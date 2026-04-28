@@ -234,8 +234,8 @@ class ContextSidebar(Static):
             parts.append("[bold]Performance[/bold]")
             if self._tok_rate > 0:
                 rate = self._tok_rate
-                # ASCII speedometer: 0-50 tok/s range
-                needle = min(int(rate / 50 * 10), 10)
+                # ASCII speedometer: 0-150 tok/s range
+                needle = min(int(rate / 150 * 10), 10)
                 gauge = "▁▂▃▄▅▆▇█"
                 bar = ""
                 for i in range(10):
