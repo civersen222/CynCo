@@ -1089,10 +1089,11 @@ export class ConversationLoop {
       // Case 2: Short text + heavy thinking — describing instead of doing
       const isDescribingInsteadOfDoing = noToolsEndTurn && tokenCount > 0 && tokenCount < 100 && reasoningTokenCount > tokenCount * 2
       // Case 3: Tools were used earlier in session but model stopped using them.
-      // This catches the "let me check... actually... wait..." narration pattern
-      // where the model writes hundreds of tokens of internal monologue instead of calling Read.
-      // No token count cap — any text-only response mid-session gets one nudge attempt.
-      const isMidPlanStop = noToolsEndTurn && toolsUsedInSession.length > 0
+      // This catches the "let me check... actually... wait..." narration pattern.
+      // BUT: if the model says it's done (completion signals), let it finish.
+      const completionSignals = /\b(task (is )?complete|i'm done|waiting for|ready for your|what would you like|no changes needed)\b/i
+      const modelSaysDone = completionSignals.test(streamedText)
+      const isMidPlanStop = noToolsEndTurn && toolsUsedInSession.length > 0 && !modelSaysDone
       if (isThinkingWithoutActing || isDescribingInsteadOfDoing || isMidPlanStop) {
         this.consecutiveNudges++
         if (this.consecutiveNudges <= 5) {
