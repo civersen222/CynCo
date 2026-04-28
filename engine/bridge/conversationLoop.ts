@@ -272,6 +272,30 @@ export class ConversationLoop {
     this.consecutiveNudges = 0
     this.steering.clear()
 
+    // Aggressive early compaction — keep context small for speed.
+    // Attention is O(n²): 30K context = 3 tok/s, 3K context = 30 tok/s.
+    // Compact if we have more than ~5K estimated tokens BEFORE running the model.
+    const estimatedTokensPreTurn = this.messages.reduce((sum, m) =>
+      sum + m.content.reduce((s, b: any) => s + (b.text?.length ?? JSON.stringify(b).length) / 4, 0), 0)
+    const ctxLen = this.config.contextLength ?? 32768
+    if (estimatedTokensPreTurn > 5000 && this.messages.length > 6) {
+      console.log(`[compact] Pre-turn compaction: ${Math.round(estimatedTokensPreTurn)} tokens → compacting for speed`)
+      try {
+        const toCompress = this.compressor.selectForCompression(this.messages, 2) // keep only last 2 pairs
+        if (toCompress.length > 0) {
+          const prompt = this.compressor.buildStructuredSummaryPrompt(toCompress, this.fileTracker)
+          const summary = await this.sideQuery(prompt)
+          this.messages = this.compressor.compressMessages(this.messages, summary, this.fileTracker)
+          try { this.journal.appendCompaction(summary, this.fileTracker.serialize()) } catch {}
+          const newTokens = this.messages.reduce((sum, m) =>
+            sum + m.content.reduce((s, b: any) => s + (b.text?.length ?? JSON.stringify(b).length) / 4, 0), 0)
+          console.log(`[compact] ${Math.round(estimatedTokensPreTurn)} → ${Math.round(newTokens)} tokens (${this.messages.length} messages)`)
+        }
+      } catch (e) {
+        console.log(`[compact] Pre-turn compaction failed: ${e}`)
+      }
+    }
+
     // Auto-inject CodeIndex results as system context — don't modify user message
     // (modifying user message leaks into memory recall display as "Prior: [Relevant code...]")
     try {
