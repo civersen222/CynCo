@@ -148,6 +148,13 @@ class LocalCodeApp(App):
             chat.add_assistant_token(event.text)
         except Exception:
             pass
+        # Track token rate for speedometer
+        try:
+            from .widgets.context_sidebar import ContextSidebar
+            sidebar = self.query_one(ContextSidebar)
+            sidebar.on_stream_token()
+        except Exception:
+            pass
 
     def _handle_message_complete(self, event: MessageCompleteEvent) -> None:
         try:
@@ -157,6 +164,13 @@ class LocalCodeApp(App):
         except Exception:
             pass
         self._current_message = ""
+        # Reset speedometer for next turn
+        try:
+            from .widgets.context_sidebar import ContextSidebar
+            sidebar = self.query_one(ContextSidebar)
+            sidebar.on_stream_complete()
+        except Exception:
+            pass
         # Stop worker animation
         try:
             from .screens.workspace import WorkspaceScreen
@@ -285,6 +299,28 @@ class LocalCodeApp(App):
                 self.screen.handle_session_ready(event)
         except Exception:
             pass
+        # Fetch GPU info from Ollama /api/ps
+        import asyncio
+        async def fetch_gpu():
+            try:
+                import json
+                from urllib.request import urlopen
+                data = json.loads(urlopen("http://localhost:11434/api/ps", timeout=3).read())
+                models = data.get("models", [])
+                if models:
+                    m = models[0]
+                    size_gb = m.get("size_vram", 0) / (1024**3)
+                    name = m.get("name", "?")
+                    gpu_str = f"{name} · {size_gb:.1f} GB VRAM"
+                    from .widgets.context_sidebar import ContextSidebar
+                    try:
+                        sidebar = self.query_one(ContextSidebar)
+                        sidebar.set_gpu_info(gpu_str)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        asyncio.ensure_future(fetch_gpu())
 
     def _handle_context_warning(self, event: ContextWarningEvent) -> None:
         self.notify(f"Context warning: {event.message}", severity="warning")

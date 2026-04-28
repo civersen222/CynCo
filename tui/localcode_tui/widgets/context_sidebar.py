@@ -44,6 +44,11 @@ class ContextSidebar(Static):
         self._expertise: str = ""
         self._ctx_tokens: int = 0
         self._ctx_utilization: float = 0.0
+        # Performance
+        self._tok_rate: float = 0.0  # tokens/sec
+        self._tok_count: int = 0
+        self._tok_start: float = 0.0
+        self._gpu_info: str = ""
         # MCP / LSP
         self._mcp_servers: list[dict] = []
         self._lsp_servers: list[dict] = []
@@ -93,6 +98,29 @@ class ContextSidebar(Static):
         self._ctx_utilization = utilization
         if context_length > 0:
             self._session_ctx_len = context_length
+        self._refresh_content()
+
+    def on_stream_token(self) -> None:
+        """Call on each stream token to track generation speed."""
+        import time
+        now = time.time()
+        if self._tok_start == 0:
+            self._tok_start = now
+        self._tok_count += 1
+        elapsed = now - self._tok_start
+        if elapsed > 0.5:
+            self._tok_rate = self._tok_count / elapsed
+            self._refresh_content()
+
+    def on_stream_complete(self) -> None:
+        """Call when generation finishes — reset for next turn."""
+        self._tok_count = 0
+        self._tok_start = 0.0
+        self._refresh_content()
+
+    def set_gpu_info(self, info: str) -> None:
+        """Set GPU info string (e.g. 'RTX 4090 · 18.2/24 GB')."""
+        self._gpu_info = info
         self._refresh_content()
 
     def set_lsp_servers(self, servers: list[dict]) -> None:
@@ -199,6 +227,27 @@ class ContextSidebar(Static):
                 tokens_line += f" / {self._session_ctx_len:,}"
             parts.append(tokens_line)
             parts.append(f"  [{color}]{pct}% used[/{color}]")
+            parts.append("")
+
+        # ── Speed ──
+        if self._tok_rate > 0 or self._gpu_info:
+            parts.append("[bold]Performance[/bold]")
+            if self._tok_rate > 0:
+                rate = self._tok_rate
+                # ASCII speedometer: 0-50 tok/s range
+                needle = min(int(rate / 50 * 10), 10)
+                gauge = "▁▂▃▄▅▆▇█"
+                bar = ""
+                for i in range(10):
+                    if i < needle:
+                        c = "green" if i < 4 else ("yellow" if i < 7 else "red")
+                        idx = min(i, len(gauge) - 1)
+                        bar += f"[{c}]{gauge[idx]}[/{c}]"
+                    else:
+                        bar += "[dim]░[/dim]"
+                parts.append(f"  {bar} {rate:.1f} tok/s")
+            if self._gpu_info:
+                parts.append(f"  [dim]{self._gpu_info}[/dim]")
             parts.append("")
 
         # ── Workflow (if active) ──
