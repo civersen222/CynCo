@@ -77,6 +77,7 @@ class VibeLoopScreen(Screen):
         ("escape", "focus_input", "Focus Input"),
         ("ctrl+q", "quit", "Quit"),
         ("ctrl+j", "just_build", "Just Build It"),
+        ("ctrl+x", "stop_model", "Stop"),
     ]
 
     def __init__(self, phases: list | None = None, *args, **kwargs):
@@ -491,6 +492,18 @@ class VibeLoopScreen(Screen):
             from ..protocol import VibeActionCommand
             cmd = VibeActionCommand(action="just_build")
             self.app.send_command(cmd)
+
+    def action_stop_model(self) -> None:
+        """Ctrl+X — interrupt the model mid-task."""
+        from ..protocol import AbortCommand
+        self.app.send_command(AbortCommand())
+        try:
+            chat = self.query_one("#vibe-chat", ChatPanel)
+            chat.add_system_message("[yellow]⏹ Interrupted.[/yellow]")
+            worker = self.query_one("#vibe-worker", WorkerAnimation)
+            worker.stop_activity()
+        except Exception:
+            pass
 
     async def action_quit(self) -> None:
         await self.app.action_quit()

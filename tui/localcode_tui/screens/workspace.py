@@ -14,6 +14,7 @@ from ..protocol import SlashCommandMsg
 
 SLASH_COMMANDS = [
     ("/help", "Show available commands"),
+    ("/stop", "Stop the model (also Ctrl+X)"),
     ("/model", "Pick a different model"),
     ("/model <name>", "Switch to a specific model"),
     ("/clear", "Clear the chat history"),
@@ -193,6 +194,7 @@ class WorkspaceScreen(Screen):
         ("ctrl+m", "pick_model", "Model"),
         ("ctrl+comma", "open_settings", "Settings"),
         ("ctrl+y", "copy_response", "Copy"),
+        ("ctrl+x", "stop_model", "Stop"),
         ("escape", "focus_input", "Focus Input"),
     ]
 
@@ -276,6 +278,9 @@ class WorkspaceScreen(Screen):
             from .guided import GuidedScreen
             self.app.switch_screen(GuidedScreen())
 
+        elif command == "/stop":
+            self.action_stop_model()
+
         elif command in ("/quit", "/exit"):
             import asyncio
             asyncio.ensure_future(self.app.action_quit())
@@ -337,6 +342,19 @@ class WorkspaceScreen(Screen):
             from ..protocol import SlashCommandMsg
             cmd = SlashCommandMsg(command=command, args=args)
             self.app.send_command(cmd)
+
+    def action_stop_model(self) -> None:
+        """Ctrl+X — interrupt the model mid-task."""
+        from ..protocol import AbortCommand
+        self.app.send_command(AbortCommand())
+        chat = self.query_one("#chat", ChatPanel)
+        chat.add_system_message("[yellow]⏹ Interrupted.[/yellow]")
+        try:
+            from ..widgets import WorkerAnimation
+            worker = self.query_one("#worker-anim", WorkerAnimation)
+            worker.stop_activity()
+        except Exception:
+            pass
 
     def action_new_chat(self) -> None:
         chat = self.query_one("#chat", ChatPanel)
