@@ -179,7 +179,7 @@ class ProjectPicker(Screen):
         # Find bun and engine entry point
         engine_script = os.path.join(
             os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
-            "src", "src", "localcode", "main.ts",
+            "engine", "main.ts",
         )
 
         if not os.path.exists(engine_script):
