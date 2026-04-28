@@ -1,0 +1,26 @@
+/* Guided mode layout */
+
+#context-bar {
+    dock: top;
+    height: 1;
+}
+
+#center-container {
+    height: 1fr;
+}
+
+#menu {
+    width: 50;
+    height: auto;
+    padding: 2;
+}
+
+#welcome {
+    text-align: center;
+    margin-bottom: 2;
+}
+
+#menu Button {
+    width: 100%;
+    margin-bottom: 1;
+}

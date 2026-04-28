@@ -1,0 +1,42 @@
+/* LocalCode TUI Theme */
+
+$accent: #4CAF50;
+$surface: #1e1e1e;
+$text: #e0e0e0;
+
+Screen {
+    background: $surface;
+    color: $text;
+}
+
+/* Context bar color states */
+.context-ok {
+    color: #4CAF50;
+}
+
+.context-warning {
+    color: #FFC107;
+}
+
+.context-critical {
+    color: #F44336;
+}
+
+/* Chat panel */
+ChatPanel {
+    scrollbar-size: 1 1;
+}
+
+/* Approval dialog */
+ApprovalDialog {
+    background: rgba(0, 0, 0, 0.7);
+}
+
+/* Input styling */
+Input {
+    border: solid $accent;
+}
+
+Input:focus {
+    border: heavy $accent;
+}

@@ -1,0 +1,22 @@
+{
+  "name": "cynco",
+  "version": "0.1.0",
+  "description": "CynCo — Cybernetic Collaborator. AI coding assistant on your GPU.",
+  "type": "module",
+  "scripts": {
+    "start": "bun engine/main.ts",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "sqlite-vec": "^0.1.9",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "bun-types": "^1.3.0"
+  },
+  "license": "AGPL-3.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/civersen222/CynCo.git"
+  }
+}

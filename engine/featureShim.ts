@@ -1,0 +1,96 @@
+/**
+ * Static replacement for bun:bundle's feature() function.
+ *
+ * Feature flag shim — statically resolves feature flags
+ * that enables dead-code elimination. In CynCo, we resolve all flags
+ * statically. This shim exists during the migration — Phase 7.3 will
+ * inline these decisions and remove it.
+ *
+ * Flags are categorized as:
+ * - ENABLED: User-facing functionality that should work in CynCo
+ * - DISABLED: cloud-dependent or enterprise-only
+ */
+
+const ENABLED_FEATURES = new Set([
+  // Context management
+  'REACTIVE_COMPACT',
+  'CONTEXT_COLLAPSE',
+  'COMPACTION_REMINDERS',
+  'CACHED_MICROCOMPACT',
+  'TOKEN_BUDGET',
+
+  // Security & permissions
+  'BASH_CLASSIFIER',
+  'POWERSHELL_AUTO_MODE',
+  'TRANSCRIPT_CLASSIFIER',
+
+  // Code intelligence
+  'TREE_SITTER_BASH',
+  'TREE_SITTER_BASH_SHADOW',
+
+  // Agent & tool features
+  'BUILTIN_EXPLORE_PLAN_AGENTS',
+  'FORK_SUBAGENT',
+  'AGENT_TRIGGERS',
+  'AGENT_TRIGGERS_REMOTE',
+  'HOOK_PROMPTS',
+  'MCP_SKILLS',
+  'MCP_RICH_OUTPUT',
+  'WORKFLOW_SCRIPTS',
+  'PROACTIVE',
+  'MONITOR_TOOL',
+
+  // Memory & session
+  'EXTRACT_MEMORIES',
+  'FILE_PERSISTENCE',
+  'COMMIT_ATTRIBUTION',
+  'AGENT_MEMORY_SNAPSHOT',
+  'HISTORY_PICKER',
+  'HISTORY_SNIP',
+
+  // UI features
+  'CONNECTOR_TEXT',
+  'STREAMLINED_OUTPUT',
+  'AUTO_THEME',
+  'MESSAGE_ACTIONS',
+  'QUICK_SEARCH',
+  'ULTRAPLAN',
+  'ULTRATHINK',
+  'REVIEW_ARTIFACT',
+  'SLOW_OPERATION_LOGGING',
+
+  // Misc user-facing
+  'BREAK_CACHE_COMMAND',
+  'NEW_INIT',
+  'BUILDING_CLAUDE_APPS',
+  'EXPERIMENTAL_SKILL_SEARCH',
+  'SKILL_IMPROVEMENT',
+  'RUN_SKILL_GENERATOR',
+  'VERIFICATION_AGENT',
+  'UNATTENDED_RETRY',
+  'PROMPT_CACHE_BREAK_DETECTION',
+  'HARD_FAIL',
+  'SHOT_STATS',
+  'COORDINATOR_MODE',
+  'DAEMON',
+  'TEMPLATES',
+  'TERMINAL_PANEL',
+  'WEB_BROWSER_TOOL',
+  'OVERFLOW_TEST_TOOL',
+  'NATIVE_CLIPBOARD_IMAGE',
+])
+
+// Disabled flags (cloud-dependent or enterprise-only):
+// ABLATION_BASELINE, ANTI_DISTILLATION_CC, AWAY_SUMMARY, BG_SESSIONS, MEMORY_SHAPE_TELEMETRY,
+// BRIDGE_MODE, BUDDY, BYOC_ENVIRONMENT_RUNNER, CCR_AUTO_CONNECT,
+// CCR_MIRROR, CCR_REMOTE_SETUP, CHICAGO_MCP, COWORKER_TYPE_TELEMETRY,
+// DIRECT_CONNECT, DOWNLOAD_USER_SETTINGS, DUMP_SYSTEM_PROMPT,
+// ENHANCED_TELEMETRY_BETA, IS_LIBC_GLIBC, IS_LIBC_MUSL,
+// KAIROS, KAIROS_BRIEF, KAIROS_CHANNELS, KAIROS_DREAM,
+// KAIROS_GITHUB_WEBHOOKS, KAIROS_PUSH_NOTIFICATION, LODESTONE,
+// NATIVE_CLIENT_ATTESTATION, PERFETTO_TRACING, SELF_HOSTED_RUNNER,
+// SSH_REMOTE, TEAMMEM, TORCH, UPLOAD_USER_SETTINGS, VOICE_MODE
+
+export function feature(flag: string): boolean {
+  return ENABLED_FEATURES.has(flag)
+}

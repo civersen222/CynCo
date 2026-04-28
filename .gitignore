@@ -1,0 +1,71 @@
+# Environment & secrets
+.env
+.env.local
+.env.*.local
+credentials.json
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Claude/Serena working dirs
+.serena/
+.pytest_cache/
+
+# Build artifacts & deps
+node_modules/
+__pycache__/
+*.pyc
+.claude/cache/
+.claude/worktrees/
+
+# Python venvs
+.venv/
+tui/.venv/
+
+# Lock files (regenerated per-machine)
+bun.lock
+tui/uv.lock
+src/_archived_claude_code/
+.claude/
+src/src/
+benchmark
+benchmark-manual
+benchmark-results
+benchmark-workspace-06
+.superpowers
+.localcode-debug.json
+.localcode-http-debug.json
+.localcode-sse-debug.json
+CLAUDE.md
+docs/superpowers/
+thoughts/
+src/.claude/
+src/thoughts/
+src.zip
+docker-compose.yml
+bunfig.toml
+DEAD_CODE_AUDIT.md
+engine/cybernetics-core/.claude/
+src/
+tests/
+tsconfig.json
+vectors/
+tui/.localcode-snapshots/
+tui/.localcode-engine.log
+tui/.localcode/
+tui/tui_errors.txt
+*.db-shm
+*.db-wal
+NUL
+CON
+PRN
+AUX

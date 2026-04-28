@@ -1,0 +1,33 @@
+/* Workspace mode layout */
+
+#context-bar {
+    dock: top;
+    height: 1;
+}
+
+#main-split {
+    height: 1fr;
+}
+
+#left-pane {
+    width: 2fr;
+}
+
+#chat {
+    height: 1fr;
+}
+
+#input {
+    height: 5;
+    min-height: 5;
+}
+
+#sidebar {
+    width: 1fr;
+}
+
+#tool-activity {
+    dock: bottom;
+    height: auto;
+    max-height: 5;
+}
