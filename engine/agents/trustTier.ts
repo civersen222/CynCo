@@ -1,11 +1,6 @@
 import { ALL_TOOLS } from '../tools/registry.js'
 import type { ToolImpl } from '../tools/types.js'
-
-// TrustTier and AgentPersona are defined in ./types.ts (Task 1).
-// Using string literals here keeps this module functional before types.ts lands;
-// once types.ts exists the import can be swapped in without changing runtime behaviour.
-type TrustTier = 'readonly' | 'specialist' | 'full'
-type AgentPersona = string
+import type { TrustTier, AgentPersona } from './types.js'
 
 const READONLY_TOOL_NAMES = new Set([
   'Read', 'Glob', 'Grep', 'CodeIndex', 'Ls', 'ImageView', 'Git',
