@@ -24,6 +24,9 @@ import { DecisionLogger } from '../decisions/logger.js'
 import { ContextCompressor, FileOperationTracker } from '../context/compressor.js'
 import type { S5Orchestrator } from '../s5/orchestrator.js'
 import { SubAgentRunner } from '../agents/runner.js'
+import { S2Coordinator } from '../agents/s2Coordinator.js'
+import { SubAgent } from '../agents/subAgent.js'
+import type { SubAgentConfig, SubAgentResult } from '../agents/types.js'
 import { shouldInjectSummary, buildSummaryInjectionMessage } from './summaryInjection.js'
 import { SteeringQueue } from './steeringQueue.js'
 import { JSONLStore } from '../session/jsonlStore.js'
@@ -120,6 +123,9 @@ export class ConversationLoop {
   private fileTracker = new FileOperationTracker()
   private s5?: S5Orchestrator
   private agentRunner: SubAgentRunner
+  private s2: S2Coordinator
+  private runningAgents = new Map<string, SubAgent>()
+  private agentResults = new Map<string, SubAgentResult>()
   private toolHistory: string[] = []  // Track tool names for VSM advisors
   private toolFailureCounts: Map<string, number> = new Map()
   private consecutiveNudges = 0
@@ -165,6 +171,24 @@ export class ConversationLoop {
     this.agentRunner = new SubAgentRunner(async (task) => {
       // Simplified sub-agent execution — full execution comes later
       return `[SubAgent completed] ${task.task}`
+    })
+
+    this.s2 = new S2Coordinator({
+      pollGpuUtil: async () => {
+        try {
+          const resp = await fetch(`${this.config.baseUrl}/api/ps`)
+          const data = await resp.json() as any
+          if (data.models?.length > 0) {
+            const model = data.models[0]
+            const used = model.size_vram ?? 0
+            const total = model.size ?? used
+            return total > 0 ? used / total : 0.5
+          }
+          return 0
+        } catch {
+          return 0.5
+        }
+      },
     })
 
     // Initialize workspace snapshot for governance
@@ -1360,6 +1384,131 @@ export class ConversationLoop {
 
     const toolStartMs = Date.now()
     const result = await this.executor.execute(toolName, toolInput)
+
+    // ─── SubAgent interception ─────────────────────────────────────
+    // spawnAgent.ts returns { _subagent: true, config, blocking } as JSON.
+    // We intercept here to actually spawn and run the agent via S2.
+    if (toolName === 'SubAgent' && !result.isError) {
+      try {
+        const parsed = JSON.parse(result.output)
+        if (parsed._subagent) {
+          const config: SubAgentConfig = parsed.config
+          const blocking: boolean = parsed.blocking ?? true
+
+          // 1. Ask S2 to schedule
+          const s2Decision = await this.s2.requestSchedule(config.id)
+          console.log(`[s2] Schedule decision for ${config.id}: ${s2Decision.decision} — ${s2Decision.reasoning}`)
+          this.emit({
+            type: 's2.decision',
+            decision: s2Decision.decision,
+            agentId: config.id,
+            reason: s2Decision.reasoning,
+            gpuUtil: s2Decision.input.gpuUtil,
+            queueDepth: s2Decision.input.queueDepth,
+          })
+
+          // 2. Create SubAgent instance
+          const agent = new SubAgent({
+            config,
+            provider: this.provider,
+            emit: this.emit,
+            cwd: this.executor['cwd'],
+            model: this.config.model!,
+          })
+
+          // 3. Register with S2
+          this.s2.registerAgent(agent.status)
+          this.runningAgents.set(config.id, agent)
+
+          if (blocking) {
+            // 4a. Blocking: await completion, store result
+            const agentResult = await agent.run()
+            this.s2.completeAgent(config.id)
+            this.runningAgents.delete(config.id)
+            this.agentResults.set(config.id, agentResult)
+
+            result.output = [
+              `[SubAgent ${config.id}] (${config.persona}) completed`,
+              `Task: ${config.task}`,
+              `Turns: ${agentResult.turns} | Tokens: ${agentResult.tokensUsed}`,
+              `Success: ${agentResult.success}`,
+              '',
+              agentResult.output,
+            ].join('\n')
+          } else {
+            // 4b. Non-blocking: start in background, return ID
+            agent.run().then((agentResult) => {
+              this.s2.completeAgent(config.id)
+              this.runningAgents.delete(config.id)
+              this.agentResults.set(config.id, agentResult)
+              console.log(`[subagent] ${config.id} completed in background: success=${agentResult.success}`)
+            }).catch((err) => {
+              this.s2.completeAgent(config.id)
+              this.runningAgents.delete(config.id)
+              this.agentResults.set(config.id, {
+                agentId: config.id,
+                success: false,
+                output: `SubAgent error: ${err instanceof Error ? err.message : String(err)}`,
+                turns: 0,
+                tokensUsed: 0,
+                governanceMetrics: { toolCalls: 0, toolErrors: 0, stuckTurns: 0, compactions: 0 },
+              })
+              console.log(`[subagent] ${config.id} failed in background: ${err}`)
+            })
+
+            result.output = [
+              `[SubAgent ${config.id}] (${config.persona}) spawned (non-blocking)`,
+              `Task: ${config.task}`,
+              `Use CollectAgent with agentId "${config.id}" to retrieve results when ready.`,
+            ].join('\n')
+          }
+        }
+      } catch (e) {
+        // JSON parse failed — pass through the original result (probably an error)
+        console.log(`[subagent] Failed to parse SubAgent output: ${e}`)
+      }
+    }
+
+    // ─── CollectAgent interception ─────────────────────────────────
+    // collectAgent.ts returns { _collectAgent: true, agentId } as JSON.
+    // We intercept here to look up actual results.
+    if (toolName === 'CollectAgent' && !result.isError) {
+      try {
+        const parsed = JSON.parse(result.output)
+        if (parsed._collectAgent) {
+          const agentId: string = parsed.agentId
+
+          const completedResult = this.agentResults.get(agentId)
+          if (completedResult) {
+            // Agent finished — return full result
+            result.output = [
+              `[SubAgent ${agentId}] Result:`,
+              `Success: ${completedResult.success}`,
+              `Turns: ${completedResult.turns} | Tokens: ${completedResult.tokensUsed}`,
+              '',
+              completedResult.output,
+            ].join('\n')
+          } else if (this.runningAgents.has(agentId)) {
+            // Agent still running — return status
+            const agent = this.runningAgents.get(agentId)!
+            const status = agent.status
+            result.output = [
+              `[SubAgent ${agentId}] Still running`,
+              `Persona: ${status.persona}`,
+              `Turn: ${status.currentTurn}/${status.maxTurns}`,
+              `Tokens used: ${status.tokensUsed}`,
+              `Try collecting again later.`,
+            ].join('\n')
+          } else {
+            // Agent not found
+            result.output = `Error: No agent found with ID "${agentId}". It may have never been spawned or its results were already collected.`
+            result.isError = true
+          }
+        }
+      } catch (e) {
+        console.log(`[subagent] Failed to parse CollectAgent output: ${e}`)
+      }
+    }
 
     console.log(`[loop] Tool result: ${toolName} isError=${result.isError}`)
 
