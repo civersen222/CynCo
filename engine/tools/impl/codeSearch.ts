@@ -1,10 +1,10 @@
-import { execSync } from 'child_process'
+import { exec } from 'child_process'
 import { resolve } from 'path'
 import type { ToolImpl } from '../types.js'
 
 export const codeSearchTool: ToolImpl = {
   name: 'CodeSearch',
-  description: 'Search for code symbols — function definitions, class declarations, exports, imports. Uses ripgrep with code-aware patterns.',
+  description: 'Search for code symbols — function definitions, class declarations, exports, imports. Works with or without ripgrep.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -30,16 +30,32 @@ export const codeSearchTool: ToolImpl = {
 
     const pattern = patterns[type] ?? patterns.all
 
-    try {
-      const stdout = execSync(
-        `rg --no-heading --line-number --color never -e "${pattern}" "${dir}"`,
-        { encoding: 'utf-8', timeout: 15000, maxBuffer: 512 * 1024, stdio: ['pipe', 'pipe', 'pipe'] }
-      )
-      const lines = stdout.split('\n').slice(0, 50)
-      return { output: lines.join('\n') || 'No matches found', isError: false }
-    } catch (err: any) {
-      if (err.status === 1) return { output: 'No matches found', isError: false }
-      return { output: `Search error: ${err.message?.slice(0, 200)}`, isError: true }
-    }
+    // Try ripgrep first, fall back to PowerShell Select-String on Windows, grep on Unix
+    const isWindows = process.platform === 'win32'
+    const rgCmd = `rg --no-heading --line-number --color never -e "${pattern}" "${dir}"`
+    const fallbackCmd = isWindows
+      ? `powershell -Command "Get-ChildItem -Path '${dir}' -Recurse -Include *.py,*.ts,*.js,*.tsx,*.jsx,*.rs,*.go,*.java,*.c,*.cpp | Select-String -Pattern '${query}' | Select-Object -First 50 | ForEach-Object { $_.ToString() }"`
+      : `grep -rn "${query}" "${dir}" --include="*.py" --include="*.ts" --include="*.js" | head -50`
+
+    return new Promise((resolve) => {
+      // Try rg first
+      exec(rgCmd, { cwd, encoding: 'utf-8', timeout: 15000, maxBuffer: 512 * 1024 }, (err, stdout) => {
+        if (!err && stdout.trim()) {
+          const lines = stdout.split('\n').slice(0, 50)
+          resolve({ output: lines.join('\n'), isError: false })
+          return
+        }
+
+        // rg failed or not found — try fallback
+        exec(fallbackCmd, { cwd, encoding: 'utf-8', timeout: 15000, maxBuffer: 512 * 1024, shell: isWindows ? 'powershell.exe' : '/bin/bash' }, (err2, stdout2) => {
+          if (err2 || !stdout2.trim()) {
+            resolve({ output: 'No matches found', isError: false })
+            return
+          }
+          const lines = stdout2.split('\n').slice(0, 50)
+          resolve({ output: lines.join('\n'), isError: false })
+        })
+      })
+    })
   },
 }
