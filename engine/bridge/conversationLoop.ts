@@ -1369,7 +1369,10 @@ export class ConversationLoop {
       this.toolFailureCounts.set(toolName, count)
       if (count >= 3) {
         console.log(`[loop] Circuit breaker: ${toolName} failed ${count} times — overriding result`)
-        result.output = `CIRCUIT BREAKER: ${toolName} has failed ${count} consecutive times with errors. STOP using ${toolName} with these arguments. Try a DIFFERENT approach:\n- If running a script that has import errors, fix the imports first with Edit\n- If a file path is wrong, use Glob or Ls to find the correct path\n- If a command fails, read the error carefully before retrying\n\nOriginal error: ${result.output.slice(0, 300)}`
+        const writeHint = toolName === 'Write'
+          ? '\n- STOP trying to Write the entire file. Use Edit to make SMALL targeted changes instead.\n- Read the file first, find the specific line, use Edit to change just that line.'
+          : ''
+        result.output = `CIRCUIT BREAKER: ${toolName} has failed ${count} consecutive times. STOP using ${toolName} this way.${writeHint}\n- Try a COMPLETELY DIFFERENT approach\n- If editing: use Edit with small targeted changes, not Write with full file content\n- If running scripts: fix imports/syntax first\n\nOriginal error: ${result.output.slice(0, 300)}`
       }
     } else {
       this.toolFailureCounts.delete(toolName)
