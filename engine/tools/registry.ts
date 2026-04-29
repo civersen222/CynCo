@@ -16,11 +16,14 @@ import { lsTool } from './impl/ls.js'
 import { webSearchTool } from './impl/webSearch.js'
 import { saveLearningTool } from './impl/saveLearning.js'
 import { codeIndexTool } from './impl/codeIndex.js'
+import { spawnAgentTool } from './impl/spawnAgent.js'
+import { collectAgentTool } from './impl/collectAgent.js'
 
 export const ALL_TOOLS: ToolImpl[] = [
   readTool, globTool, grepTool, editTool, writeTool,
   bashTool, gitTool, webFetchTool, webSearchTool, imageViewTool, notebookEditTool,
   multiEditTool, applyPatchTool, lsTool, codeIndexTool, saveLearningTool,
+  spawnAgentTool, collectAgentTool,
 ]
 
 export function getToolsByTier(tier: ApprovalTier): ToolImpl[] {

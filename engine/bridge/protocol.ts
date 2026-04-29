@@ -207,6 +207,23 @@ export type SubAgentCompleteEvent = {
   tokensUsed: number
 }
 
+export type SubAgentKilledEvent = {
+  type: 'subagent.killed'
+  agentId: string
+  persona: string
+  task: string
+  reason: string
+}
+
+export type S2CoordinationEvent = {
+  type: 's2.decision'
+  decision: 'run' | 'queue' | 'wait' | 'absorb' | 'escalate' | 'kill'
+  agentId: string
+  reason: string
+  gpuUtil: number
+  queueDepth: number
+}
+
 // ─── Config/Profile Response Events ───────────────────────────────
 
 export type ConfigCurrentEvent = {
@@ -267,6 +284,8 @@ export type EngineEvent =
   | SubAgentSpawnedEvent
   | SubAgentToolEvent
   | SubAgentCompleteEvent
+  | SubAgentKilledEvent
+  | S2CoordinationEvent
   | VibeStateChangedEvent
   | VibeConfidenceUpdateEvent
   | VibeTaskCompleteEvent
