@@ -181,6 +181,32 @@ export type VibeQuestionEvent = {
   options?: string[]
 }
 
+// ─── Sub-Agent Events ────────────────────────────────────────────
+
+export type SubAgentSpawnedEvent = {
+  type: 'subagent.spawned'
+  agentId: string
+  persona: string
+  task: string
+}
+
+export type SubAgentToolEvent = {
+  type: 'subagent.tool'
+  agentId: string
+  toolName: string
+  status: 'success' | 'error'
+  preview: string
+}
+
+export type SubAgentCompleteEvent = {
+  type: 'subagent.complete'
+  agentId: string
+  success: boolean
+  output: string
+  turns: number
+  tokensUsed: number
+}
+
 // ─── Config/Profile Response Events ───────────────────────────────
 
 export type ConfigCurrentEvent = {
@@ -238,6 +264,9 @@ export type EngineEvent =
   | WorkflowStatusEvent
   | GovernanceStatusEvent
   | SummaryInjectedEvent
+  | SubAgentSpawnedEvent
+  | SubAgentToolEvent
+  | SubAgentCompleteEvent
   | VibeStateChangedEvent
   | VibeConfidenceUpdateEvent
   | VibeTaskCompleteEvent
