@@ -163,6 +163,11 @@ class TestParseEvent:
             "vibe.escalation",
             "vibe.project_scanned",
             "vibe.question",
+            "subagent.spawned",
+            "subagent.tool",
+            "subagent.complete",
+            "subagent.killed",
+            "s2.decision",
         }
         assert set(EVENT_TYPES.keys()) == expected
 

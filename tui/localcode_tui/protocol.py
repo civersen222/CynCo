@@ -127,6 +127,56 @@ class GovernanceStatusEvent:
 
 
 @dataclass
+class SubAgentSpawnedEvent:
+    type: str = "subagent.spawned"
+    agent_id: str = ""
+    persona: str = ""
+    task: str = ""
+
+
+@dataclass
+class SubAgentToolEvent:
+    type: str = "subagent.tool"
+    agent_id: str = ""
+    persona: str = ""
+    task: str = ""
+    tool_name: str = ""
+    status: str = ""
+    preview: str = ""
+
+
+@dataclass
+class SubAgentCompleteEvent:
+    type: str = "subagent.complete"
+    agent_id: str = ""
+    persona: str = ""
+    task: str = ""
+    success: bool = False
+    result_summary: str = ""
+    turns: int = 0
+    tokens_used: int = 0
+
+
+@dataclass
+class SubAgentKilledEvent:
+    type: str = "subagent.killed"
+    agent_id: str = ""
+    persona: str = ""
+    task: str = ""
+    reason: str = ""
+
+
+@dataclass
+class S2CoordinationEvent:
+    type: str = "s2.decision"
+    decision: str = ""
+    agent_id: str = ""
+    reason: str = ""
+    gpu_util: float = 0.0
+    queue_depth: int = 0
+
+
+@dataclass
 class SummaryInjectedEvent:
     type: str = "summary.injected"
     tools_used: list = field(default_factory=list)
@@ -343,6 +393,11 @@ EVENT_TYPES = {
     "vibe.escalation": VibeEscalationEvent,
     "vibe.project_scanned": VibeProjectScannedEvent,
     "vibe.question": VibeQuestionEvent,
+    "subagent.spawned": SubAgentSpawnedEvent,
+    "subagent.tool": SubAgentToolEvent,
+    "subagent.complete": SubAgentCompleteEvent,
+    "subagent.killed": SubAgentKilledEvent,
+    "s2.decision": S2CoordinationEvent,
 }
 
 

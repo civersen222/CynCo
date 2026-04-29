@@ -29,6 +29,12 @@ class ContextSidebar(Static):
         self._gov_stuck: int = 0
         self._gov_suggestion: str | None = None
 
+        # Sub-agents
+        self._agents: list[dict] = []
+        self._s2_gpu: float = 0.0
+        self._s2_running: int = 0
+        self._s2_queued: int = 0
+
         # Memory section
         self._prior_goal: str | None = None
         self._prior_status: str | None = None
@@ -145,6 +151,28 @@ class ContextSidebar(Static):
         self._active_phase = phase
         self._refresh_content()
 
+    def add_agent(self, agent_id: str, persona: str, task: str, state: str, turn: int, max_turns: int, tokens: int) -> None:
+        """Track or update a sub-agent."""
+        for a in self._agents:
+            if a["id"] == agent_id:
+                a.update({"state": state, "turn": turn, "tokens": tokens})
+                self._refresh_content()
+                return
+        self._agents.append({
+            "id": agent_id, "persona": persona, "task": task,
+            "state": state, "turn": turn, "max_turns": max_turns, "tokens": tokens,
+        })
+        if len(self._agents) > 10:
+            self._agents = self._agents[-10:]
+        self._refresh_content()
+
+    def set_s2_status(self, gpu_util: float, running: int, queued: int) -> None:
+        """Update S2 coordinator status."""
+        self._s2_gpu = gpu_util
+        self._s2_running = running
+        self._s2_queued = queued
+        self._refresh_content()
+
     def add_file(self, path: str, size: str = "", tool: str = "Read") -> None:
         """Track a file that was read into context."""
         # Avoid duplicates
@@ -255,6 +283,44 @@ class ContextSidebar(Static):
             parts.append(f"[bold yellow]Workflow: {self._active_workflow}[/bold yellow]")
             parts.append(f"  Phase: [cyan]{self._active_phase}[/cyan]")
             parts.append("")
+
+        # ── Agents ──
+        parts.append("[bold]Agents[/bold]")
+        if self._agents:
+            for a in self._agents[-10:]:
+                state = a["state"]
+                if state == "running":
+                    icon = "\u25b6"
+                    color = "yellow"
+                    detail = f"turn {a['turn']}/{a['max_turns']}"
+                elif state == "queued":
+                    icon = "\u23f3"
+                    color = "dim"
+                    detail = "waiting for GPU"
+                elif state == "completed":
+                    icon = "\u2713"
+                    color = "green"
+                    detail = f"{a['turn']} turns \u00b7 {a['tokens']:,} tok"
+                elif state == "killed":
+                    icon = "\u2717"
+                    color = "red"
+                    detail = "killed"
+                elif state == "failed":
+                    icon = "\u2717"
+                    color = "red"
+                    detail = "failed"
+                else:
+                    icon = "?"
+                    color = "white"
+                    detail = state
+                task_short = a["task"][:40]
+                parts.append(f"  [{color}]{icon}[/{color}] {a['id'][:16]}  \"{task_short}\"  [{color}]{detail}[/{color}]")
+            if self._s2_gpu > 0 or self._s2_running > 0 or self._s2_queued > 0:
+                pct = int(self._s2_gpu * 100)
+                parts.append(f"  [dim]S2: GPU {pct}% \u00b7 {self._s2_running} running \u00b7 {self._s2_queued} queued[/dim]")
+        else:
+            parts.append("  [dim]No agents[/dim]")
+        parts.append("")
 
         # ── VSM Governance ──
         if self._gov_health:
