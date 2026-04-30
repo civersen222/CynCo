@@ -9,7 +9,7 @@ export const planningWorkflow: WorkflowDefinition = {
     create_plan: {
       name: 'create_plan',
       instruction: 'Analyze the task and create a detailed, ordered implementation plan. Break the work into discrete, verifiable steps. Read relevant code to understand the current state before planning. Output the plan clearly before proceeding.',
-      allowedTools: ['Read', 'Glob', 'Grep'],
+      allowedTools: ['Read', 'Glob', 'Grep', 'CodeIndex', 'SubAgent', 'CollectAgent'],
       gate: { type: 'model_done' },
       transitions: ['execute_step'],
     },

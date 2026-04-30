@@ -15,7 +15,7 @@ export const debugWorkflow: WorkflowDefinition = {
     hypothesize: {
       name: 'hypothesize',
       instruction: 'Form 2-3 specific hypotheses about the root cause. Read the relevant code carefully and reason about what could cause the observed behavior. Document each hypothesis with supporting evidence from the code.',
-      allowedTools: ['Read', 'Glob', 'Grep'],
+      allowedTools: ['Read', 'Glob', 'Grep', 'SubAgent', 'CollectAgent'],
       gate: { type: 'model_done' },
       transitions: ['isolate'],
     },

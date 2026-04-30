@@ -15,7 +15,7 @@ export const critiqueWorkflow: WorkflowDefinition = {
     critique: {
       name: 'critique',
       instruction: 'Now switch to CRITIC mode. Review what you just generated with fresh eyes.\nLook for: bugs, edge cases, missing error handling, unclear naming, unnecessary complexity.\nScore the solution 1-10 and list specific issues.\nBe harsh — the goal is to find real problems, not validate.',
-      allowedTools: ['Read', 'Grep', 'Glob'],
+      allowedTools: ['Read', 'Grep', 'Glob', 'SubAgent', 'CollectAgent'],
       gate: { type: 'model_done' },
       transitions: ['refine'],
     },
