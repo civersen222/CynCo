@@ -462,6 +462,14 @@ class WorkspaceScreen(Screen):
         chat.add_system_message(f"[dim]\u25b6 Running tool: [bold]{event.tool_name}[/bold][/dim]")
         sidebar = self.query_one("#sidebar", ContextSidebar)
         sidebar.log_tool(event.tool_name, status="running")
+        # Track tool_id → file_path so we can show the path on tool.complete
+        if not hasattr(self, "_tool_paths"):
+            self._tool_paths = {}
+        tool_input = getattr(event, "input", None) or {}
+        if isinstance(tool_input, dict):
+            path = tool_input.get("file_path") or tool_input.get("filePath") or tool_input.get("path") or tool_input.get("pattern") or ""
+            if path:
+                self._tool_paths[event.tool_id] = str(path)
 
     def handle_tool_complete(self, event) -> None:
         chat = self.query_one("#chat", ChatPanel)
@@ -473,17 +481,22 @@ class WorkspaceScreen(Screen):
         tool_status = "error" if event.is_error else "ok"
         sidebar.log_tool(event.tool_name, status=tool_status, preview=result_preview[:80])
 
-        # If it was a Read tool, show file in sidebar preview and track it
-        if event.tool_name == "Read" and not event.is_error and event.result:
-            result_str = str(event.result)
-            sidebar.add_file(result_str.split("\n")[0].strip() if result_str else "file")
-            sidebar.show_preview("File", result_str[:2000])
-        # Track files from Glob/Grep results
+        # Look up file path from tool.start input
+        tool_paths = getattr(self, "_tool_paths", {})
+        file_path = tool_paths.pop(event.tool_id, None)
+
+        # Track files from Read/Glob/Grep
+        if event.tool_name == "Read" and not event.is_error:
+            if file_path:
+                from os.path import basename
+                sidebar.add_file(file_path)
+                result_str = str(event.result) if event.result else ""
+                sidebar.show_preview(basename(file_path), result_str[:2000])
         elif event.tool_name in ("Glob", "Grep") and not event.is_error and event.result:
             result_str = str(event.result)
             for line in result_str.split("\n")[:10]:
                 path = line.strip()
-                if path:
+                if path and not path.startswith("[") and len(path) < 300:
                     sidebar.add_file(path, tool=event.tool_name)
 
         # Explain mode: request plain-language explanation for non-advanced users

@@ -230,7 +230,9 @@ export class ConversationLoop {
   abort(): void {
     if (this.abortController) {
       this.abortController.abort()
-      this.abortController = null
+      // Don't null the controller — the model loop checks signal.aborted
+      // Setting it to null makes the check `this.abortController?.signal.aborted`
+      // return undefined instead of true, so the loop never stops.
       this.processing = false
     }
   }

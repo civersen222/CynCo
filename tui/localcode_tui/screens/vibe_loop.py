@@ -468,8 +468,16 @@ class VibeLoopScreen(Screen):
         try:
             sidebar = self.query_one("#vibe-sidebar", ContextSidebar)
             sidebar.log_tool(event.tool_name, status="running")
-        except Exception:
-            pass
+            # Track tool_id → file_path for tool.complete
+            if not hasattr(self, "_tool_paths"):
+                self._tool_paths = {}
+            tool_input = getattr(event, "input", None) or {}
+            if isinstance(tool_input, dict):
+                path = tool_input.get("file_path") or tool_input.get("filePath") or tool_input.get("path") or tool_input.get("pattern") or ""
+                if path:
+                    self._tool_paths[event.tool_id] = str(path)
+        except Exception as e:
+            print(f"[vibe] ERROR in handle_tool_start_sidebar: {e}")
 
     def handle_tool_complete_sidebar(self, event) -> None:
         try:
@@ -478,16 +486,20 @@ class VibeLoopScreen(Screen):
             result_str = str(event.result) if event.result else ""
             sidebar.log_tool(event.tool_name, status=tool_status,
                            preview=result_str[:80])
-            # Track files from Read/Glob/Grep — mirrors WorkspaceScreen logic
-            if event.tool_name == "Read" and not event.is_error and result_str:
-                sidebar.add_file(result_str.split("\n")[0].strip() or "file")
+            # Look up file path from tool.start input
+            tool_paths = getattr(self, "_tool_paths", {})
+            file_path = tool_paths.pop(getattr(event, "tool_id", ""), None)
+            # Track files from Read/Glob/Grep
+            if event.tool_name == "Read" and not event.is_error and file_path:
+                from os.path import basename
+                sidebar.add_file(file_path)
             elif event.tool_name in ("Glob", "Grep") and not event.is_error and result_str:
                 for line in result_str.split("\n")[:10]:
                     path = line.strip()
-                    if path:
+                    if path and not path.startswith("[") and len(path) < 300:
                         sidebar.add_file(path, tool=event.tool_name)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[vibe] ERROR in handle_tool_complete_sidebar: {e}")
 
     def action_focus_input(self) -> None:
         try:
