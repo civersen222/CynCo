@@ -63,6 +63,7 @@ class ToolProgressEvent:
 class ToolCompleteEvent:
     type: str = "tool.complete"
     tool_id: str = ""
+    tool_name: str = ""
     result: Any = None
     is_error: bool = False
 

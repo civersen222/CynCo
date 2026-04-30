@@ -61,6 +61,7 @@ export type ToolProgressEvent = {
 export type ToolCompleteEvent = {
   type: 'tool.complete'
   toolId: string
+  toolName: string
   result: unknown
   isError?: boolean
 }

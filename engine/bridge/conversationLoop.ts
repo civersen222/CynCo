@@ -1352,7 +1352,7 @@ export class ConversationLoop {
       console.log(`[guardian] BLOCKED (dangerous, beginner): ${toolName}`)
       this.emit({ type: 'tool.start', toolId, toolName, input: toolInput })
       this.emit({ type: 'stream.token', text: `\n[Guardian] Blocked: ${riskDesc}\nThe AI has been asked to find a safer approach.\n` })
-      this.emit({ type: 'tool.complete', toolId, result: `BLOCKED: ${riskDesc}`, isError: true })
+      this.emit({ type: 'tool.complete', toolId, toolName, result: `BLOCKED: ${riskDesc}`, isError: true })
       toolResults.push({
         type: 'tool_result',
         tool_use_id: toolId,
@@ -1527,14 +1527,13 @@ export class ConversationLoop {
       this.toolFailureCounts.delete(toolName)
     }
 
-    if (!this.vibeMode) {
-      this.emit({
-        type: 'tool.complete',
-        toolId,
-        result: result.output.slice(0, 500),
-        isError: result.isError,
-      })
-    }
+    this.emit({
+      type: 'tool.complete',
+      toolId,
+      toolName,
+      result: result.output.slice(0, 500),
+      isError: result.isError,
+    })
 
     // Governance: record tool result
     this.governance.onToolResult(toolName, !result.isError, Date.now() - toolStartMs, result.output)
