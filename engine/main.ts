@@ -5,6 +5,29 @@
  *   LOCALCODE_MODEL=qwen3:8b bun engine/main.ts
  */
 
+// Ensure ripgrep is in PATH on Windows (winget installs it but Bun may not inherit updated PATH)
+if (process.platform === 'win32') {
+  const rgPaths = [
+    `${process.env.LOCALAPPDATA || ''}\\Microsoft\\WinGet\\Packages\\BurntSushi.ripgrep.MSVC_Microsoft.Winget.Source_8wekyb3d8bbwe\\ripgrep-15.1.0-x86_64-pc-windows-msvc`,
+    `${process.env.USERPROFILE || ''}\\scoop\\shims`,
+    `C:\\Program Files\\ripgrep`,
+  ]
+  const sep = ';'
+  const currentPath = process.env.PATH || ''
+  for (const rp of rgPaths) {
+    if (rp && !currentPath.includes(rp)) {
+      try {
+        const fs = require('fs')
+        if (fs.existsSync(rp)) {
+          process.env.PATH = `${rp}${sep}${currentPath}`
+          console.log(`[path] Added ripgrep: ${rp}`)
+          break
+        }
+      } catch {}
+    }
+  }
+}
+
 import { loadConfig } from './config.js'
 import { createProvider } from './providers/factory.js'
 import { LocalCodeWSServer } from './bridge/server.js'
