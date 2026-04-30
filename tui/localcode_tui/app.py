@@ -154,6 +154,11 @@ class LocalCodeApp(App):
             self._handle_session_ready(event)
         elif isinstance(event, SessionErrorEvent):
             self.notify(f"Engine error: {event.error}", severity="error")
+        else:
+            # Unhandled event — log it so we can diagnose missing handlers
+            event_type = getattr(event, 'type', None) or (event.get('type') if isinstance(event, dict) else None)
+            if event_type and event_type not in ('stream.token', 'message.complete'):
+                print(f"[app] UNHANDLED event: type={event_type} class={type(event).__name__}")
 
     def _handle_stream_token(self, event: StreamTokenEvent) -> None:
         self._current_message += event.text
@@ -244,8 +249,8 @@ class LocalCodeApp(App):
             from .screens.workspace import WorkspaceScreen
             if isinstance(self.screen, WorkspaceScreen):
                 self.screen.handle_tool_complete(event)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[app] ERROR in handle_tool_complete (workspace): {e}")
         # Vibe loop: show tool result in chat + update sidebar
         try:
             from .screens.vibe_loop import VibeLoopScreen
@@ -496,8 +501,10 @@ class LocalCodeApp(App):
             from .screens.workspace import WorkspaceScreen
             if isinstance(self.screen, WorkspaceScreen):
                 self.screen.handle_workflow_status(event)
-        except Exception:
-            pass
+            else:
+                print(f"[app] workflow.status received but screen is {type(self.screen).__name__}, not WorkspaceScreen")
+        except Exception as e:
+            print(f"[app] ERROR in _handle_workflow_status: {e}")
 
     def send_message(self, text: str) -> None:
         """Send a user message to the engine."""
