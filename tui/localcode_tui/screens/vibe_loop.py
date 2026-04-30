@@ -475,8 +475,17 @@ class VibeLoopScreen(Screen):
         try:
             sidebar = self.query_one("#vibe-sidebar", ContextSidebar)
             tool_status = "error" if event.is_error else "ok"
+            result_str = str(event.result) if event.result else ""
             sidebar.log_tool(event.tool_name, status=tool_status,
-                           preview=str(event.result)[:80] if event.result else "")
+                           preview=result_str[:80])
+            # Track files from Read/Glob/Grep — mirrors WorkspaceScreen logic
+            if event.tool_name == "Read" and not event.is_error and result_str:
+                sidebar.add_file(result_str.split("\n")[0].strip() or "file")
+            elif event.tool_name in ("Glob", "Grep") and not event.is_error and result_str:
+                for line in result_str.split("\n")[:10]:
+                    path = line.strip()
+                    if path:
+                        sidebar.add_file(path, tool=event.tool_name)
         except Exception:
             pass
 
