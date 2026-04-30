@@ -307,6 +307,7 @@ async function handleCommand(command: TUICommand): Promise<void> {
           if (wf) {
             loop.startWorkflow(wf)
             wsServer.emit({ type: 'stream.token', text: `[System] Started workflow: ${wf.displayName}\nPhase: ${wf.initialPhase}\n\n${wf.phases[wf.initialPhase].instruction}\n` })
+            wsServer.emit({ type: 'workflow.status', active: true, workflow: wf.name, phase: wf.initialPhase, displayName: wf.displayName })
             wsServer.emit({ type: 'message.complete', messageId: '', stopReason: 'end_turn' })
           }
           break
@@ -315,6 +316,7 @@ async function handleCommand(command: TUICommand): Promise<void> {
         case '/cancel': {
           loop.cancelWorkflow()
           wsServer.emit({ type: 'stream.token', text: '[System] Workflow cancelled.\n' })
+          wsServer.emit({ type: 'workflow.status', active: false, workflow: null, phase: null, displayName: null })
           wsServer.emit({ type: 'message.complete', messageId: '', stopReason: 'end_turn' })
           break
         }

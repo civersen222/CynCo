@@ -162,7 +162,15 @@ export class ConversationLoop {
       trustProfile: opts.trustProfile,
     })
 
-    this.workflowEngine = opts.workflowEngine ?? new WorkflowEngine()
+    this.workflowEngine = opts.workflowEngine ?? new WorkflowEngine((event) => {
+      // Translate internal workflow events to protocol events for the TUI
+      if (event.type === 'workflow.phase_changed') {
+        const wf = this.workflowEngine.state?.workflow
+        this.emit({ type: 'workflow.status', active: true, workflow: wf?.name ?? null, phase: event.toPhase, displayName: wf?.displayName ?? null })
+      } else if (event.type === 'workflow.completed' || event.type === 'workflow.cancelled') {
+        this.emit({ type: 'workflow.status', active: false, workflow: null, phase: null, displayName: null })
+      }
+    })
     this.lspManager = new LSPManager(opts.cwd ?? process.cwd())
     this.governance = new GovernanceLayer((alert) => {
       this.emit({ type: 'governance.alert', severity: alert.severity, message: alert.message, source: alert.source } as any)
