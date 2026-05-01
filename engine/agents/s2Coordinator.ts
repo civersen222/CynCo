@@ -1,5 +1,7 @@
 import { makeS2Decision } from './types.js'
 import type { SubAgentStatus, S2Decision, S2State } from './types.js'
+import { getJournal } from '../training/decisionJournal.js'
+import { makeJournalEntry } from '../training/types.js'
 
 // ─── Options ──────────────────────────────────────────────────────────────────
 
@@ -108,6 +110,18 @@ export class S2Coordinator {
     }
 
     this.state.decisions.push(decision)
+
+    // S2 decision journal
+    const journal = getJournal()
+    if (journal) {
+      journal.log(makeJournalEntry({
+        sessionId: 'coordinator',
+        system: 'S2',
+        input: { gpuUtil, queueDepth, runningCount },
+        decision: { action: decision.decision, reasoning: decision.reasoning },
+      }))
+    }
+
     return decision
   }
 
@@ -172,6 +186,19 @@ export class S2Coordinator {
     }
 
     this.state.decisions.push(decision)
+
+    // S2 algedonic journal
+    const journal = getJournal()
+    if (journal) {
+      journal.log(makeJournalEntry({
+        sessionId: 'coordinator',
+        system: 'S2',
+        agentId: agentId,
+        input: { signal, turnRatio: agent ? agent.currentTurn / agent.maxTurns : 0 },
+        decision: { action: decision.decision, reasoning: decision.reasoning },
+      }))
+    }
+
     return decision
   }
 
@@ -199,6 +226,17 @@ export class S2Coordinator {
       this.state.activeAgents.delete(agentId)
     }
     this.state.queueDepth = this.getQueuedCount()
+
+    // Backfill S2 scheduling decision with agent outcome
+    const journal = getJournal()
+    if (journal && agent) {
+      journal.backfill('S2', agent.startTime, {
+        agentCompleted: true,
+        finalState: agent.state,
+        totalTurns: agent.currentTurn,
+        tokensUsed: agent.tokensUsed,
+      })
+    }
   }
 
   /** Kill an agent and remove from active registry. */
