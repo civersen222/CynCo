@@ -42,6 +42,8 @@ import { AutopoiesisVerifier } from './autopoiesisVerifier.js'
 import { StrategyMemory } from './strategyMemory.js'
 
 import type { GovernanceReport, GovernanceAlert } from './types.js'
+import { getJournal } from '../training/decisionJournal.js'
+import { makeJournalEntry } from '../training/types.js'
 
 // ─── Task Complexity Estimator (S4: environment scanning) ─────
 
@@ -243,6 +245,22 @@ export class CyberneticsGovernance {
         timestamp: Date.now(),
       })
     }
+
+    // S3 decision journal: governance response to tool result
+    try {
+      const journal = getJournal()
+      if (journal) {
+        const recent = this.toolHistory.slice(-20)
+        const recentSuccessRate = recent.filter(t => t.success).length / Math.max(recent.length, 1)
+        journal.log(makeJournalEntry({
+          sessionId: 'governance',
+          system: 'S3',
+          input: { toolName: name, success, latencyMs, recentSuccessRate, stuckCount: this.stuckCount },
+          decision: { algedonicAction: action.type },
+          outcome: { toolHistoryLength: this.toolHistory.length },
+        }))
+      }
+    } catch {}
   }
 
   /** Called when workspace files change — real progress detected via POSIWID. */
