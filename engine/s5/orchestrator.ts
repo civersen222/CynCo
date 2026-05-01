@@ -1,5 +1,7 @@
 import type { GovernanceReport } from '../vsm/types.js'
 import type { S5Input, S5Decision, S5Interface, DecisionLogEntry } from './types.js'
+import { getJournal } from '../training/decisionJournal.js'
+import { makeJournalEntry } from '../training/types.js'
 
 const MAX_HISTORY = 100
 
@@ -61,6 +63,22 @@ export class S5Orchestrator {
         duration_ms: Date.now() - startMs,
       })
     } catch {}
+
+    // S5 decision journal: policy decisions as training data
+    const journal = getJournal()
+    if (journal) {
+      journal.log(makeJournalEntry({
+        sessionId: entry.timestamp.toString(),
+        system: 'S5',
+        input: { ...s5Input, userMessage: s5Input.userMessage?.slice(0, 200) },
+        decision: {
+          workflow: decision.workflow,
+          contextAction: decision.contextAction,
+          priority: decision.priority,
+          reasoning: decision.reasoning,
+        },
+      }))
+    }
 
     return decision
   }
