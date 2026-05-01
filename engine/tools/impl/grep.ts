@@ -2,25 +2,48 @@ import { resolve } from 'path'
 import { existsSync } from 'fs'
 import type { ToolImpl } from '../types.js'
 
-/** Locate ripgrep binary: system PATH first, then common vendored locations. */
+/** Locate ripgrep binary: system PATH first, then common install locations. */
 function findRg(): string {
-  // On Windows, rg may not be on PATH — fall back to vendored copy.
-  // Use forward-slash paths (Bun/Node on Windows accepts both).
-  const appdata = (process.env.APPDATA ?? '').split('\\').join('/')
   const localAppdata = (process.env.LOCALAPPDATA ?? '').split('\\').join('/')
-  const vendoredPaths: string[] = []
-  if (appdata) {
-    vendoredPaths.push(
-      appdata + '/npm/node_modules/cynco/vendor/ripgrep/x64-win32/rg.exe',
-    )
-  }
+  const userProfile = (process.env.USERPROFILE ?? '').split('\\').join('/')
+
+  const searchPaths: string[] = []
+
+  // Winget install (most common on Windows)
   if (localAppdata) {
-    // npx cache path: find any matching subfolder
-    vendoredPaths.push(
-      localAppdata + '/npm-cache/_npx/becf7b9e49303068/node_modules/cynco/vendor/ripgrep/x64-win32/rg.exe',
-    )
+    try {
+      const wingetBase = localAppdata + '/Microsoft/WinGet/Packages'
+      const fs = require('fs')
+      if (fs.existsSync(wingetBase)) {
+        const entries = fs.readdirSync(wingetBase) as string[]
+        const rgDir = entries.find((e: string) => e.startsWith('BurntSushi.ripgrep'))
+        if (rgDir) {
+          // Find rg.exe recursively in the package dir
+          const pkgDir = wingetBase + '/' + rgDir
+          const subEntries = fs.readdirSync(pkgDir) as string[]
+          for (const sub of subEntries) {
+            const candidate = pkgDir + '/' + sub + '/rg.exe'
+            if (fs.existsSync(candidate)) {
+              searchPaths.push(candidate)
+            }
+          }
+        }
+      }
+    } catch {}
   }
-  for (const p of vendoredPaths) {
+
+  // Scoop install
+  if (userProfile) {
+    searchPaths.push(userProfile + '/scoop/shims/rg.exe')
+  }
+
+  // Chocolatey
+  searchPaths.push('C:/ProgramData/chocolatey/bin/rg.exe')
+
+  // Program Files
+  searchPaths.push('C:/Program Files/ripgrep/rg.exe')
+
+  for (const p of searchPaths) {
     if (existsSync(p)) return p
   }
   return 'rg' // fallback: assume on PATH
