@@ -39,6 +39,7 @@ import { ModelS5 } from './s5/modelS5.js'
 import { LSPManager } from './lsp/manager.js'
 import { VibeController } from './vibe/controller.js'
 import { TemplateLoader } from './prompts/templateLoader.js'
+import { initJournal } from './training/decisionJournal.js'
 
 // ─── MCP Discovery (standalone — standalone implementation) ──────
 
@@ -140,6 +141,30 @@ const s5Impl = process.env.LOCALCODE_S5_MODEL
 const s5Orchestrator = new S5Orchestrator(s5Impl)
 if (process.env.LOCALCODE_S5_MODEL) {
   console.log(`[cynco] S5 Decision Model: ${process.env.LOCALCODE_S5_MODEL}`)
+}
+
+// Initialize decision journal for v2 training data collection
+const journal = initJournal()
+console.log('[training] Decision journal initialized: ~/.cynco/training/')
+
+// V2 training pipeline threshold checks
+try {
+  const { GovernanceDB } = await import('./vsm/governanceDb.js')
+  const db = new GovernanceDB()
+  const sessions = db.getRecentSessions(9999)
+  const count = sessions.length
+  if (count >= 200) {
+    console.log(`[v2] ⚠ ${count} sessions reached — LoRA fine-tuning pipeline due (see docs/superpowers/specs/2026-05-01-v2-bridge-design.md)`)
+  } else if (count >= 100) {
+    console.log(`[v2] ⚠ ${count} sessions reached — training extraction pipeline due`)
+  } else if (count >= 50) {
+    console.log(`[v2] ⚠ ${count} sessions reached — decision journals ready to wire`)
+  } else {
+    console.log(`[v2] ${count} sessions — collecting data (next milestone: 50)`)
+  }
+  db.close()
+} catch (e) {
+  console.log(`[v2] Session count check skipped: ${e instanceof Error ? e.message : e}`)
 }
 
 // ─── WS Server + Conversation Loop ────────────────────────────
