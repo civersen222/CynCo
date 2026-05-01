@@ -63,6 +63,12 @@ export interface Provider {
   complete(request: CompletionRequest): Promise<CompletionResponse>
   stream(request: CompletionRequest): AsyncIterable<StreamEvent>
   healthCheck(): Promise<boolean>
+  /** Load a LoRA adapter by name (e.g., 's3-lora'). Optional — not all backends support this. */
+  loadAdapter?(adapterId: string): Promise<void>
+  /** Unload the current LoRA adapter. */
+  unloadAdapter?(): Promise<void>
+  /** Return the currently loaded adapter ID, or null if none. */
+  activeAdapter?(): string | null
 }
 
 // ─── Tier Derivation ─────────────────────────────────────────────
