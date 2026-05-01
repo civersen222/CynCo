@@ -25,6 +25,8 @@ import { ToolExecutor } from '../tools/executor.js'
 import { getToolByName } from '../tools/registry.js'
 import { localCallModel } from '../engine/callModel.js'
 import type { LocalCodeConfig } from '../config.js'
+import { getJournal } from '../training/decisionJournal.js'
+import { makeJournalEntry } from '../training/types.js'
 
 // ─── Options ────────────────────────────────────────────────────
 
@@ -326,6 +328,19 @@ export class SubAgent {
 
           // Track governance
           this.governance.onToolResult(toolUse.name, !result.isError, latencyMs)
+
+          // S1 decision journal: agent tool calls
+          const journal = getJournal()
+          if (journal) {
+            journal.log(makeJournalEntry({
+              sessionId: 'agent-' + this.id,
+              system: 'S1',
+              agentId: this.id,
+              input: { toolName: toolUse.name, persona: this.config.persona, turn },
+              decision: { tool: toolUse.name, args: toolUse.input },
+              outcome: { success: !result.isError, outputPreview: result.output.slice(0, 200) },
+            }))
+          }
 
           // Emit tool event with preview
           this.emitEvent({
