@@ -37,6 +37,8 @@ import {
   FIRST_TIME_PROJECT,
   FRESH_PROJECT,
 } from '../engine/systemPromptText.js'
+import { getJournal } from '../training/decisionJournal.js'
+import { makeJournalEntry } from '../training/types.js'
 
 type Message = {
   role: 'user' | 'assistant' | 'system'
@@ -1547,6 +1549,18 @@ export class ConversationLoop {
 
     // Governance: record tool result
     this.governance.onToolResult(toolName, !result.isError, Date.now() - toolStartMs, result.output)
+
+    // S1 decision journal: log every tool call as a training triple
+    const journal = getJournal()
+    if (journal) {
+      journal.log(makeJournalEntry({
+        sessionId: this.journal?.path ?? 'unknown',
+        system: 'S1',
+        input: { toolName, turnCount: this.messages.length },
+        decision: { tool: toolName, args: toolInput },
+        outcome: { success: !result.isError, elapsed: Date.now() - toolStartMs, outputPreview: result.output.slice(0, 200) },
+      }))
+    }
 
     // Autopoietic: update session homeostat with current measurements
     const sessionH = this.governance.getSessionHomeostat()
