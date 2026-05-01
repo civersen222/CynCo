@@ -274,6 +274,106 @@ export class ConversationLoop {
     return false
   }
 
+  /**
+   * Proactive scout dispatch — the engine decides when to spawn scouts.
+   *
+   * Analyzes the user message and spawns read-only scout agents to gather
+   * codebase context BEFORE the main model runs. Returns scout results
+   * that get injected as system context.
+   *
+   * Triggers:
+   * - Task mentions exploring/finding/understanding code ("find all", "how does", "what files")
+   * - Task is complex (long message, mentions multiple concerns)
+   * - Workflow is in create_plan or exploration phase
+   * - First message in a session (needs project orientation)
+   */
+  private async proactiveScoutDispatch(userMessage: string): Promise<SubAgentResult[]> {
+    const msg = userMessage.toLowerCase()
+    const wordCount = msg.split(/\s+/).length
+
+    // Determine if scouts would help
+    const isExploration = /\b(find|search|look for|explore|understand|how does|what files|where is|show me|list all|trace|dependency|dependencies|related|architecture)\b/.test(msg)
+    const isComplex = wordCount > 30 || /\b(and then|also|multiple|several|all the|every|entire|whole)\b/.test(msg)
+    const isFirstMessage = this.messages.filter(m => m.role === 'user').length <= 1
+    const isPlanning = this.workflowEngine.currentPhase?.name === 'create_plan'
+
+    if (!isExploration && !isComplex && !isFirstMessage && !isPlanning) {
+      return []
+    }
+
+    console.log(`[scouts] Proactive dispatch triggered: exploration=${isExploration} complex=${isComplex} first=${isFirstMessage} planning=${isPlanning}`)
+
+    // Build scout tasks based on what the user needs
+    const scoutTasks: string[] = []
+
+    if (isFirstMessage || isPlanning) {
+      // Orientation scout — understand the project structure
+      scoutTasks.push(
+        `Survey the project at ${this.executor['cwd']}. List the main directories and key files (entry points, configs, READMEs). Summarize what this project is and how it's structured in 200 words or less.`
+      )
+    }
+
+    if (isExploration || isComplex) {
+      // Targeted scout — search for what the user is asking about
+      scoutTasks.push(
+        `Search the codebase at ${this.executor['cwd']} for code related to: "${userMessage.slice(0, 200)}". Find the most relevant files, functions, and classes. Report file paths and brief descriptions of what each does. Be concise — 300 words max.`
+      )
+    }
+
+    // Cap at 2 scouts to avoid GPU contention
+    const tasks = scoutTasks.slice(0, 2)
+    if (tasks.length === 0) return []
+
+    // Spawn scouts via S2 coordinator
+    const results: SubAgentResult[] = []
+
+    for (const task of tasks) {
+      try {
+        const { makeSubAgentConfig } = await import('../agents/types.js')
+        const config = makeSubAgentConfig({
+          task,
+          persona: 'scout',
+          maxIterations: 5,  // Keep scouts fast — 5 turns max
+        })
+
+        const s2Decision = await this.s2.requestSchedule(config.id)
+        this.emit({
+          type: 's2.decision',
+          decision: s2Decision.decision,
+          agentId: config.id,
+          reason: s2Decision.reasoning,
+          gpuUtil: s2Decision.input.gpuUtil,
+          queueDepth: s2Decision.input.queueDepth,
+        } as any)
+
+        const agent = new SubAgent({
+          config,
+          provider: this.provider,
+          emit: this.emit,
+          cwd: this.executor['cwd'],
+          model: this.config.model ?? 'unknown',
+        })
+
+        this.s2.registerAgent(agent.status)
+        console.log(`[scouts] Dispatched scout ${config.id}: "${task.slice(0, 80)}..."`)
+
+        const result = await agent.run()
+        this.s2.completeAgent(config.id)
+
+        if (result.success && result.output.length > 10) {
+          results.push(result)
+          console.log(`[scouts] Scout ${config.id} completed: ${result.turns} turns, ${result.output.length} chars`)
+        } else {
+          console.log(`[scouts] Scout ${config.id} returned empty/failed result`)
+        }
+      } catch (e) {
+        console.log(`[scouts] Scout dispatch error: ${e}`)
+      }
+    }
+
+    return results
+  }
+
   resetGovernance(): void {
     this.governance.resetKillSwitch()
     this.consecutiveNudges = 0
@@ -589,6 +689,27 @@ export class ConversationLoop {
       } catch (err) {
         console.log(`[s5] Decision error: ${err instanceof Error ? err.message : String(err)}`)
       }
+    }
+
+    // ─── Proactive Scout Dispatch ──────────────────────────────────
+    // The engine decides when to spawn scouts — don't wait for the model.
+    // Local models never call SubAgent on their own. The orchestrator
+    // analyzes the task and dispatches scouts to gather context BEFORE
+    // the main model runs, then injects their findings as system context.
+    try {
+      const scoutResults = await this.proactiveScoutDispatch(text)
+      if (scoutResults.length > 0) {
+        const scoutContext = scoutResults
+          .map(r => `[Scout ${r.agentId} — ${r.output.slice(0, 1500)}]`)
+          .join('\n\n')
+        this.messages.splice(this.messages.length - 1, 0, {
+          role: 'system',
+          content: [{ type: 'text', text: `[Scout research results]\n${scoutContext}` }],
+        })
+        console.log(`[scouts] Injected ${scoutResults.length} scout results as context`)
+      }
+    } catch (e) {
+      console.log(`[scouts] Proactive dispatch failed: ${e}`)
     }
 
     try {
