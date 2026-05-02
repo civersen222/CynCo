@@ -135,9 +135,18 @@ export class ProcessManager {
 
     console.log(`[llama-cpp] Starting: ${this.binaryPath} ${args.join(' ')}`)
 
+    // Add llama-server's directory to PATH so CUDA DLLs (cublas, cudart) are found
+    const path = require('path')
+    const binDir = path.dirname(this.binaryPath)
+    const env = { ...process.env }
+    if (env.PATH && !env.PATH.includes(binDir)) {
+      env.PATH = `${binDir}${path.delimiter}${env.PATH}`
+    }
+
     this.child = spawn(this.binaryPath, args, {
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
+      env,
     })
 
     // Log stderr for diagnostics

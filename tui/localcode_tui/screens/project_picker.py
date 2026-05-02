@@ -188,8 +188,9 @@ class ProjectPicker(Screen):
 
         # Get model from config or env
         model = os.environ.get("LOCALCODE_MODEL") or getattr(self.app.config, "model", None) or "gemma4:31b"
+        context_length = os.environ.get("LOCALCODE_CONTEXT_LENGTH") or str(getattr(self.app.config, "context_length", 65536))
 
-        env = {**os.environ, "LOCALCODE_MODEL": model}
+        env = {**os.environ, "LOCALCODE_MODEL": model, "LOCALCODE_CONTEXT_LENGTH": context_length}
 
         try:
             # Find bun executable — on Windows needs .cmd extension or full path
