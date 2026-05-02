@@ -125,7 +125,7 @@ export function loadConfig(): LocalCodeConfig {
   const expertise = (process.env.LOCALCODE_EXPERTISE ?? profile?.expertise ?? 'advanced') as 'beginner' | 'intermediate' | 'advanced'
 
   // --- provider ---
-  const provider = (process.env.LOCALCODE_PROVIDER ?? 'llamacpp') as ProviderType
+  const provider = (process.env.LOCALCODE_PROVIDER ?? 'llama-cpp') as ProviderType
 
   // --- apiKey ---
   const apiKey = process.env.LOCALCODE_API_KEY ?? ''
