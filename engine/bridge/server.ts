@@ -30,33 +30,46 @@ export class LocalCodeWSServer {
   get connected(): boolean { return this._connected }
 
   private start() {
-    // Use Bun's built-in WebSocket server
-    this.server = Bun.serve({
-      port: this._port,
-      fetch(req, server) {
-        // Upgrade HTTP request to WebSocket
-        const success = server.upgrade(req)
-        if (success) return undefined
-        return new Response('WebSocket upgrade required', { status: 426 })
-      },
-      websocket: {
-        open: (ws: any) => {
-          this.client = ws
-          this._connected = true
-        },
-        message: (_ws: any, message: string | Buffer) => {
-          const text = typeof message === 'string' ? message : message.toString()
-          const command = parseCommand(text)
-          if (command && this.onCommand) {
-            this.onCommand(command)
-          }
-        },
-        close: () => {
-          this.client = null
-          this._connected = false
-        },
-      },
-    })
+    // Try the requested port, then fall back to +1, +2 if it's stuck in TIME_WAIT/CLOSE_WAIT
+    const portsToTry = [this._port, this._port + 1, this._port + 2]
+    let lastError: any
+    for (const port of portsToTry) {
+      try {
+        this.server = Bun.serve({
+          port,
+          fetch(req, server) {
+            const success = server.upgrade(req)
+            if (success) return undefined
+            return new Response('WebSocket upgrade required', { status: 426 })
+          },
+          websocket: {
+            open: (ws: any) => {
+              this.client = ws
+              this._connected = true
+            },
+            message: (_ws: any, message: string | Buffer) => {
+              const text = typeof message === 'string' ? message : message.toString()
+              const command = parseCommand(text)
+              if (command && this.onCommand) {
+                this.onCommand(command)
+              }
+            },
+            close: () => {
+              this.client = null
+              this._connected = false
+            },
+          },
+        })
+        this._port = port
+        if (port !== portsToTry[0]) {
+          console.log(`[ws] Port ${portsToTry[0]} in use, using ${port} instead`)
+        }
+        return
+      } catch (e) {
+        lastError = e
+      }
+    }
+    throw lastError
   }
 
   emit(event: EngineEvent): void {

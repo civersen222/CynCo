@@ -239,20 +239,32 @@ class ProjectPicker(Screen):
                     pass
 
             from ..bridge import EngineBridge
-            self.app.bridge = EngineBridge(port=self.app.bridge_port, on_event=self.app._on_engine_event)
 
-            retries = 30  # More retries for first-launch LSP install
+            # Try base port and fallbacks (engine tries same ports if base is stuck)
+            base_port = self.app.bridge_port
+            ports_to_try = [base_port, base_port + 1, base_port + 2]
+            connected = False
+
+            retries = 30  # More retries for first-launch or llama-server model load
             for attempt in range(retries):
-                try:
-                    await self.app.bridge.connect()
-                    self.notify("Connected to engine!", severity="information")
+                for port in ports_to_try:
+                    try:
+                        self.app.bridge = EngineBridge(port=port, on_event=self.app._on_engine_event)
+                        await self.app.bridge.connect()
+                        self.app.bridge_port = port
+                        self.notify(f"Connected to engine on port {port}!", severity="information")
+                        connected = True
+                        break
+                    except Exception:
+                        pass
+                if connected:
                     break
-                except Exception:
-                    if attempt < retries - 1:
-                        await asyncio.sleep(1)
-                    else:
-                        self.notify("Failed to connect to engine after 5 retries", severity="error")
-                        return
+                if attempt < retries - 1:
+                    await asyncio.sleep(1)
+
+            if not connected:
+                self.notify("Failed to connect to engine after 30 retries", severity="error")
+                return
 
             # Switch to workspace
             from .workspace import WorkspaceScreen
