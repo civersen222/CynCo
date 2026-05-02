@@ -466,35 +466,42 @@ class LocalCodeApp(App):
 
     # ─── Sub-Agent Event Handlers ─────────────────────────────────
 
+    def _get_sidebar(self):
+        """Find the context sidebar on the current screen (works for both WorkspaceScreen and VibeLoopScreen)."""
+        from .widgets.context_sidebar import ContextSidebar
+        try:
+            return self.screen.query_one(ContextSidebar)
+        except Exception:
+            return None
+
     def _handle_subagent_spawned(self, event: SubAgentSpawnedEvent) -> None:
-        screen = self.screen
-        if hasattr(screen, "sidebar") and hasattr(screen.sidebar, "add_agent"):
-            screen.sidebar.add_agent(event.agent_id, event.persona, event.task, "running", 0, 10, 0)
-        if hasattr(screen, "sidebar") and hasattr(screen.sidebar, "log_tool"):
-            screen.sidebar.log_tool(f"SubAgent:{event.persona}", "running", event.task[:60])
+        sidebar = self._get_sidebar()
+        if sidebar:
+            sidebar.add_agent(event.agent_id, event.persona, event.task, "running", 0, 10, 0)
+            sidebar.log_tool(f"SubAgent:{event.persona}", "running", event.task[:60])
 
     def _handle_subagent_tool(self, event: SubAgentToolEvent) -> None:
-        screen = self.screen
-        if hasattr(screen, "sidebar") and hasattr(screen.sidebar, "log_tool"):
+        sidebar = self._get_sidebar()
+        if sidebar:
             tool_status = "ok" if event.status == "success" else event.status
-            screen.sidebar.log_tool(f"  {event.agent_id[:12]}:{event.tool_name}", tool_status, event.preview[:40])
+            sidebar.log_tool(f"  {event.agent_id[:12]}:{event.tool_name}", tool_status, event.preview[:40])
 
     def _handle_subagent_complete(self, event: SubAgentCompleteEvent) -> None:
-        screen = self.screen
-        if hasattr(screen, "sidebar") and hasattr(screen.sidebar, "add_agent"):
+        sidebar = self._get_sidebar()
+        if sidebar:
             state = "completed" if event.success else "failed"
-            screen.sidebar.add_agent(event.agent_id, event.persona, event.task, state, event.turns, event.turns, event.tokens_used)
+            sidebar.add_agent(event.agent_id, event.persona, event.task, state, event.turns, event.turns, event.tokens_used)
 
     def _handle_subagent_killed(self, event: SubAgentKilledEvent) -> None:
-        screen = self.screen
-        if hasattr(screen, "sidebar") and hasattr(screen.sidebar, "add_agent"):
-            screen.sidebar.add_agent(event.agent_id, event.persona, event.task, "killed", 0, 0, 0)
+        sidebar = self._get_sidebar()
+        if sidebar:
+            sidebar.add_agent(event.agent_id, event.persona, event.task, "killed", 0, 0, 0)
 
     def _handle_s2_decision(self, event: S2CoordinationEvent) -> None:
-        screen = self.screen
-        if hasattr(screen, "sidebar") and hasattr(screen.sidebar, "set_s2_status"):
-            running = sum(1 for a in getattr(screen.sidebar, "_agents", []) if a.get("state") == "running")
-            screen.sidebar.set_s2_status(event.gpu_util, running, event.queue_depth)
+        sidebar = self._get_sidebar()
+        if sidebar:
+            running = sum(1 for a in getattr(sidebar, "_agents", []) if a.get("state") == "running")
+            sidebar.set_s2_status(event.gpu_util, running, event.queue_depth)
 
     def _handle_workflow_status(self, event: WorkflowStatusEvent) -> None:
         try:
