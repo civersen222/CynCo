@@ -93,16 +93,56 @@ try {
   }
 } catch {}
 
-// Probe model context length and pass to provider
+// Probe model capabilities and determine actual context length
 import { resolveCapabilities } from './ollama/probe.js'
 const modelCaps = config.model ? resolveCapabilities(config.model) : null
-// Use model's actual context length unless explicitly overridden via env var
-// The TUI config default (32768) should NOT override the model's capability
-const contextLengthExplicit = process.env.LOCALCODE_CONTEXT_LENGTH ? config.contextLength : undefined
-const contextLength = contextLengthExplicit ?? modelCaps?.contextLength ?? config.contextLength ?? 32768
-// Write resolved context length back to config so ConversationLoop uses the probed value
+
+// Context length resolution:
+// 1. Explicit env var override (LOCALCODE_CONTEXT_LENGTH) — highest priority
+// 2. Ollama's actual num_ctx — query what Ollama allocated, not the model's theoretical max
+// 3. Sensible default (32768) — matches Ollama's default
+//
+// CRITICAL: Do NOT use the model's theoretical max context (e.g., 262144 for qwen3.6)
+// as the budget. Ollama allocates KV cache based on num_ctx (default 32768). If we
+// tell the compactor the budget is 262K but Ollama only allocated 32K, compaction
+// never triggers and the model crawls at 3 tok/s processing 50K+ tokens through
+// a 32K KV cache window.
+const contextLengthExplicit = process.env.LOCALCODE_CONTEXT_LENGTH
+  ? parseInt(process.env.LOCALCODE_CONTEXT_LENGTH, 10)
+  : undefined
+
+let contextLength: number
+if (contextLengthExplicit && !Number.isNaN(contextLengthExplicit)) {
+  contextLength = contextLengthExplicit
+  console.log(`[context] Using explicit LOCALCODE_CONTEXT_LENGTH=${contextLength}`)
+} else {
+  // Query Ollama for actual num_ctx of the running model
+  let ollamaNumCtx: number | null = null
+  try {
+    const resp = await fetch(`${config.baseUrl}/api/ps`)
+    const data = await resp.json() as any
+    const running = data.models?.find((m: any) => m.name?.startsWith(config.model?.split(':')[0] ?? ''))
+    if (running?.details?.num_ctx) {
+      ollamaNumCtx = running.details.num_ctx
+    }
+  } catch {}
+
+  if (ollamaNumCtx) {
+    contextLength = ollamaNumCtx
+    console.log(`[context] Detected Ollama num_ctx=${contextLength} from /api/ps`)
+  } else {
+    // Ollama's default is 32768 when not explicitly set.
+    // Use this instead of the model's theoretical max.
+    const OLLAMA_DEFAULT_CTX = 32768
+    const modelMax = modelCaps?.contextLength ?? OLLAMA_DEFAULT_CTX
+    // If model reports > 32K, cap at Ollama's default unless user explicitly set higher
+    contextLength = Math.min(modelMax, OLLAMA_DEFAULT_CTX)
+    console.log(`[context] Using Ollama default ${contextLength} (model theoretical max: ${modelMax}). Set LOCALCODE_CONTEXT_LENGTH or OLLAMA_CONTEXT_LENGTH to increase.`)
+  }
+}
+
 config.contextLength = contextLength
-console.log(`[localcode] Context length: ${contextLength} (model: ${modelCaps?.contextLength ?? 'unknown'}, config: ${config.contextLength ?? 'unset'})`)
+console.log(`[localcode] Context budget: ${contextLength} tokens`)
 const provider = createProvider(config.provider, config.baseUrl, config.apiKey, contextLength)
 const port = parseInt(process.env.LOCALCODE_WS_PORT ?? '9160', 10)
 
