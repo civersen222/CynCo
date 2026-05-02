@@ -1,6 +1,6 @@
 // engine/llama/provider.ts
 import type {
-  Provider, CompletionRequest, ModelCapabilities, ModelInfo, PullProgress,
+  Provider, CompletionRequest, ModelCapabilities, ModelInfo,
 } from '../provider.js'
 import type { CompletionResponse, StreamEvent } from '../types.js'
 import {

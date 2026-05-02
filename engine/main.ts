@@ -188,10 +188,9 @@ if (config.provider === 'llama-cpp') {
     contextLength = config.contextLength ?? 32768
     config.contextLength = contextLength
 
-    // Cleanup on exit
-    const cleanup = () => { processManager.stop() }
-    process.on('SIGTERM', cleanup)
-    process.on('SIGINT', cleanup)
+    // Cleanup on exit — must run before the later SIGINT/SIGTERM handlers that call process.exit()
+    const cleanup = async () => { await processManager.stop() }
+    process.on('beforeExit', cleanup)
 
   } catch (err) {
     console.error(`[llama-cpp] Setup failed: ${err instanceof Error ? err.message : err}`)
@@ -219,7 +218,8 @@ if (!config.model) {
 }
 
 console.log(`[localcode] Model: ${config.model}`)
-console.log(`[localcode] Provider: ${config.provider} @ ${config.baseUrl}`)
+const providerUrl = config.provider === 'llama-cpp' ? `http://127.0.0.1:${config.port}` : config.baseUrl
+console.log(`[localcode] Provider: ${config.provider} @ ${providerUrl}`)
 console.log(`[localcode] Starting WS server on port ${port}...`)
 
 // Auto-detect and install LSP servers
@@ -319,12 +319,20 @@ const loop = new ConversationLoop({
 })
 
 // Write session outcome on clean shutdown
-process.on('SIGTERM', () => {
+process.on('SIGTERM', async () => {
   AuditLogger.writeSessionOutcome('SIGTERM')
+  if (config.provider === 'llama-cpp' && provider && 'processManager' in provider) {
+    const pm = (provider as any).processManager
+    if (pm?.stop) await pm.stop()
+  }
   process.exit(0)
 })
-process.on('SIGINT', () => {
+process.on('SIGINT', async () => {
   AuditLogger.writeSessionOutcome('SIGINT')
+  if (config.provider === 'llama-cpp' && provider && 'processManager' in provider) {
+    const pm = (provider as any).processManager
+    if (pm?.stop) await pm.stop()
+  }
   process.exit(0)
 })
 
@@ -873,10 +881,10 @@ provider.healthCheck().then(async ok => {
       console.log(`[localcode] Auto-index failed (non-fatal): ${e}`)
     }
   } else {
-    console.error(`[localcode] ✗ ${config.provider} NOT reachable at ${config.baseUrl}`)
+    console.error(`[localcode] ✗ ${config.provider} NOT reachable at ${providerUrl}`)
     wsServer.emit({
       type: 'session.error',
-      error: `${config.provider} not reachable at ${config.baseUrl}. Is it running?`,
+      error: `${config.provider} not reachable at ${providerUrl}. Is it running?`,
     })
   }
 })
