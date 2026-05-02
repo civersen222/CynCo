@@ -26,9 +26,7 @@ export function buildServerArgs(config: ServerConfig): string[] {
     '--batch-size', String(config.batchSize ?? 2048),
   ]
 
-  if (config.flashAttn !== false) {
-    args.push('--flash-attn')
-  }
+  args.push('--flash-attn', config.flashAttn !== false ? 'on' : 'off')
 
   if (config.threads != null) {
     args.push('--threads', String(config.threads))
