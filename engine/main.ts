@@ -29,7 +29,7 @@ if (process.platform === 'win32') {
 }
 
 import { loadConfig } from './config.js'
-import { createProvider } from './providers/factory.js'
+import type { Provider } from './provider.js'
 import { LocalCodeWSServer } from './bridge/server.js'
 import type { TUICommand } from './bridge/protocol.js'
 import { ConversationLoop } from './bridge/conversationLoop.js'
@@ -93,57 +93,124 @@ try {
   }
 } catch {}
 
-// Probe model capabilities and determine actual context length
+// ─── Provider Setup ──────────────────────────────────────────
 import { resolveCapabilities } from './ollama/probe.js'
 const modelCaps = config.model ? resolveCapabilities(config.model) : null
 
-// Context length resolution:
-// 1. Explicit env var override (LOCALCODE_CONTEXT_LENGTH) — highest priority
-// 2. Ollama's actual num_ctx — query what Ollama allocated, not the model's theoretical max
-// 3. Sensible default (32768) — matches Ollama's default
-//
-// CRITICAL: Do NOT use the model's theoretical max context (e.g., 262144 for qwen3.6)
-// as the budget. Ollama allocates KV cache based on num_ctx (default 32768). If we
-// tell the compactor the budget is 262K but Ollama only allocated 32K, compaction
-// never triggers and the model crawls at 3 tok/s processing 50K+ tokens through
-// a 32K KV cache window.
-const contextLengthExplicit = process.env.LOCALCODE_CONTEXT_LENGTH
-  ? parseInt(process.env.LOCALCODE_CONTEXT_LENGTH, 10)
-  : undefined
-
+let provider: Provider
 let contextLength: number
-if (contextLengthExplicit && !Number.isNaN(contextLengthExplicit)) {
-  contextLength = contextLengthExplicit
-  console.log(`[context] Using explicit LOCALCODE_CONTEXT_LENGTH=${contextLength}`)
-} else {
-  // Query Ollama for actual num_ctx of the running model
-  let ollamaNumCtx: number | null = null
-  try {
-    const resp = await fetch(`${config.baseUrl}/api/ps`)
-    const data = await resp.json() as any
-    const running = data.models?.find((m: any) => m.name?.startsWith(config.model?.split(':')[0] ?? ''))
-    if (running?.details?.num_ctx) {
-      ollamaNumCtx = running.details.num_ctx
-    }
-  } catch {}
 
-  if (ollamaNumCtx) {
-    contextLength = ollamaNumCtx
-    console.log(`[context] Detected Ollama num_ctx=${contextLength} from /api/ps`)
+async function createOllamaFallback(): Promise<{ provider: Provider; contextLength: number }> {
+  const contextLengthExplicit = process.env.LOCALCODE_CONTEXT_LENGTH
+    ? parseInt(process.env.LOCALCODE_CONTEXT_LENGTH, 10)
+    : undefined
+
+  let ctx: number
+  if (contextLengthExplicit && !Number.isNaN(contextLengthExplicit)) {
+    ctx = contextLengthExplicit
+    console.log(`[context] Using explicit LOCALCODE_CONTEXT_LENGTH=${ctx}`)
   } else {
-    // Ollama's default is 32768 when not explicitly set.
-    // Use this instead of the model's theoretical max.
-    const OLLAMA_DEFAULT_CTX = 32768
-    const modelMax = modelCaps?.contextLength ?? OLLAMA_DEFAULT_CTX
-    // If model reports > 32K, cap at Ollama's default unless user explicitly set higher
-    contextLength = Math.min(modelMax, OLLAMA_DEFAULT_CTX)
-    console.log(`[context] Using Ollama default ${contextLength} (model theoretical max: ${modelMax}). Set LOCALCODE_CONTEXT_LENGTH or OLLAMA_CONTEXT_LENGTH to increase.`)
+    let ollamaNumCtx: number | null = null
+    try {
+      const resp = await fetch(`${config.baseUrl}/api/ps`)
+      const data = await resp.json() as any
+      const running = data.models?.find((m: any) => m.name?.startsWith(config.model?.split(':')[0] ?? ''))
+      if (running?.details?.num_ctx) {
+        ollamaNumCtx = running.details.num_ctx
+      }
+    } catch {}
+
+    if (ollamaNumCtx) {
+      ctx = ollamaNumCtx
+      console.log(`[context] Detected Ollama num_ctx=${ctx} from /api/ps`)
+    } else {
+      const OLLAMA_DEFAULT_CTX = 32768
+      const modelMax = modelCaps?.contextLength ?? OLLAMA_DEFAULT_CTX
+      ctx = Math.min(modelMax, OLLAMA_DEFAULT_CTX)
+      console.log(`[context] Using Ollama default ${ctx} (model theoretical max: ${modelMax})`)
+    }
   }
+
+  const { createProvider } = await import('./providers/factory.js')
+  return { provider: createProvider('ollama', config.baseUrl, config.apiKey, ctx), contextLength: ctx }
 }
 
-config.contextLength = contextLength
+if (config.provider === 'llama-cpp') {
+  // ─── llama-cpp provider path ─────────────────────────────
+  try {
+    const os = require('os')
+    const path = require('path')
+
+    const cyncoDir = path.join(os.homedir(), '.cynco')
+    const binDir = path.join(cyncoDir, 'bin')
+    const modelsDir = path.join(cyncoDir, 'models')
+    const adaptersDir = path.join(cyncoDir, 'adapters')
+
+    // 1. Resolve llama-server binary
+    const { resolveBinary, downloadBinary } = await import('./llama/binaryManager.js')
+    let binaryPath = resolveBinary(config.llamaServer, binDir)
+    if (!binaryPath) {
+      console.log('[llama-cpp] llama-server not found — downloading...')
+      binaryPath = await downloadBinary(binDir, (msg) => console.log(msg))
+    }
+    console.log(`[llama-cpp] Binary: ${binaryPath}`)
+
+    // 2. Resolve GGUF model
+    const { resolveModel } = await import('./llama/modelResolver.js')
+    const modelPath = resolveModel(config.model ?? 'unknown', modelsDir, config.modelPath)
+    console.log(`[llama-cpp] Model: ${modelPath}`)
+
+    // 3. Start/connect to llama-server
+    const { ProcessManager } = await import('./llama/processManager.js')
+    const processManager = new ProcessManager({
+      binaryPath,
+      modelPath,
+      port: config.port,
+      ctxSize: config.contextLength ?? 32768,
+      batchSize: config.batchSize,
+      gpuLayers: config.gpuLayers,
+      flashAttn: config.flashAttn,
+      threads: config.threads,
+    })
+    await processManager.ensureRunning()
+
+    // 4. Create provider
+    const { LlamaCppProvider } = await import('./llama/provider.js')
+    provider = new LlamaCppProvider({
+      primaryUrl: `http://127.0.0.1:${config.port}`,
+      adapterUrl: config.adapterUrl,
+      modelName: config.model ?? 'unknown',
+      modelsDir,
+      adaptersDir,
+      processManager,
+    })
+
+    contextLength = config.contextLength ?? 32768
+    config.contextLength = contextLength
+
+    // Cleanup on exit
+    const cleanup = () => { processManager.stop() }
+    process.on('SIGTERM', cleanup)
+    process.on('SIGINT', cleanup)
+
+  } catch (err) {
+    console.error(`[llama-cpp] Setup failed: ${err instanceof Error ? err.message : err}`)
+    console.log('[llama-cpp] Falling back to Ollama provider')
+    const fallback = await createOllamaFallback()
+    provider = fallback.provider
+    contextLength = fallback.contextLength
+    config.contextLength = contextLength
+  }
+
+} else {
+  // ─── Ollama provider path (existing) ───────────────────────
+  const fallback = await createOllamaFallback()
+  provider = fallback.provider
+  contextLength = fallback.contextLength
+  config.contextLength = contextLength
+}
+
 console.log(`[localcode] Context budget: ${contextLength} tokens`)
-const provider = createProvider(config.provider, config.baseUrl, config.apiKey, contextLength)
 const port = parseInt(process.env.LOCALCODE_WS_PORT ?? '9160', 10)
 
 if (!config.model) {
@@ -771,7 +838,7 @@ async function handleCommand(command: TUICommand): Promise<void> {
 
 provider.healthCheck().then(async ok => {
   if (ok) {
-    console.log(`[localcode] Ollama is reachable ✓`)
+    console.log(`[localcode] ${config.provider} is reachable`)
     const knownLanguages = ['typescript', 'python', 'rust', 'go', 'c']
     const lspServers = knownLanguages.map(lang => ({
       language: lang,
@@ -806,10 +873,10 @@ provider.healthCheck().then(async ok => {
       console.log(`[localcode] Auto-index failed (non-fatal): ${e}`)
     }
   } else {
-    console.error(`[localcode] ✗ Ollama NOT reachable at ${config.baseUrl}`)
+    console.error(`[localcode] ✗ ${config.provider} NOT reachable at ${config.baseUrl}`)
     wsServer.emit({
       type: 'session.error',
-      error: `Ollama not reachable at ${config.baseUrl}. Is it running?`,
+      error: `${config.provider} not reachable at ${config.baseUrl}. Is it running?`,
     })
   }
 })
