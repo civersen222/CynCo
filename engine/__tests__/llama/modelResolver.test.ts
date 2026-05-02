@@ -37,6 +37,15 @@ describe('resolveModel', () => {
     expect(result).toBe(ggufPath)
   })
 
+  it('strips Ollama tag from model name (qwen3.6:latest → qwen3.6)', () => {
+    const modelDir = path.join(tmpDir, 'qwen3.6')
+    fs.mkdirSync(modelDir, { recursive: true })
+    const ggufPath = path.join(modelDir, 'qwen3.6-Q4_K_M.gguf')
+    fs.writeFileSync(ggufPath, 'x'.repeat(100))
+    const result = resolveModel('qwen3.6:latest', tmpDir)
+    expect(result).toBe(ggufPath)
+  })
+
   it('picks largest GGUF when multiple exist', () => {
     const modelDir = path.join(tmpDir, 'qwen3.6')
     fs.mkdirSync(modelDir, { recursive: true })

@@ -25,7 +25,9 @@ export function resolveModel(
   }
 
   // 2. Scan modelsDir/<modelName>/*.gguf
-  const modelDir = path.join(modelsDir, modelName)
+  // Strip Ollama-style tags (e.g., "qwen3.6:latest" → "qwen3.6")
+  const baseName = modelName.split(':')[0]
+  const modelDir = path.join(modelsDir, baseName)
   if (!fs.existsSync(modelDir)) {
     throw new ModelNotFoundError(modelName, modelDir)
   }
