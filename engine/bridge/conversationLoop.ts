@@ -408,13 +408,14 @@ export class ConversationLoop {
     this.consecutiveNudges = 0
     this.steering.clear()
 
-    // Aggressive early compaction — keep context small for speed.
-    // Attention is O(n²): 30K context = 3 tok/s, 3K context = 30 tok/s.
-    // Compact if we have more than ~5K estimated tokens BEFORE running the model.
+    // Compact when context exceeds the configured warning threshold.
+    // With flash attention, attention is ~O(n) not O(n²), so we can use
+    // much more of the context window before compacting.
     const estimatedTokensPreTurn = this.messages.reduce((sum, m) =>
       sum + m.content.reduce((s, b: any) => s + (b.text?.length ?? JSON.stringify(b).length) / 4, 0), 0)
     const ctxLen = this.config.contextLength ?? 32768
-    if (estimatedTokensPreTurn > 5000 && this.messages.length > 6) {
+    const compactThreshold = ctxLen * (this.config.contextManagement?.warningThreshold ?? 0.4)
+    if (estimatedTokensPreTurn > compactThreshold && this.messages.length > 6) {
       console.log(`[compact] Pre-turn compaction: ${Math.round(estimatedTokensPreTurn)} tokens → compacting for speed`)
       try {
         const toCompress = this.compressor.selectForCompression(this.messages, 2) // keep only last 2 pairs
