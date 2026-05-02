@@ -38,6 +38,14 @@ export type LocalCodeConfig = {
   }
   provider: ProviderType
   apiKey: string
+  llamaServer: string | undefined
+  modelPath: string | undefined
+  adapterUrl: string | undefined
+  port: number
+  batchSize: number
+  gpuLayers: number
+  flashAttn: boolean
+  threads: number | undefined
 }
 
 const VALID_TIERS: TierSetting[] = ['auto', 'basic', 'standard', 'advanced']
@@ -117,10 +125,20 @@ export function loadConfig(): LocalCodeConfig {
   const expertise = (process.env.LOCALCODE_EXPERTISE ?? profile?.expertise ?? 'advanced') as 'beginner' | 'intermediate' | 'advanced'
 
   // --- provider ---
-  const provider = (process.env.LOCALCODE_PROVIDER ?? 'ollama') as ProviderType
+  const provider = (process.env.LOCALCODE_PROVIDER ?? 'llamacpp') as ProviderType
 
   // --- apiKey ---
   const apiKey = process.env.LOCALCODE_API_KEY ?? ''
+
+  // --- llama-cpp provider settings ---
+  const llamaServer = process.env.LOCALCODE_LLAMA_SERVER || undefined
+  const modelPath = process.env.LOCALCODE_MODEL_PATH || undefined
+  const adapterUrl = process.env.LOCALCODE_ADAPTER_URL || undefined
+  const port = parseInt(process.env.LOCALCODE_PORT ?? '8081', 10)
+  const batchSize = parseInt(process.env.LOCALCODE_BATCH_SIZE ?? '2048', 10)
+  const gpuLayers = parseInt(process.env.LOCALCODE_GPU_LAYERS ?? '999', 10)
+  const flashAttn = (process.env.LOCALCODE_FLASH_ATTN ?? 'true') !== 'false'
+  const threads = process.env.LOCALCODE_THREADS ? parseInt(process.env.LOCALCODE_THREADS, 10) : undefined
 
   return {
     baseUrl,
@@ -135,5 +153,13 @@ export function loadConfig(): LocalCodeConfig {
     contextManagement,
     provider,
     apiKey,
+    llamaServer,
+    modelPath,
+    adapterUrl,
+    port,
+    batchSize,
+    gpuLayers,
+    flashAttn,
+    threads,
   }
 }
