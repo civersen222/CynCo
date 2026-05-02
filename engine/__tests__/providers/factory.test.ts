@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test'
 import { createProvider } from '../../providers/factory.js'
 import { OllamaProvider } from '../../ollama/client.js'
 import { OpenAICompatProvider } from '../../providers/openaiCompat.js'
+import { LlamaCppProvider } from '../../llama/provider.js'
 
 describe('createProvider factory', () => {
   it('creates OllamaProvider for ollama type', () => {
@@ -26,6 +27,12 @@ describe('createProvider factory', () => {
     const p = createProvider('llamacpp', 'http://localhost:8000')
     expect(p).toBeInstanceOf(OpenAICompatProvider)
     expect(p.name).toBe('llamacpp')
+  })
+
+  it('creates LlamaCppProvider for llama-cpp type', () => {
+    const p = createProvider('llama-cpp', 'http://127.0.0.1:8081')
+    expect(p).toBeInstanceOf(LlamaCppProvider)
+    expect(p.name).toBe('llama-cpp')
   })
 
   it('creates OpenAICompatProvider for openai-compat type', () => {
