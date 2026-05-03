@@ -309,14 +309,14 @@ export class ConversationLoop {
     if (isFirstMessage || isPlanning) {
       // Orientation scout — understand the project structure
       scoutTasks.push(
-        `Survey the project at ${this.executor['cwd']}. List the main directories and key files (entry points, configs, READMEs). Summarize what this project is and how it's structured in 200 words or less.`
+        `Survey the project at ${this.executor['cwd']}. FIRST use the CodeIndex tool to search for key concepts like "main", "entry", "app", "config". THEN use Ls and Glob to list main directories. Summarize what this project is and how it's structured in 200 words or less.`
       )
     }
 
     if (isExploration || isComplex) {
       // Targeted scout — search for what the user is asking about
       scoutTasks.push(
-        `Search the codebase at ${this.executor['cwd']} for code related to: "${userMessage.slice(0, 200)}". Find the most relevant files, functions, and classes. Report file paths and brief descriptions of what each does. Be concise — 300 words max.`
+        `Search the codebase at ${this.executor['cwd']} for code related to: "${userMessage.slice(0, 200)}". FIRST use the CodeIndex tool to find semantically relevant code. THEN use Grep for specific symbols. Report file paths and brief descriptions of what each does. Be concise — 300 words max.`
       )
     }
 
