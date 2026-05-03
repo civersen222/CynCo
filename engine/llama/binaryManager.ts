@@ -158,6 +158,40 @@ export async function downloadBinary(
   // Cleanup archive
   fs.rmSync(zipPath, { force: true })
 
+  // Download matching CUDA runtime DLLs (separate zip in llama.cpp releases)
+  if (process.platform === 'win32') {
+    const cudartPattern = /cudart-llama-bin-win-cuda-.*-x64\.zip/
+    const cudartAsset = release.assets.find(a => cudartPattern.test(a.name))
+    if (cudartAsset) {
+      log(`[llama-cpp] Downloading CUDA runtime: ${cudartAsset.name}...`)
+      try {
+        const cudartResp = await fetch(cudartAsset.browser_download_url)
+        if (cudartResp.ok) {
+          const cudartBuf = await cudartResp.arrayBuffer()
+          const cudartZip = path.join(binDir, cudartAsset.name)
+          fs.writeFileSync(cudartZip, Buffer.from(cudartBuf))
+          const { execSync } = require('child_process')
+          const cudartExtract = path.join(binDir, '_cudart')
+          execSync(
+            `powershell -NoProfile -Command "Expand-Archive -Path '${cudartZip}' -DestinationPath '${cudartExtract}' -Force"`,
+            { timeout: 60000 },
+          )
+          // Copy all DLLs from cudart archive
+          for (const f of fs.readdirSync(cudartExtract)) {
+            if (f.endsWith('.dll')) {
+              fs.copyFileSync(path.join(cudartExtract, f), path.join(binDir, f))
+            }
+          }
+          fs.rmSync(cudartExtract, { recursive: true, force: true })
+          fs.rmSync(cudartZip, { force: true })
+          log(`[llama-cpp] CUDA runtime installed`)
+        }
+      } catch (e) {
+        log(`[llama-cpp] CUDA runtime download failed (non-fatal): ${e}`)
+      }
+    }
+  }
+
   writeVersionInfo(binDir, release.tag_name)
   log(`[llama-cpp] Downloaded llama-server ${release.tag_name} to ${binDir}`)
 
