@@ -68,14 +68,20 @@ export class ProcessManager {
   }
 
   /**
-   * Ensure the server is running. If port is already occupied, assume
-   * an external server is running and skip. Otherwise spawn a new process.
+   * Ensure the server is running with correct settings.
+   * Always kills stale servers on the port and starts fresh.
    */
   async ensureRunning(): Promise<void> {
-    // Check if port is already in use (external server)
+    // Kill any stale llama-server on our port — on Windows, child processes
+    // survive when Bun exits, leaving zombies with wrong settings.
     if (await this.isPortOccupied()) {
-      console.log(`[llama-cpp] Port ${this.port} already in use — connecting to existing server`)
-      return
+      console.log(`[llama-cpp] Killing stale server on port ${this.port}`)
+      await this.killProcessOnPort(this.port)
+      // Wait for port to free
+      for (let i = 0; i < 10; i++) {
+        if (!(await this.isPortOccupied())) break
+        await new Promise(r => setTimeout(r, 500))
+      }
     }
 
     await this.startProcess()
@@ -202,5 +208,33 @@ export class ProcessManager {
     } catch {
       return false
     }
+  }
+
+  private async killProcessOnPort(port: number): Promise<void> {
+    if (process.platform !== 'win32') {
+      try {
+        const { execSync } = require('child_process')
+        execSync(`fuser -k ${port}/tcp`, { timeout: 5000 })
+      } catch {}
+      return
+    }
+
+    // Windows: find PID listening on port, then kill it
+    try {
+      const { execSync } = require('child_process')
+      const result = execSync('netstat -ano', { timeout: 5000, encoding: 'utf-8' })
+      for (const line of result.split('\n')) {
+        if (line.includes(`:${port}`) && line.includes('LISTENING')) {
+          const parts = line.trim().split(/\s+/)
+          const pid = parts[parts.length - 1]
+          if (pid && /^\d+$/.test(pid)) {
+            try {
+              execSync(`taskkill /F /PID ${pid}`, { timeout: 5000 })
+              console.log(`[llama-cpp] Killed stale process PID ${pid} on port ${port}`)
+            } catch {}
+          }
+        }
+      }
+    } catch {}
   }
 }
