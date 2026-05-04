@@ -162,6 +162,7 @@ export class ConversationLoop {
       cwd: opts.cwd ?? process.cwd(),
       requestApproval,
       trustProfile: opts.trustProfile,
+      approveAll: opts.config.approveAll,
     })
 
     this.workflowEngine = opts.workflowEngine ?? new WorkflowEngine((event) => {
@@ -288,6 +289,11 @@ export class ConversationLoop {
    * - First message in a session (needs project orientation)
    */
   private async proactiveScoutDispatch(userMessage: string): Promise<SubAgentResult[]> {
+    // LOCALCODE_NO_SCOUTS=true disables all proactive scouting (for automated execution)
+    if (this.config.noScouts) {
+      return []
+    }
+
     const msg = userMessage.toLowerCase()
     const wordCount = msg.split(/\s+/).length
 

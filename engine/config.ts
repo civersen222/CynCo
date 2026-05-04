@@ -46,6 +46,8 @@ export type LocalCodeConfig = {
   gpuLayers: number
   flashAttn: boolean
   threads: number | undefined
+  noScouts: boolean
+  approveAll: boolean
 }
 
 const VALID_TIERS: TierSetting[] = ['auto', 'basic', 'standard', 'advanced']
@@ -161,5 +163,7 @@ export function loadConfig(): LocalCodeConfig {
     gpuLayers,
     flashAttn,
     threads,
+    noScouts: process.env.LOCALCODE_NO_SCOUTS === 'true',
+    approveAll: process.env.LOCALCODE_APPROVE_ALL === 'true',
   }
 }
