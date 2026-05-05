@@ -126,6 +126,9 @@ export function fromOpenAIResponse(oai: {
   }>
   usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number }
 }): CompletionResponse {
+  if (!oai.choices || oai.choices.length === 0) {
+    return { content: [], model: oai.model, stopReason: 'error', usage: { inputTokens: 0, outputTokens: 0 } }
+  }
   const choice = oai.choices[0]
   const content: ContentBlock[] = []
 
@@ -189,6 +192,7 @@ export function fromOpenAIStreamChunk(chunk: {
   usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number }
 }): StreamEvent[] {
   const events: StreamEvent[] = []
+  if (!chunk.choices || chunk.choices.length === 0) return events
   const choice = chunk.choices[0]
   if (!choice) return events
 
