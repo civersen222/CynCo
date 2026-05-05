@@ -1,12 +1,12 @@
 import type { ToolImpl } from '../types.js'
 import { makeSubAgentConfig, type AgentPersona } from '../../agents/types.js'
 
-const VALID_PERSONAS: AgentPersona[] = ['scout', 'oracle', 'kraken', 'spark', 'architect']
+const VALID_PERSONAS: AgentPersona[] = ['scout', 'oracle', 'kraken', 'spark', 'architect', 'researcher']
 
 export const spawnAgentTool: ToolImpl = {
   name: 'SubAgent',
   description:
-    'Spawn an autonomous sub-agent to work on a task. Agent runs independently with its own context and tools. Use for: parallel research, specialist tasks, task decomposition. Personas: scout (explore codebase), oracle (deep analysis), kraken (testing), spark (refactoring), architect (design).',
+    'Spawn an autonomous sub-agent to work on a task. Agent runs independently with its own context and tools. Use for: parallel research, specialist tasks, task decomposition. Personas: scout (explore codebase), oracle (deep analysis), kraken (testing), spark (refactoring), architect (design), researcher (multi-source research with web access).',
   inputSchema: {
     type: 'object',
     properties: {
@@ -43,7 +43,8 @@ export const spawnAgentTool: ToolImpl = {
       }
     }
 
-    const config = makeSubAgentConfig({ task, persona: persona as AgentPersona })
+    const trustTier = persona === 'researcher' ? 'specialist' as const : undefined
+    const config = makeSubAgentConfig({ task, persona: persona as AgentPersona, trustTier })
 
     return {
       output: JSON.stringify({ _subagent: true, config, blocking }),

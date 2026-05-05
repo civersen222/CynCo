@@ -2,7 +2,7 @@ import { randomBytes } from 'crypto'
 
 // ─── Persona & Trust ──────────────────────────────────────────────────────────
 
-export type AgentPersona = 'scout' | 'oracle' | 'kraken' | 'spark' | 'architect'
+export type AgentPersona = 'scout' | 'oracle' | 'kraken' | 'spark' | 'architect' | 'researcher'
 
 export type TrustTier = 'readonly' | 'specialist' | 'full'
 
@@ -84,6 +84,8 @@ export interface S2State {
 
 const READONLY_TOOLS: string[] = ['Read', 'Glob', 'Grep', 'CodeIndex', 'Ls', 'ImageView', 'Git']
 
+const SPECIALIST_TOOLS: string[] = [...READONLY_TOOLS, 'WebSearch', 'WebFetch']
+
 // Defaults for iterations and token budget indexed by trust tier
 const TIER_DEFAULTS: Record<TrustTier, { maxIterations: number; maxTokenBudget: number }> = {
   readonly:   { maxIterations: 10, maxTokenBudget: 8192  },
@@ -114,7 +116,11 @@ export function makeSubAgentConfig(opts: MakeSubAgentConfigOpts): SubAgentConfig
     persona: opts.persona,
     trustTier,
     policyConstraints: {
-      allowedTools: READONLY_TOOLS,
+      allowedTools: trustTier === 'readonly'
+        ? READONLY_TOOLS
+        : trustTier === 'specialist'
+          ? SPECIALIST_TOOLS
+          : [...SPECIALIST_TOOLS, 'Write', 'Edit', 'Bash'],
       ...(opts.scopePaths !== undefined ? { scopePaths: opts.scopePaths } : {}),
       maxIterations: opts.maxIterations ?? tierDefaults.maxIterations,
       maxTokenBudget: opts.maxTokenBudget ?? tierDefaults.maxTokenBudget,
