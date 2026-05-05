@@ -1,19 +1,31 @@
-/**
- * WebSearch tool — search the web via DuckDuckGo and return results.
- *
- * Available to the model in any conversation, not just the wizard.
- * Uses DuckDuckGo HTML search (no API key required).
- */
 import type { ToolImpl } from '../types.js'
+import { getEngine, getAllEngines, initEngines } from '../../research/engines/registry.js'
+import { routeQuery } from '../../research/engineRouter.js'
+import type { SearchResult } from '../../research/types.js'
+
+let initialized = false
+
+function ensureEngines(): void {
+  if (!initialized) {
+    initEngines()
+    initialized = true
+  }
+}
 
 export const webSearchTool: ToolImpl = {
   name: 'WebSearch',
-  description: 'Search the web for information. Returns relevant snippets from search results. Use this to research topics, find documentation, or look up how things work.',
+  description: 'Search the web using multiple search engines. Returns relevant snippets from search results. Use this to research topics, find documentation, or look up how things work.',
   inputSchema: {
     type: 'object',
     properties: {
       query: { type: 'string', description: 'The search query' },
       num_results: { type: 'number', description: 'Number of results to return (default: 5, max: 10)' },
+      engine: {
+        type: 'string',
+        enum: ['auto', 'duckduckgo', 'searxng', 'arxiv', 'wikipedia', 'github', 'pubmed'],
+        default: 'auto',
+        description: 'Search engine to use. "auto" routes to best engine(s) based on query.',
+      },
     },
     required: ['query'],
   },
@@ -21,54 +33,52 @@ export const webSearchTool: ToolImpl = {
   execute: async (input) => {
     const query = input.query as string
     const numResults = Math.min((input.num_results as number) ?? 5, 10)
+    const engineName = (input.engine as string) ?? 'auto'
+
+    ensureEngines()
 
     try {
-      const url = 'https://html.duckduckgo.com/html/?q=' + encodeURIComponent(query)
-      const resp = await fetch(url, {
-        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; LocalCode/0.1)' },
-        signal: AbortSignal.timeout(15000),
-      })
-      const html = await resp.text()
+      let results: SearchResult[]
 
-      // Extract result titles and snippets
-      const results: string[] = []
-
-      // Extract snippets
-      const snippets = [...html.matchAll(/<a class="result__snippet"[^>]*>(.*?)<\/a>/gs)]
-        .map(m => m[1]
-          .replace(/<[^>]+>/g, '')
-          .replace(/&#x27;/g, "'")
-          .replace(/&quot;/g, '"')
-          .replace(/&amp;/g, '&')
-          .replace(/&lt;/g, '<')
-          .replace(/&gt;/g, '>')
-          .trim()
-        )
-        .filter(s => s.length > 20)
-        .slice(0, numResults)
-
-      // Extract titles
-      const titles = [...html.matchAll(/<a class="result__a"[^>]*>(.*?)<\/a>/gs)]
-        .map(m => m[1].replace(/<[^>]+>/g, '').trim())
-        .slice(0, numResults)
-
-      // Extract URLs
-      const urls = [...html.matchAll(/<a class="result__url"[^>]*href="([^"]*)"[^>]*>/gs)]
-        .map(m => m[1].trim())
-        .slice(0, numResults)
-
-      for (let i = 0; i < snippets.length; i++) {
-        const title = titles[i] ?? ''
-        const resultUrl = urls[i] ?? ''
-        results.push(`${i + 1}. ${title}\n   ${resultUrl}\n   ${snippets[i]}`)
+      if (engineName === 'auto') {
+        const engines = routeQuery(query, getAllEngines())
+        if (engines.length === 0) {
+          return { output: `No search engines available for: "${query}"`, isError: false }
+        }
+        const searches = engines.slice(0, 2).map(e => e.search(query, numResults))
+        const allResults = (await Promise.allSettled(searches))
+          .filter(r => r.status === 'fulfilled')
+          .flatMap(r => (r as PromiseFulfilledResult<SearchResult[]>).value)
+        const seen = new Set<string>()
+        results = allResults.filter(r => {
+          if (seen.has(r.url)) return false
+          seen.add(r.url)
+          return true
+        }).slice(0, numResults)
+      } else {
+        const engine = getEngine(engineName)
+        if (!engine) {
+          const ddg = getEngine('duckduckgo')
+          if (!ddg) return { output: `No search engines available`, isError: true }
+          results = await ddg.search(query, numResults)
+        } else {
+          results = await engine.search(query, numResults)
+        }
       }
 
       if (results.length === 0) {
         return { output: `No results found for: "${query}"`, isError: false }
       }
 
+      const formatted = results.map((r, i) => {
+        const meta = r.metadata
+        const authorLine = meta?.authors?.length ? `\n   Authors: ${meta.authors.join(', ')}` : ''
+        const dateLine = meta?.date ? `\n   Date: ${meta.date}` : ''
+        return `${i + 1}. ${r.title}\n   ${r.url}\n   [${r.source}] ${r.snippet}${authorLine}${dateLine}`
+      }).join('\n\n')
+
       return {
-        output: `Search results for "${query}":\n\n${results.join('\n\n')}`,
+        output: `Search results for "${query}":\n\n${formatted}`,
         isError: false,
       }
     } catch (err) {
