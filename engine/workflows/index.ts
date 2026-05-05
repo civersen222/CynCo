@@ -8,6 +8,7 @@ export { reviewWorkflow } from './definitions/review.js'
 export { planningWorkflow } from './definitions/planning.js'
 export { brainstormWorkflow } from './definitions/brainstorm.js'
 export { critiqueWorkflow } from './definitions/critique.js'
+export { researchWorkflow } from './definitions/research.js'
 
 import { tddWorkflow } from './definitions/tdd.js'
 import { debugWorkflow } from './definitions/debug.js'
@@ -15,6 +16,7 @@ import { reviewWorkflow } from './definitions/review.js'
 import { planningWorkflow } from './definitions/planning.js'
 import { brainstormWorkflow } from './definitions/brainstorm.js'
 import { critiqueWorkflow } from './definitions/critique.js'
+import { researchWorkflow } from './definitions/research.js'
 import type { WorkflowDefinition } from './types.js'
 
 /** All available workflows, keyed by slash command name. */
@@ -25,6 +27,7 @@ export const WORKFLOWS: Record<string, WorkflowDefinition> = {
   '/plan': planningWorkflow,
   '/brainstorm': brainstormWorkflow,
   '/critique': critiqueWorkflow,
+  '/research': researchWorkflow,
 }
 
 /** Get workflow by slash command. */
