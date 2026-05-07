@@ -2,6 +2,7 @@ import type { GovernanceReport } from '../vsm/types.js'
 import type { S5Input, S5Decision, S5Interface, DecisionLogEntry } from './types.js'
 import { getJournal } from '../training/decisionJournal.js'
 import { makeJournalEntry } from '../training/types.js'
+import { RuleWeightManager } from './ruleWeights.js'
 
 const MAX_HISTORY = 100
 
@@ -30,6 +31,7 @@ export type OrchestratorInput = {
 export class S5Orchestrator {
   private s5: S5Interface
   private history: DecisionLogEntry[] = []
+  private ruleWeights: RuleWeightManager | null = null
   private lastDecision: {
     decisionId: string
     ruleIds: string[]
@@ -39,6 +41,14 @@ export class S5Orchestrator {
 
   constructor(s5: S5Interface) {
     this.s5 = s5
+    try {
+      const os = require('os')
+      const path = require('path')
+      const dir = path.join(os.homedir(), '.cynco', 'training')
+      this.ruleWeights = new RuleWeightManager(dir)
+    } catch {
+      // Non-fatal — weights just won't persist
+    }
   }
 
   async makeDecision(input: OrchestratorInput): Promise<S5Decision> {
@@ -141,12 +151,35 @@ export class S5Orchestrator {
     const improved = stuckNow < this.lastDecision.stuckTurnsBefore ||
       successNow > this.lastDecision.toolSuccessRateBefore + 0.1
 
+    const outcome = improved ? 'positive' as const : 'negative' as const
+
+    // Adjust rule weights based on outcome
+    if (this.ruleWeights) {
+      for (const ruleId of this.lastDecision.ruleIds) {
+        this.ruleWeights.recordOutcome(ruleId, outcome)
+      }
+    }
+
     const result = {
       decisionId: this.lastDecision.decisionId,
       ruleIds: this.lastDecision.ruleIds,
-      outcome: improved ? 'positive' as const : 'negative' as const,
+      outcome,
     }
     this.lastDecision = null
     return result
+  }
+
+  /** Record user dismissal of a governance recommendation. */
+  recordDismissal(ruleIds: string[]): void {
+    if (this.ruleWeights) {
+      for (const ruleId of ruleIds) {
+        this.ruleWeights.recordOutcome(ruleId, 'dismissed')
+      }
+    }
+  }
+
+  /** Save rule weights at session end. */
+  saveWeights(): void {
+    this.ruleWeights?.save()
   }
 }

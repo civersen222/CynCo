@@ -485,7 +485,7 @@ export class ConversationLoop {
     }
 
     // Build tool definitions in the format callModel expects (inputJSONSchema)
-    const toolDefs = activeTools.map(t => ({
+    let toolDefs = activeTools.map(t => ({
       name: t.name,
       description: t.description,
       inputJSONSchema: t.inputSchema,
@@ -560,75 +560,7 @@ export class ConversationLoop {
       promptParts.push('## Strategy\n' + activeStrategy)
     }
 
-    // VSM Governance Signals — pure state machine outputs, NO model calls.
-    // Each signal is computed from metrics in microseconds, not LLM inference.
-    {
-      try {
-        const govReport = this.governance.getReport()
-        const signals: string[] = []
-
-        // Variety signal: if task complexity exceeds tool variety
-        if (govReport.varietyBalance === 'overload') {
-          signals.push('VARIETY WARNING: Task complexity exceeds your current tool usage. Try using more diverse tools (Grep, Glob, Read) to build understanding before editing.')
-        }
-
-        // Homeostat signal: if system is unstable
-        if (!this.governance.isStable()) {
-          signals.push('STABILITY WARNING: System metrics are oscillating. Focus on one approach before switching.')
-        }
-
-        // Feedback control: if context needs compression
-        if (this.governance.shouldCompress()) {
-          signals.push('CONTEXT PRESSURE: Context window filling up. Be concise. Consider compacting.')
-        }
-
-        // Performance signal: check achievement health
-        const pm = this.governance.getPerformanceMetrics()
-        const health = pm.getHealthStatus()
-        if (health === 'red') {
-          signals.push('PERFORMANCE ALERT: Low task completion rate. Simplify your approach — solve one thing at a time.')
-        }
-
-        // CUSUM drift: failure rate shifting
-        if (pm.isDriftDetected()) {
-          signals.push('DRIFT DETECTED: Tool failure rate has shifted. Check recent errors and adjust approach.')
-        }
-
-        // Stuck detection
-        if (govReport.stuckTurns >= 2) {
-          signals.push(`STUCK: ${govReport.stuckTurns} turns without progress. Try a completely different approach.`)
-        }
-
-        // Heterarchy: who commands in this context
-        const het = this.governance.getHeterarchy()
-        const context = het.classifyContext(
-          govReport.stuckTurns,
-          govReport.s3s4Balance === 'critical',
-          this.messages.length <= 2,
-          this.toolHistory.length,
-        )
-        const commander = het.whoCommands(context)
-        if (commander !== 'S3') { // Only inject when not normal operations
-          const contextLabel = { crisis: 'CRISIS MODE', exploration: 'EXPLORATION MODE', stuck: 'RECOVERY MODE', routine: 'ROUTINE' }[context] ?? ''
-          if (contextLabel) {
-            signals.push(`${contextLabel}: ${commander} has authority. ${
-              commander === 'S5' ? 'Focus on safety and identity.' :
-              commander === 'S4' ? 'Explore alternatives before committing.' :
-              commander === 'S1' ? 'Execute autonomously.' :
-              'Coordinate with other systems.'
-            }`)
-          }
-        }
-
-        if (signals.length > 0) {
-          promptParts.push('')
-          promptParts.push('## Governance Signals\n' + signals.map(s => `- ${s}`).join('\n'))
-          console.log(`[vsm] ${signals.length} governance signals injected`)
-        }
-      } catch (err) {
-        console.log(`[vsm] Governance signal error: ${err instanceof Error ? err.message : String(err)}`)
-      }
-    }
+    // Governance signals routed through S5 enforcement, not prompt injection.
 
     // Prepend workflow instructions when a workflow is active
     if (this.workflowEngine.isActive) {
@@ -654,18 +586,39 @@ export class ConversationLoop {
         const estimatedTokens = this.messages.reduce((sum, m) =>
           sum + m.content.reduce((s, b: any) => s + (b.text?.length ?? JSON.stringify(b).length) / 4, 0), 0)
         const ctxLength = this.config.contextLength ?? 32768
+        const govReport = this.governance.getReport()
+        const pm = this.governance.getPerformanceMetrics?.()
+
+        // Evaluate previous S5 decision outcome (feeds rule weight tuning)
+        try {
+          const outcomeResult = this.s5.evaluateLastDecision(govReport as any)
+          if (outcomeResult) {
+            console.log(`[s5] Outcome: ${outcomeResult.outcome} for rules [${outcomeResult.ruleIds.join(',')}]`)
+          }
+        } catch {}
+
         const decision = await this.s5.makeDecision({
           userMessage: text.slice(0, 200),
           activeWorkflow: this.workflowEngine.state?.workflow.name ?? null,
           currentPhase: this.workflowEngine.currentPhase?.name ?? null,
           contextUsagePercent: estimatedTokens / ctxLength,
-          governance: this.governance.getReport(),
+          governance: govReport,
           recentToolResults: [],
           availableModels: [this.config.model ?? 'unknown'],
           turnCount: this.messages.filter(m => m.role === 'user').length,
+          varietyBalance: (govReport as any).varietyBalance ?? 'balanced',
+          varietyRatio: (govReport as any).varietyRatio ?? 1.0,
+          homeostatStable: this.governance.isStable?.() ?? true,
+          homeostatConsecutiveUnstable: (govReport as any).consecutiveUnstable ?? 0,
+          driftDetected: pm?.isDriftDetected?.() ?? false,
+          driftDirection: pm?.isDriftDetected?.() ? 'degrading' : null,
+          performanceHealth: pm?.getHealthStatus?.() === 'green' ? 'healthy' : pm?.getHealthStatus?.() === 'yellow' ? 'warning' : 'critical',
+          productivityRatio: (pm as any)?.getProductivity?.() ?? 0.8,
+          recommendedToolMode: this.governance.getRecommendedToolMode?.() ?? null,
+          heterarchyAuthority: null,
         })
 
-        // L3: APPLY S5 decisions, not just log them
+        // L3: APPLY S5 decisions — hard enforcement, not advisory
         if (decision.contextAction === 'compact') {
           console.log(`[s5] Decision: compact context (${decision.reasoning})`)
           // Trigger compaction via the S5 decision path
@@ -682,16 +635,43 @@ export class ConversationLoop {
             } catch {}
           }
         }
+
+        // Hard tool filtering: S5 decides, engine enforces
         if (decision.tools) {
-          // Reorder tools so S5's preferred tools appear first (don't remove — removal kills model)
-          const preferred = new Set(decision.tools)
-          toolDefs.sort((a, b) => {
-            const aP = preferred.has(a.name) ? 0 : 1
-            const bP = preferred.has(b.name) ? 0 : 1
-            return aP - bP
-          })
-          console.log(`[s5] Tool order adjusted: ${decision.tools.join(', ')} prioritized`)
+          console.log(`[s5] ENFORCE: tool restriction to [${decision.tools.join(', ')}]`)
+          const allowed = new Set(decision.tools)
+          toolDefs = toolDefs.filter(t => allowed.has(t.name))
         }
+
+        // Model switch enforcement
+        if (decision.model && decision.model !== this.config.model) {
+          console.log(`[s5] ENFORCE: model switch to ${decision.model}`)
+          this.updateModel(decision.model)
+        }
+
+        // Emit governance.recommendation for warning-tier rules
+        const warningRuleIds = (decision.ruleIds ?? []).filter(id => id.startsWith('W'))
+        if (warningRuleIds.length > 0) {
+          const requestId = require('crypto').randomUUID()
+          this.emit({
+            type: 'governance.recommendation',
+            requestId,
+            severity: 'warning',
+            signal: warningRuleIds[0],
+            title: decision.reasoning.split('.')[0],
+            description: decision.reasoning,
+            action: {
+              model: decision.model,
+              tools: decision.tools,
+              contextAction: decision.contextAction,
+              revert: decision.revert,
+              priority: decision.priority,
+            },
+            autoApplyAfterMs: decision.revert ? undefined : 60000,
+          } as any)
+          console.log(`[s5] RECOMMEND: ${warningRuleIds.join(',')} — ${decision.reasoning.slice(0, 80)}`)
+        }
+
         console.log(`[s5] Priority: ${decision.priority} | ${decision.reasoning}`)
       } catch (err) {
         console.log(`[s5] Decision error: ${err instanceof Error ? err.message : String(err)}`)
@@ -1052,14 +1032,8 @@ export class ConversationLoop {
         return
       }
 
-      // VSM agent mode: log but NEVER restrict tools.
-      // Removing write tools when the model needs to write is actively harmful —
-      // it causes the model to narrate instead of act, which looks like "dying."
-      const toolMode = this.governance.getRecommendedToolMode()
+      // Tools already filtered by S5 enforcement and workflow phase restrictions.
       const iterationTools = toolDefs
-      if (toolMode !== 'full') {
-        console.log(`[vsm] Tool mode is ${toolMode} but NOT restricting — tool removal causes model death`)
-      }
 
       const gen = localCallModel({
         messages: this.messages,
