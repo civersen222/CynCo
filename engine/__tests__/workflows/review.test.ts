@@ -53,7 +53,7 @@ describe('Review workflow', () => {
     engine.advance('analyze')
     engine.advance('report')
     const tools = engine.getAllowedTools()
-    expect(tools).toEqual(['Read'])
+    expect(tools).toEqual(['Read', 'SubAgent', 'CollectAgent'])
   })
 
   it('all phases use model_done gate', () => {

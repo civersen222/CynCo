@@ -1,6 +1,7 @@
 import type { ToolImpl } from '../types.js'
 import { getEngine, getAllEngines, initEngines } from '../../research/engines/registry.js'
-import { routeQuery } from '../../research/engineRouter.js'
+import { routeQuery, searchWithFallback } from '../../research/engineRouter.js'
+import { scoreResults, deduplicateResults } from '../../research/resultScorer.js'
 import type { SearchResult } from '../../research/types.js'
 
 let initialized = false
@@ -22,7 +23,7 @@ export const webSearchTool: ToolImpl = {
       num_results: { type: 'number', description: 'Number of results to return (default: 5, max: 10)' },
       engine: {
         type: 'string',
-        enum: ['auto', 'duckduckgo', 'searxng', 'arxiv', 'wikipedia', 'github', 'pubmed'],
+        enum: ['auto', 'duckduckgo', 'searxng', 'arxiv', 'wikipedia', 'github', 'pubmed', 'huggingface'],
         default: 'auto',
         description: 'Search engine to use. "auto" routes to best engine(s) based on query.',
       },
@@ -41,28 +42,31 @@ export const webSearchTool: ToolImpl = {
       let results: SearchResult[]
 
       if (engineName === 'auto') {
-        const engines = routeQuery(query, getAllEngines())
+        const allEngines = getAllEngines()
+        const engines = routeQuery(query, allEngines)
         if (engines.length === 0) {
           return { output: `No search engines available for: "${query}"`, isError: false }
         }
-        const searches = engines.slice(0, 2).map(e => e.search(query, numResults))
+        // Search top 2 engines with fallback
+        const searches = engines.slice(0, 2).map(e =>
+          searchWithFallback(query, e, allEngines, numResults)
+        )
         const allResults = (await Promise.allSettled(searches))
           .filter(r => r.status === 'fulfilled')
           .flatMap(r => (r as PromiseFulfilledResult<SearchResult[]>).value)
-        const seen = new Set<string>()
-        results = allResults.filter(r => {
-          if (seen.has(r.url)) return false
-          seen.add(r.url)
-          return true
-        }).slice(0, numResults)
+
+        // Score, deduplicate, and rank
+        const scored = scoreResults(allResults, query)
+        results = deduplicateResults(scored).slice(0, numResults)
       } else {
+        const allEngines = getAllEngines()
         const engine = getEngine(engineName)
         if (!engine) {
           const ddg = getEngine('duckduckgo')
           if (!ddg) return { output: `No search engines available`, isError: true }
-          results = await ddg.search(query, numResults)
+          results = await searchWithFallback(query, ddg, allEngines, numResults)
         } else {
-          results = await engine.search(query, numResults)
+          results = await searchWithFallback(query, engine, allEngines, numResults)
         }
       }
 
@@ -74,7 +78,9 @@ export const webSearchTool: ToolImpl = {
         const meta = r.metadata
         const authorLine = meta?.authors?.length ? `\n   Authors: ${meta.authors.join(', ')}` : ''
         const dateLine = meta?.date ? `\n   Date: ${meta.date}` : ''
-        return `${i + 1}. ${r.title}\n   ${r.url}\n   [${r.source}] ${r.snippet}${authorLine}${dateLine}`
+        const starsLine = meta?.stars != null && meta.stars > 0 ? `\n   Stars: ${meta.stars.toLocaleString()}` : ''
+        const scoreLine = r.score != null ? ` (score: ${r.score})` : ''
+        return `${i + 1}. ${r.title}${scoreLine}\n   ${r.url}\n   [${r.source}] ${r.snippet}${starsLine}${authorLine}${dateLine}`
       }).join('\n\n')
 
       return {

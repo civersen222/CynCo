@@ -36,6 +36,7 @@ export function initEngines(): void {
   const { PubMedEngine } = require('./pubmed.js')
   const { GitHubEngine } = require('./github.js')
   const { SearXNGEngine } = require('./searxng.js')
+  const { HuggingFaceEngine } = require('./huggingface.js')
 
   registerEngine(new DuckDuckGoEngine())
   registerEngine(new WikipediaEngine())
@@ -43,4 +44,5 @@ export function initEngines(): void {
   registerEngine(new PubMedEngine())
   registerEngine(new GitHubEngine())
   registerEngine(new SearXNGEngine())
+  registerEngine(new HuggingFaceEngine())
 }

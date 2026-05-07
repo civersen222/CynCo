@@ -8,12 +8,16 @@ const SAMPLE_RESPONSE = {
       html_url: 'https://github.com/facebook/react',
       description: 'The library for web and native user interfaces.',
       updated_at: '2026-01-01T00:00:00Z',
+      stargazers_count: 230000,
+      language: 'JavaScript',
     },
     {
       full_name: 'vuejs/vue',
       html_url: 'https://github.com/vuejs/vue',
       description: null,
       updated_at: '2026-01-02T00:00:00Z',
+      stargazers_count: 210000,
+      language: 'TypeScript',
     },
   ],
 }
@@ -38,11 +42,13 @@ describe('GitHubEngine', () => {
     const results = engine.parseResponse(SAMPLE_RESPONSE)
     expect(results[1].snippet).toBe('')
   })
-  it('extracts repo metadata', () => {
+  it('extracts repo metadata including stars and language', () => {
     const engine = new GitHubEngine()
     const results = engine.parseResponse(SAMPLE_RESPONSE)
     expect(results[0].metadata?.repo).toBe('facebook/react')
     expect(results[0].metadata?.date).toBe('2026-01-01T00:00:00Z')
+    expect(results[0].metadata?.stars).toBe(230000)
+    expect(results[0].metadata?.language).toBe('JavaScript')
   })
   it('handles empty items', () => {
     const engine = new GitHubEngine()

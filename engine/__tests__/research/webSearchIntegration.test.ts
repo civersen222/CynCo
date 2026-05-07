@@ -12,6 +12,7 @@ describe('WebSearch tool schema', () => {
     expect(props.engine.enum).toContain('pubmed')
     expect(props.engine.enum).toContain('searxng')
     expect(props.engine.enum).toContain('duckduckgo')
+    expect(props.engine.enum).toContain('huggingface')
   })
   it('defaults engine to auto', () => {
     const props = webSearchTool.inputSchema.properties as Record<string, any>

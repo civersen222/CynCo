@@ -4,11 +4,14 @@ export interface SearchResult {
   snippet: string
   source: string
   relevance?: number
+  score?: number  // quality score assigned by resultScorer
   metadata?: {
     authors?: string[]
     date?: string
     doi?: string
     repo?: string
+    stars?: number
+    language?: string
   }
 }
 

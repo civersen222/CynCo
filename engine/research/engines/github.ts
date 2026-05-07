@@ -5,8 +5,15 @@ export class GitHubEngine implements SearchEngine {
   description = 'GitHub repository and code search'
   domains = ['code', 'repos', 'technical', 'github', 'open-source']
 
+  private minStars: number
+
+  constructor(options?: { minStars?: number }) {
+    this.minStars = options?.minStars ?? 0
+  }
+
   async search(query: string, maxResults = 5): Promise<SearchResult[]> {
-    const url = `https://api.github.com/search/repositories?q=${encodeURIComponent(query)}&per_page=${maxResults}&sort=stars&order=desc`
+    const starFilter = this.minStars > 0 ? `+stars:>=${this.minStars}` : ''
+    const url = `https://api.github.com/search/repositories?q=${encodeURIComponent(query)}${starFilter}&per_page=${maxResults}&sort=stars&order=desc`
     const resp = await fetch(url, {
       headers: {
         'User-Agent': 'CynCo/1.0',
@@ -40,6 +47,8 @@ export class GitHubEngine implements SearchEngine {
       metadata: {
         date: repo.updated_at,
         repo: repo.full_name,
+        stars: repo.stargazers_count ?? 0,
+        language: repo.language ?? undefined,
       },
     }))
   }

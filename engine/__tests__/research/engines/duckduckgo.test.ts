@@ -3,13 +3,13 @@ import { DuckDuckGoEngine } from '../../../research/engines/duckduckgo.js'
 
 const SAMPLE_HTML = `
 <div class="results">
-  <div class="result">
-    <a class="result__a" href="https://example.com/page1">Example Page One</a>
+  <div class="result results_links results_links_deep web-result">
+    <h2 class="result__title"><a class="result__a" href="https://example.com/page1">Example Page One</a></h2>
     <a class="result__url" href="https://example.com/page1">example.com/page1</a>
     <a class="result__snippet" href="#">This is the first search result snippet with enough text to pass the filter.</a>
   </div>
-  <div class="result">
-    <a class="result__a" href="https://example.com/page2">Example Page Two</a>
+  <div class="result results_links results_links_deep web-result">
+    <h2 class="result__title"><a class="result__a" href="https://example.com/page2">Example Page Two</a></h2>
     <a class="result__url" href="https://example.com/page2">example.com/page2</a>
     <a class="result__snippet" href="#">Second result snippet with &#x27;entities&#x27; and &amp; symbols decoded properly.</a>
   </div>
