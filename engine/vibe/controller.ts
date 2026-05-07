@@ -455,6 +455,39 @@ export class VibeController {
     }
   }
 
+  /** Check if the user's task description warrants external research before building. */
+  private async shouldResearch(description: string): Promise<boolean> {
+    if (!description || description.trim().length < 10) return false
+
+    // Check if research already exists in the index for this topic
+    const existing = await this.queryProjectIndex(description, 3)
+    if (existing) {
+      // Check if any results are research chunks (contain citation-like patterns)
+      const hasResearch = existing.includes('[Source:') || existing.includes('— Source:')
+      if (hasResearch) {
+        console.log('[vibe] Existing research found in index — skipping research phase')
+        return false
+      }
+    }
+
+    try {
+      const prompt = [
+        'Does this task require external research (unfamiliar APIs, libraries, patterns,',
+        'best practices, academic references) before implementation?',
+        'Consider: if a developer has never worked with the technologies mentioned,',
+        'would they need to look things up first?',
+        '',
+        `Task: "${description}"`,
+        '',
+        'Answer YES or NO only.',
+      ].join('\n')
+      const answer = await this.sideQuery(prompt)
+      return answer.trim().toUpperCase().startsWith('YES')
+    } catch {
+      return false
+    }
+  }
+
   // ─── Private: Summarize Understanding ──────────────────────────
 
   private async summarizeUnderstanding(): Promise<string> {
@@ -482,6 +515,27 @@ export class VibeController {
   // ─── Private: BUILD Phase ──────────────────────────────────────
 
   async executeBuild(buildPromptOverride?: string): Promise<void> {
+    // Check if research would help before building
+    if (!buildPromptOverride && this.userDescription) {
+      const needsResearch = await this.shouldResearch(this.userDescription)
+      if (needsResearch) {
+        console.log(`[vibe] Research needed — injecting research context before build`)
+        const researchPrompt = [
+          `Before implementing, research the following topic using WebSearch:`,
+          `"${this.userDescription}"`,
+          '',
+          `Search for relevant libraries, APIs, patterns, and best practices.`,
+          `Use the engine parameter to target specific search engines:`,
+          `- engine:"arxiv" for academic papers`,
+          `- engine:"github" for code examples and libraries`,
+          `- engine:"wikipedia" for background concepts`,
+          '',
+          `Summarize your findings, then proceed to implementation.`,
+        ].join('\n')
+        await this.loop.handleUserMessage(researchPrompt)
+      }
+    }
+
     this.engine.transitionToBuild()
 
     // Auto-approve all tools during project BUILD — no approval popups

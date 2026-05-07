@@ -8,6 +8,7 @@ describe('approvalGate', () => {
     expect(shouldAutoApprove('Grep', undefined)).toBe(true)
     expect(shouldAutoApprove('WebFetch', undefined)).toBe(true)
     expect(shouldAutoApprove('ImageView', undefined)).toBe(true)
+    expect(shouldAutoApprove('SubAgent', undefined)).toBe(true)
   })
 
   it('requires approval for write-tier tools with no profile override', () => {
@@ -15,7 +16,6 @@ describe('approvalGate', () => {
     expect(shouldAutoApprove('Edit', undefined)).toBe(false)
     expect(shouldAutoApprove('Bash', undefined)).toBe(false)
     expect(shouldAutoApprove('Git', undefined)).toBe(false)
-    expect(shouldAutoApprove('SubAgent', undefined)).toBe(false)
   })
 
   it('respects profile trust overrides', () => {

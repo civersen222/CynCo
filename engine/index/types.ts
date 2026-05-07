@@ -1,4 +1,4 @@
-export type ChunkType = 'function' | 'class' | 'module' | 'import_block'
+export type ChunkType = 'function' | 'class' | 'module' | 'import_block' | 'research'
 
 export type Chunk = {
   filePath: string

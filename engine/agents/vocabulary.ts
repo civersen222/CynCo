@@ -242,6 +242,51 @@ const VOCABULARIES: Record<string, VocabularyPayload> = {
       },
     ],
   },
+  researcher: {
+    agentType: 'researcher',
+    clusters: [
+      {
+        name: 'source evaluation',
+        terms: [
+          'primary source',
+          'secondary source',
+          'peer-reviewed',
+          'preprint',
+          'citation',
+          'credibility',
+          'methodology',
+          'sample size',
+          'replication',
+        ],
+      },
+      {
+        name: 'synthesis',
+        terms: [
+          'corroboration',
+          'contradiction',
+          'gap',
+          'consensus',
+          'dissent',
+          'meta-analysis',
+          'weight of evidence',
+          'systematic review',
+        ],
+      },
+      {
+        name: 'academic',
+        terms: [
+          'arXiv',
+          'PubMed',
+          'DOI',
+          'abstract',
+          'related work',
+          'prior art',
+          'state of the art',
+          'literature review',
+        ],
+      },
+    ],
+  },
 }
 
 /**

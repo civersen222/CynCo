@@ -464,7 +464,8 @@ async function handleCommand(command: TUICommand): Promise<void> {
         case '/review':
         case '/plan':
         case '/brainstorm':
-        case '/critique': {
+        case '/critique':
+        case '/research': {
           const { getWorkflow } = await import('./workflows/index.js')
           const wf = getWorkflow(cmd)
           if (wf) {

@@ -12,14 +12,15 @@ describe('spawnAgentTool', () => {
     expect(spawnAgentTool.inputSchema.required).toContain('persona')
   })
 
-  test('persona enum includes all 5 types', () => {
+  test('persona enum includes all 6 types', () => {
     const personaProp = spawnAgentTool.inputSchema.properties['persona'] as { enum: string[] }
     expect(personaProp.enum).toContain('scout')
     expect(personaProp.enum).toContain('oracle')
     expect(personaProp.enum).toContain('kraken')
     expect(personaProp.enum).toContain('spark')
     expect(personaProp.enum).toContain('architect')
-    expect(personaProp.enum).toHaveLength(5)
+    expect(personaProp.enum).toContain('researcher')
+    expect(personaProp.enum).toHaveLength(6)
   })
 
   test('rejects invalid persona with error containing "Invalid persona"', async () => {

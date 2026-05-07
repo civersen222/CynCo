@@ -39,6 +39,10 @@ export const AGENT_PERSONAS: Record<string, PersonaConfig> = {
     role: 'software architect',
     focus: 'system design and implementation planning',
   },
+  researcher: {
+    role: 'research analyst',
+    focus: 'multi-source information gathering, evidence evaluation, and synthesis with citations',
+  },
 }
 
 /** Words that violate the "no superlatives" PRISM rule. Case-insensitive. */
