@@ -131,6 +131,17 @@ export type GovernanceStatusEvent = {
   suggestion: string | null
 }
 
+export type GovernanceRecommendationEvent = {
+  type: 'governance.recommendation'
+  requestId: string
+  severity: 'warning'
+  signal: string
+  title: string
+  description: string
+  action: Record<string, unknown>
+  autoApplyAfterMs?: number
+}
+
 export type SummaryInjectedEvent = {
   type: 'summary.injected'
   toolsUsed: string[]
@@ -281,6 +292,7 @@ export type EngineEvent =
   | MemoryWrittenEvent
   | WorkflowStatusEvent
   | GovernanceStatusEvent
+  | GovernanceRecommendationEvent
   | SummaryInjectedEvent
   | SubAgentSpawnedEvent
   | SubAgentToolEvent
