@@ -3,21 +3,25 @@ export type S5Input = {
   activeWorkflow: string | null
   currentPhase: string | null
   contextUsagePercent: number
-  recentToolResults: { tool: string; success: boolean }[]
   governanceStatus: 'healthy' | 'warning' | 'critical' | 'halted'
   s3s4Balance: 'balanced' | 's3_dominant' | 's4_dominant' | 'critical'
   modelLatencyTrend: 'stable' | 'rising' | 'falling'
   availableModels: string[]
   turnCount: number
+  recentToolResults: { tool: string; success: boolean }[]
   snapshotAvailable?: boolean
-  governance?: {
-    status: string
-    varietyBalance: string
-    s3s4Balance: string
-    stuckTurns: number
-    toolSuccessRate: number
-    algedonicAlerts: number
-  }
+  governance?: Record<string, unknown>
+  // Governance signals for S5 enforcement
+  varietyBalance: 'balanced' | 'underload' | 'overload' | 'critical'
+  varietyRatio: number
+  homeostatStable: boolean
+  homeostatConsecutiveUnstable: number
+  driftDetected: boolean
+  driftDirection: 'improving' | 'degrading' | null
+  performanceHealth: 'healthy' | 'warning' | 'critical'
+  productivityRatio: number
+  recommendedToolMode: string | null
+  heterarchyAuthority: 's3' | 's4' | 's5' | null
 }
 
 export type S5Decision = {
@@ -30,6 +34,17 @@ export type S5Decision = {
   priority: 's3' | 's4' | 'balanced'
   reasoning: string
   revert?: boolean
+  decisionId?: string
+  ruleIds?: string[]
+}
+
+export type RuleTier = 'critical' | 'warning' | 'info'
+
+export type S5Rule = {
+  id: string
+  tier: RuleTier
+  name: string
+  evaluate: (input: S5Input) => Partial<S5Decision> | null
 }
 
 export interface S5Interface {
