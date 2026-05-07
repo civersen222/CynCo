@@ -79,9 +79,11 @@ export class GovernanceLayer {
     return {
       status,
       varietyBalance,
+      varietyRatio: 1.0,
       s3s4Balance: balance.balance,
       algedonicAlerts,
       stuckTurns,
+      consecutiveUnstable: 0,
       modelLatencyTrend: latencyTrend,
       toolSuccessRate: successRate,
     }

@@ -8,8 +8,8 @@ import { CyberneticsGovernance } from '../../vsm/cyberneticsGovernance.js'
 describe('VSM types', () => {
   it('GovernanceReport shape is correct', () => {
     const report: GovernanceReport = {
-      status: 'healthy', varietyBalance: 'balanced', s3s4Balance: 'balanced',
-      algedonicAlerts: 0, stuckTurns: 0, modelLatencyTrend: 'stable', toolSuccessRate: 0.95,
+      status: 'healthy', varietyBalance: 'balanced', varietyRatio: 1.0, s3s4Balance: 'balanced',
+      algedonicAlerts: 0, stuckTurns: 0, consecutiveUnstable: 0, modelLatencyTrend: 'stable', toolSuccessRate: 0.95,
     }
     expect(report.status).toBe('healthy')
   })

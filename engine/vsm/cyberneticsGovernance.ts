@@ -128,6 +128,8 @@ export class CyberneticsGovernance {
   private stuckCount = 0
   private lastResponses: string[] = []
   private currentTaskComplexity = 1
+  private lastVarietyRatio = 1.0
+  private consecutiveUnstableCount = 0
 
   constructor(onAlert?: (alert: GovernanceAlert) => void) {
     this.onAlert = onAlert
@@ -362,6 +364,7 @@ export class CyberneticsGovernance {
     const successRate = this.getSuccessRate()
     const snap2 = this.varietyEngine.current()
     const varietyRatio = snap2?.ratio ?? 1.0
+    this.lastVarietyRatio = varietyRatio
     this.lastFeedbackActions = this.feedbackControl.update(
       0, // context utilization — filled when available
       1.0 - successRate,
@@ -374,6 +377,13 @@ export class CyberneticsGovernance {
     const s4Pressure = metrics.thinkingTokens > 0 ? Math.min(metrics.thinkingTokens / metrics.totalTokens, 1.0) : 0.3
     const contextPressure = 0 // TODO: pass from context status events
     this.homeostatIntegration.update(s3Pressure, s4Pressure, contextPressure, metrics.latencyMs)
+
+    // Track consecutive instability — used by S5 for escalation decisions
+    if (this.homeostatIntegration.isStable()) {
+      this.consecutiveUnstableCount = 0
+    } else {
+      this.consecutiveUnstableCount++
+    }
 
     // Emit variety event to EventBus
     const snap = this.varietyEngine.current()
@@ -498,11 +508,13 @@ export class CyberneticsGovernance {
     return {
       status,
       varietyBalance,
+      varietyRatio: this.lastVarietyRatio,
       s3s4Balance,
       algedonicAlerts: this.eventBus.replayFiltered(
         e => e.payload.kind === 'AlgedonicFired' && (e.payload as any).severity !== 'Info'
       ).length,
       stuckTurns: this.stuckCount,
+      consecutiveUnstable: this.consecutiveUnstableCount,
       modelLatencyTrend: this.getLatencyTrend(),
       toolSuccessRate: successRate,
     }
