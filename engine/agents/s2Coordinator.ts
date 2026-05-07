@@ -32,6 +32,9 @@ export class S2Coordinator {
   private readonly gpuLow: number
   private readonly gpuHigh: number
 
+  /** Live agent instances keyed by agentId — used to enforce kill decisions. */
+  private agentInstances = new Map<string, { kill: () => void }>()
+
   private readonly state: S2State = {
     activeAgents: new Map(),
     fileLocks: new Map(),
@@ -187,6 +190,20 @@ export class S2Coordinator {
 
     this.state.decisions.push(decision)
 
+    // ── Enforce the decision ─────────────────────────────────────────────────
+    if (decision.decision === 'kill') {
+      const instance = this.agentInstances.get(agentId)
+      if (instance?.kill) {
+        instance.kill()
+        console.log(`[s2] ENFORCE: killed agent ${agentId}`)
+      }
+      this.agentInstances.delete(agentId)
+      // Promote any queued agents now that a slot has freed up.
+      this.drainQueue().catch(() => {/* best-effort */})
+    } else if (decision.decision === 'escalate') {
+      console.warn(`[s2] ESCALATE: agent ${agentId} requires S3/S5 intervention — ${decision.reasoning}`)
+    }
+
     // S2 algedonic journal
     const journal = getJournal()
     if (journal) {
@@ -202,9 +219,16 @@ export class S2Coordinator {
     return decision
   }
 
-  /** Register a new agent in the active registry. */
-  registerAgent(status: SubAgentStatus): void {
+  /** Register a new agent in the active registry.
+   *
+   * Pass an `instance` with a `kill()` method to enable S2 kill enforcement.
+   * When S2 decides to kill an agent, it will call `instance.kill()`.
+   */
+  registerAgent(status: SubAgentStatus, instance?: { kill: () => void }): void {
     this.state.activeAgents.set(status.id, { ...status })
+    if (instance) {
+      this.agentInstances.set(status.id, instance)
+    }
     this.state.queueDepth = this.getQueuedCount()
   }
 
@@ -225,6 +249,7 @@ export class S2Coordinator {
       agent.endTime = Date.now()
       this.state.activeAgents.delete(agentId)
     }
+    this.agentInstances.delete(agentId)
     this.state.queueDepth = this.getQueuedCount()
 
     // Backfill S2 scheduling decision with agent outcome
@@ -247,6 +272,7 @@ export class S2Coordinator {
       agent.endTime = Date.now()
       this.state.activeAgents.delete(agentId)
     }
+    this.agentInstances.delete(agentId)
     this.state.queueDepth = this.getQueuedCount()
   }
 
