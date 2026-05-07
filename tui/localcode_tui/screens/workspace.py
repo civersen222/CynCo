@@ -35,6 +35,7 @@ SLASH_COMMANDS = [
     ("/debug", "Debug workflow (Phase 2)"),
     ("/review", "Code review workflow (Phase 2)"),
     ("/critique", "Critique workflow (Phase 2)"),
+    ("/research", "Deep research with multi-source search and citations"),
     ("/agent", "Launch sub-agent (Phase 2)"),
     ("/copy", "Copy last assistant response to clipboard"),
     ("/settings", "Open settings"),
@@ -80,6 +81,7 @@ HELP_TEXT = """[bold]Available Commands:[/bold]
   [cyan]/debug[/cyan]        Debug workflow
   [cyan]/review[/cyan]       Code review workflow
   [cyan]/critique[/cyan]     Critique workflow
+  [cyan]/research[/cyan]     Deep research with multi-source search
   [cyan]/agent[/cyan]        Launch a sub-agent
   [cyan]/cancel[/cyan]       Cancel the current running workflow
 
