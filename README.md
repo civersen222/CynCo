@@ -117,23 +117,29 @@ Smaller models (<7B) struggle with the tool-calling format. 24B+ recommended for
 ## Architecture
 
 ```
-                     ┌──────────────────────────────────────────────────────────┐
-                     │  S5 Policy Engine (20 rules, 3 tiers)                   │
-                     │  Critical: auto-enforce | Warning: TUI prompt | Info: log│
-                     └────────────────────┬─────────────────────────────────────┘
-                                          │ enforces
-┌─────────────────────────────┐     WebSocket     ┌─────────────────────┐
-│  TypeScript Engine (Bun)    │◄─────────────────►│  Python TUI         │
-│                             │    port 9160      │  (Textual)          │
-│  engine/main.ts             │                   │                     │
-│  ├── conversation loop      │  stream.token     │  tui/app.py         │
-│  ├── tool executor (19)     │  tool.start/done  │  ├── workspace      │
-│  ├── S5 governance (enforced)│ file.change      │  ├── vibe loop      │
-│  ├── S2 agent coordinator   │  governance.*     │  ├── project wizard │
-│  ├── 6 search engines       │  subagent.*       │  └── context sidebar│
-│  ├── semantic index          │  workflow.*       │                     │
-│  └── Ollama / llama.cpp     │  s2.decision      │                     │
-└─────────────────────────────┘                   └─────────────────────┘
+┌───────────────────────────────────────────────────────────────────────┐
+│                    S5 Policy Engine (enforced)                        │
+│         20 rules: Critical | Warning | Info    ──── learns ──→ disk  │
+├──────────────────────────────┬────────────────────────────────────────┤
+│                              │ enforces                              │
+│  ┌───────────────────────────┴──────────────┐    ┌────────────────┐  │
+│  │  TypeScript Engine (Bun)                 │    │  Python TUI    │  │
+│  │                                          │ WS │  (Textual)     │  │
+│  │  Conversation Loop                       │◄──►│                │  │
+│  │  ├── Tool Executor (19 tools)            │    │  Workspace     │  │
+│  │  ├── S2 Agent Coordinator (GPU-aware)    │    │  Vibe Loop     │  │
+│  │  ├── 6 Search Engines + Query Router     │    │  Settings      │  │
+│  │  ├── Semantic Code Index (sqlite-vec)    │    │  Context Bar   │  │
+│  │  ├── Context Compressor                  │    │                │  │
+│  │  └── Sub-Agents (6 personas, PRISM)      │    │                │  │
+│  │       ↓ HTTP                             │    └────────────────┘  │
+│  │  Ollama / llama.cpp                      │                        │
+│  └──────────────────────────────────────────┘                        │
+│                                                                      │
+│  Events: stream.token, tool.start, tool.complete, file.change,       │
+│  governance.status, governance.recommendation, subagent.spawned,     │
+│  s2.decision, workflow.status, context.status, vibe.*                │
+└───────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
