@@ -344,7 +344,6 @@ async function cleanShutdown(signal: string) {
 }
 process.on('SIGTERM', () => cleanShutdown('SIGTERM'))
 process.on('SIGINT', () => cleanShutdown('SIGINT'))
-})
 
 let vibeController: VibeController | null = null
 
