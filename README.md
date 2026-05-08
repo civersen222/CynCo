@@ -143,12 +143,14 @@ Smaller models (<7B) struggle with the tool-calling format. 24B+ recommended for
 ### Workspace Mode
 Type naturally. CynCo calls tools autonomously — reads files, edits code, runs commands, searches the codebase.
 
-### Vibe Mode (Guided Building)
-For non-programmers. CynCo asks clarifying questions scaled to project difficulty, builds locked decisions, then codes autonomously with goal-backward verification:
+### Vibe Mode (`/project`)
+Guided building for non-programmers. Type `/project` to start. CynCo asks clarifying questions scaled to project difficulty, builds locked decisions, then codes autonomously with goal-backward verification:
 1. **Understand** — asks focused questions, builds confidence score
 2. **Build** — works autonomously with locked D-XX decisions
 3. **Report** — explains what was built in plain language with analogies
 4. **Next** — suggests the logical next step
+
+Also accessible via `/mode` to switch to the guided screen.
 
 ### Deep Research (`/research`)
 Multi-source research workflow with 6 search engines:
