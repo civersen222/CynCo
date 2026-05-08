@@ -1432,6 +1432,14 @@ export class ConversationLoop {
     return this.governance.getReport()
   }
 
+  getGovernance() {
+    return this.governance
+  }
+
+  getFileTracker() {
+    return this.fileTracker
+  }
+
   /** GSD→VSM: Report verification outcome as algedonic signal. */
   reportVerification(passed: boolean, details?: string): void {
     this.governance.onVerificationResult(passed, details)

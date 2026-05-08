@@ -257,7 +257,10 @@ console.log('[training] Decision journal initialized: ~/.cynco/training/')
 // V2 training pipeline threshold checks
 try {
   const { GovernanceDB } = await import('./vsm/governanceDb.js')
-  const db = new GovernanceDB()
+  const os = require('os')
+  const path = require('path')
+  const dbPath = path.join(os.homedir(), '.cynco', 'governance', 'governance.db')
+  const db = new GovernanceDB(dbPath)
   const sessions = db.getRecentSessions(9999)
   const count = sessions.length
   if (count >= 200) {
@@ -319,21 +322,28 @@ const loop = new ConversationLoop({
 })
 
 // Write session outcome on clean shutdown
-process.on('SIGTERM', async () => {
-  AuditLogger.writeSessionOutcome('SIGTERM')
+async function cleanShutdown(signal: string) {
+  // Record governance session outcome
+  try {
+    const govReport = loop.getGovernance?.()?.getReport?.()
+    if (govReport && loop.getGovernance?.()?.recordSessionOutcome) {
+      const outcome = govReport.stuckTurns >= 5 ? 'non-viable' as const
+        : govReport.toolSuccessRate < 0.5 ? 'marginal' as const
+        : 'viable' as const
+      loop.getGovernance().recordSessionOutcome(outcome, 'default', 0, loop.getFileTracker?.()?.getModifiedFiles?.()?.length ?? 0)
+    }
+  } catch {}
+  // Save S5 rule weights
+  try { s5Orchestrator.saveWeights() } catch {}
+  AuditLogger.writeSessionOutcome(signal)
   if (config.provider === 'llama-cpp' && provider && 'processManager' in provider) {
     const pm = (provider as any).processManager
     if (pm?.stop) await pm.stop()
   }
   process.exit(0)
-})
-process.on('SIGINT', async () => {
-  AuditLogger.writeSessionOutcome('SIGINT')
-  if (config.provider === 'llama-cpp' && provider && 'processManager' in provider) {
-    const pm = (provider as any).processManager
-    if (pm?.stop) await pm.stop()
-  }
-  process.exit(0)
+}
+process.on('SIGTERM', () => cleanShutdown('SIGTERM'))
+process.on('SIGINT', () => cleanShutdown('SIGINT'))
 })
 
 let vibeController: VibeController | null = null
@@ -775,6 +785,21 @@ async function handleCommand(command: TUICommand): Promise<void> {
       } catch (err) {
         console.log(`[localcode] Handoff failed: ${err instanceof Error ? err.message : String(err)}`)
       }
+      // Record governance session outcome for cross-session learning
+      try {
+        const govReport = loop.getGovernance?.()?.getReport?.()
+        if (govReport && loop.getGovernance?.()?.recordSessionOutcome) {
+          const outcome = govReport.stuckTurns >= 5 ? 'non-viable' as const
+            : govReport.toolSuccessRate < 0.5 ? 'marginal' as const
+            : 'viable' as const
+          loop.getGovernance().recordSessionOutcome(outcome, 'default', 0, loop.getFileTracker?.()?.getModifiedFiles?.()?.length ?? 0)
+          console.log(`[governance] Session outcome: ${outcome}`)
+        }
+      } catch (err) {
+        console.log(`[governance] Session outcome failed: ${err instanceof Error ? err.message : String(err)}`)
+      }
+      // Save S5 rule weights
+      try { s5Orchestrator.saveWeights() } catch {}
       // Audit: write session outcome on clean shutdown
       AuditLogger.writeSessionOutcome()
       break
