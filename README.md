@@ -117,29 +117,24 @@ Smaller models (<7B) struggle with the tool-calling format. 24B+ recommended for
 ## Architecture
 
 ```
-┌───────────────────────────────────────────────────────────────────────┐
-│                    S5 Policy Engine (enforced)                        │
-│         20 rules: Critical | Warning | Info    ──── learns ──→ disk  │
-├──────────────────────────────┬────────────────────────────────────────┤
-│                              │ enforces                              │
-│  ┌───────────────────────────┴──────────────┐    ┌────────────────┐  │
-│  │  TypeScript Engine (Bun)                 │    │  Python TUI    │  │
-│  │                                          │ WS │  (Textual)     │  │
-│  │  Conversation Loop                       │◄──►│                │  │
-│  │  ├── Tool Executor (19 tools)            │    │  Workspace     │  │
-│  │  ├── S2 Agent Coordinator (GPU-aware)    │    │  Vibe Loop     │  │
-│  │  ├── 6 Search Engines + Query Router     │    │  Settings      │  │
-│  │  ├── Semantic Code Index (sqlite-vec)    │    │  Context Bar   │  │
-│  │  ├── Context Compressor                  │    │                │  │
-│  │  └── Sub-Agents (6 personas, PRISM)      │    │                │  │
-│  │       ↓ HTTP                             │    └────────────────┘  │
-│  │  Ollama / llama.cpp                      │                        │
-│  └──────────────────────────────────────────┘                        │
-│                                                                      │
-│  Events: stream.token, tool.start, tool.complete, file.change,       │
-│  governance.status, governance.recommendation, subagent.spawned,     │
-│  s2.decision, workflow.status, context.status, vibe.*                │
-└───────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│  S5 Policy Engine (20 rules, 3 tiers, enforced)              │
+│  Critical: auto-enforce | Warning: TUI | Info: journal       │
+└──────────────────────────┬───────────────────────────────────┘
+                           │ enforces
+┌──────────────────────────┴───────┐   WS   ┌─────────────────┐
+│  TypeScript Engine (Bun)         │◄──────►│  Python TUI     │
+│                                  │  9160  │  (Textual)      │
+│  Conversation Loop               │        │                 │
+│  ├── Tool Executor (19 tools)    │        │  Workspace      │
+│  ├── S2 Agent Coordinator        │        │  Vibe Loop      │
+│  ├── 6 Search Engines            │        │  Settings       │
+│  ├── Semantic Code Index         │        │  Context Bar    │
+│  ├── Context Compressor          │        │                 │
+│  └── Sub-Agents (6 personas)     │        │                 │
+│       ↓ HTTP                     │        │                 │
+│  Ollama / llama.cpp              │        │                 │
+└──────────────────────────────────┘        └─────────────────┘
 ```
 
 ---
