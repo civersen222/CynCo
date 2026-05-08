@@ -358,9 +358,17 @@ export class ConversationLoop {
           emit: this.emit,
           cwd: this.executor['cwd'],
           model: this.config.model ?? 'unknown',
+          s2: {
+            updateAgentTurn: (id: string, turn: number, tokens: number) => {
+              try { this.s2.updateAgentTurn(id, turn, tokens) } catch {}
+            },
+            handleAlgedonic: (id: string, signal: string) => {
+              try { this.s2.handleAlgedonic(id, signal) } catch {}
+            },
+          },
         })
 
-        this.s2.registerAgent(agent.status)
+        this.s2.registerAgent(agent.status, agent)
         console.log(`[scouts] Dispatched scout ${config.id}: "${task.slice(0, 80)}..."`)
 
         const result = await agent.run()
@@ -1536,10 +1544,18 @@ export class ConversationLoop {
             emit: this.emit,
             cwd: this.executor['cwd'],
             model: this.config.model!,
+            s2: {
+              updateAgentTurn: (id: string, turn: number, tokens: number) => {
+                try { this.s2.updateAgentTurn(id, turn, tokens) } catch {}
+              },
+              handleAlgedonic: (id: string, signal: string) => {
+                try { this.s2.handleAlgedonic(id, signal) } catch {}
+              },
+            },
           })
 
           // 3. Register with S2
-          this.s2.registerAgent(agent.status)
+          this.s2.registerAgent(agent.status, agent)
           this.runningAgents.set(config.id, agent)
 
           if (blocking) {
@@ -1656,6 +1672,18 @@ export class ConversationLoop {
       result: result.output.slice(0, 500),
       isError: result.isError,
     })
+
+    // Emit file.change for write operations
+    if (['Write', 'Edit', 'MultiEdit', 'ApplyPatch'].includes(toolName)) {
+      const filePath = (toolInput as any).file_path ?? (toolInput as any).path ?? ''
+      if (filePath) {
+        this.emit({
+          type: 'file.change',
+          path: filePath,
+          changeType: toolName === 'Write' ? 'create' : 'modify',
+        } as any)
+      }
+    }
 
     // Governance: record tool result
     this.governance.onToolResult(toolName, !result.isError, Date.now() - toolStartMs, result.output)

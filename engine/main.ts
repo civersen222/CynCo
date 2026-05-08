@@ -391,6 +391,10 @@ async function handleCommand(command: TUICommand): Promise<void> {
 
     case 'approval.response':
       loop.handleApprovalResponse(command.requestId, command.approved)
+      // Track governance recommendation dismissals for S5 weight tuning
+      if (!command.approved && s5Orchestrator) {
+        try { s5Orchestrator.recordDismissal([command.requestId]) } catch {}
+      }
       break
 
     case 'command': {

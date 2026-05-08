@@ -36,6 +36,10 @@ export type SubAgentOptions = {
   emit: (event: EngineEvent) => void
   cwd: string
   model: string
+  s2?: {
+    updateAgentTurn: (id: string, turn: number, tokens: number) => void
+    handleAlgedonic: (id: string, signal: string) => void
+  }
 }
 
 // ─── SubAgent ───────────────────────────────────────────────────
@@ -50,6 +54,7 @@ export class SubAgent {
   private toolExecutor: ToolExecutor
   private aborted = false
   private _status: SubAgentStatus
+  private s2: SubAgentOptions['s2'] | null
 
   constructor(opts: SubAgentOptions) {
     this.config = opts.config
@@ -57,6 +62,7 @@ export class SubAgent {
     this.emitEvent = opts.emit
     this.cwd = opts.cwd
     this.model = opts.model
+    this.s2 = opts.s2 ?? null
 
     // Own governance instance — alerts are logged but not escalated in Phase 1
     this.governance = new CyberneticsGovernance()
@@ -183,6 +189,9 @@ export class SubAgent {
         if (this.aborted) break
 
         this._status.currentTurn = turn + 1
+        if (this.s2) {
+          try { this.s2.updateAgentTurn(this.config.id, turn + 1, this._status.tokensUsed) } catch {}
+        }
 
         // Call localCallModel
         const systemPrompt = asSystemPrompt([systemPromptText])
@@ -324,7 +333,12 @@ export class SubAgent {
           const result = await this.toolExecutor.execute(toolUse.name, toolUse.input)
           const latencyMs = Date.now() - startTime
 
-          if (result.isError) toolErrors++
+          if (result.isError) {
+            toolErrors++
+            if (toolErrors >= 3 && this.s2) {
+              try { this.s2.handleAlgedonic(this.config.id, `${toolErrors} consecutive tool failures`) } catch {}
+            }
+          }
 
           // Track governance
           this.governance.onToolResult(toolUse.name, !result.isError, latencyMs)
