@@ -10,7 +10,7 @@
  * - SlaTracker tracks response time violations per severity level
  */
 
-import { algedonic, NodeId, AlgedonicType, Severity } from '../cybernetics-core/src/index.js'
+import { algedonic, NodeId, AlgedonicType, Severity, classifySeverity } from '../cybernetics-core/src/index.js'
 import { getEventBus } from './eventBus.js'
 import { events } from '../cybernetics-core/src/index.js'
 
@@ -36,7 +36,9 @@ export class AlgedonicIntegration {
    * Behavioral effect: consecutive pain signals activate the kill switch.
    */
   recordToolResult(toolName: string, success: boolean, latencyMs: number): ReturnType<typeof algedonic.routeSignal> {
-    const score = success ? 0.2 : 0.7 // pleasure vs pain
+    const baseScore = success ? 0.15 : 0.7
+    const latencyPenalty = latencyMs > 30000 ? 0.2 : latencyMs > 10000 ? 0.1 : 0
+    const score = Math.min(1.0, baseScore + latencyPenalty)
     const signalType = success ? AlgedonicType.Pleasure : AlgedonicType.Pain
     const signal = new algedonic.AlgedonicSignal(
       this.nodeId,
@@ -84,7 +86,7 @@ export class AlgedonicIntegration {
     }
 
     // Check SLA
-    const severity = success ? Severity.Low : Severity.Moderate
+    const severity = classifySeverity(score)
     this.slaTracker.check(severity, latencyMs, toolName)
 
     return action
