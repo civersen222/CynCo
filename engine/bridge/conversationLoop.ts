@@ -39,6 +39,7 @@ import {
 } from '../engine/systemPromptText.js'
 import { getJournal } from '../training/decisionJournal.js'
 import { makeJournalEntry } from '../training/types.js'
+import { globalContract } from '../tools/contract.js'
 
 type Message = {
   role: 'user' | 'assistant' | 'system'
@@ -569,6 +570,12 @@ export class ConversationLoop {
     }
 
     // Governance signals routed through S5 enforcement, not prompt injection.
+
+    // Active contract context: remind the model of its current obligations
+    if (globalContract.isActive()) {
+      promptParts.push('')
+      promptParts.push('## Active Contract\n' + globalContract.getStatus())
+    }
 
     // Prepend workflow instructions when a workflow is active
     if (this.workflowEngine.isActive) {
@@ -1293,6 +1300,21 @@ export class ConversationLoop {
           this.addMessage({ role: 'user', content: [{ type: 'text', text: `CONTINUE WORKING. You stopped without finishing. Your original task was: "${originalTask}". Call a tool now to make progress.` }] })
           continue
         }
+      }
+
+      // Contract enforcement: don't let model finish if contract is incomplete
+      if (globalContract.isActive() && !globalContract.isComplete() && toolUseBlocks.length === 0 && stopReason === 'end_turn') {
+        globalContract.enforcementRounds++
+        if (globalContract.enforcementRounds <= 3) {
+          const pending = globalContract.pendingCount()
+          const failed = globalContract.failedCount()
+          this.addMessage({
+            role: 'user',
+            content: [{ type: 'text', text: `[System] Contract incomplete — ${pending} assertions pending, ${failed} failed. Continue working. Use ContractStatus to check progress.` }],
+          })
+          continue // Continue the model loop instead of breaking
+        }
+        console.log(`[contract] Allowing completion after ${globalContract.enforcementRounds} enforcement rounds`)
       }
 
       if (toolUseBlocks.length === 0 || stopReason !== 'tool_use') {
