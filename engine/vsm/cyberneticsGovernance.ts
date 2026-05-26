@@ -41,6 +41,7 @@ import { S4Reflector } from './s4Reflector.js'
 import { IdentityGuard } from './identityGuard.js'
 import { AutopoiesisVerifier } from './autopoiesisVerifier.js'
 import { StrategyMemory } from './strategyMemory.js'
+import { PredictionTracker } from './predictionTracker.js'
 
 import type { GovernanceReport, GovernanceAlert } from './types.js'
 import { getJournal } from '../training/decisionJournal.js'
@@ -119,6 +120,7 @@ export class CyberneticsGovernance {
   private _strategyMemory: StrategyMemory = new StrategyMemory()
   private _db?: import('./governanceDb.js').GovernanceDB
   private _sessionId = `session-${Date.now()}`
+  private _predictionTracker: PredictionTracker
 
   // Axiom health — last computed Beer axiom check results
   private lastAxiomHealth: { holding: number; total: number; violations: string[] } = { holding: 0, total: 0, violations: [] }
@@ -146,6 +148,7 @@ export class CyberneticsGovernance {
     this._ablated = process.env._ABLATION_VSM_DISABLED === '1'
     this.eventBus = getEventBus()
     this.nodeId = new NodeId()
+    this._predictionTracker = new PredictionTracker(this._sessionId)
 
     // Load optimized params if available
     const paramsPath = process.env.LOCALCODE_OPTIMIZED_PARAMS
@@ -484,6 +487,11 @@ export class CyberneticsGovernance {
         timestamp: Date.now(),
       })
     }
+
+    // Prediction tracking — check triggers and evaluate
+    const toolResults = this.toolHistory.slice(-10).map(t => ({ tool: t.name, success: t.success }))
+    this._predictionTracker.checkTriggers(this.turnCount, this.getReport(), toolResults)
+    this._predictionTracker.evaluateOpen(this.turnCount, this.getReport(), toolResults)
   }
 
   onModelError(error: string): void {
@@ -794,5 +802,10 @@ export class CyberneticsGovernance {
 
   getGovernanceDb(): import('./governanceDb.js').GovernanceDB | undefined {
     return this._db
+  }
+
+  /** Get the PredictionTracker for reading falsifiable hypothesis statistics. */
+  getPredictionTracker(): PredictionTracker {
+    return this._predictionTracker
   }
 }

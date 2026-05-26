@@ -609,6 +609,33 @@ async function handleCommand(command: TUICommand): Promise<void> {
           break
         }
 
+        case '/governance': {
+          const subCommand = args.trim()
+          if (subCommand === 'report' || subCommand === '') {
+            const governance = loop.getGovernance?.()
+            const tracker = governance?.getPredictionTracker?.()
+            if (!tracker) {
+              wsServer.emit({ type: 'stream.token', text: 'No prediction data available yet.\n' })
+              wsServer.emit({ type: 'message.complete', messageId: '', stopReason: 'end_turn' })
+              break
+            }
+            const stats = tracker.getStatistics()
+            if (stats.length === 0) {
+              wsServer.emit({ type: 'stream.token', text: 'No predictions evaluated yet. Run sessions to collect data.\n' })
+            } else {
+              let table = 'Hypothesis | Samples | Hit Rate | Null Rate | Significant?\n'
+              table += '-----------|---------|----------|-----------|-------------\n'
+              for (const s of stats) {
+                const ci = `[${s.confidenceInterval[0].toFixed(2)}, ${s.confidenceInterval[1].toFixed(2)}]`
+                table += `${s.hypothesis.padEnd(10)} | ${String(s.total).padEnd(7)} | ${(s.hitRate * 100).toFixed(0)}% ${ci} | ${(s.nullBaselineRate * 100).toFixed(0)}%       | ${s.significantlyBetter ? 'YES' : 'NO'}\n`
+              }
+              wsServer.emit({ type: 'stream.token', text: table })
+            }
+            wsServer.emit({ type: 'message.complete', messageId: '', stopReason: 'end_turn' })
+          }
+          break
+        }
+
         default: {
           // Check for template-based custom commands
           const templateName = cmd.replace('/', '')
