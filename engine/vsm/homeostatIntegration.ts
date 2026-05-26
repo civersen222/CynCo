@@ -99,7 +99,10 @@ export class HomeostatIntegration {
     ))
 
     // ULTRASTABILITY: if not stable, randomize weights to search for new equilibrium
-    if (!this.ashby.isStable(0.05)) {
+    // Scale tolerance by time constant — isStable checks derivatives which are divided by tau,
+    // so a larger tau requires a proportionally smaller tolerance to detect the same instability.
+    const stabilityTolerance = 0.05 / this.ashby.timeConstant
+    if (!this.ashby.isStable(stabilityTolerance)) {
       this.ashby.randomizeWeights(0.5)
       this.perturbationCount++
     }
@@ -109,9 +112,10 @@ export class HomeostatIntegration {
    * Is the homeostat currently stable?
    *
    * BEHAVIORAL EFFECT: When unstable, S5 should intervene.
+   * Tolerance is scaled by time constant so stability check is tau-independent.
    */
   isStable(): boolean {
-    return this.ashby.isStable(0.05)
+    return this.ashby.isStable(0.05 / this.ashby.timeConstant)
   }
 
   /**
