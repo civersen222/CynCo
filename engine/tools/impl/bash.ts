@@ -1,6 +1,7 @@
 import { exec } from 'child_process'
 import type { ToolImpl } from '../types.js'
 import { checkBashSafety } from '../bashSafety.js'
+import { diagnoseError } from '../errorDiagnosis.js'
 
 export const bashTool: ToolImpl = {
   name: 'Bash',
@@ -41,8 +42,9 @@ export const bashTool: ToolImpl = {
             resolve({ output: `Error: command timeout after ${timeout}ms`, isError: true })
             return
           }
-          const output = stderr || stdout || `Command exited with code ${(err as any).code}`
-          resolve({ output, isError: true })
+          const rawOutput = stderr || stdout || `Command exited with code ${(err as any).code}`
+          const diagnosis = diagnoseError(rawOutput)
+          resolve({ output: diagnosis.formatted, isError: true })
           return
         }
         resolve({ output: stdout || stderr || '(no output)', isError: false })
