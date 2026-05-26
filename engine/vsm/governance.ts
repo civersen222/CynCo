@@ -86,6 +86,9 @@ export class GovernanceLayer {
       consecutiveUnstable: 0,
       modelLatencyTrend: latencyTrend,
       toolSuccessRate: successRate,
+      agreementRatio: 1.0,
+      observerDivergence: null,
+      axiomHealth: { holding: 0, total: 0, violations: [] },
     }
   }
 }

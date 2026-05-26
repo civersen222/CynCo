@@ -22,6 +22,8 @@ export type S5Input = {
   productivityRatio: number
   recommendedToolMode: string | null
   heterarchyAuthority: 's3' | 's4' | 's5' | null
+  agreementRatio: number
+  observerDivergence: number | null
 }
 
 export type S5Decision = {

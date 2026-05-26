@@ -677,28 +677,57 @@ async function handleCommand(command: TUICommand): Promise<void> {
     case 'web.search': {
       const requestId = (command as any).requestId ?? ''
       const queries: string[] = (command as any).queries ?? []
-      console.log(`[search] Searching ${queries.length} queries`)
+      console.log(`[search] Searching ${queries.length} queries via research engine`)
+
+      const { initEngines: initSearchEngines, getAllEngines: getSearchEngines } = await import('./research/engines/registry.js')
+      const { routeQuery: routeSearchQuery, searchWithFallback: searchWithEngFallback } = await import('./research/engineRouter.js')
+      const { scoreResults: scoreSearchResults, deduplicateResults: dedupeSearchResults } = await import('./research/resultScorer.js')
+
+      initSearchEngines()
+
       const allResults: string[] = []
       for (const query of queries.slice(0, 5)) {
         try {
-          const url = 'https://html.duckduckgo.com/html/?q=' + encodeURIComponent(query)
-          const resp = await fetch(url, {
-            headers: { 'User-Agent': 'Mozilla/5.0 (compatible; LocalCode/0.1)' },
-            signal: AbortSignal.timeout(10000),
-          })
-          const html = await resp.text()
-          const snippets = [...html.matchAll(/<a class="result__snippet"[^>]*>(.*?)<\/a>/gs)]
-            .map((m: any) => m[1].replace(/<[^>]+>/g, '').replace(/&#x27;/g, "'").replace(/&quot;/g, '"').replace(/&amp;/g, '&').trim())
-            .filter((s: string) => s.length > 20)
-            .slice(0, 3)
-          if (snippets.length > 0) {
-            allResults.push(`Search: "${query}"\n${snippets.join('\n')}\n`)
+          const allEngines = getSearchEngines()
+          const engines = routeSearchQuery(query, allEngines)
+          if (engines.length === 0) {
+            console.log(`[search] No engines matched for: "${query}"`)
+            continue
           }
+
+          // Search top 2 matched engines with fallback, in parallel
+          const searches = engines.slice(0, 2).map(e =>
+            searchWithEngFallback(query, e, allEngines, 5)
+          )
+          const raw = (await Promise.allSettled(searches))
+            .filter(r => r.status === 'fulfilled')
+            .flatMap(r => (r as PromiseFulfilledResult<any[]>).value)
+
+          // Score, deduplicate, and rank
+          const scored = scoreSearchResults(raw, query)
+          const results = dedupeSearchResults(scored).slice(0, 5)
+
+          if (results.length === 0) {
+            console.log(`[search] No results for: "${query}"`)
+            continue
+          }
+
+          const formatted = results.map((r: any, i: number) => {
+            const meta = r.metadata
+            const authorLine = meta?.authors?.length ? `\n   Authors: ${meta.authors.join(', ')}` : ''
+            const dateLine = meta?.date ? `\n   Date: ${meta.date}` : ''
+            const starsLine = meta?.stars != null && meta.stars > 0 ? `\n   Stars: ${meta.stars.toLocaleString()}` : ''
+            const scoreLine = r.score != null ? ` (score: ${r.score})` : ''
+            return `${i + 1}. ${r.title}${scoreLine}\n   ${r.url}\n   [${r.source}] ${r.snippet}${starsLine}${authorLine}${dateLine}`
+          }).join('\n\n')
+
+          allResults.push(`Search: "${query}"\n\n${formatted}`)
         } catch (err) {
           console.log(`[search] Failed for "${query}": ${err instanceof Error ? err.message : String(err)}`)
         }
       }
-      const resultText = allResults.join('\n') || 'No search results found.'
+
+      const resultText = allResults.join('\n\n---\n\n') || 'No search results found.'
       console.log(`[search] Got ${allResults.length} result sets, ${resultText.length} chars`)
       wsServer.emit({ type: 'web.search.result', requestId, results: resultText })
       break

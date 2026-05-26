@@ -624,6 +624,8 @@ export class ConversationLoop {
           productivityRatio: (pm as any)?.getProductivity?.() ?? 0.8,
           recommendedToolMode: this.governance.getRecommendedToolMode?.() ?? null,
           heterarchyAuthority: null,
+          agreementRatio: (govReport as any).agreementRatio ?? 1.0,
+          observerDivergence: (govReport as any).observerDivergence ?? null,
         })
 
         // L3: APPLY S5 decisions — hard enforcement, not advisory

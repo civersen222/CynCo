@@ -517,6 +517,9 @@ export class CyberneticsGovernance {
       consecutiveUnstable: this.consecutiveUnstableCount,
       modelLatencyTrend: this.getLatencyTrend(),
       toolSuccessRate: successRate,
+      agreementRatio: this.conversationTheory.getAgreementRatio(),
+      observerDivergence: null,
+      axiomHealth: { holding: 0, total: 0, violations: [] },
     }
   }
 

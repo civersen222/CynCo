@@ -24,6 +24,8 @@ function baseInput(overrides: Partial<S5Input> = {}): S5Input {
     productivityRatio: 0.8,
     recommendedToolMode: null,
     heterarchyAuthority: null,
+    agreementRatio: 1.0,
+    observerDivergence: null,
     ...overrides,
   }
 }

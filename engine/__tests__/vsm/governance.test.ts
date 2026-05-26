@@ -10,6 +10,7 @@ describe('VSM types', () => {
     const report: GovernanceReport = {
       status: 'healthy', varietyBalance: 'balanced', varietyRatio: 1.0, s3s4Balance: 'balanced',
       algedonicAlerts: 0, stuckTurns: 0, consecutiveUnstable: 0, modelLatencyTrend: 'stable', toolSuccessRate: 0.95,
+      agreementRatio: 1.0, observerDivergence: null, axiomHealth: { holding: 0, total: 0, violations: [] },
     }
     expect(report.status).toBe('healthy')
   })

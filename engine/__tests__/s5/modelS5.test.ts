@@ -15,6 +15,18 @@ const baseInput: S5Input = {
   modelLatencyTrend: 'stable',
   availableModels: ['qwen3:8b'],
   turnCount: 2,
+  varietyBalance: 'balanced',
+  varietyRatio: 1.0,
+  homeostatStable: true,
+  homeostatConsecutiveUnstable: 0,
+  driftDetected: false,
+  driftDirection: null,
+  performanceHealth: 'healthy',
+  productivityRatio: 0.8,
+  recommendedToolMode: null,
+  heterarchyAuthority: null,
+  agreementRatio: 1.0,
+  observerDivergence: null,
 }
 
 // ─── Tests ────────────────────────────────────────────────────────
