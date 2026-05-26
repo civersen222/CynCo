@@ -122,6 +122,8 @@ export class CyberneticsGovernance {
 
   // Ablation toggle — when true, governance is a no-op passthrough
   private readonly _ablated: boolean
+  // Heterarchy: last computed commander
+  private lastCommander: string = 'S3'
 
   // Metrics tracking
   private toolHistory: { name: string; success: boolean; latencyMs: number }[] = []
@@ -358,6 +360,7 @@ export class CyberneticsGovernance {
       metrics.toolsCalled,
     )
     const commander = this.heterarchyIntegration.whoCommands(context)
+    this.lastCommander = commander
 
     // Conversation: track exchange if user message present
     if (metrics.userMessage && metrics.response) {
@@ -618,6 +621,9 @@ export class CyberneticsGovernance {
 
   /** Get heterarchy integration (who commands in what context). */
   getHeterarchy(): HeterarchyIntegration { return this.heterarchyIntegration }
+
+  /** Get the last computed heterarchy commander (S3/S4/S5). */
+  getLastCommander(): string { return this.lastCommander }
 
   /** Return the active tool mode based on heterarchy commander. */
   getRecommendedToolMode(): 'full' | 'read_only' | 'safe' {

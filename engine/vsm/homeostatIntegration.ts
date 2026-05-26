@@ -45,8 +45,10 @@ export class HomeostatIntegration {
     this.nodeId = nodeId
 
     // 3 units: S3 (operations), S4 (intelligence), context pressure
-    // Damping = 0.8 (moderately stable), time constant = 5.0 (S2-level response)
-    this.ashby = new homeostat.AshbyHomeostat(3, 0.8, 5.0)
+    // Damping = 0.8 (moderately stable)
+    // Use Beer's time constant for S3 level (inside-and-now)
+    const s3TimeConstant = homeostat.timeConstantForLevel(3)
+    this.ashby = new homeostat.AshbyHomeostat(3, 0.8, s3TimeConstant)
 
     // Initial coupling: S3 and S4 are weakly coupled, context affects both
     this.ashby.setWeight(S3_UNIT, S4_UNIT, -0.3) // S4 inhibits S3 (intelligence reduces operational urgency)

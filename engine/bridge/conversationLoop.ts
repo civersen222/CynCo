@@ -623,7 +623,13 @@ export class ConversationLoop {
           performanceHealth: pm?.getHealthStatus?.() === 'green' ? 'healthy' : pm?.getHealthStatus?.() === 'yellow' ? 'warning' : 'critical',
           productivityRatio: (pm as any)?.getProductivity?.() ?? 0.8,
           recommendedToolMode: this.governance.getRecommendedToolMode?.() ?? null,
-          heterarchyAuthority: null,
+          heterarchyAuthority: (() => {
+            const cmd = this.governance.getLastCommander?.()
+            if (!cmd) return null
+            const lower = cmd.toLowerCase()
+            if (lower === 's3' || lower === 's4' || lower === 's5') return lower as 's3' | 's4' | 's5'
+            return null
+          })(),
           agreementRatio: (govReport as any).agreementRatio ?? 1.0,
           observerDivergence: (govReport as any).observerDivergence ?? null,
         })

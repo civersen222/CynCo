@@ -340,12 +340,24 @@ const I3: S5Rule = {
 
 const I4: S5Rule = {
   id: 'I4',
-  tier: 'info',
-  name: 'Heterarchy change — journal',
+  tier: 'warning',
+  name: 'Heterarchy authority — adjust tool mode',
   evaluate(input) {
-    if (input.heterarchyAuthority && input.heterarchyAuthority !== 's5') {
+    if (!input.heterarchyAuthority) return null
+    if (input.heterarchyAuthority === 's5' && input.turnCount >= 2) {
       return {
-        reasoning: `heterarchy authority shifted to ${input.heterarchyAuthority}`,
+        tools: [...READ_ONLY_TOOLS],
+        reasoning: 'heterarchy: S5 commanding (crisis) — restricting to read-only',
+      }
+    }
+    if (input.heterarchyAuthority === 's4') {
+      return {
+        reasoning: 'heterarchy: S4 commanding (exploration) — broad tool access',
+      }
+    }
+    if (input.heterarchyAuthority === 's3') {
+      return {
+        reasoning: 'heterarchy: S3 commanding (normal operations)',
       }
     }
     return null
