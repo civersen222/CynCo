@@ -109,6 +109,7 @@ describe('S5Input extended fields', () => {
       heterarchyAuthority: null,
       agreementRatio: 0.9,
       observerDivergence: null,
+      demotedTools: [],
     }
     expect(typeof input.agreementRatio).toBe('number')
     expect(input.agreementRatio).toBe(0.9)
@@ -138,6 +139,7 @@ describe('S5Input extended fields', () => {
       heterarchyAuthority: null,
       agreementRatio: 1.0,
       observerDivergence: 0.15,
+      demotedTools: [],
     }
     expect(typeof input.observerDivergence).toBe('number')
     expect(input.observerDivergence).toBe(0.15)

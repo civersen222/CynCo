@@ -27,6 +27,7 @@ const baseInput: S5Input = {
   heterarchyAuthority: null,
   agreementRatio: 1.0,
   observerDivergence: null,
+  demotedTools: [],
 }
 
 // ─── Tests ────────────────────────────────────────────────────────

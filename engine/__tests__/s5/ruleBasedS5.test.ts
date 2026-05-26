@@ -26,6 +26,7 @@ function baseInput(overrides: Partial<S5Input> = {}): S5Input {
     heterarchyAuthority: null,
     agreementRatio: 1.0,
     observerDivergence: null,
+    demotedTools: [],
     ...overrides,
   }
 }

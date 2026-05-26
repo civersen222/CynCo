@@ -76,6 +76,7 @@ export class S5Orchestrator {
       heterarchyAuthority: input.heterarchyAuthority ?? null,
       agreementRatio: (input.governance as any).agreementRatio ?? 1.0,
       observerDivergence: (input.governance as any).observerDivergence ?? null,
+      demotedTools: [],
     }
 
     const decision = await this.s5.decide(s5Input)
