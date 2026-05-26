@@ -19,10 +19,25 @@ const BLOCKED_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
   { pattern: /\bdd\b.*\bof=\/dev\//, reason: 'Direct disk write commands are blocked' },
 ]
 
+const BLOCKING_EXCEPTIONS = /--check|--version|--help|\btest\b|--dry-run|&\s*$/
+
+const BLOCKING_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
+  { pattern: /^(python|python3|node|bun)\s*$/, reason: 'Refused: bare REPL would block the session' },
+  { pattern: /^(node|python|python3|bun|deno)\s+.*\b(server\.|app\.)/i, reason: 'Refused: this would start a long-running server' },
+  { pattern: /(uvicorn|gunicorn|flask\s+run|django.*runserver|rails\s+s)/i, reason: 'Refused: this would start a long-running server' },
+  { pattern: /(npm\s+start|yarn\s+start|bun\s+run\s+dev|next\s+dev|vite\s+dev)/i, reason: 'Refused: this would start a long-running dev server' },
+  { pattern: /(--interactive\b|-i\s*$)/, reason: 'Refused: interactive mode would block the session' },
+]
+
 export function checkBashSafety(command: string): SafetyResult {
   for (const { pattern, reason } of BLOCKED_PATTERNS) {
     if (pattern.test(command)) {
       return { safe: false, reason }
+    }
+  }
+  if (!BLOCKING_EXCEPTIONS.test(command)) {
+    for (const { pattern, reason } of BLOCKING_PATTERNS) {
+      if (pattern.test(command)) return { safe: false, reason: reason + '. Run in background with & or use a test/check command instead.' }
     }
   }
   return { safe: true }
