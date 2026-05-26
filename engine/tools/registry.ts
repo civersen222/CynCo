@@ -19,12 +19,19 @@ import { codeIndexTool } from './impl/codeIndex.js'
 import { spawnAgentTool } from './impl/spawnAgent.js'
 import { collectAgentTool } from './impl/collectAgent.js'
 import { indexResearchTool } from './impl/indexResearch.js'
+import {
+  contractCreateTool,
+  contractAssertPassTool,
+  contractAssertFailTool,
+  contractStatusTool,
+} from './contract.js'
 
 export const ALL_TOOLS: ToolImpl[] = [
   readTool, globTool, grepTool, editTool, writeTool,
   bashTool, gitTool, webFetchTool, webSearchTool, imageViewTool, notebookEditTool,
   multiEditTool, applyPatchTool, lsTool, codeIndexTool, saveLearningTool,
   spawnAgentTool, collectAgentTool, indexResearchTool,
+  contractCreateTool, contractAssertPassTool, contractAssertFailTool, contractStatusTool,
 ]
 
 export function getToolsByTier(tier: ApprovalTier): ToolImpl[] {
