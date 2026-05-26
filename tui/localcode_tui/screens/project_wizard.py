@@ -123,19 +123,15 @@ RESEARCH_SYSTEM = (
 )
 
 MOCKUP_SYSTEM = (
-    "You are a UI/UX designer creating an HTML mockup. Generate a COMPLETE, "
-    "self-contained HTML file (with inline CSS and minimal JS) that shows what "
-    "the proposed application will look like.\n\n"
+    "You are a UI/UX designer creating a SIMPLE HTML wireframe. Generate a SHORT, "
+    "self-contained HTML file showing the main screen layout.\n\n"
     "Requirements:\n"
-    "- Single HTML file, all CSS inline in <style>, all JS inline in <script>\n"
-    "- Show the MAIN screen/view of the application with realistic sample data\n"
-    "- Include navigation, key UI elements, and interactive components\n"
-    "- Use a clean, modern dark theme\n"
-    "- Make it look like a real product mockup, not a wireframe\n"
-    "- Include placeholder content that shows what real data would look like\n"
-    "- For games: show the main game screen with map/board, UI panels, stats\n"
-    "- For apps: show the primary view with navigation and sample content\n"
-    "- Add a banner at top: 'LocalCode Design Preview — This is a mockup'\n\n"
+    "- Single HTML file, inline CSS only, NO JavaScript\n"
+    "- Use colored divs and borders to show layout regions (header, sidebar, main, footer)\n"
+    "- Label each region with what it contains\n"
+    "- Dark background (#1e1e1e), light text (#e0e0e0), colored borders for regions\n"
+    "- Keep it UNDER 200 lines of HTML — this is a wireframe, not a finished product\n"
+    "- Banner at top: 'LocalCode Design Preview'\n\n"
     "Return ONLY the HTML. No markdown, no explanation, no code fences. "
     "Just the raw HTML starting with <!DOCTYPE html>."
 )

@@ -794,7 +794,11 @@ async function handleCommand(command: TUICommand): Promise<void> {
             ],
             stream: false,
             think: false,
-            options: { temperature: 0.3, num_predict: 4096 },
+            options: {
+              temperature: 0.3,
+              // Mockup queries need more tokens for full HTML files
+              num_predict: prompt.length > 500 && systemPrompt.includes('HTML') ? 16384 : 4096,
+            },
           }),
         })
 
