@@ -120,6 +120,9 @@ export class CyberneticsGovernance {
   private _db?: import('./governanceDb.js').GovernanceDB
   private _sessionId = `session-${Date.now()}`
 
+  // Axiom health — last computed Beer axiom check results
+  private lastAxiomHealth: { holding: number; total: number; violations: string[] } = { holding: 0, total: 0, violations: [] }
+
   // Ablation toggle — when true, governance is a no-op passthrough
   private readonly _ablated: boolean
   // Heterarchy: last computed commander
@@ -438,6 +441,14 @@ export class CyberneticsGovernance {
       ))
     }
 
+    // Periodic Beer axiom checks — every 5 turns
+    if (this.turnCount % 5 === 0 && this.turnCount > 0) {
+      this.lastAxiomHealth = this.checkAxioms()
+      if (this.lastAxiomHealth.violations.length > 0) {
+        console.log(`[vsm] Axiom violations: ${this.lastAxiomHealth.violations.join(', ')}`)
+      }
+    }
+
     // Stuck detection: same response pattern
     this.lastResponses.push(metrics.response?.slice(0, 100) ?? '')
     if (this.lastResponses.length > 5) this.lastResponses = this.lastResponses.slice(-5)
@@ -561,8 +572,32 @@ export class CyberneticsGovernance {
       toolSuccessRate: successRate,
       agreementRatio: this.conversationTheory.getAgreementRatio(),
       observerDivergence: this.lastObserverDivergence,
-      axiomHealth: { holding: 0, total: 0, violations: [] },
+      axiomHealth: this.lastAxiomHealth,
     }
+  }
+
+  private checkAxioms(): { holding: number; total: number; violations: string[] } {
+    const violations: string[] = []
+    const snap = this.varietyEngine.current()
+    const envVariety = snap?.inputCount ?? 1
+    const regVariety = snap?.amplified ?? 1
+
+    if (!vsm.checkAxiom1(envVariety, regVariety, 0.3)) {
+      violations.push('Axiom1: operational variety exceeds management capacity')
+    }
+
+    const balance = this.homeostatIntegration.getBalance()
+    if (!vsm.checkAxiom2(balance.s3Pressure, balance.s4Pressure, 0.4)) {
+      violations.push('Axiom2: S3/S4 variety imbalance impairs arbitration')
+    }
+
+    if (!vsm.checkPrinciple1(regVariety, envVariety * 0.5, envVariety, 0.3)) {
+      violations.push('Principle1: management variety insufficient for operational demands')
+    }
+
+    const total = 3
+    const holding = total - violations.length
+    return { holding, total, violations }
   }
 
   private getSuccessRate(): number {
