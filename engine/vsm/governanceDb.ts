@@ -53,6 +53,25 @@ export type BoundStatistics = {
   max: number
 }
 
+export type PredictionRecord = {
+  id: number
+  session_id: string
+  hypothesis: string
+  trigger_turn: number
+  trigger_context: string | null
+  predicted_outcome: string
+  actual_outcome: string | null
+  correct: number | null
+  evaluation_turn: number | null
+  created_at: string
+}
+
+export type HypothesisStats = {
+  total: number
+  correct: number
+  hitRate: number
+}
+
 // ─── Column mapping ─────────────────────────────────────────────────
 
 const MEASUREMENT_FIELD_MAP: Record<string, string> = {
@@ -103,6 +122,21 @@ export class GovernanceDB {
         s4_composite        REAL NOT NULL,
         created_at          TEXT NOT NULL DEFAULT (datetime('now')),
         FOREIGN KEY (session_id) REFERENCES sessions(session_id)
+      )
+    `)
+
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS predictions (
+        id               INTEGER PRIMARY KEY,
+        session_id       TEXT NOT NULL,
+        hypothesis       TEXT NOT NULL,
+        trigger_turn     INTEGER NOT NULL,
+        trigger_context  TEXT,
+        predicted_outcome TEXT NOT NULL,
+        actual_outcome   TEXT,
+        correct          INTEGER,
+        evaluation_turn  INTEGER,
+        created_at       TEXT DEFAULT (datetime('now'))
       )
     `)
   }
@@ -253,6 +287,82 @@ export class GovernanceDB {
       p90: percentile(90),
       min: values[0],
       max: values[n - 1],
+    }
+  }
+
+  // ── Predictions ─────────────────────────────────────────────────
+
+  recordPrediction(record: {
+    sessionId: string
+    hypothesis: string
+    triggerTurn: number
+    triggerContext: string
+    predictedOutcome: string
+  }): void {
+    const stmt = this.db.prepare(`
+      INSERT INTO predictions
+        (session_id, hypothesis, trigger_turn, trigger_context, predicted_outcome)
+      VALUES (?, ?, ?, ?, ?)
+    `)
+    stmt.run(
+      record.sessionId,
+      record.hypothesis,
+      record.triggerTurn,
+      record.triggerContext,
+      record.predictedOutcome,
+    )
+  }
+
+  getPredictions(sessionId: string): PredictionRecord[] {
+    const stmt = this.db.prepare(`
+      SELECT id, session_id, hypothesis, trigger_turn, trigger_context,
+             predicted_outcome, actual_outcome, correct, evaluation_turn, created_at
+      FROM predictions
+      WHERE session_id = ?
+      ORDER BY id ASC
+    `)
+    return stmt.all(sessionId) as PredictionRecord[]
+  }
+
+  getAllPredictions(hypothesis: string): PredictionRecord[] {
+    const stmt = this.db.prepare(`
+      SELECT id, session_id, hypothesis, trigger_turn, trigger_context,
+             predicted_outcome, actual_outcome, correct, evaluation_turn, created_at
+      FROM predictions
+      WHERE hypothesis = ?
+      ORDER BY id ASC
+    `)
+    return stmt.all(hypothesis) as PredictionRecord[]
+  }
+
+  evaluatePrediction(
+    id: number,
+    actualOutcome: string,
+    correct: boolean,
+    evaluationTurn: number,
+  ): void {
+    const stmt = this.db.prepare(`
+      UPDATE predictions
+      SET actual_outcome = ?, correct = ?, evaluation_turn = ?
+      WHERE id = ?
+    `)
+    stmt.run(actualOutcome, correct ? 1 : 0, evaluationTurn, id)
+  }
+
+  getHypothesisStats(hypothesis: string): HypothesisStats {
+    const totalStmt = this.db.prepare(`
+      SELECT COUNT(*) as total FROM predictions WHERE hypothesis = ?
+    `)
+    const correctStmt = this.db.prepare(`
+      SELECT COUNT(*) as correct FROM predictions
+      WHERE hypothesis = ? AND correct = 1
+    `)
+    const total = (totalStmt.get(hypothesis) as any).total as number
+    const correct = (correctStmt.get(hypothesis) as any).correct as number
+    return {
+      total,
+      correct,
+      hitRate: total > 0 ? correct / total : 0,
     }
   }
 
