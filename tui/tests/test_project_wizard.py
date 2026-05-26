@@ -75,3 +75,24 @@ class TestProjectState:
         state.qa_pairs.append(("What type?", "Web page"))
         state.qa_pairs.append(("How many users?", "Just me"))
         assert len(state.qa_pairs) == 2
+
+    def test_mockup_iteration_defaults_to_zero(self):
+        from localcode_tui.screens.project_wizard import ProjectState
+        state = ProjectState(description="Build a game")
+        assert state.mockup_iteration == 0
+
+    def test_mockup_iteration_can_be_incremented(self):
+        from localcode_tui.screens.project_wizard import ProjectState
+        state = ProjectState(description="Build a game")
+        state.mockup_iteration += 1
+        assert state.mockup_iteration == 1
+
+
+class TestMockupConstants:
+    def test_max_mockup_iterations_is_five(self):
+        from localcode_tui.screens.project_wizard import MAX_MOCKUP_ITERATIONS
+        assert MAX_MOCKUP_ITERATIONS == 5
+
+    def test_max_mockup_iterations_type(self):
+        from localcode_tui.screens.project_wizard import MAX_MOCKUP_ITERATIONS
+        assert isinstance(MAX_MOCKUP_ITERATIONS, int)

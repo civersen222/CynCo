@@ -20,6 +20,7 @@ import {
   variety,
   vsm,
   events,
+  foundations,
   NodeId,
 } from '../cybernetics-core/src/index.js'
 import { getEventBus } from './eventBus.js'
@@ -130,6 +131,8 @@ export class CyberneticsGovernance {
   private currentTaskComplexity = 1
   private lastVarietyRatio = 1.0
   private consecutiveUnstableCount = 0
+  private varietyAttenuators: InstanceType<typeof variety.Attenuator>[]
+  private varietyAmplifiers: InstanceType<typeof variety.Amplifier>[]
 
   constructor(onAlert?: (alert: GovernanceAlert) => void) {
     this.onAlert = onAlert
@@ -188,6 +191,16 @@ export class CyberneticsGovernance {
     this.varietyEngine.setFilterCount(0)
     this.varietyEngine.setActiveTheories(0)
     this.varietyEngine.recalculate()
+
+    // Initialize attenuator/amplifier chains for information-theoretic variety
+    this.varietyAttenuators = [
+      new variety.Attenuator('denied_tools', 0.1, 'Profile-denied tools reduce available variety'),
+      new variety.Attenuator('context_budget', 0.0, 'Context pressure constrains tool variety'),
+    ]
+    this.varietyAmplifiers = [
+      new variety.Amplifier('tool_diversity', 1.0, 'Diverse tool usage amplifies regulatory variety'),
+      new variety.Amplifier('subagent_capacity', 1.0, 'Sub-agent spawning expands response capacity'),
+    ]
 
     // Initialize VSM node — LocalCode as a viable system
     this.systemNode = new vsm.VSMNode('LocalCode')
@@ -312,12 +325,22 @@ export class CyberneticsGovernance {
     }
 
     // Update variety engine with BOTH sides of Ashby's equation:
-    // - Environmental variety (S4): task complexity
-    // - Regulatory variety: number of distinct tools available * usage diversity
+    // - Environmental variety (S4): task complexity, attenuated by constraints
+    // - Regulatory variety: tool diversity measured via Shannon entropy
     const distinctToolsUsed = new Set(this.toolHistory.slice(-10).map(t => t.name)).size
-    this.varietyEngine.setInputCount(this.currentTaskComplexity * 3) // Environmental variety
+    const recentTools = this.toolHistory.slice(-10)
+
+    // Environmental variety (S4): task complexity, attenuated by constraints
+    const rawEnvironmental = this.currentTaskComplexity * 3
+    const attenuatedEnvironmental = variety.attenuateChain(rawEnvironmental, this.varietyAttenuators)
+
+    // Regulatory variety: tool diversity measured via Shannon entropy
+    const toolProbs = this._toolUsageProbabilities(recentTools)
+    const toolEntropy = toolProbs.length > 0 ? foundations.entropy(toolProbs) : 0
+
+    this.varietyEngine.setInputCount(Math.round(attenuatedEnvironmental))
     this.varietyEngine.setFilterCount(0)
-    this.varietyEngine.setActiveTheories(distinctToolsUsed) // Tool diversity as amplification
+    this.varietyEngine.setActiveTheories(Math.max(1, Math.round(toolEntropy * 3)))
     this.varietyEngine.recalculate()
 
     // Observer: record measurements from S3 and S4 perspectives
@@ -533,6 +556,16 @@ export class CyberneticsGovernance {
     const recent = this.toolHistory.slice(-10)
     if (recent.length === 0) return 0
     return recent.reduce((sum, t) => sum + t.latencyMs, 0) / recent.length
+  }
+
+  private _toolUsageProbabilities(recentTools: { name: string }[]): number[] {
+    if (recentTools.length === 0) return []
+    const counts = new Map<string, number>()
+    for (const t of recentTools) {
+      counts.set(t.name, (counts.get(t.name) ?? 0) + 1)
+    }
+    const total = recentTools.length
+    return [...counts.values()].map(c => c / total)
   }
 
   /** Get the current variety snapshot for display/debugging. */
