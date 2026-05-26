@@ -292,6 +292,34 @@ const W7: S5Rule = {
   },
 }
 
+const W8: S5Rule = {
+  id: 'W8',
+  tier: 'warning',
+  name: 'Low agreement — suggest clarification',
+  evaluate(input) {
+    if (input.agreementRatio < 0.4 && input.turnCount >= 3) {
+      return {
+        reasoning: `agreement ratio ${input.agreementRatio.toFixed(2)} — user and system may be diverging, suggest clarification`,
+      }
+    }
+    return null
+  },
+}
+
+const W9: S5Rule = {
+  id: 'W9',
+  tier: 'warning',
+  name: 'Observer divergence — S5 arbitration',
+  evaluate(input) {
+    if (input.observerDivergence != null && input.observerDivergence > 0.3 && input.turnCount >= 3) {
+      return {
+        reasoning: `observer divergence ${input.observerDivergence.toFixed(2)} — S3/S4 disagree on system state, S5 arbitrating`,
+      }
+    }
+    return null
+  },
+}
+
 // ─── Info Rules (I1–I5) ─────────────────────────────────────
 
 const I1: S5Rule = {
@@ -384,7 +412,7 @@ export const ALL_RULES: S5Rule[] = [
   // Critical (auto-enforce)
   C1, C2, C3, C4, C5, C6,
   // Warning (surface to TUI)
-  W1, W2, W3, W4, W5, W6, W7,
+  W1, W2, W3, W4, W5, W6, W7, W8, W9,
   // Info (journal only)
   I1, I2, I3, I4, I5,
 ]

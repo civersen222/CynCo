@@ -124,6 +124,8 @@ export class CyberneticsGovernance {
   private readonly _ablated: boolean
   // Heterarchy: last computed commander
   private lastCommander: string = 'S3'
+  // Observer divergence — last computed S3/S4 divergence on success_rate
+  private lastObserverDivergence: number | null = null
 
   // Metrics tracking
   private toolHistory: { name: string; success: boolean; latencyMs: number }[] = []
@@ -351,6 +353,13 @@ export class CyberneticsGovernance {
     this.observerEffects.recordMeasurement('success_rate',
       metrics.toolsCalled > 0 ? sr : 0.5, 'S4') // S4 sees differently when no tools
 
+    // Check observer divergence — S3 vs S4 on success rate
+    const divergenceResult = this.observerEffects.checkDivergence('success_rate', 0.2)
+    this.lastObserverDivergence = divergenceResult.divergence
+    if (divergenceResult.exceeds && this.turnCount > 3) {
+      console.log(`[vsm] Observer divergence ${divergenceResult.divergence.toFixed(2)} > 0.2 — S3/S4 disagree`)
+    }
+
     // Heterarchy: determine who commands
     const govReport = this.getReport()
     const context = this.heterarchyIntegration.classifyContext(
@@ -369,6 +378,13 @@ export class CyberneticsGovernance {
         metrics.response.slice(0, 200),
         metrics.userMessage.slice(0, 200),
       )
+    }
+
+    // Query agreement ratio — low agreement = user and system are diverging
+    const agreementRatio = this.conversationTheory.getAgreementRatio()
+    if (agreementRatio < 0.5 && this.turnCount > 3) {
+      this.algedonicIntegration.recordToolResult('AgreementDivergence', false, 0)
+      console.log(`[vsm] Agreement ratio ${agreementRatio.toFixed(2)} < 0.5 — algedonic pain`)
     }
 
     // Track structural coupling (user ↔ system co-drift)
@@ -544,7 +560,7 @@ export class CyberneticsGovernance {
       modelLatencyTrend: this.getLatencyTrend(),
       toolSuccessRate: successRate,
       agreementRatio: this.conversationTheory.getAgreementRatio(),
-      observerDivergence: null,
+      observerDivergence: this.lastObserverDivergence,
       axiomHealth: { holding: 0, total: 0, violations: [] },
     }
   }
@@ -650,6 +666,21 @@ export class CyberneticsGovernance {
 
   /** Get observer effects integration (measurements, eigenform). */
   getObserverEffects(): ObserverEffectsIntegration { return this.observerEffects }
+
+  /**
+   * Check eigenform stability of the self-assessment function.
+   * Called at session end — non-convergence indicates the system's
+   * self-model is unstable and parameters should be reset.
+   */
+  checkEigenformStability(): { converged: boolean; value: number } {
+    const sr = this.getSuccessRate()
+    const assessFn = (x: number) => 0.3 + 0.5 * x + 0.2 * sr
+    const result = this.observerEffects.findSelfAssessmentEigenform(assessFn, sr)
+    if (!result.converged) {
+      console.log('[vsm] Eigenform did NOT converge — self-assessment unstable')
+    }
+    return result
+  }
 
   /** Get constraint checks integration. */
   getConstraintChecks(): ConstraintChecksIntegration { return this.constraintChecks }
