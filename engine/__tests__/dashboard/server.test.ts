@@ -2,7 +2,6 @@ import { describe, expect, it, beforeAll, afterAll, beforeEach } from 'bun:test'
 import { DashboardServer } from '../../dashboard/server.js'
 import { resetParams, getParam } from '../../vsm/governanceParams.js'
 import { globalContract } from '../../tools/contract.js'
-import WebSocket from 'ws'
 
 const PORT = 19161
 const BASE = `http://localhost:${PORT}`
@@ -166,15 +165,15 @@ describe('WebSocket broadcast', () => {
   it('sends events to connected clients', async () => {
     const ws = new WebSocket(`ws://localhost:${PORT}/ws`)
     await new Promise<void>((resolve, reject) => {
-      ws.on('open', () => resolve())
-      ws.on('error', (e) => reject(e))
+      ws.onopen = () => resolve()
+      ws.onerror = (e) => reject(e)
     })
 
     // Give server a moment to register the connection
     await new Promise(r => setTimeout(r, 50))
 
     const received: string[] = []
-    ws.on('message', (data) => { received.push(data.toString()) })
+    ws.onmessage = (event) => { received.push(typeof event.data === 'string' ? event.data : event.data.toString()) }
 
     server.broadcast({ type: 'stream.token', text: 'hello from dashboard' })
 

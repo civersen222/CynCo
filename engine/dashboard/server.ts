@@ -4,19 +4,17 @@
  * Serves the dashboard UI, exposes REST endpoints for governance data,
  * and broadcasts engine events over WebSocket to connected dashboard clients.
  *
- * Uses Node.js http + ws for compatibility with both Bun runtime and
- * vitest test runner (Bun.serve is unavailable in vitest).
+ * Uses Bun.serve() with native WebSocket support — matching the pattern
+ * used in engine/bridge/server.ts.
  *
  * This is Level 4 visibility: every governance parameter, prediction,
  * contract, and audit event is inspectable and tunable from a browser.
  */
 
-import { join, dirname } from 'path'
+import { join } from 'path'
 import { readFileSync, existsSync } from 'fs'
 import { homedir } from 'os'
-import { fileURLToPath } from 'url'
-import { createServer, type IncomingMessage, type ServerResponse } from 'http'
-import { WebSocketServer, WebSocket } from 'ws'
+import type { Server, ServerWebSocket } from 'bun'
 import type { EngineEvent } from '../bridge/protocol.js'
 import { setParam, GOVERNANCE_PARAMS, exportParamMetadata } from '../vsm/governanceParams.js'
 import { globalContract } from '../tools/contract.js'
@@ -46,15 +44,18 @@ const CORS_HEADERS: Record<string, string> = {
   'Access-Control-Allow-Headers': 'Content-Type',
 }
 
-function sendJson(res: ServerResponse, data: unknown, status = 200): void {
-  const body = JSON.stringify(data)
-  res.writeHead(status, { ...CORS_HEADERS, 'Content-Type': 'application/json' })
-  res.end(body)
+function jsonResponse(data: unknown, status = 200): Response {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+  })
 }
 
-function sendHtml(res: ServerResponse, body: string, status = 200): void {
-  res.writeHead(status, { ...CORS_HEADERS, 'Content-Type': 'text/html; charset=utf-8' })
-  res.end(body)
+function htmlResponse(body: string, status = 200): Response {
+  return new Response(body, {
+    status,
+    headers: { ...CORS_HEADERS, 'Content-Type': 'text/html; charset=utf-8' },
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -89,149 +90,127 @@ function validateInteger(value: unknown, min: number, max: number, field: string
 }
 
 // ---------------------------------------------------------------------------
-// Resolve this file's directory for serving index.html
-// ---------------------------------------------------------------------------
-
-const __dirname = dirname(fileURLToPath(import.meta.url))
-
-// ---------------------------------------------------------------------------
 // DashboardServer
 // ---------------------------------------------------------------------------
 
 export class DashboardServer {
-  private httpServer: ReturnType<typeof createServer>
-  private wss: WebSocketServer
-  private clients: Set<WebSocket> = new Set()
+  private server: Server
+  private clients: Set<ServerWebSocket<unknown>> = new Set()
   private deps: DashboardDeps
   private _port: number
+  private indexHtml: string
 
   constructor({ port = 9161, deps = {} }: { port?: number; deps?: DashboardDeps } = {}) {
     this.deps = deps
     this._port = port
 
-    // Create HTTP server
-    this.httpServer = createServer((req, res) => {
-      this.handleRequest(req, res)
-    })
-
-    // Create WebSocket server on /ws path
-    this.wss = new WebSocketServer({ server: this.httpServer, path: '/ws' })
-    this.wss.on('connection', (ws) => {
-      this.clients.add(ws)
-      ws.on('close', () => {
-        this.clients.delete(ws)
-      })
-      // Read-only — ignore incoming messages
-    })
-
-    // Start listening (synchronous-ish via listen callback)
-    this.httpServer.listen(port)
-  }
-
-  // ── Request Router ──────────────────────────────────────────────
-
-  private handleRequest(req: IncomingMessage, res: ServerResponse): void {
-    const urlStr = req.url ?? '/'
-    const method = req.method ?? 'GET'
-
-    // Parse URL (handle relative URLs)
-    let pathname: string
-    try {
-      const url = new URL(urlStr, `http://localhost:${this._port}`)
-      pathname = url.pathname
-    } catch {
-      pathname = urlStr
+    // Read index.html once at startup
+    const htmlPath = join(import.meta.dir, 'index.html')
+    if (existsSync(htmlPath)) {
+      this.indexHtml = readFileSync(htmlPath, 'utf-8')
+    } else {
+      this.indexHtml =
+        '<!DOCTYPE html><html><head><title>CynCo Governance Dashboard</title></head>' +
+        '<body><h1>CynCo Governance Dashboard</h1><p>Dashboard UI not yet built. Coming soon.</p></body></html>'
     }
 
-    // Handle CORS preflight
-    if (method === 'OPTIONS') {
-      res.writeHead(204, CORS_HEADERS)
-      res.end()
-      return
-    }
+    this.server = Bun.serve({
+      port,
+      fetch: async (req, server) => {
+        const url = new URL(req.url)
+        const pathname = url.pathname
+        const method = req.method
 
-    // GET routes
-    if (method === 'GET') {
-      switch (pathname) {
-        case '/':
-          return this.serveIndex(res)
-        case '/api/governance':
-          return this.getGovernance(res)
-        case '/api/predictions':
-          return this.getPredictions(res)
-        case '/api/contracts':
-          return this.getContracts(res)
-        case '/api/params':
-          return this.getParams(res)
-        case '/api/history':
-          return this.getHistory(res)
-        default:
-          return sendJson(res, { error: 'Not found' }, 404)
-      }
-    }
-
-    // POST routes — need to read body
-    if (method === 'POST') {
-      let bodyChunks: Buffer[] = []
-      req.on('data', (chunk: Buffer) => { bodyChunks.push(chunk) })
-      req.on('end', () => {
-        const raw = Buffer.concat(bodyChunks).toString('utf-8')
-        let body: Record<string, unknown>
-        try {
-          body = JSON.parse(raw) as Record<string, unknown>
-        } catch {
-          return sendJson(res, { error: 'Invalid JSON body' }, 400)
+        // WebSocket upgrade at /ws
+        if (pathname === '/ws') {
+          const success = server.upgrade(req)
+          if (success) return undefined
+          return new Response('WebSocket upgrade failed', { status: 400 })
         }
 
-        switch (pathname) {
-          case '/config/engine':
-            return this.postConfigEngine(body, res)
-          case '/config/governance':
-            return this.postConfigGovernance(body, res)
-          case '/config/tools':
-            return this.postConfigTools(body, res)
-          case '/config/system':
-            return this.postConfigSystem(body, res)
-          default:
-            return sendJson(res, { error: 'Not found' }, 404)
+        // Handle CORS preflight
+        if (method === 'OPTIONS') {
+          return new Response(null, { status: 204, headers: CORS_HEADERS })
         }
-      })
-      return
-    }
 
-    sendJson(res, { error: 'Method not allowed' }, 405)
+        // GET routes
+        if (method === 'GET') {
+          switch (pathname) {
+            case '/':
+              return this.serveIndex()
+            case '/api/governance':
+              return this.getGovernance()
+            case '/api/predictions':
+              return this.getPredictions()
+            case '/api/contracts':
+              return this.getContracts()
+            case '/api/params':
+              return this.getParams()
+            case '/api/history':
+              return this.getHistory()
+            default:
+              return jsonResponse({ error: 'Not found' }, 404)
+          }
+        }
+
+        // POST routes
+        if (method === 'POST') {
+          let body: Record<string, unknown>
+          try {
+            body = await req.json() as Record<string, unknown>
+          } catch {
+            return jsonResponse({ error: 'Invalid JSON body' }, 400)
+          }
+
+          switch (pathname) {
+            case '/config/engine':
+              return this.postConfigEngine(body)
+            case '/config/governance':
+              return this.postConfigGovernance(body)
+            case '/config/tools':
+              return this.postConfigTools(body)
+            case '/config/system':
+              return this.postConfigSystem(body)
+            default:
+              return jsonResponse({ error: 'Not found' }, 404)
+          }
+        }
+
+        return jsonResponse({ error: 'Method not allowed' }, 405)
+      },
+      websocket: {
+        open: (ws: ServerWebSocket<unknown>) => {
+          this.clients.add(ws)
+        },
+        message: (_ws: ServerWebSocket<unknown>, _message: string | Buffer) => {
+          // Read-only dashboard — ignore incoming messages
+        },
+        close: (ws: ServerWebSocket<unknown>) => {
+          this.clients.delete(ws)
+        },
+      },
+    })
   }
 
   // ── GET Handlers ────────────────────────────────────────────────
 
-  private serveIndex(res: ServerResponse): void {
-    try {
-      const htmlPath = join(__dirname, 'index.html')
-      if (existsSync(htmlPath)) {
-        const html = readFileSync(htmlPath, 'utf-8')
-        return sendHtml(res, html)
-      }
-    } catch {}
-    // Fallback when index.html doesn't exist yet (Task 7)
-    sendHtml(res,
-      '<!DOCTYPE html><html><head><title>CynCo Governance Dashboard</title></head>' +
-      '<body><h1>CynCo Governance Dashboard</h1><p>Dashboard UI not yet built. Coming soon.</p></body></html>'
-    )
+  private serveIndex(): Response {
+    return htmlResponse(this.indexHtml)
   }
 
-  private getGovernance(res: ServerResponse): void {
+  private getGovernance(): Response {
     const report = this.deps.getGovernanceReport?.() ?? null
-    sendJson(res, report)
+    return jsonResponse(report)
   }
 
-  private getPredictions(res: ServerResponse): void {
+  private getPredictions(): Response {
     const stats = this.deps.getPredictionStats?.() ?? null
-    sendJson(res, stats)
+    return jsonResponse(stats)
   }
 
-  private getContracts(res: ServerResponse): void {
+  private getContracts(): Response {
     if (globalContract.isActive()) {
-      return sendJson(res, {
+      return jsonResponse({
         active: true,
         status: globalContract.getStatus(),
         complete: globalContract.isComplete(),
@@ -240,18 +219,18 @@ export class DashboardServer {
         enforcementEnabled: globalContract.isEnforcementEnabled(),
       })
     }
-    sendJson(res, null)
+    return jsonResponse(null)
   }
 
-  private getParams(res: ServerResponse): void {
-    sendJson(res, exportParamMetadata())
+  private getParams(): Response {
+    return jsonResponse(exportParamMetadata())
   }
 
-  private getHistory(res: ServerResponse): void {
+  private getHistory(): Response {
     try {
       const eventsPath = join(homedir(), '.cynco', 'audit-log', 'events.jsonl')
       if (!existsSync(eventsPath)) {
-        return sendJson(res, [])
+        return jsonResponse([])
       }
       const content = readFileSync(eventsPath, 'utf-8')
       const lines = content.trim().split('\n').filter(l => l.length > 0)
@@ -260,15 +239,15 @@ export class DashboardServer {
       const entries = last1000.map(line => {
         try { return JSON.parse(line) } catch { return null }
       }).filter(Boolean)
-      sendJson(res, entries)
+      return jsonResponse(entries)
     } catch {
-      sendJson(res, [])
+      return jsonResponse([])
     }
   }
 
   // ── POST Handlers ───────────────────────────────────────────────
 
-  private postConfigEngine(body: Record<string, unknown>, res: ServerResponse): void {
+  private postConfigEngine(body: Record<string, unknown>): Response {
     const applied: Record<string, unknown> = {}
     const errors: { field: string; message: string }[] = []
 
@@ -313,13 +292,13 @@ export class DashboardServer {
       const result = this.deps.applyEngineConfig(applied)
       // Merge any additional errors from the engine
       errors.push(...result.errors)
-      return sendJson(res, { applied: result.applied, errors })
+      return jsonResponse({ applied: result.applied, errors })
     }
 
-    sendJson(res, { applied, errors })
+    return jsonResponse({ applied, errors })
   }
 
-  private postConfigGovernance(body: Record<string, unknown>, res: ServerResponse): void {
+  private postConfigGovernance(body: Record<string, unknown>): Response {
     const applied: Record<string, unknown> = {}
     const errors: { field: string; message: string }[] = []
 
@@ -344,10 +323,10 @@ export class DashboardServer {
       applied[key] = value
     }
 
-    sendJson(res, { applied, errors })
+    return jsonResponse({ applied, errors })
   }
 
-  private postConfigTools(body: Record<string, unknown>, res: ServerResponse): void {
+  private postConfigTools(body: Record<string, unknown>): Response {
     const applied: Record<string, unknown> = {}
     const errors: { field: string; message: string }[] = []
 
@@ -383,10 +362,10 @@ export class DashboardServer {
       }
     }
 
-    sendJson(res, { applied, errors })
+    return jsonResponse({ applied, errors })
   }
 
-  private postConfigSystem(body: Record<string, unknown>, res: ServerResponse): void {
+  private postConfigSystem(body: Record<string, unknown>): Response {
     const applied: Record<string, unknown> = {}
     const errors: { field: string; message: string }[] = []
 
@@ -436,7 +415,7 @@ export class DashboardServer {
       }
     }
 
-    sendJson(res, { applied, errors })
+    return jsonResponse({ applied, errors })
   }
 
   // ── WebSocket Broadcast ─────────────────────────────────────────
@@ -452,8 +431,7 @@ export class DashboardServer {
   // ── Lifecycle ───────────────────────────────────────────────────
 
   stop(): void {
-    this.wss.close()
-    this.httpServer.close()
+    this.server.stop()
   }
 
   getPort(): number {
