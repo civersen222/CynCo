@@ -156,6 +156,30 @@ const C6: S5Rule = {
   },
 }
 
+const C7: S5Rule = {
+  id: 'C7',
+  tier: 'critical',
+  name: 'Stuck loop — restrict to unused tools',
+  evaluate(input) {
+    const gov = input.governance as Record<string, unknown> | undefined
+    const stuckTurns = (gov?.stuckTurns as number) ?? 0
+    if (stuckTurns >= 5) {
+      const recentTools = (gov?.recentToolNames as string[]) ?? []
+      const recentSet = new Set(recentTools)
+      // Get tools NOT used in last 5 turns, plus always include action tools
+      const forcedTools = new Set<string>(['Edit', 'Write', 'Bash', 'Grep'])
+      for (const t of ALL_TOOL_NAMES) {
+        if (!recentSet.has(t)) forcedTools.add(t)
+      }
+      return {
+        tools: [...forcedTools],
+        reasoning: `stuck for ${stuckTurns} turns — restricting to unused tools to force new approach`,
+      }
+    }
+    return null
+  },
+}
+
 // ─── Warning Rules (W1–W7) ──────────────────────────────────
 
 const W1: S5Rule = {
@@ -193,15 +217,15 @@ const W2: S5Rule = {
 const W3: S5Rule = {
   id: 'W3',
   tier: 'warning',
-  name: 'Revert recommendation — stuck with low success',
+  name: 'Revert recommendation — stuck',
   evaluate(input) {
     const gov = input.governance as Record<string, unknown> | undefined
     const stuckTurns = (gov?.stuckTurns as number) ?? 0
-    const toolSuccessRate = (gov?.toolSuccessRate as number) ?? 1.0
-    if (stuckTurns >= 5 && toolSuccessRate < 0.5) {
+    if (stuckTurns >= 5) {
+      const toolSuccessRate = (gov?.toolSuccessRate as number) ?? 1.0
       return {
         revert: true,
-        reasoning: `stuck for ${stuckTurns} turns with ${Math.round(toolSuccessRate * 100)}% tool success — recommending revert`,
+        reasoning: `stuck for ${stuckTurns} turns (${Math.round(toolSuccessRate * 100)}% tool success) — recommending revert`,
       }
     }
     return null
@@ -410,7 +434,7 @@ const I5: S5Rule = {
 
 export const ALL_RULES: S5Rule[] = [
   // Critical (auto-enforce)
-  C1, C2, C3, C4, C5, C6,
+  C1, C2, C3, C4, C5, C6, C7,
   // Warning (surface to TUI)
   W1, W2, W3, W4, W5, W6, W7, W8, W9,
   // Info (journal only)
