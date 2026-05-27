@@ -1,0 +1,1390 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CynCo Governance Dashboard</title>
+<style>
+/* ── Reset & Base ─────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: #1e1e1e; color: #d4d4d4;
+  font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  font-size: 13px; line-height: 1.5;
+}
+::-webkit-scrollbar { width: 8px; }
+::-webkit-scrollbar-track { background: #1e1e1e; }
+::-webkit-scrollbar-thumb { background: #3a3a3a; border-radius: 4px; }
+
+/* ── Layout ───────────────────────────────────────────────── */
+.header {
+  padding: 12px 20px; background: #252525;
+  border-bottom: 1px solid #3a3a3a;
+  display: flex; align-items: center; gap: 12px;
+}
+.header h1 { font-size: 16px; color: #4ec9b0; font-weight: 600; }
+.header .subtitle { color: #808080; font-size: 11px; }
+
+.reconnect-banner {
+  display: none; padding: 8px 20px;
+  background: #3a3a1a; color: #dcdcaa;
+  font-size: 12px; text-align: center;
+  border-bottom: 1px solid #5a5a2a;
+}
+.reconnect-banner.visible { display: block; }
+
+.grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px; padding: 12px 20px;
+}
+
+.panel {
+  background: #252525; border: 1px solid #3a3a3a;
+  border-radius: 6px; padding: 14px;
+  min-height: 120px;
+}
+.panel-title {
+  font-size: 12px; color: #4ec9b0; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.5px;
+  margin-bottom: 10px; border-bottom: 1px solid #3a3a3a;
+  padding-bottom: 6px;
+}
+.full-width { grid-column: 1 / -1; }
+
+/* ── Connection Status ────────────────────────────────────── */
+.status-dot {
+  display: inline-block; width: 10px; height: 10px;
+  border-radius: 50%; margin-right: 6px; vertical-align: middle;
+}
+.status-dot.connected { background: #4ec9b0; animation: pulse 2s infinite; }
+.status-dot.disconnected { background: #808080; }
+@keyframes pulse {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(78,201,176,0.4); }
+  50% { opacity: 0.8; box-shadow: 0 0 0 6px rgba(78,201,176,0); }
+}
+.status-row { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 6px; font-size: 12px; }
+.status-row .label { color: #808080; }
+.status-row .value { color: #d4d4d4; }
+
+/* ── Context Utilization ──────────────────────────────────── */
+.progress-track {
+  background: #3a3a3a; border-radius: 4px; height: 20px;
+  overflow: hidden; margin: 8px 0;
+}
+.progress-fill {
+  height: 100%; border-radius: 4px;
+  background: linear-gradient(90deg, #4ec9b0, #4ec9b0);
+  transition: width 0.3s ease, background 0.3s ease;
+}
+.progress-fill.warn { background: linear-gradient(90deg, #4ec9b0, #dcdcaa); }
+.progress-fill.critical { background: linear-gradient(90deg, #dcdcaa, #f44747); }
+.context-text { font-size: 12px; color: #d4d4d4; margin-top: 4px; }
+.action-badge {
+  display: inline-block; padding: 2px 8px; border-radius: 3px;
+  font-size: 11px; margin-left: 8px; font-weight: 600;
+}
+.action-badge.proceed { background: #2d4a3e; color: #4ec9b0; }
+.action-badge.compact { background: #4a3a2d; color: #dcdcaa; }
+.action-badge.externalize { background: #4a2d2d; color: #f44747; }
+
+/* ── Governance Health ────────────────────────────────────── */
+.health-badge {
+  display: inline-block; padding: 3px 10px; border-radius: 4px;
+  font-size: 12px; font-weight: 700; text-transform: uppercase;
+}
+.health-badge.healthy { background: #2d4a3e; color: #4ec9b0; }
+.health-badge.warning { background: #4a3a2d; color: #dcdcaa; }
+.health-badge.critical { background: #4a2d2d; color: #f44747; }
+.health-badge.halted { background: #4a2d2d; color: #f44747; animation: pulse-red 1s infinite; }
+@keyframes pulse-red {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+.gov-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 12px; margin-top: 8px; font-size: 12px; }
+.gov-stats .label { color: #808080; }
+.gov-stats .value { color: #d4d4d4; }
+.sub-badges { display: flex; gap: 8px; margin-top: 8px; }
+.sub-badge {
+  padding: 2px 6px; border-radius: 3px; font-size: 10px;
+  background: #3a3a3a; color: #808080;
+}
+.sub-badge.active { background: #2d4a3e; color: #4ec9b0; }
+
+/* ── S5 Decision Log ──────────────────────────────────────── */
+.decision-list {
+  max-height: 260px; overflow-y: auto;
+  font-size: 11px;
+}
+.decision-entry {
+  padding: 4px 0; border-bottom: 1px solid #2a2a2a;
+  display: flex; gap: 6px; align-items: baseline;
+}
+.decision-ts { color: #808080; white-space: nowrap; }
+.decision-arrow { color: #4ec9b0; }
+.decision-type { color: #569cd6; font-weight: 600; }
+.decision-priority { color: #dcdcaa; font-size: 10px; }
+.decision-reason { color: #d4d4d4; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ── Tool Activity ────────────────────────────────────────── */
+.tool-sections { display: flex; gap: 16px; flex-wrap: wrap; }
+.bar-chart {
+  display: flex; align-items: flex-end; gap: 8px;
+  height: 160px; flex: 1; min-width: 300px;
+  padding-top: 8px;
+}
+.bar-col {
+  display: flex; flex-direction: column; align-items: center;
+  flex: 1; min-width: 36px;
+}
+.bar-stack {
+  display: flex; flex-direction: column-reverse;
+  width: 100%; max-width: 40px; align-items: stretch;
+}
+.bar-segment {
+  min-height: 1px; transition: height 0.3s ease;
+}
+.bar-success { background: #4ec9b0; border-radius: 2px 2px 0 0; }
+.bar-failure { background: #f44747; border-radius: 2px 2px 0 0; }
+.bar-label { font-size: 10px; color: #808080; margin-top: 4px; text-align: center; white-space: nowrap; }
+.bar-count { font-size: 10px; color: #d4d4d4; margin-top: 2px; }
+
+.tool-feed {
+  flex: 1; min-width: 300px; max-height: 200px;
+  overflow-y: auto; font-size: 11px;
+}
+.feed-entry {
+  padding: 3px 0; border-bottom: 1px solid #2a2a2a;
+  display: flex; gap: 6px; align-items: baseline;
+}
+.feed-ts { color: #808080; white-space: nowrap; }
+.feed-icon-ok { color: #4ec9b0; }
+.feed-icon-err { color: #f44747; }
+.feed-icon-run { color: #dcdcaa; }
+.feed-tool { color: #569cd6; font-weight: 600; }
+.feed-target { color: #d4d4d4; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.feed-latency { color: #808080; white-space: nowrap; }
+
+/* ── Contract ─────────────────────────────────────────────── */
+.contract-title { font-weight: 700; color: #d4d4d4; margin-bottom: 4px; }
+.contract-brief { color: #808080; font-size: 12px; margin-bottom: 8px; }
+.assertion-list { list-style: none; font-size: 12px; }
+.assertion-list li { padding: 2px 0; }
+.assert-pass { color: #4ec9b0; }
+.assert-fail { color: #f44747; }
+.assert-pending { color: #dcdcaa; }
+.contract-summary { margin-top: 8px; font-size: 12px; color: #808080; }
+
+/* ── Predictions ──────────────────────────────────────────── */
+.pred-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+.pred-table th {
+  text-align: left; padding: 4px 6px;
+  color: #808080; border-bottom: 1px solid #3a3a3a;
+  font-weight: 600;
+}
+.pred-table td { padding: 4px 6px; border-bottom: 1px solid #2a2a2a; }
+.pred-above { color: #4ec9b0; }
+.pred-below { color: #f44747; }
+.pred-none { color: #808080; }
+
+/* ── Controls ─────────────────────────────────────────────── */
+.controls-section {
+  padding: 12px 20px;
+}
+.controls-grid {
+  display: grid; grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+.control-panel {
+  background: #252525; border: 1px solid #3a3a3a;
+  border-radius: 6px; padding: 14px;
+}
+.control-panel-title {
+  font-size: 12px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.5px; margin-bottom: 10px;
+  border-bottom: 1px solid #3a3a3a; padding-bottom: 6px;
+}
+.control-panel-title.teal { color: #4ec9b0; }
+.control-panel-title.orange { color: #ce9178; }
+
+.slider-row {
+  display: flex; align-items: center; gap: 8px;
+  margin-bottom: 8px; font-size: 12px;
+}
+.slider-row label { flex: 0 0 180px; color: #d4d4d4; }
+.slider-row input[type="range"] { flex: 1; }
+.slider-row .slider-val {
+  flex: 0 0 60px; text-align: right;
+  color: #4ec9b0; font-weight: 600; font-size: 11px;
+}
+.slider-row .slider-val.orange { color: #ce9178; }
+.slider-row.changed label { color: #dcdcaa; }
+
+/* Slider theming */
+input[type="range"] {
+  -webkit-appearance: none; appearance: none;
+  height: 4px; border-radius: 2px; background: #3a3a3a;
+  outline: none;
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 14px; height: 14px; border-radius: 50%;
+  background: #4ec9b0; cursor: pointer;
+}
+input[type="range"].orange-slider::-webkit-slider-thumb { background: #ce9178; }
+input[type="range"].blue-slider::-webkit-slider-thumb { background: #569cd6; }
+input[type="range"]:disabled { opacity: 0.4; }
+input[type="range"]:disabled::-webkit-slider-thumb { cursor: not-allowed; }
+
+/* Toggle switch */
+.toggle-row {
+  display: flex; align-items: center; gap: 8px;
+  margin-bottom: 8px; font-size: 12px;
+}
+.toggle-row label { flex: 0 0 180px; color: #d4d4d4; }
+.toggle-switch {
+  position: relative; width: 36px; height: 20px;
+}
+.toggle-switch input { opacity: 0; width: 0; height: 0; }
+.toggle-track {
+  position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+  background: #3a3a3a; border-radius: 10px; cursor: pointer;
+  transition: background 0.2s;
+}
+.toggle-track::after {
+  content: ''; position: absolute;
+  width: 16px; height: 16px; border-radius: 50%;
+  background: #808080; top: 2px; left: 2px;
+  transition: transform 0.2s, background 0.2s;
+}
+.toggle-switch input:checked + .toggle-track { background: #2d4a3e; }
+.toggle-switch input:checked + .toggle-track::after { transform: translateX(16px); background: #4ec9b0; }
+.toggle-switch input:disabled + .toggle-track { opacity: 0.4; cursor: not-allowed; }
+.toggle-status { color: #808080; font-size: 11px; }
+
+/* ── Advanced Section ─────────────────────────────────────── */
+.advanced-section {
+  padding: 0 20px 12px;
+}
+.advanced-toggle {
+  background: #252525; border: 1px solid #3a3a3a;
+  border-radius: 6px; overflow: hidden;
+}
+.advanced-header {
+  padding: 10px 14px; cursor: pointer; color: #808080;
+  font-size: 12px; user-select: none;
+  display: flex; align-items: center; gap: 6px;
+}
+.advanced-header:hover { color: #d4d4d4; }
+.advanced-header .arrow { transition: transform 0.2s; }
+.advanced-header.open .arrow { transform: rotate(90deg); }
+.advanced-body { display: none; padding: 14px; border-top: 1px solid #3a3a3a; }
+.advanced-body.open { display: block; }
+
+.tab-bar {
+  display: flex; gap: 4px; margin-bottom: 12px; flex-wrap: wrap;
+}
+.tab-btn {
+  padding: 4px 12px; border-radius: 3px; border: 1px solid #3a3a3a;
+  background: transparent; color: #808080; cursor: pointer;
+  font-family: inherit; font-size: 11px;
+}
+.tab-btn:hover { color: #d4d4d4; border-color: #569cd6; }
+.tab-btn.active { background: #2d3a4a; color: #569cd6; border-color: #569cd6; }
+.tab-content { display: none; }
+.tab-content.active { display: block; }
+
+.adv-slider-val { color: #569cd6; }
+
+/* ── Bottom Bar ───────────────────────────────────────────── */
+.bottom-bar {
+  padding: 12px 20px; display: flex; gap: 12px;
+  align-items: center; justify-content: flex-end;
+  border-top: 1px solid #3a3a3a;
+}
+.btn {
+  padding: 6px 16px; border: 1px solid #3a3a3a;
+  border-radius: 4px; cursor: pointer;
+  font-family: inherit; font-size: 12px; font-weight: 600;
+}
+.btn-grey { background: #3a3a3a; color: #d4d4d4; }
+.btn-grey:hover { background: #4a4a4a; }
+.btn-teal { background: #4ec9b0; color: #1e1e1e; border-color: #4ec9b0; }
+.btn-teal:hover { background: #3db99f; }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.apply-status { font-size: 11px; color: #808080; }
+
+.empty-text { color: #808080; font-size: 12px; font-style: italic; }
+</style>
+</head>
+<body>
+
+<!-- ── Header ──────────────────────────────────────────────── -->
+<div class="header">
+  <h1>CynCo Governance Dashboard</h1>
+  <span class="subtitle">Level 4 Visibility &mdash; Local AI Governance</span>
+</div>
+<div id="reconnectBanner" class="reconnect-banner">Reconnecting to engine...</div>
+
+<!-- ── Monitoring Grid ─────────────────────────────────────── -->
+<div class="grid">
+
+  <!-- Row 1: Connection Status -->
+  <div class="panel" id="panelConnection">
+    <div class="panel-title">Connection Status</div>
+    <div id="connStatus">
+      <span class="status-dot disconnected" id="statusDot"></span>
+      <span id="connLabel">No active session</span>
+    </div>
+    <div class="status-row" id="connDetails">
+      <div><span class="label">Model: </span><span class="value" id="connModel">&mdash;</span></div>
+      <div><span class="label">Duration: </span><span class="value" id="connDuration">&mdash;</span></div>
+      <div><span class="label">Turns: </span><span class="value" id="connTurns">0</span></div>
+      <div><span class="label">Tier: </span><span class="value" id="connTier">&mdash;</span></div>
+    </div>
+  </div>
+
+  <!-- Row 1: Context Utilization -->
+  <div class="panel" id="panelContext">
+    <div class="panel-title">Context Utilization</div>
+    <div class="progress-track"><div class="progress-fill" id="ctxBar" style="width:0%"></div></div>
+    <div class="context-text">
+      <span id="ctxText">0 / 0 tokens (0%)</span>
+      <span class="action-badge proceed" id="ctxAction">proceed</span>
+    </div>
+  </div>
+
+  <!-- Row 2: Governance Health -->
+  <div class="panel" id="panelGovernance">
+    <div class="panel-title">Governance Health</div>
+    <div id="govHealthBadge"><span class="health-badge healthy">Healthy</span></div>
+    <div class="gov-stats" id="govStats">
+      <div><span class="label">S3/S4 Balance: </span><span class="value" id="govBalance">&mdash;</span></div>
+      <div><span class="label">Variety Ratio: </span><span class="value" id="govVariety">&mdash;</span></div>
+      <div><span class="label">Tool Success: </span><span class="value" id="govToolSuccess">&mdash;</span></div>
+      <div><span class="label">Stuck Turns: </span><span class="value" id="govStuck">0</span></div>
+      <div><span class="label">Algedonic Alerts: </span><span class="value" id="govAlgedonic">0</span></div>
+      <div><span class="label">Axiom Health: </span><span class="value" id="govAxioms">&mdash;</span></div>
+    </div>
+    <div class="sub-badges" id="govSubBadges">
+      <span class="sub-badge" id="badgeS3">S3</span>
+      <span class="sub-badge" id="badgeS4">S4</span>
+      <span class="sub-badge" id="badgeS5">S5</span>
+    </div>
+  </div>
+
+  <!-- Row 2: S5 Decision Log -->
+  <div class="panel" id="panelS5">
+    <div class="panel-title">S5 Decision Log</div>
+    <div class="decision-list" id="s5List">
+      <div class="empty-text">No decisions yet</div>
+    </div>
+  </div>
+
+  <!-- Row 3: Tool Activity (full width) -->
+  <div class="panel full-width" id="panelTools">
+    <div class="panel-title">Tool Activity &mdash; "The Brain"</div>
+    <div class="tool-sections">
+      <div class="bar-chart" id="toolBarChart">
+        <div class="empty-text">No tool calls yet</div>
+      </div>
+      <div class="tool-feed" id="toolFeed">
+        <div class="empty-text">Live feed &mdash; waiting for tool calls</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Row 4: Active Contract -->
+  <div class="panel" id="panelContract">
+    <div class="panel-title">Active Contract</div>
+    <div id="contractContent">
+      <div class="empty-text">No active contract</div>
+    </div>
+  </div>
+
+  <!-- Row 4: Prediction Tracker -->
+  <div class="panel" id="panelPredictions">
+    <div class="panel-title">Prediction Tracker (H1&ndash;H8)</div>
+    <div id="predContent">
+      <table class="pred-table">
+        <thead><tr><th>ID</th><th>Name</th><th>Hit Rate</th><th>Samples</th><th>Null</th></tr></thead>
+        <tbody id="predBody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- ── Parameter Controls ──────────────────────────────────── -->
+<div class="controls-section">
+  <div class="controls-grid">
+
+    <!-- Left: Engine Config -->
+    <div class="control-panel">
+      <div class="control-panel-title teal">Engine Config</div>
+      <div class="slider-row" data-key="temperature">
+        <label>Temperature</label>
+        <input type="range" min="0" max="2" step="0.05" value="0.7" id="sliderTemp">
+        <span class="slider-val" id="valTemp">0.70</span>
+      </div>
+      <div class="slider-row" data-key="contextLength">
+        <label>Context Length</label>
+        <input type="range" min="1024" max="131072" step="1024" value="40960" id="sliderCtxLen">
+        <span class="slider-val" id="valCtxLen">40960</span>
+      </div>
+      <div class="slider-row" data-key="timeout">
+        <label>Timeout (ms)</label>
+        <input type="range" min="1000" max="600000" step="1000" value="300000" id="sliderTimeout">
+        <span class="slider-val" id="valTimeout">300000</span>
+      </div>
+    </div>
+
+    <!-- Right: System Controls -->
+    <div class="control-panel">
+      <div class="control-panel-title orange">System Controls</div>
+
+      <div class="toggle-row" data-key="toolRouting">
+        <label>Tool Routing</label>
+        <div class="toggle-switch">
+          <input type="checkbox" id="toggleToolRouting" checked>
+          <span class="toggle-track"></span>
+        </div>
+        <span class="toggle-status" id="statusToolRouting">ON</span>
+      </div>
+
+      <div class="toggle-row" data-key="contractEnforcement">
+        <label>Contract Enforcement</label>
+        <div class="toggle-switch">
+          <input type="checkbox" id="toggleContractEnf" checked>
+          <span class="toggle-track"></span>
+        </div>
+        <span class="toggle-status" id="statusContractEnf">ON</span>
+      </div>
+
+      <div class="toggle-row" data-key="ablation">
+        <label>VSM Governance</label>
+        <div class="toggle-switch">
+          <input type="checkbox" id="toggleVSM" checked>
+          <span class="toggle-track"></span>
+        </div>
+        <span class="toggle-status" id="statusVSM">ON</span>
+      </div>
+
+      <div class="slider-row" data-key="algedonic.kill_threshold">
+        <label>Kill Switch Threshold</label>
+        <input type="range" class="orange-slider" min="2" max="20" step="1" value="5" id="sliderKill">
+        <span class="slider-val orange" id="valKill">5</span>
+      </div>
+
+      <div class="slider-row" data-key="trustDecayThreshold">
+        <label>Trust Decay Threshold</label>
+        <input type="range" class="orange-slider" min="0" max="1" step="0.05" value="0.5" id="sliderTrust">
+        <span class="slider-val orange" id="valTrust">0.50</span>
+      </div>
+
+      <div class="slider-row" data-key="s4ReflectionFrequency">
+        <label>S4 Reflection Frequency</label>
+        <input type="range" class="orange-slider" min="1" max="20" step="1" value="5" id="sliderS4Freq">
+        <span class="slider-val orange" id="valS4Freq">5</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Advanced Section ────────────────────────────────────── -->
+<div class="advanced-section">
+  <div class="advanced-toggle">
+    <div class="advanced-header" id="advHeader" onclick="toggleAdvanced()">
+      <span class="arrow">&#9654;</span> Advanced Governance Parameters
+    </div>
+    <div class="advanced-body" id="advBody">
+      <div class="tab-bar" id="advTabBar"></div>
+      <div id="advTabContent"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Bottom Bar ──────────────────────────────────────────── -->
+<div class="bottom-bar">
+  <span class="apply-status" id="applyStatus"></span>
+  <button class="btn btn-grey" id="btnReset" onclick="resetToDefaults()">Reset to Defaults</button>
+  <button class="btn btn-teal" id="btnApply" onclick="applyChanges()">Apply Changes</button>
+</div>
+
+<script>
+/* ══════════════════════════════════════════════════════════════
+   CynCo Governance Dashboard — Client JS
+   ══════════════════════════════════════════════════════════════ */
+
+// ── State ────────────────────────────────────────────────────
+
+const state = {
+  connected: false,
+  paused: false,
+  sessionActive: false,
+  sessionStart: null,
+  model: '',
+  tier: '',
+  turnCount: 0,
+  tools: {},
+  toolFeed: [],
+  s5Decisions: [],
+  governance: null,
+  context: null,
+  contract: null,
+  predictions: null,
+  config: null,
+  pendingChanges: {},
+  paramMeta: [],
+};
+
+const TOOL_ORDER = ['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash', 'CodeIndex', 'Git', 'Agent',
+  'ContractCreate', 'ContractAssertPass', 'ContractAssertFail', 'ContractStatus'];
+const MAX_FEED = 50;
+const MAX_DECISIONS = 20;
+
+const HYPOTHESIS_NAMES = {
+  H1: 'Variety Match',
+  H2: 'Homeostat Stability',
+  H3: 'Feedback Setpoint',
+  H4: 'Algedonic Signal',
+  H5: 'S3/S4 Balance',
+  H6: 'Kill Switch',
+  H7: 'Context Budget',
+  H8: 'Tool Success',
+};
+
+// ── WebSocket ────────────────────────────────────────────────
+
+let ws = null;
+let reconnectDelay = 1000;
+let sessionTimer = null;
+let standaloneTimeout = null;
+
+function connectWS() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(proto + '//' + location.hostname + ':' + location.port + '/ws');
+
+  ws.onopen = function() {
+    state.connected = true;
+    reconnectDelay = 1000;
+    document.getElementById('reconnectBanner').classList.remove('visible');
+    render();
+  };
+
+  ws.onclose = function() {
+    state.connected = false;
+    render();
+    document.getElementById('reconnectBanner').classList.add('visible');
+    setTimeout(connectWS, reconnectDelay);
+    reconnectDelay = Math.min(reconnectDelay * 2, 30000);
+  };
+
+  ws.onerror = function() {
+    // onclose will fire after this
+  };
+
+  ws.onmessage = function(evt) {
+    try {
+      var event = JSON.parse(evt.data);
+      handleEvent(event);
+      render();
+    } catch (e) { /* ignore malformed messages */ }
+  };
+}
+
+// ── Event Handler ────────────────────────────────────────────
+
+function handleEvent(event) {
+  switch (event.type) {
+    case 'session.ready':
+      state.sessionActive = true;
+      state.model = event.model || '';
+      state.tier = event.tier || (event.contextLength > 65536 ? 'advanced' : event.contextLength > 16384 ? 'standard' : 'basic');
+      state.sessionStart = new Date();
+      state.turnCount = 0;
+      enableControls(true);
+      if (standaloneTimeout) { clearTimeout(standaloneTimeout); standaloneTimeout = null; }
+      break;
+
+    case 'governance.status':
+      state.governance = event;
+      break;
+
+    case 'context.status':
+      state.context = event;
+      break;
+
+    case 'tool.start': {
+      var entry = {
+        ts: new Date(),
+        toolName: event.toolName || 'unknown',
+        toolId: event.toolId || '',
+        status: 'running',
+        target: summarizeInput(event.toolName, event.input),
+        latency: null,
+        startTime: Date.now(),
+      };
+      state.toolFeed.unshift(entry);
+      if (state.toolFeed.length > MAX_FEED) state.toolFeed.pop();
+      // Ensure tool counters exist
+      if (!state.tools[event.toolName]) state.tools[event.toolName] = { success: 0, failure: 0 };
+      break;
+    }
+
+    case 'tool.complete': {
+      var name = event.toolName || 'unknown';
+      if (!state.tools[name]) state.tools[name] = { success: 0, failure: 0 };
+      if (event.isError) state.tools[name].failure++;
+      else state.tools[name].success++;
+      // Update matching feed entry
+      for (var i = 0; i < state.toolFeed.length; i++) {
+        if (state.toolFeed[i].toolId === event.toolId && state.toolFeed[i].status === 'running') {
+          state.toolFeed[i].status = event.isError ? 'error' : 'success';
+          state.toolFeed[i].latency = state.toolFeed[i].startTime ? Date.now() - state.toolFeed[i].startTime : null;
+          break;
+        }
+      }
+      state.turnCount++;
+      break;
+    }
+
+    case 's2.decision': {
+      var dec = {
+        ts: new Date(),
+        decision: event.decision || '',
+        agentId: event.agentId || '',
+        reason: event.reason || '',
+        gpuUtil: event.gpuUtil,
+        queueDepth: event.queueDepth,
+      };
+      state.s5Decisions.unshift(dec);
+      if (state.s5Decisions.length > MAX_DECISIONS) state.s5Decisions.pop();
+      break;
+    }
+
+    case 'config.current':
+      state.config = event.config;
+      syncConfigToSliders(event.config);
+      break;
+
+    case 'config.updated':
+      // Response to our POST; clear applied changes
+      break;
+
+    case 'message.complete':
+      state.turnCount++;
+      break;
+  }
+}
+
+function summarizeInput(toolName, input) {
+  if (!input) return '';
+  if (typeof input === 'string') return input.slice(0, 60);
+  if (input.file_path) return String(input.file_path).slice(0, 60);
+  if (input.path) return String(input.path).slice(0, 60);
+  if (input.pattern) return String(input.pattern).slice(0, 60);
+  if (input.command) return String(input.command).slice(0, 60);
+  if (input.query) return String(input.query).slice(0, 60);
+  var s = JSON.stringify(input);
+  return s.length > 60 ? s.slice(0, 57) + '...' : s;
+}
+
+// ── Rendering ────────────────────────────────────────────────
+
+function render() {
+  renderConnection();
+  renderContext();
+  renderGovernance();
+  renderS5();
+  renderToolChart();
+  renderToolFeed();
+  renderContract();
+  renderPredictions();
+}
+
+function renderConnection() {
+  var dot = document.getElementById('statusDot');
+  var label = document.getElementById('connLabel');
+  if (state.connected && state.sessionActive) {
+    dot.className = 'status-dot connected';
+    label.textContent = 'Connected';
+  } else if (state.connected) {
+    dot.className = 'status-dot connected';
+    label.textContent = 'Connected (no session)';
+  } else {
+    dot.className = 'status-dot disconnected';
+    label.textContent = 'No active session';
+  }
+  document.getElementById('connModel').textContent = state.model || '\u2014';
+  document.getElementById('connTurns').textContent = String(state.turnCount);
+  document.getElementById('connTier').textContent = state.tier || '\u2014';
+}
+
+function formatDuration(ms) {
+  var s = Math.floor(ms / 1000);
+  var h = Math.floor(s / 3600);
+  var m = Math.floor((s % 3600) / 60);
+  s = s % 60;
+  var parts = [];
+  if (h > 0) parts.push(h + 'h');
+  parts.push(String(m).padStart(2, '0') + 'm');
+  parts.push(String(s).padStart(2, '0') + 's');
+  return parts.join(' ');
+}
+
+function renderContext() {
+  var bar = document.getElementById('ctxBar');
+  var text = document.getElementById('ctxText');
+  var badge = document.getElementById('ctxAction');
+
+  if (!state.context) {
+    bar.style.width = '0%';
+    text.textContent = '0 / 0 tokens (0%)';
+    badge.textContent = 'proceed';
+    badge.className = 'action-badge proceed';
+    return;
+  }
+
+  var pct = Math.round(state.context.utilization * 100);
+  var est = state.context.estimatedTokens || 0;
+  var total = state.context.contextLength || 0;
+  var action = state.context.action || 'proceed';
+
+  bar.style.width = pct + '%';
+  bar.className = 'progress-fill' + (pct > 80 ? ' critical' : pct > 60 ? ' warn' : '');
+  text.textContent = est.toLocaleString() + ' / ' + total.toLocaleString() + ' tokens (' + pct + '%)';
+  badge.textContent = action;
+  badge.className = 'action-badge ' + action;
+}
+
+function renderGovernance() {
+  var gov = state.governance;
+  var badgeEl = document.getElementById('govHealthBadge');
+
+  if (!gov) {
+    badgeEl.innerHTML = '<span class="health-badge healthy">Healthy</span>';
+    return;
+  }
+
+  var health = (gov.health || 'healthy').toLowerCase();
+  var cls = 'healthy';
+  if (health.includes('warning') || health.includes('amber')) cls = 'warning';
+  else if (health.includes('critical') || health.includes('red')) cls = 'critical';
+  else if (health.includes('halt')) cls = 'halted';
+
+  badgeEl.innerHTML = '<span class="health-badge ' + cls + '">' + escHtml(gov.health) + '</span>';
+
+  document.getElementById('govBalance').textContent = gov.s3s4Balance || '\u2014';
+  document.getElementById('govToolSuccess').textContent = gov.toolSuccessRate != null ? Math.round(gov.toolSuccessRate * 100) + '%' : '\u2014';
+  document.getElementById('govStuck').textContent = String(gov.stuckTurns || 0);
+}
+
+function renderS5() {
+  var el = document.getElementById('s5List');
+  if (state.s5Decisions.length === 0) {
+    el.innerHTML = '<div class="empty-text">No decisions yet</div>';
+    return;
+  }
+  var html = '';
+  for (var i = 0; i < state.s5Decisions.length; i++) {
+    var d = state.s5Decisions[i];
+    var ts = d.ts instanceof Date ? formatTime(d.ts) : '';
+    html += '<div class="decision-entry">' +
+      '<span class="decision-ts">' + ts + '</span>' +
+      '<span class="decision-arrow">\u2192</span>' +
+      '<span class="decision-type">' + escHtml(d.decision) + '</span>' +
+      '<span class="decision-reason">' + escHtml(d.reason) + '</span>' +
+      '</div>';
+  }
+  el.innerHTML = html;
+}
+
+function renderToolChart() {
+  var el = document.getElementById('toolBarChart');
+  var names = Object.keys(state.tools);
+  if (names.length === 0) {
+    el.innerHTML = '<div class="empty-text">No tool calls yet</div>';
+    return;
+  }
+
+  // Build ordered list: TOOL_ORDER first, then any others
+  var ordered = [];
+  for (var i = 0; i < TOOL_ORDER.length; i++) {
+    if (state.tools[TOOL_ORDER[i]]) ordered.push(TOOL_ORDER[i]);
+  }
+  for (var j = 0; j < names.length; j++) {
+    if (ordered.indexOf(names[j]) === -1) ordered.push(names[j]);
+  }
+
+  // Find max height
+  var maxCount = 0;
+  for (var k = 0; k < ordered.length; k++) {
+    var t = state.tools[ordered[k]];
+    var total = t.success + t.failure;
+    if (total > maxCount) maxCount = total;
+  }
+  if (maxCount === 0) maxCount = 1;
+
+  var barMaxPx = 130;
+  var html = '';
+  for (var m = 0; m < ordered.length; m++) {
+    var tool = state.tools[ordered[m]];
+    var sH = Math.round((tool.success / maxCount) * barMaxPx);
+    var fH = Math.round((tool.failure / maxCount) * barMaxPx);
+    if (sH === 0 && tool.success > 0) sH = 2;
+    if (fH === 0 && tool.failure > 0) fH = 2;
+
+    html += '<div class="bar-col">' +
+      '<div class="bar-stack">';
+    if (tool.success > 0) {
+      html += '<div class="bar-segment bar-success" style="height:' + sH + 'px" title="' + tool.success + ' success"></div>';
+    }
+    if (tool.failure > 0) {
+      html += '<div class="bar-segment bar-failure" style="height:' + fH + 'px" title="' + tool.failure + ' failure"></div>';
+    }
+    html += '</div>' +
+      '<div class="bar-label">' + escHtml(ordered[m]) + '</div>' +
+      '<div class="bar-count">' + (tool.success + tool.failure) + '</div>' +
+      '</div>';
+  }
+  el.innerHTML = html;
+}
+
+function renderToolFeed() {
+  var el = document.getElementById('toolFeed');
+  if (state.toolFeed.length === 0) {
+    el.innerHTML = '<div class="empty-text">Live feed \u2014 waiting for tool calls</div>';
+    return;
+  }
+  var html = '';
+  for (var i = 0; i < state.toolFeed.length; i++) {
+    var f = state.toolFeed[i];
+    var ts = f.ts instanceof Date ? formatTime(f.ts) : '';
+    var iconCls = f.status === 'success' ? 'feed-icon-ok' :
+                  f.status === 'error' ? 'feed-icon-err' : 'feed-icon-run';
+    var icon = f.status === 'success' ? '\u2713' :
+               f.status === 'error' ? '\u2717' : '\u25cc';
+    var latency = f.latency != null ? f.latency + 'ms' : '';
+
+    html += '<div class="feed-entry">' +
+      '<span class="feed-ts">' + ts + '</span>' +
+      '<span class="' + iconCls + '">' + icon + '</span>' +
+      '<span class="feed-tool">' + escHtml(f.toolName) + '</span>' +
+      '<span class="feed-target">' + escHtml(f.target) + '</span>' +
+      '<span class="feed-latency">' + latency + '</span>' +
+      '</div>';
+  }
+  el.innerHTML = html;
+}
+
+function renderContract() {
+  var el = document.getElementById('contractContent');
+  if (!state.contract) {
+    el.innerHTML = '<div class="empty-text">No active contract</div>';
+    return;
+  }
+
+  // state.contract is the text status from getStatus()
+  // Parse it into structured data
+  var lines = state.contract.split('\n');
+  var html = '';
+  var title = '';
+  var brief = '';
+  var assertions = [];
+  var summary = '';
+
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i];
+    if (line.startsWith('Contract: ')) title = line.slice(10);
+    else if (line.startsWith('Brief: ')) brief = line.slice(7);
+    else if (line.startsWith('Summary: ')) summary = line;
+    else if (line.trim().match(/^\d+\.\s+\[/)) assertions.push(line.trim());
+  }
+
+  if (title) html += '<div class="contract-title">' + escHtml(title) + '</div>';
+  if (brief) html += '<div class="contract-brief">' + escHtml(brief) + '</div>';
+
+  if (assertions.length > 0) {
+    html += '<ul class="assertion-list">';
+    for (var j = 0; j < assertions.length; j++) {
+      var a = assertions[j];
+      var cls = 'assert-pending';
+      var icon = '\u25cc';
+      if (a.includes('[PASS]')) { cls = 'assert-pass'; icon = '\u2713'; }
+      else if (a.includes('[FAIL]')) { cls = 'assert-fail'; icon = '\u2717'; }
+      var text = a.replace(/^\d+\.\s+\[\w*\s*\]\s*/, '');
+      html += '<li><span class="' + cls + '">' + icon + '</span> ' + escHtml(text) + '</li>';
+    }
+    html += '</ul>';
+  }
+
+  if (summary) html += '<div class="contract-summary">' + escHtml(summary) + '</div>';
+
+  el.innerHTML = html;
+}
+
+function renderPredictions() {
+  var el = document.getElementById('predBody');
+  var ids = ['H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'H7', 'H8'];
+  var html = '';
+
+  for (var i = 0; i < ids.length; i++) {
+    var id = ids[i];
+    var name = HYPOTHESIS_NAMES[id] || id;
+    var stat = null;
+
+    if (state.predictions && Array.isArray(state.predictions)) {
+      for (var j = 0; j < state.predictions.length; j++) {
+        if (state.predictions[j].hypothesis === id) {
+          stat = state.predictions[j];
+          break;
+        }
+      }
+    }
+
+    if (stat && stat.total > 0) {
+      var pct = Math.round(stat.hitRate * 100);
+      var nullPct = Math.round(stat.nullBaselineRate * 100);
+      var cls = stat.significantlyBetter ? 'pred-above' : (pct < nullPct ? 'pred-below' : 'pred-none');
+      html += '<tr>' +
+        '<td>' + id + '</td>' +
+        '<td>' + escHtml(name) + '</td>' +
+        '<td class="' + cls + '">' + pct + '%</td>' +
+        '<td>' + stat.total + '</td>' +
+        '<td>' + nullPct + '%</td>' +
+        '</tr>';
+    } else {
+      html += '<tr>' +
+        '<td>' + id + '</td>' +
+        '<td>' + escHtml(name) + '</td>' +
+        '<td class="pred-none">\u2014</td>' +
+        '<td class="pred-none">\u2014</td>' +
+        '<td class="pred-none">\u2014</td>' +
+        '</tr>';
+    }
+  }
+
+  el.innerHTML = html;
+}
+
+// ── Slider Logic ─────────────────────────────────────────────
+
+function setupSliders() {
+  var sliders = document.querySelectorAll('input[type="range"]');
+  for (var i = 0; i < sliders.length; i++) {
+    (function(slider) {
+      var row = slider.closest('.slider-row');
+      if (!row) return;
+      var key = row.getAttribute('data-key');
+      var valSpan = slider.nextElementSibling;
+
+      slider.addEventListener('input', function() {
+        var v = parseFloat(slider.value);
+        if (valSpan) {
+          valSpan.textContent = slider.step && parseFloat(slider.step) < 1 ? v.toFixed(2) : String(v);
+        }
+        if (key) {
+          state.pendingChanges[key] = v;
+          row.classList.add('changed');
+        }
+      });
+    })(sliders[i]);
+  }
+
+  // Toggles
+  var toggles = document.querySelectorAll('.toggle-row input[type="checkbox"]');
+  for (var j = 0; j < toggles.length; j++) {
+    (function(toggle) {
+      var row = toggle.closest('.toggle-row');
+      if (!row) return;
+      var key = row.getAttribute('data-key');
+      var statusSpan = row.querySelector('.toggle-status');
+
+      toggle.addEventListener('change', function() {
+        if (statusSpan) statusSpan.textContent = toggle.checked ? 'ON' : 'OFF';
+        if (key) {
+          // ablation is inverted: toggle ON = governance ON = ablation false
+          if (key === 'ablation') {
+            state.pendingChanges[key] = !toggle.checked;
+          } else {
+            state.pendingChanges[key] = toggle.checked;
+          }
+        }
+      });
+    })(toggles[j]);
+  }
+}
+
+function syncConfigToSliders(cfg) {
+  if (!cfg) return;
+  if (cfg.temperature != null) setSlider('sliderTemp', 'valTemp', cfg.temperature);
+  if (cfg.contextLength != null) setSlider('sliderCtxLen', 'valCtxLen', cfg.contextLength);
+  if (cfg.timeout != null) setSlider('sliderTimeout', 'valTimeout', cfg.timeout);
+}
+
+function setSlider(sliderId, valId, value) {
+  var s = document.getElementById(sliderId);
+  var v = document.getElementById(valId);
+  if (s) {
+    s.value = value;
+    if (v) v.textContent = s.step && parseFloat(s.step) < 1 ? parseFloat(value).toFixed(2) : String(value);
+  }
+}
+
+function enableControls(enabled) {
+  var inputs = document.querySelectorAll('.control-panel input, .advanced-body input');
+  for (var i = 0; i < inputs.length; i++) {
+    inputs[i].disabled = !enabled;
+  }
+  document.getElementById('btnApply').disabled = !enabled;
+  document.getElementById('btnReset').disabled = !enabled;
+}
+
+// ── Advanced Params ──────────────────────────────────────────
+
+function buildAdvancedTabs() {
+  var systems = ['variety', 'homeostat', 'feedback', 'algedonic', 'metrics', 'global'];
+  var tabBar = document.getElementById('advTabBar');
+  var content = document.getElementById('advTabContent');
+
+  tabBar.innerHTML = '';
+  content.innerHTML = '';
+
+  for (var i = 0; i < systems.length; i++) {
+    var sys = systems[i];
+    var btn = document.createElement('button');
+    btn.className = 'tab-btn' + (i === 0 ? ' active' : '');
+    btn.textContent = sys.charAt(0).toUpperCase() + sys.slice(1);
+    btn.setAttribute('data-tab', sys);
+    btn.onclick = function() { switchTab(this.getAttribute('data-tab')); };
+    tabBar.appendChild(btn);
+
+    var div = document.createElement('div');
+    div.className = 'tab-content' + (i === 0 ? ' active' : '');
+    div.id = 'tab-' + sys;
+    content.appendChild(div);
+  }
+
+  renderAdvancedSliders();
+}
+
+function renderAdvancedSliders() {
+  var systems = ['variety', 'homeostat', 'feedback', 'algedonic', 'metrics', 'global'];
+
+  for (var s = 0; s < systems.length; s++) {
+    var sys = systems[s];
+    var div = document.getElementById('tab-' + sys);
+    if (!div) continue;
+
+    var params = state.paramMeta.filter(function(p) { return p.system === sys; });
+    if (params.length === 0) {
+      div.innerHTML = '<div class="empty-text">No parameters loaded</div>';
+      continue;
+    }
+
+    var html = '';
+    for (var i = 0; i < params.length; i++) {
+      var p = params[i];
+      var step = (p.max - p.min) <= 2 ? 0.01 : (p.max - p.min) <= 20 ? 0.1 : 1;
+      // Use integer step for integer-valued params
+      if (Number.isInteger(p.min) && Number.isInteger(p.max) && Number.isInteger(p.default)) step = 1;
+      var valText = step < 1 ? p.value.toFixed(2) : String(p.value);
+
+      html += '<div class="slider-row" data-key="' + escAttr(p.name) + '" title="' + escAttr(p.description) + '">' +
+        '<label>' + escHtml(p.name) + '</label>' +
+        '<input type="range" class="blue-slider" min="' + p.min + '" max="' + p.max + '" step="' + step + '" value="' + p.value + '">' +
+        '<span class="slider-val adv-slider-val">' + valText + '</span>' +
+        '</div>';
+    }
+    div.innerHTML = html;
+  }
+
+  // Bind input events for advanced sliders
+  var advSliders = document.querySelectorAll('.advanced-body input[type="range"]');
+  for (var j = 0; j < advSliders.length; j++) {
+    (function(slider) {
+      var row = slider.closest('.slider-row');
+      if (!row) return;
+      var key = row.getAttribute('data-key');
+      var valSpan = slider.nextElementSibling;
+
+      slider.addEventListener('input', function() {
+        var v = parseFloat(slider.value);
+        if (valSpan) {
+          valSpan.textContent = parseFloat(slider.step) < 1 ? v.toFixed(2) : String(v);
+        }
+        if (key) {
+          state.pendingChanges[key] = v;
+          row.classList.add('changed');
+        }
+      });
+    })(advSliders[j]);
+  }
+}
+
+function switchTab(tabName) {
+  var btns = document.querySelectorAll('.tab-btn');
+  for (var i = 0; i < btns.length; i++) {
+    btns[i].classList.toggle('active', btns[i].getAttribute('data-tab') === tabName);
+  }
+  var tabs = document.querySelectorAll('.tab-content');
+  for (var j = 0; j < tabs.length; j++) {
+    tabs[j].classList.toggle('active', tabs[j].id === 'tab-' + tabName);
+  }
+}
+
+function toggleAdvanced() {
+  var header = document.getElementById('advHeader');
+  var body = document.getElementById('advBody');
+  header.classList.toggle('open');
+  body.classList.toggle('open');
+}
+
+// ── Config POST Logic ────────────────────────────────────────
+
+function applyChanges() {
+  var keys = Object.keys(state.pendingChanges);
+  if (keys.length === 0) {
+    showApplyStatus('No changes to apply', false);
+    return;
+  }
+
+  var groups = {
+    engine: {},
+    governance: {},
+    tools: {},
+    system: {},
+  };
+
+  var engineKeys = new Set(['temperature', 'contextLength', 'timeout', 'maxOutputTokens']);
+  var toolKeys = new Set(['trustDecayThreshold', 'toolRouting']);
+  var systemKeys = new Set(['ablation', 'contractEnforcement', 's4ReflectionFrequency']);
+
+  for (var i = 0; i < keys.length; i++) {
+    var k = keys[i];
+    var v = state.pendingChanges[k];
+    if (engineKeys.has(k)) groups.engine[k] = v;
+    else if (toolKeys.has(k)) groups.tools[k] = v;
+    else if (systemKeys.has(k)) groups.system[k] = v;
+    else groups.governance[k] = v; // governance param (variety.*, homeostat.*, etc.)
+  }
+
+  var endpoints = [];
+  if (Object.keys(groups.engine).length > 0) endpoints.push({ url: '/config/engine', body: groups.engine });
+  if (Object.keys(groups.governance).length > 0) endpoints.push({ url: '/config/governance', body: groups.governance });
+  if (Object.keys(groups.tools).length > 0) endpoints.push({ url: '/config/tools', body: groups.tools });
+  if (Object.keys(groups.system).length > 0) endpoints.push({ url: '/config/system', body: groups.system });
+
+  var completed = 0;
+  var totalErrors = [];
+
+  for (var j = 0; j < endpoints.length; j++) {
+    (function(ep) {
+      fetch(ep.url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(ep.body),
+      })
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        // Clear successfully applied changes
+        if (data.applied) {
+          var appliedKeys = Object.keys(data.applied);
+          for (var a = 0; a < appliedKeys.length; a++) {
+            delete state.pendingChanges[appliedKeys[a]];
+            var row = document.querySelector('[data-key="' + appliedKeys[a] + '"]');
+            if (row) row.classList.remove('changed');
+          }
+        }
+        if (data.errors && data.errors.length > 0) {
+          for (var e = 0; e < data.errors.length; e++) {
+            totalErrors.push(data.errors[e]);
+            showSliderError(data.errors[e].field, data.errors[e].message);
+          }
+        }
+        completed++;
+        if (completed === endpoints.length) {
+          if (totalErrors.length > 0) {
+            showApplyStatus(totalErrors.length + ' error(s)', true);
+          } else {
+            showApplyStatus('Applied ' + keys.length + ' change(s)', false);
+          }
+        }
+      })
+      .catch(function(err) {
+        completed++;
+        totalErrors.push({ field: '', message: err.message || 'Network error' });
+        if (completed === endpoints.length) {
+          showApplyStatus('Error: ' + (err.message || 'Network error'), true);
+        }
+      });
+    })(endpoints[j]);
+  }
+}
+
+function showSliderError(field, message) {
+  var row = document.querySelector('[data-key="' + field + '"]');
+  if (!row) return;
+  // Remove existing error
+  var existing = row.querySelector('.slider-error');
+  if (existing) existing.remove();
+  var span = document.createElement('span');
+  span.className = 'slider-error';
+  span.style.cssText = 'color:#f44747;font-size:10px;margin-left:4px;';
+  span.textContent = message;
+  row.appendChild(span);
+  setTimeout(function() { if (span.parentNode) span.remove(); }, 5000);
+}
+
+function showApplyStatus(text, isError) {
+  var el = document.getElementById('applyStatus');
+  el.textContent = text;
+  el.style.color = isError ? '#f44747' : '#4ec9b0';
+  setTimeout(function() { el.textContent = ''; }, 4000);
+}
+
+function resetToDefaults() {
+  fetch('/api/params')
+    .then(function(r) { return r.json(); })
+    .then(function(params) {
+      state.paramMeta = params;
+      // Reset advanced sliders to defaults
+      for (var i = 0; i < params.length; i++) {
+        var p = params[i];
+        state.pendingChanges[p.name] = p.default;
+      }
+      renderAdvancedSliders();
+
+      // Reset primary sliders
+      setSlider('sliderTemp', 'valTemp', 0.7);
+      state.pendingChanges['temperature'] = 0.7;
+      setSlider('sliderCtxLen', 'valCtxLen', 40960);
+      state.pendingChanges['contextLength'] = 40960;
+      setSlider('sliderTimeout', 'valTimeout', 300000);
+      state.pendingChanges['timeout'] = 300000;
+
+      // Reset system controls
+      setSlider('sliderKill', 'valKill', 5);
+      state.pendingChanges['algedonic.kill_threshold'] = 5;
+      setSlider('sliderTrust', 'valTrust', 0.5);
+      state.pendingChanges['trustDecayThreshold'] = 0.5;
+      setSlider('sliderS4Freq', 'valS4Freq', 5);
+      state.pendingChanges['s4ReflectionFrequency'] = 5;
+
+      showApplyStatus('Sliders reset to defaults \u2014 click Apply to send', false);
+    })
+    .catch(function(err) {
+      showApplyStatus('Reset failed: ' + err.message, true);
+    });
+}
+
+// ── Standalone Mode ──────────────────────────────────────────
+
+function enterStandaloneMode() {
+  if (state.sessionActive) return;
+
+  document.getElementById('connLabel').textContent = 'No active session \u2014 showing historical data';
+  enableControls(false);
+
+  // Fetch historical events
+  fetch('/api/history')
+    .then(function(r) { return r.json(); })
+    .then(function(events) {
+      if (!Array.isArray(events)) return;
+      for (var i = 0; i < events.length; i++) {
+        var e = events[i];
+        if (!e || !e.data) continue;
+        var evt = e.data || e;
+        if (evt.type === 'tool.start') {
+          var name = evt.toolName || 'unknown';
+          if (!state.tools[name]) state.tools[name] = { success: 0, failure: 0 };
+        }
+        if (evt.type === 'tool.complete') {
+          var tName = evt.toolName || 'unknown';
+          if (!state.tools[tName]) state.tools[tName] = { success: 0, failure: 0 };
+          if (evt.isError) state.tools[tName].failure++;
+          else state.tools[tName].success++;
+        }
+      }
+      render();
+    })
+    .catch(function() { /* no history available */ });
+
+  // Fetch params
+  fetchParams();
+
+  // Fetch predictions
+  fetch('/api/predictions')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data) state.predictions = data;
+      render();
+    })
+    .catch(function() {});
+
+  // Fetch contracts
+  fetch('/api/contracts')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data && data.active) state.contract = data.status || null;
+      render();
+    })
+    .catch(function() {});
+}
+
+function fetchParams() {
+  fetch('/api/params')
+    .then(function(r) { return r.json(); })
+    .then(function(params) {
+      if (Array.isArray(params)) {
+        state.paramMeta = params;
+        buildAdvancedTabs();
+      }
+    })
+    .catch(function() {});
+}
+
+// ── Session Timer ────────────────────────────────────────────
+
+function startSessionTimer() {
+  if (sessionTimer) clearInterval(sessionTimer);
+  sessionTimer = setInterval(function() {
+    if (state.sessionStart) {
+      var elapsed = Date.now() - state.sessionStart.getTime();
+      document.getElementById('connDuration').textContent = formatDuration(elapsed);
+    }
+  }, 1000);
+}
+
+// ── Helpers ──────────────────────────────────────────────────
+
+function formatTime(d) {
+  return String(d.getHours()).padStart(2, '0') + ':' +
+         String(d.getMinutes()).padStart(2, '0') + ':' +
+         String(d.getSeconds()).padStart(2, '0');
+}
+
+function escHtml(s) {
+  if (!s) return '';
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function escAttr(s) {
+  return escHtml(s).replace(/'/g, '&#39;');
+}
+
+// ── Init ─────────────────────────────────────────────────────
+
+setupSliders();
+fetchParams();
+renderPredictions();
+connectWS();
+startSessionTimer();
+
+// Enter standalone mode after 2 seconds if no session arrives
+standaloneTimeout = setTimeout(function() {
+  if (!state.sessionActive) enterStandaloneMode();
+}, 2000);
+</script>
+</body>
+</html>
