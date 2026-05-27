@@ -127,6 +127,7 @@ export class CyberneticsGovernance {
 
   // Ablation toggle — when true, governance is a no-op passthrough
   private readonly _ablated: boolean
+  private _paused: boolean = false
   // Heterarchy: last computed commander
   private lastCommander: string = 'S3'
   // Observer divergence — last computed S3/S4 divergence on success_rate
@@ -241,7 +242,7 @@ export class CyberneticsGovernance {
     if (this.toolHistory.length > 50) {
       this.toolHistory = this.toolHistory.slice(-50)
     }
-    if (this._ablated) return // Skip all governance when ablated
+    if (this._ablated || this._paused) return // Skip all governance when ablated or paused
 
     // Route through real algedonic channel
     const action = this.algedonicIntegration.recordToolResult(name, success, latencyMs)
@@ -326,7 +327,7 @@ export class CyberneticsGovernance {
     userMessage?: string
   }): void {
     this.turnCount++
-    if (this._ablated) return // Skip all governance when ablated
+    if (this._ablated || this._paused) return // Skip all governance when ablated or paused
 
     // S4: Classify task complexity from user message
     if (metrics.userMessage) {
@@ -758,7 +759,7 @@ export class CyberneticsGovernance {
    * Call before every model invocation.
    */
   checkOrHalt(): void {
-    if (this._ablated) return // No kill switch when ablated
+    if (this._ablated || this._paused) return // No kill switch when ablated or paused
     this.algedonicIntegration.checkOrHalt()
   }
 
@@ -807,5 +808,19 @@ export class CyberneticsGovernance {
   /** Get the PredictionTracker for reading falsifiable hypothesis statistics. */
   getPredictionTracker(): PredictionTracker {
     return this._predictionTracker
+  }
+
+  pause(): void {
+    this._paused = true
+    console.log('[vsm] Governance paused — state preserved, processing suspended')
+  }
+
+  resume(): void {
+    this._paused = false
+    console.log('[vsm] Governance resumed')
+  }
+
+  isPaused(): boolean {
+    return this._paused
   }
 }

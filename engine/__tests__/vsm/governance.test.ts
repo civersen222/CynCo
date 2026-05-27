@@ -137,3 +137,18 @@ describe('CyberneticsGovernance', () => {
     expect(mode).toBe('full')
   })
 })
+
+// ─── CyberneticsGovernance: pause/resume ────────────────────────
+
+describe('pause/resume', () => {
+  it('pause() stops governance processing, resume() restores it', () => {
+    const gov = new CyberneticsGovernance()
+    expect(gov.isPaused()).toBe(false)
+    gov.pause()
+    expect(gov.isPaused()).toBe(true)
+    const report = gov.getReport()
+    expect(report.status).toBeDefined()
+    gov.resume()
+    expect(gov.isPaused()).toBe(false)
+  })
+})
