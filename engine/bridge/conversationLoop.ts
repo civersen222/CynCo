@@ -605,7 +605,27 @@ export class ConversationLoop {
       promptParts.push('## Strategy\n' + activeStrategy)
     }
 
-    // Governance signals routed through S5 enforcement, not prompt injection.
+    // Governance signal injection: tell the model it's stuck
+    const stuckCount = this.governance.getStuckCount()
+    if (stuckCount >= 3) {
+      const signal = stuckCount >= 5
+        ? `## Governance Signal — CRITICAL\n\n` +
+          `CRITICAL: You have been stuck for ${stuckCount} turns. Your tools have been restricted.\n\n` +
+          `You MUST change your approach NOW. Do something completely different from your last 5 actions.\n` +
+          `- If you have been reading files, STOP reading and start editing or writing\n` +
+          `- If editing has been failing, try a completely different file or strategy\n` +
+          `- Summarize what you know and what specific problem is blocking you`
+        : `## Governance Signal\n\n` +
+          `WARNING: You have been repeating similar actions for ${stuckCount} turns without progress.\n\n` +
+          `REQUIRED: Change your approach immediately.\n` +
+          `- If reading files: stop reading and start writing or editing\n` +
+          `- If editing fails: try a different file or approach\n` +
+          `- If searching: stop searching and act on what you already know\n` +
+          `- Summarize what you know and what specific problem is blocking you`
+      promptParts.push('')
+      promptParts.push(signal)
+      console.log(`[vsm] Injected ${stuckCount >= 5 ? 'CRITICAL' : 'WARNING'} governance signal (stuck ${stuckCount} turns)`)
+    }
 
     // Active contract context: remind the model of its current obligations
     if (globalContract.isActive()) {
