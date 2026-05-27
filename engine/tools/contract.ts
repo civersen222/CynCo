@@ -32,6 +32,16 @@ export class ContractState {
   /** Number of times the contract has been checked / enforcement rounds run */
   enforcementRounds: number = 0
 
+  private enforcementEnabled: boolean = true
+
+  setEnforcementEnabled(enabled: boolean): void {
+    this.enforcementEnabled = enabled
+  }
+
+  isEnforcementEnabled(): boolean {
+    return this.enforcementEnabled
+  }
+
   /** Create (or replace) the contract with a title, brief, and list of assertion texts. */
   create(title: string, brief: string, assertionTexts: string[]): void {
     this.title = title

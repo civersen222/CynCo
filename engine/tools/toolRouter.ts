@@ -33,6 +33,17 @@ export function getToolsForCategory(category: string, allTools: ToolImpl[]): Too
   return allTools.filter(t => nameSet.has(t.name))
 }
 
+let routingOverride: boolean | null = null
+
+export function setRoutingEnabled(enabled: boolean | null): void {
+  routingOverride = enabled
+}
+
+export function isRoutingEnabled(): boolean {
+  return routingOverride !== null ? routingOverride : false
+}
+
 export function shouldUseRouting(contextLength: number): boolean {
+  if (routingOverride !== null) return routingOverride
   return contextLength <= 65536 // Active for all local models (saves ~2000 schema tokens)
 }
