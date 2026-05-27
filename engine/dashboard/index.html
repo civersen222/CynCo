@@ -602,16 +602,24 @@ function handleEvent(event) {
       state.tier = event.tier || (event.contextLength > 65536 ? 'advanced' : event.contextLength > 16384 ? 'standard' : 'basic');
       state.sessionStart = new Date();
       state.turnCount = 0;
+      // Sync context length slider from actual detected value
+      if (event.contextLength) setSlider('sliderCtxLen', 'valCtxLen', event.contextLength);
       enableControls(true);
       if (standaloneTimeout) { clearTimeout(standaloneTimeout); standaloneTimeout = null; }
+      // Fetch initial prediction data
+      fetchPredictions();
       break;
 
     case 'governance.status':
       state.governance = event;
+      // Predictions update per turn — fetch latest via REST since they're not in WS events
+      fetchPredictions();
       break;
 
     case 'context.status':
       state.context = event;
+      // Keep context length slider in sync with actual engine value
+      if (event.contextLength) setSlider('sliderCtxLen', 'valCtxLen', event.contextLength);
       break;
 
     case 'tool.start': {
@@ -1328,6 +1336,15 @@ function enterStandaloneMode() {
     .then(function(data) {
       if (data && data.active) state.contract = data.status || null;
       render();
+    })
+    .catch(function() {});
+}
+
+function fetchPredictions() {
+  fetch('/api/predictions')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data) { state.predictions = data; render(); }
     })
     .catch(function() {});
 }
