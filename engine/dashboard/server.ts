@@ -11,7 +11,8 @@
  * contract, and audit event is inspectable and tunable from a browser.
  */
 
-import { join } from 'path'
+import { join, dirname } from 'path'
+import { fileURLToPath } from 'url'
 import { readFileSync, existsSync } from 'fs'
 import { homedir } from 'os'
 import type { Server, ServerWebSocket } from 'bun'
@@ -105,7 +106,8 @@ export class DashboardServer {
     this._port = port
 
     // Read index.html once at startup
-    const htmlPath = join(import.meta.dir, 'index.html')
+    const __dir = import.meta.dir ?? dirname(fileURLToPath(import.meta.url))
+    const htmlPath = join(__dir, 'index.html')
     if (existsSync(htmlPath)) {
       this.indexHtml = readFileSync(htmlPath, 'utf-8')
     } else {

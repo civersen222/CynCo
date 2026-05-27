@@ -283,3 +283,57 @@ describe('getPort()', () => {
     expect(server.getPort()).toBe(PORT)
   })
 })
+
+// ── integration: event flow ───────────────────────────────────────
+
+describe('integration: event flow', () => {
+  it('governance.status event reaches WS client', async () => {
+    const ws = new WebSocket(`ws://localhost:${PORT}/ws`)
+    const received: any[] = []
+
+    await new Promise<void>((resolve, reject) => {
+      ws.onopen = () => resolve()
+      ws.onerror = (e) => reject(e)
+    })
+    await new Promise(r => setTimeout(r, 50))
+    ws.onmessage = (e) => received.push(JSON.parse(typeof e.data === 'string' ? e.data : e.data.toString()))
+
+    server.broadcast({
+      type: 'governance.status',
+      health: 'healthy',
+      s3s4Balance: 'balanced',
+      toolSuccessRate: 0.94,
+      stuckTurns: 0,
+      varietyRatio: 0.72,
+      axiomHealth: { holding: 3, total: 3, violations: [] },
+    } as any)
+
+    await new Promise(r => setTimeout(r, 100))
+    expect(received[0].type).toBe('governance.status')
+    expect(received[0].toolSuccessRate).toBe(0.94)
+    ws.close()
+    await new Promise(r => setTimeout(r, 50))
+  })
+
+  it('tool.start + tool.complete flow', async () => {
+    const ws = new WebSocket(`ws://localhost:${PORT}/ws`)
+    const received: any[] = []
+
+    await new Promise<void>((resolve, reject) => {
+      ws.onopen = () => resolve()
+      ws.onerror = (e) => reject(e)
+    })
+    await new Promise(r => setTimeout(r, 50))
+    ws.onmessage = (e) => received.push(JSON.parse(typeof e.data === 'string' ? e.data : e.data.toString()))
+
+    server.broadcast({ type: 'tool.start', toolId: 'int-1', toolName: 'Edit', input: { file: 'test.ts' } } as any)
+    server.broadcast({ type: 'tool.complete', toolId: 'int-1', toolName: 'Edit', result: 'ok', isError: false } as any)
+
+    await new Promise(r => setTimeout(r, 100))
+    expect(received).toHaveLength(2)
+    expect(received[0].type).toBe('tool.start')
+    expect(received[1].isError).toBe(false)
+    ws.close()
+    await new Promise(r => setTimeout(r, 50))
+  })
+})

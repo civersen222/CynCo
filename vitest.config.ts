@@ -7,5 +7,7 @@ export default defineConfig({
       'bun:test': 'vitest',
     },
     include: ['engine/__tests__/**/*.test.ts'],
+    // Provide Bun.serve shim so tests that use Bun.serve run under vitest
+    setupFiles: ['engine/__tests__/setup/bunShim.ts'],
   },
 })
