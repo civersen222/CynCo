@@ -646,7 +646,7 @@ export class ConversationLoop {
           })(),
           agreementRatio: (govReport as any).agreementRatio ?? 1.0,
           observerDivergence: (govReport as any).observerDivergence ?? null,
-          demotedTools: this.toolExecutor.getToolScorer?.()?.getDemotedTools() ?? [],
+          demotedTools: this.executor.getToolScorer?.()?.getDemotedTools() ?? [],
         })
 
         // L3: APPLY S5 decisions — hard enforcement, not advisory
@@ -1067,7 +1067,7 @@ export class ConversationLoop {
       }
 
       // Filter out demoted tools (trust score decay)
-      const scorer = this.toolExecutor.getToolScorer?.()
+      const scorer = this.executor.getToolScorer?.()
       const demoted = scorer ? new Set(scorer.getDemotedTools()) : new Set<string>()
       let iterationTools = demoted.size > 0
         ? toolDefs.filter(t => !demoted.has(t.name))
