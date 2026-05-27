@@ -34,5 +34,5 @@ export function getToolsForCategory(category: string, allTools: ToolImpl[]): Too
 }
 
 export function shouldUseRouting(contextLength: number): boolean {
-  return contextLength < 32768
+  return contextLength <= 65536 // Active for all local models (saves ~2000 schema tokens)
 }

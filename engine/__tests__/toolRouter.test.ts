@@ -110,18 +110,15 @@ describe('getToolsForCategory', () => {
 })
 
 describe('shouldUseRouting', () => {
-  it('returns true for context length below 32768', () => {
+  it('returns true for context length at or below 65536', () => {
     expect(shouldUseRouting(8192)).toBe(true)
     expect(shouldUseRouting(16384)).toBe(true)
-    expect(shouldUseRouting(32767)).toBe(true)
+    expect(shouldUseRouting(32768)).toBe(true)
+    expect(shouldUseRouting(65536)).toBe(true)
   })
 
-  it('returns false for context length at 32768', () => {
-    expect(shouldUseRouting(32768)).toBe(false)
-  })
-
-  it('returns false for context length above 32768', () => {
-    expect(shouldUseRouting(65536)).toBe(false)
+  it('returns false for context length above 65536', () => {
+    expect(shouldUseRouting(65537)).toBe(false)
     expect(shouldUseRouting(131072)).toBe(false)
   })
 })
