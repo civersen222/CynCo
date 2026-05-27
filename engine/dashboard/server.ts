@@ -30,6 +30,7 @@ export interface DashboardDeps {
   getGovernance?: () => any
   getToolScorer?: () => any
   getS4Reflector?: () => any
+  getSessionInfo?: () => { model: string; contextLength: number; tier?: string } | null
   applyEngineConfig?: (patches: Record<string, unknown>) => { applied: Record<string, unknown>; errors: { field: string; message: string }[] }
   setToolRouting?: (enabled: boolean) => void
   getToolRouting?: () => boolean
@@ -150,6 +151,8 @@ export class DashboardServer {
               return this.getParams()
             case '/api/history':
               return this.getHistory()
+            case '/api/session':
+              return jsonResponse(this.deps.getSessionInfo?.() ?? null)
             default:
               return jsonResponse({ error: 'Not found' }, 404)
           }

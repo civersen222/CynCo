@@ -594,26 +594,45 @@ function connectWS() {
 
 // ── Event Handler ────────────────────────────────────────────
 
+function activateSession(contextLength) {
+  // Called when we detect a live session (from session.ready OR any engine event)
+  if (state.sessionActive) return;
+  state.sessionActive = true;
+  if (!state.sessionStart) state.sessionStart = new Date();
+  if (standaloneTimeout) { clearTimeout(standaloneTimeout); standaloneTimeout = null; }
+  enableControls(true);
+  document.getElementById('connLabel').textContent = '';
+  // Sync context length from engine if available
+  if (contextLength) setSlider('sliderCtxLen', 'valCtxLen', contextLength);
+  // Fetch current data from REST endpoints
+  fetchPredictions();
+  fetchContracts();
+  // Fetch session info for model/tier if we missed session.ready
+  if (!state.model) fetchSessionInfo();
+}
+
 function handleEvent(event) {
+  // Any engine event means a session is active — detect late connections
+  var liveEvents = ['governance.status', 'context.status', 'tool.start', 'tool.complete',
+    's2.decision', 'vibe.state_changed', 'vibe.confidence_update', 'message.complete'];
+  if (!state.sessionActive && liveEvents.indexOf(event.type) >= 0) {
+    activateSession(event.contextLength || null);
+  }
+
   switch (event.type) {
     case 'session.ready':
-      state.sessionActive = true;
       state.model = event.model || '';
       state.tier = event.tier || (event.contextLength > 65536 ? 'advanced' : event.contextLength > 16384 ? 'standard' : 'basic');
       state.sessionStart = new Date();
       state.turnCount = 0;
-      // Sync context length slider from actual detected value
-      if (event.contextLength) setSlider('sliderCtxLen', 'valCtxLen', event.contextLength);
-      enableControls(true);
-      if (standaloneTimeout) { clearTimeout(standaloneTimeout); standaloneTimeout = null; }
-      // Fetch initial prediction data
-      fetchPredictions();
+      activateSession(event.contextLength);
       break;
 
     case 'governance.status':
       state.governance = event;
-      // Predictions update per turn — fetch latest via REST since they're not in WS events
+      // Predictions and contracts update per turn — fetch via REST
       fetchPredictions();
+      fetchContracts();
       break;
 
     case 'context.status':
@@ -1345,6 +1364,33 @@ function fetchPredictions() {
     .then(function(r) { return r.json(); })
     .then(function(data) {
       if (data) { state.predictions = data; render(); }
+    })
+    .catch(function() {});
+}
+
+function fetchContracts() {
+  fetch('/api/contracts')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data) { state.contract = data.status || null; }
+      else { state.contract = null; }
+      render();
+    })
+    .catch(function() {});
+}
+
+function fetchSessionInfo() {
+  fetch('/api/session')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data) {
+        if (data.model) state.model = data.model;
+        if (data.contextLength) {
+          setSlider('sliderCtxLen', 'valCtxLen', data.contextLength);
+        }
+        if (data.tier) state.tier = data.tier;
+        render();
+      }
     })
     .catch(function() {});
 }

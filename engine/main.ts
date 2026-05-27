@@ -338,6 +338,7 @@ try {
       getGovernance: () => loop.getGovernance(),
       getToolScorer: () => loop.getExecutor()?.getToolScorer?.(),
       getS4Reflector: () => loop.getGovernance().getReflector(),
+      getSessionInfo: () => ({ model: config.model || '', contextLength: config.contextLength || 32768, tier: config.tier || 'auto' }),
       applyEngineConfig: (patches) => {
         const { handleConfigUpdate } = require('./bridge/configHandlers.js')
         return handleConfigUpdate(config, patches)
