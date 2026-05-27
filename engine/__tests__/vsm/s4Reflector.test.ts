@@ -117,6 +117,26 @@ describe('deriveFromMetrics', () => {
   })
 })
 
+describe('S4Reflector.setFrequency', () => {
+  it('sets frequency within bounds', () => {
+    const r = new S4Reflector(8, 3, 15)
+    r.setFrequency(5)
+    expect(r.getFrequency()).toBe(5)
+  })
+
+  it('clamps to min bound', () => {
+    const r = new S4Reflector(8, 3, 15)
+    r.setFrequency(1)
+    expect(r.getFrequency()).toBe(3)
+  })
+
+  it('clamps to max bound', () => {
+    const r = new S4Reflector(8, 3, 15)
+    r.setFrequency(30)
+    expect(r.getFrequency()).toBe(15)
+  })
+})
+
 describe('parseResponse robustness', () => {
   let reflector: S4Reflector
 

@@ -23,6 +23,10 @@ export class S4Reflector {
 
   getFrequency(): number { return this.x }
 
+  setFrequency(n: number): void {
+    this.x = Math.max(this.minX, Math.min(this.maxX, Math.round(n)))
+  }
+
   shouldReflect(turnCount: number): boolean {
     return turnCount > 0 && turnCount % this.x === 0
   }
