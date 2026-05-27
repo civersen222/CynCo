@@ -19,6 +19,7 @@ export type GovernanceReport = {
   agreementRatio: number
   observerDivergence: number | null
   axiomHealth: AxiomHealth
+  recentToolNames: string[]
 }
 
 export type GovernanceAlert = {

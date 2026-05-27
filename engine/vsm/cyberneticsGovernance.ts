@@ -138,6 +138,7 @@ export class CyberneticsGovernance {
   private turnCount = 0
   private stuckCount = 0
   private lastResponses: string[] = []
+  private lastToolSignatures: string[] = []
   private currentTaskComplexity = 1
   private lastVarietyRatio = 1.0
   private consecutiveUnstableCount = 0
@@ -242,6 +243,9 @@ export class CyberneticsGovernance {
     if (this.toolHistory.length > 50) {
       this.toolHistory = this.toolHistory.slice(-50)
     }
+    // Track tool signatures for smarter stuck detection
+    this.lastToolSignatures.push(name)
+    if (this.lastToolSignatures.length > 5) this.lastToolSignatures = this.lastToolSignatures.slice(-5)
     if (this._ablated || this._paused) return // Skip all governance when ablated or paused
 
     // Route through real algedonic channel
@@ -453,11 +457,14 @@ export class CyberneticsGovernance {
       }
     }
 
-    // Stuck detection: same response pattern
+    // Stuck detection: check BOTH response text AND tool signatures
     this.lastResponses.push(metrics.response?.slice(0, 100) ?? '')
     if (this.lastResponses.length > 5) this.lastResponses = this.lastResponses.slice(-5)
     const uniqueResponses = new Set(this.lastResponses).size
-    if (this.lastResponses.length >= 3 && uniqueResponses === 1) {
+    const uniqueToolSigs = new Set(this.lastToolSignatures).size
+    const responseStuck = this.lastResponses.length >= 3 && uniqueResponses === 1
+    const toolStuck = this.lastToolSignatures.length >= 3 && uniqueToolSigs === 1
+    if (responseStuck || toolStuck) {
       this.stuckCount++
     } else {
       this.stuckCount = Math.max(0, this.stuckCount - 1)
@@ -582,6 +589,7 @@ export class CyberneticsGovernance {
       agreementRatio: this.conversationTheory.getAgreementRatio(),
       observerDivergence: this.lastObserverDivergence,
       axiomHealth: this.lastAxiomHealth,
+      recentToolNames: this.getRecentToolNames(),
     }
   }
 
@@ -808,6 +816,14 @@ export class CyberneticsGovernance {
   /** Get the PredictionTracker for reading falsifiable hypothesis statistics. */
   getPredictionTracker(): PredictionTracker {
     return this._predictionTracker
+  }
+
+  getStuckCount(): number {
+    return this.stuckCount
+  }
+
+  getRecentToolNames(): string[] {
+    return [...this.lastToolSignatures]
   }
 
   pause(): void {
