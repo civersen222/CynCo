@@ -447,8 +447,12 @@ export class ConversationLoop {
             }
           }
         }
+        // If no specific files detected, add a generic code-change assertion
+        if (assertions.length === 0) {
+          assertions.push('Code was modified to address the task')
+        }
         assertions.push('Changes committed to git')
-        if (assertions.length > 1) {
+        if (assertions.length >= 2) {
           globalContract.create(
             text.slice(0, 60),
             text.slice(0, 200),
