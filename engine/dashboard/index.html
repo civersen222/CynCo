@@ -804,6 +804,14 @@ function renderGovernance() {
   document.getElementById('govBalance').textContent = gov.s3s4Balance || '\u2014';
   document.getElementById('govToolSuccess').textContent = gov.toolSuccessRate != null ? Math.round(gov.toolSuccessRate * 100) + '%' : '\u2014';
   document.getElementById('govStuck').textContent = String(gov.stuckTurns || 0);
+  document.getElementById('govVariety').textContent = gov.varietyRatio != null ? gov.varietyRatio.toFixed(2) : '\u2014';
+  document.getElementById('govAlgedonic').textContent = String(gov.algedonicAlerts || 0);
+  if (gov.axiomHealth) {
+    document.getElementById('govAxioms').textContent = gov.axiomHealth.holding + '/' + gov.axiomHealth.total + ' holding';
+    if (gov.axiomHealth.violations && gov.axiomHealth.violations.length > 0) {
+      document.getElementById('govAxioms').textContent += ' (' + gov.axiomHealth.violations.length + ' violations)';
+    }
+  }
 }
 
 function renderS5() {

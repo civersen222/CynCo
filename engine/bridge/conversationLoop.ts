@@ -1278,6 +1278,11 @@ export class ConversationLoop {
                 s3s4Balance: turnReport.s3s4Balance,
                 toolSuccessRate: turnReport.toolSuccessRate,
                 stuckTurns: turnReport.stuckTurns,
+                varietyRatio: turnReport.varietyRatio,
+                varietyBalance: turnReport.varietyBalance,
+                algedonicAlerts: turnReport.algedonicAlerts,
+                axiomHealth: turnReport.axiomHealth,
+                consecutiveUnstable: turnReport.consecutiveUnstable,
                 suggestion: turnReport.stuckTurns > 0 ? 'Model may be stuck — consider changing approach' : null,
               })
 
