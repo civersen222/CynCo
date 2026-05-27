@@ -40,6 +40,7 @@ import {
 import { getJournal } from '../training/decisionJournal.js'
 import { makeJournalEntry } from '../training/types.js'
 import { globalContract } from '../tools/contract.js'
+import { setSideQuery, resetMergeTracking } from '../tools/impl/edit.js'
 
 type Message = {
   role: 'user' | 'assistant' | 'system'
@@ -164,6 +165,12 @@ export class ConversationLoop {
       requestApproval,
       trustProfile: opts.trustProfile,
       approveAll: opts.config.approveAll,
+    })
+
+    // Inject sideQuery into Edit tool for semantic merge fallback
+    setSideQuery((prompt: string, system?: string) => {
+      const fullPrompt = system ? `${system}\n\n${prompt}` : prompt
+      return this.sideQuery(fullPrompt)
     })
 
     this.workflowEngine = opts.workflowEngine ?? new WorkflowEngine((event) => {
@@ -639,6 +646,7 @@ export class ConversationLoop {
           })(),
           agreementRatio: (govReport as any).agreementRatio ?? 1.0,
           observerDivergence: (govReport as any).observerDivergence ?? null,
+          demotedTools: this.toolExecutor.getToolScorer?.()?.getDemotedTools() ?? [],
         })
 
         // L3: APPLY S5 decisions — hard enforcement, not advisory
@@ -1045,6 +1053,9 @@ export class ConversationLoop {
         console.log(`[loop] Compressed to ${this.messages.length} messages (files tracked: ${this.fileTracker.getModifiedFiles().length} modified, ${this.fileTracker.getReadFiles().length} read)`)
       }
 
+      // Reset per-turn semantic merge tracking
+      resetMergeTracking()
+
       // Algedonic kill switch — HALT if critical failures accumulated
       try {
         this.governance.checkOrHalt()
@@ -1055,8 +1066,48 @@ export class ConversationLoop {
         return
       }
 
-      // Tools already filtered by S5 enforcement and workflow phase restrictions.
-      const iterationTools = toolDefs
+      // Filter out demoted tools (trust score decay)
+      const scorer = this.toolExecutor.getToolScorer?.()
+      const demoted = scorer ? new Set(scorer.getDemotedTools()) : new Set<string>()
+      let iterationTools = demoted.size > 0
+        ? toolDefs.filter(t => !demoted.has(t.name))
+        : toolDefs
+      if (demoted.size > 0) {
+        console.log(`[trust] Demoted tools excluded: ${[...demoted].join(', ')}`)
+      }
+
+      // Two-stage tool routing for small context models
+      try {
+        const { shouldUseRouting, getToolsForCategory, CATEGORY_SELECTOR_TOOL } = await import('../tools/toolRouter.js')
+        if (shouldUseRouting(this.config.contextLength ?? 32768) && iterationTools.length > 5) {
+          // Stage 1: send only category selector
+          const routingGen = localCallModel({
+            messages: this.messages,
+            systemPrompt,
+            thinkingConfig,
+            tools: [CATEGORY_SELECTOR_TOOL as any],
+            signal: this.abortController?.signal ?? new AbortController().signal,
+            options: { model: this.config.model! },
+            deps,
+          })
+          for await (const evt of routingGen) {
+            if (evt.type === 'tool_use' && evt.name === 'select_category') {
+              const category = (evt as any).input?.category ?? 'all'
+              console.log(`[routing] Category selected: ${category}`)
+              const { ALL_TOOLS } = await import('../tools/registry.js')
+              iterationTools = getToolsForCategory(category, ALL_TOOLS).map(t => ({
+                name: t.name,
+                description: t.description,
+                input_schema: t.inputSchema,
+              }))
+              break
+            }
+            if (evt.type === 'message_stop') break // model didn't use the tool — fall through to all tools
+          }
+        }
+      } catch (routeErr) {
+        console.log(`[routing] Error: ${routeErr instanceof Error ? routeErr.message : routeErr}`)
+      }
 
       const gen = localCallModel({
         messages: this.messages,

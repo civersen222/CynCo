@@ -1,6 +1,23 @@
 import { readFileSync, writeFileSync, existsSync } from 'fs'
 import { resolve } from 'path'
-import type { ToolImpl } from '../types.js'
+import type { ToolImpl, ToolResult } from '../types.js'
+import { attemptSemanticMerge } from '../semanticMerge.js'
+
+// Track which files have been attempted for semantic merge this session
+const mergeAttemptedFiles = new Set<string>()
+
+/** Reset merge tracking at the start of each turn. Called from conversation loop. */
+export function resetMergeTracking(): void {
+  mergeAttemptedFiles.clear()
+}
+
+// Side query function — injected by conversation loop
+let _sideQuery: ((prompt: string, system?: string) => Promise<string>) | null = null
+
+/** Set the side query function for semantic merge. Called from conversation loop. */
+export function setSideQuery(fn: (prompt: string, system?: string) => Promise<string>): void {
+  _sideQuery = fn
+}
 
 export const editTool: ToolImpl = {
   name: 'Edit',
@@ -31,6 +48,21 @@ export const editTool: ToolImpl = {
       const occurrences = content.split(oldStr).length - 1
 
       if (occurrences === 0) {
+        // Semantic merge fallback: old_str not found, try LLM-powered merge
+        if (_sideQuery) {
+          const mergePrompt = attemptSemanticMerge(content, oldStr, newStr, filePath, mergeAttemptedFiles)
+          if (mergePrompt) {
+            try {
+              const merged = await _sideQuery(mergePrompt.user, mergePrompt.system)
+              if (merged && merged.trim() && merged.trim() !== content.trim()) {
+                writeFileSync(filePath, merged.trim())
+                return { output: `Edited ${filePath}: applied via semantic merge (exact match failed)`, isError: false }
+              }
+            } catch (mergeErr) {
+              console.log(`[edit] Semantic merge failed: ${mergeErr}`)
+            }
+          }
+        }
         return { output: `Error: old_string not found in ${filePath}`, isError: true }
       }
       if (occurrences > 1 && !replaceAll) {
