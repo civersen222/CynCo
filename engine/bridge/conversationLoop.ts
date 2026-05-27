@@ -1014,6 +1014,39 @@ export class ConversationLoop {
     let summaryInjected = false
 
     for (let i = 0; i < maxIterations; i++) {
+      // ── Stuck loop escape: escalating intervention ──
+      const stuckCount = this.governance.getStuckCount()
+
+      // Tier 4: Hard halt at 15+ stuck turns
+      if (stuckCount >= 15) {
+        console.log(`[vsm] HALT: stuck for ${stuckCount} turns — stopping model loop`)
+        this.emit({
+          type: 'stream.token',
+          text: '\n\n---\n**Session halted** — stuck for ' + stuckCount +
+            ' turns without progress. Send a message to redirect.\n',
+          messageId: '',
+        } as any)
+        this.emit({ type: 'message.complete', messageId: '', stopReason: 'end_turn' } as any)
+        break
+      }
+
+      // Tier 3: Synthetic user message at 10+ stuck turns (every 5 turns)
+      if (stuckCount >= 10 && stuckCount % 5 === 0) {
+        console.log(`[vsm] REDIRECT: injecting synthetic user message (stuck ${stuckCount} turns)`)
+        this.messages.push({
+          role: 'user',
+          content: [{
+            type: 'text',
+            text: 'STOP. You have been repeating the same actions for ' + stuckCount + ' turns without making progress. ' +
+              'Before your next action, answer these questions:\n' +
+              '1. What are you trying to accomplish?\n' +
+              '2. What specific problem is preventing progress?\n' +
+              '3. What completely different approach could you try?\n\n' +
+              'Do NOT repeat any tool call you have made in the last 5 turns.',
+          }],
+        })
+      }
+
       const iterationStartMs = Date.now()
 
       // S2: Check for steering interrupts
