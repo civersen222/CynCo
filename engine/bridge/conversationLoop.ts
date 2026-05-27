@@ -430,6 +430,35 @@ export class ConversationLoop {
     this.consecutiveNudges = 0
     this.steering.clear()
 
+    // Auto-create contract from user message — force verification, don't trust the model
+    if (!globalContract.isActive()) {
+      const lowerText = text.toLowerCase()
+      const isEditTask = /\b(edit|add|create|write|fix|change|modify|delete|remove|wire|implement|refactor)\b/.test(lowerText)
+      if (isEditTask && text.length > 30) {
+        const assertions: string[] = []
+        // Extract file targets from the message
+        const fileMatches = text.match(/[\w./\\-]+\.(py|ts|js|tsx|jsx|rs|go|java|c|cpp|h|html|css|json|yaml|yml|toml|md)\b/g)
+        if (fileMatches) {
+          for (const f of [...new Set(fileMatches)].slice(0, 3)) {
+            if (/\b(create|write|new file)\b/i.test(text) && text.includes(f)) {
+              assertions.push(`File ${f} exists after changes`)
+            } else {
+              assertions.push(`File ${f} was modified (git diff shows changes)`)
+            }
+          }
+        }
+        assertions.push('Changes committed to git')
+        if (assertions.length > 1) {
+          globalContract.create(
+            text.slice(0, 60),
+            text.slice(0, 200),
+            assertions,
+          )
+          console.log(`[contract] Auto-created: ${assertions.length} assertions for "${text.slice(0, 50)}..."`)
+        }
+      }
+    }
+
     // Compact when context exceeds the configured warning threshold.
     // With flash attention, attention is ~O(n) not O(n²), so we can use
     // much more of the context window before compacting.

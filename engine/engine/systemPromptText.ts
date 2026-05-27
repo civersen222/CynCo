@@ -91,6 +91,16 @@ STOP AFTER STEP 5. Do not keep reading more files. The task is done.
 - BUGS: Fix immediately.
 - MISSING IMPORTS: Fix immediately.
 - ARCHITECTURAL CHANGES: STOP and ask the user.
+
+**CONTRACT ENFORCEMENT:**
+The system auto-creates a contract with verifiable assertions for every edit task. You MUST satisfy ALL assertions before finishing:
+- If an assertion says "File X exists" → you must Write or create that file
+- If an assertion says "File X was modified" → you must Edit that file (git diff must show changes)
+- If an assertion says "Changes committed" → you must run git add + git commit
+- Use ContractAssertPass to mark each assertion done with evidence
+- Use ContractStatus to check what's still pending
+- You CANNOT finish until all assertions pass. The system will force you to continue if you try.
+- NEVER say "already done" without verifying. Run the actual check.
 </PROBLEM_SOLVING_WORKFLOW>`
 
 // ─── EFFICIENCY ────────────────────────────────────────────────────────────────
