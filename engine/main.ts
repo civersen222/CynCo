@@ -40,6 +40,7 @@ import { LSPManager } from './lsp/manager.js'
 import { VibeController } from './vibe/controller.js'
 import { TemplateLoader } from './prompts/templateLoader.js'
 import { initJournal } from './training/decisionJournal.js'
+import { DashboardServer } from './dashboard/server.js'
 
 // ─── MCP Discovery (standalone — standalone implementation) ──────
 
@@ -297,12 +298,18 @@ AuditLogger.init(auditSessionId, process.cwd(), config.model)
 // Audit-relevant event prefixes
 const AUDIT_EVENT_PREFIXES = ['governance.', 'context.', 's2.', 's5.', 'algedonic.', 'workflow.']
 
+// Dashboard server declared before loop — assigned after loop creation.
+// The emit closure captures dashboardServer by reference, so broadcasts
+// work once the server is initialised below.
+let dashboardServer: DashboardServer | null = null
+
 const loop = new ConversationLoop({
   config,
   provider,
   emit: (event) => {
     console.log(`[localcode] Emitting: ${event.type}`)
     wsServer.emit(event)
+    dashboardServer?.broadcast(event)
 
     // Tee audit-relevant events to the audit log
     const evType = (event as any).type ?? ''
@@ -320,6 +327,35 @@ const loop = new ConversationLoop({
   },
   s5: s5Orchestrator,
 })
+
+// ─── Dashboard Server (Governance UI) ─────────────────────────
+try {
+  dashboardServer = new DashboardServer({
+    port: port + 1,
+    deps: {
+      getGovernanceReport: () => loop.getGovernanceReport(),
+      getPredictionStats: () => loop.getGovernance().getPredictionTracker().getStatistics(),
+      getGovernance: () => loop.getGovernance(),
+      getToolScorer: () => loop.getExecutor()?.getToolScorer?.(),
+      getS4Reflector: () => loop.getGovernance().getReflector(),
+      applyEngineConfig: (patches) => {
+        const { handleConfigUpdate } = require('./bridge/configHandlers.js')
+        return handleConfigUpdate(config, patches)
+      },
+      setToolRouting: (enabled) => {
+        const { setRoutingEnabled } = require('./tools/toolRouter.js')
+        setRoutingEnabled(enabled)
+      },
+      getToolRouting: () => {
+        const { isRoutingEnabled } = require('./tools/toolRouter.js')
+        return isRoutingEnabled()
+      },
+    },
+  })
+  console.log(`[dashboard] Governance dashboard on http://localhost:${port + 1}`)
+} catch (e) {
+  console.warn('[dashboard] Failed to start dashboard server:', e)
+}
 
 // Write session outcome on clean shutdown
 async function cleanShutdown(signal: string) {
@@ -353,6 +389,7 @@ function getOrCreateVibeController(): VibeController {
       emit: (event) => {
         console.log(`[vibe] Emitting: ${(event as any).type}`)
         wsServer.emit(event as any)
+        dashboardServer?.broadcast(event as any)
       },
       sideQuery: async (prompt: string) => {
         const resp = await fetch(`${config.baseUrl}/api/chat`, {

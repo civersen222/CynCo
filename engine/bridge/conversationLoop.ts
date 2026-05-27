@@ -1554,6 +1554,10 @@ export class ConversationLoop {
     return this.governance
   }
 
+  getExecutor() {
+    return this.executor
+  }
+
   getFileTracker() {
     return this.fileTracker
   }
