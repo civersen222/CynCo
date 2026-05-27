@@ -2,6 +2,15 @@ type ToolStats = { successes: number; total: number }
 
 export class ToolScorer {
   private scores = new Map<string, ToolStats>()
+  private demotionThreshold: number = 0.35
+
+  setDemotionThreshold(threshold: number): void {
+    this.demotionThreshold = Math.max(0, Math.min(1, threshold))
+  }
+
+  getDemotionThreshold(): number {
+    return this.demotionThreshold
+  }
 
   record(toolName: string, success: boolean): void {
     const stats = this.scores.get(toolName) ?? { successes: 0, total: 0 }
@@ -18,7 +27,7 @@ export class ToolScorer {
   shouldDemote(toolName: string): boolean {
     const stats = this.scores.get(toolName)
     if (!stats || stats.total < 3) return false
-    return this.getConfidence(toolName) < 0.35
+    return this.getConfidence(toolName) < this.demotionThreshold
   }
 
   getDemotedTools(): string[] {

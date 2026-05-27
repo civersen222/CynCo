@@ -71,6 +71,19 @@ describe('ToolScorer', () => {
     expect(demoted).not.toContain('Edit')
   })
 
+  it('uses configurable demotion threshold', () => {
+    const scorer = new ToolScorer()
+    scorer.record('TestTool', true)
+    scorer.record('TestTool', false)
+    scorer.record('TestTool', false)
+    // confidence = (1+1)/(3+2) = 0.4, default threshold 0.35 → NOT demoted
+    expect(scorer.shouldDemote('TestTool')).toBe(false)
+    // Raise threshold → IS demoted
+    scorer.setDemotionThreshold(0.5)
+    expect(scorer.shouldDemote('TestTool')).toBe(true)
+    expect(scorer.getDemotionThreshold()).toBe(0.5)
+  })
+
   it('accumulates scores correctly across multiple records', () => {
     const scorer = new ToolScorer()
     for (let i = 0; i < 8; i++) scorer.record('Grep', true)
