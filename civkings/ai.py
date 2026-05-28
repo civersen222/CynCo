@@ -12,7 +12,7 @@ class AI:
         adj = {"expansion": max(0, 0.8 - 0.2 * num_cities)}
         adj["expansion"] -= 0.1
         if num_cities < 4:
-            adj["expansion"] += max(0, 0.8 - 0.2 * num_cities)
+            adj["expansion"] += 0.3
         if adj["expansion"] < 0:
             adj["expansion"] = 0
         return adj["expansion"]
