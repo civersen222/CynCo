@@ -407,7 +407,7 @@ input[type="range"]:disabled::-webkit-slider-thumb { cursor: not-allowed; }
     <div class="panel-title">Prediction Tracker (H1&ndash;H8)</div>
     <div id="predContent">
       <table class="pred-table">
-        <thead><tr><th>ID</th><th>Name</th><th>Hit Rate</th><th>Samples</th><th>Null</th></tr></thead>
+        <thead><tr><th>ID</th><th>Name</th><th>Hit Rate</th><th>Samples</th><th>Null</th><th>Verdict</th></tr></thead>
         <tbody id="predBody"></tbody>
       </table>
     </div>
@@ -776,7 +776,9 @@ function renderContext() {
 
   bar.style.width = pct + '%';
   bar.className = 'progress-fill' + (pct > 80 ? ' critical' : pct > 60 ? ' warn' : '');
-  text.textContent = est.toLocaleString() + ' / ' + total.toLocaleString() + ' tokens (' + pct + '%)';
+  var remaining = total - est;
+  var pctLabel = pct <= 40 ? 'healthy' : pct <= 60 ? 'moderate' : pct <= 75 ? 'elevated' : pct <= 90 ? 'HIGH' : 'CRITICAL';
+  text.textContent = est.toLocaleString() + ' / ' + total.toLocaleString() + ' tokens (' + pct + '% \u2014 ' + pctLabel + ', ' + remaining.toLocaleString() + ' remaining)';
   badge.textContent = action;
   badge.className = 'action-badge ' + action;
 }
@@ -798,16 +800,60 @@ function renderGovernance() {
 
   badgeEl.innerHTML = '<span class="health-badge ' + cls + '">' + escHtml(gov.health) + '</span>';
 
-  document.getElementById('govBalance').textContent = gov.s3s4Balance || '\u2014';
-  document.getElementById('govToolSuccess').textContent = gov.toolSuccessRate != null ? Math.round(gov.toolSuccessRate * 100) + '%' : '\u2014';
-  document.getElementById('govStuck').textContent = String(gov.stuckTurns || 0);
-  document.getElementById('govVariety').textContent = gov.varietyRatio != null ? gov.varietyRatio.toFixed(2) : '\u2014';
-  document.getElementById('govAlgedonic').textContent = String(gov.algedonicAlerts || 0);
-  if (gov.axiomHealth) {
-    document.getElementById('govAxioms').textContent = gov.axiomHealth.holding + '/' + gov.axiomHealth.total + ' holding';
-    if (gov.axiomHealth.violations && gov.axiomHealth.violations.length > 0) {
-      document.getElementById('govAxioms').textContent += ' (' + gov.axiomHealth.violations.length + ' violations)';
-    }
+  // S3/S4 Balance — color by state
+  var balEl = document.getElementById('govBalance');
+  var bal = gov.s3s4Balance || 'balanced';
+  balEl.textContent = bal;
+  balEl.style.color = bal === 'balanced' ? '#4ec9b0' : bal === 'critical' ? '#f44747' : '#dcdcaa';
+
+  // Tool Success — green >90%, yellow 70-90%, red <70%
+  var tsEl = document.getElementById('govToolSuccess');
+  if (gov.toolSuccessRate != null) {
+    var pct = Math.round(gov.toolSuccessRate * 100);
+    tsEl.textContent = pct + '%';
+    tsEl.style.color = pct >= 90 ? '#4ec9b0' : pct >= 70 ? '#dcdcaa' : '#f44747';
+  } else { tsEl.textContent = '\u2014'; }
+
+  // Stuck Turns — green 0, yellow 1-2, orange 3-4, red 5+
+  var stEl = document.getElementById('govStuck');
+  var stuck = gov.stuckTurns || 0;
+  var stuckLabel = stuck === 0 ? '0 \u2014 flowing' : stuck <= 2 ? stuck + ' \u2014 minor' : stuck <= 4 ? stuck + ' \u2014 warning' : stuck + ' \u2014 stuck!';
+  stEl.textContent = stuckLabel;
+  stEl.style.color = stuck === 0 ? '#4ec9b0' : stuck <= 2 ? '#dcdcaa' : stuck <= 4 ? '#ce9178' : '#f44747';
+
+  // Variety Ratio — target is ~1.0 (balanced), high = overload, low = underload
+  var vrEl = document.getElementById('govVariety');
+  if (gov.varietyRatio != null) {
+    var vr = gov.varietyRatio;
+    var vrLabel = vr.toFixed(2);
+    var vBal = gov.varietyBalance || '';
+    if (vBal) vrLabel += ' (' + vBal + ')';
+    vrEl.textContent = vrLabel;
+    vrEl.style.color = vBal === 'balanced' ? '#4ec9b0' : vBal === 'overload' ? '#f44747' : vBal === 'underload' ? '#dcdcaa' : (vr >= 0.7 && vr <= 1.5 ? '#4ec9b0' : vr > 3 ? '#f44747' : '#dcdcaa');
+  } else { vrEl.textContent = '\u2014'; }
+
+  // Algedonic Alerts — green 0, yellow 1-2, red 3+
+  var alEl = document.getElementById('govAlgedonic');
+  var alerts = gov.algedonicAlerts || 0;
+  var alertLabel = alerts === 0 ? '0 \u2014 no pain' : alerts <= 2 ? alerts + ' \u2014 mild' : alerts + ' \u2014 distress';
+  alEl.textContent = alertLabel;
+  alEl.style.color = alerts === 0 ? '#4ec9b0' : alerts <= 2 ? '#dcdcaa' : '#f44747';
+
+  // Axiom Health — green all holding, yellow partial, red none
+  var axEl = document.getElementById('govAxioms');
+  if (gov.axiomHealth && gov.axiomHealth.total > 0) {
+    var h = gov.axiomHealth.holding;
+    var t = gov.axiomHealth.total;
+    var v = gov.axiomHealth.violations || [];
+    var axLabel = h + '/' + t + ' holding';
+    if (v.length > 0) axLabel += ' \u2014 ' + v.length + ' violation' + (v.length > 1 ? 's' : '');
+    axEl.textContent = axLabel;
+    axEl.style.color = h === t ? '#4ec9b0' : h >= t / 2 ? '#dcdcaa' : '#f44747';
+    // Tooltip with violation details
+    axEl.title = v.length > 0 ? v.join('\n') : 'All axioms holding';
+  } else {
+    axEl.textContent = 'awaiting data (turn 5+)';
+    axEl.style.color = '#555';
   }
 }
 
@@ -977,21 +1023,27 @@ function renderPredictions() {
     if (stat && stat.total > 0) {
       var pct = Math.round(stat.hitRate * 100);
       var nullPct = Math.round(stat.nullBaselineRate * 100);
+      var diff = pct - nullPct;
       var cls = stat.significantlyBetter ? 'pred-above' : (pct < nullPct ? 'pred-below' : 'pred-none');
-      html += '<tr>' +
+      // Verdict: is the hypothesis performing better than random?
+      var verdict = stat.significantlyBetter ? '\u2714 proven' : (stat.total < 5 ? 'need more data' : (pct >= nullPct ? 'promising' : '\u2716 worse than null'));
+      var verdictCls = stat.significantlyBetter ? 'pred-above' : (pct < nullPct ? 'pred-below' : 'pred-none');
+      html += '<tr title="' + escHtml(name) + ': ' + pct + '% hit rate vs ' + nullPct + '% null baseline (' + (diff >= 0 ? '+' : '') + diff + '%). ' + verdict + '">' +
         '<td>' + id + '</td>' +
         '<td>' + escHtml(name) + '</td>' +
-        '<td class="' + cls + '">' + pct + '%</td>' +
+        '<td class="' + cls + '">' + pct + '% <span style="font-size:9px;color:#555">(' + (diff >= 0 ? '+' : '') + diff + ')</span></td>' +
         '<td>' + stat.total + '</td>' +
         '<td>' + nullPct + '%</td>' +
+        '<td class="' + verdictCls + '" style="font-size:10px">' + verdict + '</td>' +
         '</tr>';
     } else {
-      html += '<tr>' +
+      html += '<tr title="Not yet triggered — waiting for ' + escHtml(name) + ' condition">' +
         '<td>' + id + '</td>' +
         '<td>' + escHtml(name) + '</td>' +
-        '<td class="pred-none">\u2014</td>' +
-        '<td class="pred-none">\u2014</td>' +
-        '<td class="pred-none">\u2014</td>' +
+        '<td class="pred-none" style="color:#555">waiting</td>' +
+        '<td class="pred-none" style="color:#555">\u2014</td>' +
+        '<td class="pred-none" style="color:#555">\u2014</td>' +
+        '<td class="pred-none" style="color:#555;font-size:10px">not triggered</td>' +
         '</tr>';
     }
   }
