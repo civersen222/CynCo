@@ -1094,12 +1094,11 @@ export class ConversationLoop {
         console.log(`[vsm] Session-end evaluation error: ${e}`)
       }
 
-      this.processing = false
-      this.abortController = null
-    }
+    this.processing = false
+    this.abortController = null
   }
 
-  buildHandoff(): { goal: string; now: string; status: string; model?: string; what_was_done: string[]; files_modified: string[] } {
+  buildHandoff(): Record<string, unknown> {
     // Extract first user message as the goal
     const firstUser = this.messages.find(m => m.role === 'user')
     const goal = firstUser?.content
