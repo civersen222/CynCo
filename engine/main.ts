@@ -425,6 +425,16 @@ async function handleCommand(command: TUICommand): Promise<void> {
   switch (command.type) {
     case 'user.message':
       console.log(`[localcode] User message: "${command.text.slice(0, 80)}"`)
+      // If cwd is specified, switch the executor's working directory
+      if (command.cwd) {
+        const { existsSync } = require('fs')
+        if (existsSync(command.cwd)) {
+          loop.getExecutor().setCwd(command.cwd)
+          console.log(`[localcode] Switched cwd to: ${command.cwd}`)
+        } else {
+          console.log(`[localcode] Ignoring invalid cwd: ${command.cwd}`)
+        }
+      }
       await loop.handleUserMessage(command.text)
       break
 

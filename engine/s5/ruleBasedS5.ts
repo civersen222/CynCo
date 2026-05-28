@@ -166,19 +166,10 @@ const C7: S5Rule = {
     if (stuckTurns >= 5) {
       const recentTools = (gov?.recentToolNames as string[]) ?? []
       const recentSet = new Set(recentTools)
-      // ONLY include tools NOT used recently + action tools the model should switch TO
-      // Do NOT include recently-used tools even if they're in the forced set
-      const actionTools = new Set<string>(['Edit', 'Write', 'Bash'])
-      const allowedTools = new Set<string>()
-      for (const t of actionTools) allowedTools.add(t) // always allow action tools
-      for (const t of ALL_TOOL_NAMES) {
-        if (!recentSet.has(t)) allowedTools.add(t) // add unused tools
-      }
-      // Remove recently-used tools EVEN from forced set (except Edit/Write which are the goal)
-      for (const t of recentSet) {
-        if (t !== 'Edit' && t !== 'Write') allowedTools.delete(t)
-      }
-      const forcedTools = allowedTools
+      // AGGRESSIVE restriction: at stuck >= 5, limit to action tools ONLY
+      // The model has been reading/searching — it needs to ACT, not explore
+      // Giving it 17+ tools means it picks another read-type tool
+      const forcedTools = new Set<string>(['Edit', 'Write', 'MultiEdit', 'ApplyPatch', 'Bash'])
       return {
         tools: [...forcedTools],
         reasoning: `stuck for ${stuckTurns} turns — restricting to unused tools to force new approach`,

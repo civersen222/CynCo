@@ -39,6 +39,10 @@ export const editTool: ToolImpl = {
     const newStr = String(input.new_string ?? '')
     const replaceAll = (input.replace_all as boolean) ?? false
 
+    console.log(`[edit] ${filePath}:`)
+    console.log(`[edit]   old_string (${oldStr.length} chars): ${oldStr.slice(0, 200)}`)
+    console.log(`[edit]   new_string (${newStr.length} chars): ${newStr.slice(0, 200)}`)
+
     if (!existsSync(filePath)) {
       return { output: `Error: file not found: ${filePath}`, isError: true }
     }

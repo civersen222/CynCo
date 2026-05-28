@@ -1391,6 +1391,7 @@ export class ConversationLoop {
         effectiveSystemPrompt = asSystemPrompt([...systemPrompt, signal])
 
         // Re-evaluate S5 to get fresh tool restrictions (C7 fires at stuck >= 5)
+        console.log(`[s5] Live re-eval check: stuck=${currentStuck} s5=${!!this.s5}`)
         if (currentStuck >= 5 && this.s5) {
           try {
             const govReport = this.governance.getReport()
@@ -1428,6 +1429,9 @@ export class ConversationLoop {
         }
       }
 
+      if (currentStuck >= 3) {
+        console.log(`[loop] Sending to model with ${iterationTools.length} tools: ${iterationTools.map((t: any) => t.name).join(', ')}`)
+      }
       const gen = localCallModel({
         messages: this.messages,
         systemPrompt: effectiveSystemPrompt,
@@ -1594,6 +1598,11 @@ export class ConversationLoop {
       let toolUseBlocks = (assistantContent as any[]).filter(
         (b: any) => b.type === 'tool_use'
       )
+      // Diagnostic: log which tools the model is calling
+      if (toolUseBlocks.length > 0) {
+        const toolNames = toolUseBlocks.map((b: any) => b.name).join(', ')
+        console.log(`[loop] Tool calls: ${toolNames}`)
+      }
 
       // Fallback: if model output <tool_call> XML text instead of native tool_use blocks,
       // extract tool calls from the text. This happens when native models occasionally
