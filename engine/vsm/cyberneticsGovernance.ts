@@ -380,6 +380,7 @@ export class CyberneticsGovernance {
       metrics.toolsCalled,
     )
     const commander = this.heterarchyIntegration.whoCommands(context)
+    const heterarchyShifted = commander !== this.lastCommander
     this.lastCommander = commander
 
     // Conversation: track exchange if user message present
@@ -496,10 +497,23 @@ export class CyberneticsGovernance {
       })
     }
 
+    // Algedonic: fire pain for stuck states (not just tool failures)
+    if (this.stuckCount >= 3) {
+      this.eventBus.emit(events.DomainEvent.algedonicFired(
+        this.nodeId,
+        'Pain' as any,
+        'Warning' as any,
+        `Stuck for ${this.stuckCount} turns without progress`,
+      ))
+    }
+
     // Prediction tracking — check triggers and evaluate
     const toolResults = this.toolHistory.slice(-10).map(t => ({ tool: t.name, success: t.success }))
-    this._predictionTracker.checkTriggers(this.turnCount, this.getReport(), toolResults)
-    this._predictionTracker.evaluateOpen(this.turnCount, this.getReport(), toolResults)
+    const report = this.getReport()
+    this._predictionTracker.checkTriggers(this.turnCount, report, toolResults)
+    // Extended triggers: heterarchy shifts and observer divergence
+    this._predictionTracker.checkExtendedTriggers(this.turnCount, report, heterarchyShifted, this.stuckCount >= 3)
+    this._predictionTracker.evaluateOpen(this.turnCount, report, toolResults)
   }
 
   onModelError(error: string): void {
