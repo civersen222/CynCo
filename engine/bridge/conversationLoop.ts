@@ -138,6 +138,7 @@ export class ConversationLoop {
   private snapshot?: WorkspaceSnapshot
   private lastSnapshotHash?: string
   private vibeMode = false
+  private _correctionAttempts = 0
 
   constructor(opts: ConversationLoopOptions) {
     this.config = opts.config
@@ -475,6 +476,16 @@ export class ConversationLoop {
       console.log(`[contract] Auto-created: ${assertions.length} assertions for "${text.slice(0, 50)}..."`)
     }
 
+    // Start trajectory recording for this task
+    try {
+      const { getTrajectoryRecorder } = require('../training/trajectoryRecorder.js')
+      const { randomUUID } = require('crypto')
+      const recorder = getTrajectoryRecorder()
+      if (recorder) {
+        recorder.startTask(`task-${randomUUID().slice(0, 8)}`, this.config.model ?? 'unknown')
+      }
+    } catch {}
+
     // Compact when context exceeds the configured warning threshold.
     // With flash attention, attention is ~O(n) not O(n²), so we can use
     // much more of the context window before compacting.
@@ -793,6 +804,27 @@ export class ConversationLoop {
       }
     } catch (e) {
       console.log(`[scouts] Proactive dispatch failed: ${e}`)
+    }
+
+    // ─── Best-of-N Activation Hook ────────────────────────────────
+    // Lightweight check: detect tests + emit event if best-of-N is enabled.
+    // Full multi-candidate orchestration deferred — sampler needs a mini-loop factory.
+    try {
+      const bonEnabled = (process.env.LOCALCODE_BEST_OF_N ?? 'false').toLowerCase() === 'true'
+      const bonCount = parseInt(process.env.LOCALCODE_BEST_OF_N_COUNT ?? '2', 10)
+      if (bonEnabled) {
+        const { detectTests } = require('../bestOfN/testDetector.js') as { detectTests: (root: string) => { available: boolean; command: string; framework: string } }
+        const testInfo = detectTests(this.cwd)
+        if (testInfo.available) {
+          this.emit({ type: 'bestOfN.start', payload: { count: bonCount, framework: testInfo.framework, command: testInfo.command } } as any)
+          console.log(`[bestOfN] Activation detected — ${bonCount} candidates, framework: ${testInfo.framework}, command: ${testInfo.command}`)
+          console.log('[bestOfN] Full orchestration coming in future task (sampler needs mini-loop factory)')
+        } else {
+          console.log('[bestOfN] Enabled but no test framework detected — skipping')
+        }
+      }
+    } catch (e) {
+      console.log(`[bestOfN] Activation check failed: ${e}`)
     }
 
     try {
@@ -1207,6 +1239,20 @@ export class ConversationLoop {
         console.log(`[routing] Error: ${routeErr instanceof Error ? routeErr.message : routeErr}`)
       }
 
+      // Apply variety-driven control signals
+      let effectiveTemperature = this.config.temperature ?? 0.7
+      if (process.env.LOCALCODE_VARIETY_CONTROL !== 'false' && this.governance) {
+        try {
+          const signals = this.governance.getControlSignals(effectiveTemperature)
+          effectiveTemperature = signals.temperature
+          if (signals.temperatureAdjust !== 0) {
+            console.log(`[control] Variety: temp ${(effectiveTemperature - signals.temperatureAdjust).toFixed(2)} → ${effectiveTemperature.toFixed(2)}`)
+          }
+        } catch {}
+      }
+      const _savedTemperature = this.config.temperature
+      this.config.temperature = effectiveTemperature
+
       const gen = localCallModel({
         messages: this.messages,
         systemPrompt,
@@ -1216,6 +1262,7 @@ export class ConversationLoop {
         options: { model: this.config.model! },
         deps,
       })
+      this.config.temperature = _savedTemperature
 
       let lastMessageId = ''
       let tokenCount = 0
@@ -1302,6 +1349,20 @@ export class ConversationLoop {
                 suggestion: turnReport.stuckTurns > 0 ? 'Model may be stuck — consider changing approach' : null,
               })
 
+              // Emit control signals for dashboard
+              if (this.governance && process.env.LOCALCODE_VARIETY_CONTROL !== 'false') {
+                try {
+                  const signals = this.governance.getControlSignals(this.config.temperature ?? 0.7)
+                  this.emit({
+                    type: 'control.signals',
+                    temperatureAdjust: signals.temperatureAdjust,
+                    temperature: signals.temperature,
+                    bestOfNBudget: signals.bestOfNBudget,
+                    widenToolSet: signals.widenToolSet,
+                  })
+                } catch {}
+              }
+
               // Stream debug log
               try {
                 const fs = require('fs')
@@ -1367,20 +1428,30 @@ export class ConversationLoop {
           .filter((b: any) => b.type === 'text')
           .map((b: any) => b.text ?? '')
           .join('')
-        const toolCallMatch = textContent.match(/<tool_call[|]?>\s*(\{[\s\S]*?\})\s*<\/tool_call>/)
-        if (toolCallMatch) {
-          try {
-            const parsed = JSON.parse(toolCallMatch[1])
-            if (parsed.name) {
-              console.log(`[loop] Extracted XML tool call fallback: ${parsed.name}`)
-              toolUseBlocks = [{
-                type: 'tool_use',
-                id: randomUUID(),
-                name: parsed.name,
-                input: parsed.arguments ?? parsed.input ?? {},
-              }]
-            }
-          } catch { /* ignore parse errors */ }
+        if (textContent.includes('<tool_call>')) {
+          const { extractSimulatedToolCalls } = require('../ollama/simulated.js')
+          const extractResult = extractSimulatedToolCalls(textContent)
+          if (extractResult.toolCalls.length > 0) {
+            console.log(`[loop] Extracted ${extractResult.toolCalls.length} XML tool call(s) via simulated extractor`)
+            toolUseBlocks = extractResult.toolCalls.map((tc: any) => ({
+              type: 'tool_use',
+              id: tc.id,
+              name: tc.name,
+              input: tc.input,
+            }))
+          }
+          // Handle post-validation errors: inject corrective message and re-prompt
+          if (extractResult.validationErrors?.length && this._correctionAttempts < 2) {
+            this._correctionAttempts++
+            const correction = extractResult.validationErrors.join('\n\n')
+            this.messages.push({
+              role: 'user',
+              content: [{ type: 'text', text: `[System] Your tool call was invalid. ${correction}` }],
+            })
+            console.log(`[loop] Tool call validation failed — re-prompting (attempt ${this._correctionAttempts}/2)`)
+            continue // re-prompt
+          }
+          this._correctionAttempts = 0
         }
         // If still no tool calls found, treat as end_turn
         if (toolUseBlocks.length === 0) {
@@ -1887,6 +1958,38 @@ export class ConversationLoop {
         outcome: { success: !result.isError, elapsed: Date.now() - toolStartMs, outputPreview: result.output.slice(0, 200) },
       }))
     }
+
+    // Record trajectory turn for future training
+    try {
+      const { getTrajectoryRecorder } = require('../training/trajectoryRecorder.js')
+      const recorder = getTrajectoryRecorder()
+      if (recorder) {
+        const { createHash } = require('crypto')
+        const elapsed = Date.now() - toolStartMs
+        const inputHash = createHash('sha256').update(JSON.stringify(toolInput)).digest('hex').slice(0, 12)
+        recorder.recordTurn({
+          toolCalls: [{ name: toolName, inputHash, success: !result.isError, latencyMs: elapsed }],
+          stateFeatures: {
+            filesTouched: 0,
+            diffSize: 0,
+            testsTotal: 0,
+            testsFailing: 0,
+            toolsUsed: [toolName],
+            contextPct: 0,
+          },
+          rewardComponents: {
+            toolSuccessRate: 1.0,
+            stuckTurns: 0,
+            varietyEntropy: 0,
+          },
+        })
+        this.emit({
+          type: 'trajectory.turn',
+          taskId: recorder.taskId ?? null,
+          turnIdx: recorder.turnIdx ?? 0,
+        })
+      }
+    } catch {}
 
     // Autopoietic: update session homeostat with current measurements
     const sessionH = this.governance.getSessionHomeostat()

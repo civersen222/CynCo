@@ -73,20 +73,20 @@ describe('WORKFLOW', () => {
     expect(WORKFLOW.length).toBeGreaterThan(100)
   })
 
-  it('EXPLORE appears before ANALYZE, ANALYZE before IMPLEMENT, IMPLEMENT before VERIFY', () => {
-    const exploreIdx = WORKFLOW.indexOf('EXPLORE')
-    const analyzeIdx = WORKFLOW.indexOf('ANALYZE')
-    const implementIdx = WORKFLOW.indexOf('IMPLEMENT')
+  it('SEARCH appears before EDIT, EDIT before VERIFY, VERIFY before COMMIT', () => {
+    const searchIdx = WORKFLOW.indexOf('SEARCH')
+    const editIdx = WORKFLOW.indexOf('EDIT')
     const verifyIdx = WORKFLOW.indexOf('VERIFY')
+    const commitIdx = WORKFLOW.indexOf('COMMIT')
 
-    expect(exploreIdx).toBeGreaterThan(-1)
-    expect(analyzeIdx).toBeGreaterThan(-1)
-    expect(implementIdx).toBeGreaterThan(-1)
+    expect(searchIdx).toBeGreaterThan(-1)
+    expect(editIdx).toBeGreaterThan(-1)
     expect(verifyIdx).toBeGreaterThan(-1)
+    expect(commitIdx).toBeGreaterThan(-1)
 
-    expect(exploreIdx).toBeLessThan(analyzeIdx)
-    expect(analyzeIdx).toBeLessThan(implementIdx)
-    expect(implementIdx).toBeLessThan(verifyIdx)
+    expect(searchIdx).toBeLessThan(editIdx)
+    expect(editIdx).toBeLessThan(verifyIdx)
+    expect(verifyIdx).toBeLessThan(commitIdx)
   })
 
   it('contains "read"', () => {

@@ -191,6 +191,18 @@ function chunkGeneric(filePath: string, lines: string[], fileHash: string): Chun
   return chunks
 }
 
+/** Async chunker that tries tree-sitter first, falls back to regex chunkFile. */
+export async function chunkFileAsync(filePath: string, content: string): Promise<Chunk[]> {
+  try {
+    const { treeSitterChunk } = await import('../retrieval/treeSitterChunker.js')
+    const result = await treeSitterChunk(filePath, content)
+    if (result !== null) return result
+  } catch {
+    // tree-sitter not available — fall through to regex
+  }
+  return chunkFile(filePath, content)
+}
+
 /** Extract import relationships from a chunk. */
 export function extractRelationships(chunk: Chunk): { targetFile: string; relType: 'imports' | 'extends' }[] {
   const rels: { targetFile: string; relType: 'imports' | 'extends' }[] = []

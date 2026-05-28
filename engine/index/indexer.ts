@@ -4,7 +4,7 @@ import { join, relative, extname } from 'path'
 import { createHash } from 'crypto'
 import { EmbedClient } from './embedClient.js'
 import { IndexStore } from './store.js'
-import { chunkFile, extractRelationships } from './chunker.js'
+import { chunkFile, chunkFileAsync, extractRelationships } from './chunker.js'
 import type { IndexResult, IndexQuery } from './types.js'
 
 const SOURCE_EXTS = new Set(['.py', '.ts', '.tsx', '.js', '.jsx', '.rs', '.go', '.java', '.c', '.cpp', '.rb', '.cs', '.lua', '.sh'])
@@ -50,8 +50,8 @@ export class ProjectIndexer {
       // Remove old chunks for this file
       this.store.removeFile(filePath)
 
-      // Chunk the file
-      const fileChunks = chunkFile(filePath, content)
+      // Chunk the file (tree-sitter first, regex fallback)
+      const fileChunks = await chunkFileAsync(filePath, content)
       for (const chunk of fileChunks) {
         const embedText = `${chunk.chunkType} ${chunk.name ?? ''} in ${chunk.filePath}:\n${chunk.content.slice(0, 500)}`
         toEmbed.push({ chunk, text: embedText })
@@ -171,7 +171,7 @@ export class ProjectIndexer {
     try {
       const content = readFileSync(absPath, 'utf-8')
       this.store.removeFile(relativePath)
-      const chunks = chunkFile(relativePath, content)
+      const chunks = await chunkFileAsync(relativePath, content)
       const texts = chunks.map(c => `${c.chunkType} ${c.name ?? ''} in ${c.filePath}:\n${c.content.slice(0, 500)}`)
 
       let embeddings: number[][]

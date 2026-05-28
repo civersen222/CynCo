@@ -52,6 +52,7 @@ type SimulatedToolCall = {
 type ExtractToolCallsResult = {
   toolCalls: SimulatedToolCall[]
   remainingText: string
+  validationErrors?: string[]
 }
 
 /**
@@ -86,9 +87,36 @@ export function extractSimulatedToolCalls(text: string): ExtractToolCallsResult 
     remaining = remaining.replace(match[0], '')
   }
 
+  // Post-validate extracted tool calls against registry schemas
+  let validationErrors: string[] = []
+  try {
+    const { validateToolCall } = require('../decoding/postValidator.js')
+    const { ALL_TOOLS } = require('../tools/registry.js')
+    const toolMap = new Map(ALL_TOOLS.map((t: any) => [t.name, t]))
+    const validCalls: SimulatedToolCall[] = []
+
+    for (const call of toolCalls) {
+      const result = validateToolCall({ name: call.name, input: call.input }, toolMap)
+      if (result.valid) {
+        validCalls.push(call)
+      } else {
+        console.log(`[simulated] Invalid tool call "${call.name}": ${result.errors.join('; ')}`)
+        validationErrors.push(result.correctionMessage)
+      }
+    }
+
+    // Replace toolCalls with only valid ones
+    toolCalls.length = 0
+    toolCalls.push(...validCalls)
+  } catch (e) {
+    // Post-validation unavailable — continue with unvalidated calls
+    console.log(`[simulated] Post-validation skipped: ${e}`)
+  }
+
   return {
     toolCalls,
     remainingText: remaining.trim(),
+    validationErrors,
   }
 }
 

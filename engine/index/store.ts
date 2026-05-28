@@ -37,10 +37,17 @@ export class IndexStore {
   private embeddingDim: number
 
   constructor(dbPath: string, embeddingDim = 768) {
-    this.embeddingDim = embeddingDim
     this.db = new Database(dbPath)
     this.db.exec('PRAGMA journal_mode=WAL;')
     this.db.exec(BASE_SCHEMA)
+
+    // Detect embedding dimension from stored metadata if available
+    const storedDim = this.getMeta('embedding_dim')
+    if (storedDim !== null) {
+      this.embeddingDim = parseInt(storedDim, 10) || embeddingDim
+    } else {
+      this.embeddingDim = embeddingDim
+    }
 
     // Try to load sqlite-vec extension
     try {
@@ -53,6 +60,8 @@ export class IndexStore {
         );
       `)
       this.vecEnabled = true
+      // Persist the embedding dimension for future opens
+      this.setMeta('embedding_dim', String(this.embeddingDim))
       console.log(`[index] sqlite-vec loaded — vector search enabled (dim=${this.embeddingDim})`)
     } catch (e) {
       console.log(`[index] sqlite-vec not available — falling back to keyword search: ${e}`)

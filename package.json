@@ -9,6 +9,8 @@
   },
   "dependencies": {
     "sqlite-vec": "^0.1.9",
+    "tree-sitter-wasm": "^1.0.3",
+    "web-tree-sitter": "^0.26.9",
     "ws": "^8.18.0"
   },
   "devDependencies": {

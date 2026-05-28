@@ -255,6 +255,12 @@ if (process.env.LOCALCODE_S5_MODEL) {
 const journal = initJournal()
 console.log('[training] Decision journal initialized: ~/.cynco/training/')
 
+if (process.env.LOCALCODE_TRAJECTORY_ENABLED !== 'false') {
+  const { initTrajectoryRecorder } = require('./training/trajectoryRecorder.js')
+  initTrajectoryRecorder()
+  console.log('[main] Trajectory recorder initialized')
+}
+
 // V2 training pipeline threshold checks
 try {
   const { GovernanceDB } = await import('./vsm/governanceDb.js')

@@ -158,6 +158,33 @@ export const GOVERNANCE_PARAMS: Map<string, GovernanceParam> = new Map([
     'Whether governance signals are injected into system prompt (1=on, 0=off)',
     1.0, 0.0, 1.0, 'global',
   )],
+
+  // ── Variety Control (temperature/tool-set) ──
+  ['variety.low_entropy_threshold', param(
+    'variety.low_entropy_threshold',
+    'Tool entropy below which model is hammering one tool — raise temperature',
+    0.5, 0.0, 2.0, 'variety',
+  )],
+  ['variety.high_entropy_margin', param(
+    'variety.high_entropy_margin',
+    'Margin from max entropy above which model is thrashing — lower temperature',
+    0.2, 0.0, 1.0, 'variety',
+  )],
+  ['variety.temperature_floor', param(
+    'variety.temperature_floor',
+    'Minimum temperature from variety control',
+    0.3, 0.1, 0.9, 'variety',
+  )],
+  ['variety.temperature_ceiling', param(
+    'variety.temperature_ceiling',
+    'Maximum temperature from variety control',
+    1.0, 0.5, 2.0, 'variety',
+  )],
+  ['bestofn.budget', param(
+    'bestofn.budget',
+    'Default number of candidates for best-of-N sampling',
+    2, 1, 8, 'global',
+  )],
 ])
 
 /**

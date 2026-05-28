@@ -19,7 +19,7 @@ describe('formatSessionContext', () => {
     const result = formatSessionContext(handoff, openThreads, new Date('2026-04-14T12:00:00Z'))
     expect(result!.priorGoal).toBe('fix the edit loop bug')
     expect(result!.priorStatus).toBe('in_progress')
-    expect(result!.priorDate).toMatch(/\d+[dhwm]\s+ago|just now/)
+    expect(result!.priorDate).toMatch(/\d+(mo|[dhwm])\s*ago|just now/)
     expect(result!.openThreads).toHaveLength(2)
     expect(result!.openThreads[0].priority).toBe('high')
   })

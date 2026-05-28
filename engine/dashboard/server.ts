@@ -153,6 +153,27 @@ export class DashboardServer {
               return this.getHistory()
             case '/api/session':
               return jsonResponse(this.deps.getSessionInfo?.() ?? null)
+            case '/api/subsystems': {
+              const recorder = (() => { try { return require('../training/trajectoryRecorder.js').getTrajectoryRecorder() } catch { return null } })()
+              return jsonResponse({
+                grammar: {
+                  enabled: process.env.LOCALCODE_GRAMMAR_ENABLED !== 'false',
+                  provider: 'llama-cpp',
+                },
+                bestOfN: {
+                  enabled: process.env.LOCALCODE_BEST_OF_N === 'true',
+                  count: parseInt(process.env.LOCALCODE_BEST_OF_N_COUNT ?? '2', 10),
+                  turnCap: parseInt(process.env.LOCALCODE_BEST_OF_N_TURN_CAP ?? '15', 10),
+                },
+                trajectory: {
+                  enabled: process.env.LOCALCODE_TRAJECTORY_ENABLED !== 'false',
+                  activeTaskId: recorder?.taskId ?? null,
+                },
+                varietyControl: {
+                  enabled: process.env.LOCALCODE_VARIETY_CONTROL !== 'false',
+                },
+              })
+            }
             default:
               return jsonResponse({ error: 'Not found' }, 404)
           }
