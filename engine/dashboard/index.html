@@ -568,6 +568,8 @@ function connectWS() {
     state.connected = true;
     reconnectDelay = 1000;
     document.getElementById('reconnectBanner').classList.remove('visible');
+    // Proactively check for active session on every connect (handles reload + late connect)
+    fetchSessionState();
     render();
   };
 
@@ -595,7 +597,7 @@ function connectWS() {
 // ── Event Handler ────────────────────────────────────────────
 
 function activateSession(contextLength) {
-  // Called when we detect a live session (from session.ready OR any engine event)
+  // Called when we detect a live session (from session.ready, REST, or any engine event)
   if (state.sessionActive) return;
   state.sessionActive = true;
   if (!state.sessionStart) state.sessionStart = new Date();
@@ -604,11 +606,6 @@ function activateSession(contextLength) {
   document.getElementById('connLabel').textContent = '';
   // Sync context length from engine if available
   if (contextLength) setSlider('sliderCtxLen', 'valCtxLen', contextLength);
-  // Fetch current data from REST endpoints
-  fetchPredictions();
-  fetchContracts();
-  // Fetch session info for model/tier if we missed session.ready
-  if (!state.model) fetchSessionInfo();
 }
 
 function handleEvent(event) {
@@ -1387,20 +1384,28 @@ function fetchContracts() {
     .catch(function() {});
 }
 
-function fetchSessionInfo() {
+function fetchSessionState() {
+  // Hydrate full dashboard state from REST — handles reload, late connect, reconnect
   fetch('/api/session')
     .then(function(r) { return r.json(); })
     .then(function(data) {
-      if (data) {
-        if (data.model) state.model = data.model;
-        if (data.contextLength) {
-          setSlider('sliderCtxLen', 'valCtxLen', data.contextLength);
-        }
+      if (data && data.model) {
+        // Engine has a session — activate immediately, don't wait for WS events
+        state.model = data.model;
+        if (data.contextLength) setSlider('sliderCtxLen', 'valCtxLen', data.contextLength);
         if (data.tier) state.tier = data.tier;
-        render();
+        activateSession(data.contextLength);
       }
     })
     .catch(function() {});
+
+  // Also hydrate governance, predictions, contracts
+  fetch('/api/governance').then(function(r) { return r.json(); }).then(function(data) {
+    if (data && data.status) { state.governance = data; render(); }
+  }).catch(function() {});
+
+  fetchPredictions();
+  fetchContracts();
 }
 
 function fetchParams() {
