@@ -1368,9 +1368,69 @@ export class ConversationLoop {
       const _savedTemperature = this.config.temperature
       this.config.temperature = effectiveTemperature
 
+      // ── Dynamic governance intervention (re-evaluated EVERY iteration) ──
+      // The static systemPrompt was built before the loop with stuckCount=0.
+      // We must rebuild the governance signal portion on each iteration so the
+      // model actually sees "you are stuck" when it IS stuck.
+      let effectiveSystemPrompt = systemPrompt
+      const currentStuck = this.governance.getStuckCount()
+      if (currentStuck >= 3) {
+        const signal = currentStuck >= 5
+          ? `\n\n## GOVERNANCE SIGNAL — CRITICAL (turn ${currentStuck})\n\n` +
+            `CRITICAL: You have been stuck for ${currentStuck} turns repeating the same actions.\n\n` +
+            `You MUST change your approach NOW:\n` +
+            `- If you have been reading files → STOP reading and EDIT or WRITE code\n` +
+            `- If you have been searching → STOP searching and ACT on what you know\n` +
+            `- If editing has failed → try a COMPLETELY different strategy\n` +
+            `- Do NOT call any tool you have used in the last 5 turns\n\n` +
+            `YOUR NEXT ACTION MUST BE DIFFERENT FROM YOUR PREVIOUS ACTIONS.`
+          : `\n\n## GOVERNANCE SIGNAL (turn ${currentStuck})\n\n` +
+            `WARNING: You have been repeating similar actions for ${currentStuck} turns.\n` +
+            `Change your approach: if reading, start editing. If searching, start acting.`
+        // Append governance signal to the frozen system prompt
+        effectiveSystemPrompt = asSystemPrompt([...systemPrompt, signal])
+
+        // Re-evaluate S5 to get fresh tool restrictions (C7 fires at stuck >= 5)
+        if (currentStuck >= 5 && this.s5) {
+          try {
+            const govReport = this.governance.getReport()
+            const decision = await this.s5.makeDecision({
+              userMessage: 'stuck loop re-evaluation',
+              activeWorkflow: this.workflowEngine.state?.workflow.name ?? null,
+              currentPhase: this.workflowEngine.currentPhase?.name ?? null,
+              contextUsagePercent: 0.5,
+              governance: govReport,
+              recentToolResults: [],
+              availableModels: [this.config.model ?? 'unknown'],
+              turnCount: this.messages.filter(m => m.role === 'user').length,
+              varietyBalance: (govReport as any).varietyBalance ?? 'balanced',
+              varietyRatio: (govReport as any).varietyRatio ?? 1.0,
+              homeostatStable: true,
+              homeostatConsecutiveUnstable: (govReport as any).consecutiveUnstable ?? 0,
+              driftDetected: false,
+              driftDirection: null,
+              performanceHealth: 'critical',
+              productivityRatio: 0,
+              recommendedToolMode: null,
+              heterarchyAuthority: null,
+              agreementRatio: (govReport as any).agreementRatio ?? 1.0,
+              observerDivergence: (govReport as any).observerDivergence ?? null,
+              demotedTools: [],
+            })
+            if (decision.tools) {
+              const allowed = new Set(decision.tools)
+              iterationTools = iterationTools.filter(t => allowed.has(t.name))
+              console.log(`[s5] LIVE RE-EVAL: tool restriction to [${decision.tools.join(', ')}] (stuck ${currentStuck})`)
+            }
+          } catch (e) {
+            console.log(`[s5] Live re-eval failed: ${e}`)
+          }
+        }
+      }
+
       const gen = localCallModel({
         messages: this.messages,
-        systemPrompt,
+        systemPrompt: effectiveSystemPrompt,
         thinkingConfig,
         tools: iterationTools,
         signal: this.abortController?.signal ?? new AbortController().signal,
