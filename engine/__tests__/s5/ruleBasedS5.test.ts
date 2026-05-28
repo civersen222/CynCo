@@ -31,7 +31,7 @@ function baseInput(overrides: Partial<S5Input> = {}): S5Input {
   }
 }
 
-describe('RuleBasedS5 — Hardened 20-rule engine', () => {
+describe('RuleBasedS5 — Hardened 21-rule engine', () => {
   const s5 = new RuleBasedS5()
 
   it('has correct type shape — name and decide()', () => {
@@ -39,13 +39,13 @@ describe('RuleBasedS5 — Hardened 20-rule engine', () => {
     expect(typeof s5.decide).toBe('function')
   })
 
-  it('exports ALL_RULES with 20 rules (6 critical + 10 warning + 4 info)', () => {
+  it('exports ALL_RULES with 21 rules (7 critical + 10 warning + 4 info)', () => {
     expect(Array.isArray(ALL_RULES)).toBe(true)
-    expect(ALL_RULES.length).toBe(20)
+    expect(ALL_RULES.length).toBe(21)
     const criticals = ALL_RULES.filter(r => r.tier === 'critical')
     const warnings = ALL_RULES.filter(r => r.tier === 'warning')
     const infos = ALL_RULES.filter(r => r.tier === 'info')
-    expect(criticals.length).toBe(6)
+    expect(criticals.length).toBe(7)
     expect(warnings.length).toBe(10)
     expect(infos.length).toBe(4)
   })
