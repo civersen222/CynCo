@@ -430,12 +430,17 @@ export class ConversationLoop {
     this.consecutiveNudges = 0
     this.steering.clear()
 
-    // Auto-create contract from user message — force verification, don't trust the model
-    if (!globalContract.isActive()) {
+    // Auto-create contract from EVERY user message — the model must finish what the user asked
+    if (!globalContract.isActive() && text.length > 15) {
       const lowerText = text.toLowerCase()
-      const isEditTask = /\b(edit|add|create|write|fix|change|modify|delete|remove|wire|implement|refactor)\b/.test(lowerText)
-      if (isEditTask && text.length > 30) {
-        const assertions: string[] = []
+      const assertions: string[] = []
+
+      // Classify intent
+      const isEditTask = /\b(edit|add|create|write|fix|change|modify|delete|remove|wire|implement|refactor|build|update|move|rename)\b/.test(lowerText)
+      const isAnalysisTask = /\b(analyze|explain|describe|summarize|review|compare|investigate|trace|debug|diagnose|why|how does|what is|what are|tell me|show me|find|search|look at|check)\b/.test(lowerText)
+      const isRunTask = /\b(run|test|execute|deploy|install|start|launch|build)\b/.test(lowerText)
+
+      if (isEditTask) {
         // Extract file targets from the message
         const fileMatches = text.match(/[\w./\\-]+\.(py|ts|js|tsx|jsx|rs|go|java|c|cpp|h|html|css|json|yaml|yml|toml|md)\b/g)
         if (fileMatches) {
@@ -447,20 +452,27 @@ export class ConversationLoop {
             }
           }
         }
-        // If no specific files detected, add a generic code-change assertion
         if (assertions.length === 0) {
           assertions.push('Code was modified to address the task')
         }
         assertions.push('Changes committed to git')
-        if (assertions.length >= 2) {
-          globalContract.create(
-            text.slice(0, 60),
-            text.slice(0, 200),
-            assertions,
-          )
-          console.log(`[contract] Auto-created: ${assertions.length} assertions for "${text.slice(0, 50)}..."`)
-        }
+      } else if (isAnalysisTask) {
+        assertions.push('Analysis or answer was provided to the user')
+        assertions.push('Response directly addresses what the user asked')
+      } else if (isRunTask) {
+        assertions.push('Command was executed')
+        assertions.push('Output or result was reported to the user')
+      } else {
+        // Default: treat as a general task
+        assertions.push('Task was completed — user request fully addressed')
       }
+
+      globalContract.create(
+        text.slice(0, 60),
+        text.slice(0, 200),
+        assertions,
+      )
+      console.log(`[contract] Auto-created: ${assertions.length} assertions for "${text.slice(0, 50)}..."`)
     }
 
     // Compact when context exceeds the configured warning threshold.
@@ -1447,12 +1459,12 @@ export class ConversationLoop {
       // Contract enforcement: don't let model finish if contract is incomplete
       if (globalContract.isActive() && !globalContract.isComplete() && toolUseBlocks.length === 0 && stopReason === 'end_turn') {
         globalContract.enforcementRounds++
-        if (globalContract.enforcementRounds <= 3) {
+        if (globalContract.enforcementRounds <= 5) {
           const pending = globalContract.pendingCount()
           const failed = globalContract.failedCount()
           this.addMessage({
             role: 'user',
-            content: [{ type: 'text', text: `[System] Contract incomplete — ${pending} assertions pending, ${failed} failed. Continue working. Use ContractStatus to check progress.` }],
+            content: [{ type: 'text', text: `[System] You are NOT done. Contract incomplete — ${pending} assertions still pending, ${failed} failed. You MUST continue working. Do NOT stop until every assertion is passed. Use ContractAssertPass to mark completed assertions.` }],
           })
           continue // Continue the model loop instead of breaking
         }
