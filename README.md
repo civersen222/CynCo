@@ -2,7 +2,7 @@
 
 **AI coding assistant that runs entirely on your GPU. Zero API costs. Your data never leaves your machine.**
 
-Inspired by Stafford Beer's Viable System Model and Salvador Allende's [Project Cybersyn](https://en.wikipedia.org/wiki/Project_Cybersyn) (Chile, 1971-73). Technology built for the people, not corporations.
+Inspired by Stafford Beer's Viable System Model and Salvador Allende's [Project Cybersyn](https://en.wikipedia.org/wiki/Project_Cybersyn) (Chile, 1971-73). AI that belongs to the person running it.
 
 ---
 
@@ -12,7 +12,8 @@ CynCo is a terminal-based AI coding assistant powered by local LLMs via [Ollama]
 
 - **Edit files, run commands, search code** — full tool-calling loop on your hardware
 - **Build entire projects from a description** — guided Vibe mode asks smart questions, then builds autonomously
-- **Self-govern with enforced cybernetics** — S5 policy engine hard-filters tools, kills stuck agents, and learns across sessions
+- **Self-govern with enforced cybernetics** — S5 policy engine hard-filters tools, breaks stuck loops with escalating intervention, and learns across sessions
+- **Monitor governance in real-time** — browser dashboard on port 9161 shows tool activity, contracts, predictions, and parameter controls
 - **Research from multiple sources** — DuckDuckGo, arXiv, Wikipedia, GitHub, PubMed, HuggingFace with intelligent query routing
 - **Spawn parallel sub-agents** — 6 typed personas (scout/oracle/kraken/spark/architect/researcher) with GPU-aware scheduling
 - **Index your codebase semantically** — vector search finds relevant code instantly
@@ -118,7 +119,7 @@ Smaller models (<7B) struggle with the tool-calling format. 24B+ recommended for
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│  S5 Policy Engine (20 rules, 3 tiers, enforced)              │
+│  S5 Policy Engine (21 rules, 3 tiers, enforced)              │
 │  Critical: auto-enforce | Warning: TUI | Info: journal       │
 └──────────────────────────┬───────────────────────────────────┘
                            │ enforces
@@ -127,14 +128,19 @@ Smaller models (<7B) struggle with the tool-calling format. 24B+ recommended for
 │                                  │  9160  │  (Textual)      │
 │  Conversation Loop               │        │                 │
 │  ├── Tool Executor (19 tools)    │        │  Workspace      │
-│  ├── S2 Agent Coordinator        │        │  Vibe Loop      │
-│  ├── 6 Search Engines            │        │  Settings       │
-│  ├── Semantic Code Index         │        │  Context Bar    │
+│  ├── Contract Enforcement        │        │  Vibe Loop      │
+│  ├── S2 Agent Coordinator        │        │  Settings       │
+│  ├── 6 Search Engines            │        │  Context Bar    │
+│  ├── Semantic Code Index         │        │                 │
 │  ├── Context Compressor          │        │                 │
 │  └── Sub-Agents (6 personas)     │        │                 │
 │       ↓ HTTP                     │        │                 │
 │  Ollama / llama.cpp              │        │                 │
-└──────────────────────────────────┘        └─────────────────┘
+├──────────────────────────────────┤        └─────────────────┘
+│  Governance Dashboard (HTTP+WS)  │
+│  http://localhost:9161           │   ← browser
+│  Live monitoring + param control │
+└──────────────────────────────────┘
 ```
 
 ---
@@ -176,7 +182,7 @@ Results are scored by keyword relevance, recency, source authority, and cross-so
 S2 coordinator manages GPU utilization, queues agents when resources are constrained, and kills stuck agents via algedonic signals.
 
 ### Enforced Governance (VSM S1-S5)
-Not advisory — **enforced**. S5 is the single policy enforcer with 20 tiered rules:
+Not advisory — **enforced**. S5 is the single policy enforcer with 21 tiered rules:
 
 **Critical (auto-enforce, no user approval):**
 - Kill switch on 5+ consecutive tool failures
@@ -184,10 +190,17 @@ Not advisory — **enforced**. S5 is the single policy enforcer with 20 tiered r
 - Context overflow compaction at 90% utilization
 - Doom loop breaking (3+ identical failing calls)
 - Variety critical tool restriction to top-5 by success rate
+- **Stuck loop escape** — restricts to unused tools when stuck 5+ turns, regardless of tool success rate
+
+**Stuck Loop Escalation (4 tiers):**
+1. **Turn 3+** — governance signal injected into system prompt: "change your approach"
+2. **Turn 5+** — C7 critical rule restricts tools to ones not used in last 5 turns
+3. **Turn 10+** — synthetic user message forces model to reflect on what's blocking it
+4. **Turn 15+** — hard halt, returns control to user
 
 **Warning (surfaced to TUI for accept/dismiss):**
 - Model switch recommendation on rising latency
-- Workspace revert on 5+ stuck turns with <50% tool success
+- Workspace revert on 5+ stuck turns
 - Drift-based compaction and tool restriction
 - Homeostatic instability rebalancing
 - S3/S4 imbalance correction
@@ -196,6 +209,23 @@ Not advisory — **enforced**. S5 is the single policy enforcer with 20 tiered r
 - Variety balance shifts, homeostatic adjustments, performance metrics
 
 Rule weights adjust across sessions based on outcomes — positive outcomes strengthen rules, user dismissals weaken them.
+
+### Contract Enforcement
+Every user message auto-creates a Definition of Done contract. The model cannot stop until all assertions pass:
+- **Edit tasks:** file modified + changes committed
+- **Analysis tasks:** answer provided + addresses user's question
+- **Run tasks:** command executed + output reported
+- Up to 5 enforcement rounds — if the model tries to stop early, it gets told "you're NOT done"
+
+### Governance Dashboard
+Open `http://localhost:9161` during any session. Real-time visibility into the VSM brain:
+- **Tool Activity** — stacked bar chart of every tool call (green=success, red=failure) + live feed
+- **Governance Health** — color-coded: S3/S4 balance, variety ratio, stuck turns, algedonic alerts, axiom violations
+- **Prediction Tracker** — 8 falsifiable hypotheses (H1-H8) with hit rates vs null baselines and verdicts
+- **Active Contract** — current assertion status with pass/fail/pending indicators
+- **Parameter Controls** — temperature, context length, kill switch threshold, trust decay, S4 reflection frequency
+- **Advanced Controls** — all 21 VSM governance parameters with sliders and bounds
+- Survives page reload, auto-detects active sessions, auto-reconnects on disconnect
 
 ### Semantic Code Index
 Automatic vector indexing via `nomic-embed-text`. The model starts each task knowing your codebase — function signatures, class definitions, imports. Falls back to keyword search if embedding model unavailable.
@@ -268,20 +298,20 @@ All config via environment variables. No config files required.
 
 ## Why?
 
-In 1971, Salvador Allende and Stafford Beer tried to build a cybernetic system that would give workers real-time control of Chile's economy. It was called [Project Cybersyn](https://en.wikipedia.org/wiki/Project_Cybersyn). The CIA helped destroy it in 1973.
+In 1971, Stafford Beer designed a cybernetic system for real-time economic coordination in Chile — [Project Cybersyn](https://en.wikipedia.org/wiki/Project_Cybersyn). The project was ahead of its time: distributed sensing, algedonic alerts, variety management. The political context ended it, but the ideas didn't die.
 
-The core idea survived: technology should serve the people who use it, not extract value from them. Every major AI coding tool today requires sending your code to someone else's servers and paying them for the privilege.
+Every major AI coding tool today sends your code to someone else's servers. You pay per token for the privilege of using your own data. One policy change and your tools disappear.
 
-CynCo runs on your hardware. Your code stays on your machine. The cybernetic governance system — variety engines, algedonic signals, homeostatic balance, autopoietic strategy evolution — comes directly from Beer's work. It's not a metaphor. It's the actual math, enforced in code.
+CynCo runs on your GPU. Your code never leaves your machine. The governance system — variety engines, algedonic signals, homeostatic balance, autopoietic strategy evolution — is Beer's mathematics, implemented and enforced in code. Not a metaphor. Not advisory. Real feedback control.
 
-One GPU. Zero API costs. Nobody can shut it down.
+One GPU. Zero API costs. Yours to keep.
 
 ---
 
 ## Credits
 
 - **Stafford Beer** — Viable System Model, the foundation of CynCo's governance
-- **Salvador Allende** — proved cybernetics could serve the people
+- **Salvador Allende & Fernando Flores** — Project Cybersyn, the original vision for cybernetic governance
 - **Ross Ashby** — Law of Requisite Variety, used in variety regulation
 - **Humberto Maturana & Francisco Varela** — autopoiesis, used in self-modification governance
 - **W. Ross McCulloch** — heterarchy, used in dynamic authority selection
