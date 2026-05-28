@@ -796,6 +796,27 @@ export class ConversationLoop {
       console.log(`[scouts] Proactive dispatch failed: ${e}`)
     }
 
+    // ─── Best-of-N Activation Hook ────────────────────────────────
+    // Lightweight check: detect tests + emit event if best-of-N is enabled.
+    // Full multi-candidate orchestration deferred — sampler needs a mini-loop factory.
+    try {
+      const bonEnabled = (process.env.LOCALCODE_BEST_OF_N ?? 'false').toLowerCase() === 'true'
+      const bonCount = parseInt(process.env.LOCALCODE_BEST_OF_N_COUNT ?? '2', 10)
+      if (bonEnabled) {
+        const { detectTests } = require('../bestOfN/testDetector.js') as { detectTests: (root: string) => { available: boolean; command: string; framework: string } }
+        const testInfo = detectTests(this.cwd)
+        if (testInfo.available) {
+          this.emit({ type: 'bestOfN.start', payload: { count: bonCount, framework: testInfo.framework, command: testInfo.command } } as any)
+          console.log(`[bestOfN] Activation detected — ${bonCount} candidates, framework: ${testInfo.framework}, command: ${testInfo.command}`)
+          console.log('[bestOfN] Full orchestration coming in future task (sampler needs mini-loop factory)')
+        } else {
+          console.log('[bestOfN] Enabled but no test framework detected — skipping')
+        }
+      }
+    } catch (e) {
+      console.log(`[bestOfN] Activation check failed: ${e}`)
+    }
+
     try {
       await this.runModelLoop(systemPrompt, thinkingConfig, toolDefs, deps)
     } catch (err) {
