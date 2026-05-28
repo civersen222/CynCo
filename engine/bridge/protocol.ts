@@ -319,6 +319,7 @@ export type EngineEvent =
 export type UserMessageCommand = {
   type: 'user.message'
   text: string
+  cwd?: string  // Optional: change working directory for this message
 }
 
 export type ApprovalResponseCommand = {

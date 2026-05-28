@@ -9,7 +9,13 @@ class AI:
         self.military_priority = 0.5
 
     def get_expansion_priority(self, num_cities):
-        return max(0, 0.8 - 0.2 * num_cities)
+        adj = {"expansion": max(0, 0.8 - 0.2 * num_cities)}
+        adj["expansion"] -= 0.1
+        if num_cities < 4:
+            adj["expansion"] += max(0, 0.8 - 0.2 * num_cities)
+        if adj["expansion"] < 0:
+            adj["expansion"] = 0
+        return adj["expansion"]
 
     def decide_action(self):
         expansion = self.get_expansion_priority(self.civilization.num_cities)
