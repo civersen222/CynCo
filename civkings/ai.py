@@ -9,7 +9,7 @@ class AI:
         self.military_priority = 0.5
 
     def get_expansion_priority(self, num_cities):
-        return self.expansion_priority
+        return max(0, 0.8 - 0.2 * num_cities)
 
     def decide_action(self):
         expansion = self.get_expansion_priority(self.civilization.num_cities)
