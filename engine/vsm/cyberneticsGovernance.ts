@@ -658,6 +658,21 @@ export class CyberneticsGovernance {
     return this.varietyEngine.current()
   }
 
+  /** Compute variety-driven control signals (temperature delta, bestOfN, tool-set width). */
+  getControlSignals(baseTemperature: number): import('./controlSignals.js').ControlSignals {
+    const { computeControlSignals } = require('./controlSignals.js')
+    const recentTools = this.toolHistory.slice(-10)
+    const toolProbs = this._toolUsageProbabilities(recentTools)
+    const toolEntropy = toolProbs.length > 0 ? foundations.entropy(toolProbs) : 0
+    const activeToolCount = new Set(recentTools.map(t => t.name)).size
+    return computeControlSignals({
+      toolEntropy,
+      activeToolCount: Math.max(activeToolCount, 5),
+      stuckTurns: this.stuckCount,
+      baseTemperature,
+    })
+  }
+
   /** Get the current task classification. */
   getTaskComplexity(): number {
     return this.currentTaskComplexity
