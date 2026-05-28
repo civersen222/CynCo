@@ -2,6 +2,8 @@ import { getToolByName } from './registry.js'
 import { shouldAutoApprove, getToolRisk, type ToolTrustProfile } from './approvalGate.js'
 import type { ToolResult } from './types.js'
 import { DoomLoopDetector } from './doomLoop.js'
+import { capToolResult } from './resultCap.js'
+import { ToolScorer } from './toolScorer.js'
 
 export type RequestApprovalFn = (
   toolName: string,
@@ -14,6 +16,8 @@ export type ToolExecutorOptions = {
   requestApproval: RequestApprovalFn
   trustProfile?: ToolTrustProfile
   approveAll?: boolean
+  contextLength?: number
+  toolScorer?: ToolScorer
 }
 
 export class ToolExecutor {
@@ -21,13 +25,17 @@ export class ToolExecutor {
   private requestApproval: RequestApprovalFn
   private trustProfile?: ToolTrustProfile
   private approveAll: boolean
+  private contextLength: number
   private doomLoop = new DoomLoopDetector(3)
+  private toolScorer?: ToolScorer
 
   constructor(opts: ToolExecutorOptions) {
     this.cwd = opts.cwd
     this.requestApproval = opts.requestApproval
     this.trustProfile = opts.trustProfile
     this.approveAll = opts.approveAll ?? false
+    this.contextLength = opts.contextLength ?? 32768
+    this.toolScorer = opts.toolScorer
   }
 
   setApproveAll(value: boolean): void {
@@ -36,6 +44,10 @@ export class ToolExecutor {
 
   setCwd(cwd: string): void {
     this.cwd = cwd
+  }
+
+  getToolScorer(): ToolScorer | undefined {
+    return this.toolScorer
   }
 
   async execute(toolName: string, input: Record<string, unknown>): Promise<ToolResult> {
@@ -67,7 +79,9 @@ export class ToolExecutor {
         }
       }
 
-      return result
+      const capped = { output: capToolResult(result.output, this.contextLength), isError: result.isError }
+      this.toolScorer?.record(toolName, !capped.isError)
+      return capped
     } catch (err) {
       return {
         output: `Tool execution error (${toolName}): ${err instanceof Error ? err.message : String(err)}`,

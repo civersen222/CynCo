@@ -24,6 +24,7 @@ from ..widgets.worker_animation import WorkerAnimation
 
 
 MAX_QUESTIONS = 12
+MAX_MOCKUP_ITERATIONS = 5
 
 # ─── Pure helpers (testable) ───────────────────────────────────
 
@@ -97,6 +98,7 @@ class ProjectState:
     current_options: list[str] = field(default_factory=list)
     design_summary: str = ""
     plan_phases: list[dict] = field(default_factory=list)
+    mockup_iteration: int = 0
 
 
 # ─── Prompts ───────────────────────────────────────────────────
@@ -121,19 +123,15 @@ RESEARCH_SYSTEM = (
 )
 
 MOCKUP_SYSTEM = (
-    "You are a UI/UX designer creating an HTML mockup. Generate a COMPLETE, "
-    "self-contained HTML file (with inline CSS and minimal JS) that shows what "
-    "the proposed application will look like.\n\n"
+    "You are a UI/UX designer creating a SIMPLE HTML wireframe. Generate a SHORT, "
+    "self-contained HTML file showing the main screen layout.\n\n"
     "Requirements:\n"
-    "- Single HTML file, all CSS inline in <style>, all JS inline in <script>\n"
-    "- Show the MAIN screen/view of the application with realistic sample data\n"
-    "- Include navigation, key UI elements, and interactive components\n"
-    "- Use a clean, modern dark theme\n"
-    "- Make it look like a real product mockup, not a wireframe\n"
-    "- Include placeholder content that shows what real data would look like\n"
-    "- For games: show the main game screen with map/board, UI panels, stats\n"
-    "- For apps: show the primary view with navigation and sample content\n"
-    "- Add a banner at top: 'LocalCode Design Preview — This is a mockup'\n\n"
+    "- Single HTML file, inline CSS only, NO JavaScript\n"
+    "- Use colored divs and borders to show layout regions (header, sidebar, main, footer)\n"
+    "- Label each region with what it contains\n"
+    "- Dark background (#1e1e1e), light text (#e0e0e0), colored borders for regions\n"
+    "- Keep it UNDER 200 lines of HTML — this is a wireframe, not a finished product\n"
+    "- Banner at top: 'LocalCode Design Preview'\n\n"
     "Return ONLY the HTML. No markdown, no explanation, no code fences. "
     "Just the raw HTML starting with <!DOCTYPE html>."
 )
@@ -245,6 +243,7 @@ class ProjectWizard(ModalScreen):
                 Button("Next", variant="primary", id="btn-next"),
                 Button("Show me a mockup", variant="success", id="btn-mockup"),
                 Button("Looks good \u2014 plan it", variant="primary", id="btn-plan"),
+                Button("Change something", variant="warning", id="btn-change-mockup"),
                 Button("Build it!", variant="primary", id="btn-build"),
                 Button("Start over", variant="warning", id="btn-restart"),
                 Button("Cancel", variant="error", id="btn-cancel"),
@@ -309,7 +308,7 @@ class ProjectWizard(ModalScreen):
 
     def _show_buttons(self, *visible_ids: str) -> None:
         """Show only the specified buttons, hide the rest."""
-        all_btn_ids = ["btn-start", "btn-next", "btn-mockup", "btn-plan", "btn-build", "btn-restart", "btn-cancel"]
+        all_btn_ids = ["btn-start", "btn-next", "btn-mockup", "btn-plan", "btn-change-mockup", "btn-build", "btn-restart", "btn-cancel"]
         for btn_id in all_btn_ids:
             try:
                 btn = self.query_one(f"#{btn_id}", Button)
@@ -331,6 +330,8 @@ class ProjectWizard(ModalScreen):
             self._submit_answer()
         elif btn == "btn-mockup":
             self._generate_mockup()
+        elif btn == "btn-change-mockup":
+            self._ask_mockup_feedback()
         elif btn == "btn-plan":
             self._start_planning()
         elif btn == "btn-build":
@@ -597,19 +598,70 @@ class ProjectWizard(ModalScreen):
         except Exception as e:
             self.notify(f"Could not open mockup: {e}", severity="error")
 
-        # Return to design phase with mockup shown
+        # Show approval gate
         try:
             content = self.query_one("#project-content", VerticalScroll)
             content.remove_children()
-            content.mount(Static(self.state.design_summary))
             content.mount(Static(
-                f"\n[bold green]Mockup opened in your browser![/bold green]\n"
-                f"[dim]File: {mockup_path}[/dim]\n\n"
-                f"[dim]Review the visual preview, then come back here.[/dim]"
+                "[bold green]Design preview opened in your browser![/bold green]\n\n"
+                "[dim]Does this look right?[/dim]"
             ))
-            self._show_buttons("btn-plan", "btn-mockup", "btn-restart", "btn-cancel")
+            self._show_buttons("btn-plan", "btn-change-mockup", "btn-cancel")
         except Exception:
             pass
+
+    def _ask_mockup_feedback(self) -> None:
+        """Show a text input asking what the user wants to change in the mockup."""
+        try:
+            content = self.query_one("#project-content", VerticalScroll)
+            content.remove_children()
+            content.mount(Static("[bold]What would you like to change?[/bold]\n"))
+            content.mount(Input(placeholder="Describe what to change...", id="mockup-feedback-input"))
+            self._show_buttons("btn-cancel")
+        except Exception:
+            pass
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        """Handle input submissions including mockup feedback."""
+        if event.input.id == "mockup-feedback-input":
+            feedback = event.value.strip()
+            if not feedback:
+                return
+            self.state.mockup_iteration += 1
+            if self.state.mockup_iteration >= MAX_MOCKUP_ITERATIONS:
+                # Max iterations reached — auto-proceed to planning
+                self.notify(
+                    f"Max mockup iterations ({MAX_MOCKUP_ITERATIONS}) reached — proceeding to plan.",
+                    severity="warning",
+                )
+                self._start_planning()
+                return
+            # Re-generate mockup with feedback
+            try:
+                content = self.query_one("#project-content", VerticalScroll)
+                content.remove_children()
+                content.mount(Static(
+                    "[bold yellow]Regenerating mockup with your feedback...[/bold yellow]\n\n"
+                    "[dim]Creating an updated HTML preview.[/dim]"
+                ))
+            except Exception:
+                pass
+
+            req_id = f"mockup-{uuid.uuid4().hex[:8]}"
+            self._pending_query = req_id
+            try:
+                self.app.send_raw_command(json.dumps({
+                    "type": "wizard.query",
+                    "requestId": req_id,
+                    "systemPrompt": MOCKUP_SYSTEM,
+                    "prompt": (
+                        f"Design to visualize:\n{self.state.design_summary}\n\n"
+                        f"User feedback on previous mockup:\n{feedback}\n\n"
+                        f"Update the mockup to address this feedback."
+                    ),
+                }))
+            except Exception as e:
+                self.notify(f"Failed to regenerate mockup: {e}", severity="error")
 
     # ─── Plan flow ─────────────────────────────────────────────
 
@@ -676,6 +728,17 @@ class ProjectWizard(ModalScreen):
         elif req_id.startswith("mockup-"):
             if error or not text.strip():
                 self.notify("Mockup generation failed — continuing without preview", severity="warning")
+                # Show approval gate anyway so user can proceed
+                try:
+                    content = self.query_one("#project-content", VerticalScroll)
+                    content.remove_children()
+                    content.mount(Static(
+                        "[bold yellow]Could not generate visual preview.[/bold yellow]\n\n"
+                        "[dim]Would you like to continue to planning, or try changing something?[/dim]"
+                    ))
+                    self._show_buttons("btn-plan", "btn-change-mockup", "btn-cancel")
+                except Exception:
+                    pass
             else:
                 # Extract HTML — strip markdown fences if present
                 html = text.strip()
@@ -689,7 +752,7 @@ class ProjectWizard(ModalScreen):
                 self._fallback_to_design()
             else:
                 self.state.design_summary = text.strip()
-            self._render_phase()
+                self._generate_mockup()
 
         elif req_id.startswith("plan-"):
             if error or not text.strip():

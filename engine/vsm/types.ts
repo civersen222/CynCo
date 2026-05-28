@@ -1,5 +1,11 @@
 export type HealthStatus = 'healthy' | 'warning' | 'critical' | 'halted'
 
+export type AxiomHealth = {
+  holding: number
+  total: number
+  violations: string[]
+}
+
 export type GovernanceReport = {
   status: HealthStatus
   varietyBalance: 'balanced' | 'underload' | 'overload'
@@ -10,6 +16,10 @@ export type GovernanceReport = {
   consecutiveUnstable: number
   modelLatencyTrend: 'stable' | 'rising' | 'falling'
   toolSuccessRate: number
+  agreementRatio: number
+  observerDivergence: number | null
+  axiomHealth: AxiomHealth
+  recentToolNames: string[]
 }
 
 export type GovernanceAlert = {

@@ -209,6 +209,20 @@ export function exportParams(): Record<string, number> {
 }
 
 /**
+ * Export full parameter metadata for the dashboard.
+ * Includes name, current value, default, min, max, system, and description.
+ */
+export function exportParamMetadata(): Array<{
+  name: string; value: number; default: number;
+  min: number; max: number; system: string; description: string;
+}> {
+  return [...GOVERNANCE_PARAMS.values()].map(p => ({
+    name: p.name, value: p.value, default: p.default,
+    min: p.min, max: p.max, system: p.system, description: p.description,
+  }))
+}
+
+/**
  * Import parameter values from a flat object.
  * Used to load optimized parameters from Bayesian search.
  */

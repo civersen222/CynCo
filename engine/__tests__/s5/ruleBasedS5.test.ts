@@ -24,6 +24,9 @@ function baseInput(overrides: Partial<S5Input> = {}): S5Input {
     productivityRatio: 0.8,
     recommendedToolMode: null,
     heterarchyAuthority: null,
+    agreementRatio: 1.0,
+    observerDivergence: null,
+    demotedTools: [],
     ...overrides,
   }
 }
@@ -36,15 +39,15 @@ describe('RuleBasedS5 — Hardened 20-rule engine', () => {
     expect(typeof s5.decide).toBe('function')
   })
 
-  it('exports ALL_RULES with 18 rules (6 critical + 7 warning + 5 info)', () => {
+  it('exports ALL_RULES with 20 rules (6 critical + 10 warning + 4 info)', () => {
     expect(Array.isArray(ALL_RULES)).toBe(true)
-    expect(ALL_RULES.length).toBe(18)
+    expect(ALL_RULES.length).toBe(20)
     const criticals = ALL_RULES.filter(r => r.tier === 'critical')
     const warnings = ALL_RULES.filter(r => r.tier === 'warning')
     const infos = ALL_RULES.filter(r => r.tier === 'info')
     expect(criticals.length).toBe(6)
-    expect(warnings.length).toBe(7)
-    expect(infos.length).toBe(5)
+    expect(warnings.length).toBe(10)
+    expect(infos.length).toBe(4)
   })
 
   // ─── Critical rules ────────────────────────────────────────

@@ -39,6 +39,8 @@ import {
 } from '../engine/systemPromptText.js'
 import { getJournal } from '../training/decisionJournal.js'
 import { makeJournalEntry } from '../training/types.js'
+import { globalContract } from '../tools/contract.js'
+import { setSideQuery, resetMergeTracking } from '../tools/impl/edit.js'
 
 type Message = {
   role: 'user' | 'assistant' | 'system'
@@ -163,6 +165,12 @@ export class ConversationLoop {
       requestApproval,
       trustProfile: opts.trustProfile,
       approveAll: opts.config.approveAll,
+    })
+
+    // Inject sideQuery into Edit tool for semantic merge fallback
+    setSideQuery((prompt: string, system?: string) => {
+      const fullPrompt = system ? `${system}\n\n${prompt}` : prompt
+      return this.sideQuery(fullPrompt)
     })
 
     this.workflowEngine = opts.workflowEngine ?? new WorkflowEngine((event) => {
@@ -422,6 +430,51 @@ export class ConversationLoop {
     this.consecutiveNudges = 0
     this.steering.clear()
 
+    // Auto-create contract from EVERY user message — the model must finish what the user asked
+    if (!globalContract.isActive() && text.length > 15) {
+      const lowerText = text.toLowerCase()
+      const assertions: string[] = []
+
+      // Classify intent
+      const isEditTask = /\b(edit|add|create|write|fix|change|modify|delete|remove|wire|implement|refactor|build|update|move|rename)\b/.test(lowerText)
+      const isAnalysisTask = /\b(analyze|explain|describe|summarize|review|compare|investigate|trace|debug|diagnose|why|how does|what is|what are|tell me|show me|find|search|look at|check)\b/.test(lowerText)
+      const isRunTask = /\b(run|test|execute|deploy|install|start|launch|build)\b/.test(lowerText)
+
+      if (isEditTask) {
+        // Extract file targets from the message
+        const fileMatches = text.match(/[\w./\\-]+\.(py|ts|js|tsx|jsx|rs|go|java|c|cpp|h|html|css|json|yaml|yml|toml|md)\b/g)
+        if (fileMatches) {
+          for (const f of [...new Set(fileMatches)].slice(0, 3)) {
+            if (/\b(create|write|new file)\b/i.test(text) && text.includes(f)) {
+              assertions.push(`File ${f} exists after changes`)
+            } else {
+              assertions.push(`File ${f} was modified (git diff shows changes)`)
+            }
+          }
+        }
+        if (assertions.length === 0) {
+          assertions.push('Code was modified to address the task')
+        }
+        assertions.push('Changes committed to git')
+      } else if (isAnalysisTask) {
+        assertions.push('Analysis or answer was provided to the user')
+        assertions.push('Response directly addresses what the user asked')
+      } else if (isRunTask) {
+        assertions.push('Command was executed')
+        assertions.push('Output or result was reported to the user')
+      } else {
+        // Default: treat as a general task
+        assertions.push('Task was completed — user request fully addressed')
+      }
+
+      globalContract.create(
+        text.slice(0, 60),
+        text.slice(0, 200),
+        assertions,
+      )
+      console.log(`[contract] Auto-created: ${assertions.length} assertions for "${text.slice(0, 50)}..."`)
+    }
+
     // Compact when context exceeds the configured warning threshold.
     // With flash attention, attention is ~O(n) not O(n²), so we can use
     // much more of the context window before compacting.
@@ -568,7 +621,33 @@ export class ConversationLoop {
       promptParts.push('## Strategy\n' + activeStrategy)
     }
 
-    // Governance signals routed through S5 enforcement, not prompt injection.
+    // Governance signal injection: tell the model it's stuck
+    const stuckCount = this.governance.getStuckCount()
+    if (stuckCount >= 3) {
+      const signal = stuckCount >= 5
+        ? `## Governance Signal — CRITICAL\n\n` +
+          `CRITICAL: You have been stuck for ${stuckCount} turns. Your tools have been restricted.\n\n` +
+          `You MUST change your approach NOW. Do something completely different from your last 5 actions.\n` +
+          `- If you have been reading files, STOP reading and start editing or writing\n` +
+          `- If editing has been failing, try a completely different file or strategy\n` +
+          `- Summarize what you know and what specific problem is blocking you`
+        : `## Governance Signal\n\n` +
+          `WARNING: You have been repeating similar actions for ${stuckCount} turns without progress.\n\n` +
+          `REQUIRED: Change your approach immediately.\n` +
+          `- If reading files: stop reading and start writing or editing\n` +
+          `- If editing fails: try a different file or approach\n` +
+          `- If searching: stop searching and act on what you already know\n` +
+          `- Summarize what you know and what specific problem is blocking you`
+      promptParts.push('')
+      promptParts.push(signal)
+      console.log(`[vsm] Injected ${stuckCount >= 5 ? 'CRITICAL' : 'WARNING'} governance signal (stuck ${stuckCount} turns)`)
+    }
+
+    // Active contract context: remind the model of its current obligations
+    if (globalContract.isActive()) {
+      promptParts.push('')
+      promptParts.push('## Active Contract\n' + globalContract.getStatus())
+    }
 
     // Prepend workflow instructions when a workflow is active
     if (this.workflowEngine.isActive) {
@@ -623,7 +702,16 @@ export class ConversationLoop {
           performanceHealth: pm?.getHealthStatus?.() === 'green' ? 'healthy' : pm?.getHealthStatus?.() === 'yellow' ? 'warning' : 'critical',
           productivityRatio: (pm as any)?.getProductivity?.() ?? 0.8,
           recommendedToolMode: this.governance.getRecommendedToolMode?.() ?? null,
-          heterarchyAuthority: null,
+          heterarchyAuthority: (() => {
+            const cmd = this.governance.getLastCommander?.()
+            if (!cmd) return null
+            const lower = cmd.toLowerCase()
+            if (lower === 's3' || lower === 's4' || lower === 's5') return lower as 's3' | 's4' | 's5'
+            return null
+          })(),
+          agreementRatio: (govReport as any).agreementRatio ?? 1.0,
+          observerDivergence: (govReport as any).observerDivergence ?? null,
+          demotedTools: this.executor.getToolScorer?.()?.getDemotedTools() ?? [],
         })
 
         // L3: APPLY S5 decisions — hard enforcement, not advisory
@@ -942,6 +1030,39 @@ export class ConversationLoop {
     let summaryInjected = false
 
     for (let i = 0; i < maxIterations; i++) {
+      // ── Stuck loop escape: escalating intervention ──
+      const stuckCount = this.governance.getStuckCount()
+
+      // Tier 4: Hard halt at 15+ stuck turns
+      if (stuckCount >= 15) {
+        console.log(`[vsm] HALT: stuck for ${stuckCount} turns — stopping model loop`)
+        this.emit({
+          type: 'stream.token',
+          text: '\n\n---\n**Session halted** — stuck for ' + stuckCount +
+            ' turns without progress. Send a message to redirect.\n',
+          messageId: '',
+        } as any)
+        this.emit({ type: 'message.complete', messageId: '', stopReason: 'end_turn' } as any)
+        break
+      }
+
+      // Tier 3: Synthetic user message at 10+ stuck turns (every 5 turns)
+      if (stuckCount >= 10 && stuckCount % 5 === 0) {
+        console.log(`[vsm] REDIRECT: injecting synthetic user message (stuck ${stuckCount} turns)`)
+        this.messages.push({
+          role: 'user',
+          content: [{
+            type: 'text',
+            text: 'STOP. You have been repeating the same actions for ' + stuckCount + ' turns without making progress. ' +
+              'Before your next action, answer these questions:\n' +
+              '1. What are you trying to accomplish?\n' +
+              '2. What specific problem is preventing progress?\n' +
+              '3. What completely different approach could you try?\n\n' +
+              'Do NOT repeat any tool call you have made in the last 5 turns.',
+          }],
+        })
+      }
+
       const iterationStartMs = Date.now()
 
       // S2: Check for steering interrupts
@@ -1030,6 +1151,9 @@ export class ConversationLoop {
         console.log(`[loop] Compressed to ${this.messages.length} messages (files tracked: ${this.fileTracker.getModifiedFiles().length} modified, ${this.fileTracker.getReadFiles().length} read)`)
       }
 
+      // Reset per-turn semantic merge tracking
+      resetMergeTracking()
+
       // Algedonic kill switch — HALT if critical failures accumulated
       try {
         this.governance.checkOrHalt()
@@ -1040,8 +1164,48 @@ export class ConversationLoop {
         return
       }
 
-      // Tools already filtered by S5 enforcement and workflow phase restrictions.
-      const iterationTools = toolDefs
+      // Filter out demoted tools (trust score decay)
+      const scorer = this.executor.getToolScorer?.()
+      const demoted = scorer ? new Set(scorer.getDemotedTools()) : new Set<string>()
+      let iterationTools = demoted.size > 0
+        ? toolDefs.filter(t => !demoted.has(t.name))
+        : toolDefs
+      if (demoted.size > 0) {
+        console.log(`[trust] Demoted tools excluded: ${[...demoted].join(', ')}`)
+      }
+
+      // Two-stage tool routing for small context models
+      try {
+        const { shouldUseRouting, getToolsForCategory, CATEGORY_SELECTOR_TOOL } = await import('../tools/toolRouter.js')
+        if (shouldUseRouting(this.config.contextLength ?? 32768) && iterationTools.length > 5) {
+          // Stage 1: send only category selector
+          const routingGen = localCallModel({
+            messages: this.messages,
+            systemPrompt,
+            thinkingConfig,
+            tools: [CATEGORY_SELECTOR_TOOL as any],
+            signal: this.abortController?.signal ?? new AbortController().signal,
+            options: { model: this.config.model! },
+            deps,
+          })
+          for await (const evt of routingGen) {
+            if (evt.type === 'tool_use' && evt.name === 'select_category') {
+              const category = (evt as any).input?.category ?? 'all'
+              console.log(`[routing] Category selected: ${category}`)
+              const { ALL_TOOLS } = await import('../tools/registry.js')
+              iterationTools = getToolsForCategory(category, ALL_TOOLS).map(t => ({
+                name: t.name,
+                description: t.description,
+                input_schema: t.inputSchema,
+              }))
+              break
+            }
+            if (evt.type === 'message_stop') break // model didn't use the tool — fall through to all tools
+          }
+        }
+      } catch (routeErr) {
+        console.log(`[routing] Error: ${routeErr instanceof Error ? routeErr.message : routeErr}`)
+      }
 
       const gen = localCallModel({
         messages: this.messages,
@@ -1130,6 +1294,11 @@ export class ConversationLoop {
                 s3s4Balance: turnReport.s3s4Balance,
                 toolSuccessRate: turnReport.toolSuccessRate,
                 stuckTurns: turnReport.stuckTurns,
+                varietyRatio: turnReport.varietyRatio,
+                varietyBalance: turnReport.varietyBalance,
+                algedonicAlerts: turnReport.algedonicAlerts,
+                axiomHealth: turnReport.axiomHealth,
+                consecutiveUnstable: turnReport.consecutiveUnstable,
                 suggestion: turnReport.stuckTurns > 0 ? 'Model may be stuck — consider changing approach' : null,
               })
 
@@ -1287,6 +1456,21 @@ export class ConversationLoop {
         }
       }
 
+      // Contract enforcement: don't let model finish if contract is incomplete
+      if (globalContract.isActive() && !globalContract.isComplete() && toolUseBlocks.length === 0 && stopReason === 'end_turn') {
+        globalContract.enforcementRounds++
+        if (globalContract.enforcementRounds <= 5) {
+          const pending = globalContract.pendingCount()
+          const failed = globalContract.failedCount()
+          this.addMessage({
+            role: 'user',
+            content: [{ type: 'text', text: `[System] You are NOT done. Contract incomplete — ${pending} assertions still pending, ${failed} failed. You MUST continue working. Do NOT stop until every assertion is passed. Use ContractAssertPass to mark completed assertions.` }],
+          })
+          continue // Continue the model loop instead of breaking
+        }
+        console.log(`[contract] Allowing completion after ${globalContract.enforcementRounds} enforcement rounds`)
+      }
+
       if (toolUseBlocks.length === 0 || stopReason !== 'tool_use') {
         // Before exiting: check whether the model ended silently after tool use
         // and if so, queue a summary follow-up to force one more turn.
@@ -1442,6 +1626,10 @@ export class ConversationLoop {
 
   getGovernance() {
     return this.governance
+  }
+
+  getExecutor() {
+    return this.executor
   }
 
   getFileTracker() {

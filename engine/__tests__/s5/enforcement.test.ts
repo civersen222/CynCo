@@ -44,6 +44,9 @@ function makeGovernance(overrides: Partial<GovernanceReport> = {}): GovernanceRe
     consecutiveUnstable: 0,
     modelLatencyTrend: 'stable',
     toolSuccessRate: 1.0,
+    agreementRatio: 1.0,
+    observerDivergence: null,
+    axiomHealth: { holding: 0, total: 0, violations: [] },
     ...overrides,
   }
 }

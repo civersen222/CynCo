@@ -20,6 +20,7 @@ import {
   variety,
   vsm,
   events,
+  foundations,
   NodeId,
 } from '../cybernetics-core/src/index.js'
 import { getEventBus } from './eventBus.js'
@@ -40,6 +41,7 @@ import { S4Reflector } from './s4Reflector.js'
 import { IdentityGuard } from './identityGuard.js'
 import { AutopoiesisVerifier } from './autopoiesisVerifier.js'
 import { StrategyMemory } from './strategyMemory.js'
+import { PredictionTracker } from './predictionTracker.js'
 
 import type { GovernanceReport, GovernanceAlert } from './types.js'
 import { getJournal } from '../training/decisionJournal.js'
@@ -118,24 +120,37 @@ export class CyberneticsGovernance {
   private _strategyMemory: StrategyMemory = new StrategyMemory()
   private _db?: import('./governanceDb.js').GovernanceDB
   private _sessionId = `session-${Date.now()}`
+  private _predictionTracker: PredictionTracker
+
+  // Axiom health — last computed Beer axiom check results
+  private lastAxiomHealth: { holding: number; total: number; violations: string[] } = { holding: 0, total: 0, violations: [] }
 
   // Ablation toggle — when true, governance is a no-op passthrough
   private readonly _ablated: boolean
+  private _paused: boolean = false
+  // Heterarchy: last computed commander
+  private lastCommander: string = 'S3'
+  // Observer divergence — last computed S3/S4 divergence on success_rate
+  private lastObserverDivergence: number | null = null
 
   // Metrics tracking
   private toolHistory: { name: string; success: boolean; latencyMs: number }[] = []
   private turnCount = 0
   private stuckCount = 0
   private lastResponses: string[] = []
+  private lastToolSignatures: string[] = []
   private currentTaskComplexity = 1
   private lastVarietyRatio = 1.0
   private consecutiveUnstableCount = 0
+  private varietyAttenuators: InstanceType<typeof variety.Attenuator>[]
+  private varietyAmplifiers: InstanceType<typeof variety.Amplifier>[]
 
   constructor(onAlert?: (alert: GovernanceAlert) => void) {
     this.onAlert = onAlert
     this._ablated = process.env._ABLATION_VSM_DISABLED === '1'
     this.eventBus = getEventBus()
     this.nodeId = new NodeId()
+    this._predictionTracker = new PredictionTracker(this._sessionId)
 
     // Load optimized params if available
     const paramsPath = process.env.LOCALCODE_OPTIMIZED_PARAMS
@@ -189,6 +204,16 @@ export class CyberneticsGovernance {
     this.varietyEngine.setActiveTheories(0)
     this.varietyEngine.recalculate()
 
+    // Initialize attenuator/amplifier chains for information-theoretic variety
+    this.varietyAttenuators = [
+      new variety.Attenuator('denied_tools', 0.1, 'Profile-denied tools reduce available variety'),
+      new variety.Attenuator('context_budget', 0.0, 'Context pressure constrains tool variety'),
+    ]
+    this.varietyAmplifiers = [
+      new variety.Amplifier('tool_diversity', 1.0, 'Diverse tool usage amplifies regulatory variety'),
+      new variety.Amplifier('subagent_capacity', 1.0, 'Sub-agent spawning expands response capacity'),
+    ]
+
     // Initialize VSM node — LocalCode as a viable system
     this.systemNode = new vsm.VSMNode('LocalCode')
 
@@ -218,7 +243,10 @@ export class CyberneticsGovernance {
     if (this.toolHistory.length > 50) {
       this.toolHistory = this.toolHistory.slice(-50)
     }
-    if (this._ablated) return // Skip all governance when ablated
+    // Track tool signatures for smarter stuck detection
+    this.lastToolSignatures.push(name)
+    if (this.lastToolSignatures.length > 5) this.lastToolSignatures = this.lastToolSignatures.slice(-5)
+    if (this._ablated || this._paused) return // Skip all governance when ablated or paused
 
     // Route through real algedonic channel
     const action = this.algedonicIntegration.recordToolResult(name, success, latencyMs)
@@ -303,7 +331,7 @@ export class CyberneticsGovernance {
     userMessage?: string
   }): void {
     this.turnCount++
-    if (this._ablated) return // Skip all governance when ablated
+    if (this._ablated || this._paused) return // Skip all governance when ablated or paused
 
     // S4: Classify task complexity from user message
     if (metrics.userMessage) {
@@ -312,12 +340,22 @@ export class CyberneticsGovernance {
     }
 
     // Update variety engine with BOTH sides of Ashby's equation:
-    // - Environmental variety (S4): task complexity
-    // - Regulatory variety: number of distinct tools available * usage diversity
+    // - Environmental variety (S4): task complexity, attenuated by constraints
+    // - Regulatory variety: tool diversity measured via Shannon entropy
     const distinctToolsUsed = new Set(this.toolHistory.slice(-10).map(t => t.name)).size
-    this.varietyEngine.setInputCount(this.currentTaskComplexity * 3) // Environmental variety
+    const recentTools = this.toolHistory.slice(-10)
+
+    // Environmental variety (S4): task complexity, attenuated by constraints
+    const rawEnvironmental = this.currentTaskComplexity * 3
+    const attenuatedEnvironmental = variety.attenuateChain(rawEnvironmental, this.varietyAttenuators)
+
+    // Regulatory variety: tool diversity measured via Shannon entropy
+    const toolProbs = this._toolUsageProbabilities(recentTools)
+    const toolEntropy = toolProbs.length > 0 ? foundations.entropy(toolProbs) : 0
+
+    this.varietyEngine.setInputCount(Math.round(attenuatedEnvironmental))
     this.varietyEngine.setFilterCount(0)
-    this.varietyEngine.setActiveTheories(distinctToolsUsed) // Tool diversity as amplification
+    this.varietyEngine.setActiveTheories(Math.max(1, Math.round(toolEntropy * 3)))
     this.varietyEngine.recalculate()
 
     // Observer: record measurements from S3 and S4 perspectives
@@ -325,6 +363,13 @@ export class CyberneticsGovernance {
     this.observerEffects.recordMeasurement('success_rate', sr, 'S3')
     this.observerEffects.recordMeasurement('success_rate',
       metrics.toolsCalled > 0 ? sr : 0.5, 'S4') // S4 sees differently when no tools
+
+    // Check observer divergence — S3 vs S4 on success rate
+    const divergenceResult = this.observerEffects.checkDivergence('success_rate', 0.2)
+    this.lastObserverDivergence = divergenceResult.divergence
+    if (divergenceResult.exceeds && this.turnCount > 3) {
+      console.log(`[vsm] Observer divergence ${divergenceResult.divergence.toFixed(2)} > 0.2 — S3/S4 disagree`)
+    }
 
     // Heterarchy: determine who commands
     const govReport = this.getReport()
@@ -335,6 +380,8 @@ export class CyberneticsGovernance {
       metrics.toolsCalled,
     )
     const commander = this.heterarchyIntegration.whoCommands(context)
+    const heterarchyShifted = commander !== this.lastCommander
+    this.lastCommander = commander
 
     // Conversation: track exchange if user message present
     if (metrics.userMessage && metrics.response) {
@@ -343,6 +390,13 @@ export class CyberneticsGovernance {
         metrics.response.slice(0, 200),
         metrics.userMessage.slice(0, 200),
       )
+    }
+
+    // Query agreement ratio — low agreement = user and system are diverging
+    const agreementRatio = this.conversationTheory.getAgreementRatio()
+    if (agreementRatio < 0.5 && this.turnCount > 3) {
+      this.algedonicIntegration.recordToolResult('AgreementDivergence', false, 0)
+      console.log(`[vsm] Agreement ratio ${agreementRatio.toFixed(2)} < 0.5 — algedonic pain`)
     }
 
     // Track structural coupling (user ↔ system co-drift)
@@ -396,11 +450,22 @@ export class CyberneticsGovernance {
       ))
     }
 
-    // Stuck detection: same response pattern
+    // Periodic Beer axiom checks — every 5 turns
+    if (this.turnCount % 5 === 0 && this.turnCount > 0) {
+      this.lastAxiomHealth = this.checkAxioms()
+      if (this.lastAxiomHealth.violations.length > 0) {
+        console.log(`[vsm] Axiom violations: ${this.lastAxiomHealth.violations.join(', ')}`)
+      }
+    }
+
+    // Stuck detection: check BOTH response text AND tool signatures
     this.lastResponses.push(metrics.response?.slice(0, 100) ?? '')
     if (this.lastResponses.length > 5) this.lastResponses = this.lastResponses.slice(-5)
     const uniqueResponses = new Set(this.lastResponses).size
-    if (this.lastResponses.length >= 3 && uniqueResponses === 1) {
+    const uniqueToolSigs = new Set(this.lastToolSignatures).size
+    const responseStuck = this.lastResponses.length >= 3 && uniqueResponses === 1
+    const toolStuck = this.lastToolSignatures.length >= 3 && uniqueToolSigs === 1
+    if (responseStuck || toolStuck) {
       this.stuckCount++
     } else {
       this.stuckCount = Math.max(0, this.stuckCount - 1)
@@ -431,6 +496,24 @@ export class CyberneticsGovernance {
         timestamp: Date.now(),
       })
     }
+
+    // Algedonic: fire pain for stuck states (not just tool failures)
+    if (this.stuckCount >= 3) {
+      this.eventBus.emit(events.DomainEvent.algedonicFired(
+        this.nodeId,
+        'Pain' as any,
+        'Warning' as any,
+        `Stuck for ${this.stuckCount} turns without progress`,
+      ))
+    }
+
+    // Prediction tracking — check triggers and evaluate
+    const toolResults = this.toolHistory.slice(-10).map(t => ({ tool: t.name, success: t.success }))
+    const report = this.getReport()
+    this._predictionTracker.checkTriggers(this.turnCount, report, toolResults)
+    // Extended triggers: heterarchy shifts and observer divergence
+    this._predictionTracker.checkExtendedTriggers(this.turnCount, report, heterarchyShifted, this.stuckCount >= 3)
+    this._predictionTracker.evaluateOpen(this.turnCount, report, toolResults)
   }
 
   onModelError(error: string): void {
@@ -517,7 +600,35 @@ export class CyberneticsGovernance {
       consecutiveUnstable: this.consecutiveUnstableCount,
       modelLatencyTrend: this.getLatencyTrend(),
       toolSuccessRate: successRate,
+      agreementRatio: this.conversationTheory.getAgreementRatio(),
+      observerDivergence: this.lastObserverDivergence,
+      axiomHealth: this.lastAxiomHealth,
+      recentToolNames: this.getRecentToolNames(),
     }
+  }
+
+  private checkAxioms(): { holding: number; total: number; violations: string[] } {
+    const violations: string[] = []
+    const snap = this.varietyEngine.current()
+    const envVariety = snap?.inputCount ?? 1
+    const regVariety = snap?.amplified ?? 1
+
+    if (!vsm.checkAxiom1(envVariety, regVariety, 0.3)) {
+      violations.push('Axiom1: operational variety exceeds management capacity')
+    }
+
+    const balance = this.homeostatIntegration.getBalance()
+    if (!vsm.checkAxiom2(balance.s3Pressure, balance.s4Pressure, 0.4)) {
+      violations.push('Axiom2: S3/S4 variety imbalance impairs arbitration')
+    }
+
+    if (!vsm.checkPrinciple1(regVariety, envVariety * 0.5, envVariety, 0.3)) {
+      violations.push('Principle1: management variety insufficient for operational demands')
+    }
+
+    const total = 3
+    const holding = total - violations.length
+    return { holding, total, violations }
   }
 
   private getSuccessRate(): number {
@@ -530,6 +641,16 @@ export class CyberneticsGovernance {
     const recent = this.toolHistory.slice(-10)
     if (recent.length === 0) return 0
     return recent.reduce((sum, t) => sum + t.latencyMs, 0) / recent.length
+  }
+
+  private _toolUsageProbabilities(recentTools: { name: string }[]): number[] {
+    if (recentTools.length === 0) return []
+    const counts = new Map<string, number>()
+    for (const t of recentTools) {
+      counts.set(t.name, (counts.get(t.name) ?? 0) + 1)
+    }
+    const total = recentTools.length
+    return [...counts.values()].map(c => c / total)
   }
 
   /** Get the current variety snapshot for display/debugging. */
@@ -583,6 +704,9 @@ export class CyberneticsGovernance {
   /** Get heterarchy integration (who commands in what context). */
   getHeterarchy(): HeterarchyIntegration { return this.heterarchyIntegration }
 
+  /** Get the last computed heterarchy commander (S3/S4/S5). */
+  getLastCommander(): string { return this.lastCommander }
+
   /** Return the active tool mode based on heterarchy commander. */
   getRecommendedToolMode(): 'full' | 'read_only' | 'safe' {
     try {
@@ -608,6 +732,21 @@ export class CyberneticsGovernance {
 
   /** Get observer effects integration (measurements, eigenform). */
   getObserverEffects(): ObserverEffectsIntegration { return this.observerEffects }
+
+  /**
+   * Check eigenform stability of the self-assessment function.
+   * Called at session end — non-convergence indicates the system's
+   * self-model is unstable and parameters should be reset.
+   */
+  checkEigenformStability(): { converged: boolean; value: number } {
+    const sr = this.getSuccessRate()
+    const assessFn = (x: number) => 0.3 + 0.5 * x + 0.2 * sr
+    const result = this.observerEffects.findSelfAssessmentEigenform(assessFn, sr)
+    if (!result.converged) {
+      console.log('[vsm] Eigenform did NOT converge — self-assessment unstable')
+    }
+    return result
+  }
 
   /** Get constraint checks integration. */
   getConstraintChecks(): ConstraintChecksIntegration { return this.constraintChecks }
@@ -642,7 +781,7 @@ export class CyberneticsGovernance {
    * Call before every model invocation.
    */
   checkOrHalt(): void {
-    if (this._ablated) return // No kill switch when ablated
+    if (this._ablated || this._paused) return // No kill switch when ablated or paused
     this.algedonicIntegration.checkOrHalt()
   }
 
@@ -686,5 +825,32 @@ export class CyberneticsGovernance {
 
   getGovernanceDb(): import('./governanceDb.js').GovernanceDB | undefined {
     return this._db
+  }
+
+  /** Get the PredictionTracker for reading falsifiable hypothesis statistics. */
+  getPredictionTracker(): PredictionTracker {
+    return this._predictionTracker
+  }
+
+  getStuckCount(): number {
+    return this.stuckCount
+  }
+
+  getRecentToolNames(): string[] {
+    return [...this.lastToolSignatures]
+  }
+
+  pause(): void {
+    this._paused = true
+    console.log('[vsm] Governance paused — state preserved, processing suspended')
+  }
+
+  resume(): void {
+    this._paused = false
+    console.log('[vsm] Governance resumed')
+  }
+
+  isPaused(): boolean {
+    return this._paused
   }
 }

@@ -45,8 +45,10 @@ export class HomeostatIntegration {
     this.nodeId = nodeId
 
     // 3 units: S3 (operations), S4 (intelligence), context pressure
-    // Damping = 0.8 (moderately stable), time constant = 5.0 (S2-level response)
-    this.ashby = new homeostat.AshbyHomeostat(3, 0.8, 5.0)
+    // Damping = 0.8 (moderately stable)
+    // Use Beer's time constant for S3 level (inside-and-now)
+    const s3TimeConstant = homeostat.timeConstantForLevel(3)
+    this.ashby = new homeostat.AshbyHomeostat(3, 0.8, s3TimeConstant)
 
     // Initial coupling: S3 and S4 are weakly coupled, context affects both
     this.ashby.setWeight(S3_UNIT, S4_UNIT, -0.3) // S4 inhibits S3 (intelligence reduces operational urgency)
@@ -97,7 +99,10 @@ export class HomeostatIntegration {
     ))
 
     // ULTRASTABILITY: if not stable, randomize weights to search for new equilibrium
-    if (!this.ashby.isStable(0.05)) {
+    // Scale tolerance by time constant — isStable checks derivatives which are divided by tau,
+    // so a larger tau requires a proportionally smaller tolerance to detect the same instability.
+    const stabilityTolerance = 0.05 / this.ashby.timeConstant
+    if (!this.ashby.isStable(stabilityTolerance)) {
       this.ashby.randomizeWeights(0.5)
       this.perturbationCount++
     }
@@ -107,9 +112,10 @@ export class HomeostatIntegration {
    * Is the homeostat currently stable?
    *
    * BEHAVIORAL EFFECT: When unstable, S5 should intervene.
+   * Tolerance is scaled by time constant so stability check is tau-independent.
    */
   isStable(): boolean {
-    return this.ashby.isStable(0.05)
+    return this.ashby.isStable(0.05 / this.ashby.timeConstant)
   }
 
   /**

@@ -10,6 +10,7 @@ describe('VSM types', () => {
     const report: GovernanceReport = {
       status: 'healthy', varietyBalance: 'balanced', varietyRatio: 1.0, s3s4Balance: 'balanced',
       algedonicAlerts: 0, stuckTurns: 0, consecutiveUnstable: 0, modelLatencyTrend: 'stable', toolSuccessRate: 0.95,
+      agreementRatio: 1.0, observerDivergence: null, axiomHealth: { holding: 0, total: 0, violations: [] },
     }
     expect(report.status).toBe('healthy')
   })
@@ -134,5 +135,20 @@ describe('CyberneticsGovernance', () => {
     const governance = new CyberneticsGovernance()
     const mode = governance.getRecommendedToolMode()
     expect(mode).toBe('full')
+  })
+})
+
+// ─── CyberneticsGovernance: pause/resume ────────────────────────
+
+describe('pause/resume', () => {
+  it('pause() stops governance processing, resume() restores it', () => {
+    const gov = new CyberneticsGovernance()
+    expect(gov.isPaused()).toBe(false)
+    gov.pause()
+    expect(gov.isPaused()).toBe(true)
+    const report = gov.getReport()
+    expect(report.status).toBeDefined()
+    gov.resume()
+    expect(gov.isPaused()).toBe(false)
   })
 })

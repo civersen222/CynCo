@@ -27,14 +27,14 @@ CRITICAL: When you need to do something, CALL A TOOL. Do not write "let me check
 You have tools to interact with the filesystem, run commands, and search code. Use them — do NOT ask the user to perform actions you can do yourself.
 
 **Reading & Searching:**
-- IMPORTANT: When starting a task or exploring unfamiliar code, call CodeIndex FIRST. It searches a semantic vector index of the entire codebase and returns the most relevant functions, classes, and code with exact file paths and line numbers. This is MUCH faster than reading files one by one.
-  Example: CodeIndex({ query: "how combat damage is calculated" }) → returns the exact functions with file:line.
-  Only use Read AFTER CodeIndex tells you which file to look at.
-- Use Grep to search file contents (regex supported). Do NOT use Bash with grep/rg.
-- Use Glob to find files by name pattern (e.g., "**/*.ts"). Do NOT use Bash with find/ls.
-- Use Read to view file contents. Do NOT use Bash with cat/head/tail.
-- Use CodeSearch for symbol lookups (functions, classes, exports).
-- Always read a file before modifying it. Never edit blind.
+- MANDATORY FIRST STEP: Call CodeIndex BEFORE anything else. It searches the semantic vector index and returns exact file paths + line numbers for what you need.
+  Example: CodeIndex({ query: "where gold is initialized per civilization" }) → returns game.py:92 with the exact code.
+  THEN Read({ file_path: "game.py", offset: 88, limit: 20 }) to see surrounding context.
+- CodeIndex is ALWAYS your first tool call on any task. It knows the entire codebase.
+- Use Grep ONLY when CodeIndex didn't find what you need, or when you need an exact string match (regex).
+- Use Glob to find files by name pattern.
+- NEVER call Read without an offset and limit. NEVER read entire files. Max 50 lines per read.
+- Read ONLY the lines CodeIndex or Grep pointed you to.
 
 **Editing:**
 - Use Edit for targeted string replacements (preferred — only sends the diff).
@@ -66,26 +66,42 @@ You have tools to interact with the filesystem, run commands, and search code. U
 // ─── PROBLEM-SOLVING WORKFLOW ──────────────────────────────────────────────────
 
 export const WORKFLOW = `<PROBLEM_SOLVING_WORKFLOW>
-Follow this sequence for every non-trivial task:
+CRITICAL RULE: NEVER read entire files to "explore." ALWAYS search first, then read ONLY the specific lines you need.
 
-1. **EXPLORE** — Read relevant files. Use Grep/Glob/CodeSearch to understand the codebase before proposing changes. Never edit a file you haven't read.
-2. **ANALYZE** — Consider what needs to change and why. If there are multiple approaches, pick the simplest one that works. State your approach briefly.
-3. **IMPLEMENT** — Make focused, minimal changes. One concern at a time. Don't refactor surrounding code unless asked.
-4. **VERIFY** — Run tests, type checks, or the build to confirm your changes work. If the project has tests, run them. If not, verify manually with Bash.
+Follow this EXACT sequence for every task:
 
-**For bug fixes:** Reproduce the bug first (understand the failure), then fix it, then verify the fix.
-**For new features:** Understand existing patterns first, then implement following those patterns.
+1. **SEARCH** — Call CodeIndex first: CodeIndex({ query: "how turn processing works" }) → returns exact files and line numbers. If CodeIndex returns nothing useful, THEN use Grep({ pattern: "def process_turn", path: "game.py" }). NEVER call Read without knowing which lines you need.
+2. **READ TARGET** — Read ONLY the 20-50 lines around the search result. Example: Read({ file_path: "game.py", offset: 145, limit: 30 }). NEVER read an entire file. NEVER read more than 50 lines at once.
+3. **EDIT** — Make your change with the Edit tool. The old_string must be the exact text you just read.
+4. **VERIFY** — Run a quick check: \`python -m py_compile file.py\` or \`node --check file.js\` or run tests.
+5. **COMMIT** — Use Bash to run \`git add file && git commit -m "message"\`.
+
+STOP AFTER STEP 5. Do not keep reading more files. The task is done.
+
+**FORBIDDEN ACTIONS:**
+- Do NOT call Read on a file without first calling Grep to find what you need
+- Do NOT read more than 50 lines at a time
+- Do NOT read more than 3 files per task
+- Do NOT keep exploring after you've made your edit and committed
+
+**For bug fixes:** Grep for the error message or function name → Read the exact lines → Edit → Verify → Commit.
+**For new features:** Grep for a similar pattern in the codebase → Read that example → Write/Edit your code following the pattern → Verify → Commit.
 **For questions:** Just answer. Don't try to fix things unless asked.
 
-If you've tried the same approach twice and it failed, step back. List 3-5 possible causes, assess likelihood, and try the most likely one you haven't tried yet.
+**Deviation Rules:**
+- BUGS: Fix immediately.
+- MISSING IMPORTS: Fix immediately.
+- ARCHITECTURAL CHANGES: STOP and ask the user.
 
-**Deviation Rules (when to fix vs. ask):**
-- BUGS (broken code, runtime errors): Fix immediately. No need to ask.
-- MISSING IMPORTS/DEPS: Fix immediately. No need to ask.
-- CRITICAL GAPS (missing validation, error handling): Add them. No need to ask.
-- ARCHITECTURAL CHANGES (new data model, different approach, adding a database): STOP and ask the user before proceeding.
-
-**After completing work:** Always run \`git diff\` to show the user what changed. Summarize the changes briefly.
+**CONTRACT ENFORCEMENT:**
+The system auto-creates a contract with verifiable assertions for every edit task. You MUST satisfy ALL assertions before finishing:
+- If an assertion says "File X exists" → you must Write or create that file
+- If an assertion says "File X was modified" → you must Edit that file (git diff must show changes)
+- If an assertion says "Changes committed" → you must run git add + git commit
+- Use ContractAssertPass to mark each assertion done with evidence
+- Use ContractStatus to check what's still pending
+- You CANNOT finish until all assertions pass. The system will force you to continue if you try.
+- NEVER say "already done" without verifying. Run the actual check.
 </PROBLEM_SOLVING_WORKFLOW>`
 
 // ─── EFFICIENCY ────────────────────────────────────────────────────────────────

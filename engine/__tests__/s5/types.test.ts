@@ -24,6 +24,9 @@ describe('S5 extended types', () => {
       productivityRatio: 0.8,
       recommendedToolMode: null,
       heterarchyAuthority: null,
+      agreementRatio: 1.0,
+      observerDivergence: null,
+      demotedTools: [],
     }
     expect(input.varietyBalance).toBe('balanced')
     expect(input.homeostatStable).toBe(true)
