@@ -345,6 +345,21 @@ export async function* localCallModel({
     }
   }
 
+  // Add GBNF grammar for constrained decoding on simulated tool use
+  if (simulatedToolUse && process.env.LOCALCODE_GRAMMAR_ENABLED !== 'false') {
+    try {
+      const { generateGBNF } = await import('../decoding/grammarEmitter.js')
+      const { ALL_TOOLS } = await import('../tools/registry.js')
+      const activeTools = ALL_TOOLS.filter(t => toolDefs.some(td => td.name === t.name))
+      const grammar = generateGBNF(activeTools)
+      if (grammar && provider.name === 'llama-cpp') {
+        request.grammar = grammar
+      }
+    } catch (e) {
+      console.log(`[callModel] Grammar generation failed, continuing without: ${e}`)
+    }
+  }
+
   // 9. Stream from provider and translate
   console.log(`[callModel] Streaming from provider with ${convertedMessages.length} messages, ${toolDefs.length} tools`)
   let rawStream: AsyncIterable<LocalStreamEvent>

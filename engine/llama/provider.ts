@@ -207,6 +207,7 @@ export class LlamaCppProvider implements Provider {
     if (request.temperature !== undefined) body.temperature = request.temperature
     if (request.stop_sequences) body.stop = request.stop_sequences
     if (request.tools?.length) body.tools = toOpenAITools(request.tools)
+    if (request.grammar) body.grammar = request.grammar
     if (request.system) {
       body.messages = [
         { role: 'system', content: request.system },

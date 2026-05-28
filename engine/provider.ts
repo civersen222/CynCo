@@ -51,6 +51,7 @@ export type CompletionRequest = {
   temperature?: number
   stop_sequences?: string[]
   thinking?: { enabled: boolean; budget_tokens?: number }
+  grammar?: string
 }
 
 // ─── Provider Interface ──────────────────────────────────────────
