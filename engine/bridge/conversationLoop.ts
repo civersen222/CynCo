@@ -138,6 +138,7 @@ export class ConversationLoop {
   private snapshot?: WorkspaceSnapshot
   private lastSnapshotHash?: string
   private vibeMode = false
+  private _correctionAttempts = 0
 
   constructor(opts: ConversationLoopOptions) {
     this.config = opts.config
@@ -1367,20 +1368,30 @@ export class ConversationLoop {
           .filter((b: any) => b.type === 'text')
           .map((b: any) => b.text ?? '')
           .join('')
-        const toolCallMatch = textContent.match(/<tool_call[|]?>\s*(\{[\s\S]*?\})\s*<\/tool_call>/)
-        if (toolCallMatch) {
-          try {
-            const parsed = JSON.parse(toolCallMatch[1])
-            if (parsed.name) {
-              console.log(`[loop] Extracted XML tool call fallback: ${parsed.name}`)
-              toolUseBlocks = [{
-                type: 'tool_use',
-                id: randomUUID(),
-                name: parsed.name,
-                input: parsed.arguments ?? parsed.input ?? {},
-              }]
-            }
-          } catch { /* ignore parse errors */ }
+        if (textContent.includes('<tool_call>')) {
+          const { extractSimulatedToolCalls } = require('../ollama/simulated.js')
+          const extractResult = extractSimulatedToolCalls(textContent)
+          if (extractResult.toolCalls.length > 0) {
+            console.log(`[loop] Extracted ${extractResult.toolCalls.length} XML tool call(s) via simulated extractor`)
+            toolUseBlocks = extractResult.toolCalls.map((tc: any) => ({
+              type: 'tool_use',
+              id: tc.id,
+              name: tc.name,
+              input: tc.input,
+            }))
+          }
+          // Handle post-validation errors: inject corrective message and re-prompt
+          if (extractResult.validationErrors?.length && this._correctionAttempts < 2) {
+            this._correctionAttempts++
+            const correction = extractResult.validationErrors.join('\n\n')
+            this.messages.push({
+              role: 'user',
+              content: [{ type: 'text', text: `[System] Your tool call was invalid. ${correction}` }],
+            })
+            console.log(`[loop] Tool call validation failed — re-prompting (attempt ${this._correctionAttempts}/2)`)
+            continue // re-prompt
+          }
+          this._correctionAttempts = 0
         }
         // If still no tool calls found, treat as end_turn
         if (toolUseBlocks.length === 0) {

@@ -25,11 +25,11 @@ describe('extractSimulatedToolCalls', () => {
   it('extracts a single tool call', () => {
     const text = `I'll check the files.
 <tool_call>
-{"name": "bash", "arguments": {"command": "ls -la"}}
+{"name": "Bash", "arguments": {"command": "ls -la"}}
 </tool_call>`
     const result = extractSimulatedToolCalls(text)
     expect(result.toolCalls).toHaveLength(1)
-    expect(result.toolCalls[0].name).toBe('bash')
+    expect(result.toolCalls[0].name).toBe('Bash')
     expect(result.toolCalls[0].input).toEqual({ command: 'ls -la' })
     expect(result.toolCalls[0].id).toMatch(/^sim_/)
     expect(result.remainingText).toBe("I'll check the files.")
@@ -38,20 +38,20 @@ describe('extractSimulatedToolCalls', () => {
   it('extracts multiple tool calls', () => {
     const text = `Let me do two things.
 <tool_call>
-{"name": "bash", "arguments": {"command": "ls"}}
+{"name": "Bash", "arguments": {"command": "ls"}}
 </tool_call>
 <tool_call>
-{"name": "read", "arguments": {"path": "file.ts"}}
+{"name": "Read", "arguments": {"file_path": "file.ts"}}
 </tool_call>`
     const result = extractSimulatedToolCalls(text)
     expect(result.toolCalls).toHaveLength(2)
-    expect(result.toolCalls[0].name).toBe('bash')
-    expect(result.toolCalls[1].name).toBe('read')
+    expect(result.toolCalls[0].name).toBe('Bash')
+    expect(result.toolCalls[1].name).toBe('Read')
   })
 
   it('handles malformed JSON with trailing commas', () => {
     const text = `<tool_call>
-{"name": "bash", "arguments": {"command": "ls",}}
+{"name": "Bash", "arguments": {"command": "ls",}}
 </tool_call>`
     const result = extractSimulatedToolCalls(text)
     expect(result.toolCalls).toHaveLength(1)

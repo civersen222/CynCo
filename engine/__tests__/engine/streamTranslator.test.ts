@@ -253,7 +253,7 @@ describe('translateStream — simulated mode', () => {
 
   describe('with simulated tool calls', () => {
     it('extracts tool calls from buffered XML and emits tool_use blocks', async () => {
-      const toolCallXml = '<tool_call>\n{"name": "Read", "arguments": {"path": "foo.ts"}}\n</tool_call>'
+      const toolCallXml = '<tool_call>\n{"name": "Read", "arguments": {"file_path": "foo.ts"}}\n</tool_call>'
       const source: StreamEvent[] = [
         { type: 'message_start', message: { id: '', model: 'llama3', usage: { input_tokens: 0, output_tokens: 0 } } },
         { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: `I will read the file.\n${toolCallXml}` } },
@@ -285,7 +285,7 @@ describe('translateStream — simulated mode', () => {
       expect(toolBlock.type).toBe('tool_use')
       if (toolBlock.type === 'tool_use') {
         expect(toolBlock.name).toBe('Read')
-        expect(toolBlock.input).toEqual({ path: 'foo.ts' })
+        expect(toolBlock.input).toEqual({ file_path: 'foo.ts' })
         expect(toolBlock.id).toMatch(/^sim_/)
       }
 
@@ -346,7 +346,7 @@ describe('translateStream — simulated mode', () => {
 
   describe('with thinking AND tool calls', () => {
     it('extracts both thinking and tool calls from buffered text', async () => {
-      const text = '<think>I should check the file.</think>\nLet me read it.\n<tool_call>\n{"name": "Read", "arguments": {"path": "bar.ts"}}\n</tool_call>'
+      const text = '<think>I should check the file.</think>\nLet me read it.\n<tool_call>\n{"name": "Read", "arguments": {"file_path": "bar.ts"}}\n</tool_call>'
       const source: StreamEvent[] = [
         { type: 'message_start', message: { id: '', model: 'llama3', usage: { input_tokens: 0, output_tokens: 0 } } },
         { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: text } },

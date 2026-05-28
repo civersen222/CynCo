@@ -177,7 +177,7 @@ describe('Integration: tool use response', () => {
 
 describe('Integration: simulated tool use', () => {
   it('buffers text and extracts tool calls from XML', async () => {
-    const xmlText = 'I will read the file.\n<tool_call>\n{"name": "Read", "arguments": {"path": "/tmp/test.ts"}}\n</tool_call>'
+    const xmlText = 'I will read the file.\n<tool_call>\n{"name": "Read", "arguments": {"file_path": "/tmp/test.ts"}}\n</tool_call>'
 
     const events: LocalStreamEvent[] = [
       { type: 'message_start', message: { id: 'msg-3', model: 'phi4:14b', usage: { input_tokens: 10, output_tokens: 0 } } },
