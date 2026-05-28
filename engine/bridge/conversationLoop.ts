@@ -476,6 +476,16 @@ export class ConversationLoop {
       console.log(`[contract] Auto-created: ${assertions.length} assertions for "${text.slice(0, 50)}..."`)
     }
 
+    // Start trajectory recording for this task
+    try {
+      const { getTrajectoryRecorder } = require('../training/trajectoryRecorder.js')
+      const { randomUUID } = require('crypto')
+      const recorder = getTrajectoryRecorder()
+      if (recorder) {
+        recorder.startTask(`task-${randomUUID().slice(0, 8)}`, this.config.model ?? 'unknown')
+      }
+    } catch {}
+
     // Compact when context exceeds the configured warning threshold.
     // With flash attention, attention is ~O(n) not O(n²), so we can use
     // much more of the context window before compacting.
@@ -1229,6 +1239,20 @@ export class ConversationLoop {
         console.log(`[routing] Error: ${routeErr instanceof Error ? routeErr.message : routeErr}`)
       }
 
+      // Apply variety-driven control signals
+      let effectiveTemperature = this.config.temperature ?? 0.7
+      if (process.env.LOCALCODE_VARIETY_CONTROL !== 'false' && this.governance) {
+        try {
+          const signals = this.governance.getControlSignals(effectiveTemperature)
+          effectiveTemperature = signals.temperature
+          if (signals.temperatureAdjust !== 0) {
+            console.log(`[control] Variety: temp ${(effectiveTemperature - signals.temperatureAdjust).toFixed(2)} → ${effectiveTemperature.toFixed(2)}`)
+          }
+        } catch {}
+      }
+      const _savedTemperature = this.config.temperature
+      this.config.temperature = effectiveTemperature
+
       const gen = localCallModel({
         messages: this.messages,
         systemPrompt,
@@ -1238,6 +1262,7 @@ export class ConversationLoop {
         options: { model: this.config.model! },
         deps,
       })
+      this.config.temperature = _savedTemperature
 
       let lastMessageId = ''
       let tokenCount = 0
@@ -1919,6 +1944,33 @@ export class ConversationLoop {
         outcome: { success: !result.isError, elapsed: Date.now() - toolStartMs, outputPreview: result.output.slice(0, 200) },
       }))
     }
+
+    // Record trajectory turn for future training
+    try {
+      const { getTrajectoryRecorder } = require('../training/trajectoryRecorder.js')
+      const recorder = getTrajectoryRecorder()
+      if (recorder) {
+        const { createHash } = require('crypto')
+        const elapsed = Date.now() - toolStartMs
+        const inputHash = createHash('sha256').update(JSON.stringify(toolInput)).digest('hex').slice(0, 12)
+        recorder.recordTurn({
+          toolCalls: [{ name: toolName, inputHash, success: !result.isError, latencyMs: elapsed }],
+          stateFeatures: {
+            filesTouched: 0,
+            diffSize: 0,
+            testsTotal: 0,
+            testsFailing: 0,
+            toolsUsed: [toolName],
+            contextPct: 0,
+          },
+          rewardComponents: {
+            toolSuccessRate: 1.0,
+            stuckTurns: 0,
+            varietyEntropy: 0,
+          },
+        })
+      }
+    } catch {}
 
     // Autopoietic: update session homeostat with current measurements
     const sessionH = this.governance.getSessionHomeostat()
