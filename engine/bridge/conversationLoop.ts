@@ -806,36 +806,152 @@ export class ConversationLoop {
       console.log(`[scouts] Proactive dispatch failed: ${e}`)
     }
 
-    // ─── Best-of-N Activation Hook ────────────────────────────────
-    // Lightweight check: detect tests + emit event if best-of-N is enabled.
-    // Full multi-candidate orchestration deferred — sampler needs a mini-loop factory.
+    // ─── Best-of-N Orchestration ─────────────────────────────────
+    // If enabled and tests detected: run N candidates in git worktrees,
+    // pick the one with the highest test pass rate.
+    let bestOfNRan = false
     try {
       const bonEnabled = (process.env.LOCALCODE_BEST_OF_N ?? 'false').toLowerCase() === 'true'
       const bonCount = parseInt(process.env.LOCALCODE_BEST_OF_N_COUNT ?? '2', 10)
+      const bonTurnCap = parseInt(process.env.LOCALCODE_BEST_OF_N_TURN_CAP ?? '15', 10)
+      const bonTemp = parseFloat(process.env.LOCALCODE_BEST_OF_N_TEMP ?? '0.8')
+
       if (bonEnabled) {
-        const { detectTests } = require('../bestOfN/testDetector.js') as { detectTests: (root: string) => { available: boolean; command: string; framework: string } }
-        const testInfo = detectTests(this.cwd)
+        const { detectTests } = require('../bestOfN/testDetector.js')
+        const testInfo = detectTests(this.executor['cwd'])
+
         if (testInfo.available) {
+          const { WorktreeManager } = require('../bestOfN/worktreeManager.js')
+          const { extractPatch } = require('../bestOfN/patchExtractor.js')
+          const { runTests, selectWinner, applyPatch } = require('../bestOfN/sampler.js')
+          const mainCwd = this.executor['cwd']
+
           this.emit({ type: 'bestOfN.start', payload: { count: bonCount, framework: testInfo.framework, command: testInfo.command } } as any)
-          console.log(`[bestOfN] Activation detected — ${bonCount} candidates, framework: ${testInfo.framework}, command: ${testInfo.command}`)
-          console.log('[bestOfN] Full orchestration coming in future task (sampler needs mini-loop factory)')
+          console.log(`[bestOfN] Running ${bonCount} candidates — ${testInfo.framework} (${testInfo.command})`)
+
+          // Save state for reset between candidates
+          const savedMessages = JSON.parse(JSON.stringify(this.messages))
+          const savedTemp = this.config.temperature
+          const originalEmit = this.emit
+
+          // Mute stream.token events during candidate runs — only pass through
+          // progress markers, tool events, and governance events
+          this.emit = (event: any) => {
+            if (event.type === 'stream.token') return // mute model text
+            originalEmit(event)
+          }
+
+          const candidates: any[] = []
+          const wtManager = new WorktreeManager(mainCwd)
+
+          try {
+            for (let i = 0; i < bonCount; i++) {
+              // Reset conversation to pre-candidate state
+              this.messages = JSON.parse(JSON.stringify(savedMessages))
+              this.config.temperature = bonTemp
+
+              // Create worktree for this candidate
+              const wtPath = await wtManager.create()
+              this.executor.setCwd(wtPath)
+
+              // Emit progress
+              originalEmit({
+                type: 'stream.token',
+                text: `\n**Best-of-N: sampling candidate ${i + 1}/${bonCount}...**\n`,
+                messageId: '',
+              } as any)
+
+              console.log(`[bestOfN] Candidate ${i + 1}/${bonCount} in ${wtPath}`)
+
+              try {
+                await this.runModelLoop(systemPrompt, thinkingConfig, toolDefs, deps, bonTurnCap)
+              } catch (e) {
+                console.log(`[bestOfN] Candidate ${i + 1} loop error: ${e}`)
+              }
+
+              // Extract patch and run tests
+              const patch = extractPatch(wtPath)
+              const testResult = runTests(wtPath, testInfo)
+              const passRate = testResult.total > 0 ? testResult.passed / testResult.total : 0
+
+              candidates.push({
+                index: i,
+                worktreePath: wtPath,
+                patch,
+                testsPassed: testResult.passed,
+                testsTotal: testResult.total,
+                passRate,
+                stuckTurns: 0,
+                totalTurns: bonTurnCap,
+              })
+
+              console.log(`[bestOfN] Candidate ${i + 1}: ${testResult.passed}/${testResult.total} tests (${(passRate * 100).toFixed(0)}%)`)
+
+              originalEmit({
+                type: 'bestOfN.candidate' as any,
+                index: i,
+                passed: testResult.passed,
+                total: testResult.total,
+                passRate,
+              } as any)
+            }
+
+            // Restore state
+            this.emit = originalEmit
+            this.config.temperature = savedTemp
+            this.executor.setCwd(mainCwd)
+            this.messages = JSON.parse(JSON.stringify(savedMessages))
+
+            // Select winner
+            const winner = selectWinner(candidates)
+
+            if (winner && winner.patch) {
+              const applied = applyPatch(mainCwd, winner.patch)
+              const msg = applied
+                ? `\n**Best-of-N result:** Candidate ${winner.index + 1} selected — ${winner.testsPassed}/${winner.testsTotal} tests passing (${(winner.passRate * 100).toFixed(0)}%). Patch applied.\n`
+                : `\n**Best-of-N result:** Candidate ${winner.index + 1} won (${winner.testsPassed}/${winner.testsTotal} tests) but patch failed to apply cleanly. Running single-pass fallback.\n`
+
+              this.emit({ type: 'stream.token', text: msg, messageId: '' } as any)
+              this.emit({ type: 'bestOfN.selected' as any, winner: winner.index, passRate: winner.passRate, applied } as any)
+              this.emit({ type: 'message.complete', messageId: '', stopReason: 'end_turn' } as any)
+
+              console.log(`[bestOfN] Winner: candidate ${winner.index + 1} (${(winner.passRate * 100).toFixed(0)}%), applied=${applied}`)
+
+              if (applied) {
+                bestOfNRan = true
+              }
+              // If patch didn't apply, fall through to normal single-pass below
+            } else {
+              this.emit({ type: 'stream.token', text: '\n**Best-of-N:** No candidate produced a valid patch. Running single-pass fallback.\n', messageId: '' } as any)
+            }
+          } finally {
+            // Always clean up worktrees
+            wtManager.cleanupAll()
+            this.emit = originalEmit
+            this.config.temperature = savedTemp
+            this.executor.setCwd(mainCwd)
+          }
         } else {
           console.log('[bestOfN] Enabled but no test framework detected — skipping')
         }
       }
     } catch (e) {
-      console.log(`[bestOfN] Activation check failed: ${e}`)
+      console.log(`[bestOfN] Orchestration failed, falling back to single-pass: ${e}`)
     }
 
-    try {
-      await this.runModelLoop(systemPrompt, thinkingConfig, toolDefs, deps)
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      console.error(`[loop] ERROR: ${msg}`)
-      this.emit({ type: 'session.error', error: msg })
-    } finally {
-      // ─── Session End: Autopoietic evaluation ─────────────────
+    // Normal single-pass if best-of-N didn't run (or failed)
+    if (!bestOfNRan) {
       try {
+        await this.runModelLoop(systemPrompt, thinkingConfig, toolDefs, deps)
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        console.error(`[loop] ERROR: ${msg}`)
+        this.emit({ type: 'session.error', error: msg })
+      }
+    }
+
+    // ─── Session End: Autopoietic evaluation + cleanup ──────────
+    try {
         const pop = this.governance.getPopulation()
         const sh = this.governance.getSessionHomeostat()
         const guard = this.governance.getIdentityGuard()
