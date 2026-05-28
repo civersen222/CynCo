@@ -109,6 +109,10 @@ export class TrajectoryRecorder {
   get taskId(): string | null {
     return this._taskId
   }
+
+  get turnIdx(): number {
+    return this._turnIdx
+  }
 }
 
 // ─── Singleton ────────────────────────────────────────────────────

@@ -1349,6 +1349,20 @@ export class ConversationLoop {
                 suggestion: turnReport.stuckTurns > 0 ? 'Model may be stuck — consider changing approach' : null,
               })
 
+              // Emit control signals for dashboard
+              if (this.governance && process.env.LOCALCODE_VARIETY_CONTROL !== 'false') {
+                try {
+                  const signals = this.governance.getControlSignals(this.config.temperature ?? 0.7)
+                  this.emit({
+                    type: 'control.signals',
+                    temperatureAdjust: signals.temperatureAdjust,
+                    temperature: signals.temperature,
+                    bestOfNBudget: signals.bestOfNBudget,
+                    widenToolSet: signals.widenToolSet,
+                  })
+                } catch {}
+              }
+
               // Stream debug log
               try {
                 const fs = require('fs')
@@ -1968,6 +1982,11 @@ export class ConversationLoop {
             stuckTurns: 0,
             varietyEntropy: 0,
           },
+        })
+        this.emit({
+          type: 'trajectory.turn',
+          taskId: recorder.taskId ?? null,
+          turnIdx: recorder.turnIdx ?? 0,
         })
       }
     } catch {}

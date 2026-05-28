@@ -111,6 +111,40 @@ body {
 }
 .sub-badge.active { background: #2d4a3e; color: #4ec9b0; }
 
+/* ── Subsystem Panels ─────────────────────────────────────── */
+.subsystem-grid {
+  grid-column: 1 / -1;
+  display: grid; grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.sub-panel {
+  background: #2d2d2d; border: 1px solid #3a3a3a;
+  border-radius: 6px; padding: 12px;
+  min-height: 100px;
+}
+.sub-panel-title {
+  font-size: 0.85em; color: #4ec9b0; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.5px;
+  margin-bottom: 8px; border-bottom: 1px solid #3a3a3a;
+  padding-bottom: 5px;
+}
+.sub-row {
+  display: flex; justify-content: space-between; align-items: center;
+  font-size: 11px; margin-bottom: 4px;
+}
+.sub-row .sub-label { color: #808080; }
+.sub-row .sub-value { font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace; color: #e0e0e0; }
+.sub-value.green { color: #4caf50; }
+.sub-value.yellow { color: #ffc107; }
+.sub-value.gray { color: #666; }
+.sub-value.red { color: #f44747; }
+.sub-note { font-size: 10px; color: #666; margin-top: 6px; font-style: italic; }
+@keyframes pulse-green {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+.recording-pulse { animation: pulse-green 1.2s infinite; color: #4caf50; }
+
 /* ── S5 Decision Log ──────────────────────────────────────── */
 .decision-list {
   max-height: 260px; overflow-y: auto;
@@ -381,6 +415,45 @@ input[type="range"]:disabled::-webkit-slider-thumb { cursor: not-allowed; }
     </div>
   </div>
 
+  <!-- Subsystems: 2x2 grid of small panels -->
+  <div class="subsystem-grid">
+
+    <!-- Variety Control -->
+    <div class="sub-panel" id="panelVarietyControl">
+      <div class="sub-panel-title">Variety Control</div>
+      <div class="sub-row"><span class="sub-label">Temperature</span><span class="sub-value green" id="vcTemp">0.70</span></div>
+      <div class="sub-row"><span class="sub-label">Adjust</span><span class="sub-value" id="vcAdjust">0.0</span></div>
+      <div class="sub-row"><span class="sub-label">Entropy</span><span class="sub-value" id="vcEntropy">&mdash;</span></div>
+      <div class="sub-row"><span class="sub-label">Tool Set</span><span class="sub-value" id="vcToolSet">normal</span></div>
+      <div class="sub-row"><span class="sub-label">Best-of-N Budget</span><span class="sub-value" id="vcBestOfN">2</span></div>
+    </div>
+
+    <!-- GBNF Grammar -->
+    <div class="sub-panel" id="panelGrammar">
+      <div class="sub-panel-title">GBNF Grammar</div>
+      <div class="sub-row"><span class="sub-label">Status</span><span class="sub-value gray" id="grammarStatus">disabled</span></div>
+      <div class="sub-row"><span class="sub-label">Provider</span><span class="sub-value" id="grammarProvider">llama-cpp</span></div>
+      <div class="sub-note" id="grammarNote">Post-validation on all providers</div>
+    </div>
+
+    <!-- Trajectory Recorder -->
+    <div class="sub-panel" id="panelTrajectory">
+      <div class="sub-panel-title">Trajectory Recorder</div>
+      <div class="sub-row"><span class="sub-label">Status</span><span class="sub-value gray" id="trajStatus">inactive</span></div>
+      <div class="sub-row"><span class="sub-label">Task ID</span><span class="sub-value" id="trajTaskId">&mdash;</span></div>
+      <div class="sub-row"><span class="sub-label">Turns</span><span class="sub-value" id="trajTurns">0</span></div>
+    </div>
+
+    <!-- Best-of-N Sampling -->
+    <div class="sub-panel" id="panelBestOfN">
+      <div class="sub-panel-title">Best-of-N Sampling</div>
+      <div class="sub-row"><span class="sub-label">Status</span><span class="sub-value gray" id="bonStatus">disabled</span></div>
+      <div class="sub-row"><span class="sub-label">N</span><span class="sub-value" id="bonN">2</span></div>
+      <div class="sub-row"><span class="sub-label">Framework</span><span class="sub-value" id="bonFramework">&mdash;</span></div>
+    </div>
+
+  </div>
+
   <!-- Row 3: Tool Activity (full width) -->
   <div class="panel full-width" id="panelTools">
     <div class="panel-title">Tool Activity &mdash; "The Brain"</div>
@@ -535,6 +608,11 @@ const state = {
   config: null,
   pendingChanges: {},
   paramMeta: [],
+  controlSignals: null,
+  trajectoryTurns: 0,
+  trajectoryTaskId: null,
+  bestOfN: null,
+  subsystems: null,
 };
 
 const TOOL_ORDER = ['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash', 'CodeIndex', 'Git', 'Agent',
@@ -698,6 +776,22 @@ function handleEvent(event) {
     case 'message.complete':
       state.turnCount++;
       break;
+
+    case 'control.signals':
+      state.controlSignals = event;
+      renderControlSignals();
+      break;
+
+    case 'trajectory.turn':
+      state.trajectoryTurns = (state.trajectoryTurns || 0) + 1;
+      state.trajectoryTaskId = event.taskId;
+      renderTrajectory();
+      break;
+
+    case 'bestOfN.start':
+      state.bestOfN = event.payload || event;
+      renderBestOfN();
+      break;
   }
 }
 
@@ -720,6 +814,7 @@ function render() {
   renderContext();
   renderGovernance();
   renderS5();
+  renderSubsystems();
   renderToolChart();
   renderToolFeed();
   renderContract();
@@ -1049,6 +1144,112 @@ function renderPredictions() {
   }
 
   el.innerHTML = html;
+}
+
+// ── Subsystem Renderers ──────────────────────────────────────
+
+function renderControlSignals() {
+  var cs = state.controlSignals;
+  var sub = state.subsystems;
+
+  // Temperature
+  var tempEl = document.getElementById('vcTemp');
+  var adjEl = document.getElementById('vcAdjust');
+  var toolSetEl = document.getElementById('vcToolSet');
+  var bonEl = document.getElementById('vcBestOfN');
+
+  if (cs) {
+    var temp = typeof cs.temperature === 'number' ? cs.temperature.toFixed(2) : '0.70';
+    var adj = typeof cs.temperatureAdjust === 'number' ? cs.temperatureAdjust : 0;
+    tempEl.textContent = temp;
+    tempEl.className = 'sub-value ' + (adj !== 0 ? 'yellow' : 'green');
+    var adjSign = adj > 0 ? '+' : '';
+    adjEl.textContent = adjSign + (typeof adj === 'number' ? adj.toFixed(1) : '0.0');
+    adjEl.className = 'sub-value ' + (adj !== 0 ? 'yellow' : 'green');
+    toolSetEl.textContent = cs.widenToolSet ? 'widened' : 'normal';
+    toolSetEl.className = 'sub-value ' + (cs.widenToolSet ? 'yellow' : 'green');
+    bonEl.textContent = typeof cs.bestOfNBudget === 'number' ? String(cs.bestOfNBudget) : '2';
+  }
+
+  // Entropy from governance state
+  var entropyEl = document.getElementById('vcEntropy');
+  if (state.governance && state.governance.varietyRatio != null) {
+    entropyEl.textContent = state.governance.varietyRatio.toFixed(3);
+    entropyEl.className = 'sub-value ' + (state.governance.varietyBalance === 'balanced' ? 'green' : 'yellow');
+  }
+
+  // Variety control enabled from subsystems
+  if (sub && sub.varietyControl) {
+    var vcEnabled = sub.varietyControl.enabled;
+    if (!vcEnabled) {
+      tempEl.className = 'sub-value gray';
+      adjEl.textContent = 'disabled';
+      adjEl.className = 'sub-value gray';
+    }
+  }
+}
+
+function renderTrajectory() {
+  var statusEl = document.getElementById('trajStatus');
+  var taskEl = document.getElementById('trajTaskId');
+  var turnsEl = document.getElementById('trajTurns');
+  var sub = state.subsystems;
+
+  var enabled = !sub || (sub.trajectory && sub.trajectory.enabled !== false);
+  var taskId = state.trajectoryTaskId || (sub && sub.trajectory && sub.trajectory.activeTaskId) || null;
+  var turns = state.trajectoryTurns || 0;
+  var recording = enabled && taskId != null;
+
+  if (recording) {
+    statusEl.innerHTML = '<span class="recording-pulse">&#9679;</span> recording';
+    statusEl.className = 'sub-value green';
+  } else if (enabled) {
+    statusEl.textContent = 'inactive';
+    statusEl.className = 'sub-value gray';
+  } else {
+    statusEl.textContent = 'disabled';
+    statusEl.className = 'sub-value gray';
+  }
+
+  taskEl.textContent = taskId ? String(taskId).slice(0, 20) : '\u2014';
+  turnsEl.textContent = String(turns);
+}
+
+function renderGrammar() {
+  var statusEl = document.getElementById('grammarStatus');
+  var providerEl = document.getElementById('grammarProvider');
+  var sub = state.subsystems;
+
+  if (sub && sub.grammar) {
+    var enabled = sub.grammar.enabled;
+    statusEl.textContent = enabled ? 'active' : 'disabled';
+    statusEl.className = 'sub-value ' + (enabled ? 'green' : 'gray');
+    providerEl.textContent = sub.grammar.provider || 'llama-cpp';
+  }
+}
+
+function renderBestOfN() {
+  var statusEl = document.getElementById('bonStatus');
+  var nEl = document.getElementById('bonN');
+  var frameworkEl = document.getElementById('bonFramework');
+  var sub = state.subsystems;
+  var bon = state.bestOfN;
+
+  var enabled = (sub && sub.bestOfN && sub.bestOfN.enabled) || (bon && bon.enabled);
+  var count = (bon && bon.count) || (sub && sub.bestOfN && sub.bestOfN.count) || 2;
+  var framework = (bon && bon.framework) || '\u2014';
+
+  statusEl.textContent = enabled ? 'enabled' : 'disabled';
+  statusEl.className = 'sub-value ' + (enabled ? 'green' : 'gray');
+  nEl.textContent = String(count);
+  frameworkEl.textContent = String(framework);
+}
+
+function renderSubsystems() {
+  renderControlSignals();
+  renderTrajectory();
+  renderGrammar();
+  renderBestOfN();
 }
 
 // ── Slider Logic ─────────────────────────────────────────────
@@ -1458,6 +1659,18 @@ function fetchSessionState() {
 
   fetchPredictions();
   fetchContracts();
+
+  // Hydrate subsystem state
+  fetch('/api/subsystems').then(function(r) { return r.json(); }).then(function(data) {
+    if (data) {
+      state.subsystems = data;
+      // Sync trajectory task ID from REST
+      if (data.trajectory && data.trajectory.activeTaskId) {
+        state.trajectoryTaskId = data.trajectory.activeTaskId;
+      }
+      renderSubsystems();
+    }
+  }).catch(function() {});
 }
 
 function fetchParams() {
