@@ -81,8 +81,8 @@ Follow this EXACT sequence for every task:
 1. **SEARCH** — Call CodeIndex first: CodeIndex({ query: "how turn processing works" }) → returns exact files and line numbers. If CodeIndex returns nothing useful, THEN use Grep({ pattern: "def process_turn", path: "game.py" }). NEVER call Read without knowing which lines you need.
 2. **READ TARGET** — Read ONLY the 20-50 lines around the search result. Example: Read({ file_path: "game.py", offset: 145, limit: 30 }). NEVER read an entire file. NEVER read more than 50 lines at once.
 3. **EDIT** — Make your change with the Edit tool. The old_string must be the EXACT text you just read — copy it character-for-character including indentation. If your Edit fails with "old_string not found", you got the whitespace wrong — re-read the exact lines and try again. Do NOT switch to Bash as a fallback.
-4. **VERIFY** — Run a quick check: \`python -m py_compile file.py\` or \`node --check file.js\` or run tests.
-5. **COMMIT** — Use Bash to run \`git add file && git commit -m "message"\`.
+4. **VERIFY** — MANDATORY: Run the project's test suite with Bash IMMEDIATELY after every edit. If tests fail, read the error, fix it, and re-run. Do NOT proceed to step 5 until tests pass. Example: \`python -m pytest test_civkings.py -v\` or \`bun test\`. If you don't know the test command, check package.json or look for test files.
+5. **COMMIT** — Use Bash to run \`git add file && git commit -m "message"\`. Only commit when tests pass.
 
 STOP AFTER STEP 5. Do not keep reading more files. The task is done.
 

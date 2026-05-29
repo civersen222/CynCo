@@ -1712,16 +1712,23 @@ export class ConversationLoop {
       }
 
       // Contract enforcement: don't let model finish if contract is incomplete
-      if (globalContract.isActive() && !globalContract.isComplete() && toolUseBlocks.length === 0 && stopReason === 'end_turn') {
+      // Fires when model stops WITHOUT tool calls, OR when model has been iterating
+      // for a while without marking assertions (prevents read-loop evasion)
+      const contractActive = globalContract.isActive() && !globalContract.isComplete() && globalContract.isEnforcementEnabled()
+      const modelStopping = toolUseBlocks.length === 0 && stopReason === 'end_turn'
+      const readLoopEvasion = contractActive && i > 0 && i % 8 === 0 // every 8 iterations, check
+      if (contractActive && (modelStopping || readLoopEvasion)) {
         globalContract.enforcementRounds++
         if (globalContract.enforcementRounds <= 5) {
           const pending = globalContract.pendingCount()
           const failed = globalContract.failedCount()
+          const runTests = 'Run the test suite NOW with Bash to verify your changes work. If tests fail, fix the errors.'
           this.addMessage({
             role: 'user',
-            content: [{ type: 'text', text: `[System] You are NOT done. Contract incomplete — ${pending} assertions still pending, ${failed} failed. You MUST continue working. Do NOT stop until every assertion is passed. Use ContractAssertPass to mark completed assertions.` }],
+            content: [{ type: 'text', text: `[System] You are NOT done. Contract has ${pending} assertions pending, ${failed} failed. ${runTests} Then use ContractAssertPass to mark completed assertions. Do NOT keep reading files — ACT.` }],
           })
-          continue // Continue the model loop instead of breaking
+          console.log(`[contract] Enforcement round ${globalContract.enforcementRounds}: ${pending} pending, ${failed} failed`)
+          continue
         }
         console.log(`[contract] Allowing completion after ${globalContract.enforcementRounds} enforcement rounds`)
       }
