@@ -436,12 +436,22 @@ input[type="range"]:disabled::-webkit-slider-thumb { cursor: not-allowed; }
       <div class="sub-note" id="grammarNote">Post-validation on all providers</div>
     </div>
 
-    <!-- Trajectory Recorder -->
-    <div class="sub-panel" id="panelTrajectory">
-      <div class="sub-panel-title">Trajectory Recorder</div>
-      <div class="sub-row"><span class="sub-label">Status</span><span class="sub-value gray" id="trajStatus">inactive</span></div>
-      <div class="sub-row"><span class="sub-label">Task ID</span><span class="sub-value" id="trajTaskId">&mdash;</span></div>
-      <div class="sub-row"><span class="sub-label">Turns</span><span class="sub-value" id="trajTurns">0</span></div>
+    <!-- Training Data Pipeline -->
+    <div class="sub-panel" id="panelTraining">
+      <div class="sub-panel-title">Training Data</div>
+      <div class="sub-row"><span class="sub-label">Recording</span><span class="sub-value gray" id="trajStatus">inactive</span></div>
+      <div class="sub-row"><span class="sub-label">Tasks</span><span class="sub-value" id="trainTasks">0</span></div>
+      <div class="sub-row"><span class="sub-label">Turns</span><span class="sub-value" id="trainTurns">0</span></div>
+      <div class="sub-row"><span class="sub-label">SFT Examples</span><span class="sub-value" id="trainSFT">0</span></div>
+      <div style="margin-top:6px">
+        <div style="display:flex;justify-content:space-between;font-size:11px;color:#808080;margin-bottom:2px">
+          <span>Progress to training</span>
+          <span id="trainTarget">0 / 300</span>
+        </div>
+        <div style="background:#1e1e1e;border-radius:3px;height:8px;overflow:hidden">
+          <div id="trainProgressBar" style="background:#4caf50;height:100%;width:0%;transition:width 0.3s;border-radius:3px"></div>
+        </div>
+      </div>
     </div>
 
     <!-- Best-of-N Sampling -->
@@ -786,6 +796,8 @@ function handleEvent(event) {
       state.trajectoryTurns = (state.trajectoryTurns || 0) + 1;
       state.trajectoryTaskId = event.taskId;
       renderTrajectory();
+      // Refresh training data counts every 10 turns
+      if (state.trajectoryTurns % 10 === 0) fetchTrainingData();
       break;
 
     case 'bestOfN.start':
@@ -1191,28 +1203,47 @@ function renderControlSignals() {
 
 function renderTrajectory() {
   var statusEl = document.getElementById('trajStatus');
-  var taskEl = document.getElementById('trajTaskId');
-  var turnsEl = document.getElementById('trajTurns');
   var sub = state.subsystems;
 
   var enabled = !sub || (sub.trajectory && sub.trajectory.enabled !== false);
   var taskId = state.trajectoryTaskId || (sub && sub.trajectory && sub.trajectory.activeTaskId) || null;
-  var turns = state.trajectoryTurns || 0;
   var recording = enabled && taskId != null;
 
   if (recording) {
     statusEl.innerHTML = '<span class="recording-pulse">&#9679;</span> recording';
     statusEl.className = 'sub-value green';
   } else if (enabled) {
-    statusEl.textContent = 'inactive';
+    statusEl.textContent = 'idle';
     statusEl.className = 'sub-value gray';
   } else {
     statusEl.textContent = 'disabled';
     statusEl.className = 'sub-value gray';
   }
 
-  taskEl.textContent = taskId ? String(taskId).slice(0, 20) : '\u2014';
-  turnsEl.textContent = String(turns);
+  // Training data stats from /api/training
+  if (state.trainingData) {
+    var td = state.trainingData;
+    var tasksEl = document.getElementById('trainTasks');
+    var turnsEl = document.getElementById('trainTurns');
+    var sftEl = document.getElementById('trainSFT');
+    var targetEl = document.getElementById('trainTarget');
+    var barEl = document.getElementById('trainProgressBar');
+    if (tasksEl) tasksEl.textContent = String(td.tasks || 0);
+    if (turnsEl) turnsEl.textContent = String(td.turns || 0);
+    if (sftEl) {
+      sftEl.textContent = String(td.sftExamples || 0);
+      sftEl.className = 'sub-value ' + (td.readyForSFT ? 'green' : 'yellow');
+    }
+    if (targetEl) targetEl.textContent = (td.sftExamples || 0) + ' / ' + (td.targetExamples || 300);
+    if (barEl) barEl.style.width = Math.min(100, (td.progress || 0) * 100).toFixed(1) + '%';
+  }
+}
+
+function fetchTrainingData() {
+  fetch('/api/training').then(function(r) { return r.json(); }).then(function(data) {
+    state.trainingData = data;
+    renderTrajectory();
+  }).catch(function() {});
 }
 
 function renderGrammar() {
@@ -1671,6 +1702,9 @@ function fetchSessionState() {
       renderSubsystems();
     }
   }).catch(function() {});
+
+  // Hydrate training data stats
+  fetchTrainingData();
 }
 
 function fetchParams() {
