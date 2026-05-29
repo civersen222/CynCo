@@ -174,6 +174,43 @@ export class DashboardServer {
                 },
               })
             }
+            case '/api/training': {
+              try {
+                const { loadTrajectories } = require('../training/datasetBuilder.js')
+                const { homedir } = require('os')
+                const { join } = require('path')
+                const { readdirSync, readFileSync, existsSync } = require('fs')
+                const trajDir = join(homedir(), '.cynco', 'trajectories')
+                const rewDir = join(homedir(), '.cynco', 'rewards')
+                const dsDir = join(homedir(), '.cynco', 'datasets')
+                const trajFiles = existsSync(trajDir) ? readdirSync(trajDir).filter((f: string) => f.endsWith('.jsonl')).length : 0
+                const rewFiles = existsSync(rewDir) ? readdirSync(rewDir).filter((f: string) => f.endsWith('.json')).length : 0
+                let totalTurns = 0
+                if (existsSync(trajDir)) {
+                  for (const f of readdirSync(trajDir).filter((f: string) => f.endsWith('.jsonl'))) {
+                    totalTurns += readFileSync(join(trajDir, f), 'utf-8').trim().split('\n').length
+                  }
+                }
+                let sftExamples = 0
+                const sftPath = join(dsDir, 'sft.jsonl')
+                if (existsSync(sftPath)) {
+                  sftExamples = readFileSync(sftPath, 'utf-8').trim().split('\n').length
+                }
+                const readyForSFT = sftExamples >= 300
+                const targetExamples = 300
+                return jsonResponse({
+                  tasks: trajFiles,
+                  turns: totalTurns,
+                  rewards: rewFiles,
+                  sftExamples,
+                  targetExamples,
+                  readyForSFT,
+                  progress: Math.min(1, sftExamples / targetExamples),
+                })
+              } catch {
+                return jsonResponse({ tasks: 0, turns: 0, rewards: 0, sftExamples: 0, targetExamples: 300, readyForSFT: false, progress: 0 })
+              }
+            }
             default:
               return jsonResponse({ error: 'Not found' }, 404)
           }
