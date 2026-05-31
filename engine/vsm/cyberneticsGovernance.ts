@@ -851,6 +851,13 @@ export class CyberneticsGovernance {
     return this.stuckCount
   }
 
+  /** Reset stuck counter — call on new user message to give fresh start. */
+  resetStuck(): void {
+    this.stuckCount = 0
+    this.lastToolSignatures = []
+    console.log('[vsm] Stuck counter reset (new user message)')
+  }
+
   getRecentToolNames(): string[] {
     return [...this.lastToolSignatures]
   }
