@@ -52,22 +52,11 @@ export const editTool: ToolImpl = {
       const occurrences = content.split(oldStr).length - 1
 
       if (occurrences === 0) {
-        // Semantic merge fallback: old_str not found, try LLM-powered merge
-        if (_sideQuery) {
-          const mergePrompt = attemptSemanticMerge(content, oldStr, newStr, filePath, mergeAttemptedFiles)
-          if (mergePrompt) {
-            try {
-              const merged = await _sideQuery(mergePrompt.user, mergePrompt.system)
-              if (merged && merged.trim() && merged.trim() !== content.trim()) {
-                writeFileSync(filePath, merged.trim())
-                return { output: `Edited ${filePath}: applied via semantic merge (exact match failed)`, isError: false }
-              }
-            } catch (mergeErr) {
-              console.log(`[edit] Semantic merge failed: ${mergeErr}`)
-            }
-          }
-        }
-        return { output: `Error: old_string not found in ${filePath}`, isError: true }
+        // Semantic merge DISABLED — it corrupts files when the local model
+        // produces garbled output. Better to fail cleanly so the model retries
+        // with correct old_string, or uses ReplaceFunction for large edits.
+        console.log(`[edit] old_string not found in ${filePath} (${oldStr.length} chars). No semantic merge — failing cleanly.`)
+        return { output: `Error: old_string not found in ${filePath}. The text you provided does not match any content in the file. Re-read the file to get the exact text, then try again with the correct old_string. If the function is large, use ReplaceFunction instead.`, isError: true }
       }
       if (occurrences > 1 && !replaceAll) {
         return { output: `Error: old_string is not unique in ${filePath} (found ${occurrences} times). Use replace_all: true to replace all, or provide more context to make it unique.`, isError: true }
