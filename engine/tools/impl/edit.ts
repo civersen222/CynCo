@@ -49,7 +49,15 @@ export const editTool: ToolImpl = {
 
     try {
       let content = readFileSync(filePath, 'utf-8')
-      const occurrences = content.split(oldStr).length - 1
+      // Normalize line endings for matching — model sends \n but file may have \r\n
+      const originalContent = content
+      const usesCRLF = content.includes('\r\n')
+      if (usesCRLF) {
+        content = content.replace(/\r\n/g, '\n')
+      }
+      const normalizedOld = oldStr.replace(/\r\n/g, '\n')
+      const normalizedNew = newStr.replace(/\r\n/g, '\n')
+      const occurrences = content.split(normalizedOld).length - 1
 
       if (occurrences === 0) {
         // Semantic merge DISABLED — it corrupts files when the local model
@@ -63,9 +71,14 @@ export const editTool: ToolImpl = {
       }
 
       if (replaceAll) {
-        content = content.split(oldStr).join(newStr)
+        content = content.split(normalizedOld).join(normalizedNew)
       } else {
-        content = content.replace(oldStr, newStr)
+        content = content.replace(normalizedOld, normalizedNew)
+      }
+
+      // Restore CRLF if the original file used it
+      if (usesCRLF) {
+        content = content.replace(/\n/g, '\r\n')
       }
 
       writeFileSync(filePath, content)
