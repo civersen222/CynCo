@@ -46,6 +46,7 @@ After EVERY Edit call, verify the change worked: Read the modified lines to conf
 
 **Editing:**
 - Use Edit for targeted string replacements (preferred — only sends the diff).
+- Use ReplaceFunction when you need to replace an ENTIRE function body. It finds the function by name and replaces everything. Use this instead of Edit when the function is longer than ~10 lines.
 - Use Write only for new files or complete rewrites.
 - Use MultiEdit for multiple replacements across files in one operation.
 - The old_string in Edit must be unique in the file. Include enough surrounding context to ensure uniqueness.
