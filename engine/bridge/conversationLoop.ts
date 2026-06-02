@@ -429,6 +429,7 @@ export class ConversationLoop {
     this.abortController = new AbortController()
     this.toolFailureCounts.clear()
     this.governance.resetStuck() // Fresh start for each user message
+    this.governance.resetKillSwitch() // Clear kill switch from previous task
     this.consecutiveNudges = 0
     this.steering.clear()
 
