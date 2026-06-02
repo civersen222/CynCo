@@ -12,12 +12,16 @@ CynCo is a terminal-based AI coding assistant powered by local LLMs via [Ollama]
 
 - **Edit files, run commands, search code** — full tool-calling loop on your hardware
 - **Build entire projects from a description** — guided Vibe mode asks smart questions, then builds autonomously
-- **Self-govern with enforced cybernetics** — S5 policy engine hard-filters tools, breaks stuck loops with escalating intervention, and learns across sessions
-- **Monitor governance in real-time** — browser dashboard on port 9161 shows tool activity, contracts, predictions, and parameter controls
+- **Self-govern with enforced cybernetics** — S5 policy engine with 21 rules, 4-tier stuck loop escape, live governance signals injected every iteration
+- **Monitor governance in real-time** — browser dashboard on port 9161 shows tool activity, contracts, predictions, training data progress, and variety control
+- **Constrained decoding** — GBNF grammar enforcement on llama.cpp, post-validation on all providers. No more silent tool-call drops
+- **Best-of-N sampling** — run multiple candidates in git worktrees, select by test pass rate
+- **Tree-sitter code indexing** — AST-aware chunking with BM25 + vector hybrid search and PageRank repo map
+- **Self-improving training loop** — trajectory recorder collects per-turn data, reward labeler scores outcomes, Unsloth SFT pipeline exports ChatML datasets
 - **Research from multiple sources** — DuckDuckGo, arXiv, Wikipedia, GitHub, PubMed, HuggingFace with intelligent query routing
 - **Spawn parallel sub-agents** — 6 typed personas (scout/oracle/kraken/spark/architect/researcher) with GPU-aware scheduling
-- **Index your codebase semantically** — vector search finds relevant code instantly
-- **Persist across sessions** — handoff files, decision journals, governance DB, and rule weight learning
+- **Index your codebase semantically** — vector + BM25 hybrid search finds relevant code instantly
+- **Persist across sessions** — handoff files, decision journals, governance DB, rule weight learning, and trajectory data for training
 
 ---
 
@@ -127,7 +131,7 @@ Smaller models (<7B) struggle with the tool-calling format. 24B+ recommended for
 │  TypeScript Engine (Bun)         │◄──────►│  Python TUI     │
 │                                  │  9160  │  (Textual)      │
 │  Conversation Loop               │        │                 │
-│  ├── Tool Executor (19 tools)    │        │  Workspace      │
+│  ├── Tool Executor (24 tools)    │        │  Workspace      │
 │  ├── Contract Enforcement        │        │  Vibe Loop      │
 │  ├── S2 Agent Coordinator        │        │  Settings       │
 │  ├── 6 Search Engines            │        │  Context Bar    │
@@ -240,8 +244,8 @@ Structured multi-phase workflows with tool restrictions and advancement gates:
 - `/brainstorm` — idea exploration
 - `/critique` — critical analysis
 
-### Tools (19 built-in)
-Read, Write, Edit, MultiEdit, ApplyPatch, Bash, Git, Glob, Grep, Ls, CodeIndex, WebSearch, WebFetch, ImageView, NotebookEdit, SaveLearning, SubAgent, CollectAgent, IndexResearch
+### Tools (24 built-in)
+Read, Write, Edit, MultiEdit, ApplyPatch, ReplaceFunction, Bash, Git, Glob, Grep, Ls, CodeIndex, WebSearch, WebFetch, ImageView, NotebookEdit, SaveLearning, SubAgent, CollectAgent, IndexResearch, ContractCreate, ContractAssertPass, ContractAssertFail, ContractStatus
 
 ### Session Persistence
 - **JSONL journaling** — every message saved, survives crashes
