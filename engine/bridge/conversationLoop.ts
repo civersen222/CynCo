@@ -179,8 +179,19 @@ export class ConversationLoop {
       if (event.type === 'workflow.phase_changed') {
         const wf = this.workflowEngine.state?.workflow
         this.emit({ type: 'workflow.status', active: true, workflow: wf?.name ?? null, phase: event.toPhase, displayName: wf?.displayName ?? null })
+        // Inform governance about read-only phases so stuck detection pauses
+        const phase = wf?.phases[event.toPhase]
+        const isReadOnly = phase?.allowedTools != null && !phase.allowedTools.some(t => ['Write', 'Edit', 'MultiEdit', 'Bash', 'ApplyPatch'].includes(t))
+        this.governance.setWorkflowReadOnlyPhase(isReadOnly)
+      } else if (event.type === 'workflow.started') {
+        // Check if initial phase is read-only
+        const wf = this.workflowEngine.state?.workflow
+        const phase = wf?.phases[event.phase]
+        const isReadOnly = phase?.allowedTools != null && !phase.allowedTools.some(t => ['Write', 'Edit', 'MultiEdit', 'Bash', 'ApplyPatch'].includes(t))
+        this.governance.setWorkflowReadOnlyPhase(isReadOnly)
       } else if (event.type === 'workflow.completed' || event.type === 'workflow.cancelled') {
         this.emit({ type: 'workflow.status', active: false, workflow: null, phase: null, displayName: null })
+        this.governance.setWorkflowReadOnlyPhase(false)
       }
     })
     this.lspManager = new LSPManager(opts.cwd ?? process.cwd())
@@ -1760,9 +1771,20 @@ export class ConversationLoop {
         // Check workflow gate and auto-advance at end of turn
         if (this.workflowEngine.isActive) {
           this.workflowEngine.incrementTurn()
+          const phase = this.workflowEngine.currentPhase
+          const turnCount = this.workflowEngine.state?.turnCount ?? 0
+          const maxTurns = phase?.maxTurns
+
+          // Nudge model when approaching maxTurns in a read-only phase
+          if (maxTurns && turnCount === maxTurns - 3) {
+            this.addMessage({
+              role: 'user',
+              content: [{ type: 'text', text: '[System] You are approaching the turn limit for this planning phase. Stop reading and OUTPUT YOUR PLAN NOW as a numbered list of steps. Do not call any more tools — just write out the plan.' }],
+            })
+          }
+
           const gateSatisfied = this.workflowEngine.checkGate(stopReason, null)
           if (gateSatisfied) {
-            const phase = this.workflowEngine.currentPhase
             const transitions = phase?.transitions ?? []
             if (transitions.length === 1 && transitions[0] !== 'done') {
               this.workflowEngine.advance(transitions[0])
@@ -1795,6 +1817,38 @@ export class ConversationLoop {
         } catch {}
 
         return
+      }
+
+      // Workflow: count turns and check maxTurns even during tool execution
+      if (this.workflowEngine.isActive) {
+        this.workflowEngine.incrementTurn()
+        const wfPhase = this.workflowEngine.currentPhase
+        const wfTurnCount = this.workflowEngine.state?.turnCount ?? 0
+        const wfMaxTurns = wfPhase?.maxTurns
+
+        // Nudge 3 turns before maxTurns
+        if (wfMaxTurns && wfTurnCount === wfMaxTurns - 3) {
+          console.log(`[workflow] Nudging model at turn ${wfTurnCount}/${wfMaxTurns}`)
+          this.addMessage({
+            role: 'user',
+            content: [{ type: 'text', text: '[System] You are approaching the turn limit for this planning phase. Stop reading and OUTPUT YOUR PLAN NOW as a numbered list of steps. Do not call any more tools — just write out the plan.' }],
+          })
+        }
+
+        // Force phase advance at maxTurns
+        if (wfMaxTurns && wfTurnCount >= wfMaxTurns) {
+          console.log(`[workflow] Forcing phase advance at turn ${wfTurnCount}/${wfMaxTurns}`)
+          const transitions = wfPhase?.transitions ?? []
+          if (transitions.length >= 1 && transitions[0] !== 'done') {
+            this.workflowEngine.advance(transitions[0])
+            this.governance.setWorkflowReadOnlyPhase(false)
+            this.emit({ type: 'stream.token', text: `\n[Workflow] Phase: ${transitions[0]} (auto-advanced after planning)\n` })
+            this.addMessage({
+              role: 'user',
+              content: [{ type: 'text', text: '[System] Planning phase complete. You are now in the EXECUTION phase. You have access to Edit, Write, and Bash tools. Execute the task step by step.' }],
+            })
+          }
+        }
       }
 
       // Execute tool calls and feed results back

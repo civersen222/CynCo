@@ -140,6 +140,7 @@ export class CyberneticsGovernance {
   private lastResponses: string[] = []
   private lastToolSignatures: string[] = []
   private currentTaskComplexity = 1
+  private _workflowReadOnlyPhase = false
   private lastVarietyRatio = 1.0
   private consecutiveUnstableCount = 0
   private varietyAttenuators: InstanceType<typeof variety.Attenuator>[]
@@ -459,16 +460,19 @@ export class CyberneticsGovernance {
     }
 
     // Stuck detection: check BOTH response text AND tool signatures
+    // Skip stuck detection during workflow read-only phases — reading IS the expected behavior
     this.lastResponses.push(metrics.response?.slice(0, 100) ?? '')
     if (this.lastResponses.length > 5) this.lastResponses = this.lastResponses.slice(-5)
-    const uniqueResponses = new Set(this.lastResponses).size
-    const uniqueToolSigs = new Set(this.lastToolSignatures).size
-    const responseStuck = this.lastResponses.length >= 3 && uniqueResponses === 1
-    const toolStuck = this.lastToolSignatures.length >= 3 && uniqueToolSigs === 1
-    if (responseStuck || toolStuck) {
-      this.stuckCount++
-    } else {
-      this.stuckCount = Math.max(0, this.stuckCount - 1)
+    if (!this._workflowReadOnlyPhase) {
+      const uniqueResponses = new Set(this.lastResponses).size
+      const uniqueToolSigs = new Set(this.lastToolSignatures).size
+      const responseStuck = this.lastResponses.length >= 3 && uniqueResponses === 1
+      const toolStuck = this.lastToolSignatures.length >= 3 && uniqueToolSigs === 1
+      if (responseStuck || toolStuck) {
+        this.stuckCount++
+      } else {
+        this.stuckCount = Math.max(0, this.stuckCount - 1)
+      }
     }
 
     // Persist measurement to SQLite for cross-session learning
@@ -856,6 +860,18 @@ export class CyberneticsGovernance {
     this.stuckCount = 0
     this.lastToolSignatures = []
     console.log('[vsm] Stuck counter reset (new user message)')
+  }
+
+  /** Tell governance whether a workflow read-only phase is active.
+   *  When true, read-only tool usage is expected and should NOT trigger stuck detection. */
+  setWorkflowReadOnlyPhase(active: boolean): void {
+    this._workflowReadOnlyPhase = active
+    if (active) {
+      this.stuckCount = 0 // Reset on phase entry
+      console.log('[vsm] Workflow read-only phase active — stuck detection paused')
+    } else {
+      console.log('[vsm] Workflow read-only phase ended — stuck detection resumed')
+    }
   }
 
   getRecentToolNames(): string[] {

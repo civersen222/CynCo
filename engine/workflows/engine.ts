@@ -68,6 +68,12 @@ export class WorkflowEngine {
   checkGate(stopReason: string, toolResult: { tool: string; output: string } | null): boolean {
     const gate = this.currentPhase?.gate
     if (!gate) return false
+    // Force advance if phase exceeded maxTurns
+    const maxTurns = this.currentPhase?.maxTurns
+    if (maxTurns && this._state && this._state.turnCount >= maxTurns) {
+      console.log(`[workflow] Phase ${this._state.currentPhase} exceeded maxTurns (${maxTurns}) — forcing advance`)
+      return true
+    }
     switch (gate.type) {
       case 'model_done': return stopReason === 'end_turn'
       case 'auto': return true

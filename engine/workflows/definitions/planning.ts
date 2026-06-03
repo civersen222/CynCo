@@ -8,10 +8,11 @@ export const planningWorkflow: WorkflowDefinition = {
   phases: {
     create_plan: {
       name: 'create_plan',
-      instruction: 'Analyze the task and create a detailed, ordered implementation plan. Break the work into discrete, verifiable steps. Read relevant code to understand the current state before planning. Output the plan clearly before proceeding.',
-      allowedTools: ['Read', 'Glob', 'Grep', 'CodeIndex', 'SubAgent', 'CollectAgent'],
+      instruction: 'Analyze the task and create a detailed implementation plan. Read the relevant files to understand the current state, then OUTPUT YOUR PLAN AS TEXT — a numbered list of steps. Do NOT attempt to Edit or Write files yet. Once you output the plan, the system will advance you to the execution phase where editing tools become available. Keep reading to a maximum of 5-8 files, then write the plan.',
+      allowedTools: ['Read', 'Glob', 'Grep', 'CodeIndex'],
       gate: { type: 'model_done' },
       transitions: ['execute_step'],
+      maxTurns: 15,
     },
     execute_step: {
       name: 'execute_step',

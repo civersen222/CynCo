@@ -14,6 +14,7 @@ export type Phase = {
   allowedTools?: string[]
   gate: GateType
   transitions: string[]
+  maxTurns?: number
 }
 
 export type WorkflowDefinition = {
