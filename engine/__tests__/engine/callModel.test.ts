@@ -846,4 +846,83 @@ describe('localCallModel', () => {
       expect(msg.message.usage.output_tokens).toBe(42)
     })
   })
+
+  // ─── Ollama Simulated Tool Override ─────────────────────────────
+
+  describe('Ollama simulated tool override', () => {
+    it('forces simulated tool use for Ollama provider even with native capabilities', async () => {
+      let capturedRequest: any = null
+
+      const provider: Provider = {
+        name: 'ollama',
+        async *stream(request) {
+          capturedRequest = request
+          yield { type: 'message_start', message: { id: 'msg_ollama', model: 'qwen3.6:27b', usage: { input_tokens: 0, output_tokens: 0 } } }
+          yield { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Hello' } }
+          yield { type: 'message_stop' }
+        },
+        async complete() { throw new Error('not implemented') },
+        async healthCheck() { return true },
+        async listModels() { return [] },
+        async probeCapabilities() { return defaultCapabilities() },
+      }
+
+      const tools = [makeTool('Bash', 'Run a command', { command: { type: 'string' } })]
+      const gen = localCallModel({
+        ...defaultParams({ tools, options: { model: 'qwen3.6:27b' } }),
+        deps: {
+          getProvider: () => provider,
+          loadConfig: () => defaultConfig({ model: 'qwen3.6:27b' }),
+          resolveCapabilities: () => defaultCapabilities({ toolUse: 'native' }),
+        },
+      } as any)
+
+      await collect(gen)
+
+      // Tools should NOT be sent to the provider (simulated mode)
+      expect(capturedRequest.tools).toBeUndefined()
+      // System prompt should contain tool definitions
+      expect(capturedRequest.system).toContain('<tool_call>')
+      expect(capturedRequest.system).toContain('Bash')
+    })
+
+    it('respects LOCALCODE_NATIVE_TOOLS=true to disable override', async () => {
+      let capturedRequest: any = null
+      const origEnv = process.env.LOCALCODE_NATIVE_TOOLS
+      process.env.LOCALCODE_NATIVE_TOOLS = 'true'
+
+      try {
+        const provider: Provider = {
+          name: 'ollama',
+          async *stream(request) {
+            capturedRequest = request
+            yield { type: 'message_start', message: { id: 'msg_native', model: 'qwen3.6:27b', usage: { input_tokens: 0, output_tokens: 0 } } }
+            yield { type: 'message_stop' }
+          },
+          async complete() { throw new Error('not implemented') },
+          async healthCheck() { return true },
+          async listModels() { return [] },
+          async probeCapabilities() { return defaultCapabilities() },
+        }
+
+        const tools = [makeTool('Bash', 'Run a command', { command: { type: 'string' } })]
+        const gen = localCallModel({
+          ...defaultParams({ tools, options: { model: 'qwen3.6:27b' } }),
+          deps: {
+            getProvider: () => provider,
+            loadConfig: () => defaultConfig({ model: 'qwen3.6:27b' }),
+            resolveCapabilities: () => defaultCapabilities({ toolUse: 'native' }),
+          },
+        } as any)
+
+        await collect(gen)
+
+        expect(capturedRequest.tools).toBeDefined()
+        expect(capturedRequest.tools).toHaveLength(1)
+      } finally {
+        if (origEnv === undefined) delete process.env.LOCALCODE_NATIVE_TOOLS
+        else process.env.LOCALCODE_NATIVE_TOOLS = origEnv
+      }
+    })
+  })
 })

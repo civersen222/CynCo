@@ -182,7 +182,13 @@ export async function* localCallModel({
 
   // 3. Resolve capabilities
   const capabilities = resolveCaps(model)
-  const simulatedToolUse = capabilities.toolUse === 'simulated'
+  // Ollama provider override: force simulated tool use to bypass Ollama bugs
+  // (Go struct serialization, stripped tool history, wrong template renderer)
+  // unless LOCALCODE_NATIVE_TOOLS=true is explicitly set
+  const ollamaSimulatedOverride = provider.name === 'ollama'
+    && capabilities.toolUse !== 'none'
+    && process.env.LOCALCODE_NATIVE_TOOLS !== 'true'
+  const simulatedToolUse = ollamaSimulatedOverride || capabilities.toolUse === 'simulated'
   const noToolUse = capabilities.toolUse === 'none'
 
   // 3b. Pre-turn context check
@@ -227,8 +233,8 @@ export async function* localCallModel({
     }
   }
 
-  // 4. Convert messages
-  const convertedMessages = convertMessages(messages as any)
+  // 4. Convert messages (serialize tool blocks to text in simulated mode)
+  const convertedMessages = convertMessages(messages as any, { simulatedToolUse })
 
   // 5. Filter tools by profile scoping, then convert
   const scopedTools = filterTools(tools as readonly ToolInput[], config.tools)
