@@ -141,6 +141,7 @@ export class CyberneticsGovernance {
   private lastToolSignatures: string[] = []
   private currentTaskComplexity = 1
   private _workflowReadOnlyPhase = false
+  private _lastTokPerSec = 0
   private lastVarietyRatio = 1.0
   private consecutiveUnstableCount = 0
   private varietyAttenuators: InstanceType<typeof variety.Attenuator>[]
@@ -608,7 +609,12 @@ export class CyberneticsGovernance {
       observerDivergence: this.lastObserverDivergence,
       axiomHealth: this.lastAxiomHealth,
       recentToolNames: this.getRecentToolNames(),
+      tokPerSec: this._lastTokPerSec,
     }
+  }
+
+  setTokPerSec(tps: number): void {
+    this._lastTokPerSec = tps
   }
 
   private checkAxioms(): { holding: number; total: number; violations: string[] } {

@@ -885,7 +885,9 @@ function renderContext() {
   bar.className = 'progress-fill' + (pct > 80 ? ' critical' : pct > 60 ? ' warn' : '');
   var remaining = total - est;
   var pctLabel = pct <= 40 ? 'healthy' : pct <= 60 ? 'moderate' : pct <= 75 ? 'elevated' : pct <= 90 ? 'HIGH' : 'CRITICAL';
-  text.textContent = est.toLocaleString() + ' / ' + total.toLocaleString() + ' tokens (' + pct + '% \u2014 ' + pctLabel + ', ' + remaining.toLocaleString() + ' remaining)';
+  var tps = state.governance && state.governance.tokPerSec ? state.governance.tokPerSec : 0;
+  var tpsStr = tps > 0 ? ' | ' + tps + ' tok/s' : '';
+  text.textContent = est.toLocaleString() + ' / ' + total.toLocaleString() + ' tokens (' + pct + '% \u2014 ' + pctLabel + ', ' + remaining.toLocaleString() + ' remaining' + tpsStr + ')';
   badge.textContent = action;
   badge.className = 'action-badge ' + action;
 }

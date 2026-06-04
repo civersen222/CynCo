@@ -133,6 +133,8 @@ export class ConversationLoop {
   private toolHistory: string[] = []  // Track tool names for VSM advisors
   private toolFailureCounts: Map<string, number> = new Map()
   private consecutiveNudges = 0
+  private lastTokPerSec = 0
+  private lastModelCallMs = 0
   private steering = new SteeringQueue()
   private journal: JSONLStore
   private snapshot?: WorkspaceSnapshot
@@ -1460,6 +1462,7 @@ export class ConversationLoop {
       let tokenCount = 0
       let reasoningTokenCount = 0
       let stopReason = 'end_turn'
+      const modelCallStartTime = Date.now()
       let assistantContent: unknown[] = []
       const toolsUsedThisTurn: string[] = []
       const toolResultsThisTurn: ('success' | 'failure' | 'denied')[] = []
@@ -1496,7 +1499,12 @@ export class ConversationLoop {
               stopReason = event.delta?.stop_reason ?? stopReason
               break
             case 'message_stop': {
-              console.log(`[loop] message_stop, tokens=${tokenCount}, stop=${stopReason}`)
+              const modelCallElapsedMs = Date.now() - modelCallStartTime
+              const tokPerSec = modelCallElapsedMs > 0 ? Math.round((tokenCount + reasoningTokenCount) / (modelCallElapsedMs / 1000) * 10) / 10 : 0
+              console.log(`[loop] message_stop, tokens=${tokenCount}+${reasoningTokenCount}r, ${tokPerSec} tok/s, stop=${stopReason}`)
+              this.lastTokPerSec = tokPerSec
+              this.lastModelCallMs = modelCallElapsedMs
+              this.governance.setTokPerSec(tokPerSec)
               // Debug: write conversation state to file for diagnosis
               try {
                 const debugPath = require('path').join(this.executor['cwd'], '.cynco-debug.json')
