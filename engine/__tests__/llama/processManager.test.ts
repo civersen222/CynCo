@@ -53,6 +53,38 @@ describe('buildServerArgs', () => {
     expect(args).toContain('--lora')
     expect(args).toContain('/adapters/s3-lora.gguf')
   })
+
+  it('adds speculative decoding flags when specType is set', () => {
+    const args = buildServerArgs({
+      modelPath: '/models/qwen-mtp.gguf',
+      port: 8081,
+      specType: 'draft-mtp',
+      specDraftN: 2,
+    })
+    expect(args).toContain('--spec-type')
+    expect(args).toContain('draft-mtp')
+    expect(args).toContain('--spec-draft-n-max')
+    expect(args).toContain('2')
+  })
+
+  it('defaults specDraftN to 2 when specType is set but specDraftN is not', () => {
+    const args = buildServerArgs({
+      modelPath: '/models/qwen-mtp.gguf',
+      port: 8081,
+      specType: 'draft-mtp',
+    })
+    expect(args).toContain('--spec-draft-n-max')
+    expect(args).toContain('2')
+  })
+
+  it('does not add spec flags when specType is not set', () => {
+    const args = buildServerArgs({
+      modelPath: '/models/qwen.gguf',
+      port: 8081,
+    })
+    expect(args).not.toContain('--spec-type')
+    expect(args).not.toContain('--spec-draft-n-max')
+  })
 })
 
 describe('ProcessManager', () => {

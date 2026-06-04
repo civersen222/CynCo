@@ -172,6 +172,8 @@ if (config.provider === 'llama-cpp') {
       gpuLayers: config.gpuLayers,
       flashAttn: config.flashAttn,
       threads: config.threads,
+      specType: process.env.LOCALCODE_SPEC_TYPE || undefined,
+      specDraftN: process.env.LOCALCODE_SPEC_DRAFT_N ? parseInt(process.env.LOCALCODE_SPEC_DRAFT_N, 10) : undefined,
     })
     await processManager.ensureRunning()
 

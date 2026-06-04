@@ -11,6 +11,8 @@ export type ServerConfig = {
   flashAttn?: boolean
   threads?: number
   loraPath?: string
+  specType?: string
+  specDraftN?: number
 }
 
 /**
@@ -36,6 +38,11 @@ export function buildServerArgs(config: ServerConfig): string[] {
     args.push('--lora', config.loraPath)
   }
 
+  if (config.specType) {
+    args.push('--spec-type', config.specType)
+    args.push('--spec-draft-n-max', String(config.specDraftN ?? 2))
+  }
+
   return args
 }
 
@@ -48,6 +55,8 @@ export type ProcessManagerConfig = {
   gpuLayers?: number
   flashAttn?: boolean
   threads?: number
+  specType?: string
+  specDraftN?: number
 }
 
 export class ProcessManager {
