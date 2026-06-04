@@ -613,8 +613,11 @@ export class CyberneticsGovernance {
     }
   }
 
-  setTokPerSec(tps: number): void {
-    this._lastTokPerSec = tps
+  /** Only update tok/s from meaningful generation turns (> 5 tokens). Tool-only turns produce 0 tokens and would zero out the display. */
+  setTokPerSec(tps: number, tokenCount: number): void {
+    if (tokenCount > 5) {
+      this._lastTokPerSec = tps
+    }
   }
 
   private checkAxioms(): { holding: number; total: number; violations: string[] } {

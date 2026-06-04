@@ -1504,7 +1504,7 @@ export class ConversationLoop {
               console.log(`[loop] message_stop, tokens=${tokenCount}+${reasoningTokenCount}r, ${tokPerSec} tok/s, stop=${stopReason}`)
               this.lastTokPerSec = tokPerSec
               this.lastModelCallMs = modelCallElapsedMs
-              this.governance.setTokPerSec(tokPerSec)
+              this.governance.setTokPerSec(tokPerSec, tokenCount + reasoningTokenCount)
               // Debug: write conversation state to file for diagnosis
               try {
                 const debugPath = require('path').join(this.executor['cwd'], '.cynco-debug.json')
