@@ -1451,7 +1451,7 @@ export class ConversationLoop {
         thinkingConfig,
         tools: iterationTools,
         signal: this.abortController?.signal ?? new AbortController().signal,
-        options: { model: this.config.model! },
+        options: { model: this.config.model!, stuckTurns: this.governance?.getStuckCount() ?? 0 },
         deps,
       })
       this.config.temperature = _savedTemperature

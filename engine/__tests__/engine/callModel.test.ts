@@ -925,4 +925,146 @@ describe('localCallModel', () => {
       }
     })
   })
+
+  // ─── Stuck Temperature Override ─────────────────────────────────
+
+  describe('stuck temperature override', () => {
+    it('overrides temperature to 0.1 when stuckTurns >= 3', async () => {
+      let capturedRequest: any = null
+
+      const provider: Provider = {
+        name: 'mock',
+        async *stream(request) {
+          capturedRequest = request
+          yield { type: 'message_start', message: { id: 'msg_stuck', model: 'qwen3:32b', usage: { input_tokens: 0, output_tokens: 0 } } }
+          yield { type: 'message_stop' }
+        },
+        async complete() { throw new Error('not implemented') },
+        async healthCheck() { return true },
+        async listModels() { return [] },
+        async probeCapabilities() { return defaultCapabilities() },
+      }
+
+      const gen = localCallModel({
+        ...defaultParams({
+          options: { model: 'qwen3:32b', stuckTurns: 3 },
+        }),
+        deps: {
+          getProvider: () => provider,
+          loadConfig: () => defaultConfig({ temperature: 0.7 }),
+          resolveCapabilities: () => defaultCapabilities(),
+        },
+      } as any)
+
+      await collect(gen)
+      expect(capturedRequest.temperature).toBe(0.1)
+    })
+
+    it('uses LOCALCODE_TOOL_TEMPERATURE when set and stuck', async () => {
+      let capturedRequest: any = null
+      const origEnv = process.env.LOCALCODE_TOOL_TEMPERATURE
+      process.env.LOCALCODE_TOOL_TEMPERATURE = '0.2'
+
+      try {
+        const provider: Provider = {
+          name: 'mock',
+          async *stream(request) {
+            capturedRequest = request
+            yield { type: 'message_start', message: { id: 'msg_tt', model: 'qwen3:32b', usage: { input_tokens: 0, output_tokens: 0 } } }
+            yield { type: 'message_stop' }
+          },
+          async complete() { throw new Error('not implemented') },
+          async healthCheck() { return true },
+          async listModels() { return [] },
+          async probeCapabilities() { return defaultCapabilities() },
+        }
+
+        const gen = localCallModel({
+          ...defaultParams({
+            options: { model: 'qwen3:32b', stuckTurns: 4 },
+          }),
+          deps: {
+            getProvider: () => provider,
+            loadConfig: () => defaultConfig({ temperature: 0.7 }),
+            resolveCapabilities: () => defaultCapabilities(),
+          },
+        } as any)
+
+        await collect(gen)
+        expect(capturedRequest.temperature).toBe(0.2)
+      } finally {
+        if (origEnv === undefined) delete process.env.LOCALCODE_TOOL_TEMPERATURE
+        else process.env.LOCALCODE_TOOL_TEMPERATURE = origEnv
+      }
+    })
+
+    it('does not override temperature when stuckTurns < 3', async () => {
+      let capturedRequest: any = null
+
+      const provider: Provider = {
+        name: 'mock',
+        async *stream(request) {
+          capturedRequest = request
+          yield { type: 'message_start', message: { id: 'msg_ok', model: 'qwen3:32b', usage: { input_tokens: 0, output_tokens: 0 } } }
+          yield { type: 'message_stop' }
+        },
+        async complete() { throw new Error('not implemented') },
+        async healthCheck() { return true },
+        async listModels() { return [] },
+        async probeCapabilities() { return defaultCapabilities() },
+      }
+
+      const gen = localCallModel({
+        ...defaultParams({
+          options: { model: 'qwen3:32b', stuckTurns: 2 },
+        }),
+        deps: {
+          getProvider: () => provider,
+          loadConfig: () => defaultConfig({ temperature: 0.7 }),
+          resolveCapabilities: () => defaultCapabilities(),
+        },
+      } as any)
+
+      await collect(gen)
+      expect(capturedRequest.temperature).toBe(0.7)
+    })
+  })
+
+  // ─── Stuck Thinking Budget Cap ──────────────────────────────────
+
+  describe('stuck thinking budget cap', () => {
+    it('caps thinking budget to 64 when stuck >= 3', async () => {
+      let capturedRequest: any = null
+
+      const provider: Provider = {
+        name: 'mock',
+        async *stream(request) {
+          capturedRequest = request
+          yield { type: 'message_start', message: { id: 'msg_think', model: 'qwen3:32b', usage: { input_tokens: 0, output_tokens: 0 } } }
+          yield { type: 'message_stop' }
+        },
+        async complete() { throw new Error('not implemented') },
+        async healthCheck() { return true },
+        async listModels() { return [] },
+        async probeCapabilities() { return defaultCapabilities({ thinking: 'native' }) },
+      }
+
+      const gen = localCallModel({
+        ...defaultParams({
+          thinkingConfig: { type: 'enabled', budgetTokens: 1024 },
+          options: { model: 'qwen3:32b', stuckTurns: 3 },
+        }),
+        deps: {
+          getProvider: () => provider,
+          loadConfig: () => defaultConfig({ temperature: 0.7 }),
+          resolveCapabilities: () => defaultCapabilities({ thinking: 'native' }),
+        },
+      } as any)
+
+      await collect(gen)
+
+      expect(capturedRequest.thinking).toBeDefined()
+      expect(capturedRequest.thinking.budget_tokens).toBe(64)
+    })
+  })
 })

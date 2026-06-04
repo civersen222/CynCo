@@ -330,11 +330,20 @@ export async function* localCallModel({
   }
 
   // 8. Build CompletionRequest
+  // Temperature override: stuck >= 3 → force low temperature for tool accuracy
+  const stuckTurns = (options as any).stuckTurns ?? 0
+  let effectiveTemperature = config.temperature
+  if (stuckTurns >= 3) {
+    const toolTemp = process.env.LOCALCODE_TOOL_TEMPERATURE
+    effectiveTemperature = toolTemp ? parseFloat(toolTemp) : 0.1
+    console.log(`[callModel] Stuck ${stuckTurns} turns → temperature override to ${effectiveTemperature}`)
+  }
+
   const request: CompletionRequest = {
     model,
     messages: convertedMessages,
     system,
-    temperature: config.temperature,
+    temperature: effectiveTemperature,
     // No max_tokens — let the model generate as much as it needs
   }
 
@@ -345,9 +354,12 @@ export async function* localCallModel({
 
   // Include thinking config if enabled
   if (thinkingConfig.type === 'enabled') {
+    // Cap thinking budget when stuck — extended thinking degrades tool accuracy
+    const baseBudget = (thinkingConfig as any).budgetTokens
+    const thinkingBudget = stuckTurns >= 3 ? Math.min(baseBudget, 64) : baseBudget
     request.thinking = {
       enabled: true,
-      budget_tokens: (thinkingConfig as any).budgetTokens,
+      budget_tokens: thinkingBudget,
     }
   }
 
