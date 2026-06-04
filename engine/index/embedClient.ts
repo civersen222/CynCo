@@ -9,7 +9,7 @@ export class EmbedClient {
   private pullAttempted = false
 
   constructor(baseUrl = 'http://localhost:11434', model = 'nomic-embed-text') {
-    this.baseUrl = baseUrl
+    this.baseUrl = process.env.LOCALCODE_EMBED_BASE_URL ?? baseUrl
     this.model = process.env.LOCALCODE_EMBED_MODEL ?? model
   }
 
@@ -77,5 +77,9 @@ export class EmbedClient {
 
   get modelName(): string {
     return this.model
+  }
+
+  get baseUrlUsed(): string {
+    return this.baseUrl
   }
 }
