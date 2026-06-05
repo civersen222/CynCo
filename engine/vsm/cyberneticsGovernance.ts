@@ -613,10 +613,14 @@ export class CyberneticsGovernance {
     }
   }
 
-  /** Only update tok/s from meaningful generation turns (> 5 tokens). Tool-only turns produce 0 tokens and would zero out the display. */
+  /** Update tok/s from model calls. Uses exponential moving average to smooth out turn-to-turn variation. Only updates when there were actual output tokens. */
   setTokPerSec(tps: number, tokenCount: number): void {
-    if (tokenCount > 5) {
-      this._lastTokPerSec = tps
+    if (tokenCount > 0 && tps > 0) {
+      if (this._lastTokPerSec === 0) {
+        this._lastTokPerSec = tps // first measurement
+      } else {
+        this._lastTokPerSec = Math.round((this._lastTokPerSec * 0.7 + tps * 0.3) * 10) / 10 // EMA
+      }
     }
   }
 

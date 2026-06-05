@@ -1490,6 +1490,10 @@ export class ConversationLoop {
               if (delta?.type === 'thinking_delta' && delta.thinking) {
                 reasoningTokenCount++
               }
+              // Count tool input JSON tokens for accurate tok/s
+              if (delta?.type === 'input_json_delta' && delta.partial_json) {
+                tokenCount++ // tool call JSON also counts as output
+              }
               break
             }
             case 'message_start':
@@ -1497,6 +1501,12 @@ export class ConversationLoop {
               break
             case 'message_delta':
               stopReason = event.delta?.stop_reason ?? stopReason
+              // Capture estimated output tokens from the stream translator
+              if (event.usage?.output_tokens) {
+                const estimatedTokens = event.usage.output_tokens
+                // Use the stream translator's estimate if it's higher than our chunk count
+                if (estimatedTokens > tokenCount) tokenCount = estimatedTokens
+              }
               break
             case 'message_stop': {
               const modelCallElapsedMs = Date.now() - modelCallStartTime
