@@ -1716,10 +1716,14 @@ function fetchSessionState() {
     })
     .catch(function() {});
 
-  // Also hydrate governance, predictions, contracts
-  fetch('/api/governance').then(function(r) { return r.json(); }).then(function(data) {
-    if (data && data.status) { state.governance = data; render(); }
-  }).catch(function() {});
+  // Hydrate + poll governance every 3 seconds (tok/s, stuck, health)
+  function pollGovernance() {
+    fetch('/api/governance').then(function(r) { return r.json(); }).then(function(data) {
+      if (data && data.status) { state.governance = data; render(); }
+    }).catch(function() {});
+  }
+  pollGovernance();
+  setInterval(pollGovernance, 3000);
 
   fetchPredictions();
   fetchContracts();
@@ -1736,8 +1740,9 @@ function fetchSessionState() {
     }
   }).catch(function() {});
 
-  // Hydrate training data stats
+  // Hydrate + poll training data every 30 seconds
   fetchTrainingData();
+  setInterval(fetchTrainingData, 30000);
 }
 
 function fetchParams() {
