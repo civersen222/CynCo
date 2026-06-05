@@ -141,6 +141,14 @@ export class CyberneticsGovernance {
   private lastToolSignatures: string[] = []
   private currentTaskComplexity = 1
   private _workflowReadOnlyPhase = false
+  private _toolsRestricted = false
+  private _nudgeInjectedThisTurn = false
+  private _temperatureLoweredThisTurn = false
+  private _contractCreatedThisTurn = false
+  private _consecutiveReadsSameFile = 0
+  private _lastReadFile = ''
+  private _thinkingTokensLastTurn = 0
+  private _s4ReflectionRanThisTurn = false
   private _lastTokPerSec = 0
   private lastVarietyRatio = 1.0
   private consecutiveUnstableCount = 0
@@ -513,12 +521,23 @@ export class CyberneticsGovernance {
     }
 
     // Prediction tracking — check triggers and evaluate
-    const toolResults = this.toolHistory.slice(-10).map(t => ({ tool: t.name, success: t.success }))
     const report = this.getReport()
-    this._predictionTracker.checkTriggers(this.turnCount, report, toolResults)
-    // Extended triggers: heterarchy shifts and observer divergence
-    this._predictionTracker.checkExtendedTriggers(this.turnCount, report, heterarchyShifted, this.stuckCount >= 3)
-    this._predictionTracker.evaluateOpen(this.turnCount, report, toolResults)
+    this._predictionTracker.checkTriggers(this.turnCount, {
+      stuckTurns: this.stuckCount,
+      toolsRestricted: this._toolsRestricted,
+      nudgeInjected: this._nudgeInjectedThisTurn,
+      temperatureLowered: this._temperatureLoweredThisTurn,
+      recentTools: this.lastToolSignatures.slice(-5),
+    })
+
+    this._predictionTracker.checkExtendedTriggers(this.turnCount, {
+      contractCreated: this._contractCreatedThisTurn,
+      consecutiveReadsSameFile: this._consecutiveReadsSameFile,
+      thinkingTokensLastTurn: this._thinkingTokensLastTurn,
+      s4ReflectionRan: this._s4ReflectionRanThisTurn,
+    })
+
+    this._predictionTracker.evaluateOpen(this.turnCount, report, this.lastToolSignatures)
   }
 
   onModelError(error: string): void {
@@ -884,6 +903,33 @@ export class CyberneticsGovernance {
       console.log('[vsm] Workflow read-only phase active — stuck detection paused')
     } else {
       console.log('[vsm] Workflow read-only phase ended — stuck detection resumed')
+    }
+  }
+
+  setToolsRestricted(restricted: boolean): void { this._toolsRestricted = restricted }
+  markNudgeInjected(): void { this._nudgeInjectedThisTurn = true }
+  markTemperatureLowered(): void { this._temperatureLoweredThisTurn = true }
+  setContractCreated(): void { this._contractCreatedThisTurn = true }
+  setThinkingTokens(count: number): void { this._thinkingTokensLastTurn = count }
+  setS4ReflectionRan(): void { this._s4ReflectionRanThisTurn = true }
+
+  resetTurnFlags(): void {
+    this._nudgeInjectedThisTurn = false
+    this._temperatureLoweredThisTurn = false
+    this._contractCreatedThisTurn = false
+    this._thinkingTokensLastTurn = 0
+    this._s4ReflectionRanThisTurn = false
+  }
+
+  trackReadPattern(toolName: string, filePath: string): void {
+    if (toolName === 'Read' && filePath === this._lastReadFile) {
+      this._consecutiveReadsSameFile++
+    } else if (toolName === 'Read') {
+      this._lastReadFile = filePath
+      this._consecutiveReadsSameFile = 1
+    } else {
+      this._consecutiveReadsSameFile = 0
+      this._lastReadFile = ''
     }
   }
 
