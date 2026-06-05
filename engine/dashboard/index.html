@@ -497,6 +497,28 @@ input[type="range"]:disabled::-webkit-slider-thumb { cursor: not-allowed; }
   </div>
 </div>
 
+<!-- ── Session History ──────────────────────────────────────── -->
+<div class="panel" id="historyPanel">
+  <div class="panel-title">Session History</div>
+  <div style="display:flex;gap:8px;margin-bottom:8px;align-items:center;">
+    <select id="sessionSelect" style="flex:1;background:#1e1e2e;color:#d4d4d4;border:1px solid #444;padding:4px 8px;border-radius:4px;font-size:12px;">
+      <option value="">Loading sessions...</option>
+    </select>
+    <button onclick="loadSessionHistory()" style="background:#264f78;color:#d4d4d4;border:none;padding:4px 12px;border-radius:4px;cursor:pointer;font-size:12px;">Load</button>
+  </div>
+  <div id="historyContent" style="font-size:12px;">
+    <div id="sessionSummary" style="margin-bottom:8px;color:#808080;">Select a session to view history</div>
+    <div id="historyChart" style="height:120px;background:#1a1a2e;border-radius:4px;padding:4px;position:relative;overflow:hidden;">
+      <canvas id="histCanvas" style="width:100%;height:100%;"></canvas>
+    </div>
+    <div style="display:flex;gap:16px;margin-top:4px;font-size:11px;color:#808080;">
+      <span><span style="color:#4ec9b0;">&#9632;</span> Tool Success</span>
+      <span><span style="color:#ce9178;">&#9632;</span> Stuck Turns</span>
+      <span><span style="color:#569cd6;">&#9632;</span> Context %</span>
+    </div>
+  </div>
+</div>
+
 <!-- ── Parameter Controls ──────────────────────────────────── -->
 <div class="controls-section">
   <div class="controls-grid">
@@ -1771,6 +1793,91 @@ startSessionTimer();
 standaloneTimeout = setTimeout(function() {
   if (!state.sessionActive) enterStandaloneMode();
 }, 2000);
+// ── Session History ────────────────────────────────────────
+function fetchSessions() {
+  fetch('/api/sessions').then(function(r) { return r.json(); }).then(function(sessions) {
+    var sel = document.getElementById('sessionSelect');
+    if (!sessions || !sessions.length) {
+      sel.innerHTML = '<option value="">No sessions found</option>';
+      return;
+    }
+    sel.innerHTML = '';
+    sessions.forEach(function(s) {
+      var opt = document.createElement('option');
+      opt.value = s.sessionId;
+      var label = s.sessionId.slice(0, 12) + ' | ' + s.outcome + ' | ' + s.totalTurns + ' turns | ' + Math.round(s.toolSuccessRate * 100) + '% success';
+      opt.textContent = label;
+      sel.appendChild(opt);
+    });
+  }).catch(function() {});
+}
+
+function loadSessionHistory() {
+  var sel = document.getElementById('sessionSelect');
+  var sid = sel.value;
+  if (!sid) return;
+
+  // Show summary
+  var opt = sel.options[sel.selectedIndex];
+  document.getElementById('sessionSummary').textContent = opt.textContent;
+
+  // Fetch measurements
+  fetch('/api/sessions/' + sid + '/measurements').then(function(r) { return r.json(); }).then(function(data) {
+    if (!data || !data.length) {
+      document.getElementById('sessionSummary').textContent += ' (no measurements)';
+      return;
+    }
+    drawHistoryChart(data);
+  }).catch(function() {});
+}
+
+function drawHistoryChart(measurements) {
+  var canvas = document.getElementById('histCanvas');
+  var ctx = canvas.getContext('2d');
+  var w = canvas.parentElement.clientWidth - 8;
+  var h = canvas.parentElement.clientHeight - 8;
+  canvas.width = w;
+  canvas.height = h;
+  ctx.clearRect(0, 0, w, h);
+
+  var n = measurements.length;
+  if (n === 0) return;
+
+  var xStep = w / Math.max(n - 1, 1);
+
+  // Tool success rate (green, 0-1 scaled to 0-h)
+  ctx.strokeStyle = '#4ec9b0';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  for (var i = 0; i < n; i++) {
+    var y = h - (1 - measurements[i].toolErrorRate) * h;
+    if (i === 0) ctx.moveTo(0, y); else ctx.lineTo(i * xStep, y);
+  }
+  ctx.stroke();
+
+  // Stuck turns (orange, 0-15 scaled to 0-h)
+  ctx.strokeStyle = '#ce9178';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  for (var i = 0; i < n; i++) {
+    var y = h - (measurements[i].stuckTurns / 15) * h;
+    if (i === 0) ctx.moveTo(0, y); else ctx.lineTo(i * xStep, y);
+  }
+  ctx.stroke();
+
+  // Context utilization (blue, 0-1 scaled to 0-h)
+  ctx.strokeStyle = '#569cd6';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  for (var i = 0; i < n; i++) {
+    var y = h - measurements[i].contextUtilization * h;
+    if (i === 0) ctx.moveTo(0, y); else ctx.lineTo(i * xStep, y);
+  }
+  ctx.stroke();
+}
+
+// Load sessions on startup
+fetchSessions();
 </script>
 </body>
 </html>

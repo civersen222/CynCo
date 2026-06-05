@@ -151,6 +151,8 @@ export class DashboardServer {
               return this.getParams()
             case '/api/history':
               return this.getHistory()
+            case '/api/sessions':
+              return this.getSessions()
             case '/api/session':
               return jsonResponse(this.deps.getSessionInfo?.() ?? null)
             case '/api/subsystems': {
@@ -211,8 +213,14 @@ export class DashboardServer {
                 return jsonResponse({ tasks: 0, turns: 0, rewards: 0, sftExamples: 0, targetExamples: 300, readyForSFT: false, progress: 0 })
               }
             }
-            default:
+            default: {
+              // Handle parameterized routes
+              if (pathname.startsWith('/api/sessions/') && pathname.endsWith('/measurements')) {
+                const sid = pathname.replace('/api/sessions/', '').replace('/measurements', '')
+                return this.getSessionMeasurements(sid)
+              }
               return jsonResponse({ error: 'Not found' }, 404)
+            }
           }
         }
 
@@ -303,6 +311,30 @@ export class DashboardServer {
         try { return JSON.parse(line) } catch { return null }
       }).filter(Boolean)
       return jsonResponse(entries)
+    } catch {
+      return jsonResponse([])
+    }
+  }
+
+  private getSessions(): Response {
+    try {
+      const gov = this.deps.getGovernance?.() as any
+      const db = gov?.getGovernanceDb?.()
+      if (!db) return jsonResponse([])
+      const sessions = db.getRecentSessions(50)
+      return jsonResponse(sessions)
+    } catch {
+      return jsonResponse([])
+    }
+  }
+
+  private getSessionMeasurements(sessionId: string): Response {
+    try {
+      const gov = this.deps.getGovernance?.() as any
+      const db = gov?.getGovernanceDb?.()
+      if (!db) return jsonResponse([])
+      const measurements = db.getMeasurements(sessionId)
+      return jsonResponse(measurements)
     } catch {
       return jsonResponse([])
     }
