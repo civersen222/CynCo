@@ -48,6 +48,9 @@ export function buildServerArgs(config: ServerConfig): string[] {
   // Disable prompt cache — Qwen3.6 uses SWA which invalidates cache every call,
   // so caching wastes 1-2GB VRAM and 700ms per iteration for zero benefit
   args.push('--cache-ram', '0')
+  // Cap reasoning/thinking to 256 tokens — research shows >256 HURTS tool accuracy,
+  // and uncapped thinking can generate 30K+ invisible tokens (5+ min wasted)
+  args.push('--reasoning-budget', '256')
 
   return args
 }
