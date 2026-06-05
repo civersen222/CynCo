@@ -219,6 +219,10 @@ export class DashboardServer {
                 const sid = pathname.replace('/api/sessions/', '').replace('/measurements', '')
                 return this.getSessionMeasurements(sid)
               }
+              if (pathname.startsWith('/api/sessions/') && pathname.endsWith('/transcript')) {
+                const sid = pathname.replace('/api/sessions/', '').replace('/transcript', '')
+                return this.getSessionTranscript(sid)
+              }
               return jsonResponse({ error: 'Not found' }, 404)
             }
           }
@@ -335,6 +339,21 @@ export class DashboardServer {
       if (!db) return jsonResponse([])
       const measurements = db.getMeasurements(sessionId)
       return jsonResponse(measurements)
+    } catch {
+      return jsonResponse([])
+    }
+  }
+
+  private getSessionTranscript(sessionId: string): Response {
+    try {
+      const sessionDir = join(homedir(), '.cynco', 'sessions')
+      const sessionFile = join(sessionDir, `${sessionId}.jsonl`)
+      if (!existsSync(sessionFile)) return jsonResponse([])
+      const lines = readFileSync(sessionFile, 'utf-8').trim().split('\n')
+      const entries = lines.slice(-500).map(line => {
+        try { return JSON.parse(line) } catch { return null }
+      }).filter(Boolean)
+      return jsonResponse(entries)
     } catch {
       return jsonResponse([])
     }
