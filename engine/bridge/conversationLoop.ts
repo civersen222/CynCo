@@ -1535,6 +1535,7 @@ export class ConversationLoop {
               // Accumulated silently — not shown in chat (noise for users)
               if (delta?.type === 'thinking_delta' && delta.thinking) {
                 reasoningTokenCount++
+                this.emit({ type: 'stream.thinking', text: delta.thinking })
               }
               // Count tool input JSON tokens for accurate tok/s
               if (delta?.type === 'input_json_delta' && delta.partial_json) {

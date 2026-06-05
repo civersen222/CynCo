@@ -38,6 +38,12 @@ export type StreamTokenEvent = {
   messageId?: string
 }
 
+export type StreamThinkingEvent = {
+  type: 'stream.thinking'
+  text: string
+  messageId?: string
+}
+
 export type MessageCompleteEvent = {
   type: 'message.complete'
   messageId: string
@@ -280,6 +286,7 @@ export type EngineEvent =
   | SessionReadyEvent
   | SessionErrorEvent
   | StreamTokenEvent
+  | StreamThinkingEvent
   | MessageCompleteEvent
   | ToolStartEvent
   | ToolProgressEvent
