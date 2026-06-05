@@ -1160,12 +1160,31 @@ export class ConversationLoop {
 
   /** Quick side query — no tools, no thinking, returns plain text. */
   private async sideQuery(prompt: string): Promise<string> {
-    // Use native Ollama API (not OpenAI-compatible) with think:false.
-    // qwen3.6 burns all tokens on chain-of-thought reasoning via the
-    // OpenAI endpoint, returning empty content. Native API + think:false
-    // forces direct text output.
-    const baseUrl = this.config.baseUrl || 'http://localhost:11434'
-    const resp = await fetch(`${baseUrl}/api/chat`, {
+    // Route through the SAME backend as the main model to avoid loading
+    // a second model in Ollama when using llama-cpp provider.
+    // Uses OpenAI-compatible endpoint which both Ollama and llama-server support.
+    const providerUrl = this.config.provider === 'llama-cpp'
+      ? `http://127.0.0.1:${this.config.port ?? 8081}`
+      : (this.config.baseUrl || 'http://localhost:11434')
+
+    if (this.config.provider === 'llama-cpp') {
+      // llama-server: use OpenAI-compatible chat endpoint
+      const resp = await fetch(`${providerUrl}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: this.config.model,
+          messages: [{ role: 'user', content: '/no_think\n' + prompt }],
+          max_tokens: 200,
+          temperature: 0.3,
+        }),
+      })
+      const data: any = await resp.json()
+      return data.choices?.[0]?.message?.content ?? ''
+    }
+
+    // Ollama: use native API with think:false
+    const resp = await fetch(`${providerUrl}/api/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

@@ -43,9 +43,11 @@ export function buildServerArgs(config: ServerConfig): string[] {
     args.push('--spec-draft-n-max', String(config.specDraftN ?? 2))
   }
 
-  // Single slot + capped cache RAM to avoid KV cache OOM with large models
+  // Single slot — we only process one request at a time
   args.push('--parallel', '1')
-  args.push('--cache-ram', '2048')
+  // Disable prompt cache — Qwen3.6 uses SWA which invalidates cache every call,
+  // so caching wastes 1-2GB VRAM and 700ms per iteration for zero benefit
+  args.push('--cache-ram', '0')
 
   return args
 }
