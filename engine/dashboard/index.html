@@ -796,6 +796,19 @@ function handleEvent(event) {
       break;
     }
 
+    case 's5.decision': {
+      var s5dec = {
+        ts: new Date(),
+        decision: (event.contextAction || 'proceed') + (event.toolRestriction ? ' | tools: ' + event.toolRestriction : ''),
+        agentId: 'S5',
+        reason: event.reasoning || '',
+      };
+      state.s5Decisions.unshift(s5dec);
+      if (state.s5Decisions.length > MAX_DECISIONS) state.s5Decisions.pop();
+      renderS5();
+      break;
+    }
+
     case 'config.current':
       state.config = event.config;
       syncConfigToSliders(event.config);

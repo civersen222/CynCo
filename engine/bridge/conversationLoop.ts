@@ -747,6 +747,17 @@ export class ConversationLoop {
           demotedTools: this.executor.getToolScorer?.()?.getDemotedTools() ?? [],
         })
 
+        // Emit S5 decision to dashboard
+        this.emit({
+          type: 's5.decision' as any,
+          reasoning: decision.reasoning,
+          contextAction: decision.contextAction,
+          toolRestriction: decision.toolRestriction,
+          modelSwitch: decision.modelSwitch,
+          timestamp: Date.now(),
+        })
+        console.log(`[s5] Decision: context=${decision.contextAction} tools=${decision.toolRestriction ?? 'none'} (${decision.reasoning})`)
+
         // L3: APPLY S5 decisions — hard enforcement, not advisory
         if (decision.contextAction === 'compact') {
           console.log(`[s5] Decision: compact context (${decision.reasoning})`)
