@@ -6,14 +6,14 @@
  *
  * Hypotheses
  * ----------
- * H1 — variety_critical   → tool_failure_cascade within 3 turns      (null: 0.42)
- * H2 — s3s4_imbalance     → repair_action within 5 turns              (null: 0.38)
- * H3 — heterarchy_shift   → context_efficiency improves in 5 turns    (null: 0.35)
- * H4 — observer_diverge   → s5_decision_quality drops in 3 turns      (null: 0.30)
- * H5 — session_end        → high agreement → positive user sentiment  (null: 0.50)
- * H6 — homeostat_perturb  → stability restored within 3 turns         (null: 0.60)
- * H7 — latency_rise       → model_switch triggered within 5 turns     (null: 0.50)
- * H8 — axiom_violation    → corrective_action within 3 turns          (null: 0.20)
+ * H1 — Stuck Escape        → stuck + tools restricted → Edit/Write within 3 turns  (null: 0.40)
+ * H2 — Nudge Response      → nudge injected → tool type changes next call          (null: 0.50)
+ * H3 — Contract Completion → contract created → all assertions pass in 20 iters    (null: 0.50)
+ * H4 — Read-to-Edit        → 3+ consecutive reads same file → Edit within 2 turns  (null: 0.30)
+ * H5 — Thinking Efficiency → >100 thinking tokens → next tool is action tool       (null: 0.30)
+ * H6 — Temperature Effect  → temperature lowered → different tool than last 3       (null: 0.33)
+ * H7 — S4 Reflection ROI   → S4 reflection ran → behavior changes in 3 turns       (null: 0.50)
+ * H8 — Session Improvement → session edits/min > rolling average                   (null: 0.50)
  */
 
 import type { GovernanceReport } from './types.js'
@@ -120,34 +120,19 @@ function probitApprox(p: number): number {
   )
 }
 
-// ─── Null baseline rates ──────────────────────────────────────────────────────
+// ─── Hypothesis metadata ─────────────────────────────────────────────────────
 
-const NULL_BASELINES: Record<HypothesisId, number> = {
-  H1: 0.42,
-  H2: 0.38,
-  H3: 0.35,
-  H4: 0.30,
-  H5: 0.50,
-  H6: 0.60,
-  H7: 0.50,
-  H8: 0.20,
+/** Hypothesis metadata — names, null baselines, evaluation windows */
+export const HYPOTHESES: Record<HypothesisId, { name: string; nullBaseline: number; evalWindow: number }> = {
+  H1: { name: 'Stuck Escape',        nullBaseline: 0.40, evalWindow: 3 },
+  H2: { name: 'Nudge Response',      nullBaseline: 0.50, evalWindow: 1 },
+  H3: { name: 'Contract Completion', nullBaseline: 0.50, evalWindow: 20 },
+  H4: { name: 'Read-to-Edit',        nullBaseline: 0.30, evalWindow: 2 },
+  H5: { name: 'Thinking Efficiency', nullBaseline: 0.30, evalWindow: 1 },
+  H6: { name: 'Temperature Effect',  nullBaseline: 0.33, evalWindow: 1 },
+  H7: { name: 'S4 Reflection ROI',   nullBaseline: 0.50, evalWindow: 3 },
+  H8: { name: 'Session Improvement', nullBaseline: 0.50, evalWindow: 0 },
 }
-
-// Evaluation windows (in turns) for each hypothesis
-const EVAL_WINDOWS: Record<HypothesisId, number> = {
-  H1: 3,
-  H2: 5,
-  H3: 5,
-  H4: 3,
-  H5: 0, // evaluated at session end
-  H6: 3,
-  H7: 5,
-  H8: 3,
-}
-
-// ─── Helper types ─────────────────────────────────────────────────────────────
-
-type ToolResult = { tool: string; success: boolean }
 
 // ─── PredictionTracker ────────────────────────────────────────────────────────
 
@@ -168,76 +153,54 @@ export class PredictionTracker {
   // ── Trigger checks ────────────────────────────────────────────────────────
 
   /**
-   * Check H1, H2, H6, H8 triggers from a governance report.
+   * Check H1, H2, H6 triggers from observable turn-level signals.
    * Call this every turn.
    */
   checkTriggers(
     turn: number,
-    report: GovernanceReport,
-    recentToolResults: ToolResult[],
+    context: {
+      stuckTurns: number,
+      toolsRestricted: boolean,
+      nudgeInjected: boolean,
+      temperatureLowered: boolean,
+      recentTools: string[],
+    },
   ): void {
-    // H1: variety overload / critical → expect tool failure cascade
-    if (
-      report.varietyBalance === 'overload' ||
-      (report.varietyBalance as string) === 'critical'
-    ) {
-      this._openIf('H1', turn, `variety=${report.varietyBalance}`, 'tool failure cascade within 3 turns')
+    if (context.stuckTurns >= 5 && context.toolsRestricted) {
+      this._openIf('H1', turn, `stuck=${context.stuckTurns},restricted=true`, 'Edit/Write within 3 turns')
     }
-
-    // H2: S3/S4 imbalance → expect repair action within 5 turns
-    if (report.s3s4Balance !== 'balanced') {
-      this._openIf('H2', turn, `s3s4=${report.s3s4Balance}`, 'repair action within 5 turns')
+    if (context.nudgeInjected) {
+      this._openIf('H2', turn, 'nudge_injected', 'tool type changes on next call')
     }
-
-    // H6: homeostat perturbation (consecutive unstable) → stability restored in 3 turns
-    if (report.consecutiveUnstable >= 2) {
-      this._openIf(
-        'H6',
-        turn,
-        `consecutiveUnstable=${report.consecutiveUnstable}`,
-        'homeostat stability restored within 3 turns',
-      )
-    }
-
-    // H7: latency rising → model switch within 5 turns
-    if (report.modelLatencyTrend === 'rising') {
-      this._openIf('H7', turn, 'latency=rising', 'model switch triggered within 5 turns')
-    }
-
-    // H8: axiom violation → corrective action within 3 turns
-    if (report.axiomHealth.violations.length > 0) {
-      this._openIf(
-        'H8',
-        turn,
-        `axiomViolations=${report.axiomHealth.violations.join(',')}`,
-        'corrective action within 3 turns',
-      )
+    if (context.temperatureLowered) {
+      this._openIf('H6', turn, 'temperature_lowered', 'different tool than last 3 calls')
     }
   }
 
   /**
-   * Check H3 and H4 triggers that require external signals.
-   * Call this when heterarchy or observer signals are available.
+   * Check H3, H4, H5, H7 triggers that require external signals.
+   * Call this every turn with extended context.
    */
   checkExtendedTriggers(
     turn: number,
-    report: GovernanceReport,
-    heterarchyChanged: boolean,
-    isStuck: boolean,
+    context: {
+      contractCreated: boolean,
+      consecutiveReadsSameFile: number,
+      thinkingTokensLastTurn: number,
+      s4ReflectionRan: boolean,
+    },
   ): void {
-    // H3: heterarchy shift → context efficiency improves in 5 turns
-    if (heterarchyChanged) {
-      this._openIf('H3', turn, 'heterarchy_shift', 'context efficiency improves in 5 turns')
+    if (context.contractCreated) {
+      this._openIf('H3', turn, 'contract_created', 'all assertions pass within 20 iterations')
     }
-
-    // H4: observer divergence → S5 decision quality drops in 3 turns
-    if (report.observerDivergence !== null && report.observerDivergence > 0.4) {
-      this._openIf(
-        'H4',
-        turn,
-        `observerDivergence=${report.observerDivergence.toFixed(2)}`,
-        'S5 decision quality drops in 3 turns',
-      )
+    if (context.consecutiveReadsSameFile >= 3) {
+      this._openIf('H4', turn, `consecutive_reads=${context.consecutiveReadsSameFile}`, 'Edit follows within 2 turns')
+    }
+    if (context.thinkingTokensLastTurn > 100) {
+      this._openIf('H5', turn, `thinking_tokens=${context.thinkingTokensLastTurn}`, 'next tool is action tool (Edit/Write/Bash)')
+    }
+    if (context.s4ReflectionRan) {
+      this._openIf('H7', turn, 's4_reflection_ran', 'model behavior changes within 3 turns')
     }
   }
 
@@ -250,7 +213,7 @@ export class PredictionTracker {
   evaluateOpen(
     turn: number,
     report: GovernanceReport,
-    recentToolResults: ToolResult[],
+    recentTools: string[],
   ): void {
     const stillOpen: Prediction[] = []
 
@@ -262,7 +225,7 @@ export class PredictionTracker {
       }
 
       // Window has elapsed — evaluate
-      const result = this._evaluate(p, report, recentToolResults)
+      const result = this._evaluate(p, report, recentTools)
       p.correct = result.correct
       p.actualOutcome = result.actualOutcome
       this.completedPredictions.push(p)
@@ -272,32 +235,18 @@ export class PredictionTracker {
   }
 
   /**
-   * Evaluate session-end hypotheses (H5, H8 summary).
+   * Evaluate session-end hypothesis (H8: session improvement).
    * Call this when the session closes.
    */
   evaluateSessionEnd(
-    sessionOutcome: 'positive' | 'neutral' | 'negative',
-    report: GovernanceReport,
+    editsPerMinute: number,
+    rollingAvgEditsPerMinute: number,
   ): void {
-    // H5: high agreement → positive user sentiment
-    const h5Open = this.openPredictions.filter(p => p.hypothesis === 'H5')
-    for (const p of h5Open) {
-      const highAgreement = report.agreementRatio >= 0.75
-      const positive = sessionOutcome === 'positive'
-      p.correct = highAgreement ? positive : !positive
-      p.actualOutcome = `sessionOutcome=${sessionOutcome}, agreementRatio=${report.agreementRatio.toFixed(2)}`
-      this.completedPredictions.push(p)
-    }
-
-    // Remove evaluated H5 from open list
-    this.openPredictions = this.openPredictions.filter(p => p.hypothesis !== 'H5')
-
-    // Any remaining H8 that weren't resolved during the session
     const h8Open = this.openPredictions.filter(p => p.hypothesis === 'H8')
     for (const p of h8Open) {
-      const noViolationsNow = report.axiomHealth.violations.length === 0
-      p.correct = noViolationsNow
-      p.actualOutcome = `session_end axiomViolations=${report.axiomHealth.violations.length}`
+      const improved = editsPerMinute > rollingAvgEditsPerMinute
+      p.correct = improved
+      p.actualOutcome = `current=${editsPerMinute.toFixed(1)}/min, avg=${rollingAvgEditsPerMinute.toFixed(1)}/min`
       this.completedPredictions.push(p)
     }
     this.openPredictions = this.openPredictions.filter(p => p.hypothesis !== 'H8')
@@ -324,7 +273,7 @@ export class PredictionTracker {
       const correct = preds.filter(p => p.correct === true).length
       const hitRate = total > 0 ? correct / total : 0
       const ci = wilsonScore(correct, total, 0.05)
-      const nullBaseline = NULL_BASELINES[hyp]
+      const nullBaseline = HYPOTHESES[hyp].nullBaseline
 
       stats.push({
         hypothesis: hyp,
@@ -354,7 +303,7 @@ export class PredictionTracker {
     triggerContext: string,
     predictedOutcome: string,
   ): void {
-    const window = EVAL_WINDOWS[hypothesis]
+    const window = HYPOTHESES[hypothesis].evalWindow
     const alreadyOpen = this.openPredictions.some(
       p =>
         p.hypothesis === hypothesis &&
@@ -377,76 +326,49 @@ export class PredictionTracker {
   private _evaluate(
     p: Prediction,
     report: GovernanceReport,
-    recentToolResults: ToolResult[],
+    recentTools: string[],
   ): { correct: boolean; actualOutcome: string } {
+    const ACTION_TOOLS = ['Edit', 'Write', 'MultiEdit', 'Bash', 'ApplyPatch']
+    const lastN = (n: number) => recentTools.slice(-n)
+
     switch (p.hypothesis) {
       case 'H1': {
-        // Predicted: tool failure cascade (≥ 2 tool failures in recent results)
-        const failures = recentToolResults.filter(r => !r.success).length
-        const cascade = failures >= 2
-        return {
-          correct: cascade,
-          actualOutcome: `${failures} tool failures in ${recentToolResults.length} results`,
-        }
+        const hasAction = recentTools.some(t => ACTION_TOOLS.includes(t))
+        return { correct: hasAction, actualOutcome: `action_tools_used=${hasAction}, recent=[${lastN(3).join(',')}]` }
       }
-
       case 'H2': {
-        // Predicted: S3/S4 balance restored
-        const balanced = report.s3s4Balance === 'balanced'
-        return {
-          correct: balanced,
-          actualOutcome: `s3s4Balance=${report.s3s4Balance}`,
-        }
+        const beforeNudge = recentTools.slice(-4, -1)
+        const afterNudge = recentTools.slice(-1)[0]
+        const changed = afterNudge ? !beforeNudge.includes(afterNudge) : false
+        return { correct: changed, actualOutcome: `before=[${beforeNudge.join(',')}] after=${afterNudge || 'none'}` }
       }
-
       case 'H3': {
-        // Predicted: context efficiency improved (toolSuccessRate as proxy)
-        const improved = report.toolSuccessRate > 0.7
-        return {
-          correct: improved,
-          actualOutcome: `toolSuccessRate=${report.toolSuccessRate.toFixed(2)}`,
-        }
+        const completed = report.stuckTurns === 0 && report.toolSuccessRate > 0.7
+        return { correct: completed, actualOutcome: `stuck=${report.stuckTurns}, successRate=${report.toolSuccessRate.toFixed(2)}` }
       }
-
       case 'H4': {
-        // Predicted: S5 decision quality drops (status degrades or tool success falls)
-        const qualityDrop = report.status === 'warning' || report.status === 'critical' || report.toolSuccessRate < 0.6
-        return {
-          correct: qualityDrop,
-          actualOutcome: `status=${report.status}, toolSuccessRate=${report.toolSuccessRate.toFixed(2)}`,
-        }
+        const hasEdit = recentTools.slice(-2).some(t => t === 'Edit' || t === 'Write' || t === 'MultiEdit')
+        return { correct: hasEdit, actualOutcome: `recent=[${lastN(2).join(',')}]` }
       }
-
       case 'H5': {
-        // Evaluated at session end — should not reach here via evaluateOpen
-        return { correct: false, actualOutcome: 'H5 must be evaluated at session end' }
+        const nextTool = recentTools[recentTools.length - 1]
+        const isAction = nextTool ? ACTION_TOOLS.includes(nextTool) : false
+        return { correct: isAction, actualOutcome: `next_tool=${nextTool || 'none'}` }
       }
-
       case 'H6': {
-        // Predicted: homeostat stability restored (consecutiveUnstable drops to 0)
-        const stable = report.consecutiveUnstable === 0
-        return {
-          correct: stable,
-          actualOutcome: `consecutiveUnstable=${report.consecutiveUnstable}`,
-        }
+        const last3 = recentTools.slice(-4, -1)
+        const current = recentTools[recentTools.length - 1]
+        const different = current ? !last3.includes(current) : false
+        return { correct: different, actualOutcome: `last3=[${last3.join(',')}] current=${current || 'none'}` }
       }
-
       case 'H7': {
-        // Predicted: model switch triggered (latency stabilised or fell)
-        const switched = report.modelLatencyTrend !== 'rising'
-        return {
-          correct: switched,
-          actualOutcome: `latencyTrend=${report.modelLatencyTrend}`,
-        }
+        const before = new Set(recentTools.slice(-6, -3))
+        const after = new Set(recentTools.slice(-3))
+        const changed = ![...after].every(t => before.has(t))
+        return { correct: changed, actualOutcome: `before=[${[...before].join(',')}] after=[${[...after].join(',')}]` }
       }
-
       case 'H8': {
-        // Predicted: corrective action taken — axiom violations cleared
-        const cleared = report.axiomHealth.violations.length === 0
-        return {
-          correct: cleared,
-          actualOutcome: `axiomViolations=${report.axiomHealth.violations.length}`,
-        }
+        return { correct: false, actualOutcome: 'H8 evaluated at session end' }
       }
     }
   }
