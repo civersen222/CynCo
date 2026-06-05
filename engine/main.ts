@@ -175,6 +175,8 @@ if (config.provider === 'llama-cpp') {
       specType: process.env.LOCALCODE_SPEC_TYPE || undefined,
       specDraftN: process.env.LOCALCODE_SPEC_DRAFT_N ? parseInt(process.env.LOCALCODE_SPEC_DRAFT_N, 10) : undefined,
     })
+    // Wire eval tok/s from llama-server stderr → governance (deferred until loop is created)
+    ;(globalThis as any).__llamaProcessManager = processManager
     await processManager.ensureRunning()
 
     // 4. Create provider
@@ -335,6 +337,15 @@ const loop = new ConversationLoop({
   },
   s5: s5Orchestrator,
 })
+
+// Wire llama-server eval tok/s → governance for accurate dashboard display
+if ((globalThis as any).__llamaProcessManager) {
+  const pm = (globalThis as any).__llamaProcessManager
+  pm.onEvalTokPerSec = (tps: number) => {
+    loop.getGovernance()?.setTokPerSec(tps, 100) // 100 ensures it always updates
+  }
+  delete (globalThis as any).__llamaProcessManager
+}
 
 // ─── Dashboard Server (Governance UI) ─────────────────────────
 try {

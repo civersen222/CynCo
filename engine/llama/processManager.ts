@@ -65,6 +65,7 @@ export class ProcessManager {
   private baseConfig: ProcessManagerConfig
   private child: ChildProcess | null = null
   private currentLoraPath: string | null = null
+  onEvalTokPerSec?: (tps: number) => void
 
   constructor(config: ProcessManagerConfig) {
     this.binaryPath = config.binaryPath
@@ -164,10 +165,15 @@ export class ProcessManager {
       env,
     })
 
-    // Log stderr for diagnostics
+    // Log stderr for diagnostics + parse eval tok/s
     this.child.stderr?.on('data', (data: Buffer) => {
       const line = data.toString().trim()
       if (line) console.log(`[llama-server] ${line}`)
+      // Parse "eval time = ... tokens per second" from llama-server timing output
+      const evalMatch = line.match(/\|\s+eval time\s+=\s+[\d.]+ ms\s+\/\s+\d+ tokens\s+\(\s*[\d.]+ ms per token,\s+([\d.]+) tokens per second\)/)
+      if (evalMatch && this.onEvalTokPerSec) {
+        this.onEvalTokPerSec(parseFloat(evalMatch[1]))
+      }
     })
 
     // Handle unexpected exit
