@@ -329,6 +329,13 @@ export class ConversationLoop {
       return []
     }
 
+    // Skip scouts for llama-cpp provider — each scout call costs 5-7s prompt eval
+    // with no caching (SWA invalidates). Scouts add 40-60s overhead per task.
+    if (this.config.provider === 'llama-cpp') {
+      console.log('[scouts] Skipping proactive dispatch for llama-cpp provider (no prompt cache)')
+      return []
+    }
+
     console.log(`[scouts] Proactive dispatch triggered: exploration=${isExploration} complex=${isComplex} first=${isFirstMessage} planning=${isPlanning}`)
 
     // Build scout tasks based on what the user needs
@@ -1263,8 +1270,10 @@ export class ConversationLoop {
       console.log(`[loop] Model call iteration ${i + 1} | messages: ${this.messages.length} | last: ${lastRole}/${lastType}`)
 
       // S4 Reflector: periodic model self-report
+      // For llama-cpp, throttle to every 10th iteration (each reflection costs 6s prompt eval)
       const reflector = this.governance.getReflector()
-      if (reflector.shouldReflect(i + 1)) {
+      const s4Skip = this.config.provider === 'llama-cpp' && (i + 1) % 10 !== 0
+      if (!s4Skip && reflector.shouldReflect(i + 1)) {
         try {
           const sideText = await this.sideQuery(reflector.getReflectionPrompt())
           console.log(`[vsm] S4 raw response: ${sideText.slice(0, 200)}`)
