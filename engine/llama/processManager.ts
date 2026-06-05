@@ -43,6 +43,10 @@ export function buildServerArgs(config: ServerConfig): string[] {
     args.push('--spec-draft-n-max', String(config.specDraftN ?? 2))
   }
 
+  // Single slot + capped cache RAM to avoid KV cache OOM with large models
+  args.push('--parallel', '1')
+  args.push('--cache-ram', '2048')
+
   return args
 }
 
