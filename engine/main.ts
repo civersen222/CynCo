@@ -380,6 +380,21 @@ async function cleanShutdown(signal: string) {
   } catch {}
   // Save S5 rule weights
   try { s5Orchestrator.saveWeights() } catch {}
+  // Auto-backfill training data (reward labeling + dataset export)
+  try {
+    const { RewardLabeler } = await import('./training/rewardLabeler.js')
+    const { DatasetBuilder } = await import('./training/datasetBuilder.js')
+    const labeler = new RewardLabeler()
+    const backfilled = labeler.backfillAll()
+    if (backfilled > 0) {
+      console.log(`[training] Auto-backfilled ${backfilled} task rewards on shutdown`)
+      const builder = new DatasetBuilder()
+      const result = builder.exportAll()
+      console.log(`[training] Dataset rebuilt: ${result.sft} SFT examples`)
+    }
+  } catch (e) {
+    console.log(`[training] Auto-backfill failed: ${e}`)
+  }
   AuditLogger.writeSessionOutcome(signal)
   if (config.provider === 'llama-cpp' && provider && 'processManager' in provider) {
     const pm = (provider as any).processManager
