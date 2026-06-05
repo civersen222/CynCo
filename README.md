@@ -93,15 +93,20 @@ cd tui && python -m localcode_tui.app
 
 That's it. No API keys. No subscriptions. No data leaving your machine.
 
-### Alternative: llama.cpp Direct Provider
+### Alternative: llama.cpp Direct Provider with MTP Speculative Decoding
 
-CynCo can also drive llama-server directly for faster inference (15.6 tok/s vs 3.3 with Ollama on some models):
+CynCo can drive llama-server directly with Multi-Token Prediction for ~100 tok/s generation (vs ~12 tok/s on Ollama):
 
 ```bash
-LOCALCODE_MODEL=qwen3.6 LOCALCODE_PROVIDER=llama-cpp bun engine/main.ts
+LOCALCODE_PROVIDER=llama-cpp \
+  LOCALCODE_MODEL_PATH=~/.cynco/models/qwen3.6-mtp/Qwen3.6-27B-Q6_K.gguf \
+  LOCALCODE_SPEC_TYPE=draft-mtp \
+  LOCALCODE_SPEC_DRAFT_N=3 \
+  LOCALCODE_CONTEXT_LENGTH=65536 \
+  bun engine/main.ts
 ```
 
-The engine auto-downloads llama-server and manages the process.
+The engine auto-manages llama-server with: single-slot mode, disabled prompt cache (SWA models invalidate it), capped reasoning budget (256 tokens), and accurate tok/s from server eval timing. Side queries route through the same llama-server instance to avoid VRAM thrashing.
 
 ---
 
@@ -221,15 +226,24 @@ Every user message auto-creates a Definition of Done contract. The model cannot 
 - **Run tasks:** command executed + output reported
 - Up to 5 enforcement rounds — if the model tries to stop early, it gets told "you're NOT done"
 
-### Governance Dashboard
-Open `http://localhost:9161` during any session. Real-time visibility into the VSM brain:
-- **Tool Activity** — stacked bar chart of every tool call (green=success, red=failure) + live feed
-- **Governance Health** — color-coded: S3/S4 balance, variety ratio, stuck turns, algedonic alerts, axiom violations
-- **Prediction Tracker** — 8 falsifiable hypotheses (H1-H8) with hit rates vs null baselines and verdicts
-- **Active Contract** — current assertion status with pass/fail/pending indicators
-- **Parameter Controls** — temperature, context length, kill switch threshold, trust decay, S4 reflection frequency
-- **Advanced Controls** — all 21 VSM governance parameters with sliders and bounds
-- Survives page reload, auto-detects active sessions, auto-reconnects on disconnect
+### Governance Dashboard + Chat UI
+Open `http://localhost:9161` during any session. Four tabs:
+
+**[Chat]** — Send prompts directly from the browser. Full tool output with expandable details, visible thinking tokens, streaming model text. Slash commands (`/plan`, `/tdd`, `/debug`) for workflows. Enter to send, Shift+Enter for newlines.
+
+**[Governance]** — Real-time VSM monitoring:
+- **Tool Activity** — stacked bar chart + live feed with latency
+- **Governance Health** — S3/S4 balance, variety ratio, stuck turns, algedonic alerts
+- **Prediction Tracker** — 8 redesigned hypotheses measuring governance effectiveness (H1: Stuck Escape, H2: Nudge Response), model predictability (H4: Read-to-Edit, H5: Thinking Efficiency), and parameter tuning (H6: Temperature Effect, H7: S4 Reflection ROI)
+- **Active Contract** — assertion status with pass/fail/pending
+- **S5 Decision Log** — live policy decisions with reasoning
+- **tok/s** — real-time inference speed from llama-server eval timing
+
+**[History]** — Session analytics with per-session metrics charts (tool success, stuck turns, context utilization over time), session transcript viewer, and session selector.
+
+**[Config]** — Temperature, context length, timeout sliders. System control toggles. All 21 VSM governance parameters with sliders and bounds.
+
+Survives page reload, auto-detects active sessions, auto-reconnects on disconnect. Polls governance every 3s and training data every 30s.
 
 ### Semantic Code Index
 Automatic vector indexing via `nomic-embed-text`. The model starts each task knowing your codebase — function signatures, class definitions, imports. Falls back to keyword search if embedding model unavailable.
