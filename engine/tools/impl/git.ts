@@ -26,7 +26,9 @@ export const gitTool: ToolImpl = {
     }
 
     try {
-      const proc = Bun.spawn(['git', sub, ...args.split(/\s+/).filter(Boolean)], {
+      // Run through shell to preserve quoted arguments (e.g., commit -m "message with spaces")
+      const fullCmd = `git ${sub} ${args}`.trim()
+      const proc = Bun.spawn(['bash', '-c', fullCmd], {
         cwd, stdout: 'pipe', stderr: 'pipe',
       })
       const stdout = await new Response(proc.stdout).text()
