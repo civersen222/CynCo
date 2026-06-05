@@ -496,6 +496,7 @@ export class ConversationLoop {
         assertions,
       )
       console.log(`[contract] Auto-created: ${assertions.length} assertions for "${text.slice(0, 50)}..."`)
+      this.governance.setContractCreated()
     }
 
     // Start trajectory recording for this task
@@ -1268,6 +1269,7 @@ export class ConversationLoop {
       const steer = this.steering.nextSteer()
       if (steer) {
         console.log(`[s2] Steering from ${steer.source}`)
+        this.governance.markNudgeInjected()
         this.addMessage({
           role: 'user',
           content: [{ type: 'text', text: steer.text }],
@@ -1279,6 +1281,7 @@ export class ConversationLoop {
       const lastRole = lastMsg?.role ?? 'none'
       const lastType = lastMsg?.content?.[0]?.type ?? 'empty'
       console.log(`[loop] Model call iteration ${i + 1} | messages: ${this.messages.length} | last: ${lastRole}/${lastType}`)
+      this.governance.resetTurnFlags()
 
       // S4 Reflector: periodic model self-report
       // For llama-cpp, throttle to every 10th iteration (each reflection costs 6s prompt eval)
@@ -1301,6 +1304,7 @@ export class ConversationLoop {
           }
           const composite = reflector.recordScores(scores)
           console.log(`[vsm] S4 reflection: progress=${scores.progress} confidence=${scores.confidence} stuck=${scores.stuckness} composite=${composite.toFixed(1)} X=${reflector.getFrequency()}`)
+          this.governance.setS4ReflectionRan()
 
           // Feed S4 composite into essential variables — this is how the system
           // feels pain from task failure, not just process failure
@@ -1416,6 +1420,9 @@ export class ConversationLoop {
           effectiveTemperature = signals.temperature
           if (signals.temperatureAdjust !== 0) {
             console.log(`[control] Variety: temp ${(effectiveTemperature - signals.temperatureAdjust).toFixed(2)} → ${effectiveTemperature.toFixed(2)}`)
+            if (signals.temperatureAdjust < 0) {
+              this.governance.markTemperatureLowered()
+            }
           }
         } catch {}
       }
@@ -1554,6 +1561,7 @@ export class ConversationLoop {
               this.lastTokPerSec = tokPerSec
               this.lastModelCallMs = modelCallElapsedMs
               this.governance.setTokPerSec(tokPerSec, tokenCount + reasoningTokenCount)
+              this.governance.setThinkingTokens(reasoningTokenCount)
               // Debug: write conversation state to file for diagnosis
               try {
                 const debugPath = require('path').join(this.executor['cwd'], '.cynco-debug.json')
@@ -1767,6 +1775,7 @@ export class ConversationLoop {
               ? `WARNING ${this.consecutiveNudges}: You MUST call a tool. Do not explain, do not plan, do not narrate. Call Read, Write, Edit, Grep, or Bash RIGHT NOW.`
               : 'FINAL WARNING: Call a tool immediately or your turn ends.'
           console.log(`[s2] Nudge ${this.consecutiveNudges}: ${nudgeText.slice(0, 50)}...`)
+          this.governance.markNudgeInjected()
           // Push directly and continue — steering queue gets consumed too late (after exit)
           this.addMessage({ role: 'user', content: [{ type: 'text', text: nudgeText }] })
           continue
@@ -1775,6 +1784,7 @@ export class ConversationLoop {
           const firstUserMsg = this.messages.find(m => m.role === 'user')
           const originalTask = firstUserMsg?.content?.filter((b: any) => b.type === 'text').map((b: any) => b.text).join('').slice(0, 200) ?? ''
           console.log(`[s2] Nudge exhausted — injecting continuation with original task`)
+          this.governance.markNudgeInjected()
           this.consecutiveNudges = 0
           this.addMessage({ role: 'user', content: [{ type: 'text', text: `CONTINUE WORKING. You stopped without finishing. Your original task was: "${originalTask}". Call a tool now to make progress.` }] })
           continue
@@ -1818,6 +1828,7 @@ export class ConversationLoop {
         const followUpMsg = this.steering.nextFollowUp()
         if (followUpMsg) {
           console.log(`[s2] Follow-up from ${followUpMsg.source}`)
+          this.governance.markNudgeInjected()
           this.addMessage({
             role: 'user',
             content: [{ type: 'text', text: followUpMsg.text }],
@@ -2250,6 +2261,12 @@ export class ConversationLoop {
 
     // Governance: record tool result
     this.governance.onToolResult(toolName, !result.isError, Date.now() - toolStartMs, result.output)
+
+    // Governance: track read patterns for prediction system
+    const toolFilePath = (toolInput as any).file_path ?? (toolInput as any).path ?? ''
+    if (toolFilePath) {
+      this.governance.trackReadPattern(toolName, toolFilePath)
+    }
 
     // S1 decision journal: log every tool call as a training triple
     const journal = getJournal()
