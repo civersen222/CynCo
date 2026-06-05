@@ -653,14 +653,9 @@ const MAX_FEED = 50;
 const MAX_DECISIONS = 20;
 
 const HYPOTHESIS_NAMES = {
-  H1: 'Variety Match',
-  H2: 'Homeostat Stability',
-  H3: 'Feedback Setpoint',
-  H4: 'Algedonic Signal',
-  H5: 'S3/S4 Balance',
-  H6: 'Kill Switch',
-  H7: 'Context Budget',
-  H8: 'Tool Success',
+  H1: 'Stuck Escape', H2: 'Nudge Response', H3: 'Contract Completion',
+  H4: 'Read-to-Edit', H5: 'Thinking Efficiency', H6: 'Temperature Effect',
+  H7: 'S4 Reflection ROI', H8: 'Session Improvement',
 };
 
 // ── WebSocket ────────────────────────────────────────────────
@@ -1179,9 +1174,12 @@ function renderPredictions() {
       var nullPct = Math.round(stat.nullBaselineRate * 100);
       var diff = pct - nullPct;
       var cls = stat.significantlyBetter ? 'pred-above' : (pct < nullPct ? 'pred-below' : 'pred-none');
-      // Verdict: is the hypothesis performing better than random?
-      var verdict = stat.significantlyBetter ? '\u2714 proven' : (stat.total < 5 ? 'need more data' : (pct >= nullPct ? 'promising' : '\u2716 worse than null'));
-      var verdictCls = stat.significantlyBetter ? 'pred-above' : (pct < nullPct ? 'pred-below' : 'pred-none');
+      // Verdict: require minimum 10 samples before drawing conclusions
+      var verdict = stat.total < 10 ? 'need more data'
+        : stat.significantlyBetter ? 'better than null'
+        : 'worse than null';
+      var verdictClass = stat.total < 10 ? '' : stat.significantlyBetter ? 'green' : 'red';
+      var verdictCls = stat.total < 10 ? 'pred-none' : stat.significantlyBetter ? 'pred-above' : 'pred-below';
       html += '<tr title="' + escHtml(name) + ': ' + pct + '% hit rate vs ' + nullPct + '% null baseline (' + (diff >= 0 ? '+' : '') + diff + '%). ' + verdict + '">' +
         '<td>' + id + '</td>' +
         '<td>' + escHtml(name) + '</td>' +
