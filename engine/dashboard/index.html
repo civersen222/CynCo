@@ -890,6 +890,18 @@ function renderContext() {
   var text = document.getElementById('ctxText');
   var badge = document.getElementById('ctxAction');
 
+  // Tok/s display — always render regardless of context state
+  var tps = state.governance && state.governance.tokPerSec != null ? state.governance.tokPerSec : 0;
+  var tpsDisplay = tps > 0 ? tps.toFixed(1) + ' tok/s' : '--';
+  var tpsBadge = document.getElementById('tpsBadge');
+  if (!tpsBadge) {
+    tpsBadge = document.createElement('span');
+    tpsBadge.id = 'tpsBadge';
+    tpsBadge.style.cssText = 'margin-left:8px;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:600;background:#1e1e2e;color:#dcdcaa;border:1px solid #444;';
+    badge.parentNode.insertBefore(tpsBadge, badge.nextSibling);
+  }
+  tpsBadge.textContent = tpsDisplay;
+
   if (!state.context) {
     bar.style.width = '0%';
     text.textContent = '0 / 0 tokens (0%)';
@@ -907,20 +919,9 @@ function renderContext() {
   bar.className = 'progress-fill' + (pct > 80 ? ' critical' : pct > 60 ? ' warn' : '');
   var remaining = total - est;
   var pctLabel = pct <= 40 ? 'healthy' : pct <= 60 ? 'moderate' : pct <= 75 ? 'elevated' : pct <= 90 ? 'HIGH' : 'CRITICAL';
-  var tps = state.governance && state.governance.tokPerSec != null ? state.governance.tokPerSec : 0;
-  var tpsDisplay = tps > 0 ? tps.toFixed(1) + ' tok/s' : '--';
   text.textContent = est.toLocaleString() + ' / ' + total.toLocaleString() + ' tokens (' + pct + '% \u2014 ' + pctLabel + ', ' + remaining.toLocaleString() + ' remaining)';
   badge.textContent = action;
   badge.className = 'action-badge ' + action;
-  // Tok/s display — add or update a dedicated badge
-  var tpsBadge = document.getElementById('tpsBadge');
-  if (!tpsBadge) {
-    tpsBadge = document.createElement('span');
-    tpsBadge.id = 'tpsBadge';
-    tpsBadge.style.cssText = 'margin-left:8px;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:600;background:#1e1e2e;color:#dcdcaa;border:1px solid #444;';
-    badge.parentNode.insertBefore(tpsBadge, badge.nextSibling);
-  }
-  tpsBadge.textContent = tpsDisplay;
 }
 
 function renderGovernance() {
