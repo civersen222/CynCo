@@ -346,7 +346,16 @@ try {
       getGovernance: () => loop.getGovernance(),
       getToolScorer: () => loop.getExecutor()?.getToolScorer?.(),
       getS4Reflector: () => loop.getGovernance().getReflector(),
-      getSessionInfo: () => ({ model: config.model || '', contextLength: config.contextLength || 32768, tier: config.tier || 'auto' }),
+      getSessionInfo: () => {
+        let modelName = config.model || ''
+        // For llama-cpp provider, show the actual GGUF file + spec type
+        if (config.provider === 'llama-cpp' && config.modelPath) {
+          const basename = config.modelPath.split(/[/\\]/).pop() || config.modelPath
+          const spec = process.env.LOCALCODE_SPEC_TYPE ? ` +${process.env.LOCALCODE_SPEC_TYPE}` : ''
+          modelName = `${basename}${spec}`
+        }
+        return { model: modelName, contextLength: config.contextLength || 32768, tier: config.tier || 'auto' }
+      },
       applyEngineConfig: (patches) => {
         const { handleConfigUpdate } = require('./bridge/configHandlers.js')
         return handleConfigUpdate(config, patches)
