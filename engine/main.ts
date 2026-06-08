@@ -379,6 +379,12 @@ try {
         const { isRoutingEnabled } = require('./tools/toolRouter.js')
         return isRoutingEnabled()
       },
+      onCommand: (command: any) => {
+        console.log(`[dashboard] Chat command: ${JSON.stringify(command).slice(0, 100)}`)
+        handleCommand(command).catch(err => {
+          console.error('[dashboard] Command handler error:', err)
+        })
+      },
     },
   })
   console.log(`[dashboard] Governance dashboard on http://localhost:${port + 1}`)

@@ -34,6 +34,7 @@ export interface DashboardDeps {
   applyEngineConfig?: (patches: Record<string, unknown>) => { applied: Record<string, unknown>; errors: { field: string; message: string }[] }
   setToolRouting?: (enabled: boolean) => void
   getToolRouting?: () => boolean
+  onCommand?: (command: any) => void
 }
 
 // ---------------------------------------------------------------------------
@@ -257,8 +258,18 @@ export class DashboardServer {
         open: (ws: ServerWebSocket<unknown>) => {
           this.clients.add(ws)
         },
-        message: (_ws: ServerWebSocket<unknown>, _message: string | Buffer) => {
-          // Read-only dashboard — ignore incoming messages
+        message: (_ws: ServerWebSocket<unknown>, message: string | Buffer) => {
+          // Forward commands from dashboard chat to engine
+          if (this.deps.onCommand) {
+            try {
+              const text = typeof message === 'string' ? message : message.toString()
+              const parsed = JSON.parse(text)
+              if (parsed && parsed.type) {
+                console.log(`[dashboard] Forwarding command: ${parsed.type}`)
+                this.deps.onCommand(parsed)
+              }
+            } catch {}
+          }
         },
         close: (ws: ServerWebSocket<unknown>) => {
           this.clients.delete(ws)
