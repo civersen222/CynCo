@@ -185,7 +185,9 @@ export async function* localCallModel({
   // Ollama provider override: force simulated tool use to bypass Ollama bugs
   // (Go struct serialization, stripped tool history, wrong template renderer)
   // unless LOCALCODE_NATIVE_TOOLS=true is explicitly set
-  const ollamaSimulatedOverride = provider.name === 'ollama'
+    // Force simulated tool use for both Ollama and llama-cpp to avoid
+  // native tool call format issues (model outputs XML text for large edits)
+  const ollamaSimulatedOverride = (provider.name === 'ollama' || provider.name === 'llama-cpp')
     && capabilities.toolUse !== 'none'
     && process.env.LOCALCODE_NATIVE_TOOLS !== 'true'
   const simulatedToolUse = ollamaSimulatedOverride || capabilities.toolUse === 'simulated'
