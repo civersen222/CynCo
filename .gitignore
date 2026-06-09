@@ -45,6 +45,14 @@ benchmark-workspace-06
 .localcode-debug.json
 .localcode-http-debug.json
 .localcode-sse-debug.json
+.cynco/
+.cynco-debug.json
+.cynco-http-debug.json
+.cynco-sse-debug.json
+.cynco-stream.log
+.cynco-snapshots/
+.cynco-engine.log
+test-results/
 CLAUDE.md
 docs/superpowers/
 thoughts/
