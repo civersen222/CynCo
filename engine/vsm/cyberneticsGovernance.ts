@@ -341,7 +341,14 @@ export class CyberneticsGovernance {
     userMessage?: string
   }): void {
     this.turnCount++
-    if (this._ablated || this._paused) return // Skip all governance when ablated or paused
+    if (this._ablated || this._paused) {
+      // Clear the contract flag even on the no-governance path.
+      // If governance is paused/ablated the prediction tracker never reads this turn, so
+      // the flag must not survive into the next active turn — otherwise a contract created
+      // during an ablation control condition would contaminate post-ablation H3 statistics.
+      this._contractCreatedThisTurn = false
+      return
+    }
 
     // S4: Classify task complexity from user message
     if (metrics.userMessage) {
