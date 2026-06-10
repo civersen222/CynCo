@@ -340,13 +340,20 @@ export class CyberneticsGovernance {
     response: string
     userMessage?: string
   }): void {
+    // ── Consume-on-read: snapshot + clear all per-turn flags atomically ──────
+    // Do this BEFORE the ablated/paused early return so that flags are never
+    // carried across turns regardless of governance state.  Using local
+    // variables means the prediction tracker always sees what was set during
+    // this turn, even when resetTurnFlags() already ran (which it does at the
+    // start of each loop iteration in conversationLoop).
+    const nudgeInjected        = this._nudgeInjectedThisTurn;     this._nudgeInjectedThisTurn        = false
+    const temperatureLowered   = this._temperatureLoweredThisTurn; this._temperatureLoweredThisTurn   = false
+    const contractCreated      = this._contractCreatedThisTurn;    this._contractCreatedThisTurn      = false
+    const thinkingTokensAmount = this._thinkingTokensLastTurn;     this._thinkingTokensLastTurn       = 0
+    const s4ReflectionRan      = this._s4ReflectionRanThisTurn;    this._s4ReflectionRanThisTurn      = false
+
     this.turnCount++
     if (this._ablated || this._paused) {
-      // Clear the contract flag even on the no-governance path.
-      // If governance is paused/ablated the prediction tracker never reads this turn, so
-      // the flag must not survive into the next active turn — otherwise a contract created
-      // during an ablation control condition would contaminate post-ablation H3 statistics.
-      this._contractCreatedThisTurn = false
       return
     }
 
@@ -532,23 +539,19 @@ export class CyberneticsGovernance {
     this._predictionTracker.checkTriggers(this.turnCount, {
       stuckTurns: this.stuckCount,
       toolsRestricted: this._toolsRestricted,
-      nudgeInjected: this._nudgeInjectedThisTurn,
-      temperatureLowered: this._temperatureLoweredThisTurn,
+      nudgeInjected: nudgeInjected,
+      temperatureLowered: temperatureLowered,
       recentTools: this.lastToolSignatures.slice(-5),
     })
 
     this._predictionTracker.checkExtendedTriggers(this.turnCount, {
-      contractCreated: this._contractCreatedThisTurn,
+      contractCreated: contractCreated,
       consecutiveReadsSameFile: this._consecutiveReadsSameFile,
-      thinkingTokensLastTurn: this._thinkingTokensLastTurn,
-      s4ReflectionRan: this._s4ReflectionRanThisTurn,
+      thinkingTokensLastTurn: thinkingTokensAmount,
+      s4ReflectionRan: s4ReflectionRan,
     })
 
     this._predictionTracker.evaluateOpen(this.turnCount, report, this.lastToolSignatures)
-
-    // Clear the contract flag NOW — after the prediction tracker has read it.
-    // (resetTurnFlags() intentionally leaves this set so it survives into onTurnComplete.)
-    this._contractCreatedThisTurn = false
   }
 
   onModelError(error: string): void {
@@ -925,13 +928,10 @@ export class CyberneticsGovernance {
   setS4ReflectionRan(): void { this._s4ReflectionRanThisTurn = true }
 
   resetTurnFlags(): void {
-    this._nudgeInjectedThisTurn = false
-    this._temperatureLoweredThisTurn = false
-    // NOTE: _contractCreatedThisTurn is intentionally NOT cleared here.
-    // It must survive until onTurnComplete() reads it via checkExtendedTriggers()
-    // so that H3 can open. It is cleared at the end of onTurnComplete() instead.
-    this._thinkingTokensLastTurn = 0
-    this._s4ReflectionRanThisTurn = false
+    // All per-turn flags are now consumed at the top of onTurnComplete() via
+    // the consume-on-read pattern (snapshot + clear before ablated/paused early
+    // return).  Nothing remains to clear here; the method is kept for call-site
+    // compatibility.
   }
 
   trackReadPattern(toolName: string, filePath: string): void {

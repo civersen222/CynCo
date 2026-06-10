@@ -16,7 +16,7 @@ describe('H3 contract flag lifecycle', () => {
     const governance = new CyberneticsGovernance()
 
     governance.setContractCreated()
-    governance.resetTurnFlags() // must NOT clear _contractCreatedThisTurn
+    governance.resetTurnFlags() // no-op — all flags consumed at top of onTurnComplete()
 
     governance.onTurnComplete({
       toolsCalled: 0,
@@ -60,8 +60,9 @@ describe('H3 contract flag lifecycle', () => {
     const tracker = governance.getPredictionTracker()
     // Count H3 across both open (window still running) and completed (window elapsed).
     // After 22 turns the turn-1 H3 has been evaluated and moved to completedPredictions.
-    // If the line-544 clear is deleted, _contractCreatedThisTurn stays true and a
-    // second H3 opens at turn 22 once the dedup window expires — making this fail.
+    // If the consume-on-read at the top of onTurnComplete() is deleted,
+    // _contractCreatedThisTurn stays true and a second H3 opens at turn 22
+    // once the dedup window expires — making this fail.
     const h3All = [
       ...tracker.openPredictions,
       ...tracker.completedPredictions,
