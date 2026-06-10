@@ -387,7 +387,9 @@ try {
       },
     },
   })
-  console.log(`[dashboard] Governance dashboard on http://localhost:${port + 1}`)
+  const dashboardHost = dashboardServer.getHostname()
+  const dashboardDisplayHost = (dashboardHost === '0.0.0.0') ? 'localhost' : dashboardHost
+  console.log(`[dashboard] Governance dashboard on http://${dashboardDisplayHost}:${port + 1}`)
 } catch (e) {
   console.warn('[dashboard] Failed to start dashboard server:', e)
 }
