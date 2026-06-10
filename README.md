@@ -311,6 +311,7 @@ All config via environment variables. No config files required.
 | `LOCALCODE_CONTEXT_LENGTH` | Auto-detected | Override context window |
 | `LOCALCODE_SEARXNG_URL` | — | SearXNG instance URL for research |
 | `LOCALCODE_S5_MODEL` | — | Fine-tuned S5 model (when available) |
+| `LOCALCODE_DASHBOARD_HOST` | `127.0.0.1` | Dashboard bind address (set to `0.0.0.0` to expose on network) |
 
 ---
 

@@ -14,6 +14,7 @@ import { WebSocketServer, WebSocket as WsWebSocket } from 'ws'
 
 interface BunWSServerOptions {
   port: number
+  hostname?: string
   fetch: (req: Request, server: BunServerLike) => Promise<Response | undefined> | Response | undefined
   websocket?: {
     open?: (ws: BunWS) => void
@@ -25,6 +26,7 @@ interface BunWSServerOptions {
 interface BunServerLike {
   upgrade: (req: Request, extra?: any) => boolean
   stop: (force?: boolean) => void
+  hostname?: string
 }
 
 interface BunWS {
@@ -118,9 +120,11 @@ function makeBunServe(options: BunWSServerOptions): BunServerLike {
     })
   })
 
-  httpServer.listen(options.port)
+  const bindHost = options.hostname ?? '0.0.0.0'
+  httpServer.listen(options.port, bindHost)
 
   return {
+    hostname: bindHost,
     upgrade: () => false,
     stop: () => {
       wss.close()

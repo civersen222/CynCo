@@ -101,11 +101,13 @@ export class DashboardServer {
   private clients: Set<ServerWebSocket<unknown>> = new Set()
   private deps: DashboardDeps
   private _port: number
+  private _hostname: string
   private indexHtml: string
 
   constructor({ port = 9161, deps = {} }: { port?: number; deps?: DashboardDeps } = {}) {
     this.deps = deps
     this._port = port
+    this._hostname = process.env.LOCALCODE_DASHBOARD_HOST || '127.0.0.1'
 
     // Read index.html once at startup
     const __dir = import.meta.dir ?? dirname(fileURLToPath(import.meta.url))
@@ -120,6 +122,7 @@ export class DashboardServer {
 
     this.server = Bun.serve({
       port,
+      hostname: this._hostname,
       fetch: async (req, server) => {
         const url = new URL(req.url)
         const pathname = url.pathname
@@ -561,5 +564,9 @@ export class DashboardServer {
 
   getPort(): number {
     return this._port
+  }
+
+  getHostname(): string {
+    return this._hostname
   }
 }
