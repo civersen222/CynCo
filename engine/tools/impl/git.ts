@@ -1,6 +1,10 @@
 import type { ToolImpl } from '../types.js'
 
-const DANGEROUS_PATTERNS = [/push\s+--force/, /reset\s+--hard/, /clean\s+-f/, /branch\s+-D/]
+const DANGEROUS_PATTERNS = [/push\s+(--force\b|-f\b)/, /reset\s+--hard/, /clean\s+-f/, /branch\s+-D/]
+
+// Argument injection: git executes the VALUES of these options as programs,
+// so they're blocked outright even though they contain no shell metacharacters.
+const FORBIDDEN_OPTIONS = [/^--upload-pack(=|$)/, /^--receive-pack(=|$)/, /^--exec(=|$)/, /^--config(=|$)/]
 
 const SHELL_METACHAR = /[;&|`$(){}]/
 
@@ -93,8 +97,22 @@ export const gitTool: ToolImpl = {
       return { output: `Error: dangerous git command blocked: ${fullCmd}. Shell metacharacters not allowed.`, isError: true }
     }
 
+    // Argument-injection guard: per-token check for options whose values git
+    // would execute as programs.
+    const argTokens = tokenizeArgs(args)
+    for (let i = 0; i < argTokens.length; i++) {
+      const token = argTokens[i]
+      if (FORBIDDEN_OPTIONS.some((p) => p.test(token))) {
+        return { output: `Error: dangerous git command blocked: ${fullCmd}. Option ${token.split('=')[0]} can execute arbitrary programs.`, isError: true }
+      }
+      // Config-style `-c name=value` injects settings like core.sshCommand.
+      // Bare -c without a key=value next token stays allowed (switch -c <branch>).
+      if (token === '-c' && argTokens[i + 1]?.includes('=')) {
+        return { output: `Error: dangerous git command blocked: ${fullCmd}. Inline config (-c name=value) not allowed.`, isError: true }
+      }
+    }
+
     try {
-      const argTokens = tokenizeArgs(args)
       const proc = Bun.spawn(['git', sub, ...argTokens], {
         cwd, stdout: 'pipe', stderr: 'pipe',
       })

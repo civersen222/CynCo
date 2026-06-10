@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'bun:test'
+import * as os from 'node:os'
 const SKIP_ENV = !process.env.CYNCO_INTEGRATION
 import { gitTool, tokenizeArgs } from '../../tools/impl/git.js'
+
+// Non-repo cwd: guards fire before spawn, but if a guard ever regresses the
+// command runs against an empty temp dir instead of this repository.
+const NON_REPO_CWD = os.tmpdir()
 
 // ---------------------------------------------------------------------------
 // tokenizeArgs unit tests (Issue 3 + Issue 4)
@@ -98,6 +103,13 @@ describe('Git tool', () => {
     expect(result.output).toContain('Shell metacharacters not allowed')
   })
 
+  // Short-flag variant of push --force must also be blocked
+  it('rejects push -f (short flag)', async () => {
+    const result = await gitTool.execute({ subcommand: 'push', args: '-f origin main' }, NON_REPO_CWD)
+    expect(result.isError).toBe(true)
+    expect(result.output).toContain('dangerous')
+  })
+
   // Issue 3: rename / replace misleading "handles quoted commit messages safely"
   // Now tests an actual quoted arg flowing through execute without being blocked
   it('handles quoted log --grep without metachar false positive', async () => {
@@ -106,5 +118,66 @@ describe('Git tool', () => {
       process.cwd()
     )
     expect(result.output).not.toContain('Shell metacharacters not allowed')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Argument injection: options whose VALUES git executes as programs.
+// These contain no shell metacharacters, so they pass the metachar guard —
+// they must be blocked by an explicit option deny-list.
+// ---------------------------------------------------------------------------
+describe('Git tool — argument injection guard', () => {
+  it('blocks --upload-pack (fetch/clone runs the given program)', async () => {
+    const result = await gitTool.execute(
+      { subcommand: 'fetch', args: '--upload-pack=/tmp/evil.sh origin' },
+      NON_REPO_CWD
+    )
+    expect(result.isError).toBe(true)
+    expect(result.output).toContain('blocked')
+  })
+
+  it('blocks --receive-pack as a bare token with separate value', async () => {
+    const result = await gitTool.execute(
+      { subcommand: 'push', args: '--receive-pack /tmp/evil.sh origin main' },
+      NON_REPO_CWD
+    )
+    expect(result.isError).toBe(true)
+    expect(result.output).toContain('blocked')
+  })
+
+  it('blocks --exec (alias for upload/receive-pack)', async () => {
+    const result = await gitTool.execute(
+      { subcommand: 'fetch', args: '--exec=/tmp/evil.sh origin' },
+      NON_REPO_CWD
+    )
+    expect(result.isError).toBe(true)
+    expect(result.output).toContain('blocked')
+  })
+
+  it('blocks --config (clone can plant core.fsmonitor etc.)', async () => {
+    const result = await gitTool.execute(
+      { subcommand: 'clone', args: '--config=core.fsmonitor=/tmp/evil.sh https://example.com/r.git' },
+      NON_REPO_CWD
+    )
+    expect(result.isError).toBe(true)
+    expect(result.output).toContain('blocked')
+  })
+
+  it('blocks config-style -c name=value (core.sshCommand injection)', async () => {
+    const result = await gitTool.execute(
+      { subcommand: 'fetch', args: '-c core.sshCommand=/tmp/evil.sh origin' },
+      NON_REPO_CWD
+    )
+    expect(result.isError).toBe(true)
+    expect(result.output).toContain('blocked')
+  })
+
+  it('allows non-config -c (switch -c <branch>)', async () => {
+    const result = await gitTool.execute(
+      { subcommand: 'switch', args: '-c feature-x' },
+      NON_REPO_CWD
+    )
+    // Must not be blocked by any guard; git itself errors (not a repository)
+    expect(result.output).not.toContain('blocked')
   })
 })
