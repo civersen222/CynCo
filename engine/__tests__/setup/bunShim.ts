@@ -9,6 +9,7 @@
  */
 
 import * as http from 'http'
+import { spawn as nodeSpawn } from 'child_process'
 import { WebSocketServer, WebSocket as WsWebSocket } from 'ws'
 
 interface BunWSServerOptions {
@@ -127,8 +128,6 @@ function makeBunServe(options: BunWSServerOptions): BunServerLike {
     },
   }
 }
-
-import { spawn as nodeSpawn } from 'child_process'
 
 /** Minimal Bun.spawn shim for vitest: spawns a real child process. */
 function makeBunSpawn(

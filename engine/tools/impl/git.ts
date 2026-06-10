@@ -4,11 +4,45 @@ const DANGEROUS_PATTERNS = [/push\s+--force/, /reset\s+--hard/, /clean\s+-f/, /b
 
 const SHELL_METACHAR = /[;&|`$(){}]/
 
-/** Quote-aware argument tokenizer — handles single and double quotes. */
-function tokenizeArgs(args: string): string[] {
+/** Quote-aware argument tokenizer — handles single and double quotes.
+ *  Exported for unit testing. */
+export function tokenizeArgs(args: string): string[] {
   if (!args.trim()) return []
   const tokens: string[] = []
   let current = ''
+  let inQuotes = false
+  let quoteChar = ''
+  let wasInQuotes = false  // tracks whether we just closed a quoted region
+  for (let i = 0; i < args.length; i++) {
+    const char = args[i]
+    if (!inQuotes && (char === '"' || char === "'")) {
+      inQuotes = true
+      quoteChar = char
+      wasInQuotes = false
+    } else if (inQuotes && char === quoteChar) {
+      inQuotes = false
+      quoteChar = ''
+      wasInQuotes = true
+    } else if (!inQuotes && /\s/.test(char)) {
+      if (current || wasInQuotes) { tokens.push(current); current = '' }
+      wasInQuotes = false
+    } else {
+      current += char
+      wasInQuotes = false
+    }
+  }
+  if (current || wasInQuotes) tokens.push(current)
+  return tokens
+}
+
+/**
+ * Returns the portion of `args` that lies OUTSIDE quoted regions.
+ * Used to check shell metacharacters only on the unquoted parts —
+ * metacharacters inside quotes are inert when args are passed via
+ * array-based Bun.spawn.
+ */
+function unquotedParts(args: string): string {
+  let result = ''
   let inQuotes = false
   let quoteChar = ''
   for (let i = 0; i < args.length; i++) {
@@ -19,14 +53,11 @@ function tokenizeArgs(args: string): string[] {
     } else if (inQuotes && char === quoteChar) {
       inQuotes = false
       quoteChar = ''
-    } else if (!inQuotes && /\s/.test(char)) {
-      if (current) { tokens.push(current); current = '' }
-    } else {
-      current += char
+    } else if (!inQuotes) {
+      result += char
     }
   }
-  if (current) tokens.push(current)
-  return tokens
+  return result
 }
 
 export const gitTool: ToolImpl = {
@@ -46,13 +77,19 @@ export const gitTool: ToolImpl = {
     const args = (input.args as string) ?? ''
     const fullCmd = `git ${sub} ${args}`.trim()
 
+    // Check dangerous patterns against BOTH raw form and normalized tokenized form
+    // so that quoted --force (e.g. '"--force"') is also caught.
+    const tokenizedCmd = [sub, ...tokenizeArgs(args)].join(' ')
     for (const pattern of DANGEROUS_PATTERNS) {
-      if (pattern.test(fullCmd)) {
+      if (pattern.test(fullCmd) || pattern.test(tokenizedCmd)) {
         return { output: `Error: dangerous git command blocked: ${fullCmd}. This could cause data loss.`, isError: true }
       }
     }
 
-    if (SHELL_METACHAR.test(args) || SHELL_METACHAR.test(sub)) {
+    // Metachar guard: check `sub` as-is (no quotes expected in subcommand),
+    // but for `args` only check the UNQUOTED regions — metacharacters inside
+    // quoted strings are inert when passed via array-based spawn.
+    if (SHELL_METACHAR.test(sub) || SHELL_METACHAR.test(unquotedParts(args))) {
       return { output: `Error: dangerous git command blocked: ${fullCmd}. Shell metacharacters not allowed.`, isError: true }
     }
 
