@@ -78,6 +78,7 @@ export function convertMessages(messages: Message[], options?: ConvertOptions): 
  * - tool_use blocks (assistant) → `<tool_call>` XML with JSON payload
  * - tool_result blocks (user) → `[Tool Result: id]\ncontent` text
  * - thinking blocks → `<think>text</think>` text
+ * - image blocks → `[Image omitted — not supported in simulated tool mode]` placeholder text
  * - All other block types (redacted_thinking, connector_text, document) → dropped
  */
 function convertMessageSimulated(msg: Message): Message {
@@ -95,8 +96,10 @@ function convertMessageSimulated(msg: Message): Message {
       textParts.push(`[Tool Result: ${tr.tool_use_id}]\n${content}`)
     } else if (block.type === 'thinking') {
       textParts.push(`<think>${(block as any).text}</think>`)
+    } else if (block.type === 'image') {
+      textParts.push('[Image omitted — not supported in simulated tool mode]')
     }
-    // redacted_thinking, connector_text, document, image → dropped
+    // redacted_thinking, connector_text, document → dropped
   }
 
   return {

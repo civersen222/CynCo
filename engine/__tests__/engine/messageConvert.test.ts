@@ -262,6 +262,22 @@ describe('convertMessages with simulatedToolUse', () => {
     const result = convertMessages(messages, { simulatedToolUse: true })
     expect(result[0].content).toEqual([])
   })
+
+  it('replaces image blocks with a placeholder in simulated mode', () => {
+    const messages: Message[] = [
+      { role: 'user', content: [
+        { type: 'text', text: 'Look at this:' },
+        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'abc123' } },
+        { type: 'text', text: 'What do you see?' },
+      ] },
+    ]
+    const result = convertMessages(messages, { simulatedToolUse: true })
+    expect(result[0].content).toHaveLength(1)
+    const text = (result[0].content[0] as any).text
+    expect(text).toContain('Look at this:')
+    expect(text).toContain('[Image omitted — not supported in simulated tool mode]')
+    expect(text).toContain('What do you see?')
+  })
 })
 
 // ─── convertTools ───────────────────────────────────────────────
