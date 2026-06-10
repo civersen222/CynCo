@@ -62,6 +62,8 @@ export class WorkflowEngine {
 
     this._state.currentPhase = targetPhase
     this._state.phaseHistory.push(targetPhase)
+    // Reset per-phase turn counter so maxTurns applies to each phase independently
+    this._state.turnCount = 0
     this._onEvent?.({ type: 'workflow.phase_changed', workflow: this._state.workflow.name, fromPhase, toPhase: targetPhase })
   }
 
