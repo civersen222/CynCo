@@ -128,9 +128,55 @@ function makeBunServe(options: BunWSServerOptions): BunServerLike {
   }
 }
 
+import { spawn as nodeSpawn } from 'child_process'
+
+/** Minimal Bun.spawn shim for vitest: spawns a real child process. */
+function makeBunSpawn(
+  cmd: string[],
+  options: { cwd?: string; stdout?: string; stderr?: string }
+) {
+  let exitResolve: (code: number) => void
+  const exitedPromise = new Promise<number>(resolve => { exitResolve = resolve })
+
+  const chunks: { stdout: Buffer[]; stderr: Buffer[] } = { stdout: [], stderr: [] }
+
+  const child = nodeSpawn(cmd[0], cmd.slice(1), {
+    cwd: options.cwd,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    shell: false,
+  })
+
+  child.stdout?.on('data', (d: Buffer) => chunks.stdout.push(d))
+  child.stderr?.on('data', (d: Buffer) => chunks.stderr.push(d))
+  child.on('close', (code: number | null) => exitResolve!(code ?? 0))
+  child.on('error', () => exitResolve!(1))
+
+  const makeStream = (bufs: Buffer[]) =>
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        // Data may not have arrived yet — resolve after process exits
+        exitedPromise.then(() => {
+          const data = Buffer.concat(bufs)
+          if (data.length > 0) controller.enqueue(data)
+          controller.close()
+        })
+      },
+    })
+
+  return {
+    get stdout() { return makeStream(chunks.stdout) },
+    get stderr() { return makeStream(chunks.stderr) },
+    get exitCode() { return child.exitCode },
+    exited: exitedPromise,
+  }
+}
+
 // Install global Bun shim if not already defined (i.e. running under vitest)
 if (typeof globalThis.Bun === 'undefined') {
   ;(globalThis as any).Bun = {
     serve: makeBunServe,
+    spawn: makeBunSpawn,
   }
+} else if (typeof (globalThis as any).Bun.spawn === 'undefined') {
+  ;(globalThis as any).Bun.spawn = makeBunSpawn
 }

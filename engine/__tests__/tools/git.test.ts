@@ -24,4 +24,21 @@ describe('Git tool', () => {
     expect(result.isError).toBe(true)
     expect(result.output).toContain('dangerous')
   })
+
+  it('blocks shell metacharacters in args', async () => {
+    const result = await gitTool.execute(
+      { subcommand: 'status', args: '; echo INJECTED > /tmp/proof' },
+      '/tmp'
+    )
+    expect(result.isError).toBe(true)
+    expect(result.output).toMatch(/dangerous.*command.*blocked/i)
+  })
+
+  it('handles quoted commit messages safely', async () => {
+    const result = await gitTool.execute(
+      { subcommand: 'log', args: '--oneline -1' },
+      process.cwd()
+    )
+    expect(result.isError).toBe(false)
+  })
 })

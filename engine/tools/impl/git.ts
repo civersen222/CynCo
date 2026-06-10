@@ -2,6 +2,33 @@ import type { ToolImpl } from '../types.js'
 
 const DANGEROUS_PATTERNS = [/push\s+--force/, /reset\s+--hard/, /clean\s+-f/, /branch\s+-D/]
 
+const SHELL_METACHAR = /[;&|`$(){}]/
+
+/** Quote-aware argument tokenizer — handles single and double quotes. */
+function tokenizeArgs(args: string): string[] {
+  if (!args.trim()) return []
+  const tokens: string[] = []
+  let current = ''
+  let inQuotes = false
+  let quoteChar = ''
+  for (let i = 0; i < args.length; i++) {
+    const char = args[i]
+    if (!inQuotes && (char === '"' || char === "'")) {
+      inQuotes = true
+      quoteChar = char
+    } else if (inQuotes && char === quoteChar) {
+      inQuotes = false
+      quoteChar = ''
+    } else if (!inQuotes && /\s/.test(char)) {
+      if (current) { tokens.push(current); current = '' }
+    } else {
+      current += char
+    }
+  }
+  if (current) tokens.push(current)
+  return tokens
+}
+
 export const gitTool: ToolImpl = {
   name: 'Git',
   description: 'Run git commands. Read-only commands (status, log, diff) auto-approve. Write commands (commit, checkout) require approval. Dangerous commands (push --force, reset --hard) are blocked.',
@@ -25,10 +52,13 @@ export const gitTool: ToolImpl = {
       }
     }
 
+    if (SHELL_METACHAR.test(args) || SHELL_METACHAR.test(sub)) {
+      return { output: `Error: dangerous git command blocked: ${fullCmd}. Shell metacharacters not allowed.`, isError: true }
+    }
+
     try {
-      // Run through shell to preserve quoted arguments (e.g., commit -m "message with spaces")
-      const fullCmd = `git ${sub} ${args}`.trim()
-      const proc = Bun.spawn(['bash', '-c', fullCmd], {
+      const argTokens = tokenizeArgs(args)
+      const proc = Bun.spawn(['git', sub, ...argTokens], {
         cwd, stdout: 'pipe', stderr: 'pipe',
       })
       const stdout = await new Response(proc.stdout).text()
