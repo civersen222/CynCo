@@ -274,9 +274,8 @@ describe('convertMessages with simulatedToolUse', () => {
     const result = convertMessages(messages, { simulatedToolUse: true })
     expect(result[0].content).toHaveLength(1)
     const text = (result[0].content[0] as any).text
-    expect(text).toContain('Look at this:')
-    expect(text).toContain('[Image omitted — not supported in simulated tool mode]')
-    expect(text).toContain('What do you see?')
+    // Full-string assertion pins part ordering and the '\n\n' join separator
+    expect(text).toBe('Look at this:\n\n[Image omitted — not supported in simulated tool mode]\n\nWhat do you see?')
   })
 })
 
