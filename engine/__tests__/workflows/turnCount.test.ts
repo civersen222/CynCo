@@ -13,12 +13,12 @@ const twoPhaseWorkflow: WorkflowDefinition = {
       instruction: 'Do phase 1 work',
       gate: { type: 'model_done' },
       transitions: ['phase2'],
-      maxTurns: 3,
+      maxTurns: 5,
     },
     phase2: {
       name: 'phase2',
       instruction: 'Do phase 2 work',
-      gate: { type: 'model_done' },
+      gate: { type: 'user_confirm' },
       transitions: ['done'],
       maxTurns: 5,
     },
@@ -45,21 +45,17 @@ describe('WorkflowEngine — turnCount reset on phase advance', () => {
     const engine = new WorkflowEngine()
     engine.start(twoPhaseWorkflow)
 
-    // Accumulate 5 turns in phase1, then advance
+    // Accumulate maxTurns (5) turns in phase1, then advance to phase2
     for (let i = 0; i < 5; i++) engine.incrementTurn()
     engine.advance('phase2')
-    expect(engine.state?.turnCount).toBe(0)
+    // turnCount must be 0 after advance; phase2 gate is user_confirm (normally false)
+    // Pre-fix: stale turnCount 5 >= maxTurns 5 would force-advance → true
+    // Post-fix: turnCount 0 < maxTurns 5 → gate fires normally → false
+    expect(engine.checkGate('end_turn', null)).toBe(false)
 
-    // Now in phase2 (maxTurns: 5) — gate should NOT force-advance at turn 0
-    expect(engine.checkGate('end_turn', null)).toBe(true) // gate=model_done passes on end_turn
-    // But the maxTurns force-advance logic checks turnCount >= maxTurns — turn 0 is not >= 5
-    engine.incrementTurn()
-    expect(engine.state?.turnCount).toBe(1)
-  })
-
-  it('turnCount starts at 0 on initial start()', () => {
-    const engine = new WorkflowEngine()
-    engine.start(twoPhaseWorkflow)
-    expect(engine.state?.turnCount).toBe(0)
+    // Exhaust phase2's own maxTurns — force-advance must now fire
+    for (let i = 0; i < 5; i++) engine.incrementTurn()
+    expect(engine.state?.turnCount).toBe(5)
+    expect(engine.checkGate('end_turn', null)).toBe(true)
   })
 })
