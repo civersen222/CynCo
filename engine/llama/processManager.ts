@@ -45,12 +45,17 @@ export function buildServerArgs(config: ServerConfig): string[] {
 
   // Single slot — we only process one request at a time
   args.push('--parallel', '1')
-  // Disable prompt cache — Qwen3.6 uses SWA which invalidates cache every call,
-  // so caching wastes 1-2GB VRAM and 700ms per iteration for zero benefit
-  args.push('--cache-ram', '0')
-  // Cap reasoning/thinking to 256 tokens — research shows >256 HURTS tool accuracy,
-  // and uncapped thinking can generate 30K+ invisible tokens (5+ min wasted)
-  args.push('--reasoning-budget', '256')
+  // Default 0: Qwen3.6 uses SWA (Sliding Window Attention) which invalidates the KV
+  // cache every call — caching wastes 1-2GB VRAM and ~700ms/iteration for zero benefit.
+  // Non-SWA models (Llama, Mistral, Phi) benefit from KV prefix reuse;
+  // set LOCALCODE_CACHE_RAM=2048 for those.
+  const cacheRam = process.env.LOCALCODE_CACHE_RAM ?? '0'
+  args.push('--cache-ram', cacheRam)
+  // Default 256: >256 thinking tokens hurts tool-call accuracy and uncapped reasoning
+  // can burn 30K+ invisible tokens (5+ min wasted per iteration).
+  // Raise via LOCALCODE_REASONING_BUDGET if your model needs more deliberation.
+  const reasoningBudget = process.env.LOCALCODE_REASONING_BUDGET ?? '256'
+  args.push('--reasoning-budget', reasoningBudget)
 
   return args
 }
