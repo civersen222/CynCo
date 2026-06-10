@@ -11,6 +11,11 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 // ─── Fix 1: Git command injection ────────────────────────────────────────────
 
 import { gitTool, tokenizeArgs } from '../../tools/impl/git.js'
+import * as os from 'node:os'
+
+// Guards fire before any spawn, so cwd is irrelevant to the assertions —
+// but use a non-repo temp dir so a guard regression can never mutate this repo.
+const NON_REPO_CWD = os.tmpdir()
 
 describe('Fix 1 — git command injection guard', () => {
   it('tokenizeArgs: -m "feat(scope): add parser" splits to two tokens', () => {
@@ -27,7 +32,7 @@ describe('Fix 1 — git command injection guard', () => {
   it('blocks shell metacharacter injection in args (unquoted semicolon)', async () => {
     const result = await gitTool.execute(
       { subcommand: 'status', args: '; rm -rf /' },
-      process.cwd(),
+      NON_REPO_CWD,
     )
     expect(result.isError).toBe(true)
     expect(result.output).toMatch(/dangerous.*command.*blocked/i)
@@ -37,7 +42,7 @@ describe('Fix 1 — git command injection guard', () => {
   it('blocks push with quoted --force (tokenized-form check)', async () => {
     const result = await gitTool.execute(
       { subcommand: 'push', args: '"--force"' },
-      process.cwd(),
+      NON_REPO_CWD,
     )
     expect(result.isError).toBe(true)
     expect(result.output).toContain('dangerous')
