@@ -62,12 +62,20 @@ export class WorkflowEngine {
 
     this._state.currentPhase = targetPhase
     this._state.phaseHistory.push(targetPhase)
+    // Reset per-phase turn counter so maxTurns applies to each phase independently
+    this._state.turnCount = 0
     this._onEvent?.({ type: 'workflow.phase_changed', workflow: this._state.workflow.name, fromPhase, toPhase: targetPhase })
   }
 
   checkGate(stopReason: string, toolResult: { tool: string; output: string } | null): boolean {
     const gate = this.currentPhase?.gate
     if (!gate) return false
+    // Force advance if phase exceeded maxTurns
+    const maxTurns = this.currentPhase?.maxTurns
+    if (maxTurns && this._state && this._state.turnCount >= maxTurns) {
+      console.log(`[workflow] Phase ${this._state.currentPhase} exceeded maxTurns (${maxTurns}) — forcing advance`)
+      return true
+    }
     switch (gate.type) {
       case 'model_done': return stopReason === 'end_turn'
       case 'auto': return true

@@ -172,7 +172,11 @@ if (config.provider === 'llama-cpp') {
       gpuLayers: config.gpuLayers,
       flashAttn: config.flashAttn,
       threads: config.threads,
+      specType: process.env.LOCALCODE_SPEC_TYPE || undefined,
+      specDraftN: process.env.LOCALCODE_SPEC_DRAFT_N ? parseInt(process.env.LOCALCODE_SPEC_DRAFT_N, 10) : undefined,
     })
+    // Wire eval tok/s from llama-server stderr → governance (deferred until loop is created)
+    ;(globalThis as any).__llamaProcessManager = processManager
     await processManager.ensureRunning()
 
     // 4. Create provider
@@ -334,6 +338,15 @@ const loop = new ConversationLoop({
   s5: s5Orchestrator,
 })
 
+// Wire llama-server eval tok/s → governance for accurate dashboard display
+if ((globalThis as any).__llamaProcessManager) {
+  const pm = (globalThis as any).__llamaProcessManager
+  pm.onEvalTokPerSec = (tps: number) => {
+    loop.getGovernance()?.setTokPerSec(tps, 100) // 100 ensures it always updates
+  }
+  delete (globalThis as any).__llamaProcessManager
+}
+
 // ─── Dashboard Server (Governance UI) ─────────────────────────
 try {
   dashboardServer = new DashboardServer({
@@ -344,7 +357,16 @@ try {
       getGovernance: () => loop.getGovernance(),
       getToolScorer: () => loop.getExecutor()?.getToolScorer?.(),
       getS4Reflector: () => loop.getGovernance().getReflector(),
-      getSessionInfo: () => ({ model: config.model || '', contextLength: config.contextLength || 32768, tier: config.tier || 'auto' }),
+      getSessionInfo: () => {
+        let modelName = config.model || ''
+        // For llama-cpp provider, show the actual GGUF file + spec type
+        if (config.provider === 'llama-cpp' && config.modelPath) {
+          const basename = config.modelPath.split(/[/\\]/).pop() || config.modelPath
+          const spec = process.env.LOCALCODE_SPEC_TYPE ? ` +${process.env.LOCALCODE_SPEC_TYPE}` : ''
+          modelName = `${basename}${spec}`
+        }
+        return { model: modelName, contextLength: config.contextLength || 32768, tier: config.tier || 'auto' }
+      },
       applyEngineConfig: (patches) => {
         const { handleConfigUpdate } = require('./bridge/configHandlers.js')
         return handleConfigUpdate(config, patches)
@@ -357,9 +379,17 @@ try {
         const { isRoutingEnabled } = require('./tools/toolRouter.js')
         return isRoutingEnabled()
       },
+      onCommand: (command: any) => {
+        console.log(`[dashboard] Chat command: ${JSON.stringify(command).slice(0, 100)}`)
+        handleCommand(command).catch(err => {
+          console.error('[dashboard] Command handler error:', err)
+        })
+      },
     },
   })
-  console.log(`[dashboard] Governance dashboard on http://localhost:${port + 1}`)
+  const dashboardHost = dashboardServer.getHostname()
+  const dashboardDisplayHost = (dashboardHost === '0.0.0.0') ? 'localhost' : dashboardHost
+  console.log(`[dashboard] Governance dashboard on http://${dashboardDisplayHost}:${port + 1}`)
 } catch (e) {
   console.warn('[dashboard] Failed to start dashboard server:', e)
 }
@@ -378,6 +408,21 @@ async function cleanShutdown(signal: string) {
   } catch {}
   // Save S5 rule weights
   try { s5Orchestrator.saveWeights() } catch {}
+  // Auto-backfill training data (reward labeling + dataset export)
+  try {
+    const { RewardLabeler } = await import('./training/rewardLabeler.js')
+    const { DatasetBuilder } = await import('./training/datasetBuilder.js')
+    const labeler = new RewardLabeler()
+    const backfilled = labeler.backfillAll()
+    if (backfilled > 0) {
+      console.log(`[training] Auto-backfilled ${backfilled} task rewards on shutdown`)
+      const builder = new DatasetBuilder()
+      const result = builder.exportAll()
+      console.log(`[training] Dataset rebuilt: ${result.sft} SFT examples`)
+    }
+  } catch (e) {
+    console.log(`[training] Auto-backfill failed: ${e}`)
+  }
   AuditLogger.writeSessionOutcome(signal)
   if (config.provider === 'llama-cpp' && provider && 'processManager' in provider) {
     const pm = (provider as any).processManager

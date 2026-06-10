@@ -34,6 +34,7 @@ export interface DashboardDeps {
   applyEngineConfig?: (patches: Record<string, unknown>) => { applied: Record<string, unknown>; errors: { field: string; message: string }[] }
   setToolRouting?: (enabled: boolean) => void
   getToolRouting?: () => boolean
+  onCommand?: (command: any) => void
 }
 
 // ---------------------------------------------------------------------------
@@ -100,11 +101,13 @@ export class DashboardServer {
   private clients: Set<ServerWebSocket<unknown>> = new Set()
   private deps: DashboardDeps
   private _port: number
+  private _hostname: string
   private indexHtml: string
 
   constructor({ port = 9161, deps = {} }: { port?: number; deps?: DashboardDeps } = {}) {
     this.deps = deps
     this._port = port
+    this._hostname = process.env.LOCALCODE_DASHBOARD_HOST || '127.0.0.1'
 
     // Read index.html once at startup
     const __dir = import.meta.dir ?? dirname(fileURLToPath(import.meta.url))
@@ -119,6 +122,7 @@ export class DashboardServer {
 
     this.server = Bun.serve({
       port,
+      hostname: this._hostname,
       fetch: async (req, server) => {
         const url = new URL(req.url)
         const pathname = url.pathname
@@ -151,6 +155,8 @@ export class DashboardServer {
               return this.getParams()
             case '/api/history':
               return this.getHistory()
+            case '/api/sessions':
+              return this.getSessions()
             case '/api/session':
               return jsonResponse(this.deps.getSessionInfo?.() ?? null)
             case '/api/subsystems': {
@@ -211,8 +217,18 @@ export class DashboardServer {
                 return jsonResponse({ tasks: 0, turns: 0, rewards: 0, sftExamples: 0, targetExamples: 300, readyForSFT: false, progress: 0 })
               }
             }
-            default:
+            default: {
+              // Handle parameterized routes
+              if (pathname.startsWith('/api/sessions/') && pathname.endsWith('/measurements')) {
+                const sid = pathname.replace('/api/sessions/', '').replace('/measurements', '')
+                return this.getSessionMeasurements(sid)
+              }
+              if (pathname.startsWith('/api/sessions/') && pathname.endsWith('/transcript')) {
+                const sid = pathname.replace('/api/sessions/', '').replace('/transcript', '')
+                return this.getSessionTranscript(sid)
+              }
               return jsonResponse({ error: 'Not found' }, 404)
+            }
           }
         }
 
@@ -245,8 +261,18 @@ export class DashboardServer {
         open: (ws: ServerWebSocket<unknown>) => {
           this.clients.add(ws)
         },
-        message: (_ws: ServerWebSocket<unknown>, _message: string | Buffer) => {
-          // Read-only dashboard — ignore incoming messages
+        message: (_ws: ServerWebSocket<unknown>, message: string | Buffer) => {
+          // Forward commands from dashboard chat to engine
+          if (this.deps.onCommand) {
+            try {
+              const text = typeof message === 'string' ? message : message.toString()
+              const parsed = JSON.parse(text)
+              if (parsed && parsed.type) {
+                console.log(`[dashboard] Forwarding command: ${parsed.type}`)
+                this.deps.onCommand(parsed)
+              }
+            } catch {}
+          }
         },
         close: (ws: ServerWebSocket<unknown>) => {
           this.clients.delete(ws)
@@ -300,6 +326,45 @@ export class DashboardServer {
       // Return last 1000 entries
       const last1000 = lines.slice(-1000)
       const entries = last1000.map(line => {
+        try { return JSON.parse(line) } catch { return null }
+      }).filter(Boolean)
+      return jsonResponse(entries)
+    } catch {
+      return jsonResponse([])
+    }
+  }
+
+  private getSessions(): Response {
+    try {
+      const gov = this.deps.getGovernance?.() as any
+      const db = gov?.getGovernanceDb?.()
+      if (!db) return jsonResponse([])
+      const sessions = db.getRecentSessions(50)
+      return jsonResponse(sessions)
+    } catch {
+      return jsonResponse([])
+    }
+  }
+
+  private getSessionMeasurements(sessionId: string): Response {
+    try {
+      const gov = this.deps.getGovernance?.() as any
+      const db = gov?.getGovernanceDb?.()
+      if (!db) return jsonResponse([])
+      const measurements = db.getMeasurements(sessionId)
+      return jsonResponse(measurements)
+    } catch {
+      return jsonResponse([])
+    }
+  }
+
+  private getSessionTranscript(sessionId: string): Response {
+    try {
+      const sessionDir = join(homedir(), '.cynco', 'sessions')
+      const sessionFile = join(sessionDir, `${sessionId}.jsonl`)
+      if (!existsSync(sessionFile)) return jsonResponse([])
+      const lines = readFileSync(sessionFile, 'utf-8').trim().split('\n')
+      const entries = lines.slice(-500).map(line => {
         try { return JSON.parse(line) } catch { return null }
       }).filter(Boolean)
       return jsonResponse(entries)
@@ -499,5 +564,9 @@ export class DashboardServer {
 
   getPort(): number {
     return this._port
+  }
+
+  getHostname(): string {
+    return this._hostname
   }
 }

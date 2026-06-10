@@ -77,6 +77,7 @@ export class S5Orchestrator {
       agreementRatio: (input.governance as any).agreementRatio ?? 1.0,
       observerDivergence: (input.governance as any).observerDivergence ?? null,
       demotedTools: [],
+      governance: input.governance as Record<string, unknown>,
     }
 
     const decision = await this.s5.decide(s5Input)

@@ -182,7 +182,15 @@ export async function* localCallModel({
 
   // 3. Resolve capabilities
   const capabilities = resolveCaps(model)
-  const simulatedToolUse = capabilities.toolUse === 'simulated'
+  // Ollama provider override: force simulated tool use to bypass Ollama bugs
+  // (Go struct serialization, stripped tool history, wrong template renderer)
+  // unless LOCALCODE_NATIVE_TOOLS=true is explicitly set
+    // Force simulated tool use for both Ollama and llama-cpp to avoid
+  // native tool call format issues (model outputs XML text for large edits)
+  const ollamaSimulatedOverride = (provider.name === 'ollama' || provider.name === 'llama-cpp')
+    && capabilities.toolUse !== 'none'
+    && process.env.LOCALCODE_NATIVE_TOOLS !== 'true'
+  const simulatedToolUse = ollamaSimulatedOverride || capabilities.toolUse === 'simulated'
   const noToolUse = capabilities.toolUse === 'none'
 
   // 3b. Pre-turn context check
@@ -227,8 +235,8 @@ export async function* localCallModel({
     }
   }
 
-  // 4. Convert messages
-  const convertedMessages = convertMessages(messages as any)
+  // 4. Convert messages (serialize tool blocks to text in simulated mode)
+  const convertedMessages = convertMessages(messages as any, { simulatedToolUse })
 
   // 5. Filter tools by profile scoping, then convert
   const scopedTools = filterTools(tools as readonly ToolInput[], config.tools)
@@ -324,11 +332,20 @@ export async function* localCallModel({
   }
 
   // 8. Build CompletionRequest
+  // Temperature override: stuck >= 3 → force low temperature for tool accuracy
+  const stuckTurns = (options as any).stuckTurns ?? 0
+  let effectiveTemperature = config.temperature
+  if (stuckTurns >= 3) {
+    const toolTemp = process.env.LOCALCODE_TOOL_TEMPERATURE
+    effectiveTemperature = toolTemp ? parseFloat(toolTemp) : 0.1
+    console.log(`[callModel] Stuck ${stuckTurns} turns → temperature override to ${effectiveTemperature}`)
+  }
+
   const request: CompletionRequest = {
     model,
     messages: convertedMessages,
     system,
-    temperature: config.temperature,
+    temperature: effectiveTemperature,
     // No max_tokens — let the model generate as much as it needs
   }
 
@@ -339,9 +356,12 @@ export async function* localCallModel({
 
   // Include thinking config if enabled
   if (thinkingConfig.type === 'enabled') {
+    // Cap thinking budget when stuck — extended thinking degrades tool accuracy
+    const baseBudget = (thinkingConfig as any).budgetTokens
+    const thinkingBudget = stuckTurns >= 3 ? Math.min(baseBudget, 64) : baseBudget
     request.thinking = {
       enabled: true,
-      budget_tokens: (thinkingConfig as any).budgetTokens,
+      budget_tokens: thinkingBudget,
     }
   }
 

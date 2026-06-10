@@ -11,6 +11,8 @@ export type ServerConfig = {
   flashAttn?: boolean
   threads?: number
   loraPath?: string
+  specType?: string
+  specDraftN?: number
 }
 
 /**
@@ -36,6 +38,25 @@ export function buildServerArgs(config: ServerConfig): string[] {
     args.push('--lora', config.loraPath)
   }
 
+  if (config.specType) {
+    args.push('--spec-type', config.specType)
+    args.push('--spec-draft-n-max', String(config.specDraftN ?? 2))
+  }
+
+  // Single slot — we only process one request at a time
+  args.push('--parallel', '1')
+  // Default 0: Qwen3.6 uses SWA (Sliding Window Attention) which invalidates the KV
+  // cache every call — caching wastes 1-2GB VRAM and ~700ms/iteration for zero benefit.
+  // Non-SWA models (Llama, Mistral, Phi) benefit from KV prefix reuse;
+  // set LOCALCODE_CACHE_RAM=2048 for those.
+  const cacheRam = process.env.LOCALCODE_CACHE_RAM ?? '0'
+  args.push('--cache-ram', cacheRam)
+  // Default 256: >256 thinking tokens hurts tool-call accuracy and uncapped reasoning
+  // can burn 30K+ invisible tokens (5+ min wasted per iteration).
+  // Raise via LOCALCODE_REASONING_BUDGET if your model needs more deliberation.
+  const reasoningBudget = process.env.LOCALCODE_REASONING_BUDGET ?? '256'
+  args.push('--reasoning-budget', reasoningBudget)
+
   return args
 }
 
@@ -48,6 +69,8 @@ export type ProcessManagerConfig = {
   gpuLayers?: number
   flashAttn?: boolean
   threads?: number
+  specType?: string
+  specDraftN?: number
 }
 
 export class ProcessManager {
@@ -56,6 +79,7 @@ export class ProcessManager {
   private baseConfig: ProcessManagerConfig
   private child: ChildProcess | null = null
   private currentLoraPath: string | null = null
+  onEvalTokPerSec?: (tps: number) => void
 
   constructor(config: ProcessManagerConfig) {
     this.binaryPath = config.binaryPath
@@ -155,10 +179,15 @@ export class ProcessManager {
       env,
     })
 
-    // Log stderr for diagnostics
+    // Log stderr for diagnostics + parse eval tok/s
     this.child.stderr?.on('data', (data: Buffer) => {
       const line = data.toString().trim()
       if (line) console.log(`[llama-server] ${line}`)
+      // Parse "eval time = ... tokens per second" from llama-server timing output
+      const evalMatch = line.match(/\|\s+eval time\s+=\s+[\d.]+ ms\s+\/\s+\d+ tokens\s+\(\s*[\d.]+ ms per token,\s+([\d.]+) tokens per second\)/)
+      if (evalMatch && this.onEvalTokPerSec) {
+        this.onEvalTokPerSec(parseFloat(evalMatch[1]))
+      }
     })
 
     // Handle unexpected exit

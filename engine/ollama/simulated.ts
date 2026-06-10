@@ -87,6 +87,16 @@ export function extractSimulatedToolCalls(text: string): ExtractToolCallsResult 
     remaining = remaining.replace(match[0], '')
   }
 
+  // 2. Hermes-style <function=name>
+  const hermes = extractHermesToolCalls(remaining)
+  toolCalls.push(...hermes.calls)
+  remaining = hermes.remaining
+
+  // 3. Fenced JSON blocks (only if they look like tool calls)
+  const jsonBlocks = extractJsonBlockToolCalls(remaining)
+  toolCalls.push(...jsonBlocks.calls)
+  remaining = jsonBlocks.remaining
+
   // Post-validate extracted tool calls against registry schemas
   let validationErrors: string[] = []
   try {
@@ -149,6 +159,58 @@ export function extractThinkingBlocks(text: string): ExtractThinkingResult {
     thinkingBlocks,
     remainingText: remaining.trim(),
   }
+}
+
+// ─── Additional Format Parsers ───────────────────────────────────
+
+/**
+ * Extract Hermes-style <function=name>{...}</function> tool calls.
+ */
+function extractHermesToolCalls(text: string): { calls: SimulatedToolCall[]; remaining: string } {
+  const calls: SimulatedToolCall[] = []
+  const regex = /<function=(\w+)>\s*([\s\S]*?)\s*<\/function>/g
+  let remaining = text
+  let match: RegExpExecArray | null
+
+  while ((match = regex.exec(text)) !== null) {
+    const name = match[1]
+    const parsed = tryParseJSON(match[2].trim())
+    if (parsed) {
+      calls.push({
+        id: `sim_${randomUUID()}`,
+        name,
+        input: parsed as Record<string, unknown>,
+      })
+    }
+    remaining = remaining.replace(match[0], '')
+  }
+
+  return { calls, remaining }
+}
+
+/**
+ * Extract tool calls from fenced JSON code blocks.
+ * Only matches blocks containing both "name" and "arguments" keys.
+ */
+function extractJsonBlockToolCalls(text: string): { calls: SimulatedToolCall[]; remaining: string } {
+  const calls: SimulatedToolCall[] = []
+  const regex = /```(?:json)?\s*\n([\s\S]*?)\n```/g
+  let remaining = text
+  let match: RegExpExecArray | null
+
+  while ((match = regex.exec(text)) !== null) {
+    const parsed = tryParseJSON(match[1].trim())
+    if (parsed && typeof parsed.name === 'string' && parsed.arguments !== undefined) {
+      calls.push({
+        id: `sim_${randomUUID()}`,
+        name: parsed.name,
+        input: (parsed.arguments ?? {}) as Record<string, unknown>,
+      })
+      remaining = remaining.replace(match[0], '')
+    }
+  }
+
+  return { calls, remaining }
 }
 
 // ─── JSON Repair ─────────────────────────────────────────────────

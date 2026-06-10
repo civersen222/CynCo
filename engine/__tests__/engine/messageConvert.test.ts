@@ -178,6 +178,107 @@ describe('convertMessages', () => {
   })
 })
 
+// ─── convertMessages with simulatedToolUse ─────────────────
+
+describe('convertMessages with simulatedToolUse', () => {
+  it('serializes tool_use blocks to XML text in assistant messages', () => {
+    const messages: Message[] = [
+      { role: 'user', content: [{ type: 'text', text: 'List files' }] },
+      { role: 'assistant', content: [
+        { type: 'text', text: 'Let me check.' },
+        { type: 'tool_use', id: 'tu_1', name: 'Bash', input: { command: 'ls' } },
+      ] },
+      { role: 'user', content: [
+        { type: 'tool_result', tool_use_id: 'tu_1', content: 'file1.ts\nfile2.ts' },
+      ] },
+    ]
+    const result = convertMessages(messages, { simulatedToolUse: true })
+    const assistantContent = result[1].content
+    expect(assistantContent).toHaveLength(1)
+    expect(assistantContent[0].type).toBe('text')
+    const text = (assistantContent[0] as any).text
+    expect(text).toContain('Let me check.')
+    expect(text).toContain('<tool_call>')
+    expect(text).toContain('"name": "Bash"')
+    expect(text).toContain('"command": "ls"')
+    expect(text).toContain('</tool_call>')
+  })
+
+  it('converts tool_result blocks to text in user messages', () => {
+    const messages: Message[] = [
+      { role: 'user', content: [
+        { type: 'tool_result', tool_use_id: 'tu_1', content: 'output here' },
+      ] },
+    ]
+    const result = convertMessages(messages, { simulatedToolUse: true })
+    const userContent = result[0].content
+    expect(userContent[0].type).toBe('text')
+    expect((userContent[0] as any).text).toContain('output here')
+  })
+
+  it('preserves thinking blocks as <think> tags', () => {
+    const messages: Message[] = [
+      { role: 'assistant', content: [
+        { type: 'thinking', text: 'let me reason' },
+        { type: 'text', text: 'Here is my answer.' },
+      ] },
+    ]
+    const result = convertMessages(messages, { simulatedToolUse: true })
+    const text = (result[0].content[0] as any).text
+    expect(text).toContain('<think>let me reason</think>')
+    expect(text).toContain('Here is my answer.')
+  })
+
+  it('strips unsupported blocks like redacted_thinking in simulated mode', () => {
+    const messages: Message[] = [
+      { role: 'assistant', content: [
+        { type: 'text', text: 'visible' },
+        { type: 'redacted_thinking', data: 'secret' },
+      ] },
+    ]
+    const result = convertMessages(messages, { simulatedToolUse: true })
+    expect(result[0].content).toHaveLength(1)
+    expect((result[0].content[0] as any).text).toBe('visible')
+  })
+
+  it('handles tool_result with array content', () => {
+    const messages: Message[] = [
+      { role: 'user', content: [
+        { type: 'tool_result', tool_use_id: 'tu_1', content: [{ type: 'text', text: 'array content' }] },
+      ] },
+    ]
+    const result = convertMessages(messages, { simulatedToolUse: true })
+    const text = (result[0].content[0] as any).text
+    expect(text).toContain('array content')
+  })
+
+  it('returns empty content array when all blocks are stripped', () => {
+    const messages: Message[] = [
+      { role: 'assistant', content: [
+        { type: 'redacted_thinking', data: 'secret' },
+        { type: 'connector_text', text: 'bridge' },
+      ] },
+    ]
+    const result = convertMessages(messages, { simulatedToolUse: true })
+    expect(result[0].content).toEqual([])
+  })
+
+  it('replaces image blocks with a placeholder in simulated mode', () => {
+    const messages: Message[] = [
+      { role: 'user', content: [
+        { type: 'text', text: 'Look at this:' },
+        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'abc123' } },
+        { type: 'text', text: 'What do you see?' },
+      ] },
+    ]
+    const result = convertMessages(messages, { simulatedToolUse: true })
+    expect(result[0].content).toHaveLength(1)
+    const text = (result[0].content[0] as any).text
+    // Full-string assertion pins part ordering and the '\n\n' join separator
+    expect(text).toBe('Look at this:\n\n[Image omitted — not supported in simulated tool mode]\n\nWhat do you see?')
+  })
+})
+
 // ─── convertTools ───────────────────────────────────────────────
 
 describe('convertTools', () => {

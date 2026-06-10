@@ -85,6 +85,54 @@ Here is my safe response.`
     expect(result.toolCalls).toHaveLength(0)
     expect(result.remainingText).toBe('Just a normal response.')
   })
+
+  it('extracts Hermes-style <function=name> tool calls', () => {
+    const text = `Let me read that file.
+<function=Read>{"file_path": "/src/main.ts"}</function>`
+    const result = extractSimulatedToolCalls(text)
+    expect(result.toolCalls).toHaveLength(1)
+    expect(result.toolCalls[0].name).toBe('Read')
+    expect(result.toolCalls[0].input).toEqual({ file_path: '/src/main.ts' })
+    expect(result.remainingText).toBe('Let me read that file.')
+  })
+
+  it('extracts Hermes-style with whitespace inside tags', () => {
+    const text = `<function=Bash>
+{"command": "git status"}
+</function>`
+    const result = extractSimulatedToolCalls(text)
+    expect(result.toolCalls).toHaveLength(1)
+    expect(result.toolCalls[0].name).toBe('Bash')
+    expect(result.toolCalls[0].input).toEqual({ command: 'git status' })
+  })
+
+  it('extracts tool calls from fenced JSON code blocks', () => {
+    const text = "I'll check the files.\n```json\n{\"name\": \"Bash\", \"arguments\": {\"command\": \"ls -la\"}}\n```"
+    const result = extractSimulatedToolCalls(text)
+    expect(result.toolCalls).toHaveLength(1)
+    expect(result.toolCalls[0].name).toBe('Bash')
+    expect(result.toolCalls[0].input).toEqual({ command: 'ls -la' })
+  })
+
+  it('ignores fenced JSON blocks that are not tool calls', () => {
+    const text = "Here's a config example:\n```json\n{\"port\": 8080, \"host\": \"localhost\"}\n```"
+    const result = extractSimulatedToolCalls(text)
+    expect(result.toolCalls).toHaveLength(0)
+    expect(result.remainingText).toContain('config example')
+  })
+
+  it('extracts tool calls from mixed formats in one response', () => {
+    const text = `Reading first.
+<tool_call>
+{"name": "Read", "arguments": {"file_path": "a.ts"}}
+</tool_call>
+Then editing.
+<function=Edit>{"file_path": "a.ts", "old_string": "x", "new_string": "y"}</function>`
+    const result = extractSimulatedToolCalls(text)
+    expect(result.toolCalls).toHaveLength(2)
+    expect(result.toolCalls[0].name).toBe('Read')
+    expect(result.toolCalls[1].name).toBe('Edit')
+  })
 })
 
 describe('extractThinkingBlocks', () => {

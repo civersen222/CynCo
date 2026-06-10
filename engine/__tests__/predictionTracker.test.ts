@@ -1,56 +1,70 @@
 import { describe, it, expect } from 'vitest'
-import { PredictionTracker, wilsonScore } from '../vsm/predictionTracker.js'
-import type { GovernanceReport } from '../vsm/types.js'
+import { PredictionTracker, wilsonScore, HYPOTHESES } from '../vsm/predictionTracker.js'
 
-describe('PredictionTracker', () => {
-  const makeReport = (overrides: Partial<GovernanceReport> = {}): GovernanceReport => ({
-    status: 'healthy',
-    varietyBalance: 'balanced',
-    varietyRatio: 1.0,
-    s3s4Balance: 'balanced',
-    algedonicAlerts: 0,
-    stuckTurns: 0,
-    consecutiveUnstable: 0,
-    modelLatencyTrend: 'stable',
-    toolSuccessRate: 0.8,
-    agreementRatio: 0.9,
-    observerDivergence: null,
-    axiomHealth: { holding: 4, total: 4, violations: [] },
-    ...overrides,
+describe('PredictionTracker — redesigned H1-H8', () => {
+  it('H1: triggers on stuck >= 5 with tools restricted', () => {
+    const t = new PredictionTracker('test')
+    t.checkTriggers(5, { stuckTurns: 5, toolsRestricted: true, nudgeInjected: false, temperatureLowered: false, recentTools: [] })
+    expect(t.openPredictions.length).toBe(1)
+    expect(t.openPredictions[0].hypothesis).toBe('H1')
   })
 
-  it('records H1 when variety is critical/overload', () => {
-    const tracker = new PredictionTracker('test')
-    tracker.checkTriggers(5, makeReport({ varietyBalance: 'overload' }), [])
-    expect(tracker.openPredictions.length).toBe(1)
-    expect(tracker.openPredictions[0].hypothesis).toBe('H1')
+  it('H1: does NOT trigger when stuck < 5', () => {
+    const t = new PredictionTracker('test')
+    t.checkTriggers(3, { stuckTurns: 3, toolsRestricted: true, nudgeInjected: false, temperatureLowered: false, recentTools: [] })
+    expect(t.openPredictions.length).toBe(0)
+  })
+
+  it('H2: triggers on nudge injection', () => {
+    const t = new PredictionTracker('test')
+    t.checkTriggers(5, { stuckTurns: 0, toolsRestricted: false, nudgeInjected: true, temperatureLowered: false, recentTools: [] })
+    expect(t.openPredictions.some(p => p.hypothesis === 'H2')).toBe(true)
+  })
+
+  it('H4: triggers on 3+ consecutive reads', () => {
+    const t = new PredictionTracker('test')
+    t.checkExtendedTriggers(5, { contractCreated: false, consecutiveReadsSameFile: 3, thinkingTokensLastTurn: 0, s4ReflectionRan: false })
+    expect(t.openPredictions.some(p => p.hypothesis === 'H4')).toBe(true)
+  })
+
+  it('H5: triggers on thinking tokens > 100', () => {
+    const t = new PredictionTracker('test')
+    t.checkExtendedTriggers(5, { contractCreated: false, consecutiveReadsSameFile: 0, thinkingTokensLastTurn: 150, s4ReflectionRan: false })
+    expect(t.openPredictions.some(p => p.hypothesis === 'H5')).toBe(true)
+  })
+
+  it('H1 evaluates correctly when Edit follows restriction', () => {
+    const t = new PredictionTracker('test')
+    t.checkTriggers(5, { stuckTurns: 5, toolsRestricted: true, nudgeInjected: false, temperatureLowered: false, recentTools: [] })
+    const report = { status: 'healthy', stuckTurns: 0, toolSuccessRate: 0.9 } as any
+    t.evaluateOpen(8, report, ['Read', 'Read', 'Edit'])
+    expect(t.completedPredictions.length).toBe(1)
+    expect(t.completedPredictions[0].correct).toBe(true)
+  })
+
+  it('H1 evaluates false when only Read after restriction', () => {
+    const t = new PredictionTracker('test')
+    t.checkTriggers(5, { stuckTurns: 5, toolsRestricted: true, nudgeInjected: false, temperatureLowered: false, recentTools: [] })
+    const report = { status: 'warning', stuckTurns: 8, toolSuccessRate: 0.5 } as any
+    t.evaluateOpen(8, report, ['Read', 'Read', 'Read'])
+    expect(t.completedPredictions.length).toBe(1)
+    expect(t.completedPredictions[0].correct).toBe(false)
   })
 
   it('does not duplicate predictions in same window', () => {
-    const tracker = new PredictionTracker('test')
-    tracker.checkTriggers(5, makeReport({ varietyBalance: 'overload' }), [])
-    tracker.checkTriggers(6, makeReport({ varietyBalance: 'overload' }), [])
-    expect(tracker.openPredictions.length).toBe(1)
+    const t = new PredictionTracker('test')
+    t.checkTriggers(5, { stuckTurns: 5, toolsRestricted: true, nudgeInjected: false, temperatureLowered: false, recentTools: [] })
+    t.checkTriggers(6, { stuckTurns: 6, toolsRestricted: true, nudgeInjected: false, temperatureLowered: false, recentTools: [] })
+    expect(t.openPredictions.filter(p => p.hypothesis === 'H1').length).toBe(1)
   })
 
-  it('evaluates H1 after window', () => {
-    const tracker = new PredictionTracker('test')
-    tracker.checkTriggers(5, makeReport({ varietyBalance: 'overload' }), [])
-    const failResults = [
-      { tool: 'Edit', success: false },
-      { tool: 'Bash', success: false },
-      { tool: 'Write', success: false },
-    ]
-    tracker.evaluateOpen(8, makeReport(), failResults)
-    expect(tracker.openPredictions.length).toBe(0)
-    expect(tracker.completedPredictions.length).toBe(1)
-    expect(tracker.completedPredictions[0].correct).toBe(true)
-  })
-
-  it('records H2 for S3/S4 imbalance', () => {
-    const tracker = new PredictionTracker('test')
-    tracker.checkTriggers(5, makeReport({ s3s4Balance: 's3_dominant' }), [])
-    expect(tracker.openPredictions.some(p => p.hypothesis === 'H2')).toBe(true)
+  it('HYPOTHESES has names for all 8', () => {
+    expect(Object.keys(HYPOTHESES).length).toBe(8)
+    for (const h of Object.values(HYPOTHESES)) {
+      expect(h.name.length).toBeGreaterThan(0)
+      expect(h.nullBaseline).toBeGreaterThan(0)
+      expect(h.evalWindow).toBeGreaterThanOrEqual(0)
+    }
   })
 })
 
@@ -61,7 +75,7 @@ describe('wilsonScore', () => {
     expect(hi).toBeLessThan(0.85)
   })
 
-  it('returns [0, 1] for 0 samples', () => {
+  it('returns [0,1] for empty data', () => {
     const [lo, hi] = wilsonScore(0, 0, 0.05)
     expect(lo).toBe(0)
     expect(hi).toBe(1)

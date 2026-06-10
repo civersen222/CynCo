@@ -1,6 +1,68 @@
 import type { ToolImpl } from '../types.js'
 
-const DANGEROUS_PATTERNS = [/push\s+--force/, /reset\s+--hard/, /clean\s+-f/, /branch\s+-D/]
+const DANGEROUS_PATTERNS = [/push\s+(--force\b|-f\b)/, /reset\s+--hard/, /clean\s+-f/, /branch\s+-D/]
+
+// Argument injection: git executes the VALUES of these options as programs,
+// so they're blocked outright even though they contain no shell metacharacters.
+const FORBIDDEN_OPTIONS = [/^--upload-pack(=|$)/, /^--receive-pack(=|$)/, /^--exec(=|$)/, /^--config(=|$)/]
+
+const SHELL_METACHAR = /[;&|`$(){}]/
+
+/** Quote-aware argument tokenizer — handles single and double quotes.
+ *  Exported for unit testing. */
+export function tokenizeArgs(args: string): string[] {
+  if (!args.trim()) return []
+  const tokens: string[] = []
+  let current = ''
+  let inQuotes = false
+  let quoteChar = ''
+  let wasInQuotes = false  // tracks whether we just closed a quoted region
+  for (let i = 0; i < args.length; i++) {
+    const char = args[i]
+    if (!inQuotes && (char === '"' || char === "'")) {
+      inQuotes = true
+      quoteChar = char
+      wasInQuotes = false
+    } else if (inQuotes && char === quoteChar) {
+      inQuotes = false
+      quoteChar = ''
+      wasInQuotes = true
+    } else if (!inQuotes && /\s/.test(char)) {
+      if (current || wasInQuotes) { tokens.push(current); current = '' }
+      wasInQuotes = false
+    } else {
+      current += char
+      wasInQuotes = false
+    }
+  }
+  if (current || wasInQuotes) tokens.push(current)
+  return tokens
+}
+
+/**
+ * Returns the portion of `args` that lies OUTSIDE quoted regions.
+ * Used to check shell metacharacters only on the unquoted parts —
+ * metacharacters inside quotes are inert when args are passed via
+ * array-based Bun.spawn.
+ */
+function unquotedParts(args: string): string {
+  let result = ''
+  let inQuotes = false
+  let quoteChar = ''
+  for (let i = 0; i < args.length; i++) {
+    const char = args[i]
+    if (!inQuotes && (char === '"' || char === "'")) {
+      inQuotes = true
+      quoteChar = char
+    } else if (inQuotes && char === quoteChar) {
+      inQuotes = false
+      quoteChar = ''
+    } else if (!inQuotes) {
+      result += char
+    }
+  }
+  return result
+}
 
 export const gitTool: ToolImpl = {
   name: 'Git',
@@ -19,14 +81,39 @@ export const gitTool: ToolImpl = {
     const args = (input.args as string) ?? ''
     const fullCmd = `git ${sub} ${args}`.trim()
 
+    // Check dangerous patterns against BOTH raw form and normalized tokenized form
+    // so that quoted --force (e.g. '"--force"') is also caught.
+    const tokenizedCmd = [sub, ...tokenizeArgs(args)].join(' ')
     for (const pattern of DANGEROUS_PATTERNS) {
-      if (pattern.test(fullCmd)) {
+      if (pattern.test(fullCmd) || pattern.test(tokenizedCmd)) {
         return { output: `Error: dangerous git command blocked: ${fullCmd}. This could cause data loss.`, isError: true }
       }
     }
 
+    // Metachar guard: check `sub` as-is (no quotes expected in subcommand),
+    // but for `args` only check the UNQUOTED regions — metacharacters inside
+    // quoted strings are inert when passed via array-based spawn.
+    if (SHELL_METACHAR.test(sub) || SHELL_METACHAR.test(unquotedParts(args))) {
+      return { output: `Error: dangerous git command blocked: ${fullCmd}. Shell metacharacters not allowed.`, isError: true }
+    }
+
+    // Argument-injection guard: per-token check for options whose values git
+    // would execute as programs.
+    const argTokens = tokenizeArgs(args)
+    for (let i = 0; i < argTokens.length; i++) {
+      const token = argTokens[i]
+      if (FORBIDDEN_OPTIONS.some((p) => p.test(token))) {
+        return { output: `Error: dangerous git command blocked: ${fullCmd}. Option ${token.split('=')[0]} can execute arbitrary programs.`, isError: true }
+      }
+      // Config-style `-c name=value` injects settings like core.sshCommand.
+      // Bare -c without a key=value next token stays allowed (switch -c <branch>).
+      if (token === '-c' && argTokens[i + 1]?.includes('=')) {
+        return { output: `Error: dangerous git command blocked: ${fullCmd}. Inline config (-c name=value) not allowed.`, isError: true }
+      }
+    }
+
     try {
-      const proc = Bun.spawn(['git', sub, ...args.split(/\s+/).filter(Boolean)], {
+      const proc = Bun.spawn(['git', sub, ...argTokens], {
         cwd, stdout: 'pipe', stderr: 'pipe',
       })
       const stdout = await new Response(proc.stdout).text()

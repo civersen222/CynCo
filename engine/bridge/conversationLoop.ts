@@ -133,6 +133,8 @@ export class ConversationLoop {
   private toolHistory: string[] = []  // Track tool names for VSM advisors
   private toolFailureCounts: Map<string, number> = new Map()
   private consecutiveNudges = 0
+  private lastTokPerSec = 0
+  private lastModelCallMs = 0
   private steering = new SteeringQueue()
   private journal: JSONLStore
   private snapshot?: WorkspaceSnapshot
@@ -179,8 +181,19 @@ export class ConversationLoop {
       if (event.type === 'workflow.phase_changed') {
         const wf = this.workflowEngine.state?.workflow
         this.emit({ type: 'workflow.status', active: true, workflow: wf?.name ?? null, phase: event.toPhase, displayName: wf?.displayName ?? null })
+        // Inform governance about read-only phases so stuck detection pauses
+        const phase = wf?.phases[event.toPhase]
+        const isReadOnly = phase?.allowedTools != null && !phase.allowedTools.some(t => ['Write', 'Edit', 'MultiEdit', 'Bash', 'ApplyPatch'].includes(t))
+        this.governance.setWorkflowReadOnlyPhase(isReadOnly)
+      } else if (event.type === 'workflow.started') {
+        // Check if initial phase is read-only
+        const wf = this.workflowEngine.state?.workflow
+        const phase = wf?.phases[event.phase]
+        const isReadOnly = phase?.allowedTools != null && !phase.allowedTools.some(t => ['Write', 'Edit', 'MultiEdit', 'Bash', 'ApplyPatch'].includes(t))
+        this.governance.setWorkflowReadOnlyPhase(isReadOnly)
       } else if (event.type === 'workflow.completed' || event.type === 'workflow.cancelled') {
         this.emit({ type: 'workflow.status', active: false, workflow: null, phase: null, displayName: null })
+        this.governance.setWorkflowReadOnlyPhase(false)
       }
     })
     this.lspManager = new LSPManager(opts.cwd ?? process.cwd())
@@ -313,6 +326,13 @@ export class ConversationLoop {
     const isPlanning = this.workflowEngine.currentPhase?.name === 'create_plan'
 
     if (!isExploration && !isComplex && !isFirstMessage && !isPlanning) {
+      return []
+    }
+
+    // Skip scouts for llama-cpp provider — each scout call costs 5-7s prompt eval
+    // with no caching (SWA invalidates). Scouts add 40-60s overhead per task.
+    if (this.config.provider === 'llama-cpp') {
+      console.log('[scouts] Skipping proactive dispatch for llama-cpp provider (no prompt cache)')
       return []
     }
 
@@ -476,6 +496,7 @@ export class ConversationLoop {
         assertions,
       )
       console.log(`[contract] Auto-created: ${assertions.length} assertions for "${text.slice(0, 50)}..."`)
+      this.governance.setContractCreated()
     }
 
     // Start trajectory recording for this task
@@ -726,6 +747,17 @@ export class ConversationLoop {
           observerDivergence: (govReport as any).observerDivergence ?? null,
           demotedTools: this.executor.getToolScorer?.()?.getDemotedTools() ?? [],
         })
+
+        // Emit S5 decision to dashboard
+        this.emit({
+          type: 's5.decision' as any,
+          reasoning: decision.reasoning,
+          contextAction: decision.contextAction,
+          toolRestriction: decision.toolRestriction,
+          modelSwitch: decision.modelSwitch,
+          timestamp: Date.now(),
+        })
+        console.log(`[s5] Decision: context=${decision.contextAction} tools=${decision.toolRestriction ?? 'none'} (${decision.reasoning})`)
 
         // L3: APPLY S5 decisions — hard enforcement, not advisory
         if (decision.contextAction === 'compact') {
@@ -1147,12 +1179,31 @@ export class ConversationLoop {
 
   /** Quick side query — no tools, no thinking, returns plain text. */
   private async sideQuery(prompt: string): Promise<string> {
-    // Use native Ollama API (not OpenAI-compatible) with think:false.
-    // qwen3.6 burns all tokens on chain-of-thought reasoning via the
-    // OpenAI endpoint, returning empty content. Native API + think:false
-    // forces direct text output.
-    const baseUrl = this.config.baseUrl || 'http://localhost:11434'
-    const resp = await fetch(`${baseUrl}/api/chat`, {
+    // Route through the SAME backend as the main model to avoid loading
+    // a second model in Ollama when using llama-cpp provider.
+    // Uses OpenAI-compatible endpoint which both Ollama and llama-server support.
+    const providerUrl = this.config.provider === 'llama-cpp'
+      ? `http://127.0.0.1:${this.config.port ?? 8081}`
+      : (this.config.baseUrl || 'http://localhost:11434')
+
+    if (this.config.provider === 'llama-cpp') {
+      // llama-server: use OpenAI-compatible chat endpoint
+      const resp = await fetch(`${providerUrl}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: this.config.model,
+          messages: [{ role: 'user', content: '/no_think\n' + prompt }],
+          max_tokens: 200,
+          temperature: 0.3,
+        }),
+      })
+      const data: any = await resp.json()
+      return data.choices?.[0]?.message?.content ?? ''
+    }
+
+    // Ollama: use native API with think:false
+    const resp = await fetch(`${providerUrl}/api/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1218,6 +1269,7 @@ export class ConversationLoop {
       const steer = this.steering.nextSteer()
       if (steer) {
         console.log(`[s2] Steering from ${steer.source}`)
+        this.governance.markNudgeInjected()
         this.addMessage({
           role: 'user',
           content: [{ type: 'text', text: steer.text }],
@@ -1231,8 +1283,10 @@ export class ConversationLoop {
       console.log(`[loop] Model call iteration ${i + 1} | messages: ${this.messages.length} | last: ${lastRole}/${lastType}`)
 
       // S4 Reflector: periodic model self-report
+      // For llama-cpp, throttle to every 10th iteration (each reflection costs 6s prompt eval)
       const reflector = this.governance.getReflector()
-      if (reflector.shouldReflect(i + 1)) {
+      const s4Skip = this.config.provider === 'llama-cpp' && (i + 1) % 10 !== 0
+      if (!s4Skip && reflector.shouldReflect(i + 1)) {
         try {
           const sideText = await this.sideQuery(reflector.getReflectionPrompt())
           console.log(`[vsm] S4 raw response: ${sideText.slice(0, 200)}`)
@@ -1249,6 +1303,7 @@ export class ConversationLoop {
           }
           const composite = reflector.recordScores(scores)
           console.log(`[vsm] S4 reflection: progress=${scores.progress} confidence=${scores.confidence} stuck=${scores.stuckness} composite=${composite.toFixed(1)} X=${reflector.getFrequency()}`)
+          this.governance.setS4ReflectionRan()
 
           // Feed S4 composite into essential variables — this is how the system
           // feels pain from task failure, not just process failure
@@ -1364,6 +1419,9 @@ export class ConversationLoop {
           effectiveTemperature = signals.temperature
           if (signals.temperatureAdjust !== 0) {
             console.log(`[control] Variety: temp ${(effectiveTemperature - signals.temperatureAdjust).toFixed(2)} → ${effectiveTemperature.toFixed(2)}`)
+            if (signals.temperatureAdjust < 0) {
+              this.governance.markTemperatureLowered()
+            }
           }
         } catch {}
       }
@@ -1440,7 +1498,7 @@ export class ConversationLoop {
         thinkingConfig,
         tools: iterationTools,
         signal: this.abortController?.signal ?? new AbortController().signal,
-        options: { model: this.config.model! },
+        options: { model: this.config.model!, stuckTurns: this.governance?.getStuckCount() ?? 0 },
         deps,
       })
       this.config.temperature = _savedTemperature
@@ -1449,6 +1507,7 @@ export class ConversationLoop {
       let tokenCount = 0
       let reasoningTokenCount = 0
       let stopReason = 'end_turn'
+      const modelCallStartTime = Date.now()
       let assistantContent: unknown[] = []
       const toolsUsedThisTurn: string[] = []
       const toolResultsThisTurn: ('success' | 'failure' | 'denied')[] = []
@@ -1475,6 +1534,11 @@ export class ConversationLoop {
               // Accumulated silently — not shown in chat (noise for users)
               if (delta?.type === 'thinking_delta' && delta.thinking) {
                 reasoningTokenCount++
+                this.emit({ type: 'stream.thinking', text: delta.thinking })
+              }
+              // Count tool input JSON tokens for accurate tok/s
+              if (delta?.type === 'input_json_delta' && delta.partial_json) {
+                tokenCount++ // tool call JSON also counts as output
               }
               break
             }
@@ -1483,9 +1547,21 @@ export class ConversationLoop {
               break
             case 'message_delta':
               stopReason = event.delta?.stop_reason ?? stopReason
+              // Capture estimated output tokens from the stream translator
+              if (event.usage?.output_tokens) {
+                const estimatedTokens = event.usage.output_tokens
+                // Use the stream translator's estimate if it's higher than our chunk count
+                if (estimatedTokens > tokenCount) tokenCount = estimatedTokens
+              }
               break
             case 'message_stop': {
-              console.log(`[loop] message_stop, tokens=${tokenCount}, stop=${stopReason}`)
+              const modelCallElapsedMs = Date.now() - modelCallStartTime
+              const tokPerSec = modelCallElapsedMs > 0 ? Math.round((tokenCount + reasoningTokenCount) / (modelCallElapsedMs / 1000) * 10) / 10 : 0
+              console.log(`[loop] message_stop, tokens=${tokenCount}+${reasoningTokenCount}r, ${tokPerSec} tok/s, stop=${stopReason}`)
+              this.lastTokPerSec = tokPerSec
+              this.lastModelCallMs = modelCallElapsedMs
+              this.governance.setTokPerSec(tokPerSec, tokenCount + reasoningTokenCount)
+              this.governance.setThinkingTokens(reasoningTokenCount)
               // Debug: write conversation state to file for diagnosis
               try {
                 const debugPath = require('path').join(this.executor['cwd'], '.cynco-debug.json')
@@ -1699,6 +1775,7 @@ export class ConversationLoop {
               ? `WARNING ${this.consecutiveNudges}: You MUST call a tool. Do not explain, do not plan, do not narrate. Call Read, Write, Edit, Grep, or Bash RIGHT NOW.`
               : 'FINAL WARNING: Call a tool immediately or your turn ends.'
           console.log(`[s2] Nudge ${this.consecutiveNudges}: ${nudgeText.slice(0, 50)}...`)
+          this.governance.markNudgeInjected()
           // Push directly and continue — steering queue gets consumed too late (after exit)
           this.addMessage({ role: 'user', content: [{ type: 'text', text: nudgeText }] })
           continue
@@ -1707,6 +1784,7 @@ export class ConversationLoop {
           const firstUserMsg = this.messages.find(m => m.role === 'user')
           const originalTask = firstUserMsg?.content?.filter((b: any) => b.type === 'text').map((b: any) => b.text).join('').slice(0, 200) ?? ''
           console.log(`[s2] Nudge exhausted — injecting continuation with original task`)
+          this.governance.markNudgeInjected()
           this.consecutiveNudges = 0
           this.addMessage({ role: 'user', content: [{ type: 'text', text: `CONTINUE WORKING. You stopped without finishing. Your original task was: "${originalTask}". Call a tool now to make progress.` }] })
           continue
@@ -1750,6 +1828,7 @@ export class ConversationLoop {
         const followUpMsg = this.steering.nextFollowUp()
         if (followUpMsg) {
           console.log(`[s2] Follow-up from ${followUpMsg.source}`)
+          this.governance.markNudgeInjected()
           this.addMessage({
             role: 'user',
             content: [{ type: 'text', text: followUpMsg.text }],
@@ -1760,9 +1839,20 @@ export class ConversationLoop {
         // Check workflow gate and auto-advance at end of turn
         if (this.workflowEngine.isActive) {
           this.workflowEngine.incrementTurn()
+          const phase = this.workflowEngine.currentPhase
+          const turnCount = this.workflowEngine.state?.turnCount ?? 0
+          const maxTurns = phase?.maxTurns
+
+          // Nudge model when approaching maxTurns in a read-only phase
+          if (maxTurns && turnCount === maxTurns - 3) {
+            this.addMessage({
+              role: 'user',
+              content: [{ type: 'text', text: '[System] You are approaching the turn limit for this planning phase. Stop reading and OUTPUT YOUR PLAN NOW as a numbered list of steps. Do not call any more tools — just write out the plan.' }],
+            })
+          }
+
           const gateSatisfied = this.workflowEngine.checkGate(stopReason, null)
           if (gateSatisfied) {
-            const phase = this.workflowEngine.currentPhase
             const transitions = phase?.transitions ?? []
             if (transitions.length === 1 && transitions[0] !== 'done') {
               this.workflowEngine.advance(transitions[0])
@@ -1795,6 +1885,38 @@ export class ConversationLoop {
         } catch {}
 
         return
+      }
+
+      // Workflow: count turns and check maxTurns even during tool execution
+      if (this.workflowEngine.isActive) {
+        this.workflowEngine.incrementTurn()
+        const wfPhase = this.workflowEngine.currentPhase
+        const wfTurnCount = this.workflowEngine.state?.turnCount ?? 0
+        const wfMaxTurns = wfPhase?.maxTurns
+
+        // Nudge 3 turns before maxTurns
+        if (wfMaxTurns && wfTurnCount === wfMaxTurns - 3) {
+          console.log(`[workflow] Nudging model at turn ${wfTurnCount}/${wfMaxTurns}`)
+          this.addMessage({
+            role: 'user',
+            content: [{ type: 'text', text: '[System] You are approaching the turn limit for this planning phase. Stop reading and OUTPUT YOUR PLAN NOW as a numbered list of steps. Do not call any more tools — just write out the plan.' }],
+          })
+        }
+
+        // Force phase advance at maxTurns
+        if (wfMaxTurns && wfTurnCount >= wfMaxTurns) {
+          console.log(`[workflow] Forcing phase advance at turn ${wfTurnCount}/${wfMaxTurns}`)
+          const transitions = wfPhase?.transitions ?? []
+          if (transitions.length >= 1 && transitions[0] !== 'done') {
+            this.workflowEngine.advance(transitions[0])
+            this.governance.setWorkflowReadOnlyPhase(false)
+            this.emit({ type: 'stream.token', text: `\n[Workflow] Phase: ${transitions[0]} (auto-advanced after planning)\n` })
+            this.addMessage({
+              role: 'user',
+              content: [{ type: 'text', text: '[System] Planning phase complete. You are now in the EXECUTION phase. You have access to Edit, Write, and Bash tools. Execute the task step by step.' }],
+            })
+          }
+        }
       }
 
       // Execute tool calls and feed results back
@@ -2139,6 +2261,12 @@ export class ConversationLoop {
 
     // Governance: record tool result
     this.governance.onToolResult(toolName, !result.isError, Date.now() - toolStartMs, result.output)
+
+    // Governance: track read patterns for prediction system
+    const toolFilePath = (toolInput as any).file_path ?? (toolInput as any).path ?? ''
+    if (toolFilePath) {
+      this.governance.trackReadPattern(toolName, toolFilePath)
+    }
 
     // S1 decision journal: log every tool call as a training triple
     const journal = getJournal()

@@ -315,18 +315,61 @@ input[type="range"]:disabled::-webkit-slider-thumb { cursor: not-allowed; }
 .advanced-body { display: none; padding: 14px; border-top: 1px solid #3a3a3a; }
 .advanced-body.open { display: block; }
 
-.tab-bar {
+/* ── Advanced sub-tabs ──────────────────────────────────── */
+.adv-tab-bar {
   display: flex; gap: 4px; margin-bottom: 12px; flex-wrap: wrap;
 }
-.tab-btn {
+.adv-tab-btn {
   padding: 4px 12px; border-radius: 3px; border: 1px solid #3a3a3a;
   background: transparent; color: #808080; cursor: pointer;
   font-family: inherit; font-size: 11px;
 }
-.tab-btn:hover { color: #d4d4d4; border-color: #569cd6; }
-.tab-btn.active { background: #2d3a4a; color: #569cd6; border-color: #569cd6; }
+.adv-tab-btn:hover { color: #d4d4d4; border-color: #569cd6; }
+.adv-tab-btn.active { background: #2d3a4a; color: #569cd6; border-color: #569cd6; }
+.adv-tab-content { display: none; }
+.adv-tab-content.active { display: block; }
+
+/* ── Top-level Tabs ──────────────────────────────────────── */
+.tab-bar {
+  display: flex; gap: 0; background: #1a1a2e; padding: 0 12px;
+  border-bottom: 2px solid #333; margin-bottom: 12px;
+}
+.tab-btn {
+  padding: 8px 20px; background: none; border: none; border-bottom: 2px solid transparent;
+  color: #808080; font-size: 13px; font-weight: 600; cursor: pointer;
+  font-family: 'Cascadia Code', 'Fira Code', monospace; margin-bottom: -2px;
+}
+.tab-btn:hover { color: #d4d4d4; }
+.tab-btn.active { color: #4ec9b0; border-bottom-color: #4ec9b0; }
 .tab-content { display: none; }
 .tab-content.active { display: block; }
+
+/* ── Chat ────────────────────────────────────────────────── */
+.chat-container { display:flex; flex-direction:column; height:calc(100vh - 80px); }
+.chat-header { display:flex; align-items:center; gap:8px; padding:8px 0; border-bottom:1px solid #333; }
+.chat-messages { flex:1; overflow-y:auto; padding:8px 0; }
+.chat-input-area { border-top:1px solid #333; padding:8px 0; display:flex; gap:8px; align-items:flex-end; }
+.chat-input { flex:1; background:#1e1e2e; color:#d4d4d4; border:1px solid #444; border-radius:6px;
+  padding:10px 14px; font-size:13px; font-family:'Cascadia Code','Fira Code',monospace; outline:none;
+  min-height:120px; max-height:300px; resize:vertical; line-height:1.5; }
+.chat-input:focus { border-color:#4ec9b0; }
+.chat-send { background:#264f78; color:#d4d4d4; border:none; padding:12px 20px; border-radius:6px;
+  cursor:pointer; font-size:13px; font-weight:600; height:fit-content; }
+.chat-send:hover { background:#2d5a8a; }
+.chat-msg { margin-bottom:8px; line-height:1.6; }
+.chat-msg-user { color:#808080; }
+.chat-msg-user span { color:#4ec9b0; font-weight:600; }
+.chat-msg-assistant { color:#d4d4d4; white-space:pre-wrap; }
+.chat-thinking { color:#555; font-style:italic; font-size:12px; border-left:2px solid #333;
+  padding-left:8px; margin:4px 0; cursor:pointer; max-height:20px; overflow:hidden; transition:max-height 0.3s; }
+.chat-thinking.expanded { max-height:500px; overflow-y:auto; }
+.chat-tool { background:#252535; border-radius:4px; padding:6px 10px; margin:2px 0;
+  display:flex; align-items:center; gap:6px; font-size:12px; cursor:pointer; }
+.chat-tool-detail { display:none; background:#1a1a2e; border:1px solid #333; border-radius:4px;
+  padding:8px; margin:2px 0 2px 20px; font-size:11px; font-family:monospace; max-height:200px; overflow-y:auto; white-space:pre-wrap; word-break:break-all; }
+.chat-tool-detail.visible { display:block; }
+.cwd-input { background:#1e1e2e; color:#808080; border:1px solid #333; border-radius:4px;
+  padding:4px 8px; font-size:11px; width:300px; font-family:'Cascadia Code',monospace; }
 
 .adv-slider-val { color: #569cd6; }
 
@@ -359,6 +402,32 @@ input[type="range"]:disabled::-webkit-slider-thumb { cursor: not-allowed; }
   <span class="subtitle">Level 4 Visibility &mdash; Local AI Governance</span>
 </div>
 <div id="reconnectBanner" class="reconnect-banner">Reconnecting to engine...</div>
+
+<div class="tab-bar">
+  <button class="tab-btn active" onclick="switchTab('chat')">Chat</button>
+  <button class="tab-btn" onclick="switchTab('governance')">Governance</button>
+  <button class="tab-btn" onclick="switchTab('history')">History</button>
+  <button class="tab-btn" onclick="switchTab('config')">Config</button>
+</div>
+
+<!-- ── Chat Tab ────────────────────────────────────────────── -->
+<div id="tab-chat" class="tab-content active">
+  <div class="chat-container">
+    <div class="chat-header">
+      <label style="color:#808080;font-size:11px;">CWD:</label>
+      <input class="cwd-input" id="chatCwd" value="C:/Users/civer/civkings" placeholder="Working directory">
+    </div>
+    <div class="chat-messages" id="chatMessages"></div>
+    <div class="chat-input-area">
+      <textarea class="chat-input" id="chatInput" placeholder="Type a message... (/plan, /tdd, /debug for workflows)&#10;&#10;Enter to send, Shift+Enter for newline"
+             onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChatMessage()}"></textarea>
+      <button class="chat-send" onclick="sendChatMessage()">Send</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Governance Tab ──────────────────────────────────────── -->
+<div id="tab-governance" class="tab-content">
 
 <!-- ── Monitoring Grid ─────────────────────────────────────── -->
 <div class="grid">
@@ -496,6 +565,39 @@ input[type="range"]:disabled::-webkit-slider-thumb { cursor: not-allowed; }
     </div>
   </div>
 </div>
+</div><!-- /tab-governance -->
+
+<!-- ── History Tab ─────────────────────────────────────────── -->
+<div id="tab-history" class="tab-content">
+
+<!-- ── Session History ──────────────────────────────────────── -->
+<div class="panel" id="historyPanel">
+  <div class="panel-title">Session History</div>
+  <div style="display:flex;gap:8px;margin-bottom:8px;align-items:center;">
+    <select id="sessionSelect" style="flex:1;background:#1e1e2e;color:#d4d4d4;border:1px solid #444;padding:4px 8px;border-radius:4px;font-size:12px;">
+      <option value="">Loading sessions...</option>
+    </select>
+    <button onclick="loadSessionHistory()" style="background:#264f78;color:#d4d4d4;border:none;padding:4px 12px;border-radius:4px;cursor:pointer;font-size:12px;">Load</button>
+  </div>
+  <div id="historyContent" style="font-size:12px;">
+    <div id="sessionSummary" style="margin-bottom:8px;color:#808080;">Select a session to view history</div>
+    <div id="historyChart" style="height:120px;background:#1a1a2e;border-radius:4px;padding:4px;position:relative;overflow:hidden;">
+      <canvas id="histCanvas" style="width:100%;height:100%;"></canvas>
+    </div>
+    <div style="display:flex;gap:16px;margin-top:4px;font-size:11px;color:#808080;">
+      <span><span style="color:#4ec9b0;">&#9632;</span> Tool Success</span>
+      <span><span style="color:#ce9178;">&#9632;</span> Stuck Turns</span>
+      <span><span style="color:#569cd6;">&#9632;</span> Context %</span>
+    </div>
+    <div id="transcriptViewer" style="margin-top:12px;max-height:400px;overflow-y:auto;font-size:11px;background:#1a1a2e;border-radius:4px;padding:8px;">
+      <div style="color:#808080">Select a session and click Load to view transcript</div>
+    </div>
+  </div>
+</div>
+</div><!-- /tab-history -->
+
+<!-- ── Config Tab ──────────────────────────────────────────── -->
+<div id="tab-config" class="tab-content">
 
 <!-- ── Parameter Controls ──────────────────────────────────── -->
 <div class="controls-section">
@@ -580,11 +682,12 @@ input[type="range"]:disabled::-webkit-slider-thumb { cursor: not-allowed; }
       <span class="arrow">&#9654;</span> Advanced Governance Parameters
     </div>
     <div class="advanced-body" id="advBody">
-      <div class="tab-bar" id="advTabBar"></div>
+      <div class="adv-tab-bar" id="advTabBar"></div>
       <div id="advTabContent"></div>
     </div>
   </div>
 </div>
+</div><!-- /tab-config -->
 
 <!-- ── Bottom Bar ──────────────────────────────────────────── -->
 <div class="bottom-bar">
@@ -631,14 +734,9 @@ const MAX_FEED = 50;
 const MAX_DECISIONS = 20;
 
 const HYPOTHESIS_NAMES = {
-  H1: 'Variety Match',
-  H2: 'Homeostat Stability',
-  H3: 'Feedback Setpoint',
-  H4: 'Algedonic Signal',
-  H5: 'S3/S4 Balance',
-  H6: 'Kill Switch',
-  H7: 'Context Budget',
-  H8: 'Tool Success',
+  H1: 'Stuck Escape', H2: 'Nudge Response', H3: 'Contract Completion',
+  H4: 'Read-to-Edit', H5: 'Thinking Efficiency', H6: 'Temperature Effect',
+  H7: 'S4 Reflection ROI', H8: 'Session Improvement',
 };
 
 // ── WebSocket ────────────────────────────────────────────────
@@ -740,6 +838,11 @@ function handleEvent(event) {
       if (state.toolFeed.length > MAX_FEED) state.toolFeed.pop();
       // Ensure tool counters exist
       if (!state.tools[event.toolName]) state.tools[event.toolName] = { success: 0, failure: 0 };
+      // Chat tab: show tool start
+      closeChatThinking();
+      var chatTarget = summarizeInput(event.toolName, event.input);
+      var chatToolId = appendChatTool(event.toolName, chatTarget, 'running', null);
+      chatActiveTools[event.toolId || event.toolName] = { chatId: chatToolId, start: Date.now() };
       break;
     }
 
@@ -757,6 +860,20 @@ function handleEvent(event) {
         }
       }
       state.turnCount++;
+      // Chat tab: update tool status
+      var active = chatActiveTools[event.toolId || event.toolName];
+      if (active) {
+        var chatLat = Date.now() - active.start;
+        var chatRow = document.querySelector('[data-id="' + active.chatId + '"]');
+        if (chatRow) {
+          chatRow.children[0].textContent = event.isError ? '\u2717' : '\u2713';
+          chatRow.children[0].style.color = event.isError ? '#f44747' : '#4ec9b0';
+          chatRow.children[3].textContent = chatLat + 'ms';
+        }
+        var chatDetail = document.getElementById(active.chatId + '-detail');
+        if (chatDetail) chatDetail.textContent = (event.output || '').slice(0, 2000);
+        delete chatActiveTools[event.toolId || event.toolName];
+      }
       break;
     }
 
@@ -774,6 +891,19 @@ function handleEvent(event) {
       break;
     }
 
+    case 's5.decision': {
+      var s5dec = {
+        ts: new Date(),
+        decision: (event.contextAction || 'proceed') + (event.toolRestriction ? ' | tools: ' + event.toolRestriction : ''),
+        agentId: 'S5',
+        reason: event.reasoning || '',
+      };
+      state.s5Decisions.unshift(s5dec);
+      if (state.s5Decisions.length > MAX_DECISIONS) state.s5Decisions.pop();
+      renderS5();
+      break;
+    }
+
     case 'config.current':
       state.config = event.config;
       syncConfigToSliders(event.config);
@@ -783,8 +913,33 @@ function handleEvent(event) {
       // Response to our POST; clear applied changes
       break;
 
+    case 'stream.thinking':
+      appendChatThinking(event.text || '');
+      break;
+
+    case 'stream.token':
+      // Chat tab: stream assistant text
+      if (event.text) {
+        var msgs = document.getElementById('chatMessages');
+        if (msgs) {
+          var lastEl = msgs.lastElementChild;
+          if (lastEl && lastEl.classList.contains('chat-msg-assistant')) {
+            lastEl.textContent += event.text;
+          } else {
+            closeChatThinking();
+            var div = document.createElement('div');
+            div.className = 'chat-msg chat-msg-assistant';
+            div.textContent = event.text;
+            msgs.appendChild(div);
+          }
+          msgs.scrollTop = msgs.scrollHeight;
+        }
+      }
+      break;
+
     case 'message.complete':
       state.turnCount++;
+      closeChatThinking();
       break;
 
     case 'control.signals':
@@ -867,6 +1022,18 @@ function renderContext() {
   var bar = document.getElementById('ctxBar');
   var text = document.getElementById('ctxText');
   var badge = document.getElementById('ctxAction');
+
+  // Tok/s display — always render regardless of context state
+  var tps = state.governance && state.governance.tokPerSec != null ? state.governance.tokPerSec : 0;
+  var tpsDisplay = tps > 0 ? tps.toFixed(1) + ' tok/s' : '--';
+  var tpsBadge = document.getElementById('tpsBadge');
+  if (!tpsBadge) {
+    tpsBadge = document.createElement('span');
+    tpsBadge.id = 'tpsBadge';
+    tpsBadge.style.cssText = 'margin-left:8px;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:600;background:#1e1e2e;color:#dcdcaa;border:1px solid #444;';
+    badge.parentNode.insertBefore(tpsBadge, badge.nextSibling);
+  }
+  tpsBadge.textContent = tpsDisplay;
 
   if (!state.context) {
     bar.style.width = '0%';
@@ -1132,9 +1299,12 @@ function renderPredictions() {
       var nullPct = Math.round(stat.nullBaselineRate * 100);
       var diff = pct - nullPct;
       var cls = stat.significantlyBetter ? 'pred-above' : (pct < nullPct ? 'pred-below' : 'pred-none');
-      // Verdict: is the hypothesis performing better than random?
-      var verdict = stat.significantlyBetter ? '\u2714 proven' : (stat.total < 5 ? 'need more data' : (pct >= nullPct ? 'promising' : '\u2716 worse than null'));
-      var verdictCls = stat.significantlyBetter ? 'pred-above' : (pct < nullPct ? 'pred-below' : 'pred-none');
+      // Verdict: require minimum 10 samples before drawing conclusions
+      var verdict = stat.total < 10 ? 'need more data'
+        : stat.significantlyBetter ? 'better than null'
+        : 'worse than null';
+      var verdictClass = stat.total < 10 ? '' : stat.significantlyBetter ? 'green' : 'red';
+      var verdictCls = stat.total < 10 ? 'pred-none' : stat.significantlyBetter ? 'pred-above' : 'pred-below';
       html += '<tr title="' + escHtml(name) + ': ' + pct + '% hit rate vs ' + nullPct + '% null baseline (' + (diff >= 0 ? '+' : '') + diff + '%). ' + verdict + '">' +
         '<td>' + id + '</td>' +
         '<td>' + escHtml(name) + '</td>' +
@@ -1369,15 +1539,15 @@ function buildAdvancedTabs() {
   for (var i = 0; i < systems.length; i++) {
     var sys = systems[i];
     var btn = document.createElement('button');
-    btn.className = 'tab-btn' + (i === 0 ? ' active' : '');
+    btn.className = 'adv-tab-btn' + (i === 0 ? ' active' : '');
     btn.textContent = sys.charAt(0).toUpperCase() + sys.slice(1);
-    btn.setAttribute('data-tab', sys);
-    btn.onclick = function() { switchTab(this.getAttribute('data-tab')); };
+    btn.setAttribute('data-adv-tab', sys);
+    btn.onclick = function() { switchAdvTab(this.getAttribute('data-adv-tab')); };
     tabBar.appendChild(btn);
 
     var div = document.createElement('div');
-    div.className = 'tab-content' + (i === 0 ? ' active' : '');
-    div.id = 'tab-' + sys;
+    div.className = 'adv-tab-content' + (i === 0 ? ' active' : '');
+    div.id = 'adv-tab-' + sys;
     content.appendChild(div);
   }
 
@@ -1389,7 +1559,7 @@ function renderAdvancedSliders() {
 
   for (var s = 0; s < systems.length; s++) {
     var sys = systems[s];
-    var div = document.getElementById('tab-' + sys);
+    var div = document.getElementById('adv-tab-' + sys);
     if (!div) continue;
 
     var params = state.paramMeta.filter(function(p) { return p.system === sys; });
@@ -1438,14 +1608,14 @@ function renderAdvancedSliders() {
   }
 }
 
-function switchTab(tabName) {
-  var btns = document.querySelectorAll('.tab-btn');
+function switchAdvTab(tabName) {
+  var btns = document.querySelectorAll('#advTabBar .adv-tab-btn');
   for (var i = 0; i < btns.length; i++) {
-    btns[i].classList.toggle('active', btns[i].getAttribute('data-tab') === tabName);
+    btns[i].classList.toggle('active', btns[i].getAttribute('data-adv-tab') === tabName);
   }
-  var tabs = document.querySelectorAll('.tab-content');
+  var tabs = document.querySelectorAll('#advTabContent .adv-tab-content');
   for (var j = 0; j < tabs.length; j++) {
-    tabs[j].classList.toggle('active', tabs[j].id === 'tab-' + tabName);
+    tabs[j].classList.toggle('active', tabs[j].id === 'adv-tab-' + tabName);
   }
 }
 
@@ -1683,10 +1853,14 @@ function fetchSessionState() {
     })
     .catch(function() {});
 
-  // Also hydrate governance, predictions, contracts
-  fetch('/api/governance').then(function(r) { return r.json(); }).then(function(data) {
-    if (data && data.status) { state.governance = data; render(); }
-  }).catch(function() {});
+  // Hydrate + poll governance every 3 seconds (tok/s, stuck, health)
+  function pollGovernance() {
+    fetch('/api/governance').then(function(r) { return r.json(); }).then(function(data) {
+      if (data && data.status) { state.governance = data; render(); }
+    }).catch(function() {});
+  }
+  pollGovernance();
+  setInterval(pollGovernance, 3000);
 
   fetchPredictions();
   fetchContracts();
@@ -1703,8 +1877,9 @@ function fetchSessionState() {
     }
   }).catch(function() {});
 
-  // Hydrate training data stats
+  // Hydrate + poll training data every 30 seconds
   fetchTrainingData();
+  setInterval(fetchTrainingData, 30000);
 }
 
 function fetchParams() {
@@ -1760,6 +1935,217 @@ startSessionTimer();
 standaloneTimeout = setTimeout(function() {
   if (!state.sessionActive) enterStandaloneMode();
 }, 2000);
+// ── Session History ────────────────────────────────────────
+function fetchSessions() {
+  fetch('/api/sessions').then(function(r) { return r.json(); }).then(function(sessions) {
+    var sel = document.getElementById('sessionSelect');
+    if (!sessions || !sessions.length) {
+      sel.innerHTML = '<option value="">No sessions found</option>';
+      return;
+    }
+    sel.innerHTML = '';
+    sessions.forEach(function(s) {
+      var opt = document.createElement('option');
+      opt.value = s.sessionId;
+      var label = s.sessionId.slice(0, 12) + ' | ' + s.outcome + ' | ' + s.totalTurns + ' turns | ' + Math.round(s.toolSuccessRate * 100) + '% success';
+      opt.textContent = label;
+      sel.appendChild(opt);
+    });
+  }).catch(function() {});
+}
+
+function loadSessionHistory() {
+  var sel = document.getElementById('sessionSelect');
+  var sid = sel.value;
+  if (!sid) return;
+
+  // Show summary
+  var opt = sel.options[sel.selectedIndex];
+  document.getElementById('sessionSummary').textContent = opt.textContent;
+
+  // Fetch measurements
+  fetch('/api/sessions/' + sid + '/measurements').then(function(r) { return r.json(); }).then(function(data) {
+    if (!data || !data.length) {
+      document.getElementById('sessionSummary').textContent += ' (no measurements)';
+      return;
+    }
+    drawHistoryChart(data);
+  }).catch(function() {});
+
+  // Also load transcript
+  loadSessionTranscript();
+}
+
+function drawHistoryChart(measurements) {
+  var canvas = document.getElementById('histCanvas');
+  var ctx = canvas.getContext('2d');
+  var w = canvas.parentElement.clientWidth - 8;
+  var h = canvas.parentElement.clientHeight - 8;
+  canvas.width = w;
+  canvas.height = h;
+  ctx.clearRect(0, 0, w, h);
+
+  var n = measurements.length;
+  if (n === 0) return;
+
+  var xStep = w / Math.max(n - 1, 1);
+
+  // Tool success rate (green, 0-1 scaled to 0-h)
+  ctx.strokeStyle = '#4ec9b0';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  for (var i = 0; i < n; i++) {
+    var y = h - (1 - measurements[i].toolErrorRate) * h;
+    if (i === 0) ctx.moveTo(0, y); else ctx.lineTo(i * xStep, y);
+  }
+  ctx.stroke();
+
+  // Stuck turns (orange, 0-15 scaled to 0-h)
+  ctx.strokeStyle = '#ce9178';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  for (var i = 0; i < n; i++) {
+    var y = h - (measurements[i].stuckTurns / 15) * h;
+    if (i === 0) ctx.moveTo(0, y); else ctx.lineTo(i * xStep, y);
+  }
+  ctx.stroke();
+
+  // Context utilization (blue, 0-1 scaled to 0-h)
+  ctx.strokeStyle = '#569cd6';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  for (var i = 0; i < n; i++) {
+    var y = h - measurements[i].contextUtilization * h;
+    if (i === 0) ctx.moveTo(0, y); else ctx.lineTo(i * xStep, y);
+  }
+  ctx.stroke();
+}
+
+// Load sessions on startup
+fetchSessions();
+
+// ── Tab Switching ─────────────────────────────────────────
+function switchTab(name) {
+  var tabs = document.querySelectorAll('.tab-content');
+  var btns = document.querySelectorAll('.tab-bar > .tab-btn');
+  for (var i = 0; i < tabs.length; i++) tabs[i].classList.remove('active');
+  for (var i = 0; i < btns.length; i++) btns[i].classList.remove('active');
+  var el = document.getElementById('tab-' + name);
+  if (el) el.classList.add('active');
+  for (var i = 0; i < btns.length; i++) {
+    if (btns[i].textContent.trim().toLowerCase() === name) btns[i].classList.add('active');
+  }
+}
+
+// ── Chat ──────────────────────────────────────────────────
+var chatActiveTools = {};
+
+function sendChatMessage() {
+  var input = document.getElementById('chatInput');
+  var cwd = document.getElementById('chatCwd').value.trim();
+  var text = input.value.trim();
+  if (!text) return;
+  input.value = '';
+
+  if (text.startsWith('/')) {
+    var parts = text.split(' ');
+    var cmd = parts[0];
+    var args = parts.slice(1).join(' ');
+    if (['/plan','/tdd','/debug','/cancel','/brainstorm','/critique','/review','/research'].indexOf(cmd) >= 0) {
+      if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'command', command: cmd, args: args }));
+      appendChatMsg('system', 'Sent command: ' + cmd + (args ? ' ' + args : ''));
+      return;
+    }
+  }
+
+  if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'user.message', text: text, cwd: cwd }));
+  appendChatMsg('user', text);
+}
+
+function appendChatMsg(role, text) {
+  var el = document.getElementById('chatMessages');
+  var div = document.createElement('div');
+  div.className = 'chat-msg chat-msg-' + role;
+  if (role === 'user') {
+    div.innerHTML = '<span>you</span> ' + escHtml(text);
+  } else if (role === 'system') {
+    div.style.color = '#808080';
+    div.style.fontStyle = 'italic';
+    div.textContent = text;
+  } else {
+    div.textContent = text;
+  }
+  el.appendChild(div);
+  el.scrollTop = el.scrollHeight;
+}
+
+function appendChatTool(toolName, target, status, latency) {
+  var el = document.getElementById('chatMessages');
+  var id = 'ct-' + Date.now() + '-' + Math.random().toString(36).slice(2,6);
+  var icon = status === 'success' ? '\u2713' : status === 'error' ? '\u2717' : '\u25cc';
+  var iconColor = status === 'success' ? '#4ec9b0' : status === 'error' ? '#f44747' : '#dcdcaa';
+  var toolColors = {Read:'#569cd6',Edit:'#dcdcaa',Write:'#dcdcaa',Bash:'#ce9178',Grep:'#569cd6',Glob:'#569cd6',Git:'#ce9178'};
+  var toolColor = toolColors[toolName] || '#808080';
+  var lat = latency ? latency + 'ms' : '';
+
+  var row = document.createElement('div');
+  row.className = 'chat-tool';
+  row.dataset.id = id;
+  row.innerHTML = '<span style="color:' + iconColor + '">' + icon + '</span>' +
+    '<span style="color:' + toolColor + ';font-weight:600">' + escHtml(toolName) + '</span>' +
+    '<span style="color:#808080;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escHtml(target) + '</span>' +
+    '<span style="color:#808080;font-size:10px">' + lat + '</span>' +
+    '<span style="color:#555">\u25bc</span>';
+  row.onclick = function() {
+    var d = document.getElementById(id + '-detail');
+    if (d) d.classList.toggle('visible');
+  };
+  el.appendChild(row);
+
+  var detail = document.createElement('div');
+  detail.className = 'chat-tool-detail';
+  detail.id = id + '-detail';
+  el.appendChild(detail);
+  el.scrollTop = el.scrollHeight;
+  return id;
+}
+
+function appendChatThinking(text) {
+  var el = document.getElementById('chatMessages');
+  var existing = el.querySelector('.chat-thinking:last-child');
+  if (existing && !existing.dataset.closed) {
+    existing.textContent += text;
+  } else {
+    var div = document.createElement('div');
+    div.className = 'chat-thinking';
+    div.textContent = text;
+    div.onclick = function() { this.classList.toggle('expanded'); };
+    el.appendChild(div);
+  }
+  el.scrollTop = el.scrollHeight;
+}
+
+function closeChatThinking() {
+  var el = document.getElementById('chatMessages');
+  var all = el.querySelectorAll('.chat-thinking');
+  for (var i = 0; i < all.length; i++) all[i].dataset.closed = 'true';
+}
+
+// ── Session Transcript ────────────────────────────────────
+function loadSessionTranscript() {
+  var sid = document.getElementById('sessionSelect').value;
+  if (!sid) return;
+  fetch('/api/sessions/' + sid + '/transcript').then(function(r) { return r.json(); }).then(function(entries) {
+    var el = document.getElementById('transcriptViewer');
+    if (!entries.length) { el.innerHTML = '<div style="color:#808080">No transcript data</div>'; return; }
+    var html = '';
+    entries.forEach(function(e) {
+      if (e.role === 'user') html += '<div style="color:#4ec9b0;margin-bottom:4px"><b>user:</b> ' + escHtml((e.content && e.content[0] && e.content[0].text || '').slice(0, 300)) + '</div>';
+      else if (e.role === 'assistant') html += '<div style="color:#d4d4d4;margin-bottom:4px"><b>assistant:</b> ' + escHtml((e.content && e.content[0] && e.content[0].text || '').slice(0, 300)) + '</div>';
+    });
+    el.innerHTML = html || '<div style="color:#808080">No messages found</div>';
+  }).catch(function() {});
+}
 </script>
 </body>
 </html>

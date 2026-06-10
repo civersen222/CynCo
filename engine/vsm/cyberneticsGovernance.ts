@@ -140,6 +140,16 @@ export class CyberneticsGovernance {
   private lastResponses: string[] = []
   private lastToolSignatures: string[] = []
   private currentTaskComplexity = 1
+  private _workflowReadOnlyPhase = false
+  private _toolsRestricted = false
+  private _nudgeInjectedThisTurn = false
+  private _temperatureLoweredThisTurn = false
+  private _contractCreatedThisTurn = false
+  private _consecutiveReadsSameFile = 0
+  private _lastReadFile = ''
+  private _thinkingTokensLastTurn = 0
+  private _s4ReflectionRanThisTurn = false
+  private _lastTokPerSec = 0
   private lastVarietyRatio = 1.0
   private consecutiveUnstableCount = 0
   private varietyAttenuators: InstanceType<typeof variety.Attenuator>[]
@@ -330,8 +340,25 @@ export class CyberneticsGovernance {
     response: string
     userMessage?: string
   }): void {
+    // ── Consume-on-read: snapshot + clear all per-turn flags in one place, ───
+    // before any early return, so flags are never carried across turns
+    // regardless of governance state.  Using local variables means the
+    // prediction tracker always sees what was set during this turn.
+    const nudgeInjected = this._nudgeInjectedThisTurn
+    this._nudgeInjectedThisTurn = false
+    const temperatureLowered = this._temperatureLoweredThisTurn
+    this._temperatureLoweredThisTurn = false
+    const contractCreated = this._contractCreatedThisTurn
+    this._contractCreatedThisTurn = false
+    const thinkingTokensAmount = this._thinkingTokensLastTurn
+    this._thinkingTokensLastTurn = 0
+    const s4ReflectionRan = this._s4ReflectionRanThisTurn
+    this._s4ReflectionRanThisTurn = false
+
     this.turnCount++
-    if (this._ablated || this._paused) return // Skip all governance when ablated or paused
+    if (this._ablated || this._paused) {
+      return
+    }
 
     // S4: Classify task complexity from user message
     if (metrics.userMessage) {
@@ -459,16 +486,19 @@ export class CyberneticsGovernance {
     }
 
     // Stuck detection: check BOTH response text AND tool signatures
+    // Skip stuck detection during workflow read-only phases — reading IS the expected behavior
     this.lastResponses.push(metrics.response?.slice(0, 100) ?? '')
     if (this.lastResponses.length > 5) this.lastResponses = this.lastResponses.slice(-5)
-    const uniqueResponses = new Set(this.lastResponses).size
-    const uniqueToolSigs = new Set(this.lastToolSignatures).size
-    const responseStuck = this.lastResponses.length >= 3 && uniqueResponses === 1
-    const toolStuck = this.lastToolSignatures.length >= 3 && uniqueToolSigs === 1
-    if (responseStuck || toolStuck) {
-      this.stuckCount++
-    } else {
-      this.stuckCount = Math.max(0, this.stuckCount - 1)
+    if (!this._workflowReadOnlyPhase) {
+      const uniqueResponses = new Set(this.lastResponses).size
+      const uniqueToolSigs = new Set(this.lastToolSignatures).size
+      const responseStuck = this.lastResponses.length >= 3 && uniqueResponses === 1
+      const toolStuck = this.lastToolSignatures.length >= 3 && uniqueToolSigs === 1
+      if (responseStuck || toolStuck) {
+        this.stuckCount++
+      } else {
+        this.stuckCount = Math.max(0, this.stuckCount - 1)
+      }
     }
 
     // Persist measurement to SQLite for cross-session learning
@@ -508,12 +538,23 @@ export class CyberneticsGovernance {
     }
 
     // Prediction tracking — check triggers and evaluate
-    const toolResults = this.toolHistory.slice(-10).map(t => ({ tool: t.name, success: t.success }))
     const report = this.getReport()
-    this._predictionTracker.checkTriggers(this.turnCount, report, toolResults)
-    // Extended triggers: heterarchy shifts and observer divergence
-    this._predictionTracker.checkExtendedTriggers(this.turnCount, report, heterarchyShifted, this.stuckCount >= 3)
-    this._predictionTracker.evaluateOpen(this.turnCount, report, toolResults)
+    this._predictionTracker.checkTriggers(this.turnCount, {
+      stuckTurns: this.stuckCount,
+      toolsRestricted: this._toolsRestricted,
+      nudgeInjected: nudgeInjected,
+      temperatureLowered: temperatureLowered,
+      recentTools: this.lastToolSignatures.slice(-5),
+    })
+
+    this._predictionTracker.checkExtendedTriggers(this.turnCount, {
+      contractCreated: contractCreated,
+      consecutiveReadsSameFile: this._consecutiveReadsSameFile,
+      thinkingTokensLastTurn: thinkingTokensAmount,
+      s4ReflectionRan: s4ReflectionRan,
+    })
+
+    this._predictionTracker.evaluateOpen(this.turnCount, report, this.lastToolSignatures)
   }
 
   onModelError(error: string): void {
@@ -604,6 +645,18 @@ export class CyberneticsGovernance {
       observerDivergence: this.lastObserverDivergence,
       axiomHealth: this.lastAxiomHealth,
       recentToolNames: this.getRecentToolNames(),
+      tokPerSec: this._lastTokPerSec,
+    }
+  }
+
+  /** Update tok/s from model calls. Uses exponential moving average to smooth out turn-to-turn variation. Only updates when there were actual output tokens. */
+  setTokPerSec(tps: number, tokenCount: number): void {
+    if (tokenCount > 0 && tps > 0) {
+      if (this._lastTokPerSec === 0) {
+        this._lastTokPerSec = tps // first measurement
+      } else {
+        this._lastTokPerSec = Math.round((this._lastTokPerSec * 0.7 + tps * 0.3) * 10) / 10 // EMA
+      }
     }
   }
 
@@ -856,6 +909,37 @@ export class CyberneticsGovernance {
     this.stuckCount = 0
     this.lastToolSignatures = []
     console.log('[vsm] Stuck counter reset (new user message)')
+  }
+
+  /** Tell governance whether a workflow read-only phase is active.
+   *  When true, read-only tool usage is expected and should NOT trigger stuck detection. */
+  setWorkflowReadOnlyPhase(active: boolean): void {
+    this._workflowReadOnlyPhase = active
+    if (active) {
+      this.stuckCount = 0 // Reset on phase entry
+      console.log('[vsm] Workflow read-only phase active — stuck detection paused')
+    } else {
+      console.log('[vsm] Workflow read-only phase ended — stuck detection resumed')
+    }
+  }
+
+  setToolsRestricted(restricted: boolean): void { this._toolsRestricted = restricted }
+  markNudgeInjected(): void { this._nudgeInjectedThisTurn = true }
+  markTemperatureLowered(): void { this._temperatureLoweredThisTurn = true }
+  setContractCreated(): void { this._contractCreatedThisTurn = true }
+  setThinkingTokens(count: number): void { this._thinkingTokensLastTurn = count }
+  setS4ReflectionRan(): void { this._s4ReflectionRanThisTurn = true }
+
+  trackReadPattern(toolName: string, filePath: string): void {
+    if (toolName === 'Read' && filePath === this._lastReadFile) {
+      this._consecutiveReadsSameFile++
+    } else if (toolName === 'Read') {
+      this._lastReadFile = filePath
+      this._consecutiveReadsSameFile = 1
+    } else {
+      this._consecutiveReadsSameFile = 0
+      this._lastReadFile = ''
+    }
   }
 
   getRecentToolNames(): string[] {

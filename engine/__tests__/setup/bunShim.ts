@@ -9,10 +9,12 @@
  */
 
 import * as http from 'http'
+import { spawn as nodeSpawn } from 'child_process'
 import { WebSocketServer, WebSocket as WsWebSocket } from 'ws'
 
 interface BunWSServerOptions {
   port: number
+  hostname?: string
   fetch: (req: Request, server: BunServerLike) => Promise<Response | undefined> | Response | undefined
   websocket?: {
     open?: (ws: BunWS) => void
@@ -24,6 +26,7 @@ interface BunWSServerOptions {
 interface BunServerLike {
   upgrade: (req: Request, extra?: any) => boolean
   stop: (force?: boolean) => void
+  hostname?: string
 }
 
 interface BunWS {
@@ -58,10 +61,14 @@ function makeBunServe(options: BunWSServerOptions): BunServerLike {
       body: body && body.length > 0 ? body : undefined,
     })
 
-    // Provide upgrade function — marks this request for WS upgrade
+    // Provide upgrade function — marks this request for WS upgrade.
+    // Like real Bun, upgrade() fails for plain HTTP requests; real WS
+    // handshakes never reach this handler (ws handles the 'upgrade' event).
     let upgradeRequested = false
+    const isWsUpgrade = (req.headers['upgrade'] ?? '').toLowerCase() === 'websocket'
     const serverLike: BunServerLike = {
       upgrade: (_req: Request) => {
+        if (!isWsUpgrade) return false
         upgradeRequested = true
         return true
       },
@@ -117,9 +124,11 @@ function makeBunServe(options: BunWSServerOptions): BunServerLike {
     })
   })
 
-  httpServer.listen(options.port)
+  const bindHost = options.hostname ?? '0.0.0.0'
+  httpServer.listen(options.port, bindHost)
 
   return {
+    hostname: bindHost,
     upgrade: () => false,
     stop: () => {
       wss.close()
@@ -128,9 +137,53 @@ function makeBunServe(options: BunWSServerOptions): BunServerLike {
   }
 }
 
+/** Minimal Bun.spawn shim for vitest: spawns a real child process. */
+function makeBunSpawn(
+  cmd: string[],
+  options: { cwd?: string; stdout?: string; stderr?: string }
+) {
+  let exitResolve: (code: number) => void
+  const exitedPromise = new Promise<number>(resolve => { exitResolve = resolve })
+
+  const chunks: { stdout: Buffer[]; stderr: Buffer[] } = { stdout: [], stderr: [] }
+
+  const child = nodeSpawn(cmd[0], cmd.slice(1), {
+    cwd: options.cwd,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    shell: false,
+  })
+
+  child.stdout?.on('data', (d: Buffer) => chunks.stdout.push(d))
+  child.stderr?.on('data', (d: Buffer) => chunks.stderr.push(d))
+  child.on('close', (code: number | null) => exitResolve!(code ?? 0))
+  child.on('error', () => exitResolve!(1))
+
+  const makeStream = (bufs: Buffer[]) =>
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        // Data may not have arrived yet — resolve after process exits
+        exitedPromise.then(() => {
+          const data = Buffer.concat(bufs)
+          if (data.length > 0) controller.enqueue(data)
+          controller.close()
+        })
+      },
+    })
+
+  return {
+    get stdout() { return makeStream(chunks.stdout) },
+    get stderr() { return makeStream(chunks.stderr) },
+    get exitCode() { return child.exitCode },
+    exited: exitedPromise,
+  }
+}
+
 // Install global Bun shim if not already defined (i.e. running under vitest)
 if (typeof globalThis.Bun === 'undefined') {
   ;(globalThis as any).Bun = {
     serve: makeBunServe,
+    spawn: makeBunSpawn,
   }
+} else if (typeof (globalThis as any).Bun.spawn === 'undefined') {
+  ;(globalThis as any).Bun.spawn = makeBunSpawn
 }
