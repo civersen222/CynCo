@@ -538,6 +538,10 @@ export class CyberneticsGovernance {
     })
 
     this._predictionTracker.evaluateOpen(this.turnCount, report, this.lastToolSignatures)
+
+    // Clear the contract flag NOW — after the prediction tracker has read it.
+    // (resetTurnFlags() intentionally leaves this set so it survives into onTurnComplete.)
+    this._contractCreatedThisTurn = false
   }
 
   onModelError(error: string): void {
@@ -916,7 +920,9 @@ export class CyberneticsGovernance {
   resetTurnFlags(): void {
     this._nudgeInjectedThisTurn = false
     this._temperatureLoweredThisTurn = false
-    this._contractCreatedThisTurn = false
+    // NOTE: _contractCreatedThisTurn is intentionally NOT cleared here.
+    // It must survive until onTurnComplete() reads it via checkExtendedTriggers()
+    // so that H3 can open. It is cleared at the end of onTurnComplete() instead.
     this._thinkingTokensLastTurn = 0
     this._s4ReflectionRanThisTurn = false
   }
