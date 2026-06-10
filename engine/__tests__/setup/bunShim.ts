@@ -61,10 +61,14 @@ function makeBunServe(options: BunWSServerOptions): BunServerLike {
       body: body && body.length > 0 ? body : undefined,
     })
 
-    // Provide upgrade function — marks this request for WS upgrade
+    // Provide upgrade function — marks this request for WS upgrade.
+    // Like real Bun, upgrade() fails for plain HTTP requests; real WS
+    // handshakes never reach this handler (ws handles the 'upgrade' event).
     let upgradeRequested = false
+    const isWsUpgrade = (req.headers['upgrade'] ?? '').toLowerCase() === 'websocket'
     const serverLike: BunServerLike = {
       upgrade: (_req: Request) => {
+        if (!isWsUpgrade) return false
         upgradeRequested = true
         return true
       },

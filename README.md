@@ -312,6 +312,7 @@ All config via environment variables. No config files required.
 | `LOCALCODE_SEARXNG_URL` | — | SearXNG instance URL for research |
 | `LOCALCODE_S5_MODEL` | — | Fine-tuned S5 model (when available) |
 | `LOCALCODE_DASHBOARD_HOST` | `127.0.0.1` | Dashboard bind address (set to `0.0.0.0` to expose on network) |
+| `LOCALCODE_BRIDGE_HOST` | `127.0.0.1` | TUI WebSocket bridge bind address (set to `0.0.0.0` to expose on network) |
 | `LOCALCODE_CACHE_RAM` | `0` | llama-server KV cache RAM (MB). Default 0 is optimal for Qwen3.6 SWA (cache invalidated every call). Set to `2048` for non-SWA models (Llama/Mistral/Phi) to enable KV prefix reuse. |
 | `LOCALCODE_REASONING_BUDGET` | `256` | llama-server reasoning token budget. >256 hurts tool-call accuracy; uncapped thinking wastes minutes. Raise if your model needs more deliberation. |
 

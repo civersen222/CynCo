@@ -17,17 +17,22 @@ export class LocalCodeWSServer {
   private server: any = null
   private client: any = null
   private _port: number
+  private _hostname: string
   private _connected = false
   private onCommand: ((command: TUICommand) => void) | undefined
 
   constructor(options: WSServerOptions) {
     this._port = options.port
+    // Bind loopback only by default — the bridge carries full conversation
+    // and tool traffic and must not be exposed on the network.
+    this._hostname = process.env.LOCALCODE_BRIDGE_HOST || '127.0.0.1'
     this.onCommand = options.onCommand
     this.start()
   }
 
   get port(): number { return this._port }
   get connected(): boolean { return this._connected }
+  getHostname(): string { return this._hostname }
 
   private start() {
     // Try the requested port, then fall back to +1, +2 if it's stuck in TIME_WAIT/CLOSE_WAIT
@@ -37,6 +42,7 @@ export class LocalCodeWSServer {
       try {
         this.server = Bun.serve({
           port,
+          hostname: this._hostname,
           fetch(req, server) {
             const success = server.upgrade(req)
             if (success) return undefined
