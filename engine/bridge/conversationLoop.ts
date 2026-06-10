@@ -1281,7 +1281,6 @@ export class ConversationLoop {
       const lastRole = lastMsg?.role ?? 'none'
       const lastType = lastMsg?.content?.[0]?.type ?? 'empty'
       console.log(`[loop] Model call iteration ${i + 1} | messages: ${this.messages.length} | last: ${lastRole}/${lastType}`)
-      this.governance.resetTurnFlags()
 
       // S4 Reflector: periodic model self-report
       // For llama-cpp, throttle to every 10th iteration (each reflection costs 6s prompt eval)

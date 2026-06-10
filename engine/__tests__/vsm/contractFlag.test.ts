@@ -12,11 +12,10 @@ const turn = (userMessage = 'test') => ({
 })
 
 describe('H3 contract flag lifecycle', () => {
-  test('contract created flag persists through resetTurnFlags() so onTurnComplete can open H3', () => {
+  test('contract created flag set then onTurnComplete opens H3', () => {
     const governance = new CyberneticsGovernance()
 
     governance.setContractCreated()
-    governance.resetTurnFlags() // no-op — all flags consumed at top of onTurnComplete()
 
     governance.onTurnComplete({
       toolsCalled: 0,
@@ -39,22 +38,19 @@ describe('H3 contract flag lifecycle', () => {
     governance.setContractCreated()
     governance.onTurnComplete(turn('first turn'))
 
-    // Turns 2 – 21: no contract created, but stay inside the dedup window — the dedup
-    // guard keeps blocking a second H3 open.  We need turn >= 21 to escape the window.
+    // Turns 2 – 21: no contract created.  Dedup guard blocks while turn < 1+20=21,
+    // so turns 2-20 are inside the window; turn 21 is the first outside it.
     // Run 20 more turns (total turn count will reach 21) without ever setting the flag.
     for (let i = 0; i < 20; i++) {
-      governance.resetTurnFlags()
       governance.onTurnComplete(turn(`turn ${i + 2}`))
     }
 
     // At this point we are at turnCount = 21.  The original H3 evaluation window has
     // expired (triggerTurn=1, window=20 → guard blocks while turn < 1+20=21, so at
     // turn 21 the guard no longer blocks).  If _contractCreatedThisTurn had leaked
-    // (i.e. the flag was never cleared after turn 1) AND the logic used the stored
-    // value, a second H3 would open here.
+    // (i.e. the flag was never cleared after turn 1) a second H3 would open here.
     //
     // Run one more turn without setting the flag.
-    governance.resetTurnFlags()
     governance.onTurnComplete(turn('turn 22 — must not open a second H3'))
 
     const tracker = governance.getPredictionTracker()
@@ -87,7 +83,6 @@ describe('H3 contract flag lifecycle', () => {
     governance.resume()
 
     // Run a normal turn — no contract created, no flag set.
-    governance.resetTurnFlags()
     governance.onTurnComplete(turn('first active turn after resume'))
 
     const tracker = governance.getPredictionTracker()

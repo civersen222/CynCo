@@ -340,17 +340,20 @@ export class CyberneticsGovernance {
     response: string
     userMessage?: string
   }): void {
-    // ── Consume-on-read: snapshot + clear all per-turn flags atomically ──────
-    // Do this BEFORE the ablated/paused early return so that flags are never
-    // carried across turns regardless of governance state.  Using local
-    // variables means the prediction tracker always sees what was set during
-    // this turn, even when resetTurnFlags() already ran (which it does at the
-    // start of each loop iteration in conversationLoop).
-    const nudgeInjected        = this._nudgeInjectedThisTurn;     this._nudgeInjectedThisTurn        = false
-    const temperatureLowered   = this._temperatureLoweredThisTurn; this._temperatureLoweredThisTurn   = false
-    const contractCreated      = this._contractCreatedThisTurn;    this._contractCreatedThisTurn      = false
-    const thinkingTokensAmount = this._thinkingTokensLastTurn;     this._thinkingTokensLastTurn       = 0
-    const s4ReflectionRan      = this._s4ReflectionRanThisTurn;    this._s4ReflectionRanThisTurn      = false
+    // ── Consume-on-read: snapshot + clear all per-turn flags in one place, ───
+    // before any early return, so flags are never carried across turns
+    // regardless of governance state.  Using local variables means the
+    // prediction tracker always sees what was set during this turn.
+    const nudgeInjected = this._nudgeInjectedThisTurn
+    this._nudgeInjectedThisTurn = false
+    const temperatureLowered = this._temperatureLoweredThisTurn
+    this._temperatureLoweredThisTurn = false
+    const contractCreated = this._contractCreatedThisTurn
+    this._contractCreatedThisTurn = false
+    const thinkingTokensAmount = this._thinkingTokensLastTurn
+    this._thinkingTokensLastTurn = 0
+    const s4ReflectionRan = this._s4ReflectionRanThisTurn
+    this._s4ReflectionRanThisTurn = false
 
     this.turnCount++
     if (this._ablated || this._paused) {
@@ -926,13 +929,6 @@ export class CyberneticsGovernance {
   setContractCreated(): void { this._contractCreatedThisTurn = true }
   setThinkingTokens(count: number): void { this._thinkingTokensLastTurn = count }
   setS4ReflectionRan(): void { this._s4ReflectionRanThisTurn = true }
-
-  resetTurnFlags(): void {
-    // All per-turn flags are now consumed at the top of onTurnComplete() via
-    // the consume-on-read pattern (snapshot + clear before ablated/paused early
-    // return).  Nothing remains to clear here; the method is kept for call-site
-    // compatibility.
-  }
 
   trackReadPattern(toolName: string, filePath: string): void {
     if (toolName === 'Read' && filePath === this._lastReadFile) {
