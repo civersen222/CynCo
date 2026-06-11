@@ -215,6 +215,23 @@ if (config.provider === 'llama-cpp') {
 }
 
 console.log(`[localcode] Context budget: ${contextLength} tokens`)
+
+// ─── One-shot mode (daemon-scheduled task; no WS server, no TUI) ──
+const runTaskIdx = process.argv.indexOf('--run-task')
+if (runTaskIdx !== -1) {
+  const taskFilePath = process.argv[runTaskIdx + 1]
+  if (!taskFilePath) {
+    console.error('[one-shot] --run-task requires a task file path')
+    process.exit(1)
+  }
+  const { runOneShotTask } = await import('./daemon/oneShot.js')
+  const exitCode = await runOneShotTask(taskFilePath, provider, config)
+  // process.exit() skips beforeExit — stop llama-server explicitly
+  const pm = (globalThis as any).__llamaProcessManager
+  if (pm) { try { await pm.stop() } catch {} }
+  process.exit(exitCode)
+}
+
 const port = parseInt(process.env.LOCALCODE_WS_PORT ?? '9160', 10)
 
 if (!config.model) {
