@@ -99,6 +99,9 @@ export class MissionRunner {
 
     if (!outcome.ok) {
       this.ledger.state.failureStreak += 1
+      // Persist before notifying: crash between saveState and publish is safe —
+      // the streak survives and no notification is pending.
+      this.ledger.saveState()
       if (this.ledger.state.failureStreak >= FAILURE_ALERT_THRESHOLD) {
         await this.deps.publish({
           title: `CynCo stuck on mission ${this.ledger.config.id}`,
@@ -112,6 +115,13 @@ export class MissionRunner {
     this.ledger.state.failureStreak = 0
     for (const rec of outcome.recommendations) {
       this.ledger.addPending(rec)
+    }
+    // Persist all ledger mutations BEFORE any phone notifications.
+    // If the daemon crashes after saveState but before a publish, the
+    // pending is on disk and the user can re-check; the reverse would
+    // produce an approve/reject button with no matching pending.
+    this.ledger.saveState()
+    for (const rec of outcome.recommendations) {
       await this.deps.publishRecommendation(rec)
     }
     if (outcome.recommendations.length === 0 && trigger.precheck === 'none') {

@@ -148,4 +148,28 @@ describe('MissionRunner.tick', () => {
     const runner = new MissionRunner(ledger, deps as any)
     expect(await runner.handleCommand({ recId: 'nope', verdict: 'approve' })).toBe(false)
   })
+
+  it('Fix 1: pending is on disk even when publishRecommendation throws', async () => {
+    // publishRecommendation throws to simulate a crash/network failure after saveState
+    const throwingPublishRec = async (_rec: Recommendation): Promise<boolean> => {
+      throw new Error('ntfy network error')
+    }
+    const { deps } = makeDeps({ publishRecommendation: throwingPublishRec })
+    const missionDir = join(dir, 'mfl-dynasty')
+    const ledger = MissionLedger.load(missionDir)
+    ledger.setNextFire('news', new Date(2026, 5, 11, 11, 59).toISOString())
+    ledger.setNextFire('poll', new Date(2026, 5, 12).toISOString())
+    const runner = new MissionRunner(ledger, deps as any)
+
+    // tick() → fire() → publishRecommendation throws; the throw may propagate — we don't care
+    try {
+      await runner.tick()
+    } catch {
+      // acceptable: what matters is the on-disk state, not whether the exception escapes
+    }
+
+    // Re-load ledger from disk to verify saveState ran BEFORE the publish
+    const reloaded = MissionLedger.load(missionDir)
+    expect(reloaded.state.pending['rec-1']).toBeDefined()
+  })
 })

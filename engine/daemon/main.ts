@@ -22,6 +22,10 @@ if (!ntfyUrl) {
   process.exit(1)
 }
 
+process.on('unhandledRejection', (err) => {
+  console.error('[daemon] unhandled rejection (continuing):', err)
+})
+
 const ntfy = new NtfyChannel({
   baseUrl: ntfyUrl,
   token: process.env.CYNCO_NTFY_TOKEN,
@@ -60,10 +64,14 @@ if (runners.length === 0) {
 
 // Phone commands → first mission that knows the recId
 const stopSubscription = ntfy.subscribe(async (cmd) => {
-  for (const runner of runners) {
-    if (await runner.handleCommand(cmd)) return
+  try {
+    for (const runner of runners) {
+      if (await runner.handleCommand(cmd)) return
+    }
+    console.log(`[daemon] Command for unknown recId: ${cmd.recId}`)
+  } catch (err) {
+    console.error('[daemon] command handling failed:', err)
   }
-  console.log(`[daemon] Command for unknown recId: ${cmd.recId}`)
 })
 
 let ticking = false
