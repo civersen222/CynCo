@@ -16,7 +16,7 @@ Four gaps, one theme:
 
 This design adds a focused liveness layer (not a platform pivot) with a concrete test workload: an agent that manages the user's MyFantasyLeague (MFL) dynasty fantasy football teams.
 
-**Key framing:** the daemon/scheduler/ledger/notification stack is mission-agnostic. MFL is the first domain tool plugged into the framework; future missions are "write a tool + a mission.yml."
+**Key framing:** the daemon/scheduler/ledger/notification stack is mission-agnostic. MFL is the first domain tool plugged into the framework; future missions are "write a tool + a mission.json."
 
 ## Decisions log
 
@@ -61,7 +61,7 @@ The daemon never loads a model and never imports heavy engine code — it is a s
 
 ## 3. Mission ledger (`~/.cynco/missions/{mission-id}/`)
 
-- `mission.yml` — goal statement, MFL league IDs, schedule triggers, trust-ladder config
+- `mission.json` — goal statement, MFL league IDs, schedule triggers, trust-ladder config (JSON, not YAML: the `yaml` package is unreliable under vitest in this repo and the daemon must not depend on it)
 - `state.json` — last-seen MFL snapshot (for delta detection), pending approvals
 - `runs.jsonl` — append-only run history: trigger, outcome, recommendations made, approval results
 - Trust ladder is per action-type: `{ "waiver": { mode: "ask", approvedStreak: 4, promoteAt: 10 }, ... }`. Phase C flips `mode: "auto"` per type — the data model supports it now; the write path comes later.
