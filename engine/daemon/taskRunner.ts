@@ -85,6 +85,13 @@ export class TaskRunner {
           const { execSync } = require('child_process')
           execSync(`taskkill /F /T /PID ${child.pid}`, { timeout: 5000 })
         } catch {}
+      } else {
+        // non-Windows: escalate to SIGKILL if SIGTERM is ignored
+        const gone = await Promise.race([
+          exited.then(() => true),
+          new Promise<boolean>((r) => setTimeout(() => r(false), 2000)),
+        ])
+        if (!gone) { try { child.kill('SIGKILL') } catch {} }
       }
       return { ok: false, summary: '', recommendations: [], error: `Task timeout after ${input.timeoutMs}ms` }
     }
