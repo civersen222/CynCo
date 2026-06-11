@@ -4,11 +4,16 @@
 // this client never opens a listening port.
 import type { CommandMessage, Recommendation } from './types.js'
 
+const MAX_QUEUE = 100
+const MAX_SSE_BUFFER = 64 * 1024
+
 export interface NtfyOptions {
   baseUrl: string
   token?: string
   alertTopic: string
   commandTopic: string
+  idleTimeoutMs?: number
+  reconnectBaseMs?: number
 }
 
 interface NtfyAction {
@@ -34,12 +39,16 @@ export class NtfyChannel {
   private commandTopic: string
   private queue: PublishPayload[] = []
   private subscribed = false
+  private idleTimeoutMs: number
+  private reconnectBaseMs: number
 
   constructor(opts: NtfyOptions) {
     this.baseUrl = opts.baseUrl.replace(/\/$/, '')
     this.token = opts.token
     this.alertTopic = opts.alertTopic
     this.commandTopic = opts.commandTopic
+    this.idleTimeoutMs = opts.idleTimeoutMs ?? 300000
+    this.reconnectBaseMs = opts.reconnectBaseMs ?? 1000
   }
 
   get queuedCount(): number {
@@ -75,7 +84,10 @@ export class NtfyChannel {
       else break
     }
     const ok = await this.post(payload)
-    if (!ok) this.queue.push(payload)
+    if (!ok) {
+      if (this.queue.length >= MAX_QUEUE) this.queue.shift()
+      this.queue.push(payload)
+    }
     return ok
   }
 
@@ -107,21 +119,38 @@ export class NtfyChannel {
   subscribe(onCommand: (cmd: CommandMessage) => void): () => void {
     this.subscribed = true
     const loop = async () => {
-      let backoffMs = 1000
+      let backoffMs = this.reconnectBaseMs
       while (this.subscribed) {
+        const controller = new AbortController()
+        let idleTimer: ReturnType<typeof setTimeout> | null = null
+        const resetIdleTimer = () => {
+          if (idleTimer !== null) clearTimeout(idleTimer)
+          idleTimer = setTimeout(() => { controller.abort() }, this.idleTimeoutMs)
+        }
+        const clearIdleTimer = () => {
+          if (idleTimer !== null) { clearTimeout(idleTimer); idleTimer = null }
+        }
         try {
+          resetIdleTimer()
           const resp = await fetch(`${this.baseUrl}/${this.commandTopic}/sse`, {
             headers: this.token ? { Authorization: `Bearer ${this.token}` } : {},
+            signal: controller.signal,
           })
           if (!resp.ok || !resp.body) throw new Error(`SSE HTTP ${resp.status}`)
-          backoffMs = 1000
+          backoffMs = this.reconnectBaseMs
           const reader = resp.body.getReader()
           const decoder = new TextDecoder()
           let buffer = ''
           while (this.subscribed) {
             const { done, value } = await reader.read()
             if (done) break
+            resetIdleTimer()
             buffer += decoder.decode(value, { stream: true })
+            // Cap SSE line buffer to avoid unbounded growth on malformed streams
+            if (buffer.length > MAX_SSE_BUFFER && buffer.indexOf('\n') === -1) {
+              buffer = ''
+              continue
+            }
             let idx: number
             while ((idx = buffer.indexOf('\n')) !== -1) {
               const line = buffer.slice(0, idx).trim()
@@ -138,9 +167,11 @@ export class NtfyChannel {
               }
             }
           }
+          clearIdleTimer()
           try { reader.cancel() } catch {}
         } catch {
-          // connection failed — back off and retry
+          // connection failed (including idle abort) — back off and retry
+          clearIdleTimer()
           await new Promise((r) => setTimeout(r, backoffMs))
           backoffMs = Math.min(backoffMs * 2, 60000)
         }

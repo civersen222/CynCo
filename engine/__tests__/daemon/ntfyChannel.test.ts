@@ -124,4 +124,55 @@ describe('NtfyChannel', () => {
     stop()
     expect(got.length).toBe(0)
   })
+
+  it('caps the offline queue at MAX_QUEUE (100) dropping oldest', async () => {
+    const ch = new NtfyChannel({
+      baseUrl: 'http://127.0.0.1:1', alertTopic: 'a', commandTopic: 'c',
+    })
+    for (let i = 0; i < 105; i++) {
+      await ch.publish({ title: `msg-${i}`, message: 'm' })
+    }
+    expect(ch.queuedCount).toBe(100)
+  })
+
+  it('reconnects after idle timeout when SSE server sends no data', async () => {
+    let connectionCount = 0
+    const server = await new Promise<http.Server>((resolve) => {
+      const s = http.createServer((req, res) => {
+        if (req.method === 'GET' && req.url?.endsWith('/sse')) {
+          connectionCount++
+          // Accept the connection, send headers only, never send data
+          res.writeHead(200, { 'Content-Type': 'text/event-stream' })
+          res.flushHeaders()
+          // hold connection open until client aborts
+          req.on('close', () => { res.end() })
+          return
+        }
+        res.writeHead(404)
+        res.end()
+      })
+      s.listen(0, '127.0.0.1', () => resolve(s))
+    })
+
+    const port = (server.address() as any).port
+    const url = `http://127.0.0.1:${port}`
+
+    const ch = new NtfyChannel({
+      baseUrl: url,
+      alertTopic: 'a',
+      commandTopic: 'c',
+      idleTimeoutMs: 100,
+      reconnectBaseMs: 50,
+    })
+    let stop: (() => void) | null = null
+    try {
+      stop = ch.subscribe(() => {})
+      // Wait long enough for: connect → idle timeout (100ms) → reconnect backoff (50ms) → second connect
+      await new Promise((r) => setTimeout(r, 600))
+      expect(connectionCount).toBeGreaterThanOrEqual(2)
+    } finally {
+      stop?.()
+      await new Promise<void>((r) => server.close(() => r()))
+    }
+  })
 })
