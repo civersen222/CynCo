@@ -163,7 +163,9 @@ export class DashboardServer {
               const recorder = (() => { try { return require('../training/trajectoryRecorder.js').getTrajectoryRecorder() } catch { return null } })()
               return jsonResponse({
                 grammar: {
-                  enabled: process.env.LOCALCODE_GRAMMAR_ENABLED !== 'false',
+                  // Opt-in, matching callModel.ts (grammar is default-off until
+                  // the stream translator handles server-side parsed output)
+                  enabled: process.env.LOCALCODE_GRAMMAR_ENABLED === 'true',
                   provider: 'llama-cpp',
                 },
                 bestOfN: {

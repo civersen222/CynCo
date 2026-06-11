@@ -365,8 +365,13 @@ export async function* localCallModel({
     }
   }
 
-  // Add GBNF grammar for constrained decoding on simulated tool use
-  if (simulatedToolUse && process.env.LOCALCODE_GRAMMAR_ENABLED !== 'false') {
+  // Add GBNF grammar for constrained decoding on simulated tool use.
+  // OPT-IN (default off): with a valid grammar, llama-server's peg-native
+  // chat parser consumes the output into reasoning_content/tool_calls fields
+  // that the stream translator doesn't read yet (engine sees 0 tokens), and
+  // grammar+reasoning-budget can crash the server. Re-enable once the
+  // translator handles server-side parsed output.
+  if (simulatedToolUse && process.env.LOCALCODE_GRAMMAR_ENABLED === 'true') {
     try {
       const { generateGBNF } = await import('../decoding/grammarEmitter.js')
       const { ALL_TOOLS } = await import('../tools/registry.js')
