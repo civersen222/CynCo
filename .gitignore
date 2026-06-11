@@ -77,3 +77,6 @@ NUL
 CON
 PRN
 AUX
+
+# CivKings test bed removed permanently (2026-06-11)
+civkings/
