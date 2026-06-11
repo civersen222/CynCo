@@ -61,4 +61,15 @@ describe('taskFile contract', () => {
     expect(back.ok).toBe(false)
     expect(back.error).toMatch(/missing/i)
   })
+
+  it('readOutcome returns a failure outcome for corrupt/truncated JSON', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cynco-tf-'))
+    try {
+      const p = join(dir, 'corrupt.json')
+      writeFileSync(p, '{"ok": tr', 'utf-8')
+      const back = readOutcome(p)
+      expect(back.ok).toBe(false)
+      expect(back.error).toMatch(/unreadable|missing/i)
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
 })

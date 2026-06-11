@@ -1,5 +1,5 @@
 // engine/daemon/taskFile.ts
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs'
+import { readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { dirname } from 'path'
 import type { TaskFileInput, TaskOutcome } from './types.js'
 
@@ -27,10 +27,12 @@ export function writeOutcome(path: string, outcome: TaskOutcome): void {
 }
 
 export function readOutcome(path: string): TaskOutcome {
-  if (!existsSync(path)) {
-    return { ok: false, summary: '', recommendations: [], error: `Outcome file missing: ${path}` }
+  let raw: any
+  try {
+    raw = JSON.parse(readFileSync(path, 'utf-8'))
+  } catch (err: any) {
+    return { ok: false, summary: '', recommendations: [], error: `Outcome file missing or unreadable: ${path} (${err?.message ?? err})` }
   }
-  const raw = JSON.parse(readFileSync(path, 'utf-8'))
   return {
     ok: raw.ok === true,
     summary: typeof raw.summary === 'string' ? raw.summary : '',
