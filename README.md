@@ -247,6 +247,13 @@ Open `http://localhost:9161` during any session. Four tabs:
 
 Survives page reload, auto-detects active sessions, auto-reconnects on disconnect. Polls governance every 3s and training data every 30s.
 
+### Always-on missions (experimental)
+
+CynCo can run as a persistent agent: a tiny daemon schedules mission triggers (e.g. "watch my
+fantasy league"), wakes the engine on-demand for one-shot tasks, and pushes recommendations to
+your phone via self-hosted [ntfy](https://ntfy.sh) over Tailscale — approve or reject with one tap,
+no public ports. See [docs/liveness-setup.md](docs/liveness-setup.md).
+
 ### Semantic Code Index
 Automatic vector indexing via `nomic-embed-text`. The model starts each task knowing your codebase — function signatures, class definitions, imports. Falls back to keyword search if embedding model unavailable.
 
