@@ -138,6 +138,7 @@ export class ConversationLoop {
   private steering = new SteeringQueue()
   private journal: JSONLStore
   private snapshot?: WorkspaceSnapshot
+  private snapshotCwd?: string
   private lastSnapshotHash?: string
   private vibeMode = false
   private _correctionAttempts = 0
@@ -225,11 +226,24 @@ export class ConversationLoop {
     })
 
     // Initialize workspace snapshot for governance
+    this.initSnapshot(this.executor['cwd'])
+
+    // S5: Session journal for crash recovery
+    this.journal = new JSONLStore(`session-${Date.now()}`)
+    console.log(`[session] Journal: ${this.journal.path}`)
+  }
+
+  /**
+   * (Re)initialize the workspace snapshot for the given cwd.
+   * Called at construction and again whenever the executor cwd changes
+   * (e.g. a user.message arrives with a different project directory) —
+   * otherwise snapshots run `git add -A` against the engine's startup dir.
+   */
+  private initSnapshot(cwd: string): void {
     try {
       const fs = require('fs')
       const path = require('path')
       const { execSync } = require('child_process')
-      const cwd = this.executor['cwd']
       // If not a git repo, make it one — snapshots need git
       if (!fs.existsSync(path.join(cwd, '.git'))) {
         execSync('git init', { cwd, stdio: 'pipe' })
@@ -238,14 +252,13 @@ export class ConversationLoop {
       this.snapshot = new WorkspaceSnapshot(cwd)
       this.snapshot.init()
       this.lastSnapshotHash = this.snapshot.track()
-      console.log('[snapshot] Initialized workspace snapshot')
+      this.snapshotCwd = cwd
+      console.log(`[snapshot] Initialized workspace snapshot for ${cwd}`)
     } catch (e) {
+      this.snapshot = undefined
+      this.snapshotCwd = cwd
       console.log(`[snapshot] Failed to initialize: ${e instanceof Error ? e.message : String(e)}`)
     }
-
-    // S5: Session journal for crash recovery
-    this.journal = new JSONLStore(`session-${Date.now()}`)
-    console.log(`[session] Journal: ${this.journal.path}`)
   }
 
   get isProcessing(): boolean {
@@ -1937,7 +1950,13 @@ export class ConversationLoop {
         }
       }
 
-      // Snapshot: track workspace state after tool batch
+      // Snapshot: track workspace state after tool batch.
+      // Re-init if the executor cwd changed since the snapshot was created
+      // (user.message with a different project dir, worktree switch, ...).
+      const snapCwd = this.executor['cwd']
+      if (snapCwd && snapCwd !== this.snapshotCwd) {
+        this.initSnapshot(snapCwd)
+      }
       if (this.snapshot) {
         try {
           const newHash = this.snapshot.track()

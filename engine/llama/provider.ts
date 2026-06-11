@@ -207,7 +207,15 @@ export class LlamaCppProvider implements Provider {
     if (request.temperature !== undefined) body.temperature = request.temperature
     if (request.stop_sequences) body.stop = request.stop_sequences
     if (request.tools?.length) body.tools = toOpenAITools(request.tools)
-    if (request.grammar) body.grammar = request.grammar
+    if (request.grammar) {
+      body.grammar = request.grammar
+      // Lazy grammar: sample unconstrained (reasoning, prose) until the
+      // trigger appears, then enforce the grammar. Without this, the text
+      // rule blocks <think>/</think> and the model EOSes at 0 tokens.
+      // Trigger type 2 = PATTERN (WORD requires a preserved tokenizer token).
+      body.grammar_lazy = true
+      body.grammar_triggers = [{ type: 2, value: '<tool_call>' }]
+    }
     if (request.system) {
       body.messages = [
         { role: 'system', content: request.system },
