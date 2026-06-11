@@ -12,16 +12,26 @@ import type { MissionConfig } from '../../daemon/types.js'
 
 const STUB = join(import.meta.dirname, 'fixtures', 'stubEngine.mjs')
 
+async function waitFor(cond: () => boolean, timeoutMs = 5000, intervalMs = 25): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (!cond()) {
+    if (Date.now() > deadline) throw new Error('waitFor timed out')
+    await new Promise((r) => setTimeout(r, intervalMs))
+  }
+}
+
 // Reuse the mock ntfy pattern from ntfyChannel.test.ts
-function startMockNtfy(): Promise<{ url: string; captured: any[]; sendSse: (d: object) => void; close: () => Promise<void> }> {
+function startMockNtfy(): Promise<{ url: string; captured: any[]; sendSse: (d: object) => void; close: () => Promise<void>; sseConnected: boolean }> {
   const captured: any[] = []
   let sseRes: http.ServerResponse | null = null
+  let sseConnected = false
   return new Promise((resolve) => {
     const server = http.createServer((req, res) => {
       if (req.method === 'GET' && req.url?.endsWith('/sse')) {
         res.writeHead(200, { 'Content-Type': 'text/event-stream' })
         res.write(': connected\n\n')
         sseRes = res
+        sseConnected = true
         return
       }
       let body = ''
@@ -36,6 +46,7 @@ function startMockNtfy(): Promise<{ url: string; captured: any[]; sendSse: (d: o
       captured,
       sendSse: (d) => { sseRes?.write(`data: ${JSON.stringify(d)}\n\n`) },
       close: () => new Promise((r) => { sseRes?.end(); server.close(() => r()) }),
+      get sseConnected() { return sseConnected },
     }))
   })
 }
@@ -87,9 +98,9 @@ describe('liveness layer end-to-end', () => {
     // 2. Phone approval arrives over SSE → trust streak + promotion (promoteAt: 1)
     const stop = ntfy.subscribe(async (cmd) => { await runner.handleCommand(cmd) })
     cleanups.push(stop)
-    await new Promise((r) => setTimeout(r, 300)) // SSE connect
+    await waitFor(() => mock.sseConnected)
     mock.sendSse({ message: JSON.stringify({ recId: 'rec-stub', verdict: 'approve' }) })
-    await new Promise((r) => setTimeout(r, 500))
+    await waitFor(() => ledger.state.pending['rec-stub'] === undefined)
 
     expect(ledger.state.pending['rec-stub']).toBeUndefined()
     expect(ledger.state.trust.waiver.approvedStreak).toBe(1)
