@@ -33,7 +33,10 @@ export const bashTool: ToolImpl = {
         cwd,
         encoding: 'utf-8',
         timeout,
-        env: process.env,
+        // Force UTF-8 for Python subprocesses on Windows — the default
+        // cp1252 codec crashes any script that reads/prints files
+        // containing non-ASCII (emoji in game code, etc.)
+        env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
         maxBuffer: 2 * 1024 * 1024, // 2MB
         shell,
       }, (err, stdout, stderr) => {
