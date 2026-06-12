@@ -239,6 +239,46 @@ describe('ConversationLoop with tools', () => {
     expect(toolsSection).toContain('- Read:')
   })
 
+  it.skipIf(SKIP)('S5 tool restriction is enforced at execution time in one-shot runs', async () => {
+    // Replay incident (2026-06-12): at stuck=5 S5 restricted the prompt to
+    // [Read, WebFetch], but the model kept calling WebSearch (seen earlier in
+    // history) and the calls EXECUTED — the gate only checked the run-level
+    // pin, not the live restricted set. Stuck climbed to 15 → HALT.
+    function* bashToolUse(): Generator<StreamEvent> {
+      yield { type: 'message_start', message: { id: 'msg1', model: 'test', usage: { input_tokens: 10, output_tokens: 0 } } } as any
+      yield { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'tu1', name: 'Bash', input: {} } } as any
+      yield { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"command":"echo SHOULD_NOT_RUN"}' } } as any
+      yield { type: 'content_block_stop', index: 0 } as any
+      yield { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 5 } } as any
+      yield { type: 'message_stop' } as any
+    }
+    const events: any[] = []
+    const fakeS5 = {
+      async makeDecision() {
+        return {
+          workflow: null, advancePhase: null, model: null,
+          tools: ['Read'], // restriction: Bash is pinned for the run but NOT offered this turn
+          contextAction: 'none', spawnAgent: null, priority: 'balanced',
+          reasoning: 'test restriction',
+        }
+      },
+      evaluateLastDecision() { return null },
+    }
+    const loop = new ConversationLoop({
+      config: { ...defaultConfig(), approveAll: true },
+      provider: mockProvider([() => bashToolUse(), () => textResponse('done')]),
+      emit: (e) => events.push(e),
+      s5: fakeS5 as any,
+      allowedTools: ['Read', 'Bash'],
+    })
+    await loop.handleUserMessage('do something')
+    const complete = events.find(e => e.type === 'tool.complete' && e.toolName === 'Bash')
+    expect(complete).toBeDefined()
+    expect(complete.isError).toBe(true)
+    expect(String(complete.result)).toContain('not available')
+    expect(String(complete.result)).not.toContain('SHOULD_NOT_RUN')
+  })
+
   it.skipIf(SKIP)('emits message.complete with correct stopReason', async () => {
     const events: any[] = []
     const provider = mockProvider([() => textResponse('done')])

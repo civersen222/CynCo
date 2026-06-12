@@ -145,6 +145,10 @@ export class ConversationLoop {
   private vibeMode = false
   private _correctionAttempts = 0
   private allowedTools?: string[]
+  // Tool names actually offered to the model in the current iteration (after
+  // S5 restrictions, demotions, routing). In one-shot runs this is enforced
+  // at execution time too — see executeOneTool.
+  private offeredToolNames: Set<string> | null = null
 
   constructor(opts: ConversationLoopOptions) {
     this.config = opts.config
@@ -1527,6 +1531,7 @@ export class ConversationLoop {
       if (currentStuck >= 3) {
         console.log(`[loop] Sending to model with ${iterationTools.length} tools: ${iterationTools.map((t: any) => t.name).join(', ')}`)
       }
+      this.offeredToolNames = new Set(iterationTools.map((t: any) => t.name))
       const gen = localCallModel({
         messages: this.messages,
         systemPrompt: effectiveSystemPrompt,
@@ -2092,6 +2097,30 @@ export class ConversationLoop {
     if (this.allowedTools && !this.allowedTools.includes(toolName)) {
       console.log(`[loop] BLOCKED (not in allowedTools): ${toolName}`)
       const msg = `Tool "${toolName}" is not available in this run. Available tools: ${this.allowedTools.join(', ')}.`
+      this.emit({ type: 'tool.start', toolId, toolName, input: toolInput })
+      this.emit({ type: 'tool.complete', toolId, toolName, result: msg, isError: true })
+      toolResults.push({
+        type: 'tool_result',
+        tool_use_id: toolId,
+        content: [{ type: 'text', text: msg }],
+        is_error: true,
+      })
+      toolsUsedThisTurn.push(toolName)
+      toolResultsThisTurn.push('denied')
+      toolsUsedInSession.push(toolName)
+      return
+    }
+
+    // S5 live restriction (one-shot runs only): the model can keep calling a
+    // tool it saw earlier in history even after a stuck-loop restriction
+    // removed it from the prompt — 2026-06-12 replay looped WebSearch to
+    // stuck=15 this way. Enforce the per-iteration offered set, with feedback
+    // telling the model what it CAN use.
+    if (this.allowedTools && this.offeredToolNames && !this.offeredToolNames.has(toolName)) {
+      console.log(`[loop] BLOCKED (not offered this turn): ${toolName}`)
+      const msg = `Tool "${toolName}" is not available this turn (governance restricted the tool set). ` +
+        `Available tools: ${[...this.offeredToolNames].join(', ')}. ` +
+        `Use one of those, or produce your final answer from what you already know.`
       this.emit({ type: 'tool.start', toolId, toolName, input: toolInput })
       this.emit({ type: 'tool.complete', toolId, toolName, result: msg, isError: true })
       toolResults.push({
