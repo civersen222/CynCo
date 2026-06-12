@@ -105,4 +105,13 @@ export class ConversationTheoryIntegration {
   getDivergentCount(): number {
     return this.teachback.divergentCount()
   }
+
+  /**
+   * Count of decided exchanges (verified + divergent; pending excluded).
+   * The agreement ratio is meaningless below ~2 decided exchanges — the lib
+   * returns 0.0 both for "all divergent" and "no data at all".
+   */
+  getDecidedCount(): number {
+    return this.teachback.verifiedCount() + this.teachback.divergentCount()
+  }
 }

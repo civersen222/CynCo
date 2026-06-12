@@ -107,6 +107,10 @@ export class CyberneticsGovernance {
   private heterarchyIntegration: HeterarchyIntegration
   // Conversation theory — teachback, agreement
   private conversationTheory: ConversationTheoryIntegration
+  // Last user message recorded as a teachback exchange — agreement is a
+  // property of dialogue; the same prompt repeated across internal turns
+  // (one-shot missions) must count as ONE exchange, not one per turn.
+  private _lastRecordedUserMessage: string | null = null
   // Observer effects — measurement divergence, eigenform
   private observerEffects: ObserverEffectsIntegration
   // Autopoietic governance components
@@ -410,18 +414,29 @@ export class CyberneticsGovernance {
     const heterarchyShifted = commander !== this.lastCommander
     this.lastCommander = commander
 
-    // Conversation: track exchange if user message present
-    if (metrics.userMessage && metrics.response) {
+    // Conversation: track exchange if user message present.
+    // Dedupe: only record when the user actually said something NEW —
+    // one-shot mission runs replay the same prompt every internal turn.
+    if (
+      metrics.userMessage && metrics.response &&
+      metrics.userMessage !== this._lastRecordedUserMessage
+    ) {
       this.conversationTheory.recordExchange(
         `turn_${this.turnCount}`,
         metrics.response.slice(0, 200),
         metrics.userMessage.slice(0, 200),
       )
+      this._lastRecordedUserMessage = metrics.userMessage
     }
 
-    // Query agreement ratio — low agreement = user and system are diverging
+    // Query agreement ratio — low agreement = user and system are diverging.
+    // Require >=2 decided exchanges: the lib returns 0.0 both for "all
+    // divergent" and "no data", so a tiny sample must never cause pain.
     const agreementRatio = this.conversationTheory.getAgreementRatio()
-    if (agreementRatio < 0.5 && this.turnCount > 3) {
+    if (
+      agreementRatio < 0.5 && this.turnCount > 3 &&
+      this.conversationTheory.getDecidedCount() >= 2
+    ) {
       this.algedonicIntegration.recordToolResult('AgreementDivergence', false, 0)
       console.log(`[vsm] Agreement ratio ${agreementRatio.toFixed(2)} < 0.5 — algedonic pain`)
     }

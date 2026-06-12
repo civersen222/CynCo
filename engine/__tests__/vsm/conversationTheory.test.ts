@@ -44,4 +44,12 @@ describe('ConversationTheoryIntegration', () => {
     ct.recordExchange('b', 'explanation', 'huh what do you mean')
     expect(ct.getAgreementRatio()).toBe(0.5)
   })
+
+  it('exposes decided exchange count (verified + divergent, not pending)', () => {
+    expect(ct.getDecidedCount()).toBe(0)
+    ct.recordExchange('a', 'explanation', 'yes got it')            // verified
+    ct.recordExchange('b', 'explanation', 'what? that is wrong')   // divergent
+    ct.recordExchange('c', 'explanation', 'let me check the file') // pending
+    expect(ct.getDecidedCount()).toBe(2)
+  })
 })
