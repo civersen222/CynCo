@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeAll } from 'bun:test'
+import { describe, expect, it, beforeAll, vi } from 'bun:test'
 
 // Skip these integration tests in CI — they create real ConversationLoop
 // instances that hit the filesystem, create JSONL sessions, index DBs, etc.
@@ -404,6 +404,56 @@ describe('ConversationLoop with tools', () => {
     })
     await loop.handleUserMessage('compile the weekly digest from league data')
     expect((loop as any).governance.getStuckCount()).toBeGreaterThan(0)
+  })
+
+  it.skipIf(SKIP)('context estimate includes system prompt + tool schema overhead', async () => {
+    // 2026-06-12 incident #3: llama-server evaluates system prompt + tool
+    // schemas on EVERY request (15.1k tokens of a 32.8k n_ctx), but the
+    // in-loop monitor estimated only this.messages — it read 54% while the
+    // server was rejecting requests at 100%, so compaction never fired.
+    const events: any[] = []
+    const loop = new ConversationLoop({
+      config: defaultConfig(),
+      provider: mockProvider([() => textResponse('Here is my analysis of the league situation this week.')]),
+      emit: (e) => events.push(e),
+      allowedTools: ['Read'],
+    })
+    await loop.handleUserMessage('analyze the league standings and summarize the week')
+    const status = events.find(e => e.type === 'context.status')
+    expect(status).toBeDefined()
+    // The system prompt alone is thousands of chars (>300 tokens); a
+    // messages-only estimate of this tiny exchange is well under 100.
+    expect(status.estimatedTokens).toBeGreaterThan(300)
+  })
+
+  it.skipIf(SKIP)('compactNow compresses older messages into a summary', async () => {
+    // In-loop compaction must actually shrink this.messages — a "finish now"
+    // warning alone cannot stop overflow when each tool result adds
+    // thousands of tokens.
+    vi.stubGlobal('fetch', async () => new Response(
+      JSON.stringify({ message: { content: 'summary of earlier turns' } }),
+      { status: 200 },
+    ))
+    try {
+      const loop = new ConversationLoop({
+        config: defaultConfig(),
+        provider: mockProvider([]),
+        emit: () => {},
+      })
+      const msgs = (loop as any).messages as any[]
+      for (let i = 0; i < 12; i++) {
+        msgs.push({
+          role: i % 2 ? 'assistant' : 'user',
+          content: [{ type: 'text', text: `turn ${i}: ${'x'.repeat(400)}` }],
+        })
+      }
+      const compacted = await (loop as any).compactNow('test')
+      expect(compacted).toBe(true)
+      expect((loop as any).messages.length).toBeLessThan(12)
+      expect(JSON.stringify((loop as any).messages)).toContain('Context Summary')
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 
   it.skipIf(SKIP)('emits message.complete with correct stopReason', async () => {

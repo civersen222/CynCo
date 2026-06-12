@@ -536,26 +536,12 @@ export class ConversationLoop {
     // Compact when context exceeds the configured warning threshold.
     // With flash attention, attention is ~O(n) not O(n²), so we can use
     // much more of the context window before compacting.
-    const estimatedTokensPreTurn = this.messages.reduce((sum, m) =>
-      sum + m.content.reduce((s, b: any) => s + (b.text?.length ?? JSON.stringify(b).length) / 4, 0), 0)
+    const estimatedTokensPreTurn = this.estimateMessageTokens()
     const ctxLen = this.config.contextLength ?? 32768
     const compactThreshold = ctxLen * (this.config.contextManagement?.warningThreshold ?? 0.4)
-    if (estimatedTokensPreTurn > compactThreshold && this.messages.length > 6) {
-      console.log(`[compact] Pre-turn compaction: ${Math.round(estimatedTokensPreTurn)} tokens → compacting for speed`)
-      try {
-        const toCompress = this.compressor.selectForCompression(this.messages, 2) // keep only last 2 pairs
-        if (toCompress.length > 0) {
-          const prompt = this.compressor.buildStructuredSummaryPrompt(toCompress, this.fileTracker)
-          const summary = await this.sideQuery(prompt)
-          this.messages = this.compressor.compressMessages(this.messages, summary, this.fileTracker)
-          try { this.journal.appendCompaction(summary, this.fileTracker.serialize()) } catch {}
-          const newTokens = this.messages.reduce((sum, m) =>
-            sum + m.content.reduce((s, b: any) => s + (b.text?.length ?? JSON.stringify(b).length) / 4, 0), 0)
-          console.log(`[compact] ${Math.round(estimatedTokensPreTurn)} → ${Math.round(newTokens)} tokens (${this.messages.length} messages)`)
-        }
-      } catch (e) {
-        console.log(`[compact] Pre-turn compaction failed: ${e}`)
-      }
+    if (estimatedTokensPreTurn > compactThreshold) {
+      console.log(`[compact] Pre-turn: ${Math.round(estimatedTokensPreTurn)} tokens > ${Math.round(compactThreshold)} threshold`)
+      await this.compactNow('pre-turn')
     }
 
     // Auto-inject CodeIndex results as system context — don't modify user message
@@ -1214,6 +1200,34 @@ export class ConversationLoop {
     return { goal, now, status, model: this.config.model, what_was_done, files_modified }
   }
 
+  /** Rough token estimate (chars/4) of the current message history. */
+  private estimateMessageTokens(): number {
+    return this.messages.reduce((sum, m) =>
+      sum + m.content.reduce((s, b: any) => s + (b.text?.length ?? JSON.stringify(b).length) / 4, 0), 0)
+  }
+
+  /**
+   * Compress older messages into a structured summary via a side query.
+   * Keeps the most recent pairs so a pending tool_use message survives.
+   * Returns true only if the message list was actually compacted.
+   */
+  private async compactNow(label: string): Promise<boolean> {
+    if (this.messages.length <= 6) return false
+    try {
+      const toCompress = this.compressor.selectForCompression(this.messages, 2) // keep only last 2 pairs
+      if (toCompress.length === 0) return false
+      const prompt = this.compressor.buildStructuredSummaryPrompt(toCompress, this.fileTracker)
+      const summary = await this.sideQuery(prompt)
+      this.messages = this.compressor.compressMessages(this.messages, summary, this.fileTracker)
+      try { this.journal.appendCompaction(summary, this.fileTracker.serialize()) } catch {}
+      console.log(`[compact] ${label}: → ${Math.round(this.estimateMessageTokens())} tokens (${this.messages.length} messages)`)
+      return true
+    } catch (e) {
+      console.log(`[compact] ${label} compaction failed: ${e}`)
+      return false
+    }
+  }
+
   /** Quick side query — no tools, no thinking, returns plain text. */
   private async sideQuery(prompt: string): Promise<string> {
     // Route through the SAME backend as the main model to avoid loading
@@ -1768,10 +1782,16 @@ export class ConversationLoop {
         }
       }
 
-      // Emit context utilization after each model turn
-      const estimatedTokens = this.messages.reduce((sum, m) => {
-        return sum + m.content.reduce((s, b: any) => s + (b.text?.length ?? JSON.stringify(b).length) / 4, 0)
-      }, 0)
+      // Emit context utilization after each model turn.
+      // The estimate MUST include the fixed per-request prompt overhead
+      // (system prompt + tool schemas) — llama-server evaluates them on every
+      // request. 2026-06-12 incident #3: overhead was 15.1k of a 32.8k n_ctx;
+      // the messages-only estimate read 54% while the server was rejecting
+      // requests at 100%, so the critical path never fired.
+      const promptOverheadTokens =
+        JSON.stringify(effectiveSystemPrompt ?? '').length / 4 +
+        JSON.stringify(iterationTools ?? []).length / 4
+      const estimatedTokens = promptOverheadTokens + this.estimateMessageTokens()
       const contextLength = this.config.contextLength ?? 32768
       this.emit({
         type: 'context.status',
@@ -1781,8 +1801,15 @@ export class ConversationLoop {
         action: estimatedTokens / contextLength > 0.8 ? 'compact' : 'proceed',
       })
 
-      // GSD: Context monitor — warn model before overflow
-      const ctxUtilization = estimatedTokens / contextLength
+      // GSD: Context monitor — compact before overflow. A "finish now"
+      // warning alone cannot stop overflow when each tool result adds
+      // thousands of tokens, so shrink the conversation first.
+      let ctxUtilization = estimatedTokens / contextLength
+      if (ctxUtilization > 0.80) {
+        if (await this.compactNow(`in-loop at ${Math.round(ctxUtilization * 100)}%`)) {
+          ctxUtilization = (promptOverheadTokens + this.estimateMessageTokens()) / contextLength
+        }
+      }
       if (ctxUtilization > 0.80) {
         this.addMessage({
           role: 'user',
