@@ -149,6 +149,27 @@ describe('MissionRunner.tick', () => {
     expect(await runner.handleCommand({ recId: 'nope', verdict: 'approve' })).toBe(false)
   })
 
+  it('persists nextFire to disk before firing — a crash mid-run cannot re-fire', async () => {
+    const missionDir = join(dir, 'mfl-dynasty')
+    let nextFireOnDiskAtRunTime: string | undefined
+    const { deps, ranTasks } = makeDeps({
+      runTask: async (input: any): Promise<TaskOutcome> => {
+        ranTasks.push(input)
+        // Reload from disk while the run is in flight
+        nextFireOnDiskAtRunTime = MissionLedger.load(missionDir).state.nextFire['news']
+        return { ok: true, summary: 'ok', recommendations: [] }
+      },
+    })
+    const ledger = MissionLedger.load(missionDir)
+    ledger.setNextFire('news', new Date(2026, 5, 11, 11, 59).toISOString())
+    ledger.setNextFire('poll', new Date(2026, 5, 12).toISOString())
+    ledger.saveState()
+    const runner = new MissionRunner(ledger, deps as any)
+    await runner.tick()
+    expect(nextFireOnDiskAtRunTime).toBeDefined()
+    expect(new Date(nextFireOnDiskAtRunTime!).getTime()).toBeGreaterThan(deps.now().getTime())
+  })
+
   it('Fix 1: pending is on disk even when publishRecommendation throws', async () => {
     // publishRecommendation throws to simulate a crash/network failure after saveState
     const throwingPublishRec = async (_rec: Recommendation): Promise<boolean> => {

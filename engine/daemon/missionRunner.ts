@@ -33,10 +33,10 @@ export class MissionRunner {
       const evaln = evaluateTrigger(trigger, this.ledger.state.nextFire[trigger.id], now)
       if (evaln.action === 'wait') continue
       this.ledger.setNextFire(trigger.id, evaln.next.toISOString())
-      if (evaln.action === 'init' || evaln.action === 'skip') {
-        this.ledger.saveState()
-        continue
-      }
+      // Persist BEFORE firing: a crash mid-run must not re-fire the trigger
+      // on restart with the old nextFire still on disk.
+      this.ledger.saveState()
+      if (evaln.action === 'init' || evaln.action === 'skip') continue
       await this.fire(trigger, now)
     }
     this.ledger.saveState()
