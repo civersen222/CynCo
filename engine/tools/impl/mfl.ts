@@ -17,6 +17,11 @@ const ALLOWED_QUERIES = new Set([
   'assets',          // all tradeable assets per franchise
 ])
 
+// Global (league-independent) queries. Sending L= makes api.myfantasyleague.com
+// 302 to the league host, which rejects these TYPEs with "must go to
+// api.myfantasyleague.com" (2026-06-12 weekly-digest incident). Omit L.
+const GLOBAL_QUERIES = new Set(['injuries'])
+
 export function buildMflExportUrl(opts: {
   query: string
   league: string
@@ -34,7 +39,7 @@ export function buildMflExportUrl(opts: {
     params.set(k, v)
   }
   params.set('TYPE', opts.query)
-  params.set('L', opts.league)
+  if (!GLOBAL_QUERIES.has(opts.query)) params.set('L', opts.league)
   params.set('JSON', '1')
   if (opts.apiKey) params.set('APIKEY', opts.apiKey)
   // URLSearchParams encodes; MFL accepts encoded params fine

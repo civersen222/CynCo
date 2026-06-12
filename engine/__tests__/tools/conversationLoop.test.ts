@@ -279,6 +279,82 @@ describe('ConversationLoop with tools', () => {
     expect(String(complete.result)).not.toContain('SHOULD_NOT_RUN')
   })
 
+  it.skipIf(SKIP)('one-shot runs skip contract auto-creation so the model can finish', async () => {
+    // 2026-06-12 weekly-digest incident: the auto-created contract demanded
+    // "Run the test suite NOW with Bash" in a read-only mission, re-prompting
+    // the model every time it tried to produce its final outcome.
+    const captured: CompletionRequest[] = []
+    const provider: Provider = {
+      name: 'mock',
+      async healthCheck() { return true },
+      async listModels() { return [] },
+      async probeCapabilities() { return defaultCapabilities() },
+      async complete() { throw new Error('not implemented') },
+      async *stream(request: CompletionRequest): AsyncGenerator<StreamEvent> {
+        captured.push(request)
+        yield* textResponse('Here is my analysis of the league situation this week.')
+      },
+    }
+    const loop = new ConversationLoop({
+      config: defaultConfig(),
+      provider,
+      emit: () => {},
+      allowedTools: ['Read'],
+    })
+    await loop.handleUserMessage('analyze the league standings and summarize the week')
+    // No contract → no "[System] You are NOT done" re-prompt → exactly one model call
+    expect(captured.length).toBe(1)
+  })
+
+  it.skipIf(SKIP)('one-shot nudge asks for the structured outcome instead of coding tools', async () => {
+    // 2026-06-12 weekly-digest incident: S2 nudged "Call Read, Write, Edit,
+    // Grep, or Bash RIGHT NOW" at the model mid-answer, pushing it back into
+    // a tool loop. In one-shot runs the nudge must offer finishing as an
+    // option, and a response containing the structured outcome must not be
+    // nudged at all.
+    function* readToolUse(): Generator<StreamEvent> {
+      yield { type: 'message_start', message: { id: 'msg1', model: 'test', usage: { input_tokens: 10, output_tokens: 0 } } } as any
+      yield { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'tu1', name: 'Read', input: {} } } as any
+      yield { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"file_path":"C:/nonexistent.txt"}' } } as any
+      yield { type: 'content_block_stop', index: 0 } as any
+      yield { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 5 } } as any
+      yield { type: 'message_stop' } as any
+    }
+    const captured: CompletionRequest[] = []
+    const responses = [
+      () => readToolUse(),
+      () => textResponse('I will now compile the weekly digest.'), // narration stall → nudge
+      () => textResponse('```json\n{"ok": true, "summary": "week 1 digest", "recommendations": []}\n```'),
+    ]
+    let idx = 0
+    const provider: Provider = {
+      name: 'mock',
+      async healthCheck() { return true },
+      async listModels() { return [] },
+      async probeCapabilities() { return defaultCapabilities() },
+      async complete() { throw new Error('not implemented') },
+      async *stream(request: CompletionRequest): AsyncGenerator<StreamEvent> {
+        captured.push(request)
+        const gen = responses[idx++]
+        if (gen) yield* gen()
+      },
+    }
+    const loop = new ConversationLoop({
+      config: { ...defaultConfig(), approveAll: true },
+      provider,
+      emit: () => {},
+      allowedTools: ['Read'],
+    })
+    await loop.handleUserMessage('compile the weekly digest from league data')
+    // Exactly 3 calls: tool turn, narration turn (nudged), outcome turn (exit)
+    expect(captured.length).toBe(3)
+    const lastMessages = (captured[2] as any).messages as any[]
+    const nudge = lastMessages[lastMessages.length - 1]
+    const nudgeText = nudge.content.map((b: any) => b.text ?? '').join('')
+    expect(nudgeText).toContain('structured outcome')
+    expect(nudgeText).not.toMatch(/Write, Edit, Grep/)
+  })
+
   it.skipIf(SKIP)('emits message.complete with correct stopReason', async () => {
     const events: any[] = []
     const provider = mockProvider([() => textResponse('done')])

@@ -474,8 +474,11 @@ export class ConversationLoop {
     this.consecutiveNudges = 0
     this.steering.clear()
 
-    // Auto-create contract from EVERY user message — the model must finish what the user asked
-    if (!globalContract.isActive() && text.length > 15) {
+    // Auto-create contract from EVERY user message — the model must finish what the user asked.
+    // Skip in one-shot mission runs (allowedTools pinned): the contract enforcer is calibrated
+    // for interactive coding ("run the test suite NOW with Bash") and blocks a mission from
+    // producing its final structured outcome (2026-06-12 weekly-digest incident).
+    if (!this.allowedTools && !globalContract.isActive() && text.length > 15) {
       const lowerText = text.toLowerCase()
       const assertions: string[] = []
 
@@ -1806,10 +1809,17 @@ export class ConversationLoop {
       const completionSignals = /\b(task (is )?complete|i'm done|waiting for|ready for your|what would you like|no changes needed)\b/i
       const modelSaysDone = completionSignals.test(streamedText)
       const isMidPlanStop = noToolsEndTurn && toolsUsedInSession.length > 0 && !modelSaysDone
-      if (isThinkingWithoutActing || isDescribingInsteadOfDoing || isMidPlanStop) {
+      // One-shot missions finish by emitting a ```json structured outcome —
+      // that IS completion; never nudge it back into tool calls
+      // (2026-06-12 weekly-digest incident: nudges pushed the model mid-answer
+      // back to repeating the same Mfl call until HALT).
+      const producedStructuredOutcome = this.allowedTools != null && /```json/.test(streamedText)
+      if ((isThinkingWithoutActing || isDescribingInsteadOfDoing || isMidPlanStop) && !producedStructuredOutcome) {
         this.consecutiveNudges++
         if (this.consecutiveNudges <= 5) {
-          const nudgeText = this.consecutiveNudges <= 1
+          const nudgeText = this.allowedTools
+            ? `Do not narrate. Either call one of your available tools (${this.allowedTools.join(', ')}) to gather missing data, or produce your final structured outcome (the \`\`\`json block) now.`
+            : this.consecutiveNudges <= 1
             ? 'Do not describe what you will do. Call a tool now. If you need to read a file, call Read. If you need to write, call Write. If you need to search, call Grep. Act, do not narrate.'
             : this.consecutiveNudges <= 3
               ? `WARNING ${this.consecutiveNudges}: You MUST call a tool. Do not explain, do not plan, do not narrate. Call Read, Write, Edit, Grep, or Bash RIGHT NOW.`

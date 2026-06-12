@@ -10,6 +10,14 @@ describe('buildMflExportUrl', () => {
     expect(url).toBe('https://api.myfantasyleague.com/2026/export?TYPE=rosters&L=12345&JSON=1')
   })
 
+  it('omits L for global queries so MFL does not redirect to the league host', () => {
+    // 2026-06-12 incident: api.myfantasyleague.com 302s any L= request to the
+    // league host (www47), which rejects TYPE=injuries with "must go to
+    // api.myfantasyleague.com". Without L there is no redirect and api serves it.
+    const url = buildMflExportUrl({ query: 'injuries', league: '65042', year: 2026 })
+    expect(url).toBe('https://api.myfantasyleague.com/2026/export?TYPE=injuries&JSON=1')
+  })
+
   it('appends APIKEY when provided', () => {
     const url = buildMflExportUrl({ query: 'rosters', league: '12345', year: 2026, apiKey: 'sekret' })
     expect(url).toContain('APIKEY=sekret')
