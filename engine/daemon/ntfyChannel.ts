@@ -39,6 +39,7 @@ export class NtfyChannel {
   private alertTopic: string
   private commandTopic: string
   private queue: PublishPayload[] = []
+  private publishLock: Promise<void> = Promise.resolve()
   private subscribed = false
   private idleTimeoutMs: number
   private reconnectBaseMs: number
@@ -78,6 +79,14 @@ export class NtfyChannel {
 
   /** Publish a notification. On failure it is queued; queued items flush before the next publish. */
   async publish(payload: PublishPayload): Promise<boolean> {
+    // Serialize: an SSE-callback publish racing a tick publish must not both
+    // flush the queue, or queued items get sent twice.
+    const run = this.publishLock.then(() => this.publishInner(payload))
+    this.publishLock = run.then(() => undefined, () => undefined)
+    return run
+  }
+
+  private async publishInner(payload: PublishPayload): Promise<boolean> {
     // Flush queue first (oldest first)
     while (this.queue.length > 0) {
       const queued = this.queue[0]
@@ -124,7 +133,10 @@ export class NtfyChannel {
     this.subscribed = true
     const loop = async () => {
       let backoffMs = this.reconnectBaseMs
+      // A connection that survives this long is "stable" — reset backoff.
+      const stableMs = Math.min(this.idleTimeoutMs, 30000)
       while (this.subscribed) {
+        const startedAt = Date.now()
         const controller = new AbortController()
         let idleTimer: ReturnType<typeof setTimeout> | null = null
         const resetIdleTimer = () => {
@@ -141,7 +153,6 @@ export class NtfyChannel {
             signal: controller.signal,
           })
           if (!resp.ok || !resp.body) throw new Error(`SSE HTTP ${resp.status}`)
-          backoffMs = this.reconnectBaseMs
           const reader = resp.body.getReader()
           const decoder = new TextDecoder()
           let buffer = ''
@@ -174,11 +185,15 @@ export class NtfyChannel {
           clearIdleTimer()
           try { reader.cancel() } catch {}
         } catch {
-          // connection failed (including idle abort) — back off and retry
+          // connection failed (including idle abort) — fall through to backoff
           clearIdleTimer()
-          await new Promise((r) => setTimeout(r, backoffMs))
-          backoffMs = Math.min(backoffMs * 2, 60000)
         }
+        if (!this.subscribed) break
+        // Backoff applies to clean closes too: a server that accepts and
+        // immediately ends the stream must not cause a hot reconnect loop.
+        if (Date.now() - startedAt >= stableMs) backoffMs = this.reconnectBaseMs
+        await new Promise((r) => setTimeout(r, backoffMs))
+        backoffMs = Math.min(backoffMs * 2, 60000)
       }
     }
     void loop()

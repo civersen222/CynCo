@@ -147,6 +147,63 @@ describe('NtfyChannel', () => {
     expect(ch.queuedCount).toBe(100)
   })
 
+  it('serializes concurrent publishes so the queue is not flushed twice', async () => {
+    const ch = new NtfyChannel({
+      baseUrl: 'http://127.0.0.1:1', alertTopic: 'a', commandTopic: 'c', // nothing listening
+    })
+    await ch.publish({ title: 'queued', message: 'm' })
+    expect(ch.queuedCount).toBe(1)
+
+    const mock = await startMockNtfy()
+    cleanup = mock.close
+    ;(ch as any).baseUrl = mock.url
+    await Promise.all([
+      ch.publish({ title: 'a1', message: 'm' }),
+      ch.publish({ title: 'a2', message: 'm' }),
+    ])
+    // queued + a1 + a2, with the queued item sent exactly once
+    expect(mock.captured.length).toBe(3)
+    expect(mock.captured.filter((c) => c.body.title === 'queued').length).toBe(1)
+  })
+
+  it('backs off when SSE connections close cleanly right after connecting', async () => {
+    let connectionCount = 0
+    const server = await new Promise<http.Server>((resolve) => {
+      const s = http.createServer((req, res) => {
+        if (req.method === 'GET' && req.url?.endsWith('/sse')) {
+          connectionCount++
+          res.writeHead(200, { 'Content-Type': 'text/event-stream' })
+          res.end(': bye\n\n') // clean close immediately — no error thrown client-side
+          return
+        }
+        res.writeHead(404)
+        res.end()
+      })
+      s.listen(0, '127.0.0.1', () => resolve(s))
+    })
+
+    const port = (server.address() as any).port
+    const ch = new NtfyChannel({
+      baseUrl: `http://127.0.0.1:${port}`,
+      alertTopic: 'a',
+      commandTopic: 'c',
+      idleTimeoutMs: 5000,
+      reconnectBaseMs: 50,
+    })
+    let stop: (() => void) | null = null
+    try {
+      stop = ch.subscribe(() => {})
+      await new Promise((r) => setTimeout(r, 500))
+      // With backoff (50, 100, 200, 400ms) at most ~5 connects fit in 500ms.
+      // A hot reconnect loop would produce dozens.
+      expect(connectionCount).toBeGreaterThanOrEqual(2)
+      expect(connectionCount).toBeLessThanOrEqual(6)
+    } finally {
+      stop?.()
+      await new Promise<void>((r) => server.close(() => r()))
+    }
+  })
+
   it('reconnects after idle timeout when SSE server sends no data', async () => {
     let connectionCount = 0
     const server = await new Promise<http.Server>((resolve) => {
