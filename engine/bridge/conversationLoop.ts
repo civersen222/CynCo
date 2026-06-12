@@ -2350,7 +2350,7 @@ export class ConversationLoop {
     }
 
     // Governance: record tool result
-    this.governance.onToolResult(toolName, !result.isError, Date.now() - toolStartMs, result.output)
+    this.governance.onToolResult(toolName, !result.isError, Date.now() - toolStartMs, result.output, toolInput)
 
     // Governance: track read patterns for prediction system
     const toolFilePath = (toolInput as any).file_path ?? (toolInput as any).path ?? ''
