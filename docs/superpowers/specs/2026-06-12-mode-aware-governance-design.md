@@ -131,6 +131,16 @@ Mission-mode CRITICAL variant ends with:
 structured outcome now." Interactive keeps the current generic text. The
 variant is selected by the loop's `mode`.
 
+### 2e. S2 nudges (observed in the 2026-06-12 replay, post-fix run)
+
+The S2 coordinator nudged "Do not describe what you will do. Call a tool now."
+on the turn where the model was correctly producing its final structured
+outcome (text-only by design). In mission mode, S2 must not push toward tool
+use when the run is in its answer-production phase — at minimum, suppress
+tool-pushing nudges when the response parses as (or begins) the structured
+outcome format. Plan enumerates the nudge call sites and picks the narrowest
+gate.
+
 ## 3. "No data == worst case" audit
 
 The agreement bug pattern: a metric returns its worst value (0.0) when it has
