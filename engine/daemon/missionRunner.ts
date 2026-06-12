@@ -7,7 +7,10 @@ import { GpuBusyError } from './taskRunner.js'
 import { serializeHandoff } from '../memory/handoff.js'
 import type { CommandMessage, Recommendation, TaskFileInput, TaskOutcome, TriggerSpec } from './types.js'
 
-const GPU_DEFER_MS = 10 * 60 * 1000
+// GPU-busy defer backoff (spec §2/§7): 5 → 10 → 20 → 40 → 60 min, capped.
+// In-memory by design — a daemon restart starting fresh at 5 min is fine.
+const GPU_DEFER_BASE_MS = 5 * 60 * 1000
+const GPU_DEFER_MAX_MS = 60 * 60 * 1000
 const FAILURE_ALERT_THRESHOLD = 3
 const DEFAULT_TOOLS = ['Mfl', 'WebSearch', 'WebFetch', 'Read']
 const DEFAULT_TIMEOUT_MS = 15 * 60 * 1000
@@ -24,6 +27,9 @@ export interface MissionRunnerDeps {
 }
 
 export class MissionRunner {
+  /** Consecutive GPU-busy defers per trigger id (drives the backoff). */
+  private gpuDefers = new Map<string, number>()
+
   constructor(
     private ledger: MissionLedger,
     private deps: MissionRunnerDeps,
@@ -102,11 +108,15 @@ export class MissionRunner {
     let outcome: TaskOutcome
     try {
       outcome = await this.deps.runTask(input)
+      this.gpuDefers.delete(trigger.id) // GPU was free — reset the backoff
     } catch (err) {
       if (err instanceof GpuBusyError) {
-        // Defer, don't count as failure
-        console.log(`[mission:${this.ledger.config.id}] GPU busy — deferring trigger "${trigger.id}" by ${GPU_DEFER_MS / 60000} min`)
-        this.ledger.setNextFire(trigger.id, new Date(now.getTime() + GPU_DEFER_MS).toISOString())
+        // Defer with escalating backoff, don't count as failure
+        const defers = this.gpuDefers.get(trigger.id) ?? 0
+        const deferMs = Math.min(GPU_DEFER_BASE_MS * 2 ** defers, GPU_DEFER_MAX_MS)
+        this.gpuDefers.set(trigger.id, defers + 1)
+        console.log(`[mission:${this.ledger.config.id}] GPU busy — deferring trigger "${trigger.id}" by ${deferMs / 60000} min (defer #${defers + 1})`)
+        this.ledger.setNextFire(trigger.id, new Date(now.getTime() + deferMs).toISOString())
         return
       }
       outcome = { ok: false, summary: '', recommendations: [], error: err instanceof Error ? err.message : String(err) }

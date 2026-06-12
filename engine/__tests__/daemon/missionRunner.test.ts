@@ -136,17 +136,50 @@ describe('MissionRunner.tick', () => {
     expect(ledger.state.lastSeen['12345']).toBe('hash-2')
   })
 
-  it('GPU busy defers: nextFire pushed 10 minutes, no failure recorded', async () => {
+  it('GPU busy defers with escalating backoff: 5 → 10 → 20 min, no failure recorded (spec §2/§7)', async () => {
     const { GpuBusyError } = await import('../../daemon/taskRunner.js')
-    const { deps, ranTasks } = makeDeps({ runTask: async () => { throw new GpuBusyError() } })
+    const { deps } = makeDeps({ runTask: async () => { throw new GpuBusyError() } })
     const ledger = MissionLedger.load(join(dir, 'mfl-dynasty'))
+    const runner = new MissionRunner(ledger, deps as any)
+    const expected = [5, 10, 20]
+    for (const minutes of expected) {
+      ledger.setNextFire('news', new Date(2026, 5, 11, 11, 59).toISOString())
+      ledger.setNextFire('poll', new Date(2026, 5, 12).toISOString())
+      await runner.tick()
+      expect(ledger.state.failureStreak).toBe(0)
+      const next = new Date(ledger.state.nextFire['news'])
+      expect(next.getTime()).toBe(deps.now().getTime() + minutes * 60000)
+    }
+  })
+
+  it('GPU backoff caps at 60 min and resets after a successful run', async () => {
+    const { GpuBusyError } = await import('../../daemon/taskRunner.js')
+    let busy = true
+    const { deps } = makeDeps({
+      runTask: async (): Promise<TaskOutcome> => {
+        if (busy) throw new GpuBusyError()
+        return { ok: true, summary: 'ran', recommendations: [] }
+      },
+    })
+    const ledger = MissionLedger.load(join(dir, 'mfl-dynasty'))
+    const runner = new MissionRunner(ledger, deps as any)
+    // Drive past the cap: 5,10,20,40,60,60
+    for (let i = 0; i < 6; i++) {
+      ledger.setNextFire('news', new Date(2026, 5, 11, 11, 59).toISOString())
+      ledger.setNextFire('poll', new Date(2026, 5, 12).toISOString())
+      await runner.tick()
+    }
+    expect(new Date(ledger.state.nextFire['news']).getTime()).toBe(deps.now().getTime() + 60 * 60000)
+    // Successful run resets the backoff
+    busy = false
     ledger.setNextFire('news', new Date(2026, 5, 11, 11, 59).toISOString())
     ledger.setNextFire('poll', new Date(2026, 5, 12).toISOString())
-    const runner = new MissionRunner(ledger, deps as any)
     await runner.tick()
-    expect(ledger.state.failureStreak).toBe(0)
-    const next = new Date(ledger.state.nextFire['news'])
-    expect(next.getTime()).toBe(deps.now().getTime() + 10 * 60000)
+    busy = true
+    ledger.setNextFire('news', new Date(2026, 5, 11, 11, 59).toISOString())
+    ledger.setNextFire('poll', new Date(2026, 5, 12).toISOString())
+    await runner.tick()
+    expect(new Date(ledger.state.nextFire['news']).getTime()).toBe(deps.now().getTime() + 5 * 60000)
   })
 
   it('3 consecutive failures publish an algedonic alert', async () => {

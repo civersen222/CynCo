@@ -9,23 +9,45 @@ export class GpuBusyError extends Error {
   constructor() { super('GPU busy: an interactive llama-server is running') }
 }
 
+// A compute app holding this much VRAM means the GPU can't also fit a
+// one-shot engine model load (Qwen3.6-27B Q6_K needs ~24GB of the 5090's 32GB).
+const GPU_VRAM_BUSY_MIB = 4096
+
 /**
- * Heuristic: if llama-server is already running, an interactive CynCo session
- * owns the GPU — a scheduled task must not fight it for VRAM.
+ * GPU guard (spec §2): nvidia-smi compute apps PLUS the tasklist heuristic
+ * for an interactive CynCo session (llama-server). Either signal → busy.
+ * Both probes fail open: can't tell → let the run proceed; engine startup
+ * will fail loudly if truly contended.
  */
 export async function isGpuBusy(
   listProcesses?: () => Promise<string>,
+  queryGpuApps?: () => Promise<string>,
 ): Promise<boolean> {
   const list = listProcesses ?? (async () => {
     const { execSync } = require('child_process')
     return execSync('tasklist', { timeout: 10000, encoding: 'utf-8' }) as string
   })
+  const queryGpu = queryGpuApps ?? (async () => {
+    const { execSync } = require('child_process')
+    return execSync('nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader,nounits', {
+      timeout: 10000, encoding: 'utf-8',
+    }) as string
+  })
+
   try {
     const out = await list()
-    return out.toLowerCase().includes('llama-server')
-  } catch {
-    return false // can't tell — let the run proceed; engine startup will fail loudly if truly contended
-  }
+    if (out.toLowerCase().includes('llama-server')) return true
+  } catch {}
+
+  try {
+    // One "pid, used_memory_MiB" line per compute app; empty when GPU is idle
+    for (const line of (await queryGpu()).split('\n')) {
+      const usedMib = parseInt(line.split(',')[1] ?? '', 10)
+      if (Number.isFinite(usedMib) && usedMib >= GPU_VRAM_BUSY_MIB) return true
+    }
+  } catch {}
+
+  return false
 }
 
 export interface TaskRunnerOptions {
