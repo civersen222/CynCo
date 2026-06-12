@@ -67,7 +67,9 @@ export const mflTool: ToolImpl = {
   description:
     'Query the MyFantasyLeague (MFL) fantasy football API (read-only). ' +
     `Queries: ${[...ALLOWED_QUERIES].join(', ')}. ` +
-    'Returns raw JSON. Use extra params like {"W": "3"} for week or {"FRANCHISE": "0005"} to filter.',
+    'Returns raw JSON. Use extra params like {"W": "3"} for week or {"FRANCHISE": "0005"} to filter. ' +
+    'IMPORTANT: the players query returns the ENTIRE league player database unless filtered — ' +
+    'to look up specific players (e.g. ids from rosters), always pass {"PLAYERS": "id1,id2,..."}.',
   inputSchema: {
     type: 'object',
     properties: {

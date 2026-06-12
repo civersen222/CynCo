@@ -43,6 +43,14 @@ describe('buildMflExportUrl', () => {
 })
 
 describe('Mfl tool', () => {
+  it('description teaches the PLAYERS filter for the players query', () => {
+    // 2026-06-12 incident: rosters returns ids only; the model looped fetching
+    // the ENTIRE player database (truncated) because nothing told it the
+    // players query accepts a PLAYERS=id1,id2 filter.
+    expect(mflTool.description).toContain('PLAYERS')
+    expect(mflTool.description).toMatch(/players.*entire|entire.*players/i)
+  })
+
   it('rejects non-whitelisted queries (read-only guard)', async () => {
     const result = await mflTool.execute({ query: 'import', league: '12345' }, {} as any)
     expect(result.isError).toBe(true)

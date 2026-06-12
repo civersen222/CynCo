@@ -745,7 +745,9 @@ export class ConversationLoop {
           activeWorkflow: this.workflowEngine.state?.workflow.name ?? null,
           currentPhase: this.workflowEngine.currentPhase?.name ?? null,
           contextUsagePercent: estimatedTokens / ctxLength,
-          governance: govReport,
+          // activeToolNames: rules that restrict tools (C7) must pick from
+          // what THIS run actually has — not a hardcoded coding-tool list.
+          governance: { ...(govReport as any), activeToolNames: toolDefs.map(t => t.name) },
           recentToolResults: [],
           availableModels: [this.config.model ?? 'unknown'],
           turnCount: this.messages.filter(m => m.role === 'user').length,
@@ -799,11 +801,17 @@ export class ConversationLoop {
           }
         }
 
-        // Hard tool filtering: S5 decides, engine enforces
+        // Hard tool filtering: S5 decides, engine enforces — but never apply
+        // a restriction that would leave the model with zero tools.
         if (decision.tools) {
-          console.log(`[s5] ENFORCE: tool restriction to [${decision.tools.join(', ')}]`)
           const allowed = new Set(decision.tools)
-          toolDefs = toolDefs.filter(t => allowed.has(t.name))
+          const filtered = toolDefs.filter(t => allowed.has(t.name))
+          if (filtered.length > 0) {
+            console.log(`[s5] ENFORCE: tool restriction to [${decision.tools.join(', ')}]`)
+            toolDefs = filtered
+          } else {
+            console.log(`[s5] ENFORCE skipped: restriction [${decision.tools.join(', ')}] would remove every available tool`)
+          }
         }
 
         // Model switch enforcement
@@ -1461,14 +1469,14 @@ export class ConversationLoop {
           ? `\n\n## GOVERNANCE SIGNAL — CRITICAL (turn ${currentStuck})\n\n` +
             `CRITICAL: You have been stuck for ${currentStuck} turns repeating the same actions.\n\n` +
             `You MUST change your approach NOW:\n` +
-            `- If you have been reading files → STOP reading and EDIT or WRITE code\n` +
-            `- If you have been searching → STOP searching and ACT on what you know\n` +
-            `- If editing has failed → try a COMPLETELY different strategy\n` +
-            `- Do NOT call any tool you have used in the last 5 turns\n\n` +
+            `- Do NOT call any tool you have used in the last 5 turns\n` +
+            `- Use a DIFFERENT available tool, or change the tool's parameters completely\n` +
+            `- If repeated attempts keep failing → try a COMPLETELY different strategy\n` +
+            `- If you already have enough information → STOP using tools and produce your final answer\n\n` +
             `YOUR NEXT ACTION MUST BE DIFFERENT FROM YOUR PREVIOUS ACTIONS.`
           : `\n\n## GOVERNANCE SIGNAL (turn ${currentStuck})\n\n` +
             `WARNING: You have been repeating similar actions for ${currentStuck} turns.\n` +
-            `Change your approach: if reading, start editing. If searching, start acting.`
+            `Change your approach: use a different tool or different parameters, or act on what you already know.`
         // Append governance signal to the frozen system prompt
         effectiveSystemPrompt = asSystemPrompt([...systemPrompt, signal])
 
@@ -1482,7 +1490,7 @@ export class ConversationLoop {
               activeWorkflow: this.workflowEngine.state?.workflow.name ?? null,
               currentPhase: this.workflowEngine.currentPhase?.name ?? null,
               contextUsagePercent: 0.5,
-              governance: govReport,
+              governance: { ...(govReport as any), activeToolNames: iterationTools.map((t: any) => t.name) },
               recentToolResults: [],
               availableModels: [this.config.model ?? 'unknown'],
               turnCount: this.messages.filter(m => m.role === 'user').length,
@@ -1502,8 +1510,13 @@ export class ConversationLoop {
             })
             if (decision.tools) {
               const allowed = new Set(decision.tools)
-              iterationTools = iterationTools.filter(t => allowed.has(t.name))
-              console.log(`[s5] LIVE RE-EVAL: tool restriction to [${decision.tools.join(', ')}] (stuck ${currentStuck})`)
+              const filtered = iterationTools.filter(t => allowed.has(t.name))
+              if (filtered.length > 0) {
+                iterationTools = filtered
+                console.log(`[s5] LIVE RE-EVAL: tool restriction to [${decision.tools.join(', ')}] (stuck ${currentStuck})`)
+              } else {
+                console.log(`[s5] LIVE RE-EVAL skipped: restriction [${decision.tools.join(', ')}] would remove every available tool (stuck ${currentStuck})`)
+              }
             }
           } catch (e) {
             console.log(`[s5] Live re-eval failed: ${e}`)

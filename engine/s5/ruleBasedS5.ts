@@ -164,14 +164,24 @@ const C7: S5Rule = {
     const gov = input.governance as Record<string, unknown> | undefined
     const stuckTurns = (gov?.stuckTurns as number) ?? 0
     if (stuckTurns >= 5) {
-      const recentTools = (gov?.recentToolNames as string[]) ?? []
-      const recentSet = new Set(recentTools)
-      // AGGRESSIVE restriction: at stuck >= 5, limit to action tools ONLY
-      // The model has been reading/searching — it needs to ACT, not explore
-      // Giving it 17+ tools means it picks another read-type tool
-      const forcedTools = new Set<string>(['Edit', 'Write', 'MultiEdit', 'ApplyPatch', 'Bash'])
+      const recentSet = new Set((gov?.recentToolNames as string[]) ?? [])
+      const available = gov?.activeToolNames as string[] | undefined
+      if (available && available.length > 0) {
+        // Restrict to tools the model has NOT been spamming, drawn from what
+        // is actually available in this run. Works for coding sessions AND
+        // pinned read-only mission runs (2026-06-12 incident: hardcoding
+        // coding tools left a mission run with ZERO tools and it halted).
+        const unused = available.filter((t) => !recentSet.has(t))
+        if (unused.length === 0) return null // never restrict to an empty set
+        return {
+          tools: unused,
+          reasoning: `stuck for ${stuckTurns} turns — restricting to unused tools to force new approach`,
+        }
+      }
+      // Available set unknown (legacy callers): fall back to action tools —
+      // the model has been reading/searching and needs to ACT, not explore.
       return {
-        tools: [...forcedTools],
+        tools: ['Edit', 'Write', 'MultiEdit', 'ApplyPatch', 'Bash'],
         reasoning: `stuck for ${stuckTurns} turns — restricting to unused tools to force new approach`,
       }
     }

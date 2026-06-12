@@ -193,6 +193,52 @@ describe('ConversationLoop with tools', () => {
     expect(String(complete.result)).not.toContain('SHOULD_NOT_RUN')
   })
 
+  it.skipIf(SKIP)('S5 restriction that would empty the tool set is skipped, and S5 sees activeToolNames', async () => {
+    // Real incident (2026-06-12): C7 restricted a mission run to coding tools
+    // outside the pinned set — intersection left ZERO tools. The loop must
+    // never apply a restriction that removes every available tool.
+    const captured: CompletionRequest[] = []
+    const provider: Provider = {
+      name: 'mock',
+      async healthCheck() { return true },
+      async listModels() { return [] },
+      async probeCapabilities() { return defaultCapabilities() },
+      async complete() { throw new Error('not implemented') },
+      async *stream(request: CompletionRequest): AsyncGenerator<StreamEvent> {
+        captured.push(request)
+        yield* textResponse('done')
+      },
+    }
+    const s5Inputs: any[] = []
+    const fakeS5 = {
+      async makeDecision(input: any) {
+        s5Inputs.push(input)
+        return {
+          workflow: null, advancePhase: null, model: null,
+          tools: ['Edit', 'Write', 'Bash'], // none of these exist in this run
+          contextAction: 'none', spawnAgent: null, priority: 'balanced',
+          reasoning: 'test restriction',
+        }
+      },
+      evaluateLastDecision() { return null },
+    }
+    const loop = new ConversationLoop({
+      config: defaultConfig(),
+      provider,
+      emit: () => {},
+      s5: fakeS5 as any,
+      allowedTools: ['Read'],
+    })
+    await loop.handleUserMessage('hello')
+    // S5 was told what tools are actually available in this run
+    expect(s5Inputs.length).toBeGreaterThan(0)
+    expect(s5Inputs[0].governance.activeToolNames).toEqual(['Read'])
+    // The empty-intersection restriction was skipped — Read still offered
+    const system = String(captured[0].system ?? '')
+    const toolsSection = system.slice(system.indexOf('<TOOLS>'), system.indexOf('</TOOLS>'))
+    expect(toolsSection).toContain('- Read:')
+  })
+
   it.skipIf(SKIP)('emits message.complete with correct stopReason', async () => {
     const events: any[] = []
     const provider = mockProvider([() => textResponse('done')])
