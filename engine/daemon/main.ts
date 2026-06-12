@@ -35,7 +35,7 @@ const ntfy = new NtfyChannel({
 
 async function fetchMflSnapshot(leagueId: string, year: number): Promise<string> {
   const url = buildMflExportUrl({ query: 'transactions', league: leagueId, year, apiKey: loadMflApiKey() })
-  const resp = await fetch(url, { headers: { 'User-Agent': 'CynCo/1.0' }, signal: AbortSignal.timeout(30000) })
+  const resp = await fetch(url, { headers: { 'User-Agent': 'CynCoMFL/1.0' }, signal: AbortSignal.timeout(30000) })
   if (!resp.ok) throw new Error(`MFL HTTP ${resp.status}`)
   return createHash('sha256').update(await resp.text()).digest('hex')
 }
