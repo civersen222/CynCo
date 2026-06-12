@@ -1,5 +1,5 @@
 // engine/daemon/missionLedger.ts
-import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync } from 'fs'
+import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync, renameSync } from 'fs'
 import { join } from 'path'
 import type {
   MissionConfig, MissionState, Recommendation, RunRecord,
@@ -25,11 +25,17 @@ export class MissionLedger {
   static load(dir: string): MissionLedger {
     const config = JSON.parse(readFileSync(join(dir, 'mission.json'), 'utf-8')) as MissionConfig
     const statePath = join(dir, 'state.json')
-    let state: MissionState
+    let state: MissionState = { lastSeen: {}, nextFire: {}, pending: {}, trust: {}, failureStreak: 0 }
     if (existsSync(statePath)) {
-      state = JSON.parse(readFileSync(statePath, 'utf-8')) as MissionState
-    } else {
-      state = { lastSeen: {}, nextFire: {}, pending: {}, trust: {}, failureStreak: 0 }
+      try {
+        state = JSON.parse(readFileSync(statePath, 'utf-8')) as MissionState
+      } catch (err) {
+        // A truncated state.json (power loss mid-write) must not crash-loop the
+        // daemon forever. Preserve the corrupt file for forensics, start fresh.
+        const backup = `${statePath}.corrupt`
+        try { renameSync(statePath, backup) } catch {}
+        console.error(`[ledger:${config.id}] state.json corrupt — backed up to ${backup}, starting with fresh state: ${err instanceof Error ? err.message : err}`)
+      }
     }
     // Ensure every trustLadder action type has a state entry
     for (const [actionType, ladder] of Object.entries(config.trustLadder)) {
@@ -42,7 +48,11 @@ export class MissionLedger {
 
   saveState(): void {
     mkdirSync(this.dir, { recursive: true })
-    writeFileSync(join(this.dir, 'state.json'), JSON.stringify(this.state, null, 2), 'utf-8')
+    // Atomic write: a crash mid-write must never leave a truncated state.json.
+    const statePath = join(this.dir, 'state.json')
+    const tmpPath = `${statePath}.tmp`
+    writeFileSync(tmpPath, JSON.stringify(this.state, null, 2), 'utf-8')
+    renameSync(tmpPath, statePath)
   }
 
   recordRun(run: RunRecord): void {
@@ -53,7 +63,13 @@ export class MissionLedger {
     const p = join(this.dir, 'runs.jsonl')
     if (!existsSync(p)) return []
     const lines = readFileSync(p, 'utf-8').split('\n').filter(l => l.trim())
-    return lines.slice(-n).map(l => JSON.parse(l) as RunRecord)
+    // Tolerate truncated appends (crash mid-write) — one bad line must not
+    // permanently break every future fire() on this mission.
+    const runs: RunRecord[] = []
+    for (const l of lines) {
+      try { runs.push(JSON.parse(l) as RunRecord) } catch {}
+    }
+    return runs.slice(-n)
   }
 
   setNextFire(triggerId: string, iso: string): void {
@@ -69,6 +85,9 @@ export class MissionLedger {
   }
 
   resolveApproval(recId: string, verdict: 'approve' | 'reject'): ApprovalResolution | null {
+    // recId arrives from the phone over ntfy — hasOwn guards against prototype
+    // keys like "constructor" reaching the plain-object pending map.
+    if (!Object.hasOwn(this.state.pending, recId)) return null
     const pending = this.state.pending[recId]
     if (!pending) return null
     delete this.state.pending[recId]

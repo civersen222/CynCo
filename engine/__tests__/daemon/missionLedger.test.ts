@@ -1,6 +1,6 @@
 // engine/__tests__/daemon/missionLedger.test.ts
 import { beforeEach, afterEach, describe, expect, it } from 'bun:test'
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'fs'
+import { appendFileSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { MissionLedger } from '../../daemon/missionLedger.js'
@@ -92,5 +92,30 @@ describe('MissionLedger', () => {
     const res = ml.resolveApproval('rec-2', 'approve')
     expect(res).not.toBeNull()
     expect(res?.promotionEligible).toBe(false)
+  })
+
+  it('survives a corrupt state.json: backs it up and starts fresh', () => {
+    writeFileSync(join(dir, 'state.json'), '{"lastSeen": {tru', 'utf-8') // truncated write
+    const ml = MissionLedger.load(dir)
+    expect(ml.state.failureStreak).toBe(0)
+    expect(ml.state.trust.waiver.approvedStreak).toBe(0)
+    // corrupt original preserved for forensics
+    expect(readFileSync(join(dir, 'state.json.corrupt'), 'utf-8')).toBe('{"lastSeen": {tru')
+  })
+
+  it('recentRuns skips unparseable lines instead of throwing', () => {
+    const ml = MissionLedger.load(dir)
+    ml.recordRun({ ts: 't1', triggerId: 'daily-news', ok: true, summary: 'a', recommendationIds: [] })
+    appendFileSync(join(dir, 'runs.jsonl'), '{"ts":"t2","trunc', 'utf-8') // crash mid-append
+    appendFileSync(join(dir, 'runs.jsonl'), '\n', 'utf-8')
+    ml.recordRun({ ts: 't3', triggerId: 'daily-news', ok: true, summary: 'c', recommendationIds: [] })
+    const runs = ml.recentRuns(5)
+    expect(runs.map(r => r.ts)).toEqual(['t1', 't3'])
+  })
+
+  it('resolveApproval ignores prototype keys like "constructor"', () => {
+    const ml = MissionLedger.load(dir)
+    expect(ml.resolveApproval('constructor', 'approve')).toBeNull()
+    expect(ml.resolveApproval('__proto__', 'approve')).toBeNull()
   })
 })
