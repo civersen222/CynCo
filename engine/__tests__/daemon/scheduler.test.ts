@@ -12,6 +12,9 @@ const daily = (at: string): TriggerSpec => ({
 const weekly = (day: TriggerSpec['day'], at: string): TriggerSpec => ({
   id: 'w', kind: 'weekly', day, at, precheck: 'none', missedPolicy: 'skip', prompt: 'p',
 })
+const cron = (expr: string): TriggerSpec => ({
+  id: 'c', kind: 'cron', cron: expr, precheck: 'none', missedPolicy: 'skip', prompt: 'p',
+})
 
 describe('computeNextFire', () => {
   it('interval: from + everyMinutes', () => {
@@ -47,6 +50,55 @@ describe('computeNextFire', () => {
     const from = new Date(2026, 5, 11, 1, 0, 0) // Thursday 01:00
     const next = computeNextFire(weekly('thu', '08:00'), from)
     expect(next.getDate()).toBe(11)
+  })
+
+  it('cron: step minutes (*/15)', () => {
+    const from = new Date(2026, 5, 11, 12, 7, 0)
+    const next = computeNextFire(cron('*/15 * * * *'), from)
+    expect(next.getTime()).toBe(new Date(2026, 5, 11, 12, 15, 0).getTime())
+  })
+
+  it('cron: fixed time on a weekday (0 8 * * 1 = Mondays 08:00)', () => {
+    const from = new Date(2026, 5, 11, 12, 0, 0) // Thursday
+    const next = computeNextFire(cron('0 8 * * 1'), from)
+    expect(next.getDay()).toBe(1)
+    expect(next.getHours()).toBe(8)
+    expect(next.getMinutes()).toBe(0)
+    expect(next.getDate()).toBe(15) // Mon Jun 15 2026
+  })
+
+  it('cron: day-of-month (30 14 1 * * = 1st at 14:30)', () => {
+    const from = new Date(2026, 5, 11, 12, 0, 0)
+    const next = computeNextFire(cron('30 14 1 * *'), from)
+    expect(next.getDate()).toBe(1)
+    expect(next.getMonth()).toBe(6) // July
+    expect(next.getHours()).toBe(14)
+    expect(next.getMinutes()).toBe(30)
+  })
+
+  it('cron: lists and ranges (0,30 9-17 * * *)', () => {
+    const from = new Date(2026, 5, 11, 17, 31, 0) // past the last slot today
+    const next = computeNextFire(cron('0,30 9-17 * * *'), from)
+    expect(next.getTime()).toBe(new Date(2026, 5, 12, 9, 0, 0).getTime())
+  })
+
+  it('cron: dow 7 and 0 both mean Sunday', () => {
+    const from = new Date(2026, 5, 11, 12, 0, 0) // Thursday
+    const next = computeNextFire(cron('0 6 * * 7'), from)
+    expect(next.getDay()).toBe(0)
+    expect(next.getDate()).toBe(14) // Sun Jun 14 2026
+  })
+
+  it('cron: never fires at or before `from` itself', () => {
+    const from = new Date(2026, 5, 11, 12, 0, 0)
+    const next = computeNextFire(cron('0 12 * * *'), from) // exactly `from`
+    expect(next.getTime()).toBe(new Date(2026, 5, 12, 12, 0, 0).getTime())
+  })
+
+  it('cron: invalid expression throws with a clear message', () => {
+    const from = new Date(2026, 5, 11, 12, 0, 0)
+    expect(() => computeNextFire(cron('not a cron'), from)).toThrow(/cron/i)
+    expect(() => computeNextFire(cron('99 * * * *'), from)).toThrow(/cron/i)
   })
 })
 

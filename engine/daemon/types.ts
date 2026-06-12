@@ -6,11 +6,13 @@ export type Weekday = 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun'
 
 export interface TriggerSpec {
   id: string
-  /** interval: fire every `everyMinutes`. daily: fire at `at` (HH:MM local). weekly: fire on `day` at `at`. */
-  kind: 'interval' | 'daily' | 'weekly'
+  /** interval: fire every `everyMinutes`. daily: fire at `at` (HH:MM local). weekly: fire on `day` at `at`. cron: 5-field `cron` expression (local time). */
+  kind: 'interval' | 'daily' | 'weekly' | 'cron'
   everyMinutes?: number
   at?: string
   day?: Weekday
+  /** 5-field cron "min hour day-of-month month day-of-week" — numeric values with * , - / supported. */
+  cron?: string
   /** 'mfl-delta': skip the engine run if MFL transactions haven't changed. 'none': always run. */
   precheck: 'mfl-delta' | 'none'
   /** What to do when the daemon was down at fire time. */

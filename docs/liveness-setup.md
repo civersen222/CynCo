@@ -81,6 +81,10 @@ Create `~/.cynco/missions/mfl-dynasty/mission.json`:
 }
 ```
 
+Trigger kinds: `interval` (`everyMinutes`), `daily` (`at`), `weekly` (`day` + `at`),
+and `cron` — a 5-field cron expression in local time, e.g.
+`{ "id": "gameday", "kind": "cron", "cron": "0 11,17 * * 0", ... }` (Sundays 11:00 and 17:00).
+
 The daemon reads `mission.json` once at startup — after editing it (new triggers,
 changed intervals, trust ladder), restart the daemon for the changes to take effect.
 
