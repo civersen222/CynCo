@@ -57,7 +57,13 @@ export function extractOutcome(text: string): TaskOutcome {
   }
   // Soft failure: the model did work but broke the outcome contract. Keep
   // ok:true (don't page the user via failureStreak) but flag it visibly.
-  const tail = text.trim().slice(-1000)
+  // Sanitize before tailing — stuck runs leak reasoning (<think>) and
+  // malformed <tool_call> fragments, which must never reach the phone.
+  const sanitized = text
+    .replace(/<think>[\s\S]*?(?:<\/think>|$)/g, '')
+    .replace(/<tool_call>[\s\S]*?(?:<\/tool_call>|$)/g, '')
+    .trim()
+  const tail = sanitized.slice(-1000)
   return { ok: true, summary: `(unstructured output) ${tail || '(no output)'}`, recommendations: [] }
 }
 

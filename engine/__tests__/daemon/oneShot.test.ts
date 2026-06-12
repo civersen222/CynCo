@@ -47,6 +47,29 @@ describe('extractOutcome', () => {
     expect(outcome.summary).toMatch(/^\(unstructured output\)/)
   })
 
+  it('fallback strips think blocks and tool_call fragments before tailing', () => {
+    // Real failure mode (2026-06-12 morning-brief): model got stuck, emitted
+    // reasoning + a malformed <tool_call> instead of the outcome JSON, and the
+    // raw tail shipped to the phone as the digest.
+    const text = [
+      '<think>let me reason about the roster here</think>',
+      'I am stuck calling Mfl "players" which returns the full database.',
+      '<tool_call>',
+      '{',
+      '{',
+      '  "name": "Mfl",',
+      '  "arguments": { "league": "65042", "query": "players" }',
+      '}',
+    ].join('\n')
+    const outcome = extractOutcome(text)
+    expect(outcome.summary).toMatch(/^\(unstructured output\)/)
+    expect(outcome.summary).toContain('stuck calling Mfl')
+    expect(outcome.summary).not.toContain('<think>')
+    expect(outcome.summary).not.toContain('let me reason')
+    expect(outcome.summary).not.toContain('<tool_call>')
+    expect(outcome.summary).not.toContain('"arguments"')
+  })
+
   it('ignores model-supplied recommendation ids and always generates fresh ones', () => {
     const text = '```json\n{"summary": "s", "recommendations": [{"id": "__proto__", "actionType": "waiver", "summary": "a", "detail": "d"}]}\n```'
     const outcome = extractOutcome(text)
