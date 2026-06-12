@@ -12,6 +12,14 @@ if (task.prompt.includes('HANG')) {
   setInterval(() => {}, 1000)
 } else if (task.prompt.includes('CRASH')) {
   process.exit(1)
+} else if (task.prompt.includes('ECHO_ENV')) {
+  mkdirSync(dirname(task.outcomePath), { recursive: true })
+  writeFileSync(task.outcomePath, JSON.stringify({
+    ok: true,
+    summary: `env keys: ${Object.keys(process.env).filter((k) => k.startsWith('CYNCO_')).join(',') || '(none)'}`,
+    recommendations: [],
+  }), 'utf-8')
+  process.exit(0)
 } else {
   mkdirSync(dirname(task.outcomePath), { recursive: true })
   writeFileSync(task.outcomePath, JSON.stringify({

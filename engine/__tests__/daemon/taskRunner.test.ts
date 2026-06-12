@@ -62,6 +62,24 @@ describe('TaskRunner', () => {
     } finally { rmSync(dir, { recursive: true, force: true }) }
   })
 
+  it('strips CYNCO_NTFY_* env so the one-shot engine cannot act as the daemon', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cynco-tr-'))
+    process.env.CYNCO_NTFY_TOKEN = 'tk_leak_test'
+    try {
+      const runner = new TaskRunner({
+        workDir: dir,
+        spawnCmd: [process.execPath, STUB],
+        isGpuBusyImpl: async () => false,
+      })
+      const outcome = await runner.run(makeInput(dir, 'ECHO_ENV'))
+      expect(outcome.ok).toBe(true)
+      expect(outcome.summary).not.toContain('CYNCO_NTFY_TOKEN')
+    } finally {
+      delete process.env.CYNCO_NTFY_TOKEN
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('throws GpuBusyError when the GPU is busy', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'cynco-tr-'))
     try {
