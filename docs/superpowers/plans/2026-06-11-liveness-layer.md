@@ -2571,10 +2571,5 @@ Report completion to the user with: test counts, the wire-check table, and what 
 
 - Spec coverage: daemon (§2→Tasks 8), ledger (§3→Task 3), one-shot (§4→Task 6), MFL tool (§5→Task 2), ntfy/approvals (§6→Tasks 5, 8), error handling (§7→Tasks 7, 8: timeout kill, failure streak alert, GPU defer, ntfy offline queue, Task Scheduler restart documented), testing (§8→every task + Task 9 + Task 11 wire-check), trust ladder Phase C preview (→Task 3 promotionEligible + Task 8 promotion notification, mode never auto-flips).
 - Type consistency: `TaskFileInput.outcomePath` is filled by `TaskRunner.run` when empty (missionRunner passes `''`); `ApprovalResolution.promotionEligible` used by both Task 3 tests and Task 8.
-- Deliberate scope cuts (out of scope per spec): Phase C writes, Sleeper, free-text commands, S5 integration into daemon decisions (the trust ladder data feeds it later), dashboard visibility of missions.
-
-- Spec deviations (found in final review, accepted as shipped behavior):
-  - Triggers use a structured spec (`kind: interval|daily|weekly` + fields) instead of raw cron strings — simpler to validate, covers every mission trigger we have.
-  - GPU guard uses a `tasklist` llama-server heuristic, not nvidia-smi VRAM queries — process presence is the actual contention signal on this box.
-  - One-shot runs get mission goal + leagues + recent-run summaries as context, not a full roster handoff — the engine fetches live rosters via the Mfl tool instead of trusting stale context.
-  - GPU-busy defer is a fixed 10 minutes rather than adaptive backoff — interactive sessions end on a human timescale; revisit if defers stack up in runs.jsonl.
+- Deliberate scope cuts (out of scope per spec): Phase C writes, Sleeper, free-text commands, dashboard visibility of missions.
+- Spec-compliance fixes landed after final review: one-shot mode runs the real S5/VSM-governed conversation loop (§4), task context = handoff-format YAML + roster snapshot (§3), nvidia-smi in the GPU guard + escalating defer backoff (§2/§7), cron expression triggers (§2).
