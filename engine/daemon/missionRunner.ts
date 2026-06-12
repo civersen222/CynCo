@@ -83,6 +83,7 @@ export class MissionRunner {
     } catch (err) {
       if (err instanceof GpuBusyError) {
         // Defer, don't count as failure
+        console.log(`[mission:${this.ledger.config.id}] GPU busy — deferring trigger "${trigger.id}" by ${GPU_DEFER_MS / 60000} min`)
         this.ledger.setNextFire(trigger.id, new Date(now.getTime() + GPU_DEFER_MS).toISOString())
         return
       }
