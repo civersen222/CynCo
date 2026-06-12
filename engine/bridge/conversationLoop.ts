@@ -2073,6 +2073,26 @@ export class ConversationLoop {
 
     console.log(`[loop] Executing tool: ${toolName}`)
 
+    // Hard tool pin (one-shot/unattended runs): enforce allowedTools at
+    // execution time too — simulated-mode models can hallucinate tools that
+    // were never offered in the prompt, and approveAll would run them.
+    if (this.allowedTools && !this.allowedTools.includes(toolName)) {
+      console.log(`[loop] BLOCKED (not in allowedTools): ${toolName}`)
+      const msg = `Tool "${toolName}" is not available in this run. Available tools: ${this.allowedTools.join(', ')}.`
+      this.emit({ type: 'tool.start', toolId, toolName, input: toolInput })
+      this.emit({ type: 'tool.complete', toolId, toolName, result: msg, isError: true })
+      toolResults.push({
+        type: 'tool_result',
+        tool_use_id: toolId,
+        content: [{ type: 'text', text: msg }],
+        is_error: true,
+      })
+      toolsUsedThisTurn.push(toolName)
+      toolResultsThisTurn.push('denied')
+      toolsUsedInSession.push(toolName)
+      return
+    }
+
     // Vibe Guardian: check risk level before execution
     const { classifyRisk, describeRisk } = await import('./guardianRules.js')
     const risk = classifyRisk(toolName, toolInput)

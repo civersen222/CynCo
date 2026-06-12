@@ -166,6 +166,33 @@ describe('ConversationLoop with tools', () => {
     expect(toolsSection).not.toContain('- Write:')
   })
 
+  it.skipIf(SKIP)('allowedTools blocks disallowed tool calls at execution time', async () => {
+    // Simulated-mode models can hallucinate tools that were never offered in
+    // the prompt — the pin must also be enforced when the call comes back.
+    function* bashToolUse(): Generator<StreamEvent> {
+      yield { type: 'message_start', message: { id: 'msg1', model: 'test', usage: { input_tokens: 10, output_tokens: 0 } } } as any
+      yield { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'tu1', name: 'Bash', input: {} } } as any
+      yield { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"command":"echo SHOULD_NOT_RUN"}' } } as any
+      yield { type: 'content_block_stop', index: 0 } as any
+      yield { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 5 } } as any
+      yield { type: 'message_stop' } as any
+    }
+    const events: any[] = []
+    const provider = mockProvider([() => bashToolUse(), () => textResponse('done')])
+    const loop = new ConversationLoop({
+      config: { ...defaultConfig(), approveAll: true },
+      provider,
+      emit: (e) => events.push(e),
+      allowedTools: ['Read'],
+    })
+    await loop.handleUserMessage('run something')
+    const complete = events.find(e => e.type === 'tool.complete' && e.toolName === 'Bash')
+    expect(complete).toBeDefined()
+    expect(complete.isError).toBe(true)
+    expect(String(complete.result)).toContain('not available in this run')
+    expect(String(complete.result)).not.toContain('SHOULD_NOT_RUN')
+  })
+
   it.skipIf(SKIP)('emits message.complete with correct stopReason', async () => {
     const events: any[] = []
     const provider = mockProvider([() => textResponse('done')])
