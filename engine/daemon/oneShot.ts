@@ -41,7 +41,9 @@ export function extractOutcome(text: string): TaskOutcome {
       const recommendations: Recommendation[] = (Array.isArray(raw.recommendations) ? raw.recommendations : [])
         .filter((r: any) => r && typeof r.actionType === 'string' && typeof r.summary === 'string' && typeof r.detail === 'string')
         .map((r: any) => ({
-          id: typeof r.id === 'string' && r.id ? r.id : `rec-${randomBytes(4).toString('hex')}`,
+          // SECURITY: ids key the daemon's pending map and ride ntfy approve
+          // buttons — never trust a model-supplied id, always mint our own.
+          id: `rec-${randomBytes(4).toString('hex')}`,
           actionType: r.actionType,
           summary: r.summary,
           detail: r.detail,
@@ -52,8 +54,10 @@ export function extractOutcome(text: string): TaskOutcome {
       // try the previous block
     }
   }
+  // Soft failure: the model did work but broke the outcome contract. Keep
+  // ok:true (don't page the user via failureStreak) but flag it visibly.
   const tail = text.trim().slice(-1000)
-  return { ok: true, summary: tail || '(no output)', recommendations: [] }
+  return { ok: true, summary: `(unstructured output) ${tail || '(no output)'}`, recommendations: [] }
 }
 
 export async function runOneShotTask(

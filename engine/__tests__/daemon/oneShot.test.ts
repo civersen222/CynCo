@@ -34,6 +34,17 @@ describe('extractOutcome', () => {
     expect(outcome.recommendations).toEqual([])
   })
 
+  it('flags unstructured fallback output so digests show the contract miss', () => {
+    const outcome = extractOutcome('free text, no json block')
+    expect(outcome.summary).toMatch(/^\(unstructured output\)/)
+  })
+
+  it('ignores model-supplied recommendation ids and always generates fresh ones', () => {
+    const text = '```json\n{"summary": "s", "recommendations": [{"id": "__proto__", "actionType": "waiver", "summary": "a", "detail": "d"}]}\n```'
+    const outcome = extractOutcome(text)
+    expect(outcome.recommendations[0].id).toMatch(/^rec-[0-9a-f]{8}$/)
+  })
+
   it('drops malformed recommendation entries', () => {
     const text = '```json\n{"summary": "s", "recommendations": [{"bogus": true}, {"actionType": "waiver", "summary": "a", "detail": "d"}]}\n```'
     const outcome = extractOutcome(text)
