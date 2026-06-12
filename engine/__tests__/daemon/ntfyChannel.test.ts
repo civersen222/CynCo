@@ -80,6 +80,18 @@ describe('NtfyChannel', () => {
     expect(JSON.parse(actions[1].body)).toEqual({ recId: 'rec-9', verdict: 'reject' })
   })
 
+  it('http actions carry the auth token so the phone can POST to a deny-all server', async () => {
+    const mock = await startMockNtfy()
+    cleanup = mock.close
+    const ch = new NtfyChannel({
+      baseUrl: mock.url, token: 'tk_secret', alertTopic: 'cynco-alerts', commandTopic: 'cynco-commands',
+    })
+    await ch.publishRecommendation({ id: 'rec-9', actionType: 'waiver', summary: 'Claim X', detail: 'why' })
+    const actions = mock.captured[0].body.actions
+    expect(actions[0].headers).toEqual({ Authorization: 'Bearer tk_secret' })
+    expect(actions[1].headers).toEqual({ Authorization: 'Bearer tk_secret' })
+  })
+
   it('queues failed publishes and flushes them on the next publish', async () => {
     const ch = new NtfyChannel({
       baseUrl: 'http://127.0.0.1:1', alertTopic: 'a', commandTopic: 'c', // nothing listening

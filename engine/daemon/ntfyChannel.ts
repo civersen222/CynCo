@@ -22,6 +22,7 @@ interface NtfyAction {
   url: string
   method?: string
   body?: string
+  headers?: Record<string, string>
   clear?: boolean
 }
 
@@ -100,6 +101,9 @@ export class NtfyChannel {
       url: cmdUrl,
       method: 'POST',
       body: JSON.stringify({ recId: rec.id, verdict } satisfies CommandMessage),
+      // The phone app does NOT attach its own login to http actions, so a
+      // deny-all server would 403 the button press without this header.
+      ...(this.token ? { headers: { Authorization: `Bearer ${this.token}` } } : {}),
       clear: true,
     })
     const actions: NtfyAction[] = [action('approve', 'Approve'), action('reject', 'Reject')]
