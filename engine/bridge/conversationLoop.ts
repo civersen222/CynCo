@@ -1629,7 +1629,10 @@ export class ConversationLoop {
                 thinkingTokens: reasoningTokenCount,
                 totalTokens: tokenCount + reasoningTokenCount,
                 latencyMs: Date.now() - iterationStartMs,
-                response: '',
+                // Must be the real streamed text: '' here made responseStuck
+                // permanently true (uniform empty prefixes) — 2026-06-12
+                // weekly-digest HALT incident #3.
+                response: streamedText,
                 userMessage: userMsgText,
               })
 

@@ -42,6 +42,23 @@ describe('param-aware stuck signatures', () => {
     expect(gov.getStuckCount()).toBeGreaterThan(0)
   })
 
+  it('tool-only turns (empty response text) with varied calls are not stuck', () => {
+    // 2026-06-12 weekly-digest incident #3: the loop passed response: '' on
+    // every turn, so lastResponses was uniformly empty and responseStuck was
+    // permanently true from turn 3 — stuck +1/turn, HALT at ~turn 18. Even
+    // with correct wiring, tool-use turns without narration have empty text;
+    // uniform emptiness is not a narration loop.
+    const gov = new CyberneticsGovernance()
+    for (let i = 0; i < 8; i++) {
+      gov.onToolResult('Mfl', true, 100, undefined, { query: `query-${i}` })
+      gov.onTurnComplete({
+        toolsCalled: 1, thinkingTokens: 10, totalTokens: 200, latencyMs: 500,
+        response: '',
+      })
+    }
+    expect(gov.getStuckCount()).toBe(0)
+  })
+
   it('getRecentToolNames still returns plain names for C7', () => {
     const gov = new CyberneticsGovernance()
     gov.onToolResult('Mfl', true, 100, undefined, { query: 'rosters' })

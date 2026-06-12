@@ -355,6 +355,57 @@ describe('ConversationLoop with tools', () => {
     expect(nudgeText).not.toMatch(/Write, Edit, Grep/)
   })
 
+  // 2026-06-12 weekly-digest incident #3: the loop passed response: '' to
+  // governance.onTurnComplete on EVERY turn, so responseStuck (uniform
+  // prefixes) was permanently true from turn 3 — stuck +1/turn, guaranteed
+  // HALT at ~turn 18 in any long mission regardless of model behavior.
+  function* narratedToolUse(text: string, file: string): Generator<StreamEvent> {
+    yield { type: 'message_start', message: { id: 'msg1', model: 'test', usage: { input_tokens: 10, output_tokens: 0 } } } as any
+    yield { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } } as any
+    yield { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } } as any
+    yield { type: 'content_block_stop', index: 0 } as any
+    yield { type: 'content_block_start', index: 1, content_block: { type: 'tool_use', id: 'tu1', name: 'Read', input: {} } } as any
+    yield { type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: JSON.stringify({ file_path: file }) } } as any
+    yield { type: 'content_block_stop', index: 1 } as any
+    yield { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 5 } } as any
+    yield { type: 'message_stop' } as any
+  }
+  const READ_FILES = ['package.json', 'README.md', 'CLAUDE.md', '.gitignore', 'engine/main.ts']
+  const OUTCOME = '```json\n{"ok": true, "summary": "digest", "recommendations": []}\n```'
+
+  it.skipIf(SKIP)('varied narration across tool turns never accumulates stuck', async () => {
+    const responses = [
+      ...READ_FILES.map((f, i) => () => narratedToolUse(`Checking source ${i} for a different part of the digest.`, f)),
+      () => textResponse(OUTCOME),
+    ]
+    const loop = new ConversationLoop({
+      config: { ...defaultConfig(), approveAll: true },
+      provider: mockProvider(responses),
+      emit: () => {},
+      allowedTools: ['Read'],
+    })
+    await loop.handleUserMessage('compile the weekly digest from league data')
+    expect((loop as any).governance.getStuckCount()).toBe(0)
+  })
+
+  it.skipIf(SKIP)('repeated identical narration reaches governance and counts as stuck', async () => {
+    // Guards the response wiring itself: if the loop passes '' (or anything
+    // uniform-but-ignored) instead of the streamed text, a genuinely looping
+    // model would never be detected.
+    const responses = [
+      ...READ_FILES.map(f => () => narratedToolUse('I will now check the league data.', f)),
+      () => textResponse(OUTCOME),
+    ]
+    const loop = new ConversationLoop({
+      config: { ...defaultConfig(), approveAll: true },
+      provider: mockProvider(responses),
+      emit: () => {},
+      allowedTools: ['Read'],
+    })
+    await loop.handleUserMessage('compile the weekly digest from league data')
+    expect((loop as any).governance.getStuckCount()).toBeGreaterThan(0)
+  })
+
   it.skipIf(SKIP)('emits message.complete with correct stopReason', async () => {
     const events: any[] = []
     const provider = mockProvider([() => textResponse('done')])

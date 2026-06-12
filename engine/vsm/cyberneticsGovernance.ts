@@ -515,7 +515,11 @@ export class CyberneticsGovernance {
     if (!this._workflowReadOnlyPhase) {
       const uniqueResponses = new Set(this.lastResponses).size
       const uniqueToolSigs = new Set(this.lastToolCallSigs).size
+      // Uniform EMPTY responses are not a narration loop — tool-use turns
+      // without narration text legitimately have response: ''. (2026-06-12
+      // incident #3: uniform '' made responseStuck permanently true.)
       const responseStuck = this.lastResponses.length >= 3 && uniqueResponses === 1
+        && this.lastResponses[0] !== ''
       const toolStuck = this.lastToolCallSigs.length >= 3 && uniqueToolSigs === 1
       if (responseStuck || toolStuck) {
         this.stuckCount++
