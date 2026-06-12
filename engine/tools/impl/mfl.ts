@@ -85,7 +85,7 @@ export const mflTool: ToolImpl = {
 
     try {
       const resp = await fetch(url, {
-        headers: { 'User-Agent': 'CynCo/1.0' },
+        headers: { 'User-Agent': 'CynCoMFL/1.0' },  // must match the UA prefix registered with MFL's API client program
         signal: AbortSignal.timeout(30000),
       })
       if (!resp.ok) return { output: redact(`MFL HTTP ${resp.status}: ${resp.statusText}`, apiKey), isError: true }
