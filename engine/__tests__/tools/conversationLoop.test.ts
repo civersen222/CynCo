@@ -17,8 +17,13 @@ function defaultConfig(): LocalCodeConfig {
     temperature: 0.7,
     maxOutputTokens: 8192,
     timeout: 120000,
-    contextLength: undefined,
+    // Above the two-stage tool-routing threshold (65536) — the routing
+    // pre-call would otherwise consume the mock provider's scripted responses.
+    contextLength: 131072,
     tools: undefined,
+    // Deterministic tests: proactive scouts would consume the mock provider's
+    // scripted responses before the main loop runs.
+    noScouts: true,
   }
 }
 
@@ -128,6 +133,37 @@ describe('ConversationLoop with tools', () => {
     // Only one message.complete event (the second was ignored)
     const completes = events.filter(e => e.type === 'message.complete')
     expect(completes.length).toBe(1)
+  })
+
+  it.skipIf(SKIP)('allowedTools option restricts the tool set offered to the model', async () => {
+    const captured: CompletionRequest[] = []
+    const provider: Provider = {
+      name: 'mock',
+      async healthCheck() { return true },
+      async listModels() { return [] },
+      async probeCapabilities() { return defaultCapabilities() },
+      async complete() { throw new Error('not implemented') },
+      async *stream(request: CompletionRequest): AsyncGenerator<StreamEvent> {
+        captured.push(request)
+        yield* textResponse('done')
+      },
+    }
+    const loop = new ConversationLoop({
+      config: defaultConfig(),
+      provider,
+      emit: () => {},
+      allowedTools: ['Read'],
+    })
+    await loop.handleUserMessage('what is in the readme file here')
+    expect(captured.length).toBeGreaterThan(0)
+    // Unknown models run in simulated tool-use mode (tools ride in the system
+    // prompt, request.tools stays unset) — so assert on the <TOOLS> section.
+    const system = String(captured[0].system ?? '')
+    expect(system).toContain('<TOOLS>')
+    const toolsSection = system.slice(system.indexOf('<TOOLS>'), system.indexOf('</TOOLS>'))
+    expect(toolsSection).toContain('- Read:')
+    expect(toolsSection).not.toContain('- Bash:')
+    expect(toolsSection).not.toContain('- Write:')
   })
 
   it.skipIf(SKIP)('emits message.complete with correct stopReason', async () => {

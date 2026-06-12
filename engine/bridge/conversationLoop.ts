@@ -108,6 +108,8 @@ export type ConversationLoopOptions = {
   trustProfile?: ToolTrustProfile
   workflowEngine?: WorkflowEngine
   s5?: S5Orchestrator
+  /** Hard-pin the tool set (e.g. unattended one-shot mission runs). Applied on top of workflow restrictions. */
+  allowedTools?: string[]
 }
 
 export class ConversationLoop {
@@ -142,6 +144,7 @@ export class ConversationLoop {
   private lastSnapshotHash?: string
   private vibeMode = false
   private _correctionAttempts = 0
+  private allowedTools?: string[]
 
   constructor(opts: ConversationLoopOptions) {
     this.config = opts.config
@@ -202,6 +205,7 @@ export class ConversationLoop {
       this.emit({ type: 'governance.alert', severity: alert.severity, message: alert.message, source: alert.source } as any)
     })
     this.s5 = opts.s5
+    this.allowedTools = opts.allowedTools
     this.agentRunner = new SubAgentRunner(async (task) => {
       // Simplified sub-agent execution — full execution comes later
       return `[SubAgent completed] ${task.task}`
@@ -590,6 +594,11 @@ export class ConversationLoop {
       if (allowed) {
         activeTools = ALL_TOOLS.filter(t => allowed.includes(t.name))
       }
+    }
+    // Caller-pinned tool set (one-shot mission runs) on top of any workflow restriction
+    if (this.allowedTools) {
+      const pinned = new Set(this.allowedTools)
+      activeTools = activeTools.filter(t => pinned.has(t.name))
     }
 
     // Build tool definitions in the format callModel expects (inputJSONSchema)

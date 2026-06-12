@@ -1,27 +1,28 @@
 // engine/daemon/oneShot.ts
-// One-shot engine mode: read a task file, run a bounded model+tool loop,
-// write a TaskOutcome, return an exit code. Runs INSIDE the engine process
-// (invoked from main.ts when --run-task is passed). Loop pattern mirrors
-// engine/agents/subAgent.ts but stays independent of it.
+// One-shot engine mode: read a task file, run the prompt through the REAL
+// conversation loop (spec §4) — the same S5/VSM-governed path interactive
+// sessions use — then write a TaskOutcome and return an exit code. Runs
+// INSIDE the engine process (invoked from main.ts when --run-task is passed).
 import { randomBytes } from 'crypto'
 import type { Provider } from '../provider.js'
 import type { LocalCodeConfig } from '../config.js'
-import type { Message, ContentBlock, ToolUseBlock } from '../types.js'
-import { asSystemPrompt } from '../types.js'
-import { ToolExecutor } from '../tools/executor.js'
-import { getToolByName } from '../tools/registry.js'
-import { localCallModel } from '../engine/callModel.js'
+import type { Message } from '../types.js'
+import { ConversationLoop } from '../bridge/conversationLoop.js'
+import { S5Orchestrator } from '../s5/orchestrator.js'
+import { RuleBasedS5 } from '../s5/ruleBasedS5.js'
+import { ModelS5 } from '../s5/modelS5.js'
 import { readTaskFile, writeOutcome } from './taskFile.js'
 import type { Recommendation, TaskOutcome } from './types.js'
 
-const MAX_TURNS = 20
-
-export function buildOneShotSystemPrompt(context: string): string {
+export function buildOneShotPrompt(context: string, prompt: string): string {
   return [
-    'You are CynCo running an unattended scheduled mission task. There is no user to ask — work autonomously with the tools provided, then stop.',
+    'You are running an unattended scheduled mission task. There is no user to ask — work autonomously with the tools provided, then stop.',
     '',
     'Mission context:',
     context,
+    '',
+    'Task:',
+    prompt,
     '',
     'When you are done, end your FINAL message with exactly one fenced code block in this format:',
     '```json',
@@ -60,6 +61,17 @@ export function extractOutcome(text: string): TaskOutcome {
   return { ok: true, summary: `(unstructured output) ${tail || '(no output)'}`, recommendations: [] }
 }
 
+function collectAssistantText(messages: Message[]): string {
+  const parts: string[] = []
+  for (const m of messages) {
+    if (m.role !== 'assistant') continue
+    for (const block of m.content) {
+      if (block.type === 'text' && typeof (block as any).text === 'string') parts.push((block as any).text)
+    }
+  }
+  return parts.join('\n')
+}
+
 export async function runOneShotTask(
   taskFilePath: string,
   provider: Provider,
@@ -71,103 +83,37 @@ export async function runOneShotTask(
     outcomePath = task.outcomePath
     console.log(`[one-shot] Mission ${task.missionId} / trigger ${task.triggerId}`)
 
-    const tools = task.allowedTools
-      .map((name) => getToolByName(name))
-      .filter((t): t is NonNullable<typeof t> => t != null)
-    const allowedNames = new Set(tools.map((t) => t.name))
-    const toolDefs = tools.map((t) => ({
-      name: t.name,
-      description: t.description,
-      inputJSONSchema: t.inputSchema,
-    }))
+    // Same S5 selection as interactive startup (main.ts): LoRA-trained
+    // decision model when configured, rule-based otherwise.
+    const s5Impl = process.env.LOCALCODE_S5_MODEL
+      ? new ModelS5({ model: process.env.LOCALCODE_S5_MODEL, baseUrl: config.baseUrl })
+      : new RuleBasedS5()
+    const s5 = new S5Orchestrator(s5Impl)
 
-    const executor = new ToolExecutor({
+    const loop = new ConversationLoop({
+      // unattended: read-only mission tools, no TUI to ask; scouts disabled —
+      // codebase scouting is irrelevant to mission tasks and burns GPU time
+      config: { ...config, approveAll: true, noScouts: true },
+      provider,
+      emit: () => {}, // headless — no TUI, no dashboard
       cwd: process.cwd(),
-      requestApproval: async () => true,
-      approveAll: true,
+      s5,
+      allowedTools: task.allowedTools,
     })
 
-    const systemPrompt = asSystemPrompt([buildOneShotSystemPrompt(task.context)])
-    const messages: Message[] = [
-      { role: 'user', content: [{ type: 'text', text: task.prompt }] },
-    ]
-    const deps = { getProvider: () => provider, loadConfig: () => config }
-    const abort = new AbortController()
-    const deadline = Date.now() + task.timeoutMs
-    let collectedText = ''
+    // Internal deadline backstop (the daemon also enforces a hard kill).
+    let timedOut = false
+    const timer = setTimeout(() => { timedOut = true; loop.abort() }, task.timeoutMs)
+    try {
+      await loop.handleUserMessage(buildOneShotPrompt(task.context, task.prompt))
+    } finally {
+      clearTimeout(timer)
+    }
 
-    for (let turn = 0; turn < MAX_TURNS; turn++) {
-      if (Date.now() > deadline) {
-        writeOutcome(outcomePath, { ok: false, summary: collectedText.slice(-1000), recommendations: [], error: 'Internal deadline exceeded' })
-        return 1
-      }
-
-      const stream = localCallModel({
-        messages,
-        systemPrompt,
-        thinkingConfig: { type: 'disabled' },
-        tools: toolDefs,
-        signal: abort.signal,
-        options: { model: config.model ?? 'unknown' },
-        deps,
-      })
-
-      // Collect text and tool_use blocks (same event shapes as subAgent.ts)
-      let turnText = ''
-      const turnToolUses: ToolUseBlock[] = []
-      let currentBlock: any = null
-      for await (const event of stream) {
-        if (event.type !== 'stream_event') continue
-        const inner = (event as any).event
-        switch (inner.type) {
-          case 'content_block_start': {
-            const block = inner.content_block
-            if (block.type === 'text') currentBlock = { type: 'text', text: '' }
-            else if (block.type === 'tool_use') currentBlock = { type: 'tool_use', id: block.id ?? '', name: block.name ?? '', input: block.input ?? {} }
-            break
-          }
-          case 'content_block_delta': {
-            if (!currentBlock) break
-            const delta = inner.delta
-            if (delta.type === 'text_delta' && currentBlock.type === 'text') currentBlock.text += delta.text
-            else if (delta.type === 'input_json_delta' && currentBlock.type === 'tool_use') {
-              currentBlock._partialJson = (currentBlock._partialJson ?? '') + delta.partial_json
-            }
-            break
-          }
-          case 'content_block_stop': {
-            if (!currentBlock) break
-            if (currentBlock.type === 'text') turnText += currentBlock.text
-            else {
-              if (currentBlock._partialJson) {
-                try { currentBlock.input = JSON.parse(currentBlock._partialJson) } catch {}
-                delete currentBlock._partialJson
-              }
-              turnToolUses.push({ type: 'tool_use', id: currentBlock.id, name: currentBlock.name, input: currentBlock.input })
-            }
-            currentBlock = null
-            break
-          }
-        }
-      }
-
-      const assistantContent: ContentBlock[] = []
-      if (turnText) { assistantContent.push({ type: 'text', text: turnText }); collectedText += turnText + '\n' }
-      for (const tu of turnToolUses) assistantContent.push(tu)
-      if (assistantContent.length > 0) messages.push({ role: 'assistant', content: assistantContent })
-
-      if (turnToolUses.length === 0) break // model is done
-
-      const toolResults: ContentBlock[] = []
-      for (const tu of turnToolUses) {
-        if (!allowedNames.has(tu.name)) {
-          toolResults.push({ type: 'tool_result', tool_use_id: tu.id, content: `Error: tool "${tu.name}" not allowed for this task`, is_error: true })
-          continue
-        }
-        const result = await executor.execute(tu.name, tu.input)
-        toolResults.push({ type: 'tool_result', tool_use_id: tu.id, content: result.output ?? '', is_error: result.isError === true })
-      }
-      messages.push({ role: 'user', content: toolResults })
+    const collectedText = collectAssistantText(loop.getMessages())
+    if (timedOut) {
+      writeOutcome(outcomePath, { ok: false, summary: collectedText.slice(-1000), recommendations: [], error: 'Internal deadline exceeded' })
+      return 1
     }
 
     writeOutcome(outcomePath, extractOutcome(collectedText))
