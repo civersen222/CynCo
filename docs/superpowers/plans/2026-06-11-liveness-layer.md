@@ -2573,3 +2573,8 @@ Report completion to the user with: test counts, the wire-check table, and what 
 - Type consistency: `TaskFileInput.outcomePath` is filled by `TaskRunner.run` when empty (missionRunner passes `''`); `ApprovalResolution.promotionEligible` used by both Task 3 tests and Task 8.
 - Deliberate scope cuts (out of scope per spec): Phase C writes, Sleeper, free-text commands, S5 integration into daemon decisions (the trust ladder data feeds it later), dashboard visibility of missions.
 
+- Spec deviations (found in final review, accepted as shipped behavior):
+  - Triggers use a structured spec (`kind: interval|daily|weekly` + fields) instead of raw cron strings — simpler to validate, covers every mission trigger we have.
+  - GPU guard uses a `tasklist` llama-server heuristic, not nvidia-smi VRAM queries — process presence is the actual contention signal on this box.
+  - One-shot runs get mission goal + leagues + recent-run summaries as context, not a full roster handoff — the engine fetches live rosters via the Mfl tool instead of trusting stale context.
+  - GPU-busy defer is a fixed 10 minutes rather than adaptive backoff — interactive sessions end on a human timescale; revisit if defers stack up in runs.jsonl.

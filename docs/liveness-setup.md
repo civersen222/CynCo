@@ -81,6 +81,9 @@ Create `~/.cynco/missions/mfl-dynasty/mission.json`:
 }
 ```
 
+The daemon reads `mission.json` once at startup — after editing it (new triggers,
+changed intervals, trust ladder), restart the daemon for the changes to take effect.
+
 ## 5. Daemon autostart (Windows Task Scheduler)
 
 ```powershell
