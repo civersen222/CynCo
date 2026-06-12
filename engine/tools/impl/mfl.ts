@@ -15,12 +15,15 @@ const ALLOWED_QUERIES = new Set([
   'freeAgents',      // available players
   'futureDraftPicks',// dynasty draft pick ownership
   'assets',          // all tradeable assets per franchise
+  'projectedScores', // weekly projections under THIS league's scoring (W=week)
+  'playerRanks',     // dynasty trade-value rankings (global)
+  'nflSchedule',     // NFL matchups + byes for a week (global, W=week)
 ])
 
 // Global (league-independent) queries. Sending L= makes api.myfantasyleague.com
 // 302 to the league host, which rejects these TYPEs with "must go to
 // api.myfantasyleague.com" (2026-06-12 weekly-digest incident). Omit L.
-const GLOBAL_QUERIES = new Set(['injuries'])
+const GLOBAL_QUERIES = new Set(['injuries', 'playerRanks', 'nflSchedule'])
 
 export function buildMflExportUrl(opts: {
   query: string

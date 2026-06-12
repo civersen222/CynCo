@@ -48,6 +48,22 @@ describe('buildMflExportUrl', () => {
     expect(url).not.toContain('99999')
     expect(url).not.toContain('stolen')
   })
+
+  it('allows projectedScores with L (league scoring rules) and a week param', () => {
+    const url = buildMflExportUrl({ query: 'projectedScores', league: '65042', year: 2026, extra: { W: '3' } })
+    expect(url).toContain('TYPE=projectedScores')
+    expect(url).toContain('L=65042')
+    expect(url).toContain('W=3')
+  })
+
+  it('playerRanks and nflSchedule are global queries — no L param', () => {
+    // Same 302-redirect failure mode as injuries (see GLOBAL_QUERIES comment).
+    for (const q of ['playerRanks', 'nflSchedule']) {
+      const url = buildMflExportUrl({ query: q, league: '65042', year: 2026 })
+      expect(url).toContain(`TYPE=${q}`)
+      expect(url).not.toContain('L=65042')
+    }
+  })
 })
 
 describe('Mfl tool', () => {
@@ -87,5 +103,14 @@ describe('Mfl tool', () => {
     const result = await mflTool.execute({ query: 'rosters', league: '12345', year: 2026 }, {} as any)
     expect(result.isError).toBe(true)
     expect(result.output).not.toContain('sekret')
+  })
+
+  it('accepts the new lineup/trade queries through the whitelist', async () => {
+    const fakeFetch = vi.fn(async () => new Response('{}', { status: 200 }))
+    vi.stubGlobal('fetch', fakeFetch)
+    for (const q of ['projectedScores', 'playerRanks', 'nflSchedule']) {
+      const result = await mflTool.execute({ query: q, league: '65042', year: 2026 }, {} as any)
+      expect(result.isError).toBe(false)
+    }
   })
 })
