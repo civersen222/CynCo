@@ -135,6 +135,7 @@ export class MissionRunner {
   async handleCommand(cmd: CommandMessage): Promise<boolean> {
     const res = this.ledger.resolveApproval(cmd.recId, cmd.verdict)
     if (!res) return false
+    console.log(`[mission:${this.ledger.config.id}] ${cmd.verdict}: "${res.rec.summary}" (${res.rec.actionType} streak now ${this.ledger.state.trust[res.rec.actionType]?.approvedStreak ?? 'n/a'})`)
     await this.deps.publish({
       title: `${cmd.verdict === 'approve' ? 'Approved' : 'Rejected'}: ${res.rec.summary}`,
       message: cmd.verdict === 'approve' ? 'Noted — execute it in MFL when ready.' : 'Noted — streak reset.',
