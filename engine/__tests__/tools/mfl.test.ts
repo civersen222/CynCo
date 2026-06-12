@@ -19,6 +19,27 @@ describe('buildMflExportUrl', () => {
     const url = buildMflExportUrl({ query: 'players', league: '12345', year: 2026, extra: { DETAILS: '1' } })
     expect(url).toContain('DETAILS=1')
   })
+
+  it('extra cannot override TYPE — write endpoints stay unreachable', () => {
+    const url = buildMflExportUrl({
+      query: 'rosters', league: '12345', year: 2026, apiKey: 'sekret',
+      extra: { TYPE: 'import', type: 'import' },
+    })
+    expect(url).toContain('TYPE=rosters')
+    expect(url).not.toContain('import')
+  })
+
+  it('extra cannot override L, JSON, or APIKEY', () => {
+    const url = buildMflExportUrl({
+      query: 'rosters', league: '12345', year: 2026, apiKey: 'sekret',
+      extra: { L: '99999', JSON: '0', APIKEY: 'stolen', ApiKey: 'stolen2' },
+    })
+    expect(url).toContain('L=12345')
+    expect(url).toContain('JSON=1')
+    expect(url).toContain('APIKEY=sekret')
+    expect(url).not.toContain('99999')
+    expect(url).not.toContain('stolen')
+  })
 })
 
 describe('Mfl tool', () => {
@@ -28,7 +49,7 @@ describe('Mfl tool', () => {
     expect(result.output).toMatch(/not allowed/i)
   })
 
-  it('rejects the calendar injection of write types via casing', async () => {
+  it('rejects case-variant injection of write types (IMPORT vs import)', async () => {
     const result = await mflTool.execute({ query: 'IMPORT', league: '12345' }, {} as any)
     expect(result.isError).toBe(true)
   })

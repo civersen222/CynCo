@@ -24,8 +24,18 @@ export function buildMflExportUrl(opts: {
   apiKey?: string
   extra?: Record<string, string>
 }): string {
-  const params = new URLSearchParams({ TYPE: opts.query, L: opts.league, JSON: '1' })
-  for (const [k, v] of Object.entries(opts.extra ?? {})) params.set(k, v)
+  // SECURITY: extra is model-controlled. Reserved params (TYPE/L/JSON/APIKEY)
+  // are dropped from extra and set canonically AFTER it, so a tool call can
+  // never rewrite TYPE=import (write endpoint) or retarget another league.
+  const RESERVED = new Set(['TYPE', 'L', 'JSON', 'APIKEY'])
+  const params = new URLSearchParams()
+  for (const [k, v] of Object.entries(opts.extra ?? {})) {
+    if (RESERVED.has(k.toUpperCase())) continue
+    params.set(k, v)
+  }
+  params.set('TYPE', opts.query)
+  params.set('L', opts.league)
+  params.set('JSON', '1')
   if (opts.apiKey) params.set('APIKEY', opts.apiKey)
   // URLSearchParams encodes; MFL accepts encoded params fine
   return `https://api.myfantasyleague.com/${opts.year}/export?${params.toString()}`
