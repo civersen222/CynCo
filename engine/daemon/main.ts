@@ -40,6 +40,19 @@ async function fetchMflSnapshot(leagueId: string, year: number): Promise<string>
   return createHash('sha256').update(await resp.text()).digest('hex')
 }
 
+async function fetchRosterSnapshot(leagueId: string, year: number, franchiseId: string): Promise<string> {
+  const url = buildMflExportUrl({
+    query: 'rosters', league: leagueId, year, apiKey: loadMflApiKey(),
+    extra: { FRANCHISE: franchiseId },
+  })
+  const resp = await fetch(url, { headers: { 'User-Agent': 'CynCoMFL/1.0' }, signal: AbortSignal.timeout(30000) })
+  if (!resp.ok) throw new Error(`MFL HTTP ${resp.status}`)
+  const text = await resp.text()
+  // Keep the task file small — player ids are enough, the model can resolve
+  // names via the Mfl tool when it needs them.
+  return text.length > 4000 ? `${text.slice(0, 4000)}…(truncated)` : text
+}
+
 // Load all missions
 mkdirSync(missionsDir, { recursive: true })
 const runners: MissionRunner[] = []
@@ -53,6 +66,7 @@ for (const entry of readdirSync(missionsDir)) {
     publish: (p) => ntfy.publish(p),
     publishRecommendation: (rec) => ntfy.publishRecommendation(rec),
     fetchMflSnapshot,
+    fetchRosterSnapshot,
     now: () => new Date(),
   }))
   console.log(`[daemon] Loaded mission: ${ledger.config.id} (${ledger.config.triggers.length} triggers)`)

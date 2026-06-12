@@ -4,6 +4,7 @@
 import type { MissionLedger } from './missionLedger.js'
 import { evaluateTrigger, computeNextFire } from './scheduler.js'
 import { GpuBusyError } from './taskRunner.js'
+import { serializeHandoff } from '../memory/handoff.js'
 import type { CommandMessage, Recommendation, TaskFileInput, TaskOutcome, TriggerSpec } from './types.js'
 
 const GPU_DEFER_MS = 10 * 60 * 1000
@@ -17,6 +18,8 @@ export interface MissionRunnerDeps {
   publishRecommendation: (rec: Recommendation) => Promise<boolean>
   /** Returns a stable hash of the league's current MFL transactions. */
   fetchMflSnapshot: (leagueId: string, year: number) => Promise<string>
+  /** Returns a compact text snapshot of the franchise's current roster. */
+  fetchRosterSnapshot: (leagueId: string, year: number, franchiseId: string) => Promise<string>
   now: () => Date
 }
 
@@ -60,12 +63,31 @@ export class MissionRunner {
       if (!anyDelta) return
     }
 
-    const context = [
-      `Mission goal: ${this.ledger.config.goal}`,
-      `Leagues: ${this.ledger.config.leagues.map((l) => `${l.leagueId} (year ${l.year}, your franchise ${l.franchiseId})`).join('; ')}`,
-      'Recent runs:',
-      ...this.ledger.recentRuns(3).map((r) => `- [${r.ts}] ${r.ok ? 'ok' : 'FAILED'}: ${r.summary.slice(0, 200)}`),
-    ].join('\n')
+    // Mission context (spec §3): goal + last 3 run summaries in the existing
+    // handoff format (engine/memory/handoff.ts YAML), plus a roster snapshot
+    // per league fetched by the daemon directly — no inference, one HTTP call.
+    const handoffYaml = serializeHandoff({
+      goal: this.ledger.config.goal,
+      now: `Scheduled trigger "${trigger.id}" fired at ${now.toISOString()}`,
+      status: 'in_progress',
+      what_was_done: this.ledger.recentRuns(3).map(
+        (r) => `[${r.ts}] ${r.triggerId} ${r.ok ? 'ok' : 'FAILED'}: ${r.summary.slice(0, 200)}`,
+      ),
+    })
+    const rosterSections: string[] = []
+    for (const league of this.ledger.config.leagues) {
+      let snapshot: string
+      try {
+        snapshot = await this.deps.fetchRosterSnapshot(league.leagueId, league.year, league.franchiseId)
+      } catch (err) {
+        // Don't block the run — the model has the Mfl tool to fetch it itself
+        snapshot = `(roster unavailable: ${err instanceof Error ? err.message : String(err)})`
+      }
+      rosterSections.push(
+        `League ${league.leagueId} (year ${league.year}, your franchise ${league.franchiseId}) roster snapshot:\n${snapshot}`,
+      )
+    }
+    const context = [handoffYaml.trimEnd(), ...rosterSections].join('\n\n')
 
     const input: TaskFileInput = {
       missionId: this.ledger.config.id,

@@ -35,6 +35,7 @@ function makeDeps(overrides: Partial<any> = {}) {
       publish: async (p: any) => { published.push(p); return true },
       publishRecommendation: async (r: Recommendation) => { published.push(r); return true },
       fetchMflSnapshot: async (_league: string, _year: number) => 'hash-1',
+      fetchRosterSnapshot: async (_league: string, _year: number, franchise: string) => `roster-for-${franchise}`,
       now: () => new Date(2026, 5, 11, 12, 0, 0),
       ...overrides,
     },
@@ -73,6 +74,41 @@ describe('MissionRunner.tick', () => {
     expect(ledger.recentRuns(5).length).toBe(1)
     // nextFire advanced
     expect(new Date(ledger.state.nextFire['news']).getTime()).toBeGreaterThan(deps.now().getTime())
+  })
+
+  it('task context carries goal, roster snapshot, and last 3 run summaries in handoff format (spec §3/§4)', async () => {
+    const { deps, ranTasks } = makeDeps()
+    const ledger = MissionLedger.load(join(dir, 'mfl-dynasty'))
+    ledger.recordRun({ ts: '2026-06-10T08:00:00Z', triggerId: 'news', ok: true, summary: 'old run A', recommendationIds: [] })
+    ledger.recordRun({ ts: '2026-06-10T10:00:00Z', triggerId: 'news', ok: false, summary: 'old run B', recommendationIds: [] })
+    ledger.setNextFire('news', new Date(2026, 5, 11, 11, 59).toISOString())
+    ledger.setNextFire('poll', new Date(2026, 5, 12).toISOString())
+    const runner = new MissionRunner(ledger, deps as any)
+    await runner.tick()
+    expect(ranTasks.length).toBe(1)
+    const ctx = ranTasks[0].context as string
+    // Handoff YAML format (engine/memory/handoff.ts)
+    expect(ctx).toContain('goal: Win the league')
+    expect(ctx).toContain('status: in_progress')
+    expect(ctx).toContain('what_was_done:')
+    expect(ctx).toContain('old run A')
+    expect(ctx).toContain('FAILED: old run B')
+    // Roster snapshot per league, fetched by the daemon (no inference)
+    expect(ctx).toContain('franchise 0005')
+    expect(ctx).toContain('roster-for-0005')
+  })
+
+  it('roster snapshot fetch failure does not block the run', async () => {
+    const { deps, ranTasks } = makeDeps({
+      fetchRosterSnapshot: async () => { throw new Error('MFL down') },
+    })
+    const ledger = MissionLedger.load(join(dir, 'mfl-dynasty'))
+    ledger.setNextFire('news', new Date(2026, 5, 11, 11, 59).toISOString())
+    ledger.setNextFire('poll', new Date(2026, 5, 12).toISOString())
+    const runner = new MissionRunner(ledger, deps as any)
+    await runner.tick()
+    expect(ranTasks.length).toBe(1)
+    expect(ranTasks[0].context).toContain('roster unavailable')
   })
 
   it('mfl-delta precheck: skips the engine when the snapshot is unchanged', async () => {
