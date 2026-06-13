@@ -151,12 +151,10 @@ describe('runOneShotTask trade-scan dispatch', () => {
         fakeScanInvoked = true
         throw new Error('must not be called')
       }
-      // noopProvider.stream() throws 'unused' — runGovernedLoop will error out,
-      // runOneShotTask catches and returns 1, writing an error outcome.
       const code = await runOneShotTask(taskPath, noopProvider, makeConfig() as any, fakeScan)
       // Key assertion 1: the trade-scan orchestrator was never touched
       expect(fakeScanInvoked).toBe(false)
-      // Key assertion 2: outcome file was written (error outcome)
+      // Key assertion 2: outcome file was written
       const outcome = JSON.parse(readFileSync(join(dir, 'out.json'), 'utf-8'))
       expect(outcome).toBeDefined()
       // runGovernedLoop catches the stream error internally and returns an
