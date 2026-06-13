@@ -263,7 +263,10 @@ function makeRealDeps(
     }),
     writeIntermediate: (name, content) => {
       try {
-        writeFileSync(join(outDir, `tradescan-${stamp}-${name}.txt`), content, 'utf-8')
+        // name embeds a franchise id from MFL JSON — sanitize so a hostile
+        // id can never traverse out of outDir (debugging aid, not trusted input).
+        const safe = name.replace(/[^\w.-]/g, '_')
+        writeFileSync(join(outDir, `tradescan-${stamp}-${safe}.txt`), content, 'utf-8')
       } catch { /* debugging aid only — never fail the scan over it */ }
     },
     log: (msg) => console.log(msg),
