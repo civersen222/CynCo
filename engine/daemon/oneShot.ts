@@ -12,7 +12,7 @@ import { S5Orchestrator } from '../s5/orchestrator.js'
 import { RuleBasedS5 } from '../s5/ruleBasedS5.js'
 import { ModelS5 } from '../s5/modelS5.js'
 import { readTaskFile, writeOutcome } from './taskFile.js'
-import type { Recommendation, TaskOutcome } from './types.js'
+import type { Recommendation, TaskFileInput, TaskOutcome } from './types.js'
 
 export function buildOneShotPrompt(context: string, prompt: string): string {
   return [
@@ -78,10 +78,62 @@ function collectAssistantText(messages: Message[]): string {
   return parts.join('\n')
 }
 
+export type TradeScanImpl = (
+  task: TaskFileInput,
+  provider: Provider,
+  config: LocalCodeConfig,
+) => Promise<TaskOutcome>
+
+/** Run one prompt through the real S5/VSM-governed conversation loop and
+ *  extract the outcome contract. Shared by plain one-shot tasks and the
+ *  trade scan's ranking pass. */
+export async function runGovernedLoop(opts: {
+  prompt: string
+  context: string
+  allowedTools: string[]
+  timeoutMs: number
+  provider: Provider
+  config: LocalCodeConfig
+}): Promise<TaskOutcome> {
+  // Same S5 selection as interactive startup (main.ts): LoRA-trained
+  // decision model when configured, rule-based otherwise.
+  const s5Impl = process.env.LOCALCODE_S5_MODEL
+    ? new ModelS5({ model: process.env.LOCALCODE_S5_MODEL, baseUrl: opts.config.baseUrl })
+    : new RuleBasedS5()
+  const s5 = new S5Orchestrator(s5Impl)
+
+  const loop = new ConversationLoop({
+    // unattended: read-only mission tools, no TUI to ask; scouts disabled —
+    // codebase scouting is irrelevant to mission tasks and burns GPU time
+    config: { ...opts.config, approveAll: true, noScouts: true },
+    provider: opts.provider,
+    emit: () => {}, // headless — no TUI, no dashboard
+    cwd: process.cwd(),
+    s5,
+    allowedTools: opts.allowedTools,
+  })
+
+  // Internal deadline backstop (the daemon also enforces a hard kill).
+  let timedOut = false
+  const timer = setTimeout(() => { timedOut = true; loop.abort() }, opts.timeoutMs)
+  try {
+    await loop.handleUserMessage(buildOneShotPrompt(opts.context, opts.prompt))
+  } finally {
+    clearTimeout(timer)
+  }
+
+  const collectedText = collectAssistantText(loop.getMessages())
+  if (timedOut) {
+    return { ok: false, summary: collectedText.slice(-1000), recommendations: [], error: 'Internal deadline exceeded' }
+  }
+  return extractOutcome(collectedText)
+}
+
 export async function runOneShotTask(
   taskFilePath: string,
   provider: Provider,
   config: LocalCodeConfig,
+  tradeScanImpl?: TradeScanImpl,
 ): Promise<number> {
   let outcomePath = ''
   try {
@@ -89,42 +141,25 @@ export async function runOneShotTask(
     outcomePath = task.outcomePath
     console.log(`[one-shot] Mission ${task.missionId} / trigger ${task.triggerId}`)
 
-    // Same S5 selection as interactive startup (main.ts): LoRA-trained
-    // decision model when configured, rule-based otherwise.
-    const s5Impl = process.env.LOCALCODE_S5_MODEL
-      ? new ModelS5({ model: process.env.LOCALCODE_S5_MODEL, baseUrl: config.baseUrl })
-      : new RuleBasedS5()
-    const s5 = new S5Orchestrator(s5Impl)
-
-    const loop = new ConversationLoop({
-      // unattended: read-only mission tools, no TUI to ask; scouts disabled —
-      // codebase scouting is irrelevant to mission tasks and burns GPU time
-      config: { ...config, approveAll: true, noScouts: true },
-      provider,
-      emit: () => {}, // headless — no TUI, no dashboard
-      cwd: process.cwd(),
-      s5,
-      allowedTools: task.allowedTools,
-    })
-
-    // Internal deadline backstop (the daemon also enforces a hard kill).
-    let timedOut = false
-    const timer = setTimeout(() => { timedOut = true; loop.abort() }, task.timeoutMs)
-    try {
-      await loop.handleUserMessage(buildOneShotPrompt(task.context, task.prompt))
-    } finally {
-      clearTimeout(timer)
+    let outcome: TaskOutcome
+    if (task.taskType === 'trade-scan') {
+      // Lazy import keeps oneShot ↔ tradeScan acyclic at load time
+      const impl = tradeScanImpl ?? (await import('./tradeScan.js')).runTradeScan
+      outcome = await impl(task, provider, config)
+    } else {
+      outcome = await runGovernedLoop({
+        prompt: task.prompt,
+        context: task.context,
+        allowedTools: task.allowedTools,
+        timeoutMs: task.timeoutMs,
+        provider,
+        config,
+      })
     }
 
-    const collectedText = collectAssistantText(loop.getMessages())
-    if (timedOut) {
-      writeOutcome(outcomePath, { ok: false, summary: collectedText.slice(-1000), recommendations: [], error: 'Internal deadline exceeded' })
-      return 1
-    }
-
-    writeOutcome(outcomePath, extractOutcome(collectedText))
+    writeOutcome(outcomePath, outcome)
     console.log(`[one-shot] Outcome written: ${outcomePath}`)
-    return 0
+    return outcome.ok ? 0 : 1
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     console.error(`[one-shot] Failed: ${msg}`)

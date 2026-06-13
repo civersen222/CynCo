@@ -94,6 +94,67 @@ describe('buildOneShotPrompt', () => {
   })
 })
 
+describe('runOneShotTask trade-scan dispatch', () => {
+  function makeConfig() {
+    return {
+      baseUrl: 'http://localhost:11434', model: 'test', tier: 'auto' as const,
+      temperature: 0.7, maxOutputTokens: 8192, timeout: 120000,
+      contextLength: undefined, tools: undefined,
+    }
+  }
+  const noopProvider = {
+    name: 'mock',
+    async healthCheck() { return true },
+    async listModels() { return [] },
+    async probeCapabilities() { throw new Error('unused') },
+    async complete() { throw new Error('unused') },
+    async *stream() { throw new Error('unused') },
+  } as unknown as Provider
+
+  it("taskType 'trade-scan' routes to the injected orchestrator and writes its outcome", async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cynco-ts-'))
+    try {
+      const task: TaskFileInput = {
+        missionId: 'm1', triggerId: 'trade-scan', prompt: 'Rank trades', context: 'ctx',
+        allowedTools: ['Mfl'], timeoutMs: 60000, outcomePath: join(dir, 'out.json'),
+        taskType: 'trade-scan',
+        leagues: [{ leagueId: '65042', year: 2026, franchiseId: '0003' }],
+      }
+      const taskPath = join(dir, 'task.json')
+      writeFileSync(taskPath, JSON.stringify(task), 'utf-8')
+      const seen: TaskFileInput[] = []
+      const fakeScan = async (t: TaskFileInput) => {
+        seen.push(t)
+        return { ok: true, summary: 'scan done', recommendations: [] }
+      }
+      const code = await runOneShotTask(taskPath, noopProvider, makeConfig() as any, fakeScan)
+      expect(code).toBe(0)
+      expect(seen.length).toBe(1)
+      expect(seen[0].leagues?.[0]?.franchiseId).toBe('0003')
+      const outcome = JSON.parse(readFileSync(join(dir, 'out.json'), 'utf-8'))
+      expect(outcome.summary).toBe('scan done')
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it('a failed scan outcome yields exit code 1', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cynco-ts-'))
+    try {
+      const task: TaskFileInput = {
+        missionId: 'm1', triggerId: 'trade-scan', prompt: 'p', context: 'c',
+        allowedTools: [], timeoutMs: 60000, outcomePath: join(dir, 'out.json'),
+        taskType: 'trade-scan',
+      }
+      const taskPath = join(dir, 'task.json')
+      writeFileSync(taskPath, JSON.stringify(task), 'utf-8')
+      const fakeScan = async () => ({ ok: false, summary: '', recommendations: [], error: 'too few passes' })
+      const code = await runOneShotTask(taskPath, noopProvider, makeConfig() as any, fakeScan)
+      expect(code).toBe(1)
+      const outcome = JSON.parse(readFileSync(join(dir, 'out.json'), 'utf-8'))
+      expect(outcome.error).toBe('too few passes')
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+})
+
 describe('runOneShotTask (governed conversation loop)', () => {
   function makeConfig() {
     return {
