@@ -4,7 +4,7 @@ export default defineConfig({
   test: {
     // Map bun:test imports to vitest so all existing tests work unchanged
     alias: {
-      'bun:test': 'vitest',
+      'bun:test': './engine/__tests__/setup/bunTestShim.ts',
       'bun:sqlite': './engine/__tests__/setup/bunSqliteShim.ts',
     },
     include: ['engine/__tests__/**/*.test.ts'],

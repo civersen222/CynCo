@@ -1,6 +1,5 @@
 import { createHash } from 'crypto'
 import { createRequire } from 'module'
-import path from 'path'
 import type { Chunk } from '../index/types.js'
 
 // Extended chunk with optional relationship and signature fields
@@ -49,10 +48,11 @@ async function ensureInitialized(): Promise<void> {
     ParserClass = webTreeSitter.Parser
     LanguageClass = webTreeSitter.Language
 
-    // Locate the web-tree-sitter WASM runtime file
+    // Locate the web-tree-sitter WASM runtime file. Resolve the wasm subpath
+    // directly — it's an explicit `exports` entry — rather than resolving
+    // `package.json`, whose subpath Node's strict exports enforcement blocks.
     const _require = createRequire(import.meta.url)
-    const webTsDir = path.dirname(_require.resolve('web-tree-sitter/package.json'))
-    const wasmRuntimePath = path.join(webTsDir, 'web-tree-sitter.wasm')
+    const wasmRuntimePath = _require.resolve('web-tree-sitter/web-tree-sitter.wasm')
 
     await ParserClass.init({
       locateFile: () => wasmRuntimePath,
@@ -70,9 +70,10 @@ async function ensureInitialized(): Promise<void> {
 async function loadLanguage(langName: string): Promise<any> {
   if (languageCache.has(langName)) return languageCache.get(langName)
 
+  // Resolve via the package's `./*` → `./out/*` exports mapping instead of
+  // `package.json` (blocked by Node's strict exports enforcement under vitest).
   const _require = createRequire(import.meta.url)
-  const wasmPkgDir = path.dirname(_require.resolve('tree-sitter-wasm/package.json'))
-  const wasmPath = path.join(wasmPkgDir, 'out', langName, `tree-sitter-${langName}.wasm`)
+  const wasmPath = _require.resolve(`tree-sitter-wasm/${langName}/tree-sitter-${langName}.wasm`)
 
   const lang = await LanguageClass.load(wasmPath)
   languageCache.set(langName, lang)

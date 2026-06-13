@@ -15,7 +15,8 @@
   },
   "devDependencies": {
     "bun-types": "^1.3.0",
-    "vitest": "^4.1.5"
+    "vitest": "^4.1.5",
+    "yaml": "^2.9.0"
   },
   "license": "AGPL-3.0",
   "repository": {

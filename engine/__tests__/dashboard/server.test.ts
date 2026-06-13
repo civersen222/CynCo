@@ -3,7 +3,9 @@ import { DashboardServer } from '../../dashboard/server.js'
 import { resetParams, getParam } from '../../vsm/governanceParams.js'
 import { globalContract } from '../../tools/contract.js'
 
-const PORT = 19161
+// Distinct from bridge/server.test.ts (19161) and dashboard/security.test.ts
+// (19171-19173) so parallel vitest workers never collide on a bound port.
+const PORT = 19181
 const BASE = `http://localhost:${PORT}`
 
 let server: DashboardServer
