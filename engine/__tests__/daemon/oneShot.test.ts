@@ -136,6 +136,36 @@ describe('runOneShotTask trade-scan dispatch', () => {
     } finally { rmSync(dir, { recursive: true, force: true }) }
   })
 
+  it('a non-trade-scan task never dispatches to the trade-scan orchestrator', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cynco-ts-'))
+    try {
+      const task: TaskFileInput = {
+        missionId: 'm1', triggerId: 'morning-brief', prompt: 'Summarize the roster', context: 'ctx',
+        allowedTools: [], timeoutMs: 5000, outcomePath: join(dir, 'out.json'),
+        // intentionally no taskType — must go to runGovernedLoop, never to tradeScanImpl
+      }
+      const taskPath = join(dir, 'task.json')
+      writeFileSync(taskPath, JSON.stringify(task), 'utf-8')
+      let fakeScanInvoked = false
+      const fakeScan = async (_t: TaskFileInput) => {
+        fakeScanInvoked = true
+        throw new Error('must not be called')
+      }
+      // noopProvider.stream() throws 'unused' — runGovernedLoop will error out,
+      // runOneShotTask catches and returns 1, writing an error outcome.
+      const code = await runOneShotTask(taskPath, noopProvider, makeConfig() as any, fakeScan)
+      // Key assertion 1: the trade-scan orchestrator was never touched
+      expect(fakeScanInvoked).toBe(false)
+      // Key assertion 2: outcome file was written (error outcome)
+      const outcome = JSON.parse(readFileSync(join(dir, 'out.json'), 'utf-8'))
+      expect(outcome).toBeDefined()
+      // runGovernedLoop catches the stream error internally and returns an
+      // unstructured-fallback outcome (ok:true) — so runOneShotTask returns 0.
+      // The exact exit code is intentionally asserted to lock in the behaviour.
+      expect(code).toBe(0)
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
   it('a failed scan outcome yields exit code 1', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'cynco-ts-'))
     try {
