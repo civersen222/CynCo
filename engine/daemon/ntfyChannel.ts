@@ -2,7 +2,7 @@
 // Self-hosted ntfy client. Publish: JSON API (POST {baseUrl}/). Subscribe: SSE.
 // The ntfy server is expected to be bound to the Tailscale interface only —
 // this client never opens a listening port.
-import type { CommandMessage, Recommendation } from './types.js'
+import type { ApprovalCommand, CommandMessage, Recommendation } from './types.js'
 
 const MAX_QUEUE = 100
 const MAX_SSE_BUFFER = 64 * 1024
@@ -109,7 +109,7 @@ export class NtfyChannel {
       label,
       url: cmdUrl,
       method: 'POST',
-      body: JSON.stringify({ recId: rec.id, verdict } satisfies CommandMessage),
+      body: JSON.stringify({ kind: 'approval', recId: rec.id, verdict } satisfies ApprovalCommand),
       // The phone app does NOT attach its own login to http actions, so a
       // deny-all server would 403 the button press without this header.
       ...(this.token ? { headers: { Authorization: `Bearer ${this.token}` } } : {}),
@@ -173,12 +173,23 @@ export class NtfyChannel {
               if (!line.startsWith('data:')) continue
               try {
                 const event = JSON.parse(line.slice(5).trim())
-                const cmd = JSON.parse(event.message)
-                if ((cmd.verdict === 'approve' || cmd.verdict === 'reject') && typeof cmd.recId === 'string') {
-                  onCommand({ recId: cmd.recId, verdict: cmd.verdict })
+                const raw = typeof event.message === 'string' ? event.message : ''
+                if (!raw.trim()) continue // keepalive/open events or blank messages
+                let cmd: CommandMessage | null = null
+                try {
+                  const parsed = JSON.parse(raw)
+                  // Accept approval bodies with or without kind — buttons on
+                  // notifications published before this change carry no kind.
+                  if ((parsed?.verdict === 'approve' || parsed?.verdict === 'reject') && typeof parsed?.recId === 'string') {
+                    cmd = { kind: 'approval', recId: parsed.recId, verdict: parsed.verdict }
+                  }
+                } catch {
+                  // not JSON — fall through to text command
                 }
+                if (!cmd) cmd = { kind: 'text', text: raw.trim() }
+                onCommand(cmd)
               } catch {
-                // malformed event — ignore
+                // malformed SSE event — ignore
               }
             }
           }

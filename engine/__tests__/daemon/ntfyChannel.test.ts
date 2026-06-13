@@ -76,8 +76,8 @@ describe('NtfyChannel', () => {
     expect(actions.length).toBe(2)
     expect(actions[0].action).toBe('http')
     expect(actions[0].url).toContain('cynco-commands')
-    expect(JSON.parse(actions[0].body)).toEqual({ recId: 'rec-9', verdict: 'approve' })
-    expect(JSON.parse(actions[1].body)).toEqual({ recId: 'rec-9', verdict: 'reject' })
+    expect(JSON.parse(actions[0].body)).toEqual({ kind: 'approval', recId: 'rec-9', verdict: 'approve' })
+    expect(JSON.parse(actions[1].body)).toEqual({ kind: 'approval', recId: 'rec-9', verdict: 'reject' })
   })
 
   it('http actions carry the auth token so the phone can POST to a deny-all server', async () => {
@@ -117,24 +117,29 @@ describe('NtfyChannel', () => {
     const got: any[] = []
     const stop = ch.subscribe((cmd) => got.push(cmd))
     await new Promise((r) => setTimeout(r, 200)) // let SSE connect
-    mock.sendSse({ message: JSON.stringify({ recId: 'rec-1', verdict: 'approve' }) })
+    mock.sendSse({ message: JSON.stringify({ recId: 'rec-1', verdict: 'approve' }) }) // legacy body, no kind
     await new Promise((r) => setTimeout(r, 200))
     stop()
-    expect(got).toEqual([{ recId: 'rec-1', verdict: 'approve' }])
+    expect(got).toEqual([{ kind: 'approval', recId: 'rec-1', verdict: 'approve' }])
   })
 
-  it('ignores malformed SSE messages', async () => {
+  it('non-approval messages become text commands; empty messages are ignored', async () => {
     const mock = await startMockNtfy()
     cleanup = mock.close
     const ch = new NtfyChannel({ baseUrl: mock.url, alertTopic: 'a', commandTopic: 'c' })
     const got: any[] = []
     const stop = ch.subscribe((cmd) => got.push(cmd))
     await new Promise((r) => setTimeout(r, 200))
-    mock.sendSse({ message: 'not json' })
-    mock.sendSse({ message: JSON.stringify({ nope: true }) })
+    mock.sendSse({ message: 'lineup 5' })                          // plain text → text command
+    mock.sendSse({ message: JSON.stringify({ nope: true }) })      // JSON but not approval → text command
+    mock.sendSse({ message: '   ' })                               // whitespace only → ignored
+    mock.sendSse({})                                               // no message field (keepalive) → ignored
     await new Promise((r) => setTimeout(r, 200))
     stop()
-    expect(got.length).toBe(0)
+    expect(got).toEqual([
+      { kind: 'text', text: 'lineup 5' },
+      { kind: 'text', text: '{"nope":true}' },
+    ])
   })
 
   it('caps the offline queue at MAX_QUEUE (100) dropping oldest', async () => {

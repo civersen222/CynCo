@@ -96,7 +96,16 @@ export interface MissionState {
   failureStreak: number
 }
 
-export interface CommandMessage {
+export interface ApprovalCommand {
+  kind: 'approval'
   recId: string
   verdict: 'approve' | 'reject'
 }
+
+/** Free-text phone command (e.g. "lineup 5") published to the command topic. */
+export interface TextCommand {
+  kind: 'text'
+  text: string
+}
+
+export type CommandMessage = ApprovalCommand | TextCommand
