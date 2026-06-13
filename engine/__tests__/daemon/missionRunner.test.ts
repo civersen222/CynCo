@@ -327,7 +327,7 @@ describe('MissionRunner text commands + on-demand queue', () => {
     const { GpuBusyError } = await import('../../daemon/taskRunner.js')
     let busy = true
     let nowMs = new Date(2026, 5, 11, 12, 0, 0).getTime()
-    const { runner, ranTasks } = freshRunner({
+    const { runner, ranTasks, ledger } = freshRunner({
       runTask: async (input: any): Promise<TaskOutcome> => {
         if (busy) throw new GpuBusyError()
         ranTasks.push(input)
@@ -338,6 +338,7 @@ describe('MissionRunner text commands + on-demand queue', () => {
     await runner.handleTextCommand('lineup')
     await runner.tick() // GPU busy → deferred, still queued
     expect(ranTasks.length).toBe(0)
+    expect(ledger.state.nextFire['on-demand-lineup']).toBeUndefined()
     await runner.tick() // before retry-at → still waiting, no run attempt
     expect(ranTasks.length).toBe(0)
     busy = false
@@ -345,6 +346,30 @@ describe('MissionRunner text commands + on-demand queue', () => {
     await runner.tick()
     expect(ranTasks.length).toBe(1)
     expect(ranTasks[0].triggerId).toBe('on-demand-lineup')
+  })
+
+  it('backoff-parked on-demand does not starve a due scheduled trigger', async () => {
+    const { GpuBusyError } = await import('../../daemon/taskRunner.js')
+    const nowMs = new Date(2026, 5, 11, 12, 0, 0).getTime()
+    const { runner, ranTasks, ledger } = freshRunner({
+      runTask: async (input: any): Promise<TaskOutcome> => {
+        // GpuBusyError only for the on-demand task; scheduled triggers run normally
+        if (input.triggerId === 'on-demand-lineup') throw new GpuBusyError()
+        ranTasks.push(input)
+        return { ok: true, summary: 'ran', recommendations: [] }
+      },
+      now: () => new Date(nowMs),
+    })
+    // Queue the on-demand request; it will park with a notBefore ~5 min from now
+    await runner.handleTextCommand('lineup')
+    await runner.tick() // on-demand deferred (GPU busy) — parked with future notBefore
+    expect(ranTasks.length).toBe(0)
+    // Now make a scheduled trigger due (poll is parked in the future by freshRunner)
+    ledger.setNextFire('poll', new Date(nowMs - 1000).toISOString())
+    await runner.tick() // scheduled 'poll' is due; on-demand is still notBefore-in-future
+    // Scheduled trigger ran; on-demand did not
+    expect(ranTasks.length).toBe(1)
+    expect(ranTasks[0].triggerId).toBe('poll')
   })
 
   it('on-demand outcome with recommendations publishes them as pending', async () => {
