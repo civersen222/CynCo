@@ -76,9 +76,14 @@ if (runners.length === 0) {
   console.log(`[daemon] No missions found in ${missionsDir} — create <mission-id>/mission.json. Idling.`)
 }
 
-// Phone commands → first mission that knows the recId
+// Phone commands: approvals → first mission that knows the recId;
+// text commands (e.g. "lineup 5") → every mission runner.
 const stopSubscription = ntfy.subscribe(async (cmd) => {
   try {
+    if (cmd.kind === 'text') {
+      for (const runner of runners) await runner.handleTextCommand(cmd.text)
+      return
+    }
     for (const runner of runners) {
       if (await runner.handleCommand(cmd)) return
     }
