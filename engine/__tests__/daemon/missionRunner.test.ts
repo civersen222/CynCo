@@ -16,6 +16,7 @@ const config: MissionConfig = {
     { id: 'news', kind: 'interval', everyMinutes: 120, precheck: 'none', missedPolicy: 'skip', prompt: 'Check news' },
   ],
   trustLadder: { waiver: { mode: 'ask', promoteAt: 2 } },
+  commands: { lineup: 'Produce a full suggested starting lineup for {week}.' },
 }
 
 function makeDeps(overrides: Partial<any> = {}) {
@@ -204,7 +205,7 @@ describe('MissionRunner.tick', () => {
     const runner = new MissionRunner(ledger, deps as any)
     ledger.state.trust.waiver.approvedStreak = 1 // promoteAt: 2 → next approve hits it
     ledger.addPending({ id: 'rec-7', actionType: 'waiver', summary: 'Claim Z', detail: 'd' })
-    const handled = await runner.handleCommand({ recId: 'rec-7', verdict: 'approve' })
+    const handled = await runner.handleCommand({ kind: 'approval', recId: 'rec-7', verdict: 'approve' })
     expect(handled).toBe(true)
     expect(ledger.state.pending['rec-7']).toBeUndefined()
     const promo = published.find((p) => p.title?.match(/promot/i))
@@ -215,7 +216,7 @@ describe('MissionRunner.tick', () => {
     const { deps } = makeDeps()
     const ledger = MissionLedger.load(join(dir, 'mfl-dynasty'))
     const runner = new MissionRunner(ledger, deps as any)
-    expect(await runner.handleCommand({ recId: 'nope', verdict: 'approve' })).toBe(false)
+    expect(await runner.handleCommand({ kind: 'approval', recId: 'nope', verdict: 'approve' })).toBe(false)
   })
 
   it('persists nextFire to disk before firing — a crash mid-run cannot re-fire', async () => {
@@ -261,5 +262,129 @@ describe('MissionRunner.tick', () => {
     // Re-load ledger from disk to verify saveState ran BEFORE the publish
     const reloaded = MissionLedger.load(missionDir)
     expect(reloaded.state.pending['rec-1']).toBeDefined()
+  })
+})
+
+describe('MissionRunner text commands + on-demand queue', () => {
+  function freshRunner(overrides: Partial<any> = {}) {
+    const made = makeDeps(overrides)
+    const ledger = MissionLedger.load(join(dir, 'mfl-dynasty'))
+    // Park both scheduled triggers in the future so only on-demand work fires
+    ledger.setNextFire('news', new Date(2026, 5, 12).toISOString())
+    ledger.setNextFire('poll', new Date(2026, 5, 12).toISOString())
+    return { ...made, ledger, runner: new MissionRunner(ledger, made.deps as any) }
+  }
+
+  it('handleTextCommand("lineup") queues a request and publishes an ack', async () => {
+    const { runner, published, ranTasks } = freshRunner()
+    await runner.handleTextCommand('lineup')
+    expect(ranTasks.length).toBe(0) // never runs a model from the command handler
+    expect(published.length).toBe(1)
+    expect(published[0].title).toMatch(/queued/i)
+    expect(published[0].message).toContain('upcoming week')
+  })
+
+  it('handleTextCommand("lineup 5") parses the week; tick drains it through the fire path', async () => {
+    const { runner, ranTasks } = freshRunner()
+    await runner.handleTextCommand('lineup 5')
+    await runner.tick()
+    expect(ranTasks.length).toBe(1)
+    expect(ranTasks[0].triggerId).toBe('on-demand-lineup')
+    expect(ranTasks[0].prompt).toBe('Produce a full suggested starting lineup for week 5.')
+    // Drained: a second tick must not re-run it
+    await runner.tick()
+    expect(ranTasks.length).toBe(1)
+  })
+
+  it('"lineup" without a week substitutes "the upcoming week" into the template', async () => {
+    const { runner, ranTasks } = freshRunner()
+    await runner.handleTextCommand('LINEUP') // case-insensitive
+    await runner.tick()
+    expect(ranTasks[0].prompt).toBe('Produce a full suggested starting lineup for the upcoming week.')
+  })
+
+  it('unknown text publishes help and queues nothing', async () => {
+    const { runner, published, ranTasks } = freshRunner()
+    await runner.handleTextCommand('make me a sandwich')
+    await runner.tick()
+    expect(ranTasks.length).toBe(0)
+    expect(published.length).toBe(1)
+    expect(published[0].message).toMatch(/lineup/)
+  })
+
+  it('missing commands.lineup template publishes an error and queues nothing', async () => {
+    // Rewrite mission.json without commands, reload
+    const noCmd = { ...config, commands: undefined }
+    writeFileSync(join(dir, 'mfl-dynasty', 'mission.json'), JSON.stringify(noCmd), 'utf-8')
+    const { runner, published, ranTasks } = freshRunner()
+    await runner.handleTextCommand('lineup')
+    await runner.tick()
+    expect(ranTasks.length).toBe(0)
+    expect(published[0].title).toMatch(/unavailable/i)
+  })
+
+  it('GPU busy keeps the request queued with a retry-at backoff, then runs when free', async () => {
+    const { GpuBusyError } = await import('../../daemon/taskRunner.js')
+    let busy = true
+    let nowMs = new Date(2026, 5, 11, 12, 0, 0).getTime()
+    const { runner, ranTasks } = freshRunner({
+      runTask: async (input: any): Promise<TaskOutcome> => {
+        if (busy) throw new GpuBusyError()
+        ranTasks.push(input)
+        return { ok: true, summary: 'ran', recommendations: [] }
+      },
+      now: () => new Date(nowMs),
+    })
+    await runner.handleTextCommand('lineup')
+    await runner.tick() // GPU busy → deferred, still queued
+    expect(ranTasks.length).toBe(0)
+    await runner.tick() // before retry-at → still waiting, no run attempt
+    expect(ranTasks.length).toBe(0)
+    busy = false
+    nowMs += 6 * 60000 // past the 5-min base defer
+    await runner.tick()
+    expect(ranTasks.length).toBe(1)
+    expect(ranTasks[0].triggerId).toBe('on-demand-lineup')
+  })
+
+  it('on-demand outcome with recommendations publishes them as pending', async () => {
+    const { runner, ledger, published } = freshRunner()
+    await runner.handleTextCommand('lineup')
+    await runner.tick()
+    // makeDeps default runTask returns rec-1
+    expect(ledger.state.pending['rec-1']).toBeDefined()
+    const recPublish = published.find((p) => p.id === 'rec-1')
+    expect(recPublish).toBeDefined()
+  })
+})
+
+describe('MissionRunner taskType plumbing', () => {
+  it('trade-scan triggers get a 60-minute timeout and taskType/leagues passthrough', async () => {
+    const scanConfig: MissionConfig = {
+      ...config,
+      triggers: [{ id: 'trade-scan', kind: 'weekly', day: 'tue', at: '09:00', precheck: 'none', missedPolicy: 'skip', prompt: 'Rank trades', taskType: 'trade-scan' }],
+    }
+    writeFileSync(join(dir, 'mfl-dynasty', 'mission.json'), JSON.stringify(scanConfig), 'utf-8')
+    const { deps, ranTasks } = makeDeps()
+    const ledger = MissionLedger.load(join(dir, 'mfl-dynasty'))
+    ledger.setNextFire('trade-scan', new Date(2026, 5, 11, 11, 59).toISOString())
+    const runner = new MissionRunner(ledger, deps as any)
+    await runner.tick()
+    expect(ranTasks.length).toBe(1)
+    expect(ranTasks[0].taskType).toBe('trade-scan')
+    expect(ranTasks[0].timeoutMs).toBe(60 * 60 * 1000)
+    expect(ranTasks[0].leagues).toEqual([{ leagueId: '12345', year: 2026, franchiseId: '0005' }])
+  })
+
+  it('plain prompt triggers keep the 15-minute timeout and carry leagues', async () => {
+    const { deps, ranTasks } = makeDeps()
+    const ledger = MissionLedger.load(join(dir, 'mfl-dynasty'))
+    ledger.setNextFire('news', new Date(2026, 5, 11, 11, 59).toISOString())
+    ledger.setNextFire('poll', new Date(2026, 5, 12).toISOString())
+    const runner = new MissionRunner(ledger, deps as any)
+    await runner.tick()
+    expect(ranTasks[0].timeoutMs).toBe(15 * 60 * 1000)
+    expect(ranTasks[0].taskType).toBeUndefined()
+    expect(ranTasks[0].leagues).toEqual([{ leagueId: '12345', year: 2026, franchiseId: '0005' }])
   })
 })

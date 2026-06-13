@@ -5,7 +5,7 @@ import type { MissionLedger } from './missionLedger.js'
 import { evaluateTrigger, computeNextFire } from './scheduler.js'
 import { GpuBusyError } from './taskRunner.js'
 import { serializeHandoff } from '../memory/handoff.js'
-import type { CommandMessage, Recommendation, TaskFileInput, TaskOutcome, TriggerSpec } from './types.js'
+import type { ApprovalCommand, Recommendation, TaskFileInput, TaskOutcome, TriggerSpec } from './types.js'
 
 // GPU-busy defer backoff (spec §2/§7): 5 → 10 → 20 → 40 → 60 min, capped.
 // In-memory by design — a daemon restart starting fresh at 5 min is fine.
@@ -14,6 +14,9 @@ const GPU_DEFER_MAX_MS = 60 * 60 * 1000
 const FAILURE_ALERT_THRESHOLD = 3
 const DEFAULT_TOOLS = ['Mfl', 'WebSearch', 'WebFetch', 'Read']
 const DEFAULT_TIMEOUT_MS = 15 * 60 * 1000
+const TRADE_SCAN_TIMEOUT_MS = 60 * 60 * 1000
+
+type FireResult = { status: 'ran' } | { status: 'gpu-deferred'; retryAtMs: number }
 
 export interface MissionRunnerDeps {
   runTask: (input: TaskFileInput) => Promise<TaskOutcome>
@@ -30,6 +33,10 @@ export class MissionRunner {
   /** Consecutive GPU-busy defers per trigger id (drives the backoff). */
   private gpuDefers = new Map<string, number>()
 
+  /** Queued on-demand phone requests, drained by tick(). In-memory by design —
+   *  a daemon restart drops them; the user just resends the command. */
+  private onDemand: { week?: number; notBefore?: number }[] = []
+
   constructor(
     private ledger: MissionLedger,
     private deps: MissionRunnerDeps,
@@ -38,6 +45,7 @@ export class MissionRunner {
   /** One scheduler tick: evaluate every trigger, fire due ones sequentially. */
   async tick(): Promise<void> {
     const now = this.deps.now()
+    await this.drainOnDemand(now)
     for (const trigger of this.ledger.config.triggers) {
       const evaln = evaluateTrigger(trigger, this.ledger.state.nextFire[trigger.id], now)
       if (evaln.action === 'wait') continue
@@ -51,7 +59,26 @@ export class MissionRunner {
     this.ledger.saveState()
   }
 
-  private async fire(trigger: TriggerSpec, now: Date): Promise<void> {
+  private async drainOnDemand(now: Date): Promise<void> {
+    while (this.onDemand.length > 0) {
+      const req = this.onDemand[0]
+      if (req.notBefore !== undefined && now.getTime() < req.notBefore) return
+      const template = this.ledger.config.commands?.['lineup']
+      if (!template) { this.onDemand.shift(); continue } // template vanished since queuing — drop
+      const prompt = template.replace(/\{week\}/g, req.week !== undefined ? `week ${req.week}` : 'the upcoming week')
+      const trigger: TriggerSpec = {
+        id: 'on-demand-lineup', kind: 'daily', at: '00:00', precheck: 'none', missedPolicy: 'skip', prompt,
+      }
+      const result = await this.fire(trigger, now)
+      if (result.status === 'gpu-deferred') {
+        req.notBefore = result.retryAtMs
+        return
+      }
+      this.onDemand.shift()
+    }
+  }
+
+  private async fire(trigger: TriggerSpec, now: Date): Promise<FireResult> {
     // Cheap pre-check: skip the model entirely when MFL hasn't changed
     if (trigger.precheck === 'mfl-delta') {
       let anyDelta = false
@@ -66,7 +93,7 @@ export class MissionRunner {
           anyDelta = true // can't check — let the engine look
         }
       }
-      if (!anyDelta) return
+      if (!anyDelta) return { status: 'ran' }
     }
 
     // Mission context (spec §3): goal + last 3 run summaries in the existing
@@ -101,8 +128,10 @@ export class MissionRunner {
       prompt: trigger.prompt,
       context,
       allowedTools: DEFAULT_TOOLS,
-      timeoutMs: DEFAULT_TIMEOUT_MS,
+      timeoutMs: trigger.taskType === 'trade-scan' ? TRADE_SCAN_TIMEOUT_MS : DEFAULT_TIMEOUT_MS,
       outcomePath: '', // TaskRunner fills this in
+      ...(trigger.taskType ? { taskType: trigger.taskType } : {}),
+      leagues: this.ledger.config.leagues,
     }
 
     let outcome: TaskOutcome
@@ -116,8 +145,12 @@ export class MissionRunner {
         const deferMs = Math.min(GPU_DEFER_BASE_MS * 2 ** defers, GPU_DEFER_MAX_MS)
         this.gpuDefers.set(trigger.id, defers + 1)
         console.log(`[mission:${this.ledger.config.id}] GPU busy — deferring trigger "${trigger.id}" by ${deferMs / 60000} min (defer #${defers + 1})`)
-        this.ledger.setNextFire(trigger.id, new Date(now.getTime() + deferMs).toISOString())
-        return
+        // Synthetic (on-demand) triggers are not in config.triggers — keep
+        // their bookkeeping out of state.json nextFire.
+        if (this.ledger.config.triggers.some((t) => t.id === trigger.id)) {
+          this.ledger.setNextFire(trigger.id, new Date(now.getTime() + deferMs).toISOString())
+        }
+        return { status: 'gpu-deferred', retryAtMs: now.getTime() + deferMs }
       }
       outcome = { ok: false, summary: '', recommendations: [], error: err instanceof Error ? err.message : String(err) }
     }
@@ -142,7 +175,7 @@ export class MissionRunner {
           priority: 5,
         })
       }
-      return
+      return { status: 'ran' }
     }
 
     this.ledger.state.failureStreak = 0
@@ -161,10 +194,11 @@ export class MissionRunner {
       // Digest-style runs report even when nothing is actionable
       await this.deps.publish({ title: `Mission ${this.ledger.config.id}: ${trigger.id}`, message: outcome.summary })
     }
+    return { status: 'ran' }
   }
 
   /** Handle an approve/reject command from the phone. Returns false if the recId is unknown to this mission. */
-  async handleCommand(cmd: CommandMessage): Promise<boolean> {
+  async handleCommand(cmd: ApprovalCommand): Promise<boolean> {
     const res = this.ledger.resolveApproval(cmd.recId, cmd.verdict)
     if (!res) return false
     console.log(`[mission:${this.ledger.config.id}] ${cmd.verdict}: "${res.rec.summary}" (${res.rec.actionType} streak now ${this.ledger.state.trust[res.rec.actionType]?.approvedStreak ?? 'n/a'})`)
@@ -180,5 +214,32 @@ export class MissionRunner {
       })
     }
     return true
+  }
+
+  /** Handle a free-text phone command. Recognized commands are queued for the
+   *  next tick — a model run NEVER starts from the SSE callback. */
+  async handleTextCommand(text: string): Promise<void> {
+    const trimmed = text.trim()
+    const m = /^lineup(?:\s+(\d{1,2}))?$/i.exec(trimmed)
+    if (!m) {
+      await this.deps.publish({
+        title: 'Unknown command',
+        message: `"${trimmed.slice(0, 80)}" — valid commands: "lineup" (upcoming week) or "lineup <week>"`,
+      })
+      return
+    }
+    if (!this.ledger.config.commands?.['lineup']) {
+      await this.deps.publish({
+        title: 'Lineup command unavailable',
+        message: 'mission.json has no commands.lineup prompt template.',
+      })
+      return
+    }
+    const week = m[1] !== undefined ? parseInt(m[1], 10) : undefined
+    this.onDemand.push({ week })
+    await this.deps.publish({
+      title: 'Lineup queued',
+      message: `Suggested lineup for ${week !== undefined ? `week ${week}` : 'the upcoming week'} — report arrives in a few minutes.`,
+    })
   }
 }

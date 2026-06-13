@@ -19,6 +19,8 @@ export interface TriggerSpec {
   missedPolicy: 'skip' | 'run-once-on-startup'
   /** Task prompt for the engine run. */
   prompt: string
+  /** 'prompt' (default): single governed run of `prompt`. 'trade-scan': multi-pass orchestrator (engine/daemon/tradeScan.ts). */
+  taskType?: 'prompt' | 'trade-scan'
 }
 
 export interface MflLeagueRef {
@@ -35,6 +37,8 @@ export interface MissionConfig {
   triggers: TriggerSpec[]
   /** Per action-type trust ladder. mode stays 'ask' in Phase B; 'auto' is Phase C. */
   trustLadder: Record<string, { mode: 'ask' | 'auto'; promoteAt: number }>
+  /** On-demand phone command prompt templates, e.g. { lineup: "...for {week}..." }. */
+  commands?: Record<string, string>
 }
 
 export interface Recommendation {
@@ -57,6 +61,10 @@ export interface TaskFileInput {
   timeoutMs: number
   /** Where the engine writes the TaskOutcome JSON. */
   outcomePath: string
+  /** Mirrors TriggerSpec.taskType. Absent = 'prompt'. */
+  taskType?: 'prompt' | 'trade-scan'
+  /** League refs for orchestrated tasks (trade-scan needs structured ids, not just the context string). */
+  leagues?: MflLeagueRef[]
 }
 
 export interface TaskOutcome {
