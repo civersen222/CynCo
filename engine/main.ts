@@ -158,22 +158,27 @@ if (config.provider === 'llama-cpp') {
 
     // 2. Resolve GGUF model
     const { resolveModel } = await import('./llama/modelResolver.js')
-    const modelPath = resolveModel(config.model ?? 'unknown', modelsDir, config.modelPath)
+    const modelPath = resolveModel(config.model ?? 'unknown', modelsDir, config.modelPath, config.modelFile)
     console.log(`[llama-cpp] Model: ${modelPath}`)
 
     // 3. Start/connect to llama-server
     const { ProcessManager } = await import('./llama/processManager.js')
+    const rt = config.runtime
     const processManager = new ProcessManager({
       binaryPath,
       modelPath,
       port: config.port,
       ctxSize: config.contextLength ?? 32768,
-      batchSize: config.batchSize,
-      gpuLayers: config.gpuLayers,
-      flashAttn: config.flashAttn,
+      batchSize: rt?.batchSize ?? config.batchSize,
+      gpuLayers: rt?.gpuLayers ?? config.gpuLayers,
+      flashAttn: rt?.flashAttn ?? config.flashAttn,
       threads: config.threads,
-      specType: process.env.LOCALCODE_SPEC_TYPE || undefined,
-      specDraftN: process.env.LOCALCODE_SPEC_DRAFT_N ? parseInt(process.env.LOCALCODE_SPEC_DRAFT_N, 10) : undefined,
+      specType: process.env.LOCALCODE_SPEC_TYPE || rt?.specType || undefined,
+      specDraftN: process.env.LOCALCODE_SPEC_DRAFT_N
+        ? parseInt(process.env.LOCALCODE_SPEC_DRAFT_N, 10)
+        : rt?.specDraftN,
+      cacheRam: rt?.cacheRam,
+      reasoningBudget: rt?.reasoningBudget,
     })
     // Wire eval tok/s from llama-server stderr → governance (deferred until loop is created)
     ;(globalThis as any).__llamaProcessManager = processManager
