@@ -382,7 +382,7 @@ try {
           const spec = process.env.LOCALCODE_SPEC_TYPE ? ` +${process.env.LOCALCODE_SPEC_TYPE}` : ''
           modelName = `${basename}${spec}`
         }
-        return { model: modelName, contextLength: config.contextLength || 32768, tier: config.tier || 'auto' }
+        return { model: modelName, contextLength: config.contextLength || 32768, tier: config.tier || 'auto', projectPath: loop.getExecutor()?.['cwd'] ?? process.cwd() }
       },
       applyEngineConfig: (patches) => {
         const { handleConfigUpdate } = require('./bridge/configHandlers.js')
@@ -491,7 +491,7 @@ async function handleCommand(command: TUICommand): Promise<void> {
       if (command.cwd) {
         const { existsSync } = require('fs')
         if (existsSync(command.cwd)) {
-          loop.getExecutor().setCwd(command.cwd)
+          loop.setCwd(command.cwd)
           console.log(`[localcode] Switched cwd to: ${command.cwd}`)
         } else {
           console.log(`[localcode] Ignoring invalid cwd: ${command.cwd}`)

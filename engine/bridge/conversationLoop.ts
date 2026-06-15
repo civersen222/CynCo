@@ -2104,6 +2104,18 @@ export class ConversationLoop {
     return this.executor
   }
 
+  /**
+   * Re-root the entire loop at a new project directory: tool executor,
+   * LSP diagnostics, and the governance workspace snapshot. Called when a
+   * user.message arrives with a different cwd so everything (not just the
+   * executor) points at the directory the user is actually working in.
+   */
+  setCwd(cwd: string): void {
+    this.executor.setCwd(cwd)
+    this.lspManager.setCwd(cwd)
+    if (cwd !== this.snapshotCwd) this.initSnapshot(cwd)
+  }
+
   getFileTracker() {
     return this.fileTracker
   }
