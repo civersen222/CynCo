@@ -25,7 +25,7 @@ export type CapabilityOverrides = {
 
 /**
  * llama-cpp launch parameters. Snake_case keys mirror the YAML profile.
- * Every key maps 1:1 onto ServerConfig in engine/llama/processManager.ts.
+ * Each key is the design source for a ServerConfig field in engine/llama/processManager.ts.
  * All optional — omitted keys keep the built-in launch defaults.
  */
 export type ProfileRuntime = {
