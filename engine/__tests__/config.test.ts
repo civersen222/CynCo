@@ -2,7 +2,27 @@ import { describe, expect, it, afterEach, beforeEach, mock } from 'bun:test'
 import { loadConfig } from '../config.js'
 
 describe('config', () => {
+  const fs = require('node:fs') as typeof import('node:fs')
+  const path = require('node:path') as typeof import('node:path')
+  const os = require('node:os') as typeof import('node:os')
+  let tmpDir: string
+  let origHome: string | undefined
+  let origCwd: string
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lc-config-base-'))
+    fs.mkdirSync(path.join(tmpDir, 'home'), { recursive: true })
+    fs.mkdirSync(path.join(tmpDir, 'project'), { recursive: true })
+    origHome = process.env.HOME
+    origCwd = process.cwd()
+    process.env.HOME = path.join(tmpDir, 'home')
+    process.chdir(path.join(tmpDir, 'project'))
+  })
+
   afterEach(() => {
+    process.env.HOME = origHome
+    process.chdir(origCwd)
+    fs.rmSync(tmpDir, { recursive: true, force: true })
     for (const key of Object.keys(process.env)) {
       if (key.startsWith('LOCALCODE_')) delete process.env[key]
     }
