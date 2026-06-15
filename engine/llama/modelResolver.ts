@@ -37,10 +37,7 @@ export function resolveModel(
   if (modelFile) {
     const exact = path.join(modelDir, modelFile)
     if (!fs.existsSync(exact)) {
-      throw new Error(
-        `model_file '${modelFile}' not found in ${modelDir}. ` +
-        `Check the profile's model_file matches the gguf on disk.`,
-      )
+      throw new ModelNotFoundError(modelName, exact)
     }
     return exact
   }
