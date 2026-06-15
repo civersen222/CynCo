@@ -239,4 +239,28 @@ describe('resolveProfile', () => {
     const result = resolveProfile('child', mockLoader(profiles))
     expect(result.system_prompt_append).toBe('Child system prompt.')
   })
+
+  it('carries model_file and runtime block through resolution', () => {
+    const profiles: Record<string, Profile> = {
+      'rt': {
+        name: 'rt',
+        model: 'qwen3.6-27b-q6k',
+        model_file: 'Qwen3.6-27B-Q6_K.gguf',
+        runtime: { spec_type: 'mtp', spec_draft_n: 3, gpu_layers: 999 },
+      },
+    }
+    const result = resolveProfile('rt', mockLoader(profiles))
+    expect(result.model_file).toBe('Qwen3.6-27B-Q6_K.gguf')
+    expect(result.runtime).toEqual({ spec_type: 'mtp', spec_draft_n: 3, gpu_layers: 999 })
+  })
+
+  it('child runtime block replaces parent runtime block entirely', () => {
+    const profiles: Record<string, Profile> = {
+      'parent': { name: 'parent', runtime: { spec_type: 'mtp', spec_draft_n: 2 } },
+      'child': { name: 'child', extends: 'parent', runtime: { spec_draft_n: 5 } },
+    }
+    const result = resolveProfile('child', mockLoader(profiles))
+    // Object fields in child replace parent's entirely (existing merge rule)
+    expect(result.runtime).toEqual({ spec_draft_n: 5 })
+  })
 })

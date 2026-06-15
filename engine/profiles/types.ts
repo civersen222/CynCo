@@ -24,6 +24,21 @@ export type CapabilityOverrides = {
 }
 
 /**
+ * llama-cpp launch parameters. Snake_case keys mirror the YAML profile.
+ * Every key maps 1:1 onto ServerConfig in engine/llama/processManager.ts.
+ * All optional — omitted keys keep the built-in launch defaults.
+ */
+export type ProfileRuntime = {
+  spec_type?: string
+  spec_draft_n?: number
+  gpu_layers?: number
+  batch_size?: number
+  flash_attn?: boolean
+  cache_ram?: number
+  reasoning_budget?: number
+}
+
+/**
  * Raw profile as loaded from a YAML file.
  * May contain an `extends` field referencing a parent profile.
  */
@@ -34,6 +49,8 @@ export type Profile = {
   temperature?: number
   max_output_tokens?: number
   context_length?: number
+  model_file?: string
+  runtime?: ProfileRuntime
   tier?: TierSetting
   base_url?: string
   timeout?: number
