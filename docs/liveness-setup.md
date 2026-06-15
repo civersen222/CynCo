@@ -92,8 +92,12 @@ changed intervals, trust ladder), restart the daemon for the changes to take eff
 
 ```powershell
 schtasks /Create /TN "CynCo Liveness Daemon" /SC ONLOGON /RL LIMITED `
-  /TR "cmd /c set CYNCO_NTFY_URL=http://100.101.102.103:8090&& set CYNCO_NTFY_TOKEN=tk_yourtoken&& set LOCALCODE_MODEL=qwen3.6&& set LOCALCODE_PROVIDER=llama-cpp&& cd /d C:\Users\civer\localcode&& bun engine\daemon\main.ts >> %USERPROFILE%\.cynco\daemon.log 2>&1"
+  /TR "cmd /c set CYNCO_NTFY_URL=http://100.101.102.103:8090&& set CYNCO_NTFY_TOKEN=tk_yourtoken&& set LOCALCODE_PROVIDER=llama-cpp&& cd /d C:\Users\civer\localcode&& bun engine\daemon\main.ts >> %USERPROFILE%\.cynco\daemon.log 2>&1"
 ```
+
+> The daemon no longer sets `LOCALCODE_MODEL`. With it unset, the engine auto-loads
+> `~/.cynco/profiles/default.yaml` (the canonical 27B-Q6_K / 64k / MTP config), so
+> the daemon and the interactive TUI provably run the same model.
 
 In Task Scheduler GUI, open the task → Settings → check "If the task fails, restart every 1 minute".
 The daemon never loads a model — it spawns `bun engine/main.ts --run-task <file>` per task,
@@ -106,7 +110,7 @@ open (llama-server already running), scheduled tasks defer 10 minutes and retry.
 # Terminal 1: ntfy serve --config ntfy.yml
 # Terminal 2:
 CYNCO_NTFY_URL=http://100.101.102.103:8090 CYNCO_NTFY_TOKEN=tk_... \
-LOCALCODE_MODEL=qwen3.6 LOCALCODE_PROVIDER=llama-cpp \
+LOCALCODE_PROVIDER=llama-cpp \
 bun engine/daemon/main.ts
 ```
 
