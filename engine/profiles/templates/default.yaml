@@ -4,5 +4,5 @@ model_file: Qwen3.6-27B-Q6_K.gguf
 context_length: 65536
 temperature: 0.7
 runtime:
-  spec_type: mtp
+  spec_type: draft-mtp
   spec_draft_n: 3
