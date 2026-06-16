@@ -158,22 +158,27 @@ if (config.provider === 'llama-cpp') {
 
     // 2. Resolve GGUF model
     const { resolveModel } = await import('./llama/modelResolver.js')
-    const modelPath = resolveModel(config.model ?? 'unknown', modelsDir, config.modelPath)
+    const modelPath = resolveModel(config.model ?? 'unknown', modelsDir, config.modelPath, config.modelFile)
     console.log(`[llama-cpp] Model: ${modelPath}`)
 
     // 3. Start/connect to llama-server
     const { ProcessManager } = await import('./llama/processManager.js')
+    const rt = config.runtime
     const processManager = new ProcessManager({
       binaryPath,
       modelPath,
       port: config.port,
       ctxSize: config.contextLength ?? 32768,
-      batchSize: config.batchSize,
-      gpuLayers: config.gpuLayers,
-      flashAttn: config.flashAttn,
+      batchSize: rt?.batchSize ?? config.batchSize,
+      gpuLayers: rt?.gpuLayers ?? config.gpuLayers,
+      flashAttn: rt?.flashAttn ?? config.flashAttn,
       threads: config.threads,
-      specType: process.env.LOCALCODE_SPEC_TYPE || undefined,
-      specDraftN: process.env.LOCALCODE_SPEC_DRAFT_N ? parseInt(process.env.LOCALCODE_SPEC_DRAFT_N, 10) : undefined,
+      specType: process.env.LOCALCODE_SPEC_TYPE || rt?.specType || undefined,
+      specDraftN: process.env.LOCALCODE_SPEC_DRAFT_N
+        ? parseInt(process.env.LOCALCODE_SPEC_DRAFT_N, 10)
+        : rt?.specDraftN,
+      cacheRam: rt?.cacheRam,
+      reasoningBudget: rt?.reasoningBudget,
     })
     // Wire eval tok/s from llama-server stderr → governance (deferred until loop is created)
     ;(globalThis as any).__llamaProcessManager = processManager
@@ -215,6 +220,23 @@ if (config.provider === 'llama-cpp') {
 }
 
 console.log(`[localcode] Context budget: ${contextLength} tokens`)
+
+// ─── One-shot mode (daemon-scheduled task; no WS server, no TUI) ──
+const runTaskIdx = process.argv.indexOf('--run-task')
+if (runTaskIdx !== -1) {
+  const taskFilePath = process.argv[runTaskIdx + 1]
+  if (!taskFilePath) {
+    console.error('[one-shot] --run-task requires a task file path')
+    process.exit(1)
+  }
+  const { runOneShotTask } = await import('./daemon/oneShot.js')
+  const exitCode = await runOneShotTask(taskFilePath, provider, config)
+  // process.exit() skips beforeExit — stop llama-server explicitly
+  const pm = (globalThis as any).__llamaProcessManager
+  if (pm) { try { await pm.stop() } catch {} }
+  process.exit(exitCode)
+}
+
 const port = parseInt(process.env.LOCALCODE_WS_PORT ?? '9160', 10)
 
 if (!config.model) {
@@ -365,7 +387,7 @@ try {
           const spec = process.env.LOCALCODE_SPEC_TYPE ? ` +${process.env.LOCALCODE_SPEC_TYPE}` : ''
           modelName = `${basename}${spec}`
         }
-        return { model: modelName, contextLength: config.contextLength || 32768, tier: config.tier || 'auto' }
+        return { model: modelName, contextLength: config.contextLength || 32768, tier: config.tier || 'auto', projectPath: loop.getExecutor()?.['cwd'] ?? process.cwd() }
       },
       applyEngineConfig: (patches) => {
         const { handleConfigUpdate } = require('./bridge/configHandlers.js')
@@ -474,7 +496,7 @@ async function handleCommand(command: TUICommand): Promise<void> {
       if (command.cwd) {
         const { existsSync } = require('fs')
         if (existsSync(command.cwd)) {
-          loop.getExecutor().setCwd(command.cwd)
+          loop.setCwd(command.cwd)
           console.log(`[localcode] Switched cwd to: ${command.cwd}`)
         } else {
           console.log(`[localcode] Ignoring invalid cwd: ${command.cwd}`)
@@ -493,6 +515,10 @@ async function handleCommand(command: TUICommand): Promise<void> {
       if (!command.approved && s5Orchestrator) {
         try { s5Orchestrator.recordDismissal([command.requestId]) } catch {}
       }
+      break
+
+    case 'ask.answer':
+      loop.handleAskAnswer(command.requestId, command.answer)
       break
 
     case 'command': {

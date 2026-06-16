@@ -1,9 +1,56 @@
 // engine/__tests__/llama/provider.test.ts
-import { describe, expect, it, beforeEach, afterEach } from 'bun:test'
+import { describe, expect, it, beforeEach, afterEach, vi } from 'bun:test'
 import { LlamaCppProvider } from '../../llama/provider.js'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
+
+function makeProvider(): LlamaCppProvider {
+  return new LlamaCppProvider({
+    primaryUrl: 'http://127.0.0.1:8081',
+    modelName: 'qwen3.6',
+    modelsDir: '/fake/models',
+  })
+}
+
+async function drain(events: AsyncIterable<unknown>): Promise<void> {
+  for await (const _ of events) { /* consume */ }
+}
+
+describe('LlamaCppProvider stream errors', () => {
+  // 2026-06-12 weekly-digest incident #3: llama-server rejected an oversized
+  // request ("request (32900 tokens) exceeds the available context size
+  // (32768)") but stream() never checked resp.ok and fromOpenAIStreamChunk
+  // drops chunks without choices — the loop saw a silent 0-token end_turn
+  // every remaining turn instead of the error.
+  afterEach(() => { vi.unstubAllGlobals() })
+
+  it('throws on non-OK HTTP response instead of silently ending the stream', async () => {
+    vi.stubGlobal('fetch', async () => new Response(
+      JSON.stringify({ error: { message: 'request (32900 tokens) exceeds the available context size (32768)' } }),
+      { status: 400, statusText: 'Bad Request' },
+    ))
+    const p = makeProvider()
+    await expect(drain(p.stream({ model: 'qwen3.6', messages: [] } as any)))
+      .rejects.toThrow(/32900|HTTP 400/)
+  })
+
+  it('throws when a data chunk carries an error payload', async () => {
+    const sse = 'data: {"error":{"message":"context shift is disabled"}}\n\ndata: [DONE]\n\n'
+    vi.stubGlobal('fetch', async () => new Response(sse, { status: 200 }))
+    const p = makeProvider()
+    await expect(drain(p.stream({ model: 'qwen3.6', messages: [] } as any)))
+      .rejects.toThrow(/context shift is disabled/)
+  })
+
+  it('throws on SSE error:-prefixed lines (llama.cpp error events)', async () => {
+    const sse = 'error: {"code":500,"message":"slot unavailable","type":"unavailable_error"}\n\n'
+    vi.stubGlobal('fetch', async () => new Response(sse, { status: 200 }))
+    const p = makeProvider()
+    await expect(drain(p.stream({ model: 'qwen3.6', messages: [] } as any)))
+      .rejects.toThrow(/slot unavailable/)
+  })
+})
 
 describe('LlamaCppProvider', () => {
   it('has correct name', () => {

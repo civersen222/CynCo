@@ -2,6 +2,11 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
 import { buildServerArgs, ProcessManager } from '../../llama/processManager.js'
 
+function argValue(args: string[], flag: string): string | undefined {
+  const i = args.indexOf(flag)
+  return i >= 0 ? args[i + 1] : undefined
+}
+
 describe('buildServerArgs', () => {
   it('builds default args', () => {
     const args = buildServerArgs({
@@ -135,6 +140,46 @@ describe('buildServerArgs', () => {
       expect(idx).toBeGreaterThanOrEqual(0)
       expect(args[idx + 1]).toBe('512')
     })
+  })
+})
+
+describe('buildServerArgs — config-driven cacheRam/reasoningBudget', () => {
+  afterEach(() => {
+    delete process.env.LOCALCODE_CACHE_RAM
+    delete process.env.LOCALCODE_REASONING_BUDGET
+  })
+
+  it('emits the canonical MTP profile args', () => {
+    const args = buildServerArgs({
+      modelPath: '/m/Qwen3.6-27B-Q6_K.gguf',
+      port: 8081,
+      ctxSize: 65536,
+      specType: 'draft-mtp',
+      specDraftN: 3,
+    })
+    expect(argValue(args, '--ctx-size')).toBe('65536')
+    expect(argValue(args, '--spec-type')).toBe('draft-mtp')
+    expect(argValue(args, '--spec-draft-n-max')).toBe('3')
+  })
+
+  it('uses config cacheRam/reasoningBudget over env and default', () => {
+    process.env.LOCALCODE_CACHE_RAM = '9999'
+    process.env.LOCALCODE_REASONING_BUDGET = '9999'
+    const args = buildServerArgs({
+      modelPath: '/m/x.gguf', port: 8081,
+      cacheRam: 0, reasoningBudget: 256,
+    })
+    expect(argValue(args, '--cache-ram')).toBe('0')
+    expect(argValue(args, '--reasoning-budget')).toBe('256')
+  })
+
+  it('falls back to env then default when config omits them', () => {
+    const a1 = buildServerArgs({ modelPath: '/m/x.gguf', port: 8081 })
+    expect(argValue(a1, '--cache-ram')).toBe('0')
+    expect(argValue(a1, '--reasoning-budget')).toBe('256')
+    process.env.LOCALCODE_CACHE_RAM = '2048'
+    const a2 = buildServerArgs({ modelPath: '/m/x.gguf', port: 8081 })
+    expect(argValue(a2, '--cache-ram')).toBe('2048')
   })
 })
 

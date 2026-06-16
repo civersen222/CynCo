@@ -10,7 +10,9 @@
 
 import * as http from 'http'
 import { spawn as nodeSpawn } from 'child_process'
+import { globSync } from 'fs'
 import { WebSocketServer, WebSocket as WsWebSocket } from 'ws'
+import { parse as parseYamlLib } from 'yaml'
 
 interface BunWSServerOptions {
   port: number
@@ -178,12 +180,34 @@ function makeBunSpawn(
   }
 }
 
-// Install global Bun shim if not already defined (i.e. running under vitest)
-if (typeof globalThis.Bun === 'undefined') {
-  ;(globalThis as any).Bun = {
-    serve: makeBunServe,
-    spawn: makeBunSpawn,
+/**
+ * Minimal Bun.Glob shim for vitest, backed by Node's fs.globSync.
+ * Production code uses `new Bun.Glob(pattern).scan({ cwd, absolute })`.
+ * Bun yields forward-slash paths; fs.globSync yields native separators on
+ * Windows, so we normalize to forward slashes to match Bun's behavior.
+ */
+class GlobShim {
+  constructor(private readonly pattern: string) {}
+
+  async *scan(opts: { cwd?: string; absolute?: boolean } = {}): AsyncGenerator<string> {
+    const cwd = opts.cwd ?? process.cwd()
+    const matches = globSync(this.pattern, { cwd }) as string[]
+    for (const m of matches) {
+      const rel = m.split('\\').join('/')
+      yield opts.absolute ? `${cwd.split('\\').join('/')}/${rel}` : rel
+    }
   }
-} else if (typeof (globalThis as any).Bun.spawn === 'undefined') {
-  ;(globalThis as any).Bun.spawn = makeBunSpawn
+}
+
+const bunYaml = { parse: (input: string) => parseYamlLib(input) }
+
+// Install global Bun shim if not already defined (i.e. running under vitest).
+// Each property is added defensively so a partial pre-existing Bun global
+// (e.g. another setup file) still gains the members it lacks.
+{
+  const target: any = (globalThis as any).Bun ?? ((globalThis as any).Bun = {})
+  if (typeof target.serve === 'undefined') target.serve = makeBunServe
+  if (typeof target.spawn === 'undefined') target.spawn = makeBunSpawn
+  if (typeof target.Glob === 'undefined') target.Glob = GlobShim
+  if (typeof target.YAML === 'undefined') target.YAML = bunYaml
 }

@@ -18,6 +18,11 @@ export class LSPManager {
     this.cwd = cwd
   }
 
+  setCwd(cwd: string): void {
+    this.cwd = cwd
+    this.diagnosticsCache.clear()
+  }
+
   detectAvailable(): LSPServerConfig[] {
     return KNOWN_SERVERS.filter(s => {
       try {

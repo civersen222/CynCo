@@ -186,11 +186,16 @@ class ProjectPicker(Screen):
             self.notify(f"Engine not found at {engine_script}", severity="error")
             return
 
-        # Get model from config or env
-        model = os.environ.get("LOCALCODE_MODEL") or getattr(self.app.config, "model", None) or "gemma4:31b"
-        context_length = os.environ.get("LOCALCODE_CONTEXT_LENGTH") or str(getattr(self.app.config, "context_length", 65536))
-
-        env = {**os.environ, "LOCALCODE_MODEL": model, "LOCALCODE_CONTEXT_LENGTH": context_length}
+        # Source of truth is the engine's profile (default.yaml auto-loads when
+        # LOCALCODE_PROFILE is unset). Only forward explicit user overrides so
+        # the launcher can never silently diverge from the daemon's config.
+        env = {**os.environ}
+        explicit_model = os.environ.get("LOCALCODE_MODEL") or getattr(self.app.config, "model", None)
+        if explicit_model:
+            env["LOCALCODE_MODEL"] = explicit_model
+        explicit_ctx = os.environ.get("LOCALCODE_CONTEXT_LENGTH")
+        if explicit_ctx:
+            env["LOCALCODE_CONTEXT_LENGTH"] = explicit_ctx
 
         try:
             # Find bun executable — on Windows needs .cmd extension or full path

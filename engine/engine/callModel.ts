@@ -216,20 +216,32 @@ export async function* localCallModel({
       },
     }
 
-    // Auto-externalize: create handoff with current state
+    // Auto-externalize: build a content-rich handoff from the active contract
+    // (passed/failed/pending assertions → done/failed/next_steps) so the next
+    // session inherits real state, not a placeholder.
     try {
       const { onSessionEnd } = await import('../memory/lifecycle.js')
+      const { globalContract } = await import('../tools/contract.js')
+      const { handoffFromContract } = await import('../memory/handoff.js')
       const os = await import('os')
       const path = await import('path')
       const crypto = await import('crypto')
       const projectHash = crypto.createHash('md5').update(process.cwd()).digest('hex').slice(0, 8)
       const baseDir = path.join(os.homedir(), '.cynco', 'continuity', projectHash)
-      await onSessionEnd(baseDir, process.cwd().split('/').pop() || 'unknown', {
-        goal: 'Auto-externalized at ' + Math.round(contextCheck.budget.utilization * 100) + '% context',
-        now: 'Context warning threshold reached',
-        status: 'in_progress',
-        context_at_exit: contextCheck.budget.utilization,
-      })
+
+      const handoff = globalContract.isActive()
+        ? handoffFromContract(globalContract.snapshot(), {
+            utilization: contextCheck.budget.utilization,
+            model: config.model,
+          })
+        : {
+            goal: 'Auto-externalized at ' + Math.round(contextCheck.budget.utilization * 100) + '% context',
+            now: 'Context warning threshold reached',
+            status: 'in_progress' as const,
+            context_at_exit: contextCheck.budget.utilization,
+          }
+
+      await onSessionEnd(baseDir, process.cwd().split('/').pop() || 'unknown', handoff)
     } catch {
       // Externalization failed -- continue anyway
     }
@@ -270,7 +282,8 @@ export async function* localCallModel({
       const state = await onSessionStart(baseDir, process.cwd().split('/').pop() || 'unknown')
       if (state.recentHandoffs.length > 0) {
         const lastHandoff = state.recentHandoffs[state.recentHandoffs.length - 1]
-        system += `\n\n## Previous Session Context\nLast session goal: ${lastHandoff.handoff.goal}\nStatus: ${lastHandoff.handoff.status}\nWhat was happening: ${lastHandoff.handoff.now}`
+        const { formatHandoffForPrompt } = await import('../memory/handoff.js')
+        system += `\n\n${formatHandoffForPrompt(lastHandoff.handoff)}`
         // Capture for protocol event (TUI sidebar)
         try {
           const { formatSessionContext } = await import('../bridge/memoryEvents.js')
@@ -365,8 +378,13 @@ export async function* localCallModel({
     }
   }
 
-  // Add GBNF grammar for constrained decoding on simulated tool use
-  if (simulatedToolUse && process.env.LOCALCODE_GRAMMAR_ENABLED !== 'false') {
+  // Add GBNF grammar for constrained decoding on simulated tool use.
+  // OPT-IN (default off): with a valid grammar, llama-server's peg-native
+  // chat parser consumes the output into reasoning_content/tool_calls fields
+  // that the stream translator doesn't read yet (engine sees 0 tokens), and
+  // grammar+reasoning-budget can crash the server. Re-enable once the
+  // translator handles server-side parsed output.
+  if (simulatedToolUse && process.env.LOCALCODE_GRAMMAR_ENABLED === 'true') {
     try {
       const { generateGBNF } = await import('../decoding/grammarEmitter.js')
       const { ALL_TOOLS } = await import('../tools/registry.js')

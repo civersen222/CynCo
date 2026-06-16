@@ -41,10 +41,13 @@ export function generateGBNF(tools: ToolImpl[]): string {
   lines.push('tool-call ::= "<tool_call>" ws json-call ws "</tool_call>"')
   lines.push('')
 
-  // Top-level dispatch: each tool gets its own json-call variant
+  // Top-level dispatch: each tool gets its own json-call variant.
+  // NOTE: alternatives MUST be on a single line — llama.cpp's GBNF parser
+  // only allows newlines inside parenthesized groups; a newline at top level
+  // ends the rule and the next `| foo` fails with "expecting name".
   const callAlts = tools
     .map(t => `${slugify(t.name)}-call`)
-    .join('\n  | ')
+    .join(' | ')
   lines.push(`json-call ::= ${callAlts}`)
   lines.push('')
 
@@ -52,7 +55,9 @@ export function generateGBNF(tools: ToolImpl[]): string {
   for (const tool of tools) {
     const slug = slugify(tool.name)
     const escapedName = escapeGbnfString(tool.name)
-    lines.push(`${slug}-call ::= "{" ws '"name"' ws ":" ws "${escapedName}" ws "," ws '"arguments"' ws ":" ws ${slug}-args ws "}"`)
+    // GBNF only supports double-quoted literals; JSON keys/values must
+    // include their quote characters via \" escapes inside the literal.
+    lines.push(`${slug}-call ::= "{" ws "\\"name\\"" ws ":" ws "\\"${escapedName}\\"" ws "," ws "\\"arguments\\"" ws ":" ws ${slug}-args ws "}"`)
   }
   lines.push('')
 
@@ -111,9 +116,9 @@ function buildArgsRule(
     const [key, schema] = requiredProps[i]
     const valueRule = schemaToRule(schema)
     if (i === 0) {
-      parts.push(`"${escapeGbnfString(key)}" ws ":" ws ${valueRule}`)
+      parts.push(`"\\"${escapeGbnfString(key)}\\"" ws ":" ws ${valueRule}`)
     } else {
-      parts.push(`ws "," ws "${escapeGbnfString(key)}" ws ":" ws ${valueRule}`)
+      parts.push(`ws "," ws "\\"${escapeGbnfString(key)}\\"" ws ":" ws ${valueRule}`)
     }
   }
 
@@ -121,7 +126,7 @@ function buildArgsRule(
   for (const [key, schema] of optionalProps) {
     const valueRule = schemaToRule(schema)
     const sep = parts.length > 0 ? 'ws "," ws ' : ''
-    parts.push(`( ${sep}"${escapeGbnfString(key)}" ws ":" ws ${valueRule} )?`)
+    parts.push(`( ${sep}"\\"${escapeGbnfString(key)}\\"" ws ":" ws ${valueRule} )?`)
   }
 
   const body = parts.join(' ')

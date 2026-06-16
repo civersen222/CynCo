@@ -75,8 +75,10 @@ describe('generateGBNF', () => {
 
   it('includes all tool names in alternation', () => {
     const grammar = generateGBNF([readTool, bashTool])
-    expect(grammar).toContain('"Read"')
-    expect(grammar).toContain('"Bash"')
+    // Tool names are JSON string values — the quote chars are part of the
+    // GBNF literal via \" escapes (llama.cpp only supports "..." literals)
+    expect(grammar).toContain('"\\"Read\\""')
+    expect(grammar).toContain('"\\"Bash\\""')
   })
 
   it('generates per-tool call rules', () => {
@@ -98,7 +100,7 @@ describe('generateGBNF', () => {
     const argsLine = lines.find(l => l.startsWith('read-args ::='))
     expect(argsLine).toBeDefined()
     // Must include file_path without wrapping in ( ... )?
-    expect(argsLine).toContain('"file_path"')
+    expect(argsLine).toContain('"\\"file_path\\""')
   })
 
   it('wraps optional fields in ( ... )? groups', () => {
@@ -107,8 +109,8 @@ describe('generateGBNF', () => {
     const argsLine = lines.find(l => l.startsWith('read-args ::='))
     expect(argsLine).toBeDefined()
     // offset and limit are optional — they should appear inside ( ... )?
-    expect(argsLine).toMatch(/\(\s*.*"offset".*\)\?/)
-    expect(argsLine).toMatch(/\(\s*.*"limit".*\)\?/)
+    expect(argsLine).toMatch(/\(\s*.*\\"offset\\".*\)\?/)
+    expect(argsLine).toMatch(/\(\s*.*\\"limit\\".*\)\?/)
   })
 
   it('handles tool with all required fields — no optional groups', () => {
@@ -118,8 +120,8 @@ describe('generateGBNF', () => {
     expect(argsLine).toBeDefined()
     // Neither field should be wrapped in ( ... )?
     expect(argsLine).not.toContain(')?')
-    expect(argsLine).toContain('"file_path"')
-    expect(argsLine).toContain('"content"')
+    expect(argsLine).toContain('"\\"file_path\\""')
+    expect(argsLine).toContain('"\\"content\\""')
   })
 
   it('handles tool with no properties', () => {
@@ -166,18 +168,18 @@ describe('generateGBNF', () => {
     const lines = grammar.split('\n')
     const callLine = lines.find(l => l.startsWith('read-call ::='))
     expect(callLine).toBeDefined()
-    expect(callLine).toContain('"name"')
-    expect(callLine).toContain('"arguments"')
+    expect(callLine).toContain('"\\"name\\""')
+    expect(callLine).toContain('"\\"arguments\\""')
   })
 
-  it('json-call dispatches to all per-tool call rules', () => {
+  it('json-call dispatches to all per-tool call rules on a single line', () => {
     const grammar = generateGBNF([readTool, bashTool])
-    // json-call may span multiple lines when using alternation
-    expect(grammar).toContain('json-call ::=')
-    // Both tool call variants must appear somewhere after json-call
-    const callSection = grammar.slice(grammar.indexOf('json-call ::='))
-    expect(callSection).toContain('read-call')
-    expect(callSection).toContain('bash-call')
+    // Alternatives MUST be on one line — llama.cpp's GBNF parser ends the
+    // rule at a top-level newline and then fails on the dangling `| foo`
+    const dispatchLine = grammar.split('\n').find(l => l.startsWith('json-call ::='))
+    expect(dispatchLine).toBeDefined()
+    expect(dispatchLine).toContain('read-call')
+    expect(dispatchLine).toContain('bash-call')
   })
 
   it('maps string schema to json-string rule', () => {
@@ -199,7 +201,7 @@ describe('generateGBNF', () => {
     expect(grammar).toContain('root ::=')
     expect(grammar).toContain('bash-call ::=')
     expect(grammar).toContain('bash-args ::=')
-    expect(grammar).toContain('"Bash"')
+    expect(grammar).toContain('"\\"Bash\\""')
   })
 
   it('produces deterministic output for same input', () => {

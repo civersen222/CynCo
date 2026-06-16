@@ -40,6 +40,7 @@ import {
 import { getJournal } from '../training/decisionJournal.js'
 import { makeJournalEntry } from '../training/types.js'
 import { globalContract } from '../tools/contract.js'
+import { globalAskBroker } from '../tools/askBroker.js'
 import { setSideQuery, resetMergeTracking } from '../tools/impl/edit.js'
 
 type Message = {
@@ -108,6 +109,8 @@ export type ConversationLoopOptions = {
   trustProfile?: ToolTrustProfile
   workflowEngine?: WorkflowEngine
   s5?: S5Orchestrator
+  /** Hard-pin the tool set (e.g. unattended one-shot mission runs). Applied on top of workflow restrictions. */
+  allowedTools?: string[]
 }
 
 export class ConversationLoop {
@@ -138,9 +141,15 @@ export class ConversationLoop {
   private steering = new SteeringQueue()
   private journal: JSONLStore
   private snapshot?: WorkspaceSnapshot
+  private snapshotCwd?: string
   private lastSnapshotHash?: string
   private vibeMode = false
   private _correctionAttempts = 0
+  private allowedTools?: string[]
+  // Tool names actually offered to the model in the current iteration (after
+  // S5 restrictions, demotions, routing). In one-shot runs this is enforced
+  // at execution time too — see executeOneTool.
+  private offeredToolNames: Set<string> | null = null
 
   constructor(opts: ConversationLoopOptions) {
     this.config = opts.config
@@ -201,6 +210,7 @@ export class ConversationLoop {
       this.emit({ type: 'governance.alert', severity: alert.severity, message: alert.message, source: alert.source } as any)
     })
     this.s5 = opts.s5
+    this.allowedTools = opts.allowedTools
     this.agentRunner = new SubAgentRunner(async (task) => {
       // Simplified sub-agent execution — full execution comes later
       return `[SubAgent completed] ${task.task}`
@@ -225,11 +235,29 @@ export class ConversationLoop {
     })
 
     // Initialize workspace snapshot for governance
+    this.initSnapshot(this.executor['cwd'])
+
+    // S5: Session journal for crash recovery
+    this.journal = new JSONLStore(`session-${Date.now()}`)
+    console.log(`[session] Journal: ${this.journal.path}`)
+
+    // Human-in-the-loop: surface AskUser questions to the TUI over the bridge.
+    globalAskBroker.setEmitter(({ requestId, question, options }) => {
+      this.emit({ type: 'ask.request', requestId, question, options })
+    })
+  }
+
+  /**
+   * (Re)initialize the workspace snapshot for the given cwd.
+   * Called at construction and again whenever the executor cwd changes
+   * (e.g. a user.message arrives with a different project directory) —
+   * otherwise snapshots run `git add -A` against the engine's startup dir.
+   */
+  private initSnapshot(cwd: string): void {
     try {
       const fs = require('fs')
       const path = require('path')
       const { execSync } = require('child_process')
-      const cwd = this.executor['cwd']
       // If not a git repo, make it one — snapshots need git
       if (!fs.existsSync(path.join(cwd, '.git'))) {
         execSync('git init', { cwd, stdio: 'pipe' })
@@ -238,14 +266,13 @@ export class ConversationLoop {
       this.snapshot = new WorkspaceSnapshot(cwd)
       this.snapshot.init()
       this.lastSnapshotHash = this.snapshot.track()
-      console.log('[snapshot] Initialized workspace snapshot')
+      this.snapshotCwd = cwd
+      console.log(`[snapshot] Initialized workspace snapshot for ${cwd}`)
     } catch (e) {
+      this.snapshot = undefined
+      this.snapshotCwd = cwd
       console.log(`[snapshot] Failed to initialize: ${e instanceof Error ? e.message : String(e)}`)
     }
-
-    // S5: Session journal for crash recovery
-    this.journal = new JSONLStore(`session-${Date.now()}`)
-    console.log(`[session] Journal: ${this.journal.path}`)
   }
 
   get isProcessing(): boolean {
@@ -272,6 +299,11 @@ export class ConversationLoop {
       this.pendingApprovals.delete(requestId)
       resolve(approved)
     }
+  }
+
+  /** Route a human's answer to a pending AskUser question back to the broker. */
+  handleAskAnswer(requestId: string, answer: string): void {
+    globalAskBroker.answer(requestId, answer)
   }
 
   setApproveAll(value: boolean): void {
@@ -453,8 +485,11 @@ export class ConversationLoop {
     this.consecutiveNudges = 0
     this.steering.clear()
 
-    // Auto-create contract from EVERY user message — the model must finish what the user asked
-    if (!globalContract.isActive() && text.length > 15) {
+    // Auto-create contract from EVERY user message — the model must finish what the user asked.
+    // Skip in one-shot mission runs (allowedTools pinned): the contract enforcer is calibrated
+    // for interactive coding ("run the test suite NOW with Bash") and blocks a mission from
+    // producing its final structured outcome (2026-06-12 weekly-digest incident).
+    if (!this.allowedTools && !globalContract.isActive() && text.length > 15) {
       const lowerText = text.toLowerCase()
       const assertions: string[] = []
 
@@ -512,26 +547,12 @@ export class ConversationLoop {
     // Compact when context exceeds the configured warning threshold.
     // With flash attention, attention is ~O(n) not O(n²), so we can use
     // much more of the context window before compacting.
-    const estimatedTokensPreTurn = this.messages.reduce((sum, m) =>
-      sum + m.content.reduce((s, b: any) => s + (b.text?.length ?? JSON.stringify(b).length) / 4, 0), 0)
+    const estimatedTokensPreTurn = this.estimateMessageTokens()
     const ctxLen = this.config.contextLength ?? 32768
     const compactThreshold = ctxLen * (this.config.contextManagement?.warningThreshold ?? 0.4)
-    if (estimatedTokensPreTurn > compactThreshold && this.messages.length > 6) {
-      console.log(`[compact] Pre-turn compaction: ${Math.round(estimatedTokensPreTurn)} tokens → compacting for speed`)
-      try {
-        const toCompress = this.compressor.selectForCompression(this.messages, 2) // keep only last 2 pairs
-        if (toCompress.length > 0) {
-          const prompt = this.compressor.buildStructuredSummaryPrompt(toCompress, this.fileTracker)
-          const summary = await this.sideQuery(prompt)
-          this.messages = this.compressor.compressMessages(this.messages, summary, this.fileTracker)
-          try { this.journal.appendCompaction(summary, this.fileTracker.serialize()) } catch {}
-          const newTokens = this.messages.reduce((sum, m) =>
-            sum + m.content.reduce((s, b: any) => s + (b.text?.length ?? JSON.stringify(b).length) / 4, 0), 0)
-          console.log(`[compact] ${Math.round(estimatedTokensPreTurn)} → ${Math.round(newTokens)} tokens (${this.messages.length} messages)`)
-        }
-      } catch (e) {
-        console.log(`[compact] Pre-turn compaction failed: ${e}`)
-      }
+    if (estimatedTokensPreTurn > compactThreshold) {
+      console.log(`[compact] Pre-turn: ${Math.round(estimatedTokensPreTurn)} tokens > ${Math.round(compactThreshold)} threshold`)
+      await this.compactNow('pre-turn')
     }
 
     // Auto-inject CodeIndex results as system context — don't modify user message
@@ -577,6 +598,11 @@ export class ConversationLoop {
       if (allowed) {
         activeTools = ALL_TOOLS.filter(t => allowed.includes(t.name))
       }
+    }
+    // Caller-pinned tool set (one-shot mission runs) on top of any workflow restriction
+    if (this.allowedTools) {
+      const pinned = new Set(this.allowedTools)
+      activeTools = activeTools.filter(t => pinned.has(t.name))
     }
 
     // Build tool definitions in the format callModel expects (inputJSONSchema)
@@ -723,7 +749,9 @@ export class ConversationLoop {
           activeWorkflow: this.workflowEngine.state?.workflow.name ?? null,
           currentPhase: this.workflowEngine.currentPhase?.name ?? null,
           contextUsagePercent: estimatedTokens / ctxLength,
-          governance: govReport,
+          // activeToolNames: rules that restrict tools (C7) must pick from
+          // what THIS run actually has — not a hardcoded coding-tool list.
+          governance: { ...(govReport as any), activeToolNames: toolDefs.map(t => t.name) },
           recentToolResults: [],
           availableModels: [this.config.model ?? 'unknown'],
           turnCount: this.messages.filter(m => m.role === 'user').length,
@@ -777,11 +805,17 @@ export class ConversationLoop {
           }
         }
 
-        // Hard tool filtering: S5 decides, engine enforces
+        // Hard tool filtering: S5 decides, engine enforces — but never apply
+        // a restriction that would leave the model with zero tools.
         if (decision.tools) {
-          console.log(`[s5] ENFORCE: tool restriction to [${decision.tools.join(', ')}]`)
           const allowed = new Set(decision.tools)
-          toolDefs = toolDefs.filter(t => allowed.has(t.name))
+          const filtered = toolDefs.filter(t => allowed.has(t.name))
+          if (filtered.length > 0) {
+            console.log(`[s5] ENFORCE: tool restriction to [${decision.tools.join(', ')}]`)
+            toolDefs = filtered
+          } else {
+            console.log(`[s5] ENFORCE skipped: restriction [${decision.tools.join(', ')}] would remove every available tool`)
+          }
         }
 
         // Model switch enforcement
@@ -1177,6 +1211,34 @@ export class ConversationLoop {
     return { goal, now, status, model: this.config.model, what_was_done, files_modified }
   }
 
+  /** Rough token estimate (chars/4) of the current message history. */
+  private estimateMessageTokens(): number {
+    return this.messages.reduce((sum, m) =>
+      sum + m.content.reduce((s, b: any) => s + (b.text?.length ?? JSON.stringify(b).length) / 4, 0), 0)
+  }
+
+  /**
+   * Compress older messages into a structured summary via a side query.
+   * Keeps the most recent pairs so a pending tool_use message survives.
+   * Returns true only if the message list was actually compacted.
+   */
+  private async compactNow(label: string): Promise<boolean> {
+    if (this.messages.length <= 6) return false
+    try {
+      const toCompress = this.compressor.selectForCompression(this.messages, 2) // keep only last 2 pairs
+      if (toCompress.length === 0) return false
+      const prompt = this.compressor.buildStructuredSummaryPrompt(toCompress, this.fileTracker)
+      const summary = await this.sideQuery(prompt)
+      this.messages = this.compressor.compressMessages(this.messages, summary, this.fileTracker)
+      try { this.journal.appendCompaction(summary, this.fileTracker.serialize()) } catch {}
+      console.log(`[compact] ${label}: → ${Math.round(this.estimateMessageTokens())} tokens (${this.messages.length} messages)`)
+      return true
+    } catch (e) {
+      console.log(`[compact] ${label} compaction failed: ${e}`)
+      return false
+    }
+  }
+
   /** Quick side query — no tools, no thinking, returns plain text. */
   private async sideQuery(prompt: string): Promise<string> {
     // Route through the SAME backend as the main model to avoid loading
@@ -1439,14 +1501,14 @@ export class ConversationLoop {
           ? `\n\n## GOVERNANCE SIGNAL — CRITICAL (turn ${currentStuck})\n\n` +
             `CRITICAL: You have been stuck for ${currentStuck} turns repeating the same actions.\n\n` +
             `You MUST change your approach NOW:\n` +
-            `- If you have been reading files → STOP reading and EDIT or WRITE code\n` +
-            `- If you have been searching → STOP searching and ACT on what you know\n` +
-            `- If editing has failed → try a COMPLETELY different strategy\n` +
-            `- Do NOT call any tool you have used in the last 5 turns\n\n` +
+            `- Do NOT call any tool you have used in the last 5 turns\n` +
+            `- Use a DIFFERENT available tool, or change the tool's parameters completely\n` +
+            `- If repeated attempts keep failing → try a COMPLETELY different strategy\n` +
+            `- If you already have enough information → STOP using tools and produce your final answer\n\n` +
             `YOUR NEXT ACTION MUST BE DIFFERENT FROM YOUR PREVIOUS ACTIONS.`
           : `\n\n## GOVERNANCE SIGNAL (turn ${currentStuck})\n\n` +
             `WARNING: You have been repeating similar actions for ${currentStuck} turns.\n` +
-            `Change your approach: if reading, start editing. If searching, start acting.`
+            `Change your approach: use a different tool or different parameters, or act on what you already know.`
         // Append governance signal to the frozen system prompt
         effectiveSystemPrompt = asSystemPrompt([...systemPrompt, signal])
 
@@ -1460,7 +1522,7 @@ export class ConversationLoop {
               activeWorkflow: this.workflowEngine.state?.workflow.name ?? null,
               currentPhase: this.workflowEngine.currentPhase?.name ?? null,
               contextUsagePercent: 0.5,
-              governance: govReport,
+              governance: { ...(govReport as any), activeToolNames: iterationTools.map((t: any) => t.name) },
               recentToolResults: [],
               availableModels: [this.config.model ?? 'unknown'],
               turnCount: this.messages.filter(m => m.role === 'user').length,
@@ -1480,8 +1542,13 @@ export class ConversationLoop {
             })
             if (decision.tools) {
               const allowed = new Set(decision.tools)
-              iterationTools = iterationTools.filter(t => allowed.has(t.name))
-              console.log(`[s5] LIVE RE-EVAL: tool restriction to [${decision.tools.join(', ')}] (stuck ${currentStuck})`)
+              const filtered = iterationTools.filter(t => allowed.has(t.name))
+              if (filtered.length > 0) {
+                iterationTools = filtered
+                console.log(`[s5] LIVE RE-EVAL: tool restriction to [${decision.tools.join(', ')}] (stuck ${currentStuck})`)
+              } else {
+                console.log(`[s5] LIVE RE-EVAL skipped: restriction [${decision.tools.join(', ')}] would remove every available tool (stuck ${currentStuck})`)
+              }
             }
           } catch (e) {
             console.log(`[s5] Live re-eval failed: ${e}`)
@@ -1492,6 +1559,7 @@ export class ConversationLoop {
       if (currentStuck >= 3) {
         console.log(`[loop] Sending to model with ${iterationTools.length} tools: ${iterationTools.map((t: any) => t.name).join(', ')}`)
       }
+      this.offeredToolNames = new Set(iterationTools.map((t: any) => t.name))
       const gen = localCallModel({
         messages: this.messages,
         systemPrompt: effectiveSystemPrompt,
@@ -1586,7 +1654,10 @@ export class ConversationLoop {
                 thinkingTokens: reasoningTokenCount,
                 totalTokens: tokenCount + reasoningTokenCount,
                 latencyMs: Date.now() - iterationStartMs,
-                response: '',
+                // Must be the real streamed text: '' here made responseStuck
+                // permanently true (uniform empty prefixes) — 2026-06-12
+                // weekly-digest HALT incident #3.
+                response: streamedText,
                 userMessage: userMsgText,
               })
 
@@ -1722,10 +1793,16 @@ export class ConversationLoop {
         }
       }
 
-      // Emit context utilization after each model turn
-      const estimatedTokens = this.messages.reduce((sum, m) => {
-        return sum + m.content.reduce((s, b: any) => s + (b.text?.length ?? JSON.stringify(b).length) / 4, 0)
-      }, 0)
+      // Emit context utilization after each model turn.
+      // The estimate MUST include the fixed per-request prompt overhead
+      // (system prompt + tool schemas) — llama-server evaluates them on every
+      // request. 2026-06-12 incident #3: overhead was 15.1k of a 32.8k n_ctx;
+      // the messages-only estimate read 54% while the server was rejecting
+      // requests at 100%, so the critical path never fired.
+      const promptOverheadTokens =
+        JSON.stringify(effectiveSystemPrompt ?? '').length / 4 +
+        JSON.stringify(iterationTools ?? []).length / 4
+      const estimatedTokens = promptOverheadTokens + this.estimateMessageTokens()
       const contextLength = this.config.contextLength ?? 32768
       this.emit({
         type: 'context.status',
@@ -1735,8 +1812,15 @@ export class ConversationLoop {
         action: estimatedTokens / contextLength > 0.8 ? 'compact' : 'proceed',
       })
 
-      // GSD: Context monitor — warn model before overflow
-      const ctxUtilization = estimatedTokens / contextLength
+      // GSD: Context monitor — compact before overflow. A "finish now"
+      // warning alone cannot stop overflow when each tool result adds
+      // thousands of tokens, so shrink the conversation first.
+      let ctxUtilization = estimatedTokens / contextLength
+      if (ctxUtilization > 0.80) {
+        if (await this.compactNow(`in-loop at ${Math.round(ctxUtilization * 100)}%`)) {
+          ctxUtilization = (promptOverheadTokens + this.estimateMessageTokens()) / contextLength
+        }
+      }
       if (ctxUtilization > 0.80) {
         this.addMessage({
           role: 'user',
@@ -1766,10 +1850,17 @@ export class ConversationLoop {
       const completionSignals = /\b(task (is )?complete|i'm done|waiting for|ready for your|what would you like|no changes needed)\b/i
       const modelSaysDone = completionSignals.test(streamedText)
       const isMidPlanStop = noToolsEndTurn && toolsUsedInSession.length > 0 && !modelSaysDone
-      if (isThinkingWithoutActing || isDescribingInsteadOfDoing || isMidPlanStop) {
+      // One-shot missions finish by emitting a ```json structured outcome —
+      // that IS completion; never nudge it back into tool calls
+      // (2026-06-12 weekly-digest incident: nudges pushed the model mid-answer
+      // back to repeating the same Mfl call until HALT).
+      const producedStructuredOutcome = this.allowedTools != null && /```json/.test(streamedText)
+      if ((isThinkingWithoutActing || isDescribingInsteadOfDoing || isMidPlanStop) && !producedStructuredOutcome) {
         this.consecutiveNudges++
         if (this.consecutiveNudges <= 5) {
-          const nudgeText = this.consecutiveNudges <= 1
+          const nudgeText = this.allowedTools
+            ? `Do not narrate. Either call one of your available tools (${this.allowedTools.join(', ')}) to gather missing data, or produce your final structured outcome (the \`\`\`json block) now.`
+            : this.consecutiveNudges <= 1
             ? 'Do not describe what you will do. Call a tool now. If you need to read a file, call Read. If you need to write, call Write. If you need to search, call Grep. Act, do not narrate.'
             : this.consecutiveNudges <= 3
               ? `WARNING ${this.consecutiveNudges}: You MUST call a tool. Do not explain, do not plan, do not narrate. Call Read, Write, Edit, Grep, or Bash RIGHT NOW.`
@@ -1937,7 +2028,13 @@ export class ConversationLoop {
         }
       }
 
-      // Snapshot: track workspace state after tool batch
+      // Snapshot: track workspace state after tool batch.
+      // Re-init if the executor cwd changed since the snapshot was created
+      // (user.message with a different project dir, worktree switch, ...).
+      const snapCwd = this.executor['cwd']
+      if (snapCwd && snapCwd !== this.snapshotCwd) {
+        this.initSnapshot(snapCwd)
+      }
       if (this.snapshot) {
         try {
           const newHash = this.snapshot.track()
@@ -2018,6 +2115,18 @@ export class ConversationLoop {
     return this.executor
   }
 
+  /**
+   * Re-root the entire loop at a new project directory: tool executor,
+   * LSP diagnostics, and the governance workspace snapshot. Called when a
+   * user.message arrives with a different cwd so everything (not just the
+   * executor) points at the directory the user is actually working in.
+   */
+  setCwd(cwd: string): void {
+    this.executor.setCwd(cwd)
+    this.lspManager.setCwd(cwd)
+    if (cwd !== this.snapshotCwd) this.initSnapshot(cwd)
+  }
+
   getFileTracker() {
     return this.fileTracker
   }
@@ -2044,6 +2153,50 @@ export class ConversationLoop {
     const toolInput = block.input ?? {}
 
     console.log(`[loop] Executing tool: ${toolName}`)
+
+    // Hard tool pin (one-shot/unattended runs): enforce allowedTools at
+    // execution time too — simulated-mode models can hallucinate tools that
+    // were never offered in the prompt, and approveAll would run them.
+    if (this.allowedTools && !this.allowedTools.includes(toolName)) {
+      console.log(`[loop] BLOCKED (not in allowedTools): ${toolName}`)
+      const msg = `Tool "${toolName}" is not available in this run. Available tools: ${this.allowedTools.join(', ')}.`
+      this.emit({ type: 'tool.start', toolId, toolName, input: toolInput })
+      this.emit({ type: 'tool.complete', toolId, toolName, result: msg, isError: true })
+      toolResults.push({
+        type: 'tool_result',
+        tool_use_id: toolId,
+        content: [{ type: 'text', text: msg }],
+        is_error: true,
+      })
+      toolsUsedThisTurn.push(toolName)
+      toolResultsThisTurn.push('denied')
+      toolsUsedInSession.push(toolName)
+      return
+    }
+
+    // S5 live restriction (one-shot runs only): the model can keep calling a
+    // tool it saw earlier in history even after a stuck-loop restriction
+    // removed it from the prompt — 2026-06-12 replay looped WebSearch to
+    // stuck=15 this way. Enforce the per-iteration offered set, with feedback
+    // telling the model what it CAN use.
+    if (this.allowedTools && this.offeredToolNames && !this.offeredToolNames.has(toolName)) {
+      console.log(`[loop] BLOCKED (not offered this turn): ${toolName}`)
+      const msg = `Tool "${toolName}" is not available this turn (governance restricted the tool set). ` +
+        `Available tools: ${[...this.offeredToolNames].join(', ')}. ` +
+        `Use one of those, or produce your final answer from what you already know.`
+      this.emit({ type: 'tool.start', toolId, toolName, input: toolInput })
+      this.emit({ type: 'tool.complete', toolId, toolName, result: msg, isError: true })
+      toolResults.push({
+        type: 'tool_result',
+        tool_use_id: toolId,
+        content: [{ type: 'text', text: msg }],
+        is_error: true,
+      })
+      toolsUsedThisTurn.push(toolName)
+      toolResultsThisTurn.push('denied')
+      toolsUsedInSession.push(toolName)
+      return
+    }
 
     // Vibe Guardian: check risk level before execution
     const { classifyRisk, describeRisk } = await import('./guardianRules.js')
@@ -2260,7 +2413,7 @@ export class ConversationLoop {
     }
 
     // Governance: record tool result
-    this.governance.onToolResult(toolName, !result.isError, Date.now() - toolStartMs, result.output)
+    this.governance.onToolResult(toolName, !result.isError, Date.now() - toolStartMs, result.output, toolInput)
 
     // Governance: track read patterns for prediction system
     const toolFilePath = (toolInput as any).file_path ?? (toolInput as any).path ?? ''

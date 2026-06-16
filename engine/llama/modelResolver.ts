@@ -8,13 +8,15 @@ import { ModelNotFoundError, AdapterNotFoundError } from './errors.js'
  *
  * Resolution order:
  * 1. Explicit modelPath (LOCALCODE_MODEL_PATH) — wins outright
- * 2. modelsDir/<modelName>/*.gguf — pick largest file
- * 3. Error with download instructions
+ * 2. modelFile provided → use modelsDir/<modelName>/<modelFile> exactly; throw if absent
+ * 3. No modelFile, folder has exactly one .gguf → use it
+ * 4. No modelFile, folder has multiple .gguf → throw, listing candidates
  */
 export function resolveModel(
   modelName: string,
   modelsDir: string,
   modelPath?: string,
+  modelFile?: string,
 ): string {
   // 1. Explicit path override
   if (modelPath) {
@@ -24,7 +26,6 @@ export function resolveModel(
     return modelPath
   }
 
-  // 2. Scan modelsDir/<modelName>/*.gguf
   // Strip Ollama-style tags (e.g., "qwen3.6:latest" → "qwen3.6")
   const baseName = modelName.split(':')[0]
   const modelDir = path.join(modelsDir, baseName)
@@ -32,21 +33,32 @@ export function resolveModel(
     throw new ModelNotFoundError(modelName, modelDir)
   }
 
+  // 2. Explicit model_file → use it exactly
+  if (modelFile) {
+    const exact = path.join(modelDir, modelFile)
+    if (!fs.existsSync(exact)) {
+      throw new ModelNotFoundError(modelName, exact)
+    }
+    return exact
+  }
+
   const entries = fs.readdirSync(modelDir)
-  const ggufs = entries
-    .filter(f => f.endsWith('.gguf'))
-    .map(f => {
-      const fullPath = path.join(modelDir, f)
-      const stat = fs.statSync(fullPath)
-      return { path: fullPath, size: stat.size }
-    })
-    .sort((a, b) => b.size - a.size) // largest first
+  const ggufs = entries.filter(f => f.endsWith('.gguf'))
 
   if (ggufs.length === 0) {
     throw new ModelNotFoundError(modelName, modelDir)
   }
 
-  return ggufs[0].path
+  // 3. Exactly one → unambiguous
+  if (ggufs.length === 1) {
+    return path.join(modelDir, ggufs[0])
+  }
+
+  // 4. Multiple → never silently pick. Force the user to disambiguate.
+  throw new Error(
+    `Multiple .gguf files in ${modelDir}: ${ggufs.join(', ')}. ` +
+    `Set model_file in your profile to choose one.`,
+  )
 }
 
 /**

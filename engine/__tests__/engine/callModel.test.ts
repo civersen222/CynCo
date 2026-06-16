@@ -1,9 +1,37 @@
-import { describe, expect, it } from 'bun:test'
+import { describe, expect, it, beforeAll, afterAll } from 'bun:test'
+import { mkdtempSync, rmSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
 import type { StreamEvent as LocalStreamEvent } from '../../types.js'
 import type { Provider, ModelCapabilities } from '../../provider.js'
 import type { LocalCodeConfig } from '../../config.js'
 import { localCallModel } from '../../engine/callModel.js'
 import { asSystemPrompt } from '../../types.js'
+
+// callModel injects "## Previous Session Context" on the first turn when it
+// finds session handoffs under os.homedir()/.cynco/continuity. On a developer
+// machine real handoffs exist and leak into the system prompt, breaking the
+// exact-match assertions below. Redirect homedir (USERPROFILE on Windows,
+// HOME on POSIX) to an empty temp dir so no handoffs are ever found.
+let fakeHome: string
+let savedHome: string | undefined
+let savedUserProfile: string | undefined
+
+beforeAll(() => {
+  fakeHome = mkdtempSync(join(tmpdir(), 'callmodel-home-'))
+  savedHome = process.env.HOME
+  savedUserProfile = process.env.USERPROFILE
+  process.env.HOME = fakeHome
+  process.env.USERPROFILE = fakeHome
+})
+
+afterAll(() => {
+  if (savedHome === undefined) delete process.env.HOME
+  else process.env.HOME = savedHome
+  if (savedUserProfile === undefined) delete process.env.USERPROFILE
+  else process.env.USERPROFILE = savedUserProfile
+  rmSync(fakeHome, { recursive: true, force: true })
+})
 
 // ─── Test Helpers ───────────────────────────────────────────────
 

@@ -2,7 +2,27 @@ import { describe, expect, it, afterEach, beforeEach, mock } from 'bun:test'
 import { loadConfig } from '../config.js'
 
 describe('config', () => {
+  const fs = require('node:fs') as typeof import('node:fs')
+  const path = require('node:path') as typeof import('node:path')
+  const os = require('node:os') as typeof import('node:os')
+  let tmpDir: string
+  let origHome: string | undefined
+  let origCwd: string
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lc-config-base-'))
+    fs.mkdirSync(path.join(tmpDir, 'home'), { recursive: true })
+    fs.mkdirSync(path.join(tmpDir, 'project'), { recursive: true })
+    origHome = process.env.HOME
+    origCwd = process.cwd()
+    process.env.HOME = path.join(tmpDir, 'home')
+    process.chdir(path.join(tmpDir, 'project'))
+  })
+
   afterEach(() => {
+    process.env.HOME = origHome
+    process.chdir(origCwd)
+    fs.rmSync(tmpDir, { recursive: true, force: true })
     for (const key of Object.keys(process.env)) {
       if (key.startsWith('LOCALCODE_')) delete process.env[key]
     }
@@ -168,5 +188,96 @@ model: llama3:8b
   it('config tools is undefined when no profile is set', () => {
     const c = loadConfig()
     expect(c.tools).toBeUndefined()
+  })
+})
+
+describe('config runtime + auto-default', () => {
+  const fs = require('node:fs') as typeof import('node:fs')
+  const path = require('node:path') as typeof import('node:path')
+  const os = require('node:os') as typeof import('node:os')
+  let tmpDir: string
+  let origHome: string | undefined
+  let origCwd: string
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lc-config-rt-'))
+    fs.mkdirSync(path.join(tmpDir, 'home'), { recursive: true })
+    fs.mkdirSync(path.join(tmpDir, 'project'), { recursive: true })
+    origHome = process.env.HOME
+    origCwd = process.cwd()
+    process.env.HOME = path.join(tmpDir, 'home')
+    process.chdir(path.join(tmpDir, 'project'))
+  })
+
+  afterEach(() => {
+    process.env.HOME = origHome
+    process.chdir(origCwd)
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+    for (const key of Object.keys(process.env)) {
+      if (key.startsWith('LOCALCODE_')) delete process.env[key]
+    }
+  })
+
+  function writeGlobalProfile(name: string, content: string) {
+    const dir = path.join(tmpDir, 'home', '.cynco', 'profiles')
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, `${name}.yml`), content)
+  }
+
+  it('maps model_file and runtime block into config (camelCase)', () => {
+    writeGlobalProfile('rt', `
+name: rt
+model: qwen3.6-27b-q6k
+model_file: Qwen3.6-27B-Q6_K.gguf
+context_length: 65536
+runtime:
+  spec_type: mtp
+  spec_draft_n: 3
+  cache_ram: 0
+  reasoning_budget: 256
+`)
+    process.env.LOCALCODE_PROFILE = 'rt'
+    const c = loadConfig()
+    expect(c.modelFile).toBe('Qwen3.6-27B-Q6_K.gguf')
+    expect(c.contextLength).toBe(65536)
+    expect(c.runtime).toEqual({
+      specType: 'mtp', specDraftN: 3, cacheRam: 0, reasoningBudget: 256,
+    })
+  })
+
+  it('auto-loads the default profile when LOCALCODE_PROFILE is unset', () => {
+    writeGlobalProfile('default', `
+name: default
+model: qwen3.6-27b-q6k
+model_file: Qwen3.6-27B-Q6_K.gguf
+context_length: 65536
+runtime:
+  spec_type: mtp
+  spec_draft_n: 3
+`)
+    const c = loadConfig()
+    expect(c.model).toBe('qwen3.6-27b-q6k')
+    expect(c.modelFile).toBe('Qwen3.6-27B-Q6_K.gguf')
+    expect(c.contextLength).toBe(65536)
+    expect(c.runtime?.specType).toBe('mtp')
+  })
+
+  it('returns built-in defaults when no profile and no default.yaml', () => {
+    const c = loadConfig()
+    expect(c.model).toBeUndefined()
+    expect(c.modelFile).toBeUndefined()
+    expect(c.runtime).toBeUndefined()
+  })
+
+  it('env LOCALCODE_MODEL overrides the auto-default profile model', () => {
+    writeGlobalProfile('default', `
+name: default
+model: qwen3.6-27b-q6k
+model_file: Qwen3.6-27B-Q6_K.gguf
+`)
+    process.env.LOCALCODE_MODEL = 'env-model:13b'
+    const c = loadConfig()
+    expect(c.model).toBe('env-model:13b')
+    expect(c.modelFile).toBe('Qwen3.6-27B-Q6_K.gguf')
   })
 })

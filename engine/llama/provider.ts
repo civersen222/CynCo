@@ -13,6 +13,15 @@ import { resolveAdapter } from './modelResolver.js'
 import * as fs from 'fs'
 import * as path from 'path'
 
+/** Pull a human-readable message out of an SSE error payload (string or {message}). */
+function extractErrorMessage(err: unknown): string {
+  if (typeof err === 'string') {
+    try { err = JSON.parse(err) } catch { return err as string }
+  }
+  const msg = (err as any)?.message
+  return typeof msg === 'string' ? msg : JSON.stringify(err)
+}
+
 export type LlamaCppProviderConfig = {
   primaryUrl: string
   adapterUrl?: string
@@ -118,6 +127,15 @@ export class LlamaCppProvider implements Provider {
       body: JSON.stringify(body),
     })
 
+    // Errors must THROW, not silently end the stream. 2026-06-12 incident:
+    // llama-server rejected an oversized request (context overflow) but this
+    // path ignored resp.ok — every turn became a silent 0-token end_turn.
+    if (!resp.ok) {
+      let detail = ''
+      try { detail = (await resp.text()).slice(0, 500) } catch {}
+      throw new Error(`llama-server HTTP ${resp.status}: ${detail || resp.statusText}`)
+    }
+
     yield {
       type: 'message_start',
       message: { id: '', model: request.model, usage: { input_tokens: 0, output_tokens: 0 } },
@@ -139,9 +157,19 @@ export class LlamaCppProvider implements Provider {
       for (const line of lines) {
         const trimmed = line.trim()
         if (!trimmed) continue
+        // llama.cpp emits mid-stream errors as "error: {...}" SSE events,
+        // which parseSSELine (data:-only) would silently drop.
+        if (trimmed.startsWith('error:')) {
+          throw new Error(`llama-server stream error: ${extractErrorMessage(trimmed.slice(6).trim())}`)
+        }
         const parsed = parseSSELine(trimmed)
         if (parsed === null) break // [DONE]
         if (parsed === undefined) continue
+        // Error payloads inside data: chunks have no choices[] —
+        // fromOpenAIStreamChunk would return [] and the error would vanish.
+        if ((parsed as any)?.error) {
+          throw new Error(`llama-server stream error: ${extractErrorMessage((parsed as any).error)}`)
+        }
         const events = fromOpenAIStreamChunk(parsed as any)
         for (const event of events) yield event
       }
@@ -207,7 +235,15 @@ export class LlamaCppProvider implements Provider {
     if (request.temperature !== undefined) body.temperature = request.temperature
     if (request.stop_sequences) body.stop = request.stop_sequences
     if (request.tools?.length) body.tools = toOpenAITools(request.tools)
-    if (request.grammar) body.grammar = request.grammar
+    if (request.grammar) {
+      body.grammar = request.grammar
+      // Lazy grammar: sample unconstrained (reasoning, prose) until the
+      // trigger appears, then enforce the grammar. Without this, the text
+      // rule blocks <think>/</think> and the model EOSes at 0 tokens.
+      // Trigger type 2 = PATTERN (WORD requires a preserved tokenizer token).
+      body.grammar_lazy = true
+      body.grammar_triggers = [{ type: 2, value: '<tool_call>' }]
+    }
     if (request.system) {
       body.messages = [
         { role: 'system', content: request.system },

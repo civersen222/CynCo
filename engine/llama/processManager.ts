@@ -13,6 +13,8 @@ export type ServerConfig = {
   loraPath?: string
   specType?: string
   specDraftN?: number
+  cacheRam?: number
+  reasoningBudget?: number
 }
 
 /**
@@ -49,12 +51,16 @@ export function buildServerArgs(config: ServerConfig): string[] {
   // cache every call — caching wastes 1-2GB VRAM and ~700ms/iteration for zero benefit.
   // Non-SWA models (Llama, Mistral, Phi) benefit from KV prefix reuse;
   // set LOCALCODE_CACHE_RAM=2048 for those.
-  const cacheRam = process.env.LOCALCODE_CACHE_RAM ?? '0'
+  const cacheRam = config.cacheRam != null
+    ? String(config.cacheRam)
+    : process.env.LOCALCODE_CACHE_RAM ?? '0'
   args.push('--cache-ram', cacheRam)
   // Default 256: >256 thinking tokens hurts tool-call accuracy and uncapped reasoning
   // can burn 30K+ invisible tokens (5+ min wasted per iteration).
   // Raise via LOCALCODE_REASONING_BUDGET if your model needs more deliberation.
-  const reasoningBudget = process.env.LOCALCODE_REASONING_BUDGET ?? '256'
+  const reasoningBudget = config.reasoningBudget != null
+    ? String(config.reasoningBudget)
+    : process.env.LOCALCODE_REASONING_BUDGET ?? '256'
   args.push('--reasoning-budget', reasoningBudget)
 
   return args
@@ -71,6 +77,8 @@ export type ProcessManagerConfig = {
   threads?: number
   specType?: string
   specDraftN?: number
+  cacheRam?: number
+  reasoningBudget?: number
 }
 
 export class ProcessManager {

@@ -46,15 +46,32 @@ describe('resolveModel', () => {
     expect(result).toBe(ggufPath)
   })
 
-  it('picks largest GGUF when multiple exist', () => {
+  it('uses model_file exactly when provided', () => {
+    const modelDir = path.join(tmpDir, 'qwen3.6-27b-q6k')
+    fs.mkdirSync(modelDir, { recursive: true })
+    const wanted = path.join(modelDir, 'Qwen3.6-27B-Q6_K.gguf')
+    const other = path.join(modelDir, 'Qwen3.6-35B-Q4_K_M.gguf')
+    fs.writeFileSync(wanted, 'x'.repeat(50))
+    fs.writeFileSync(other, 'x'.repeat(200)) // larger — must NOT be chosen
+    const result = resolveModel('qwen3.6-27b-q6k', tmpDir, undefined, 'Qwen3.6-27B-Q6_K.gguf')
+    expect(result).toBe(wanted)
+  })
+
+  it('throws when model_file is given but missing', () => {
+    const modelDir = path.join(tmpDir, 'qwen3.6-27b-q6k')
+    fs.mkdirSync(modelDir, { recursive: true })
+    fs.writeFileSync(path.join(modelDir, 'something-else.gguf'), 'x')
+    expect(() => resolveModel('qwen3.6-27b-q6k', tmpDir, undefined, 'Qwen3.6-27B-Q6_K.gguf'))
+      .toThrow('Qwen3.6-27B-Q6_K.gguf')
+  })
+
+  it('throws and lists candidates when multiple ggufs and no model_file', () => {
     const modelDir = path.join(tmpDir, 'qwen3.6')
     fs.mkdirSync(modelDir, { recursive: true })
-    const small = path.join(modelDir, 'qwen3.6-Q2_K.gguf')
-    const large = path.join(modelDir, 'qwen3.6-Q4_K_M.gguf')
-    fs.writeFileSync(small, 'x'.repeat(50))
-    fs.writeFileSync(large, 'x'.repeat(200))
-    const result = resolveModel('qwen3.6', tmpDir)
-    expect(result).toBe(large)
+    fs.writeFileSync(path.join(modelDir, 'a-Q2_K.gguf'), 'x'.repeat(50))
+    fs.writeFileSync(path.join(modelDir, 'b-Q4_K_M.gguf'), 'x'.repeat(200))
+    expect(() => resolveModel('qwen3.6', tmpDir))
+      .toThrow(/multiple .gguf|set model_file/i)
   })
 
   it('throws ModelNotFoundError when no GGUF found', () => {

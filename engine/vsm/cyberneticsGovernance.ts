@@ -107,6 +107,10 @@ export class CyberneticsGovernance {
   private heterarchyIntegration: HeterarchyIntegration
   // Conversation theory — teachback, agreement
   private conversationTheory: ConversationTheoryIntegration
+  // Last user message recorded as a teachback exchange — agreement is a
+  // property of dialogue; the same prompt repeated across internal turns
+  // (one-shot missions) must count as ONE exchange, not one per turn.
+  private _lastRecordedUserMessage: string | null = null
   // Observer effects — measurement divergence, eigenform
   private observerEffects: ObserverEffectsIntegration
   // Autopoietic governance components
@@ -139,6 +143,9 @@ export class CyberneticsGovernance {
   private stuckCount = 0
   private lastResponses: string[] = []
   private lastToolSignatures: string[] = []
+  // Param-aware call signatures (name + input) — used ONLY by stuck detection.
+  // lastToolSignatures stays name-only for C7 / predictions consumers.
+  private lastToolCallSigs: string[] = []
   private currentTaskComplexity = 1
   private _workflowReadOnlyPhase = false
   private _toolsRestricted = false
@@ -241,7 +248,7 @@ export class CyberneticsGovernance {
     }
   }
 
-  onToolResult(name: string, success: boolean, latencyMs: number, _output?: string): void {
+  onToolResult(name: string, success: boolean, latencyMs: number, _output?: string, input?: unknown): void {
     // Reset stuck counter on successful write/edit/bash operations
     // These represent actual progress — the model is doing real work
     if (success && ['Write', 'Edit', 'MultiEdit', 'Bash', 'ApplyPatch'].includes(name)) {
@@ -256,6 +263,11 @@ export class CyberneticsGovernance {
     // Track tool signatures for smarter stuck detection
     this.lastToolSignatures.push(name)
     if (this.lastToolSignatures.length > 5) this.lastToolSignatures = this.lastToolSignatures.slice(-5)
+    // Stuck means repeating the SAME call (name + params), not the same tool.
+    // Real incident 2026-06-12: a mission calling Mfl with different queries
+    // climbed to stuck=15 and HALTed mid-answer because signatures were name-only.
+    this.lastToolCallSigs.push(`${name}:${JSON.stringify(input ?? {}).slice(0, 200)}`)
+    if (this.lastToolCallSigs.length > 5) this.lastToolCallSigs = this.lastToolCallSigs.slice(-5)
     if (this._ablated || this._paused) return // Skip all governance when ablated or paused
 
     // Route through real algedonic channel
@@ -410,18 +422,29 @@ export class CyberneticsGovernance {
     const heterarchyShifted = commander !== this.lastCommander
     this.lastCommander = commander
 
-    // Conversation: track exchange if user message present
-    if (metrics.userMessage && metrics.response) {
+    // Conversation: track exchange if user message present.
+    // Dedupe: only record when the user actually said something NEW —
+    // one-shot mission runs replay the same prompt every internal turn.
+    if (
+      metrics.userMessage && metrics.response &&
+      metrics.userMessage !== this._lastRecordedUserMessage
+    ) {
       this.conversationTheory.recordExchange(
         `turn_${this.turnCount}`,
         metrics.response.slice(0, 200),
         metrics.userMessage.slice(0, 200),
       )
+      this._lastRecordedUserMessage = metrics.userMessage
     }
 
-    // Query agreement ratio — low agreement = user and system are diverging
+    // Query agreement ratio — low agreement = user and system are diverging.
+    // Require >=2 decided exchanges: the lib returns 0.0 both for "all
+    // divergent" and "no data", so a tiny sample must never cause pain.
     const agreementRatio = this.conversationTheory.getAgreementRatio()
-    if (agreementRatio < 0.5 && this.turnCount > 3) {
+    if (
+      agreementRatio < 0.5 && this.turnCount > 3 &&
+      this.conversationTheory.getDecidedCount() >= 2
+    ) {
       this.algedonicIntegration.recordToolResult('AgreementDivergence', false, 0)
       console.log(`[vsm] Agreement ratio ${agreementRatio.toFixed(2)} < 0.5 — algedonic pain`)
     }
@@ -491,9 +514,13 @@ export class CyberneticsGovernance {
     if (this.lastResponses.length > 5) this.lastResponses = this.lastResponses.slice(-5)
     if (!this._workflowReadOnlyPhase) {
       const uniqueResponses = new Set(this.lastResponses).size
-      const uniqueToolSigs = new Set(this.lastToolSignatures).size
+      const uniqueToolSigs = new Set(this.lastToolCallSigs).size
+      // Uniform EMPTY responses are not a narration loop — tool-use turns
+      // without narration text legitimately have response: ''. (2026-06-12
+      // incident #3: uniform '' made responseStuck permanently true.)
       const responseStuck = this.lastResponses.length >= 3 && uniqueResponses === 1
-      const toolStuck = this.lastToolSignatures.length >= 3 && uniqueToolSigs === 1
+        && this.lastResponses[0] !== ''
+      const toolStuck = this.lastToolCallSigs.length >= 3 && uniqueToolSigs === 1
       if (responseStuck || toolStuck) {
         this.stuckCount++
       } else {
@@ -908,6 +935,7 @@ export class CyberneticsGovernance {
   resetStuck(): void {
     this.stuckCount = 0
     this.lastToolSignatures = []
+    this.lastToolCallSigs = []
     console.log('[vsm] Stuck counter reset (new user message)')
   }
 

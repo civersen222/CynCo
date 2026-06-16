@@ -8,12 +8,12 @@ Inspired by Stafford Beer's Viable System Model and Salvador Allende's [Project 
 
 ## What Is This?
 
-CynCo is a terminal-based AI coding assistant powered by local LLMs via [Ollama](https://ollama.com) or [llama.cpp](https://github.com/ggml-org/llama.cpp). It can:
+CynCo is an AI coding assistant powered by local LLMs via [Ollama](https://ollama.com) or [llama.cpp](https://github.com/ggml-org/llama.cpp). Work from the terminal TUI, or straight from your browser — the dashboard includes a full chat UI. It can:
 
 - **Edit files, run commands, search code** — full tool-calling loop on your hardware
 - **Build entire projects from a description** — guided Vibe mode asks smart questions, then builds autonomously
 - **Self-govern with enforced cybernetics** — S5 policy engine with 21 rules, 4-tier stuck loop escape, live governance signals injected every iteration
-- **Monitor governance in real-time** — browser dashboard on port 9161 shows tool activity, contracts, predictions, training data progress, and variety control
+- **Chat and monitor from the browser** — dashboard on port 9161 with a full chat UI plus real-time tool activity, contracts, predictions, training data progress, and variety control
 - **Constrained decoding** — GBNF grammar enforcement on llama.cpp, post-validation on all providers. No more silent tool-call drops
 - **Best-of-N sampling** — run multiple candidates in git worktrees, select by test pass rate
 - **Tree-sitter code indexing** — AST-aware chunking with BM25 + vector hybrid search and PageRank repo map
@@ -31,22 +31,22 @@ CynCo works best with models that support native tool calling. Here are the test
 
 ### Primary (your main coding model)
 
-| Model | Type | VRAM (Q4) | Speed (RTX 5090) | SWE-bench | Notes |
-|-------|------|-----------|-------------------|-----------|-------|
-| **Qwen3.6-35B-A3B** | MoE | ~20 GB | ~234 tok/s | 73.4% | **Best choice for 32GB GPUs.** Only 3B active params = fast. Native tool use. Apache 2.0. |
-| Gemma4-31B | Dense | ~19 GB | ~52 tok/s | ~65% | Good alternative. Slower (dense). Native tool use. |
-| Devstral-Small-2-24B | Dense | ~15 GB | ~70 tok/s | Good | Strong for agentic multi-file edits. Fits 16GB GPUs. |
-| Qwen3.6-27B | Dense | ~17 GB | ~65 tok/s | 77.2% | Best dense model. Good cascade secondary on a 16GB GPU. |
+| Model | Type | VRAM | Speed (RTX 5090) | SWE-bench | Notes |
+|-------|------|------|-------------------|-----------|-------|
+| **Qwen3.6-27B** | Dense + MTP | ~22 GB (Q6_K) | ~100 tok/s (MTP) | 77.2% | **Best choice.** Run Q6_K via the llama.cpp provider with MTP speculative decoding. Native tool use. Apache 2.0. |
+| Gemma4-31B | Dense | ~19 GB (Q4) | ~52 tok/s | ~65% | Good alternative. Native tool use. |
+| Devstral-Small-2-24B | Dense | ~15 GB (Q4) | ~70 tok/s | Good | Strong for agentic multi-file edits. Fits 16GB GPUs. |
+| Qwen3.6-35B-A3B | MoE | ~20 GB (Q4) | ~234 tok/s | 73.4% | Raw speed champion (3B active params), but 27B dense scores higher and MTP closes the speed gap. |
 
 ### Quantization
 
-Use **Q4_K_M** for the best speed/quality balance. For coding, Q4 quality loss is minimal and speed gain is significant:
+We run **Q6_K** of Qwen3.6-27B — near-lossless quality, and MTP speculative decoding keeps it fast. Drop to Q4_K_M only if you're VRAM-constrained:
 
-| Quantization | Size (35B MoE) | Speed | Quality | When to Use |
-|-------------|---------------|-------|---------|-------------|
-| Q6_K | ~27 GB | Fast | Near-lossless | When you have VRAM headroom and want max quality |
-| **Q4_K_M** | ~20 GB | Fastest | Good | Default recommendation. Best speed/quality trade-off |
-| Q3_K_M | ~16 GB | Fast | Noticeable loss | Only if you can't fit Q4 |
+| Quantization | Size (27B dense) | Speed | Quality | When to Use |
+|-------------|------------------|-------|---------|-------------|
+| **Q6_K** | ~22 GB | Fast (with MTP) | Near-lossless | **Default on 32GB GPUs — what we run** |
+| Q4_K_M | ~17 GB | Fastest | Good | 24GB GPUs, or when you need more context headroom |
+| Q3_K_M | ~13 GB | Fast | Noticeable loss | Only if you can't fit Q4 |
 
 ### Embedding Model
 
@@ -58,7 +58,7 @@ ollama pull nomic-embed-text
 
 ### Cascade (Optional)
 
-If you have a second GPU on the network, run a smaller model (Devstral-Small-2 or Qwen3.6-27B) as a cascade secondary. CynCo's S2 coordinator routes simple tasks to the fast model and complex tasks to your primary.
+If you have a second GPU on the network, run a smaller model (e.g. Devstral-Small-2) as a cascade secondary. CynCo's S2 coordinator routes simple tasks to the fast model and complex tasks to your primary.
 
 ---
 
@@ -93,9 +93,11 @@ cd tui && python -m localcode_tui.app
 
 That's it. No API keys. No subscriptions. No data leaving your machine.
 
-### Alternative: llama.cpp Direct Provider with MTP Speculative Decoding
+Once running, interact in the TUI or open `http://localhost:9161` in your browser and chat from there.
 
-CynCo can drive llama-server directly with Multi-Token Prediction for ~100 tok/s generation (vs ~12 tok/s on Ollama):
+### Recommended: llama.cpp Direct Provider with MTP Speculative Decoding
+
+This is how we run CynCo: llama-server driven directly with Multi-Token Prediction on Qwen3.6-27B Q6_K, for ~100 tok/s generation (vs ~12 tok/s on Ollama):
 
 ```bash
 LOCALCODE_PROVIDER=llama-cpp \
@@ -115,9 +117,9 @@ The engine auto-manages llama-server with: single-slot mode, disabled prompt cac
 | VRAM | Recommended Model | Experience |
 |------|------------------|------------|
 | 8-12 GB | Devstral-Small-2 Q4 | Solid tool calling, single-file tasks |
-| 16 GB | Qwen3.6-27B Q4 or Devstral-Small-2 Q6 | Multi-file projects, sub-agents |
-| 24 GB | Qwen3.6-35B-A3B Q4 | Full feature set, parallel agents |
-| **32 GB** | **Qwen3.6-35B-A3B Q4 + large context** | **Optimal. Room for 32K context + agents.** |
+| 16 GB | Devstral-Small-2 Q6 | Multi-file projects, sub-agents |
+| 24 GB | Qwen3.6-27B Q4_K_M | Full feature set, parallel agents |
+| **32 GB** | **Qwen3.6-27B Q6_K + MTP** | **Optimal. ~100 tok/s with room for 64K context + agents.** |
 | 32+16 GB (dual) | Primary + cascade secondary | Complex tasks on primary, simple on secondary |
 
 Smaller models (<7B) struggle with the tool-calling format. 24B+ recommended for real work.
@@ -244,6 +246,13 @@ Open `http://localhost:9161` during any session. Four tabs:
 **[Config]** — Temperature, context length, timeout sliders. System control toggles. All 21 VSM governance parameters with sliders and bounds.
 
 Survives page reload, auto-detects active sessions, auto-reconnects on disconnect. Polls governance every 3s and training data every 30s.
+
+### Always-on missions (experimental)
+
+CynCo can run as a persistent agent: a tiny daemon schedules mission triggers (e.g. "watch my
+fantasy league"), wakes the engine on-demand for one-shot tasks, and pushes recommendations to
+your phone via self-hosted [ntfy](https://ntfy.sh) over Tailscale — approve or reject with one tap,
+no public ports. See [docs/liveness-setup.md](docs/liveness-setup.md).
 
 ### Semantic Code Index
 Automatic vector indexing via `nomic-embed-text`. The model starts each task knowing your codebase — function signatures, class definitions, imports. Falls back to keyword search if embedding model unavailable.

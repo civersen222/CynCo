@@ -368,8 +368,33 @@ input[type="range"]:disabled::-webkit-slider-thumb { cursor: not-allowed; }
 .chat-tool-detail { display:none; background:#1a1a2e; border:1px solid #333; border-radius:4px;
   padding:8px; margin:2px 0 2px 20px; font-size:11px; font-family:monospace; max-height:200px; overflow-y:auto; white-space:pre-wrap; word-break:break-all; }
 .chat-tool-detail.visible { display:block; }
+.chat-approval { background:#2a1f2e; border:1px solid #6a4a7a; border-left:3px solid #c586c0;
+  border-radius:6px; padding:10px 12px; margin:6px 0; font-size:12px; }
+.chat-approval .ap-head { display:flex; align-items:center; gap:8px; margin-bottom:6px; }
+.chat-approval .ap-tool { color:#dcb6ff; font-weight:600; }
+.chat-approval .ap-risk { font-size:10px; text-transform:uppercase; letter-spacing:1px;
+  padding:1px 6px; border-radius:3px; }
+.chat-approval .ap-risk.low { background:#1e3a2e; color:#4ec9b0; }
+.chat-approval .ap-risk.medium { background:#3a341e; color:#dcdcaa; }
+.chat-approval .ap-risk.high { background:#3a1e1e; color:#f44747; }
+.chat-approval .ap-desc { color:#b0b0c0; white-space:pre-wrap; word-break:break-word;
+  max-height:140px; overflow-y:auto; margin-bottom:8px; font-family:'Cascadia Code',monospace; font-size:11px; }
+.chat-approval .ap-btns { display:flex; gap:8px; }
+.chat-approval button { border:none; border-radius:5px; padding:6px 16px; font-size:12px;
+  font-weight:600; cursor:pointer; }
+.chat-approval .ap-yes { background:#264f78; color:#d4d4d4; }
+.chat-approval .ap-yes:hover { background:#2d5a8a; }
+.chat-approval .ap-no { background:#5a2d2d; color:#d4d4d4; }
+.chat-approval .ap-no:hover { background:#6e3636; }
+.chat-approval.resolved { opacity:0.5; }
+.chat-approval .ap-status { font-size:11px; color:#808080; }
 .cwd-input { background:#1e1e2e; color:#808080; border:1px solid #333; border-radius:4px;
   padding:4px 8px; font-size:11px; width:300px; font-family:'Cascadia Code',monospace; }
+.brain-badge { margin-left:auto; display:flex; align-items:center; gap:6px; user-select:none; }
+.brain-badge canvas { width:76px; height:44px; display:block; }
+.brain-label { font-size:10px; letter-spacing:1px; text-transform:uppercase;
+  color:#4a4a5a; transition:color 0.4s; font-family:'Cascadia Code',monospace; }
+.brain-label.active { color:#7fd4ff; text-shadow:0 0 8px rgba(127,212,255,0.6); }
 
 .adv-slider-val { color: #569cd6; }
 
@@ -415,7 +440,11 @@ input[type="range"]:disabled::-webkit-slider-thumb { cursor: not-allowed; }
   <div class="chat-container">
     <div class="chat-header">
       <label style="color:#808080;font-size:11px;">CWD:</label>
-      <input class="cwd-input" id="chatCwd" value="C:/Users/civer/civkings" placeholder="Working directory">
+      <input class="cwd-input" id="chatCwd" value="" placeholder="Working directory">
+      <div class="brain-badge" title="Engine activity">
+        <canvas id="brainCanvas" width="76" height="44"></canvas>
+        <span class="brain-label" id="brainLabel">idle</span>
+      </div>
     </div>
     <div class="chat-messages" id="chatMessages"></div>
     <div class="chat-input-area">
@@ -808,6 +837,7 @@ function handleEvent(event) {
       state.tier = event.tier || (event.contextLength > 65536 ? 'advanced' : event.contextLength > 16384 ? 'standard' : 'basic');
       state.sessionStart = new Date();
       state.turnCount = 0;
+      if (event.projectPath) { var cwdEl = document.getElementById('chatCwd'); if (cwdEl) cwdEl.value = event.projectPath; }
       activateSession(event.contextLength);
       break;
 
@@ -825,6 +855,7 @@ function handleEvent(event) {
       break;
 
     case 'tool.start': {
+      brainViz.setActive(true);
       var entry = {
         ts: new Date(),
         toolName: event.toolName || 'unknown',
@@ -914,10 +945,12 @@ function handleEvent(event) {
       break;
 
     case 'stream.thinking':
+      brainViz.setActive(true);
       appendChatThinking(event.text || '');
       break;
 
     case 'stream.token':
+      brainViz.setActive(true);
       // Chat tab: stream assistant text
       if (event.text) {
         var msgs = document.getElementById('chatMessages');
@@ -940,6 +973,12 @@ function handleEvent(event) {
     case 'message.complete':
       state.turnCount++;
       closeChatThinking();
+      brainViz.setActive(false);
+      break;
+
+    case 'approval.request':
+      appendApprovalCard(event);
+      brainViz.setActive(false); // engine is now waiting on you, not computing
       break;
 
     case 'control.signals':
@@ -1848,6 +1887,7 @@ function fetchSessionState() {
         state.model = data.model;
         if (data.contextLength) setSlider('sliderCtxLen', 'valCtxLen', data.contextLength);
         if (data.tier) state.tier = data.tier;
+        if (data.projectPath) { var cwdEl2 = document.getElementById('chatCwd'); if (cwdEl2) cwdEl2.value = data.projectPath; }
         activateSession(data.contextLength);
       }
     })
@@ -1923,6 +1963,114 @@ function escAttr(s) {
   return escHtml(s).replace(/'/g, '&#39;');
 }
 
+// ── Brain "thinking" visualization ───────────────────────────
+// A stylized brain that crackles with electricity rays whenever the
+// engine is actively working (streaming tokens, thinking, running tools).
+var brainViz = (function() {
+  var canvas, ctx, raf, W, H, cx, cy, dpr, t = 0;
+  var intensity = 0;   // eased 0..1 (current visual energy)
+  var target = 0;      // 0 = idle, 1 = working
+  var watchdog = null;
+
+  function init() {
+    canvas = document.getElementById('brainCanvas');
+    if (!canvas || !canvas.getContext) return;
+    ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    resize();
+    window.addEventListener('resize', resize);
+    loop();
+  }
+
+  function resize() {
+    dpr = window.devicePixelRatio || 1;
+    var cssW = canvas.clientWidth || 76, cssH = canvas.clientHeight || 44;
+    canvas.width = Math.round(cssW * dpr);
+    canvas.height = Math.round(cssH * dpr);
+    W = cssW; H = cssH; cx = W / 2; cy = H / 2;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  function setActive(on) {
+    target = on ? 1 : 0;
+    var lbl = document.getElementById('brainLabel');
+    if (lbl) { lbl.textContent = on ? 'thinking' : 'idle'; lbl.classList.toggle('active', !!on); }
+    if (on) {
+      if (watchdog) clearTimeout(watchdog);
+      // safety: if we somehow miss the end signal, settle back to idle
+      watchdog = setTimeout(function() { setActive(false); }, 180000);
+    } else if (watchdog) { clearTimeout(watchdog); watchdog = null; }
+  }
+
+  // Jagged lightning bolt from (x0,y0) outward along angle a; returns tip [x,y]
+  function bolt(x0, y0, a, len, segs, jitter, width, color, glow) {
+    var nx = Math.cos(a), ny = Math.sin(a), ox = -ny, oy = nx;
+    var px = x0, py = y0;
+    ctx.save();
+    ctx.strokeStyle = color; ctx.lineWidth = width; ctx.lineCap = 'round';
+    ctx.shadowColor = color; ctx.shadowBlur = glow;
+    ctx.beginPath(); ctx.moveTo(x0, y0);
+    for (var i = 1; i <= segs; i++) {
+      var f = i / segs;
+      var off = (Math.random() - 0.5) * jitter * (1 - Math.abs(f - 0.5) * 2 + 0.3);
+      px = x0 + nx * len * f + ox * off;
+      py = y0 + ny * len * f + oy * off;
+      ctx.lineTo(px, py);
+    }
+    ctx.stroke(); ctx.restore();
+    return [px, py];
+  }
+
+  function drawBrain(pulse) {
+    var size = Math.min(W, H) * 0.6;
+    ctx.save();
+    ctx.font = size + 'px serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.shadowColor = intensity > 0.05
+      ? 'rgba(127,212,255,' + (0.35 + 0.65 * intensity) + ')'
+      : 'rgba(120,140,180,0.2)';
+    ctx.shadowBlur = 5 + 16 * intensity * pulse;
+    ctx.globalAlpha = 0.5 + 0.5 * intensity;
+    ctx.fillText('\uD83E\uDDE0', cx, cy + size * 0.04);
+    ctx.restore();
+  }
+
+  var HUES = ['rgba(130,220,255,', 'rgba(180,140,255,', 'rgba(120,255,230,'];
+
+  function loop() {
+    raf = requestAnimationFrame(loop);
+    t += 0.05;
+    intensity += (target - intensity) * 0.08;
+    ctx.clearRect(0, 0, W, H);
+
+    var pulse = 0.7 + 0.3 * Math.sin(t * 2.2);
+    drawBrain(pulse);
+    if (intensity < 0.02) return; // idle: just the dim brain
+
+    var rays = Math.round(3 + intensity * 8);
+    var baseR = Math.min(W, H) * 0.28;
+    for (var k = 0; k < rays; k++) {
+      if (Math.random() > 0.4 + 0.55 * intensity) continue; // flicker
+      var a = (Math.PI * 2) * (k / rays) + (Math.random() - 0.5) * 0.6 + t * 0.12;
+      var sx = cx + Math.cos(a) * baseR, sy = cy + Math.sin(a) * baseR;
+      var len = (Math.min(W, H) * (0.35 + Math.random() * 0.5)) * (0.5 + intensity);
+      var hue = HUES[k % 3];
+      var alpha = (0.5 + 0.5 * Math.random()) * intensity;
+      bolt(sx, sy, a, len, 5, 8, 2.0, hue + (alpha * 0.5) + ')', 9 * intensity);      // glow
+      var tip = bolt(sx, sy, a, len, 5, 6, 0.8, 'rgba(255,255,255,' + alpha + ')', 5); // core
+      if (Math.random() < 0.5) {
+        ctx.save();
+        ctx.fillStyle = 'rgba(255,255,255,' + alpha + ')';
+        ctx.shadowColor = hue + '1)'; ctx.shadowBlur = 7;
+        ctx.beginPath(); ctx.arc(tip[0], tip[1], 1.1, 0, 7); ctx.fill();
+        ctx.restore();
+      }
+    }
+  }
+
+  return { init: init, setActive: setActive };
+})();
+
 // ── Init ─────────────────────────────────────────────────────
 
 setupSliders();
@@ -1930,6 +2078,7 @@ fetchParams();
 renderPredictions();
 connectWS();
 startSessionTimer();
+brainViz.init();
 
 // Enter standalone mode after 2 seconds if no session arrives
 standaloneTimeout = setTimeout(function() {
@@ -2060,6 +2209,44 @@ function sendChatMessage() {
 
   if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'user.message', text: text, cwd: cwd }));
   appendChatMsg('user', text);
+  brainViz.setActive(true);
+}
+
+function appendApprovalCard(event) {
+  var msgs = document.getElementById('chatMessages');
+  if (!msgs || !event.requestId) return;
+  var risk = (event.risk || 'medium').toLowerCase();
+  var card = document.createElement('div');
+  card.className = 'chat-approval';
+  card.setAttribute('data-req', event.requestId);
+  card.innerHTML =
+    '<div class="ap-head">' +
+      '<span class="ap-tool">' + escHtml(event.toolName || 'tool') + '</span>' +
+      '<span class="ap-risk ' + risk + '">' + escHtml(risk) + '</span>' +
+      '<span style="color:#808080">wants approval</span>' +
+    '</div>' +
+    '<div class="ap-desc">' + escHtml(event.description || '') + '</div>' +
+    '<div class="ap-btns">' +
+      '<button class="ap-yes">Approve</button>' +
+      '<button class="ap-no">Deny</button>' +
+    '</div>';
+  card.querySelector('.ap-yes').onclick = function() { respondApproval(event.requestId, true); };
+  card.querySelector('.ap-no').onclick = function() { respondApproval(event.requestId, false); };
+  msgs.appendChild(card);
+  msgs.scrollTop = msgs.scrollHeight;
+}
+
+function respondApproval(requestId, approved) {
+  if (ws && ws.readyState === 1) {
+    ws.send(JSON.stringify({ type: 'approval.response', requestId: requestId, approved: approved }));
+  }
+  var card = document.querySelector('.chat-approval[data-req="' + requestId + '"]');
+  if (card) {
+    card.classList.add('resolved');
+    var btns = card.querySelector('.ap-btns');
+    if (btns) btns.innerHTML = '<span class="ap-status">' + (approved ? '\u2713 approved' : '\u2717 denied') + '</span>';
+  }
+  if (approved) brainViz.setActive(true); // work resumes
 }
 
 function appendChatMsg(role, text) {

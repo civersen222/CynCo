@@ -22,6 +22,16 @@ export function isLocalMode(): boolean {
 
 export type TierSetting = 'auto' | 'basic' | 'standard' | 'advanced'
 
+export type RuntimeConfig = {
+  specType?: string
+  specDraftN?: number
+  gpuLayers?: number
+  batchSize?: number
+  flashAttn?: boolean
+  cacheRam?: number
+  reasoningBudget?: number
+}
+
 export type LocalCodeConfig = {
   baseUrl: string
   model: string | undefined
@@ -40,6 +50,8 @@ export type LocalCodeConfig = {
   apiKey: string
   llamaServer: string | undefined
   modelPath: string | undefined
+  modelFile: string | undefined
+  runtime: RuntimeConfig | undefined
   adapterUrl: string | undefined
   port: number
   batchSize: number
@@ -58,12 +70,14 @@ const VALID_TIERS: TierSetting[] = ['auto', 'basic', 'standard', 'advanced']
  */
 function loadProfileConfig(): ResolvedProfile | null {
   const profileName = process.env.LOCALCODE_PROFILE
-  if (!profileName) return null
-
   try {
-    return resolveProfile(profileName)
+    if (profileName) return resolveProfile(profileName)
+    // Auto-default tier: when no profile is named, load 'default' if it exists.
+    const def = resolveProfile('default')
+    console.log("[config] loaded profile 'default'")
+    return def
   } catch {
-    // Profile not found or resolution error - continue with defaults
+    // Named profile not found, or no default.yaml present — continue with defaults.
     return null
   }
 }
@@ -101,6 +115,23 @@ export function loadConfig(): LocalCodeConfig {
   const model = hasEnvVar('LOCALCODE_MODEL')
     ? process.env.LOCALCODE_MODEL!
     : profile?.model ?? undefined
+
+  // --- modelFile ---
+  const modelFile = profile?.model_file ?? undefined
+
+  // --- runtime (snake_case profile → camelCase RuntimeConfig) ---
+  const pr = profile?.runtime
+  const runtime: RuntimeConfig | undefined = pr
+    ? {
+        specType: pr.spec_type,
+        specDraftN: pr.spec_draft_n,
+        gpuLayers: pr.gpu_layers,
+        batchSize: pr.batch_size,
+        flashAttn: pr.flash_attn,
+        cacheRam: pr.cache_ram,
+        reasoningBudget: pr.reasoning_budget,
+      }
+    : undefined
 
   // --- temperature ---
   const temperature = hasEnvVar('LOCALCODE_TEMPERATURE')
@@ -157,6 +188,8 @@ export function loadConfig(): LocalCodeConfig {
     apiKey,
     llamaServer,
     modelPath,
+    modelFile,
+    runtime,
     adapterUrl,
     port,
     batchSize,

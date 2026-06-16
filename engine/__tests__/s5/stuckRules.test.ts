@@ -55,6 +55,47 @@ describe('C7: stuck loop — restrict to unused tools', () => {
     }) as any)
     expect(result).toBeNull()
   })
+
+  // Real incident (2026-06-12 morning-brief): C7 hardcoded coding tools in a
+  // read-only mission run whose pinned set was [Mfl, WebSearch, WebFetch, Read]
+  // — the intersection left ZERO tools and the run halted at stuck 15.
+  it('restricts to available-but-unused tools when activeToolNames is provided', () => {
+    const result = C7.evaluate(makeInput({
+      governance: {
+        stuckTurns: 6,
+        toolSuccessRate: 1.0,
+        recentToolNames: ['Mfl', 'Mfl', 'Mfl', 'Mfl', 'Mfl'],
+        activeToolNames: ['Mfl', 'WebSearch', 'WebFetch', 'Read'],
+      },
+    }) as any)
+    expect(result).not.toBeNull()
+    expect(result!.tools).toEqual(['WebSearch', 'WebFetch', 'Read'])
+  })
+
+  it('coding session: excludes the spammed read tools, keeps action tools', () => {
+    const result = C7.evaluate(makeInput({
+      governance: {
+        stuckTurns: 5,
+        toolSuccessRate: 1.0,
+        recentToolNames: ['Read', 'Grep', 'Read'],
+        activeToolNames: ['Read', 'Grep', 'Edit', 'Write', 'Bash'],
+      },
+    }) as any)
+    expect(result).not.toBeNull()
+    expect(result!.tools).toEqual(['Edit', 'Write', 'Bash'])
+  })
+
+  it('returns null instead of an empty restriction when every available tool was recently used', () => {
+    const result = C7.evaluate(makeInput({
+      governance: {
+        stuckTurns: 8,
+        toolSuccessRate: 1.0,
+        recentToolNames: ['Mfl', 'WebSearch'],
+        activeToolNames: ['Mfl', 'WebSearch'],
+      },
+    }) as any)
+    expect(result).toBeNull()
+  })
 })
 
 describe('W3: fires on stuck alone', () => {
