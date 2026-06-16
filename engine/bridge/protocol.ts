@@ -87,6 +87,13 @@ export type ApprovalRequestEvent = {
   risk: 'low' | 'medium' | 'high'
 }
 
+export type AskRequestEvent = {
+  type: 'ask.request'
+  requestId: string
+  question: string
+  options?: string[]
+}
+
 export type ContextStatusEvent = {
   type: 'context.status'
   utilization: number
@@ -293,6 +300,7 @@ export type EngineEvent =
   | ToolCompleteEvent
   | FileChangeEvent
   | ApprovalRequestEvent
+  | AskRequestEvent
   | ContextStatusEvent
   | ContextWarningEvent
   | MemoryRecalledEvent
@@ -333,6 +341,12 @@ export type ApprovalResponseCommand = {
   type: 'approval.response'
   requestId: string
   approved: boolean
+}
+
+export type AskAnswerCommand = {
+  type: 'ask.answer'
+  requestId: string
+  answer: string
 }
 
 export type SlashCommand = {
@@ -443,6 +457,7 @@ export type ToolsListEvent = {
 export type TUICommand =
   | UserMessageCommand
   | ApprovalResponseCommand
+  | AskAnswerCommand
   | SlashCommand
   | AbortCommand
   | FileOpenCommand

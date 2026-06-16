@@ -517,6 +517,10 @@ async function handleCommand(command: TUICommand): Promise<void> {
       }
       break
 
+    case 'ask.answer':
+      loop.handleAskAnswer(command.requestId, command.answer)
+      break
+
     case 'command': {
       const cmd = command.command
       const args = command.args ?? ''

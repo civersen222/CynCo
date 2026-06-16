@@ -1,6 +1,70 @@
 import { writeFileSync, readFileSync, mkdirSync, existsSync } from 'fs'
 import { join } from 'path'
 import type { Handoff } from './types.js'
+import type { ContractSnapshot } from '../tools/contract.js'
+
+export type HandoffFromContractOptions = {
+  utilization?: number
+  model?: string
+  filesModified?: string[]
+}
+
+/**
+ * Build a content-rich Handoff from a contract snapshot. Passed assertions
+ * become what_was_done, failed become what_failed, and pending become
+ * next_steps — turning the Definition-of-Done state into real continuity.
+ */
+export function handoffFromContract(
+  snapshot: ContractSnapshot,
+  opts: HandoffFromContractOptions,
+): Handoff {
+  const withEvidence = (a: { text: string; evidence?: string }) =>
+    a.evidence ? `${a.text} — ${a.evidence}` : a.text
+
+  const done = snapshot.assertions.filter(a => a.status === 'passed').map(withEvidence)
+  const failed = snapshot.assertions.filter(a => a.status === 'failed').map(withEvidence)
+  const pending = snapshot.assertions.filter(a => a.status === 'pending').map(a => a.text)
+
+  const handoff: Handoff = {
+    goal: snapshot.title || 'Untitled task',
+    now: snapshot.brief || (snapshot.complete ? 'Task complete' : 'Work in progress'),
+    status: snapshot.complete ? 'complete' : 'in_progress',
+  }
+
+  if (opts.utilization != null) handoff.context_at_exit = opts.utilization
+  if (opts.model) handoff.model = opts.model
+  if (done.length > 0) handoff.what_was_done = done
+  if (failed.length > 0) handoff.what_failed = failed
+  if (pending.length > 0) handoff.next_steps = pending
+  if (opts.filesModified && opts.filesModified.length > 0) handoff.files_modified = opts.filesModified
+
+  return handoff
+}
+
+/**
+ * Render a handoff as a compact "## Previous Session Context" block for
+ * injection into the next session's system prompt. Sections are omitted when
+ * empty to keep the local model's context lean.
+ */
+export function formatHandoffForPrompt(handoff: Handoff): string {
+  const lines: string[] = ['## Previous Session Context']
+  lines.push(`Last session goal: ${handoff.goal}`)
+  lines.push(`Status: ${handoff.status}`)
+  lines.push(`What was happening: ${handoff.now}`)
+
+  const section = (label: string, arr?: string[]) => {
+    if (!arr || arr.length === 0) return
+    lines.push(`${label}:`)
+    for (const item of arr) lines.push(`  - ${item}`)
+  }
+
+  section('Done', handoff.what_was_done)
+  section('What failed', handoff.what_failed)
+  section('Next steps', handoff.next_steps)
+  section('Files modified', handoff.files_modified)
+
+  return lines.join('\n')
+}
 
 export function serializeHandoff(handoff: Handoff): string {
   const lines: string[] = []

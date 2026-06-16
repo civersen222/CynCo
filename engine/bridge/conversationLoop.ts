@@ -40,6 +40,7 @@ import {
 import { getJournal } from '../training/decisionJournal.js'
 import { makeJournalEntry } from '../training/types.js'
 import { globalContract } from '../tools/contract.js'
+import { globalAskBroker } from '../tools/askBroker.js'
 import { setSideQuery, resetMergeTracking } from '../tools/impl/edit.js'
 
 type Message = {
@@ -239,6 +240,11 @@ export class ConversationLoop {
     // S5: Session journal for crash recovery
     this.journal = new JSONLStore(`session-${Date.now()}`)
     console.log(`[session] Journal: ${this.journal.path}`)
+
+    // Human-in-the-loop: surface AskUser questions to the TUI over the bridge.
+    globalAskBroker.setEmitter(({ requestId, question, options }) => {
+      this.emit({ type: 'ask.request', requestId, question, options })
+    })
   }
 
   /**
@@ -293,6 +299,11 @@ export class ConversationLoop {
       this.pendingApprovals.delete(requestId)
       resolve(approved)
     }
+  }
+
+  /** Route a human's answer to a pending AskUser question back to the broker. */
+  handleAskAnswer(requestId: string, answer: string): void {
+    globalAskBroker.answer(requestId, answer)
   }
 
   setApproveAll(value: boolean): void {

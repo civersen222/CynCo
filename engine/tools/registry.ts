@@ -21,6 +21,7 @@ import { collectAgentTool } from './impl/collectAgent.js'
 import { indexResearchTool } from './impl/indexResearch.js'
 import { replaceFunctionTool } from './impl/replaceFunction.js'
 import { mflTool } from './impl/mfl.js'
+import { askUserTool } from './askUser.js'
 import {
   contractCreateTool,
   contractAssertPassTool,
@@ -33,6 +34,7 @@ export const ALL_TOOLS: ToolImpl[] = [
   bashTool, gitTool, webFetchTool, webSearchTool, imageViewTool, notebookEditTool,
   multiEditTool, applyPatchTool, lsTool, codeIndexTool, saveLearningTool,
   spawnAgentTool, collectAgentTool, indexResearchTool, replaceFunctionTool, mflTool,
+  askUserTool,
   contractCreateTool, contractAssertPassTool, contractAssertFailTool, contractStatusTool,
 ]
 

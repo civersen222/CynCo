@@ -20,6 +20,14 @@ export interface Assertion {
   evidence?: string
 }
 
+export interface ContractSnapshot {
+  title: string
+  brief: string
+  active: boolean
+  complete: boolean
+  assertions: Assertion[]
+}
+
 // ---------------------------------------------------------------------------
 // ContractState class
 // ---------------------------------------------------------------------------
@@ -126,6 +134,17 @@ export class ContractState {
     lines.push(`Complete: ${this.isComplete() ? 'YES' : 'NO'}`)
 
     return lines.join('\n')
+  }
+
+  /** Return a deep-copied, serializable snapshot of the contract state. */
+  snapshot(): ContractSnapshot {
+    return {
+      title: this.title,
+      brief: this.brief,
+      active: this.active,
+      complete: this.isComplete(),
+      assertions: this.assertions.map(a => ({ ...a })),
+    }
   }
 
   /** Clear the contract, resetting all state. */

@@ -103,6 +103,32 @@ describe('ContractState', () => {
     c.assertPass(99)  // should not throw
     expect(c.pendingCount()).toBe(1)
   })
+
+  it('snapshot reflects title, brief, completion and assertion states', () => {
+    c.create('Title', 'Brief text', ['a', 'b'])
+    c.assertPass(0, 'ev')
+    const s = c.snapshot()
+    expect(s.title).toBe('Title')
+    expect(s.brief).toBe('Brief text')
+    expect(s.active).toBe(true)
+    expect(s.complete).toBe(false)
+    expect(s.assertions.length).toBe(2)
+    expect(s.assertions[0]).toEqual({ text: 'a', status: 'passed', evidence: 'ev' })
+    expect(s.assertions[1].status).toBe('pending')
+  })
+
+  it('snapshot is a copy — mutating it does not affect the contract', () => {
+    c.create('T', '', ['a'])
+    const s = c.snapshot()
+    s.assertions[0].status = 'passed'
+    expect(c.pendingCount()).toBe(1)
+  })
+
+  it('snapshot of an inactive contract is inactive with no assertions', () => {
+    const s = c.snapshot()
+    expect(s.active).toBe(false)
+    expect(s.assertions.length).toBe(0)
+  })
 })
 
 describe('contractCreateTool.execute', () => {
