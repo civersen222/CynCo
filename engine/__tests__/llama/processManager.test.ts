@@ -154,11 +154,11 @@ describe('buildServerArgs — config-driven cacheRam/reasoningBudget', () => {
       modelPath: '/m/Qwen3.6-27B-Q6_K.gguf',
       port: 8081,
       ctxSize: 65536,
-      specType: 'mtp',
+      specType: 'draft-mtp',
       specDraftN: 3,
     })
     expect(argValue(args, '--ctx-size')).toBe('65536')
-    expect(argValue(args, '--spec-type')).toBe('mtp')
+    expect(argValue(args, '--spec-type')).toBe('draft-mtp')
     expect(argValue(args, '--spec-draft-n-max')).toBe('3')
   })
 
