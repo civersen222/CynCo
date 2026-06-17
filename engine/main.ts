@@ -814,6 +814,19 @@ async function handleCommand(command: TUICommand): Promise<void> {
               }
               wsServer.emit({ type: 'stream.token', text: table })
             }
+            // Intervention success rates — which governance directives actually helped.
+            const interventions = governance?.getInterventionTracker?.()
+            const history = interventions?.getHistory() ?? []
+            if (history.length > 0) {
+              const types = [...new Set(history.map(r => r.type))]
+              let itable = '\nIntervention | Samples | Success Rate\n'
+              itable += '-------------|---------|-------------\n'
+              for (const t of types) {
+                const samples = history.filter(r => r.type === t).length
+                itable += `${t.padEnd(12)} | ${String(samples).padEnd(7)} | ${(interventions!.getSuccessRate(t) * 100).toFixed(0)}%\n`
+              }
+              wsServer.emit({ type: 'stream.token', text: itable })
+            }
             wsServer.emit({ type: 'message.complete', messageId: '', stopReason: 'end_turn' })
           }
           break

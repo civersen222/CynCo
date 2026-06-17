@@ -42,6 +42,7 @@ import { IdentityGuard } from './identityGuard.js'
 import { AutopoiesisVerifier } from './autopoiesisVerifier.js'
 import { StrategyMemory } from './strategyMemory.js'
 import { PredictionTracker } from './predictionTracker.js'
+import { InterventionTracker } from './interventionTracker.js'
 
 import type { GovernanceReport, GovernanceAlert } from './types.js'
 import { getJournal } from '../training/decisionJournal.js'
@@ -125,6 +126,7 @@ export class CyberneticsGovernance {
   private _db?: import('./governanceDb.js').GovernanceDB
   private _sessionId = `session-${Date.now()}`
   private _predictionTracker: PredictionTracker
+  private _interventionTracker = new InterventionTracker()
 
   // Axiom health — last computed Beer axiom check results
   private lastAxiomHealth: { holding: number; total: number; violations: string[] } = { holding: 0, total: 0, violations: [] }
@@ -564,6 +566,15 @@ export class CyberneticsGovernance {
       ))
     }
 
+    // Intervention tracking — closed-loop PID: record which interventions
+    // preceded a non-stuck (successful) turn vs a still-stuck (failed) one.
+    // S3 issued a directive this turn; observe the outcome to tune intensity.
+    const interventionSucceeded = this.stuckCount === 0
+    if (nudgeInjected) this._interventionTracker.recordIntervention('nudge', interventionSucceeded)
+    if (temperatureLowered) this._interventionTracker.recordIntervention('temperature', interventionSucceeded)
+    if (contractCreated) this._interventionTracker.recordIntervention('contract', interventionSucceeded)
+    if (this._toolsRestricted) this._interventionTracker.recordIntervention('toolRestriction', interventionSucceeded)
+
     // Prediction tracking — check triggers and evaluate
     const report = this.getReport()
     this._predictionTracker.checkTriggers(this.turnCount, {
@@ -925,6 +936,11 @@ export class CyberneticsGovernance {
   /** Get the PredictionTracker for reading falsifiable hypothesis statistics. */
   getPredictionTracker(): PredictionTracker {
     return this._predictionTracker
+  }
+
+  /** Get the InterventionTracker for reading per-intervention success rates. */
+  getInterventionTracker(): InterventionTracker {
+    return this._interventionTracker
   }
 
   getStuckCount(): number {
