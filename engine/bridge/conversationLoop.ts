@@ -48,7 +48,7 @@ type Message = {
   content: { type: string; text?: string; [key: string]: unknown }[]
 }
 
-const READ_ONLY_TOOLS = ['Read', 'Grep', 'Glob', 'CodeSearch', 'Ls', 'Git', 'ImageView']
+const READ_ONLY_TOOLS = ['Read', 'Grep', 'Glob', 'Ls', 'Git', 'ImageView']
 const SAFE_MODE_TOOLS = [...READ_ONLY_TOOLS, 'Bash']
 
 // S3 Resource Management: prevent single tool output from consuming all context
@@ -57,7 +57,6 @@ const TOOL_OUTPUT_LIMITS: Record<string, { maxLines: number; maxBytes: number }>
   Bash:       { maxLines: 100, maxBytes: 20_000 },
   Grep:       { maxLines: 100, maxBytes: 30_000 },
   Glob:       { maxLines: 100, maxBytes: 30_000 },
-  CodeSearch: { maxLines: 100, maxBytes: 30_000 },
   WebFetch:   { maxLines: 200, maxBytes: 50_000 },
   _default:   { maxLines: 200, maxBytes: 30_000 },
 }
@@ -2014,7 +2013,7 @@ export class ConversationLoop {
       // S1: Group read-only tools for parallel execution
       this.consecutiveNudges = 0
       const toolResults: Message['content'] = []
-      const P_READ_ONLY = new Set(['Read', 'Grep', 'Glob', 'CodeSearch', 'Ls', 'ImageView', 'Git'])
+      const P_READ_ONLY = new Set(['Read', 'Grep', 'Glob', 'Ls', 'ImageView', 'Git'])
       const batches = classifyParallelBatches(toolUseBlocks, P_READ_ONLY)
 
       for (const batch of batches) {
@@ -2059,7 +2058,7 @@ export class ConversationLoop {
       // If the model reads extensively without writing, nudge it to act.
       // Uses a ratio: after the model has read 3x more than it's written,
       // and at least 6 consecutive reads, suggest implementing.
-      const READ_ONLY = new Set(['Read', 'Grep', 'Glob', 'CodeSearch', 'Ls', 'ImageView'])
+      const READ_ONLY = new Set(['Read', 'Grep', 'Glob', 'Ls', 'ImageView'])
       const WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'ApplyPatch', 'Bash'])
       const totalReads = toolsUsedInSession.filter(t => READ_ONLY.has(t)).length
       const totalWrites = toolsUsedInSession.filter(t => WRITE_TOOLS.has(t)).length
