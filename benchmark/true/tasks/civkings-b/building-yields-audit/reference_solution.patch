@@ -1,0 +1,50 @@
+diff --git a/city.py b/city.py
+index 268021a..5d19557 100644
+--- a/city.py
++++ b/city.py
+@@ -231,23 +231,29 @@ class City:
+             if district.happiness_bonus > 0:
+                 self.happiness += district.happiness_bonus
+ 
+-        # Add yields from buildings
++        # Add yields from buildings.
++        #
++        # Building effects are additive (no adjacency for buildings currently).
++        # Every declared positive effect field on the BuildingType dataclass is
++        # honored generically so that any building -- present or future -- placed
++        # in a city contributes all of its declared effects to the output. The
++        # field name on the dataclass is used directly as the output key, except
++        # for defense_bonus which is surfaced under the "defense" yield key.
++        BUILDING_EFFECT_FIELDS = (
++            "food", "production", "gold", "science", "faith", "culture",
++            "happiness", "defense_bonus",
++        )
+         for building_name, building in self.buildings.items():
+-            # Building yields are additive (no adjacency for buildings currently)
+-            if building.food > 0:
+-                yields["food"] += building.food
+-            if building.gold > 0:
+-                yields["gold"] += building.gold
+-            if building.science > 0:
+-                yields["science"] += building.science
+-            if building.production > 0:
+-                yields["production"] += building.production
+-            if building.faith > 0:
+-                yields["faith"] = yields.get("faith", 0) + building.faith
+-            if hasattr(building, "culture") and building.culture > 0:
+-                yields["culture"] += building.culture
+-            if building.happiness > 0:
+-                self.happiness += building.happiness
++            for field in BUILDING_EFFECT_FIELDS:
++                value = getattr(building, field, 0)
++                if not value or value <= 0:
++                    continue
++                out_key = "defense" if field == "defense_bonus" else field
++                yields[out_key] = yields.get(out_key, 0) + value
++                # Building happiness also feeds the city-wide happiness metric
++                # used below for stability/production math (unchanged behavior).
++                if field == "happiness":
++                    self.happiness += value
+ 
+         # Population bonuses
+         yields["food"] += self.population * 0.5

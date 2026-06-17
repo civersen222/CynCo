@@ -1,0 +1,21 @@
+diff --git a/game.py b/game.py
+index 47e6783..75f7dce 100644
+--- a/game.py
++++ b/game.py
+@@ -633,6 +633,16 @@ class Game:
+         
+         # 2. Happiness & Stability
+         self.happiness_system.update_city_count(len(self.cities))
++        # Tax -> happiness: raising the rate above the neutral rate (50) lowers
++        # happiness, scaled by how far above neutral it is. The HappinessSystem
++        # clamps the result to 0-100 internally.
++        self.happiness_system.tax_penalty = self.tax_system.happiness_penalty
++        # Sustained low happiness erodes empire stability. Below the neutral
++        # happiness line (50) stability falls proportionally to the shortfall;
++        # apply_change clamps stability to 0-100.
++        current_happiness = self.happiness_system.current_happiness
++        if current_happiness < 50:
++            self.stability_system.apply_change(-(50 - current_happiness) * 0.5)
+         self.stability_system.calculate_unrest()
+         self.stability_system.calculate_revolt_risk()
+         msgs.append(f"  Happiness: {self.happiness_system.current_happiness}%")
