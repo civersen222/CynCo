@@ -250,6 +250,51 @@ if (exportTrainingIdx !== -1) {
   process.exit(0)
 }
 
+// ─── VSM ablation harness (governed vs ungoverned A/B over real tasks) ──
+const runAblationIdx = process.argv.indexOf('--run-ablation')
+if (runAblationIdx !== -1) {
+  const casesPath = process.argv[runAblationIdx + 1]
+  if (!casesPath) {
+    console.error('[ablation] --run-ablation requires a cases JSON file path')
+    process.exit(1)
+  }
+  const { readFileSync } = await import('fs')
+  const { AblationRunner, metricsFromMessages } = await import('./vsm/ablationRunner.js')
+  const { ConversationLoop } = await import('./bridge/conversationLoop.js')
+  const { S5Orchestrator } = await import('./s5/orchestrator.js')
+  const { RuleBasedS5 } = await import('./s5/ruleBasedS5.js')
+
+  const runner = new AblationRunner()
+  runner.loadFromJson(readFileSync(casesPath, 'utf-8'))
+
+  // Each call builds a fresh loop so it re-reads the ablation env flag that
+  // AblationRunner.run() flips between the governed and ungoverned passes.
+  const execute = async (task: string, _maxTurns: number) => {
+    const s5 = new S5Orchestrator(new RuleBasedS5())
+    const loop = new ConversationLoop({
+      config: { ...config, approveAll: true, noScouts: true },
+      provider,
+      emit: () => {},
+      cwd: process.cwd(),
+      s5,
+    })
+    let timedOut = false
+    const timer = setTimeout(() => { timedOut = true; loop.abort() }, 5 * 60_000)
+    try {
+      await loop.handleUserMessage(task)
+    } finally {
+      clearTimeout(timer)
+    }
+    return metricsFromMessages(loop.getMessages(), !timedOut)
+  }
+
+  const results = await runner.run(execute)
+  console.log(runner.formatReport(results, runner.summarize(results)))
+  const pm = (globalThis as any).__llamaProcessManager
+  if (pm) { try { await pm.stop() } catch {} }
+  process.exit(0)
+}
+
 const port = parseInt(process.env.LOCALCODE_WS_PORT ?? '9160', 10)
 
 if (!config.model) {
