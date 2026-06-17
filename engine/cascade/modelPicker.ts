@@ -1,11 +1,8 @@
 /**
- * ModelPicker — selects a model profile based on task complexity.
- *
- * Maps simple→fast, moderate→balanced, complex→powerful.
- * Falls back to the first available model if no tier match is found.
+ * ModelPicker — classifies task complexity from a message.
  */
 
-import type { TaskComplexity, ModelProfile } from './types.js'
+import type { TaskComplexity } from './types.js'
 
 // ─── Complexity Classification ────────────────────────────────────
 
@@ -36,32 +33,4 @@ export function classifyComplexity(message: string, recentToolCount: number): Ta
   }
 
   return 'moderate'
-}
-
-// ─── Model Selection ──────────────────────────────────────────────
-
-/** Map complexity to the required tier. */
-const COMPLEXITY_TO_TIER: Record<TaskComplexity, ModelProfile['tier']> = {
-  simple: 'fast',
-  moderate: 'balanced',
-  complex: 'powerful',
-}
-
-/**
- * Pick the best model profile for a given complexity level.
- *
- * Returns the first profile matching the required tier, or the first profile
- * in the list as a fallback if none match.
- */
-export function pickForComplexity(
-  complexity: TaskComplexity,
-  profiles: ModelProfile[],
-): ModelProfile | undefined {
-  if (profiles.length === 0) return undefined
-
-  const targetTier = COMPLEXITY_TO_TIER[complexity]
-  const match = profiles.find(p => p.tier === targetTier)
-
-  // Fallback to first model if no tier match
-  return match ?? profiles[0]
 }
