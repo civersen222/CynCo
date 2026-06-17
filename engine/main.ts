@@ -237,6 +237,19 @@ if (runTaskIdx !== -1) {
   process.exit(exitCode)
 }
 
+// ─── Export S5 training data (DecisionLogger history -> JSONL) ──
+const exportTrainingIdx = process.argv.indexOf('--export-training')
+if (exportTrainingIdx !== -1) {
+  const outPath = process.argv[exportTrainingIdx + 1] ?? 's5-training.jsonl'
+  const { DecisionLogger } = await import('./decisions/logger.js')
+  const { toJsonl } = await import('./s5/trainingData.js')
+  const { writeFileSync } = await import('fs')
+  const records = new DecisionLogger().readAll()
+  writeFileSync(outPath, toJsonl(records))
+  console.log(`[export-training] wrote ${records.length} examples to ${outPath}`)
+  process.exit(0)
+}
+
 const port = parseInt(process.env.LOCALCODE_WS_PORT ?? '9160', 10)
 
 if (!config.model) {

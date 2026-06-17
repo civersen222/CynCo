@@ -13,6 +13,7 @@ import type { Provider } from '../provider.js'
 import { localCallModel, type CallModelDeps } from '../engine/callModel.js'
 import { ALL_TOOLS } from '../tools/registry.js'
 import { ToolExecutor, type RequestApprovalFn } from '../tools/executor.js'
+import { ToolScorer } from '../tools/toolScorer.js'
 import type { ToolTrustProfile } from '../tools/approvalGate.js'
 import { WorkflowEngine } from '../workflows/engine.js'
 import type { WorkflowDefinition } from '../workflows/types.js'
@@ -120,6 +121,8 @@ export class ConversationLoop {
   private provider: Provider
   private emit: (event: EngineEvent) => void
   private executor: ToolExecutor
+  private toolScorer = new ToolScorer()
+  private toolScorerPath = require('path').join(require('os').homedir(), '.cynco', 'tool-scores.json')
   private pendingApprovals = new Map<string, (approved: boolean) => void>()
   private workflowEngine: WorkflowEngine
   private lspManager: LSPManager
@@ -171,11 +174,13 @@ export class ConversationLoop {
       })
     }
 
+    this.toolScorer.load(this.toolScorerPath)
     this.executor = new ToolExecutor({
       cwd: opts.cwd ?? process.cwd(),
       requestApproval,
       trustProfile: opts.trustProfile,
       approveAll: opts.config.approveAll,
+      toolScorer: this.toolScorer,
     })
 
     // Inject sideQuery into Edit tool for semantic merge fallback
@@ -1160,6 +1165,9 @@ export class ConversationLoop {
       } catch (e) {
         console.log(`[vsm] Session-end evaluation error: ${e}`)
       }
+
+    // Persist tool trust scores so demotion signal survives across sessions
+    this.toolScorer.save(this.toolScorerPath)
 
     this.processing = false
     this.abortController = null
