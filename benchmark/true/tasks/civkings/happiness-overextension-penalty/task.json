@@ -1,0 +1,9 @@
+{
+  "id": "happiness-overextension-penalty",
+  "prompt": "In this CivKings game, citizen happiness is supposed to drop as an empire overextends: once you control more cities than your administrative limit, each extra city should cost happiness. Right now sprawling empires never lose any happiness from having too many cities no matter how many they hold. Find where the overextension happiness penalty is computed and make it scale with the number of cities beyond the limit so large empires become correctly unhappy.",
+  "start_ref": "03b4032",
+  "setup_patch": "setup.patch",
+  "hidden_test": "hidden_test.py",
+  "timeout_ms": 900000,
+  "source": "authored"
+}

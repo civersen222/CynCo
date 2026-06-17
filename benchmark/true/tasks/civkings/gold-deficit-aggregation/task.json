@@ -1,0 +1,9 @@
+{
+  "id": "gold-deficit-aggregation",
+  "prompt": "In this CivKings game, the monthly gold report is wrong when the player holds conquered cities. The tribute owed for conquered cities is calculated and shown in the breakdown, but it is not being subtracted from the treasury: the reported total expenses and the surplus/deficit ignore tribute entirely, so the player looks richer than they actually are. Find where monthly expenses are totaled and make the total expenses (and therefore the surplus/deficit) account for unit maintenance, tribute, and bribery together.",
+  "start_ref": "03b4032",
+  "setup_patch": "setup.patch",
+  "hidden_test": "hidden_test.py",
+  "timeout_ms": 900000,
+  "source": "authored"
+}

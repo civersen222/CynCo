@@ -1,0 +1,13 @@
+diff --git a/pygame_app/popups/production.py b/pygame_app/popups/production.py
+index 1a27adf..cebc011 100644
+--- a/pygame_app/popups/production.py
++++ b/pygame_app/popups/production.py
+@@ -139,7 +139,7 @@ class ProductionPopup:
+         if current:
+             cost = city.get_production_cost(current) or 0
+             prod = getattr(city, "production", 0)
+-            progress = min(prod / cost, 1.0) if cost > 0 else 0
++            progress = (prod / cost) if cost > 0 else 0
+             bar_w = int(200 * progress)
+             bar = f"[{'#' * bar_w}{'.' * (200 - bar_w)}] {int(progress * 100)}%"
+             parts.append(f"{current} — {prod}/{cost} {bar}<br>")

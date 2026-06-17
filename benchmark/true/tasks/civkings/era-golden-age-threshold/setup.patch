@@ -1,0 +1,15 @@
+diff --git a/era_system.py b/era_system.py
+index b982705..5a877ce 100644
+--- a/era_system.py
++++ b/era_system.py
+@@ -26,9 +26,7 @@ class EraSystem:
+         return 0
+ 
+     def check_era_transition(self) -> str:
+-        if self.era_score >= self.THRESHOLDS['golden_age']:
+-            return 'Golden'
+-        elif self.era_score >= self.THRESHOLDS['dark_age']:
++        if self.era_score >= self.THRESHOLDS['dark_age']:
+             return 'Normal'
+         return 'Dark'
+ 

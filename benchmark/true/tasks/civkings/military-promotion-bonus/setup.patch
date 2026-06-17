@@ -1,0 +1,19 @@
+diff --git a/military.py b/military.py
+index 4110198..adf63d7 100644
+--- a/military.py
++++ b/military.py
+@@ -48,14 +48,6 @@ class Unit:
+         self.defense = base["defense"]
+         self.max_moves = self.base_move
+ 
+-        for bonus in self.promotions:
+-            for stat, val in bonus.items():
+-                if stat == "attack":
+-                    self.attack += val
+-                elif stat == "defense":
+-                    self.defense += val
+-                elif stat == "movement":
+-                    self.max_moves += val
+     def gain_xp(self, amount: int) -> None:
+         """Gain XP and check for promotion eligibility."""
+         self.xp += amount
