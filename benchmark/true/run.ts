@@ -18,8 +18,16 @@ async function main() {
   const civkingsRepo = arg('--civkings', 'C:\\Users\\civer\\civkings')
   const tasksDir = arg('--tasks', join(import.meta.dirname, 'tasks', 'civkings'))
   const reps = parseInt(arg('--reps', '3'), 10)
+  if (!Number.isInteger(reps) || reps < 1) {
+    console.error(`[true-bench] invalid --reps (must be a positive integer): ${arg('--reps', '3')}`)
+    process.exit(1)
+  }
 
   const config = loadConfig()
+  if (!config.model) {
+    console.error('[true-bench] no model configured (set LOCALCODE_MODEL) — refusing to write unattributable evidence')
+    process.exit(1)
+  }
   const ctx = config.contextLength ?? 32768
   const provider = createProvider('ollama', config.baseUrl, config.apiKey, ctx)
 
@@ -45,29 +53,31 @@ async function main() {
     }
   }
 
-  const result = await runSuite({ tasks, reps, model: config.model ?? 'unknown', runOne })
+  try {
+    const result = await runSuite({ tasks, reps, model: config.model, runOne })
 
-  const outDir = join(import.meta.dirname, 'results')
-  mkdirSync(outDir, { recursive: true })
-  const outFile = join(outDir, `true-ablation-${Date.now()}.json`)
-  writeFileSync(outFile, JSON.stringify(result, null, 2))
+    const outDir = join(import.meta.dirname, 'results')
+    mkdirSync(outDir, { recursive: true })
+    const outFile = join(outDir, `true-ablation-${Date.now()}.json`)
+    writeFileSync(outFile, JSON.stringify(result, null, 2))
 
-  console.log('\n=== TRUE BENCHMARK (Layer A: CivKings self-ablation) ===')
-  console.log(`model: ${result.model}  reps/condition: ${result.repsPerCondition}`)
-  console.log(`governed   pass: ${(result.governedOverall.point * 100).toFixed(1)}% ` +
-    `[${(result.governedOverall.lower * 100).toFixed(1)}, ${(result.governedOverall.upper * 100).toFixed(1)}]`)
-  console.log(`ungoverned pass: ${(result.ungovernedOverall.point * 100).toFixed(1)}% ` +
-    `[${(result.ungovernedOverall.lower * 100).toFixed(1)}, ${(result.ungovernedOverall.upper * 100).toFixed(1)}]`)
-  console.log(`lift (governed-ungoverned): ${(result.liftMean * 100).toFixed(1)}% ` +
-    `[${(result.liftLower * 100).toFixed(1)}, ${(result.liftUpper * 100).toFixed(1)}]`)
-  const verdict = result.liftLower > 0 ? 'GOVERNANCE HELPS (CI excludes 0)'
-    : result.liftUpper < 0 ? 'GOVERNANCE HURTS (CI excludes 0)'
-    : 'INCONCLUSIVE (CI includes 0)'
-  console.log(`verdict: ${verdict}`)
-  console.log(`results: ${outFile}`)
-
-  const pm = (globalThis as any).__llamaProcessManager
-  if (pm) { try { await pm.stop() } catch {} }
+    console.log('\n=== TRUE BENCHMARK (Layer A: CivKings self-ablation) ===')
+    console.log(`model: ${result.model}  reps/condition: ${result.repsPerCondition}`)
+    console.log(`governed   pass: ${(result.governedOverall.point * 100).toFixed(1)}% ` +
+      `[${(result.governedOverall.lower * 100).toFixed(1)}, ${(result.governedOverall.upper * 100).toFixed(1)}]`)
+    console.log(`ungoverned pass: ${(result.ungovernedOverall.point * 100).toFixed(1)}% ` +
+      `[${(result.ungovernedOverall.lower * 100).toFixed(1)}, ${(result.ungovernedOverall.upper * 100).toFixed(1)}]`)
+    console.log(`lift (governed-ungoverned): ${(result.liftMean * 100).toFixed(1)}% ` +
+      `[${(result.liftLower * 100).toFixed(1)}, ${(result.liftUpper * 100).toFixed(1)}]`)
+    const verdict = result.liftLower > 0 ? 'GOVERNANCE HELPS (CI excludes 0)'
+      : result.liftUpper < 0 ? 'GOVERNANCE HURTS (CI excludes 0)'
+      : 'INCONCLUSIVE (CI includes 0)'
+    console.log(`verdict: ${verdict}`)
+    console.log(`results: ${outFile}`)
+  } finally {
+    const pm = (globalThis as any).__llamaProcessManager
+    if (pm) { try { await pm.stop() } catch {} }
+  }
 }
 
 main().catch((e) => { console.error(e); process.exit(1) })
