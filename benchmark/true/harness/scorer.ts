@@ -22,6 +22,9 @@ export function scorePytest(workdir: string, hiddenTestPath: string, hiddenTestN
       encoding: 'utf-8',
       timeout: 120_000,
     })
+    // A spawn-level error (e.g. python not on PATH) is an infra failure, not an
+    // agent failure — surface it loudly rather than silently scoring it as a miss.
+    if (res.error) throw res.error
     const output = `${res.stdout ?? ''}${res.stderr ?? ''}`
     return { passed: res.status === 0, output }
   } finally {

@@ -16,7 +16,7 @@ interface RawTask {
 export function loadCivkingsTasks(tasksDir: string): TaskDef[] {
   if (!existsSync(tasksDir)) return []
   const out: TaskDef[] = []
-  for (const entry of readdirSync(tasksDir)) {
+  for (const entry of readdirSync(tasksDir).sort()) {
     const dir = join(tasksDir, entry)
     if (!statSync(dir).isDirectory()) continue
     const jsonPath = join(dir, 'task.json')
