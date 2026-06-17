@@ -37,7 +37,8 @@ tui/uv.lock
 src/_archived_claude_code/
 .claude/
 src/src/
-benchmark
+benchmark/*
+!benchmark/true/
 benchmark-manual
 benchmark-results
 benchmark-workspace-06
