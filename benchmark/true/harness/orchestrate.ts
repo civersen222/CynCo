@@ -22,10 +22,12 @@ export async function runSuite(opts: {
   model: string
   runOne: RunOne
   bootstrapRng?: () => number
+  conditions?: Condition[]   // default both; calibration passes ['ungoverned']
 }): Promise<SuiteResult> {
+  const conditions = opts.conditions ?? CONDITIONS
   const runs: RunRecord[] = []
   for (const task of opts.tasks) {
-    for (const condition of CONDITIONS) {
+    for (const condition of conditions) {
       for (let rep = 1; rep <= opts.reps; rep++) {
         const r = await opts.runOne({ task, condition, rep })
         runs.push({ taskId: task.id, condition, rep, passed: r.passed, score: r.score, timedOut: r.timedOut, turns: r.turns })

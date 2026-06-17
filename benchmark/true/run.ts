@@ -14,10 +14,17 @@ function arg(name: string, fallback: string): string {
   return i !== -1 && process.argv[i + 1] ? process.argv[i + 1] : fallback
 }
 
+function flag(name: string): boolean {
+  return process.argv.includes(name)
+}
+
 async function main() {
   const civkingsRepo = arg('--civkings', 'C:\\Users\\civer\\civkings')
   const tasksDir = arg('--tasks', join(import.meta.dirname, 'tasks', 'civkings'))
-  const reps = parseInt(arg('--reps', '3'), 10)
+  // Calibration mode: unaided (ungoverned-only) pilot to find which tasks land in
+  // the discriminating 0.2-0.8 score band. Default 2 reps unless --reps given.
+  const calibrate = flag('--calibrate')
+  const reps = parseInt(arg('--reps', calibrate ? '2' : '3'), 10)
   if (!Number.isInteger(reps) || reps < 1) {
     console.error(`[true-bench] invalid --reps (must be a positive integer): ${arg('--reps', '3')}`)
     process.exit(1)
@@ -58,14 +65,40 @@ async function main() {
   }
 
   try {
-    const result = await runSuite({ tasks, reps, model: config.model, runOne })
+    const result = await runSuite({
+      tasks, reps, model: config.model, runOne,
+      conditions: calibrate ? ['ungoverned'] : undefined,
+    })
 
     const outDir = join(import.meta.dirname, 'results')
     mkdirSync(outDir, { recursive: true })
+    const pct = (x: number) => (x * 100).toFixed(1)
+
+    if (calibrate) {
+      // Unaided pilot: report each task's mean ungoverned score and whether it
+      // lands in the discriminating band. Saturators (<=0.2 or >=0.8) carry no
+      // governance signal and should be dropped from the headline set.
+      const outFile = join(outDir, `calibration-${Date.now()}.json`)
+      const rows = result.perTask
+        .map((p) => ({ taskId: p.taskId, score: p.ungovernedScore }))
+        .sort((a, b) => a.score - b.score)
+      const KEEP_LO = 0.2, KEEP_HI = 0.8
+      const keep = rows.filter((r) => r.score >= KEEP_LO && r.score <= KEEP_HI).map((r) => r.taskId)
+      writeFileSync(outFile, JSON.stringify({ model: result.model, repsPerCondition: reps, band: [KEEP_LO, KEEP_HI], rows, keep, full: result }, null, 2))
+      console.log('\n=== CALIBRATION (unaided / ungoverned-only) ===')
+      console.log(`model: ${result.model}  reps: ${reps}  band: keep if ${KEEP_LO}-${KEEP_HI}`)
+      for (const r of rows) {
+        const verdict = r.score < KEEP_LO ? 'DROP (too hard)' : r.score > KEEP_HI ? 'DROP (too easy)' : 'KEEP'
+        console.log(`  ${pct(r.score).padStart(5)}%  ${r.taskId.padEnd(26)} ${verdict}`)
+      }
+      console.log(`keep (${keep.length}): ${keep.join(', ') || '(none)'}`)
+      console.log(`results: ${outFile}`)
+      return
+    }
+
     const outFile = join(outDir, `true-ablation-${Date.now()}.json`)
     writeFileSync(outFile, JSON.stringify(result, null, 2))
 
-    const pct = (x: number) => (x * 100).toFixed(1)
     console.log('\n=== TRUE BENCHMARK (CivKings self-ablation) ===')
     console.log(`model: ${result.model}  reps/condition: ${result.repsPerCondition}`)
     // Headline is the CONTINUOUS per-assertion score (fraction of hidden-test

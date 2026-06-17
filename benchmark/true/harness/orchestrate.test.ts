@@ -33,6 +33,25 @@ describe('runSuite', () => {
     }
   })
 
+  it('runs ungoverned-only when conditions is restricted (calibration path)', async () => {
+    const result = await runSuite({
+      tasks: [fakeTask('alpha'), fakeTask('beta')],
+      reps: 2,
+      model: 'fake-model',
+      conditions: ['ungoverned'],
+      runOne: async () => ({ passed: false, timedOut: false, turns: 1, score: 0.5 }),
+      bootstrapRng: () => 0,
+    })
+    expect(result.runs).toHaveLength(2 * 1 * 2)
+    expect(result.runs.every((r) => r.condition === 'ungoverned')).toBe(true)
+    for (const pt of result.perTask) {
+      expect(pt.ungovernedScore).toBeCloseTo(0.5, 5)
+      expect(pt.governedScore).toBe(0)
+      expect(Number.isNaN(pt.scoreLift)).toBe(false)
+    }
+    expect(Number.isNaN(result.governedScoreMean.point)).toBe(false)
+  })
+
   it('reports zero lift when both arms behave identically', async () => {
     const result = await runSuite({
       tasks: [fakeTask('alpha')],
