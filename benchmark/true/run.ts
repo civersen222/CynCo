@@ -65,17 +65,24 @@ async function main() {
     const outFile = join(outDir, `true-ablation-${Date.now()}.json`)
     writeFileSync(outFile, JSON.stringify(result, null, 2))
 
-    console.log('\n=== TRUE BENCHMARK (Layer A: CivKings self-ablation) ===')
+    const pct = (x: number) => (x * 100).toFixed(1)
+    console.log('\n=== TRUE BENCHMARK (CivKings self-ablation) ===')
     console.log(`model: ${result.model}  reps/condition: ${result.repsPerCondition}`)
-    console.log(`governed   pass: ${(result.governedOverall.point * 100).toFixed(1)}% ` +
-      `[${(result.governedOverall.lower * 100).toFixed(1)}, ${(result.governedOverall.upper * 100).toFixed(1)}]`)
-    console.log(`ungoverned pass: ${(result.ungovernedOverall.point * 100).toFixed(1)}% ` +
-      `[${(result.ungovernedOverall.lower * 100).toFixed(1)}, ${(result.ungovernedOverall.upper * 100).toFixed(1)}]`)
-    console.log(`lift (governed-ungoverned): ${(result.liftMean * 100).toFixed(1)}% ` +
-      `[${(result.liftLower * 100).toFixed(1)}, ${(result.liftUpper * 100).toFixed(1)}]`)
-    const verdict = result.liftLower > 0 ? 'GOVERNANCE HELPS (CI excludes 0)'
-      : result.liftUpper < 0 ? 'GOVERNANCE HURTS (CI excludes 0)'
-      : 'INCONCLUSIVE (CI includes 0)'
+    // Headline is the CONTINUOUS per-assertion score (fraction of hidden-test
+    // checks passed) — it carries gradient where binary pass/fail saturates.
+    console.log(`governed   score: ${pct(result.governedScoreMean.point)}% ` +
+      `[${pct(result.governedScoreMean.lower)}, ${pct(result.governedScoreMean.upper)}]`)
+    console.log(`ungoverned score: ${pct(result.ungovernedScoreMean.point)}% ` +
+      `[${pct(result.ungovernedScoreMean.lower)}, ${pct(result.ungovernedScoreMean.upper)}]`)
+    console.log(`score-lift (governed-ungoverned): ${pct(result.liftMean)}% ` +
+      `[${pct(result.liftLower)}, ${pct(result.liftUpper)}]  (paired bootstrap)`)
+    // Secondary: binary full-pass rate (every assertion green), for comparison
+    // with the Layer A binary numbers.
+    console.log(`  [secondary] governed full-pass: ${pct(result.governedOverall.point)}%  ` +
+      `ungoverned full-pass: ${pct(result.ungovernedOverall.point)}%`)
+    const verdict = result.liftLower > 0 ? 'GOVERNANCE HELPS (score-lift CI excludes 0)'
+      : result.liftUpper < 0 ? 'GOVERNANCE HURTS (score-lift CI excludes 0)'
+      : 'INCONCLUSIVE (score-lift CI includes 0)'
     console.log(`verdict: ${verdict}`)
     console.log(`results: ${outFile}`)
   } finally {
