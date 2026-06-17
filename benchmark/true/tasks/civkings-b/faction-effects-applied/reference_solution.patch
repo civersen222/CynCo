@@ -1,0 +1,78 @@
+diff --git a/game.py b/game.py
+index 47e6783..4b28d24 100644
+--- a/game.py
++++ b/game.py
+@@ -246,6 +246,8 @@ class Game:
+         self.gold_management = GoldManagement()
+         self.external_trade = ExternalTradeRoutes()
+         self.faction_manager = FactionManager(self.player_civ.name)
++        # Per-civilization faction managers (populated in _initialize_game).
++        self.faction_managers: Dict[str, FactionManager] = {}
+         self.war_weariness: Dict[str, int] = {}  # civ_name -> weariness level 0-100
+         self.governments: Dict[str, str] = {}  # civ_name -> government type (default: Despotism)
+         self.anarchy_turns: Dict[str, int] = {}  # civ_name -> remaining anarchy turns
+@@ -457,6 +459,16 @@ class Game:
+         
+         # Initialize factions
+         self.faction_manager.initialize_factions()
++
++        # Per-civ faction managers so every civilization's internal factions
++        # can confer/penalize its own state. The player's entry is the same
++        # object as self.faction_manager (kept for backward compatibility).
++        self.faction_managers[self.player_civ.name] = self.faction_manager
++        for civ_name in self.civilizations:
++            if civ_name not in self.faction_managers:
++                mgr = FactionManager(civ_name)
++                mgr.initialize_factions()
++                self.faction_managers[civ_name] = mgr
+         
+         # Initialize per-player data
+         self.players[self.player_civ.name] = self.player_civ
+@@ -679,12 +691,41 @@ class Game:
+                         elif cargo == "food" and civ_name in self.cities:
+                             self.cities[civ_name].food += amount
+         
+-        # 6. Faction Effects
+-        faction_effects = self.faction_manager.get_faction_effects()
+-        if faction_effects['stability'] != 0:
+-            msgs.append(f"  Faction Stability Effect: {faction_effects['stability']:+.1f}")
+-        if self.faction_manager.conflict_level > 50:
+-            msgs.append(f"  ⚠️ High faction conflict level: {self.faction_manager.conflict_level:.0f}%")
++        # 6. Faction Effects (applied per-civ to gold / stability / culture)
++        for fc_civ, fc_manager in self.faction_managers.items():
++            fc_effects = fc_manager.get_faction_effects()
++
++            # Gold: dominant factions add, marginalized factions subtract.
++            if fc_effects['gold'] != 0:
++                self.gold[fc_civ] = self.gold.get(fc_civ, 0) + fc_effects['gold']
++
++            # Culture accrues to the civilization object.
++            civ_obj = self.civilizations.get(fc_civ)
++            if civ_obj is not None and fc_effects['culture'] != 0:
++                civ_obj.culture += fc_effects['culture']
++
++            # Stability is tracked by the shared StabilitySystem, which models
++            # the player's empire, so only the player's factions move it.
++            if fc_civ == self.player_civ.name and fc_effects['stability'] != 0:
++                self.stability_system.apply_change(fc_effects['stability'])
++
++            # Turn log mentions the faction effect for this civ. The turn log
++            # returned by process_turn is self.state.turn_events, so append
++            # there (msgs is internal scaffolding that is not returned).
++            if any(fc_effects[k] != 0 for k in ('gold', 'culture', 'stability')):
++                dom = fc_manager.dominant_faction
++                dom_name = dom.name if dom is not None else "factions"
++                effect_line = (
++                    f"Faction Effect ({fc_civ}): {dom_name} "
++                    f"gold {fc_effects['gold']:+.2f}, "
++                    f"stability {fc_effects['stability']:+.2f}, "
++                    f"culture {fc_effects['culture']:+.2f}"
++                )
++                msgs.append(f"  {effect_line}")
++                self.state.turn_events.append(effect_line)
++
++            if fc_civ == self.player_civ.name and fc_manager.conflict_level > 50:
++                msgs.append(f"  ⚠️ High faction conflict level: {fc_manager.conflict_level:.0f}%")
+         
+         # 7. City Production
+         for city in self.cities.values():

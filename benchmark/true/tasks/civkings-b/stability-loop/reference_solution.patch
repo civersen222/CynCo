@@ -1,0 +1,76 @@
+diff --git a/game.py b/game.py
+index 47e6783..c5f1f5b 100644
+--- a/game.py
++++ b/game.py
+@@ -242,6 +242,10 @@ class Game:
+         self.tax_system = TaxSystem()
+         self.happiness_system = HappinessSystem()
+         self.stability_system = StabilitySystem()
++        # Stability-loop wiring: track war state and owned-city count between
++        # turns so the turn loop can drive war/conquest stability penalties.
++        self._stability_war_active: bool = False
++        self._stability_owned_cities: int = 0
+         self.market = MarketSimulation()
+         self.gold_management = GoldManagement()
+         self.external_trade = ExternalTradeRoutes()
+@@ -272,6 +276,12 @@ class Game:
+         # Update managers with actual data
+         self.city_manager.cities = list(self.cities.values())
+         self.military_manager.units = list(self.units.values())
++
++        # Stability-loop wiring: seed the owned-city baseline so the founding
++        # cities are not mistaken for conquests on the first processed turn.
++        self._stability_owned_cities = sum(
++            1 for c in self.cities.values() if c.owner == self.player_civ.name
++        )
+     
+     @property
+     def fog(self):
+@@ -633,6 +643,30 @@ class Game:
+         
+         # 2. Happiness & Stability
+         self.happiness_system.update_city_count(len(self.cities))
++
++        # --- Stability-loop wiring: war and conquest drive stability down ---
++        at_war = bool(self.diplomacy_manager.get_active_wars(civ_name))
++        owned_cities = sum(1 for c in self.cities.values() if c.owner == civ_name)
++
++        # War: applying the war-declared penalty once when war begins, plus a
++        # smaller ongoing penalty for every turn the war drags on.
++        if at_war and not self._stability_war_active:
++            self.stability_system.apply_event_modifier("war_declared")
++            msgs.append("  Stability: war has destabilized the realm")
++        elif at_war:
++            self.stability_system.apply_change(-3)
++        self.stability_system.update_war_status(at_war)
++        self._stability_war_active = at_war
++
++        # Conquest: any net gain in owned cities reduces stability further.
++        if owned_cities > self._stability_owned_cities:
++            gained = owned_cities - self._stability_owned_cities
++            for _ in range(gained):
++                self.stability_system.apply_event_modifier("conquest")
++            self.stability_system.update_war_status(at_war, conquered_cities=gained)
++            msgs.append(f"  Stability: conquest of {gained} city(ies) breeds unrest")
++        self._stability_owned_cities = owned_cities
++
+         self.stability_system.calculate_unrest()
+         self.stability_system.calculate_revolt_risk()
+         msgs.append(f"  Happiness: {self.happiness_system.current_happiness}%")
+@@ -687,10 +721,16 @@ class Game:
+             msgs.append(f"  ⚠️ High faction conflict level: {self.faction_manager.conflict_level:.0f}%")
+         
+         # 7. City Production
++        # Stability-loop wiring: a destabilized empire produces less. Map empire
++        # stability (0-100) to a production multiplier in [0.5, 1.0].
++        empire_stability = self.stability_system.stability
++        stability_prod_mult = 0.5 + 0.5 * (max(0.0, min(100.0, empire_stability)) / 100.0)
+         for city in self.cities.values():
+             if (owner := city.owner) is not None:
+                 # Calculate yields
+                 yields = city.calculate_yields()
++                if owner == self.player_civ.name:
++                    yields["production"] = yields.get("production", 0) * stability_prod_mult
+                 civ_obj = self.civilizations.get(owner)
+                 if civ_obj is not None:
+                     civ_obj.culture += yields.get('culture', 0)

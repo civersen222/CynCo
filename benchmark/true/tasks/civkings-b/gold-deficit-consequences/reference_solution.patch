@@ -1,0 +1,106 @@
+diff --git a/game.py b/game.py
+index 47e6783..0cd20fc 100644
+--- a/game.py
++++ b/game.py
+@@ -481,6 +481,88 @@ class Game:
+         # Generate initial events
+         self.event_manager.generate_events()
+ 
++    # --- Gold deficit consequences -------------------------------------
++    # When a civilization's treasury runs into the red, the standing army
++    # can no longer be paid. A moderate deficit demoralizes troops (combat
++    # debuff); a severe deficit forces disbandment of units, which are
++    # removed from every registry that tracks them.
++    GOLD_DEFICIT_DEBUFF_THRESHOLD = 50    # deficit beyond this debuffs units
++    GOLD_DEFICIT_DISBAND_THRESHOLD = 100  # deficit beyond this disbands units
++    GOLD_DEFICIT_DEBUFF_FRACTION = 0.25   # combat strength lost while in debt
++    GOLD_DEFICIT_DISBAND_FRACTION = 0.5   # share of army disbanded when severe
++
++    def _combat_units_for(self, civ_name: str) -> List["Unit"]:
++        """Living combat units (non-zero strength) owned by civ_name."""
++        result = []
++        for unit in self.units.values():
++            if unit.owner != civ_name or not unit.is_alive:
++                continue
++            if (unit.attack or 0) > 0 or (unit.defense or 0) > 0:
++                result.append(unit)
++        return result
++
++    def _disband_unit(self, unit: "Unit") -> None:
++        """Remove a unit from every registry that references it."""
++        unit.is_alive = False
++        # Drop from the primary name->Unit registry.
++        for name, u in list(self.units.items()):
++            if u is unit:
++                del self.units[name]
++        # Drop from the military manager's flat list.
++        if hasattr(self, "military_manager") and self.military_manager is not None:
++            self.military_manager.remove_unit(unit)
++        # Keep the gold-management maintenance ledger in sync.
++        if hasattr(self, "gold_management") and self.gold_management is not None:
++            self.gold_management.remove_unit(getattr(unit, "name", ""))
++
++    def _apply_gold_deficit_consequences(self, civ_name: str, msgs: List[str]) -> None:
++        """Penalize the army when the treasury is in deficit."""
++        treasury = self.gold.get(civ_name, 0)
++        if treasury >= 0:
++            return
++        deficit = -treasury
++
++        # Severe deficit: disband a share of the army first.
++        if deficit > self.GOLD_DEFICIT_DISBAND_THRESHOLD:
++            army = self._combat_units_for(civ_name)
++            if army:
++                import math
++                to_disband = max(1, math.ceil(len(army) * self.GOLD_DEFICIT_DISBAND_FRACTION))
++                # Disband the weakest units first.
++                army.sort(key=lambda u: (u.attack + u.defense))
++                disbanded = 0
++                for unit in army[:to_disband]:
++                    self._disband_unit(unit)
++                    disbanded += 1
++                if disbanded:
++                    msgs.append(
++                        f"\n  💸 Treasury bankrupt ({treasury} gold): "
++                        f"{disbanded} unit(s) disbanded"
++                    )
++
++        # Moderate-or-worse deficit: surviving units fight at reduced strength.
++        if deficit > self.GOLD_DEFICIT_DEBUFF_THRESHOLD:
++            penalized = 0
++            for unit in self._combat_units_for(civ_name):
++                base = unit.get_base_stats()
++                cut_atk = int(round(base["attack"] * self.GOLD_DEFICIT_DEBUFF_FRACTION))
++                cut_def = int(round(base["defense"] * self.GOLD_DEFICIT_DEBUFF_FRACTION))
++                if base["attack"] > 0:
++                    cut_atk = max(1, cut_atk)
++                if base["defense"] > 0:
++                    cut_def = max(1, cut_def)
++                new_atk = max(0, unit.attack - cut_atk)
++                new_def = max(0, unit.defense - cut_def)
++                if new_atk != unit.attack or new_def != unit.defense:
++                    unit.attack = new_atk
++                    unit.defense = new_def
++                    penalized += 1
++            if penalized:
++                msgs.append(
++                    f"\n  📉 Unpaid troops ({treasury} gold): "
++                    f"{penalized} unit(s) lost combat strength"
++                )
++
+     def process_turn(self) -> List[str]:
+         """Process one turn and return messages. Does not block on input."""
+         self.stats["turns_played"] += 1
+@@ -641,7 +723,11 @@ class Game:
+         # 3. Gold Expenses
+         expense_summary = self.gold_management.process_monthly_expenses(self.gold[civ_name])
+         msgs.append(f"  Gold Surplus: {'+' if expense_summary['surplus_deficit'] >= 0 else ''}{expense_summary['surplus_deficit']}")
+-        
++
++        # 3b. Gold deficit consequences: starving the treasury weakens and
++        # eventually disbands the standing army.
++        self._apply_gold_deficit_consequences(civ_name, msgs)
++
+         # 4. Market Simulation
+         self.market.update_all_prices()
+         msgs.append(f"  Market: Prices updated")
