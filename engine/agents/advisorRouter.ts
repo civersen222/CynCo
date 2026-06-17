@@ -216,3 +216,24 @@ export function formatAdvisorAdvice(advice: AdvisorAdvice[]): string {
 export function getAdvisors(): AdvisorConfig[] {
   return ADVISORS
 }
+
+/**
+ * Run every firing advisor against the given state, querying the model via the
+ * injected askModel function, and return a formatted guidance block (or '' if
+ * no advisor fires). Pure orchestration — inference is injected so callers and
+ * tests control the model call.
+ */
+export async function runAdvisors(
+  state: SystemState,
+  askModel: (systemPrompt: string, prompt: string) => Promise<string>,
+): Promise<string> {
+  const active = getActiveAdvisors(state)
+  if (active.length === 0) return ''
+  const advice: AdvisorAdvice[] = []
+  for (const advisor of active) {
+    const q = buildAdvisorQuery(advisor, state)
+    const text = await askModel(q.systemPrompt, q.prompt)
+    if (text.trim()) advice.push({ system: advisor.system, name: advisor.name, advice: text.trim() })
+  }
+  return formatAdvisorAdvice(advice)
+}

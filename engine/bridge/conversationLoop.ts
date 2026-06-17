@@ -24,7 +24,7 @@ import type { WorkflowDefinition } from '../workflows/types.js'
 import { LSPManager } from '../lsp/manager.js'
 import { CyberneticsGovernance as GovernanceLayer } from '../vsm/cyberneticsGovernance.js'
 import { WorkspaceSnapshot } from '../snapshot/snapshot.js'
-// Advisor system imported dynamically in handleMessage to avoid circular deps
+import { runAdvisors, type SystemState as AdvisorState } from '../agents/advisorRouter.js'
 import { DecisionLogger } from '../decisions/logger.js'
 import { ContextCompressor, FileOperationTracker } from '../context/compressor.js'
 import type { S5Orchestrator } from '../s5/orchestrator.js'
@@ -1434,6 +1434,41 @@ export class ConversationLoop {
           }
         } catch (e) {
           console.log(`[vsm] S4 reflection failed: ${e}`)
+        }
+      }
+
+      // VSM advisor routing (opt-in: LOCALCODE_ADVISORS=1). During S4
+      // reflection, consult the firing domain advisors and inject their
+      // guidance into the executor context. Throttled like the reflector to
+      // avoid an inference storm on llama-cpp.
+      if (process.env.LOCALCODE_ADVISORS === '1' && !s4Skip) {
+        try {
+          const govReport = this.governance.getReport()
+          const lastUser = [...this.messages].reverse()
+            .find(m => m.role === 'user')?.content
+            .find((b: any) => b.type === 'text') as any
+          const advisorState: AdvisorState = {
+            turnCount: i + 1,
+            toolsUsedThisTurn: [],
+            toolsUsedTotal: this.governance.getRecentToolNames(),
+            toolFailureRate: 1.0 - govReport.toolSuccessRate,
+            varietyBalance: (govReport as any).varietyBalance ?? 'balanced',
+            stuckTurns: govReport.stuckTurns,
+            contextUtilization: 0,
+            expertise: this.config.expertise ?? 'intermediate',
+            lastUserMessage: lastUser?.text ?? '',
+            conversationLength: this.messages.length,
+          }
+          const guidance = await runAdvisors(
+            advisorState,
+            (sys, prompt) => this.sideQuery(`${sys}\n\n${prompt}`),
+          )
+          if (guidance) {
+            this.addMessage({ role: 'user', content: [{ type: 'text', text: guidance }] })
+            console.log('[advisors] Injected VSM advisor guidance')
+          }
+        } catch (e) {
+          console.log(`[advisors] routing failed: ${e}`)
         }
       }
 
