@@ -91,59 +91,50 @@ Results are written as JSON to `benchmark-results/ablation/` and
 
 ---
 
-## 3. Current Results (committed runs)
+## 3. Current Results: None That Can Be Trusted
 
-These are real numbers from committed result files in `benchmark-results/`. They
-are **not cherry-picked for a favorable story** — the headline is parity, not
-victory.
+**There is no credible benchmark of the current governance layer.** This is stated
+bluntly on purpose.
 
-### 3.1 50-task Python suite — gemma4:31b
+Old result files exist under `benchmark-results/`, but they must **not** be cited
+as evidence for the system as it stands today, for three independent reasons:
 
-Source: `benchmark-results/ablation/ablation-v2-1776717161981.json`
+1. **They predate the governance wiring.** The most-cited file
+   (`benchmark-results/ablation/ablation-v2-1776717161981.json`) was produced on
+   **2026-04-20**. The governance features that define the current "governed"
+   condition — `reflexionFeedback`, `interventionTracker`, `toolGating`,
+   `testDrivenGov`, `advisorRouter` — were only wired into the live loop on
+   **2026-06-16** (commits `d4fbefb`…`d3b2440`). The April run therefore measured a
+   *half-built* governance layer. Its "governed" arm was missing most of the
+   governance.
 
-| | Pass rate | Avg tools | Tool errors | Avg tokens | Avg time (ms) |
-|---|---|---|---|---|---|
-| **Governed (VSM)** | 40.0% | 4.6 | 0.0 | 256 | 8375 |
-| **Ungoverned (base)** | 40.0% | 4.7 | 0.0 | 257 | 7969 |
+2. **The numbers are suspiciously identical, consistent with measuring nothing.**
+   That run reported governed vs ungoverned at 40.0% vs 40.0% pass, 4.6 vs 4.7
+   tools, 256 vs 257 tokens. When the two arms of an ablation are this close, the
+   most likely explanation is not "governance is exactly neutral" but "the toggle
+   had almost nothing to toggle" — which matches reason (1).
 
-Per-task wins: **VSM 0, base 0**. Both passed 20/50, both failed 30/50.
+3. **The data is not version-controlled.** `benchmark-results/` is gitignored.
+   These are unreviewed local scratch files, not committed, reproducible evidence.
 
-**Reading:** on this suite, governance is at **statistical parity** with baseline
-on pass rate, with a small latency overhead (~5%) from the governance work. It
-neither helped nor hurt task success. The honest conclusion is that VSM does not
-yet move the needle on simple, single-file Python tasks for this model.
-
-### 3.2 Expert SWE-style tasks — qwen3.6
-
-Across the committed `ablation-full/final-report-*.json` and
-`benchmark-results/ablation/swe-*.json` runs (TDD cycle, multi-file feature,
-debug-from-symptoms, state machine, new subsystem, analyze-unknown-codebase), the
-dominant outcome is **TIE**, with occasional single governed or single ungoverned
-wins depending on the run and the runs-per-task count. No suite shows a
-consistent governed advantage at present.
-
-For example, the 3×-repeated expert "Full TDD Cycle" task scored identically on
-average for governed and ungoverned (both `criteriaScore` ~0.25 with high
-variance), i.e. the task is hard for the model and governance didn't change the
-ceiling.
+So this section deliberately reports **no headline numbers**. Any prior draft that
+presented the April figures as "current results" was wrong, and they have been
+removed.
 
 ---
 
-## 4. What the Numbers Mean
+## 4. What We Can Honestly Say Today
 
-The current, defensible position:
-
-- **Governance is correctly wired and measurable.** The ablation flag genuinely
-  toggles behavior — governed and ungoverned runs take different paths (different
-  turn counts, different tool sequences). The plumbing works.
-- **Governance does not yet demonstrably improve task success** on the committed
-  suites for the tested models. Most outcomes are ties; pass rates match.
-- This is the *expected* state for a system whose governance value is meant to
-  show up on **harder, longer-horizon, multi-file** tasks where staying un-stuck
-  matters — exactly the regime where the current suites are either too easy
-  (single-file Python: model succeeds or fails regardless of governance) or too
-  hard (expert tasks: model fails regardless of governance). The middle band
-  where governance should pay off is under-represented in the committed data.
+- **Governance is wired and the ablation switch works.** A governed and an
+  ungoverned run of the *same* task take measurably different paths (different turn
+  counts and tool sequences). The plumbing is real and the flag genuinely toggles
+  it. This was verified directly, not benchmarked.
+- **Whether governance improves task outcomes is currently UNKNOWN.** It has not
+  been measured since the wiring landed. Claiming a win — or even claiming
+  "parity" — would be unsupported.
+- The honest one-liner is: *the governance layer is built and toggleable; its
+  effect on task success is unmeasured and must be established by a fresh run (§5)
+  before any performance claim is made.*
 
 This is reported plainly because the project's whole premise is falsifiability. A
 governance layer that claimed wins it can't reproduce would be worthless.
@@ -208,5 +199,6 @@ To turn parity-with-caveats into a defensible claim, in priority order:
 4. **Report confidence intervals and run counts** for every headline number, not
    point estimates from a single run.
 
-Until then, the honest one-line summary is: *governance is wired, measurable, and
-currently at parity with baseline on the committed suites.*
+Until then, the honest one-line summary is: *governance is wired and toggleable,
+but its effect on task success is unmeasured — no performance claim is warranted
+yet.*
