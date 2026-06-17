@@ -16,6 +16,7 @@ import { ToolExecutor, type RequestApprovalFn } from '../tools/executor.js'
 import { ToolScorer } from '../tools/toolScorer.js'
 import { DifficultyClassifier } from '../vsm/difficultyClassifier.js'
 import { withReflexion } from '../vsm/reflexionFeedback.js'
+import { ToolGating, applyToolGate } from '../vsm/toolGating.js'
 import type { ToolTrustProfile } from '../tools/approvalGate.js'
 import { WorkflowEngine } from '../workflows/engine.js'
 import type { WorkflowDefinition } from '../workflows/types.js'
@@ -151,6 +152,7 @@ export class ConversationLoop {
   private lastSnapshotHash?: string
   private vibeMode = false
   private _correctionAttempts = 0
+  private toolGating = new ToolGating()
   private allowedTools?: string[]
   // Tool names actually offered to the model in the current iteration (after
   // S5 restrictions, demotions, routing). In one-shot runs this is enforced
@@ -1580,6 +1582,22 @@ export class ConversationLoop {
         }
       }
 
+      // Final deterministic gate: attenuate overused/stuck tools out of the
+      // offered set. Pure narrowing — applyToolGate never empties the set.
+      if (currentStuck >= 2) {
+        const recent = this.governance.getRecentToolNames()
+        const lastTool = recent[recent.length - 1]
+        if (lastTool) this.toolGating.recordStuckTurn(lastTool)
+      }
+      const gated = this.toolGating.getRestrictedTools()
+      if (gated.length > 0) {
+        const narrowed = applyToolGate(iterationTools, gated)
+        if (narrowed.length !== iterationTools.length) {
+          console.log(`[toolgate] Attenuated overused tools: ${gated.join(', ')}`)
+          iterationTools = narrowed
+        }
+      }
+
       if (currentStuck >= 3) {
         console.log(`[loop] Sending to model with ${iterationTools.length} tools: ${iterationTools.map((t: any) => t.name).join(', ')}`)
       }
@@ -2438,6 +2456,10 @@ export class ConversationLoop {
 
     // Governance: record tool result
     this.governance.onToolResult(toolName, !result.isError, Date.now() - toolStartMs, result.output, toolInput)
+
+    // Deterministic tool gating: track usage so consecutive-overuse can be
+    // attenuated out of the offered set on the next iteration (see runModelLoop).
+    this.toolGating.recordTool(toolName)
 
     // Governance: track read patterns for prediction system
     const toolFilePath = (toolInput as any).file_path ?? (toolInput as any).path ?? ''
