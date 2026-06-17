@@ -42,3 +42,16 @@ export function generateReflection(toolName: string, isError: boolean, output: s
 
   return `Tool ${toolName} failed. Read the error output carefully and adjust your approach.`
 }
+
+/**
+ * Append a Reflexion self-correction note to a tool result's text when the tool
+ * errored. Gated by LOCALCODE_REFLEXION (default ON; set to '0' to disable).
+ * Returns baseText unchanged on success, when disabled, or when no specific
+ * reflection applies. The note rides the tool_result the model reads next turn.
+ */
+export function withReflexion(toolName: string, isError: boolean, output: string, baseText: string): string {
+  if (!isError || process.env.LOCALCODE_REFLEXION === '0') return baseText
+  const note = generateReflection(toolName, isError, output)
+  if (!note) return baseText
+  return `${baseText}\n\n[reflexion] ${note}`
+}

@@ -15,6 +15,7 @@ import { ALL_TOOLS } from '../tools/registry.js'
 import { ToolExecutor, type RequestApprovalFn } from '../tools/executor.js'
 import { ToolScorer } from '../tools/toolScorer.js'
 import { DifficultyClassifier } from '../vsm/difficultyClassifier.js'
+import { withReflexion } from '../vsm/reflexionFeedback.js'
 import type { ToolTrustProfile } from '../tools/approvalGate.js'
 import { WorkflowEngine } from '../workflows/engine.js'
 import type { WorkflowDefinition } from '../workflows/types.js'
@@ -2560,10 +2561,13 @@ export class ConversationLoop {
         } catch {}
       }
     }
+    // S3* Reflexion: on a failed tool, append a specific self-correction note
+    // to the result the model reads next turn (gated by LOCALCODE_REFLEXION).
+    const resultText = withReflexion(toolName, result.isError, result.output, truncatedOutput)
     toolResults.push({
       type: 'tool_result',
       tool_use_id: toolId,
-      content: [{ type: 'text', text: truncatedOutput }],
+      content: [{ type: 'text', text: resultText }],
       is_error: result.isError,
     })
 
