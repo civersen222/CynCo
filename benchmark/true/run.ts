@@ -1,10 +1,10 @@
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { loadConfig } from '../../engine/config.js'
 import { bootstrapProvider } from '../../engine/bootstrapProvider.js'
 import { loadCivkingsTasks } from './harness/tasks.js'
-import { cloneRepo, checkoutRef, applyPatch } from './harness/isolate.js'
+import { cloneRepo, checkoutRef, applyPatch, removeWorkdir } from './harness/isolate.js'
 import { runTask, countTurns } from './harness/driver.js'
 import { scorePytest } from './harness/scorer.js'
 import { runSuite, type RunOneArgs } from './harness/orchestrate.js'
@@ -53,7 +53,7 @@ async function main() {
       const score = scorePytest(work, task.hiddenTestPath, task.hiddenTestName)
       return { passed: score.passed, timedOut: driven.timedOut, turns: countTurns(driven.messages) }
     } finally {
-      rmSync(work, { recursive: true, force: true })
+      removeWorkdir(work)
     }
   }
 
