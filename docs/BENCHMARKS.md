@@ -89,72 +89,114 @@ checks, tests passing). Task suites that ship in the repo:
 Results are written as JSON to `benchmark-results/ablation/` and
 `benchmark-results/ablation-full/`.
 
+### 2.3 TRUE benchmark — CivKings self-ablation (`benchmark/true/`)
+
+The harness that produced the §3 results. It is **fully standalone** (zero reuse
+of the older `benchmark/` code) and built for falsifiability:
+
+- **Real-repo tasks.** Each task clones the CivKings game repo, checks out a pinned
+  green ref (`03b4032`), and applies a `setup.patch` that breaks one feature. The
+  agent must restore it. Scoring runs a **hidden pytest** (`scorePytest`, headless
+  via `SDL_VIDEODRIVER=dummy`) that the agent never sees: clean ref **passes**,
+  patched ref **fails** — every gate is independently verified.
+- **Production backend.** `run.ts` calls the same `bootstrapProvider` as
+  `engine/main.ts`, so the benchmark drives the exact llama-cpp + MTP path users
+  run — not a stub.
+- **Honest statistics.** Per-task and overall pass rates use Wilson score
+  intervals; the governed−ungoverned **lift** CI uses a paired bootstrap (10 000
+  iterations). Verdict is `GOVERNANCE HELPS/HURTS` only if the lift CI excludes 0,
+  else `INCONCLUSIVE`.
+- **Clean ablation.** The governed/ungoverned split is the single env var
+  `_ABLATION_VSM_DISABLED`; governance *interventions* are gated by it while
+  *measurement* telemetry runs identically in both arms (so the comparison is fair).
+
+Twelve tasks ship under `benchmark/true/tasks/civkings/`; results are committed
+(not gitignored) under `benchmark/true/results/`.
+
 ---
 
-## 3. Current Results: None That Can Be Trusted
+## 3. Current Results: CivKings Self-Ablation (Layer A)
 
-**There is no credible benchmark of the current governance layer.** This is stated
-bluntly on purpose.
+The first credible measurement of the **fully-wired** governance layer was run on
+**2026-06-17** against the standalone harness in `benchmark/true/` (§2.3). Twelve
+multi-file CivKings tasks, each run **governed vs ungoverned, N=3 per arm** (72
+runs total), on `qwen3.6-27b-q6k` driving the production llama-cpp + MTP backend.
 
-Old result files exist under `benchmark-results/`, but they must **not** be cited
-as evidence for the system as it stands today, for three independent reasons:
+Committed evidence: `benchmark/true/results/true-ablation-1781728598176.json`.
 
-1. **They predate the governance wiring.** The most-cited file
-   (`benchmark-results/ablation/ablation-v2-1776717161981.json`) was produced on
-   **2026-04-20**. The governance features that define the current "governed"
-   condition — `reflexionFeedback`, `interventionTracker`, `toolGating`,
-   `testDrivenGov`, `advisorRouter` — were only wired into the live loop on
-   **2026-06-16** (commits `d4fbefb`…`d3b2440`). The April run therefore measured a
-   *half-built* governance layer. Its "governed" arm was missing most of the
-   governance.
+| Condition | Pass rate | 95% CI (Wilson) | Raw |
+|---|---|---|---|
+| Governed | **83.3%** | [68.1, 92.1] | 30/36 |
+| Ungoverned | **83.3%** | [68.1, 92.1] | 30/36 |
+| **Lift (governed − ungoverned)** | **0.0%** | **[0.0, 0.0]** (paired bootstrap) | — |
 
-2. **The numbers are suspiciously identical, consistent with measuring nothing.**
-   That run reported governed vs ungoverned at 40.0% vs 40.0% pass, 4.6 vs 4.7
-   tools, 256 vs 257 tokens. When the two arms of an ablation are this close, the
-   most likely explanation is not "governance is exactly neutral" but "the toggle
-   had almost nothing to toggle" — which matches reason (1).
+**Verdict: INCONCLUSIVE — the confidence interval includes 0.** On this suite,
+governance changed task success by exactly nothing.
 
-3. **The data is not version-controlled.** `benchmark-results/` is gitignored.
-   These are unreviewed local scratch files, not committed, reproducible evidence.
+This is a *credible* null, not a measurement artifact, for three reasons:
 
-So this section deliberately reports **no headline numbers**. Any prior draft that
-presented the April figures as "current results" was wrong, and they have been
-removed.
+1. **The suite has real signal — it is not a pass-everything ceiling.** Ten of
+   twelve tasks pass 3/3 in both arms; two (`faction-dominant-effects`,
+   `market-price-clamp`) fail 0/3 in both arms. Ten of those twelve failures were
+   the agent finishing with a *wrong answer* (not a timeout), so the model
+   genuinely cannot solve them. Governance failed to help on exactly the tasks
+   where help was possible.
+2. **Per-task results are perfectly symmetric.** No task flips between conditions —
+   governance rescued no failure and broke no success.
+3. **A latency cost with no correctness benefit.** All five "passed-but-timed-out"
+   runs were *governed*: governance adds verification turns that occasionally push
+   a run past the 15-minute wall, without changing the outcome.
+
+> **The old April data remains discredited.** Files under `benchmark-results/`
+> (e.g. `ablation/ablation-v2-1776717161981.json`, 2026-04-20) predate the
+> governance wiring (`reflexionFeedback`, `interventionTracker`, `toolGating`,
+> `testDrivenGov`, `advisorRouter` landed 2026-06-16), reported suspiciously
+> identical arms (40.0% vs 40.0%), and are gitignored scratch — **not** committed,
+> reproducible evidence. Do not cite them. The §3 numbers above supersede them.
 
 ---
 
 ## 4. What We Can Honestly Say Today
 
-- **Governance is wired and the ablation switch works.** A governed and an
-  ungoverned run of the *same* task take measurably different paths (different turn
-  counts and tool sequences). The plumbing is real and the flag genuinely toggles
-  it. This was verified directly, not benchmarked.
-- **Whether governance improves task outcomes is currently UNKNOWN.** It has not
-  been measured since the wiring landed. Claiming a win — or even claiming
-  "parity" — would be unsupported.
-- The honest one-liner is: *the governance layer is built and toggleable; its
-  effect on task success is unmeasured and must be established by a fresh run (§5)
-  before any performance claim is made.*
+- **Governance is wired and the ablation switch works.** Every governed run fired
+  axiom checks and contract enforcement; every ungoverned run fired none. The flag
+  genuinely toggles the layer, verified in the run logs.
+- **On short-horizon multi-file bug fixes, governance is outcome-neutral.**
+  Measured lift is 0.0% [0.0, 0.0] (§3). It neither helped nor hurt task success,
+  and it carried a small latency cost (governed runs run longer).
+- **This does not falsify the central thesis — it bounds where it applies.** These
+  CivKings tasks resolve in ~15 agent turns inside a single subsystem. That is
+  likely too short a horizon for variety/management-capacity governance to
+  differentiate: the agent rarely gets the chance to spiral, which is precisely the
+  failure mode governance is theorized to catch. The honest reading is *"no
+  measurable effect on this regime,"* not *"no effect anywhere."*
+- The next falsifiable step is a **long-horizon, easy-to-get-stuck suite** (§7) —
+  the regime where governance should help if it helps at all. Until that is run, no
+  positive performance claim is warranted.
 
 This is reported plainly because the project's whole premise is falsifiability. A
-governance layer that claimed wins it can't reproduce would be worthless.
+governance layer that claimed wins it can't reproduce would be worthless; a clean,
+committed null on a discriminating suite is worth more than a rigged win.
 
 ---
 
 ## 5. Reproducing the Benchmarks
 
 ```bash
+# TRUE benchmark — the §3 CivKings self-ablation (N=3, all 12 tasks):
+LOCALCODE_MODEL=qwen3.6-27b-q6k bun benchmark/true/run.ts --reps 3
+# → writes a timestamped, committable JSON to benchmark/true/results/
+
 # Built-in runner over your own cases:
 LOCALCODE_MODEL=qwen3.6 bun engine/main.ts --run-ablation my-cases.json
 
 # Criteria-scored Python suite (50 tasks), governed vs ungoverned:
 bun benchmark/ablation.ts            # see benchmark/cli.ts for options/flags
-
-# Results land in benchmark-results/ablation*/ as timestamped JSON.
 ```
 
 Each run records the model, per-task metrics, and the governed/ungoverned split,
-so any result in §3 can be regenerated and checked against the committed JSON.
+so any result in §3 can be regenerated and checked against the committed JSON. The
+§3 figures came from `benchmark/true/results/true-ablation-1781728598176.json`.
 
 ---
 
