@@ -15,7 +15,8 @@ export interface RunRecord {
   taskId: string
   condition: Condition
   rep: number               // 1-based repeat index
-  passed: boolean
+  passed: boolean           // strict full-pass flag (score === 1)
+  score: number             // fraction of hidden-test assertions that passed, [0,1]
   timedOut: boolean
   turns: number             // count of assistant messages
 }
@@ -28,9 +29,12 @@ export interface Interval {
 
 export interface PerTaskResult {
   taskId: string
-  governed: Interval        // pass rate over reps, Wilson CI
+  governed: Interval        // full-pass rate over reps, Wilson CI (binary)
   ungoverned: Interval
-  lift: number              // governed.point - ungoverned.point
+  lift: number              // binary: governed.point - ungoverned.point
+  governedScore: number     // mean continuous score over governed reps
+  ungovernedScore: number   // mean continuous score over ungoverned reps
+  scoreLift: number         // governedScore - ungovernedScore
 }
 
 export interface SuiteResult {
@@ -39,9 +43,11 @@ export interface SuiteResult {
   repsPerCondition: number
   runs: RunRecord[]
   perTask: PerTaskResult[]
-  governedOverall: Interval
+  governedOverall: Interval        // binary full-pass rate, Wilson CI
   ungovernedOverall: Interval
-  liftMean: number
-  liftLower: number         // paired-bootstrap CI on mean lift
+  governedScoreMean: Interval       // continuous mean score, bootstrap CI
+  ungovernedScoreMean: Interval
+  liftMean: number          // headline: bootstrap over per-task continuous scoreLift
+  liftLower: number         // paired-bootstrap CI on mean continuous scoreLift
   liftUpper: number
 }

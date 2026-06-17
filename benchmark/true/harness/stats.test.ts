@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { wilsonInterval, pairedBootstrapLift } from './stats.js'
+import { wilsonInterval, pairedBootstrapLift, meanBootstrap } from './stats.js'
 
 describe('wilsonInterval', () => {
   it('computes the 95% interval for 8/10', () => {
@@ -43,5 +43,24 @@ describe('pairedBootstrapLift', () => {
 
   it('handles the empty case', () => {
     expect(pairedBootstrapLift([], 10)).toEqual({ meanLift: 0, lower: 0, upper: 0 })
+  })
+})
+
+describe('meanBootstrap', () => {
+  it('computes the exact mean on a known array', () => {
+    const r = meanBootstrap([0.25, 0.5, 0.75], 100)
+    expect(r.point).toBeCloseTo(0.5, 5)
+  })
+
+  it('collapses the CI to the first value when rng always returns 0', () => {
+    // rng always returns 0 -> every resample picks index 0 -> mean = values[0]
+    const r = meanBootstrap([0.2, 0.9], 50, 0.95, () => 0)
+    expect(r.point).toBeCloseTo(0.55, 5)
+    expect(r.lower).toBeCloseTo(0.2, 5)
+    expect(r.upper).toBeCloseTo(0.2, 5)
+  })
+
+  it('handles the empty case', () => {
+    expect(meanBootstrap([], 10)).toEqual({ point: 0, lower: 0, upper: 0 })
   })
 })

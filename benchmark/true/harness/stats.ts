@@ -41,3 +41,30 @@ export function pairedBootstrapLift(
   const upperIdx = Math.min(iterations - 1, Math.ceil((1 - alpha) * iterations) - 1)
   return { meanLift, lower: means[lowerIdx], upper: means[upperIdx] }
 }
+
+/**
+ * Bootstrap CI on the mean of a continuous sample, resampling values with
+ * replacement (percentile CI). `point` is the exact sample mean; `rng` is
+ * injectable for deterministic tests. Empty input -> all-zero interval.
+ */
+export function meanBootstrap(
+  values: number[],
+  iterations = 10000,
+  confidence = 0.95,
+  rng: () => number = Math.random,
+): Interval {
+  const k = values.length
+  if (k === 0) return { point: 0, lower: 0, upper: 0 }
+  const point = values.reduce((a, b) => a + b, 0) / k
+  const means: number[] = []
+  for (let i = 0; i < iterations; i++) {
+    let sum = 0
+    for (let j = 0; j < k; j++) sum += values[Math.floor(rng() * k)]
+    means.push(sum / k)
+  }
+  means.sort((a, b) => a - b)
+  const alpha = (1 - confidence) / 2
+  const lowerIdx = Math.floor(alpha * iterations)
+  const upperIdx = Math.min(iterations - 1, Math.ceil((1 - alpha) * iterations) - 1)
+  return { point, lower: means[lowerIdx], upper: means[upperIdx] }
+}

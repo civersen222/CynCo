@@ -51,7 +51,7 @@ async function main() {
         config, provider, timeoutMs: task.timeoutMs,
       })
       const score = scorePytest(work, task.hiddenTestPath, task.hiddenTestName)
-      return { passed: score.passed, timedOut: driven.timedOut, turns: countTurns(driven.messages) }
+      return { passed: score.passed, score: score.score, timedOut: driven.timedOut, turns: countTurns(driven.messages) }
     } finally {
       removeWorkdir(work)
     }
