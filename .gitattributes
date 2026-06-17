@@ -1,0 +1,6 @@
+# Benchmark task fixtures must keep LF endings on every platform.
+# setup.patch is applied via `git apply` in the harness; CRLF conversion
+# would corrupt the patch and silently break the FAIL->PASS gate.
+benchmark/true/tasks/**/*.patch text eol=lf
+benchmark/true/tasks/**/*.py text eol=lf
+benchmark/true/tasks/**/*.json text eol=lf

@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { loadConfig } from '../../engine/config.js'
-import { createProvider } from '../../engine/providers/factory.js'
+import { bootstrapProvider } from '../../engine/bootstrapProvider.js'
 import { loadCivkingsTasks } from './harness/tasks.js'
 import { cloneRepo, checkoutRef, applyPatch } from './harness/isolate.js'
 import { runTask, countTurns } from './harness/driver.js'
@@ -28,12 +28,16 @@ async function main() {
     console.error('[true-bench] no model configured (set LOCALCODE_MODEL) — refusing to write unattributable evidence')
     process.exit(1)
   }
-  const ctx = config.contextLength ?? 32768
-  const provider = createProvider('ollama', config.baseUrl, config.apiKey, ctx)
 
+  // Load tasks (cheap) and bail before standing up the provider if there's nothing to run.
   const tasks = loadCivkingsTasks(tasksDir)
   if (tasks.length === 0) { console.error(`[true-bench] no tasks in ${tasksDir}`); process.exit(1) }
   console.log(`[true-bench] ${tasks.length} task(s), reps=${reps}, model=${config.model}`)
+
+  // Use the engine's real provider-selection logic so the benchmark drives the
+  // exact backend the user runs in production (llama-cpp/llama-server + MTP for
+  // the default profile, Ollama otherwise).
+  const { provider } = await bootstrapProvider(config)
 
   const runOne = async ({ task, condition, rep }: RunOneArgs) => {
     const work = mkdtempSync(join(tmpdir(), `truebench-${task.id}-`))

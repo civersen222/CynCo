@@ -1,0 +1,9 @@
+{
+  "id": "trade-route-income",
+  "prompt": "In this CivKings game, active trade routes are supposed to generate gold income every turn, but right now they produce nothing. Find where trade routes are processed each turn and make each active route credit the expected per-turn gold income (its gold_per_turn) so the economy's gold increases accordingly.",
+  "start_ref": "03b4032",
+  "setup_patch": "setup.patch",
+  "hidden_test": "hidden_test.py",
+  "timeout_ms": 900000,
+  "source": "authored"
+}
