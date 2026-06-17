@@ -17,6 +17,7 @@ import { ToolScorer } from '../tools/toolScorer.js'
 import { DifficultyClassifier } from '../vsm/difficultyClassifier.js'
 import { withReflexion } from '../vsm/reflexionFeedback.js'
 import { ToolGating, applyToolGate } from '../vsm/toolGating.js'
+import { TestDrivenGovernor, shouldNudgeTests } from '../vsm/testDrivenGov.js'
 import type { ToolTrustProfile } from '../tools/approvalGate.js'
 import { WorkflowEngine } from '../workflows/engine.js'
 import type { WorkflowDefinition } from '../workflows/types.js'
@@ -153,6 +154,7 @@ export class ConversationLoop {
   private vibeMode = false
   private _correctionAttempts = 0
   private toolGating = new ToolGating()
+  private tddGov = new TestDrivenGovernor()
   private allowedTools?: string[]
   // Tool names actually offered to the model in the current iteration (after
   // S5 restrictions, demotions, routing). In one-shot runs this is enforced
@@ -1364,6 +1366,24 @@ export class ConversationLoop {
         continue
       }
 
+      // TDD governance nudge (opt-in: LOCALCODE_TDD_GOV=1). When no formal
+      // workflow is active and the model has edited repeatedly without running
+      // tests, push a single soft nudge to run tests. Push directly, never
+      // queue. Reset the streak so we nudge once per build-up, not every turn.
+      if (shouldNudgeTests(this.tddGov, {
+        flagOn: process.env.LOCALCODE_TDD_GOV === '1',
+        workflowActive: this.workflowEngine.state != null,
+      })) {
+        console.log('[tdd-gov] Nudging: run tests before more edits')
+        this.governance.markNudgeInjected()
+        this.addMessage({
+          role: 'user',
+          content: [{ type: 'text', text: this.tddGov.getTestDirective() }],
+        })
+        this.tddGov.recordToolCall('Bash') // reset edit streak (single nudge)
+        continue
+      }
+
       const lastMsg = this.messages[this.messages.length - 1]
       const lastRole = lastMsg?.role ?? 'none'
       const lastType = lastMsg?.content?.[0]?.type ?? 'empty'
@@ -2460,6 +2480,9 @@ export class ConversationLoop {
     // Deterministic tool gating: track usage so consecutive-overuse can be
     // attenuated out of the offered set on the next iteration (see runModelLoop).
     this.toolGating.recordTool(toolName)
+
+    // TDD governance: track edit-vs-test cadence (opt-in nudge in runModelLoop).
+    this.tddGov.recordToolCall(toolName)
 
     // Governance: track read patterns for prediction system
     const toolFilePath = (toolInput as any).file_path ?? (toolInput as any).path ?? ''

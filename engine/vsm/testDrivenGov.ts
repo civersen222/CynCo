@@ -33,3 +33,16 @@ export class TestDrivenGovernor {
 
   getHistory() { return this.history }
 }
+
+/**
+ * Decide whether to push a TDD nudge this turn. Opt-in and soft:
+ * only when the flag is on, no formal workflow is active (workflows already
+ * enforce their own test phases), and the governor has seen enough
+ * consecutive edits without a test run. Never a hard block.
+ */
+export function shouldNudgeTests(
+  gov: TestDrivenGovernor,
+  opts: { flagOn: boolean; workflowActive: boolean },
+): boolean {
+  return opts.flagOn && !opts.workflowActive && gov.shouldForceTests()
+}
