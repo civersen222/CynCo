@@ -6,6 +6,7 @@ import { EmbedClient } from './embedClient.js'
 import { IndexStore } from './store.js'
 import { chunkFile, chunkFileAsync, extractRelationships } from './chunker.js'
 import { hybridRank } from './hybridRank.js'
+import { buildRepoGraph, formatRepoMap } from './repoMapBuilder.js'
 import type { IndexResult, IndexQuery } from './types.js'
 
 const SOURCE_EXTS = new Set(['.py', '.ts', '.tsx', '.js', '.jsx', '.rs', '.go', '.java', '.c', '.cpp', '.rb', '.cs', '.lua', '.sh'])
@@ -145,6 +146,20 @@ export class ProjectIndexer {
     if (keywordResults.length === 0) return vectorResults.slice(0, topK)
 
     return hybridRank(vectorResults, keywordResults, q.query, topK)
+  }
+
+  /**
+   * Build a repo-map block: the most important symbols by PageRank over the
+   * import/reference graph. Returns '' when the graph has no resolvable edges
+   * (PageRank would degenerate to uniform and add only noise).
+   */
+  buildRepoMap(seedFiles: string[] = [], topK = 20): string {
+    const defs = this.store.getAllDefinitions()
+    if (defs.length === 0) return ''
+    const rels = this.store.getAllRelationships()
+    const graph = buildRepoGraph(defs, rels, this.store.getIndexedFiles())
+    if (graph.edgeCount() === 0) return ''
+    return formatRepoMap(graph.pageRank(seedFiles, topK))
   }
 
   /** Check if the index is stale (files changed since last index). */

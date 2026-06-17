@@ -576,6 +576,17 @@ export class ConversationLoop {
         })
         console.log(`[index] Injected ${results.length} relevant chunks as system context`)
       }
+      // Opt-in repo map: top symbols by import-graph PageRank (token-costly).
+      if (process.env.LOCALCODE_REPO_MAP === '1') {
+        const repoMap = indexer.buildRepoMap([], 20)
+        if (repoMap) {
+          this.messages.splice(this.messages.length - 1, 0, {
+            role: 'system',
+            content: [{ type: 'text', text: repoMap }],
+          })
+          console.log('[index] Injected repo map as system context')
+        }
+      }
       indexer.close()
     } catch {
       // Index not available — proceed without it

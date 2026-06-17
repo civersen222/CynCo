@@ -181,6 +181,24 @@ export class IndexStore {
     return rows.map(r => r.file_path)
   }
 
+  /** All named definitions (functions/classes) for repo-map graph construction. */
+  getAllDefinitions(): { file: string; name: string; kind: string }[] {
+    const rows = this.db.prepare(
+      `SELECT file_path, name, chunk_type FROM chunks WHERE name IS NOT NULL AND name != ''`
+    ).all() as any[]
+    return rows.map(r => ({ file: r.file_path, name: r.name, kind: r.chunk_type }))
+  }
+
+  /** All relationships joined to their source symbol, for repo-map graph edges. */
+  getAllRelationships(): { sourceFile: string; sourceName: string; target: string }[] {
+    const rows = this.db.prepare(
+      `SELECT c.file_path AS source_file, c.name AS source_name, r.target_file AS target
+       FROM relationships r JOIN chunks c ON c.id = r.source_chunk_id
+       WHERE c.name IS NOT NULL AND c.name != ''`
+    ).all() as any[]
+    return rows.map(r => ({ sourceFile: r.source_file, sourceName: r.source_name, target: r.target }))
+  }
+
   /** Whether sqlite-vec vector search is available. */
   get isVecEnabled(): boolean {
     return this.vecEnabled
