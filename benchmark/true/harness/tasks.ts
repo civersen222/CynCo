@@ -1,5 +1,5 @@
 import { readdirSync, readFileSync, existsSync, statSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import type { TaskDef } from './types.js'
 
 interface RawTask {
@@ -15,9 +15,12 @@ interface RawTask {
 /** Load every `<dir>/<id>/task.json` into a TaskDef with absolute paths resolved. */
 export function loadCivkingsTasks(tasksDir: string): TaskDef[] {
   if (!existsSync(tasksDir)) return []
+  // Resolve to absolute so paths survive being handed to `git -C <workdir>`,
+  // which resolves relative paths against the workdir, not our cwd.
+  const tasksRoot = resolve(tasksDir)
   const out: TaskDef[] = []
-  for (const entry of readdirSync(tasksDir).sort()) {
-    const dir = join(tasksDir, entry)
+  for (const entry of readdirSync(tasksRoot).sort()) {
+    const dir = join(tasksRoot, entry)
     if (!statSync(dir).isDirectory()) continue
     const jsonPath = join(dir, 'task.json')
     if (!existsSync(jsonPath)) continue
