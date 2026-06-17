@@ -19,6 +19,7 @@ function makeInput(overrides: Record<string, unknown> = {}) {
     agreementRatio: 1.0,
     observerDivergence: null,
     demotedTools: [],
+    promptDifficulty: 'unknown',
     recentToolResults: [],
     availableModels: ['qwen3:8b'],
     governance: { stuckTurns: 0, toolSuccessRate: 1.0, recentToolNames: [] },

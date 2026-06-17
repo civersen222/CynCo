@@ -3,7 +3,7 @@
  */
 
 import type { ConfidenceDimension, DifficultyLevel, VibeEvent, VibeMode, VibeState } from './types.js'
-import { classifyDifficulty, ConfidenceScorer } from './confidence.js'
+import { classifyPromptComplexity, ConfidenceScorer } from './confidence.js'
 
 export class VibeLoopEngine {
   state: VibeState = 'idle'
@@ -18,7 +18,7 @@ export class VibeLoopEngine {
 
   start(mode: VibeMode, description?: string): void {
     const desc = description ?? mode
-    this.difficulty = classifyDifficulty(desc)
+    this.difficulty = classifyPromptComplexity(desc)
     this.confidence = new ConfidenceScorer(this.difficulty)
     this.transition('understand')
   }

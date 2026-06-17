@@ -14,6 +14,7 @@ import { localCallModel, type CallModelDeps } from '../engine/callModel.js'
 import { ALL_TOOLS } from '../tools/registry.js'
 import { ToolExecutor, type RequestApprovalFn } from '../tools/executor.js'
 import { ToolScorer } from '../tools/toolScorer.js'
+import { DifficultyClassifier } from '../vsm/difficultyClassifier.js'
 import type { ToolTrustProfile } from '../tools/approvalGate.js'
 import { WorkflowEngine } from '../workflows/engine.js'
 import type { WorkflowDefinition } from '../workflows/types.js'
@@ -123,6 +124,8 @@ export class ConversationLoop {
   private executor: ToolExecutor
   private toolScorer = new ToolScorer()
   private toolScorerPath = require('path').join(require('os').homedir(), '.cynco', 'tool-scores.json')
+  // Observed task difficulty from turn telemetry — feeds S5Input.promptDifficulty
+  private difficultyClassifier = new DifficultyClassifier()
   private pendingApprovals = new Map<string, (approved: boolean) => void>()
   private workflowEngine: WorkflowEngine
   private lspManager: LSPManager
@@ -778,6 +781,7 @@ export class ConversationLoop {
           agreementRatio: (govReport as any).agreementRatio ?? 1.0,
           observerDivergence: (govReport as any).observerDivergence ?? null,
           demotedTools: this.executor.getToolScorer?.()?.getDemotedTools() ?? [],
+          promptDifficulty: this.difficultyClassifier.getLevel(),
         })
 
         // Emit S5 decision to dashboard
@@ -1546,6 +1550,7 @@ export class ConversationLoop {
               agreementRatio: (govReport as any).agreementRatio ?? 1.0,
               observerDivergence: (govReport as any).observerDivergence ?? null,
               demotedTools: [],
+              promptDifficulty: this.difficultyClassifier.getLevel(),
             })
             if (decision.tools) {
               const allowed = new Set(decision.tools)
@@ -2439,6 +2444,9 @@ export class ConversationLoop {
         outcome: { success: !result.isError, elapsed: Date.now() - toolStartMs, outputPreview: result.output.slice(0, 200) },
       }))
     }
+
+    // Feed tool telemetry to the difficulty classifier (escalates S5 governance intensity)
+    this.difficultyClassifier.recordTurn({ toolCalls: 1, errors: result.isError ? 1 : 0, tokens: 0 })
 
     // Record trajectory turn for future training
     try {

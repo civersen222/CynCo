@@ -1,3 +1,5 @@
+import type { DifficultyLevel } from '../vsm/difficultyClassifier.js'
+
 export type S5Input = {
   userMessage: string
   activeWorkflow: string | null
@@ -25,6 +27,8 @@ export type S5Input = {
   agreementRatio: number
   observerDivergence: number | null
   demotedTools: string[]
+  // Observed task difficulty from turn telemetry (vsm DifficultyClassifier)
+  promptDifficulty: DifficultyLevel
 }
 
 export type S5Decision = {
