@@ -1,0 +1,52 @@
+{
+  "model": "qwen3.6-27b-q6k",
+  "timestamp": "2026-06-17T14:42:49.694Z",
+  "repsPerCondition": 1,
+  "runs": [
+    {
+      "taskId": "trade-route-income",
+      "condition": "governed",
+      "rep": 1,
+      "passed": true,
+      "timedOut": false,
+      "turns": 46
+    },
+    {
+      "taskId": "trade-route-income",
+      "condition": "ungoverned",
+      "rep": 1,
+      "passed": true,
+      "timedOut": false,
+      "turns": 10
+    }
+  ],
+  "perTask": [
+    {
+      "taskId": "trade-route-income",
+      "governed": {
+        "point": 1,
+        "lower": 0.20654329147389294,
+        "upper": 1
+      },
+      "ungoverned": {
+        "point": 1,
+        "lower": 0.20654329147389294,
+        "upper": 1
+      },
+      "lift": 0
+    }
+  ],
+  "governedOverall": {
+    "point": 1,
+    "lower": 0.20654329147389294,
+    "upper": 1
+  },
+  "ungovernedOverall": {
+    "point": 1,
+    "lower": 0.20654329147389294,
+    "upper": 1
+  },
+  "liftMean": 0,
+  "liftLower": 0,
+  "liftUpper": 0
+}
