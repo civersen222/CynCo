@@ -34,19 +34,39 @@ export function parsePytestScore(output: string): { score: number; passedCount: 
  * remove it, and report pass (exit 0) / fail. The hidden test never exists in the
  * workdir while the agent is running.
  */
-export function scorePytest(workdir: string, hiddenTestPath: string, hiddenTestName: string): ScoreResult {
+export function scorePytest(
+  workdir: string,
+  hiddenTestPath: string,
+  hiddenTestName: string,
+  scorerTimeoutMs = 120_000,
+  pythonBin = 'python',
+): ScoreResult {
   const dest = join(workdir, hiddenTestName)
   copyFileSync(hiddenTestPath, dest)
   try {
-    const res = spawnSync('python', ['-m', 'pytest', hiddenTestName, '-q'], {
+    const res = spawnSync(pythonBin, ['-m', 'pytest', hiddenTestName, '-q'], {
       cwd: workdir,
       env: { ...process.env, SDL_VIDEODRIVER: 'dummy' },
       encoding: 'utf-8',
-      timeout: 120_000,
+      timeout: scorerTimeoutMs,
     })
-    // A spawn-level error (e.g. python not on PATH) is an infra failure, not an
-    // agent failure — surface it loudly rather than silently scoring it as a miss.
-    if (res.error) throw res.error
+    if (res.error) {
+      // A pytest run that blows the timeout means the agent's code hangs (infinite
+      // loop / blocking call). That's an AGENT failure: score it 0 and let the
+      // suite continue — one hung agent must not abort a multi-task run. Genuine
+      // spawn errors (e.g. python not on PATH) are infra failures and still
+      // surface loudly rather than being silently scored as a miss.
+      if ((res.error as NodeJS.ErrnoException).code === 'ETIMEDOUT') {
+        return {
+          score: 0,
+          passed: false,
+          passedCount: 0,
+          total: 0,
+          output: `pytest exceeded ${scorerTimeoutMs}ms — agent code hung: ${res.error.message}`,
+        }
+      }
+      throw res.error
+    }
     const output = `${res.stdout ?? ''}${res.stderr ?? ''}`
     const { score, passedCount, total } = parsePytestScore(output)
     // `passed` stays a strict binary flag (everything passed) for the

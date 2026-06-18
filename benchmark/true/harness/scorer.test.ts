@@ -78,4 +78,37 @@ describe('scorePytest', () => {
     rmSync(work, { recursive: true, force: true })
     rmSync(hidden, { recursive: true, force: true })
   })
+
+  it('scores agent code that hangs the test as 0 without aborting the suite', () => {
+    // A pytest run that blows the timeout means the agent produced hanging code
+    // (infinite loop / blocking call). That is an AGENT failure: score 0 and let
+    // the run continue — it must NOT throw and kill the whole multi-task suite.
+    const work = mkdtempSync(join(tmpdir(), 'truebench-work-'))
+    writeFileSync(join(work, 'mod.py'), 'def add(a, b):\n    return a + b\n')
+    const hidden = mkdtempSync(join(tmpdir(), 'truebench-hidden-'))
+    const hiddenTest = join(hidden, 'hidden_test.py')
+    writeFileSync(hiddenTest, 'import time\n\ndef test_hang():\n    time.sleep(30)\n')
+
+    let r: ReturnType<typeof scorePytest> | undefined
+    expect(() => { r = scorePytest(work, hiddenTest, 'hidden_test.py', 3000) }).not.toThrow()
+    expect(r!.passed).toBe(false)
+    expect(r!.score).toBe(0)
+    expect(existsSync(join(work, 'hidden_test.py'))).toBe(false) // still cleaned up
+    rmSync(work, { recursive: true, force: true })
+    rmSync(hidden, { recursive: true, force: true })
+  })
+
+  it('still throws on a genuine spawn failure (infra error, not an agent miss)', () => {
+    // python-not-on-PATH and friends are infra failures — they must surface loudly,
+    // not be silently scored as a miss.
+    const work = mkdtempSync(join(tmpdir(), 'truebench-work-'))
+    const hidden = mkdtempSync(join(tmpdir(), 'truebench-hidden-'))
+    const hiddenTest = join(hidden, 'hidden_test.py')
+    writeFileSync(hiddenTest, 'def test_noop():\n    assert True\n')
+
+    expect(() => scorePytest(work, hiddenTest, 'hidden_test.py', 120_000, '__definitely_not_a_real_python__'))
+      .toThrow()
+    rmSync(work, { recursive: true, force: true })
+    rmSync(hidden, { recursive: true, force: true })
+  })
 })
