@@ -53,3 +53,7 @@ or penalty magnitudes.
   field was needed).
 - No `setup_patch`; tests use only the real `City` / `game_data` API and set
   `SDL_VIDEODRIVER=dummy` (no pygame surface is created).
+
+## Calibration (2026-06-18)
+DROPPED from the headline set: unaided ungoverned mean = 100% over 2 reps (qwen3.6-27b-q6k).
+Saturated above the 0.2-0.8 discriminating band — no headroom for governance to register a lift, so it carries no governance signal. Kept here as authored evidence; not part of the headline run.

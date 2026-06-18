@@ -89,3 +89,7 @@ All deterministic, headless (`SDL_VIDEODRIVER=dummy`), use real classes
   UNIT_TYPES) should cost 0, not an arbitrary default.
 
 Status: **DONE**.
+
+## Calibration (2026-06-18)
+DROPPED from the headline set: unaided ungoverned mean = 100% over 2 reps (qwen3.6-27b-q6k).
+Saturated above the 0.2-0.8 discriminating band — no headroom for governance to register a lift, so it carries no governance signal. Kept here as authored evidence; not part of the headline run.
