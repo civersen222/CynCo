@@ -94,58 +94,107 @@ Results are written as JSON to `benchmark-results/ablation/` and
 The harness that produced the §3 results. It is **fully standalone** (zero reuse
 of the older `benchmark/` code) and built for falsifiability:
 
-- **Real-repo tasks.** Each task clones the CivKings game repo, checks out a pinned
-  green ref (`03b4032`), and applies a `setup.patch` that breaks one feature. The
-  agent must restore it. Scoring runs a **hidden pytest** (`scorePytest`, headless
-  via `SDL_VIDEODRIVER=dummy`) that the agent never sees: clean ref **passes**,
-  patched ref **fails** — every gate is independently verified.
+- **Real-repo, long-horizon tasks.** Each task clones the CivKings game repo and
+  checks out a pinned green ref (`03b4032`). The Layer B suite is **flavor-2**: no
+  `setup.patch` — the target subsystem is genuinely *unwired* on the green ref (e.g.
+  `stability_system` exists but the turn loop never drives it). The agent must build
+  the missing wiring across multiple files. Each task ships a verified
+  `reference_solution.patch` (scores 1.0) and a green floor < 1.0.
+- **Continuous scoring.** Each hidden pytest (`scorePytest`, headless via
+  `SDL_VIDEODRIVER=dummy`) contains **4–6 independent `test_*` functions**; the task
+  score is the **passing fraction** (`parsePytestScore`), so partial progress
+  (2 of 4 sites wired = 0.5) is visible. The agent never sees the hidden test. An
+  agent whose code *hangs* the test scores 0 and the run continues (the scorer
+  treats a pytest `ETIMEDOUT` as an agent failure, not an infra abort); a genuine
+  spawn failure — e.g. `python` missing — still surfaces loudly.
+- **Calibration gate.** `run.ts --calibrate` runs an unaided ungoverned-only pilot
+  and keeps only tasks scoring in the discriminating **0.2–0.8** band; saturators
+  (0/1 with no headroom) carry no governance signal and are archived under
+  `benchmark/true/tasks/civkings-b-saturated/` with a recorded drop reason.
 - **Production backend.** `run.ts` calls the same `bootstrapProvider` as
   `engine/main.ts`, so the benchmark drives the exact llama-cpp + MTP path users
   run — not a stub.
-- **Honest statistics.** Per-task and overall pass rates use Wilson score
-  intervals; the governed−ungoverned **lift** CI uses a paired bootstrap (10 000
-  iterations). Verdict is `GOVERNANCE HELPS/HURTS` only if the lift CI excludes 0,
-  else `INCONCLUSIVE`.
+- **Honest statistics.** The headline is the governed−ungoverned **score-lift** with
+  a **paired-bootstrap** CI (`pairedBootstrapLift`, 10 000 iterations) over the
+  per-task continuous scores; per-arm means use `meanBootstrap`. Binary full-pass
+  rates (Wilson) are kept as a secondary. Verdict is `GOVERNANCE HELPS/HURTS` only
+  if the score-lift CI excludes 0, else `INCONCLUSIVE`.
 - **Clean ablation.** The governed/ungoverned split is the single env var
   `_ABLATION_VSM_DISABLED`; governance *interventions* are gated by it while
   *measurement* telemetry runs identically in both arms (so the comparison is fair).
 
-Twelve tasks ship under `benchmark/true/tasks/civkings/`; results are committed
-(not gitignored) under `benchmark/true/results/`.
+Five calibrated tasks ship under `benchmark/true/tasks/civkings-b/`
+(building-yields-audit, city-yield-consumers, faction-effects-applied,
+gold-deficit-consequences, stability-loop); results are committed (not gitignored)
+under `benchmark/true/results/`.
 
 ---
 
-## 3. Current Results: CivKings Self-Ablation (Layer A)
+## 3. Current Results: CivKings Self-Ablation
 
-The first credible measurement of the **fully-wired** governance layer was run on
-**2026-06-17** against the standalone harness in `benchmark/true/` (§2.3). Twelve
-multi-file CivKings tasks, each run **governed vs ungoverned, N=3 per arm** (72
-runs total), on `qwen3.6-27b-q6k` driving the production llama-cpp + MTP backend.
+### 3.1 Layer B — continuous-score, long-horizon suite (current headline)
 
-Committed evidence: `benchmark/true/results/true-ablation-1781728598176.json`.
+Run **2026-06-18** on `qwen3.6-27b-q6k` (production llama-cpp + MTP backend), the
+Layer B suite measures the **fully-wired** governance layer on long-horizon
+"wire the half-built subsystem" tasks with **continuous** per-assertion scoring.
+Five tasks (calibrated into the discriminating 0.2–0.8 band, see §2.3), each run
+**governed vs ungoverned, N=5 per arm** (50 runs total).
+
+Committed evidence: `benchmark/true/results/true-ablation-1781824508747.json`.
+
+| Condition | Mean score | 95% CI (bootstrap) |
+|---|---|---|
+| Governed | **67.0%** | [55.3, 78.0] |
+| Ungoverned | **75.3%** | [61.0, 88.0] |
+| **Score-lift (governed − ungoverned)** | **−8.3%** | **[−28.0, +14.0]** (paired bootstrap) |
+
+Secondary (binary full-pass): governed **28%**, ungoverned **56%**.
+
+**Verdict: INCONCLUSIVE — the score-lift CI includes 0.** The point estimate leans
+*against* governance, but at N=5 the interval is too wide to conclude either way.
+
+Per-task lift (governed − ungoverned mean score):
+
+| Task | Governed | Ungoverned | Lift |
+|---|---|---|---|
+| city-yield-consumers | 80% | 47% | **+33** |
+| building-yields-audit | 80% | 85% | −5 |
+| faction-effects-applied | 55% | 70% | −15 |
+| gold-deficit-consequences | 80% | 95% | −15 |
+| stability-loop | 40% | 80% | **−40** |
+
+Two honest caveats on the negative lean:
+
+1. **Governance helped most on the hardest task.** `city-yield-consumers` (the task
+   ungoverned struggled with, .47) is the one governance rescued (+33); the deficits
+   are all on easier tasks. This *hints* governance trades efficiency for resilience
+   — a sharp, testable hypothesis, not a conclusion at N=5.
+2. **A timeout confound.** Governed runs used more turns (43 vs 38) and timed out
+   more often (9/25 vs 5/25); on `gold-deficit` the governed arm timed out 4 of 5
+   times, so part of its deficit is "ran out of clock on unfinished work," not worse
+   reasoning. This is simultaneously a *real efficiency cost* of governance and a
+   confound for the quality reading.
+
+### 3.2 Layer A — why the first null was a measurement artifact
+
+The first attempt (**2026-06-17**, twelve single-edit tasks, **binary** pass/fail,
+N=3, 72 runs) produced a degenerate result:
 
 | Condition | Pass rate | 95% CI (Wilson) | Raw |
 |---|---|---|---|
-| Governed | **83.3%** | [68.1, 92.1] | 30/36 |
-| Ungoverned | **83.3%** | [68.1, 92.1] | 30/36 |
-| **Lift (governed − ungoverned)** | **0.0%** | **[0.0, 0.0]** (paired bootstrap) | — |
+| Governed | 83.3% | [68.1, 92.1] | 30/36 |
+| Ungoverned | 83.3% | [68.1, 92.1] | 30/36 |
+| **Lift** | **0.0%** | **[0.0, 0.0]** | — |
 
-**Verdict: INCONCLUSIVE — the confidence interval includes 0.** On this suite,
-governance changed task success by exactly nothing.
+At the time this was read as a *credible null*. **Layer B falsifies that reading.**
+The same governance layer, measured on a discriminating suite, moves the signal off
+zero (−8.3%, §3.1) — so Layer A's flat 0.0 [0.0, 0.0] was the **instrument failing
+to register**, not governance being neutral. Two root causes: tasks were too short
+(single-line re-adds; the agent never spirals) and binary scoring discarded all
+partial-progress gradient. Layer A is kept as committed evidence of the artifact;
+the Layer B figures (§3.1) supersede it.
 
-This is a *credible* null, not a measurement artifact, for three reasons:
-
-1. **The suite has real signal — it is not a pass-everything ceiling.** Ten of
-   twelve tasks pass 3/3 in both arms; two (`faction-dominant-effects`,
-   `market-price-clamp`) fail 0/3 in both arms. Ten of those twelve failures were
-   the agent finishing with a *wrong answer* (not a timeout), so the model
-   genuinely cannot solve them. Governance failed to help on exactly the tasks
-   where help was possible.
-2. **Per-task results are perfectly symmetric.** No task flips between conditions —
-   governance rescued no failure and broke no success.
-3. **A latency cost with no correctness benefit.** All five "passed-but-timed-out"
-   runs were *governed*: governance adds verification turns that occasionally push
-   a run past the 15-minute wall, without changing the outcome.
+Committed evidence (Layer A): `benchmark/true/results/true-ablation-1781728598176.json`.
 
 > **The old April data remains discredited.** Files under `benchmark-results/`
 > (e.g. `ablation/ablation-v2-1776717161981.json`, 2026-04-20) predate the
@@ -159,33 +208,39 @@ This is a *credible* null, not a measurement artifact, for three reasons:
 ## 4. What We Can Honestly Say Today
 
 - **Governance is wired and the ablation switch works.** Every governed run fired
-  axiom checks and contract enforcement; every ungoverned run fired none. The flag
-  genuinely toggles the layer, verified in the run logs.
-- **On short-horizon multi-file bug fixes, governance is outcome-neutral.**
-  Measured lift is 0.0% [0.0, 0.0] (§3). It neither helped nor hurt task success,
-  and it carried a small latency cost (governed runs run longer).
-- **This does not falsify the central thesis — it bounds where it applies.** These
-  CivKings tasks resolve in ~15 agent turns inside a single subsystem. That is
-  likely too short a horizon for variety/management-capacity governance to
-  differentiate: the agent rarely gets the chance to spiral, which is precisely the
-  failure mode governance is theorized to catch. The honest reading is *"no
-  measurable effect on this regime,"* not *"no effect anywhere."*
-- The next falsifiable step is a **long-horizon, easy-to-get-stuck suite** (§7) —
-  the regime where governance should help if it helps at all. Until that is run, no
-  positive performance claim is warranted.
+  axiom checks and contract enforcement; every ungoverned run fired none — verified
+  in the logs.
+- **On a discriminating long-horizon suite, the measured score-lift is −8.3%
+  [−28, +14] — INCONCLUSIVE, leaning negative.** The current governance layer does
+  *not* demonstrably improve task score on these tasks, and on the easier ones it
+  appears to add turns/timeouts without a correctness benefit (§3.1).
+- **The one positive signal is on the hardest task** (`city-yield`, +33),
+  consistent with the thesis that governance helps where the agent would otherwise
+  spiral — but it is a single task at N=5, not a result.
+- **The instrument now works.** Layer A could not move (0.0 [0.0, 0.0]); Layer B
+  produces a real, non-saturated distribution with gradient. A benchmark that can
+  register a governance difference is the deliverable — and it currently registers
+  one that does **not** favor governance.
+- **Next falsifiable step:** raise N and the per-task timeout (to clear the timeout
+  confound), and widen the kept-task set, to test the "helps on hard, costs on easy"
+  hypothesis with a tighter CI.
 
-This is reported plainly because the project's whole premise is falsifiability. A
-governance layer that claimed wins it can't reproduce would be worthless; a clean,
-committed null on a discriminating suite is worth more than a rigged win.
+This is reported plainly because the project's whole premise is falsifiability. The
+honest status is *"no demonstrated benefit, a hint of cost, one hard-task win"* —
+not a positive performance claim. A committed, discriminating null (or negative
+lean) is worth more than a rigged win.
 
 ---
 
 ## 5. Reproducing the Benchmarks
 
 ```bash
-# TRUE benchmark — the §3 CivKings self-ablation (N=3, all 12 tasks):
-LOCALCODE_MODEL=qwen3.6-27b-q6k bun benchmark/true/run.ts --reps 3
+# TRUE benchmark — Layer B headline (§3.1): 5 calibrated tasks, N=5 per arm:
+LOCALCODE_MODEL=qwen3.6-27b-q6k bun benchmark/true/run.ts --reps 5
 # → writes a timestamped, committable JSON to benchmark/true/results/
+
+# Re-calibrate the kept-task set (unaided ungoverned pilot, keep 0.2–0.8 band):
+LOCALCODE_MODEL=qwen3.6-27b-q6k bun benchmark/true/run.ts --calibrate
 
 # Built-in runner over your own cases:
 LOCALCODE_MODEL=qwen3.6 bun engine/main.ts --run-ablation my-cases.json
@@ -194,9 +249,11 @@ LOCALCODE_MODEL=qwen3.6 bun engine/main.ts --run-ablation my-cases.json
 bun benchmark/ablation.ts            # see benchmark/cli.ts for options/flags
 ```
 
-Each run records the model, per-task metrics, and the governed/ungoverned split,
-so any result in §3 can be regenerated and checked against the committed JSON. The
-§3 figures came from `benchmark/true/results/true-ablation-1781728598176.json`.
+Each run records the model, per-task continuous scores, and the governed/ungoverned
+split, so any result in §3 can be regenerated and checked against the committed JSON.
+The §3.1 headline figures came from
+`benchmark/true/results/true-ablation-1781824508747.json`; the Layer A artifact
+(§3.2) from `benchmark/true/results/true-ablation-1781728598176.json`.
 
 ---
 
