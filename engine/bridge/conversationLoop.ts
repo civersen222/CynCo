@@ -44,6 +44,10 @@ import {
 } from '../engine/systemPromptText.js'
 import { getJournal } from '../training/decisionJournal.js'
 import { makeJournalEntry } from '../training/types.js'
+import { buildConceptTableForCwd } from '../vsm/conceptTable.js'
+import { evaluateGrounding, extractAddedText } from '../vsm/groundingTrigger.js'
+import { probeEdit } from '../vsm/groundingProbe.js'
+import { loadInterventionRates, saveInterventionRates } from '../vsm/interventionPersistence.js'
 import { globalContract } from '../tools/contract.js'
 import { globalAskBroker } from '../tools/askBroker.js'
 import { setSideQuery, resetMergeTracking } from '../tools/impl/edit.js'
@@ -129,6 +133,9 @@ export class ConversationLoop {
   private toolScorerPath = require('path').join(require('os').homedir(), '.cynco', 'tool-scores.json')
   // Observed task difficulty from turn telemetry — feeds S5Input.promptDifficulty
   private difficultyClassifier = new DifficultyClassifier()
+  // Grounding trigger: concepts fired on, awaiting a re-edit to judge intervention success
+  private pendingGroundingConcepts = new Set<string>()
+  private groundingRatesLoaded = false
   private pendingApprovals = new Map<string, (approved: boolean) => void>()
   private workflowEngine: WorkflowEngine
   private lspManager: LSPManager
@@ -2251,6 +2258,12 @@ export class ConversationLoop {
 
     console.log(`[loop] Executing tool: ${toolName}`)
 
+    // One-time: hydrate grounding intervention success rates from prior sessions.
+    if (!this.groundingRatesLoaded) {
+      loadInterventionRates(this.governance.getInterventionTracker())
+      this.groundingRatesLoaded = true
+    }
+
     // Hard tool pin (one-shot/unattended runs): enforce allowedTools at
     // execution time too — simulated-mode models can hallucinate tools that
     // were never offered in the prompt, and approveAll would run them.
@@ -2332,6 +2345,65 @@ export class ConversationLoop {
       })
       // For now, proceed with execution (full approval flow requires async wait)
       // TODO: wire into approval response system for actual blocking
+    }
+
+    // ─── Grounding gate ────────────────────────────────────────────
+    // Fire the moment an edit resolves a multi-source concept (e.g. "happiness")
+    // to a non-authoritative plain field instead of its *_system source of truth.
+    // Validated retrospectively at 100% precision / 86% recall on city-yield-consumers.
+    const groundingTracker = this.governance.getInterventionTracker()
+    if (
+      (toolName === 'Edit' || toolName === 'Write' || toolName === 'MultiEdit') &&
+      groundingTracker.shouldIntervene('grounding') // self-tuning gate: backs off if it stops helping
+    ) {
+      const table = buildConceptTableForCwd(this.executor['cwd'] ?? process.cwd())
+      const intensity = this.difficultyClassifier.getGovernanceIntensity()
+      const decision = evaluateGrounding(toolName, toolInput, table, intensity)
+
+      // Resolve any prior fire: if this edit re-touches a pending concept and is now
+      // grounded, the earlier intervention worked; if still ungrounded, it failed.
+      const addedLines = extractAddedText(toolName, toolInput).split('\n')
+      const stillUngrounded = new Set(probeEdit(addedLines, table).map((f) => f.concept))
+      for (const c of [...this.pendingGroundingConcepts]) {
+        if (decision.concepts.includes(c)) continue // re-firing below; judge on the NEXT edit
+        groundingTracker.recordIntervention('grounding', !stillUngrounded.has(c))
+        this.pendingGroundingConcepts.delete(c)
+        saveInterventionRates(groundingTracker)
+      }
+
+      if (decision.action !== 'skip') {
+        // Log the fire as an S5 training triple (input/decision/outcome).
+        const groundingJournal = getJournal()
+        if (groundingJournal) {
+          groundingJournal.log(makeJournalEntry({
+            sessionId: this.journal?.path ?? 'unknown',
+            system: 'S5',
+            input: { trigger: 'grounding', toolName, concepts: decision.concepts, intensity },
+            decision: { action: decision.action },
+            outcome: { grounded: false },
+          }))
+        }
+        for (const c of decision.concepts) this.pendingGroundingConcepts.add(c)
+
+        if (decision.action === 'block') {
+          console.log(`[grounding] BLOCKED ${toolName}: ${decision.concepts.join(', ')}`)
+          this.emit({ type: 'tool.start', toolId, toolName, input: toolInput })
+          this.emit({ type: 'tool.complete', toolId, toolName, result: decision.message, isError: true })
+          toolResults.push({
+            type: 'tool_result',
+            tool_use_id: toolId,
+            content: [{ type: 'text', text: decision.message }],
+            is_error: true,
+          })
+          toolsUsedThisTurn.push(toolName)
+          toolResultsThisTurn.push('denied')
+          toolsUsedInSession.push(toolName)
+          return
+        }
+        // action === 'warn': let the edit proceed but surface the note.
+        console.log(`[grounding] WARN ${toolName}: ${decision.concepts.join(', ')}`)
+        this.emit({ type: 'stream.token', text: `\n[Grounding] ${decision.message}\n` })
+      }
     }
 
     this.emit({ type: 'tool.start', toolId, toolName, input: toolInput })
