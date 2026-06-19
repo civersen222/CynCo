@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildConceptTable, probeEdit, isGrounded } from './groundingProbe.js'
+import { buildConceptTable, probeEdit, isGrounded } from '../../vsm/groundingProbe.js'
 
 // Minimal stand-in for the civkings repo at the green ref: the concept
 // "happiness" is a plain field in TWO files AND has an authoritative
