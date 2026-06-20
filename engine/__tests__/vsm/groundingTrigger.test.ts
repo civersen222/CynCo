@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { buildConceptTable } from '../../vsm/groundingProbe.js'
-import { extractAddedText, evaluateGrounding } from '../../vsm/groundingTrigger.js'
+import { extractAddedText, extractTargetPaths, evaluateGrounding } from '../../vsm/groundingTrigger.js'
 
 const TABLE = buildConceptTable([
   { path: 'city.py', content: 'self.happiness = 0\n' },
@@ -21,6 +21,23 @@ describe('extractAddedText', () => {
   })
   it('returns empty string for a non-edit tool', () => {
     expect(extractAddedText('Read', { file_path: 'x' })).toBe('')
+  })
+})
+
+describe('extractTargetPaths', () => {
+  it('returns the file_path for Edit and Write', () => {
+    expect(extractTargetPaths('Edit', { file_path: 'a.py' })).toEqual(['a.py'])
+    expect(extractTargetPaths('Write', { file_path: 'b.py' })).toEqual(['b.py'])
+  })
+  it('returns the de-duplicated set of edit file_paths for MultiEdit', () => {
+    const paths = extractTargetPaths('MultiEdit', {
+      edits: [{ file_path: 'a.py' }, { file_path: 'b.py' }, { file_path: 'a.py' }],
+    })
+    expect(paths.sort()).toEqual(['a.py', 'b.py'])
+  })
+  it('returns empty for a non-edit tool or missing path', () => {
+    expect(extractTargetPaths('Read', { file_path: 'x' })).toEqual([])
+    expect(extractTargetPaths('Edit', {})).toEqual([])
   })
 })
 

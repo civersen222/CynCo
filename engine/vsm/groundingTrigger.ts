@@ -24,6 +24,20 @@ export function extractAddedText(toolName: string, input: Record<string, unknown
   return ''
 }
 
+/** The file path(s) an Edit/Write/MultiEdit call targets. Used to scope a fired
+ *  concept to its file so its outcome is judged on a later edit to the SAME file. */
+export function extractTargetPaths(toolName: string, input: Record<string, unknown>): string[] {
+  if (toolName === 'Edit' || toolName === 'Write') {
+    return typeof input.file_path === 'string' ? [input.file_path] : []
+  }
+  if (toolName === 'MultiEdit') {
+    const edits = Array.isArray(input.edits) ? (input.edits as Record<string, unknown>[]) : []
+    const paths = edits.map((e) => e?.file_path).filter((p): p is string => typeof p === 'string')
+    return [...new Set(paths)]
+  }
+  return []
+}
+
 function buildMessage(findings: { concept: string; systemSource: string }[], block: boolean): string {
   const lines = findings.map(
     (f) =>
