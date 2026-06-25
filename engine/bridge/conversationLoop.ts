@@ -2351,7 +2351,13 @@ export class ConversationLoop {
     // Fire the moment an edit resolves a multi-source concept (e.g. "happiness")
     // to a non-authoritative plain field instead of its *_system source of truth.
     // Validated retrospectively at 100% precision / 86% recall on city-yield-consumers.
-    if (toolName === 'Edit' || toolName === 'Write' || toolName === 'MultiEdit') {
+    // `_ABLATION_GROUNDING_DISABLED=1` turns this gate into a no-op so its causal
+    // contribution can be isolated in an A/B run, independent of the broader VSM
+    // ablation flag (the rest of governance can be held constant in both arms).
+    if (
+      (toolName === 'Edit' || toolName === 'Write' || toolName === 'MultiEdit') &&
+      process.env._ABLATION_GROUNDING_DISABLED !== '1'
+    ) {
       const groundingTracker = this.governance.getInterventionTracker()
       const table = buildConceptTableForCwd(this.executor['cwd'] ?? process.cwd())
       const addedText = extractAddedText(toolName, toolInput)
