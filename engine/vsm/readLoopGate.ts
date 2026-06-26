@@ -6,6 +6,7 @@ export type ReadLoopVerdict =
   | { kind: 'deny'; message: string }
 
 const READ_TOOLS = new Set(['Read', 'Grep', 'Glob', 'Ls'])
+const STALL_CAP = 20
 
 function norm(p: string): string {
   const r = resolve(p)
@@ -50,6 +51,13 @@ export class ReadLoopGate {
       return { kind: 'deny', message: `[read-loop] DENIED: you are re-reading sources you've already seen without making any change. You must now either (a) call Write/Edit/MultiEdit to act on what you've learned, or (b) end your turn if the task is genuinely complete. Reading is disabled until you make an edit.` }
     }
     this.seen.add(sig)
+    if (this.readsSinceWrite >= STALL_CAP) {
+      if (!this.warnedStall) {
+        this.warnedStall = true
+        return { kind: 'warn', message: `[read-loop] ${this.readsSinceWrite} reads since your last edit. Consider whether you have enough to start implementing — use Write or Edit.` }
+      }
+      return { kind: 'deny', message: `[read-loop] DENIED: ${this.readsSinceWrite} reads since your last edit with no change made. Make an edit now, or end your turn if complete.` }
+    }
     return { kind: 'allow' }
   }
 
