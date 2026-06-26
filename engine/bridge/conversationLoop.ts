@@ -2336,6 +2336,28 @@ export class ConversationLoop {
       return
     }
 
+    // ─── Read-loop gate ────────────────────────────────────────────
+    // Deny redundant / stalled reads at execution time so the model is forced
+    // to act or stop, instead of reading itself into the context-bloat timeout.
+    const readLoopVerdict = this.readLoopGate.evaluate(toolName, toolInput)
+    if (readLoopVerdict.kind === 'deny') {
+      console.log(`[read-loop] DENIED ${toolName}`)
+      if (process.env._TRACE_STEERING === '1') this.traceLastInjected = 'readLoopGate-deny'
+      this.emit({ type: 'tool.start', toolId, toolName, input: toolInput })
+      this.emit({ type: 'tool.complete', toolId, toolName, result: readLoopVerdict.message, isError: true })
+      toolResults.push({
+        type: 'tool_result',
+        tool_use_id: toolId,
+        content: [{ type: 'text', text: readLoopVerdict.message }],
+        is_error: true,
+      })
+      toolsUsedThisTurn.push(toolName)
+      toolResultsThisTurn.push('denied')
+      toolsUsedInSession.push(toolName)
+      return // read never executes: no file payload appended (bloat fix)
+    }
+    const readLoopWarn = readLoopVerdict.kind === 'warn' ? readLoopVerdict.message : null
+
     // Vibe Guardian: check risk level before execution
     const { classifyRisk, describeRisk } = await import('./guardianRules.js')
     const risk = classifyRisk(toolName, toolInput)
@@ -2732,6 +2754,11 @@ export class ConversationLoop {
     this.toolHistory.push(toolName)
     if (this.toolHistory.length > 50) this.toolHistory = this.toolHistory.slice(-50)
 
+    // Re-arm the read-loop gate whenever the model actually changes something.
+    if (!result.isError && ['Edit', 'Write', 'MultiEdit', 'ApplyPatch'].includes(toolName)) {
+      this.readLoopGate.onWrite()
+    }
+
     // S4: Track file operations for structured compaction
     const filePath = (toolInput.file_path as string) ?? (toolInput.path as string) ?? ''
     if (filePath) {
@@ -2777,7 +2804,8 @@ export class ConversationLoop {
     }
     // S3* Reflexion: on a failed tool, append a specific self-correction note
     // to the result the model reads next turn (gated by LOCALCODE_REFLEXION).
-    const resultText = withReflexion(toolName, result.isError, result.output, truncatedOutput)
+    const baseResultText = withReflexion(toolName, result.isError, result.output, truncatedOutput)
+    const resultText = readLoopWarn ? `${readLoopWarn}\n\n${baseResultText}` : baseResultText
     toolResults.push({
       type: 'tool_result',
       tool_use_id: toolId,
