@@ -41,4 +41,18 @@ describe('ReadLoopGate — redundancy', () => {
     expect(gate.evaluate('Bash', { command: 'ls' }).kind).toBe('allow')
     expect(gate.evaluate('Write', { file_path: '/a/x.ts' }).kind).toBe('allow')
   })
+
+  test('warn-once is session-global: first redundant read warns, next redundant read of a different seen file denies', () => {
+    expect(gate.evaluate('Read', { file_path: '/a/a.ts' }).kind).toBe('allow')
+    expect(gate.evaluate('Read', { file_path: '/a/b.ts' }).kind).toBe('allow')
+    expect(gate.evaluate('Read', { file_path: '/a/a.ts' }).kind).toBe('warn')  // first redundancy spends the free pass
+    expect(gate.evaluate('Read', { file_path: '/a/b.ts' }).kind).toBe('deny')  // free pass gone, even though b was never warned
+  })
+
+  test('reset clears seen so a previously-seen file reads as allow again', () => {
+    expect(gate.evaluate('Read', { file_path: '/a/x.ts' }).kind).toBe('allow')
+    expect(gate.evaluate('Read', { file_path: '/a/x.ts' }).kind).toBe('warn')
+    gate.reset()
+    expect(gate.evaluate('Read', { file_path: '/a/x.ts' }).kind).toBe('allow')  // seen cleared
+  })
 })
