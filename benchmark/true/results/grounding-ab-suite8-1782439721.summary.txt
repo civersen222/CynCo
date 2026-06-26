@@ -1,0 +1,26 @@
+=== GROUNDING-GATE A/B (CivKings, VSM held off in both arms) — reps=8 (well-powered) ===
+model: qwen3.6-27b-q6k  reps/arm: 8  tasks: building-yields-audit, city-yield-consumers, faction-effects-applied, gold-deficit-consequences, stability-loop
+grounding ON  score: 70.6% [59.8, 80.2]
+grounding OFF score: 66.9% [55.8, 77.3]
+score-lift (ON - OFF): 3.8% [-9.4, 18.1]  (paired bootstrap, 5 tasks)
+  building-yields-audit      ON   75.0%  OFF   78.1%  lift   -3.1%
+  city-yield-consumers       ON   62.5%  OFF   75.0%  lift  -12.5%
+  faction-effects-applied    ON   68.8%  OFF   53.1%  lift   15.6%
+  gold-deficit-consequences  ON   71.9%  OFF   81.3%  lift   -9.4%
+  stability-loop             ON   75.0%  OFF   46.9%  lift   28.1%
+verdict: INCONCLUSIVE (score-lift CI includes 0) -> OUTCOME-NEUTRAL at proper power
+
+REPLICATION NOTE (why this supersedes reps=3/4):
+  city-yield-consumers (the "target" collision task):
+    reps=3 -> +55.6 (ON 88.9 / OFF 33.3)
+    reps=4 -> +41.7 (ON 75.0 / OFF 33.3)
+    reps=8 -> -12.5 (ON 62.5 / OFF 75.0)
+  The early OFF arm drew three 0.333 scores in a row; at n=8 OFF averages 0.75.
+  The apparent +55pp win was the OFF baseline getting unlucky, NOT the gate.
+  stability-loop "regression" (-25 at reps=3) -> +28 at reps=8: also variance.
+  No per-task effect survives replication.
+
+SELF-TUNING NOTE: final intervention-rates.json = grounding {success:0,total:1};
+the InterventionTracker backed the gate off after early non-successes (shouldIntervene
+returns false once success rate < 0.4), so much of the ON arm ran ungated — consistent
+with, and reinforcing, the outcome-neutral result.
