@@ -2187,24 +2187,6 @@ export class ConversationLoop {
         }
       }
 
-      // Read loop detection: track consecutive read-only tool calls.
-      // If the model reads extensively without writing, nudge it to act.
-      // Uses a ratio: after the model has read 3x more than it's written,
-      // and at least 6 consecutive reads, suggest implementing.
-      const READ_ONLY = new Set(['Read', 'Grep', 'Glob', 'Ls', 'ImageView'])
-      const WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'ApplyPatch', 'Bash'])
-      const totalReads = toolsUsedInSession.filter(t => READ_ONLY.has(t)).length
-      const totalWrites = toolsUsedInSession.filter(t => WRITE_TOOLS.has(t)).length
-      const recentTools = this.toolHistory.slice(-6)
-      const inReadLoop = recentTools.length >= 6 && recentTools.every(t => READ_ONLY.has(t))
-      if (inReadLoop && totalReads > (totalWrites + 1) * 3) {
-        console.log(`[s2] Read-heavy pattern: ${totalReads} reads vs ${totalWrites} writes`)
-        this.steering.steer(
-          `SYSTEM: You have read ${totalReads} times and written ${totalWrites} times. Your last 6 tool calls were all read-only. Consider whether you have enough information to start implementing. Use Write or Edit to make changes.`,
-          'readLoop'
-        )
-      }
-
       // Add tool results as a user message (OpenAI format for Ollama)
       this.addMessage({
         role: 'user',
