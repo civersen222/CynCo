@@ -80,9 +80,8 @@ export type ReadLoopVerdict =
 
 export class ReadLoopGate {
   private seen = new Set<string>()       // read signatures already executed
-  private warnedRedundant = false        // redundancy free-pass spent?
-  private redundancyArmed = false        // a redundant read happened, no write since
-  private warnedStall = false            // stall free-pass spent?
+  private warnedRedundant = false        // redundancy free-pass spent? (reset on write)
+  private warnedStall = false            // stall free-pass spent? (reset on write)
   private readsSinceWrite = 0
 
   evaluate(toolName: string, input: any): ReadLoopVerdict
@@ -121,7 +120,6 @@ readsSinceWrite += 1
 if sig in seen:                                                    # REDUNDANT
     if not warnedRedundant:
         warnedRedundant = true
-        redundancyArmed = true
         return { kind: 'warn', message: REDUNDANCY_WARN }          # one free pass
     return { kind: 'deny', message: REDUNDANCY_DENY }              # teeth
 else:                                                              # NEW read
@@ -134,8 +132,7 @@ else:                                                              # NEW read
     return { kind: 'allow' }
 ```
 
-`onWrite()`: `readsSinceWrite = 0; warnedRedundant = false; redundancyArmed = false;
-warnedStall = false`.
+`onWrite()`: `readsSinceWrite = 0; warnedRedundant = false; warnedStall = false`.
 `reset()`: clears `seen` and all of the above.
 
 ### Messages
