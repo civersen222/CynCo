@@ -154,6 +154,10 @@ export class ConversationLoop {
   private lastTokPerSec = 0
   private lastModelCallMs = 0
   private steering = new SteeringQueue()
+  // _TRACE_STEERING=1: records the source of the intervention injected on the
+  // PREVIOUS iteration so the next model-call trace line can attribute the
+  // model's resulting action to it. Diagnostic only; null when tracing is off.
+  private traceLastInjected: string | null = null
   private journal: JSONLStore
   private snapshot?: WorkspaceSnapshot
   private snapshotCwd?: string
@@ -1365,6 +1369,7 @@ export class ConversationLoop {
       const steer = this.steering.nextSteer()
       if (steer) {
         console.log(`[s2] Steering from ${steer.source}`)
+        if (process.env._TRACE_STEERING === '1') this.traceLastInjected = steer.source
         this.governance.markNudgeInjected()
         this.addMessage({
           role: 'user',
@@ -1395,6 +1400,24 @@ export class ConversationLoop {
       const lastRole = lastMsg?.role ?? 'none'
       const lastType = lastMsg?.content?.[0]?.type ?? 'empty'
       console.log(`[loop] Model call iteration ${i + 1} | messages: ${this.messages.length} | last: ${lastRole}/${lastType}`)
+
+      // _TRACE_STEERING=1: one structured line per model call — context size (to expose
+      // bloat), cumulative read/write split + last-6 tools (exploration efficiency), and
+      // the intervention (if any) injected just before THIS call (to attribute the model's
+      // next action to it). Parsed offline to test "death by soft nagging" hypothesis.
+      if (process.env._TRACE_STEERING === '1') {
+        const TRACE_READ = new Set(['Read', 'Grep', 'Glob', 'Ls', 'ImageView'])
+        const TRACE_WRITE = new Set(['Write', 'Edit', 'MultiEdit', 'ApplyPatch', 'Bash'])
+        const approxTok = Math.round(this.messages.reduce((sum: number, m: any) =>
+          sum + (Array.isArray(m.content)
+            ? m.content.reduce((s: number, b: any) => s + (b.text?.length ?? JSON.stringify(b).length) / 4, 0)
+            : (typeof m.content === 'string' ? m.content.length / 4 : 0)), 0))
+        const reads = this.toolHistory.filter((t) => TRACE_READ.has(t)).length
+        const writes = this.toolHistory.filter((t) => TRACE_WRITE.has(t)).length
+        const last6 = this.toolHistory.slice(-6).join(',')
+        console.log(`[trace] iter=${i + 1} msgs=${this.messages.length} ctxTok=${approxTok} reads=${reads} writes=${writes} injected=${this.traceLastInjected ?? 'none'} last6=[${last6}]`)
+        this.traceLastInjected = null
+      }
 
       // S4 Reflector: periodic model self-report
       // For llama-cpp, throttle to every 10th iteration (each reflection costs 6s prompt eval)
@@ -1970,6 +1993,7 @@ export class ConversationLoop {
               ? `WARNING ${this.consecutiveNudges}: You MUST call a tool. Do not explain, do not plan, do not narrate. Call Read, Write, Edit, Grep, or Bash RIGHT NOW.`
               : 'FINAL WARNING: Call a tool immediately or your turn ends.'
           console.log(`[s2] Nudge ${this.consecutiveNudges}: ${nudgeText.slice(0, 50)}...`)
+          if (process.env._TRACE_STEERING === '1') this.traceLastInjected = `nudge${this.consecutiveNudges}`
           this.governance.markNudgeInjected()
           // Push directly and continue — steering queue gets consumed too late (after exit)
           this.addMessage({ role: 'user', content: [{ type: 'text', text: nudgeText }] })
@@ -2394,7 +2418,10 @@ export class ConversationLoop {
 
       // (2) Decide whether to FIRE on the current edit. Only the firing side is
       // gated by the self-tuning success rate (fail-open: unseen 'grounding' -> 1.0 -> fires).
-      if (groundingTracker.shouldIntervene('grounding')) {
+      // _PIN_GROUNDING=1 pins the firing side armed regardless of the tracker's
+      // success rate (used by the A/B harness to isolate the gate's effect from the
+      // self-disabling back-off). Recording/journalling in step (1) is unchanged.
+      if (process.env._PIN_GROUNDING === '1' || groundingTracker.shouldIntervene('grounding')) {
         const intensity = this.difficultyClassifier.getGovernanceIntensity()
         const decision = evaluateGrounding(toolName, toolInput, table, intensity)
         if (decision.action !== 'skip') {

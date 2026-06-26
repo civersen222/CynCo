@@ -62,6 +62,7 @@ async function main() {
   const all = loadCivkingsTasks(tasksDir)
   const tasks = onlyTask === 'ALL' ? all : all.filter((t) => t.id === onlyTask)
   if (tasks.length === 0) { console.error(`[grounding-ab] no task '${onlyTask}' in ${tasksDir} (have: ${all.map((t) => t.id).join(', ')})`); process.exit(1) }
+  console.log(`[grounding-ab] PINNED MODE: ON arm fires on every collision (tracker back-off bypassed)`)
   console.log(`[grounding-ab] ${tasks.length} task(s): ${tasks.map((t) => t.id).join(', ')}  reps=${reps}  model=${config.model}`)
 
   const { provider } = await bootstrapProvider(config)
@@ -69,8 +70,17 @@ async function main() {
   const runOne = async ({ task, condition, rep }: RunOneArgs) => {
     const groundingOn = condition === 'governed'
     // Both arms: VSM held off (governed:false below). Toggle ONLY the grounding gate.
-    if (groundingOn) delete process.env._ABLATION_GROUNDING_DISABLED
-    else process.env._ABLATION_GROUNDING_DISABLED = '1'
+    // PINNED MODE: in the ON arm we pin the firing side armed (_PIN_GROUNDING=1) so the
+    // gate fires on EVERY collision edit, bypassing the InterventionTracker back-off that
+    // silenced the gate after one unresolved fire in the unpinned reps=8 run. This isolates
+    // the gate's true effect from its self-disabling behaviour.
+    if (groundingOn) {
+      delete process.env._ABLATION_GROUNDING_DISABLED
+      process.env._PIN_GROUNDING = '1'
+    } else {
+      process.env._ABLATION_GROUNDING_DISABLED = '1'
+      delete process.env._PIN_GROUNDING
+    }
 
     const work = mkdtempSync(join(tmpdir(), `groundab-${task.id}-`))
     try {
@@ -89,6 +99,7 @@ async function main() {
     } finally {
       removeWorkdir(work)
       delete process.env._ABLATION_GROUNDING_DISABLED
+      delete process.env._PIN_GROUNDING
     }
   }
 
@@ -97,11 +108,11 @@ async function main() {
 
     const outDir = join(import.meta.dirname, '..', 'results')
     mkdirSync(outDir, { recursive: true })
-    const outFile = join(outDir, `grounding-ab-${Date.now()}.json`)
+    const outFile = join(outDir, `grounding-ab-pinned-${Date.now()}.json`)
     // Persist with grounding-explicit labels alongside the raw suite result.
     writeFileSync(outFile, JSON.stringify({
-      experiment: 'grounding-gate-isolation',
-      arms: { governed: 'grounding-ON (VSM off)', ungoverned: 'grounding-OFF (VSM off)' },
+      experiment: 'grounding-gate-isolation-PINNED',
+      arms: { governed: 'grounding-ON pinned (VSM off)', ungoverned: 'grounding-OFF (VSM off)' },
       groundingOnScore: result.governedScoreMean,
       groundingOffScore: result.ungovernedScoreMean,
       groundingLift: { mean: result.liftMean, lower: result.liftLower, upper: result.liftUpper },
