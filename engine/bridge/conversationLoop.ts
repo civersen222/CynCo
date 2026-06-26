@@ -46,6 +46,7 @@ import { getJournal } from '../training/decisionJournal.js'
 import { makeJournalEntry } from '../training/types.js'
 import { buildConceptTableForCwd } from '../vsm/conceptTable.js'
 import { evaluateGrounding, extractAddedText, extractTargetPaths } from '../vsm/groundingTrigger.js'
+import { ReadLoopGate } from '../vsm/readLoopGate.js'
 import { probeEdit } from '../vsm/groundingProbe.js'
 import { loadInterventionRates, saveInterventionRates } from '../vsm/interventionPersistence.js'
 import { globalContract } from '../tools/contract.js'
@@ -154,6 +155,7 @@ export class ConversationLoop {
   private lastTokPerSec = 0
   private lastModelCallMs = 0
   private steering = new SteeringQueue()
+  private readLoopGate = new ReadLoopGate()
   // _TRACE_STEERING=1: records the source of the intervention injected on the
   // PREVIOUS iteration so the next model-call trace line can attribute the
   // model's resulting action to it. Diagnostic only; null when tracing is off.
@@ -475,6 +477,7 @@ export class ConversationLoop {
   resetGovernance(): void {
     this.governance.resetKillSwitch()
     this.consecutiveNudges = 0
+    this.readLoopGate.reset()
     this.toolFailureCounts.clear()
     console.log('[loop] Governance reset — kill switch, nudges, and tool failure counts cleared')
   }
@@ -506,6 +509,7 @@ export class ConversationLoop {
     this.governance.resetStuck() // Fresh start for each user message
     this.governance.resetKillSwitch() // Clear kill switch from previous task
     this.consecutiveNudges = 0
+    this.readLoopGate.reset()
     this.steering.clear()
 
     // Auto-create contract from EVERY user message — the model must finish what the user asked.
