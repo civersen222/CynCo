@@ -14,8 +14,10 @@ import type { ToolDefinition, ToolUseBlock, ThinkingBlock } from '../types.js'
 /**
  * Build a system prompt addendum instructing the model to use
  * <tool_call> XML tags when it wants to invoke a tool.
+ *
+ * Internal uncached implementation — call buildSimulatedToolPrompt() instead.
  */
-export function buildSimulatedToolPrompt(tools: ToolDefinition[]): string {
+function buildSimulatedToolPromptUncached(tools: ToolDefinition[]): string {
   const toolDescriptions = tools.map(t => {
     const params = t.input_schema.properties
       ? Object.entries(t.input_schema.properties)
@@ -39,6 +41,21 @@ You may use multiple tool calls in a single response. Only use the tools listed 
 Available tools:
 
 ${toolDescriptions}`
+}
+
+// Memoized: the prompt prefix must be byte-identical across turns for
+// llama.cpp checkpoint caching. Single-slot cache keyed on tool names —
+// the tool set is stable within a conversation; demotion/routing changes
+// legitimately rebuild.
+let simPromptKey: string | null = null
+let simPromptValue: string | null = null
+
+export function buildSimulatedToolPrompt(tools: ToolDefinition[]): string {
+  const key = tools.map(t => t.name).join('\u0000')
+  if (key === simPromptKey && simPromptValue !== null) return simPromptValue
+  simPromptValue = buildSimulatedToolPromptUncached(tools)
+  simPromptKey = key
+  return simPromptValue
 }
 
 // ─── Tool Call Extraction ────────────────────────────────────────
