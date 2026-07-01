@@ -268,10 +268,18 @@ export async function* localCallModel({
     system = simPrompt + '\n\n' + system
   }
 
-  // 7b. Session lifecycle — read ledger on first turn
+  // 7b+7c. Session extras (handoff + recalled memories) — computed once per
+  // conversation and re-appended byte-identically on every subsequent call so
+  // the prompt prefix stays stable for llama.cpp checkpoint caching.
   let sessionContextForProtocol: any = null
-  console.log(`[callModel] Step 7b: session lifecycle check (messages=${messages.length})`)
-  if (messages.length <= 2) { // First turn heuristic
+  let recalledMemoriesForProtocol: any[] = []
+  console.log(`[callModel] Step 7b/7c: session extras (messages=${messages.length})`)
+  const { getSessionExtras } = await import('./sessionExtras.js')
+  const firstUserMsg = messages.find(m => m.role === 'user')
+  const conversationKey = firstUserMsg?.content?.map((b: any) => b.text || '').join(' ') ?? ''
+  const extras = await getSessionExtras(conversationKey, messages.length <= 2, async () => {
+    let out = ''
+    // Handoff (previously step 7b)
     try {
       const { onSessionStart } = await import('../memory/lifecycle.js')
       const os = await import('os')
@@ -283,8 +291,7 @@ export async function* localCallModel({
       if (state.recentHandoffs.length > 0) {
         const lastHandoff = state.recentHandoffs[state.recentHandoffs.length - 1]
         const { formatHandoffForPrompt } = await import('../memory/handoff.js')
-        system += `\n\n${formatHandoffForPrompt(lastHandoff.handoff)}`
-        // Capture for protocol event (TUI sidebar)
+        out += `\n\n${formatHandoffForPrompt(lastHandoff.handoff)}`
         try {
           const { formatSessionContext } = await import('../bridge/memoryEvents.js')
           const fs = await import('fs')
@@ -306,30 +313,28 @@ export async function* localCallModel({
     } catch {
       // Lifecycle system unavailable
     }
-  }
-
-  console.log(`[callModel] Step 7c: memory recall`)
-  // 7c. Inject recalled memories (first turn only)
-  let recalledMemoriesForProtocol: any[] = []
-  try {
-    const { recallMemories, formatRecalledMemories } = await import('../memory/recall.js')
-    const lastUserMsg = messages.filter(m => m.role === 'user').pop()
-    const queryText = lastUserMsg?.content?.map((b: any) => b.text || '').join(' ') || ''
-    if (queryText && messages.length <= 2) {
-      const memories = await recallMemories(queryText, 5)
-      const section = formatRecalledMemories(memories)
-      if (section) {
-        system = system + '\n\n' + section
+    // Recalled memories (previously step 7c)
+    try {
+      const { recallMemories, formatRecalledMemories } = await import('../memory/recall.js')
+      const lastUserMsg = messages.filter(m => m.role === 'user').pop()
+      const queryText = lastUserMsg?.content?.map((b: any) => b.text || '').join(' ') || ''
+      if (queryText) {
+        const memories = await recallMemories(queryText, 5)
+        const section = formatRecalledMemories(memories)
+        if (section) {
+          out += '\n\n' + section
+        }
+        try {
+          const { formatRecalledForProtocol } = await import('../bridge/memoryEvents.js')
+          recalledMemoriesForProtocol = formatRecalledForProtocol(memories)
+        } catch {}
       }
-      // Capture for protocol event
-      try {
-        const { formatRecalledForProtocol } = await import('../bridge/memoryEvents.js')
-        recalledMemoriesForProtocol = formatRecalledForProtocol(memories)
-      } catch {}
+    } catch {
+      // Memory system unavailable
     }
-  } catch {
-    // Memory system unavailable
-  }
+    return out
+  })
+  system += extras
 
   // Yield memory data for the conversation loop to emit as protocol events
   // This MUST happen BEFORE the provider.stream() call to satisfy ordering guarantee
