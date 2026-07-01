@@ -115,11 +115,9 @@ describe('buildServerArgs', () => {
       }
     })
 
-    it('defaults cache-ram to 0 and reasoning-budget to 256 when env unset', () => {
+    it('omits cache-ram and defaults reasoning-budget to 256 when env unset', () => {
       const args = buildServerArgs({ modelPath: '/models/qwen.gguf', port: 8081 })
-      const cacheIdx = args.indexOf('--cache-ram')
-      expect(cacheIdx).toBeGreaterThanOrEqual(0)
-      expect(args[cacheIdx + 1]).toBe('0')
+      expect(args).not.toContain('--cache-ram')
       const budgetIdx = args.indexOf('--reasoning-budget')
       expect(budgetIdx).toBeGreaterThanOrEqual(0)
       expect(args[budgetIdx + 1]).toBe('256')
@@ -175,7 +173,7 @@ describe('buildServerArgs — config-driven cacheRam/reasoningBudget', () => {
 
   it('falls back to env then default when config omits them', () => {
     const a1 = buildServerArgs({ modelPath: '/m/x.gguf', port: 8081 })
-    expect(argValue(a1, '--cache-ram')).toBe('0')
+    expect(a1).not.toContain('--cache-ram')
     expect(argValue(a1, '--reasoning-budget')).toBe('256')
     process.env.LOCALCODE_CACHE_RAM = '2048'
     const a2 = buildServerArgs({ modelPath: '/m/x.gguf', port: 8081 })
@@ -192,5 +190,54 @@ describe('ProcessManager', () => {
     })
     expect(pm.port).toBe(8081)
     expect(pm.isRunning()).toBe(false)
+  })
+})
+
+describe('buildServerArgs — checkpoint caching (prefill elimination)', () => {
+  const base = { modelPath: '/models/qwen.gguf', port: 8081 }
+
+  it('adds checkpoint and ubatch defaults', () => {
+    const args = buildServerArgs(base)
+    expect(argValue(args, '--ctx-checkpoints')).toBe('64')
+    expect(argValue(args, '--checkpoint-min-step')).toBe('1024')
+    expect(argValue(args, '--ubatch-size')).toBe('2048')
+  })
+
+  it('omits --cache-ram by default so the llama.cpp default applies', () => {
+    delete process.env.LOCALCODE_CACHE_RAM
+    const args = buildServerArgs(base)
+    expect(args).not.toContain('--cache-ram')
+  })
+
+  it('honors explicit cacheRam config', () => {
+    const args = buildServerArgs({ ...base, cacheRam: 4096 })
+    expect(argValue(args, '--cache-ram')).toBe('4096')
+  })
+
+  it('honors LOCALCODE_CACHE_RAM env when config unset', () => {
+    process.env.LOCALCODE_CACHE_RAM = '2048'
+    const args = buildServerArgs(base)
+    expect(argValue(args, '--cache-ram')).toBe('2048')
+    delete process.env.LOCALCODE_CACHE_RAM
+  })
+
+  it('honors config overrides for checkpoint/ubatch flags', () => {
+    const args = buildServerArgs({ ...base, ctxCheckpoints: 128, checkpointMinStep: 512, ubatchSize: 1024 })
+    expect(argValue(args, '--ctx-checkpoints')).toBe('128')
+    expect(argValue(args, '--checkpoint-min-step')).toBe('512')
+    expect(argValue(args, '--ubatch-size')).toBe('1024')
+  })
+
+  it('honors env overrides for checkpoint/ubatch flags', () => {
+    process.env.LOCALCODE_CTX_CHECKPOINTS = '32'
+    process.env.LOCALCODE_CHECKPOINT_MIN_STEP = '2048'
+    process.env.LOCALCODE_UBATCH_SIZE = '512'
+    const args = buildServerArgs(base)
+    expect(argValue(args, '--ctx-checkpoints')).toBe('32')
+    expect(argValue(args, '--checkpoint-min-step')).toBe('2048')
+    expect(argValue(args, '--ubatch-size')).toBe('512')
+    delete process.env.LOCALCODE_CTX_CHECKPOINTS
+    delete process.env.LOCALCODE_CHECKPOINT_MIN_STEP
+    delete process.env.LOCALCODE_UBATCH_SIZE
   })
 })

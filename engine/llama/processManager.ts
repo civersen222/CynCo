@@ -15,6 +15,14 @@ export type ServerConfig = {
   specDraftN?: number
   cacheRam?: number
   reasoningBudget?: number
+  ctxCheckpoints?: number
+  checkpointMinStep?: number
+  ubatchSize?: number
+}
+
+function envInt(name: string): number | undefined {
+  const v = process.env[name]
+  return v != null && v !== '' ? parseInt(v, 10) : undefined
 }
 
 /**
@@ -28,6 +36,7 @@ export function buildServerArgs(config: ServerConfig): string[] {
     '--ctx-size', String(config.ctxSize ?? 32768),
     '--n-gpu-layers', String(config.gpuLayers ?? 999),
     '--batch-size', String(config.batchSize ?? 2048),
+    '--ubatch-size', String(config.ubatchSize ?? envInt('LOCALCODE_UBATCH_SIZE') ?? 2048),
   ]
 
   args.push('--flash-attn', config.flashAttn !== false ? 'on' : 'off')
@@ -47,14 +56,21 @@ export function buildServerArgs(config: ServerConfig): string[] {
 
   // Single slot — we only process one request at a time
   args.push('--parallel', '1')
-  // Default 0: Qwen3.6 uses SWA (Sliding Window Attention) which invalidates the KV
-  // cache every call — caching wastes 1-2GB VRAM and ~700ms/iteration for zero benefit.
-  // Non-SWA models (Llama, Mistral, Phi) benefit from KV prefix reuse;
-  // set LOCALCODE_CACHE_RAM=2048 for those.
+  // Qwen3.6 is a hybrid Gated DeltaNet + attention model. llama.cpp context
+  // checkpoints snapshot recurrent state during prefill so warm turns roll
+  // back to the nearest checkpoint instead of re-prefilling from token 0
+  // (ggml-org/llama.cpp#21831). This needs the host-memory prompt cache, so
+  // --cache-ram is left at the server default unless explicitly overridden.
+  // NOTE: prefix reuse also requires the client prompt to be strictly
+  // append-only — see engine/__tests__/engine/prefixStability.test.ts.
   const cacheRam = config.cacheRam != null
     ? String(config.cacheRam)
-    : process.env.LOCALCODE_CACHE_RAM ?? '0'
-  args.push('--cache-ram', cacheRam)
+    : process.env.LOCALCODE_CACHE_RAM
+  if (cacheRam != null && cacheRam !== '') {
+    args.push('--cache-ram', cacheRam)
+  }
+  args.push('--ctx-checkpoints', String(config.ctxCheckpoints ?? envInt('LOCALCODE_CTX_CHECKPOINTS') ?? 64))
+  args.push('--checkpoint-min-step', String(config.checkpointMinStep ?? envInt('LOCALCODE_CHECKPOINT_MIN_STEP') ?? 1024))
   // Default 256: >256 thinking tokens hurts tool-call accuracy and uncapped reasoning
   // can burn 30K+ invisible tokens (5+ min wasted per iteration).
   // Raise via LOCALCODE_REASONING_BUDGET if your model needs more deliberation.
@@ -79,6 +95,9 @@ export type ProcessManagerConfig = {
   specDraftN?: number
   cacheRam?: number
   reasoningBudget?: number
+  ctxCheckpoints?: number
+  checkpointMinStep?: number
+  ubatchSize?: number
 }
 
 export class ProcessManager {
