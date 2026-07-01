@@ -7,6 +7,19 @@
 const NEVER_RESTRICT = new Set(['Bash', 'Glob', 'Grep', 'Ls'])
 const CONSECUTIVE_THRESHOLD = 4
 
+/**
+ * Pure narrowing gate: drop restricted tools from an offered tool set.
+ * Never returns an empty set — if narrowing would remove every tool, the
+ * original set is returned unchanged (a starved model is worse than a
+ * repetitive one). Only ever removes, never adds (Ashby attenuator).
+ */
+export function applyToolGate<T extends { name: string }>(tools: T[], restricted: string[]): T[] {
+  if (restricted.length === 0) return tools
+  const block = new Set(restricted)
+  const filtered = tools.filter(t => !block.has(t.name))
+  return filtered.length > 0 ? filtered : tools
+}
+
 export class ToolGating {
   private recentTools: string[] = []
   private stuckTool: string | null = null

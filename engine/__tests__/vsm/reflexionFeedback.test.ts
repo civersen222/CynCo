@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'bun:test'
-import { generateReflection } from '../../vsm/reflexionFeedback.js'
+import { describe, expect, it, afterEach } from 'bun:test'
+import { generateReflection, withReflexion } from '../../vsm/reflexionFeedback.js'
 
 describe('generateReflection', () => {
   it('generates Edit feedback for match failure', () => {
@@ -30,5 +30,28 @@ describe('generateReflection', () => {
   it('generates generic feedback for unknown errors', () => {
     const r = generateReflection('Glob', true, 'some error')
     expect(r.length).toBeGreaterThan(0)
+  })
+})
+
+describe('withReflexion', () => {
+  afterEach(() => {
+    delete process.env.LOCALCODE_REFLEXION
+  })
+
+  it('appends a reflexion note to errored tool output by default', () => {
+    delete process.env.LOCALCODE_REFLEXION
+    const out = withReflexion('Edit', true, 'old_string not found', 'BASE')
+    expect(out).toContain('BASE')
+    expect(out).toContain('[reflexion]')
+    expect(out).toContain('Read')
+  })
+
+  it('leaves output untouched on success', () => {
+    expect(withReflexion('Read', false, 'contents', 'BASE')).toBe('BASE')
+  })
+
+  it('is a no-op when LOCALCODE_REFLEXION=0', () => {
+    process.env.LOCALCODE_REFLEXION = '0'
+    expect(withReflexion('Edit', true, 'old_string not found', 'BASE')).toBe('BASE')
   })
 })

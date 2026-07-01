@@ -5,6 +5,8 @@ import { createHash } from 'crypto'
 import { EmbedClient } from './embedClient.js'
 import { IndexStore } from './store.js'
 import { chunkFile, chunkFileAsync, extractRelationships } from './chunker.js'
+import { hybridRank } from './hybridRank.js'
+import { buildRepoGraph, formatRepoMap } from './repoMapBuilder.js'
 import type { IndexResult, IndexQuery } from './types.js'
 
 const SOURCE_EXTS = new Set(['.py', '.ts', '.tsx', '.js', '.jsx', '.rs', '.go', '.java', '.c', '.cpp', '.rb', '.cs', '.lua', '.sh'])
@@ -116,19 +118,48 @@ export class ProjectIndexer {
     return { files: files.length, chunks, skipped }
   }
 
-  /** Query the index. Uses vector search if available, keyword fallback otherwise. */
+  /**
+   * Query the index. Fuses vector + lexical (BM25) retrieval via Reciprocal
+   * Rank Fusion when both are available. Set LOCALCODE_HYBRID_SEARCH=0 to fall
+   * back to the legacy vector-or-keyword behavior.
+   */
   async query(q: IndexQuery): Promise<IndexResult[]> {
     const topK = q.topK ?? 5
+    const hybridEnabled = process.env.LOCALCODE_HYBRID_SEARCH !== '0'
 
+    let vectorResults: IndexResult[] = []
     try {
       const queryEmbedding = await this.embedClient.embed(q.query)
-      const results = this.store.search(queryEmbedding, topK)
-      if (results.length > 0) return results
+      // Cast a wider candidate net when fusing so BM25 can re-rank.
+      vectorResults = this.store.search(queryEmbedding, hybridEnabled ? topK * 4 : topK)
     } catch {
       // Vector search failed — fall through to keyword
     }
 
-    return this.store.keywordSearch(q.query, topK)
+    if (!hybridEnabled) {
+      if (vectorResults.length > 0) return vectorResults
+      return this.store.keywordSearch(q.query, topK)
+    }
+
+    const keywordResults = this.store.keywordSearch(q.query, topK * 4)
+    if (vectorResults.length === 0) return keywordResults.slice(0, topK)
+    if (keywordResults.length === 0) return vectorResults.slice(0, topK)
+
+    return hybridRank(vectorResults, keywordResults, q.query, topK)
+  }
+
+  /**
+   * Build a repo-map block: the most important symbols by PageRank over the
+   * import/reference graph. Returns '' when the graph has no resolvable edges
+   * (PageRank would degenerate to uniform and add only noise).
+   */
+  buildRepoMap(seedFiles: string[] = [], topK = 20): string {
+    const defs = this.store.getAllDefinitions()
+    if (defs.length === 0) return ''
+    const rels = this.store.getAllRelationships()
+    const graph = buildRepoGraph(defs, rels, this.store.getIndexedFiles())
+    if (graph.edgeCount() === 0) return ''
+    return formatRepoMap(graph.pageRank(seedFiles, topK))
   }
 
   /** Check if the index is stale (files changed since last index). */

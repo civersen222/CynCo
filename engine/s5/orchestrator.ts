@@ -1,5 +1,6 @@
 import type { GovernanceReport } from '../vsm/types.js'
 import type { S5Input, S5Decision, S5Interface, DecisionLogEntry } from './types.js'
+import type { DifficultyLevel } from '../vsm/difficultyClassifier.js'
 import { getJournal } from '../training/decisionJournal.js'
 import { makeJournalEntry } from '../training/types.js'
 import { RuleWeightManager } from './ruleWeights.js'
@@ -26,6 +27,7 @@ export type OrchestratorInput = {
   productivityRatio?: number
   recommendedToolMode?: string | null
   heterarchyAuthority?: 's3' | 's4' | 's5' | null
+  promptDifficulty?: DifficultyLevel
 }
 
 export class S5Orchestrator {
@@ -77,6 +79,7 @@ export class S5Orchestrator {
       agreementRatio: (input.governance as any).agreementRatio ?? 1.0,
       observerDivergence: (input.governance as any).observerDivergence ?? null,
       demotedTools: [],
+      promptDifficulty: input.promptDifficulty ?? 'unknown',
       governance: input.governance as Record<string, unknown>,
     }
 

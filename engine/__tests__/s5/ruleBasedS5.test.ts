@@ -27,6 +27,7 @@ function baseInput(overrides: Partial<S5Input> = {}): S5Input {
     agreementRatio: 1.0,
     observerDivergence: null,
     demotedTools: [],
+    promptDifficulty: 'unknown',
     ...overrides,
   }
 }

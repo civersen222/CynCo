@@ -178,6 +178,24 @@ class TestVibeLoopScreenInteraction:
         assert screen._current_question_id == ""
 
 
+class TestProjectScannedCard:
+    """handle_project_scanned should build a real ProjectEntry card."""
+
+    def test_make_project_entry_builds_existing_card(self):
+        from localcode_tui.screens.vibe_loop import _make_project_entry
+        from localcode_tui.widgets.project_entry import ProjectEntry
+        entry = _make_project_entry("civkings", 15, ["Python"], "Strategy game")
+        assert isinstance(entry, ProjectEntry)
+        assert entry._mode == "existing"
+        assert entry._project_name == "civkings"
+        assert entry._file_count == 15
+        assert entry._languages == ["Python"]
+
+    def test_make_project_entry_none_without_summary(self):
+        from localcode_tui.screens.vibe_loop import _make_project_entry
+        assert _make_project_entry("anything", 0, [], "") is None
+
+
 class TestVibeEntryPoints:
     """Tests for vibe loop entry points."""
 

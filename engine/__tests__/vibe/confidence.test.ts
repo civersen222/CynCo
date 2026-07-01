@@ -1,27 +1,27 @@
 import { describe, expect, it } from 'bun:test'
-import { classifyDifficulty, ConfidenceScorer } from '../../vibe/confidence.js'
+import { classifyPromptComplexity, ConfidenceScorer } from '../../vibe/confidence.js'
 
-describe('classifyDifficulty', () => {
+describe('classifyPromptComplexity', () => {
   it('classifies trivial tasks', () => {
-    expect(classifyDifficulty('make button blue')).toBe('trivial')
-    expect(classifyDifficulty('change the text color')).toBe('trivial')
+    expect(classifyPromptComplexity('make button blue')).toBe('trivial')
+    expect(classifyPromptComplexity('change the text color')).toBe('trivial')
   })
 
   it('classifies simple tasks', () => {
-    expect(classifyDifficulty('add settings page')).toBe('simple')
-    expect(classifyDifficulty('create a new component')).toBe('simple')
+    expect(classifyPromptComplexity('add settings page')).toBe('simple')
+    expect(classifyPromptComplexity('create a new component')).toBe('simple')
   })
 
   it('classifies medium tasks', () => {
-    expect(classifyDifficulty('build inventory system with items and equipment')).toBe('medium')
+    expect(classifyPromptComplexity('build inventory system with items and equipment')).toBe('medium')
   })
 
   it('classifies complex tasks', () => {
-    expect(classifyDifficulty('multiplayer real-time combat with matchmaking and leaderboards')).toBe('complex')
+    expect(classifyPromptComplexity('multiplayer real-time combat with matchmaking and leaderboards')).toBe('complex')
   })
 
   it('classifies massive tasks', () => {
-    expect(classifyDifficulty('complete app like Uber with payments maps driver matching ratings notifications')).toBe('massive')
+    expect(classifyPromptComplexity('complete app like Uber with payments maps driver matching ratings notifications')).toBe('massive')
   })
 })
 

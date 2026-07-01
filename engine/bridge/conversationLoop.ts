@@ -13,13 +13,18 @@ import type { Provider } from '../provider.js'
 import { localCallModel, type CallModelDeps } from '../engine/callModel.js'
 import { ALL_TOOLS } from '../tools/registry.js'
 import { ToolExecutor, type RequestApprovalFn } from '../tools/executor.js'
+import { ToolScorer } from '../tools/toolScorer.js'
+import { DifficultyClassifier } from '../vsm/difficultyClassifier.js'
+import { withReflexion } from '../vsm/reflexionFeedback.js'
+import { ToolGating, applyToolGate } from '../vsm/toolGating.js'
+import { TestDrivenGovernor, shouldNudgeTests } from '../vsm/testDrivenGov.js'
 import type { ToolTrustProfile } from '../tools/approvalGate.js'
 import { WorkflowEngine } from '../workflows/engine.js'
 import type { WorkflowDefinition } from '../workflows/types.js'
 import { LSPManager } from '../lsp/manager.js'
 import { CyberneticsGovernance as GovernanceLayer } from '../vsm/cyberneticsGovernance.js'
 import { WorkspaceSnapshot } from '../snapshot/snapshot.js'
-// Advisor system imported dynamically in handleMessage to avoid circular deps
+import { runAdvisors, type SystemState as AdvisorState } from '../agents/advisorRouter.js'
 import { DecisionLogger } from '../decisions/logger.js'
 import { ContextCompressor, FileOperationTracker } from '../context/compressor.js'
 import type { S5Orchestrator } from '../s5/orchestrator.js'
@@ -48,7 +53,7 @@ type Message = {
   content: { type: string; text?: string; [key: string]: unknown }[]
 }
 
-const READ_ONLY_TOOLS = ['Read', 'Grep', 'Glob', 'CodeSearch', 'Ls', 'Git', 'ImageView']
+const READ_ONLY_TOOLS = ['Read', 'Grep', 'Glob', 'Ls', 'Git', 'ImageView']
 const SAFE_MODE_TOOLS = [...READ_ONLY_TOOLS, 'Bash']
 
 // S3 Resource Management: prevent single tool output from consuming all context
@@ -57,7 +62,6 @@ const TOOL_OUTPUT_LIMITS: Record<string, { maxLines: number; maxBytes: number }>
   Bash:       { maxLines: 100, maxBytes: 20_000 },
   Grep:       { maxLines: 100, maxBytes: 30_000 },
   Glob:       { maxLines: 100, maxBytes: 30_000 },
-  CodeSearch: { maxLines: 100, maxBytes: 30_000 },
   WebFetch:   { maxLines: 200, maxBytes: 50_000 },
   _default:   { maxLines: 200, maxBytes: 30_000 },
 }
@@ -121,6 +125,10 @@ export class ConversationLoop {
   private provider: Provider
   private emit: (event: EngineEvent) => void
   private executor: ToolExecutor
+  private toolScorer = new ToolScorer()
+  private toolScorerPath = require('path').join(require('os').homedir(), '.cynco', 'tool-scores.json')
+  // Observed task difficulty from turn telemetry — feeds S5Input.promptDifficulty
+  private difficultyClassifier = new DifficultyClassifier()
   private pendingApprovals = new Map<string, (approved: boolean) => void>()
   private workflowEngine: WorkflowEngine
   private lspManager: LSPManager
@@ -145,6 +153,8 @@ export class ConversationLoop {
   private lastSnapshotHash?: string
   private vibeMode = false
   private _correctionAttempts = 0
+  private toolGating = new ToolGating()
+  private tddGov = new TestDrivenGovernor()
   private allowedTools?: string[]
   // Tool names actually offered to the model in the current iteration (after
   // S5 restrictions, demotions, routing). In one-shot runs this is enforced
@@ -172,11 +182,13 @@ export class ConversationLoop {
       })
     }
 
+    this.toolScorer.load(this.toolScorerPath)
     this.executor = new ToolExecutor({
       cwd: opts.cwd ?? process.cwd(),
       requestApproval,
       trustProfile: opts.trustProfile,
       approveAll: opts.config.approveAll,
+      toolScorer: this.toolScorer,
     })
 
     // Inject sideQuery into Edit tool for semantic merge fallback
@@ -569,6 +581,17 @@ export class ConversationLoop {
         })
         console.log(`[index] Injected ${results.length} relevant chunks as system context`)
       }
+      // Opt-in repo map: top symbols by import-graph PageRank (token-costly).
+      if (process.env.LOCALCODE_REPO_MAP === '1') {
+        const repoMap = indexer.buildRepoMap([], 20)
+        if (repoMap) {
+          this.messages.splice(this.messages.length - 1, 0, {
+            role: 'system',
+            content: [{ type: 'text', text: repoMap }],
+          })
+          console.log('[index] Injected repo map as system context')
+        }
+      }
       indexer.close()
     } catch {
       // Index not available — proceed without it
@@ -774,6 +797,7 @@ export class ConversationLoop {
           agreementRatio: (govReport as any).agreementRatio ?? 1.0,
           observerDivergence: (govReport as any).observerDivergence ?? null,
           demotedTools: this.executor.getToolScorer?.()?.getDemotedTools() ?? [],
+          promptDifficulty: this.difficultyClassifier.getLevel(),
         })
 
         // Emit S5 decision to dashboard
@@ -1162,6 +1186,9 @@ export class ConversationLoop {
         console.log(`[vsm] Session-end evaluation error: ${e}`)
       }
 
+    // Persist tool trust scores so demotion signal survives across sessions
+    this.toolScorer.save(this.toolScorerPath)
+
     this.processing = false
     this.abortController = null
   }
@@ -1339,6 +1366,24 @@ export class ConversationLoop {
         continue
       }
 
+      // TDD governance nudge (opt-in: LOCALCODE_TDD_GOV=1). When no formal
+      // workflow is active and the model has edited repeatedly without running
+      // tests, push a single soft nudge to run tests. Push directly, never
+      // queue. Reset the streak so we nudge once per build-up, not every turn.
+      if (shouldNudgeTests(this.tddGov, {
+        flagOn: process.env.LOCALCODE_TDD_GOV === '1',
+        workflowActive: this.workflowEngine.state != null,
+      })) {
+        console.log('[tdd-gov] Nudging: run tests before more edits')
+        this.governance.markNudgeInjected()
+        this.addMessage({
+          role: 'user',
+          content: [{ type: 'text', text: this.tddGov.getTestDirective() }],
+        })
+        this.tddGov.recordToolCall('Bash') // reset edit streak (single nudge)
+        continue
+      }
+
       const lastMsg = this.messages[this.messages.length - 1]
       const lastRole = lastMsg?.role ?? 'none'
       const lastType = lastMsg?.content?.[0]?.type ?? 'empty'
@@ -1389,6 +1434,41 @@ export class ConversationLoop {
           }
         } catch (e) {
           console.log(`[vsm] S4 reflection failed: ${e}`)
+        }
+      }
+
+      // VSM advisor routing (opt-in: LOCALCODE_ADVISORS=1). During S4
+      // reflection, consult the firing domain advisors and inject their
+      // guidance into the executor context. Throttled like the reflector to
+      // avoid an inference storm on llama-cpp.
+      if (process.env.LOCALCODE_ADVISORS === '1' && !s4Skip) {
+        try {
+          const govReport = this.governance.getReport()
+          const lastUser = [...this.messages].reverse()
+            .find(m => m.role === 'user')?.content
+            .find((b: any) => b.type === 'text') as any
+          const advisorState: AdvisorState = {
+            turnCount: i + 1,
+            toolsUsedThisTurn: [],
+            toolsUsedTotal: this.governance.getRecentToolNames(),
+            toolFailureRate: 1.0 - govReport.toolSuccessRate,
+            varietyBalance: (govReport as any).varietyBalance ?? 'balanced',
+            stuckTurns: govReport.stuckTurns,
+            contextUtilization: 0,
+            expertise: this.config.expertise ?? 'intermediate',
+            lastUserMessage: lastUser?.text ?? '',
+            conversationLength: this.messages.length,
+          }
+          const guidance = await runAdvisors(
+            advisorState,
+            (sys, prompt) => this.sideQuery(`${sys}\n\n${prompt}`),
+          )
+          if (guidance) {
+            this.addMessage({ role: 'user', content: [{ type: 'text', text: guidance }] })
+            console.log('[advisors] Injected VSM advisor guidance')
+          }
+        } catch (e) {
+          console.log(`[advisors] routing failed: ${e}`)
         }
       }
 
@@ -1539,6 +1619,7 @@ export class ConversationLoop {
               agreementRatio: (govReport as any).agreementRatio ?? 1.0,
               observerDivergence: (govReport as any).observerDivergence ?? null,
               demotedTools: [],
+              promptDifficulty: this.difficultyClassifier.getLevel(),
             })
             if (decision.tools) {
               const allowed = new Set(decision.tools)
@@ -1553,6 +1634,22 @@ export class ConversationLoop {
           } catch (e) {
             console.log(`[s5] Live re-eval failed: ${e}`)
           }
+        }
+      }
+
+      // Final deterministic gate: attenuate overused/stuck tools out of the
+      // offered set. Pure narrowing — applyToolGate never empties the set.
+      if (currentStuck >= 2) {
+        const recent = this.governance.getRecentToolNames()
+        const lastTool = recent[recent.length - 1]
+        if (lastTool) this.toolGating.recordStuckTurn(lastTool)
+      }
+      const gated = this.toolGating.getRestrictedTools()
+      if (gated.length > 0) {
+        const narrowed = applyToolGate(iterationTools, gated)
+        if (narrowed.length !== iterationTools.length) {
+          console.log(`[toolgate] Attenuated overused tools: ${gated.join(', ')}`)
+          iterationTools = narrowed
         }
       }
 
@@ -2014,7 +2111,7 @@ export class ConversationLoop {
       // S1: Group read-only tools for parallel execution
       this.consecutiveNudges = 0
       const toolResults: Message['content'] = []
-      const P_READ_ONLY = new Set(['Read', 'Grep', 'Glob', 'CodeSearch', 'Ls', 'ImageView', 'Git'])
+      const P_READ_ONLY = new Set(['Read', 'Grep', 'Glob', 'Ls', 'ImageView', 'Git'])
       const batches = classifyParallelBatches(toolUseBlocks, P_READ_ONLY)
 
       for (const batch of batches) {
@@ -2059,7 +2156,7 @@ export class ConversationLoop {
       // If the model reads extensively without writing, nudge it to act.
       // Uses a ratio: after the model has read 3x more than it's written,
       // and at least 6 consecutive reads, suggest implementing.
-      const READ_ONLY = new Set(['Read', 'Grep', 'Glob', 'CodeSearch', 'Ls', 'ImageView'])
+      const READ_ONLY = new Set(['Read', 'Grep', 'Glob', 'Ls', 'ImageView'])
       const WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'ApplyPatch', 'Bash'])
       const totalReads = toolsUsedInSession.filter(t => READ_ONLY.has(t)).length
       const totalWrites = toolsUsedInSession.filter(t => WRITE_TOOLS.has(t)).length
@@ -2415,6 +2512,13 @@ export class ConversationLoop {
     // Governance: record tool result
     this.governance.onToolResult(toolName, !result.isError, Date.now() - toolStartMs, result.output, toolInput)
 
+    // Deterministic tool gating: track usage so consecutive-overuse can be
+    // attenuated out of the offered set on the next iteration (see runModelLoop).
+    this.toolGating.recordTool(toolName)
+
+    // TDD governance: track edit-vs-test cadence (opt-in nudge in runModelLoop).
+    this.tddGov.recordToolCall(toolName)
+
     // Governance: track read patterns for prediction system
     const toolFilePath = (toolInput as any).file_path ?? (toolInput as any).path ?? ''
     if (toolFilePath) {
@@ -2432,6 +2536,9 @@ export class ConversationLoop {
         outcome: { success: !result.isError, elapsed: Date.now() - toolStartMs, outputPreview: result.output.slice(0, 200) },
       }))
     }
+
+    // Feed tool telemetry to the difficulty classifier (escalates S5 governance intensity)
+    this.difficultyClassifier.recordTurn({ toolCalls: 1, errors: result.isError ? 1 : 0, tokens: 0 })
 
     // Record trajectory turn for future training
     try {
@@ -2534,10 +2641,13 @@ export class ConversationLoop {
         } catch {}
       }
     }
+    // S3* Reflexion: on a failed tool, append a specific self-correction note
+    // to the result the model reads next turn (gated by LOCALCODE_REFLEXION).
+    const resultText = withReflexion(toolName, result.isError, result.output, truncatedOutput)
     toolResults.push({
       type: 'tool_result',
       tool_use_id: toolId,
-      content: [{ type: 'text', text: truncatedOutput }],
+      content: [{ type: 'text', text: resultText }],
       is_error: result.isError,
     })
 

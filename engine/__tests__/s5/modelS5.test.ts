@@ -28,6 +28,7 @@ const baseInput: S5Input = {
   agreementRatio: 1.0,
   observerDivergence: null,
   demotedTools: [],
+  promptDifficulty: 'unknown',
 }
 
 // ─── Tests ────────────────────────────────────────────────────────

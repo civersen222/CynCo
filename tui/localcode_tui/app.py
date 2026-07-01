@@ -452,12 +452,7 @@ class LocalCodeApp(App):
     def _handle_vibe_project_scanned(self, event: VibeProjectScannedEvent) -> None:
         from .screens.vibe_loop import VibeLoopScreen
         if isinstance(self.screen, VibeLoopScreen):
-            try:
-                from .widgets.chat_panel import ChatPanel
-                chat = self.screen.query_one("#vibe-chat", ChatPanel)
-                chat.add_system_message(event.summary)
-            except Exception:
-                pass
+            self.screen.handle_project_scanned(event)
 
     def _handle_vibe_question(self, event: VibeQuestionEvent) -> None:
         from .screens.vibe_loop import VibeLoopScreen

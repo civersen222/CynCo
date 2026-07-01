@@ -1,7 +1,6 @@
 """Tests for TUI widgets (Task 19).
 
-Tests cover: ChatPanel, ContextBar, ApprovalDialog, ToolActivity,
-FilePreview, DiffView, FileTree, ProgressList.
+Tests cover: ChatPanel, ContextBar, ApprovalDialog, ToolActivity, ProgressList.
 """
 import pytest
 from unittest.mock import patch
@@ -166,73 +165,6 @@ class TestToolActivity:
         assert "ToolActivity" in ToolActivity.DEFAULT_CSS
 
 
-# ─── FilePreview ──────────────────────────────────────────────
-
-class TestFilePreview:
-    """Tests for the file preview widget."""
-
-    def test_import(self):
-        from localcode_tui.widgets.file_preview import FilePreview
-        assert FilePreview is not None
-
-    def test_inherits_static(self):
-        from localcode_tui.widgets.file_preview import FilePreview
-        assert issubclass(FilePreview, Static)
-
-    def test_has_show_file(self):
-        from localcode_tui.widgets.file_preview import FilePreview
-        assert hasattr(FilePreview, "show_file")
-
-    def test_has_show_diff(self):
-        from localcode_tui.widgets.file_preview import FilePreview
-        assert hasattr(FilePreview, "show_diff")
-
-    def test_default_css(self):
-        from localcode_tui.widgets.file_preview import FilePreview
-        assert "FilePreview" in FilePreview.DEFAULT_CSS
-
-
-# ─── DiffView ─────────────────────────────────────────────────
-
-class TestDiffView:
-    """Tests for the diff view widget."""
-
-    def test_import(self):
-        from localcode_tui.widgets.diff_view import DiffView
-        assert DiffView is not None
-
-    def test_inherits_static(self):
-        from localcode_tui.widgets.diff_view import DiffView
-        assert issubclass(DiffView, Static)
-
-    def test_has_show_diff(self):
-        from localcode_tui.widgets.diff_view import DiffView
-        assert hasattr(DiffView, "show_diff")
-
-    def test_default_css(self):
-        from localcode_tui.widgets.diff_view import DiffView
-        assert "DiffView" in DiffView.DEFAULT_CSS
-
-
-# ─── FileTree ─────────────────────────────────────────────────
-
-class TestFileTree:
-    """Tests for the file tree widget."""
-
-    def test_import(self):
-        from localcode_tui.widgets.file_tree import FileTree
-        assert FileTree is not None
-
-    def test_inherits_directory_tree(self):
-        from localcode_tui.widgets.file_tree import FileTree
-        from textual.widgets import DirectoryTree
-        assert issubclass(FileTree, DirectoryTree)
-
-    def test_default_css(self):
-        from localcode_tui.widgets.file_tree import FileTree
-        assert "FileTree" in FileTree.DEFAULT_CSS
-
-
 # ─── ProgressList ─────────────────────────────────────────────
 
 class TestProgressList:
@@ -287,9 +219,6 @@ class TestWidgetsInit:
             ContextBar,
             ApprovalDialog,
             ToolActivity,
-            FilePreview,
-            DiffView,
-            FileTree,
             ProgressList,
             ConfidenceBar,
             CompletionCard,
@@ -300,9 +229,6 @@ class TestWidgetsInit:
         assert ContextBar is not None
         assert ApprovalDialog is not None
         assert ToolActivity is not None
-        assert FilePreview is not None
-        assert DiffView is not None
-        assert FileTree is not None
         assert ProgressList is not None
         assert ConfidenceBar is not None
         assert CompletionCard is not None

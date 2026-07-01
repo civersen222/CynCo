@@ -13,6 +13,20 @@ from ..widgets.confidence_bar import ConfidenceBar
 from ..widgets.completion_screen import CompletionCard
 from ..widgets.worker_animation import WorkerAnimation
 from ..widgets.context_sidebar import ContextSidebar
+from ..widgets.project_entry import ProjectEntry
+
+
+def _make_project_entry(name: str, file_count: int, languages: list, summary: str) -> ProjectEntry | None:
+    """Build a context-aware ProjectEntry card from scan data.
+
+    Returns None when there's no summary to show (nothing to render).
+    Pure — no app/mount required, so it's unit-testable on its own.
+    """
+    if not summary:
+        return None
+    entry = ProjectEntry()
+    entry.set_existing_project(name, file_count, languages, summary)
+    return entry
 
 
 class VibeLoopScreen(Screen):
@@ -405,18 +419,23 @@ class VibeLoopScreen(Screen):
             pass
 
     def handle_project_scanned(self, event) -> None:
-        """Handle vibe.project_scanned event — show project summary."""
+        """Handle vibe.project_scanned event — mount a context-aware project card."""
         try:
-            chat = self.query_one("#vibe-chat", ChatPanel)
-            summary = getattr(event, 'summary', '')
-            file_count = getattr(event, 'file_count', 0)
-            languages = getattr(event, 'languages', [])
-            if summary:
-                header = f"[bold cyan]Project found[/bold cyan]"
-                if file_count:
-                    lang_str = ', '.join(languages[:3]) if languages else ''
-                    header += f" [dim]({file_count} files{', ' + lang_str if lang_str else ''})[/dim]"
-                chat.add_system_message(f"{header}\n{summary}")
+            project_dir = getattr(self.app, 'project_dir', None) or os.getcwd()
+            name = os.path.basename(os.path.normpath(project_dir))
+            entry = _make_project_entry(
+                name,
+                getattr(event, 'file_count', 0),
+                getattr(event, 'languages', []),
+                getattr(event, 'summary', ''),
+            )
+            if entry is None:
+                return
+            # Replace any prior card so a re-scan doesn't stack duplicates.
+            for old in self.query(ProjectEntry):
+                old.remove()
+            main = self.query_one("#vibe-main", Vertical)
+            main.mount(entry, before=self.query_one("#vibe-chat", ChatPanel))
         except Exception:
             pass
 

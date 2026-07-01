@@ -37,7 +37,7 @@ const TRIVIAL_KEYWORDS = [
 /**
  * Classify task difficulty from a natural-language description.
  */
-export function classifyDifficulty(description: string): DifficultyLevel {
+export function classifyPromptComplexity(description: string): DifficultyLevel {
   const lower = description.toLowerCase()
   const words = lower.split(/\s+/).filter(w => w.length > 0)
   const wordCount = words.length
