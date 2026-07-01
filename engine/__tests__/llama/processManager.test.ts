@@ -196,6 +196,45 @@ describe('ProcessManager', () => {
 describe('buildServerArgs — checkpoint caching (prefill elimination)', () => {
   const base = { modelPath: '/models/qwen.gguf', port: 8081 }
 
+  let savedCtxCheckpoints: string | undefined
+  let savedCheckpointMinStep: string | undefined
+  let savedUbatchSize: string | undefined
+  let savedCacheRam: string | undefined
+
+  beforeEach(() => {
+    savedCtxCheckpoints = process.env.LOCALCODE_CTX_CHECKPOINTS
+    savedCheckpointMinStep = process.env.LOCALCODE_CHECKPOINT_MIN_STEP
+    savedUbatchSize = process.env.LOCALCODE_UBATCH_SIZE
+    savedCacheRam = process.env.LOCALCODE_CACHE_RAM
+    delete process.env.LOCALCODE_CTX_CHECKPOINTS
+    delete process.env.LOCALCODE_CHECKPOINT_MIN_STEP
+    delete process.env.LOCALCODE_UBATCH_SIZE
+    delete process.env.LOCALCODE_CACHE_RAM
+  })
+
+  afterEach(() => {
+    if (savedCtxCheckpoints === undefined) {
+      delete process.env.LOCALCODE_CTX_CHECKPOINTS
+    } else {
+      process.env.LOCALCODE_CTX_CHECKPOINTS = savedCtxCheckpoints
+    }
+    if (savedCheckpointMinStep === undefined) {
+      delete process.env.LOCALCODE_CHECKPOINT_MIN_STEP
+    } else {
+      process.env.LOCALCODE_CHECKPOINT_MIN_STEP = savedCheckpointMinStep
+    }
+    if (savedUbatchSize === undefined) {
+      delete process.env.LOCALCODE_UBATCH_SIZE
+    } else {
+      process.env.LOCALCODE_UBATCH_SIZE = savedUbatchSize
+    }
+    if (savedCacheRam === undefined) {
+      delete process.env.LOCALCODE_CACHE_RAM
+    } else {
+      process.env.LOCALCODE_CACHE_RAM = savedCacheRam
+    }
+  })
+
   it('adds checkpoint and ubatch defaults', () => {
     const args = buildServerArgs(base)
     expect(argValue(args, '--ctx-checkpoints')).toBe('64')
@@ -204,7 +243,6 @@ describe('buildServerArgs — checkpoint caching (prefill elimination)', () => {
   })
 
   it('omits --cache-ram by default so the llama.cpp default applies', () => {
-    delete process.env.LOCALCODE_CACHE_RAM
     const args = buildServerArgs(base)
     expect(args).not.toContain('--cache-ram')
   })
@@ -218,7 +256,6 @@ describe('buildServerArgs — checkpoint caching (prefill elimination)', () => {
     process.env.LOCALCODE_CACHE_RAM = '2048'
     const args = buildServerArgs(base)
     expect(argValue(args, '--cache-ram')).toBe('2048')
-    delete process.env.LOCALCODE_CACHE_RAM
   })
 
   it('honors config overrides for checkpoint/ubatch flags', () => {
@@ -236,8 +273,11 @@ describe('buildServerArgs — checkpoint caching (prefill elimination)', () => {
     expect(argValue(args, '--ctx-checkpoints')).toBe('32')
     expect(argValue(args, '--checkpoint-min-step')).toBe('2048')
     expect(argValue(args, '--ubatch-size')).toBe('512')
-    delete process.env.LOCALCODE_CTX_CHECKPOINTS
-    delete process.env.LOCALCODE_CHECKPOINT_MIN_STEP
-    delete process.env.LOCALCODE_UBATCH_SIZE
+  })
+
+  it('falls back to default when LOCALCODE_UBATCH_SIZE is garbage', () => {
+    process.env.LOCALCODE_UBATCH_SIZE = 'abc'
+    const args = buildServerArgs(base)
+    expect(argValue(args, '--ubatch-size')).toBe('2048')
   })
 })

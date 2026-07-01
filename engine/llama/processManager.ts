@@ -22,7 +22,9 @@ export type ServerConfig = {
 
 function envInt(name: string): number | undefined {
   const v = process.env[name]
-  return v != null && v !== '' ? parseInt(v, 10) : undefined
+  if (v == null || v === '') return undefined
+  const n = parseInt(v, 10)
+  return Number.isNaN(n) ? undefined : n
 }
 
 /**
@@ -65,7 +67,7 @@ export function buildServerArgs(config: ServerConfig): string[] {
   // append-only — see engine/__tests__/engine/prefixStability.test.ts.
   const cacheRam = config.cacheRam != null
     ? String(config.cacheRam)
-    : process.env.LOCALCODE_CACHE_RAM
+    : process.env.LOCALCODE_CACHE_RAM // string passthrough — value forwarded verbatim, no envInt
   if (cacheRam != null && cacheRam !== '') {
     args.push('--cache-ram', cacheRam)
   }
