@@ -23,6 +23,7 @@ import { WorkflowEngine } from '../workflows/engine.js'
 import type { WorkflowDefinition } from '../workflows/types.js'
 import { LSPManager } from '../lsp/manager.js'
 import { CyberneticsGovernance as GovernanceLayer } from '../vsm/cyberneticsGovernance.js'
+import { buildGovernanceSignal } from '../vsm/governanceSignal.js'
 import { WorkspaceSnapshot } from '../snapshot/snapshot.js'
 import { runAdvisors, type SystemState as AdvisorState } from '../agents/advisorRouter.js'
 import { DecisionLogger } from '../decisions/logger.js'
@@ -1605,27 +1606,15 @@ export class ConversationLoop {
       this.config.temperature = effectiveTemperature
 
       // ── Dynamic governance intervention (re-evaluated EVERY iteration) ──
-      // The static systemPrompt was built before the loop with stuckCount=0.
-      // We must rebuild the governance signal portion on each iteration so the
-      // model actually sees "you are stuck" when it IS stuck.
-      let effectiveSystemPrompt = systemPrompt
+      // Delivered as an APPENDED user message, never a system-prompt rewrite:
+      // the prompt prefix must stay byte-stable for checkpoint caching.
       const currentStuck = this.governance.getStuckCount()
+      const govSignal = buildGovernanceSignal(currentStuck)
+      if (govSignal) {
+        this.addMessage({ role: 'user', content: [{ type: 'text', text: govSignal }] })
+        console.log(`[governance] Stuck signal appended as message (stuck=${currentStuck})`)
+      }
       if (currentStuck >= 3) {
-        const signal = currentStuck >= 5
-          ? `\n\n## GOVERNANCE SIGNAL — CRITICAL (turn ${currentStuck})\n\n` +
-            `CRITICAL: You have been stuck for ${currentStuck} turns repeating the same actions.\n\n` +
-            `You MUST change your approach NOW:\n` +
-            `- Do NOT call any tool you have used in the last 5 turns\n` +
-            `- Use a DIFFERENT available tool, or change the tool's parameters completely\n` +
-            `- If repeated attempts keep failing → try a COMPLETELY different strategy\n` +
-            `- If you already have enough information → STOP using tools and produce your final answer\n\n` +
-            `YOUR NEXT ACTION MUST BE DIFFERENT FROM YOUR PREVIOUS ACTIONS.`
-          : `\n\n## GOVERNANCE SIGNAL (turn ${currentStuck})\n\n` +
-            `WARNING: You have been repeating similar actions for ${currentStuck} turns.\n` +
-            `Change your approach: use a different tool or different parameters, or act on what you already know.`
-        // Append governance signal to the frozen system prompt
-        effectiveSystemPrompt = asSystemPrompt([...systemPrompt, signal])
-
         // Re-evaluate S5 to get fresh tool restrictions (C7 fires at stuck >= 5)
         console.log(`[s5] Live re-eval check: stuck=${currentStuck} s5=${!!this.s5}`)
         if (currentStuck >= 5 && this.s5) {
@@ -1693,7 +1682,7 @@ export class ConversationLoop {
       this.offeredToolNames = new Set(iterationTools.map((t: any) => t.name))
       const gen = localCallModel({
         messages: this.messages,
-        systemPrompt: effectiveSystemPrompt,
+        systemPrompt,
         thinkingConfig,
         tools: iterationTools,
         signal: this.abortController?.signal ?? new AbortController().signal,
@@ -1931,7 +1920,7 @@ export class ConversationLoop {
       // the messages-only estimate read 54% while the server was rejecting
       // requests at 100%, so the critical path never fired.
       const promptOverheadTokens =
-        JSON.stringify(effectiveSystemPrompt ?? '').length / 4 +
+        JSON.stringify(systemPrompt ?? '').length / 4 +
         JSON.stringify(iterationTools ?? []).length / 4
       const estimatedTokens = promptOverheadTokens + this.estimateMessageTokens()
       const contextLength = this.config.contextLength ?? 32768
