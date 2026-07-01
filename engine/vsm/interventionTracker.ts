@@ -12,6 +12,8 @@ type InterventionRecord = {
   timestamp: number
 }
 
+export type InterventionCounts = Record<string, { success: number; total: number }>
+
 export class InterventionTracker {
   private records: InterventionRecord[] = []
   private successCounts: Map<string, { success: number; total: number }> = new Map()
@@ -36,5 +38,20 @@ export class InterventionTracker {
 
   getHistory(): InterventionRecord[] {
     return [...this.records]
+  }
+
+  /** Export success counts for persistence across sessions. */
+  serialize(): InterventionCounts {
+    const out: InterventionCounts = {}
+    for (const [type, c] of this.successCounts) out[type] = { success: c.success, total: c.total }
+    return out
+  }
+
+  /** Replace success counts from persisted state (does not merge). */
+  restore(counts: InterventionCounts): void {
+    this.successCounts.clear()
+    for (const [type, c] of Object.entries(counts)) {
+      this.successCounts.set(type, { success: c.success, total: c.total })
+    }
   }
 }

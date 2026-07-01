@@ -36,4 +36,22 @@ describe('InterventionTracker', () => {
     expect(history[0].type).toBe('test_forcing')
     expect(history[0].success).toBe(true)
   })
+
+  it('round-trips success counts via serialize/restore', () => {
+    tracker.recordIntervention('grounding', true)
+    tracker.recordIntervention('grounding', false)
+    tracker.recordIntervention('grounding', true)
+
+    const restored = new InterventionTracker()
+    restored.restore(tracker.serialize())
+
+    expect(restored.getSuccessRate('grounding')).toBeCloseTo(2 / 3)
+    expect(restored.shouldIntervene('grounding')).toBe(true)
+  })
+
+  it('restore replaces (not merges) existing counts', () => {
+    tracker.recordIntervention('grounding', false)
+    tracker.restore({ grounding: { success: 5, total: 5 } })
+    expect(tracker.getSuccessRate('grounding')).toBe(1)
+  })
 })
