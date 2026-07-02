@@ -72,7 +72,7 @@ export function buildServerArgs(config: ServerConfig): string[] {
     args.push('--cache-ram', cacheRam)
   }
   args.push('--ctx-checkpoints', String(config.ctxCheckpoints ?? envInt('LOCALCODE_CTX_CHECKPOINTS') ?? 64))
-  args.push('--checkpoint-min-step', String(config.checkpointMinStep ?? envInt('LOCALCODE_CHECKPOINT_MIN_STEP') ?? 1024))
+  args.push('--checkpoint-min-step', String(config.checkpointMinStep ?? envInt('LOCALCODE_CHECKPOINT_MIN_STEP') ?? 256))
   // Default 256: >256 thinking tokens hurts tool-call accuracy and uncapped reasoning
   // can burn 30K+ invisible tokens (5+ min wasted per iteration).
   // Raise via LOCALCODE_REASONING_BUDGET if your model needs more deliberation.

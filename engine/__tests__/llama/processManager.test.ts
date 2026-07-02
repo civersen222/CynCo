@@ -238,7 +238,7 @@ describe('buildServerArgs — checkpoint caching (prefill elimination)', () => {
   it('adds checkpoint and ubatch defaults', () => {
     const args = buildServerArgs(base)
     expect(argValue(args, '--ctx-checkpoints')).toBe('64')
-    expect(argValue(args, '--checkpoint-min-step')).toBe('1024')
+    expect(argValue(args, '--checkpoint-min-step')).toBe('256')
     expect(argValue(args, '--ubatch-size')).toBe('2048')
   })
 

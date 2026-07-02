@@ -1,0 +1,20 @@
+=== AGENTIC PREFILL BENCH ===
+model: Qwen3.6-27B-Q6_K.gguf  sessions: 1  turns: 12
+tool-call misses (synthesized): 1
+
+turn  prompt_tok   ttft_ms   decode_tps
+   1        1074      1042       204.9
+   2        1244       336       121.5
+   3        1581       431       117.1
+   4        2226       755       182.4
+   5        3376       719       186.2
+   6        5211       972       172.4
+   7        7816      1303       156.6
+   8       11392      1733       175.1
+   9       16003      2220       127.8
+  10       21758      2693       107.4
+  11       28988      3624       110.3
+  12       37837      4520        93.3
+
+TTFT growth: 107.6 ms per 1K prompt tokens  (turn1=1042ms → turn12=4520ms)
+shape: LINEAR (incremental prefill grows with context)

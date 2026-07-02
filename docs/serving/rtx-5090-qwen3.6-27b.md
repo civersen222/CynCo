@@ -31,7 +31,7 @@ llama-server \
   --flash-attn on \
   --parallel 1 \
   --ctx-checkpoints 64 \
-  --checkpoint-min-step 1024 \
+  --checkpoint-min-step 256 \
   --reasoning-budget 256
 ```
 
@@ -54,12 +54,12 @@ throughput win on this model — expect roughly ~100 tok/s decode.
 | `--flash-attn` | `on` | `LOCALCODE_FLASH_ATTN` (`false` to disable) | `flash_attn` | Keep ON. FlashAttention cuts KV memory and speeds long-context prefill — essential for 32K on 32 GB. |
 | `--threads` | (unset unless provided) | `LOCALCODE_THREADS` | `threads` | Only matters for CPU-side work; with full GPU offload leave unset. |
 | `--spec-type` | (only if set) | — | `spec_type` | Set to `draft-mtp` to use Qwen3.6's native multi-token-prediction draft head. No separate draft model needed. |
-| `--spec-draft-n-max` | `2` (when spec on) | — | `spec_draft_n` | `3` is the sweet spot for Qwen3.6 MTP per the live setup. Higher = more speculative tokens per step but more rejection cost. |
+| `--spec-draft-n-max` | `2` (when spec on) | `LOCALCODE_SPEC_DRAFT_N` | `spec_draft_n` | `3` is the sweet spot for Qwen3.6 MTP — measured A/B (2026-07-01, benchAgentic): n=3 median decode 153.7 tok/s vs n=2 142.2 tok/s (acceptance 0.95 vs 0.97). |
 | `--parallel` | `1` | — | — | Single slot. LocalCode processes one request at a time; don't raise. |
 | `--cache-ram` | (omitted — llama.cpp default) | `LOCALCODE_CACHE_RAM` | `cache_ram` | Leave at the llama.cpp default. The host-memory prompt cache is **required** for checkpoint rollback (see `--ctx-checkpoints` below) — do not set to 0. `LOCALCODE_CACHE_RAM`/`cache_ram` still override when set. |
 | `--ubatch-size` | `2048` | `LOCALCODE_UBATCH_SIZE` | `ubatch_size` | Physical prefill batch. llama.cpp default is 512; 2048 is the biggest single prefill-speed knob (~1-2 GB extra compute buffer). |
-| `--ctx-checkpoints` | `64` | `LOCALCODE_CTX_CHECKPOINTS` | `ctx_checkpoints` | Recurrent-state snapshots during prefill. Qwen3.6 is hybrid DeltaNet — checkpoints (not `--swa-full`) enable prefix-cache rollback (llama.cpp #21831). ~75 MiB each. |
-| `--checkpoint-min-step` | `1024` | `LOCALCODE_CHECKPOINT_MIN_STEP` | `checkpoint_min_step` | Minimum token spacing between checkpoints. |
+| `--ctx-checkpoints` | `64` | `LOCALCODE_CTX_CHECKPOINTS` | `ctx_checkpoints` | Recurrent-state snapshots during prefill. Qwen3.6 is hybrid DeltaNet — checkpoints (not `--swa-full`) enable prefix-cache rollback (llama.cpp #21831). Measured ~150 MiB each on this model. Note: this llama.cpp build already defaults to 32 checkpoints / 256 spacing; the explicit flags document the requirement. |
+| `--checkpoint-min-step` | `256` | `LOCALCODE_CHECKPOINT_MIN_STEP` | `checkpoint_min_step` | Minimum token spacing between checkpoints. 256 matches the build default; coarser spacing wastes up to that many tokens of re-prefill after each rollback. |
 | `--reasoning-budget` | `256` | `LOCALCODE_REASONING_BUDGET` | `reasoning_budget` | Caps thinking tokens. >256 hurts tool-call accuracy and uncapped reasoning can burn 30K+ invisible tokens (5+ min/iter). Raise only if a task genuinely needs deeper deliberation. |
 | `--lora` | (only if `loraPath`) | — | — | Set at runtime via the adapter swap path, not statically. |
 
@@ -81,8 +81,8 @@ runtime:
   batch_size: 2048            # → --batch-size 2048
   ubatch_size: 2048           # → --ubatch-size 2048      (physical prefill batch)
   flash_attn: true            # → --flash-attn on
-  ctx_checkpoints: 64         # → --ctx-checkpoints 64    (recurrent-state snapshots; ~75 MiB each)
-  checkpoint_min_step: 1024   # → --checkpoint-min-step 1024
+  ctx_checkpoints: 64         # → --ctx-checkpoints 64    (recurrent-state snapshots; ~150 MiB each)
+  checkpoint_min_step: 256    # → --checkpoint-min-step 256
   # cache_ram: 2048           # → --cache-ram 2048        (optional override; leave unset to use llama.cpp default)
   reasoning_budget: 256       # → --reasoning-budget 256
 ```
@@ -97,15 +97,15 @@ LOCALCODE_BATCH_SIZE=2048 \
 LOCALCODE_UBATCH_SIZE=2048 \
 LOCALCODE_FLASH_ATTN=true \
 LOCALCODE_CTX_CHECKPOINTS=64 \
-LOCALCODE_CHECKPOINT_MIN_STEP=1024 \
+LOCALCODE_CHECKPOINT_MIN_STEP=256 \
 LOCALCODE_REASONING_BUDGET=256 \
 bun engine/main.ts
 ```
 
-(`spec_type` / `spec_draft_n` have no env override — they come from the profile
-`runtime:` block only. `LOCALCODE_CACHE_RAM` is available if you need to
-explicitly override the llama.cpp default, but should not be needed for
-normal use.)
+(`spec_type` has no env override — it comes from the profile `runtime:` block
+only; `spec_draft_n` can be overridden with `LOCALCODE_SPEC_DRAFT_N`.
+`LOCALCODE_CACHE_RAM` is available if you need to explicitly override the
+llama.cpp default, but should not be needed for normal use.)
 
 ---
 
@@ -119,8 +119,9 @@ Rough back-of-envelope so you know how much context you can afford:
   compete with weights — check `nvidia-smi` before committing.
 - **MTP draft head:** small, included in the model; negligible extra VRAM but
   buys most of the decode speedup.
-- **Context checkpoints (`--ctx-checkpoints 64`):** ~75 MiB per checkpoint ×
-  64 = ~4.8 GB in host RAM (not VRAM). These snapshot the recurrent state of
+- **Context checkpoints (`--ctx-checkpoints 64`):** measured ~150 MiB per
+  checkpoint on Qwen3.6-27B, held in host RAM (not VRAM) and capped by the
+  prompt cache size limit (8 GiB by default). These snapshot the recurrent state of
   Qwen3.6's hybrid Gated DeltaNet layers during prefill so that warm turns
   roll back to the nearest checkpoint instead of re-prefilling from token 0
   (llama.cpp #21831). The host-memory prompt cache must remain enabled (do not

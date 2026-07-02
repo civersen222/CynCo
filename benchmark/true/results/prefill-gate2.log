@@ -1,0 +1,534 @@
+[config] loaded profile 'default'
+[bench-agentic] model=qwen3.6-27b-q6k  sessions=2  turns=12  accumulates ~26,350 tokens
+[llama-cpp] Binary: C:\Users\civer\.cynco\bin\llama-server.exe
+[llama-cpp] Model: C:\Users\civer\.cynco\models\qwen3.6-27b-q6k\Qwen3.6-27B-Q6_K.gguf
+[llama-cpp] Starting: C:\Users\civer\.cynco\bin\llama-server.exe --model C:\Users\civer\.cynco\models\qwen3.6-27b-q6k\Qwen3.6-27B-Q6_K.gguf --port 8081 --host 127.0.0.1 --ctx-size 65536 --n-gpu-layers 999 --batch-size 2048 --ubatch-size 2048 --flash-attn on --spec-type draft-mtp --spec-draft-n-max 3 --parallel 1 --ctx-checkpoints 64 --checkpoint-min-step 1024 --reasoning-budget 256
+[llama-server] 0.00.086.161 I log_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.086.166 I device_info:
+[llama-server] 0.00.175.094 I   - CUDA0   : NVIDIA GeForce RTX 5090 (32606 MiB, 30927 MiB free)
+0.00.175.104 I   - CPU     : AMD Ryzen 9 9950X3D 16-Core Processor           (65080 MiB, 42269 MiB free)
+[llama-server] 0.00.175.166 I system_info: n_threads = 16 (n_threads_batch = 16) / 32 | CUDA : ARCHS = 500,610,700,750,800,860,890,900 | USE_GRAPHS = 1 | PEER_MAX_BATCH_SIZE = 128 | CPU : SSE3 = 1 | SSSE3 = 1 | AVX = 1 | AVX2 = 1 | F16C = 1 | FMA = 1 | BMI2 = 1 | AVX512 = 1 | AVX512_VBMI = 1 | AVX512_VNNI = 1 | AVX512_BF16 = 1 | LLAMAFILE = 1 | OPENMP = 1 | REPACK = 1 | 
+0.00.175.206 I srv          init: running without SSL
+0.00.175.230 I srv          init: using 31 threads for HTTP server
+0.00.175.336 I srv         start: binding port with default address family
+[llama-server] 0.00.180.286 I srv  llama_server: loading model
+0.00.180.298 I
+[llama-server] srv    load_model: loading model 'C:\Users\civer\.cynco\models\qwen3.6-27b-q6k\Qwen3.6-27B-Q6_K.gguf'
+[llama-server] 0.00.494.055 I srv    load_model: [spec] estimated memory usage of MTP context is 784.06 MiB
+0.00.494.080 I common_init_result: fitting params to device memory ...
+0.00.494.080 I common_init_result: (for bugs during this step try to reproduce them with -fit off, or provide --verbose logs if the bug only occurs with -fit on)
+[llama-server] 0.08.917.823 W llama_context: n_ctx_seq (65536) < n_ctx_train (262144) -- the full capacity of the model will not be utilized
+[llama-server] 0.09.131.257 I common_init_from_params: warming up the model with an empty run - please wait ... (--no-warmup to disable)
+[llama-server] 0.09.268.929 I srv    load_model: creating MTP draft context against the target model 'C:\Users\civer\.cynco\models\qwen3.6-27b-q6k\Qwen3.6-27B-Q6_K.gguf'
+[llama-server] 0.09.268.985 W llama_context: n_ctx_seq (65536) < n_ctx_train (262144) -- the full capacity of the model will not be utilized
+[llama-server] 0.10.091.906 I srv    load_model: initializing slots, n_slots = 1
+[llama-server] 0.10.104.416 I common_context_can_seq_rm: the context supports bounded partial sequence removal
+[llama-server] 0.10.128.510 I common_speculative_impl_draft_mtp: adding speculative implementation 'draft-mtp'
+0.10.128.516 I common_speculative_impl_draft_mtp: - n_max=3, n_min=0, p_min=0.00, n_embd=5120, backend_sampling=1
+[llama-server] 0.10.128.519 I common_speculative_impl_draft_mtp: - gpu_layers=-1, cache_k=f16, cache_v=f16, ctx_tgt=yes, ctx_dft=yes, devices=[default]
+[llama-server] 0.10.128.634 I srv    load_model: speculative decoding context initialized
+0.10.128.637 I
+[llama-server] slot   load_model: id  0 | task -1 | new slot, n_ctx = 65536
+[llama-server] 0.10.128.676 I srv    load_model: prompt cache is enabled, size limit: 8192 MiB
+0.10.128.679 I srv    load_model: use `--cache-ram 0` to disable the prompt cache
+[llama-server] 0.10.128.679 I srv    load_model: for more info see https://github.com/ggml-org/llama.cpp/pull/16391
+0.10.128.680 I srv    load_model: context checkpoints enabled, max = 64, min spacing = 1024
+[llama-server] 0.10.128.709 W srv          init: --cache-idle-slots requires --kv-unified, disabling
+[llama-server] 0.10.143.484 I init: chat template, example_format: '<|im_start|>system
+You are a helpful assistant<|im_end|>
+<|im_start|>user
+Hello<|im_end|>
+<|im_start|>assistant
+Hi there<|im_end|>
+<|im_start|>user
+How are you?<|im_end|>
+<|im_start|>assistant
+<think>
+'
+[llama-server] 0.10.154.252 I srv          init: init: chat template, thinking = 1
+[llama-server] 0.10.154.286 I srv  llama_server: model loaded
+0.10.154.292 I srv  llama_server: server is listening on http://127.0.0.1:8081
+0.10.154.297 I srv  update_slots: all slots are idle
+[llama-cpp] Server healthy on port 8081
+
+=== SESSION 1/2 ===
+[llama-server] 0.10.415.690 I
+[llama-server] srv  params_from_: Chat format: peg-native
+[llama-server] 0.10.417.906 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = -1
+0.10.417.917 I srv  get_availabl: updating prompt cache
+0.10.417.926 I srv          load:  - looking for better prompt, base f_keep = -1.000, sim = 0.000
+0.10.417.931 I srv        update:  - cache state: 0 prompts, 0.000 MiB (limits: 8192.000 MiB, 65536 tokens, 8589934592 est)
+0.10.417.933 I srv  get_availabl: prompt cache update took 0.01 ms
+[llama-server] 0.10.418.623 I reasoning-budget: activated, budget=256 tokens
+0.10.418.631 I reasoning-budget: deactivated (natural end)
+0.10.418.656 I slot launch_slot_: id  0 | task 0 | processing task, is_child = 0
+[llama-server] 0.11.152.360 I slot create_check: id  0 | task 0 | created context checkpoint 1 of 64 (pos_min = 1051, pos_max = 1051, n_tokens = 1052, size = 153.756 MiB)
+[llama-server] 0.11.435.706 I slot print_timing: id  0 | task 0 | prompt eval time =     822.32 ms /  1074 tokens (    0.77 ms per token,  1306.05 tokens per second)
+0.11.435.711 I slot print_timing: id  0 | task 0 |        eval time =     194.60 ms /    25 tokens (    7.78 ms per token,   128.47 tokens per second)
+0.11.435.712 I slot print_timing: id  0 | task 0 |       total time =    1016.93 ms /  1099 tokens
+0.11.435.713 I slot print_timing: id  0 | task 0 |    graphs reused =          6
+0.11.435.714 I slot print_timing: id  0 | task 0 | draft acceptance = 1.00000 (   18 accepted /    18 generated)
+[llama-server] 0.11.435.736 I statistics        draft-mtp: #calls(b,g,a) =    1      6      6, #gen drafts =      6, #acc drafts =     6, #gen tokens =     18, #acc tokens =    18, dur(b,g,a) = 0.001, 26.991, 0.003 ms
+0.11.435.864 I slot      release: id  0 | task 0 | stop processing: n_tokens = 1098, truncated = 0
+0.11.435.884 I srv  update_slots: all slots are idle
+  s1 turn  1  prompt_tok   1074  ttft    936ms  decode  227.3 tok/s
+[llama-server] 0.11.455.017 I srv  params_from_: Chat format: peg-native
+[llama-server] 0.11.456.566 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, sim_best = 0.860 (> 0.100 thold), f_keep = 0.974
+[llama-server] 0.11.456.851 I reasoning-budget: activated, budget=256 tokens
+0.11.456.853 I reasoning-budget: deactivated (natural end)
+[llama-server] 0.11.456.972 I slot launch_slot_: id  0 | task 10 | processing task, is_child = 0
+0.11.456.982 I slot update_slots: id  0 | task 10 | Checking checkpoint with [1051, 1051] against 1070...
+[llama-server] 0.11.505.908 W slot update_slots: id  0 | task 10 | restored context checkpoint (pos_min = 1051, pos_max = 1051, n_tokens = 1052, n_past = 1052, size = 153.756 MiB)
+[llama-server] 0.11.905.701 I slot print_timing: id  0 | task 10 | prompt eval time =     203.55 ms /   192 tokens (    1.06 ms per token,   943.27 tokens per second)
+0.11.905.707 I slot print_timing: id  0 | task 10 |        eval time =     245.08 ms /    26 tokens (    9.43 ms per token,   106.09 tokens per second)
+0.11.905.708 I slot print_timing: id  0 | task 10 |       total time =     448.63 ms /   218 tokens
+0.11.905.709 I slot print_timing: id  0 | task 10 |    graphs reused =         12
+0.11.905.710 I
+  s1 turn  2  prompt_tok   1244  ttft    292ms  decode  146.9 tok/s
+[llama-server] slot print_timing: id  0 | task 10 | draft acceptance = 0.95238 (   20 accepted /    21 generated)
+0.11.905.732 I statistics        draft-mtp: #calls(b,g,a) =    2     13     13, #gen drafts =     13, #acc drafts =    13, #gen tokens =     39, #acc tokens =    38, dur(b,g,a) = 0.002, 52.028, 0.010 ms
+0.11.905.838 I slot      release: id  0 | task 10 | stop processing: n_tokens = 1271, truncated = 0
+0.11.905.898 I srv  update_slots: all slots are idle
+[llama-server] 0.11.925.942 I srv  params_from_: Chat format: peg-native
+[llama-server] 0.11.927.647 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, sim_best = 0.784 (> 0.100 thold), f_keep = 0.976
+[llama-server] 0.11.927.945 I reasoning-budget: activated, budget=256 tokens
+0.11.927.948 I reasoning-budget: deactivated (natural end)
+[llama-server] 0.11.928.052 I slot launch_slot_: id  0 | task 21 | processing task, is_child = 0
+0.11.928.061 I slot update_slots: id  0 | task 21 | Checking checkpoint with [1051, 1051] against 1240...
+[llama-server] 0.11.977.417 W slot update_slots: id  0 | task 21 | restored context checkpoint (pos_min = 1051, pos_max = 1051, n_tokens = 1052, n_past = 1052, size = 153.756 MiB)
+[llama-server] 0.12.541.020 I slot print_timing: id  0 | task 21 | prompt eval time =     312.00 ms /   529 tokens (    0.59 ms per token,  1695.54 tokens per second)
+0.12.541.025 I slot print_timing: id  0 | task 21 |        eval time =     300.87 ms /    39 tokens (    7.71 ms per token,   129.62 tokens per second)
+0.12.541.026 I
+[llama-server] slot print_timing: id  0 | task 21 |       total time =     612.87 ms /   568 tokens
+0.12.541.026 I slot print_timing: id  0 | task 21 |    graphs reused =         21
+0.12.541.027 I slot print_timing: id  0 | task 21 | draft acceptance = 0.93333 (   28 accepted /    30 generated)
+0.12.541.042 I statistics        draft-mtp: #calls(b,g,a) =    3     23     23, #gen drafts =     23, #acc drafts =    23, #gen tokens =     69, #acc tokens =    66, dur(b,g,a) = 0.003, 89.640, 0.018 ms
+0.12.541.137 I slot      release: id  0 | task 21 | stop processing: n_tokens = 1619, truncated = 0
+0.12.541.195 I srv  update_slots: all slots are idle
+  s1 turn  3  prompt_tok   1581  ttft    407ms  decode  169.6 tok/s
+[llama-server] 0.12.573.842 I srv  params_from_: Chat format: peg-native
+[llama-server] 0.12.576.591 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, sim_best = 0.708 (> 0.100 thold), f_keep = 0.974
+[llama-server] 0.12.577.195 I reasoning-budget: activated, budget=256 tokens
+0.12.577.200 I reasoning-budget: deactivated (natural end)
+[llama-server] 0.12.577.349 I slot launch_slot_: id  0 | task 35 | processing task, is_child = 0
+0.12.577.358 I
+[llama-server] slot update_slots: id  0 | task 35 | Checking checkpoint with [1051, 1051] against 1577...
+[llama-server] 0.12.626.831 W slot update_slots: id  0 | task 35 | restored context checkpoint (pos_min = 1051, pos_max = 1051, n_tokens = 1052, n_past = 1052, size = 153.756 MiB)
+[llama-server] 0.13.138.009 I slot create_check: id  0 | task 35 | created context checkpoint 2 of 64 (pos_min = 2204, pos_max = 2204, n_tokens = 2205, size = 158.282 MiB)
+[llama-server] 0.13.493.693 I slot print_timing: id  0 | task 35 | prompt eval time =     636.77 ms /  1174 tokens (    0.54 ms per token,  1843.69 tokens per second)
+0.13.493.698 I slot print_timing: id  0 | task 35 |        eval time =     279.46 ms /    31 tokens (    9.01 ms per token,   110.93 tokens per second)
+0.13.493.699 I slot print_timing: id  0 | task 35 |       total time =     916.23 ms /  1205 tokens
+0.13.493.700 I slot print_timing: id  0 | task 35 |    graphs reused =         28
+[llama-server] 0.13.493.702 I slot print_timing: id  0 | task 35 | draft acceptance = 1.00000 (   24 accepted /    24 generated)
+0.13.493.723 I statistics        draft-mtp: #calls(b,g,a) =    4     31     31, #gen drafts =     31, #acc drafts =    31, #gen tokens =     93, #acc tokens =    90, dur(b,g,a) = 0.004, 119.620, 0.026 ms
+0.13.493.834 I slot      release: id  0 | task 35 | stop processing: n_tokens = 2258, truncated = 0
+[llama-server] 0.13.493.895 I srv  update_slots: all slots are idle
+  s1 turn  4  prompt_tok   2226  ttft    743ms  decode  149.0 tok/s
+[llama-server] 0.13.516.647 I srv  params_from_: Chat format: peg-native
+[llama-server] 0.13.518.952 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, sim_best = 0.658 (> 0.100 thold), f_keep = 0.984
+[llama-server] 0.13.519.535 I reasoning-budget: activated, budget=256 tokens
+0.13.519.539 I reasoning-budget: deactivated (natural end)
+[llama-server] 0.13.519.679 I slot launch_slot_: id  0 | task 47 | processing task, is_child = 0
+0.13.519.696 I slot update_slots: id  0 | task 47 | Checking checkpoint with [2204, 2204] against 2222...
+[llama-server] 0.13.571.283 W slot update_slots: id  0 | task 47 | restored context checkpoint (pos_min = 2204, pos_max = 2204, n_tokens = 2205, n_past = 2205, size = 158.282 MiB)
+[llama-server] 0.14.062.803 I slot create_check: id  0 | task 47 | created context checkpoint 3 of 64 (pos_min = 3353, pos_max = 3353, n_tokens = 3354, size = 162.792 MiB)
+[llama-server] 0.14.388.385 I slot print_timing: id  0 | task 47 | prompt eval time =     620.76 ms /  1171 tokens (    0.53 ms per token,  1886.39 tokens per second)
+0.14.388.391 I
+[llama-server] slot print_timing: id  0 | task 47 |        eval time =     247.83 ms /    27 tokens (    9.18 ms per token,   108.95 tokens per second)
+0.14.388.392 I slot print_timing: id  0 | task 47 |       total time =     868.59 ms /  1198 tokens
+0.14.388.393 I slot print_timing: id  0 | task 47 |    graphs reused =         34
+0.14.388.394 I slot print_timing: id  0 | task 47 | draft acceptance = 1.00000 (   21 accepted /    21 generated)
+0.14.388.414 I statistics        draft-mtp: #calls(b,g,a) =    5     38     38, #gen drafts =     38, #acc drafts =    38, #gen tokens =    114, #acc tokens =   111, dur(b,g,a) = 0.004, 145.568, 0.032 ms
+0.14.388.541 I slot      release: id  0 | task 47 | stop processing: n_tokens = 3404, truncated = 0
+0.14.388.610
+[llama-server] I srv  update_slots: all slots are idle
+  s1 turn  5  prompt_tok   3376  ttft    721ms  decode  155.2 tok/s
+[llama-server] 0.14.412.015 I srv  params_from_: Chat format: peg-native
+[llama-server] 0.14.414.784 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, sim_best = 0.647 (> 0.100 thold), f_keep = 0.991
+[llama-server] 0.14.415.080 I reasoning-budget: activated, budget=256 tokens
+0.14.415.082 I reasoning-budget: deactivated (natural end)
+[llama-server] 0.14.415.194 I slot launch_slot_: id  0 | task 58 | processing task, is_child = 0
+0.14.415.206 I slot update_slots: id  0 | task 58 | Checking checkpoint with [3353, 3353] against 3372...
+[llama-server] 0.14.467.613 W slot update_slots: id  0 | task 58 | restored context checkpoint (pos_min = 3353, pos_max = 3353, n_tokens = 3354, n_past = 3354, size = 162.792 MiB)
+[llama-server] 0.15.210.183 I slot create_check: id  0 | task 58 | created context checkpoint 4 of 64 (pos_min = 5186, pos_max = 5186, n_tokens = 5187, size = 169.987 MiB)
+[llama-server] 0.15.583.584 I slot print_timing: id  0 | task 58 | prompt eval time =     874.41 ms /  1857 tokens (    0.47 ms per token,  2123.72 tokens per second)
+0.15.583.590 I slot print_timing: id  0 | task 58 |        eval time =     293.87 ms /    30 tokens (    9.80 ms per token,   102.09 tokens per second)
+0.15.583.591 I slot print_timing: id  0 | task 58 |       total time =    1168.28 ms /  1887 tokens
+0.15.583.592 I slot print_timing: id  0 | task 58 |    graphs reused =         41
+0.15.583.593 I slot print_timing: id  0 | task 58 | draft acceptance = 1.00000 (   24 accepted /    24 generated)
+0.15.583.614 I statistics        draft-mtp: #calls(b,g,a) =    6     46     46, #gen drafts =     46, #acc drafts =    46, #gen tokens =    138, #acc tokens =   135, dur(b,g,a) = 0.005, 175.154, 0.039 ms
+[llama-server] 0.15.583.779 I slot      release: id  0 | task 58 | stop processing: n_tokens = 5243, truncated = 0
+[llama-server] 0.15.583.848 I srv  update_slots: all slots are idle
+  s1 turn  6  prompt_tok   5211  ttft    971ms  decode  133.9 tok/s
+[llama-server] 0.15.612.450 I srv  params_from_: Chat format: peg-native
+[llama-server] 0.15.615.771 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, sim_best = 0.666 (> 0.100 thold), f_keep = 0.993
+[llama-server] 0.15.616.214 I reasoning-budget: activated, budget=256 tokens
+0.15.616.218 I reasoning-budget: deactivated (natural end)
+[llama-server] 0.15.616.365 I slot launch_slot_: id  0 | task 70 | processing task, is_child = 0
+0.15.616.379 I slot update_slots: id  0 | task 70 | Checking checkpoint with [5186, 5186] against 5207...
+[llama-server] 0.15.671.468 W slot update_slots: id  0 | task 70 | restored context checkpoint (pos_min = 5186, pos_max = 5186, n_tokens = 5187, n_past = 5187, size = 169.987 MiB)
+[llama-server] 0.16.720.005 I slot create_check: id  0 | task 70 | created context checkpoint 5 of 64 (pos_min = 7793, pos_max = 7793, n_tokens = 7794, size = 180.220 MiB)
+[llama-server] 0.17.103.680 I slot print_timing: id  0 | task 70 | prompt eval time =    1177.68 ms /  2629 tokens (    0.45 ms per token,  2232.36 tokens per second)
+0.17.103.686 I slot print_timing: id  0 | task 70 |        eval time =     309.54 ms /    39 tokens (    7.94 ms per token,   125.99 tokens per second)
+0.17.103.687 I slot print_timing: id  0 | task 70 |       total time =    1487.22 ms /  2668 tokens
+[llama-server] 0.17.103.688 I slot print_timing: id  0 | task 70 |    graphs reused =         50
+0.17.103.689 I slot print_timing: id  0 | task 70 | draft acceptance = 0.96667 (   29 accepted /    30 generated)
+0.17.103.709 I statistics        draft-mtp: #calls(b,g,a) =    7     56     56, #gen drafts =     56, #acc drafts =    56, #gen tokens =    168, #acc tokens =   164, dur(b,g,a) = 0.006, 213.959, 0.049 ms
+0.17.103.891 I slot      release: id  0 | task 70 | stop processing: n_tokens = 7855, truncated = 0
+0.17.103.952 I srv  update_slots: all slots are idle
+  s1 turn  7  prompt_tok   7816  ttft   1287ms  decode  167.4 tok/s
+[llama-server] 0.17.133.984 I srv  params_from_: Chat format: peg-native
+[llama-server] 0.17.140.355 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, sim_best = 0.686 (> 0.100 thold), f_keep = 0.995
+[llama-server] 0.17.140.790 I reasoning-budget: activated, budget=256 tokens
+0.17.140.794 I reasoning-budget: deactivated (natural end)
+[llama-server] 0.17.140.929 I slot launch_slot_: id  0 | task 85 | processing task, is_child = 0
+0.17.140.943 I slot update_slots: id  0 | task 85 | Checking checkpoint with [7793, 7793] against 7812...
+[llama-server] 0.17.199.527 W slot update_slots: id  0 | task 85 | restored context checkpoint (pos_min = 7793, pos_max = 7793, n_tokens = 7794, n_past = 7794, size = 180.220 MiB)
+[llama-server] 0.18.703.524 I slot create_check: id  0 | task 85 | created context checkpoint 6 of 64 (pos_min = 11367, pos_max = 11367, n_tokens = 11368, size = 194.249 MiB)
+[llama-server] 0.19.049.465 I slot print_timing: id  0 | task 85 | prompt eval time =    1639.13 ms /  3598 tokens (    0.46 ms per token,  2195.06 tokens per second)
+0.19.049.471 I slot print_timing: id  0 | task 85 |        eval time =     269.32 ms /    31 tokens (    8.69 ms per token,   115.10 tokens per second)
+0.19.049.472 I slot print_timing: id  0 | task 85 |       total time =    1908.46 ms /  3629 tokens
+  s1 turn  8  prompt_tok  11392  ttft   1753ms  decode  158.2 tok/s
+[llama-server] 0.19.049.472 I slot print_timing: id  0 | task 85 |    graphs reused =         57
+0.19.049.474 I slot print_timing: id  0 | task 85 | draft acceptance = 1.00000 (   24 accepted /    24 generated)
+0.19.049.491 I statistics        draft-mtp: #calls(b,g,a) =    8     64     64, #gen drafts =     64, #acc drafts =    64, #gen tokens =    192, #acc tokens =   188, dur(b,g,a) = 0.007, 250.515, 0.052 ms
+0.19.049.693 I slot      release: id  0 | task 85 | stop processing: n_tokens = 11424, truncated = 0
+0.19.049.746 I srv  update_slots: all slots are idle
+[llama-server] 0.19.083.945 I srv  params_from_: Chat format: peg-native
+[llama-server] 0.19.089.304 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, sim_best = 0.712 (> 0.100 thold), f_keep = 0.997
+[llama-server] 0.19.089.615 I reasoning-budget: activated, budget=256 tokens
+0.19.089.618 I reasoning-budget: deactivated (natural end)
+[llama-server] 0.19.089.723 I slot launch_slot_: id  0 | task 98 | processing task, is_child = 0
+0.19.089.734 I slot update_slots: id  0 | task 98 | Checking checkpoint with [11367, 11367] against 11388...
+[llama-server] 0.19.152.947 W slot update_slots: id  0 | task 98 | restored context checkpoint (pos_min = 11367, pos_max = 11367, n_tokens = 11368, n_past = 11368, size = 194.249 MiB)
+[llama-server] 0.21.101.724 I slot create_check: id  0 | task 98 | created context checkpoint 7 of 64 (pos_min = 15983, pos_max = 15983, n_tokens = 15984, size = 212.369 MiB)
+[llama-server] 0.21.394.166 I slot print_timing: id  0 | task 98 | prompt eval time =    2091.79 ms /  4635 tokens (    0.45 ms per token,  2215.81 tokens per second)
+[llama-server] 0.21.394.176 I slot print_timing: id  0 | task 98 |        eval time =     212.58 ms /    29 tokens (    7.33 ms per token,   136.42 tokens per second)
+0.21.394.177 I slot print_timing: id  0 | task 98 |       total time =    2304.37 ms /  4664 tokens
+0.21.394.178 I slot print_timing: id  0 | task 98 |    graphs reused =         63
+0.21.394.180 I slot print_timing: id  0 | task 98 | draft acceptance = 1.00000 (   21 accepted /    21 generated)
+0.21.394.197 I statistics        draft-mtp: #calls(b,g,a) =    9     71     71, #gen drafts =     71, #acc drafts =    71, #gen tokens =    213, #acc tokens =   209, dur(b,g,a) = 0.007, 277.203, 0.057 ms
+[llama-server] 0.21.394.482 I slot      release: id  0 | task 98 | stop processing: n_tokens = 16031, truncated = 0
+[llama-server] 0.21.394.539 I srv  update_slots: all slots are idle
+  s1 turn  9  prompt_tok  16003  ttft   2200ms  decode  205.7 tok/s
+[llama-server] 0.21.433.219 I srv  params_from_: Chat format: peg-native
+[llama-server] 0.21.440.429 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, sim_best = 0.735 (> 0.100 thold), f_keep = 0.998
+[llama-server] 0.21.440.777 I reasoning-budget: activated, budget=256 tokens
+0.21.440.780 I reasoning-budget: deactivated (natural end)
+[llama-server] 0.21.440.882 I slot launch_slot_: id  0 | task 111 | processing task, is_child = 0
+0.21.440.895 I slot update_slots: id  0 | task 111 | Checking checkpoint with [15983, 15983] against 15999...
+[llama-server] 0.21.512.544 W slot update_slots: id  0 | task 111 | restored context checkpoint (pos_min = 15983, pos_max = 15983, n_tokens = 15984, n_past = 15984, size = 212.369 MiB)
+[llama-server] 0.23.989.013 I slot create_check: id  0 | task 111 | created context checkpoint 8 of 64 (pos_min = 21734, pos_max = 21734, n_tokens = 21735, size = 234.943 MiB)
+[llama-server] 0.24.706.190 I slot print_timing: id  0 | task 111 | prompt eval time =    2624.61 ms /  5774 tokens (    0.45 ms per token,  2199.94 tokens per second)
+0.24.706.195 I slot print_timing: id  0 | task 111 |        eval time =     640.62 ms /    70 tokens (    9.15 ms per token,   109.27 tokens per second)
+0.24.706.196 I slot print_timing: id  0 | task 111 |       total time =    3265.23 ms /  5844 tokens
+0.24.706.197 I slot print_timing: id  0 | task 111 |    graphs reused =         83
+[llama-server] 0.24.706.198 I slot print_timing: id  0 | task 111 | draft acceptance = 0.77778 (   49 accepted /    63 generated)
+0.24.706.217 I statistics        draft-mtp: #calls(b,g,a) =   10     92     92, #gen drafts =     92, #acc drafts =    90, #gen tokens =    276, #acc tokens =   258, dur(b,g,a) = 0.008, 359.302, 0.066 ms
+0.24.706.529 I slot      release: id  0 | task 111 | stop processing: n_tokens = 21828, truncated = 0
+[llama-server] 0.24.706.592 I srv  update_slots: all slots are idle
+  s1 turn 10  prompt_tok  21758  ttft   2672ms  decode  109.4 tok/s
+[llama-server] 0.24.748.293 I srv  params_from_: Chat format: peg-native
+[llama-server] 0.24.756.920 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, sim_best = 0.751 (> 0.100 thold), f_keep = 0.997
+[llama-server] 0.24.757.258 I reasoning-budget: activated, budget=256 tokens
+0.24.757.261 I reasoning-budget: deactivated (natural end)
+[llama-server] 0.24.757.384 I slot launch_slot_: id  0 | task 138 | processing task, is_child = 0
+[llama-server] 0.24.757.402 I slot update_slots: id  0 | task 138 | Checking checkpoint with [21734, 21734] against 21754...
+[llama-server] 0.24.835.150 W slot update_slots: id  0 | task 138 | restored context checkpoint (pos_min = 21734, pos_max = 21734, n_tokens = 21735, n_past = 21735, size = 234.943 MiB)
+[llama-server] 0.28.030.062 I slot print_timing: id  0 | task 138 | prompt processing, n_tokens =   7229, progress = 1.00, t =   3.27 s / 2208.91 tokens per second
+[llama-server] 0.28.131.282 I slot create_check: id  0 | task 138 | created context checkpoint 9 of 64 (pos_min = 28963, pos_max = 28963, n_tokens = 28964, size = 263.319 MiB)
+[llama-server] 0.28.174.495 I slot print_timing: id  0 | task 138 | prompt processing, n_tokens =   7247, progress = 1.00, t =   3.42 s / 2120.81 tokens per second
+[llama-server] 0.28.425.299 I slot print_timing: id  0 | task 138 | prompt eval time =    3451.58 ms /  7251 tokens (    0.48 ms per token,  2100.78 tokens per second)
+0.28.425.306 I slot print_timing: id  0 | task 138 |        eval time =     216.25 ms /    29 tokens (    7.46 ms per token,   134.10 tokens per second)
+0.28.425.307 I slot print_timing: id  0 | task 138 |       total time =    3667.83 ms /  7280 tokens
+0.28.425.308 I slot print_timing: id  0 | task 138 |    graphs reused =         89
+[llama-server] 0.28.425.309 I slot print_timing: id  0 | task 138 | draft acceptance = 1.00000 (   21 accepted /    21 generated)
+0.28.425.328 I statistics        draft-mtp: #calls(b,g,a) =   11     99     99, #gen drafts =     99, #acc drafts =    97, #gen tokens =    297, #acc tokens =   279, dur(b,g,a) = 0.009, 387.184, 0.071 ms
+[llama-server] 0.28.425.755 I slot      release: id  0 | task 138 | stop processing: n_tokens = 29014, truncated = 0
+  s1 turn 11  prompt_tok  28986  ttft   3572ms  decode  197.3 tok/s
+[llama-server] 0.28.425.807 I srv  update_slots: all slots are idle
+[llama-server] 0.28.466.472 I srv  params_from_: Chat format: peg-native
+[llama-server] 0.28.477.666 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, sim_best = 0.766 (> 0.100 thold), f_keep = 0.999
+[llama-server] 0.28.478.133 I reasoning-budget: activated, budget=256 tokens
+0.28.478.136 I reasoning-budget: deactivated (natural end)
+0.28.478.264 I slot launch_slot_: id  0 | task 152 | processing task, is_child = 0
+0.28.478.281 I slot update_slots: id  0 | task 152 | Checking checkpoint with [28963, 28963] against 28982...
+[llama-server] 0.28.567.522 W slot update_slots: id  0 | task 152 | restored context checkpoint (pos_min = 28963, pos_max = 28963, n_tokens = 28964, n_past = 28964, size = 263.319 MiB)
+[llama-server] 0.31.860.756 I slot print_timing: id  0 | task 152 | prompt processing, n_tokens =   6823, progress = 0.95, t =   3.38 s / 2017.16 tokens per second
+[llama-server] 0.32.883.025 I slot print_timing: id  0 | task 152 | prompt processing, n_tokens =   8846, progress = 1.00, t =   4.40 s / 2008.29 tokens per second
+[llama-server] 0.32.998.065 I slot create_check: id  0 | task 152 | created context checkpoint 10 of 64 (pos_min = 37809, pos_max = 37809, n_tokens = 37810, size = 298.043 MiB)
+[llama-server] 0.33.042.307 I slot print_timing: id  0 | task 152 | prompt processing, n_tokens =   8867, progress = 1.00, t =   4.56 s / 1942.80 tokens per second
+[llama-server] 0.34.211.331 I slot print_timing: id  0 | task 152 | n_decoded =    102, tg =  89.99 t/s
+[llama-server] 0.34.765.779 I slot print_timing: id  0 | task 152 | prompt eval time =    4599.54 ms /  8871 tokens (    0.52 ms per token,  1928.67 tokens per second)
+0.34.765.786 I slot print_timing: id  0 | task 152 |        eval time =    1687.88 ms /   150 tokens (   11.25 ms per token,    88.87 tokens per second)
+0.34.765.787 I slot print_timing: id  0 | task 152 |       total time =    6287.42 ms /  9021 tokens
+0.34.765.787 I slot print_timing: id  0 | task 152 |    graphs reused =        144
+0.34.765.789 I
+[llama-server] slot print_timing: id  0 | task 152 | draft acceptance = 0.53801 (   92 accepted /   171 generated)
+0.34.765.807 I statistics        draft-mtp: #calls(b,g,a) =   12    156    156, #gen drafts =    156, #acc drafts =   142, #gen tokens =    468, #acc tokens =   371, dur(b,g,a) = 0.009, 616.288, 0.102 ms
+[llama-server] 0.34.766.298 I slot      release: id  0 | task 152 | stop processing: n_tokens = 37984, truncated = 0
+[llama-server] 0.34.766.356 I srv  update_slots: all slots are idle
+  s1 turn 12  prompt_tok  37835  ttft   4652ms  decode   88.9 tok/s  [tool-call miss → synthesized]
+
+=== SESSION 2/2 ===
+[llama-server] 0.34.793.311 I srv  params_from_: Chat format: peg-native
+[llama-server] 0.34.795.484 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, sim_best = 0.996 (> 0.100 thold), f_keep = 0.028
+0.34.795.494 I srv  get_availabl: updating prompt cache
+[llama-server] 0.34.797.998 W srv   prompt_save:  - saving prompt with length 37984, total state size = 2673.451 MiB (draft: 149.100 MiB)
+[llama-server] 0.36.593.237 I srv          load:  - looking for better prompt, base f_keep = 0.028, sim = 0.996
+0.36.593.248 I srv        update:  - cache state: 1 prompts, 4701.409 MiB (limits: 8192.000 MiB, 65536 tokens, 66185 est)
+0.36.593.250 I srv        update:    - prompt 00000231E7351070:   37984 tokens, checkpoints: 10,  4701.409 MiB
+0.36.593.252 I srv  get_availabl: prompt cache update took 1797.76 ms
+[llama-server] 0.36.593.721 I reasoning-budget: activated, budget=256 tokens
+0.36.593.724 I reasoning-budget: deactivated (natural end)
+0.36.593.849 I slot launch_slot_: id  0 | task 217 | processing task, is_child = 0
+0.36.593.863 I slot update_slots: id  0 | task 217 | Checking checkpoint with [37809, 37809] against 1070...
+0.36.593.865 I slot update_slots: id  0 | task 217 | Checking checkpoint with [28963, 28963] against 1070...
+0.36.593.866 I slot update_slots: id  0 | task 217 | Checking checkpoint with [21734, 21734] against 1070...
+0.36.593.866 I slot update_slots: id  0 | task 217 | Checking checkpoint with [15983, 15983] against 1070...
+0.36.593.867 I slot update_slots: id  0 | task 217 | Checking checkpoint with [11367, 11367] against 1070...
+0.36.593.867 I slot update_slots: id  0 | task 217 | Checking checkpoint with [7793, 7793] against 1070...
+0.36.593.868 I slot update_slots: id  0 | task 217 | Checking checkpoint with [5186, 5186] against 1070...
+0.36.593.869 I slot update_slots: id  0 | task 217 | Checking checkpoint with [3353, 3353] against 1070...
+0.36.593.870 I slot update_slots: id  0 | task 217 | Checking checkpoint with [2204, 2204] against 1070...
+0.36.593.870 I slot update_slots: id  0 | task 217 | Checking checkpoint with [1051, 1051] against 1070...
+[llama-server] 0.36.648.882 W slot update_slots: id  0 | task 217 | restored context checkpoint (pos_min = 1051, pos_max = 1051, n_tokens = 1052, n_past = 1052, size = 153.756 MiB)
+0.36.648.890 W slot update_slots: id  0 | task 217 | erased invalidated context checkpoint (pos_min = 2204, pos_max = 2204, n_tokens = 2205, n_swa = 0, pos_next = 1052, size = 158.282 MiB)
+[llama-server] 0.36.654.522 W slot update_slots: id  0 | task 217 | erased invalidated context checkpoint (pos_min = 3353, pos_max = 3353, n_tokens = 3354, n_swa = 0, pos_next = 1052, size = 162.792 MiB)
+[llama-server] 0.36.660.791 W slot update_slots: id  0 | task 217 | erased invalidated context checkpoint (pos_min = 5186, pos_max = 5186, n_tokens = 5187, n_swa = 0, pos_next = 1052, size = 169.987 MiB)
+[llama-server] 0.36.667.322 W slot update_slots: id  0 | task 217 | erased invalidated context checkpoint (pos_min = 7793, pos_max = 7793, n_tokens = 7794, n_swa = 0, pos_next = 1052, size = 180.220 MiB)
+[llama-server] 0.36.674.496 W slot update_slots: id  0 | task 217 | erased invalidated context checkpoint (pos_min = 11367, pos_max = 11367, n_tokens = 11368, n_swa = 0, pos_next = 1052, size = 194.249 MiB)
+[llama-server] 0.36.682.525 W slot update_slots: id  0 | task 217 | erased invalidated context checkpoint (pos_min = 15983, pos_max = 15983, n_tokens = 15984, n_swa = 0, pos_next = 1052, size = 212.369 MiB)
+[llama-server] 0.36.691.211 W slot update_slots: id  0 | task 217 | erased invalidated context checkpoint (pos_min = 21734, pos_max = 21734, n_tokens = 21735, n_swa = 0, pos_next = 1052, size = 234.943 MiB)
+[llama-server] 0.36.700.602 W slot update_slots: id  0 | task 217 | erased invalidated context checkpoint (pos_min = 28963, pos_max = 28963, n_tokens = 28964, n_swa = 0, pos_next = 1052, size = 263.319 MiB)
+[llama-server] 0.36.711.386 W slot update_slots: id  0 | task 217 | erased invalidated context checkpoint (pos_min = 37809, pos_max = 37809, n_tokens = 37810, n_swa = 0, pos_next = 1052, size = 298.043 MiB)
+[llama-server] 0.36.991.372 I slot print_timing: id  0 | task 217 | prompt eval time =     213.29 ms /    22 tokens (    9.70 ms per token,   103.14 tokens per second)
+0.36.991.377 I
+[llama-server] slot print_timing: id  0 | task 217 |        eval time =     184.10 ms /    25 tokens (    7.36 ms per token,   135.79 tokens per second)
+0.36.991.378 I slot print_timing: id  0 | task 217 |       total time =     397.40 ms /    47 tokens
+0.36.991.380 I slot print_timing: id  0 | task 217 |    graphs reused =        149
+0.36.991.382 I slot print_timing: id  0 | task 217 | draft acceptance = 1.00000 (   18 accepted /    18 generated)
+0.36.991.404 I statistics        draft-mtp: #calls(b,g,a) =   13    162    162, #gen drafts =    162, #acc drafts =   148, #gen tokens =    486, #acc tokens =   389, dur(b,g,a) = 0.010, 639.417, 0.111 ms
+0.36.991.519 I slot      release: id  0 | task 217 | stop processing: n_tokens = 1098, truncated = 0
+0.36.991.590 I srv  update_slots: all slots are idle
+  s2 turn  1  prompt_tok   1074  ttft   2110ms  decode  217.4 tok/s
+[llama-server] 0.37.024.732 I srv  params_from_: Chat format: peg-native
+[llama-server] 0.37.026.458 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, sim_best = 0.860 (> 0.100 thold), f_keep = 0.974
+[llama-server] 0.37.026.853 I reasoning-budget: activated, budget=256 tokens
+0.37.026.855 I reasoning-budget: deactivated (natural end)
+0.37.026.985 I slot launch_slot_: id  0 | task 226 | processing task, is_child = 0
+0.37.026.995 I slot update_slots: id  0 | task 226 | Checking checkpoint with [1051, 1051] against 1070...
+[llama-server] 0.37.077.039 W slot update_slots: id  0 | task 226 | restored context checkpoint (pos_min = 1051, pos_max = 1051, n_tokens = 1052, n_past = 1052, size = 153.756 MiB)
+[llama-server] 0.37.470.672 I slot print_timing: id  0 | task 226 | prompt eval time =     206.83 ms /   192 tokens (    1.08 ms per token,   928.28 tokens per second)
+0.37.470.677 I slot print_timing: id  0 | task 226 |        eval time =     236.75 ms /    26 tokens (    9.11 ms per token,   109.82 tokens per second)
+0.37.470.678 I slot print_timing: id  0 | task 226 |       total time =     443.59 ms /   218 tokens
+0.37.470.679 I slot print_timing: id  0 | task 226 |    graphs reused =        155
+0.37.470.680 I slot print_timing: id  0 | task 226 | draft acceptance = 0.95238 (   20 accepted /    21 generated)
+0.37.470.701 I statistics        draft-mtp: #calls(b,g,a) =   14    169    169, #gen drafts =    169, #acc drafts =   155, #gen tokens =    507, #acc tokens =   409, dur(b,g,a) = 0.011, 665.022, 0.117 ms
+[llama-server] 0.37.470.805 I slot      release: id  0 | task 226 | stop processing: n_tokens = 1271, truncated = 0
+0.37.470.868 I srv  update_slots: all slots are idle
+  s2 turn  2  prompt_tok   1244  ttft    316ms  decode  159.5 tok/s
+[llama-server] 0.37.498.607 I srv  params_from_: Chat format: peg-native
+[llama-server] 0.37.500.254 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, sim_best = 0.784 (> 0.100 thold), f_keep = 0.976
+[llama-server] 0.37.500.552 I reasoning-budget: activated, budget=256 tokens
+0.37.500.555 I reasoning-budget: deactivated (natural end)
+[llama-server] 0.37.500.673 I slot launch_slot_: id  0 | task 237 | processing task, is_child = 0
+0.37.500.685 I
+[llama-server] slot update_slots: id  0 | task 237 | Checking checkpoint with [1051, 1051] against 1240...
+[llama-server] 0.37.549.933 W slot update_slots: id  0 | task 237 | restored context checkpoint (pos_min = 1051, pos_max = 1051, n_tokens = 1052, n_past = 1052, size = 153.756 MiB)
+[llama-server] 0.38.159.357 I slot print_timing: id  0 | task 237 | prompt eval time =     307.86 ms /   529 tokens (    0.58 ms per token,  1718.30 tokens per second)
+0.38.159.363 I slot print_timing: id  0 | task 237 |        eval time =     350.73 ms /    45 tokens (    7.79 ms per token,   128.31 tokens per second)
+0.38.159.364 I slot print_timing: id  0 | task 237 |       total time =     658.59 ms /   574 tokens
+0.38.159.364 I slot print_timing: id  0 | task 237 |    graphs reused =        166
+0.38.159.365 I slot print_timing: id  0 | task 237 | draft acceptance = 0.91667 (   33 accepted /    36 generated)
+0.38.159.380
+  s2 turn  3  prompt_tok   1581  ttft    406ms  decode  157.9 tok/s
+[llama-server] I statistics        draft-mtp: #calls(b,g,a) =   15    181    181, #gen drafts =    181, #acc drafts =   166, #gen tokens =    543, #acc tokens =   442, dur(b,g,a) = 0.012, 708.828, 0.126 ms
+0.38.159.486 I slot      release: id  0 | task 237 | stop processing: n_tokens = 1626, truncated = 0
+0.38.159.543 I srv  update_slots: all slots are idle
+[llama-server] 0.38.192.213 I srv  params_from_: Chat format: peg-native
+[llama-server] 0.38.194.074 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, sim_best = 0.707 (> 0.100 thold), f_keep = 0.970
+[llama-server] 0.38.194.557 I reasoning-budget: activated, budget=256 tokens
+0.38.194.562 I reasoning-budget: deactivated (natural end)
+[llama-server] 0.38.194.700 I slot launch_slot_: id  0 | task 253 | processing task, is_child = 0
+0.38.194.716 I slot update_slots: id  0 | task 253 | Checking checkpoint with [1051, 1051] against 1577...
+[llama-server] 0.38.244.422 W slot update_slots: id  0 | task 253 | restored context checkpoint (pos_min = 1051, pos_max = 1051, n_tokens = 1052, n_past = 1052, size = 153.756 MiB)
+[llama-server] 0.38.744.388 I slot create_check: id  0 | task 253 | created context checkpoint 2 of 64 (pos_min = 2210, pos_max = 2210, n_tokens = 2211, size = 158.305 MiB)
+[llama-server] 0.39.083.492 I slot print_timing: id  0 | task 253 | prompt eval time =     624.36 ms /  1180 tokens (    0.53 ms per token,  1889.94 tokens per second)
+0.39.083.501 I slot print_timing: id  0 | task 253 |        eval time =     264.34 ms /    31 tokens (    8.53 ms per token,   117.27 tokens per second)
+0.39.083.502 I slot print_timing: id  0 | task 253 |       total time =     888.70 ms /  1211 tokens
+0.39.083.503 I slot print_timing: id  0 | task 253 |    graphs reused =        173
+0.39.083.504 I slot print_timing: id  0 | task 253 | draft acceptance = 1.00000 (   24 accepted /    24 generated)
+0.39.083.524 I statistics        draft-mtp: #calls(b,g,a) =   16    189    189, #gen drafts =    189, #acc drafts =   174, #gen tokens =    567, #acc tokens =   466, dur(b,g,a) = 0.013, 738.125, 0.135 ms
+[llama-server] 0.39.083.630 I slot      release: id  0 | task 253 | stop processing: n_tokens = 2264, truncated = 0
+0.39.083.684 I srv  update_slots: all slots are idle
+  s2 turn  4  prompt_tok   2232  ttft    727ms  decode  159.0 tok/s
+[llama-server] 0.39.106.115 I srv  params_from_: Chat format: peg-native
+[llama-server] 0.39.108.182 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, sim_best = 0.659 (> 0.100 thold), f_keep = 0.984
+[llama-server] 0.39.108.671 I reasoning-budget: activated, budget=256 tokens
+0.39.108.675 I reasoning-budget: deactivated (natural end)
+[llama-server] 0.39.108.834 I slot launch_slot_: id  0 | task 265 | processing task, is_child = 0
+0.39.108.857 I slot update_slots: id  0 | task 265 | Checking checkpoint with [2210, 2210] against 2228...
+[llama-server] 0.39.159.905 W slot update_slots: id  0 | task 265 | restored context checkpoint (pos_min = 2210, pos_max = 2210, n_tokens = 2211, n_past = 2211, size = 158.305 MiB)
+[llama-server] 0.39.630.481 I slot create_check: id  0 | task 265 | created context checkpoint 3 of 64 (pos_min = 3359, pos_max = 3359, n_tokens = 3360, size = 162.815 MiB)
+[llama-server] 0.39.936.305 I slot print_timing: id  0 | task 265 | prompt eval time =     596.11 ms /  1171 tokens (    0.51 ms per token,  1964.41 tokens per second)
+0.39.936.311 I
+[llama-server] slot print_timing: id  0 | task 265 |        eval time =     231.27 ms /    27 tokens (    8.57 ms per token,   116.75 tokens per second)
+0.39.936.312 I slot print_timing: id  0 | task 265 |       total time =     827.38 ms /  1198 tokens
+0.39.936.313 I slot print_timing: id  0 | task 265 |    graphs reused =        179
+0.39.936.314 I slot print_timing: id  0 | task 265 | draft acceptance = 1.00000 (   21 accepted /    21 generated)
+0.39.936.334 I statistics        draft-mtp: #calls(b,g,a) =   17    196    196, #gen drafts =    196, #acc drafts =   181, #gen tokens =    588, #acc tokens =   487, dur(b,g,a) = 0.014, 764.045, 0.140 ms
+0.39.936.454 I slot      release: id  0 | task 265 | stop processing: n_tokens = 3410, truncated = 0
+[llama-server] 0.39.936.517 I srv  update_slots: all slots are idle
+  s2 turn  5  prompt_tok   3382  ttft    686ms  decode  162.7 tok/s
+[llama-server] 0.39.960.971 I srv  params_from_: Chat format: peg-native
+[llama-server] 0.39.964.167 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, sim_best = 0.647 (> 0.100 thold), f_keep = 0.991
+[llama-server] 0.39.964.467 I reasoning-budget: activated, budget=256 tokens
+0.39.964.470 I reasoning-budget: deactivated (natural end)
+[llama-server] 0.39.964.599 I slot launch_slot_: id  0 | task 276 | processing task, is_child = 0
+0.39.964.612 I slot update_slots: id  0 | task 276 | Checking checkpoint with [3359, 3359] against 3378...
+[llama-server] 0.40.017.333 W slot update_slots: id  0 | task 276 | restored context checkpoint (pos_min = 3359, pos_max = 3359, n_tokens = 3360, n_past = 3360, size = 162.815 MiB)
+[llama-server] 0.40.749.786 I slot create_check: id  0 | task 276 | created context checkpoint 4 of 64 (pos_min = 5192, pos_max = 5192, n_tokens = 5193, size = 170.010 MiB)
+[llama-server] 0.41.120.974 I slot print_timing: id  0 | task 276 | prompt eval time =     864.57 ms /  1857 tokens (    0.47 ms per token,  2147.89 tokens per second)
+0.41.120.983 I slot print_timing: id  0 | task 276 |        eval time =     291.72 ms /    30 tokens (    9.72 ms per token,   102.84 tokens per second)
+0.41.120.984 I slot print_timing: id  0 | task 276 |       total time =    1156.29 ms /  1887 tokens
+0.41.120.985 I slot print_timing: id  0 | task 276 |    graphs reused =        186
+[llama-server] 0.41.120.986 I slot print_timing: id  0 | task 276 | draft acceptance = 1.00000 (   24 accepted /    24 generated)
+0.41.121.005 I statistics        draft-mtp: #calls(b,g,a) =   18    204    204, #gen drafts =    204, #acc drafts =   189, #gen tokens =    612, #acc tokens =   511, dur(b,g,a) = 0.015, 792.978, 0.148 ms
+0.41.121.148 I slot      release: id  0 | task 276 | stop processing: n_tokens = 5249, truncated = 0
+0.41.121.207 I srv  update_slots: all slots are idle
+  s2 turn  6  prompt_tok   5217  ttft    960ms  decode  133.9 tok/s
+[llama-server] 0.41.147.634 I srv  params_from_: Chat format: peg-native
+[llama-server] 0.41.151.092 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, sim_best = 0.666 (> 0.100 thold), f_keep = 0.993
+[llama-server] 0.41.151.386 I reasoning-budget: activated, budget=256 tokens
+0.41.151.389 I reasoning-budget: deactivated (natural end)
+[llama-server] 0.41.151.495 I slot launch_slot_: id  0 | task 288 | processing task, is_child = 0
+0.41.151.506 I slot update_slots: id  0 | task 288 | Checking checkpoint with [5192, 5192] against 5213...
+[llama-server] 0.41.206.248 W slot update_slots: id  0 | task 288 | restored context checkpoint (pos_min = 5192, pos_max = 5192, n_tokens = 5193, n_past = 5193, size = 170.010 MiB)
+[llama-server] 0.42.324.520 I slot create_check: id  0 | task 288 | created context checkpoint 5 of 64 (pos_min = 7799, pos_max = 7799, n_tokens = 7800, size = 180.244 MiB)
+[llama-server] 0.42.703.161 I slot print_timing: id  0 | task 288 | prompt eval time =    1256.15 ms /  2629 tokens (    0.48 ms per token,  2092.90 tokens per second)
+0.42.703.167 I slot print_timing: id  0 | task 288 |        eval time =     295.42 ms /    39 tokens (    7.57 ms per token,   132.02 tokens per second)
+0.42.703.169 I slot print_timing: id  0 | task 288 |       total time =    1551.57 ms /  2668 tokens
+0.42.703.169 I slot print_timing: id  0 | task 288 |    graphs reused =        195
+0.42.703.171 I
+  s2 turn  7  prompt_tok   7822  ttft   1359ms  decode  173.3 tok/s
+[llama-server] slot print_timing: id  0 | task 288 | draft acceptance = 0.93333 (   28 accepted /    30 generated)
+0.42.703.190 I statistics        draft-mtp: #calls(b,g,a) =   19    214    214, #gen drafts =    214, #acc drafts =   199, #gen tokens =    642, #acc tokens =   539, dur(b,g,a) = 0.015, 830.599, 0.154 ms
+0.42.703.368 I slot      release: id  0 | task 288 | stop processing: n_tokens = 7860, truncated = 0
+0.42.703.418 I srv  update_slots: all slots are idle
+[llama-server] 0.42.733.966 I srv  params_from_: Chat format: peg-native
+[llama-server] 0.42.738.151 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, sim_best = 0.686 (> 0.100 thold), f_keep = 0.995
+[llama-server] 0.42.738.467 I reasoning-budget: activated, budget=256 tokens
+0.42.738.470 I reasoning-budget: deactivated (natural end)
+[llama-server] 0.42.738.601 I slot launch_slot_: id  0 | task 303 | processing task, is_child = 0
+0.42.738.616 I slot update_slots: id  0 | task 303 | Checking checkpoint with [7799, 7799] against 7818...
+[llama-server] 0.42.797.034 W slot update_slots: id  0 | task 303 | restored context checkpoint (pos_min = 7799, pos_max = 7799, n_tokens = 7800, n_past = 7800, size = 180.244 MiB)
+[llama-server] 0.44.262.496 I slot create_check: id  0 | task 303 | created context checkpoint 6 of 64 (pos_min = 11373, pos_max = 11373, n_tokens = 11374, size = 194.273 MiB)
+[llama-server] 0.44.596.438 I slot print_timing: id  0 | task 303 | prompt eval time =    1600.01 ms /  3598 tokens (    0.44 ms per token,  2248.74 tokens per second)
+0.44.596.447 I slot print_timing: id  0 | task 303 |        eval time =     257.75 ms /    31 tokens (    8.31 ms per token,   120.27 tokens per second)
+[llama-server] 0.44.596.449 I slot print_timing: id  0 | task 303 |       total time =    1857.76 ms /  3629 tokens
+0.44.596.450 I slot print_timing: id  0 | task 303 |    graphs reused =        202
+0.44.596.451 I slot print_timing: id  0 | task 303 | draft acceptance = 1.00000 (   24 accepted /    24 generated)
+0.44.596.465 I statistics        draft-mtp: #calls(b,g,a) =   20    222    222, #gen drafts =    222, #acc drafts =   207, #gen tokens =    666, #acc tokens =   563, dur(b,g,a) = 0.015, 859.422, 0.160 ms
+[llama-server] 0.44.596.662 I slot      release: id  0 | task 303 | stop processing: n_tokens = 11430, truncated = 0
+[llama-server] 0.44.596.716 I srv  update_slots: all slots are idle
+  s2 turn  8  prompt_tok  11398  ttft   1700ms  decode  161.5 tok/s
+[llama-server] 0.44.627.485 I srv  params_from_: Chat format: peg-native
+[llama-server] 0.44.633.102 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, sim_best = 0.712 (> 0.100 thold), f_keep = 0.997
+[llama-server] 0.44.633.419 I reasoning-budget: activated, budget=256 tokens
+0.44.633.421 I reasoning-budget: deactivated (natural end)
+[llama-server] 0.44.633.537 I slot launch_slot_: id  0 | task 316 | processing task, is_child = 0
+0.44.633.552 I slot update_slots: id  0 | task 316 | Checking checkpoint with [11373, 11373] against 11394...
+[llama-server] 0.44.696.771 W slot update_slots: id  0 | task 316 | restored context checkpoint (pos_min = 11373, pos_max = 11373, n_tokens = 11374, n_past = 11374, size = 194.273 MiB)
+[llama-server] 0.46.645.218 I slot create_check: id  0 | task 316 | created context checkpoint 7 of 64 (pos_min = 15989, pos_max = 15989, n_tokens = 15990, size = 212.392 MiB)
+[llama-server] 0.46.929.306 I slot print_timing: id  0 | task 316 | prompt eval time =    2085.86 ms /  4635 tokens (    0.45 ms per token,  2222.10 tokens per second)
+0.46.929.312 I slot print_timing: id  0 | task 316 |        eval time =     209.81 ms /    29 tokens (    7.23 ms per token,   138.22 tokens per second)
+0.46.929.313 I slot print_timing: id  0 | task 316 |       total time =    2295.67 ms /  4664 tokens
+0.46.929.313 I slot print_timing: id  0 | task 316 |    graphs reused =        208
+0.46.929.315 I slot print_timing: id  0 | task 316 | draft acceptance = 1.00000 (   21 accepted /    21 generated)
+[llama-server] 0.46.929.329 I statistics        draft-mtp: #calls(b,g,a) =   21    229    229, #gen drafts =    229, #acc drafts =   214, #gen tokens =    687, #acc tokens =   584, dur(b,g,a) = 0.015, 885.684, 0.163 ms
+[llama-server] 0.46.929.577 I slot      release: id  0 | task 316 | stop processing: n_tokens = 16037, truncated = 0
+[llama-server] 0.46.929.637 I srv  update_slots: all slots are idle
+  s2 turn  9  prompt_tok  16009  ttft   2191ms  decode  205.7 tok/s
+[llama-server] 0.46.978.078 I srv  params_from_: Chat format: peg-native
+[llama-server] 0.46.984.822 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, sim_best = 0.735 (> 0.100 thold), f_keep = 0.998
+[llama-server] 0.46.985.130 I reasoning-budget: activated, budget=256 tokens
+0.46.985.133 I reasoning-budget: deactivated (natural end)
+[llama-server] 0.46.985.247 I slot launch_slot_: id  0 | task 329 | processing task, is_child = 0
+0.46.985.262 I slot update_slots: id  0 | task 329 | Checking checkpoint with [15989, 15989] against 16005...
+[llama-server] 0.47.056.280 W slot update_slots: id  0 | task 329 | restored context checkpoint (pos_min = 15989, pos_max = 15989, n_tokens = 15990, n_past = 15990, size = 212.392 MiB)
+[llama-server] 0.49.673.162 I slot create_check: id  0 | task 329 | created context checkpoint 8 of 64 (pos_min = 21740, pos_max = 21740, n_tokens = 21741, size = 234.967 MiB)
+[llama-server] 0.50.347.745 I slot print_timing: id  0 | task 329 | prompt eval time =    2768.58 ms /  5774 tokens (    0.48 ms per token,  2085.55 tokens per second)
+0.50.347.750 I slot print_timing: id  0 | task 329 |        eval time =     593.81 ms /    70 tokens (    8.48 ms per token,   117.88 tokens per second)
+0.50.347.751 I slot print_timing: id  0 | task 329 |       total time =    3362.39 ms /  5844 tokens
+0.50.347.752
+[llama-server] I slot print_timing: id  0 | task 329 |    graphs reused =        225
+0.50.347.753 I slot print_timing: id  0 | task 329 | draft acceptance = 1.00000 (   54 accepted /    54 generated)
+0.50.347.774 I statistics        draft-mtp: #calls(b,g,a) =   22    247    247, #gen drafts =    247, #acc drafts =   232, #gen tokens =    741, #acc tokens =   638, dur(b,g,a) = 0.015, 955.196, 0.175 ms
+0.50.348.107 I slot      release: id  0 | task 329 | stop processing: n_tokens = 21836, truncated = 0
+0.50.348.177 I srv  update_slots: all slots are idle
+  s2 turn 10  prompt_tok  21764  ttft   2826ms  decode  118.2 tok/s
+[llama-server] 0.50.393.172 I srv  params_from_: Chat format: peg-native
+[llama-server] 0.50.401.823 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, sim_best = 0.751 (> 0.100 thold), f_keep = 0.997
+[llama-server] 0.50.402.187 I reasoning-budget: activated, budget=256 tokens
+0.50.402.190 I reasoning-budget: deactivated (natural end)
+[llama-server] 0.50.402.321 I slot launch_slot_: id  0 | task 353 | processing task, is_child = 0
+0.50.402.342 I slot update_slots: id  0 | task 353 | Checking checkpoint with [21740, 21740] against 21760...
+[llama-server] 0.50.480.055 W slot update_slots: id  0 | task 353 | restored context checkpoint (pos_min = 21740, pos_max = 21740, n_tokens = 21741, n_past = 21741, size = 234.967 MiB)
+[llama-server] 0.53.715.881 I slot print_timing: id  0 | task 353 | prompt processing, n_tokens =   7231, progress = 1.00, t =   3.31 s / 2182.26 tokens per second
+[llama-server] 0.53.818.890 I slot create_check: id  0 | task 353 | created context checkpoint 9 of 64 (pos_min = 28971, pos_max = 28971, n_tokens = 28972, size = 263.351 MiB)
+[llama-server] 0.53.861.156 I slot print_timing: id  0 | task 353 | prompt processing, n_tokens =   7249, progress = 1.00, t =   3.46 s / 2095.80 tokens per second
+[llama-server] 0.54.113.406 I slot print_timing: id  0 | task 353 | prompt eval time =    3494.58 ms /  7253 tokens (    0.48 ms per token,  2075.50 tokens per second)
+[llama-server] 0.54.113.412 I slot print_timing: id  0 | task 353 |        eval time =     216.41 ms /    29 tokens (    7.46 ms per token,   134.01 tokens per second)
+0.54.113.413 I slot print_timing: id  0 | task 353 |       total time =    3710.99 ms /  7282 tokens
+0.54.113.414 I slot print_timing: id  0 | task 353 |    graphs reused =        231
+0.54.113.415 I slot print_timing: id  0 | task 353 | draft acceptance = 1.00000 (   21 accepted /    21 generated)
+0.54.113.429 I statistics        draft-mtp: #calls(b,g,a) =   23    254    254, #gen drafts =    254, #acc drafts =   239, #gen tokens =    762, #acc tokens =   659, dur(b,g,a) = 0.016, 982.764, 0.178 ms
+  s2 turn 11  prompt_tok  28994  ttft   3619ms  decode  185.9 tok/s
+[llama-server] 0.54.113.845 I slot      release: id  0 | task 353 | stop processing: n_tokens = 29022, truncated = 0
+0.54.113.906 I srv  update_slots: all slots are idle
+[llama-server] 0.54.172.693 I srv  params_from_: Chat format: peg-native
+[llama-server] 0.54.185.587 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, sim_best = 0.766 (> 0.100 thold), f_keep = 0.999
+[llama-server] 0.54.186.261 I reasoning-budget: activated, budget=256 tokens
+0.54.186.266 I reasoning-budget: deactivated (natural end)
+[llama-server] 0.54.186.446 I slot launch_slot_: id  0 | task 367 | processing task, is_child = 0
+[llama-server] 0.54.186.476 I slot update_slots: id  0 | task 367 | Checking checkpoint with [28971, 28971] against 28990...
+[llama-server] 0.54.274.396 W slot update_slots: id  0 | task 367 | restored context checkpoint (pos_min = 28971, pos_max = 28971, n_tokens = 28972, n_past = 28972, size = 263.351 MiB)
+[llama-server] 0.57.211.325 I slot print_timing: id  0 | task 367 | prompt processing, n_tokens =   6144, progress = 0.93, t =   3.02 s / 2031.17 tokens per second
+[llama-server] 0.57.558.151 I slot print_timing: id  0 | task 367 | prompt processing, n_tokens =   6823, progress = 0.95, t =   3.37 s / 2023.62 tokens per second
+[llama-server] 0.58.565.177 I slot print_timing: id  0 | task 367 | prompt processing, n_tokens =   8846, progress = 1.00, t =   4.38 s / 2020.23 tokens per second
+[llama-server] 0.58.682.181 I slot create_check: id  0 | task 367 | created context checkpoint 10 of 64 (pos_min = 37817, pos_max = 37817, n_tokens = 37818, size = 298.074 MiB)
+[llama-server] 0.58.727.465 I slot print_timing: id  0 | task 367 | prompt processing, n_tokens =   8867, progress = 1.00, t =   4.54 s / 1952.65 tokens per second
+[llama-server] 0.59.806.001 I slot print_timing: id  0 | task 367 | n_decoded =    102, tg =  97.92 t/s
+[llama-server] 1.00.444.928 I slot print_timing: id  0 | task 367 | prompt eval time =    4577.82 ms /  8871 tokens (    0.52 ms per token,  1937.82 tokens per second)
+1.00.444.933 I slot print_timing: id  0 | task 367 |        eval time =    1680.57 ms /   150 tokens (   11.20 ms per token,    89.26 tokens per second)
+1.00.444.934 I slot print_timing: id  0 | task 367 |       total time =    6258.40 ms /  9021 tokens
+1.00.444.935 I slot print_timing: id  0 | task 367 |    graphs reused =        281
+1.00.444.936 I slot print_timing: id  0 | task 367 | draft acceptance = 0.60759 (   96 accepted /   158 generated)
+1.00.444.957 I statistics        draft-mtp: #calls(b,g,a) =   24    307    307, #gen drafts =    307, #acc drafts =   281, #gen tokens =    920, #acc tokens =   755, dur(b,g,a) = 0.016, 1207.849, 0.220 ms
+[llama-server] 1.00.445.308 I slot      release: id  0 | task 367 | stop processing: n_tokens = 37992, truncated = 0
+[llama-server] 1.00.445.362 I srv  update_slots: all slots are idle
+  s2 turn 12  prompt_tok  37843  ttft   4640ms  decode   89.2 tok/s  [tool-call miss → synthesized]
+
+=== AGENTIC PREFILL BENCH ===
+model: Qwen3.6-27B-Q6_K.gguf  sessions: 2  turns: 12
+tool-call misses (synthesized): 2
+
+turn  prompt_tok   ttft_ms   decode_tps
+   1        1074      2110       227.3
+   2        1244       316       159.5
+   3        1581       407       169.6
+   4        2232       743       159.0
+   5        3382       721       162.7
+   6        5217       971       133.9
+   7        7822      1359       173.3
+   8       11398      1753       161.5
+   9       16009      2200       205.7
+  10       21764      2826       118.2
+  11       28994      3619       197.3
+  12       37843      4652        89.2
+
+TTFT growth: 103.8 ms per 1K prompt tokens  (turn1=2110ms → turn12=4652ms)
+shape: LINEAR (incremental prefill grows with context)
+
+evidence: C:\Users\civer\localcode\benchmark\true\results\benchagentic-1782962007702.summary.txt
