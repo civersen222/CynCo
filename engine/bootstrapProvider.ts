@@ -3,9 +3,11 @@
  *
  * This is the single source of truth for how the engine selects a provider:
  * the llama-cpp/llama-server path when `config.provider === 'llama-cpp'` (the
- * default), falling back to Ollama on setup failure, or the Ollama path
- * otherwise. It mutates `config.contextLength` to the resolved budget and
- * returns the provider plus that budget.
+ * default), or the Ollama path otherwise. llama-cpp setup failure is FATAL —
+ * it throws instead of silently falling back to Ollama, because a degraded
+ * fallback runs with the wrong model/context and produces broken sessions
+ * (timeouts with no visible cause). It mutates `config.contextLength` to the
+ * resolved budget and returns the provider plus that budget.
  *
  * Both `engine/main.ts` and `benchmark/true/run.ts` call this so the benchmark
  * drives the identical backend the user runs in production.
@@ -127,12 +129,13 @@ export async function bootstrapProvider(
       process.on('beforeExit', cleanup)
 
     } catch (err) {
-      console.error(`[llama-cpp] Setup failed: ${err instanceof Error ? err.message : err}`)
-      console.log('[llama-cpp] Falling back to Ollama provider')
-      const fallback = await createOllamaFallback()
-      provider = fallback.provider
-      contextLength = fallback.contextLength
-      config.contextLength = contextLength
+      // No silent fallback: degrading to Ollama here runs the wrong model with
+      // the wrong context budget and fails later with opaque timeouts. Fail
+      // loud at startup so the launcher/user sees the real cause immediately.
+      const msg = err instanceof Error ? err.message : String(err)
+      console.error(`[llama-cpp] FATAL: setup failed: ${msg}`)
+      console.error('[llama-cpp] Fix the error above, or set provider: ollama explicitly if that is what you want.')
+      throw err
     }
 
   } else {
