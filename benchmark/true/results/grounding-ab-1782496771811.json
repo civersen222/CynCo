@@ -1,0 +1,859 @@
+{
+  "experiment": "grounding-gate-isolation",
+  "arms": {
+    "governed": "grounding-ON (VSM off)",
+    "ungoverned": "grounding-OFF (VSM off)"
+  },
+  "groundingOnScore": {
+    "point": 0.70625,
+    "lower": 0.5979166666666667,
+    "upper": 0.8020833333333334
+  },
+  "groundingOffScore": {
+    "point": 0.66875,
+    "lower": 0.5583333333333333,
+    "upper": 0.7729166666666667
+  },
+  "groundingLift": {
+    "mean": 0.0375,
+    "lower": -0.09375,
+    "upper": 0.18125
+  },
+  "full": {
+    "model": "qwen3.6-27b-q6k",
+    "timestamp": "2026-06-26T17:59:31.810Z",
+    "repsPerCondition": 8,
+    "runs": [
+      {
+        "taskId": "building-yields-audit",
+        "condition": "governed",
+        "rep": 1,
+        "passed": true,
+        "score": 1,
+        "timedOut": true,
+        "turns": 57
+      },
+      {
+        "taskId": "building-yields-audit",
+        "condition": "governed",
+        "rep": 2,
+        "passed": true,
+        "score": 1,
+        "timedOut": false,
+        "turns": 38
+      },
+      {
+        "taskId": "building-yields-audit",
+        "condition": "governed",
+        "rep": 3,
+        "passed": true,
+        "score": 1,
+        "timedOut": false,
+        "turns": 27
+      },
+      {
+        "taskId": "building-yields-audit",
+        "condition": "governed",
+        "rep": 4,
+        "passed": true,
+        "score": 1,
+        "timedOut": false,
+        "turns": 55
+      },
+      {
+        "taskId": "building-yields-audit",
+        "condition": "governed",
+        "rep": 5,
+        "passed": true,
+        "score": 1,
+        "timedOut": false,
+        "turns": 49
+      },
+      {
+        "taskId": "building-yields-audit",
+        "condition": "governed",
+        "rep": 6,
+        "passed": true,
+        "score": 1,
+        "timedOut": false,
+        "turns": 45
+      },
+      {
+        "taskId": "building-yields-audit",
+        "condition": "governed",
+        "rep": 7,
+        "passed": false,
+        "score": 0,
+        "timedOut": false,
+        "turns": 33
+      },
+      {
+        "taskId": "building-yields-audit",
+        "condition": "governed",
+        "rep": 8,
+        "passed": false,
+        "score": 0,
+        "timedOut": false,
+        "turns": 27
+      },
+      {
+        "taskId": "building-yields-audit",
+        "condition": "ungoverned",
+        "rep": 1,
+        "passed": true,
+        "score": 1,
+        "timedOut": false,
+        "turns": 35
+      },
+      {
+        "taskId": "building-yields-audit",
+        "condition": "ungoverned",
+        "rep": 2,
+        "passed": true,
+        "score": 1,
+        "timedOut": true,
+        "turns": 49
+      },
+      {
+        "taskId": "building-yields-audit",
+        "condition": "ungoverned",
+        "rep": 3,
+        "passed": true,
+        "score": 1,
+        "timedOut": false,
+        "turns": 56
+      },
+      {
+        "taskId": "building-yields-audit",
+        "condition": "ungoverned",
+        "rep": 4,
+        "passed": true,
+        "score": 1,
+        "timedOut": false,
+        "turns": 40
+      },
+      {
+        "taskId": "building-yields-audit",
+        "condition": "ungoverned",
+        "rep": 5,
+        "passed": false,
+        "score": 0,
+        "timedOut": false,
+        "turns": 34
+      },
+      {
+        "taskId": "building-yields-audit",
+        "condition": "ungoverned",
+        "rep": 6,
+        "passed": false,
+        "score": 0.75,
+        "timedOut": true,
+        "turns": 49
+      },
+      {
+        "taskId": "building-yields-audit",
+        "condition": "ungoverned",
+        "rep": 7,
+        "passed": true,
+        "score": 1,
+        "timedOut": false,
+        "turns": 50
+      },
+      {
+        "taskId": "building-yields-audit",
+        "condition": "ungoverned",
+        "rep": 8,
+        "passed": false,
+        "score": 0.5,
+        "timedOut": false,
+        "turns": 30
+      },
+      {
+        "taskId": "city-yield-consumers",
+        "condition": "governed",
+        "rep": 1,
+        "passed": false,
+        "score": 0,
+        "timedOut": true,
+        "turns": 51
+      },
+      {
+        "taskId": "city-yield-consumers",
+        "condition": "governed",
+        "rep": 2,
+        "passed": false,
+        "score": 0.6666666666666666,
+        "timedOut": false,
+        "turns": 50
+      },
+      {
+        "taskId": "city-yield-consumers",
+        "condition": "governed",
+        "rep": 3,
+        "passed": false,
+        "score": 0,
+        "timedOut": false,
+        "turns": 44
+      },
+      {
+        "taskId": "city-yield-consumers",
+        "condition": "governed",
+        "rep": 4,
+        "passed": false,
+        "score": 0.6666666666666666,
+        "timedOut": true,
+        "turns": 49
+      },
+      {
+        "taskId": "city-yield-consumers",
+        "condition": "governed",
+        "rep": 5,
+        "passed": true,
+        "score": 1,
+        "timedOut": false,
+        "turns": 34
+      },
+      {
+        "taskId": "city-yield-consumers",
+        "condition": "governed",
+        "rep": 6,
+        "passed": false,
+        "score": 0.6666666666666666,
+        "timedOut": false,
+        "turns": 44
+      },
+      {
+        "taskId": "city-yield-consumers",
+        "condition": "governed",
+        "rep": 7,
+        "passed": true,
+        "score": 1,
+        "timedOut": false,
+        "turns": 28
+      },
+      {
+        "taskId": "city-yield-consumers",
+        "condition": "governed",
+        "rep": 8,
+        "passed": true,
+        "score": 1,
+        "timedOut": false,
+        "turns": 36
+      },
+      {
+        "taskId": "city-yield-consumers",
+        "condition": "ungoverned",
+        "rep": 1,
+        "passed": false,
+        "score": 0.6666666666666666,
+        "timedOut": false,
+        "turns": 37
+      },
+      {
+        "taskId": "city-yield-consumers",
+        "condition": "ungoverned",
+        "rep": 2,
+        "passed": true,
+        "score": 1,
+        "timedOut": false,
+        "turns": 39
+      },
+      {
+        "taskId": "city-yield-consumers",
+        "condition": "ungoverned",
+        "rep": 3,
+        "passed": true,
+        "score": 1,
+        "timedOut": false,
+        "turns": 33
+      },
+      {
+        "taskId": "city-yield-consumers",
+        "condition": "ungoverned",
+        "rep": 4,
+        "passed": false,
+        "score": 0.6666666666666666,
+        "timedOut": false,
+        "turns": 41
+      },
+      {
+        "taskId": "city-yield-consumers",
+        "condition": "ungoverned",
+        "rep": 5,
+        "passed": false,
+        "score": 0.6666666666666666,
+        "timedOut": true,
+        "turns": 53
+      },
+      {
+        "taskId": "city-yield-consumers",
+        "condition": "ungoverned",
+        "rep": 6,
+        "passed": true,
+        "score": 1,
+        "timedOut": false,
+        "turns": 44
+      },
+      {
+        "taskId": "city-yield-consumers",
+        "condition": "ungoverned",
+        "rep": 7,
+        "passed": false,
+        "score": 0.3333333333333333,
+        "timedOut": true,
+        "turns": 53
+      },
+      {
+        "taskId": "city-yield-consumers",
+        "condition": "ungoverned",
+        "rep": 8,
+        "passed": false,
+        "score": 0.6666666666666666,
+        "timedOut": false,
+        "turns": 45
+      },
+      {
+        "taskId": "faction-effects-applied",
+        "condition": "governed",
+        "rep": 1,
+        "passed": false,
+        "score": 0.75,
+        "timedOut": true,
+        "turns": 45
+      },
+      {
+        "taskId": "faction-effects-applied",
+        "condition": "governed",
+        "rep": 2,
+        "passed": false,
+        "score": 0.5,
+        "timedOut": true,
+        "turns": 49
+      },
+      {
+        "taskId": "faction-effects-applied",
+        "condition": "governed",
+        "rep": 3,
+        "passed": false,
+        "score": 0.75,
+        "timedOut": true,
+        "turns": 49
+      },
+      {
+        "taskId": "faction-effects-applied",
+        "condition": "governed",
+        "rep": 4,
+        "passed": false,
+        "score": 0.75,
+        "timedOut": false,
+        "turns": 52
+      },
+      {
+        "taskId": "faction-effects-applied",
+        "condition": "governed",
+        "rep": 5,
+        "passed": false,
+        "score": 0.5,
+        "timedOut": true,
+        "turns": 59
+      },
+      {
+        "taskId": "faction-effects-applied",
+        "condition": "governed",
+        "rep": 6,
+        "passed": false,
+        "score": 0.75,
+        "timedOut": false,
+        "turns": 50
+      },
+      {
+        "taskId": "faction-effects-applied",
+        "condition": "governed",
+        "rep": 7,
+        "passed": false,
+        "score": 0.75,
+        "timedOut": false,
+        "turns": 43
+      },
+      {
+        "taskId": "faction-effects-applied",
+        "condition": "governed",
+        "rep": 8,
+        "passed": false,
+        "score": 0.75,
+        "timedOut": true,
+        "turns": 53
+      },
+      {
+        "taskId": "faction-effects-applied",
+        "condition": "ungoverned",
+        "rep": 1,
+        "passed": false,
+        "score": 0,
+        "timedOut": true,
+        "turns": 59
+      },
+      {
+        "taskId": "faction-effects-applied",
+        "condition": "ungoverned",
+        "rep": 2,
+        "passed": false,
+        "score": 0.5,
+        "timedOut": true,
+        "turns": 51
+      },
+      {
+        "taskId": "faction-effects-applied",
+        "condition": "ungoverned",
+        "rep": 3,
+        "passed": false,
+        "score": 0.5,
+        "timedOut": false,
+        "turns": 51
+      },
+      {
+        "taskId": "faction-effects-applied",
+        "condition": "ungoverned",
+        "rep": 4,
+        "passed": false,
+        "score": 0.75,
+        "timedOut": true,
+        "turns": 57
+      },
+      {
+        "taskId": "faction-effects-applied",
+        "condition": "ungoverned",
+        "rep": 5,
+        "passed": false,
+        "score": 0.75,
+        "timedOut": false,
+        "turns": 43
+      },
+      {
+        "taskId": "faction-effects-applied",
+        "condition": "ungoverned",
+        "rep": 6,
+        "passed": false,
+        "score": 0.75,
+        "timedOut": false,
+        "turns": 47
+      },
+      {
+        "taskId": "faction-effects-applied",
+        "condition": "ungoverned",
+        "rep": 7,
+        "passed": false,
+        "score": 0.5,
+        "timedOut": false,
+        "turns": 44
+      },
+      {
+        "taskId": "faction-effects-applied",
+        "condition": "ungoverned",
+        "rep": 8,
+        "passed": false,
+        "score": 0.5,
+        "timedOut": false,
+        "turns": 39
+      },
+      {
+        "taskId": "gold-deficit-consequences",
+        "condition": "governed",
+        "rep": 1,
+        "passed": false,
+        "score": 0.75,
+        "timedOut": false,
+        "turns": 37
+      },
+      {
+        "taskId": "gold-deficit-consequences",
+        "condition": "governed",
+        "rep": 2,
+        "passed": true,
+        "score": 1,
+        "timedOut": false,
+        "turns": 47
+      },
+      {
+        "taskId": "gold-deficit-consequences",
+        "condition": "governed",
+        "rep": 3,
+        "passed": true,
+        "score": 1,
+        "timedOut": true,
+        "turns": 51
+      },
+      {
+        "taskId": "gold-deficit-consequences",
+        "condition": "governed",
+        "rep": 4,
+        "passed": true,
+        "score": 1,
+        "timedOut": false,
+        "turns": 43
+      },
+      {
+        "taskId": "gold-deficit-consequences",
+        "condition": "governed",
+        "rep": 5,
+        "passed": false,
+        "score": 0.25,
+        "timedOut": true,
+        "turns": 57
+      },
+      {
+        "taskId": "gold-deficit-consequences",
+        "condition": "governed",
+        "rep": 6,
+        "passed": false,
+        "score": 0.25,
+        "timedOut": false,
+        "turns": 45
+      },
+      {
+        "taskId": "gold-deficit-consequences",
+        "condition": "governed",
+        "rep": 7,
+        "passed": false,
+        "score": 0.75,
+        "timedOut": false,
+        "turns": 38
+      },
+      {
+        "taskId": "gold-deficit-consequences",
+        "condition": "governed",
+        "rep": 8,
+        "passed": false,
+        "score": 0.75,
+        "timedOut": false,
+        "turns": 39
+      },
+      {
+        "taskId": "gold-deficit-consequences",
+        "condition": "ungoverned",
+        "rep": 1,
+        "passed": true,
+        "score": 1,
+        "timedOut": false,
+        "turns": 49
+      },
+      {
+        "taskId": "gold-deficit-consequences",
+        "condition": "ungoverned",
+        "rep": 2,
+        "passed": false,
+        "score": 0,
+        "timedOut": true,
+        "turns": 43
+      },
+      {
+        "taskId": "gold-deficit-consequences",
+        "condition": "ungoverned",
+        "rep": 3,
+        "passed": true,
+        "score": 1,
+        "timedOut": false,
+        "turns": 46
+      },
+      {
+        "taskId": "gold-deficit-consequences",
+        "condition": "ungoverned",
+        "rep": 4,
+        "passed": true,
+        "score": 1,
+        "timedOut": false,
+        "turns": 42
+      },
+      {
+        "taskId": "gold-deficit-consequences",
+        "condition": "ungoverned",
+        "rep": 5,
+        "passed": true,
+        "score": 1,
+        "timedOut": false,
+        "turns": 47
+      },
+      {
+        "taskId": "gold-deficit-consequences",
+        "condition": "ungoverned",
+        "rep": 6,
+        "passed": false,
+        "score": 0.75,
+        "timedOut": false,
+        "turns": 48
+      },
+      {
+        "taskId": "gold-deficit-consequences",
+        "condition": "ungoverned",
+        "rep": 7,
+        "passed": true,
+        "score": 1,
+        "timedOut": false,
+        "turns": 47
+      },
+      {
+        "taskId": "gold-deficit-consequences",
+        "condition": "ungoverned",
+        "rep": 8,
+        "passed": false,
+        "score": 0.75,
+        "timedOut": false,
+        "turns": 39
+      },
+      {
+        "taskId": "stability-loop",
+        "condition": "governed",
+        "rep": 1,
+        "passed": false,
+        "score": 0.75,
+        "timedOut": false,
+        "turns": 43
+      },
+      {
+        "taskId": "stability-loop",
+        "condition": "governed",
+        "rep": 2,
+        "passed": true,
+        "score": 1,
+        "timedOut": false,
+        "turns": 52
+      },
+      {
+        "taskId": "stability-loop",
+        "condition": "governed",
+        "rep": 3,
+        "passed": false,
+        "score": 0,
+        "timedOut": false,
+        "turns": 49
+      },
+      {
+        "taskId": "stability-loop",
+        "condition": "governed",
+        "rep": 4,
+        "passed": true,
+        "score": 1,
+        "timedOut": true,
+        "turns": 50
+      },
+      {
+        "taskId": "stability-loop",
+        "condition": "governed",
+        "rep": 5,
+        "passed": false,
+        "score": 0.75,
+        "timedOut": false,
+        "turns": 37
+      },
+      {
+        "taskId": "stability-loop",
+        "condition": "governed",
+        "rep": 6,
+        "passed": false,
+        "score": 0.5,
+        "timedOut": false,
+        "turns": 37
+      },
+      {
+        "taskId": "stability-loop",
+        "condition": "governed",
+        "rep": 7,
+        "passed": true,
+        "score": 1,
+        "timedOut": false,
+        "turns": 48
+      },
+      {
+        "taskId": "stability-loop",
+        "condition": "governed",
+        "rep": 8,
+        "passed": true,
+        "score": 1,
+        "timedOut": false,
+        "turns": 36
+      },
+      {
+        "taskId": "stability-loop",
+        "condition": "ungoverned",
+        "rep": 1,
+        "passed": false,
+        "score": 0.25,
+        "timedOut": false,
+        "turns": 43
+      },
+      {
+        "taskId": "stability-loop",
+        "condition": "ungoverned",
+        "rep": 2,
+        "passed": false,
+        "score": 0.75,
+        "timedOut": true,
+        "turns": 33
+      },
+      {
+        "taskId": "stability-loop",
+        "condition": "ungoverned",
+        "rep": 3,
+        "passed": false,
+        "score": 0,
+        "timedOut": false,
+        "turns": 45
+      },
+      {
+        "taskId": "stability-loop",
+        "condition": "ungoverned",
+        "rep": 4,
+        "passed": false,
+        "score": 0.75,
+        "timedOut": false,
+        "turns": 45
+      },
+      {
+        "taskId": "stability-loop",
+        "condition": "ungoverned",
+        "rep": 5,
+        "passed": false,
+        "score": 0,
+        "timedOut": false,
+        "turns": 42
+      },
+      {
+        "taskId": "stability-loop",
+        "condition": "ungoverned",
+        "rep": 6,
+        "passed": false,
+        "score": 0,
+        "timedOut": false,
+        "turns": 39
+      },
+      {
+        "taskId": "stability-loop",
+        "condition": "ungoverned",
+        "rep": 7,
+        "passed": true,
+        "score": 1,
+        "timedOut": false,
+        "turns": 42
+      },
+      {
+        "taskId": "stability-loop",
+        "condition": "ungoverned",
+        "rep": 8,
+        "passed": true,
+        "score": 1,
+        "timedOut": false,
+        "turns": 44
+      }
+    ],
+    "perTask": [
+      {
+        "taskId": "building-yields-audit",
+        "governed": {
+          "point": 0.75,
+          "lower": 0.40926987910258916,
+          "upper": 0.9285223111419724
+        },
+        "ungoverned": {
+          "point": 0.625,
+          "lower": 0.30573785458380187,
+          "upper": 0.863158240538479
+        },
+        "lift": 0.125,
+        "governedScore": 0.75,
+        "ungovernedScore": 0.78125,
+        "scoreLift": -0.03125
+      },
+      {
+        "taskId": "city-yield-consumers",
+        "governed": {
+          "point": 0.375,
+          "lower": 0.13684175946152105,
+          "upper": 0.6942621454161981
+        },
+        "ungoverned": {
+          "point": 0.375,
+          "lower": 0.13684175946152105,
+          "upper": 0.6942621454161981
+        },
+        "lift": 0,
+        "governedScore": 0.625,
+        "ungovernedScore": 0.75,
+        "scoreLift": -0.125
+      },
+      {
+        "taskId": "faction-effects-applied",
+        "governed": {
+          "point": 0,
+          "lower": 0,
+          "upper": 0.3244156195108769
+        },
+        "ungoverned": {
+          "point": 0,
+          "lower": 0,
+          "upper": 0.3244156195108769
+        },
+        "lift": 0,
+        "governedScore": 0.6875,
+        "ungovernedScore": 0.53125,
+        "scoreLift": 0.15625
+      },
+      {
+        "taskId": "gold-deficit-consequences",
+        "governed": {
+          "point": 0.375,
+          "lower": 0.13684175946152105,
+          "upper": 0.6942621454161981
+        },
+        "ungoverned": {
+          "point": 0.625,
+          "lower": 0.30573785458380187,
+          "upper": 0.863158240538479
+        },
+        "lift": -0.25,
+        "governedScore": 0.71875,
+        "ungovernedScore": 0.8125,
+        "scoreLift": -0.09375
+      },
+      {
+        "taskId": "stability-loop",
+        "governed": {
+          "point": 0.5,
+          "lower": 0.21521252682444186,
+          "upper": 0.7847874731755582
+        },
+        "ungoverned": {
+          "point": 0.25,
+          "lower": 0.07147768885802763,
+          "upper": 0.5907301208974108
+        },
+        "lift": 0.25,
+        "governedScore": 0.75,
+        "ungovernedScore": 0.46875,
+        "scoreLift": 0.28125
+      }
+    ],
+    "governedOverall": {
+      "point": 0.4,
+      "lower": 0.2634811061240136,
+      "upper": 0.5540438017260649
+    },
+    "ungovernedOverall": {
+      "point": 0.375,
+      "lower": 0.2422277353579172,
+      "upper": 0.529678399454681
+    },
+    "governedScoreMean": {
+      "point": 0.70625,
+      "lower": 0.5979166666666667,
+      "upper": 0.8020833333333334
+    },
+    "ungovernedScoreMean": {
+      "point": 0.66875,
+      "lower": 0.5583333333333333,
+      "upper": 0.7729166666666667
+    },
+    "liftMean": 0.0375,
+    "liftLower": -0.09375,
+    "liftUpper": 0.18125
+  }
+}

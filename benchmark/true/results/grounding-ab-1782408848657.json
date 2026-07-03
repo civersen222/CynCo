@@ -1,0 +1,143 @@
+{
+  "experiment": "grounding-gate-isolation",
+  "arms": {
+    "governed": "grounding-ON (VSM off)",
+    "ungoverned": "grounding-OFF (VSM off)"
+  },
+  "groundingOnScore": {
+    "point": 0.75,
+    "lower": 0.49999999999999994,
+    "upper": 1
+  },
+  "groundingOffScore": {
+    "point": 0.3333333333333333,
+    "lower": 0.3333333333333333,
+    "upper": 0.3333333333333333
+  },
+  "groundingLift": {
+    "mean": 0.4166666666666667,
+    "lower": 0.4166666666666667,
+    "upper": 0.4166666666666667
+  },
+  "full": {
+    "model": "qwen3.6-27b-q6k",
+    "timestamp": "2026-06-25T17:34:08.656Z",
+    "repsPerCondition": 4,
+    "runs": [
+      {
+        "taskId": "city-yield-consumers",
+        "condition": "governed",
+        "rep": 1,
+        "passed": true,
+        "score": 1,
+        "timedOut": true,
+        "turns": 47
+      },
+      {
+        "taskId": "city-yield-consumers",
+        "condition": "governed",
+        "rep": 2,
+        "passed": true,
+        "score": 1,
+        "timedOut": true,
+        "turns": 54
+      },
+      {
+        "taskId": "city-yield-consumers",
+        "condition": "governed",
+        "rep": 3,
+        "passed": false,
+        "score": 0.3333333333333333,
+        "timedOut": false,
+        "turns": 47
+      },
+      {
+        "taskId": "city-yield-consumers",
+        "condition": "governed",
+        "rep": 4,
+        "passed": false,
+        "score": 0.6666666666666666,
+        "timedOut": false,
+        "turns": 48
+      },
+      {
+        "taskId": "city-yield-consumers",
+        "condition": "ungoverned",
+        "rep": 1,
+        "passed": false,
+        "score": 0.3333333333333333,
+        "timedOut": false,
+        "turns": 51
+      },
+      {
+        "taskId": "city-yield-consumers",
+        "condition": "ungoverned",
+        "rep": 2,
+        "passed": false,
+        "score": 0.3333333333333333,
+        "timedOut": true,
+        "turns": 57
+      },
+      {
+        "taskId": "city-yield-consumers",
+        "condition": "ungoverned",
+        "rep": 3,
+        "passed": false,
+        "score": 0.3333333333333333,
+        "timedOut": false,
+        "turns": 59
+      },
+      {
+        "taskId": "city-yield-consumers",
+        "condition": "ungoverned",
+        "rep": 4,
+        "passed": false,
+        "score": 0.3333333333333333,
+        "timedOut": false,
+        "turns": 42
+      }
+    ],
+    "perTask": [
+      {
+        "taskId": "city-yield-consumers",
+        "governed": {
+          "point": 0.5,
+          "lower": 0.15003570882017148,
+          "upper": 0.8499642911798285
+        },
+        "ungoverned": {
+          "point": 0,
+          "lower": 0,
+          "upper": 0.48990002040399916
+        },
+        "lift": 0.5,
+        "governedScore": 0.75,
+        "ungovernedScore": 0.3333333333333333,
+        "scoreLift": 0.4166666666666667
+      }
+    ],
+    "governedOverall": {
+      "point": 0.5,
+      "lower": 0.15003570882017148,
+      "upper": 0.8499642911798285
+    },
+    "ungovernedOverall": {
+      "point": 0,
+      "lower": 0,
+      "upper": 0.48990002040399916
+    },
+    "governedScoreMean": {
+      "point": 0.75,
+      "lower": 0.49999999999999994,
+      "upper": 1
+    },
+    "ungovernedScoreMean": {
+      "point": 0.3333333333333333,
+      "lower": 0.3333333333333333,
+      "upper": 0.3333333333333333
+    },
+    "liftMean": 0.4166666666666667,
+    "liftLower": 0.4166666666666667,
+    "liftUpper": 0.4166666666666667
+  }
+}

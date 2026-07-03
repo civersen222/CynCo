@@ -1,0 +1,13 @@
+diff --git a/gold_management.py b/gold_management.py
+index c2188ee..cfe5238 100644
+--- a/gold_management.py
++++ b/gold_management.py
+@@ -84,7 +84,7 @@ class GoldManagement:
+         tribute = self.calculate_tribute()
+         
+         total_income = income
+-        total_expenses = unit_maintenance + tribute + self.bribery_total
++        total_expenses = unit_maintenance + self.bribery_total
+         
+         surplus = total_income - total_expenses
+         

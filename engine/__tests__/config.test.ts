@@ -235,6 +235,9 @@ runtime:
   spec_draft_n: 3
   cache_ram: 0
   reasoning_budget: 256
+  ctx_checkpoints: 128
+  checkpoint_min_step: 512
+  ubatch_size: 1024
 `)
     process.env.LOCALCODE_PROFILE = 'rt'
     const c = loadConfig()
@@ -242,6 +245,7 @@ runtime:
     expect(c.contextLength).toBe(65536)
     expect(c.runtime).toEqual({
       specType: 'mtp', specDraftN: 3, cacheRam: 0, reasoningBudget: 256,
+      ctxCheckpoints: 128, checkpointMinStep: 512, ubatchSize: 1024,
     })
   })
 

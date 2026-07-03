@@ -1,0 +1,9 @@
+{
+  "id": "building-yields-audit",
+  "start_ref": "03b4032",
+  "hidden_test": "hidden_test.py",
+  "timeout_ms": 900000,
+  "source": "authored",
+  "prompt": "In CivKings, `game_data.py` defines every building in the `BUILDINGS` table as a `BuildingType` with a full set of declared effect fields (food, production, gold, science, faith, culture, happiness, defense_bonus, ...). `city.py`'s `City.calculate_yields()` is supposed to be the single place that turns a city's placed buildings into an output yields dictionary. Today it only surfaces SOME of each building's declared fields into that returned dictionary -- a few declared effect fields are read off the dataclass but never make it into the result, so buildings that declare those effects contribute nothing observable to the city's yields.\n\nMake city yield calculation honor EVERY building's declared effects generically: any building placed in a city must contribute ALL of its declared positive effect fields to the dictionary returned by `calculate_yields()`, keyed by the field name, so that adding a building visibly changes the corresponding entry by exactly the declared amount. Do this generically off the `BuildingType` fields rather than by hardcoding individual building names, so future buildings added to `BUILDINGS` are honored automatically.\n\nHard requirement -- do not regress what already works: existing per-building yields that are already reflected must stay exactly correct (no double-counting), and the existing district adjacency bonuses and climate-zone multipliers must continue to apply exactly as they do now. Touch `city.py` (and `game_data.py` only if you genuinely need to). The returned dictionary's existing keys and their current values for already-working yields must not change.",
+  "notes": "Authored task. No setup_patch: the gap exists in the green tree."
+}

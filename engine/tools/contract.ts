@@ -244,7 +244,6 @@ export const contractAssertPassTool: ToolImpl = {
     }
     const index = input.index as number
     globalContract.assertPass(index, input.evidence as string | undefined)
-    globalContract.enforcementRounds += 1
     return { output: globalContract.getStatus(), isError: false }
   },
 }
@@ -279,7 +278,6 @@ export const contractAssertFailTool: ToolImpl = {
     }
     const index = input.index as number
     globalContract.assertFail(index, input.evidence as string | undefined)
-    globalContract.enforcementRounds += 1
     return { output: globalContract.getStatus(), isError: false }
   },
 }

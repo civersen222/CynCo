@@ -1,0 +1,8 @@
+{
+  "id": "stability-loop",
+  "prompt": "In this CivKings game, the empire stability system in stability_system.py is fully implemented (it tracks a 0-100 stability value, applies event modifiers for things like war and conquest, and computes revolt risk), but the turn loop never actually drives it. The Game class in game.py creates a StabilitySystem and only reads its values for display, so wars, conquests, and low stability currently have no gameplay effect at all. Wire the stability system into Game.process_turn so the realm responds to events: while the player is at war, stability should fall (with a one-time hit when war begins and ongoing strain while it continues); each time the player gains a city by conquest, stability should drop further still; a low-stability empire should suffer reduced city production; and as stability falls, the revolt risk reported by the system should climb. The relevant files are game.py (the turn loop and city-production handling) and stability_system.py (the existing API you should call into rather than reimplement). Use the diplomacy manager to tell whether the player is at war and detect conquests by watching how many cities the player owns from turn to turn.",
+  "start_ref": "03b4032",
+  "hidden_test": "hidden_test.py",
+  "timeout_ms": 900000,
+  "source": "authored"
+}

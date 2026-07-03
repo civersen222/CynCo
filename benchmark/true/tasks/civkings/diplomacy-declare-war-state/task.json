@@ -1,0 +1,9 @@
+{
+  "id": "diplomacy-declare-war-state",
+  "prompt": "In CivKings, declaring war is broken. When one civilization declares war on another, only the aggressor ends up recording the war: the defender doesn't see itself as being at war, so checks from the defender's perspective report peace and the defender's active-war list stays empty. Worse, relations between the two civs don't move at all after a declaration, so the relations panel still shows them as neutral instead of flipping to a 'War' status. Declaring war should register the conflict symmetrically on both sides and sour relations by 50 points (without dropping below the -100 floor). Restore correct war-declaration behavior.",
+  "start_ref": "03b4032",
+  "setup_patch": "setup.patch",
+  "hidden_test": "hidden_test.py",
+  "timeout_ms": 900000,
+  "source": "authored"
+}

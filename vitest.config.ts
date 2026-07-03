@@ -7,7 +7,7 @@ export default defineConfig({
       'bun:test': './engine/__tests__/setup/bunTestShim.ts',
       'bun:sqlite': './engine/__tests__/setup/bunSqliteShim.ts',
     },
-    include: ['engine/__tests__/**/*.test.ts'],
+    include: ['engine/__tests__/**/*.test.ts', 'engine/vsm/**/*.test.ts', 'engine/tools/**/*.test.ts', 'benchmark/true/**/*.test.ts'],
     // Provide Bun.serve shim so tests that use Bun.serve run under vitest
     setupFiles: ['engine/__tests__/setup/bunShim.ts'],
   },

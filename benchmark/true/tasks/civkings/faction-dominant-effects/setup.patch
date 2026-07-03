@@ -1,0 +1,14 @@
+diff --git a/faction_system.py b/faction_system.py
+index 09758a2..256e2ab 100644
+--- a/faction_system.py
++++ b/faction_system.py
+@@ -118,8 +118,7 @@ class FactionManager:
+         for faction in self.factions.values():
+             if faction.is_dominant:
+                 # Dominant faction provides bonuses
+-                for stat, bonus in self.FACTION_TYPES[faction.faction_type]['bonuses'].items():
+-                    effects[stat] += bonus * 0.1
++                pass
+             elif faction.is_marginalized:
+                 # Marginalized faction causes penalties
+                 for stat, penalty in self.FACTION_TYPES[faction.faction_type]['penalties'].items():

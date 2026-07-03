@@ -13,6 +13,32 @@ from textual.containers import Vertical, Horizontal
 RECENT_FILE = Path.home() / ".cynco" / "recent_projects.txt"
 
 
+def build_engine_env(base_env: dict, app_config=None) -> dict:
+    """Environment for the spawned engine process.
+
+    The engine's profile (default.yaml when LOCALCODE_PROFILE is unset) is the
+    source of truth for model/context. Explicit LOCALCODE_* env vars set by the
+    user pass through untouched via base_env.
+
+    ``app_config`` (the TUI's ~/.cynco/config.yml) is deliberately IGNORED:
+    forwarding its model as LOCALCODE_MODEL let a stale TUI config silently
+    override the engine profile — llama-cpp setup failed on the unknown name
+    and every session broke with opaque timeouts (2026-07-02). Model switches
+    made in the TUI reach the running engine via the /model command instead.
+    """
+    return {**base_env}
+
+
+def read_engine_log_tail(log_path: str, max_lines: int = 8) -> str:
+    """Last few lines of the engine log, for surfacing startup failures."""
+    try:
+        with open(log_path, encoding="utf-8", errors="replace") as f:
+            lines = f.read().strip().splitlines()
+        return "\n".join(lines[-max_lines:]) if lines else "(engine log is empty)"
+    except OSError:
+        return "(no engine log found)"
+
+
 def load_recent_projects() -> list[str]:
     """Load recently used project directories."""
     if RECENT_FILE.exists():
@@ -186,16 +212,8 @@ class ProjectPicker(Screen):
             self.notify(f"Engine not found at {engine_script}", severity="error")
             return
 
-        # Source of truth is the engine's profile (default.yaml auto-loads when
-        # LOCALCODE_PROFILE is unset). Only forward explicit user overrides so
-        # the launcher can never silently diverge from the daemon's config.
-        env = {**os.environ}
-        explicit_model = os.environ.get("LOCALCODE_MODEL") or getattr(self.app.config, "model", None)
-        if explicit_model:
-            env["LOCALCODE_MODEL"] = explicit_model
-        explicit_ctx = os.environ.get("LOCALCODE_CONTEXT_LENGTH")
-        if explicit_ctx:
-            env["LOCALCODE_CONTEXT_LENGTH"] = explicit_ctx
+        # Source of truth is the engine's profile; see build_engine_env.
+        env = build_engine_env(os.environ, getattr(self.app, "config", None))
 
         try:
             # Find bun executable — on Windows needs .cmd extension or full path
@@ -253,6 +271,22 @@ class ProjectPicker(Screen):
 
             retries = 30  # More retries for first-launch or llama-server model load
             for attempt in range(retries):
+                # If the engine already died (e.g. fatal provider setup error),
+                # surface the real cause from its log instead of retrying into
+                # a generic connection failure.
+                proc = self.app.engine_process
+                if proc is not None and proc.poll() is not None:
+                    try:
+                        log_file.flush()
+                    except Exception:
+                        pass
+                    tail = read_engine_log_tail(log_path)
+                    self.notify(
+                        f"Engine exited (code {proc.returncode}):\n{tail}",
+                        severity="error",
+                        timeout=30,
+                    )
+                    return
                 for port in ports_to_try:
                     try:
                         self.app.bridge = EngineBridge(port=port, on_event=self.app._on_engine_event)

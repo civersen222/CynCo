@@ -1,0 +1,766 @@
+{
+  "model": "qwen3.6-27b-q6k",
+  "timestamp": "2026-06-17T20:36:38.175Z",
+  "repsPerCondition": 3,
+  "runs": [
+    {
+      "taskId": "combat-flanking",
+      "condition": "governed",
+      "rep": 1,
+      "passed": true,
+      "timedOut": true,
+      "turns": 59
+    },
+    {
+      "taskId": "combat-flanking",
+      "condition": "governed",
+      "rep": 2,
+      "passed": true,
+      "timedOut": false,
+      "turns": 31
+    },
+    {
+      "taskId": "combat-flanking",
+      "condition": "governed",
+      "rep": 3,
+      "passed": true,
+      "timedOut": false,
+      "turns": 21
+    },
+    {
+      "taskId": "combat-flanking",
+      "condition": "ungoverned",
+      "rep": 1,
+      "passed": true,
+      "timedOut": false,
+      "turns": 19
+    },
+    {
+      "taskId": "combat-flanking",
+      "condition": "ungoverned",
+      "rep": 2,
+      "passed": true,
+      "timedOut": false,
+      "turns": 18
+    },
+    {
+      "taskId": "combat-flanking",
+      "condition": "ungoverned",
+      "rep": 3,
+      "passed": true,
+      "timedOut": false,
+      "turns": 25
+    },
+    {
+      "taskId": "diplomacy-declare-war-state",
+      "condition": "governed",
+      "rep": 1,
+      "passed": true,
+      "timedOut": false,
+      "turns": 28
+    },
+    {
+      "taskId": "diplomacy-declare-war-state",
+      "condition": "governed",
+      "rep": 2,
+      "passed": true,
+      "timedOut": false,
+      "turns": 20
+    },
+    {
+      "taskId": "diplomacy-declare-war-state",
+      "condition": "governed",
+      "rep": 3,
+      "passed": true,
+      "timedOut": false,
+      "turns": 27
+    },
+    {
+      "taskId": "diplomacy-declare-war-state",
+      "condition": "ungoverned",
+      "rep": 1,
+      "passed": true,
+      "timedOut": false,
+      "turns": 18
+    },
+    {
+      "taskId": "diplomacy-declare-war-state",
+      "condition": "ungoverned",
+      "rep": 2,
+      "passed": true,
+      "timedOut": false,
+      "turns": 22
+    },
+    {
+      "taskId": "diplomacy-declare-war-state",
+      "condition": "ungoverned",
+      "rep": 3,
+      "passed": true,
+      "timedOut": false,
+      "turns": 29
+    },
+    {
+      "taskId": "era-golden-age-threshold",
+      "condition": "governed",
+      "rep": 1,
+      "passed": true,
+      "timedOut": false,
+      "turns": 25
+    },
+    {
+      "taskId": "era-golden-age-threshold",
+      "condition": "governed",
+      "rep": 2,
+      "passed": true,
+      "timedOut": false,
+      "turns": 19
+    },
+    {
+      "taskId": "era-golden-age-threshold",
+      "condition": "governed",
+      "rep": 3,
+      "passed": true,
+      "timedOut": false,
+      "turns": 21
+    },
+    {
+      "taskId": "era-golden-age-threshold",
+      "condition": "ungoverned",
+      "rep": 1,
+      "passed": true,
+      "timedOut": false,
+      "turns": 28
+    },
+    {
+      "taskId": "era-golden-age-threshold",
+      "condition": "ungoverned",
+      "rep": 2,
+      "passed": true,
+      "timedOut": false,
+      "turns": 21
+    },
+    {
+      "taskId": "era-golden-age-threshold",
+      "condition": "ungoverned",
+      "rep": 3,
+      "passed": true,
+      "timedOut": false,
+      "turns": 12
+    },
+    {
+      "taskId": "faction-dominant-effects",
+      "condition": "governed",
+      "rep": 1,
+      "passed": false,
+      "timedOut": false,
+      "turns": 23
+    },
+    {
+      "taskId": "faction-dominant-effects",
+      "condition": "governed",
+      "rep": 2,
+      "passed": false,
+      "timedOut": false,
+      "turns": 19
+    },
+    {
+      "taskId": "faction-dominant-effects",
+      "condition": "governed",
+      "rep": 3,
+      "passed": false,
+      "timedOut": false,
+      "turns": 30
+    },
+    {
+      "taskId": "faction-dominant-effects",
+      "condition": "ungoverned",
+      "rep": 1,
+      "passed": false,
+      "timedOut": false,
+      "turns": 25
+    },
+    {
+      "taskId": "faction-dominant-effects",
+      "condition": "ungoverned",
+      "rep": 2,
+      "passed": false,
+      "timedOut": false,
+      "turns": 21
+    },
+    {
+      "taskId": "faction-dominant-effects",
+      "condition": "ungoverned",
+      "rep": 3,
+      "passed": false,
+      "timedOut": true,
+      "turns": 56
+    },
+    {
+      "taskId": "gold-deficit-aggregation",
+      "condition": "governed",
+      "rep": 1,
+      "passed": true,
+      "timedOut": false,
+      "turns": 23
+    },
+    {
+      "taskId": "gold-deficit-aggregation",
+      "condition": "governed",
+      "rep": 2,
+      "passed": true,
+      "timedOut": false,
+      "turns": 19
+    },
+    {
+      "taskId": "gold-deficit-aggregation",
+      "condition": "governed",
+      "rep": 3,
+      "passed": true,
+      "timedOut": false,
+      "turns": 19
+    },
+    {
+      "taskId": "gold-deficit-aggregation",
+      "condition": "ungoverned",
+      "rep": 1,
+      "passed": true,
+      "timedOut": false,
+      "turns": 12
+    },
+    {
+      "taskId": "gold-deficit-aggregation",
+      "condition": "ungoverned",
+      "rep": 2,
+      "passed": true,
+      "timedOut": false,
+      "turns": 16
+    },
+    {
+      "taskId": "gold-deficit-aggregation",
+      "condition": "ungoverned",
+      "rep": 3,
+      "passed": true,
+      "timedOut": false,
+      "turns": 11
+    },
+    {
+      "taskId": "greatpeople-recruit-cost-carryover",
+      "condition": "governed",
+      "rep": 1,
+      "passed": true,
+      "timedOut": false,
+      "turns": 23
+    },
+    {
+      "taskId": "greatpeople-recruit-cost-carryover",
+      "condition": "governed",
+      "rep": 2,
+      "passed": true,
+      "timedOut": false,
+      "turns": 20
+    },
+    {
+      "taskId": "greatpeople-recruit-cost-carryover",
+      "condition": "governed",
+      "rep": 3,
+      "passed": true,
+      "timedOut": false,
+      "turns": 19
+    },
+    {
+      "taskId": "greatpeople-recruit-cost-carryover",
+      "condition": "ungoverned",
+      "rep": 1,
+      "passed": true,
+      "timedOut": false,
+      "turns": 13
+    },
+    {
+      "taskId": "greatpeople-recruit-cost-carryover",
+      "condition": "ungoverned",
+      "rep": 2,
+      "passed": true,
+      "timedOut": false,
+      "turns": 18
+    },
+    {
+      "taskId": "greatpeople-recruit-cost-carryover",
+      "condition": "ungoverned",
+      "rep": 3,
+      "passed": true,
+      "timedOut": false,
+      "turns": 20
+    },
+    {
+      "taskId": "happiness-overextension-penalty",
+      "condition": "governed",
+      "rep": 1,
+      "passed": true,
+      "timedOut": false,
+      "turns": 19
+    },
+    {
+      "taskId": "happiness-overextension-penalty",
+      "condition": "governed",
+      "rep": 2,
+      "passed": true,
+      "timedOut": false,
+      "turns": 13
+    },
+    {
+      "taskId": "happiness-overextension-penalty",
+      "condition": "governed",
+      "rep": 3,
+      "passed": true,
+      "timedOut": false,
+      "turns": 16
+    },
+    {
+      "taskId": "happiness-overextension-penalty",
+      "condition": "ungoverned",
+      "rep": 1,
+      "passed": true,
+      "timedOut": false,
+      "turns": 13
+    },
+    {
+      "taskId": "happiness-overextension-penalty",
+      "condition": "ungoverned",
+      "rep": 2,
+      "passed": true,
+      "timedOut": false,
+      "turns": 13
+    },
+    {
+      "taskId": "happiness-overextension-penalty",
+      "condition": "ungoverned",
+      "rep": 3,
+      "passed": true,
+      "timedOut": false,
+      "turns": 14
+    },
+    {
+      "taskId": "improvements-worker-build-progress",
+      "condition": "governed",
+      "rep": 1,
+      "passed": true,
+      "timedOut": false,
+      "turns": 17
+    },
+    {
+      "taskId": "improvements-worker-build-progress",
+      "condition": "governed",
+      "rep": 2,
+      "passed": true,
+      "timedOut": true,
+      "turns": 53
+    },
+    {
+      "taskId": "improvements-worker-build-progress",
+      "condition": "governed",
+      "rep": 3,
+      "passed": true,
+      "timedOut": false,
+      "turns": 24
+    },
+    {
+      "taskId": "improvements-worker-build-progress",
+      "condition": "ungoverned",
+      "rep": 1,
+      "passed": true,
+      "timedOut": false,
+      "turns": 17
+    },
+    {
+      "taskId": "improvements-worker-build-progress",
+      "condition": "ungoverned",
+      "rep": 2,
+      "passed": true,
+      "timedOut": false,
+      "turns": 18
+    },
+    {
+      "taskId": "improvements-worker-build-progress",
+      "condition": "ungoverned",
+      "rep": 3,
+      "passed": true,
+      "timedOut": false,
+      "turns": 17
+    },
+    {
+      "taskId": "market-price-clamp",
+      "condition": "governed",
+      "rep": 1,
+      "passed": false,
+      "timedOut": false,
+      "turns": 22
+    },
+    {
+      "taskId": "market-price-clamp",
+      "condition": "governed",
+      "rep": 2,
+      "passed": false,
+      "timedOut": false,
+      "turns": 20
+    },
+    {
+      "taskId": "market-price-clamp",
+      "condition": "governed",
+      "rep": 3,
+      "passed": false,
+      "timedOut": true,
+      "turns": 61
+    },
+    {
+      "taskId": "market-price-clamp",
+      "condition": "ungoverned",
+      "rep": 1,
+      "passed": false,
+      "timedOut": false,
+      "turns": 18
+    },
+    {
+      "taskId": "market-price-clamp",
+      "condition": "ungoverned",
+      "rep": 2,
+      "passed": false,
+      "timedOut": false,
+      "turns": 17
+    },
+    {
+      "taskId": "market-price-clamp",
+      "condition": "ungoverned",
+      "rep": 3,
+      "passed": false,
+      "timedOut": false,
+      "turns": 34
+    },
+    {
+      "taskId": "military-promotion-bonus",
+      "condition": "governed",
+      "rep": 1,
+      "passed": true,
+      "timedOut": true,
+      "turns": 48
+    },
+    {
+      "taskId": "military-promotion-bonus",
+      "condition": "governed",
+      "rep": 2,
+      "passed": true,
+      "timedOut": false,
+      "turns": 41
+    },
+    {
+      "taskId": "military-promotion-bonus",
+      "condition": "governed",
+      "rep": 3,
+      "passed": true,
+      "timedOut": false,
+      "turns": 23
+    },
+    {
+      "taskId": "military-promotion-bonus",
+      "condition": "ungoverned",
+      "rep": 1,
+      "passed": true,
+      "timedOut": false,
+      "turns": 18
+    },
+    {
+      "taskId": "military-promotion-bonus",
+      "condition": "ungoverned",
+      "rep": 2,
+      "passed": true,
+      "timedOut": false,
+      "turns": 16
+    },
+    {
+      "taskId": "military-promotion-bonus",
+      "condition": "ungoverned",
+      "rep": 3,
+      "passed": true,
+      "timedOut": false,
+      "turns": 20
+    },
+    {
+      "taskId": "production-progress-clamp",
+      "condition": "governed",
+      "rep": 1,
+      "passed": true,
+      "timedOut": true,
+      "turns": 60
+    },
+    {
+      "taskId": "production-progress-clamp",
+      "condition": "governed",
+      "rep": 2,
+      "passed": true,
+      "timedOut": false,
+      "turns": 14
+    },
+    {
+      "taskId": "production-progress-clamp",
+      "condition": "governed",
+      "rep": 3,
+      "passed": true,
+      "timedOut": false,
+      "turns": 11
+    },
+    {
+      "taskId": "production-progress-clamp",
+      "condition": "ungoverned",
+      "rep": 1,
+      "passed": true,
+      "timedOut": false,
+      "turns": 17
+    },
+    {
+      "taskId": "production-progress-clamp",
+      "condition": "ungoverned",
+      "rep": 2,
+      "passed": true,
+      "timedOut": false,
+      "turns": 12
+    },
+    {
+      "taskId": "production-progress-clamp",
+      "condition": "ungoverned",
+      "rep": 3,
+      "passed": true,
+      "timedOut": false,
+      "turns": 22
+    },
+    {
+      "taskId": "trade-route-income",
+      "condition": "governed",
+      "rep": 1,
+      "passed": true,
+      "timedOut": true,
+      "turns": 58
+    },
+    {
+      "taskId": "trade-route-income",
+      "condition": "governed",
+      "rep": 2,
+      "passed": true,
+      "timedOut": false,
+      "turns": 58
+    },
+    {
+      "taskId": "trade-route-income",
+      "condition": "governed",
+      "rep": 3,
+      "passed": true,
+      "timedOut": false,
+      "turns": 14
+    },
+    {
+      "taskId": "trade-route-income",
+      "condition": "ungoverned",
+      "rep": 1,
+      "passed": true,
+      "timedOut": false,
+      "turns": 19
+    },
+    {
+      "taskId": "trade-route-income",
+      "condition": "ungoverned",
+      "rep": 2,
+      "passed": true,
+      "timedOut": false,
+      "turns": 12
+    },
+    {
+      "taskId": "trade-route-income",
+      "condition": "ungoverned",
+      "rep": 3,
+      "passed": true,
+      "timedOut": false,
+      "turns": 30
+    }
+  ],
+  "perTask": [
+    {
+      "taskId": "combat-flanking",
+      "governed": {
+        "point": 1,
+        "lower": 0.43849391955098227,
+        "upper": 1
+      },
+      "ungoverned": {
+        "point": 1,
+        "lower": 0.43849391955098227,
+        "upper": 1
+      },
+      "lift": 0
+    },
+    {
+      "taskId": "diplomacy-declare-war-state",
+      "governed": {
+        "point": 1,
+        "lower": 0.43849391955098227,
+        "upper": 1
+      },
+      "ungoverned": {
+        "point": 1,
+        "lower": 0.43849391955098227,
+        "upper": 1
+      },
+      "lift": 0
+    },
+    {
+      "taskId": "era-golden-age-threshold",
+      "governed": {
+        "point": 1,
+        "lower": 0.43849391955098227,
+        "upper": 1
+      },
+      "ungoverned": {
+        "point": 1,
+        "lower": 0.43849391955098227,
+        "upper": 1
+      },
+      "lift": 0
+    },
+    {
+      "taskId": "faction-dominant-effects",
+      "governed": {
+        "point": 0,
+        "lower": 0,
+        "upper": 0.5615060804490177
+      },
+      "ungoverned": {
+        "point": 0,
+        "lower": 0,
+        "upper": 0.5615060804490177
+      },
+      "lift": 0
+    },
+    {
+      "taskId": "gold-deficit-aggregation",
+      "governed": {
+        "point": 1,
+        "lower": 0.43849391955098227,
+        "upper": 1
+      },
+      "ungoverned": {
+        "point": 1,
+        "lower": 0.43849391955098227,
+        "upper": 1
+      },
+      "lift": 0
+    },
+    {
+      "taskId": "greatpeople-recruit-cost-carryover",
+      "governed": {
+        "point": 1,
+        "lower": 0.43849391955098227,
+        "upper": 1
+      },
+      "ungoverned": {
+        "point": 1,
+        "lower": 0.43849391955098227,
+        "upper": 1
+      },
+      "lift": 0
+    },
+    {
+      "taskId": "happiness-overextension-penalty",
+      "governed": {
+        "point": 1,
+        "lower": 0.43849391955098227,
+        "upper": 1
+      },
+      "ungoverned": {
+        "point": 1,
+        "lower": 0.43849391955098227,
+        "upper": 1
+      },
+      "lift": 0
+    },
+    {
+      "taskId": "improvements-worker-build-progress",
+      "governed": {
+        "point": 1,
+        "lower": 0.43849391955098227,
+        "upper": 1
+      },
+      "ungoverned": {
+        "point": 1,
+        "lower": 0.43849391955098227,
+        "upper": 1
+      },
+      "lift": 0
+    },
+    {
+      "taskId": "market-price-clamp",
+      "governed": {
+        "point": 0,
+        "lower": 0,
+        "upper": 0.5615060804490177
+      },
+      "ungoverned": {
+        "point": 0,
+        "lower": 0,
+        "upper": 0.5615060804490177
+      },
+      "lift": 0
+    },
+    {
+      "taskId": "military-promotion-bonus",
+      "governed": {
+        "point": 1,
+        "lower": 0.43849391955098227,
+        "upper": 1
+      },
+      "ungoverned": {
+        "point": 1,
+        "lower": 0.43849391955098227,
+        "upper": 1
+      },
+      "lift": 0
+    },
+    {
+      "taskId": "production-progress-clamp",
+      "governed": {
+        "point": 1,
+        "lower": 0.43849391955098227,
+        "upper": 1
+      },
+      "ungoverned": {
+        "point": 1,
+        "lower": 0.43849391955098227,
+        "upper": 1
+      },
+      "lift": 0
+    },
+    {
+      "taskId": "trade-route-income",
+      "governed": {
+        "point": 1,
+        "lower": 0.43849391955098227,
+        "upper": 1
+      },
+      "ungoverned": {
+        "point": 1,
+        "lower": 0.43849391955098227,
+        "upper": 1
+      },
+      "lift": 0
+    }
+  ],
+  "governedOverall": {
+    "point": 0.8333333333333334,
+    "lower": 0.6810888526532568,
+    "upper": 0.9212965937143589
+  },
+  "ungovernedOverall": {
+    "point": 0.8333333333333334,
+    "lower": 0.6810888526532568,
+    "upper": 0.9212965937143589
+  },
+  "liftMean": 0,
+  "liftLower": 0,
+  "liftUpper": 0
+}

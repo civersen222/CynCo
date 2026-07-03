@@ -1,0 +1,35 @@
+diff --git a/game.py b/game.py
+index 47e6783..e774fee 100644
+--- a/game.py
++++ b/game.py
+@@ -694,7 +694,29 @@ class Game:
+                 civ_obj = self.civilizations.get(owner)
+                 if civ_obj is not None:
+                     civ_obj.culture += yields.get('culture', 0)
+-                
++
++                # Science yield advances the civ's current research.
++                science_yield = yields.get('science', 0)
++                tech_mgr = self.research.get(owner)
++                if tech_mgr is not None and science_yield > 0:
++                    if not tech_mgr.current_research:
++                        available = tech_mgr.get_available_technologies(owner)
++                        if available:
++                            tech_mgr.research(available[0], owner)
++                    if tech_mgr.current_research:
++                        tech_mgr.add_research_progress(owner, int(science_yield))
++
++                # Faith yield accumulates into the civ's faith points.
++                faith_yield = yields.get('faith', 0)
++                if faith_yield > 0:
++                    self.faith_points[owner] = self.faith_points.get(owner, 0) + faith_yield
++
++                # Empire happiness reduces effective production output.
++                production_loss = 1.0
++                if owner == self.player_civ.name:
++                    production_loss = self.happiness_system.get_production_loss()
++                    yields['production'] = yields.get('production', 0) * production_loss
++
+                 # Population growth
+                 old_pop = city.population
+                 city.grow()

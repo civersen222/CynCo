@@ -1,0 +1,9 @@
+{
+  "id": "combat-flanking",
+  "prompt": "In CivKings tactical combat, surrounding an enemy is supposed to give an attack advantage, but right now it does nothing. When friendly units stand on hexes adjacent to the defender, the attacker should gain a flanking bonus of +2% attack per adjacent ally, capped at +12%, and the attacking unit itself must never count as one of its own flankers. Today, no matter how many allies surround the defender, the flanking bonus is always zero, so the combat preview shows the same attacker strength and estimated damage whether or not the enemy is encircled. Restore the flanking calculation so encirclement increases the attacker's effective strength.",
+  "start_ref": "03b4032",
+  "setup_patch": "setup.patch",
+  "hidden_test": "hidden_test.py",
+  "timeout_ms": 900000,
+  "source": "authored"
+}

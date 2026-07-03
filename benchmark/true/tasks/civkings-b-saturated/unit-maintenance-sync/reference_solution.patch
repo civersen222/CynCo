@@ -1,0 +1,41 @@
+diff --git a/gold_management.py b/gold_management.py
+index c2188ee..349fc82 100644
+--- a/gold_management.py
++++ b/gold_management.py
+@@ -4,6 +4,8 @@ Handles unit maintenance, tribute, bribery costs, and gold expenditure tracking.
+ """
+ from typing import Dict, List, Optional, Tuple
+ 
++from game_data import UNIT_TYPES
++
+ 
+ class GoldManagement:
+     """Manages gold expenditures beyond basic tax income."""
+@@ -45,11 +47,26 @@ class GoldManagement:
+         self._monthly_expenses: List[Dict[str, any]] = []
+         self._surplus_history: List[int] = []
+ 
++    @classmethod
++    def maintenance_for_type(cls, unit_type: str) -> float:
++        """Authoritative per-turn maintenance for a unit type.
++
++        The canonical unit definitions in ``game_data.UNIT_TYPES`` are the
++        single source of truth. The local ``UNIT_MAINTENANCE`` table is only a
++        last-resort fallback for unit-type names that are not present in the
++        canonical definitions; a genuinely unknown type costs zero rather than
++        an arbitrary default fee.
++        """
++        utype = UNIT_TYPES.get(unit_type)
++        if utype is not None:
++            return float(utype.gold_maintenance)
++        return float(cls.UNIT_MAINTENANCE.get(unit_type, 0.0))
++
+     def add_unit(self, unit_name: str, unit_type: str):
+         """Register a unit for maintenance tracking."""
+         self._units[unit_name] = {
+             "type": unit_type,
+-            "maintenance": self.UNIT_MAINTENANCE.get(unit_type, 1.0),
++            "maintenance": self.maintenance_for_type(unit_type),
+         }
+ 
+     def remove_unit(self, unit_name: str):

@@ -1,0 +1,14 @@
+diff --git a/improvements.py b/improvements.py
+index 1d41d24..29968da 100644
+--- a/improvements.py
++++ b/improvements.py
+@@ -77,9 +77,6 @@ class ImprovementManager:
+         completed = []
+ 
+         for (x, y), imp_type in list(self._active_improvements.items()):
+-            if (x, y) not in tiles_with_workers:
+-                continue
+-
+             tile = all_tiles.get((x, y))
+             if not tile:
+                 continue

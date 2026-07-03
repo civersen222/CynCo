@@ -1,0 +1,18 @@
+diff --git a/diplomacy.py b/diplomacy.py
+index 47e2247..70c4e91 100644
+--- a/diplomacy.py
++++ b/diplomacy.py
+@@ -77,13 +77,6 @@ class DiplomacyManager:
+             self.wars[aggressor] = []
+         if defender not in self.wars[aggressor]:
+             self.wars[aggressor].append(defender)
+-        
+-        if defender not in self.wars:
+-            self.wars[defender] = []
+-        if aggressor not in self.wars[defender]:
+-            self.wars[defender].append(aggressor)
+-        
+-        self.modify_relation(aggressor, defender, -50)
+     
+     def make_pact(self, civ_a: str, civ_b: str, pact_type: str = "alliance"):
+         """Create a diplomatic pact"""

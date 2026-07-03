@@ -1,0 +1,28 @@
+=== READ-LOOP GATE INTEGRATION SMOKE (city-yield-consumers, governed/ON rep, _TRACE_STEERING=1) ===
+model: qwen3.6-27b-q6k via llama-cpp (port 8081)   branch: read-loop-gate
+log: readloopgate-smoke-1782510001.log
+baseline for comparison: trace-steering-1782502010.log (un-gated; first write at iter=71)
+
+FALSIFIABLE BEHAVIOR CHANGE — CONFIRMED:
+  (a) The gate fired: 8x "[read-loop] DENIED" (first at iter=7; mix of redundant Read + Grep).
+  (b) The gate forced an EARLIER edit attempt: first writes=1 at iter=32
+      (last6 included Edit) vs the un-gated baseline's iter=71.
+      => 39 iterations earlier. Directly comparable, falsifiable, passes the
+         Task-7 success criterion (first write earlier than 71).
+
+CONTEXT-BLOAT FIX — CONFIRMED:
+  Denied reads append NO file payload, so context stayed lean:
+  ctxTok at first write (iter=32) = 10,712, versus the un-gated baseline that
+  bloated 436 -> ~20,900 before its (much later) first write. Roughly half the
+  context for an earlier write.
+
+OUTCOME (single rep, NOT a powered effect estimate):
+  grounding=ON rep 1: score=33.3% pass=false turns=47.
+  This is a MECHANISM smoke test, not a score verdict. n=1 says nothing about
+  whether the gate raises task scores — only that the intended behavior change
+  (deny redundant reads -> earlier write, leaner context) actually occurs live.
+  A score verdict would need reps>=8 (per the grounding A/B variance findings).
+
+PROCEDURE NOTE:
+  Only the ON/governed rep is needed for this mechanism check; the benchmark was
+  killed before the OFF arm ran (bun + both llama-server PIDs terminated).

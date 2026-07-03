@@ -1,0 +1,8 @@
+{
+  "id": "tax-happiness-chain",
+  "prompt": "In this CivKings game the taxation chain is only half wired. tax_system.py defines a TaxSystem with a gold multiplier that grows with the tax rate and a happiness_penalty that scales with how far the rate sits above the neutral rate of 50, happiness_system.py defines a HappinessSystem whose current_happiness subtracts a settable tax_penalty and clamps the result to 0-100, and there is a StabilitySystem that can apply clamped stability changes. The problem is that Game.process_turn in game.py creates these systems but never connects them: raising the tax rate adds gold but does not actually make the populace less happy, and an unhappy empire never loses stability. Wire the turn loop so the chain works end to end. Raising the tax rate should measurably increase tax gold income (already true) while lowering empire happiness in proportion to how far the rate is above the neutral rate, and sustained low happiness should erode empire stability. Drive the existing TaxSystem and HappinessSystem APIs rather than reinventing them, and make sure the existing 0-100 happiness clamp is respected so no extreme tax rate ever produces negative or overflowing happiness. The relevant files are game.py (the turn loop where tax income, happiness and stability are processed), tax_system.py, and happiness_system.py.",
+  "start_ref": "03b4032",
+  "hidden_test": "hidden_test.py",
+  "timeout_ms": 900000,
+  "source": "authored"
+}

@@ -1,0 +1,12 @@
+diff --git a/great_people.py b/great_people.py
+index a6a0556..ac48ba1 100644
+--- a/great_people.py
++++ b/great_people.py
+@@ -66,7 +66,6 @@ class GreatPeopleManager:
+         gp_points = self.points.get(civ_name, {})
+         for person_type, info in GREAT_PERSON_TYPES.items():
+             if gp_points.get(person_type, 0) >= info["threshold"]:
+-                self.points[civ_name][person_type] -= info["threshold"]
+                 entry = {
+                     "type": person_type,
+                     "civ": civ_name,

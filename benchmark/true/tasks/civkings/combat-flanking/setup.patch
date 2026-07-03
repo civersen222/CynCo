@@ -1,0 +1,18 @@
+diff --git a/combat.py b/combat.py
+index 705a92f..583e3a8 100644
+--- a/combat.py
++++ b/combat.py
+@@ -117,12 +117,7 @@ def calculate_flanking(
+     +2 per friendly unit adjacent to the defender (max +12).
+     The attacker itself is excluded.
+     """
+-    adj_positions = set(_hex_neighbors(defender_pos))
+-    count = 0
+-    for unit in friendly_units:
+-        if unit.is_alive and unit.position != attacker_pos and unit.position in adj_positions:
+-            count += 1
+-    return min(count * 2, 12)
++    return 0
+
+
+ def _get_counter_bonus(attacker: "Unit", defender: "Unit") -> int:

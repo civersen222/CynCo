@@ -211,13 +211,11 @@ describe('Fix 5 — cache-ram configurable via LOCALCODE_CACHE_RAM', () => {
     expect(args[idx + 1]).toBe('1024')
   })
 
-  it('defaults cache-ram to 0 and reasoning-budget to 256 when env vars unset', () => {
+  it('omits cache-ram and defaults reasoning-budget to 256 when env vars unset', () => {
     delete process.env.LOCALCODE_CACHE_RAM
     delete process.env.LOCALCODE_REASONING_BUDGET
     const args = buildServerArgs({ modelPath: '/models/test.gguf', port: 8081 })
-    const cacheIdx = args.indexOf('--cache-ram')
-    expect(cacheIdx).toBeGreaterThanOrEqual(0)
-    expect(args[cacheIdx + 1]).toBe('0')
+    expect(args).not.toContain('--cache-ram')
     const budgetIdx = args.indexOf('--reasoning-budget')
     expect(budgetIdx).toBeGreaterThanOrEqual(0)
     expect(args[budgetIdx + 1]).toBe('256')

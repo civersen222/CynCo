@@ -108,7 +108,7 @@ LOCALCODE_PROVIDER=llama-cpp \
   bun engine/main.ts
 ```
 
-The engine auto-manages llama-server with: single-slot mode, disabled prompt cache (SWA models invalidate it), capped reasoning budget (256 tokens), and accurate tok/s from server eval timing. Side queries route through the same llama-server instance to avoid VRAM thrashing.
+The engine auto-manages llama-server with: single-slot mode, context checkpoints for prefix-cache rollback (Qwen3.6 is a hybrid Gated DeltaNet model — warm turns only prefill new tokens instead of reprocessing the whole prompt), capped reasoning budget (256 tokens), and accurate tok/s from server eval timing. The engine keeps its prompt strictly append-only across turns to preserve the cache (enforced by a regression test). Measured live at 45K tokens of context: warm turns restore a checkpoint with ~0.998 prefix reuse and prefill only the ~500-900 genuinely new tokens (~0.6-0.9 s) instead of reprocessing the full prompt (~17 s) — each turn pays only for its new content. Side queries route through the same llama-server instance to avoid VRAM thrashing. Full tuning recipe: [docs/serving/rtx-5090-qwen3.6-27b.md](docs/serving/rtx-5090-qwen3.6-27b.md).
 
 ---
 
@@ -204,7 +204,7 @@ Not advisory — **enforced**. S5 is the single policy enforcer with 21 tiered r
 - **Stuck loop escape** — restricts to unused tools when stuck 5+ turns, regardless of tool success rate
 
 **Stuck Loop Escalation (4 tiers):**
-1. **Turn 3+** — governance signal injected into system prompt: "change your approach"
+1. **Turn 3+** — governance signal appended to the conversation: "change your approach" (appended, not a system-prompt rewrite — keeps the prompt cache valid)
 2. **Turn 5+** — C7 critical rule restricts tools to ones not used in last 5 turns
 3. **Turn 10+** — synthetic user message forces model to reflect on what's blocking it
 4. **Turn 15+** — hard halt, returns control to user
@@ -322,7 +322,10 @@ All config via environment variables. No config files required.
 | `LOCALCODE_S5_MODEL` | — | Fine-tuned S5 model (when available) |
 | `LOCALCODE_DASHBOARD_HOST` | `127.0.0.1` | Dashboard bind address (set to `0.0.0.0` to expose on network) |
 | `LOCALCODE_BRIDGE_HOST` | `127.0.0.1` | TUI WebSocket bridge bind address (set to `0.0.0.0` to expose on network) |
-| `LOCALCODE_CACHE_RAM` | `0` | llama-server KV cache RAM (MB). Default 0 is optimal for Qwen3.6 SWA (cache invalidated every call). Set to `2048` for non-SWA models (Llama/Mistral/Phi) to enable KV prefix reuse. |
+| `LOCALCODE_CACHE_RAM` | llama.cpp default | llama-server host prompt-cache RAM (MB). The cache is required for context-checkpoint rollback on hybrid models (Qwen3.6) — don't set to `0`. |
+| `LOCALCODE_CTX_CHECKPOINTS` | `64` | Recurrent-state checkpoints for prefix-cache rollback on hybrid DeltaNet models. |
+| `LOCALCODE_CHECKPOINT_MIN_STEP` | `256` | Minimum token spacing between checkpoints. |
+| `LOCALCODE_UBATCH_SIZE` | `2048` | llama-server physical prefill batch size. |
 | `LOCALCODE_REASONING_BUDGET` | `256` | llama-server reasoning token budget. >256 hurts tool-call accuracy; uncapped thinking wastes minutes. Raise if your model needs more deliberation. |
 
 ---

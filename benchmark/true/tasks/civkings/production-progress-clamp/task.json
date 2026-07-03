@@ -1,0 +1,9 @@
+{
+  "id": "production-progress-clamp",
+  "prompt": "In this CivKings game, the city production popup draws a progress bar showing how close the current build is to finishing. When a city has accumulated more production than the item costs (carryover/overflow), the bar overflows past its track and the percentage shown climbs above 100% instead of capping at a full bar. Find where the production queue display computes the build progress and make an over-funded item render as a completely full bar at 100%.",
+  "start_ref": "03b4032",
+  "setup_patch": "setup.patch",
+  "hidden_test": "hidden_test.py",
+  "timeout_ms": 900000,
+  "source": "authored"
+}

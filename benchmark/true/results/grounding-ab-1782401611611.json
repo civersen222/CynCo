@@ -1,0 +1,89 @@
+{
+  "experiment": "grounding-gate-isolation",
+  "arms": {
+    "governed": "grounding-ON (VSM off)",
+    "ungoverned": "grounding-OFF (VSM off)"
+  },
+  "groundingOnScore": {
+    "point": 0,
+    "lower": 0,
+    "upper": 0
+  },
+  "groundingOffScore": {
+    "point": 0.6666666666666666,
+    "lower": 0.6666666666666666,
+    "upper": 0.6666666666666666
+  },
+  "groundingLift": {
+    "mean": -0.6666666666666666,
+    "lower": -0.6666666666666666,
+    "upper": -0.6666666666666666
+  },
+  "full": {
+    "model": "qwen3.6-27b-q6k",
+    "timestamp": "2026-06-25T15:33:31.610Z",
+    "repsPerCondition": 1,
+    "runs": [
+      {
+        "taskId": "city-yield-consumers",
+        "condition": "governed",
+        "rep": 1,
+        "passed": false,
+        "score": 0,
+        "timedOut": true,
+        "turns": 44
+      },
+      {
+        "taskId": "city-yield-consumers",
+        "condition": "ungoverned",
+        "rep": 1,
+        "passed": false,
+        "score": 0.6666666666666666,
+        "timedOut": false,
+        "turns": 48
+      }
+    ],
+    "perTask": [
+      {
+        "taskId": "city-yield-consumers",
+        "governed": {
+          "point": 0,
+          "lower": 0,
+          "upper": 0.7934567085261071
+        },
+        "ungoverned": {
+          "point": 0,
+          "lower": 0,
+          "upper": 0.7934567085261071
+        },
+        "lift": 0,
+        "governedScore": 0,
+        "ungovernedScore": 0.6666666666666666,
+        "scoreLift": -0.6666666666666666
+      }
+    ],
+    "governedOverall": {
+      "point": 0,
+      "lower": 0,
+      "upper": 0.7934567085261071
+    },
+    "ungovernedOverall": {
+      "point": 0,
+      "lower": 0,
+      "upper": 0.7934567085261071
+    },
+    "governedScoreMean": {
+      "point": 0,
+      "lower": 0,
+      "upper": 0
+    },
+    "ungovernedScoreMean": {
+      "point": 0.6666666666666666,
+      "lower": 0.6666666666666666,
+      "upper": 0.6666666666666666
+    },
+    "liftMean": -0.6666666666666666,
+    "liftLower": -0.6666666666666666,
+    "liftUpper": -0.6666666666666666
+  }
+}

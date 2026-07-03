@@ -37,7 +37,8 @@ tui/uv.lock
 src/_archived_claude_code/
 .claude/
 src/src/
-benchmark
+benchmark/*
+!benchmark/true/
 benchmark-manual
 benchmark-results
 benchmark-workspace-06
@@ -79,4 +80,6 @@ PRN
 AUX
 
 # CivKings test bed removed permanently (2026-06-11)
-civkings/
+# Anchored to repo root so it does NOT swallow the benchmark task fixtures
+# under benchmark/true/tasks/civkings/ (those are versioned evidence).
+/civkings/

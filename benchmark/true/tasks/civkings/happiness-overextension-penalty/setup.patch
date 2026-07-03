@@ -1,0 +1,17 @@
+diff --git a/happiness_system.py b/happiness_system.py
+index 2b1dcad..a841cb4 100644
+--- a/happiness_system.py
++++ b/happiness_system.py
+@@ -59,11 +59,7 @@ class HappinessSystem:
+     @property
+     def overextension_penalty(self) -> int:
+         """Calculate happiness penalty from overextension."""
+-        if self._city_count <= self._max_cities_before_penalty:
+-            return 0
+-        excess = self._city_count - self._max_cities_before_penalty
+-        penalty_per_city = 5
+-        return excess * penalty_per_city
++        return 0
+ 
+     @property
+     def war_penalty(self) -> int:

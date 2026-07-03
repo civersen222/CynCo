@@ -1,0 +1,75 @@
+diff --git a/city.py b/city.py
+index 268021a..f9b25db 100644
+--- a/city.py
++++ b/city.py
+@@ -54,6 +54,9 @@ class City:
+         self.food = 0
+         self.food_reserved = 0
+         self.faith = 0
++        # Number of consecutive turns this city has been starving (food
++        # income below population consumption). Drives the starvation cascade.
++        self.starvation_turns = 0
+         self.climate_zone = climate_zone
+         self.is_coastal = is_coastal
+         self._adjacency_scores: Dict[str, Dict[str, float]] = {}
+@@ -187,13 +190,46 @@ class City:
+ 
+         return 1.0 + total
+ 
++    # Minimum population a city can be starved down to. A city is never
++    # wiped out to zero by starvation alone.
++    POPULATION_FLOOR = 1
++
+     def grow(self):
+-        """Population growth each turn based on food surplus."""
++        """Population growth each turn based on food surplus.
++
++        When food income covers the population's consumption the city grows
++        as before. When it does not, the city *starves*: it accumulates
++        starvation turns, takes a happiness penalty, sheds population over
++        time (never below POPULATION_FLOOR), and — once the starvation is
++        severe / sustained — its stability is dragged down as well (see
++        calculate_yields).
++        """
+         yields = self.calculate_yields()
+         food = yields.get("food", 0)
+         consumption = self.population * 1.5
++
+         if food > consumption and self.population < 20:
++            # Healthy surplus: grow and shake off any prior starvation.
+             self.population += 1
++            self.starvation_turns = 0
++            return
++
++        if food < consumption:
++            # Food deficit: the city starves.
++            self.starvation_turns += 1
++
++            # Happiness penalty grows with how long the famine has lasted,
++            # capped so a single famine cannot drive happiness arbitrarily
++            # negative.
++            self.happiness -= min(self.starvation_turns, 5)
++
++            # Lose population over turns, but never below the floor.
++            if self.population > self.POPULATION_FLOOR:
++                self.population -= 1
++        else:
++            # Exactly breaking even (or at the growth cap with a surplus):
++            # no growth, but no famine either.
++            self.starvation_turns = 0
+ 
+     def calculate_yields(self, tiles: Optional[Dict[tuple, Any]] = None) -> Dict[str, float]:
+         """Calculate total yields for the city, including adjacency bonuses."""
+@@ -284,6 +320,12 @@ class City:
+                 if str(d_name) == "Government":
+                     stability += 15
+         stability += self.happiness  # happiness directly affects stability
++
++        # Severe / sustained starvation directly erodes stability on top of
++        # its happiness penalty: a prolonged famine destabilises the city.
++        if self.starvation_turns > 0:
++            stability -= 3 * self.starvation_turns
++
+         stability = max(0, min(100, stability))
+         yields["stability"] = stability
+ 

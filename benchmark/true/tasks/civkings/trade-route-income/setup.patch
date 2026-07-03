@@ -1,0 +1,14 @@
+diff --git a/economy.py b/economy.py
+index 92e43e9..db13d4e 100644
+--- a/economy.py
++++ b/economy.py
+@@ -86,9 +86,7 @@ class EconomyManager:
+         """
+         total_gold = 0
+         for route in self.trade_routes:
+-            total_gold += route.gold_per_turn
+             route.tick()
+-        self.add_gold(total_gold, source="trade_routes")
+         return total_gold
+ 
+  

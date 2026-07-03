@@ -23,6 +23,7 @@ import { WorkflowEngine } from '../workflows/engine.js'
 import type { WorkflowDefinition } from '../workflows/types.js'
 import { LSPManager } from '../lsp/manager.js'
 import { CyberneticsGovernance as GovernanceLayer } from '../vsm/cyberneticsGovernance.js'
+import { buildGovernanceSignal } from '../vsm/governanceSignal.js'
 import { WorkspaceSnapshot } from '../snapshot/snapshot.js'
 import { runAdvisors, type SystemState as AdvisorState } from '../agents/advisorRouter.js'
 import { DecisionLogger } from '../decisions/logger.js'
@@ -44,6 +45,11 @@ import {
 } from '../engine/systemPromptText.js'
 import { getJournal } from '../training/decisionJournal.js'
 import { makeJournalEntry } from '../training/types.js'
+import { buildConceptTableForCwd } from '../vsm/conceptTable.js'
+import { evaluateGrounding, extractAddedText, extractTargetPaths } from '../vsm/groundingTrigger.js'
+import { ReadLoopGate } from '../vsm/readLoopGate.js'
+import { probeEdit } from '../vsm/groundingProbe.js'
+import { loadInterventionRates, saveInterventionRates } from '../vsm/interventionPersistence.js'
 import { globalContract } from '../tools/contract.js'
 import { globalAskBroker } from '../tools/askBroker.js'
 import { setSideQuery, resetMergeTracking } from '../tools/impl/edit.js'
@@ -129,6 +135,9 @@ export class ConversationLoop {
   private toolScorerPath = require('path').join(require('os').homedir(), '.cynco', 'tool-scores.json')
   // Observed task difficulty from turn telemetry — feeds S5Input.promptDifficulty
   private difficultyClassifier = new DifficultyClassifier()
+  // Grounding trigger: concepts fired on, awaiting a re-edit to judge intervention success
+  private pendingGroundingConcepts = new Set<string>()
+  private groundingRatesLoaded = false
   private pendingApprovals = new Map<string, (approved: boolean) => void>()
   private workflowEngine: WorkflowEngine
   private lspManager: LSPManager
@@ -147,6 +156,11 @@ export class ConversationLoop {
   private lastTokPerSec = 0
   private lastModelCallMs = 0
   private steering = new SteeringQueue()
+  private readLoopGate = new ReadLoopGate()
+  // _TRACE_STEERING=1: records the source of the intervention injected on the
+  // PREVIOUS iteration so the next model-call trace line can attribute the
+  // model's resulting action to it. Diagnostic only; null when tracing is off.
+  private traceLastInjected: string | null = null
   private journal: JSONLStore
   private snapshot?: WorkspaceSnapshot
   private snapshotCwd?: string
@@ -464,6 +478,7 @@ export class ConversationLoop {
   resetGovernance(): void {
     this.governance.resetKillSwitch()
     this.consecutiveNudges = 0
+    this.readLoopGate.reset()
     this.toolFailureCounts.clear()
     console.log('[loop] Governance reset — kill switch, nudges, and tool failure counts cleared')
   }
@@ -495,6 +510,7 @@ export class ConversationLoop {
     this.governance.resetStuck() // Fresh start for each user message
     this.governance.resetKillSwitch() // Clear kill switch from previous task
     this.consecutiveNudges = 0
+    this.readLoopGate.reset()
     this.steering.clear()
 
     // Auto-create contract from EVERY user message — the model must finish what the user asked.
@@ -1358,6 +1374,7 @@ export class ConversationLoop {
       const steer = this.steering.nextSteer()
       if (steer) {
         console.log(`[s2] Steering from ${steer.source}`)
+        if (process.env._TRACE_STEERING === '1') this.traceLastInjected = steer.source
         this.governance.markNudgeInjected()
         this.addMessage({
           role: 'user',
@@ -1388,6 +1405,24 @@ export class ConversationLoop {
       const lastRole = lastMsg?.role ?? 'none'
       const lastType = lastMsg?.content?.[0]?.type ?? 'empty'
       console.log(`[loop] Model call iteration ${i + 1} | messages: ${this.messages.length} | last: ${lastRole}/${lastType}`)
+
+      // _TRACE_STEERING=1: one structured line per model call — context size (to expose
+      // bloat), cumulative read/write split + last-6 tools (exploration efficiency), and
+      // the intervention (if any) injected just before THIS call (to attribute the model's
+      // next action to it). Parsed offline to test "death by soft nagging" hypothesis.
+      if (process.env._TRACE_STEERING === '1') {
+        const TRACE_READ = new Set(['Read', 'Grep', 'Glob', 'Ls', 'ImageView'])
+        const TRACE_WRITE = new Set(['Write', 'Edit', 'MultiEdit', 'ApplyPatch', 'Bash'])
+        const approxTok = Math.round(this.messages.reduce((sum: number, m: any) =>
+          sum + (Array.isArray(m.content)
+            ? m.content.reduce((s: number, b: any) => s + (b.text?.length ?? JSON.stringify(b).length) / 4, 0)
+            : (typeof m.content === 'string' ? m.content.length / 4 : 0)), 0))
+        const reads = this.toolHistory.filter((t) => TRACE_READ.has(t)).length
+        const writes = this.toolHistory.filter((t) => TRACE_WRITE.has(t)).length
+        const last6 = this.toolHistory.slice(-6).join(',')
+        console.log(`[trace] iter=${i + 1} msgs=${this.messages.length} ctxTok=${approxTok} reads=${reads} writes=${writes} injected=${this.traceLastInjected ?? 'none'} last6=[${last6}]`)
+        this.traceLastInjected = null
+      }
 
       // S4 Reflector: periodic model self-report
       // For llama-cpp, throttle to every 10th iteration (each reflection costs 6s prompt eval)
@@ -1571,27 +1606,15 @@ export class ConversationLoop {
       this.config.temperature = effectiveTemperature
 
       // ── Dynamic governance intervention (re-evaluated EVERY iteration) ──
-      // The static systemPrompt was built before the loop with stuckCount=0.
-      // We must rebuild the governance signal portion on each iteration so the
-      // model actually sees "you are stuck" when it IS stuck.
-      let effectiveSystemPrompt = systemPrompt
+      // Delivered as an APPENDED user message, never a system-prompt rewrite:
+      // the prompt prefix must stay byte-stable for checkpoint caching.
       const currentStuck = this.governance.getStuckCount()
+      const govSignal = buildGovernanceSignal(currentStuck)
+      if (govSignal) {
+        this.addMessage({ role: 'user', content: [{ type: 'text', text: govSignal }] })
+        console.log(`[governance] Stuck signal appended as message (stuck=${currentStuck})`)
+      }
       if (currentStuck >= 3) {
-        const signal = currentStuck >= 5
-          ? `\n\n## GOVERNANCE SIGNAL — CRITICAL (turn ${currentStuck})\n\n` +
-            `CRITICAL: You have been stuck for ${currentStuck} turns repeating the same actions.\n\n` +
-            `You MUST change your approach NOW:\n` +
-            `- Do NOT call any tool you have used in the last 5 turns\n` +
-            `- Use a DIFFERENT available tool, or change the tool's parameters completely\n` +
-            `- If repeated attempts keep failing → try a COMPLETELY different strategy\n` +
-            `- If you already have enough information → STOP using tools and produce your final answer\n\n` +
-            `YOUR NEXT ACTION MUST BE DIFFERENT FROM YOUR PREVIOUS ACTIONS.`
-          : `\n\n## GOVERNANCE SIGNAL (turn ${currentStuck})\n\n` +
-            `WARNING: You have been repeating similar actions for ${currentStuck} turns.\n` +
-            `Change your approach: use a different tool or different parameters, or act on what you already know.`
-        // Append governance signal to the frozen system prompt
-        effectiveSystemPrompt = asSystemPrompt([...systemPrompt, signal])
-
         // Re-evaluate S5 to get fresh tool restrictions (C7 fires at stuck >= 5)
         console.log(`[s5] Live re-eval check: stuck=${currentStuck} s5=${!!this.s5}`)
         if (currentStuck >= 5 && this.s5) {
@@ -1659,7 +1682,7 @@ export class ConversationLoop {
       this.offeredToolNames = new Set(iterationTools.map((t: any) => t.name))
       const gen = localCallModel({
         messages: this.messages,
-        systemPrompt: effectiveSystemPrompt,
+        systemPrompt,
         thinkingConfig,
         tools: iterationTools,
         signal: this.abortController?.signal ?? new AbortController().signal,
@@ -1897,7 +1920,7 @@ export class ConversationLoop {
       // the messages-only estimate read 54% while the server was rejecting
       // requests at 100%, so the critical path never fired.
       const promptOverheadTokens =
-        JSON.stringify(effectiveSystemPrompt ?? '').length / 4 +
+        JSON.stringify(systemPrompt ?? '').length / 4 +
         JSON.stringify(iterationTools ?? []).length / 4
       const estimatedTokens = promptOverheadTokens + this.estimateMessageTokens()
       const contextLength = this.config.contextLength ?? 32768
@@ -1963,6 +1986,7 @@ export class ConversationLoop {
               ? `WARNING ${this.consecutiveNudges}: You MUST call a tool. Do not explain, do not plan, do not narrate. Call Read, Write, Edit, Grep, or Bash RIGHT NOW.`
               : 'FINAL WARNING: Call a tool immediately or your turn ends.'
           console.log(`[s2] Nudge ${this.consecutiveNudges}: ${nudgeText.slice(0, 50)}...`)
+          if (process.env._TRACE_STEERING === '1') this.traceLastInjected = `nudge${this.consecutiveNudges}`
           this.governance.markNudgeInjected()
           // Push directly and continue — steering queue gets consumed too late (after exit)
           this.addMessage({ role: 'user', content: [{ type: 'text', text: nudgeText }] })
@@ -2152,24 +2176,6 @@ export class ConversationLoop {
         }
       }
 
-      // Read loop detection: track consecutive read-only tool calls.
-      // If the model reads extensively without writing, nudge it to act.
-      // Uses a ratio: after the model has read 3x more than it's written,
-      // and at least 6 consecutive reads, suggest implementing.
-      const READ_ONLY = new Set(['Read', 'Grep', 'Glob', 'Ls', 'ImageView'])
-      const WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'ApplyPatch', 'Bash'])
-      const totalReads = toolsUsedInSession.filter(t => READ_ONLY.has(t)).length
-      const totalWrites = toolsUsedInSession.filter(t => WRITE_TOOLS.has(t)).length
-      const recentTools = this.toolHistory.slice(-6)
-      const inReadLoop = recentTools.length >= 6 && recentTools.every(t => READ_ONLY.has(t))
-      if (inReadLoop && totalReads > (totalWrites + 1) * 3) {
-        console.log(`[s2] Read-heavy pattern: ${totalReads} reads vs ${totalWrites} writes`)
-        this.steering.steer(
-          `SYSTEM: You have read ${totalReads} times and written ${totalWrites} times. Your last 6 tool calls were all read-only. Consider whether you have enough information to start implementing. Use Write or Edit to make changes.`,
-          'readLoop'
-        )
-      }
-
       // Add tool results as a user message (OpenAI format for Ollama)
       this.addMessage({
         role: 'user',
@@ -2251,6 +2257,12 @@ export class ConversationLoop {
 
     console.log(`[loop] Executing tool: ${toolName}`)
 
+    // One-time: hydrate grounding intervention success rates from prior sessions.
+    if (!this.groundingRatesLoaded) {
+      loadInterventionRates(this.governance.getInterventionTracker())
+      this.groundingRatesLoaded = true
+    }
+
     // Hard tool pin (one-shot/unattended runs): enforce allowedTools at
     // execution time too — simulated-mode models can hallucinate tools that
     // were never offered in the prompt, and approveAll would run them.
@@ -2295,6 +2307,28 @@ export class ConversationLoop {
       return
     }
 
+    // ─── Read-loop gate ────────────────────────────────────────────
+    // Deny redundant / stalled reads at execution time so the model is forced
+    // to act or stop, instead of reading itself into the context-bloat timeout.
+    const readLoopVerdict = this.readLoopGate.evaluate(toolName, toolInput)
+    if (readLoopVerdict.kind === 'deny') {
+      console.log(`[read-loop] DENIED ${toolName}`)
+      if (process.env._TRACE_STEERING === '1') this.traceLastInjected = 'readLoopGate-deny'
+      this.emit({ type: 'tool.start', toolId, toolName, input: toolInput })
+      this.emit({ type: 'tool.complete', toolId, toolName, result: readLoopVerdict.message, isError: true })
+      toolResults.push({
+        type: 'tool_result',
+        tool_use_id: toolId,
+        content: [{ type: 'text', text: readLoopVerdict.message }],
+        is_error: true,
+      })
+      toolsUsedThisTurn.push(toolName)
+      toolResultsThisTurn.push('denied')
+      toolsUsedInSession.push(toolName)
+      return // read never executes: no file payload appended (bloat fix)
+    }
+    const readLoopWarn = readLoopVerdict.kind === 'warn' ? readLoopVerdict.message : null
+
     // Vibe Guardian: check risk level before execution
     const { classifyRisk, describeRisk } = await import('./guardianRules.js')
     const risk = classifyRisk(toolName, toolInput)
@@ -2332,6 +2366,99 @@ export class ConversationLoop {
       })
       // For now, proceed with execution (full approval flow requires async wait)
       // TODO: wire into approval response system for actual blocking
+    }
+
+    // ─── Grounding gate ────────────────────────────────────────────
+    // Fire the moment an edit resolves a multi-source concept (e.g. "happiness")
+    // to a non-authoritative plain field instead of its *_system source of truth.
+    // Validated retrospectively at 100% precision / 86% recall on city-yield-consumers.
+    // `_ABLATION_GROUNDING_DISABLED=1` turns this gate into a no-op so its causal
+    // contribution can be isolated in an A/B run, independent of the broader VSM
+    // ablation flag (the rest of governance can be held constant in both arms).
+    if (
+      (toolName === 'Edit' || toolName === 'Write' || toolName === 'MultiEdit') &&
+      process.env._ABLATION_GROUNDING_DISABLED !== '1'
+    ) {
+      const groundingTracker = this.governance.getInterventionTracker()
+      const table = buildConceptTableForCwd(this.executor['cwd'] ?? process.cwd())
+      const addedText = extractAddedText(toolName, toolInput)
+      const targetPaths = extractTargetPaths(toolName, toolInput)
+      const stillUngrounded = new Set(probeEdit(addedText.split('\n'), table).map((f) => f.concept))
+
+      // (1) Resolve prior fires — NEVER gated, so the success rate keeps updating
+      // and the self-tuning gate can recover after backing off. A pending (file,
+      // concept) resolves only when a later edit to that SAME file re-addresses
+      // the concept: grounded now => intervention worked, still ungrounded => failed.
+      let ratesDirty = false
+      for (const key of [...this.pendingGroundingConcepts]) {
+        const sep = key.indexOf('\u0000')
+        const pendPath = key.slice(0, sep)
+        const concept = key.slice(sep + 1)
+        if (!targetPaths.includes(pendPath)) continue // different file — still pending
+        if (!new RegExp(`\\b${concept}\\b`).test(addedText)) continue // concept not re-addressed yet
+        const success = !stillUngrounded.has(concept)
+        groundingTracker.recordIntervention('grounding', success)
+        this.pendingGroundingConcepts.delete(key)
+        ratesDirty = true
+        const resolveJournal = getJournal()
+        if (resolveJournal) {
+          resolveJournal.log(makeJournalEntry({
+            sessionId: this.journal?.path ?? 'unknown',
+            system: 'S5',
+            input: { trigger: 'grounding', phase: 'resolution', toolName, concept },
+            decision: { recorded: 'grounding' },
+            outcome: { grounded: success },
+          }))
+        }
+      }
+      if (ratesDirty) saveInterventionRates(groundingTracker)
+
+      // (2) Decide whether to FIRE on the current edit. Only the firing side is
+      // gated by the self-tuning success rate (fail-open: unseen 'grounding' -> 1.0 -> fires).
+      // _PIN_GROUNDING=1 pins the firing side armed regardless of the tracker's
+      // success rate (used by the A/B harness to isolate the gate's effect from the
+      // self-disabling back-off). Recording/journalling in step (1) is unchanged.
+      if (process.env._PIN_GROUNDING === '1' || groundingTracker.shouldIntervene('grounding')) {
+        const intensity = this.difficultyClassifier.getGovernanceIntensity()
+        const decision = evaluateGrounding(toolName, toolInput, table, intensity)
+        if (decision.action !== 'skip') {
+          // Log the fire as an S5 training triple. Outcome is unknown at fire time
+          // (resolved: 'pending'); the true outcome is back-filled in step (1) above.
+          const fireJournal = getJournal()
+          if (fireJournal) {
+            fireJournal.log(makeJournalEntry({
+              sessionId: this.journal?.path ?? 'unknown',
+              system: 'S5',
+              input: { trigger: 'grounding', phase: 'fire', toolName, concepts: decision.concepts, intensity },
+              decision: { action: decision.action },
+              outcome: { resolved: 'pending' },
+            }))
+          }
+          // Remember each (file, concept) so resolution judges the RIGHT later edit.
+          for (const c of decision.concepts) {
+            for (const p of targetPaths) this.pendingGroundingConcepts.add(`${p}\u0000${c}`)
+          }
+
+          if (decision.action === 'block') {
+            console.log(`[grounding] BLOCKED ${toolName}: ${decision.concepts.join(', ')}`)
+            this.emit({ type: 'tool.start', toolId, toolName, input: toolInput })
+            this.emit({ type: 'tool.complete', toolId, toolName, result: decision.message, isError: true })
+            toolResults.push({
+              type: 'tool_result',
+              tool_use_id: toolId,
+              content: [{ type: 'text', text: decision.message }],
+              is_error: true,
+            })
+            toolsUsedThisTurn.push(toolName)
+            toolResultsThisTurn.push('denied')
+            toolsUsedInSession.push(toolName)
+            return
+          }
+          // action === 'warn': let the edit proceed but surface the note.
+          console.log(`[grounding] WARN ${toolName}: ${decision.concepts.join(', ')}`)
+          this.emit({ type: 'stream.token', text: `\n[Grounding] ${decision.message}\n` })
+        }
+      }
     }
 
     this.emit({ type: 'tool.start', toolId, toolName, input: toolInput })
@@ -2598,6 +2725,11 @@ export class ConversationLoop {
     this.toolHistory.push(toolName)
     if (this.toolHistory.length > 50) this.toolHistory = this.toolHistory.slice(-50)
 
+    // Re-arm the read-loop gate whenever the model actually changes something.
+    if (!result.isError && ['Edit', 'Write', 'MultiEdit', 'ApplyPatch'].includes(toolName)) {
+      this.readLoopGate.onWrite()
+    }
+
     // S4: Track file operations for structured compaction
     const filePath = (toolInput.file_path as string) ?? (toolInput.path as string) ?? ''
     if (filePath) {
@@ -2643,7 +2775,8 @@ export class ConversationLoop {
     }
     // S3* Reflexion: on a failed tool, append a specific self-correction note
     // to the result the model reads next turn (gated by LOCALCODE_REFLEXION).
-    const resultText = withReflexion(toolName, result.isError, result.output, truncatedOutput)
+    const baseResultText = withReflexion(toolName, result.isError, result.output, truncatedOutput)
+    const resultText = readLoopWarn ? `${readLoopWarn}\n\n${baseResultText}` : baseResultText
     toolResults.push({
       type: 'tool_result',
       tool_use_id: toolId,

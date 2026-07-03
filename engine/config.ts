@@ -30,6 +30,9 @@ export type RuntimeConfig = {
   flashAttn?: boolean
   cacheRam?: number
   reasoningBudget?: number
+  ctxCheckpoints?: number
+  checkpointMinStep?: number
+  ubatchSize?: number
 }
 
 export type LocalCodeConfig = {
@@ -130,6 +133,9 @@ export function loadConfig(): LocalCodeConfig {
         flashAttn: pr.flash_attn,
         cacheRam: pr.cache_ram,
         reasoningBudget: pr.reasoning_budget,
+        ctxCheckpoints: pr.ctx_checkpoints,
+        checkpointMinStep: pr.checkpoint_min_step,
+        ubatchSize: pr.ubatch_size,
       }
     : undefined
 

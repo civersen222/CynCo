@@ -1,0 +1,12 @@
+diff --git a/market_simulation.py b/market_simulation.py
+index b59912b..5f44e31 100644
+--- a/market_simulation.py
++++ b/market_simulation.py
+@@ -80,7 +80,6 @@ class MarketSimulation:
+         fluctuation = random.uniform(0.9, 1.1)
+         price *= fluctuation
+ 
+-        price = max(0.1, min(100.0, price))
+         return price
+ 
+     def update_all_prices(self):

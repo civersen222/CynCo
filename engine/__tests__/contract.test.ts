@@ -170,11 +170,13 @@ describe('contractAssertPassTool.execute', () => {
     globalContract.create('T', '', ['a', 'b'])
   })
 
-  it('passes an assertion and increments enforcementRounds', async () => {
+  it('passes an assertion without consuming enforcementRounds', async () => {
     const result = await contractAssertPassTool.execute({ index: 0, evidence: 'done' }, process.cwd())
     expect(result.isError).toBe(false)
     expect(result.output).toContain('[PASS]')
-    expect(globalContract.enforcementRounds).toBe(1)
+    // Marking an assertion must NOT burn the enforcer's re-prompt budget;
+    // that counter advances only at the genuine enforcer site (conversationLoop).
+    expect(globalContract.enforcementRounds).toBe(0)
   })
 
   it('returns error when no active contract', async () => {
@@ -190,11 +192,13 @@ describe('contractAssertFailTool.execute', () => {
     globalContract.create('T', '', ['a', 'b'])
   })
 
-  it('fails an assertion and increments enforcementRounds', async () => {
+  it('fails an assertion without consuming enforcementRounds', async () => {
     const result = await contractAssertFailTool.execute({ index: 1, evidence: 'broken' }, process.cwd())
     expect(result.isError).toBe(false)
     expect(result.output).toContain('[FAIL]')
-    expect(globalContract.enforcementRounds).toBe(1)
+    // Marking an assertion must NOT burn the enforcer's re-prompt budget;
+    // that counter advances only at the genuine enforcer site (conversationLoop).
+    expect(globalContract.enforcementRounds).toBe(0)
   })
 })
 
