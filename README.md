@@ -108,7 +108,7 @@ LOCALCODE_PROVIDER=llama-cpp \
   bun engine/main.ts
 ```
 
-The engine auto-manages llama-server with: single-slot mode, context checkpoints for prefix-cache rollback (Qwen3.6 is a hybrid Gated DeltaNet model — warm turns only prefill new tokens instead of reprocessing the whole prompt), capped reasoning budget (256 tokens), and accurate tok/s from server eval timing. The engine keeps its prompt strictly append-only across turns to preserve the cache (enforced by a regression test). Side queries route through the same llama-server instance to avoid VRAM thrashing. Full tuning recipe: [docs/serving/rtx-5090-qwen3.6-27b.md](docs/serving/rtx-5090-qwen3.6-27b.md).
+The engine auto-manages llama-server with: single-slot mode, context checkpoints for prefix-cache rollback (Qwen3.6 is a hybrid Gated DeltaNet model — warm turns only prefill new tokens instead of reprocessing the whole prompt), capped reasoning budget (256 tokens), and accurate tok/s from server eval timing. The engine keeps its prompt strictly append-only across turns to preserve the cache (enforced by a regression test). Measured live at 45K tokens of context: warm turns restore a checkpoint with ~0.998 prefix reuse and prefill only the ~500-900 genuinely new tokens (~0.6-0.9 s) instead of reprocessing the full prompt (~17 s) — each turn pays only for its new content. Side queries route through the same llama-server instance to avoid VRAM thrashing. Full tuning recipe: [docs/serving/rtx-5090-qwen3.6-27b.md](docs/serving/rtx-5090-qwen3.6-27b.md).
 
 ---
 
