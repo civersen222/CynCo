@@ -238,6 +238,11 @@ describe('assembleBasePrompt', () => {
   it('ROLE is first (result[0] contains "CynCo")', () => {
     expect(result[0]).toContain("CynCo")
   })
+
+  it('states the actual shell and its dialect', () => {
+    const joined = result.join('\n')
+    expect(joined).toMatch(/Shell: .*[Ss]hell is /)
+  })
 })
 
 // ─── Task 8: Dynamic section framing text ──────

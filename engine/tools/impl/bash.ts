@@ -2,10 +2,11 @@ import { exec } from 'child_process'
 import type { ToolImpl } from '../types.js'
 import { checkBashSafety } from '../bashSafety.js'
 import { diagnoseError } from '../errorDiagnosis.js'
+import { getShellInfo, checkShellDialect } from '../shellInfo.js'
 
 export const bashTool: ToolImpl = {
   name: 'Bash',
-  description: 'Execute a shell command and return its output. The working directory persists between calls. On Windows, uses PowerShell.',
+  description: `Execute a shell command and return its output. The working directory persists between calls. ${getShellInfo().dialectNote}`,
   inputSchema: {
     type: 'object',
     properties: {
@@ -24,9 +25,14 @@ export const bashTool: ToolImpl = {
       return { output: `Blocked: ${safety.reason}`, isError: true }
     }
 
+    const shellInfo = getShellInfo()
+    const dialectError = checkShellDialect(command, shellInfo)
+    if (dialectError) {
+      return { output: dialectError, isError: true }
+    }
+
     // Use async exec — execSync blocks the entire event loop (freezes WebSocket)
-    const isWindows = process.platform === 'win32'
-    const shell = isWindows ? 'powershell.exe' : '/bin/bash'
+    const shell = shellInfo.shell
 
     return new Promise((resolve) => {
       const child = exec(command, {

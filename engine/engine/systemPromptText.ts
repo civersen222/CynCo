@@ -5,6 +5,7 @@
  * assembleBasePrompt() into the array that buildSystemPrompt() injects
  * into every Ollama request.
  */
+import { getShellInfo } from '../tools/shellInfo.js'
 
 // ─── ROLE ──────────────────────────────────────────────────────────────────────
 
@@ -250,5 +251,6 @@ export function assembleBasePrompt(toolNames: string, cwd: string): string[] {
     MEMORY,
     '',
     `Working directory: ${cwd}`,
+    `Shell: ${getShellInfo().dialectNote}`,
   ]
 }
