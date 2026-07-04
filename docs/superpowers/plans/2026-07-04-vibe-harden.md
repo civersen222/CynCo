@@ -639,6 +639,18 @@ function* textResponse(text: string): Generator<StreamEvent> {
   yield { type: 'message_stop' } as any
 }
 
+// Read of a nonexistent file: executes without approval, emits
+// tool.start + tool.complete (isError) — same pattern as
+// engine/__tests__/tools/conversationLoop.test.ts:315.
+function* readToolUse(): Generator<StreamEvent> {
+  yield { type: 'message_start', message: { id: 'msg1', model: 'test', usage: { input_tokens: 10, output_tokens: 0 } } } as any
+  yield { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'tu1', name: 'Read', input: {} } } as any
+  yield { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"file_path":"C:/nonexistent-vibe-test.txt"}' } } as any
+  yield { type: 'content_block_stop', index: 0 } as any
+  yield { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 5 } } as any
+  yield { type: 'message_stop' } as any
+}
+
 describe('vibe mode event suppression', () => {
   it.skipIf(SKIP)('suppresses stream.token but still completes the message', async () => {
     const events: any[] = []
@@ -652,6 +664,23 @@ describe('vibe mode event suppression', () => {
 
     expect(events.some(e => e.type === 'stream.token')).toBe(false)
     expect(events.some(e => e.type === 'message.complete')).toBe(true)
+  })
+
+  it.skipIf(SKIP)('tool.start/tool.complete still flow in vibe mode (TUI activity lines)', async () => {
+    // Amended spec: tool events intentionally reach the TUI in vibe mode —
+    // app.py:228-263 renders them as plain-language activity + worker animation.
+    const events: any[] = []
+    const loop = new ConversationLoop({
+      config: defaultConfig(),
+      provider: mockProvider([() => readToolUse(), () => textResponse('Done.')]),
+      emit: (e) => events.push(e),
+    })
+    loop.setVibeMode(true)
+    await loop.handleUserMessage('build something')
+
+    expect(events.some(e => e.type === 'tool.start' && e.toolName === 'Read')).toBe(true)
+    expect(events.some(e => e.type === 'tool.complete' && e.toolName === 'Read')).toBe(true)
+    expect(events.some(e => e.type === 'stream.token')).toBe(false)
   })
 
   it.skipIf(SKIP)('normal mode still streams tokens (control)', async () => {
@@ -682,10 +711,10 @@ describe('vibe mode event suppression', () => {
 - [ ] **Step 2: Run gated and ungated**
 
 Run: `npx vitest run engine/__tests__/vibe/vibeModeSuppression.test.ts`
-Expected: PASS (2 skipped, 1 passed)
+Expected: PASS (3 skipped, 1 passed)
 
 Run: `CYNCO_INTEGRATION=1 npx vitest run engine/__tests__/vibe/vibeModeSuppression.test.ts`
-Expected: PASS (3 passed). If the suppression assertion fails, the guard at `conversationLoop.ts:1726` has rotted — restore `if (!this.vibeMode)` around the `stream.token` emit.
+Expected: PASS (4 passed). If the suppression assertion fails, the guard at `conversationLoop.ts:1726` has rotted — restore `if (!this.vibeMode)` around the `stream.token` emit. If the tool-event assertions fail, someone gated tool.start/tool.complete on vibeMode — remove that gate (the TUI needs them for activity lines).
 
 - [ ] **Step 3: Commit**
 
