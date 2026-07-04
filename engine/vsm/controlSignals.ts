@@ -63,3 +63,15 @@ export function computeControlSignals(input: ControlInput): ControlSignals {
 
   return { temperatureAdjust, temperature, bestOfNBudget, widenToolSet }
 }
+
+/**
+ * Nudge cooling. After repeated no-tool-call nudges the model is stuck in a
+ * narration attractor; stronger wording alone does not break it (2026-07-01
+ * session: 5 escalating nudges, zero behavior change). Deterministically
+ * lower sampling temperature instead so the tool-call token paths dominate.
+ */
+export function applyNudgeTemperature(temperature: number, consecutiveNudges: number): number {
+  if (consecutiveNudges < 2) return temperature
+  const floor = getParam('variety.temperature_floor')
+  return Math.max(floor, temperature - 0.2)
+}

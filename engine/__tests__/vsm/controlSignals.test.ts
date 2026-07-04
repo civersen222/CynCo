@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, beforeEach } from 'bun:test'
-import { computeControlSignals } from '../../vsm/controlSignals.js'
+import { computeControlSignals, applyNudgeTemperature } from '../../vsm/controlSignals.js'
 import { resetParams, setParam } from '../../vsm/governanceParams.js'
 
 beforeEach(() => {
@@ -101,5 +101,22 @@ describe('computeControlSignals', () => {
       baseTemperature: 0.7,
     })
     expect(result.bestOfNBudget).toBe(2)
+  })
+})
+
+describe('applyNudgeTemperature', () => {
+  it('does nothing at 0 or 1 consecutive nudges', () => {
+    expect(applyNudgeTemperature(0.7, 0)).toBe(0.7)
+    expect(applyNudgeTemperature(0.7, 1)).toBe(0.7)
+  })
+
+  it('cools by 0.2 at 2+ consecutive nudges', () => {
+    expect(applyNudgeTemperature(0.7, 2)).toBeCloseTo(0.5, 5)
+    expect(applyNudgeTemperature(0.7, 5)).toBeCloseTo(0.5, 5)
+  })
+
+  it('clamps to the governance temperature floor', () => {
+    // default variety.temperature_floor is 0.3
+    expect(applyNudgeTemperature(0.4, 3)).toBeCloseTo(0.3, 5)
   })
 })
