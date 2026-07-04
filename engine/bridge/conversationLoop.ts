@@ -50,6 +50,7 @@ import { evaluateGrounding, extractAddedText, extractTargetPaths } from '../vsm/
 import { ReadLoopGate } from '../vsm/readLoopGate.js'
 import { probeEdit } from '../vsm/groundingProbe.js'
 import { loadInterventionRates, saveInterventionRates } from '../vsm/interventionPersistence.js'
+import { applyNudgeTemperature } from '../vsm/controlSignals.js'
 import { globalContract } from '../tools/contract.js'
 import { globalAskBroker } from '../tools/askBroker.js'
 import { setSideQuery, resetMergeTracking } from '../tools/impl/edit.js'
@@ -1601,6 +1602,14 @@ export class ConversationLoop {
             }
           }
         } catch {}
+      }
+      // Nudge cooling: after 2+ consecutive no-tool-call nudges, lower the
+      // temperature deterministically — wording alone doesn't break the
+      // narration attractor. Applies even when variety control is disabled.
+      const cooled = applyNudgeTemperature(effectiveTemperature, this.consecutiveNudges)
+      if (cooled !== effectiveTemperature) {
+        console.log(`[control] Nudge cooling: temp ${effectiveTemperature.toFixed(2)} → ${cooled.toFixed(2)} after ${this.consecutiveNudges} consecutive nudges`)
+        effectiveTemperature = cooled
       }
       const _savedTemperature = this.config.temperature
       this.config.temperature = effectiveTemperature
