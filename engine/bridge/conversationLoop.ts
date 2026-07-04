@@ -2006,7 +2006,10 @@ export class ConversationLoop {
           const originalTask = firstUserMsg?.content?.filter((b: any) => b.type === 'text').map((b: any) => b.text).join('').slice(0, 200) ?? ''
           console.log(`[s2] Nudge exhausted — injecting continuation with original task`)
           this.governance.markNudgeInjected()
-          this.consecutiveNudges = 0
+          // Reset to 2, not 0: restarts the nudge escalation cycle but keeps
+          // nudge cooling engaged — the model is at peak stuckness here, and
+          // returning to full temperature would undo the behavioral fix.
+          this.consecutiveNudges = 2
           this.addMessage({ role: 'user', content: [{ type: 'text', text: `CONTINUE WORKING. You stopped without finishing. Your original task was: "${originalTask}". Call a tool now to make progress.` }] })
           continue
         }
