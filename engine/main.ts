@@ -403,6 +403,7 @@ function getOrCreateVibeController(): VibeController {
       },
       sideQuery: async (prompt: string) => loop.runSideQuery(prompt, { maxTokens: 300 }),
       loop,
+      timeoutMs: config.timeout,
     })
   }
   return vibeController
