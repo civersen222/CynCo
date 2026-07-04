@@ -1316,6 +1316,7 @@ export class ConversationLoop {
           temperature: 0.3,
         }),
       })
+      if (!resp.ok) throw new Error(`sideQuery HTTP ${resp.status}`)
       const data: any = await resp.json()
       return data.choices?.[0]?.message?.content ?? ''
     }
@@ -1335,6 +1336,7 @@ export class ConversationLoop {
         stream: false,
       }),
     })
+    if (!resp.ok) throw new Error(`sideQuery HTTP ${resp.status}`)
     const data: any = await resp.json()
     // Gemma4 puts everything in message.thinking with empty content — fall back
     return data.message?.content || data.message?.thinking || ''

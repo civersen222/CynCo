@@ -90,4 +90,13 @@ describe('runSideQuery provider routing', () => {
     await loop.runSideQuery('ping')
     expect(body.options.num_predict).toBe(300)
   })
+
+  it('throws on non-2xx HTTP status (llama-cpp path)', async () => {
+    globalThis.fetch = (async () => {
+      return new Response(JSON.stringify({ error: 'model not loaded' }), { status: 500 })
+    }) as any
+
+    const loop = makeLoop({ provider: 'llama-cpp', port: 8099 })
+    await expect(loop.runSideQuery('ping')).rejects.toThrow(/500/)
+  })
 })
