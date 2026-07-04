@@ -377,9 +377,14 @@ export class SubAgent {
         messages.push({ role: 'user', content: toolResults })
       }
 
-      // 8. Determine final state
+      // 8. Determine final state. Zero collected output is a failure even if
+      // the loop ran to completion — a silent scout must not report success
+      // (parents act on the output; '(no output)' with success:true is a lie).
+      const producedOutput = collectedText.trim().length > 0
       if (this.aborted) {
         this._status.state = 'killed'
+      } else if (!producedOutput) {
+        this._status.state = 'failed'
       } else {
         this._status.state = 'completed'
       }
@@ -388,7 +393,7 @@ export class SubAgent {
       // 9. Build result
       const result: SubAgentResult = {
         agentId: this.config.id,
-        success: !this.aborted,
+        success: !this.aborted && producedOutput,
         output: collectedText || '(no output)',
         turns: this._status.currentTurn,
         tokensUsed: this._status.tokensUsed,
