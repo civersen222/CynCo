@@ -60,17 +60,25 @@ the current 13-line test ignores:
 - `vibe.start` → controller emits `vibe.question` with confidence state
 - answers → `vibe.confidence_update` increments → threshold crossing triggers BUILD
 - BUILD delegates to `ConversationLoop.handleUserMessage` with `vibeMode=true`,
-  and suppression actually suppresses — `stream.token` / `tool.start` /
-  `tool.complete` do not reach the TUI event stream during vibe builds
+  and suppression actually suppresses `stream.token` during vibe builds.
+  **Amended after code review:** `tool.start`/`tool.complete` intentionally DO
+  reach the TUI — app.py:228-263 renders them as plain-language activity lines
+  and drives the worker animation. Tests protect both directions: token stream
+  suppressed, tool events flowing.
 - REPORT → `vibe.task_complete` carries `files_modified` sourced from
   `buildHandoff()` (verifies the uncertain contract)
 - governance-stuck → `vibe.escalation` → `vibe.escalation_response` resumes the loop
 
 ### Hardening
 
+- **Provider-aware sideQuery (rot bug found in code review):** main.ts:404 builds
+  the vibe controller's sideQuery on Ollama-only `/api/chat`; with the llama-cpp
+  primary backend every vibe sideQuery fails and degrades to fallbacks.
+  conversationLoop.ts:1287 already has a provider-aware `sideQuery` — expose it
+  publicly and route the vibe controller through it.
 - **sideQuery timeouts:** every `sideQuery` call in controller.ts gets a timeout
-  (default from `LOCALCODE_TIMEOUT`). On timeout: plain-language escalation event,
-  not a silent hang.
+  (default from `LOCALCODE_TIMEOUT`). On timeout the existing per-call fallback
+  paths engage (fallback question, generic analogy, etc.) — never a silent hang.
 - **Escalation-dialog race:** app.py pushes `EscalationDialog` via
   `asyncio.ensure_future` fire-and-forget; concurrent escalations can race.
   Serialize dialog presentation.
