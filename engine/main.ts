@@ -401,21 +401,7 @@ function getOrCreateVibeController(): VibeController {
         wsServer.emit(event as any)
         dashboardServer?.broadcast(event as any)
       },
-      sideQuery: async (prompt: string) => {
-        const resp = await fetch(`${config.baseUrl}/api/chat`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            model: config.model,
-            messages: [{ role: 'user', content: prompt }],
-            options: { num_predict: 300, temperature: 0.3 },
-            think: false,
-            stream: false,
-          }),
-        })
-        const data: any = await resp.json()
-        return data.message?.content ?? ''
-      },
+      sideQuery: async (prompt: string) => loop.runSideQuery(prompt, { maxTokens: 300 }),
       loop,
     })
   }
@@ -851,36 +837,14 @@ async function handleCommand(command: TUICommand): Promise<void> {
 
       const wizardStartMs = Date.now()
       try {
-        // Use Ollama native /api/chat (more reliable than /v1/chat/completions)
-        // No AbortSignal.timeout — Bun on Windows has issues with it
         // No timeout — let the model take as long as it needs.
         // Gemma4 with large prompts can take 2-5 minutes.
         // The user sees "Thinking..." in the wizard.
 
-        const resp = await fetch(`${config.baseUrl}/api/chat`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            model: config.model,
-            messages: [
-              ...(systemPrompt ? [{ role: 'system', content: systemPrompt }] : []),
-              { role: 'user', content: prompt },
-            ],
-            stream: false,
-            think: false,
-            options: {
-              temperature: 0.3,
-              // Mockup queries need more tokens for full HTML files
-              num_predict: prompt.length > 500 && systemPrompt.includes('HTML') ? 16384 : 4096,
-            },
-          }),
+        const text = await loop.runSideQuery(prompt, {
+          maxTokens: prompt.length > 500 && systemPrompt.includes('HTML') ? 16384 : 4096,
+          system: systemPrompt || undefined,
         })
-
-        const data = await resp.json() as any
-        // Ollama native API returns message.content directly (not choices[])
-        // Gemma4 puts everything in message.thinking with empty content — fall back to thinking
-        const rawContent = data.message?.content ?? data.choices?.[0]?.message?.content ?? ''
-        const text = rawContent || (data.message?.thinking ?? '')
         console.log(`[wizard] OK in ${Date.now() - wizardStartMs}ms: ${text.slice(0, 100)}`)
         wsServer.emit({ type: 'wizard.response', requestId, text })
       } catch (err) {

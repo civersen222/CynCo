@@ -1283,8 +1283,17 @@ export class ConversationLoop {
     }
   }
 
+  /**
+   * Public provider-aware side query for satellite components
+   * (vibe controller, wizard). Routes through the SAME backend as the
+   * main model so llama-cpp users don't hit Ollama-only endpoints.
+   */
+  runSideQuery(prompt: string, opts?: { maxTokens?: number; system?: string }): Promise<string> {
+    return this.sideQuery(prompt, opts?.maxTokens ?? 300, opts?.system)
+  }
+
   /** Quick side query — no tools, no thinking, returns plain text. */
-  private async sideQuery(prompt: string): Promise<string> {
+  private async sideQuery(prompt: string, maxTokens = 200, system?: string): Promise<string> {
     // Route through the SAME backend as the main model to avoid loading
     // a second model in Ollama when using llama-cpp provider.
     // Uses OpenAI-compatible endpoint which both Ollama and llama-server support.
@@ -1299,8 +1308,11 @@ export class ConversationLoop {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           model: this.config.model,
-          messages: [{ role: 'user', content: '/no_think\n' + prompt }],
-          max_tokens: 200,
+          messages: [
+            ...(system ? [{ role: 'system', content: system }] : []),
+            { role: 'user', content: '/no_think\n' + prompt },
+          ],
+          max_tokens: maxTokens,
           temperature: 0.3,
         }),
       })
@@ -1314,14 +1326,18 @@ export class ConversationLoop {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: this.config.model,
-        messages: [{ role: 'user', content: prompt }],
-        options: { num_predict: 200, temperature: 0.3 },
+        messages: [
+          ...(system ? [{ role: 'system', content: system }] : []),
+          { role: 'user', content: prompt },
+        ],
+        options: { num_predict: maxTokens, temperature: 0.3 },
         think: false,
         stream: false,
       }),
     })
     const data: any = await resp.json()
-    return data.message?.content ?? ''
+    // Gemma4 puts everything in message.thinking with empty content — fall back
+    return data.message?.content || data.message?.thinking || ''
   }
 
   private async runModelLoop(
