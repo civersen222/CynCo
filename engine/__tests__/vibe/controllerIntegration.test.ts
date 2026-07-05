@@ -80,7 +80,9 @@ describe('sideQuery timeout', () => {
     events.length = 0
     const started = Date.now()
     await ctrl.handleAnswer('q-1', 'B')        // short pick → generateQuestion → hang → timeout
-    expect(Date.now() - started).toBeLessThan(2000)
+    // Generous bound: proves the 50ms timeout fired (vs 120s default / infinite
+    // hang) while absorbing cold-start transform/import cost on first run.
+    expect(Date.now() - started).toBeLessThan(4000)
 
     const fallback = events.find(e => e.type === 'vibe.question')
     expect(fallback).toBeDefined()
