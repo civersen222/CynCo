@@ -994,6 +994,7 @@ Expected failure classes and where to look:
 - sideQuery errors → Task 1 regression or backend port mismatch (`config.port`).
 - Build runs but no `vibe.task_complete` → `executeBuild`/`generateCompletionReport`; check `getGovernanceReport().stuckTurns` and verification sideQuery.
 - `hello.txt` missing despite task_complete → buildHandoff contract or the model built in the wrong cwd (check `setCwd` interactions).
+- Hang BEFORE any sideQuery timeout fires → known gap (Task 2 review): `queryProjectIndex` → `EmbedClient.embed()` is a bare fetch with no timeout (`engine/index/embedClient.ts`), awaited in `generateQuestion`/`buildTaskPrompt` upstream of the timed sideQuery. If the live run hangs there, give EmbedClient an AbortSignal timeout.
 
 Apply superpowers:systematic-debugging for every failure: root cause first, minimal fix, add a regression test to `engine/__tests__/vibe/` when the bug is testable without a model, commit each fix separately.
 
