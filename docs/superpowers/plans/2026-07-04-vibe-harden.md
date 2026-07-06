@@ -29,7 +29,7 @@
 - Modify: `engine/main.ts:396-423` (getOrCreateVibeController) and `engine/main.ts:843-896` (wizard.query)
 - Test: `engine/__tests__/vibe/sideQueryRouting.test.ts` (new)
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `engine/__tests__/vibe/sideQueryRouting.test.ts`:
 
@@ -129,12 +129,12 @@ describe('runSideQuery provider routing', () => {
 })
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `npx vitest run engine/__tests__/vibe/sideQueryRouting.test.ts`
 Expected: FAIL — `loop.runSideQuery is not a function`
 
-- [ ] **Step 3: Implement `runSideQuery` in ConversationLoop**
+- [x] **Step 3: Implement `runSideQuery` in ConversationLoop**
 
 In `engine/bridge/conversationLoop.ts`, replace the private `sideQuery` (currently lines 1287-1325) with:
 
@@ -197,12 +197,12 @@ In `engine/bridge/conversationLoop.ts`, replace the private `sideQuery` (current
 
 Note: internal callers of `this.sideQuery(prompt)` keep the 200-token default — unchanged behavior.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `npx vitest run engine/__tests__/vibe/sideQueryRouting.test.ts`
 Expected: PASS (3 tests)
 
-- [ ] **Step 5: Route the vibe controller through it**
+- [x] **Step 5: Route the vibe controller through it**
 
 In `engine/main.ts`, inside `getOrCreateVibeController()` (lines ~396-423), replace the whole `sideQuery:` property (the `async (prompt) => { fetch(...) }` block, lines ~404-418) with:
 
@@ -210,7 +210,7 @@ In `engine/main.ts`, inside `getOrCreateVibeController()` (lines ~396-423), repl
       sideQuery: async (prompt: string) => loop.runSideQuery(prompt, { maxTokens: 300 }),
 ```
 
-- [ ] **Step 6: Route wizard.query through it**
+- [x] **Step 6: Route wizard.query through it**
 
 In `engine/main.ts`, `case 'wizard.query'` (lines ~843-896): replace the `fetch` + response parsing (from `const resp = await fetch(...)` through `const text = rawContent || (data.message?.thinking ?? '')`) with:
 
@@ -223,12 +223,12 @@ In `engine/main.ts`, `case 'wizard.query'` (lines ~843-896): replace the `fetch`
 
 Keep the surrounding try/catch, timing log, and `wizard.response` emissions exactly as they are. Delete the now-unused comment block about Ollama native `/api/chat`.
 
-- [ ] **Step 7: Typecheck and run the vibe + bridge test suites**
+- [x] **Step 7: Typecheck and run the vibe + bridge test suites**
 
 Run: `npx tsc --noEmit -p . 2>/dev/null || bunx tsc --noEmit` (if no tsconfig check script exists, skip) and `npx vitest run engine/__tests__/vibe/ engine/__tests__/bridge/`
 Expected: PASS, no regressions
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 cd /c/Users/civer/localcode
@@ -253,7 +253,7 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 - Modify: `engine/main.ts` (pass `timeoutMs` in getOrCreateVibeController)
 - Test: `engine/__tests__/vibe/controllerIntegration.test.ts` (created here, extended in Task 3)
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `engine/__tests__/vibe/controllerIntegration.test.ts` with the shared harness (Task 3 adds more tests to this file):
 
@@ -349,12 +349,12 @@ describe('sideQuery timeout', () => {
 })
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `npx vitest run engine/__tests__/vibe/controllerIntegration.test.ts`
 Expected: FAIL — the test times out (vitest default 5s) or hangs, because nothing rejects the hanging promise. (If vitest reports a timeout rather than an assertion failure, that IS the expected failure mode.)
 
-- [ ] **Step 3: Implement the timeout wrapper**
+- [x] **Step 3: Implement the timeout wrapper**
 
 In `engine/vibe/controller.ts`:
 
@@ -400,12 +400,12 @@ In the constructor (line ~60), replace `this.sideQuery = opts.sideQuery` with:
     this.sideQuery = (prompt) => sideQueryWithTimeout(opts.sideQuery, prompt, timeoutMs)
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `npx vitest run engine/__tests__/vibe/controllerIntegration.test.ts`
 Expected: PASS
 
-- [ ] **Step 5: Pass the configured timeout from main.ts**
+- [x] **Step 5: Pass the configured timeout from main.ts**
 
 In `engine/main.ts` `getOrCreateVibeController()`, add after the `loop,` line of the `new VibeController({...})` options:
 
@@ -413,7 +413,7 @@ In `engine/main.ts` `getOrCreateVibeController()`, add after the `loop,` line of
       timeoutMs: config.timeout,
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 cd /c/Users/civer/localcode
@@ -432,7 +432,7 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 **Files:**
 - Modify: `engine/__tests__/vibe/controllerIntegration.test.ts` (extend)
 
-- [ ] **Step 1: Add the integration tests**
+- [x] **Step 1: Add the integration tests**
 
 Append to `engine/__tests__/vibe/controllerIntegration.test.ts`:
 
@@ -552,17 +552,17 @@ describe('VibeController chain', () => {
 
 Note for the implementer: `scriptedSideQuery` and `fakeLoop` come from Task 2's harness in the same file. `fs`, `path`, `tmpDir` are already imported/defined there.
 
-- [ ] **Step 2: Run the tests**
+- [x] **Step 2: Run the tests**
 
 Run: `npx vitest run engine/__tests__/vibe/controllerIntegration.test.ts`
 Expected: PASS. **If any test fails, that is a real product bug this task exists to catch** — apply superpowers:systematic-debugging, fix minimally in `engine/vibe/controller.ts` (or wherever the root cause is), and record what rotted in the commit message. Do NOT weaken assertions to make tests pass; the assertions encode the spec.
 
-- [ ] **Step 3: Run the full vibe suite**
+- [x] **Step 3: Run the full vibe suite**
 
 Run: `npx vitest run engine/__tests__/vibe/`
 Expected: PASS (sideQueryRouting + controllerIntegration + confidence + engine)
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 cd /c/Users/civer/localcode
@@ -581,7 +581,7 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 **Files:**
 - Test: `engine/__tests__/vibe/vibeModeSuppression.test.ts` (new)
 
-- [ ] **Step 1: Write the test**
+- [x] **Step 1: Write the test**
 
 Create `engine/__tests__/vibe/vibeModeSuppression.test.ts`. The harness (defaultConfig/mockProvider/textResponse) is copied from `engine/__tests__/tools/conversationLoop.test.ts:12-66` — same CYNCO_INTEGRATION gate, because real ConversationLoop message handling touches the filesystem:
 
@@ -708,7 +708,7 @@ describe('vibe mode event suppression', () => {
 })
 ```
 
-- [ ] **Step 2: Run gated and ungated**
+- [x] **Step 2: Run gated and ungated**
 
 Run: `npx vitest run engine/__tests__/vibe/vibeModeSuppression.test.ts`
 Expected: PASS (3 skipped, 1 passed)
@@ -716,7 +716,7 @@ Expected: PASS (3 skipped, 1 passed)
 Run: `CYNCO_INTEGRATION=1 npx vitest run engine/__tests__/vibe/vibeModeSuppression.test.ts`
 Expected: PASS (4 passed). If the suppression assertion fails, the guard at `conversationLoop.ts:1726` has rotted — restore `if (!this.vibeMode)` around the `stream.token` emit. If the tool-event assertions fail, someone gated tool.start/tool.complete on vibeMode — remove that gate (the TUI needs them for activity lines).
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 cd /c/Users/civer/localcode
@@ -736,7 +736,7 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 - Modify: `tui/localcode_tui/app.py` (`__init__` + `_handle_vibe_escalation`)
 - Test: `tui/tests/test_vibe_integration.py` (extend)
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `tui/tests/test_vibe_integration.py` (match the file's existing import style at the top; add `import asyncio` if absent). Before writing, confirm the attribute that stores `request_id` on `EscalationDialog` by reading `tui/localcode_tui/widgets/escalation_dialog.py` — the test below assumes `dialog.request_id`; adjust the attribute read if it differs:
 
@@ -781,12 +781,12 @@ def test_escalation_dialogs_are_serialized(monkeypatch):
 
 Note: if `VibeEscalationEvent` construction requires different field names, read the dataclass in `tui/localcode_tui/protocol.py` and match it — `app.py:436-441` uses `event.problem/tried/proposal/request_id`.
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd tui && python -m pytest tests/test_vibe_integration.py::test_escalation_dialogs_are_serialized -v && cd /c/Users/civer/localcode`
 Expected: FAIL — `active["max"] == 2` (both dialogs pushed concurrently)
 
-- [ ] **Step 3: Implement the lock**
+- [x] **Step 3: Implement the lock**
 
 In `tui/localcode_tui/app.py`:
 
@@ -820,12 +820,12 @@ In `tui/localcode_tui/app.py`:
         asyncio.ensure_future(handle())
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd tui && python -m pytest tests/test_vibe_integration.py -v && cd /c/Users/civer/localcode`
 Expected: PASS (all tests in the file)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cd /c/Users/civer/localcode
@@ -844,7 +844,7 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 **Files:**
 - Create: `scripts/vibe-e2e.ts`
 
-- [ ] **Step 1: Write the script**
+- [x] **Step 1: Write the script**
 
 Create `scripts/vibe-e2e.ts`:
 
@@ -956,12 +956,12 @@ try { rmSync(workDir, { recursive: true, force: true, maxRetries: 3 }) } catch {
 process.exit(0)
 ```
 
-- [ ] **Step 2: Syntax check only (no live run yet)**
+- [x] **Step 2: Syntax check only (no live run yet)**
 
 Run: `bun build --no-bundle scripts/vibe-e2e.ts > /dev/null 2>&1 || bun -e "await import('./scripts/vibe-e2e.ts')" --dry-run 2>&1 | head -5`
 If neither works cleanly, a plain `bun scripts/vibe-e2e.ts` started and immediately Ctrl-C'd (or reviewing for syntax with `npx tsc --noEmit scripts/vibe-e2e.ts`) is acceptable — the real validation is Task 7.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 cd /c/Users/civer/localcode
@@ -977,16 +977,16 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 
 **This task is exploratory by design.** The controller (this session's main agent, NOT a subagent) runs it, because it needs the real model, real ports, and judgment.
 
-- [ ] **Step 1: Pre-flight**
+- [x] **Step 1: Pre-flight**
 
 - Verify the model backend is up per the user's config (llama-server default `http://127.0.0.1:8081/health` — beware: the dndai project sometimes steals :8081).
 - Verify no zombie engines: check nothing is listening on 9260 (`netstat -ano | grep 9260`). Kill stale `bun` engine processes if found — never reuse them.
 
-- [ ] **Step 2: Run**
+- [x] **Step 2: Run**
 
 Run: `bun scripts/vibe-e2e.ts` (in background; expect several minutes — model load + Q&A sideQueries + build turns).
 
-- [ ] **Step 3: Diagnose and fix failures**
+- [x] **Step 3: Diagnose and fix failures**
 
 Expected failure classes and where to look:
 - WS never up → engine crash on boot: read engine stdout (inherited).
@@ -998,11 +998,11 @@ Expected failure classes and where to look:
 
 Apply superpowers:systematic-debugging for every failure: root cause first, minimal fix, add a regression test to `engine/__tests__/vibe/` when the bug is testable without a model, commit each fix separately.
 
-- [ ] **Step 4: Re-run until PASS**
+- [x] **Step 4: Re-run until PASS**
 
 Exit criterion: `[e2e] PASS — vibe loop built the file end-to-end`.
 
-- [ ] **Step 5: Commit any fixes**
+- [x] **Step 5: Commit any fixes**
 
 ```bash
 cd /c/Users/civer/localcode
@@ -1016,7 +1016,7 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 
 ### Task 8: Wire check + full suites
 
-- [ ] **Step 1: Wire check (BLOCKING)**
+- [x] **Step 1: Wire check (BLOCKING)**
 
 Every new symbol must be imported/called somewhere real:
 
@@ -1034,22 +1034,22 @@ grep -rn "sideQueryWithTimeout" engine/vibe
 
 If any symbol is defined but never called outside tests, STOP — wire it or remove it before proceeding.
 
-- [ ] **Step 2: Full engine suite**
+- [x] **Step 2: Full engine suite**
 
 Run: `npx vitest run`
 Expected: 0 failures (skips OK)
 
-- [ ] **Step 3: Gated vibe integration**
+- [x] **Step 3: Gated vibe integration**
 
 Run: `CYNCO_INTEGRATION=1 npx vitest run engine/__tests__/vibe/`
 Expected: 0 failures
 
-- [ ] **Step 4: Full TUI suite**
+- [x] **Step 4: Full TUI suite**
 
 Run: `cd tui && python -m pytest tests/ && cd /c/Users/civer/localcode`
 Expected: 0 failures
 
-- [ ] **Step 5: Commit the plan checkboxes and any stragglers**
+- [x] **Step 5: Commit the plan checkboxes and any stragglers**
 
 ```bash
 cd /c/Users/civer/localcode
