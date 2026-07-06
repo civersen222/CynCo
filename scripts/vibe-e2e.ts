@@ -43,6 +43,8 @@ process.on('exit', cleanup)
 
 function fail(msg: string): never {
   console.error(`\n[e2e] FAIL: ${msg}`)
+  // Workdir is intentionally left behind on failure for post-mortem inspection.
+  console.error(`[e2e] Workdir kept for debugging: ${workDir}`)
   cleanup()
   process.exit(1)
 }
@@ -77,7 +79,7 @@ let answeredDirective = false
 const done = new Promise<void>((res) => {
   ws.onmessage = (msg) => {
     let event: any
-    try { event = JSON.parse(String(msg.data)) } catch { return }
+    try { event = JSON.parse(String(msg.data)) } catch { return }  // non-JSON frames aren't protocol messages
     if (typeof event?.type !== 'string' || !event.type.startsWith('vibe.')) return
     const preview = event.text ?? event.problem ?? event.analogy ?? ''
     console.log(`[e2e] <- ${event.type}${preview ? `: ${String(preview).slice(0, 100)}` : ''}`)
