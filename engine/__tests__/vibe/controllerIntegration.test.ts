@@ -107,9 +107,10 @@ describe('VibeController chain', () => {
     // BUILD delegated exactly once, with the build-prompt contract
     expect(calls.handleUserMessage).toHaveLength(1)
     expect(calls.handleUserMessage[0]).toContain('Build the following')
-    // Approvals: on for the session, re-asserted for build, off after
-    expect(calls.setApproveAll[calls.setApproveAll.length - 1]).toBe(false)
-    expect(calls.setApproveAll).toContain(true)
+    // Approvals: on at start (controller.ts:109), re-asserted for build
+    // (:567), off after (:574) — exact sequence so a dropped re-assert
+    // or missing reset fails loudly
+    expect(calls.setApproveAll).toEqual([true, true, false])
     // Goal verification passed → pleasure signal
     expect(calls.verifications).toEqual([true])
     // State machine reached build then report
@@ -171,6 +172,8 @@ describe('VibeController chain', () => {
     const buildsBefore = calls.handleUserMessage.length
     await ctrl.handleEscalationResponse(esc.requestId, 'fix')
     expect(calls.handleUserMessage.length).toBeGreaterThan(buildsBefore)
+    // The fix path reuses the build-prompt contract
+    expect(calls.handleUserMessage[calls.handleUserMessage.length - 1]).toContain('Build the following')
   })
 
   it('verification FAIL steers a fix build and reports a pain signal', async () => {
