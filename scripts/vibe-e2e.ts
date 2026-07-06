@@ -34,7 +34,17 @@ let engineExited = false
 engine.exited.then(() => { engineExited = true })
 
 function cleanup() {
-  try { engine.kill() } catch {} // engine may already be dead
+  try {
+    if (process.platform === 'win32') {
+      // engine.kill() only signals the direct child on Windows; the process tree
+      // (engine + the llama-server it spawns) survives. Verified live: after
+      // kill() the engine stayed on :9260 and held the workdir. Kill the tree.
+      Bun.spawnSync(['taskkill', '/PID', String(engine.pid), '/T', '/F'],
+        { stdout: 'ignore', stderr: 'ignore' })
+    } else {
+      engine.kill()
+    }
+  } catch {} // engine may already be dead
 }
 
 // Fix 3: ensure cleanup runs even on unhandled exceptions / synchronous throws
@@ -126,7 +136,12 @@ console.log('\n[e2e] PASS — vibe loop built the file end-to-end')
 cleanup()
 // Fix 4: wait for the engine to release its cwd handle before rmSync; on Windows
 // kill() returns before the process exits and rmSync on the live workdir hits EBUSY.
-await engine.exited.catch(() => {})
+// Bounded: engine.exited proved unreliable on Windows (event loop drained past it
+// on the first live run), so never let teardown hang on it.
+await Promise.race([
+  engine.exited.catch(() => {}),
+  new Promise(r => setTimeout(r, 10_000)),
+])
 // Fix 5c: best-effort cleanup — temp-dir removal is not critical; the OS will
 // reclaim tmpdirs eventually if this fails.
 try { rmSync(workDir, { recursive: true, force: true, maxRetries: 3 }) } catch {}
