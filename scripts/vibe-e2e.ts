@@ -28,9 +28,18 @@ const engine = Bun.spawn(['bun', join(repoRoot, 'engine', 'main.ts')], {
   stderr: 'inherit',
 })
 
+// Fix 1: track engine exit so the retry loop can fail fast instead of spinning
+// for the full 3-minute startup window against a crashed process.
+let engineExited = false
+engine.exited.then(() => { engineExited = true })
+
 function cleanup() {
-  try { engine.kill() } catch {}
+  try { engine.kill() } catch {} // engine may already be dead
 }
+
+// Fix 3: ensure cleanup runs even on unhandled exceptions / synchronous throws
+// so the child process is never orphaned (Windows zombie-process hazard).
+process.on('exit', cleanup)
 
 function fail(msg: string): never {
   console.error(`\n[e2e] FAIL: ${msg}`)
@@ -41,6 +50,8 @@ function fail(msg: string): never {
 async function connect(): Promise<WebSocket> {
   const deadline = Date.now() + STARTUP_TIMEOUT_MS
   while (Date.now() < deadline) {
+    // Fix 1: if the engine already exited, retrying is pointless — fail immediately.
+    if (engineExited) fail(`engine exited during startup (code ${engine.exitCode})`)
     try {
       const ws = new WebSocket(`ws://127.0.0.1:${WS_PORT}`)
       await new Promise<void>((res, rej) => {
@@ -57,6 +68,10 @@ async function connect(): Promise<WebSocket> {
 
 const ws = await connect()
 console.log('[e2e] Connected — starting vibe loop')
+
+// Fix 2: surface engine crashes mid-run instead of hanging until the 15-min timer.
+// Cleared on the happy path (after `await done`) so normal teardown doesn't trip it.
+ws.onclose = () => fail('WebSocket closed before vibe.task_complete')
 
 let answeredDirective = false
 const done = new Promise<void>((res) => {
@@ -91,15 +106,26 @@ const timer = setTimeout(
 )
 await done
 clearTimeout(timer)
+// Fix 2: normal teardown — clear the onclose guard before we intentionally close.
+ws.onclose = null
+ws.close()
 
 const target = join(workDir, 'hello.txt')
 if (!existsSync(target)) fail(`vibe.task_complete arrived but hello.txt was not created in ${workDir}`)
 const content = readFileSync(target, 'utf-8')
+// Fix 5a: toLowerCase + includes rather than exact-match because a nondeterministic
+// local model may add a trailing newline or vary casing; the smoke goal is "the loop
+// built the right file", not byte-perfect output.
 if (!content.toLowerCase().includes('hello world')) {
   fail(`hello.txt content wrong: "${content.slice(0, 100)}"`)
 }
 
 console.log('\n[e2e] PASS — vibe loop built the file end-to-end')
 cleanup()
+// Fix 4: wait for the engine to release its cwd handle before rmSync; on Windows
+// kill() returns before the process exits and rmSync on the live workdir hits EBUSY.
+await engine.exited.catch(() => {})
+// Fix 5c: best-effort cleanup — temp-dir removal is not critical; the OS will
+// reclaim tmpdirs eventually if this fails.
 try { rmSync(workDir, { recursive: true, force: true, maxRetries: 3 }) } catch {}
 process.exit(0)
