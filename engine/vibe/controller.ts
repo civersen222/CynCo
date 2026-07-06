@@ -57,7 +57,10 @@ async function sideQueryWithTimeout(
     return await Promise.race([
       fn(prompt),
       new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(`sideQuery timed out after ${ms}ms`)), ms)
+        timer = setTimeout(() => {
+          console.log(`[vibe] sideQuery timed out after ${ms}ms`)
+          reject(new Error(`sideQuery timed out after ${ms}ms`))
+        }, ms)
       }),
     ])
   } finally {

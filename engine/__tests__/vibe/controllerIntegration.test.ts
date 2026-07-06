@@ -16,13 +16,17 @@ function fakeLoop(overrides: Record<string, any> = {}) {
     handleUserMessage: [] as string[],
     setApproveAll: [] as boolean[],
     verifications: [] as boolean[],
+    verificationDetails: [] as (string | undefined)[],
   }
   const loop = {
     setApproveAll: (v: boolean) => { calls.setApproveAll.push(v) },
     handleUserMessage: async (text: string) => { calls.handleUserMessage.push(text) },
     getGovernanceReport: () => ({ stuckTurns: 0 }),
     buildHandoff: () => ({ files_modified: ['hello.py'] }),
-    reportVerification: (passed: boolean) => { calls.verifications.push(passed) },
+    reportVerification: (passed: boolean, detail?: string) => {
+      calls.verifications.push(passed)
+      calls.verificationDetails.push(detail)
+    },
     ...overrides,
   }
   return { loop: loop as unknown as ConversationLoop, calls }
@@ -51,14 +55,25 @@ function scriptedSideQuery(overrides: Record<string, string | ((p: string) => st
 // scanProject() walks it — every test MUST run inside an empty temp dir.
 const prevCwd = process.cwd()
 let tmpDir: string
+let prevEmbedBaseUrl: string | undefined
 
 beforeEach(() => {
+  // Stub embed endpoint to an unroutable port — instant connection refusal,
+  // no live Ollama calls, truly hermetic.
+  prevEmbedBaseUrl = process.env.LOCALCODE_EMBED_BASE_URL
+  process.env.LOCALCODE_EMBED_BASE_URL = 'http://127.0.0.1:9'
+
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vibe-int-'))
   process.chdir(tmpDir)
 })
 
 afterEach(() => {
   process.chdir(prevCwd)
+  if (prevEmbedBaseUrl === undefined) {
+    delete process.env.LOCALCODE_EMBED_BASE_URL
+  } else {
+    process.env.LOCALCODE_EMBED_BASE_URL = prevEmbedBaseUrl
+  }
   try { fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 3 }) } catch {}
 })
 
@@ -68,7 +83,11 @@ describe('sideQuery timeout', () => {
   it('falls back to the generic question instead of hanging forever', async () => {
     const events: any[] = []
     const { loop } = fakeLoop()
-    const hangingSideQuery = () => new Promise<string>(() => { /* never resolves */ })
+    let invokedAt = 0
+    const hangingSideQuery = () => {
+      if (!invokedAt) invokedAt = Date.now()
+      return new Promise<string>(() => { /* never resolves */ })
+    }
     const ctrl = new VibeController({
       emit: (e) => events.push(e),
       sideQuery: hangingSideQuery,
@@ -78,11 +97,11 @@ describe('sideQuery timeout', () => {
 
     await ctrl.start('new')                    // empty dir: no sideQuery needed
     events.length = 0
-    const started = Date.now()
     await ctrl.handleAnswer('q-1', 'B')        // short pick → generateQuestion → hang → timeout
-    // Generous bound: proves the 50ms timeout fired (vs 120s default / infinite
-    // hang) while absorbing cold-start transform/import cost on first run.
-    expect(Date.now() - started).toBeLessThan(4000)
+    // Hermetic harness (embed endpoint stubbed to refuse instantly), so this
+    // bound only has to absorb the 50ms timeout + test overhead.
+    expect(invokedAt).toBeGreaterThan(0)
+    expect(Date.now() - invokedAt).toBeLessThan(1500)
 
     const fallback = events.find(e => e.type === 'vibe.question')
     expect(fallback).toBeDefined()
