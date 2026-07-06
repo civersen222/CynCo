@@ -77,6 +77,118 @@ afterEach(() => {
   try { fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 3 }) } catch {}
 })
 
+// ─── Full chain ─────────────────────────────────────────────────
+
+describe('VibeController chain', () => {
+  it('start in an empty dir transitions idle→understand and asks the opening question', async () => {
+    const events: any[] = []
+    const { loop } = fakeLoop()
+    const { fn } = scriptedSideQuery()
+    const ctrl = new VibeController({ emit: (e) => events.push(e), sideQuery: fn, loop })
+
+    await ctrl.start('new')
+
+    const transition = events.find(e => e.type === 'vibe.state_changed')
+    expect(transition).toMatchObject({ fromState: 'idle', to: 'understand' })
+    const q = events.find(e => e.type === 'vibe.question')
+    expect(q.text).toContain('What would you like to build')
+    expect(ctrl.state).toBe('understand')
+  })
+
+  it('a substantive answer triggers BUILD: delegation, handoff files, verification, report', async () => {
+    const events: any[] = []
+    const { loop, calls } = fakeLoop()
+    const { fn } = scriptedSideQuery()
+    const ctrl = new VibeController({ emit: (e) => events.push(e), sideQuery: fn, loop })
+
+    await ctrl.start('new')
+    await ctrl.handleAnswer('q-1', 'Build a hello world python script that prints hello')
+
+    // BUILD delegated exactly once, with the build-prompt contract
+    expect(calls.handleUserMessage).toHaveLength(1)
+    expect(calls.handleUserMessage[0]).toContain('Build the following')
+    // Approvals: on for the session, re-asserted for build, off after
+    expect(calls.setApproveAll[calls.setApproveAll.length - 1]).toBe(false)
+    expect(calls.setApproveAll).toContain(true)
+    // Goal verification passed → pleasure signal
+    expect(calls.verifications).toEqual([true])
+    // State machine reached build then report
+    const states = events.filter(e => e.type === 'vibe.state_changed').map(e => e.to)
+    expect(states).toContain('build')
+    expect(states).toContain('report')
+    // Report carries buildHandoff().files_modified — the uncertain contract
+    const report = events.find(e => e.type === 'vibe.task_complete')
+    expect(report.filesChanged).toEqual(['hello.py'])
+    expect(report.analogy).toContain('Think of it like')
+    expect(report.suggestion).toBe('Add a lock to the door.')
+    // State file persisted for cross-session continuity
+    expect(fs.existsSync(path.join(tmpDir, '.cynco-state.md'))).toBe(true)
+  })
+
+  it('short picks continue Q&A with confidence updates until READY', async () => {
+    const events: any[] = []
+    const { loop, calls } = fakeLoop()
+    let questionCalls = 0
+    const { fn } = scriptedSideQuery({
+      'clarifying question': () => {
+        questionCalls++
+        return questionCalls === 1
+          ? 'What color should it be?\nA) Red\nB) Blue'
+          : 'READY'
+      },
+    })
+    const ctrl = new VibeController({ emit: (e) => events.push(e), sideQuery: fn, loop })
+
+    await ctrl.start('new')
+    await ctrl.handleAnswer('q-1', 'A')   // short pick → LLM question comes back
+
+    const q = events.find(e => e.type === 'vibe.question' && e.text.includes('What color'))
+    expect(q).toBeDefined()
+    expect(q.options).toEqual(['Red', 'Blue', 'Something else (type below)'])
+    expect(events.some(e => e.type === 'vibe.confidence_update')).toBe(true)
+    expect(calls.handleUserMessage).toHaveLength(0)   // still understanding
+
+    await ctrl.handleAnswer(q.questionId, 'B')        // → READY → build
+    expect(calls.handleUserMessage).toHaveLength(1)
+  })
+
+  it('stuck governance escalates; escalation_response fix re-builds', async () => {
+    const events: any[] = []
+    const { loop, calls } = fakeLoop({ getGovernanceReport: () => ({ stuckTurns: 3 }) })
+    const { fn } = scriptedSideQuery()
+    const ctrl = new VibeController({ emit: (e) => events.push(e), sideQuery: fn, loop })
+
+    await ctrl.start('new')
+    await ctrl.handleAnswer('q-1', 'Build a hello world python script that prints hello')
+
+    const esc = events.find(e => e.type === 'vibe.escalation')
+    expect(esc).toBeDefined()
+    expect(esc.problem).toBe('The build hit a wall')
+    expect(esc.tried).toEqual(['A', 'B'])
+    expect(esc.requestId).toMatch(/^esc-/)
+    expect(events.some(e => e.type === 'vibe.task_complete')).toBe(false)
+
+    const buildsBefore = calls.handleUserMessage.length
+    await ctrl.handleEscalationResponse(esc.requestId, 'fix')
+    expect(calls.handleUserMessage.length).toBeGreaterThan(buildsBefore)
+  })
+
+  it('verification FAIL steers a fix build and reports a pain signal', async () => {
+    const events: any[] = []
+    const { loop, calls } = fakeLoop()
+    const { fn } = scriptedSideQuery({ 'Verify 3 levels': 'FAIL: hello.py never prints' })
+    const ctrl = new VibeController({ emit: (e) => events.push(e), sideQuery: fn, loop })
+
+    await ctrl.start('new')
+    await ctrl.handleAnswer('q-1', 'Build a hello world python script that prints hello')
+
+    expect(calls.verifications).toEqual([false])
+    // Build + steered fix build
+    expect(calls.handleUserMessage).toHaveLength(2)
+    expect(calls.handleUserMessage[1]).toContain('VERIFICATION FAILED')
+  })
+})
+
 // ─── Timeout ────────────────────────────────────────────────────
 
 describe('sideQuery timeout', () => {
