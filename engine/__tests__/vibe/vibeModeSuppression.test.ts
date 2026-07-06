@@ -89,6 +89,10 @@ describe('vibe mode event suppression', () => {
     const events: any[] = []
     const loop = new ConversationLoop({
       config: { ...defaultConfig(), approveAll: true },
+      // 'The task is complete.' must match the completionSignals regex
+      // (conversationLoop.ts ~1998) or the mid-plan nudge fires and exhausts
+      // the 2-response mock. If this test starts failing slowly with empty
+      // streams, check that regex first.
       provider: mockProvider([() => readToolUse(), () => textResponse('The task is complete.')]),
       emit: (e) => events.push(e),
     })
