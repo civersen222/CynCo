@@ -62,6 +62,7 @@ class LocalCodeApp(App):
         self.engine_process = None
         self.config = load_config()
         self._current_message = ""
+        self._vibe_escalation_lock = asyncio.Lock()
 
     async def on_mount(self) -> None:
         """Show project picker or connect to running engine."""
@@ -432,21 +433,23 @@ class LocalCodeApp(App):
             self.screen.handle_task_complete(event)
 
     def _handle_vibe_escalation(self, event: VibeEscalationEvent) -> None:
-        from .widgets.escalation_dialog import EscalationDialog
-        dialog = EscalationDialog(
-            problem=event.problem,
-            tried=event.tried,
-            proposal=event.proposal,
-            request_id=event.request_id,
-        )
         async def handle():
-            action = await self.push_screen_wait(dialog)
-            from .protocol import VibeEscalationResponseCommand
-            cmd = VibeEscalationResponseCommand(
-                request_id=event.request_id,
-                action=action or "skip",
-            )
-            self.send_command(cmd)
+            # Serialize dialogs — concurrent push_screen_wait calls race
+            async with self._vibe_escalation_lock:
+                from .widgets.escalation_dialog import EscalationDialog
+                dialog = EscalationDialog(
+                    problem=event.problem,
+                    tried=event.tried,
+                    proposal=event.proposal,
+                    request_id=event.request_id,
+                )
+                action = await self.push_screen_wait(dialog)
+                from .protocol import VibeEscalationResponseCommand
+                cmd = VibeEscalationResponseCommand(
+                    request_id=event.request_id,
+                    action=action or "skip",
+                )
+                self.send_command(cmd)
         asyncio.ensure_future(handle())
 
     def _handle_vibe_project_scanned(self, event: VibeProjectScannedEvent) -> None:

@@ -223,3 +223,41 @@ class TestVibeEntryPoints:
         from localcode_tui.screens.workspace import SLASH_COMMANDS
         commands = [cmd for cmd, _ in SLASH_COMMANDS]
         assert "/project" in commands
+
+
+def test_escalation_dialogs_are_serialized(monkeypatch):
+    """Two rapid vibe.escalation events must show dialogs one at a time, in order."""
+    import asyncio
+    from localcode_tui.app import LocalCodeApp
+    from localcode_tui.protocol import VibeEscalationEvent
+
+    app = LocalCodeApp.__new__(LocalCodeApp)  # bypass full Textual init
+    app._vibe_escalation_lock = asyncio.Lock()
+
+    active = {"count": 0, "max": 0}
+    shown = []
+    sent = []
+
+    async def fake_push_screen_wait(dialog):
+        active["count"] += 1
+        active["max"] = max(active["max"], active["count"])
+        await asyncio.sleep(0.01)  # simulate the user thinking
+        active["count"] -= 1
+        shown.append(dialog.request_id)
+        return "skip"
+
+    monkeypatch.setattr(app, "push_screen_wait", fake_push_screen_wait, raising=False)
+    monkeypatch.setattr(app, "send_command", lambda cmd: sent.append(cmd), raising=False)
+
+    async def run():
+        e1 = VibeEscalationEvent(problem="p1", tried=[], proposal="", request_id="r1")
+        e2 = VibeEscalationEvent(problem="p2", tried=[], proposal="", request_id="r2")
+        app._handle_vibe_escalation(e1)
+        app._handle_vibe_escalation(e2)
+        await asyncio.sleep(0.2)
+
+    asyncio.run(run())
+
+    assert active["max"] == 1, "two escalation dialogs were on screen at once"
+    assert shown == ["r1", "r2"]
+    assert [c.request_id for c in sent] == ["r1", "r2"]
