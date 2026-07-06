@@ -225,6 +225,16 @@ class TestVibeEntryPoints:
         assert "/project" in commands
 
 
+def test_app_init_creates_escalation_lock():
+    """Wire check: the serialization test below builds its own lock via __new__,
+    so this guards that LocalCodeApp.__init__ actually creates it in production."""
+    import asyncio
+    from localcode_tui.app import LocalCodeApp
+
+    app = LocalCodeApp()
+    assert isinstance(app._vibe_escalation_lock, asyncio.Lock)
+
+
 def test_escalation_dialogs_are_serialized(monkeypatch):
     """Two rapid vibe.escalation events must show dialogs one at a time, in order."""
     import asyncio
