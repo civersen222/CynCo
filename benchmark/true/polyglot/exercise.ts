@@ -134,8 +134,13 @@ export function injectTests(ex: Exercise, workdir: string): void {
         // remove any squatting directory before writing
         rmSync(dest, { recursive: true, force: true })
         mkdirSync(dirname(dest), { recursive: true })
-        const content = readFileSync(abs, 'utf-8')
-        writeFileSync(dest, testSet.has(rel) ? unskip(ex.language, content) : content)
+        if (testSet.has(rel)) {
+          writeFileSync(dest, unskip(ex.language, readFileSync(abs, 'utf-8')))
+        } else {
+          // Buffer copy — scaffolding includes binaries (gradle-wrapper.jar);
+          // a UTF-8 round-trip would corrupt them.
+          writeFileSync(dest, readFileSync(abs))
+        }
       }
     }
   }
@@ -165,21 +170,39 @@ export function buildPrompt(ex: Exercise): string {
   const fileList = ex.solutionFiles.join(', ')
   return `${parts.join('\n\n')}
 
+####
+
 Use the above instructions to modify the supplied files: ${fileList}
 Don't change the names of existing functions or classes, as they may be referenced from other code like unit tests, etc.
 Only use standard libraries, don't suggest installing any packages.`
 }
 
-const MAX_ERROR_LINES = 100
+const MAX_HEAD_LINES = 20
+const MAX_TAIL_LINES = 80
 
-/** Aider's try-2 message: test output + "the tests are correct" wording. */
+/**
+ * Documented deviation from aider (which feeds full test output): local-model
+ * context is finite, so long output keeps the head (framework banner / first
+ * error) and the tail (where pytest/gradle/cargo put failure summaries).
+ */
+export function truncateTestOutput(output: string): string {
+  const lines = output.split('\n')
+  if (lines.length <= MAX_HEAD_LINES + MAX_TAIL_LINES) return output
+  const omitted = lines.length - MAX_HEAD_LINES - MAX_TAIL_LINES
+  return [
+    ...lines.slice(0, MAX_HEAD_LINES),
+    `[... ${omitted} lines omitted ...]`,
+    ...lines.slice(-MAX_TAIL_LINES),
+  ].join('\n')
+}
+
+/** Aider's try-2 message: test output + aider's exact retry wording. */
 export function buildRetryPrompt(solutionFiles: string[], testOutput: string): string {
-  const truncated = testOutput.split('\n').slice(0, MAX_ERROR_LINES).join('\n')
-  return `${truncated}
+  return `${truncateTestOutput(testOutput)}
 
 ####
 
 See the testing errors above.
-The tests are correct.
+The tests are correct, don't try and change them.
 Fix the code in ${solutionFiles.join(', ')} to resolve the errors.`
 }

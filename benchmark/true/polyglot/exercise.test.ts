@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { readFileSync as readFs } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { discoverExercises, assertPristine, stageWorkdir, injectTests, removeTests, unskip, buildPrompt, buildRetryPrompt } from './exercise.js'
+import { discoverExercises, assertPristine, stageWorkdir, injectTests, removeTests, unskip, buildPrompt, buildRetryPrompt, truncateTestOutput } from './exercise.js'
 
 const REAL_ROOT = join(import.meta.dirname, '..', '..', 'polyglot-exercises')
 
@@ -194,6 +194,20 @@ describe('injectTests restores scaffolding', () => {
     expect(readFs(join(workdir, 'demo_test.py'), 'utf-8')).toContain('assert True')
   })
 
+  it('restores binary scaffolding byte-identically (gradle-wrapper.jar style)', () => {
+    const root = makeFakeRoot()
+    const exDir = join(root, 'python', 'exercises', 'practice', 'demo')
+    // bytes that are NOT valid UTF-8 — a utf-8 round-trip would mangle them
+    const binary = Buffer.from([0xff, 0xfe, 0x00, 0x50, 0x4b, 0x03, 0x04, 0x80, 0xc3, 0x28])
+    writeFileSync(join(exDir, 'wrapper.jar'), binary)
+    const [ex] = discoverExercises(root)
+    const scratch = mkdtempSync(join(tmpdir(), 'polyglot-scratch-'))
+    const workdir = stageWorkdir(ex, scratch)
+    writeFileSync(join(workdir, 'wrapper.jar'), 'tampered')
+    injectTests(ex, workdir)
+    expect(readFs(join(workdir, 'wrapper.jar')).equals(binary)).toBe(true)
+  })
+
   it('injects JS tests with skips enabled (unskip applied end-to-end)', () => {
     const root = makeFakeRoot()
     const ex = join(root, 'javascript', 'exercises', 'practice', 'jsdemo')
@@ -218,7 +232,8 @@ describe('buildPrompt', () => {
     const [ex] = discoverExercises(root)
     const p = buildPrompt(ex)
     expect(p).toContain('Implement demo.')
-    expect(p).toContain('Use the above instructions to modify the supplied files: demo.py')
+    // aider's addendum: "####" separator line, then the instruction wording
+    expect(p).toContain('####\n\nUse the above instructions to modify the supplied files: demo.py')
     expect(p).toContain("Don't change the names of existing functions or classes")
     expect(p).toContain("Only use standard libraries, don't suggest installing any packages.")
   })
@@ -236,14 +251,30 @@ describe('buildPrompt', () => {
   })
 })
 
+describe('truncateTestOutput', () => {
+  it('passes short output through untouched', () => {
+    const output = 'a\nb\nc'
+    expect(truncateTestOutput(output)).toBe(output)
+  })
+
+  it('keeps head and tail of long output — failure summaries live at the end', () => {
+    const output = Array.from({ length: 300 }, (_, i) => `line ${i}`).join('\n')
+    const t = truncateTestOutput(output)
+    expect(t).toContain('line 0') // head (framework banner / first error)
+    expect(t).toContain('line 299') // tail (pytest/gradle failure summary)
+    expect(t).not.toContain('line 150\n') // middle omitted
+    expect(t).toContain('[... 200 lines omitted ...]')
+  })
+})
+
 describe('buildRetryPrompt', () => {
-  it("feeds truncated test output with aider's retry wording", () => {
+  it("feeds truncated test output with aider's exact retry wording", () => {
     const output = Array.from({ length: 300 }, (_, i) => `line ${i}`).join('\n')
     const p = buildRetryPrompt(['demo.py'], output)
     expect(p).toContain('line 0')
-    expect(p).not.toContain('line 299') // truncated
+    expect(p).toContain('line 299') // tail kept — errors live at the end
     expect(p).toContain('See the testing errors above.')
-    expect(p).toContain('The tests are correct.')
+    expect(p).toContain("The tests are correct, don't try and change them.")
     expect(p).toContain('Fix the code in demo.py to resolve the errors.')
   })
 })

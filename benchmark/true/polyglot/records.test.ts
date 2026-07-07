@@ -44,6 +44,24 @@ describe('appendRecord / loadRecords', () => {
     expect(() => loadRecords(path)).toThrow(/corrupt/i)
   })
 
+  it('appending onto a torn fragment drops the fragment instead of poisoning the file', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'polyglot-rec-')), 'out.jsonl')
+    appendRecord(path, rec())
+    appendFileSync(path, '{"language":"go","exercise":"tr') // crash mid-append
+    appendRecord(path, rec({ exercise: 'connect' }))
+    const loaded = loadRecords(path) // must not throw "corrupt"
+    expect(loaded.map((r) => r.exercise)).toEqual(['bowling', 'connect'])
+  })
+
+  it('appending after a complete record that lost only its newline keeps that record', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'polyglot-rec-')), 'out.jsonl')
+    appendRecord(path, rec())
+    appendFileSync(path, JSON.stringify(rec({ exercise: 'zebra' }))) // valid JSON, no \n
+    appendRecord(path, rec({ exercise: 'connect' }))
+    const loaded = loadRecords(path)
+    expect(loaded.map((r) => r.exercise)).toEqual(['bowling', 'zebra', 'connect'])
+  })
+
   it('dedups duplicate language/exercise keys keeping the first record', () => {
     const path = join(mkdtempSync(join(tmpdir(), 'polyglot-rec-')), 'out.jsonl')
     appendRecord(path, rec({ passed: true, passedTry: 1 }))

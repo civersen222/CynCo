@@ -30,7 +30,16 @@ against CynCo **as-shipped** on local hardware, with aider's pass@2 protocol.
    Governance (S5) stays active.
 4. **Raw data in git:** results JSONL, run logs, harness code, and Dockerfile are
    all tracked. The harness refuses to run if the exercises repo is not pristine
-   (`assertPristine`).
+   (`assertPristine`), and re-checks pristineness before **every** verdict run —
+   an agent that wrote into the exercises checkout kills the run instead of
+   poisoning it.
+
+**Accepted residual risk** (shared with aider's own harness): the agent's tools
+run unsandboxed on the host, so it could in principle leave a background process
+alive past its try. The verdict window is still tamper-checked (pristine restore
+of all scaffolding + pristine-source assert), but a sufficiently deliberate
+background process racing the verdict is not defended against. CynCo's agent has
+no benchmark awareness, so this is a theoretical, not practical, hole.
 
 ## Requirements
 
@@ -39,9 +48,12 @@ against CynCo **as-shipped** on local hardware, with aider's pass@2 protocol.
 - **Exercises checkout** at `benchmark/polyglot-exercises`:
 
   ```bash
-  git clone https://github.com/Aider-AI/polyglot-benchmark.git benchmark/polyglot-exercises
+  git clone --config core.autocrlf=false https://github.com/Aider-AI/polyglot-benchmark.git benchmark/polyglot-exercises
   git -C benchmark/polyglot-exercises checkout 7e0611e77b54e2dea774cdc0aa00cf9f7ed6144f
   ```
+
+  (`core.autocrlf=false` matters on Windows: CRLF in `gradlew` / shell scripts
+  breaks them under the container's Linux bash.)
 
 - A configured local model (`LOCALCODE_MODEL` or a CynCo profile). The harness
   refuses to run without one — results must be attributable.
@@ -60,9 +72,12 @@ bun benchmark/true/polyglot/run.ts --resume --budget 60
 ```
 
 Each chunk stops cleanly before an exercise that couldn't fit the budget
-(conservative worst case: 26 min/exercise), prints a progress report, and exits.
-Interruptions are harmless — every exercise is appended to the JSONL the moment
-it finishes, and `--resume` skips already-recorded ones.
+(conservative worst case: 46 min/exercise — 2 tries × 8 min model + up to 10 min
+in-flight tool tail after an abort + 2 × 5 min tests), prints a progress report,
+and exits. Typical exercises take a few minutes, so a 60-min chunk usually runs
+several; the worst case just guarantees no overrun. Interruptions are harmless —
+every exercise is appended to the JSONL the moment it finishes, and `--resume`
+skips already-recorded ones. Budgets below 46 min are refused (nothing would run).
 
 Other flags: `--lang go`, `--exercise bowling`, `--out path.jsonl`.
 
@@ -85,6 +100,9 @@ Record schema (`ExerciseRecord`):
 | `error` | model-call error or `try timeout` (optional) |
 | `envFailure` | `true` if failure is provably environmental (optional) |
 
+The report's `timeouts` count covers **try** (model) timeouts; test-command
+timeouts appear under `env failures`.
+
 ## Container toolchain versions
 
 `polyglot-bench` image (Ubuntu 24.04), as built:
@@ -104,8 +122,21 @@ Gradle/cargo/go/npm caches persist in named docker volumes across chunks.
 ## Protocol parity notes
 
 - Try 2 continues the **same** `ConversationLoop` (aider keeps the conversation).
-- Skipped tests are enabled the way aider does it: JS `xtest/xit/xdescribe` →
+- Prompt wording (try 1 addendum and try 2 retry) is aider's exact text.
+- **Deviation, disclosed:** aider feeds the full test output into try 2; this
+  harness truncates long output to the first 20 + last 80 lines (local-model
+  context is finite; failure summaries live at the end of pytest/gradle/cargo
+  output). Short output is passed through unchanged.
+- Skipped tests are enabled at inject time: JS `xtest/xit/xdescribe` →
   `test/it/describe`, Java `@Disabled` lines stripped, Rust
   `cargo test -- --include-ignored`, C++ `-DEXERCISM_RUN_ALL_TESTS=1`.
+  (Aider's JS script converts only `xtest`; converting `xit`/`xdescribe` too is
+  strictly **harder** — more tests enabled — never easier.)
 - Java runs `bash gradlew test` (exec bit is lost copying from a Windows host).
-- Per-try model timeout 8 min (counts as a failed try); test timeout 5 min.
+- JS runs `npm install` inside the container per verdict (aider pre-installs
+  node_modules; the npm cache volume keeps this fast after the first run).
+- Per-try model timeout 8 min: the try is aborted and recorded in `error`, but
+  its partial edits still get a verdict run — same as an interrupted aider
+  attempt. Test-command timeout 5 min (→ `envFailure`).
+- S5 governance is active in its as-shipped default (rule-based S5, same as a
+  fresh CynCo install without a fine-tuned decision model).

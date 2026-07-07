@@ -36,7 +36,7 @@ export function startContainer(scratchRoot: string): void {
 }
 
 export function stopContainer(): void {
-  docker(['rm', '-f', NAME])
+  docker(['rm', '-f', NAME], 60_000)
 }
 
 export interface ExecResult {
@@ -46,18 +46,26 @@ export interface ExecResult {
   durationMs: number
 }
 
-/** Run a test command inside /bench/<workdirName> with a hard timeout. */
+/**
+ * Run a test command inside /bench/<workdirName> with a hard timeout.
+ * The client-side timeout kills the docker CLI only — a runaway test process
+ * keeps running inside the container until chunk-end teardown. Accepted: it can
+ * only burn CPU in its own workdir; the verdict for its exercise is already a
+ * timeout env-failure.
+ */
 export function execInContainer(workdirName: string, command: string, timeoutMs: number): ExecResult {
   const start = Date.now()
   const res = docker(
     ['exec', '-w', `/bench/${workdirName}`, NAME, 'bash', '-lc', command],
     timeoutMs,
   )
-  const timedOut = res.error?.name === 'Error' && /ETIMEDOUT/.test(String((res.error as any).code ?? res.error.message))
+  // Only a real ETIMEDOUT is a timeout; other spawn errors (ENOENT, signal-kill)
+  // surface as code -1 and are caught by isEnvFailure.
+  const timedOut = !!res.error && /ETIMEDOUT/.test(String((res.error as any).code ?? res.error.message))
   return {
     code: res.status ?? -1,
     output: `${res.stdout ?? ''}${res.stderr ?? ''}`,
-    timedOut: timedOut || (res.status === null && !!res.error),
+    timedOut,
     durationMs: Date.now() - start,
   }
 }
@@ -68,6 +76,8 @@ export function execInContainer(workdirName: string, command: string, timeoutMs:
  */
 export function isEnvFailure(res: ExecResult): boolean {
   if (res.timedOut) return true
+  // docker CLI produced no exit code: spawn failure, signal-kill, daemon gone.
+  if (res.code < 0) return true
   if ([125, 126, 127].includes(res.code)) return true // docker/daemon/toolchain-missing
   if (/command not found|No such container|error during connect/i.test(res.output)) return true
   return false

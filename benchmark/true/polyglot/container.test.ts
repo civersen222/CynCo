@@ -4,9 +4,40 @@ import { spawnSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { ensureImage, startContainer, stopContainer, execInContainer } from './container.js'
+import { ensureImage, startContainer, stopContainer, execInContainer, isEnvFailure, type ExecResult } from './container.js'
 
 const dockerPresent = spawnSync('docker', ['version'], { encoding: 'utf-8' }).status === 0
+
+const res = (over: Partial<ExecResult>): ExecResult => ({
+  code: 1, output: 'FAILED test_x', timedOut: false, durationMs: 1000, ...over,
+})
+
+// Pure taxonomy tests — no docker needed.
+describe('isEnvFailure', () => {
+  it('a normal test failure is a model failure, not env', () => {
+    expect(isEnvFailure(res({}))).toBe(false)
+  })
+
+  it('flags timeouts', () => {
+    expect(isEnvFailure(res({ timedOut: true }))).toBe(true)
+  })
+
+  it('flags docker exit codes 125/126/127', () => {
+    for (const code of [125, 126, 127]) expect(isEnvFailure(res({ code }))).toBe(true)
+  })
+
+  it('flags a docker CLI that produced no exit code (signal-kill / spawn failure)', () => {
+    // Observed live: signal-killed docker exec -> status null -> code -1,
+    // 8ms verdict recorded as a clean model failure. Must be env.
+    expect(isEnvFailure(res({ code: -1, output: '', durationMs: 4 }))).toBe(true)
+  })
+
+  it('flags infra markers in output', () => {
+    expect(isEnvFailure(res({ output: 'bash: go: command not found' }))).toBe(true)
+    expect(isEnvFailure(res({ output: 'Error: No such container: polyglot-bench-run' }))).toBe(true)
+    expect(isEnvFailure(res({ output: 'error during connect: daemon not running' }))).toBe(true)
+  })
+})
 
 // Live integration test — same gating style as other docker/live suites.
 describe.skipIf(!dockerPresent)('container lifecycle', () => {
