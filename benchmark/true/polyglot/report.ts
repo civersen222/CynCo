@@ -19,6 +19,8 @@ export function summarize(records: ExerciseRecord[]): Summary {
     if (r.passed) s.passed++
     if (r.passedTry === 1) s.passedTry1++
     if (r.envFailure) s.envFailures++
+    // Heuristic: `error` is the harness-level error string (never raw test
+    // output), so 'timeout' here means a try/infra timeout, not a test name.
     if (r.error?.includes('timeout')) s.timeouts++
     const lang = (s.byLanguage[r.language] ??= { total: 0, passed: 0 })
     lang.total++

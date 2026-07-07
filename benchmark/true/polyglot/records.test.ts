@@ -1,6 +1,6 @@
 // benchmark/true/polyglot/records.test.ts
 import { describe, it, expect } from 'vitest'
-import { mkdtempSync, readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, appendFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { appendRecord, loadRecords, completedKeys, fitsInBudget, WORST_CASE_MS } from './records.js'
@@ -26,6 +26,32 @@ describe('appendRecord / loadRecords', () => {
   it('loadRecords returns [] for a missing file (fresh run)', () => {
     expect(loadRecords(join(tmpdir(), 'does-not-exist.jsonl'))).toEqual([])
   })
+
+  it('drops a torn final line (crash mid-append) so --resume can proceed', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'polyglot-rec-')), 'out.jsonl')
+    appendRecord(path, rec())
+    appendFileSync(path, '{"language":"go","exercise":"tr') // torn append, no newline
+    const loaded = loadRecords(path)
+    expect(loaded).toHaveLength(1)
+    expect(loaded[0].exercise).toBe('bowling')
+  })
+
+  it('throws on a malformed line that is NOT last (real corruption)', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'polyglot-rec-')), 'out.jsonl')
+    appendRecord(path, rec())
+    appendFileSync(path, 'GARBAGE\n')
+    appendRecord(path, rec({ exercise: 'connect' }))
+    expect(() => loadRecords(path)).toThrow(/corrupt/i)
+  })
+
+  it('dedups duplicate language/exercise keys keeping the first record', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'polyglot-rec-')), 'out.jsonl')
+    appendRecord(path, rec({ passed: true, passedTry: 1 }))
+    appendRecord(path, rec({ passed: false, passedTry: null }))
+    const loaded = loadRecords(path)
+    expect(loaded).toHaveLength(1)
+    expect(loaded[0].passed).toBe(true)
+  })
 })
 
 describe('completedKeys (resume filtering)', () => {
@@ -45,5 +71,8 @@ describe('fitsInBudget', () => {
     const budget = 60 * 60_000
     expect(fitsInBudget(budget - WORST_CASE_MS, budget)).toBe(true)
     expect(fitsInBudget(budget - WORST_CASE_MS + 1, budget)).toBe(false)
+  })
+  it('a budget smaller than one worst-case exercise fits nothing', () => {
+    expect(fitsInBudget(0, WORST_CASE_MS - 1)).toBe(false)
   })
 })
