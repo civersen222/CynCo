@@ -77,7 +77,7 @@ run.ts orchestrator                            polyglot-bench image:
 | `container.ts` | Container lifecycle: build-if-missing, start long-lived container with SCRATCH + cache volumes mounted, `docker exec` a test command with timeout, teardown. One container for the whole run (no per-exercise startup cost). |
 | `exercise.ts` | Discovery from `benchmark/polyglot-exercises/` via `.meta/config.json`; workdir staging (copy exercise dir **excluding `.meta/` and `config.files.test`**); test-file inject (always overwrite) / remove; prompt assembly from `.docs/instructions*.md` using aider's wording. |
 | `runLoop.ts` | Engine driving: one provider bootstrapped **once** for the whole run (llama-server started once, never churned); per exercise a fresh `ConversationLoop` (cwd=workdir, `setApproveAll(true)`, events discarded); try 2 is a second `handleUserMessage` into the **same loop** so the model keeps its context, mirroring aider. Per-try hard timeout via `loop.abort()`. |
-| `run.ts` | CLI orchestrator: `--lang`, `--exercise`, `--resume`, `--smoke` (1 exercise/language); sequential execution; incremental JSONL append after every exercise; summary table + leaderboard comparison at end. |
+| `run.ts` | CLI orchestrator: `--lang`, `--exercise`, `--resume`, `--smoke` (1 exercise/language), `--budget <min>` (default 60); sequential execution; incremental JSONL append after every exercise; progress summary at the end of every chunk, full leaderboard comparison once all 225 are recorded. |
 | `README.md` | Full reproduction instructions (for publication credibility). |
 
 ### Scoring & metrics
@@ -105,15 +105,31 @@ durationMs, tryDurationsMs[], testDurationMs, error?, envFailure?`.
 4. **Raw data published:** JSONL + run log + harness code + Dockerfile all tracked
    in git.
 
-### Durability (30–50h run)
+### Durability & chunked execution (~30–50h total, run in ≤1h chunks)
 
-- JSONL appended after each exercise; `--resume` skips exercises already recorded.
-- One llama-server for the entire run (bootstrap once; per-exercise loops share the
-  provider).
+The full run is **never one long process**. It is a sequence of user-triggered
+chunks, each bounded by `--budget <min>` (default 60):
+
+- **Budget scheduler:** before starting each exercise, the orchestrator checks
+  `elapsed + worstCase(exercise)` against the budget, where worstCase is the
+  conservative per-exercise ceiling (2 tries × 8 min model + 2 × 5 min tests ≈ 26
+  min). If it doesn't fit, the chunk stops cleanly — a chunk can end early but
+  never overruns its budget. Expected per-exercise mean is well under 10 min, so a
+  60-min chunk typically completes 6–15 exercises; the full 225 take roughly 20–40
+  chunks.
+- **Chunk end report:** exercises done this chunk, cumulative progress (n/225),
+  running pass@2, projected chunks remaining. Re-running the same command with
+  `--resume` starts the next chunk.
+- All state between chunks lives in the JSONL: appended after each exercise;
+  `--resume` skips exercises already recorded. Nothing is lost if a chunk crashes.
+- One llama-server per chunk (bootstrapped once at chunk start; per-exercise loops
+  share the provider; `ensureRunning` kills any stale server first, per policy).
+  The Docker container is likewise started at chunk start and torn down at chunk
+  end — cache volumes persist on disk, so warm Gradle/cargo caches carry across
+  chunks.
 - Per-try model timeout: 8 min (abort + count as failed try). Test-command timeout:
   5 min (Gradle first-run; warm caches via mounted volumes make subsequent runs fast).
-  Per-exercise worst case ≈ 26 min; expected mean well under 10.
-- Run log tee'd to `benchmark/true/results/polyglot-<ts>.log`.
+- Run log tee'd to `benchmark/true/results/polyglot-<ts>.log` (one per chunk).
 
 ### Error handling
 
@@ -121,7 +137,7 @@ durationMs, tryDurationsMs[], testDurationMs, error?, envFailure?`.
 - Docker exec timeout/nonzero-before-tests → `envFailure: true`, continue.
 - Container dies mid-run → orchestrator fails fast with a clear message; `--resume`
   continues after restart.
-- Ctrl-C / crash → JSONL is already durable; `--resume`.
+- Ctrl-C / crash mid-chunk → JSONL is already durable; `--resume` next chunk.
 
 ### Testing (no model, no GPU)
 
@@ -129,7 +145,8 @@ durationMs, tryDurationsMs[], testDurationMs, error?, envFailure?`.
   (225 total; per-language counts match aider's published split), workdir staging
   excludes `.meta` + test files, inject/remove round-trip, overwrite-clobber of
   agent-created test-name collisions, resume filtering, JSONL append format,
-  prompt assembly.
+  prompt assembly, budget scheduler (stops before an exercise that can't fit;
+  never overruns the budget).
 - `--smoke` mode: 6 exercises (1/language) against the real model + container —
   the pre-flight gate before the full run.
 - Docker `container.ts` gets an integration test gated like other live tests
@@ -140,10 +157,12 @@ durationMs, tryDurationsMs[], testDurationMs, error?, envFailure?`.
 1. Build image, run unit tests.
 2. `--smoke` (6 exercises, ~1h) — fix env issues until all 6 produce *valid*
    results (pass or fail is fine; envFailure is not).
-3. Full run (`--resume` on interruptions), driven autonomously to completion per
-   standing preference — expect 30–50h wall-clock with the GPU saturated.
-4. Score, write summary, publish results + update the Reddit post draft with real
-   numbers (whatever they are — nulls included).
+3. Full run as user-triggered chunks: each chunk is one command
+   (`... --resume --budget 60`), runs ≤1h, ends with a progress report and stops.
+   The user launches chunks at their convenience; roughly 20–40 chunks total.
+   Interruptions are harmless (`--resume`).
+4. Once all 225 are recorded: score, write summary, publish results + update the
+   Reddit post draft with real numbers (whatever they are — nulls included).
 
 ### Open risk, called out honestly
 
