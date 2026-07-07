@@ -157,6 +157,61 @@ describe('injectTests / removeTests', () => {
   })
 })
 
+describe('injectTests restores scaffolding', () => {
+  it('restores tampered scaffolding (fake npm test script) before the verdict run', () => {
+    const root = makeFakeRoot()
+    // give the fake exercise a scaffold file
+    const exDir = join(root, 'python', 'exercises', 'practice', 'demo')
+    writeFileSync(join(exDir, 'conftest.py'), '# pristine scaffold\n')
+    const [ex] = discoverExercises(root)
+    const scratch = mkdtempSync(join(tmpdir(), 'polyglot-scratch-'))
+    const workdir = stageWorkdir(ex, scratch)
+    writeFileSync(join(workdir, 'conftest.py'), '# TAMPERED\n')
+    injectTests(ex, workdir)
+    expect(readFs(join(workdir, 'conftest.py'), 'utf-8')).toBe('# pristine scaffold\n')
+  })
+
+  it('does NOT clobber the agent solution files or agent-created helpers', () => {
+    const root = makeFakeRoot()
+    const [ex] = discoverExercises(root)
+    const scratch = mkdtempSync(join(tmpdir(), 'polyglot-scratch-'))
+    const workdir = stageWorkdir(ex, scratch)
+    writeFileSync(join(workdir, 'demo.py'), 'def demo():\n    return 42\n')
+    writeFileSync(join(workdir, 'helper.py'), 'HELP = True\n')
+    injectTests(ex, workdir)
+    expect(readFs(join(workdir, 'demo.py'), 'utf-8')).toContain('return 42')
+    expect(readFs(join(workdir, 'helper.py'), 'utf-8')).toBe('HELP = True\n')
+    expect(existsSync(join(workdir, '.meta'))).toBe(false) // still never copied
+  })
+
+  it('replaces an agent-created directory squatting on a test filename', () => {
+    const root = makeFakeRoot()
+    const [ex] = discoverExercises(root)
+    const scratch = mkdtempSync(join(tmpdir(), 'polyglot-scratch-'))
+    const workdir = stageWorkdir(ex, scratch)
+    mkdirSync(join(workdir, 'demo_test.py')) // directory with the test's name
+    injectTests(ex, workdir)
+    expect(readFs(join(workdir, 'demo_test.py'), 'utf-8')).toContain('assert True')
+  })
+
+  it('injects JS tests with skips enabled (unskip applied end-to-end)', () => {
+    const root = makeFakeRoot()
+    const ex = join(root, 'javascript', 'exercises', 'practice', 'jsdemo')
+    mkdirSync(join(ex, '.meta'), { recursive: true })
+    writeFileSync(
+      join(ex, '.meta', 'config.json'),
+      JSON.stringify({ files: { solution: ['jsdemo.js'], test: ['jsdemo.spec.js'], example: ['.meta/proof.js'] } }),
+    )
+    writeFileSync(join(ex, 'jsdemo.js'), 'export const f = () => {}\n')
+    writeFileSync(join(ex, 'jsdemo.spec.js'), "xtest('works', () => {})\n")
+    const [jsex] = discoverExercises(root, { lang: 'javascript' })
+    const scratch = mkdtempSync(join(tmpdir(), 'polyglot-scratch-'))
+    const workdir = stageWorkdir(jsex, scratch)
+    injectTests(jsex, workdir)
+    expect(readFs(join(workdir, 'jsdemo.spec.js'), 'utf-8')).toBe("test('works', () => {})\n")
+  })
+})
+
 describe('buildPrompt', () => {
   it("assembles docs + aider's instruction wording with the solution file list", () => {
     const root = makeFakeRoot()

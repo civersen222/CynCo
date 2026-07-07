@@ -3,7 +3,6 @@ import {
   cpSync,
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   readdirSync,
   rmSync,
@@ -104,17 +103,44 @@ export function unskip(language: Language, src: string): string {
 }
 
 /**
- * Copy pristine test files from the exercises repo into the workdir,
- * unskipped. ALWAYS overwrites, so an agent-created file with a test's
- * name is clobbered by the pristine copy (anti-tamper).
+ * Injects pristine tests AND restores all non-solution scaffolding (anti-tamper:
+ * a fake `npm test` script or patched `gradlew` is clobbered before every verdict
+ * run). Agent-created helper files and the solution files themselves are preserved.
+ *
+ * Walks the pristine exercise dir recursively and copies EVERY file into the
+ * workdir, overwriting, EXCEPT:
+ *  - anything under `.meta/` (never copied — reference solutions)
+ *  - files listed in `ex.solutionFiles` (the agent's work — must NOT be clobbered)
+ * Test files (`ex.testFiles`) get `unskip` applied; all other files are verbatim.
+ * Before writing each file, any same-named directory is removed so a squatting
+ * directory doesn't cause EISDIR.
  */
 export function injectTests(ex: Exercise, workdir: string): void {
-  for (const rel of ex.testFiles) {
-    const pristine = readFileSync(join(ex.dir, rel), 'utf-8')
-    const dest = join(workdir, rel.split('/').join(sep))
-    mkdirSync(dirname(dest), { recursive: true })
-    writeFileSync(dest, unskip(ex.language, pristine))
+  const solutionSet = new Set(ex.solutionFiles)
+  const testSet = new Set(ex.testFiles)
+
+  function walk(dir: string): void {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const abs = join(dir, entry.name)
+      const rel = relative(ex.dir, abs).split(sep).join('/')
+      // skip .meta entirely
+      if (rel === '.meta' || rel.startsWith('.meta/')) continue
+      if (entry.isDirectory()) {
+        walk(abs)
+      } else {
+        // skip solution files — agent's work must not be clobbered
+        if (solutionSet.has(rel)) continue
+        const dest = join(workdir, rel.split('/').join(sep))
+        // remove any squatting directory before writing
+        rmSync(dest, { recursive: true, force: true })
+        mkdirSync(dirname(dest), { recursive: true })
+        const content = readFileSync(abs, 'utf-8')
+        writeFileSync(dest, testSet.has(rel) ? unskip(ex.language, content) : content)
+      }
+    }
   }
+
+  walk(ex.dir)
 }
 
 /** Delete injected test files so they are unreadable while the agent runs. */

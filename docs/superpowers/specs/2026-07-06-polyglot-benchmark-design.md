@@ -104,6 +104,7 @@ durationMs, tryDurationsMs[], testDurationMs, error?, envFailure?`.
    harness-level instruction is aider's own exercise prompt wording.
 4. **Raw data published:** JSONL + run log + harness code + Dockerfile all tracked
    in git.
+5. **Scaffolding tamper-proof:** test injection restores ALL non-solution files from the pristine exercise (build files, test runners, configs), so a fake `npm test` script or patched `gradlew` is clobbered before every verdict run. Agent-created helper files and the solution files themselves are preserved.
 
 ### Durability & chunked execution (~30–50h total, run in ≤1h chunks)
 
