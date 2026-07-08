@@ -125,8 +125,16 @@ async function main() {
   log(`[polyglot] log: ${logPath}`)
 }
 
-main().catch((err) => {
-  console.error('[polyglot] fatal:', err)
-  stopContainer()
-  process.exit(1)
-})
+main().then(
+  () => {
+    // Explicit exit: bootstrapProvider leaves live handles (llama-server
+    // process manager / stdio wiring) that keep the event loop alive forever
+    // after main() returns — observed hanging an overnight chunk loop.
+    process.exit(0)
+  },
+  (err) => {
+    console.error('[polyglot] fatal:', err)
+    stopContainer()
+    process.exit(1)
+  },
+)
