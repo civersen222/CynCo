@@ -56,6 +56,25 @@ export function assertPristine(root: string): void {
         `Fix with: git -C "${root}" checkout -- . && git -C "${root}" clean -fdx\n${status}`,
     )
   }
+  // CRLF guard: a checkout smudged by core.autocrlf=true is git-clean but
+  // every bash script carries \r, which kills gradlew instantly under the
+  // container's Linux bash — all 47 java exercises would be recorded as env
+  // failures (observed live). Probe one canary gradlew.
+  const practice = join(root, 'java', 'exercises', 'practice')
+  if (existsSync(practice)) {
+    for (const name of readdirSync(practice).sort()) {
+      const gradlew = join(practice, name, 'gradlew')
+      if (!existsSync(gradlew)) continue
+      if (readFileSync(gradlew, 'utf-8').includes('\r')) {
+        throw new Error(
+          `exercises checkout has CRLF line endings (${gradlew}) — bash scripts break in the container.\n` +
+            `Fix with: git -C "${root}" config core.autocrlf false && ` +
+            `git -C "${root}" rm -rq --cached . && git -C "${root}" reset --hard`,
+        )
+      }
+      break // one canary is enough — the whole checkout shares one smudge state
+    }
+  }
 }
 
 /**

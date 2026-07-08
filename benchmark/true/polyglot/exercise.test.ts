@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { readFileSync as readFs } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { execSync } from 'node:child_process'
 import { discoverExercises, assertPristine, stageWorkdir, injectTests, removeTests, unskip, buildPrompt, buildRetryPrompt, truncateTestOutput } from './exercise.js'
 
 const REAL_ROOT = join(import.meta.dirname, '..', '..', 'polyglot-exercises')
@@ -58,6 +59,35 @@ describe.skipIf(!existsSync(REAL_ROOT))('discoverExercises against real repo', (
 describe.skipIf(!existsSync(REAL_ROOT))('assertPristine', () => {
   it('passes on a clean exercises repo', () => {
     expect(() => assertPristine(REAL_ROOT)).not.toThrow()
+  })
+})
+
+describe('assertPristine CRLF guard', () => {
+  // A checkout smudged by core.autocrlf=true is git-clean but every bash
+  // script carries \r — gradlew dies instantly in the container and all 47
+  // java exercises would be recorded as env failures (observed live in the
+  // smoke run). The guard probes one canary gradlew.
+  function makeRepo(gradlewContent: string): string {
+    const root = mkdtempSync(join(tmpdir(), 'polyglot-crlf-'))
+    const ex = join(root, 'java', 'exercises', 'practice', 'demo')
+    mkdirSync(ex, { recursive: true })
+    writeFileSync(join(ex, 'gradlew'), gradlewContent)
+    const git = (cmd: string) => execSync(`git -c core.autocrlf=false ${cmd}`, { cwd: root })
+    git('init -q')
+    git('add -A')
+    git('-c user.email=t@t -c user.name=t commit -qm x')
+    return root
+  }
+
+  it('throws with remediation instructions when gradlew has CRLF', () => {
+    const root = makeRepo('#!/bin/sh\r\necho hi\r\n')
+    expect(() => assertPristine(root)).toThrow(/CRLF/)
+    expect(() => assertPristine(root)).toThrow(/core\.autocrlf false/)
+  })
+
+  it('passes when gradlew is LF', () => {
+    const root = makeRepo('#!/bin/sh\necho hi\n')
+    expect(() => assertPristine(root)).not.toThrow()
   })
 })
 
