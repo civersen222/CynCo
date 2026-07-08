@@ -53,7 +53,8 @@ no benchmark awareness, so this is a theoretical, not practical, hole.
   ```
 
   (`core.autocrlf=false` matters on Windows: CRLF in `gradlew` / shell scripts
-  breaks them under the container's Linux bash.)
+  breaks them under the container's Linux bash. `assertPristine` fails fast on
+  a CRLF-smudged checkout, with renormalization instructions.)
 
 - A configured local model (`LOCALCODE_MODEL` or a CynCo profile). The harness
   refuses to run without one — results must be attributable.
