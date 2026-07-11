@@ -42,6 +42,30 @@ export type VibeControllerOptions = {
   emit: (event: VibeEvent | Record<string, unknown>) => void
   sideQuery: (prompt: string) => Promise<string>
   loop: ConversationLoop
+  /** Max wait for any single sideQuery before rejecting into the call site's fallback. Default 120s. */
+  timeoutMs?: number
+}
+
+/** Reject a sideQuery that exceeds ms — call sites all have catch fallbacks. */
+async function sideQueryWithTimeout(
+  fn: (prompt: string) => Promise<string>,
+  prompt: string,
+  ms: number,
+): Promise<string> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      fn(prompt),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          console.log(`[vibe] sideQuery timed out after ${ms}ms`)
+          reject(new Error(`sideQuery timed out after ${ms}ms`))
+        }, ms)
+      }),
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
 }
 
 export class VibeController {
@@ -59,7 +83,8 @@ export class VibeController {
 
   constructor(opts: VibeControllerOptions) {
     this.emitFn = opts.emit
-    this.sideQuery = opts.sideQuery
+    const timeoutMs = opts.timeoutMs ?? 120_000
+    this.sideQuery = (prompt) => sideQueryWithTimeout(opts.sideQuery, prompt, timeoutMs)
     this.loop = opts.loop
     this.engine = new VibeLoopEngine((event) => this.emitFn(event))
   }
