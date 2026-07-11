@@ -1,5 +1,5 @@
 import { describe, expect, it, afterEach, beforeEach, mock } from 'bun:test'
-import { loadConfig } from '../config.js'
+import { loadConfig, isS5EnforcementEnabled } from '../config.js'
 
 describe('config', () => {
   const fs = require('node:fs') as typeof import('node:fs')
@@ -36,6 +36,21 @@ describe('config', () => {
     expect(c.temperature).toBe(0.7)
     expect(c.maxOutputTokens).toBe(16384)
     expect(c.timeout).toBe(300000)
+  })
+
+  it('S5 enforcement is enabled by default', () => {
+    delete process.env.LOCALCODE_S5_ENFORCE
+    expect(isS5EnforcementEnabled()).toBe(true)
+  })
+
+  it('LOCALCODE_S5_ENFORCE=false caps S5 at recommend', () => {
+    process.env.LOCALCODE_S5_ENFORCE = 'false'
+    expect(isS5EnforcementEnabled()).toBe(false)
+  })
+
+  it('LOCALCODE_S5_ENFORCE with any other value keeps enforcement on', () => {
+    process.env.LOCALCODE_S5_ENFORCE = 'true'
+    expect(isS5EnforcementEnabled()).toBe(true)
   })
 
   it('reads LOCALCODE_ env vars', () => {

@@ -141,6 +141,12 @@ export type GovernanceStatusEvent = {
   s3s4Balance: string
   toolSuccessRate: number
   stuckTurns: number
+  varietyRatio?: number
+  varietyBalance?: string
+  algedonicAlerts?: number
+  axiomHealth?: string
+  consecutiveUnstable?: number
+  agreementRatio?: number
   suggestion: string | null
 }
 
