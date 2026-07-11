@@ -48,8 +48,19 @@ Entry status: `OPEN` (improvement not yet shipped) | `SHIPPED` (fix in engine/dr
 - **Harness improvement:** Use `npx vitest run` for engine tests. (Baseline vitest harness gaps already fixed in cf75f8e.)
 - **Status:** MITIGATED (practice)
 
+## F7 — S5 crisis mode locks reused engine sessions to read-only
+- **Date:** 2026-07-11 · **Context:** Mission 4 (research pipeline), engine reused across missions 2-4
+- **How it failed:** Driver TIMEOUT with ZERO tool.start events — CynCo replied 49 tokens of text and ended the turn. Silent from the driver's perspective; only the engine log revealed it.
+- **Why:** VSM S5 accumulated "homeostat unstable 217x" + "agreement ratio 0.00" across the reused session and entered `heterarchy: S5 commanding (crisis)`, enforcing `tool restriction to [Read, Glob, Grep, Ls]` (conversationLoop.ts:855). An edit mission with no write tools is unfulfillable. The governance signals are non-discriminating (s3s4=critical even during successful missions), so "crisis" fires on healthy sessions that simply run long.
+- **Harness improvement:** Return to fresh-engine-per-mission (kill bun + llama-server, restart) — deviating from that rhythm caused this. **Follow-up (OPEN):** (a) driver should alert when a mission turn completes with zero tool calls (fast-fail instead of 10-min timeout); (b) S5 read-only enforcement is actively harmful under non-discriminating signals — feed this case into the H1-H8 predictions redesign; consider a headless-mission flag that caps S5 at "recommend" without "enforce".
+- **Status:** MITIGATED (fresh engine per mission) / OPEN (driver zero-tool alert, S5 redesign input)
+
 ## Latent product bugs found while verifying (not harness failures, future missions)
-- **CKEvent._apply_effect prestige AttributeError:** `ruler.prestige += value` on rulers that may lack the attribute (game.py ~line 120s). Found 2026-07-11 via functional test. → queue as CynCo mission.
+- **CKEvent._apply_effect prestige AttributeError:** `ruler.prestige += value` on rulers that may lack the attribute (game.py ~line 120s). Found 2026-07-11 via functional test. → FIXED by mission 3 (194b784).
+
+## Success observations (validated brief patterns)
+- **2026-07-11, mission 3:** Less prescriptive brief (whole-method replacement: goal + exact target code, CynCo picks the edit strategy) worked first try — CynCo split it into 2 Edits itself, ran ast.parse + pytest + smoke check as instructed, committed clean. Whole-method rewrites are viable when the final code is given verbatim; no need to spoon-feed anchors for method-scale changes.
+- **2026-07-11, missions 2-3:** `scripts/cynco-mission-driver.mjs` end-to-end: tool trace visible (Read×4, Edit×2, Bash×6 for mission 3), commit-marker detection, single-digit-minute missions. NOTE: pass the brief path with forward slashes (`C:/tmp/...`) — bash eats backslashes (mission 3 first dispatch ENOENT'd).
 
 ## Standing observations
 - Governance dashboard shows `s3s4Balance: critical`, `varietyRatio: 9 (overload)`, `consecutiveUnstable: 14` even during successful missions — signals are not discriminating success from failure (ties into the H1-H8 predictions redesign).
