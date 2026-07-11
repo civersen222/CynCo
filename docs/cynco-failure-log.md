@@ -59,6 +59,7 @@ Entry status: `OPEN` (improvement not yet shipped) | `SHIPPED` (fix in engine/dr
 - **CKEvent._apply_effect prestige AttributeError:** `ruler.prestige += value` on rulers that may lack the attribute (game.py ~line 120s). Found 2026-07-11 via functional test. → FIXED by mission 3 (194b784).
 
 ## Success observations (validated brief patterns)
+- **2026-07-11, mission 5 (AI movement):** whole-method replacement pattern again first-try (fresh engine, F7 rhythm respected). Minor deviation: CynCo's replacement also consumed the `# ── Diplomacy management` separator comment + blank lines between methods — harmless, but "replace down to line X" boundaries are approximate; keep verifying by full diff, not just tests.
 - **2026-07-11, mission 3:** Less prescriptive brief (whole-method replacement: goal + exact target code, CynCo picks the edit strategy) worked first try — CynCo split it into 2 Edits itself, ran ast.parse + pytest + smoke check as instructed, committed clean. Whole-method rewrites are viable when the final code is given verbatim; no need to spoon-feed anchors for method-scale changes.
 - **2026-07-11, missions 2-3:** `scripts/cynco-mission-driver.mjs` end-to-end: tool trace visible (Read×4, Edit×2, Bash×6 for mission 3), commit-marker detection, single-digit-minute missions. NOTE: pass the brief path with forward slashes (`C:/tmp/...`) — bash eats backslashes (mission 3 first dispatch ENOENT'd).
 
