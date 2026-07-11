@@ -18,6 +18,7 @@ export type ServerConfig = {
   ctxCheckpoints?: number
   checkpointMinStep?: number
   ubatchSize?: number
+  chatTemplateFile?: string
 }
 
 function envInt(name: string): number | undefined {
@@ -49,6 +50,14 @@ export function buildServerArgs(config: ServerConfig): string[] {
 
   if (config.loraPath) {
     args.push('--lora', config.loraPath)
+  }
+
+  // Override the GGUF's embedded chat template. Needed when a community
+  // quant ships a stricter template than the model actually requires (e.g.
+  // NVFP4 GGUFs whose template raises on mid-conversation system messages,
+  // which the engine's context injection produces).
+  if (config.chatTemplateFile) {
+    args.push('--chat-template-file', config.chatTemplateFile)
   }
 
   if (config.specType) {
@@ -100,6 +109,7 @@ export type ProcessManagerConfig = {
   ctxCheckpoints?: number
   checkpointMinStep?: number
   ubatchSize?: number
+  chatTemplateFile?: string
 }
 
 export class ProcessManager {
