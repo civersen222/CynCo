@@ -24,6 +24,8 @@ const task = await Bun.file(taskFile).text()
 console.log(`[driver] mission from ${taskFile} (${task.length} chars), marker="${marker}", cwd=${CWD}`)
 
 const ws = new WebSocket(WS_URL)
+let toolCount = 0
+let zeroToolCompletion = false
 ws.onopen = () => {
   console.log('[driver] connected, dispatching mission')
   ws.send(JSON.stringify({ type: 'user.message', text: task, cwd: CWD }))
@@ -31,9 +33,15 @@ ws.onopen = () => {
 ws.onmessage = (ev) => {
   try {
     const m = JSON.parse(ev.data)
-    if (m.type === 'tool.start') console.log(`[cynco] tool: ${m.toolName}`)
+    if (m.type === 'tool.start') { toolCount++; console.log(`[cynco] tool: ${m.toolName}`) }
     if (m.type === 'tool.complete' && m.isError) console.log(`[cynco] TOOL ERROR (${m.toolName}): ${String(m.result).slice(0, 200)}`)
     if (m.type === 'approval.request') console.log(`[cynco] APPROVAL REQUESTED (${m.toolName ?? '?'}) — engine not in APPROVE_ALL mode? (F2)`)
+    if (m.type === 'message.complete' && toolCount === 0) {
+      // F7: conversation ended without a single tool call — mission cannot have
+      // landed. Likely S5 crisis-mode tool restriction on a stale engine session.
+      console.log('[driver] FAIL-FAST: message.complete with ZERO tool calls (F7 — check engine log for S5 ENFORCE; restart engine fresh)')
+      zeroToolCompletion = true
+    }
   } catch {}
 }
 ws.onerror = (e) => console.log('[driver] ws error', e?.message ?? e)
@@ -46,7 +54,7 @@ async function gitLog() {
 
 const start = Date.now()
 let landed = false
-while (!landed && (Date.now() - start) / 1000 < TIMEOUT_S) {
+while (!landed && !zeroToolCompletion && (Date.now() - start) / 1000 < TIMEOUT_S) {
   await Bun.sleep(30000)
   try {
     const g = await fetch(GOV_URL).then(r => r.json())
