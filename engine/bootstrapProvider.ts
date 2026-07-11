@@ -105,6 +105,7 @@ export async function bootstrapProvider(
         ctxCheckpoints: rt?.ctxCheckpoints,
         checkpointMinStep: rt?.checkpointMinStep,
         ubatchSize: rt?.ubatchSize,
+        chatTemplateFile: rt?.chatTemplateFile,
       })
       // Wire eval tok/s from llama-server stderr → governance (deferred until loop is created)
       ;(globalThis as any).__llamaProcessManager = processManager

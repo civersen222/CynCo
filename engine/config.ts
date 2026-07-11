@@ -33,6 +33,7 @@ export type RuntimeConfig = {
   ctxCheckpoints?: number
   checkpointMinStep?: number
   ubatchSize?: number
+  chatTemplateFile?: string
 }
 
 export type LocalCodeConfig = {
@@ -136,6 +137,7 @@ export function loadConfig(): LocalCodeConfig {
         ctxCheckpoints: pr.ctx_checkpoints,
         checkpointMinStep: pr.checkpoint_min_step,
         ubatchSize: pr.ubatch_size,
+        chatTemplateFile: pr.chat_template_file,
       }
     : undefined
 

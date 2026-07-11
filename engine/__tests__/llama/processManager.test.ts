@@ -59,6 +59,24 @@ describe('buildServerArgs', () => {
     expect(args).toContain('/adapters/s3-lora.gguf')
   })
 
+  it('adds --chat-template-file when chatTemplateFile is set', () => {
+    const args = buildServerArgs({
+      modelPath: '/models/qwen.gguf',
+      port: 8081,
+      chatTemplateFile: '/models/qwen/chat_template.jinja',
+    })
+    expect(args).toContain('--chat-template-file')
+    expect(args).toContain('/models/qwen/chat_template.jinja')
+  })
+
+  it('does not add --chat-template-file when chatTemplateFile is not set', () => {
+    const args = buildServerArgs({
+      modelPath: '/models/qwen.gguf',
+      port: 8081,
+    })
+    expect(args).not.toContain('--chat-template-file')
+  })
+
   it('adds speculative decoding flags when specType is set', () => {
     const args = buildServerArgs({
       modelPath: '/models/qwen-mtp.gguf',
