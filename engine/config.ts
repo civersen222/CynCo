@@ -20,6 +20,17 @@ export function isLocalMode(): boolean {
   return !!(process.env.LOCALCODE_MODEL || process.env.LOCALCODE_BASE_URL)
 }
 
+/**
+ * S5 enforcement gate (governance falsification program, step 3: earned authority).
+ * Default ON. Set LOCALCODE_S5_ENFORCE=false to cap S5 at recommend/journal-only —
+ * decisions are still computed and emitted for the outcome ledger, but never
+ * applied. Headless CynCo missions run capped so enforcement can neither kill a
+ * mission (F7) nor confound the ledger's outcome labels.
+ */
+export function isS5EnforcementEnabled(): boolean {
+  return process.env.LOCALCODE_S5_ENFORCE !== 'false'
+}
+
 export type TierSetting = 'auto' | 'basic' | 'standard' | 'advanced'
 
 export type RuntimeConfig = {

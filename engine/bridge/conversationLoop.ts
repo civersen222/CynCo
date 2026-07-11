@@ -9,6 +9,7 @@ import type { EngineEvent, TUICommand } from './protocol.js'
 import type { ThinkingConfig } from '../types.js'
 import { asSystemPrompt } from '../types.js'
 import type { LocalCodeConfig } from '../config.js'
+import { isS5EnforcementEnabled } from '../config.js'
 import type { Provider } from '../provider.js'
 import { localCallModel, type CallModelDeps } from '../engine/callModel.js'
 import { ALL_TOOLS } from '../tools/registry.js'
@@ -817,19 +818,29 @@ export class ConversationLoop {
           promptDifficulty: this.difficultyClassifier.getLevel(),
         })
 
-        // Emit S5 decision to dashboard
+        // Earned-authority cap: when LOCALCODE_S5_ENFORCE=false, S5 decisions
+        // are computed and emitted (the outcome ledger needs them) but never
+        // applied. See docs/cynco-failure-log.md F7.
+        const s5Enforce = isS5EnforcementEnabled()
+
+        // Emit S5 decision to dashboard (ruleIds/enforced feed the mission
+        // outcome ledger — step 2 needs per-rule attribution)
         this.emit({
           type: 's5.decision' as any,
           reasoning: decision.reasoning,
           contextAction: decision.contextAction,
           toolRestriction: decision.toolRestriction,
           modelSwitch: decision.modelSwitch,
+          ruleIds: decision.ruleIds ?? [],
+          enforced: s5Enforce,
           timestamp: Date.now(),
         })
         console.log(`[s5] Decision: context=${decision.contextAction} tools=${decision.toolRestriction ?? 'none'} (${decision.reasoning})`)
 
         // L3: APPLY S5 decisions — hard enforcement, not advisory
-        if (decision.contextAction === 'compact') {
+        if (decision.contextAction === 'compact' && !s5Enforce) {
+          console.log(`[s5] WOULD-ENFORCE (capped at recommend): compact context (${decision.reasoning})`)
+        } else if (decision.contextAction === 'compact') {
           console.log(`[s5] Decision: compact context (${decision.reasoning})`)
           // Trigger compaction via the S5 decision path
           const ctxLen = this.config.contextLength ?? 32768
@@ -848,7 +859,9 @@ export class ConversationLoop {
 
         // Hard tool filtering: S5 decides, engine enforces — but never apply
         // a restriction that would leave the model with zero tools.
-        if (decision.tools) {
+        if (decision.tools && !s5Enforce) {
+          console.log(`[s5] WOULD-ENFORCE (capped at recommend): tool restriction to [${decision.tools.join(', ')}]`)
+        } else if (decision.tools) {
           const allowed = new Set(decision.tools)
           const filtered = toolDefs.filter(t => allowed.has(t.name))
           if (filtered.length > 0) {
@@ -860,7 +873,9 @@ export class ConversationLoop {
         }
 
         // Model switch enforcement
-        if (decision.model && decision.model !== this.config.model) {
+        if (decision.model && decision.model !== this.config.model && !s5Enforce) {
+          console.log(`[s5] WOULD-ENFORCE (capped at recommend): model switch to ${decision.model}`)
+        } else if (decision.model && decision.model !== this.config.model) {
           console.log(`[s5] ENFORCE: model switch to ${decision.model}`)
           this.updateModel(decision.model)
         }
@@ -1821,6 +1836,9 @@ export class ConversationLoop {
                 algedonicAlerts: turnReport.algedonicAlerts,
                 axiomHealth: turnReport.axiomHealth,
                 consecutiveUnstable: turnReport.consecutiveUnstable,
+                // Suspect signal under falsification (pegged 0.00 in successful
+                // missions) — must be visible per-turn for the outcome ledger
+                agreementRatio: (turnReport as any).agreementRatio ?? 1.0,
                 suggestion: turnReport.stuckTurns > 0 ? 'Model may be stuck — consider changing approach' : null,
               })
 

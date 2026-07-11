@@ -39,6 +39,8 @@ src/_archived_claude_code/
 src/src/
 benchmark/*
 !benchmark/true/
+# Mission outcome ledger is versioned evidence (governance falsification step 1)
+!benchmark/cynco-ledger/
 benchmark-manual
 benchmark-results
 benchmark-workspace-06
