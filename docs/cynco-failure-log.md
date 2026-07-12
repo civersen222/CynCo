@@ -58,7 +58,15 @@ Entry status: `OPEN` (improvement not yet shipped) | `SHIPPED` (fix in engine/dr
 ## Latent product bugs found while verifying (not harness failures, future missions)
 - **CKEvent._apply_effect prestige AttributeError:** `ruler.prestige += value` on rulers that may lack the attribute (game.py ~line 120s). Found 2026-07-11 via functional test. → FIXED by mission 3 (194b784).
 
+## F8 — Brief author gave a wrong container-type assumption; CynCo debugged it live
+- **Date:** 2026-07-12 · **Context:** Mission 8 (random events apply effects), events.py
+- **How it failed:** Brief's verbatim replacement iterated `game.cities` as a list (`[c for c in game.cities if c.owner == civ_name]`) but `Game.cities` is `Dict[str, City]` — iteration yields key strings, `.owner` would AttributeError. Cost: 1 Edit anchor miss + several extra turns (9/63 tool errors), plus 2 failed `git commit` attempts (commit-before-add) before landing.
+- **Why:** I (mission author) wrote effect-mapping code against grepped attribute names without verifying the container type. CynCo's instructed smoke check caught it at runtime and CynCo correctly self-repaired to `game.cities.values()` — a *good* deviation, caught only by full-diff verification.
+- **Harness improvement:** When a brief contains new code touching game state, verify every container's type (`grep "self.X: "` for the annotation) before freezing the verbatim block. Keep instructing the smoke check in every brief — it's what turned this from a broken landing into a self-repair. Diff-vs-brief review must classify deviations (cosmetic | fix | drift) rather than demanding byte-exactness.
+- **Status:** MITIGATED (practice: type-check brief code + mandatory smoke checks)
+
 ## Success observations (validated brief patterns)
+- **2026-07-12, mission 7 (CK event choice feedback):** 4-edit, 3-file brief landed first try in ~13 min, byte-exact except the known trailing-blank-line consumption by ReplaceFunction (cosmetic). Fresh engine, S5 cap active (`enforced: false` in ledger row 2).
 - **2026-07-11, mission 5 (AI movement):** whole-method replacement pattern again first-try (fresh engine, F7 rhythm respected). Minor deviation: CynCo's replacement also consumed the `# ── Diplomacy management` separator comment + blank lines between methods — harmless, but "replace down to line X" boundaries are approximate; keep verifying by full diff, not just tests.
 - **2026-07-11, mission 3:** Less prescriptive brief (whole-method replacement: goal + exact target code, CynCo picks the edit strategy) worked first try — CynCo split it into 2 Edits itself, ran ast.parse + pytest + smoke check as instructed, committed clean. Whole-method rewrites are viable when the final code is given verbatim; no need to spoon-feed anchors for method-scale changes.
 - **2026-07-11, missions 2-3:** `scripts/cynco-mission-driver.mjs` end-to-end: tool trace visible (Read×4, Edit×2, Bash×6 for mission 3), commit-marker detection, single-digit-minute missions. NOTE: pass the brief path with forward slashes (`C:/tmp/...`) — bash eats backslashes (mission 3 first dispatch ENOENT'd).
