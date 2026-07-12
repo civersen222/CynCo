@@ -1,0 +1,22 @@
+[polyglot] 6 exercise(s) queued (0 already recorded), model=qwen3.6-27b-q6k, budget=60min
+[polyglot] python/affine-cipher try 1...
+[polyglot] PASS python/affine-cipher try=1 117s
+[polyglot] javascript/affine-cipher try 1...
+[polyglot] javascript/affine-cipher try 2 (tests failed)...
+[polyglot] PASS javascript/affine-cipher try=2 710s
+[polyglot] go/alphametics try 1...
+[polyglot] PASS go/alphametics try=1 379s
+[polyglot] budget reached — stopping chunk cleanly (3 exercise(s) this chunk)
+
+Polyglot progress — model: qwen3.6-27b-q6k
+  recorded: 3/225
+  pass@2: 3/3 (100.0%)   pass@1: 2/3 (66.7%)
+  env failures: 0   timeouts: 1
+  go           1/1 (100.0%)
+  javascript   1/1 (100.0%)
+  python       1/1 (100.0%)
+
+[polyglot] 3 exercise(s) remaining — continue with:
+  bun benchmark/true/polyglot/run.ts --resume --budget 60 --smoke
+[polyglot] results: C:\Users\civer\localcode\benchmark\true\results\polyglot-smoke-qwen3.6-27b-q6k.jsonl
+[polyglot] log: C:\Users\civer\localcode\benchmark\true\results\polyglot-1783468612003.log

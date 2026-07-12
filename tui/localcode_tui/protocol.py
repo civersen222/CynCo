@@ -323,12 +323,6 @@ class AbortCommand:
 
 
 @dataclass
-class FileOpenCommand:
-    type: str = "file.open"
-    path: str = ""
-
-
-@dataclass
 class SessionEndCommand:
     type: str = "session.end"
 

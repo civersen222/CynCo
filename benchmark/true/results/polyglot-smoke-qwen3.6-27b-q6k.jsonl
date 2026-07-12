@@ -1,0 +1,6 @@
+{"language":"python","exercise":"affine-cipher","passed":true,"passedTry":1,"durationMs":117364,"tryDurationsMs":[116810],"testDurationMs":339}
+{"language":"javascript","exercise":"affine-cipher","passed":true,"passedTry":2,"durationMs":709600,"tryDurationsMs":[144575,482911],"testDurationMs":77745,"error":"try timeout"}
+{"language":"go","exercise":"alphametics","passed":true,"passedTry":1,"durationMs":378857,"tryDurationsMs":[376041],"testDurationMs":2599}
+{"language":"rust","exercise":"accumulate","passed":true,"passedTry":2,"durationMs":148870,"tryDurationsMs":[124809,18764],"testDurationMs":4995}
+{"language":"cpp","exercise":"all-your-base","passed":false,"passedTry":null,"durationMs":196015,"tryDurationsMs":[114613,79787],"testDurationMs":1276}
+{"language":"java","exercise":"affine-cipher","passed":true,"passedTry":2,"durationMs":634150,"tryDurationsMs":[183449,418326],"testDurationMs":32038}

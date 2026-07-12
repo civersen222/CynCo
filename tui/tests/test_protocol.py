@@ -23,7 +23,6 @@ from localcode_tui.protocol import (
     ApprovalResponseCommand,
     SlashCommandMsg,
     AbortCommand,
-    FileOpenCommand,
     EVENT_TYPES,
 )
 
@@ -197,12 +196,6 @@ class TestSerializeCommand:
         cmd = AbortCommand()
         result = json.loads(serialize_command(cmd))
         assert result["type"] == "abort"
-
-    def test_file_open_command(self):
-        cmd = FileOpenCommand(path="/src/main.py")
-        result = json.loads(serialize_command(cmd))
-        assert result["type"] == "file.open"
-        assert result["path"] == "/src/main.py"
 
     def test_session_end_command(self):
         from localcode_tui.protocol import SessionEndCommand, serialize_command
