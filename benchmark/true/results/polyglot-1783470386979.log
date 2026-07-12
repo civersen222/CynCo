@@ -1,0 +1,23 @@
+[polyglot] 3 exercise(s) queued (3 already recorded), model=qwen3.6-27b-q6k, budget=60min
+[polyglot] rust/accumulate try 1...
+[polyglot] rust/accumulate try 2 (tests failed)...
+[polyglot] PASS rust/accumulate try=2 149s
+[polyglot] java/affine-cipher try 1...
+[polyglot] java/affine-cipher try 2 (tests failed)...
+[polyglot] FAIL (env) java/affine-cipher try=- 423s
+[polyglot] cpp/all-your-base try 1...
+[polyglot] cpp/all-your-base try 2 (tests failed)...
+[polyglot] FAIL cpp/all-your-base try=- 196s
+
+Polyglot progress — model: qwen3.6-27b-q6k
+  recorded: 6/225
+  pass@2: 4/6 (66.7%)   pass@1: 2/6 (33.3%)
+  env failures: 1   timeouts: 1
+  cpp          0/1 (0.0%)
+  go           1/1 (100.0%)
+  java         0/1 (0.0%)
+  javascript   1/1 (100.0%)
+  python       1/1 (100.0%)
+  rust         1/1 (100.0%)
+[polyglot] results: C:\Users\civer\localcode\benchmark\true\results\polyglot-smoke-qwen3.6-27b-q6k.jsonl
+[polyglot] log: C:\Users\civer\localcode\benchmark\true\results\polyglot-1783470386979.log

@@ -1,0 +1,17 @@
+[polyglot] 1 exercise(s) queued (5 already recorded), model=qwen3.6-27b-q6k, budget=60min
+[polyglot] java/affine-cipher try 1...
+[polyglot] java/affine-cipher try 2 (tests failed)...
+[polyglot] PASS java/affine-cipher try=2 634s
+
+Polyglot progress — model: qwen3.6-27b-q6k
+  recorded: 6/225
+  pass@2: 5/6 (83.3%)   pass@1: 2/6 (33.3%)
+  env failures: 0   timeouts: 1
+  cpp          0/1 (0.0%)
+  go           1/1 (100.0%)
+  java         1/1 (100.0%)
+  javascript   1/1 (100.0%)
+  python       1/1 (100.0%)
+  rust         1/1 (100.0%)
+[polyglot] results: C:\Users\civer\localcode\benchmark\true\results\polyglot-smoke-qwen3.6-27b-q6k.jsonl
+[polyglot] log: C:\Users\civer\localcode\benchmark\true\results\polyglot-1783471566156.log

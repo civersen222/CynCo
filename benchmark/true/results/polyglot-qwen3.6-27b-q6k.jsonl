@@ -1,0 +1,11 @@
+{"language":"python","exercise":"affine-cipher","passed":true,"passedTry":1,"durationMs":86555,"tryDurationsMs":[85902],"testDurationMs":423}
+{"language":"python","exercise":"beer-song","passed":true,"passedTry":1,"durationMs":166162,"tryDurationsMs":[165691],"testDurationMs":265}
+{"language":"python","exercise":"book-store","passed":true,"passedTry":2,"durationMs":185461,"tryDurationsMs":[141917,42738],"testDurationMs":549}
+{"language":"python","exercise":"bottle-song","passed":true,"passedTry":1,"durationMs":69470,"tryDurationsMs":[69005],"testDurationMs":255}
+{"language":"python","exercise":"bowling","passed":false,"passedTry":null,"durationMs":540471,"tryDurationsMs":[390773,148731],"testDurationMs":630}
+{"language":"python","exercise":"connect","passed":true,"passedTry":1,"durationMs":122866,"tryDurationsMs":[122339],"testDurationMs":324}
+{"language":"python","exercise":"dominoes","passed":true,"passedTry":2,"durationMs":125661,"tryDurationsMs":[8316,116509],"testDurationMs":612}
+{"language":"python","exercise":"dot-dsl","passed":true,"passedTry":2,"durationMs":228735,"tryDurationsMs":[110880,117020],"testDurationMs":592}
+{"language":"python","exercise":"food-chain","passed":true,"passedTry":2,"durationMs":100904,"tryDurationsMs":[78563,21499],"testDurationMs":631}
+{"language":"python","exercise":"forth","passed":true,"passedTry":1,"durationMs":132013,"tryDurationsMs":[131516],"testDurationMs":310}
+{"language":"python","exercise":"go-counting","passed":false,"passedTry":null,"durationMs":131488,"tryDurationsMs":[99109,31553],"testDurationMs":600}

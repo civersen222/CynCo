@@ -1,0 +1,30 @@
+=== STREAMING TOOL-CALL PROBE ===
+model: qwen3.6-27b-nvfp4
+requests: 24  PASS: 24  DROP: 0  OTHER: 0  ERROR: 0
+verdict: OK (no streamed tool-call drops)
+
+per-request:
+  S1#1    PASS  tool=read_file
+  S1#2    PASS  tool=read_file
+  S1#3    PASS  tool=read_file
+  S2#1    PASS  tool=run_shell
+  S2#2    PASS  tool=run_shell
+  S2#3    PASS  tool=run_shell
+  S3#1    PASS  tool=run_shell
+  S3#2    PASS  tool=run_shell
+  S3#3    PASS  tool=run_shell
+  S4#1    PASS  tool=web_search
+  S4#2    PASS  tool=web_search
+  S4#3    PASS  tool=web_search
+  S5#1    PASS  tool=calculate
+  S5#2    PASS  tool=calculate
+  S5#3    PASS  tool=calculate
+  S6#1    PASS  tool=calculate
+  S6#2    PASS  tool=calculate
+  S6#3    PASS  tool=calculate
+  M1#1    PASS  tool=read_file
+  M1#2    PASS  tool=read_file
+  M1#3    PASS  tool=read_file
+  M2#1    PASS  tool=run_shell
+  M2#2    PASS  tool=run_shell
+  M2#3    PASS  tool=run_shell

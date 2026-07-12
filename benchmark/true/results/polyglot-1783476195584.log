@@ -1,0 +1,25 @@
+[polyglot] 225 exercise(s) queued (0 already recorded), model=qwen3.6-27b-q6k, budget=60min
+[polyglot] python/affine-cipher try 1...
+[polyglot] PASS python/affine-cipher try=1 87s
+[polyglot] python/beer-song try 1...
+[polyglot] PASS python/beer-song try=1 166s
+[polyglot] python/book-store try 1...
+[polyglot] python/book-store try 2 (tests failed)...
+[polyglot] PASS python/book-store try=2 185s
+[polyglot] python/bottle-song try 1...
+[polyglot] PASS python/bottle-song try=1 69s
+[polyglot] python/bowling try 1...
+[polyglot] python/bowling try 2 (tests failed)...
+[polyglot] FAIL python/bowling try=- 540s
+[polyglot] budget reached — stopping chunk cleanly (5 exercise(s) this chunk)
+
+Polyglot progress — model: qwen3.6-27b-q6k
+  recorded: 5/225
+  pass@2: 4/5 (80.0%)   pass@1: 3/5 (60.0%)
+  env failures: 0   timeouts: 0
+  python       4/5 (80.0%)
+
+[polyglot] 220 exercise(s) remaining — continue with:
+  bun benchmark/true/polyglot/run.ts --resume --budget 60
+[polyglot] results: C:\Users\civer\localcode\benchmark\true\results\polyglot-qwen3.6-27b-q6k.jsonl
+[polyglot] log: C:\Users\civer\localcode\benchmark\true\results\polyglot-1783476195584.log

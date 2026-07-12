@@ -1,0 +1,30 @@
+=== GROUNDING-GATE A/B — PINNED MODE (city-yield-consumers, reps=3) ===
+model: qwen3.6-27b-q6k   _PIN_GROUNDING=1 (gate fires every ON rep, tracker back-off bypassed)
+OFF arm intentionally NOT re-run (condition-identical OFF baseline already established at reps=8).
+
+PURPOSE: the unpinned reps=8 run showed the gate self-silenced after one unresolved
+fire (InterventionTracker success 0/1 -> shouldIntervene false for 79/80 runs), so the
+reps=8 ON arm was effectively ungated and city-yield NEVER fired (0/8). Pinning forces
+the gate to fire on every collision edit, isolating its true effect from the back-off.
+
+MECHANISM VALIDATED:
+  city-yield ON rep 1: [grounding] BLOCKED Edit: happiness  -> score 100.0% pass  (42 turns)
+  city-yield ON rep 2: [grounding] BLOCKED Edit: happiness  -> score   0.0% TIMEOUT (55 turns)
+  city-yield ON rep 3: [grounding] BLOCKED Edit: happiness  -> score   0.0% TIMEOUT (50 turns)
+  => 3/3 ON reps fired the gate (vs 0/8 in the unpinned reps=8 run). Pin works.
+
+PINNED ON mean: 33.3%  (n=3: 100 / 0 / 0)
+OFF baseline:   75.0%  (n=8, reps=8 unpinned, condition-identical)
+naive lift:    -41.7pp
+
+DO NOT TRUST THIS LIFT — VARIANCE DOMINATES AT n=3:
+  The SAME gate-firing condition gave wildly different results across two runs:
+    unpinned reps=3 ON (gate fired all 3 reps): 66.7 / 100 / 100  -> mean 88.9%
+    pinned   reps=3 ON (gate fired all 3 reps): 100  /   0 /   0  -> mean 33.3%
+  Same condition (gate fires every rep), 55.6pp swing between runs. Two timeouts this run
+  vs zero last run is the variance source. n=3 on city-yield is noise, pinned or not.
+
+CONCLUSION:
+  (1) The pin is validated and 100% reliable — gate fires on every ON rep.
+  (2) A clean verdict on whether the pinned gate helps/hurts STILL needs reps>=8.
+      The reps=3 result cannot distinguish effect from noise (88.9 vs 33.3, same condition).
