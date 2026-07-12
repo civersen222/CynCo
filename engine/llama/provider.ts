@@ -31,6 +31,9 @@ export type LlamaCppProviderConfig = {
   processManager?: ProcessManager
 }
 
+/** Maximum number of entries stored in the countTokens memoization cache. */
+export const COUNT_TOKENS_CACHE_BOUND = 512
+
 export class LlamaCppProvider implements Provider {
   readonly name = 'llama-cpp'
   private primaryUrl: string
@@ -40,14 +43,18 @@ export class LlamaCppProvider implements Provider {
   private modelsDir: string
   private adaptersDir: string
   private processManager: ProcessManager | undefined
+  /** Memoization cache: text → token count. FIFO eviction when over COUNT_TOKENS_CACHE_BOUND. */
+  private tokenCache: Map<string, number> = new Map()
+  private readonly tokenCacheBound: number
 
-  constructor(config: LlamaCppProviderConfig) {
+  constructor(config: LlamaCppProviderConfig & { tokenCacheBound?: number }) {
     this.primaryUrl = config.primaryUrl.replace(/\/$/, '')
     this.adapterUrl = config.adapterUrl?.replace(/\/$/, '')
     this.modelName = config.modelName
     this.modelsDir = config.modelsDir
     this.adaptersDir = config.adaptersDir ?? path.join(path.dirname(config.modelsDir), 'adapters')
     this.processManager = config.processManager
+    this.tokenCacheBound = config.tokenCacheBound ?? COUNT_TOKENS_CACHE_BOUND
   }
 
   // ─── URL routing ─────────────────────────────────────────────
@@ -220,6 +227,49 @@ export class LlamaCppProvider implements Provider {
 
   activeAdapter(): string | null {
     return this.activeAdapterId
+  }
+
+  /**
+   * Count tokens using llama-server's /tokenize endpoint.
+   *
+   * Memoized per text string with FIFO eviction at tokenCacheBound entries.
+   * Conversation messages are immutable once appended, so the cache hit rate
+   * is high: only the newest message requires a network round-trip each turn.
+   *
+   * On any error (fetch failure, non-ok, malformed JSON): returns chars/4
+   * heuristic and does NOT cache the fallback so a transient hiccup doesn't
+   * poison future calls.
+   */
+  async countTokens(text: string): Promise<number> {
+    if (text.length === 0) return 0
+
+    const cached = this.tokenCache.get(text)
+    if (cached !== undefined) return cached
+
+    try {
+      const resp = await fetch(`${this.getBaseUrl()}/tokenize`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: text }),
+        signal: AbortSignal.timeout(5000),
+      })
+      if (!resp.ok) return Math.ceil(text.length / 4)
+      const data = await resp.json() as { tokens?: number[] }
+      if (!Array.isArray(data.tokens)) return Math.ceil(text.length / 4)
+      const count = data.tokens.length
+
+      // FIFO eviction: Map preserves insertion order — delete the oldest key
+      // when the cache would exceed the bound.
+      if (this.tokenCache.size >= this.tokenCacheBound) {
+        const firstKey = this.tokenCache.keys().next().value
+        if (firstKey !== undefined) this.tokenCache.delete(firstKey)
+      }
+      this.tokenCache.set(text, count)
+      return count
+    } catch {
+      // Never cache the fallback — transient errors must not poison the cache.
+      return Math.ceil(text.length / 4)
+    }
   }
 
   // ─── Private ─────────────────────────────────────────────────

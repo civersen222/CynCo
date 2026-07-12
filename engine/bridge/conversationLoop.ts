@@ -55,6 +55,7 @@ import { applyNudgeTemperature } from '../vsm/controlSignals.js'
 import { globalContract } from '../tools/contract.js'
 import { globalAskBroker } from '../tools/askBroker.js'
 import { setSideQuery, resetMergeTracking } from '../tools/impl/edit.js'
+import { estimateTokensAsync } from '../engine/contextBudget.js'
 
 type Message = {
   role: 'user' | 'assistant' | 'system'
@@ -494,6 +495,16 @@ export class ConversationLoop {
     return this.vibeMode
   }
 
+  /**
+   * Estimate the token count for the current message history using the
+   * provider's real tokenizer when available (llama-server /tokenize),
+   * falling back to the chars/4 heuristic for providers that lack countTokens
+   * (e.g. Ollama).
+   */
+  private async estimateContextTokens(): Promise<number> {
+    return estimateTokensAsync(this.messages as any, this.provider.countTokens?.bind(this.provider))
+  }
+
   async handleUserMessage(text: string): Promise<void> {
     if (this.processing) {
       console.log('[loop] Already processing, ignoring message')
@@ -844,8 +855,7 @@ export class ConversationLoop {
           console.log(`[s5] Decision: compact context (${decision.reasoning})`)
           // Trigger compaction via the S5 decision path
           const ctxLen = this.config.contextLength ?? 32768
-          const estTokens = this.messages.reduce((sum, m) =>
-            sum + m.content.reduce((s, b: any) => s + (b.text?.length ?? JSON.stringify(b).length) / 4, 0), 0)
+          const estTokens = await this.estimateContextTokens()
           if (this.compressor.shouldCompress(this.messages, estTokens, ctxLen)) {
             const toCompress = this.compressor.selectForCompression(this.messages)
             const prompt = this.compressor.buildStructuredSummaryPrompt(toCompress, this.fileTracker)
@@ -1542,8 +1552,7 @@ export class ConversationLoop {
       }
 
       // Context compression check
-      const estimatedTokensBefore = this.messages.reduce((sum, m) =>
-        sum + m.content.reduce((s, b: any) => s + (b.text?.length ?? JSON.stringify(b).length) / 4, 0), 0)
+      const estimatedTokensBefore = await this.estimateContextTokens()
       const ctxLen = this.config.contextLength ?? 32768
 
       if (this.compressor.shouldCompress(this.messages, estimatedTokensBefore, ctxLen)) {
