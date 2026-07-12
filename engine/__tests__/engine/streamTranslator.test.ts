@@ -504,4 +504,73 @@ describe('translateStream — simulated mode passes through native tool blocks',
     const msgDelta = eventsOfType(events, 'message_delta')[0]
     expect(msgDelta.delta.stop_reason).toBe('tool_use')
   })
+
+  // Issue 2 (Minor #5): test the malformed branch of the simulated tool passthrough
+  it('simulated mode: unparseable native tool arguments get the malformed marker', async () => {
+    const source: StreamEvent[] = [
+      { type: 'message_start', message: { id: '', model: 'qwen3.6', usage: { input_tokens: 0, output_tokens: 0 } } },
+      { type: 'content_block_start', index: 1, content_block: { type: 'tool_use', id: 'call_2', name: 'Write', input: {} } },
+      { type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: '<tool_call>blah</tool_call>' } },
+      { type: 'message_stop' },
+    ]
+    const events = await collect(translateStream(fromArray(source), { simulatedToolUse: true }))
+    const toolStarts = eventsOfType(events, 'content_block_start').filter(e => e.content_block.type === 'tool_use')
+    expect(toolStarts).toHaveLength(1)
+    const input = (toolStarts[0].content_block as any).input
+    expect(input.__malformed).toBe(true)
+    expect(input.raw).toBe('<tool_call>blah</tool_call>')
+  })
+})
+
+// ─── Issue 1: unique block indices in native mode ─────────────────
+
+describe('translateStream — native mode block index uniqueness', () => {
+  // Issue 1 (Important): block index collision fix — thinking at 0, text at 1,
+  // provider tool_use was also at raw index 1; must be re-addressed to 2.
+  it('thinking + text + tool call: all block indices unique, stops pair with starts', async () => {
+    const source: StreamEvent[] = [
+      { type: 'message_start', message: { id: '', model: 'qwen3.6', usage: { input_tokens: 0, output_tokens: 0 } } },
+      { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'plan' } },
+      { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Reading.' } },
+      { type: 'content_block_start', index: 1, content_block: { type: 'tool_use', id: 'call_1', name: 'Read', input: {} } },
+      { type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: '{"file_path":"a.ts"}' } },
+      { type: 'message_stop' },
+    ]
+    const events = await collect(translateStream(fromArray(source)))
+    const starts = eventsOfType(events, 'content_block_start')
+    const stops = eventsOfType(events, 'content_block_stop')
+    // All start indices unique
+    const startIndices = starts.map(e => e.index)
+    expect(new Set(startIndices).size).toBe(startIndices.length)
+    // One stop per start, stop index set matches start index set
+    expect(stops.length).toBe(starts.length)
+    expect(new Set(stops.map(e => e.index))).toEqual(new Set(startIndices))
+    // input_json_delta re-addressed to the tool block's output index
+    const toolStart = starts.find(e => e.content_block.type === 'tool_use')!
+    const jsonDeltas = eventsOfType(events, 'content_block_delta').filter(e => (e as any).delta.type === 'input_json_delta')
+    expect(jsonDeltas.every(e => e.index === toolStart.index)).toBe(true)
+    const msgDelta = eventsOfType(events, 'message_delta')[0]
+    expect(msgDelta.delta.stop_reason).toBe('tool_use')
+  })
+})
+
+// ─── Issue 2: simulated mode thinking_delta passthrough ───────────
+
+describe('translateStream — simulated mode thinking_delta passthrough', () => {
+  // Issue 2 (Important): provider thinking_delta must not be dropped in simulated mode.
+  // emitSimulatedBlocks emits thinking as content_block_start { type:'thinking', text }
+  // with no content_block_delta (the text is embedded in the start event), then stop.
+  it('simulated mode: provider thinking_delta becomes a thinking block, not dropped', async () => {
+    const source: StreamEvent[] = [
+      { type: 'message_start', message: { id: '', model: 'qwen3.6', usage: { input_tokens: 0, output_tokens: 0 } } },
+      { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'let me think' } },
+      { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Answer.' } },
+      { type: 'message_stop' },
+    ]
+    const events = await collect(translateStream(fromArray(source), { simulatedToolUse: true }))
+    const thinkStarts = eventsOfType(events, 'content_block_start').filter(e => e.content_block.type === 'thinking')
+    expect(thinkStarts).toHaveLength(1)
+    const textStarts = eventsOfType(events, 'content_block_start').filter(e => e.content_block.type === 'text')
+    expect(textStarts).toHaveLength(1)
+  })
 })

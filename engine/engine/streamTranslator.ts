@@ -13,7 +13,7 @@
 import { randomUUID } from 'crypto'
 import type { StreamEvent } from '../types.js'
 import { extractSimulatedToolCalls, extractThinkingBlocks } from '../ollama/simulated.js'
-import { repairToolCall, MALFORMED_KEY } from './toolCallRepair.js'
+import { repairToolCall, parseNativeToolCalls, MALFORMED_KEY } from './toolCallRepair.js'
 
 // ─── Public API ─────────────────────────────────────────────────
 
@@ -59,13 +59,22 @@ async function* translateNative(
   source: AsyncIterable<StreamEvent>,
   options?: TranslateStreamOptions,
 ): AsyncGenerator<StreamEvent, void> {
-  // Kind of the currently open SYNTHESIZED block ('text' | 'thinking'),
-  // or 'provider' when a provider-emitted block (tool_use) is open.
+  // Kind of the currently open block:
+  //   'text'     — synthesized text block
+  //   'thinking' — synthesized thinking block
+  //   'provider' — provider-emitted block (tool_use or other); also used for
+  //                provider-emitted text/thinking starts that were already open
   let openKind: 'text' | 'thinking' | 'provider' | null = null
   let activeBlockIndex = -1
   let nextSynthIndex = 0
   let hasToolBlocks = false
   let totalText = ''
+
+  // Issue 1: map provider raw index → output index for provider-emitted blocks.
+  // Needed because provider tool_use starts arrive at raw indices that may
+  // collide with synthesized indices (e.g. synth thinking=0, synth text=1,
+  // provider tool at raw index 1 would collide without re-addressing).
+  const providerIndexMap = new Map<number, number>()
 
   for await (const event of source) {
     switch (event.type) {
@@ -102,22 +111,33 @@ async function* translateNative(
           totalText += event.delta.text
         }
 
-        // Re-address synthesized-kind deltas to the open block; pass
-        // provider-addressed deltas (input_json_delta) through unchanged.
+        // Re-address synthesized-kind deltas to the open block.
+        // For provider-addressed deltas (input_json_delta), look up the
+        // re-addressed output index via providerIndexMap; fall back to raw
+        // index if not mapped (e.g. provider opened a text/thinking start).
         if (kind) {
           yield { ...event, index: activeBlockIndex }
         } else {
-          activeBlockIndex = event.index
-          yield event
+          // Issue 1 fix: use mapped output index for provider-addressed deltas
+          const mappedIndex = providerIndexMap.get(event.index) ?? event.index
+          activeBlockIndex = mappedIndex
+          yield { ...event, index: mappedIndex }
         }
         break
       }
 
       case 'content_block_start': {
-        // Provider-emitted block. Close any open block first.
+        // Provider-emitted block. Close any open synthesized block first.
         if (activeBlockIndex >= 0) {
           yield { type: 'content_block_stop', index: activeBlockIndex }
         }
+
+        // Issue 1 fix: re-address the provider block to the next synth index
+        // so all output indices are unique and monotonically increasing.
+        const outIndex = nextSynthIndex++
+        providerIndexMap.set(event.index, outIndex)
+        activeBlockIndex = outIndex
+
         if (event.content_block.type === 'tool_use') {
           hasToolBlocks = true
           openKind = 'provider'
@@ -130,9 +150,8 @@ async function* translateNative(
         } else {
           openKind = 'provider'
         }
-        activeBlockIndex = event.index
-        nextSynthIndex = Math.max(nextSynthIndex, event.index + 1)
-        yield event
+
+        yield { ...event, index: outIndex }
         break
       }
 
@@ -169,6 +188,8 @@ async function* translateSimulated(
   options?: TranslateStreamOptions,
 ): AsyncGenerator<StreamEvent, void> {
   let bufferedText = ''
+  // Issue 2 fix: buffer provider-parsed thinking_delta so it isn't dropped.
+  let bufferedThinking = ''
   // Native tool blocks parsed server-side (--jinja) can arrive even in
   // simulated mode; dropping them loses the model's action. Collect and
   // append them after the extracted blocks.
@@ -195,6 +216,9 @@ async function* translateSimulated(
       case 'content_block_delta': {
         if (event.delta.type === 'text_delta') {
           bufferedText += event.delta.text
+        } else if (event.delta.type === 'thinking_delta') {
+          // Issue 2 fix: capture provider-parsed thinking instead of dropping it
+          bufferedThinking += event.delta.thinking
         } else if (event.delta.type === 'input_json_delta' && nativeToolBlocks.length > 0) {
           nativeToolBlocks[nativeToolBlocks.length - 1].partialJson += event.delta.partial_json
         }
@@ -202,7 +226,7 @@ async function* translateSimulated(
       }
 
       case 'message_stop': {
-        yield* emitSimulatedBlocks(bufferedText, nativeToolBlocks)
+        yield* emitSimulatedBlocks(bufferedText, nativeToolBlocks, bufferedThinking)
         break
       }
 
@@ -219,12 +243,23 @@ async function* translateSimulated(
 
 /**
  * Process buffered text from simulated mode and emit the full block lifecycle.
+ *
+ * Block emission order:
+ *   0. Provider-parsed thinking block (bufferedThinking) — emitted FIRST,
+ *      as it arrived on the wire before content
+ *   1. Text block (cleanText after removing <think> tags and tool XML)
+ *   2. Extracted thinking blocks (from <think> tags in bufferedText)
+ *   3. Extracted tool_use blocks (from <tool_call> XML in bufferedText)
+ *   3b. Native tool blocks captured from the provider (server-side parsed)
+ *   4. message_delta
+ *   5. message_stop
  */
 function* emitSimulatedBlocks(
   bufferedText: string,
   nativeToolBlocks: Array<{ id: string; name: string; partialJson: string }> = [],
+  bufferedThinking = '',
 ): Generator<StreamEvent, void> {
-  if (bufferedText.length === 0 && nativeToolBlocks.length === 0) {
+  if (bufferedText.length === 0 && nativeToolBlocks.length === 0 && bufferedThinking.length === 0) {
     // Empty response — just emit message_delta + message_stop
     yield {
       type: 'message_delta',
@@ -244,7 +279,18 @@ function* emitSimulatedBlocks(
   // Extract simulated tool calls from text (excluding thinking blocks)
   const { toolCalls, remainingText: cleanText } = extractSimulatedToolCalls(textAfterThinking)
 
-  // 1. Emit text block (index 0) — if there is clean text
+  // 0. Emit provider-parsed thinking FIRST (arrived before content on the wire)
+  if (bufferedThinking.length > 0) {
+    yield {
+      type: 'content_block_start',
+      index: blockIndex,
+      content_block: { type: 'thinking', text: bufferedThinking },
+    }
+    yield { type: 'content_block_stop', index: blockIndex }
+    blockIndex++
+  }
+
+  // 1. Emit text block — if there is clean text
   if (cleanText.length > 0) {
     yield {
       type: 'content_block_start',
@@ -260,7 +306,7 @@ function* emitSimulatedBlocks(
     blockIndex++
   }
 
-  // 2. Emit thinking blocks
+  // 2. Emit thinking blocks extracted from <think> tags
   for (const thinkBlock of thinkingBlocks) {
     yield {
       type: 'content_block_start',
@@ -288,20 +334,19 @@ function* emitSimulatedBlocks(
     blockIndex++
   }
 
-  // 3b. Emit native tool blocks captured from the provider (server-side parsed)
+  // 3b. Emit native tool blocks captured from the provider (server-side parsed).
+  // Minor #4: use parseNativeToolCalls to keep malformed-marker shape in one place.
   for (const nb of nativeToolBlocks) {
     hasToolCalls = true
-    const result = repairToolCall(nb.partialJson)
+    const [block] = parseNativeToolCalls([{ id: nb.id, type: 'function', function: { name: nb.name, arguments: nb.partialJson } }])
     yield {
       type: 'content_block_start',
       index: blockIndex,
       content_block: {
         type: 'tool_use',
-        id: nb.id || `call_${randomUUID()}`,
-        name: nb.name,
-        input: result.ok
-          ? result.input
-          : { [MALFORMED_KEY]: true, raw: result.raw, error: result.error },
+        id: block.id,
+        name: block.name,
+        input: block.input,
       },
     }
     yield { type: 'content_block_stop', index: blockIndex }
