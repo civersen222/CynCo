@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeAll, afterAll } from 'bun:test'
+import { describe, expect, it, beforeAll, afterAll, beforeEach, afterEach } from 'bun:test'
 import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -1061,9 +1061,26 @@ describe('localCallModel', () => {
   // ─── P1.8: llama-cpp Native Tool Default ─────────────────────────
 
   describe('P1.8 llama-cpp native tool default', () => {
-    it('llama-cpp + native-capable model defaults to NATIVE tool use (P1.8)', async () => {
+    // Snapshot/restore env so these tests neither depend on nor leak
+    // LOCALCODE_NATIVE_TOOLS / LOCALCODE_SIMULATED_TOOLS state.
+    let savedNativeTools: string | undefined
+    let savedSimulatedTools: string | undefined
+
+    beforeEach(() => {
+      savedNativeTools = process.env.LOCALCODE_NATIVE_TOOLS
+      savedSimulatedTools = process.env.LOCALCODE_SIMULATED_TOOLS
       delete process.env.LOCALCODE_NATIVE_TOOLS
       delete process.env.LOCALCODE_SIMULATED_TOOLS
+    })
+
+    afterEach(() => {
+      if (savedNativeTools === undefined) delete process.env.LOCALCODE_NATIVE_TOOLS
+      else process.env.LOCALCODE_NATIVE_TOOLS = savedNativeTools
+      if (savedSimulatedTools === undefined) delete process.env.LOCALCODE_SIMULATED_TOOLS
+      else process.env.LOCALCODE_SIMULATED_TOOLS = savedSimulatedTools
+    })
+
+    it('llama-cpp + native-capable model defaults to NATIVE tool use (P1.8)', async () => {
       let capturedRequest: any = null
 
       const fakeProvider: any = {
@@ -1098,8 +1115,8 @@ describe('localCallModel', () => {
     })
 
     it('LOCALCODE_SIMULATED_TOOLS=true forces simulated on llama-cpp (kill switch) (P1.8)', async () => {
-      process.env.LOCALCODE_SIMULATED_TOOLS = 'true'
-      try {
+      process.env.LOCALCODE_SIMULATED_TOOLS = 'true' // restored by afterEach
+      {
         let capturedRequest: any = null
 
         const fakeProvider: any = {
@@ -1131,8 +1148,6 @@ describe('localCallModel', () => {
         expect(capturedRequest.tools).toBeUndefined()
         // simulated prompt injected
         expect(capturedRequest.system).toContain('<tool_call>')
-      } finally {
-        delete process.env.LOCALCODE_SIMULATED_TOOLS
       }
     })
   })

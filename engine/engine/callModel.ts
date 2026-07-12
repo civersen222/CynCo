@@ -514,7 +514,7 @@ export async function* localCallModel({
               if (result.ok) {
                 currentBlock.input = result.input
                 if (result.repaired) {
-                  console.log(`[toolcall] Repaired malformed JSON args for ${currentBlock.name}`)
+                  console.log(`[callModel] Repaired malformed JSON args for ${currentBlock.name}`)
                   yield {
                     type: 'stream_event' as const,
                     event: {
@@ -526,7 +526,7 @@ export async function* localCallModel({
                   }
                 }
               } else {
-                console.log(`[toolcall] Unrepairable args for ${currentBlock.name}: ${result.error}`)
+                console.log(`[callModel] Unrepairable args for ${currentBlock.name}: ${result.error}`)
                 currentBlock.input = { [MALFORMED_KEY]: true, raw: result.raw, error: result.error }
               }
               delete (currentBlock as any)._partialJson
