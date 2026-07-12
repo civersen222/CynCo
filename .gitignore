@@ -64,7 +64,6 @@ src/thoughts/
 src.zip
 docker-compose.yml
 bunfig.toml
-DEAD_CODE_AUDIT.md
 engine/cybernetics-core/.claude/
 src/
 tests/
