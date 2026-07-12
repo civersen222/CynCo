@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test'
 import { ContextCompressor } from '../../context/compressor.js'
 import type { CompressorConfig } from '../../context/compressor.js'
+import { estimateTokensAsync, type TokenCounter } from '../../engine/contextBudget.js'
 
 function makeMessages(count: number) {
   return Array.from({ length: count }, (_, i) => ({
@@ -51,5 +52,40 @@ describe('ContextCompressor', () => {
     expect(prompt).toContain('User:')
     expect(prompt).toContain('Assistant:')
     expect(prompt).toContain('Provide the structured summary:')
+  })
+})
+
+// ─── Accurate token count flows into shouldCompress ───────────────
+
+describe('ContextCompressor with accurate token counter', () => {
+  // Word-count stand-in: each space-delimited word = 1 token.
+  const wordCounter: TokenCounter = async (text: string) => text.split(' ').length
+
+  it('does not compress when accurate count is below threshold', async () => {
+    const config: CompressorConfig = { threshold: 0.8, targetRatio: 0.4, keepRecent: 2 }
+    const compressor = new ContextCompressor(config)
+    // 10 messages, each 5-word text → concatenated per message = 5 tokens each → 50 total
+    const messages = Array.from({ length: 10 }, (_, i) => ({
+      role: (i % 2 === 0 ? 'user' : 'assistant') as 'user' | 'assistant',
+      content: [{ type: 'text', text: `word1 word2 word3 word4 word5` }],
+    }))
+    const contextLength = 100 // 50/100 = 0.5 < 0.8 threshold
+    const accurateTokens = await estimateTokensAsync(messages, wordCounter)
+    expect(accurateTokens).toBe(50)
+    expect(compressor.shouldCompress(messages, accurateTokens, contextLength)).toBe(false)
+  })
+
+  it('triggers compression when accurate count exceeds threshold', async () => {
+    const config: CompressorConfig = { threshold: 0.8, targetRatio: 0.4, keepRecent: 2 }
+    const compressor = new ContextCompressor(config)
+    // 10 messages, each 9-word text → 9 tokens each → 90 total
+    const messages = Array.from({ length: 10 }, (_, i) => ({
+      role: (i % 2 === 0 ? 'user' : 'assistant') as 'user' | 'assistant',
+      content: [{ type: 'text', text: `w1 w2 w3 w4 w5 w6 w7 w8 w9` }],
+    }))
+    const contextLength = 100 // 90/100 = 0.9 >= 0.8 threshold, messages.length=10 > keepRecent*2=4
+    const accurateTokens = await estimateTokensAsync(messages, wordCounter)
+    expect(accurateTokens).toBe(90)
+    expect(compressor.shouldCompress(messages, accurateTokens, contextLength)).toBe(true)
   })
 })

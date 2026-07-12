@@ -2,9 +2,12 @@ import { describe, expect, it } from 'bun:test'
 import {
   estimateTokens,
   checkBudget,
+  estimateTokensAsync,
+  checkBudgetAsync,
   DEFAULT_BUDGET,
   type BudgetConfig,
   type BudgetCheck,
+  type TokenCounter,
 } from '../../engine/contextBudget.js'
 
 // ─── estimateTokens ────────────────────────────────────────────
@@ -180,5 +183,124 @@ describe('DEFAULT_BUDGET', () => {
 
   it('has hardLimit of 0.8', () => {
     expect(DEFAULT_BUDGET.hardLimit).toBe(0.8)
+  })
+})
+
+// ─── estimateTokensAsync ───────────────────────────────────────
+
+describe('estimateTokensAsync', () => {
+  // Word-count stand-in: each space-delimited word = 1 token.
+  const wordCounter: TokenCounter = async (text: string) => text.split(' ').length
+
+  it('returns sync estimateTokens result when countTokens is undefined', async () => {
+    const messages = [
+      { content: [{ type: 'text', text: 'Hello world' }] },
+    ]
+    const async_ = await estimateTokensAsync(messages, undefined)
+    expect(async_).toBe(estimateTokens(messages))
+  })
+
+  it('uses the real counter for text blocks', async () => {
+    // "one two three" → 3 words → 3 tokens
+    const messages = [
+      { content: [{ type: 'text', text: 'one two three' }] },
+    ]
+    const count = await estimateTokensAsync(messages, wordCounter)
+    expect(count).toBe(3)
+  })
+
+  it('uses the real counter for string content blocks', async () => {
+    // "hello world" → 2 words → 2 tokens
+    const messages = [
+      { content: ['hello world'] },
+    ]
+    const count = await estimateTokensAsync(messages, wordCounter)
+    expect(count).toBe(2)
+  })
+
+  it('uses JSON.stringify for tool input blocks', async () => {
+    // input: {a:1} => JSON '{"a":1}' (7 chars, 1 word) → wordCounter returns 1
+    const messages = [
+      { content: [{ type: 'tool_use', input: { a: 1 } }] },
+    ]
+    const count = await estimateTokensAsync(messages, wordCounter)
+    expect(count).toBe(1)
+  })
+
+  it('concatenates multi-block messages before counting (single counter call per message)', async () => {
+    // Message: ["foo bar", "baz"] → concatenated = "foo barbaz" → 2 words
+    const messages = [
+      { content: [{ type: 'text', text: 'foo bar' }, { type: 'text', text: 'baz' }] },
+    ]
+    const count = await estimateTokensAsync(messages, wordCounter)
+    // "foo bar" + "baz" → joined = "foo barbaz" → 2 words
+    expect(count).toBe(2)
+  })
+
+  it('sums across multiple messages', async () => {
+    // Msg1: "one two" → 2 words; Msg2: "three four five" → 3 words; total = 5
+    const messages = [
+      { content: [{ type: 'text', text: 'one two' }] },
+      { content: [{ type: 'text', text: 'three four five' }] },
+    ]
+    const count = await estimateTokensAsync(messages, wordCounter)
+    expect(count).toBe(5)
+  })
+
+  it('returns 0 for empty messages array', async () => {
+    const count = await estimateTokensAsync([], wordCounter)
+    expect(count).toBe(0)
+  })
+})
+
+// ─── checkBudgetAsync ──────────────────────────────────────────
+
+describe('checkBudgetAsync', () => {
+  // Word-count stand-in: each space-delimited word = 1 token.
+  const wordCounter: TokenCounter = async (text: string) => text.split(' ').length
+
+  it('returns "ok" when under warning threshold', async () => {
+    // 1 word, contextLength=100, warningThreshold=0.4 → 0.01 utilization
+    const messages = [{ content: [{ type: 'text', text: 'hello' }] }]
+    const result = await checkBudgetAsync(messages, { contextLength: 100 }, wordCounter)
+    expect(result.status).toBe('ok')
+    expect(result.shouldCompact).toBe(false)
+  })
+
+  it('returns "warning" when over warning threshold', async () => {
+    // 50 words, contextLength=100, warningThreshold=0.4 → 0.5 utilization → warning
+    const text = Array.from({ length: 50 }, (_, i) => `w${i}`).join(' ')
+    const messages = [{ content: [{ type: 'text', text: text }] }]
+    const result = await checkBudgetAsync(messages, { contextLength: 100 }, wordCounter)
+    expect(result.status).toBe('warning')
+    expect(result.shouldCompact).toBe(true)
+  })
+
+  it('returns "exceeded" when over hard limit', async () => {
+    // 85 words, contextLength=100, hardLimit=0.8 → 0.85 utilization → exceeded
+    const text = Array.from({ length: 85 }, (_, i) => `w${i}`).join(' ')
+    const messages = [{ content: [{ type: 'text', text: text }] }]
+    const result = await checkBudgetAsync(messages, { contextLength: 100 }, wordCounter)
+    expect(result.status).toBe('exceeded')
+    expect(result.shouldCompact).toBe(true)
+  })
+
+  it('with undefined counter matches sync checkBudget result', async () => {
+    const messages = [{ content: [{ type: 'text', text: 'x'.repeat(400) }] }]
+    const sync = checkBudget(messages, { contextLength: 1000 })
+    const async_ = await checkBudgetAsync(messages, { contextLength: 1000 }, undefined)
+    expect(async_.estimatedTokens).toBe(sync.estimatedTokens)
+    expect(async_.status).toBe(sync.status)
+    expect(async_.utilization).toBeCloseTo(sync.utilization, 10)
+  })
+
+  it('returns correct estimatedTokens and utilization', async () => {
+    // 10 words, contextLength=100 → utilization = 0.1
+    const text = Array.from({ length: 10 }, (_, i) => `word${i}`).join(' ')
+    const messages = [{ content: [{ type: 'text', text: text }] }]
+    const result = await checkBudgetAsync(messages, { contextLength: 100 }, wordCounter)
+    expect(result.estimatedTokens).toBe(10)
+    expect(result.utilization).toBeCloseTo(0.1, 5)
+    expect(result.contextLength).toBe(100)
   })
 })

@@ -7,7 +7,7 @@
  */
 
 import type { LocalCodeConfig } from '../config.js'
-import { checkBudget, type BudgetCheck } from '../engine/contextBudget.js'
+import { checkBudgetAsync, type BudgetCheck, type TokenCounter } from '../engine/contextBudget.js'
 
 export type ContextAction = 'proceed' | 'externalize' | 'compact'
 
@@ -19,15 +19,16 @@ export type ContextCheckResult = {
 export async function checkContextBeforeTurn(
   messages: { content?: unknown[] }[],
   config: LocalCodeConfig,
+  countTokens?: TokenCounter,
 ): Promise<ContextCheckResult> {
   const thresholds = config.contextManagement ?? { warningThreshold: 0.4, hardLimit: 0.8 }
   const contextLength = config.contextLength ?? 32768
 
-  const budget = checkBudget(messages, {
+  const budget = await checkBudgetAsync(messages, {
     contextLength,
     warningThreshold: thresholds.warningThreshold,
     hardLimit: thresholds.hardLimit,
-  })
+  }, countTokens)
 
   let action: ContextAction = 'proceed'
 

@@ -195,7 +195,7 @@ export async function* localCallModel({
 
   // 3b. Pre-turn context check
   const { checkContextBeforeTurn } = await import('../hooks/contextCheck.js')
-  const contextCheck = await checkContextBeforeTurn(messages as any, config)
+  const contextCheck = await checkContextBeforeTurn(messages as any, config, provider.countTokens?.bind(provider))
 
   if (contextCheck.budget.status === 'exceeded') {
     yield {
