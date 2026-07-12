@@ -1,0 +1,510 @@
+# CynCo: State of the System and the Cybernetic End State
+
+**Date:** 2026-07-12
+**Scope:** Complete survey of the CynCo codebase (engine, TUI, governance, memory, tools, vibe loop, benchmarks, operations, cybernetics library), a diagnosis grounded in cybernetic first principles, an ideal end state, and the detailed plan to get there.
+**Method:** Seven parallel deep-survey passes over every subsystem, cross-referenced against the mission ledger, failure log (F1–F7), Layer B benchmark results, and the cybernetics library at `C:\Users\civer\cybernetics`; followed by six parallel prior-art research passes (one per problem cluster) whose adopt/adapt/skip verdicts are in Part VI and whose amendments are folded into Part V (marked *research-amended*).
+
+---
+
+## Table of Contents
+
+- **Part 0 — Why This Document Exists**
+- **Part I — Cybernetic First Principles** (the yardstick everything is measured against)
+- **Part II — Current State** (subsystem by subsystem, with evidence)
+- **Part III — Diagnosis** (what the principles say is wrong, and why)
+- **Part IV — The Ideal End State**
+- **Part V — The Plan** (phased, falsifiable, wire-checked)
+- **Part VI — Prior Art and Adopted Solutions** (six research passes; adopt/adapt/skip per problem, with sources)
+- **Appendix A — Gap Register** (every unwired, dead, or fragile piece found)
+- **Appendix B — Glossary of Cybernetic Terms as Used Here**
+
+---
+
+# Part 0 — Why This Document Exists
+
+CynCo exists to prove a thesis: **one consumer GPU, running local models, can deliver the coding assistance of a frontier lab** — for climate reasons (no datacenter round-trips for every keystroke of the world's programming) and for equity reasons (AI coding for the people, on their own hardware, in the tradition of Project Cybersyn). The differentiator is not raw model quality — a 27B local model will not out-reason a frontier model head-to-head. The differentiator is **regulation**: a cybernetic governance layer that lets a smaller, cheaper brain achieve viable long-horizon behavior by sensing its own state, correcting its own errors, and eventually training itself from its own governance data (the Level 4 autopoietic goal).
+
+That thesis is falsifiable, and this project has — to its enormous credit — chosen to falsify it honestly. The current headline number is uncomfortable: **Layer B measures governance at −8.3% score-lift [−28.0, +14.0], inconclusive, leaning negative** — with a single bright spot (+33pp on the hardest task). The mission ledger has 2 of the 30–50 labeled missions needed to validate signals. Several governance organs are anatomically present but not innervated.
+
+This document is the map for the next phase: what exists, what is actually wired, what cybernetics says the machine *should* be, and the ordered, falsifiable steps from here to there. It is written to be executed. No stone was deliberately left unturned; where a stone could not be lifted, that is stated.
+
+---
+
+# Part I — Cybernetic First Principles
+
+Everything in Parts III–V is derived from six principles. They are stated here once, precisely, because the codebase's central defect (Part III) is a violation of the second one.
+
+## 1.1 Ashby's Law of Requisite Variety
+
+*Only variety can absorb variety.* A regulator can only control a system if it can match the variety (the number of distinguishable states) of the disturbances reaching it. For CynCo: the disturbances are the states of a coding task (broken tests, missing imports, wrong anchors, stale context, model hallucination). The regulator is the governance layer plus the context manager. Requisite variety is achieved two ways: **attenuate** environmental variety before it reaches the regulator (filter, summarize, index, scope), and **amplify** regulatory variety (tools, sub-agents, retries, temperature control). The library implements this literally: `cybernetics/src/variety/` — attenuators, amplifiers, transducers, and Beer's balance equation `V(E)·Att = V(O)·Amp`.
+
+**Design consequence:** context management, tool scoping, and sub-agent dispatch are not conveniences. They ARE the variety engineering of the system, and they should be built and measured as such.
+
+## 1.2 The Conant–Ashby Theorem (the Good Regulator)
+
+*Every good regulator of a system must be a model of that system.* This is the deepest principle in this document, and the one CynCo currently violates. A regulator that does not contain a model of the thing it regulates can only react to symptoms, never to error — because **error is defined as deviation from a modeled goal state**. A thermostat works because it contains a setpoint. CynCo's governance signals (varietyRatio, s3s4Balance, consecutiveUnstable) contain **no model of the task being performed**. They measure activity, not progress. This is exactly why they fire identically on successful and failed missions (failure log F7; ledger missions 6–7). The library even quantifies this: `foundations/regulator.rs` measures regulator fidelity as `1/(1+D_KL)` between the internal model and system behavior. CynCo's governance currently has near-zero fidelity by that measure, because it has no task model to diverge *from*.
+
+**Design consequence:** the single highest-leverage change available to this project is giving the regulator a model of the task — a setpoint. That setpoint already exists in embryo: the Contract / Definition-of-Done system (`engine/tools/contract.ts`). Part V builds the whole plan around promoting it.
+
+## 1.3 Beer's Viable System Model
+
+A viable system has five necessary subsystems: **S1** operations, **S2** anti-oscillation coordination, **S3** inside-and-now resource management (with **S3\*** sporadic audit), **S4** outside-and-then intelligence, **S5** identity and policy — plus the **algedonic channel**, a pain/pleasure bypass that jumps the hierarchy when something is existentially wrong. Crucially, VSM is *recursive*: every S1 is itself a viable system. And Beer's axioms are *balance* conditions (S3–S4 homeostasis, horizontal/vertical variety equality), not org charts. Naming a module `s4Reflector.ts` does not make it an S4; being one requires continuous outward/forward scanning coupled into the S3–S4 homeostat. Part II grades each CynCo "S-organ" as real, partial, or nominal against this standard.
+
+## 1.4 POSIWID
+
+*The Purpose Of a System Is What It Does* — not what it is documented to do. Applied ruthlessly to CynCo itself: a governance layer whose enforcement is capped, whose algedonic channel receives no signals, and whose predictions are never evaluated **is, today, a telemetry system, not a governor**. That is not an insult — a telemetry system is precisely the correct thing to be during the falsification program's data-gathering stage. But the document must name it, because the end state requires it to change, and the ledger is the mechanism of change.
+
+## 1.5 Pask's Conversation Theory
+
+Understanding between two systems is only established through **teachback**: B explains back to A, and agreement is verified, not assumed. This is the theoretical foundation of the vibe loop and the project wizard — CynCo's product differentiator for non-engineer users. A vibe coder cannot review a diff; the *only* channel through which the system can verify shared understanding is conversation. The library implements teachback protocols, four-level agreement tracking, and entailment meshes (`cybernetics/src/conversation/`). The current vibe loop asks questions but never teaches back (Part II.6).
+
+## 1.6 Second-Order Cybernetics and Autopoiesis (von Foerster, Maturana/Varela)
+
+The observer is part of the system. A system is autopoietic when it produces the components that produce it. CynCo's Level 4 goal — a system that trains its own S5 from its own decision journal, evolves its own configuration population, and preserves its organizational identity (invariants like "tool approval required") through every self-modification — is a literal autopoiesis program. The library provides the machinery: production networks, identity invariants, proposal state machines, eigenform self-assessment (`cybernetics/src/autopoiesis/`, `observer/eigenform.rs`). Almost none of it is behaviorally live yet. It is the summit, and the plan sequences it last, after the sensing and validation layers below it are real — because an autopoietic system that reproduces itself from **non-discriminating signals** would faithfully reproduce its own blindness.
+
+---
+
+# Part II — Current State
+
+This part is the evidence base. Each section states what a subsystem actually does (verified by reading code, not names), how it is wired, its test coverage, and its defects. Severity tags: 🟢 real and working, 🟡 partial/fragile, 🔴 present but unwired or dead.
+
+## 2.1 The Engine Core: Model Pipeline 🟢
+
+**Architecture:** `engine/main.ts` (entry, ~600+ lines) boots a provider via `engine/bootstrapProvider.ts`, starts the WebSocket bridge on port 9160 (`engine/bridge/server.ts`, loopback-only, port fallback 9160→9162), instantiates the `ConversationLoop` (`engine/bridge/conversationLoop.ts`, **3,620 lines** — the system's true center of gravity), optionally a governance dashboard on 9161, the S5 orchestrator (rule-based or LoRA-model-based via `LOCALCODE_S5_MODEL`), decision journal, trajectory recorder, and the VibeController.
+
+**Provider layer:** clean `Provider` interface (`engine/provider.ts`) with two implementations:
+
+- **llama.cpp** (`engine/llama/provider.ts`, `processManager.ts`) — the primary path. Spawns llama-server, speaks OpenAI-compatible SSE, supports MTP speculative decoding (`--spec-type`, measured 115 tok/s eval with 0.83 draft acceptance on Qwen3.6-27B NVFP4), chat-template file override (the F1 fix), context checkpoints for Qwen3.6's hybrid recurrent state, LoRA adapter loading in two modes (server restart on single machine; URL switch in dual-machine mode for the 4070 Ti Super secondary). **Bootstrap failure is deliberately fatal** — no silent fallback to Ollama (`bootstrapProvider.ts:132–140`), a direct lesson from a 2026 incident.
+- **Ollama** (`engine/ollama/`) — fallback path with capability probing and a 34-entry known-model table (`ollama/probe.ts:27–65`) mapping model family → tier (basic/standard/advanced), tool mode, thinking mode, context length.
+
+**Streaming:** `engine/engine/callModel.ts` (600+ lines) is the per-turn pipeline: capability resolution → context budget check → message conversion → tool filtering → session extras (handoff + recall) → optional GBNF grammar → provider stream → `streamTranslator.ts` (native pass-through-with-gap-fill mode, or simulated mode that buffers text and regex-extracts `<tool_call>` XML and `<think>` blocks) → assembled AssistantMessage.
+
+**Critical design fact:** even models with native tool-call support are **forced into simulated XML tool mode by default** (`callModel.ts:186–194`, override `LOCALCODE_NATIVE_TOOLS=true`), because native paths were unreliable (Go struct serialization, stripped tool history, wrong template renderers). All tool-call parsing therefore rides on regexes in `ollama/simulated.ts:83–148` with Hermes-style and fenced-JSON fallbacks — and **unparseable calls are silently discarded**. The recent stream-tool-call probe shows 24/24 PASS with zero drops on NVFP4 (`benchmark/true/results/streamtoolcall-1783788296355.summary.txt`), so the regex path is currently holding, but it is a load-bearing regex.
+
+**Known fragilities:**
+- Token counting is `Math.ceil(text.length / 4)` everywhere (`streamTranslator.ts:50–52`). Every context decision downstream — compression triggers, budget warnings, S5's C3 rule — is built on a ±25% estimate.
+- Session extras memoized by first-user-message text (`callModel.ts:279`) — collision risk between conversations opening with the same words.
+- GBNF grammar constrained decoding exists (`engine/decoding/grammarEmitter.ts`) but is opt-in and off (`LOCALCODE_GRAMMAR_ENABLED`), because a valid grammar combined with reasoning budget crashes llama-server streaming (documented finding; do not re-enable without the stream translator fix).
+- A TODO in the loop: *"wire into approval response system for actual blocking"* — an approval path exists that doesn't actually block.
+
+**Tests:** ~200 unit tests covering callModel, streamTranslator, messageConvert, protocol, simulated extraction, llama provider and process manager. The 3,620-line ConversationLoop itself has only isolated tests — **no end-to-end turn-cycle test with governance active**.
+
+**Protocol:** ~40 engine→TUI event types and ~20 TUI→engine commands (`bridge/protocol.ts`, 501 lines), covering streaming, tools, approvals, context, memory, workflow, governance, vibe, sub-agents, S2 decisions, config/profiles, and web research. It is rich, JSON-serialized — and entirely unversioned (see 2.7).
+
+## 2.2 The Tool System 🟢
+
+**24 tools** enumerated in a single registry (`engine/tools/registry.ts:32–39`), pure JSON Schema definitions, two approval tiers (`auto` / `approval`), three-vector trust profiles (per-tool override, deny list, bash glob auto-approve patterns), risk stratification (HIGH: Bash, SubAgent; MEDIUM: Write/Edit/Git/NotebookEdit), doom-loop detection (same tool + same input + same error ×3 → halt with suggestion, `executor.ts:71–79`), bash safety checks and shell-dialect validation, per-tool output truncation as S3 resource management (`conversationLoop.ts:68–92`).
+
+Sub-agent dispatch exists with six personas (scout, oracle, kraken, spark, architect, researcher — `tools/impl/spawnAgent.ts`), but **scouts are disabled under llama-cpp** because each scout invocation destroys the prompt-cache prefix (40–60s penalty per task if re-enabled). This is a genuine variety-amplification capability currently paid for in cache locality — an unresolved engineering trade, not a bug.
+
+The Contract system (`tools/contract.ts`: ContractCreate / AssertPass / AssertFail / Status) implements a Definition of Done as first-class objects, feeds the handoff writer, and — as Part III argues — is the embryo of the task model the whole regulator lacks. Today the model can create contracts, but nothing in governance reads them.
+
+**Tests:** 19 tool test files + approval gate + executor. Solid.
+
+## 2.3 Memory, Context, Session, Index 🟡
+
+This is the variety-attenuation organ of the system, and it is half-built.
+
+**What works:**
+- **Handoff continuity** (`engine/memory/handoff.ts`, `lifecycle.ts`, `ledger.ts`): YAML handoffs in `.cynco/handoffs/`, derived from contract snapshots (passed→what_was_done, failed→what_failed, pending→next_steps), injected into the next session's system prompt as `## Previous Session Context`. Ledger JSON (`.cynco/ledger.json`) with a 100-entry session history. Tested (6 tests) for the contract→handoff mapping.
+- **Compression** (`engine/context/compressor.ts`): at ≥75% estimated utilization, keep the last 8 messages, side-query the model for a structured summary (Goal / Progress / Files Modified / Files Read / Constraints / Next Steps), replace history with `[Context Summary]`, journal the compaction to JSONL. The `FileOperationTracker` embeds read/modified file lists into the summary so the model doesn't re-read the world. This is genuinely good design. But: the tracker is **never reset** between compressions (unbounded growth over long sessions), the fallback when the side-query fails is a lossy 100-chars-per-message concat, and the whole thing triggers off the chars/4 token estimate.
+- **JSONL session persistence** (`engine/session/jsonlStore.ts`): append-only, crash-safe-ish (silent catch on corrupt lines), replays messages and honors compaction boundaries. No garbage collection, no session-end marker, compaction file-ops serialized but never deserialized on recovery.
+- **Semantic index** (`engine/index/`): SHA-256-incremental indexer → regex/tree-sitter chunker (80-line cap) → nomic-embed-text via Ollama → Bun SQLite with optional sqlite-vec, optional hybrid RRF fusion with BM25 (`LOCALCODE_HYBRID_SEARCH`), optional PageRank repo map (`LOCALCODE_REPO_MAP=1`, undocumented). Exposed to the model as the `CodeIndex` tool, which the system prompt instructs the model to prefer over raw Read. Graceful — arguably *too* graceful — degradation: if Ollama is down it silently falls back to ripgrep and the user never learns the semantic layer is dead.
+
+**What is broken or dead:**
+- 🔴 **Recall is entirely non-functional.** `engine/memory/recall.ts` shells out to `scripts/recall.py` — **which does not exist in the repo** (a `scripts/recall.py` exists per the ops survey but the memory survey found the invocation path always returns `[]` and degrades silently). Either way: `formatRecalledMemories()` has never formatted a memory in production. The `SaveLearning` tool exists and is advertised in the system prompt, but its storage backend could not be located. **Cross-session learning — the raw material of the autopoietic goal — currently does not happen.**
+- 🔴 **Snapshots initialized, never used.** `engine/snapshot/snapshot.ts` implements content-addressed workspace snapshots in a side bare repo (`.cynco-snapshots/`) with track/diff/restore — a complete undo/audit substrate. `initSnapshot()` is called; `track()` is never called from the loop. Zero tests. This is the definition of an unwired feature (see standing feedback: wire-or-remove).
+- 🟡 Profiles (`engine/profiles/`) support inheritance via `extends`, but the resolver is untested and malformed YAML silently returns null.
+
+## 2.4 The VSM Governance Layer — organ by organ
+
+This is the heart of the thesis, so it gets the honest anatomical exam.
+
+| Organ | Verdict | Evidence |
+|---|---|---|
+| **S1** — operations | 🟢 Real | Parallel read batches / sequential writes (`conversationLoop.ts:94–110`), output truncation, doom-loop detection. Unceremonious and functional. |
+| **S2** — anti-oscillation | 🟡 Partial | `agents/s2Coordinator.ts` detects oscillation and routes sub-agent algedonic signals — but is **only invoked when sub-agents run**, and scouts are disabled under llama-cpp. The main conversation has no S2. |
+| **S3** — inside & now | 🟡 Real but blind | Variety balance, context limits, tool scoring, homeostat coupling are computed every turn and fed to S5 (`vsm/cyberneticsGovernance.ts`; loop lines 777–810). But the signals do not discriminate: `varietyRatio` climbs monotonically (5.5 → 8.5 by turn 10, "overload" forever after), `consecutiveUnstable` only ever rises, in **successful** missions (ledger, missions 6–7; F7). |
+| **S3\*** — audit | 🟡 Partial | Advisor router exists, runs in parallel, low observed impact. CUSUM drift detection (`vsm/performanceMetrics.ts`) is wired to trigger audit cycles. |
+| **S4** — outside & then | 🟡 Episodic | `vsm/s4Reflector.ts` scores progress/confidence/toolQuality/stuckness every N turns (adaptive 3–15) via side-query, with metric fallback. But task classification runs **once at construction** and is never re-evaluated, and reflection scores are not persisted to the ledger (only a boolean `_s4ReflectionRanThisTurn`). Beer's S4 scans continuously; this one glances occasionally and forgets what it saw. |
+| **S5** — policy | 🟢 Real, deliberately caged | A genuine 21-rule engine (`s5/ruleBasedS5.ts`: C1–C7 critical, W1–W10 warning, I1–I4 info) evaluated **every turn** with the full signal vector, producing decisions logged to audit, journal, and ledger. Enforcement is capped by the earned-authority gate (`isS5EnforcementEnabled()`, `LOCALCODE_S5_ENFORCE`) — implemented precisely as the F7 postmortem demanded. Rule-weight backfill (`evaluateLastDecision`) persists weights to disk but the weights have **no behavioral feedback** yet. |
+| **Algedonic channel** | 🔴 Unwired | The single most important finding of this survey. `vsm/algedonicIntegration.ts` implements the full library channel — pain/pleasure per tool result, latency penalties, 5-consecutive-pain kill switch, SLA tracking, severity routing. **`recordToolResult()` is never called from the conversation loop.** The pain never arrives; the kill switch can never fire. CynCo has a complete nervous system for suffering and no nerves connected to it. |
+| **Heterarchy** | 🔴 Unwired | `vsm/heterarchyIntegration.ts` builds the CommandRegistry (context-sensitive authority: S3=0.9 normal, S5=1.0 crisis) and the non-transitive McCulloch preference cycle. But context classification is never invoked, `lastCommander` is initialized to `'S3'` and **never updated**, and no S5 rule reads `heterarchyAuthority`. Pure scaffolding. |
+| **H1–H8 predictions** | 🔴 Structurally complete, operationally dead | `vsm/predictionTracker.ts` defines eight falsifiable hypotheses with null baselines and Wilson CIs (H1 stuck-escape … H8 session improvement). `checkTriggers()` is not called from the loop; `getStatistics()` is never invoked; no session has ever produced a completed prediction. The "all eight always red" dashboard symptom is exactly this: the tracker is a corpse being displayed as a patient. Redesign is correctly gated behind ledger step 2. |
+| **Autopoiesis** | 🔴 Skeletal | `vsm/autopoiesisIntegration.ts` loads a ConfigPopulation from `~/.cynco/population/` if present; no mission has ever evolved it. Identity invariants exist; the proposal state machine exists; nothing routes real parameter changes through it. |
+
+**The falsification program scorecard (the 5 steps):**
+1. **Outcome ledger** — ✅ SHIPPED. Schema v1, per-turn signal vectors + S5 decisions + control signals + tool stats, appended by the canonical mission driver (`scripts/cynco-mission-driver.mjs`, F5 fix), committed to git. **Count: 2 labeled missions of the 30–50 gate.**
+2. **Signal validation** (precision/recall per rule against ground truth) — ⛔ BLOCKED on step 1 volume. This is the bottleneck of the entire project.
+3. **Earned-authority cap** — ✅ SHIPPED (`LOCALCODE_S5_ENFORCE=false` for missions; loop logs "WOULD-ENFORCE (capped at recommend)").
+4. **Hygiene** — ❌ not started as a labeled effort.
+5. **Autopoiesis** — ❌ skeletal (above).
+
+## 2.5 The Cybernetics Library and Its Integration 🟡
+
+The library (`C:\Users\civer\cybernetics`: Rust core, TS port, PyO3 bindings) is **not metaphorware**. It contains real mathematics: Ashby homeostat as coupled ODEs with Euler integration and ultrastability perturbation search; Conant–Ashby regulator fidelity as `1/(1+D_KL)`; Shannon variety with attenuator/amplifier/transducer chains and Beer's balance equation; PID controllers; CUSUM drift detectors; Pask teachback and 4-level agreement tracking; entailment meshes; autopoietic production networks and identity invariants; von Foerster eigenforms; heterarchical command registries.
+
+CynCo vendors a **copy** of the TS port at `engine/cybernetics-core/` (not a dependency — drift risk with the upstream library). Roughly **60% of capability is imported and instantiated** (algedonic, homeostat, variety, PID/ultrastable feedback, teachback detection, CUSUM, autopoiesis scaffolding, observer measurement logs, heterarchy structures) — but as §2.4 shows, "instantiated" and "innervated" are different things. The genuinely closed loops today: the S3/S4/context homeostat (stepped every turn, randomizes weights when unstable), the variety engine (computed every turn, feeds S5), CUSUM → audit trigger, and the ultrastable essential-variable monitor in `vsm/feedbackControl.ts` (context utilization [0, 0.85], failure rate [0, 0.4], variety ratio [0.3, 3.0] → parameter perturbation). Unintegrated: constraints/POSIWID checks, autonomy/freedom coupling, eigenform self-reference, entailment-mesh execution ordering, heterarchic routing.
+
+## 2.6 The Vibe Loop and Guided Mode 🟢 (wired) / 🟡 (shallow)
+
+The product differentiator — and, happily, one of the best-wired subsystems. End-to-end verified: `main.ts:396–410` constructs the VibeController around the live loop; TUI protocol commands (`vibe.start/answer/action/escalation_response`) round-trip; integration tests exercise the full start → Q&A → build → verify → report chain (`__tests__/vibe/controllerIntegration.test.ts`).
+
+**Lifecycle:** UNDERSTAND (project scan → confidence baseline → LLM-generated questions against `.cynco-plan.md` locked D-XX decisions, max 30) → BUILD (auto-approve on, single mega-prompt delegation with plan + state + index context; three-level verification: TRUTH/EXISTS/WIRED — note that the wire-check discipline from the failure log has made it into the product itself) → REPORT (state file, plain-language analogy, next-step suggestion). Cross-session persistence via `.cynco-plan.md` + `.cynco-state.md`. The TUI side (ProjectWizard, 1,084 lines) runs a genuinely thoughtful research → brainstorm (≤12 mechanics-focused questions) → design synthesis + HTML mockup → phase plan pipeline.
+
+**Gaps:** the four modes (new/continue/fix/explain) differ only in the opening question; the ConfidenceScorer (4-dimension bottleneck scoring with per-difficulty thresholds) is computed and displayed but **does not gate** the build transition — question count does; verification is a single LLM self-assessment, not a teachback with the user; there is no Pask agreement tracking across the conversation despite the library shipping it. The "phases 1–3 wired but never verified end-to-end" memory note is now resolved on the wiring axis (tests exist) but the *mode-aware behavior* gap it flagged remains real.
+
+## 2.7 The Python TUI 🟢
+
+Mature Textual app (~2,460 core LOC + 2,201 test LOC, 82% coverage, the "284 tests"). Three-stage routing (WebSocket → Textual message → per-screen handlers), all screens reachable, no orphaned widgets in the active tree (the four dead widgets flagged in `DEAD_CODE_AUDIT.md` — file_preview, diff_view, file_tree, project_entry — need the wire-or-remove decision). Approval UX with risk color-coding and keyboard bindings; engine spawn with port-cleanup-then-retry, log-file redirection (pipes deadlock), Windows `CREATE_NO_WINDOW` + explicit kill dances for the zombie problem — mitigated, not solved (only the direct Bun process is killed, not descendants).
+
+**Structural debts:** the 150+-line if/elif event dispatcher in `app.py:93–163`; asymmetric approval handling between WorkspaceScreen and VibeLoopScreen; **no protocol versioning or schema validation** — unknown events silently return raw dicts, and `MemoryRecalledEvent` needs bespoke deep camelCase conversion. Known UX gaps confirmed in code: `/copy` wired only in workspace, no structured diff event in the protocol (git-diff awareness gap), plan/phase persistence saves phases but not context.
+
+## 2.8 Benchmarking and Operations 🟢
+
+The measurement culture is the project's crown jewel. **Layer B** (`benchmark/true/`) is a legitimate instrument: real CivKings repo at a pinned green ref, continuous pytest-fraction scoring (not binary), a calibration gate keeping only tasks in the 0.2–0.8 discrimination band, the **production** provider stack (llama-cpp + MTP, not a stub), 10,000-iteration paired bootstrap.
+
+**Current results (2026-06-18, N=5/condition):** governed 67.0% [55.3, 78.0] vs ungoverned 75.3% [61.0, 88.0]; lift −8.3% [−28.0, +14.0] → INCONCLUSIVE. Per task: +33pp on the hardest (city-yield-consumers), −5 to −40 on easier ones, with a serious confound — governed runs timed out 9/25 vs 5/25 (4/5 on gold-deficit), so quality is entangled with clock. Layer A's earlier 0.0% null was correctly diagnosed as instrument failure (tasks too short, binary scoring). Ancillary probes: polyglot 9/11 pass on Q6_K single-trial; grounding-gate A/B: +55pp on its target collision task, suite-wide +14pp with CI crossing zero, −25pp regression on stability-loop; streamed tool-calls 24/24.
+
+**Ops:** the liveness layer (daemon + ntfy over Tailscale + Windows Task Scheduler) is documented and was verified live on branch `liveness-layer` (merge pending). The canonical mission driver embodies F2/F5/F7 lessons (auto-approve, real protocol field names, zero-tool fast-fail). The failure log (`docs/cynco-failure-log.md`, F1–F7) is an operating asset, not a graveyard — every entry carries a mitigation and several carry harness improvements.
+
+**Hygiene debts:** root-level junk (`nul`, `New folder/`, `src.zip` 9.9MB, mangled `C:Usersciverlocalcodeengine__tests__s5/`, `benchmark-workspace-06/`), ~20 uncommitted result logs in `benchmark/true/results/`, a stale `DEAD_CODE_AUDIT.md` (2026-04-24) listing 11 dead TS files and 4 dead widgets awaiting evidence-based decisions, and embedded git repos in `engine/` and `tui/` that make root-level git the only safe git.
+
+---
+
+# Part III — Diagnosis: What Cybernetics Says Is Wrong
+
+Six findings, ordered by causal depth. Everything in the plan (Part V) traces back to one of these.
+
+## 3.1 The regulator has no model of the task (Conant–Ashby violation) — ROOT CAUSE
+
+Every governance signal CynCo computes is a function of **activity**: how many distinct tools were used (varietyRatio), how the S3/S4 homeostat units drift (consecutiveUnstable), how often tools error (toolSuccessRate). None is a function of **progress toward the goal**. The consequence is mathematically inevitable, not an implementation bug: a long, successful mission uses many tools over many turns, so its activity signature converges with a long, failing mission's. Missions 6 and 7 landed cleanly (0 tool errors, verified) while the dashboard read `s3s4Balance: critical, varietyRatio: 8.5 overload, consecutiveUnstable: 22`. F7 is the operational form of this: S5's crisis rules, fed activity signals, locked a healthy session read-only and killed an edit mission.
+
+By Conant–Ashby, no amount of signal *tuning* fixes this. The regulator must contain a model of the system it regulates — here, a model of the task: what "done" means, what the current error (distance to done) is, whether error is shrinking. **CynCo already owns the seed of that model — the Contract/DoD system — and governance never reads it.** The variety ratio should not be judged against a fixed band; it should be judged against *what the task's error trajectory warrants*. High variety while error shrinks is exploration; high variety while error is flat is thrashing. Today the system cannot tell the difference, because it never measures error.
+
+Corollary defects downstream of this root cause:
+- The variety metric itself is degenerate: `5·log₁₀(inputs)` and `log₂(tool count)` are **monotone in cumulative activity** — they can never decay within a session, so "overload" is simply a synonym for "turn > ~8". A variety measure must be windowed/decaying to mean anything (Ashby's variety is about *current* distinguishable states, not lifetime totals).
+- H1–H8 were designed as behavior-about-behavior hypotheses (does restriction cause escape? does reflection change behavior?) — reasonable, but they too lack outcome grounding, which is precisely why the program correctly gates their redesign behind ledger data.
+
+## 3.2 The afferent nerves are cut (unwired sensing loops)
+
+Cybernetically, a control loop has four arcs: sense → compare → act → effect. CynCo has built all four arcs for several loops and then **left the sensing arc disconnected**:
+
+- Algedonic: full channel + kill switch, `recordToolResult()` never called. The one mechanism Beer designed to bypass a slow/misled hierarchy in a crisis — arguably the mechanism that would have caught the F2 silent-auto-deny loop *from the inside* — is deaf.
+- H1–H8: `checkTriggers()`/`getStatistics()` never called.
+- Heterarchy: context never classified, commander never updated.
+- Snapshot: initialized, never `track()`ed — the effector for safe self-correction (revert recommendations from rule W-class!) has no data to revert to.
+- S4 reflection scores: computed, then dropped (not persisted to ledger) — the system reflects and then forgets its reflections.
+
+The pattern (also enshrined in the standing feedback memories: "features built but not wired") is the project's characteristic failure mode. The plan therefore makes **wire-or-remove a phase-zero discipline with evidence per item**, and every subsequent phase ends with a grep-verified wire check.
+
+## 3.3 POSIWID: the governance layer is currently telemetry
+
+What the governance layer *does* today: computes 21-rule decisions every turn, logs them, enforces none of them (missions), and displays non-discriminating dashboards. Its purpose, as evidenced by behavior, is **data collection for the falsification program** — which is the right purpose for this stage, and the earned-authority cap is the right cage. The diagnosis is not "governance is fake"; it is "governance is pre-empirical." The danger named by POSIWID is *narrative drift*: describing the system to investors/users as self-governing while it is self-describing. The ledger gate (30–50 labeled missions) is the honest boundary between those claims, and today the count is **2**. Mission throughput is therefore not an ops nicety — it is the critical path of the entire thesis.
+
+## 3.4 Variety engineering exists but is not doing the variety engineering
+
+The context/memory stack (compression, index, handoff, truncation) is where Ashby's law is actually enforced — and it runs on heuristics (75% threshold, keep-8, chars/4) rather than on the attenuator algebra the library provides. Meanwhile the *measured* variety machinery (VarietyEngine) observes but does not attenuate. The two halves of Ashby's law live in different modules that don't speak: the measurer doesn't act, and the actor doesn't measure. Additional attenuation losses: recall returns nothing (a whole attenuation channel — compressed past experience — is dark), the semantic index silently degrades to ripgrep, and the repo map (a superb one-shot attenuator of codebase variety) is hidden behind an undocumented env var.
+
+## 3.5 The conversation with the user is one-directional (Pask violation)
+
+For the vibe-coder audience, conversation is the *only* verification channel — and the current loop asks questions without teachback, gates the build on question *count* rather than measured confidence, and verifies completion by asking the model to grade itself. The library's TeachbackProtocol/AgreementTracker are integrated at message-sniffing level only. Product consequence: the differentiator is currently a questionnaire, not a conversation. (The ProjectWizard's research→brainstorm pipeline is genuinely strong; it deserves the theory it was named for.)
+
+## 3.6 Measurement confounds and instrument debt
+
+The Layer B result (−8.3% inconclusive) is contaminated by the timeout confound (governed runs burn more turns and hit the clock), by N=5, and — after this survey — by the knowledge that several governance organs weren't actually operating during the ablation (an "ablation" of a partly-unwired system understates the true effect, in either direction). Re-running the ablation is only meaningful **after** the wiring phase. Secondary instrument debt: chars/4 tokenization skews every context-dependent behavior; the benchmark and the ledger label success differently (score fraction vs landed+verified) and will eventually need reconciliation.
+
+**Summary of the causal chain:** No task model (3.1) → signals measure activity → signals don't discriminate → enforcement is rightly caged (3.3) → governance can't show value (3.6) → thesis unproven. Meanwhile cut nerves (3.2) mean even the signals that could discriminate (pain density, prediction outcomes) were never collected. The plan attacks the chain at both ends: wire the nerves, and give the regulator a model.
+
+---
+
+# Part IV — The Ideal End State
+
+This is the machine as it should exist when the thesis is proven. Each element is stated as a *closed loop* (sense → compare → act → effect → sense), because in the end state there are no open loops: everything that is computed is consumed, and everything that acts is measured.
+
+## 4.1 The Task Homeostat (the Good Regulator, realized)
+
+At the center of every session sits a **contract**: a machine-checkable Definition of Done, created at task start (by the model in workspace mode; synthesized from D-XX decisions in vibe mode; supplied by the hidden test in benchmark mode). The contract is the regulator's model of the system. From it, every turn, the engine computes **task error**: fraction of assertions unmet, plus trend (is error shrinking, flat, rising — a CUSUM on the error series). All governance signals are re-referenced against error:
+
+- *Productive variety*: high tool variety + falling error → healthy exploration, S4 favored.
+- *Thrashing*: high variety + flat error over k turns → S3 tightens (tool scoping, temperature down), and this is the *only* condition under which "overload" means anything.
+- *Stuck*: zero error movement + repeated identical actions → algedonic pain accumulates → escalation or kill.
+- Session success labels for the ledger fall out automatically: error(final) ≈ 0 ∧ verified.
+
+By Conant–Ashby, this is the minimum viable regulator. Everything else in the end state hangs off the error signal the way the current system hangs off the (meaningless) variety signal. The regulator-fidelity measure from the library (`1/(1+D_KL)`) becomes a reportable number: how well did the contract predict what actually needed doing? Low fidelity → the *contract-writing* behavior gets trained, closing a second-order loop.
+
+## 4.2 The Innervated VSM
+
+Every organ present today, but with the nerves connected and the ceremonial parts either functional or deleted:
+
+- **S1** as-is, plus snapshot `track()` before every write-batch — giving every S5 revert-recommendation a real target, and giving the vibe user a true one-keystroke undo.
+- **S2** promoted into the main loop: the oscillation detector watches the primary conversation (Read→Edit→Read cycles, F2-style silent loops), not just sub-agents. Doom-loop detection and S2 merge into one coordination organ with one escalation path.
+- **S3** allocates against error trend; its variety measures are **windowed** (rolling 10-turn distinguishable-state counts, not lifetime logs). The attenuator algebra runs the context manager: compression, index retrieval scope, tool-set width, and thinking budget are all attenuation/amplification decisions with measured before/after variety, satisfying Beer's balance equation numerically each turn.
+- **S4** scans continuously and cheaply: task re-classification on every user message; reflection scores persisted to the ledger; the S3–S4 homeostat arbitrated by measured error (falling → S3's inside-and-now favored; flat → S4's outside-and-then favored: research, re-planning, asking the user).
+- **S5** with **earned, per-rule authority**: each of the 21 rules carries a precision/recall record from the ledger; a rule may enforce only where its measured precision exceeds the cost-adjusted threshold; all others recommend. Authority is a *number per rule*, earned and revocable — not a global switch. The heterarchy registry finally does its job: crisis classification (driven by algedonic density, not variety) shifts command weight to S5 for the duration of the crisis and returns it afterwards.
+- **Algedonic channel** live: every tool result feeds pain/pleasure; pain density (pain per turn, decayed) becomes the first *validated-by-construction* discriminating signal (it is grounded in actual failure); 5-consecutive-pain kill switch protects every headless mission; SLA violations page via ntfy through the liveness layer.
+- **H-predictions v2**, redesigned from ≥30 labeled missions: hypotheses about *interventions* ("when rule C7 fires and enforces, error resumes falling within 3 turns at rate ≥ X above matched non-enforced baseline"), evaluated automatically, displayed honestly — green when confirmed, red when refuted, grey when underpowered. The dashboard becomes the experiment log of the thesis.
+
+## 4.3 Memory as Organizational Closure
+
+The autopoietic substrate: every session produces artifacts that improve the production of future sessions.
+
+- **Recall works**: learnings saved via SaveLearning land in a real store (SQLite + embeddings, same stack as the code index); recall retrieves by semantic similarity to the current task and injects top-k, measured (do recalled learnings correlate with lower error trajectories? — an H-prediction).
+- **Handoffs** remain the short-horizon channel; the ledger the mid-horizon; learnings the long-horizon. All three consulted at session start; all three written at session end; atomic writes throughout.
+- **Compression** consults the contract: what gets kept verbatim is what the error signal says is still unmet; a real tokenizer (llama-server's `/tokenize`, already available in the primary path) replaces chars/4 everywhere.
+- **Eigenform loop** (the second-order layer): periodically S5 computes the system's stable self-description from ledger statistics — "what kind of regulator am I, measured?" — and drift in the eigenform (e.g., precision decay of a rule) triggers retraining or rule retirement.
+
+## 4.4 The Pask Interface
+
+Vibe mode becomes an actual conversation-theoretic loop: after the question phase, CynCo **teaches back** its understanding in the user's language ("Here's what I think you want — a hex map where…") and agreement is tracked at Pask's four levels; the build gates on measured MutualUnderstanding + confidence threshold (finally consuming the ConfidenceScorer), not question count. Completion verification includes the user in the loop with the analogy card plus a concrete "try this and tell me what you see." Entailment meshes order multi-phase builds (the wizard's phase plan becomes a dependency graph, not a list). Modes (new/continue/fix/explain) get distinct thresholds and recovery strategies. The dashboard grows the chat surface (standing vision) so guided users never need the terminal.
+
+## 4.5 The Proof (measurement end state)
+
+- Layer B at N≥15/condition, per-task timeouts sized so <10% of runs hit the clock, a task ladder spanning difficulty so the "helps hard, costs easy" hypothesis is *testable*, and the ablation run against the **fully wired** system. Target claim, falsifiably stated: governed lift > 0 with 95% CI excluding zero on the hard half of the ladder, and no regression on the easy half.
+- The ledger at 50+ labeled missions with automated verification, feeding per-rule authority continuously — measurement and governance become the same pipeline.
+- CivKings ships on Steam built substantially by CynCo missions — POSIWID for the whole project: the purpose of a coding system is the software it produces.
+
+## 4.6 Autopoiesis (Level 4)
+
+Last, because it must be built on validated signals: the decision journal + ledger become training data (the pipeline already scaffolded in `main.ts` v2 thresholds and `scripts/fine_tune_s5.py`); S5 graduates from 21 hand rules to a LoRA fine-tuned on its own validated decisions, evaluated by the same per-rule authority mechanism (the model earns authority exactly as the rules did); the config population evolves across missions under identity invariants (approval-required, kill-switch-armed — non-negotiable genes); every self-modification passes the Proposal state machine. The system that governs produces the data that trains the governor: organizational closure, on one GPU.
+
+---
+
+# Part V — The Plan
+
+Ordering logic: **wire before measure, measure before validate, validate before enforce, enforce before train.** Each phase has a falsifiable exit criterion and ends with a wire check (grep every new symbol; verify imported *and called* from the live path — per standing project law). Phases 1–3 are the critical path; 4–8 parallelize where noted.
+
+### Phase 0 — Hygiene and Wire-or-Remove (short)
+The ground-clearing Beer would call S3\* audit. **(a)** Delete root junk: `nul`, `New folder/`, `src.zip`, `C:Usersciverlocalcodeengine__tests__s5/`, `benchmark-workspace-06/` — each with a one-line evidence note before deletion (standing feedback: removal-evidence-first). **(b)** Re-audit `DEAD_CODE_AUDIT.md` (stale since 04-24) against current imports; for each item decide wire-or-remove *with evidence*; the four dead TUI widgets (diff_view especially) are candidates for wiring in Phase 6, not deletion. **(c)** Commit or archive the ~20 loose benchmark result logs. **(d)** Decide the `engine/cybernetics-core` vendoring policy: either a scripted sync from `C:\Users\civer\cybernetics` with a version stamp, or a real package dependency — drift between the two is silent corruption of the theory layer. **Exit:** clean `git status` at root; audit doc regenerated with dates. **Wire check:** n/a (removal phase) — instead, a *removal check*: grep proves no deleted symbol is referenced.
+
+### Phase 1 — Reconnect the Nerves (the wiring sprint)
+1. **Algedonic**: call `algedonicIntegration.recordToolResult(toolName, success, latencyMs)` from the tool-result path in `conversationLoop.ts`; arm `checkOrHalt()` at turn start; route Critical → `governance.recommendation` event + ntfy in headless mode. Add the missing end-to-end test: scripted 5-failure session must trip the kill switch.
+2. **H1–H8 plumbing** (not redesign — that stays gated): call `checkTriggers()`/`evaluateOpen()` per turn; persist `getStatistics()` snapshots into the ledger's turn records so the redesign has raw material.
+3. **S4 persistence**: write reflection scores into ledger turns; re-run task classification on each user message.
+4. **Snapshot**: `track()` before each write batch; store hash in turn record; surface `/undo` via a new protocol event.
+5. **Windowed variety**: add rolling-window distinguishable-state counting alongside (not replacing) the current monotone measures; log both to the ledger so Phase 3 can compare their discrimination power head-to-head — *the fix to 3.1's corollary becomes itself an experiment.*
+6. **Heterarchy**: minimum honest wiring — call context classification per turn, update `lastCommander`, log to ledger. Grant it no authority yet; just make it observable. If Phase 3 shows the classification is noise, remove it with evidence.
+7. **Tokenizer**: replace chars/4 with llama-server `/tokenize` (memoized per message at append time, summed client-side — pure-CPU BPE, single-digit-ms; see VI.6) in the primary path; keep the heuristic as Ollama fallback.
+8. **Tool-call transport** *(research-amended — see VI.1)*: adopt llama-server **native tool calling** (`--jinja`, OpenAI `tools`/`tool_choice`, streamed `tool_calls` deltas) on a current build (post-PR #20223); validate the Qwen3.6 `chat_template_file` against the Unsloth/froggeric fixed templates. Fallback ladder replaces silent discard: **jsonrepair** salvage → one bounded error-feedback retry (parse error + offending text as synthetic tool result) → surface-to-ledger. The Hermes regex extractor demotes to last-resort detection. Raw GBNF stays off for thinking requests (Qwen3.x follow-up to llama.cpp #20345 still open).
+9. **Process tree**: Python TUI owns a Windows Job Object (`KILL_ON_JOB_CLOSE`; pywin32 CreateJobObject → CREATE_SUSPENDED spawn → AssignProcessToJobObject → resume) so TUI death nukes Bun + llama-server; `taskkill /T` demotes to graceful-path cleanup. Kills the zombie-descendant class (standing hazard) at the root.
+**Exit (falsifiable):** a scripted 12-turn test session produces a ledger record containing: ≥1 algedonic signal, ≥1 opened-and-evaluated prediction, persisted S4 scores, ≥1 snapshot hash, windowed-variety series, heterarchy context series; plus a tool-call transport test where a deliberately malformed call is repaired or retried, never silently discarded. **Wire check:** grep each new call site; `npx vitest run` green (F6: never `bun test` on Windows).
+
+### Phase 2 — Mission Throughput (the data engine; runs continuously from here)
+The 30–50-mission gate at current cadence (~1–2/week) takes months; that is the thesis's real deadline risk. **(a)** Use the liveness daemon (merge `liveness-layer`) to schedule 1–3 CivKings missions/day from a curated brief backlog (F3 brief pattern: single task, grep-verified anchors, whole-method replacement) — this simultaneously serves the CivKings Steam directive. **(b)** Automate verification: each brief ships with a check script (pytest/smoke) the driver runs post-mission to set `verified` without human labeling; human spot-audit 1 in 5. **(c)** Fresh engine per mission (F7), `LOCALCODE_S5_ENFORCE=false`, zero-tool fast-fail — all already canonical. **(d)** Weekly: commit ledger, review failures into the failure log (never fail the same way twice). **Exit:** ledger ≥ 30 labeled missions with ≥ 5 genuine failures (a ledger of only successes cannot compute precision — if failures don't occur naturally, add harder briefs until they do; discrimination requires both classes). **Wire check:** driver logs show toolName/verified fields populated for every record.
+
+### Phase 3 — Signal Validation and Earned Enforcement (falsification step 2 → 3)
+With ≥30 labeled missions: **(a)** For every signal (old monotone variety, new windowed variety, pain density, error trend once Phase 4 lands, homeostat stability, each of the 21 rule-fire events) compute discrimination against the success label: precision/recall, and report with CIs. **(b)** Retire signals that don't discriminate (evidence-first removal). **(c)** Implement **per-rule authority**: a rule may set `enforced=true` only if its ledger precision ≥ threshold (start: 0.8 precision on ≥10 firings); authority is recomputed as the ledger grows and is revocable. **(d)** Redesign H-predictions around intervention outcomes (now unblocked). **(e)** Redesign the dashboard around validated signals only (this is the standing "predictions H1–H8 broken" fix, in its correct sequence — step 4 of the original program). **Exit:** at least one rule earns enforcement authority on data, or the honest publication that none do — either outcome is a falsification-program success. **Wire check:** grep `enforced` path; a mission run with an earned rule shows real enforcement in the ledger; capped rules still log WOULD-ENFORCE.
+
+### Phase 4 — The Task Homeostat (Conant–Ashby; can start in parallel with Phase 2)
+**(a)** Make contract creation automatic: workspace mode — the system prompts the model to emit a contract on task start (it already knows how); vibe mode — synthesize assertions from D-XX decisions; mission mode — the brief's check script *is* the contract. **(b)** Compute per-turn task error = unmet-assertion fraction; CUSUM the error series for trend. Task error is computed **externally** by the harness/governor — never by asking the executing model for a mid-run self-estimate, which the literature shows is counterproductive (RePro; see VI.3). Alongside it, instrument the four other evidence-backed per-turn signals from VI.3: semantic action-fingerprint repetition (hash of tool name + normalized args, window ~20, thresholds 3–4 identical / 6 alternating, polling whitelisted), tool-failure streak (the algedonic channel, now validated by prior art), information gain/novelty (new files/regions per turn vs revisits), and length-normalized progress. **(c)** Feed `taskError`, `errorTrend` into the S5 input vector and the ledger. Design rule for any intervention these trigger: **inject evidence** (failing assertion output, the repeated fingerprint, the error text) — evidence-free "reflect harder" nudges measurably hurt (Huang et al.; ProbGuard). **(d)** Re-reference S3: thrashing = variety high ∧ error flat; healthy exploration = variety high ∧ error falling. **(e)** Report regulator fidelity per session (did contract assertions predict the actual work?). Grant *no new authority* here — error signals enter the same Phase 3 validation gauntlet as everything else; if error trend out-discriminates activity signals (it should, by theory), the data will say so. **Exit:** ledger records carry error trajectories; discrimination analysis of errorTrend vs old signals published in BENCHMARKS.md. **Wire check:** grep contract-read path from governance; test: session with a deliberately failing contract shows rising-then-falling error as fixes land.
+
+### Phase 5 — Memory Closure (parallel-safe)
+**(a)** Build the real learning store: SQLite + embeddings (reuse `engine/index/` stack — no new infrastructure); SaveLearning writes to it; port `recall.ts` off the phantom Python subprocess onto it. Shape it per VI.2: learnings as an **ACE-style itemized playbook** (delta updates only, helpful/harmful counters, demote-don't-delete), promotion gated on ledger-verified successful missions (AWM pattern), injection capped ~5 items, retrieval ranked by the generative-agents formula (recency decay × importance × embedding relevance), facts carrying bitemporal columns (valid-from / invalidated-at). **(b)** Atomic writes for ledger/handoff (write-temp-rename). **(c)** Compaction upgrades from prior art (VI.2): a free **tier-0 pass that trims old tool results** before any LLM summarization; **verbatim anchoring** of user messages, the DoD contract, and active constraints (the "Governance Decay" failure — constraints silently erased by compaction — is now documented in the literature); **write-before-compact** flushes durable facts to ledger/store before the summary call. Reset FileOperationTracker at each compaction; session-file GC (age-based); deserialize file-ops on session resume. Embedding model: swap `nomic-embed-text` → **jina-code-embeddings-0.5b** (code-specialized, GGUF-able, biggest quality-per-VRAM jump); make BM25+RRF hybrid default; adopt cAST-style AST split-then-merge chunking if the chunker isn't already boundary-aware. **(d)** Ship the repo map by default on first turn (it's built; it's an attenuator; unhide it) with a size cap. **(e)** Surface index degradation: when semantic search falls back to ripgrep, say so in `context.status`. **Exit:** a two-session test — session 1 saves a learning, session 2's first model call provably contains it (grep the logged prompt). **Wire check:** grep `recallMemories` call path end-to-end; no silent `[]` returns without a logged reason.
+
+### Phase 6 — The Pask Interface (product track; parallel after Phase 1)
+**(a)** Teachback gate: after questions, CynCo emits its understanding; user confirms/corrects; AgreementTracker (already vendored) records level; build gates on agreement ∧ `ConfidenceScorer.isReady()` — finally consuming the scorer. **(b)** Mode-aware thresholds and recovery per mode (fix: reproduce-first; explain: no-write toolset). **(c)** Entailment-mesh ordering for wizard phases. **(d)** TUI: wire `diff_view` widget + a structured `file.diff` protocol event (closes the git-awareness UX gap and one dead widget in a single move); `/copy` in vibe screen; protocol version handshake in `session.ready` (close the drift risk before it bites). **(e)** Dashboard chat surface (standing vision) — the guided user's home. **Exit:** vibe e2e (`scripts/vibe-e2e.ts`) extended to assert teachback occurred and confidence gated the build; one real non-engineer session observed end-to-end. **Wire check:** grep AgreementTracker/ConfidenceScorer consumption from the controller's gating branch, not just construction.
+
+### Phase 7 — Re-measure (the honest re-ablation)
+Only after Phases 1+3+4 *(design research-amended — see VI.4)*: **(a)** Layer B rebalanced to **≥10 tasks × 6–8 reps** rather than 5×15 — with 5 tasks, a correctly clustered task-level test has only 2⁵ sign patterns and a minimum two-sided p of 1/16 ≈ 0.06: **p<0.05 is mathematically unreachable at 5 tasks, ever**; and reps hit diminishing returns past ~5–8 while task diversity keeps buying power (Miller 2024). Inference: **BCa bootstrap resampled at the task level** (per-task mean deltas) + **sign-flip permutation test**, significance claimed only when both agree; state the resampling level explicitly. **(b)** Timeouts: per-task cap from ungoverned p95 × 1.5, *plus* per-condition timeout rates as a first-class result, score-vs-wall-clock curves (so "slower but equal" is distinguishable from "worse"), and a censoring sensitivity analysis (recompute CIs treating timeouts as administratively censored, report both). **(c)** Extend the ladder with new calibrated tasks; **pre-register a rule that headline analysis uses only tasks whose ungoverned pass rate is in the 20–80% band** (saturated/floored tasks add noise, zero information); report the rest descriptively. **(d)** Pre-register the whole protocol in BENCHMARKS.md as a committed doc before running: primary metric, N, timeout policy, task-inclusion rule, pinned repo SHA, seeds/temps/model digests, and the exact decision rule ("effect claimed iff BCa CI excludes 0 AND sign-flip p<0.05"). **(e)** Publish whatever comes out. **Exit:** a committed result JSON + updated BENCHMARKS.md; the thesis number, whatever it is. **Wire check:** the run config proves governance organs were live (ledger turn records from benchmark runs contain algedonic/error fields).
+
+### Phase 8 — Autopoiesis (Level 4; gated on Phase 3 success)
+**(a)** *(research-amended — see VI.5)* **Classical first**: freeze a held-out eval set immediately (20% of missions, whole missions not turns, never trained on); at ~100–200 outcome-validated decision records train **TabPFN** (XGBoost as sanity check) on the signal vector → decision mapping and run it in **shadow mode**, logging agreement with the rules — it is calibrated, retrainable per-batch, and becomes the baseline the LoRA must beat. At ~500 clean records: first LoRA — Unsloth **BF16 LoRA (not QLoRA) on Qwen3-4B**, rank 16–32, 2–3 epochs on the 5090; data mix ~60% real outcome-validated / ~15% rule-engine synthetic states / ~25% general-instruction replay (anti-forgetting, anti-collapse: never train generation N+1 exclusively on N's outputs); strict-JSON decision + short rationale, non-thinking with empty think tags; bake the training chat template into the GGUF and diff against the served template as a pipeline check. At ~1k+ labeled decisions with both classes: add **KTO** (takes unpaired good/bad labels — exactly what a ledger produces); skip DPO and offline RL at this scale. Serving: separate llama-server on the 4070 Ti Super, **LoRA loaded at startup only** (hot-swap clears KV cache and can't be per-slot), no speculative decoding on the 4B. **(b)** Model-S5 enters the same per-decision authority ladder as the rules — it earns enforcement from ledger precision, from zero, and gets even advisory authority only after beating both the rule baseline and the classical model on the frozen set. Guard the labeling function against Goodhart: multi-signal outcome labels (success ∧ cost ∧ user-visible quality) + human audit of ~10% of new labels per batch. **(c)** Activate population evolution across missions under identity invariants; every parameter change through the Proposal machine. **(d)** Eigenform report: quarterly self-description from ledger stats, drift alarms on rule-precision decay. **Exit:** one full closed loop demonstrated and documented: mission → ledger → training example → adapter → decision → ledger, with authority earned on data. That demonstration *is* the Level 4 milestone and the investor deliverable. **Wire check:** trace one training example from its source mission ID through the adapter to a logged live decision.
+
+### Final Integration Verification (per standing project law)
+After Phase 8 (and abbreviated after each phase): a single verification mission run with everything on, followed by the full grep audit — every symbol introduced by this plan is imported, called from the live path, and visible in the resulting ledger record; every claimed-removed symbol is gone; `npx vitest run` and `cd tui && python -m pytest tests/` green; TRUTH/EXISTS/WIRED, applied to the system that applies it to others.
+
+---
+
+## Part V.b — Phase Implementation Details (file-level)
+
+The working notes for each phase: which files change, which symbols appear, which tests prove it. This is the level at which the wire checks operate.
+
+### Phase 0 details
+- Deletions (evidence noted inline at deletion time): `nul` (Windows device-name artifact, zero references), `New folder/` (empty placeholder, 2026-06-13), `src.zip` (9.9MB stale archive of `src/`, superseded by git history), `C:Usersciverlocalcodeengine__tests__s5/` (path-mangling artifact of a 2026-05-27 extraction; verify its contents duplicate `engine/__tests__/s5/` before removal), `benchmark-workspace-06/` (Layer-A-era workspace).
+- `DEAD_CODE_AUDIT.md` regeneration: script a grep pass over each listed symbol; annotate each with `IMPORTED-BY: <path>|NONE`; decisions recorded per standing removal-evidence-first rule. Note the audit's `src/src/localcode/*` paths predate the engine/ reorganization — first confirm whether `src/` itself is entirely legacy (it appears at root alongside `engine/`; if `engine/` superseded it, `src/` is the single largest removal candidate in the repo and deserves its own evidence pass).
+- Cybernetics vendoring: add `engine/cybernetics-core/VENDORED.md` recording upstream commit hash + a `scripts/sync-cybernetics.ts` that diffs vendored copy against `C:\Users\civer\cybernetics\cybernetics-ts\src` and fails CI-style if drifted without a version bump.
+
+### Phase 1 details
+| # | Change | Files touched | New/used symbols | Proving test |
+|---|---|---|---|---|
+| 1 | Algedonic wiring | `bridge/conversationLoop.ts` (tool-result path, ~the block that emits `tool.complete`); `vsm/algedonicIntegration.ts` | `recordToolResult()`, `checkOrHalt()` at turn top | new `__tests__/vsm/algedonicLive.test.ts`: 5 scripted failures → HaltedError; 4 failures + 1 success → no halt |
+| 2 | Prediction plumbing | `conversationLoop.ts` per-turn governance block (lines ~777–910); `vsm/predictionTracker.ts`; `scripts/cynco-ledger.mjs` (turn record schema +`predictions`) | `checkTriggers()`, `evaluateOpen()`, `getStatistics()` | scripted 12-turn session yields ≥1 completed prediction in ledger record |
+| 3 | S4 persistence | `vsm/s4Reflector.ts`, `vsm/cyberneticsGovernance.ts` (re-classify on user msg), ledger schema +`s4Scores` | `classifyTask()` per-message | ledger turn records carry 4-tuple scores |
+| 4 | Snapshot | `conversationLoop.ts` write-batch path; `snapshot/snapshot.ts`; `bridge/protocol.ts` (+`snapshot.taken` event, `/undo` command) | `track()`, `restore()` | first snapshot test file: track→edit→restore round-trip |
+| 5 | Windowed variety | `vsm/cyberneticsGovernance.ts`; ledger +`varietyWindowed` | rolling-window state counter (new, small — do not modify library) | unit test: window decays after tool-set stabilizes; both series logged |
+| 6 | Heterarchy observability | `vsm/heterarchyIntegration.ts` call sites in loop; ledger +`commander`,`hContext` | context classification per turn | ledger shows context transitions; no authority consumed |
+| 7 | Real tokenizer | `engine/llama/provider.ts` (+`countTokens` via `/tokenize`, memoized per message); `engine/contextBudget.ts`; `context/compressor.ts`; `streamTranslator.ts` fallback retained | `Provider.countTokens?` | compressor test with known-token fixture; Ollama path still uses heuristic |
+| 8 | Native tool calling + repair ladder | `engine/llama/provider.ts` (send `tools`, consume `tool_calls` deltas); `engine/streamTranslator.ts` (native path bypasses regex); `package.json` (+`jsonrepair`); launch script (+`--jinja`, template validation) | `parseNativeToolCalls()`, `repairToolCall()`, bounded-retry path | test: malformed-JSON call is repaired; unrepairable call triggers exactly one retry turn; nothing silently discarded (discards logged to ledger) |
+| 9 | Job Object process tree | `tui/localcode_tui/` engine-spawn path (+pywin32: CreateJobObject/KILL_ON_JOB_CLOSE/CREATE_SUSPENDED/Assign/resume) | `create_engine_job()` | manual: kill TUI process → verify Bun + llama-server exit (no zombie in Task Manager) |
+
+Sequencing inside Phase 1: item 7 first (everything else's thresholds get truer), then 8 (transport reliability underlies every other test), then 1–6 and 9 in any order; each lands as its own commit + PR per git-web-flow law.
+
+### Phase 2 details
+- Merge `liveness-layer` (verified working 2026-06-12) via PR; confirm daemon mission scheduling against `docs/liveness-setup.md`.
+- Brief backlog: `benchmark/cynco-ledger/briefs/` — 30+ single-task CivKings briefs following the F3 pattern, each with `check.sh`/`check.py` (its verification script). Draw tasks from the CivKings Steam directive backlog (characters + events polish) so mission data production and game production are the same work.
+- Driver change: `scripts/cynco-mission-driver.mjs` runs the brief's check script post-marker-detection, patches `verified` into the ledger record automatically; add `--audit` flag that skips auto-verification for the 1-in-5 human spot checks.
+- Failure quota: if after 15 missions failures < 3, add briefs at the next difficulty rung (multi-file, cross-module) until the failure rate lives in ~15–30%. A precision denominator needs positives *and* negatives.
+
+### Phase 3 details
+- New analysis script `scripts/ledger-discrimination.ts`: reads `missions.jsonl`, emits per-signal ROC-style table (signal → threshold sweep → precision/recall vs success label) and per-rule firing outcome table; output committed to `benchmark/cynco-ledger/analysis/`.
+- Per-rule authority: `s5/orchestrator.ts` gains `ruleAuthority: Map<ruleId, {precision, n, enforceEligible}>` loaded from the analysis output; `isS5EnforcementEnabled()` becomes per-rule: global gate ∧ rule eligibility. Ledger record gains `authorityTable` snapshot so every mission is interpretable later.
+- Dashboard redesign lives in the dashboard server (port 9161) — validated signals only, plus the H-v2 experiment board.
+
+### Phase 4 details
+- `tools/contract.ts` is already the data structure; new `vsm/taskModel.ts` computes `taskError` (unmet fraction) + `errorTrend` (CUSUM via existing library detector) from the global contract each turn; injected into the S5 input alongside existing signals; ledger +`taskError`,`errorTrend`.
+- Contract auto-creation: system prompt section in `engine/systemPromptText.ts` upgraded from "you may create contracts" to "create a contract before non-trivial work" (workspace); `vibe/controller.ts` synthesizes assertions from D-XX at build start; mission driver registers the check script as a one-assertion contract.
+- Regulator fidelity: post-session, compare contract assertions to files actually modified (Jaccard over touched paths as a v1 proxy for D_KL fidelity); logged to ledger.
+
+### Phase 5 details
+- `engine/memory/learningStore.ts` (new): SQLite at `~/.cynco/learnings.db`, embeddings via existing `index/embedClient.ts`; `tools/impl/saveLearning.ts` writes to it; `memory/recall.ts` rewritten to query it (delete the Python subprocess path — evidence: target script absent/orphaned, returns [] since inception).
+- Atomicity: `writeFileAtomic()` helper used by ledger.ts, handoff.ts, learningStore.
+- `context/compressor.ts`: reset FileOperationTracker post-compaction; consult global contract for keep-verbatim selection.
+- `session/jsonlStore.ts`: session-end marker entry; GC of sessions >30 days on engine boot.
+- Repo map default-on: move `LOCALCODE_REPO_MAP` default to `1` with a 2k-token cap; document in MANUAL.md.
+
+### Phase 6 details
+- `vibe/controller.ts`: new TEACHBACK state between understand/build; consumes vendored `AgreementTracker`; gate = `agreement ≥ SharedProcedures && scorer.isReady()`; per-mode threshold table in `vibe/types.ts`.
+- Protocol: +`file.diff` event (structured hunks), +`protocolVersion` in `session.ready`; TUI `protocol.py` mirrors + warns on mismatch.
+- TUI: wire `widgets/diff_view.py` to `file.diff`; `/copy` handler in vibe_loop.py; refactor app.py dispatcher to a handler-registry dict (mechanical, kills the 150-line if/elif).
+- Dashboard chat: reuse the WS protocol the TUI speaks; the dashboard server already broadcasts events — add the command path.
+
+### Phase 7 details
+- `benchmark/true/run.ts`: **tasks 5→≥10, reps 6–8** (not 5×15 — see VI.4); per-task `timeoutMs` from calibration p95×1.5; suite report gains timeout-rate column and score-vs-wall-clock series; analysis script gains BCa-at-task-level + sign-flip permutation + censoring sensitivity; pre-registration section committed to BENCHMARKS.md before the run (hypothesis, N, timeout policy, 20–80% band inclusion rule, pinned SHA, seeds, decision rule).
+- New calibrated tasks: extend `benchmark/true/tasks/` from the Phase 2 brief backlog's harder rungs; re-run `--calibrate` to keep the 0.2–0.8 band honest.
+- Benchmark ledger unification: benchmark runs append to missions.jsonl with `source: "layer-b"` so discrimination analysis can pool both datasets (labels reconciled: benchmark success = score ≥ 1.0).
+
+### Phase 8 details
+- Training filter in `scripts/aggregate_training_data.py`: only decisions where (rule had earned authority ∨ decision was followed by error-trend improvement); target ≥500 examples before first SFT run (v2 thresholds in main.ts already encode 50/100/200 session milestones — reconcile).
+- New `scripts/s5_classical_baseline.py`: TabPFN + XGBoost on the signal-vector table; shadow-mode agreement logging into ledger records (`classicalDecision`, `agreesWithRule`); frozen eval set manifest committed at `benchmark/cynco-ledger/frozen-eval.json` the day the 10th mission lands.
+- LoRA recipe pinned (VI.5): Unsloth BF16 LoRA, Qwen3-4B, rank 16–32, 60/15/25 data mix, template baked + diffed; adapter exported f16/q8_0.
+- Adapter serving: dual-machine path (4070 Ti Super hosts the S5 adapter server, LoRA loaded at startup, no spec decoding; primary 5090 unaffected — the URL-switch mode in `llama/provider.ts:183–189` exists for exactly this).
+- Population evolution: activate `autopoiesisIntegration` maintenance at mission end (fresh-engine-per-mission means evolution state must persist in `~/.cynco/population/` — it already does); invariants: `tool_approval_required`, `kill_switch_armed`, `s5_authority_ledger_derived`.
+
+---
+
+## Part V.c — Current → End-State Delta Matrix
+
+| Subsystem | Today (evidence) | End state | Phase |
+|---|---|---|---|
+| Token accounting | chars/4 everywhere | llama-server `/tokenize`, cached; heuristic only as Ollama fallback | 1 |
+| Tool-call transport | regex XML extraction, silent discard; GBNF off | llama-server native tool calling (`--jinja` + streamed `tool_calls`); jsonrepair + bounded retry fallback; regex last-resort; GBNF stays off for thinking until upstream Qwen3.x fix confirmed | 1 |
+| Algedonic | channel built, zero signals ever received | every tool result scored; kill switch armed; pain density a first-class ledger signal | 1 |
+| Variety | monotone lifetime logs, "overload" ≈ turn>8 | windowed counts, judged against error trend; attenuator algebra drives context ops | 1, 4 |
+| S2 | sub-agents only | main-loop oscillation watch merged with doom-loop detection | 1–2 |
+| S4 | once-at-start classification, unpersisted reflections | per-message classification, ledger-persisted scores, homeostat arbitration by error | 1, 4 |
+| S5 | 21 rules, global recommend-only cap | per-rule earned authority with precision floor, revocable; later LoRA S5 on same ladder | 3, 8 |
+| Predictions | H1–H8 defined, never evaluated | H-v2 intervention hypotheses, auto-evaluated, honest dashboard | 1 (plumb), 3 (redesign) |
+| Heterarchy | dead scaffolding | observable first; authority only if it earns discrimination; else removed with evidence | 1, 3 |
+| Contracts | model-creatable, governance-blind | the regulator's task model; error = master signal | 4 |
+| Recall/learnings | returns [] always; backend missing | SQLite+embeddings store; measured injection at session start | 5 |
+| Handoff | working (contract→YAML→prompt) | unchanged core + atomic writes | 5 |
+| Compression | 75%/keep-8/chars-4, tracker leak | contract-aware selection, real tokens, tracker reset | 4, 5 |
+| Snapshot | init-only, 0 tests | track-per-write-batch, /undo, revert targets for S5 | 1 |
+| Index | solid, silently degrading, repo map hidden; general-text embedder | degradation surfaced; repo map default-on capped; jina-code-embeddings-0.5b + BM25/RRF hybrid default | 5 |
+| Vibe loop | wired; count-gated; no teachback | Pask loop: teachback + agreement + confidence gating; mode-aware | 6 |
+| TUI protocol | unversioned, drift risk | version handshake; structured diff event; dead widgets wired or removed | 6 |
+| Benchmark | 5 tasks (task-level p<0.05 unreachable), timeout confound, ablated a half-wired system | ≥10 tasks × 6–8 reps, BCa+sign-flip at task level, sized timeouts + censoring sensitivity, 20–80% band, pre-registered, fully-wired subject | 7 |
+| S5 training | LoRA-first plan, no baseline | classical-first ladder: TabPFN shadow → BF16 LoRA (Qwen3-4B) → KTO; frozen eval set; authority earned against baselines | 8 |
+| Ledger | 2 labeled missions | 30–50+, auto-verified, pooled with benchmark, driving authority continuously | 2, 3 |
+| Autopoiesis | skeletal | mission→ledger→training→adapter→decision→ledger closed loop under identity invariants | 8 |
+| Hygiene | junk at root, stale audits, loose logs | clean root, dated audits, scripted vendor sync | 0 |
+
+# Part VI — Prior Art and Adopted Solutions
+
+**Method.** Six parallel research passes, one per problem cluster from Part III, each briefed with CynCo's exact constraints (Bun/TS → llama-server HTTP, Qwen3.6-27B thinking model, RTX 5090 + 4070 Ti Super, Windows 11, ~2-labeled-mission ledger). Every diagnosed problem was checked against what the field has already learned, so CynCo spends its scarce variety on the problems that are actually novel. In Ashby's terms: this section imports requisite variety from the environment — other teams have already paid, in compute and failed runs, for lessons we would otherwise pay for again. Verdicts are **Adopt** (use as-is), **Adapt** (take the mechanism, not the system), **Skip** (wrong stack, wrong scale, or unvalidated). Where a finding overturned a phase design, the phase text in Part V has been amended in place and marked *(research-amended)*; VI.7 summarizes every such change.
+
+## VI.1 Tool-Call Transport (fixes 3.6's regex fragility and the GBNF freeze)
+
+The "stripped tool history / hand-rolled grammar" era is over upstream. llama-server native tool calling matured through three PRs: lazy-grammar tool calls ([#9639](https://github.com/ggml-org/llama.cpp/pull/9639)), streamed tool calls + reasoning under `--jinja` ([#12379](https://github.com/ggml-org/llama.cpp/pull/12379)), and generalized XML-style streaming parsers covering the Qwen3 family ([#16932](https://github.com/ggml-org/llama.cpp/pull/16932), merged 2025-11). Our grammar+thinking crash is a confirmed upstream bug class — [issue #20345](https://github.com/ggml-org/llama.cpp/issues/20345) is exactly our failure mode — closed by ["Fix structured outputs" #20223](https://github.com/ggml-org/llama.cpp/pulls/20223) (2026-03), **but** follow-ups report grammar still leaking into `reasoning_content` on Qwen3.x thinking models specifically. The lesson from the lazy-grammar crash catalog (#12196, #17047): don't ship our own GBNF; let the server's format-aware machinery own the lazy grammar.
+
+For the fallback layer, vLLM's production Hermes parser establishes the pattern: re-parse accumulated text per chunk, diff against emitted state, and **repair rather than discard** — [jsonrepair](https://www.npmjs.com/package/jsonrepair) (mature, streaming transform, runs on Bun) plus one bounded error-feedback retry (what Qwen-Agent does implicitly; cheap and effective at 27B scale). Qwen's own docs warn against ReAct/stopword formats because thinking sections emit the stopwords; the recommended serve line is `--jinja --reasoning-format deepseek`. An NVIDIA forum report (2026-04) finds Qwen3.6 tool calling stable out-of-the-box including parallel calls — with a caveat that MTP interacted badly in their setup (watch ours; see VI.6). Tool-call structure degrades below 4-bit quants; NVFP4/Q6_K are safe.
+
+| Option | Verdict | Why |
+|---|---|---|
+| Native `tools` API, `--jinja`, streamed `tool_calls` (build ≥ b8444) | **Adopt** | Deletes the regex extractor as primary path; upstream owns the thinking boundary |
+| jsonrepair salvage + 1 bounded retry, discards → ledger | **Adopt** | Eliminates the silent-discard anti-pattern (a POSIWID fix: discards become signals) |
+| llguidance build flag (`-DLLAMA_LLGUIDANCE=ON`) for non-thinking structured output | **Adapt** | ~50µs/token, real engine; but inherits the same reasoning-boundary plumbing — flag-gated experiment only |
+| Raw GBNF with thinking on | **Skip (for now)** | Qwen3.x follow-up to #20345 unconfirmed; matches our own grammar-decoding findings |
+| xgrammar / outlines / LM Format Enforcer / guidance | **Skip** | vLLM/Python stacks — wrong architecture for TS→HTTP |
+
+## VI.2 Memory, Compaction, Retrieval (fixes 2.3's broken recall and the compressor's blind spots)
+
+The memory-product space is noisy — the Mem0/Zep benchmark war collapsed under scrutiny ([Zep's rebuttal](https://blog.getzep.com/lies-damn-lies-statistics-is-mem0-really-sota-in-agent-memory/), ["The Benchmark Theatre"](https://essays.bloo-mind.ai/posts/2026-05-20-mem-eval/)) — so verdicts here trust *mechanisms with ablations*, not headline scores:
+
+- **Adopt — the generative-agents retrieval formula** ([arXiv:2304.03442](https://arxiv.org/abs/2304.03442)): score = recency decay × importance × embedding relevance; each term ablation-validated; trivial over SQLite.
+- **Adopt — ACE-style playbook for learnings** ([arXiv:2510.04618](https://arxiv.org/abs/2510.04618)): itemized bullets maintained by incremental **delta updates, never full rewrites**, each with helpful/harmful counters so bad lessons get demoted, not accumulated. Explicitly designed against "context collapse" — and structurally the closest published system to the autopoietic S5 goal.
+- **Adopt — AWM workflow induction** ([arXiv:2409.07429](https://arxiv.org/abs/2409.07429)): induce reusable workflows *only from successful trajectories* (+51% relative on WebArena — among the strongest validated cross-session gains). The mission ledger is exactly the required success signal; this is what "memory as organizational closure" (4.3) looks like in practice.
+- **Adapt — MemGPT's tier model** ([arXiv:2310.08560](https://arxiv.org/abs/2310.08560)): pinned in-context block / recent verbatim / searchable archive. Take the tiers, skip the framework. **Adapt — Mem0's write path** (extract → reconcile/supersede/dedupe), distrust its numbers. Copy Graphiti's **bitemporal columns** (valid-from, invalidated-at — mark facts invalidated, never delete) into SQLite; skip Neo4j.
+- **Compaction**: production consensus (Claude Code, OpenHands condensers, 7-agent survey in [badlogic's compaction research](https://gist.github.com/badlogic/cd2ef65b0697c4dbe2d13fbecb0a0a5f)) is tiered — (0) trim old **tool results** first, zero LLM cost; (1) structured-template summarization with **user messages kept verbatim**. The failure modes are now literature: ["Governance Decay"](https://arxiv.org/abs/2606.22528) measures in-context constraints silently erased by compaction (violations 0% → 30–59% post-compact) — the direct scientific justification for **anchored summarization** (DoD contract + constraints verbatim, never summarized) and **write-before-compact**. For a 32k-context local model, tier-0 trimming is worth more than for any cloud agent.
+- **Code retrieval**: our PageRank repo map is *not* behind architecturally — only the embedder is dated. **Adopt** [jina-code-embeddings-0.5b](https://huggingface.co/jinaai/jina-code-embeddings-0.5b) (beats Qwen3-Embedding-0.6B and larger generalists on code retrieval; GGUF-able; fits beside the 27B). **Adopt** cAST AST-boundary chunking ([arXiv:2506.15655](https://arxiv.org/abs/2506.15655), +4.3 Recall@5 over line chunking) and BM25+dense RRF hybrid as default. **Skip** graph-DB code retrieval (CodexGraph et al.) — overkill.
+- **Skip** LangMem, A-MEM, Zep as systems; steal vocabulary (semantic/episodic/procedural) and supersede-on-write.
+
+## VI.3 Progress Monitoring — the Task Homeostat Has Prior Art (grounds Phase 4)
+
+The literature strongly supports Part III's central diagnosis and sharpens Phase 4's design:
+
+**The field's PRM results are our thesis in miniature**: process reward models that work are *rubric- or environment-grounded* (SWE-TRACE, DataPRM, [SWE-Gym](https://arxiv.org/pdf/2412.21139) lifting a 32B agent 19.7%→26.3% via trajectory verifiers); activity-feature monitors don't discriminate. That is literally finding 3.1. Claude Code itself shipped `/goal` — a separate model checking a completion condition after each turn — an external DoD checker, structurally identical to the task homeostat.
+
+**Five evidence-backed per-turn signals** (now written into Phase 4b):
+1. **DoD assertion delta** — the strongest validated signal ([Verification Horizon](https://arxiv.org/html/2606.26300): test-driven rewards cut reward-hacked resolutions 28.6%→0.6%); checked by a process other than the executor.
+2. **Semantic action-fingerprint repetition** — production consensus from [OpenHands StuckDetector](https://docs.openhands.dev/sdk/guides/agent-stuck-detector) and terminal-agent two-tier fingerprinting ([arXiv:2603.05344](https://arxiv.org/pdf/2603.05344)): hash tool name + normalized args, window ~20, thresholds 3–4 identical / 6 alternating; whitelist legitimate polling (known false-positive class, OpenHands #5355).
+3. **Tool-failure streak** — the algedonic channel, independently validated: consecutive failures without strategy change predict collapse ([Beyond Resolution Rates](https://arxiv.org/pdf/2604.02547); SWE-EVAL).
+4. **Information gain / novelty** — revisiting explored regions without new insight predicts failure; hunk-level fault localization achieved is a success predictor across all agents studied.
+5. **Length-normalized progress** — failed trajectories run 14–112% longer across three independent studies; feeds the CUSUM.
+
+**Two hard design rules the literature insists on:** (a) *never ask the executing model for a mid-run progress self-estimate* — [RePro](https://arxiv.org/abs/2606.14302) found online progress prompting counterproductive while retrospective outcome-anchored reflection gains up to +12%; (b) *interventions must inject evidence* (failing test output, the repeated fingerprint) — intrinsic self-correction without external feedback degrades performance ([Huang et al., ICLR 2024](https://arxiv.org/abs/2310.01798)); Reflexion works *because* it anchors to environment feedback. And from the terminal-agent work: LLMs ignore injected warnings but cannot bypass an execution halt — pair the algedonic channel with hard S3 actions, not prompt nudges. **CUSUM-on-task-error is genuinely novel** (fleet-level drift monitoring uses changepoint methods; within-trajectory work uses learned monitors) — benchmark it against a [PrefixGuard](https://arxiv.org/pdf/2605.06455)-style learned prefix monitor as the ablation. [HiL-Bench](https://arxiv.org/abs/2604.09408)'s ASK-F1 (question precision × blocker recall) is the ready-made scoring for our intervention triggers against the ledger. Sobering calibration: auto-generating fail-to-pass DoD tests succeeds only ~19% of the time in the best published system (Otter/SWE-Agent+) — hand-authored and template contracts are the right v1, exactly as Phase 4a plans.
+
+## VI.4 Benchmark Methodology — One Finding Changes Everything (grounds Phase 7)
+
+**The finding: with 5 tasks, task-level statistical significance is mathematically unreachable.** Runs within a task are correlated, so honest inference must cluster at the task level; a sign-flip test on 5 task deltas has 2⁵=32 sign patterns and a minimum two-sided p of 1/16 ≈ 0.06. No amount of reps fixes this — and reps hit diminishing returns fast anyway ([Miller 2024, "Adding Error Bars to Evals"](https://arxiv.org/abs/2411.00640): K=1→2 cuts variance a third; ceiling ~two-thirds; variance-decomposition studies find task effects dominate once reps ≥ 5–8). **10–12 tasks × 6–8 reps strictly dominates 5 × 15 at equal compute.** Retroactively, this also explains why Layer B *had* to come out inconclusive at N=5 tasks.
+
+The rest of the protocol survives with upgrades: **BCa bootstrap** (percentile undercovers at small n) resampled **at the task level**, paired with a sign-flip permutation test, claiming an effect only when both agree ([paired bootstrap protocol, arXiv:2511.19794](https://arxiv.org/abs/2511.19794)). Timeouts: p95×1.5 is defensible and pre-registrable but asymmetric (it caps governance's runway relative to the *other* condition's distribution) — so report per-condition timeout rates as a first-class result, log score-vs-wall-clock curves ("slower but equal" ≠ "worse"), and run a censoring sensitivity analysis treating budget-hit runs as administratively censored ([HAL](https://arxiv.org/pdf/2510.11977) treats cost as its own axis; reliability-science framing per [arXiv:2603.29231](https://arxiv.org/pdf/2603.29231)). Task inclusion: IRT work confirms items discriminate only in roughly the **20–80% baseline band** — pre-register that rule. Hygiene per [BetterBench](https://arxiv.org/abs/2411.12990): pinned repo SHA (we have nested-git hazards — pin by commit), logged seeds/temps/model digests, all runs reported including infra failures, exclusion rules decided in advance, and a committed decision rule: *effect claimed iff BCa CI excludes 0 AND sign-flip p<0.05.*
+
+## VI.5 Training the S5 — Classical First, LoRA Second, KTO Third (grounds Phase 8)
+
+The trajectory-learning field converged on a cost ladder: SFT → rejection-sampling SFT → preference optimization → offline RL. Two scale anchors bound our plan: [FireAct](https://arxiv.org/abs/2310.05915) shows agent fine-tuning reaches non-trivial performance at **~500 trajectories** (77% gain at 500; scaling study at 100/200/500/1000); and a small-model SFT-DPO study ([arXiv:2603.20100](https://arxiv.org/pdf/2603.20100)) found DPO with ~100–325 pairs gives only minor unstable gains. Our arithmetic: 50 missions × 20–40 turns ≈ 1,000–2,000 decision records — inside the viable band *iff labels are clean*; 2 missions is few-shot prompting with extra steps.
+
+**The pivotal finding is the classical baseline.** For low-dimensional signal vector → small discrete action set, [TabPFN (Nature 2025)](https://www.nature.com/articles/s41586-024-08328-6) beats tuned XGBoost ensembles up to 10k samples in a 2.8-second forward pass, strongest exactly in our few-hundred-sample regime. So the S5 ladder becomes: **TabPFN/XGBoost in shadow mode at ~100–200 records** (calibrated probabilities, retrainable per mission batch, LLM writes the rationale) → **BF16 LoRA on Qwen3-4B at ~500 records** (Unsloth explicitly recommends BF16-not-QLoRA for the newest Qwen generation; chat-template mismatch is the #1 fine-tuning failure mode — bake and diff the template; 60/15/25 real/synthetic/replay mix per the anti-forgetting literature) → **KTO at ~1k+** (takes *unpaired* good/bad labels — exactly what a ledger emits; skip DPO and offline RL at this scale). The classical model doubles as the **rule-baseline falsifier**: the LoRA earns deployment only by beating it on a frozen eval set — the earned-authority philosophy, applied to our own model. Safety rails from the self-training literature, all mapped into Phase 8: never train generation N+1 exclusively on N's outputs ([model collapse, Nature 2024](https://www.nature.com/articles/s41586-024-07566-y) — retaining even 10% real data keeps degradation minor); Goodhart-guard the label ("mission success" is a proxy a policy can game — multi-signal labels + ~10% human audit); frozen whole-mission holdout + staged authority (shadow → advisory → binding) against distribution shift once the policy is live.
+
+## VI.6 Serving Stack and Windows Ops (unblocks scouts; hardens the substrate)
+
+- **Scouts are unblocked.** The agent-switch cache-destruction problem is documented with a community-validated fix ([discussion #22354](https://github.com/ggml-org/llama.cpp/discussions/22354)): **slot pinning** — `-np 2 --kv-unified` (without `--kv-unified`, `-np 2` halves the main context), main conversation pinned to `id_slot: 0`, scouts to slot 1. Caveat to verify on our build: explicit `id_slot` bypasses host-RAM prompt-cache restore ([#24746](https://github.com/ggml-org/llama.cpp/issues/24746)) — acceptable for a resident main slot. Cleaner fallback if scout latency hurts main throughput: a second llama-server with a 4–8B model on the 4070 Ti Super; two independent servers is the simplest robust multi-agent pattern. Slot save/restore (`--slot-save-path`) as recovery before risky operations. Our 40–60s re-prefills are consistent with the known hybrid/SWA checkpoint-invalidation behavior of Qwen3.6 (#19794, #21831) — `--ctx-checkpoints`/`--cache-ram` mitigate.
+- **`/tokenize` — adopt without hesitation.** Pure-CPU BPE, no slot occupancy, single-digit-ms on localhost. Pattern: memoize per message at append time, sum client-side. (The memory-research pass suggested a client-side transformers.js tokenizer for hot loops; the serving pass measured `/tokenize` as cheap enough at our call volume — start with `/tokenize`, port client-side only if a trim-to-fit loop ever shows up in profiles.)
+- **MTP watchdog.** Known failure class on SWA/hybrid Qwen3.6: after cache invalidation, the MTP head desyncs and acceptance collapses ([#23322](https://github.com/ggml-org/llama.cpp/issues/23322), [#23658](https://github.com/ggml-org/llama.cpp/issues/23658) at KV slot boundaries). Our 0.83 acceptance is the good path — add an acceptance-rate watchdog to the engine logs (the likeliest *silent* throughput regression) with the field mitigations on file (`--spec-draft-p-min 0.75`, `--spec-draft-n-max 2–3`). Also: draft-mtp changes deterministic output on Qwen3.6 (#23302) — relevant to any benchmark assuming greedy reproducibility. LoRA is applied to the MTP head too (#25187), so a mild adapter should hold acceptance, but **LoRA scale changes require a KV-cache clear and can't be per-slot** — hence Phase 8's load-at-startup rule.
+- **Windows process trees.** Bun already wraps children in a Job Object with `KILL_ON_JOB_CLOSE` — the orphan gap is the *top* of the tree. Fix: the Python TUI creates the Job Object (job membership inherits down the whole tree); `taskkill /T /F` demotes to graceful cleanup because its tree enumeration races on busy systems. Now Phase 1 item 9.
+- **Quant/serving choice: stay on llama.cpp.** Every differentiator we use (MTP at 0.83, slots, host prompt cache, /tokenize) lives there; exllamav3 lacks Qwen3.6 MTP-head support and vLLM/SGLang optimize multi-user throughput, not single-agent TTFT. NVFP4's edge is prefill (+43–68%, decode ±0%) — real for agentic loops, *but* some NVFP4 uploads show broken tool calling, and a 5090 field test found Q4_K_XL beating NVFP4 single-user. Benchmark order, tool-call quality first: current NVFP4+MTP → Unsloth UD-Q4_K_XL+MTP → Unsloth dynamic NVFP4.
+
+## VI.7 What the Research Overturned (amendment ledger)
+
+| # | Plan element (pre-research) | Amendment | Where applied |
+|---|---|---|---|
+| 1 | Phase 7: 5 tasks × 15 reps | ≥10 tasks × 6–8 reps — 5 tasks can never reach task-level p<0.05; BCa at task level + sign-flip; censoring sensitivity; 20–80% band pre-registered | Phase 7, V.b, V.c |
+| 2 | Tool calls: keep regex extractor, GBNF someday | Native llama-server tool calling now; jsonrepair + bounded retry; regex demoted; GBNF stays off for thinking | Phase 1 item 8, V.c |
+| 3 | Phase 8: LoRA-first | Classical-first ladder: TabPFN shadow → BF16 LoRA Qwen3-4B → KTO; frozen eval set immediately; LoRA load-at-startup only | Phase 8, V.b |
+| 4 | Phase 4: task error as the one new signal | Five evidence-backed signals; error computed externally (never model self-estimate); interventions must carry evidence | Phase 4b–c |
+| 5 | Phase 5: nomic embeddings; compressor as-is | jina-code-embeddings-0.5b; tier-0 tool-result trimming; verbatim anchoring of DoD/constraints; write-before-compact; ACE playbook + AWM induction | Phase 5 |
+| 6 | Scouts: disabled indefinitely (cache trade) | Unblocked via slot pinning (`-np 2 --kv-unified`, id_slot) or second server on the 4070 Ti Super | VI.6 (backlog → Phase 2 era) |
+| 7 | Process cleanup: taskkill on exit | TUI-owned Windows Job Object; taskkill demoted to graceful path | Phase 1 item 9 |
+| 8 | (no equivalent) | MTP acceptance-rate watchdog — likeliest silent throughput regression | VI.6 (fold into Phase 1 logging) |
+
+Two validations worth naming because they were *not* overturned: the DoD-contract-as-setpoint design (Phase 4) turns out to be the production and research consensus independently arrived at (Claude Code `/goal`, verification-horizon results, grounded PRMs) — the cybernetic derivation and the empirical literature converge on the same machine; and the earned-authority ladder (Phase 3) has no direct prior art as governance, but its statistical shape (shadow → advisory → binding, gated on a frozen outcome set) is exactly how the self-training-safety literature says to deploy learned policies. Where CynCo is novel — CUSUM on external task error within a trajectory, per-rule authority earned from a mission ledger — it is novel *on purpose*, with the nearest published baselines (PrefixGuard, ASK-F1) identified as the ablations to beat.
+
+# Appendix A — Gap Register (complete list of findings)
+
+**Unwired (built, never called from live path):** algedonic `recordToolResult`/kill switch; H1–H8 `checkTriggers`/`getStatistics`; heterarchy context classification/`lastCommander`; snapshot `track()`/`restore()`; autopoiesis population evolution; rule-weight backfill (persisted, no behavioral feedback); ConfidenceScorer gating; governance DB queries; approval-blocking TODO in conversationLoop; contract → governance linkage.
+
+**Dead/broken:** recall via missing/orphaned Python path (always `[]`); SaveLearning backend unlocated; `/context` slash command placeholder; DEAD_CODE_AUDIT items (11 TS files under `src/`, 4 TUI widgets, 2 protocol types) pending evidence-based decisions.
+
+**Fragile:** chars/4 token estimation (system-wide); regex tool-call extraction with silent discard; session-extras memo keyed on first message text; YAML handoff regex parsing; non-atomic ledger/handoff writes; JSONL silent corruption skip + no GC; FileOperationTracker unbounded; compression fallback lossy; profile inheritance unvalidated; TUI protocol unversioned; Windows zombie descendants; GBNF+thinking streaming crash (keep off until translator fix); scouts disabled under llama-cpp (cache trade); `dndai` steals :8081; external branch-switcher (verify branch before commit); benchmark timeout confound.
+
+**Hygiene:** root junk (`nul`, `New folder/`, `src.zip`, mangled test dir, `benchmark-workspace-06/`); ~20 uncommitted result logs; stale dead-code audit; vendored cybernetics-core drift risk; embedded git repos in `engine/` and `tui/` (root-only git).
+
+**Test-coverage holes (est.):** ConversationLoop e2e ~0%; snapshot 0%; session JSONL ~20%; profiles ~20%; index ~30%; memory ~40%; governance e2e minimal (no test runs a mission and checks predictions/algedonic fire).
+
+# Appendix B — Glossary
+
+**Variety** — count of distinguishable states (Shannon); the currency of control. **Requisite variety** — regulator variety ≥ disturbance variety, via attenuation + amplification. **Good Regulator / Conant–Ashby** — a regulator must contain a model of what it regulates; here: the contract as task model, error as the master signal. **Homeostat / ultrastability** — coupled units that, when pushed out of viable bounds, randomly re-parameterize until stable (Ashby's ODEs, implemented in the library). **Algedonic** — pain/pleasure bypass channel that outranks hierarchy in crisis. **S1–S5, S3\*** — Beer's five systems + audit. **Heterarchy** — McCulloch's redundancy of potential command; authority flows to the fittest system per context. **POSIWID** — the purpose of a system is what it does. **Teachback / agreement levels** — Pask; understanding verified by explanation-back, tracked Participation → SharedTopics → SharedProcedures → MutualUnderstanding. **Eigenform** — von Foerster; the stable self-description a self-observing system converges to. **Autopoiesis** — Maturana/Varela; a system that produces the components that produce it — here, governance that generates the data that trains the governor. **Earned authority** — CynCo's own contribution to the vocabulary: enforcement power granted per rule, per measured precision, revocable by the same ledger that granted it.
+
+---
+
+*Prepared 2026-07-12. The thesis stands unproven and unrefuted; the instrument to decide it is two-thirds built. Wire the nerves, feed the ledger, give the regulator its model — then let the data speak.*
