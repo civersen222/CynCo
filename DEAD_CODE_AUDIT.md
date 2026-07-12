@@ -26,7 +26,7 @@ pass below).
 - **IMPORTED-BY (live):** NONE
 - **IMPORTED-BY (tests only):** `engine/__tests__/agents/cascade.test.ts` (line 2: `import { shouldCascade, type CascadeDecision } from '../../agents/cascade.js'`)
 - Note: `engine/main.ts` imports `./cascade/modelPicker.js` — that is `engine/cascade/` (a separate directory), not `engine/agents/cascade.ts`.
-- **DECISION: REMOVE — pending approval**
+- **DECISION: REMOVED 2026-07-12 (approved)** — file + test deleted; removal check clean
 
 #### `engine/agents/prism.ts`
 
@@ -177,7 +177,7 @@ pass below).
 - **IMPORTED-BY (live, Python side):** NONE — no screen or widget imports `FileOpenCommand`
 - **IMPORTED-BY (TS side):** `engine/bridge/protocol.ts` line 368–469 (defined + in union type); tested in `engine/__tests__/bridge/protocol.test.ts`
 - Note: TS protocol defines it and it participates in the `Command` union; Python side does not use it yet.
-- **DECISION: REMOVE — pending approval** *(Python class only; TS definition stays as it's in the union)*
+- **DECISION: REMOVED 2026-07-12 (approved)** *(Python class + its test removed; TS definition stays as it's in the union — wire format stable if reintroduced)*
 
 ---
 
@@ -187,7 +187,7 @@ pass below).
 |---|---|---|
 | KEEP — in use | 8 | agents/prism.ts, agents/vocabulary.ts, vsm/difficultyClassifier.ts, vsm/interventionTracker.ts, vsm/reflexionFeedback.ts, vsm/testDrivenGov.ts, vsm/toolGating.ts; AbortCommand (protocol) |
 | ALREADY REMOVED | 6 | engine/systemPrompt.ts, vsm/governance.ts, engine/macroShim.ts, file_preview.py, diff_view.py, file_tree.py |
-| REMOVE — pending approval | 2 | agents/cascade.ts, FileOpenCommand (Python protocol.py only) |
+| REMOVED 2026-07-12 (approved) | 2 | agents/cascade.ts, FileOpenCommand (Python protocol.py only) |
 | KEEP — in use (was dead) | 2 | project_entry.py, AbortCommand *(counted above in KEEP)* |
 | WIRE (Phase 6) | 0 | diff_view and file_tree were ALREADY REMOVED — must rebuild if Phase 6 reinstates them |
 
@@ -241,4 +241,5 @@ workspace.
 
 **VERDICT: EVIDENCE SUPPORTS REMOVAL (no live references found)**
 
-Decision goes to the human — do not delete without explicit approval.
+**RESOLVED 2026-07-12:** human approved archive-then-delete. Archived to
+`C:\Users\civer\src-archive-2026-07-12.tar.gz` (21MB, includes the fossil .git), then deleted.
