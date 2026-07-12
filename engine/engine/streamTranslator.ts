@@ -13,6 +13,7 @@
 import { randomUUID } from 'crypto'
 import type { StreamEvent } from '../types.js'
 import { extractSimulatedToolCalls, extractThinkingBlocks } from '../ollama/simulated.js'
+import { repairToolCall, MALFORMED_KEY } from './toolCallRepair.js'
 
 // ─── Public API ─────────────────────────────────────────────────
 
@@ -58,8 +59,11 @@ async function* translateNative(
   source: AsyncIterable<StreamEvent>,
   options?: TranslateStreamOptions,
 ): AsyncGenerator<StreamEvent, void> {
-  let textBlockStarted = false
+  // Kind of the currently open SYNTHESIZED block ('text' | 'thinking'),
+  // or 'provider' when a provider-emitted block (tool_use) is open.
+  let openKind: 'text' | 'thinking' | 'provider' | null = null
   let activeBlockIndex = -1
+  let nextSynthIndex = 0
   let hasToolBlocks = false
   let totalText = ''
 
@@ -71,71 +75,86 @@ async function* translateNative(
       }
 
       case 'content_block_delta': {
-        // If this is a text delta and we haven't started the text block yet,
-        // synthesize a content_block_start first
-        if (event.delta.type === 'text_delta' && !textBlockStarted) {
+        const kind = event.delta.type === 'text_delta' ? 'text'
+          : event.delta.type === 'thinking_delta' ? 'thinking'
+          : null
+
+        // Synthesize block boundaries when the delta kind changes
+        // (llama-server with --jinja streams reasoning_content before content,
+        // both at index 0 — without this, thinking deltas have no open block
+        // and the assembler drops them).
+        if (kind && openKind !== kind) {
+          if (activeBlockIndex >= 0) {
+            yield { type: 'content_block_stop', index: activeBlockIndex }
+          }
+          activeBlockIndex = nextSynthIndex++
           yield {
             type: 'content_block_start',
-            index: 0,
-            content_block: { type: 'text', text: '' },
+            index: activeBlockIndex,
+            content_block: kind === 'text'
+              ? { type: 'text', text: '' }
+              : { type: 'thinking', text: '' },
           }
-          textBlockStarted = true
-          activeBlockIndex = 0
+          openKind = kind
         }
 
-        // Track text for token estimation
         if (event.delta.type === 'text_delta') {
           totalText += event.delta.text
         }
 
-        // Update active block index
-        activeBlockIndex = event.index
-
-        yield event
+        // Re-address synthesized-kind deltas to the open block; pass
+        // provider-addressed deltas (input_json_delta) through unchanged.
+        if (kind) {
+          yield { ...event, index: activeBlockIndex }
+        } else {
+          activeBlockIndex = event.index
+          yield event
+        }
         break
       }
 
       case 'content_block_start': {
-        // This comes from the provider for tool_use blocks.
-        // Close the previous block first.
+        // Provider-emitted block. Close any open block first.
         if (activeBlockIndex >= 0) {
           yield { type: 'content_block_stop', index: activeBlockIndex }
         }
-
         if (event.content_block.type === 'tool_use') {
           hasToolBlocks = true
+          openKind = 'provider'
+        } else if (event.content_block.type === 'text') {
+          // Provider emitted a text block start (e.g., re-translated stream);
+          // track it so subsequent text deltas don't trigger re-synthesis.
+          openKind = 'text'
+        } else if (event.content_block.type === 'thinking') {
+          openKind = 'thinking'
+        } else {
+          openKind = 'provider'
         }
-
         activeBlockIndex = event.index
+        nextSynthIndex = Math.max(nextSynthIndex, event.index + 1)
         yield event
         break
       }
 
       case 'message_stop': {
-        // Close the last active block if any
         if (activeBlockIndex >= 0) {
           yield { type: 'content_block_stop', index: activeBlockIndex }
         }
-
-        // Synthesize message_delta
         yield {
           type: 'message_delta',
           delta: { stop_reason: hasToolBlocks ? 'tool_use' : 'end_turn' },
           usage: { output_tokens: estimateOutputTokens(totalText) },
         }
-
         yield { type: 'message_stop' }
         break
       }
 
       case 'error': {
-        // Pass through error events unchanged
         yield event
         break
       }
 
       default: {
-        // Pass through any other events
         yield event
         break
       }
@@ -150,6 +169,10 @@ async function* translateSimulated(
   options?: TranslateStreamOptions,
 ): AsyncGenerator<StreamEvent, void> {
   let bufferedText = ''
+  // Native tool blocks parsed server-side (--jinja) can arrive even in
+  // simulated mode; dropping them loses the model's action. Collect and
+  // append them after the extracted blocks.
+  const nativeToolBlocks: Array<{ id: string; name: string; partialJson: string }> = []
 
   for await (const event of source) {
     switch (event.type) {
@@ -158,17 +181,28 @@ async function* translateSimulated(
         break
       }
 
+      case 'content_block_start': {
+        if (event.content_block.type === 'tool_use') {
+          nativeToolBlocks.push({
+            id: (event.content_block as any).id ?? '',
+            name: (event.content_block as any).name ?? 'unknown',
+            partialJson: '',
+          })
+        }
+        break
+      }
+
       case 'content_block_delta': {
-        // Buffer all text deltas instead of emitting them
         if (event.delta.type === 'text_delta') {
           bufferedText += event.delta.text
+        } else if (event.delta.type === 'input_json_delta' && nativeToolBlocks.length > 0) {
+          nativeToolBlocks[nativeToolBlocks.length - 1].partialJson += event.delta.partial_json
         }
         break
       }
 
       case 'message_stop': {
-        // Process the buffered text and emit proper block lifecycle
-        yield* emitSimulatedBlocks(bufferedText)
+        yield* emitSimulatedBlocks(bufferedText, nativeToolBlocks)
         break
       }
 
@@ -178,8 +212,6 @@ async function* translateSimulated(
       }
 
       default:
-        // Ignore other events in simulated mode (e.g., content_block_start
-        // from the provider for tool blocks — we handle everything ourselves)
         break
     }
   }
@@ -188,8 +220,11 @@ async function* translateSimulated(
 /**
  * Process buffered text from simulated mode and emit the full block lifecycle.
  */
-function* emitSimulatedBlocks(bufferedText: string): Generator<StreamEvent, void> {
-  if (bufferedText.length === 0) {
+function* emitSimulatedBlocks(
+  bufferedText: string,
+  nativeToolBlocks: Array<{ id: string; name: string; partialJson: string }> = [],
+): Generator<StreamEvent, void> {
+  if (bufferedText.length === 0 && nativeToolBlocks.length === 0) {
     // Empty response — just emit message_delta + message_stop
     yield {
       type: 'message_delta',
@@ -247,6 +282,26 @@ function* emitSimulatedBlocks(bufferedText: string): Generator<StreamEvent, void
         id: tc.id,
         name: tc.name,
         input: tc.input,
+      },
+    }
+    yield { type: 'content_block_stop', index: blockIndex }
+    blockIndex++
+  }
+
+  // 3b. Emit native tool blocks captured from the provider (server-side parsed)
+  for (const nb of nativeToolBlocks) {
+    hasToolCalls = true
+    const result = repairToolCall(nb.partialJson)
+    yield {
+      type: 'content_block_start',
+      index: blockIndex,
+      content_block: {
+        type: 'tool_use',
+        id: nb.id || `call_${randomUUID()}`,
+        name: nb.name,
+        input: result.ok
+          ? result.input
+          : { [MALFORMED_KEY]: true, raw: result.raw, error: result.error },
       },
     }
     yield { type: 'content_block_stop', index: blockIndex }

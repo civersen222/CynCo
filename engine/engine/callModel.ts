@@ -492,7 +492,7 @@ export async function* localCallModel({
             const existing = (currentBlock as any)._partialJson ?? ''
             ;(currentBlock as any)._partialJson = existing + delta.partial_json
           } else if (delta.type === 'thinking_delta' && currentBlock.type === 'thinking') {
-            currentBlock.text = (currentBlock.text as string) + delta.text
+            currentBlock.text = (currentBlock.text as string) + delta.thinking
           }
           break
         }
