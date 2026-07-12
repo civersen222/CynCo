@@ -13,7 +13,7 @@
 import { randomUUID } from 'crypto'
 import type { StreamEvent } from '../types.js'
 import { extractSimulatedToolCalls, extractThinkingBlocks } from '../ollama/simulated.js'
-import { repairToolCall, parseNativeToolCalls, MALFORMED_KEY } from './toolCallRepair.js'
+import { parseNativeToolCalls } from './toolCallRepair.js'
 
 // ─── Public API ─────────────────────────────────────────────────
 
