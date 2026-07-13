@@ -289,14 +289,12 @@ export class CyberneticsGovernance {
         source: 'algedonic',
         severity: 'critical',
         message: `Critical: Tool ${name} failure requires immediate attention`,
-        timestamp: Date.now(),
       })
     } else if (action.type === 'Delayed' && this.onAlert) {
       this.onAlert({
         source: 'algedonic',
         severity: 'high',
         message: `Tool ${name} failure — monitoring for recovery`,
-        timestamp: Date.now(),
       })
     }
 
@@ -552,7 +550,6 @@ export class CyberneticsGovernance {
         source: 'variety',
         severity: 'medium',
         message: `Task complexity (${this.currentTaskComplexity}) exceeds tool variety (${distinctToolsUsed} tools). Model may need more diverse tool usage.`,
-        timestamp: Date.now(),
       })
     }
 
@@ -602,7 +599,6 @@ export class CyberneticsGovernance {
         source: 'algedonic',
         severity: 'critical',
         message: `Model error: ${error}`,
-        timestamp: Date.now(),
       })
     }
   }
@@ -613,7 +609,6 @@ export class CyberneticsGovernance {
         source: 'algedonic',
         severity: 'high',
         message: `Model timeout after ${ms}ms`,
-        timestamp: Date.now(),
       })
     }
   }

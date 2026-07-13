@@ -23,9 +23,8 @@ export type GovernanceReport = {
 }
 
 export type GovernanceAlert = {
-  /** Which organ raised it: 'algedonic' | 'variety' | ... */
-  source: string
+  /** Which organ raised it. */
+  source: 'algedonic' | 'variety'
   severity: 'low' | 'medium' | 'high' | 'critical'
   message: string
-  timestamp: number
 }
