@@ -50,6 +50,8 @@ import { makeJournalEntry } from '../training/types.js'
 
 // ─── Task Complexity Estimator (S4: environment scanning) ─────
 
+// NOTE: mirrored by S4Snapshot.taskType in vsm/types.ts (types.ts stays
+// import-free by convention). Keep the unions in sync.
 type TaskType = 'simple_query' | 'file_operation' | 'code_generation' | 'debugging' | 'multi_step' | 'architectural'
 
 function classifyTask(userMessage: string): { type: TaskType; complexity: number } {
@@ -664,6 +666,9 @@ export class CyberneticsGovernance {
       status = 'healthy'
     }
 
+    const lastScores = this._reflector.getLastScores()
+    const reflectionHistory = this._reflector.getHistory()
+
     return {
       status,
       varietyBalance,
@@ -687,9 +692,11 @@ export class CyberneticsGovernance {
         stats: this._predictionTracker.getStatistics(),
       },
       s4: {
-        scores: this._reflector.getLastScores(),
-        composite: this._reflector.getHistory().at(-1) ?? null,
-        reflectionCount: this._reflector.getHistory().length,
+        // Defensive copy — getLastScores() returns the reflector's live object;
+        // the report must not alias mutable internal state.
+        scores: lastScores ? { ...lastScores } : null,
+        composite: reflectionHistory.at(-1) ?? null,
+        reflectionCount: reflectionHistory.length,
         taskType: this.currentTaskType,
         taskComplexity: this.currentTaskComplexity,
       },
