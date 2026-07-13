@@ -2342,6 +2342,8 @@ export class ConversationLoop {
       this.lastSnapshotHash = this.snapshot.track()
     } catch (e) {
       console.log(`[snapshot] Re-track after undo failed: ${e instanceof Error ? e.message : String(e)}`)
+      // Best available truth: the workspace now matches the restored snapshot.
+      this.lastSnapshotHash = entry.prevHash
     }
     this.emit({ type: 'snapshot.restored', hash: entry.prevHash, filesChanged: entry.filesChanged })
     return { ok: true, message: `Reverted last write batch (${entry.filesChanged} files, +${entry.additions}/-${entry.deletions}).` }
