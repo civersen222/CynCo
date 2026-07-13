@@ -170,9 +170,9 @@ export class ConversationLoop {
   private journal: JSONLStore
   private snapshot?: WorkspaceSnapshot
   private snapshotCwd?: string
-  private lastSnapshotHash?: string
+  private lastSnapshotHash?: SnapshotHash
   /** Undo targets: one entry per write batch that changed user files (P1.4). */
-  private snapshotUndoStack: Array<{ prevHash: string; newHash: string; filesChanged: number; additions: number; deletions: number }> = []
+  private snapshotUndoStack: Array<{ prevHash: SnapshotHash; newHash: SnapshotHash; filesChanged: number; additions: number; deletions: number }> = []
   private vibeMode = false
   private _correctionAttempts = 0
   /** P1.8 bounded retry: consecutive malformed tool-call parses. 0 = healthy. */
@@ -290,6 +290,9 @@ export class ConversationLoop {
    * otherwise snapshots run `git add -A` against the engine's startup dir.
    */
   private initSnapshot(cwd: string): void {
+    // Undo entries reference tree objects in the previous cwd's snapshot repo —
+    // unrestorable after re-init, so drop them (P1.4 review I1).
+    this.snapshotUndoStack = []
     try {
       const fs = require('fs')
       const path = require('path')
@@ -2286,7 +2289,7 @@ export class ConversationLoop {
     try {
       const newHash = this.snapshot.track()
       if (this.lastSnapshotHash && newHash !== this.lastSnapshotHash) {
-        const diff = this.snapshot.diff(this.lastSnapshotHash as SnapshotHash, newHash)
+        const diff = this.snapshot.diff(this.lastSnapshotHash, newHash)
         // Filter out index/debug files — only count user code changes
         const userFiles = diff.files.filter((f: any) => !f.path?.includes('.cynco'))
         if (userFiles.length > 0) {
@@ -2317,20 +2320,31 @@ export class ConversationLoop {
 
   /** Revert the most recent write batch to its pre-batch snapshot (P1.4 /undo). */
   undoLastBatch(): { ok: boolean; message: string } {
+    // Check the snapshot BEFORE popping — otherwise a stale entry would be
+    // silently discarded while claiming "nothing to undo" (P1.4 review I1).
+    if (!this.snapshot) {
+      return { ok: false, message: 'Nothing to undo — no tracked write batches this session.' }
+    }
     const entry = this.snapshotUndoStack.pop()
-    if (!entry || !this.snapshot) {
+    if (!entry) {
       return { ok: false, message: 'Nothing to undo — no tracked write batches this session.' }
     }
     try {
-      this.snapshot.restore(entry.prevHash as SnapshotHash)
-      this.lastSnapshotHash = this.snapshot.track()
-      this.emit({ type: 'snapshot.restored', hash: entry.prevHash, filesChanged: entry.filesChanged })
-      return { ok: true, message: `Reverted last write batch (${entry.filesChanged} files, +${entry.additions}/-${entry.deletions}).` }
+      this.snapshot.restore(entry.prevHash)
     } catch (e) {
       // Restore failed — put the entry back so the user can retry.
       this.snapshotUndoStack.push(entry)
       return { ok: false, message: `Undo failed: ${e instanceof Error ? e.message : String(e)}` }
     }
+    // The workspace IS reverted at this point. A re-track failure must not be
+    // reported as an undo failure (P1.4 review M1) — tolerate it and move on.
+    try {
+      this.lastSnapshotHash = this.snapshot.track()
+    } catch (e) {
+      console.log(`[snapshot] Re-track after undo failed: ${e instanceof Error ? e.message : String(e)}`)
+    }
+    this.emit({ type: 'snapshot.restored', hash: entry.prevHash, filesChanged: entry.filesChanged })
+    return { ok: true, message: `Reverted last write batch (${entry.filesChanged} files, +${entry.additions}/-${entry.deletions}).` }
   }
 
   getExecutor() {

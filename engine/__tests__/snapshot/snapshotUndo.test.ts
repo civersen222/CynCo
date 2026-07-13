@@ -20,7 +20,7 @@ describe('snapshot undo stack (P1.4)', () => {
   })
 
   afterEach(() => {
-    fs.rmSync(tempDir, { recursive: true, force: true })
+    fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 5 })
   })
 
   async function makeLoop() {
@@ -86,6 +86,11 @@ describe('snapshot undo stack (P1.4)', () => {
     loop['trackSnapshotAfterBatch']()
     fs.writeFileSync(path.join(tempDir, 'file.txt'), 'v3\n')
     loop['trackSnapshotAfterBatch']()
+
+    // The two snapshot.taken events must chain: batch 2's prevHash is batch 1's hash.
+    const taken = events.filter((e) => e.type === 'snapshot.taken')
+    expect(taken.length).toBe(2)
+    expect(taken[1].prevHash).toBe(taken[0].hash)
 
     expect(loop.undoLastBatch().ok).toBe(true)
     expect(fs.readFileSync(path.join(tempDir, 'file.txt'), 'utf8')).toBe('v2\n')
