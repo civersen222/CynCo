@@ -123,4 +123,21 @@ describe('cynco mission outcome ledger', () => {
     c.ingest({ type: 'governance.status', health: 'healthy' })
     expect(c.turns[0].predictions).toBeNull()
   })
+
+  it('governance.status s4 snapshot lands in the turn record (P1.3)', () => {
+    const c = createMissionCollector(() => 1000)
+    c.ingest({
+      type: 'governance.status',
+      health: 'healthy',
+      s4: { scores: { progress: 7, confidence: 6, toolQuality: 8, stuckness: 2 }, composite: 7.25, reflectionCount: 1, taskType: 'debugging', taskComplexity: 5 },
+    })
+    expect(c.turns[0].s4).toEqual(expect.objectContaining({ composite: 7.25, reflectionCount: 1, taskType: 'debugging', taskComplexity: 5 }))
+    expect(c.turns[0].s4.scores).toEqual({ progress: 7, confidence: 6, toolQuality: 8, stuckness: 2 })
+  })
+
+  it('governance.status without s4 records null (older engines)', () => {
+    const c = createMissionCollector(() => 1000)
+    c.ingest({ type: 'governance.status', health: 'healthy' })
+    expect(c.turns[0].s4).toBeNull()
+  })
 })

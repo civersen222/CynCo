@@ -409,13 +409,15 @@ def test_session_ready_warnings_default_none():
     assert event.warnings is None
 
 
-def test_governance_status_ignores_predictions_field():
-    # Engine P1.2 adds a `predictions` object to governance.status; the TUI
-    # dataclass doesn't carry it — parse must filter it, not crash.
+def test_governance_status_ignores_new_engine_fields():
+    # Engine P1.2/P1.3 add `predictions` and `s4` objects to governance.status;
+    # the TUI dataclass carries neither — parse must filter them, not crash.
     event = parse_event(json.dumps({
         "type": "governance.status",
         "health": "healthy",
         "predictions": {"open": 1, "completed": 2, "stats": []},
+        "s4": {"scores": {"progress": 7, "confidence": 6, "toolQuality": 8, "stuckness": 2},
+               "composite": 7.25, "reflectionCount": 1, "taskType": "debugging", "taskComplexity": 5},
     }))
     assert isinstance(event, GovernanceStatusEvent)
     assert event.health == "healthy"

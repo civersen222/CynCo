@@ -50,6 +50,8 @@ import { makeJournalEntry } from '../training/types.js'
 
 // ─── Task Complexity Estimator (S4: environment scanning) ─────
 
+// NOTE: mirrored by S4Snapshot.taskType in vsm/types.ts (types.ts stays
+// import-free by convention). Keep the unions in sync.
 type TaskType = 'simple_query' | 'file_operation' | 'code_generation' | 'debugging' | 'multi_step' | 'architectural'
 
 function classifyTask(userMessage: string): { type: TaskType; complexity: number } {
@@ -149,6 +151,7 @@ export class CyberneticsGovernance {
   // lastToolSignatures stays name-only for C7 / predictions consumers.
   private lastToolCallSigs: string[] = []
   private currentTaskComplexity = 1
+  private currentTaskType: TaskType = 'simple_query'
   private _workflowReadOnlyPhase = false
   private _toolsRestricted = false
   private _nudgeInjectedThisTurn = false
@@ -376,6 +379,7 @@ export class CyberneticsGovernance {
     if (metrics.userMessage) {
       const classification = classifyTask(metrics.userMessage)
       this.currentTaskComplexity = classification.complexity
+      this.currentTaskType = classification.type
     }
 
     // Update variety engine with BOTH sides of Ashby's equation:
@@ -662,6 +666,9 @@ export class CyberneticsGovernance {
       status = 'healthy'
     }
 
+    const lastScores = this._reflector.getLastScores()
+    const reflectionHistory = this._reflector.getHistory()
+
     return {
       status,
       varietyBalance,
@@ -683,6 +690,15 @@ export class CyberneticsGovernance {
         open: this._predictionTracker.openPredictions.length,
         completed: this._predictionTracker.completedPredictions.length,
         stats: this._predictionTracker.getStatistics(),
+      },
+      s4: {
+        // Defensive copy — getLastScores() returns the reflector's live object;
+        // the report must not alias mutable internal state.
+        scores: lastScores ? { ...lastScores } : null,
+        composite: reflectionHistory.at(-1) ?? null,
+        reflectionCount: reflectionHistory.length,
+        taskType: this.currentTaskType,
+        taskComplexity: this.currentTaskComplexity,
       },
     }
   }

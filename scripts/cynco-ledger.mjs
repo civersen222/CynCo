@@ -36,6 +36,7 @@ export function createMissionCollector(now = () => Date.now()) {
             consecutiveUnstable: m.consecutiveUnstable ?? null,
             agreementRatio: m.agreementRatio ?? null,
             predictions: m.predictions ?? null,
+            s4: m.s4 ?? null,
           })
           break
         case 's5.decision':

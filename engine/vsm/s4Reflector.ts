@@ -1,3 +1,5 @@
+// NOTE: mirrored structurally by S4Snapshot.scores in vsm/types.ts
+// (types.ts stays import-free by convention). Keep the shapes in sync.
 export interface ReflectionScores {
   progress: number
   confidence: number
@@ -49,6 +51,7 @@ export class S4Reflector {
   }
 
   getLastSignal(): SignalType { return this.lastSignal }
+  getLastScores(): ReflectionScores | null { return this.lastScores }
   shouldTriggerPerturbation(): boolean { return this.lastScores !== null && this.lastScores.stuckness > 7 }
   shouldSuppressSignals(): boolean { return !!this.lastScores && this.lastScores.progress >= 9 && this.lastScores.confidence >= 8 }
 

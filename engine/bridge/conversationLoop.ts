@@ -1856,6 +1856,7 @@ export class ConversationLoop {
                 // missions) — must be visible per-turn for the outcome ledger
                 agreementRatio: (turnReport as any).agreementRatio ?? 1.0,
                 predictions: turnReport.predictions,
+                s4: turnReport.s4,
                 suggestion: turnReport.stuckTurns > 0 ? 'Model may be stuck — consider changing approach' : null,
               })
 
