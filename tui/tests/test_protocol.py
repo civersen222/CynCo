@@ -19,6 +19,7 @@ from localcode_tui.protocol import (
     ContextWarningEvent,
     MemoryRecalledEvent,
     MemoryWrittenEvent,
+    GovernanceStatusEvent,
     UserMessageCommand,
     ApprovalResponseCommand,
     SlashCommandMsg,
@@ -409,7 +410,6 @@ def test_session_ready_warnings_default_none():
 
 
 def test_governance_status_ignores_predictions_field():
-    from localcode_tui.protocol import parse_event, GovernanceStatusEvent
     # Engine P1.2 adds a `predictions` object to governance.status; the TUI
     # dataclass doesn't carry it — parse must filter it, not crash.
     event = parse_event(json.dumps({
