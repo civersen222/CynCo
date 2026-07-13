@@ -2,6 +2,7 @@
 from __future__ import annotations
 import argparse
 import asyncio
+from rich.markup import escape
 from textual.app import App
 from textual.message import Message as TextualMessage
 
@@ -9,7 +10,8 @@ from .config import load_config, save_config
 from .bridge import EngineBridge
 from .protocol import (
     StreamTokenEvent, MessageCompleteEvent, ToolStartEvent,
-    ToolCompleteEvent, ToolcallTransportEvent, ApprovalRequestEvent, ContextStatusEvent,
+    ToolCompleteEvent, ToolcallTransportEvent, GovernanceAlertEvent,
+    ApprovalRequestEvent, ContextStatusEvent,
     ContextWarningEvent, SessionReadyEvent, SessionErrorEvent,
     UserMessageCommand, SlashCommandMsg, WorkflowStatusEvent,
     GovernanceStatusEvent,
@@ -103,6 +105,8 @@ class LocalCodeApp(App):
             self._handle_tool_complete(event)
         elif isinstance(event, ToolcallTransportEvent):
             self._handle_toolcall_transport(event)
+        elif isinstance(event, GovernanceAlertEvent):
+            self._handle_governance_alert(event)
         elif isinstance(event, ApprovalRequestEvent):
             self._handle_approval_request(event)
         elif isinstance(event, ContextStatusEvent):
@@ -285,6 +289,29 @@ class LocalCodeApp(App):
             # repaired / retried — debug log only, no chat noise
             try:
                 self.log(f"[toolcall.transport] {event.stage} {event.tool_name}: {event.detail}")
+            except Exception:
+                pass
+
+    def _handle_governance_alert(self, event: GovernanceAlertEvent) -> None:
+        """Algedonic governance alerts (P1.1): critical/high are user-visible, rest log-only."""
+        label = f"{event.source}: {event.message}" if event.source else event.message
+        if event.severity in ("critical", "high"):
+            try:
+                from .widgets import ChatPanel
+                chat = self.query_one(ChatPanel)
+                style = "red" if event.severity == "critical" else "yellow"
+                # escape(): alert text may contain brackets ([Errno 2], list[str])
+                # that Rich would parse as markup and raise MarkupError on.
+                chat.add_system_message(f"[{style}]\u26a0 {escape(label)}[/{style}]")
+            except Exception:
+                try:
+                    self.log(f"[governance.alert] (no chat panel) [{event.severity}] {label}")
+                except Exception:
+                    pass
+        else:
+            # low / medium — debug log only, no chat noise
+            try:
+                self.log(f"[governance.alert] [{event.severity}] {label}")
             except Exception:
                 pass
 

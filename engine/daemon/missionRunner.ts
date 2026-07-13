@@ -168,7 +168,15 @@ export class MissionRunner {
       // Persist before notifying: crash between saveState and publish is safe —
       // the streak survives and no notification is pending.
       this.ledger.saveState()
-      if (this.ledger.state.failureStreak >= FAILURE_ALERT_THRESHOLD) {
+      const isHalt = outcome.error?.startsWith('HALTED:') ?? false
+      if (isHalt) {
+        // Algedonic Critical: page immediately, do not wait for a streak (P1.1)
+        await this.deps.publish({
+          title: `CynCo HALTED on mission ${this.ledger.config.id}`,
+          message: outcome.error ?? 'halted',
+          priority: 5,
+        })
+      } else if (this.ledger.state.failureStreak >= FAILURE_ALERT_THRESHOLD) {
         await this.deps.publish({
           title: `CynCo stuck on mission ${this.ledger.config.id}`,
           message: `${this.ledger.state.failureStreak} consecutive failures. Last error: ${outcome.error ?? 'unknown'}`,

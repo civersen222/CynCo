@@ -80,6 +80,15 @@ class ToolcallTransportEvent:
 
 
 @dataclass
+class GovernanceAlertEvent:
+    """Algedonic governance alert (P1.1). Critical/high are user-visible."""
+    severity: str = "low"    # low | medium | high | critical
+    message: str = ""
+    source: str = ""
+    type: str = "governance.alert"
+
+
+@dataclass
 class FileChangeEvent:
     type: str = "file.change"
     path: str = ""
@@ -377,6 +386,7 @@ EVENT_TYPES = {
     "tool.progress": ToolProgressEvent,
     "tool.complete": ToolCompleteEvent,
     "toolcall.transport": ToolcallTransportEvent,
+    "governance.alert": GovernanceAlertEvent,
     "file.change": FileChangeEvent,
     "approval.request": ApprovalRequestEvent,
     "context.status": ContextStatusEvent,

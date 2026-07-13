@@ -240,7 +240,7 @@ export class ConversationLoop {
     })
     this.lspManager = new LSPManager(opts.cwd ?? process.cwd())
     this.governance = new GovernanceLayer((alert) => {
-      this.emit({ type: 'governance.alert', severity: alert.severity, message: alert.message, source: alert.source } as any)
+      this.emit({ type: 'governance.alert', severity: alert.severity, message: alert.message, source: alert.source })
     })
     this.s5 = opts.s5
     this.allowedTools = opts.allowedTools

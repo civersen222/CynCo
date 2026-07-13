@@ -3,7 +3,7 @@ import { describe, expect, it } from 'bun:test'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { extractOutcome, buildOneShotPrompt, runOneShotTask } from '../../daemon/oneShot.js'
+import { extractOutcome, buildOneShotPrompt, makeHaltCapture, runOneShotTask } from '../../daemon/oneShot.js'
 import type { Provider, CompletionRequest, ModelCapabilities } from '../../provider.js'
 import type { StreamEvent } from '../../types.js'
 import type { TaskFileInput } from '../../daemon/types.js'
@@ -81,6 +81,29 @@ describe('extractOutcome', () => {
     const outcome = extractOutcome(text)
     expect(outcome.recommendations.length).toBe(1)
     expect(outcome.recommendations[0].actionType).toBe('waiver')
+  })
+})
+
+describe('makeHaltCapture', () => {
+  it('captures a halted message.complete', () => {
+    const cap = makeHaltCapture()
+    cap.emit({ type: 'stream.token', text: 'hi' })
+    expect(cap.haltReason()).toBeNull()
+    cap.emit({ type: 'message.complete', messageId: '', stopReason: 'halted' })
+    expect(cap.haltReason()).toBe('algedonic kill switch halted the loop')
+  })
+
+  it('prefers the critical governance.alert message as the reason', () => {
+    const cap = makeHaltCapture()
+    cap.emit({ type: 'governance.alert', severity: 'critical', message: '5 consecutive failures — system halted for safety', source: 'algedonic' })
+    cap.emit({ type: 'message.complete', messageId: '', stopReason: 'halted' })
+    expect(cap.haltReason()).toBe('5 consecutive failures — system halted for safety')
+  })
+
+  it('a critical alert without a halt is not a halt', () => {
+    const cap = makeHaltCapture()
+    cap.emit({ type: 'governance.alert', severity: 'critical', message: 'model error', source: 'algedonic' })
+    expect(cap.haltReason()).toBeNull()
   })
 })
 

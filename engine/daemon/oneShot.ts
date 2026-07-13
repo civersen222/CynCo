@@ -8,6 +8,7 @@ import type { Provider } from '../provider.js'
 import type { LocalCodeConfig } from '../config.js'
 import type { Message } from '../types.js'
 import { ConversationLoop } from '../bridge/conversationLoop.js'
+import type { EngineEvent } from '../bridge/protocol.js'
 import { S5Orchestrator } from '../s5/orchestrator.js'
 import { RuleBasedS5 } from '../s5/ruleBasedS5.js'
 import { ModelS5 } from '../s5/modelS5.js'
@@ -78,6 +79,24 @@ function collectAssistantText(messages: Message[]): string {
   return parts.join('\n')
 }
 
+/** Headless emit-sink that remembers whether the loop was halted by the
+ *  algedonic kill switch, and the best available reason (P1.1). */
+export function makeHaltCapture(): { emit: (e: EngineEvent) => void; haltReason: () => string | null } {
+  let lastCriticalMsg: string | null = null
+  let halted = false
+  return {
+    emit: (e: EngineEvent) => {
+      if (e.type === 'governance.alert' && e.severity === 'critical' && e.message) {
+        lastCriticalMsg = e.message
+      }
+      if (e.type === 'message.complete' && e.stopReason === 'halted') {
+        halted = true
+      }
+    },
+    haltReason: () => (halted ? (lastCriticalMsg ?? 'algedonic kill switch halted the loop') : null),
+  }
+}
+
 export type TradeScanImpl = (
   task: TaskFileInput,
   provider: Provider,
@@ -102,12 +121,13 @@ export async function runGovernedLoop(opts: {
     : new RuleBasedS5()
   const s5 = new S5Orchestrator(s5Impl)
 
+  const haltCapture = makeHaltCapture()
   const loop = new ConversationLoop({
     // unattended: read-only mission tools, no TUI to ask; scouts disabled —
     // codebase scouting is irrelevant to mission tasks and burns GPU time
     config: { ...opts.config, approveAll: true, noScouts: true },
     provider: opts.provider,
-    emit: () => {}, // headless — no TUI, no dashboard
+    emit: haltCapture.emit, // headless — no TUI, but halts must not vanish (P1.1)
     cwd: process.cwd(),
     s5,
     allowedTools: opts.allowedTools,
@@ -125,6 +145,10 @@ export async function runGovernedLoop(opts: {
   const collectedText = collectAssistantText(loop.getMessages())
   if (timedOut) {
     return { ok: false, summary: collectedText.slice(-1000), recommendations: [], error: 'Internal deadline exceeded' }
+  }
+  const haltReason = haltCapture.haltReason()
+  if (haltReason) {
+    return { ok: false, summary: collectedText.slice(-1000), recommendations: [], error: `HALTED: ${haltReason}` }
   }
   return extractOutcome(collectedText)
 }

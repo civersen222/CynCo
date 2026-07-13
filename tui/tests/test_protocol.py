@@ -168,6 +168,7 @@ class TestParseEvent:
             "subagent.killed",
             "s2.decision",
             "toolcall.transport",
+            "governance.alert",
         }
         assert set(EVENT_TYPES.keys()) == expected
 
@@ -370,6 +371,25 @@ def test_toolcall_transport_event_defaults():
     assert event.stage == "regex_fallback"
     assert event.tool_id == ""
     assert event.tool_name == ""
+
+
+def test_governance_alert_event_parses():
+    from localcode_tui.protocol import parse_event, GovernanceAlertEvent
+    raw = '{"type": "governance.alert", "severity": "critical", "message": "Critical: Tool Bash failure requires immediate attention", "source": "algedonic"}'
+    event = parse_event(raw)
+    assert isinstance(event, GovernanceAlertEvent)
+    assert event.severity == "critical"
+    assert event.message == "Critical: Tool Bash failure requires immediate attention"
+    assert event.source == "algedonic"
+
+
+def test_governance_alert_event_defaults():
+    from localcode_tui.protocol import parse_event, GovernanceAlertEvent
+    raw = '{"type": "governance.alert", "severity": "low", "message": "minor drift"}'
+    event = parse_event(raw)
+    assert isinstance(event, GovernanceAlertEvent)
+    assert event.severity == "low"
+    assert event.source == ""
 
 
 def test_session_ready_warnings_parse():
