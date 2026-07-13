@@ -274,9 +274,11 @@ class LocalCodeApp(App):
             try:
                 from .widgets import ChatPanel
                 chat = self.query_one(ChatPanel)
-                chat.add_system_message(
-                    f"[yellow]\u26a0 tool call {event.tool_name or ''} {event.stage}: {event.detail or ''}[/yellow]".strip()
-                )
+                parts = ["\u26a0 tool call", event.tool_name, event.stage]
+                msg = " ".join(p for p in parts if p)
+                if event.detail:
+                    msg += f": {event.detail}"
+                chat.add_system_message(f"[yellow]{msg}[/yellow]")
             except Exception:
                 pass
         else:

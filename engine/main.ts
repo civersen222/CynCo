@@ -460,10 +460,16 @@ async function handleCommand(command: TUICommand): Promise<void> {
           if (args) {
             config.model = args
             loop.updateModel(args)
+            // Include any current template warning so a swap onto a bad
+            // template is visible in the TUI too (P1.8).
+            const modelPm = (globalThis as any).__llamaProcessManager
             wsServer.emit({
               type: 'session.ready',
               model: args,
               contextLength: contextLength,
+              ...(modelPm?.templateWarning
+                ? { warnings: [`Chat template validation failed: ${modelPm.templateWarning}`] }
+                : {}),
             })
           }
           break
