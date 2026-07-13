@@ -220,6 +220,27 @@ describe('MissionRunner.tick', () => {
     expect(ledger.state.failureStreak).toBe(1)
   })
 
+  it('a HALT at the failure-streak threshold publishes exactly once (halt page, no streak alert)', async () => {
+    const { deps, published } = makeDeps({
+      runTask: async (): Promise<TaskOutcome> => ({
+        ok: false,
+        summary: '',
+        recommendations: [],
+        error: 'HALTED: 5 consecutive failures — system halted for safety',
+      }),
+    })
+    const ledger = MissionLedger.load(join(dir, 'mfl-dynasty'))
+    ledger.state.failureStreak = 2 // this run makes it 3 = FAILURE_ALERT_THRESHOLD
+    ledger.setNextFire('news', new Date(2026, 5, 11, 11, 59).toISOString())
+    ledger.setNextFire('poll', new Date(2026, 5, 12).toISOString()) // not due
+    const runner = new MissionRunner(ledger, deps as any)
+    await runner.tick()
+    expect(ledger.state.failureStreak).toBe(3)
+    expect(published.length).toBe(1) // halt page only — the else-if suppresses the streak alert
+    expect(published[0].title).toContain('HALTED')
+    expect(published[0].priority).toBe(5)
+  })
+
   it('handleCommand resolves approval and confirms via publish; promotion proposal at threshold', async () => {
     const { deps, published } = makeDeps()
     const ledger = MissionLedger.load(join(dir, 'mfl-dynasty'))

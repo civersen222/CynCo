@@ -8,6 +8,7 @@ import type { Provider } from '../provider.js'
 import type { LocalCodeConfig } from '../config.js'
 import type { Message } from '../types.js'
 import { ConversationLoop } from '../bridge/conversationLoop.js'
+import type { EngineEvent } from '../bridge/protocol.js'
 import { S5Orchestrator } from '../s5/orchestrator.js'
 import { RuleBasedS5 } from '../s5/ruleBasedS5.js'
 import { ModelS5 } from '../s5/modelS5.js'
@@ -80,16 +81,15 @@ function collectAssistantText(messages: Message[]): string {
 
 /** Headless emit-sink that remembers whether the loop was halted by the
  *  algedonic kill switch, and the best available reason (P1.1). */
-export function makeHaltCapture(): { emit: (e: unknown) => void; haltReason: () => string | null } {
+export function makeHaltCapture(): { emit: (e: EngineEvent) => void; haltReason: () => string | null } {
   let lastCriticalMsg: string | null = null
   let halted = false
   return {
-    emit: (e: unknown) => {
-      const ev = e as { type?: string; severity?: string; message?: string; stopReason?: string }
-      if (ev?.type === 'governance.alert' && ev.severity === 'critical' && ev.message) {
-        lastCriticalMsg = ev.message
+    emit: (e: EngineEvent) => {
+      if (e.type === 'governance.alert' && e.severity === 'critical' && e.message) {
+        lastCriticalMsg = e.message
       }
-      if (ev?.type === 'message.complete' && ev.stopReason === 'halted') {
+      if (e.type === 'message.complete' && e.stopReason === 'halted') {
         halted = true
       }
     },
