@@ -155,9 +155,26 @@ export type GovernanceStatusEvent = {
   varietyRatio?: number
   varietyBalance?: string
   algedonicAlerts?: number
-  axiomHealth?: string
+  /** Mirrors AxiomHealth in vsm/types.ts (emit sends the object, not a string). */
+  axiomHealth?: { holding: number; total: number; violations: string[] }
   consecutiveUnstable?: number
   agreementRatio?: number
+  /** Per-turn H1-H8 prediction tracker snapshot (P1.2). Mirrors
+   *  PredictionSnapshot in vsm/types.ts — keep in sync (this file stays
+   *  import-free by convention). */
+  predictions?: {
+    open: number
+    completed: number
+    stats: {
+      hypothesis: string
+      total: number
+      correct: number
+      hitRate: number
+      confidenceInterval: [number, number]
+      nullBaselineRate: number
+      significantlyBetter: boolean
+    }[]
+  }
   suggestion: string | null
 }
 

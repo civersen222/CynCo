@@ -39,6 +39,8 @@ export type Prediction = {
   actualOutcome?: string
 }
 
+// NOTE: mirrored structurally by PredictionSnapshot.stats in vsm/types.ts
+// (types.ts cannot import this file — cycle). Keep the shapes in sync.
 export type PredictionStats = {
   hypothesis: HypothesisId
   total: number

@@ -107,4 +107,20 @@ describe('cynco mission outcome ledger', () => {
       { t: 1000, stage: 'discarded', toolName: 'Write', detail: 'Unexpected token' },
     ])
   })
+
+  it('governance.status predictions snapshot lands in the turn record (P1.2)', () => {
+    const c = createMissionCollector(() => 1000)
+    c.ingest({
+      type: 'governance.status',
+      health: 'healthy',
+      predictions: { open: 1, completed: 2, stats: [{ hypothesis: 'H4', total: 2, correct: 1, hitRate: 0.5, confidenceInterval: [0.1, 0.9], nullBaselineRate: 0.3, significantlyBetter: false }] },
+    })
+    expect(c.turns[0].predictions).toEqual({ open: 1, completed: 2, stats: [expect.objectContaining({ hypothesis: 'H4' })] })
+  })
+
+  it('governance.status without predictions records null (older engines)', () => {
+    const c = createMissionCollector(() => 1000)
+    c.ingest({ type: 'governance.status', health: 'healthy' })
+    expect(c.turns[0].predictions).toBeNull()
+  })
 })
