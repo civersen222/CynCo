@@ -23,6 +23,17 @@ export type PredictionSnapshot = {
   }[]
 }
 
+/** Per-turn snapshot of the S4 reflector + task classifier (P1.3). scores
+ *  mirrors ReflectionScores in s4Reflector.ts structurally — types.ts stays
+ *  import-free by convention; keep the shapes in sync. */
+export type S4Snapshot = {
+  scores: { progress: number; confidence: number; toolQuality: number; stuckness: number } | null
+  composite: number | null
+  reflectionCount: number
+  taskType: 'simple_query' | 'file_operation' | 'code_generation' | 'debugging' | 'multi_step' | 'architectural'
+  taskComplexity: number
+}
+
 export type GovernanceReport = {
   status: HealthStatus
   varietyBalance: 'balanced' | 'underload' | 'overload'
@@ -38,6 +49,7 @@ export type GovernanceReport = {
   axiomHealth: AxiomHealth
   recentToolNames: string[]
   predictions: PredictionSnapshot
+  s4: S4Snapshot
 }
 
 export type GovernanceAlert = {

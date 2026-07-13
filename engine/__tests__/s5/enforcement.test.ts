@@ -49,6 +49,7 @@ function makeGovernance(overrides: Partial<GovernanceReport> = {}): GovernanceRe
     axiomHealth: { holding: 0, total: 0, violations: [] },
     recentToolNames: [],
     predictions: { open: 0, completed: 0, stats: [] },
+    s4: { scores: null, composite: null, reflectionCount: 0, taskType: 'simple_query', taskComplexity: 1 },
     ...overrides,
   }
 }

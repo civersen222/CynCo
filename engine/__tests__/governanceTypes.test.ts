@@ -35,6 +35,7 @@ describe('GovernanceReport extended fields', () => {
       axiomHealth: { holding: 3, total: 3, violations: [] },
       recentToolNames: [],
       predictions: { open: 0, completed: 0, stats: [] },
+      s4: { scores: null, composite: null, reflectionCount: 0, taskType: 'simple_query', taskComplexity: 1 },
     }
     expect(typeof report.agreementRatio).toBe('number')
     expect(report.agreementRatio).toBe(0.85)
@@ -56,6 +57,7 @@ describe('GovernanceReport extended fields', () => {
       axiomHealth: { holding: 0, total: 0, violations: [] },
       recentToolNames: [],
       predictions: { open: 0, completed: 0, stats: [] },
+      s4: { scores: null, composite: null, reflectionCount: 0, taskType: 'simple_query', taskComplexity: 1 },
     }
     expect(withNull.observerDivergence).toBeNull()
 
@@ -81,6 +83,7 @@ describe('GovernanceReport extended fields', () => {
       axiomHealth: axiom,
       recentToolNames: [],
       predictions: { open: 0, completed: 0, stats: [] },
+      s4: { scores: null, composite: null, reflectionCount: 0, taskType: 'simple_query', taskComplexity: 1 },
     }
     expect(report.axiomHealth.holding).toBe(2)
     expect(report.axiomHealth.total).toBe(3)
@@ -220,6 +223,7 @@ describe('S5Orchestrator passes agreementRatio and observerDivergence', () => {
       axiomHealth: { holding: 0, total: 0, violations: [] },
       recentToolNames: [],
       predictions: { open: 0, completed: 0, stats: [] },
+      s4: { scores: null, composite: null, reflectionCount: 0, taskType: 'simple_query', taskComplexity: 1 },
     }
 
     const orchInput: OrchestratorInput = {

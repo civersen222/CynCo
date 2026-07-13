@@ -149,6 +149,7 @@ export class CyberneticsGovernance {
   // lastToolSignatures stays name-only for C7 / predictions consumers.
   private lastToolCallSigs: string[] = []
   private currentTaskComplexity = 1
+  private currentTaskType: TaskType = 'simple_query'
   private _workflowReadOnlyPhase = false
   private _toolsRestricted = false
   private _nudgeInjectedThisTurn = false
@@ -376,6 +377,7 @@ export class CyberneticsGovernance {
     if (metrics.userMessage) {
       const classification = classifyTask(metrics.userMessage)
       this.currentTaskComplexity = classification.complexity
+      this.currentTaskType = classification.type
     }
 
     // Update variety engine with BOTH sides of Ashby's equation:
@@ -683,6 +685,13 @@ export class CyberneticsGovernance {
         open: this._predictionTracker.openPredictions.length,
         completed: this._predictionTracker.completedPredictions.length,
         stats: this._predictionTracker.getStatistics(),
+      },
+      s4: {
+        scores: this._reflector.getLastScores(),
+        composite: this._reflector.getHistory().at(-1) ?? null,
+        reflectionCount: this._reflector.getHistory().length,
+        taskType: this.currentTaskType,
+        taskComplexity: this.currentTaskComplexity,
       },
     }
   }
