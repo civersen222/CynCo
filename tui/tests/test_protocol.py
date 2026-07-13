@@ -167,6 +167,7 @@ class TestParseEvent:
             "subagent.complete",
             "subagent.killed",
             "s2.decision",
+            "toolcall.transport",
         }
         assert set(EVENT_TYPES.keys()) == expected
 
@@ -347,3 +348,41 @@ def test_session_ready_expertise_field():
     event = parse_event(raw)
     assert isinstance(event, SessionReadyEvent)
     assert event.expertise == "beginner"
+
+
+def test_toolcall_transport_event_parses():
+    from localcode_tui.protocol import parse_event, ToolcallTransportEvent
+    raw = '{"type": "toolcall.transport", "stage": "discarded", "toolId": "t1", "toolName": "Read", "detail": "Unexpected token"}'
+    event = parse_event(raw)
+    assert isinstance(event, ToolcallTransportEvent)
+    assert event.stage == "discarded"
+    assert event.tool_id == "t1"
+    assert event.tool_name == "Read"
+    assert event.detail == "Unexpected token"
+
+
+def test_toolcall_transport_event_defaults():
+    from localcode_tui.protocol import parse_event, ToolcallTransportEvent
+    # Engine omits toolId/toolName for regex_fallback events
+    raw = '{"type": "toolcall.transport", "stage": "regex_fallback", "detail": "extracted 2 call(s) from XML text"}'
+    event = parse_event(raw)
+    assert isinstance(event, ToolcallTransportEvent)
+    assert event.stage == "regex_fallback"
+    assert event.tool_id == ""
+    assert event.tool_name == ""
+
+
+def test_session_ready_warnings_parse():
+    from localcode_tui.protocol import parse_event, SessionReadyEvent
+    raw = '{"type": "session.ready", "model": "m", "contextLength": 4096, "warnings": ["Chat template validation failed: no tool support"]}'
+    event = parse_event(raw)
+    assert isinstance(event, SessionReadyEvent)
+    assert event.warnings and "tool support" in event.warnings[0]
+
+
+def test_session_ready_warnings_default_none():
+    from localcode_tui.protocol import parse_event, SessionReadyEvent
+    raw = '{"type": "session.ready", "model": "m", "contextLength": 4096}'
+    event = parse_event(raw)
+    assert isinstance(event, SessionReadyEvent)
+    assert event.warnings is None

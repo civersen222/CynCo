@@ -25,6 +25,8 @@ export type SessionReadyEvent = {
   lspServers?: LSPServerInfo[]
   mcpServers?: MCPServerInfo[]
   expertise?: 'beginner' | 'intermediate' | 'advanced'
+  /** Startup warnings to surface in the TUI (e.g., chat template lacks tool support) (P1.8). */
+  warnings?: string[]
 }
 
 export type SessionErrorEvent = {

@@ -155,6 +155,8 @@ export class ProcessManager {
   private child: ChildProcess | null = null
   private currentLoraPath: string | null = null
   onEvalTokPerSec?: (tps: number) => void
+  /** Last chat-template validation failure reason, null when OK (P1.8). */
+  templateWarning: string | null = null
 
   constructor(config: ProcessManagerConfig) {
     this.binaryPath = config.binaryPath
@@ -278,6 +280,7 @@ export class ProcessManager {
 
     // Template validation (P1.8) — warn loudly, never block startup.
     const templateCheck = await validateChatTemplate(`http://127.0.0.1:${this.port}`)
+    this.templateWarning = templateCheck.ok ? null : (templateCheck.reason ?? 'unknown')
     if (!templateCheck.ok) {
       console.log(`[llama-cpp] WARNING: chat template validation failed: ${templateCheck.reason}`)
     } else {

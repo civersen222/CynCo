@@ -132,6 +132,16 @@ class TestLocalCodeApp:
         app.on_local_code_app_engine_event_received(msg)
         app._handle_context_status.assert_called_once_with(event)
 
+    def test_process_event_dispatch_toolcall_transport(self):
+        from localcode_tui.app import LocalCodeApp
+        from localcode_tui.protocol import ToolcallTransportEvent
+        app = LocalCodeApp()
+        app._handle_toolcall_transport = MagicMock()
+        event = ToolcallTransportEvent(stage="discarded", tool_name="Read", detail="Unexpected token")
+        msg = LocalCodeApp.EngineEventReceived(event)
+        app.on_local_code_app_engine_event_received(msg)
+        app._handle_toolcall_transport.assert_called_once_with(event)
+
     def test_process_event_dispatch_session_ready(self):
         from localcode_tui.app import LocalCodeApp
         from localcode_tui.protocol import SessionReadyEvent
