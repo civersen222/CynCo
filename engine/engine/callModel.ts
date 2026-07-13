@@ -20,6 +20,7 @@ import { convertMessages, convertTools, buildSystemPrompt } from './messageConve
 import type { ToolLike } from './messageConvert.js'
 import { translateStream } from './streamTranslator.js'
 import { filterTools } from './toolFilter.js'
+import { repairToolCall, MALFORMED_KEY } from './toolCallRepair.js'
 
 // ─── Output Types ──────
 
@@ -182,15 +183,20 @@ export async function* localCallModel({
 
   // 3. Resolve capabilities
   const capabilities = resolveCaps(model)
-  // Ollama provider override: force simulated tool use to bypass Ollama bugs
+  // Ollama override: force simulated tool use to bypass Ollama bugs
   // (Go struct serialization, stripped tool history, wrong template renderer)
-  // unless LOCALCODE_NATIVE_TOOLS=true is explicitly set
-    // Force simulated tool use for both Ollama and llama-cpp to avoid
-  // native tool call format issues (model outputs XML text for large edits)
-  const ollamaSimulatedOverride = (provider.name === 'ollama' || provider.name === 'llama-cpp')
+  // unless LOCALCODE_NATIVE_TOOLS=true is explicitly set.
+  const ollamaSimulatedOverride = provider.name === 'ollama'
     && capabilities.toolUse !== 'none'
     && process.env.LOCALCODE_NATIVE_TOOLS !== 'true'
-  const simulatedToolUse = ollamaSimulatedOverride || capabilities.toolUse === 'simulated'
+  // llama-cpp default is NATIVE (P1.8): llama-server runs with --jinja and
+  // handles tools/tool_calls natively. LOCALCODE_SIMULATED_TOOLS=true is the
+  // kill switch back to prompt-engineered <tool_call> XML.
+  const llamaSimulatedOverride = provider.name === 'llama-cpp'
+    && capabilities.toolUse !== 'none'
+    && process.env.LOCALCODE_SIMULATED_TOOLS === 'true'
+  const simulatedToolUse = ollamaSimulatedOverride || llamaSimulatedOverride
+    || capabilities.toolUse === 'simulated'
   const noToolUse = capabilities.toolUse === 'none'
 
   // 3b. Pre-turn context check
@@ -492,19 +498,36 @@ export async function* localCallModel({
             const existing = (currentBlock as any)._partialJson ?? ''
             ;(currentBlock as any)._partialJson = existing + delta.partial_json
           } else if (delta.type === 'thinking_delta' && currentBlock.type === 'thinking') {
-            currentBlock.text = (currentBlock.text as string) + delta.text
+            currentBlock.text = (currentBlock.text as string) + delta.thinking
           }
           break
         }
 
         case 'content_block_stop': {
           if (currentBlock) {
-            // Finalize tool_use block: parse accumulated JSON
+            // Finalize tool_use block: parse accumulated JSON via the repair
+            // ladder (P1.8). Unrepairable input is MARKED, never dropped —
+            // conversationLoop turns the marker into an error-feedback retry.
             if (currentBlock.type === 'tool_use' && (currentBlock as any)._partialJson) {
-              try {
-                currentBlock.input = JSON.parse((currentBlock as any)._partialJson)
-              } catch {
-                // Keep existing input if parse fails
+              const raw = (currentBlock as any)._partialJson as string
+              const result = repairToolCall(raw)
+              if (result.ok) {
+                currentBlock.input = result.input
+                if (result.repaired) {
+                  console.log(`[callModel] Repaired malformed JSON args for ${currentBlock.name}`)
+                  yield {
+                    type: 'stream_event' as const,
+                    event: {
+                      type: 'toolcall_transport',
+                      stage: 'repaired',
+                      toolName: currentBlock.name as string,
+                      detail: `jsonrepair salvaged ${raw.length}-char args`,
+                    } as any,
+                  }
+                }
+              } else {
+                console.log(`[callModel] Unrepairable args for ${currentBlock.name}: ${result.error}`)
+                currentBlock.input = { [MALFORMED_KEY]: true, raw: result.raw, error: result.error }
               }
               delete (currentBlock as any)._partialJson
             }

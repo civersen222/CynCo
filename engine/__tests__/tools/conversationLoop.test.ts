@@ -472,3 +472,155 @@ describe('ConversationLoop with tools', () => {
     expect(complete.stopReason).toBe('end_turn')
   })
 })
+
+// ─── P1.8: malformed tool-call retry ladder ───────────────────────────────────
+// These tests use CYNCO_INTEGRATION because they create real ConversationLoop
+// instances that hit the filesystem and create JSONL sessions.
+describe('malformed tool-call retry ladder (P1.8)', () => {
+  // Emit a tool_use block with broken JSON arguments so callModel marks input
+  // as { __malformed: true, raw, error }.
+  function* malformedToolUse(id: string, raw: string): Generator<StreamEvent> {
+    yield { type: 'message_start', message: { id: 'msg1', model: 'test', usage: { input_tokens: 10, output_tokens: 0 } } } as any
+    yield { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id, name: 'Read', input: {} } } as any
+    yield { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: raw } } as any
+    yield { type: 'content_block_stop', index: 0 } as any
+    yield { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 5 } } as any
+    yield { type: 'message_stop' } as any
+  }
+
+  it.skipIf(SKIP)('answers a malformed tool_use with an error tool_result containing the parse error and raw text', async () => {
+    const events: any[] = []
+    // jsonrepair salvages JSON-ish garbage (e.g. {"file_path": <<<) — only XML-like text genuinely throws
+    const RAW = '<tool_call>blah</tool_call>'
+    const provider = mockProvider([
+      () => malformedToolUse('tu-bad1', RAW),
+      () => textResponse('understood'),
+    ])
+    const loop = new ConversationLoop({
+      config: { ...defaultConfig(), approveAll: true },
+      provider,
+      emit: (e) => events.push(e),
+      allowedTools: ['Read'],
+    })
+    await loop.handleUserMessage('read something')
+
+    // (1) No actual Read tool execution — only the error synthetic result
+    const toolCompletes = events.filter(e => e.type === 'tool.complete' && e.toolName === 'Read')
+    expect(toolCompletes.length).toBeGreaterThan(0)
+    const errComplete = toolCompletes[0]
+    expect(errComplete.isError).toBe(true)
+
+    // (2) The result text contains the parse error and the raw offending input
+    const resultText = String(errComplete.result)
+    // The raw partial JSON was the marker for invalid, result must reference it or its error
+    expect(resultText).toMatch(/not valid JSON|unparseable|malformed|parse error/i)
+
+    // (3) toolcall.transport with stage:'retried' was emitted
+    const transport = events.find(e => e.type === 'toolcall.transport' && e.stage === 'retried')
+    expect(transport).toBeDefined()
+    expect(transport.toolName).toBe('Read')
+  })
+
+  it.skipIf(SKIP)('emits stage:discarded to the ledger after the bounded retry is exhausted', async () => {
+    const RAW = '<tool_call>blah</tool_call>'
+    const events: any[] = []
+    // TWO consecutive malformed calls, then recovery text
+    const provider = mockProvider([
+      () => malformedToolUse('tu-bad1', RAW),
+      () => malformedToolUse('tu-bad2', RAW),
+      () => textResponse('ok'),
+    ])
+    const loop = new ConversationLoop({
+      config: { ...defaultConfig(), approveAll: true },
+      provider,
+      emit: (e) => events.push(e),
+      allowedTools: ['Read'],
+    })
+    await loop.handleUserMessage('read something')
+
+    const transports = events.filter(e => e.type === 'toolcall.transport')
+    // First is 'retried', second (exhausted) is 'discarded'
+    expect(transports.some(e => e.stage === 'retried')).toBe(true)
+    expect(transports.some(e => e.stage === 'discarded')).toBe(true)
+
+    // The discarded result tells the model to proceed without the tool call
+    const discardedIdx = transports.findIndex(e => e.stage === 'discarded')
+    // Verify a tool.complete with is_error was emitted for the second call too
+    const errCompletes = events.filter(e => e.type === 'tool.complete' && e.isError === true && e.toolName === 'Read')
+    expect(errCompletes.length).toBeGreaterThanOrEqual(2)
+    // The discarded result message should tell model to proceed
+    const discardedResult = String(errCompletes[1].result)
+    expect(discardedResult).toMatch(/proceed|different approach|dropped/i)
+  })
+
+  it.skipIf(SKIP)('a well-formed tool call resets the malformed counter', async () => {
+    const RAW = '<tool_call>blah</tool_call>'
+    const events: any[] = []
+
+    // malformed → valid Read (nonexistent file) → malformed again
+    // third must be stage:'retried' (counter reset by the valid call)
+    function* validReadToolUse(): Generator<StreamEvent> {
+      yield { type: 'message_start', message: { id: 'msg1', model: 'test', usage: { input_tokens: 10, output_tokens: 0 } } } as any
+      yield { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'tu-valid', name: 'Read', input: {} } } as any
+      yield { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"file_path":"C:/nonexistent-cynco-test-file.txt"}' } } as any
+      yield { type: 'content_block_stop', index: 0 } as any
+      yield { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 5 } } as any
+      yield { type: 'message_stop' } as any
+    }
+
+    const provider = mockProvider([
+      () => malformedToolUse('tu-bad1', RAW),     // → retried
+      () => validReadToolUse(),                     // → resets counter
+      () => malformedToolUse('tu-bad3', RAW),     // → retried (not discarded)
+      () => textResponse('done'),
+    ])
+    const loop = new ConversationLoop({
+      config: { ...defaultConfig(), approveAll: true },
+      provider,
+      emit: (e) => events.push(e),
+      allowedTools: ['Read'],
+    })
+    await loop.handleUserMessage('read something')
+
+    const transports = events.filter(e => e.type === 'toolcall.transport')
+    // Should have two 'retried' events and no 'discarded'
+    const retried = transports.filter(e => e.stage === 'retried')
+    const discarded = transports.filter(e => e.stage === 'discarded')
+    expect(retried.length).toBe(2)
+    expect(discarded.length).toBe(0)
+  })
+
+  it.skipIf(SKIP)('regex XML fallback extraction emits stage:regex_fallback', async () => {
+    // Model returns stop_reason 'tool_use' but emits <tool_call> XML text instead
+    // of native tool_use blocks — triggers the XML regex fallback path.
+    function* xmlFallbackResponse(): Generator<StreamEvent> {
+      const xml = '<tool_call>{"name":"Read","arguments":{"file_path":"C:/nonexistent-cynco-test-file.txt"}}</tool_call>'
+      yield { type: 'message_start', message: { id: 'msg1', model: 'test', usage: { input_tokens: 10, output_tokens: 0 } } } as any
+      yield { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } } as any
+      yield { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: xml } } as any
+      yield { type: 'content_block_stop', index: 0 } as any
+      yield { type: 'message_stop' } as any
+      // translateNative synthesizes its own message_delta (end_turn — no tool
+      // blocks) at message_stop, clobbering any earlier provider stop_reason.
+      // Emit the provider's tool_use stop_reason AFTER message_stop (it passes
+      // through the translator's default case) so the loop sees the defensive
+      // precondition this fallback exists for: stop=tool_use with zero blocks.
+      yield { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 5 } } as any
+    }
+    const events: any[] = []
+    const provider = mockProvider([
+      () => xmlFallbackResponse(),
+      () => textResponse('done'),
+    ])
+    const loop = new ConversationLoop({
+      config: { ...defaultConfig(), approveAll: true },
+      provider,
+      emit: (e) => events.push(e),
+      allowedTools: ['Read'],
+    })
+    await loop.handleUserMessage('read a file')
+
+    const transport = events.find(e => e.type === 'toolcall.transport' && e.stage === 'regex_fallback')
+    expect(transport).toBeDefined()
+  })
+})

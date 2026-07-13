@@ -48,6 +48,9 @@ decisions still recorded here).
     { "t": 1783550000000, "temperatureAdjust": 0, "temperature": 0.7,
       "bestOfNBudget": 1, "widenToolSet": false }
   ],
+  "toolTransport": [        // one per toolcall.transport event (P1.8 repair ladder); absent in pre-P1.8 records
+    { "t": 1783550000000, "stage": "repaired", "toolName": "Read", "detail": "..." }
+  ],
   "toolStats": { "total": 12, "errors": 1, "byName": { "Read": 4, "Edit": 2, "Bash": 6 } }
 }
 ```

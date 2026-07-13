@@ -284,7 +284,10 @@ export class LlamaCppProvider implements Provider {
     if (request.max_tokens) body.max_tokens = request.max_tokens
     if (request.temperature !== undefined) body.temperature = request.temperature
     if (request.stop_sequences) body.stop = request.stop_sequences
-    if (request.tools?.length) body.tools = toOpenAITools(request.tools)
+    if (request.tools?.length) {
+      body.tools = toOpenAITools(request.tools)
+      body.tool_choice = 'auto'
+    }
     if (request.grammar) {
       body.grammar = request.grammar
       // Lazy grammar: sample unconstrained (reasoning, prose) until the

@@ -102,7 +102,7 @@ export type CompletionResponse = {
 
 export type ContentDelta =
   | { type: 'text_delta'; text: string }
-  | { type: 'thinking_delta'; text: string }
+  | { type: 'thinking_delta'; thinking: string }
   | { type: 'input_json_delta'; partial_json: string }
   | { type: 'connector_text_delta'; text: string }
 

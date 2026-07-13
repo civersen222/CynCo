@@ -72,6 +72,15 @@ export type ToolCompleteEvent = {
   isError?: boolean
 }
 
+/** Tool-call transport ladder observability (P1.8): repaired / retried / discarded / regex_fallback. */
+export type ToolcallTransportEvent = {
+  type: 'toolcall.transport'
+  stage: 'repaired' | 'retried' | 'discarded' | 'regex_fallback'
+  toolId?: string
+  toolName?: string
+  detail?: string
+}
+
 export type FileChangeEvent = {
   type: 'file.change'
   path: string
@@ -334,6 +343,7 @@ export type EngineEvent =
   | ToolsListEvent
   | WizardResponseEvent
   | WebSearchResultEvent
+  | ToolcallTransportEvent
 
 // ─── TUI → Engine Commands ─────────────────────────────────────
 

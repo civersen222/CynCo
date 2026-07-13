@@ -9,6 +9,7 @@ import type {
   ContentBlock, Message, ToolDefinition, CompletionResponse,
   StreamEvent, StopReason, TokenUsage,
 } from '../types.js'
+import { parseNativeToolCalls } from '../engine/toolCallRepair.js'
 
 // ─── Internal → OpenAI ──────────────────────────────────────────
 
@@ -137,20 +138,7 @@ export function fromOpenAIResponse(oai: {
   }
 
   if (choice.message.tool_calls) {
-    for (const tc of choice.message.tool_calls) {
-      let input: Record<string, unknown> = {}
-      try {
-        input = JSON.parse(tc.function.arguments)
-      } catch {
-        input = { _raw: tc.function.arguments }
-      }
-      content.push({
-        type: 'tool_use',
-        id: tc.id,
-        name: tc.function.name,
-        input,
-      })
-    }
+    content.push(...parseNativeToolCalls(choice.message.tool_calls))
   }
 
   return {
@@ -205,13 +193,15 @@ export function fromOpenAIStreamChunk(chunk: {
     })
   }
 
-  // Reasoning delta (Gemma 4 and other models with chain-of-thought)
-  // Treat reasoning tokens as thinking blocks so the TUI can display them
-  if ((choice.delta as any).reasoning) {
+  // Reasoning delta. llama-server with --jinja parses <think> out of content
+  // into delta.reasoning_content; some backends use delta.reasoning. Both map
+  // to thinking blocks so the TUI can display them and the assembler keeps them.
+  const reasoningText = (choice.delta as any).reasoning_content ?? (choice.delta as any).reasoning
+  if (reasoningText) {
     events.push({
       type: 'content_block_delta',
       index: 0,
-      delta: { type: 'thinking_delta', thinking: (choice.delta as any).reasoning },
+      delta: { type: 'thinking_delta', thinking: reasoningText },
     })
   }
 

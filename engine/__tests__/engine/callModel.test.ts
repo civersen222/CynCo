@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeAll, afterAll } from 'bun:test'
+import { describe, expect, it, beforeAll, afterAll, beforeEach, afterEach } from 'bun:test'
 import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -1055,6 +1055,189 @@ describe('localCallModel', () => {
 
       await collect(gen)
       expect(capturedRequest.temperature).toBe(0.7)
+    })
+  })
+
+  // ─── P1.8: llama-cpp Native Tool Default ─────────────────────────
+
+  describe('P1.8 llama-cpp native tool default', () => {
+    // Snapshot/restore env so these tests neither depend on nor leak
+    // LOCALCODE_NATIVE_TOOLS / LOCALCODE_SIMULATED_TOOLS state.
+    let savedNativeTools: string | undefined
+    let savedSimulatedTools: string | undefined
+
+    beforeEach(() => {
+      savedNativeTools = process.env.LOCALCODE_NATIVE_TOOLS
+      savedSimulatedTools = process.env.LOCALCODE_SIMULATED_TOOLS
+      delete process.env.LOCALCODE_NATIVE_TOOLS
+      delete process.env.LOCALCODE_SIMULATED_TOOLS
+    })
+
+    afterEach(() => {
+      if (savedNativeTools === undefined) delete process.env.LOCALCODE_NATIVE_TOOLS
+      else process.env.LOCALCODE_NATIVE_TOOLS = savedNativeTools
+      if (savedSimulatedTools === undefined) delete process.env.LOCALCODE_SIMULATED_TOOLS
+      else process.env.LOCALCODE_SIMULATED_TOOLS = savedSimulatedTools
+    })
+
+    it('llama-cpp + native-capable model defaults to NATIVE tool use (P1.8)', async () => {
+      let capturedRequest: any = null
+
+      const fakeProvider: any = {
+        name: 'llama-cpp',
+        async *stream(req: any) {
+          capturedRequest = req
+          yield { type: 'message_start', message: { id: 'm1', model: 'qwen3.6', usage: { input_tokens: 0, output_tokens: 0 } } }
+          yield { type: 'message_stop' }
+        },
+        async complete() { throw new Error('not implemented') },
+        async healthCheck() { return true },
+        async listModels() { return [] },
+        async probeCapabilities() { return defaultCapabilities({ toolUse: 'native' }) },
+      }
+
+      const tools = [makeTool('Read', 'read', { file_path: { type: 'string' } })]
+      const gen = localCallModel({
+        ...defaultParams({ tools, options: { model: 'qwen3.6' } }),
+        deps: {
+          getProvider: () => fakeProvider,
+          loadConfig: () => defaultConfig({ model: 'qwen3.6' }),
+          resolveCapabilities: () => defaultCapabilities({ toolUse: 'native' }),
+        },
+      } as any)
+
+      for await (const _ of gen) { /* drain */ }
+
+      // native: tools param sent
+      expect(capturedRequest.tools?.length).toBeGreaterThan(0)
+      // no simulated prompt
+      expect(capturedRequest.system).not.toContain('<tool_call>')
+    })
+
+    it('LOCALCODE_SIMULATED_TOOLS=true forces simulated on llama-cpp (kill switch) (P1.8)', async () => {
+      process.env.LOCALCODE_SIMULATED_TOOLS = 'true' // restored by afterEach
+      {
+        let capturedRequest: any = null
+
+        const fakeProvider: any = {
+          name: 'llama-cpp',
+          async *stream(req: any) {
+            capturedRequest = req
+            yield { type: 'message_start', message: { id: 'm2', model: 'qwen3.6', usage: { input_tokens: 0, output_tokens: 0 } } }
+            yield { type: 'message_stop' }
+          },
+          async complete() { throw new Error('not implemented') },
+          async healthCheck() { return true },
+          async listModels() { return [] },
+          async probeCapabilities() { return defaultCapabilities({ toolUse: 'native' }) },
+        }
+
+        const tools = [makeTool('Read', 'read', { file_path: { type: 'string' } })]
+        const gen = localCallModel({
+          ...defaultParams({ tools, options: { model: 'qwen3.6' } }),
+          deps: {
+            getProvider: () => fakeProvider,
+            loadConfig: () => defaultConfig({ model: 'qwen3.6' }),
+            resolveCapabilities: () => defaultCapabilities({ toolUse: 'native' }),
+          },
+        } as any)
+
+        for await (const _ of gen) { /* drain */ }
+
+        // simulated: tools param NOT sent
+        expect(capturedRequest.tools).toBeUndefined()
+        // simulated prompt injected
+        expect(capturedRequest.system).toContain('<tool_call>')
+      }
+    })
+  })
+
+  // ─── P1.8: Repair Ladder at Stream Finalization ───────────────────
+
+  describe('P1.8 repair ladder at stream finalization', () => {
+    it('marks unrepairable streamed tool args as malformed instead of {} (P1.8)', async () => {
+      // Fixture probe result: '<tool_call>blah</tool_call>' throws in jsonrepair
+      // (Unexpected character "/" at position 16) — verified unrepairable
+      const unrepairable = '<tool_call>blah</tool_call>'
+      let capturedRequest: any = null
+
+      const fakeProvider: any = {
+        name: 'llama-cpp',
+        async *stream(req: any) {
+          capturedRequest = req
+          yield { type: 'message_start', message: { id: 'm3', model: 'qwen3.6', usage: { input_tokens: 0, output_tokens: 0 } } }
+          yield { type: 'content_block_start', index: 1, content_block: { type: 'tool_use', id: 'call_1', name: 'Write', input: {} } }
+          yield { type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: unrepairable } }
+          yield { type: 'content_block_stop', index: 1 }
+          yield { type: 'message_stop' }
+        },
+        async complete() { throw new Error('not implemented') },
+        async healthCheck() { return true },
+        async listModels() { return [] },
+        async probeCapabilities() { return defaultCapabilities({ toolUse: 'native' }) },
+      }
+
+      const tools = [makeTool('Write', 'write', { file_path: { type: 'string' } })]
+      const gen = localCallModel({
+        ...defaultParams({ tools, options: { model: 'qwen3.6' } }),
+        deps: {
+          getProvider: () => fakeProvider,
+          loadConfig: () => defaultConfig({ model: 'qwen3.6' }),
+          resolveCapabilities: () => defaultCapabilities({ toolUse: 'native' }),
+        },
+      } as any)
+
+      const assistantMsgs: any[] = []
+      for await (const y of gen) {
+        if ((y as any).type === 'assistant') assistantMsgs.push(y)
+      }
+
+      const last = assistantMsgs[assistantMsgs.length - 1]
+      const tool = last.message.content.find((b: any) => b.type === 'tool_use')
+      expect(tool).toBeDefined()
+      expect(tool.input.__malformed).toBe(true)
+      expect(tool.input.raw).toBe(unrepairable)
+    })
+
+    it('repairs trailing-comma tool args via jsonrepair (P1.8)', async () => {
+      // Fixture: '{"file_path": "a.ts",}' — jsonrepair salvages to {"file_path":"a.ts"}
+      const repairable = '{"file_path": "a.ts",}'
+
+      const fakeProvider: any = {
+        name: 'llama-cpp',
+        async *stream() {
+          yield { type: 'message_start', message: { id: 'm4', model: 'qwen3.6', usage: { input_tokens: 0, output_tokens: 0 } } }
+          yield { type: 'content_block_start', index: 1, content_block: { type: 'tool_use', id: 'call_2', name: 'Read', input: {} } }
+          yield { type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: repairable } }
+          yield { type: 'content_block_stop', index: 1 }
+          yield { type: 'message_stop' }
+        },
+        async complete() { throw new Error('not implemented') },
+        async healthCheck() { return true },
+        async listModels() { return [] },
+        async probeCapabilities() { return defaultCapabilities({ toolUse: 'native' }) },
+      }
+
+      const tools = [makeTool('Read', 'read', { file_path: { type: 'string' } })]
+      const gen = localCallModel({
+        ...defaultParams({ tools, options: { model: 'qwen3.6' } }),
+        deps: {
+          getProvider: () => fakeProvider,
+          loadConfig: () => defaultConfig({ model: 'qwen3.6' }),
+          resolveCapabilities: () => defaultCapabilities({ toolUse: 'native' }),
+        },
+      } as any)
+
+      const assistantMsgs: any[] = []
+      for await (const y of gen) {
+        if ((y as any).type === 'assistant') assistantMsgs.push(y)
+      }
+
+      const last = assistantMsgs[assistantMsgs.length - 1]
+      const tool = last.message.content.find((b: any) => b.type === 'tool_use')
+      expect(tool).toBeDefined()
+      expect(tool.input).toEqual({ file_path: 'a.ts' })
+      expect(tool.input.__malformed).toBeUndefined()
     })
   })
 

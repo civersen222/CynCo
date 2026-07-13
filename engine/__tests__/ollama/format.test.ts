@@ -180,3 +180,61 @@ describe('parseSSELine', () => {
     expect(parseSSELine(': comment')).toBeUndefined()
   })
 })
+
+describe('fromOpenAIStreamChunk — reasoning_content (llama-server --jinja)', () => {
+  it('emits thinking_delta for delta.reasoning_content', () => {
+    const events = fromOpenAIStreamChunk({
+      id: 'c1', model: 'qwen3.6',
+      choices: [{ index: 0, delta: { reasoning_content: 'pondering...' } as any, finish_reason: null }],
+    })
+    expect(events).toEqual([
+      { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'pondering...' } },
+    ])
+  })
+
+  it('still emits thinking_delta for legacy delta.reasoning', () => {
+    const events = fromOpenAIStreamChunk({
+      id: 'c1', model: 'gemma4',
+      choices: [{ index: 0, delta: { reasoning: 'hmm' } as any, finish_reason: null }],
+    })
+    expect(events[0].type).toBe('content_block_delta')
+    expect((events[0] as any).delta).toEqual({ type: 'thinking_delta', thinking: 'hmm' })
+  })
+})
+
+describe('fromOpenAIResponse — malformed tool arguments', () => {
+  it('repairs trailing-comma arguments', () => {
+    const resp = fromOpenAIResponse({
+      id: 'r1', model: 'qwen3.6',
+      choices: [{
+        index: 0,
+        message: {
+          role: 'assistant', content: null,
+          tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'Read', arguments: '{"file_path":"a.ts",}' } }],
+        },
+        finish_reason: 'tool_calls',
+      }],
+    })
+    const tool = resp.content.find((b: any) => b.type === 'tool_use') as any
+    expect(tool.input).toEqual({ file_path: 'a.ts' })
+  })
+
+  it('marks unrepairable arguments as malformed (no silent _raw)', () => {
+    // fixture: '<tool_call>blah</tool_call>' is verified to throw in jsonrepair
+    // ('{oops <<' gets salvaged by jsonrepair — P1.8 fixture caveat)
+    const resp = fromOpenAIResponse({
+      id: 'r1', model: 'qwen3.6',
+      choices: [{
+        index: 0,
+        message: {
+          role: 'assistant', content: null,
+          tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'Write', arguments: '<tool_call>blah</tool_call>' } }],
+        },
+        finish_reason: 'tool_calls',
+      }],
+    })
+    const tool = resp.content.find((b: any) => b.type === 'tool_use') as any
+    expect(tool.input.__malformed).toBe(true)
+    expect(tool.input.raw).toBe('<tool_call>blah</tool_call>')
+  })
+})

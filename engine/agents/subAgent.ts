@@ -27,6 +27,7 @@ import { localCallModel } from '../engine/callModel.js'
 import type { LocalCodeConfig } from '../config.js'
 import { getJournal } from '../training/decisionJournal.js'
 import { makeJournalEntry } from '../training/types.js'
+import { repairToolCall, isMalformedInput, MALFORMED_KEY } from '../engine/toolCallRepair.js'
 
 // ─── Options ────────────────────────────────────────────────────
 
@@ -251,11 +252,12 @@ export class SubAgent {
                   if (currentBlock.type === 'text') {
                     turnText += currentBlock.text
                   } else if (currentBlock.type === 'tool_use') {
-                    // Finalize JSON parsing
+                    // Finalize JSON parsing via P1.8 repair ladder
                     if (currentBlock._partialJson) {
-                      try {
-                        currentBlock.input = JSON.parse(currentBlock._partialJson)
-                      } catch { /* keep existing input */ }
+                      const result = repairToolCall(currentBlock._partialJson)
+                      currentBlock.input = result.ok
+                        ? result.input
+                        : { [MALFORMED_KEY]: true, raw: result.raw, error: result.error }
                       delete currentBlock._partialJson
                     }
                     turnToolUses.push({
@@ -307,6 +309,30 @@ export class SubAgent {
         const toolResults: ContentBlock[] = []
         for (const toolUse of turnToolUses) {
           toolCalls++
+
+          // P1.8 repair-ladder parity: never execute a malformed call with {}.
+          if (isMalformedInput(toolUse.input)) {
+            toolErrors++
+            this.governance.onToolResult(toolUse.name, false, 0)
+            const raw = String((toolUse.input as any).raw ?? '')
+            const parseError = String((toolUse.input as any).error ?? 'invalid JSON')
+            toolResults.push({
+              type: 'tool_result',
+              tool_use_id: toolUse.id,
+              content: `Tool call "${toolUse.name}" was not executed: its arguments were not valid JSON. ` +
+                `Parse error: ${parseError}. Offending arguments: ${raw} — ` +
+                `Re-issue the tool call with valid JSON arguments.`,
+              is_error: true,
+            })
+            this.emitEvent({
+              type: 'subagent.tool',
+              agentId: this.config.id,
+              toolName: toolUse.name,
+              status: 'error',
+              preview: `Malformed arguments: ${parseError.slice(0, 80)}`,
+            })
+            continue
+          }
 
           // Only execute tools that are in the allowed list
           if (!allowedToolNames.has(toolUse.name)) {
