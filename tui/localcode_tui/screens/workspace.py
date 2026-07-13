@@ -29,6 +29,7 @@ SLASH_COMMANDS = [
     ("/git", "Show git status and recent changes"),
     ("/commit", "Help create a commit with staged changes"),
     ("/diff", "Show git diff of modified files"),
+    ("/undo", "Revert the last write batch (workspace snapshot)"),
     ("/brainstorm", "Brainstorm ideas (Phase 2)"),
     ("/plan", "Create an implementation plan (Phase 2)"),
     ("/tdd", "Test-driven development workflow (Phase 2)"),
