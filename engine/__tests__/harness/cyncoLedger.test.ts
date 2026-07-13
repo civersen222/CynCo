@@ -92,4 +92,19 @@ describe('cynco mission outcome ledger', () => {
     expect(c.s5Decisions[0].ruleIds).toEqual([])
     expect(c.s5Decisions[0].enforced).toBeNull()
   })
+
+  it('collects toolcall.transport events into the mission record (P1.8)', () => {
+    const collector = createMissionCollector(() => 1000)
+    collector.ingest({ type: 'toolcall.transport', stage: 'repaired', toolName: 'Read', detail: 'jsonrepair salvaged 40-char args' })
+    collector.ingest({ type: 'toolcall.transport', stage: 'retried', toolName: 'Write', detail: 'Unexpected token' })
+    collector.ingest({ type: 'toolcall.transport', stage: 'discarded', toolName: 'Write', detail: 'Unexpected token' })
+    const record = buildMissionRecord(collector, {
+      missionId: 'm1', briefFile: 'b.md', marker: 'x', cwd: '.', dispatchedAt: 0, durationS: 1, outcome: 'landed',
+    })
+    expect(record.toolTransport).toEqual([
+      { t: 1000, stage: 'repaired', toolName: 'Read', detail: 'jsonrepair salvaged 40-char args' },
+      { t: 1000, stage: 'retried', toolName: 'Write', detail: 'Unexpected token' },
+      { t: 1000, stage: 'discarded', toolName: 'Write', detail: 'Unexpected token' },
+    ])
+  })
 })

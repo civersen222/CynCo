@@ -15,6 +15,7 @@ export function createMissionCollector(now = () => Date.now()) {
     turns: [],
     s5Decisions: [],
     controlSignals: [],
+    toolTransport: [],
     toolStats: { total: 0, errors: 0, byName: {} },
     enforcedSeen: false,
 
@@ -57,6 +58,14 @@ export function createMissionCollector(now = () => Date.now()) {
             widenToolSet: m.widenToolSet ?? null,
           })
           break
+        case 'toolcall.transport':
+          this.toolTransport.push({
+            t,
+            stage: m.stage ?? null,
+            toolName: m.toolName ?? null,
+            detail: m.detail ?? null,
+          })
+          break
         case 'tool.start': {
           this.toolStats.total++
           const name = m.toolName ?? 'unknown'
@@ -87,6 +96,7 @@ export function buildMissionRecord(collector, meta) {
     turns: collector.turns,
     s5Decisions: collector.s5Decisions,
     controlSignals: collector.controlSignals,
+    toolTransport: collector.toolTransport,
     toolStats: collector.toolStats,
   }
 }
