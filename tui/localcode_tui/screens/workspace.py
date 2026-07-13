@@ -73,6 +73,7 @@ HELP_TEXT = """[bold]Available Commands:[/bold]
   [cyan]/git[/cyan]          Show git status and recent changes
   [cyan]/commit[/cyan]       Help create a commit with staged changes
   [cyan]/diff[/cyan]         Show git diff of all modified files
+  [cyan]/undo[/cyan]         Revert the last write batch (workspace snapshot)
 
 [bold cyan]Workflows (Phase 2)[/bold cyan]
   [cyan]/brainstorm[/cyan]   Brainstorm ideas

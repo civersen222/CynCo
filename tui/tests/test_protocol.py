@@ -421,3 +421,16 @@ def test_governance_status_ignores_new_engine_fields():
     }))
     assert isinstance(event, GovernanceStatusEvent)
     assert event.health == "healthy"
+
+
+def test_unknown_event_types_return_raw_dict():
+    # Engine P1.4 adds snapshot.taken / snapshot.restored event types with no
+    # TUI dataclass — parse_event must return the raw dict (app.py's isinstance
+    # dispatch then ignores it), not raise.
+    raw = parse_event(json.dumps({
+        "type": "snapshot.taken",
+        "hash": "abc123", "prevHash": "def456",
+        "filesChanged": 2, "additions": 10, "deletions": 3,
+    }))
+    assert isinstance(raw, dict)
+    assert raw["type"] == "snapshot.taken"

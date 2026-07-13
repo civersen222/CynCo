@@ -37,8 +37,22 @@ export function createMissionCollector(now = () => Date.now()) {
             agreementRatio: m.agreementRatio ?? null,
             predictions: m.predictions ?? null,
             s4: m.s4 ?? null,
+            snapshot: null,
           })
           break
+        case 'snapshot.taken': {
+          const lastTurn = this.turns[this.turns.length - 1]
+          if (lastTurn) {
+            lastTurn.snapshot = {
+              hash: m.hash,
+              prevHash: m.prevHash,
+              filesChanged: m.filesChanged,
+              additions: m.additions,
+              deletions: m.deletions,
+            }
+          }
+          break
+        }
         case 's5.decision':
           if (m.enforced === true) this.enforcedSeen = true
           this.s5Decisions.push({
