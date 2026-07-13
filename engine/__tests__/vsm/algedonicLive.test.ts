@@ -1,6 +1,8 @@
 import { describe, expect, it, beforeEach } from 'vitest'
 import { CyberneticsGovernance } from '../../vsm/cyberneticsGovernance.js'
 import { HaltedError } from '../../cybernetics-core/src/algedonic/index.js'
+import { resetEventBus } from '../../vsm/eventBus.js'
+import { globalContract } from '../../tools/contract.js'
 
 // ── Layer 2 gate ────────────────────────────────────────────────────────────
 // Run with: CYNCO_INTEGRATION=1 npx vitest run engine/__tests__/vsm/algedonicLive.test.ts
@@ -82,9 +84,12 @@ function* failingRead(i: number): Generator<StreamEvent> {
 // ── Layer 1: Un-gated governance-level tests ─────────────────────────────────
 
 describe('algedonic live wiring — governance level (un-gated)', () => {
-  // Ensure ablation env var is absent so the constructor sees it as false
+  // Ensure ablation env var is absent so the constructor sees it as false.
+  // resetEventBus() gives each test a fresh bus — the singleton is shared
+  // across the module, so event counts would otherwise accumulate.
   beforeEach(() => {
     delete process.env._ABLATION_VSM_DISABLED
+    resetEventBus()
   })
 
   it('5 consecutive tool failures trip the kill switch; checkOrHalt throws', () => {
@@ -119,6 +124,15 @@ describe('algedonic live wiring — governance level (un-gated)', () => {
 // ── Layer 2: Gated integration tests through a real ConversationLoop ─────────
 
 describe('algedonic live wiring — loop level (gated: CYNCO_INTEGRATION=1)', () => {
+  // Reset the global contract singleton between tests. It persists as a module-level
+  // object; auto-creation in handleUserMessage creates a "pending" assertion that
+  // the mock provider can never satisfy, causing contract enforcement to block exit.
+  // Disabling enforcement lets end_turn propagate cleanly.
+  beforeEach(() => {
+    globalContract.clear()
+    globalContract.setEnforcementEnabled(false)
+  })
+
   it.skipIf(SKIP)('Test A — 5 consecutive Read failures halt the loop with stopReason=halted', async () => {
     // Dynamically import to avoid blowing up the un-gated suite
     const { ConversationLoop } = await import('../../bridge/conversationLoop.js')
@@ -170,12 +184,14 @@ describe('algedonic live wiring — loop level (gated: CYNCO_INTEGRATION=1)', ()
 
     const events: any[] = []
 
+    // 4 failing reads + successful text. The completion phrase "task complete"
+    // satisfies the loop's modelSaysDone check, preventing nudge injection.
     const responses: Array<() => Generator<StreamEvent>> = [
       () => failingRead(10),
       () => failingRead(11),
       () => failingRead(12),
       () => failingRead(13),
-      () => textResponse('All done, no halt.'),
+      () => textResponse('task complete — no halt triggered; the four reads failed but the streak never reached five.'),
     ]
 
     const provider = mockProvider(responses)
@@ -191,5 +207,8 @@ describe('algedonic live wiring — loop level (gated: CYNCO_INTEGRATION=1)', ()
     const completes = events.filter((e: any) => e.type === 'message.complete')
     const halted = completes.filter((e: any) => e.stopReason === 'halted')
     expect(halted.length).toBe(0)
+    // Positive: loop completed normally with exactly one end_turn completion
+    expect(completes.length).toBe(1)
+    expect(completes[0].stopReason).toBe('end_turn')
   }, 60000)
 })
