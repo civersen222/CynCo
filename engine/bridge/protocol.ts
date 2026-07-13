@@ -158,6 +158,20 @@ export type GovernanceStatusEvent = {
   axiomHealth?: string
   consecutiveUnstable?: number
   agreementRatio?: number
+  /** Per-turn H1-H8 prediction tracker snapshot (P1.2). */
+  predictions?: {
+    open: number
+    completed: number
+    stats: {
+      hypothesis: string
+      total: number
+      correct: number
+      hitRate: number
+      confidenceInterval: [number, number]
+      nullBaselineRate: number
+      significantlyBetter: boolean
+    }[]
+  }
   suggestion: string | null
 }
 

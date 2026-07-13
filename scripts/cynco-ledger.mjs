@@ -35,6 +35,7 @@ export function createMissionCollector(now = () => Date.now()) {
             axiomHealth: m.axiomHealth ?? null,
             consecutiveUnstable: m.consecutiveUnstable ?? null,
             agreementRatio: m.agreementRatio ?? null,
+            predictions: m.predictions ?? null,
           })
           break
         case 's5.decision':

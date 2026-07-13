@@ -1855,6 +1855,7 @@ export class ConversationLoop {
                 // Suspect signal under falsification (pegged 0.00 in successful
                 // missions) — must be visible per-turn for the outcome ledger
                 agreementRatio: (turnReport as any).agreementRatio ?? 1.0,
+                predictions: turnReport.predictions,
                 suggestion: turnReport.stuckTurns > 0 ? 'Model may be stuck — consider changing approach' : null,
               })
 
