@@ -78,6 +78,25 @@ function collectAssistantText(messages: Message[]): string {
   return parts.join('\n')
 }
 
+/** Headless emit-sink that remembers whether the loop was halted by the
+ *  algedonic kill switch, and the best available reason (P1.1). */
+export function makeHaltCapture(): { emit: (e: unknown) => void; haltReason: () => string | null } {
+  let lastCriticalMsg: string | null = null
+  let halted = false
+  return {
+    emit: (e: unknown) => {
+      const ev = e as { type?: string; severity?: string; message?: string; stopReason?: string }
+      if (ev?.type === 'governance.alert' && ev.severity === 'critical' && ev.message) {
+        lastCriticalMsg = ev.message
+      }
+      if (ev?.type === 'message.complete' && ev.stopReason === 'halted') {
+        halted = true
+      }
+    },
+    haltReason: () => (halted ? (lastCriticalMsg ?? 'algedonic kill switch halted the loop') : null),
+  }
+}
+
 export type TradeScanImpl = (
   task: TaskFileInput,
   provider: Provider,
@@ -102,12 +121,13 @@ export async function runGovernedLoop(opts: {
     : new RuleBasedS5()
   const s5 = new S5Orchestrator(s5Impl)
 
+  const haltCapture = makeHaltCapture()
   const loop = new ConversationLoop({
     // unattended: read-only mission tools, no TUI to ask; scouts disabled —
     // codebase scouting is irrelevant to mission tasks and burns GPU time
     config: { ...opts.config, approveAll: true, noScouts: true },
     provider: opts.provider,
-    emit: () => {}, // headless — no TUI, no dashboard
+    emit: haltCapture.emit, // headless — no TUI, but halts must not vanish (P1.1)
     cwd: process.cwd(),
     s5,
     allowedTools: opts.allowedTools,
@@ -125,6 +145,10 @@ export async function runGovernedLoop(opts: {
   const collectedText = collectAssistantText(loop.getMessages())
   if (timedOut) {
     return { ok: false, summary: collectedText.slice(-1000), recommendations: [], error: 'Internal deadline exceeded' }
+  }
+  const haltReason = haltCapture.haltReason()
+  if (haltReason) {
+    return { ok: false, summary: collectedText.slice(-1000), recommendations: [], error: `HALTED: ${haltReason}` }
   }
   return extractOutcome(collectedText)
 }

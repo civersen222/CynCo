@@ -199,6 +199,27 @@ describe('MissionRunner.tick', () => {
     expect(alert).toBeDefined()
   })
 
+  it('publishes immediately with priority 5 when the outcome is a HALT, regardless of failure streak', async () => {
+    const { deps, published } = makeDeps({
+      runTask: async (): Promise<TaskOutcome> => ({
+        ok: false,
+        summary: '',
+        recommendations: [],
+        error: 'HALTED: 5 consecutive failures — system halted for safety',
+      }),
+    })
+    const ledger = MissionLedger.load(join(dir, 'mfl-dynasty'))
+    ledger.setNextFire('news', new Date(2026, 5, 11, 11, 59).toISOString())
+    ledger.setNextFire('poll', new Date(2026, 5, 12).toISOString()) // not due
+    const runner = new MissionRunner(ledger, deps as any)
+    await runner.tick()
+    // failureStreak is 1 — below FAILURE_ALERT_THRESHOLD — yet the halt pages immediately
+    const halts = published.filter((p: any) => typeof p.message === 'string' && p.message.includes('HALTED'))
+    expect(halts.length).toBe(1)
+    expect(halts[0].priority).toBe(5)
+    expect(ledger.state.failureStreak).toBe(1)
+  })
+
   it('handleCommand resolves approval and confirms via publish; promotion proposal at threshold', async () => {
     const { deps, published } = makeDeps()
     const ledger = MissionLedger.load(join(dir, 'mfl-dynasty'))
