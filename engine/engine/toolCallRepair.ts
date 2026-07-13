@@ -13,6 +13,9 @@ import { jsonrepair } from 'jsonrepair'
 /** Marker key on tool_use.input identifying unparseable arguments. */
 export const MALFORMED_KEY = '__malformed'
 
+/** Cap raw malformed arguments carried in the marker (keeps context + logs bounded). */
+const MAX_RAW_LENGTH = 2000
+
 export type RepairResult =
   | { ok: true; input: Record<string, unknown>; repaired: boolean }
   | { ok: false; error: string; raw: string }
@@ -38,7 +41,7 @@ export function repairToolCall(raw: string): RepairResult {
     // fall through to malformed
   }
 
-  return { ok: false, error: firstError, raw }
+  return { ok: false, error: firstError, raw: raw.slice(0, MAX_RAW_LENGTH) }
 }
 
 export type OpenAIToolCall = {

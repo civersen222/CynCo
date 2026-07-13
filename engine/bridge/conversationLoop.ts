@@ -524,6 +524,9 @@ export class ConversationLoop {
 
     this.abortController = new AbortController()
     this.toolFailureCounts.clear()
+    // Fresh request = fresh bounded retry: a discard last turn must not rob
+    // the first malformed call of this turn of its retry (P1.8).
+    this._malformedToolCalls = 0
     this.governance.resetStuck() // Fresh start for each user message
     this.governance.resetKillSwitch() // Clear kill switch from previous task
     this.consecutiveNudges = 0
@@ -2343,11 +2346,14 @@ export class ConversationLoop {
       const exhausted = this._malformedToolCalls > 1
       const stage = exhausted ? 'discarded' : 'retried'
       console.log(`[toolcall] Malformed args for ${toolName} (${stage}): ${parseError}`)
-      this.emit({ type: 'toolcall.transport', stage, toolName, detail: parseError })
+      this.emit({ type: 'toolcall.transport', stage, toolId, toolName, detail: parseError })
+      // Note: the counter spans tools — a second consecutive malformed call is
+      // discarded even if it targets a different tool (model-level health).
       const msg = exhausted
-        ? `Tool call "${toolName}" had malformed JSON arguments again (${parseError}). ` +
-          `This call has been dropped. Proceed with a different approach — state your ` +
-          `next step in plain text or call a different tool with simple, valid JSON.`
+        ? `Tool call "${toolName}" was not executed: its arguments were not valid JSON ` +
+          `(${parseError}). Repeated malformed tool calls — this call has been dropped. ` +
+          `Proceed with a different approach: state your next step in plain text or ` +
+          `call a tool with simple, valid JSON.`
         : `Tool call "${toolName}" was not executed: its arguments were not valid JSON. ` +
           `Parse error: ${parseError}. Offending arguments: ${raw} — ` +
           `Re-issue the tool call with valid JSON arguments.`

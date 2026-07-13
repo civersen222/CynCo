@@ -76,6 +76,7 @@ export type ToolCompleteEvent = {
 export type ToolcallTransportEvent = {
   type: 'toolcall.transport'
   stage: 'repaired' | 'retried' | 'discarded' | 'regex_fallback'
+  toolId?: string
   toolName?: string
   detail?: string
 }
