@@ -416,7 +416,8 @@ def test_governance_status_ignores_new_engine_fields():
         "type": "governance.status",
         "health": "healthy",
         "predictions": {"open": 1, "completed": 2, "stats": []},
-        "s4": {"scores": None, "composite": 7.25, "reflectionCount": 1, "taskType": "debugging", "taskComplexity": 5},
+        "s4": {"scores": {"progress": 7, "confidence": 6, "toolQuality": 8, "stuckness": 2},
+               "composite": 7.25, "reflectionCount": 1, "taskType": "debugging", "taskComplexity": 5},
     }))
     assert isinstance(event, GovernanceStatusEvent)
     assert event.health == "healthy"

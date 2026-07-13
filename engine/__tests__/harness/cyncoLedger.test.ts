@@ -131,7 +131,7 @@ describe('cynco mission outcome ledger', () => {
       health: 'healthy',
       s4: { scores: { progress: 7, confidence: 6, toolQuality: 8, stuckness: 2 }, composite: 7.25, reflectionCount: 1, taskType: 'debugging', taskComplexity: 5 },
     })
-    expect(c.turns[0].s4).toEqual(expect.objectContaining({ composite: 7.25, taskType: 'debugging' }))
+    expect(c.turns[0].s4).toEqual(expect.objectContaining({ composite: 7.25, reflectionCount: 1, taskType: 'debugging', taskComplexity: 5 }))
     expect(c.turns[0].s4.scores).toEqual({ progress: 7, confidence: 6, toolQuality: 8, stuckness: 2 })
   })
 

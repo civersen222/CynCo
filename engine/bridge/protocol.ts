@@ -176,7 +176,9 @@ export type GovernanceStatusEvent = {
     }[]
   }
   /** Per-turn S4 reflector + task classification snapshot (P1.3). Mirrors
-   *  S4Snapshot in vsm/types.ts — keep in sync (this file stays import-free). */
+   *  S4Snapshot in vsm/types.ts — keep in sync (this file stays import-free).
+   *  taskType is deliberately widened to `string` on the wire; do not copy
+   *  the TaskType union here. */
   s4?: {
     scores: { progress: number; confidence: number; toolQuality: number; stuckness: number } | null
     composite: number | null
