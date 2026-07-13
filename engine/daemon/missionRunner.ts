@@ -168,7 +168,7 @@ export class MissionRunner {
       // Persist before notifying: crash between saveState and publish is safe —
       // the streak survives and no notification is pending.
       this.ledger.saveState()
-      const isHalt = outcome.error?.startsWith('HALTED') ?? false
+      const isHalt = outcome.error?.startsWith('HALTED:') ?? false
       if (isHalt) {
         // Algedonic Critical: page immediately, do not wait for a streak (P1.1)
         await this.deps.publish({
