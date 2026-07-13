@@ -1,6 +1,6 @@
 // engine/__tests__/llama/processManager.test.ts
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
-import { buildServerArgs, ProcessManager } from '../../llama/processManager.js'
+import { buildServerArgs, ProcessManager, validateChatTemplate } from '../../llama/processManager.js'
 
 function argValue(args: string[], flag: string): string | undefined {
   const i = args.indexOf(flag)
@@ -297,5 +297,37 @@ describe('buildServerArgs — checkpoint caching (prefill elimination)', () => {
     process.env.LOCALCODE_UBATCH_SIZE = 'abc'
     const args = buildServerArgs(base)
     expect(argValue(args, '--ubatch-size')).toBe('2048')
+  })
+})
+
+describe('buildServerArgs — native tool calling (P1.8)', () => {
+  it('buildServerArgs includes --jinja for native tool calling (P1.8)', () => {
+    const args = buildServerArgs({ modelPath: 'm.gguf', port: 8080 })
+    expect(args).toContain('--jinja')
+  })
+})
+
+describe('validateChatTemplate', () => {
+  it('returns ok when the server template mentions tools', async () => {
+    const fetchImpl = async () => new Response(JSON.stringify({
+      chat_template: '{% if tools %}...{% endif %}',
+    }), { status: 200 })
+    const result = await validateChatTemplate('http://127.0.0.1:8080', fetchImpl as any)
+    expect(result.ok).toBe(true)
+  })
+
+  it('returns ok:false with reason when the template has no tool support', async () => {
+    const fetchImpl = async () => new Response(JSON.stringify({
+      chat_template: '{{ messages }}',
+    }), { status: 200 })
+    const result = await validateChatTemplate('http://127.0.0.1:8080', fetchImpl as any)
+    expect(result.ok).toBe(false)
+    expect(result.reason).toContain('tool')
+  })
+
+  it('returns ok:false without throwing when /props is unreachable', async () => {
+    const fetchImpl = async () => { throw new Error('ECONNREFUSED') }
+    const result = await validateChatTemplate('http://127.0.0.1:8080', fetchImpl as any)
+    expect(result.ok).toBe(false)
   })
 })

@@ -42,6 +42,11 @@ export function buildServerArgs(config: ServerConfig): string[] {
     '--ubatch-size', String(config.ubatchSize ?? envInt('LOCALCODE_UBATCH_SIZE') ?? 2048),
   ]
 
+  // Native tool calling (P1.8): --jinja enables the chat-template engine so
+  // OpenAI `tools` render into the prompt and tool_calls/reasoning_content
+  // are parsed server-side. Required for the default native transport.
+  args.push('--jinja')
+
   args.push('--flash-attn', config.flashAttn !== false ? 'on' : 'off')
 
   if (config.threads != null) {
@@ -91,6 +96,37 @@ export function buildServerArgs(config: ServerConfig): string[] {
   args.push('--reasoning-budget', reasoningBudget)
 
   return args
+}
+
+/**
+ * Validate that the served chat template supports native tool calls (P1.8).
+ * Checks GET /props for a template that references tools; a template without
+ * tool support silently renders requests WITHOUT the tool list — the model
+ * would never see its tools. Non-fatal: callers log loudly and continue
+ * (the simulated kill switch still works).
+ */
+export async function validateChatTemplate(
+  baseUrl: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ ok: boolean; reason?: string }> {
+  try {
+    const resp = await fetchImpl(`${baseUrl}/props`, { signal: AbortSignal.timeout(5000) })
+    if (!resp.ok) return { ok: false, reason: `/props HTTP ${resp.status}` }
+    const props = await resp.json() as any
+    const template: string = props?.chat_template
+      ?? props?.default_generation_settings?.chat_template ?? ''
+    if (!template) return { ok: false, reason: 'no chat_template in /props' }
+    if (!/tool/i.test(template)) {
+      return {
+        ok: false,
+        reason: 'chat template has no tool support — native tool calls will not render. ' +
+          'Set chat_template_file in the profile to a tool-capable template (see VENDORED serving notes).',
+      }
+    }
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, reason: e instanceof Error ? e.message : String(e) }
+  }
 }
 
 export type ProcessManagerConfig = {
@@ -239,6 +275,14 @@ export class ProcessManager {
 
     // Wait for health check
     await this.waitForHealth()
+
+    // Template validation (P1.8) — warn loudly, never block startup.
+    const templateCheck = await validateChatTemplate(`http://127.0.0.1:${this.port}`)
+    if (!templateCheck.ok) {
+      console.log(`[llama-cpp] WARNING: chat template validation failed: ${templateCheck.reason}`)
+    } else {
+      console.log(`[llama-cpp] Chat template supports native tool calls`)
+    }
   }
 
   private async waitForHealth(timeoutMs = 60000): Promise<void> {
