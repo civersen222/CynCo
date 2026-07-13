@@ -175,6 +175,77 @@ describe('LocalCodeWSServer', () => {
     server = null // Already closed
   })
 
+  it('replays session.ready to a late-connecting client', async () => {
+    server = new LocalCodeWSServer({ port: 19170 })
+    await new Promise(r => setTimeout(r, 50))
+
+    // Emit session.ready BEFORE any client connects
+    const event: EngineEvent = {
+      type: 'session.ready',
+      model: 'replay-model',
+      contextLength: 65536,
+    }
+    server.emit(event)
+
+    // Now connect — should receive the cached event immediately
+    const ws = new WebSocket('ws://localhost:19170')
+    const received: string[] = []
+    ws.onmessage = (ev) => { received.push(String(ev.data)) }
+    await new Promise<void>((resolve, reject) => {
+      ws.onopen = () => resolve()
+      ws.onerror = (e) => reject(e)
+    })
+
+    await new Promise(r => setTimeout(r, 150))
+    expect(received).toHaveLength(1)
+    const parsed = JSON.parse(received[0])
+    expect(parsed.type).toBe('session.ready')
+    expect(parsed.model).toBe('replay-model')
+    expect(parsed.contextLength).toBe(65536)
+
+    ws.close()
+    await new Promise(r => setTimeout(r, 50))
+  })
+
+  it('replays session.ready to a second client after first disconnects', async () => {
+    server = new LocalCodeWSServer({ port: 19171 })
+    await new Promise(r => setTimeout(r, 50))
+
+    // Cache a session.ready before anyone connects
+    server.emit({ type: 'session.ready', model: 'second-client-model', contextLength: 8192 })
+
+    // First client
+    const ws1 = new WebSocket('ws://localhost:19171')
+    const received1: string[] = []
+    ws1.onmessage = (ev) => { received1.push(String(ev.data)) }
+    await new Promise<void>((resolve, reject) => {
+      ws1.onopen = () => resolve()
+      ws1.onerror = (e) => reject(e)
+    })
+    await new Promise(r => setTimeout(r, 100))
+    expect(received1).toHaveLength(1)
+    expect(JSON.parse(received1[0]).model).toBe('second-client-model')
+
+    // First client disconnects
+    ws1.close()
+    await new Promise(r => setTimeout(r, 100))
+
+    // Second client connects — should also get the cached event
+    const ws2 = new WebSocket('ws://localhost:19171')
+    const received2: string[] = []
+    ws2.onmessage = (ev) => { received2.push(String(ev.data)) }
+    await new Promise<void>((resolve, reject) => {
+      ws2.onopen = () => resolve()
+      ws2.onerror = (e) => reject(e)
+    })
+    await new Promise(r => setTimeout(r, 150))
+    expect(received2).toHaveLength(1)
+    expect(JSON.parse(received2[0]).model).toBe('second-client-model')
+
+    ws2.close()
+    await new Promise(r => setTimeout(r, 50))
+  })
+
   it('emits multiple events in sequence', async () => {
     server = new LocalCodeWSServer({ port: 19169 })
     await new Promise(r => setTimeout(r, 50))

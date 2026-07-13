@@ -2,6 +2,7 @@ import { describe, expect, it, beforeEach, afterEach } from 'bun:test'
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
+import { execSync } from 'child_process'
 import { WorkspaceSnapshot } from '../../snapshot/snapshot.js'
 import type { DiffResult, SnapshotHash } from '../../snapshot/types.js'
 
@@ -151,5 +152,77 @@ describe('WorkspaceSnapshot', () => {
     snap.restore(clean)
     expect(existsSync(join(tempDir, 'keep.txt'))).toBe(true)
     expect(existsSync(join(tempDir, 'rogue.txt'))).toBe(false)
+  })
+
+  // 11. track() succeeds when workspace contains an embedded git repo with no commits
+  it('track() excludes embedded git repo with no commits and does not throw', () => {
+    snap.init()
+    writeFileSync(join(tempDir, 'a.txt'), 'workspace file')
+
+    // Create an embedded repo with NO commits — reproduces the fatal error
+    const subPath = join(tempDir, 'sub')
+    mkdirSync(subPath)
+    execSync(`git init "${subPath}"`, { stdio: ['pipe', 'pipe', 'pipe'] })
+
+    // Must not throw
+    let hash: SnapshotHash
+    expect(() => {
+      hash = snap.track()
+    }).not.toThrow()
+
+    // The resulting tree must contain a.txt
+    const gitDir = join(tempDir, '.cynco-snapshots')
+    const tree = execSync(`git ls-tree -r ${hash!}`, {
+      env: { ...process.env, GIT_DIR: gitDir, GIT_WORK_TREE: tempDir },
+      cwd: tempDir,
+    }).toString()
+    expect(tree).toContain('a.txt')
+
+    // And must NOT contain anything from the embedded sub/ repo
+    expect(tree).not.toMatch(/\bsub\//)
+  })
+
+  // 12. track() a second time still succeeds (exclusion persisted in info/exclude)
+  it('track() called twice with embedded repo succeeds both times', () => {
+    snap.init()
+    writeFileSync(join(tempDir, 'b.txt'), 'another file')
+
+    const subPath = join(tempDir, 'embedded')
+    mkdirSync(subPath)
+    execSync(`git init "${subPath}"`, { stdio: ['pipe', 'pipe', 'pipe'] })
+
+    // First call
+    let hash1: SnapshotHash
+    expect(() => { hash1 = snap.track() }).not.toThrow()
+
+    // Modify workspace file and call again
+    writeFileSync(join(tempDir, 'b.txt'), 'modified content')
+    let hash2: SnapshotHash
+    expect(() => { hash2 = snap.track() }).not.toThrow()
+
+    // Should get a different hash since b.txt changed
+    expect(hash1!).not.toBe(hash2!)
+  })
+
+  // 13. re-init path preserves existing info/exclude entries
+  it('track() re-init preserves pre-existing info/exclude entries', () => {
+    snap.init()
+    writeFileSync(join(tempDir, 'c.txt'), 'workspace file')
+
+    // Seed info/exclude with an extra line before we corrupt anything
+    const excludeFile = join(tempDir, '.cynco-snapshots', 'info', 'exclude')
+    const original = readFileSync(excludeFile, 'utf-8')
+    writeFileSync(excludeFile, original + 'sub/\n')
+
+    // Force the re-init branch: delete HEAD so git sees a non-repo
+    const headPath = join(tempDir, '.cynco-snapshots', 'HEAD')
+    rmSync(headPath)
+
+    // track() should recover via re-init without losing 'sub/'
+    expect(() => snap.track()).not.toThrow()
+
+    const after = readFileSync(excludeFile, 'utf-8')
+    expect(after).toContain('.cynco-snapshots')
+    expect(after).toContain('sub/')
   })
 })

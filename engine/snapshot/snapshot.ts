@@ -1,5 +1,5 @@
 import { execSync } from 'child_process'
-import { existsSync, mkdirSync, unlinkSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, unlinkSync, writeFileSync, readFileSync } from 'fs'
 import { join } from 'path'
 import type { SnapshotHash, DiffResult, FileDiff, FileStatus } from './types.js'
 
@@ -22,6 +22,26 @@ export class WorkspaceSnapshot {
 
   // ── helpers ────────────────────────────────────────────────────────────
 
+  /**
+   * Ensure `entry` is present in `<gitDir>/info/exclude` without overwriting
+   * any lines that are already there.  Creates the file (and its parent dir)
+   * if they don't yet exist.
+   */
+  private ensureExcludeEntry(entry: string): void {
+    const excludeDir = join(this.gitDir, 'info')
+    const excludeFile = join(excludeDir, 'exclude')
+    if (!existsSync(excludeDir)) {
+      mkdirSync(excludeDir, { recursive: true })
+    }
+    let existing = ''
+    try { existing = readFileSync(excludeFile, 'utf-8') } catch { /* will create */ }
+    const lines = new Set(existing.split('\n').map(l => l.trim()).filter(Boolean))
+    if (!lines.has(entry)) {
+      const sep = existing === '' || existing.endsWith('\n') ? '' : '\n'
+      writeFileSync(excludeFile, existing + sep + entry + '\n')
+    }
+  }
+
   /** Common env vars that redirect git to our snapshot repo. */
   private env(): Record<string, string> {
     return {
@@ -42,6 +62,66 @@ export class WorkspaceSnapshot {
       .trim()
   }
 
+  // ── private helpers ────────────────────────────────────────────────────
+
+  /**
+   * Parse stderr/message text from a failed `git add -A` to extract paths of
+   * embedded git repos, add them to info/exclude, and drop any gitlinks already
+   * staged. Returns true if at least one path was excluded (caller should retry).
+   */
+  private excludeEmbeddedRepos(errText: string): boolean {
+    const paths = new Set<string>()
+
+    // Pattern: error: 'foo/' does not have a commit checked out
+    const noCommitRe = /error: '(.+?)' does not have a commit checked out/g
+    let m: RegExpExecArray | null
+    while ((m = noCommitRe.exec(errText)) !== null) {
+      paths.add(m[1].replace(/\\/g, '/').replace(/\/$/, ''))
+    }
+
+    // Pattern: warning: adding embedded git repository: foo
+    const embeddedRe = /warning: adding embedded git repository: (.+)/g
+    while ((m = embeddedRe.exec(errText)) !== null) {
+      paths.add(m[1].trim().replace(/\\/g, '/').replace(/\/$/, ''))
+    }
+
+    if (paths.size === 0) return false
+
+    // Read existing exclude file so we can deduplicate
+    const excludeFile = join(this.gitDir, 'info', 'exclude')
+    let existing = ''
+    try { existing = readFileSync(excludeFile, 'utf-8') } catch { /* will create */ }
+
+    const existingLines = new Set(existing.split('\n').map(l => l.trim()).filter(Boolean))
+
+    const toAppend: string[] = []
+    for (const p of paths) {
+      const entry = p.endsWith('/') ? p : `${p}/`
+      if (!existingLines.has(entry)) {
+        toAppend.push(entry)
+        existingLines.add(entry)
+      }
+    }
+
+    if (toAppend.length > 0) {
+      const newContent = existing.endsWith('\n') || existing === ''
+        ? existing + toAppend.join('\n') + '\n'
+        : existing + '\n' + toAppend.join('\n') + '\n'
+      writeFileSync(excludeFile, newContent)
+    }
+
+    // Drop any gitlinks already staged (ignore failures — may not be in index yet)
+    for (const p of paths) {
+      try {
+        this.git(`rm -r --cached --ignore-unmatch -- "${p}"`)
+      } catch {
+        // ignore
+      }
+    }
+
+    return true
+  }
+
   // ── public API ─────────────────────────────────────────────────────────
 
   /**
@@ -60,11 +140,7 @@ export class WorkspaceSnapshot {
         stdio: ['pipe', 'pipe', 'pipe'],
       })
       // Exclude the snapshot repo itself from being tracked
-      const excludeDir = join(this.gitDir, 'info')
-      if (!existsSync(excludeDir)) {
-        mkdirSync(excludeDir, { recursive: true })
-      }
-      writeFileSync(join(excludeDir, 'exclude'), '.cynco-snapshots\n')
+      this.ensureExcludeEntry('.cynco-snapshots')
     }
   }
 
@@ -75,7 +151,29 @@ export class WorkspaceSnapshot {
    */
   track(): SnapshotHash {
     try {
-      this.git('add -A')
+      try {
+        this.git('add -A')
+      } catch (addErr) {
+        // Check if the failure is due to embedded git repos
+        const errText = (() => {
+          if (addErr instanceof Error) {
+            const asAny = addErr as any
+            const stderr = asAny.stderr instanceof Buffer
+              ? asAny.stderr.toString()
+              : typeof asAny.stderr === 'string' ? asAny.stderr : ''
+            return addErr.message + '\n' + stderr
+          }
+          return String(addErr)
+        })()
+
+        if (this.excludeEmbeddedRepos(errText)) {
+          // Retry once after excluding embedded repos
+          this.git('add -A')
+        } else {
+          // Unrelated failure — let outer catch handle it
+          throw addErr
+        }
+      }
       const hash = this.git('write-tree')
       return hash as SnapshotHash
     } catch (e) {
@@ -89,9 +187,7 @@ export class WorkspaceSnapshot {
             cwd: this.workDir,
             stdio: ['pipe', 'pipe', 'pipe'],
           })
-          const excludeDir = join(this.gitDir, 'info')
-          mkdirSync(excludeDir, { recursive: true })
-          writeFileSync(join(excludeDir, 'exclude'), '.cynco-snapshots\n')
+          this.ensureExcludeEntry('.cynco-snapshots')
           // Retry
           this.git('add -A')
           const hash = this.git('write-tree')

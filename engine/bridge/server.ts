@@ -20,6 +20,7 @@ export class LocalCodeWSServer {
   private _hostname: string
   private _connected = false
   private onCommand: ((command: TUICommand) => void) | undefined
+  private lastSessionReady: EngineEvent | null = null
 
   constructor(options: WSServerOptions) {
     this._port = options.port
@@ -52,6 +53,9 @@ export class LocalCodeWSServer {
             open: (ws: any) => {
               this.client = ws
               this._connected = true
+              if (this.lastSessionReady !== null) {
+                ws.send(serializeEvent(this.lastSessionReady))
+              }
             },
             message: (_ws: any, message: string | Buffer) => {
               const text = typeof message === 'string' ? message : message.toString()
@@ -79,6 +83,9 @@ export class LocalCodeWSServer {
   }
 
   emit(event: EngineEvent): void {
+    if (event.type === 'session.ready') {
+      this.lastSessionReady = event
+    }
     if (this.client && this._connected) {
       this.client.send(serializeEvent(event))
     }
