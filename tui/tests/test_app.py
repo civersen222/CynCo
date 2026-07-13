@@ -152,6 +152,50 @@ class TestLocalCodeApp:
         app.on_local_code_app_engine_event_received(msg)
         app._handle_governance_alert.assert_called_once_with(event)
 
+    def test_governance_alert_critical_routes_to_chat(self):
+        """critical severity → chat panel gets a system message containing the alert text."""
+        from localcode_tui.app import LocalCodeApp
+        from localcode_tui.protocol import GovernanceAlertEvent
+        app = LocalCodeApp()
+        chat = MagicMock()
+        app.query_one = MagicMock(return_value=chat)
+        event = GovernanceAlertEvent(severity="critical", message="loop stalled", source="algedonic")
+        app._handle_governance_alert(event)
+        chat.add_system_message.assert_called_once()
+        text = chat.add_system_message.call_args[0][0]
+        assert "loop stalled" in text
+        assert "algedonic" in text
+        assert text.startswith("[red]")
+
+    def test_governance_alert_low_severity_skips_chat(self):
+        """low severity → log only, chat panel never touched."""
+        from localcode_tui.app import LocalCodeApp
+        from localcode_tui.protocol import GovernanceAlertEvent
+        app = LocalCodeApp()
+        chat = MagicMock()
+        app.query_one = MagicMock(return_value=chat)
+        event = GovernanceAlertEvent(severity="low", message="minor drift", source="algedonic")
+        app._handle_governance_alert(event)
+        chat.add_system_message.assert_not_called()
+
+    def test_governance_alert_brackets_in_message_reach_chat(self):
+        """Bracket-laden alert text must not raise MarkupError and must reach the chat."""
+        from rich.text import Text
+        from localcode_tui.app import LocalCodeApp
+        from localcode_tui.protocol import GovernanceAlertEvent
+        app = LocalCodeApp()
+        chat = MagicMock()
+        app.query_one = MagicMock(return_value=chat)
+        event = GovernanceAlertEvent(
+            severity="critical", message="[Errno 2] no such file", source="algedonic"
+        )
+        app._handle_governance_alert(event)
+        chat.add_system_message.assert_called_once()
+        text = chat.add_system_message.call_args[0][0]
+        assert "Errno" in text
+        # The produced string must be valid Rich markup (escaped brackets)
+        Text.from_markup(text)
+
     def test_process_event_dispatch_session_ready(self):
         from localcode_tui.app import LocalCodeApp
         from localcode_tui.protocol import SessionReadyEvent

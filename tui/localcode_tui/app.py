@@ -2,6 +2,7 @@
 from __future__ import annotations
 import argparse
 import asyncio
+from rich.markup import escape
 from textual.app import App
 from textual.message import Message as TextualMessage
 
@@ -293,22 +294,24 @@ class LocalCodeApp(App):
 
     def _handle_governance_alert(self, event: GovernanceAlertEvent) -> None:
         """Algedonic governance alerts (P1.1): critical/high are user-visible, rest log-only."""
+        label = f"{event.source}: {event.message}" if event.source else event.message
         if event.severity in ("critical", "high"):
             try:
                 from .widgets import ChatPanel
                 chat = self.query_one(ChatPanel)
                 style = "red" if event.severity == "critical" else "yellow"
-                msg = f"\u26a0 {event.source}: {event.message}" if event.source else f"\u26a0 {event.message}"
-                chat.add_system_message(f"[{style}]{msg}[/{style}]")
+                # escape(): alert text may contain brackets ([Errno 2], list[str])
+                # that Rich would parse as markup and raise MarkupError on.
+                chat.add_system_message(f"[{style}]\u26a0 {escape(label)}[/{style}]")
             except Exception:
                 try:
-                    self.log(f"[governance.alert] (no chat panel) [{event.severity}] {event.source}: {event.message}")
+                    self.log(f"[governance.alert] (no chat panel) [{event.severity}] {label}")
                 except Exception:
                     pass
         else:
             # low / medium — debug log only, no chat noise
             try:
-                self.log(f"[governance.alert] [{event.severity}] {event.source}: {event.message}")
+                self.log(f"[governance.alert] [{event.severity}] {label}")
             except Exception:
                 pass
 
