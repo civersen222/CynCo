@@ -175,6 +175,15 @@ export type GovernanceStatusEvent = {
       significantlyBetter: boolean
     }[]
   }
+  /** Per-turn S4 reflector + task classification snapshot (P1.3). Mirrors
+   *  S4Snapshot in vsm/types.ts — keep in sync (this file stays import-free). */
+  s4?: {
+    scores: { progress: number; confidence: number; toolQuality: number; stuckness: number } | null
+    composite: number | null
+    reflectionCount: number
+    taskType: string
+    taskComplexity: number
+  }
   suggestion: string | null
 }
 
