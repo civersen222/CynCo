@@ -109,13 +109,24 @@ describe('S4 reflection plumbing — loop level (gated: CYNCO_INTEGRATION=1)', (
     // Stub global fetch so the S4 sideQuery (which calls Ollama /api/chat
     // directly, bypassing the mock provider) returns a parseable score
     // response instead of failing with a network error.
-    // Shape mirrors Ollama /api/chat non-streaming response.
-    vi.stubGlobal('fetch', async () => new Response(
-      JSON.stringify({
-        message: { content: 'Progress: 7\nConfidence: 6\nTool Quality: 8\nStuckness: 2' },
-      }),
-      { status: 200 },
-    ))
+    // Shape mirrors Ollama /api/chat non-streaming response. Any URL other
+    // than the sideQuery chat call or S2's harmless /api/ps poll throws —
+    // accidental interceptions must fail loudly, not pass vacuously.
+    vi.stubGlobal('fetch', async (url: any) => {
+      const u = String(url)
+      if (u.includes('/api/chat')) {
+        return new Response(
+          JSON.stringify({
+            message: { content: 'Progress: 7\nConfidence: 6\nTool Quality: 8\nStuckness: 2' },
+          }),
+          { status: 200 },
+        )
+      }
+      if (u.includes('/api/ps')) {
+        return new Response(JSON.stringify({ models: [] }), { status: 200 })
+      }
+      throw new Error(`s4Live fetch stub intercepted unexpected URL: ${u}`)
+    })
   })
 
   afterEach(() => {
@@ -177,12 +188,16 @@ describe('S4 reflection plumbing — loop level (gated: CYNCO_INTEGRATION=1)', (
     for (const s of statusEvents) expect((s as any).s4).toBeDefined()
 
     // The last status event should carry scores from the reflection that fired
-    // at iteration 3. taskType and taskComplexity come from classifyTask().
+    // at iteration 3. The stub is deterministic, so assert the exact values —
+    // this pins the fetch→parseResponse path (a deriveFromMetrics fallback
+    // would record different scores and fail here, as it should).
     const last = statusEvents[statusEvents.length - 1] as any
-    expect(last.s4.scores).not.toBeNull()
+    expect(last.s4.scores).toEqual({ progress: 7, confidence: 6, toolQuality: 8, stuckness: 2 })
+    expect(last.s4.composite).toBeCloseTo(7.25) // (7+6+8+(10-2))/4
     expect(last.s4.reflectionCount).toBeGreaterThanOrEqual(1)
-    expect(typeof last.s4.taskType).toBe('string')
-    expect(last.s4.taskComplexity).toBeGreaterThanOrEqual(1)
+    // classifyTask: "read"/"file" → file_operation, complexity 2 (deterministic).
+    expect(last.s4.taskType).toBe('file_operation')
+    expect(last.s4.taskComplexity).toBe(2)
 
     // And it lands in a ledger turn record via the real collector.
     const collector = createMissionCollector(() => 1000)
