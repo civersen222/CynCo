@@ -286,14 +286,14 @@ export class CyberneticsGovernance {
     // Escalate immediate-action signals
     if (action.type === 'Immediate' && this.onAlert) {
       this.onAlert({
-        type: 'algedonic',
+        source: 'algedonic',
         severity: 'critical',
         message: `Critical: Tool ${name} failure requires immediate attention`,
         timestamp: Date.now(),
       })
     } else if (action.type === 'Delayed' && this.onAlert) {
       this.onAlert({
-        type: 'algedonic',
+        source: 'algedonic',
         severity: 'high',
         message: `Tool ${name} failure — monitoring for recovery`,
         timestamp: Date.now(),
@@ -549,7 +549,7 @@ export class CyberneticsGovernance {
     const snapshot = this.varietyEngine.current()
     if (snapshot && snapshot.balance === 'Overload' && this.onAlert) {
       this.onAlert({
-        type: 'variety_mismatch',
+        source: 'variety',
         severity: 'medium',
         message: `Task complexity (${this.currentTaskComplexity}) exceeds tool variety (${distinctToolsUsed} tools). Model may need more diverse tool usage.`,
         timestamp: Date.now(),
@@ -599,7 +599,7 @@ export class CyberneticsGovernance {
     this.algedonicIntegration.recordModelError(error)
     if (this.onAlert) {
       this.onAlert({
-        type: 'algedonic',
+        source: 'algedonic',
         severity: 'critical',
         message: `Model error: ${error}`,
         timestamp: Date.now(),
@@ -610,7 +610,7 @@ export class CyberneticsGovernance {
   onModelTimeout(ms: number): void {
     if (this.onAlert) {
       this.onAlert({
-        type: 'algedonic',
+        source: 'algedonic',
         severity: 'high',
         message: `Model timeout after ${ms}ms`,
         timestamp: Date.now(),

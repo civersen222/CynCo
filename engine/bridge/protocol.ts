@@ -172,6 +172,15 @@ export type GovernanceRecommendationEvent = {
   autoApplyAfterMs?: number
 }
 
+/** Governance organ alert surfaced to the client (P1.1). Critical/high are
+ *  user-visible; lower severities are log-only on the TUI side. */
+export type GovernanceAlertEvent = {
+  type: 'governance.alert'
+  severity: 'low' | 'medium' | 'high' | 'critical'
+  message: string
+  source: string
+}
+
 export type SummaryInjectedEvent = {
   type: 'summary.injected'
   toolsUsed: string[]
@@ -325,6 +334,7 @@ export type EngineEvent =
   | WorkflowStatusEvent
   | GovernanceStatusEvent
   | GovernanceRecommendationEvent
+  | GovernanceAlertEvent
   | SummaryInjectedEvent
   | SubAgentSpawnedEvent
   | SubAgentToolEvent
