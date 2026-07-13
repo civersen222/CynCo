@@ -679,6 +679,11 @@ export class CyberneticsGovernance {
       axiomHealth: this.lastAxiomHealth,
       recentToolNames: this.getRecentToolNames(),
       tokPerSec: this._lastTokPerSec,
+      predictions: {
+        open: this._predictionTracker.openPredictions.length,
+        completed: this._predictionTracker.completedPredictions.length,
+        stats: this._predictionTracker.getStatistics(),
+      },
     }
   }
 
