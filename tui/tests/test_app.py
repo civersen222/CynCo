@@ -142,6 +142,16 @@ class TestLocalCodeApp:
         app.on_local_code_app_engine_event_received(msg)
         app._handle_toolcall_transport.assert_called_once_with(event)
 
+    def test_process_event_dispatch_governance_alert(self):
+        from localcode_tui.app import LocalCodeApp
+        from localcode_tui.protocol import GovernanceAlertEvent
+        app = LocalCodeApp()
+        app._handle_governance_alert = MagicMock()
+        event = GovernanceAlertEvent(severity="critical", message="boom", source="algedonic")
+        msg = LocalCodeApp.EngineEventReceived(event)
+        app.on_local_code_app_engine_event_received(msg)
+        app._handle_governance_alert.assert_called_once_with(event)
+
     def test_process_event_dispatch_session_ready(self):
         from localcode_tui.app import LocalCodeApp
         from localcode_tui.protocol import SessionReadyEvent
