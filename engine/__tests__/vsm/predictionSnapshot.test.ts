@@ -17,7 +17,7 @@ describe('GovernanceReport.predictions (P1.2)', () => {
   it('reflects opened and evaluated predictions with per-hypothesis stats', () => {
     const gov = new CyberneticsGovernance()
     const tracker = gov.getPredictionTracker()
-    // H4 opens at consecutiveReadsSameFile >= 3 (predictionTracker.ts:196), window 2
+    // H4 opens at consecutiveReadsSameFile >= 3 (checkExtendedTriggers), window 2
     tracker.checkExtendedTriggers(1, {
       contractCreated: false,
       consecutiveReadsSameFile: 3,

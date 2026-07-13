@@ -33,6 +33,8 @@ describe('GovernanceReport extended fields', () => {
       agreementRatio: 0.85,
       observerDivergence: null,
       axiomHealth: { holding: 3, total: 3, violations: [] },
+      recentToolNames: [],
+      predictions: { open: 0, completed: 0, stats: [] },
     }
     expect(typeof report.agreementRatio).toBe('number')
     expect(report.agreementRatio).toBe(0.85)
@@ -52,6 +54,8 @@ describe('GovernanceReport extended fields', () => {
       agreementRatio: 1.0,
       observerDivergence: null,
       axiomHealth: { holding: 0, total: 0, violations: [] },
+      recentToolNames: [],
+      predictions: { open: 0, completed: 0, stats: [] },
     }
     expect(withNull.observerDivergence).toBeNull()
 
@@ -75,6 +79,8 @@ describe('GovernanceReport extended fields', () => {
       agreementRatio: 0.7,
       observerDivergence: 0.2,
       axiomHealth: axiom,
+      recentToolNames: [],
+      predictions: { open: 0, completed: 0, stats: [] },
     }
     expect(report.axiomHealth.holding).toBe(2)
     expect(report.axiomHealth.total).toBe(3)
@@ -212,6 +218,8 @@ describe('S5Orchestrator passes agreementRatio and observerDivergence', () => {
       agreementRatio: 0.75,
       observerDivergence: 0.1,
       axiomHealth: { holding: 0, total: 0, violations: [] },
+      recentToolNames: [],
+      predictions: { open: 0, completed: 0, stats: [] },
     }
 
     const orchInput: OrchestratorInput = {

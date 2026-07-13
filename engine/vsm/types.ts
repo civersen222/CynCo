@@ -13,7 +13,7 @@ export type PredictionSnapshot = {
   open: number
   completed: number
   stats: {
-    hypothesis: string
+    hypothesis: 'H1' | 'H2' | 'H3' | 'H4' | 'H5' | 'H6' | 'H7' | 'H8'
     total: number
     correct: number
     hitRate: number

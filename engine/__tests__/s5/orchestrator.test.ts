@@ -18,6 +18,8 @@ function makeGovernance(overrides: Partial<GovernanceReport> = {}): GovernanceRe
     agreementRatio: 1.0,
     observerDivergence: null,
     axiomHealth: { holding: 0, total: 0, violations: [] },
+    recentToolNames: [],
+    predictions: { open: 0, completed: 0, stats: [] },
     ...overrides,
   }
 }
