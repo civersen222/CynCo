@@ -140,4 +140,25 @@ describe('LlamaCppProvider', () => {
     })
     expect(p.getCompletionsUrl()).toBe('http://127.0.0.1:8081/v1/chat/completions')
   })
+
+  it('sends tool_choice auto alongside tools (P1.8)', async () => {
+    let captured: any = null
+    const realFetch = globalThis.fetch
+    globalThis.fetch = (async (_url: any, init: any) => {
+      captured = JSON.parse(init.body)
+      return new Response(JSON.stringify({ id: 'r', model: 'm', choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }] }), { status: 200 })
+    }) as any
+    try {
+      const provider = new LlamaCppProvider({ primaryUrl: 'http://127.0.0.1:9999', modelName: 'qwen3.6', modelsDir: '/tmp' })
+      await provider.complete({
+        model: 'qwen3.6',
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+        tools: [{ name: 'Read', description: 'read', input_schema: { type: 'object', properties: {} } }],
+      } as any)
+      expect(captured.tools).toHaveLength(1)
+      expect(captured.tool_choice).toBe('auto')
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
 })
