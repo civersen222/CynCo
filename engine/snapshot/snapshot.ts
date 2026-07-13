@@ -22,6 +22,26 @@ export class WorkspaceSnapshot {
 
   // ── helpers ────────────────────────────────────────────────────────────
 
+  /**
+   * Ensure `entry` is present in `<gitDir>/info/exclude` without overwriting
+   * any lines that are already there.  Creates the file (and its parent dir)
+   * if they don't yet exist.
+   */
+  private ensureExcludeEntry(entry: string): void {
+    const excludeDir = join(this.gitDir, 'info')
+    const excludeFile = join(excludeDir, 'exclude')
+    if (!existsSync(excludeDir)) {
+      mkdirSync(excludeDir, { recursive: true })
+    }
+    let existing = ''
+    try { existing = readFileSync(excludeFile, 'utf-8') } catch { /* will create */ }
+    const lines = new Set(existing.split('\n').map(l => l.trim()).filter(Boolean))
+    if (!lines.has(entry)) {
+      const sep = existing === '' || existing.endsWith('\n') ? '' : '\n'
+      writeFileSync(excludeFile, existing + sep + entry + '\n')
+    }
+  }
+
   /** Common env vars that redirect git to our snapshot repo. */
   private env(): Record<string, string> {
     return {
@@ -120,11 +140,7 @@ export class WorkspaceSnapshot {
         stdio: ['pipe', 'pipe', 'pipe'],
       })
       // Exclude the snapshot repo itself from being tracked
-      const excludeDir = join(this.gitDir, 'info')
-      if (!existsSync(excludeDir)) {
-        mkdirSync(excludeDir, { recursive: true })
-      }
-      writeFileSync(join(excludeDir, 'exclude'), '.cynco-snapshots\n')
+      this.ensureExcludeEntry('.cynco-snapshots')
     }
   }
 
@@ -171,9 +187,7 @@ export class WorkspaceSnapshot {
             cwd: this.workDir,
             stdio: ['pipe', 'pipe', 'pipe'],
           })
-          const excludeDir = join(this.gitDir, 'info')
-          mkdirSync(excludeDir, { recursive: true })
-          writeFileSync(join(excludeDir, 'exclude'), '.cynco-snapshots\n')
+          this.ensureExcludeEntry('.cynco-snapshots')
           // Retry
           this.git('add -A')
           const hash = this.git('write-tree')

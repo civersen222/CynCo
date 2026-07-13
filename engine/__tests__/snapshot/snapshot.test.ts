@@ -203,4 +203,26 @@ describe('WorkspaceSnapshot', () => {
     // Should get a different hash since b.txt changed
     expect(hash1!).not.toBe(hash2!)
   })
+
+  // 13. re-init path preserves existing info/exclude entries
+  it('track() re-init preserves pre-existing info/exclude entries', () => {
+    snap.init()
+    writeFileSync(join(tempDir, 'c.txt'), 'workspace file')
+
+    // Seed info/exclude with an extra line before we corrupt anything
+    const excludeFile = join(tempDir, '.cynco-snapshots', 'info', 'exclude')
+    const original = readFileSync(excludeFile, 'utf-8')
+    writeFileSync(excludeFile, original + 'sub/\n')
+
+    // Force the re-init branch: delete HEAD so git sees a non-repo
+    const headPath = join(tempDir, '.cynco-snapshots', 'HEAD')
+    rmSync(headPath)
+
+    // track() should recover via re-init without losing 'sub/'
+    expect(() => snap.track()).not.toThrow()
+
+    const after = readFileSync(excludeFile, 'utf-8')
+    expect(after).toContain('.cynco-snapshots')
+    expect(after).toContain('sub/')
+  })
 })
