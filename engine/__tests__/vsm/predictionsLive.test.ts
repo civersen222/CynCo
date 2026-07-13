@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach } from 'vitest'
+import { describe, expect, it, beforeEach, afterEach } from 'vitest'
 import { resetEventBus } from '../../vsm/eventBus.js'
 import { globalContract } from '../../tools/contract.js'
 import * as fs from 'fs'
@@ -61,7 +61,10 @@ function mockProvider(responses: Array<() => Generator<StreamEvent>>): Provider 
     async complete() { throw new Error('not implemented') },
     async *stream(_request: CompletionRequest): AsyncGenerator<StreamEvent> {
       const gen = responses[callIdx++]
-      if (gen) yield* gen()
+      // Crisp failure instead of a silent empty stream → nudge spiral: this
+      // test's script length is load-bearing, so exhaustion must be loud.
+      if (!gen) throw new Error(`mock provider script exhausted at call ${callIdx}`)
+      yield* gen()
     },
   }
 }
@@ -103,6 +106,10 @@ describe('prediction plumbing — loop level (gated: CYNCO_INTEGRATION=1)', () =
     // failures would trip the algedonic kill switch and halt the loop.
     tempFile = path.join(os.tmpdir(), `cynco-predictions-live-${Date.now()}.txt`)
     fs.writeFileSync(tempFile, 'hello prediction world\nsecond line for good measure\n')
+  })
+
+  afterEach(() => {
+    fs.rmSync(tempFile, { force: true })
   })
 
   it.skipIf(SKIP)('scripted session opens H4 (3 consecutive Reads) and a completed prediction lands in governance.status and the ledger turn record', async () => {
@@ -167,9 +174,11 @@ describe('prediction plumbing — loop level (gated: CYNCO_INTEGRATION=1)', () =
     expect(statusEvents.length).toBeGreaterThan(0)
     for (const s of statusEvents) expect((s as any).predictions).toBeDefined()
 
-    // H4 completed (evaluated either way — correctness is not asserted).
+    // H4 specifically completed (evaluated either way — correctness is not
+    // asserted): an unrelated hypothesis completing must not mask an H4 miss.
     const last = statusEvents[statusEvents.length - 1] as any
     expect(last.predictions.completed).toBeGreaterThanOrEqual(1)
+    expect(last.predictions.stats.some((s: any) => s.hypothesis === 'H4' && s.total >= 1)).toBe(true)
 
     // And it lands in a ledger turn record via the real collector.
     const collector = createMissionCollector(() => 1000)
