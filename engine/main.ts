@@ -987,6 +987,13 @@ provider.healthCheck().then(async ok => {
       available: availableLSPs.some((a: any) => a.language === lang),
     }))
 
+    // Gather startup warnings (P1.8) — e.g., chat template lacks tool support
+    const startupWarnings: string[] = []
+    const pm = (globalThis as any).__llamaProcessManager
+    if (pm?.templateWarning) {
+      startupWarnings.push(`Chat template validation failed: ${pm.templateWarning}`)
+    }
+
     wsServer.emit({
       type: 'session.ready',
       model: config.model!,
@@ -997,6 +1004,7 @@ provider.healthCheck().then(async ok => {
       lspServers,
       mcpServers: await discoverMcpServers(),
       expertise: config.expertise,
+      ...(startupWarnings.length > 0 ? { warnings: startupWarnings } : {}),
     })
 
     // Auto-index project on startup — powers CodeIndex tool in ALL modes

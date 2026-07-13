@@ -209,6 +209,17 @@ describe('ProcessManager', () => {
     expect(pm.port).toBe(8081)
     expect(pm.isRunning()).toBe(false)
   })
+
+  it('templateWarning starts null before any validation (P1.8)', () => {
+    // startProcess spawns a real llama-server, so the set-on-failure path is
+    // exercised at runtime only; the field contract is tested here.
+    const pm = new ProcessManager({
+      binaryPath: '/bin/llama-server',
+      modelPath: '/models/qwen.gguf',
+      port: 8081,
+    })
+    expect(pm.templateWarning).toBeNull()
+  })
 })
 
 describe('buildServerArgs — checkpoint caching (prefill elimination)', () => {

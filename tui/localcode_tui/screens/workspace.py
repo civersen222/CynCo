@@ -785,6 +785,15 @@ class WorkspaceScreen(Screen):
             path=getattr(event, "project_path", ""),
             version=getattr(event, "version", ""),
         )
+        # Startup warnings from the engine (P1.8) — e.g., chat template lacks tool support
+        warnings = getattr(event, "warnings", None)
+        if warnings:
+            try:
+                chat = self.query_one("#chat", ChatPanel)
+                for w in warnings:
+                    chat.add_system_message(f"[yellow]\u26a0 {w}[/yellow]")
+            except Exception:
+                pass
 
     def handle_context_status(self, event) -> None:
         sidebar = self.query_one("#sidebar", ContextSidebar)

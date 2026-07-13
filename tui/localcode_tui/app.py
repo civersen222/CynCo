@@ -9,7 +9,7 @@ from .config import load_config, save_config
 from .bridge import EngineBridge
 from .protocol import (
     StreamTokenEvent, MessageCompleteEvent, ToolStartEvent,
-    ToolCompleteEvent, ApprovalRequestEvent, ContextStatusEvent,
+    ToolCompleteEvent, ToolcallTransportEvent, ApprovalRequestEvent, ContextStatusEvent,
     ContextWarningEvent, SessionReadyEvent, SessionErrorEvent,
     UserMessageCommand, SlashCommandMsg, WorkflowStatusEvent,
     GovernanceStatusEvent,
@@ -101,6 +101,8 @@ class LocalCodeApp(App):
             self._handle_tool_start(event)
         elif isinstance(event, ToolCompleteEvent):
             self._handle_tool_complete(event)
+        elif isinstance(event, ToolcallTransportEvent):
+            self._handle_toolcall_transport(event)
         elif isinstance(event, ApprovalRequestEvent):
             self._handle_approval_request(event)
         elif isinstance(event, ContextStatusEvent):
@@ -264,6 +266,25 @@ class LocalCodeApp(App):
                 self.screen.handle_tool_complete_sidebar(event)
         except Exception:
             pass
+
+    def _handle_toolcall_transport(self, event: ToolcallTransportEvent) -> None:
+        """Tool-call repair ladder observability (P1.8)."""
+        if event.stage in ("discarded", "regex_fallback"):
+            # Visible warning — the model's tool call was dropped or salvaged via regex
+            try:
+                from .widgets import ChatPanel
+                chat = self.query_one(ChatPanel)
+                chat.add_system_message(
+                    f"[yellow]\u26a0 tool call {event.tool_name or ''} {event.stage}: {event.detail or ''}[/yellow]".strip()
+                )
+            except Exception:
+                pass
+        else:
+            # repaired / retried — debug log only, no chat noise
+            try:
+                self.log(f"[toolcall.transport] {event.stage} {event.tool_name}: {event.detail}")
+            except Exception:
+                pass
 
     def _handle_approval_request(self, event: ApprovalRequestEvent) -> None:
         try:

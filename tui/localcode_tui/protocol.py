@@ -21,6 +21,7 @@ class SessionReadyEvent:
     lsp_servers: list = field(default_factory=list)
     mcp_servers: list = field(default_factory=list)
     expertise: str = "advanced"
+    warnings: list | None = None
 
 
 @dataclass
@@ -66,6 +67,16 @@ class ToolCompleteEvent:
     tool_name: str = ""
     result: Any = None
     is_error: bool = False
+
+
+@dataclass
+class ToolcallTransportEvent:
+    """Tool-call transport ladder observability (P1.8)."""
+    type: str = "toolcall.transport"
+    stage: str = ""          # repaired | retried | discarded | regex_fallback
+    tool_id: str = ""
+    tool_name: str = ""
+    detail: str = ""
 
 
 @dataclass
@@ -365,6 +376,7 @@ EVENT_TYPES = {
     "tool.start": ToolStartEvent,
     "tool.progress": ToolProgressEvent,
     "tool.complete": ToolCompleteEvent,
+    "toolcall.transport": ToolcallTransportEvent,
     "file.change": FileChangeEvent,
     "approval.request": ApprovalRequestEvent,
     "context.status": ContextStatusEvent,
