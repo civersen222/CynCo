@@ -56,6 +56,8 @@ import { globalContract } from '../tools/contract.js'
 import { globalAskBroker } from '../tools/askBroker.js'
 import { setSideQuery, resetMergeTracking } from '../tools/impl/edit.js'
 import { estimateTokensAsync } from '../engine/contextBudget.js'
+import { isMalformedInput } from '../engine/toolCallRepair.js'
+import { extractSimulatedToolCalls } from '../ollama/simulated.js'
 
 type Message = {
   role: 'user' | 'assistant' | 'system'
@@ -170,6 +172,8 @@ export class ConversationLoop {
   private lastSnapshotHash?: string
   private vibeMode = false
   private _correctionAttempts = 0
+  /** P1.8 bounded retry: consecutive malformed tool-call parses. 0 = healthy. */
+  private _malformedToolCalls = 0
   private toolGating = new ToolGating()
   private tddGov = new TestDrivenGovernor()
   private allowedTools?: string[]
@@ -1906,6 +1910,15 @@ export class ConversationLoop {
               })
               break
             }
+            case 'toolcall_transport': {
+              this.emit({
+                type: 'toolcall.transport',
+                stage: (event as any).stage,
+                toolName: (event as any).toolName,
+                detail: (event as any).detail,
+              })
+              break
+            }
           }
         } else if (yielded.type === 'assistant') {
           const msg = yielded as any
@@ -1936,7 +1949,6 @@ export class ConversationLoop {
           .map((b: any) => b.text ?? '')
           .join('')
         if (textContent.includes('<tool_call>')) {
-          const { extractSimulatedToolCalls } = require('../ollama/simulated.js')
           const extractResult = extractSimulatedToolCalls(textContent)
           if (extractResult.toolCalls.length > 0) {
             console.log(`[loop] Extracted ${extractResult.toolCalls.length} XML tool call(s) via simulated extractor`)
@@ -1946,6 +1958,11 @@ export class ConversationLoop {
               name: tc.name,
               input: tc.input,
             }))
+            this.emit({
+              type: 'toolcall.transport',
+              stage: 'regex_fallback',
+              detail: `extracted ${extractResult.toolCalls.length} call(s) from XML text`,
+            })
           }
           // Handle post-validation errors: inject corrective message and re-prompt
           if (extractResult.validationErrors?.length && this._correctionAttempts < 2) {
@@ -2313,6 +2330,42 @@ export class ConversationLoop {
     const toolInput = block.input ?? {}
 
     console.log(`[loop] Executing tool: ${toolName}`)
+
+    // ─── P1.8 repair ladder: malformed arguments ─────────────────────
+    // The transport marked this call's arguments unparseable (JSON.parse and
+    // jsonrepair both failed). Never execute, never silently drop: feed the
+    // parse error back as a synthetic tool result so the model re-issues the
+    // call (one bounded retry), then surface to the ledger and move on.
+    if (isMalformedInput(toolInput)) {
+      this._malformedToolCalls++
+      const raw = String((toolInput as any).raw ?? '').slice(0, 500)
+      const parseError = String((toolInput as any).error ?? 'unparseable JSON')
+      const exhausted = this._malformedToolCalls > 1
+      const stage = exhausted ? 'discarded' : 'retried'
+      console.log(`[toolcall] Malformed args for ${toolName} (${stage}): ${parseError}`)
+      this.emit({ type: 'toolcall.transport', stage, toolName, detail: parseError })
+      const msg = exhausted
+        ? `Tool call "${toolName}" had malformed JSON arguments again (${parseError}). ` +
+          `This call has been dropped. Proceed with a different approach — state your ` +
+          `next step in plain text or call a different tool with simple, valid JSON.`
+        : `Tool call "${toolName}" was not executed: its arguments were not valid JSON. ` +
+          `Parse error: ${parseError}. Offending arguments: ${raw} — ` +
+          `Re-issue the tool call with valid JSON arguments.`
+      this.emit({ type: 'tool.start', toolId, toolName, input: {} })
+      this.emit({ type: 'tool.complete', toolId, toolName, result: msg, isError: true })
+      toolResults.push({
+        type: 'tool_result',
+        tool_use_id: toolId,
+        content: [{ type: 'text', text: msg }],
+        is_error: true,
+      })
+      toolsUsedThisTurn.push(toolName)
+      toolResultsThisTurn.push('failure')
+      toolsUsedInSession.push(toolName)
+      return
+    }
+    // Healthy parse: reset the bounded-retry counter.
+    this._malformedToolCalls = 0
 
     // One-time: hydrate grounding intervention success rates from prior sessions.
     if (!this.groundingRatesLoaded) {
