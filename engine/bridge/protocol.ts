@@ -90,6 +90,24 @@ export type FileChangeEvent = {
   diff?: string
 }
 
+export type SnapshotTakenEvent = {
+  type: 'snapshot.taken'
+  /** Workspace state hash AFTER the write batch. */
+  hash: string
+  /** Hash BEFORE the batch — the /undo restore target. */
+  prevHash: string
+  filesChanged: number
+  additions: number
+  deletions: number
+}
+
+export type SnapshotRestoredEvent = {
+  type: 'snapshot.restored'
+  /** The hash the workspace was restored TO (a prior snapshot.taken prevHash). */
+  hash: string
+  filesChanged: number
+}
+
 export type ApprovalRequestEvent = {
   type: 'approval.request'
   requestId: string
@@ -384,6 +402,8 @@ export type EngineEvent =
   | WizardResponseEvent
   | WebSearchResultEvent
   | ToolcallTransportEvent
+  | SnapshotTakenEvent
+  | SnapshotRestoredEvent
 
 // ─── TUI → Engine Commands ─────────────────────────────────────
 

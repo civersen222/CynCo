@@ -29,6 +29,7 @@ SLASH_COMMANDS = [
     ("/git", "Show git status and recent changes"),
     ("/commit", "Help create a commit with staged changes"),
     ("/diff", "Show git diff of modified files"),
+    ("/undo", "Revert the last write batch (workspace snapshot)"),
     ("/brainstorm", "Brainstorm ideas (Phase 2)"),
     ("/plan", "Create an implementation plan (Phase 2)"),
     ("/tdd", "Test-driven development workflow (Phase 2)"),
@@ -73,6 +74,7 @@ HELP_TEXT = """[bold]Available Commands:[/bold]
   [cyan]/git[/cyan]          Show git status and recent changes
   [cyan]/commit[/cyan]       Help create a commit with staged changes
   [cyan]/diff[/cyan]         Show git diff of all modified files
+  [cyan]/undo[/cyan]         Revert the last write batch (workspace snapshot)
 
 [bold cyan]Workflows (Phase 2)[/bold cyan]
   [cyan]/brainstorm[/cyan]   Brainstorm ideas

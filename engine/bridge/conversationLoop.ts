@@ -26,6 +26,7 @@ import { LSPManager } from '../lsp/manager.js'
 import { CyberneticsGovernance as GovernanceLayer } from '../vsm/cyberneticsGovernance.js'
 import { buildGovernanceSignal } from '../vsm/governanceSignal.js'
 import { WorkspaceSnapshot } from '../snapshot/snapshot.js'
+import type { SnapshotHash } from '../snapshot/types.js'
 import { runAdvisors, type SystemState as AdvisorState } from '../agents/advisorRouter.js'
 import { DecisionLogger } from '../decisions/logger.js'
 import { ContextCompressor, FileOperationTracker } from '../context/compressor.js'
@@ -169,7 +170,9 @@ export class ConversationLoop {
   private journal: JSONLStore
   private snapshot?: WorkspaceSnapshot
   private snapshotCwd?: string
-  private lastSnapshotHash?: string
+  private lastSnapshotHash?: SnapshotHash
+  /** Undo targets: one entry per write batch that changed user files (P1.4). */
+  private snapshotUndoStack: Array<{ prevHash: SnapshotHash; newHash: SnapshotHash; filesChanged: number; additions: number; deletions: number }> = []
   private vibeMode = false
   private _correctionAttempts = 0
   /** P1.8 bounded retry: consecutive malformed tool-call parses. 0 = healthy. */
@@ -287,6 +290,9 @@ export class ConversationLoop {
    * otherwise snapshots run `git add -A` against the engine's startup dir.
    */
   private initSnapshot(cwd: string): void {
+    // Undo entries reference tree objects in the previous cwd's snapshot repo —
+    // unrestorable after re-init, so drop them (P1.4 review I1).
+    this.snapshotUndoStack = []
     try {
       const fs = require('fs')
       const path = require('path')
@@ -2235,25 +2241,7 @@ export class ConversationLoop {
       if (snapCwd && snapCwd !== this.snapshotCwd) {
         this.initSnapshot(snapCwd)
       }
-      if (this.snapshot) {
-        try {
-          const newHash = this.snapshot.track()
-          if (this.lastSnapshotHash && newHash !== this.lastSnapshotHash) {
-            const diff = this.snapshot.diff(this.lastSnapshotHash, newHash)
-            // Filter out index/debug files — only count user code changes
-            const userFiles = diff.files.filter((f: any) =>
-              !f.path?.includes('.cynco') && !f.path?.includes('.cynco') && !f.path?.includes('.cynco-')
-            )
-            if (userFiles.length > 0) {
-              console.log(`[snapshot] ${userFiles.length} user files changed (${diff.totalAdditions}+ ${diff.totalDeletions}-)`)
-              this.governance.onFileProgress(userFiles.length, diff.totalAdditions, diff.totalDeletions)
-            }
-          }
-          this.lastSnapshotHash = newHash
-        } catch (e) {
-          console.log(`[snapshot] Track failed: ${e instanceof Error ? e.message : String(e)}`)
-        }
-      }
+      this.trackSnapshotAfterBatch()
 
       // Add tool results as a user message (OpenAI format for Ollama)
       this.addMessage({
@@ -2291,6 +2279,74 @@ export class ConversationLoop {
 
   getGovernance() {
     return this.governance
+  }
+
+  /** Track workspace state after a tool batch; on user-file changes, push an
+   *  undo target and emit snapshot.taken (P1.4). Extracted from run() so the
+   *  round-trip is testable without driving the model loop. */
+  private trackSnapshotAfterBatch(): void {
+    if (!this.snapshot) return
+    try {
+      const newHash = this.snapshot.track()
+      if (this.lastSnapshotHash && newHash !== this.lastSnapshotHash) {
+        const diff = this.snapshot.diff(this.lastSnapshotHash, newHash)
+        // Filter out index/debug files — only count user code changes
+        const userFiles = diff.files.filter((f: any) => !f.path?.includes('.cynco'))
+        if (userFiles.length > 0) {
+          console.log(`[snapshot] ${userFiles.length} user files changed (${diff.totalAdditions}+ ${diff.totalDeletions}-)`)
+          this.governance.onFileProgress(userFiles.length, diff.totalAdditions, diff.totalDeletions)
+          this.snapshotUndoStack.push({
+            prevHash: this.lastSnapshotHash,
+            newHash,
+            filesChanged: userFiles.length,
+            additions: diff.totalAdditions,
+            deletions: diff.totalDeletions,
+          })
+          this.emit({
+            type: 'snapshot.taken',
+            hash: newHash,
+            prevHash: this.lastSnapshotHash,
+            filesChanged: userFiles.length,
+            additions: diff.totalAdditions,
+            deletions: diff.totalDeletions,
+          })
+        }
+      }
+      this.lastSnapshotHash = newHash
+    } catch (e) {
+      console.log(`[snapshot] Track failed: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+
+  /** Revert the most recent write batch to its pre-batch snapshot (P1.4 /undo). */
+  undoLastBatch(): { ok: boolean; message: string } {
+    // Check the snapshot BEFORE popping — otherwise a stale entry would be
+    // silently discarded while claiming "nothing to undo" (P1.4 review I1).
+    if (!this.snapshot) {
+      return { ok: false, message: 'Nothing to undo — no tracked write batches this session.' }
+    }
+    const entry = this.snapshotUndoStack.pop()
+    if (!entry) {
+      return { ok: false, message: 'Nothing to undo — no tracked write batches this session.' }
+    }
+    try {
+      this.snapshot.restore(entry.prevHash)
+    } catch (e) {
+      // Restore failed — put the entry back so the user can retry.
+      this.snapshotUndoStack.push(entry)
+      return { ok: false, message: `Undo failed: ${e instanceof Error ? e.message : String(e)}` }
+    }
+    // The workspace IS reverted at this point. A re-track failure must not be
+    // reported as an undo failure (P1.4 review M1) — tolerate it and move on.
+    try {
+      this.lastSnapshotHash = this.snapshot.track()
+    } catch (e) {
+      console.log(`[snapshot] Re-track after undo failed: ${e instanceof Error ? e.message : String(e)}`)
+      // Best available truth: the workspace now matches the restored snapshot.
+      this.lastSnapshotHash = entry.prevHash
+    }
+    this.emit({ type: 'snapshot.restored', hash: entry.prevHash, filesChanged: entry.filesChanged })
+    return { ok: true, message: `Reverted last write batch (${entry.filesChanged} files, +${entry.additions}/-${entry.deletions}).` }
   }
 
   getExecutor() {

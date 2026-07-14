@@ -113,6 +113,9 @@ export async function runGovernedLoop(opts: {
   timeoutMs: number
   provider: Provider
   config: LocalCodeConfig
+  /** Loop workspace root — the constructor initSnapshot()s this dir.
+   *  Defaults to process.cwd() (daemon runs from the mission workspace). */
+  cwd?: string
 }): Promise<TaskOutcome> {
   // Same S5 selection as interactive startup (main.ts): LoRA-trained
   // decision model when configured, rule-based otherwise.
@@ -128,7 +131,7 @@ export async function runGovernedLoop(opts: {
     config: { ...opts.config, approveAll: true, noScouts: true },
     provider: opts.provider,
     emit: haltCapture.emit, // headless — no TUI, but halts must not vanish (P1.1)
-    cwd: process.cwd(),
+    cwd: opts.cwd ?? process.cwd(),
     s5,
     allowedTools: opts.allowedTools,
   })
@@ -158,6 +161,8 @@ export async function runOneShotTask(
   provider: Provider,
   config: LocalCodeConfig,
   tradeScanImpl?: TradeScanImpl,
+  /** Loop workspace root override — see runGovernedLoop.cwd (tests pass a temp dir). */
+  cwd?: string,
 ): Promise<number> {
   let outcomePath = ''
   try {
@@ -178,6 +183,7 @@ export async function runOneShotTask(
         timeoutMs: task.timeoutMs,
         provider,
         config,
+        cwd,
       })
     }
 

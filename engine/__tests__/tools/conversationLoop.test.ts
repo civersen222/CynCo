@@ -1,4 +1,7 @@
-import { describe, expect, it, beforeAll, vi } from 'bun:test'
+import { describe, expect, it, beforeAll, afterAll, vi } from 'bun:test'
+import * as fs from 'fs'
+import * as os from 'os'
+import * as path from 'path'
 
 // Skip these integration tests in CI — they create real ConversationLoop
 // instances that hit the filesystem, create JSONL sessions, index DBs, etc.
@@ -8,6 +11,14 @@ import { ConversationLoop } from '../../bridge/conversationLoop.js'
 import type { Provider, ModelCapabilities, CompletionRequest } from '../../provider.js'
 import type { StreamEvent } from '../../types.js'
 import type { LocalCodeConfig } from '../../config.js'
+
+// ConversationLoop's constructor initSnapshot()s its cwd (git add -A into
+// .cynco-snapshots/) — point it at a temp dir so tests never stage the repo
+// root into the repo's live .cynco-snapshots/ (P1.4 hazard fix).
+const TEST_CWD = fs.mkdtempSync(path.join(os.tmpdir(), 'cynco-loop-cwd-'))
+afterAll(() => {
+  fs.rmSync(TEST_CWD, { recursive: true, force: true, maxRetries: 5 })
+})
 
 function defaultConfig(): LocalCodeConfig {
   return {
@@ -71,6 +82,7 @@ describe('ConversationLoop with tools', () => {
     const provider = mockProvider([() => textResponse('Hello!')])
 
     const loop = new ConversationLoop({
+      cwd: TEST_CWD,
       config: defaultConfig(),
       provider,
       emit: (e) => events.push(e),
@@ -86,6 +98,7 @@ describe('ConversationLoop with tools', () => {
     const provider = mockProvider([() => textResponse('test')])
 
     const loop = new ConversationLoop({
+      cwd: TEST_CWD,
       config: defaultConfig(),
       provider,
       emit: (e) => events.push(e),
@@ -102,6 +115,7 @@ describe('ConversationLoop with tools', () => {
   it('exposes handleApprovalResponse and setApproveAll methods', () => {
     const provider = mockProvider([])
     const loop = new ConversationLoop({
+      cwd: TEST_CWD,
       config: defaultConfig(),
       provider,
       emit: () => {},
@@ -119,6 +133,7 @@ describe('ConversationLoop with tools', () => {
     const provider = mockProvider([() => textResponse('first'), () => textResponse('second')])
 
     const loop = new ConversationLoop({
+      cwd: TEST_CWD,
       config: defaultConfig(),
       provider,
       emit: (e) => events.push(e),
@@ -149,6 +164,7 @@ describe('ConversationLoop with tools', () => {
       },
     }
     const loop = new ConversationLoop({
+      cwd: TEST_CWD,
       config: defaultConfig(),
       provider,
       emit: () => {},
@@ -180,6 +196,7 @@ describe('ConversationLoop with tools', () => {
     const events: any[] = []
     const provider = mockProvider([() => bashToolUse(), () => textResponse('done')])
     const loop = new ConversationLoop({
+      cwd: TEST_CWD,
       config: { ...defaultConfig(), approveAll: true },
       provider,
       emit: (e) => events.push(e),
@@ -223,6 +240,7 @@ describe('ConversationLoop with tools', () => {
       evaluateLastDecision() { return null },
     }
     const loop = new ConversationLoop({
+      cwd: TEST_CWD,
       config: defaultConfig(),
       provider,
       emit: () => {},
@@ -265,6 +283,7 @@ describe('ConversationLoop with tools', () => {
       evaluateLastDecision() { return null },
     }
     const loop = new ConversationLoop({
+      cwd: TEST_CWD,
       config: { ...defaultConfig(), approveAll: true },
       provider: mockProvider([() => bashToolUse(), () => textResponse('done')]),
       emit: (e) => events.push(e),
@@ -296,6 +315,7 @@ describe('ConversationLoop with tools', () => {
       },
     }
     const loop = new ConversationLoop({
+      cwd: TEST_CWD,
       config: defaultConfig(),
       provider,
       emit: () => {},
@@ -340,6 +360,7 @@ describe('ConversationLoop with tools', () => {
       },
     }
     const loop = new ConversationLoop({
+      cwd: TEST_CWD,
       config: { ...defaultConfig(), approveAll: true },
       provider,
       emit: () => {},
@@ -379,6 +400,7 @@ describe('ConversationLoop with tools', () => {
       () => textResponse(OUTCOME),
     ]
     const loop = new ConversationLoop({
+      cwd: TEST_CWD,
       config: { ...defaultConfig(), approveAll: true },
       provider: mockProvider(responses),
       emit: () => {},
@@ -397,6 +419,7 @@ describe('ConversationLoop with tools', () => {
       () => textResponse(OUTCOME),
     ]
     const loop = new ConversationLoop({
+      cwd: TEST_CWD,
       config: { ...defaultConfig(), approveAll: true },
       provider: mockProvider(responses),
       emit: () => {},
@@ -413,6 +436,7 @@ describe('ConversationLoop with tools', () => {
     // server was rejecting requests at 100%, so compaction never fired.
     const events: any[] = []
     const loop = new ConversationLoop({
+      cwd: TEST_CWD,
       config: defaultConfig(),
       provider: mockProvider([() => textResponse('Here is my analysis of the league situation this week.')]),
       emit: (e) => events.push(e),
@@ -436,6 +460,7 @@ describe('ConversationLoop with tools', () => {
     ))
     try {
       const loop = new ConversationLoop({
+        cwd: TEST_CWD,
         config: defaultConfig(),
         provider: mockProvider([]),
         emit: () => {},
@@ -461,6 +486,7 @@ describe('ConversationLoop with tools', () => {
     const provider = mockProvider([() => textResponse('done')])
 
     const loop = new ConversationLoop({
+      cwd: TEST_CWD,
       config: defaultConfig(),
       provider,
       emit: (e) => events.push(e),
@@ -497,6 +523,7 @@ describe('malformed tool-call retry ladder (P1.8)', () => {
       () => textResponse('understood'),
     ])
     const loop = new ConversationLoop({
+      cwd: TEST_CWD,
       config: { ...defaultConfig(), approveAll: true },
       provider,
       emit: (e) => events.push(e),
@@ -531,6 +558,7 @@ describe('malformed tool-call retry ladder (P1.8)', () => {
       () => textResponse('ok'),
     ])
     const loop = new ConversationLoop({
+      cwd: TEST_CWD,
       config: { ...defaultConfig(), approveAll: true },
       provider,
       emit: (e) => events.push(e),
@@ -575,6 +603,7 @@ describe('malformed tool-call retry ladder (P1.8)', () => {
       () => textResponse('done'),
     ])
     const loop = new ConversationLoop({
+      cwd: TEST_CWD,
       config: { ...defaultConfig(), approveAll: true },
       provider,
       emit: (e) => events.push(e),
@@ -613,6 +642,7 @@ describe('malformed tool-call retry ladder (P1.8)', () => {
       () => textResponse('done'),
     ])
     const loop = new ConversationLoop({
+      cwd: TEST_CWD,
       config: { ...defaultConfig(), approveAll: true },
       provider,
       emit: (e) => events.push(e),

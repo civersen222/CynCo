@@ -8,14 +8,14 @@ import * as path from 'path'
 import { createMissionCollector } from '../../../scripts/cynco-ledger.mjs'
 
 // ── Gate ─────────────────────────────────────────────────────────────────────
-// Run with: CYNCO_INTEGRATION=1 npx vitest run engine/__tests__/vsm/s4Live.test.ts
+// Run with: CYNCO_INTEGRATION=1 npx vitest run engine/__tests__/vsm/snapshotLive.test.ts
 const SKIP = !process.env.CYNCO_INTEGRATION
 
 import type { Provider, ModelCapabilities, CompletionRequest } from '../../provider.js'
 import type { StreamEvent } from '../../types.js'
 import type { LocalCodeConfig } from '../../config.js'
 
-// ── Harness helpers (mirror predictionsLive.test.ts) ─────────────────────────
+// ── Harness helpers (mirror s4Live.test.ts) ──────────────────────────────────
 
 function defaultConfig(): LocalCodeConfig {
   return {
@@ -86,11 +86,11 @@ function* toolCall(i: number, name: string, input: Record<string, unknown>): Gen
   yield { type: 'message_stop' } as any
 }
 
-// ── Gated proving test: S4 reflection fires, scores land in ledger ─────────
+// ── Gated proving test: after-batch snapshot fires organically ──────────────
 
-describe('S4 reflection plumbing — loop level (gated: CYNCO_INTEGRATION=1)', () => {
+describe('snapshot surfacing — loop level (gated: CYNCO_INTEGRATION=1)', () => {
   let tempDir = ''
-  let tempFile = ''
+  let targetFile = ''
 
   beforeEach(() => {
     // Ablation env var must be absent so CyberneticsGovernance activates.
@@ -102,20 +102,16 @@ describe('S4 reflection plumbing — loop level (gated: CYNCO_INTEGRATION=1)', (
     globalContract.clear()
     globalContract.setEnforcementEnabled(false)
 
-    // Real temp file so the scripted Reads SUCCEED — 5 consecutive tool
-    // failures would trip the algedonic kill switch and halt the loop.
-    // Own temp DIR: passed as the loop cwd so the constructor's initSnapshot
-    // never stages the repo root into the live .cynco-snapshots/ (P1.4 fix).
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cynco-s4-live-'))
-    tempFile = path.join(tempDir, 's4-target.txt')
-    fs.writeFileSync(tempFile, 'hello s4 reflection world\nsecond line for good measure\n')
+    // The snapshot attaches to THIS temp dir — never the repo root, where
+    // initSnapshot would `git add -A` the whole repo into a live
+    // .cynco-snapshots/ from real CynCo sessions.
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cynco-snapshot-live-'))
+    targetFile = path.join(tempDir, 'target.txt')
+    fs.writeFileSync(targetFile, 'original content\n')
 
-    // Stub global fetch so the S4 sideQuery (which calls Ollama /api/chat
-    // directly, bypassing the mock provider) returns a parseable score
-    // response instead of failing with a network error.
-    // Shape mirrors Ollama /api/chat non-streaming response. Any URL other
-    // than the sideQuery chat call or S2's harmless /api/ps poll throws —
-    // accidental interceptions must fail loudly, not pass vacuously.
+    // Loud URL-guard fetch stub: default reflection frequency is 8 so a
+    // 2-iteration session never reflects, but S2 polls /api/ps and any stray
+    // fetch must fail loudly instead of hitting the network.
     vi.stubGlobal('fetch', async (url: any) => {
       const u = String(url)
       if (u.includes('/api/chat')) {
@@ -129,7 +125,7 @@ describe('S4 reflection plumbing — loop level (gated: CYNCO_INTEGRATION=1)', (
       if (u.includes('/api/ps')) {
         return new Response(JSON.stringify({ models: [] }), { status: 200 })
       }
-      throw new Error(`s4Live fetch stub intercepted unexpected URL: ${u}`)
+      throw new Error(`snapshotLive fetch stub intercepted unexpected URL: ${u}`)
     })
   })
 
@@ -138,28 +134,21 @@ describe('S4 reflection plumbing — loop level (gated: CYNCO_INTEGRATION=1)', (
     vi.unstubAllGlobals()
   })
 
-  it.skipIf(SKIP)('scripted session fires S4 reflection at turn 3, scores land in governance.status and the ledger turn record', async () => {
+  it.skipIf(SKIP)('scripted Write batch fires the after-batch snapshot, lands in the ledger turn record, and undoLastBatch reverts the file', async () => {
     // Dynamically import to avoid blowing up the un-gated suite.
     const { ConversationLoop } = await import('../../bridge/conversationLoop.js')
 
-    const filePath = tempFile.replace(/\\/g, '/')
+    const filePath = targetFile.replace(/\\/g, '/')
     const events: any[] = []
 
-    // Timeline (S4 reflection fires at the TOP of the iteration, before the
-    // model call; frequency is set to 3 so it fires at iteration 3, i.e. i=2,
-    // i+1=3, 3%3===0):
-    //
-    //   iter 1 (i=0): no reflection; provider call → toolCall Read → execute → governance.status
-    //   iter 2 (i=1): no reflection; provider call → toolCall Read → execute → governance.status
-    //   iter 3 (i=2): REFLECTION fires → sideQuery hits stubbed fetch → scores recorded;
-    //                 provider call → textResponse done → governance.status (WITH scores)
-    //
-    // The sideQuery consumes the stubbed fetch, NOT a scripted provider response.
+    // Timeline:
+    //   iter 1 (i=0): provider call → toolCall Write → execute (approveAll) →
+    //                 after-batch snapshot block fires → snapshot.taken
+    //   iter 2 (i=1): provider call → textResponse done → end_turn
     // Spare done-texts follow in case governance nudges add extra model calls.
-    const doneText = 'task complete — the file was read and the s4 reflection has been verified; all done.'
+    const doneText = 'task complete — the new content has been written to the target file as requested; all done.'
     const responses: Array<() => Generator<StreamEvent>> = [
-      () => toolCall(1, 'Read', { file_path: filePath }),
-      () => toolCall(2, 'Read', { file_path: filePath }),
+      () => toolCall(1, 'Write', { file_path: filePath, content: 'modified by model\n' }),
       () => textResponse(doneText),
       () => textResponse(doneText),
       () => textResponse(doneText),
@@ -168,47 +157,43 @@ describe('S4 reflection plumbing — loop level (gated: CYNCO_INTEGRATION=1)', (
     const provider = mockProvider(responses)
 
     const loop = new ConversationLoop({
-      cwd: tempDir,
       config: defaultConfig(),
       provider,
       emit: (e) => events.push(e),
+      // CRITICAL: the constructor runs initSnapshot(opts.cwd ?? process.cwd())
+      // — without this, construction itself would stage the repo root.
+      cwd: tempDir,
     })
+    // Production re-root path (main.ts user.message handler): executor, LSP,
+    // and snapshot all point at the project dir before the message runs.
+    loop.setCwd(tempDir)
 
-    // Lower reflector frequency to 3 (minimum) so the reflection fires at
-    // iteration 3 within a single handleUserMessage call.
-    // getGovernance() → CyberneticsGovernance; getReflector() → S4Reflector.
-    loop.getGovernance().getReflector().setFrequency(3)
-
-    // User message classifies as file_operation (contains "read" and "file").
-    await loop.handleUserMessage('please read that file and report what you find')
+    // Classifies as file_operation ("write"/"file").
+    await loop.handleUserMessage('please write the new content to that file')
 
     // The loop must not have been halted by the kill switch — if it was, the
-    // scripted Reads are failing (temp file setup broken).
+    // scripted Write is failing (temp dir setup or approval broken).
     const halted = events.filter((e: any) => e.type === 'message.complete' && e.stopReason === 'halted')
     expect(halted.length).toBe(0)
 
-    // Every governance.status event must carry the s4 snapshot (Task 2 wired it).
-    const statusEvents = events.filter((e: any) => e.type === 'governance.status')
-    expect(statusEvents.length).toBeGreaterThan(0)
-    for (const s of statusEvents) expect((s as any).s4).toBeDefined()
+    // The after-batch snapshot block fired organically with a real git diff.
+    const taken = events.filter((e: any) => e.type === 'snapshot.taken')
+    expect(taken.length).toBeGreaterThanOrEqual(1)
+    expect(taken[0].filesChanged).toBeGreaterThanOrEqual(1)
+    expect(taken[0].hash).not.toBe(taken[0].prevHash)
 
-    // The last status event should carry scores from the reflection that fired
-    // at iteration 3. The stub is deterministic, so assert the exact values —
-    // this pins the fetch→parseResponse path (a deriveFromMetrics fallback
-    // would record different scores and fail here, as it should).
-    const last = statusEvents[statusEvents.length - 1] as any
-    expect(last.s4.scores).toEqual({ progress: 7, confidence: 6, toolQuality: 8, stuckness: 2 })
-    expect(last.s4.composite).toBeCloseTo(7.25) // (7+6+8+(10-2))/4
-    expect(last.s4.reflectionCount).toBeGreaterThanOrEqual(1)
-    // classifyTask: "read"/"file" → file_operation, complexity 2 (deterministic).
-    expect(last.s4.taskType).toBe('file_operation')
-    expect(last.s4.taskComplexity).toBe(2)
+    // The Write actually landed on disk.
+    expect(fs.readFileSync(targetFile, 'utf8')).toBe('modified by model\n')
 
-    // And it lands in a ledger turn record via the real collector.
+    // And the snapshot lands in a ledger turn record via the real collector.
     const collector = createMissionCollector(() => 1000)
     for (const e of events) collector.ingest(e)
-    const lastTurn = collector.turns[collector.turns.length - 1]
-    expect(lastTurn.s4).not.toBeNull()
-    expect(lastTurn.s4.scores).not.toBeNull()
+    expect(collector.turns.some((t: any) => t.snapshot && t.snapshot.hash === taken[0].hash)).toBe(true)
+
+    // /undo path: revert the batch, file back to original, restore event out.
+    const result = loop.undoLastBatch()
+    expect(result.ok).toBe(true)
+    expect(fs.readFileSync(targetFile, 'utf8')).toBe('original content\n')
+    expect(events.some((e: any) => e.type === 'snapshot.restored' && e.hash === taken[0].prevHash)).toBe(true)
   }, 60000)
 })

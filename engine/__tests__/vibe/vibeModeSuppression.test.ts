@@ -5,7 +5,10 @@
 // activity lines and drives the worker animation. Gated like other
 // real-loop tests:
 //   CYNCO_INTEGRATION=1 npx vitest run engine/__tests__/vibe/vibeModeSuppression.test.ts
-import { describe, expect, it } from 'bun:test'
+import { afterAll, describe, expect, it } from 'bun:test'
+import * as fs from 'fs'
+import * as os from 'os'
+import * as path from 'path'
 
 const SKIP = !process.env.CYNCO_INTEGRATION
 
@@ -13,6 +16,13 @@ import { ConversationLoop } from '../../bridge/conversationLoop.js'
 import type { Provider, ModelCapabilities, CompletionRequest } from '../../provider.js'
 import type { StreamEvent } from '../../types.js'
 import type { LocalCodeConfig } from '../../config.js'
+
+// Loop cwd — the constructor initSnapshot()s its cwd; a temp dir keeps tests
+// from staging the repo root into the live .cynco-snapshots/ (P1.4 fix).
+const TEST_CWD = fs.mkdtempSync(path.join(os.tmpdir(), 'cynco-vibe-cwd-'))
+afterAll(() => {
+  fs.rmSync(TEST_CWD, { recursive: true, force: true, maxRetries: 5 })
+})
 
 function defaultConfig(): LocalCodeConfig {
   return {
@@ -69,6 +79,7 @@ describe('vibe mode event suppression', () => {
   it.skipIf(SKIP)('suppresses stream.token but still completes the message', async () => {
     const events: any[] = []
     const loop = new ConversationLoop({
+      cwd: TEST_CWD,
       config: defaultConfig(),
       provider: mockProvider([() => textResponse('Built it.')]),
       emit: (e) => events.push(e),
@@ -88,6 +99,7 @@ describe('vibe mode event suppression', () => {
     // conversationLoop.test.ts for the Bash-blocked test).
     const events: any[] = []
     const loop = new ConversationLoop({
+      cwd: TEST_CWD,
       config: { ...defaultConfig(), approveAll: true },
       // 'The task is complete.' must match the completionSignals regex
       // (conversationLoop.ts ~1998) or the mid-plan nudge fires and exhausts
@@ -107,6 +119,7 @@ describe('vibe mode event suppression', () => {
   it.skipIf(SKIP)('normal mode still streams tokens (control)', async () => {
     const events: any[] = []
     const loop = new ConversationLoop({
+      cwd: TEST_CWD,
       config: defaultConfig(),
       provider: mockProvider([() => textResponse('Hello!')]),
       emit: (e) => events.push(e),
@@ -118,6 +131,7 @@ describe('vibe mode event suppression', () => {
 
   it('setVibeMode toggles the isVibeMode getter', () => {
     const loop = new ConversationLoop({
+      cwd: TEST_CWD,
       config: defaultConfig(),
       provider: mockProvider([]),
       emit: () => {},

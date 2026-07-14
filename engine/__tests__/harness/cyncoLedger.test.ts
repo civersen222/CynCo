@@ -140,4 +140,19 @@ describe('cynco mission outcome ledger', () => {
     c.ingest({ type: 'governance.status', health: 'healthy' })
     expect(c.turns[0].s4).toBeNull()
   })
+
+  it('snapshot.taken attaches to the latest turn record (P1.4)', () => {
+    const c = createMissionCollector(() => 1000)
+    c.ingest({ type: 'governance.status', health: 'healthy' })
+    c.ingest({ type: 'snapshot.taken', hash: 'abc123', prevHash: 'def456', filesChanged: 2, additions: 10, deletions: 3 })
+    expect(c.turns[0].snapshot).toEqual({ hash: 'abc123', prevHash: 'def456', filesChanged: 2, additions: 10, deletions: 3 })
+  })
+
+  it('turns without a snapshot event carry snapshot: null; snapshot.taken before any turn does not crash', () => {
+    const c = createMissionCollector(() => 1000)
+    c.ingest({ type: 'snapshot.taken', hash: 'abc123', prevHash: 'def456', filesChanged: 1, additions: 1, deletions: 0 })
+    expect(c.turns.length).toBe(0) // ignored, no crash
+    c.ingest({ type: 'governance.status', health: 'healthy' })
+    expect(c.turns[0].snapshot).toBeNull()
+  })
 })

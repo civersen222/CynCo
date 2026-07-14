@@ -526,6 +526,13 @@ async function handleCommand(command: TUICommand): Promise<void> {
           await loop.handleUserMessage('Show me the current git diff of all modified files.')
           break
 
+        case '/undo': {
+          const result = loop.undoLastBatch()
+          wsServer.emit({ type: 'stream.token', text: `[System] ${result.message}\n` })
+          wsServer.emit({ type: 'message.complete', messageId: '', stopReason: 'end_turn' })
+          break
+        }
+
         case '/tdd':
         case '/debug':
         case '/review':

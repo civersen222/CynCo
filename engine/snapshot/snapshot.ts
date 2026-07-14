@@ -142,6 +142,11 @@ export class WorkspaceSnapshot {
       // Exclude the snapshot repo itself from being tracked
       this.ensureExcludeEntry('.cynco-snapshots')
     }
+    // Snapshots must be byte-exact: with the (Windows-default) global
+    // core.autocrlf=true, checkout-index would rewrite LF as CRLF on restore,
+    // silently changing every text file. Pin it off in the snapshot repo.
+    // Unconditional so pre-existing snapshot repos get repaired too.
+    try { this.git('config core.autocrlf false') } catch { /* best effort */ }
   }
 
   /**
@@ -188,6 +193,7 @@ export class WorkspaceSnapshot {
             stdio: ['pipe', 'pipe', 'pipe'],
           })
           this.ensureExcludeEntry('.cynco-snapshots')
+          try { this.git('config core.autocrlf false') } catch { /* best effort */ }
           // Retry
           this.git('add -A')
           const hash = this.git('write-tree')
