@@ -14,6 +14,16 @@
 
 const FINGERPRINT_ARG_CAP = 200
 
+/** Canonical (toolName, args) fingerprint — shared with stuck detection
+ *  (cyberneticsGovernance lastToolCallSigs) so the two never drift.
+ *  Known measurement blur, accepted deliberately: calls differing only
+ *  beyond char 200 collide (undercount), and JSON.stringify key-order
+ *  differences split identical args (overcount). Both are rare in practice
+ *  because inputs come from one serializer on one code path. */
+export function toolCallFingerprint(name: string, input?: unknown): string {
+  return `${name}:${JSON.stringify(input ?? {}).slice(0, FINGERPRINT_ARG_CAP)}`
+}
+
 export class WindowedVarietyMeter {
   /** Sealed per-turn fingerprint sets, oldest first, capped at windowTurns. */
   private window: Set<string>[] = []
@@ -24,7 +34,7 @@ export class WindowedVarietyMeter {
 
   /** Record one tool call. Mirrors the stuck-detection signature format. */
   recordCall(name: string, input?: unknown): void {
-    this.current.add(`${name}:${JSON.stringify(input ?? {}).slice(0, FINGERPRINT_ARG_CAP)}`)
+    this.current.add(toolCallFingerprint(name, input))
   }
 
   /** Seal the in-progress turn into the rolling window. */
