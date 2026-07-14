@@ -29,6 +29,8 @@ const baseInput: S5Input = {
   observerDivergence: null,
   demotedTools: [],
   promptDifficulty: 'unknown',
+  taskError: null,
+  errorTrend: null,
 }
 
 // ─── Tests ────────────────────────────────────────────────────────

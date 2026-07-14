@@ -15,6 +15,8 @@ class CapturingS5 implements S5Interface {
 
 const govReport: GovernanceReport = {
   status: 'healthy',
+  taskError: null,
+  errorTrend: null,
   s3s4Balance: 'balanced',
   modelLatencyTrend: 'stable',
 } as unknown as GovernanceReport

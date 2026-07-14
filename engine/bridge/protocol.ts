@@ -215,6 +215,12 @@ export type GovernanceStatusEvent = {
     commander: string
     shifted: boolean
   }
+  /** P4.1: unmet-assertion fraction at turn seal; null when no active
+   *  contract. Mirrors GovernanceReport.taskError (file stays import-free). */
+  taskError?: number | null
+  /** P4.1: CUSUM alarm state over the taskError series — widened to string
+   *  on the wire; do not copy the union here. */
+  errorTrend?: string | null
   suggestion: string | null
 }
 

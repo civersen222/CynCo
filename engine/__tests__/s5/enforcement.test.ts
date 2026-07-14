@@ -39,6 +39,8 @@ function makeGovernance(overrides: Partial<GovernanceReport> = {}): GovernanceRe
     varietyBalance: 'balanced',
     varietyRatio: 1.0,
     varietyWindowed: 0,
+    taskError: null,
+    errorTrend: null,
     s3s4Balance: 'balanced',
     algedonicAlerts: 0,
     stuckTurns: 0,

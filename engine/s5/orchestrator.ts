@@ -78,6 +78,8 @@ export class S5Orchestrator {
       heterarchyAuthority: input.heterarchyAuthority ?? null,
       agreementRatio: (input.governance as any).agreementRatio ?? 1.0,
       observerDivergence: (input.governance as any).observerDivergence ?? null,
+      taskError: input.governance.taskError,
+      errorTrend: input.governance.errorTrend,
       demotedTools: [],
       promptDifficulty: input.promptDifficulty ?? 'unknown',
       governance: input.governance as Record<string, unknown>,
