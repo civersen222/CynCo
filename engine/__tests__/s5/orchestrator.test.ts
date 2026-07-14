@@ -9,6 +9,7 @@ function makeGovernance(overrides: Partial<GovernanceReport> = {}): GovernanceRe
     status: 'healthy',
     varietyBalance: 'balanced',
     varietyRatio: 1.0,
+    varietyWindowed: 0,
     s3s4Balance: 'balanced',
     algedonicAlerts: 0,
     stuckTurns: 0,

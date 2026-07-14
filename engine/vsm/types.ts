@@ -38,6 +38,10 @@ export type GovernanceReport = {
   status: HealthStatus
   varietyBalance: 'balanced' | 'underload' | 'overload'
   varietyRatio: number
+  /** P1.5: distinct (tool, args) states in the rolling 10-turn window —
+   *  the windowed counterpart to the monotone varietyRatio. Both are
+   *  logged so Phase 3 can compare discrimination power. */
+  varietyWindowed: number
   s3s4Balance: 'balanced' | 's3_dominant' | 's4_dominant' | 'critical'
   algedonicAlerts: number
   stuckTurns: number
