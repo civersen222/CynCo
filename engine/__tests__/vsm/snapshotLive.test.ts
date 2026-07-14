@@ -191,7 +191,7 @@ describe('snapshot surfacing — loop level (gated: CYNCO_INTEGRATION=1)', () =>
     expect(collector.turns.some((t: any) => t.snapshot && t.snapshot.hash === taken[0].hash)).toBe(true)
 
     // /undo path: revert the batch, file back to original, restore event out.
-    const result = (loop as any).undoLastBatch()
+    const result = loop.undoLastBatch()
     expect(result.ok).toBe(true)
     expect(fs.readFileSync(targetFile, 'utf8')).toBe('original content\n')
     expect(events.some((e: any) => e.type === 'snapshot.restored' && e.hash === taken[0].prevHash)).toBe(true)

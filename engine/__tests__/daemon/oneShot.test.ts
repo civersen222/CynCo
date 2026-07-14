@@ -174,7 +174,10 @@ describe('runOneShotTask trade-scan dispatch', () => {
         fakeScanInvoked = true
         throw new Error('must not be called')
       }
-      const code = await runOneShotTask(taskPath, noopProvider, makeConfig() as any, fakeScan)
+      // cwd: dir — this path constructs a real ConversationLoop, whose
+      // constructor initSnapshot()s its cwd; a temp dir keeps the test from
+      // staging the repo root into the live .cynco-snapshots/ (P1.4 fix).
+      const code = await runOneShotTask(taskPath, noopProvider, makeConfig() as any, fakeScan, dir)
       // Key assertion 1: the trade-scan orchestrator was never touched
       expect(fakeScanInvoked).toBe(false)
       // Key assertion 2: outcome file was written
@@ -255,7 +258,8 @@ describe('runOneShotTask (governed conversation loop)', () => {
       const taskPath = join(dir, 'task.json')
       writeFileSync(taskPath, JSON.stringify(task), 'utf-8')
 
-      const code = await runOneShotTask(taskPath, provider, makeConfig() as any)
+      // cwd: dir — keeps the real loop's initSnapshot off the repo root (P1.4 fix).
+      const code = await runOneShotTask(taskPath, provider, makeConfig() as any, undefined, dir)
       expect(code).toBe(0)
 
       const outcome = JSON.parse(readFileSync(join(dir, 'out.json'), 'utf-8'))
