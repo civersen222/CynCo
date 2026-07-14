@@ -172,4 +172,27 @@ describe('cynco mission outcome ledger', () => {
     expect(c.turns[0].heterarchy).toEqual({ context: 'exploration', commander: 'S4', shifted: true })
     expect(c.turns[1].heterarchy).toBe(null)
   })
+
+  it('buildMissionRecord passes verified + verify detail through from meta (Phase 2b)', () => {
+    const c = createMissionCollector(() => 1000)
+    const rec = buildMissionRecord(c, {
+      missionId: 'm-verify', briefFile: 'b.md', marker: 'x', cwd: '.',
+      dispatchedAt: 0, durationS: 1, outcome: 'landed',
+      verified: true,
+      verify: { command: 'pytest -q tests/smoke.py', exitCode: 0, timedOut: false, durationMs: 4200, outputTail: '3 passed' },
+    })
+    expect(rec.verified).toBe(true)
+    expect(rec.verify.exitCode).toBe(0)
+    expect(rec.verify.command).toBe('pytest -q tests/smoke.py')
+  })
+
+  it('buildMissionRecord without verified/verify stays null (manual-patch path unchanged)', () => {
+    const c = createMissionCollector(() => 1000)
+    const rec = buildMissionRecord(c, {
+      missionId: 'm-noverify', briefFile: 'b.md', marker: 'x', cwd: '.',
+      dispatchedAt: 0, durationS: 1, outcome: 'timeout',
+    })
+    expect(rec.verified).toBeNull()
+    expect(rec.verify).toBeNull()
+  })
 })
