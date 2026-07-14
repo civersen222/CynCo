@@ -263,7 +263,13 @@ class ProjectPicker(Screen):
                 )
                 if job:
                     ok = assign_process_to_job(job, self.app.engine_process._handle)
-                    resume_process(self.app.engine_process.pid)  # ALWAYS resume
+                    if resume_process(self.app.engine_process.pid) == 0:  # ALWAYS resume
+                        # Suspended-forever engine would just fail to connect
+                        # with no clue — surface the real cause.
+                        self.notify(
+                            "Engine resume reported 0 threads — engine may be stuck suspended",
+                            severity="warning",
+                        )
                     if not ok:
                         close_job(job)  # process not in job; close is inert
                         job = None

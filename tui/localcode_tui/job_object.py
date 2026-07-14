@@ -101,6 +101,7 @@ if sys.platform == "win32":
     _k32.Thread32Next.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
     _k32.OpenThread.restype = ctypes.c_void_p
     _k32.OpenThread.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
+    _k32.ResumeThread.restype = ctypes.c_uint32  # DWORD; (DWORD)-1 on failure
     _k32.ResumeThread.argtypes = [ctypes.c_void_p]
 
 
@@ -152,7 +153,7 @@ def resume_process(pid: int) -> int:
             if entry.th32OwnerProcessID == pid:
                 th = _k32.OpenThread(_THREAD_SUSPEND_RESUME, False, entry.th32ThreadID)
                 if th:
-                    if _k32.ResumeThread(th) != -1:
+                    if _k32.ResumeThread(th) != 0xFFFFFFFF:
                         resumed += 1
                     _k32.CloseHandle(th)
             has = _k32.Thread32Next(snap, ctypes.byref(entry))
