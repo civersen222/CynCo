@@ -74,6 +74,9 @@ export function maybeAutoCreateContract(text: string, contract: ContractState = 
 /** Apply a harness-supplied contract spec. Returns true when applied. */
 export function applyHarnessContract(spec: HarnessContractSpec | undefined, contract: ContractState = globalContract): boolean {
   if (!spec || !spec.title || !Array.isArray(spec.assertions) || spec.assertions.length === 0) return false
+  if (contract.isActive() && !contract.isComplete()) {
+    console.log(`[contract] Harness contract replacing an incomplete active contract ("${spec.title}")`)
+  }
   contract.create(spec.title, spec.brief ?? '', spec.assertions)
   return true
 }

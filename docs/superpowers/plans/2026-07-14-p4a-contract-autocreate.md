@@ -15,7 +15,7 @@
 - **protocol.ts stays import-free** — the `contract` field type is inlined, not imported.
 - **No S5/governance behavior change** — this only populates the measurement channel shipped in P4.1 (PR #45). No new authority.
 
-**Baselines (main @ 32fa749):** un-gated `npx vitest run` = 1900 passed / 33 skipped; gated (CYNCO_INTEGRATION=1) = 9 passed. **Expected after this plan:** un-gated **1914 passed / 33 skipped** (+11 contractAutoCreate, +3 decisionContract); gated **10 passed** (+1 harness-contract loop test).
+**Baselines (main @ 32fa749):** un-gated `npx vitest run` = 1900 passed / 33 skipped; gated (CYNCO_INTEGRATION=1) = 9 passed. **Expected after this plan:** un-gated **1914 passed / 34 skipped** (+11 contractAutoCreate, +3 decisionContract; +1 skipped = the new gated loop test); gated conversationLoop file **20 passed** (+1 harness-contract loop test).
 
 **File structure:**
 - Create: `engine/bridge/contractAutoCreate.ts` — pure contract-origination logic (synthesizeMessageAssertions, maybeAutoCreateContract, applyHarnessContract)
@@ -593,7 +593,7 @@ npx vitest run > /tmp/wire-p4a.log 2>&1; tail -6 /tmp/wire-p4a.log
 CYNCO_INTEGRATION=1 npx vitest run engine/__tests__/tools/conversationLoop.test.ts 2>&1 | tail -4
 ```
 
-Expected: un-gated **1914 passed / 33 skipped**; gated conversationLoop file green including the new P4.2 test. TUI untouched (optional protocol field, TUI never sends it) — no TUI run needed.
+Expected: un-gated **1914 passed / 34 skipped**; gated conversationLoop file green including the new P4.2 test. TUI untouched (optional protocol field, TUI never sends it) — no TUI run needed.
 
 - [ ] **Step 3: Commit the plan file, then ship (git-web-flow)**
 
