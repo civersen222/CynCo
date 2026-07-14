@@ -155,4 +155,13 @@ describe('cynco mission outcome ledger', () => {
     c.ingest({ type: 'governance.status', health: 'healthy' })
     expect(c.turns[0].snapshot).toBeNull()
   })
+
+  it('governance.status carries varietyWindowed into the turn record; absent → null (P1.5)', () => {
+    const c = createMissionCollector(() => 1000)
+    c.ingest({ type: 'governance.status', health: 'healthy', varietyRatio: 5.5, varietyWindowed: 4 })
+    c.ingest({ type: 'governance.status', health: 'healthy', varietyRatio: 5.5 })
+    expect(c.turns[0].varietyWindowed).toBe(4)
+    expect(c.turns[0].varietyRatio).toBe(5.5) // both series, side by side
+    expect(c.turns[1].varietyWindowed).toBe(null)
+  })
 })
