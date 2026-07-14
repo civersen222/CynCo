@@ -9,8 +9,23 @@ import { VibeLoopEngine } from './engine.js'
 import type { VibeMode, VibeEvent } from './types.js'
 import type { ConversationLoop } from '../bridge/conversationLoop.js'
 import { ProjectIndexer } from '../index/indexer.js'
+import { globalContract } from '../tools/contract.js'
 
 const MAX_QUESTIONS = 30  // Safety valve only — LLM says READY when done
+
+/** P4.2: one assertion per answered D-XX decision (same numbering as writePlanFile). */
+export function synthesizeDecisionAssertions(answers: { question: string; answer: string }[]): string[] {
+  const out: string[] = []
+  let dIdx = 1
+  for (const qa of answers) {
+    if (qa.answer) {
+      const dId = `D-${String(dIdx).padStart(2, '0')}`
+      out.push(`${dId} implemented as decided: ${qa.question} → ${qa.answer}`)
+      dIdx++
+    }
+  }
+  return out
+}
 
 /** System prompt for question generation — ported from ProjectWizard's BRAINSTORM_SYSTEM. */
 const QUESTION_SYSTEM = [
@@ -374,6 +389,22 @@ export class VibeController {
 
   // ─── Private: Plan File Persistence ─────────────────────────────
 
+  /** P4.2: synthesize the DoD contract from locked D-XX decisions so taskError
+   *  measures decision satisfaction during BUILD (STATE doc Phase 4(a)).
+   *  Replaces any prior contract — BUILD start is a task boundary; a re-BUILD
+   *  resets the series (reads as a fresh attempt in the ledger). No-op when no
+   *  decisions are locked (the loop's auto-create then covers the build prompt). */
+  private createContractFromDecisions(): void {
+    const assertions = synthesizeDecisionAssertions(this.answers)
+    if (assertions.length === 0) return
+    globalContract.create(
+      `Vibe build: ${this.userDescription.slice(0, 50)}`,
+      this.userDescription.slice(0, 200),
+      assertions,
+    )
+    console.log(`[vibe] Contract synthesized from ${assertions.length} D-XX decisions`)
+  }
+
   /** Write Q&A decisions with locked D-XX IDs to .cynco-plan.md */
   private writePlanFile(): void {
     const fs = require('fs')
@@ -568,6 +599,9 @@ export class VibeController {
 
     const buildPrompt = buildPromptOverride ?? await this.buildTaskPrompt()
 
+    // P4.2: D-XX contract BEFORE dispatch — preempts the junk auto-contract
+    // the loop would otherwise synthesize from the mega-prompt text.
+    this.createContractFromDecisions()
     await this.loop.handleUserMessage(buildPrompt)
 
     // Restore approval gating after build
