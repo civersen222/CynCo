@@ -5,6 +5,13 @@ import subprocess
 import asyncio
 from pathlib import Path
 from textual.screen import Screen
+from ..job_object import (
+    CREATE_SUSPENDED,
+    assign_process_to_job,
+    close_job,
+    create_kill_on_close_job,
+    resume_process,
+)
 from textual.widgets import Static, Input, Button, Footer
 from textual.containers import Vertical, Horizontal
 
@@ -201,6 +208,11 @@ class ProjectPicker(Screen):
                 self.app.engine_process.wait(timeout=3)
             except Exception:
                 pass
+        # P1.9: closing the previous job handle reaps the previous TREE —
+        # the single-PID kill above only reaches the shell; llama-server is
+        # a grandchild and used to survive respawns.
+        close_job(getattr(self.app, '_engine_job', None))
+        self.app._engine_job = None
 
         # Find bun and engine entry point
         engine_script = os.path.join(
@@ -232,6 +244,14 @@ class ProjectPicker(Screen):
                 # On Windows: shell=True needs a string command, not a list.
                 # Quote paths in case they contain spaces.
                 cmd = f'"{bun_cmd}" "{engine_script}"'
+                # P1.9: spawn SUSPENDED inside a KILL_ON_JOB_CLOSE Job Object
+                # so TUI death (even a crash) kills cmd.exe -> bun ->
+                # llama-server. Assign must happen before the process runs:
+                # descendants inherit job membership only if the parent is
+                # already in the job when it spawns them. If job creation
+                # fails we degrade to the old plain spawn (flags unchanged).
+                job = create_kill_on_close_job()
+                flags = subprocess.CREATE_NO_WINDOW | (CREATE_SUSPENDED if job else 0)
                 self.app.engine_process = subprocess.Popen(
                     cmd,
                     cwd=project_dir,
@@ -239,8 +259,21 @@ class ProjectPicker(Screen):
                     stdout=log_file,
                     stderr=log_file,
                     shell=True,
-                    creationflags=subprocess.CREATE_NO_WINDOW,
+                    creationflags=flags,
                 )
+                if job:
+                    ok = assign_process_to_job(job, self.app.engine_process._handle)
+                    if resume_process(self.app.engine_process.pid) == 0:  # ALWAYS resume
+                        # Suspended-forever engine would just fail to connect
+                        # with no clue — surface the real cause.
+                        self.notify(
+                            "Engine resume reported 0 threads — engine may be stuck suspended",
+                            severity="warning",
+                        )
+                    if not ok:
+                        close_job(job)  # process not in job; close is inert
+                        job = None
+                self.app._engine_job = job
             else:
                 self.app.engine_process = subprocess.Popen(
                     [bun_cmd, engine_script],
