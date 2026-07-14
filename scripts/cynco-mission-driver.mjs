@@ -141,7 +141,9 @@ try {
   try {
     const count = readFileSync(LEDGER_PATH, 'utf8').split('\n').filter(Boolean).length
     if (count % 5 === 0) console.log(`[ledger] SPOT-AUDIT DUE: record #${count} — human-verify this mission's label (1-in-5 cadence)`)
-  } catch {}
+  } catch (e) {
+    console.log(`[ledger] spot-audit count failed (reminder skipped): ${e?.message ?? e}`)
+  }
 } catch (e) {
   console.log(`[ledger] FAILED to write record: ${e?.message ?? e}`)
 }
