@@ -207,6 +207,14 @@ export type GovernanceStatusEvent = {
     taskType: string
     taskComplexity: number
   }
+  /** P1.6: per-turn heterarchy state. Mirrors HeterarchySnapshot in
+   *  vsm/types.ts — keep in sync (this file stays import-free). context is
+   *  widened to `string` on the wire; do not copy the union here. */
+  heterarchy?: {
+    context: string
+    commander: string
+    shifted: boolean
+  }
   suggestion: string | null
 }
 

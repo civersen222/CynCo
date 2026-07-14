@@ -215,5 +215,12 @@ describe('S4 reflection plumbing — loop level (gated: CYNCO_INTEGRATION=1)', (
     const govStatuses = events.filter((e: any) => e.type === 'governance.status')
     expect(govStatuses.length).toBeGreaterThanOrEqual(1)
     for (const g of govStatuses) expect(typeof g.varietyWindowed).toBe('number')
+
+    // P1.6 wire-proof: every per-turn status carries the heterarchy state.
+    for (const g of govStatuses) {
+      expect(typeof g.heterarchy?.commander).toBe('string')
+      expect(typeof g.heterarchy?.context).toBe('string')
+      expect(typeof g.heterarchy?.shifted).toBe('boolean')
+    }
   }, 60000)
 })
