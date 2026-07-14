@@ -12,77 +12,8 @@ import { globalContract } from '../../tools/contract.js'
 const SKIP = !process.env.CYNCO_INTEGRATION
 
 // Layer 2 imports (evaluated lazily so they don't blow up the un-gated suite)
-import type { Provider, ModelCapabilities, CompletionRequest } from '../../provider.js'
 import type { StreamEvent } from '../../types.js'
-import type { LocalCodeConfig } from '../../config.js'
-
-// ── Harness helpers (mirror conversationLoop.test.ts) ───────────────────────
-
-function defaultConfig(): LocalCodeConfig {
-  return {
-    baseUrl: 'http://localhost:11434',
-    model: 'test',
-    tier: 'auto',
-    temperature: 0.7,
-    maxOutputTokens: 8192,
-    timeout: 120000,
-    // Above the two-stage tool-routing threshold (65536) — the routing
-    // pre-call would otherwise consume the mock provider's scripted responses.
-    contextLength: 131072,
-    tools: undefined,
-    // Deterministic tests: proactive scouts would consume the mock provider's
-    // scripted responses before the main loop runs.
-    noScouts: true,
-    approveAll: true,
-  }
-}
-
-function defaultCapabilities(): ModelCapabilities {
-  return {
-    tier: 'advanced',
-    toolUse: 'native',
-    thinking: 'none',
-    vision: false,
-    jsonMode: true,
-    contextLength: 32768,
-    streaming: true,
-  }
-}
-
-function mockProvider(responses: Array<() => Generator<StreamEvent>>): Provider {
-  let callIdx = 0
-  return {
-    name: 'mock',
-    async healthCheck() { return true },
-    async listModels() { return [] },
-    async probeCapabilities(): Promise<ModelCapabilities> {
-      return defaultCapabilities()
-    },
-    async complete() { throw new Error('not implemented') },
-    async *stream(_request: CompletionRequest): AsyncGenerator<StreamEvent> {
-      const gen = responses[callIdx++]
-      if (gen) yield* gen()
-    },
-  }
-}
-
-function* textResponse(text: string): Generator<StreamEvent> {
-  yield { type: 'message_start', message: { id: 'msg1', model: 'test', usage: { input_tokens: 10, output_tokens: 0 } } } as any
-  yield { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } } as any
-  yield { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } } as any
-  yield { type: 'content_block_stop', index: 0 } as any
-  yield { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 5 } } as any
-  yield { type: 'message_stop' } as any
-}
-
-function* failingRead(i: number): Generator<StreamEvent> {
-  yield { type: 'message_start', message: { id: `m${i}`, model: 'test', usage: { input_tokens: 10, output_tokens: 0 } } } as any
-  yield { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: `tu${i}`, name: 'Read', input: {} } } as any
-  yield { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: `{"file_path":"C:/nonexistent-algedonic-${i}.txt"}` } } as any
-  yield { type: 'content_block_stop', index: 0 } as any
-  yield { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 5 } } as any
-  yield { type: 'message_stop' } as any
-}
+import { defaultConfig, mockProvider, textResponse, toolCall } from '../harness/liveHarness.js'
 
 // ── Layer 1: Un-gated governance-level tests ─────────────────────────────────
 
@@ -150,30 +81,19 @@ describe('algedonic live wiring — loop level (gated: CYNCO_INTEGRATION=1)', ()
     const { ConversationLoop } = await import('../../bridge/conversationLoop.js')
 
     const events: any[] = []
-    let callCount = 0
 
     const responses: Array<() => Generator<StreamEvent>> = [
-      () => failingRead(0),
-      () => failingRead(1),
-      () => failingRead(2),
-      () => failingRead(3),
-      () => failingRead(4),
-      () => failingRead(5),
-      () => failingRead(6),
-      () => failingRead(7),
+      () => toolCall(0, 'Read', { file_path: 'C:/nonexistent-algedonic-0.txt' }),
+      () => toolCall(1, 'Read', { file_path: 'C:/nonexistent-algedonic-1.txt' }),
+      () => toolCall(2, 'Read', { file_path: 'C:/nonexistent-algedonic-2.txt' }),
+      () => toolCall(3, 'Read', { file_path: 'C:/nonexistent-algedonic-3.txt' }),
+      () => toolCall(4, 'Read', { file_path: 'C:/nonexistent-algedonic-4.txt' }),
+      () => toolCall(5, 'Read', { file_path: 'C:/nonexistent-algedonic-5.txt' }),
+      () => toolCall(6, 'Read', { file_path: 'C:/nonexistent-algedonic-6.txt' }),
+      () => toolCall(7, 'Read', { file_path: 'C:/nonexistent-algedonic-7.txt' }),
     ]
 
-    const provider: Provider = {
-      name: 'mock',
-      async healthCheck() { return true },
-      async listModels() { return [] },
-      async probeCapabilities(): Promise<ModelCapabilities> { return defaultCapabilities() },
-      async complete() { throw new Error('not implemented') },
-      async *stream(_request: CompletionRequest): AsyncGenerator<StreamEvent> {
-        const gen = responses[callCount++]
-        if (gen) yield* gen()
-      },
-    }
+    const provider = mockProvider(responses, { lenient: true })
 
     const loop = new ConversationLoop({
       cwd: tempDir,
@@ -189,7 +109,7 @@ describe('algedonic live wiring — loop level (gated: CYNCO_INTEGRATION=1)', ()
     expect(completes[0].stopReason).toBe('halted')
     // Kill switch trips after 5 pain signals; nudges or context checks may consume
     // a few extra scripted responses but should not need all 8.
-    expect(callCount).toBeLessThanOrEqual(8)
+    expect(provider.callCount()).toBeLessThanOrEqual(8)
   }, 60000)
 
   it.skipIf(SKIP)('Test B — 4 Read failures then text response does NOT halt', async () => {
@@ -200,10 +120,10 @@ describe('algedonic live wiring — loop level (gated: CYNCO_INTEGRATION=1)', ()
     // 4 failing reads + successful text. The completion phrase "task complete"
     // satisfies the loop's modelSaysDone check, preventing nudge injection.
     const responses: Array<() => Generator<StreamEvent>> = [
-      () => failingRead(10),
-      () => failingRead(11),
-      () => failingRead(12),
-      () => failingRead(13),
+      () => toolCall(10, 'Read', { file_path: 'C:/nonexistent-algedonic-10.txt' }),
+      () => toolCall(11, 'Read', { file_path: 'C:/nonexistent-algedonic-11.txt' }),
+      () => toolCall(12, 'Read', { file_path: 'C:/nonexistent-algedonic-12.txt' }),
+      () => toolCall(13, 'Read', { file_path: 'C:/nonexistent-algedonic-13.txt' }),
       () => textResponse('task complete — no halt triggered; the four reads failed but the streak never reached five.'),
     ]
 
