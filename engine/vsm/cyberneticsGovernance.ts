@@ -45,6 +45,7 @@ import { PredictionTracker } from './predictionTracker.js'
 import { InterventionTracker } from './interventionTracker.js'
 
 import type { GovernanceReport, GovernanceAlert } from './types.js'
+import { WindowedVarietyMeter, toolCallFingerprint } from './windowedVariety.js'
 import { getJournal } from '../training/decisionJournal.js'
 import { makeJournalEntry } from '../training/types.js'
 
@@ -140,6 +141,8 @@ export class CyberneticsGovernance {
   private lastCommander: string = 'S3'
   // Observer divergence — last computed S3/S4 divergence on success_rate
   private lastObserverDivergence: number | null = null
+
+  private windowedVariety = new WindowedVarietyMeter()
 
   // Metrics tracking
   private toolHistory: { name: string; success: boolean; latencyMs: number }[] = []
@@ -271,8 +274,11 @@ export class CyberneticsGovernance {
     // Stuck means repeating the SAME call (name + params), not the same tool.
     // Real incident 2026-06-12: a mission calling Mfl with different queries
     // climbed to stuck=15 and HALTed mid-answer because signatures were name-only.
-    this.lastToolCallSigs.push(`${name}:${JSON.stringify(input ?? {}).slice(0, 200)}`)
+    this.lastToolCallSigs.push(toolCallFingerprint(name, input))
     if (this.lastToolCallSigs.length > 5) this.lastToolCallSigs = this.lastToolCallSigs.slice(-5)
+    // P1.5: windowed distinguishable-state counting — measurement, so it
+    // stays in the always-track zone (needed from ablated runs too).
+    this.windowedVariety.recordCall(name, input)
     if (this._ablated || this._paused) return // Skip all governance when ablated or paused
 
     // Route through real algedonic channel
@@ -371,6 +377,9 @@ export class CyberneticsGovernance {
     this._s4ReflectionRanThisTurn = false
 
     this.turnCount++
+    // P1.5: seal the turn's fingerprint set into the rolling window
+    // (before the ablation return — measurement, not authority).
+    this.windowedVariety.onTurnComplete()
     if (this._ablated || this._paused) {
       return
     }
@@ -673,6 +682,7 @@ export class CyberneticsGovernance {
       status,
       varietyBalance,
       varietyRatio: this.lastVarietyRatio,
+      varietyWindowed: this.windowedVariety.count(),
       s3s4Balance,
       algedonicAlerts: this.eventBus.replayFiltered(
         e => e.payload.kind === 'AlgedonicFired' && (e.payload as any).severity !== 'Info'

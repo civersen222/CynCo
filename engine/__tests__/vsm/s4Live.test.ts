@@ -210,5 +210,10 @@ describe('S4 reflection plumbing — loop level (gated: CYNCO_INTEGRATION=1)', (
     const lastTurn = collector.turns[collector.turns.length - 1]
     expect(lastTurn.s4).not.toBeNull()
     expect(lastTurn.s4.scores).not.toBeNull()
+
+    // P1.5 wire-proof: every per-turn status carries the windowed series.
+    const govStatuses = events.filter((e: any) => e.type === 'governance.status')
+    expect(govStatuses.length).toBeGreaterThanOrEqual(1)
+    for (const g of govStatuses) expect(typeof g.varietyWindowed).toBe('number')
   }, 60000)
 })

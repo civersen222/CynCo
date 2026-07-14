@@ -171,6 +171,9 @@ export type GovernanceStatusEvent = {
   toolSuccessRate: number
   stuckTurns: number
   varietyRatio?: number
+  /** P1.5: rolling-window distinguishable-state count — the windowed
+   *  counterpart to the monotone varietyRatio; both logged for Phase 3. */
+  varietyWindowed?: number
   varietyBalance?: string
   algedonicAlerts?: number
   /** Mirrors AxiomHealth in vsm/types.ts (emit sends the object, not a string). */

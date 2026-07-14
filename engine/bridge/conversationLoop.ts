@@ -1854,6 +1854,7 @@ export class ConversationLoop {
                 toolSuccessRate: turnReport.toolSuccessRate,
                 stuckTurns: turnReport.stuckTurns,
                 varietyRatio: turnReport.varietyRatio,
+                varietyWindowed: turnReport.varietyWindowed,
                 varietyBalance: turnReport.varietyBalance,
                 algedonicAlerts: turnReport.algedonicAlerts,
                 axiomHealth: turnReport.axiomHealth,
