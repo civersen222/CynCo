@@ -164,4 +164,12 @@ describe('cynco mission outcome ledger', () => {
     expect(c.turns[0].varietyRatio).toBe(5.5) // both series, side by side
     expect(c.turns[1].varietyWindowed).toBe(null)
   })
+
+  it('governance.status carries the heterarchy snapshot into the turn record; absent → null (P1.6)', () => {
+    const c = createMissionCollector(() => 1000)
+    c.ingest({ type: 'governance.status', health: 'healthy', heterarchy: { context: 'exploration', commander: 'S4', shifted: true } })
+    c.ingest({ type: 'governance.status', health: 'healthy' })
+    expect(c.turns[0].heterarchy).toEqual({ context: 'exploration', commander: 'S4', shifted: true })
+    expect(c.turns[1].heterarchy).toBe(null)
+  })
 })

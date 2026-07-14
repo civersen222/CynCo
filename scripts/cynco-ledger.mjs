@@ -38,6 +38,7 @@ export function createMissionCollector(now = () => Date.now()) {
             agreementRatio: m.agreementRatio ?? null,
             predictions: m.predictions ?? null,
             s4: m.s4 ?? null,
+            heterarchy: m.heterarchy ?? null,
             snapshot: null,
           })
           break

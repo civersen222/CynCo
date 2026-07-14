@@ -1864,6 +1864,7 @@ export class ConversationLoop {
                 agreementRatio: (turnReport as any).agreementRatio ?? 1.0,
                 predictions: turnReport.predictions,
                 s4: turnReport.s4,
+                heterarchy: turnReport.heterarchy,
                 suggestion: turnReport.stuckTurns > 0 ? 'Model may be stuck — consider changing approach' : null,
               })
 

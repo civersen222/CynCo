@@ -31,7 +31,7 @@ import { FeedbackControlIntegration, type FeedbackActions } from './feedbackCont
 import { PerformanceMetricsIntegration } from './performanceMetrics.js'
 import { AutopoiesisIntegration } from './autopoiesisIntegration.js'
 import { ConstraintChecksIntegration } from './constraintChecks.js'
-import { HeterarchyIntegration } from './heterarchyIntegration.js'
+import { HeterarchyIntegration, type SystemContext } from './heterarchyIntegration.js'
 import { ConversationTheoryIntegration } from './conversationTheory.js'
 import { ObserverEffectsIntegration } from './observerEffects.js'
 import { ConfigPopulation } from './population.js'
@@ -139,6 +139,8 @@ export class CyberneticsGovernance {
   private _paused: boolean = false
   // Heterarchy: last computed commander
   private lastCommander: string = 'S3'
+  private lastContext: SystemContext = 'normal'
+  private lastCommanderShifted = false
   // Observer divergence — last computed S3/S4 divergence on success_rate
   private lastObserverDivergence: number | null = null
 
@@ -432,7 +434,10 @@ export class CyberneticsGovernance {
       metrics.toolsCalled,
     )
     const commander = this.heterarchyIntegration.whoCommands(context)
-    const heterarchyShifted = commander !== this.lastCommander
+    // P1.6: persist the full heterarchy state — before this, `context` was
+    // discarded and the shift flag computed-then-dropped (dead local).
+    this.lastContext = context
+    this.lastCommanderShifted = commander !== this.lastCommander
     this.lastCommander = commander
 
     // Conversation: track exchange if user message present.
@@ -709,6 +714,11 @@ export class CyberneticsGovernance {
         reflectionCount: reflectionHistory.length,
         taskType: this.currentTaskType,
         taskComplexity: this.currentTaskComplexity,
+      },
+      heterarchy: {
+        context: this.lastContext,
+        commander: this.lastCommander,
+        shifted: this.lastCommanderShifted,
       },
     }
   }

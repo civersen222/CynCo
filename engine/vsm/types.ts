@@ -34,6 +34,15 @@ export type S4Snapshot = {
   taskComplexity: number
 }
 
+/** P1.6: per-turn heterarchy state (McCulloch redundancy of potential
+ *  command). Classification pre-existed; this persists it. */
+export type HeterarchySnapshot = {
+  context: 'normal' | 'crisis' | 'exploration' | 'routine' | 'stuck'
+  commander: string
+  /** Did command shift on the last completed turn? */
+  shifted: boolean
+}
+
 export type GovernanceReport = {
   status: HealthStatus
   varietyBalance: 'balanced' | 'underload' | 'overload'
@@ -54,6 +63,7 @@ export type GovernanceReport = {
   recentToolNames: string[]
   predictions: PredictionSnapshot
   s4: S4Snapshot
+  heterarchy: HeterarchySnapshot
 }
 
 export type GovernanceAlert = {
