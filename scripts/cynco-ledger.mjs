@@ -8,7 +8,8 @@
 //
 // Records land in benchmark/cynco-ledger/missions.jsonl (committed to git).
 // Ground-truth label for scoring: outcome === 'landed' && verified === true
-// (`verified` is patched in after independent verification of the commit).
+// (`verified` is set by the driver's post-mission check script when a
+// check-cmd is supplied — Phase 2(b) — or patched in manually otherwise).
 
 export function createMissionCollector(now = () => Date.now()) {
   return {
@@ -99,7 +100,8 @@ export function createMissionCollector(now = () => Date.now()) {
 }
 
 // meta: { missionId, briefFile, marker, cwd, dispatchedAt, durationS,
-//         outcome: 'landed' | 'timeout' | 'zero_tool_fail' }
+//         outcome: 'landed' | 'timeout' | 'zero_tool_fail',
+//         verified?: boolean, verify?: object } // Phase 2(b) check-script result
 export function buildMissionRecord(collector, meta) {
   return {
     schema: 1,
@@ -110,7 +112,10 @@ export function buildMissionRecord(collector, meta) {
     dispatchedAt: meta.dispatchedAt,
     durationS: meta.durationS,
     outcome: meta.outcome,
-    verified: null, // patched after independent verification of the landed commit
+    // Phase 2(b): set by the driver's post-mission check script (exit 0 =>
+    // true); null when no check command was supplied (manual-patch path).
+    verified: meta.verified ?? null,
+    verify: meta.verify ?? null, // { command, exitCode, timedOut, durationMs, outputTail }
     turns: collector.turns,
     s5Decisions: collector.s5Decisions,
     controlSignals: collector.controlSignals,
