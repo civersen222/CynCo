@@ -1,10 +1,12 @@
 // Canonical CynCo mission driver (see docs/cynco-failure-log.md F5).
 //
-// Usage: bun scripts/cynco-mission-driver.mjs <task-file> <commit-marker> [cwd] [timeout-s]
+// Usage: bun scripts/cynco-mission-driver.mjs <task-file> <commit-marker> [cwd] [timeout-s] [check-cmd]
 //   task-file:     path to a text file containing the full mission brief
 //   commit-marker: substring expected in `git log --oneline` when the mission lands
 //   cwd:           target repo for the mission (default: C:\Users\civer\civkings)
 //   timeout-s:     max wait (default 600)
+//   check-cmd:     shell command run in cwd AFTER the mission ends (Phase 2b);
+//                  exit 0 => verified:true, else verified:false. Omit => null.
 //
 // Requires the engine running headless with LOCALCODE_APPROVE_ALL=true (F2)
 // and LOCALCODE_S5_ENFORCE=false (F7 — S5 capped at recommend so enforcement
@@ -13,17 +15,19 @@
 // unique Edit anchor (grep-verified), full replacement block verbatim.
 //
 // Every mission appends one labeled record to benchmark/cynco-ledger/missions.jsonl
-// (governance falsification program, step 1). Patch `verified` after
-// independently verifying the landed commit.
+// (governance falsification program, step 1). With a check-cmd the driver sets
+// `verified` itself; without one, patch it after independent verification.
+// Human spot-audit every 5th record either way (STATE doc Phase 2(b)).
 
 import { basename, join, dirname } from 'node:path'
-import { mkdirSync, appendFileSync } from 'node:fs'
+import { mkdirSync, appendFileSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { createMissionCollector, buildMissionRecord } from './cynco-ledger.mjs'
+import { runCheck } from './cynco-verify.mjs'
 
-const [taskFile, marker, cwdArg, timeoutArg] = process.argv.slice(2)
+const [taskFile, marker, cwdArg, timeoutArg, checkCmd] = process.argv.slice(2)
 if (!taskFile || !marker) {
-  console.error('usage: bun scripts/cynco-mission-driver.mjs <task-file> <commit-marker> [cwd] [timeout-s]')
+  console.error('usage: bun scripts/cynco-mission-driver.mjs <task-file> <commit-marker> [cwd] [timeout-s] [check-cmd]')
   process.exit(2)
 }
 const CWD = cwdArg ?? 'C:\\Users\\civer\\civkings'
@@ -99,6 +103,22 @@ try {
   console.log('[git status]\n' + await new Response(p.stdout).text())
 } catch (e) { console.log(`[driver] git status failed: ${e?.message ?? e}`) }
 
+// Phase 2(b): brief-supplied check command labels the record automatically.
+// Runs for EVERY outcome — a timeout mission that somehow landed working code
+// earns verified:true, and a "landed" commit that breaks the check earns
+// verified:false. Both are exactly the labels the falsification program needs.
+const CHECK_TIMEOUT_MS = 300000
+let verified
+let verify = null
+if (checkCmd) {
+  console.log(`[verify] running check in ${CWD}: ${checkCmd}`)
+  const r = runCheck(checkCmd, CWD, CHECK_TIMEOUT_MS)
+  verified = r.verified
+  verify = { command: checkCmd, exitCode: r.exitCode, timedOut: r.timedOut, durationMs: r.durationMs, outputTail: r.outputTail }
+  console.log(`[verify] ${verified ? 'PASS' : 'FAIL'} (exit=${r.exitCode ?? 'none'}${r.timedOut ? ', TIMED OUT' : ''}, ${r.durationMs}ms)`)
+  if (!verified) console.log(`[verify] output tail:\n${r.outputTail}`)
+}
+
 // Append the labeled mission record to the outcome ledger
 const outcome = landed ? 'landed' : zeroToolCompletion ? 'zero_tool_fail' : 'timeout'
 try {
@@ -110,11 +130,18 @@ try {
     dispatchedAt,
     durationS: Math.round((Date.now() - start) / 1000),
     outcome,
+    verified,
+    verify,
   })
   mkdirSync(dirname(LEDGER_PATH), { recursive: true })
   appendFileSync(LEDGER_PATH, JSON.stringify(record) + '\n')
   console.log(`[ledger] ${outcome} record ${missionId} appended (${collector.turns.length} turns, ${collector.s5Decisions.length} S5 decisions) → ${LEDGER_PATH}`)
-  console.log('[ledger] patch "verified": true|false after independent verification')
+  if (!checkCmd) console.log('[ledger] no check-cmd given — patch "verified": true|false after independent verification')
+  // 1-in-5 human spot-audit cadence (STATE doc Phase 2(b)).
+  try {
+    const count = readFileSync(LEDGER_PATH, 'utf8').split('\n').filter(Boolean).length
+    if (count % 5 === 0) console.log(`[ledger] SPOT-AUDIT DUE: record #${count} — human-verify this mission's label (1-in-5 cadence)`)
+  } catch {}
 } catch (e) {
   console.log(`[ledger] FAILED to write record: ${e?.message ?? e}`)
 }
