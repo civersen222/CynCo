@@ -62,6 +62,7 @@ class LocalCodeApp(App):
         self.show_setup = setup
         self.project_dir: str | None = project
         self.engine_process = None
+        self._engine_job = None  # P1.9: Job Object handle owning the engine tree
         self.config = load_config()
         self._current_message = ""
         self._vibe_escalation_lock = asyncio.Lock()
@@ -616,6 +617,11 @@ class LocalCodeApp(App):
                     self.engine_process.kill()
                 except Exception:
                     pass
+        # P1.9: final sweep — terminate() above only reaches the shell;
+        # closing the job kills anything left in the tree (llama-server).
+        from .job_object import close_job
+        close_job(getattr(self, '_engine_job', None))
+        self._engine_job = None
         self.exit()
 
 
