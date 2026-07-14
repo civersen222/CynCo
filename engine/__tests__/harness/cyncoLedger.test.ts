@@ -195,4 +195,18 @@ describe('cynco mission outcome ledger', () => {
     expect(rec.verified).toBeNull()
     expect(rec.verify).toBeNull()
   })
+
+  it('turn records carry taskError + errorTrend from governance.status (P4.1)', () => {
+    const c = createMissionCollector(() => 42)
+    c.ingest({ type: 'governance.status', health: 'healthy', taskError: 0.5, errorTrend: 'rising' })
+    expect(c.turns[0].taskError).toBe(0.5)
+    expect(c.turns[0].errorTrend).toBe('rising')
+  })
+
+  it('turn records default taskError + errorTrend to null when absent (P4.1)', () => {
+    const c = createMissionCollector(() => 42)
+    c.ingest({ type: 'governance.status', health: 'healthy' })
+    expect(c.turns[0].taskError).toBeNull()
+    expect(c.turns[0].errorTrend).toBeNull()
+  })
 })

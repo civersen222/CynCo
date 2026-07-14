@@ -32,6 +32,8 @@ export function createMissionCollector(now = () => Date.now()) {
             stuckTurns: m.stuckTurns ?? null,
             varietyRatio: m.varietyRatio ?? null,
             varietyWindowed: m.varietyWindowed ?? null,
+            taskError: m.taskError ?? null,
+            errorTrend: m.errorTrend ?? null,
             varietyBalance: m.varietyBalance ?? null,
             algedonicAlerts: m.algedonicAlerts ?? null,
             axiomHealth: m.axiomHealth ?? null,

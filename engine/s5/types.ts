@@ -29,6 +29,9 @@ export type S5Input = {
   demotedTools: string[]
   // Observed task difficulty from turn telemetry (vsm DifficultyClassifier)
   promptDifficulty: DifficultyLevel
+  // P4.1: task homeostat — external DoD error + CUSUM trend (VI.3)
+  taskError: number | null
+  errorTrend: 'rising' | 'falling' | 'flat' | null
 }
 
 export type S5Decision = {

@@ -28,6 +28,8 @@ function baseInput(overrides: Partial<S5Input> = {}): S5Input {
     observerDivergence: null,
     demotedTools: [],
     promptDifficulty: 'unknown',
+    taskError: null,
+    errorTrend: null,
     ...overrides,
   }
 }
