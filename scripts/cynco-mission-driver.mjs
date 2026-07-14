@@ -7,6 +7,8 @@
 //   timeout-s:     max wait (default 600)
 //   check-cmd:     shell command run in cwd AFTER the mission ends (Phase 2b);
 //                  exit 0 => verified:true, else verified:false. Omit => null.
+//                  Also sent as a one-assertion DoD contract with the mission
+//                  dispatch (P4.2) so taskError/errorTrend measure the run.
 //
 // Requires the engine running headless with LOCALCODE_APPROVE_ALL=true (F2)
 // and LOCALCODE_S5_ENFORCE=false (F7 — S5 capped at recommend so enforcement
@@ -49,7 +51,12 @@ let toolCount = 0
 let zeroToolCompletion = false
 ws.onopen = () => {
   console.log('[driver] connected, dispatching mission')
-  ws.send(JSON.stringify({ type: 'user.message', text: task, cwd: CWD }))
+  // P4.2 (STATE doc Phase 4(a)): the check script IS the contract — the engine
+  // creates a one-assertion DoD so taskError/errorTrend measure this mission.
+  const contract = checkCmd
+    ? { title: `Mission: ${marker}`, brief: task.slice(0, 200), assertions: [`Verification command exits 0: ${checkCmd}`] }
+    : undefined
+  ws.send(JSON.stringify({ type: 'user.message', text: task, cwd: CWD, ...(contract ? { contract } : {}) }))
 }
 ws.onmessage = (ev) => {
   try {

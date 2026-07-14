@@ -8,6 +8,7 @@ import * as path from 'path'
 // Run manually with: CYNCO_INTEGRATION=1 bun test
 const SKIP = !process.env.CYNCO_INTEGRATION
 import { ConversationLoop } from '../../bridge/conversationLoop.js'
+import { globalContract } from '../../tools/contract.js'
 import type { Provider, ModelCapabilities, CompletionRequest } from '../../provider.js'
 import type { StreamEvent } from '../../types.js'
 import type { LocalCodeConfig } from '../../config.js'
@@ -496,6 +497,25 @@ describe('ConversationLoop with tools', () => {
     const complete = events.find(e => e.type === 'message.complete')
     expect(complete).toBeDefined()
     expect(complete.stopReason).toBe('end_turn')
+  })
+
+  it.skipIf(SKIP)('applies a harness-supplied contract before auto-create (P4.2)', async () => {
+    globalContract.clear()
+    // Enough scripted responses to exhaust contract enforcement rounds (cap 5).
+    const provider = mockProvider(Array.from({ length: 7 }, () => () => textResponse('done')))
+    const loop = new ConversationLoop({
+      cwd: TEST_CWD,
+      config: defaultConfig(),
+      provider,
+      emit: () => {},
+    })
+    await loop.handleUserMessage('carry out the mission described in the brief in full', {
+      contract: { title: 'Mission: m1', assertions: ['Verification command exits 0: exit 0'] },
+    })
+    const snap = globalContract.snapshot()
+    expect(snap.title).toBe('Mission: m1')
+    expect(snap.assertions.length).toBe(1)
+    globalContract.clear()
   })
 })
 

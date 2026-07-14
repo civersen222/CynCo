@@ -54,6 +54,7 @@ import { probeEdit } from '../vsm/groundingProbe.js'
 import { loadInterventionRates, saveInterventionRates } from '../vsm/interventionPersistence.js'
 import { applyNudgeTemperature } from '../vsm/controlSignals.js'
 import { globalContract } from '../tools/contract.js'
+import { applyHarnessContract, maybeAutoCreateContract, type HarnessContractSpec } from './contractAutoCreate.js'
 import { globalAskBroker } from '../tools/askBroker.js'
 import { setSideQuery, resetMergeTracking } from '../tools/impl/edit.js'
 import { estimateTokensAsync } from '../engine/contextBudget.js'
@@ -515,7 +516,7 @@ export class ConversationLoop {
     return estimateTokensAsync(this.messages as any, this.provider.countTokens?.bind(this.provider))
   }
 
-  async handleUserMessage(text: string): Promise<void> {
+  async handleUserMessage(text: string, opts?: { contract?: HarnessContractSpec }): Promise<void> {
     if (this.processing) {
       console.log('[loop] Already processing, ignoring message')
       return
@@ -539,52 +540,21 @@ export class ConversationLoop {
     this.readLoopGate.reset()
     this.steering.clear()
 
-    // Auto-create contract from EVERY user message — the model must finish what the user asked.
-    // Skip in one-shot mission runs (allowedTools pinned): the contract enforcer is calibrated
-    // for interactive coding ("run the test suite NOW with Bash") and blocks a mission from
+    // P4.2: harness-supplied contract (mission mode — the brief's check script
+    // IS the contract, STATE doc Phase 4(a)). Applied before auto-create.
+    if (opts?.contract && applyHarnessContract(opts.contract)) {
+      console.log(`[contract] Harness-supplied: "${opts.contract.title}" (${opts.contract.assertions.length} assertion(s))`)
+      this.governance.setContractCreated()
+    }
+    // Auto-create contract from EVERY user message — the model must finish what
+    // the user asked. A COMPLETE stale contract from a prior task is replaced
+    // (P4.2 — otherwise taskError measures the wrong task); an INCOMPLETE one is
+    // kept (live task / follow-up message). Skip in one-shot mission runs
+    // (allowedTools pinned): the contract enforcer is calibrated for interactive
+    // coding ("run the test suite NOW with Bash") and blocks a mission from
     // producing its final structured outcome (2026-06-12 weekly-digest incident).
-    if (!this.allowedTools && !globalContract.isActive() && text.length > 15) {
-      const lowerText = text.toLowerCase()
-      const assertions: string[] = []
-
-      // Classify intent
-      const isEditTask = /\b(edit|add|create|write|fix|change|modify|delete|remove|wire|implement|refactor|build|update|move|rename)\b/.test(lowerText)
-      const isAnalysisTask = /\b(analyze|explain|describe|summarize|review|compare|investigate|trace|debug|diagnose|why|how does|what is|what are|tell me|show me|find|search|look at|check)\b/.test(lowerText)
-      const isRunTask = /\b(run|test|execute|deploy|install|start|launch|build)\b/.test(lowerText)
-
-      if (isEditTask) {
-        // Extract file targets from the message
-        const fileMatches = text.match(/[\w./\\-]+\.(py|ts|js|tsx|jsx|rs|go|java|c|cpp|h|html|css|json|yaml|yml|toml|md)\b/g)
-        if (fileMatches) {
-          for (const f of [...new Set(fileMatches)].slice(0, 3)) {
-            if (/\b(create|write|new file)\b/i.test(text) && text.includes(f)) {
-              assertions.push(`File ${f} exists after changes`)
-            } else {
-              assertions.push(`File ${f} was modified (git diff shows changes)`)
-            }
-          }
-        }
-        if (assertions.length === 0) {
-          assertions.push('Code was modified to address the task')
-        }
-        assertions.push('Changes committed to git')
-      } else if (isAnalysisTask) {
-        assertions.push('Analysis or answer was provided to the user')
-        assertions.push('Response directly addresses what the user asked')
-      } else if (isRunTask) {
-        assertions.push('Command was executed')
-        assertions.push('Output or result was reported to the user')
-      } else {
-        // Default: treat as a general task
-        assertions.push('Task was completed — user request fully addressed')
-      }
-
-      globalContract.create(
-        text.slice(0, 60),
-        text.slice(0, 200),
-        assertions,
-      )
-      console.log(`[contract] Auto-created: ${assertions.length} assertions for "${text.slice(0, 50)}..."`)
+    else if (!this.allowedTools && maybeAutoCreateContract(text)) {
+      console.log(`[contract] Auto-created: ${globalContract.pendingCount()} assertions for "${text.slice(0, 50)}..."`)
       this.governance.setContractCreated()
     }
 

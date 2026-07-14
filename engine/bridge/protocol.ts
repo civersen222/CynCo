@@ -428,6 +428,10 @@ export type UserMessageCommand = {
   type: 'user.message'
   text: string
   cwd?: string  // Optional: change working directory for this message
+  /** P4.2: optional harness-supplied DoD contract (mission mode — the brief's
+   *  check script is the contract). Applied before intent auto-create.
+   *  Inlined type: this file stays import-free. */
+  contract?: { title: string; brief?: string; assertions: string[] }
 }
 
 export type ApprovalResponseCommand = {
