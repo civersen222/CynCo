@@ -22,6 +22,7 @@ function makeGovernance(overrides: Partial<GovernanceReport> = {}): GovernanceRe
     recentToolNames: [],
     predictions: { open: 0, completed: 0, stats: [] },
     s4: { scores: null, composite: null, reflectionCount: 0, taskType: 'simple_query', taskComplexity: 1 },
+    heterarchy: { context: 'normal' as const, commander: 'S3', shifted: false },
     ...overrides,
   }
 }
