@@ -8,7 +8,8 @@
 //
 // Records land in benchmark/cynco-ledger/missions.jsonl (committed to git).
 // Ground-truth label for scoring: outcome === 'landed' && verified === true
-// (`verified` is patched in after independent verification of the commit).
+// (`verified` is set by the driver's post-mission check script when a
+// check-cmd is supplied — Phase 2(b) — or patched in manually otherwise).
 
 export function createMissionCollector(now = () => Date.now()) {
   return {
