@@ -1,7 +1,10 @@
 // engine/__tests__/vibe/sideQueryRouting.test.ts
 // runSideQuery must route through the provider-appropriate endpoint —
 // llama-cpp uses OpenAI-compatible /v1/chat/completions, Ollama uses /api/chat.
-import { afterEach, describe, expect, it } from 'bun:test'
+import { afterAll, afterEach, describe, expect, it } from 'bun:test'
+import * as fs from 'fs'
+import * as os from 'os'
+import * as path from 'path'
 import { ConversationLoop } from '../../bridge/conversationLoop.js'
 import type { Provider, ModelCapabilities, CompletionRequest } from '../../provider.js'
 import type { StreamEvent } from '../../types.js'
@@ -24,8 +27,16 @@ function stubProvider(): Provider {
   }
 }
 
+// Loop cwd — the constructor initSnapshot()s its cwd; a temp dir keeps tests
+// from staging the repo root into the live .cynco-snapshots/ (P1.4 fix).
+const TEST_CWD = fs.mkdtempSync(path.join(os.tmpdir(), 'cynco-sidequery-cwd-'))
+afterAll(() => {
+  fs.rmSync(TEST_CWD, { recursive: true, force: true, maxRetries: 5 })
+})
+
 function makeLoop(configOverrides: Record<string, unknown>) {
   return new ConversationLoop({
+    cwd: TEST_CWD,
     config: {
       baseUrl: 'http://localhost:11434', model: 'test', tier: 'auto',
       temperature: 0.7, maxOutputTokens: 8192, timeout: 120000,

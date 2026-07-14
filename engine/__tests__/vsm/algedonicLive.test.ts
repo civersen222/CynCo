@@ -1,4 +1,7 @@
-import { describe, expect, it, beforeEach } from 'vitest'
+import { describe, expect, it, beforeEach, afterEach } from 'vitest'
+import * as fs from 'fs'
+import * as os from 'os'
+import * as path from 'path'
 import { CyberneticsGovernance } from '../../vsm/cyberneticsGovernance.js'
 import { HaltedError } from '../../cybernetics-core/src/algedonic/index.js'
 import { resetEventBus } from '../../vsm/eventBus.js'
@@ -128,9 +131,18 @@ describe('algedonic live wiring — loop level (gated: CYNCO_INTEGRATION=1)', ()
   // object; auto-creation in handleUserMessage creates a "pending" assertion that
   // the mock provider can never satisfy, causing contract enforcement to block exit.
   // Disabling enforcement lets end_turn propagate cleanly.
+  let tempDir = ''
+
   beforeEach(() => {
     globalContract.clear()
     globalContract.setEnforcementEnabled(false)
+    // Loop cwd — the constructor initSnapshot()s its cwd; a temp dir keeps
+    // tests from staging the repo root into the live .cynco-snapshots/ (P1.4 fix).
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cynco-algedonic-live-'))
+  })
+
+  afterEach(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 5 })
   })
 
   it.skipIf(SKIP)('Test A — 5 consecutive Read failures halt the loop with stopReason=halted', async () => {
@@ -164,6 +176,7 @@ describe('algedonic live wiring — loop level (gated: CYNCO_INTEGRATION=1)', ()
     }
 
     const loop = new ConversationLoop({
+      cwd: tempDir,
       config: defaultConfig(),
       provider,
       emit: (e) => events.push(e),
@@ -197,6 +210,7 @@ describe('algedonic live wiring — loop level (gated: CYNCO_INTEGRATION=1)', ()
     const provider = mockProvider(responses)
 
     const loop = new ConversationLoop({
+      cwd: tempDir,
       config: defaultConfig(),
       provider,
       emit: (e) => events.push(e),

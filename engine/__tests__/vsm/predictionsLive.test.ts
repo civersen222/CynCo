@@ -90,6 +90,7 @@ function* toolCall(i: number, name: string, input: Record<string, unknown>): Gen
 // ── Gated proving test: H4 opens, completes, and lands in a ledger turn ──────
 
 describe('prediction plumbing — loop level (gated: CYNCO_INTEGRATION=1)', () => {
+  let tempDir = ''
   let tempFile = ''
 
   beforeEach(() => {
@@ -104,12 +105,15 @@ describe('prediction plumbing — loop level (gated: CYNCO_INTEGRATION=1)', () =
 
     // Real temp file so the scripted Reads SUCCEED — 5 consecutive tool
     // failures would trip the algedonic kill switch and halt the loop.
-    tempFile = path.join(os.tmpdir(), `cynco-predictions-live-${Date.now()}.txt`)
+    // Own temp DIR: passed as the loop cwd so the constructor's initSnapshot
+    // never stages the repo root into the live .cynco-snapshots/ (P1.4 fix).
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cynco-predictions-live-'))
+    tempFile = path.join(tempDir, 'predictions-target.txt')
     fs.writeFileSync(tempFile, 'hello prediction world\nsecond line for good measure\n')
   })
 
   afterEach(() => {
-    fs.rmSync(tempFile, { force: true })
+    fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 5 })
   })
 
   it.skipIf(SKIP)('scripted session opens H4 (3 consecutive Reads) and a completed prediction lands in governance.status and the ledger turn record', async () => {
@@ -155,6 +159,7 @@ describe('prediction plumbing — loop level (gated: CYNCO_INTEGRATION=1)', () =
     const provider = mockProvider(responses)
 
     const loop = new ConversationLoop({
+      cwd: tempDir,
       config: defaultConfig(),
       provider,
       emit: (e) => events.push(e),

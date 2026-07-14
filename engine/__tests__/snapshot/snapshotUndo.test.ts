@@ -41,12 +41,13 @@ describe('snapshot undo stack (P1.4)', () => {
       temperature: 0.7, maxOutputTokens: 8192, timeout: 120000,
       contextLength: 131072, noScouts: true, approveAll: true,
     }
-    return new ConversationLoop({ config, provider, emit: (e: any) => events.push(e) })
+    // cwd: tempDir — the constructor initSnapshot()s its cwd; without this it
+    // would stage the repo root into the live .cynco-snapshots/ (P1.4 hazard fix).
+    return new ConversationLoop({ cwd: tempDir, config, provider, emit: (e: any) => events.push(e) })
   }
 
   it('track-after-batch pushes an undo entry and emits snapshot.taken; undoLastBatch restores and emits snapshot.restored', async () => {
     const loop: any = await makeLoop()
-    loop['initSnapshot'](tempDir)
 
     // Simulate a model write batch
     fs.writeFileSync(path.join(tempDir, 'file.txt'), 'modified by model\n')
@@ -69,7 +70,6 @@ describe('snapshot undo stack (P1.4)', () => {
 
   it('no-change batches emit nothing and undo on empty stack refuses politely', async () => {
     const loop: any = await makeLoop()
-    loop['initSnapshot'](tempDir)
     loop['trackSnapshotAfterBatch']() // nothing changed
     expect(events.filter((e) => e.type === 'snapshot.taken').length).toBe(0)
 
@@ -80,7 +80,6 @@ describe('snapshot undo stack (P1.4)', () => {
 
   it('undo is stackable: two batches undo in reverse order', async () => {
     const loop: any = await makeLoop()
-    loop['initSnapshot'](tempDir)
 
     fs.writeFileSync(path.join(tempDir, 'file.txt'), 'v2\n')
     loop['trackSnapshotAfterBatch']()

@@ -89,6 +89,7 @@ function* toolCall(i: number, name: string, input: Record<string, unknown>): Gen
 // ── Gated proving test: S4 reflection fires, scores land in ledger ─────────
 
 describe('S4 reflection plumbing — loop level (gated: CYNCO_INTEGRATION=1)', () => {
+  let tempDir = ''
   let tempFile = ''
 
   beforeEach(() => {
@@ -103,7 +104,10 @@ describe('S4 reflection plumbing — loop level (gated: CYNCO_INTEGRATION=1)', (
 
     // Real temp file so the scripted Reads SUCCEED — 5 consecutive tool
     // failures would trip the algedonic kill switch and halt the loop.
-    tempFile = path.join(os.tmpdir(), `cynco-s4-live-${Date.now()}.txt`)
+    // Own temp DIR: passed as the loop cwd so the constructor's initSnapshot
+    // never stages the repo root into the live .cynco-snapshots/ (P1.4 fix).
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cynco-s4-live-'))
+    tempFile = path.join(tempDir, 's4-target.txt')
     fs.writeFileSync(tempFile, 'hello s4 reflection world\nsecond line for good measure\n')
 
     // Stub global fetch so the S4 sideQuery (which calls Ollama /api/chat
@@ -130,7 +134,7 @@ describe('S4 reflection plumbing — loop level (gated: CYNCO_INTEGRATION=1)', (
   })
 
   afterEach(() => {
-    fs.rmSync(tempFile, { force: true })
+    fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 5 })
     vi.unstubAllGlobals()
   })
 
@@ -164,6 +168,7 @@ describe('S4 reflection plumbing — loop level (gated: CYNCO_INTEGRATION=1)', (
     const provider = mockProvider(responses)
 
     const loop = new ConversationLoop({
+      cwd: tempDir,
       config: defaultConfig(),
       provider,
       emit: (e) => events.push(e),
