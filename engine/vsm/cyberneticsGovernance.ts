@@ -688,13 +688,14 @@ export class CyberneticsGovernance {
     const lastScores = this._reflector.getLastScores()
     const reflectionHistory = this._reflector.getHistory()
 
+    const taskSnapshot = this.taskModel.snapshot()
     return {
       status,
       varietyBalance,
       varietyRatio: this.lastVarietyRatio,
       varietyWindowed: this.windowedVariety.count(),
-      taskError: this.taskModel.snapshot().taskError,
-      errorTrend: this.taskModel.snapshot().errorTrend,
+      taskError: taskSnapshot.taskError,
+      errorTrend: taskSnapshot.errorTrend,
       s3s4Balance,
       algedonicAlerts: this.eventBus.replayFiltered(
         e => e.payload.kind === 'AlgedonicFired' && (e.payload as any).severity !== 'Info'
