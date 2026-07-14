@@ -51,6 +51,12 @@ export type GovernanceReport = {
    *  the windowed counterpart to the monotone varietyRatio. Both are
    *  logged so Phase 3 can compare discrimination power. */
   varietyWindowed: number
+  /** P4.1: fraction of unmet (pending|failed) contract assertions at turn
+   *  seal, over countable (non-skipped) assertions; null when no active
+   *  contract. Computed by the governor, never by the model (VI.3). */
+  taskError: number | null
+  /** P4.1: CUSUM alarm state over the taskError series; null with taskError. */
+  errorTrend: 'rising' | 'falling' | 'flat' | null
   s3s4Balance: 'balanced' | 's3_dominant' | 's4_dominant' | 'critical'
   algedonicAlerts: number
   stuckTurns: number

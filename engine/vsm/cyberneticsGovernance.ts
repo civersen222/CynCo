@@ -46,6 +46,7 @@ import { InterventionTracker } from './interventionTracker.js'
 
 import type { GovernanceReport, GovernanceAlert } from './types.js'
 import { WindowedVarietyMeter, toolCallFingerprint } from './windowedVariety.js'
+import { TaskModel } from './taskModel.js'
 import { getJournal } from '../training/decisionJournal.js'
 import { makeJournalEntry } from '../training/types.js'
 
@@ -145,6 +146,7 @@ export class CyberneticsGovernance {
   private lastObserverDivergence: number | null = null
 
   private windowedVariety = new WindowedVarietyMeter()
+  private taskModel = new TaskModel()
 
   // Metrics tracking
   private toolHistory: { name: string; success: boolean; latencyMs: number }[] = []
@@ -382,6 +384,9 @@ export class CyberneticsGovernance {
     // P1.5: seal the turn's fingerprint set into the rolling window
     // (before the ablation return — measurement, not authority).
     this.windowedVariety.onTurnComplete()
+    // P4.1: seal taskError/errorTrend from the global contract (before the
+    // ablation return — measurement, not authority).
+    this.taskModel.onTurnComplete()
     if (this._ablated || this._paused) {
       return
     }
@@ -688,6 +693,8 @@ export class CyberneticsGovernance {
       varietyBalance,
       varietyRatio: this.lastVarietyRatio,
       varietyWindowed: this.windowedVariety.count(),
+      taskError: this.taskModel.snapshot().taskError,
+      errorTrend: this.taskModel.snapshot().errorTrend,
       s3s4Balance,
       algedonicAlerts: this.eventBus.replayFiltered(
         e => e.payload.kind === 'AlgedonicFired' && (e.payload as any).severity !== 'Info'
