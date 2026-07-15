@@ -150,6 +150,24 @@ export class ContextCompressor {
    * owns the LLM call and the journal sink; the compressor owns the ordering
    * guarantee (write-before-compact) and the tracker lifecycle.
    */
+  /**
+   * Verbatim anchors survive compaction: the last <=maxUserMsgs user messages
+   * plus (optionally) the active DoD contract brief, rendered as pinned system
+   * messages so the literal ask and the contract are never summarized away.
+   */
+  selectVerbatimAnchors(messages: Message[], contractText?: string, maxUserMsgs = 6): Message[] {
+    const anchors: Message[] = []
+    if (contractText && contractText.trim()) {
+      anchors.push({ role: 'system', content: [{ type: 'text', text: `[Pinned Contract]\n${contractText}` }] })
+    }
+    const userMsgs = messages.filter(m => m.role === 'user').slice(-maxUserMsgs)
+    for (const u of userMsgs) {
+      const text = u.content.filter(b => b.type === 'text' && b.text).map(b => b.text as string).join(' ')
+      if (text) anchors.push({ role: 'system', content: [{ type: 'text', text: `[Pinned user request]\n${text}` }] })
+    }
+    return anchors
+  }
+
   async runCompaction(
     messages: Message[],
     fileTracker: FileOperationTracker,
@@ -157,6 +175,7 @@ export class ContextCompressor {
       summarize: (prompt: string) => Promise<string>
       journal: (summary: string, fileOps?: string) => void
       keepRecentPairs?: number
+      contractText?: string
     },
   ): Promise<Message[]> {
     const trimmed = this.tier0Trim(messages)
@@ -168,8 +187,10 @@ export class ContextCompressor {
     // BEFORE we drop the source messages, so a crash mid-compaction is safe.
     cb.journal(summary, fileTracker.serialize())
     const compacted = this.compressMessages(trimmed, summary, fileTracker)
+    const anchors = this.selectVerbatimAnchors(messages, cb.contractText)
     fileTracker.reset()
-    return compacted
+    // Splice anchors right after the summary system message (index 0).
+    return [compacted[0], ...anchors, ...compacted.slice(1)]
   }
 
   compressMessages(messages: Message[], summary: string, fileTracker?: FileOperationTracker): Message[] {

@@ -1317,10 +1317,12 @@ export class ConversationLoop {
     if (this.messages.length <= 6) return false
     try {
       const before = this.messages
+      const contractText = globalContract.isActive() ? globalContract.snapshot().brief : undefined
       const compacted = await this.compressor.runCompaction(this.messages, this.fileTracker, {
         keepRecentPairs: 2,
         summarize: (prompt) => this.sideQuery(prompt),
         journal: (summary, fileOps) => { try { this.journal.appendCompaction(summary, fileOps) } catch {} },
+        contractText,
       })
       if (compacted === before) return false
       this.messages = compacted
