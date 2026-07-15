@@ -645,11 +645,7 @@ export class ConversationLoop {
       // Non-blocking: a short deadline falls back to keyword-only retrieval.
       try {
         const { EmbedClient } = await import('../index/embedClient.js')
-        const timeoutMs = Number(process.env.LOCALCODE_RECALL_EMBED_TIMEOUT_MS ?? 4000)
-        const emb = await Promise.race([
-          new EmbedClient().embed(text),
-          new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), timeoutMs)),
-        ])
+        const emb = await new EmbedClient().embedWithDeadline(text)
         if (emb && emb.length) {
           this.indexDegraded = false
           this.lastQueryMode = process.env.LOCALCODE_HYBRID_SEARCH !== '0' ? 'hybrid' : 'vector'

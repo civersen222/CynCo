@@ -19,6 +19,32 @@ export class EmbedClient {
     return results[0]
   }
 
+  /**
+   * Embed `text` but never block longer than `timeoutMs`. On timeout (or any
+   * embed failure) resolves `undefined` so callers fall back to lexical recall.
+   * The losing embed promise is detached with a swallow so a late rejection can
+   * never surface as an unhandled rejection after the caller has moved on
+   * (this is what produced vitest teardown noise on cold/absent embed servers).
+   */
+  async embedWithDeadline(
+    text: string,
+    timeoutMs = Number(process.env.LOCALCODE_RECALL_EMBED_TIMEOUT_MS ?? 4000),
+  ): Promise<number[] | undefined> {
+    const embedPromise = this.embed(text)
+    embedPromise.catch(() => { /* detach: swallow a late rejection from the losing race side */ })
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const timeout = new Promise<undefined>((resolve) => {
+      timer = setTimeout(() => resolve(undefined), timeoutMs)
+    })
+    try {
+      return await Promise.race([embedPromise, timeout])
+    } catch {
+      return undefined
+    } finally {
+      if (timer) clearTimeout(timer)
+    }
+  }
+
   async embedBatch(texts: string[]): Promise<number[][]> {
     try {
       return await this.embedWith(this.model, texts)

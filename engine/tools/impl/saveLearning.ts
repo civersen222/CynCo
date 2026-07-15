@@ -36,11 +36,7 @@ export const saveLearningTool: ToolImpl = {
       let embedding: number[] | undefined
       try {
         const { EmbedClient } = await import('../../index/embedClient.js')
-        const timeoutMs = Number(process.env.LOCALCODE_RECALL_EMBED_TIMEOUT_MS ?? 4000)
-        embedding = await Promise.race([
-          new EmbedClient().embed(content),
-          new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), timeoutMs)),
-        ])
+        embedding = await new EmbedClient().embedWithDeadline(content)
       } catch { embedding = undefined }
 
       store = new LearningStore(learningsDbPath())

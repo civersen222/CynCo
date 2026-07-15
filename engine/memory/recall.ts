@@ -31,11 +31,7 @@ export async function recallMemories(
       const { EmbedClient } = await import('../index/embedClient.js')
       // Cap the embed on a short deadline: recall must never block the turn on
       // the network (cold-model loads can take seconds). Fall back to lexical.
-      const timeoutMs = Number(process.env.LOCALCODE_RECALL_EMBED_TIMEOUT_MS ?? 4000)
-      queryEmbedding = await Promise.race([
-        new EmbedClient().embed(query),
-        new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), timeoutMs)),
-      ])
+      queryEmbedding = await new EmbedClient().embedWithDeadline(query)
     } catch { queryEmbedding = undefined }
 
     const results = store.recall(query, k, queryEmbedding)
