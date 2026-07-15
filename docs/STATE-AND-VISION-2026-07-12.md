@@ -368,6 +368,15 @@ Sequencing inside Phase 1: item 7 first (everything else's thresholds get truer)
 - TUI: wire `widgets/diff_view.py` to `file.diff`; `/copy` handler in vibe_loop.py; refactor app.py dispatcher to a handler-registry dict (mechanical, kills the 150-line if/elif).
 - Dashboard chat: reuse the WS protocol the TUI speaks; the dashboard server already broadcasts events — add the command path.
 
+**STATUS — LANDED (branch `phase6-pask`, 2026-07-15):**
+- Teachback gate landed: a TEACHBACK state sits between understand and build; the controller consumes the vendored `AgreementTracker` (SharedProcedures floor) AND `ConfidenceScorer.isReady()` — the scorer is now genuinely gated for the first time. `just_build` routes through teachback with a pre-seeded agreement so it opens on a single confirm.
+- Per-mode config table in `vibe/types.ts` (`MODE_CONFIG`, `minAgreementForBuild`); mode-aware build constraints wired (`fix`=reproduce-first, `explain`=read-only prompt-injected).
+- Entailment-mesh phase-ordering helper (`vibe/phaseOrdering.ts`) using Pask's `EntailmentMesh` (verification utility; wizard does not yet emit `requires[]`).
+- `file.diff` structured event + `protocolVersion` handshake shipped engine (`protocol.ts`, `conversationLoop.ts` emit, `main.ts` `session.ready`) AND TUI (`protocol.py` mirror + warn-only `protocol_mismatch_warning`).
+- `diff_view` widget rebuilt from scratch and wired to `file.diff`; `/copy` handler (Ctrl+Y / typed) added; teachback banner in `vibe_loop.py`; `app.py` dispatcher refactored to a handler-registry dict.
+- Dashboard chat command path verified LIVE (WS `websocket.message` forwards `{type}` commands to `deps.onCommand`) — no new guided UI added (Option A).
+- **HUMAN STEP (unchecked exit criterion):** one real non-engineer session must be observed end-to-end (teachback confirm → build → diff view → /copy) before Phase 6 is declared closed. Not yet done.
+
 ### Phase 7 details
 - `benchmark/true/run.ts`: **tasks 5→≥10, reps 6–8** (not 5×15 — see VI.4); per-task `timeoutMs` from calibration p95×1.5; suite report gains timeout-rate column and score-vs-wall-clock series; analysis script gains BCa-at-task-level + sign-flip permutation + censoring sensitivity; pre-registration section committed to BENCHMARKS.md before the run (hypothesis, N, timeout policy, 20–80% band inclusion rule, pinned SHA, seeds, decision rule).
 - New calibrated tasks: extend `benchmark/true/tasks/` from the Phase 2 brief backlog's harder rungs; re-run `--calibrate` to keep the 0.2–0.8 band honest.
