@@ -227,7 +227,22 @@ export type GovernanceStatusEvent = {
   infoGain?: number | null
   /** P4.3: newly-passed assertions per 1k tokens; null without contract/tokens. */
   progressRate?: number | null
+  /** P4.3/4(d): thrashing/exploration/floundering regime — widened to string. */
+  explorationState?: string | null
   suggestion: string | null
+}
+
+/** P4.3 (STATE doc Phase 4(e)): session-level regulator fidelity, emitted once
+ *  when the conversation loop finishes a user message. Plain JSON; null when no
+ *  contract was ever active. Mirrors RegulatorFidelity in vsm/regulatorFidelity.ts. */
+export type GovernanceSessionFidelityEvent = {
+  type: 'governance.session_fidelity'
+  fidelity: {
+    hadContract: boolean
+    resolutionRate: number | null
+    finalTaskError: number | null
+    contractReplacements: number
+  } | null
 }
 
 export type GovernanceRecommendationEvent = {
@@ -402,6 +417,7 @@ export type EngineEvent =
   | MemoryWrittenEvent
   | WorkflowStatusEvent
   | GovernanceStatusEvent
+  | GovernanceSessionFidelityEvent
   | GovernanceRecommendationEvent
   | GovernanceAlertEvent
   | SummaryInjectedEvent

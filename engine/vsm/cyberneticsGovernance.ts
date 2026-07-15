@@ -50,6 +50,9 @@ import { TaskModel } from './taskModel.js'
 import { FingerprintRepetitionDetector } from './fingerprintRepetition.js'
 import { TurnNoveltyMeter } from './turnNovelty.js'
 import { ProgressModel } from './progressModel.js'
+import { classifyExploration } from './explorationState.js'
+import { RegulatorFidelityTracker } from './regulatorFidelity.js'
+import { globalContract } from '../tools/contract.js'
 import { getJournal } from '../training/decisionJournal.js'
 import { makeJournalEntry } from '../training/types.js'
 
@@ -154,6 +157,7 @@ export class CyberneticsGovernance {
   private fingerprintRepetition = new FingerprintRepetitionDetector()
   private turnNovelty = new TurnNoveltyMeter()
   private progressModel = new ProgressModel()
+  private regulatorFidelity = new RegulatorFidelityTracker()
 
   // Metrics tracking
   private toolHistory: { name: string; success: boolean; latencyMs: number }[] = []
@@ -405,6 +409,9 @@ export class CyberneticsGovernance {
     // return — measurement, not authority).
     this.turnNovelty.onTurnComplete()
     this.progressModel.onTurnComplete(metrics.totalTokens)
+    // P4.3/4e: observe the contract each seal for session-level regulator
+    // fidelity (before the ablation return — measurement, not authority).
+    this.regulatorFidelity.observe(globalContract.snapshot())
     if (this._ablated || this._paused) {
       return
     }
@@ -719,6 +726,11 @@ export class CyberneticsGovernance {
       fingerprintAlarm: this.fingerprintRepetition.alarm(),
       infoGain: noveltySnapshot.infoGain,
       progressRate: progressSnapshot.progressRate,
+      explorationState: classifyExploration(
+        this.windowedVariety.count(),
+        this.turnCount,
+        taskSnapshot.errorTrend,
+      ),
       s3s4Balance,
       algedonicAlerts: this.eventBus.replayFiltered(
         e => e.payload.kind === 'AlgedonicFired' && (e.payload as any).severity !== 'Info'
@@ -752,6 +764,12 @@ export class CyberneticsGovernance {
         shifted: this.lastCommanderShifted,
       },
     }
+  }
+
+  /** P4.3/4e: session-level regulator fidelity — null if no contract was ever
+   *  active this session. Called once at session end (measurement only). */
+  getSessionFidelity() {
+    return this.regulatorFidelity.getFidelity(this.taskModel.snapshot().taskError)
   }
 
   /** Update tok/s from model calls. Uses exponential moving average to smooth out turn-to-turn variation. Only updates when there were actual output tokens. */

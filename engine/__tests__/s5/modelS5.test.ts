@@ -34,6 +34,7 @@ const baseInput: S5Input = {
   fingerprintAlarm: null,
   infoGain: null,
   progressRate: null,
+  explorationState: null,
 }
 
 // ─── Tests ────────────────────────────────────────────────────────

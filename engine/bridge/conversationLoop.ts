@@ -1260,7 +1260,13 @@ export class ConversationLoop {
       : this.messages.length <= 2 ? 'abandoned'
       : 'in_progress'
 
-    return { goal, now, status, model: this.config.model, what_was_done, files_modified }
+    return {
+      goal, now, status, model: this.config.model, what_was_done, files_modified,
+      // P4.3/4(e): persisted in the interactive handoff (main.ts session.end).
+      // The vibe surface does not persist it here — vibe fidelity coverage comes
+      // from the governance.session_fidelity event emitted at conversation end.
+      regulator_fidelity: this.governance.getSessionFidelity(),
+    }
   }
 
   /** Rough token estimate (chars/4) of the current message history. */
@@ -1830,6 +1836,7 @@ export class ConversationLoop {
                 fingerprintAlarm: turnReport.fingerprintAlarm,
                 infoGain: turnReport.infoGain,
                 progressRate: turnReport.progressRate,
+                explorationState: turnReport.explorationState,
                 varietyBalance: turnReport.varietyBalance,
                 algedonicAlerts: turnReport.algedonicAlerts,
                 axiomHealth: turnReport.axiomHealth,
@@ -2140,6 +2147,14 @@ export class ConversationLoop {
           type: 'message.complete',
           messageId: lastMessageId,
           stopReason,
+        })
+
+        // P4.3/4(e): session-level regulator fidelity — the mission driver
+        // ingests this into the outcome ledger; the TUI/vibe surfaces consume
+        // the event directly. Emitted once per completed user message.
+        this.emit({
+          type: 'governance.session_fidelity',
+          fidelity: this.governance.getSessionFidelity(),
         })
 
         // Decision logging

@@ -20,6 +20,7 @@ const govReport: GovernanceReport = {
   fingerprintAlarm: null,
   infoGain: null,
   progressRate: null,
+  explorationState: null,
   s3s4Balance: 'balanced',
   modelLatencyTrend: 'stable',
 } as unknown as GovernanceReport

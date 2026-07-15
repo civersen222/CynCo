@@ -15,6 +15,7 @@ function makeGovernance(overrides: Partial<GovernanceReport> = {}): GovernanceRe
     fingerprintAlarm: null,
     infoGain: null,
     progressRate: null,
+    explorationState: null,
     s3s4Balance: 'balanced',
     algedonicAlerts: 0,
     stuckTurns: 0,

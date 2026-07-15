@@ -901,6 +901,7 @@ async function handleCommand(command: TUICommand): Promise<void> {
           model: handoffData.model,
           what_was_done: handoffData.what_was_done,
           files_modified: handoffData.files_modified,
+          regulator_fidelity: (handoffData as any).regulator_fidelity ?? null,
         })
         console.log('[localcode] Handoff written successfully')
       } catch (err) {
