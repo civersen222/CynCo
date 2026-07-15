@@ -378,7 +378,9 @@ export class ConversationLoop {
         const ops = store.loadFileOps()
         if (ops) this.fileTracker = FileOperationTracker.deserialize(ops)
       } catch { /* non-fatal */ }
-      console.log(`[session] Resumed ${sessionId}: ${messages.length} messages`)
+      // S5 Identity Continuity: distinguish a clean prior shutdown from a crash.
+      const priorClean = (() => { try { return store.hasEnded() } catch { return false } })()
+      console.log(`[session] Resumed ${sessionId}: ${messages.length} messages (prior session ${priorClean ? 'ended cleanly' : 'did not end cleanly — possible crash'})`)
       return true
     }
     return false
