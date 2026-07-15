@@ -47,8 +47,10 @@ describe('GovernanceReport P4.3 signals', () => {
       gov.onToolResult('Read', true, 10, '', { file_path: `f${i}.ts` })
       gov.onTurnComplete({ toolsCalled: 1, thinkingTokens: 0, totalTokens: 100, latencyMs: 5, response: 'r', userMessage: 'u' })
     }
-    const state = gov.getReport().explorationState
-    expect(['thrashing', 'floundering', 'healthy_exploration', null]).toContain(state)
+    // Deterministic: 2 pending assertions → taskError 1.0 every turn → CUSUM
+    // never alarms → errorTrend 'flat'; 5 distinct fingerprints → variety ratio
+    // 1.0 ≥ 0.6 at turn 5 ≥ 4 → classifyExploration(5, 5, 'flat') = 'thrashing'.
+    expect(gov.getReport().explorationState).toBe('thrashing')
   })
 
   it('explorationState is null before the 4-turn floor', () => {
