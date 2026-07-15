@@ -106,6 +106,14 @@ export class LearningStore {
   /** Insert a new learning. Returns the row id. */
   save(input: SaveLearningInput): number {
     const now = Date.now()
+    // ACE delta: a duplicate (type, content) is reinforcement, not a new row.
+    const existing = this.db
+      .prepare('SELECT id FROM learnings WHERE type = ? AND content = ? AND invalidated_at IS NULL')
+      .get(input.type, input.content) as any
+    if (existing) {
+      this.markHelpful(existing.id)
+      return existing.id as number
+    }
     const stmt = this.db.prepare(`
       INSERT INTO learnings (type, content, context, session_id, importance, valid_from, last_accessed, embedding)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -122,6 +130,27 @@ export class LearningStore {
     )
     const row = this.db.prepare('SELECT last_insert_rowid() AS id').get() as any
     return row.id as number
+  }
+
+  /** AWM promotion gate: only a verified successful mission promotes. */
+  promote(id: number, verified: boolean): void {
+    if (!verified) return
+    this.db.prepare('UPDATE learnings SET promoted = 1 WHERE id = ?').run(id)
+  }
+
+  /** ACE delta: reinforce a learning that helped. */
+  markHelpful(id: number): void {
+    this.db.prepare('UPDATE learnings SET helpful = helpful + 1, last_accessed = ? WHERE id = ?').run(Date.now(), id)
+  }
+
+  /** ACE delta: penalize a learning that misled. */
+  markHarmful(id: number): void {
+    this.db.prepare('UPDATE learnings SET harmful = harmful + 1, last_accessed = ? WHERE id = ?').run(Date.now(), id)
+  }
+
+  /** Demote-don't-delete: mark invalid rather than removing the row. */
+  demote(id: number): void {
+    this.db.prepare('UPDATE learnings SET invalidated_at = ? WHERE id = ? AND invalidated_at IS NULL').run(Date.now(), id)
   }
 
   /** All rows, including invalidated ones — for audit/tests. */
