@@ -650,19 +650,18 @@ export class ConversationLoop {
 
     const promptParts = assembleBasePrompt(toolNames, this.executor['cwd'])
 
-    // Inject saved learnings from previous sessions
+    // Inject saved learnings from previous sessions (global LearningStore).
+    // TODO(P5 follow-up): repoint /learnings review command at LearningStore.
     try {
-      const crypto = await import('crypto')
-      const os = await import('os')
-      const path = await import('path')
+      const { LearningStore, defaultLearningsDbPath } = await import('../memory/learningStore.js')
       const fs = await import('fs')
-      const projectHash = crypto.createHash('md5').update(process.cwd()).digest('hex').slice(0, 8)
-      const learningsPath = path.join(os.homedir(), '.cynco', 'continuity', projectHash, 'learnings.json')
-      if (fs.existsSync(learningsPath)) {
-        const learnings = JSON.parse(fs.readFileSync(learningsPath, 'utf-8'))
-        if (learnings.length > 0) {
-          const recent = learnings.slice(-20)
-          const learningLines = recent.map((l: any) =>
+      const dbPath = process.env.LOCALCODE_LEARNINGS_DB ?? defaultLearningsDbPath()
+      if (fs.existsSync(dbPath)) {
+        const store = new LearningStore(dbPath)
+        const recent = store.allIncludingInvalidated().filter(l => l.invalidatedAt === null).slice(-20)
+        store.close()
+        if (recent.length > 0) {
+          const learningLines = recent.map(l =>
             `- [${l.type}] ${l.content}${l.context ? ` (${l.context})` : ''}`
           ).join('\n')
           promptParts.push('')
