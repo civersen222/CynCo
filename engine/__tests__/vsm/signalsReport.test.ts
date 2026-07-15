@@ -60,4 +60,20 @@ describe('GovernanceReport P4.3 signals', () => {
     gov.onTurnComplete({ toolsCalled: 1, thinkingTokens: 0, totalTokens: 100, latencyMs: 5, response: 'r', userMessage: 'u' })
     expect(gov.getReport().explorationState).toBeNull()
   })
+
+  it('getSessionFidelity is null when no contract was ever active', () => {
+    const gov = new CyberneticsGovernance()
+    gov.onTurnComplete({ toolsCalled: 0, thinkingTokens: 0, totalTokens: 100, latencyMs: 5, response: 'r', userMessage: 'u' })
+    expect(gov.getSessionFidelity()).toBeNull()
+  })
+
+  it('getSessionFidelity returns the struct after a contract session, even when ablated', () => {
+    process.env._ABLATION_VSM_DISABLED = '1'
+    const gov = new CyberneticsGovernance()
+    globalContract.create('t', 'b', ['a0'])
+    gov.onTurnComplete({ toolsCalled: 0, thinkingTokens: 0, totalTokens: 100, latencyMs: 5, response: 'r', userMessage: 'u' })
+    const fid = gov.getSessionFidelity()
+    expect(fid).not.toBeNull()
+    expect(fid!.hadContract).toBe(true)
+  })
 })
