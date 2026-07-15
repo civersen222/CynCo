@@ -257,3 +257,12 @@ class TestTheme:
         from pathlib import Path
         p = Path(__file__).parent.parent / "localcode_tui" / "styles" / "guided.tcss"
         assert p.exists(), f"guided.tcss not found at {p}"
+
+
+def test_event_dispatch_registry_covers_all_event_types():
+    from localcode_tui.app import LocalCodeApp
+    app = LocalCodeApp()
+    registry = app._event_dispatch_table()
+    handled = set(registry.keys())
+    for cls_name in ("StreamTokenEvent", "ToolStartEvent", "VibeQuestionEvent", "FileDiffEvent"):
+        assert any(t.__name__ == cls_name for t in handled)
