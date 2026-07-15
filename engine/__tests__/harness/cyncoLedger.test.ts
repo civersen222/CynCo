@@ -209,4 +209,26 @@ describe('cynco mission outcome ledger', () => {
     expect(c.turns[0].taskError).toBeNull()
     expect(c.turns[0].errorTrend).toBeNull()
   })
+
+  it('governance.session_fidelity lands as a top-level regulatorFidelity field (P4.3/4e)', () => {
+    const c = createMissionCollector(() => 1000)
+    c.ingest({ type: 'governance.status', health: 'healthy' })
+    c.ingest({
+      type: 'governance.session_fidelity',
+      fidelity: { hadContract: true, resolutionRate: 0.75, finalTaskError: 0.25, contractReplacements: 1 },
+    })
+    const rec = buildMissionRecord(c, {
+      missionId: 'm-fid', briefFile: 'b.md', marker: 'x', cwd: '.', dispatchedAt: 0, durationS: 1, outcome: 'landed',
+    })
+    expect(rec.regulatorFidelity).toEqual({ hadContract: true, resolutionRate: 0.75, finalTaskError: 0.25, contractReplacements: 1 })
+  })
+
+  it('absent session_fidelity → regulatorFidelity null on the record (P4.3/4e)', () => {
+    const c = createMissionCollector(() => 1000)
+    c.ingest({ type: 'governance.status', health: 'healthy' })
+    const rec = buildMissionRecord(c, {
+      missionId: 'm-nofid', briefFile: 'b.md', marker: 'x', cwd: '.', dispatchedAt: 0, durationS: 1, outcome: 'timeout',
+    })
+    expect(rec.regulatorFidelity).toBeNull()
+  })
 })

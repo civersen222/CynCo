@@ -11,6 +11,12 @@ export type Handoff = {
   next_steps?: string[]
   files_modified?: string[]
   learnings?: string[]
+  regulator_fidelity?: {
+    hadContract: boolean
+    resolutionRate: number | null
+    finalTaskError: number | null
+    contractReplacements: number
+  } | null
 }
 
 export type LedgerEntry = {

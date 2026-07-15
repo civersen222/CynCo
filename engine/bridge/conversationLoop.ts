@@ -1260,7 +1260,12 @@ export class ConversationLoop {
       : this.messages.length <= 2 ? 'abandoned'
       : 'in_progress'
 
-    return { goal, now, status, model: this.config.model, what_was_done, files_modified }
+    return {
+      goal, now, status, model: this.config.model, what_was_done, files_modified,
+      // P4.3/4(e): flows into both interactive (main.ts session.end) and vibe
+      // (controller completion) handoffs, since both call buildHandoff().
+      regulator_fidelity: this.governance.getSessionFidelity(),
+    }
   }
 
   /** Rough token estimate (chars/4) of the current message history. */
@@ -2142,6 +2147,14 @@ export class ConversationLoop {
           messageId: lastMessageId,
           stopReason,
         })
+
+        // P4.3/4(e): session-level regulator fidelity — the mission driver
+        // ingests this into the outcome ledger; interactive/vibe persist it via
+        // buildHandoff. Emitted once per completed user message.
+        this.emit({
+          type: 'governance.session_fidelity',
+          fidelity: this.governance.getSessionFidelity(),
+        } as any)
 
         // Decision logging
         try {

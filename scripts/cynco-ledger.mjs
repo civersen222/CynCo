@@ -19,6 +19,7 @@ export function createMissionCollector(now = () => Date.now()) {
     toolTransport: [],
     toolStats: { total: 0, errors: 0, byName: {} },
     enforcedSeen: false,
+    regulatorFidelity: null,
 
     ingest(m) {
       const t = now()
@@ -91,6 +92,9 @@ export function createMissionCollector(now = () => Date.now()) {
             detail: m.detail ?? null,
           })
           break
+        case 'governance.session_fidelity':
+          this.regulatorFidelity = m.fidelity ?? null
+          break
         case 'tool.start': {
           this.toolStats.total++
           const name = m.toolName ?? 'unknown'
@@ -127,5 +131,8 @@ export function buildMissionRecord(collector, meta) {
     controlSignals: collector.controlSignals,
     toolTransport: collector.toolTransport,
     toolStats: collector.toolStats,
+    // P4.3/4(e): session-level regulator fidelity (not per-turn); null when the
+    // engine emitted no session_fidelity event (no contract / older engine).
+    regulatorFidelity: collector.regulatorFidelity ?? null,
   }
 }

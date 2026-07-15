@@ -232,6 +232,19 @@ export type GovernanceStatusEvent = {
   suggestion: string | null
 }
 
+/** P4.3 (STATE doc Phase 4(e)): session-level regulator fidelity, emitted once
+ *  when the conversation loop finishes a user message. Plain JSON; null when no
+ *  contract was ever active. Mirrors RegulatorFidelity in vsm/regulatorFidelity.ts. */
+export type GovernanceSessionFidelityEvent = {
+  type: 'governance.session_fidelity'
+  fidelity: {
+    hadContract: boolean
+    resolutionRate: number | null
+    finalTaskError: number | null
+    contractReplacements: number
+  } | null
+}
+
 export type GovernanceRecommendationEvent = {
   type: 'governance.recommendation'
   requestId: string
@@ -404,6 +417,7 @@ export type EngineEvent =
   | MemoryWrittenEvent
   | WorkflowStatusEvent
   | GovernanceStatusEvent
+  | GovernanceSessionFidelityEvent
   | GovernanceRecommendationEvent
   | GovernanceAlertEvent
   | SummaryInjectedEvent
