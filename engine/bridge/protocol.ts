@@ -3,6 +3,9 @@
  * All messages are JSON-serialized with a `type` discriminator.
  */
 
+/** Wire protocol version. Bump on any breaking event/command shape change. */
+export const PROTOCOL_VERSION = 1
+
 // ─── Engine → TUI Events ──────────────────────────────────────
 
 export type LSPServerInfo = {
@@ -27,6 +30,8 @@ export type SessionReadyEvent = {
   expertise?: 'beginner' | 'intermediate' | 'advanced'
   /** Startup warnings to surface in the TUI (e.g., chat template lacks tool support) (P1.8). */
   warnings?: string[]
+  /** Phase 6: wire protocol version for the TUI handshake mismatch check. */
+  protocolVersion?: number
 }
 
 export type SessionErrorEvent = {
@@ -88,6 +93,17 @@ export type FileChangeEvent = {
   path: string
   changeType: 'create' | 'modify' | 'delete'
   diff?: string
+}
+
+// Phase 6: structured diff event (additive; distinct from file.change).
+export type DiffLine = { kind: 'context' | 'add' | 'del'; text: string }
+export type DiffHunk = { oldStart: number; oldLines: number; newStart: number; newLines: number; lines: DiffLine[] }
+
+export type FileDiffEvent = {
+  type: 'file.diff'
+  path: string
+  changeType: 'create' | 'modify' | 'delete'
+  hunks: DiffHunk[]
 }
 
 export type SnapshotTakenEvent = {
@@ -415,6 +431,7 @@ export type EngineEvent =
   | ToolProgressEvent
   | ToolCompleteEvent
   | FileChangeEvent
+  | FileDiffEvent
   | ApprovalRequestEvent
   | AskRequestEvent
   | ContextStatusEvent

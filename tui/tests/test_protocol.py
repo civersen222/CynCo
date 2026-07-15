@@ -166,7 +166,7 @@ class TestParseEvent:
         expected = {
             "session.ready", "session.error", "stream.token",
             "message.complete", "tool.start", "tool.progress",
-            "tool.complete", "file.change", "approval.request",
+            "tool.complete", "file.change", "file.diff", "approval.request",
             "context.status", "context.warning", "memory.recalled",
             "memory.written", "workflow.status", "governance.status",
             "summary.injected", "web.search.result",

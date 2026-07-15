@@ -86,6 +86,8 @@ console.log('[e2e] Connected — starting vibe loop')
 ws.onclose = () => fail('WebSocket closed before vibe.task_complete')
 
 let answeredDirective = false
+let sawTeachback = false            // Phase 6a: teachback question emitted
+let sawBuildAfterTeachback = false  // build only after the teachback confirm
 const done = new Promise<void>((res) => {
   ws.onmessage = (msg) => {
     let event: any
@@ -94,13 +96,21 @@ const done = new Promise<void>((res) => {
     const preview = event.text ?? event.problem ?? event.analogy ?? ''
     console.log(`[e2e] <- ${event.type}${preview ? `: ${String(preview).slice(0, 100)}` : ''}`)
 
-    if (event.type === 'vibe.question' && !answeredDirective) {
+    if (event.type === 'vibe.question' && event.questionId === 'teachback') {
+      // Phase 6a: CynCo is checking its understanding — confirm to open the build gate.
+      sawTeachback = true
+      ws.send(JSON.stringify({ type: 'vibe.answer', questionId: 'teachback', answer: 'yes, build it' }))
+      console.log('[e2e] -> vibe.answer (teachback confirm)')
+    } else if (event.type === 'vibe.question' && !answeredDirective) {
       answeredDirective = true
       ws.send(JSON.stringify({ type: 'vibe.answer', questionId: event.questionId, answer: TASK }))
-      console.log('[e2e] -> vibe.answer (substantive directive — should go straight to BUILD)')
+      console.log('[e2e] -> vibe.answer (substantive directive — should trigger teachback)')
     } else if (event.type === 'vibe.question') {
       ws.send(JSON.stringify({ type: 'vibe.answer', questionId: event.questionId, answer: 'A' }))
       console.log('[e2e] -> vibe.answer (A)')
+    } else if (event.type === 'vibe.state_changed' && event.to === 'build') {
+      // Phase 6a: build must only follow a teachback confirmation.
+      if (sawTeachback) sawBuildAfterTeachback = true
     } else if (event.type === 'vibe.escalation') {
       fail(`escalated: ${event.problem}`)
     } else if (event.type === 'vibe.task_complete') {
@@ -121,6 +131,10 @@ clearTimeout(timer)
 // Fix 2: normal teardown — clear the onclose guard before we intentionally close.
 ws.onclose = null
 ws.close()
+
+// Phase 6a exit criteria: the teachback gate must have fired before BUILD.
+if (!sawTeachback) fail('teachback question never emitted — Phase 6a gate not wired')
+if (!sawBuildAfterTeachback) fail('build did not follow teachback confirmation')
 
 const target = join(workDir, 'hello.txt')
 if (!existsSync(target)) fail(`vibe.task_complete arrived but hello.txt was not created in ${workDir}`)

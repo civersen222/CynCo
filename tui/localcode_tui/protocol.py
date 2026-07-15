@@ -8,6 +8,20 @@ from typing import Any, Optional
 import json
 
 
+# Wire protocol version — mirrors PROTOCOL_VERSION in engine/bridge/protocol.ts.
+PROTOCOL_VERSION = 1
+
+
+def protocol_mismatch_warning(engine_version) -> Optional[str]:
+    """Return a warning string if the engine speaks a different protocol version."""
+    if engine_version is None:
+        return None
+    if engine_version != PROTOCOL_VERSION:
+        return (f"Protocol mismatch: engine speaks v{engine_version}, "
+                f"TUI expects v{PROTOCOL_VERSION}. Some features may misbehave.")
+    return None
+
+
 # ─── Engine → TUI Events ──────────────────────────────────────
 
 @dataclass
@@ -22,6 +36,7 @@ class SessionReadyEvent:
     mcp_servers: list = field(default_factory=list)
     expertise: str = "advanced"
     warnings: list | None = None
+    protocol_version: int | None = None
 
 
 @dataclass
@@ -94,6 +109,14 @@ class FileChangeEvent:
     path: str = ""
     change_type: str = "modify"
     diff: Optional[str] = None
+
+
+@dataclass
+class FileDiffEvent:
+    type: str = "file.diff"
+    path: str = ""
+    change_type: str = "modify"
+    hunks: list = field(default_factory=list)
 
 
 @dataclass
@@ -391,6 +414,7 @@ EVENT_TYPES = {
     "toolcall.transport": ToolcallTransportEvent,
     "governance.alert": GovernanceAlertEvent,
     "file.change": FileChangeEvent,
+    "file.diff": FileDiffEvent,
     "approval.request": ApprovalRequestEvent,
     "context.status": ContextStatusEvent,
     "context.warning": ContextWarningEvent,

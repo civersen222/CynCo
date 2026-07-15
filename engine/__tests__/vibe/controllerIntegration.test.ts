@@ -103,6 +103,10 @@ describe('VibeController chain', () => {
 
     await ctrl.start('new')
     await ctrl.handleAnswer('q-1', 'Build a hello world python script that prints hello')
+    // Phase 6a: a substantive directive now confirms understanding first.
+    expect(ctrl.state).toBe('teachback')
+    expect(calls.handleUserMessage).toHaveLength(0)
+    await ctrl.handleAnswer('teachback', 'yes, build it')
 
     // BUILD delegated exactly once, with the build-prompt contract
     expect(calls.handleUserMessage).toHaveLength(1)
@@ -149,7 +153,10 @@ describe('VibeController chain', () => {
     expect(events.some(e => e.type === 'vibe.confidence_update')).toBe(true)
     expect(calls.handleUserMessage).toHaveLength(0)   // still understanding
 
-    await ctrl.handleAnswer(q.questionId, 'B')        // → READY → build
+    await ctrl.handleAnswer(q.questionId, 'B')        // → READY → teachback
+    expect(ctrl.state).toBe('teachback')
+    expect(calls.handleUserMessage).toHaveLength(0)
+    await ctrl.handleAnswer('teachback', 'yes, build it')  // → build
     expect(calls.handleUserMessage).toHaveLength(1)
   })
 
@@ -161,6 +168,7 @@ describe('VibeController chain', () => {
 
     await ctrl.start('new')
     await ctrl.handleAnswer('q-1', 'Build a hello world python script that prints hello')
+    await ctrl.handleAnswer('teachback', 'yes, build it')
 
     const esc = events.find(e => e.type === 'vibe.escalation')
     expect(esc).toBeDefined()
@@ -184,6 +192,7 @@ describe('VibeController chain', () => {
 
     await ctrl.start('new')
     await ctrl.handleAnswer('q-1', 'Build a hello world python script that prints hello')
+    await ctrl.handleAnswer('teachback', 'yes, build it')
 
     expect(calls.verifications).toEqual([false])
     // Build + steered fix build

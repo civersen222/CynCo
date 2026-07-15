@@ -31,6 +31,7 @@ if (process.platform === 'win32') {
 import { loadConfig } from './config.js'
 import { LocalCodeWSServer } from './bridge/server.js'
 import type { TUICommand } from './bridge/protocol.js'
+import { PROTOCOL_VERSION } from './bridge/protocol.js'
 import { ConversationLoop } from './bridge/conversationLoop.js'
 import { S5Orchestrator } from './s5/orchestrator.js'
 import { RuleBasedS5 } from './s5/ruleBasedS5.js'
@@ -1035,6 +1036,7 @@ provider.healthCheck().then(async ok => {
       contextLength: contextLength,
       projectPath: process.cwd(),
       version: '0.1.0',
+      protocolVersion: PROTOCOL_VERSION,
       sessionStartTime: new Date().toISOString(),
       lspServers,
       mcpServers: await discoverMcpServers(),

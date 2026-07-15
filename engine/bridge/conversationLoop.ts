@@ -5,7 +5,7 @@
  */
 
 import { randomUUID } from 'crypto'
-import type { EngineEvent, TUICommand } from './protocol.js'
+import type { EngineEvent, TUICommand, DiffHunk, DiffLine } from './protocol.js'
 import type { ThinkingConfig } from '../types.js'
 import { asSystemPrompt } from '../types.js'
 import type { LocalCodeConfig } from '../config.js'
@@ -60,6 +60,46 @@ import { setSideQuery, resetMergeTracking } from '../tools/impl/edit.js'
 import { estimateTokensAsync } from '../engine/contextBudget.js'
 import { isMalformedInput } from '../engine/toolCallRepair.js'
 import { extractSimulatedToolCalls } from '../ollama/simulated.js'
+
+/**
+ * Phase 6: build structured diff hunks from a write-tool input for the file.diff
+ * event. Whole-content add-hunk for Write; a single old→new hunk for Edit.
+ * No LCS — a coarse line-by-line diff is enough for the TUI preview.
+ */
+export function buildDiffHunks(toolName: string, input: Record<string, unknown>): DiffHunk[] {
+  if (toolName === 'Write') {
+    const content = String(input.content ?? '')
+    if (!content) return []
+    const lines: DiffLine[] = content.split('\n').map(text => ({ kind: 'add' as const, text }))
+    return [{ oldStart: 0, oldLines: 0, newStart: 1, newLines: lines.length, lines }]
+  }
+  if (toolName === 'Edit') {
+    const oldStr = String(input.old_string ?? '')
+    const newStr = String(input.new_string ?? '')
+    if (!oldStr && !newStr) return []
+    const oldLines = oldStr ? oldStr.split('\n') : []
+    const newLines = newStr ? newStr.split('\n') : []
+    const lines: DiffLine[] = [
+      ...oldLines.map(text => ({ kind: 'del' as const, text })),
+      ...newLines.map(text => ({ kind: 'add' as const, text })),
+    ]
+    return [{ oldStart: 1, oldLines: oldLines.length, newStart: 1, newLines: newLines.length, lines }]
+  }
+  // MultiEdit: concatenate each edit's old→new as one hunk.
+  if (toolName === 'MultiEdit') {
+    const edits = Array.isArray(input.edits) ? input.edits : []
+    const lines: DiffLine[] = []
+    for (const e of edits as Array<Record<string, unknown>>) {
+      const oldStr = String(e.old_string ?? '')
+      const newStr = String(e.new_string ?? '')
+      if (oldStr) for (const text of oldStr.split('\n')) lines.push({ kind: 'del', text })
+      if (newStr) for (const text of newStr.split('\n')) lines.push({ kind: 'add', text })
+    }
+    if (lines.length === 0) return []
+    return [{ oldStart: 1, oldLines: 0, newStart: 1, newLines: 0, lines }]
+  }
+  return []
+}
 
 type Message = {
   role: 'user' | 'assistant' | 'system'
@@ -2840,6 +2880,20 @@ export class ConversationLoop {
           path: filePath,
           changeType: toolName === 'Write' ? 'create' : 'modify',
         } as any)
+      }
+    }
+
+    // Phase 6: additionally emit a structured file.diff for the diff_view widget.
+    if (['Write', 'Edit', 'MultiEdit'].includes(toolName)) {
+      const filePath = (toolInput as any).file_path ?? (toolInput as any).path ?? ''
+      const hunks = buildDiffHunks(toolName, toolInput as any)
+      if (filePath && hunks.length > 0) {
+        this.emit({
+          type: 'file.diff',
+          path: filePath,
+          changeType: toolName === 'Write' ? 'create' : 'modify',
+          hunks,
+        })
       }
     }
 
