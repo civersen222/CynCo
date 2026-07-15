@@ -9,6 +9,20 @@ import { hybridRank } from './hybridRank.js'
 import { buildRepoGraph, formatRepoMap } from './repoMapBuilder.js'
 import type { IndexResult, IndexQuery } from './types.js'
 
+/**
+ * Cap a repo-map block to ~maxTokens (≈4 chars/token) so the default-on map
+ * can never dominate the context budget. Truncates on a line boundary and
+ * appends a marker. Documented in MANUAL.md.
+ */
+export function capRepoMap(map: string, maxTokens = 2000): string {
+  const maxChars = maxTokens * 4
+  if (map.length <= maxChars) return map
+  const slice = map.slice(0, maxChars)
+  const lastNl = slice.lastIndexOf('\n')
+  const body = lastNl > 0 ? slice.slice(0, lastNl) : slice
+  return `${body}\n[repo map truncated to ~${maxTokens} tokens]`
+}
+
 const SOURCE_EXTS = new Set(['.py', '.ts', '.tsx', '.js', '.jsx', '.rs', '.go', '.java', '.c', '.cpp', '.rb', '.cs', '.lua', '.sh'])
 const IGNORE_DIRS = new Set(['.git', 'node_modules', '__pycache__', 'venv', '.venv', 'dist', 'build', '.cynco', '.next', 'target'])
 const MAX_FILE_SIZE = 100_000 // 100KB — skip huge files

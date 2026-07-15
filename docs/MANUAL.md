@@ -110,7 +110,7 @@ data, and write the audit log before exit.
 | `_ABLATION_VSM_DISABLED` | `1` makes the whole VSM layer a no-op (for ablation) |
 | `LOCALCODE_REFLEXION` | `0` disables error-correction feedback notes |
 | `LOCALCODE_HYBRID_SEARCH` | `0` disables BM25+vector fusion (vector only) |
-| `LOCALCODE_REPO_MAP` | `1` injects a PageRank repo map into context |
+| `LOCALCODE_REPO_MAP` | Default-on: injects a PageRank repo map (capped to ~2k tokens). Set `0` to disable |
 
 ---
 

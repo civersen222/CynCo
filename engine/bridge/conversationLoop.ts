@@ -608,15 +608,17 @@ export class ConversationLoop {
         })
         console.log(`[index] Injected ${results.length} relevant chunks as system context`)
       }
-      // Opt-in repo map: top symbols by import-graph PageRank (token-costly).
-      if (process.env.LOCALCODE_REPO_MAP === '1') {
-        const repoMap = indexer.buildRepoMap([], 20)
+      // Repo map default-on (opt out with LOCALCODE_REPO_MAP=0): top symbols by
+      // import-graph PageRank, capped so it can't dominate the context budget.
+      if (process.env.LOCALCODE_REPO_MAP !== '0') {
+        const { capRepoMap } = await import('../index/indexer.js')
+        const repoMap = capRepoMap(indexer.buildRepoMap([], 20), 2000)
         if (repoMap) {
           this.messages.splice(this.messages.length - 1, 0, {
             role: 'system',
             content: [{ type: 'text', text: repoMap }],
           })
-          console.log('[index] Injected repo map as system context')
+          console.log('[index] Injected capped repo map as system context')
         }
       }
       indexer.close()
