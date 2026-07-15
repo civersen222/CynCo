@@ -1262,8 +1262,9 @@ export class ConversationLoop {
 
     return {
       goal, now, status, model: this.config.model, what_was_done, files_modified,
-      // P4.3/4(e): flows into both interactive (main.ts session.end) and vibe
-      // (controller completion) handoffs, since both call buildHandoff().
+      // P4.3/4(e): persisted in the interactive handoff (main.ts session.end).
+      // The vibe surface does not persist it here — vibe fidelity coverage comes
+      // from the governance.session_fidelity event emitted at conversation end.
       regulator_fidelity: this.governance.getSessionFidelity(),
     }
   }
@@ -2149,12 +2150,12 @@ export class ConversationLoop {
         })
 
         // P4.3/4(e): session-level regulator fidelity — the mission driver
-        // ingests this into the outcome ledger; interactive/vibe persist it via
-        // buildHandoff. Emitted once per completed user message.
+        // ingests this into the outcome ledger; the TUI/vibe surfaces consume
+        // the event directly. Emitted once per completed user message.
         this.emit({
           type: 'governance.session_fidelity',
           fidelity: this.governance.getSessionFidelity(),
-        } as any)
+        })
 
         // Decision logging
         try {
