@@ -47,6 +47,9 @@ import { InterventionTracker } from './interventionTracker.js'
 import type { GovernanceReport, GovernanceAlert } from './types.js'
 import { WindowedVarietyMeter, toolCallFingerprint } from './windowedVariety.js'
 import { TaskModel } from './taskModel.js'
+import { FingerprintRepetitionDetector } from './fingerprintRepetition.js'
+import { TurnNoveltyMeter } from './turnNovelty.js'
+import { ProgressModel } from './progressModel.js'
 import { getJournal } from '../training/decisionJournal.js'
 import { makeJournalEntry } from '../training/types.js'
 
@@ -147,6 +150,10 @@ export class CyberneticsGovernance {
 
   private windowedVariety = new WindowedVarietyMeter()
   private taskModel = new TaskModel()
+  // P4.3: remaining VI.3 signals — measurement only, no authority (Phase 3 gauntlet first)
+  private fingerprintRepetition = new FingerprintRepetitionDetector()
+  private turnNovelty = new TurnNoveltyMeter()
+  private progressModel = new ProgressModel()
 
   // Metrics tracking
   private toolHistory: { name: string; success: boolean; latencyMs: number }[] = []
@@ -283,6 +290,13 @@ export class CyberneticsGovernance {
     // P1.5: windowed distinguishable-state counting — measurement, so it
     // stays in the always-track zone (needed from ablated runs too).
     this.windowedVariety.recordCall(name, input)
+    // P4.3: fingerprint repetition + path novelty — measurement, so they
+    // stay in the always-track zone (needed from ablated runs too).
+    this.fingerprintRepetition.recordCall(name, input)
+    const touchedPath = (input as any)?.file_path ?? (input as any)?.path
+    if (typeof touchedPath === 'string' && touchedPath) {
+      this.turnNovelty.recordPath(touchedPath)
+    }
     if (this._ablated || this._paused) return // Skip all governance when ablated or paused
 
     // Route through real algedonic channel
@@ -387,6 +401,10 @@ export class CyberneticsGovernance {
     // P4.1: seal taskError/errorTrend from the global contract (before the
     // ablation return — measurement, not authority).
     this.taskModel.onTurnComplete()
+    // P4.3: seal novelty + length-normalized progress (before the ablation
+    // return — measurement, not authority).
+    this.turnNovelty.onTurnComplete()
+    this.progressModel.onTurnComplete(metrics.totalTokens)
     if (this._ablated || this._paused) {
       return
     }
@@ -689,6 +707,8 @@ export class CyberneticsGovernance {
     const reflectionHistory = this._reflector.getHistory()
 
     const taskSnapshot = this.taskModel.snapshot()
+    const noveltySnapshot = this.turnNovelty.snapshot()
+    const progressSnapshot = this.progressModel.snapshot()
     return {
       status,
       varietyBalance,
@@ -696,6 +716,9 @@ export class CyberneticsGovernance {
       varietyWindowed: this.windowedVariety.count(),
       taskError: taskSnapshot.taskError,
       errorTrend: taskSnapshot.errorTrend,
+      fingerprintAlarm: this.fingerprintRepetition.alarm(),
+      infoGain: noveltySnapshot.infoGain,
+      progressRate: progressSnapshot.progressRate,
       s3s4Balance,
       algedonicAlerts: this.eventBus.replayFiltered(
         e => e.payload.kind === 'AlgedonicFired' && (e.payload as any).severity !== 'Info'

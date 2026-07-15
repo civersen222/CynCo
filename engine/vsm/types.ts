@@ -57,6 +57,16 @@ export type GovernanceReport = {
   taskError: number | null
   /** P4.1: CUSUM alarm state over the taskError series; null with taskError. */
   errorTrend: 'rising' | 'falling' | 'flat' | null
+  /** P4.3 (VI.3 signal 2): action-fingerprint repetition alarm —
+   *  'identical' = 3 consecutive identical (tool, args) fingerprints,
+   *  'alternating' = last 6 calls A-B-A-B-A-B; polling tools whitelisted. */
+  fingerprintAlarm: 'identical' | 'alternating' | null
+  /** P4.3 (VI.3 signal 4): fraction of this turn's touched file paths never
+   *  seen before this session; null when the turn touched no paths. */
+  infoGain: number | null
+  /** P4.3 (VI.3 signal 5): newly-passed contract assertions per 1k
+   *  totalTokens; null when no active contract or a zero-token turn. */
+  progressRate: number | null
   s3s4Balance: 'balanced' | 's3_dominant' | 's4_dominant' | 'critical'
   algedonicAlerts: number
   stuckTurns: number
