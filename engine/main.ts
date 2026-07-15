@@ -223,6 +223,14 @@ if (process.env.LOCALCODE_TRAJECTORY_ENABLED !== 'false') {
   console.log('[main] Trajectory recorder initialized')
 }
 
+// Garbage-collect stale session journals (>30d) once per process boot so
+// ~/.cynco/sessions/ doesn't grow forever.
+try {
+  const { JSONLStore } = await import('./session/jsonlStore.js')
+  const n = JSONLStore.gcOldSessions(30)
+  if (n > 0) console.log(`[session] GC removed ${n} session file(s) older than 30d`)
+} catch { /* non-fatal */ }
+
 // V2 training pipeline threshold checks
 try {
   const { GovernanceDB } = await import('./vsm/governanceDb.js')

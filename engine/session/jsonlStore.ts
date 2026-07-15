@@ -101,6 +101,25 @@ export class JSONLStore {
 
   get path(): string { return this.filePath }
 
+  /** Delete session files whose mtime is older than `maxAgeDays`. Returns count removed. */
+  static gcOldSessions(maxAgeDays = 30): number {
+    const sessionDir = join(homedir(), '.cynco', 'sessions')
+    if (!existsSync(sessionDir)) return 0
+    const cutoff = Date.now() - maxAgeDays * 86400_000
+    let removed = 0
+    try {
+      const { statSync, unlinkSync } = require('fs')
+      for (const f of readdirSync(sessionDir)) {
+        if (!f.endsWith('.jsonl')) continue
+        const full = join(sessionDir, f)
+        try {
+          if (statSync(full).mtimeMs < cutoff) { unlinkSync(full); removed++ }
+        } catch { /* skip */ }
+      }
+    } catch { /* dir vanished */ }
+    return removed
+  }
+
   static listSessions(): { id: string; modified: number }[] {
     const sessionDir = join(homedir(), '.cynco', 'sessions')
     if (!existsSync(sessionDir)) return []
