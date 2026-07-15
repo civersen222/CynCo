@@ -4,7 +4,7 @@
 
 import { AgreementLevel } from '../cybernetics-core/src/conversation/index.js'
 
-export type VibeState = 'idle' | 'understand' | 'build' | 'report' | 'next' | 'escalation'
+export type VibeState = 'idle' | 'understand' | 'teachback' | 'build' | 'report' | 'next' | 'escalation'
 export type VibeMode = 'new' | 'continue' | 'fix' | 'explain'
 export type DifficultyLevel = 'trivial' | 'simple' | 'medium' | 'complex' | 'massive'
 export type ConfidenceDimension = 'purpose' | 'mechanics' | 'integration' | 'ambiguity'

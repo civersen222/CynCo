@@ -116,12 +116,12 @@ describe('VibeLoopEngine', () => {
     expect(engine.state).toBe('idle')
   })
 
-  it('just_build transitions to build', () => {
+  it('just_build transitions to teachback (Phase 6a: confirm understanding first)', () => {
     const { engine } = createEngine()
     engine.start('new', 'something')
 
     engine.handleAction('just_build')
-    expect(engine.state).toBe('build')
+    expect(engine.state).toBe('teachback')
   })
 
   it('skip transitions to understand', () => {

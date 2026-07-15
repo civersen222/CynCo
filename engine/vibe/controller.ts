@@ -7,6 +7,8 @@
 
 import { VibeLoopEngine } from './engine.js'
 import type { VibeMode, VibeEvent } from './types.js'
+import { MODE_CONFIG } from './types.js'
+import { AgreementTracker, AgreementState, AgreementLevel } from '../cybernetics-core/src/conversation/index.js'
 import type { ConversationLoop } from '../bridge/conversationLoop.js'
 import { ProjectIndexer } from '../index/indexer.js'
 import { globalContract } from '../tools/contract.js'
@@ -95,6 +97,10 @@ export class VibeController {
   private projectSummary = ''
   private projectContext = ''  // Raw file content for LLM context
   private indexer: ProjectIndexer | null = null
+  // Phase 6a: Pask two-directional conversation state.
+  private agreement = new AgreementTracker()
+  private mode: VibeMode = 'new'
+  private pendingUnderstanding = ''
 
   constructor(opts: VibeControllerOptions) {
     this.emitFn = opts.emit
@@ -113,6 +119,9 @@ export class VibeController {
   }
 
   async start(mode: VibeMode, description?: string): Promise<void> {
+    this.mode = mode
+    this.agreement = new AgreementTracker()
+    this.pendingUnderstanding = ''
     this.userDescription = description ?? ''
     this.answers = []
     this.questionCounter = 0
@@ -167,10 +176,31 @@ export class VibeController {
   }
 
   async handleAnswer(questionId: string, answer: string): Promise<void> {
+    // Phase 6a: teachback confirmation — the Pask agreement gate.
+    if (questionId === 'teachback') {
+      const confirmed = /\b(yes|correct|right|good|build|go)\b/i.test(answer)
+      const state = new AgreementState('build-understanding', 'system', 'user')
+      state.advanceTo(confirmed ? AgreementLevel.MutualUnderstanding : AgreementLevel.SharedTopics)
+      this.agreement.add(state)
+      if (confirmed && this.buildGateOpen()) {
+        await this.executeBuild()
+      } else if (!confirmed) {
+        // User corrected — fold the correction back in and resume Q&A.
+        this.userDescription = answer
+        this.answers.push({ question: 'Correction', answer })
+        this.writePlanFile()
+        await this.generateQuestion()
+      } else {
+        // Confirmed but confidence not yet ready — keep gathering info.
+        await this.generateQuestion()
+      }
+      return
+    }
+
     // Special case: confirmation question
     if (questionId === 'confirm') {
       if (answer.toLowerCase().includes('yes') || answer === 'A' || answer === 'a') {
-        await this.executeBuild()
+        await this.enterTeachback()
       } else {
         await this.generateQuestion()
       }
@@ -180,12 +210,12 @@ export class VibeController {
     // If the answer is a substantive instruction (not just A/B/C), treat it as a BUILD directive
     const isShortPick = /^[a-dA-D]$/i.test(answer.trim()) || answer.trim().length < 10
     if (!isShortPick) {
-      // User gave a real directive — BUILD IT, don't ask more questions
+      // User gave a real directive — confirm understanding then BUILD.
       this.userDescription = answer
-      console.log(`[vibe] User directive — going straight to BUILD: "${answer.slice(0, 80)}"`)
+      console.log(`[vibe] User directive — confirming understanding before BUILD: "${answer.slice(0, 80)}"`)
       this.answers.push({ question: 'User directive', answer })
       this.writePlanFile()
-      await this.executeBuild()
+      await this.enterTeachback()
       return
     }
 
@@ -209,8 +239,8 @@ export class VibeController {
 
     // Safety valve — auto-transition after max questions for this difficulty
     if (this.questionCounter >= MAX_QUESTIONS) {
-      console.log(`[vibe] Max questions (${MAX_QUESTIONS}) reached — auto-transitioning to build`)
-      await this.executeBuild()
+      console.log(`[vibe] Max questions (${MAX_QUESTIONS}) reached — confirming understanding`)
+      await this.enterTeachback()
       return
     }
 
@@ -246,9 +276,15 @@ export class VibeController {
         this.answers = []
         await this.generateQuestion()
         break
-      case 'just_build':
-        await this.executeBuild()
+      case 'just_build': {
+        // Escape hatch: pre-seed agreement to the floor so a single teachback
+        // confirm opens the gate — keeps the loop two-directional (Phase 6a).
+        const seed = new AgreementState('just-build', 'system', 'user')
+        seed.advanceTo(MODE_CONFIG[this.mode].minAgreement)
+        this.agreement.add(seed)
+        await this.enterTeachback()
         break
+      }
       case 'done':
         break
       case 'skip':
@@ -338,7 +374,7 @@ export class VibeController {
       const parsed = this.parseQuestion(raw)
 
       if (parsed.ready) {
-        await this.executeBuild()
+        await this.enterTeachback()
         return
       }
 
@@ -566,6 +602,37 @@ export class VibeController {
     } catch {
       return `Build: ${this.userDescription}`
     }
+  }
+
+  // ─── Private: TEACHBACK Phase (Pask two-directional) ───────────
+
+  /** Emit CynCo's understanding and ask the user to confirm/correct before BUILD. */
+  private async enterTeachback(): Promise<void> {
+    this.engine.transitionToTeachback()
+    // Entering teachback means the questioning phase is complete (LLM said READY,
+    // a substantive directive arrived, or the safety valve fired) — so the
+    // confidence floor for BUILD is met. The teachback confirm is the final gate,
+    // still checked against ConfidenceScorer.isReady() in buildGateOpen().
+    this.engine.updateConfidence('purpose', 100, 'Questioning phase complete')
+    this.engine.updateConfidence('mechanics', 100, 'Questioning phase complete')
+    this.engine.updateConfidence('integration', 100, 'Questioning phase complete')
+    this.engine.updateConfidence('ambiguity', 100, 'Questioning phase complete')
+    const understanding = await this.summarizeUnderstanding()
+    this.pendingUnderstanding = understanding
+    this.emitFn({
+      type: 'vibe.question',
+      questionId: 'teachback',
+      text: `Here's what I understand — did I get it right?\n\n${understanding}`,
+      options: ['Yes, build it', 'No, let me correct something'],
+    })
+  }
+
+  /** Phase 6a build gate: Pask agreement ≥ SharedProcedures AND confidence ready. */
+  private buildGateOpen(): boolean {
+    const floor = MODE_CONFIG[this.mode].minAgreement
+    const agreementOk = this.agreement.atLevel(floor).length > 0
+    const confidenceOk = this.engine.confidenceReady()
+    return agreementOk && confidenceOk
   }
 
   // ─── Private: BUILD Phase ──────────────────────────────────────

@@ -50,6 +50,15 @@ export class VibeLoopEngine {
     this.transition('build')
   }
 
+  transitionToTeachback(): void {
+    this.transition('teachback')
+  }
+
+  /** Phase 6a: confidence half of the build gate — consumes ConfidenceScorer.isReady(). */
+  confidenceReady(): boolean {
+    return this.confidence?.isReady() ?? false
+  }
+
   completeTask(
     title: string,
     analogy: string,
@@ -92,7 +101,7 @@ export class VibeLoopEngine {
         this.transition('idle')
         break
       case 'just_build':
-        this.transition('build')
+        this.transition('teachback')
         break
     }
   }
