@@ -26,6 +26,7 @@ __pycache__/
 *.pyc
 .claude/cache/
 .claude/worktrees/
+.worktrees/
 
 # Python venvs
 .venv/
