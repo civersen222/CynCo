@@ -40,6 +40,11 @@ export class FileOperationTracker {
     return JSON.stringify(this.operations)
   }
 
+  /** Clear the op log — called after a compaction so stale ops don't accrue. */
+  reset(): void {
+    this.operations = []
+  }
+
   static deserialize(json: string): FileOperationTracker {
     const tracker = new FileOperationTracker()
     try {
@@ -67,6 +72,27 @@ export class ContextCompressor {
     const keepCount = keepRecentPairs * 2
     if (messages.length <= keepCount) return []
     return messages.slice(0, messages.length - keepCount)
+  }
+
+  /**
+   * Tier-0 trim: cheaply shrink oversized tool_result blocks in place BEFORE
+   * the LLM summary call, so the summary prompt (and kept tail) stay small.
+   * Keeps the head and tail of each block verbatim with a truncation marker.
+   */
+  tier0Trim(messages: Message[], maxBlockChars = 4000): Message[] {
+    return messages.map(msg => ({
+      ...msg,
+      content: msg.content.map(block => {
+        const text = block.text
+        if (block.type === 'tool_result' && typeof text === 'string' && text.length > maxBlockChars) {
+          const head = text.slice(0, Math.floor(maxBlockChars / 2))
+          const tail = text.slice(-Math.floor(maxBlockChars / 2))
+          const cut = text.length - maxBlockChars
+          return { ...block, text: `${head}\n… [trimmed ${cut} chars] …\n${tail}` }
+        }
+        return block
+      }),
+    }))
   }
 
   /** Pi-mono-style structured summary prompt with file operation tracking. */
