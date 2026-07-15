@@ -27,6 +27,9 @@ describe('GovernanceReport extended fields', () => {
       varietyWindowed: 0,
       taskError: null,
       errorTrend: null,
+      fingerprintAlarm: null,
+      infoGain: null,
+      progressRate: null,
       s3s4Balance: 'balanced',
       algedonicAlerts: 0,
       stuckTurns: 0,
@@ -53,6 +56,9 @@ describe('GovernanceReport extended fields', () => {
       varietyWindowed: 0,
       taskError: null,
       errorTrend: null,
+      fingerprintAlarm: null,
+      infoGain: null,
+      progressRate: null,
       s3s4Balance: 'balanced',
       algedonicAlerts: 0,
       stuckTurns: 0,
@@ -83,6 +89,9 @@ describe('GovernanceReport extended fields', () => {
       varietyWindowed: 0,
       taskError: null,
       errorTrend: null,
+      fingerprintAlarm: null,
+      infoGain: null,
+      progressRate: null,
       s3s4Balance: 'balanced',
       algedonicAlerts: 0,
       stuckTurns: 0,
@@ -134,6 +143,9 @@ describe('S5Input extended fields', () => {
       promptDifficulty: 'unknown',
       taskError: null,
       errorTrend: null,
+      fingerprintAlarm: null,
+      infoGain: null,
+      progressRate: null,
     }
     expect(typeof input.agreementRatio).toBe('number')
     expect(input.agreementRatio).toBe(0.9)
@@ -167,6 +179,9 @@ describe('S5Input extended fields', () => {
       promptDifficulty: 'unknown',
       taskError: null,
       errorTrend: null,
+      fingerprintAlarm: null,
+      infoGain: null,
+      progressRate: null,
     }
     expect(typeof input.observerDivergence).toBe('number')
     expect(input.observerDivergence).toBe(0.15)
@@ -231,6 +246,9 @@ describe('S5Orchestrator passes agreementRatio and observerDivergence', () => {
       varietyWindowed: 0,
       taskError: null,
       errorTrend: null,
+      fingerprintAlarm: null,
+      infoGain: null,
+      progressRate: null,
       s3s4Balance: 'balanced',
       algedonicAlerts: 0,
       stuckTurns: 0,

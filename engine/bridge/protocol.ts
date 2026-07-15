@@ -221,6 +221,12 @@ export type GovernanceStatusEvent = {
   /** P4.1: CUSUM alarm state over the taskError series — widened to string
    *  on the wire; do not copy the union here. */
   errorTrend?: string | null
+  /** P4.3: fingerprint repetition alarm — widened to string on the wire. */
+  fingerprintAlarm?: string | null
+  /** P4.3: new-path fraction this turn; null when no paths touched. */
+  infoGain?: number | null
+  /** P4.3: newly-passed assertions per 1k tokens; null without contract/tokens. */
+  progressRate?: number | null
   suggestion: string | null
 }
 

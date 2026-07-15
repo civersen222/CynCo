@@ -31,6 +31,9 @@ const baseInput: S5Input = {
   promptDifficulty: 'unknown',
   taskError: null,
   errorTrend: null,
+  fingerprintAlarm: null,
+  infoGain: null,
+  progressRate: null,
 }
 
 // ─── Tests ────────────────────────────────────────────────────────
