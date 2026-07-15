@@ -707,8 +707,26 @@ export class VibeController {
     // Include prior state for cross-session context
     const stateContent = this.readStateFile()
 
+    // Phase 6b: mode-aware constraints from MODE_CONFIG.
+    const modeCfg = MODE_CONFIG[this.mode]
+    const modeConstraints: string[] = []
+    if (modeCfg.reproduceFirst) {
+      modeConstraints.push(
+        'REPRODUCE FIRST: Before changing any code, reproduce the reported problem — ' +
+        'run the failing path, confirm the symptom, and state what you observed. ' +
+        'Only then implement the fix, and re-run to prove the symptom is gone.'
+      )
+    }
+    if (modeCfg.readOnly) {
+      modeConstraints.push(
+        'READ-ONLY (explain mode): Do NOT write, edit, or create any files. ' +
+        'Use only Read/Grep/Glob to investigate, then explain your findings in plain language.'
+      )
+    }
+
     return [
       `Build the following for the user. Work autonomously — do not ask questions.`,
+      modeConstraints.length > 0 ? modeConstraints.join('\n') : '',
       projectCtx,
       indexSection,
       stateContent ? `\n--- Prior Session State ---\n${stateContent}\n--- End State ---\n` : '',
