@@ -30,6 +30,9 @@ function baseInput(overrides: Partial<S5Input> = {}): S5Input {
     promptDifficulty: 'unknown',
     taskError: null,
     errorTrend: null,
+    fingerprintAlarm: null,
+    infoGain: null,
+    progressRate: null,
     ...overrides,
   }
 }

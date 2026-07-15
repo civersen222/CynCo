@@ -30,6 +30,9 @@ describe('S5 extended types', () => {
       promptDifficulty: 'unknown',
       taskError: null,
       errorTrend: null,
+      fingerprintAlarm: null,
+      infoGain: null,
+      progressRate: null,
     }
     expect(input.varietyBalance).toBe('balanced')
     expect(input.homeostatStable).toBe(true)

@@ -17,6 +17,9 @@ const govReport: GovernanceReport = {
   status: 'healthy',
   taskError: null,
   errorTrend: null,
+  fingerprintAlarm: null,
+  infoGain: null,
+  progressRate: null,
   s3s4Balance: 'balanced',
   modelLatencyTrend: 'stable',
 } as unknown as GovernanceReport

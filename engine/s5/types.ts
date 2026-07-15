@@ -32,6 +32,11 @@ export type S5Input = {
   // P4.1: task homeostat — external DoD error + CUSUM trend (VI.3)
   taskError: number | null
   errorTrend: 'rising' | 'falling' | 'flat' | null
+  // P4.3: remaining VI.3 signals — measurement only; no rule consumes these
+  // until they pass the Phase 3 gauntlet
+  fingerprintAlarm: 'identical' | 'alternating' | null
+  infoGain: number | null
+  progressRate: number | null
 }
 
 export type S5Decision = {

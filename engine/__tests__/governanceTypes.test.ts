@@ -143,6 +143,9 @@ describe('S5Input extended fields', () => {
       promptDifficulty: 'unknown',
       taskError: null,
       errorTrend: null,
+      fingerprintAlarm: null,
+      infoGain: null,
+      progressRate: null,
     }
     expect(typeof input.agreementRatio).toBe('number')
     expect(input.agreementRatio).toBe(0.9)
@@ -176,6 +179,9 @@ describe('S5Input extended fields', () => {
       promptDifficulty: 'unknown',
       taskError: null,
       errorTrend: null,
+      fingerprintAlarm: null,
+      infoGain: null,
+      progressRate: null,
     }
     expect(typeof input.observerDivergence).toBe('number')
     expect(input.observerDivergence).toBe(0.15)
