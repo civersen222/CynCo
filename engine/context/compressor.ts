@@ -144,6 +144,34 @@ export class ContextCompressor {
     return this.buildStructuredSummaryPrompt(messages)
   }
 
+  /**
+   * One-shot compaction: tier-0 trim → select → journal-before-replace →
+   * summarize → replace → reset tracker. Callbacks are injected so the loop
+   * owns the LLM call and the journal sink; the compressor owns the ordering
+   * guarantee (write-before-compact) and the tracker lifecycle.
+   */
+  async runCompaction(
+    messages: Message[],
+    fileTracker: FileOperationTracker,
+    cb: {
+      summarize: (prompt: string) => Promise<string>
+      journal: (summary: string, fileOps?: string) => void
+      keepRecentPairs?: number
+    },
+  ): Promise<Message[]> {
+    const trimmed = this.tier0Trim(messages)
+    const toCompress = this.selectForCompression(trimmed, cb.keepRecentPairs ?? this.keepRecent)
+    if (toCompress.length === 0) return messages
+    const prompt = this.buildStructuredSummaryPrompt(toCompress, fileTracker)
+    const summary = await cb.summarize(prompt)
+    // Write-before-compact: persist the summary + file ops to the journal
+    // BEFORE we drop the source messages, so a crash mid-compaction is safe.
+    cb.journal(summary, fileTracker.serialize())
+    const compacted = this.compressMessages(trimmed, summary, fileTracker)
+    fileTracker.reset()
+    return compacted
+  }
+
   compressMessages(messages: Message[], summary: string, fileTracker?: FileOperationTracker): Message[] {
     const keepCount = this.keepRecent * 2
     const recent = messages.slice(-keepCount)

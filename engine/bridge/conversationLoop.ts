@@ -839,13 +839,10 @@ export class ConversationLoop {
           const ctxLen = this.config.contextLength ?? 32768
           const estTokens = await this.estimateContextTokens()
           if (this.compressor.shouldCompress(this.messages, estTokens, ctxLen)) {
-            const toCompress = this.compressor.selectForCompression(this.messages)
-            const prompt = this.compressor.buildStructuredSummaryPrompt(toCompress, this.fileTracker)
-            try {
-              const summary = await this.sideQuery(prompt)
-              this.messages = this.compressor.compressMessages(this.messages, summary, this.fileTracker)
+            // Single compaction path: runCompaction via compactNow (write-before-compact).
+            if (await this.compactNow('s5-decision')) {
               console.log(`[s5] Context compacted by S5 decision`)
-            } catch {}
+            }
           }
         }
 
@@ -1282,12 +1279,14 @@ export class ConversationLoop {
   private async compactNow(label: string): Promise<boolean> {
     if (this.messages.length <= 6) return false
     try {
-      const toCompress = this.compressor.selectForCompression(this.messages, 2) // keep only last 2 pairs
-      if (toCompress.length === 0) return false
-      const prompt = this.compressor.buildStructuredSummaryPrompt(toCompress, this.fileTracker)
-      const summary = await this.sideQuery(prompt)
-      this.messages = this.compressor.compressMessages(this.messages, summary, this.fileTracker)
-      try { this.journal.appendCompaction(summary, this.fileTracker.serialize()) } catch {}
+      const before = this.messages
+      const compacted = await this.compressor.runCompaction(this.messages, this.fileTracker, {
+        keepRecentPairs: 2,
+        summarize: (prompt) => this.sideQuery(prompt),
+        journal: (summary, fileOps) => { try { this.journal.appendCompaction(summary, fileOps) } catch {} },
+      })
+      if (compacted === before) return false
+      this.messages = compacted
       console.log(`[compact] ${label}: → ${Math.round(this.estimateMessageTokens())} tokens (${this.messages.length} messages)`)
       return true
     } catch (e) {
@@ -1546,20 +1545,9 @@ export class ConversationLoop {
       if (this.compressor.shouldCompress(this.messages, estimatedTokensBefore, ctxLen)) {
         console.log(`[loop] Context at ${Math.round(estimatedTokensBefore / ctxLen * 100)}% — compressing`)
         this.emit({ type: 'stream.token', text: '\n[System] Compressing context to free space...\n' })
-        const toCompress = this.compressor.selectForCompression(this.messages)
-        // S4: structured compaction with file operation tracking
-        const prompt = this.compressor.buildStructuredSummaryPrompt(toCompress, this.fileTracker)
-        let summary: string
-        try {
-          summary = await this.sideQuery(prompt)
-        } catch {
-          // Fallback: simple concatenation if sideQuery fails
-          summary = toCompress.map(m =>
-            m.content.filter((b: any) => b.type === 'text').map((b: any) => b.text ?? '').join(' ').slice(0, 100)
-          ).join('; ')
-        }
-        this.messages = this.compressor.compressMessages(this.messages, summary, this.fileTracker)
-        try { this.journal.appendCompaction(summary, this.fileTracker.serialize()) } catch {}
+        // Single compaction path: runCompaction via compactNow (tier-0 trim,
+        // write-before-compact journal, verbatim anchors, tracker reset).
+        await this.compactNow('loop-threshold')
         console.log(`[loop] Compressed to ${this.messages.length} messages (files tracked: ${this.fileTracker.getModifiedFiles().length} modified, ${this.fileTracker.getReadFiles().length} read)`)
       }
 
