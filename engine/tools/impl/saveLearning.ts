@@ -1,18 +1,13 @@
 /**
- * SaveLearning tool — the model can save user preferences, corrections,
- * and feedback as persistent learnings, as persistent learnings.
- *
- * Saves to ~/.cynco/continuity/{projectHash}/learnings.json
+ * SaveLearning tool — persists user preferences, corrections, and feedback to
+ * the global SQLite LearningStore (~/.cynco/learnings.db). Learnings are
+ * embedded for generative-agents recall and de-duplicated with a helpful bump.
  */
 import type { ToolImpl } from '../types.js'
-import * as fs from 'node:fs'
-import * as path from 'node:path'
-import * as os from 'node:os'
-import * as crypto from 'node:crypto'
+import { LearningStore, defaultLearningsDbPath } from '../../memory/learningStore.js'
 
-function getLearningsPath(): string {
-  const projectHash = crypto.createHash('md5').update(process.cwd()).digest('hex').slice(0, 8)
-  return path.join(os.homedir(), '.cynco', 'continuity', projectHash, 'learnings.json')
+function learningsDbPath(): string {
+  return process.env.LOCALCODE_LEARNINGS_DB ?? defaultLearningsDbPath()
 }
 
 export const saveLearningTool: ToolImpl = {
@@ -21,18 +16,9 @@ export const saveLearningTool: ToolImpl = {
   inputSchema: {
     type: 'object',
     properties: {
-      type: {
-        type: 'string',
-        description: 'Type of learning: "preference" (user likes/dislikes), "correction" (user fixed something), "pattern" (recurring codebase pattern), "decision" (architectural choice made)',
-      },
-      content: {
-        type: 'string',
-        description: 'The learning itself — what to remember. Be specific and actionable.',
-      },
-      context: {
-        type: 'string',
-        description: 'Optional context about when this applies.',
-      },
+      type: { type: 'string', description: 'Type of learning: "preference", "correction", "pattern", "decision"' },
+      content: { type: 'string', description: 'The learning itself — what to remember. Be specific and actionable.' },
+      context: { type: 'string', description: 'Optional context about when this applies.' },
     },
     required: ['type', 'content'],
   },
@@ -41,53 +27,25 @@ export const saveLearningTool: ToolImpl = {
     const type = (input.type as string) || 'preference'
     const content = (input.content as string) || ''
     const context = (input.context as string) || ''
+    if (!content) return { output: 'No content provided', isError: true }
 
-    if (!content) {
-      return { output: 'No content provided', isError: true }
-    }
-
+    let store: LearningStore | null = null
     try {
-      const filePath = getLearningsPath()
-      const dir = path.dirname(filePath)
-      if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true })
-      }
+      // Best-effort embedding so recall relevance works; keyword fallback if down.
+      // Capped on a short deadline so a cold embed model can't block the tool.
+      let embedding: number[] | undefined
+      try {
+        const { EmbedClient } = await import('../../index/embedClient.js')
+        embedding = await new EmbedClient().embedWithDeadline(content)
+      } catch { embedding = undefined }
 
-      let learnings: any[] = []
-      if (fs.existsSync(filePath)) {
-        learnings = JSON.parse(fs.readFileSync(filePath, 'utf-8'))
-      }
-
-      // Don't save duplicates
-      const isDuplicate = learnings.some(
-        (l: any) => l.content === content && l.type === type
-      )
-      if (isDuplicate) {
-        return { output: `Learning already saved: ${content.slice(0, 60)}`, isError: false }
-      }
-
-      learnings.push({
-        type,
-        content,
-        context,
-        date: new Date().toISOString(),
-      })
-
-      // Keep last 100 learnings
-      if (learnings.length > 100) {
-        learnings = learnings.slice(-100)
-      }
-
-      fs.writeFileSync(filePath, JSON.stringify(learnings, null, 2))
-      return {
-        output: `Saved learning: ${content.slice(0, 60)}...`,
-        isError: false,
-      }
+      store = new LearningStore(learningsDbPath())
+      store.save({ type, content, context, embedding, sessionId: process.env.LOCALCODE_SESSION_ID })
+      return { output: `Saved learning: ${content.slice(0, 60)}...`, isError: false }
     } catch (err) {
-      return {
-        output: `Failed to save: ${err instanceof Error ? err.message : String(err)}`,
-        isError: true,
-      }
+      return { output: `Failed to save: ${err instanceof Error ? err.message : String(err)}`, isError: true }
+    } finally {
+      try { store?.close() } catch { /* ignore */ }
     }
   },
 }

@@ -13,7 +13,7 @@ type Message = {
 }
 
 type JournalEntry = {
-  type: 'message' | 'compaction' | 'governance'
+  type: 'message' | 'compaction' | 'governance' | 'session_end'
   timestamp: number
   data: Message | { summary: string; fileOps?: string } | Record<string, unknown>
 }
@@ -66,7 +66,59 @@ export class JSONLStore {
     return messages
   }
 
+  /** Most recent serialized file-op string journaled with a compaction, or null. */
+  loadFileOps(): string | null {
+    if (!existsSync(this.filePath)) return null
+    const lines = readFileSync(this.filePath, 'utf-8').split('\n').filter(l => l.trim())
+    let latest: string | null = null
+    for (const line of lines) {
+      try {
+        const entry: JournalEntry = JSON.parse(line)
+        if (entry.type === 'compaction') {
+          const d = entry.data as { summary: string; fileOps?: string }
+          if (d.fileOps) latest = d.fileOps
+        }
+      } catch { /* skip */ }
+    }
+    return latest
+  }
+
+  /** Write an explicit clean-shutdown marker. */
+  appendSessionEnd(): void {
+    const entry: JournalEntry = { type: 'session_end', timestamp: Date.now(), data: {} }
+    appendFileSync(this.filePath, JSON.stringify(entry) + '\n')
+  }
+
+  /** True if a session_end marker was written (clean shutdown). */
+  hasEnded(): boolean {
+    if (!existsSync(this.filePath)) return false
+    const lines = readFileSync(this.filePath, 'utf-8').split('\n').filter(l => l.trim())
+    for (const line of lines) {
+      try { if ((JSON.parse(line) as JournalEntry).type === 'session_end') return true } catch { /* skip */ }
+    }
+    return false
+  }
+
   get path(): string { return this.filePath }
+
+  /** Delete session files whose mtime is older than `maxAgeDays`. Returns count removed. */
+  static gcOldSessions(maxAgeDays = 30): number {
+    const sessionDir = join(homedir(), '.cynco', 'sessions')
+    if (!existsSync(sessionDir)) return 0
+    const cutoff = Date.now() - maxAgeDays * 86400_000
+    let removed = 0
+    try {
+      const { statSync, unlinkSync } = require('fs')
+      for (const f of readdirSync(sessionDir)) {
+        if (!f.endsWith('.jsonl')) continue
+        const full = join(sessionDir, f)
+        try {
+          if (statSync(full).mtimeMs < cutoff) { unlinkSync(full); removed++ }
+        } catch { /* skip */ }
+      }
+    } catch { /* dir vanished */ }
+    return removed
+  }
 
   static listSessions(): { id: string; modified: number }[] {
     const sessionDir = join(homedir(), '.cynco', 'sessions')

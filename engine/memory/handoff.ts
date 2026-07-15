@@ -1,7 +1,8 @@
-import { writeFileSync, readFileSync, mkdirSync, existsSync } from 'fs'
+import { readFileSync, mkdirSync, existsSync } from 'fs'
 import { join } from 'path'
 import type { Handoff } from './types.js'
 import type { ContractSnapshot } from '../tools/contract.js'
+import { writeFileAtomic } from './atomicWrite.js'
 
 export type HandoffFromContractOptions = {
   utilization?: number
@@ -129,7 +130,7 @@ export async function writeHandoff(handoff: Handoff, dir: string, topic: string)
   const filename = `${ts}_${safeTopic}.yml`
   const filePath = join(dir, filename)
 
-  writeFileSync(filePath, serializeHandoff(handoff), 'utf-8')
+  writeFileAtomic(filePath, serializeHandoff(handoff))
   return filePath
 }
 

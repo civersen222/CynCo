@@ -209,6 +209,10 @@ export class ConversationLoop {
   // model's resulting action to it. Diagnostic only; null when tracing is off.
   private traceLastInjected: string | null = null
   private journal: JSONLStore
+  private sessionId: string = ''
+  // Index-degradation state surfaced on context.status (Task 13).
+  private indexDegraded?: boolean
+  private lastQueryMode?: 'hybrid' | 'vector' | 'keyword'
   private snapshot?: WorkspaceSnapshot
   private snapshotCwd?: string
   private lastSnapshotHash?: SnapshotHash
@@ -315,7 +319,10 @@ export class ConversationLoop {
     this.initSnapshot(this.executor['cwd'])
 
     // S5: Session journal for crash recovery
-    this.journal = new JSONLStore(`session-${Date.now()}`)
+    this.sessionId = `session-${Date.now()}`
+    this.journal = new JSONLStore(this.sessionId)
+    // Stamp the session id so SaveLearning tags learnings for AWM promotion.
+    process.env.LOCALCODE_SESSION_ID = this.sessionId
     console.log(`[session] Journal: ${this.journal.path}`)
 
     // Human-in-the-loop: surface AskUser questions to the TUI over the bridge.
@@ -403,7 +410,17 @@ export class ConversationLoop {
     if (messages.length > 0) {
       this.messages = messages
       this.journal = store
-      console.log(`[session] Resumed ${sessionId}: ${messages.length} messages`)
+      this.sessionId = sessionId
+      process.env.LOCALCODE_SESSION_ID = sessionId
+      // Rehydrate the file-operation tracker from the last journaled compaction
+      // so a resumed session doesn't "forget" what it already read/edited.
+      try {
+        const ops = store.loadFileOps()
+        if (ops) this.fileTracker = FileOperationTracker.deserialize(ops)
+      } catch { /* non-fatal */ }
+      // S5 Identity Continuity: distinguish a clean prior shutdown from a crash.
+      const priorClean = (() => { try { return store.hasEnded() } catch { return false } })()
+      console.log(`[session] Resumed ${sessionId}: ${messages.length} messages (prior session ${priorClean ? 'ended cleanly' : 'did not end cleanly — possible crash'})`)
       return true
     }
     return false
@@ -624,6 +641,22 @@ export class ConversationLoop {
     try {
       const { ProjectIndexer } = await import('../index/indexer.js')
       const indexer = new ProjectIndexer(this.executor['cwd'])
+      // Probe embed health so we can surface index degradation on context.status.
+      // Non-blocking: a short deadline falls back to keyword-only retrieval.
+      try {
+        const { EmbedClient } = await import('../index/embedClient.js')
+        const emb = await new EmbedClient().embedWithDeadline(text)
+        if (emb && emb.length) {
+          this.indexDegraded = false
+          this.lastQueryMode = process.env.LOCALCODE_HYBRID_SEARCH !== '0' ? 'hybrid' : 'vector'
+        } else {
+          this.indexDegraded = true
+          this.lastQueryMode = 'keyword'
+        }
+      } catch {
+        this.indexDegraded = true
+        this.lastQueryMode = 'keyword'
+      }
       const results = await indexer.query({ query: text, topK: 5 })
       if (results.length > 0) {
         const context = indexer.formatResults(results)
@@ -633,15 +666,17 @@ export class ConversationLoop {
         })
         console.log(`[index] Injected ${results.length} relevant chunks as system context`)
       }
-      // Opt-in repo map: top symbols by import-graph PageRank (token-costly).
-      if (process.env.LOCALCODE_REPO_MAP === '1') {
-        const repoMap = indexer.buildRepoMap([], 20)
+      // Repo map default-on (opt out with LOCALCODE_REPO_MAP=0): top symbols by
+      // import-graph PageRank, capped so it can't dominate the context budget.
+      if (process.env.LOCALCODE_REPO_MAP !== '0') {
+        const { capRepoMap } = await import('../index/indexer.js')
+        const repoMap = capRepoMap(indexer.buildRepoMap([], 20), 2000)
         if (repoMap) {
           this.messages.splice(this.messages.length - 1, 0, {
             role: 'system',
             content: [{ type: 'text', text: repoMap }],
           })
-          console.log('[index] Injected repo map as system context')
+          console.log('[index] Injected capped repo map as system context')
         }
       }
       indexer.close()
@@ -690,19 +725,18 @@ export class ConversationLoop {
 
     const promptParts = assembleBasePrompt(toolNames, this.executor['cwd'])
 
-    // Inject saved learnings from previous sessions
+    // Inject saved learnings from previous sessions (global LearningStore).
+    // TODO(P5 follow-up): repoint /learnings review command at LearningStore.
     try {
-      const crypto = await import('crypto')
-      const os = await import('os')
-      const path = await import('path')
+      const { LearningStore, defaultLearningsDbPath } = await import('../memory/learningStore.js')
       const fs = await import('fs')
-      const projectHash = crypto.createHash('md5').update(process.cwd()).digest('hex').slice(0, 8)
-      const learningsPath = path.join(os.homedir(), '.cynco', 'continuity', projectHash, 'learnings.json')
-      if (fs.existsSync(learningsPath)) {
-        const learnings = JSON.parse(fs.readFileSync(learningsPath, 'utf-8'))
-        if (learnings.length > 0) {
-          const recent = learnings.slice(-20)
-          const learningLines = recent.map((l: any) =>
+      const dbPath = process.env.LOCALCODE_LEARNINGS_DB ?? defaultLearningsDbPath()
+      if (fs.existsSync(dbPath)) {
+        const store = new LearningStore(dbPath)
+        const recent = store.allIncludingInvalidated().filter(l => l.invalidatedAt === null).slice(-20)
+        store.close()
+        if (recent.length > 0) {
+          const learningLines = recent.map(l =>
             `- [${l.type}] ${l.content}${l.context ? ` (${l.context})` : ''}`
           ).join('\n')
           promptParts.push('')
@@ -880,13 +914,10 @@ export class ConversationLoop {
           const ctxLen = this.config.contextLength ?? 32768
           const estTokens = await this.estimateContextTokens()
           if (this.compressor.shouldCompress(this.messages, estTokens, ctxLen)) {
-            const toCompress = this.compressor.selectForCompression(this.messages)
-            const prompt = this.compressor.buildStructuredSummaryPrompt(toCompress, this.fileTracker)
-            try {
-              const summary = await this.sideQuery(prompt)
-              this.messages = this.compressor.compressMessages(this.messages, summary, this.fileTracker)
+            // Single compaction path: runCompaction via compactNow (write-before-compact).
+            if (await this.compactNow('s5-decision')) {
               console.log(`[s5] Context compacted by S5 decision`)
-            } catch {}
+            }
           }
         }
 
@@ -1323,12 +1354,16 @@ export class ConversationLoop {
   private async compactNow(label: string): Promise<boolean> {
     if (this.messages.length <= 6) return false
     try {
-      const toCompress = this.compressor.selectForCompression(this.messages, 2) // keep only last 2 pairs
-      if (toCompress.length === 0) return false
-      const prompt = this.compressor.buildStructuredSummaryPrompt(toCompress, this.fileTracker)
-      const summary = await this.sideQuery(prompt)
-      this.messages = this.compressor.compressMessages(this.messages, summary, this.fileTracker)
-      try { this.journal.appendCompaction(summary, this.fileTracker.serialize()) } catch {}
+      const before = this.messages
+      const contractText = globalContract.isActive() ? globalContract.snapshot().brief : undefined
+      const compacted = await this.compressor.runCompaction(this.messages, this.fileTracker, {
+        keepRecentPairs: 2,
+        summarize: (prompt) => this.sideQuery(prompt),
+        journal: (summary, fileOps) => { try { this.journal.appendCompaction(summary, fileOps) } catch {} },
+        contractText,
+      })
+      if (compacted === before) return false
+      this.messages = compacted
       console.log(`[compact] ${label}: → ${Math.round(this.estimateMessageTokens())} tokens (${this.messages.length} messages)`)
       return true
     } catch (e) {
@@ -1587,20 +1622,9 @@ export class ConversationLoop {
       if (this.compressor.shouldCompress(this.messages, estimatedTokensBefore, ctxLen)) {
         console.log(`[loop] Context at ${Math.round(estimatedTokensBefore / ctxLen * 100)}% — compressing`)
         this.emit({ type: 'stream.token', text: '\n[System] Compressing context to free space...\n' })
-        const toCompress = this.compressor.selectForCompression(this.messages)
-        // S4: structured compaction with file operation tracking
-        const prompt = this.compressor.buildStructuredSummaryPrompt(toCompress, this.fileTracker)
-        let summary: string
-        try {
-          summary = await this.sideQuery(prompt)
-        } catch {
-          // Fallback: simple concatenation if sideQuery fails
-          summary = toCompress.map(m =>
-            m.content.filter((b: any) => b.type === 'text').map((b: any) => b.text ?? '').join(' ').slice(0, 100)
-          ).join('; ')
-        }
-        this.messages = this.compressor.compressMessages(this.messages, summary, this.fileTracker)
-        try { this.journal.appendCompaction(summary, this.fileTracker.serialize()) } catch {}
+        // Single compaction path: runCompaction via compactNow (tier-0 trim,
+        // write-before-compact journal, verbatim anchors, tracker reset).
+        await this.compactNow('loop-threshold')
         console.log(`[loop] Compressed to ${this.messages.length} messages (files tracked: ${this.fileTracker.getModifiedFiles().length} modified, ${this.fileTracker.getReadFiles().length} read)`)
       }
 
@@ -2036,6 +2060,9 @@ export class ConversationLoop {
         estimatedTokens: Math.round(estimatedTokens),
         contextLength,
         action: estimatedTokens / contextLength > 0.8 ? 'compact' : 'proceed',
+        indexMode: process.env.LOCALCODE_HYBRID_SEARCH !== '0' ? 'hybrid' : 'vector',
+        indexDegraded: this.indexDegraded ?? false,
+        lastQueryMode: this.lastQueryMode ?? undefined,
       })
 
       // GSD: Context monitor — compact before overflow. A "finish now"
@@ -2399,6 +2426,16 @@ export class ConversationLoop {
 
   getFileTracker() {
     return this.fileTracker
+  }
+
+  /** The active session journal (for session-end markers). */
+  getJournal(): JSONLStore {
+    return this.journal
+  }
+
+  /** The active session id (for AWM learning promotion at session end). */
+  getSessionId(): string {
+    return this.sessionId
   }
 
   /** GSD→VSM: Report verification outcome as algedonic signal. */

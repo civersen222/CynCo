@@ -1,6 +1,7 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs'
+import { readFileSync, existsSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import type { Ledger, LedgerEntry } from './types.js'
+import { writeFileAtomic } from './atomicWrite.js'
 
 const LEDGER_FILENAME = 'ledger.json'
 
@@ -27,7 +28,7 @@ export async function readLedger(dir: string, project: string): Promise<Ledger> 
 export async function writeLedger(ledger: Ledger, dir: string): Promise<void> {
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
   const filePath = join(dir, LEDGER_FILENAME)
-  writeFileSync(filePath, JSON.stringify(ledger, null, 2) + '\n', 'utf-8')
+  writeFileAtomic(filePath, JSON.stringify(ledger, null, 2) + '\n')
 }
 
 export function addSessionEntry(ledger: Ledger, entry: LedgerEntry): void {

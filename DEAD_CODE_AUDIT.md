@@ -243,3 +243,32 @@ workspace.
 
 **RESOLVED 2026-07-12:** human approved archive-then-delete. Archived to
 `C:\Users\civer\src-archive-2026-07-12.tar.gz` (21MB, includes the fossil .git), then deleted.
+
+---
+
+## Phase 5 (Memory Closure) — orphaned Postgres recall/store scripts
+
+> Grep evidence pass run 2026-07-15 against `engine/`, `tui/`, `scripts/`, `benchmark/`.
+
+The learning store was reimplemented on `bun:sqlite` (`engine/memory/learningStore.ts`) and
+`engine/memory/recall.ts` was rewritten to read that store directly. The three Python scripts
+below were the previous Postgres-backed recall/extract/store pipeline and have **zero live
+importers** in the TS engine or the Python TUI.
+
+#### `scripts/store_learning.py`
+
+- **IMPORTED-BY (live):** NONE — no `store_learning` reference anywhere after `recall.ts` rewrite.
+- **DECISION: REMOVED 2026-07-15 (Phase 5, approved)** — superseded by `LearningStore.save()`.
+
+#### `scripts/extract_learnings.py`
+
+- **IMPORTED-BY (live):** NONE — no `extract_learnings` reference anywhere.
+- **DECISION: REMOVED 2026-07-15 (Phase 5, approved)** — extraction now inline via `save_learning` tool.
+
+#### `scripts/recall.py`
+
+- **IMPORTED-BY (live):** NONE — `engine/memory/recall.ts` no longer shells out to it.
+- **DECISION: REMOVED 2026-07-15 (Phase 5, approved)** — superseded by `recallMemories()` reading `LearningStore`.
+
+Note: `scripts/embed.py` was **kept** — it remains a standalone embedding helper with no
+Postgres coupling.

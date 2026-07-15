@@ -40,6 +40,11 @@ export class FileOperationTracker {
     return JSON.stringify(this.operations)
   }
 
+  /** Clear the op log — called after a compaction so stale ops don't accrue. */
+  reset(): void {
+    this.operations = []
+  }
+
   static deserialize(json: string): FileOperationTracker {
     const tracker = new FileOperationTracker()
     try {
@@ -67,6 +72,27 @@ export class ContextCompressor {
     const keepCount = keepRecentPairs * 2
     if (messages.length <= keepCount) return []
     return messages.slice(0, messages.length - keepCount)
+  }
+
+  /**
+   * Tier-0 trim: cheaply shrink oversized tool_result blocks in place BEFORE
+   * the LLM summary call, so the summary prompt (and kept tail) stay small.
+   * Keeps the head and tail of each block verbatim with a truncation marker.
+   */
+  tier0Trim(messages: Message[], maxBlockChars = 4000): Message[] {
+    return messages.map(msg => ({
+      ...msg,
+      content: msg.content.map(block => {
+        const text = block.text
+        if (block.type === 'tool_result' && typeof text === 'string' && text.length > maxBlockChars) {
+          const head = text.slice(0, Math.floor(maxBlockChars / 2))
+          const tail = text.slice(-Math.floor(maxBlockChars / 2))
+          const cut = text.length - maxBlockChars
+          return { ...block, text: `${head}\n… [trimmed ${cut} chars] …\n${tail}` }
+        }
+        return block
+      }),
+    }))
   }
 
   /** Pi-mono-style structured summary prompt with file operation tracking. */
@@ -116,6 +142,55 @@ export class ContextCompressor {
   /** Legacy unstructured prompt (kept for fallback). */
   buildSummaryPrompt(messages: Message[]): string {
     return this.buildStructuredSummaryPrompt(messages)
+  }
+
+  /**
+   * One-shot compaction: tier-0 trim → select → journal-before-replace →
+   * summarize → replace → reset tracker. Callbacks are injected so the loop
+   * owns the LLM call and the journal sink; the compressor owns the ordering
+   * guarantee (write-before-compact) and the tracker lifecycle.
+   */
+  /**
+   * Verbatim anchors survive compaction: the last <=maxUserMsgs user messages
+   * plus (optionally) the active DoD contract brief, rendered as pinned system
+   * messages so the literal ask and the contract are never summarized away.
+   */
+  selectVerbatimAnchors(messages: Message[], contractText?: string, maxUserMsgs = 6): Message[] {
+    const anchors: Message[] = []
+    if (contractText && contractText.trim()) {
+      anchors.push({ role: 'system', content: [{ type: 'text', text: `[Pinned Contract]\n${contractText}` }] })
+    }
+    const userMsgs = messages.filter(m => m.role === 'user').slice(-maxUserMsgs)
+    for (const u of userMsgs) {
+      const text = u.content.filter(b => b.type === 'text' && b.text).map(b => b.text as string).join(' ')
+      if (text) anchors.push({ role: 'system', content: [{ type: 'text', text: `[Pinned user request]\n${text}` }] })
+    }
+    return anchors
+  }
+
+  async runCompaction(
+    messages: Message[],
+    fileTracker: FileOperationTracker,
+    cb: {
+      summarize: (prompt: string) => Promise<string>
+      journal: (summary: string, fileOps?: string) => void
+      keepRecentPairs?: number
+      contractText?: string
+    },
+  ): Promise<Message[]> {
+    const trimmed = this.tier0Trim(messages)
+    const toCompress = this.selectForCompression(trimmed, cb.keepRecentPairs ?? this.keepRecent)
+    if (toCompress.length === 0) return messages
+    const prompt = this.buildStructuredSummaryPrompt(toCompress, fileTracker)
+    const summary = await cb.summarize(prompt)
+    // Write-before-compact: persist the summary + file ops to the journal
+    // BEFORE we drop the source messages, so a crash mid-compaction is safe.
+    cb.journal(summary, fileTracker.serialize())
+    const compacted = this.compressMessages(trimmed, summary, fileTracker)
+    const anchors = this.selectVerbatimAnchors(messages, cb.contractText)
+    fileTracker.reset()
+    // Splice anchors right after the summary system message (index 0).
+    return [compacted[0], ...anchors, ...compacted.slice(1)]
   }
 
   compressMessages(messages: Message[], summary: string, fileTracker?: FileOperationTracker): Message[] {
