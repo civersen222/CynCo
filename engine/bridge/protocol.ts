@@ -129,6 +129,12 @@ export type ContextStatusEvent = {
   estimatedTokens: number
   contextLength: number
   action: 'proceed' | 'externalize' | 'compact'
+  /** Retrieval mode in effect: 'hybrid' (vector+BM25), 'vector', or 'keyword'. */
+  indexMode?: 'hybrid' | 'vector' | 'keyword'
+  /** True when embeddings are unavailable and retrieval fell back to keyword-only. */
+  indexDegraded?: boolean
+  /** The mode actually used on the most recent query. */
+  lastQueryMode?: 'hybrid' | 'vector' | 'keyword'
 }
 
 export type ContextWarningEvent = {

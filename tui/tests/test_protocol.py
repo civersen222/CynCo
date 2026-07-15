@@ -122,6 +122,23 @@ class TestParseEvent:
         assert event.utilization == 0.5
         assert event.estimated_tokens == 16000
 
+    def test_context_status_index_fields(self):
+        e = ContextStatusEvent(index_mode="keyword", index_degraded=True)
+        assert e.index_mode == "keyword"
+        assert e.index_degraded is True
+        assert e.last_query_mode is None
+
+    def test_parse_context_status_index_mode(self):
+        event = parse_event({
+            "type": "context.status", "utilization": 0.5, "estimatedTokens": 100,
+            "contextLength": 32768, "action": "proceed",
+            "indexMode": "hybrid", "indexDegraded": False, "lastQueryMode": "keyword",
+        })
+        assert isinstance(event, ContextStatusEvent)
+        assert event.index_mode == "hybrid"
+        assert event.index_degraded is False
+        assert event.last_query_mode == "keyword"
+
     def test_parse_context_warning(self):
         event = parse_event({"type": "context.warning", "utilization": 0.85, "message": "approaching limit"})
         assert isinstance(event, ContextWarningEvent)

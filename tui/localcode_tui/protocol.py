@@ -112,6 +112,9 @@ class ContextStatusEvent:
     estimated_tokens: int = 0
     context_length: int = 32768
     action: str = "proceed"
+    index_mode: str | None = None
+    index_degraded: bool = False
+    last_query_mode: str | None = None
 
 
 @dataclass

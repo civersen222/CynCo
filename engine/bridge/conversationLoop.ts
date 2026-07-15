@@ -599,6 +599,26 @@ export class ConversationLoop {
     try {
       const { ProjectIndexer } = await import('../index/indexer.js')
       const indexer = new ProjectIndexer(this.executor['cwd'])
+      // Probe embed health so we can surface index degradation on context.status.
+      // Non-blocking: a short deadline falls back to keyword-only retrieval.
+      try {
+        const { EmbedClient } = await import('../index/embedClient.js')
+        const timeoutMs = Number(process.env.LOCALCODE_RECALL_EMBED_TIMEOUT_MS ?? 4000)
+        const emb = await Promise.race([
+          new EmbedClient().embed(text),
+          new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), timeoutMs)),
+        ])
+        if (emb && emb.length) {
+          this.indexDegraded = false
+          this.lastQueryMode = process.env.LOCALCODE_HYBRID_SEARCH !== '0' ? 'hybrid' : 'vector'
+        } else {
+          this.indexDegraded = true
+          this.lastQueryMode = 'keyword'
+        }
+      } catch {
+        this.indexDegraded = true
+        this.lastQueryMode = 'keyword'
+      }
       const results = await indexer.query({ query: text, topK: 5 })
       if (results.length > 0) {
         const context = indexer.formatResults(results)
@@ -2000,6 +2020,9 @@ export class ConversationLoop {
         estimatedTokens: Math.round(estimatedTokens),
         contextLength,
         action: estimatedTokens / contextLength > 0.8 ? 'compact' : 'proceed',
+        indexMode: process.env.LOCALCODE_HYBRID_SEARCH !== '0' ? 'hybrid' : 'vector',
+        indexDegraded: this.indexDegraded ?? false,
+        lastQueryMode: this.lastQueryMode ?? undefined,
       })
 
       // GSD: Context monitor — compact before overflow. A "finish now"
