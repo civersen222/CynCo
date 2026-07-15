@@ -67,6 +67,11 @@ export type GovernanceReport = {
   /** P4.3 (VI.3 signal 5): newly-passed contract assertions per 1k
    *  totalTokens; null when no active contract or a zero-token turn. */
   progressRate: number | null
+  /** P4.3 (STATE doc Phase 4(d)): thrashing (variety high ∧ error flat) vs
+   *  healthy exploration (variety high ∧ error falling) vs floundering (∧ error
+   *  rising); null when the variety gate fails or no active contract. Derived,
+   *  measurement only. Mirrors ExplorationState in vsm/explorationState.ts. */
+  explorationState: 'healthy_exploration' | 'thrashing' | 'floundering' | null
   s3s4Balance: 'balanced' | 's3_dominant' | 's4_dominant' | 'critical'
   algedonicAlerts: number
   stuckTurns: number

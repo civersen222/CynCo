@@ -50,6 +50,7 @@ import { TaskModel } from './taskModel.js'
 import { FingerprintRepetitionDetector } from './fingerprintRepetition.js'
 import { TurnNoveltyMeter } from './turnNovelty.js'
 import { ProgressModel } from './progressModel.js'
+import { classifyExploration } from './explorationState.js'
 import { getJournal } from '../training/decisionJournal.js'
 import { makeJournalEntry } from '../training/types.js'
 
@@ -719,6 +720,11 @@ export class CyberneticsGovernance {
       fingerprintAlarm: this.fingerprintRepetition.alarm(),
       infoGain: noveltySnapshot.infoGain,
       progressRate: progressSnapshot.progressRate,
+      explorationState: classifyExploration(
+        this.windowedVariety.count(),
+        this.turnCount,
+        taskSnapshot.errorTrend,
+      ),
       s3s4Balance,
       algedonicAlerts: this.eventBus.replayFiltered(
         e => e.payload.kind === 'AlgedonicFired' && (e.payload as any).severity !== 'Info'
