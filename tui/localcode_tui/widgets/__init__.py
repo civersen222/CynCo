@@ -10,3 +10,4 @@ from .confidence_bar import ConfidenceBar
 from .completion_screen import CompletionCard
 from .escalation_dialog import EscalationDialog
 from .project_entry import ProjectEntry
+from .diff_view import DiffView

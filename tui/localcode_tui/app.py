@@ -13,6 +13,7 @@ from .protocol import (
     ToolCompleteEvent, ToolcallTransportEvent, GovernanceAlertEvent,
     ApprovalRequestEvent, ContextStatusEvent,
     ContextWarningEvent, SessionReadyEvent, SessionErrorEvent,
+    FileDiffEvent,
     UserMessageCommand, SlashCommandMsg, WorkflowStatusEvent,
     GovernanceStatusEvent,
     SummaryInjectedEvent,
@@ -93,72 +94,60 @@ class LocalCodeApp(App):
         # Post as a Textual message so it's processed in the UI thread properly
         self.post_message(self.EngineEventReceived(event))
 
+    def _event_dispatch_table(self) -> dict:
+        """Map each engine-event dataclass to its handler method.
+
+        session.ready / session.error keep bespoke handling in the receiver
+        (notify + sub_title) so they are intentionally NOT in this table.
+        """
+        return {
+            StreamTokenEvent: self._handle_stream_token,
+            MessageCompleteEvent: self._handle_message_complete,
+            ToolStartEvent: self._handle_tool_start,
+            ToolCompleteEvent: self._handle_tool_complete,
+            ToolcallTransportEvent: self._handle_toolcall_transport,
+            GovernanceAlertEvent: self._handle_governance_alert,
+            ApprovalRequestEvent: self._handle_approval_request,
+            ContextStatusEvent: self._handle_context_status,
+            ContextWarningEvent: self._handle_context_warning,
+            WorkflowStatusEvent: self._handle_workflow_status,
+            GovernanceStatusEvent: self._handle_governance_status,
+            SummaryInjectedEvent: self._handle_summary_injected,
+            MemoryRecalledEvent: self._handle_memory_recalled,
+            MemoryWrittenEvent: self._handle_memory_written,
+            ConfigCurrentEvent: self._handle_config_current,
+            ConfigUpdatedEvent: self._handle_config_updated,
+            ToolsListEvent: self._handle_tools_list,
+            WizardResponseEvent: self._handle_wizard_response,
+            WebSearchResultEvent: self._handle_web_search_result,
+            VibeStateChangedEvent: self._handle_vibe_state_changed,
+            VibeConfidenceUpdateEvent: self._handle_vibe_confidence_update,
+            VibeTaskCompleteEvent: self._handle_vibe_task_complete,
+            VibeEscalationEvent: self._handle_vibe_escalation,
+            VibeProjectScannedEvent: self._handle_vibe_project_scanned,
+            VibeQuestionEvent: self._handle_vibe_question,
+            SubAgentSpawnedEvent: self._handle_subagent_spawned,
+            SubAgentToolEvent: self._handle_subagent_tool,
+            SubAgentCompleteEvent: self._handle_subagent_complete,
+            SubAgentKilledEvent: self._handle_subagent_killed,
+            S2CoordinationEvent: self._handle_s2_decision,
+            FileDiffEvent: self._handle_file_diff,
+        }
+
     def on_local_code_app_engine_event_received(self, message: EngineEventReceived) -> None:
         """Process engine events via Textual's message system."""
         event = message.event
-        if isinstance(event, StreamTokenEvent):
-            self._handle_stream_token(event)
-        elif isinstance(event, MessageCompleteEvent):
-            self._handle_message_complete(event)
-        elif isinstance(event, ToolStartEvent):
-            self._handle_tool_start(event)
-        elif isinstance(event, ToolCompleteEvent):
-            self._handle_tool_complete(event)
-        elif isinstance(event, ToolcallTransportEvent):
-            self._handle_toolcall_transport(event)
-        elif isinstance(event, GovernanceAlertEvent):
-            self._handle_governance_alert(event)
-        elif isinstance(event, ApprovalRequestEvent):
-            self._handle_approval_request(event)
-        elif isinstance(event, ContextStatusEvent):
-            self._handle_context_status(event)
-        elif isinstance(event, ContextWarningEvent):
-            self._handle_context_warning(event)
-        elif isinstance(event, WorkflowStatusEvent):
-            self._handle_workflow_status(event)
-        elif isinstance(event, GovernanceStatusEvent):
-            self._handle_governance_status(event)
-        elif isinstance(event, SummaryInjectedEvent):
-            self._handle_summary_injected(event)
-        elif isinstance(event, MemoryRecalledEvent):
-            self._handle_memory_recalled(event)
-        elif isinstance(event, MemoryWrittenEvent):
-            self._handle_memory_written(event)
-        elif isinstance(event, ConfigCurrentEvent):
-            self._handle_config_current(event)
-        elif isinstance(event, ConfigUpdatedEvent):
-            self._handle_config_updated(event)
-        elif isinstance(event, ToolsListEvent):
-            self._handle_tools_list(event)
-        elif isinstance(event, WizardResponseEvent):
-            self._handle_wizard_response(event)
-        elif isinstance(event, WebSearchResultEvent):
-            self._handle_web_search_result(event)
-        elif isinstance(event, VibeStateChangedEvent):
-            self._handle_vibe_state_changed(event)
-        elif isinstance(event, VibeConfidenceUpdateEvent):
-            self._handle_vibe_confidence_update(event)
-        elif isinstance(event, VibeTaskCompleteEvent):
-            self._handle_vibe_task_complete(event)
-        elif isinstance(event, VibeEscalationEvent):
-            self._handle_vibe_escalation(event)
-        elif isinstance(event, VibeProjectScannedEvent):
-            self._handle_vibe_project_scanned(event)
-        elif isinstance(event, VibeQuestionEvent):
-            self._handle_vibe_question(event)
-        elif isinstance(event, SubAgentSpawnedEvent):
-            self._handle_subagent_spawned(event)
-        elif isinstance(event, SubAgentToolEvent):
-            self._handle_subagent_tool(event)
-        elif isinstance(event, SubAgentCompleteEvent):
-            self._handle_subagent_complete(event)
-        elif isinstance(event, SubAgentKilledEvent):
-            self._handle_subagent_killed(event)
-        elif isinstance(event, S2CoordinationEvent):
-            self._handle_s2_decision(event)
-        elif isinstance(event, SessionReadyEvent):
+        handler = self._event_dispatch_table().get(type(event))
+        if handler is not None:
+            handler(event)
+            return
+        if isinstance(event, SessionReadyEvent):
             self.sub_title = f"Model: {event.model}"
             self.notify(f"Engine ready — model: {event.model}")
+            from .protocol import protocol_mismatch_warning
+            warn = protocol_mismatch_warning(getattr(event, "protocol_version", None))
+            if warn:
+                self.notify(warn, severity="warning")
             self._handle_session_ready(event)
         elif isinstance(event, SessionErrorEvent):
             self.notify(f"Engine error: {event.error}", severity="error")
@@ -167,6 +156,12 @@ class LocalCodeApp(App):
             event_type = getattr(event, 'type', None) or (event.get('type') if isinstance(event, dict) else None)
             if event_type and event_type not in ('stream.token', 'message.complete'):
                 print(f"[app] UNHANDLED event: type={event_type} class={type(event).__name__}")
+
+    def _handle_file_diff(self, event) -> None:
+        """Route a structured file.diff to the vibe screen's diff view (Task 7 fills it in)."""
+        from .screens.vibe_loop import VibeLoopScreen
+        if isinstance(self.screen, VibeLoopScreen) and hasattr(self.screen, "handle_file_diff"):
+            self.screen.handle_file_diff(event)
 
     def _handle_stream_token(self, event: StreamTokenEvent) -> None:
         self._current_message += event.text

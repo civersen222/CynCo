@@ -14,6 +14,7 @@ from ..widgets.completion_screen import CompletionCard
 from ..widgets.worker_animation import WorkerAnimation
 from ..widgets.context_sidebar import ContextSidebar
 from ..widgets.project_entry import ProjectEntry
+from ..widgets.diff_view import DiffView
 
 
 def _make_project_entry(name: str, file_count: int, languages: list, summary: str) -> ProjectEntry | None:
@@ -92,6 +93,7 @@ class VibeLoopScreen(Screen):
         ("ctrl+q", "quit", "Quit"),
         ("ctrl+j", "just_build", "Just Build It"),
         ("ctrl+x", "stop_model", "Stop"),
+        ("ctrl+y", "copy", "Copy diff"),
     ]
 
     def __init__(self, phases: list | None = None, *args, **kwargs):
@@ -241,6 +243,11 @@ class VibeLoopScreen(Screen):
             return
         event.input.value = ""
 
+        # /copy — copy the most recent diff to the clipboard (before the state machine).
+        if text.lower() == "/copy":
+            self.action_copy()
+            return
+
         chat = self.query_one("#vibe-chat", ChatPanel)
         chat.add_user_message(text)
 
@@ -269,8 +276,8 @@ class VibeLoopScreen(Screen):
             from ..protocol import VibeStartCommand
             cmd = VibeStartCommand(mode=mode, description=text)
             self.app.send_command(cmd)
-        elif self._state == "understand":
-            # Answer a question
+        elif self._state in ("understand", "teachback"):
+            # Answer a question (teachback confirmations route the same way).
             from ..protocol import VibeAnswerCommand
             cmd = VibeAnswerCommand(question_id=self._current_question_id, answer=text)
             self.app.send_command(cmd)
@@ -336,6 +343,12 @@ class VibeLoopScreen(Screen):
             completion.remove_class("visible")
             just_build.add_class("visible")
             input_widget.placeholder = "Your answer..."
+            input_widget.focus()
+        elif self._state == "teachback":
+            completion.remove_class("visible")
+            just_build.remove_class("visible")
+            worker.stop_activity()
+            input_widget.placeholder = "Confirm ('yes') or correct me..."
             input_widget.focus()
         elif self._state == "build":
             completion.remove_class("visible")
@@ -408,6 +421,9 @@ class VibeLoopScreen(Screen):
         if options:
             options_text = "\n".join(f"  {chr(65+i)}. {opt}" for i, opt in enumerate(options))
             text += f"\n\n{options_text}"
+        # Teachback: prefix a banner so the user knows CynCo is checking understanding.
+        if self._current_question_id == "teachback":
+            text = "[bold cyan]Let me check I understood:[/bold cyan]\n\n" + text
         chat.add_system_message(text)
 
     def handle_escalation(self, event) -> None:
@@ -436,6 +452,24 @@ class VibeLoopScreen(Screen):
                 old.remove()
             main = self.query_one("#vibe-main", Vertical)
             main.mount(entry, before=self.query_one("#vibe-chat", ChatPanel))
+        except Exception:
+            pass
+
+    def handle_file_diff(self, event) -> None:
+        """Handle file.diff event — mount/update a DiffView in the main container."""
+        try:
+            path = getattr(event, "path", "")
+            change_type = getattr(event, "change_type", "modify")
+            hunks = getattr(event, "hunks", []) or []
+            # Replace any prior diff view so successive edits don't stack forever.
+            for old in self.query(DiffView):
+                old.remove()
+            dv = DiffView()
+            dv.set_diff(path, change_type, hunks)
+            main = self.query_one("#vibe-main", Vertical)
+            main.mount(dv, before=self.query_one("#vibe-worker", WorkerAnimation))
+            # Keep the most recent diff text for /copy (works even if unmounted).
+            self._last_diff_text = dv.copy_text()
         except Exception:
             pass
 
@@ -525,6 +559,33 @@ class VibeLoopScreen(Screen):
             self.query_one("#vibe-input", Input).focus()
         except Exception:
             pass
+
+    def action_copy(self) -> None:
+        """Copy the most recent diff to the clipboard (/copy or Ctrl+Y)."""
+        # Prefer a live DiffView; fall back to the cached text.
+        text = ""
+        try:
+            views = list(self.query(DiffView))
+            if views:
+                text = views[-1].copy_text()
+        except Exception:
+            pass
+        if not text:
+            text = getattr(self, "_last_diff_text", "")
+        try:
+            chat = self.query_one("#vibe-chat", ChatPanel)
+        except Exception:
+            chat = None
+        if not text:
+            if chat is not None:
+                chat.add_system_message("[dim]Nothing to copy yet — no diff shown.[/dim]")
+            return
+        try:
+            self.app.copy_to_clipboard(text)
+        except Exception:
+            pass
+        if chat is not None:
+            chat.add_system_message("[green]Copied the latest diff to your clipboard.[/green]")
 
     def action_just_build(self) -> None:
         """Ctrl+J shortcut to skip questions and build immediately."""
