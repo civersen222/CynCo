@@ -77,6 +77,23 @@ function blobToFloats(b: Uint8Array | null): number[] | null {
   return Array.from(f32)
 }
 
+function cosine(a: number[], b: number[]): number {
+  if (a.length === 0 || b.length === 0 || a.length !== b.length) return 0
+  let dot = 0, na = 0, nb = 0
+  for (let i = 0; i < a.length; i++) { dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i] }
+  if (na === 0 || nb === 0) return 0
+  return dot / (Math.sqrt(na) * Math.sqrt(nb))
+}
+
+function lexicalOverlap(query: string, content: string): number {
+  const q = new Set(query.toLowerCase().split(/\W+/).filter(Boolean))
+  const c = new Set(content.toLowerCase().split(/\W+/).filter(Boolean))
+  if (q.size === 0 || c.size === 0) return 0
+  let hits = 0
+  for (const t of q) if (c.has(t)) hits++
+  return hits / q.size
+}
+
 function rowToStored(r: any): StoredLearning {
   return {
     id: r.id,
@@ -151,6 +168,38 @@ export class LearningStore {
   /** Demote-don't-delete: mark invalid rather than removing the row. */
   demote(id: number): void {
     this.db.prepare('UPDATE learnings SET invalidated_at = ? WHERE id = ? AND invalidated_at IS NULL').run(Date.now(), id)
+  }
+
+  /**
+   * Generative-agents recall: composite of recency, importance, relevance,
+   * plus a bonus for AWM-promoted learnings. Excludes invalidated rows.
+   * @param queryEmbedding optional; when provided, relevance uses cosine.
+   */
+  recall(query: string, k = 5, queryEmbedding?: number[]): RecallResult[] {
+    const now = Date.now()
+    const rows = this.db
+      .prepare('SELECT * FROM learnings WHERE invalidated_at IS NULL')
+      .all() as any[]
+    const scored: RecallResult[] = rows.map(raw => {
+      const s = rowToStored(raw)
+      const ageMs = Math.max(0, now - s.lastAccessed)
+      const recency = Math.pow(0.5, ageMs / RANKING.halfLifeMs)
+      let relevance: number
+      if (queryEmbedding && queryEmbedding.length) {
+        const emb = blobToFloats(raw.embedding as Uint8Array | null)
+        relevance = emb ? Math.max(0, cosine(queryEmbedding, emb)) : lexicalOverlap(query, s.content)
+      } else {
+        relevance = lexicalOverlap(query, s.content + ' ' + s.context)
+      }
+      let score =
+        RANKING.wRecency * recency +
+        RANKING.wImportance * s.importance +
+        RANKING.wRelevance * relevance
+      if (s.promoted) score += RANKING.promotedBonus
+      return { ...s, score }
+    })
+    scored.sort((x, y) => y.score - x.score)
+    return scored.slice(0, k)
   }
 
   /** All rows, including invalidated ones — for audit/tests. */
