@@ -169,6 +169,10 @@ export class ConversationLoop {
   // model's resulting action to it. Diagnostic only; null when tracing is off.
   private traceLastInjected: string | null = null
   private journal: JSONLStore
+  private sessionId: string = ''
+  // Index-degradation state surfaced on context.status (Task 13).
+  private indexDegraded?: boolean
+  private lastQueryMode?: 'hybrid' | 'vector' | 'keyword'
   private snapshot?: WorkspaceSnapshot
   private snapshotCwd?: string
   private lastSnapshotHash?: SnapshotHash
@@ -275,7 +279,10 @@ export class ConversationLoop {
     this.initSnapshot(this.executor['cwd'])
 
     // S5: Session journal for crash recovery
-    this.journal = new JSONLStore(`session-${Date.now()}`)
+    this.sessionId = `session-${Date.now()}`
+    this.journal = new JSONLStore(this.sessionId)
+    // Stamp the session id so SaveLearning tags learnings for AWM promotion.
+    process.env.LOCALCODE_SESSION_ID = this.sessionId
     console.log(`[session] Journal: ${this.journal.path}`)
 
     // Human-in-the-loop: surface AskUser questions to the TUI over the bridge.
@@ -363,6 +370,14 @@ export class ConversationLoop {
     if (messages.length > 0) {
       this.messages = messages
       this.journal = store
+      this.sessionId = sessionId
+      process.env.LOCALCODE_SESSION_ID = sessionId
+      // Rehydrate the file-operation tracker from the last journaled compaction
+      // so a resumed session doesn't "forget" what it already read/edited.
+      try {
+        const ops = store.loadFileOps()
+        if (ops) this.fileTracker = FileOperationTracker.deserialize(ops)
+      } catch { /* non-fatal */ }
       console.log(`[session] Resumed ${sessionId}: ${messages.length} messages`)
       return true
     }
@@ -2346,6 +2361,16 @@ export class ConversationLoop {
 
   getFileTracker() {
     return this.fileTracker
+  }
+
+  /** The active session journal (for session-end markers). */
+  getJournal(): JSONLStore {
+    return this.journal
+  }
+
+  /** The active session id (for AWM learning promotion at session end). */
+  getSessionId(): string {
+    return this.sessionId
   }
 
   /** GSD→VSM: Report verification outcome as algedonic signal. */
