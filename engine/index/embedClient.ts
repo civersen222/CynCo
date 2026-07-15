@@ -6,9 +6,10 @@
 export class EmbedClient {
   private baseUrl: string
   private model: string
+  private fallbackModel = 'nomic-embed-text'
   private pullAttempted = false
 
-  constructor(baseUrl = 'http://localhost:11434', model = 'nomic-embed-text') {
+  constructor(baseUrl = 'http://localhost:11434', model = 'jina-code-embeddings-0.5b') {
     this.baseUrl = process.env.LOCALCODE_EMBED_BASE_URL ?? baseUrl
     this.model = process.env.LOCALCODE_EMBED_MODEL ?? model
   }
@@ -19,13 +20,28 @@ export class EmbedClient {
   }
 
   async embedBatch(texts: string[]): Promise<number[][]> {
+    try {
+      return await this.embedWith(this.model, texts)
+    } catch (err) {
+      if (this.model !== this.fallbackModel && this.isModelMissing(err)) {
+        console.log(`[embed] "${this.model}" unavailable — falling back to ${this.fallbackModel}`)
+        this.model = this.fallbackModel
+        return await this.embedWith(this.model, texts)
+      }
+      throw err
+    }
+  }
+
+  private isModelMissing(err: unknown): boolean {
+    const msg = err instanceof Error ? err.message : String(err)
+    return msg.includes('not found') || msg.includes('404')
+  }
+
+  private async embedWith(model: string, texts: string[]): Promise<number[][]> {
     const resp = await fetch(`${this.baseUrl}/api/embed`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: this.model,
-        input: texts,
-      }),
+      body: JSON.stringify({ model, input: texts }),
     })
 
     if (!resp.ok) {
@@ -33,7 +49,7 @@ export class EmbedClient {
 
       // If model not found, log instructions instead of auto-pulling
       if (errText.includes('not found') || resp.status === 404) {
-        console.log(`[embed] Model "${this.model}" not installed. Run: ollama pull ${this.model}`)
+        console.log(`[embed] Model "${model}" not installed. Run: ollama pull ${model}`)
         console.log(`[embed] Continuing without vector search — keyword fallback only.`)
       }
 
@@ -43,6 +59,8 @@ export class EmbedClient {
     const data: any = await resp.json()
     return data.embeddings ?? []
   }
+
+  get fallbackModelName(): string { return this.fallbackModel }
 
   /** Pull the embedding model from Ollama. */
   private async pullModel(): Promise<boolean> {
