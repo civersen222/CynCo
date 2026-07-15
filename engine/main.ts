@@ -920,6 +920,8 @@ async function handleCommand(command: TUICommand): Promise<void> {
       } catch (err) {
         console.log(`[governance] Session outcome failed: ${err instanceof Error ? err.message : String(err)}`)
       }
+      // S5 Identity Continuity: mark the session cleanly ended (crash-vs-clean resume).
+      try { loop.getJournal?.()?.appendSessionEnd?.() } catch {}
       // Save S5 rule weights
       try { s5Orchestrator.saveWeights() } catch {}
       // Audit: write session outcome on clean shutdown
