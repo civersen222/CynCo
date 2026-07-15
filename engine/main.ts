@@ -924,6 +924,17 @@ async function handleCommand(command: TUICommand): Promise<void> {
             : 'viable' as const
           loop.getGovernance().recordSessionOutcome(outcome, 'default', 0, loop.getFileTracker?.()?.getModifiedFiles?.()?.length ?? 0)
           console.log(`[governance] Session outcome: ${outcome}`)
+          // AWM: promote this session's learnings only on a ledger-verified viable outcome.
+          try {
+            const { LearningStore, promoteSessionLearnings, defaultLearningsDbPath } = await import('./memory/learningStore.js')
+            const sid = loop.getSessionId?.()
+            if (sid) {
+              const store = new LearningStore(process.env.LOCALCODE_LEARNINGS_DB ?? defaultLearningsDbPath())
+              const n = promoteSessionLearnings(store, sid, outcome)
+              store.close()
+              if (n > 0) console.log(`[memory] AWM promoted ${n} learning(s) from viable session ${sid}`)
+            }
+          } catch (e) { console.log(`[memory] AWM promotion skipped: ${e}`) }
         }
       } catch (err) {
         console.log(`[governance] Session outcome failed: ${err instanceof Error ? err.message : String(err)}`)

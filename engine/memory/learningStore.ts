@@ -225,3 +225,21 @@ export class LearningStore {
     try { this.db.close() } catch { /* already closed */ }
   }
 }
+
+export type SessionOutcome = 'viable' | 'marginal' | 'non-viable'
+
+/**
+ * AWM promotion: promote every learning saved during `sessionId` to the
+ * long-term playbook, but ONLY when the ledger-verified outcome is 'viable'.
+ * Returns the number of learnings promoted.
+ */
+export function promoteSessionLearnings(
+  store: LearningStore,
+  sessionId: string,
+  outcome: SessionOutcome,
+): number {
+  if (outcome !== 'viable') return 0
+  const ids = store.idsForSession(sessionId)
+  for (const id of ids) store.promote(id, true)
+  return ids.length
+}
