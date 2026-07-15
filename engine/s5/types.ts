@@ -37,6 +37,7 @@ export type S5Input = {
   fingerprintAlarm: 'identical' | 'alternating' | null
   infoGain: number | null
   progressRate: number | null
+  explorationState: 'healthy_exploration' | 'thrashing' | 'floundering' | null
 }
 
 export type S5Decision = {

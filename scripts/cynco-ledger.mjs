@@ -37,6 +37,7 @@ export function createMissionCollector(now = () => Date.now()) {
             fingerprintAlarm: m.fingerprintAlarm ?? null,
             infoGain: m.infoGain ?? null,
             progressRate: m.progressRate ?? null,
+            explorationState: m.explorationState ?? null,
             varietyBalance: m.varietyBalance ?? null,
             algedonicAlerts: m.algedonicAlerts ?? null,
             axiomHealth: m.axiomHealth ?? null,

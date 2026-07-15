@@ -227,6 +227,8 @@ export type GovernanceStatusEvent = {
   infoGain?: number | null
   /** P4.3: newly-passed assertions per 1k tokens; null without contract/tokens. */
   progressRate?: number | null
+  /** P4.3/4(d): thrashing/exploration/floundering regime — widened to string. */
+  explorationState?: string | null
   suggestion: string | null
 }
 

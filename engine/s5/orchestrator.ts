@@ -83,6 +83,7 @@ export class S5Orchestrator {
       fingerprintAlarm: input.governance.fingerprintAlarm,
       infoGain: input.governance.infoGain,
       progressRate: input.governance.progressRate,
+      explorationState: input.governance.explorationState,
       demotedTools: [],
       promptDifficulty: input.promptDifficulty ?? 'unknown',
       governance: input.governance as Record<string, unknown>,

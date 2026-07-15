@@ -33,6 +33,7 @@ function baseInput(overrides: Partial<S5Input> = {}): S5Input {
     fingerprintAlarm: null,
     infoGain: null,
     progressRate: null,
+    explorationState: null,
     ...overrides,
   }
 }

@@ -1830,6 +1830,7 @@ export class ConversationLoop {
                 fingerprintAlarm: turnReport.fingerprintAlarm,
                 infoGain: turnReport.infoGain,
                 progressRate: turnReport.progressRate,
+                explorationState: turnReport.explorationState,
                 varietyBalance: turnReport.varietyBalance,
                 algedonicAlerts: turnReport.algedonicAlerts,
                 axiomHealth: turnReport.axiomHealth,
