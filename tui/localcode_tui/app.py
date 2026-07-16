@@ -11,7 +11,7 @@ from .bridge import EngineBridge
 from .protocol import (
     StreamTokenEvent, MessageCompleteEvent, ToolStartEvent,
     ToolCompleteEvent, ToolcallTransportEvent, GovernanceAlertEvent,
-    ApprovalRequestEvent, ContextStatusEvent,
+    ApprovalRequestEvent, AskRequestEvent, ContextStatusEvent,
     ContextWarningEvent, SessionReadyEvent, SessionErrorEvent,
     FileDiffEvent,
     UserMessageCommand, SlashCommandMsg, WorkflowStatusEvent,
@@ -117,6 +117,7 @@ class LocalCodeApp(App):
             ToolcallTransportEvent: self._handle_toolcall_transport,
             GovernanceAlertEvent: self._handle_governance_alert,
             ApprovalRequestEvent: self._handle_approval_request,
+            AskRequestEvent: self._handle_ask_request,
             ContextStatusEvent: self._handle_context_status,
             ContextWarningEvent: self._handle_context_warning,
             WorkflowStatusEvent: self._handle_workflow_status,
@@ -340,6 +341,17 @@ class LocalCodeApp(App):
                     request_id=event.request_id,
                     approved=result,
                 ))
+        asyncio.ensure_future(handle())
+
+    def _handle_ask_request(self, event: AskRequestEvent) -> None:
+        """Engine AskUser tool: show the question, send the answer back."""
+        from .widgets.ask_dialog import AskDialog
+
+        async def handle():
+            answer = await self.push_screen_wait(AskDialog(event.question, event.options))
+            if self.bridge:
+                from .protocol import AskAnswerCommand
+                await self.bridge.send(AskAnswerCommand(request_id=event.request_id, answer=answer or ""))
         asyncio.ensure_future(handle())
 
     def _handle_context_status(self, event: ContextStatusEvent) -> None:
