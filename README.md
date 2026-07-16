@@ -14,8 +14,8 @@ CynCo is an AI coding assistant powered by local LLMs via [Ollama](https://ollam
 - **Build entire projects from a description** — guided Vibe mode asks smart questions, then builds autonomously
 - **Self-govern with enforced cybernetics** — S5 policy engine with 21 rules, 4-tier stuck loop escape, live governance signals injected every iteration
 - **Chat and monitor from the browser** — dashboard on port 9161 with a full chat UI plus real-time tool activity, contracts, predictions, training data progress, and variety control
-- **Constrained decoding** — GBNF grammar enforcement on llama.cpp, post-validation on all providers. No more silent tool-call drops
-- **Best-of-N sampling** — run multiple candidates in git worktrees, select by test pass rate
+- **Constrained decoding** *(opt-in: `LOCALCODE_GRAMMAR_ENABLED=true`)* — GBNF grammar enforcement on llama.cpp, post-validation on all providers
+- **Best-of-N sampling** *(opt-in: `LOCALCODE_BEST_OF_N=true`)* — run multiple candidates in git worktrees, select by test pass rate
 - **Tree-sitter code indexing** — AST-aware chunking with BM25 + vector hybrid search and PageRank repo map
 - **Self-improving training loop** — trajectory recorder collects per-turn data, reward labeler scores outcomes, Unsloth SFT pipeline exports ChatML datasets
 - **Research from multiple sources** — DuckDuckGo, arXiv, Wikipedia, GitHub, PubMed, HuggingFace with intelligent query routing
