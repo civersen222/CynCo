@@ -65,12 +65,6 @@ export type ToolStartEvent = {
   input: Record<string, unknown>
 }
 
-export type ToolProgressEvent = {
-  type: 'tool.progress'
-  toolId: string
-  output: string
-}
-
 export type ToolCompleteEvent = {
   type: 'tool.complete'
   toolId: string
@@ -88,14 +82,7 @@ export type ToolcallTransportEvent = {
   detail?: string
 }
 
-export type FileChangeEvent = {
-  type: 'file.change'
-  path: string
-  changeType: 'create' | 'modify' | 'delete'
-  diff?: string
-}
-
-// Phase 6: structured diff event (additive; distinct from file.change).
+// Phase 6: structured diff event (additive replacement for file.change).
 export type DiffLine = { kind: 'context' | 'add' | 'del'; text: string }
 export type DiffHunk = { oldStart: number; oldLines: number; newStart: number; newLines: number; lines: DiffLine[] }
 
@@ -428,9 +415,7 @@ export type EngineEvent =
   | StreamThinkingEvent
   | MessageCompleteEvent
   | ToolStartEvent
-  | ToolProgressEvent
   | ToolCompleteEvent
-  | FileChangeEvent
   | FileDiffEvent
   | ApprovalRequestEvent
   | AskRequestEvent

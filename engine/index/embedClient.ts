@@ -50,8 +50,17 @@ export class EmbedClient {
       return await this.embedWith(this.model, texts)
     } catch (err) {
       if (this.model !== this.fallbackModel && this.isModelMissing(err)) {
-        console.log(`[embed] "${this.model}" unavailable — falling back to ${this.fallbackModel}`)
+        const wanted = this.model
+        console.log(`[embed] "${wanted}" unavailable — falling back to ${this.fallbackModel}`)
         this.model = this.fallbackModel
+        if (!this.pullAttempted) {
+          this.pullAttempted = true
+          // Fire-and-forget: pull the configured model in the background so a
+          // later session gets it. THIS call is served by the fallback below.
+          this.pullModel(wanted).then((ok) => {
+            if (ok) console.log(`[embed] "${wanted}" pulled — future sessions will use it`)
+          })
+        }
         return await this.embedWith(this.model, texts)
       }
       throw err
@@ -88,17 +97,17 @@ export class EmbedClient {
 
   get fallbackModelName(): string { return this.fallbackModel }
 
-  /** Pull the embedding model from Ollama. */
-  private async pullModel(): Promise<boolean> {
+  /** Pull an embedding model from Ollama. Never throws — logs and returns false. */
+  private async pullModel(model: string): Promise<boolean> {
     try {
-      console.log(`[embed] Pulling ${this.model}...`)
+      console.log(`[embed] Pulling ${model}...`)
       const resp = await fetch(`${this.baseUrl}/api/pull`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: this.model, stream: false }),
+        body: JSON.stringify({ model, stream: false }),
       })
       if (resp.ok) {
-        console.log(`[embed] Successfully pulled ${this.model}`)
+        console.log(`[embed] Successfully pulled ${model}`)
         return true
       }
       const err = await resp.text()

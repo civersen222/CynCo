@@ -314,10 +314,10 @@ export async function* localCallModel({
             highPriorityThreads,
             handoffDate,
           )
-        } catch {}
+        } catch (e) { console.log(`[memory] session-context build failed: ${e instanceof Error ? e.message : String(e)}`) }
       }
-    } catch {
-      // Lifecycle system unavailable
+    } catch (e) {
+      console.log(`[memory] lifecycle unavailable: ${e instanceof Error ? e.message : String(e)}`)
     }
     // Recalled memories (previously step 7c)
     try {

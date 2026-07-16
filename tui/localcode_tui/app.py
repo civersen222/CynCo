@@ -9,13 +9,13 @@ from textual.message import Message as TextualMessage
 from .config import load_config, save_config
 from .bridge import EngineBridge
 from .protocol import (
-    StreamTokenEvent, MessageCompleteEvent, ToolStartEvent,
+    StreamTokenEvent, StreamThinkingEvent, MessageCompleteEvent, ToolStartEvent,
     ToolCompleteEvent, ToolcallTransportEvent, GovernanceAlertEvent,
-    ApprovalRequestEvent, ContextStatusEvent,
+    ApprovalRequestEvent, AskRequestEvent, ContextStatusEvent,
     ContextWarningEvent, SessionReadyEvent, SessionErrorEvent,
     FileDiffEvent,
     UserMessageCommand, SlashCommandMsg, WorkflowStatusEvent,
-    GovernanceStatusEvent,
+    GovernanceStatusEvent, GovernanceRecommendationEvent,
     SummaryInjectedEvent,
     MemoryRecalledEvent,
     MemoryWrittenEvent,
@@ -35,6 +35,11 @@ from .protocol import (
     SubAgentCompleteEvent,
     SubAgentKilledEvent,
     S2CoordinationEvent,
+    SnapshotTakenEvent,
+    SnapshotRestoredEvent,
+    ProfileListEvent,
+    ProfileValidationEvent,
+    ProfileWrittenEvent,
 )
 
 
@@ -48,6 +53,7 @@ class LocalCodeApp(App):
     BINDINGS = [
         ("ctrl+q", "quit", "Quit"),
         ("ctrl+w", "switch_mode", "Switch Mode"),
+        ("escape", "abort_generation", "Abort"),
     ]
 
     # Custom Textual message for engine events
@@ -94,6 +100,14 @@ class LocalCodeApp(App):
         # Post as a Textual message so it's processed in the UI thread properly
         self.post_message(self.EngineEventReceived(event))
 
+    def action_abort_generation(self) -> None:
+        """Esc — ask the engine to abort the current generation."""
+        if not self.bridge:
+            return
+        from .protocol import AbortCommand
+        asyncio.ensure_future(self.bridge.send(AbortCommand()))
+        self.notify("Abort requested", severity="warning")
+
     def _event_dispatch_table(self) -> dict:
         """Map each engine-event dataclass to its handler method.
 
@@ -102,12 +116,17 @@ class LocalCodeApp(App):
         """
         return {
             StreamTokenEvent: self._handle_stream_token,
+            StreamThinkingEvent: self._handle_stream_thinking,
             MessageCompleteEvent: self._handle_message_complete,
             ToolStartEvent: self._handle_tool_start,
             ToolCompleteEvent: self._handle_tool_complete,
             ToolcallTransportEvent: self._handle_toolcall_transport,
             GovernanceAlertEvent: self._handle_governance_alert,
+            GovernanceRecommendationEvent: self._handle_governance_recommendation,
+            SnapshotTakenEvent: self._handle_snapshot_taken,
+            SnapshotRestoredEvent: self._handle_snapshot_restored,
             ApprovalRequestEvent: self._handle_approval_request,
+            AskRequestEvent: self._handle_ask_request,
             ContextStatusEvent: self._handle_context_status,
             ContextWarningEvent: self._handle_context_warning,
             WorkflowStatusEvent: self._handle_workflow_status,
@@ -132,6 +151,9 @@ class LocalCodeApp(App):
             SubAgentKilledEvent: self._handle_subagent_killed,
             S2CoordinationEvent: self._handle_s2_decision,
             FileDiffEvent: self._handle_file_diff,
+            ProfileListEvent: self._handle_profile_list,
+            ProfileValidationEvent: self._handle_profile_validation,
+            ProfileWrittenEvent: self._handle_profile_written,
         }
 
     def on_local_code_app_engine_event_received(self, message: EngineEventReceived) -> None:
@@ -178,6 +200,15 @@ class LocalCodeApp(App):
             sidebar.on_stream_token()
         except Exception:
             pass
+
+    def _handle_stream_thinking(self, event: StreamThinkingEvent) -> None:
+        """Reasoning tokens are generation too — feed the speedometer (not the chat)."""
+        try:
+            from .widgets.context_sidebar import ContextSidebar
+            sidebar = self.query_one(ContextSidebar)
+            sidebar.on_stream_token()
+        except Exception:
+            self.log("[stream.thinking] no sidebar to update")
 
     def _handle_message_complete(self, event: MessageCompleteEvent) -> None:
         try:
@@ -311,6 +342,37 @@ class LocalCodeApp(App):
             except Exception:
                 pass
 
+    def _handle_governance_recommendation(self, event: GovernanceRecommendationEvent) -> None:
+        """S5 warning-tier recommendation (not enforced) — surface in chat."""
+        label = f"{event.title}: {event.description}" if event.title else event.description
+        try:
+            from .widgets import ChatPanel
+            chat = self.query_one(ChatPanel)
+            chat.add_system_message(f"[yellow]\u26a0 S5 recommends \u2014 {escape(label)}[/yellow]")
+        except Exception:
+            self.log(f"[governance.recommendation] (no chat panel) {label}")
+
+    def _handle_snapshot_taken(self, event: SnapshotTakenEvent) -> None:
+        try:
+            from .widgets import ChatPanel
+            chat = self.query_one(ChatPanel)
+            chat.add_system_message(
+                f"[dim]\u25cf Snapshot: {event.files_changed} file(s) "
+                f"(+{event.additions}/-{event.deletions}) \u2014 /undo to revert[/dim]"
+            )
+        except Exception:
+            self.log(f"[snapshot.taken] (no chat panel) {event.files_changed} files")
+
+    def _handle_snapshot_restored(self, event: SnapshotRestoredEvent) -> None:
+        try:
+            from .widgets import ChatPanel
+            chat = self.query_one(ChatPanel)
+            chat.add_system_message(
+                f"[yellow]\u21a9 Restored snapshot {event.hash[:8]} ({event.files_changed} file(s))[/yellow]"
+            )
+        except Exception:
+            self.log(f"[snapshot.restored] (no chat panel) {event.hash}")
+
     def _handle_approval_request(self, event: ApprovalRequestEvent) -> None:
         try:
             from .screens.workspace import WorkspaceScreen
@@ -319,19 +381,39 @@ class LocalCodeApp(App):
                 return
         except Exception:
             pass
-        # Fallback: handle at app level
+        # Fallback: handle at app level using callback pattern
         from .widgets import ApprovalDialog
-        async def handle():
-            result = await self.push_screen_wait(
-                ApprovalDialog(event.tool_name, event.description, event.risk)
-            )
+
+        dialog = ApprovalDialog(
+            tool_name=event.tool_name,
+            description=event.description,
+            risk=event.risk,
+        )
+
+        def on_result(approved: bool | None) -> None:
             if self.bridge:
                 from .protocol import ApprovalResponseCommand
-                await self.bridge.send(ApprovalResponseCommand(
+                # Map None → False (user dismissed dialog)
+                approved_value = approved if approved is not None else False
+                asyncio.ensure_future(self.bridge.send(ApprovalResponseCommand(
                     request_id=event.request_id,
-                    approved=result,
+                    approved=approved_value,
+                )))
+
+        self.push_screen(dialog, on_result)
+
+    def _handle_ask_request(self, event: AskRequestEvent) -> None:
+        """Engine AskUser tool: show the question, send the answer back."""
+        from .widgets.ask_dialog import AskDialog
+
+        def on_result(answer: str | None) -> None:
+            if self.bridge:
+                from .protocol import AskAnswerCommand
+                asyncio.ensure_future(self.bridge.send(
+                    AskAnswerCommand(request_id=event.request_id, answer=answer or "")
                 ))
-        asyncio.ensure_future(handle())
+
+        self.push_screen(AskDialog(event.question, event.options), on_result)
 
     def _handle_context_status(self, event: ContextStatusEvent) -> None:
         try:
@@ -444,6 +526,32 @@ class LocalCodeApp(App):
         from .screens.settings import SettingsScreen
         if isinstance(self.screen, SettingsScreen):
             self.screen.handle_tools_list(event)
+
+    def _handle_profile_list(self, event) -> None:
+        from .screens.settings import SettingsScreen
+        from .screens.profile_wizard import ProfileWizard
+        if isinstance(self.screen, SettingsScreen) and hasattr(self.screen, 'handle_profile_list'):
+            self.screen.handle_profile_list(event)
+        elif isinstance(self.screen, ProfileWizard) and hasattr(self.screen, 'handle_profile_list'):
+            self.screen.handle_profile_list(event)
+        else:
+            self.log(f"[profile.list] {len(event.profiles)} profile(s) (no active handler)")
+
+    def _handle_profile_validation(self, event) -> None:
+        from .screens.profile_wizard import ProfileWizard
+        if isinstance(self.screen, ProfileWizard) and hasattr(self.screen, 'handle_profile_validation'):
+            self.screen.handle_profile_validation(event)
+        else:
+            status = "ok" if event.ok else f"errors: {event.errors}"
+            self.log(f"[profile.validation] {status} (no active handler)")
+
+    def _handle_profile_written(self, event) -> None:
+        from .screens.profile_wizard import ProfileWizard
+        if isinstance(self.screen, ProfileWizard) and hasattr(self.screen, 'handle_profile_written'):
+            self.screen.handle_profile_written(event)
+        else:
+            self.notify(f"Profile '{event.name}' saved", severity="information")
+            self.log(f"[profile.written] name={event.name} path={event.path}")
 
     def _handle_wizard_response(self, event) -> None:
         from .screens.profile_wizard import ProfileWizard

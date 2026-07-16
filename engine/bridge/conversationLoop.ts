@@ -400,7 +400,7 @@ export class ConversationLoop {
   /** Append message to both in-memory array and JSONL journal. */
   private addMessage(msg: Message): void {
     this.messages.push(msg)
-    try { this.journal.appendMessage(msg) } catch {}
+    try { this.journal.appendMessage(msg) } catch (e) { console.log(`[session] journal append failed: ${e instanceof Error ? e.message : String(e)}`) }
   }
 
   /** Resume a previous session from JSONL journal. */
@@ -668,7 +668,10 @@ export class ConversationLoop {
       }
       // Repo map default-on (opt out with LOCALCODE_REPO_MAP=0): top symbols by
       // import-graph PageRank, capped so it can't dominate the context budget.
-      if (process.env.LOCALCODE_REPO_MAP !== '0') {
+      // First user turn ONLY — re-injecting every turn wasted ~2k tokens/turn
+      // (2026-07-16 audit). The user message is already pushed, so count === 1.
+      const isFirstUserTurn = this.messages.filter(m => m.role === 'user').length === 1
+      if (isFirstUserTurn && process.env.LOCALCODE_REPO_MAP !== '0') {
         const { capRepoMap } = await import('../index/indexer.js')
         const repoMap = capRepoMap(indexer.buildRepoMap([], 20), 2000)
         if (repoMap) {
@@ -1359,7 +1362,7 @@ export class ConversationLoop {
       const compacted = await this.compressor.runCompaction(this.messages, this.fileTracker, {
         keepRecentPairs: 2,
         summarize: (prompt) => this.sideQuery(prompt),
-        journal: (summary, fileOps) => { try { this.journal.appendCompaction(summary, fileOps) } catch {} },
+        journal: (summary, fileOps) => { try { this.journal.appendCompaction(summary, fileOps) } catch (e) { console.log(`[session] compaction journal failed: ${e instanceof Error ? e.message : String(e)}`) } },
         contractText,
       })
       if (compacted === before) return false
@@ -1883,6 +1886,7 @@ export class ConversationLoop {
                 // weekly-digest HALT incident #3.
                 response: streamedText,
                 userMessage: userMsgText,
+                contextUtilization: Math.min(1, this.estimateMessageTokens() / (this.config.contextLength ?? 32768)),
               })
 
               // Emit governance status to TUI
@@ -2866,18 +2870,6 @@ export class ConversationLoop {
       result: result.output.slice(0, 500),
       isError: result.isError,
     })
-
-    // Emit file.change for write operations
-    if (['Write', 'Edit', 'MultiEdit', 'ApplyPatch'].includes(toolName)) {
-      const filePath = (toolInput as any).file_path ?? (toolInput as any).path ?? ''
-      if (filePath) {
-        this.emit({
-          type: 'file.change',
-          path: filePath,
-          changeType: toolName === 'Write' ? 'create' : 'modify',
-        } as any)
-      }
-    }
 
     // Phase 6: additionally emit a structured file.diff for the diff_view widget.
     if (['Write', 'Edit', 'MultiEdit'].includes(toolName)) {
