@@ -1,0 +1,10 @@
+{
+  "app.py": 29,
+  "bridge.py": 1,
+  "screens/profile_wizard.py": 7,
+  "screens/project_picker.py": 5,
+  "screens/project_wizard.py": 11,
+  "screens/settings.py": 3,
+  "screens/vibe_loop.py": 20,
+  "screens/workspace.py": 7
+}
