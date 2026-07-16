@@ -1886,6 +1886,7 @@ export class ConversationLoop {
                 // weekly-digest HALT incident #3.
                 response: streamedText,
                 userMessage: userMsgText,
+                contextUtilization: Math.min(1, this.estimateMessageTokens() / (this.config.contextLength ?? 32768)),
               })
 
               // Emit governance status to TUI
