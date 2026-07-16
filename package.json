@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "start": "bun engine/main.ts",
-    "test": "vitest run"
+    "test": "vitest run",
+    "audit:wiring": "vitest run engine/__tests__/guards"
   },
   "dependencies": {
     "jsonrepair": "^3.15.0",

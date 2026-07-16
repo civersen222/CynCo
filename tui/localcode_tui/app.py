@@ -37,6 +37,9 @@ from .protocol import (
     S2CoordinationEvent,
     SnapshotTakenEvent,
     SnapshotRestoredEvent,
+    ProfileListEvent,
+    ProfileValidationEvent,
+    ProfileWrittenEvent,
 )
 
 
@@ -148,6 +151,9 @@ class LocalCodeApp(App):
             SubAgentKilledEvent: self._handle_subagent_killed,
             S2CoordinationEvent: self._handle_s2_decision,
             FileDiffEvent: self._handle_file_diff,
+            ProfileListEvent: self._handle_profile_list,
+            ProfileValidationEvent: self._handle_profile_validation,
+            ProfileWrittenEvent: self._handle_profile_written,
         }
 
     def on_local_code_app_engine_event_received(self, message: EngineEventReceived) -> None:
@@ -520,6 +526,32 @@ class LocalCodeApp(App):
         from .screens.settings import SettingsScreen
         if isinstance(self.screen, SettingsScreen):
             self.screen.handle_tools_list(event)
+
+    def _handle_profile_list(self, event) -> None:
+        from .screens.settings import SettingsScreen
+        from .screens.profile_wizard import ProfileWizard
+        if isinstance(self.screen, SettingsScreen) and hasattr(self.screen, 'handle_profile_list'):
+            self.screen.handle_profile_list(event)
+        elif isinstance(self.screen, ProfileWizard) and hasattr(self.screen, 'handle_profile_list'):
+            self.screen.handle_profile_list(event)
+        else:
+            self.log(f"[profile.list] {len(event.profiles)} profile(s) (no active handler)")
+
+    def _handle_profile_validation(self, event) -> None:
+        from .screens.profile_wizard import ProfileWizard
+        if isinstance(self.screen, ProfileWizard) and hasattr(self.screen, 'handle_profile_validation'):
+            self.screen.handle_profile_validation(event)
+        else:
+            status = "ok" if event.ok else f"errors: {event.errors}"
+            self.log(f"[profile.validation] {status} (no active handler)")
+
+    def _handle_profile_written(self, event) -> None:
+        from .screens.profile_wizard import ProfileWizard
+        if isinstance(self.screen, ProfileWizard) and hasattr(self.screen, 'handle_profile_written'):
+            self.screen.handle_profile_written(event)
+        else:
+            self.notify(f"Profile '{event.name}' saved", severity="information")
+            self.log(f"[profile.written] name={event.name} path={event.path}")
 
     def _handle_wizard_response(self, event) -> None:
         from .screens.profile_wizard import ProfileWizard
