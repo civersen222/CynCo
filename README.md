@@ -50,11 +50,13 @@ We run **Q6_K** of Qwen3.6-27B — near-lossless quality, and MTP speculative de
 
 ### Embedding Model
 
-Pull `nomic-embed-text` for semantic code indexing. This runs alongside your main model:
+CynCo uses `jina-code-embeddings-0.5b` (code-specialized) for semantic code indexing and auto-pulls it on first index. It runs alongside your main model:
 
 ```bash
-ollama pull nomic-embed-text
+ollama pull jina-code-embeddings-0.5b
 ```
+
+If that model isn't installed it falls back to `nomic-embed-text` at runtime. Override with `LOCALCODE_EMBED_MODEL` — switching embed models requires a re-index.
 
 ### Cascade (Optional)
 
@@ -85,7 +87,7 @@ source .venv/bin/activate  # Windows: .venv\Scripts\activate
 cd tui && pip install -e . && cd ..
 
 # Pull embedding model for semantic code search
-ollama pull nomic-embed-text
+ollama pull jina-code-embeddings-0.5b
 
 # Launch
 cd tui && python -m localcode_tui.app
@@ -235,7 +237,7 @@ Open `http://localhost:9161` during any session. Four tabs:
 
 **[Governance]** — Real-time VSM monitoring:
 - **Tool Activity** — stacked bar chart + live feed with latency
-- **Governance Health** — S3/S4 balance, variety ratio, stuck turns, algedonic alerts
+- **Governance Health** — S3/S4 balance, variety ratio, stuck turns, algedonic alerts, and action-fingerprint repetition alarms (flags 3-identical / 6-alternating tool-call loops)
 - **Prediction Tracker** — 8 redesigned hypotheses measuring governance effectiveness (H1: Stuck Escape, H2: Nudge Response), model predictability (H4: Read-to-Edit, H5: Thinking Efficiency), and parameter tuning (H6: Temperature Effect, H7: S4 Reflection ROI)
 - **Active Contract** — assertion status with pass/fail/pending
 - **S5 Decision Log** — live policy decisions with reasoning
@@ -255,7 +257,7 @@ your phone via self-hosted [ntfy](https://ntfy.sh) over Tailscale — approve or
 no public ports. See [docs/liveness-setup.md](docs/liveness-setup.md).
 
 ### Semantic Code Index
-Automatic vector indexing via `nomic-embed-text`. The model starts each task knowing your codebase — function signatures, class definitions, imports. Falls back to keyword search if embedding model unavailable.
+Automatic vector indexing via `jina-code-embeddings-0.5b` (code-specialized; `nomic-embed-text` runtime fallback). The model starts each task knowing your codebase — function signatures, class definitions, imports. Retrieval is a **BM25 + dense RRF hybrid** by default over an AST-boundary-aware chunker. A **repo map** is injected on the first turn (capped ~2k tokens), and index degradation is surfaced on `context.status` (`indexMode` / `indexDegraded` / `lastQueryMode`) — it falls back to keyword search, and says so, when the embedding model is unavailable.
 
 ### Workflows
 Structured multi-phase workflows with tool restrictions and advancement gates:
@@ -267,12 +269,14 @@ Structured multi-phase workflows with tool restrictions and advancement gates:
 - `/brainstorm` — idea exploration
 - `/critique` — critical analysis
 
-### Tools (24 built-in)
-Read, Write, Edit, MultiEdit, ApplyPatch, ReplaceFunction, Bash, Git, Glob, Grep, Ls, CodeIndex, WebSearch, WebFetch, ImageView, NotebookEdit, SaveLearning, SubAgent, CollectAgent, IndexResearch, ContractCreate, ContractAssertPass, ContractAssertFail, ContractStatus
+### Tools (25 built-in)
+Read, Write, Edit, MultiEdit, ApplyPatch, ReplaceFunction, Bash, Git, Glob, Grep, Ls, CodeIndex, WebSearch, WebFetch, ImageView, NotebookEdit, SaveLearning, SubAgent, CollectAgent, AskUser, IndexResearch, ContractCreate, ContractAssertPass, ContractAssertFail, ContractStatus
 
 ### Session Persistence
 - **JSONL journaling** — every message saved, survives crashes
 - **Handoff system** — goal, progress, learnings, next steps persist across sessions
+- **Adaptive Working Memory (AWM)** — session learnings promoted into a durable ACE-style playbook only on ledger-verified viable outcomes, then recalled (capped ~5) at the start of later sessions
+- **Compaction that keeps the goal** — at context overflow, recent user messages and the active Definition-of-Done contract are anchored verbatim through summarization (durable facts flushed first) so constraints aren't silently erased
 - **Decision journals** — S1-S5 decisions logged as training data (JSONL)
 - **Governance DB** — SQLite with session outcomes and per-turn measurements
 - **Rule weights** — S5 rule effectiveness learned across sessions
@@ -315,7 +319,7 @@ All config via environment variables. No config files required.
 | `LOCALCODE_MODEL` | *required* | Model name (e.g., `qwen3.6`) |
 | `LOCALCODE_BASE_URL` | `http://localhost:11434` | Ollama server URL |
 | `LOCALCODE_PROVIDER` | `ollama` | Provider: `ollama` or `llama-cpp` |
-| `LOCALCODE_EMBED_MODEL` | `nomic-embed-text` | Model for code indexing |
+| `LOCALCODE_EMBED_MODEL` | `jina-code-embeddings-0.5b` | Model for code indexing (falls back to `nomic-embed-text`) |
 | `LOCALCODE_TEMPERATURE` | `0.7` | Sampling temperature |
 | `LOCALCODE_CONTEXT_LENGTH` | Auto-detected | Override context window |
 | `LOCALCODE_SEARXNG_URL` | — | SearXNG instance URL for research |
