@@ -67,7 +67,8 @@ docker-compose.yml
 bunfig.toml
 engine/cybernetics-core/.claude/
 src/
-tests/
+# Anchored: only the legacy root-level tests/ — NOT tui/tests/ or other suite dirs
+/tests/
 tsconfig.json
 vectors/
 tui/.localcode-snapshots/
