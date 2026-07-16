@@ -53,6 +53,13 @@ class StreamTokenEvent:
 
 
 @dataclass
+class StreamThinkingEvent:
+    type: str = "stream.thinking"
+    text: str = ""
+    message_id: Optional[str] = None
+
+
+@dataclass
 class MessageCompleteEvent:
     type: str = "message.complete"
     message_id: str = ""
@@ -129,6 +136,31 @@ class ApprovalRequestEvent:
 
 
 @dataclass
+class AskRequestEvent:
+    type: str = "ask.request"
+    request_id: str = ""
+    question: str = ""
+    options: list = field(default_factory=list)
+
+
+@dataclass
+class SnapshotTakenEvent:
+    type: str = "snapshot.taken"
+    hash: str = ""
+    prev_hash: str = ""
+    files_changed: int = 0
+    additions: int = 0
+    deletions: int = 0
+
+
+@dataclass
+class SnapshotRestoredEvent:
+    type: str = "snapshot.restored"
+    hash: str = ""
+    files_changed: int = 0
+
+
+@dataclass
 class ContextStatusEvent:
     type: str = "context.status"
     utilization: float = 0.0
@@ -171,6 +203,18 @@ class GovernanceStatusEvent:
     tool_success_rate: float = 1.0
     stuck_turns: int = 0
     suggestion: Optional[str] = None
+
+
+@dataclass
+class GovernanceRecommendationEvent:
+    type: str = "governance.recommendation"
+    request_id: str = ""
+    severity: str = "warning"
+    signal: str = ""
+    title: str = ""
+    description: str = ""
+    action: dict = field(default_factory=dict)
+    auto_apply_after_ms: Optional[int] = None
 
 
 @dataclass
@@ -357,6 +401,13 @@ class ApprovalResponseCommand:
 
 
 @dataclass
+class AskAnswerCommand:
+    type: str = "ask.answer"
+    request_id: str = ""
+    answer: str = ""
+
+
+@dataclass
 class SlashCommandMsg:
     type: str = "command"
     command: str = ""
@@ -407,6 +458,7 @@ EVENT_TYPES = {
     "session.ready": SessionReadyEvent,
     "session.error": SessionErrorEvent,
     "stream.token": StreamTokenEvent,
+    "stream.thinking": StreamThinkingEvent,
     "message.complete": MessageCompleteEvent,
     "tool.start": ToolStartEvent,
     "tool.progress": ToolProgressEvent,
@@ -416,12 +468,16 @@ EVENT_TYPES = {
     "file.change": FileChangeEvent,
     "file.diff": FileDiffEvent,
     "approval.request": ApprovalRequestEvent,
+    "ask.request": AskRequestEvent,
+    "snapshot.taken": SnapshotTakenEvent,
+    "snapshot.restored": SnapshotRestoredEvent,
     "context.status": ContextStatusEvent,
     "context.warning": ContextWarningEvent,
     "memory.recalled": MemoryRecalledEvent,
     "memory.written": MemoryWrittenEvent,
     "workflow.status": WorkflowStatusEvent,
     "governance.status": GovernanceStatusEvent,
+    "governance.recommendation": GovernanceRecommendationEvent,
     "summary.injected": SummaryInjectedEvent,
     "config.current": ConfigCurrentEvent,
     "config.updated": ConfigUpdatedEvent,

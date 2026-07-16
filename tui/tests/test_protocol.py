@@ -164,12 +164,13 @@ class TestParseEvent:
     def test_all_event_types_covered(self):
         """Verify EVENT_TYPES maps all documented event types."""
         expected = {
-            "session.ready", "session.error", "stream.token",
+            "session.ready", "session.error", "stream.token", "stream.thinking",
             "message.complete", "tool.start", "tool.progress",
             "tool.complete", "file.change", "file.diff", "approval.request",
+            "ask.request", "snapshot.taken", "snapshot.restored",
             "context.status", "context.warning", "memory.recalled",
             "memory.written", "workflow.status", "governance.status",
-            "summary.injected", "web.search.result",
+            "governance.recommendation", "summary.injected", "web.search.result",
             "config.current", "config.updated",
             "profile.list", "profile.validation", "profile.written",
             "tools.list",
@@ -441,13 +442,12 @@ def test_governance_status_ignores_new_engine_fields():
 
 
 def test_unknown_event_types_return_raw_dict():
-    # Engine P1.4 adds snapshot.taken / snapshot.restored event types with no
-    # TUI dataclass — parse_event must return the raw dict (app.py's isinstance
-    # dispatch then ignores it), not raise.
+    # Unknown event types (not in EVENT_TYPES) return raw dict.
+    # parse_event must return the raw dict (app.py's isinstance dispatch
+    # then ignores it), not raise.
     raw = parse_event(json.dumps({
-        "type": "snapshot.taken",
-        "hash": "abc123", "prevHash": "def456",
-        "filesChanged": 2, "additions": 10, "deletions": 3,
+        "type": "unknown.event",
+        "data": "example",
     }))
     assert isinstance(raw, dict)
-    assert raw["type"] == "snapshot.taken"
+    assert raw["type"] == "unknown.event"
