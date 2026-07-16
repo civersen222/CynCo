@@ -48,6 +48,7 @@ class LocalCodeApp(App):
     BINDINGS = [
         ("ctrl+q", "quit", "Quit"),
         ("ctrl+w", "switch_mode", "Switch Mode"),
+        ("escape", "abort_generation", "Abort"),
     ]
 
     # Custom Textual message for engine events
@@ -93,6 +94,14 @@ class LocalCodeApp(App):
         """Handle events from the engine bridge (runs on same event loop)."""
         # Post as a Textual message so it's processed in the UI thread properly
         self.post_message(self.EngineEventReceived(event))
+
+    def action_abort_generation(self) -> None:
+        """Esc — ask the engine to abort the current generation."""
+        if not self.bridge:
+            return
+        from .protocol import AbortCommand
+        asyncio.ensure_future(self.bridge.send(AbortCommand()))
+        self.notify("Abort requested", severity="warning")
 
     def _event_dispatch_table(self) -> dict:
         """Map each engine-event dataclass to its handler method.
