@@ -9,7 +9,7 @@ from textual.message import Message as TextualMessage
 from .config import load_config, save_config
 from .bridge import EngineBridge
 from .protocol import (
-    StreamTokenEvent, MessageCompleteEvent, ToolStartEvent,
+    StreamTokenEvent, StreamThinkingEvent, MessageCompleteEvent, ToolStartEvent,
     ToolCompleteEvent, ToolcallTransportEvent, GovernanceAlertEvent,
     ApprovalRequestEvent, AskRequestEvent, ContextStatusEvent,
     ContextWarningEvent, SessionReadyEvent, SessionErrorEvent,
@@ -111,6 +111,7 @@ class LocalCodeApp(App):
         """
         return {
             StreamTokenEvent: self._handle_stream_token,
+            StreamThinkingEvent: self._handle_stream_thinking,
             MessageCompleteEvent: self._handle_message_complete,
             ToolStartEvent: self._handle_tool_start,
             ToolCompleteEvent: self._handle_tool_complete,
@@ -188,6 +189,15 @@ class LocalCodeApp(App):
             sidebar.on_stream_token()
         except Exception:
             pass
+
+    def _handle_stream_thinking(self, event: StreamThinkingEvent) -> None:
+        """Reasoning tokens are generation too — feed the speedometer (not the chat)."""
+        try:
+            from .widgets.context_sidebar import ContextSidebar
+            sidebar = self.query_one(ContextSidebar)
+            sidebar.on_stream_token()
+        except Exception:
+            self.log("[stream.thinking] no sidebar to update")
 
     def _handle_message_complete(self, event: MessageCompleteEvent) -> None:
         try:
