@@ -400,7 +400,7 @@ export class ConversationLoop {
   /** Append message to both in-memory array and JSONL journal. */
   private addMessage(msg: Message): void {
     this.messages.push(msg)
-    try { this.journal.appendMessage(msg) } catch {}
+    try { this.journal.appendMessage(msg) } catch (e) { console.log(`[session] journal append failed: ${e instanceof Error ? e.message : String(e)}`) }
   }
 
   /** Resume a previous session from JSONL journal. */
@@ -1362,7 +1362,7 @@ export class ConversationLoop {
       const compacted = await this.compressor.runCompaction(this.messages, this.fileTracker, {
         keepRecentPairs: 2,
         summarize: (prompt) => this.sideQuery(prompt),
-        journal: (summary, fileOps) => { try { this.journal.appendCompaction(summary, fileOps) } catch {} },
+        journal: (summary, fileOps) => { try { this.journal.appendCompaction(summary, fileOps) } catch (e) { console.log(`[session] compaction journal failed: ${e instanceof Error ? e.message : String(e)}`) } },
         contractText,
       })
       if (compacted === before) return false

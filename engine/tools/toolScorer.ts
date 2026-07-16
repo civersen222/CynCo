@@ -41,7 +41,7 @@ export class ToolScorer {
       const fs = require('fs')
       fs.mkdirSync(require('path').dirname(path), { recursive: true })
       fs.writeFileSync(path, JSON.stringify(data, null, 2))
-    } catch {}
+    } catch (e) { console.log(`[toolScorer] save failed: ${e instanceof Error ? e.message : String(e)}`) }
   }
 
   load(path: string): void {
@@ -50,6 +50,6 @@ export class ToolScorer {
       if (!fs.existsSync(path)) return
       const data = JSON.parse(fs.readFileSync(path, 'utf-8'))
       for (const [k, v] of Object.entries(data)) this.scores.set(k, v as ToolStats)
-    } catch {}
+    } catch (e) { console.log(`[toolScorer] load failed: ${e instanceof Error ? e.message : String(e)}`) }
   }
 }
