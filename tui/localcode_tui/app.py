@@ -329,30 +329,39 @@ class LocalCodeApp(App):
                 return
         except Exception:
             pass
-        # Fallback: handle at app level
+        # Fallback: handle at app level using callback pattern
         from .widgets import ApprovalDialog
-        async def handle():
-            result = await self.push_screen_wait(
-                ApprovalDialog(event.tool_name, event.description, event.risk)
-            )
+
+        dialog = ApprovalDialog(
+            tool_name=event.tool_name,
+            description=event.description,
+            risk=event.risk,
+        )
+
+        def on_result(approved: bool | None) -> None:
             if self.bridge:
                 from .protocol import ApprovalResponseCommand
-                await self.bridge.send(ApprovalResponseCommand(
+                # Map None → False (user dismissed dialog)
+                approved_value = approved if approved is not None else False
+                asyncio.ensure_future(self.bridge.send(ApprovalResponseCommand(
                     request_id=event.request_id,
-                    approved=result,
-                ))
-        asyncio.ensure_future(handle())
+                    approved=approved_value,
+                )))
+
+        self.push_screen(dialog, on_result)
 
     def _handle_ask_request(self, event: AskRequestEvent) -> None:
         """Engine AskUser tool: show the question, send the answer back."""
         from .widgets.ask_dialog import AskDialog
 
-        async def handle():
-            answer = await self.push_screen_wait(AskDialog(event.question, event.options))
+        def on_result(answer: str | None) -> None:
             if self.bridge:
                 from .protocol import AskAnswerCommand
-                await self.bridge.send(AskAnswerCommand(request_id=event.request_id, answer=answer or ""))
-        asyncio.ensure_future(handle())
+                asyncio.ensure_future(self.bridge.send(
+                    AskAnswerCommand(request_id=event.request_id, answer=answer or "")
+                ))
+
+        self.push_screen(AskDialog(event.question, event.options), on_result)
 
     def _handle_context_status(self, event: ContextStatusEvent) -> None:
         try:

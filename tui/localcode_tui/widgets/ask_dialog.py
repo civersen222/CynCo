@@ -28,6 +28,11 @@ class AskDialog(ModalScreen[str]):
     }
     """
 
+    BINDINGS = [("escape", "cancel", "Cancel")]
+
+    def action_cancel(self) -> None:
+        self.dismiss("")
+
     def __init__(self, question: str, options: list[str] | None = None):
         super().__init__()
         self.question = question
