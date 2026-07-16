@@ -72,6 +72,7 @@ class LocalCodeApp(App):
         self._engine_job = None  # P1.9: Job Object handle owning the engine tree
         self.config = load_config()
         self._current_message = ""
+        self._engine_busy = False  # True between user message send and message.complete
         self._vibe_escalation_lock = asyncio.Lock()
 
     async def on_mount(self) -> None:
@@ -101,8 +102,8 @@ class LocalCodeApp(App):
         self.post_message(self.EngineEventReceived(event))
 
     def action_abort_generation(self) -> None:
-        """Esc — ask the engine to abort the current generation."""
-        if not self.bridge:
+        """Esc — ask the engine to abort the current generation (no-op when idle)."""
+        if not self.bridge or not self._engine_busy:
             return
         from .protocol import AbortCommand
         asyncio.ensure_future(self.bridge.send(AbortCommand()))
@@ -186,6 +187,7 @@ class LocalCodeApp(App):
             self.screen.handle_file_diff(event)
 
     def _handle_stream_token(self, event: StreamTokenEvent) -> None:
+        self._engine_busy = True  # resync if generation started outside send_message
         self._current_message += event.text
         try:
             from .widgets import ChatPanel
@@ -211,6 +213,7 @@ class LocalCodeApp(App):
             self.log("[stream.thinking] no sidebar to update")
 
     def _handle_message_complete(self, event: MessageCompleteEvent) -> None:
+        self._engine_busy = False
         try:
             from .widgets import ChatPanel
             chat = self.query_one(ChatPanel)
@@ -668,6 +671,7 @@ class LocalCodeApp(App):
     def send_message(self, text: str) -> None:
         """Send a user message to the engine."""
         if self.bridge and self.bridge.connected:
+            self._engine_busy = True
             asyncio.ensure_future(self.bridge.send(UserMessageCommand(text=text)))
         else:
             self.notify("Not connected to engine", severity="error")

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'fs'
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
-import { currentCounts } from './emptyCatchScan.mjs'
+import { currentCounts, EMPTY_CATCH } from './emptyCatchScan.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const baseline: Record<string, number> = JSON.parse(
@@ -10,6 +10,16 @@ const baseline: Record<string, number> = JSON.parse(
 )
 
 describe('empty catch ratchet (2026-07-16 audit)', () => {
+  it('pattern catches comment-only catch bodies — still silent handlers', () => {
+    const hits = (src: string) => src.match(EMPTY_CATCH)?.length ?? 0
+    expect(hits('try {} catch {}')).toBe(1)
+    expect(hits('try {} catch (e) {}')).toBe(1)
+    expect(hits('try {} catch (e) { // ignore\n }')).toBe(1)
+    expect(hits('try {} catch (e) { /* best effort */ }')).toBe(1)
+    expect(hits('try {} catch (e) {\n  // reason\n  /* more */\n}')).toBe(1)
+    expect(hits('try {} catch (e) { console.log(e) }')).toBe(0)
+  })
+
   it('no file gains empty catch blocks — log the error or emit governance.alert instead', () => {
     const regressions: string[] = []
     for (const [file, n] of Object.entries(currentCounts())) {

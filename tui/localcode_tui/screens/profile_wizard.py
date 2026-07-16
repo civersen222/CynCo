@@ -470,21 +470,36 @@ class ProfileWizard(ModalScreen):
 
         yaml_str = generate_profile_yaml(self.state)
 
-        # Send profile.write command to engine
+        # Send profile.write command to engine; the engine replies with
+        # profile.written (success) or profile.validation ok=false (errors),
+        # routed back here via app._handle_profile_written/_handle_profile_validation.
         try:
             self.app.send_raw_command(json.dumps({
                 "type": "profile.write",
                 "name": self.state.profile_name,
                 "yaml": yaml_str,
             }))
-            self.notify(
-                f"Profile '{self.state.profile_name}' saved!\n"
-                f"Activate it in Settings > Profiles.",
-                severity="information",
-            )
-            self.dismiss(self.state.profile_name)
+            self.notify("Saving profile…", severity="information")
         except Exception as e:
             self.notify(f"Save failed: {e}", severity="error")
+
+    # ─── Engine profile event handlers ─────────────────────────
+
+    def handle_profile_written(self, event) -> None:
+        """Engine confirmed the profile was written — notify and close."""
+        self.notify(
+            f"Profile '{event.name}' saved!\n"
+            f"Activate it in Settings > Profiles.",
+            severity="information",
+        )
+        self.dismiss(event.name)
+
+    def handle_profile_validation(self, event) -> None:
+        """Engine rejected the profile — show errors, keep wizard open."""
+        if getattr(event, "ok", True):
+            return  # validation passed; profile.written will follow
+        errors = "\n".join(str(e) for e in event.errors) or "unknown validation error"
+        self.notify(f"Profile not saved:\n{errors}", severity="error")
 
     # ─── LLM response handler ─────────────────────────────────
 
