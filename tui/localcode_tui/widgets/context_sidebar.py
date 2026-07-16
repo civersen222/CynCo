@@ -50,6 +50,9 @@ class ContextSidebar(Static):
         self._expertise: str = ""
         self._ctx_tokens: int = 0
         self._ctx_utilization: float = 0.0
+        # Index / retrieval health
+        self._index_mode: str | None = None
+        self._index_degraded: bool = False
         # Performance
         self._tok_rate: float = 0.0  # tokens/sec
         self._tok_count: int = 0
@@ -104,6 +107,11 @@ class ContextSidebar(Static):
         self._ctx_utilization = utilization
         if context_length > 0:
             self._session_ctx_len = context_length
+        self._refresh_content()
+
+    def set_index_status(self, mode: str | None, degraded: bool) -> None:
+        self._index_mode = mode
+        self._index_degraded = degraded
         self._refresh_content()
 
     def on_stream_token(self) -> None:
@@ -255,6 +263,10 @@ class ContextSidebar(Static):
                 tokens_line += f" / {self._session_ctx_len:,}"
             parts.append(tokens_line)
             parts.append(f"  [{color}]{pct}% used[/{color}]")
+            if self._index_degraded:
+                parts.append("  [yellow]index: keyword-only (embeddings down)[/yellow]")
+            elif self._index_mode:
+                parts.append(f"  [dim]index: {self._index_mode}[/dim]")
             parts.append("")
 
         # ── Speed ──

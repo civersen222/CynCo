@@ -382,6 +382,8 @@ export class CyberneticsGovernance {
     latencyMs: number
     response: string
     userMessage?: string
+    /** 0..1 fraction of the context window in use at turn end (2026-07-16 audit). */
+    contextUtilization?: number
   }): void {
     // ── Consume-on-read: snapshot + clear all per-turn flags in one place, ───
     // before any early return, so flags are never carried across turns
@@ -517,8 +519,9 @@ export class CyberneticsGovernance {
     const snap2 = this.varietyEngine.current()
     const varietyRatio = snap2?.ratio ?? 1.0
     this.lastVarietyRatio = varietyRatio
+    const contextUtilization = Math.max(0, Math.min(1, metrics.contextUtilization ?? 0))
     this.lastFeedbackActions = this.feedbackControl.update(
-      0, // context utilization — filled when available
+      contextUtilization,
       1.0 - successRate,
       varietyRatio,
       successRate, // approval rate approximated by success rate
@@ -527,8 +530,7 @@ export class CyberneticsGovernance {
     // Update homeostat with current pressures
     const s3Pressure = metrics.toolsCalled > 0 ? Math.min(metrics.toolsCalled / 5.0, 1.0) : 0.1
     const s4Pressure = metrics.thinkingTokens > 0 ? Math.min(metrics.thinkingTokens / metrics.totalTokens, 1.0) : 0.3
-    const contextPressure = 0 // TODO: pass from context status events
-    this.homeostatIntegration.update(s3Pressure, s4Pressure, contextPressure, metrics.latencyMs)
+    this.homeostatIntegration.update(s3Pressure, s4Pressure, contextUtilization, metrics.latencyMs)
 
     // Track consecutive instability — used by S5 for escalation decisions
     if (this.homeostatIntegration.isStable()) {

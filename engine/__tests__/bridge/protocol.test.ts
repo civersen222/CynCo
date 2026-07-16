@@ -9,9 +9,7 @@ import {
   type StreamTokenEvent,
   type MessageCompleteEvent,
   type ToolStartEvent,
-  type ToolProgressEvent,
   type ToolCompleteEvent,
-  type FileChangeEvent,
   type ApprovalRequestEvent,
   type ContextStatusEvent,
   type ContextWarningEvent,
@@ -117,15 +115,6 @@ describe('protocol types', () => {
       expect(event.input).toEqual({ file_path: '/tmp/test.txt' })
     })
 
-    it('ToolProgressEvent has correct shape', () => {
-      const event: ToolProgressEvent = {
-        type: 'tool.progress',
-        toolId: 'tool-1',
-        output: 'Reading file...',
-      }
-      expect(event.type).toBe('tool.progress')
-    })
-
     it('ToolCompleteEvent has correct shape', () => {
       const event: ToolCompleteEvent = {
         type: 'tool.complete',
@@ -144,27 +133,6 @@ describe('protocol types', () => {
         result: 'ok',
       }
       expect(event.isError).toBeUndefined()
-    })
-
-    it('FileChangeEvent has correct shape', () => {
-      const event: FileChangeEvent = {
-        type: 'file.change',
-        path: '/src/app.ts',
-        changeType: 'modify',
-        diff: '+added line',
-      }
-      expect(event.type).toBe('file.change')
-      expect(event.changeType).toBe('modify')
-      expect(event.diff).toBe('+added line')
-    })
-
-    it('FileChangeEvent diff is optional', () => {
-      const event: FileChangeEvent = {
-        type: 'file.change',
-        path: '/tmp/new.txt',
-        changeType: 'create',
-      }
-      expect(event.diff).toBeUndefined()
     })
 
     it('ApprovalRequestEvent has correct shape', () => {

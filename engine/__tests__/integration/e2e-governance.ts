@@ -3,7 +3,7 @@
  * End-to-end integration test for CynCo governance hardening.
  *
  * Starts the engine via WebSocket, sends real messages, and verifies
- * that governance enforcement, S2 telemetry, file.change events,
+ * that governance enforcement, S2 telemetry, file.diff events,
  * and S5 decisions actually fire during real operation.
  *
  * Usage: First start engine in another terminal:
@@ -62,7 +62,7 @@ ws.onmessage = (msg) => {
     if (evt.type === 'session.ready') log(`  session.ready: model=${evt.model}`)
     else if (evt.type === 'tool.start') log(`  tool.start: ${evt.toolName}`)
     else if (evt.type === 'tool.complete') log(`  tool.complete: ${evt.toolName} (error=${evt.isError})`)
-    else if (evt.type === 'file.change') log(`  ★ file.change: ${evt.path} (${evt.changeType})`)
+    else if (evt.type === 'file.diff') log(`  ★ file.diff: ${evt.path} (${evt.changeType})`)
     else if (evt.type === 'governance.status') log(`  governance: health=${evt.health} stuck=${evt.stuckTurns}`)
     else if (evt.type === 'governance.recommendation') log(`  ★ governance.recommendation: ${evt.signal} — ${evt.title}`)
     else if (evt.type === 'workflow.status') log(`  workflow: ${evt.workflow} phase=${evt.phase}`)
@@ -102,9 +102,9 @@ await sleep(1000)
 
 log('')
 
-// ─── Test 1: Basic Tool Use + file.change ─────────────────────
+// ─── Test 1: Basic Tool Use + file.diff ─────────────────────
 
-log('═══ Test 1: Tool use + file.change events ═══')
+log('═══ Test 1: Tool use + file.diff events ═══')
 log('Sending: "Create a file .cynco/test-output.txt with hello world"')
 
 const preCompletes1 = (eventsByType.get('message.complete') ?? []).length
@@ -120,26 +120,26 @@ for (let i = 0; i < 180; i++) {
   if (completes.length > preCompletes1) break
   await sleep(1000)
 }
-// Extra wait for file.change to propagate
+// Extra wait for file.diff to propagate
 await sleep(2000)
 
 const toolStarts = eventsByType.get('tool.start') ?? []
 const toolCompletes = eventsByType.get('tool.complete') ?? []
-const fileChanges = eventsByType.get('file.change') ?? []
+const fileDiffs = eventsByType.get('file.diff') ?? []
 const govStatus = eventsByType.get('governance.status') ?? []
 
 log('')
 log(`Results:`)
 log(`  Tools started: ${toolStarts.length}`)
 log(`  Tools completed: ${toolCompletes.length}`)
-log(`  file.change events: ${fileChanges.length}`)
+log(`  file.diff events: ${fileDiffs.length}`)
 log(`  governance.status events: ${govStatus.length}`)
 
 const test1Pass = toolStarts.length > 0 && toolCompletes.length > 0
 log(`  Test 1: ${test1Pass ? 'PASS' : 'FAIL'} — tools executed`)
 
-const test1bPass = fileChanges.length > 0
-log(`  Test 1b: ${test1bPass ? 'PASS' : 'FAIL'} — file.change emitted`)
+const test1bPass = fileDiffs.length > 0
+log(`  Test 1b: ${test1bPass ? 'PASS' : 'FAIL'} — file.diff emitted`)
 
 log('')
 
@@ -210,7 +210,7 @@ log('')
 
 const allTests = [
   { name: 'Tool execution', pass: test1Pass },
-  { name: 'file.change events', pass: test1bPass },
+  { name: 'file.diff events', pass: test1bPass },
   { name: 'Read auto-approve', pass: readTools.length > 0 },
   { name: '/research workflow', pass: newWf.length > 0 },
 ]

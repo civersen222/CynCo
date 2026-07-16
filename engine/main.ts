@@ -374,7 +374,7 @@ async function cleanShutdown(signal: string) {
     }
   } catch {}
   // Save S5 rule weights
-  try { s5Orchestrator.saveWeights() } catch {}
+  try { s5Orchestrator.saveWeights() } catch (e) { console.log(`[s5] saveWeights failed: ${e instanceof Error ? e.message : String(e)}`) }
   // Auto-backfill training data (reward labeling + dataset export)
   try {
     const { RewardLabeler } = await import('./training/rewardLabeler.js')
@@ -941,9 +941,9 @@ async function handleCommand(command: TUICommand): Promise<void> {
         console.log(`[governance] Session outcome failed: ${err instanceof Error ? err.message : String(err)}`)
       }
       // S5 Identity Continuity: mark the session cleanly ended (crash-vs-clean resume).
-      try { loop.getJournal?.()?.appendSessionEnd?.() } catch {}
+      try { loop.getJournal?.()?.appendSessionEnd?.() } catch (e) { console.log(`[session] appendSessionEnd failed: ${e instanceof Error ? e.message : String(e)}`) }
       // Save S5 rule weights
-      try { s5Orchestrator.saveWeights() } catch {}
+      try { s5Orchestrator.saveWeights() } catch (e) { console.log(`[s5] saveWeights failed: ${e instanceof Error ? e.message : String(e)}`) }
       // Audit: write session outcome on clean shutdown
       AuditLogger.writeSessionOutcome()
       break

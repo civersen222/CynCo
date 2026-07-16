@@ -123,7 +123,7 @@ export class S5Orchestrator {
         applied: {}, // filled by conversationLoop after it processes the decision
         duration_ms: Date.now() - startMs,
       })
-    } catch {}
+    } catch (e) { console.log(`[s5] audit log failed: ${e instanceof Error ? e.message : String(e)}`) }
 
     // S5 decision journal: policy decisions as training data
     const journal = getJournal()

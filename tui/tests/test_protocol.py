@@ -11,9 +11,7 @@ from localcode_tui.protocol import (
     StreamTokenEvent,
     MessageCompleteEvent,
     ToolStartEvent,
-    ToolProgressEvent,
     ToolCompleteEvent,
-    FileChangeEvent,
     ApprovalRequestEvent,
     ContextStatusEvent,
     ContextWarningEvent,
@@ -104,12 +102,6 @@ class TestParseEvent:
         assert event.result == "ok"
         assert event.is_error is False
 
-    def test_parse_file_change(self):
-        event = parse_event({"type": "file.change", "path": "/src/foo.py", "changeType": "modify"})
-        assert isinstance(event, FileChangeEvent)
-        assert event.path == "/src/foo.py"
-        assert event.change_type == "modify"
-
     def test_parse_approval_request(self):
         event = parse_event({"type": "approval.request", "requestId": "r1", "toolName": "Bash", "description": "run ls", "risk": "low"})
         assert isinstance(event, ApprovalRequestEvent)
@@ -164,12 +156,13 @@ class TestParseEvent:
     def test_all_event_types_covered(self):
         """Verify EVENT_TYPES maps all documented event types."""
         expected = {
-            "session.ready", "session.error", "stream.token",
-            "message.complete", "tool.start", "tool.progress",
-            "tool.complete", "file.change", "file.diff", "approval.request",
+            "session.ready", "session.error", "stream.token", "stream.thinking",
+            "message.complete", "tool.start",
+            "tool.complete", "file.diff", "approval.request",
+            "ask.request", "snapshot.taken", "snapshot.restored",
             "context.status", "context.warning", "memory.recalled",
             "memory.written", "workflow.status", "governance.status",
-            "summary.injected", "web.search.result",
+            "governance.recommendation", "summary.injected", "web.search.result",
             "config.current", "config.updated",
             "profile.list", "profile.validation", "profile.written",
             "tools.list",
@@ -441,13 +434,12 @@ def test_governance_status_ignores_new_engine_fields():
 
 
 def test_unknown_event_types_return_raw_dict():
-    # Engine P1.4 adds snapshot.taken / snapshot.restored event types with no
-    # TUI dataclass — parse_event must return the raw dict (app.py's isinstance
-    # dispatch then ignores it), not raise.
+    # Unknown event types (not in EVENT_TYPES) return raw dict.
+    # parse_event must return the raw dict (app.py's isinstance dispatch
+    # then ignores it), not raise.
     raw = parse_event(json.dumps({
-        "type": "snapshot.taken",
-        "hash": "abc123", "prevHash": "def456",
-        "filesChanged": 2, "additions": 10, "deletions": 3,
+        "type": "unknown.event",
+        "data": "example",
     }))
     assert isinstance(raw, dict)
-    assert raw["type"] == "snapshot.taken"
+    assert raw["type"] == "unknown.event"
