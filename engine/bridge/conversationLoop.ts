@@ -668,7 +668,10 @@ export class ConversationLoop {
       }
       // Repo map default-on (opt out with LOCALCODE_REPO_MAP=0): top symbols by
       // import-graph PageRank, capped so it can't dominate the context budget.
-      if (process.env.LOCALCODE_REPO_MAP !== '0') {
+      // First user turn ONLY — re-injecting every turn wasted ~2k tokens/turn
+      // (2026-07-16 audit). The user message is already pushed, so count === 1.
+      const isFirstUserTurn = this.messages.filter(m => m.role === 'user').length === 1
+      if (isFirstUserTurn && process.env.LOCALCODE_REPO_MAP !== '0') {
         const { capRepoMap } = await import('../index/indexer.js')
         const repoMap = capRepoMap(indexer.buildRepoMap([], 20), 2000)
         if (repoMap) {
