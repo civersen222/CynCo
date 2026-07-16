@@ -804,3 +804,7 @@ class WorkspaceScreen(Screen):
             utilization=getattr(event, "utilization", 0.0),
             context_length=getattr(event, "context_length", 0),
         )
+        sidebar.set_index_status(
+            mode=getattr(event, "last_query_mode", None) or getattr(event, "index_mode", None),
+            degraded=getattr(event, "index_degraded", False),
+        )
