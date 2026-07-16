@@ -76,13 +76,6 @@ class ToolStartEvent:
 
 
 @dataclass
-class ToolProgressEvent:
-    type: str = "tool.progress"
-    tool_id: str = ""
-    output: str = ""
-
-
-@dataclass
 class ToolCompleteEvent:
     type: str = "tool.complete"
     tool_id: str = ""
@@ -108,14 +101,6 @@ class GovernanceAlertEvent:
     message: str = ""
     source: str = ""
     type: str = "governance.alert"
-
-
-@dataclass
-class FileChangeEvent:
-    type: str = "file.change"
-    path: str = ""
-    change_type: str = "modify"
-    diff: Optional[str] = None
 
 
 @dataclass
@@ -461,11 +446,9 @@ EVENT_TYPES = {
     "stream.thinking": StreamThinkingEvent,
     "message.complete": MessageCompleteEvent,
     "tool.start": ToolStartEvent,
-    "tool.progress": ToolProgressEvent,
     "tool.complete": ToolCompleteEvent,
     "toolcall.transport": ToolcallTransportEvent,
     "governance.alert": GovernanceAlertEvent,
-    "file.change": FileChangeEvent,
     "file.diff": FileDiffEvent,
     "approval.request": ApprovalRequestEvent,
     "ask.request": AskRequestEvent,

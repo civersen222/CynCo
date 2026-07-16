@@ -2871,18 +2871,6 @@ export class ConversationLoop {
       isError: result.isError,
     })
 
-    // Emit file.change for write operations
-    if (['Write', 'Edit', 'MultiEdit', 'ApplyPatch'].includes(toolName)) {
-      const filePath = (toolInput as any).file_path ?? (toolInput as any).path ?? ''
-      if (filePath) {
-        this.emit({
-          type: 'file.change',
-          path: filePath,
-          changeType: toolName === 'Write' ? 'create' : 'modify',
-        } as any)
-      }
-    }
-
     // Phase 6: additionally emit a structured file.diff for the diff_view widget.
     if (['Write', 'Edit', 'MultiEdit'].includes(toolName)) {
       const filePath = (toolInput as any).file_path ?? (toolInput as any).path ?? ''

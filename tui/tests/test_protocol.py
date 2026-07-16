@@ -11,9 +11,7 @@ from localcode_tui.protocol import (
     StreamTokenEvent,
     MessageCompleteEvent,
     ToolStartEvent,
-    ToolProgressEvent,
     ToolCompleteEvent,
-    FileChangeEvent,
     ApprovalRequestEvent,
     ContextStatusEvent,
     ContextWarningEvent,
@@ -104,12 +102,6 @@ class TestParseEvent:
         assert event.result == "ok"
         assert event.is_error is False
 
-    def test_parse_file_change(self):
-        event = parse_event({"type": "file.change", "path": "/src/foo.py", "changeType": "modify"})
-        assert isinstance(event, FileChangeEvent)
-        assert event.path == "/src/foo.py"
-        assert event.change_type == "modify"
-
     def test_parse_approval_request(self):
         event = parse_event({"type": "approval.request", "requestId": "r1", "toolName": "Bash", "description": "run ls", "risk": "low"})
         assert isinstance(event, ApprovalRequestEvent)
@@ -165,8 +157,8 @@ class TestParseEvent:
         """Verify EVENT_TYPES maps all documented event types."""
         expected = {
             "session.ready", "session.error", "stream.token", "stream.thinking",
-            "message.complete", "tool.start", "tool.progress",
-            "tool.complete", "file.change", "file.diff", "approval.request",
+            "message.complete", "tool.start",
+            "tool.complete", "file.diff", "approval.request",
             "ask.request", "snapshot.taken", "snapshot.restored",
             "context.status", "context.warning", "memory.recalled",
             "memory.written", "workflow.status", "governance.status",
