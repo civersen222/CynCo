@@ -5,7 +5,8 @@ import { fileURLToPath } from 'url'
 const here = dirname(fileURLToPath(import.meta.url))
 export const engineRoot = join(here, '..', '..')
 
-const EMPTY_CATCH = /catch\s*(\([^)]*\))?\s*\{\s*\}/g
+// Matches catch blocks that are empty OR contain only comments (still silent).
+export const EMPTY_CATCH = /catch\s*(\([^)]*\))?\s*\{(?:\s|\/\/[^\n]*|\/\*[\s\S]*?\*\/)*\}/g
 
 function walk(dir, out = []) {
   for (const name of readdirSync(dir)) {

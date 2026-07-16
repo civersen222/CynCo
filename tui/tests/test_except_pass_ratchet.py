@@ -6,7 +6,8 @@ from pathlib import Path
 TUI_ROOT = Path(__file__).resolve().parent.parent / "localcode_tui"
 BASELINE_PATH = Path(__file__).resolve().parent / "except_pass_baseline.json"
 
-PATTERN = re.compile(r"except[^\n]*:\s*\n\s*pass\b|except[^\n]*:\s*pass\b")
+# Matches except bodies that are `pass`, including ones padded with comment lines.
+PATTERN = re.compile(r"except[^\n]*:\s*(?:#[^\n]*\s*)*pass\b")
 
 
 def current_counts() -> dict:
@@ -16,6 +17,14 @@ def current_counts() -> dict:
         if n:
             counts[path.relative_to(TUI_ROOT).as_posix()] = n
     return counts
+
+
+def test_pattern_catches_comment_padded_pass():
+    """Comment-only except bodies are still silent handlers."""
+    assert PATTERN.search("try:\n    x()\nexcept Exception:\n    # ignore\n    pass\n")
+    assert PATTERN.search("except ValueError:\n    # reason one\n    # reason two\n    pass\n")
+    assert PATTERN.search("except: pass\n")
+    assert not PATTERN.search("except Exception as e:\n    self.log(e)\n")
 
 
 def test_no_new_except_pass():
