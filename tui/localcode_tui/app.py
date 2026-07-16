@@ -15,7 +15,7 @@ from .protocol import (
     ContextWarningEvent, SessionReadyEvent, SessionErrorEvent,
     FileDiffEvent,
     UserMessageCommand, SlashCommandMsg, WorkflowStatusEvent,
-    GovernanceStatusEvent,
+    GovernanceStatusEvent, GovernanceRecommendationEvent,
     SummaryInjectedEvent,
     MemoryRecalledEvent,
     MemoryWrittenEvent,
@@ -35,6 +35,8 @@ from .protocol import (
     SubAgentCompleteEvent,
     SubAgentKilledEvent,
     S2CoordinationEvent,
+    SnapshotTakenEvent,
+    SnapshotRestoredEvent,
 )
 
 
@@ -117,6 +119,9 @@ class LocalCodeApp(App):
             ToolCompleteEvent: self._handle_tool_complete,
             ToolcallTransportEvent: self._handle_toolcall_transport,
             GovernanceAlertEvent: self._handle_governance_alert,
+            GovernanceRecommendationEvent: self._handle_governance_recommendation,
+            SnapshotTakenEvent: self._handle_snapshot_taken,
+            SnapshotRestoredEvent: self._handle_snapshot_restored,
             ApprovalRequestEvent: self._handle_approval_request,
             AskRequestEvent: self._handle_ask_request,
             ContextStatusEvent: self._handle_context_status,
@@ -330,6 +335,37 @@ class LocalCodeApp(App):
                 self.log(f"[governance.alert] [{event.severity}] {label}")
             except Exception:
                 pass
+
+    def _handle_governance_recommendation(self, event: GovernanceRecommendationEvent) -> None:
+        """S5 warning-tier recommendation (not enforced) — surface in chat."""
+        label = f"{event.title}: {event.description}" if event.title else event.description
+        try:
+            from .widgets import ChatPanel
+            chat = self.query_one(ChatPanel)
+            chat.add_system_message(f"[yellow]\u26a0 S5 recommends \u2014 {escape(label)}[/yellow]")
+        except Exception:
+            self.log(f"[governance.recommendation] (no chat panel) {label}")
+
+    def _handle_snapshot_taken(self, event: SnapshotTakenEvent) -> None:
+        try:
+            from .widgets import ChatPanel
+            chat = self.query_one(ChatPanel)
+            chat.add_system_message(
+                f"[dim]\u25cf Snapshot: {event.files_changed} file(s) "
+                f"(+{event.additions}/-{event.deletions}) \u2014 /undo to revert[/dim]"
+            )
+        except Exception:
+            self.log(f"[snapshot.taken] (no chat panel) {event.files_changed} files")
+
+    def _handle_snapshot_restored(self, event: SnapshotRestoredEvent) -> None:
+        try:
+            from .widgets import ChatPanel
+            chat = self.query_one(ChatPanel)
+            chat.add_system_message(
+                f"[yellow]\u21a9 Restored snapshot {event.hash[:8]} ({event.files_changed} file(s))[/yellow]"
+            )
+        except Exception:
+            self.log(f"[snapshot.restored] (no chat panel) {event.hash}")
 
     def _handle_approval_request(self, event: ApprovalRequestEvent) -> None:
         try:
