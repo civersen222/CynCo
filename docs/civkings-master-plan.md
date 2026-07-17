@@ -17,7 +17,7 @@
 - **Part VII — Event Architecture & Content Plan**
 - **Part VIII — AI Design**
 - **Part IX — Pacing, Anti-Snowball & Session Design**
-- **Part X — UX, UI, Audio & Polish**
+- **Part X — UX, UI, Audio & Polish** (incl. X.9 local generative audio & content stack)
 - **Part XI — Technical & Shipping Reality**
 - **Part XII — Production Roadmap: CynCo Mission Waves**
 - **Part XIII — Verification & Quality Infrastructure**
@@ -402,10 +402,42 @@ Civ VII shipped to Mostly Negative *largely on UI*. Indie forgiveness is lower. 
 2. **The Dynasty screen is the flagship UI** — this is the differentiator, so it gets the polish budget: family tree with portraits, traits/opinions on hover, heir designation, marriage/scheme verbs, dynasty chronicle timeline. (Existing dynasty popup is the seed.)
 3. **Needs-attention queue** (IX) — the single biggest busywork killer.
 4. **End-of-game dynasty chronicle:** auto-generated timeline of the campaign's events ("Turn 34: Queen Irene murdered her rival... Turn 88: the realm split between three sons") — shareable screenshot = free marketing (streamer legibility).
-5. **Audio:** wire the existing music_manager/sound_manager (era-shifting music beds ×5, ~25 SFX: end turn, battle, build complete, event sting, succession bell). Licensed/commissioned packs — do not compose.
+5. **Audio:** wire the existing music_manager/sound_manager (era-shifting music beds ×5, ~25 SFX: end turn, battle, build complete, event sting, succession bell). Licensed/commissioned packs — do not compose. **But the audio library itself can be produced at near-zero cost by a local generative stack — see X.9, which turns "a solo dev can't afford 300 voiced event lines" into a batch job.**
 6. **Settings screen:** volume, resolution/fullscreen, autosave cadence, speed, difficulty. Pause menu (save/load/settings/quit). These are Steam-review table stakes.
 7. **Portraits & map art pass:** one consistent style (batch-commissioned or curated gen + human cleanup), trait icons, district icons. Placeholder art is allowed until Wave 9, then a single style unification pass.
 8. **Copy-editing pass** over every player-facing string (I do this; local model text does not ship raw).
+
+## X.9 The local generative audio & content stack (openmoss · thinksound.cpp · Lemonade)
+
+*Added 2026-07-15 after evaluating three repos the user flagged. The unifying property — and the reason they matter to CivKings specifically — is that all three are **pure C++/GGML, single self-contained binary, fully offline** inference engines. This is the exact shape of dependency a $15 offline Steam game can actually ship. Cloud TTS/SFX/LLM cannot: they cost money per player, require an internet connection, need per-user API keys, and leak player data. A local GGML binary bundled in the install directory has none of those problems. This is the I.3 "CynCo advantage" argument applied to audio and flavor content.*
+
+**The three engines:**
+
+| Repo | What it is | What it gives CivKings |
+|---|---|---|
+| [`pwilkin/openmoss`](https://github.com/pwilkin/openmoss) | Standalone C++/GGML port of MOSS-TTS (Qwen3-8B backbone + RVQ codec) — `moss-tts-cli` (one-shot) + `moss-tts-server` (HTTP), **voice cloning**, Vulkan/ROCm/CUDA/CPU. ~10 s speech in ~4 s on a 16 GB GPU. | **Text→speech.** Voiced event narration, ruler/advisor lines, the dynasty chronicle read aloud. Voice cloning → a distinct, consistent voice per advisor/leader dynasty. |
+| [`pwilkin/thinksound.cpp`](https://github.com/pwilkin/thinksound.cpp) | Standalone C++/GGML runtime for ThinkSound (NeurIPS 2025) — `ts-generate` / `ts-server`, **text→sound-effect**, 44.1 kHz stereo, BF16/Q8 GGUF. Also a Dasheng-AudioGen text→audio path. | **Text→SFX / ambience.** Event stings, battle/city/era soundscapes, per-event bespoke effects generated from the event's own description text. |
+| [`lemonade-sdk/lemonade`](https://github.com/lemonade-sdk/lemonade) | Local AI server (AMD-optimized, but Vulkan/GPU/NPU/CPU); OpenAI/Anthropic/Ollama-compatible; multi-modal (chat, **speech gen**, image gen, embeddings); **"Embeddable Lemonade" = a portable binary you package into your app that auto-optimizes for the player's PC.** Already lists `openmoss` as a backend. | **The runtime host.** One embeddable binary that hosts TTS (openmoss), SFX, and an optional flavor-text LLM, auto-detecting the player's NPU/GPU/CPU and degrading gracefully. |
+
+**Two deployment modes — the honest split that keeps this plan-consistent:**
+
+- **Mode A — Build-time audio foundry (CORE, low-risk, recommended).** Run openmoss + thinksound on the *developer's* box (or a batch pipeline, same as the CynCo content pipeline in VII.3) to mass-produce the shipping audio library as ordinary compressed WAV/OGG assets: a voiced line for every one of the ~300 events, distinct cloned advisor/leader voices, five era ambience beds, and a far larger, more varied SFX set than a solo dev could license. The game ships **plain audio files — no model weights, no GPU requirement, no runtime dependency, no added system requirements.** This is a *production tool*, not a runtime feature, and it directly attacks the real deficit (II.3 content volume) the same way CynCo attacks the code and event deficit. Every generated clip still passes the VII.4 human editorial/quality bar before it ships (voice output is reviewed exactly like event prose is).
+
+- **Mode B — Runtime local generation via Embeddable Lemonade (OPTIONAL, S4-gated differentiator).** Bundle Lemonade's portable binary; on capable NPU/GPU PCs, generate *truly per-run* content at play time — the dynasty chronicle (X.4) read aloud in an advisor's cloned voice, event flavor text authored by a local LLM and then voiced, event-specific SFX from thinksound — auto-optimized to the player's hardware, with **graceful fallback to the Mode-A pre-baked assets on any PC that can't run it.** This is the streamer/"wow" hook ("every game narrates its own dynasty's saga, out loud, differently"), but it is strictly additive: it never gates the core game and it lives behind an explicit post-S3 gate, honoring pillar 5 (no scope creep into the critical path).
+
+**CivKings-specific payoffs (both modes read the systems we already have):**
+- The **dynasty chronicle** (X.4) is already the shareable, streamer-legible artifact and the trailer storyboard (Part XIV). Reading it aloud — Mode A pre-bakes the stock lines; Mode B narrates the actual run — is the single highest-leverage use, because it amplifies the exact thing the market strategy is built on.
+- Events already carry `title`/`desc` prose (Appendix C); that same text is the TTS prompt (voice) and the thinksound caption (SFX), so voiced-and-scored events are a *derivation* of content we're already producing, not new content.
+- Voice cloning gives each of the 8 curated leader dynasties (Part VIII/III.2) a consistent voice — cheap character identity that reinforces the dynasty-first pillar.
+- Bonus alignment: Lemonade is Anthropic/OpenAI/Ollama-compatible and already ships a Claude Code / Copilot integration, so the *same local-inference muscle that builds the game* (CynCo) can host its runtime content — the "an AI agent built this, and local AI runs inside it" dev-log angle (XIV) becomes literally true, two audiences one stack.
+
+**Honest gates and costs (do not skip):**
+- **Model licensing is a hard shipping gate.** Commercial redistribution of the underlying MOSS-TTS and ThinkSound weights (and any Lemonade-hosted model) must be license-verified *before* Mode A output ships in a paid product. Treat this as a blocking task, not a formality — it is the first mission of any audio-foundry work.
+- Mode A adds **zero** runtime footprint but adds asset size (compressed audio) — budget it like any voiced game's audio bundle.
+- Mode B needs a capable GPU/NPU and ships model weights (gigabytes) as an *optional* download, never in the base install; it must detect-and-degrade, never crash, on unsupported hardware.
+- Quality is not free: local TTS/SFX gets the same human review pass as local text (VII.4). Nothing ships raw.
+
+**Roadmap placement:** Mode A folds into **Wave 9** as an "audio foundry" batch (produce → editorial review → ship as assets), replacing the "licensed packs" assumption in X.5 with a near-zero-marginal-cost internal pipeline — but the licensing-verification mission gates it. Mode B is an **S4-gated experimental track** (post the S3 revenue signal), consistent with I.2's staged-on-evidence discipline and the Part XI port-gate philosophy.
 
 ---
 
@@ -468,7 +500,7 @@ Tech tree 25→40 with eurekas for all; buildings 15→30; units→24; wonders�
 Events 150→300 (remaining families); civs curated to 8 with leader dynasties + agendas; trait icon/text pass; STYLE.md conformance edit. **Gate:** two full user campaigns, chronicle output reviewed.
 
 ## Wave 9 — UX/audio/polish (12 missions)
-Needs-attention queue; onboarding tooltips (first-20-turns script); dynasty screen flagship pass; chronicle screen + screenshot export; audio wiring + packs; settings + pause menu; art style unification; copy edit. **Gate:** a stranger plays 30 minutes with zero verbal help (the real tutorial test).
+Needs-attention queue; onboarding tooltips (first-20-turns script); dynasty screen flagship pass; chronicle screen + screenshot export; audio wiring + **audio foundry** (Mode-A pre-baked voiced-event + SFX assets via openmoss/thinksound — license-verification mission first, X.9); settings + pause menu; art style unification; copy edit. **Gate:** a stranger plays 30 minutes with zero verbal help (the real tutorial test). *(Runtime generative narration = Mode B, S4-gated track, X.9 — not in this wave.)*
 
 ## Wave 10 — Balance & pacing (8 missions + play cycles)
 Autoplay sweeps across seeds/difficulties; decision-density tuning; snowball metrics (leader yield share over time); victory timing tuning (all 4 paths land turns 120–220); difficulty curve; 100-turn crash-free soak ×20 seeds. **Gate:** telemetry bands green; 5 external playtesters.
@@ -516,6 +548,8 @@ PyInstaller onedir + installer + clean-VM test; Steamworks integration; demo bui
 | 8 | "Old World already exists" positioning failure | Medium | Dynasty-first differentiation, session length, price point, moddability |
 | 9 | Interaction layer feels like two bolted games | Medium | VI's both-directions rule with falsifiable tests per mapping; user play gates every wave |
 | 10 | $1M expectation vs 1.5% base rate | — | Staged gates (I.2); success case honestly defined as $50–250k |
+| 11 | Generative-audio model licensing blocks commercial ship | Medium | X.9 licensing-verification is a *blocking* first mission before any foundry output ships; Mode A ships only plain reviewed WAV/OGG assets; fall back to licensed packs if weights aren't commercially clearable |
+| 12 | Runtime local generation (Mode B) hurts perf / fails on weak PCs | Low (it's optional) | Mode B is S4-gated, ships as optional download, auto-detects NPU/GPU/CPU and degrades to Mode-A pre-baked assets; core game never depends on it |
 
 ---
 
@@ -595,7 +629,7 @@ Wave 4: legitimacy · stat→map ×4 · map→char ×7 · stress-yield · agenda
 Wave 5: EventEngine · schema/loader · migration · chains/memory · subjects · event UI · schemes ×2 · scheme UI · W5 gate.
 Wave 6: difficulty · openings · rules ×3 · grand strategy · AI schemes · perf · W6 gate.
 Waves 7–8: content batches (techs, buildings, units, wonders, events ×~20 batches, civs-8, style pass) · gates.
-Wave 9: attention queue · onboarding · dynasty screen · chronicle · audio · settings/pause · art pass · copy edit · W9 gate.
+Wave 9: attention queue · onboarding · dynasty screen · chronicle · audio wiring · audio foundry (license check → openmoss/thinksound pre-baked assets, X.9) · settings/pause · art pass · copy edit · W9 gate. (Mode-B runtime generation = separate S4 track.)
 Wave 10: balance sweeps ×6 · soak · external playtest · W10 gate.
 Wave 11: packaging · Steamworks · demo · page assets · trailer · Next Fest · EA roadmap · save audit · S2 launch.
 
