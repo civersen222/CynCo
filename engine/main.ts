@@ -303,6 +303,8 @@ const loop = new ConversationLoop({
     }
   },
   s5: s5Orchestrator,
+  // Late-binding closure: dashboardServer is assigned after loop construction
+  dashboardBroadcast: (msg) => dashboardServer?.broadcast(msg as any),
 })
 
 // Wire llama-server eval tok/s → governance for accurate dashboard display
