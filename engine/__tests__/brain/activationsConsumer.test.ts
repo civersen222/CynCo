@@ -54,4 +54,33 @@ describe('ActivationsConsumer', () => {
     expect(broadcast).not.toHaveBeenCalled()
     expect(c.cursor).toBe(1)
   })
+
+  it('start() broadcasts brain.tier with layers from jlens health', async () => {
+    const fetched = { cursor: 0, n_embd: 4, entries: [] }
+    const broadcast = vi.fn()
+    const c = new ActivationsConsumer({
+      activationsUrl: 'http://x',
+      fetchFn: (async () => new Response(JSON.stringify(fetched), { status: 200 })) as any,
+      jlens: { readout: vi.fn(), health: async () => ({ ok: true, layers: [24, 40, 56] }) } as any,
+      broadcast, layer: 40, stride: 1,
+    })
+    const tier = await c.start()
+    c.stop()
+    expect(tier).toBe('live')
+    expect(broadcast).toHaveBeenCalledWith({ type: 'brain.tier', tier: 'live', layers: [24, 40, 56] })
+  })
+
+  it('start() reports entropy-only with empty layers when both deps down', async () => {
+    const broadcast = vi.fn()
+    const c = new ActivationsConsumer({
+      activationsUrl: 'http://x',
+      fetchFn: (async () => { throw new Error('refused') }) as any,
+      jlens: { readout: vi.fn(), health: async () => null } as any,
+      broadcast, layer: 40, stride: 1,
+    })
+    const tier = await c.start()
+    c.stop()
+    expect(tier).toBe('entropy-only')
+    expect(broadcast).toHaveBeenCalledWith({ type: 'brain.tier', tier: 'entropy-only', layers: [] })
+  })
 })

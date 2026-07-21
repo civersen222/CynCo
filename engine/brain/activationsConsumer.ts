@@ -43,10 +43,11 @@ export class ActivationsConsumer {
   /** Probe deps, report tier, start polling if the tap is up. */
   async start(): Promise<BrainTier> {
     const tapUp = await this.pollOnce()
-    const lensUp = (await this.opts.jlens.health()) !== null
+    const lens = await this.opts.jlens.health()
+    const lensUp = lens !== null
     const tier: BrainTier = tapUp && lensUp ? 'live' : tapUp ? 'record-only' : 'entropy-only'
     console.log(`[brain] tier: ${tier} (tap=${tapUp} lens=${lensUp})`)
-    this.opts.broadcast({ type: 'brain.tier', tier })
+    this.opts.broadcast({ type: 'brain.tier', tier, layers: lens?.layers ?? [] })
     if (tapUp) this.timer = setInterval(() => { void this.pollOnce() }, this.opts.intervalMs ?? 100)
     return tier
   }

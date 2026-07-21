@@ -423,6 +423,9 @@ input[type="range"]:disabled::-webkit-slider-thumb { cursor: not-allowed; }
 .thinking.done { opacity: .45; }
 .turn-sep { text-align: center; opacity: .5; font-size: 11px; padding: 4px 0; color: #808080; }
 .scroll-tail { max-height: 240px; overflow-y: auto; background: #1a1a2e; border-radius: 4px; padding: 8px; font-size: 12px; }
+.ws-row { white-space: nowrap; }
+.ws-concept { margin-right: .5em; }
+.ws-pos { opacity: .4; margin-right: .6em; }
 .badge {
   display: inline-block; padding: 2px 8px; border-radius: 3px;
   font-size: 10px; font-weight: 600; text-transform: uppercase;
@@ -2501,8 +2504,51 @@ function brainMaybeCloseThinking() {
   var c = tail.lastElementChild;
   if (c && c.classList.contains('thinking')) c.classList.add('done');
 }
-function brainOnWorkspace() {}  // stub — implemented in Task 17
-function brainOnTier() {}       // stub — implemented in Task 17
+// ── Brain workspace panel (Tier 2/3) ─────────────────────────
+var brainWorkspace = { rows: [] };  // last N readouts
+
+function brainOnTier(msg) {
+  var tier = msg.tier || 'entropy-only';
+  var badge = document.getElementById('brain-tier-badge');
+  if (badge) badge.textContent = tier + (tier === 'live' ? ' (unvalidated)' : '');
+  var status = document.getElementById('brain-workspace-status');
+  if (status) status.textContent =
+    tier === 'live' ? '' : tier === 'record-only' ? 'lens sidecar offline — activations recorded only'
+                         : 'workspace offline (unpatched server) — entropy only';
+  brainFillLayers(msg.layers);
+}
+
+function brainFillLayers(layers) {
+  var sel = document.getElementById('brain-layer');
+  if (!sel || !Array.isArray(layers) || layers.length === 0) return;
+  var current = sel.value;
+  sel.innerHTML = layers.map(function (l) {
+    return '<option value="' + Number(l) + '">' + Number(l) + '</option>';
+  }).join('');
+  if (current && layers.indexOf(Number(current)) !== -1) sel.value = current;
+}
+
+document.getElementById('brain-layer').addEventListener('change', function () {
+  fetch('/api/brain/layer', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ layer: Number(this.value) }),
+  }).catch(function (e) { console.warn('[brain] layer switch failed', e); });
+});
+
+function brainOnWorkspace(msg) {
+  brainWorkspace.rows.push(msg);
+  if (brainWorkspace.rows.length > 40) brainWorkspace.rows.shift();
+  var el = document.getElementById('brain-concepts');
+  if (!el) return;
+  el.innerHTML = brainWorkspace.rows.slice(-12).reverse().map(function (r) {
+    return '<div class="ws-row"><span class="ws-pos">@' + Number(r.pos) + '</span>' +
+      (r.top || []).slice(0, 8).map(function (t) {
+        var op = Math.max(0.25, Math.min(1, t.p * 3));
+        return '<span class="ws-concept" style="opacity:' + op + '">' + escHtml(t.token) + '</span>';
+      }).join('') + '</div>';
+  }).join('');
+}
 
 // Populate replay index from most-recent session in /api/sessions list
 // TODO(T17): replace with live session id once session.ready emits it

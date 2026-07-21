@@ -38,6 +38,8 @@ export interface DashboardDeps {
   onCommand?: (command: any) => void
   /** Override sessions directory for tests (defaults to ~/.cynco/sessions) */
   sessionsDir?: string
+  /** Brain Tier 3: switch the activations consumer's readout layer */
+  setBrainLayer?: (layer: number) => void
 }
 
 // ---------------------------------------------------------------------------
@@ -275,6 +277,15 @@ export class DashboardServer {
               return this.postConfigTools(body)
             case '/config/system':
               return this.postConfigSystem(body)
+            case '/api/brain/layer': {
+              const layer = body.layer
+              if (typeof layer !== 'number' || !Number.isInteger(layer) || layer < 0 || layer > 200) {
+                return jsonResponse({ error: 'invalid layer' }, 400)
+              }
+              if (!this.deps.setBrainLayer) return jsonResponse({ error: 'no consumer' }, 503)
+              this.deps.setBrainLayer(layer)
+              return jsonResponse({ ok: true })
+            }
             default:
               return jsonResponse({ error: 'Not found' }, 404)
           }

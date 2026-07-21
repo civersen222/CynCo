@@ -148,3 +148,54 @@ describe('GET /api/thinking', () => {
     expect(data).toHaveProperty('error', 'invalid session id')
   })
 })
+
+// ── POST /api/brain/layer ──────────────────────────────────────────
+
+describe('POST /api/brain/layer', () => {
+  it('returns 503 when no setBrainLayer dep is wired', async () => {
+    // shared server above has no setBrainLayer dep
+    const res = await fetch(`${BASE}/api/brain/layer`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ layer: 40 }),
+    })
+    expect(res.status).toBe(503)
+    expect(await res.json()).toHaveProperty('error', 'no consumer')
+  })
+
+  it('calls the dep and returns ok for a valid layer; 400 on invalid bodies', async () => {
+    const calls: number[] = []
+    const srv = new DashboardServer({ port: 0, deps: { setBrainLayer: (n) => calls.push(n) } })
+    const deadline = Date.now() + 2000
+    while (Date.now() < deadline) {
+      const port = srv.getPort()
+      if (port > 0) {
+        try { await fetch(`http://localhost:${port}/api/thinking/turns?session=__probe`); break } catch { /* not ready yet */ }
+      }
+      await new Promise(r => setTimeout(r, 10))
+    }
+    const base = `http://localhost:${srv.getPort()}`
+    try {
+      const ok = await fetch(`${base}/api/brain/layer`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ layer: 32 }),
+      })
+      expect(ok.status).toBe(200)
+      expect(await ok.json()).toHaveProperty('ok', true)
+      expect(calls).toEqual([32])
+
+      for (const bad of [{ layer: 'x' }, { layer: 3.5 }, { layer: -1 }, { layer: 999 }, {}]) {
+        const res = await fetch(`${base}/api/brain/layer`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(bad),
+        })
+        expect(res.status).toBe(400)
+      }
+      expect(calls).toEqual([32])
+    } finally {
+      srv.stop()
+    }
+  })
+})
