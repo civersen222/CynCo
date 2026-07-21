@@ -213,10 +213,11 @@ export function fromOpenAIStreamChunk(chunk: {
   // to thinking blocks so the TUI can display them and the assembler keeps them.
   const reasoningText = (choice.delta as any).reasoning_content ?? (choice.delta as any).reasoning
   if (reasoningText) {
+    const thinkLp = lp && !choice.delta.content ? lp : undefined
     events.push({
       type: 'content_block_delta',
       index: 0,
-      delta: { type: 'thinking_delta', thinking: reasoningText, ...(lp ? { logprobs: lp } : {}) },
+      delta: { type: 'thinking_delta', thinking: reasoningText, ...(thinkLp ? { logprobs: thinkLp } : {}) },
     })
   }
 

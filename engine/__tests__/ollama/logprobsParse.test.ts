@@ -43,6 +43,17 @@ describe('fromOpenAIStreamChunk logprobs', () => {
     expect(delta.delta.logprobs).toBeUndefined()
   })
 
+  it('chunk with both content and reasoning_content attaches logprobs only to the text delta', () => {
+    const events = fromOpenAIStreamChunk(baseChunk({
+      delta: { content: 'hi', reasoning_content: 'hmm' },
+      logprobs: { content: [{ token: 'hi', logprob: -0.1, top_logprobs: [] }] },
+    }))
+    const text = events.find(e => (e as any).delta?.type === 'text_delta') as any
+    const think = events.find(e => (e as any).delta?.type === 'thinking_delta') as any
+    expect(text.delta.logprobs).toHaveLength(1)
+    expect(think.delta.logprobs).toBeUndefined()
+  })
+
   it('translateStream native mode preserves delta.logprobs', async () => {
     async function* src() {
       yield { type: 'message_start', message: { id: '', model: 'm', usage: { input_tokens: 0, output_tokens: 0 } } } as any
