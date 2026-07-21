@@ -7,7 +7,7 @@
 
 import type {
   ContentBlock, Message, ToolDefinition, CompletionResponse,
-  StreamEvent, StopReason, TokenUsage,
+  StreamEvent, StopReason, TokenUsage, TokenLogprob,
 } from '../types.js'
 import { parseNativeToolCalls } from '../engine/toolCallRepair.js'
 
@@ -153,6 +153,19 @@ export function fromOpenAIResponse(oai: {
   }
 }
 
+/** Parse OpenAI-compat `choices[].logprobs.content` into TokenLogprob[]; undefined if absent/malformed. */
+function parseChunkLogprobs(choice: unknown): TokenLogprob[] | undefined {
+  const content = (choice as any)?.logprobs?.content
+  if (!Array.isArray(content) || content.length === 0) return undefined
+  return content.map((e: any) => ({
+    token: String(e?.token ?? ''),
+    logprob: Number(e?.logprob ?? 0),
+    top: Array.isArray(e?.top_logprobs)
+      ? e.top_logprobs.map((t: any) => ({ token: String(t?.token ?? ''), logprob: Number(t?.logprob ?? 0) }))
+      : [],
+  }))
+}
+
 /**
  * Convert an OpenAI streaming chunk to StreamEvents.
  *
@@ -184,12 +197,14 @@ export function fromOpenAIStreamChunk(chunk: {
   const choice = chunk.choices[0]
   if (!choice) return events
 
+  const lp = parseChunkLogprobs(choice)
+
   // Text delta
   if (choice.delta.content) {
     events.push({
       type: 'content_block_delta',
       index: 0,
-      delta: { type: 'text_delta', text: choice.delta.content },
+      delta: { type: 'text_delta', text: choice.delta.content, ...(lp ? { logprobs: lp } : {}) },
     })
   }
 
@@ -201,7 +216,7 @@ export function fromOpenAIStreamChunk(chunk: {
     events.push({
       type: 'content_block_delta',
       index: 0,
-      delta: { type: 'thinking_delta', thinking: reasoningText },
+      delta: { type: 'thinking_delta', thinking: reasoningText, ...(lp ? { logprobs: lp } : {}) },
     })
   }
 

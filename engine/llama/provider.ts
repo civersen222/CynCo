@@ -304,6 +304,13 @@ export class LlamaCppProvider implements Provider {
       ]
     }
 
+    // Tier-1 uncertainty trace (Brain): default-on. Ollama's OAI-compat layer
+    // ignores unknown sampling fields; llama-server honors them.
+    if (stream) {
+      body.logprobs = true
+      body.top_logprobs = 8
+    }
+
     return body
   }
 }
