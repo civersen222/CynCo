@@ -31,6 +31,10 @@ __pycache__/
 # Python venvs
 .venv/
 tui/.venv/
+jlens/.venv/
+
+# jlens pycache
+jlens/**/__pycache__/
 
 # Lock files (regenerated per-machine)
 bun.lock

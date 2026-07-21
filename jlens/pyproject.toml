@@ -1,0 +1,17 @@
+[project]
+name = "jlens-service"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+  "torch>=2.2",
+  "safetensors>=0.4",
+  "huggingface_hub>=0.23",
+  "transformers>=4.44",
+  "numpy",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
