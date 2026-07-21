@@ -231,7 +231,7 @@ Every user message auto-creates a Definition of Done contract. The model cannot 
 - Up to 5 enforcement rounds — if the model tries to stop early, it gets told "you're NOT done"
 
 ### Governance Dashboard + Chat UI
-Open `http://localhost:9161` during any session. Four tabs:
+Open `http://localhost:9161` during any session. Five tabs:
 
 **[Chat]** — Send prompts directly from the browser. Full tool output with expandable details, visible thinking tokens, streaming model text. Slash commands (`/plan`, `/tdd`, `/debug`) for workflows. Enter to send, Shift+Enter for newlines.
 
@@ -243,11 +243,30 @@ Open `http://localhost:9161` during any session. Four tabs:
 - **S5 Decision Log** — live policy decisions with reasoning
 - **tok/s** — real-time inference speed from llama-server eval timing
 
+**[Brain]** — Model cognition: thinking-token viewer, per-token entropy trace, and (with setup) a live concept workspace read from mid-network activations. See **The Brain** below.
+
 **[History]** — Session analytics with per-session metrics charts (tool success, stuck turns, context utilization over time), session transcript viewer, and session selector.
 
 **[Config]** — Temperature, context length, timeout sliders. System control toggles. All 21 VSM governance parameters with sliders and bounds.
 
 Survives page reload, auto-detects active sessions, auto-reconnects on disconnect. Polls governance every 3s and training data every 30s.
+
+### The Brain
+
+The dashboard's **[Brain]** tab exposes what the model is doing internally, at three depths:
+
+**Thinking stream (default-on).** Thinking tokens are persisted per turn and rendered in the Brain tab's turn browser. Wired in `engine/bridge/conversationLoop.ts` (`finalizeTurn` stores each turn's thinking text) — no configuration needed.
+
+**Entropy trace (default-on).** Every generated token carries its top-8 logprobs; the engine computes per-token entropy and streams it as a live sparkline with a hover readout of the runner-up tokens. Wired in `engine/ollama/client.ts` and `engine/llama/provider.ts` (logprobs request + `brain.token` broadcast). If the backend returns no logprob data, the trace degrades to a "no logprob data" notice — everything else keeps working.
+
+**Concept workspace (setup-required).** A J-lens readout (`softmax(W_U · rmsnorm(J_ℓ h_ℓ))`) of mid-network activations, shown as a live ribbon of the concepts the model is holding at each layer. Tier support is auto-detected at startup by `engine/brain/activationsConsumer.ts` (`start()` probes both dependencies and reports `live` / `record-only` / `entropy-only` on the tab's badge). To enable the full `live` tier:
+
+1. Download the lens artifacts: `cd jlens && python -m jlens_service.download`
+2. Start the sidecar: `python -m jlens_service.server` (port 9163)
+3. Build the patched llama-server (activation tap + `/activations` route — patches in `docs/research/`), deploy as `~/.cynco/bin/llama-server-brain.exe`
+4. Set `LLAMA_ACTIVATIONS_LAYERS=24,32,40,48,56` and point CynCo at the patched binary
+
+Without steps 3-4 the tab runs `entropy-only`; without step 2 it runs `record-only`. Nothing breaks either way.
 
 ### Always-on missions (experimental)
 
