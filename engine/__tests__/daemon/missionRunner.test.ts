@@ -6,6 +6,7 @@ import { join } from 'path'
 import { MissionRunner } from '../../daemon/missionRunner.js'
 import { MissionLedger } from '../../daemon/missionLedger.js'
 import type { MissionConfig, TaskOutcome, Recommendation } from '../../daemon/types.js'
+import type { TurnThinkingRecord } from '../../memory/thinkingRecorder.js'
 
 const config: MissionConfig = {
   id: 'mfl-dynasty',
@@ -453,5 +454,75 @@ describe('MissionRunner taskType plumbing', () => {
     expect(ranTasks[0].timeoutMs).toBe(15 * 60 * 1000)
     expect(ranTasks[0].taskType).toBeUndefined()
     expect(ranTasks[0].leagues).toEqual([{ leagueId: '12345', year: 2026, franchiseId: '0005' }])
+  })
+})
+
+describe('MissionRunner entropy digest on RunRecord', () => {
+  /** Write two thinking records for a given sessionId into a temp sessions dir. */
+  function writeThinkingFile(sessionsDir: string, sessionId: string): void {
+    const rec1: TurnThinkingRecord = {
+      turn: 1, ts: 1, text: 'a', tokenCount: 1, durationMs: 1,
+      entropy: { thinking: { mean: 1, max: 2, spikeCount: 1 }, output: null },
+    }
+    const rec2: TurnThinkingRecord = {
+      turn: 2, ts: 2, text: 'b', tokenCount: 1, durationMs: 1,
+      entropy: { thinking: { mean: 3, max: 5, spikeCount: 2 }, output: null },
+    }
+    writeFileSync(
+      join(sessionsDir, `${sessionId}.thinking.jsonl`),
+      [JSON.stringify(rec1), JSON.stringify(rec2)].join('\n') + '\n',
+      'utf-8',
+    )
+  }
+
+  it('run record carries entropy digest when a thinking file exists for the session', async () => {
+    const sessionsDir = mkdtempSync(join(tmpdir(), 'cynco-thinking-'))
+    const SESSION_ID = 'session-test-entropy-001'
+    writeThinkingFile(sessionsDir, SESSION_ID)
+
+    const { deps } = makeDeps({
+      runTask: async (): Promise<TaskOutcome> => ({
+        ok: true, summary: 'done', recommendations: [], sessionId: SESSION_ID,
+      }),
+    })
+    const ledger = MissionLedger.load(join(dir, 'mfl-dynasty'))
+    ledger.setNextFire('news', new Date(2026, 5, 11, 11, 59).toISOString())
+    ledger.setNextFire('poll', new Date(2026, 5, 12).toISOString())
+    const runner = new MissionRunner(ledger, deps as any, sessionsDir)
+    await runner.tick()
+
+    const runs = ledger.recentRuns(5)
+    expect(runs.length).toBe(1)
+    expect(runs[0].entropy).toEqual({
+      thinking: {
+        mean: expect.any(Number),
+        max: expect.any(Number),
+        spikeCount: expect.any(Number),
+      },
+      output: null,
+    })
+
+    rmSync(sessionsDir, { recursive: true, force: true })
+  })
+
+  it('run record entropy is null when no thinking file exists for the session', async () => {
+    const sessionsDir = mkdtempSync(join(tmpdir(), 'cynco-thinking-empty-'))
+
+    const { deps } = makeDeps({
+      runTask: async (): Promise<TaskOutcome> => ({
+        ok: true, summary: 'done', recommendations: [], sessionId: 'session-no-thinking-file',
+      }),
+    })
+    const ledger = MissionLedger.load(join(dir, 'mfl-dynasty'))
+    ledger.setNextFire('news', new Date(2026, 5, 11, 11, 59).toISOString())
+    ledger.setNextFire('poll', new Date(2026, 5, 12).toISOString())
+    const runner = new MissionRunner(ledger, deps as any, sessionsDir)
+    await runner.tick()
+
+    const runs = ledger.recentRuns(5)
+    expect(runs.length).toBe(1)
+    expect(runs[0].entropy).toBeNull()
+
+    rmSync(sessionsDir, { recursive: true, force: true })
   })
 })

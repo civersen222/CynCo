@@ -72,6 +72,9 @@ export interface TaskOutcome {
   summary: string
   recommendations: Recommendation[]
   error?: string
+  /** Session id produced by the ConversationLoop that ran this task.
+   *  Set by runGovernedLoop; absent when the task short-circuits (timeout, GPU busy). */
+  sessionId?: string
 }
 
 export interface RunRecord {
@@ -80,6 +83,10 @@ export interface RunRecord {
   ok: boolean
   summary: string
   recommendationIds: string[]
+  /** Entropy digest aggregated from thinking records for this session.
+   *  null when no thinking file exists (model has no thinking tokens, or
+   *  this is an older record written before Brain T5). */
+  entropy?: import('../memory/thinkingRecorder.js').TurnEntropy | null
 }
 
 export interface PendingApproval {
