@@ -41,6 +41,8 @@ import { VibeController } from './vibe/controller.js'
 import { TemplateLoader } from './prompts/templateLoader.js'
 import { initJournal } from './training/decisionJournal.js'
 import { DashboardServer } from './dashboard/server.js'
+import { ActivationsConsumer } from './brain/activationsConsumer.js'
+import { JlensClient } from './brain/jlensClient.js'
 
 // ─── MCP Discovery (standalone — standalone implementation) ──────
 
@@ -363,6 +365,19 @@ try {
   console.warn('[dashboard] Failed to start dashboard server:', e)
 }
 
+// ─── Brain Activations Consumer (Tier 3 — default-on, degrades silently) ─────
+// Only wired when provider is llama-cpp (Ollama has no activation tap).
+let activationsConsumer: ActivationsConsumer | null = null
+if (config.provider === 'llama-cpp') {
+  activationsConsumer = new ActivationsConsumer({
+    activationsUrl: `${providerUrl}/activations`,
+    jlens: new JlensClient(),
+    broadcast: (msg) => dashboardServer?.broadcast(msg as any),
+    layer: Number(process.env.LOCALCODE_BRAIN_LAYER ?? 40),
+  })
+  void activationsConsumer.start()   // auto-detects tier; default-on, no flag (D5)
+}
+
 // Write session outcome on clean shutdown
 async function cleanShutdown(signal: string) {
   // Record governance session outcome
@@ -393,6 +408,7 @@ async function cleanShutdown(signal: string) {
     console.log(`[training] Auto-backfill failed: ${e}`)
   }
   AuditLogger.writeSessionOutcome(signal)
+  activationsConsumer?.stop()
   if (config.provider === 'llama-cpp' && provider && 'processManager' in provider) {
     const pm = (provider as any).processManager
     if (pm?.stop) await pm.stop()
