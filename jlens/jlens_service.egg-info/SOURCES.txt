@@ -1,9 +1,0 @@
-pyproject.toml
-jlens_service/__init__.py
-jlens_service/config.py
-jlens_service.egg-info/PKG-INFO
-jlens_service.egg-info/SOURCES.txt
-jlens_service.egg-info/dependency_links.txt
-jlens_service.egg-info/requires.txt
-jlens_service.egg-info/top_level.txt
-tests/test_config.py

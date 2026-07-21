@@ -33,8 +33,9 @@ __pycache__/
 tui/.venv/
 jlens/.venv/
 
-# jlens pycache
+# jlens pycache + build artifacts
 jlens/**/__pycache__/
+jlens/*.egg-info/
 
 # Lock files (regenerated per-machine)
 bun.lock
