@@ -19,6 +19,7 @@ import type { Server, ServerWebSocket } from 'bun'
 import type { EngineEvent } from '../bridge/protocol.js'
 import { setParam, GOVERNANCE_PARAMS, exportParamMetadata } from '../vsm/governanceParams.js'
 import { globalContract } from '../tools/contract.js'
+import { ThinkingRecorder } from '../memory/thinkingRecorder.js'
 
 // ---------------------------------------------------------------------------
 // DashboardDeps — optional callbacks into the engine
@@ -35,6 +36,8 @@ export interface DashboardDeps {
   setToolRouting?: (enabled: boolean) => void
   getToolRouting?: () => boolean
   onCommand?: (command: any) => void
+  /** Override sessions directory for tests (defaults to ~/.cynco/sessions) */
+  sessionsDir?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -60,6 +63,12 @@ function htmlResponse(body: string, status = 200): Response {
     headers: { ...CORS_HEADERS, 'Content-Type': 'text/html; charset=utf-8' },
   })
 }
+
+// ---------------------------------------------------------------------------
+// Session-id validation (no path separators, no shell-special chars)
+// ---------------------------------------------------------------------------
+
+const SESSION_ID_RE = /^[\w.-]+$/
 
 // ---------------------------------------------------------------------------
 // Validation helpers
@@ -123,6 +132,8 @@ export class DashboardServer {
     this.server = Bun.serve({
       port,
       hostname: this._hostname,
+      // Note: after Bun.serve() this.server.port reflects the actual bound port
+      // (important when port=0 is used for OS-assigned ephemeral ports in tests).
       fetch: async (req, server) => {
         const url = new URL(req.url)
         const pathname = url.pathname
@@ -218,6 +229,18 @@ export class DashboardServer {
               } catch {
                 return jsonResponse({ tasks: 0, turns: 0, rewards: 0, sftExamples: 0, targetExamples: 300, readyForSFT: false, progress: 0 })
               }
+            }
+            case '/api/thinking/turns': {
+              const sid = url.searchParams.get('session') ?? ''
+              return this.getThinkingTurns(sid)
+            }
+            case '/api/thinking': {
+              const sid = url.searchParams.get('session') ?? ''
+              const turnStr = url.searchParams.get('turn') ?? ''
+              const turnNum = Number(turnStr)
+              if (!SESSION_ID_RE.test(sid)) return jsonResponse({ error: 'invalid session id' }, 400)
+              if (!turnStr || Number.isNaN(turnNum)) return jsonResponse({ error: 'invalid session id' }, 400)
+              return this.getThinkingTurn(sid, turnNum)
             }
             default: {
               // Handle parameterized routes
@@ -373,6 +396,20 @@ export class DashboardServer {
     } catch {
       return jsonResponse([])
     }
+  }
+
+  private getThinkingTurns(sessionId: string): Response {
+    if (!SESSION_ID_RE.test(sessionId)) return jsonResponse({ error: 'invalid session id' }, 400)
+    const turns = ThinkingRecorder.readTurns(sessionId, this.deps.sessionsDir)
+    if (turns.length === 0) return jsonResponse({ error: 'not found' }, 404)
+    return jsonResponse(turns.map(({ text: _text, ...index }) => index))
+  }
+
+  private getThinkingTurn(sessionId: string, turn: number): Response {
+    if (!SESSION_ID_RE.test(sessionId)) return jsonResponse({ error: 'invalid session id' }, 400)
+    const rec = ThinkingRecorder.readTurn(sessionId, turn, this.deps.sessionsDir)
+    if (!rec) return jsonResponse({ error: 'not found' }, 404)
+    return jsonResponse(rec)
   }
 
   // ── POST Handlers ───────────────────────────────────────────────
@@ -565,7 +602,8 @@ export class DashboardServer {
   }
 
   getPort(): number {
-    return this._port
+    // Prefer the server's actual bound port (non-zero when port=0 was requested).
+    return (this.server as any).port ?? this._port
   }
 
   getHostname(): string {

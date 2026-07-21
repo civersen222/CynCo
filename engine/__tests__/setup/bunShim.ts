@@ -127,7 +127,12 @@ function makeBunServe(options: BunWSServerOptions): BunServerLike {
   })
 
   const bindHost = options.hostname ?? '0.0.0.0'
-  httpServer.listen(options.port, bindHost)
+  // exclusive: false → SO_REUSEADDR on Windows, allowing bind when prior
+  // connections are in TIME_WAIT (common in rapid test re-runs).
+  httpServer.listen({ port: options.port, host: bindHost, exclusive: false })
+
+  // Expose the actual bound port (useful when port=0 for OS-assigned ephemeral ports).
+  const getPort = () => (httpServer.address() as any)?.port ?? options.port
 
   return {
     hostname: bindHost,
@@ -136,6 +141,7 @@ function makeBunServe(options: BunWSServerOptions): BunServerLike {
       wss.close()
       httpServer.close()
     },
+    get port() { return getPort() },
   }
 }
 
