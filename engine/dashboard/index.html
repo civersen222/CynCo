@@ -2510,7 +2510,7 @@ var brainWorkspace = { rows: [] };  // last N readouts
 function brainOnTier(msg) {
   var tier = msg.tier || 'entropy-only';
   var badge = document.getElementById('brain-tier-badge');
-  if (badge) badge.textContent = tier + (tier === 'live' ? ' (unvalidated)' : '');
+  if (badge) badge.textContent = tier;
   var status = document.getElementById('brain-workspace-status');
   if (status) status.textContent =
     tier === 'live' ? '' : tier === 'record-only' ? 'lens sidecar offline — activations recorded only'
