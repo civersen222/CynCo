@@ -417,6 +417,24 @@ input[type="range"]:disabled::-webkit-slider-thumb { cursor: not-allowed; }
 .apply-status { font-size: 11px; color: #808080; }
 
 .empty-text { color: #808080; font-size: 12px; font-style: italic; }
+
+/* ── Brain pane ───────────────────────────────────────────── */
+.thinking { opacity: .7; font-style: italic; white-space: pre-wrap; font-size: 12px; }
+.thinking.done { opacity: .45; }
+.turn-sep { text-align: center; opacity: .5; font-size: 11px; padding: 4px 0; color: #808080; }
+.scroll-tail { max-height: 240px; overflow-y: auto; background: #1a1a2e; border-radius: 4px; padding: 8px; font-size: 12px; }
+.badge {
+  display: inline-block; padding: 2px 8px; border-radius: 3px;
+  font-size: 10px; font-weight: 600; text-transform: uppercase;
+  background: #2d3a4a; color: #569cd6; letter-spacing: 0.5px;
+  margin-left: 8px; vertical-align: middle;
+}
+.tooltip {
+  position: absolute; background: #1a1a2e; color: #d4d4d4;
+  border: 1px solid #444; border-radius: 4px; padding: 4px 8px;
+  font-size: 11px; pointer-events: none; z-index: 100; white-space: nowrap;
+  font-family: 'Cascadia Code', 'Fira Code', monospace;
+}
 </style>
 </head>
 <body>
@@ -431,6 +449,7 @@ input[type="range"]:disabled::-webkit-slider-thumb { cursor: not-allowed; }
 <div class="tab-bar">
   <button class="tab-btn active" onclick="switchTab('chat')">Chat</button>
   <button class="tab-btn" onclick="switchTab('governance')">Governance</button>
+  <button class="tab-btn" onclick="switchTab('brain')">Brain</button>
   <button class="tab-btn" onclick="switchTab('history')">History</button>
   <button class="tab-btn" onclick="switchTab('config')">Config</button>
 </div>
@@ -595,6 +614,29 @@ input[type="range"]:disabled::-webkit-slider-thumb { cursor: not-allowed; }
   </div>
 </div>
 </div><!-- /tab-governance -->
+
+<!-- ── Brain Tab ────────────────────────────────────────────── -->
+<div id="tab-brain" class="tab-content">
+<div class="grid">
+  <div class="panel full-width" id="brain-pane">
+    <div class="panel-title">
+      Brain <span id="brain-tier-badge" class="badge">entropy-only</span>
+    </div>
+    <div id="brain-tail" class="scroll-tail"></div>
+    <canvas id="brain-sparkline" height="60" style="width:100%;display:block;margin:8px 0;"></canvas>
+    <div id="brain-tooltip" class="tooltip" hidden></div>
+    <div id="brain-workspace" style="margin-top:8px;">
+      <label style="font-size:12px;color:#808080;">Layer <select id="brain-layer" style="background:#1e1e2e;color:#d4d4d4;border:1px solid #444;padding:2px 6px;border-radius:4px;font-size:12px;"></select></label>
+      <span id="brain-workspace-status" style="margin-left:12px;font-size:12px;color:#808080;">workspace offline</span>
+      <div id="brain-concepts" style="margin-top:6px;font-size:11px;color:#808080;"></div>
+    </div>
+    <div id="brain-replay" style="margin-top:10px;display:flex;gap:8px;align-items:center;">
+      <select id="brain-turn-select" style="background:#1e1e2e;color:#d4d4d4;border:1px solid #444;padding:4px 8px;border-radius:4px;font-size:12px;flex:1;"></select>
+      <button id="brain-replay-load" style="background:#264f78;color:#d4d4d4;border:none;padding:4px 12px;border-radius:4px;cursor:pointer;font-size:12px;">Replay turn</button>
+    </div>
+  </div>
+</div>
+</div><!-- /tab-brain -->
 
 <!-- ── History Tab ─────────────────────────────────────────── -->
 <div id="tab-history" class="tab-content">
@@ -846,6 +888,7 @@ function handleEvent(event) {
       // Predictions and contracts update per turn — fetch via REST
       fetchPredictions();
       fetchContracts();
+      brainTurnSeparator();
       break;
 
     case 'context.status':
@@ -947,10 +990,12 @@ function handleEvent(event) {
     case 'stream.thinking':
       brainViz.setActive(true);
       appendChatThinking(event.text || '');
+      brainOnThinking(event.text || '');
       break;
 
     case 'stream.token':
       brainViz.setActive(true);
+      brainMaybeCloseThinking();
       // Chat tab: stream assistant text
       if (event.text) {
         var msgs = document.getElementById('chatMessages');
@@ -997,6 +1042,18 @@ function handleEvent(event) {
     case 'bestOfN.start':
       state.bestOfN = event.payload || event;
       renderBestOfN();
+      break;
+
+    case 'brain.uncertainty':
+      brainOnUncertainty(event.points || []);
+      break;
+
+    case 'brain.workspace':
+      brainOnWorkspace(event);
+      break;
+
+    case 'brain.tier':
+      brainOnTier(event);
       break;
   }
 }
@@ -2317,6 +2374,138 @@ function closeChatThinking() {
   var all = el.querySelectorAll('.chat-thinking');
   for (var i = 0; i < all.length; i++) all[i].dataset.closed = 'true';
 }
+
+// ── Brain pane ────────────────────────────────────────────────
+var brain = { entropies: [], paused: false, turnCount: 0 };
+
+function brainOnThinking(text) {
+  var tail = document.getElementById('brain-tail');
+  var cur = tail.lastElementChild;
+  if (!cur || !cur.classList.contains('thinking')) {
+    cur = document.createElement('div');
+    cur.className = 'thinking';
+    tail.appendChild(cur);
+  }
+  cur.textContent += text;
+  if (!brain.paused) tail.scrollTop = tail.scrollHeight;
+}
+
+function brainOnUncertainty(points) {
+  brain.entropies.push.apply(brain.entropies, points);
+  if (brain.entropies.length > 2000) brain.entropies.splice(0, brain.entropies.length - 2000);
+  drawSparkline();
+}
+
+function brainTurnSeparator() {
+  brain.turnCount++;
+  var sep = document.createElement('div');
+  sep.className = 'turn-sep';
+  sep.textContent = '\u2014 turn ' + brain.turnCount + ' \u2014';
+  document.getElementById('brain-tail').appendChild(sep);
+}
+
+function drawSparkline() {
+  var canvas = document.getElementById('brain-sparkline');
+  if (!canvas) return;
+  var ctx = canvas.getContext('2d');
+  canvas.width = canvas.clientWidth || canvas.offsetWidth || 600;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  var xs = brain.entropies.slice(-canvas.width);
+  if (!xs.length) return;
+  var hMax = Math.max.apply(null, xs.map(function(p) { return p.h; }).concat([Math.log(8)]));
+  var sum = xs.reduce(function(a, p) { return a + p.h; }, 0);
+  var mean = sum / xs.length;
+  var variance = xs.reduce(function(a, p) { return a + (p.h - mean) * (p.h - mean); }, 0) / xs.length;
+  var sd = Math.sqrt(variance);
+  for (var i = 0; i < xs.length; i++) {
+    var p = xs[i];
+    var y = canvas.height - (p.h / hMax) * canvas.height;
+    var spike = p.h > mean + 2 * sd;
+    ctx.fillStyle = spike ? '#e05555' : (p.kind === 'thinking' ? '#8888cc' : '#55aa77');
+    ctx.fillRect(i, y, 1, canvas.height - y);
+  }
+  canvas.onmousemove = function(ev) {
+    var p = xs[Math.floor(ev.offsetX)];
+    var tip = document.getElementById('brain-tooltip');
+    if (!p || !p.top || !p.top.length) { tip.hidden = true; return; }
+    tip.hidden = false;
+    tip.style.left = ev.pageX + 'px';
+    tip.style.top = (ev.pageY - 10) + 'px';
+    tip.textContent = p.top.map(function(t) {
+      return JSON.stringify(t.token) + ' ' + (Math.exp(t.logprob) * 100).toFixed(1) + '%';
+    }).join('  ');
+  };
+  canvas.onmouseleave = function() {
+    var tip = document.getElementById('brain-tooltip');
+    if (tip) tip.hidden = true;
+  };
+}
+
+(function() {
+  var tail = document.getElementById('brain-tail');
+  if (tail) {
+    tail.addEventListener('scroll', function() {
+      brain.paused = this.scrollTop + this.clientHeight < this.scrollHeight - 8;
+    });
+  }
+})();
+
+function brainLoadReplayIndex(sessionId) {
+  return fetch('/api/thinking/turns?session=' + encodeURIComponent(sessionId))
+    .then(function(r) { if (!r.ok) throw new Error('not ok'); return r.json(); })
+    .then(function(turns) {
+      var sel = document.getElementById('brain-turn-select');
+      if (!sel || !Array.isArray(turns)) return;
+      sel.innerHTML = turns.map(function(t) {
+        return '<option value="' + Number(t.turn) + '">turn ' + Number(t.turn) + ' \u00b7 ' + Number(t.tokenCount) + ' tok</option>';
+      }).join('');
+      sel.dataset.session = sessionId;
+    })
+    .catch(function() {});
+}
+
+(function() {
+  var btn = document.getElementById('brain-replay-load');
+  if (btn) {
+    btn.onclick = function() {
+      var sel = document.getElementById('brain-turn-select');
+      if (!sel || !sel.dataset.session) return;
+      fetch('/api/thinking?session=' + encodeURIComponent(sel.dataset.session) + '&turn=' + encodeURIComponent(sel.value))
+        .then(function(r) { if (!r.ok) throw new Error('not ok'); return r.json(); })
+        .then(function(rec) {
+          var tail = document.getElementById('brain-tail');
+          if (!tail) return;
+          tail.innerHTML = '';
+          brainTurnSeparator();
+          brainOnThinking(rec.text || '');
+        })
+        .catch(function() {});
+    };
+  }
+})();
+
+function brainMaybeCloseThinking() {
+  var tail = document.getElementById('brain-tail');
+  if (!tail) return;
+  var c = tail.lastElementChild;
+  if (c && c.classList.contains('thinking')) c.classList.add('done');
+}
+function brainOnWorkspace() {}  // stub — implemented in Task 17
+function brainOnTier() {}       // stub — implemented in Task 17
+
+// Populate replay index from most-recent session in /api/sessions list
+// TODO(T17): replace with live session id once session.ready emits it
+function brainFetchLatestSessionForReplay() {
+  fetch('/api/sessions')
+    .then(function(r) { if (!r.ok) throw new Error('not ok'); return r.json(); })
+    .then(function(sessions) {
+      if (!Array.isArray(sessions) || !sessions.length) return;
+      var latest = sessions[0]; // list is sorted newest-first by the server
+      if (latest && latest.sessionId) brainLoadReplayIndex(latest.sessionId);
+    })
+    .catch(function() {});
+}
+brainFetchLatestSessionForReplay();
 
 // ── Session Transcript ────────────────────────────────────
 function loadSessionTranscript() {
