@@ -1,8 +1,8 @@
 diff --git a/include/llama.h b/include/llama.h
-index eb8698140..1c994b76b 100644
+index 9f78aa9a0..78959bcfa 100644
 --- a/include/llama.h
 +++ b/include/llama.h
-@@ -971,6 +971,25 @@ extern "C" {
+@@ -990,6 +990,25 @@ extern "C" {
      // and is not necessary to call it explicitly in most cases
      LLAMA_API void llama_synchronize(struct llama_context * ctx);
  
@@ -29,10 +29,10 @@ index eb8698140..1c994b76b 100644
      // The logits for which llama_batch.logits[i] != 0 are stored contiguously
      // in the order they have appeared in the batch.
 diff --git a/src/llama-context.cpp b/src/llama-context.cpp
-index d584415ee..e9bad04a9 100644
+index eff1d8f89..6513dca81 100644
 --- a/src/llama-context.cpp
 +++ b/src/llama-context.cpp
-@@ -13,9 +13,30 @@
+@@ -14,9 +14,30 @@
  
  #include <cinttypes>
  #include <cmath>
@@ -63,7 +63,7 @@ index d584415ee..e9bad04a9 100644
  
  //
  // llama_context
-@@ -663,6 +684,29 @@ void llama_context::synchronize() {
+@@ -691,6 +712,29 @@ void llama_context::synchronize() {
      t_compute_start_us = 0;
  }
  
@@ -93,7 +93,7 @@ index d584415ee..e9bad04a9 100644
  const llama_model & llama_context::get_model() const {
      return model;
  }
-@@ -1822,6 +1866,47 @@ int llama_context::decode(const llama_batch & batch_inp) {
+@@ -1945,6 +1989,47 @@ int llama_context::decode(const llama_batch & batch_inp) {
              copy_tensor_async_candidates(res->t_candidates,     sampling.candidates, stride, sampling.candidates_count, seq_to_output_row, sched.get());
          }
  
@@ -139,9 +139,9 @@ index d584415ee..e9bad04a9 100644
 +        }
 +
          n_outputs_prev += n_outputs;
+         n_tokens_prev  += ubatch.n_tokens;
      } while (mctx->next());
- 
-@@ -2202,6 +2287,11 @@ llm_graph_cb llama_context::graph_get_cb() const {
+@@ -2345,6 +2430,11 @@ llm_graph_cb llama_context::graph_get_cb() const {
      return [&](const llama_ubatch & ubatch, ggml_tensor * cur, const char * name, int il) {
          if (il >= 0) {
              ggml_format_name(cur, "%s-%d", name, il);
@@ -153,7 +153,7 @@ index d584415ee..e9bad04a9 100644
          } else {
              ggml_set_name(cur, name);
          }
-@@ -3143,6 +3233,13 @@ void llama_synchronize(llama_context * ctx) {
+@@ -3551,6 +3641,13 @@ void llama_synchronize(llama_context * ctx) {
      ctx->synchronize();
  }
  
@@ -168,7 +168,7 @@ index d584415ee..e9bad04a9 100644
      ctx->synchronize();
  
 diff --git a/src/llama-context.h b/src/llama-context.h
-index 53c705eaf..4931c9948 100644
+index 2af92b0f0..e23a3c1c3 100644
 --- a/src/llama-context.h
 +++ b/src/llama-context.h
 @@ -10,7 +10,9 @@
@@ -181,9 +181,9 @@ index 53c705eaf..4931c9948 100644
  #include <vector>
  
  struct llama_model;
-@@ -23,6 +25,16 @@ class llama_io_write_i;
- struct llama_memory_i;
- struct llama_memory_context_i;
+@@ -38,6 +40,16 @@ struct llama_memory_buffer {
+ 
+ using llama_memory_buffers = std::map<ggml_backend_buffer_type_t, llama_memory_buffer>;
  
 +// ── Brain activation tap (LocalCode) ─────────────────────────────────────────
 +// One captured activation: layer, sequence position, sampled token, fp32 vector.
@@ -198,7 +198,7 @@ index 53c705eaf..4931c9948 100644
  struct llama_context {
      // init scheduler and compute buffers, reserve worst-case graphs
      llama_context(
-@@ -41,6 +53,10 @@ struct llama_context {
+@@ -56,6 +68,10 @@ struct llama_context {
  
      void synchronize();
  
@@ -209,7 +209,7 @@ index 53c705eaf..4931c9948 100644
      const llama_model   & get_model()   const;
      const llama_cparams & get_cparams() const;
  
-@@ -299,6 +315,12 @@ private:
+@@ -324,6 +340,12 @@ private:
  
      std::vector<swap_info> output_swaps;
  
@@ -223,10 +223,10 @@ index 53c705eaf..4931c9948 100644
  
      bool sched_need_reserve = true;
 diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
-index d21e9c2ee..ee3f17714 100644
+index ab0d59447..cebde9ae2 100644
 --- a/tools/server/server-context.cpp
 +++ b/tools/server/server-context.cpp
-@@ -14,6 +14,7 @@
+@@ -15,6 +15,7 @@
  #include "speculative.h"
  #include "mtmd.h"
  #include "mtmd-helper.h"
@@ -234,18 +234,18 @@ index d21e9c2ee..ee3f17714 100644
  
  #include <algorithm>
  #include <cstddef>
-@@ -641,6 +642,10 @@ public:
+@@ -649,6 +650,10 @@ public:
      mtmd_context * mctx = nullptr;
      const llama_vocab * vocab = nullptr;
  
 +    // ── Brain activation tap (LocalCode): direct ctx access for /activations ──
 +    // safe cross-thread: llama_activations_read only touches its own mutex-guarded ring
-+    llama_context * get_ctx_for_activations() const { return sleeping ? nullptr : ctx; }
++    llama_context * get_ctx_for_activations() const { return sleeping ? nullptr : ctx_tgt; }
 +
      server_queue    queue_tasks;
      server_response queue_results;
  
-@@ -3582,6 +3587,45 @@ void server_routes::init_routes() {
+@@ -4116,6 +4121,45 @@ void server_routes::init_routes() {
          return res;
      };
  
@@ -292,10 +292,10 @@ index d21e9c2ee..ee3f17714 100644
          auto res = create_response();
          if (params.slot_save_path.empty()) {
 diff --git a/tools/server/server-context.h b/tools/server/server-context.h
-index 37f10dc77..7dde66a8f 100644
+index 73caff54a..b15dc1913 100644
 --- a/tools/server/server-context.h
 +++ b/tools/server/server-context.h
-@@ -101,6 +101,7 @@ struct server_routes {
+@@ -102,6 +102,7 @@ struct server_routes {
      // they won't be called until ctx_http.is_ready is set to true
      server_http_context::handler_t get_health;
      server_http_context::handler_t get_metrics;
@@ -304,10 +304,10 @@ index 37f10dc77..7dde66a8f 100644
      server_http_context::handler_t post_slots;
      server_http_context::handler_t get_props;
 diff --git a/tools/server/server.cpp b/tools/server/server.cpp
-index 6566949ed..499139ed1 100644
+index 769e80a80..1aa730bd9 100644
 --- a/tools/server/server.cpp
 +++ b/tools/server/server.cpp
-@@ -172,6 +172,7 @@ int main(int argc, char ** argv) {
+@@ -177,6 +177,7 @@ int llama_server(int argc, char ** argv) {
      ctx_http.get ("/health",                   ex_wrapper(routes.get_health)); // public endpoint (no API key check)
      ctx_http.get ("/v1/health",                ex_wrapper(routes.get_health)); // public endpoint (no API key check)
      ctx_http.get ("/metrics",                  ex_wrapper(routes.get_metrics));

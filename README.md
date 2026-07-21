@@ -263,8 +263,8 @@ The dashboard's **[Brain]** tab exposes what the model is doing internally, at t
 
 1. Download the lens artifacts: `cd jlens && python -m jlens_service.download`
 2. Start the sidecar: `python -m jlens_service.server` (port 9163)
-3. Build the patched llama-server (activation tap + `/activations` route — patches in `docs/research/`), deploy as `~/.cynco/bin/llama-server-brain.exe`
-4. Set `LLAMA_ACTIVATIONS_LAYERS=24,32,40,48,56` and point CynCo at the patched binary
+3. Build the patched llama-server (activation tap + `/activations` route — patch in `docs/research/llamacpp-activation-tap.patch`, base llama.cpp b9529), deploy to its own directory (e.g. `~/.cynco/bin-brain/llama-server.exe` with its CUDA DLLs alongside)
+4. Set `LLAMA_ACTIVATIONS_LAYERS=24,32,40,48,56` and `LOCALCODE_LLAMA_SERVER=~/.cynco/bin-brain/llama-server.exe`
 
 Without steps 3-4 the tab runs `entropy-only`; without step 2 it runs `record-only`. Nothing breaks either way.
 
