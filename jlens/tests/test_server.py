@@ -2,23 +2,13 @@
 injected with a synthetic Readout (no real artifacts needed)."""
 import json
 import threading
+import urllib.error
 import urllib.request
-import torch
 import pytest
 
 from jlens_service import server as server_mod
-from jlens_service.readout import Readout
-from jlens_service import config
 
-
-def make_readout(d=8, vocab=16):
-    torch.manual_seed(0)
-    r = Readout.__new__(Readout)
-    r.J = {2: torch.eye(d, dtype=torch.float32)}
-    r.wu = torch.randn(vocab, d)
-    r.norm_w = torch.ones(d)
-    r.id_to_token = {i: f"tok{i}" for i in range(vocab)}
-    return r
+from conftest import make_readout
 
 
 @pytest.fixture(scope="module")
@@ -31,6 +21,8 @@ def live_server():
     t.start()
     yield port
     srv.shutdown()
+    srv.server_close()
+    server_mod.READOUT = None
 
 
 def _get(port, path):

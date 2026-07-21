@@ -11,6 +11,8 @@ READOUT: Readout | None = None
 
 
 class Handler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"  # keep-alive: engine client polls at token cadence
+
     def _send(self, code: int, obj: dict) -> None:
         body = json.dumps(obj).encode()
         self.send_response(code)
@@ -21,7 +23,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/health":
-            self._send(200, {"ok": True, "layers": config.layers()})
+            layers = sorted(READOUT.J.keys()) if READOUT else config.layers()
+            self._send(200, {"ok": True, "layers": layers})
         else:
             self._send(404, {"error": "not found"})
 
