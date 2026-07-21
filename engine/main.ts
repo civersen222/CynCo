@@ -368,7 +368,7 @@ try {
 // ─── Brain Activations Consumer (Tier 3 — default-on, degrades silently) ─────
 // Only wired when provider is llama-cpp (Ollama has no activation tap).
 let activationsConsumer: ActivationsConsumer | null = null
-if (config.provider === 'llama-cpp') {
+if (config.provider === 'llama-cpp' && dashboardServer) {
   activationsConsumer = new ActivationsConsumer({
     activationsUrl: `${providerUrl}/activations`,
     jlens: new JlensClient(),

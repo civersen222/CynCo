@@ -32,6 +32,7 @@ export class ActivationsConsumer {
   private readonly stride: number
   private timer: ReturnType<typeof setInterval> | null = null
   private readonly fetchFn: typeof fetch
+  private inFlight = false
 
   constructor(private opts: ConsumerOpts) {
     this.layer = opts.layer
@@ -57,24 +58,37 @@ export class ActivationsConsumer {
 
   /** One drain + readout pass. Returns whether the tap responded. */
   async pollOnce(): Promise<boolean> {
-    let data: { cursor: number; n_embd: number; entries: Entry[] }
+    if (this.inFlight) return true  // previous drain still running — skip, cursor stays consistent
+    this.inFlight = true
     try {
-      const r = await this.fetchFn(`${this.opts.activationsUrl}?since=${this.cursor}`, {
-        signal: AbortSignal.timeout(3000),
-      })
-      if (!r.ok) return false
-      data = await r.json() as typeof data
-    } catch {
-      return false  // tap down: normal for unpatched servers — stay quiet, degrade
+      let data: { cursor: number; n_embd: number; entries: Entry[] }
+      try {
+        const r = await this.fetchFn(`${this.opts.activationsUrl}?since=${this.cursor}`, {
+          signal: AbortSignal.timeout(3000),
+        })
+        if (!r.ok) return false
+        data = await r.json() as typeof data
+      } catch {
+        return false  // tap down: normal for unpatched servers — stay quiet, degrade
+      }
+      for (const e of data.entries ?? []) {
+        if (e.cursor > this.cursor) this.cursor = e.cursor
+        if (e.layer !== this.layer) continue
+        if (e.pos % this.stride !== 0) continue
+        let h: Float32Array
+        try {
+          h = decodeB64Floats(e.values_b64)
+        } catch (err) {
+          console.log(`[brain] malformed activation payload at cursor ${e.cursor}: ${err}`)
+          continue
+        }
+        const top = await this.opts.jlens.readout(this.layer, h)
+        if (!top) continue
+        this.opts.broadcast({ type: 'brain.workspace', layer: e.layer, pos: e.pos, token: e.token, top })
+      }
+      return true
+    } finally {
+      this.inFlight = false
     }
-    for (const e of data.entries ?? []) {
-      if (e.cursor > this.cursor) this.cursor = e.cursor
-      if (e.layer !== this.layer) continue
-      if (e.pos % this.stride !== 0) continue
-      const top = await this.opts.jlens.readout(this.layer, decodeB64Floats(e.values_b64))
-      if (!top) continue
-      this.opts.broadcast({ type: 'brain.workspace', layer: e.layer, pos: e.pos, token: e.token, top })
-    }
-    return true
   }
 }
