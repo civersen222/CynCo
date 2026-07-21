@@ -1,0 +1,317 @@
+diff --git a/include/llama.h b/include/llama.h
+index eb8698140..1c994b76b 100644
+--- a/include/llama.h
++++ b/include/llama.h
+@@ -971,6 +971,25 @@ extern "C" {
+     // and is not necessary to call it explicitly in most cases
+     LLAMA_API void llama_synchronize(struct llama_context * ctx);
+ 
++    // ── Brain activation tap (LocalCode) ──────────────────────────────────────
++    // Captured mid-network activation (enabled via LLAMA_ACTIVATIONS_LAYERS env var,
++    // e.g. "24,32,40"). `values` points into internal storage valid until the next
++    // llama_activations_read call on the same context — copy immediately.
++    struct llama_activation_view {
++        uint64_t    cursor;
++        int32_t     layer;
++        llama_pos   pos;
++        llama_token token;
++        const float * values;
++        int32_t     n_embd;
++    };
++
++    // Brain tap: copy up to n_max entries newer than `since` into out;
++    // returns count, sets *cursor_out to the newest cursor seen so far.
++    LLAMA_API int32_t llama_activations_read(struct llama_context * ctx, uint64_t since,
++                                             struct llama_activation_view * out, int32_t n_max,
++                                             uint64_t * cursor_out);
++
+     // Token logits obtained from the last call to llama_decode()
+     // The logits for which llama_batch.logits[i] != 0 are stored contiguously
+     // in the order they have appeared in the batch.
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+index d584415ee..e9bad04a9 100644
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -13,9 +13,30 @@
+ 
+ #include <cinttypes>
+ #include <cmath>
++#include <cstdlib>
+ #include <cstring>
+ #include <limits>
++#include <set>
++#include <sstream>
+ #include <stdexcept>
++#include <string>
++
++// ── Brain activation tap (LocalCode): layers selected via LLAMA_ACTIVATIONS_LAYERS ──
++// e.g. LLAMA_ACTIVATIONS_LAYERS=24,32,40,48,56 — empty/unset disables the tap entirely.
++static const std::set<int> & act_tap_layers() {
++    static std::set<int> layers = [] {
++        std::set<int> s;
++        if (const char * env = getenv("LLAMA_ACTIVATIONS_LAYERS")) {
++            std::stringstream ss(env);
++            std::string item;
++            while (std::getline(ss, item, ',')) {
++                if (!item.empty()) s.insert(std::stoi(item));
++            }
++        }
++        return s;
++    }();
++    return layers;
++}
+ 
+ //
+ // llama_context
+@@ -663,6 +684,29 @@ void llama_context::synchronize() {
+     t_compute_start_us = 0;
+ }
+ 
++// ── Brain activation tap (LocalCode) ─────────────────────────────────────────
++int32_t llama_context::activations_read(uint64_t since, llama_activation_view * out, int32_t n_max, uint64_t * cursor_out) {
++    std::lock_guard<std::mutex> lock(act_mutex);
++
++    act_read_buf.clear();
++    for (const auto & e : act_ring) {
++        if (e.cursor > since && (int32_t) act_read_buf.size() < n_max) {
++            act_read_buf.push_back(e);
++        }
++    }
++
++    for (size_t i = 0; i < act_read_buf.size(); ++i) {
++        const auto & e = act_read_buf[i];
++        out[i] = { e.cursor, e.layer, e.pos, e.token, e.values.data(), (int32_t) e.values.size() };
++    }
++
++    if (cursor_out) {
++        *cursor_out = act_cursor;
++    }
++
++    return (int32_t) act_read_buf.size();
++}
++
+ const llama_model & llama_context::get_model() const {
+     return model;
+ }
+@@ -1822,6 +1866,47 @@ int llama_context::decode(const llama_batch & batch_inp) {
+             copy_tensor_async_candidates(res->t_candidates,     sampling.candidates, stride, sampling.candidates_count, seq_to_output_row, sched.get());
+         }
+ 
++        // ── Brain activation tap (LocalCode): capture tapped l_out layers ──
++        if (!act_tap_layers().empty() && n_outputs > 0) {
++            // device work must be complete before the synchronous readbacks below
++            ggml_backend_sched_synchronize(sched.get());
++
++            auto * gf = res->get_gf();
++
++            for (int il : act_tap_layers()) {
++                const std::string tname = "l_out-" + std::to_string(il);
++                ggml_tensor * t = ggml_graph_get_tensor(gf, tname.c_str());
++                if (t == nullptr || t->type != GGML_TYPE_F32 || t->ne[0] <= 0) {
++                    continue;   // layer not in this graph (e.g. out of range) — skip quietly
++                }
++
++                const int64_t n_embd_act = t->ne[0];
++
++                // l_out-<il> holds every ubatch token (MTP: accepted draft tokens arrive as
++                // multi-token ubatches) — slice by output position, never assume ne[1] == 1
++                for (uint32_t i = 0; i < ubatch.n_tokens; ++i) {
++                    const bool is_out = (n_outputs_all == n_tokens_all) || (ubatch.output[i] != 0);
++                    if (!is_out || (int64_t) i >= t->ne[1]) {
++                        continue;
++                    }
++
++                    llama_activation_entry e;
++                    e.layer  = il;
++                    e.pos    = ubatch.pos[i];
++                    e.token  = ubatch.token ? ubatch.token[i] : 0;
++                    e.values.resize(n_embd_act);
++                    ggml_backend_tensor_get(t, e.values.data(), (size_t) i * t->nb[1], n_embd_act * sizeof(float));
++
++                    std::lock_guard<std::mutex> lock(act_mutex);
++                    e.cursor = ++act_cursor;
++                    act_ring.push_back(std::move(e));
++                    if (act_ring.size() > 512) {
++                        act_ring.pop_front();
++                    }
++                }
++            }
++        }
++
+         n_outputs_prev += n_outputs;
+     } while (mctx->next());
+ 
+@@ -2202,6 +2287,11 @@ llm_graph_cb llama_context::graph_get_cb() const {
+     return [&](const llama_ubatch & ubatch, ggml_tensor * cur, const char * name, int il) {
+         if (il >= 0) {
+             ggml_format_name(cur, "%s-%d", name, il);
++
++            // ── Brain activation tap (LocalCode): keep chosen l_out-<il> tensors alive ──
++            if (strncmp(name, "l_out", 5) == 0 && act_tap_layers().count(il)) {
++                ggml_set_output(cur);   // prevents allocator reuse; graph stays monolithic (CUDA graphs intact)
++            }
+         } else {
+             ggml_set_name(cur, name);
+         }
+@@ -3143,6 +3233,13 @@ void llama_synchronize(llama_context * ctx) {
+     ctx->synchronize();
+ }
+ 
++// ── Brain activation tap (LocalCode) ─────────────────────────────────────────
++int32_t llama_activations_read(llama_context * ctx, uint64_t since,
++                               llama_activation_view * out, int32_t n_max,
++                               uint64_t * cursor_out) {
++    return ctx->activations_read(since, out, n_max, cursor_out);
++}
++
+ float * llama_get_logits(llama_context * ctx) {
+     ctx->synchronize();
+ 
+diff --git a/src/llama-context.h b/src/llama-context.h
+index 53c705eaf..4931c9948 100644
+--- a/src/llama-context.h
++++ b/src/llama-context.h
+@@ -10,7 +10,9 @@
+ #include "ggml-cpp.h"
+ #include "ggml-opt.h"
+ 
++#include <deque>
+ #include <map>
++#include <mutex>
+ #include <vector>
+ 
+ struct llama_model;
+@@ -23,6 +25,16 @@ class llama_io_write_i;
+ struct llama_memory_i;
+ struct llama_memory_context_i;
+ 
++// ── Brain activation tap (LocalCode) ─────────────────────────────────────────
++// One captured activation: layer, sequence position, sampled token, fp32 vector.
++struct llama_activation_entry {
++    uint64_t    cursor;   // monotonically increasing
++    int32_t     layer;
++    llama_pos   pos;
++    llama_token token;
++    std::vector<float> values;   // n_embd
++};
++
+ struct llama_context {
+     // init scheduler and compute buffers, reserve worst-case graphs
+     llama_context(
+@@ -41,6 +53,10 @@ struct llama_context {
+ 
+     void synchronize();
+ 
++    // ── Brain activation tap (LocalCode): drain entries newer than `since` ──
++    // Views written to `out` stay valid until the next call (caller copies immediately).
++    int32_t activations_read(uint64_t since, struct llama_activation_view * out, int32_t n_max, uint64_t * cursor_out);
++
+     const llama_model   & get_model()   const;
+     const llama_cparams & get_cparams() const;
+ 
+@@ -299,6 +315,12 @@ private:
+ 
+     std::vector<swap_info> output_swaps;
+ 
++    // ── Brain activation tap (LocalCode): ring of last 512 captured activations ──
++    std::deque<llama_activation_entry> act_ring;
++    std::vector<llama_activation_entry> act_read_buf; // stable storage backing the views returned by activations_read
++    uint64_t   act_cursor = 0;
++    std::mutex act_mutex;
++
+     ggml_backend_sched_ptr sched;
+ 
+     bool sched_need_reserve = true;
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index d21e9c2ee..ee3f17714 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -14,6 +14,7 @@
+ #include "speculative.h"
+ #include "mtmd.h"
+ #include "mtmd-helper.h"
++#include "base64.hpp"
+ 
+ #include <algorithm>
+ #include <cstddef>
+@@ -641,6 +642,10 @@ public:
+     mtmd_context * mctx = nullptr;
+     const llama_vocab * vocab = nullptr;
+ 
++    // ── Brain activation tap (LocalCode): direct ctx access for /activations ──
++    // safe cross-thread: llama_activations_read only touches its own mutex-guarded ring
++    llama_context * get_ctx_for_activations() const { return sleeping ? nullptr : ctx; }
++
+     server_queue    queue_tasks;
+     server_response queue_results;
+ 
+@@ -3582,6 +3587,45 @@ void server_routes::init_routes() {
+         return res;
+     };
+ 
++    // ── Brain activation tap (LocalCode): polling drain of the activation ring ──
++    // GET /activations?since=<cursor> → {"cursor", "n_embd", "entries": [{cursor, layer, pos, token, values_b64}]}
++    this->get_activations = [this](const server_http_req & req) {
++        auto res = create_response();
++
++        uint64_t since = 0;
++        const std::string since_str = req.get_param("since");
++        if (!since_str.empty()) {
++            since = std::stoull(since_str); // throws on garbage → handled by ex_wrapper
++        }
++
++        json entries = json::array();
++        uint64_t cursor = 0;
++        int32_t n_embd = 0;
++
++        llama_context * lctx = ctx_server.get_ctx_for_activations();
++        if (lctx != nullptr) {
++            std::vector<llama_activation_view> views(512);
++            const int32_t n = llama_activations_read(lctx, since, views.data(), 512, &cursor);
++            for (int32_t i = 0; i < n; i++) {
++                n_embd = views[i].n_embd;
++                entries.push_back(json {
++                    {"cursor", views[i].cursor},
++                    {"layer",  views[i].layer},
++                    {"pos",    views[i].pos},
++                    {"token",  views[i].token},
++                    {"values_b64", base64::encode((const char *) views[i].values, (size_t) views[i].n_embd * sizeof(float))},
++                });
++            }
++        }
++
++        res->ok(json {
++            {"cursor",  cursor},
++            {"n_embd",  n_embd},
++            {"entries", entries},
++        });
++        return res;
++    };
++
+     this->post_slots = [this](const server_http_req & req) {
+         auto res = create_response();
+         if (params.slot_save_path.empty()) {
+diff --git a/tools/server/server-context.h b/tools/server/server-context.h
+index 37f10dc77..7dde66a8f 100644
+--- a/tools/server/server-context.h
++++ b/tools/server/server-context.h
+@@ -101,6 +101,7 @@ struct server_routes {
+     // they won't be called until ctx_http.is_ready is set to true
+     server_http_context::handler_t get_health;
+     server_http_context::handler_t get_metrics;
++    server_http_context::handler_t get_activations; // Brain activation tap (LocalCode)
+     server_http_context::handler_t get_slots;
+     server_http_context::handler_t post_slots;
+     server_http_context::handler_t get_props;
+diff --git a/tools/server/server.cpp b/tools/server/server.cpp
+index 6566949ed..499139ed1 100644
+--- a/tools/server/server.cpp
++++ b/tools/server/server.cpp
+@@ -172,6 +172,7 @@ int main(int argc, char ** argv) {
+     ctx_http.get ("/health",                   ex_wrapper(routes.get_health)); // public endpoint (no API key check)
+     ctx_http.get ("/v1/health",                ex_wrapper(routes.get_health)); // public endpoint (no API key check)
+     ctx_http.get ("/metrics",                  ex_wrapper(routes.get_metrics));
++    ctx_http.get ("/activations",              ex_wrapper(routes.get_activations)); // Brain activation tap (LocalCode)
+     ctx_http.get ("/props",                    ex_wrapper(routes.get_props));
+     ctx_http.post("/props",                    ex_wrapper(routes.post_props));
+     ctx_http.get ("/models",                   ex_wrapper(routes.get_models)); // public endpoint (no API key check)
