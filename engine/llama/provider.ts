@@ -142,7 +142,7 @@ export class LlamaCppProvider implements Provider {
     // path ignored resp.ok — every turn became a silent 0-token end_turn.
     if (!resp.ok) {
       let detail = ''
-      try { detail = (await resp.text()).slice(0, 500) } catch {}
+      try { detail = (await resp.text()).slice(0, 500) } catch (err) { console.log('[llama-cpp] could not read error body:', err) }
       // Stock llama-server (≥b9529) rejects logprobs with tools + stream.
       // The entropy trace (Brain Tier 1) must degrade, not fail the whole
       // turn: drop logprobs for the rest of the session and retry once.
@@ -156,7 +156,7 @@ export class LlamaCppProvider implements Provider {
           body: JSON.stringify(body),
         })
         detail = ''
-        try { if (!resp.ok) detail = (await resp.text()).slice(0, 500) } catch {}
+        try { if (!resp.ok) detail = (await resp.text()).slice(0, 500) } catch (err) { console.log('[llama-cpp] could not read error body:', err) }
       }
       if (!resp.ok) {
         throw new Error(`llama-server HTTP ${resp.status}: ${detail || resp.statusText}`)

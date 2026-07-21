@@ -304,7 +304,7 @@ export class DashboardServer {
         open: (ws: ServerWebSocket<unknown>) => {
           this.clients.add(ws)
           for (const json of this.replayCache.values()) {
-            try { ws.send(json) } catch {}
+            try { ws.send(json) } catch (err) { console.log('[dashboard] replay send failed:', err) }
           }
         },
         message: (_ws: ServerWebSocket<unknown>, message: string | Buffer) => {
