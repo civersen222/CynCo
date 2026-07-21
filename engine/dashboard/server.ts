@@ -236,6 +236,9 @@ export class DashboardServer {
                 return jsonResponse({ tasks: 0, turns: 0, rewards: 0, sftExamples: 0, targetExamples: 300, readyForSFT: false, progress: 0 })
               }
             }
+            case '/api/thinking/sessions': {
+              return jsonResponse(ThinkingRecorder.listSessions(this.deps.sessionsDir))
+            }
             case '/api/thinking/turns': {
               const sid = url.searchParams.get('session') ?? ''
               return this.getThinkingTurns(sid)

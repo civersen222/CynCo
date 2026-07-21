@@ -2553,17 +2553,17 @@ function brainOnWorkspace(msg) {
   }).join('');
 }
 
-// Populate replay index from most-recent session in /api/sessions list
-// TODO(T17): replace with live session id once session.ready emits it
+// Populate replay index from the newest session that HAS thinking records.
+// (/api/sessions lists ledger outcomes — the live session isn't in it until
+// it ends, and old ledger sessions may have no thinking files.)
 function brainFetchLatestSessionForReplay() {
-  fetch('/api/sessions')
+  fetch('/api/thinking/sessions')
     .then(function(r) { if (!r.ok) throw new Error('not ok'); return r.json(); })
-    .then(function(sessions) {
-      if (!Array.isArray(sessions) || !sessions.length) return;
-      var latest = sessions[0]; // list is sorted newest-first by the server
-      if (latest && latest.sessionId) brainLoadReplayIndex(latest.sessionId);
+    .then(function(ids) {
+      if (!Array.isArray(ids) || !ids.length) return;
+      brainLoadReplayIndex(ids[0]); // newest-first by the server
     })
-    .catch(function(err) { console.warn('[brain] fetch latest session:', err); });
+    .catch(function(err) { console.warn('[brain] fetch thinking sessions:', err); });
 }
 brainFetchLatestSessionForReplay();
 

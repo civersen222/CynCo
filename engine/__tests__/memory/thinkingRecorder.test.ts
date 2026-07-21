@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } from 'fs'
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, utimesSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { ThinkingRecorder } from '../../memory/thinkingRecorder.js'
@@ -69,5 +69,19 @@ describe('ThinkingRecorder', () => {
     expect(agg.thinking!.spikeCount).toBe(3)
     expect(agg.output).toBeNull()
     expect(ThinkingRecorder.aggregateSession('missing', dir)).toBeNull()
+  })
+
+  it('listSessions returns ids with thinking files, newest mtime first, ignoring other files', () => {
+    writeFileSync(join(dir, 'old.thinking.jsonl'), '{}\n')
+    writeFileSync(join(dir, 'new.thinking.jsonl'), '{}\n')
+    writeFileSync(join(dir, 'plain-session.jsonl'), '{}\n')  // not a thinking file
+    // Force distinct mtimes (same-second writes are indistinguishable otherwise)
+    utimesSync(join(dir, 'old.thinking.jsonl'), new Date(1000_000), new Date(1000_000))
+    utimesSync(join(dir, 'new.thinking.jsonl'), new Date(2000_000), new Date(2000_000))
+    expect(ThinkingRecorder.listSessions(dir)).toEqual(['new', 'old'])
+  })
+
+  it('listSessions returns [] for a missing dir', () => {
+    expect(ThinkingRecorder.listSessions(join(dir, 'no-such-subdir'))).toEqual([])
   })
 })

@@ -99,6 +99,17 @@ describe('GET /api/thinking/turns', () => {
   })
 })
 
+// ── GET /api/thinking/sessions ─────────────────────────────────────
+
+describe('GET /api/thinking/sessions', () => {
+  it('lists only sessions that have thinking files', async () => {
+    const res = await fetch(`${BASE}/api/thinking/sessions`)
+    expect(res.status).toBe(200)
+    const data = await res.json() as string[]
+    expect(data).toEqual(['s1'])
+  })
+})
+
 // ── GET /api/thinking ─────────────────────────────────────────────
 
 describe('GET /api/thinking', () => {

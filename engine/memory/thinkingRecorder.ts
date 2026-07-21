@@ -5,7 +5,7 @@
  * GC: gcOldSessions already sweeps *.jsonl in the sessions dir, which matches
  * *.thinking.jsonl — locked in by a test in gcOldSessions.test.ts.
  */
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
 import type { EntropyDigest } from './uncertaintyTracker.js'
@@ -87,6 +87,21 @@ export class ThinkingRecorder {
 
   static readTurn(sessionId: string, turn: number, dir?: string): TurnThinkingRecord | null {
     return ThinkingRecorder.readTurns(sessionId, dir).find(r => r.turn === turn) ?? null
+  }
+
+  /** Session ids that have thinking records, newest mtime first (for the dashboard replay picker). */
+  static listSessions(dir?: string): string[] {
+    const d = dir ?? defaultDir()
+    try {
+      return readdirSync(d)
+        .filter(f => f.endsWith('.thinking.jsonl'))
+        .map(f => ({ id: f.slice(0, -'.thinking.jsonl'.length), mtime: statSync(join(d, f)).mtimeMs }))
+        .sort((a, b) => b.mtime - a.mtime)
+        .map(e => e.id)
+    } catch (err) {
+      console.log(`[thinking] listSessions failed: ${err}`)
+      return []
+    }
   }
 
   /** Session-level digest for the mission ledger: mean of means, max of maxes, sum of spikes. */
