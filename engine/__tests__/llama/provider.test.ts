@@ -141,6 +141,62 @@ describe('LlamaCppProvider', () => {
     expect(p.getCompletionsUrl()).toBe('http://127.0.0.1:8081/v1/chat/completions')
   })
 
+  it('retries stream without logprobs after a 400 logprobs rejection, then stays off (Brain Tier 1 degrade)', async () => {
+    const bodies: any[] = []
+    const realFetch = globalThis.fetch
+    const sse = 'data: {"id":"c","model":"m","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'
+    globalThis.fetch = (async (_url: any, init: any) => {
+      const body = JSON.parse(init.body)
+      bodies.push(body)
+      if (body.logprobs) {
+        return new Response(JSON.stringify({ error: { code: 400, message: 'logprobs is not supported with tools + stream' } }), { status: 400 })
+      }
+      return new Response(sse, { status: 200, headers: { 'Content-Type': 'text/event-stream' } })
+    }) as any
+    try {
+      const provider = new LlamaCppProvider({ primaryUrl: 'http://127.0.0.1:9999', modelName: 'qwen3.6', modelsDir: '/tmp' })
+      const req = {
+        model: 'qwen3.6',
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+        tools: [{ name: 'Read', description: 'read', input_schema: { type: 'object', properties: {} } }],
+      } as any
+
+      const events: any[] = []
+      for await (const e of provider.stream(req)) events.push(e)
+      // first attempt had logprobs, retry did not, turn still succeeded
+      expect(bodies).toHaveLength(2)
+      expect(bodies[0].logprobs).toBe(true)
+      expect(bodies[1].logprobs).toBeUndefined()
+      expect(events.some(e => e.type === 'message_stop')).toBe(true)
+
+      // sticky: next stream never asks for logprobs again
+      for await (const _e of provider.stream(req)) { /* drain */ }
+      expect(bodies).toHaveLength(3)
+      expect(bodies[2].logprobs).toBeUndefined()
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+
+  it('still throws on non-logprobs 400s in stream', async () => {
+    const realFetch = globalThis.fetch
+    globalThis.fetch = (async () => {
+      return new Response(JSON.stringify({ error: { code: 400, message: 'context overflow' } }), { status: 400 })
+    }) as any
+    try {
+      const provider = new LlamaCppProvider({ primaryUrl: 'http://127.0.0.1:9999', modelName: 'qwen3.6', modelsDir: '/tmp' })
+      const req = {
+        model: 'qwen3.6',
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+      } as any
+      await expect((async () => {
+        for await (const _e of provider.stream(req)) { /* drain */ }
+      })()).rejects.toThrow(/HTTP 400/)
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+
   it('sends tool_choice auto alongside tools (P1.8)', async () => {
     let captured: any = null
     const realFetch = globalThis.fetch

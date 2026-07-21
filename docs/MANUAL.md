@@ -306,6 +306,12 @@ broker, enforces output limits, and records outcomes for governance.
 - **Workflows** (`engine/workflows/`): phase-based structured tasks
   (`/tdd`, `/debug`, `/review`, `/plan`, `/brainstorm`, `/critique`, `/research`)
   that constrain the tool set per phase.
+- **The Brain** (`engine/brain/`): dashboard tab exposing model cognition.
+  Thinking tokens are persisted per turn (`conversationLoop.ts` finalizeTurn) and
+  per-token entropy is computed from top-8 logprobs (default-on). With setup, a
+  J-lens sidecar (`jlens/`, port 9163) plus a patched llama-server activation tap
+  add a live concept workspace; `activationsConsumer.ts` auto-detects the tier
+  (`live` / `record-only` / `entropy-only`) at startup. See README "The Brain".
 
 ---
 

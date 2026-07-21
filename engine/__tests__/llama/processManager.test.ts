@@ -342,3 +342,15 @@ describe('validateChatTemplate', () => {
     expect(result.ok).toBe(false)
   })
 })
+
+describe('spawn env passthrough (Brain Tier 3)', () => {
+  // startProcess spawns a real llama-server, so we lock in the env contract
+  // statically: the spawn env must spread process.env so vars like
+  // LLAMA_ACTIVATIONS_LAYERS set in the parent reach the child server.
+  it('spawn env spreads process.env (LLAMA_ACTIVATIONS_LAYERS reaches child)', () => {
+    const { readFileSync } = require('fs')
+    const src = readFileSync(require.resolve('../../llama/processManager.ts'), 'utf-8')
+    expect(src).toContain('const env = { ...process.env }')
+    expect(src).toMatch(/spawn\(this\.binaryPath, args, \{[\s\S]*?env,[\s\S]*?\}\)/)
+  })
+})
