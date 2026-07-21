@@ -60,6 +60,8 @@ import { setSideQuery, resetMergeTracking } from '../tools/impl/edit.js'
 import { estimateTokensAsync } from '../engine/contextBudget.js'
 import { isMalformedInput } from '../engine/toolCallRepair.js'
 import { extractSimulatedToolCalls } from '../ollama/simulated.js'
+import { ThinkingRecorder } from '../memory/thinkingRecorder.js'
+import { UncertaintyTracker } from '../memory/uncertaintyTracker.js'
 
 /**
  * Phase 6: build structured diff hunks from a write-tool input for the file.diff
@@ -168,6 +170,8 @@ export type ConversationLoopOptions = {
   s5?: S5Orchestrator
   /** Hard-pin the tool set (e.g. unattended one-shot mission runs). Applied on top of workflow restrictions. */
   allowedTools?: string[]
+  /** Direct dashboard broadcast for brain.* messages (NOT the engine→TUI protocol). Optional. */
+  dashboardBroadcast?: (msg: Record<string, unknown>) => void
 }
 
 export class ConversationLoop {
@@ -229,6 +233,13 @@ export class ConversationLoop {
   // S5 restrictions, demotions, routing). In one-shot runs this is enforced
   // at execution time too — see executeOneTool.
   private offeredToolNames: Set<string> | null = null
+  // Brain stream: thinking persistence + uncertainty tracking
+  private thinkingRecorder: ThinkingRecorder | null = null
+  private uncertainty = new UncertaintyTracker()
+  /** Direct dashboard broadcast (NOT protocol) — brain.* messages only. Optional. */
+  private dashboardBroadcast: ((msg: Record<string, unknown>) => void) | null = null
+  private uncertaintyBatch: { i: number; h: number; kind: 'thinking' | 'output'; top: { token: string; logprob: number }[] }[] = []
+  private uncertaintyIndex = 0
 
   constructor(opts: ConversationLoopOptions) {
     this.config = opts.config
@@ -325,6 +336,10 @@ export class ConversationLoop {
     process.env.LOCALCODE_SESSION_ID = this.sessionId
     console.log(`[session] Journal: ${this.journal.path}`)
 
+    // Brain stream: thinking recorder uses same session id as the JSONL journal
+    this.thinkingRecorder = new ThinkingRecorder(this.sessionId)
+    this.dashboardBroadcast = opts.dashboardBroadcast ?? null
+
     // Human-in-the-loop: surface AskUser questions to the TUI over the bridge.
     globalAskBroker.setEmitter(({ requestId, question, options }) => {
       this.emit({ type: 'ask.request', requestId, question, options })
@@ -337,6 +352,36 @@ export class ConversationLoop {
    * (e.g. a user.message arrives with a different project directory) —
    * otherwise snapshots run `git add -A` against the engine's startup dir.
    */
+  /** Reset per-model-call brain state; called at model-call start so aborted/failed calls can't bleed. */
+  private resetBrainTurnState(): void {
+    this.uncertainty.reset()
+    this.uncertaintyBatch = []
+    this.uncertaintyIndex = 0
+    this.thinkingRecorder?.discardBuffer()
+  }
+
+  /** Track entropy + batch brain.uncertainty messages to the dashboard. */
+  private observeUncertainty(kind: 'thinking' | 'output', logprobs: import('../types.js').TokenLogprob[]): void {
+    this.uncertainty.observe(kind, logprobs)
+    if (!this.dashboardBroadcast) return
+    for (const tl of logprobs) {
+      const h = UncertaintyTracker.entropy(tl)
+      if (h === null) continue
+      this.uncertaintyBatch.push({ i: this.uncertaintyIndex++, h, kind, top: tl.top.slice(0, 8) })
+    }
+    if (this.uncertaintyBatch.length >= 16) this.flushUncertainty()
+  }
+
+  private flushUncertainty(): void {
+    if (this.uncertaintyBatch.length === 0 || !this.dashboardBroadcast) return
+    try {
+      this.dashboardBroadcast({ type: 'brain.uncertainty', points: this.uncertaintyBatch })
+    } catch (err) {
+      console.log(`[brain] uncertainty broadcast failed: ${err}`)
+    }
+    this.uncertaintyBatch = []
+  }
+
   private initSnapshot(cwd: string): void {
     // Undo entries reference tree objects in the previous cwd's snapshot repo —
     // unrestorable after re-init, so drop them (P1.4 review I1).
@@ -411,6 +456,7 @@ export class ConversationLoop {
       this.messages = messages
       this.journal = store
       this.sessionId = sessionId
+      this.thinkingRecorder = new ThinkingRecorder(this.sessionId)
       process.env.LOCALCODE_SESSION_ID = sessionId
       // Rehydrate the file-operation tracker from the last journaled compaction
       // so a resumed session doesn't "forget" what it already read/edited.
@@ -1797,6 +1843,7 @@ export class ConversationLoop {
         deps,
       })
       this.config.temperature = _savedTemperature
+      this.resetBrainTurnState()
 
       let lastMessageId = ''
       let tokenCount = 0
@@ -1824,12 +1871,15 @@ export class ConversationLoop {
                 if (!this.vibeMode) {
                   this.emit({ type: 'stream.token', text: delta.text })
                 }
+                if (delta.logprobs?.length) this.observeUncertainty('output', delta.logprobs)
               }
               // Track reasoning tokens (qwen3, deepseek-r1, etc.)
               // Accumulated silently — not shown in chat (noise for users)
               if (delta?.type === 'thinking_delta' && delta.thinking) {
                 reasoningTokenCount++
                 this.emit({ type: 'stream.thinking', text: delta.thinking })
+                this.thinkingRecorder?.onThinkingDelta(delta.thinking)
+                if (delta.logprobs?.length) this.observeUncertainty('thinking', delta.logprobs)
               }
               // Count tool input JSON tokens for accurate tok/s
               if (delta?.type === 'input_json_delta' && delta.partial_json) {
@@ -1857,6 +1907,17 @@ export class ConversationLoop {
               this.lastModelCallMs = modelCallElapsedMs
               this.governance.setTokPerSec(tokPerSec, tokenCount + reasoningTokenCount)
               this.governance.setThinkingTokens(reasoningTokenCount)
+              this.flushUncertainty()
+              this.thinkingRecorder?.finalizeTurn({
+                tokenCount: reasoningTokenCount,
+                durationMs: modelCallElapsedMs,
+                entropy: {
+                  thinking: this.uncertainty.digest('thinking'),
+                  output: this.uncertainty.digest('output'),
+                },
+              })
+              this.uncertainty.reset()
+              this.uncertaintyIndex = 0
               // Debug: write conversation state to file for diagnosis
               try {
                 const debugPath = require('path').join(this.executor['cwd'], '.cynco-debug.json')

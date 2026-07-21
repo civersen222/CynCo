@@ -5,6 +5,7 @@ import type { MissionLedger } from './missionLedger.js'
 import { evaluateTrigger, computeNextFire } from './scheduler.js'
 import { GpuBusyError } from './taskRunner.js'
 import { serializeHandoff } from '../memory/handoff.js'
+import { ThinkingRecorder } from '../memory/thinkingRecorder.js'
 import type { ApprovalCommand, Recommendation, TaskFileInput, TaskOutcome, TriggerSpec } from './types.js'
 
 // GPU-busy defer backoff (spec §2/§7): 5 → 10 → 20 → 40 → 60 min, capped.
@@ -40,6 +41,9 @@ export class MissionRunner {
   constructor(
     private ledger: MissionLedger,
     private deps: MissionRunnerDeps,
+    /** Override the sessions dir used by ThinkingRecorder.aggregateSession.
+     *  Undefined → real ~/.cynco/sessions. Tests pass a temp dir. */
+    private sessionsDir?: string,
   ) {}
 
   /** One scheduler tick: evaluate every trigger, fire due ones sequentially. */
@@ -161,6 +165,9 @@ export class MissionRunner {
       ok: outcome.ok,
       summary: outcome.ok ? outcome.summary : (outcome.error ?? 'failed'),
       recommendationIds: outcome.recommendations.map((r) => r.id),
+      entropy: outcome.sessionId
+        ? ThinkingRecorder.aggregateSession(outcome.sessionId, this.sessionsDir)
+        : null,
     })
 
     if (!outcome.ok) {

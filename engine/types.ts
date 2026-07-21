@@ -100,9 +100,16 @@ export type CompletionResponse = {
 
 // ─── Streaming ───────────────────────────────────────────────────
 
+/** Per-sampled-token logprob info parsed from OpenAI-compat `choices[].logprobs.content`. */
+export type TokenLogprob = {
+  token: string
+  logprob: number
+  top: { token: string; logprob: number }[]
+}
+
 export type ContentDelta =
-  | { type: 'text_delta'; text: string }
-  | { type: 'thinking_delta'; thinking: string }
+  | { type: 'text_delta'; text: string; logprobs?: TokenLogprob[] }
+  | { type: 'thinking_delta'; thinking: string; logprobs?: TokenLogprob[] }
   | { type: 'input_json_delta'; partial_json: string }
   | { type: 'connector_text_delta'; text: string }
 

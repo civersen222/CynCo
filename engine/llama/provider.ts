@@ -46,6 +46,9 @@ export class LlamaCppProvider implements Provider {
   /** Memoization cache: text → token count. FIFO eviction when over COUNT_TOKENS_CACHE_BOUND. */
   private tokenCache: Map<string, number> = new Map()
   private readonly tokenCacheBound: number
+  /** Sticky: stock llama-server (≥b9529) rejects logprobs with tools+stream.
+   *  Tier 1 must degrade, never break the turn — set on first rejection. */
+  private logprobsUnsupported = false
 
   constructor(config: LlamaCppProviderConfig & { tokenCacheBound?: number }) {
     this.primaryUrl = config.primaryUrl.replace(/\/$/, '')
@@ -126,9 +129,9 @@ export class LlamaCppProvider implements Provider {
   }
 
   async *stream(request: CompletionRequest): AsyncIterable<StreamEvent> {
-    const body = this.buildRequestBody(request, true)
+    let body = this.buildRequestBody(request, true)
 
-    const resp = await fetch(this.getCompletionsUrl(), {
+    let resp = await fetch(this.getCompletionsUrl(), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -139,8 +142,25 @@ export class LlamaCppProvider implements Provider {
     // path ignored resp.ok — every turn became a silent 0-token end_turn.
     if (!resp.ok) {
       let detail = ''
-      try { detail = (await resp.text()).slice(0, 500) } catch {}
-      throw new Error(`llama-server HTTP ${resp.status}: ${detail || resp.statusText}`)
+      try { detail = (await resp.text()).slice(0, 500) } catch (err) { console.log('[llama-cpp] could not read error body:', err) }
+      // Stock llama-server (≥b9529) rejects logprobs with tools + stream.
+      // The entropy trace (Brain Tier 1) must degrade, not fail the whole
+      // turn: drop logprobs for the rest of the session and retry once.
+      if (body.logprobs && resp.status === 400 && /logprobs/i.test(detail)) {
+        this.logprobsUnsupported = true
+        console.log(`[llama-cpp] server rejects logprobs — entropy trace disabled for this session (${detail})`)
+        body = this.buildRequestBody(request, true)
+        resp = await fetch(this.getCompletionsUrl(), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        })
+        detail = ''
+        try { if (!resp.ok) detail = (await resp.text()).slice(0, 500) } catch (err) { console.log('[llama-cpp] could not read error body:', err) }
+      }
+      if (!resp.ok) {
+        throw new Error(`llama-server HTTP ${resp.status}: ${detail || resp.statusText}`)
+      }
     }
 
     yield {
@@ -302,6 +322,14 @@ export class LlamaCppProvider implements Provider {
         { role: 'system', content: request.system },
         ...(body.messages as unknown[]),
       ]
+    }
+
+    // Tier-1 uncertainty trace (Brain): default-on. Ollama's OAI-compat layer
+    // ignores unknown sampling fields; llama-server honors them. Skipped once
+    // the server has rejected the combination (stock ≥b9529 with tools+stream).
+    if (stream && !this.logprobsUnsupported) {
+      body.logprobs = true
+      body.top_logprobs = 8
     }
 
     return body

@@ -41,6 +41,8 @@ import { VibeController } from './vibe/controller.js'
 import { TemplateLoader } from './prompts/templateLoader.js'
 import { initJournal } from './training/decisionJournal.js'
 import { DashboardServer } from './dashboard/server.js'
+import { ActivationsConsumer } from './brain/activationsConsumer.js'
+import { JlensClient } from './brain/jlensClient.js'
 
 // ─── MCP Discovery (standalone — standalone implementation) ──────
 
@@ -303,6 +305,8 @@ const loop = new ConversationLoop({
     }
   },
   s5: s5Orchestrator,
+  // Late-binding closure: dashboardServer is assigned after loop construction
+  dashboardBroadcast: (msg) => dashboardServer?.broadcast(msg as any),
 })
 
 // Wire llama-server eval tok/s → governance for accurate dashboard display
@@ -315,6 +319,9 @@ if ((globalThis as any).__llamaProcessManager) {
 }
 
 // ─── Dashboard Server (Governance UI) ─────────────────────────
+// Declared before the dashboard server so its setBrainLayer dep can late-bind
+// to the consumer created below (Brain Tier 3).
+let activationsConsumer: ActivationsConsumer | null = null
 try {
   dashboardServer = new DashboardServer({
     port: port + 1,
@@ -352,6 +359,9 @@ try {
           console.error('[dashboard] Command handler error:', err)
         })
       },
+      setBrainLayer: (layer: number) => {
+        if (activationsConsumer) activationsConsumer.layer = layer
+      },
     },
   })
   const dashboardHost = dashboardServer.getHostname()
@@ -359,6 +369,22 @@ try {
   console.log(`[dashboard] Governance dashboard on http://${dashboardDisplayHost}:${port + 1}`)
 } catch (e) {
   console.warn('[dashboard] Failed to start dashboard server:', e)
+}
+
+// ─── Brain Activations Consumer (Tier 3 — default-on, degrades silently) ─────
+// Only wired when provider is llama-cpp (Ollama has no activation tap).
+// (declared above the dashboard server for the setBrainLayer late-binding)
+if (config.provider === 'llama-cpp' && dashboardServer) {
+  activationsConsumer = new ActivationsConsumer({
+    activationsUrl: `${providerUrl}/activations`,
+    jlens: new JlensClient(),
+    broadcast: (msg) => dashboardServer?.broadcast(msg as any),
+    layer: Number(process.env.LOCALCODE_BRAIN_LAYER ?? 40),
+    // We spawn llama-server with our env: no LLAMA_ACTIVATIONS_LAYERS means
+    // the tap can never produce entries even though the route answers 200.
+    tapConfigured: !!process.env.LLAMA_ACTIVATIONS_LAYERS,
+  })
+  void activationsConsumer.start()   // auto-detects tier; default-on, no flag (D5)
 }
 
 // Write session outcome on clean shutdown
@@ -391,6 +417,7 @@ async function cleanShutdown(signal: string) {
     console.log(`[training] Auto-backfill failed: ${e}`)
   }
   AuditLogger.writeSessionOutcome(signal)
+  activationsConsumer?.stop()
   if (config.provider === 'llama-cpp' && provider && 'processManager' in provider) {
     const pm = (provider as any).processManager
     if (pm?.stop) await pm.stop()

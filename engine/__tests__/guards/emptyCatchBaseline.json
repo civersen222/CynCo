@@ -17,7 +17,6 @@
   "index/chunker.ts": 1,
   "index/indexer.ts": 3,
   "llama/processManager.ts": 5,
-  "llama/provider.ts": 1,
   "lsp/manager.ts": 1,
   "main.ts": 8,
   "memory/atomicWrite.ts": 1,

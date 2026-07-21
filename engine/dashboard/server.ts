@@ -19,6 +19,7 @@ import type { Server, ServerWebSocket } from 'bun'
 import type { EngineEvent } from '../bridge/protocol.js'
 import { setParam, GOVERNANCE_PARAMS, exportParamMetadata } from '../vsm/governanceParams.js'
 import { globalContract } from '../tools/contract.js'
+import { ThinkingRecorder } from '../memory/thinkingRecorder.js'
 
 // ---------------------------------------------------------------------------
 // DashboardDeps — optional callbacks into the engine
@@ -35,6 +36,10 @@ export interface DashboardDeps {
   setToolRouting?: (enabled: boolean) => void
   getToolRouting?: () => boolean
   onCommand?: (command: any) => void
+  /** Override sessions directory for tests (defaults to ~/.cynco/sessions) */
+  sessionsDir?: string
+  /** Brain Tier 3: switch the activations consumer's readout layer */
+  setBrainLayer?: (layer: number) => void
 }
 
 // ---------------------------------------------------------------------------
@@ -60,6 +65,12 @@ function htmlResponse(body: string, status = 200): Response {
     headers: { ...CORS_HEADERS, 'Content-Type': 'text/html; charset=utf-8' },
   })
 }
+
+// ---------------------------------------------------------------------------
+// Session-id validation (no path separators, no shell-special chars)
+// ---------------------------------------------------------------------------
+
+const SESSION_ID_RE = /^[\w.-]+$/
 
 // ---------------------------------------------------------------------------
 // Validation helpers
@@ -99,6 +110,10 @@ function validateInteger(value: unknown, min: number, max: number, field: string
 export class DashboardServer {
   private server: Server
   private clients: Set<ServerWebSocket<unknown>> = new Set()
+  /** Last broadcast per replayable type, resent to late-joining clients.
+   *  brain.tier fires once at engine startup — browsers always connect later. */
+  private readonly replayCache = new Map<string, string>()
+  private static readonly REPLAY_TYPES = new Set(['brain.tier'])
   private deps: DashboardDeps
   private _port: number
   private _hostname: string
@@ -123,6 +138,8 @@ export class DashboardServer {
     this.server = Bun.serve({
       port,
       hostname: this._hostname,
+      // Note: after Bun.serve() this.server.port reflects the actual bound port
+      // (important when port=0 is used for OS-assigned ephemeral ports in tests).
       fetch: async (req, server) => {
         const url = new URL(req.url)
         const pathname = url.pathname
@@ -219,6 +236,21 @@ export class DashboardServer {
                 return jsonResponse({ tasks: 0, turns: 0, rewards: 0, sftExamples: 0, targetExamples: 300, readyForSFT: false, progress: 0 })
               }
             }
+            case '/api/thinking/sessions': {
+              return jsonResponse(ThinkingRecorder.listSessions(this.deps.sessionsDir))
+            }
+            case '/api/thinking/turns': {
+              const sid = url.searchParams.get('session') ?? ''
+              return this.getThinkingTurns(sid)
+            }
+            case '/api/thinking': {
+              const sid = url.searchParams.get('session') ?? ''
+              const turnStr = url.searchParams.get('turn') ?? ''
+              const turnNum = Number(turnStr)
+              if (!SESSION_ID_RE.test(sid)) return jsonResponse({ error: 'invalid session id' }, 400)
+              if (!turnStr || Number.isNaN(turnNum)) return jsonResponse({ error: 'invalid turn' }, 400)
+              return this.getThinkingTurn(sid, turnNum)
+            }
             default: {
               // Handle parameterized routes
               if (pathname.startsWith('/api/sessions/') && pathname.endsWith('/measurements')) {
@@ -252,6 +284,15 @@ export class DashboardServer {
               return this.postConfigTools(body)
             case '/config/system':
               return this.postConfigSystem(body)
+            case '/api/brain/layer': {
+              const layer = body.layer
+              if (typeof layer !== 'number' || !Number.isInteger(layer) || layer < 0 || layer > 200) {
+                return jsonResponse({ error: 'invalid layer' }, 400)
+              }
+              if (!this.deps.setBrainLayer) return jsonResponse({ error: 'no consumer' }, 503)
+              this.deps.setBrainLayer(layer)
+              return jsonResponse({ ok: true })
+            }
             default:
               return jsonResponse({ error: 'Not found' }, 404)
           }
@@ -262,6 +303,9 @@ export class DashboardServer {
       websocket: {
         open: (ws: ServerWebSocket<unknown>) => {
           this.clients.add(ws)
+          for (const json of this.replayCache.values()) {
+            try { ws.send(json) } catch (err) { console.log('[dashboard] replay send failed:', err) }
+          }
         },
         message: (_ws: ServerWebSocket<unknown>, message: string | Buffer) => {
           // Forward commands from dashboard chat to engine
@@ -373,6 +417,20 @@ export class DashboardServer {
     } catch {
       return jsonResponse([])
     }
+  }
+
+  private getThinkingTurns(sessionId: string): Response {
+    if (!SESSION_ID_RE.test(sessionId)) return jsonResponse({ error: 'invalid session id' }, 400)
+    const turns = ThinkingRecorder.readTurns(sessionId, this.deps.sessionsDir)
+    if (turns.length === 0) return jsonResponse({ error: 'Not found' }, 404)
+    return jsonResponse(turns.map(({ text: _text, ...index }) => index))
+  }
+
+  private getThinkingTurn(sessionId: string, turn: number): Response {
+    if (!SESSION_ID_RE.test(sessionId)) return jsonResponse({ error: 'invalid session id' }, 400)
+    const rec = ThinkingRecorder.readTurn(sessionId, turn, this.deps.sessionsDir)
+    if (!rec) return jsonResponse({ error: 'Not found' }, 404)
+    return jsonResponse(rec)
   }
 
   // ── POST Handlers ───────────────────────────────────────────────
@@ -551,8 +609,10 @@ export class DashboardServer {
   // ── WebSocket Broadcast ─────────────────────────────────────────
 
   broadcast(event: EngineEvent): void {
-    if (this.clients.size === 0) return
     const json = JSON.stringify(event)
+    const type = (event as { type?: string }).type
+    if (type && DashboardServer.REPLAY_TYPES.has(type)) this.replayCache.set(type, json)
+    if (this.clients.size === 0) return
     for (const ws of this.clients) {
       try { ws.send(json) } catch {}
     }
@@ -565,7 +625,8 @@ export class DashboardServer {
   }
 
   getPort(): number {
-    return this._port
+    // Prefer the server's actual bound port (non-zero when port=0 was requested).
+    return this.server.port ?? this._port
   }
 
   getHostname(): string {
