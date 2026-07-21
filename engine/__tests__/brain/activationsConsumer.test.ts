@@ -70,6 +70,24 @@ describe('ActivationsConsumer', () => {
     expect(broadcast).toHaveBeenCalledWith({ type: 'brain.tier', tier: 'live', layers: [24, 40, 56], layer: 40 })
   })
 
+  it('start() reports entropy-only when tapConfigured=false even if the route responds (patched binary, taps disabled)', async () => {
+    // Without LLAMA_ACTIVATIONS_LAYERS the patched server still serves
+    // /activations (empty forever) — a 200 must NOT count as tap up.
+    const fetched = { cursor: 0, n_embd: 0, entries: [] }
+    const fetchFn = vi.fn(async () => new Response(JSON.stringify(fetched), { status: 200 })) as any
+    const broadcast = vi.fn()
+    const c = new ActivationsConsumer({
+      activationsUrl: 'http://x', fetchFn, tapConfigured: false,
+      jlens: { readout: vi.fn(), health: async () => ({ ok: true, layers: [24, 40] }) } as any,
+      broadcast, layer: 40, stride: 1,
+    })
+    const tier = await c.start()
+    c.stop()
+    expect(tier).toBe('entropy-only')
+    expect(fetchFn).not.toHaveBeenCalled()   // no probe, no polling loop
+    expect(broadcast).toHaveBeenCalledWith({ type: 'brain.tier', tier: 'entropy-only', layers: [24, 40], layer: 40 })
+  })
+
   it('start() reports entropy-only with empty layers when both deps down', async () => {
     const broadcast = vi.fn()
     const c = new ActivationsConsumer({

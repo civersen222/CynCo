@@ -380,6 +380,9 @@ if (config.provider === 'llama-cpp' && dashboardServer) {
     jlens: new JlensClient(),
     broadcast: (msg) => dashboardServer?.broadcast(msg as any),
     layer: Number(process.env.LOCALCODE_BRAIN_LAYER ?? 40),
+    // We spawn llama-server with our env: no LLAMA_ACTIVATIONS_LAYERS means
+    // the tap can never produce entries even though the route answers 200.
+    tapConfigured: !!process.env.LLAMA_ACTIVATIONS_LAYERS,
   })
   void activationsConsumer.start()   // auto-detects tier; default-on, no flag (D5)
 }

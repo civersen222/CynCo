@@ -22,6 +22,10 @@ export type ConsumerOpts = {
   stride?: number                   // read out every Nth position (default 4)
   fetchFn?: typeof fetch
   intervalMs?: number               // default 100
+  /** Whether the server was launched with activation taps (LLAMA_ACTIVATIONS_LAYERS).
+   *  The patched binary serves /activations (empty forever) even with taps off,
+   *  so a 200 alone must not count as tap up. Default true (external servers). */
+  tapConfigured?: boolean
 }
 
 export type BrainTier = 'live' | 'record-only' | 'entropy-only'
@@ -42,7 +46,7 @@ export class ActivationsConsumer {
 
   /** Probe deps, report tier, start polling if the tap is up. */
   async start(): Promise<BrainTier> {
-    const tapUp = await this.pollOnce()
+    const tapUp = (this.opts.tapConfigured ?? true) && await this.pollOnce()
     const lens = await this.opts.jlens.health()
     const lensUp = lens !== null
     const tier: BrainTier = tapUp && lensUp ? 'live' : tapUp ? 'record-only' : 'entropy-only'
