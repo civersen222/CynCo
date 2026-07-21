@@ -478,51 +478,51 @@ describe('MissionRunner entropy digest on RunRecord', () => {
   it('run record carries entropy digest when a thinking file exists for the session', async () => {
     const sessionsDir = mkdtempSync(join(tmpdir(), 'cynco-thinking-'))
     const SESSION_ID = 'session-test-entropy-001'
-    writeThinkingFile(sessionsDir, SESSION_ID)
+    try {
+      writeThinkingFile(sessionsDir, SESSION_ID)
 
-    const { deps } = makeDeps({
-      runTask: async (): Promise<TaskOutcome> => ({
-        ok: true, summary: 'done', recommendations: [], sessionId: SESSION_ID,
-      }),
-    })
-    const ledger = MissionLedger.load(join(dir, 'mfl-dynasty'))
-    ledger.setNextFire('news', new Date(2026, 5, 11, 11, 59).toISOString())
-    ledger.setNextFire('poll', new Date(2026, 5, 12).toISOString())
-    const runner = new MissionRunner(ledger, deps as any, sessionsDir)
-    await runner.tick()
+      const { deps } = makeDeps({
+        runTask: async (): Promise<TaskOutcome> => ({
+          ok: true, summary: 'done', recommendations: [], sessionId: SESSION_ID,
+        }),
+      })
+      const ledger = MissionLedger.load(join(dir, 'mfl-dynasty'))
+      ledger.setNextFire('news', new Date(2026, 5, 11, 11, 59).toISOString())
+      ledger.setNextFire('poll', new Date(2026, 5, 12).toISOString())
+      const runner = new MissionRunner(ledger, deps as any, sessionsDir)
+      await runner.tick()
 
-    const runs = ledger.recentRuns(5)
-    expect(runs.length).toBe(1)
-    expect(runs[0].entropy).toEqual({
-      thinking: {
-        mean: expect.any(Number),
-        max: expect.any(Number),
-        spikeCount: expect.any(Number),
-      },
-      output: null,
-    })
-
-    rmSync(sessionsDir, { recursive: true, force: true })
+      const runs = ledger.recentRuns(5)
+      expect(runs.length).toBe(1)
+      // Aggregate: mean of means = (1 + 3) / 2 = 2, max of maxes = 5, sum of spikeCounts = 1 + 2 = 3
+      expect(runs[0].entropy?.thinking.mean).toBeCloseTo(2, 5)
+      expect(runs[0].entropy?.thinking.max).toBe(5)
+      expect(runs[0].entropy?.thinking.spikeCount).toBe(3)
+      expect(runs[0].entropy?.output).toBeNull()
+    } finally {
+      rmSync(sessionsDir, { recursive: true, force: true })
+    }
   })
 
   it('run record entropy is null when no thinking file exists for the session', async () => {
     const sessionsDir = mkdtempSync(join(tmpdir(), 'cynco-thinking-empty-'))
+    try {
+      const { deps } = makeDeps({
+        runTask: async (): Promise<TaskOutcome> => ({
+          ok: true, summary: 'done', recommendations: [], sessionId: 'session-no-thinking-file',
+        }),
+      })
+      const ledger = MissionLedger.load(join(dir, 'mfl-dynasty'))
+      ledger.setNextFire('news', new Date(2026, 5, 11, 11, 59).toISOString())
+      ledger.setNextFire('poll', new Date(2026, 5, 12).toISOString())
+      const runner = new MissionRunner(ledger, deps as any, sessionsDir)
+      await runner.tick()
 
-    const { deps } = makeDeps({
-      runTask: async (): Promise<TaskOutcome> => ({
-        ok: true, summary: 'done', recommendations: [], sessionId: 'session-no-thinking-file',
-      }),
-    })
-    const ledger = MissionLedger.load(join(dir, 'mfl-dynasty'))
-    ledger.setNextFire('news', new Date(2026, 5, 11, 11, 59).toISOString())
-    ledger.setNextFire('poll', new Date(2026, 5, 12).toISOString())
-    const runner = new MissionRunner(ledger, deps as any, sessionsDir)
-    await runner.tick()
-
-    const runs = ledger.recentRuns(5)
-    expect(runs.length).toBe(1)
-    expect(runs[0].entropy).toBeNull()
-
-    rmSync(sessionsDir, { recursive: true, force: true })
+      const runs = ledger.recentRuns(5)
+      expect(runs.length).toBe(1)
+      expect(runs[0].entropy).toBeNull()
+    } finally {
+      rmSync(sessionsDir, { recursive: true, force: true })
+    }
   })
 })
