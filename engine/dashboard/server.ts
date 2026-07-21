@@ -110,6 +110,10 @@ function validateInteger(value: unknown, min: number, max: number, field: string
 export class DashboardServer {
   private server: Server
   private clients: Set<ServerWebSocket<unknown>> = new Set()
+  /** Last broadcast per replayable type, resent to late-joining clients.
+   *  brain.tier fires once at engine startup — browsers always connect later. */
+  private readonly replayCache = new Map<string, string>()
+  private static readonly REPLAY_TYPES = new Set(['brain.tier'])
   private deps: DashboardDeps
   private _port: number
   private _hostname: string
@@ -296,6 +300,9 @@ export class DashboardServer {
       websocket: {
         open: (ws: ServerWebSocket<unknown>) => {
           this.clients.add(ws)
+          for (const json of this.replayCache.values()) {
+            try { ws.send(json) } catch {}
+          }
         },
         message: (_ws: ServerWebSocket<unknown>, message: string | Buffer) => {
           // Forward commands from dashboard chat to engine
@@ -599,8 +606,10 @@ export class DashboardServer {
   // ── WebSocket Broadcast ─────────────────────────────────────────
 
   broadcast(event: EngineEvent): void {
-    if (this.clients.size === 0) return
     const json = JSON.stringify(event)
+    const type = (event as { type?: string }).type
+    if (type && DashboardServer.REPLAY_TYPES.has(type)) this.replayCache.set(type, json)
+    if (this.clients.size === 0) return
     for (const ws of this.clients) {
       try { ws.send(json) } catch {}
     }

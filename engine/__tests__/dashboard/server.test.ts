@@ -195,6 +195,48 @@ describe('WebSocket broadcast', () => {
       server.broadcast({ type: 'stream.token', text: 'nobody listening' })
     }).not.toThrow()
   })
+
+  it('replays last brain.tier to late-joining clients', async () => {
+    // brain.tier fires once at engine startup, before any browser connects
+    server.broadcast({ type: 'brain.tier', tier: 'live', layers: [24, 32], layer: 40 } as never)
+
+    const ws = new WebSocket(`ws://localhost:${PORT}/ws`)
+    const received: string[] = []
+    ws.onmessage = (event) => { received.push(typeof event.data === 'string' ? event.data : event.data.toString()) }
+    await new Promise<void>((resolve, reject) => {
+      ws.onopen = () => resolve()
+      ws.onerror = (e) => reject(e)
+    })
+    await new Promise(r => setTimeout(r, 100))
+
+    const tiers = received.map(m => JSON.parse(m)).filter(m => m.type === 'brain.tier')
+    expect(tiers).toHaveLength(1)
+    expect(tiers[0].tier).toBe('live')
+    expect(tiers[0].layers).toEqual([24, 32])
+    expect(tiers[0].layer).toBe(40)
+
+    ws.close()
+    await new Promise(r => setTimeout(r, 50))
+  })
+
+  it('does not replay non-whitelisted event types', async () => {
+    server.broadcast({ type: 'stream.token', text: 'ephemeral' })
+
+    const ws = new WebSocket(`ws://localhost:${PORT}/ws`)
+    const received: string[] = []
+    ws.onmessage = (event) => { received.push(typeof event.data === 'string' ? event.data : event.data.toString()) }
+    await new Promise<void>((resolve, reject) => {
+      ws.onopen = () => resolve()
+      ws.onerror = (e) => reject(e)
+    })
+    await new Promise(r => setTimeout(r, 100))
+
+    const tokens = received.map(m => JSON.parse(m)).filter(m => m.type === 'stream.token')
+    expect(tokens).toHaveLength(0)
+
+    ws.close()
+    await new Promise(r => setTimeout(r, 50))
+  })
 })
 
 // ── CORS headers ──────────────────────────────────────────────────
