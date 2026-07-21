@@ -239,7 +239,7 @@ export class DashboardServer {
               const turnStr = url.searchParams.get('turn') ?? ''
               const turnNum = Number(turnStr)
               if (!SESSION_ID_RE.test(sid)) return jsonResponse({ error: 'invalid session id' }, 400)
-              if (!turnStr || Number.isNaN(turnNum)) return jsonResponse({ error: 'invalid session id' }, 400)
+              if (!turnStr || Number.isNaN(turnNum)) return jsonResponse({ error: 'invalid turn' }, 400)
               return this.getThinkingTurn(sid, turnNum)
             }
             default: {
@@ -401,14 +401,14 @@ export class DashboardServer {
   private getThinkingTurns(sessionId: string): Response {
     if (!SESSION_ID_RE.test(sessionId)) return jsonResponse({ error: 'invalid session id' }, 400)
     const turns = ThinkingRecorder.readTurns(sessionId, this.deps.sessionsDir)
-    if (turns.length === 0) return jsonResponse({ error: 'not found' }, 404)
+    if (turns.length === 0) return jsonResponse({ error: 'Not found' }, 404)
     return jsonResponse(turns.map(({ text: _text, ...index }) => index))
   }
 
   private getThinkingTurn(sessionId: string, turn: number): Response {
     if (!SESSION_ID_RE.test(sessionId)) return jsonResponse({ error: 'invalid session id' }, 400)
     const rec = ThinkingRecorder.readTurn(sessionId, turn, this.deps.sessionsDir)
-    if (!rec) return jsonResponse({ error: 'not found' }, 404)
+    if (!rec) return jsonResponse({ error: 'Not found' }, 404)
     return jsonResponse(rec)
   }
 
@@ -603,7 +603,7 @@ export class DashboardServer {
 
   getPort(): number {
     // Prefer the server's actual bound port (non-zero when port=0 was requested).
-    return (this.server as any).port ?? this._port
+    return this.server.port ?? this._port
   }
 
   getHostname(): string {

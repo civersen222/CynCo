@@ -25,13 +25,21 @@ beforeAll(async () => {
   writeFileSync(join(SESSIONS_DIR, 's1.thinking.jsonl'), [line1, corrupt, line2].join('\n') + '\n')
 
   server = new DashboardServer({ port: 0, deps: { sessionsDir: SESSIONS_DIR } })
-  await new Promise(r => setTimeout(r, 100))
+  // Poll until the server is ready (max 2 s) instead of a fixed sleep.
+  const deadline = Date.now() + 2000
+  while (Date.now() < deadline) {
+    const port = server.getPort()
+    if (port > 0) {
+      try { await fetch(`http://localhost:${port}/api/thinking/turns?session=__probe`); break } catch { /* not ready yet */ }
+    }
+    await new Promise(r => setTimeout(r, 10))
+  }
   BASE = `http://localhost:${server.getPort()}`
 })
 
 afterAll(() => {
   server.stop()
-  try { rmSync(SESSIONS_DIR, { recursive: true, force: true }) } catch { /* ignore */ }
+  try { rmSync(SESSIONS_DIR, { recursive: true, force: true }) } catch (err) { console.log('[test] cleanup failed:', err) }
 })
 
 // ── GET /api/thinking/turns ────────────────────────────────────────
@@ -66,7 +74,7 @@ describe('GET /api/thinking/turns', () => {
     const res = await fetch(`${BASE}/api/thinking/turns?session=no_such_session`)
     expect(res.status).toBe(404)
     const data = await res.json() as any
-    expect(data).toHaveProperty('error', 'not found')
+    expect(data).toHaveProperty('error', 'Not found')
   })
 
   it('returns 400 for session id with path separators (slash)', async () => {
@@ -109,21 +117,21 @@ describe('GET /api/thinking', () => {
     const res = await fetch(`${BASE}/api/thinking?session=s1&turn=99`)
     expect(res.status).toBe(404)
     const data = await res.json() as any
-    expect(data).toHaveProperty('error', 'not found')
+    expect(data).toHaveProperty('error', 'Not found')
   })
 
   it('returns 404 for missing session', async () => {
     const res = await fetch(`${BASE}/api/thinking?session=ghost&turn=1`)
     expect(res.status).toBe(404)
     const data = await res.json() as any
-    expect(data).toHaveProperty('error', 'not found')
+    expect(data).toHaveProperty('error', 'Not found')
   })
 
   it('returns 400 for non-numeric turn', async () => {
     const res = await fetch(`${BASE}/api/thinking?session=s1&turn=abc`)
     expect(res.status).toBe(400)
     const data = await res.json() as any
-    expect(data).toHaveProperty('error', 'invalid session id')
+    expect(data).toHaveProperty('error', 'invalid turn')
   })
 
   it('returns 400 for session id with path separators', async () => {

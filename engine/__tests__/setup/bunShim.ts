@@ -29,6 +29,7 @@ interface BunServerLike {
   upgrade: (req: Request, extra?: any) => boolean
   stop: (force?: boolean) => void
   hostname?: string
+  readonly port: number
 }
 
 interface BunWS {
