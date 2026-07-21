@@ -47,7 +47,7 @@ export class ActivationsConsumer {
     const lensUp = lens !== null
     const tier: BrainTier = tapUp && lensUp ? 'live' : tapUp ? 'record-only' : 'entropy-only'
     console.log(`[brain] tier: ${tier} (tap=${tapUp} lens=${lensUp})`)
-    this.opts.broadcast({ type: 'brain.tier', tier, layers: lens?.layers ?? [] })
+    this.opts.broadcast({ type: 'brain.tier', tier, layers: lens?.layers ?? [], layer: this.layer })
     if (tapUp) this.timer = setInterval(() => { void this.pollOnce() }, this.opts.intervalMs ?? 100)
     return tier
   }

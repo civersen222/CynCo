@@ -67,7 +67,7 @@ describe('ActivationsConsumer', () => {
     const tier = await c.start()
     c.stop()
     expect(tier).toBe('live')
-    expect(broadcast).toHaveBeenCalledWith({ type: 'brain.tier', tier: 'live', layers: [24, 40, 56] })
+    expect(broadcast).toHaveBeenCalledWith({ type: 'brain.tier', tier: 'live', layers: [24, 40, 56], layer: 40 })
   })
 
   it('start() reports entropy-only with empty layers when both deps down', async () => {
@@ -81,6 +81,6 @@ describe('ActivationsConsumer', () => {
     const tier = await c.start()
     c.stop()
     expect(tier).toBe('entropy-only')
-    expect(broadcast).toHaveBeenCalledWith({ type: 'brain.tier', tier: 'entropy-only', layers: [] })
+    expect(broadcast).toHaveBeenCalledWith({ type: 'brain.tier', tier: 'entropy-only', layers: [], layer: 40 })
   })
 })

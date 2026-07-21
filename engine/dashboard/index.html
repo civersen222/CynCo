@@ -2515,17 +2515,19 @@ function brainOnTier(msg) {
   if (status) status.textContent =
     tier === 'live' ? '' : tier === 'record-only' ? 'lens sidecar offline — activations recorded only'
                          : 'workspace offline (unpatched server) — entropy only';
-  brainFillLayers(msg.layers);
+  brainFillLayers(msg.layers, msg.layer);
 }
 
-function brainFillLayers(layers) {
+function brainFillLayers(layers, engineLayer) {
   var sel = document.getElementById('brain-layer');
   if (!sel || !Array.isArray(layers) || layers.length === 0) return;
   var current = sel.value;
   sel.innerHTML = layers.map(function (l) {
     return '<option value="' + Number(l) + '">' + Number(l) + '</option>';
   }).join('');
+  // Keep the user's pick if still valid; otherwise mirror the engine's active layer
   if (current && layers.indexOf(Number(current)) !== -1) sel.value = current;
+  else if (engineLayer != null && layers.indexOf(Number(engineLayer)) !== -1) sel.value = String(engineLayer);
 }
 
 document.getElementById('brain-layer').addEventListener('change', function () {
@@ -2533,7 +2535,8 @@ document.getElementById('brain-layer').addEventListener('change', function () {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ layer: Number(this.value) }),
-  }).catch(function (e) { console.warn('[brain] layer switch failed', e); });
+  }).then(function (r) { if (!r.ok) console.warn('[brain] layer switch rejected:', r.status); })
+    .catch(function (e) { console.warn('[brain] layer switch failed', e); });
 });
 
 function brainOnWorkspace(msg) {
