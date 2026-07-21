@@ -19,4 +19,8 @@ describe('brain wiring (static)', () => {
   it('main.ts passes dashboardBroadcast to the loop', () => {
     expect(main).toMatch(/dashboardBroadcast/)
   })
+  it('brain state resets at model-call start and recorder follows resume()', () => {
+    expect(loop).toMatch(/resetBrainTurnState\(\)/)
+    expect(loop.match(/new ThinkingRecorder\(/g)!.length).toBeGreaterThanOrEqual(2) // init + resume
+  })
 })

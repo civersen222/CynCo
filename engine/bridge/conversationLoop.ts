@@ -352,6 +352,14 @@ export class ConversationLoop {
    * (e.g. a user.message arrives with a different project directory) —
    * otherwise snapshots run `git add -A` against the engine's startup dir.
    */
+  /** Reset per-model-call brain state; called at model-call start so aborted/failed calls can't bleed. */
+  private resetBrainTurnState(): void {
+    this.uncertainty.reset()
+    this.uncertaintyBatch = []
+    this.uncertaintyIndex = 0
+    this.thinkingRecorder?.discardBuffer()
+  }
+
   /** Track entropy + batch brain.uncertainty messages to the dashboard. */
   private observeUncertainty(kind: 'thinking' | 'output', logprobs: import('../types.js').TokenLogprob[]): void {
     this.uncertainty.observe(kind, logprobs)
@@ -448,6 +456,7 @@ export class ConversationLoop {
       this.messages = messages
       this.journal = store
       this.sessionId = sessionId
+      this.thinkingRecorder = new ThinkingRecorder(this.sessionId)
       process.env.LOCALCODE_SESSION_ID = sessionId
       // Rehydrate the file-operation tracker from the last journaled compaction
       // so a resumed session doesn't "forget" what it already read/edited.
@@ -1834,6 +1843,7 @@ export class ConversationLoop {
         deps,
       })
       this.config.temperature = _savedTemperature
+      this.resetBrainTurnState()
 
       let lastMessageId = ''
       let tokenCount = 0

@@ -46,6 +46,17 @@ describe('ThinkingRecorder', () => {
     expect(ThinkingRecorder.readTurn('s1', 99, dir)).toBeNull()
   })
 
+  it('discardBuffer drops buffered text without writing or counting a turn', () => {
+    const r = new ThinkingRecorder('s1', dir)
+    r.onThinkingDelta('aborted stuff')
+    r.discardBuffer()
+    r.onThinkingDelta('real')
+    r.finalizeTurn({ tokenCount: 1, durationMs: 1, entropy: null })
+    const rec = JSON.parse(readFileSync(join(dir, 's1.thinking.jsonl'), 'utf-8').trim())
+    expect(rec.turn).toBe(1)
+    expect(rec.text).toBe('real')
+  })
+
   it('aggregateSession averages means, maxes maxes, sums spikes', () => {
     const r = new ThinkingRecorder('s1', dir)
     r.onThinkingDelta('a')

@@ -46,6 +46,11 @@ export class ThinkingRecorder {
     this.buffer += text
   }
 
+  /** Drop any buffered thinking without writing a record (aborted/failed model call). */
+  discardBuffer(): void {
+    this.buffer = ''
+  }
+
   /** Append ONE record for the completed turn; never throws (D: log + keep running). */
   finalizeTurn(info: { tokenCount: number; durationMs: number; entropy: TurnEntropy | null }): void {
     this.turn++
