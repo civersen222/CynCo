@@ -1020,6 +1020,21 @@ export class CyberneticsGovernance {
     return this._db
   }
 
+  /**
+   * Overwrite the auto-generated session id so it matches the conversation
+   * loop's canonical id. Required for the decision-journal → outcome join:
+   * decisions are journaled under conversationLoop.sessionId, and this makes
+   * recordSessionOutcome() and flushPredictions() write under the same id.
+   */
+  setSessionId(id: string): void {
+    this._sessionId = id
+  }
+
+  /** The session id used for outcome + prediction persistence. */
+  getSessionId(): string {
+    return this._sessionId
+  }
+
   /** Get the PredictionTracker for reading falsifiable hypothesis statistics. */
   getPredictionTracker(): PredictionTracker {
     return this._predictionTracker
