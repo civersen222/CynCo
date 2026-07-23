@@ -118,16 +118,19 @@ if (runTaskIdx !== -1) {
   process.exit(exitCode)
 }
 
-// ─── Export S5 training data (DecisionLogger history -> JSONL) ──
+// ─── Export S5 training data (outcome-joined, reward-filtered -> JSONL) ──
 const exportTrainingIdx = process.argv.indexOf('--export-training')
 if (exportTrainingIdx !== -1) {
-  const outPath = process.argv[exportTrainingIdx + 1] ?? 's5-training.jsonl'
-  const { DecisionLogger } = await import('./decisions/logger.js')
-  const { toJsonl } = await import('./s5/trainingData.js')
-  const { writeFileSync } = await import('fs')
-  const records = new DecisionLogger().readAll()
-  writeFileSync(outPath, toJsonl(records))
-  console.log(`[export-training] wrote ${records.length} examples to ${outPath}`)
+  const os = await import('os')
+  const path = await import('path')
+  const outPath = process.argv[exportTrainingIdx + 1]
+    ?? path.join(os.homedir(), '.cynco', 'training', 's5_training_data.jsonl')
+  const journalPath = path.join(os.homedir(), '.cynco', 'training', 's5-decisions.jsonl')
+  const dbPath = path.join(os.homedir(), '.cynco', 'governance', 'governance.db')
+  const { loadOutcomesFromDb, exportViableExamples } = await import('./s5/exportTrainingData.js')
+  const outcomeBySession = loadOutcomesFromDb(dbPath)
+  const { written } = exportViableExamples({ journalPath, outPath, outcomeBySession })
+  console.log(`[export-training] wrote ${written} viable-session example(s) to ${outPath}`)
   process.exit(0)
 }
 
