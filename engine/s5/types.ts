@@ -38,13 +38,29 @@ export type S5Input = {
   infoGain: number | null
   progressRate: number | null
   explorationState: 'healthy_exploration' | 'thrashing' | 'floundering' | null
+  // P4.5 Phase 3: proactive tool surfacing (opt-in via LOCALCODE_S5_PROACTIVE_TOOLS).
+  // taskClass = keyword-classified request type; loadedTools = the currently-loaded
+  // tool names. Both are the STATE half of the (state, surfaced-tools, outcome) triple.
+  // Optional so pre-existing S5Input constructions (and the flag-off path) are unaffected.
+  taskClass?: TaskClass | null
+  loadedTools?: string[]
 }
+
+/** Keyword-classified request type used only for proactive tool surfacing.
+ *  Deliberately distinct from vsm/cyberneticsGovernance's complexity-oriented
+ *  TaskType (simple_query/…/architectural) — that taxonomy lacks test/research
+ *  classes and is tuned for variety estimation, not tool hints. */
+export type TaskClass = 'debug' | 'test' | 'research' | 'refactor' | 'general'
 
 export type S5Decision = {
   workflow: string | null
   advancePhase: string | null
   model: string | null
   tools: string[] | null
+  // P4.5 Phase 3: tool names to PRE-LOAD (append-only surface), never a restriction.
+  // The ACTION half of the (state, surfaced-tools, outcome) triple. null when the
+  // proactive flag is off or no tools are missing → byte-identical to prior behavior.
+  surfaceTools: string[] | null
   contextAction: 'none' | 'compact' | 'warn'
   spawnAgent: { task: string; tools: string[] } | null
   priority: 's3' | 's4' | 'balanced'

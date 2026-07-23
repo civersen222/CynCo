@@ -558,6 +558,7 @@ export class RuleBasedS5 implements S5Interface {
       advancePhase: null,
       model: combined.model ?? null,
       tools: combined.tools ?? null,
+      surfaceTools: combined.surfaceTools ?? null,
       contextAction: combined.contextAction ?? 'none',
       spawnAgent: combined.spawnAgent ?? null,
       priority: combined.priority ?? 'balanced',
