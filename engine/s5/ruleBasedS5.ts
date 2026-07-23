@@ -1,6 +1,8 @@
 import { randomUUID } from 'crypto'
 import type { S5Input, S5Decision, S5Interface, S5Rule } from './types.js'
 import { ALL_TOOLS } from '../tools/registry.js'
+import { isProactiveToolsEnabled } from '../config.js'
+import { PROACTIVE_SURFACING } from './proactiveSurfacing.js'
 
 // ─── Constants ───────────────────────────────────────────────
 
@@ -463,6 +465,7 @@ export function combineDecisions(decisions: Partial<S5Decision>[]): Partial<S5De
   if (decisions.length === 0) return {}
 
   let combinedTools: string[] | null = null
+  let surfaceTools: string[] | null = null
   let contextAction: S5Decision['contextAction'] = 'none'
   let priority: S5Decision['priority'] = 'balanced'
   let model: string | null = null
@@ -478,6 +481,17 @@ export function combineDecisions(decisions: Partial<S5Decision>[]): Partial<S5De
       } else {
         const dSet = new Set(d.tools)
         combinedTools = combinedTools.filter(t => dSet.has(t))
+      }
+    }
+
+    // Surface tools: union (additive pre-load — never restricts, so accumulate)
+    if (d.surfaceTools && d.surfaceTools.length > 0) {
+      if (surfaceTools === null) {
+        surfaceTools = [...d.surfaceTools]
+      } else {
+        for (const t of d.surfaceTools) {
+          if (!surfaceTools.includes(t)) surfaceTools.push(t)
+        }
       }
     }
 
@@ -518,6 +532,7 @@ export function combineDecisions(decisions: Partial<S5Decision>[]): Partial<S5De
 
   return {
     tools: combinedTools,
+    surfaceTools,
     contextAction,
     priority,
     model,
@@ -536,8 +551,15 @@ export class RuleBasedS5 implements S5Interface {
     const firedDecisions: Partial<S5Decision>[] = []
     const ruleIds: string[] = []
 
+    // Proactive tool surfacing (P1) is opt-in: only consult it when the flag is
+    // on. Read the flag per-decision (not at import) so it can be toggled at
+    // runtime and in tests. Flag off → the rule is absent → no surfaceTools ever.
+    const rules = isProactiveToolsEnabled()
+      ? [...ALL_RULES, PROACTIVE_SURFACING]
+      : ALL_RULES
+
     // Evaluate all rules by tier order (critical first, then warning, then info)
-    for (const rule of ALL_RULES) {
+    for (const rule of rules) {
       const result = rule.evaluate(input)
       if (result !== null) {
         firedDecisions.push(result)

@@ -40,6 +40,18 @@ export function isAllToolsEnabled(): boolean {
   return process.env.LOCALCODE_ALL_TOOLS === 'true'
 }
 
+/**
+ * S5 proactive tool surfacing gate (P4.5 Phase 3). Default OFF. When true, the
+ * PROACTIVE_SURFACING info-rule may pre-load task-relevant tools by name via the
+ * append-only surface channel. Off → the rule never fires, no surfaceTools field
+ * is set, and the (state, action) journal triple is not written → byte-identical
+ * behavior. This is a static heuristic table, not a learned model (the LoRA
+ * milestone comes later, trained on the triples this flag lets us collect).
+ */
+export function isProactiveToolsEnabled(): boolean {
+  return process.env.LOCALCODE_S5_PROACTIVE_TOOLS === 'true'
+}
+
 export type TierSetting = 'auto' | 'basic' | 'standard' | 'advanced'
 
 export type RuntimeConfig = {
