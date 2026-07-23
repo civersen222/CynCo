@@ -15,7 +15,8 @@ import { localCallModel, type CallModelDeps } from '../engine/callModel.js'
 import { ALL_TOOLS, getCoreTools, getExtendedTools } from '../tools/registry.js'
 import { LoadedToolSet } from '../tools/loadedToolSet.js'
 import { loadSkills } from '../skills/loader.js'
-import { setLoadedSkills, getSkillByName } from '../skills/store.js'
+import { setLoadedSkills, getSkillByName, getSkillIndex } from '../skills/store.js'
+import { formatSkillIndexBlock } from '../skills/prompt.js'
 import { ToolExecutor, type RequestApprovalFn } from '../tools/executor.js'
 import { ToolScorer } from '../tools/toolScorer.js'
 import { DifficultyClassifier } from '../vsm/difficultyClassifier.js'
@@ -839,6 +840,15 @@ export class ConversationLoop {
           loadable.map(t => `- ${t.name}: ${t.description}`).join('\n'),
         )
       }
+    }
+
+    // Skill catalogue (one line per skill). Session-static — skills are
+    // discovered once per session — so this stays inside the append-only prompt
+    // prefix. run_skill loads a skill's body + surfaces its tools on demand.
+    const skillIndexBlock = formatSkillIndexBlock(getSkillIndex())
+    if (skillIndexBlock) {
+      promptParts.push('')
+      promptParts.push(skillIndexBlock)
     }
 
     // Inject saved learnings from previous sessions (global LearningStore).

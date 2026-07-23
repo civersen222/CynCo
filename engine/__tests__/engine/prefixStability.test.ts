@@ -8,6 +8,7 @@ import { buildSimulatedToolPrompt } from '../../ollama/simulated.js'
 import { getSessionExtras, resetSessionExtras } from '../../engine/sessionExtras.js'
 import { buildGovernanceSignal } from '../../vsm/governanceSignal.js'
 import { ContextCompressor } from '../../context/compressor.js'
+import { formatSkillIndexBlock } from '../../skills/prompt.js'
 
 const TOOLS = [
   { name: 'read_file', description: 'Read', input_schema: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] } },
@@ -101,6 +102,30 @@ describe('prompt prefix stability across turns', () => {
     }
     for (let i = 1; i < post.length; i++) {
       expect(post[i].startsWith(post[i - 1])).toBe(true)
+    }
+  })
+
+  it('the skill-index block is session-static and keeps the system prefix byte-stable across turns', async () => {
+    // Skills are discovered once per session. The skill-index block enters the
+    // system prompt and must be identical on every turn (no per-turn drift), so
+    // the append-only prefix guarantee holds with skills present.
+    const index = [
+      { name: 'tdd', description: 'TDD loop', source: 'builtin' as const },
+      { name: 'debug', description: 'Systematic debugging', source: 'builtin' as const },
+    ]
+    const withSkills = (msgs: any[]) => {
+      const block = formatSkillIndexBlock(index)
+      return BASE_SYSTEM + '\n\n' + block + '\u0000' + msgs.map(m => JSON.stringify(m)).join('\u0000')
+    }
+    const messages: any[] = [msg('user', 'use the tdd skill')]
+    const serialized: string[] = []
+    for (let turn = 0; turn < 4; turn++) {
+      serialized.push(withSkills(messages))
+      messages.push(msg('assistant', `turn ${turn}`))
+      messages.push(msg('user', `[tool result ${turn}] ok`))
+    }
+    for (let i = 1; i < serialized.length; i++) {
+      expect(serialized[i].startsWith(serialized[i - 1])).toBe(true)
     }
   })
 
