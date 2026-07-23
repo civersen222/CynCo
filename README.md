@@ -291,6 +291,8 @@ Structured multi-phase workflows with tool restrictions and advancement gates:
 ### Skills
 Shareable, self-contained capability packs — a directory with a `SKILL.md` (YAML frontmatter + prose instructions) that declares the tools it needs. Skills are discovered from two locations: bundled builtins (`engine/skills/builtins/`) and your workspace (`~/.cynco/skills/`, which overrides builtins by name). A name-sorted index of available skills is surfaced in the prompt; the model calls `run_skill` to load a skill's full instructions and its declared tools on demand, or `list_skills` to enumerate them.
 
+The seven guided workflows above (`tdd`, `debug`, `review`, `plan`, `brainstorm`, `critique`, `research`) ship as builtin skills. `run_skill("tdd")` and the `/tdd` slash command are aliases: both drive the same phase-gated workflow engine, so the workflow keeps its state machine (per-phase instructions, gates, allowed tools) rather than collapsing into flat prose.
+
 Manage skills with the `/skill` slash command:
 - `/skill list` — show discovered skills
 - `/skill new <name>` — scaffold a new skill (`~/.cynco/skills/<name>/SKILL.md`)
@@ -355,6 +357,7 @@ All config via environment variables. No config files required.
 | `LOCALCODE_TEMPERATURE` | `0.7` | Sampling temperature |
 | `LOCALCODE_CONTEXT_LENGTH` | Auto-detected | Override context window |
 | `LOCALCODE_ALL_TOOLS` | `false` | Surface every tool up front instead of loading extended tools on demand via `load_tools` |
+| `LOCALCODE_S5_PROACTIVE_TOOLS` | `false` | **Opt-in.** Let the S5 policy engine proactively pre-load task-relevant tools (e.g. surface `Bash`, `Grep`, `Read` for a debugging request) before the model asks. Append-only — never restricts. |
 | `LOCALCODE_SEARXNG_URL` | — | SearXNG instance URL for research |
 | `LOCALCODE_S5_MODEL` | — | Fine-tuned S5 model (when available) |
 | `LOCALCODE_DASHBOARD_HOST` | `127.0.0.1` | Dashboard bind address (set to `0.0.0.0` to expose on network) |

@@ -11,6 +11,7 @@ and workspace directories and loaded on demand via `run_skill` — is ported fro
 the **Hearth** project.
 
 - **Original project:** Hearth
+- **Author:** Ishant Singh ([@0pen-sourcer](https://github.com/0pen-sourcer))
 - **Original license:** MIT
 - **Use here:** The design and portions of the implementation were adapted into
   CynCo and are distributed under CynCo's license, the GNU Affero General Public
@@ -19,6 +20,8 @@ the **Hearth** project.
 
 ```
 MIT License
+
+Copyright (c) Ishant Singh (@0pen-sourcer), Hearth
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
