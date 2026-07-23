@@ -110,12 +110,15 @@ export type TokenLogprob = {
 export type ContentDelta =
   | { type: 'text_delta'; text: string; logprobs?: TokenLogprob[] }
   | { type: 'thinking_delta'; thinking: string; logprobs?: TokenLogprob[] }
-  | { type: 'input_json_delta'; partial_json: string }
+  | { type: 'input_json_delta'; partial_json: string; logprobs?: TokenLogprob[] }
   | { type: 'connector_text_delta'; text: string }
+
+/** Stream-level content block — may carry optional logprobs for the tool-name token. */
+export type StreamContentBlock = ContentBlock & { logprobs?: TokenLogprob[] }
 
 export type StreamEvent =
   | { type: 'message_start'; message: { id: string; model: string; usage: TokenUsage } }
-  | { type: 'content_block_start'; index: number; content_block: ContentBlock }
+  | { type: 'content_block_start'; index: number; content_block: StreamContentBlock }
   | { type: 'content_block_delta'; index: number; delta: ContentDelta }
   | { type: 'content_block_stop'; index: number }
   | { type: 'message_delta'; delta: { stop_reason: string }; usage: Partial<TokenUsage> }

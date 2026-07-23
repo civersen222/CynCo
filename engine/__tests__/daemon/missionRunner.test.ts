@@ -462,11 +462,11 @@ describe('MissionRunner entropy digest on RunRecord', () => {
   function writeThinkingFile(sessionsDir: string, sessionId: string): void {
     const rec1: TurnThinkingRecord = {
       turn: 1, ts: 1, text: 'a', tokenCount: 1, durationMs: 1,
-      entropy: { thinking: { mean: 1, max: 2, spikeCount: 1 }, output: null },
+      entropy: { thinking: { mean: 1, max: 2, spikeCount: 1 }, output: null, tool: null },
     }
     const rec2: TurnThinkingRecord = {
       turn: 2, ts: 2, text: 'b', tokenCount: 1, durationMs: 1,
-      entropy: { thinking: { mean: 3, max: 5, spikeCount: 2 }, output: null },
+      entropy: { thinking: { mean: 3, max: 5, spikeCount: 2 }, output: null, tool: null },
     }
     writeFileSync(
       join(sessionsDir, `${sessionId}.thinking.jsonl`),

@@ -234,6 +234,7 @@ export function fromOpenAIStreamChunk(chunk: {
             id: tc.id,
             name: tc.function.name,
             input: {},
+            ...(lp ? { logprobs: lp } : {}),
           },
         })
       }
@@ -242,7 +243,7 @@ export function fromOpenAIStreamChunk(chunk: {
         events.push({
           type: 'content_block_delta',
           index: tc.index + 1,
-          delta: { type: 'input_json_delta', partial_json: tc.function.arguments },
+          delta: { type: 'input_json_delta', partial_json: tc.function.arguments, ...(lp ? { logprobs: lp } : {}) },
         })
       }
     }

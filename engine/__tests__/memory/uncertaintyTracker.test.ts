@@ -48,4 +48,15 @@ describe('UncertaintyTracker', () => {
     t.reset()
     expect(t.digest('output')).toBeNull()
   })
+
+  it('tracks a tool stream independently and digests it', () => {
+    const t = new UncertaintyTracker()
+    t.observe('tool', [{ token: 'Read', logprob: -0.01, top: [
+      { token: 'Read', logprob: -0.01 }, { token: 'Write', logprob: -4.2 },
+    ] }])
+    const d = t.digest('tool')
+    expect(d).not.toBeNull()
+    expect(d!.mean).toBeGreaterThanOrEqual(0)
+    expect(t.digest('output')).toBeNull() // isolation
+  })
 })

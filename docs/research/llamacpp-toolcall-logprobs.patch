@@ -1,0 +1,59 @@
+# llama.cpp tool-call / speculative-decoding logprobs patch
+# base: 96fbe0039 (applied on top of the LocalCode brain activations tap)
+#
+# Problem: the NVFP4-MTP model runs (nearly) every token through llama.cpp's
+#   speculative-decoding accept loop, which carried an upstream
+#   `// TODO: set result.probs`. Accepted tokens — including every native
+#   tool-call token — therefore emitted no `logprobs.content` on their SSE
+#   chunks, so the Brain could never see the tool-selection distribution.
+#
+# Fix: save the speculative batch indices (spec_i_batch) before they are
+#   cleared, then call the existing populate_token_probs() for each accepted
+#   token using spec_idxs[i] — the batch position whose verified target logits
+#   produced ids[i]. Gated on n_probs > 0, so it is a no-op on normal requests.
+#
+# Verified via /v1/chat/completions probe (stream, logprobs, tools):
+#   tool_call chunks with logprobs: 0/9  ->  9/9   (95/97 chunks overall).
+#
+# Note: this diff contains ONLY the logprobs change. The brain activation tap
+#   (get_ctx_for_activations, ctx->ctx_tgt) lives in the same file but is a
+#   separate, pre-existing LocalCode patch and is intentionally excluded here.
+
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -3420,6 +3420,12 @@ private:
+
+                 GGML_ASSERT(n_draft > 0);
+
++                // save the speculative batch indices before they are cleared, so
++                // token probabilities can be populated for each accepted token
++                // (spec_i_batch[i] is the batch position whose logits produced
++                // accepted token i). Needed for logprobs on tool-call/spec tokens.
++                std::vector<int32_t> spec_idxs;
++
+                 // verify and try to accept the draft
+                 {
+                     // save the sampler sampler state in case we need to restore it
+@@ -3427,6 +3433,7 @@ private:
+
+                     GGML_ASSERT(slot.spec_i_batch.size() == n_draft + 1);
+                     auto accepted = common_sampler_sample_and_accept_n(slot.smpl.get(), slot.ctx_tgt, slot.spec_i_batch, slot.spec_draft);
++                    spec_idxs = slot.spec_i_batch;
+                     slot.spec_i_batch.clear();
+
+                     GGML_ASSERT(accepted.size() >= 1);
+@@ -3507,7 +3514,13 @@ private:
+                     result.text_to_send = common_token_to_piece(slot.ctx_tgt, result.tok, accept_special_token(slot, result.tok));
+                     result.prob         = 1.0f; // set later
+
+-                    // TODO: set result.probs
++                    // populate token probs for each accepted speculative token from
++                    // the verified target logits (spec_idxs[i] is the batch position
++                    // whose distribution produced ids[i]). Only when the client
++                    // requested logprobs (n_probs > 0); no-op on normal requests.
++                    if (slot.task->params.sampling.n_probs > 0 && i < spec_idxs.size()) {
++                        populate_token_probs(slot, result, slot.task->params.post_sampling_probs, params_base.special, spec_idxs[i]);
++                    }
+
+                     slot.n_decoded += 1;

@@ -10,7 +10,7 @@ import { join } from 'path'
 import { homedir } from 'os'
 import type { EntropyDigest } from './uncertaintyTracker.js'
 
-export type TurnEntropy = { thinking: EntropyDigest | null; output: EntropyDigest | null }
+export type TurnEntropy = { thinking: EntropyDigest | null; output: EntropyDigest | null; tool: EntropyDigest | null }
 
 export type TurnThinkingRecord = {
   turn: number
@@ -54,7 +54,7 @@ export class ThinkingRecorder {
   /** Append ONE record for the completed turn; never throws (D: log + keep running). */
   finalizeTurn(info: { tokenCount: number; durationMs: number; entropy: TurnEntropy | null }): void {
     this.turn++
-    const hasEntropy = info.entropy && (info.entropy.thinking || info.entropy.output)
+    const hasEntropy = info.entropy && (info.entropy.thinking || info.entropy.output || info.entropy.tool)
     if (this.buffer.length === 0 && !hasEntropy) return
     const rec: TurnThinkingRecord = {
       turn: this.turn,
@@ -108,7 +108,7 @@ export class ThinkingRecorder {
   static aggregateSession(sessionId: string, dir?: string): TurnEntropy | null {
     const turns = ThinkingRecorder.readTurns(sessionId, dir)
     if (turns.length === 0) return null
-    const agg = (kind: 'thinking' | 'output'): EntropyDigest | null => {
+    const agg = (kind: 'thinking' | 'output' | 'tool'): EntropyDigest | null => {
       const ds = turns.map(t => t.entropy?.[kind]).filter((d): d is EntropyDigest => !!d)
       if (ds.length === 0) return null
       return {
@@ -117,6 +117,6 @@ export class ThinkingRecorder {
         spikeCount: ds.reduce((a, d) => a + d.spikeCount, 0),
       }
     }
-    return { thinking: agg('thinking'), output: agg('output') }
+    return { thinking: agg('thinking'), output: agg('output'), tool: agg('tool') }
   }
 }
