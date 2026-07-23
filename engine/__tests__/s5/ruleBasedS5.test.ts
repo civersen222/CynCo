@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test'
-import { RuleBasedS5, ALL_RULES } from '../../s5/ruleBasedS5.js'
+import { RuleBasedS5, ALL_RULES, ALL_TOOL_NAMES } from '../../s5/ruleBasedS5.js'
+import { ALL_TOOLS } from '../../tools/registry.js'
 import type { S5Input } from '../../s5/types.js'
 
 function baseInput(overrides: Partial<S5Input> = {}): S5Input {
@@ -250,6 +251,21 @@ describe('RuleBasedS5 — Hardened 21-rule engine', () => {
       }))
       expect(decision.ruleIds).toContain('C3')
       expect(decision.ruleIds).toContain('W6')
+    })
+  })
+
+  describe('ALL_TOOL_NAMES governance surface', () => {
+    it('stays in sync with the canonical tool registry', () => {
+      // Derived, not hand-maintained — this guards against a hardcoded copy drifting again.
+      expect([...ALL_TOOL_NAMES].sort()).toEqual(ALL_TOOLS.map(t => t.name).sort())
+    })
+
+    it('includes the tools a stale hardcoded list previously dropped', () => {
+      // Regression guard: these seven were absent from the old hardcoded array, so S5's
+      // excludeTools() allow-list silently excluded them whenever it enforced a restriction.
+      for (const name of ['ReplaceFunction', 'Mfl', 'AskUser', 'ContractCreate', 'ContractAssertPass', 'ContractAssertFail', 'ContractStatus']) {
+        expect(ALL_TOOL_NAMES).toContain(name)
+      }
     })
   })
 })

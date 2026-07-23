@@ -140,7 +140,7 @@ Smaller models (<7B) struggle with the tool-calling format. 24B+ recommended for
 │  TypeScript Engine (Bun)         │◄──────►│  Python TUI     │
 │                                  │  9160  │  (Textual)      │
 │  Conversation Loop               │        │                 │
-│  ├── Tool Executor (24 tools)    │        │  Workspace      │
+│  ├── Tool Executor (26 tools)    │        │  Workspace      │
 │  ├── Contract Enforcement        │        │  Vibe Loop      │
 │  ├── S2 Agent Coordinator        │        │  Settings       │
 │  ├── 6 Search Engines            │        │  Context Bar    │
@@ -288,8 +288,8 @@ Structured multi-phase workflows with tool restrictions and advancement gates:
 - `/brainstorm` — idea exploration
 - `/critique` — critical analysis
 
-### Tools (25 built-in)
-Read, Write, Edit, MultiEdit, ApplyPatch, ReplaceFunction, Bash, Git, Glob, Grep, Ls, CodeIndex, WebSearch, WebFetch, ImageView, NotebookEdit, SaveLearning, SubAgent, CollectAgent, AskUser, IndexResearch, ContractCreate, ContractAssertPass, ContractAssertFail, ContractStatus
+### Tools (26 built-in)
+Read, Write, Edit, MultiEdit, ApplyPatch, ReplaceFunction, Bash, Git, Glob, Grep, Ls, CodeIndex, WebSearch, WebFetch, ImageView, NotebookEdit, SaveLearning, SubAgent, CollectAgent, AskUser, IndexResearch, Mfl, ContractCreate, ContractAssertPass, ContractAssertFail, ContractStatus
 
 ### Session Persistence
 - **JSONL journaling** — every message saved, survives crashes
@@ -307,7 +307,7 @@ Read, Write, Edit, MultiEdit, ApplyPatch, ReplaceFunction, Bash, Git, Glob, Grep
 CynCo collects governance decision data during every session — (input, decision, outcome) triples for each of its S1-S5 systems. This data is the foundation for fine-tuned models that will replace the rule-based governance with learned governance:
 
 ### S5 Decision Model
-The first fine-tuning target. Currently CynCo uses a rule-based S5 with 20 hand-coded rules. The decision journal collects every S5 decision with the full governance snapshot (context usage, tool success rate, variety balance, stuck turns, etc.) and the outcome (did the decision help?).
+The first fine-tuning target. Currently CynCo uses a rule-based S5 with 21 hand-coded rules. The decision journal collects every S5 decision with the full governance snapshot (context usage, tool success rate, variety balance, stuck turns, etc.) and the outcome (did the decision help?).
 
 **Status:** Collecting training data. Need 500+ decisions with backfilled outcomes before LoRA fine-tuning is viable. The journal format is locked: `{ input: S5Input, decision: S5Decision, outcome: OutcomeScore }`.
 
