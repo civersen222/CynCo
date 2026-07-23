@@ -10,6 +10,13 @@ export type DivergenceVerdict = { diverged: boolean; tool: string; entropy: numb
 export class ToolDivergenceDetector {
   private xs: number[] = []
   private static readonly ABS_CAP = Math.log(2)
+  // Absolute confidence floor (~0.05 nats ≈ top-token prob ≥ 0.99). A real model
+  // (qwen3.6) picks tools with near-zero entropy across the board, so the σ-floor
+  // collapses to ~0 and nothing reads as an "outlier". Clamping the floor to never
+  // drop below this ensures a genuinely-certain emission of a *disabled* tool still
+  // alarms — the reasoning/action divergence we care about — while the ln(2) cap
+  // keeps a flat *high*-entropy stream from ever counting as a collapse.
+  private static readonly ABS_FLOOR = 0.05
 
   observeEntropy(h: number): void {
     if (Number.isFinite(h)) this.xs.push(h)
@@ -19,7 +26,11 @@ export class ToolDivergenceDetector {
     if (this.xs.length < 3) return ToolDivergenceDetector.ABS_CAP
     const mean = this.xs.reduce((a, b) => a + b, 0) / this.xs.length
     const sd = Math.sqrt(this.xs.reduce((a, x) => a + (x - mean) ** 2, 0) / this.xs.length)
-    return Math.min(mean - sd, ToolDivergenceDetector.ABS_CAP)
+    const sigmaFloor = mean - sd
+    return Math.min(
+      Math.max(sigmaFloor, ToolDivergenceDetector.ABS_FLOOR),
+      ToolDivergenceDetector.ABS_CAP,
+    )
   }
 
   check(input: DivergenceInput): DivergenceVerdict {

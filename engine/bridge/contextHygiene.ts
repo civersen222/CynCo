@@ -16,13 +16,17 @@ const MARKER =
 export function pruneRedundantReads(messages: Msg[], redundantSigs: Set<string>, sigOf: SigOf): Msg[] {
   if (redundantSigs.size === 0) return messages
 
-  // A redundant exchange = an assistant message that is EXACTLY one tool_use
-  // whose read signature is certified redundant, immediately followed by the
-  // matching tool_result user message.
+  // A redundant exchange = an assistant message whose SOLE tool_use call is a
+  // certified-redundant read, immediately followed by the matching tool_result
+  // user message. Reasoning models (qwen3.6 etc.) emit a `thinking` block
+  // alongside the tool_use, so the turn may carry more than one content block —
+  // we key off the tool_use blocks, not total content length. Turns with more
+  // than one tool_use (a read plus another action) are left untouched.
   const isRedundantAssistant = (m: Msg): string | null => {
-    if (m.role !== 'assistant' || !Array.isArray(m.content) || m.content.length !== 1) return null
-    const b = m.content[0]
-    if (b?.type !== 'tool_use') return null
+    if (m.role !== 'assistant' || !Array.isArray(m.content)) return null
+    const toolUses = m.content.filter((b: any) => b?.type === 'tool_use')
+    if (toolUses.length !== 1) return null
+    const b = toolUses[0]
     const sig = sigOf(b.name, b.input)
     return sig && redundantSigs.has(sig) ? b.id : null
   }
