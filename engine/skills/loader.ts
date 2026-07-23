@@ -44,6 +44,22 @@ function splitFrontmatter(text: string): string | null {
   return normalized.slice(firstNewline + 1, end)
 }
 
+/**
+ * Read a SKILL.md and return only its prose body (the frontmatter fence
+ * stripped). This is what gets appended to context when a skill runs.
+ */
+export function readSkillBody(bodyPath: string): string {
+  const text = fs.readFileSync(bodyPath, 'utf8').replace(/^\uFEFF/, '')
+  if (text.startsWith('---')) {
+    const end = text.indexOf('\n---', 3)
+    if (end !== -1) {
+      const afterFence = text.indexOf('\n', end + 1)
+      if (afterFence !== -1) return text.slice(afterFence + 1).replace(/^\s+/, '')
+    }
+  }
+  return text
+}
+
 function scanDir(
   root: string,
   source: Skill['source'],

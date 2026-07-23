@@ -14,6 +14,8 @@ import type { Provider } from '../provider.js'
 import { localCallModel, type CallModelDeps } from '../engine/callModel.js'
 import { ALL_TOOLS, getCoreTools, getExtendedTools } from '../tools/registry.js'
 import { LoadedToolSet } from '../tools/loadedToolSet.js'
+import { loadSkills } from '../skills/loader.js'
+import { setLoadedSkills, getSkillByName } from '../skills/store.js'
 import { ToolExecutor, type RequestApprovalFn } from '../tools/executor.js'
 import { ToolScorer } from '../tools/toolScorer.js'
 import { DifficultyClassifier } from '../vsm/difficultyClassifier.js'
@@ -238,6 +240,9 @@ export class ConversationLoop {
   // the core tools; grows when the model calls load_tools (Phase 1) / run_skill
   // (Phase 2) / S5 proactive surfacing (Phase 3). Never shrinks.
   private loadedTools = new LoadedToolSet(getCoreTools().map(t => t.name))
+  // Lazy-once guard: skills are discovered from disk on the first user message,
+  // populating the process-wide skill store that run_skill / list_skills read.
+  private skillsLoaded = false
   // Tool names actually offered to the model in the current iteration (after
   // S5 restrictions, demotions, routing). In one-shot runs this is enforced
   // at execution time too — see executeOneTool.
@@ -638,6 +643,25 @@ export class ConversationLoop {
     return estimateTokensAsync(this.messages as any, this.provider.countTokens?.bind(this.provider))
   }
 
+  /**
+   * Discover skills from the builtin + workspace dirs once per session and
+   * publish them to the process-wide store that run_skill / list_skills read.
+   * Failures are non-fatal — a bad skill dir must never block a conversation.
+   */
+  private async ensureSkillsLoaded(): Promise<void> {
+    if (this.skillsLoaded) return
+    this.skillsLoaded = true
+    try {
+      const knownTools = new Set(ALL_TOOLS.map(t => t.name))
+      const { skills } = await loadSkills({ knownTools })
+      setLoadedSkills(skills)
+      console.log(`[skills] Loaded ${skills.length} skill(s)`)
+    } catch (err) {
+      console.warn(`[skills] load failed: ${(err as Error).message}`)
+      setLoadedSkills([])
+    }
+  }
+
   async handleUserMessage(text: string, opts?: { contract?: HarnessContractSpec }): Promise<void> {
     if (this.processing) {
       console.log('[loop] Already processing, ignoring message')
@@ -645,6 +669,8 @@ export class ConversationLoop {
     }
     this.processing = true
     console.log(`[loop] Handling message: "${text.slice(0, 80)}..."`)
+
+    await this.ensureSkillsLoaded()
 
     this.addMessage({
       role: 'user',
@@ -2426,6 +2452,11 @@ export class ConversationLoop {
       for (const block of toolUseBlocks as any[]) {
         if (block.name === 'load_tools' && Array.isArray(block.input?.tools)) {
           for (const n of block.input.tools) if (typeof n === 'string') requestedLoads.push(n)
+        }
+        // run_skill surfaces the skill's declared tools[] through the same channel.
+        if (block.name === 'run_skill' && typeof block.input?.name === 'string') {
+          const skill = getSkillByName(block.input.name)
+          if (skill) for (const n of skill.frontmatter.tools) requestedLoads.push(n)
         }
       }
       if (requestedLoads.length > 0) {
