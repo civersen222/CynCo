@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Fine-tune a small model on S5 decision data using Unsloth.
 
-Reads a JSONL training file (produced by aggregate_training_data.py),
+Reads a JSONL training file (produced by `bun engine/main.ts --export-training`),
 formats examples as chat turns, and fine-tunes a small quantised base
 model using LoRA via the Unsloth library.
 
@@ -23,7 +23,7 @@ from pathlib import Path
 
 # ─── Default configuration ──────────────────────────────────────────────────
 
-DEFAULT_TRAINING_DATA = Path.home() / ".localcode" / "training" / "s5_training_data.jsonl"
+DEFAULT_TRAINING_DATA = Path.home() / ".cynco" / "training" / "s5_training_data.jsonl"
 DEFAULT_MODEL = "unsloth/Qwen2.5-3B-Instruct-bnb-4bit"
 DEFAULT_OUTPUT_DIR = Path("./s5_lora")
 DEFAULT_EPOCHS = 3
@@ -38,7 +38,7 @@ def load_training_data(path: Path) -> list[dict]:
     if not path.exists():
         print(f"[error] Training data not found: {path}", file=sys.stderr)
         print(
-            "[hint] Run aggregate_training_data.py first to generate training data.",
+            "[hint] Generate it first: bun engine/main.ts --export-training",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -177,7 +177,7 @@ def main() -> None:
         "--training-data",
         type=Path,
         default=DEFAULT_TRAINING_DATA,
-        help="Path to JSONL training data (from aggregate_training_data.py)",
+        help="Path to JSONL training data (from `bun engine/main.ts --export-training`)",
     )
     parser.add_argument(
         "--model",
@@ -202,7 +202,18 @@ def main() -> None:
         default=DEFAULT_BATCH_SIZE,
         help="Per-device training batch size",
     )
+    parser.add_argument(
+        "--validate-only",
+        action="store_true",
+        help="Load and format the training data, print the example count, and exit (no unsloth import, no training).",
+    )
     args = parser.parse_args()
+
+    if args.validate_only:
+        examples = load_training_data(args.training_data)
+        chat = format_as_chat(examples)
+        print(f"[validate] {len(chat)} example(s) ready for SFT from {args.training_data}")
+        sys.exit(0)
 
     fine_tune(
         training_data=args.training_data,

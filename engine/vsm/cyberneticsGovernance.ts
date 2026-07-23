@@ -1013,16 +1013,62 @@ export class CyberneticsGovernance {
         filesChanged,
       })
       console.log(`[vsm] Session outcome persisted: ${outcome}`)
-    } catch {}
+    } catch (e) {
+      console.error(`[vsm] Session outcome persist failed: ${e instanceof Error ? e.message : String(e)}`)
+    }
   }
 
   getGovernanceDb(): import('./governanceDb.js').GovernanceDB | undefined {
     return this._db
   }
 
+  /**
+   * Overwrite the auto-generated session id so it matches the conversation
+   * loop's canonical id. Required for the decision-journal → outcome join:
+   * decisions are journaled under conversationLoop.sessionId, and this makes
+   * recordSessionOutcome() and flushPredictions() write under the same id.
+   */
+  setSessionId(id: string): void {
+    this._sessionId = id
+  }
+
+  /** The session id used for outcome + prediction persistence. */
+  getSessionId(): string {
+    return this._sessionId
+  }
+
   /** Get the PredictionTracker for reading falsifiable hypothesis statistics. */
   getPredictionTracker(): PredictionTracker {
     return this._predictionTracker
+  }
+
+  /**
+   * Persist every in-memory completed prediction to governance.db under the
+   * canonical session id. PredictionTracker evaluates H1-H7 live each turn but
+   * never persists — this is the session-end bridge. Returns rows written.
+   * Accepts the db explicitly so the caller (main.ts) reuses its open handle;
+   * falls back to the governance-owned _db when omitted. H8 is out of scope
+   * (never opened — see spec).
+   */
+  flushPredictions(db?: import('./governanceDb.js').GovernanceDB): number {
+    const target = db ?? this._db
+    if (!target) return 0
+    let written = 0
+    for (const p of this._predictionTracker.completedPredictions) {
+      if (p.correct === undefined || p.actualOutcome === undefined) continue
+      target.recordCompletedPrediction({
+        sessionId: this._sessionId,
+        hypothesis: p.hypothesis,
+        triggerTurn: p.triggerTurn,
+        triggerContext: p.triggerContext,
+        predictedOutcome: p.predictedOutcome,
+        actualOutcome: p.actualOutcome,
+        correct: p.correct,
+        evaluationTurn: p.triggerTurn + p.evaluationWindow,
+      })
+      written++
+    }
+    return written
   }
 
   /** Get the InterventionTracker for reading per-intervention success rates. */

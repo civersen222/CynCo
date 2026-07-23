@@ -338,6 +338,9 @@ export class ConversationLoop {
     this.journal = new JSONLStore(this.sessionId)
     // Stamp the session id so SaveLearning tags learnings for AWM promotion.
     process.env.LOCALCODE_SESSION_ID = this.sessionId
+    // Unify governance's session id with the conversation loop's so the
+    // decision journal and the outcome/prediction rows share one join key.
+    this.governance.setSessionId(this.sessionId)
     console.log(`[session] Journal: ${this.journal.path}`)
 
     // Brain stream: thinking recorder uses same session id as the JSONL journal
@@ -466,6 +469,7 @@ export class ConversationLoop {
       this.sessionId = sessionId
       this.thinkingRecorder = new ThinkingRecorder(this.sessionId)
       process.env.LOCALCODE_SESSION_ID = sessionId
+      this.governance.setSessionId(sessionId)
       // Rehydrate the file-operation tracker from the last journaled compaction
       // so a resumed session doesn't "forget" what it already read/edited.
       try {
@@ -945,6 +949,7 @@ export class ConversationLoop {
           observerDivergence: (govReport as any).observerDivergence ?? null,
           demotedTools: this.executor.getToolScorer?.()?.getDemotedTools() ?? [],
           promptDifficulty: this.difficultyClassifier.getLevel(),
+          sessionId: this.sessionId,
         })
 
         // Earned-authority cap: when LOCALCODE_S5_ENFORCE=false, S5 decisions
