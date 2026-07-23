@@ -241,6 +241,8 @@ try {
   const path = require('path')
   const dbPath = path.join(os.homedir(), '.cynco', 'governance', 'governance.db')
   const db = new GovernanceDB(dbPath)
+  const purged = db.purgeDegenerateSessions()
+  if (purged > 0) console.log(`[govdb] purged ${purged} degenerate (zero-turn) session(s)`)
   const sessions = db.getRecentSessions(9999)
   const count = sessions.length
   if (count >= 200) {
@@ -397,8 +399,12 @@ async function cleanShutdown(signal: string) {
         : govReport.toolSuccessRate < 0.5 ? 'marginal' as const
         : 'viable' as const
       loop.getGovernance().recordSessionOutcome(outcome, 'default', 0, loop.getFileTracker?.()?.getModifiedFiles?.()?.length ?? 0)
+      const flushed = loop.getGovernance().flushPredictions?.()
+      if (flushed) console.log(`[vsm] flushed ${flushed} completed prediction(s)`)
     }
-  } catch {}
+  } catch (e) {
+    console.error(`[shutdown] governance outcome/flush failed: ${e instanceof Error ? e.message : String(e)}`)
+  }
   // Save S5 rule weights
   try { s5Orchestrator.saveWeights() } catch (e) { console.log(`[s5] saveWeights failed: ${e instanceof Error ? e.message : String(e)}`) }
   // Auto-backfill training data (reward labeling + dataset export)
@@ -952,6 +958,8 @@ async function handleCommand(command: TUICommand): Promise<void> {
             : 'viable' as const
           loop.getGovernance().recordSessionOutcome(outcome, 'default', 0, loop.getFileTracker?.()?.getModifiedFiles?.()?.length ?? 0)
           console.log(`[governance] Session outcome: ${outcome}`)
+          const flushed = loop.getGovernance().flushPredictions?.()
+          if (flushed) console.log(`[governance] flushed ${flushed} completed prediction(s)`)
           // AWM: promote this session's learnings only on a ledger-verified viable outcome.
           try {
             const { LearningStore, promoteSessionLearnings, defaultLearningsDbPath } = await import('./memory/learningStore.js')
