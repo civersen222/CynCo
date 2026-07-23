@@ -177,7 +177,7 @@ def main() -> None:
         "--training-data",
         type=Path,
         default=DEFAULT_TRAINING_DATA,
-        help="Path to JSONL training data (from aggregate_training_data.py)",
+        help="Path to JSONL training data (from `bun engine/main.ts --export-training`)",
     )
     parser.add_argument(
         "--model",
