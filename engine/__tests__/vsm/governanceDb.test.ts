@@ -2,6 +2,7 @@ import { describe, expect, it, beforeEach, afterEach } from 'bun:test'
 import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
+import { Database } from 'bun:sqlite'
 import { GovernanceDB } from '../../vsm/governanceDb.js'
 import type { SessionRecord, MeasurementRecord } from '../../vsm/governanceDb.js'
 
@@ -70,7 +71,7 @@ describe('GovernanceDB', () => {
   it('purges pre-existing degenerate rows and reports the count', () => {
     // Backdoor a degenerate row via a second connection so the write-guard
     // doesn't block the setup, simulating legacy data written before the guard.
-    const raw = new (require('bun:sqlite').Database)(join(tmpDir, 'governance.db'))
+    const raw = new Database(join(tmpDir, 'governance.db'))
     raw.exec(`INSERT INTO sessions (session_id, outcome, config_index, strategy, tool_success_rate, stuck_turns, total_turns, files_changed) VALUES ('legacy-0', 'viable', 0, 'default', 1.0, 0, 0, 0)`)
     raw.close()
 
