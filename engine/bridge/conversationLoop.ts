@@ -9,10 +9,11 @@ import type { EngineEvent, TUICommand, DiffHunk, DiffLine } from './protocol.js'
 import type { ThinkingConfig } from '../types.js'
 import { asSystemPrompt } from '../types.js'
 import type { LocalCodeConfig } from '../config.js'
-import { isS5EnforcementEnabled } from '../config.js'
+import { isS5EnforcementEnabled, isAllToolsEnabled } from '../config.js'
 import type { Provider } from '../provider.js'
 import { localCallModel, type CallModelDeps } from '../engine/callModel.js'
-import { ALL_TOOLS } from '../tools/registry.js'
+import { ALL_TOOLS, getCoreTools } from '../tools/registry.js'
+import { LoadedToolSet } from '../tools/loadedToolSet.js'
 import { ToolExecutor, type RequestApprovalFn } from '../tools/executor.js'
 import { ToolScorer } from '../tools/toolScorer.js'
 import { DifficultyClassifier } from '../vsm/difficultyClassifier.js'
@@ -233,6 +234,10 @@ export class ConversationLoop {
   private toolGating = new ToolGating()
   private tddGov = new TestDrivenGovernor()
   private allowedTools?: string[]
+  // Per-session, append-only set of tools surfaced to the model. Seeded with
+  // the core tools; grows when the model calls load_tools (Phase 1) / run_skill
+  // (Phase 2) / S5 proactive surfacing (Phase 3). Never shrinks.
+  private loadedTools = new LoadedToolSet(getCoreTools().map(t => t.name))
   // Tool names actually offered to the model in the current iteration (after
   // S5 restrictions, demotions, routing). In one-shot runs this is enforced
   // at execution time too — see executeOneTool.
@@ -766,8 +771,13 @@ export class ConversationLoop {
       }
     } catch {}
 
-    // Determine active tool set — workflow may restrict tools
-    let activeTools = ALL_TOOLS
+    // Determine active tool set. Core-by-default: only tools in the loaded set
+    // are offered, unless LOCALCODE_ALL_TOOLS bypasses gating. Extended tools
+    // enter the loaded set via load_tools / run_skill / S5 surfacing. Workflow
+    // and caller-pin filters below intersect down from here.
+    let activeTools = isAllToolsEnabled()
+      ? ALL_TOOLS
+      : ALL_TOOLS.filter(t => this.loadedTools.has(t.name))
     if (this.workflowEngine.isActive) {
       const allowed = this.workflowEngine.getAllowedTools()
       if (allowed) {
@@ -2392,6 +2402,51 @@ export class ConversationLoop {
         role: 'user',
         content: toolResults,
       })
+
+      // On-demand tool surfacing: if the model called load_tools this turn,
+      // grow the loaded set and append a tool-availability block (Option B —
+      // the structured tool array grows next iteration, a bounded prefix break
+      // like compaction; the system prompt itself is untouched).
+      const requestedLoads: string[] = []
+      for (const block of toolUseBlocks as any[]) {
+        if (block.name === 'load_tools' && Array.isArray(block.input?.tools)) {
+          for (const n of block.input.tools) if (typeof n === 'string') requestedLoads.push(n)
+        }
+      }
+      if (requestedLoads.length > 0) {
+        const valid = requestedLoads.filter(n => ALL_TOOLS.some(t => t.name === n))
+        const added = this.loadedTools.surface(valid)
+        if (added.length > 0) {
+          // Recompute the offered tool set for subsequent iterations. Mirrors
+          // the pre-loop seed (core-or-all + loaded, intersected by workflow +
+          // caller-pin). Only `toolDefs` (this method's param) is mutated — the
+          // system prompt built before the loop is left untouched (Option B).
+          let refreshed = isAllToolsEnabled()
+            ? ALL_TOOLS
+            : ALL_TOOLS.filter(t => this.loadedTools.has(t.name))
+          if (this.workflowEngine.isActive) {
+            const allowed = this.workflowEngine.getAllowedTools()
+            if (allowed) refreshed = refreshed.filter(t => allowed.includes(t.name))
+          }
+          if (this.allowedTools) {
+            const pinned = new Set(this.allowedTools)
+            refreshed = refreshed.filter(t => pinned.has(t.name))
+          }
+          toolDefs = refreshed.map(t => ({
+            name: t.name,
+            description: t.description,
+            inputJSONSchema: t.inputSchema,
+          }))
+          const lines = added.map(name => {
+            const tool = ALL_TOOLS.find(t => t.name === name)!
+            return `- ${tool.name}: ${tool.description}\n  schema: ${JSON.stringify(tool.inputSchema)}`
+          })
+          this.addMessage({
+            role: 'user',
+            content: [{ type: 'text', text: `[tool-availability turn ${i}] Newly loaded tools (callable from now on):\n${lines.join('\n')}` }],
+          })
+        }
+      }
 
       // Loop back to call model again with tool results
     }

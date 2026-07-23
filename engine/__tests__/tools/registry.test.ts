@@ -17,8 +17,8 @@ describe('tool types', () => {
 })
 
 describe('tool registry', () => {
-  it('exports all 26 tools', () => {
-    expect(ALL_TOOLS).toHaveLength(26)
+  it('exports all 27 tools', () => {
+    expect(ALL_TOOLS).toHaveLength(27)
     const names = ALL_TOOLS.map(t => t.name)
     expect(names).toContain('Read')
     expect(names).toContain('Write')
@@ -45,6 +45,7 @@ describe('tool registry', () => {
     expect(names).toContain('ContractStatus')
     expect(names).toContain('Mfl')
     expect(names).toContain('AskUser')
+    expect(names).toContain('load_tools')
   })
 
   it('getToolsByTier returns correct split', () => {
@@ -52,12 +53,12 @@ describe('tool registry', () => {
     const approval = getToolsByTier('approval')
     expect(auto.every(t => t.tier === 'auto')).toBe(true)
     expect(approval.every(t => t.tier === 'approval')).toBe(true)
-    expect(auto.length + approval.length).toBe(26)
+    expect(auto.length + approval.length).toBe(27)
   })
 
   it('getToolDefinitions returns ToolDefinition[] for callModel', () => {
     const defs = getToolDefinitions()
-    expect(defs.length).toBe(26)
+    expect(defs.length).toBe(27)
     for (const def of defs) {
       expect(def).toHaveProperty('name')
       expect(def).toHaveProperty('description')
