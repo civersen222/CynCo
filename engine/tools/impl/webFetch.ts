@@ -49,6 +49,7 @@ export const webFetchTool: ToolImpl = {
     required: ['url'],
   },
   tier: 'auto',
+  core: false,
   execute: async (input) => {
     const url = input.url as string
     const maxLen = (input.max_length as number) ?? 50000

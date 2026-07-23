@@ -13,6 +13,7 @@ export const globTool: ToolImpl = {
     required: ['pattern'],
   },
   tier: 'auto',
+  core: true,
   execute: async (input, cwd) => {
     const dir = resolve(cwd, (input.path as string) ?? cwd)
     const pattern = input.pattern as string

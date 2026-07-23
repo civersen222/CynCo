@@ -89,6 +89,7 @@ export const mflTool: ToolImpl = {
     required: ['query', 'league'],
   },
   tier: 'auto',
+  core: false,
   execute: async (input) => {
     const query = String(input.query ?? '')
     if (!ALLOWED_QUERIES.has(query)) {

@@ -19,6 +19,7 @@ export const indexResearchTool: ToolImpl = {
     required: ['file_path'],
   },
   tier: 'auto',
+  core: false,
   execute: async (input, cwd) => {
     const filePath = input.file_path as string
     const fullPath = resolve(cwd, filePath)

@@ -63,6 +63,7 @@ export const grepTool: ToolImpl = {
     required: ['pattern'],
   },
   tier: 'auto',
+  core: true,
   execute: async (input, cwd) => {
     const dir = resolve(cwd, (input.path as string) ?? '.')
     const pattern = input.pattern as string

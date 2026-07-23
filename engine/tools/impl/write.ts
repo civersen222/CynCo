@@ -14,6 +14,7 @@ export const writeTool: ToolImpl = {
     required: ['file_path', 'content'],
   },
   tier: 'approval',
+  core: true,
   execute: async (input, cwd) => {
     const filePath = resolve(cwd, input.file_path as string)
     // Coerce to string — local models sometimes pass non-string content (null, number, object)

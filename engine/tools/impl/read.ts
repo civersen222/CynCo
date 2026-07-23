@@ -16,6 +16,7 @@ export const readTool: ToolImpl = {
     required: ['file_path'],
   },
   tier: 'auto',
+  core: true,
   execute: async (input, cwd) => {
     const filePath = resolve(cwd, input.file_path as string)
     if (!existsSync(filePath)) {

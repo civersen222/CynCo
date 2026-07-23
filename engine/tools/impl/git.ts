@@ -76,6 +76,7 @@ export const gitTool: ToolImpl = {
     required: ['subcommand'],
   },
   tier: 'approval',
+  core: true,
   execute: async (input, cwd) => {
     const sub = input.subcommand as string
     const args = (input.args as string) ?? ''

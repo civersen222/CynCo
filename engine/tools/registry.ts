@@ -42,6 +42,16 @@ export function getToolsByTier(tier: ApprovalTier): ToolImpl[] {
   return ALL_TOOLS.filter(t => t.tier === tier)
 }
 
+/** Default-loaded tools — surfaced to the model up front every turn. */
+export function getCoreTools(): ToolImpl[] {
+  return ALL_TOOLS.filter(t => t.core)
+}
+
+/** Load-on-demand tools — surfaced only after load_tools / run_skill / S5 surface. */
+export function getExtendedTools(): ToolImpl[] {
+  return ALL_TOOLS.filter(t => !t.core)
+}
+
 export function getToolByName(name: string): ToolImpl | undefined {
   return ALL_TOOLS.find(t => t.name === name)
 }

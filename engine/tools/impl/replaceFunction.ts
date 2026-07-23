@@ -26,6 +26,7 @@ export const replaceFunctionTool: ToolImpl = {
     required: ['file_path', 'function_name', 'new_body'],
   },
   tier: 'approval',
+  core: true,
   execute: async (input, cwd) => {
     const filePath = resolve(cwd, input.file_path as string)
     const funcName = input.function_name as string

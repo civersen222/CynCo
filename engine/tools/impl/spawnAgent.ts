@@ -27,6 +27,7 @@ export const spawnAgentTool: ToolImpl = {
     required: ['task', 'persona'],
   },
   tier: 'auto',
+  core: false,
   execute: async (input, _cwd) => {
     const task = input['task'] as string
     const persona = input['persona'] as string

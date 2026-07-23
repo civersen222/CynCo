@@ -16,6 +16,7 @@ export const bashTool: ToolImpl = {
     required: ['command'],
   },
   tier: 'approval',
+  core: true,
   execute: async (input, cwd) => {
     const command = input.command as string
     const timeout = Math.min((input.timeout as number) ?? 120000, 600000)
