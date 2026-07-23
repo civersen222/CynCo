@@ -15,7 +15,7 @@ describe('ThinkingRecorder', () => {
     const r = new ThinkingRecorder('s1', dir)
     r.onThinkingDelta('let me ')
     r.onThinkingDelta('think')
-    r.finalizeTurn({ tokenCount: 2, durationMs: 500, entropy: { thinking: digest, output: null } })
+    r.finalizeTurn({ tokenCount: 2, durationMs: 500, entropy: { thinking: digest, output: null, tool: null } })
     const lines = readFileSync(join(dir, 's1.thinking.jsonl'), 'utf-8').trim().split('\n')
     expect(lines).toHaveLength(1)
     const rec = JSON.parse(lines[0])
@@ -60,9 +60,9 @@ describe('ThinkingRecorder', () => {
   it('aggregateSession averages means, maxes maxes, sums spikes', () => {
     const r = new ThinkingRecorder('s1', dir)
     r.onThinkingDelta('a')
-    r.finalizeTurn({ tokenCount: 1, durationMs: 1, entropy: { thinking: { mean: 1, max: 2, spikeCount: 1 }, output: null } })
+    r.finalizeTurn({ tokenCount: 1, durationMs: 1, entropy: { thinking: { mean: 1, max: 2, spikeCount: 1 }, output: null, tool: null } })
     r.onThinkingDelta('b')
-    r.finalizeTurn({ tokenCount: 1, durationMs: 1, entropy: { thinking: { mean: 3, max: 5, spikeCount: 2 }, output: null } })
+    r.finalizeTurn({ tokenCount: 1, durationMs: 1, entropy: { thinking: { mean: 3, max: 5, spikeCount: 2 }, output: null, tool: null } })
     const agg = ThinkingRecorder.aggregateSession('s1', dir)!
     expect(agg.thinking!.mean).toBeCloseTo(2)
     expect(agg.thinking!.max).toBe(5)
@@ -83,5 +83,16 @@ describe('ThinkingRecorder', () => {
 
   it('listSessions returns [] for a missing dir', () => {
     expect(ThinkingRecorder.listSessions(join(dir, 'no-such-subdir'))).toEqual([])
+  })
+
+  it('round-trips and aggregates the tool entropy digest', () => {
+    const rec = new ThinkingRecorder('s-tool', dir)
+    rec.finalizeTurn({ tokenCount: 3, durationMs: 10, entropy: {
+      thinking: { mean: 0.2, max: 0.4, spikeCount: 0 },
+      output: null,
+      tool: { mean: 1.1, max: 1.1, spikeCount: 0 },
+    } })
+    const agg = ThinkingRecorder.aggregateSession('s-tool', dir)
+    expect(agg?.tool?.mean).toBeCloseTo(1.1)
   })
 })

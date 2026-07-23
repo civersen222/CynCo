@@ -1914,6 +1914,7 @@ export class ConversationLoop {
                 entropy: {
                   thinking: this.uncertainty.digest('thinking'),
                   output: this.uncertainty.digest('output'),
+                  tool: this.uncertainty.digest('tool'),
                 },
               })
               this.uncertainty.reset()
