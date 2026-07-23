@@ -6,10 +6,10 @@
 import type { TokenLogprob } from '../types.js'
 
 export type EntropyDigest = { mean: number; max: number; spikeCount: number }
-export type StreamKind = 'thinking' | 'output'
+export type StreamKind = 'thinking' | 'output' | 'tool'
 
 export class UncertaintyTracker {
-  private series: Record<StreamKind, number[]> = { thinking: [], output: [] }
+  private series: Record<StreamKind, number[]> = { thinking: [], output: [], tool: [] }
 
   /** Entropy H = -Σ p·ln p over the renormalized top alternatives of one token. */
   static entropy(tl: TokenLogprob): number | null {
@@ -49,6 +49,6 @@ export class UncertaintyTracker {
   }
 
   reset(): void {
-    this.series = { thinking: [], output: [] }
+    this.series = { thinking: [], output: [], tool: [] }
   }
 }
