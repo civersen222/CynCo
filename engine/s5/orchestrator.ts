@@ -1,5 +1,5 @@
 import type { GovernanceReport } from '../vsm/types.js'
-import type { S5Input, S5Decision, S5Interface, DecisionLogEntry } from './types.js'
+import type { S5Input, S5Decision, S5Interface, DecisionLogEntry, TaskClass } from './types.js'
 import type { DifficultyLevel } from '../vsm/difficultyClassifier.js'
 import { getJournal } from '../training/decisionJournal.js'
 import { makeJournalEntry } from '../training/types.js'
@@ -28,6 +28,11 @@ export type OrchestratorInput = {
   recommendedToolMode?: string | null
   heterarchyAuthority?: 's3' | 's4' | 's5' | null
   promptDifficulty?: DifficultyLevel
+  /** P4.5 Phase 3: STATE half of the surfacing triple. taskClass = keyword-classified
+   *  request type; loadedTools = currently-loaded tool names. Both feed the P1
+   *  proactive-surfacing rule and are journaled for training. */
+  taskClass?: TaskClass | null
+  loadedTools?: string[]
   /** Canonical session id — the join key for the decision-journal → outcome join. */
   sessionId?: string
 }
@@ -88,6 +93,8 @@ export class S5Orchestrator {
       explorationState: input.governance.explorationState,
       demotedTools: [],
       promptDifficulty: input.promptDifficulty ?? 'unknown',
+      taskClass: input.taskClass ?? null,
+      loadedTools: input.loadedTools ?? [],
       governance: input.governance as Record<string, unknown>,
     }
 
@@ -139,6 +146,11 @@ export class S5Orchestrator {
           contextAction: decision.contextAction,
           priority: decision.priority,
           reasoning: decision.reasoning,
+          // ACTION half of the (state, surfaced-tools, outcome) triple. STATE
+          // (taskClass, loadedTools) rides in `input`; OUTCOME is joined later by
+          // sessionId via exportTrainingData. Always present ([] when nothing
+          // surfaced) so the exporter sees a stable schema.
+          surfaceTools: decision.surfaceTools ?? [],
         },
       }))
     }

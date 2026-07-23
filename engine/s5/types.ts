@@ -58,9 +58,10 @@ export type S5Decision = {
   model: string | null
   tools: string[] | null
   // P4.5 Phase 3: tool names to PRE-LOAD (append-only surface), never a restriction.
-  // The ACTION half of the (state, surfaced-tools, outcome) triple. null when the
-  // proactive flag is off or no tools are missing → byte-identical to prior behavior.
-  surfaceTools: string[] | null
+  // The ACTION half of the (state, surfaced-tools, outcome) triple. null/absent when
+  // the proactive flag is off or no tools are missing → byte-identical to prior
+  // behavior. Optional (additive) so pre-existing S5Decision literals stay valid.
+  surfaceTools?: string[] | null
   contextAction: 'none' | 'compact' | 'warn'
   spawnAgent: { task: string; tools: string[] } | null
   priority: 's3' | 's4' | 'balanced'
