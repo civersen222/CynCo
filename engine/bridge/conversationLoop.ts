@@ -9,7 +9,8 @@ import type { EngineEvent, TUICommand, DiffHunk, DiffLine } from './protocol.js'
 import type { ThinkingConfig } from '../types.js'
 import { asSystemPrompt } from '../types.js'
 import type { LocalCodeConfig } from '../config.js'
-import { isS5EnforcementEnabled, isAllToolsEnabled } from '../config.js'
+import { isS5EnforcementEnabled, isAllToolsEnabled, isProactiveToolsEnabled } from '../config.js'
+import { classifyTaskClass } from '../s5/proactiveSurfacing.js'
 import type { Provider } from '../provider.js'
 import { localCallModel, type CallModelDeps } from '../engine/callModel.js'
 import { ALL_TOOLS, getCoreTools, getExtendedTools } from '../tools/registry.js'
@@ -1010,6 +1011,10 @@ export class ConversationLoop {
           observerDivergence: (govReport as any).observerDivergence ?? null,
           demotedTools: this.executor.getToolScorer?.()?.getDemotedTools() ?? [],
           promptDifficulty: this.difficultyClassifier.getLevel(),
+          // P4.5 Phase 3: STATE for proactive surfacing. Only classify when the
+          // flag is on — off → taskClass null → P1 never fires → byte-identical.
+          taskClass: isProactiveToolsEnabled() ? classifyTaskClass(text) : null,
+          loadedTools: this.loadedTools.names(),
           sessionId: this.sessionId,
         })
 
@@ -1060,6 +1065,19 @@ export class ConversationLoop {
             toolDefs = filtered
           } else {
             console.log(`[s5] ENFORCE skipped: restriction [${decision.tools.join(', ')}] would remove every available tool`)
+          }
+        }
+
+        // P4.5 Phase 3: proactive tool surfacing. Purely additive (append-only
+        // load), never a restriction — so it is safe to apply even when S5
+        // enforcement is capped; it can neither kill a mission nor drop a tool.
+        // Gated only by the proactive flag (surfaceTools is only ever populated
+        // when that flag is on). Takes effect from the next turn since this
+        // turn's toolDefs are already built.
+        if (isProactiveToolsEnabled() && decision.surfaceTools && decision.surfaceTools.length > 0) {
+          const added = this.loadedTools.surface(decision.surfaceTools)
+          if (added.length > 0) {
+            console.log(`[s5] PROACTIVE SURFACE: pre-loaded [${added.join(', ')}] for next turn`)
           }
         }
 
