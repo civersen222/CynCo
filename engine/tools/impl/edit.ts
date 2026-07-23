@@ -33,6 +33,7 @@ export const editTool: ToolImpl = {
     required: ['file_path', 'old_string', 'new_string'],
   },
   tier: 'approval',
+  core: true,
   execute: async (input, cwd) => {
     const filePath = resolve(cwd, input.file_path as string)
     const oldStr = String(input.old_string ?? '')

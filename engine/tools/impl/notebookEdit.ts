@@ -14,6 +14,7 @@ export const notebookEditTool: ToolImpl = {
     required: ['notebook_path', 'cell_index', 'new_source'],
   },
   tier: 'approval',
+  core: false,
   execute: async (input, cwd) => {
     const { resolve } = await import('path')
     const { readFileSync, writeFileSync, existsSync } = await import('fs')

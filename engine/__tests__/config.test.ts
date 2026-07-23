@@ -1,5 +1,5 @@
 import { describe, expect, it, afterEach, beforeEach, mock } from 'bun:test'
-import { loadConfig, isS5EnforcementEnabled } from '../config.js'
+import { loadConfig, isS5EnforcementEnabled, isAllToolsEnabled } from '../config.js'
 
 describe('config', () => {
   const fs = require('node:fs') as typeof import('node:fs')
@@ -51,6 +51,21 @@ describe('config', () => {
   it('LOCALCODE_S5_ENFORCE with any other value keeps enforcement on', () => {
     process.env.LOCALCODE_S5_ENFORCE = 'true'
     expect(isS5EnforcementEnabled()).toBe(true)
+  })
+
+  it('all-tools loading is OFF by default', () => {
+    delete process.env.LOCALCODE_ALL_TOOLS
+    expect(isAllToolsEnabled()).toBe(false)
+  })
+
+  it('LOCALCODE_ALL_TOOLS=true loads every tool up front', () => {
+    process.env.LOCALCODE_ALL_TOOLS = 'true'
+    expect(isAllToolsEnabled()).toBe(true)
+  })
+
+  it('LOCALCODE_ALL_TOOLS with any other value stays off', () => {
+    process.env.LOCALCODE_ALL_TOOLS = 'yes'
+    expect(isAllToolsEnabled()).toBe(false)
   })
 
   it('reads LOCALCODE_ env vars', () => {

@@ -13,6 +13,7 @@ export const imageViewTool: ToolImpl = {
     required: ['file_path'],
   },
   tier: 'auto',
+  core: false,
   execute: async (input, cwd) => {
     const filePath = resolve(cwd, input.file_path as string)
     if (!existsSync(filePath)) return { output: `Error: image not found: ${filePath}`, isError: true }

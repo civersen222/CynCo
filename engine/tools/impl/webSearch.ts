@@ -31,6 +31,7 @@ export const webSearchTool: ToolImpl = {
     required: ['query'],
   },
   tier: 'auto',
+  core: false,
   execute: async (input) => {
     const query = input.query as string
     const numResults = Math.min((input.num_results as number) ?? 5, 10)

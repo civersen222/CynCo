@@ -27,6 +27,7 @@ export const multiEditTool: ToolImpl = {
     required: ['edits'],
   },
   tier: 'approval',
+  core: true,
   execute: async (input, cwd) => {
     const edits = input.edits as EditOp[]
     const results: string[] = []

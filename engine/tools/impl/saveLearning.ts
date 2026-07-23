@@ -23,6 +23,7 @@ export const saveLearningTool: ToolImpl = {
     required: ['type', 'content'],
   },
   tier: 'auto',
+  core: false,
   execute: async (input) => {
     const type = (input.type as string) || 'preference'
     const content = (input.content as string) || ''

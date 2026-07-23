@@ -9,10 +9,16 @@ import type { EngineEvent, TUICommand, DiffHunk, DiffLine } from './protocol.js'
 import type { ThinkingConfig } from '../types.js'
 import { asSystemPrompt } from '../types.js'
 import type { LocalCodeConfig } from '../config.js'
-import { isS5EnforcementEnabled } from '../config.js'
+import { isS5EnforcementEnabled, isAllToolsEnabled, isProactiveToolsEnabled } from '../config.js'
+import { classifyTaskClass } from '../s5/proactiveSurfacing.js'
 import type { Provider } from '../provider.js'
 import { localCallModel, type CallModelDeps } from '../engine/callModel.js'
-import { ALL_TOOLS } from '../tools/registry.js'
+import { ALL_TOOLS, getCoreTools, getExtendedTools } from '../tools/registry.js'
+import { LoadedToolSet } from '../tools/loadedToolSet.js'
+import { loadSkills } from '../skills/loader.js'
+import { setLoadedSkills, getSkillByName, getSkillIndex } from '../skills/store.js'
+import { formatSkillIndexBlock } from '../skills/prompt.js'
+import { getWorkflowForSkill } from '../skills/workflowSkill.js'
 import { ToolExecutor, type RequestApprovalFn } from '../tools/executor.js'
 import { ToolScorer } from '../tools/toolScorer.js'
 import { DifficultyClassifier } from '../vsm/difficultyClassifier.js'
@@ -233,6 +239,13 @@ export class ConversationLoop {
   private toolGating = new ToolGating()
   private tddGov = new TestDrivenGovernor()
   private allowedTools?: string[]
+  // Per-session, append-only set of tools surfaced to the model. Seeded with
+  // the core tools; grows when the model calls load_tools (Phase 1) / run_skill
+  // (Phase 2) / S5 proactive surfacing (Phase 3). Never shrinks.
+  private loadedTools = new LoadedToolSet(getCoreTools().map(t => t.name))
+  // Lazy-once guard: skills are discovered from disk on the first user message,
+  // populating the process-wide skill store that run_skill / list_skills read.
+  private skillsLoaded = false
   // Tool names actually offered to the model in the current iteration (after
   // S5 restrictions, demotions, routing). In one-shot runs this is enforced
   // at execution time too — see executeOneTool.
@@ -633,6 +646,25 @@ export class ConversationLoop {
     return estimateTokensAsync(this.messages as any, this.provider.countTokens?.bind(this.provider))
   }
 
+  /**
+   * Discover skills from the builtin + workspace dirs once per session and
+   * publish them to the process-wide store that run_skill / list_skills read.
+   * Failures are non-fatal — a bad skill dir must never block a conversation.
+   */
+  private async ensureSkillsLoaded(): Promise<void> {
+    if (this.skillsLoaded) return
+    this.skillsLoaded = true
+    try {
+      const knownTools = new Set(ALL_TOOLS.map(t => t.name))
+      const { skills } = await loadSkills({ knownTools })
+      setLoadedSkills(skills)
+      console.log(`[skills] Loaded ${skills.length} skill(s)`)
+    } catch (err) {
+      console.warn(`[skills] load failed: ${(err as Error).message}`)
+      setLoadedSkills([])
+    }
+  }
+
   async handleUserMessage(text: string, opts?: { contract?: HarnessContractSpec }): Promise<void> {
     if (this.processing) {
       console.log('[loop] Already processing, ignoring message')
@@ -640,6 +672,8 @@ export class ConversationLoop {
     }
     this.processing = true
     console.log(`[loop] Handling message: "${text.slice(0, 80)}..."`)
+
+    await this.ensureSkillsLoaded()
 
     this.addMessage({
       role: 'user',
@@ -766,8 +800,13 @@ export class ConversationLoop {
       }
     } catch {}
 
-    // Determine active tool set — workflow may restrict tools
-    let activeTools = ALL_TOOLS
+    // Determine active tool set. Core-by-default: only tools in the loaded set
+    // are offered, unless LOCALCODE_ALL_TOOLS bypasses gating. Extended tools
+    // enter the loaded set via load_tools / run_skill / S5 surfacing. Workflow
+    // and caller-pin filters below intersect down from here.
+    let activeTools = isAllToolsEnabled()
+      ? ALL_TOOLS
+      : ALL_TOOLS.filter(t => this.loadedTools.has(t.name))
     if (this.workflowEngine.isActive) {
       const allowed = this.workflowEngine.getAllowedTools()
       if (allowed) {
@@ -789,6 +828,30 @@ export class ConversationLoop {
     const toolNames = activeTools.map(t => `- ${t.name}: ${t.description}`).join('\n')
 
     const promptParts = assembleBasePrompt(toolNames, this.executor['cwd'])
+
+    // Tell the model which extended tools it can pull in on demand. Static
+    // (same every turn) so it stays within the append-only prompt prefix; only
+    // shown when gating is active (LOCALCODE_ALL_TOOLS loads everything up
+    // front, so there is nothing left to load).
+    if (!isAllToolsEnabled()) {
+      const loadable = getExtendedTools().filter(t => !this.loadedTools.has(t.name))
+      if (loadable.length > 0) {
+        promptParts.push('')
+        promptParts.push(
+          'Loadable on demand — call load_tools with any of these names to use them:\n' +
+          loadable.map(t => `- ${t.name}: ${t.description}`).join('\n'),
+        )
+      }
+    }
+
+    // Skill catalogue (one line per skill). Session-static — skills are
+    // discovered once per session — so this stays inside the append-only prompt
+    // prefix. run_skill loads a skill's body + surfaces its tools on demand.
+    const skillIndexBlock = formatSkillIndexBlock(getSkillIndex())
+    if (skillIndexBlock) {
+      promptParts.push('')
+      promptParts.push(skillIndexBlock)
+    }
 
     // Inject saved learnings from previous sessions (global LearningStore).
     // TODO(P5 follow-up): repoint /learnings review command at LearningStore.
@@ -949,6 +1012,10 @@ export class ConversationLoop {
           observerDivergence: (govReport as any).observerDivergence ?? null,
           demotedTools: this.executor.getToolScorer?.()?.getDemotedTools() ?? [],
           promptDifficulty: this.difficultyClassifier.getLevel(),
+          // P4.5 Phase 3: STATE for proactive surfacing. Only classify when the
+          // flag is on — off → taskClass null → P1 never fires → byte-identical.
+          taskClass: isProactiveToolsEnabled() ? classifyTaskClass(text) : null,
+          loadedTools: this.loadedTools.names(),
           sessionId: this.sessionId,
         })
 
@@ -999,6 +1066,19 @@ export class ConversationLoop {
             toolDefs = filtered
           } else {
             console.log(`[s5] ENFORCE skipped: restriction [${decision.tools.join(', ')}] would remove every available tool`)
+          }
+        }
+
+        // P4.5 Phase 3: proactive tool surfacing. Purely additive (append-only
+        // load), never a restriction — so it is safe to apply even when S5
+        // enforcement is capped; it can neither kill a mission nor drop a tool.
+        // Gated only by the proactive flag (surfaceTools is only ever populated
+        // when that flag is on). Takes effect from the next turn since this
+        // turn's toolDefs are already built.
+        if (isProactiveToolsEnabled() && decision.surfaceTools && decision.surfaceTools.length > 0) {
+          const added = this.loadedTools.surface(decision.surfaceTools)
+          if (added.length > 0) {
+            console.log(`[s5] PROACTIVE SURFACE: pre-loaded [${added.join(', ')}] for next turn`)
           }
         }
 
@@ -2392,6 +2472,66 @@ export class ConversationLoop {
         role: 'user',
         content: toolResults,
       })
+
+      // On-demand tool surfacing: if the model called load_tools this turn,
+      // grow the loaded set and append a tool-availability block (Option B —
+      // the structured tool array grows next iteration, a bounded prefix break
+      // like compaction; the system prompt itself is untouched).
+      const requestedLoads: string[] = []
+      for (const block of toolUseBlocks as any[]) {
+        if (block.name === 'load_tools' && Array.isArray(block.input?.tools)) {
+          for (const n of block.input.tools) if (typeof n === 'string') requestedLoads.push(n)
+        }
+        // run_skill surfaces the skill's declared tools[] through the same channel.
+        if (block.name === 'run_skill' && typeof block.input?.name === 'string') {
+          const skill = getSkillByName(block.input.name)
+          if (skill) for (const n of skill.frontmatter.tools) requestedLoads.push(n)
+          // Workflow-backed skills are phase state machines: instead of treating
+          // the SKILL.md body as flat instructions, drive the existing
+          // WorkflowEngine (phases + gates). The body was already returned to the
+          // model by run_skill's execute; starting the engine here layers the
+          // per-phase instruction/tool gating on top. Only start when idle so a
+          // run_skill mid-workflow can't clobber an active workflow.
+          const wf = getWorkflowForSkill(block.input.name)
+          if (wf && !this.workflowEngine.isActive) {
+            this.startWorkflow(wf)
+          }
+        }
+      }
+      if (requestedLoads.length > 0) {
+        const valid = requestedLoads.filter(n => ALL_TOOLS.some(t => t.name === n))
+        const added = this.loadedTools.surface(valid)
+        if (added.length > 0) {
+          // Recompute the offered tool set for subsequent iterations. Mirrors
+          // the pre-loop seed (core-or-all + loaded, intersected by workflow +
+          // caller-pin). Only `toolDefs` (this method's param) is mutated — the
+          // system prompt built before the loop is left untouched (Option B).
+          let refreshed = isAllToolsEnabled()
+            ? ALL_TOOLS
+            : ALL_TOOLS.filter(t => this.loadedTools.has(t.name))
+          if (this.workflowEngine.isActive) {
+            const allowed = this.workflowEngine.getAllowedTools()
+            if (allowed) refreshed = refreshed.filter(t => allowed.includes(t.name))
+          }
+          if (this.allowedTools) {
+            const pinned = new Set(this.allowedTools)
+            refreshed = refreshed.filter(t => pinned.has(t.name))
+          }
+          toolDefs = refreshed.map(t => ({
+            name: t.name,
+            description: t.description,
+            inputJSONSchema: t.inputSchema,
+          }))
+          const lines = added.map(name => {
+            const tool = ALL_TOOLS.find(t => t.name === name)!
+            return `- ${tool.name}: ${tool.description}\n  schema: ${JSON.stringify(tool.inputSchema)}`
+          })
+          this.addMessage({
+            role: 'user',
+            content: [{ type: 'text', text: `[tool-availability turn ${i}] Newly loaded tools (callable from now on):\n${lines.join('\n')}` }],
+          })
+        }
+      }
 
       // Loop back to call model again with tool results
     }

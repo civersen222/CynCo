@@ -180,8 +180,28 @@ class TestParseEvent:
             "s2.decision",
             "toolcall.transport",
             "governance.alert",
+            "skill.status",
+            "skill.installed",
+            "skill.list",
         }
         assert set(EVENT_TYPES.keys()) == expected
+
+    def test_parse_skill_status(self):
+        event = parse_event({"type": "skill.status", "action": "install", "ok": True, "message": "Installed tdd"})
+        assert event.type == "skill.status"
+        assert event.action == "install"
+        assert event.ok is True
+        assert event.message == "Installed tdd"
+
+    def test_parse_skill_installed(self):
+        event = parse_event({"type": "skill.installed", "name": "tdd", "source": "workspace"})
+        assert event.name == "tdd"
+        assert event.source == "workspace"
+
+    def test_parse_skill_list(self):
+        event = parse_event({"type": "skill.list", "skills": [{"name": "tdd", "description": "d", "source": "builtin"}]})
+        assert len(event.skills) == 1
+        assert event.skills[0]["name"] == "tdd"
 
 
 class TestSerializeCommand:

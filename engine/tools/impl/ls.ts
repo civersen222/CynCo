@@ -13,6 +13,7 @@ export const lsTool: ToolImpl = {
     },
   },
   tier: 'auto',
+  core: true,
   execute: async (input, cwd) => {
     const dir = resolve(cwd, (input.path as string) ?? '.')
     const recursive = (input.recursive as boolean) ?? false

@@ -8,6 +8,7 @@ import { buildSimulatedToolPrompt } from '../../ollama/simulated.js'
 import { getSessionExtras, resetSessionExtras } from '../../engine/sessionExtras.js'
 import { buildGovernanceSignal } from '../../vsm/governanceSignal.js'
 import { ContextCompressor } from '../../context/compressor.js'
+import { formatSkillIndexBlock } from '../../skills/prompt.js'
 
 const TOOLS = [
   { name: 'read_file', description: 'Read', input_schema: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] } },
@@ -55,6 +56,74 @@ describe('prompt prefix stability across turns', () => {
       messages.push(msg('user', `[tool result ${turn}] contents...`))
     }
 
+    for (let i = 1; i < serialized.length; i++) {
+      expect(serialized[i].startsWith(serialized[i - 1])).toBe(true)
+    }
+  })
+
+  it('a load_tools surface breaks the tool-array prefix ONCE while the system prompt is unchanged, then append-only resumes', async () => {
+    // Option B (on-demand tool loading): the system prompt <TOOLS> block stays
+    // core-only and byte-stable; the *structured* tools array grows on a
+    // load_tools surface — one bounded break, like compaction — then both the
+    // system prompt and the message tail are append-only again.
+    const CORE = TOOLS
+    const WEBFETCH = { name: 'web_fetch', description: 'Fetch', input_schema: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] } } as any
+
+    // System prompt is built once from CORE and never rewritten.
+    const messages: any[] = [msg('user', 'load the web tool')]
+    const system = await assembleSystem(messages)
+
+    // Serialize system + structured tools array + messages.
+    const serWithTools = (tools: any[], msgs: any[]) =>
+      system + '\u0000TOOLS=' + JSON.stringify(tools) + '\u0000' + msgs.map(m => JSON.stringify(m)).join('\u0000')
+
+    // Turn 1: core tools only.
+    const before = serWithTools(CORE, messages)
+
+    // Surface event: model called load_tools, WebFetch enters the array AND an
+    // availability block is appended to the tail.
+    let tools = [...CORE, WEBFETCH]
+    messages.push(msg('assistant', 'calling load_tools'))
+    messages.push(msg('user', '[tool result] Loaded: WebFetch'))
+    messages.push(msg('user', '[tool-availability turn 0] Newly loaded tools:\n- WebFetch: Fetch'))
+    const afterSurface = serWithTools(tools, messages)
+
+    // The tool-array prefix breaks once (WebFetch inserted mid-serialization)…
+    expect(afterSurface.startsWith(before)).toBe(false)
+    // …but the system prompt string itself is byte-identical across the surface.
+    expect(await assembleSystem(messages)).toBe(system)
+
+    // Post-surface turns: append-only resumes (tools array stable now).
+    const post: string[] = [afterSurface]
+    for (let turn = 0; turn < 3; turn++) {
+      messages.push(msg('assistant', `post-surface turn ${turn}`))
+      messages.push(msg('user', `[tool result] ok`))
+      post.push(serWithTools(tools, messages))
+    }
+    for (let i = 1; i < post.length; i++) {
+      expect(post[i].startsWith(post[i - 1])).toBe(true)
+    }
+  })
+
+  it('the skill-index block is session-static and keeps the system prefix byte-stable across turns', async () => {
+    // Skills are discovered once per session. The skill-index block enters the
+    // system prompt and must be identical on every turn (no per-turn drift), so
+    // the append-only prefix guarantee holds with skills present.
+    const index = [
+      { name: 'tdd', description: 'TDD loop', source: 'builtin' as const },
+      { name: 'debug', description: 'Systematic debugging', source: 'builtin' as const },
+    ]
+    const withSkills = (msgs: any[]) => {
+      const block = formatSkillIndexBlock(index)
+      return BASE_SYSTEM + '\n\n' + block + '\u0000' + msgs.map(m => JSON.stringify(m)).join('\u0000')
+    }
+    const messages: any[] = [msg('user', 'use the tdd skill')]
+    const serialized: string[] = []
+    for (let turn = 0; turn < 4; turn++) {
+      serialized.push(withSkills(messages))
+      messages.push(msg('assistant', `turn ${turn}`))
+      messages.push(msg('user', `[tool result ${turn}] ok`))
+    }
     for (let i = 1; i < serialized.length; i++) {
       expect(serialized[i].startsWith(serialized[i - 1])).toBe(true)
     }

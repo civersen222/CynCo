@@ -21,6 +21,8 @@ import { collectAgentTool } from './impl/collectAgent.js'
 import { indexResearchTool } from './impl/indexResearch.js'
 import { replaceFunctionTool } from './impl/replaceFunction.js'
 import { mflTool } from './impl/mfl.js'
+import { loadToolsTool } from './impl/loadTools.js'
+import { runSkillTool, listSkillsTool } from './impl/skillTools.js'
 import { askUserTool } from './askUser.js'
 import {
   contractCreateTool,
@@ -34,12 +36,22 @@ export const ALL_TOOLS: ToolImpl[] = [
   bashTool, gitTool, webFetchTool, webSearchTool, imageViewTool, notebookEditTool,
   multiEditTool, applyPatchTool, lsTool, codeIndexTool, saveLearningTool,
   spawnAgentTool, collectAgentTool, indexResearchTool, replaceFunctionTool, mflTool,
-  askUserTool,
+  loadToolsTool, runSkillTool, listSkillsTool, askUserTool,
   contractCreateTool, contractAssertPassTool, contractAssertFailTool, contractStatusTool,
 ]
 
 export function getToolsByTier(tier: ApprovalTier): ToolImpl[] {
   return ALL_TOOLS.filter(t => t.tier === tier)
+}
+
+/** Default-loaded tools — surfaced to the model up front every turn. */
+export function getCoreTools(): ToolImpl[] {
+  return ALL_TOOLS.filter(t => t.core)
+}
+
+/** Load-on-demand tools — surfaced only after load_tools / run_skill / S5 surface. */
+export function getExtendedTools(): ToolImpl[] {
+  return ALL_TOOLS.filter(t => !t.core)
 }
 
 export function getToolByName(name: string): ToolImpl | undefined {

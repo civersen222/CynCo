@@ -437,6 +437,27 @@ class VibeEscalationResponseCommand:
     action: str = ""
 
 
+@dataclass
+class SkillStatusEvent:
+    type: str = "skill.status"
+    action: str = "install"
+    ok: bool = False
+    message: str = ""
+
+
+@dataclass
+class SkillInstalledEvent:
+    type: str = "skill.installed"
+    name: str = ""
+    source: str = "workspace"
+
+
+@dataclass
+class SkillListEvent:
+    type: str = "skill.list"
+    skills: list = field(default_factory=list)
+
+
 # ─── Parser ────────────────────────────────────────────────────
 
 EVENT_TYPES = {
@@ -481,6 +502,9 @@ EVENT_TYPES = {
     "subagent.complete": SubAgentCompleteEvent,
     "subagent.killed": SubAgentKilledEvent,
     "s2.decision": S2CoordinationEvent,
+    "skill.status": SkillStatusEvent,
+    "skill.installed": SkillInstalledEvent,
+    "skill.list": SkillListEvent,
 }
 
 

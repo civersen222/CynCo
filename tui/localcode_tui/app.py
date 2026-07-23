@@ -37,6 +37,9 @@ from .protocol import (
     S2CoordinationEvent,
     SnapshotTakenEvent,
     SnapshotRestoredEvent,
+    SkillStatusEvent,
+    SkillInstalledEvent,
+    SkillListEvent,
     ProfileListEvent,
     ProfileValidationEvent,
     ProfileWrittenEvent,
@@ -155,6 +158,9 @@ class LocalCodeApp(App):
             ProfileListEvent: self._handle_profile_list,
             ProfileValidationEvent: self._handle_profile_validation,
             ProfileWrittenEvent: self._handle_profile_written,
+            SkillStatusEvent: self._handle_skill_status,
+            SkillInstalledEvent: self._handle_skill_installed,
+            SkillListEvent: self._handle_skill_list,
         }
 
     def on_local_code_app_engine_event_received(self, message: EngineEventReceived) -> None:
@@ -667,6 +673,42 @@ class LocalCodeApp(App):
                 print(f"[app] workflow.status received but screen is {type(self.screen).__name__}, not WorkspaceScreen")
         except Exception as e:
             print(f"[app] ERROR in _handle_workflow_status: {e}")
+
+    def _handle_skill_status(self, event: SkillStatusEvent) -> None:
+        """Result of a /skill new|install|remove operation."""
+        try:
+            from .widgets import ChatPanel
+            chat = self.query_one(ChatPanel)
+            style = "green" if event.ok else "red"
+            mark = "\u2713" if event.ok else "\u2717"
+            chat.add_system_message(f"[{style}]{mark} skill {escape(event.action)}: {escape(event.message)}[/{style}]")
+        except Exception:
+            self.log(f"[skill.status] {event.action} ok={event.ok} {event.message}")
+
+    def _handle_skill_installed(self, event: SkillInstalledEvent) -> None:
+        """A skill became available — refresh nothing, just acknowledge."""
+        try:
+            from .widgets import ChatPanel
+            chat = self.query_one(ChatPanel)
+            chat.add_system_message(f"[dim]\u25cf skill available: [bold]{escape(event.name)}[/bold] ({escape(event.source)})[/dim]")
+        except Exception:
+            self.log(f"[skill.installed] {event.name} ({event.source})")
+
+    def _handle_skill_list(self, event: SkillListEvent) -> None:
+        """Response to /skill list — render the catalogue in chat."""
+        try:
+            from .widgets import ChatPanel
+            chat = self.query_one(ChatPanel)
+            if not event.skills:
+                chat.add_system_message("[dim]No skills installed. Use /skill install <owner>/<repo> or /skill new <name>.[/dim]")
+                return
+            lines = "\n".join(
+                f"  \u2022 [bold]{escape(str(s.get('name', '')))}[/bold] ({escape(str(s.get('source', '')))}) \u2014 {escape(str(s.get('description', '')))}"
+                for s in event.skills
+            )
+            chat.add_system_message(f"[cyan]Skills:[/cyan]\n{lines}")
+        except Exception as e:
+            self.log(f"[skill.list] render failed: {e}")
 
     def send_message(self, text: str) -> None:
         """Send a user message to the engine."""

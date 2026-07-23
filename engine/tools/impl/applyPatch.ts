@@ -17,6 +17,7 @@ export const applyPatchTool: ToolImpl = {
     required: ['patch'],
   },
   tier: 'approval',
+  core: true,
   execute: async (input, cwd) => {
     const patch = input.patch as string
     const checkOnly = (input.check as boolean) ?? false

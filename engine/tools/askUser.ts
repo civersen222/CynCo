@@ -29,6 +29,7 @@ export const askUserTool: ToolImpl = {
     required: ['question'],
   },
   tier: 'auto',
+  core: true,
   execute: async (input) => {
     const question = (input.question as string) || ''
     if (!question.trim()) {

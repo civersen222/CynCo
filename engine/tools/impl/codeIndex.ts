@@ -37,6 +37,7 @@ export const codeIndexTool: ToolImpl = {
     required: ['query'],
   },
   tier: 'auto',
+  core: false,
   execute: async (input, cwd) => {
     const query = input.query as string
     const topK = Math.min(Math.max((input.top_k as number) ?? 5, 1), 20)

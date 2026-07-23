@@ -279,6 +279,31 @@ export type SummaryInjectedEvent = {
   toolsUsed: string[]
 }
 
+// ─── Skill Events ─────────────────────────────────────────────
+
+export type SkillSummary = { name: string; description: string; source: 'builtin' | 'workspace' }
+
+/** Progress/result of a /skill operation (new, install, remove). */
+export type SkillStatusEvent = {
+  type: 'skill.status'
+  action: 'new' | 'install' | 'remove'
+  ok: boolean
+  message: string
+}
+
+/** A skill was installed (or scaffolded) and is now available. */
+export type SkillInstalledEvent = {
+  type: 'skill.installed'
+  name: string
+  source: 'builtin' | 'workspace'
+}
+
+/** Response to /skill list — the current skill catalogue. */
+export type SkillListEvent = {
+  type: 'skill.list'
+  skills: SkillSummary[]
+}
+
 // ─── Vibe Loop Events ─────────────────────────────────────────
 
 export type VibeStateChangedEvent = {
@@ -451,6 +476,9 @@ export type EngineEvent =
   | ToolcallTransportEvent
   | SnapshotTakenEvent
   | SnapshotRestoredEvent
+  | SkillStatusEvent
+  | SkillInstalledEvent
+  | SkillListEvent
 
 // ─── TUI → Engine Commands ─────────────────────────────────────
 

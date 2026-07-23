@@ -15,6 +15,7 @@ export const collectAgentTool: ToolImpl = {
     required: ['agentId'],
   },
   tier: 'auto',
+  core: false,
   execute: async (input, _cwd) => {
     const agentId = input['agentId'] as string
 

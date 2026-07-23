@@ -194,6 +194,7 @@ export const contractCreateTool: ToolImpl = {
     required: ['title', 'assertions'],
   },
   tier: 'auto',
+  core: true,
   execute: async (input) => {
     const title = (input.title as string) || ''
     const brief = (input.brief as string) || ''
@@ -238,6 +239,7 @@ export const contractAssertPassTool: ToolImpl = {
     required: ['index'],
   },
   tier: 'auto',
+  core: true,
   execute: async (input) => {
     if (!globalContract.isActive()) {
       return { output: 'No active contract. Use ContractCreate first.', isError: true }
@@ -272,6 +274,7 @@ export const contractAssertFailTool: ToolImpl = {
     required: ['index'],
   },
   tier: 'auto',
+  core: true,
   execute: async (input) => {
     if (!globalContract.isActive()) {
       return { output: 'No active contract. Use ContractCreate first.', isError: true }
@@ -296,6 +299,7 @@ export const contractStatusTool: ToolImpl = {
     properties: {},
   },
   tier: 'auto',
+  core: true,
   execute: async (_input) => {
     return { output: globalContract.getStatus(), isError: false }
   },
