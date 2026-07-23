@@ -49,7 +49,9 @@ import { getJournal } from '../training/decisionJournal.js'
 import { makeJournalEntry } from '../training/types.js'
 import { buildConceptTableForCwd } from '../vsm/conceptTable.js'
 import { evaluateGrounding, extractAddedText, extractTargetPaths } from '../vsm/groundingTrigger.js'
-import { ReadLoopGate } from '../vsm/readLoopGate.js'
+import { ReadLoopGate, signature as readSignature } from '../vsm/readLoopGate.js'
+import { ToolDivergenceDetector } from '../brain/toolDivergence.js'
+import { pruneRedundantReads } from './contextHygiene.js'
 import { probeEdit } from '../vsm/groundingProbe.js'
 import { loadInterventionRates, saveInterventionRates } from '../vsm/interventionPersistence.js'
 import { applyNudgeTemperature } from '../vsm/controlSignals.js'
@@ -208,6 +210,8 @@ export class ConversationLoop {
   private lastModelCallMs = 0
   private steering = new SteeringQueue()
   private readLoopGate = new ReadLoopGate()
+  private toolDivergence = new ToolDivergenceDetector()
+  private lastToolEntropy: number | null = null
   // _TRACE_STEERING=1: records the source of the intervention injected on the
   // PREVIOUS iteration so the next model-call trace line can attribute the
   // model's resulting action to it. Diagnostic only; null when tracing is off.
@@ -238,7 +242,7 @@ export class ConversationLoop {
   private uncertainty = new UncertaintyTracker()
   /** Direct dashboard broadcast (NOT protocol) — brain.* messages only. Optional. */
   private dashboardBroadcast: ((msg: Record<string, unknown>) => void) | null = null
-  private uncertaintyBatch: { i: number; h: number; kind: 'thinking' | 'output'; top: { token: string; logprob: number }[] }[] = []
+  private uncertaintyBatch: { i: number; h: number; kind: 'thinking' | 'output' | 'tool'; top: { token: string; logprob: number }[] }[] = []
   private uncertaintyIndex = 0
 
   constructor(opts: ConversationLoopOptions) {
@@ -361,12 +365,13 @@ export class ConversationLoop {
   }
 
   /** Track entropy + batch brain.uncertainty messages to the dashboard. */
-  private observeUncertainty(kind: 'thinking' | 'output', logprobs: import('../types.js').TokenLogprob[]): void {
+  private observeUncertainty(kind: 'thinking' | 'output' | 'tool', logprobs: import('../types.js').TokenLogprob[]): void {
     this.uncertainty.observe(kind, logprobs)
     if (!this.dashboardBroadcast) return
     for (const tl of logprobs) {
       const h = UncertaintyTracker.entropy(tl)
       if (h === null) continue
+      if (kind === 'tool') { this.toolDivergence.observeEntropy(h); this.lastToolEntropy = h }
       this.uncertaintyBatch.push({ i: this.uncertaintyIndex++, h, kind, top: tl.top.slice(0, 8) })
     }
     if (this.uncertaintyBatch.length >= 16) this.flushUncertainty()
@@ -374,8 +379,11 @@ export class ConversationLoop {
 
   private flushUncertainty(): void {
     if (this.uncertaintyBatch.length === 0 || !this.dashboardBroadcast) return
+    const toolPts = this.uncertaintyBatch.filter(p => p.kind === 'tool')
+    const restPts = this.uncertaintyBatch.filter(p => p.kind !== 'tool')
     try {
-      this.dashboardBroadcast({ type: 'brain.uncertainty', points: this.uncertaintyBatch })
+      if (restPts.length) this.dashboardBroadcast({ type: 'brain.uncertainty', points: restPts })
+      if (toolPts.length) this.dashboardBroadcast({ type: 'brain.toolUncertainty', points: toolPts })
     } catch (err) {
       console.log(`[brain] uncertainty broadcast failed: ${err}`)
     }
@@ -596,6 +604,8 @@ export class ConversationLoop {
     this.governance.resetKillSwitch()
     this.consecutiveNudges = 0
     this.readLoopGate.reset()
+    this.toolDivergence.reset()
+    this.lastToolEntropy = null
     this.toolFailureCounts.clear()
     console.log('[loop] Governance reset — kill switch, nudges, and tool failure counts cleared')
   }
@@ -641,6 +651,8 @@ export class ConversationLoop {
     this.governance.resetKillSwitch() // Clear kill switch from previous task
     this.consecutiveNudges = 0
     this.readLoopGate.reset()
+    this.toolDivergence.reset()
+    this.lastToolEntropy = null
     this.steering.clear()
 
     // P4.2: harness-supplied contract (mission mode — the brief's check script
@@ -1884,6 +1896,7 @@ export class ConversationLoop {
               // Count tool input JSON tokens for accurate tok/s
               if (delta?.type === 'input_json_delta' && delta.partial_json) {
                 tokenCount++ // tool call JSON also counts as output
+                if ((delta as any).logprobs?.length) this.observeUncertainty('tool', (delta as any).logprobs)
               }
               break
             }
@@ -1914,6 +1927,7 @@ export class ConversationLoop {
                 entropy: {
                   thinking: this.uncertainty.digest('thinking'),
                   output: this.uncertainty.digest('output'),
+                  tool: this.uncertainty.digest('tool'),
                 },
               })
               this.uncertainty.reset()
@@ -2013,6 +2027,7 @@ export class ConversationLoop {
                   toolName: block.name ?? 'unknown',
                   input: {},
                 })
+                if ((block as any).logprobs?.length) this.observeUncertainty('tool', (block as any).logprobs)
               }
               break
             }
@@ -2619,8 +2634,33 @@ export class ConversationLoop {
     // Deny redundant / stalled reads at execution time so the model is forced
     // to act or stop, instead of reading itself into the context-bloat timeout.
     const readLoopVerdict = this.readLoopGate.evaluate(toolName, toolInput)
-    if (readLoopVerdict.kind === 'deny') {
-      console.log(`[read-loop] DENIED ${toolName}`)
+    if (readLoopVerdict.kind === 'deny' || readLoopVerdict.kind === 'escalate') {
+      console.log(`[read-loop] ${readLoopVerdict.kind.toUpperCase()} ${toolName}`)
+      if (readLoopVerdict.kind === 'escalate') {
+        // The model has confidently re-emitted a gate-disabled read past the
+        // escalation threshold (reasoning/action divergence). Break the attractor
+        // by deflating the poisoned context — remove the certified-redundant
+        // Read+DENIED pairs — before the next model call.
+        const verdict = this.toolDivergence.check({
+          tool: toolName,
+          entropy: this.lastToolEntropy ?? 0,
+          isDisabled: this.readLoopGate.isDisabled(toolName, toolInput),
+        })
+        const before = this.messages.length
+        this.messages = pruneRedundantReads(this.messages, new Set(readLoopVerdict.signatures), readSignature)
+        const prunedMessages = before - this.messages.length
+        this.dashboardBroadcast?.({
+          type: 'brain.toolDivergence',
+          tool: toolName,
+          prunedMessages,
+          signatures: readLoopVerdict.signatures,
+          entropy: verdict.entropy,
+          floor: verdict.floor,
+          diverged: verdict.diverged,
+        })
+        this.emit({ type: 'governance.alert', severity: 'warn', message: `[context-hygiene] Broke a ${toolName} attractor: pruned ${prunedMessages} redundant re-read messages.`, source: 'read-loop' } as any)
+        console.log(`[context-hygiene] pruned ${prunedMessages} messages to break ${toolName} attractor`)
+      }
       if (process.env._TRACE_STEERING === '1') this.traceLastInjected = 'readLoopGate-deny'
       this.emit({ type: 'tool.start', toolId, toolName, input: toolInput })
       this.emit({ type: 'tool.complete', toolId, toolName, result: readLoopVerdict.message, isError: true })
@@ -2633,7 +2673,7 @@ export class ConversationLoop {
       toolsUsedThisTurn.push(toolName)
       toolResultsThisTurn.push('denied')
       toolsUsedInSession.push(toolName)
-      return // read never executes: no file payload appended (bloat fix)
+      return
     }
     const readLoopWarn = readLoopVerdict.kind === 'warn' ? readLoopVerdict.message : null
 

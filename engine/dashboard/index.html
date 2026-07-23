@@ -1051,6 +1051,14 @@ function handleEvent(event) {
       brainOnUncertainty(event.points || []);
       break;
 
+    case 'brain.toolUncertainty':
+      brainOnToolUncertainty(event.points || []);
+      break;
+
+    case 'brain.toolDivergence':
+      brainOnToolDivergence(event);
+      break;
+
     case 'brain.workspace':
       brainOnWorkspace(event);
       break;
@@ -2381,7 +2389,7 @@ function closeChatThinking() {
 }
 
 // ── Brain pane ────────────────────────────────────────────────
-var brain = { entropies: [], paused: false, turnCount: 0 };
+var brain = { entropies: [], toolEntropies: [], divergences: [], paused: false, turnCount: 0 };
 
 function brainOnThinking(text) {
   var tail = document.getElementById('brain-tail');
@@ -2399,6 +2407,18 @@ function brainOnThinking(text) {
 function brainOnUncertainty(points) {
   brain.entropies.push.apply(brain.entropies, points);
   if (brain.entropies.length > 2000) brain.entropies.splice(0, brain.entropies.length - 2000);
+  drawSparkline();
+}
+
+function brainOnToolUncertainty(points) {
+  brain.toolEntropies.push.apply(brain.toolEntropies, points);
+  if (brain.toolEntropies.length > 2000) brain.toolEntropies.splice(0, brain.toolEntropies.length - 2000);
+  drawSparkline();
+}
+
+function brainOnToolDivergence(ev) {
+  brain.divergences.push({ at: brain.toolEntropies.length, tool: ev && ev.tool ? ev.tool : '?' });
+  if (brain.divergences.length > 200) brain.divergences.splice(0, brain.divergences.length - 200);
   drawSparkline();
 }
 
@@ -2422,22 +2442,62 @@ function drawSparkline() {
   canvas.width = canvas.clientWidth || canvas.offsetWidth || 600;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   var xs = brain.entropies.slice(-canvas.width);
-  if (!xs.length) return;
-  var hMax = Math.max.apply(null, xs.map(function(p) { return p.h; }).concat([Math.log(8)]));
-  var sum = xs.reduce(function(a, p) { return a + p.h; }, 0);
-  var mean = sum / xs.length;
-  var variance = xs.reduce(function(a, p) { return a + (p.h - mean) * (p.h - mean); }, 0) / xs.length;
-  var sd = Math.sqrt(variance);
-  for (var i = 0; i < xs.length; i++) {
-    var p = xs[i];
-    var y = canvas.height - (p.h / hMax) * canvas.height;
-    var spike = p.h > mean + 2 * sd;
-    ctx.fillStyle = spike ? '#e05555' : (p.kind === 'thinking' ? '#8888cc' : '#55aa77');
-    ctx.fillRect(i, y, 1, canvas.height - y);
+  var ts = brain.toolEntropies.slice(-canvas.width);
+  if (!xs.length && !ts.length) return;
+  var allH = xs.map(function(p) { return p.h; }).concat(ts.map(function(p) { return p.h; })).concat([Math.log(8)]);
+  var hMax = Math.max.apply(null, allH);
+  // thinking/output series (blue/green, red on a >2σ spike)
+  if (xs.length) {
+    var sum = xs.reduce(function(a, p) { return a + p.h; }, 0);
+    var mean = sum / xs.length;
+    var variance = xs.reduce(function(a, p) { return a + (p.h - mean) * (p.h - mean); }, 0) / xs.length;
+    var sd = Math.sqrt(variance);
+    for (var i = 0; i < xs.length; i++) {
+      var p = xs[i];
+      var y = canvas.height - (p.h / hMax) * canvas.height;
+      var spike = p.h > mean + 2 * sd;
+      ctx.fillStyle = spike ? '#e05555' : (p.kind === 'thinking' ? '#8888cc' : '#55aa77');
+      ctx.fillRect(i, y, 1, canvas.height - y);
+    }
+  }
+  // tool-selection series (amber overlay)
+  for (var j = 0; j < ts.length; j++) {
+    var tp = ts[j];
+    var ty = canvas.height - (tp.h / hMax) * canvas.height;
+    ctx.fillStyle = '#d8a24a';
+    ctx.fillRect(j, ty, 1, canvas.height - ty);
+  }
+  // divergence pips: red down-triangle at the top, at the tool-series x-position
+  var tOffset = Math.max(0, brain.toolEntropies.length - ts.length); // absolute 'at' -> visible x
+  for (var k = 0; k < brain.divergences.length; k++) {
+    var dv = brain.divergences[k];
+    var dx = dv.at - tOffset;
+    if (dx < 0 || dx > canvas.width) continue;
+    ctx.fillStyle = '#e05555';
+    ctx.beginPath();
+    ctx.moveTo(dx - 3, 0);
+    ctx.lineTo(dx + 3, 0);
+    ctx.lineTo(dx, 7);
+    ctx.closePath();
+    ctx.fill();
   }
   canvas.onmousemove = function(ev) {
-    var p = xs[Math.floor(ev.offsetX)];
+    var ix = Math.floor(ev.offsetX);
     var tip = document.getElementById('brain-tooltip');
+    // a divergence marker under the cursor takes priority
+    var near = null;
+    for (var m = 0; m < brain.divergences.length; m++) {
+      if (Math.abs((brain.divergences[m].at - tOffset) - ix) <= 3) { near = brain.divergences[m]; break; }
+    }
+    if (near) {
+      var te = brain.toolEntropies[near.at] || brain.toolEntropies[near.at - 1];
+      tip.hidden = false;
+      tip.style.left = ev.pageX + 'px';
+      tip.style.top = (ev.pageY - 10) + 'px';
+      tip.textContent = 'divergence: ' + near.tool + (te ? ('  H=' + te.h.toFixed(2)) : '');
+      return;
+    }
+    var p = xs[ix] || ts[ix];
     if (!p || !p.top || !p.top.length) { tip.hidden = true; return; }
     tip.hidden = false;
     tip.style.left = ev.pageX + 'px';

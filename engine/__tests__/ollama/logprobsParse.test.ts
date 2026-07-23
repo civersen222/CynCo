@@ -66,3 +66,24 @@ describe('fromOpenAIStreamChunk logprobs', () => {
     expect(d.delta.logprobs).toHaveLength(1)
   })
 })
+
+describe('fromOpenAIStreamChunk tool-call logprobs', () => {
+  it('attaches logprobs to the tool-call name (content_block_start) and arg (input_json_delta) events', () => {
+    const chunk = {
+      id: 'c1', model: 'm',
+      choices: [{
+        index: 0,
+        delta: { tool_calls: [{ index: 0, id: 't1', type: 'function', function: { name: 'Read', arguments: '{"file' } }] },
+        finish_reason: null,
+        logprobs: { content: [{ token: 'Read', logprob: -0.01, top_logprobs: [
+          { token: 'Read', logprob: -0.01 }, { token: 'Write', logprob: -4.2 },
+        ] }] },
+      }],
+    }
+    const events = fromOpenAIStreamChunk(chunk as any)
+    const start = events.find(e => e.type === 'content_block_start') as any
+    const arg = events.find(e => e.type === 'content_block_delta' && e.delta.type === 'input_json_delta') as any
+    expect(start.content_block.logprobs?.[0]?.token).toBe('Read')
+    expect(arg.delta.logprobs?.[0]?.top?.[1]?.token).toBe('Write')
+  })
+})
