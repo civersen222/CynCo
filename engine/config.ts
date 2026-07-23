@@ -31,6 +31,15 @@ export function isS5EnforcementEnabled(): boolean {
   return process.env.LOCALCODE_S5_ENFORCE !== 'false'
 }
 
+/**
+ * When true, every registry tool (core + extended) is surfaced to the model up
+ * front, bypassing on-demand `load_tools` gating. Default OFF — extended tools
+ * stay behind the meta-tool until surfaced. Mirrors Hearth's HEARTH_ALL_TOOLS.
+ */
+export function isAllToolsEnabled(): boolean {
+  return process.env.LOCALCODE_ALL_TOOLS === 'true'
+}
+
 export type TierSetting = 'auto' | 'basic' | 'standard' | 'advanced'
 
 export type RuntimeConfig = {
