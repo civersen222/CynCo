@@ -144,6 +144,12 @@ export class GovernanceDB {
   // ── Sessions ────────────────────────────────────────────────────
 
   recordSession(record: SessionRecord): void {
+    // Write-guard: a session with no turns carries no learnable signal and
+    // pollutes the outcome join. Drop it at the boundary.
+    if (record.totalTurns <= 0) {
+      console.warn(`[govdb] skipping degenerate session ${record.sessionId} (totalTurns=${record.totalTurns})`)
+      return
+    }
     const stmt = this.db.prepare(`
       INSERT OR REPLACE INTO sessions
         (session_id, outcome, config_index, strategy, tool_success_rate,
@@ -181,6 +187,17 @@ export class GovernanceDB {
       totalTurns: row.total_turns,
       filesChanged: row.files_changed,
     }))
+  }
+
+  /**
+   * Delete legacy degenerate sessions (total_turns <= 0) written before the
+   * write-guard existed. Returns the number of rows removed. Idempotent.
+   */
+  purgeDegenerateSessions(): number {
+    const before = (this.db.prepare('SELECT COUNT(*) AS n FROM sessions').get() as { n: number }).n
+    this.db.exec('DELETE FROM sessions WHERE total_turns <= 0')
+    const after = (this.db.prepare('SELECT COUNT(*) AS n FROM sessions').get() as { n: number }).n
+    return before - after
   }
 
   // ── Measurements ────────────────────────────────────────────────
@@ -347,6 +364,39 @@ export class GovernanceDB {
       WHERE id = ?
     `)
     stmt.run(actualOutcome, correct ? 1 : 0, evaluationTurn, id)
+  }
+
+  /**
+   * Insert a prediction that was already opened AND evaluated in-memory by
+   * PredictionTracker. Unlike recordPrediction()/evaluatePrediction() (open
+   * then update), this is a single write used by the session-end flush.
+   */
+  recordCompletedPrediction(record: {
+    sessionId: string
+    hypothesis: string
+    triggerTurn: number
+    triggerContext: string
+    predictedOutcome: string
+    actualOutcome: string
+    correct: boolean
+    evaluationTurn: number
+  }): void {
+    const stmt = this.db.prepare(`
+      INSERT INTO predictions
+        (session_id, hypothesis, trigger_turn, trigger_context,
+         predicted_outcome, actual_outcome, correct, evaluation_turn)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+    stmt.run(
+      record.sessionId,
+      record.hypothesis,
+      record.triggerTurn,
+      record.triggerContext,
+      record.predictedOutcome,
+      record.actualOutcome,
+      record.correct ? 1 : 0,
+      record.evaluationTurn,
+    )
   }
 
   getHypothesisStats(hypothesis: string): HypothesisStats {

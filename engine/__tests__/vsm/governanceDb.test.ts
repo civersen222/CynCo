@@ -58,6 +58,49 @@ describe('GovernanceDB', () => {
     expect(rows[0].filesChanged).toBe(4)
   })
 
+  it('refuses to record a degenerate session with totalTurns <= 0', () => {
+    db.recordSession({
+      sessionId: 'sess-degenerate', outcome: 'viable', configIndex: 0,
+      strategy: 'default', toolSuccessRate: 1.0, stuckTurns: 0,
+      totalTurns: 0, filesChanged: 0,
+    })
+    expect(db.getRecentSessions(10)).toHaveLength(0)
+  })
+
+  it('purges pre-existing degenerate rows and reports the count', () => {
+    // Backdoor a degenerate row via a second connection so the write-guard
+    // doesn't block the setup, simulating legacy data written before the guard.
+    const raw = new (require('bun:sqlite').Database)(join(tmpDir, 'governance.db'))
+    raw.exec(`INSERT INTO sessions (session_id, outcome, config_index, strategy, tool_success_rate, stuck_turns, total_turns, files_changed) VALUES ('legacy-0', 'viable', 0, 'default', 1.0, 0, 0, 0)`)
+    raw.close()
+
+    db.recordSession({
+      sessionId: 'sess-good', outcome: 'viable', configIndex: 0,
+      strategy: 'default', toolSuccessRate: 1.0, stuckTurns: 0,
+      totalTurns: 12, filesChanged: 2,
+    })
+
+    const purged = db.purgeDegenerateSessions()
+    expect(purged).toBe(1)
+    const rows = db.getRecentSessions(10)
+    expect(rows).toHaveLength(1)
+    expect(rows[0].sessionId).toBe('sess-good')
+  })
+
+  it('records an already-evaluated prediction in a single insert', () => {
+    db.recordCompletedPrediction({
+      sessionId: 'sess-pred', hypothesis: 'H1', triggerTurn: 5,
+      triggerContext: 'stuck=5,restricted=true', predictedOutcome: 'Edit/Write within 3 turns',
+      actualOutcome: 'action_tools_used=true', correct: true, evaluationTurn: 8,
+    })
+    const rows = db.getPredictions('sess-pred')
+    expect(rows).toHaveLength(1)
+    expect(rows[0].hypothesis).toBe('H1')
+    expect(rows[0].correct).toBe(1)
+    expect(rows[0].actual_outcome).toBe('action_tools_used=true')
+    expect(rows[0].evaluation_turn).toBe(8)
+  })
+
   // ── 3. Measurement CRUD ──────────────────────────────────────────
 
   it('records measurements and retrieves them', () => {
