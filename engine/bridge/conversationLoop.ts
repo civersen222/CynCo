@@ -18,6 +18,7 @@ import { LoadedToolSet } from '../tools/loadedToolSet.js'
 import { loadSkills } from '../skills/loader.js'
 import { setLoadedSkills, getSkillByName, getSkillIndex } from '../skills/store.js'
 import { formatSkillIndexBlock } from '../skills/prompt.js'
+import { getWorkflowForSkill } from '../skills/workflowSkill.js'
 import { ToolExecutor, type RequestApprovalFn } from '../tools/executor.js'
 import { ToolScorer } from '../tools/toolScorer.js'
 import { DifficultyClassifier } from '../vsm/difficultyClassifier.js'
@@ -2485,6 +2486,16 @@ export class ConversationLoop {
         if (block.name === 'run_skill' && typeof block.input?.name === 'string') {
           const skill = getSkillByName(block.input.name)
           if (skill) for (const n of skill.frontmatter.tools) requestedLoads.push(n)
+          // Workflow-backed skills are phase state machines: instead of treating
+          // the SKILL.md body as flat instructions, drive the existing
+          // WorkflowEngine (phases + gates). The body was already returned to the
+          // model by run_skill's execute; starting the engine here layers the
+          // per-phase instruction/tool gating on top. Only start when idle so a
+          // run_skill mid-workflow can't clobber an active workflow.
+          const wf = getWorkflowForSkill(block.input.name)
+          if (wf && !this.workflowEngine.isActive) {
+            this.startWorkflow(wf)
+          }
         }
       }
       if (requestedLoads.length > 0) {

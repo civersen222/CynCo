@@ -585,8 +585,11 @@ async function handleCommand(command: TUICommand): Promise<void> {
         case '/brainstorm':
         case '/critique':
         case '/research': {
-          const { getWorkflow } = await import('./workflows/index.js')
-          const wf = getWorkflow(cmd)
+          // Slash commands are aliases for the same-named workflow skills: strip
+          // the leading '/' and resolve through the skill adapter so `/tdd` and
+          // run_skill("tdd") drive the identical WorkflowDefinition.
+          const { getWorkflowForSkill } = await import('./skills/workflowSkill.js')
+          const wf = getWorkflowForSkill(cmd.slice(1))
           if (wf) {
             loop.startWorkflow(wf)
             wsServer.emit({ type: 'stream.token', text: `[System] Started workflow: ${wf.displayName}\nPhase: ${wf.initialPhase}\n\n${wf.phases[wf.initialPhase].instruction}\n` })
