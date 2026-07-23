@@ -28,6 +28,8 @@ export type OrchestratorInput = {
   recommendedToolMode?: string | null
   heterarchyAuthority?: 's3' | 's4' | 's5' | null
   promptDifficulty?: DifficultyLevel
+  /** Canonical session id — the join key for the decision-journal → outcome join. */
+  sessionId?: string
 }
 
 export class S5Orchestrator {
@@ -129,7 +131,7 @@ export class S5Orchestrator {
     const journal = getJournal()
     if (journal) {
       journal.log(makeJournalEntry({
-        sessionId: entry.timestamp.toString(),
+        sessionId: input.sessionId ?? process.env.LOCALCODE_SESSION_ID ?? entry.timestamp.toString(),
         system: 'S5',
         input: { ...s5Input, userMessage: s5Input.userMessage?.slice(0, 200) },
         decision: {

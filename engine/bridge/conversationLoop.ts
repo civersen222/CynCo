@@ -949,6 +949,7 @@ export class ConversationLoop {
           observerDivergence: (govReport as any).observerDivergence ?? null,
           demotedTools: this.executor.getToolScorer?.()?.getDemotedTools() ?? [],
           promptDifficulty: this.difficultyClassifier.getLevel(),
+          sessionId: this.sessionId,
         })
 
         // Earned-authority cap: when LOCALCODE_S5_ENFORCE=false, S5 decisions
