@@ -12,7 +12,7 @@ import type { LocalCodeConfig } from '../config.js'
 import { isS5EnforcementEnabled, isAllToolsEnabled } from '../config.js'
 import type { Provider } from '../provider.js'
 import { localCallModel, type CallModelDeps } from '../engine/callModel.js'
-import { ALL_TOOLS, getCoreTools } from '../tools/registry.js'
+import { ALL_TOOLS, getCoreTools, getExtendedTools } from '../tools/registry.js'
 import { LoadedToolSet } from '../tools/loadedToolSet.js'
 import { ToolExecutor, type RequestApprovalFn } from '../tools/executor.js'
 import { ToolScorer } from '../tools/toolScorer.js'
@@ -799,6 +799,21 @@ export class ConversationLoop {
     const toolNames = activeTools.map(t => `- ${t.name}: ${t.description}`).join('\n')
 
     const promptParts = assembleBasePrompt(toolNames, this.executor['cwd'])
+
+    // Tell the model which extended tools it can pull in on demand. Static
+    // (same every turn) so it stays within the append-only prompt prefix; only
+    // shown when gating is active (LOCALCODE_ALL_TOOLS loads everything up
+    // front, so there is nothing left to load).
+    if (!isAllToolsEnabled()) {
+      const loadable = getExtendedTools().filter(t => !this.loadedTools.has(t.name))
+      if (loadable.length > 0) {
+        promptParts.push('')
+        promptParts.push(
+          'Loadable on demand — call load_tools with any of these names to use them:\n' +
+          loadable.map(t => `- ${t.name}: ${t.description}`).join('\n'),
+        )
+      }
+    }
 
     // Inject saved learnings from previous sessions (global LearningStore).
     // TODO(P5 follow-up): repoint /learnings review command at LearningStore.

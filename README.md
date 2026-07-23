@@ -140,7 +140,7 @@ Smaller models (<7B) struggle with the tool-calling format. 24B+ recommended for
 │  TypeScript Engine (Bun)         │◄──────►│  Python TUI     │
 │                                  │  9160  │  (Textual)      │
 │  Conversation Loop               │        │                 │
-│  ├── Tool Executor (26 tools)    │        │  Workspace      │
+│  ├── Tool Executor (27 tools)    │        │  Workspace      │
 │  ├── Contract Enforcement        │        │  Vibe Loop      │
 │  ├── S2 Agent Coordinator        │        │  Settings       │
 │  ├── 6 Search Engines            │        │  Context Bar    │
@@ -288,8 +288,10 @@ Structured multi-phase workflows with tool restrictions and advancement gates:
 - `/brainstorm` — idea exploration
 - `/critique` — critical analysis
 
-### Tools (26 built-in)
-Read, Write, Edit, MultiEdit, ApplyPatch, ReplaceFunction, Bash, Git, Glob, Grep, Ls, CodeIndex, WebSearch, WebFetch, ImageView, NotebookEdit, SaveLearning, SubAgent, CollectAgent, AskUser, IndexResearch, Mfl, ContractCreate, ContractAssertPass, ContractAssertFail, ContractStatus
+### Tools (27 built-in)
+Read, Write, Edit, MultiEdit, ApplyPatch, ReplaceFunction, Bash, Git, Glob, Grep, Ls, CodeIndex, WebSearch, WebFetch, ImageView, NotebookEdit, SaveLearning, SubAgent, CollectAgent, AskUser, IndexResearch, Mfl, ContractCreate, ContractAssertPass, ContractAssertFail, ContractStatus, load_tools
+
+**On-demand loading.** Tools are split into a **core** set (offered to the model every turn) and an **extended** set (loaded on demand). When the model needs an extended tool it calls the `load_tools` meta-tool with the tool names; they are then callable for the rest of the session. This keeps the default prompt small without losing any capability. Set `LOCALCODE_ALL_TOOLS=true` to surface every tool up front and skip on-demand loading (best for cache-sensitive batch runs).
 
 ### Session Persistence
 - **JSONL journaling** — every message saved, survives crashes
@@ -341,6 +343,7 @@ All config via environment variables. No config files required.
 | `LOCALCODE_EMBED_MODEL` | `jina-code-embeddings-0.5b` | Model for code indexing (falls back to `nomic-embed-text`) |
 | `LOCALCODE_TEMPERATURE` | `0.7` | Sampling temperature |
 | `LOCALCODE_CONTEXT_LENGTH` | Auto-detected | Override context window |
+| `LOCALCODE_ALL_TOOLS` | `false` | Surface every tool up front instead of loading extended tools on demand via `load_tools` |
 | `LOCALCODE_SEARXNG_URL` | — | SearXNG instance URL for research |
 | `LOCALCODE_S5_MODEL` | — | Fine-tuned S5 model (when available) |
 | `LOCALCODE_DASHBOARD_HOST` | `127.0.0.1` | Dashboard bind address (set to `0.0.0.0` to expose on network) |
