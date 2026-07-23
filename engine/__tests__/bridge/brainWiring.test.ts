@@ -43,6 +43,8 @@ describe('brain wiring (static)', () => {
 // .cynco-snapshots/) — point it at a temp dir so tests never stage the repo
 // root (same hazard fix the sibling loop tests use).
 const TEST_CWD = fs.mkdtempSync(path.join(os.tmpdir(), 'cynco-brain-cwd-'))
+const READ_FILE = path.join(TEST_CWD, 'loopfile.txt')
+fs.writeFileSync(READ_FILE, 'budget data\n')
 afterAll(() => {
   fs.rmSync(TEST_CWD, { recursive: true, force: true, maxRetries: 5 })
 })
@@ -205,5 +207,52 @@ describe('brain.toolUncertainty is dashboard-only (protocol absence)', () => {
     const pyProto = readFileSync('tui/localcode_tui/protocol.py', 'utf-8')
     expect(tsProto).not.toMatch(/toolUncertainty/)
     expect(pyProto).not.toMatch(/toolUncertainty/)
+  })
+})
+
+// ─── Behavioral: read-loop escalation → context hygiene + brain.toolDivergence ──
+// Drives the SAME denied Read signature through the tool-execution path enough
+// times to trip ReadLoopGate escalation (allow → warn → deny → deny → escalate),
+// then asserts the loop pruned redundant history and emitted the governance +
+// dashboard signals. Fails if the escalate branch is dead code.
+function readExecTurn(n: number): () => Generator<StreamEvent> {
+  return function* () {
+    yield { type: 'message_start', message: { id: `m${n}`, model: 'test', usage: { input_tokens: 5, output_tokens: 0 } } } as any
+    yield { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: `tu${n}`, name: 'Read', input: {} } } as any
+    yield { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: JSON.stringify({ file_path: READ_FILE }) } } as any
+    yield { type: 'content_block_stop', index: 0 } as any
+    yield { type: 'message_stop' } as any
+    yield { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 5 } } as any
+  }
+}
+function* stopTurn(): Generator<StreamEvent> {
+  yield { type: 'message_start', message: { id: 'mstop', model: 'test', usage: { input_tokens: 5, output_tokens: 0 } } } as any
+  yield { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } } as any
+  yield { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'done' } } as any
+  yield { type: 'content_block_stop', index: 0 } as any
+  yield { type: 'message_stop' } as any
+  yield { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 3 } } as any
+}
+
+describe('read-loop escalation → hygiene wiring (behavioral)', () => {
+  it('escalation prunes redundant reads and emits brain.toolDivergence + governance.alert', async () => {
+    const broadcasts: Array<Record<string, unknown>> = []
+    const alerts: Array<Record<string, unknown>> = []
+    const gens = [readExecTurn(1), readExecTurn(2), readExecTurn(3), readExecTurn(4), readExecTurn(5), stopTurn]
+    const loopInstance = new ConversationLoop({
+      cwd: TEST_CWD,
+      config: { ...defaultConfig(), approveAll: true } as LocalCodeConfig,
+      provider: mockProvider(gens),
+      emit: (e: any) => { if (e?.type === 'governance.alert') alerts.push(e) },
+      dashboardBroadcast: (msg) => broadcasts.push(msg),
+      allowedTools: ['Read'],
+    })
+    await loopInstance.handleUserMessage('read the budget file over and over')
+
+    const div = broadcasts.filter(b => b.type === 'brain.toolDivergence')
+    expect(div.length).toBeGreaterThan(0)
+    expect(div[0].tool).toBe('Read')
+    expect((div[0].prunedMessages as number)).toBeGreaterThan(0)
+    expect(alerts.some(a => String(a.message).includes('[context-hygiene]'))).toBe(true)
   })
 })
