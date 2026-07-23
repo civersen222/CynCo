@@ -1,16 +1,17 @@
 import { randomUUID } from 'crypto'
 import type { S5Input, S5Decision, S5Interface, S5Rule } from './types.js'
+import { ALL_TOOLS } from '../tools/registry.js'
 
 // ─── Constants ───────────────────────────────────────────────
 
 export const READ_ONLY_TOOLS = ['Read', 'Glob', 'Grep', 'Ls']
 
-export const ALL_TOOL_NAMES = [
-  'Read', 'Glob', 'Grep', 'Edit', 'Write',
-  'Bash', 'Git', 'WebFetch', 'WebSearch', 'ImageView', 'NotebookEdit',
-  'MultiEdit', 'ApplyPatch', 'Ls', 'CodeIndex', 'SaveLearning',
-  'SubAgent', 'CollectAgent', 'IndexResearch',
-]
+// Derived from the canonical tool registry — never hand-maintain this. A hardcoded copy
+// silently drifted (it omitted AskUser, ReplaceFunction, Mfl, and the four Contract tools),
+// which meant excludeTools() built restriction allow-lists that dropped a third of the tool
+// surface. Because excludeTools() is an allow-list, any omitted tool is EXCLUDED whenever S5
+// enforces a restriction (doom-loop / failing-tool / stuck escape) — the opposite of "protected."
+export const ALL_TOOL_NAMES = ALL_TOOLS.map(t => t.name)
 
 // ─── Helpers ─────────────────────────────────────────────────
 
