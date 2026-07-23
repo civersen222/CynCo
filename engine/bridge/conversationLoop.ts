@@ -238,7 +238,7 @@ export class ConversationLoop {
   private uncertainty = new UncertaintyTracker()
   /** Direct dashboard broadcast (NOT protocol) — brain.* messages only. Optional. */
   private dashboardBroadcast: ((msg: Record<string, unknown>) => void) | null = null
-  private uncertaintyBatch: { i: number; h: number; kind: 'thinking' | 'output'; top: { token: string; logprob: number }[] }[] = []
+  private uncertaintyBatch: { i: number; h: number; kind: 'thinking' | 'output' | 'tool'; top: { token: string; logprob: number }[] }[] = []
   private uncertaintyIndex = 0
 
   constructor(opts: ConversationLoopOptions) {
@@ -361,7 +361,7 @@ export class ConversationLoop {
   }
 
   /** Track entropy + batch brain.uncertainty messages to the dashboard. */
-  private observeUncertainty(kind: 'thinking' | 'output', logprobs: import('../types.js').TokenLogprob[]): void {
+  private observeUncertainty(kind: 'thinking' | 'output' | 'tool', logprobs: import('../types.js').TokenLogprob[]): void {
     this.uncertainty.observe(kind, logprobs)
     if (!this.dashboardBroadcast) return
     for (const tl of logprobs) {
@@ -374,8 +374,11 @@ export class ConversationLoop {
 
   private flushUncertainty(): void {
     if (this.uncertaintyBatch.length === 0 || !this.dashboardBroadcast) return
+    const toolPts = this.uncertaintyBatch.filter(p => p.kind === 'tool')
+    const restPts = this.uncertaintyBatch.filter(p => p.kind !== 'tool')
     try {
-      this.dashboardBroadcast({ type: 'brain.uncertainty', points: this.uncertaintyBatch })
+      if (restPts.length) this.dashboardBroadcast({ type: 'brain.uncertainty', points: restPts })
+      if (toolPts.length) this.dashboardBroadcast({ type: 'brain.toolUncertainty', points: toolPts })
     } catch (err) {
       console.log(`[brain] uncertainty broadcast failed: ${err}`)
     }
@@ -1884,6 +1887,7 @@ export class ConversationLoop {
               // Count tool input JSON tokens for accurate tok/s
               if (delta?.type === 'input_json_delta' && delta.partial_json) {
                 tokenCount++ // tool call JSON also counts as output
+                if ((delta as any).logprobs?.length) this.observeUncertainty('tool', (delta as any).logprobs)
               }
               break
             }
@@ -2014,6 +2018,7 @@ export class ConversationLoop {
                   toolName: block.name ?? 'unknown',
                   input: {},
                 })
+                if ((block as any).logprobs?.length) this.observeUncertainty('tool', (block as any).logprobs)
               }
               break
             }
