@@ -596,6 +596,80 @@ async function handleCommand(command: TUICommand): Promise<void> {
           break
         }
 
+        case '/skill': {
+          const { loadSkills, workspaceSkillsDir } = await import('./skills/loader.js')
+          const { setLoadedSkills, getSkillIndex } = await import('./skills/store.js')
+          const { ALL_TOOLS } = await import('./tools/registry.js')
+          const knownTools = new Set(ALL_TOOLS.map(t => t.name))
+          const refresh = async () => {
+            const { skills } = await loadSkills({ knownTools })
+            setLoadedSkills(skills)
+          }
+          const parts = args.trim().split(/\s+/).filter(Boolean)
+          const sub = parts[0] ?? 'list'
+          const actionFor = (s: string): 'new' | 'install' | 'remove' =>
+            s === 'new' || s === 'remove' ? s : 'install'
+          try {
+            if (sub === 'list') {
+              await refresh()
+              const skills = getSkillIndex()
+              wsServer.emit({ type: 'skill.list', skills })
+              const text = skills.length
+                ? skills.map(s => `- ${s.name} (${s.source}): ${s.description}`).join('\n')
+                : 'No skills installed.'
+              wsServer.emit({ type: 'stream.token', text: `Skills:\n${text}\n` })
+            } else if (sub === 'new') {
+              const { scaffoldSkill } = await import('./skills/scaffold.js')
+              const name = parts[1]
+              if (!name) throw new Error('usage: /skill new <name>')
+              const res = scaffoldSkill(name)
+              await refresh()
+              wsServer.emit({ type: 'skill.status', action: 'new', ok: true, message: `Created ${res.bodyPath}` })
+              wsServer.emit({ type: 'skill.installed', name: res.name, source: 'workspace' })
+              wsServer.emit({ type: 'stream.token', text: `[System] Scaffolded skill "${res.name}" at ${res.dir}\n` })
+            } else if (sub === 'install') {
+              const { installSkill } = await import('./skills/install.js')
+              const spec = parts[1]
+              const yes = parts.includes('--yes')
+              if (!spec) throw new Error('usage: /skill install <owner>/<repo>[/subdir][@ref] [--yes]')
+              const res = await installSkill(spec, {
+                knownTools,
+                confirm: async (report) => {
+                  wsServer.emit({ type: 'stream.token', text: report + '\n' })
+                  if (!yes) wsServer.emit({ type: 'stream.token', text: 'Re-run with --yes to confirm install.\n' })
+                  return yes
+                },
+              })
+              if (res.installed) {
+                await refresh()
+                wsServer.emit({ type: 'skill.status', action: 'install', ok: true, message: `Installed ${res.name}` })
+                wsServer.emit({ type: 'skill.installed', name: res.name, source: 'workspace' })
+              } else {
+                wsServer.emit({ type: 'skill.status', action: 'install', ok: false, message: `Install of "${res.name}" not confirmed` })
+              }
+            } else if (sub === 'remove') {
+              const name = parts[1]
+              if (!name) throw new Error('usage: /skill remove <name>')
+              const fsMod = await import('fs')
+              const pathMod = await import('path')
+              const dir = pathMod.join(workspaceSkillsDir(), name)
+              if (!fsMod.existsSync(dir)) throw new Error(`skill "${name}" not found in workspace`)
+              fsMod.rmSync(dir, { recursive: true, force: true })
+              await refresh()
+              wsServer.emit({ type: 'skill.status', action: 'remove', ok: true, message: `Removed ${name}` })
+              wsServer.emit({ type: 'stream.token', text: `[System] Removed skill "${name}"\n` })
+            } else {
+              throw new Error(`unknown /skill subcommand "${sub}" (use list|new|install|remove)`)
+            }
+          } catch (err) {
+            const message = (err as Error).message
+            wsServer.emit({ type: 'skill.status', action: actionFor(sub), ok: false, message })
+            wsServer.emit({ type: 'stream.token', text: `[System] /skill error: ${message}\n` })
+          }
+          wsServer.emit({ type: 'message.complete', messageId: '', stopReason: 'end_turn' })
+          break
+        }
+
         case '/cancel': {
           loop.cancelWorkflow()
           wsServer.emit({ type: 'stream.token', text: '[System] Workflow cancelled.\n' })
