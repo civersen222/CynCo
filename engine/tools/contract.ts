@@ -80,6 +80,24 @@ export class ContractState {
     if (reason !== undefined) this.assertions[index].evidence = reason
   }
 
+  /**
+   * Enforcement budget exhausted with work still unverified. Force every
+   * pending assertion to failed so the contract RESOLVES rather than silently
+   * expiring — an unverified run must never report success. Returns the texts
+   * of the assertions that were forced, for reporting.
+   */
+  resolveUnverified(reason: string = 'enforcement budget exhausted — never verified'): string[] {
+    const forced: string[] = []
+    for (const a of this.assertions) {
+      if (a.status === 'pending') {
+        a.status = 'failed'
+        a.evidence = reason
+        forced.push(a.text)
+      }
+    }
+    return forced
+  }
+
   /** True when a contract has been created and not yet cleared. */
   isActive(): boolean {
     return this.active
