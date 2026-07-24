@@ -69,6 +69,7 @@ import { setSideQuery, resetMergeTracking } from '../tools/impl/edit.js'
 import { estimateTokensAsync } from '../engine/contextBudget.js'
 import { checkCommitScope } from './commitScope.js'
 import { applyToolFloor, attributeRemoval } from './toolFloor.js'
+import { enforcementNudgeText } from './enforcementNudge.js'
 import { isMalformedInput } from '../engine/toolCallRepair.js'
 import { extractSimulatedToolCalls } from '../ollama/simulated.js'
 import { ThinkingRecorder } from '../memory/thinkingRecorder.js'
@@ -2372,10 +2373,13 @@ export class ConversationLoop {
         if (globalContract.enforcementRounds <= 5) {
           const pending = globalContract.pendingCount()
           const failed = globalContract.failedCount()
-          const runTests = 'Run the test suite NOW with Bash to verify your changes work. If tests fail, fix the errors.'
+          const phaseAllowed = this.workflowEngine.isActive ? this.workflowEngine.getAllowedTools() : null
+          const authoringPhase = !!phaseAllowed && !phaseAllowed.includes('Bash')
+          const phaseName = this.workflowEngine.currentPhase?.name ?? null
+          const nudgeText = enforcementNudgeText({ pending, failed, phaseName, authoringPhase })
           this.addMessage({
             role: 'user',
-            content: [{ type: 'text', text: `[System] You are NOT done. Contract has ${pending} assertions pending, ${failed} failed. ${runTests} Then use ContractAssertPass to mark completed assertions. Do NOT keep reading files — ACT.` }],
+            content: [{ type: 'text', text: nudgeText }],
           })
           console.log(`[contract] Enforcement round ${globalContract.enforcementRounds}: ${pending} pending, ${failed} failed`)
           continue
