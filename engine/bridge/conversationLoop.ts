@@ -1589,6 +1589,9 @@ export class ConversationLoop {
     // Session-scoped accumulators (survive across iterations within a single runModelLoop invocation)
     const toolsUsedInSession: string[] = []
     let summaryInjected = false
+    /** Evasion probes get their own small budget so they cannot consume the
+     *  stop-attempt enforcement budget, and cannot nag indefinitely. */
+    let evasionNudges = 0
 
     for (let i = 0; i < maxIterations; i++) {
       // ── Stuck loop escape: escalating intervention ──
@@ -2306,14 +2309,19 @@ export class ConversationLoop {
         }
       }
 
-      // Contract enforcement: don't let model finish if contract is incomplete
-      // Fires when model stops WITHOUT tool calls, OR when model has been iterating
-      // for a while without marking assertions (prevents read-loop evasion)
+      // Contract enforcement: don't let the model finish while the contract is
+      // incomplete. Fires when the model stops without tool calls, or
+      // periodically to catch read-loop evasion.
       const contractActive = globalContract.isActive() && !globalContract.isComplete() && globalContract.isEnforcementEnabled()
       const modelStopping = toolUseBlocks.length === 0 && stopReason === 'end_turn'
-      const readLoopEvasion = contractActive && i > 0 && i % 8 === 0 // every 8 iterations, check
+      const readLoopEvasion = contractActive && i > 0 && i % 8 === 0 && evasionNudges < 3
       if (contractActive && (modelStopping || readLoopEvasion)) {
-        globalContract.enforcementRounds++
+        // Only a genuine stop attempt spends the enforcement budget. The
+        // periodic evasion probe has its own, so it cannot exhaust enforcement
+        // before the model has tried to finish even once.
+        if (modelStopping) globalContract.enforcementRounds++
+        else evasionNudges++
+
         if (globalContract.enforcementRounds <= 5) {
           const pending = globalContract.pendingCount()
           const failed = globalContract.failedCount()
@@ -2325,7 +2333,18 @@ export class ConversationLoop {
           console.log(`[contract] Enforcement round ${globalContract.enforcementRounds}: ${pending} pending, ${failed} failed`)
           continue
         }
-        console.log(`[contract] Allowing completion after ${globalContract.enforcementRounds} enforcement rounds`)
+
+        // Budget exhausted. Resolve the contract as failed rather than allowing
+        // an unverified completion, and end the turn here instead of drifting
+        // through the other re-entry paths for several more rounds.
+        const unverified = globalContract.resolveUnverified()
+        console.log(`[contract] UNRESOLVED after ${globalContract.enforcementRounds} rounds — failing ${unverified.length} unverified assertion(s)`)
+        this.emit({
+          type: 'stream.token',
+          text: `\n[System] Contract unresolved — ${unverified.length} assertion(s) were never verified:\n${unverified.map(t => `  - ${t}`).join('\n')}\n`,
+        })
+        this.emit({ type: 'message.complete', messageId: '', stopReason: 'end_turn' })
+        return
       }
 
       if (toolUseBlocks.length === 0 || stopReason !== 'tool_use') {
