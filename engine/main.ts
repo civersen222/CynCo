@@ -595,6 +595,15 @@ async function handleCommand(command: TUICommand): Promise<void> {
             wsServer.emit({ type: 'stream.token', text: `[System] Started workflow: ${wf.displayName}\nPhase: ${wf.initialPhase}\n\n${wf.phases[wf.initialPhase].instruction}\n` })
             wsServer.emit({ type: 'workflow.status', active: true, workflow: wf.name, phase: wf.initialPhase, displayName: wf.displayName })
             wsServer.emit({ type: 'message.complete', messageId: '', stopReason: 'end_turn' })
+            // If the command carried a task (e.g. `/tdd <task text>` from the
+            // dashboard's workflow selector), enqueue it as the opening user
+            // message so the turn actually starts. Without this the workflow
+            // starts but no user.message is ever sent, and the engine idles in
+            // the initial read-only phase while the UI looks frozen.
+            const task = args.trim()
+            if (task) {
+              await loop.handleUserMessage(task)
+            }
           }
           break
         }
