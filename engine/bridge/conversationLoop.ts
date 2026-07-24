@@ -68,6 +68,7 @@ import { globalAskBroker } from '../tools/askBroker.js'
 import { setSideQuery, resetMergeTracking } from '../tools/impl/edit.js'
 import { estimateTokensAsync } from '../engine/contextBudget.js'
 import { checkCommitScope } from './commitScope.js'
+import { applyToolFloor, attributeRemoval } from './toolFloor.js'
 import { isMalformedInput } from '../engine/toolCallRepair.js'
 import { extractSimulatedToolCalls } from '../ollama/simulated.js'
 import { ThinkingRecorder } from '../memory/thinkingRecorder.js'
@@ -252,6 +253,8 @@ export class ConversationLoop {
   // S5 restrictions, demotions, routing). In one-shot runs this is enforced
   // at execution time too — see executeOneTool.
   private offeredToolNames: Set<string> | null = null
+  /** Loud record of every tool-floor rescue this run, for the outcome report. */
+  floorEvents: string[] = []
   // Brain stream: thinking persistence + uncertainty tracking
   private thinkingRecorder: ThinkingRecorder | null = null
   private uncertainty = new UncertaintyTracker()
@@ -1928,6 +1931,42 @@ export class ConversationLoop {
         if (narrowed.length !== iterationTools.length) {
           console.log(`[toolgate] Attenuated overused tools: ${gated.join(', ')}`)
           iterationTools = narrowed
+        }
+      }
+
+      // ── Contract tool floor ─────────────────────────────────────────
+      // Enforcement will demand Bash + ContractAssertPass. Any of the narrowing
+      // layers above may have removed them without knowing that. Restore them,
+      // or — if the operator's own pin omits them — stop pretending we can
+      // verify and disable enforcement loudly.
+      if (globalContract.isActive() && !globalContract.isComplete() && globalContract.isEnforcementEnabled()) {
+        const allDefs = ALL_TOOLS.map(t => ({
+          name: t.name,
+          description: t.description,
+          inputJSONSchema: t.inputSchema,
+        }))
+        const verdict = applyToolFloor({
+          offered: iterationTools as any[],
+          allTools: allDefs,
+          operatorPin: this.allowedTools ?? null,
+          enforcementActive: true,
+        })
+        if (verdict.kind === 'restored') {
+          const phaseAllowed = this.workflowEngine.isActive ? this.workflowEngine.getAllowedTools() : null
+          const why = verdict.restored
+            .map(n => `${n} (removed by ${attributeRemoval(n, {
+              phaseName: this.workflowEngine.currentPhase?.name,
+              phaseAllowed,
+              demoted: [...demoted],
+            })})`)
+            .join(', ')
+          console.log(`[tool-floor] Restored ${why} — required by active contract enforcement`)
+          this.floorEvents.push(`restored ${verdict.restored.join(', ')}`)
+          iterationTools = verdict.tools as any
+        } else if (verdict.kind === 'unsatisfiable') {
+          console.log(`[tool-floor] Contract enforcement DISABLED — allowedTools omits ${verdict.missing.join(', ')}; cannot verify completion`)
+          this.floorEvents.push(`enforcement disabled: pin omits ${verdict.missing.join(', ')}`)
+          globalContract.setEnforcementEnabled(false)
         }
       }
 
