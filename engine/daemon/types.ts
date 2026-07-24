@@ -75,6 +75,9 @@ export interface TaskOutcome {
   /** Session id produced by the ConversationLoop that ran this task.
    *  Set by runGovernedLoop; absent when the task short-circuits (timeout, GPU busy). */
   sessionId?: string
+  /** Engine self-corrections applied during the run (tool-floor rescues,
+   *  enforcement disabled). Empty on a clean run. */
+  rescues?: string[]
 }
 
 export interface RunRecord {

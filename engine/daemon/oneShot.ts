@@ -148,13 +148,13 @@ export async function runGovernedLoop(opts: {
   const collectedText = collectAssistantText(loop.getMessages())
   const sessionId = loop.getSessionId()
   if (timedOut) {
-    return { ok: false, summary: collectedText.slice(-1000), recommendations: [], error: 'Internal deadline exceeded', sessionId }
+    return { ok: false, summary: collectedText.slice(-1000), recommendations: [], error: 'Internal deadline exceeded', sessionId, rescues: loop.floorEvents }
   }
   const haltReason = haltCapture.haltReason()
   if (haltReason) {
-    return { ok: false, summary: collectedText.slice(-1000), recommendations: [], error: `HALTED: ${haltReason}`, sessionId }
+    return { ok: false, summary: collectedText.slice(-1000), recommendations: [], error: `HALTED: ${haltReason}`, sessionId, rescues: loop.floorEvents }
   }
-  return { ...extractOutcome(collectedText), sessionId }
+  return { ...extractOutcome(collectedText), sessionId, rescues: loop.floorEvents }
 }
 
 export async function runOneShotTask(
