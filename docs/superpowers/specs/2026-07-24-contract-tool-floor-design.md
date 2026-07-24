@@ -138,12 +138,15 @@ restored.
 
 A single insertion covers all of them. Patching `tdd.ts` would cover one.
 
-**Origin tracking is a prerequisite.** Today the layers simply filter; none records what it
-removed or why, so at `:1933` the loop knows only the final list. The implementation must add
-a lightweight removal ledger — each layer that narrows the set records
-`(toolName, layerLabel)` — so the floor can apply the origin split below and name the culprit
-in its warning. The ledger is per-iteration and discarded after use. Keep it additive: the
-layers' existing filtering logic should not change, only report.
+**Origin is derivable — no ledger needed.** The operator pin is its own field
+(`this.allowedTools`, applied at `:818-821`), so the split below is a direct membership test
+against it; every *other* layer is "automatic" by elimination. No cross-layer bookkeeping is
+required, and the existing filtering logic is untouched.
+
+Attribution in the warning text is best-effort and cheap: if the active workflow phase's
+`allowedTools` excludes the tool, name the phase; otherwise if the trust scorer lists it as
+demoted, name trust demotion; otherwise say "governance gating". Attribution affects only the
+log message, never the decision.
 
 **Required set.** When a contract is active with enforcement enabled:
 `[Bash, ContractAssertPass, ContractAssertFail, ContractStatus]`.
