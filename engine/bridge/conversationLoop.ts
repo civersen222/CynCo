@@ -67,6 +67,7 @@ import { applyHarnessContract, maybeAutoCreateContract, type HarnessContractSpec
 import { globalAskBroker } from '../tools/askBroker.js'
 import { setSideQuery, resetMergeTracking } from '../tools/impl/edit.js'
 import { estimateTokensAsync } from '../engine/contextBudget.js'
+import { checkCommitScope } from './commitScope.js'
 import { isMalformedInput } from '../engine/toolCallRepair.js'
 import { extractSimulatedToolCalls } from '../ollama/simulated.js'
 import { ThinkingRecorder } from '../memory/thinkingRecorder.js'
@@ -2768,6 +2769,26 @@ export class ConversationLoop {
         type: 'tool_result',
         tool_use_id: toolId,
         content: [{ type: 'text', text: msg }],
+        is_error: true,
+      })
+      toolsUsedThisTurn.push(toolName)
+      toolResultsThisTurn.push('denied')
+      toolsUsedInSession.push(toolName)
+      return
+    }
+
+    // ─── Commit scope guard ────────────────────────────────────────
+    // Prevention, not a rescue: a commit is hard to reverse once made, and an
+    // unattended run runs with approveAll so nothing else will stop it.
+    const commitVerdict = checkCommitScope(toolName, toolInput)
+    if (!commitVerdict.allowed) {
+      console.log(`[commit-scope] BLOCKED ${toolName}: repo-wide staging`)
+      this.emit({ type: 'tool.start', toolId, toolName, input: toolInput })
+      this.emit({ type: 'tool.complete', toolId, toolName, result: commitVerdict.reason!, isError: true })
+      toolResults.push({
+        type: 'tool_result',
+        tool_use_id: toolId,
+        content: [{ type: 'text', text: commitVerdict.reason! }],
         is_error: true,
       })
       toolsUsedThisTurn.push(toolName)
