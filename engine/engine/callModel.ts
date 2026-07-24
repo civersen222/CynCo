@@ -370,7 +370,9 @@ export async function* localCallModel({
     messages: convertedMessages,
     system,
     temperature: effectiveTemperature,
-    // No max_tokens — let the model generate as much as it needs
+    // Bound a single turn. A runaway turn once reached 44k tokens and was ended
+    // only by the server truncating at its context ceiling.
+    max_tokens: config.maxOutputTokens,
   }
 
   // Include tools only for native tool use
