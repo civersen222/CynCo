@@ -49,4 +49,48 @@ describe('checkCommitScope', () => {
     expect(v.allowed).toBe(false)
     expect(v.reason).toMatch(/by name/i)
   })
+
+  // Fix 3: Git tool bypass
+  it('blocks repo-wide staging through the Git tool', () => {
+    const v = checkCommitScope('Git', { subcommand: 'add', args: '-A' })
+    expect(v.allowed).toBe(false)
+  })
+
+  it('blocks git commit --all through the Git tool', () => {
+    expect(checkCommitScope('Git', { subcommand: 'commit', args: '--all -m "x"' }).allowed).toBe(false)
+  })
+
+  it('permits a scoped add through the Git tool', () => {
+    expect(checkCommitScope('Git', { subcommand: 'add', args: 'src/foo.ts' }).allowed).toBe(true)
+  })
+
+  // Fix 4: false positives across command separators
+  it('does not block a scoped commit followed by an unrelated flag-bearing command', () => {
+    expect(checkCommitScope('Bash', { command: 'git commit -m "x" && ls -la' }).allowed).toBe(true)
+  })
+
+  it('does not block a scoped add followed by ls -A', () => {
+    expect(checkCommitScope('Bash', { command: 'git add file.ts && ls -A' }).allowed).toBe(true)
+  })
+
+  it('does not block a scoped add followed by git status -u', () => {
+    expect(checkCommitScope('Bash', { command: 'git add a.ts && git status -u' }).allowed).toBe(true)
+  })
+
+  it('still blocks a repo-wide add hidden after a separator', () => {
+    expect(checkCommitScope('Bash', { command: 'echo hi && git add -A' }).allowed).toBe(false)
+  })
+
+  // Fix 5: bare glob and stage alias
+  it('blocks a bare glob add', () => {
+    expect(checkCommitScope('Bash', { command: 'git add *' }).allowed).toBe(false)
+  })
+
+  it('blocks the stage alias', () => {
+    expect(checkCommitScope('Bash', { command: 'git stage -A' }).allowed).toBe(false)
+  })
+
+  it('still permits a glob scoped to a directory', () => {
+    expect(checkCommitScope('Bash', { command: 'git add src/*.ts' }).allowed).toBe(true)
+  })
 })

@@ -160,6 +160,32 @@ describe('ContractState', () => {
     expect(c.resolveUnverified()).toEqual([])
     expect(c.isComplete()).toBe(true)
   })
+
+  it('resolveUnverified deactivates the contract so a new one can replace it', () => {
+    c.create('T', '', ['a', 'b'])
+    c.resolveUnverified()
+    expect(c.isActive()).toBe(false)
+  })
+
+  it('resolveUnverified on an already-complete contract leaves it active', () => {
+    c.create('T', '', ['a'])
+    c.assertPass(0)
+    c.resolveUnverified()
+    expect(c.isActive()).toBe(true)
+    expect(c.isComplete()).toBe(true)
+  })
+
+  it('create re-enables enforcement disabled by a previous contract', () => {
+    c.setEnforcementEnabled(false)
+    c.create('T', '', ['a'])
+    expect(c.isEnforcementEnabled()).toBe(true)
+  })
+
+  it('clear re-enables enforcement', () => {
+    c.setEnforcementEnabled(false)
+    c.clear()
+    expect(c.isEnforcementEnabled()).toBe(true)
+  })
 })
 
 describe('contractCreateTool.execute', () => {

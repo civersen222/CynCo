@@ -57,6 +57,7 @@ export class ContractState {
     this.assertions = assertionTexts.map(text => ({ text, status: 'pending' as AssertionStatus }))
     this.active = true
     this.enforcementRounds = 0
+    this.enforcementEnabled = true
   }
 
   /** Mark assertion at `index` as passed, optionally recording evidence. */
@@ -95,6 +96,9 @@ export class ContractState {
         forced.push(a.text)
       }
     }
+    if (forced.length > 0) {
+      this.active = false
+    }
     return forced
   }
 
@@ -124,7 +128,7 @@ export class ContractState {
 
   /** Return a human-readable status block. */
   getStatus(): string {
-    if (!this.active) return 'No active contract.'
+    if (!this.active && this.assertions.length === 0) return 'No active contract.'
 
     const lines: string[] = []
     lines.push(`Contract: ${this.title}`)
@@ -172,6 +176,7 @@ export class ContractState {
     this.assertions = []
     this.active = false
     this.enforcementRounds = 0
+    this.enforcementEnabled = true
   }
 }
 
