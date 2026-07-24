@@ -53,7 +53,7 @@ export function pruneRedundantReads(messages: Msg[], redundantSigs: Set<string>,
   let markerInserted = false
   for (let i = 0; i < messages.length; i++) {
     if (pruned.has(i)) {
-      if (!markerInserted) { out.push({ role: 'user', content: MARKER }); markerInserted = true }
+      if (!markerInserted) { out.push({ role: 'user', content: [{ type: 'text', text: MARKER }] }); markerInserted = true }
       continue
     }
     out.push(messages[i])

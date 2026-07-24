@@ -65,10 +65,23 @@ export function convertMessages(messages: Message[], options?: ConvertOptions): 
   }
   return messages.map(msg => ({
     role: msg.role,
-    content: msg.content.filter(
+    content: normalizeContent(msg.content).filter(
       (block: ContentBlock) => ALLOWED_BLOCK_TYPES.has(block.type)
     ),
   }))
+}
+
+/**
+ * Coerce a message's content into a ContentBlock[]. The Anthropic message
+ * shape allows `content` to be a plain string (shorthand for a single text
+ * block); some producers (e.g. late context-hygiene markers) emit that form.
+ * Downstream provider conversion assumes an array, so normalize here rather
+ * than letting `.filter` throw `content.filter is not a function`.
+ */
+function normalizeContent(content: unknown): ContentBlock[] {
+  if (Array.isArray(content)) return content as ContentBlock[]
+  if (typeof content === 'string') return [{ type: 'text', text: content } as ContentBlock]
+  return []
 }
 
 /**
@@ -84,7 +97,7 @@ export function convertMessages(messages: Message[], options?: ConvertOptions): 
 function convertMessageSimulated(msg: Message): Message {
   const textParts: string[] = []
 
-  for (const block of msg.content) {
+  for (const block of normalizeContent(msg.content)) {
     if (block.type === 'text') {
       textParts.push((block as any).text)
     } else if (block.type === 'tool_use' && msg.role === 'assistant') {
