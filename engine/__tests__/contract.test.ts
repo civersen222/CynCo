@@ -129,6 +129,63 @@ describe('ContractState', () => {
     expect(s.active).toBe(false)
     expect(s.assertions.length).toBe(0)
   })
+
+  it('resolveUnverified fails every pending assertion and returns their texts', () => {
+    c.create('T', '', ['a', 'b', 'c'])
+    c.assertPass(0)
+    const forced = c.resolveUnverified()
+    expect(forced).toEqual(['b', 'c'])
+    expect(c.failedCount()).toBe(2)
+    expect(c.pendingCount()).toBe(0)
+  })
+
+  it('resolveUnverified leaves passed and skipped assertions untouched', () => {
+    c.create('T', '', ['a', 'b', 'c'])
+    c.assertPass(0, 'verified')
+    c.assertSkip(1, 'n/a')
+    c.resolveUnverified()
+    expect(c.failedCount()).toBe(1)
+    expect(c.isComplete()).toBe(false)
+  })
+
+  it('resolveUnverified records why the assertion was failed', () => {
+    c.create('T', '', ['a'])
+    c.resolveUnverified()
+    expect(c.getStatus()).toMatch(/never verified/i)
+  })
+
+  it('resolveUnverified on a fully passed contract changes nothing', () => {
+    c.create('T', '', ['a'])
+    c.assertPass(0)
+    expect(c.resolveUnverified()).toEqual([])
+    expect(c.isComplete()).toBe(true)
+  })
+
+  it('resolveUnverified deactivates the contract so a new one can replace it', () => {
+    c.create('T', '', ['a', 'b'])
+    c.resolveUnverified()
+    expect(c.isActive()).toBe(false)
+  })
+
+  it('resolveUnverified on an already-complete contract leaves it active', () => {
+    c.create('T', '', ['a'])
+    c.assertPass(0)
+    c.resolveUnverified()
+    expect(c.isActive()).toBe(true)
+    expect(c.isComplete()).toBe(true)
+  })
+
+  it('create re-enables enforcement disabled by a previous contract', () => {
+    c.setEnforcementEnabled(false)
+    c.create('T', '', ['a'])
+    expect(c.isEnforcementEnabled()).toBe(true)
+  })
+
+  it('clear re-enables enforcement', () => {
+    c.setEnforcementEnabled(false)
+    c.clear()
+    expect(c.isEnforcementEnabled()).toBe(true)
+  })
 })
 
 describe('contractCreateTool.execute', () => {

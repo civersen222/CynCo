@@ -292,8 +292,9 @@ Immediately before the `// ─── Read-loop gate ───` comment at ~line 
 
 - [ ] **Step 4: Verify**
 
-Run: `bunx tsc --noEmit -p . 2>&1 | head -20`
-Expected: no new errors. If `toolResultsThisTurn` or `toolsUsedThisTurn` is not in scope at your insertion point, you inserted in the wrong function — compare against the block at `:2738-2753`.
+Do NOT run `tsc`: this repo has **no root `tsconfig.json`**, and Bun strips types without
+checking them. Vitest below is the only gate, so be deliberate about type correctness —
+nothing will catch a type error for you. If `toolResultsThisTurn` or `toolsUsedThisTurn` is not in scope at your insertion point, you inserted in the wrong function — compare against the block at `:2738-2753`.
 
 Run: `bunx vitest run engine/__tests__ 2>&1 | tail -20`
 Expected: baseline (seven `workflowParity` failures, nothing new).
@@ -468,8 +469,9 @@ Replace lines `:2311-2328` (from `const contractActive = ...` through the closin
 
 - [ ] **Step 4: Verify**
 
-Run: `bunx tsc --noEmit -p . 2>&1 | head -20`
-Expected: no new errors. If `i` is not in scope, you are outside the iteration loop — re-read `:2305-2335`.
+Do NOT run `tsc`: this repo has **no root `tsconfig.json`**, and Bun strips types without
+checking them. Vitest below is the only gate, so be deliberate about type correctness —
+nothing will catch a type error for you. If `i` is not in scope, you are outside the iteration loop — re-read `:2305-2335`.
 
 Run: `bunx vitest run engine/__tests__ 2>&1 | tail -20`
 Expected: baseline only.
@@ -776,8 +778,9 @@ Immediately before `this.offeredToolNames = new Set(...)` at `:1933`:
 
 - [ ] **Step 5: Verify**
 
-Run: `bunx tsc --noEmit -p . 2>&1 | head -20`
-Expected: no new errors.
+Do NOT run `tsc`: this repo has **no root `tsconfig.json`**, and Bun strips types without
+checking them. Vitest below is the only gate, so be deliberate about type correctness —
+nothing will catch a type error for you.
 
 Run: `bunx vitest run engine/__tests__ 2>&1 | tail -20`
 Expected: baseline only (seven `workflowParity` failures).
@@ -824,8 +827,9 @@ Use whatever the local variable for the loop instance is actually called — rea
 
 - [ ] **Step 4: Verify**
 
-Run: `bunx tsc --noEmit -p . 2>&1 | head -20`
-Expected: no new errors.
+Do NOT run `tsc`: this repo has **no root `tsconfig.json`**, and Bun strips types without
+checking them. Vitest below is the only gate, so be deliberate about type correctness —
+nothing will catch a type error for you.
 
 Run: `bunx vitest run engine/__tests__ 2>&1 | tail -20`
 Expected: baseline only.
@@ -846,10 +850,11 @@ git commit -m "feat(daemon): report engine self-corrections in the task outcome"
 Run: `bunx vitest run engine/__tests__ 2>&1 | tail -30`
 Expected: all pass except the seven pre-existing `workflowParity` failures. If any of those seven now pass or a new one fails, investigate — do not assume.
 
-- [ ] **Typecheck**
+- [ ] **Note on typechecking**
 
-Run: `bunx tsc --noEmit -p . 2>&1 | head -30`
-Expected: clean, or unchanged from the pre-existing baseline.
+There is no root `tsconfig.json` and Bun strips types without checking. Vitest is the only
+automated gate in this repo. Treat that as a standing hazard when reviewing these changes:
+a type error will reach runtime.
 
 - [ ] **Behavioral check against the incident**
 

@@ -67,6 +67,8 @@ import { applyHarnessContract, maybeAutoCreateContract, type HarnessContractSpec
 import { globalAskBroker } from '../tools/askBroker.js'
 import { setSideQuery, resetMergeTracking } from '../tools/impl/edit.js'
 import { estimateTokensAsync } from '../engine/contextBudget.js'
+import { checkCommitScope } from './commitScope.js'
+import { applyToolFloor, attributeRemoval } from './toolFloor.js'
 import { isMalformedInput } from '../engine/toolCallRepair.js'
 import { extractSimulatedToolCalls } from '../ollama/simulated.js'
 import { ThinkingRecorder } from '../memory/thinkingRecorder.js'
@@ -251,6 +253,8 @@ export class ConversationLoop {
   // S5 restrictions, demotions, routing). In one-shot runs this is enforced
   // at execution time too — see executeOneTool.
   private offeredToolNames: Set<string> | null = null
+  /** Loud record of every tool-floor rescue this run, for the outcome report. */
+  floorEvents: string[] = []
   // Brain stream: thinking persistence + uncertainty tracking
   private thinkingRecorder: ThinkingRecorder | null = null
   private uncertainty = new UncertaintyTracker()
@@ -1588,6 +1592,9 @@ export class ConversationLoop {
     // Session-scoped accumulators (survive across iterations within a single runModelLoop invocation)
     const toolsUsedInSession: string[] = []
     let summaryInjected = false
+    /** Evasion probes get their own small budget so they cannot consume the
+     *  stop-attempt enforcement budget, and cannot nag indefinitely. */
+    let evasionNudges = 0
 
     for (let i = 0; i < maxIterations; i++) {
       // ── Stuck loop escape: escalating intervention ──
@@ -1924,6 +1931,48 @@ export class ConversationLoop {
         if (narrowed.length !== iterationTools.length) {
           console.log(`[toolgate] Attenuated overused tools: ${gated.join(', ')}`)
           iterationTools = narrowed
+        }
+      }
+
+      // ── Contract tool floor ─────────────────────────────────────────
+      // Enforcement will demand Bash + ContractAssertPass. Any of the narrowing
+      // layers above may have removed them without knowing that. Restore them,
+      // or — if the operator's own pin omits them — stop pretending we can
+      // verify and disable enforcement loudly.
+      if (globalContract.isActive() && !globalContract.isComplete() && globalContract.isEnforcementEnabled()) {
+        const allDefs = ALL_TOOLS.map(t => ({
+          name: t.name,
+          description: t.description,
+          inputJSONSchema: t.inputSchema,
+        }))
+        const verdict = applyToolFloor({
+          offered: iterationTools as any[],
+          allTools: allDefs,
+          operatorPin: this.allowedTools ?? null,
+          enforcementActive: true,
+        })
+        if (verdict.kind === 'restored') {
+          const phaseAllowed = this.workflowEngine.isActive ? this.workflowEngine.getAllowedTools() : null
+          const why = verdict.restored
+            .map(n => `${n} (removed by ${attributeRemoval(n, {
+              phaseName: this.workflowEngine.currentPhase?.name,
+              phaseAllowed,
+              demoted: [...demoted],
+            })})`)
+            .join(', ')
+          iterationTools = verdict.tools as any
+          const event = `restored ${verdict.restored.join(', ')}`
+          if (!this.floorEvents.includes(event)) {
+            console.log(`[tool-floor] Restored ${why} — required by active contract enforcement`)
+            this.floorEvents.push(event)
+          }
+        } else if (verdict.kind === 'unsatisfiable') {
+          const event = `enforcement disabled: pin omits ${verdict.missing.join(', ')}`
+          if (!this.floorEvents.includes(event)) {
+            console.log(`[tool-floor] Contract enforcement DISABLED — allowedTools omits ${verdict.missing.join(', ')}; cannot verify completion`)
+            this.floorEvents.push(event)
+          }
+          globalContract.setEnforcementEnabled(false)
         }
       }
 
@@ -2305,14 +2354,21 @@ export class ConversationLoop {
         }
       }
 
-      // Contract enforcement: don't let model finish if contract is incomplete
-      // Fires when model stops WITHOUT tool calls, OR when model has been iterating
-      // for a while without marking assertions (prevents read-loop evasion)
+      // Contract enforcement: don't let the model finish while the contract is
+      // incomplete. Fires when the model stops without tool calls, or
+      // periodically to catch read-loop evasion.
       const contractActive = globalContract.isActive() && !globalContract.isComplete() && globalContract.isEnforcementEnabled()
-      const modelStopping = toolUseBlocks.length === 0 && stopReason === 'end_turn'
-      const readLoopEvasion = contractActive && i > 0 && i % 8 === 0 // every 8 iterations, check
+      // A truncated turn (max_tokens) is also a stop attempt — without this,
+      // the token cap becomes a way to bypass enforcement on a new path.
+      const modelStopping = toolUseBlocks.length === 0 && (stopReason === 'end_turn' || stopReason === 'max_tokens')
+      const readLoopEvasion = contractActive && i > 0 && i % 8 === 0 && evasionNudges < 3
       if (contractActive && (modelStopping || readLoopEvasion)) {
-        globalContract.enforcementRounds++
+        // Only a genuine stop attempt spends the enforcement budget. The
+        // periodic evasion probe has its own, so it cannot exhaust enforcement
+        // before the model has tried to finish even once.
+        if (modelStopping) globalContract.enforcementRounds++
+        else evasionNudges++
+
         if (globalContract.enforcementRounds <= 5) {
           const pending = globalContract.pendingCount()
           const failed = globalContract.failedCount()
@@ -2324,7 +2380,18 @@ export class ConversationLoop {
           console.log(`[contract] Enforcement round ${globalContract.enforcementRounds}: ${pending} pending, ${failed} failed`)
           continue
         }
-        console.log(`[contract] Allowing completion after ${globalContract.enforcementRounds} enforcement rounds`)
+
+        // Budget exhausted. Resolve the contract as failed rather than allowing
+        // an unverified completion, and end the turn here instead of drifting
+        // through the other re-entry paths for several more rounds.
+        const unverified = globalContract.resolveUnverified()
+        console.log(`[contract] UNRESOLVED after ${globalContract.enforcementRounds} rounds — failing ${unverified.length} unverified assertion(s)`)
+        this.emit({
+          type: 'stream.token',
+          text: `\n[System] Contract unresolved — ${unverified.length} assertion(s) were never verified:\n${unverified.map(t => `  - ${t}`).join('\n')}\n`,
+        })
+        this.emit({ type: 'message.complete', messageId: '', stopReason: 'end_turn' })
+        return
       }
 
       if (toolUseBlocks.length === 0 || stopReason !== 'tool_use') {
@@ -2537,6 +2604,12 @@ export class ConversationLoop {
       // Loop back to call model again with tool results
     }
 
+    if (globalContract.isActive() && !globalContract.isComplete()) {
+      const unverified = globalContract.resolveUnverified('iteration limit reached — never verified')
+      if (unverified.length > 0) {
+        console.log(`[contract] UNRESOLVED at iteration limit — failing ${unverified.length} unverified assertion(s)`)
+      }
+    }
     console.warn('[loop] Max iterations reached')
     this.emit({ type: 'stream.token', text: '\n[System] Max tool call iterations reached. Stopping.\n' })
     this.emit({ type: 'message.complete', messageId: '', stopReason: 'max_iterations' })
@@ -2768,6 +2841,26 @@ export class ConversationLoop {
         type: 'tool_result',
         tool_use_id: toolId,
         content: [{ type: 'text', text: msg }],
+        is_error: true,
+      })
+      toolsUsedThisTurn.push(toolName)
+      toolResultsThisTurn.push('denied')
+      toolsUsedInSession.push(toolName)
+      return
+    }
+
+    // ─── Commit scope guard ────────────────────────────────────────
+    // Prevention, not a rescue: a commit is hard to reverse once made, and an
+    // unattended run runs with approveAll so nothing else will stop it.
+    const commitVerdict = checkCommitScope(toolName, toolInput)
+    if (!commitVerdict.allowed) {
+      console.log(`[commit-scope] BLOCKED ${toolName}: repo-wide staging`)
+      this.emit({ type: 'tool.start', toolId, toolName, input: toolInput })
+      this.emit({ type: 'tool.complete', toolId, toolName, result: commitVerdict.reason!, isError: true })
+      toolResults.push({
+        type: 'tool_result',
+        tool_use_id: toolId,
+        content: [{ type: 'text', text: commitVerdict.reason! }],
         is_error: true,
       })
       toolsUsedThisTurn.push(toolName)

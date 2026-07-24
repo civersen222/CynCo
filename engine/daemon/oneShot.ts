@@ -148,13 +148,13 @@ export async function runGovernedLoop(opts: {
   const collectedText = collectAssistantText(loop.getMessages())
   const sessionId = loop.getSessionId()
   if (timedOut) {
-    return { ok: false, summary: collectedText.slice(-1000), recommendations: [], error: 'Internal deadline exceeded', sessionId }
+    return { ok: false, summary: collectedText.slice(-1000), recommendations: [], error: 'Internal deadline exceeded', sessionId, rescues: loop.floorEvents }
   }
   const haltReason = haltCapture.haltReason()
   if (haltReason) {
-    return { ok: false, summary: collectedText.slice(-1000), recommendations: [], error: `HALTED: ${haltReason}`, sessionId }
+    return { ok: false, summary: collectedText.slice(-1000), recommendations: [], error: `HALTED: ${haltReason}`, sessionId, rescues: loop.floorEvents }
   }
-  return { ...extractOutcome(collectedText), sessionId }
+  return { ...extractOutcome(collectedText), sessionId, rescues: loop.floorEvents }
 }
 
 export async function runOneShotTask(
@@ -190,6 +190,9 @@ export async function runOneShotTask(
 
     writeOutcome(outcomePath, outcome)
     console.log(`[one-shot] Outcome written: ${outcomePath}`)
+    if (outcome.rescues?.length) {
+      console.log(`[one-shot] Engine self-corrections: ${outcome.rescues.join('; ')}`)
+    }
     return outcome.ok ? 0 : 1
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)

@@ -57,6 +57,7 @@ export class ContractState {
     this.assertions = assertionTexts.map(text => ({ text, status: 'pending' as AssertionStatus }))
     this.active = true
     this.enforcementRounds = 0
+    this.enforcementEnabled = true
   }
 
   /** Mark assertion at `index` as passed, optionally recording evidence. */
@@ -78,6 +79,27 @@ export class ContractState {
     if (index < 0 || index >= this.assertions.length) return
     this.assertions[index].status = 'skipped'
     if (reason !== undefined) this.assertions[index].evidence = reason
+  }
+
+  /**
+   * Enforcement budget exhausted with work still unverified. Force every
+   * pending assertion to failed so the contract RESOLVES rather than silently
+   * expiring — an unverified run must never report success. Returns the texts
+   * of the assertions that were forced, for reporting.
+   */
+  resolveUnverified(reason: string = 'enforcement budget exhausted — never verified'): string[] {
+    const forced: string[] = []
+    for (const a of this.assertions) {
+      if (a.status === 'pending') {
+        a.status = 'failed'
+        a.evidence = reason
+        forced.push(a.text)
+      }
+    }
+    if (forced.length > 0) {
+      this.active = false
+    }
+    return forced
   }
 
   /** True when a contract has been created and not yet cleared. */
@@ -106,7 +128,7 @@ export class ContractState {
 
   /** Return a human-readable status block. */
   getStatus(): string {
-    if (!this.active) return 'No active contract.'
+    if (!this.active && this.assertions.length === 0) return 'No active contract.'
 
     const lines: string[] = []
     lines.push(`Contract: ${this.title}`)
@@ -154,6 +176,7 @@ export class ContractState {
     this.assertions = []
     this.active = false
     this.enforcementRounds = 0
+    this.enforcementEnabled = true
   }
 }
 
