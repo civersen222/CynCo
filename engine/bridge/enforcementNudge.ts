@@ -8,9 +8,12 @@
  * model now held Bash plus two opposed instructions — the phase said "write a
  * failing test, do not implement production code," while the nudge said "if tests
  * fail, fix the errors." A failing test is the *desired* state in that phase.
- * Over 115 iterations the model began implementing production code to turn the
- * red test green, violating the phase. This module emits a structurally different
- * nudge in authoring phases so the two instructions no longer conflict.
+ * This contradiction is anticipated, not yet observed: the original 115-iteration
+ * thrash happened BEFORE the floor existed, when the nudge was impossible rather
+ * than merely conflicting. The risk now is the inverse — a model that obeys the
+ * nudge implements production code to turn the red test green, violating the
+ * phase. This module emits a structurally different nudge in authoring phases so
+ * the two instructions no longer conflict.
  */
 
 export function enforcementNudgeText(opts: {
