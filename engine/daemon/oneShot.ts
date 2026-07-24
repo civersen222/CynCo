@@ -190,6 +190,9 @@ export async function runOneShotTask(
 
     writeOutcome(outcomePath, outcome)
     console.log(`[one-shot] Outcome written: ${outcomePath}`)
+    if (outcome.rescues?.length) {
+      console.log(`[one-shot] Engine self-corrections: ${outcome.rescues.join('; ')}`)
+    }
     return outcome.ok ? 0 : 1
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)

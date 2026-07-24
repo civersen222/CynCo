@@ -1960,12 +1960,18 @@ export class ConversationLoop {
               demoted: [...demoted],
             })})`)
             .join(', ')
-          console.log(`[tool-floor] Restored ${why} — required by active contract enforcement`)
-          this.floorEvents.push(`restored ${verdict.restored.join(', ')}`)
           iterationTools = verdict.tools as any
+          const event = `restored ${verdict.restored.join(', ')}`
+          if (!this.floorEvents.includes(event)) {
+            console.log(`[tool-floor] Restored ${why} — required by active contract enforcement`)
+            this.floorEvents.push(event)
+          }
         } else if (verdict.kind === 'unsatisfiable') {
-          console.log(`[tool-floor] Contract enforcement DISABLED — allowedTools omits ${verdict.missing.join(', ')}; cannot verify completion`)
-          this.floorEvents.push(`enforcement disabled: pin omits ${verdict.missing.join(', ')}`)
+          const event = `enforcement disabled: pin omits ${verdict.missing.join(', ')}`
+          if (!this.floorEvents.includes(event)) {
+            console.log(`[tool-floor] Contract enforcement DISABLED — allowedTools omits ${verdict.missing.join(', ')}; cannot verify completion`)
+            this.floorEvents.push(event)
+          }
           globalContract.setEnforcementEnabled(false)
         }
       }
@@ -2352,7 +2358,9 @@ export class ConversationLoop {
       // incomplete. Fires when the model stops without tool calls, or
       // periodically to catch read-loop evasion.
       const contractActive = globalContract.isActive() && !globalContract.isComplete() && globalContract.isEnforcementEnabled()
-      const modelStopping = toolUseBlocks.length === 0 && stopReason === 'end_turn'
+      // A truncated turn (max_tokens) is also a stop attempt — without this,
+      // the token cap becomes a way to bypass enforcement on a new path.
+      const modelStopping = toolUseBlocks.length === 0 && (stopReason === 'end_turn' || stopReason === 'max_tokens')
       const readLoopEvasion = contractActive && i > 0 && i % 8 === 0 && evasionNudges < 3
       if (contractActive && (modelStopping || readLoopEvasion)) {
         // Only a genuine stop attempt spends the enforcement budget. The
@@ -2596,6 +2604,12 @@ export class ConversationLoop {
       // Loop back to call model again with tool results
     }
 
+    if (globalContract.isActive() && !globalContract.isComplete()) {
+      const unverified = globalContract.resolveUnverified('iteration limit reached — never verified')
+      if (unverified.length > 0) {
+        console.log(`[contract] UNRESOLVED at iteration limit — failing ${unverified.length} unverified assertion(s)`)
+      }
+    }
     console.warn('[loop] Max iterations reached')
     this.emit({ type: 'stream.token', text: '\n[System] Max tool call iterations reached. Stopping.\n' })
     this.emit({ type: 'message.complete', messageId: '', stopReason: 'max_iterations' })

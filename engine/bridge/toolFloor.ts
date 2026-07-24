@@ -22,9 +22,11 @@ export interface ToolLike {
 }
 
 /**
- * The tools the enforcement message (conversationLoop.ts:2319-2322) demands.
- * Keep in sync with that text: if the message changes what it asks for, this
- * list must change too.
+ * The full set of tools the model needs to satisfy or honestly resolve an
+ * active contract. The enforcement message names Bash and ContractAssertPass
+ * (the happy path), but ContractAssertFail lets the model record a genuine
+ * failure and ContractStatus lets it check what remains — all four must be
+ * available for the contract to be resolvable in any outcome.
  */
 export const ENFORCEMENT_REQUIRED_TOOLS = [
   'Bash',
