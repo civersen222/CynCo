@@ -58,6 +58,7 @@ import { evaluateGrounding, extractAddedText, extractTargetPaths } from '../vsm/
 import { ReadLoopGate, signature as readSignature } from '../vsm/readLoopGate.js'
 import { ToolDivergenceDetector } from '../brain/toolDivergence.js'
 import { pruneRedundantReads } from './contextHygiene.js'
+import { isBenignTestFailure } from './benignToolResult.js'
 import { probeEdit } from '../vsm/groundingProbe.js'
 import { loadInterventionRates, saveInterventionRates } from '../vsm/interventionPersistence.js'
 import { applyNudgeTemperature } from '../vsm/controlSignals.js'
@@ -3094,8 +3095,16 @@ export class ConversationLoop {
 
     console.log(`[loop] Tool result: ${toolName} isError=${result.isError}`)
 
+    // A red test suite (pytest/jest/go-test reporting failing tests) exits
+    // non-zero but is expected TDD signal, not a tool fault. It must not count
+    // toward the circuit breaker or the algedonic kill switch, or the agent gets
+    // HALTed mid-development. The result output/isError are left intact so the
+    // agent still sees the failures and can fix them.
+    const benignTestFailure = result.isError && isBenignTestFailure(toolName, toolInput, result.output)
+    const countsAsFailure = result.isError && !benignTestFailure
+
     // Circuit breaker: track consecutive failures per tool
-    if (result.isError) {
+    if (countsAsFailure) {
       const count = (this.toolFailureCounts.get(toolName) ?? 0) + 1
       this.toolFailureCounts.set(toolName, count)
       if (count >= 3) {
@@ -3131,8 +3140,9 @@ export class ConversationLoop {
       }
     }
 
-    // Governance: record tool result
-    this.governance.onToolResult(toolName, !result.isError, Date.now() - toolStartMs, result.output, toolInput)
+    // Governance: record tool result. A benign red test suite counts as a
+    // success for pain/kill-switch purposes (see benignTestFailure above).
+    this.governance.onToolResult(toolName, !countsAsFailure, Date.now() - toolStartMs, result.output, toolInput)
 
     // Deterministic tool gating: track usage so consecutive-overuse can be
     // attenuated out of the offered set on the next iteration (see runModelLoop).
