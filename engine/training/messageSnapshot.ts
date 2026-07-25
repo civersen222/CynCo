@@ -16,6 +16,11 @@ import type { Message, ContentBlock } from '../types.js'
 export const RESULT_CAP_BYTES = 4096
 export const FILE_CAP_BYTES = 2 * 1024 * 1024
 
+// Deliberately biased toward over-redaction: `credentials` matches bare (so
+// `docs/credentials-guide.md` is redacted too). Losing a benign example costs
+// corpus volume; leaking one secret costs the corpus. Known limit: this reads
+// tool *inputs*, so a secret that only ever appears in output — `echo
+// $OPENAI_API_KEY` — is not caught.
 const SENSITIVE =
   /(^|[\s\/\\.])(\.env|env\.local)([\s\/\\.]|$)|credentials|secrets?\b|\.pem\b|id_rsa|\.p12\b|\.pfx\b/i
 
@@ -45,9 +50,21 @@ function truncate(text: string, cap: number): string {
   return `${text.slice(0, half)}\n…[${elided} bytes elided]…\n${text.slice(-half)}`
 }
 
+/**
+ * Flatten a tool result to text. Non-text blocks (images, documents) carry no
+ * training signal in a text corpus, so they are replaced by a visible marker
+ * rather than dropped silently — a reader of the corpus should be able to tell
+ * that something was there.
+ */
 function blockText(content: ContentBlock[] | string): string {
   if (typeof content === 'string') return content
-  return content.map(b => ('text' in b && typeof (b as { text?: unknown }).text === 'string' ? (b as { text: string }).text : '')).join('')
+  return content
+    .map(b =>
+      'text' in b && typeof (b as { text?: unknown }).text === 'string'
+        ? (b as { text: string }).text
+        : `[${b.type} block omitted]`,
+    )
+    .join('')
 }
 
 /**
@@ -77,13 +94,20 @@ export function sanitizeMessages(messages: Message[], opts: SanitizeOptions = {}
     }),
   }))
 
-  // Whole-file cap: drop oldest non-system messages until it fits.
+  // Whole-file cap: drop oldest non-system messages until it fits. Sizes are
+  // measured once and tracked incrementally — re-serializing the whole array
+  // each iteration is quadratic, and this runs on multi-megabyte inputs.
   let truncatedMessages = 0
   const kept = [...cleaned]
-  while (JSON.stringify(kept).length > fileCap && kept.length > 1) {
+  const sizes = kept.map(m => JSON.stringify(m).length)
+  // JSON.stringify of an array: "[" + parts joined by "," + "]"
+  let total = 2 + sizes.reduce((a, b) => a + b, 0) + Math.max(0, kept.length - 1)
+  while (total > fileCap && kept.length > 1) {
     const idx = kept.findIndex(m => m.role !== 'system')
     if (idx === -1 || idx === kept.length - 1) break
     kept.splice(idx, 1)
+    total -= sizes[idx] + 1 // the message plus its separating comma
+    sizes.splice(idx, 1)
     truncatedMessages++
   }
 
