@@ -13,6 +13,7 @@ import { isS5EnforcementEnabled, isAllToolsEnabled, isProactiveToolsEnabled } fr
 import { classifyTaskClass } from '../s5/proactiveSurfacing.js'
 import type { Provider } from '../provider.js'
 import { localCallModel, type CallModelDeps } from '../engine/callModel.js'
+import { toToolDefs } from '../engine/messageConvert.js'
 import { ALL_TOOLS, getCoreTools, getExtendedTools } from '../tools/registry.js'
 import { LoadedToolSet } from '../tools/loadedToolSet.js'
 import { loadSkills } from '../skills/loader.js'
@@ -710,8 +711,10 @@ export class ConversationLoop {
     // (P4.2 — otherwise taskError measures the wrong task); an INCOMPLETE one is
     // kept (live task / follow-up message). Skip in one-shot mission runs
     // (allowedTools pinned): the contract enforcer is calibrated for interactive
-    // coding ("run the test suite NOW with Bash") and blocks a mission from
-    // producing its final structured outcome (2026-06-12 weekly-digest incident).
+    // coding and blocks a mission from producing its final structured outcome
+    // (2026-06-12 weekly-digest incident). The nudge text is now pluggable via
+    // engine/bridge/enforcementNudge.ts and is phase-aware; a mission-aware nudge
+    // variant is the right path to lifting this skip, not hardcoding new text here.
     else if (!this.allowedTools && maybeAutoCreateContract(text)) {
       console.log(`[contract] Auto-created: ${globalContract.pendingCount()} assertions for "${text.slice(0, 50)}..."`)
       this.governance.setContractCreated()
@@ -826,11 +829,7 @@ export class ConversationLoop {
     }
 
     // Build tool definitions in the format callModel expects (inputJSONSchema)
-    let toolDefs = activeTools.map(t => ({
-      name: t.name,
-      description: t.description,
-      inputJSONSchema: t.inputSchema,
-    }))
+    let toolDefs = toToolDefs(activeTools)
     const toolNames = activeTools.map(t => `- ${t.name}: ${t.description}`).join('\n')
 
     const promptParts = assembleBasePrompt(toolNames, this.executor['cwd'])
@@ -1825,11 +1824,7 @@ export class ConversationLoop {
               const category = (evt as any).input?.category ?? 'all'
               console.log(`[routing] Category selected: ${category}`)
               const { ALL_TOOLS } = await import('../tools/registry.js')
-              iterationTools = getToolsForCategory(category, ALL_TOOLS).map(t => ({
-                name: t.name,
-                description: t.description,
-                input_schema: t.inputSchema,
-              }))
+              iterationTools = toToolDefs(getToolsForCategory(category, ALL_TOOLS))
               break
             }
             if (evt.type === 'message_stop') break // model didn't use the tool — fall through to all tools
@@ -1941,11 +1936,7 @@ export class ConversationLoop {
       // or — if the operator's own pin omits them — stop pretending we can
       // verify and disable enforcement loudly.
       if (globalContract.isActive() && !globalContract.isComplete() && globalContract.isEnforcementEnabled()) {
-        const allDefs = ALL_TOOLS.map(t => ({
-          name: t.name,
-          description: t.description,
-          inputJSONSchema: t.inputSchema,
-        }))
+        const allDefs = toToolDefs(ALL_TOOLS)
         const verdict = applyToolFloor({
           offered: iterationTools as any[],
           allTools: allDefs,
@@ -1966,12 +1957,14 @@ export class ConversationLoop {
           if (!this.floorEvents.includes(event)) {
             console.log(`[tool-floor] Restored ${why} — required by active contract enforcement`)
             this.floorEvents.push(event)
+            this.emit({ type: 'governance.alert', severity: 'medium', source: 'tool-floor', message: `Tool floor restored ${why} — required by active contract enforcement` })
           }
         } else if (verdict.kind === 'unsatisfiable') {
           const event = `enforcement disabled: pin omits ${verdict.missing.join(', ')}`
           if (!this.floorEvents.includes(event)) {
             console.log(`[tool-floor] Contract enforcement DISABLED — allowedTools omits ${verdict.missing.join(', ')}; cannot verify completion`)
             this.floorEvents.push(event)
+            this.emit({ type: 'governance.alert', severity: 'high', source: 'tool-floor', message: `Contract enforcement disabled — allowedTools omits ${verdict.missing.join(', ')}; completion can no longer be verified` })
           }
           globalContract.setEnforcementEnabled(false)
         }
@@ -2589,11 +2582,7 @@ export class ConversationLoop {
             const pinned = new Set(this.allowedTools)
             refreshed = refreshed.filter(t => pinned.has(t.name))
           }
-          toolDefs = refreshed.map(t => ({
-            name: t.name,
-            description: t.description,
-            inputJSONSchema: t.inputSchema,
-          }))
+          toolDefs = toToolDefs(refreshed)
           const lines = added.map(name => {
             const tool = ALL_TOOLS.find(t => t.name === name)!
             return `- ${tool.name}: ${tool.description}\n  schema: ${JSON.stringify(tool.inputSchema)}`

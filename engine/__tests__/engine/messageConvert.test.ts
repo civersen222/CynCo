@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 import {
-  convertMessages, convertTools, buildSystemPrompt,
+  convertMessages, convertTools, buildSystemPrompt, toToolDefs,
 } from '../../engine/messageConvert.js'
 import type { Message } from '../../types.js'
 import { asSystemPrompt } from '../../types.js'
@@ -385,6 +385,26 @@ describe('convertTools', () => {
       description: 'Does nothing',
       input_schema: { type: 'object' },
     }])
+  })
+})
+
+// ─── toToolDefs ─────────────────────────────────────────────────
+
+describe('toToolDefs', () => {
+  it('toToolDefs emits inputJSONSchema, the key convertTools reads', () => {
+    const defs = toToolDefs([{ name: 'Bash', description: 'run', inputSchema: { type: 'object', properties: { command: { type: 'string' } } } }])
+    expect(defs[0].inputJSONSchema).toEqual({ type: 'object', properties: { command: { type: 'string' } } })
+  })
+
+  it('a toToolDefs result survives convertTools with its properties intact', () => {
+    const wire = convertTools(toToolDefs([{ name: 'Bash', description: 'run', inputSchema: { type: 'object', properties: { command: { type: 'string' } } } }]))
+    expect(wire[0].input_schema).toHaveProperty('properties')
+    expect((wire[0].input_schema as any).properties).toEqual({ command: { type: 'string' } })
+  })
+
+  it('convertTools degrades a wrongly-keyed def to a bare object schema (the bug this guards)', () => {
+    const wire = convertTools([{ name: 'Bash', description: 'run', input_schema: { type: 'object', properties: { command: { type: 'string' } } } } as any])
+    expect(wire[0].input_schema).toEqual({ type: 'object' })
   })
 })
 
