@@ -13,16 +13,19 @@ import { homedir } from 'os'
 
 // ─── Types ────────────────────────────────────────────────────────
 
+/** A component value that could not be observed. Excluded from the reward denominator. */
+export type ComponentValue = number | 'unknown'
+
 export type RewardComponents = {
-  testsPass: number        // 0-1 ratio
-  typecheckPass: 0 | 1
-  buildPass: 0 | 1
-  diffClean: 0 | 1
-  taskCompleted: 0 | 1
+  testsPass: ComponentValue      // 0-1 ratio
+  typecheckPass: ComponentValue  // 0 | 1
+  buildPass: ComponentValue      // 0 | 1
+  diffClean: ComponentValue      // 0 | 1
+  taskCompleted: ComponentValue  // 0 | 1
   stuckTurns: number
-  iterFraction: number     // turns / 500
+  iterFraction: number           // turns / 500
   userSatisfaction: -1 | 0 | 1
-  testsUnmodified: 0 | 1   // 0 = agent modified test files = reward hacking
+  testsUnmodified: 0 | 1         // 0 = agent weakened tests = reward hacking. Never 'unknown'.
 }
 
 export type TaskReward = {
