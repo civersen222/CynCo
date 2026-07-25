@@ -26,7 +26,7 @@ function perfectComponents(): RewardComponents {
 
 describe('computeReward', () => {
   it('perfect task gets high reward (> 0.8)', () => {
-    // 1.0 + 0.5 + 0.3 + 0.2 + 0.5 + 0.3 = 2.8 → clipped to 1.0
+    // base 1.0 (all components perfect) + 0.3 satisfaction → clipped to 1.0
     const r = computeReward(perfectComponents())
     expect(r).toBeGreaterThan(0.8)
     expect(r).toBe(1.0)
@@ -220,5 +220,102 @@ describe('finalizeTask', () => {
     const filePath = join(nested, 'task-deep.reward.json')
     const parsed: TaskReward = JSON.parse(readFileSync(filePath, 'utf-8'))
     expect(parsed.taskId).toBe('task-deep')
+  })
+})
+
+// ─── Normalization (2026-07-25) ───────────────────────────────────
+
+describe('computeReward — normalization', () => {
+  const withTests = (testsPass: number): RewardComponents => ({
+    testsPass,
+    typecheckPass: 1,
+    buildPass: 1,
+    diffClean: 1,
+    taskCompleted: 1,
+    stuckTurns: 0,
+    iterFraction: 0,
+    userSatisfaction: 0,
+    testsUnmodified: 1,
+  })
+
+  it('is strictly monotonic in testsPass even with every other component perfect', () => {
+    // THE bug: weights summed to 2.8 and clipped to 1.0, so 0.43 and 1.0 tied.
+    const low = computeReward(withTests(0.4286))
+    const high = computeReward(withTests(1.0))
+    expect(low).toBeLessThan(high)
+    expect(high - low).toBeGreaterThan(0.15)
+  })
+
+  it('does not reach the ceiling on non-test components alone', () => {
+    const noTests = computeReward({ ...withTests(0), testsPass: 0 })
+    expect(noTests).toBeLessThan(1.0)
+  })
+
+  it('excludes unknown components from the denominator', () => {
+    // Only testsPass is known, so the base is exactly testsPass.
+    const r = computeReward({
+      testsPass: 0.5,
+      typecheckPass: 'unknown',
+      buildPass: 'unknown',
+      diffClean: 'unknown',
+      taskCompleted: 'unknown',
+      stuckTurns: 0,
+      iterFraction: 0,
+      userSatisfaction: 0,
+      testsUnmodified: 1,
+    })
+    expect(r).toBeCloseTo(0.5, 6)
+  })
+
+  it('an unknown component neither helps nor hurts relative to being absent', () => {
+    const known = computeReward({ ...withTests(0.5), typecheckPass: 1, buildPass: 1, diffClean: 1, taskCompleted: 1 })
+    const unknown = computeReward({
+      ...withTests(0.5), typecheckPass: 'unknown', buildPass: 'unknown', diffClean: 'unknown', taskCompleted: 'unknown',
+    })
+    expect(known).toBeGreaterThan(unknown) // real passes raise the score
+    expect(unknown).toBeCloseTo(0.5, 6)    // unknowns leave it at testsPass alone
+  })
+
+  it('scores 0 when nothing at all could be measured', () => {
+    const r = computeReward({
+      testsPass: 'unknown',
+      typecheckPass: 'unknown',
+      buildPass: 'unknown',
+      diffClean: 'unknown',
+      taskCompleted: 'unknown',
+      stuckTurns: 0,
+      iterFraction: 0,
+      userSatisfaction: 0,
+      testsUnmodified: 1,
+    })
+    expect(r).toBe(0)
+  })
+
+  it('still returns -1.0 when the safety gate trips', () => {
+    expect(computeReward({ ...withTests(1.0), testsUnmodified: 0 })).toBe(-1.0)
+  })
+})
+
+describe('finalizeTask — labelerVersion', () => {
+  it('stamps labelerVersion 2 on every record', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'reward-ver-'))
+    const r = finalizeTask('task-ver', 5, {
+      testsPass: 1, typecheckPass: 'unknown', buildPass: 'unknown',
+      diffClean: 'unknown', taskCompleted: 'unknown',
+      stuckTurns: 0, iterFraction: 0, userSatisfaction: 0, testsUnmodified: 1,
+    }, dir)
+    expect(r.labelerVersion).toBe(2)
+    const parsed = JSON.parse(readFileSync(join(dir, 'task-ver.reward.json'), 'utf-8'))
+    expect(parsed.labelerVersion).toBe(2)
+  })
+
+  it('flags a record with no measurable positive component as degenerate', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'reward-degen-'))
+    const r = finalizeTask('task-degen', 2, {
+      testsPass: 'unknown', typecheckPass: 'unknown', buildPass: 'unknown',
+      diffClean: 'unknown', taskCompleted: 'unknown',
+      stuckTurns: 0, iterFraction: 0, userSatisfaction: 0, testsUnmodified: 1,
+    }, dir)
+    expect(r.degenerate).toBe(true)
   })
 })
