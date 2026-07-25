@@ -125,21 +125,24 @@ export class TrajectoryRecorder {
 
     if (!Array.isArray(messages) || messages.length === 0) return null
 
-    const { messages: cleaned, truncatedMessages } = sanitizeMessages(messages)
-
-    const snapshot = {
-      schemaVersion: 2,
-      taskId,
-      model: this._model,
-      adapterId: this._adapterId,
-      startedAt: this._startedAt,
-      endedAt: meta?.endedAt ?? new Date().toISOString(),
-      truncatedMessages,
-      messages: cleaned,
-    }
-
+    // Everything is inside the try: this is called from a finally in the
+    // conversation loop, so a throw escaping here would mask whatever error
+    // actually ended the task. Losing a corpus row is always the cheaper loss.
     const filePath = join(this.baseDir, `${taskId}.messages.json`)
     try {
+      const { messages: cleaned, truncatedMessages } = sanitizeMessages(messages)
+
+      const snapshot = {
+        schemaVersion: 2,
+        taskId,
+        model: this._model,
+        adapterId: this._adapterId,
+        startedAt: this._startedAt,
+        endedAt: meta?.endedAt ?? new Date().toISOString(),
+        truncatedMessages,
+        messages: cleaned,
+      }
+
       writeFileSync(filePath, JSON.stringify(snapshot) + '\n', 'utf-8')
       return filePath
     } catch (e) {
