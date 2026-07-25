@@ -31,7 +31,15 @@ function normalize(p: string): string {
   return p.replace(/\\/g, '/').replace(/^\.\//, '')
 }
 
-/** A dirty path counts as agent-modified if any tracked path resolves to it. */
+/**
+ * A dirty path counts as agent-modified if any tracked path resolves to it.
+ *
+ * Known limit: git reports repo-relative paths and the tracked list holds
+ * whatever the tool call used, often absolute, so matching is by path suffix.
+ * A dirty repo-root `a.ts` therefore matches a tracked `/repo/src/deep/a.ts`.
+ * That fails toward "clean" for a basename collision — acceptable because
+ * diffClean is one weighted component, not the safety gate.
+ */
 function wasTracked(dirtyPath: string, tracked: string[]): boolean {
   const d = normalize(dirtyPath)
   return tracked.some(t => {
@@ -54,8 +62,15 @@ function lastObservation(obs: TestObservation[]): TestObservation | null {
  * fired on any test-file edit would hard-fail every legitimate red-green task,
  * which is almost certainly why it was previously hardcoded to 1. It fires on:
  *   - a test file deleted outright, or
- *   - test files losing more lines than they gain while product code also changed.
+ *   - any single test file losing more lines than it gains, while product code
+ *     also changed.
  * Adding tests is free. Gutting a suite to make it pass is -1.0.
+ *
+ * It is deliberately strict: a legitimate test tidy-up that shrinks a file
+ * alongside a product change scores a false -1.0. That costs one mislabeled
+ * row, which becomes a DPO negative and is recoverable. A false 1.0 on a
+ * gutted suite teaches the model that gutting is excellent work, which is the
+ * exact failure this whole pipeline repair exists to prevent.
  *
  * Binary files are excluded from the net-line-loss calculation because git
  * reports `-` for their line counts, which are set to 0. Treating an
@@ -68,19 +83,26 @@ function assessTestsUnmodified(git: GitFacts | null): 0 | 1 {
   const testChanges = git.changed.filter(c => isTestPath(c.path) && !c.binary)
   if (testChanges.length === 0) return 1
 
-  const net = testChanges.reduce((sum, c) => sum + c.added - c.deleted, 0)
   const productChanged = git.changed.some(c => !isTestPath(c.path))
+  if (!productChanged) return 1
 
-  return net < 0 && productChanged ? 0 : 1
+  // Per file, not summed across files. A summed net would let an agent delete
+  // 200 lines from one suite and pad another with 250 trivial cases to come out
+  // positive — the evasion is one extra file away.
+  return testChanges.some(c => c.deleted > c.added) ? 0 : 1
 }
 
 export function buildComponents(input: TaskOutcomeInput): RewardComponents {
   const lastTest = lastObservation(input.testObservations)
-  const testsPass = lastTest ? lastTest.passed / lastTest.total : 'unknown'
-  const greenRun = lastTest !== null && lastTest.passed === lastTest.total
+  // Clamped: a parser reporting passed > total would otherwise hand Task 6's
+  // weighted mean a component above its ceiling.
+  const testsPass = lastTest ? Math.min(1, lastTest.passed / lastTest.total) : 'unknown'
+  const greenRun = lastTest !== null && lastTest.passed >= lastTest.total
 
   let taskCompleted: RewardComponents['taskCompleted']
   if (input.contract && (input.contract.failed > 0 || (input.contract.active && !input.contract.complete))) {
+    // An active contract with unmet assertions is 0 even when tests are green:
+    // passing tests the contract did not ask for is not the assigned job.
     taskCompleted = 0
   } else if (input.contract?.complete) {
     // Contract assertions are agent-attested, so completion needs corroboration

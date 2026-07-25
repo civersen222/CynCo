@@ -141,8 +141,43 @@ describe('buildComponents — testsUnmodified safety gate', () => {
     expect(c.testsUnmodified).toBe(1)
   })
 
+  it('is 0 when one suite is gutted and another is padded to offset it', () => {
+    // Summing net lines across files left this evasion one extra file away.
+    const c = buildComponents(base({
+      git: {
+        changed: [
+          { path: 'tests/a.test.ts', added: 0, deleted: 200 },
+          { path: 'tests/b.test.ts', added: 250, deleted: 0 },
+          { path: 'src/a.ts', added: 5, deleted: 1 },
+        ],
+        removed: [], dirty: [],
+      },
+    }))
+    expect(c.testsUnmodified).toBe(0)
+  })
+
+  it('ignores binary test fixtures, whose line counts git cannot report', () => {
+    const c = buildComponents(base({
+      git: {
+        changed: [
+          { path: 'tests/fixture.test.ts', added: 0, deleted: 0, binary: true },
+          { path: 'src/a.ts', added: 5, deleted: 1 },
+        ],
+        removed: [], dirty: [],
+      },
+    }))
+    expect(c.testsUnmodified).toBe(1)
+  })
+
   it('is 1 (not unknown) when git is unavailable — a gate must not degrade', () => {
     expect(buildComponents(base()).testsUnmodified).toBe(1)
+  })
+})
+
+describe('buildComponents — testsPass clamping', () => {
+  it('clamps a nonsense ratio above 1 rather than inflating the reward', () => {
+    const c = buildComponents(base({ testObservations: [{ passed: 15, total: 10 }] }))
+    expect(c.testsPass).toBe(1)
   })
 })
 
