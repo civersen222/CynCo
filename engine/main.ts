@@ -410,21 +410,10 @@ async function cleanShutdown(signal: string) {
   }
   // Save S5 rule weights
   try { s5Orchestrator.saveWeights() } catch (e) { console.log(`[s5] saveWeights failed: ${e instanceof Error ? e.message : String(e)}`) }
-  // Auto-backfill training data (reward labeling + dataset export)
-  try {
-    const { RewardLabeler } = await import('./training/rewardLabeler.js')
-    const { DatasetBuilder } = await import('./training/datasetBuilder.js')
-    const labeler = new RewardLabeler()
-    const backfilled = labeler.backfillAll()
-    if (backfilled > 0) {
-      console.log(`[training] Auto-backfilled ${backfilled} task rewards on shutdown`)
-      const builder = new DatasetBuilder()
-      const result = builder.exportAll()
-      console.log(`[training] Dataset rebuilt: ${result.sft} SFT examples`)
-    }
-  } catch (e) {
-    console.log(`[training] Auto-backfill failed: ${e}`)
-  }
+  // No auto-backfill on shutdown. It called RewardLabeler.backfillAll(), which
+  // guessed every component it could not see and manufactured all 147 saturated
+  // 1.0 labels; tasks are now labeled live from observations as each one ends.
+  // Export the dataset explicitly with `runTraining.ts --stage dataset`.
   AuditLogger.writeSessionOutcome(signal)
   activationsConsumer?.stop()
   if (config.provider === 'llama-cpp' && provider && 'processManager' in provider) {

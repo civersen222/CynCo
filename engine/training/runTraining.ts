@@ -44,7 +44,7 @@ function stageDataset(): DatasetStats {
   log(`Total tasks: ${stats.totalTasks}`)
   log(`Tasks with rewards: ${stats.tasksWithRewards}`)
   log(`Usable examples: ${stats.usableExamples}`)
-  log(`Negative examples: ${stats.negativeExamples}`)
+  log(`Negative examples: ${stats.negativeExamples} (${stats.pairableNegatives} pairable)`)
   log(`Legacy excluded (labeler v1): ${stats.legacyExcluded}`)
   log(`SFT examples: ${stats.sftExamples}`)
   log(`DPO pairs: ${stats.dpoPairs}`)
@@ -81,7 +81,22 @@ function stageTrain(
     process.exit(1)
   }
 
-  const stats: DatasetStats = JSON.parse(readFileSync(statsPath, 'utf-8'))
+  let stats: DatasetStats
+  try {
+    stats = JSON.parse(readFileSync(statsPath, 'utf-8'))
+  } catch (e) {
+    log(`ERROR: ${statsPath} is not valid JSON (${e}). Run --stage dataset.`)
+    process.exit(1)
+  }
+  // A stats.json written before the grounded labeler has none of these fields,
+  // and the gate would then report a shortfall of "undefined". Refuse to read a
+  // corpus shape we cannot actually measure.
+  for (const k of ['usableExamples', 'pairableNegatives', 'avgReward'] as const) {
+    if (typeof stats[k] !== 'number') {
+      log(`ERROR: ${statsPath} has no ${k}. It predates the grounded labeler. Run --stage dataset.`)
+      process.exit(1)
+    }
+  }
   const readiness = evaluateReadiness(stats)
 
   logReadiness(readiness)
@@ -161,7 +176,7 @@ function stageStats(): void {
   log(`Total turns: ${totalTurns}`)
   log(`Tasks with rewards: ${stats.tasksWithRewards}`)
   log(`Usable examples: ${stats.usableExamples}`)
-  log(`Negative examples: ${stats.negativeExamples}`)
+  log(`Negative examples: ${stats.negativeExamples} (${stats.pairableNegatives} pairable)`)
   log(`Legacy excluded (labeler v1): ${stats.legacyExcluded}`)
   log(
     'Average reward (usable only): ' +
@@ -186,8 +201,26 @@ function stageStats(): void {
 // ─── CLI ──────────────────────────────────────────────────────────
 
 const args = process.argv.slice(2)
-const stage = args.find(a => !a.startsWith('-'))
-  ?? args[args.indexOf('--stage') + 1]
+
+/**
+ * The first bare token that is not some flag's value.
+ *
+ * `args.find(a => !a.startsWith('-'))` read the VALUE of a preceding flag, so
+ * `--base ./model --stage stats` resolved the stage to `./model`.
+ */
+const VALUE_FLAGS = new Set(['--stage', '--base', '--version'])
+function positionalStage(a: string[]): string | undefined {
+  for (let i = 0; i < a.length; i++) {
+    if (VALUE_FLAGS.has(a[i])) { i++; continue }
+    if (!a[i].startsWith('-')) return a[i]
+  }
+  return undefined
+}
+
+// An explicit --stage always wins over a positional.
+const stage =
+  (args.includes('--stage') ? args[args.indexOf('--stage') + 1] : undefined)
+  ?? positionalStage(args)
   ?? 'stats'
 const base = args[args.indexOf('--base') + 1] ?? 'unsloth/Qwen2.5-Coder-14B-Instruct'
 const version = args[args.indexOf('--version') + 1] ?? 'v1'

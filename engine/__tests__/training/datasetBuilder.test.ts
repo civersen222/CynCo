@@ -309,33 +309,33 @@ describe('evaluateReadiness', () => {
   }
 
   it('passes when all three conditions hold', () => {
-    const r = evaluateReadiness({ ...base, usableExamples: 150, negativeExamples: 20, avgReward: 0.62 })
+    const r = evaluateReadiness({ ...base, usableExamples: 150, negativeExamples: 20, pairableNegatives: 20, avgReward: 0.62 })
     expect(r.ready).toBe(true)
     expect(r.conditions.every(c => c.ok)).toBe(true)
   })
 
   it('fails on volume alone', () => {
-    const r = evaluateReadiness({ ...base, usableExamples: 149, negativeExamples: 20, avgReward: 0.62 })
+    const r = evaluateReadiness({ ...base, usableExamples: 149, negativeExamples: 20, pairableNegatives: 20, avgReward: 0.62 })
     expect(r.ready).toBe(false)
     expect(r.conditions.find(c => c.name === 'usable examples')!.ok).toBe(false)
   })
 
   it('fails without negatives, because DPO needs pairs', () => {
-    const r = evaluateReadiness({ ...base, usableExamples: 400, negativeExamples: 19, avgReward: 0.62 })
+    const r = evaluateReadiness({ ...base, usableExamples: 400, negativeExamples: 19, pairableNegatives: 19, avgReward: 0.62 })
     expect(r.ready).toBe(false)
-    expect(r.conditions.find(c => c.name === 'negative examples')!.ok).toBe(false)
+    expect(r.conditions.find(c => c.name === 'pairable negatives')!.ok).toBe(false)
   })
 
   it('fails on a saturated mean — the 147-rows-all-1.0 regression', () => {
-    const r = evaluateReadiness({ ...base, usableExamples: 400, negativeExamples: 40, avgReward: 0.95 })
+    const r = evaluateReadiness({ ...base, usableExamples: 400, negativeExamples: 40, pairableNegatives: 40, avgReward: 0.95 })
     expect(r.ready).toBe(false)
     expect(r.conditions.find(c => c.name === 'avg reward')!.ok).toBe(false)
   })
 
   it('reports every condition, passing or not', () => {
-    const r = evaluateReadiness({ ...base, usableExamples: 0, negativeExamples: 0, avgReward: 0 })
+    const r = evaluateReadiness({ ...base, usableExamples: 0, negativeExamples: 0, pairableNegatives: 0, avgReward: 0 })
     expect(r.conditions).toHaveLength(3)
-    expect(r.conditions.map(c => c.name)).toEqual(['usable examples', 'negative examples', 'avg reward'])
+    expect(r.conditions.map(c => c.name)).toEqual(['usable examples', 'pairable negatives', 'avg reward'])
   })
 
   it('exposes its thresholds as constants rather than burying them', () => {
@@ -347,7 +347,7 @@ describe('evaluateReadiness', () => {
   it('never reports a mean it did not measure', () => {
     // avgReward is 0 for an empty corpus, and 0 < 0.9. Reporting that as PASS
     // would claim a measurement that was never taken.
-    const r = evaluateReadiness({ ...base, usableExamples: 0, negativeExamples: 0, avgReward: 0 })
+    const r = evaluateReadiness({ ...base, usableExamples: 0, negativeExamples: 0, pairableNegatives: 0, avgReward: 0 })
     const avg = r.conditions.find(c => c.name === 'avg reward')!
     expect(avg.ok).toBe(false)
     expect(avg.actual).toBeNull()
@@ -356,7 +356,7 @@ describe('evaluateReadiness', () => {
   })
 
   it('names each failure in the real numbers it was given', () => {
-    const r = evaluateReadiness({ ...base, usableExamples: 100, negativeExamples: 3, avgReward: 0.94 })
+    const r = evaluateReadiness({ ...base, usableExamples: 100, negativeExamples: 3, pairableNegatives: 3, avgReward: 0.94 })
     const [usable, neg, avg] = r.conditions
     expect(usable.reason).toContain('100')
     expect(usable.reason).toContain('50') // shortfall
@@ -367,8 +367,34 @@ describe('evaluateReadiness', () => {
   })
 
   it('gives no reasons when it is ready', () => {
-    const r = evaluateReadiness({ ...base, usableExamples: 200, negativeExamples: 30, avgReward: 0.5 })
+    const r = evaluateReadiness({ ...base, usableExamples: 200, negativeExamples: 30, pairableNegatives: 30, avgReward: 0.5 })
     expect(r.reasons).toEqual([])
     expect(r.conditions.every(c => c.reason === undefined)).toBe(true)
+  })
+})
+
+describe('summarizeCorpus — pairableNegatives vs negativeExamples', () => {
+  it('counts an unattributed negative as negative but not as pairable', () => {
+    // It exports zero DPO pairs, so gating on the raw count would pass a
+    // corpus that trains nothing.
+    seed({ taskId: 'win', reward: 0.85, labelerVersion: 2, snapshot: true })
+    seed({ taskId: 'orphan', reward: 0.1, labelerVersion: 2, snapshot: true, model: '' })
+    const s = summarizeCorpus(loadTrajectories(trajDir, rewDir))
+    expect(s.negativeExamples).toBe(1)
+    expect(s.pairableNegatives).toBe(0)
+  })
+
+  it('does not count a negative with no chosen counterpart under its model', () => {
+    seed({ taskId: 'win', reward: 0.85, labelerVersion: 2, snapshot: true, model: 'a' })
+    seed({ taskId: 'lonely', reward: 0.1, labelerVersion: 2, snapshot: true, model: 'b' })
+    const s = summarizeCorpus(loadTrajectories(trajDir, rewDir))
+    expect(s.negativeExamples).toBe(1)
+    expect(s.pairableNegatives).toBe(0)
+  })
+
+  it('counts one that can pair', () => {
+    seed({ taskId: 'win', reward: 0.85, labelerVersion: 2, snapshot: true, model: 'a' })
+    seed({ taskId: 'lose', reward: 0.1, labelerVersion: 2, snapshot: true, model: 'a' })
+    expect(summarizeCorpus(loadTrajectories(trajDir, rewDir)).pairableNegatives).toBe(1)
   })
 })

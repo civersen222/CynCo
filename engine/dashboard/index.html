@@ -1513,23 +1513,34 @@ function renderTrajectory() {
     var targetEl = document.getElementById('trainTarget');
     var barEl = document.getElementById('trainProgressBar');
     var condEl = document.getElementById('trainConditions');
-    if (tasksEl) tasksEl.textContent = String(td.tasks || 0);
-    if (turnsEl) turnsEl.textContent = String(td.turns || 0);
+    // null means the corpus could not be read. That is not the same as zero,
+    // and rendering it as 0 would report a count nobody took.
+    function count(v) { return v == null ? 'unavailable' : String(v); }
+    if (tasksEl) tasksEl.textContent = count(td.tasks);
+    if (turnsEl) turnsEl.textContent = count(td.turns);
     if (usableEl) {
-      usableEl.textContent = String(td.usableExamples || 0);
+      usableEl.textContent = count(td.usableExamples);
       usableEl.className = 'sub-value ' + (td.readyForSFT ? 'green' : 'yellow');
     }
-    if (negEl) negEl.textContent = String(td.negativeExamples || 0);
+    if (negEl) negEl.textContent = count(td.negativeExamples);
     // A mean over zero rows is not 0.000, it is nothing. Say so.
     if (avgEl) avgEl.textContent = (td.avgReward == null ? 'not measured' : Number(td.avgReward).toFixed(3));
-    if (legacyEl) legacyEl.textContent = String(td.legacyExcluded || 0);
-    if (targetEl) targetEl.textContent = (td.usableExamples || 0) + ' / ' + (td.targetExamples || 150);
+    if (legacyEl) legacyEl.textContent = count(td.legacyExcluded);
+    if (targetEl) targetEl.textContent = count(td.usableExamples) + ' / ' + (td.targetExamples || 150);
     if (barEl) barEl.style.width = Math.min(100, (td.progress || 0) * 100).toFixed(1) + '%';
     if (condEl) {
-      condEl.innerHTML = (td.conditions || []).map(function(c) {
-        return '<div>' + (c.ok ? '&#10004;' : '&#10008;') + ' ' + escHtml(c.name) + ': ' +
-          escHtml(c.display != null ? c.display : String(c.actual)) + ' (need ' + escHtml(c.required) + ')</div>';
-      }).join('');
+      if (td.error) {
+        condEl.innerHTML = '<div>&#10008; corpus unreadable: ' + escHtml(td.error) + '</div>';
+      } else {
+        condEl.innerHTML = (td.conditions || []).map(function(c) {
+          // The reason carries the shortfall in real numbers. Dropping it left
+          // the UI able to say no without ever saying why.
+          var why = (!c.ok && c.reason) ? '<div class="sub-note">' + escHtml(c.reason) + '</div>' : '';
+          return '<div>' + (c.ok ? '&#10004;' : '&#10008;') + ' ' + escHtml(c.name) + ': ' +
+            escHtml(c.display != null ? c.display : String(c.actual)) + ' (need ' + escHtml(c.required) + ')' +
+            why + '</div>';
+        }).join('');
+      }
     }
   }
 }

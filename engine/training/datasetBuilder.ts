@@ -64,7 +64,10 @@ export type CorpusStats = {
   totalTasks: number
   tasksWithRewards: number
   usableExamples: number
+  /** Usable rows scoring at or below DPO_MAX_REWARD. */
   negativeExamples: number
+  /** The subset of those that can actually form a DPO pair. What the gate uses. */
+  pairableNegatives: number
   legacyExcluded: number
   avgReward: number
   rewardDistribution: { bucket: string; count: number }[]
@@ -309,6 +312,30 @@ export function buildDPODataset(
 // ─── Summary & Export ─────────────────────────────────────────────
 
 /**
+ * Negatives that buildDPODataset can actually turn into a pair: attributed to a
+ * model, and with at least one chosen-side run under that same model.
+ *
+ * The gate exists to answer "is this corpus trainable", and a bare count of
+ * low-reward rows does not answer it. 200 usable rows with 25 unattributed
+ * negatives passes a naive count and exports zero DPO pairs.
+ *
+ * Uses only rewards and the turn log, never snapshot content, so it is safe on
+ * a dashboard poll with loadSnapshots: false.
+ */
+function countPairableNegatives(usable: TrajectoryWithReward[]): number {
+  const modelsWithChosen = new Set<string>()
+  for (const t of usable) {
+    const m = modelOf(t)
+    if (m !== null && t.reward!.reward >= SFT_MIN_REWARD) modelsWithChosen.add(m)
+  }
+  return usable.filter(t => {
+    if (t.reward!.reward > DPO_MAX_REWARD) return false
+    const m = modelOf(t)
+    return m !== null && modelsWithChosen.has(m)
+  }).length
+}
+
+/**
  * Corpus statistics. Reads no message content, so it is safe to call on a
  * dashboard poll with loadSnapshots: false.
  *
@@ -325,9 +352,11 @@ export function summarizeCorpus(trajectories: TrajectoryWithReward[]): CorpusSta
     totalTasks: trajectories.length,
     tasksWithRewards: withRewards.length,
     usableExamples: usable.length,
-    // Same predicate buildDPODataset uses to pick a rejected side, so the
-    // reported negative count is the count that can actually form pairs.
+    // Same reward predicate buildDPODataset uses to pick a rejected side. It is
+    // NOT the pairable count — that also needs model attribution and a chosen
+    // counterpart in the same group. See pairableNegatives.
     negativeExamples: rewards.filter(r => r <= DPO_MAX_REWARD).length,
+    pairableNegatives: countPairableNegatives(usable),
     legacyExcluded: trajectories.filter(isLegacy).length,
     avgReward,
     rewardDistribution: [
@@ -430,7 +459,10 @@ export type Readiness = {
  */
 export function evaluateReadiness(stats: CorpusStats): Readiness {
   const usable = stats.usableExamples
-  const negative = stats.negativeExamples
+  // The pairable count, not the raw one. A negative with no model attribution,
+  // or with no chosen-side run under the same model, exports zero DPO pairs —
+  // gating on the raw count would let a corpus that trains nothing pass.
+  const negative = stats.pairableNegatives
   const measured = usable > 0
 
   const conditions: ReadinessCondition[] = [
@@ -446,15 +478,16 @@ export function evaluateReadiness(stats: CorpusStats): Readiness {
           `${GATE_MIN_USABLE - usable} short`,
     },
     {
-      name: 'negative examples',
+      name: 'pairable negatives',
       ok: negative >= GATE_MIN_NEGATIVE,
       actual: negative,
       display: String(negative),
       required: `>= ${GATE_MIN_NEGATIVE}`,
       reason: negative >= GATE_MIN_NEGATIVE
         ? undefined
-        : `have ${negative} negative examples (reward <= ${DPO_MAX_REWARD}), ` +
-          `need ${GATE_MIN_NEGATIVE} — ${GATE_MIN_NEGATIVE - negative} short`,
+        : `have ${negative} pairable negatives of ${stats.negativeExamples} ` +
+          `low-reward runs (reward <= ${DPO_MAX_REWARD}), need ${GATE_MIN_NEGATIVE} — ` +
+          `${GATE_MIN_NEGATIVE - negative} short`,
     },
     measured
       ? {

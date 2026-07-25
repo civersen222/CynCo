@@ -232,11 +232,16 @@ export class DashboardServer {
                   conditions: readiness.conditions,
                   progress: Math.min(1, stats.usableExamples / GATE_MIN_USABLE),
                 })
-              } catch {
+              } catch (e) {
+                // Counts are null, not 0. A corpus that could not be read must
+                // not render identically to an empty one — "0 usable examples"
+                // would be a measurement nobody took.
                 return jsonResponse({
-                  tasks: 0, turns: 0, rewards: 0, usableExamples: 0, negativeExamples: 0,
-                  legacyExcluded: 0, avgReward: null, targetExamples: GATE_MIN_USABLE,
-                  readyForSFT: false, conditions: [], progress: 0,
+                  error: e instanceof Error ? e.message : String(e),
+                  tasks: null, turns: null, rewards: null, usableExamples: null,
+                  negativeExamples: null, legacyExcluded: null, avgReward: null,
+                  targetExamples: GATE_MIN_USABLE,
+                  readyForSFT: false, conditions: [], progress: null,
                 })
               }
             }
