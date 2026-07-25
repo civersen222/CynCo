@@ -46,6 +46,14 @@ export function detectFramework(command: string): string | null {
   return null
 }
 
+/** Recognize typecheck/build commands so their exit status can be measured. */
+export function classifyCheckCommand(command: string): 'typecheck' | 'build' | null {
+  if (typeof command !== 'string') return null
+  if (/\b(tsc|mypy|pyright|flow\s+check)\b/i.test(command)) return 'typecheck'
+  if (/\b(bun\s+build|npm\s+run\s+build|yarn\s+build|pnpm\s+build|cargo\s+build|go\s+build|make\b)/i.test(command)) return 'build'
+  return null
+}
+
 function num(output: string, re: RegExp): number | null {
   const m = output.match(re)
   return m ? parseInt(m[1], 10) : null

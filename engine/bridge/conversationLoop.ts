@@ -60,6 +60,8 @@ import { ReadLoopGate, signature as readSignature } from '../vsm/readLoopGate.js
 import { ToolDivergenceDetector } from '../brain/toolDivergence.js'
 import { pruneRedundantReads } from './contextHygiene.js'
 import { isBenignTestFailure } from './benignToolResult.js'
+import { runWithFinalize } from './finalizeGuard.js'
+import { parseTestSummary, classifyCheckCommand } from './testSummary.js'
 import { probeEdit } from '../vsm/groundingProbe.js'
 import { loadInterventionRates, saveInterventionRates } from '../vsm/interventionPersistence.js'
 import { applyNudgeTemperature } from '../vsm/controlSignals.js'
@@ -191,6 +193,11 @@ export class ConversationLoop {
   private messages: Message[] = []
   private abortController: AbortController | null = null
   private processing = false
+  // Per-task observation buffers for the reward labeler. Reset at task start,
+  // consumed by finalizeTrajectory at task end.
+  private taskTestObservations: { passed: number; total: number }[] = []
+  private taskCommandObservations: { kind: 'typecheck' | 'build'; ok: boolean }[] = []
+  private taskGitBaseSha: string | null = null
   private config: LocalCodeConfig
   private provider: Provider
   private emit: (event: EngineEvent) => void
@@ -672,11 +679,29 @@ export class ConversationLoop {
     }
   }
 
+  /**
+   * Public entry point. Thin wrapper so that the task boundary is closed on
+   * EVERY exit runUserMessage takes — an early return, any of the in-loop
+   * returns, the max-iterations fall-through, or a thrown error.
+   *
+   * The busy guard lives HERE, outside runWithFinalize, and not inside
+   * runUserMessage. A rejected concurrent message never started a task, so
+   * finalizing it would end the task that is still running: it would snapshot a
+   * half-finished conversation, label it, and clear recorder.taskId so the real
+   * finalize became a no-op.
+   */
   async handleUserMessage(text: string, opts?: { contract?: HarnessContractSpec }): Promise<void> {
     if (this.processing) {
       console.log('[loop] Already processing, ignoring message')
       return
     }
+    return runWithFinalize(
+      () => this.runUserMessage(text, opts),
+      () => this.finalizeTrajectory(),
+    )
+  }
+
+  private async runUserMessage(text: string, opts?: { contract?: HarnessContractSpec }): Promise<void> {
     this.processing = true
     console.log(`[loop] Handling message: "${text.slice(0, 80)}..."`)
 
@@ -727,6 +752,9 @@ export class ConversationLoop {
       const recorder = getTrajectoryRecorder()
       if (recorder) {
         recorder.startTask(`task-${randomUUID().slice(0, 8)}`, this.config.model ?? 'unknown')
+        this.taskTestObservations = []
+        this.taskCommandObservations = []
+        this.taskGitBaseSha = this.readGitHead()
       }
     } catch {}
 
@@ -2720,6 +2748,54 @@ export class ConversationLoop {
     return this.fileTracker
   }
 
+  private readGitHead(): string | null {
+    try {
+      const { execSync } = require('child_process')
+      return execSync('git rev-parse HEAD', {
+        cwd: this.executor['cwd'],
+        stdio: ['pipe', 'pipe', 'pipe'],
+      }).toString().trim()
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * Close the task: persist the conversation as training corpus, then label it.
+   * Called from handleUserMessage's finally, so it runs on every exit path.
+   * Idempotent — endTask clears the recorder's active task.
+   */
+  private finalizeTrajectory(): void {
+    const { getTrajectoryRecorder } = require('../training/trajectoryRecorder.js')
+    const recorder = getTrajectoryRecorder()
+    if (!recorder || !recorder.taskId) return
+
+    const taskId = recorder.taskId
+    const turns = recorder.turnIdx ?? 0
+
+    const snapshot = recorder.endTask(this.messages)
+    if (!snapshot) return
+
+    const { collectGitFacts } = require('../training/gitFacts.js')
+    const { buildComponents } = require('../training/taskOutcome.js')
+    const { finalizeTask } = require('../training/rewardLabeler.js')
+
+    const components = buildComponents({
+      testObservations: this.taskTestObservations,
+      commandObservations: this.taskCommandObservations,
+      contract: globalContract.isActive()
+        ? { active: true, complete: globalContract.isComplete(), failed: globalContract.failedCount() }
+        : null,
+      git: collectGitFacts(this.executor['cwd'], this.taskGitBaseSha),
+      trackedModifiedFiles: this.fileTracker.getModifiedFiles(),
+      stuckTurns: 0,
+      turns,
+    })
+
+    const reward = finalizeTask(taskId, turns, components)
+    console.log(`[trajectory] Labeled ${taskId}: reward ${reward.reward.toFixed(3)} (${turns} turns)`)
+  }
+
   /** The active session journal (for session-end markers). */
   getJournal(): JSONLStore {
     return this.journal
@@ -3266,18 +3342,33 @@ export class ConversationLoop {
         const { createHash } = require('crypto')
         const elapsed = Date.now() - toolStartMs
         const inputHash = createHash('sha256').update(JSON.stringify(toolInput)).digest('hex').slice(0, 12)
+
+        const command = toolName === 'Bash' ? (toolInput as { command?: unknown })?.command : undefined
+        let testsTotal = 0
+        let testsFailing = 0
+        if (typeof command === 'string') {
+          const summary = parseTestSummary(command, result.output ?? '')
+          if (summary) {
+            testsTotal = summary.total
+            testsFailing = summary.total - summary.passed
+            this.taskTestObservations.push({ passed: summary.passed, total: summary.total })
+          }
+          const kind = classifyCheckCommand(command)
+          if (kind) this.taskCommandObservations.push({ kind, ok: !result.isError })
+        }
+
         recorder.recordTurn({
           toolCalls: [{ name: toolName, inputHash, success: !result.isError, latencyMs: elapsed }],
           stateFeatures: {
-            filesTouched: 0,
+            filesTouched: this.fileTracker.getModifiedFiles().length,
             diffSize: 0,
-            testsTotal: 0,
-            testsFailing: 0,
+            testsTotal,
+            testsFailing,
             toolsUsed: [toolName],
             contextPct: 0,
           },
           rewardComponents: {
-            toolSuccessRate: 1.0,
+            toolSuccessRate: result.isError ? 0 : 1,
             stuckTurns: 0,
             varietyEntropy: 0,
           },
