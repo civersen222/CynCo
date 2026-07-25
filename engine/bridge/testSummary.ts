@@ -46,11 +46,42 @@ export function detectFramework(command: string): string | null {
   return null
 }
 
-/** Recognize typecheck/build commands so their exit status can be measured. */
+/** Leading env assignments and wrapper runners, stripped to reach the real head. */
+const RUNNER_PREFIX = /^(?:\w+=\S*\s+)*(?:(?:npx|bunx|pnpm\s+(?:exec|dlx)|yarn\s+dlx|poetry\s+run|uv\s+run|pipenv\s+run)\s+)*/i
+
+const TYPECHECK_HEAD = /^(?:tsc|mypy|pyright|flow\s+check)\b/i
+const BUILD_HEAD = /^(?:make|cargo\s+build|go\s+build|tsup|vite\s+build|webpack|rollup|esbuild)\b/i
+
+/** `npm run <script>` and friends — the script name carries the meaning. */
+const SCRIPT_RUN = /^(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?([\w:.-]+)/i
+const TYPECHECK_SCRIPT = /^(?:typecheck|type-check|types|tsc|check-types)$/i
+const BUILD_SCRIPT = /^build(?::[\w.-]+)?$/i
+
+/**
+ * Recognize typecheck/build commands so their exit status can be measured.
+ *
+ * Matched at COMMAND POSITION, not anywhere in the string. A substring match
+ * made `git commit -m "make build work"` report a passing build and `rg tsc`
+ * report a passing typecheck — inventing a measurement out of a commit message
+ * is the precise failure this pipeline exists to undo. Quoted text is stripped
+ * first for the same reason: it is data, not a command.
+ *
+ * Errs toward null. An unrecognized check leaves the component 'unknown',
+ * which costs a little reward signal; a misrecognized one poisons a label.
+ */
 export function classifyCheckCommand(command: string): 'typecheck' | 'build' | null {
   if (typeof command !== 'string') return null
-  if (/\b(tsc|mypy|pyright|flow\s+check)\b/i.test(command)) return 'typecheck'
-  if (/\b(bun\s+build|npm\s+run\s+build|yarn\s+build|pnpm\s+build|cargo\s+build|go\s+build|make\b)/i.test(command)) return 'build'
+  const stripped = command.replace(/"[^"]*"|'[^']*'/g, ' ')
+  for (const raw of stripped.split(/&&|\|\||[;|\n]/)) {
+    const seg = raw.trim().replace(RUNNER_PREFIX, '')
+    if (TYPECHECK_HEAD.test(seg)) return 'typecheck'
+    if (BUILD_HEAD.test(seg)) return 'build'
+    const m = seg.match(SCRIPT_RUN)
+    if (m) {
+      if (TYPECHECK_SCRIPT.test(m[1])) return 'typecheck'
+      if (BUILD_SCRIPT.test(m[1])) return 'build'
+    }
+  }
   return null
 }
 

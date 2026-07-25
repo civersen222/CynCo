@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { detectFramework, parseTestSummary } from '../../bridge/testSummary.js'
+import { classifyCheckCommand, detectFramework, parseTestSummary } from '../../bridge/testSummary.js'
 
 describe('detectFramework', () => {
   it('recognizes a pytest invocation', () => {
@@ -69,5 +69,41 @@ describe('parseTestSummary', () => {
     expect(parseTestSummary('pytest', '10 passed')).toEqual({
       framework: 'pytest', passed: 10, total: 10,
     })
+  })
+})
+
+describe('classifyCheckCommand', () => {
+  it('recognizes direct typecheck and build invocations', () => {
+    expect(classifyCheckCommand('npx tsc --noEmit')).toBe('typecheck')
+    expect(classifyCheckCommand('mypy gilded/')).toBe('typecheck')
+    expect(classifyCheckCommand('cargo build --release')).toBe('build')
+    expect(classifyCheckCommand('make')).toBe('build')
+  })
+
+  it('reads the script name of a package-manager run', () => {
+    expect(classifyCheckCommand('npm run typecheck')).toBe('typecheck')
+    expect(classifyCheckCommand('bun run build')).toBe('build')
+    expect(classifyCheckCommand('pnpm build:prod')).toBe('build')
+  })
+
+  it('reaches past env assignments and a cd', () => {
+    expect(classifyCheckCommand('CI=1 npx tsc -p .')).toBe('typecheck')
+    expect(classifyCheckCommand('cd engine && npm run build')).toBe('build')
+  })
+
+  it('does not read a command out of quoted text', () => {
+    // This reported a passing build, inventing a measurement from a message.
+    expect(classifyCheckCommand('git commit -m "make build work"')).toBeNull()
+    expect(classifyCheckCommand("echo 'run tsc later'")).toBeNull()
+  })
+
+  it('does not match a tool named as an argument', () => {
+    expect(classifyCheckCommand('rg tsc')).toBeNull()
+    expect(classifyCheckCommand('cat Makefile')).toBeNull()
+  })
+
+  it('returns null for test runs and unrelated commands', () => {
+    expect(classifyCheckCommand('npm test')).toBeNull()
+    expect(classifyCheckCommand('git status')).toBeNull()
   })
 })

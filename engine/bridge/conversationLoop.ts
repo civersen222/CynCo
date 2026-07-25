@@ -2788,7 +2788,11 @@ export class ConversationLoop {
         : null,
       git: collectGitFacts(this.executor['cwd'], this.taskGitBaseSha),
       trackedModifiedFiles: this.fileTracker.getModifiedFiles(),
-      stuckTurns: 0,
+      // resetStuck() runs at the START of runUserMessage, so the counter still
+      // holds the finished task's value here. Hardcoding 0 would permanently
+      // disable the -0.5 stuck penalty — a fabricated measurement of exactly
+      // the kind this pipeline repair exists to remove.
+      stuckTurns: this.governance?.getStuckCount() ?? 0,
       turns,
     })
 
