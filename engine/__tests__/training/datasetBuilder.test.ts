@@ -9,6 +9,10 @@ import {
   exportDatasets,
   toChatML,
   isUsable,
+  evaluateReadiness,
+  GATE_MIN_USABLE,
+  GATE_MIN_NEGATIVE,
+  GATE_MAX_AVG_REWARD,
 } from '../../training/datasetBuilder.js'
 
 let root: string
@@ -296,5 +300,75 @@ describe('summarizeCorpus — the negative boundary', () => {
   it('counts a reward of exactly the DPO ceiling as negative, since it can be paired', () => {
     seed({ taskId: 'edge', reward: 0.3, labelerVersion: 2, snapshot: true })
     expect(summarizeCorpus(loadTrajectories(trajDir, rewDir)).negativeExamples).toBe(1)
+  })
+})
+
+describe('evaluateReadiness', () => {
+  const base = {
+    totalTasks: 0, tasksWithRewards: 0, legacyExcluded: 0, rewardDistribution: [],
+  }
+
+  it('passes when all three conditions hold', () => {
+    const r = evaluateReadiness({ ...base, usableExamples: 150, negativeExamples: 20, avgReward: 0.62 })
+    expect(r.ready).toBe(true)
+    expect(r.conditions.every(c => c.ok)).toBe(true)
+  })
+
+  it('fails on volume alone', () => {
+    const r = evaluateReadiness({ ...base, usableExamples: 149, negativeExamples: 20, avgReward: 0.62 })
+    expect(r.ready).toBe(false)
+    expect(r.conditions.find(c => c.name === 'usable examples')!.ok).toBe(false)
+  })
+
+  it('fails without negatives, because DPO needs pairs', () => {
+    const r = evaluateReadiness({ ...base, usableExamples: 400, negativeExamples: 19, avgReward: 0.62 })
+    expect(r.ready).toBe(false)
+    expect(r.conditions.find(c => c.name === 'negative examples')!.ok).toBe(false)
+  })
+
+  it('fails on a saturated mean — the 147-rows-all-1.0 regression', () => {
+    const r = evaluateReadiness({ ...base, usableExamples: 400, negativeExamples: 40, avgReward: 0.95 })
+    expect(r.ready).toBe(false)
+    expect(r.conditions.find(c => c.name === 'avg reward')!.ok).toBe(false)
+  })
+
+  it('reports every condition, passing or not', () => {
+    const r = evaluateReadiness({ ...base, usableExamples: 0, negativeExamples: 0, avgReward: 0 })
+    expect(r.conditions).toHaveLength(3)
+    expect(r.conditions.map(c => c.name)).toEqual(['usable examples', 'negative examples', 'avg reward'])
+  })
+
+  it('exposes its thresholds as constants rather than burying them', () => {
+    expect(GATE_MIN_USABLE).toBe(150)
+    expect(GATE_MIN_NEGATIVE).toBe(20)
+    expect(GATE_MAX_AVG_REWARD).toBe(0.9)
+  })
+
+  it('never reports a mean it did not measure', () => {
+    // avgReward is 0 for an empty corpus, and 0 < 0.9. Reporting that as PASS
+    // would claim a measurement that was never taken.
+    const r = evaluateReadiness({ ...base, usableExamples: 0, negativeExamples: 0, avgReward: 0 })
+    const avg = r.conditions.find(c => c.name === 'avg reward')!
+    expect(avg.ok).toBe(false)
+    expect(avg.actual).toBeNull()
+    expect(avg.display).toBe('not measured')
+    expect(avg.reason).toMatch(/no usable examples/i)
+  })
+
+  it('names each failure in the real numbers it was given', () => {
+    const r = evaluateReadiness({ ...base, usableExamples: 100, negativeExamples: 3, avgReward: 0.94 })
+    const [usable, neg, avg] = r.conditions
+    expect(usable.reason).toContain('100')
+    expect(usable.reason).toContain('50') // shortfall
+    expect(neg.reason).toContain('3')
+    expect(neg.reason).toContain('17') // shortfall
+    expect(avg.reason).toContain('0.940')
+    expect(r.reasons).toHaveLength(3)
+  })
+
+  it('gives no reasons when it is ready', () => {
+    const r = evaluateReadiness({ ...base, usableExamples: 200, negativeExamples: 30, avgReward: 0.5 })
+    expect(r.reasons).toEqual([])
+    expect(r.conditions.every(c => c.reason === undefined)).toBe(true)
   })
 })

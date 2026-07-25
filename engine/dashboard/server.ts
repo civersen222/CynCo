@@ -20,6 +20,12 @@ import type { EngineEvent } from '../bridge/protocol.js'
 import { setParam, GOVERNANCE_PARAMS, exportParamMetadata } from '../vsm/governanceParams.js'
 import { globalContract } from '../tools/contract.js'
 import { ThinkingRecorder } from '../memory/thinkingRecorder.js'
+import {
+  loadTrajectories,
+  summarizeCorpus,
+  evaluateReadiness,
+  GATE_MIN_USABLE,
+} from '../training/datasetBuilder.js'
 
 // ---------------------------------------------------------------------------
 // DashboardDeps — optional callbacks into the engine
@@ -201,39 +207,37 @@ export class DashboardServer {
             }
             case '/api/training': {
               try {
-                const { loadTrajectories } = require('../training/datasetBuilder.js')
-                const { homedir } = require('os')
-                const { join } = require('path')
-                const { readdirSync, readFileSync, existsSync } = require('fs')
                 const trajDir = join(homedir(), '.cynco', 'trajectories')
                 const rewDir = join(homedir(), '.cynco', 'rewards')
-                const dsDir = join(homedir(), '.cynco', 'datasets')
-                const trajFiles = existsSync(trajDir) ? readdirSync(trajDir).filter((f: string) => f.endsWith('.jsonl')).length : 0
-                const rewFiles = existsSync(rewDir) ? readdirSync(rewDir).filter((f: string) => f.endsWith('.json')).length : 0
-                let totalTurns = 0
-                if (existsSync(trajDir)) {
-                  for (const f of readdirSync(trajDir).filter((f: string) => f.endsWith('.jsonl'))) {
-                    totalTurns += readFileSync(join(trajDir, f), 'utf-8').trim().split('\n').length
-                  }
-                }
-                let sftExamples = 0
-                const sftPath = join(dsDir, 'sft.jsonl')
-                if (existsSync(sftPath)) {
-                  sftExamples = readFileSync(sftPath, 'utf-8').trim().split('\n').length
-                }
-                const readyForSFT = sftExamples >= 300
-                const targetExamples = 300
+
+                // loadSnapshots: false — this endpoint is polled and a snapshot
+                // runs to 2 MB. Eligibility only needs the file to exist.
+                const trajectories = loadTrajectories(trajDir, rewDir, { loadSnapshots: false })
+                const stats = summarizeCorpus(trajectories)
+                const readiness = evaluateReadiness(stats)
+                const totalTurns = trajectories.reduce((sum, t) => sum + t.turns.length, 0)
+
                 return jsonResponse({
-                  tasks: trajFiles,
+                  tasks: stats.totalTasks,
                   turns: totalTurns,
-                  rewards: rewFiles,
-                  sftExamples,
-                  targetExamples,
-                  readyForSFT,
-                  progress: Math.min(1, sftExamples / targetExamples),
+                  rewards: stats.tasksWithRewards,
+                  usableExamples: stats.usableExamples,
+                  negativeExamples: stats.negativeExamples,
+                  legacyExcluded: stats.legacyExcluded,
+                  // null, not 0, when nothing was averaged — a client must not
+                  // be able to render an unmeasured corpus as "0.000".
+                  avgReward: stats.usableExamples > 0 ? stats.avgReward : null,
+                  targetExamples: GATE_MIN_USABLE,
+                  readyForSFT: readiness.ready,
+                  conditions: readiness.conditions,
+                  progress: Math.min(1, stats.usableExamples / GATE_MIN_USABLE),
                 })
               } catch {
-                return jsonResponse({ tasks: 0, turns: 0, rewards: 0, sftExamples: 0, targetExamples: 300, readyForSFT: false, progress: 0 })
+                return jsonResponse({
+                  tasks: 0, turns: 0, rewards: 0, usableExamples: 0, negativeExamples: 0,
+                  legacyExcluded: 0, avgReward: null, targetExamples: GATE_MIN_USABLE,
+                  readyForSFT: false, conditions: [], progress: 0,
+                })
               }
             }
             case '/api/thinking/sessions': {

@@ -562,15 +562,19 @@ input[type="range"]:disabled::-webkit-slider-thumb { cursor: not-allowed; }
       <div class="sub-row"><span class="sub-label">Recording</span><span class="sub-value gray" id="trajStatus">inactive</span></div>
       <div class="sub-row"><span class="sub-label">Tasks</span><span class="sub-value" id="trainTasks">0</span></div>
       <div class="sub-row"><span class="sub-label">Turns</span><span class="sub-value" id="trainTurns">0</span></div>
-      <div class="sub-row"><span class="sub-label">SFT Examples</span><span class="sub-value" id="trainSFT">0</span></div>
+      <div class="sub-row"><span class="sub-label">Usable Examples</span><span class="sub-value" id="trainUsable">0</span></div>
+      <div class="sub-row"><span class="sub-label">Negatives</span><span class="sub-value" id="trainNegative">0</span></div>
+      <div class="sub-row"><span class="sub-label">Avg Reward</span><span class="sub-value" id="trainAvgReward">&mdash;</span></div>
+      <div class="sub-row"><span class="sub-label">Legacy Excluded</span><span class="sub-value gray" id="trainLegacy">0</span></div>
       <div style="margin-top:6px">
         <div style="display:flex;justify-content:space-between;font-size:11px;color:#808080;margin-bottom:2px">
-          <span>Progress to training</span>
-          <span id="trainTarget">0 / 300</span>
+          <span>Usable examples toward gate</span>
+          <span id="trainTarget">0 / 150</span>
         </div>
         <div style="background:#1e1e1e;border-radius:3px;height:8px;overflow:hidden">
           <div id="trainProgressBar" style="background:#4caf50;height:100%;width:0%;transition:width 0.3s;border-radius:3px"></div>
         </div>
+        <div id="trainConditions" style="font-size:11px;color:#808080;margin-top:4px"></div>
       </div>
     </div>
 
@@ -1502,17 +1506,31 @@ function renderTrajectory() {
     var td = state.trainingData;
     var tasksEl = document.getElementById('trainTasks');
     var turnsEl = document.getElementById('trainTurns');
-    var sftEl = document.getElementById('trainSFT');
+    var usableEl = document.getElementById('trainUsable');
+    var negEl = document.getElementById('trainNegative');
+    var avgEl = document.getElementById('trainAvgReward');
+    var legacyEl = document.getElementById('trainLegacy');
     var targetEl = document.getElementById('trainTarget');
     var barEl = document.getElementById('trainProgressBar');
+    var condEl = document.getElementById('trainConditions');
     if (tasksEl) tasksEl.textContent = String(td.tasks || 0);
     if (turnsEl) turnsEl.textContent = String(td.turns || 0);
-    if (sftEl) {
-      sftEl.textContent = String(td.sftExamples || 0);
-      sftEl.className = 'sub-value ' + (td.readyForSFT ? 'green' : 'yellow');
+    if (usableEl) {
+      usableEl.textContent = String(td.usableExamples || 0);
+      usableEl.className = 'sub-value ' + (td.readyForSFT ? 'green' : 'yellow');
     }
-    if (targetEl) targetEl.textContent = (td.sftExamples || 0) + ' / ' + (td.targetExamples || 300);
+    if (negEl) negEl.textContent = String(td.negativeExamples || 0);
+    // A mean over zero rows is not 0.000, it is nothing. Say so.
+    if (avgEl) avgEl.textContent = (td.avgReward == null ? 'not measured' : Number(td.avgReward).toFixed(3));
+    if (legacyEl) legacyEl.textContent = String(td.legacyExcluded || 0);
+    if (targetEl) targetEl.textContent = (td.usableExamples || 0) + ' / ' + (td.targetExamples || 150);
     if (barEl) barEl.style.width = Math.min(100, (td.progress || 0) * 100).toFixed(1) + '%';
+    if (condEl) {
+      condEl.innerHTML = (td.conditions || []).map(function(c) {
+        return '<div>' + (c.ok ? '&#10004;' : '&#10008;') + ' ' + escHtml(c.name) + ': ' +
+          escHtml(c.display != null ? c.display : String(c.actual)) + ' (need ' + escHtml(c.required) + ')</div>';
+      }).join('');
+    }
   }
 }
 

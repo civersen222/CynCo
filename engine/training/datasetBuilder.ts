@@ -383,3 +383,105 @@ export function exportDatasets(
 
   return stats
 }
+
+// ─── Readiness Gate ───────────────────────────────────────────────
+
+/**
+ * Thresholds, exported so they can be re-tuned without editing the gate. They
+ * are a judgement about what a trainable corpus looks like, not a measurement.
+ */
+export const GATE_MIN_USABLE = 150
+export const GATE_MIN_NEGATIVE = 20
+export const GATE_MAX_AVG_REWARD = 0.9
+
+export type ReadinessCondition = {
+  name: string
+  ok: boolean
+  /** The measured value, or null when there was nothing to measure. */
+  actual: number | null
+  /** actual rendered for a human; 'not measured' when actual is null. */
+  display: string
+  required: string
+  /** Why this condition failed, in its own numbers. Absent when ok. */
+  reason?: string
+}
+
+export type Readiness = {
+  ready: boolean
+  conditions: ReadinessCondition[]
+  /** The reason strings of the failing conditions, in order. */
+  reasons: string[]
+}
+
+/**
+ * Training readiness. All three must hold:
+ *
+ *  - usable examples — volume, but of examples that carry information
+ *  - negative examples — without them DPO has nothing to pair and SFT only
+ *    ever sees success, which is how a model learns that its failure modes
+ *    are excellent work
+ *  - avg reward below 0.9 — a saturated mean means the labeler regressed;
+ *    the pre-2026-07-25 corpus scored 1.0 on all 147 rows
+ *
+ * The mean is only a condition when there were rows to average. summarizeCorpus
+ * returns avgReward 0 for an empty corpus, and 0 < 0.9 — so a naive check
+ * would print PASS for a measurement nobody took. An unmeasured mean fails,
+ * loudly, and reports itself as unmeasured rather than as zero.
+ */
+export function evaluateReadiness(stats: CorpusStats): Readiness {
+  const usable = stats.usableExamples
+  const negative = stats.negativeExamples
+  const measured = usable > 0
+
+  const conditions: ReadinessCondition[] = [
+    {
+      name: 'usable examples',
+      ok: usable >= GATE_MIN_USABLE,
+      actual: usable,
+      display: String(usable),
+      required: `>= ${GATE_MIN_USABLE}`,
+      reason: usable >= GATE_MIN_USABLE
+        ? undefined
+        : `have ${usable} usable examples, need ${GATE_MIN_USABLE} — ` +
+          `${GATE_MIN_USABLE - usable} short`,
+    },
+    {
+      name: 'negative examples',
+      ok: negative >= GATE_MIN_NEGATIVE,
+      actual: negative,
+      display: String(negative),
+      required: `>= ${GATE_MIN_NEGATIVE}`,
+      reason: negative >= GATE_MIN_NEGATIVE
+        ? undefined
+        : `have ${negative} negative examples (reward <= ${DPO_MAX_REWARD}), ` +
+          `need ${GATE_MIN_NEGATIVE} — ${GATE_MIN_NEGATIVE - negative} short`,
+    },
+    measured
+      ? {
+          name: 'avg reward',
+          ok: stats.avgReward < GATE_MAX_AVG_REWARD,
+          actual: stats.avgReward,
+          display: stats.avgReward.toFixed(3),
+          required: `< ${GATE_MAX_AVG_REWARD}`,
+          reason: stats.avgReward < GATE_MAX_AVG_REWARD
+            ? undefined
+            : `mean reward over ${usable} usable examples is ` +
+              `${stats.avgReward.toFixed(3)}, at or above ${GATE_MAX_AVG_REWARD} — ` +
+              'a saturated mean is the labeler regressing, not the agent improving',
+        }
+      : {
+          name: 'avg reward',
+          ok: false,
+          actual: null,
+          display: 'not measured',
+          required: `< ${GATE_MAX_AVG_REWARD}`,
+          reason: 'no usable examples, so no mean reward has been measured',
+        },
+  ]
+
+  return {
+    ready: conditions.every(c => c.ok),
+    conditions,
+    reasons: conditions.map(c => c.reason).filter((r): r is string => r !== undefined),
+  }
+}
