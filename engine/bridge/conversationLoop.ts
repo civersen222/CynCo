@@ -711,8 +711,10 @@ export class ConversationLoop {
     // (P4.2 — otherwise taskError measures the wrong task); an INCOMPLETE one is
     // kept (live task / follow-up message). Skip in one-shot mission runs
     // (allowedTools pinned): the contract enforcer is calibrated for interactive
-    // coding ("run the test suite NOW with Bash") and blocks a mission from
-    // producing its final structured outcome (2026-06-12 weekly-digest incident).
+    // coding and blocks a mission from producing its final structured outcome
+    // (2026-06-12 weekly-digest incident). The nudge text is now pluggable via
+    // engine/bridge/enforcementNudge.ts and is phase-aware; a mission-aware nudge
+    // variant is the right path to lifting this skip, not hardcoding new text here.
     else if (!this.allowedTools && maybeAutoCreateContract(text)) {
       console.log(`[contract] Auto-created: ${globalContract.pendingCount()} assertions for "${text.slice(0, 50)}..."`)
       this.governance.setContractCreated()
@@ -1955,12 +1957,14 @@ export class ConversationLoop {
           if (!this.floorEvents.includes(event)) {
             console.log(`[tool-floor] Restored ${why} — required by active contract enforcement`)
             this.floorEvents.push(event)
+            this.emit({ type: 'governance.alert', severity: 'medium', source: 'tool-floor', message: `Tool floor restored ${why} — required by active contract enforcement` })
           }
         } else if (verdict.kind === 'unsatisfiable') {
           const event = `enforcement disabled: pin omits ${verdict.missing.join(', ')}`
           if (!this.floorEvents.includes(event)) {
             console.log(`[tool-floor] Contract enforcement DISABLED — allowedTools omits ${verdict.missing.join(', ')}; cannot verify completion`)
             this.floorEvents.push(event)
+            this.emit({ type: 'governance.alert', severity: 'high', source: 'tool-floor', message: `Contract enforcement disabled — allowedTools omits ${verdict.missing.join(', ')}; completion can no longer be verified` })
           }
           globalContract.setEnforcementEnabled(false)
         }
