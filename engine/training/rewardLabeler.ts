@@ -46,13 +46,19 @@ export type TaskReward = {
  * Before 2026-07-25 these were summed (total 2.8) and the result clipped to
  * 1.0, which meant the non-test components alone (1.8) hit the ceiling and
  * every testsPass value between 0.43 and 1.0 collapsed to the same score.
+ *
+ * Outcome dominates hygiene, 3.0 of 3.6. Passing typecheck and building are
+ * table stakes, not partial credit for working code: under an even split, a
+ * task where every single test failed still scored 0.4 because the code
+ * compiled. A failed task has to be able to look failed, or there are no DPO
+ * negatives and the corpus is all-positive again for a subtler reason.
  */
 const POSITIVE_WEIGHTS: { key: keyof RewardComponents; weight: number }[] = [
-  { key: 'testsPass', weight: 1.0 },
-  { key: 'typecheckPass', weight: 0.5 },
-  { key: 'buildPass', weight: 0.3 },
-  { key: 'diffClean', weight: 0.2 },
-  { key: 'taskCompleted', weight: 0.5 },
+  { key: 'testsPass', weight: 2.0 },
+  { key: 'taskCompleted', weight: 1.0 },
+  { key: 'typecheckPass', weight: 0.3 },
+  { key: 'buildPass', weight: 0.2 },
+  { key: 'diffClean', weight: 0.1 },
 ]
 
 /** Weighted mean of the measurable positive components, in [0,1]. */

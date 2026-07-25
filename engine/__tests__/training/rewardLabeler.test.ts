@@ -251,6 +251,33 @@ describe('computeReward — normalization', () => {
     expect(noTests).toBeLessThan(1.0)
   })
 
+  it('scores a total test failure as a failure, not partial credit for compiling', () => {
+    // Hygiene is table stakes. Under an even weighting this shape scored 0.4 —
+    // above the 0.3 negative threshold — so a wholly failed task produced no
+    // DPO negative and the corpus stayed all-positive.
+    const allRed = computeReward({
+      testsPass: 0,
+      typecheckPass: 1,
+      buildPass: 1,
+      diffClean: 1,
+      taskCompleted: 0,
+      stuckTurns: 0,
+      iterFraction: 0,
+      userSatisfaction: 0,
+      testsUnmodified: 1,
+    })
+    expect(allRed).toBeLessThan(0.3)
+  })
+
+  it('ranks a half-passing task above a wholly failing one', () => {
+    const shape = (testsPass: number, taskCompleted: number) => computeReward({
+      testsPass, taskCompleted, typecheckPass: 1, buildPass: 1, diffClean: 1,
+      stuckTurns: 0, iterFraction: 0, userSatisfaction: 0, testsUnmodified: 1,
+    })
+    expect(shape(0.5, 0)).toBeGreaterThan(shape(0, 0))
+    expect(shape(1, 1)).toBeGreaterThan(shape(0.5, 0))
+  })
+
   it('excludes unknown components from the denominator', () => {
     // Only testsPass is known, so the base is exactly testsPass.
     const r = computeReward({
