@@ -95,4 +95,20 @@ describe('collectGitFacts', () => {
   it('returns null when the base sha is unknown', () => {
     expect(collectGitFacts(repo, 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef')).toBeNull()
   })
+
+  it('returns null inside a repo when there is no base sha, rather than diffing HEAD', () => {
+    // Falling back to HEAD makes anything the agent COMMITTED during the task
+    // invisible: a run that gutted a suite and committed it reads as a clean
+    // diff, and the safety gate scores it 1.
+    expect(collectGitFacts(repo, null)).toBeNull()
+  })
+
+  it('sees a test file the agent gutted and COMMITTED during the task', () => {
+    writeFileSync(join(repo, 'tests', 'app.test.ts'), 'it("a", () => {})\n')
+    writeFileSync(join(repo, 'app.ts'), 'export const a = 2\n')
+    execSync('git add -A && git commit -q -m gut', { cwd: repo, stdio: 'pipe' })
+    const facts = collectGitFacts(repo, baseSha)!
+    const test = facts.changed.find(c => c.path === 'tests/app.test.ts')!
+    expect(test.deleted).toBeGreaterThan(test.added)
+  })
 })

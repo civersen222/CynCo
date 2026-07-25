@@ -96,7 +96,14 @@ export function collectGitFacts(cwd: string, baseSha: string | null): GitFacts |
     return null
   }
 
-  const range = baseSha ?? 'HEAD'
+  // No fallback to HEAD. Diffing HEAD against the working tree makes anything
+  // the agent COMMITTED during the task invisible, so a run that gutted a test
+  // suite and committed it reads as testsUnmodified: 1 — a fabricated pass on
+  // the one gate that exists to catch it. A repo with no resolvable base has
+  // nothing to diff against, and 'unknown' is the honest answer.
+  if (baseSha === null) return null
+
+  const range = baseSha
   try {
     // git cat-file -t exits non-zero when the object is not found.
     // We use this instead of `rev-parse --verify <sha>^{commit}` because
