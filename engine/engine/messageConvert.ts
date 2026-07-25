@@ -123,6 +123,24 @@ function convertMessageSimulated(msg: Message): Message {
   }
 }
 
+// ─── toToolDefs ─────────────────────────────────────────────────
+
+/**
+ * Build tool definitions in the shape `convertTools` expects.
+ *
+ * The key name matters: `convertTools` reads `inputJSONSchema` and silently
+ * falls back to a bare `{ type: 'object' }` when it is absent, which sends the
+ * model a tool with no described parameters. This existed as four hand-rolled
+ * copies in conversationLoop.ts and one of them had drifted to `input_schema`,
+ * so every router-selected tool reached the model schema-less. One constructor
+ * so the shape cannot diverge again.
+ */
+export function toToolDefs<T extends { name: string; description: string; inputSchema: unknown }>(
+  tools: readonly T[],
+): { name: string; description: string; inputJSONSchema: T['inputSchema'] }[] {
+  return tools.map(t => ({ name: t.name, description: t.description, inputJSONSchema: t.inputSchema }))
+}
+
 // ─── convertTools ───────────────────────────────────────────────
 
 /**

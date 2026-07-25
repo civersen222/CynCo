@@ -13,6 +13,7 @@ import { isS5EnforcementEnabled, isAllToolsEnabled, isProactiveToolsEnabled } fr
 import { classifyTaskClass } from '../s5/proactiveSurfacing.js'
 import type { Provider } from '../provider.js'
 import { localCallModel, type CallModelDeps } from '../engine/callModel.js'
+import { toToolDefs } from '../engine/messageConvert.js'
 import { ALL_TOOLS, getCoreTools, getExtendedTools } from '../tools/registry.js'
 import { LoadedToolSet } from '../tools/loadedToolSet.js'
 import { loadSkills } from '../skills/loader.js'
@@ -826,11 +827,7 @@ export class ConversationLoop {
     }
 
     // Build tool definitions in the format callModel expects (inputJSONSchema)
-    let toolDefs = activeTools.map(t => ({
-      name: t.name,
-      description: t.description,
-      inputJSONSchema: t.inputSchema,
-    }))
+    let toolDefs = toToolDefs(activeTools)
     const toolNames = activeTools.map(t => `- ${t.name}: ${t.description}`).join('\n')
 
     const promptParts = assembleBasePrompt(toolNames, this.executor['cwd'])
@@ -1825,11 +1822,7 @@ export class ConversationLoop {
               const category = (evt as any).input?.category ?? 'all'
               console.log(`[routing] Category selected: ${category}`)
               const { ALL_TOOLS } = await import('../tools/registry.js')
-              iterationTools = getToolsForCategory(category, ALL_TOOLS).map(t => ({
-                name: t.name,
-                description: t.description,
-                input_schema: t.inputSchema,
-              }))
+              iterationTools = toToolDefs(getToolsForCategory(category, ALL_TOOLS))
               break
             }
             if (evt.type === 'message_stop') break // model didn't use the tool — fall through to all tools
@@ -1941,11 +1934,7 @@ export class ConversationLoop {
       // or — if the operator's own pin omits them — stop pretending we can
       // verify and disable enforcement loudly.
       if (globalContract.isActive() && !globalContract.isComplete() && globalContract.isEnforcementEnabled()) {
-        const allDefs = ALL_TOOLS.map(t => ({
-          name: t.name,
-          description: t.description,
-          inputJSONSchema: t.inputSchema,
-        }))
+        const allDefs = toToolDefs(ALL_TOOLS)
         const verdict = applyToolFloor({
           offered: iterationTools as any[],
           allTools: allDefs,
@@ -2589,11 +2578,7 @@ export class ConversationLoop {
             const pinned = new Set(this.allowedTools)
             refreshed = refreshed.filter(t => pinned.has(t.name))
           }
-          toolDefs = refreshed.map(t => ({
-            name: t.name,
-            description: t.description,
-            inputJSONSchema: t.inputSchema,
-          }))
+          toolDefs = toToolDefs(refreshed)
           const lines = added.map(name => {
             const tool = ALL_TOOLS.find(t => t.name === name)!
             return `- ${tool.name}: ${tool.description}\n  schema: ${JSON.stringify(tool.inputSchema)}`
