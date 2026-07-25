@@ -59,6 +59,34 @@ describe('collectGitFacts', () => {
     expect(facts.dirty).toContain('scratch.txt')
   })
 
+  it('flags binary files instead of claiming zero lines changed', () => {
+    writeFileSync(join(repo, 'fixture.bin'), Buffer.from([0, 1, 2, 0, 255]))
+    execSync('git add -A && git commit -q -m bin', { cwd: repo, stdio: 'pipe' })
+    writeFileSync(join(repo, 'fixture.bin'), Buffer.from([0, 9, 9, 9, 0, 7]))
+    const facts = collectGitFacts(repo, baseSha)!
+    const bin = facts.changed.find(c => c.path === 'fixture.bin')!
+    expect(bin.binary).toBe(true)
+  })
+
+  it('reports the destination path of a rename, not the raw arrow line', () => {
+    execSync('git mv app.ts renamed.ts', { cwd: repo, stdio: 'pipe' })
+    const facts = collectGitFacts(repo, baseSha)!
+    expect(facts.dirty).toContain('renamed.ts')
+    expect(facts.dirty.some(p => p.includes('->'))).toBe(false)
+  })
+
+  it('unquotes paths that git C-quotes', () => {
+    writeFileSync(join(repo, 'a file with spaces.txt'), 'x\n')
+    const facts = collectGitFacts(repo, baseSha)!
+    expect(facts.dirty).toContain('a file with spaces.txt')
+  })
+
+  it('decodes octal-escaped non-ASCII paths back to UTF-8', () => {
+    writeFileSync(join(repo, 'café.txt'), 'x\n')
+    const facts = collectGitFacts(repo, baseSha)!
+    expect(facts.dirty).toContain('café.txt')
+  })
+
   it('returns null outside a git repo', () => {
     const notRepo = mkdtempSync(join(tmpdir(), 'notgit-'))
     expect(collectGitFacts(notRepo, null)).toBeNull()
