@@ -373,6 +373,67 @@ describe('evaluateReadiness', () => {
   })
 })
 
+describe('evaluateReadiness — the built row counts', () => {
+  const base = {
+    totalTasks: 0, tasksWithRewards: 0, legacyExcluded: 0, rewardDistribution: [],
+  }
+  const healthy = {
+    ...base, usableExamples: 200, negativeExamples: 40, pairableNegatives: 40, avgReward: 0.5,
+  }
+
+  it('fails when the corpus looks trainable but exports zero SFT rows', () => {
+    // isUsable requires hasSnapshot, an existsSync check. A snapshot that
+    // exists but does not parse counts toward the gate and is skipped by both
+    // builders, so the gate could say READY over a corpus that exports nothing.
+    const r = evaluateReadiness({ ...healthy, sftExamples: 0, dpoPairs: 40 })
+    expect(r.ready).toBe(false)
+    const c = r.conditions.find(c => c.name === 'SFT rows built')!
+    expect(c.ok).toBe(false)
+    expect(c.actual).toBe(0)
+    expect(c.reason).toMatch(/0/)
+  })
+
+  it('fails when too few DPO pairs were actually built', () => {
+    const r = evaluateReadiness({ ...healthy, sftExamples: 180, dpoPairs: 5 })
+    expect(r.ready).toBe(false)
+    const c = r.conditions.find(c => c.name === 'DPO pairs built')!
+    expect(c.ok).toBe(false)
+    expect(c.reason).toContain('5')
+    expect(c.reason).toContain('15') // shortfall against GATE_MIN_NEGATIVE
+  })
+
+  it('passes when the built rows back up the corpus counts', () => {
+    const r = evaluateReadiness({ ...healthy, sftExamples: 180, dpoPairs: 40 })
+    expect(r.ready).toBe(true)
+    expect(r.conditions).toHaveLength(5)
+    expect(r.conditions.map(c => c.name)).toEqual([
+      'usable examples', 'pairable negatives', 'avg reward', 'SFT rows built', 'DPO pairs built',
+    ])
+  })
+
+  it('omits the built-row conditions when the counts were never computed', () => {
+    // stageStats and the dashboard poll with loadSnapshots: false and cannot
+    // build datasets. A condition asserted from a number nobody has is the
+    // same fabrication this gate exists to prevent.
+    const r = evaluateReadiness(healthy)
+    expect(r.conditions).toHaveLength(3)
+    expect(r.conditions.some(c => c.name.includes('built'))).toBe(false)
+  })
+})
+
+describe('evaluateReadiness — end to end over a real corpus', () => {
+  it('is not ready when every snapshot on disk is unparseable', () => {
+    for (let i = 0; i < 3; i++) {
+      seed({ taskId: `t${i}`, reward: 0.9, labelerVersion: 2, snapshot: true })
+      writeFileSync(join(trajDir, `t${i}.messages.json`), '{ not json')
+    }
+    const { stats } = buildDatasets(loadTrajectories(trajDir, rewDir))
+    expect(stats.usableExamples).toBe(3) // hasSnapshot is existsSync only
+    expect(stats.sftExamples).toBe(0)
+    expect(evaluateReadiness(stats).conditions.find(c => c.name === 'SFT rows built')!.ok).toBe(false)
+  })
+})
+
 describe('summarizeCorpus — pairableNegatives vs negativeExamples', () => {
   it('counts an unattributed negative as negative but not as pairable', () => {
     // It exports zero DPO pairs, so gating on the raw count would pass a

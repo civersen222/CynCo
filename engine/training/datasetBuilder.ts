@@ -443,7 +443,7 @@ export type Readiness = {
 }
 
 /**
- * Training readiness. All three must hold:
+ * Training readiness.
  *
  *  - usable examples — volume, but of examples that carry information
  *  - negative examples — without them DPO has nothing to pair and SFT only
@@ -456,8 +456,20 @@ export type Readiness = {
  * returns avgReward 0 for an empty corpus, and 0 < 0.9 — so a naive check
  * would print PASS for a measurement nobody took. An unmeasured mean fails,
  * loudly, and reports itself as unmeasured rather than as zero.
+ *
+ * When the caller has DatasetStats — i.e. the datasets were actually built —
+ * two more conditions apply, on the rows that came out rather than the rows
+ * that looked eligible. isUsable requires hasSnapshot, which is an existsSync
+ * check: a snapshot that exists but does not parse is counted by the first
+ * three conditions and dropped by both builders, so the gate could report
+ * READY over a corpus that exports zero rows.
+ *
+ * They are conditional because summarizeCorpus is called on a dashboard poll
+ * with loadSnapshots: false, where the datasets cannot be built at all. An
+ * absent count means the check did not run; asserting it from a number nobody
+ * computed would be the same fabrication this gate exists to catch.
  */
-export function evaluateReadiness(stats: CorpusStats): Readiness {
+export function evaluateReadiness(stats: CorpusStats | DatasetStats): Readiness {
   const usable = stats.usableExamples
   // The pairable count, not the raw one. A negative with no model attribution,
   // or with no chosen-side run under the same model, exports zero DPO pairs —
@@ -511,6 +523,37 @@ export function evaluateReadiness(stats: CorpusStats): Readiness {
           reason: 'no usable examples, so no mean reward has been measured',
         },
   ]
+
+  const built = stats as Partial<DatasetStats>
+  if (typeof built.sftExamples === 'number') {
+    const sft = built.sftExamples
+    conditions.push({
+      name: 'SFT rows built',
+      ok: sft > 0,
+      actual: sft,
+      display: String(sft),
+      required: '> 0',
+      reason: sft > 0
+        ? undefined
+        : `${usable} examples passed eligibility but the SFT builder produced ` +
+          '0 rows — eligibility only checks that a snapshot file exists, so ' +
+          'these have no readable conversation to train on',
+    })
+  }
+  if (typeof built.dpoPairs === 'number') {
+    const pairs = built.dpoPairs
+    conditions.push({
+      name: 'DPO pairs built',
+      ok: pairs >= GATE_MIN_NEGATIVE,
+      actual: pairs,
+      display: String(pairs),
+      required: `>= ${GATE_MIN_NEGATIVE}`,
+      reason: pairs >= GATE_MIN_NEGATIVE
+        ? undefined
+        : `the DPO builder produced ${pairs} pairs from ${negative} pairable ` +
+          `negatives, need ${GATE_MIN_NEGATIVE} — ${GATE_MIN_NEGATIVE - pairs} short`,
+    })
+  }
 
   return {
     ready: conditions.every(c => c.ok),

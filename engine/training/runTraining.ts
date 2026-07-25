@@ -91,7 +91,12 @@ function stageTrain(
   // A stats.json written before the grounded labeler has none of these fields,
   // and the gate would then report a shortfall of "undefined". Refuse to read a
   // corpus shape we cannot actually measure.
-  for (const k of ['usableExamples', 'pairableNegatives', 'avgReward'] as const) {
+  //
+  // sftExamples and dpoPairs are required HERE specifically: evaluateReadiness
+  // treats them as optional because the dashboard cannot compute them, but this
+  // is the gate that actually decides whether to train, and it must check the
+  // rows that were built and not only the rows that looked eligible.
+  for (const k of ['usableExamples', 'pairableNegatives', 'avgReward', 'sftExamples', 'dpoPairs'] as const) {
     if (typeof stats[k] !== 'number') {
       log(`ERROR: ${statsPath} has no ${k}. It predates the grounded labeler. Run --stage dataset.`)
       process.exit(1)
