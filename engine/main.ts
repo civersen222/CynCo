@@ -110,6 +110,14 @@ if (runTaskIdx !== -1) {
     console.error('[one-shot] --run-task requires a task file path')
     process.exit(1)
   }
+  // One-shot exits before the interactive bootstrap below, so it needs its own
+  // recorder init. Without this the daemon — the path that runs unattended and
+  // should therefore produce most of the corpus — recorded nothing at all.
+  if (process.env.LOCALCODE_TRAJECTORY_ENABLED !== 'false') {
+    const { initTrajectoryRecorder } = await import('./training/trajectoryRecorder.js')
+    initTrajectoryRecorder()
+    console.log('[one-shot] Trajectory recorder initialized')
+  }
   const { runOneShotTask } = await import('./daemon/oneShot.js')
   const exitCode = await runOneShotTask(taskFilePath, provider, config)
   // process.exit() skips beforeExit — stop llama-server explicitly
