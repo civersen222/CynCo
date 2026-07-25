@@ -6,9 +6,11 @@
  * Output: ~/.cynco/trajectories/<taskId>.jsonl
  */
 
-import { appendFileSync, mkdirSync, openSync, fsyncSync, closeSync } from 'fs'
+import { appendFileSync, mkdirSync, openSync, fsyncSync, closeSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
+import { sanitizeMessages } from './messageSnapshot.js'
+import type { Message } from '../types.js'
 
 // ─── Types ────────────────────────────────────────────────────────
 
@@ -59,6 +61,7 @@ export class TrajectoryRecorder {
   private _model: string = ''
   private _adapterId: string | undefined = undefined
   private _turnIdx: number = 0
+  private _startedAt: string = ''
 
   constructor(baseDir?: string) {
     this.baseDir = baseDir ?? join(homedir(), '.cynco', 'trajectories')
@@ -71,6 +74,7 @@ export class TrajectoryRecorder {
     this._model = model
     this._adapterId = adapterId
     this._turnIdx = 0
+    this._startedAt = new Date().toISOString()
   }
 
   /** Append one turn's data to <baseDir>/<taskId>.jsonl with fsync. */
@@ -103,6 +107,44 @@ export class TrajectoryRecorder {
       closeSync(fd)
     } catch (e) {
       console.error(`[trajectory] Write failed (task=${this._taskId}): ${e}`)
+    }
+  }
+
+  /**
+   * Close the task and persist the conversation as training corpus.
+   *
+   * Returns the snapshot path, or null when there is nothing worth keeping
+   * (no active task, or an empty conversation). Clears the active task, so a
+   * second call is a no-op and a late recordTurn cannot write into a finished
+   * task.
+   */
+  endTask(messages: Message[], meta?: { endedAt?: string }): string | null {
+    const taskId = this._taskId
+    if (!taskId) return null
+    this._taskId = null
+
+    if (!Array.isArray(messages) || messages.length === 0) return null
+
+    const { messages: cleaned, truncatedMessages } = sanitizeMessages(messages)
+
+    const snapshot = {
+      schemaVersion: 2,
+      taskId,
+      model: this._model,
+      adapterId: this._adapterId,
+      startedAt: this._startedAt,
+      endedAt: meta?.endedAt ?? new Date().toISOString(),
+      truncatedMessages,
+      messages: cleaned,
+    }
+
+    const filePath = join(this.baseDir, `${taskId}.messages.json`)
+    try {
+      writeFileSync(filePath, JSON.stringify(snapshot) + '\n', 'utf-8')
+      return filePath
+    } catch (e) {
+      console.error(`[trajectory] Snapshot write failed (task=${taskId}): ${e}`)
+      return null
     }
   }
 

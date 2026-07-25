@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach } from 'bun:test'
-import { mkdtempSync, readFileSync } from 'fs'
+import { mkdtempSync, readFileSync, existsSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import {
@@ -133,5 +133,63 @@ describe('TrajectoryRecorder', () => {
     const recorder = new TrajectoryRecorder(tmpDir)
     // No startTask — should not throw
     expect(() => recorder.recordTurn(makeTurn())).not.toThrow()
+  })
+})
+
+// ─── endTask / message snapshot ───────────────────────────────────
+
+describe('endTask', () => {
+  it('writes a schemaVersion 2 snapshot with real message content', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'traj-snap-'))
+    const r = new TrajectoryRecorder(dir)
+    r.startTask('task-snap', 'qwen3.6:27b')
+    const path = r.endTask([
+      { role: 'user', content: [{ type: 'text', text: 'add a test for parseFoo' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'I will add it.' }] },
+    ])
+
+    expect(path).toBe(join(dir, 'task-snap.messages.json'))
+    const snap = JSON.parse(readFileSync(path!, 'utf-8'))
+    expect(snap.schemaVersion).toBe(2)
+    expect(snap.taskId).toBe('task-snap')
+    expect(snap.model).toBe('qwen3.6:27b')
+    expect(typeof snap.startedAt).toBe('string')
+    expect(typeof snap.endedAt).toBe('string')
+    expect(snap.messages[0].content[0].text).toBe('add a test for parseFoo')
+  })
+
+  it('applies the sanitizer — a .env read is redacted in the snapshot', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'traj-redact-'))
+    const r = new TrajectoryRecorder(dir)
+    r.startTask('task-redact', 'm')
+    const path = r.endTask([
+      { role: 'assistant', content: [{ type: 'tool_use', id: 'a', name: 'Read', input: { file_path: '/repo/.env' } }] },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'a', content: 'KEY=sk-secret' }] },
+    ])
+    expect(readFileSync(path!, 'utf-8')).not.toContain('sk-secret')
+  })
+
+  it('is a no-op when called twice', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'traj-twice-'))
+    const r = new TrajectoryRecorder(dir)
+    r.startTask('task-twice', 'm')
+    expect(r.endTask([{ role: 'user', content: [{ type: 'text', text: 'hi' }] }])).not.toBeNull()
+    expect(r.endTask([{ role: 'user', content: [{ type: 'text', text: 'hi' }] }])).toBeNull()
+  })
+
+  it('writes no snapshot when the conversation is empty', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'traj-empty-'))
+    const r = new TrajectoryRecorder(dir)
+    r.startTask('task-empty', 'm')
+    expect(r.endTask([])).toBeNull()
+    expect(existsSync(join(dir, 'task-empty.messages.json'))).toBe(false)
+  })
+
+  it('clears the active task so a later recordTurn does not write into it', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'traj-clear-'))
+    const r = new TrajectoryRecorder(dir)
+    r.startTask('task-clear', 'm')
+    r.endTask([{ role: 'user', content: [{ type: 'text', text: 'hi' }] }])
+    expect(r.taskId).toBeNull()
   })
 })
