@@ -49,6 +49,12 @@ export type TrajectorySnapshot = {
   startedAt?: string
   endedAt?: string
   truncatedMessages?: number
+  /**
+   * How well the snapshot corresponds to this task alone — see
+   * trajectoryRecorder.TaskBoundary. Absent on snapshots written before the
+   * boundary was recorded at all, which is not the same as 'exact'.
+   */
+  taskBoundary?: 'exact' | 'clamped' | 'unmeasured'
   messages: Message[]
 }
 

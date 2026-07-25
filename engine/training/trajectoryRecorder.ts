@@ -59,6 +59,56 @@ type TurnLine = {
   reward_components: RewardComponents
 }
 
+// ─── Task boundary ────────────────────────────────────────────────
+
+/**
+ * How much of the conversation the snapshot actually corresponds to this task.
+ *
+ *  - 'exact'      — the caller recorded where the task began and the array
+ *                   still holds that boundary; the snapshot is the tail.
+ *  - 'clamped'    — a boundary was recorded but the array has since shrunk
+ *                   below it (compaction), so it points nowhere and the whole
+ *                   array was kept.
+ *  - 'unmeasured' — the caller never recorded a boundary. Not the same claim
+ *                   as 'exact' over the whole array, and not written as one.
+ */
+export type TaskBoundary = 'exact' | 'clamped' | 'unmeasured'
+
+/**
+ * The slice of a session that belongs to one task.
+ *
+ * ConversationLoop.messages accumulates across a whole session and is never
+ * reset at a task boundary, so snapshotting it whole made task 2 a strict
+ * superset of task 1. That produced near-duplicate corpus rows carrying
+ * DIFFERENT rewards, and let a DPO pair drawn from one session share an
+ * identical prefix on both the chosen and the rejected side — training the
+ * model to discriminate between two things that are textually the same.
+ *
+ * Compaction interaction: compactNow replaces this.messages wholesale and can
+ * leave it shorter than the recorded index. Slicing from a stale index would
+ * silently emit an empty or wrong-boundary snapshot, so an out-of-range index
+ * clamps to 0 and keeps everything. The compacted array IS mostly this task's
+ * own history in summarized form, and a row that is too broad is recoverable
+ * while a row that is empty is not — but the snapshot records which of the two
+ * happened rather than letting the reader assume the boundary held.
+ *
+ * System messages before the boundary are carried over: they were in the
+ * model's context for this task (the engine sends the whole array), so they
+ * are measured context, and a ChatML row missing its system prompt is a
+ * different training example than the one that actually ran.
+ */
+export function sliceTaskMessages(
+  messages: Message[],
+  startIndex: number | null,
+): { messages: Message[]; boundary: TaskBoundary } {
+  if (startIndex === null) return { messages, boundary: 'unmeasured' }
+  if (startIndex <= 0) return { messages, boundary: 'exact' }
+  if (startIndex >= messages.length) return { messages, boundary: 'clamped' }
+
+  const head = messages.slice(0, startIndex).filter(m => m?.role === 'system')
+  return { messages: [...head, ...messages.slice(startIndex)], boundary: 'exact' }
+}
+
 // ─── Recorder class ───────────────────────────────────────────────
 
 export class TrajectoryRecorder {
@@ -68,19 +118,37 @@ export class TrajectoryRecorder {
   private _adapterId: string | undefined = undefined
   private _turnIdx: number = 0
   private _startedAt: string = ''
+  /**
+   * Where this task's messages begin in the caller's session array, or null
+   * when the caller did not record one. Lives here rather than on the loop
+   * because the recorder already owns the task boundary and clears its own
+   * state — two owners would have to stay in sync.
+   */
+  private _messageStartIdx: number | null = null
 
   constructor(baseDir?: string) {
     this.baseDir = baseDir ?? join(homedir(), '.cynco', 'trajectories')
     mkdirSync(this.baseDir, { recursive: true })
   }
 
-  /** Begin a new task trajectory. Resets turn counter. */
-  startTask(taskId: string, model: string, adapterId?: string): void {
+  /**
+   * Begin a new task trajectory. Resets turn counter.
+   *
+   * messageStartIndex is where this task's messages begin in the caller's
+   * session array — see sliceTaskMessages. Omitting it is honest (some callers
+   * have no session array) and the snapshot then reports its boundary as
+   * 'unmeasured' rather than claiming the whole array was one task.
+   */
+  startTask(taskId: string, model: string, adapterId?: string, messageStartIndex?: number): void {
     this._taskId = taskId
     this._model = model
     this._adapterId = adapterId
     this._turnIdx = 0
     this._startedAt = new Date().toISOString()
+    this._messageStartIdx =
+      typeof messageStartIndex === 'number' && Number.isFinite(messageStartIndex)
+        ? Math.max(0, Math.floor(messageStartIndex))
+        : null
   }
 
   /** Append one turn's data to <baseDir>/<taskId>.jsonl with fsync. */
@@ -119,6 +187,9 @@ export class TrajectoryRecorder {
   /**
    * Close the task and persist the conversation as training corpus.
    *
+   * Only this task's slice of the caller's array is persisted — see
+   * sliceTaskMessages.
+   *
    * Returns the snapshot path, or null when there is nothing worth keeping
    * (no active task, or an empty conversation). Clears the active task, so a
    * second call is a no-op and a late recordTurn cannot write into a finished
@@ -128,6 +199,10 @@ export class TrajectoryRecorder {
     const taskId = this._taskId
     if (!taskId) return null
     this._taskId = null
+    const startIdx = this._messageStartIdx
+    // Cleared with the task, the same way _taskId is: a stale boundary applied
+    // to the next task would slice it at a point that means nothing.
+    this._messageStartIdx = null
 
     if (!Array.isArray(messages) || messages.length === 0) return null
 
@@ -136,7 +211,9 @@ export class TrajectoryRecorder {
     // actually ended the task. Losing a corpus row is always the cheaper loss.
     const filePath = join(this.baseDir, `${taskId}.messages.json`)
     try {
-      const { messages: cleaned, truncatedMessages } = sanitizeMessages(messages)
+      const { messages: scoped, boundary } = sliceTaskMessages(messages, startIdx)
+      if (scoped.length === 0) return null
+      const { messages: cleaned, truncatedMessages } = sanitizeMessages(scoped)
 
       const snapshot = {
         schemaVersion: 2,
@@ -146,6 +223,7 @@ export class TrajectoryRecorder {
         startedAt: this._startedAt,
         endedAt: meta?.endedAt ?? new Date().toISOString(),
         truncatedMessages,
+        taskBoundary: boundary,
         messages: cleaned,
       }
 

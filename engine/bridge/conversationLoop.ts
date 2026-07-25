@@ -707,6 +707,13 @@ export class ConversationLoop {
 
     await this.ensureSkillsLoaded()
 
+    // Where this task's transcript begins. Captured BEFORE the user message is
+    // pushed so the message that started the task is inside its own snapshot.
+    // this.messages is never reset at a task boundary, so without this the
+    // snapshot for task 2 is a strict superset of task 1's — see
+    // trajectoryRecorder.sliceTaskMessages.
+    const taskStartIndex = this.messages.length
+
     this.addMessage({
       role: 'user',
       content: [{ type: 'text', text }],
@@ -755,7 +762,7 @@ export class ConversationLoop {
         // attribution, and datasetBuilder groups DPO pairs by model. Two runs
         // bucketed under 'unknown' would be paired as if they came from one
         // policy. An empty name is excluded from pairing instead.
-        recorder.startTask(`task-${randomUUID().slice(0, 8)}`, this.config.model ?? '')
+        recorder.startTask(`task-${randomUUID().slice(0, 8)}`, this.config.model ?? '', undefined, taskStartIndex)
         this.taskTestObservations = []
         this.taskCommandObservations = []
         this.taskGitBaseSha = this.readGitHead()
