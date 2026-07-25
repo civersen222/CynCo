@@ -245,3 +245,56 @@ describe('exportDatasets', () => {
     expect(existsSync(join(outDir, 'sft.jsonl'))).toBe(true)
   })
 })
+
+describe('toChatML — malformed snapshots off disk', () => {
+  it('keeps an image-only message rather than deleting the turn', () => {
+    const out = toChatML([
+      { role: 'user', content: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'x' } }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'I see a red square.' }] },
+    ] as never)
+    // Dropping the image turn would train the assistant to answer a phantom.
+    expect(out).toHaveLength(2)
+    expect(out[0].content).toBe('[image block omitted]')
+  })
+
+  it('drops a message holding only redacted thinking', () => {
+    expect(toChatML([{ role: 'assistant', content: [{ type: 'redacted_thinking', data: 'z' }] }] as never)).toEqual([])
+  })
+
+  it('renders a non-string non-array tool_result as empty, not [object Object]', () => {
+    const out = toChatML([
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'x', content: { oops: 1 } }] },
+    ] as never)
+    expect(out[0].content).toBe('<tool_result></tool_result>')
+  })
+
+  it('survives a null message and a bare-string content', () => {
+    const out = toChatML([null, { role: 'user', content: 'plain text' }, { role: 'user' }] as never)
+    expect(out).toEqual([{ role: 'user', content: 'plain text' }])
+  })
+})
+
+describe('buildDPODataset — model attribution', () => {
+  it('excludes a run whose model was never recorded, rather than bucketing it', () => {
+    seed({ taskId: 'win', reward: 0.85, labelerVersion: 2, snapshot: true, model: '' })
+    seed({ taskId: 'lose', reward: 0.12, labelerVersion: 2, snapshot: true, model: '' })
+    expect(buildDatasets(loadTrajectories(trajDir, rewDir)).dpo).toHaveLength(0)
+  })
+
+  it('pairs round-robin, not as a cross product', () => {
+    seed({ taskId: 'w1', reward: 0.85, labelerVersion: 2, snapshot: true })
+    seed({ taskId: 'w2', reward: 0.9, labelerVersion: 2, snapshot: true })
+    seed({ taskId: 'w3', reward: 0.95, labelerVersion: 2, snapshot: true })
+    seed({ taskId: 'l1', reward: 0.12, labelerVersion: 2, snapshot: true })
+    seed({ taskId: 'l2', reward: 0.05, labelerVersion: 2, snapshot: true })
+    // Cross product would be 6. Round-robin is max(3, 2) = 3.
+    expect(buildDatasets(loadTrajectories(trajDir, rewDir)).dpo).toHaveLength(3)
+  })
+})
+
+describe('summarizeCorpus — the negative boundary', () => {
+  it('counts a reward of exactly the DPO ceiling as negative, since it can be paired', () => {
+    seed({ taskId: 'edge', reward: 0.3, labelerVersion: 2, snapshot: true })
+    expect(summarizeCorpus(loadTrajectories(trajDir, rewDir)).negativeExamples).toBe(1)
+  })
+})

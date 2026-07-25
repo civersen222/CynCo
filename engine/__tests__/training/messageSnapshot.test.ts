@@ -89,3 +89,32 @@ describe('sanitizeMessages', () => {
     expect(JSON.stringify(msgs)).toBe(before)
   })
 })
+
+describe('sanitizeMessages — the tool call input, not just its result', () => {
+  it('redacts the input of a call that names a sensitive path', () => {
+    // Write puts the payload in the INPUT. Capping only results let a whole
+    // .env file, secrets and all, through to the exported corpus untouched.
+    const [m] = sanitizeMessages([
+      toolUse('t1', 'Write', { file_path: '.env', content: 'OPENAI_API_KEY=sk-live-abc123' }),
+    ]).messages
+    const block = m.content[0] as { type: string; name: string; input: Record<string, unknown> }
+    expect(JSON.stringify(block.input)).not.toContain('sk-live-abc123')
+    expect(block.name).toBe('Write')
+  })
+
+  it('truncates a large input payload while keeping the short arguments', () => {
+    const big = 'y'.repeat(RESULT_CAP_BYTES + 5000)
+    const [m] = sanitizeMessages([
+      toolUse('t1', 'Write', { file_path: 'src/big.ts', content: big }),
+    ]).messages
+    const input = (m.content[0] as { input: Record<string, string> }).input
+    expect(input.file_path).toBe('src/big.ts')
+    expect(input.content.length).toBeLessThan(big.length)
+    expect(input.content).toContain('bytes elided')
+  })
+
+  it('leaves an ordinary small input untouched', () => {
+    const [m] = sanitizeMessages([toolUse('t1', 'Read', { file_path: 'a.ts' })]).messages
+    expect((m.content[0] as { input: unknown }).input).toEqual({ file_path: 'a.ts' })
+  })
+})

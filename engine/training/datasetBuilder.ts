@@ -183,6 +183,7 @@ function modelOf(t: TrajectoryWithReward): string | null {
  * vanishing and leaving the next message answering a phantom.
  */
 function blockToText(b: ContentBlock): string {
+  if (!b || typeof b !== 'object') return ''
   switch (b.type) {
     case 'text':
     case 'thinking':
@@ -219,6 +220,9 @@ export function toChatML(messages: Message[]): { role: string; content: string }
   const out: { role: string; content: string }[] = []
   for (const m of messages) {
     // Message.content is ContentBlock[] by the type, but these come off disk.
+    // A single malformed message must not throw out of exportDatasets and take
+    // the whole export with it.
+    if (!m || typeof m !== 'object') continue
     const content = m.content as ContentBlock[] | string | undefined
     const text =
       typeof content === 'string'
@@ -284,13 +288,18 @@ export function buildDPODataset(
     const chosen = group.filter(t => t.reward!.reward >= chosenMinReward)
     const rejected = group.filter(t => t.reward!.reward <= rejectedMaxReward)
 
-    for (const c of chosen) {
-      for (const r of rejected) {
-        pairs.push(JSON.stringify({
-          chosen: toChatML(c.snapshot!.messages),
-          rejected: toChatML(r.snapshot!.messages),
-        }))
-      }
+    // Round-robin rather than the full cross product. 100 chosen x 50 rejected
+    // is 5,000 rows built from 150 conversations, most of them re-serializing
+    // the same two megabyte-scale transcripts; the duplication teaches nothing
+    // and dominates the file. One pass gives every trajectory on the short side
+    // equal representation.
+    if (chosen.length === 0 || rejected.length === 0) continue
+    const n = Math.max(chosen.length, rejected.length)
+    for (let i = 0; i < n; i++) {
+      pairs.push(JSON.stringify({
+        chosen: toChatML(chosen[i % chosen.length].snapshot!.messages),
+        rejected: toChatML(rejected[i % rejected.length].snapshot!.messages),
+      }))
     }
   }
 

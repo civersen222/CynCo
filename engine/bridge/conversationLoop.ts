@@ -751,7 +751,11 @@ export class ConversationLoop {
       const { randomUUID } = require('crypto')
       const recorder = getTrajectoryRecorder()
       if (recorder) {
-        recorder.startTask(`task-${randomUUID().slice(0, 8)}`, this.config.model ?? 'unknown')
+        // No 'unknown' fallback: a placeholder model name is a fabricated
+        // attribution, and datasetBuilder groups DPO pairs by model. Two runs
+        // bucketed under 'unknown' would be paired as if they came from one
+        // policy. An empty name is excluded from pairing instead.
+        recorder.startTask(`task-${randomUUID().slice(0, 8)}`, this.config.model ?? '')
         this.taskTestObservations = []
         this.taskCommandObservations = []
         this.taskGitBaseSha = this.readGitHead()

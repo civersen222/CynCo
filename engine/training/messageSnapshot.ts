@@ -2,10 +2,13 @@
  * Prepare a conversation for persistence as training data.
  *
  * The snapshot is the training corpus, so it holds verbatim repo source and
- * anything else the agent read. Three policies apply at write time:
+ * anything else the agent read or wrote. Four policies apply at write time:
  *   - truncate individual tool results (one Read of a large file would
  *     otherwise dominate the example and balloon the corpus)
  *   - redact results whose originating tool touched a sensitive path
+ *   - redact and truncate the tool call's own INPUT on the same terms — a
+ *     `Write` puts its payload in the input, so capping only results let a
+ *     whole file, secrets included, through untouched
  *   - cap the whole snapshot, dropping oldest non-system messages
  *
  * Pure: no I/O, no mutation of the input.
@@ -41,6 +44,25 @@ function inputTouchesSensitive(input: unknown): boolean {
   if (Array.isArray(input)) return input.some(inputTouchesSensitive)
   if (typeof input === 'object') return Object.values(input as Record<string, unknown>).some(inputTouchesSensitive)
   return false
+}
+
+/**
+ * Truncate every string inside a tool input, in place of the whole input.
+ *
+ * `Write`/`Edit` carry their payload as an input field, so an uncapped input
+ * is an uncapped file in the corpus. Truncating per-string rather than
+ * replacing the object keeps `file_path` and the other short arguments
+ * learnable — the structure of the call is the signal, its payload is not.
+ */
+function capInput(value: unknown, cap: number): unknown {
+  if (typeof value === 'string') return truncate(value, cap)
+  if (Array.isArray(value)) return value.map(v => capInput(v, cap))
+  if (value !== null && typeof value === 'object') {
+    const out: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) out[k] = capInput(v, cap)
+    return out
+  }
+  return value
 }
 
 function truncate(text: string, cap: number): string {
@@ -86,6 +108,13 @@ export function sanitizeMessages(messages: Message[], opts: SanitizeOptions = {}
   const cleaned: Message[] = messages.map(m => ({
     role: m.role,
     content: m.content.map((b): ContentBlock => {
+      if (b.type === 'tool_use') {
+        // The call that names a secret also usually carries it. Keep the tool
+        // name so the corpus still shows what was attempted.
+        return sensitiveCalls.has(b.id)
+          ? { ...b, input: { redacted: 'sensitive path' } }
+          : { ...b, input: capInput(b.input, resultCap) as Record<string, unknown> }
+      }
       if (b.type !== 'tool_result') return { ...b }
       if (sensitiveCalls.has(b.tool_use_id)) {
         return { ...b, content: '[redacted: sensitive path]' }
