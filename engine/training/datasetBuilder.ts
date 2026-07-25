@@ -29,12 +29,15 @@ type TurnRecord = {
   model: string
   adapter_id?: string
   tool_calls: { name: string; inputHash: string; success: boolean; latencyMs: number }[]
+  // diffSize, contextPct and varietyEntropy are optional on disk: a call site
+  // that did not measure one omits it rather than writing a 0 it cannot back
+  // up. See trajectoryRecorder.StateFeatures.
   state_features: {
-    filesTouched: number; diffSize: number; testsTotal: number
-    testsFailing: number; toolsUsed: string[]; contextPct: number
+    filesTouched: number; diffSize?: number; testsTotal: number
+    testsFailing: number; toolsUsed: string[]; contextPct?: number
   }
   reward_components: {
-    toolSuccessRate: number; stuckTurns: number; varietyEntropy: number
+    toolSuccessRate: number; stuckTurns: number; varietyEntropy?: number
   }
 }
 

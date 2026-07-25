@@ -3365,20 +3365,21 @@ export class ConversationLoop {
           if (kind) this.taskCommandObservations.push({ kind, ok: !result.isError })
         }
 
+        // diffSize, contextPct and varietyEntropy are omitted, not zeroed:
+        // nothing here measures them, and a persisted 0 is indistinguishable
+        // from a measured zero for every consumer downstream. stuckTurns IS
+        // measurable right here — the same reading finalizeTrajectory takes.
         recorder.recordTurn({
           toolCalls: [{ name: toolName, inputHash, success: !result.isError, latencyMs: elapsed }],
           stateFeatures: {
             filesTouched: this.fileTracker.getModifiedFiles().length,
-            diffSize: 0,
             testsTotal,
             testsFailing,
             toolsUsed: [toolName],
-            contextPct: 0,
           },
           rewardComponents: {
             toolSuccessRate: result.isError ? 0 : 1,
-            stuckTurns: 0,
-            varietyEntropy: 0,
+            stuckTurns: this.governance?.getStuckCount() ?? 0,
           },
         })
         this.emit({

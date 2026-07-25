@@ -193,3 +193,38 @@ describe('endTask', () => {
     expect(r.taskId).toBeNull()
   })
 })
+
+// ─── Unmeasured features are absent, not zero (2026-07-25) ────────
+
+describe('recordTurn — unmeasured features', () => {
+  it('omits the fields a caller did not measure instead of writing 0', () => {
+    // An absent field is honest; a 0 is a claim. diffSize, contextPct and
+    // varietyEntropy have no computation at the per-turn call site, so they
+    // must not appear in the record at all.
+    const dir = mkdtempSync(join(tmpdir(), 'traj-absent-'))
+    const r = new TrajectoryRecorder(dir)
+    r.startTask('task-absent', 'm')
+    r.recordTurn({
+      toolCalls: [{ name: 'Read', inputHash: 'a', success: true, latencyMs: 1 }],
+      stateFeatures: { filesTouched: 0, testsTotal: 0, testsFailing: 0, toolsUsed: ['Read'] },
+      rewardComponents: { toolSuccessRate: 1, stuckTurns: 2 },
+    })
+
+    const line = JSON.parse(readFileSync(join(dir, 'task-absent.jsonl'), 'utf-8').trim())
+    expect('diffSize' in line.state_features).toBe(false)
+    expect('contextPct' in line.state_features).toBe(false)
+    expect('varietyEntropy' in line.reward_components).toBe(false)
+    expect(line.reward_components.stuckTurns).toBe(2)
+  })
+
+  it('still persists them when a caller does measure them', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'traj-present-'))
+    const r = new TrajectoryRecorder(dir)
+    r.startTask('task-present', 'm')
+    r.recordTurn(makeTurn())
+    const line = JSON.parse(readFileSync(join(dir, 'task-present.jsonl'), 'utf-8').trim())
+    expect(line.state_features.diffSize).toBe(80)
+    expect(line.state_features.contextPct).toBe(0.35)
+    expect(line.reward_components.varietyEntropy).toBe(0.69)
+  })
+})

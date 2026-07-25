@@ -21,19 +21,25 @@ export type ToolCallRecord = {
   latencyMs: number
 }
 
+/**
+ * diffSize and contextPct are optional because not every call site measures
+ * them. An absent field is honest; a 0 is a claim — and a persisted 0 is
+ * indistinguishable from a measured zero for every consumer downstream.
+ */
 export type StateFeatures = {
   filesTouched: number
-  diffSize: number
+  diffSize?: number
   testsTotal: number
   testsFailing: number
   toolsUsed: string[]
-  contextPct: number
+  contextPct?: number
 }
 
+/** varietyEntropy is optional for the same reason as diffSize — see above. */
 export type RewardComponents = {
   toolSuccessRate: number
   stuckTurns: number
-  varietyEntropy: number
+  varietyEntropy?: number
 }
 
 export type TurnRecord = {
