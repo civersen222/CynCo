@@ -169,8 +169,24 @@ describe('buildComponents — testsUnmodified safety gate', () => {
     expect(c.testsUnmodified).toBe(1)
   })
 
-  it('is 1 (not unknown) when git is unavailable — a gate must not degrade', () => {
-    expect(buildComponents(base()).testsUnmodified).toBe(1)
+  it('is unknown when git is unavailable — the gate could not look', () => {
+    // Previously 1: the only anti-reward-hacking check in the pipeline reported
+    // "the agent did not weaken the tests" about a diff nobody read. diffClean,
+    // thirty lines below, already degrades to 'unknown' on the identical input.
+    expect(buildComponents(base()).testsUnmodified).toBe('unknown')
+  })
+
+  it('degrades to unknown on exactly the same input that makes diffClean unknown', () => {
+    const c = buildComponents(base())
+    expect(c.diffClean).toBe('unknown')
+    expect(c.testsUnmodified).toBe('unknown')
+  })
+
+  it('is a measured 1 when git IS available and nothing weakened the tests', () => {
+    const c = buildComponents(base({
+      git: { changed: [{ path: 'src/a.ts', added: 10, deleted: 2 }], removed: [], dirty: [] },
+    }))
+    expect(c.testsUnmodified).toBe(1)
   })
 })
 

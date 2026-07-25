@@ -75,9 +75,15 @@ function lastObservation(obs: TestObservation[]): TestObservation | null {
  * Binary files are excluded from the net-line-loss calculation because git
  * reports `-` for their line counts, which are set to 0. Treating an
  * unmeasured binary fixture as "weakening" would punish legitimate work.
+ *
+ * Returns 'unknown' when there are no git facts to read. A gate that reports
+ * "passed" about a diff nobody looked at is worse than one that admits it
+ * could not look: the 1 was indistinguishable in the persisted record from a
+ * 1 someone actually verified. computeReward only vetoes on a measured 0, so
+ * 'unknown' does not fail the task — it discloses that the check did not run.
  */
-function assessTestsUnmodified(git: GitFacts | null): 0 | 1 {
-  if (!git) return 1
+function assessTestsUnmodified(git: GitFacts | null): RewardComponents['testsUnmodified'] {
+  if (!git) return 'unknown'
   if (git.removed.some(isTestPath)) return 0
 
   const testChanges = git.changed.filter(c => isTestPath(c.path) && !c.binary)
