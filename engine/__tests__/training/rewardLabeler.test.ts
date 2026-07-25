@@ -2,7 +2,7 @@ import { describe, expect, it, beforeEach } from 'bun:test'
 import { mkdtempSync, readFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { computeReward, finalizeTask } from '../../training/rewardLabeler.js'
+import { computeReward, finalizeTask, hasOutcomeEvidence } from '../../training/rewardLabeler.js'
 import type { RewardComponents, TaskReward } from '../../training/rewardLabeler.js'
 
 // ─── Helpers ──────────────────────────────────────────────────────
@@ -344,5 +344,118 @@ describe('finalizeTask — labelerVersion', () => {
       stuckTurns: 0, iterFraction: 0, userSatisfaction: 0, testsUnmodified: 1,
     }, dir)
     expect(r.degenerate).toBe(true)
+  })
+})
+
+// ─── Outcome evidence (hygiene is not outcome) ────────────────────
+
+describe('hasOutcomeEvidence', () => {
+  const blank = (): RewardComponents => ({
+    testsPass: 'unknown', typecheckPass: 'unknown', buildPass: 'unknown',
+    diffClean: 'unknown', taskCompleted: 'unknown',
+    stuckTurns: 0, iterFraction: 0, userSatisfaction: 0, testsUnmodified: 1,
+  })
+
+  it('is false when nothing at all was measured', () => {
+    expect(hasOutcomeEvidence(blank())).toBe(false)
+  })
+
+  it('is true when a test run was observed', () => {
+    expect(hasOutcomeEvidence({ ...blank(), testsPass: 0 })).toBe(true)
+  })
+
+  it('is true when task completion was observed', () => {
+    expect(hasOutcomeEvidence({ ...blank(), taskCompleted: 0 })).toBe(true)
+  })
+
+  it('is false for hygiene components alone — they are not outcome', () => {
+    expect(hasOutcomeEvidence({ ...blank(), diffClean: 1 })).toBe(false)
+    expect(hasOutcomeEvidence({ ...blank(), typecheckPass: 1 })).toBe(false)
+    expect(hasOutcomeEvidence({ ...blank(), buildPass: 1 })).toBe(false)
+    expect(hasOutcomeEvidence({ ...blank(), typecheckPass: 1, buildPass: 1, diffClean: 1 })).toBe(false)
+  })
+})
+
+describe('finalizeTask — hygiene alone cannot qualify a row', () => {
+  it('marks the do-nothing task degenerate instead of rewarding it ~1.0', () => {
+    // The saturation bug relocated to the denominator: diffClean is measured on
+    // any git repo and a clean tree scores 1, so an agent that did nothing at
+    // all scored base 1.0 on a denominator of 0.1.
+    const dir = mkdtempSync(join(tmpdir(), 'reward-nothing-'))
+    const r = finalizeTask('task-nothing', 1, {
+      testsPass: 'unknown', typecheckPass: 'unknown', buildPass: 'unknown',
+      diffClean: 1, taskCompleted: 'unknown',
+      stuckTurns: 0, iterFraction: 0, userSatisfaction: 0, testsUnmodified: 1,
+    }, dir)
+    expect(r.reward).toBe(1.0)      // the raw score is still a weighted mean
+    expect(r.degenerate).toBe(true) // but the row carries no outcome evidence
+    const parsed: TaskReward = JSON.parse(readFileSync(join(dir, 'task-nothing.reward.json'), 'utf-8'))
+    expect(parsed.degenerate).toBe(true)
+  })
+
+  it('marks a row degenerate when only typecheck and build were measured', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'reward-hygiene-'))
+    const r = finalizeTask('task-hygiene', 4, {
+      testsPass: 'unknown', typecheckPass: 1, buildPass: 1,
+      diffClean: 1, taskCompleted: 'unknown',
+      stuckTurns: 0, iterFraction: 0, userSatisfaction: 0, testsUnmodified: 1,
+    }, dir)
+    expect(r.degenerate).toBe(true)
+  })
+
+  it('keeps a row with a real test run, however hygiene went', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'reward-outcome-'))
+    const r = finalizeTask('task-outcome', 9, {
+      testsPass: 0.5, typecheckPass: 'unknown', buildPass: 'unknown',
+      diffClean: 'unknown', taskCompleted: 'unknown',
+      stuckTurns: 0, iterFraction: 0, userSatisfaction: 0, testsUnmodified: 1,
+    }, dir)
+    expect(r.degenerate).toBeUndefined()
+  })
+
+  it('keeps a row whose only outcome measurement is a failed task', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'reward-failed-'))
+    const r = finalizeTask('task-failed', 30, {
+      testsPass: 'unknown', typecheckPass: 'unknown', buildPass: 'unknown',
+      diffClean: 0, taskCompleted: 0,
+      stuckTurns: 0, iterFraction: 0, userSatisfaction: 0, testsUnmodified: 1,
+    }, dir)
+    expect(r.degenerate).toBeUndefined()
+  })
+
+  it('does not make a row degenerate merely because the safety gate could not run', () => {
+    // testsUnmodified: 'unknown' is disclosure, not disqualification — the row
+    // still carries a measured test outcome.
+    const dir = mkdtempSync(join(tmpdir(), 'reward-nogate-'))
+    const r = finalizeTask('task-nogate', 6, {
+      testsPass: 1, typecheckPass: 'unknown', buildPass: 'unknown',
+      diffClean: 'unknown', taskCompleted: 'unknown',
+      stuckTurns: 0, iterFraction: 0, userSatisfaction: 0, testsUnmodified: 'unknown',
+    }, dir)
+    expect(r.degenerate).toBeUndefined()
+    const parsed: TaskReward = JSON.parse(readFileSync(join(dir, 'task-nogate.reward.json'), 'utf-8'))
+    expect(parsed.components.testsUnmodified).toBe('unknown')
+  })
+})
+
+// ─── The safety gate when it could not look (2026-07-25) ──────────
+
+describe('computeReward — testsUnmodified unknown', () => {
+  it('does not veto when the gate could not run', () => {
+    const r = computeReward({
+      testsPass: 1, typecheckPass: 'unknown', buildPass: 'unknown',
+      diffClean: 'unknown', taskCompleted: 'unknown',
+      stuckTurns: 0, iterFraction: 0, userSatisfaction: 0, testsUnmodified: 'unknown',
+    })
+    expect(r).toBe(1.0)
+  })
+
+  it('still vetoes on a measured 0', () => {
+    const r = computeReward({
+      testsPass: 1, typecheckPass: 'unknown', buildPass: 'unknown',
+      diffClean: 'unknown', taskCompleted: 'unknown',
+      stuckTurns: 0, iterFraction: 0, userSatisfaction: 0, testsUnmodified: 0,
+    })
+    expect(r).toBe(-1.0)
   })
 })

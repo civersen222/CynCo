@@ -25,7 +25,11 @@ export type RewardComponents = {
   stuckTurns: number
   iterFraction: number           // turns / 500
   userSatisfaction: -1 | 0 | 1
-  testsUnmodified: 0 | 1         // 0 = agent weakened tests = reward hacking. Never 'unknown'.
+  // 0 = agent weakened tests = reward hacking. 'unknown' = the gate could not
+  // run at all (no git repo, unresolvable base sha), which is disclosed in the
+  // persisted record rather than papered over with a 1. A 1 here is a claim
+  // that someone looked at the diff and found the tests intact.
+  testsUnmodified: ComponentValue
 }
 
 export type TaskReward = {
@@ -75,6 +79,24 @@ export function positiveBase(c: RewardComponents): { base: number; known: number
 }
 
 /**
+ * Did anything about the OUTCOME of the task actually get measured?
+ *
+ * testsPass and taskCompleted are the only two components that say whether the
+ * work worked. typecheckPass, buildPass and diffClean are hygiene: they are
+ * measured constantly and say nothing about whether the assigned job was done.
+ * diffClean in particular is measured on any git repo and scores 1 for an
+ * empty dirty list, so a task where the agent did nothing at all would
+ * otherwise produce a full-marks row on a denominator of 0.1.
+ */
+export function hasOutcomeEvidence(c: RewardComponents): boolean {
+  for (const key of ['testsPass', 'taskCompleted'] as const) {
+    const v = c[key]
+    if (typeof v === 'number' && !Number.isNaN(v)) return true
+  }
+  return false
+}
+
+/**
  * Compute a scalar reward in [-1, 1] from task outcome components.
  *
  * Anti-reward-hacking gate: testsUnmodified == 0 -> reward = -1.0 immediately.
@@ -116,7 +138,6 @@ export function finalizeTask(
   mkdirSync(dir, { recursive: true })
 
   const reward = computeReward(components)
-  const { known } = positiveBase(components)
 
   const result: TaskReward = {
     taskId,
@@ -124,7 +145,13 @@ export function finalizeTask(
     components,
     reward,
     labelerVersion: 2,
-    ...(known === 0 ? { degenerate: true } : {}),
+    // Degenerate unless the OUTCOME was observed. A denominator of "something
+    // was measured" is not enough: hygiene alone is not evidence that any work
+    // happened, and a clean tree with no test run scored 1.0 on diffClean
+    // alone — the saturation bug relocated from the clipping ceiling to the
+    // denominator. Hygiene cannot stand in for outcome, so it cannot qualify
+    // a row for the corpus on its own. See hasOutcomeEvidence.
+    ...(hasOutcomeEvidence(components) ? {} : { degenerate: true }),
   }
 
   const filePath = join(dir, `${taskId}.reward.json`)
