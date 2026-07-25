@@ -1,5 +1,6 @@
 import { execSync } from 'child_process'
 import type { CandidateResult, TestInfo } from './types.js'
+import { parseTestSummary } from '../bridge/testSummary.js'
 
 export function selectWinner(candidates: CandidateResult[]): CandidateResult | null {
   const valid = candidates.filter((c) => c.patch.trim().length > 0)
@@ -17,44 +18,8 @@ export function parseTestOutput(
   output: string,
   framework: string
 ): { passed: number; total: number } {
-  switch (framework) {
-    case 'pytest': {
-      const passedMatch = output.match(/(\d+) passed/)
-      const failedMatch = output.match(/(\d+) failed/)
-      const passed = passedMatch ? parseInt(passedMatch[1], 10) : 0
-      const failed = failedMatch ? parseInt(failedMatch[1], 10) : 0
-      return { passed, total: passed + failed }
-    }
-    case 'jest': {
-      const passedMatch = output.match(/(\d+) passed/)
-      const totalMatch = output.match(/(\d+) total/)
-      const passed = passedMatch ? parseInt(passedMatch[1], 10) : 0
-      const total = totalMatch ? parseInt(totalMatch[1], 10) : passed
-      return { passed, total }
-    }
-    case 'bun': {
-      const passMatch = output.match(/(\d+) pass/)
-      const failMatch = output.match(/(\d+) fail/)
-      const passed = passMatch ? parseInt(passMatch[1], 10) : 0
-      const failed = failMatch ? parseInt(failMatch[1], 10) : 0
-      return { passed, total: passed + failed }
-    }
-    case 'cargo': {
-      const passedMatch = output.match(/(\d+) passed/)
-      const failedMatch = output.match(/(\d+) failed/)
-      const passed = passedMatch ? parseInt(passedMatch[1], 10) : 0
-      const failed = failedMatch ? parseInt(failedMatch[1], 10) : 0
-      return { passed, total: passed + failed }
-    }
-    case 'go': {
-      const lines = output.split('\n')
-      const passed = lines.filter((l) => /^ok\s/.test(l)).length
-      const failed = lines.filter((l) => /^FAIL\s/.test(l)).length
-      return { passed, total: passed + failed }
-    }
-    default:
-      return { passed: 0, total: 0 }
-  }
+  const summary = parseTestSummary(framework, output)
+  return summary ? { passed: summary.passed, total: summary.total } : { passed: 0, total: 0 }
 }
 
 export function runTests(
