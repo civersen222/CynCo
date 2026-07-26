@@ -30,6 +30,14 @@ export function fileModifiedAssertion(file: string): string {
 export function fileExistsAssertion(file: string): string {
   return `File ${file} exists after changes`
 }
+/**
+ * "Delete X" is a claim about absence, and git diff is the wrong instrument for
+ * it: an untracked scratch file can never show a diff, and a deleted file has
+ * nothing left to diff. The filesystem answers this one directly.
+ */
+export function fileAbsentAssertion(file: string): string {
+  return `File ${file} no longer exists after changes`
+}
 export const COMMITTED_ASSERTION = 'Changes committed to git'
 
 /**
@@ -44,6 +52,7 @@ export function commandAssertion(command: string): string {
 export type AssertionCheck =
   | { kind: 'file_modified'; path: string }
   | { kind: 'file_exists'; path: string }
+  | { kind: 'file_absent'; path: string }
   | { kind: 'committed' }
   | { kind: 'command'; command: string }
 
@@ -51,6 +60,10 @@ export type AssertionCheck =
 export function assertionCheck(text: string): AssertionCheck | null {
   const modified = /^File (.+) was modified \(git diff shows changes\)$/.exec(text)
   if (modified) return { kind: 'file_modified', path: modified[1] }
+  // Before the existence pattern, whose greedy capture would otherwise read the
+  // absence template as a path ending in "no longer".
+  const absent = /^File (.+) no longer exists after changes$/.exec(text)
+  if (absent) return { kind: 'file_absent', path: absent[1] }
   const exists = /^File (.+) exists after changes$/.exec(text)
   if (exists) return { kind: 'file_exists', path: exists[1] }
   if (text === COMMITTED_ASSERTION) return { kind: 'committed' }
@@ -93,6 +106,12 @@ export async function verifyAssertion(
     return probe.exists(check.path)
       ? { status: 'confirmed' }
       : { status: 'contradicted', detail: `${check.path} does not exist on disk.` }
+  }
+
+  if (check.kind === 'file_absent') {
+    return probe.exists(check.path)
+      ? { status: 'contradicted', detail: `${check.path} is still on disk.` }
+      : { status: 'confirmed' }
   }
 
   // The only check that needs no git and no baseline: a person wrote the command

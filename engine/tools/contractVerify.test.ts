@@ -9,6 +9,7 @@ import {
   gitProbe,
   fileModifiedAssertion,
   fileExistsAssertion,
+  fileAbsentAssertion,
   COMMITTED_ASSERTION,
   type RepoProbe,
 } from './contractVerify.js'
@@ -24,6 +25,53 @@ describe('assertionCheck — recovering the claim from engine-generated text', (
   test('a judgement-call assertion has no machine check', () => {
     expect(assertionCheck('Analysis or answer was provided to the user')).toBeNull()
     expect(assertionCheck('Task was completed — user request fully addressed')).toBeNull()
+  })
+
+  test('an absence claim is not mistaken for an existence claim', () => {
+    // Both templates start `File <path> ` and end `exists after changes`, and the
+    // path capture is greedy, so the exists pattern will happily swallow
+    // "realm_eb29375.py no longer" as a path unless absence is read first.
+    expect(assertionCheck(fileAbsentAssertion('realm_eb29375.py'))).toEqual({
+      kind: 'file_absent',
+      path: 'realm_eb29375.py',
+    })
+  })
+})
+
+/**
+ * Watched live on L2f: the brief's first task was "Delete `realm_eb29375.py` from
+ * the repo root", and the auto-contract turned it into "File realm_eb29375.py was
+ * modified (git diff shows changes)". The file was UNTRACKED, so no git diff could
+ * ever show a change to it, and once deleted it did not exist at all — an
+ * assertion nothing could satisfy, attached to an instruction that was carried out
+ * correctly within seconds. CynCo read it and rationalised: "this means the file
+ * should be deleted (modification includes deletion)".
+ *
+ * A deletion is a claim about absence. git diff is the wrong instrument.
+ */
+describe('verifyAssertion — a deletion is settled by absence', () => {
+  test('confirmed when the file is gone', async () => {
+    const v = await verifyAssertion({ kind: 'file_absent', path: 'scratch.py' }, probe({ exists: () => false }), 'aaaaaaaa')
+    expect(v.status).toBe('confirmed')
+  })
+
+  test('contradicted while the file is still there', async () => {
+    const v = await verifyAssertion({ kind: 'file_absent', path: 'scratch.py' }, probe({ exists: () => true }), 'aaaaaaaa')
+    expect(v.status).toBe('contradicted')
+  })
+
+  test('needs no git and no baseline — the filesystem answers on its own', async () => {
+    const v = await verifyAssertion(
+      { kind: 'file_absent', path: 'scratch.py' },
+      probe({
+        exists: () => false,
+        head: async () => null,
+        isDirty: async () => null,
+        changedSince: async () => null,
+      }),
+      null,
+    )
+    expect(v.status).toBe('confirmed')
   })
 })
 

@@ -164,6 +164,65 @@ describe('assertions are grounded in the workspace at creation time', () => {
     ])
   })
 
+  /**
+   * Watched live on L2f. The brief's first task was "Delete `realm_eb29375.py`
+   * from the repo root" — a scratch file the previous run had left behind. The
+   * generator saw a change verb in the sentence and asserted "File
+   * realm_eb29375.py was modified (git diff shows changes)". The file was
+   * untracked, so no git diff could ever show a change to it, and once deleted it
+   * did not exist at all: an unsatisfiable assertion attached to the one
+   * instruction CynCo carried out correctly within seconds. It read the assertion
+   * and rationalised — "this means the file should be deleted (modification
+   * includes deletion)" — which happens to be right here and would be wrong in
+   * general.
+   *
+   * The intent is absence, so the assertion has to be about absence.
+   */
+  it('asking for a file to be deleted asserts its absence, not a diff', () => {
+    const c = new ContractState()
+    const cwd = workspace('realm_eb29375.py')
+    maybeAutoCreateContract('Delete `realm_eb29375.py` from the repo root.', cwd, c)
+    expect(c.snapshot().assertions[0].text).toBe('File realm_eb29375.py no longer exists after changes')
+  })
+
+  it('recognizes the plain unquoted form', () => {
+    const c = new ContractState()
+    const cwd = workspace('scratch.py')
+    maybeAutoCreateContract('remove scratch.py, it should never have been committed', cwd, c)
+    expect(c.snapshot().assertions[0].text).toBe('File scratch.py no longer exists after changes')
+  })
+
+  /**
+   * The distinction that makes this safe: a delete verb whose object is something
+   * INSIDE the file is a mandate to edit the file, not to remove it. Both phrasings
+   * put "delete" and a path in one sentence, so sentence scope cannot separate
+   * them — adjacency can.
+   */
+  it('deleting something INSIDE a file is still a modify mandate', () => {
+    const c = new ContractState()
+    const cwd = workspace('gilded/grip.py')
+    maybeAutoCreateContract('delete the fallback branch in gilded/grip.py', cwd, c)
+    expect(c.snapshot().assertions[0].text).toBe('File gilded/grip.py was modified (git diff shows changes)')
+  })
+
+  it('and so is stripping the unused imports out of one', () => {
+    const c = new ContractState()
+    const cwd = workspace('gilded/grip.py')
+    maybeAutoCreateContract('gilded/grip.py — remove the unused imports at the top', cwd, c)
+    expect(c.snapshot().assertions[0].text).toBe('File gilded/grip.py was modified (git diff shows changes)')
+  })
+
+  it('does not conjure an absence assertion for a file that is already gone', () => {
+    // Nothing to ask for: the workspace does not have it, and "delete X" is not a
+    // request to bring X into existence either.
+    const c = new ContractState()
+    maybeAutoCreateContract('delete stale_scratch.py from the root', workspace(), c)
+    expect(c.snapshot().assertions.map(a => a.text)).toEqual([
+      'Code was modified to address the task',
+      'Changes committed to git',
+    ])
+  })
+
   it('the create verb still counts when it is attached to the filename', () => {
     const c = new ContractState()
     maybeAutoCreateContract(

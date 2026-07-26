@@ -15,7 +15,12 @@
 import { existsSync } from 'node:fs'
 import { isAbsolute, resolve } from 'node:path'
 import { ContractState, globalContract } from '../tools/contract.js'
-import { COMMITTED_ASSERTION, fileExistsAssertion, fileModifiedAssertion } from '../tools/contractVerify.js'
+import {
+  COMMITTED_ASSERTION,
+  fileAbsentAssertion,
+  fileExistsAssertion,
+  fileModifiedAssertion,
+} from '../tools/contractVerify.js'
 
 export type HarnessContractSpec = {
   title: string
@@ -97,6 +102,37 @@ function asksToChange(text: string, file: string): boolean {
   return sentencesMentioning(text, file).some(s => CHANGE_VERB.test(s))
 }
 
+/**
+ * A delete verb sitting directly on the path, with nothing but an article, the
+ * word "file", or an opening quote between them.
+ *
+ * Sentence scope cannot separate the two meanings of "delete X.py": removing the
+ * file, and removing something inside it. Adjacency can. "Delete
+ * `realm_eb29375.py` from the repo root" puts the verb on the path; "delete the
+ * fallback branch in gilded/grip.py" puts a noun phrase in between, and that one
+ * is a mandate to edit the file, not to remove it.
+ */
+const DELETE_ON_PATH = /\b(delete|remove|rm|drop)\s+(the\s+)?(scratch\s+|stale\s+|leftover\s+|temp(orary)?\s+)?(file\s+)?[`'"(]?$/i
+
+/**
+ * Does the message ask for *this* file to stop existing?
+ *
+ * Watched live on L2f: "Delete `realm_eb29375.py` from the repo root" became
+ * "File realm_eb29375.py was modified (git diff shows changes)". The file was
+ * untracked, so git diff could never show a change to it, and once deleted there
+ * was nothing left to diff — an unsatisfiable assertion bolted to the one
+ * instruction the run carried out correctly and immediately.
+ */
+function asksToDelete(text: string, file: string): boolean {
+  let from = 0
+  for (;;) {
+    const at = text.indexOf(file, from)
+    if (at < 0) return false
+    if (DELETE_ON_PATH.test(text.slice(Math.max(0, at - CREATE_VERB_REACH), at))) return true
+    from = at + file.length
+  }
+}
+
 export function synthesizeMessageAssertions(text: string, cwd: string): string[] {
   const lowerText = text.toLowerCase()
   const assertions: string[] = []
@@ -117,8 +153,10 @@ export function synthesizeMessageAssertions(text: string, cwd: string): string[]
       if (existsSync(isAbsolute(f) ? f : resolve(cwd, f))) {
         // It is there, so "exists after changes" is true before a keystroke is
         // typed. The claim worth making is that the work touched it — but only
-        // where the message actually asked for that.
-        if (asksToChange(text, f)) assertions.push(fileModifiedAssertion(f))
+        // where the message actually asked for that, and removal is a different
+        // claim from modification.
+        if (asksToDelete(text, f)) assertions.push(fileAbsentAssertion(f))
+        else if (asksToChange(text, f)) assertions.push(fileModifiedAssertion(f))
       } else if (asksToCreate(text, f)) {
         assertions.push(fileExistsAssertion(f))
       }
