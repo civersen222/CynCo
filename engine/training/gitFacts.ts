@@ -11,8 +11,19 @@ import { execSync } from 'child_process'
  * `binary: true` means git reported `-` for the line counts. Line counts are
  * meaningless for that file, so consumers must treat it as unmeasured rather
  * than reading `added: 0, deleted: 0` as "nothing changed".
+ *
+ * `assertions` and `skips` are net deltas over the same diff — populated only
+ * for non-binary test paths, and left undefined when the per-file diff could
+ * not be read. Undefined means "not measured", never zero.
  */
-export type ChangedFile = { path: string; added: number; deleted: number; binary?: true }
+export type ChangedFile = {
+  path: string
+  added: number
+  deleted: number
+  binary?: true
+  assertions?: number
+  skips?: number
+}
 
 export type GitFacts = {
   changed: ChangedFile[]
@@ -79,6 +90,55 @@ function unquote(s: string): string {
   return Buffer.from(bytes).toString('utf-8')
 }
 
+/**
+ * A line that CHECKS something.
+ *
+ * The safety gate needs to tell "the agent deleted dead scaffolding" from "the
+ * agent deleted the line that fails when the code is wrong", and line counts
+ * cannot: a brief whose own instruction is "trim this file" makes a shrinking
+ * test file the correct outcome.
+ *
+ * Deliberately loose, and safe for being loose: the same pattern is applied to
+ * both sides of one diff, so a false positive on an added line cancels against
+ * the removed line it replaced. Only the direction of the net delta is read.
+ */
+const ASSERTION_LINE =
+  /\bassert\w*|\bexpect\s*\(|\.to[A-Z]\w*\s*\(|\bshould\b|\bt\.(Error|Fatal)f?\b|\b(pytest\.)?raises\b|\btoThrow\b/
+
+/** Introducing one of these disables a test without deleting a single line. */
+const SKIP_MARKER =
+  /\b(it|test|describe|context)\.(skip|todo|only)\b|\bx(it|describe)\s*\(|@pytest\.mark\.(skip|skipif|xfail)|@unittest\.skip|\bt\.Skip(Now)?\b|\bpytest\.skip\b/
+
+/**
+ * Net assertion and skip deltas for one file between `range` and the worktree,
+ * or null when the diff could not be read — which is "not measured".
+ */
+function countTestSignals(cwd: string, range: string, path: string): { assertions: number; skips: number } | null {
+  // The path is interpolated into a shell command, so anything that would need
+  // real quoting is declined rather than guessed at. This also catches the
+  // C-quoted paths numstat emits for non-ASCII names, which begin with `"`.
+  if (/["`$\n]/.test(path)) return null
+  let diff: string
+  try {
+    diff = git(cwd, `diff -U0 ${range} -- "${path}"`)
+  } catch {
+    return null
+  }
+  let assertions = 0
+  let skips = 0
+  for (const line of diff.split('\n')) {
+    // `+++`/`---` are the file headers, not content.
+    if (line.startsWith('+++') || line.startsWith('---')) continue
+    const sign = line[0]
+    if (sign !== '+' && sign !== '-') continue
+    const body = line.slice(1)
+    const delta = sign === '+' ? 1 : -1
+    if (ASSERTION_LINE.test(body)) assertions += delta
+    if (SKIP_MARKER.test(body)) skips += delta
+  }
+  return { assertions, skips }
+}
+
 function git(cwd: string, args: string): string {
   return execSync(`git ${args}`, { cwd, stdio: ['pipe', 'pipe', 'pipe'], maxBuffer: 8 * 1024 * 1024 })
     .toString()
@@ -121,12 +181,23 @@ export function collectGitFacts(cwd: string, baseSha: string | null): GitFacts |
       const m = line.trim().match(/^(\d+|-)\t(\d+|-)\t(.+)$/)
       if (!m) continue
       const binary = m[1] === '-' || m[2] === '-'
-      changed.push({
-        path: m[3].replace(/\\/g, '/'),
+      const path = m[3].replace(/\\/g, '/')
+      const entry: ChangedFile = {
+        path,
         added: binary ? 0 : parseInt(m[1], 10),
         deleted: binary ? 0 : parseInt(m[2], 10),
         ...(binary ? { binary: true as const } : {}),
-      })
+      }
+      // One extra `git diff` per changed test file. Only test files, because
+      // this is the only consumer's question and product diffs can be huge.
+      if (!binary && isTestPath(path)) {
+        const signals = countTestSignals(cwd, range, path)
+        if (signals) {
+          entry.assertions = signals.assertions
+          entry.skips = signals.skips
+        }
+      }
+      changed.push(entry)
     }
 
     const removed = git(cwd, `diff --name-only --diff-filter=D ${range}`)

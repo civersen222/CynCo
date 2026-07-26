@@ -112,3 +112,92 @@ describe('collectGitFacts', () => {
     expect(test.deleted).toBeGreaterThan(test.added)
   })
 })
+
+describe('collectGitFacts — assertion and skip deltas on test files', () => {
+  let repo: string
+  let baseSha: string
+  const run = (c: string, cwd: string) => execSync(c, { cwd, stdio: 'pipe' })
+
+  const ORIGINAL = [
+    'import pytest',
+    '',
+    'def test_real_one():',
+    '    x = compute()',
+    '    assert x == 1',
+    '',
+    'def test_real_two():',
+    '    y = other()',
+    '    assert y == 2',
+    '',
+    '# abandoned exploratory scaffolding below',
+    'def _dead_helper():',
+    '    a = 1',
+    '    b = 2',
+    '    return a + b',
+    '',
+  ].join('\n')
+
+  beforeEach(() => {
+    repo = mkdtempSync(join(tmpdir(), 'gitsignals-'))
+    run('git init -q', repo)
+    run('git config user.email t@t.t', repo)
+    run('git config user.name t', repo)
+    mkdirSync(join(repo, 'tests'), { recursive: true })
+    writeFileSync(join(repo, 'app.py'), 'def compute():\n    return 1\n')
+    writeFileSync(join(repo, 'tests', 'test_app.py'), ORIGINAL)
+    run('git add -A', repo)
+    run('git commit -q -m base', repo)
+    baseSha = execSync('git rev-parse HEAD', { cwd: repo }).toString().trim()
+  })
+
+  const signals = () => {
+    const facts = collectGitFacts(repo, baseSha)!
+    return facts.changed.find(c => c.path === 'tests/test_app.py')!
+  }
+
+  it('reports assertions: 0 when only dead scaffolding is deleted', () => {
+    // The L2e case. The file shrinks a lot and loses nothing that checks anything.
+    writeFileSync(
+      join(repo, 'tests', 'test_app.py'),
+      ORIGINAL.split('\n').slice(0, 10).join('\n') + '\n'
+    )
+    const s = signals()
+    expect(s.deleted).toBeGreaterThan(s.added)
+    expect(s.assertions).toBe(0)
+    expect(s.skips).toBe(0)
+  })
+
+  it('reports a negative assertion delta when a check is removed', () => {
+    writeFileSync(join(repo, 'tests', 'test_app.py'), ORIGINAL.replace('    assert y == 2\n', ''))
+    expect(signals().assertions).toBe(-1)
+  })
+
+  it('reports a positive assertion delta when checks are added', () => {
+    writeFileSync(join(repo, 'tests', 'test_app.py'), ORIGINAL + '\ndef test_new():\n    assert compute() == 1\n')
+    expect(signals().assertions).toBe(1)
+  })
+
+  it('counts an introduced skip marker even when nothing else changes', () => {
+    writeFileSync(
+      join(repo, 'tests', 'test_app.py'),
+      ORIGINAL.replace('def test_real_two():', '@pytest.mark.skip\ndef test_real_two():')
+    )
+    const s = signals()
+    expect(s.skips).toBe(1)
+    expect(s.assertions).toBe(0)
+  })
+
+  it('leaves assertions and skips undefined for product files', () => {
+    writeFileSync(join(repo, 'app.py'), 'def compute():\n    return 2\n')
+    const facts = collectGitFacts(repo, baseSha)!
+    const app = facts.changed.find(c => c.path === 'app.py')!
+    expect(app.assertions).toBeUndefined()
+    expect(app.skips).toBeUndefined()
+  })
+
+  it('reports the full assertion loss of a test file deleted outright', () => {
+    rmSync(join(repo, 'tests', 'test_app.py'))
+    const s = signals()
+    expect(s.assertions).toBe(-2)
+  })
+})

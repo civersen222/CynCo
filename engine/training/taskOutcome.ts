@@ -10,7 +10,7 @@
  * Pure — git access is the caller's job (see gitFacts.ts).
  */
 
-import { isTestPath, type GitFacts } from './gitFacts.js'
+import { isTestPath, type ChangedFile, type GitFacts } from './gitFacts.js'
 import type { RewardComponents } from './rewardLabeler.js'
 
 export type TestObservation = { passed: number; total: number }
@@ -115,42 +115,86 @@ function assessTestsPass(
  *
  * CynCo does TDD, so writing tests is frequently the assigned job — a gate that
  * fired on any test-file edit would hard-fail every legitimate red-green task,
- * which is almost certainly why it was previously hardcoded to 1. It fires on:
- *   - a test file deleted outright, or
- *   - any single test file losing more lines than it gains, while product code
- *     also changed.
- * Adding tests is free. Gutting a suite to make it pass is -1.0.
+ * which is almost certainly why it was previously hardcoded to 1. It fires when
+ * a test file loses coverage while product code also changed. Adding tests is
+ * free. Gutting a suite to make it pass is -1.0.
  *
- * It is deliberately strict: a legitimate test tidy-up that shrinks a file
- * alongside a product change scores a false -1.0. That costs one mislabeled
- * row, which becomes a DPO negative and is recoverable. A false 1.0 on a
- * gutted suite teaches the model that gutting is excellent work, which is the
- * exact failure this whole pipeline repair exists to prevent.
+ * What "losing coverage" means is the whole difficulty, and net line loss was
+ * the wrong proxy for it. Watched live on L2e: the brief's own second task was
+ * "delete the abandoned first half of this test". CynCo did exactly that —
+ * 114 lines to 50, both real assertions kept, suite green, all five authored
+ * contract assertions verified by real commands, taskCompleted a measured 1 —
+ * and the line-count rule vetoed the run to -1.0. The corpus's first negative
+ * was a false one, earned by following instructions.
  *
- * Binary files are excluded from the net-line-loss calculation because git
- * reports `-` for their line counts, which are set to 0. Treating an
- * unmeasured binary fixture as "weakening" would punish legitimate work.
+ * That is the worse failure direction. A false positive inflates a mean; a
+ * false negative of this exact shape teaches the model never to touch a test
+ * file, which is the opposite of the behaviour this pipeline exists to build.
+ * So the gate counts lines that CHECK something, and skip markers, which is the
+ * thing actually feared. Line counts survive only as a disclosed fallback for
+ * when the per-file diff could not be read.
  *
- * Returns 'unknown' when there are no git facts to read. A gate that reports
+ * That is still only a proxy. On L2e the assertion delta came out -3, because
+ * the half CynCo was told to delete was a superseded duplicate of the checks in
+ * the half it kept. Nothing cheap distinguishes "removed a redundant copy" from
+ * "removed the assertion that was failing" — so where the two are
+ * indistinguishable, the deciding question is whether anyone specified the task:
+ *
+ *   - No authored contract: the suspicion stands and scores 0. A wrong 1 on a
+ *     gutted suite is the failure this whole repair exists to prevent, and with
+ *     no spec to consult there is nothing to weigh against the suspicion.
+ *   - A harness contract, complete with no failed assertions: a person said what
+ *     done means for this task and real commands confirmed it. The engine's
+ *     unverified heuristic does not get to overrule a person's verified
+ *     specification, but it has not been cleared either — so 'unknown'.
+ *
+ * 'unknown' is the honest label rather than 1 because testsUnmodified carries no
+ * positive weight; it is purely a veto. Unknown withholds the veto without
+ * manufacturing credit.
+ *
+ * Binary files are excluded because git reports `-` for their line counts.
+ * Treating an unmeasured binary fixture as weakening would punish real work.
+ *
+ * Also 'unknown' when there are no git facts to read. A gate that reports
  * "passed" about a diff nobody looked at is worse than one that admits it
  * could not look: the 1 was indistinguishable in the persisted record from a
- * 1 someone actually verified. computeReward only vetoes on a measured 0, so
- * 'unknown' does not fail the task — it discloses that the check did not run.
+ * 1 someone actually verified.
  */
-function assessTestsUnmodified(git: GitFacts | null): RewardComponents['testsUnmodified'] {
+function assessTestsUnmodified(
+  git: GitFacts | null,
+  contract: ContractFacts | null,
+): RewardComponents['testsUnmodified'] {
   if (!git) return 'unknown'
-  if (git.removed.some(isTestPath)) return 0
 
   const testChanges = git.changed.filter(c => isTestPath(c.path) && !c.binary)
-  if (testChanges.length === 0) return 1
 
-  const productChanged = git.changed.some(c => !isTestPath(c.path))
-  if (!productChanged) return 1
+  // A skip marker disables a test without deleting a line, and no brief asks for
+  // one. It is the only unambiguous case here, so it vetoes outright.
+  if (testChanges.some(c => c.skips !== undefined && c.skips > 0)) return 0
+
+  // A deletion normally appears in the numstat diff too, so it is judged by the
+  // same rule as any other change — deleting a scratch file that asserted
+  // nothing is not weakening a suite. Only a removal the diff did not report is
+  // taken on faith, and there the safe reading is that coverage was lost.
+  const unreported = git.removed.some(p => isTestPath(p) && !testChanges.some(c => c.path === p))
 
   // Per file, not summed across files. A summed net would let an agent delete
   // 200 lines from one suite and pad another with 250 trivial cases to come out
   // positive — the evasion is one extra file away.
-  return testChanges.some(c => c.deleted > c.added) ? 0 : 1
+  const productChanged = git.changed.some(c => !isTestPath(c.path))
+  const suspected = unreported || (productChanged && testChanges.some(reduced))
+  if (!suspected) return 1
+
+  const specified = contract?.origin === 'harness' && contract.complete && contract.failed === 0
+  return specified ? 'unknown' : 0
+}
+
+function reduced(c: ChangedFile): boolean {
+  // Losing lines that check something is weakening; losing lines is not.
+  if (c.assertions !== undefined) return c.assertions < 0
+  // No per-file diff was available. Net line loss is the only evidence left,
+  // and it is the pre-existing rule: strict, and wrong about tidy-ups.
+  return c.deleted > c.added
 }
 
 export function buildComponents(input: TaskOutcomeInput): RewardComponents {
@@ -212,6 +256,6 @@ export function buildComponents(input: TaskOutcomeInput): RewardComponents {
     stuckTurns: input.stuckTurns,
     iterFraction: input.turns / 500,
     userSatisfaction: 0,
-    testsUnmodified: assessTestsUnmodified(input.git),
+    testsUnmodified: assessTestsUnmodified(input.git, input.contract),
   }
 }
