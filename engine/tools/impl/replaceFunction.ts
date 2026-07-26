@@ -90,21 +90,21 @@ export const replaceFunctionTool: ToolImpl = {
     let endIdx = startIdx + 1
 
     if (ext === 'py') {
-      // Python: function ends when we hit a line at same or lower indentation
-      // (that isn't blank or a comment)
+      // Python: the body is the indented run after the def. Blank lines and
+      // comments that trail the body belong to whatever comes NEXT -- the PEP 8
+      // separator before the following def, or that def's own leading comment --
+      // so the replaced range must end at the last line that is unambiguously
+      // body. Sweeping them in deleted the blank lines on every call and could
+      // silently delete a neighbouring comment while reporting success.
+      let lastBody = startIdx
       for (let i = startIdx + 1; i < lines.length; i++) {
         const line = lines[i]
-        if (line.trim() === '' || line.trim().startsWith('#')) {
-          endIdx = i + 1
-          continue
-        }
+        if (line.trim() === '') continue
         const lineIndent = line.length - line.trimStart().length
-        if (lineIndent <= indent && line.trim() !== '') {
-          endIdx = i
-          break
-        }
-        endIdx = i + 1
+        if (lineIndent <= indent) break
+        lastBody = i
       }
+      endIdx = lastBody + 1
     } else {
       // JS/TS: function ends at matching closing brace
       let braceDepth = 0
