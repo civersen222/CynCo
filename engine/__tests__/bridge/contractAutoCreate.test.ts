@@ -137,6 +137,43 @@ describe('assertions are grounded in the workspace at creation time', () => {
       .toBe('File gilded/grip.py was modified (git diff shows changes)')
   })
 
+  /**
+   * The create-intent used to be a flag over the whole message: if the word
+   * "write" or "create" appeared anywhere, every filename-shaped token naming
+   * nothing on disk became "File X exists after changes". Every TDD instruction
+   * contains "write the test first", so on the live L2b run a correction message
+   * about `gilded/grip.py` — which mentions the bare basename `grip.py` a dozen
+   * times in prose — produced an assertion that a root-level `grip.py` would
+   * exist. The model burned four turns proving to itself that no such file was
+   * ever meant to exist, then tried to close the assertion with the wrong path.
+   *
+   * The verb has to be attached to the filename, not loose in the paragraph.
+   */
+  it('a create verb elsewhere in the message does not conjure an unrelated file', () => {
+    const c = new ContractState()
+    const cwd = workspace('gilded/grip.py')
+    maybeAutoCreateContract(
+      'Fix the disloyalty rule in gilded/grip.py. For each item: write the test FIRST, '
+      + 'run it, confirm it fails. Do not solve this by copying the rule into grip.py.',
+      cwd,
+      c,
+    )
+    expect(c.snapshot().assertions.map(a => a.text)).toEqual([
+      'File gilded/grip.py was modified (git diff shows changes)',
+      'Changes committed to git',
+    ])
+  })
+
+  it('the create verb still counts when it is attached to the filename', () => {
+    const c = new ContractState()
+    maybeAutoCreateContract(
+      'Read the whole brief before you start. Then create gilded/ledger.py for the books.',
+      workspace(),
+      c,
+    )
+    expect(c.snapshot().assertions[0].text).toBe('File gilded/ledger.py exists after changes')
+  })
+
   it('when every mined path is prose, falls back to the generic assertion', () => {
     const c = new ContractState()
     maybeAutoCreateContract('fix whatever is wrong in nowhere/absent.py today', workspace(), c)

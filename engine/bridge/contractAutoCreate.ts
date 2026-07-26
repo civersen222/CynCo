@@ -33,6 +33,32 @@ export type HarnessContractSpec = {
  * incomplete work that was in fact done. A filename-shaped token in prose is not
  * evidence that the file exists; the workspace is.
  */
+const FILE_TOKEN = /[\w./\\-]+\.(py|ts|js|tsx|jsx|rs|go|java|c|cpp|h|html|css|json|yaml|yml|toml|md)\b/g
+
+/** How far before a filename a create verb may sit and still be about that file. */
+const CREATE_VERB_REACH = 40
+
+/**
+ * Does the message ask for *this* file to be brought into existence?
+ *
+ * The create-intent used to be a flag over the whole message, which meant the
+ * word "write" anywhere turned every unrecognised filename token into a claim
+ * that the file would exist when the task closed. Every TDD instruction says
+ * "write the test first", so any correction message that mentions a bare
+ * basename in passing manufactured an assertion nothing could ever satisfy.
+ * The verb has to be attached to the filename to be about the filename.
+ */
+function asksToCreate(text: string, file: string): boolean {
+  const verb = /\b(create|write|new file)\b[^.]*$/i
+  let from = 0
+  for (;;) {
+    const at = text.indexOf(file, from)
+    if (at < 0) return false
+    if (verb.test(text.slice(Math.max(0, at - CREATE_VERB_REACH), at))) return true
+    from = at + file.length
+  }
+}
+
 export function synthesizeMessageAssertions(text: string, cwd: string): string[] {
   const lowerText = text.toLowerCase()
   const assertions: string[] = []
@@ -43,23 +69,23 @@ export function synthesizeMessageAssertions(text: string, cwd: string): string[]
   const isRunTask = /\b(run|test|execute|deploy|install|start|launch|build)\b/.test(lowerText)
 
   if (isEditTask) {
-    // Extract file targets from the message
-    const fileMatches = text.match(/[\w./\\-]+\.(py|ts|js|tsx|jsx|rs|go|java|c|cpp|h|html|css|json|yaml|yml|toml|md)\b/g)
-    const wantsNewFile = /\b(create|write|new file)\b/i.test(text)
-    if (fileMatches) {
-      for (const f of new Set(fileMatches)) {
-        if (assertions.length >= 3) break
-        if (existsSync(isAbsolute(f) ? f : resolve(cwd, f))) {
-          // It is there, so "exists after changes" is true before a keystroke is
-          // typed. The claim worth making is that the work touched it.
-          assertions.push(fileModifiedAssertion(f))
-        } else if (wantsNewFile) {
-          assertions.push(fileExistsAssertion(f))
-        }
-        // Otherwise: a filename in prose naming nothing on disk. The engine
-        // cannot tell a target from a mention, and an assertion it cannot tell
-        // the truth about is worse than one less assertion.
+    // Extract file targets from the message, keeping where each one was said.
+    const seen = new Set<string>()
+    for (const m of text.matchAll(FILE_TOKEN)) {
+      if (assertions.length >= 3) break
+      const f = m[0]
+      if (seen.has(f)) continue
+      seen.add(f)
+      if (existsSync(isAbsolute(f) ? f : resolve(cwd, f))) {
+        // It is there, so "exists after changes" is true before a keystroke is
+        // typed. The claim worth making is that the work touched it.
+        assertions.push(fileModifiedAssertion(f))
+      } else if (asksToCreate(text, f)) {
+        assertions.push(fileExistsAssertion(f))
       }
+      // Otherwise: a filename in prose naming nothing on disk. The engine
+      // cannot tell a target from a mention, and an assertion it cannot tell
+      // the truth about is worse than one less assertion.
     }
     if (assertions.length === 0) {
       assertions.push('Code was modified to address the task')
