@@ -6,6 +6,8 @@
  */
 
 import { execSync } from 'child_process'
+import { readFileSync } from 'fs'
+import { resolve } from 'path'
 
 /**
  * `binary: true` means git reported `-` for the line counts. Line counts are
@@ -15,6 +17,11 @@ import { execSync } from 'child_process'
  * `assertions` and `skips` are net deltas over the same diff — populated only
  * for non-binary test paths, and left undefined when the per-file diff could
  * not be read. Undefined means "not measured", never zero.
+ *
+ * `casesLost` counts named test cases that existed before and cannot fail now:
+ * gone entirely, or still present with nothing left that checks anything. It is
+ * measured from the two file versions rather than the diff, because a net
+ * assertion delta cannot tell deduplication from weakening and this can.
  */
 export type ChangedFile = {
   path: string
@@ -23,6 +30,7 @@ export type ChangedFile = {
   binary?: true
   assertions?: number
   skips?: number
+  casesLost?: number
 }
 
 export type GitFacts = {
@@ -139,6 +147,109 @@ function countTestSignals(cwd: string, range: string, path: string): { assertion
   return { assertions, skips }
 }
 
+/**
+ * The declaration line of a single named test case.
+ *
+ * `describe`/`context` are deliberately absent: they group cases, and counting a
+ * group as a case would report a loss every time a suite is reorganised.
+ */
+const TEST_CASE_DECL: RegExp[] = [
+  /^\s*(?:async\s+)?def\s+(test\w*)\s*\(/,
+  /^\s*func\s+(Test\w+)\s*\(/,
+  /^\s*(?:it|test)\s*(?:\.\w+)?\s*\(\s*(?:['"`])(.+?)(?:['"`])/,
+]
+
+function declaredCase(line: string): string | null {
+  for (const re of TEST_CASE_DECL) {
+    const m = re.exec(line)
+    if (m) return m[m.length - 1]
+  }
+  return null
+}
+
+/**
+ * Every named test case in `content`, mapped to how many lines inside it check
+ * something.
+ *
+ * Attribution runs to the next declaration, so a helper defined between two
+ * tests has its lines credited to the one above it. That is imprecise in the
+ * absolute, and harmless here: the same rule is applied to both versions of the
+ * file, and only cases that go from "checks something" to "checks nothing" are
+ * read out.
+ */
+function testCaseAssertions(content: string): Map<string, number> {
+  const cases = new Map<string, number>()
+  let current: string | null = null
+  for (const line of content.split('\n')) {
+    const name = declaredCase(line)
+    if (name !== null) {
+      current = name
+      // A case redeclared under one name (a table-driven `it` in a loop, a
+      // duplicate) is one case; keep whatever it has already accumulated.
+      if (!cases.has(current)) cases.set(current, 0)
+      continue
+    }
+    if (current !== null && ASSERTION_LINE.test(line)) {
+      cases.set(current, (cases.get(current) as number) + 1)
+    }
+  }
+  return cases
+}
+
+/**
+ * How many test cases in `path` can no longer fail, comparing the version at
+ * `range` with the one in the worktree. Null when the before-version could not
+ * be read, which includes a file the task created.
+ *
+ * This is the measurement that separates the two things a shrinking test file
+ * can mean. Collapsing a copy-pasted second half of a test removes assertions
+ * and loses no case; deleting a test that was failing, or replacing its body
+ * with `pass`, loses one. Watched live twice: both times a brief said "trim
+ * this file", the trim was correct, every case survived, and the net assertion
+ * delta still read as weakening.
+ */
+function countCasesLost(cwd: string, range: string, path: string): number | null {
+  if (/["`$\n]/.test(path)) return null
+  let before: string
+  try {
+    before = git(cwd, `show ${range}:"${path}"`)
+  } catch {
+    return null
+  }
+  const wasThere = testCaseAssertions(before)
+  if (wasThere.size === 0) return 0
+
+  let after: string
+  try {
+    after = readFileSync(resolve(cwd, path), 'utf-8')
+  } catch {
+    // Not on disk: the file was deleted, so every case it held is gone.
+    after = ''
+  }
+  const isThere = testCaseAssertions(after)
+
+  let gone = 0
+  let gutted = 0
+  for (const [name, asserted] of wasThere) {
+    const now = isThere.get(name)
+    if (now === undefined) gone++
+    // Still declared, but nothing in it checks anything any more. A case that
+    // cannot fail is not a case, however many lines it still has. Counted
+    // separately from `gone` because a rename cannot disguise it.
+    else if (asserted > 0 && now === 0) gutted++
+  }
+
+  let appeared = 0
+  for (const name of isThere.keys()) if (!wasThere.has(name)) appeared++
+
+  // Renaming a case makes its old name vanish, which is not a loss. Netting the
+  // names that appeared against the ones that went is the same cancellation the
+  // assertion count relies on: it costs the ability to see "deleted one test and
+  // added a trivial one", and that case still falls through to 'unknown' rather
+  // than earning credit.
+  return Math.max(0, gone - appeared) + gutted
+}
+
 function git(cwd: string, args: string): string {
   return execSync(`git ${args}`, { cwd, stdio: ['pipe', 'pipe', 'pipe'], maxBuffer: 8 * 1024 * 1024 })
     .toString()
@@ -196,6 +307,8 @@ export function collectGitFacts(cwd: string, baseSha: string | null): GitFacts |
           entry.assertions = signals.assertions
           entry.skips = signals.skips
         }
+        const lost = countCasesLost(cwd, range, path)
+        if (lost !== null) entry.casesLost = lost
       }
       changed.push(entry)
     }

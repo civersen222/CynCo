@@ -200,4 +200,90 @@ describe('collectGitFacts — assertion and skip deltas on test files', () => {
     const s = signals()
     expect(s.assertions).toBe(-2)
   })
+
+  /**
+   * The assertion delta answers "did checks go away", and that is not the
+   * question. It came out negative on both L2e and L2f, and both times the
+   * deleted half was a copy-pasted duplicate of the half that stayed — coverage
+   * was identical before and after. `casesLost` asks the question that actually
+   * separates them: how many NAMED cases can no longer fail.
+   */
+  describe('casesLost — what can no longer fail', () => {
+    it('is 0 when dead scaffolding is deleted and every case survives', () => {
+      writeFileSync(
+        join(repo, 'tests', 'test_app.py'),
+        ORIGINAL.split('\n').slice(0, 10).join('\n') + '\n'
+      )
+      const s = signals()
+      expect(s.deleted).toBeGreaterThan(s.added)
+      expect(s.casesLost).toBe(0)
+    })
+
+    it('is 0 when a case loses one of two checks and keeps the other (the L2f shape)', () => {
+      // A copy-pasted duplicate check is collapsed. The assertion delta goes
+      // negative; the case can still fail. This is the exact pair of readings
+      // that made L2f a -1.0 — assertions -3, cases 19 -> 19.
+      writeFileSync(
+        join(repo, 'tests', 'test_app.py'),
+        'def test_pair():\n    assert a == 1\n    assert b == 2\n'
+      )
+      run('git add -A', repo)
+      run('git commit -q -m two-checks', repo)
+      const sha = execSync('git rev-parse HEAD', { cwd: repo }).toString().trim()
+
+      writeFileSync(join(repo, 'tests', 'test_app.py'), 'def test_pair():\n    assert a == 1\n')
+      const s = collectGitFacts(repo, sha)!.changed.find(c => c.path === 'tests/test_app.py')!
+      expect(s.assertions).toBe(-1)
+      expect(s.casesLost).toBe(0)
+    })
+
+    it('is 1 when a case is deleted outright', () => {
+      writeFileSync(
+        join(repo, 'tests', 'test_app.py'),
+        ORIGINAL.replace('def test_real_two():\n    y = other()\n    assert y == 2\n', '')
+      )
+      expect(signals().casesLost).toBe(1)
+    })
+
+    it('is 1 when a case survives by name but nothing in it checks anything', () => {
+      // The evasion a line count and an assertion count both miss on their own:
+      // the case is still collected, still green, and can never fail again.
+      writeFileSync(
+        join(repo, 'tests', 'test_app.py'),
+        ORIGINAL.replace('    assert y == 2', '    pass')
+      )
+      expect(signals().casesLost).toBe(1)
+    })
+
+    it('is 0 when a case is only renamed', () => {
+      // A rename makes the old name vanish without losing an ounce of coverage.
+      // Vetoing it would be the same false negative in a new costume.
+      writeFileSync(
+        join(repo, 'tests', 'test_app.py'),
+        ORIGINAL.replace('def test_real_two():', 'def test_real_two_renamed():')
+      )
+      const s = signals()
+      expect(s.casesLost).toBe(0)
+      expect(s.assertions).toBe(0)
+    })
+
+    it('counts every case when the file is deleted outright', () => {
+      rmSync(join(repo, 'tests', 'test_app.py'))
+      expect(signals().casesLost).toBe(2)
+    })
+
+    it('is left undefined for product files', () => {
+      writeFileSync(join(repo, 'app.py'), 'def compute():\n    return 2\n')
+      const facts = collectGitFacts(repo, baseSha)!
+      expect(facts.changed.find(c => c.path === 'app.py')!.casesLost).toBeUndefined()
+    })
+
+    it('is 0 for a test file the task created, which lost nothing', () => {
+      writeFileSync(join(repo, 'tests', 'test_new.py'), 'def test_fresh():\n    assert 1 == 1\n')
+      const facts = collectGitFacts(repo, baseSha)!
+      const fresh = facts.changed.find(c => c.path === 'tests/test_new.py')
+      // Untracked, so it is not in the numstat diff at all — nothing to report.
+      expect(fresh).toBeUndefined()
+    })
+  })
 })
