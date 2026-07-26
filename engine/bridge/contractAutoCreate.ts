@@ -64,7 +64,13 @@ export function synthesizeMessageAssertions(text: string, cwd: string): string[]
     if (assertions.length === 0) {
       assertions.push('Code was modified to address the task')
     }
-    assertions.push(COMMITTED_ASSERTION)
+    // The engine does not get to overrule the user about what the task is. On
+    // the live L2 run this assertion was appended to a message that said "Do
+    // not commit", the model committed to satisfy the contract, and then cited
+    // that forbidden commit as its evidence.
+    if (!/\b(do not|do n't|don'?t|never|without)\s+commit(ting)?\b/i.test(text)) {
+      assertions.push(COMMITTED_ASSERTION)
+    }
   } else if (isAnalysisTask) {
     assertions.push('Analysis or answer was provided to the user')
     assertions.push('Response directly addresses what the user asked')

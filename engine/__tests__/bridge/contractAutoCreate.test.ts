@@ -147,6 +147,39 @@ describe('assertions are grounded in the workspace at creation time', () => {
   })
 })
 
+/**
+ * The commit assertion used to be appended to every edit task unconditionally,
+ * including tasks that said in as many words not to commit. That puts the model
+ * between the user's instruction and the engine's contract, and the engine wins:
+ * on the live L2 run the model committed against an explicit order and then
+ * cited its own forbidden commit as the evidence that the contract was met.
+ *
+ * The engine does not get to overrule the user about what the task is.
+ */
+describe('the commit assertion respects a do-not-commit instruction', () => {
+  const texts = [
+    'fix the rule in gilded/grip.py. Do not commit.',
+    "fix the rule in gilded/grip.py — don't commit, I'll do that",
+    'fix the rule in gilded/grip.py without committing anything',
+  ]
+
+  for (const text of texts) {
+    it(`no commit assertion for: ${text.slice(-28)}`, () => {
+      const c = new ContractState()
+      maybeAutoCreateContract(text, workspace('gilded/grip.py'), c)
+      expect(c.snapshot().assertions.map(a => a.text)).toEqual([
+        'File gilded/grip.py was modified (git diff shows changes)',
+      ])
+    })
+  }
+
+  it('an ordinary edit task still asserts the commit', () => {
+    const c = new ContractState()
+    maybeAutoCreateContract('fix the rule in gilded/grip.py please', workspace('gilded/grip.py'), c)
+    expect(c.snapshot().assertions.map(a => a.text)).toContain('Changes committed to git')
+  })
+})
+
 describe('applyHarnessContract (P4.2)', () => {
   it('valid spec → contract created verbatim', () => {
     const c = new ContractState()
