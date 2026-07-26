@@ -3497,9 +3497,12 @@ export class ConversationLoop {
     this.toolHistory.push(toolName)
     if (this.toolHistory.length > 50) this.toolHistory = this.toolHistory.slice(-50)
 
-    // Re-arm the read-loop gate whenever the model actually changes something.
-    if (!result.isError && ['Edit', 'Write', 'MultiEdit', 'ApplyPatch'].includes(toolName)) {
-      this.readLoopGate.onWrite()
+    // Re-arm the read-loop gate whenever the model actually changes something,
+    // and tell it *which* file, so the gate stops treating a post-edit look as a
+    // re-read. ReplaceFunction writes a file like any other editor; leaving it
+    // off this list meant a refactor never re-armed the gate at all.
+    if (!result.isError && ['Edit', 'Write', 'MultiEdit', 'ApplyPatch', 'ReplaceFunction'].includes(toolName)) {
+      this.readLoopGate.onWrite(toolInput.file_path as string | undefined)
     }
 
     // S4: Track file operations for structured compaction

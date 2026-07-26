@@ -1,4 +1,4 @@
-import { resolve } from 'node:path'
+import { resolve, sep } from 'node:path'
 
 export type ReadLoopVerdict =
   | { kind: 'allow' }
@@ -28,6 +28,25 @@ export function signature(toolName: string, input: any): string | null {
   }
 }
 
+/**
+ * The filesystem location a read is scoped to: the file for Read, the search
+ * root for Grep/Glob/Ls. Used to decide which remembered reads a write
+ * invalidates.
+ */
+function scopeOf(toolName: string, input: any): string | null {
+  switch (toolName) {
+    case 'Read': return input?.file_path ? norm(input.file_path) : null
+    case 'Grep': return norm(input?.path ?? '.')
+    case 'Glob': return norm(input?.path ?? '.')
+    case 'Ls':   return norm(input?.path ?? '.')
+    default:     return null
+  }
+}
+
+function covers(scope: string, written: string): boolean {
+  return written === scope || written.startsWith(scope.endsWith(sep) ? scope : scope + sep)
+}
+
 function describe(toolName: string, input: any): string {
   switch (toolName) {
     case 'Read': return input?.file_path ?? 'this file'
@@ -39,7 +58,8 @@ function describe(toolName: string, input: any): string {
 }
 
 export class ReadLoopGate {
-  private seen = new Set<string>()
+  // signature -> the filesystem scope it covers, so a write can un-see it.
+  private seen = new Map<string, string>()
   private warnedRedundant = false
   private warnedStall = false
   private readsSinceWrite = 0
@@ -79,7 +99,7 @@ export class ReadLoopGate {
       }
       return this.denyOrEscalate(sig, `[read-loop] DENIED: you are re-reading sources you've already seen without making any change. You must now either (a) call Write/Edit/MultiEdit to act on what you've learned, or (b) end your turn if the task is genuinely complete. Reading is disabled until you make an edit.`)
     }
-    this.seen.add(sig)
+    this.seen.set(sig, scopeOf(toolName, input) ?? '')
     if (this.readsSinceWrite >= STALL_CAP) {
       if (!this.warnedStall) {
         this.warnedStall = true
@@ -96,7 +116,20 @@ export class ReadLoopGate {
     return this.seen.has(sig) && this.warnedRedundant
   }
 
-  onWrite(): void {
+  /**
+   * Re-arm the gate after the model changed something. When the written path is
+   * known, forget every remembered read that covered it: the bytes on disk are
+   * no longer the bytes the model saw, so looking again is new information, not
+   * a loop. Without this the gate blinds the model to its own edit — and since
+   * Edit needs an exact `old_string`, a blinded model cannot make the next one.
+   */
+  onWrite(writtenPath?: string): void {
+    if (writtenPath) {
+      const written = norm(writtenPath)
+      for (const [sig, scope] of this.seen) {
+        if (scope && covers(scope, written)) this.seen.delete(sig)
+      }
+    }
     this.readsSinceWrite = 0
     this.warnedRedundant = false
     this.warnedStall = false
