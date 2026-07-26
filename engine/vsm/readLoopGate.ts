@@ -46,6 +46,9 @@ export class ReadLoopGate {
   private consecutiveDenies = 0
   private lastDeniedSig: string | null = null
   private redundantSigs = new Set<string>()
+  // Reads the model kept demanding after a warn and repeated denials. Once a
+  // signature lands here the gate stops refusing it — see relent note below.
+  private relented = new Set<string>()
   private static ESCALATE_AFTER = 3
 
   private denyOrEscalate(sig: string, message: string): ReadLoopVerdict {
@@ -53,6 +56,7 @@ export class ReadLoopGate {
     this.consecutiveDenies = (sig === this.lastDeniedSig) ? this.consecutiveDenies + 1 : 1
     this.lastDeniedSig = sig
     if (this.consecutiveDenies >= ReadLoopGate.ESCALATE_AFTER) {
+      this.relented.add(sig)
       return { kind: 'escalate', message, signatures: [...this.redundantSigs] }
     }
     return { kind: 'deny', message }
@@ -62,6 +66,12 @@ export class ReadLoopGate {
     const sig = signature(toolName, input)
     if (sig === null) return { kind: 'allow' }
     this.readsSinceWrite += 1
+    // A read that survived a warning and repeated denials is one the model
+    // provably cannot proceed without. Keep refusing it and the damage inverts:
+    // Edit needs an exact `old_string`, so a blinded model cannot perform the
+    // very action the denial message orders it to perform. Nagging is the right
+    // lever here; blocking is not. Serve it.
+    if (this.relented.has(sig)) return { kind: 'allow' }
     if (this.seen.has(sig)) {
       if (!this.warnedRedundant) {
         this.warnedRedundant = true
@@ -93,6 +103,7 @@ export class ReadLoopGate {
     this.consecutiveDenies = 0
     this.lastDeniedSig = null
     this.redundantSigs.clear()
+    this.relented.clear()
   }
 
   reset(): void {
@@ -103,5 +114,6 @@ export class ReadLoopGate {
     this.consecutiveDenies = 0
     this.lastDeniedSig = null
     this.redundantSigs.clear()
+    this.relented.clear()
   }
 }

@@ -59,6 +59,36 @@ describe('ReadLoopGate — redundancy', () => {
     expect(gate.evaluate('Grep', { pattern: 'foo', path: '/a', head_limit: 50, offset: 50 }).kind).toBe('allow')
   })
 
+  test('escalation relents: a read the model keeps insisting on is finally served', () => {
+    const f = { file_path: '/a/needed.ts' }
+    expect(gate.evaluate('Read', f).kind).toBe('allow')
+    expect(gate.evaluate('Read', f).kind).toBe('warn')
+    expect(gate.evaluate('Read', f).kind).toBe('deny')
+    expect(gate.evaluate('Read', f).kind).toBe('deny')
+    expect(gate.evaluate('Read', f).kind).toBe('escalate')
+    // Nagging and blocking both failed. Blocking a read the model provably needs
+    // costs it the ability to Edit at all, so the gate must stop refusing.
+    expect(gate.evaluate('Read', f).kind).toBe('allow')
+    expect(gate.evaluate('Read', f).kind).toBe('allow')
+  })
+
+  test('relenting on one file does not relent on another', () => {
+    const f = { file_path: '/a/needed.ts' }
+    for (let n = 0; n < 5; n++) gate.evaluate('Read', f)
+    expect(gate.evaluate('Read', f).kind).toBe('allow')
+    expect(gate.evaluate('Read', { file_path: '/a/other.ts' }).kind).toBe('allow')
+    expect(gate.evaluate('Read', { file_path: '/a/other.ts' }).kind).toBe('deny')
+  })
+
+  test('reset clears relented signatures', () => {
+    const f = { file_path: '/a/needed.ts' }
+    for (let n = 0; n < 5; n++) gate.evaluate('Read', f)
+    expect(gate.evaluate('Read', f).kind).toBe('allow')
+    gate.reset()
+    expect(gate.evaluate('Read', f).kind).toBe('allow')
+    expect(gate.evaluate('Read', f).kind).toBe('warn')
+  })
+
   test('non-read tools always allow', () => {
     expect(gate.evaluate('Bash', { command: 'ls' }).kind).toBe('allow')
     expect(gate.evaluate('Write', { file_path: '/a/x.ts' }).kind).toBe('allow')

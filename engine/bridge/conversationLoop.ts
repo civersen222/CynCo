@@ -2969,33 +2969,43 @@ export class ConversationLoop {
     // Deny redundant / stalled reads at execution time so the model is forced
     // to act or stop, instead of reading itself into the context-bloat timeout.
     const readLoopVerdict = this.readLoopGate.evaluate(toolName, toolInput)
-    if (readLoopVerdict.kind === 'deny' || readLoopVerdict.kind === 'escalate') {
-      console.log(`[read-loop] ${readLoopVerdict.kind.toUpperCase()} ${toolName}`)
-      if (readLoopVerdict.kind === 'escalate') {
-        // The model has confidently re-emitted a gate-disabled read past the
-        // escalation threshold (reasoning/action divergence). Break the attractor
-        // by deflating the poisoned context — remove the certified-redundant
-        // Read+DENIED pairs — before the next model call.
-        const verdict = this.toolDivergence.check({
-          tool: toolName,
-          entropy: this.lastToolEntropy ?? 0,
-          isDisabled: this.readLoopGate.isDisabled(toolName, toolInput),
-        })
-        const before = this.messages.length
-        this.messages = pruneRedundantReads(this.messages, new Set(readLoopVerdict.signatures), readSignature)
-        const prunedMessages = before - this.messages.length
-        this.dashboardBroadcast?.({
-          type: 'brain.toolDivergence',
-          tool: toolName,
-          prunedMessages,
-          signatures: readLoopVerdict.signatures,
-          entropy: verdict.entropy,
-          floor: verdict.floor,
-          diverged: verdict.diverged,
-        })
-        this.emit({ type: 'governance.alert', severity: 'warn', message: `[context-hygiene] Broke a ${toolName} attractor: pruned ${prunedMessages} redundant re-read messages.`, source: 'read-loop' } as any)
-        console.log(`[context-hygiene] pruned ${prunedMessages} messages to break ${toolName} attractor`)
-      }
+    let readLoopRelented: string | null = null
+    if (readLoopVerdict.kind === 'escalate') {
+      // The model has confidently re-emitted a gate-disabled read past the
+      // escalation threshold (reasoning/action divergence). Break the attractor
+      // by deflating the poisoned context — remove the certified-redundant
+      // Read+DENIED pairs — before the next model call.
+      console.log(`[read-loop] ESCALATE ${toolName}`)
+      const verdict = this.toolDivergence.check({
+        tool: toolName,
+        entropy: this.lastToolEntropy ?? 0,
+        isDisabled: this.readLoopGate.isDisabled(toolName, toolInput),
+      })
+      const before = this.messages.length
+      this.messages = pruneRedundantReads(this.messages, new Set(readLoopVerdict.signatures), readSignature)
+      const prunedMessages = before - this.messages.length
+      this.dashboardBroadcast?.({
+        type: 'brain.toolDivergence',
+        tool: toolName,
+        prunedMessages,
+        signatures: readLoopVerdict.signatures,
+        entropy: verdict.entropy,
+        floor: verdict.floor,
+        diverged: verdict.diverged,
+      })
+      this.emit({ type: 'governance.alert', severity: 'warn', message: `[context-hygiene] Broke a ${toolName} attractor: pruned ${prunedMessages} redundant re-read messages.`, source: 'read-loop' } as any)
+      console.log(`[context-hygiene] pruned ${prunedMessages} messages to break ${toolName} attractor`)
+      // ...and then SERVE the read. Pruning alone made this worse: it deletes the
+      // Read+DENIED pairs, which are the model's only evidence that reading is
+      // blocked, so it re-emits the same read as if fresh and loops forever. The
+      // denial also told the model to "call Edit instead" while withholding the
+      // bytes Edit needs to build an exact `old_string`. Past this threshold the
+      // model has demonstrated it cannot proceed without this content, so the
+      // gate stops refusing and downgrades to a warning.
+      readLoopRelented = `[read-loop] You have requested this repeatedly, so here it is — but you have now read it more than once without making a change. Use it: call Edit or Write, or end your turn if the task is done.`
+    }
+    if (readLoopVerdict.kind === 'deny') {
+      console.log(`[read-loop] DENY ${toolName}`)
       if (process.env._TRACE_STEERING === '1') this.traceLastInjected = 'readLoopGate-deny'
       this.emit({ type: 'tool.start', toolId, toolName, input: toolInput })
       this.emit({ type: 'tool.complete', toolId, toolName, result: readLoopVerdict.message, isError: true })
@@ -3010,7 +3020,7 @@ export class ConversationLoop {
       toolsUsedInSession.push(toolName)
       return
     }
-    const readLoopWarn = readLoopVerdict.kind === 'warn' ? readLoopVerdict.message : null
+    const readLoopWarn = readLoopVerdict.kind === 'warn' ? readLoopVerdict.message : readLoopRelented
 
     // Vibe Guardian: check risk level before execution
     const { classifyRisk, describeRisk } = await import('./guardianRules.js')
