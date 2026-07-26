@@ -67,6 +67,7 @@ import { loadInterventionRates, saveInterventionRates } from '../vsm/interventio
 import { applyNudgeTemperature } from '../vsm/controlSignals.js'
 import { globalContract } from '../tools/contract.js'
 import { applyHarnessContract, maybeAutoCreateContract, type HarnessContractSpec } from './contractAutoCreate.js'
+import { gitProbe } from '../tools/contractVerify.js'
 import { globalAskBroker } from '../tools/askBroker.js'
 import { setSideQuery, resetMergeTracking } from '../tools/impl/edit.js'
 import { estimateTokensAsync } from '../engine/contextBudget.js'
@@ -746,9 +747,11 @@ export class ConversationLoop {
 
     // P4.2: harness-supplied contract (mission mode — the brief's check script
     // IS the contract, STATE doc Phase 4(a)). Applied before auto-create.
+    let contractIsNew = false
     if (opts?.contract && applyHarnessContract(opts.contract)) {
       console.log(`[contract] Harness-supplied: "${opts.contract.title}" (${opts.contract.assertions.length} assertion(s))`)
       this.governance.setContractCreated()
+      contractIsNew = true
     }
     // Auto-create contract from EVERY user message — the model must finish what
     // the user asked. A COMPLETE stale contract from a prior task is replaced
@@ -762,6 +765,15 @@ export class ConversationLoop {
     else if (!this.allowedTools && maybeAutoCreateContract(text)) {
       console.log(`[contract] Auto-created: ${globalContract.pendingCount()} assertions for "${text.slice(0, 50)}..."`)
       this.governance.setContractCreated()
+      contractIsNew = true
+    }
+
+    // Pin the repository state these assertions are measured against. Only on a
+    // fresh contract: a follow-up message that keeps a live contract must keep
+    // the baseline the work started from, or a commit the task already made
+    // would silently become "pre-existing" and stop counting as evidence.
+    if (contractIsNew) {
+      globalContract.setBaseline(await gitProbe(this.executor['cwd']).head())
     }
 
     // Start trajectory recording for this task

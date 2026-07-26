@@ -7,6 +7,7 @@
  * task contracts that the model self-verifies.
  */
 import type { ToolImpl } from './types.js'
+import { assertionCheck, gitProbe, verifyAssertion } from './contractVerify.js'
 
 // ---------------------------------------------------------------------------
 // Core data types
@@ -37,6 +38,13 @@ export class ContractState {
   private brief: string = ''
   private assertions: Assertion[] = []
   private active: boolean = false
+  /**
+   * HEAD at the moment the contract was created. Without it "Changes committed
+   * to git" is unfalsifiable — a repo with any history satisfies it. The live
+   * failure this guards against: a run that made zero edits passed that
+   * assertion citing 1166a60, a commit made before the task began.
+   */
+  private baseline: string | null = null
   /** Number of times the contract has been checked / enforcement rounds run */
   enforcementRounds: number = 0
 
@@ -56,8 +64,23 @@ export class ContractState {
     this.brief = brief
     this.assertions = assertionTexts.map(text => ({ text, status: 'pending' as AssertionStatus }))
     this.active = true
+    this.baseline = null
     this.enforcementRounds = 0
     this.enforcementEnabled = true
+  }
+
+  /** Record the repository state this contract's work will be measured against. */
+  setBaseline(head: string | null): void {
+    this.baseline = head
+  }
+
+  getBaseline(): string | null {
+    return this.baseline
+  }
+
+  /** Assertion text at `index`, or null when out of range. */
+  assertionText(index: number): string | null {
+    return this.assertions[index]?.text ?? null
   }
 
   /** Mark assertion at `index` as passed, optionally recording evidence. */
@@ -175,6 +198,7 @@ export class ContractState {
     this.brief = ''
     this.assertions = []
     this.active = false
+    this.baseline = null
     this.enforcementRounds = 0
     this.enforcementEnabled = true
   }
@@ -246,7 +270,9 @@ export const contractAssertPassTool: ToolImpl = {
   name: 'ContractAssertPass',
   description:
     'Mark an assertion in the active contract as PASSED. Provide the assertion index (0-based) ' +
-    'and optional evidence showing it was met. Use ContractStatus to see current assertion indices.',
+    'and optional evidence showing it was met. Use ContractStatus to see current assertion indices. ' +
+    'Assertions about files and commits are checked against the repository — the claim is rejected ' +
+    'if the repository contradicts it, whatever the evidence says.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -263,12 +289,37 @@ export const contractAssertPassTool: ToolImpl = {
   },
   tier: 'auto',
   core: true,
-  execute: async (input) => {
+  execute: async (input, cwd) => {
     if (!globalContract.isActive()) {
       return { output: 'No active contract. Use ContractCreate first.', isError: true }
     }
     const index = input.index as number
-    globalContract.assertPass(index, input.evidence as string | undefined)
+    let evidence = input.evidence as string | undefined
+
+    // The engine wrote these assertions, so the engine knows which of them the
+    // repository can answer. Where it can, the repository's answer wins: a
+    // contradicted claim is refused outright rather than recorded as passed on
+    // the strength of the model's prose.
+    const text = globalContract.assertionText(index)
+    const check = text ? assertionCheck(text) : null
+    if (check) {
+      const v = await verifyAssertion(check, gitProbe(cwd), globalContract.getBaseline())
+      if (v.status === 'contradicted') {
+        return {
+          output:
+            `Assertion ${index} was NOT marked passed — the repository contradicts it.\n\n` +
+            `  Assertion: ${text}\n` +
+            `  Repository: ${v.detail}\n\n` +
+            `Do the work, then assert it. If the assertion cannot be satisfied, use ContractAssertFail.`,
+          isError: true,
+        }
+      }
+      if (v.status === 'unverifiable') {
+        evidence = `[unverified: ${v.detail}] ${evidence ?? ''}`.trim()
+      }
+    }
+
+    globalContract.assertPass(index, evidence)
     return { output: globalContract.getStatus(), isError: false }
   },
 }

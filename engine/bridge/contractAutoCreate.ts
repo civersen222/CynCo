@@ -13,6 +13,7 @@
 // enforcement caps at 5 rounds.
 
 import { ContractState, globalContract } from '../tools/contract.js'
+import { COMMITTED_ASSERTION, fileExistsAssertion, fileModifiedAssertion } from '../tools/contractVerify.js'
 
 export type HarnessContractSpec = {
   title: string
@@ -36,16 +37,16 @@ export function synthesizeMessageAssertions(text: string): string[] {
     if (fileMatches) {
       for (const f of [...new Set(fileMatches)].slice(0, 3)) {
         if (/\b(create|write|new file)\b/i.test(text) && text.includes(f)) {
-          assertions.push(`File ${f} exists after changes`)
+          assertions.push(fileExistsAssertion(f))
         } else {
-          assertions.push(`File ${f} was modified (git diff shows changes)`)
+          assertions.push(fileModifiedAssertion(f))
         }
       }
     }
     if (assertions.length === 0) {
       assertions.push('Code was modified to address the task')
     }
-    assertions.push('Changes committed to git')
+    assertions.push(COMMITTED_ASSERTION)
   } else if (isAnalysisTask) {
     assertions.push('Analysis or answer was provided to the user')
     assertions.push('Response directly addresses what the user asked')
