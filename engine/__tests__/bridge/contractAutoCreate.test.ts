@@ -174,6 +174,44 @@ describe('assertions are grounded in the workspace at creation time', () => {
     expect(c.snapshot().assertions[0].text).toBe('File gilded/ledger.py exists after changes')
   })
 
+  /**
+   * The existing-file branch had no verb check at all: any real path named
+   * anywhere in the message became "was modified". A fix-list that PRAISED CynCo
+   * for reverting an edit to gilded/society/realm.py therefore asserted that
+   * realm.py must be modified, and on the live L2d run the model spent turns
+   * insisting "The contract says realm.py should be modified... but realm.py has
+   * no changes" while trying to reconcile a mandate to edit a file it had been
+   * commended for leaving alone. Mentioning a file is not asking for it.
+   */
+  it('a file mentioned only in praise is not asserted on', () => {
+    const c = new ContractState()
+    const cwd = workspace('gilded/grip.py', 'gilded/society/realm.py')
+    maybeAutoCreateContract(
+      'DELETE the fallback branch in gilded/grip.py. At 21:14 you flipped an opinion '
+      + 'key in gilded/society/realm.py, then reverted it unprompted; nice catch.',
+      cwd,
+      c,
+    )
+    expect(c.snapshot().assertions.map(a => a.text)).toEqual([
+      'File gilded/grip.py was modified (git diff shows changes)',
+      'Changes committed to git',
+    ])
+  })
+
+  it('a file the message says to leave alone is not asserted on', () => {
+    const c = new ContractState()
+    const cwd = workspace('gilded/grip.py', 'gilded/market.py')
+    maybeAutoCreateContract(
+      'Refactor gilded/grip.py. Leave gilded/market.py exactly as it is.',
+      cwd,
+      c,
+    )
+    expect(c.snapshot().assertions.map(a => a.text)).toEqual([
+      'File gilded/grip.py was modified (git diff shows changes)',
+      'Changes committed to git',
+    ])
+  })
+
   it('when every mined path is prose, falls back to the generic assertion', () => {
     const c = new ContractState()
     maybeAutoCreateContract('fix whatever is wrong in nowhere/absent.py today', workspace(), c)

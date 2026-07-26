@@ -59,6 +59,44 @@ function asksToCreate(text: string, file: string): boolean {
   }
 }
 
+/**
+ * The sentences of `text` that contain `file`.
+ *
+ * Split on end-of-sentence punctuation followed by whitespace, plus newlines and
+ * list bullets, so a filename's own dot ("grip.py") never splits a sentence.
+ */
+function sentencesMentioning(text: string, file: string): string[] {
+  return text
+    .split(/(?<=[.!?;:])\s+|\n+/)
+    .filter(s => s.includes(file))
+}
+
+const CHANGE_VERB =
+  /\b(edit|add|create|writ(e|ing)|fix|change|modify|delete|remove|strip|wire|implement|refactor|rewrite|build|update|move|rename|declare|replace|revert)\b/i
+
+/**
+ * Does the message ask for *this* existing file to be changed?
+ *
+ * The existing-file branch used to have no verb check at all: any real path named
+ * anywhere in the message became "was modified". So a fix-list that PRAISED CynCo
+ * for reverting an edit to gilded/society/realm.py asserted that realm.py must be
+ * modified, and on the live L2d run the model burned turns insisting "the contract
+ * says realm.py should be modified... but realm.py has no changes", trying to
+ * reconcile a mandate to edit a file it had just been commended for leaving alone.
+ * "Leave X alone" produced the same inversion.
+ *
+ * Scoped to the sentence rather than a character window (the rule `asksToCreate`
+ * uses) because a real instruction puts the verb on either side of the path —
+ * "delete the fallback branch in gilded/grip.py" and "gilded/grip.py — strip the
+ * unused imports" are both mandates, and neither fits a fixed lookbehind.
+ *
+ * A missed mandate costs one assertion and falls back to the generic "Code was
+ * modified to address the task". A false one points the agent at the wrong file.
+ */
+function asksToChange(text: string, file: string): boolean {
+  return sentencesMentioning(text, file).some(s => CHANGE_VERB.test(s))
+}
+
 export function synthesizeMessageAssertions(text: string, cwd: string): string[] {
   const lowerText = text.toLowerCase()
   const assertions: string[] = []
@@ -78,8 +116,9 @@ export function synthesizeMessageAssertions(text: string, cwd: string): string[]
       seen.add(f)
       if (existsSync(isAbsolute(f) ? f : resolve(cwd, f))) {
         // It is there, so "exists after changes" is true before a keystroke is
-        // typed. The claim worth making is that the work touched it.
-        assertions.push(fileModifiedAssertion(f))
+        // typed. The claim worth making is that the work touched it — but only
+        // where the message actually asked for that.
+        if (asksToChange(text, f)) assertions.push(fileModifiedAssertion(f))
       } else if (asksToCreate(text, f)) {
         assertions.push(fileExistsAssertion(f))
       }
