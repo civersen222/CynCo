@@ -44,12 +44,38 @@ export class ToolScorer {
     } catch (e) { console.log(`[toolScorer] save failed: ${e instanceof Error ? e.message : String(e)}`) }
   }
 
+  /**
+   * Restore the store, halving every count as it comes in.
+   *
+   * Without the decay this was a lifetime tally, and demotion made it an
+   * absorbing state: a demoted tool is filtered out of the tool list, so it is
+   * never called, so `record` never runs again, so the ratio that demoted it
+   * can never move. MultiEdit sat at 0/5 in the live store — permanently and
+   * silently removed from the agent's capabilities, across every future
+   * session, with no path back. An estimate no new evidence can reach is not a
+   * measurement; it is a verdict.
+   *
+   * Halving also makes the estimate recency-weighted, which is the honest shape
+   * for this quantity: tool implementations get fixed, and failures recorded
+   * against a version that no longer exists should not still be counted.
+   *
+   * A tool that is genuinely broken re-demotes within a few calls, so the cost
+   * of forgiving is bounded. It fails toward "offer the tool", which is the
+   * safe direction — a wrong demotion silently costs a capability, while a
+   * wrong promotion costs one failed call the model can see and recover from.
+   */
   load(path: string): void {
     try {
       const fs = require('fs')
       if (!fs.existsSync(path)) return
       const data = JSON.parse(fs.readFileSync(path, 'utf-8'))
-      for (const [k, v] of Object.entries(data)) this.scores.set(k, v as ToolStats)
+      for (const [k, v] of Object.entries(data)) {
+        const { successes, total } = v as ToolStats
+        this.scores.set(k, {
+          successes: Math.floor(successes / 2),
+          total: Math.floor(total / 2),
+        })
+      }
     } catch (e) { console.log(`[toolScorer] load failed: ${e instanceof Error ? e.message : String(e)}`) }
   }
 }
