@@ -777,7 +777,7 @@ export class ConversationLoop {
     // (2026-06-12 weekly-digest incident). The nudge text is now pluggable via
     // engine/bridge/enforcementNudge.ts and is phase-aware; a mission-aware nudge
     // variant is the right path to lifting this skip, not hardcoding new text here.
-    else if (!this.allowedTools && maybeAutoCreateContract(text)) {
+    else if (!this.allowedTools && maybeAutoCreateContract(text, this.executor['cwd'])) {
       console.log(`[contract] Auto-created: ${globalContract.pendingCount()} assertions for "${text.slice(0, 50)}..."`)
       this.governance.setContractCreated()
       contractIsNew = true

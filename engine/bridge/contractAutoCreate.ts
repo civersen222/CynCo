@@ -12,6 +12,8 @@
 // auto-assertions on pinned-tool runs, not harness-authored ones, and
 // enforcement caps at 5 rounds.
 
+import { existsSync } from 'node:fs'
+import { isAbsolute, resolve } from 'node:path'
 import { ContractState, globalContract } from '../tools/contract.js'
 import { COMMITTED_ASSERTION, fileExistsAssertion, fileModifiedAssertion } from '../tools/contractVerify.js'
 
@@ -21,8 +23,17 @@ export type HarnessContractSpec = {
   assertions: string[]
 }
 
-/** Intent-classified assertions for a user message (moved from conversationLoop). */
-export function synthesizeMessageAssertions(text: string): string[] {
+/**
+ * Intent-classified assertions for a user message (moved from conversationLoop).
+ *
+ * File targets are resolved against `cwd` before they become assertions.
+ * ContractAssertPass now answers these against the repository, so an assertion
+ * naming a file that does not exist and was never asked for is one nothing can
+ * satisfy — the task can never be closed honestly and the run scores as
+ * incomplete work that was in fact done. A filename-shaped token in prose is not
+ * evidence that the file exists; the workspace is.
+ */
+export function synthesizeMessageAssertions(text: string, cwd: string): string[] {
   const lowerText = text.toLowerCase()
   const assertions: string[] = []
 
@@ -34,13 +45,20 @@ export function synthesizeMessageAssertions(text: string): string[] {
   if (isEditTask) {
     // Extract file targets from the message
     const fileMatches = text.match(/[\w./\\-]+\.(py|ts|js|tsx|jsx|rs|go|java|c|cpp|h|html|css|json|yaml|yml|toml|md)\b/g)
+    const wantsNewFile = /\b(create|write|new file)\b/i.test(text)
     if (fileMatches) {
-      for (const f of [...new Set(fileMatches)].slice(0, 3)) {
-        if (/\b(create|write|new file)\b/i.test(text) && text.includes(f)) {
-          assertions.push(fileExistsAssertion(f))
-        } else {
+      for (const f of new Set(fileMatches)) {
+        if (assertions.length >= 3) break
+        if (existsSync(isAbsolute(f) ? f : resolve(cwd, f))) {
+          // It is there, so "exists after changes" is true before a keystroke is
+          // typed. The claim worth making is that the work touched it.
           assertions.push(fileModifiedAssertion(f))
+        } else if (wantsNewFile) {
+          assertions.push(fileExistsAssertion(f))
         }
+        // Otherwise: a filename in prose naming nothing on disk. The engine
+        // cannot tell a target from a mention, and an assertion it cannot tell
+        // the truth about is worse than one less assertion.
       }
     }
     if (assertions.length === 0) {
@@ -65,10 +83,14 @@ export function synthesizeMessageAssertions(text: string): string[] {
  * Auto-create a contract for this user message. Returns true when a contract
  * was created. Keeps an INCOMPLETE active contract; replaces a COMPLETE one.
  */
-export function maybeAutoCreateContract(text: string, contract: ContractState = globalContract): boolean {
+export function maybeAutoCreateContract(
+  text: string,
+  cwd: string,
+  contract: ContractState = globalContract,
+): boolean {
   if (contract.isActive() && !contract.isComplete()) return false
   if (text.length <= 15) return false
-  contract.create(text.slice(0, 60), text.slice(0, 200), synthesizeMessageAssertions(text))
+  contract.create(text.slice(0, 60), text.slice(0, 200), synthesizeMessageAssertions(text, cwd))
   return true
 }
 
