@@ -695,10 +695,22 @@ export class ConversationLoop {
       console.log('[loop] Already processing, ignoring message')
       return
     }
-    return runWithFinalize(
-      () => this.runUserMessage(text, opts),
-      () => this.finalizeTrajectory(),
-    )
+    // `processing` MUST clear on every exit, not just the happy one. It is set
+    // in runUserMessage and cleared at the bottom of that method, so any throw
+    // in between used to leave it stuck `true` forever — and because the guard
+    // above returns silently, every later message in the session was dropped
+    // with no error surfaced anywhere. The session was bricked until restart.
+    // Same failure shape runWithFinalize was introduced to solve one layer
+    // down, so it gets the same remedy.
+    try {
+      return await runWithFinalize(
+        () => this.runUserMessage(text, opts),
+        () => this.finalizeTrajectory(),
+      )
+    } finally {
+      this.processing = false
+      this.abortController = null
+    }
   }
 
   private async runUserMessage(text: string, opts?: { contract?: HarnessContractSpec }): Promise<void> {
