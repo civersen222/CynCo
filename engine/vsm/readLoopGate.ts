@@ -16,8 +16,12 @@ function norm(p: string): string {
 
 export function signature(toolName: string, input: any): string | null {
   switch (toolName) {
-    case 'Read': return input?.file_path ? `read:${norm(input.file_path)}` : null
-    case 'Grep': return `grep:${input?.pattern ?? ''}|${norm(input?.path ?? '.')}|${input?.glob ?? ''}`
+    // The signature must include every parameter that changes what content comes
+    // back, or a legitimate second look gets denied as a re-read. Paging a long
+    // file (offset 0, then offset 100) and escalating a Grep from a file list to
+    // matching lines are both *new* information, not loops.
+    case 'Read': return input?.file_path ? `read:${norm(input.file_path)}|${input?.offset ?? ''}|${input?.limit ?? ''}` : null
+    case 'Grep': return `grep:${input?.pattern ?? ''}|${norm(input?.path ?? '.')}|${input?.glob ?? ''}|${input?.type ?? ''}|${input?.output_mode ?? ''}|${input?.head_limit ?? ''}|${input?.offset ?? ''}|${input?.['-C'] ?? input?.['-A'] ?? input?.['-B'] ?? ''}`
     case 'Glob': return `glob:${input?.pattern ?? ''}|${norm(input?.path ?? '.')}`
     case 'Ls':   return `ls:${norm(input?.path ?? '.')}`
     default:     return null

@@ -37,6 +37,28 @@ describe('ReadLoopGate — redundancy', () => {
     expect(abs.kind).toBe('warn') // same resolved path → redundant
   })
 
+  test('paging through one file with different offsets is not redundant', () => {
+    expect(gate.evaluate('Read', { file_path: '/a/big.ts', offset: 0, limit: 100 }).kind).toBe('allow')
+    expect(gate.evaluate('Read', { file_path: '/a/big.ts', offset: 100, limit: 100 }).kind).toBe('allow')
+    expect(gate.evaluate('Read', { file_path: '/a/big.ts', offset: 200, limit: 100 }).kind).toBe('allow')
+  })
+
+  test('the same page of a file read twice is redundant', () => {
+    expect(gate.evaluate('Read', { file_path: '/a/big.ts', offset: 100, limit: 100 }).kind).toBe('allow')
+    expect(gate.evaluate('Read', { file_path: '/a/big.ts', offset: 100, limit: 100 }).kind).toBe('warn')
+  })
+
+  test('Grep escalating from file list to matching content is not redundant', () => {
+    expect(gate.evaluate('Grep', { pattern: 'foo', path: '/a' }).kind).toBe('allow')
+    expect(gate.evaluate('Grep', { pattern: 'foo', path: '/a', output_mode: 'content' }).kind).toBe('allow')
+    expect(gate.evaluate('Grep', { pattern: 'foo', path: '/a', output_mode: 'content', '-C': 5 }).kind).toBe('allow')
+  })
+
+  test('Grep paging through matches is not redundant', () => {
+    expect(gate.evaluate('Grep', { pattern: 'foo', path: '/a', head_limit: 50 }).kind).toBe('allow')
+    expect(gate.evaluate('Grep', { pattern: 'foo', path: '/a', head_limit: 50, offset: 50 }).kind).toBe('allow')
+  })
+
   test('non-read tools always allow', () => {
     expect(gate.evaluate('Bash', { command: 'ls' }).kind).toBe('allow')
     expect(gate.evaluate('Write', { file_path: '/a/x.ts' }).kind).toBe('allow')
