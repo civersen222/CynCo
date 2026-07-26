@@ -2852,7 +2852,7 @@ export class ConversationLoop {
       turns,
     })
 
-    const reward = finalizeTask(taskId, turns, components)
+    const reward = finalizeTask(taskId, turns, components, recorder.rewardDir)
     console.log(`[trajectory] Labeled ${taskId}: reward ${reward.reward.toFixed(3)} (${turns} turns)`)
   }
 

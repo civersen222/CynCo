@@ -113,6 +113,15 @@ export function sliceTaskMessages(
 
 export class TrajectoryRecorder {
   private readonly baseDir: string
+  /**
+   * Where this task's reward label is written. A caller that redirects the
+   * trajectory directory is recording somewhere other than the user's corpus —
+   * a test, a sandbox — and its labels must not land in the real one. Until
+   * this existed, every full test-suite run wrote a dozen manufactured reward
+   * files into ~/.cynco/rewards: trajectories in a temp dir, labels in the live
+   * corpus. So rewards follow the trajectories unless told otherwise.
+   */
+  readonly rewardDir: string
   private _taskId: string | null = null
   private _model: string = ''
   private _adapterId: string | undefined = undefined
@@ -126,8 +135,10 @@ export class TrajectoryRecorder {
    */
   private _messageStartIdx: number | null = null
 
-  constructor(baseDir?: string) {
+  constructor(baseDir?: string, rewardDir?: string) {
     this.baseDir = baseDir ?? join(homedir(), '.cynco', 'trajectories')
+    this.rewardDir = rewardDir
+      ?? (baseDir ? join(baseDir, 'rewards') : join(homedir(), '.cynco', 'rewards'))
     mkdirSync(this.baseDir, { recursive: true })
   }
 
@@ -252,7 +263,7 @@ export function getTrajectoryRecorder(): TrajectoryRecorder | null {
   return _instance
 }
 
-export function initTrajectoryRecorder(baseDir?: string): TrajectoryRecorder {
-  _instance = new TrajectoryRecorder(baseDir)
+export function initTrajectoryRecorder(baseDir?: string, rewardDir?: string): TrajectoryRecorder {
+  _instance = new TrajectoryRecorder(baseDir, rewardDir)
   return _instance
 }

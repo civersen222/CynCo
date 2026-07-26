@@ -12,7 +12,7 @@
  */
 import { describe, expect, it, afterAll } from 'vitest'
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'fs'
-import { tmpdir } from 'os'
+import { homedir, tmpdir } from 'os'
 import { join } from 'path'
 import { ConversationLoop } from '../../bridge/conversationLoop.js'
 import { initTrajectoryRecorder } from '../../training/trajectoryRecorder.js'
@@ -143,6 +143,45 @@ describe('trajectory recording is on a live path', () => {
     // presence is what proves finalizeTrajectory ran rather than being skipped.
     const written = readdirSync(trajDir)
     expect(written.some(f => f.endsWith('.json') && !f.endsWith('.jsonl'))).toBe(true)
+    globalContract.clear()
+  }, 30000)
+
+  /**
+   * finalizeTask defaulted its output directory to ~/.cynco/rewards regardless
+   * of where the trajectories were going. So this very file — trajectories in a
+   * temp dir — wrote a manufactured reward label into the user's live training
+   * corpus on every run, a dozen or more per full suite. They were degenerate
+   * and so stayed out of the dataset, but the corpus is not a scratch directory
+   * and a labeler change could have promoted them at any time.
+   */
+  it('the reward label follows the trajectories and never touches the real corpus', async () => {
+    globalContract.clear()
+    const cwd = tempDir('cynco-traj-cwd-')
+    const trajDir = tempDir('cynco-traj-out-')
+    const recorder = initTrajectoryRecorder(trajDir)
+
+    const realCorpus = join(homedir(), '.cynco', 'rewards')
+    const before = existsSync(realCorpus) ? readdirSync(realCorpus).length : 0
+
+    const loop = new ConversationLoop({
+      cwd,
+      config: config(),
+      provider: mockProvider([
+        () => readToolUse(join(cwd, 'nonexistent.txt')),
+        () => textResponse('done'),
+      ]),
+      emit: () => {},
+      allowedTools: ['Read'],
+    })
+
+    await loop.handleUserMessage('read the file for me please')
+
+    expect(recorder.rewardDir.startsWith(trajDir)).toBe(true)
+    const labels = readdirSync(recorder.rewardDir).filter(f => f.endsWith('.reward.json'))
+    expect(labels.length).toBe(1)
+
+    const after = existsSync(realCorpus) ? readdirSync(realCorpus).length : 0
+    expect(after).toBe(before)
     globalContract.clear()
   }, 30000)
 })
