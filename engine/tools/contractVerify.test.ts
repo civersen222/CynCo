@@ -32,9 +32,72 @@ function probe(over: Partial<RepoProbe> = {}): RepoProbe {
     isDirty: async () => false,
     changedSince: async () => false,
     exists: () => true,
+    run: async () => 0,
     ...over,
   }
 }
+
+/**
+ * `Verification command exits 0: <cmd>` is the form the mission driver and every
+ * harness-authored contract use, and it was the ONE assertion shape whose whole
+ * purpose is to be executed — yet `assertionCheck` did not recognise it, so it
+ * fell through to "no machine check" and was passed on the model's own say-so.
+ *
+ * That made the harness-contract path, the only route to a measured
+ * `taskCompleted`, a self-report. `taskCompleted: 1` meant "the agent said the
+ * check would pass", which is exactly the plausible default this module exists
+ * to refuse.
+ */
+describe('assertionCheck — a verification command is a claim the machine can settle', () => {
+  test('reads the command back out of the harness template', () => {
+    expect(assertionCheck('Verification command exits 0: pytest -q gilded/')).toEqual({
+      kind: 'command',
+      command: 'pytest -q gilded/',
+    })
+  })
+
+  test('a multi-line command survives', () => {
+    expect(assertionCheck('Verification command exits 0: cd x &&\npytest -q')).toEqual({
+      kind: 'command',
+      command: 'cd x &&\npytest -q',
+    })
+  })
+
+  test('an empty command is not a check', () => {
+    expect(assertionCheck('Verification command exits 0: ')).toBeNull()
+  })
+})
+
+describe('verifyAssertion — command', () => {
+  test('exit 0 confirms the assertion', async () => {
+    const v = await verifyAssertion({ kind: 'command', command: 'true' }, probe({ run: async () => 0 }), null)
+    expect(v.status).toBe('confirmed')
+  })
+
+  test('a nonzero exit contradicts it, and says which code', async () => {
+    const v = await verifyAssertion({ kind: 'command', command: 'false' }, probe({ run: async () => 1 }), null)
+    expect(v.status).toBe('contradicted')
+    expect(v.status === 'contradicted' && v.detail).toContain('exit code 1')
+  })
+
+  test('a command that could not be run at all is unverifiable, not failed', async () => {
+    const v = await verifyAssertion({ kind: 'command', command: 'x' }, probe({ run: async () => null }), null)
+    expect(v.status).toBe('unverifiable')
+  })
+
+  test('needs no git baseline — it is the one check that stands alone', async () => {
+    const v = await verifyAssertion({ kind: 'command', command: 'true' }, probe({ head: async () => null }), null)
+    expect(v.status).toBe('confirmed')
+  })
+})
+
+describe('gitProbe.run — really executes', () => {
+  test('reports 0 for a passing command and nonzero for a failing one', async () => {
+    const p = gitProbe(process.cwd())
+    expect(await p.run('exit 0')).toBe(0)
+    expect(await p.run('exit 3')).toBe(3)
+  })
+})
 
 describe('verifyAssertion', () => {
   test('an untouched file contradicts "was modified"', async () => {

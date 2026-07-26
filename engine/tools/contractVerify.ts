@@ -19,7 +19,7 @@
  */
 import { existsSync } from 'node:fs'
 import { isAbsolute, resolve } from 'node:path'
-import { execFile } from 'node:child_process'
+import { exec, execFile } from 'node:child_process'
 
 // Templates are shared with contractAutoCreate so the producer of an assertion
 // and the code that verifies it cannot drift apart.
@@ -31,10 +31,20 @@ export function fileExistsAssertion(file: string): string {
 }
 export const COMMITTED_ASSERTION = 'Changes committed to git'
 
+/**
+ * The form a harness-authored contract uses for a check the machine should run.
+ * `scripts/cynco-mission-driver.mjs` emits it — in mission mode the brief's check
+ * script IS the contract.
+ */
+export function commandAssertion(command: string): string {
+  return `Verification command exits 0: ${command}`
+}
+
 export type AssertionCheck =
   | { kind: 'file_modified'; path: string }
   | { kind: 'file_exists'; path: string }
   | { kind: 'committed' }
+  | { kind: 'command'; command: string }
 
 /** Recover the machine-checkable claim from an engine-generated assertion. */
 export function assertionCheck(text: string): AssertionCheck | null {
@@ -43,6 +53,9 @@ export function assertionCheck(text: string): AssertionCheck | null {
   const exists = /^File (.+) exists after changes$/.exec(text)
   if (exists) return { kind: 'file_exists', path: exists[1] }
   if (text === COMMITTED_ASSERTION) return { kind: 'committed' }
+  // `[\s\S]` rather than `.` — a check script may span lines.
+  const command = /^Verification command exits 0: ([\s\S]+)$/.exec(text)
+  if (command?.[1].trim()) return { kind: 'command', command: command[1].trim() }
   return null
 }
 
@@ -63,6 +76,11 @@ export type RepoProbe = {
   /** Commits since `baseline` that touched `path`. */
   changedSince(baseline: string, path: string): Promise<boolean | null>
   exists(path: string): boolean
+  /**
+   * Exit code of `command` run in the workspace, or null when it could not be
+   * spawned at all — which is "no answer", not "the check failed".
+   */
+  run(command: string): Promise<number | null>
 }
 
 export async function verifyAssertion(
@@ -74,6 +92,19 @@ export async function verifyAssertion(
     return probe.exists(check.path)
       ? { status: 'confirmed' }
       : { status: 'contradicted', detail: `${check.path} does not exist on disk.` }
+  }
+
+  // The only check that needs no git and no baseline: a person wrote the command
+  // and the command answers for itself. This is what makes an authored contract
+  // worth more than the agent's own account of it.
+  if (check.kind === 'command') {
+    const code = await probe.run(check.command)
+    if (code === null) {
+      return { status: 'unverifiable', detail: `could not run the verification command: ${check.command}` }
+    }
+    return code === 0
+      ? { status: 'confirmed' }
+      : { status: 'contradicted', detail: `the verification command failed with exit code ${code}: ${check.command}` }
   }
 
   if (check.kind === 'committed') {
@@ -108,6 +139,26 @@ function git(cwd: string, args: string[]): Promise<string | null> {
   })
 }
 
+/** Long enough for a real test suite, short enough that a hung check ends the turn. */
+const COMMAND_TIMEOUT_MS = 300_000
+/** `timeout(1)`'s convention. A check that never finished has not demonstrated success. */
+const TIMEOUT_EXIT = 124
+
+function runCommand(cwd: string, command: string): Promise<number | null> {
+  return new Promise(resolvePromise => {
+    exec(command, { cwd, encoding: 'utf-8', timeout: COMMAND_TIMEOUT_MS, maxBuffer: 8 * 1024 * 1024 }, err => {
+      if (!err) return resolvePromise(0)
+      const e = err as Error & { code?: number | string; killed?: boolean }
+      if (e.killed) return resolvePromise(TIMEOUT_EXIT)
+      // A shell that ran the command reports its status as a number — including
+      // 127 for "not found", which is a real failing answer. Anything else
+      // (the shell would not start, output overran the buffer) is no answer.
+      if (typeof e.code === 'number') return resolvePromise(e.code)
+      return resolvePromise(null)
+    })
+  })
+}
+
 export function gitProbe(cwd: string): RepoProbe {
   return {
     head: async () => (await git(cwd, ['rev-parse', 'HEAD']))?.trim() ?? null,
@@ -120,5 +171,6 @@ export function gitProbe(cwd: string): RepoProbe {
       return out === null ? null : out.trim().length > 0
     },
     exists: (path) => existsSync(isAbsolute(path) ? path : resolve(cwd, path)),
+    run: (command) => runCommand(cwd, command),
   }
 }

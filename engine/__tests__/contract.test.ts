@@ -277,3 +277,46 @@ describe('contractStatusTool.execute', () => {
     expect(result.output).toContain('item 1')
   })
 })
+
+/**
+ * `Verification command exits 0: <cmd>` is the harness form, and it is now really
+ * executed — which is the only reason a harness contract's `taskCompleted` is a
+ * measurement rather than the agent's own account of itself.
+ *
+ * But assertion text is model-writable through ContractCreate. If the check ran
+ * for any contract, the model could author its own assertion and have the engine
+ * execute an arbitrary shell string with no approval card — an unapproved Bash
+ * call wearing a verification's clothes. So the command only runs when a person
+ * wrote it.
+ */
+describe('a command assertion only runs when a person authored it', () => {
+  beforeEach(() => {
+    globalContract.clear()
+  })
+
+  it('refuses a harness command assertion the workspace contradicts', async () => {
+    globalContract.create('Mission', 'brief', ['Verification command exits 0: exit 1'], 'harness')
+    const result = await contractAssertPassTool.execute({ index: 0 }, process.cwd())
+    expect(result.isError).toBe(true)
+    expect(result.output).toContain('exit code 1')
+    expect(globalContract.snapshot().assertions[0].status).toBe('pending')
+  })
+
+  it('confirms a harness command assertion that really passes', async () => {
+    globalContract.create('Mission', 'brief', ['Verification command exits 0: exit 0'], 'harness')
+    const result = await contractAssertPassTool.execute({ index: 0 }, process.cwd())
+    expect(result.isError).toBe(false)
+    expect(globalContract.snapshot().assertions[0].status).toBe('passed')
+  })
+
+  it('does not execute a command the model wrote into its own contract', async () => {
+    await contractCreateTool.execute(
+      { title: 'self-authored', brief: '', assertions: ['Verification command exits 0: exit 1'] },
+      process.cwd(),
+    )
+    expect(globalContract.getOrigin()).toBe('auto')
+    const result = await contractAssertPassTool.execute({ index: 0 }, process.cwd())
+    expect(result.isError).toBe(false)
+    expect(globalContract.snapshot().assertions[0].status).toBe('passed')
+  })
+})

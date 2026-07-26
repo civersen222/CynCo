@@ -198,6 +198,11 @@ export class ContractState {
     return lines.join('\n')
   }
 
+  /** Who authored these assertions. 'harness' means a person did. */
+  getOrigin(): ContractOrigin {
+    return this.origin
+  }
+
   /** Return a deep-copied, serializable snapshot of the contract state. */
   snapshot(): ContractSnapshot {
     return {
@@ -315,12 +320,18 @@ export const contractAssertPassTool: ToolImpl = {
     const index = input.index as number
     let evidence = input.evidence as string | undefined
 
-    // The engine wrote these assertions, so the engine knows which of them the
-    // repository can answer. Where it can, the repository's answer wins: a
-    // contradicted claim is refused outright rather than recorded as passed on
+    // The engine or the harness wrote these assertions, so it knows which of
+    // them the workspace can answer. Where it can, the workspace's answer wins:
+    // a contradicted claim is refused outright rather than recorded as passed on
     // the strength of the model's prose.
+    //
+    // A command check only runs for a 'harness' contract. Assertion text is
+    // model-writable through ContractCreate, and executing a string the model
+    // authored would be an unapproved shell call wearing a verification's
+    // clothes. A person's check script is a specification; the agent's is a wish.
     const text = globalContract.assertionText(index)
-    const check = text ? assertionCheck(text) : null
+    let check = text ? assertionCheck(text) : null
+    if (check?.kind === 'command' && globalContract.getOrigin() !== 'harness') check = null
     if (check) {
       const v = await verifyAssertion(check, gitProbe(cwd), globalContract.getBaseline())
       if (v.status === 'contradicted') {
