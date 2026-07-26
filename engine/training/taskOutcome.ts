@@ -65,6 +65,49 @@ function lastObservation(obs: TestObservation[]): TestObservation | null {
   return null
 }
 
+function firstObservation(obs: TestObservation[]): TestObservation | null {
+  for (const o of obs) if (o.total > 0) return o
+  return null
+}
+
+/**
+ * Did this task's tests pass — as opposed to: is this repository green?
+ *
+ * The distinction is the whole point. testsPass carries 2.0 of a 2.1 denominator
+ * once taskCompleted is unknown, so it effectively *is* the reward, and it was
+ * measured as `last.passed / last.total` with nothing to compare against. In a
+ * repo whose suite is already green, that scores a run which typed `pytest` and
+ * changed nothing identically to one that did the job. Honest measurement of the
+ * wrong quantity — the same error as certifying completion from an auto-contract,
+ * in the highest-weighted slot.
+ *
+ * A green run is attributable to this task only when something changed:
+ *   - the suite was red and is now green — the task fixed it, whatever it edited;
+ *   - or the task added lines to a test file, and the suite is green with them in.
+ * Green before and green after, with no test written, measures the repository.
+ * That is 'unknown': it leaves the denominator instead of inflating it.
+ *
+ * A measured failure stays a measured failure. Partial credit is real information
+ * and the corpus needs the negatives.
+ */
+function assessTestsPass(
+  obs: TestObservation[],
+  git: GitFacts | null,
+): RewardComponents['testsPass'] {
+  const last = lastObservation(obs)
+  if (!last) return 'unknown'
+  // Clamped: a parser reporting passed > total would otherwise hand the weighted
+  // mean a component above its ceiling.
+  const ratio = Math.min(1, last.passed / last.total)
+  if (ratio < 1) return ratio
+
+  const first = firstObservation(obs)
+  if (first && first.passed < first.total) return 1
+
+  const testsWritten = git?.changed.some(c => isTestPath(c.path) && !c.binary && c.added > 0)
+  return testsWritten ? 1 : 'unknown'
+}
+
 /**
  * The anti-reward-hacking gate, scoped to WEAKENING rather than touching.
  *
@@ -110,9 +153,7 @@ function assessTestsUnmodified(git: GitFacts | null): RewardComponents['testsUnm
 
 export function buildComponents(input: TaskOutcomeInput): RewardComponents {
   const lastTest = lastObservation(input.testObservations)
-  // Clamped: a parser reporting passed > total would otherwise hand Task 6's
-  // weighted mean a component above its ceiling.
-  const testsPass = lastTest ? Math.min(1, lastTest.passed / lastTest.total) : 'unknown'
+  const testsPass = assessTestsPass(input.testObservations, input.git)
   const greenRun = lastTest !== null && lastTest.passed >= lastTest.total
 
   let taskCompleted: RewardComponents['taskCompleted']

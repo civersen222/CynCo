@@ -28,6 +28,77 @@ describe('buildComponents — testsPass', () => {
   })
 })
 
+describe('buildComponents — a green suite that was already green measures nothing', () => {
+  const testsWritten = {
+    changed: [{ path: 'gilded/tests/test_grip.py', added: 180, deleted: 0 }],
+    removed: [],
+    dirty: [],
+  }
+
+  it('is UNKNOWN when the suite was green throughout and no test file was touched', () => {
+    // The single highest-weighted component (2.0 of a 2.1 denominator) was
+    // measuring the repository's health, not the task's outcome. In a repo whose
+    // suite is already green, a run that types `pytest` and does nothing else
+    // scored the same as one that did the work.
+    const c = buildComponents(base({
+      testObservations: [{ passed: 392, total: 392 }, { passed: 392, total: 392 }],
+      git: { changed: [{ path: 'gilded/grip.py', added: 3, deleted: 1 }], removed: [], dirty: [] },
+    }))
+    expect(c.testsPass).toBe('unknown')
+  })
+
+  it('is 1 when the suite is green and the task added passing tests', () => {
+    const c = buildComponents(base({
+      testObservations: [{ passed: 396, total: 396 }],
+      git: testsWritten,
+    }))
+    expect(c.testsPass).toBe(1)
+  })
+
+  it('is 1 when the suite started red and ended green', () => {
+    // Turning the suite green IS this task's outcome, whether or not it wrote tests.
+    const c = buildComponents(base({
+      testObservations: [{ passed: 390, total: 396 }, { passed: 396, total: 396 }],
+      git: { changed: [{ path: 'gilded/grip.py', added: 3, deleted: 1 }], removed: [], dirty: [] },
+    }))
+    expect(c.testsPass).toBe(1)
+  })
+
+  it('still reports a measured failure as a failure', () => {
+    const c = buildComponents(base({
+      testObservations: [{ passed: 9, total: 10 }],
+      git: { changed: [], removed: [], dirty: [] },
+    }))
+    expect(c.testsPass).toBe(0.9)
+  })
+
+  it('is UNKNOWN when the suite is green and there are no git facts to check', () => {
+    // Without git we cannot tell whether tests were written, so a green run is
+    // not attributable to this task.
+    const c = buildComponents(base({ testObservations: [{ passed: 10, total: 10 }] }))
+    expect(c.testsPass).toBe('unknown')
+  })
+
+  it('does not credit a merely-deleted test file as tests written', () => {
+    const c = buildComponents(base({
+      testObservations: [{ passed: 10, total: 10 }],
+      git: { changed: [{ path: 'tests/test_a.py', added: 0, deleted: 40 }], removed: [], dirty: [] },
+    }))
+    expect(c.testsPass).toBe('unknown')
+  })
+
+  it('leaves the reward denominator entirely, rather than scoring zero', () => {
+    // 'unknown' must not be read as failure. With taskCompleted also unknown the
+    // row has no outcome evidence at all and belongs out of the corpus.
+    const c = buildComponents(base({
+      testObservations: [{ passed: 392, total: 392 }],
+      git: { changed: [{ path: 'gilded/grip.py', added: 3, deleted: 1 }], removed: [], dirty: [] },
+    }))
+    expect(c.testsPass).toBe('unknown')
+    expect(c.taskCompleted).toBe('unknown')
+  })
+})
+
 describe('buildComponents — taskCompleted (decision D3)', () => {
   it('is 1 when the contract is complete AND a green test run corroborates it', () => {
     const c = buildComponents(base({
@@ -240,7 +311,13 @@ describe('buildComponents — testsUnmodified safety gate', () => {
 
 describe('buildComponents — testsPass clamping', () => {
   it('clamps a nonsense ratio above 1 rather than inflating the reward', () => {
-    const c = buildComponents(base({ testObservations: [{ passed: 15, total: 10 }] }))
+    // git facts showing a written test are what make a green result attributable
+    // to this task at all; without them the component is 'unknown' and the clamp
+    // is never reached.
+    const c = buildComponents(base({
+      testObservations: [{ passed: 15, total: 10 }],
+      git: { changed: [{ path: 'tests/test_a.py', added: 12, deleted: 0 }], removed: [], dirty: [] },
+    }))
     expect(c.testsPass).toBe(1)
   })
 })
