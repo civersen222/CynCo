@@ -33,6 +33,11 @@ export type TaskOutcomeInput = {
   contract: ContractFacts | null
   git: GitFacts | null
   trackedModifiedFiles: string[]
+  /**
+   * The paths already dirty when the task STARTED, or null when that was never
+   * measured. Untidiness the task inherited is not untidiness the task caused.
+   */
+  baselineDirty: string[] | null
   stuckTurns: number
   turns: number
   /** The tool loop ended because it ran out of iterations, not because the model stopped. */
@@ -261,9 +266,25 @@ export function buildComponents(input: TaskOutcomeInput): RewardComponents {
   const typecheck = input.commandObservations.filter(o => o.kind === 'typecheck')
   const build = input.commandObservations.filter(o => o.kind === 'build')
 
+  // Did THIS task leave the tree untidy? The question used to be "is the tree
+  // untidy", which is a different question in any repo that was already dirty
+  // when the task began — and scores the agent for someone else's leftovers.
+  // Measured live: a run that added one file, committed it, and left nothing
+  // behind scored diffClean 0 because of three unrelated untracked files that
+  // predated it by days.
+  //
+  // A path the agent DID touch still counts against it, inherited or not:
+  // wasTracked answers true for those, so they pass the filter either way and
+  // this exclusion opens no loophole.
+  // Array.isArray, not `!== null`: an absent field is `undefined`, which would
+  // pass a null check and then behave as an empty baseline — silently reasserting
+  // "the tree started clean", the assumption this exists to remove.
   let diffClean: RewardComponents['diffClean'] = 'unknown'
-  if (input.git) {
-    diffClean = input.git.dirty.every(p => wasTracked(p, input.trackedModifiedFiles)) ? 1 : 0
+  if (input.git && Array.isArray(input.baselineDirty)) {
+    const inherited = new Set(input.baselineDirty)
+    diffClean = input.git.dirty
+      .filter(p => !inherited.has(p))
+      .every(p => wasTracked(p, input.trackedModifiedFiles)) ? 1 : 0
   }
 
   return {

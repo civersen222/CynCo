@@ -85,7 +85,7 @@ import { UncertaintyTracker } from '../memory/uncertaintyTracker.js'
 // call took the catch branch instead of the recording path. The training corpus
 // writer was uncovered by construction.
 import { getTrajectoryRecorder } from '../training/trajectoryRecorder.js'
-import { collectGitFacts } from '../training/gitFacts.js'
+import { collectGitFacts, collectDirtyPaths } from '../training/gitFacts.js'
 import { buildComponents } from '../training/taskOutcome.js'
 import { finalizeTask } from '../training/rewardLabeler.js'
 import { detectTests } from '../bestOfN/testDetector.js'
@@ -213,6 +213,12 @@ export class ConversationLoop {
   private taskTestObservations: { passed: number; total: number }[] = []
   private taskCommandObservations: { kind: 'typecheck' | 'build'; ok: boolean }[] = []
   private taskGitBaseSha: string | null = null
+  /**
+   * Paths already dirty when the task started, so diffClean can charge the agent
+   * for the mess it made rather than the mess it walked into. Null means the
+   * starting state was never read — not that the tree was clean.
+   */
+  private taskBaselineDirty: string[] | null = null
   /** Set when the tool loop ran out of iterations instead of the model stopping. */
   private taskHitIterationLimit = false
   /** Whether this task has already reported a trajectory-recording failure. */
@@ -809,6 +815,7 @@ export class ConversationLoop {
         this.taskTestObservations = []
         this.taskCommandObservations = []
         this.taskGitBaseSha = this.readGitHead()
+        this.taskBaselineDirty = collectDirtyPaths(this.executor['cwd'])
       }
     } catch (e) {
       this.onTrajectoryError('startTask', e)
@@ -2868,6 +2875,7 @@ export class ConversationLoop {
         : null,
       git: collectGitFacts(this.executor['cwd'], this.taskGitBaseSha),
       trackedModifiedFiles: this.fileTracker.getModifiedFiles(),
+      baselineDirty: this.taskBaselineDirty,
       // resetStuck() runs at the START of runUserMessage, so the counter still
       // holds the finished task's value here. Hardcoding 0 would permanently
       // disable the -0.5 stuck penalty — a fabricated measurement of exactly

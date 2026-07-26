@@ -9,6 +9,7 @@ function base(overrides: Partial<TaskOutcomeInput> = {}): TaskOutcomeInput {
     contract: null,
     git: null,
     trackedModifiedFiles: [],
+    baselineDirty: null,
     stuckTurns: 0,
     turns: 10,
     hitIterationLimit: false,
@@ -250,6 +251,7 @@ describe('buildComponents — diffClean', () => {
     const c = buildComponents(base({
       git: { changed: [], removed: [], dirty: ['src/a.ts'] },
       trackedModifiedFiles: ['/repo/src/a.ts'],
+      baselineDirty: [],
     }))
     expect(c.diffClean).toBe(1)
   })
@@ -258,8 +260,52 @@ describe('buildComponents — diffClean', () => {
     const c = buildComponents(base({
       git: { changed: [], removed: [], dirty: ['src/a.ts', 'scratch.txt'] },
       trackedModifiedFiles: ['/repo/src/a.ts'],
+      baselineDirty: [],
     }))
     expect(c.diffClean).toBe(0)
+  })
+
+  // The live case this was written for: a run added one file, committed it, and
+  // left nothing behind, but scored 0 because three unrelated untracked files had
+  // been sitting in the tree for days.
+  it('is 1 when the only stray files were already dirty before the task', () => {
+    const c = buildComponents(base({
+      git: { changed: [], removed: [], dirty: ['src/a.ts', 'PLAN.md', 'notes.txt'] },
+      trackedModifiedFiles: ['/repo/src/a.ts'],
+      baselineDirty: ['PLAN.md', 'notes.txt'],
+    }))
+    expect(c.diffClean).toBe(1)
+  })
+
+  it('still charges for a stray the task itself introduced', () => {
+    const c = buildComponents(base({
+      git: { changed: [], removed: [], dirty: ['PLAN.md', 'scratch.txt'] },
+      trackedModifiedFiles: [],
+      baselineDirty: ['PLAN.md'],
+    }))
+    expect(c.diffClean).toBe(0)
+  })
+
+  it('is unknown when the starting state was never measured', () => {
+    const c = buildComponents(base({
+      git: { changed: [], removed: [], dirty: ['scratch.txt'] },
+      trackedModifiedFiles: [],
+      baselineDirty: null,
+    }))
+    expect(c.diffClean).toBe('unknown')
+  })
+
+  // `undefined` rather than null — what a plain-JS caller or an object rehydrated
+  // from JSON without the field actually supplies. Left untreated it passes a
+  // `!== null` guard and then behaves as an EMPTY baseline, asserting the tree
+  // started clean without having looked.
+  it('is unknown when the baseline is undefined rather than null', () => {
+    const c = buildComponents(base({
+      git: { changed: [], removed: [], dirty: ['scratch.txt'] },
+      trackedModifiedFiles: [],
+      baselineDirty: undefined as unknown as null,
+    }))
+    expect(c.diffClean).toBe('unknown')
   })
 })
 

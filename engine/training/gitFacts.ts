@@ -250,6 +250,29 @@ function countCasesLost(cwd: string, range: string, path: string): number | null
   return Math.max(0, gone - appeared) + gutted
 }
 
+/**
+ * The paths git calls dirty right now.
+ *
+ * Exported so a caller can record the tree's state BEFORE a task runs and
+ * compare it with the state after using one parser. Two lists built by two
+ * different readers of `status --porcelain` would disagree on exactly the paths
+ * that need care — renames, spaces, non-ASCII names.
+ *
+ * Null when git could not answer, which is "not measured". Never an empty
+ * array on failure: an empty array is the positive claim that the tree is clean.
+ */
+export function collectDirtyPaths(cwd: string): string[] | null {
+  try {
+    return git(cwd, 'status --porcelain')
+      .split('\n')
+      .filter(l => l.length > 3)
+      .map(porcelainPath)
+      .filter(Boolean)
+  } catch {
+    return null
+  }
+}
+
 function git(cwd: string, args: string): string {
   return execSync(`git ${args}`, { cwd, stdio: ['pipe', 'pipe', 'pipe'], maxBuffer: 8 * 1024 * 1024 })
     .toString()
@@ -316,11 +339,8 @@ export function collectGitFacts(cwd: string, baseSha: string | null): GitFacts |
     const removed = git(cwd, `diff --name-only --diff-filter=D ${range}`)
       .split('\n').map(l => l.trim().replace(/\\/g, '/')).filter(Boolean)
 
-    const dirty = git(cwd, 'status --porcelain')
-      .split('\n')
-      .filter(l => l.length > 3)
-      .map(porcelainPath)
-      .filter(Boolean)
+    const dirty = collectDirtyPaths(cwd)
+    if (dirty === null) return null
 
     return { changed, removed, dirty }
   } catch {
