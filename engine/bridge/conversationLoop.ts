@@ -78,6 +78,19 @@ import { isMalformedInput } from '../engine/toolCallRepair.js'
 import { extractSimulatedToolCalls } from '../ollama/simulated.js'
 import { ThinkingRecorder } from '../memory/thinkingRecorder.js'
 import { UncertaintyTracker } from '../memory/uncertaintyTracker.js'
+// Trajectory recording and Best-of-N were reached through lazy require('*.js').
+// Nothing in either package imports back here, so there was no cycle to break —
+// and under vitest those requires threw, so every test that exercised a tool
+// call took the catch branch instead of the recording path. The training corpus
+// writer was uncovered by construction.
+import { getTrajectoryRecorder } from '../training/trajectoryRecorder.js'
+import { collectGitFacts } from '../training/gitFacts.js'
+import { buildComponents } from '../training/taskOutcome.js'
+import { finalizeTask } from '../training/rewardLabeler.js'
+import { detectTests } from '../bestOfN/testDetector.js'
+import { WorktreeManager } from '../bestOfN/worktreeManager.js'
+import { extractPatch } from '../bestOfN/patchExtractor.js'
+import { runTests, selectWinner, applyPatch } from '../bestOfN/sampler.js'
 
 /**
  * Phase 6: build structured diff hunks from a write-tool input for the file.diff
@@ -199,6 +212,8 @@ export class ConversationLoop {
   private taskTestObservations: { passed: number; total: number }[] = []
   private taskCommandObservations: { kind: 'typecheck' | 'build'; ok: boolean }[] = []
   private taskGitBaseSha: string | null = null
+  /** Whether this task has already reported a trajectory-recording failure. */
+  private trajectoryErrorLogged = false
   private config: LocalCodeConfig
   private provider: Provider
   private emit: (event: EngineEvent) => void
@@ -777,8 +792,8 @@ export class ConversationLoop {
     }
 
     // Start trajectory recording for this task
+    this.trajectoryErrorLogged = false
     try {
-      const { getTrajectoryRecorder } = require('../training/trajectoryRecorder.js')
       const { randomUUID } = require('crypto')
       const recorder = getTrajectoryRecorder()
       if (recorder) {
@@ -791,7 +806,9 @@ export class ConversationLoop {
         this.taskCommandObservations = []
         this.taskGitBaseSha = this.readGitHead()
       }
-    } catch {}
+    } catch (e) {
+      this.onTrajectoryError('startTask', e)
+    }
 
     // Compact when context exceeds the configured warning threshold.
     // With flash attention, attention is ~O(n) not O(n²), so we can use
@@ -1219,13 +1236,9 @@ export class ConversationLoop {
       const bonTemp = parseFloat(process.env.LOCALCODE_BEST_OF_N_TEMP ?? '0.8')
 
       if (bonEnabled) {
-        const { detectTests } = require('../bestOfN/testDetector.js')
         const testInfo = detectTests(this.executor['cwd'])
 
         if (testInfo.available) {
-          const { WorktreeManager } = require('../bestOfN/worktreeManager.js')
-          const { extractPatch } = require('../bestOfN/patchExtractor.js')
-          const { runTests, selectWinner, applyPatch } = require('../bestOfN/sampler.js')
           const mainCwd = this.executor['cwd']
 
           this.emit({ type: 'bestOfN.start', payload: { count: bonCount, framework: testInfo.framework, command: testInfo.command } } as any)
@@ -2800,8 +2813,20 @@ export class ConversationLoop {
    * Called from handleUserMessage's finally, so it runs on every exit path.
    * Idempotent — endTask clears the recorder's active task.
    */
+  /**
+   * A trajectory failure must not take the turn down with it — but it must not
+   * be invisible either. Silence here means the training corpus quietly stops
+   * being written while the session looks healthy, and every reward computed
+   * afterwards rests on nothing. Reported once per task, since recordTurn runs
+   * on every tool call and a repeating fault would otherwise flood the log.
+   */
+  private onTrajectoryError(stage: string, e: unknown): void {
+    if (this.trajectoryErrorLogged) return
+    this.trajectoryErrorLogged = true
+    console.error(`[trajectory] ${stage} failed — this task will not be recorded for training: ${e}`)
+  }
+
   private finalizeTrajectory(): void {
-    const { getTrajectoryRecorder } = require('../training/trajectoryRecorder.js')
     const recorder = getTrajectoryRecorder()
     if (!recorder || !recorder.taskId) return
 
@@ -2810,10 +2835,6 @@ export class ConversationLoop {
 
     const snapshot = recorder.endTask(this.messages)
     if (!snapshot) return
-
-    const { collectGitFacts } = require('../training/gitFacts.js')
-    const { buildComponents } = require('../training/taskOutcome.js')
-    const { finalizeTask } = require('../training/rewardLabeler.js')
 
     const components = buildComponents({
       testObservations: this.taskTestObservations,
@@ -3385,7 +3406,6 @@ export class ConversationLoop {
 
     // Record trajectory turn for future training
     try {
-      const { getTrajectoryRecorder } = require('../training/trajectoryRecorder.js')
       const recorder = getTrajectoryRecorder()
       if (recorder) {
         const { createHash } = require('crypto')
@@ -3429,7 +3449,9 @@ export class ConversationLoop {
           turnIdx: recorder.turnIdx ?? 0,
         })
       }
-    } catch {}
+    } catch (e) {
+      this.onTrajectoryError('recordTurn', e)
+    }
 
     // Autopoietic: update session homeostat with current measurements
     const sessionH = this.governance.getSessionHomeostat()
