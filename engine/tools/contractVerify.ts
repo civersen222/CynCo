@@ -20,6 +20,7 @@
 import { existsSync } from 'node:fs'
 import { isAbsolute, resolve } from 'node:path'
 import { exec, execFile } from 'node:child_process'
+import { getShellInfo } from './shellInfo.js'
 
 // Templates are shared with contractAutoCreate so the producer of an assertion
 // and the code that verifies it cannot drift apart.
@@ -145,8 +146,13 @@ const COMMAND_TIMEOUT_MS = 300_000
 const TIMEOUT_EXIT = 124
 
 function runCommand(cwd: string, command: string): Promise<number | null> {
+  // The same shell the Bash tool uses. `exec` would otherwise default to
+  // cmd.exe on Windows, so a check script written in the dialect the brief and
+  // every other command in the session use — PowerShell here — would fail on
+  // syntax and be reported as the work being wrong.
+  const shell = getShellInfo().shell
   return new Promise(resolvePromise => {
-    exec(command, { cwd, encoding: 'utf-8', timeout: COMMAND_TIMEOUT_MS, maxBuffer: 8 * 1024 * 1024 }, err => {
+    exec(command, { cwd, shell, encoding: 'utf-8', timeout: COMMAND_TIMEOUT_MS, maxBuffer: 8 * 1024 * 1024 }, err => {
       if (!err) return resolvePromise(0)
       const e = err as Error & { code?: number | string; killed?: boolean }
       if (e.killed) return resolvePromise(TIMEOUT_EXIT)

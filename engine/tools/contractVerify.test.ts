@@ -12,6 +12,7 @@ import {
   COMMITTED_ASSERTION,
   type RepoProbe,
 } from './contractVerify.js'
+import { getShellInfo } from './shellInfo.js'
 
 describe('assertionCheck — recovering the claim from engine-generated text', () => {
   test('reads back the templates contractAutoCreate emits', () => {
@@ -96,6 +97,20 @@ describe('gitProbe.run — really executes', () => {
     const p = gitProbe(process.cwd())
     expect(await p.run('exit 0')).toBe(0)
     expect(await p.run('exit 3')).toBe(3)
+  })
+
+  /**
+   * The check script is written in the same dialect as every other command in
+   * the session, because whoever wrote the brief wrote both. `exec` defaults to
+   * cmd.exe on Windows, which would have failed a PowerShell check on syntax and
+   * reported it as the work being wrong.
+   */
+  test('runs in the same shell the Bash tool uses', async () => {
+    const p = gitProbe(process.cwd())
+    const probeCommand = getShellInfo().isPowerShell
+      ? 'if ($PSVersionTable) { exit 0 } else { exit 9 }'
+      : 'test -n "$BASH_VERSION" && exit 0 || exit 9'
+    expect(await p.run(probeCommand)).toBe(0)
   })
 })
 
