@@ -11,6 +11,7 @@ function base(overrides: Partial<TaskOutcomeInput> = {}): TaskOutcomeInput {
     trackedModifiedFiles: [],
     stuckTurns: 0,
     turns: 10,
+    hitIterationLimit: false,
     ...overrides,
   }
 }
@@ -183,6 +184,44 @@ describe('buildComponents — an auto-contract cannot certify the task', () => {
       contract: { active: true, complete: false, failed: 2, origin: 'harness' },
       testObservations: [{ passed: 10, total: 10 }],
     })).taskCompleted).toBe(0)
+  })
+})
+
+describe('buildComponents — a run that ran out of turns did not decide it was done', () => {
+  it('scores taskCompleted 0 when the loop ended at the iteration limit', () => {
+    const c = buildComponents(base({
+      hitIterationLimit: true,
+      testObservations: [{ passed: 396, total: 396 }],
+    }))
+    expect(c.taskCompleted).toBe(0)
+  })
+
+  it('scores 0 for an auto-contract run that ran out of turns', () => {
+    // The auto-contract still cannot certify completion, but exhausting the
+    // budget is a measured non-completion that needs no yardstick.
+    const c = buildComponents(base({
+      hitIterationLimit: true,
+      contract: { active: true, complete: false, failed: 3, origin: 'auto' },
+      testObservations: [{ passed: 396, total: 396 }],
+    }))
+    expect(c.taskCompleted).toBe(0)
+  })
+
+  it('does not overrule an authored contract that was satisfied', () => {
+    const c = buildComponents(base({
+      hitIterationLimit: true,
+      contract: { active: true, complete: true, failed: 0, origin: 'harness' },
+      testObservations: [{ passed: 10, total: 10 }],
+    }))
+    expect(c.taskCompleted).toBe(1)
+  })
+
+  it('leaves taskCompleted unknown when the model stopped on its own', () => {
+    const c = buildComponents(base({
+      hitIterationLimit: false,
+      testObservations: [{ passed: 396, total: 396 }],
+    }))
+    expect(c.taskCompleted).toBe('unknown')
   })
 })
 

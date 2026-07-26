@@ -35,6 +35,8 @@ export type TaskOutcomeInput = {
   trackedModifiedFiles: string[]
   stuckTurns: number
   turns: number
+  /** The tool loop ended because it ran out of iterations, not because the model stopped. */
+  hitIterationLimit: boolean
 }
 
 function normalize(p: string): string {
@@ -177,6 +179,21 @@ export function buildComponents(input: TaskOutcomeInput): RewardComponents {
   } else {
     taskCompleted = 'unknown'
   }
+
+  // How the loop ended is a measured fact, and it was being thrown away. A run
+  // that stops because it exhausted its turn budget did not decide it was done
+  // — and unlike a contract, that observation needs no yardstick about what was
+  // asked, so it is available even when nothing else is. Without it the reward
+  // had no way at all to express "did not finish": taskCompleted is 'unknown'
+  // for every auto-contract, so the L2c run — vacuous tests, an economy
+  // mechanic deleted, three brief items untouched, stopped only by the limit —
+  // scored 0.874, and the corpus mean sat at 0.937 with zero negatives. A
+  // saturated mean teaches the model that work of that quality is excellent.
+  //
+  // It does not overrule a satisfied authored contract. An authored spec being
+  // met is stronger evidence of completion than the agent's own stopping
+  // judgment, so this only fills in where the answer would be 'unknown'.
+  if (taskCompleted === 'unknown' && input.hitIterationLimit) taskCompleted = 0
 
   const typecheck = input.commandObservations.filter(o => o.kind === 'typecheck')
   const build = input.commandObservations.filter(o => o.kind === 'build')

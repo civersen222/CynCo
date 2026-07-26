@@ -213,6 +213,8 @@ export class ConversationLoop {
   private taskTestObservations: { passed: number; total: number }[] = []
   private taskCommandObservations: { kind: 'typecheck' | 'build'; ok: boolean }[] = []
   private taskGitBaseSha: string | null = null
+  /** Set when the tool loop ran out of iterations instead of the model stopping. */
+  private taskHitIterationLimit = false
   /** Whether this task has already reported a trajectory-recording failure. */
   private trajectoryErrorLogged = false
   private config: LocalCodeConfig
@@ -794,6 +796,7 @@ export class ConversationLoop {
 
     // Start trajectory recording for this task
     this.trajectoryErrorLogged = false
+    this.taskHitIterationLimit = false
     try {
       const { randomUUID } = require('crypto')
       const recorder = getTrajectoryRecorder()
@@ -2676,6 +2679,9 @@ export class ConversationLoop {
         console.log(`[contract] UNRESOLVED at iteration limit — failing ${unverified.length} unverified assertion(s)`)
       }
     }
+    // Recorded for the reward labeler: reaching here means the loop ended
+    // because the budget ran out, not because the model judged the work done.
+    this.taskHitIterationLimit = true
     console.warn('[loop] Max iterations reached')
     this.emit({ type: 'stream.token', text: '\n[System] Max tool call iterations reached. Stopping.\n' })
     this.emit({ type: 'message.complete', messageId: '', stopReason: 'max_iterations' })
@@ -2868,6 +2874,7 @@ export class ConversationLoop {
       // the kind this pipeline repair exists to remove.
       stuckTurns: this.governance?.getStuckCount() ?? 0,
       turns,
+      hitIterationLimit: this.taskHitIterationLimit,
     })
 
     const reward = finalizeTask(taskId, turns, components, recorder.rewardDir)
