@@ -31,7 +31,7 @@ describe('buildComponents — testsPass', () => {
 describe('buildComponents — taskCompleted (decision D3)', () => {
   it('is 1 when the contract is complete AND a green test run corroborates it', () => {
     const c = buildComponents(base({
-      contract: { active: true, complete: true, failed: 0 },
+      contract: { active: true, complete: true, failed: 0, origin: 'harness' },
       testObservations: [{ passed: 10, total: 10 }],
     }))
     expect(c.taskCompleted).toBe(1)
@@ -40,7 +40,7 @@ describe('buildComponents — taskCompleted (decision D3)', () => {
   it('is UNKNOWN when the contract claims complete but no test ever ran', () => {
     // The S4_DET regression: agent reported "25/25 passed" with the suite never run.
     const c = buildComponents(base({
-      contract: { active: true, complete: true, failed: 0 },
+      contract: { active: true, complete: true, failed: 0, origin: 'harness' },
       testObservations: [],
     }))
     expect(c.taskCompleted).toBe('unknown')
@@ -48,7 +48,7 @@ describe('buildComponents — taskCompleted (decision D3)', () => {
 
   it('is 0 when the contract has failed assertions', () => {
     const c = buildComponents(base({
-      contract: { active: true, complete: false, failed: 2 },
+      contract: { active: true, complete: false, failed: 2, origin: 'harness' },
       testObservations: [{ passed: 10, total: 10 }],
     }))
     expect(c.taskCompleted).toBe(0)
@@ -56,7 +56,7 @@ describe('buildComponents — taskCompleted (decision D3)', () => {
 
   it('is 0 when the contract is complete but tests are red', () => {
     const c = buildComponents(base({
-      contract: { active: true, complete: true, failed: 0 },
+      contract: { active: true, complete: true, failed: 0, origin: 'harness' },
       testObservations: [{ passed: 4, total: 10 }],
     }))
     expect(c.taskCompleted).toBe(0)
@@ -64,6 +64,54 @@ describe('buildComponents — taskCompleted (decision D3)', () => {
 
   it('is unknown with no contract and no observation', () => {
     expect(buildComponents(base()).taskCompleted).toBe('unknown')
+  })
+})
+
+/**
+ * An auto-contract is not a specification. It is synthesized from surface
+ * features of the user's message — which filenames it names, whether it sounds
+ * like an edit — and it can only ever assert file mechanics: X was modified,
+ * changes were committed. It cannot encode what was actually asked for.
+ *
+ * The L2b run is the proof. The brief's central instruction was "For each item:
+ * write the test FIRST, run it, confirm it FAILS", and it ended "Do not commit".
+ * The auto-contract asserted three files-touched claims and one commit claim.
+ * CynCo wrote zero tests, committed three times, and fabricated a file to close
+ * a phantom assertion — and scored 0.944, taskCompleted 1, because the contract
+ * it was measured against had asked for none of the things the user asked for.
+ *
+ * The green-test corroboration does not save it: the suite was green before the
+ * task began. A contract the engine wrote about itself proves nothing about the
+ * task, so 'unknown' is the honest answer. Only a contract someone authored on
+ * purpose — a harness brief's check script — is a specification.
+ */
+describe('buildComponents — an auto-contract cannot certify the task', () => {
+  it('is unknown when a complete auto-contract is corroborated by green tests', () => {
+    const c = buildComponents(base({
+      contract: { active: true, complete: true, failed: 0, origin: 'auto' },
+      testObservations: [{ passed: 392, total: 392 }],
+    }))
+    expect(c.taskCompleted).toBe('unknown')
+  })
+
+  it('is unknown when an auto-contract has failed assertions', () => {
+    // Failing a phantom assertion is the honest move. It must not be punished.
+    const c = buildComponents(base({
+      contract: { active: true, complete: false, failed: 1, origin: 'auto' },
+      testObservations: [{ passed: 10, total: 10 }],
+    }))
+    expect(c.taskCompleted).toBe('unknown')
+  })
+
+  it('still scores a harness contract, which someone wrote on purpose', () => {
+    expect(buildComponents(base({
+      contract: { active: true, complete: true, failed: 0, origin: 'harness' },
+      testObservations: [{ passed: 10, total: 10 }],
+    })).taskCompleted).toBe(1)
+    expect(buildComponents(base({
+      contract: { active: true, complete: false, failed: 2, origin: 'harness' },
+      testObservations: [{ passed: 10, total: 10 }],
+    })).taskCompleted).toBe(0)
   })
 })
 

@@ -2853,7 +2853,12 @@ export class ConversationLoop {
       testObservations: this.taskTestObservations,
       commandObservations: this.taskCommandObservations,
       contract: globalContract.isActive()
-        ? { active: true, complete: globalContract.isComplete(), failed: globalContract.failedCount() }
+        ? {
+            active: true,
+            complete: globalContract.isComplete(),
+            failed: globalContract.failedCount(),
+            origin: globalContract.snapshot().origin,
+          }
         : null,
       git: collectGitFacts(this.executor['cwd'], this.taskGitBaseSha),
       trackedModifiedFiles: this.fileTracker.getModifiedFiles(),

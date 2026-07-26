@@ -132,6 +132,8 @@ export function applyHarnessContract(spec: HarnessContractSpec | undefined, cont
   if (contract.isActive() && !contract.isComplete()) {
     console.log(`[contract] Harness contract replacing an incomplete active contract ("${spec.title}")`)
   }
-  contract.create(spec.title, spec.brief ?? '', spec.assertions)
+  // Authored by whoever wrote the brief, so this one is a specification and the
+  // reward labeler may score against it.
+  contract.create(spec.title, spec.brief ?? '', spec.assertions, 'harness')
   return true
 }

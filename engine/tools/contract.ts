@@ -21,11 +21,26 @@ export interface Assertion {
   evidence?: string
 }
 
+/**
+ * Who wrote this contract. 'harness' means a person authored it — a mission
+ * brief's check script, which IS the specification. 'auto' covers everything
+ * else: the loop synthesizing assertions from the shape of a user message, the
+ * model calling ContractCreate on itself, the vibe controller deriving them
+ * from locked decisions. None of those state what was asked for; they state
+ * file mechanics, or the model's own opinion of its job.
+ *
+ * The reward labeler has to tell them apart. Satisfying an auto-contract is not
+ * evidence the task was done — on the L2b run one certified taskCompleted=1 for
+ * work that skipped every test the brief demanded.
+ */
+export type ContractOrigin = 'auto' | 'harness'
+
 export interface ContractSnapshot {
   title: string
   brief: string
   active: boolean
   complete: boolean
+  origin: ContractOrigin
   assertions: Assertion[]
 }
 
@@ -38,6 +53,7 @@ export class ContractState {
   private brief: string = ''
   private assertions: Assertion[] = []
   private active: boolean = false
+  private origin: ContractOrigin = 'auto'
   /**
    * HEAD at the moment the contract was created. Without it "Changes committed
    * to git" is unfalsifiable — a repo with any history satisfies it. The live
@@ -59,10 +75,11 @@ export class ContractState {
   }
 
   /** Create (or replace) the contract with a title, brief, and list of assertion texts. */
-  create(title: string, brief: string, assertionTexts: string[]): void {
+  create(title: string, brief: string, assertionTexts: string[], origin: ContractOrigin = 'auto'): void {
     this.title = title
     this.brief = brief
     this.assertions = assertionTexts.map(text => ({ text, status: 'pending' as AssertionStatus }))
+    this.origin = origin
     this.active = true
     this.baseline = null
     this.enforcementRounds = 0
@@ -188,6 +205,7 @@ export class ContractState {
       brief: this.brief,
       active: this.active,
       complete: this.isComplete(),
+      origin: this.origin,
       assertions: this.assertions.map(a => ({ ...a })),
     }
   }
@@ -198,6 +216,7 @@ export class ContractState {
     this.brief = ''
     this.assertions = []
     this.active = false
+    this.origin = 'auto'
     this.baseline = null
     this.enforcementRounds = 0
     this.enforcementEnabled = true

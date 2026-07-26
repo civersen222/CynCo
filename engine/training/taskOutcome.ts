@@ -15,7 +15,17 @@ import type { RewardComponents } from './rewardLabeler.js'
 
 export type TestObservation = { passed: number; total: number }
 export type CommandObservation = { kind: 'typecheck' | 'build'; ok: boolean }
-export type ContractFacts = { active: boolean; complete: boolean; failed: number }
+/**
+ * `origin` decides whether this contract can say anything about the task.
+ * 'harness' — someone authored it; the brief's check script IS the spec.
+ * 'auto'    — the engine synthesized it from the shape of the user's message.
+ */
+export type ContractFacts = {
+  active: boolean
+  complete: boolean
+  failed: number
+  origin: 'auto' | 'harness'
+}
 
 export type TaskOutcomeInput = {
   testObservations: TestObservation[]
@@ -106,7 +116,16 @@ export function buildComponents(input: TaskOutcomeInput): RewardComponents {
   const greenRun = lastTest !== null && lastTest.passed >= lastTest.total
 
   let taskCompleted: RewardComponents['taskCompleted']
-  if (input.contract && (input.contract.failed > 0 || (input.contract.active && !input.contract.complete))) {
+  // An auto-contract asserts file mechanics — X was modified, changes were
+  // committed — because that is all the engine can mine out of a message. It
+  // cannot encode what was asked for, so satisfying it is not evidence the task
+  // was done. On the L2b run one certified taskCompleted=1 for a run that wrote
+  // none of the tests the brief demanded and committed against an explicit
+  // instruction not to. Unknown is the honest answer; only an authored contract
+  // is a specification.
+  if (input.contract?.origin === 'auto') {
+    taskCompleted = 'unknown'
+  } else if (input.contract && (input.contract.failed > 0 || (input.contract.active && !input.contract.complete))) {
     // An active contract with unmet assertions is 0 even when tests are green:
     // passing tests the contract did not ask for is not the assigned job.
     taskCompleted = 0
