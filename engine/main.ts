@@ -402,6 +402,16 @@ if (config.provider === 'llama-cpp' && dashboardServer) {
 
 // Write session outcome on clean shutdown
 async function cleanShutdown(signal: string) {
+  // Close any task still open. finalizeTrajectory runs from handleUserMessage's
+  // finally, which never runs when the process is killed mid-task, so a restart
+  // during live work left the trajectory on disk unlabeled — and unlabeled means
+  // invisible to the dataset builder. First, because a later failure here must
+  // not cost the corpus row.
+  try {
+    loop.finalizeOpenTask()
+  } catch (e) {
+    console.error(`[shutdown] trajectory finalize failed: ${e instanceof Error ? e.message : String(e)}`)
+  }
   // Record governance session outcome
   try {
     const govReport = loop.getGovernance?.()?.getReport?.()

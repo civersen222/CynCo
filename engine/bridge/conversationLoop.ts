@@ -2826,6 +2826,19 @@ export class ConversationLoop {
     console.error(`[trajectory] ${stage} failed — this task will not be recorded for training: ${e}`)
   }
 
+  /**
+   * Close whatever task is still open. finalizeTrajectory runs from
+   * handleUserMessage's finally, which does not run when the process dies
+   * mid-task — so every restart during a live task left a trajectory on disk
+   * with no reward label, and an unlabeled trajectory is invisible to the
+   * dataset builder. Shutdown calls this. The label will usually be degenerate,
+   * since an interrupted task has no outcome evidence, and that is the correct
+   * answer rather than a loss.
+   */
+  finalizeOpenTask(): void {
+    this.finalizeTrajectory()
+  }
+
   private finalizeTrajectory(): void {
     const recorder = getTrajectoryRecorder()
     if (!recorder || !recorder.taskId) return
@@ -2833,8 +2846,11 @@ export class ConversationLoop {
     const taskId = recorder.taskId
     const turns = recorder.turnIdx ?? 0
 
-    const snapshot = recorder.endTask(this.messages)
-    if (!snapshot) return
+    // The conversation snapshot is a separate artifact from the turn log, which
+    // is already on disk. Bailing out when the snapshot cannot be written left
+    // the task unlabeled, and an unlabeled trajectory is invisible to the
+    // dataset builder — the turns are lost over a failure in something else.
+    recorder.endTask(this.messages)
 
     const components = buildComponents({
       testObservations: this.taskTestObservations,

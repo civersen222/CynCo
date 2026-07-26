@@ -184,4 +184,45 @@ describe('trajectory recording is on a live path', () => {
     expect(after).toBe(before)
     globalContract.clear()
   }, 30000)
+
+  /**
+   * finalizeTrajectory runs from handleUserMessage's finally — which does not
+   * run when the process dies mid-task. Every engine restart during a live task
+   * therefore left a trajectory on disk with no reward label, and an unlabeled
+   * trajectory is invisible to the dataset builder. Across 2026-07-25/26 that
+   * was 3 of 10 trajectories lost, mostly to my own restarts.
+   *
+   * Shutdown closes the open task the same way the end of a message does. The
+   * label will usually be degenerate — an interrupted task has no outcome
+   * evidence — and that is the correct answer, not a loss.
+   */
+  it('an interrupted task is labeled at shutdown, and only once', async () => {
+    globalContract.clear()
+    const cwd = tempDir('cynco-traj-cwd-')
+    const trajDir = tempDir('cynco-traj-out-')
+    const recorder = initTrajectoryRecorder(trajDir)
+
+    const loop = new ConversationLoop({
+      cwd,
+      config: config(),
+      provider: mockProvider([() => textResponse('done')]),
+      emit: () => {},
+      allowedTools: ['Read'],
+    })
+
+    // A task that started and never reached the end of handleUserMessage.
+    recorder.startTask('interrupted-task', 'test-model')
+    recorder.recordTurn({ toolCalls: [{ name: 'Read', inputHash: 'h', success: true, latencyMs: 1 }] } as any)
+
+    loop.finalizeOpenTask()
+    expect(recorder.taskId).toBeNull()
+
+    const labels = readdirSync(recorder.rewardDir).filter(f => f.startsWith('interrupted-task'))
+    expect(labels.length).toBe(1)
+
+    // Shutdown may follow a message that already closed its own task.
+    loop.finalizeOpenTask()
+    expect(readdirSync(recorder.rewardDir).filter(f => f.startsWith('interrupted-task')).length).toBe(1)
+    globalContract.clear()
+  }, 30000)
 })
