@@ -74,6 +74,7 @@ import { estimateTokensAsync } from '../engine/contextBudget.js'
 import { checkCommitScope } from './commitScope.js'
 import { applyToolFloor, attributeRemoval } from './toolFloor.js'
 import { enforcementNudgeText } from './enforcementNudge.js'
+import { saysDone, shouldNudge } from './nudgeDecision.js'
 import { isMalformedInput } from '../engine/toolCallRepair.js'
 import { extractSimulatedToolCalls } from '../ollama/simulated.js'
 import { ThinkingRecorder } from '../memory/thinkingRecorder.js'
@@ -2377,23 +2378,19 @@ export class ConversationLoop {
 
       // Auto-retry: if the model produced no tool calls despite having tools available,
       // nudge it to use tools. Track consecutive nudges to escalate or give up.
-      const noToolsEndTurn = toolUseBlocks.length === 0 && stopReason === 'end_turn'
-      // Case 1: Only thinking tokens, no content — model deliberated but didn't act
-      const isThinkingWithoutActing = noToolsEndTurn && reasoningTokenCount > 0 && tokenCount === 0
-      // Case 2: Short text + heavy thinking — describing instead of doing
-      const isDescribingInsteadOfDoing = noToolsEndTurn && tokenCount > 0 && tokenCount < 100 && reasoningTokenCount > tokenCount * 2
-      // Case 3: Tools were used earlier in session but model stopped using them.
-      // This catches the "let me check... actually... wait..." narration pattern.
-      // BUT: if the model says it's done (completion signals), let it finish.
-      const completionSignals = /\b(task (is )?complete|i'm done|waiting for|ready for your|what would you like|no changes needed)\b/i
-      const modelSaysDone = completionSignals.test(streamedText)
-      const isMidPlanStop = noToolsEndTurn && toolsUsedInSession.length > 0 && !modelSaysDone
       // One-shot missions finish by emitting a ```json structured outcome —
       // that IS completion; never nudge it back into tool calls
       // (2026-06-12 weekly-digest incident: nudges pushed the model mid-answer
       // back to repeating the same Mfl call until HALT).
-      const producedStructuredOutcome = this.allowedTools != null && /```json/.test(streamedText)
-      if ((isThinkingWithoutActing || isDescribingInsteadOfDoing || isMidPlanStop) && !producedStructuredOutcome) {
+      if (shouldNudge({
+        noToolsEndTurn: toolUseBlocks.length === 0 && stopReason === 'end_turn',
+        reasoningTokens: reasoningTokenCount,
+        textTokens: tokenCount,
+        toolsUsedInSession: toolsUsedInSession.length > 0,
+        modelSaysDone: saysDone(streamedText),
+        contractComplete: globalContract.isActive() && globalContract.isComplete(),
+        producedStructuredOutcome: this.allowedTools != null && /```json/.test(streamedText),
+      })) {
         this.consecutiveNudges++
         if (this.consecutiveNudges <= 5) {
           const nudgeText = this.allowedTools
