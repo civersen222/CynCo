@@ -49,6 +49,32 @@ describe('checkShellDialect', () => {
     expect(checkShellDialect('a && b', pwsh)).toBeNull()
     expect(checkShellDialect('a && b', bash)).toBeNull()
   })
+
+  /**
+   * `NAME=value command` is a parse error in every PowerShell, and it is the
+   * first thing a model reaches for — briefs are written that way. On a live
+   * run the failure was silent enough that the model tried it, then the correct
+   * `$env:` form (blocked at the time by the env-dump safety rule), then the
+   * cmd.exe `set` form (refused by the && check), before escaping through
+   * `python -c "os.environ[...]"`. Five turns to set two variables.
+   */
+  it('rejects a POSIX env-var prefix on PowerShell and names the replacement', () => {
+    for (const info of [ps51, pwsh]) {
+      const err = checkShellDialect('GILDED_NARRATE=0 SDL_VIDEODRIVER=dummy python -m pytest', info)
+      expect(err).toBeTruthy()
+      expect(err).toContain('$env:GILDED_NARRATE="0"')
+      expect(err).toContain('$env:SDL_VIDEODRIVER="dummy"')
+    }
+  })
+
+  it('leaves the POSIX env-var prefix alone on bash', () => {
+    expect(checkShellDialect('FOO=1 python -m pytest', bash)).toBeNull()
+  })
+
+  it('does not mistake an ordinary argument for an env-var prefix', () => {
+    expect(checkShellDialect('python -m pytest -k test_x=1', ps51)).toBeNull()
+    expect(checkShellDialect('git config user.name=someone', ps51)).toBeNull()
+  })
 })
 
 describe('getShellInfo', () => {
