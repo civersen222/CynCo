@@ -3,7 +3,8 @@ import { describe, expect, it } from 'bun:test'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { extractOutcome, buildOneShotPrompt, makeHaltCapture, runOneShotTask } from '../../daemon/oneShot.js'
+import { extractOutcome, buildOneShotPrompt, makeHaltCapture, runOneShotTask, countAssistantTurns } from '../../daemon/oneShot.js'
+import type { Message } from '../../types.js'
 import type { Provider, CompletionRequest, ModelCapabilities } from '../../provider.js'
 import type { StreamEvent } from '../../types.js'
 import type { TaskFileInput } from '../../daemon/types.js'
@@ -81,6 +82,30 @@ describe('extractOutcome', () => {
     const outcome = extractOutcome(text)
     expect(outcome.recommendations.length).toBe(1)
     expect(outcome.recommendations[0].actionType).toBe('waiver')
+  })
+})
+
+describe('countAssistantTurns', () => {
+  const msg = (role: 'user' | 'assistant', content: any[]): Message => ({ role, content } as Message)
+
+  it('counts assistant messages that said or did something', () => {
+    expect(countAssistantTurns([
+      msg('user', [{ type: 'text', text: 'go' }]),
+      msg('assistant', [{ type: 'text', text: 'looking' }]),
+      msg('assistant', [{ type: 'tool_use', id: 't1', name: 'Read', input: {} }]),
+    ])).toBe(2)
+  })
+
+  it('is zero for a run where the model never produced anything', () => {
+    expect(countAssistantTurns([])).toBe(0)
+    expect(countAssistantTurns([msg('user', [{ type: 'text', text: 'go' }])])).toBe(0)
+  })
+
+  it('does not count an empty or whitespace-only assistant message as a turn', () => {
+    expect(countAssistantTurns([
+      msg('assistant', []),
+      msg('assistant', [{ type: 'text', text: '   ' }]),
+    ])).toBe(0)
   })
 })
 
@@ -183,12 +208,41 @@ describe('runOneShotTask trade-scan dispatch', () => {
       // Key assertion 2: outcome file was written
       const outcome = JSON.parse(readFileSync(join(dir, 'out.json'), 'utf-8'))
       expect(outcome).toBeDefined()
-      // runGovernedLoop catches the stream error internally and returns an
-      // unstructured-fallback outcome (ok:true) — so runOneShotTask returns 0.
-      // The exact exit code is intentionally asserted to lock in the behaviour.
-      expect(code).toBe(0)
+      // runGovernedLoop catches the stream error internally, so the run
+      // produces zero assistant turns — that is a failed run, exit code 1.
+      expect(code).toBe(1)
     } finally { rmSync(dir, { recursive: true, force: true }) }
   })
+
+  it('a run that produced zero turns reports ok:false, not an "(unstructured output)" success', async () => {
+    // Real incident: every model call timed out ("[loop] ERROR: The operation
+    // timed out."), the loop wrote nothing, and the outcome file still said
+    // {"ok": true, "summary": "(unstructured output) (no output)"} — so every
+    // unattended caller had to re-derive success by inspecting the repo.
+    const dir = mkdtempSync(join(tmpdir(), 'cynco-zt-'))
+    try {
+      const timingOutProvider = {
+        ...noopProvider,
+        async probeCapabilities() {
+          return { tier: 'advanced', toolUse: 'native', thinking: 'none', vision: false, jsonMode: true, contextLength: 32768, streaming: true }
+        },
+        async *stream(): AsyncGenerator<any> { throw new Error('The operation timed out.') },
+      } as unknown as Provider
+      const task: TaskFileInput = {
+        missionId: 'm1', triggerId: 'zero-turn', prompt: 'Do the mission', context: 'ctx',
+        allowedTools: ['Read'], timeoutMs: 15000, outcomePath: join(dir, 'out.json'),
+      }
+      const taskPath = join(dir, 'task.json')
+      writeFileSync(taskPath, JSON.stringify(task), 'utf-8')
+
+      const code = await runOneShotTask(taskPath, timingOutProvider, makeConfig() as any, undefined, dir)
+      const outcome = JSON.parse(readFileSync(join(dir, 'out.json'), 'utf-8'))
+      expect(outcome.ok).toBe(false)
+      expect(outcome.summary).not.toContain('(unstructured output)')
+      expect(String(outcome.error)).toMatch(/no.*turn/i)
+      expect(code).toBe(1)
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  }, 30000)
 
   it('a failed scan outcome yields exit code 1', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'cynco-ts-'))
