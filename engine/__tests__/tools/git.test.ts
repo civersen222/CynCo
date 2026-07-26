@@ -181,3 +181,34 @@ describe('Git tool — argument injection guard', () => {
     expect(result.output).not.toContain('blocked')
   })
 })
+
+// ---------------------------------------------------------------------------
+// Failure reporting. git does not put its diagnostics where you would expect:
+// a commit with nothing staged exits 1 with stderr EMPTY and the whole
+// explanation on stdout. Reporting stderr alone told the agent only "exited
+// with code 1", costing it a turn on `git status` to learn what the failure
+// had already said.
+// ---------------------------------------------------------------------------
+describe('Git tool — failure reporting', () => {
+  it('surfaces the explanation git wrote to stdout, not just an exit code', async () => {
+    const fs = await import('node:fs')
+    const path = await import('node:path')
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gittool-'))
+    try {
+      await gitTool.execute({ subcommand: 'init', args: '-q .' }, dir)
+      fs.writeFileSync(path.join(dir, 'untracked.txt'), 'hi')
+
+      const result = await gitTool.execute(
+        { subcommand: 'commit', args: '-m "nothing is staged"' },
+        dir
+      )
+
+      expect(result.isError).toBe(true)
+      expect(result.output).toContain('nothing added to commit')
+      // The old behaviour, and the thing the agent actually saw.
+      expect(result.output).not.toBe('git commit exited with code 1')
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})

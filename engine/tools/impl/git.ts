@@ -121,7 +121,14 @@ export const gitTool: ToolImpl = {
       const stderr = await new Response(proc.stderr).text()
       await proc.exited
       if (proc.exitCode !== 0) {
-        return { output: stderr || `git ${sub} exited with code ${proc.exitCode}`, isError: true }
+        // Both streams, because git does not put its diagnostics where you would
+        // expect. A `git commit` with nothing staged exits 1 with stderr EMPTY and
+        // the entire explanation ("nothing added to commit but untracked files
+        // present") on stdout. Reporting stderr alone showed the agent nothing but
+        // "exited with code 1", and it had to spend a turn running `git status` to
+        // learn what any human would have read off the failure itself.
+        const detail = [stderr.trim(), stdout.trim()].filter(Boolean).join('\n')
+        return { output: detail || `git ${sub} exited with code ${proc.exitCode}`, isError: true }
       }
       return { output: stdout || '(no output)', isError: false }
     } catch (err) {
