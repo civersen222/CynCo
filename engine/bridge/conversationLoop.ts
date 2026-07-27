@@ -90,6 +90,7 @@ import { UncertaintyTracker } from '../memory/uncertaintyTracker.js'
 import { getTrajectoryRecorder } from '../training/trajectoryRecorder.js'
 import { collectGitFacts, collectDirtyPaths, collectPathSignatures, changedBetween, commitsSince } from '../training/gitFacts.js'
 import { buildComponents } from '../training/taskOutcome.js'
+import type { TaskOutcomeInput } from '../training/taskOutcome.js'
 import { finalizeTask } from '../training/rewardLabeler.js'
 import { detectTests } from '../bestOfN/testDetector.js'
 import { WorktreeManager } from '../bestOfN/worktreeManager.js'
@@ -2960,7 +2961,12 @@ export class ConversationLoop {
     // dataset builder — the turns are lost over a failure in something else.
     recorder.endTask(this.messages)
 
-    const components = buildComponents({
+    // Named rather than passed inline so it can be persisted alongside the
+    // reward. Finding (z): this object was built here, consumed once and
+    // dropped, which made every reward record permanent — when a labeler bug
+    // was found the row could only be kept wrong or thrown away, and sixteen
+    // labeler fixes in three days threw the corpus away sixteen times.
+    const outcome: TaskOutcomeInput = {
       testObservations: this.taskTestObservations,
       commandObservations: this.taskCommandObservations,
       contract: globalContract.isActive()
@@ -2986,9 +2992,10 @@ export class ConversationLoop {
       turns,
       hitIterationLimit: this.taskHitIterationLimit,
       endedInEngineError: this.taskEndedInEngineError,
-    })
+    }
 
-    const reward = finalizeTask(taskId, turns, components, recorder.rewardDir)
+    const components = buildComponents(outcome)
+    const reward = finalizeTask(taskId, turns, components, recorder.rewardDir, outcome)
     console.log(`[trajectory] Labeled ${taskId}: reward ${reward.reward.toFixed(3)} (${turns} turns)`)
   }
 

@@ -13,6 +13,7 @@ import {
   GATE_MIN_USABLE,
   GATE_MIN_NEGATIVE,
   GATE_MAX_AVG_REWARD,
+  MIN_LABELER_VERSION,
 } from '../../training/datasetBuilder.js'
 
 let root: string
@@ -94,14 +95,14 @@ function seed(o: SeedOpts) {
 
 describe('loadTrajectories — snapshots', () => {
   it('attaches the snapshot when one exists', () => {
-    seed({ taskId: 'task-a', reward: 0.8, labelerVersion: 2, snapshot: true })
+    seed({ taskId: 'task-a', reward: 0.8, labelerVersion: MIN_LABELER_VERSION, snapshot: true })
     const [t] = loadTrajectories(trajDir, rewDir)
     expect(t.hasSnapshot).toBe(true)
     expect(t.snapshot!.messages).toHaveLength(3)
   })
 
   it('reports hasSnapshot without parsing when loadSnapshots is false', () => {
-    seed({ taskId: 'task-a', reward: 0.8, labelerVersion: 2, snapshot: true })
+    seed({ taskId: 'task-a', reward: 0.8, labelerVersion: MIN_LABELER_VERSION, snapshot: true })
     const [t] = loadTrajectories(trajDir, rewDir, { loadSnapshots: false })
     expect(t.hasSnapshot).toBe(true)
     expect(t.snapshot).toBeNull()
@@ -127,12 +128,12 @@ describe('isUsable — eligibility', () => {
   })
 
   it('excludes a degenerate record', () => {
-    seed({ taskId: 'degen', reward: 0.0, labelerVersion: 2, snapshot: true, degenerate: true })
+    seed({ taskId: 'degen', reward: 0.0, labelerVersion: MIN_LABELER_VERSION, snapshot: true, degenerate: true })
     expect(isUsable(loadTrajectories(trajDir, rewDir)[0])).toBe(false)
   })
 
   it('accepts a v2 reward with a snapshot', () => {
-    seed({ taskId: 'good', reward: 0.82, labelerVersion: 2, snapshot: true })
+    seed({ taskId: 'good', reward: 0.82, labelerVersion: MIN_LABELER_VERSION, snapshot: true })
     expect(isUsable(loadTrajectories(trajDir, rewDir)[0])).toBe(true)
   })
 })
@@ -173,7 +174,7 @@ describe('toChatML', () => {
 
 describe('buildDatasets — SFT', () => {
   it('emits the real conversation, never a synthesized tool sequence', () => {
-    seed({ taskId: 'good', reward: 0.82, labelerVersion: 2, snapshot: true, userText: 'Fix the realm test' })
+    seed({ taskId: 'good', reward: 0.82, labelerVersion: MIN_LABELER_VERSION, snapshot: true, userText: 'Fix the realm test' })
     const { sft } = buildDatasets(loadTrajectories(trajDir, rewDir))
     expect(sft).toHaveLength(1)
     const parsed = JSON.parse(sft[0])
@@ -184,7 +185,7 @@ describe('buildDatasets — SFT', () => {
   it('excludes legacy and snapshot-less rows from SFT', () => {
     seed({ taskId: 'legacy', reward: 1.0, snapshot: true })
     seed({ taskId: 'nosnap', reward: 0.9, labelerVersion: 2 })
-    seed({ taskId: 'good', reward: 0.82, labelerVersion: 2, snapshot: true })
+    seed({ taskId: 'good', reward: 0.82, labelerVersion: MIN_LABELER_VERSION, snapshot: true })
     const { sft } = buildDatasets(loadTrajectories(trajDir, rewDir))
     expect(sft).toHaveLength(1)
   })
@@ -192,8 +193,8 @@ describe('buildDatasets — SFT', () => {
 
 describe('buildDatasets — DPO keeps the negatives', () => {
   it('pairs a high-reward run against a low-reward run of the same model', () => {
-    seed({ taskId: 'win', reward: 0.85, labelerVersion: 2, snapshot: true, userText: 'good run' })
-    seed({ taskId: 'lose', reward: 0.12, labelerVersion: 2, snapshot: true, userText: 'bad run' })
+    seed({ taskId: 'win', reward: 0.85, labelerVersion: MIN_LABELER_VERSION, snapshot: true, userText: 'good run' })
+    seed({ taskId: 'lose', reward: 0.12, labelerVersion: MIN_LABELER_VERSION, snapshot: true, userText: 'bad run' })
     const { dpo } = buildDatasets(loadTrajectories(trajDir, rewDir))
     expect(dpo).toHaveLength(1)
     const pair = JSON.parse(dpo[0])
@@ -202,8 +203,8 @@ describe('buildDatasets — DPO keeps the negatives', () => {
   })
 
   it('does not pair across models', () => {
-    seed({ taskId: 'win', reward: 0.85, labelerVersion: 2, snapshot: true, model: 'a' })
-    seed({ taskId: 'lose', reward: 0.12, labelerVersion: 2, snapshot: true, model: 'b' })
+    seed({ taskId: 'win', reward: 0.85, labelerVersion: MIN_LABELER_VERSION, snapshot: true, model: 'a' })
+    seed({ taskId: 'lose', reward: 0.12, labelerVersion: MIN_LABELER_VERSION, snapshot: true, model: 'b' })
     expect(buildDatasets(loadTrajectories(trajDir, rewDir)).dpo).toHaveLength(0)
   })
 })
@@ -212,8 +213,8 @@ describe('summarizeCorpus', () => {
   it('counts usable, negative and legacy separately', () => {
     seed({ taskId: 'legacy1', reward: 1.0, snapshot: true })
     seed({ taskId: 'legacy2', reward: 1.0, snapshot: true })
-    seed({ taskId: 'win', reward: 0.85, labelerVersion: 2, snapshot: true })
-    seed({ taskId: 'lose', reward: 0.12, labelerVersion: 2, snapshot: true })
+    seed({ taskId: 'win', reward: 0.85, labelerVersion: MIN_LABELER_VERSION, snapshot: true })
+    seed({ taskId: 'lose', reward: 0.12, labelerVersion: MIN_LABELER_VERSION, snapshot: true })
     const stats = summarizeCorpus(loadTrajectories(trajDir, rewDir, { loadSnapshots: false }))
     expect(stats.totalTasks).toBe(4)
     expect(stats.usableExamples).toBe(2)
@@ -224,7 +225,7 @@ describe('summarizeCorpus', () => {
 
   it('averages only usable rows, so the 147 saturated legacy rows cannot hide a regression', () => {
     seed({ taskId: 'legacy', reward: 1.0, snapshot: true })
-    seed({ taskId: 'lose', reward: 0.1, labelerVersion: 2, snapshot: true })
+    seed({ taskId: 'lose', reward: 0.1, labelerVersion: MIN_LABELER_VERSION, snapshot: true })
     expect(summarizeCorpus(loadTrajectories(trajDir, rewDir)).avgReward).toBeCloseTo(0.1, 6)
   })
 })
@@ -240,7 +241,7 @@ describe('exportDatasets', () => {
   })
 
   it('writes stats.json with the new fields', () => {
-    seed({ taskId: 'good', reward: 0.82, labelerVersion: 2, snapshot: true })
+    seed({ taskId: 'good', reward: 0.82, labelerVersion: MIN_LABELER_VERSION, snapshot: true })
     exportDatasets(outDir, trajDir, rewDir)
     const stats = JSON.parse(readFileSync(join(outDir, 'stats.json'), 'utf-8'))
     expect(stats.usableExamples).toBe(1)
@@ -280,17 +281,17 @@ describe('toChatML — malformed snapshots off disk', () => {
 
 describe('buildDPODataset — model attribution', () => {
   it('excludes a run whose model was never recorded, rather than bucketing it', () => {
-    seed({ taskId: 'win', reward: 0.85, labelerVersion: 2, snapshot: true, model: '' })
-    seed({ taskId: 'lose', reward: 0.12, labelerVersion: 2, snapshot: true, model: '' })
+    seed({ taskId: 'win', reward: 0.85, labelerVersion: MIN_LABELER_VERSION, snapshot: true, model: '' })
+    seed({ taskId: 'lose', reward: 0.12, labelerVersion: MIN_LABELER_VERSION, snapshot: true, model: '' })
     expect(buildDatasets(loadTrajectories(trajDir, rewDir)).dpo).toHaveLength(0)
   })
 
   it('pairs round-robin, not as a cross product', () => {
-    seed({ taskId: 'w1', reward: 0.85, labelerVersion: 2, snapshot: true })
-    seed({ taskId: 'w2', reward: 0.9, labelerVersion: 2, snapshot: true })
-    seed({ taskId: 'w3', reward: 0.95, labelerVersion: 2, snapshot: true })
-    seed({ taskId: 'l1', reward: 0.12, labelerVersion: 2, snapshot: true })
-    seed({ taskId: 'l2', reward: 0.05, labelerVersion: 2, snapshot: true })
+    seed({ taskId: 'w1', reward: 0.85, labelerVersion: MIN_LABELER_VERSION, snapshot: true })
+    seed({ taskId: 'w2', reward: 0.9, labelerVersion: MIN_LABELER_VERSION, snapshot: true })
+    seed({ taskId: 'w3', reward: 0.95, labelerVersion: MIN_LABELER_VERSION, snapshot: true })
+    seed({ taskId: 'l1', reward: 0.12, labelerVersion: MIN_LABELER_VERSION, snapshot: true })
+    seed({ taskId: 'l2', reward: 0.05, labelerVersion: MIN_LABELER_VERSION, snapshot: true })
     // Cross product would be 6. Round-robin is max(3, 2) = 3.
     expect(buildDatasets(loadTrajectories(trajDir, rewDir)).dpo).toHaveLength(3)
   })
@@ -298,7 +299,7 @@ describe('buildDPODataset — model attribution', () => {
 
 describe('summarizeCorpus — the negative boundary', () => {
   it('counts a reward of exactly the DPO ceiling as negative, since it can be paired', () => {
-    seed({ taskId: 'edge', reward: 0.3, labelerVersion: 2, snapshot: true })
+    seed({ taskId: 'edge', reward: 0.3, labelerVersion: MIN_LABELER_VERSION, snapshot: true })
     expect(summarizeCorpus(loadTrajectories(trajDir, rewDir)).negativeExamples).toBe(1)
   })
 })
@@ -437,7 +438,7 @@ describe('evaluateReadiness — the built row counts', () => {
 describe('evaluateReadiness — end to end over a real corpus', () => {
   it('is not ready when every snapshot on disk is unparseable', () => {
     for (let i = 0; i < 3; i++) {
-      seed({ taskId: `t${i}`, reward: 0.9, labelerVersion: 2, snapshot: true })
+      seed({ taskId: `t${i}`, reward: 0.9, labelerVersion: MIN_LABELER_VERSION, snapshot: true })
       writeFileSync(join(trajDir, `t${i}.messages.json`), '{ not json')
     }
     const { stats } = buildDatasets(loadTrajectories(trajDir, rewDir))
@@ -451,24 +452,24 @@ describe('summarizeCorpus — pairableNegatives vs negativeExamples', () => {
   it('counts an unattributed negative as negative but not as pairable', () => {
     // It exports zero DPO pairs, so gating on the raw count would pass a
     // corpus that trains nothing.
-    seed({ taskId: 'win', reward: 0.85, labelerVersion: 2, snapshot: true })
-    seed({ taskId: 'orphan', reward: 0.1, labelerVersion: 2, snapshot: true, model: '' })
+    seed({ taskId: 'win', reward: 0.85, labelerVersion: MIN_LABELER_VERSION, snapshot: true })
+    seed({ taskId: 'orphan', reward: 0.1, labelerVersion: MIN_LABELER_VERSION, snapshot: true, model: '' })
     const s = summarizeCorpus(loadTrajectories(trajDir, rewDir))
     expect(s.negativeExamples).toBe(1)
     expect(s.pairableNegatives).toBe(0)
   })
 
   it('does not count a negative with no chosen counterpart under its model', () => {
-    seed({ taskId: 'win', reward: 0.85, labelerVersion: 2, snapshot: true, model: 'a' })
-    seed({ taskId: 'lonely', reward: 0.1, labelerVersion: 2, snapshot: true, model: 'b' })
+    seed({ taskId: 'win', reward: 0.85, labelerVersion: MIN_LABELER_VERSION, snapshot: true, model: 'a' })
+    seed({ taskId: 'lonely', reward: 0.1, labelerVersion: MIN_LABELER_VERSION, snapshot: true, model: 'b' })
     const s = summarizeCorpus(loadTrajectories(trajDir, rewDir))
     expect(s.negativeExamples).toBe(1)
     expect(s.pairableNegatives).toBe(0)
   })
 
   it('counts one that can pair', () => {
-    seed({ taskId: 'win', reward: 0.85, labelerVersion: 2, snapshot: true, model: 'a' })
-    seed({ taskId: 'lose', reward: 0.1, labelerVersion: 2, snapshot: true, model: 'a' })
+    seed({ taskId: 'win', reward: 0.85, labelerVersion: MIN_LABELER_VERSION, snapshot: true, model: 'a' })
+    seed({ taskId: 'lose', reward: 0.1, labelerVersion: MIN_LABELER_VERSION, snapshot: true, model: 'a' })
     expect(summarizeCorpus(loadTrajectories(trajDir, rewDir)).pairableNegatives).toBe(1)
   })
 })

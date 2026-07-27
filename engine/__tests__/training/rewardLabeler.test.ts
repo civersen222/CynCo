@@ -2,7 +2,7 @@ import { describe, expect, it, beforeEach } from 'bun:test'
 import { mkdtempSync, readFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { computeReward, finalizeTask, hasOutcomeEvidence } from '../../training/rewardLabeler.js'
+import { computeReward, finalizeTask, hasOutcomeEvidence, LABELER_VERSION } from '../../training/rewardLabeler.js'
 import type { RewardComponents, TaskReward } from '../../training/rewardLabeler.js'
 
 // ─── Helpers ──────────────────────────────────────────────────────
@@ -324,16 +324,16 @@ describe('computeReward — normalization', () => {
 })
 
 describe('finalizeTask — labelerVersion', () => {
-  it('stamps labelerVersion 2 on every record', () => {
+  it('stamps the current labeler version on every record', () => {
     const dir = mkdtempSync(join(tmpdir(), 'reward-ver-'))
     const r = finalizeTask('task-ver', 5, {
       testsPass: 1, typecheckPass: 'unknown', buildPass: 'unknown',
       diffClean: 'unknown', taskCompleted: 'unknown',
       stuckTurns: 0, iterFraction: 0, userSatisfaction: 0, testsUnmodified: 1,
     }, dir)
-    expect(r.labelerVersion).toBe(2)
+    expect(r.labelerVersion).toBe(LABELER_VERSION)
     const parsed = JSON.parse(readFileSync(join(dir, 'task-ver.reward.json'), 'utf-8'))
-    expect(parsed.labelerVersion).toBe(2)
+    expect(parsed.labelerVersion).toBe(LABELER_VERSION)
   })
 
   it('flags a record with no measurable positive component as degenerate', () => {

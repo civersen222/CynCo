@@ -217,12 +217,12 @@ describe('trajectory recording is on a live path', () => {
     loop.finalizeOpenTask()
     expect(recorder.taskId).toBeNull()
 
-    const labels = readdirSync(recorder.rewardDir).filter(f => f.startsWith('interrupted-task'))
+    const labels = readdirSync(recorder.rewardDir).filter(f => f === 'interrupted-task.reward.json')
     expect(labels.length).toBe(1)
 
     // Shutdown may follow a message that already closed its own task.
     loop.finalizeOpenTask()
-    expect(readdirSync(recorder.rewardDir).filter(f => f.startsWith('interrupted-task')).length).toBe(1)
+    expect(readdirSync(recorder.rewardDir).filter(f => f === 'interrupted-task.reward.json').length).toBe(1)
     globalContract.clear()
   }, 30000)
 })

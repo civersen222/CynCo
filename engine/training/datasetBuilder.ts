@@ -87,8 +87,23 @@ export type DatasetStats = CorpusStats & {
   dpoPairs: number
 }
 
-/** Labels written before the grounded labeler landed are not training data. */
-export const MIN_LABELER_VERSION = 2
+/**
+ * Labels written before the grounded labeler landed are not training data.
+ *
+ * Raised from 2 to 3 by finding (z). Version 2 was a hardcoded literal that
+ * never moved through sixteen changes to what the components mean, so "version
+ * 2" is not one labeler but up to sixteen, and this filter — whose entire job
+ * is to keep ungrounded labels out — was letting all of them through. L4.2 was
+ * in the corpus at 0.9736 for a run that deleted 32 test cases; the labeler
+ * that would score it -1.0 stamped its records with the same number.
+ *
+ * This empties the corpus of everything labeled before 2026-07-27, and none of
+ * it can be relabeled: those runs did not persist what they were measured from.
+ * That is the cost of the sixteen skipped bumps, and paying it is cheaper than
+ * training on numbers nobody can vouch for. Runs from here carry their
+ * evidence (see finalizeTask) and survive the next bump.
+ */
+export const MIN_LABELER_VERSION = 3
 export const SFT_MIN_REWARD = 0.7
 export const DPO_MAX_REWARD = 0.3
 
