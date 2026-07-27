@@ -60,6 +60,7 @@ import { ReadLoopGate, rearmsGate, signature as readSignature } from '../vsm/rea
 import { ToolDivergenceDetector } from '../brain/toolDivergence.js'
 import { pruneRedundantReads } from './contextHygiene.js'
 import { promptTokensWithFloor } from './contextFloor.js'
+import { applyPreLoopRestriction, type PreLoopRestriction } from './s5Restriction.js'
 import { isBenignTestFailure } from './benignToolResult.js'
 import { runWithFinalize } from './finalizeGuard.js'
 import { parseTestSummary, classifyCheckCommand } from './testSummary.js'
@@ -247,6 +248,14 @@ export class ConversationLoop {
    */
   private lastMeasuredPromptTokens: number | null = null
   private lastMeasuredAtMessageCount = 0
+  /**
+   * S5's once-per-user-message tool restriction, held rather than applied.
+   *
+   * It is decided from a governance report assembled before iteration 1, so it
+   * describes the first turn and nothing after it. Applying it to the task's
+   * tool array made it permanent — finding (j). See bridge/s5Restriction.ts.
+   */
+  private preLoopRestriction: PreLoopRestriction | null = null
   /** Whether this task has already reported a trajectory-recording failure. */
   private trajectoryErrorLogged = false
   private config: LocalCodeConfig
@@ -1177,19 +1186,16 @@ export class ConversationLoop {
           }
         }
 
-        // Hard tool filtering: S5 decides, engine enforces — but never apply
-        // a restriction that would leave the model with zero tools.
+        // Hard tool filtering: S5 decides, engine enforces — for the iteration
+        // the decision was made about. This is recorded rather than applied
+        // here, because applying it means narrowing `toolDefs`, the array the
+        // whole task runs on, and a pre-task reading has no standing over turns
+        // that have not happened yet. See finding (j) in bridge/s5Restriction.ts.
+        this.preLoopRestriction = null
         if (decision.tools && !s5Enforce) {
           console.log(`[s5] WOULD-ENFORCE (capped at recommend): tool restriction to [${decision.tools.join(', ')}]`)
         } else if (decision.tools) {
-          const allowed = new Set(decision.tools)
-          const filtered = toolDefs.filter(t => allowed.has(t.name))
-          if (filtered.length > 0) {
-            console.log(`[s5] ENFORCE: tool restriction to [${decision.tools.join(', ')}]`)
-            toolDefs = filtered
-          } else {
-            console.log(`[s5] ENFORCE skipped: restriction [${decision.tools.join(', ')}] would remove every available tool`)
-          }
+          this.preLoopRestriction = { tools: decision.tools, reasoning: decision.reasoning }
         }
 
         // P4.5 Phase 3: proactive tool surfacing. Purely additive (append-only
@@ -1918,6 +1924,15 @@ export class ConversationLoop {
         : toolDefs
       if (demoted.size > 0) {
         console.log(`[trust] Demoted tools excluded: ${[...demoted].join(', ')}`)
+      }
+
+      // S5's pre-loop decision, scoped to the iteration it was decided for.
+      const preLoop = applyPreLoopRestriction(iterationTools, this.preLoopRestriction, i)
+      if (preLoop.applied) {
+        console.log(`[s5] ENFORCE: tool restriction to [${this.preLoopRestriction!.tools.join(', ')}] for iteration 1 (${this.preLoopRestriction!.reasoning})`)
+        iterationTools = preLoop.tools
+      } else if (this.preLoopRestriction && i === 1) {
+        console.log(`[s5] Pre-loop tool restriction lifted — it was decided before this task produced any observations`)
       }
 
       // Two-stage tool routing for small context models
