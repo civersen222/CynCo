@@ -140,12 +140,19 @@ const QUALIFIED_NAME = /[\\/]|\.[A-Za-z0-9]+$/
  * run at all. An unavailable validator must not manufacture a verdict.
  */
 export function validateVerificationCommand(command: string, info: ShellInfo = getShellInfo()): string | null {
-  const dialect = checkShellDialect(command, info)
+  // Judge what will actually run. verifyAssertion translates the POSIX env
+  // prefix before executing it, so `GILDED_NARRATE=0 python -m pytest` is a
+  // perfectly good assertion even though the raw string is a parse error in
+  // PowerShell — every L4.1 contract has carried one. Holding the raw text to
+  // the dialect standard would refuse contracts the engine runs without
+  // trouble. `&&` has no translation, so it still fails here.
+  const runnable = translateEnvPrefix(command, info)
+  const dialect = checkShellDialect(runnable, info)
   if (dialect) return dialect
   try {
     if (info.isPowerShell) {
       execFileSync(info.shell, ['-NoProfile', '-NonInteractive', '-Command', PS_VALIDATE], {
-        env: { ...process.env, LOCALCODE_VALIDATE_CMD: translateEnvPrefix(command, info) },
+        env: { ...process.env, LOCALCODE_VALIDATE_CMD: runnable },
         stdio: ['ignore', 'pipe', 'ignore'],
         timeout: 15_000,
       })

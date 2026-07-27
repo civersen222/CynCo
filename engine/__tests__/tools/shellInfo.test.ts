@@ -118,6 +118,17 @@ describe('validateVerificationCommand', () => {
     expect(validateVerificationCommand('build/run-gate.exe --strict')).toBeNull()
   })
 
+  /**
+   * verifyAssertion translates this before running it, so refusing it here
+   * would refuse contracts the engine executes without trouble — every L4.1
+   * contract has carried exactly this line.
+   */
+  psOnly('accepts a POSIX env prefix, which the runner translates', () => {
+    expect(validateVerificationCommand(
+      'GILDED_NARRATE=0 SDL_VIDEODRIVER=dummy python -m pytest gilded/ -q',
+    )).toBeNull()
+  })
+
   psOnly('accepts a real multi-step check', () => {
     expect(validateVerificationCommand('cd C:/tmp; python -c "import sys; sys.exit(0)"')).toBeNull()
   })
