@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'bun:test'
 import { bashTool, failedOutput, formatBashFailure } from '../../tools/impl/bash.js'
 import { tmpdir } from 'os'
+import { mkdtempSync, writeFileSync } from 'fs'
+import { join } from 'path'
 
 // A realistic red pytest run: the traceback legitimately contains the word
 // AttributeError, and the process exits non-zero. Nothing here is a harness
@@ -141,5 +143,26 @@ describe('Bash tool banner suppression (end to end)', () => {
     )
     expect(result.isError).toBe(true)
     expect(result.output).toContain('[ERROR: runtime]')
+  }, 20000)
+})
+
+describe('Bash tool — redirecting the model to the purpose-built tool', () => {
+  it('a successful file read carries the Read hint and every byte of output', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bash-hint-'))
+    const file = join(dir, 'sample.py')
+    writeFileSync(file, 'def alpha():\n    return 1\n')
+
+    const result = await bashTool.execute({ command: `Get-Content "${file}"` }, dir)
+
+    expect(result.isError).toBe(false)
+    expect(result.output).toContain('Read tool')
+    expect(result.output).toContain('def alpha()')
+  }, 20000)
+
+  it('a real command gets no hint at all', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bash-hint-'))
+    const result = await bashTool.execute({ command: 'echo done' }, dir)
+    expect(result.isError).toBe(false)
+    expect(result.output).not.toContain('Note: prefer')
   }, 20000)
 })

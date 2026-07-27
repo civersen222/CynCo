@@ -4,6 +4,7 @@ import { checkBashSafety } from '../bashSafety.js'
 import { diagnoseError } from '../errorDiagnosis.js'
 import { parseTestSummary } from '../../bridge/testSummary.js'
 import { getShellInfo, checkShellDialect } from '../shellInfo.js'
+import { withToolHint } from '../toolHints.js'
 
 /**
  * Decide what a non-zero exit should look like to the model.
@@ -96,7 +97,10 @@ export const bashTool: ToolImpl = {
           resolve({ output: formatBashFailure(command, rawOutput), isError: true })
           return
         }
-        resolve({ output: stdout || stderr || '(no output)', isError: false })
+        // Hint on success only. A failing command already has the model's full
+        // attention on its own error; adding tool advice there buries the reason
+        // it failed under advice it did not ask for.
+        resolve({ output: withToolHint(command, stdout || stderr || '(no output)'), isError: false })
       })
     })
   },
