@@ -1,6 +1,21 @@
-import { writeFileSync, mkdirSync } from 'fs'
+import { writeFileSync, mkdirSync, statSync } from 'fs'
 import { resolve, dirname } from 'path'
 import type { ToolImpl } from '../types.js'
+
+// A file under this size is a stub; rewriting it wholesale loses nothing worth a refusal.
+const SUBSTANTIAL_BYTES = 1000
+// Below this fraction of what is already there, the write is a truncation, not a revision.
+const SHRINK_FLOOR = 0.5
+
+/** Bytes currently on disk at `path`, or null if there is nothing there to lose. */
+function existingSize(path: string): number | null {
+  try {
+    const st = statSync(path)
+    return st.isFile() ? st.size : null
+  } catch {
+    return null
+  }
+}
 
 export const writeTool: ToolImpl = {
   name: 'Write',
@@ -24,6 +39,22 @@ export const writeTool: ToolImpl = {
     if (content.trim().length === 0) {
       return {
         output: `ERROR: Cannot write empty file to ${filePath}. You must provide actual content in the 'content' field. Generate the full file content and try again.`,
+        isError: true,
+      }
+    }
+    // Reject writes that gut a file that already exists. A whole test suite has
+    // been replaced by four cases in a single Write; the advisory hint fired and
+    // the model wrote anyway. Deleting the file first is the escape hatch, so a
+    // deliberate truncation stays possible and leaves a trace in the transcript.
+    const before = existingSize(filePath)
+    const after = Buffer.byteLength(content)
+    if (before !== null && before >= SUBSTANTIAL_BYTES && after < before * SHRINK_FLOOR) {
+      return {
+        output:
+          `ERROR: Refusing to write ${filePath} — this would cut it from ${before} bytes to ${after}, ` +
+          `discarding ${before - after} bytes you have not shown you meant to lose. ` +
+          `Read the file and use Edit or MultiEdit to change the parts you mean to change. ` +
+          `If you really do intend to replace the whole file with something much smaller, delete it first, then write.`,
         isError: true,
       }
     }
