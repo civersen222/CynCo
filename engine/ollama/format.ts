@@ -193,8 +193,32 @@ export function fromOpenAIStreamChunk(chunk: {
   usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number }
 }): StreamEvent[] {
   const events: StreamEvent[] = []
-  if (!chunk.choices || chunk.choices.length === 0) return events
-  const choice = chunk.choices[0]
+  const choice = chunk.choices?.[0]
+
+  // Usage is the ONE number in the context-management path that the server
+  // measured rather than the engine guessed: prompt_tokens is what llama-server
+  // actually evaluated. It arrives on a chunk with an EMPTY choices array, so
+  // the early return below — written to swallow error payloads — used to
+  // discard it before anything could read it. Finding (n): the engine's
+  // chars/4 estimate read 75% while the request was 67733 of 65536 tokens, the
+  // 80% compaction trigger never fired, and the run died mid-task.
+  //
+  // Emitted before the content events so a consumer that stops at the first
+  // message_delta still sees it.
+  if (chunk.usage) {
+    events.push({
+      type: 'message_delta',
+      // An empty stop_reason means "this chunk says nothing about how the turn
+      // ended" — a usage-only chunk genuinely doesn't. Consumers must not read
+      // it as a stop.
+      delta: { stop_reason: mapFinishReason(choice?.finish_reason ?? null) ?? '' },
+      usage: {
+        input_tokens: chunk.usage.prompt_tokens,
+        output_tokens: chunk.usage.completion_tokens,
+      },
+    })
+  }
+
   if (!choice) return events
 
   const lp = parseChunkLogprobs(choice)

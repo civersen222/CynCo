@@ -59,6 +59,7 @@ import { evaluateGrounding, extractAddedText, extractTargetPaths } from '../vsm/
 import { ReadLoopGate, rearmsGate, signature as readSignature } from '../vsm/readLoopGate.js'
 import { ToolDivergenceDetector } from '../brain/toolDivergence.js'
 import { pruneRedundantReads } from './contextHygiene.js'
+import { promptTokensWithFloor } from './contextFloor.js'
 import { isBenignTestFailure } from './benignToolResult.js'
 import { runWithFinalize } from './finalizeGuard.js'
 import { parseTestSummary, classifyCheckCommand } from './testSummary.js'
@@ -229,6 +230,23 @@ export class ConversationLoop {
    * finding (m) in taskOutcome.ts.
    */
   private taskEndedInEngineError = false
+  /**
+   * The prompt size the server reported for the most recent request, in tokens
+   * it actually evaluated — or null when no request has been measured since the
+   * conversation last changed shape.
+   *
+   * Null is not zero. The context check uses this as a floor under its chars/4
+   * estimate, and a zero floor is no floor; "we have not measured this
+   * conversation yet" has to be distinguishable from "the server said 0".
+   *
+   * The floor argues "the prompt was at least N tokens, and the conversation
+   * has only grown since". That premise fails the moment the conversation
+   * shrinks — compaction, a read-loop prune, a best-of-N rollback — so the
+   * message count at the time of measurement is recorded with it and the floor
+   * is discarded rather than trusted when the count drops below it.
+   */
+  private lastMeasuredPromptTokens: number | null = null
+  private lastMeasuredAtMessageCount = 0
   /** Whether this task has already reported a trajectory-recording failure. */
   private trajectoryErrorLogged = false
   private config: LocalCodeConfig
@@ -2135,7 +2153,16 @@ export class ConversationLoop {
               lastMessageId = event.message?.id ?? ''
               break
             case 'message_delta':
-              stopReason = event.delta?.stop_reason ?? stopReason
+              // Truthiness, not ??: a usage-only chunk carries no stop reason
+              // and says so with '', which must not overwrite a real one.
+              if (event.delta?.stop_reason) stopReason = event.delta.stop_reason
+              // The server's own count of the prompt it evaluated. This is a
+              // measurement; everything else in the context path is a chars/4
+              // guess. See finding (n) and the floor applied below.
+              if (event.usage?.input_tokens) {
+                this.lastMeasuredPromptTokens = event.usage.input_tokens
+                this.lastMeasuredAtMessageCount = this.messages.length
+              }
               // Capture estimated output tokens from the stream translator
               if (event.usage?.output_tokens) {
                 const estimatedTokens = event.usage.output_tokens
@@ -2363,7 +2390,19 @@ export class ConversationLoop {
       const promptOverheadTokens =
         JSON.stringify(systemPrompt ?? '').length / 4 +
         JSON.stringify(iterationTools ?? []).length / 4
-      const estimatedTokens = promptOverheadTokens + this.estimateMessageTokens()
+      //
+      // The estimate is still a guess, and on the L3-3.3b run it guessed 75%
+      // of a request that was 103% (finding n). So where the server has told us
+      // what it actually evaluated, that measurement is a floor: the prompt was
+      // at least N tokens last request, and the conversation has only grown
+      // since. This is a lower bound backed by a measurement, not a second
+      // guess calibrated against the first.
+      const guessedTokens = promptOverheadTokens + this.estimateMessageTokens()
+      const estimatedTokens = promptTokensWithFloor(
+        guessedTokens,
+        { tokens: this.lastMeasuredPromptTokens, atMessageCount: this.lastMeasuredAtMessageCount },
+        this.messages.length,
+      )
       const contextLength = this.config.contextLength ?? 32768
       this.emit({
         type: 'context.status',

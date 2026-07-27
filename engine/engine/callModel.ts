@@ -571,7 +571,11 @@ export async function* localCallModel({
         case 'message_delta': {
           // Mutate the last AssistantMessage in-place
           if (lastAssistantMessage) {
-            lastAssistantMessage.message.stop_reason = (event as any).delta.stop_reason
+            // '' means "this chunk says nothing about how the turn ended" — the
+            // usage-only chunk llama-server sends last. Don't let it erase a
+            // real stop reason. See finding (n) in bridge/contextFloor.ts.
+            const chunkStopReason = (event as any).delta.stop_reason
+            if (chunkStopReason) lastAssistantMessage.message.stop_reason = chunkStopReason
             const usage = (event as any).usage
             if (usage) {
               if (usage.output_tokens !== undefined) {
