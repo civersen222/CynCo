@@ -108,6 +108,24 @@ function assessTestsPass(
   const ratio = Math.min(1, last.passed / last.total)
   if (ratio < 1) return ratio
 
+  // A green run may only certify a suite it actually covered.
+  //
+  // Measured on L3-3.3: the engine recorded two observations in 426 turns —
+  // turn 37 at total=11 failing=10 (its own new tests, an honest TDD red), then
+  // turn 39 at total=1 failing=0 (one test, run alone). Both branches below read
+  // that pair as the suite going red to green, so the run scored testsPass 1 —
+  // the heaviest weight there is — while the repository stood at 10 failed / 422
+  // passed and every one of those failures was a test this run had written.
+  //
+  // Scope is not comparable across observations and nothing here records what a
+  // run covered, so the only honest comparison is against the broadest run the
+  // task itself made. Narrower and green afterwards is not evidence about the
+  // suite; it is evidence about those tests. That leaves the denominator rather
+  // than inflating it, and the earlier red is not resurrected as the verdict
+  // either — it is stale, and what happened after it genuinely was not measured.
+  const widest = obs.reduce((m, o) => Math.max(m, o.total), 0)
+  if (last.total < widest) return 'unknown'
+
   const first = firstObservation(obs)
   if (first && first.passed < first.total) return 1
 
