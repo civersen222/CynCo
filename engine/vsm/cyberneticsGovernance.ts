@@ -571,11 +571,29 @@ export class CyberneticsGovernance {
       const responseStuck = this.lastResponses.length >= 3 && uniqueResponses === 1
         && this.lastResponses[0] !== ''
       const toolStuck = this.lastToolCallSigs.length >= 3 && uniqueToolSigs === 1
-      if (responseStuck || toolStuck) {
+      // A PERIODIC loop is invisible to the two rules above, because both ask
+      // whether the whole window is uniform. Measured on the L3-3.3 run
+      // (trajectory task-17656b4b, turns 78-105): four byte-identical Read
+      // calls then one byte-identical ContractAssertFail, repeating. The
+      // 5-signature window therefore held two distinct entries on every turn,
+      // toolStuck was false on every turn, and the report read
+      // `tools=1.00 stuck=0` across thirty turns with filesTouched=0.
+      //
+      // FingerprintRepetitionDetector already measures exactly this and fired
+      // 'identical' throughout. It was reported and forwarded to S5 and
+      // consumed by nothing — the intervention half (P4.4) was never built.
+      // Consuming it here is that half.
+      const repetitionStuck = this.fingerprintRepetition.alarm() !== null
+      if (responseStuck || toolStuck || repetitionStuck) {
         this.stuckCount++
-      } else {
-        this.stuckCount = Math.max(0, this.stuckCount - 1)
       }
+      // No decay branch. Stuck evidence is cleared by PROGRESS — a successful
+      // mutating call (onToolResult) or real file change (recordFileProgress),
+      // both of which reset to 0 outright — never by the mere absence of a
+      // repetition on one turn. Decaying on absence is what made the measured
+      // cycle unkillable even once the alarm was consulted: 'identical' fires on
+      // 2 turns of the period-5 cycle, and -1 on the other 3 nets to -1 per
+      // period. Either half of this fix alone leaves the loop invisible.
     }
 
     // Persist measurement to SQLite for cross-session learning
