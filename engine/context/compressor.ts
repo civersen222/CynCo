@@ -236,6 +236,12 @@ export class ContextCompressor {
       journal: (summary: string, fileOps?: string) => void
       keepRecentPairs?: number
       contractText?: string
+      /**
+       * The task's own commits, subject and touched paths, as measured from
+       * git. Undefined means not measured and prints nothing; the empty string
+       * is the measured claim that nothing has been committed yet.
+       */
+      commitLog?: string
     },
   ): Promise<Message[]> {
     const trimmed = this.tier0Trim(messages)
@@ -248,6 +254,19 @@ export class ContextCompressor {
     cb.journal(summary, fileTracker.serialize())
     const compacted = this.compressMessages(trimmed, summary, fileTracker)
     const anchors = this.selectVerbatimAnchors(messages, cb.contractText)
+    // Finding (x): the summary is a paraphrase of the conversation, and the one
+    // fact the agent most needs on the far side of a compaction — what it has
+    // already committed — is a fact about the repository, not the conversation.
+    // Pinned verbatim so no summarizer can drop or soften it.
+    if (cb.commitLog !== undefined) {
+      const body = cb.commitLog.trim()
+        ? cb.commitLog.trim()
+        : 'no commits yet — nothing you have done in this task is on disk'
+      anchors.push({
+        role: 'system',
+        content: [{ type: 'text', text: `[Committed so far in this task]\n${body}` }],
+      })
+    }
     fileTracker.reset()
     // Splice anchors right after the summary system message (index 0).
     return [compacted[0], ...anchors, ...compacted.slice(1)]

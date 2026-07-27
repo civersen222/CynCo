@@ -366,6 +366,35 @@ function git(cwd: string, args: string): string {
 }
 
 /**
+ * The commits this task has made, subject plus the files each one touched.
+ *
+ * Finding (x): after a compaction the agent did not know what it had already
+ * committed and set about redoing work that was already on disk. The summary
+ * carried the brief, the file tracker and the pinned user requests, and none of
+ * those say "this is finished". The task's own history is the only thing that
+ * does, and the model cannot recover it by reasoning -- only by measuring.
+ *
+ * Null means not measured: no baseline, not a repo, or a baseline git cannot
+ * resolve. Never an empty string on failure -- an empty string is the positive
+ * claim that the task has committed nothing, which is precisely the belief that
+ * makes the agent start over.
+ */
+export function commitsSince(cwd: string, baseSha: string | null): string | null {
+  if (!baseSha) return null
+  try {
+    // --name-only with a blank-line separator keeps each commit's subject next
+    // to the paths it touched, so "the ledger is already committed" is legible
+    // without a second call per commit.
+    // %x20 rather than a literal space: git() interpolates into a shell string,
+    // and a bare space would split the format into two arguments under every
+    // shell this runs on.
+    return git(cwd, `log --name-only --pretty=format:%h%x20%s ${baseSha}..HEAD`).trim()
+  } catch {
+    return null
+  }
+}
+
+/**
  * Collect changes between `baseSha` and the current working tree.
  * Returns null when cwd is not a git repo or baseSha is not resolvable —
  * callers must degrade to `unknown` rather than guessing.

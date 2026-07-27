@@ -88,7 +88,7 @@ import { UncertaintyTracker } from '../memory/uncertaintyTracker.js'
 // call took the catch branch instead of the recording path. The training corpus
 // writer was uncovered by construction.
 import { getTrajectoryRecorder } from '../training/trajectoryRecorder.js'
-import { collectGitFacts, collectDirtyPaths, collectPathSignatures, changedBetween } from '../training/gitFacts.js'
+import { collectGitFacts, collectDirtyPaths, collectPathSignatures, changedBetween, commitsSince } from '../training/gitFacts.js'
 import { buildComponents } from '../training/taskOutcome.js'
 import { finalizeTask } from '../training/rewardLabeler.js'
 import { detectTests } from '../bestOfN/testDetector.js'
@@ -1645,11 +1645,17 @@ export class ConversationLoop {
     try {
       const before = this.messages
       const contractText = globalContract.isActive() ? globalContract.snapshot().brief : undefined
+      // Finding (x): the agent came out of a compaction not knowing what it had
+      // already committed and began redoing finished work. Measured from git
+      // against the contract's baseline; null (no baseline, no repo) is passed
+      // through as undefined so the anchor says nothing rather than "no commits".
+      const commitLog = commitsSince(this.executor['cwd'], globalContract.getBaseline()) ?? undefined
       const compacted = await this.compressor.runCompaction(this.messages, this.fileTracker, {
         keepRecentPairs: 2,
         summarize: (prompt) => this.sideQuery(prompt),
         journal: (summary, fileOps) => { try { this.journal.appendCompaction(summary, fileOps) } catch (e) { console.log(`[session] compaction journal failed: ${e instanceof Error ? e.message : String(e)}`) } },
         contractText,
+        commitLog,
       })
       if (compacted === before) return false
       this.messages = compacted
