@@ -55,21 +55,37 @@ export function classifyShell(platform: string, hasPwsh: boolean): ShellInfo {
  */
 const ENV_PREFIX = /(?:^|;)\s*((?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+)(?=\S)/
 
+/**
+ * Rewrite a POSIX env prefix into this shell's dialect, or return the command
+ * unchanged when there is nothing to rewrite.
+ *
+ * `NAME=value command` means the same thing in every shell that has a way to
+ * say it, so this is a translation and not a guess — which is what makes it
+ * safe to apply to a command the engine runs on its own behalf (a harness
+ * contract check) rather than only quoting back at the model.
+ */
+export function translateEnvPrefix(command: string, info: ShellInfo): string {
+  if (!info.isPowerShell) return command
+  const prefix = ENV_PREFIX.exec(command)
+  if (!prefix) return command
+  const sets = prefix[1]
+    .trim()
+    .split(/\s+/)
+    .map(pair => {
+      const eq = pair.indexOf('=')
+      const name = pair.slice(0, eq)
+      const value = pair.slice(eq + 1).replace(/^["']|["']$/g, '')
+      return `$env:${name}="${value}"`
+    })
+  return `${sets.join('; ')}; ${command.slice(prefix.index + prefix[0].length)}`
+}
+
 /** Returns an instructive error if the command uses operators the shell rejects, else null. */
 export function checkShellDialect(command: string, info: ShellInfo): string | null {
   if (info.isPowerShell) {
-    const prefix = ENV_PREFIX.exec(command)
-    if (prefix) {
-      const sets = prefix[1]
-        .trim()
-        .split(/\s+/)
-        .map(pair => {
-          const eq = pair.indexOf('=')
-          const name = pair.slice(0, eq)
-          const value = pair.slice(eq + 1).replace(/^["']|["']$/g, '')
-          return `$env:${name}="${value}"`
-        })
-      return `Error: this system's shell is ${info.displayName}, where 'NAME=value command' is a parse error. Set each variable first, then run the command: '${sets.join('; ')}; ${command.slice(prefix.index + prefix[0].length)}'`
+    const translated = translateEnvPrefix(command, info)
+    if (translated !== command) {
+      return `Error: this system's shell is ${info.displayName}, where 'NAME=value command' is a parse error. Set each variable first, then run the command: '${translated}'`
     }
   }
   if (info.supportsAndAnd) return null

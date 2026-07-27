@@ -20,7 +20,7 @@
 import { existsSync } from 'node:fs'
 import { isAbsolute, resolve } from 'node:path'
 import { exec, execFile } from 'node:child_process'
-import { getShellInfo } from './shellInfo.js'
+import { getShellInfo, translateEnvPrefix } from './shellInfo.js'
 
 // Templates are shared with contractAutoCreate so the producer of an assertion
 // and the code that verifies it cannot drift apart.
@@ -186,9 +186,17 @@ function runCommand(cwd: string, command: string): Promise<CommandOutcome> {
   // cmd.exe on Windows, so a check script written in the dialect the brief and
   // every other command in the session use — PowerShell here — would fail on
   // syntax and be reported as the work being wrong.
-  const shell = getShellInfo().shell
+  const info = getShellInfo()
+  const shell = info.shell
+  // Finding (o): a contract check is authored alongside the brief, and briefs
+  // are written POSIX-style. `NAME=value command` is a parse error in every
+  // PowerShell, so the shell rejected the line before the program started and
+  // the engine scored an unrun command as the work failing. The engine already
+  // knows this translation — it hands the model the same rewrite when the model
+  // makes this mistake — so it applies it to its own command too.
+  const runnable = translateEnvPrefix(command, info)
   return new Promise(resolvePromise => {
-    exec(command, { cwd, shell, encoding: 'utf-8', timeout: COMMAND_TIMEOUT_MS, maxBuffer: 8 * 1024 * 1024 }, err => {
+    exec(runnable, { cwd, shell, encoding: 'utf-8', timeout: COMMAND_TIMEOUT_MS, maxBuffer: 8 * 1024 * 1024 }, err => {
       if (!err) return resolvePromise('passed')
       const e = err as Error & { code?: number | string; killed?: boolean }
       if (e.killed) return resolvePromise('timeout')

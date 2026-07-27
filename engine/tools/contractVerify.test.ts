@@ -192,6 +192,42 @@ describe('gitProbe.run — really executes', () => {
       : 'test -n "$BASH_VERSION" && exit 0 || exit 9'
     expect(await p.run(probeCommand)).toBe('passed')
   })
+
+  /**
+   * Finding (o), measured on the L3-3.4 run.
+   *
+   * The contract carried the check the brief carried:
+   *
+   *   GILDED_NARRATE=0 SDL_VIDEODRIVER=dummy python -m pytest gilded/ ...
+   *
+   * The work was correct — 446 tests passing, 22 of 22 behavioural checks green,
+   * committed. But `NAME=value command` is a parse error in every PowerShell,
+   * so the shell rejected the line with CommandNotFoundException before python
+   * ever started. The engine saw a numeric status and reported "the
+   * verification command did not exit 0", and the agent spent the rest of the
+   * run trying to fix code that was already right.
+   *
+   * The engine already owns this translation: `checkShellDialect` hands the
+   * model the exact PowerShell rewrite when the model makes this mistake. It
+   * simply was not applied to the one command the engine runs itself. A brief
+   * and its contract are written by the same hand in the same dialect, so a
+   * contract command written POSIX-style must run, not be scored as failure.
+   *
+   * This is the reward-grounding rule in its sharpest form: a fabricated
+   * NEGATIVE is worse than a fabricated positive. It teaches the model that
+   * correct work is failure.
+   */
+  test('a POSIX env prefix is run, not scored as the work failing', async () => {
+    const p = gitProbe(process.cwd())
+    expect(await p.run('GREETING=hello python -c "import os,sys; sys.exit(0 if os.environ.get(\'GREETING\')==\'hello\' else 7)"'))
+      .toBe('passed')
+  })
+
+  test('a genuinely failing command still fails when it carries an env prefix', async () => {
+    // The translation must not become a way to pass. Only the dialect changes.
+    const p = gitProbe(process.cwd())
+    expect(await p.run('GREETING=hello python -c "import sys; sys.exit(1)"')).toBe('failed')
+  })
 })
 
 describe('verifyAssertion', () => {
