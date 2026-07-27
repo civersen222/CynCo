@@ -2963,6 +2963,10 @@ export class ConversationLoop {
             complete: globalContract.isComplete(),
             failed: globalContract.failedCount(),
             origin: globalContract.snapshot().origin,
+            passedAssertions: globalContract
+              .snapshot()
+              .assertions.filter(a => a.status === 'passed')
+              .map(a => a.text),
           }
         : null,
       git: collectGitFacts(this.executor['cwd'], this.taskGitBaseSha),

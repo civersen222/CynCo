@@ -1,6 +1,12 @@
 import { describe, it, expect } from 'vitest'
 import { buildComponents } from '../../training/taskOutcome.js'
 import type { TaskOutcomeInput } from '../../training/taskOutcome.js'
+import {
+  COMMITTED_ASSERTION,
+  fileAbsentAssertion,
+  fileModifiedAssertion,
+  testCensusAssertion,
+} from '../../tools/contractVerify.js'
 
 function base(overrides: Partial<TaskOutcomeInput> = {}): TaskOutcomeInput {
   return {
@@ -715,10 +721,19 @@ describe('buildComponents — an authored spec outranks the unverified suspicion
     removed: [], dirty: [],
   }
 
-  it('withholds the veto as unknown when a harness contract closed with no failures', () => {
+  // The authorization has to be about the file that lost cases. A census floor
+  // the repository confirmed is the specification saying "this many cases are
+  // expected to survive here"; anything else in the contract is about a
+  // different subject.
+  const census = (file: string, min: number) => [testCensusAssertion(file, min)]
+
+  it('withholds the veto as unknown when the contract set a census floor on that file', () => {
     const c = buildComponents(base({
       git: caseDeleted,
-      contract: { active: true, complete: true, failed: 0, origin: 'harness' },
+      contract: {
+        active: true, complete: true, failed: 0, origin: 'harness',
+        passedAssertions: census('gilded/tests/test_chassis.py', 18),
+      },
     }))
     expect(c.testsUnmodified).toBe('unknown')
   })
@@ -726,14 +741,85 @@ describe('buildComponents — an authored spec outranks the unverified suspicion
   it('does not grant credit either — unknown is not 1', () => {
     const withSpec = buildComponents(base({
       git: caseDeleted,
-      contract: { active: true, complete: true, failed: 0, origin: 'harness' },
+      contract: {
+        active: true, complete: true, failed: 0, origin: 'harness',
+        passedAssertions: census('gilded/tests/test_chassis.py', 18),
+      },
     }))
     const clean = buildComponents(base({
       git: { changed: [{ path: 'src/a.ts', added: 3, deleted: 1 }], removed: [], dirty: [] },
-      contract: { active: true, complete: true, failed: 0, origin: 'harness' },
+      contract: { active: true, complete: true, failed: 0, origin: 'harness', passedAssertions: [] },
     }))
     expect(withSpec.testsUnmodified).not.toBe(clean.testsUnmodified)
     expect(clean.testsUnmodified).toBe(1)
+  })
+
+  it('vetoes when every assertion the contract confirmed was about the product — finding (w)', () => {
+    // Gilded L4.2, verbatim in shape. Twenty-five assertions, all confirmed, all
+    // about the ledger the run was asked to build; the run deleted 32 named test
+    // cases and added 28. The old rule read "complete, no failures" as consent to
+    // a loss the contract had never mentioned, and the run scored 0.9736 for
+    // gutting the suite that measured it.
+    const c = buildComponents(base({
+      git: caseDeleted,
+      contract: {
+        active: true, complete: true, failed: 0, origin: 'harness',
+        passedAssertions: [
+          'Verification command exits 0: python C:/tmp/verify_l4_2.py row_names_its_director',
+          fileModifiedAssertion('C:/Users/civer/civkings/gilded/ui/broadsheet.py'),
+          fileModifiedAssertion('C:/Users/civer/civkings/gilded/tests/test_chassis.py'),
+          COMMITTED_ASSERTION,
+        ],
+      },
+    }))
+    expect(c.testsUnmodified).toBe(0)
+  })
+
+  it('does not let a census floor on one file authorize a loss in another', () => {
+    const c = buildComponents(base({
+      git: caseDeleted,
+      contract: {
+        active: true, complete: true, failed: 0, origin: 'harness',
+        passedAssertions: census('gilded/tests/test_market.py', 12),
+      },
+    }))
+    expect(c.testsUnmodified).toBe(0)
+  })
+
+  it('relates an absolute contract path to the repo-relative one git reports', () => {
+    // Contracts are authored by hand against a workspace and routinely spell the
+    // path in full. Refusing to relate the two spellings would make the veto
+    // depend on how the harness author typed the path.
+    const c = buildComponents(base({
+      git: caseDeleted,
+      contract: {
+        active: true, complete: true, failed: 0, origin: 'harness',
+        passedAssertions: census('C:/Users/civer/civkings/gilded/tests/test_chassis.py', 18),
+      },
+    }))
+    expect(c.testsUnmodified).toBe('unknown')
+  })
+
+  it('vetoes a removed test file unless the contract claimed its absence', () => {
+    const removed = {
+      changed: [{ path: 'src/a.ts', added: 3, deleted: 1 }],
+      removed: ['gilded/tests/test_legacy.py'],
+      dirty: [],
+    }
+    const silent = buildComponents(base({
+      git: removed,
+      contract: { active: true, complete: true, failed: 0, origin: 'harness', passedAssertions: [] },
+    }))
+    expect(silent.testsUnmodified).toBe(0)
+
+    const claimed = buildComponents(base({
+      git: removed,
+      contract: {
+        active: true, complete: true, failed: 0, origin: 'harness',
+        passedAssertions: [fileAbsentAssertion('gilded/tests/test_legacy.py')],
+      },
+    }))
+    expect(claimed.testsUnmodified).toBe('unknown')
   })
 
   it('still vetoes when the contract was synthesized by the engine', () => {

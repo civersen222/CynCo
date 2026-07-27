@@ -184,7 +184,7 @@ function declaredCase(line: string): string | null {
  * file, and only cases that go from "checks something" to "checks nothing" are
  * read out.
  */
-function testCaseAssertions(content: string): Map<string, number> {
+export function testCaseAssertions(content: string): Map<string, number> {
   const cases = new Map<string, number>()
   let current: string | null = null
   for (const line of content.split('\n')) {

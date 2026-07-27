@@ -11,6 +11,7 @@
  */
 
 import { isTestPath, type ChangedFile, type GitFacts } from './gitFacts.js'
+import { assertionCheck } from '../tools/contractVerify.js'
 import type { RewardComponents } from './rewardLabeler.js'
 
 export type TestObservation = { passed: number; total: number }
@@ -25,6 +26,13 @@ export type ContractFacts = {
   complete: boolean
   failed: number
   origin: 'auto' | 'harness'
+  /**
+   * Texts of the assertions the repository CONFIRMED, so a consumer can ask what
+   * this contract actually established rather than only how many of its claims
+   * held. "Complete with no failures" is a fact about the claims that were made;
+   * it says nothing about a subject nobody made a claim on.
+   */
+  passedAssertions: string[]
 }
 
 export type TaskOutcomeInput = {
@@ -215,6 +223,23 @@ function assessTestsPass(
  * could not look: the 1 was indistinguishable in the persisted record from a
  * 1 someone actually verified.
  */
+/**
+ * Whether two spellings name the same file.
+ *
+ * Git reports repo-relative paths with forward slashes; a contract is authored
+ * by hand and routinely carries an absolute one
+ * (`C:/Users/civer/civkings/gilded/tests/test_ui_broadsheet.py`). Matching on a
+ * separator-normalized suffix at a `/` boundary relates the two without
+ * pretending to resolve either against a filesystem that may have moved on.
+ * The boundary matters: without it `test_ui.py` would be authorized by an
+ * assertion about `latest_ui.py`.
+ */
+function samePath(a: string, b: string): boolean {
+  const x = a.replace(/\\/g, '/')
+  const y = b.replace(/\\/g, '/')
+  return x === y || x.endsWith(`/${y}`) || y.endsWith(`/${x}`)
+}
+
 function assessTestsUnmodified(
   git: GitFacts | null,
   contract: ContractFacts | null,
@@ -231,12 +256,48 @@ function assessTestsUnmodified(
   // declared with nothing left in it that checks anything, is a case that can no
   // longer fail. A test file removed without the numstat diff accounting for it
   // is taken on faith, and there the safe reading is that coverage was lost.
-  const unreported = git.removed.some(p => isTestPath(p) && !testChanges.some(c => c.path === p))
-  const lostCases = testChanges.some(c => c.casesLost !== undefined && c.casesLost > 0)
-  if (unreported || lostCases) {
-    // A brief may legitimately order a test deleted. Only a person's contract can
-    // say so, and only once its own checks have actually run and passed.
-    const specified = contract?.origin === 'harness' && contract.complete && contract.failed === 0
+  const unreportedRemovals = git.removed.filter(p => isTestPath(p) && !testChanges.some(c => c.path === p))
+  const lostIn = testChanges.filter(c => c.casesLost !== undefined && c.casesLost > 0).map(c => c.path)
+  if (unreportedRemovals.length > 0 || lostIn.length > 0) {
+    // A brief may legitimately order a test deleted, and only a person's contract
+    // can say so — but it has to actually SAY so, about the file in question.
+    //
+    // Finding (w): this used to clear on `origin === 'harness' && complete &&
+    // failed === 0`, which is a fact about whichever claims the contract happened
+    // to make. Gilded L4.2's contract made twenty-five, every one of them about
+    // the product; the run deleted 32 test cases (28 added, net 4 lost), all 25
+    // assertions confirmed, and this returned 'unknown' — reward 0.9736 for
+    // gutting the suite. A contract silent on test survival is not evidence about
+    // test survival, and treating it as evidence is the same scope error as
+    // certifying a 432-test suite from a 1-test run (b2bf909).
+    //
+    // So each losing path must be named by an assertion the repository confirmed:
+    // a census floor for a file that lost cases, an absence claim for one that was
+    // removed outright. Silence vetoes.
+    //
+    // This is stricter than the rule 7e82b09 and 7ca162a settled on, deliberately.
+    // That rule withheld the veto because the signal was a PROXY (line counts, then
+    // assertion counts) that could not tell tidying from weakening, and no channel
+    // existed to authorize a legitimate shrink. Both premises have changed:
+    // `casesLost` measures cases that can no longer fail, netting renames, and
+    // `testCensusAssertion` is an executable way to authorize a loss. A veto on a
+    // measurement with an authorization channel is a different object from a veto
+    // on a proxy without one. A false negative here is recoverable — quarantine
+    // and relabel, done twice. An undetected deletion is not: it enters the corpus
+    // and teaches the deletion.
+    const authorized = (paths: string[], kind: 'test_census' | 'file_absent') =>
+      paths.every(p =>
+        (contract?.passedAssertions ?? []).some(text => {
+          const check = assertionCheck(text)
+          return check?.kind === kind && samePath(check.path, p)
+        }))
+
+    const specified =
+      contract?.origin === 'harness' &&
+      contract.complete &&
+      contract.failed === 0 &&
+      authorized(lostIn, 'test_census') &&
+      authorized(unreportedRemovals, 'file_absent')
     return specified ? 'unknown' : 0
   }
 

@@ -11,6 +11,7 @@ import {
   fileExistsAssertion,
   fileAbsentAssertion,
   COMMITTED_ASSERTION,
+  testCensusAssertion,
   type RepoProbe,
 } from './contractVerify.js'
 import { getShellInfo } from './shellInfo.js'
@@ -81,10 +82,71 @@ function probe(over: Partial<RepoProbe> = {}): RepoProbe {
     isDirty: async () => false,
     changedSince: async () => false,
     exists: () => true,
+    read: () => null,
     run: async () => 'passed',
     ...over,
   }
 }
+
+/**
+ * Finding (w). Every other assertion shape describes the product; a contract
+ * built only from those is silent about whether the suite that measures the
+ * product survived, and the reward gate was reading that silence as consent.
+ */
+describe('verifyAssertion — a census floor is answered by the file', () => {
+  const suite = (n: number) =>
+    Array.from({ length: n }, (_, i) => `def test_case_${i}():\n    assert True\n`).join('\n')
+
+  test('confirmed when the file still declares at least the floor', async () => {
+    const v = await verifyAssertion(
+      { kind: 'test_census', path: 'tests/test_a.py', min: 40 },
+      probe({ read: () => suite(45) }), 'aaaaaaaa')
+    expect(v.status).toBe('confirmed')
+  })
+
+  test('contradicted when cases were deleted below the floor, and says by how many', async () => {
+    const v = await verifyAssertion(
+      { kind: 'test_census', path: 'tests/test_a.py', min: 45 },
+      probe({ read: () => suite(41) }), 'aaaaaaaa')
+    expect(v.status).toBe('contradicted')
+    expect(v.status === 'contradicted' && v.detail).toContain('declares 41 test cases')
+  })
+
+  test('contradicted, not unverifiable, when the file cannot be read', async () => {
+    // A deleted file declares no cases. Calling that unmeasurable would let the
+    // most complete removal there is settle as "we could not tell".
+    const v = await verifyAssertion(
+      { kind: 'test_census', path: 'tests/test_a.py', min: 1 },
+      probe({ read: () => null }), 'aaaaaaaa')
+    expect(v.status).toBe('contradicted')
+  })
+
+  test('a case declared with nothing in it still counts as declared', async () => {
+    // The census is a floor on DECLARATIONS. Gutting is a different measurement
+    // (`casesLost` reads it from the two file versions) and this must not be
+    // read as covering it.
+    const v = await verifyAssertion(
+      { kind: 'test_census', path: 'tests/test_a.py', min: 2 },
+      probe({ read: () => 'def test_a():\n    pass\n\ndef test_b():\n    pass\n' }), 'aaaaaaaa')
+    expect(v.status).toBe('confirmed')
+  })
+
+  test('round-trips through the template', () => {
+    expect(assertionCheck(testCensusAssertion('gilded/tests/test_ui_broadsheet.py', 45)))
+      .toEqual({ kind: 'test_census', path: 'gilded/tests/test_ui_broadsheet.py', min: 45 })
+  })
+
+  test('reads a real file through gitProbe', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'census-'))
+    try {
+      writeFileSync(join(dir, 'test_a.py'), suite(3))
+      expect(gitProbe(dir).read('test_a.py')).toContain('def test_case_2')
+      expect(gitProbe(dir).read('missing.py')).toBeNull()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
 
 /**
  * `Verification command exits 0: <cmd>` is the form the mission driver and every

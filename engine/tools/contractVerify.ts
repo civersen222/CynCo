@@ -17,10 +17,11 @@
  * is `unverifiable` — recorded as unverified rather than quietly counted as
  * measured. Absent is a legitimate answer; a plausible default is not.
  */
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { isAbsolute, resolve } from 'node:path'
 import { exec, execFile } from 'node:child_process'
 import { getShellInfo, translateEnvPrefix } from './shellInfo.js'
+import { testCaseAssertions } from '../training/gitFacts.js'
 
 // Templates are shared with contractAutoCreate so the producer of an assertion
 // and the code that verifies it cannot drift apart.
@@ -41,6 +42,24 @@ export function fileAbsentAssertion(file: string): string {
 export const COMMITTED_ASSERTION = 'Changes committed to git'
 
 /**
+ * A floor on how many named test cases a file still declares.
+ *
+ * Finding (w): every other assertion shape here describes the PRODUCT. A
+ * contract made entirely of them is silent about whether the suite that
+ * measures the product survived — and the cheapest way to keep a suite green is
+ * to delete the tests that were not. On Gilded L4.2 that is exactly what
+ * happened: 32 cases removed, 28 added, every product assertion confirmed, and
+ * the reward's one anti-deletion veto stood down because a "complete" contract
+ * was read as authorization for a loss it had never mentioned.
+ *
+ * So a harness contract can now say the thing directly, and the file answers.
+ * A prose warning in the brief is not a measurement; this is.
+ */
+export function testCensusAssertion(file: string, min: number): string {
+  return `Test file ${file} declares at least ${min} test cases`
+}
+
+/**
  * The form a harness-authored contract uses for a check the machine should run.
  * `scripts/cynco-mission-driver.mjs` emits it — in mission mode the brief's check
  * script IS the contract.
@@ -55,9 +74,12 @@ export type AssertionCheck =
   | { kind: 'file_absent'; path: string }
   | { kind: 'committed' }
   | { kind: 'command'; command: string }
+  | { kind: 'test_census'; path: string; min: number }
 
 /** Recover the machine-checkable claim from an engine-generated assertion. */
 export function assertionCheck(text: string): AssertionCheck | null {
+  const census = /^Test file (.+) declares at least (\d+) test cases$/.exec(text)
+  if (census) return { kind: 'test_census', path: census[1], min: Number(census[2]) }
   const modified = /^File (.+) was modified \(git diff shows changes\)$/.exec(text)
   if (modified) return { kind: 'file_modified', path: modified[1] }
   // Before the existence pattern, whose greedy capture would otherwise read the
@@ -106,6 +128,8 @@ export type RepoProbe = {
   /** Commits since `baseline` that touched `path`. */
   changedSince(baseline: string, path: string): Promise<boolean | null>
   exists(path: string): boolean
+  /** Contents of `path`, or null when it cannot be read. */
+  read(path: string): string | null
   /** What running `command` in the workspace established. */
   run(command: string): Promise<CommandOutcome>
 }
@@ -119,6 +143,20 @@ export async function verifyAssertion(
     return probe.exists(check.path)
       ? { status: 'confirmed' }
       : { status: 'contradicted', detail: `${check.path} does not exist on disk.` }
+  }
+
+  if (check.kind === 'test_census') {
+    const content = probe.read(check.path)
+    if (content === null) {
+      return { status: 'contradicted', detail: `${check.path} could not be read, so it declares no test cases.` }
+    }
+    const count = testCaseAssertions(content).size
+    return count >= check.min
+      ? { status: 'confirmed' }
+      : {
+          status: 'contradicted',
+          detail: `${check.path} declares ${count} test cases, ${check.min - count} fewer than the ${check.min} required.`,
+        }
   }
 
   if (check.kind === 'file_absent') {
@@ -221,6 +259,13 @@ export function gitProbe(cwd: string): RepoProbe {
       return out === null ? null : out.trim().length > 0
     },
     exists: (path) => existsSync(isAbsolute(path) ? path : resolve(cwd, path)),
+    read: (path) => {
+      try {
+        return readFileSync(isAbsolute(path) ? path : resolve(cwd, path), 'utf-8')
+      } catch {
+        return null
+      }
+    },
     run: (command) => runCommand(cwd, command),
   }
 }
