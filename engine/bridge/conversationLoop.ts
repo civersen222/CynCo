@@ -58,6 +58,7 @@ import { buildConceptTableForCwd } from '../vsm/conceptTable.js'
 import { evaluateGrounding, extractAddedText, extractTargetPaths } from '../vsm/groundingTrigger.js'
 import { ReadLoopGate, rearmsGate, signature as readSignature } from '../vsm/readLoopGate.js'
 import { ToolDivergenceDetector } from '../brain/toolDivergence.js'
+import { BrainRecorder } from '../brain/brainRecorder.js'
 import { pruneRedundantReads } from './contextHygiene.js'
 import { promptTokensWithFloor } from './contextFloor.js'
 import { applyPreLoopRestriction, type PreLoopRestriction } from './s5Restriction.js'
@@ -290,6 +291,7 @@ export class ConversationLoop {
   private readLoopGate = new ReadLoopGate()
   private toolDivergence = new ToolDivergenceDetector()
   private lastToolEntropy: number | null = null
+  private brainRecorder = new BrainRecorder(() => getTrajectoryRecorder()?.brainDir ?? null)
   // _TRACE_STEERING=1: records the source of the intervention injected on the
   // PREVIOUS iteration so the next model-call trace line can attribute the
   // model's resulting action to it. Diagnostic only; null when tracing is off.
@@ -451,17 +453,26 @@ export class ConversationLoop {
     this.uncertainty.reset()
     this.uncertaintyBatch = []
     this.uncertaintyIndex = 0
+    this.brainRecorder.reset()
     this.thinkingRecorder?.discardBuffer()
   }
 
   /** Track entropy + batch brain.uncertainty messages to the dashboard. */
   private observeUncertainty(kind: 'thinking' | 'output' | 'tool', logprobs: import('../types.js').TokenLogprob[]): void {
     this.uncertainty.observe(kind, logprobs)
-    if (!this.dashboardBroadcast) return
+    // Entropy is tracked whether or not anyone is watching. This loop used to
+    // sit behind the dashboard guard, which meant the divergence floor — and
+    // now the recorded telemetry — existed only while a dashboard happened to
+    // be attached. A measurement that depends on being observed is not one.
     for (const tl of logprobs) {
       const h = UncertaintyTracker.entropy(tl)
       if (h === null) continue
-      if (kind === 'tool') { this.toolDivergence.observeEntropy(h); this.lastToolEntropy = h }
+      if (kind === 'tool') {
+        this.toolDivergence.observeEntropy(h)
+        this.brainRecorder.observeToolEntropy(h)
+        this.lastToolEntropy = h
+      }
+      if (!this.dashboardBroadcast) continue
       this.uncertaintyBatch.push({ i: this.uncertaintyIndex++, h, kind, top: tl.top.slice(0, 8) })
     }
     if (this.uncertaintyBatch.length >= 16) this.flushUncertainty()
@@ -3162,6 +3173,10 @@ export class ConversationLoop {
         floor: verdict.floor,
         diverged: verdict.diverged,
       })
+      const divTask = getTrajectoryRecorder()
+      if (divTask?.taskId) {
+        this.brainRecorder.recordDivergence(divTask.taskId, divTask.turnIdx, { ...verdict, prunedMessages })
+      }
       this.emit({ type: 'governance.alert', severity: 'warn', message: `[context-hygiene] Broke a ${toolName} attractor: pruned ${prunedMessages} redundant re-read messages.`, source: 'read-loop' } as any)
       console.log(`[context-hygiene] pruned ${prunedMessages} messages to break ${toolName} attractor`)
       // ...and then SERVE the read. Pruning alone made this worse: it deletes the
@@ -3571,6 +3586,11 @@ export class ConversationLoop {
           if (kind) this.taskCommandObservations.push({ kind, ok: !result.isError })
         }
 
+        // Read before recordTurn, which increments it. This is the index the
+        // row about to be written carries, and the brain telemetry has to key
+        // on the same one or the join lands on the neighbouring turn.
+        const joinTurnIdx = recorder.turnIdx
+
         // diffSize, contextPct and varietyEntropy are omitted, not zeroed:
         // nothing here measures them, and a persisted 0 is indistinguishable
         // from a measured zero for every consumer downstream. stuckTurns IS
@@ -3588,6 +3608,9 @@ export class ConversationLoop {
             stuckTurns: this.governance?.getStuckCount() ?? 0,
           },
         })
+        if (recorder.taskId) {
+          this.brainRecorder.recordTurn(recorder.taskId, joinTurnIdx, this.brainRecorder.snapshot())
+        }
         this.emit({
           type: 'trajectory.turn',
           taskId: recorder.taskId ?? null,

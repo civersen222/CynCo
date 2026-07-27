@@ -122,6 +122,13 @@ export class TrajectoryRecorder {
    * corpus. So rewards follow the trajectories unless told otherwise.
    */
   readonly rewardDir: string
+  /**
+   * Where this task's brain telemetry is written. Follows the trajectories for
+   * the same reason rewards do: the rows are only meaningful joined to the
+   * trajectory rows beside them, and a test's telemetry must not land in the
+   * user's corpus.
+   */
+  readonly brainDir: string
   private _taskId: string | null = null
   private _model: string = ''
   private _adapterId: string | undefined = undefined
@@ -139,6 +146,7 @@ export class TrajectoryRecorder {
     this.baseDir = baseDir ?? join(homedir(), '.cynco', 'trajectories')
     this.rewardDir = rewardDir
       ?? (baseDir ? join(baseDir, 'rewards') : join(homedir(), '.cynco', 'rewards'))
+    this.brainDir = baseDir ? join(baseDir, 'brain') : join(homedir(), '.cynco', 'brain')
     mkdirSync(this.baseDir, { recursive: true })
   }
 
