@@ -39,6 +39,15 @@ export class FingerprintRepetitionDetector {
     }
   }
 
+  /**
+   * Forget every call. Called at a task boundary: the window is evidence about
+   * one task's behaviour, and carrying it into the next one lets the first tool
+   * call of a fresh task complete a three-run started by its predecessor.
+   */
+  reset(): void {
+    this.recent = []
+  }
+
   /** Current alarm state, computed over the window tail. */
   alarm(): FingerprintAlarm {
     // Identical: IDENTICAL_RUN consecutive identical fingerprints at the tail.

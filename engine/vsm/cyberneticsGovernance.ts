@@ -1098,12 +1098,36 @@ export class CyberneticsGovernance {
     return this.stuckCount
   }
 
-  /** Reset stuck counter — call on new user message to give fresh start. */
-  resetStuck(): void {
+  /**
+   * Begin a new task with governance counters that describe THIS task.
+   *
+   * Called once per user message. It used to be named resetStuck and cleared
+   * only the stuck counter and tool signatures, which left
+   * `consecutiveUnstableCount` carrying the previous task's total into S5's
+   * first decision of the next one. Finding (k): on L3-3.3b, S5 read "homeostat
+   * unstable 72x" before iteration 1 had run, called it a crisis, and
+   * restricted the entire task to read-only tools.
+   *
+   * `consecutiveUnstable` answers "how long has this task been unstable". At
+   * the start of a task the honest answer is zero, and zero is a measurement —
+   * unlike seventy-two, which was an answer to a question about a different task.
+   *
+   * Zeroing the counter is only half of it. All three stuck rules read rolling
+   * windows, and an inherited window lets the FIRST turn of a new task complete
+   * a repetition begun by the previous one: the narration window needs three
+   * uniform entries and keeps five, and the fingerprint window needs a run of
+   * three and keeps twenty. A task that opens by reading the file the last task
+   * died reading was scored stuck on turn 1 — off one observation, which cannot
+   * be a repetition of anything.
+   */
+  resetForNewTask(): void {
     this.stuckCount = 0
     this.lastToolSignatures = []
     this.lastToolCallSigs = []
-    console.log('[vsm] Stuck counter reset (new user message)')
+    this.lastResponses = []
+    this.fingerprintRepetition.reset()
+    this.consecutiveUnstableCount = 0
+    console.log('[vsm] Governance counters reset for new task (stuck, repetition windows, consecutive instability)')
   }
 
   /** Tell governance whether a workflow read-only phase is active.

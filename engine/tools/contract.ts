@@ -203,6 +203,15 @@ export class ContractState {
     return this.origin
   }
 
+  /**
+   * The assertion texts, for consumers that need to know what the task requires
+   * rather than how far along it is — the tool floor reads these to decide
+   * whether the offered tool set can achieve the contract at all.
+   */
+  getAssertionTexts(): string[] {
+    return this.assertions.map(a => a.text)
+  }
+
   /** Return a deep-copied, serializable snapshot of the contract state. */
   snapshot(): ContractSnapshot {
     return {

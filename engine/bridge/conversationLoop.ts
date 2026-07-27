@@ -761,7 +761,7 @@ export class ConversationLoop {
     // Fresh request = fresh bounded retry: a discard last turn must not rob
     // the first malformed call of this turn of its retry (P1.8).
     this._malformedToolCalls = 0
-    this.governance.resetStuck() // Fresh start for each user message
+    this.governance.resetForNewTask() // Fresh start for each user message
     this.governance.resetKillSwitch() // Clear kill switch from previous task
     this.consecutiveNudges = 0
     this.readLoopGate.reset()
@@ -2029,6 +2029,11 @@ export class ConversationLoop {
           allTools: allDefs,
           operatorPin: this.allowedTools ?? null,
           enforcementActive: true,
+          // What the TASK needs, not only what the enforcement message says.
+          // Finding (l): on L3-3.3b the floor restored Bash + ContractAssert*
+          // into a read-only set and stopped, leaving an agent that could claim
+          // the contract and not achieve it.
+          assertions: globalContract.getAssertionTexts(),
         })
         if (verdict.kind === 'restored') {
           const phaseAllowed = this.workflowEngine.isActive ? this.workflowEngine.getAllowedTools() : null
@@ -2876,7 +2881,7 @@ export class ConversationLoop {
       git: collectGitFacts(this.executor['cwd'], this.taskGitBaseSha),
       trackedModifiedFiles: this.fileTracker.getModifiedFiles(),
       baselineDirty: this.taskBaselineDirty,
-      // resetStuck() runs at the START of runUserMessage, so the counter still
+      // resetForNewTask() runs at the START of runUserMessage, so the counter still
       // holds the finished task's value here. Hardcoding 0 would permanently
       // disable the -0.5 stuck penalty — a fabricated measurement of exactly
       // the kind this pipeline repair exists to remove.

@@ -35,6 +35,40 @@ export const ENFORCEMENT_REQUIRED_TOOLS = [
   'ContractStatus',
 ] as const
 
+/**
+ * A requirement satisfied by ANY ONE member rather than by all of them: a
+ * contract that asserts a file will be modified needs *a* way to modify a file,
+ * and which one is the model's business.
+ *
+ * Bash is deliberately not a member. A shell can obviously write a file — that
+ * is what finding (f) exists to measure — but counting it here would let the
+ * floor pronounce a read-only cage acceptable, and would push the model back
+ * toward the `python -c "open(...,'w')"` string surgery that cost L3-3.3 run 1
+ * the entire task.
+ */
+export const FILE_MUTATION_TOOLS = [
+  'Edit',
+  'Write',
+  'MultiEdit',
+  'ApplyPatch',
+  'ReplaceFunction',
+  'NotebookEdit',
+] as const
+
+/**
+ * Does any assertion claim the filesystem will be different afterwards?
+ *
+ * These are the three machine-checkable file templates contractVerify
+ * understands. Matching the contract's own wording keeps this honest: the floor
+ * requires a writing tool because the contract says a file will change, not
+ * because a heuristic guessed the task looked like an edit.
+ */
+export function assertionsRequireFileMutation(assertions: readonly string[]): boolean {
+  return assertions.some(a =>
+    /^\s*File\s+.+\s+(was modified|exists after changes|no longer exists after changes)\b/i.test(a),
+  )
+}
+
 export type FloorVerdict<T extends ToolLike> =
   /** Nothing to do. */
   | { kind: 'ok'; tools: T[] }
@@ -51,13 +85,24 @@ export function applyToolFloor<T extends ToolLike>(opts: {
   /** Caller-supplied allowedTools pin, or null when unpinned. */
   operatorPin: string[] | null
   enforcementActive: boolean
+  /**
+   * The active contract's assertions, used to floor what the TASK needs rather
+   * than only what the enforcement message says. Omitted means "no information
+   * available" and adds no requirement — never "no files will change".
+   */
+  assertions?: readonly string[]
 }): FloorVerdict<T> {
-  const { offered, allTools, operatorPin, enforcementActive } = opts
+  const { offered, allTools, operatorPin, enforcementActive, assertions } = opts
   if (!enforcementActive) return { kind: 'ok', tools: offered }
 
   // Only require tools that actually exist in this build.
   const registered = new Set(allTools.map(t => t.name))
   const required = (ENFORCEMENT_REQUIRED_TOOLS as readonly string[]).filter(n => registered.has(n))
+  // Satisfied by any one member: empty unless the contract itself claims the
+  // filesystem will change.
+  const anyOf = assertions && assertionsRequireFileMutation(assertions)
+    ? (FILE_MUTATION_TOOLS as readonly string[]).filter(n => registered.has(n))
+    : []
 
   // The operator's explicit allowlist wins over the floor. If it omits a
   // required tool the contract can never be satisfied — report that instead of
@@ -65,11 +110,13 @@ export function applyToolFloor<T extends ToolLike>(opts: {
   if (operatorPin) {
     const pin = new Set(operatorPin)
     const missing = required.filter(n => !pin.has(n))
+    if (anyOf.length > 0 && !anyOf.some(n => pin.has(n))) missing.push(...anyOf)
     if (missing.length > 0) return { kind: 'unsatisfiable', tools: offered, missing }
   }
 
   const have = new Set(offered.map(t => t.name))
   const restored = required.filter(n => !have.has(n))
+  if (anyOf.length > 0 && !anyOf.some(n => have.has(n))) restored.push(...anyOf)
   if (restored.length === 0) return { kind: 'ok', tools: offered }
 
   const byName = new Map(allTools.map(t => [t.name, t]))
