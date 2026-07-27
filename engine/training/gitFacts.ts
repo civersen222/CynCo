@@ -273,6 +273,68 @@ export function collectDirtyPaths(cwd: string): string[] | null {
   }
 }
 
+/**
+ * A per-path signature of the tree's current content state: path -> a token
+ * that changes whenever that path's content changes.
+ *
+ * Exists so a caller can tell which paths a single shell command touched, by
+ * taking one of these before and one after and comparing. `status --porcelain`
+ * alone cannot answer that: appending to a file that is ALREADY modified leaves
+ * the porcelain line byte-identical, so a set-difference over paths sees
+ * nothing. The numstat half supplies the magnitude that does change.
+ *
+ * Deliberately NOT derived from the command text. Scanning a shell string for
+ * filenames would be a proxy for the thing actually wanted, and would be
+ * confidently wrong on redirects, heredocs, interpreter one-liners and any
+ * path the command computes for itself.
+ *
+ * Null when git could not answer — "not measured", never an empty map, which
+ * would be the positive claim that nothing anywhere has changed.
+ */
+export function collectPathSignatures(cwd: string): Map<string, string> | null {
+  try {
+    const sig = new Map<string, string>()
+    // Tracked content, including staged work: covers modification magnitude.
+    for (const line of git(cwd, 'diff --numstat HEAD').split('\n')) {
+      const m = line.trim().match(/^(\d+|-)\t(\d+|-)\t(.+)$/)
+      if (!m) continue
+      sig.set(m[3].replace(/\\/g, '/'), `${m[1]},${m[2]}`)
+    }
+    // Untracked paths have no diff against HEAD at all, so they need the
+    // porcelain half or a newly created file would be invisible.
+    for (const line of git(cwd, 'status --porcelain').split('\n')) {
+      if (line.length <= 3) continue
+      const p = porcelainPath(line)
+      if (!p) continue
+      const status = line.slice(0, 2)
+      const key = p.replace(/\\/g, '/')
+      sig.set(key, `${status}:${sig.get(key) ?? ''}`)
+    }
+    return sig
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Paths whose content signature differs between two snapshots — i.e. the paths
+ * that changed in between. Empty when either snapshot is missing, because an
+ * unmeasured interval is not evidence that something changed.
+ */
+export function changedBetween(
+  before: Map<string, string> | null,
+  after: Map<string, string> | null,
+): string[] {
+  if (!before || !after) return []
+  const touched: string[] = []
+  for (const [p, s] of after) if (before.get(p) !== s) touched.push(p)
+  // A path that vanished from the signature changed too: it was reverted,
+  // committed, or deleted, and in every one of those cases the command did
+  // something to it.
+  for (const p of before.keys()) if (!after.has(p)) touched.push(p)
+  return [...new Set(touched)]
+}
+
 function git(cwd: string, args: string): string {
   return execSync(`git ${args}`, { cwd, stdio: ['pipe', 'pipe', 'pipe'], maxBuffer: 8 * 1024 * 1024 })
     .toString()

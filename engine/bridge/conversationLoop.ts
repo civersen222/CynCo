@@ -85,7 +85,7 @@ import { UncertaintyTracker } from '../memory/uncertaintyTracker.js'
 // call took the catch branch instead of the recording path. The training corpus
 // writer was uncovered by construction.
 import { getTrajectoryRecorder } from '../training/trajectoryRecorder.js'
-import { collectGitFacts, collectDirtyPaths } from '../training/gitFacts.js'
+import { collectGitFacts, collectDirtyPaths, collectPathSignatures, changedBetween } from '../training/gitFacts.js'
 import { buildComponents } from '../training/taskOutcome.js'
 import { finalizeTask } from '../training/rewardLabeler.js'
 import { detectTests } from '../bestOfN/testDetector.js'
@@ -3247,6 +3247,12 @@ export class ConversationLoop {
     this.emit({ type: 'tool.start', toolId, toolName, input: toolInput })
 
     const toolStartMs = Date.now()
+    // Only Bash can change a file without saying which one. Snapshot before, so
+    // the paths it touched can be measured after rather than guessed from the
+    // command text. Any other tool announces its file_path and is recorded below.
+    const shellSigBefore = toolName === 'Bash'
+      ? collectPathSignatures(this.executor['cwd'])
+      : null
     const result = await this.executor.execute(toolName, toolInput)
 
     // ─── SubAgent interception ─────────────────────────────────────
@@ -3549,6 +3555,18 @@ export class ConversationLoop {
     const filePath = (toolInput.file_path as string) ?? (toolInput.path as string) ?? ''
     if (filePath) {
       this.fileTracker.record(filePath, toolName)
+    }
+
+    // Close the loop on the shell snapshot taken above. Without this, a file
+    // changed by `Add-Content` or `python -c "open(...,'w')"` was invisible to
+    // getModifiedFiles(), so filesTouched went into the training row as 0 while
+    // 193 lines had in fact been added (measured, L3-3.3), and diffClean charged
+    // the agent for its own honest edit. changedBetween returns [] when either
+    // snapshot is missing, so a non-git cwd records nothing rather than guessing.
+    if (shellSigBefore) {
+      for (const p of changedBetween(shellSigBefore, collectPathSignatures(this.executor['cwd']))) {
+        this.fileTracker.record(p, 'ShellWrite')
+      }
     }
 
     // Collect LSP diagnostics after Edit/Write operations

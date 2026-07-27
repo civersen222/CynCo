@@ -20,10 +20,25 @@ export class FileOperationTracker {
     this.operations.push({ path, tool, timestamp: Date.now() })
   }
 
+  /**
+   * Files this session modified.
+   *
+   * 'ShellWrite' is not a tool the model can call. It is the label the
+   * conversation loop attaches to a path that git observed changing across a
+   * Bash call — the only way a shell mutation can be seen, since the four
+   * editing tools are the only ones that announce a file_path.
+   *
+   * Measured on the L3-3.3 run: 193 lines were added to a test file via
+   * `Add-Content` and `python -c "open(...,'w')"`, and this method returned an
+   * empty list. Both consumers were wrong as a result — the filesTouched state
+   * feature recorded in every training row, and diffClean, which asks this
+   * method whether a dirty path was the agent's own doing and so charged the
+   * agent for work it had honestly done.
+   */
   getModifiedFiles(): string[] {
     return [...new Set(
       this.operations
-        .filter(op => ['Write', 'Edit', 'MultiEdit', 'ApplyPatch'].includes(op.tool))
+        .filter(op => ['Write', 'Edit', 'MultiEdit', 'ApplyPatch', 'ShellWrite'].includes(op.tool))
         .map(op => op.path)
     )]
   }
