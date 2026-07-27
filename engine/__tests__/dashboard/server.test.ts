@@ -240,17 +240,24 @@ describe('WebSocket broadcast', () => {
 })
 
 // ── CORS headers ──────────────────────────────────────────────────
+//
+// These two cases used to assert `Access-Control-Allow-Origin: *`, i.e. they
+// pinned the hole open: the grant that let any page in any browser on this
+// machine read /api/sessions/<id>/transcript. The dashboard is same-origin and
+// never needed a grant. Kept here (rather than deleted) so the diff shows the
+// assertion being inverted, not quietly dropped. See dashboard/security.test.ts
+// for the full statement of what the header was giving away.
 
 describe('CORS', () => {
-  it('includes Access-Control-Allow-Origin header', async () => {
+  it('does not hand out a cross-origin read grant', async () => {
     const res = await fetch(`${BASE}/api/params`)
-    expect(res.headers.get('access-control-allow-origin')).toBe('*')
+    expect(res.headers.get('access-control-allow-origin')).toBeNull()
   })
 
-  it('handles OPTIONS preflight', async () => {
+  it('answers OPTIONS without granting the preflight', async () => {
     const res = await fetch(`${BASE}/config/engine`, { method: 'OPTIONS' })
     expect(res.status).toBe(204)
-    expect(res.headers.get('access-control-allow-origin')).toBe('*')
+    expect(res.headers.get('access-control-allow-origin')).toBeNull()
   })
 })
 

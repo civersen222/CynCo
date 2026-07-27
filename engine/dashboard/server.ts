@@ -49,26 +49,38 @@ export interface DashboardDeps {
 }
 
 // ---------------------------------------------------------------------------
-// CORS headers applied to every response
+// No CORS grant
 // ---------------------------------------------------------------------------
-
-const CORS_HEADERS: Record<string, string> = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type',
-}
+//
+// Every response used to carry `Access-Control-Allow-Origin: *`. That header is
+// precisely the grant that lets a cross-origin page READ a reply, and the replies
+// here include /api/sessions/<id>/transcript — the raw session journal, so every
+// file the Read tool pulled in, every diff, every Bash output — plus /api/thinking,
+// which is the model's reasoning. Any page open in any browser on this machine
+// could chain /api/thinking/sessions into the transcript route and exfiltrate the
+// lot on a page load. Binding to loopback does not help; the browser is already
+// inside loopback.
+//
+// The dashboard page is served from this origin, so it needs no grant at all.
+// Absent beats narrow: there is no legitimate cross-origin reader to name.
+//
+// This does NOT protect the POST /config/* routes, and it never did. An attacker
+// sends Content-Type: text/plain to make the request "simple" (no preflight), the
+// request lands, and req.json() parses the body regardless of the declared type.
+// The response is unreadable but the mutation already happened. Only a token or
+// an Origin check stops that; the management-scope gate below is what does it.
 
 function jsonResponse(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json' },
   })
 }
 
 function htmlResponse(body: string, status = 200): Response {
   return new Response(body, {
     status,
-    headers: { ...CORS_HEADERS, 'Content-Type': 'text/html; charset=utf-8' },
+    headers: { 'Content-Type': 'text/html; charset=utf-8' },
   })
 }
 
@@ -158,9 +170,11 @@ export class DashboardServer {
           return new Response('WebSocket upgrade failed', { status: 400 })
         }
 
-        // Handle CORS preflight
+        // A preflight with no Access-Control-* headers in the reply is a refusal:
+        // the browser fails the CORS check and never sends the real request. The
+        // dashboard page is same-origin and never preflights.
         if (method === 'OPTIONS') {
-          return new Response(null, { status: 204, headers: CORS_HEADERS })
+          return new Response(null, { status: 204 })
         }
 
         // GET routes
@@ -414,8 +428,14 @@ export class DashboardServer {
   }
 
   private getSessionTranscript(sessionId: string): Response {
+    // Both siblings — getThinkingTurns and getThinkingTurn — have always done
+    // this. This one had drifted, and joined ~/.cynco/sessions to whatever the
+    // URL carried, so `..%2f..%2f` reached any .jsonl on disk. 400 rather than an
+    // empty 200: "no such session" and "that is not a session id" are different
+    // answers and must not render the same.
+    if (!SESSION_ID_RE.test(sessionId)) return jsonResponse({ error: 'invalid session id' }, 400)
     try {
-      const sessionDir = join(homedir(), '.cynco', 'sessions')
+      const sessionDir = this.deps.sessionsDir ?? join(homedir(), '.cynco', 'sessions')
       const sessionFile = join(sessionDir, `${sessionId}.jsonl`)
       if (!existsSync(sessionFile)) return jsonResponse([])
       const lines = readFileSync(sessionFile, 'utf-8').trim().split('\n')
