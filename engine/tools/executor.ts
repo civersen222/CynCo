@@ -20,6 +20,21 @@ export type ToolExecutorOptions = {
   toolScorer?: ToolScorer
 }
 
+/**
+ * Tools whose success means the source is not what it was.
+ *
+ * Editors only. `Bash` is deliberately absent even though the shell can write
+ * files (finding (f)) — a successful `ls` would then clear every failure count
+ * and the detector would fire on nothing but strict back-to-back repetition.
+ * The blind spot is real and named rather than papered over with a rule that
+ * cannot tell `python -c "open(...,'w')"` from `git status`. Closing it wants
+ * the per-path git signature the Bash path already computes, which does not
+ * reach this layer yet.
+ */
+const WORKSPACE_MUTATING_TOOLS = new Set([
+  'Write', 'Edit', 'MultiEdit', 'ApplyPatch', 'ReplaceFunction', 'NotebookEdit',
+])
+
 export class ToolExecutor {
   private cwd: string
   private requestApproval: RequestApprovalFn
@@ -68,18 +83,29 @@ export class ToolExecutor {
     try {
       const result = await tool.execute(input, this.cwd)
 
-      // Doom loop detection: catch repeated failing tool calls
-      const inputSummary = JSON.stringify(input).slice(0, 100)
-      const isDoomLoop = this.doomLoop.check(toolName, inputSummary, result.isError)
+      // A successful edit means every recorded failure describes a repository
+      // that no longer exists. Cleared BEFORE this call is judged, so an edit
+      // and the test run that follows it are never counted against each other.
+      if (!result.isError && WORKSPACE_MUTATING_TOOLS.has(toolName)) {
+        this.doomLoop.noteWorkspaceChanged()
+      }
+
+      // Doom loop detection: catch repeated failing tool calls. The whole input,
+      // not a prefix — see finding (t) and doomLoop.ts.
+      const isDoomLoop = this.doomLoop.check(toolName, JSON.stringify(input), result.isError)
+      const capped = { output: capToolResult(result.output, this.contextLength), isError: result.isError }
       if (isDoomLoop) {
-        const suggestion = this.doomLoop.getSuggestion()
+        // Appended, never substituted. The old code replaced the tool's output
+        // with the scolding, so a model stuck on a failing test was denied the
+        // test report — the one thing that could have got it unstuck. An error
+        // message is a control signal: it must add what the engine knows, not
+        // remove what the tool said.
         return {
-          output: `DOOM LOOP DETECTED: ${suggestion}\n\nThe same tool call has failed 3+ times with identical input. Try a different approach.`,
+          output: `${capped.output}\n\n[engine] DOOM LOOP DETECTED: ${this.doomLoop.getSuggestion()}`,
           isError: true,
         }
       }
 
-      const capped = { output: capToolResult(result.output, this.contextLength), isError: result.isError }
       this.toolScorer?.record(toolName, !capped.isError)
       return capped
     } catch (err) {
