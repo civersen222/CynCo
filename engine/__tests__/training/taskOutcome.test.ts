@@ -13,6 +13,7 @@ function base(overrides: Partial<TaskOutcomeInput> = {}): TaskOutcomeInput {
     stuckTurns: 0,
     turns: 10,
     hitIterationLimit: false,
+    endedInEngineError: false,
     ...overrides,
   }
 }
@@ -223,6 +224,114 @@ describe('buildComponents — a run that ran out of turns did not decide it was 
       testObservations: [{ passed: 396, total: 396 }],
     }))
     expect(c.taskCompleted).toBe('unknown')
+  })
+})
+
+/**
+ * Finding (m), measured on the L3-3.3b re-run (trajectory task-e952d4d8).
+ *
+ * That run is the best one this corpus has: the seat now consults the candidate
+ * pool instead of re-deriving eligibility, the salary line names the amount that
+ * actually moved, 30 of 30 independent harness checks print OK, the suite went
+ * 429 -> 432 passed with 0 failed, and the whole thing is one 108-line commit.
+ * I verified every one of those numbers by hand afterwards.
+ *
+ * It scored 0.662, with taskCompleted 0.
+ *
+ * The reason is that the run did not end. It was killed:
+ *
+ *   send_error: task id = 8902, error: request (67733 tokens) exceeds the
+ *   available context size (65536 tokens), try increasing it
+ *   [loop] ERROR: llama-server HTTP 400 ... exceed_context_size_error
+ *
+ * The model was partway through calling ContractAssertPass on 34 assertions when
+ * the engine handed llama-server a request two thousand tokens too big for the
+ * context it had opened. So the contract was still 'active and not complete',
+ * and the branch above reads that as 0 — the assigned job not done.
+ *
+ * "Unmet" is doing two different jobs in that branch. An assertion the model had
+ * every chance to satisfy and did not is a measurement OF THE MODEL. An assertion
+ * left unresolved because the harness cut the run off mid-sentence is a
+ * measurement of the harness, and scoring the model 0 for it is the same
+ * fabrication as findings (f), (i), (k) and (l): a plausible default standing in
+ * for a reading nobody took.
+ *
+ * The honest label is 'unknown' — and unknown leaves the denominator, which is
+ * this module's whole thesis. Not degenerate: a crashed run is not an
+ * information-free run, and every other component here (testsPass, diffClean,
+ * testsUnmodified, stuckTurns) was really measured and really earned.
+ */
+describe('buildComponents — a run the engine killed is not a run the model failed', () => {
+  it('leaves taskCompleted unknown when an engine error ended the run mid-contract', () => {
+    const c = buildComponents(base({
+      endedInEngineError: true,
+      contract: { active: true, complete: false, failed: 0, origin: 'harness' },
+      testObservations: [{ passed: 432, total: 432 }],
+    }))
+    expect(c.taskCompleted).toBe('unknown')
+  })
+
+  it('still scores 0 when the model simply left assertions unmet', () => {
+    // The guard must not become a blanket amnesty. With no engine error, an
+    // unsatisfied authored contract is exactly the measurement it always was.
+    const c = buildComponents(base({
+      endedInEngineError: false,
+      contract: { active: true, complete: false, failed: 0, origin: 'harness' },
+      testObservations: [{ passed: 432, total: 432 }],
+    }))
+    expect(c.taskCompleted).toBe(0)
+  })
+
+  it('still scores 0 for assertions the model recorded as failed', () => {
+    // A ContractAssertFail is the model's own reading of its own work. The crash
+    // does not un-fail it, and it is not the crash's to excuse.
+    const c = buildComponents(base({
+      endedInEngineError: true,
+      contract: { active: true, complete: false, failed: 3, origin: 'harness' },
+      testObservations: [{ passed: 432, total: 432 }],
+    }))
+    expect(c.taskCompleted).toBe(0)
+  })
+
+  it('does not overrule a contract that was satisfied before the crash', () => {
+    const c = buildComponents(base({
+      endedInEngineError: true,
+      contract: { active: true, complete: true, failed: 0, origin: 'harness' },
+      testObservations: [{ passed: 432, total: 432 }],
+    }))
+    expect(c.taskCompleted).toBe(1)
+  })
+
+  it('does not let a crash be read as running out of turns', () => {
+    // hitIterationLimit is a measurement of the model — it had its whole budget
+    // and spent it. An engine error is not, so the iteration-limit fallback must
+    // not fill in a 0 on its behalf.
+    const c = buildComponents(base({
+      endedInEngineError: true,
+      hitIterationLimit: true,
+      contract: null,
+      testObservations: [{ passed: 432, total: 432 }],
+    }))
+    expect(c.taskCompleted).toBe('unknown')
+  })
+
+  it('changes nothing except taskCompleted', () => {
+    // The point of 'unknown' over exclusion: this trajectory still teaches
+    // something, so the guard must be surgical. Comparing the two runs
+    // component-by-component states that precisely, and catches a fix that
+    // reached for the whole component set when only one reading was in doubt.
+    const shared = {
+      contract: { active: true, complete: false, failed: 0, origin: 'harness' as const },
+      testObservations: [{ passed: 432, total: 432 }],
+      stuckTurns: 2,
+      turns: 79,
+    }
+    const crashed = buildComponents(base({ ...shared, endedInEngineError: true }))
+    const clean = buildComponents(base({ ...shared, endedInEngineError: false }))
+
+    expect(crashed.taskCompleted).toBe('unknown')
+    expect(clean.taskCompleted).toBe(0)
+    expect({ ...crashed, taskCompleted: null }).toEqual({ ...clean, taskCompleted: null })
   })
 })
 

@@ -42,6 +42,18 @@ export type TaskOutcomeInput = {
   turns: number
   /** The tool loop ended because it ran out of iterations, not because the model stopped. */
   hitIterationLimit: boolean
+  /**
+   * The tool loop was aborted by an engine-side failure — a provider error, a
+   * context overflow, a crash — rather than by the model or the turn budget.
+   *
+   * This is not a measurement of the model, and nothing derived from "the run
+   * stopped here" may be charged to it. Finding (m): the L3-3.3b run's request
+   * exceeded the context llama-server had opened, the loop died mid-way through
+   * recording 34 satisfied assertions, and the unresolved contract scored the
+   * task incomplete — 0.662 for work that passed 30 of 30 harness checks and
+   * took the suite from 429 to 432.
+   */
+  endedInEngineError: boolean
 }
 
 function normalize(p: string): string {
@@ -254,6 +266,16 @@ export function buildComponents(input: TaskOutcomeInput): RewardComponents {
   // is a specification.
   if (input.contract?.origin === 'auto') {
     taskCompleted = 'unknown'
+  } else if (input.contract !== null && input.contract.failed > 0) {
+    // The model's own reading of its own work. A crash does not un-fail it.
+    taskCompleted = 0
+  } else if (input.contract?.active && !input.contract.complete && input.endedInEngineError) {
+    // "Unmet" answers two different questions and only one of them is about the
+    // model. An assertion the model had every chance to satisfy and did not is a
+    // measurement of the model; an assertion left unresolved because the engine
+    // cut the run off mid-sentence is a measurement of the engine. Finding (m):
+    // charging the second to the model scored the best run in the corpus 0.662.
+    taskCompleted = 'unknown'
   } else if (input.contract && (input.contract.failed > 0 || (input.contract.active && !input.contract.complete))) {
     // An active contract with unmet assertions is 0 even when tests are green:
     // passing tests the contract did not ask for is not the assigned job.
@@ -279,7 +301,13 @@ export function buildComponents(input: TaskOutcomeInput): RewardComponents {
   // It does not overrule a satisfied authored contract. An authored spec being
   // met is stronger evidence of completion than the agent's own stopping
   // judgment, so this only fills in where the answer would be 'unknown'.
-  if (taskCompleted === 'unknown' && input.hitIterationLimit) taskCompleted = 0
+  //
+  // It is also not available when the engine killed the run. Exhausting the turn
+  // budget is a measurement of the model; being cut off is not, and the two must
+  // not be allowed to look alike just because both end with the loop stopping.
+  if (taskCompleted === 'unknown' && input.hitIterationLimit && !input.endedInEngineError) {
+    taskCompleted = 0
+  }
 
   const typecheck = input.commandObservations.filter(o => o.kind === 'typecheck')
   const build = input.commandObservations.filter(o => o.kind === 'build')

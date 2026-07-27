@@ -221,6 +221,14 @@ export class ConversationLoop {
   private taskBaselineDirty: string[] | null = null
   /** Set when the tool loop ran out of iterations instead of the model stopping. */
   private taskHitIterationLimit = false
+  /**
+   * Set when the tool loop was aborted by an engine-side failure — the provider
+   * erroring, the request overflowing the context it was given, a crash. The
+   * reward labeler must tell this apart from the model stopping or spending its
+   * turn budget, because only those two are measurements of the model. See
+   * finding (m) in taskOutcome.ts.
+   */
+  private taskEndedInEngineError = false
   /** Whether this task has already reported a trajectory-recording failure. */
   private trajectoryErrorLogged = false
   private config: LocalCodeConfig
@@ -803,6 +811,7 @@ export class ConversationLoop {
     // Start trajectory recording for this task
     this.trajectoryErrorLogged = false
     this.taskHitIterationLimit = false
+    this.taskEndedInEngineError = false
     try {
       const { randomUUID } = require('crypto')
       const recorder = getTrajectoryRecorder()
@@ -1372,6 +1381,7 @@ export class ConversationLoop {
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
         console.error(`[loop] ERROR: ${msg}`)
+        this.taskEndedInEngineError = true
         this.emit({ type: 'session.error', error: msg })
       }
     }
@@ -2888,6 +2898,7 @@ export class ConversationLoop {
       stuckTurns: this.governance?.getStuckCount() ?? 0,
       turns,
       hitIterationLimit: this.taskHitIterationLimit,
+      endedInEngineError: this.taskEndedInEngineError,
     })
 
     const reward = finalizeTask(taskId, turns, components, recorder.rewardDir)
