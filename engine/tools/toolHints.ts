@@ -92,7 +92,7 @@ const REDIRECTS_OUTPUT = /(?:^|[^>])>{1,2}[^>]/
  * Both halves are required: reading a file in a one-liner is fine, and writing a
  * NEW file is what `Write` is for and not what this is about.
  */
-function isSourceRewrite(command: string): boolean {
+export function isSourceRewrite(command: string): boolean {
   if (!/\b(?:python|python3|py|node|bun)\b/i.test(command)) return false
   const reads = /\.read\(\)|readlines\(|readFileSync/i.test(command)
   const writes = /\.write\(|writelines\(|writeFileSync|open\([^)]*['"][wa]\+?['"]/i.test(command)

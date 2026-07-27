@@ -56,7 +56,7 @@ import { getJournal } from '../training/decisionJournal.js'
 import { makeJournalEntry } from '../training/types.js'
 import { buildConceptTableForCwd } from '../vsm/conceptTable.js'
 import { evaluateGrounding, extractAddedText, extractTargetPaths } from '../vsm/groundingTrigger.js'
-import { ReadLoopGate, signature as readSignature } from '../vsm/readLoopGate.js'
+import { ReadLoopGate, rearmsGate, signature as readSignature } from '../vsm/readLoopGate.js'
 import { ToolDivergenceDetector } from '../brain/toolDivergence.js'
 import { pruneRedundantReads } from './contextHygiene.js'
 import { isBenignTestFailure } from './benignToolResult.js'
@@ -3514,9 +3514,10 @@ export class ConversationLoop {
 
     // Re-arm the read-loop gate whenever the model actually changes something,
     // and tell it *which* file, so the gate stops treating a post-edit look as a
-    // re-read. ReplaceFunction writes a file like any other editor; leaving it
-    // off this list meant a refactor never re-armed the gate at all.
-    if (!result.isError && ['Edit', 'Write', 'MultiEdit', 'ApplyPatch', 'ReplaceFunction'].includes(toolName)) {
+    // re-read. See rearmsGate: this counts shell string-surgery as an edit too,
+    // because a model that has been denied Read edits from the shell, and those
+    // edits used to leave the gate believing nothing had changed.
+    if (rearmsGate(toolName, toolInput, result.isError)) {
       this.readLoopGate.onWrite(toolInput.file_path as string | undefined)
     }
 

@@ -1,4 +1,29 @@
 import { resolve, sep } from 'node:path'
+import { isSourceRewrite } from '../tools/toolHints.js'
+
+/** Tools whose whole job is to change a file. */
+const EDITOR_TOOLS = ['Edit', 'Write', 'MultiEdit', 'ApplyPatch', 'ReplaceFunction']
+
+/**
+ * Did this successful tool call change a file, and so re-arm the gate?
+ *
+ * Editor tools obviously do. Bash usually does not — but a model that has been
+ * denied Read reaches for the shell, and once there it edits with
+ * `python -c "content = open(f).read(); ...; open(f,'w').write(...)"`. Those edits
+ * used to be invisible here, which is how the gate could refuse reads on the
+ * grounds that no edit had been made while the model was making edits the whole
+ * time. Watched live: CynCo rewrote gilded/docket.py that way four times and the
+ * read counter never reset once.
+ *
+ * A shell rewrite gives no reliable path to invalidate, so callers get no path and
+ * the gate only resets its counters — it keeps remembering what was read, which is
+ * the conservative half.
+ */
+export function rearmsGate(toolName: string, input: any, isError: boolean): boolean {
+  if (isError) return false
+  if (EDITOR_TOOLS.includes(toolName)) return true
+  return toolName === 'Bash' && typeof input?.command === 'string' && isSourceRewrite(input.command)
+}
 
 export type ReadLoopVerdict =
   | { kind: 'allow' }
@@ -69,6 +94,12 @@ export class ReadLoopGate {
   // Reads the model kept demanding after a warn and repeated denials. Once a
   // signature lands here the gate stops refusing it — see relent note below.
   private relented = new Set<string>()
+  // The stall branch refuses reads the model has never seen, so its refusals carry
+  // a different signature every time and cannot accumulate in `consecutiveDenies`.
+  // It needs its own count, and its own latch, or the relent rule below is
+  // unreachable from here. Counted per-branch, not per-signature.
+  private stallDenies = 0
+  private stallRelented = false
   private static ESCALATE_AFTER = 3
 
   private denyOrEscalate(sig: string, message: string): ReadLoopVerdict {
@@ -100,12 +131,25 @@ export class ReadLoopGate {
       return this.denyOrEscalate(sig, `[read-loop] DENIED: you are re-reading sources you've already seen without making any change. You must now either (a) call Write/Edit/MultiEdit to act on what you've learned, or (b) end your turn if the task is genuinely complete. Reading is disabled until you make an edit.`)
     }
     this.seen.set(sig, scopeOf(toolName, input) ?? '')
-    if (this.readsSinceWrite >= STALL_CAP) {
+    if (this.readsSinceWrite >= STALL_CAP && !this.stallRelented) {
       if (!this.warnedStall) {
         this.warnedStall = true
         return { kind: 'warn', message: `[read-loop] ${this.readsSinceWrite} reads since your last edit. Consider whether you have enough to start implementing — use Write or Edit.` }
       }
-      return this.denyOrEscalate(sig, `[read-loop] DENIED: ${this.readsSinceWrite} reads since your last edit with no change made. Make an edit now, or end your turn if complete.`)
+      this.redundantSigs.add(sig)
+      this.stallDenies += 1
+      const message = `[read-loop] DENIED: ${this.readsSinceWrite} reads since your last edit with no change made. Make an edit now, or end your turn if complete.`
+      // Unlike a redundant read, the gate does not know this content is already in
+      // context — it is refusing on a *count*, which is a guess about whether the
+      // model has enough. Hold that guess for a few turns, then give way: the model
+      // has to quote an exact `old_string` to edit at all, so a stall gate that
+      // never yields converts "you should be editing by now" into "you may never
+      // edit again".
+      if (this.stallDenies >= ReadLoopGate.ESCALATE_AFTER) {
+        this.stallRelented = true
+        return { kind: 'escalate', message, signatures: [...this.redundantSigs] }
+      }
+      return { kind: 'deny', message }
     }
     return { kind: 'allow' }
   }
@@ -137,6 +181,8 @@ export class ReadLoopGate {
     this.lastDeniedSig = null
     this.redundantSigs.clear()
     this.relented.clear()
+    this.stallDenies = 0
+    this.stallRelented = false
   }
 
   reset(): void {
@@ -148,5 +194,7 @@ export class ReadLoopGate {
     this.lastDeniedSig = null
     this.redundantSigs.clear()
     this.relented.clear()
+    this.stallDenies = 0
+    this.stallRelented = false
   }
 }
