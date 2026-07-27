@@ -81,7 +81,7 @@ function probe(over: Partial<RepoProbe> = {}): RepoProbe {
     isDirty: async () => false,
     changedSince: async () => false,
     exists: () => true,
-    run: async () => 0,
+    run: async () => 'passed',
     ...over,
   }
 }
@@ -119,18 +119,30 @@ describe('assertionCheck — a verification command is a claim the machine can s
 
 describe('verifyAssertion — command', () => {
   test('exit 0 confirms the assertion', async () => {
-    const v = await verifyAssertion({ kind: 'command', command: 'true' }, probe({ run: async () => 0 }), null)
+    const v = await verifyAssertion({ kind: 'command', command: 'true' }, probe({ run: async () => 'passed' }), null)
     expect(v.status).toBe('confirmed')
   })
 
-  test('a nonzero exit contradicts it, and says which code', async () => {
-    const v = await verifyAssertion({ kind: 'command', command: 'false' }, probe({ run: async () => 1 }), null)
+  test('a failing command contradicts it without naming an exit code', async () => {
+    const v = await verifyAssertion({ kind: 'command', command: 'false' }, probe({ run: async () => 'failed' }), null)
     expect(v.status).toBe('contradicted')
-    expect(v.status === 'contradicted' && v.detail).toContain('exit code 1')
+    const detail = v.status === 'contradicted' ? v.detail : ''
+    expect(detail).toContain('did not exit 0')
+    // The shell collapses a program's real code, so any number here would be
+    // one the engine never measured.
+    expect(detail).not.toMatch(/exit code \d/)
+  })
+
+  test('a timeout says it was killed, because that part really was measured', async () => {
+    const v = await verifyAssertion({ kind: 'command', command: 'sleep 999' }, probe({ run: async () => 'timeout' }), null)
+    expect(v.status).toBe('contradicted')
+    const detail = v.status === 'contradicted' ? v.detail : ''
+    expect(detail).toContain('killed')
+    expect(detail).not.toMatch(/exit code \d/)
   })
 
   test('a command that could not be run at all is unverifiable, not failed', async () => {
-    const v = await verifyAssertion({ kind: 'command', command: 'x' }, probe({ run: async () => null }), null)
+    const v = await verifyAssertion({ kind: 'command', command: 'x' }, probe({ run: async () => 'unrunnable' }), null)
     expect(v.status).toBe('unverifiable')
   })
 
@@ -141,10 +153,30 @@ describe('verifyAssertion — command', () => {
 })
 
 describe('gitProbe.run — really executes', () => {
-  test('reports 0 for a passing command and nonzero for a failing one', async () => {
+  test('reports passed for a passing command and failed for a failing one', async () => {
     const p = gitProbe(process.cwd())
-    expect(await p.run('exit 0')).toBe(0)
-    expect(await p.run('exit 3')).toBe(3)
+    expect(await p.run('exit 0')).toBe('passed')
+    expect(await p.run('exit 3')).toBe('failed')
+  })
+
+  /**
+   * Why `run` deliberately does not return the exit code. This used to assert
+   * `p.run('exit 3') === 3` and passed — but `exit 3` is the SHELL exiting, and a
+   * shell reports its own status faithfully. A verification command is almost
+   * never that; it is `python -m pytest ...`, a child program, and PowerShell
+   * collapses a child's status to 1. The old message read "failed with exit code
+   * 1" for a program that exited 3.
+   */
+  test('a child program\'s real exit code does not survive the shell', async () => {
+    if (!getShellInfo().isPowerShell) return
+    const { execSync } = await import('child_process')
+    let observed = 0
+    try {
+      execSync('python -c "import sys; sys.exit(3)"', { shell: getShellInfo().shell, stdio: 'ignore' })
+    } catch (err) {
+      observed = (err as { status?: number }).status ?? 0
+    }
+    expect(observed).not.toBe(3)
   })
 
   /**
@@ -158,7 +190,7 @@ describe('gitProbe.run — really executes', () => {
     const probeCommand = getShellInfo().isPowerShell
       ? 'if ($PSVersionTable) { exit 0 } else { exit 9 }'
       : 'test -n "$BASH_VERSION" && exit 0 || exit 9'
-    expect(await p.run(probeCommand)).toBe(0)
+    expect(await p.run(probeCommand)).toBe('passed')
   })
 })
 

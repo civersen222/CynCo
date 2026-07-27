@@ -83,6 +83,22 @@ export type Verification =
  * question cannot be answered here (not a git repo, git missing), which is
  * distinct from answering "no".
  */
+/**
+ * What running a verification command actually established.
+ *
+ * Deliberately NOT an exit code. Every check runs through a shell, and a shell
+ * does not always pass a program's status through: measured on Windows
+ * PowerShell 5.1, `python -c "sys.exit(3)"` arrives as 1. Reporting "exit code
+ * 1" therefore names a number nobody measured — the program's real code was 3
+ * and the shell invented the 1. The pass/fail verdict survives (0 stays 0), so
+ * this was only ever a message-honesty defect, but "never report a number you
+ * did not measure" is the rule the whole reward pipeline rests on.
+ *
+ * `timeout` is separate because it IS measured: the engine killed the process
+ * itself and knows why it stopped.
+ */
+export type CommandOutcome = 'passed' | 'failed' | 'timeout' | 'unrunnable'
+
 export type RepoProbe = {
   head(): Promise<string | null>
   /** Uncommitted changes to `path` in the working tree or index. */
@@ -90,11 +106,8 @@ export type RepoProbe = {
   /** Commits since `baseline` that touched `path`. */
   changedSince(baseline: string, path: string): Promise<boolean | null>
   exists(path: string): boolean
-  /**
-   * Exit code of `command` run in the workspace, or null when it could not be
-   * spawned at all — which is "no answer", not "the check failed".
-   */
-  run(command: string): Promise<number | null>
+  /** What running `command` in the workspace established. */
+  run(command: string): Promise<CommandOutcome>
 }
 
 export async function verifyAssertion(
@@ -118,13 +131,19 @@ export async function verifyAssertion(
   // and the command answers for itself. This is what makes an authored contract
   // worth more than the agent's own account of it.
   if (check.kind === 'command') {
-    const code = await probe.run(check.command)
-    if (code === null) {
-      return { status: 'unverifiable', detail: `could not run the verification command: ${check.command}` }
+    switch (await probe.run(check.command)) {
+      case 'passed':
+        return { status: 'confirmed' }
+      case 'failed':
+        return { status: 'contradicted', detail: `the verification command did not exit 0: ${check.command}` }
+      case 'timeout':
+        return {
+          status: 'contradicted',
+          detail: `the verification command was still running after ${COMMAND_TIMEOUT_MS / 1000}s and was killed: ${check.command}`,
+        }
+      case 'unrunnable':
+        return { status: 'unverifiable', detail: `could not run the verification command: ${check.command}` }
     }
-    return code === 0
-      ? { status: 'confirmed' }
-      : { status: 'contradicted', detail: `the verification command failed with exit code ${code}: ${check.command}` }
   }
 
   if (check.kind === 'committed') {
@@ -161,10 +180,8 @@ function git(cwd: string, args: string[]): Promise<string | null> {
 
 /** Long enough for a real test suite, short enough that a hung check ends the turn. */
 const COMMAND_TIMEOUT_MS = 300_000
-/** `timeout(1)`'s convention. A check that never finished has not demonstrated success. */
-const TIMEOUT_EXIT = 124
 
-function runCommand(cwd: string, command: string): Promise<number | null> {
+function runCommand(cwd: string, command: string): Promise<CommandOutcome> {
   // The same shell the Bash tool uses. `exec` would otherwise default to
   // cmd.exe on Windows, so a check script written in the dialect the brief and
   // every other command in the session use — PowerShell here — would fail on
@@ -172,14 +189,14 @@ function runCommand(cwd: string, command: string): Promise<number | null> {
   const shell = getShellInfo().shell
   return new Promise(resolvePromise => {
     exec(command, { cwd, shell, encoding: 'utf-8', timeout: COMMAND_TIMEOUT_MS, maxBuffer: 8 * 1024 * 1024 }, err => {
-      if (!err) return resolvePromise(0)
+      if (!err) return resolvePromise('passed')
       const e = err as Error & { code?: number | string; killed?: boolean }
-      if (e.killed) return resolvePromise(TIMEOUT_EXIT)
+      if (e.killed) return resolvePromise('timeout')
       // A shell that ran the command reports its status as a number — including
       // 127 for "not found", which is a real failing answer. Anything else
       // (the shell would not start, output overran the buffer) is no answer.
-      if (typeof e.code === 'number') return resolvePromise(e.code)
-      return resolvePromise(null)
+      if (typeof e.code === 'number') return resolvePromise('failed')
+      return resolvePromise('unrunnable')
     })
   })
 }

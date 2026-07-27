@@ -298,7 +298,7 @@ describe('a command assertion only runs when a person authored it', () => {
     globalContract.create('Mission', 'brief', ['Verification command exits 0: exit 1'], 'harness')
     const result = await contractAssertPassTool.execute({ index: 0 }, process.cwd())
     expect(result.isError).toBe(true)
-    expect(result.output).toContain('exit code 1')
+    expect(result.output).toContain('did not exit 0')
     expect(globalContract.snapshot().assertions[0].status).toBe('pending')
   })
 
