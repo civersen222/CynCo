@@ -2967,6 +2967,24 @@ export class ConversationLoop {
       this.groundingRatesLoaded = true
     }
 
+    /**
+     * Tell governance a call was refused before it ran.
+     *
+     * Every one of the six refusal paths below returns early, ahead of the single
+     * onToolResult() at the end of this method — so a turn in which every call was
+     * refused looked, to governance, like a turn in which nothing happened.
+     * Measured on the livelocked L3-3.2b run: 202 refused Reads, and the report
+     * still read `tools=0.95 stuck=0` while no progress was being made at all.
+     *
+     * A refusal is the strongest evidence of no progress there is, because the
+     * call provably did not run. Recording it puts the call's fingerprint in front
+     * of stuck detection, so a model that keeps re-emitting something the engine
+     * keeps refusing climbs toward the halt at 15 instead of looping to the
+     * iteration cap. Latency is 0 — nothing executed, and inventing a duration
+     * would put a made-up number into the success-rate window.
+     */
+    const recordDenial = () => this.governance.onToolResult(toolName, false, 0, undefined, toolInput)
+
     // Hard tool pin (one-shot/unattended runs): enforce allowedTools at
     // execution time too — simulated-mode models can hallucinate tools that
     // were never offered in the prompt, and approveAll would run them.
@@ -2982,6 +3000,7 @@ export class ConversationLoop {
         is_error: true,
       })
       toolsUsedThisTurn.push(toolName)
+      recordDenial()
       toolResultsThisTurn.push('denied')
       toolsUsedInSession.push(toolName)
       return
@@ -3006,6 +3025,7 @@ export class ConversationLoop {
         is_error: true,
       })
       toolsUsedThisTurn.push(toolName)
+      recordDenial()
       toolResultsThisTurn.push('denied')
       toolsUsedInSession.push(toolName)
       return
@@ -3026,6 +3046,7 @@ export class ConversationLoop {
         is_error: true,
       })
       toolsUsedThisTurn.push(toolName)
+      recordDenial()
       toolResultsThisTurn.push('denied')
       toolsUsedInSession.push(toolName)
       return
@@ -3082,6 +3103,7 @@ export class ConversationLoop {
         is_error: true,
       })
       toolsUsedThisTurn.push(toolName)
+      recordDenial()
       toolResultsThisTurn.push('denied')
       toolsUsedInSession.push(toolName)
       return
@@ -3107,6 +3129,7 @@ export class ConversationLoop {
         is_error: true,
       })
       toolsUsedThisTurn.push(toolName)
+      recordDenial()
       toolResultsThisTurn.push('denied')
       toolsUsedInSession.push(toolName)
       return
@@ -3209,6 +3232,7 @@ export class ConversationLoop {
               is_error: true,
             })
             toolsUsedThisTurn.push(toolName)
+            recordDenial()
             toolResultsThisTurn.push('denied')
             toolsUsedInSession.push(toolName)
             return

@@ -6,9 +6,20 @@
  * `gilded/docket.py` with a series of
  * `python -c "content = open(f).read(); old = '''...'''; ..."` scripts — while
  * `Read`, `Grep`, `Edit`, `MultiEdit` and `ReplaceFunction` were all registered
- * and working. The engine log for that session records zero Edit failures, and it
- * had used Edit correctly in the immediately preceding task. So this is drift,
- * not a tool gap, and it is expensive three ways:
+ * and working.
+ *
+ * The original diagnosis here was "drift, not a tool gap", on the evidence that the
+ * engine log recorded zero Edit failures and it had used Edit correctly in the
+ * immediately preceding task. That was WRONG, and the correction matters more than
+ * the hint does: the read-loop gate had denied Read and could not be made to
+ * relent (see readLoopGate.ts and 2fc20d2), so `Get-Content` was the only way left
+ * to read a file. The model was routing around an engine fault, not forgetting its
+ * tools.
+ *
+ * The hint still earns its place — the costs below are real whenever a model does
+ * reach for the shell to read or rewrite source, and a model can drift here on its
+ * own. But it treats a symptom, so if this fires often, suspect the gate first.
+ * Three costs, in order of seriousness:
  *
  *  1. A `python -c` string replacement whose target does not match writes the file
  *     back unchanged and exits 0. Silent success is the worst failure mode there
