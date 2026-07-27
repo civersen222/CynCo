@@ -90,3 +90,73 @@ describe('ReplaceFunction — python', () => {
     rmSync(dir, { recursive: true, force: true })
   })
 })
+
+// Two classes, each with a method of the same name. This is the ordinary shape
+// of a codebase, not a corner case, and it is where picking the first match
+// silently edits the wrong function and reports success.
+const TWO_CLASSES =
+  'class Scheme:\n' +
+  '    def advance(self):\n' +
+  '        return "scheme"\n' +
+  '\n' +
+  '\n' +
+  'class Takeover:\n' +
+  '    def advance(self):\n' +
+  '        return "takeover"\n'
+
+describe('ReplaceFunction — naming a method that appears in more than one class', () => {
+  it('honours the class in a qualified name instead of taking the first match', async () => {
+    const { dir, file } = scratch('g.py', TWO_CLASSES)
+    const result = await replaceFunctionTool.execute(
+      {
+        file_path: file,
+        function_name: 'Takeover.advance',
+        new_body: '    def advance(self):\n        return "replaced"',
+      },
+      dir,
+    )
+    expect(result.isError).toBe(false)
+    const out = readFileSync(file, 'utf-8')
+    expect(out).toContain('return "scheme"')
+    expect(out).toContain('return "replaced"')
+    expect(out).not.toContain('return "takeover"')
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('refuses a bare name that matches more than one method, and says where they are', async () => {
+    // Guessing here is worse than failing: the model is told it succeeded and
+    // never learns it destroyed a function it never named.
+    const { dir, file } = scratch('h.py', TWO_CLASSES)
+    const result = await replaceFunctionTool.execute(
+      { file_path: file, function_name: 'advance', new_body: '    def advance(self):\n        return "x"' },
+      dir,
+    )
+    expect(result.isError).toBe(true)
+    expect(result.output).toContain('Scheme.advance')
+    expect(result.output).toContain('Takeover.advance')
+    expect(readFileSync(file, 'utf-8')).toBe(TWO_CLASSES)
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('reports an error when the class in a qualified name has no such method', async () => {
+    const { dir, file } = scratch('i.py', TWO_CLASSES)
+    const result = await replaceFunctionTool.execute(
+      { file_path: file, function_name: 'Bribe.advance', new_body: '    def advance(self):\n        pass' },
+      dir,
+    )
+    expect(result.isError).toBe(true)
+    expect(readFileSync(file, 'utf-8')).toBe(TWO_CLASSES)
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('still replaces a bare name that is unambiguous', async () => {
+    const { dir, file } = scratch('j.py', TWO_CLASSES + '\n\ndef settle():\n    return 0\n')
+    const result = await replaceFunctionTool.execute(
+      { file_path: file, function_name: 'settle', new_body: 'def settle():\n    return 9' },
+      dir,
+    )
+    expect(result.isError).toBe(false)
+    expect(readFileSync(file, 'utf-8')).toContain('return 9')
+    rmSync(dir, { recursive: true, force: true })
+  })
+})
