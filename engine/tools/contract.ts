@@ -172,6 +172,14 @@ export class ContractState {
 
     const lines: string[] = []
     lines.push(`Contract: ${this.title}`)
+    // Where the assertions came from. Without this the two kinds are
+    // indistinguishable, and on Gilded L4.1e the agent read 35 harness
+    // assertions, concluded they "appear auto-generated", and replaced them.
+    // An inferred contract IS a guess and should be treated as one; a
+    // harness contract is what the task will be judged against.
+    lines.push(this.origin === 'harness'
+      ? 'Source: supplied with the task — this is the specification your work is judged against, not a guess. It cannot be replaced.'
+      : 'Source: inferred by the engine from the request — approximate.')
     if (this.brief) lines.push(`Brief: ${this.brief}`)
     lines.push(`Enforcement rounds: ${this.enforcementRounds}`)
     lines.push('')
@@ -285,6 +293,27 @@ export const contractCreateTool: ToolImpl = {
     }
     if (!Array.isArray(assertions) || assertions.length === 0) {
       return { output: 'assertions must be a non-empty array of strings', isError: true }
+    }
+
+    // A harness contract is the task author's specification. Replacing it is
+    // rewriting the yardstick the work is measured by — on Gilded L4.1e the
+    // agent judged 35 harness assertions "auto-generated", swapped in 5 of its
+    // own, and marked them all passed. It had in fact done the work, and the
+    // labeler refused to credit a self-authored contract (taskCompleted came
+    // back 'unknown'), so that run lost only its measurement. The next one
+    // might delete a gate it could not pass instead.
+    if (globalContract.isActive() && globalContract.getOrigin() === 'harness') {
+      return {
+        output:
+          'This contract came with the task and cannot be replaced — it is the ' +
+          'specification your work is measured against, not a draft.\n\n' +
+          'If an assertion is wrong, unsatisfiable, or contradicts the task, mark ' +
+          'that one with ContractAssertFail giving the reason, and say so in your ' +
+          'answer. Do not restate the criteria in your own words: an assertion you ' +
+          'wrote and then passed proves nothing about the task you were given.\n\n' +
+          globalContract.getStatus(),
+        isError: true,
+      }
     }
 
     globalContract.create(title, brief, assertions)

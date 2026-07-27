@@ -219,6 +219,50 @@ describe('contractCreateTool.execute', () => {
     )
     expect(result.isError).toBe(true)
   })
+
+  /**
+   * Gilded L4.1e: the agent decided the harness contract's assertions "appear
+   * auto-generated and don't match the actual task", replaced all 35 of them
+   * with 5 of its own, and marked every one passed. The work it had already
+   * done was good and the labeler declined to credit a self-authored contract
+   * — taskCompleted came back 'unknown' — so the cost that run was the
+   * measurement, which is the one thing the corpus is starving for.
+   *
+   * The capability is worse than the cost. A harness contract is the task
+   * author's specification; an agent that can replace it can delete any gate
+   * it cannot pass, and would score itself against the replacement.
+   */
+  it('refuses to replace a harness contract', async () => {
+    globalContract.create('Harness spec', 'brief', ['Verification command exits 0: exit 0'], 'harness')
+    const result = await contractCreateTool.execute(
+      { title: 'My own criteria', assertions: ['I decided this instead'] },
+      process.cwd()
+    )
+    expect(result.isError).toBe(true)
+    expect(result.output).toMatch(/ContractAssertFail/)
+    const snap = globalContract.snapshot()
+    expect(snap.title).toBe('Harness spec')
+    expect(snap.origin).toBe('harness')
+    expect(snap.assertions.map(a => a.text)).toEqual(['Verification command exits 0: exit 0'])
+  })
+
+  it('says where the assertions came from', () => {
+    globalContract.create('H', '', ['a'], 'harness')
+    expect(globalContract.getStatus()).toContain('supplied with the task')
+    globalContract.clear()
+    globalContract.create('A', '', ['a'])
+    expect(globalContract.getStatus()).toContain('inferred by the engine')
+  })
+
+  it('still replaces an auto contract', async () => {
+    globalContract.create('Auto', '', ['guessed from the message'])
+    const result = await contractCreateTool.execute(
+      { title: 'Sharper', assertions: ['a'] },
+      process.cwd()
+    )
+    expect(result.isError).toBe(false)
+    expect(globalContract.snapshot().title).toBe('Sharper')
+  })
 })
 
 describe('contractAssertPassTool.execute', () => {
