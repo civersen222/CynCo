@@ -1612,9 +1612,15 @@ export class ConversationLoop {
     }
   }
 
-  /** Rough token estimate (chars/4) of the current message history. */
-  private estimateMessageTokens(): number {
-    return this.messages.reduce((sum, m) =>
+  /**
+   * Rough token estimate (chars/4) of the message history from `fromIndex` on.
+   *
+   * The slice exists for the context floor: the server has measured the prompt
+   * up to some message count, and only the messages after it need guessing.
+   * See contextFloor.ts and finding (r).
+   */
+  private estimateMessageTokens(fromIndex = 0): number {
+    return this.messages.slice(fromIndex).reduce((sum, m) =>
       sum + m.content.reduce((s, b: any) => s + (b.text?.length ?? JSON.stringify(b).length) / 4, 0), 0)
   }
 
@@ -2412,11 +2418,17 @@ export class ConversationLoop {
       // at least N tokens last request, and the conversation has only grown
       // since. This is a lower bound backed by a measurement, not a second
       // guess calibrated against the first.
+      // ...and the floor is the measurement PLUS what has been appended since
+      // it was taken. The measurement describes the prompt at message count M;
+      // the assistant turn and tool results added after M are unmeasured, and
+      // leaving them out is what let a 72% reading precede a 101% request.
+      // Finding (r).
       const guessedTokens = promptOverheadTokens + this.estimateMessageTokens()
       const estimatedTokens = promptTokensWithFloor(
         guessedTokens,
         { tokens: this.lastMeasuredPromptTokens, atMessageCount: this.lastMeasuredAtMessageCount },
         this.messages.length,
+        this.estimateMessageTokens(this.lastMeasuredAtMessageCount),
       )
       const contextLength = this.config.contextLength ?? 32768
       this.emit({
