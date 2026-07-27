@@ -8,6 +8,7 @@ import { dirname, join } from 'path'
 import { ContractState } from '../../tools/contract.js'
 import {
   applyHarnessContract,
+  harnessContractCommandError,
   maybeAutoCreateContract,
 } from '../../bridge/contractAutoCreate.js'
 
@@ -339,5 +340,52 @@ describe('applyHarnessContract (P4.2)', () => {
     expect(applyHarnessContract({ title: '', assertions: ['a'] }, c)).toBe(false)
     expect(applyHarnessContract(undefined, c)).toBe(false)
     expect(c.snapshot().active).toBe(false)
+  })
+
+  /**
+   * The Gilded L4.1d contract carried
+   * `Verification command exits 0: python C:/tmp/bite41d.py  (every mutation ...)`.
+   * The trailing parenthetical was prose I wrote to explain the check; PowerShell
+   * read it as a call to a command named `every`, so the assertion could not pass
+   * however well the work was done. The agent spent ~60 turns on it and finally
+   * put an `every` stub on PATH. A contract the agent cannot satisfy by working
+   * must not be accepted in the first place.
+   */
+  const L41D = 'Verification command exits 0: python C:/tmp/bite41d.py  (every mutation in the L4.1 set turns the shipped test suite red)'
+
+  it('refuses the whole contract when a verification command cannot run', () => {
+    const c = new ContractState()
+    const ok = applyHarnessContract(
+      { title: 'L4.1d', assertions: ['Code was modified', L41D] },
+      c,
+      // Injected so the verdict does not depend on which shell runs the suite;
+      // shellInfo.test.ts proves the real validator against the real shell.
+      () => 'unknown command: every',
+    )
+    expect(ok).toBe(false)
+    expect(c.snapshot().active).toBe(false)
+  })
+
+  it('names the offending assertion, not just the command', () => {
+    const err = harnessContractCommandError([L41D], () => 'unknown command: every')
+    expect(err).toContain('every mutation in the L4.1 set')
+    expect(err).toContain('unknown command: every')
+  })
+
+  it('ignores assertions that are not verification commands', () => {
+    expect(harnessContractCommandError(
+      ['Code was modified to address the task', 'Changes were committed to git'],
+      () => 'should never be consulted',
+    )).toBeNull()
+  })
+
+  it('accepts a contract whose commands all validate', () => {
+    const c = new ContractState()
+    expect(applyHarnessContract(
+      { title: 'ok', assertions: ['Verification command exits 0: python C:/tmp/gate.py'] },
+      c,
+      () => null,
+    )).toBe(true)
+    expect(c.snapshot().active).toBe(true)
   })
 })

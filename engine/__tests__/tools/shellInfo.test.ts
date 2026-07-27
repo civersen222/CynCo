@@ -1,6 +1,6 @@
 // engine/__tests__/tools/shellInfo.test.ts
 import { describe, expect, it } from 'bun:test'
-import { classifyShell, checkShellDialect, getShellInfo } from '../../tools/shellInfo.js'
+import { classifyShell, checkShellDialect, getShellInfo, validateVerificationCommand } from '../../tools/shellInfo.js'
 
 describe('classifyShell', () => {
   it('non-Windows → /bin/bash, && supported', () => {
@@ -74,6 +74,59 @@ describe('checkShellDialect', () => {
   it('does not mistake an ordinary argument for an env-var prefix', () => {
     expect(checkShellDialect('python -m pytest -k test_x=1', ps51)).toBeNull()
     expect(checkShellDialect('git config user.name=someone', ps51)).toBeNull()
+  })
+})
+
+/**
+ * These run the real validator against the real shell on this machine, because
+ * the thing under test IS "would this resolve here". A mocked shell would only
+ * prove the mock.
+ */
+const onPowerShell = getShellInfo().isPowerShell
+const psOnly = onPowerShell ? it : it.skip
+
+describe('validateVerificationCommand', () => {
+  /**
+   * The exact assertion I shipped in the Gilded L4.1d contract. It parses —
+   * PowerShell reads the parenthetical as a sub-expression calling a command
+   * named `every` — so no parse check catches it. It cost ~60 turns and ended
+   * with the agent writing an `every` stub onto PATH to make it exit 0.
+   */
+  psOnly('rejects prose trailing a verification command', () => {
+    const err = validateVerificationCommand(
+      'python C:/tmp/bite41d.py  (every mutation in the L4.1 set turns the shipped test suite red)',
+    )
+    expect(err).toBeTruthy()
+    expect(err).toContain('every')
+    expect(err).toContain('the command and nothing else')
+  })
+
+  psOnly('accepts the same command with the prose removed', () => {
+    expect(validateVerificationCommand('python C:/tmp/bite41d.py')).toBeNull()
+  })
+
+  psOnly('rejects a command that does not parse', () => {
+    const err = validateVerificationCommand('python -c "unterminated')
+    expect(err).toBeTruthy()
+    expect(err).toContain('does not parse')
+  })
+
+  // A path or an extension means the task may be about to create it, and
+  // resolution is relative to a cwd this function cannot know.
+  psOnly('accepts a qualified name that does not exist yet', () => {
+    expect(validateVerificationCommand('./scripts/verify-l41e.sh')).toBeNull()
+    expect(validateVerificationCommand('build/run-gate.exe --strict')).toBeNull()
+  })
+
+  psOnly('accepts a real multi-step check', () => {
+    expect(validateVerificationCommand('cd C:/tmp; python -c "import sys; sys.exit(0)"')).toBeNull()
+  })
+
+  it('reports the dialect error before attempting to run anything', () => {
+    const ps51 = classifyShell('win32', false)
+    const err = validateVerificationCommand('cd proj && python -m pytest', ps51)
+    expect(err).toBeTruthy()
+    expect(err).toContain("does not support '&&'")
   })
 })
 

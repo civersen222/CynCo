@@ -95,6 +95,77 @@ export function checkShellDialect(command: string, info: ShellInfo): string | nu
   return null
 }
 
+/**
+ * PowerShell script that parses a command and reports the first thing wrong
+ * with it. The command arrives through the environment so no quoting of the
+ * caller's text is needed anywhere.
+ *
+ * Two questions, in order:
+ *   1. does it parse?
+ *   2. does every command name it invokes exist on this machine?
+ *
+ * The second is the one that matters. Gilded L4.1d's contract read
+ * `... exits 0: python C:/tmp/bite41d.py  (every mutation in the L4.1 set ...)`
+ * — a trailing parenthetical of prose I wrote to explain the check. That
+ * PARSES: PowerShell reads `(...)` as a sub-expression and `every mutation ...`
+ * as a call to a command named `every`. It fails at resolution, which no parse
+ * check can see. So the check has to ask whether the names resolve.
+ */
+const PS_VALIDATE = `
+$errs = $null
+$ast = [System.Management.Automation.Language.Parser]::ParseInput($env:LOCALCODE_VALIDATE_CMD, [ref]$null, [ref]$errs)
+if ($errs.Count -gt 0) { Write-Output ("does not parse: " + $errs[0].Message); exit 1 }
+$names = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) |
+  ForEach-Object { $_.GetCommandName() } | Where-Object { $_ } | Select-Object -Unique
+foreach ($n in $names) {
+  if (-not (Get-Command $n -ErrorAction SilentlyContinue)) { Write-Output ("unknown command: " + $n); exit 1 }
+}
+exit 0
+`
+
+/** A command name that carries a path or an extension. */
+const QUALIFIED_NAME = /[\\/]|\.[A-Za-z0-9]+$/
+
+/**
+ * Check that a harness verification command could actually run, and return an
+ * instructive error if it could not.
+ *
+ * Only BARE names are held to the resolution standard. A name carrying a path
+ * or an extension (`./scripts/check.sh`, `build/run.exe`) may legitimately not
+ * exist yet — the task may be about to create it, and resolution is relative to
+ * a working directory this function cannot know. A bare word that resolves to
+ * nothing is not a command on this machine and never will be by accident.
+ *
+ * Returns null when nothing is wrong, INCLUDING when the check could not be
+ * run at all. An unavailable validator must not manufacture a verdict.
+ */
+export function validateVerificationCommand(command: string, info: ShellInfo = getShellInfo()): string | null {
+  const dialect = checkShellDialect(command, info)
+  if (dialect) return dialect
+  try {
+    if (info.isPowerShell) {
+      execFileSync(info.shell, ['-NoProfile', '-NonInteractive', '-Command', PS_VALIDATE], {
+        env: { ...process.env, LOCALCODE_VALIDATE_CMD: translateEnvPrefix(command, info) },
+        stdio: ['ignore', 'pipe', 'ignore'],
+        timeout: 15_000,
+      })
+      return null
+    }
+    execFileSync(info.shell, ['-n'], { input: command, stdio: ['pipe', 'ignore', 'pipe'], timeout: 15_000 })
+    return null
+  } catch (err) {
+    const e = err as { stdout?: Buffer | string; stderr?: Buffer | string; code?: unknown }
+    const detail = String(e.stdout ?? '').trim() || String(e.stderr ?? '').trim()
+    if (!detail) return null
+    const unknown = /^unknown command: (.+)$/m.exec(detail)
+    // A qualified name may not exist yet; only a bare word is decidable here.
+    if (unknown && QUALIFIED_NAME.test(unknown[1])) return null
+    return `Verification command cannot run as written — ${detail}. ` +
+      'A verification assertion must contain the command and nothing else; ' +
+      'explanation of what it proves belongs in the brief, not after the command.'
+  }
+}
+
 function detectPwsh(): boolean {
   try {
     execFileSync('where.exe', ['pwsh'], { stdio: 'ignore' })

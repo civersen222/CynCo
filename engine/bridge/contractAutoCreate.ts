@@ -17,10 +17,12 @@ import { isAbsolute, resolve } from 'node:path'
 import { ContractState, globalContract } from '../tools/contract.js'
 import {
   COMMITTED_ASSERTION,
+  assertionCheck,
   fileAbsentAssertion,
   fileExistsAssertion,
   fileModifiedAssertion,
 } from '../tools/contractVerify.js'
+import { validateVerificationCommand } from '../tools/shellInfo.js'
 
 export type HarnessContractSpec = {
   title: string
@@ -203,9 +205,46 @@ export function maybeAutoCreateContract(
   return true
 }
 
+/**
+ * Reject a harness contract carrying a verification command that cannot run.
+ *
+ * A harness contract is a specification, and `taskCompleted` is scored against
+ * it — so an unrunnable check is not a small blemish, it is a mandate the agent
+ * cannot satisfy by doing the work. Gilded L4.1d's contract read
+ * `... exits 0: python C:/tmp/bite41d.py  (every mutation ... turns the suite red)`:
+ * the trailing parenthetical was prose, PowerShell read it as a call to a
+ * command named `every`, and the assertion could never pass. The agent spent
+ * ~60 turns on it and finally wrote an `every` stub onto PATH that exits 0 —
+ * satisfying the check by supplying the missing command. The real gate happened
+ * to pass anyway, so the fabrication cost only time; it need not have.
+ *
+ * Caught here, at dispatch, it costs one error message before the run starts.
+ */
+export function harnessContractCommandError(
+  assertions: string[],
+  validate: (cmd: string) => string | null = validateVerificationCommand,
+): string | null {
+  for (const text of assertions) {
+    const check = assertionCheck(text)
+    if (check?.kind !== 'command') continue
+    const err = validate(check.command)
+    if (err) return `assertion "${text}" — ${err}`
+  }
+  return null
+}
+
 /** Apply a harness-supplied contract spec. Returns true when applied. */
-export function applyHarnessContract(spec: HarnessContractSpec | undefined, contract: ContractState = globalContract): boolean {
+export function applyHarnessContract(
+  spec: HarnessContractSpec | undefined,
+  contract: ContractState = globalContract,
+  validate: (cmd: string) => string | null = validateVerificationCommand,
+): boolean {
   if (!spec || !spec.title || !Array.isArray(spec.assertions) || spec.assertions.length === 0) return false
+  const badCommand = harnessContractCommandError(spec.assertions, validate)
+  if (badCommand) {
+    console.log(`[contract] REFUSED harness contract "${spec.title}": ${badCommand}`)
+    return false
+  }
   if (contract.isActive() && !contract.isComplete()) {
     console.log(`[contract] Harness contract replacing an incomplete active contract ("${spec.title}")`)
   }
