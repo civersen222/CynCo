@@ -479,6 +479,22 @@ export type Readiness = {
  * computed would be the same fabrication this gate exists to catch.
  */
 export function evaluateReadiness(stats: CorpusStats | DatasetStats): Readiness {
+  // Refuse a shape that is not the summary. Handed anything else — the raw
+  // trajectory array is the easy mistake, since both are "the corpus" in
+  // conversation — every field reads undefined and the gate renders verdicts
+  // like "have undefined usable examples, need 150 — NaN short". That is a
+  // fabricated measurement wearing a number's clothes, and this gate exists
+  // to catch exactly that. It fails loudly instead.
+  for (const field of ['usableExamples', 'pairableNegatives', 'negativeExamples', 'avgReward'] as const) {
+    if (!Number.isFinite((stats as Record<string, unknown>)?.[field] as number)) {
+      throw new TypeError(
+        `evaluateReadiness: ${field} is not a finite number ` +
+        `(got ${JSON.stringify((stats as Record<string, unknown>)?.[field])}). ` +
+        'Pass the result of summarizeCorpus, not the trajectories it summarizes.',
+      )
+    }
+  }
+
   const usable = stats.usableExamples
   // The pairable count, not the raw one. A negative with no model attribution,
   // or with no chosen-side run under the same model, exports zero DPO pairs —

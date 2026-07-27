@@ -338,6 +338,19 @@ describe('evaluateReadiness', () => {
     expect(r.conditions.map(c => c.name)).toEqual(['usable examples', 'pairable negatives', 'avg reward'])
   })
 
+  // Handed the trajectory array instead of its summary, every field read
+  // undefined and the gate rendered "have undefined usable examples, need
+  // 150 — NaN short". It returned a verdict. A gate whose whole purpose is
+  // to refuse fabricated measurements must not produce one itself.
+  it.each([
+    ['the trajectory array instead of its summary', [{ taskId: 'a' }, { taskId: 'b' }]],
+    ['a summary missing pairableNegatives', { ...{ totalTasks: 0, tasksWithRewards: 0, legacyExcluded: 0, rewardDistribution: [] }, usableExamples: 200, negativeExamples: 30, avgReward: 0.5 }],
+    ['a NaN mean', { ...{ totalTasks: 0, tasksWithRewards: 0, legacyExcluded: 0, rewardDistribution: [] }, usableExamples: 200, negativeExamples: 30, pairableNegatives: 30, avgReward: NaN }],
+    ['nothing at all', undefined],
+  ])('refuses %s rather than rendering NaN as a verdict', (_label, bad) => {
+    expect(() => evaluateReadiness(bad as never)).toThrow(/not a finite number/)
+  })
+
   it('exposes its thresholds as constants rather than burying them', () => {
     expect(GATE_MIN_USABLE).toBe(150)
     expect(GATE_MIN_NEGATIVE).toBe(20)
