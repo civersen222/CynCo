@@ -212,3 +212,92 @@ describe('Git tool — failure reporting', () => {
     }
   })
 })
+
+// ---------------------------------------------------------------------------
+// Finding (s): a commit is a claim of delivery, and the engine watched a run
+// stage exactly the two files its contract named, commit, and walk away — while
+// a third tracked file holding the entire foundation of the feature sat
+// modified in the tree. HEAD did not import. Every measurement taken (25 harness
+// checks, 470 pytest, diffClean) read the WORKING TREE, so all of them were
+// green about code nobody had delivered.
+//
+// git knows. It has always known. Nobody asked it at the moment the answer
+// mattered. Reported, never blocked: unrelated dirt is legitimate and the agent
+// is the only one who can tell which is which.
+// ---------------------------------------------------------------------------
+describe('Git tool — what a commit left behind', () => {
+  async function repoWithCommitAndLeftover() {
+    const fs = await import('node:fs')
+    const path = await import('node:path')
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitleft-'))
+    await gitTool.execute({ subcommand: 'init', args: '-q .' }, dir)
+    await gitTool.execute({ subcommand: 'config', args: 'user.email t@t' }, dir)
+    await gitTool.execute({ subcommand: 'config', args: 'user.name t' }, dir)
+    fs.writeFileSync(path.join(dir, 'banner.py'), 'v1\n')
+    fs.writeFileSync(path.join(dir, 'market.py'), 'v1\n')
+    await gitTool.execute({ subcommand: 'add', args: '.' }, dir)
+    await gitTool.execute({ subcommand: 'commit', args: '-m base' }, dir)
+    // Now the run: both files change, only one is staged.
+    fs.writeFileSync(path.join(dir, 'banner.py'), 'v2 calls market.delta\n')
+    fs.writeFileSync(path.join(dir, 'market.py'), 'v2 defines delta\n')
+    await gitTool.execute({ subcommand: 'add', args: 'banner.py' }, dir)
+    return { dir, fs }
+  }
+
+  it('names the tracked files a commit left modified in the tree', async () => {
+    const { dir, fs } = await repoWithCommitAndLeftover()
+    try {
+      const result = await gitTool.execute(
+        { subcommand: 'commit', args: '-m "the half of it that was staged"' },
+        dir
+      )
+      expect(result.isError).toBe(false)
+      expect(result.output).toContain('market.py')
+      // and it must still be a success, not a refusal
+      expect(result.output).not.toContain('blocked')
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('says nothing extra when the commit took everything tracked', async () => {
+    const { dir, fs } = await repoWithCommitAndLeftover()
+    try {
+      await gitTool.execute({ subcommand: 'add', args: 'market.py' }, dir)
+      const result = await gitTool.execute(
+        { subcommand: 'commit', args: '-m "all of it"' },
+        dir
+      )
+      expect(result.isError).toBe(false)
+      expect(result.output).not.toContain('still modified')
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores untracked files — only tracked modifications are a delivery gap', async () => {
+    const { dir, fs } = await repoWithCommitAndLeftover()
+    const path = await import('node:path')
+    try {
+      await gitTool.execute({ subcommand: 'add', args: 'market.py' }, dir)
+      fs.writeFileSync(path.join(dir, 'scratch.log'), 'noise\n')
+      const result = await gitTool.execute(
+        { subcommand: 'commit', args: '-m "all of it"' },
+        dir
+      )
+      expect(result.output).not.toContain('scratch.log')
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('does not interrogate the tree after a non-commit subcommand', async () => {
+    const { dir, fs } = await repoWithCommitAndLeftover()
+    try {
+      const result = await gitTool.execute({ subcommand: 'status', args: '--short' }, dir)
+      expect(result.output).not.toContain('still modified')
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})

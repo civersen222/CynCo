@@ -64,6 +64,33 @@ function unquotedParts(args: string): string {
   return result
 }
 
+/**
+ * Paths git tracks that are still modified in the working tree.
+ *
+ * `--porcelain` codes are two columns, index then worktree. A path is a leftover
+ * when the worktree column is non-blank (`M`, `D`, `T`) — its index column may be
+ * anything, since partially staging a file and committing leaves the rest behind
+ * just the same. `??` is untracked and excluded by the same rule that excludes it
+ * from a commit's scope: git has never seen it, so it cannot be a hole in what
+ * was just delivered.
+ *
+ * Returns [] on any failure. This runs after a commit that already succeeded;
+ * a diagnostic that can turn a success into an error is worse than no diagnostic.
+ */
+async function trackedModificationsRemaining(cwd: string): Promise<string[]> {
+  try {
+    const proc = Bun.spawn(['git', 'status', '--porcelain'], { cwd, stdout: 'pipe', stderr: 'pipe' })
+    const out = await new Response(proc.stdout).text()
+    await proc.exited
+    if (proc.exitCode !== 0) return []
+    return out.split('\n')
+      .filter(l => l.length > 3 && l.slice(0, 2) !== '??' && l[1] !== ' ')
+      .map(l => l.slice(3).trim())
+  } catch {
+    return []
+  }
+}
+
 export const gitTool: ToolImpl = {
   name: 'Git',
   description: 'Run git commands. Read-only commands (status, log, diff) auto-approve. Write commands (commit, checkout) require approval. Dangerous commands (push --force, reset --hard) are blocked.',
@@ -129,6 +156,28 @@ export const gitTool: ToolImpl = {
         // learn what any human would have read off the failure itself.
         const detail = [stderr.trim(), stdout.trim()].filter(Boolean).join('\n')
         return { output: detail || `git ${sub} exited with code ${proc.exitCode}`, isError: true }
+      }
+      // A commit is a claim that the work has been delivered, and the workspace
+      // is not the delivery. Watched live: a run staged exactly the two files
+      // its contract named, committed, and stopped — while a third tracked file
+      // holding the whole foundation of the feature stayed modified in the tree.
+      // HEAD did not import. The harness, the test suite and diffClean were all
+      // green, because every one of them reads the working tree.
+      //
+      // git already knows; nobody asked it at the moment the answer mattered.
+      // Reported, never blocked: unrelated dirt is legitimate work-in-progress
+      // and only the agent can tell which is which. Untracked files are excluded
+      // — a file git has never seen cannot be a gap in what was just delivered.
+      if (sub === 'commit') {
+        const left = await trackedModificationsRemaining(cwd)
+        if (left.length > 0) {
+          return {
+            output: `${stdout || '(no output)'}\n\n[git] ${left.length} tracked file(s) still modified and NOT in this commit:\n` +
+              left.map(p => `  ${p}`).join('\n') +
+              `\nIf the committed code depends on any of them, HEAD is broken even though the working tree works.`,
+            isError: false,
+          }
+        }
       }
       return { output: stdout || '(no output)', isError: false }
     } catch (err) {
