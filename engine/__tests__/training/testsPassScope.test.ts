@@ -40,9 +40,10 @@ function base(overrides: Partial<TaskOutcomeInput> = {}): TaskOutcomeInput {
   }
 }
 
-/** A test file with lines added, so the testsWritten branch is live. */
+/** A test file with named cases that did not exist before, so the testsWritten
+ * branch is live. Lines alone do not light it — see finding (q). */
 const WROTE_TESTS = {
-  changed: [{ path: 'gilded/tests/test_docket.py', added: 193, deleted: 0, binary: false }],
+  changed: [{ path: 'gilded/tests/test_docket.py', added: 193, deleted: 0, binary: false, casesAdded: 14 }],
   dirty: [],
   removed: [],
 } as unknown as TaskOutcomeInput['git']

@@ -22,6 +22,12 @@ import { resolve } from 'path'
  * gone entirely, or still present with nothing left that checks anything. It is
  * measured from the two file versions rather than the diff, because a net
  * assertion delta cannot tell deduplication from weakening and this can.
+ *
+ * `casesAdded` is its mirror: named cases that exist now and did not before. A
+ * line added to a test file is not a test — a product change can force a
+ * one-line rewrite of the assertion that pins it, and reading that as "the task
+ * wrote tests" is finding (q). Both are counted from the same two file versions
+ * and are left undefined together when neither could be read.
  */
 export type ChangedFile = {
   path: string
@@ -31,6 +37,7 @@ export type ChangedFile = {
   assertions?: number
   skips?: number
   casesLost?: number
+  casesAdded?: number
 }
 
 export type GitFacts = {
@@ -197,27 +204,38 @@ function testCaseAssertions(content: string): Map<string, number> {
 }
 
 /**
- * How many test cases in `path` can no longer fail, comparing the version at
- * `range` with the one in the worktree. Null when the before-version could not
- * be read, which includes a file the task created.
+ * How many named test cases in `path` went away and how many appeared, comparing
+ * the version at `range` with the one in the worktree. Both null only when the
+ * path itself cannot be safely handed to git.
  *
- * This is the measurement that separates the two things a shrinking test file
+ * `lost` is the measurement that separates the two things a shrinking test file
  * can mean. Collapsing a copy-pasted second half of a test removes assertions
  * and loses no case; deleting a test that was failing, or replacing its body
  * with `pass`, loses one. Watched live twice: both times a brief said "trim
  * this file", the trim was correct, every case survived, and the net assertion
  * delta still read as weakening.
+ *
+ * `added` separates the mirror pair, and the same argument runs in reverse:
+ * a line added to a test file can be a new case or a one-character edit to an
+ * existing assertion, and only one of those is coverage.
  */
-function countCasesLost(cwd: string, range: string, path: string): number | null {
-  if (/["`$\n]/.test(path)) return null
+function countCaseDelta(
+  cwd: string,
+  range: string,
+  path: string,
+): { lost: number | null; added: number | null } {
+  if (/["`$\n]/.test(path)) return { lost: null, added: null }
   let before: string
   try {
     before = git(cwd, `show ${range}:"${path}"`)
   } catch {
-    return null
+    // The file is in the diff against `range` but has no version there, so the
+    // task created it. Nothing was lost — that stays unmeasured, as it always
+    // was — but every case it now holds is one that did not exist before, and
+    // writing a new test file is the most ordinary way there is to add coverage.
+    before = ''
   }
   const wasThere = testCaseAssertions(before)
-  if (wasThere.size === 0) return 0
 
   let after: string
   try {
@@ -247,7 +265,14 @@ function countCasesLost(cwd: string, range: string, path: string): number | null
   // assertion count relies on: it costs the ability to see "deleted one test and
   // added a trivial one", and that case still falls through to 'unknown' rather
   // than earning credit.
-  return Math.max(0, gone - appeared) + gutted
+  //
+  // `added` nets the same way and for the same reason in the mirror: a rename
+  // makes a name appear without adding an ounce of coverage, and crediting it
+  // would let a run earn the heaviest component in the reward by renaming a test.
+  return {
+    lost: Math.max(0, gone - appeared) + gutted,
+    added: Math.max(0, appeared - gone),
+  }
 }
 
 /**
@@ -392,8 +417,9 @@ export function collectGitFacts(cwd: string, baseSha: string | null): GitFacts |
           entry.assertions = signals.assertions
           entry.skips = signals.skips
         }
-        const lost = countCasesLost(cwd, range, path)
-        if (lost !== null) entry.casesLost = lost
+        const cases = countCaseDelta(cwd, range, path)
+        if (cases.lost !== null) entry.casesLost = cases.lost
+        if (cases.added !== null) entry.casesAdded = cases.added
       }
       changed.push(entry)
     }

@@ -33,7 +33,7 @@ describe('buildComponents — testsPass', () => {
 
 describe('buildComponents — a green suite that was already green measures nothing', () => {
   const testsWritten = {
-    changed: [{ path: 'gilded/tests/test_grip.py', added: 180, deleted: 0 }],
+    changed: [{ path: 'gilded/tests/test_grip.py', added: 180, deleted: 0, casesAdded: 12 }],
     removed: [],
     dirty: [],
   }
@@ -79,6 +79,66 @@ describe('buildComponents — a green suite that was already green measures noth
     // Without git we cannot tell whether tests were written, so a green run is
     // not attributable to this task.
     const c = buildComponents(base({ testObservations: [{ passed: 10, total: 10 }] }))
+    expect(c.testsPass).toBe('unknown')
+  })
+
+  /**
+   * Finding (q), measured on the Gilded L4.1 run. "The task added lines to a
+   * test file" was read off `git diff --numstat`, and a line is not a test.
+   *
+   * That run added an Enterprises tab, which changed the tab tuple, which forced
+   * a one-line rewrite of the single existing assertion that pins it: +1 / -1 on
+   * `test_ui_broadsheet.py`, zero new cases, the suite 451 before and 451 after.
+   * Mandatory bookkeeping for its own product change — and it bought `testsPass`
+   * 1, which with taskCompleted, typecheck and build all unknown carries 2.0 of
+   * a 2.1 denominator. The run then died on a context overflow without ever
+   * committing, and was labelled 0.980: the highest reward in the corpus, for
+   * work that wrote no test and shipped nothing.
+   *
+   * The question the branch means to ask is whether coverage was ADDED, and the
+   * workspace can already answer it: `casesLost` counts named cases that went
+   * away, and its `casesAdded` counterpart counts the ones that appeared. A
+   * changed line is a guess about coverage; a new named case is a measurement.
+   */
+  it('does not credit rewriting an existing assertion as tests written', () => {
+    const c = buildComponents(base({
+      testObservations: [{ passed: 451, total: 451 }],
+      git: {
+        changed: [
+          { path: 'gilded/tests/test_ui_broadsheet.py', added: 1, deleted: 1, casesAdded: 0, casesLost: 0 },
+          { path: 'gilded/ui/broadsheet.py', added: 63, deleted: 1 },
+        ],
+        removed: [],
+        dirty: [],
+      },
+    }))
+    expect(c.testsPass).toBe('unknown')
+  })
+
+  it('is 1 when a test file gains a named case, however few lines it took', () => {
+    const c = buildComponents(base({
+      testObservations: [{ passed: 452, total: 452 }],
+      git: {
+        changed: [{ path: 'gilded/tests/test_market.py', added: 3, deleted: 0, casesAdded: 1, casesLost: 0 }],
+        removed: [],
+        dirty: [],
+      },
+    }))
+    expect(c.testsPass).toBe(1)
+  })
+
+  it('is UNKNOWN when a test file changed but its case delta could not be read', () => {
+    // Same rule as everywhere else in this module: a component that reports
+    // "passed" about a diff nobody could read is worse than one that admits it
+    // could not look.
+    const c = buildComponents(base({
+      testObservations: [{ passed: 451, total: 451 }],
+      git: {
+        changed: [{ path: 'gilded/tests/test_market.py', added: 40, deleted: 0 }],
+        removed: [],
+        dirty: [],
+      },
+    }))
     expect(c.testsPass).toBe('unknown')
   })
 
@@ -736,7 +796,11 @@ describe('buildComponents — testsPass clamping', () => {
     // is never reached.
     const c = buildComponents(base({
       testObservations: [{ passed: 15, total: 10 }],
-      git: { changed: [{ path: 'tests/test_a.py', added: 12, deleted: 0 }], removed: [], dirty: [] },
+      git: {
+        changed: [{ path: 'tests/test_a.py', added: 12, deleted: 0, casesAdded: 2 }],
+        removed: [],
+        dirty: [],
+      },
     }))
     expect(c.testsPass).toBe(1)
   })

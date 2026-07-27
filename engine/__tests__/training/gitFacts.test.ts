@@ -286,4 +286,66 @@ describe('collectGitFacts — assertion and skip deltas on test files', () => {
       expect(fresh).toBeUndefined()
     })
   })
+
+  /**
+   * `casesLost` already computed the cases that APPEARED, in order to net them
+   * against the ones that went so a rename would not read as a loss — and then
+   * threw the number away. It is the measurement `assessTestsPass` needs to tell
+   * "this task wrote a test" from "this task edited a line in a test file", and
+   * finding (q) is what happens without it.
+   */
+  describe('casesAdded — coverage that was not there before', () => {
+    it('is 0 when an existing assertion is rewritten in place', () => {
+      // The finding (q) shape: a product change forces a one-line update to the
+      // assertion that pins it. Lines change; no case is added.
+      writeFileSync(
+        join(repo, 'tests', 'test_app.py'),
+        ORIGINAL.replace('assert y == 2', 'assert y == 3')
+      )
+      const s = signals()
+      expect(s.added).toBe(1)
+      expect(s.casesAdded).toBe(0)
+    })
+
+    it('counts a case that did not exist before', () => {
+      writeFileSync(
+        join(repo, 'tests', 'test_app.py'),
+        ORIGINAL + 'def test_brand_new():\n    assert z == 3\n'
+      )
+      expect(signals().casesAdded).toBe(1)
+    })
+
+    it('is 0 when a case is only renamed', () => {
+      // Symmetric with casesLost: a rename adds no coverage and loses none.
+      writeFileSync(
+        join(repo, 'tests', 'test_app.py'),
+        ORIGINAL.replace('def test_real_two():', 'def test_real_two_renamed():')
+      )
+      const s = signals()
+      expect(s.casesAdded).toBe(0)
+      expect(s.casesLost).toBe(0)
+    })
+
+    it('counts every case in a test file the task created and committed', () => {
+      // The ordinary TDD run. The before-version cannot be read because the file
+      // did not exist, and reporting "unmeasurable" there would deny credit to
+      // the most legitimate way there is to add coverage.
+      writeFileSync(
+        join(repo, 'tests', 'test_added.py'),
+        'def test_one():\n    assert a == 1\n\n\ndef test_two():\n    assert b == 2\n'
+      )
+      run('git add -A', repo)
+      run('git commit -q -m adds-tests', repo)
+      const fresh = collectGitFacts(repo, baseSha)!.changed
+        .find(c => c.path === 'tests/test_added.py')!
+      expect(fresh.casesAdded).toBe(2)
+      expect(fresh.casesLost).toBe(0)
+    })
+
+    it('is left undefined for product files', () => {
+      writeFileSync(join(repo, 'app.py'), 'def compute():\n    return 2\n')
+      const facts = collectGitFacts(repo, baseSha)!
+      expect(facts.changed.find(c => c.path === 'app.py')!.casesAdded).toBeUndefined()
+    })
+  })
 })

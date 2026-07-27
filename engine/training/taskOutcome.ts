@@ -141,7 +141,18 @@ function assessTestsPass(
   const first = firstObservation(obs)
   if (first && first.passed < first.total) return 1
 
-  const testsWritten = git?.changed.some(c => isTestPath(c.path) && !c.binary && c.added > 0)
+  // A line added to a test file is not a test. Finding (q), Gilded L4.1: adding
+  // a tab changed the tab tuple, which forced a one-line rewrite of the single
+  // assertion that pins it — +1/-1, no new case, the suite 451 before and 451
+  // after. Bookkeeping the product change made mandatory, and `added > 0` read
+  // it as "the task wrote tests", which is worth 2.0 of a 2.1 denominator once
+  // taskCompleted is unknown. That run died on a context overflow without
+  // committing and was labelled 0.980, the highest reward in the corpus.
+  //
+  // A named case that exists now and did not before is a measurement of coverage
+  // rather than a proxy for it, and casesLost already had to compute it.
+  const testsWritten = git?.changed.some(
+    c => isTestPath(c.path) && !c.binary && (c.casesAdded ?? 0) > 0)
   return testsWritten ? 1 : 'unknown'
 }
 
