@@ -2,6 +2,25 @@ import { describe, expect, it, beforeAll, afterAll, beforeEach } from 'bun:test'
 import { DashboardServer } from '../../dashboard/server.js'
 import { resetParams, getParam } from '../../vsm/governanceParams.js'
 import { globalContract } from '../../tools/contract.js'
+import { mkdtempSync, rmSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
+import { loadOrCreateTokens } from '../../security/localToken.js'
+
+// Every route but GET / now requires a capability token (see
+// dashboard/scopes.test.ts). These suites are testing behaviour behind the gate,
+// so they present the admin secret, which holds both inference and management.
+const _tokenDir = mkdtempSync(join(tmpdir(), 'cynco-dash-test-'))
+const _tokens = loadOrCreateTokens(_tokenDir)
+const _ADMIN = _tokens.tokenFor('management')!
+process.on('exit', () => rmSync(_tokenDir, { recursive: true, force: true }))
+
+function authFetch(url: string, init: RequestInit = {}): Promise<Response> {
+  const headers = new Headers(init.headers)
+  headers.set('Authorization', `Bearer ${_ADMIN}`)
+  return fetch(url, { ...init, headers })
+}
+
 
 // Distinct from bridge/server.test.ts (19161) and dashboard/security.test.ts
 // (19171-19173) so parallel vitest workers never collide on a bound port.
@@ -11,7 +30,7 @@ const BASE = `http://localhost:${PORT}`
 let server: DashboardServer
 
 beforeAll(async () => {
-  server = new DashboardServer({ port: PORT })
+  server = new DashboardServer({ port: PORT, tokens: _tokens })
   // Wait for the server to be listening
   await new Promise(r => setTimeout(r, 100))
 })
@@ -29,7 +48,7 @@ beforeEach(() => {
 
 describe('GET /', () => {
   it('returns HTML with dashboard title', async () => {
-    const res = await fetch(`${BASE}/`)
+    const res = await authFetch(`${BASE}/`)
     expect(res.status).toBe(200)
     expect(res.headers.get('content-type')).toContain('text/html')
     const body = await res.text()
@@ -41,7 +60,7 @@ describe('GET /', () => {
 
 describe('GET /api/params', () => {
   it('returns array with name/min/max/system fields', async () => {
-    const res = await fetch(`${BASE}/api/params`)
+    const res = await authFetch(`${BASE}/api/params`)
     expect(res.status).toBe(200)
     const data = await res.json() as any[]
     expect(Array.isArray(data)).toBe(true)
@@ -62,7 +81,7 @@ describe('GET /api/params', () => {
 
 describe('GET /api/governance', () => {
   it('returns null when no deps provided', async () => {
-    const res = await fetch(`${BASE}/api/governance`)
+    const res = await authFetch(`${BASE}/api/governance`)
     expect(res.status).toBe(200)
     const data = await res.json()
     expect(data).toBeNull()
@@ -73,7 +92,7 @@ describe('GET /api/governance', () => {
 
 describe('GET /api/contracts', () => {
   it('returns null when no active contract', async () => {
-    const res = await fetch(`${BASE}/api/contracts`)
+    const res = await authFetch(`${BASE}/api/contracts`)
     expect(res.status).toBe(200)
     const data = await res.json()
     expect(data).toBeNull()
@@ -81,7 +100,7 @@ describe('GET /api/contracts', () => {
 
   it('returns contract status when active', async () => {
     globalContract.create('Test Contract', 'testing', ['assert1', 'assert2'])
-    const res = await fetch(`${BASE}/api/contracts`)
+    const res = await authFetch(`${BASE}/api/contracts`)
     expect(res.status).toBe(200)
     const data = await res.json() as any
     expect(data.active).toBe(true)
@@ -94,7 +113,7 @@ describe('GET /api/contracts', () => {
 
 describe('POST /config/governance', () => {
   it('sets valid params and verifies with getParam', async () => {
-    const res = await fetch(`${BASE}/config/governance`, {
+    const res = await authFetch(`${BASE}/config/governance`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ 'homeostat.damping': 1.5 }),
@@ -108,7 +127,7 @@ describe('POST /config/governance', () => {
   })
 
   it('rejects unknown params', async () => {
-    const res = await fetch(`${BASE}/config/governance`, {
+    const res = await authFetch(`${BASE}/config/governance`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ 'totally.fake.param': 42 }),
@@ -125,7 +144,7 @@ describe('POST /config/governance', () => {
 
 describe('POST /config/engine', () => {
   it('rejects temperature out of range', async () => {
-    const res = await fetch(`${BASE}/config/engine`, {
+    const res = await authFetch(`${BASE}/config/engine`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ temperature: 5.0 }),
@@ -138,7 +157,7 @@ describe('POST /config/engine', () => {
   })
 
   it('rejects invalid JSON body', async () => {
-    const res = await fetch(`${BASE}/config/engine`, {
+    const res = await authFetch(`${BASE}/config/engine`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: 'not json at all',
@@ -149,7 +168,7 @@ describe('POST /config/engine', () => {
   })
 
   it('accepts valid temperature', async () => {
-    const res = await fetch(`${BASE}/config/engine`, {
+    const res = await authFetch(`${BASE}/config/engine`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ temperature: 0.5 }),
@@ -165,7 +184,7 @@ describe('POST /config/engine', () => {
 
 describe('WebSocket broadcast', () => {
   it('sends events to connected clients', async () => {
-    const ws = new WebSocket(`ws://localhost:${PORT}/ws`)
+    const ws = new WebSocket(`ws://localhost:${PORT}/ws?token=${_ADMIN}`)
     await new Promise<void>((resolve, reject) => {
       ws.onopen = () => resolve()
       ws.onerror = (e) => reject(e)
@@ -200,7 +219,7 @@ describe('WebSocket broadcast', () => {
     // brain.tier fires once at engine startup, before any browser connects
     server.broadcast({ type: 'brain.tier', tier: 'live', layers: [24, 32], layer: 40 } as never)
 
-    const ws = new WebSocket(`ws://localhost:${PORT}/ws`)
+    const ws = new WebSocket(`ws://localhost:${PORT}/ws?token=${_ADMIN}`)
     const received: string[] = []
     ws.onmessage = (event) => { received.push(typeof event.data === 'string' ? event.data : event.data.toString()) }
     await new Promise<void>((resolve, reject) => {
@@ -222,7 +241,7 @@ describe('WebSocket broadcast', () => {
   it('does not replay non-whitelisted event types', async () => {
     server.broadcast({ type: 'stream.token', text: 'ephemeral' })
 
-    const ws = new WebSocket(`ws://localhost:${PORT}/ws`)
+    const ws = new WebSocket(`ws://localhost:${PORT}/ws?token=${_ADMIN}`)
     const received: string[] = []
     ws.onmessage = (event) => { received.push(typeof event.data === 'string' ? event.data : event.data.toString()) }
     await new Promise<void>((resolve, reject) => {
@@ -250,12 +269,12 @@ describe('WebSocket broadcast', () => {
 
 describe('CORS', () => {
   it('does not hand out a cross-origin read grant', async () => {
-    const res = await fetch(`${BASE}/api/params`)
+    const res = await authFetch(`${BASE}/api/params`)
     expect(res.headers.get('access-control-allow-origin')).toBeNull()
   })
 
   it('answers OPTIONS without granting the preflight', async () => {
-    const res = await fetch(`${BASE}/config/engine`, { method: 'OPTIONS' })
+    const res = await authFetch(`${BASE}/config/engine`, { method: 'OPTIONS' })
     expect(res.status).toBe(204)
     expect(res.headers.get('access-control-allow-origin')).toBeNull()
   })
@@ -265,7 +284,7 @@ describe('CORS', () => {
 
 describe('GET /api/history', () => {
   it('returns an array (possibly empty)', async () => {
-    const res = await fetch(`${BASE}/api/history`)
+    const res = await authFetch(`${BASE}/api/history`)
     expect(res.status).toBe(200)
     const data = await res.json()
     expect(Array.isArray(data)).toBe(true)
@@ -276,7 +295,7 @@ describe('GET /api/history', () => {
 
 describe('POST /config/system', () => {
   it('sets contractEnforcement', async () => {
-    const res = await fetch(`${BASE}/config/system`, {
+    const res = await authFetch(`${BASE}/config/system`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ contractEnforcement: false }),
@@ -288,7 +307,7 @@ describe('POST /config/system', () => {
   })
 
   it('rejects unknown system fields', async () => {
-    const res = await fetch(`${BASE}/config/system`, {
+    const res = await authFetch(`${BASE}/config/system`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ bogusField: true }),
@@ -303,7 +322,7 @@ describe('POST /config/system', () => {
 
 describe('POST /config/tools', () => {
   it('rejects trustDecayThreshold out of range', async () => {
-    const res = await fetch(`${BASE}/config/tools`, {
+    const res = await authFetch(`${BASE}/config/tools`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ trustDecayThreshold: 5.0 }),
@@ -315,7 +334,7 @@ describe('POST /config/tools', () => {
   })
 
   it('accepts valid toolRouting boolean', async () => {
-    const res = await fetch(`${BASE}/config/tools`, {
+    const res = await authFetch(`${BASE}/config/tools`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ toolRouting: true }),
@@ -339,7 +358,7 @@ describe('getPort()', () => {
 
 describe('integration: event flow', () => {
   it('governance.status event reaches WS client', async () => {
-    const ws = new WebSocket(`ws://localhost:${PORT}/ws`)
+    const ws = new WebSocket(`ws://localhost:${PORT}/ws?token=${_ADMIN}`)
     const received: any[] = []
 
     await new Promise<void>((resolve, reject) => {
@@ -367,7 +386,7 @@ describe('integration: event flow', () => {
   })
 
   it('tool.start + tool.complete flow', async () => {
-    const ws = new WebSocket(`ws://localhost:${PORT}/ws`)
+    const ws = new WebSocket(`ws://localhost:${PORT}/ws?token=${_ADMIN}`)
     const received: any[] = []
 
     await new Promise<void>((resolve, reject) => {

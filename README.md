@@ -251,6 +251,33 @@ Open `http://localhost:9161` during any session. Five tabs:
 
 Survives page reload, auto-detects active sessions, auto-reconnects on disconnect. Polls governance every 3s and training data every 30s.
 
+### Local tokens
+
+The engine mints `~/.cynco/tokens.json` at startup (owner-only; on Windows the
+ACL is narrowed with `icacls`, since `chmod 0600` there is close to a no-op). One
+record shape carrying a scope vector, not one key type per capability:
+
+| Scope | Opens | Reaches its holder by |
+|---|---|---|
+| `bridge` | The TUI command channel on `:9160` — this drives the agent, and the agent has Bash | Read from the token file. The TUI, the mission driver and the probes all do this, so launching any of them takes no arguments. |
+| `inference` | Every dashboard read route and the event stream on `:9161` — session transcripts, thinking tokens, governance | Injected into the dashboard page at request time. |
+| `management` | `POST /config/*` and `/api/brain/layer` — anything that changes engine or governance configuration | Printed once at engine startup and pasted by hand. Never handed to a page. |
+
+The split is not ceremony. The inference token is delivered to a browser, so it
+is the secret most likely to escape; flipping `ablation` or
+`contractEnforcement` silently corrupts the measurements the research rests on,
+so that costs a deliberate paste. A management token also reads, because the
+`admin` holder carries both scopes.
+
+Two things follow from this that are easy to get wrong:
+
+- **Nothing here is protected by CORS.** A WebSocket handshake is not subject to
+  it at all, and `Content-Type: text/plain` makes a POST a "simple" request that
+  lands without a preflight. The tokens are the control; loopback binding is a
+  floor, and a browser is already inside loopback.
+- **Binding to `0.0.0.0` puts the token in front of the network.** That is a
+  64-hex secret in a file on one machine, not an auth system. Don't.
+
 ### The Brain
 
 The dashboard's **[Brain]** tab exposes what the model is doing internally, at three depths:
@@ -360,8 +387,8 @@ All config via environment variables. No config files required.
 | `LOCALCODE_S5_PROACTIVE_TOOLS` | `false` | **Opt-in.** Let the S5 policy engine proactively pre-load task-relevant tools (e.g. surface `Bash`, `Grep`, `Read` for a debugging request) before the model asks. Append-only — never restricts. |
 | `LOCALCODE_SEARXNG_URL` | — | SearXNG instance URL for research |
 | `LOCALCODE_S5_MODEL` | — | Fine-tuned S5 model (when available) |
-| `LOCALCODE_DASHBOARD_HOST` | `127.0.0.1` | Dashboard bind address (set to `0.0.0.0` to expose on network) |
-| `LOCALCODE_BRIDGE_HOST` | `127.0.0.1` | TUI WebSocket bridge bind address (set to `0.0.0.0` to expose on network) |
+| `LOCALCODE_DASHBOARD_HOST` | `127.0.0.1` | Dashboard bind address. `0.0.0.0` puts the session transcripts and the event stream on the network, behind nothing but the inference token — see [Local tokens](#local-tokens). |
+| `LOCALCODE_BRIDGE_HOST` | `127.0.0.1` | TUI bridge bind address. `0.0.0.0` puts the agent's command channel on the network, behind nothing but the bridge token — see [Local tokens](#local-tokens). |
 | `LOCALCODE_CACHE_RAM` | llama.cpp default | llama-server host prompt-cache RAM (MB). The cache is required for context-checkpoint rollback on hybrid models (Qwen3.6) — don't set to `0`. |
 | `LOCALCODE_CTX_CHECKPOINTS` | `64` | Recurrent-state checkpoints for prefix-cache rollback on hybrid DeltaNet models. |
 | `LOCALCODE_CHECKPOINT_MIN_STEP` | `256` | Minimum token spacing between checkpoints. |

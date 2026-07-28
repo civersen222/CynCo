@@ -8,7 +8,10 @@ import { loadOrCreateTokens } from '../engine/security/localToken.js'
 const brainMsgs: Record<string, unknown[]> = {}
 let done = false
 
-const dash = new WebSocket('ws://127.0.0.1:9161/ws')
+const localTokens = loadOrCreateTokens()
+// The dashboard stream takes the inference scope, and reads it from the query
+// string because a browser cannot set headers on a WebSocket handshake.
+const dash = new WebSocket(`ws://127.0.0.1:9161/ws?token=${localTokens.tokenFor('inference')}`)
 dash.onmessage = (ev) => {
   try {
     const m = JSON.parse(String(ev.data))
@@ -23,9 +26,8 @@ console.log('[probe] dashboard WS connected')
 // The bridge refuses an unauthenticated upgrade; read the secret the engine
 // minted rather than taking a flag. Bun's WebSocket sends no Origin, so this
 // probe is not turned away as a browser.
-const bridgeToken = loadOrCreateTokens().tokenFor('bridge')
 const tui = new WebSocket('ws://127.0.0.1:9160', {
-  headers: { Authorization: `Bearer ${bridgeToken}` },
+  headers: { Authorization: `Bearer ${localTokens.tokenFor('bridge')}` },
 })
 tui.onmessage = (ev) => {
   try {

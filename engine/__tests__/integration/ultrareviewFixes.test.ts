@@ -116,7 +116,7 @@ describe('Fix 3 — dashboard localhost binding', () => {
 
   it('getHostname() returns 127.0.0.1 when LOCALCODE_DASHBOARD_HOST is unset', () => {
     delete process.env.LOCALCODE_DASHBOARD_HOST
-    const server = new DashboardServer({ port: 19281 })
+    const server = new DashboardServer({ port: 19281, tokens: _tokens })
     try {
       expect(server.getHostname()).toBe('127.0.0.1')
     } finally {
@@ -126,7 +126,7 @@ describe('Fix 3 — dashboard localhost binding', () => {
 
   it('getHostname() reflects LOCALCODE_DASHBOARD_HOST override', () => {
     process.env.LOCALCODE_DASHBOARD_HOST = '0.0.0.0'
-    const server = new DashboardServer({ port: 19282 })
+    const server = new DashboardServer({ port: 19282, tokens: _tokens })
     try {
       expect(server.getHostname()).toBe('0.0.0.0')
     } finally {
@@ -226,6 +226,25 @@ describe('Fix 5 — cache-ram configurable via LOCALCODE_CACHE_RAM', () => {
 
 import { convertMessages } from '../../engine/messageConvert.js'
 import type { Message } from '../../types.js'
+import { mkdtempSync, rmSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
+import { loadOrCreateTokens } from '../../security/localToken.js'
+
+// Every route but GET / now requires a capability token (see
+// dashboard/scopes.test.ts). These suites are testing behaviour behind the gate,
+// so they present the admin secret, which holds both inference and management.
+const _tokenDir = mkdtempSync(join(tmpdir(), 'cynco-dash-test-'))
+const _tokens = loadOrCreateTokens(_tokenDir)
+const _ADMIN = _tokens.tokenFor('management')!
+process.on('exit', () => rmSync(_tokenDir, { recursive: true, force: true }))
+
+function authFetch(url: string, init: RequestInit = {}): Promise<Response> {
+  const headers = new Headers(init.headers)
+  headers.set('Authorization', `Bearer ${_ADMIN}`)
+  return fetch(url, { ...init, headers })
+}
+
 
 describe('Fix 6 — image placeholder in simulated tool mode', () => {
   it('convertMessages with simulatedToolUse replaces image block with em-dash placeholder', () => {

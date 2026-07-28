@@ -353,6 +353,7 @@ let activationsConsumer: ActivationsConsumer | null = null
 try {
   dashboardServer = new DashboardServer({
     port: port + 1,
+    tokens,
     deps: {
       getGovernanceReport: () => loop.getGovernanceReport(),
       getPredictionStats: () => loop.getGovernance().getPredictionTracker().getStatistics(),

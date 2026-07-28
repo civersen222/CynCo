@@ -50,7 +50,10 @@ let enforcedWarned = false
 // The bridge refuses an unauthenticated upgrade. Reading the same token file the
 // engine minted keeps this driver a zero-configuration tool; Bun's WebSocket
 // sends no Origin, so it is not mistaken for a browser.
-const bridgeToken = loadOrCreateTokens().tokenFor('bridge')
+const localTokens = loadOrCreateTokens()
+const bridgeToken = localTokens.tokenFor('bridge')
+// The governance poll below reads the dashboard, which takes the inference scope.
+const inferenceToken = localTokens.tokenFor('inference')
 const ws = new WebSocket(WS_URL, { headers: { Authorization: `Bearer ${bridgeToken}` } })
 let toolCount = 0
 let zeroToolCompletion = false
@@ -109,7 +112,7 @@ let landed = false
 while (!landed && !zeroToolCompletion && (Date.now() - start) / 1000 < TIMEOUT_S) {
   await Bun.sleep(30000)
   try {
-    const g = await fetch(GOV_URL).then(r => r.json())
+    const g = await fetch(GOV_URL, { headers: { Authorization: `Bearer ${inferenceToken}` } }).then(r => r.json())
     console.log(`[gov] status=${g.status} stuck=${g.stuckTurns} toolOK=${g.toolSuccessRate}`)
   } catch { console.log('[gov] unreachable') }
   // Never let a git hiccup kill the loop — the ledger write at the end must run

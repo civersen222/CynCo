@@ -114,11 +114,25 @@ export class TokenSet {
    * not the part worth hiding, and timingSafeEqual throws on a length mismatch.
    */
   verify(presented: string | null | undefined, scope: TokenScope): boolean {
+    return this.match(presented, t => t.scopes.includes(scope))
+  }
+
+  /**
+   * Is `presented` a secret this process minted, whatever its scopes?
+   *
+   * Lets a caller separate "I do not know you" from "I know you and you may not
+   * do this" — 401 from 403. Says nothing about authorization on its own.
+   */
+  isKnown(presented: string | null | undefined): boolean {
+    return this.match(presented, () => true)
+  }
+
+  private match(presented: string | null | undefined, eligible: (t: LocalToken) => boolean): boolean {
     if (!presented) return false
     const given = Buffer.from(presented, 'utf-8')
     let ok = false
     for (const t of this.file.tokens) {
-      if (!t.scopes.includes(scope)) continue
+      if (!eligible(t)) continue
       const expected = Buffer.from(t.secret, 'utf-8')
       if (expected.length !== given.length) continue
       // No early return: keep comparing so the work does not depend on which

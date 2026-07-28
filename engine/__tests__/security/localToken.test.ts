@@ -112,3 +112,26 @@ describe('verification', () => {
     expect(set.verify(value, 'bridge')).toBe(false)
   })
 })
+
+/**
+ * Separating "I do not know you" from "I know you and you may not do this" is
+ * what lets the dashboard answer 401 and 403 differently. Rendering both as 401
+ * would tell a holder of the page's own token that its secret was rejected as
+ * unrecognised, and send them looking for the wrong fault.
+ */
+describe('recognising a secret regardless of scope', () => {
+  it('knows a secret that lacks the scope being asked for', () => {
+    const set = loadOrCreateTokens(dir)
+    const inference = set.tokenFor('inference')!
+    expect(set.verify(inference, 'management')).toBe(false)
+    expect(set.isKnown(inference)).toBe(true)
+  })
+
+  it.each([
+    ['null', null],
+    ['empty', ''],
+    ['a wrong secret of the right shape', 'a'.repeat(64)],
+  ])('does not know %s', (_name, presented) => {
+    expect(loadOrCreateTokens(dir).isKnown(presented)).toBe(false)
+  })
+})

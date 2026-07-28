@@ -6,6 +6,23 @@ import { mkdirSync, writeFileSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { DashboardServer } from '../../dashboard/server.js'
+import { mkdtempSync } from 'fs'
+import { loadOrCreateTokens } from '../../security/localToken.js'
+
+// Every route but GET / now requires a capability token (see
+// dashboard/scopes.test.ts). These suites are testing behaviour behind the gate,
+// so they present the admin secret, which holds both inference and management.
+const _tokenDir = mkdtempSync(join(tmpdir(), 'cynco-dash-test-'))
+const _tokens = loadOrCreateTokens(_tokenDir)
+const _ADMIN = _tokens.tokenFor('management')!
+process.on('exit', () => rmSync(_tokenDir, { recursive: true, force: true }))
+
+function authFetch(url: string, init: RequestInit = {}): Promise<Response> {
+  const headers = new Headers(init.headers)
+  headers.set('Authorization', `Bearer ${_ADMIN}`)
+  return fetch(url, { ...init, headers })
+}
+
 
 // Use port 0 so the OS assigns an ephemeral port — avoids TIME_WAIT collisions
 // when the full dashboard suite runs all 4 test files in parallel.
@@ -24,13 +41,13 @@ beforeAll(async () => {
   const corrupt = 'NOT_JSON{{{'
   writeFileSync(join(SESSIONS_DIR, 's1.thinking.jsonl'), [line1, corrupt, line2].join('\n') + '\n')
 
-  server = new DashboardServer({ port: 0, deps: { sessionsDir: SESSIONS_DIR } })
+  server = new DashboardServer({ port: 0, deps: { sessionsDir: SESSIONS_DIR }, tokens: _tokens })
   // Poll until the server is ready (max 2 s) instead of a fixed sleep.
   const deadline = Date.now() + 2000
   while (Date.now() < deadline) {
     const port = server.getPort()
     if (port > 0) {
-      try { await fetch(`http://localhost:${port}/api/thinking/turns?session=__probe`); break } catch { /* not ready yet */ }
+      try { await authFetch(`http://localhost:${port}/api/thinking/turns?session=__probe`); break } catch { /* not ready yet */ }
     }
     await new Promise(r => setTimeout(r, 10))
   }
@@ -46,7 +63,7 @@ afterAll(() => {
 
 describe('GET /api/thinking/turns', () => {
   it('returns 200 index array with no text field', async () => {
-    const res = await fetch(`${BASE}/api/thinking/turns?session=s1`)
+    const res = await authFetch(`${BASE}/api/thinking/turns?session=s1`)
     expect(res.status).toBe(200)
     const data = await res.json() as any[]
     expect(Array.isArray(data)).toBe(true)
@@ -64,35 +81,35 @@ describe('GET /api/thinking/turns', () => {
   })
 
   it('skips corrupt line — still returns 2 valid records', async () => {
-    const res = await fetch(`${BASE}/api/thinking/turns?session=s1`)
+    const res = await authFetch(`${BASE}/api/thinking/turns?session=s1`)
     expect(res.status).toBe(200)
     const data = await res.json() as any[]
     expect(data).toHaveLength(2)
   })
 
   it('returns 404 when session file does not exist', async () => {
-    const res = await fetch(`${BASE}/api/thinking/turns?session=no_such_session`)
+    const res = await authFetch(`${BASE}/api/thinking/turns?session=no_such_session`)
     expect(res.status).toBe(404)
     const data = await res.json() as any
     expect(data).toHaveProperty('error', 'Not found')
   })
 
   it('returns 400 for session id with path separators (slash)', async () => {
-    const res = await fetch(`${BASE}/api/thinking/turns?session=a/b`)
+    const res = await authFetch(`${BASE}/api/thinking/turns?session=a/b`)
     expect(res.status).toBe(400)
     const data = await res.json() as any
     expect(data).toHaveProperty('error', 'invalid session id')
   })
 
   it('returns 400 for session id with URL-encoded path traversal', async () => {
-    const res = await fetch(`${BASE}/api/thinking/turns?session=..%2Fetc`)
+    const res = await authFetch(`${BASE}/api/thinking/turns?session=..%2Fetc`)
     expect(res.status).toBe(400)
     const data = await res.json() as any
     expect(data).toHaveProperty('error', 'invalid session id')
   })
 
   it('returns 400 when session param is missing', async () => {
-    const res = await fetch(`${BASE}/api/thinking/turns`)
+    const res = await authFetch(`${BASE}/api/thinking/turns`)
     expect(res.status).toBe(400)
     const data = await res.json() as any
     expect(data).toHaveProperty('error', 'invalid session id')
@@ -103,7 +120,7 @@ describe('GET /api/thinking/turns', () => {
 
 describe('GET /api/thinking/sessions', () => {
   it('lists only sessions that have thinking files', async () => {
-    const res = await fetch(`${BASE}/api/thinking/sessions`)
+    const res = await authFetch(`${BASE}/api/thinking/sessions`)
     expect(res.status).toBe(200)
     const data = await res.json() as string[]
     expect(data).toEqual(['s1'])
@@ -114,7 +131,7 @@ describe('GET /api/thinking/sessions', () => {
 
 describe('GET /api/thinking', () => {
   it('returns 200 full record including text for valid turn', async () => {
-    const res = await fetch(`${BASE}/api/thinking?session=s1&turn=2`)
+    const res = await authFetch(`${BASE}/api/thinking?session=s1&turn=2`)
     expect(res.status).toBe(200)
     const data = await res.json() as any
     expect(data).toHaveProperty('turn', 2)
@@ -125,35 +142,35 @@ describe('GET /api/thinking', () => {
   })
 
   it('returns 404 for valid session but missing turn number', async () => {
-    const res = await fetch(`${BASE}/api/thinking?session=s1&turn=99`)
+    const res = await authFetch(`${BASE}/api/thinking?session=s1&turn=99`)
     expect(res.status).toBe(404)
     const data = await res.json() as any
     expect(data).toHaveProperty('error', 'Not found')
   })
 
   it('returns 404 for missing session', async () => {
-    const res = await fetch(`${BASE}/api/thinking?session=ghost&turn=1`)
+    const res = await authFetch(`${BASE}/api/thinking?session=ghost&turn=1`)
     expect(res.status).toBe(404)
     const data = await res.json() as any
     expect(data).toHaveProperty('error', 'Not found')
   })
 
   it('returns 400 for non-numeric turn', async () => {
-    const res = await fetch(`${BASE}/api/thinking?session=s1&turn=abc`)
+    const res = await authFetch(`${BASE}/api/thinking?session=s1&turn=abc`)
     expect(res.status).toBe(400)
     const data = await res.json() as any
     expect(data).toHaveProperty('error', 'invalid turn')
   })
 
   it('returns 400 for session id with path separators', async () => {
-    const res = await fetch(`${BASE}/api/thinking?session=a/b&turn=1`)
+    const res = await authFetch(`${BASE}/api/thinking?session=a/b&turn=1`)
     expect(res.status).toBe(400)
     const data = await res.json() as any
     expect(data).toHaveProperty('error', 'invalid session id')
   })
 
   it('returns 400 for URL-encoded path traversal in session', async () => {
-    const res = await fetch(`${BASE}/api/thinking?session=..%2Fetc&turn=1`)
+    const res = await authFetch(`${BASE}/api/thinking?session=..%2Fetc&turn=1`)
     expect(res.status).toBe(400)
     const data = await res.json() as any
     expect(data).toHaveProperty('error', 'invalid session id')
@@ -165,7 +182,7 @@ describe('GET /api/thinking', () => {
 describe('POST /api/brain/layer', () => {
   it('returns 503 when no setBrainLayer dep is wired', async () => {
     // shared server above has no setBrainLayer dep
-    const res = await fetch(`${BASE}/api/brain/layer`, {
+    const res = await authFetch(`${BASE}/api/brain/layer`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ layer: 40 }),
@@ -176,18 +193,18 @@ describe('POST /api/brain/layer', () => {
 
   it('calls the dep and returns ok for a valid layer; 400 on invalid bodies', async () => {
     const calls: number[] = []
-    const srv = new DashboardServer({ port: 0, deps: { setBrainLayer: (n) => calls.push(n) } })
+    const srv = new DashboardServer({ port: 0, deps: { setBrainLayer: (n) => calls.push(n) }, tokens: _tokens })
     const deadline = Date.now() + 2000
     while (Date.now() < deadline) {
       const port = srv.getPort()
       if (port > 0) {
-        try { await fetch(`http://localhost:${port}/api/thinking/turns?session=__probe`); break } catch { /* not ready yet */ }
+        try { await authFetch(`http://localhost:${port}/api/thinking/turns?session=__probe`); break } catch { /* not ready yet */ }
       }
       await new Promise(r => setTimeout(r, 10))
     }
     const base = `http://localhost:${srv.getPort()}`
     try {
-      const ok = await fetch(`${base}/api/brain/layer`, {
+      const ok = await authFetch(`${base}/api/brain/layer`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ layer: 32 }),
@@ -197,7 +214,7 @@ describe('POST /api/brain/layer', () => {
       expect(calls).toEqual([32])
 
       for (const bad of [{ layer: 'x' }, { layer: 3.5 }, { layer: -1 }, { layer: 999 }, {}]) {
-        const res = await fetch(`${base}/api/brain/layer`, {
+        const res = await authFetch(`${base}/api/brain/layer`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(bad),

@@ -826,7 +826,11 @@ let standaloneTimeout = null;
 
 function connectWS() {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  ws = new WebSocket(proto + '//' + location.hostname + ':' + location.port + '/ws');
+  // The token rides in the query string here because a browser cannot set
+  // headers on a WebSocket handshake. Everywhere else it is an Authorization
+  // header, added by the fetch wrapper the server injects above.
+  ws = new WebSocket(proto + '//' + location.hostname + ':' + location.port +
+    '/ws?token=' + encodeURIComponent(window.__CYNCO_TOKEN || ''));
 
   ws.onopen = function() {
     state.connected = true;

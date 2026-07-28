@@ -26,6 +26,7 @@ import {
   evaluateReadiness,
   GATE_MIN_USABLE,
 } from '../training/datasetBuilder.js'
+import type { TokenSet, TokenScope } from '../security/localToken.js'
 
 // ---------------------------------------------------------------------------
 // DashboardDeps — optional callbacks into the engine
@@ -136,9 +137,16 @@ export class DashboardServer {
   private _port: number
   private _hostname: string
   private indexHtml: string
+  /**
+   * Required, and deliberately not optional-with-a-default. A missing token
+   * store must be a compile error at the call site, never a dashboard that
+   * quietly starts up serving transcripts to anyone who asks.
+   */
+  private tokens: TokenSet
 
-  constructor({ port = 9161, deps = {} }: { port?: number; deps?: DashboardDeps } = {}) {
+  constructor({ port = 9161, deps = {}, tokens }: { port?: number; deps?: DashboardDeps; tokens: TokenSet }) {
     this.deps = deps
+    this.tokens = tokens
     this._port = port
     this._hostname = process.env.LOCALCODE_DASHBOARD_HOST || '127.0.0.1'
 
@@ -163,8 +171,14 @@ export class DashboardServer {
         const pathname = url.pathname
         const method = req.method
 
-        // WebSocket upgrade at /ws
+        // WebSocket upgrade at /ws. The stream carries the same conversation
+        // content as the transcript route, so it takes the same scope — but a
+        // browser cannot set headers on a WebSocket handshake, which is why this
+        // one route reads the token from the query string. Refused before
+        // server.upgrade: an accepted-then-closed socket has already run `open`.
         if (pathname === '/ws') {
+          const denied = this.requireScope(req, 'inference', { allowQueryToken: true })
+          if (denied) return denied
           const success = server.upgrade(req)
           if (success) return undefined
           return new Response('WebSocket upgrade failed', { status: 400 })
@@ -177,11 +191,23 @@ export class DashboardServer {
           return new Response(null, { status: 204 })
         }
 
+        // GET / is the one ungated route: it is how the inference token reaches
+        // the page, so it cannot itself require one. With no ACAO on the reply a
+        // cross-origin page cannot read what it delivers — that is what makes
+        // this safe, and why the CORS removal had to come first.
+        if (method === 'GET' && pathname === '/') {
+          return this.serveIndex()
+        }
+
+        // Everything else is gated, including unknown paths: a 404 that answers
+        // before the token check turns the route table into public information.
+        const scope: TokenScope = method === 'GET' ? 'inference' : 'management'
+        const denied = this.requireScope(req, scope)
+        if (denied) return denied
+
         // GET routes
         if (method === 'GET') {
           switch (pathname) {
-            case '/':
-              return this.serveIndex()
             case '/api/governance':
               return this.getGovernance()
             case '/api/predictions':
@@ -350,10 +376,101 @@ export class DashboardServer {
     })
   }
 
+  // ── Authorization ───────────────────────────────────────────────
+
+  /**
+   * Null when the caller holds `scope`, otherwise the refusal to return.
+   *
+   * 401 and 403 are different answers and must not render identically: 401 says
+   * "I do not know who you are", 403 says "I do, and you may not do this". The
+   * second is the one that matters here — the inference token is handed to a
+   * browser page in its own HTML, so it is the secret most likely to escape, and
+   * it must not carry configuration rights with it.
+   *
+   * `allowQueryToken` exists for /ws alone. Query strings reach access logs,
+   * shell history and Referer headers, so nothing that can use a header is
+   * permitted to use the query string instead.
+   */
+  private requireScope(
+    req: Request,
+    scope: TokenScope,
+    { allowQueryToken = false }: { allowQueryToken?: boolean } = {},
+  ): Response | null {
+    const authz = req.headers.get('authorization') ?? ''
+    let presented = authz.startsWith('Bearer ') ? authz.slice(7) : null
+    if (presented === null && allowQueryToken) {
+      presented = new URL(req.url).searchParams.get('token')
+    }
+
+    if (presented === null) return jsonResponse({ error: 'token required' }, 401)
+    if (this.tokens.verify(presented, scope)) return null
+    // A real token lacking the scope is told so; anything else is not
+    // acknowledged as a token at all.
+    if (this.tokens.isKnown(presented)) {
+      return jsonResponse({ error: `scope '${scope}' required` }, 403)
+    }
+    return jsonResponse({ error: 'token required' }, 401)
+  }
+
   // ── GET Handlers ────────────────────────────────────────────────
 
+  /**
+   * The page, with the inference token injected at request time.
+   *
+   * Injected rather than baked in at startup so the served copy always matches
+   * the current token file, and rather than fetched by the page from an endpoint
+   * — an endpoint handing out tokens to anyone who asks is the hole this closes.
+   */
   private serveIndex(): Response {
-    return htmlResponse(this.indexHtml)
+    const token = this.tokens.tokenFor('inference') ?? ''
+    const inject = `<script>
+window.__CYNCO_TOKEN = ${JSON.stringify(token)};
+(function () {
+  var raw = window.fetch;
+  function sameOrigin(input) {
+    // A relative URL, or an absolute one naming this origin. Anything else is a
+    // third party and must not receive our token.
+    var u = typeof input === 'string' ? input : (input && input.url) || '';
+    return u.indexOf('//') === -1 || u.indexOf(location.origin) === 0;
+  }
+  function withAuth(init, input, secret) {
+    init = Object.assign({}, init);
+    var h = new Headers(init.headers || (input && input.headers) || {});
+    h.set('Authorization', 'Bearer ' + secret);
+    init.headers = h;
+    return init;
+  }
+  window.fetch = function (input, init) {
+    if (!sameOrigin(input)) return raw(input, init);
+    return raw(input, withAuth(init, input, window.__CYNCO_TOKEN)).then(function (res) {
+      // 403 means the route wants the management scope, which is never handed to
+      // a page: the engine prints it once at startup and it is pasted by hand.
+      // Held in sessionStorage so one paste covers a sitting and none survives
+      // the tab closing.
+      if (res.status !== 403) return res;
+      var t = sessionStorage.getItem('cynco_management_token');
+      if (!t) {
+        t = window.prompt('Management token (printed by the engine at startup):');
+        if (!t) return res;
+        t = t.trim();
+        sessionStorage.setItem('cynco_management_token', t);
+      }
+      return raw(input, withAuth(init, input, t)).then(function (retry) {
+        // A stored token that is still refused is the wrong one. Drop it so the
+        // next attempt asks again rather than failing silently forever.
+        if (retry.status === 403) sessionStorage.removeItem('cynco_management_token');
+        return retry;
+      });
+    });
+  };
+})();
+</script>`
+    // Before any other script so no call site can run unauthenticated. If the
+    // page has no <head>, prepending still puts it first.
+    const body = this.indexHtml.includes('<head>')
+      ? this.indexHtml.replace('<head>', `<head>${inject}`)
+      : inject + this.indexHtml
+    return htmlResponse(body)
   }
 
   private getGovernance(): Response {

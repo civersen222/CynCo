@@ -14,6 +14,22 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { describe, test, expect, beforeEach, afterEach, afterAll } from 'vitest'
 import { DashboardServer } from '../../dashboard/server.js'
+import { loadOrCreateTokens } from '../../security/localToken.js'
+
+// Every route but GET / now requires a capability token (see
+// dashboard/scopes.test.ts). These suites are testing behaviour behind the gate,
+// so they present the admin secret, which holds both inference and management.
+const _tokenDir = mkdtempSync(join(tmpdir(), 'cynco-dash-test-'))
+const _tokens = loadOrCreateTokens(_tokenDir)
+const _ADMIN = _tokens.tokenFor('management')!
+process.on('exit', () => rmSync(_tokenDir, { recursive: true, force: true }))
+
+function authFetch(url: string, init: RequestInit = {}): Promise<Response> {
+  const headers = new Headers(init.headers)
+  headers.set('Authorization', `Bearer ${_ADMIN}`)
+  return fetch(url, { ...init, headers })
+}
+
 
 // Use ports well away from the main test suite (port 19161)
 const DEFAULT_PORT = 19171
@@ -42,14 +58,14 @@ describe('dashboard server hostname binding', () => {
   test('defaults to 127.0.0.1 when LOCALCODE_DASHBOARD_HOST is unset', async () => {
     delete process.env.LOCALCODE_DASHBOARD_HOST
 
-    server = new DashboardServer({ port: DEFAULT_PORT })
+    server = new DashboardServer({ port: DEFAULT_PORT, tokens: _tokens })
 
     // getHostname() returns the stored value used in Bun.serve()
     expect(server.getHostname()).toBe('127.0.0.1')
 
     // HTTP request to 127.0.0.1 must succeed
     await new Promise(r => setTimeout(r, 100))
-    const res = await fetch(`http://127.0.0.1:${DEFAULT_PORT}/`)
+    const res = await authFetch(`http://127.0.0.1:${DEFAULT_PORT}/`)
     expect(res.status).toBe(200)
     const body = await res.text()
     expect(body).toContain('CynCo Governance Dashboard')
@@ -68,13 +84,13 @@ describe('dashboard server LOCALCODE_DASHBOARD_HOST override', () => {
     process.env.LOCALCODE_DASHBOARD_HOST = '0.0.0.0'
 
     try {
-      server = new DashboardServer({ port: OVERRIDE_PORT })
+      server = new DashboardServer({ port: OVERRIDE_PORT, tokens: _tokens })
 
       expect(server.getHostname()).toBe('0.0.0.0')
 
       // HTTP request must succeed (0.0.0.0 binds all interfaces, localhost still works)
       await new Promise(r => setTimeout(r, 100))
-      const res = await fetch(`http://127.0.0.1:${OVERRIDE_PORT}/`)
+      const res = await authFetch(`http://127.0.0.1:${OVERRIDE_PORT}/`)
       expect(res.status).toBe(200)
     } finally {
       if (saved !== undefined) {
@@ -118,14 +134,14 @@ describe('dashboard server negative binding (non-loopback refused)', () => {
     delete process.env.LOCALCODE_DASHBOARD_HOST
 
     try {
-      server = new DashboardServer({ port: NEGATIVE_PORT })
+      server = new DashboardServer({ port: NEGATIVE_PORT, tokens: _tokens })
       expect(server.getHostname()).toBe('127.0.0.1')
 
       await new Promise(r => setTimeout(r, 100))
 
       // Fetching via the external IP must be refused (connection error, not a response)
       await expect(
-        fetch(`http://${externalIP}:${NEGATIVE_PORT}/`, { signal: AbortSignal.timeout(2000) })
+        authFetch(`http://${externalIP}:${NEGATIVE_PORT}/`, { signal: AbortSignal.timeout(2000) })
       ).rejects.toThrow()
     } finally {
       server?.stop()
@@ -153,7 +169,7 @@ describe('the transcript route cannot walk out of the sessions directory', () =>
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'cynco-dash-sessions-'))
-    server = new DashboardServer({ port: TRAVERSAL_PORT, deps: { sessionsDir: dir } })
+    server = new DashboardServer({ port: TRAVERSAL_PORT, deps: { sessionsDir: dir }, tokens: _tokens })
   })
 
   afterEach(() => {
@@ -169,7 +185,7 @@ describe('the transcript route cannot walk out of the sessions directory', () =>
     ['a null byte', 'abc%00.jsonl'],
   ])('refuses %s instead of reading a file', async (_name, sid) => {
     await new Promise(r => setTimeout(r, 100))
-    const res = await fetch(`http://127.0.0.1:${TRAVERSAL_PORT}/api/sessions/${sid}/transcript`)
+    const res = await authFetch(`http://127.0.0.1:${TRAVERSAL_PORT}/api/sessions/${sid}/transcript`)
     // 400, not an empty 200: "no such session" and "that is not a session id"
     // are different answers and the caller must be able to tell them apart.
     expect(res.status).toBe(400)
@@ -178,7 +194,7 @@ describe('the transcript route cannot walk out of the sessions directory', () =>
   test('still reads a transcript for a well-formed session id', async () => {
     writeFileSync(join(dir, 'sess-1.jsonl'), JSON.stringify({ role: 'user', content: 'hi' }) + '\n')
     await new Promise(r => setTimeout(r, 100))
-    const res = await fetch(`http://127.0.0.1:${TRAVERSAL_PORT}/api/sessions/sess-1/transcript`)
+    const res = await authFetch(`http://127.0.0.1:${TRAVERSAL_PORT}/api/sessions/sess-1/transcript`)
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual([{ role: 'user', content: 'hi' }])
   })
@@ -199,7 +215,7 @@ describe('responses do not grant cross-origin reads', () => {
   let server: DashboardServer
 
   beforeEach(() => {
-    server = new DashboardServer({ port: CORS_PORT })
+    server = new DashboardServer({ port: CORS_PORT, tokens: _tokens })
   })
 
   afterEach(() => {
@@ -213,7 +229,7 @@ describe('responses do not grant cross-origin reads', () => {
     ['the preflight', '/config/engine', 'OPTIONS'],
   ])('sends no ACAO header on %s', async (_name, path, method) => {
     await new Promise(r => setTimeout(r, 100))
-    const res = await fetch(`http://127.0.0.1:${CORS_PORT}${path}`, {
+    const res = await authFetch(`http://127.0.0.1:${CORS_PORT}${path}`, {
       method,
       headers: { Origin: 'http://evil.example' },
     })
