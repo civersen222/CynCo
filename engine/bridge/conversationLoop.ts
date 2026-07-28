@@ -1117,13 +1117,18 @@ export class ConversationLoop {
         const govReport = this.governance.getReport()
         const pm = this.governance.getPerformanceMetrics?.()
 
-        // Evaluate previous S5 decision outcome (feeds rule weight tuning)
+        // Evaluate previous S5 decision outcome. Feeds rule weight tuning AND
+        // backfills the decision journal with a per-decision label — the thing the
+        // S5 corpus is missing. Swallowing a failure here would silently stop the
+        // corpus growing, so it is logged.
         try {
           const outcomeResult = this.s5.evaluateLastDecision(govReport as any)
           if (outcomeResult) {
             console.log(`[s5] Outcome: ${outcomeResult.outcome} for rules [${outcomeResult.ruleIds.join(',')}]`)
           }
-        } catch {}
+        } catch (e) {
+          console.log(`[s5] evaluateLastDecision failed: ${e instanceof Error ? e.message : String(e)}`)
+        }
 
         const decision = await this.s5.makeDecision({
           userMessage: text.slice(0, 200),

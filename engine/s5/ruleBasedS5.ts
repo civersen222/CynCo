@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto'
-import type { S5Input, S5Decision, S5Interface, S5Rule } from './types.js'
+import type { S5Input, S5Decision, S5Interface, S5Rule, RejectedProposal } from './types.js'
 import { ALL_TOOLS } from '../tools/registry.js'
 import { isProactiveToolsEnabled } from '../config.js'
 import { PROACTIVE_SURFACING } from './proactiveSurfacing.js'
@@ -461,7 +461,21 @@ const CONTEXT_ACTION_STRENGTH: Record<string, number> = {
   compact: 2,
 }
 
-export function combineDecisions(decisions: Partial<S5Decision>[]): Partial<S5Decision> {
+// Fields whose merge policy can discard a proposal. `surfaceTools` unions and
+// `reasoning` concatenates, so nothing is ever overridden there; `revert` is
+// any-true and no rule proposes false. Those four are excluded deliberately —
+// flagging them would fill the record with rules that never actually lost.
+const CONTESTED_FIELDS = ['tools', 'contextAction', 'priority', 'model', 'spawnAgent'] as const
+
+const sameValue = (a: unknown, b: unknown) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null)
+
+export function combineDecisions(
+  decisions: Partial<S5Decision>[],
+  // Parallel to `decisions`. Optional: without rule ids a rejection cannot be
+  // attributed to anything, so the scan is skipped and the result is byte-identical
+  // to the pre-existing behaviour.
+  ruleIds?: string[],
+): Partial<S5Decision> {
   if (decisions.length === 0) return {}
 
   let combinedTools: string[] | null = null
@@ -530,6 +544,39 @@ export function combineDecisions(decisions: Partial<S5Decision>[]): Partial<S5De
     }
   }
 
+  const applied: Record<string, unknown> = {
+    tools: combinedTools,
+    contextAction,
+    priority,
+    model,
+    spawnAgent,
+  }
+
+  // Second pass: a proposal is rejected iff the rule explicitly proposed a value
+  // for the field and the applied value differs. Uniform across merge policies —
+  // "you asked for X, X is not what happened" needs no per-branch special case.
+  const rejected: RejectedProposal[] = []
+  if (ruleIds && ruleIds.length === decisions.length) {
+    const winners = new Map<string, string | null>()
+    for (const field of CONTESTED_FIELDS) {
+      const idx = decisions.findIndex(d => d[field] !== undefined && sameValue(d[field], applied[field]))
+      winners.set(field, idx === -1 ? null : ruleIds[idx])
+    }
+    decisions.forEach((d, i) => {
+      for (const field of CONTESTED_FIELDS) {
+        if (d[field] === undefined) continue
+        if (sameValue(d[field], applied[field])) continue
+        rejected.push({
+          ruleId: ruleIds[i],
+          field,
+          proposed: d[field] ?? null,
+          applied: applied[field] ?? null,
+          wonBy: winners.get(field) ?? null,
+        })
+      }
+    })
+  }
+
   return {
     tools: combinedTools,
     surfaceTools,
@@ -539,6 +586,7 @@ export function combineDecisions(decisions: Partial<S5Decision>[]): Partial<S5De
     revert,
     spawnAgent,
     reasoning: allReasons.join('; '),
+    ...(ruleIds ? { rejected } : {}),
   }
 }
 
@@ -568,7 +616,7 @@ export class RuleBasedS5 implements S5Interface {
     }
 
     // Combine all fired decisions
-    const combined = combineDecisions(firedDecisions)
+    const combined = combineDecisions(firedDecisions, ruleIds)
 
     // Default reasoning if no rules fired
     const reasoning = combined.reasoning && combined.reasoning.length > 0
@@ -588,6 +636,7 @@ export class RuleBasedS5 implements S5Interface {
       revert: combined.revert ?? false,
       decisionId: randomUUID(),
       ruleIds,
+      rejected: combined.rejected ?? [],
     }
   }
 }

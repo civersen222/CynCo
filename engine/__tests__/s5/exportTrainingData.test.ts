@@ -56,6 +56,48 @@ describe('exportTrainingData', () => {
     expect(existsSync(out)).toBe(false)
   })
 
+  it('folds a decisionId-keyed backfill onto its entry and drops the measured negative', () => {
+    const good = entry('v'); (good.decision as any).decisionId = 'd-good'
+    const bad = entry('v'); (bad.decision as any).decisionId = 'd-bad'
+    const journal = join(dir, 's5-decisions.jsonl')
+    writeFileSync(journal, [
+      JSON.stringify(good),
+      JSON.stringify(bad),
+      JSON.stringify({ _backfill: true, system: 'S5', decisionId: 'd-bad', outcome: { outcome: 'negative', measured: true } }),
+    ].join('\n') + '\n')
+    const out = join(dir, 'out.jsonl')
+    // Both decisions are in the same viable session, so the session label cannot
+    // separate them. The per-decision label can — that is the entire point.
+    const res = exportViableExamples({ journalPath: journal, outPath: out, outcomeBySession: new Map([['v', 'viable']]) })
+    expect(res.written).toBe(1)
+  })
+
+  it('keeps an unknown-outcome decision — unmeasured is not a veto', () => {
+    const e = entry('v'); (e.decision as any).decisionId = 'd1'
+    const journal = join(dir, 's5-decisions.jsonl')
+    writeFileSync(journal, [
+      JSON.stringify(e),
+      JSON.stringify({ _backfill: true, system: 'S5', decisionId: 'd1', outcome: { outcome: 'unknown', measured: false } }),
+    ].join('\n') + '\n')
+    const out = join(dir, 'out.jsonl')
+    const res = exportViableExamples({ journalPath: journal, outPath: out, outcomeBySession: new Map([['v', 'viable']]) })
+    expect(res.written).toBe(1)
+  })
+
+  it('strips decisionId, ruleIds and rejected from the training target', () => {
+    const e = entry('v')
+    Object.assign(e.decision, { decisionId: 'd1', ruleIds: ['W2'], rejected: [{ ruleId: 'W9' }] })
+    const examples = joinViableExamples([e], new Map([['v', 'viable']]))
+    const target = JSON.parse(examples[0].output)
+    // The output string is the model's training target. A UUID in it teaches the
+    // model to invent UUIDs; ruleIds and rejected teach it to imitate the rule
+    // engine's internals, which is what this corpus exists to move past.
+    expect(target.decisionId).toBeUndefined()
+    expect(target.ruleIds).toBeUndefined()
+    expect(target.rejected).toBeUndefined()
+    expect(target.reasoning).toBe('ok')
+  })
+
   it('exportViableExamples skips _backfill records and malformed lines', () => {
     const journal = join(dir, 's5-decisions.jsonl')
     writeFileSync(journal, [

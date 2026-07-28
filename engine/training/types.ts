@@ -26,7 +26,13 @@ export interface JournalEntry {
 export interface BackfillRecord {
   _backfill: true
   system: SystemLevel
-  entryTimestamp: number
+  // Two join keys, both optional, at least one present. `entryTimestamp` is the
+  // original and the only one S2 can supply. It is a weak key: makeJournalEntry
+  // stamps its own Date.now(), so a caller holding a different clock reading
+  // cannot address the line it wrote. `decisionId` is a UUID carried inside the
+  // journaled decision and matches exactly.
+  entryTimestamp?: number
+  decisionId?: string
   outcome: Record<string, unknown>
 }
 
@@ -60,15 +66,20 @@ export function makeJournalEntry(opts: MakeJournalEntryOpts): JournalEntry {
 
 export type MakeBackfillRecordOpts = {
   system: SystemLevel
-  entryTimestamp: number
+  entryTimestamp?: number
+  decisionId?: string
   outcome: Record<string, unknown>
 }
 
 export function makeBackfillRecord(opts: MakeBackfillRecordOpts): BackfillRecord {
-  return {
+  const record: BackfillRecord = {
     _backfill: true,
     system: opts.system,
-    entryTimestamp: opts.entryTimestamp,
     outcome: opts.outcome,
   }
+  // Omit rather than null the absent key, so a reader joining on `decisionId`
+  // never has to distinguish "no id" from "id is null".
+  if (opts.entryTimestamp !== undefined) record.entryTimestamp = opts.entryTimestamp
+  if (opts.decisionId !== undefined) record.decisionId = opts.decisionId
+  return record
 }

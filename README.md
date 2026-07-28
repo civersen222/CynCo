@@ -353,13 +353,21 @@ CynCo collects governance decision data during every session, per VSM system, in
 ### S5 Decision Model
 The first fine-tuning target. Currently CynCo uses a rule-based S5 with 21 hand-coded rules. The decision journal collects every S5 decision with the full governance snapshot (context usage, tool success rate, variety balance, stuck turns, etc.).
 
-**Status:** Not yet trainable, and the gap is the label, not the volume.
+**Status:** Not yet trainable. The label path now exists; the volume does not.
 
-A journal line is `{ timestamp, sessionId, system, input, decision, outcome? }`. `outcome` is optional, and the S1, S3 and S4 writers fill it in — the S5 writer (`engine/s5/orchestrator.ts`) deliberately does not, because an S5 policy decision has no result at the moment it is made. `DecisionJournalWriter.backfill()` exists to patch one in afterwards, but its only call site is `engine/agents/s2Coordinator.ts`, for S2. **So no S5 decision has ever carried an outcome.**
+A journal line is `{ timestamp, sessionId, system, input, decision, outcome? }`. Until 2026-07-28 no S5 decision ever carried an `outcome`: the S5 writer omitted it (a policy decision has no result at the moment it is made), and `DecisionJournalWriter.backfill()` — which exists to patch one in afterwards — had a single call site, in `engine/agents/s2Coordinator.ts`, for S2. The only label was the one `engine/s5/exportTrainingData.ts` joined out of `governance.db` on `sessionId`: a *session*-level verdict stamped onto every decision the session made, enough to discard sessions that went badly but unable to tell two close calls inside one session apart.
 
-Instead `engine/s5/exportTrainingData.ts` joins outcomes out of `governance.db` on `sessionId` and keeps only viable sessions. That is a *session*-level label stamped onto every decision the session made. It is enough to discard sessions that went badly; it cannot distinguish two close calls inside one session, since both carry the same label.
+Each S5 decision now carries three things it did not before:
 
-So "500+ decisions" understates the requirement. What is needed is 500+ decisions with *per-decision* outcomes.
+- **`decisionId`** — a UUID, journaled inside the decision. The join key for the outcome. (The pre-existing `entryTimestamp` key cannot work here: `makeJournalEntry` reads the clock itself, so the writer never learns the line's timestamp.)
+- **`ruleIds`** — which of the 21 rules fired.
+- **`rejected`** — rules that fired and were *overridden* by `combineDecisions`. The merge is lossy on purpose (`model` takes the first non-null, `tools` intersects), and these losers are the only negative examples the rule engine produces. A rule returning `null` is not among them: its condition was simply false, so it proposed nothing.
+
+`S5Orchestrator.evaluateLastDecision()` writes the per-decision outcome, keyed on `decisionId`, from the measured change in `stuckTurns` and `toolSuccessRate`. When governance reports neither number the outcome is **`unknown`**, and it is written as `unknown` — not defaulted into a verdict. The exporter drops decisions measured `negative` even inside a viable session, and keeps `unknown` ones, where the session label remains the only evidence there is.
+
+The exporter strips `decisionId`, `ruleIds` and `rejected` from the training *target* — they are evidence about the decision, not part of it.
+
+So "500+ decisions" understates the requirement: it means 500+ with per-decision outcomes, and the counter starts from the date above.
 
 **Goal:** A small LoRA adapter (on Qwen3.6 or similar) that makes better governance decisions than the hand-coded rules — when to restrict tools, when to compact context, when to suggest model switches. The model sees the full governance state and outputs a coherent S5Decision.
 
