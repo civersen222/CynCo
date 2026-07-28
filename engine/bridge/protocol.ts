@@ -202,6 +202,12 @@ export type GovernanceStatusEvent = {
       hitRate: number
       confidenceInterval: [number, number]
       nullBaselineRate: number
+      /** 'measured' — the predicate scored at untriggered points in this
+       *  session; 'assumed' — the hand-written constant. A significance verdict
+       *  against an assumed baseline is a verdict against a guess, so the wire
+       *  carries the provenance and the display must show it. */
+      nullBaselineSource: 'measured' | 'assumed'
+      nullBaselineSamples: number
       significantlyBetter: boolean
     }[]
   }

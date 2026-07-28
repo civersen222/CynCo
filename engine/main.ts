@@ -574,6 +574,18 @@ async function handleCommand(command: TUICommand): Promise<void> {
           break
         }
 
+        case '/spend': {
+          const db = loop.getGovernance?.()?.getGovernanceDb?.()
+          if (!db) {
+            wsServer.emit({ type: 'stream.token', text: '[System] No governance database — nothing was recorded to spend against.\n' })
+          } else {
+            const { formatSpend } = await import('./vsm/spendReport.js')
+            wsServer.emit({ type: 'stream.token', text: formatSpend(db.getSessionSpend(loop.getSessionId())) })
+          }
+          wsServer.emit({ type: 'message.complete', messageId: '', stopReason: 'end_turn' })
+          break
+        }
+
         case '/read':
           if (args) await loop.handleUserMessage(`Read the file at ${args} and show me its contents.`)
           break
@@ -829,8 +841,16 @@ async function handleCommand(command: TUICommand): Promise<void> {
               table += '-----------|---------|----------|-----------|-------------\n'
               for (const s of stats) {
                 const ci = `[${s.confidenceInterval[0].toFixed(2)}, ${s.confidenceInterval[1].toFixed(2)}]`
-                table += `${s.hypothesis.padEnd(10)} | ${String(s.total).padEnd(7)} | ${(s.hitRate * 100).toFixed(0)}% ${ci} | ${(s.nullBaselineRate * 100).toFixed(0)}%       | ${s.significantlyBetter ? 'YES' : 'NO'}\n`
+                // The null rate is the number the significance verdict is made
+                // against. Printing it bare hid that most of them are guesses.
+                const nullRate = s.nullBaselineSource === 'measured'
+                  ? `${(s.nullBaselineRate * 100).toFixed(0)}% (n=${s.nullBaselineSamples})`
+                  : `${(s.nullBaselineRate * 100).toFixed(0)}% assumed`
+                table += `${s.hypothesis.padEnd(10)} | ${String(s.total).padEnd(7)} | ${(s.hitRate * 100).toFixed(0)}% ${ci} | ${nullRate.padEnd(9)} | ${s.significantlyBetter ? 'YES' : 'NO'}\n`
               }
+              table += '\n"assumed" null rates are hand-written constants, not measurements —\n'
+              table += 'a YES against one is a guess. Measured rates score the same predicate\n'
+              table += 'at points where the hypothesis was not triggered.\n'
               wsServer.emit({ type: 'stream.token', text: table })
             }
             // Intervention success rates — which governance directives actually helped.

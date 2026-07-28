@@ -33,6 +33,43 @@ export type MeasurementRecord = {
   stuckTurns: number
   tokenEfficiency: number
   s4Composite: number
+  /** Per-turn cost ledger. Absent on rows written before it existed, and on any
+   *  turn whose server reported nothing — nullable all the way down on purpose. */
+  cost?: TurnCostRecord
+}
+
+/** The tokens-and-seconds half of a measurement. Every field independently null. */
+export type TurnCostRecord = {
+  prefillTokens: number | null
+  cachedTokens: number | null
+  decodeTokens: number | null
+  prefillMs: number | null
+  decodeMs: number | null
+  wallMs: number | null
+  slot: number | null
+  /** Provenance of the numbers above. Never inferred — written by whoever read
+   *  the response. A row with `source = null` predates the ledger entirely. */
+  source: string | null
+}
+
+/**
+ * A session's total cost, as far as anything measured it.
+ *
+ * `turnsMeasured` is not `turnsTotal`: turns whose server reported no timings
+ * contribute nothing to the sums, so a total shown without the count it covers
+ * understates the real spend by an unknown amount. Both must be displayed.
+ */
+export type SessionSpend = {
+  turnsTotal: number
+  turnsMeasured: number
+  prefillTokens: number
+  cachedTokens: number
+  decodeTokens: number
+  prefillMs: number
+  decodeMs: number
+  wallMs: number
+  /** Distinct `cost_source` values seen. Says which servers produced the numbers. */
+  sources: string[]
 }
 
 export type StrategyFitness = {
@@ -125,6 +162,8 @@ export class GovernanceDB {
       )
     `)
 
+    this.migrateMeasurementCostColumns()
+
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS predictions (
         id               INTEGER PRIMARY KEY,
@@ -139,6 +178,36 @@ export class GovernanceDB {
         created_at       TEXT DEFAULT (datetime('now'))
       )
     `)
+  }
+
+  /**
+   * Add the cost-ledger columns to `measurements` if they are missing.
+   *
+   * Additive and idempotent: ALTER TABLE ADD COLUMN, never a rebuild, so existing
+   * rows survive and simply read null — which is the truth about them. They were
+   * written before anything measured this, and a backfilled zero would claim
+   * those turns were free.
+   *
+   * Nullable with no DEFAULT for the same reason. SQLite ALTER TABLE ADD COLUMN
+   * without a default fills existing rows with NULL, which is exactly wanted.
+   */
+  private migrateMeasurementCostColumns(): void {
+    const existing = new Set(
+      (this.db.prepare('PRAGMA table_info(measurements)').all() as { name: string }[]).map(c => c.name),
+    )
+    const columns: [string, string][] = [
+      ['prefill_tokens', 'INTEGER'],
+      ['cached_tokens', 'INTEGER'],
+      ['decode_tokens', 'INTEGER'],
+      ['prefill_ms', 'REAL'],
+      ['decode_ms', 'REAL'],
+      ['wall_ms', 'REAL'],
+      ['slot', 'INTEGER'],
+      ['cost_source', 'TEXT'],
+    ]
+    for (const [name, type] of columns) {
+      if (!existing.has(name)) this.db.exec(`ALTER TABLE measurements ADD COLUMN ${name} ${type}`)
+    }
   }
 
   // ── Sessions ────────────────────────────────────────────────────
@@ -206,9 +275,12 @@ export class GovernanceDB {
     const stmt = this.db.prepare(`
       INSERT INTO measurements
         (session_id, turn, tool_error_rate, context_utilization,
-         stuck_turns, token_efficiency, s4_composite)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+         stuck_turns, token_efficiency, s4_composite,
+         prefill_tokens, cached_tokens, decode_tokens,
+         prefill_ms, decode_ms, wall_ms, slot, cost_source)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
+    const c = record.cost
     stmt.run(
       record.sessionId,
       record.turn,
@@ -217,13 +289,23 @@ export class GovernanceDB {
       record.stuckTurns,
       record.tokenEfficiency,
       record.s4Composite,
+      c?.prefillTokens ?? null,
+      c?.cachedTokens ?? null,
+      c?.decodeTokens ?? null,
+      c?.prefillMs ?? null,
+      c?.decodeMs ?? null,
+      c?.wallMs ?? null,
+      c?.slot ?? null,
+      c?.source ?? null,
     )
   }
 
   getMeasurements(sessionId: string): MeasurementRecord[] {
     const stmt = this.db.prepare(`
       SELECT session_id, turn, tool_error_rate, context_utilization,
-             stuck_turns, token_efficiency, s4_composite
+             stuck_turns, token_efficiency, s4_composite,
+             prefill_tokens, cached_tokens, decode_tokens,
+             prefill_ms, decode_ms, wall_ms, slot, cost_source
       FROM measurements
       WHERE session_id = ?
       ORDER BY turn ASC
@@ -237,7 +319,52 @@ export class GovernanceDB {
       stuckTurns: row.stuck_turns,
       tokenEfficiency: row.token_efficiency,
       s4Composite: row.s4_composite,
+      cost: {
+        prefillTokens: row.prefill_tokens, cachedTokens: row.cached_tokens,
+        decodeTokens: row.decode_tokens, prefillMs: row.prefill_ms,
+        decodeMs: row.decode_ms, wallMs: row.wall_ms, slot: row.slot,
+        source: row.cost_source,
+      },
     }))
+  }
+
+  /**
+   * Where a session's time and tokens went. The answer to "/spend".
+   *
+   * `turnsMeasured` is not `turnsTotal`: turns whose server reported no timings
+   * contribute nothing to the sums, and reporting a total without saying how many
+   * turns it covers would understate the real spend by an unknown amount. Callers
+   * must show both.
+   */
+  getSessionSpend(sessionId: string): SessionSpend {
+    const row = this.db.prepare(`
+      SELECT
+        COUNT(*)                                              AS turns_total,
+        SUM(CASE WHEN cost_source IS NOT NULL
+                  AND cost_source != 'none' THEN 1 ELSE 0 END) AS turns_measured,
+        COALESCE(SUM(prefill_tokens), 0) AS prefill_tokens,
+        COALESCE(SUM(cached_tokens), 0)  AS cached_tokens,
+        COALESCE(SUM(decode_tokens), 0)  AS decode_tokens,
+        COALESCE(SUM(prefill_ms), 0)     AS prefill_ms,
+        COALESCE(SUM(decode_ms), 0)      AS decode_ms,
+        COALESCE(SUM(wall_ms), 0)        AS wall_ms
+      FROM measurements WHERE session_id = ?
+    `).get(sessionId) as any
+    const sources = (this.db.prepare(`
+      SELECT DISTINCT cost_source AS s FROM measurements
+      WHERE session_id = ? AND cost_source IS NOT NULL
+    `).all(sessionId) as { s: string }[]).map(r => r.s)
+    return {
+      turnsTotal: row?.turns_total ?? 0,
+      turnsMeasured: row?.turns_measured ?? 0,
+      prefillTokens: row?.prefill_tokens ?? 0,
+      cachedTokens: row?.cached_tokens ?? 0,
+      decodeTokens: row?.decode_tokens ?? 0,
+      prefillMs: row?.prefill_ms ?? 0,
+      decodeMs: row?.decode_ms ?? 0,
+      wallMs: row?.wall_ms ?? 0,
+      sources,
+    }
   }
 
   // ── Analytics ───────────────────────────────────────────────────

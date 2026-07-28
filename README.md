@@ -114,6 +114,8 @@ LOCALCODE_PROVIDER=llama-cpp \
 
 The engine auto-manages llama-server with: single-slot mode, context checkpoints for prefix-cache rollback (Qwen3.6 is a hybrid Gated DeltaNet model — warm turns only prefill new tokens instead of reprocessing the whole prompt), capped reasoning budget (256 tokens), and accurate tok/s from server eval timing. The engine keeps its prompt strictly append-only across turns to preserve the cache (enforced by a regression test). Measured live at 45K tokens of context: warm turns restore a checkpoint with ~0.998 prefix reuse and prefill only the ~500-900 genuinely new tokens (~0.6-0.9 s) instead of reprocessing the full prompt (~17 s) — each turn pays only for its new content. Side queries route through the same llama-server instance to avoid VRAM thrashing. Full tuning recipe: [docs/serving/rtx-5090-qwen3.6-27b.md](docs/serving/rtx-5090-qwen3.6-27b.md).
 
+Every turn's cost is recorded to the `measurements` table: prefill tokens, cached tokens, decode tokens, prefill/decode milliseconds, wall milliseconds, and the source the numbers came from. Prefill tokens are `timings.prompt_n` — the tokens the server actually evaluated — not `prompt_tokens`, which is the size of the whole prompt; conflating them makes a cached 60K prefix look identical to a cold one. A turn whose server reported no timings is stored as `NULL`, not zero: it is unmeasured, not free. `/spend` sums the session and reports how many turns it covers, so a partial total reads as a floor rather than a claim.
+
 ---
 
 ## Hardware Expectations
@@ -240,10 +242,10 @@ Open `http://localhost:9161` during any session. Five tabs:
 **[Governance]** — Real-time VSM monitoring:
 - **Tool Activity** — stacked bar chart + live feed with latency
 - **Governance Health** — S3/S4 balance, variety ratio, stuck turns, algedonic alerts, and action-fingerprint repetition alarms (flags 3-identical / 6-alternating tool-call loops)
-- **Prediction Tracker** — 8 redesigned hypotheses measuring governance effectiveness (H1: Stuck Escape, H2: Nudge Response), model predictability (H4: Read-to-Edit, H5: Thinking Efficiency), and parameter tuning (H6: Temperature Effect, H7: S4 Reflection ROI)
+- **Prediction Tracker** — 8 redesigned hypotheses measuring governance effectiveness (H1: Stuck Escape, H2: Nudge Response), model predictability (H4: Read-to-Edit, H5: Thinking Efficiency), and parameter tuning (H6: Temperature Effect, H7: S4 Reflection ROI). Each is scored against a null baseline, and the baseline says where it came from: `measured` means the hypothesis's own success predicate was scored on the same tool stream at points where it was *not* triggered; `assumed` means the hand-written constant. Six of the eight can be measured; H3 reads governance state and H8 is scored once at session end, so both stay assumed. A significance verdict against an assumed baseline is a verdict against a guess, and `/predictions` now says so.
 - **Active Contract** — assertion status with pass/fail/pending
 - **S5 Decision Log** — live policy decisions with reasoning
-- **tok/s** — real-time inference speed from llama-server eval timing
+- **tok/s** — from `timings.predicted_n / predicted_ms`, the server's own count and clock. It used to be the engine's count of *stream deltas* over its own wall clock, which reads low under speculative decoding (one chunk can carry several tokens) and includes queueing the server never saw.
 
 **[Brain]** — Model cognition: thinking-token viewer, per-token entropy trace, and (with setup) a live concept workspace read from mid-network activations. See **The Brain** below.
 

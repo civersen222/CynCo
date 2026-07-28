@@ -7,7 +7,7 @@
 
 import type {
   ContentBlock, Message, ToolDefinition, CompletionResponse,
-  StreamEvent, StopReason, TokenUsage, TokenLogprob,
+  StreamEvent, StopReason, TokenUsage, TokenLogprob, TurnCost,
 } from '../types.js'
 import { parseNativeToolCalls } from '../engine/toolCallRepair.js'
 
@@ -125,7 +125,11 @@ export function fromOpenAIResponse(oai: {
     }
     finish_reason: string | null
   }>
-  usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number }
+  usage?: {
+    prompt_tokens: number; completion_tokens: number; total_tokens: number
+    prompt_tokens_details?: { cached_tokens?: number }
+  }
+  timings?: Record<string, unknown>
 }): CompletionResponse {
   if (!oai.choices || oai.choices.length === 0) {
     return { content: [], model: oai.model, stopReason: 'error', usage: { inputTokens: 0, outputTokens: 0 } }
@@ -149,7 +153,61 @@ export function fromOpenAIResponse(oai: {
     usage: {
       input_tokens: oai.usage?.prompt_tokens ?? 0,
       output_tokens: oai.usage?.completion_tokens ?? 0,
+      cost: parseTurnCost(oai),
     },
+  }
+}
+
+/**
+ * Extract what the turn cost from a server response.
+ *
+ * llama-server attaches a `timings` block to the final chunk (and to non-stream
+ * responses); OpenAI-compatible servers generally do not, and Ollama's shim does
+ * not. Anything the server did not report stays null — a missing timing is not a
+ * timing of zero.
+ */
+export function parseTurnCost(payload: {
+  usage?: { prompt_tokens?: number; completion_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } }
+  timings?: Record<string, unknown>
+}): TurnCost {
+  const n = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null)
+  const t = payload.timings
+
+  if (t && (n(t.prompt_n) !== null || n(t.predicted_n) !== null)) {
+    return {
+      // prompt_n is the work; usage.prompt_tokens is the size. They differ by
+      // exactly the cache hit, which is the number this ledger exists to expose.
+      prefillTokens: n(t.prompt_n),
+      cachedTokens: n(t.cache_n) ?? n(payload.usage?.prompt_tokens_details?.cached_tokens),
+      decodeTokens: n(t.predicted_n) ?? n(payload.usage?.completion_tokens),
+      prefillMs: n(t.prompt_ms),
+      decodeMs: n(t.predicted_ms),
+      wallMs: null, // filled by the caller, which is the only one holding a clock
+      slot: null,   // absent from the OpenAI-compatible response
+      source: 'server-timings',
+    }
+  }
+
+  if (payload.usage) {
+    return {
+      // No timings block: the token counts are known but how they split between
+      // fresh prefill and cache is not, so prefillTokens stays null rather than
+      // being set to the prompt size it is not.
+      prefillTokens: null,
+      cachedTokens: n(payload.usage.prompt_tokens_details?.cached_tokens),
+      decodeTokens: n(payload.usage.completion_tokens),
+      prefillMs: null,
+      decodeMs: null,
+      wallMs: null,
+      slot: null,
+      source: 'usage-only',
+    }
+  }
+
+  return {
+    prefillTokens: null, cachedTokens: null, decodeTokens: null,
+    prefillMs: null, decodeMs: null, wallMs: null, slot: null,
+    source: 'none',
   }
 }
 
@@ -190,7 +248,11 @@ export function fromOpenAIStreamChunk(chunk: {
     }
     finish_reason: string | null
   }>
-  usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number }
+  usage?: {
+    prompt_tokens: number; completion_tokens: number; total_tokens: number
+    prompt_tokens_details?: { cached_tokens?: number }
+  }
+  timings?: Record<string, unknown>
 }): StreamEvent[] {
   const events: StreamEvent[] = []
   const choice = chunk.choices?.[0]
@@ -215,6 +277,9 @@ export function fromOpenAIStreamChunk(chunk: {
       usage: {
         input_tokens: chunk.usage.prompt_tokens,
         output_tokens: chunk.usage.completion_tokens,
+        // Rides the same chunk that carries the token counts, because
+        // llama-server attaches `timings` to exactly that chunk.
+        cost: parseTurnCost(chunk),
       },
     })
   }

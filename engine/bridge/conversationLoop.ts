@@ -6,7 +6,7 @@
 
 import { randomUUID } from 'crypto'
 import type { EngineEvent, TUICommand, DiffHunk, DiffLine } from './protocol.js'
-import type { ThinkingConfig } from '../types.js'
+import type { ThinkingConfig, TurnCost } from '../types.js'
 import { asSystemPrompt } from '../types.js'
 import type { LocalCodeConfig } from '../config.js'
 import { isS5EnforcementEnabled, isAllToolsEnabled, isProactiveToolsEnabled } from '../config.js'
@@ -2154,6 +2154,9 @@ export class ConversationLoop {
       let tokenCount = 0
       let reasoningTokenCount = 0
       let stopReason = 'end_turn'
+      // What the server said this turn cost. Stays null when it said nothing —
+      // a turn with no reported timings is unmeasured, not free.
+      let turnCost: TurnCost | null = null
       const modelCallStartTime = Date.now()
       let assistantContent: unknown[] = []
       const toolsUsedThisTurn: string[] = []
@@ -2207,6 +2210,11 @@ export class ConversationLoop {
                 this.lastMeasuredPromptTokens = event.usage.input_tokens
                 this.lastMeasuredAtMessageCount = this.messages.length
               }
+              // The cost ledger rides the same chunk. Kept separate from
+              // input_tokens above because they answer different questions:
+              // that one is how big the prompt was, this one is how much of it
+              // the server actually had to evaluate.
+              if (event.usage?.cost) turnCost = event.usage.cost
               // Capture estimated output tokens from the stream translator
               if (event.usage?.output_tokens) {
                 const estimatedTokens = event.usage.output_tokens
@@ -2216,12 +2224,32 @@ export class ConversationLoop {
               break
             case 'message_stop': {
               const modelCallElapsedMs = Date.now() - modelCallStartTime
-              const tokPerSec = modelCallElapsedMs > 0 ? Math.round((tokenCount + reasoningTokenCount) / (modelCallElapsedMs / 1000) * 10) / 10 : 0
-              console.log(`[loop] message_stop, tokens=${tokenCount}+${reasoningTokenCount}r, ${tokPerSec} tok/s, stop=${stopReason}`)
+              // `tokenCount` and `reasoningTokenCount` count stream DELTAS, not
+              // tokens. One chunk can carry several tokens under speculative
+              // decoding / MTP, so the delta count is a floor on the real one and
+              // every rate derived from it reads low. `timings.predicted_n` is the
+              // server's own count of what it generated; when it is present, use
+              // it, and use `predicted_ms` with it — dividing a measured token
+              // count by a wall clock that includes queueing mixes the two.
+              const deltaCount = tokenCount + reasoningTokenCount
+              const measuredDecode = turnCost?.decodeTokens ?? null
+              const measuredDecodeMs = turnCost?.decodeMs ?? null
+              const rateTokens = measuredDecode ?? deltaCount
+              const rateMs = measuredDecode !== null && measuredDecodeMs !== null ? measuredDecodeMs : modelCallElapsedMs
+              const tokPerSec = rateMs > 0 ? Math.round(rateTokens / (rateMs / 1000) * 10) / 10 : 0
+              // Thinking is not reported separately by any server — `predicted_n`
+              // covers thinking and output together. The delta split is the only
+              // evidence of where the decode went, so it is used to apportion the
+              // measured total. This is a derived number, not a measured one: it
+              // assumes thinking and output average the same tokens per delta.
+              const thinkingTokensDerived = measuredDecode !== null && deltaCount > 0
+                ? Math.round(measuredDecode * (reasoningTokenCount / deltaCount))
+                : reasoningTokenCount
+              console.log(`[loop] message_stop, deltas=${tokenCount}+${reasoningTokenCount}r, decode=${measuredDecode ?? 'unmeasured'}, ${tokPerSec} tok/s, stop=${stopReason}`)
               this.lastTokPerSec = tokPerSec
               this.lastModelCallMs = modelCallElapsedMs
-              this.governance.setTokPerSec(tokPerSec, tokenCount + reasoningTokenCount)
-              this.governance.setThinkingTokens(reasoningTokenCount)
+              this.governance.setTokPerSec(tokPerSec, rateTokens)
+              this.governance.setThinkingTokens(thinkingTokensDerived)
               this.flushUncertainty()
               this.thinkingRecorder?.finalizeTurn({
                 tokenCount: reasoningTokenCount,
@@ -2255,8 +2283,8 @@ export class ConversationLoop {
               const userMsgText = lastUserMsg?.content?.[0]?.text ?? ''
               this.governance.onTurnComplete({
                 toolsCalled: (assistantContent as any[]).filter((b: any) => b.type === 'tool_use').length,
-                thinkingTokens: reasoningTokenCount,
-                totalTokens: tokenCount + reasoningTokenCount,
+                thinkingTokens: thinkingTokensDerived,
+                totalTokens: rateTokens,
                 latencyMs: Date.now() - iterationStartMs,
                 // Must be the real streamed text: '' here made responseStuck
                 // permanently true (uniform empty prefixes) — 2026-06-12
@@ -2264,6 +2292,13 @@ export class ConversationLoop {
                 response: streamedText,
                 userMessage: userMsgText,
                 contextUtilization: Math.min(1, this.estimateMessageTokens() / (this.config.contextLength ?? 32768)),
+                // Wall time is the one number the server cannot report: it does
+                // not see queueing or transport. `parseTurnCost` leaves it null
+                // for exactly this reason, and this is the only clock that was
+                // running around the request. Measured over the model call, not
+                // the iteration — the iteration includes tool execution, which
+                // is not what the model cost.
+                cost: turnCost ? { ...turnCost, wallMs: modelCallElapsedMs } : undefined,
               })
 
               // Emit governance status to TUI

@@ -24,6 +24,7 @@ SLASH_COMMANDS = [
     ("/approve-all", "Auto-approve all tool calls for this session"),
     ("/context", "Show current context window status"),
     ("/compact", "Compact the conversation context"),
+    ("/spend", "Show this session's token and time cost"),
     ("/read", "Read a file (e.g. /read src/foo.ts)"),
     ("/search", "Search the codebase (e.g. /search TODO)"),
     ("/git", "Show git status and recent changes"),
@@ -67,6 +68,7 @@ HELP_TEXT = """[bold]Available Commands:[/bold]
 [bold cyan]Context[/bold cyan]
   [cyan]/context[/cyan]      Show current context window status
   [cyan]/compact[/cyan]      Compact the conversation context
+  [cyan]/spend[/cyan]       Show this session's token and time cost
 
 [bold cyan]Code & Git[/bold cyan]
   [cyan]/read <path>[/cyan]  Read a file and show its contents

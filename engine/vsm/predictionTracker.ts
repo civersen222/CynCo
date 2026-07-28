@@ -48,8 +48,22 @@ export type PredictionStats = {
   hitRate: number
   /** [lower, upper] Wilson score 95 % CI */
   confidenceInterval: [number, number]
-  /** Expected hit rate if the cybernetics layer did nothing (random baseline) */
+  /** Expected hit rate if the cybernetics layer did nothing. */
   nullBaselineRate: number
+  /**
+   * Where `nullBaselineRate` came from.
+   *
+   * 'measured' — the hypothesis's own success predicate, evaluated on the same
+   *              tool stream at points where it was NOT triggered. That is what
+   *              a null baseline is, and it is the only version of this number
+   *              that means anything.
+   * 'assumed'  — the hand-written constant in HYPOTHESES. A guess. It was the
+   *              only source until 2026-07-28, which made `significantlyBetter`
+   *              a comparison against a number nobody had measured.
+   */
+  nullBaselineSource: 'measured' | 'assumed'
+  /** How many untriggered points the measured baseline rests on. 0 when assumed. */
+  nullBaselineSamples: number
   /** true when the lower bound of the CI exceeds the null baseline */
   significantlyBetter: boolean
 }
@@ -124,7 +138,30 @@ function probitApprox(p: number): number {
 
 // ─── Hypothesis metadata ─────────────────────────────────────────────────────
 
-/** Hypothesis metadata — names, null baselines, evaluation windows */
+/**
+ * Hypotheses whose success predicate is a pure function of the recent tool
+ * stream, and can therefore be evaluated at an untriggered point to measure
+ * what the outcome rate is when governance did nothing.
+ *
+ * H3 is excluded: its predicate reads the GovernanceReport, whose state at an
+ * arbitrary past point is not recoverable. H8 is excluded: it is evaluated once,
+ * at session end, so there are no untriggered points within a session.
+ */
+const TOOL_STREAM_HYPOTHESES = ['H1', 'H2', 'H4', 'H5', 'H6', 'H7'] as const
+
+/**
+ * Untriggered observations required before a measured baseline replaces the
+ * assumed constant. Below this the measured rate is noisier than the guess it
+ * would replace; 20 puts the Wilson half-width around ±0.20 at p=0.5.
+ */
+const MIN_BASELINE_SAMPLES = 20
+
+/** Hypothesis metadata — names, ASSUMED null baselines, evaluation windows.
+ *
+ *  These constants were never measured. They are the fallback used until the
+ *  session has accumulated MIN_BASELINE_SAMPLES untriggered observations of the
+ *  hypothesis's own predicate, and `PredictionStats.nullBaselineSource` says
+ *  which of the two a given row used. */
 export const HYPOTHESES: Record<HypothesisId, { name: string; nullBaseline: number; evalWindow: number }> = {
   H1: { name: 'Stuck Escape',        nullBaseline: 0.40, evalWindow: 3 },
   H2: { name: 'Nudge Response',      nullBaseline: 0.50, evalWindow: 1 },
@@ -148,8 +185,51 @@ export class PredictionTracker {
   /** Predictions that have been evaluated (closed) */
   completedPredictions: Prediction[] = []
 
+  /** Rolling tool-name window the baseline sampler evaluates predicates against.
+   *  Six is the widest slice any predicate takes (H7's `slice(-6, -3)`). */
+  private _baselineWindow: string[] = []
+
+  /** Untriggered observations per hypothesis: [successes, total]. */
+  private _baseline = new Map<HypothesisId, [number, number]>()
+
   constructor(sessionId: string) {
     this.sessionId = sessionId
+  }
+
+  // ── Null baseline measurement ─────────────────────────────────────────────
+
+  /**
+   * Observe one tool call and score every tool-stream hypothesis that is NOT
+   * currently triggered.
+   *
+   * This is the measured null baseline: the hypothesis's own success predicate,
+   * asked at a moment when governance did nothing to provoke it. Points where a
+   * prediction is open are skipped — counting those would fold the effect being
+   * tested into the baseline it is tested against, which is the one way to make
+   * this number worse than the guess it replaces.
+   */
+  observeToolCall(toolName: string): void {
+    this._baselineWindow.push(toolName)
+    if (this._baselineWindow.length > 6) this._baselineWindow = this._baselineWindow.slice(-6)
+
+    const triggered = new Set(this.openPredictions.map(p => p.hypothesis))
+    for (const hyp of TOOL_STREAM_HYPOTHESES) {
+      if (triggered.has(hyp)) continue
+      const result = evaluateToolPredicate(hyp, this._baselineWindow)
+      if (!result) continue
+      const [ok, n] = this._baseline.get(hyp) ?? [0, 0]
+      this._baseline.set(hyp, [ok + (result.correct ? 1 : 0), n + 1])
+    }
+  }
+
+  /**
+   * The null baseline actually used for a hypothesis, and where it came from.
+   * Falls back to the assumed constant below MIN_BASELINE_SAMPLES.
+   */
+  getNullBaseline(hyp: HypothesisId): { rate: number; source: 'measured' | 'assumed'; samples: number } {
+    const [ok, n] = this._baseline.get(hyp) ?? [0, 0]
+    if (n >= MIN_BASELINE_SAMPLES) return { rate: ok / n, source: 'measured', samples: n }
+    return { rate: HYPOTHESES[hyp].nullBaseline, source: 'assumed', samples: 0 }
   }
 
   // ── Trigger checks ────────────────────────────────────────────────────────
@@ -275,7 +355,7 @@ export class PredictionTracker {
       const correct = preds.filter(p => p.correct === true).length
       const hitRate = total > 0 ? correct / total : 0
       const ci = wilsonScore(correct, total, 0.05)
-      const nullBaseline = HYPOTHESES[hyp].nullBaseline
+      const nullBaseline = this.getNullBaseline(hyp)
 
       stats.push({
         hypothesis: hyp,
@@ -283,8 +363,10 @@ export class PredictionTracker {
         correct,
         hitRate,
         confidenceInterval: ci,
-        nullBaselineRate: nullBaseline,
-        significantlyBetter: ci[0] > nullBaseline,
+        nullBaselineRate: nullBaseline.rate,
+        nullBaselineSource: nullBaseline.source,
+        nullBaselineSamples: nullBaseline.samples,
+        significantlyBetter: ci[0] > nullBaseline.rate,
       })
     }
 
@@ -330,48 +412,79 @@ export class PredictionTracker {
     report: GovernanceReport,
     recentTools: string[],
   ): { correct: boolean; actualOutcome: string } {
-    const ACTION_TOOLS = ['Edit', 'Write', 'MultiEdit', 'Bash', 'ApplyPatch']
-    const lastN = (n: number) => recentTools.slice(-n)
+    const toolOnly = evaluateToolPredicate(p.hypothesis, recentTools)
+    if (toolOnly) return toolOnly
 
     switch (p.hypothesis) {
-      case 'H1': {
-        const hasAction = recentTools.some(t => ACTION_TOOLS.includes(t))
-        return { correct: hasAction, actualOutcome: `action_tools_used=${hasAction}, recent=[${lastN(3).join(',')}]` }
-      }
-      case 'H2': {
-        const beforeNudge = recentTools.slice(-4, -1)
-        const afterNudge = recentTools.slice(-1)[0]
-        const changed = afterNudge ? !beforeNudge.includes(afterNudge) : false
-        return { correct: changed, actualOutcome: `before=[${beforeNudge.join(',')}] after=${afterNudge || 'none'}` }
-      }
       case 'H3': {
         const completed = report.stuckTurns === 0 && report.toolSuccessRate > 0.7
         return { correct: completed, actualOutcome: `stuck=${report.stuckTurns}, successRate=${report.toolSuccessRate.toFixed(2)}` }
       }
-      case 'H4': {
-        const hasEdit = recentTools.slice(-2).some(t => t === 'Edit' || t === 'Write' || t === 'MultiEdit')
-        return { correct: hasEdit, actualOutcome: `recent=[${lastN(2).join(',')}]` }
-      }
-      case 'H5': {
-        const nextTool = recentTools[recentTools.length - 1]
-        const isAction = nextTool ? ACTION_TOOLS.includes(nextTool) : false
-        return { correct: isAction, actualOutcome: `next_tool=${nextTool || 'none'}` }
-      }
-      case 'H6': {
-        const last3 = recentTools.slice(-4, -1)
-        const current = recentTools[recentTools.length - 1]
-        const different = current ? !last3.includes(current) : false
-        return { correct: different, actualOutcome: `last3=[${last3.join(',')}] current=${current || 'none'}` }
-      }
-      case 'H7': {
-        const before = new Set(recentTools.slice(-6, -3))
-        const after = new Set(recentTools.slice(-3))
-        const changed = ![...after].every(t => before.has(t))
-        return { correct: changed, actualOutcome: `before=[${[...before].join(',')}] after=[${[...after].join(',')}]` }
-      }
       case 'H8': {
         return { correct: false, actualOutcome: 'H8 evaluated at session end' }
       }
+      default: {
+        // Unreachable: evaluateToolPredicate covers every other id. Kept so a
+        // newly added hypothesis fails loudly here instead of returning
+        // `undefined` and being recorded as a wrong prediction.
+        throw new Error(`no evaluator for hypothesis ${p.hypothesis}`)
+      }
     }
+  }
+}
+
+/**
+ * The success predicate for every hypothesis that depends only on the recent
+ * tool stream. Returns null for the two that do not (H3 reads the governance
+ * report, H8 is session-scoped).
+ *
+ * Extracted from `_evaluate` so the identical predicate can be run at points
+ * where the hypothesis was NOT triggered. That is what makes a measured null
+ * baseline possible: the same question, asked when governance did nothing.
+ */
+export function evaluateToolPredicate(
+  hypothesis: HypothesisId,
+  recentTools: string[],
+): { correct: boolean; actualOutcome: string } | null {
+  const ACTION_TOOLS = ['Edit', 'Write', 'MultiEdit', 'Bash', 'ApplyPatch']
+  const lastN = (n: number) => recentTools.slice(-n)
+
+  switch (hypothesis) {
+    case 'H1': {
+      const hasAction = recentTools.some(t => ACTION_TOOLS.includes(t))
+      return { correct: hasAction, actualOutcome: `action_tools_used=${hasAction}, recent=[${lastN(3).join(',')}]` }
+    }
+    case 'H2': {
+      const beforeNudge = recentTools.slice(-4, -1)
+      const afterNudge = recentTools.slice(-1)[0]
+      const changed = afterNudge ? !beforeNudge.includes(afterNudge) : false
+      return { correct: changed, actualOutcome: `before=[${beforeNudge.join(',')}] after=${afterNudge || 'none'}` }
+    }
+    case 'H4': {
+      const hasEdit = recentTools.slice(-2).some(t => t === 'Edit' || t === 'Write' || t === 'MultiEdit')
+      return { correct: hasEdit, actualOutcome: `recent=[${lastN(2).join(',')}]` }
+    }
+    case 'H5': {
+      const nextTool = recentTools[recentTools.length - 1]
+      const isAction = nextTool ? ACTION_TOOLS.includes(nextTool) : false
+      return { correct: isAction, actualOutcome: `next_tool=${nextTool || 'none'}` }
+    }
+    case 'H6': {
+      const last3 = recentTools.slice(-4, -1)
+      const current = recentTools[recentTools.length - 1]
+      const different = current ? !last3.includes(current) : false
+      return { correct: different, actualOutcome: `last3=[${last3.join(',')}] current=${current || 'none'}` }
+    }
+    case 'H7': {
+      const before = new Set(recentTools.slice(-6, -3))
+      const after = new Set(recentTools.slice(-3))
+      const changed = ![...after].every(t => before.has(t))
+      return { correct: changed, actualOutcome: `before=[${[...before].join(',')}] after=[${[...after].join(',')}]` }
+    }
+    // H3 reads the governance report and H8 is scored once at session end.
+    // Neither is a function of the tool stream, so neither can be sampled at an
+    // untriggered point, and both keep their assumed baseline.
+    default:
+      return null
   }
 }

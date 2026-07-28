@@ -102,7 +102,12 @@ describe('fromOpenAIResponse', () => {
     const result = fromOpenAIResponse(oai)
     expect(result.content).toEqual([{ type: 'text', text: 'hello' }])
     expect(result.stop_reason).toBe('end_turn')
-    expect(result.usage).toEqual({ input_tokens: 10, output_tokens: 5 })
+    expect(result.usage.input_tokens).toBe(10)
+    expect(result.usage.output_tokens).toBe(5)
+    // Usage now also carries the cost ledger. This server sent no timings, so
+    // the ledger says so rather than filling the gap with the token counts.
+    expect(result.usage.cost?.source).toBe('usage-only')
+    expect(result.usage.cost?.prefillTokens).toBeNull()
   })
 
   it('converts response with tool_calls', () => {

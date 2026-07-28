@@ -283,6 +283,10 @@ export class CyberneticsGovernance {
     if (this.toolHistory.length > 50) {
       this.toolHistory = this.toolHistory.slice(-50)
     }
+    // Feed the null-baseline sampler. Here rather than in onTurnComplete because
+    // the predicates are per tool call, and a turn calling five tools is five
+    // observations, not one.
+    this._predictionTracker.observeToolCall(name)
     // Track tool signatures for smarter stuck detection
     this.lastToolSignatures.push(name)
     if (this.lastToolSignatures.length > 5) this.lastToolSignatures = this.lastToolSignatures.slice(-5)
@@ -384,6 +388,10 @@ export class CyberneticsGovernance {
     userMessage?: string
     /** 0..1 fraction of the context window in use at turn end (2026-07-16 audit). */
     contextUtilization?: number
+    /** What the server reported this turn cost. Absent when it reported nothing;
+     *  passed through to the measurements row unchanged rather than defaulted,
+     *  so an unmeasured turn stays visibly unmeasured. */
+    cost?: import('./governanceDb.js').TurnCostRecord
   }): void {
     // ── Consume-on-read: snapshot + clear all per-turn flags in one place, ───
     // before any early return, so flags are never carried across turns
@@ -607,6 +615,7 @@ export class CyberneticsGovernance {
           stuckTurns: this.stuckCount,
           tokenEfficiency: 1.0,
           s4Composite: 5.0,
+          cost: metrics.cost,
         })
       } catch {}
     }
