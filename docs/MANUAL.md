@@ -97,7 +97,7 @@ data, and write the audit log before exit.
 | Flag / Var | Purpose |
 |---|---|
 | `--run-task <file>` | One-shot mission from a JSON task file |
-| `--export-training <path>` | Export `DecisionLogger` history → JSONL |
+| `--export-training <path>` | Export the S5 journal (`~/.cynco/training/s5-decisions.jsonl`), joined to session outcomes from `governance.db` and filtered to viable sessions → JSONL |
 | `--run-ablation <path>` | Governed vs ungoverned A/B over a case file |
 | `LOCALCODE_MODEL` | **Required.** Model name (e.g. `qwen3.6`, `gemma4:31b`) |
 | `LOCALCODE_PROVIDER` | `ollama` (default), `llama-cpp`, `lmstudio`, `openai-compat`, `vllm` |
@@ -299,8 +299,15 @@ broker, enforces output limits, and records outcomes for governance.
 - **Context compression** (`engine/context/`): `ContextCompressor` summarizes the
   oldest messages via a side-query when utilization crosses the warning threshold.
 - **Agents** (`engine/agents/`): `SubAgent` isolated loops with personas;
-  `S2Coordinator` polls GPU utilization and manages the agent queue; `cascade.ts`
-  classifies task complexity to route between fast and powerful models.
+  `S2Coordinator` polls GPU utilization and manages the agent queue.
+- **Decision records** — three different things, easy to confuse:
+  `engine/decisions/logger.ts` writes per-turn telemetry to
+  `~/.cynco/decisions/YYYY-MM-DD.jsonl` (tools called, latency, tokens);
+  `engine/training/decisionJournal.ts` writes the VSM training journal to
+  `~/.cynco/training/s{1-5}-decisions.jsonl` and is what `--export-training`
+  reads; `DecisionLogEntry` in `engine/s5/types.ts` is neither — it is an
+  in-memory list the S5 orchestrator keeps so `/s5` can print recent decisions,
+  and it is never written to disk.
 - **Profiles** (`engine/profiles/`): YAML profile loading with inheritance from
   `~/.cynco/profiles/` (and project-local `.cynco/profiles/`, higher priority).
 - **Workflows** (`engine/workflows/`): phase-based structured tasks

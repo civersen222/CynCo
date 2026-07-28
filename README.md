@@ -58,9 +58,11 @@ ollama pull jina-code-embeddings-0.5b
 
 If that model isn't installed it falls back to `nomic-embed-text` at runtime. Override with `LOCALCODE_EMBED_MODEL` — switching embed models requires a re-index.
 
-### Cascade (Optional)
+### A second model (optional)
 
-If you have a second GPU on the network, run a smaller model (e.g. Devstral-Small-2) as a cascade secondary. CynCo's S2 coordinator routes simple tasks to the fast model and complex tasks to your primary.
+Configure more than one model and S5 can switch between them mid-session. Rule W2 fires when latency is *measured* rising over at least five turns and an alternative is configured, and the conversation loop applies the switch.
+
+This is a reaction to observed slowness, not a router: nothing inspects a task and sends it to a smaller model up front. There is no dispatch-time complexity classifier, and no plan to add one — S5 already carries a measured difficulty signal (`promptDifficulty`, derived from turn telemetry), which is strictly better evidence than guessing from the wording of a request.
 
 ---
 
@@ -122,7 +124,7 @@ The engine auto-manages llama-server with: single-slot mode, context checkpoints
 | 16 GB | Devstral-Small-2 Q6 | Multi-file projects, sub-agents |
 | 24 GB | Qwen3.6-27B Q4_K_M | Full feature set, parallel agents |
 | **32 GB** | **Qwen3.6-27B Q6_K + MTP** | **Optimal. ~100 tok/s with room for 64K context + agents.** |
-| 32+16 GB (dual) | Primary + cascade secondary | Complex tasks on primary, simple on secondary |
+| 32+16 GB (dual) | Primary + a smaller alternative | S5 can switch to the alternative when latency rises (rule W2) |
 
 Smaller models (<7B) struggle with the tool-calling format. 24B+ recommended for real work.
 
@@ -346,12 +348,18 @@ Read, Write, Edit, MultiEdit, ApplyPatch, ReplaceFunction, Bash, Git, Glob, Grep
 
 ## Fine-Tuned Models (Coming)
 
-CynCo collects governance decision data during every session — (input, decision, outcome) triples for each of its S1-S5 systems. This data is the foundation for fine-tuned models that will replace the rule-based governance with learned governance:
+CynCo collects governance decision data during every session, per VSM system, in `~/.cynco/training/s{1-5}-decisions.jsonl` (`engine/training/decisionJournal.ts`). This data is the foundation for fine-tuned models that will replace the rule-based governance with learned governance:
 
 ### S5 Decision Model
-The first fine-tuning target. Currently CynCo uses a rule-based S5 with 21 hand-coded rules. The decision journal collects every S5 decision with the full governance snapshot (context usage, tool success rate, variety balance, stuck turns, etc.) and the outcome (did the decision help?).
+The first fine-tuning target. Currently CynCo uses a rule-based S5 with 21 hand-coded rules. The decision journal collects every S5 decision with the full governance snapshot (context usage, tool success rate, variety balance, stuck turns, etc.).
 
-**Status:** Collecting training data. Need 500+ decisions with backfilled outcomes before LoRA fine-tuning is viable. The journal format is locked: `{ input: S5Input, decision: S5Decision, outcome: OutcomeScore }`.
+**Status:** Not yet trainable, and the gap is the label, not the volume.
+
+A journal line is `{ timestamp, sessionId, system, input, decision, outcome? }`. `outcome` is optional, and the S1, S3 and S4 writers fill it in — the S5 writer (`engine/s5/orchestrator.ts`) deliberately does not, because an S5 policy decision has no result at the moment it is made. `DecisionJournalWriter.backfill()` exists to patch one in afterwards, but its only call site is `engine/agents/s2Coordinator.ts`, for S2. **So no S5 decision has ever carried an outcome.**
+
+Instead `engine/s5/exportTrainingData.ts` joins outcomes out of `governance.db` on `sessionId` and keeps only viable sessions. That is a *session*-level label stamped onto every decision the session made. It is enough to discard sessions that went badly; it cannot distinguish two close calls inside one session, since both carry the same label.
+
+So "500+ decisions" understates the requirement. What is needed is 500+ decisions with *per-decision* outcomes.
 
 **Goal:** A small LoRA adapter (on Qwen3.6 or similar) that makes better governance decisions than the hand-coded rules — when to restrict tools, when to compact context, when to suggest model switches. The model sees the full governance state and outputs a coherent S5Decision.
 

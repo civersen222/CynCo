@@ -713,19 +713,6 @@ async function handleCommand(command: TUICommand): Promise<void> {
           break
         }
 
-        case '/cascade': {
-          const { classifyComplexity } = await import('./cascade/modelPicker.js')
-          const recentToolCount = parseInt(args, 10) || 0
-          const sampleMsg = args && isNaN(parseInt(args, 10)) ? args : 'current task'
-          const complexity = classifyComplexity(sampleMsg, recentToolCount)
-          wsServer.emit({
-            type: 'stream.token',
-            text: `[Cascade] Task complexity: ${complexity}\nSimple → fast model, Moderate → balanced, Complex → powerful.\n`,
-          })
-          wsServer.emit({ type: 'message.complete', messageId: '', stopReason: 'end_turn' })
-          break
-        }
-
         case '/agent':
           wsServer.emit({ type: 'stream.token', text: '[System] Sub-agent queue coming in Phase 2D.\n' })
           wsServer.emit({ type: 'message.complete', messageId: '', stopReason: 'end_turn' })
