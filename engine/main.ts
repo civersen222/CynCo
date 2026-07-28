@@ -40,6 +40,7 @@ import { LSPManager } from './lsp/manager.js'
 import { VibeController } from './vibe/controller.js'
 import { TemplateLoader } from './prompts/templateLoader.js'
 import { initJournal } from './training/decisionJournal.js'
+import { loadOrCreateTokens, TOKEN_FILENAME } from './security/localToken.js'
 import { DashboardServer } from './dashboard/server.js'
 import { ActivationsConsumer } from './brain/activationsConsumer.js'
 import { JlensClient } from './brain/jlensClient.js'
@@ -270,10 +271,24 @@ try {
   console.log(`[v2] Session count check skipped: ${e instanceof Error ? e.message : e}`)
 }
 
+// ─── Local capability tokens ──────────────────────────────────
+//
+// Minted once and reused, so a restarted engine does not lock out a TUI that is
+// already running. The TUI reads the bridge secret from the same file, which is
+// what keeps launching it a zero-argument operation.
+const tokens = loadOrCreateTokens()
+console.log(`[tokens] Local tokens at ~/.cynco/${TOKEN_FILENAME}`)
+// The management secret is never handed to a page. Printing it here is the whole
+// distribution mechanism: mutating engine or governance config should cost one
+// deliberate paste, because flipping `ablation` or `contractEnforcement` off
+// silently corrupts the measurements the research rests on.
+console.log(`[tokens] Management token (paste to change config): ${tokens.tokenFor('management')}`)
+
 // ─── WS Server + Conversation Loop ────────────────────────────
 
 const wsServer = new LocalCodeWSServer({
   port,
+  tokens,
   onCommand: (cmd) => {
     console.log(`[localcode] WS command received: ${JSON.stringify(cmd).slice(0, 200)}`)
     handleCommand(cmd).catch(err => {

@@ -26,6 +26,7 @@ import { mkdirSync, appendFileSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { createMissionCollector, buildMissionRecord } from './cynco-ledger.mjs'
 import { runCheck } from './cynco-verify.mjs'
+import { loadOrCreateTokens } from '../engine/security/localToken.js'
 
 const [taskFile, marker, cwdArg, timeoutArg, checkCmd] = process.argv.slice(2)
 if (!taskFile || !marker) {
@@ -46,7 +47,11 @@ const dispatchedAt = new Date().toISOString()
 const missionId = `${basename(taskFile).replace(/\.[^.]*$/, '')}-${Date.now()}`
 let enforcedWarned = false
 
-const ws = new WebSocket(WS_URL)
+// The bridge refuses an unauthenticated upgrade. Reading the same token file the
+// engine minted keeps this driver a zero-configuration tool; Bun's WebSocket
+// sends no Origin, so it is not mistaken for a browser.
+const bridgeToken = loadOrCreateTokens().tokenFor('bridge')
+const ws = new WebSocket(WS_URL, { headers: { Authorization: `Bearer ${bridgeToken}` } })
 let toolCount = 0
 let zeroToolCompletion = false
 ws.onopen = () => {
@@ -80,7 +85,19 @@ ws.onmessage = (ev) => {
   } catch {}
 }
 ws.onerror = (e) => console.log('[driver] ws error', e?.message ?? e)
-ws.onclose = () => console.log('[driver] ws closed')
+let opened = false
+ws.addEventListener('open', () => { opened = true })
+ws.onclose = () => {
+  console.log('[driver] ws closed')
+  // Closed without ever opening means the bridge refused the upgrade — 401 no
+  // token, 409 a TUI already holds it. The mission was never dispatched, so
+  // sitting out the full timeout would only produce a misleading TIMEOUT record.
+  if (!opened) {
+    console.log('[driver] bridge refused the connection — no mission dispatched. ' +
+      'Check the engine is running and that no TUI already holds the bridge.')
+    process.exit(3)
+  }
+}
 
 async function gitLog() {
   const p = Bun.spawn(['git', 'log', '--oneline', '-3'], { cwd: CWD, stdout: 'pipe' })

@@ -3,6 +3,8 @@
  * drive one turn through the engine's TUI WS, and report every brain.* message
  * the dashboard receives. Run: bun scripts/brain-e2e-probe.ts
  */
+import { loadOrCreateTokens } from '../engine/security/localToken.js'
+
 const brainMsgs: Record<string, unknown[]> = {}
 let done = false
 
@@ -18,7 +20,13 @@ dash.onmessage = (ev) => {
 await new Promise<void>((res, rej) => { dash.onopen = () => res(); dash.onerror = rej })
 console.log('[probe] dashboard WS connected')
 
-const tui = new WebSocket('ws://127.0.0.1:9160')
+// The bridge refuses an unauthenticated upgrade; read the secret the engine
+// minted rather than taking a flag. Bun's WebSocket sends no Origin, so this
+// probe is not turned away as a browser.
+const bridgeToken = loadOrCreateTokens().tokenFor('bridge')
+const tui = new WebSocket('ws://127.0.0.1:9160', {
+  headers: { Authorization: `Bearer ${bridgeToken}` },
+})
 tui.onmessage = (ev) => {
   try {
     const m = JSON.parse(String(ev.data))

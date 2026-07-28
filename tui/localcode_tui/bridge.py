@@ -10,6 +10,7 @@ import websockets
 from websockets.asyncio.client import connect
 
 from .protocol import parse_event, serialize_command
+from .tokens import bridge_token
 
 
 class EngineBridge:
@@ -26,14 +27,40 @@ class EngineBridge:
     def connected(self) -> bool:
         return self._connected
 
+    def _headers(self) -> dict:
+        """Authorization header for the upgrade, if the engine has minted a token.
+
+        The engine refuses an unauthenticated upgrade with 401. Sending no header
+        when the token is unreadable is deliberate: the refusal then comes from
+        the engine, with its own reason, instead of from a guess made here.
+
+        A browser cannot set headers on a WebSocket handshake, which is the other
+        half of why this gate keeps pages out while letting the TUI in.
+        """
+        secret = bridge_token()
+        return {"Authorization": f"Bearer {secret}"} if secret else {}
+
     async def connect(self, retries: int = 10, delay: float = 0.5) -> None:
         """Connect to the engine with retry logic."""
         for attempt in range(retries):
             try:
-                self._ws = await connect(f"ws://localhost:{self.port}")
+                self._ws = await connect(
+                    f"ws://localhost:{self.port}",
+                    additional_headers=self._headers(),
+                )
                 self._connected = True
                 self._receive_task = asyncio.create_task(self._receive_loop())
                 return
+            except websockets.exceptions.InvalidStatus as e:
+                # The engine answered the handshake and refused it: 401 no token,
+                # 403 an Origin was present, 409 another client holds the bridge.
+                # None of those change by waiting, so do not spend the retries.
+                raise ConnectionError(
+                    f"Engine refused the bridge connection on port {self.port}: "
+                    f"HTTP {e.response.status_code}. "
+                    f"The bridge token is minted at ~/.cynco/tokens.json when the "
+                    f"engine starts."
+                ) from e
             except (ConnectionRefusedError, OSError):
                 if attempt < retries - 1:
                     await asyncio.sleep(delay)

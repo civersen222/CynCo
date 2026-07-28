@@ -1,6 +1,25 @@
 import { describe, expect, it, afterEach, beforeEach } from 'bun:test'
+import { mkdtempSync, rmSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
+import WebSocket from 'ws'
 import { LocalCodeWSServer } from '../../bridge/server.js'
+import { loadOrCreateTokens } from '../../security/localToken.js'
 import type { TUICommand, EngineEvent } from '../../bridge/protocol.js'
+
+// The bridge now refuses an unauthenticated upgrade, so these tests connect the
+// way the TUI does: the `ws` client, which can set an Authorization header. The
+// global browser-style WebSocket cannot, which is exactly why a page is unable
+// to reach this port. See serverAuth.test.ts for the gates themselves.
+const tokenDir = mkdtempSync(join(tmpdir(), 'cynco-bridge-tokens-'))
+const tokens = loadOrCreateTokens(tokenDir)
+process.on('exit', () => rmSync(tokenDir, { recursive: true, force: true }))
+
+function client(port: number): WebSocket {
+  return new WebSocket(`ws://localhost:${port}`, {
+    headers: { Authorization: `Bearer ${tokens.tokenFor('bridge')}` },
+  })
+}
 
 describe('LocalCodeWSServer', () => {
   let server: LocalCodeWSServer | null = null
@@ -13,17 +32,17 @@ describe('LocalCodeWSServer', () => {
   })
 
   it('constructs with port and starts not connected', () => {
-    server = new LocalCodeWSServer({ port: 19160 })
+    server = new LocalCodeWSServer({ port: 19160, tokens })
     expect(server.port).toBe(19160)
     expect(server.connected).toBe(false)
   })
 
   it('accepts a WebSocket connection', async () => {
-    server = new LocalCodeWSServer({ port: 19161 })
+    server = new LocalCodeWSServer({ port: 19161, tokens })
     // Give the server a moment to bind
     await new Promise(r => setTimeout(r, 50))
 
-    const ws = new WebSocket('ws://localhost:19161')
+    const ws = client(19161)
     await new Promise<void>((resolve, reject) => {
       ws.onopen = () => resolve()
       ws.onerror = (e) => reject(e)
@@ -38,10 +57,10 @@ describe('LocalCodeWSServer', () => {
   })
 
   it('marks disconnected when client closes', async () => {
-    server = new LocalCodeWSServer({ port: 19162 })
+    server = new LocalCodeWSServer({ port: 19162, tokens })
     await new Promise(r => setTimeout(r, 50))
 
-    const ws = new WebSocket('ws://localhost:19162')
+    const ws = client(19162)
     await new Promise<void>((resolve) => { ws.onopen = () => resolve() })
     await new Promise(r => setTimeout(r, 50))
     expect(server.connected).toBe(true)
@@ -52,10 +71,10 @@ describe('LocalCodeWSServer', () => {
   })
 
   it('emits events to connected client', async () => {
-    server = new LocalCodeWSServer({ port: 19163 })
+    server = new LocalCodeWSServer({ port: 19163, tokens })
     await new Promise(r => setTimeout(r, 50))
 
-    const ws = new WebSocket('ws://localhost:19163')
+    const ws = client(19163)
     await new Promise<void>((resolve) => { ws.onopen = () => resolve() })
     await new Promise(r => setTimeout(r, 50))
 
@@ -80,7 +99,7 @@ describe('LocalCodeWSServer', () => {
   })
 
   it('does not throw when emitting without a connected client', () => {
-    server = new LocalCodeWSServer({ port: 19164 })
+    server = new LocalCodeWSServer({ port: 19164, tokens })
     // Should not throw
     expect(() => {
       server!.emit({ type: 'session.ready', model: 'x', contextLength: 1024 })
@@ -91,11 +110,12 @@ describe('LocalCodeWSServer', () => {
     const receivedCommands: TUICommand[] = []
     server = new LocalCodeWSServer({
       port: 19165,
+      tokens,
       onCommand: (cmd) => { receivedCommands.push(cmd) },
     })
     await new Promise(r => setTimeout(r, 50))
 
-    const ws = new WebSocket('ws://localhost:19165')
+    const ws = client(19165)
     await new Promise<void>((resolve) => { ws.onopen = () => resolve() })
     await new Promise(r => setTimeout(r, 50))
 
@@ -114,11 +134,12 @@ describe('LocalCodeWSServer', () => {
     const receivedCommands: TUICommand[] = []
     server = new LocalCodeWSServer({
       port: 19166,
+      tokens,
       onCommand: (cmd) => { receivedCommands.push(cmd) },
     })
     await new Promise(r => setTimeout(r, 50))
 
-    const ws = new WebSocket('ws://localhost:19166')
+    const ws = client(19166)
     await new Promise<void>((resolve) => { ws.onopen = () => resolve() })
     await new Promise(r => setTimeout(r, 50))
 
@@ -136,11 +157,12 @@ describe('LocalCodeWSServer', () => {
     const receivedCommands: TUICommand[] = []
     server = new LocalCodeWSServer({
       port: 19167,
+      tokens,
       onCommand: (cmd) => { receivedCommands.push(cmd) },
     })
     await new Promise(r => setTimeout(r, 50))
 
-    const ws = new WebSocket('ws://localhost:19167')
+    const ws = client(19167)
     await new Promise<void>((resolve) => { ws.onopen = () => resolve() })
     await new Promise(r => setTimeout(r, 50))
 
@@ -154,7 +176,7 @@ describe('LocalCodeWSServer', () => {
   })
 
   it('close() stops the server', async () => {
-    server = new LocalCodeWSServer({ port: 19168 })
+    server = new LocalCodeWSServer({ port: 19168, tokens })
     await new Promise(r => setTimeout(r, 50))
 
     await server.close()
@@ -162,7 +184,7 @@ describe('LocalCodeWSServer', () => {
 
     // Trying to connect should fail
     try {
-      const ws = new WebSocket('ws://localhost:19168')
+      const ws = client(19168)
       await new Promise<void>((resolve, reject) => {
         ws.onopen = () => { ws.close(); reject(new Error('Should not connect')) }
         ws.onerror = () => resolve()
@@ -176,7 +198,7 @@ describe('LocalCodeWSServer', () => {
   })
 
   it('replays session.ready to a late-connecting client', async () => {
-    server = new LocalCodeWSServer({ port: 19170 })
+    server = new LocalCodeWSServer({ port: 19170, tokens })
     await new Promise(r => setTimeout(r, 50))
 
     // Emit session.ready BEFORE any client connects
@@ -188,7 +210,7 @@ describe('LocalCodeWSServer', () => {
     server.emit(event)
 
     // Now connect — should receive the cached event immediately
-    const ws = new WebSocket('ws://localhost:19170')
+    const ws = client(19170)
     const received: string[] = []
     ws.onmessage = (ev) => { received.push(String(ev.data)) }
     await new Promise<void>((resolve, reject) => {
@@ -208,14 +230,14 @@ describe('LocalCodeWSServer', () => {
   })
 
   it('replays session.ready to a second client after first disconnects', async () => {
-    server = new LocalCodeWSServer({ port: 19171 })
+    server = new LocalCodeWSServer({ port: 19171, tokens })
     await new Promise(r => setTimeout(r, 50))
 
     // Cache a session.ready before anyone connects
     server.emit({ type: 'session.ready', model: 'second-client-model', contextLength: 8192 })
 
     // First client
-    const ws1 = new WebSocket('ws://localhost:19171')
+    const ws1 = client(19171)
     const received1: string[] = []
     ws1.onmessage = (ev) => { received1.push(String(ev.data)) }
     await new Promise<void>((resolve, reject) => {
@@ -231,7 +253,7 @@ describe('LocalCodeWSServer', () => {
     await new Promise(r => setTimeout(r, 100))
 
     // Second client connects — should also get the cached event
-    const ws2 = new WebSocket('ws://localhost:19171')
+    const ws2 = client(19171)
     const received2: string[] = []
     ws2.onmessage = (ev) => { received2.push(String(ev.data)) }
     await new Promise<void>((resolve, reject) => {
@@ -247,10 +269,10 @@ describe('LocalCodeWSServer', () => {
   })
 
   it('emits multiple events in sequence', async () => {
-    server = new LocalCodeWSServer({ port: 19169 })
+    server = new LocalCodeWSServer({ port: 19169, tokens })
     await new Promise(r => setTimeout(r, 50))
 
-    const ws = new WebSocket('ws://localhost:19169')
+    const ws = client(19169)
     await new Promise<void>((resolve) => { ws.onopen = () => resolve() })
     await new Promise(r => setTimeout(r, 50))
 
