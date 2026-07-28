@@ -4,7 +4,7 @@ import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import { ALL_TOOLS } from '../../tools/registry.js'
 
-// BLOCKING wire-check (per CLAUDE.md): every new skill symbol must be imported
+// BLOCKING wire-check (per CYNCO.md): every new skill symbol must be imported
 // AND called on a live (non-test) path. We assert against the actual source of
 // the wiring sites so a future refactor that silently drops a call fails here.
 

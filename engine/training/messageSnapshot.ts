@@ -55,7 +55,7 @@ const SECRET_VALUE: RegExp[] = [
   // Order matters: the greedy tail rule would otherwise swallow the terminator.
   /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g,
   /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*/g,
-  // OpenAI / Anthropic-style: sk-, sk-proj-, sk-ant-…
+  // Any `sk-` prefixed API key, whatever the vendor's suffix convention.
   /\bsk-[A-Za-z0-9_-]{8,}/g,
   // GitHub: classic PAT and fine-grained PAT.
   /\bghp_[A-Za-z0-9]{8,}/g,

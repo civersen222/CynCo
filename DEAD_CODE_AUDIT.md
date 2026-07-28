@@ -200,8 +200,7 @@ now live — wired since the audit was written.
 
 ## Root src/ Evidence Pass (2026-07-12)
 
-The root `src/` directory is listed in `.gitignore` (lines 37–69 cover `src/`,
-`src/_archived_claude_code/`, `src/src/`, `src/.claude/`, `src/thoughts/`).
+The root `src/` directory and its subdirectories were listed in `.gitignore`.
 
 ### (a) Live-code imports pointing into root src/
 
@@ -226,10 +225,10 @@ pre-reorganization source was cleared; `engine/` now holds all live TS modules.
 ```
 src/
 ├── .git/               ← standalone git repo from old LocalCode workspace session
-├── .claude/cache/      ← CynCo agent output caches (agents: kraken, oracle, scout, spark)
+├── <tool cache>/       ← agent output caches (agents: kraken, oracle, scout, spark)
 ├── .localcode-*.json   ← debug + SSE log files from an old session
 ├── .localcode-stream.log
-├── _archived_claude_code/  ← pre-reorg TS source (bridgeApi, sessionHistory, etc.)
+├── <archived source>/  ← pre-reorg TS source (bridgeApi, sessionHistory, etc.)
 ├── docs/               ← old planning docs (2026-04-01 vintage)
 ├── src/                ← empty directory (was src/src/localcode/ pre-reorg)
 └── thoughts/           ← (not explored, presumably design notes)

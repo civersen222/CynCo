@@ -72,7 +72,7 @@ export function convertMessages(messages: Message[], options?: ConvertOptions): 
 }
 
 /**
- * Coerce a message's content into a ContentBlock[]. The Anthropic message
+ * Coerce a message's content into a ContentBlock[]. The content-block message
  * shape allows `content` to be a plain string (shorthand for a single text
  * block); some producers (e.g. late context-hygiene markers) emit that form.
  * Downstream provider conversion assumes an array, so normalize here rather

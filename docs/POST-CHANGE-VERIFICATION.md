@@ -1,7 +1,7 @@
 # Post-Change Verification (mandatory)
 
-> Canonical, tracked copy. CLAUDE.md is gitignored in this repo — it mirrors this
-> section for agent context, but this file is the source of truth.
+> Canonical copy. `CYNCO.md` mirrors this section for agent context, but this
+> file is the source of truth.
 
 After EVERY change set (feature, fix, refactor), before moving on:
 

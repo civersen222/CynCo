@@ -6,7 +6,7 @@
  * replays a fixture of growing tool results turn-over-turn and measures, per
  * turn, time-to-first-token (TTFT) and decode tok/s as accumulated context
  * grows. That incremental-prefill cost — not single-prompt decode — is what
- * dominates every round >5 in a real CynCo/Cline/Claude-Code session.
+ * dominates every round >5 in a real CynCo session.
  *
  * It bootstraps the real provider (which starts llama-server) and then hits the
  * llama.cpp OpenAI endpoint directly so it can read `usage` and time the first

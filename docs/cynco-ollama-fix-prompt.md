@@ -1,6 +1,6 @@
 # CynCo Ollama Tool Calling Fix — Session Prompt
 
-Copy everything below the line and paste it as your first message in a new Claude Code session opened in `C:\Users\civer\localcode`.
+Copy everything below the line and paste it as your first message in a new coding-agent session opened in `C:\Users\civer\localcode`.
 
 ---
 
@@ -56,7 +56,7 @@ After the above changes, test CynCo with `gemma4:31b` as an alternative to `qwen
 ## Context
 
 - CynCo is at `C:\Users\civer\localcode`, TypeScript/Bun runtime
-- CLAUDE.md has full architecture docs
+- CYNCO.md has full architecture docs
 - All config uses `LOCALCODE_*` env vars
 - Tests: `cd engine && bun test` (or specific test files)
 - The user's hardware: RTX 5090 (32GB), secondary PC with RTX 4070 Ti Super (16GB) on WiFi
