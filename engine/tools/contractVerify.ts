@@ -125,6 +125,14 @@ export type RepoProbe = {
   head(): Promise<string | null>
   /** Uncommitted changes to `path` in the working tree or index. */
   isDirty(path: string): Promise<boolean | null>
+  /**
+   * Every TRACKED path with uncommitted changes, staged or not.
+   *
+   * Untracked paths are deliberately excluded. A workspace accumulates scratch
+   * that predates the task and belongs to nobody; failing on it would fire on
+   * every task forever, and a check that always fires teaches nothing.
+   */
+  dirtyPaths(): Promise<string[] | null>
   /** Commits since `baseline` that touched `path`. */
   changedSince(baseline: string, path: string): Promise<boolean | null>
   exists(path: string): boolean
@@ -188,9 +196,23 @@ export async function verifyAssertion(
     if (!baseline) return { status: 'unverifiable', detail: 'no baseline commit was recorded for this task' }
     const head = await probe.head()
     if (head === null) return { status: 'unverifiable', detail: 'not a git repository' }
-    return head !== baseline
-      ? { status: 'confirmed' }
-      : { status: 'contradicted', detail: `HEAD is still ${baseline.slice(0, 8)} — no commit was made during this task.` }
+    if (head === baseline) {
+      return { status: 'contradicted', detail: `HEAD is still ${baseline.slice(0, 8)} — no commit was made during this task.` }
+    }
+    // A moved HEAD proves a commit happened. It does not prove the work is in
+    // it. Measured on Gilded L4.6d: two commits landed, one edited test file
+    // was left behind, and the assertion confirmed — the published gate scored
+    // 12/12 on the working tree and 10/12 at the commit anyone else would get.
+    const dirty = await probe.dirtyPaths()
+    // A probe that cannot answer must not manufacture a negative. Absent is a
+    // legitimate answer; a plausible default is not.
+    if (dirty === null || dirty.length === 0) return { status: 'confirmed' }
+    const named = dirty.slice(0, 5).join(', ')
+    const rest = dirty.length > 5 ? ` (and ${dirty.length - 5} more)` : ''
+    return {
+      status: 'contradicted',
+      detail: `a commit was made, but tracked files still have uncommitted changes: ${named}${rest}. The work is not all in the commit.`,
+    }
   }
 
   // file_modified — changed in the working tree, or committed since the baseline.
@@ -253,6 +275,21 @@ export function gitProbe(cwd: string): RepoProbe {
     isDirty: async (path) => {
       const out = await git(cwd, ['status', '--porcelain', '--', path])
       return out === null ? null : out.trim().length > 0
+    },
+    dirtyPaths: async () => {
+      // `--untracked-files=no` is the whole point: scratch that predates the
+      // task is not the task's fault. Porcelain v1 lines are `XY <path>`, and a
+      // rename reads `R  old -> new` — the new name is the one that is dirty.
+      const out = await git(cwd, ['status', '--porcelain', '--untracked-files=no'])
+      if (out === null) return null
+      return out
+        .split('\n')
+        .filter(line => line.trim().length > 0)
+        .map(line => {
+          const path = line.slice(3).trim()
+          const arrow = path.lastIndexOf(' -> ')
+          return arrow === -1 ? path : path.slice(arrow + 4)
+        })
     },
     changedSince: async (baseline, path) => {
       const out = await git(cwd, ['diff', '--name-only', `${baseline}..HEAD`, '--', path])

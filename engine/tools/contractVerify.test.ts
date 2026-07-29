@@ -80,6 +80,7 @@ function probe(over: Partial<RepoProbe> = {}): RepoProbe {
   return {
     head: async () => 'aaaaaaaa',
     isDirty: async () => false,
+    dirtyPaths: async () => [],
     changedSince: async () => false,
     exists: () => true,
     read: () => null,
@@ -324,6 +325,45 @@ describe('verifyAssertion', () => {
     expect(v.status).toBe('confirmed')
   })
 
+  /**
+   * Finding (ae), measured on the Gilded L4.6d run.
+   *
+   * The agent made two commits and left `gilded/tests/test_ai.py` modified in
+   * the working tree — the file carrying two of the wave's four jobs. It then
+   * marked "Changes committed to git" passed, citing both SHAs, and the engine
+   * confirmed it: HEAD had moved, which was the whole of the test.
+   *
+   * Measured consequence: on the delivered working tree the harness scored
+   * 12/12; at HEAD it scored 10/12. Everything anybody else would ever clone was
+   * missing the work.
+   *
+   * A moved HEAD proves a commit happened. It does not prove the work is IN it.
+   * The previous wave had the same defect by a different route (a wholly new
+   * file that `git diff --name-only` could never mention) and was answered with
+   * an instruction in the brief. It recurred, which is the argument for
+   * answering it here instead: the repository can settle this, so it should.
+   */
+  test('a moved HEAD does not confirm "committed" while tracked files are still dirty', async () => {
+    const v = await verifyAssertion(
+      { kind: 'committed' },
+      probe({ head: async () => 'bbbbbbbb', dirtyPaths: async () => ['gilded/tests/test_ai.py'] }),
+      'aaaaaaaa',
+    )
+    expect(v.status).toBe('contradicted')
+    expect((v as { detail: string }).detail).toContain('gilded/tests/test_ai.py')
+  })
+
+  test('a probe that cannot list dirty paths does not block a moved HEAD', async () => {
+    // Absent is a legitimate answer. It must not become a fabricated negative:
+    // a repository that cannot answer must not be read as answering "no".
+    const v = await verifyAssertion(
+      { kind: 'committed' },
+      probe({ head: async () => 'bbbbbbbb', dirtyPaths: async () => null }),
+      'aaaaaaaa',
+    )
+    expect(v.status).toBe('confirmed')
+  })
+
   test('a pre-existing commit does not count — the baseline is what makes it falsifiable', async () => {
     // The exact live failure: the model passed "Changes committed to git" citing
     // 1166a60, a commit made before this task began.
@@ -387,6 +427,47 @@ describe('gitProbe against a real repository', () => {
     git('commit', '-qm', 'change')
     expect((await verifyAssertion({ kind: 'file_modified', path: 'a.py' }, p, baseline)).status).toBe('confirmed')
     expect((await verifyAssertion({ kind: 'committed' }, p, baseline)).status).toBe('confirmed')
+  })
+
+  test('committing one edit and leaving another dirty contradicts "committed"', async () => {
+    // The live L4.6d shape, reproduced exactly: some work committed, one file
+    // left behind in the working tree.
+    const p = gitProbe(dir)
+    const baseline = await p.head()
+    writeFileSync(join(dir, 'a.py'), 'print(99)\n')
+    git('add', 'a.py')
+    git('commit', '-qm', 'change')
+    writeFileSync(join(dir, 'b.py'), 'print(98)\n')
+    const v = await verifyAssertion({ kind: 'committed' }, p, baseline)
+    expect(v.status).toBe('contradicted')
+    expect((v as { detail: string }).detail).toContain('b.py')
+  })
+
+  test('an untracked file does not contradict "committed"', async () => {
+    // Scratch files predate the task and are none of this assertion's business.
+    // Failing on them would fire on every task forever, and a check that always
+    // fires teaches nothing.
+    const p = gitProbe(dir)
+    const baseline = await p.head()
+    writeFileSync(join(dir, 'a.py'), 'print(99)\n')
+    git('add', 'a.py')
+    git('commit', '-qm', 'change')
+    writeFileSync(join(dir, 'scratch.md'), 'notes\n')
+    expect((await verifyAssertion({ kind: 'committed' }, p, baseline)).status).toBe('confirmed')
+  })
+
+  test('a staged-but-uncommitted file contradicts "committed"', async () => {
+    // `git add` is not `git commit`. The index is still the working tree.
+    const p = gitProbe(dir)
+    const baseline = await p.head()
+    writeFileSync(join(dir, 'a.py'), 'print(99)\n')
+    git('add', 'a.py')
+    git('commit', '-qm', 'change')
+    writeFileSync(join(dir, 'b.py'), 'print(98)\n')
+    git('add', 'b.py')
+    const v = await verifyAssertion({ kind: 'committed' }, p, baseline)
+    expect(v.status).toBe('contradicted')
+    expect((v as { detail: string }).detail).toContain('b.py')
   })
 
   test('outside a git repo the probe answers null, not false', async () => {
