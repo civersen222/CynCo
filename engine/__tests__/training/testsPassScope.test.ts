@@ -105,3 +105,80 @@ describe('buildComponents — testsPass may not be certified by a narrower run',
     expect(c.testsPass).toBe(1)
   })
 })
+
+/**
+ * Finding (cc), measured on two persisted reward records.
+ *
+ *   task-df75bf1b  ended 552/552 green, widest total observed 562  -> 'unknown'
+ *   task-aac2741c  ended 576/576 green, widest total observed 577  -> 'unknown'
+ *                  and so scored 0.9192 where the components say ~0.99
+ *
+ * Neither run narrowed its scope. Both ran the full suite at the end and the
+ * full suite at the start; what moved was how many cases the same command
+ * collected, because the task itself was adding and reorganising tests. A total
+ * is a property of the run, not of the suite, and finding (h)'s guard was built
+ * to compare scopes with nothing but totals to compare them by.
+ *
+ * The rule these tests pin: scope is compared by what was RUN. Two observations
+ * from the same command cover the same body of tests however many cases each
+ * happened to collect, and the later one is the authoritative verdict.
+ */
+const SUITE = 'python -m pytest gilded/tests -q'
+const ONE = 'python -m pytest gilded/tests/test_docket.py::test_one -q'
+
+describe('buildComponents — scope is what ran, not how much it collected', () => {
+  it('credits a final full-suite green that collected fewer cases than an earlier run of the same command', () => {
+    // task-df75bf1b, exactly: 562 collected early, 552 collected at the end.
+    const c = buildComponents(base({
+      testObservations: [
+        { passed: 107, total: 110, command: 'python -m pytest gilded/tests/test_ui_broadsheet.py -q' },
+        { passed: 555, total: 562, command: SUITE },
+        { passed: 552, total: 552, command: SUITE },
+      ],
+    }))
+    expect(c.testsPass).toBe(1)
+  })
+
+  it('still refuses a narrow green run from a DIFFERENT command', () => {
+    // Finding (h) intact: the two runs are not about the same body of tests, and
+    // now that is said by the commands rather than inferred from the totals.
+    const c = buildComponents(base({
+      testObservations: [
+        { passed: 1, total: 11, command: 'python -m pytest gilded/tests/test_docket.py -q' },
+        { passed: 1, total: 1, command: ONE },
+      ],
+    }))
+    expect(c.testsPass).toBe('unknown')
+  })
+
+  it('falls back to comparing totals when the commands were not recorded', () => {
+    // Records written before the command was carried, and any path that cannot
+    // supply one. Unchanged behaviour is the right default: the fix may only
+    // ever add information, never remove the guard.
+    const c = buildComponents(base({
+      testObservations: [{ passed: 555, total: 562 }, { passed: 552, total: 552 }],
+    }))
+    expect(c.testsPass).toBe('unknown')
+  })
+
+  it('does not let a recorded command excuse a genuinely narrower run', () => {
+    // The last run names a different command AND is narrower. Both signals agree.
+    const c = buildComponents(base({
+      testObservations: [
+        { passed: 550, total: 562, command: SUITE },
+        { passed: 1, total: 1, command: ONE },
+      ],
+    }))
+    expect(c.testsPass).toBe('unknown')
+  })
+
+  it('ignores surrounding whitespace when deciding two runs are the same command', () => {
+    const c = buildComponents(base({
+      testObservations: [
+        { passed: 555, total: 562, command: `  ${SUITE}  ` },
+        { passed: 552, total: 552, command: SUITE },
+      ],
+    }))
+    expect(c.testsPass).toBe(1)
+  })
+})

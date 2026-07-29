@@ -14,7 +14,13 @@ import { isTestPath, type ChangedFile, type GitFacts } from './gitFacts.js'
 import { assertionCheck } from '../tools/contractVerify.js'
 import type { RewardComponents } from './rewardLabeler.js'
 
-export type TestObservation = { passed: number; total: number }
+/**
+ * `command` is what produced this reading. Optional because records written
+ * before it was carried have none, and because nothing may depend on it being
+ * there — see assessTestsPass, where its absence restores the older rule
+ * exactly.
+ */
+export type TestObservation = { passed: number; total: number; command?: string }
 export type CommandObservation = { kind: 'typecheck' | 'build'; ok: boolean }
 /**
  * `origin` decides whether this contract can say anything about the task.
@@ -117,6 +123,20 @@ function firstObservation(obs: TestObservation[]): TestObservation | null {
  * A measured failure stays a measured failure. Partial credit is real information
  * and the corpus needs the negatives.
  */
+/**
+ * Whether two readings came from the same invocation.
+ *
+ * Whitespace-normalized exact match, and nothing cleverer. `pytest gilded/tests
+ * -q` and `pytest gilded/tests -q 2>&1 | tail -5` do cover the same tests and
+ * this will not say so — which costs a run the credit it earned, and is the
+ * cheap direction to be wrong in. Loosening the match is guessing about scope,
+ * and guessing about scope is the defect this whole guard exists to stop.
+ */
+function sameCommand(a: TestObservation, b: TestObservation): boolean {
+  if (!a.command || !b.command) return false
+  return a.command.trim() === b.command.trim()
+}
+
 function assessTestsPass(
   obs: TestObservation[],
   git: GitFacts | null,
@@ -137,13 +157,26 @@ function assessTestsPass(
   // the heaviest weight there is — while the repository stood at 10 failed / 422
   // passed and every one of those failures was a test this run had written.
   //
-  // Scope is not comparable across observations and nothing here records what a
-  // run covered, so the only honest comparison is against the broadest run the
-  // task itself made. Narrower and green afterwards is not evidence about the
+  // Narrower and green afterwards is not evidence about the
   // suite; it is evidence about those tests. That leaves the denominator rather
   // than inflating it, and the earlier red is not resurrected as the verdict
   // either — it is stale, and what happened after it genuinely was not measured.
-  const widest = obs.reduce((m, o) => Math.max(m, o.total), 0)
+  //
+  // Finding (cc): compared by totals alone, that rule also fires on runs that
+  // never narrowed anything. task-df75bf1b ended 552/552 green having collected
+  // 562 earlier; task-aac2741c ended 576/576 green having collected 577, and
+  // scored 0.9192 for it. Both ran the whole suite at both ends. What moved was
+  // how many cases the same command collected, because the task itself was
+  // adding tests — a total is a property of the run, not of the suite.
+  //
+  // So scope is compared by what was RUN wherever the workspace recorded it.
+  // Two readings from the same command cover the same body of tests however
+  // many cases each collected, and the later one is the verdict. Where no
+  // command was recorded the comparison is unchanged, because a fix to a guard
+  // may only ever add information to it.
+  const widest = obs
+    .filter(o => !sameCommand(o, last))
+    .reduce((m, o) => Math.max(m, o.total), 0)
   if (last.total < widest) return 'unknown'
 
   const first = firstObservation(obs)

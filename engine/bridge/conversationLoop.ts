@@ -90,7 +90,7 @@ import { UncertaintyTracker } from '../memory/uncertaintyTracker.js'
 import { getTrajectoryRecorder } from '../training/trajectoryRecorder.js'
 import { collectGitFacts, collectDirtyPaths, collectPathSignatures, changedBetween, commitsSince, collectUntrackedPaths, repoToplevel, canonicalPath } from '../training/gitFacts.js'
 import { buildComponents } from '../training/taskOutcome.js'
-import type { TaskOutcomeInput } from '../training/taskOutcome.js'
+import type { TaskOutcomeInput, TestObservation } from '../training/taskOutcome.js'
 import { finalizeTask } from '../training/rewardLabeler.js'
 import { detectTests } from '../bestOfN/testDetector.js'
 import { WorktreeManager } from '../bestOfN/worktreeManager.js'
@@ -214,7 +214,7 @@ export class ConversationLoop {
   private processing = false
   // Per-task observation buffers for the reward labeler. Reset at task start,
   // consumed by finalizeTrajectory at task end.
-  private taskTestObservations: { passed: number; total: number }[] = []
+  private taskTestObservations: TestObservation[] = []
   private taskCommandObservations: { kind: 'typecheck' | 'build'; ok: boolean }[] = []
   private taskGitBaseSha: string | null = null
   /**
@@ -3652,7 +3652,10 @@ export class ConversationLoop {
           if (summary) {
             testsTotal = summary.total
             testsFailing = summary.total - summary.passed
-            this.taskTestObservations.push({ passed: summary.passed, total: summary.total })
+            // The command comes along: without it the reward labeler can only
+            // compare scopes by how many cases each run collected, and a task
+            // that adds tests changes that number under its own feet (finding cc).
+            this.taskTestObservations.push({ passed: summary.passed, total: summary.total, command })
           }
           const kind = classifyCheckCommand(command)
           if (kind) this.taskCommandObservations.push({ kind, ok: !result.isError })
