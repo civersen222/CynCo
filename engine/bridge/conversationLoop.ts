@@ -62,7 +62,7 @@ import { BrainRecorder } from '../brain/brainRecorder.js'
 import { pruneRedundantReads } from './contextHygiene.js'
 import { promptTokensWithFloor } from './contextFloor.js'
 import { applyPreLoopRestriction, type PreLoopRestriction } from './s5Restriction.js'
-import { isBenignTestFailure } from './benignToolResult.js'
+import { isBenignTestFailure, isDeclaredVerificationCheck } from './benignToolResult.js'
 import { runWithFinalize } from './finalizeGuard.js'
 import { parseTestSummary, classifyCheckCommand } from './testSummary.js'
 import { probeEdit } from '../vsm/groundingProbe.js'
@@ -3558,7 +3558,14 @@ export class ConversationLoop {
     // HALTed mid-development. The result output/isError are left intact so the
     // agent still sees the failures and can fix them.
     const benignTestFailure = result.isError && isBenignTestFailure(toolName, toolInput, result.output)
-    const countsAsFailure = result.isError && !benignTestFailure
+    // Finding (ad): the same is true of the contract's own verification
+    // commands. A check that runs and answers "no" is the gate working; three
+    // of them in a row used to trip the circuit breaker and tell the agent to
+    // stop using Bash that way — i.e. to stop running the gate that decides
+    // whether it is done.
+    const benignVerificationCheck = result.isError && globalContract.isActive()
+      && isDeclaredVerificationCheck(toolName, toolInput, result.output, globalContract.getAssertionTexts())
+    const countsAsFailure = result.isError && !benignTestFailure && !benignVerificationCheck
 
     // Circuit breaker: track consecutive failures per tool
     if (countsAsFailure) {
