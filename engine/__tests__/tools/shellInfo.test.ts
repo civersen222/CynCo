@@ -1,6 +1,6 @@
 // engine/__tests__/tools/shellInfo.test.ts
 import { describe, expect, it } from 'bun:test'
-import { classifyShell, checkShellDialect, getShellInfo, validateVerificationCommand } from '../../tools/shellInfo.js'
+import { classifyShell, checkShellDialect, getShellInfo, shellPreamble, validateVerificationCommand } from '../../tools/shellInfo.js'
 
 describe('classifyShell', () => {
   it('non-Windows → /bin/bash, && supported', () => {
@@ -148,5 +148,44 @@ describe('getShellInfo', () => {
     expect(a).toBe(b)
     expect(typeof a.shell).toBe('string')
     expect(typeof a.dialectNote).toBe('string')
+  })
+})
+
+/**
+ * Finding (ab), measured on this machine:
+ *
+ *   powershell.exe -NoProfile -Command "'hello' > f"   ->  ff fe 68 00 65 00 ...
+ *
+ * `>` in Windows PowerShell 5.1 is Out-File, whose default encoding is UTF-16LE.
+ * So every `command > out.txt` the agent writes produces a file that git calls
+ * binary and that every text tool downstream reads as nonsense. Setting
+ * Out-File's default parameter for the invocation moves it to UTF-8:
+ *
+ *   ... "$PSDefaultParameterValues['Out-File:Encoding']='utf8'; 'hello' > f"
+ *                                                     ->  ef bb bf 68 65 ...
+ *
+ * This is the same act as the PYTHONUTF8 injection already in bash.ts: the
+ * engine forcing UTF-8 on a subprocess whose default is not, rather than asking
+ * the model to remember. It is a shell setting, not a rewrite of the command —
+ * nothing the model wrote changes meaning, only the bytes redirection emits.
+ *
+ * 5.1 has no BOM-less UTF-8 (`utf8NoBOM` arrives in PowerShell 6), so the mark
+ * remains; Read strips it. Only powershell.exe is touched. pwsh is documented to
+ * default to UTF-8 already and is not installed here, so it cannot be measured —
+ * and an unmeasured shell gets the unchanged path, not a guess.
+ */
+describe('shellPreamble', () => {
+  it('forces UTF-8 redirection on Windows PowerShell 5.1', () => {
+    const preamble = shellPreamble(classifyShell('win32', false))
+    expect(preamble).toContain("$PSDefaultParameterValues['Out-File:Encoding']='utf8'")
+    expect(preamble.trimEnd().endsWith(';')).toBe(true)
+  })
+
+  it('leaves pwsh alone', () => {
+    expect(shellPreamble(classifyShell('win32', true))).toBe('')
+  })
+
+  it('leaves bash alone', () => {
+    expect(shellPreamble(classifyShell('linux', false))).toBe('')
   })
 })

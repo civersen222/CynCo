@@ -3,7 +3,7 @@ import type { ToolImpl } from '../types.js'
 import { checkBashSafety } from '../bashSafety.js'
 import { diagnoseError } from '../errorDiagnosis.js'
 import { parseTestSummary } from '../../bridge/testSummary.js'
-import { getShellInfo, checkShellDialect } from '../shellInfo.js'
+import { getShellInfo, checkShellDialect, shellPreamble } from '../shellInfo.js'
 import { withToolHint } from '../toolHints.js'
 
 /**
@@ -76,8 +76,12 @@ export const bashTool: ToolImpl = {
     // Use async exec — execSync blocks the entire event loop (freezes WebSocket)
     const shell = shellInfo.shell
 
+    // The command is reported, diagnosed and hinted on as the model wrote it;
+    // only what reaches the shell carries the preamble. See shellPreamble.
+    const runnable = shellPreamble(shellInfo) + command
+
     return new Promise((resolve) => {
-      const child = exec(command, {
+      const child = exec(runnable, {
         cwd,
         encoding: 'utf-8',
         timeout,

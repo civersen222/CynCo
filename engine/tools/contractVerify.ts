@@ -20,7 +20,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { isAbsolute, resolve } from 'node:path'
 import { exec, execFile } from 'node:child_process'
-import { getShellInfo, translateEnvPrefix } from './shellInfo.js'
+import { getShellInfo, shellPreamble, translateEnvPrefix } from './shellInfo.js'
 import { testCaseAssertions } from '../training/gitFacts.js'
 
 // Templates are shared with contractAutoCreate so the producer of an assertion
@@ -254,7 +254,12 @@ function runCommand(cwd: string, command: string): Promise<CommandOutcome> {
   // the engine scored an unrun command as the work failing. The engine already
   // knows this translation — it hands the model the same rewrite when the model
   // makes this mistake — so it applies it to its own command too.
-  const runnable = translateEnvPrefix(command, info)
+  // Finding (ab), same reasoning one level down: a check that redirects to a
+  // file and then reads it back gets UTF-16LE under Windows PowerShell 5.1 and
+  // answers "no" about its own scratch file. The model's shell and the engine's
+  // shell must be configured alike or the engine is verifying under conditions
+  // the work was never done in.
+  const runnable = shellPreamble(info) + translateEnvPrefix(command, info)
   return new Promise(resolvePromise => {
     exec(runnable, { cwd, shell, encoding: 'utf-8', timeout: COMMAND_TIMEOUT_MS, maxBuffer: 8 * 1024 * 1024 }, err => {
       if (!err) return resolvePromise('passed')

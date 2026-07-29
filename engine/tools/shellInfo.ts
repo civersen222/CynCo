@@ -80,6 +80,31 @@ export function translateEnvPrefix(command: string, info: ShellInfo): string {
   return `${sets.join('; ')}; ${command.slice(prefix.index + prefix[0].length)}`
 }
 
+/**
+ * Shell settings the engine applies before every command it runs on the model's
+ * behalf. Empty for every shell that does not need one.
+ *
+ * Windows PowerShell 5.1 implements `>` as Out-File, whose default encoding is
+ * UTF-16LE. Measured on this machine: `'hello' > f` writes `ff fe 68 00 65 00`.
+ * So the ordinary habit of `command > out.txt` and then reading out.txt gives
+ * back a file git calls binary and every text tool reads as nonsense — and the
+ * agent has no way to see why, because it wrote the file itself.
+ *
+ * Setting Out-File's default parameter moves redirection to UTF-8. This is a
+ * shell setting, not a rewrite: nothing the model wrote changes meaning, only
+ * the bytes redirection emits. It is the same act as the PYTHONUTF8 injection
+ * bash.ts already performs, for the same reason.
+ *
+ * 5.1 has no BOM-less UTF-8 — `utf8NoBOM` arrives in PowerShell 6 — so the mark
+ * survives, and Read strips it. Only powershell.exe is touched: pwsh is not
+ * installed here and so cannot be measured, and an unmeasured shell gets the
+ * unchanged path rather than a guess.
+ */
+export function shellPreamble(info: ShellInfo): string {
+  if (info.shell !== 'powershell.exe') return ''
+  return `$PSDefaultParameterValues['Out-File:Encoding']='utf8'; `
+}
+
 /** Returns an instructive error if the command uses operators the shell rejects, else null. */
 export function checkShellDialect(command: string, info: ShellInfo): string | null {
   if (info.isPowerShell) {
