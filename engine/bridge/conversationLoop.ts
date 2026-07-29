@@ -3132,8 +3132,16 @@ export class ConversationLoop {
      * keeps refusing climbs toward the halt at 15 instead of looping to the
      * iteration cap. Latency is 0 — nothing executed, and inventing a duration
      * would put a made-up number into the success-rate window.
+     *
+     * `governanceDenial` keeps that climb pointed at stuck detection and away
+     * from the algedonic kill switch, which halts at FIVE consecutive pain
+     * signals. Without the flag, governance's own refusals were the pain, and
+     * the halt at 5 fired three times sooner than the halt at 15 this comment
+     * describes — measured 2026-07-28, five read-loop denials ended a Gilded
+     * run mid-edit. See AlgedonicIntegration.recordToolResult.
      */
-    const recordDenial = () => this.governance.onToolResult(toolName, false, 0, undefined, toolInput)
+    const recordDenial = () => this.governance.onToolResult(
+      toolName, false, 0, undefined, toolInput, { governanceDenial: true })
 
     // Hard tool pin (one-shot/unattended runs): enforce allowedTools at
     // execution time too — simulated-mode models can hallucinate tools that

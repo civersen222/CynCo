@@ -271,7 +271,8 @@ export class CyberneticsGovernance {
     }
   }
 
-  onToolResult(name: string, success: boolean, latencyMs: number, _output?: string, input?: unknown): void {
+  onToolResult(name: string, success: boolean, latencyMs: number, _output?: string, input?: unknown,
+               opts?: { governanceDenial?: boolean }): void {
     // Reset stuck counter on successful write/edit/bash operations
     // These represent actual progress — the model is doing real work
     if (success && ['Write', 'Edit', 'MultiEdit', 'Bash', 'ApplyPatch'].includes(name)) {
@@ -308,7 +309,7 @@ export class CyberneticsGovernance {
     if (this._ablated || this._paused) return // Skip all governance when ablated or paused
 
     // Route through real algedonic channel
-    const action = this.algedonicIntegration.recordToolResult(name, success, latencyMs)
+    const action = this.algedonicIntegration.recordToolResult(name, success, latencyMs, opts)
 
     // Emit domain event
     this.eventBus.emit(events.DomainEvent.algedonicFired(
@@ -318,18 +319,21 @@ export class CyberneticsGovernance {
       `Tool ${name}: ${success ? 'success' : 'failure'} (${latencyMs}ms)`,
     ))
 
-    // Escalate immediate-action signals
+    // Escalate immediate-action signals. A denial is named as one: reading
+    // "Tool Read failure" against a Read the engine itself refused sent a live
+    // 2026-07-28 diagnosis looking for a broken filesystem for ten minutes.
+    const what = opts?.governanceDenial ? `Tool ${name} denied by governance` : `Tool ${name} failure`
     if (action.type === 'Immediate' && this.onAlert) {
       this.onAlert({
         source: 'algedonic',
         severity: 'critical',
-        message: `Critical: Tool ${name} failure requires immediate attention`,
+        message: `Critical: ${what} requires immediate attention`,
       })
     } else if (action.type === 'Delayed' && this.onAlert) {
       this.onAlert({
         source: 'algedonic',
         severity: 'high',
-        message: `Tool ${name} failure — monitoring for recovery`,
+        message: `${what} — monitoring for recovery`,
       })
     }
 

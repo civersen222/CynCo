@@ -73,6 +73,40 @@ describe('AlgedonicIntegration', () => {
     expect(killEvents.length).toBeGreaterThan(0)
   })
 
+  // A denial is the engine refusing to run a tool — the read-loop gate, the
+  // commit-scope guard, the allowedTools pin. Nothing executed, so nothing in
+  // the environment failed. Measured live 2026-07-28 in the Gilded L4.5 run:
+  // five consecutive read-loop denials (3 Read, 2 Grep) drove consecutivePainCount
+  // to 5, the kill switch fired, and the session halted with 148 lines of
+  // uncommitted work and a red suite. Governance's own steering fed governance's
+  // own kill switch. Denials still reach the channel — the pain ratio should show
+  // that the run was being refused — they just must not arm the halt.
+  it('a governance denial does not arm the kill switch', () => {
+    for (let i = 0; i < 10; i++) {
+      alg.recordToolResult('Read', false, 0, { governanceDenial: true })
+    }
+    expect(alg.killSwitch.isHalted()).toBe(false)
+  })
+
+  it('a governance denial still registers as pain', () => {
+    alg.recordToolResult('Read', false, 0, { governanceDenial: true })
+    expect(alg.getPainRatio()).toBe(1)
+  })
+
+  // Neutral, not forgiving: a denial interleaved with real failures must not
+  // launder the streak. Edit failing five times is still five times whether or
+  // not the read-loop gate refused a Read in between.
+  it('a denial neither arms nor clears a real failure streak', () => {
+    alg.recordToolResult('Edit', false, 100)
+    alg.recordToolResult('Edit', false, 100)
+    alg.recordToolResult('Read', false, 0, { governanceDenial: true })
+    alg.recordToolResult('Edit', false, 100)
+    alg.recordToolResult('Edit', false, 100)
+    expect(alg.killSwitch.isHalted()).toBe(false)
+    alg.recordToolResult('Edit', false, 100)
+    expect(alg.killSwitch.isHalted()).toBe(true)
+  })
+
   it('tracks SLA violations', () => {
     alg.recordToolResult('Bash', false, 120000) // very slow
     expect(alg.getSlaViolationCount()).toBeGreaterThan(0)

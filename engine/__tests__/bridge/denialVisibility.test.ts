@@ -44,7 +44,7 @@ describe('denial visibility (static)', () => {
   it('records zero latency rather than inventing a duration', () => {
     // Nothing executed, so there is no elapsed time to report. A plausible
     // number here would be a fabricated measurement in the success-rate window.
-    expect(loop).toMatch(/const recordDenial = \(\) => this\.governance\.onToolResult\(toolName, false, 0, undefined, toolInput\)/)
+    expect(loop).toMatch(/const recordDenial = \(\) => this\.governance\.onToolResult\(\s*toolName, false, 0, undefined, toolInput/)
   })
 })
 
@@ -131,6 +131,11 @@ describe('denial visibility (behavioral)', () => {
       // refusal recorded without it cannot be told apart from any other
       // refusal of the same tool.
       expect((input as any)?.command).toBe('ls')
+      // A refusal is evidence about the model, not the environment. Measured
+      // 2026-07-28 on the Gilded L4.5 run: five read-loop denials armed the
+      // algedonic kill switch and halted a session mid-edit. Governance must be
+      // told this call was refused, not that it failed.
+      expect((bashCalls[0] as any)[5]?.governanceDenial).toBe(true)
     } finally {
       spy.mockRestore()
     }
