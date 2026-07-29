@@ -88,7 +88,7 @@ import { UncertaintyTracker } from '../memory/uncertaintyTracker.js'
 // call took the catch branch instead of the recording path. The training corpus
 // writer was uncovered by construction.
 import { getTrajectoryRecorder } from '../training/trajectoryRecorder.js'
-import { collectGitFacts, collectDirtyPaths, collectPathSignatures, changedBetween, commitsSince } from '../training/gitFacts.js'
+import { collectGitFacts, collectDirtyPaths, collectPathSignatures, changedBetween, commitsSince, collectUntrackedPaths, repoToplevel, canonicalPath } from '../training/gitFacts.js'
 import { buildComponents } from '../training/taskOutcome.js'
 import type { TaskOutcomeInput } from '../training/taskOutcome.js'
 import { finalizeTask } from '../training/rewardLabeler.js'
@@ -3763,7 +3763,39 @@ export class ConversationLoop {
       }
     }
 
-    const fullOutput = result.output + lspContext
+    // A file the task CREATED can be left out of the task's own commit with
+    // nothing anywhere noticing. Measured on Gilded L4.6b: the run was told in
+    // writing to stage gilded/tests/test_stage4_smoke.py. To find out what it
+    // had changed it ran `git diff --name-only` — which reports modified
+    // TRACKED files and cannot, by construction, name a file that did not exist
+    // before — then staged exactly that list and committed six files. The smoke
+    // file it had just been credited for was still untracked, one `git clean`
+    // from gone, and both of its contract assertions were true.
+    //
+    // git.ts already reports tracked leftovers after a commit and deliberately
+    // excludes untracked paths, on the sound ground that a file git has never
+    // seen is usually scratch. That holds for files the task did not write.
+    // What separates the two is the file tracker, and it lives here.
+    let createdWarn = ''
+    if (toolName === 'Git' && !result.isError
+        && String(toolInput.subcommand ?? '') === 'commit') {
+      const cwd = this.executor['cwd']
+      const untracked = collectUntrackedPaths(cwd)
+      const top = repoToplevel(cwd)
+      if (untracked && untracked.length > 0 && top) {
+        const wrote = new Set(this.fileTracker.getModifiedFiles().map(p => canonicalPath(p, cwd)))
+        const orphans = untracked.filter(p => wrote.has(canonicalPath(p, top)))
+        if (orphans.length > 0) {
+          createdWarn = `\n\n[git] ${orphans.length} file(s) this task CREATED are NOT in this commit and are still untracked:\n`
+            + orphans.map(p => `  ${p}`).join('\n')
+            + `\nA new file cannot appear in \`git diff\`, so listing your changes that way will always miss it.`
+            + ` If these belong to the work, \`git add\` them and commit again.`
+          console.log(`[git] commit omitted ${orphans.length} task-created file(s): ${orphans.join(', ')}`)
+        }
+      }
+    }
+
+    const fullOutput = result.output + lspContext + createdWarn
     const truncatedOutput = truncateToolOutput(toolName, fullOutput)
     if (truncatedOutput.length < fullOutput.length) {
       console.log(`[s3] Truncated ${toolName} output: ${fullOutput.length} → ${truncatedOutput.length} bytes`)

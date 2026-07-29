@@ -299,6 +299,67 @@ export function collectDirtyPaths(cwd: string): string[] | null {
 }
 
 /**
+ * The repository root, or null if cwd is not in one.
+ *
+ * `status --porcelain` names paths from the repo root, not from cwd, while
+ * anything the model typed is relative to cwd. Comparing the two lists without
+ * this fails in the silent direction — no match, so no warning, so the caller
+ * concludes there is nothing to report.
+ */
+export function repoToplevel(cwd: string): string | null {
+  try {
+    const top = git(cwd, 'rev-parse --show-toplevel').trim()
+    return top ? top.replace(/\\/g, '/') : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * One canonical spelling for a path, so two lists written by different authors
+ * can be compared. Absolute, forward slashes, and case-folded on Windows only —
+ * where the filesystem is case-insensitive and `Gilded/X.py` and `gilded/x.py`
+ * are the same file.
+ */
+export function canonicalPath(p: string, base: string): string {
+  const s = p.replace(/\\/g, '/').replace(/^\.\//, '')
+  const b = base.replace(/\\/g, '/').replace(/\/+$/, '')
+  const abs = /^([a-zA-Z]:\/|\/)/.test(s) ? s : `${b}/${s}`
+  return process.platform === 'win32' ? abs.toLowerCase() : abs
+}
+
+/**
+ * The paths git has never seen — porcelain `??`.
+ *
+ * Split out from collectDirtyPaths because the two mean opposite things to a
+ * commit. A tracked file left modified is a hole in what was just delivered,
+ * always. An untracked file usually is not: it is scratch, build output, or
+ * unrelated work in progress, and git.ts excludes it for that reason.
+ *
+ * The exception is the file the task itself created, which is not scratch and
+ * is not in the commit either. Only the session's file tracker can tell those
+ * two apart, so this reports the raw set and lets the caller intersect.
+ *
+ * Null when git could not answer, which is "not measured" — never an empty
+ * array, which is the positive claim that nothing is untracked.
+ */
+export function collectUntrackedPaths(cwd: string): string[] | null {
+  try {
+    // `--untracked-files=all`, because the default collapses a wholly untracked
+    // directory to one entry: a task that creates `tests/a.py` and `tests/b.py`
+    // in a new directory gets reported as `tests/`, which matches nothing the
+    // file tracker holds and so warns about nothing. Caught by the test below.
+    return git(cwd, 'status --porcelain --untracked-files=all')
+      .split('\n')
+      .filter(l => l.slice(0, 2) === '??')
+      .map(porcelainPath)
+      .filter(Boolean)
+  } catch {
+    return null
+  }
+}
+
+/**
  * A per-path signature of the tree's current content state: path -> a token
  * that changes whenever that path's content changes.
  *

@@ -3,7 +3,7 @@ import { execSync } from 'child_process'
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { collectGitFacts, isTestPath } from '../../training/gitFacts.js'
+import { collectGitFacts, isTestPath, collectUntrackedPaths, repoToplevel, canonicalPath } from '../../training/gitFacts.js'
 
 describe('isTestPath', () => {
   it('recognizes common test layouts', () => {
@@ -347,5 +347,73 @@ describe('collectGitFacts — assertion and skip deltas on test files', () => {
       const facts = collectGitFacts(repo, baseSha)!
       expect(facts.changed.find(c => c.path === 'app.py')!.casesAdded).toBeUndefined()
     })
+  })
+})
+
+describe('untracked paths a task created', () => {
+  let repo: string
+  const run = (c: string, cwd: string) => execSync(c, { cwd, stdio: 'pipe' })
+
+  beforeEach(() => {
+    repo = mkdtempSync(join(tmpdir(), 'gituntracked-'))
+    run('git init -q', repo)
+    run('git config user.email t@t.t', repo)
+    run('git config user.name t', repo)
+    mkdirSync(join(repo, 'tests'), { recursive: true })
+    writeFileSync(join(repo, 'app.py'), 'def a():\n    return 1\n')
+    run('git add -A', repo)
+    run('git commit -q -m base', repo)
+  })
+
+  it('reports only paths git has never seen, not modified tracked ones', () => {
+    writeFileSync(join(repo, 'app.py'), 'def a():\n    return 2\n')
+    writeFileSync(join(repo, 'tests', 'test_new.py'), 'def test_x():\n    assert True\n')
+    const untracked = collectUntrackedPaths(repo)!
+    expect(untracked).toEqual(['tests/test_new.py'])
+    expect(untracked).not.toContain('app.py')
+  })
+
+  // The exact shape of Gilded L4.6b. The agent asked `git diff --name-only`
+  // what it had changed, staged that answer, and committed — leaving the file
+  // it had CREATED untracked, because a new file cannot appear in a diff.
+  it('catches the file a commit left behind because diff --name-only cannot name it', () => {
+    writeFileSync(join(repo, 'app.py'), 'def a():\n    return 2\n')
+    writeFileSync(join(repo, 'tests', 'test_new.py'), 'def test_x():\n    assert True\n')
+
+    const staged = execSync('git diff --name-only', { cwd: repo }).toString().trim().split('\n')
+    expect(staged).toEqual(['app.py'])          // the blind spot itself
+    run(`git add ${staged.join(' ')}`, repo)
+    run('git commit -q -m partial', repo)
+
+    // What the file tracker knows: both paths were written by this task.
+    const tracked = ['app.py', 'tests/test_new.py']
+    const top = repoToplevel(repo)!
+    const wrote = new Set(tracked.map(p => canonicalPath(p, repo)))
+    const orphans = collectUntrackedPaths(repo)!.filter(p => wrote.has(canonicalPath(p, top)))
+
+    expect(orphans).toEqual(['tests/test_new.py'])
+  })
+
+  it('stays silent about untracked files the task did not write', () => {
+    writeFileSync(join(repo, 'scratch.log'), 'noise\n')
+    const top = repoToplevel(repo)!
+    const wrote = new Set(['app.py'].map(p => canonicalPath(p, repo)))
+    const orphans = collectUntrackedPaths(repo)!.filter(p => wrote.has(canonicalPath(p, top)))
+    expect(orphans).toEqual([])
+  })
+
+  it('matches a tracker path spelled absolutely against git\'s repo-relative one', () => {
+    writeFileSync(join(repo, 'tests', 'test_new.py'), 'def test_x():\n    assert True\n')
+    const top = repoToplevel(repo)!
+    const wrote = new Set([join(repo, 'tests', 'test_new.py')].map(p => canonicalPath(p, repo)))
+    const orphans = collectUntrackedPaths(repo)!.filter(p => wrote.has(canonicalPath(p, top)))
+    expect(orphans).toEqual(['tests/test_new.py'])
+  })
+
+  it('returns null when git cannot answer, never an empty list', () => {
+    const notARepo = mkdtempSync(join(tmpdir(), 'nogit-'))
+    expect(collectUntrackedPaths(notARepo)).toBeNull()
+    expect(repoToplevel(notARepo)).toBeNull()
+    rmSync(notARepo, { recursive: true, force: true })
   })
 })
