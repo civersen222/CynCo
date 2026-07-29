@@ -142,6 +142,24 @@ export class HomeostatIntegration {
   }
 
   /**
+   * The balance classified from the pressures last measured, or null if no turn
+   * has been measured yet.
+   *
+   * This is the reading to report. getBalance() below recomputes from the ashby
+   * unit states, which have been stepped through the coupled equation and, when
+   * the system is unstable, had their weights randomized — appropriate for
+   * asking whether the system is settling, wrong for saying what the S3/S4
+   * balance IS. lastBalance is the classification of the numbers that were
+   * actually observed.
+   *
+   * Null rather than a default: before the first turn there are no pressures,
+   * and "no reading" is not the same as "balanced" even where they act alike.
+   */
+  getLastBalance(): InstanceType<typeof HomeostatBalance> | null {
+    return this.lastBalance
+  }
+
+  /**
    * Get the S3/S4 balance result.
    */
   getBalance(): ReturnType<typeof homeostat.calculateBalance> {

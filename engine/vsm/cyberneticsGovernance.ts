@@ -700,38 +700,47 @@ export class CyberneticsGovernance {
     const snapshot = hasEnoughData ? this.varietyEngine.current() : null
     const successRate = this.getSuccessRate()
 
-    // S3/S4 balance from real variety metrics
-    let s3s4Balance: 'balanced' | 'critical'
+    // Variety balance from the variety engine — environment against regulator.
     let varietyBalance: 'balanced' | 'underload' | 'overload'
-
     if (snapshot) {
       // Map library's VarietyBalance enum to governance report
       // Library values: 'Critical' | 'Overload' | 'Underload' | 'Balanced'
       switch (snapshot.balance) {
         case 'Critical':
           varietyBalance = 'overload' // severe mismatch
-          s3s4Balance = 'critical'
           break
         case 'Overload':
           varietyBalance = 'overload' // environment exceeds regulatory capacity
-          s3s4Balance = snapshot.ratio < 0.5 ? 'critical' : 'balanced'
           break
         case 'Underload':
           varietyBalance = 'underload' // excess regulatory capacity
-          s3s4Balance = 'balanced'
-          break
-        case 'Balanced':
-          varietyBalance = 'balanced'
-          s3s4Balance = 'balanced'
           break
         default:
           varietyBalance = 'balanced'
-          s3s4Balance = 'balanced'
       }
     } else {
       varietyBalance = 'balanced'
-      s3s4Balance = 'balanced'
     }
+
+    // Finding (af): s3s4Balance used to be derived from that same variety
+    // snapshot. The two are different measurements — variety is environment
+    // against regulator, the homeostat is S3 operations against S4 intelligence
+    // — and they share only two of their four state names. A variety ratio
+    // outside [0.5, 2.0] reads Critical, and the observed ratios were 5.5 and
+    // 7.0 because tool entropy and task complexity are not on one scale. So the
+    // field read 'critical' on 287 of 308 reports across three watched runs, and
+    // could never once produce 's3_dominant' or 's4_dominant' — the two values
+    // ruleBasedS5's W6 branches on exclusively, which is why W6 had never fired.
+    //
+    // The reading was already being taken: the pressures are measured below on
+    // every turn, handed to the homeostat, classified, stored and emitted as a
+    // domain event that nothing read. Report it.
+    const homeostatBalance = this.homeostatIntegration.getLastBalance()
+    const s3s4Balance: 'balanced' | 's3_dominant' | 's4_dominant' | 'critical' =
+      homeostatBalance === 'S3Dominant' ? 's3_dominant'
+      : homeostatBalance === 'S4Dominant' ? 's4_dominant'
+      : homeostatBalance === 'Critical' ? 'critical'
+      : 'balanced'
 
     // Status derivation — variety alone should NOT trigger critical, need real failures
     let status: 'healthy' | 'warning' | 'critical'
