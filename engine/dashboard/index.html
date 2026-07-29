@@ -931,6 +931,10 @@ function handleEvent(event) {
       break;
     }
 
+    case 'file.diff':
+      appendChatDiff(event.path || '', event.changeType || 'modify', event.hunks || []);
+      break;
+
     case 'tool.complete': {
       var name = event.toolName || 'unknown';
       if (!state.tools[name]) state.tools[name] = { success: 0, failure: 0 };
@@ -2395,6 +2399,69 @@ function appendChatTool(toolName, target, status, latency) {
   var detail = document.createElement('div');
   detail.className = 'chat-tool-detail';
   detail.id = id + '-detail';
+  el.appendChild(detail);
+  el.scrollTop = el.scrollHeight;
+  return id;
+}
+
+// Render a structured file.diff into the chat feed. The engine has emitted
+// these since Phase 6 (bridge/conversationLoop.ts) and the Textual TUI renders
+// them, but this dashboard had no handler, so a watcher saw Edit tools fire
+// without ever seeing what changed.
+var DIFF_MAX_LINES = 300;
+
+function appendChatDiff(path, changeType, hunks) {
+  var el = document.getElementById('chatMessages');
+  var id = 'cd-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
+  var adds = 0, dels = 0, i, j;
+  for (i = 0; i < hunks.length; i++) {
+    for (j = 0; j < hunks[i].lines.length; j++) {
+      if (hunks[i].lines[j].kind === 'add') adds++;
+      else if (hunks[i].lines[j].kind === 'del') dels++;
+    }
+  }
+
+  var row = document.createElement('div');
+  row.className = 'chat-tool';
+  row.dataset.id = id;
+  row.innerHTML = '<span style="color:#4ec9b0">\u00b1</span>' +
+    '<span style="color:#dcdcaa;font-weight:600">' + escHtml(changeType) + '</span>' +
+    '<span style="color:#808080;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:rtl;text-align:left">' +
+    escHtml(path) + '</span>' +
+    '<span style="color:#4ec9b0;font-size:10px">+' + adds + '</span>' +
+    '<span style="color:#f44747;font-size:10px">-' + dels + '</span>' +
+    '<span style="color:#555">\u25bc</span>';
+  row.onclick = function() {
+    var d = document.getElementById(id + '-detail');
+    if (d) d.classList.toggle('visible');
+  };
+  el.appendChild(row);
+
+  var detail = document.createElement('div');
+  detail.className = 'chat-tool-detail visible';
+  detail.id = id + '-detail';
+
+  // A single runaway edit must not be able to push the whole session out of the
+  // feed, so the render is capped and says so rather than truncating silently.
+  var html = '', shown = 0, dropped = 0;
+  for (i = 0; i < hunks.length; i++) {
+    var h = hunks[i];
+    html += '<div style="color:#569cd6">@@ -' + h.oldStart + ',' + h.oldLines +
+      ' +' + h.newStart + ',' + h.newLines + ' @@</div>';
+    for (j = 0; j < h.lines.length; j++) {
+      if (shown >= DIFF_MAX_LINES) { dropped++; continue; }
+      var ln = h.lines[j];
+      var mark = ln.kind === 'add' ? '+' : ln.kind === 'del' ? '-' : ' ';
+      var color = ln.kind === 'add' ? '#4ec9b0' : ln.kind === 'del' ? '#f44747' : '#808080';
+      html += '<div style="color:' + color + ';white-space:pre">' +
+        escHtml(mark + ln.text) + '</div>';
+      shown++;
+    }
+  }
+  if (dropped > 0) {
+    html += '<div style="color:#555">\u2026 ' + dropped + ' more lines not shown</div>';
+  }
+  detail.innerHTML = html;
   el.appendChild(detail);
   el.scrollTop = el.scrollHeight;
   return id;
