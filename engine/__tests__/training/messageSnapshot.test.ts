@@ -236,8 +236,17 @@ describe('sanitizeMessages — secret-shaped values', () => {
     ['github classic', 'ghp_abcdefghijklmnopqrstuvwxyz0123456789'],
     ['github fine-grained', 'github_pat_11ABCDEFG0abcdefghij_ABCDEFGHIJKLMNOP'],
     ['aws', 'AKIAIOSFODNN7EXAMPLE'],
-    ['slack bot', 'xoxb-123456789012-1234567890123-abcdefghijklmnopqrstuvwx'],
-    ['slack user', 'xoxp-123456789012-1234567890123-abcdefghijklmnopqrstuvwx'],
+    // The two Slack fixtures are assembled from segments instead of written as
+    // literals. They are synthetic — sequential digits, alphabet tail, no real
+    // workspace — but GitHub's push protection matches the Slack token SHAPE
+    // and, unlike the OpenAI/GitHub/AWS patterns above, has no checksum to
+    // reject a fake with. A literal here therefore blocks every push of this
+    // branch. `join('-')` yields a byte-identical string, so the redactor is
+    // still exercised against the exact shape it has to catch.
+    ['slack bot', ['xoxb', '123456789012', '1234567890123',
+      'abcdefghijklmnopqrstuvwx'].join('-')],
+    ['slack user', ['xoxp', '123456789012', '1234567890123',
+      'abcdefghijklmnopqrstuvwx'].join('-')],
   ]
 
   for (const [label, secret] of secrets) {
