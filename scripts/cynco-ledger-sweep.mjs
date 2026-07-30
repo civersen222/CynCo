@@ -14,92 +14,140 @@
 //   bun scripts/cynco-ledger-sweep.mjs --mission ui3_brief-1785394368994 ...
 //
 // --record is 1-based, matching the "record #N" the driver prints.
-// --survived is a comma-separated list of rule ids; omit it when none survived.
+// --survived takes the surviving rule ids, comma- OR space-separated. Both work
+// on purpose: taking only the first token writes a record that UNDERSTATES the
+// failure, and a record that reads "1 survivor" when eight survived is worse
+// than no record at all. Omit it when none survived. The list must name every
+// survivor — exactly `total - killed` ids — or nothing is written.
 
 import { readFileSync, writeFileSync, renameSync } from 'fs'
-import { dirname, join } from 'path'
+import { dirname, join, resolve } from 'path'
 import { fileURLToPath } from 'url'
 
 const LEDGER_PATH = join(dirname(fileURLToPath(import.meta.url)), '..',
   'benchmark', 'cynco-ledger', 'missions.jsonl')
 
-function arg(name) {
-  const i = process.argv.indexOf(`--${name}`)
-  return i === -1 ? undefined : process.argv[i + 1]
+export function arg(argv, name) {
+  const i = argv.indexOf(`--${name}`)
+  return i === -1 ? undefined : argv[i + 1]
 }
 
-const recordArg = arg('record')
-const missionArg = arg('mission')
-const command = arg('command')
-const killed = arg('killed')
-const total = arg('total')
-const survivedArg = arg('survived')
-const dryRun = process.argv.includes('--dry-run')
-
-if ((!recordArg && !missionArg) || !command || killed === undefined || total === undefined) {
-  console.error('usage: --record N | --mission ID  --command "..." --killed K --total T [--survived a,b] [--dry-run]')
-  process.exit(2)
-}
-
-const lines = readFileSync(LEDGER_PATH, 'utf8').split('\n').filter(Boolean)
-const rows = lines.map((l) => JSON.parse(l))
-
-let idx
-if (recordArg !== undefined) {
-  idx = Number(recordArg) - 1
-  if (!Number.isInteger(idx) || idx < 0 || idx >= rows.length) {
-    console.error(`--record ${recordArg} out of range (ledger has ${rows.length} records)`)
-    process.exit(2)
+// Gather EVERY token after --name up to the next --flag, then split each on
+// commas. `--survived a,b` and `--survived a b` must mean the same thing:
+// reading only argv[i+1] silently discarded seven of eight survivor ids once,
+// and the record it wrote read as measured.
+export function argList(argv, name) {
+  const i = argv.indexOf(`--${name}`)
+  if (i === -1) return undefined
+  const out = []
+  for (let j = i + 1; j < argv.length; j++) {
+    const tok = argv[j]
+    if (tok.startsWith('--')) break
+    for (const part of tok.split(',')) {
+      const s = part.trim()
+      if (s) out.push(s)
+    }
   }
-} else {
-  idx = rows.findIndex((r) => r.missionId === missionArg)
-  if (idx === -1) {
-    console.error(`no record with missionId ${missionArg}`)
-    process.exit(2)
-  }
+  return out
 }
-
-const k = Number(killed)
-const t = Number(total)
-const survived = survivedArg ? survivedArg.split(',').map((s) => s.trim()).filter(Boolean) : []
 
 // Validate before writing: a malformed sweep record is worse than none, because
-// it reads as measured.
-const problems = []
-if (!Number.isFinite(k) || k < 0) problems.push(`killed=${killed} is not a count`)
-if (!Number.isFinite(t) || t <= 0) problems.push(`total=${total} is not a positive count`)
-if (k > t) problems.push(`killed (${k}) > total (${t})`)
-// The survivor list is the whole point of recording a partial sweep: a bare
-// "14/15" does not say WHICH rule is unpinned, and that is the actionable part.
-if (k < t && survived.length === 0) {
-  problems.push(`${t - k} mutation(s) survived but --survived names none`)
-}
-if (k === t && survived.length > 0) {
-  problems.push(`killed === total but --survived names ${survived.length}`)
-}
-if (problems.length) {
-  for (const p of problems) console.error(`invalid: ${p}`)
-  process.exit(2)
-}
-
-const rec = rows[idx]
-const before = rec.mutationSweep
-rec.mutationSweep = { command, killed: k, total: t, survived }
-
-console.log(`record #${idx + 1}  ${rec.missionId}`)
-console.log(`  briefFile : ${rec.briefFile}`)
-console.log(`  outcome   : ${rec.outcome}   verified: ${rec.verified}`)
-console.log(`  was       : ${JSON.stringify(before ?? null)}`)
-console.log(`  now       : ${JSON.stringify(rec.mutationSweep)}`)
-console.log(`  accepted  : ${rec.outcome === 'landed' && rec.verified === true && k === t}`)
-
-if (dryRun) {
-  console.log('--dry-run: nothing written')
-  process.exit(0)
+// it reads as measured. Exported so the test exercises the shipping predicate
+// rather than a restatement of it.
+export function sweepProblems(killed, total, survived) {
+  const k = Number(killed)
+  const t = Number(total)
+  const problems = []
+  if (!Number.isFinite(k) || k < 0) problems.push(`killed=${killed} is not a count`)
+  if (!Number.isFinite(t) || t <= 0) problems.push(`total=${total} is not a positive count`)
+  if (k > t) problems.push(`killed (${k}) > total (${t})`)
+  // The survivor list is the whole point of recording a partial sweep: a bare
+  // "14/15" does not say WHICH rule is unpinned, and that is the actionable
+  // part. This one arithmetic check subsumes "gap but nothing named" and "no gap
+  // but named": the list length must equal total - killed, exactly. Without it a
+  // list of 1 is accepted for a gap of 8, and the record then reads "one rule
+  // unpinned" when eight were. A count is checkable; trusting the caller to keep
+  // two numbers in agreement is not.
+  if (Number.isFinite(k) && Number.isFinite(t) && k <= t && survived.length !== t - k) {
+    problems.push(
+      `--survived names ${survived.length} id(s) but ${t} - ${k} = ${t - k} mutation(s) survived` +
+      (survived.length ? ` (got: ${survived.join(', ')})` : ''),
+    )
+  }
+  // A repeat inflates the list to the right length while naming fewer survivors
+  // than there are — the length check alone would pass it.
+  const dupes = survived.filter((s, i) => survived.indexOf(s) !== i)
+  if (dupes.length) {
+    problems.push(`--survived repeats id(s): ${[...new Set(dupes)].join(', ')}`)
+  }
+  return problems
 }
 
-const out = rows.map((r) => JSON.stringify(r)).join('\n') + '\n'
-const tmp = LEDGER_PATH + '.tmp'
-writeFileSync(tmp, out)
-renameSync(tmp, LEDGER_PATH)
-console.log(`written → ${LEDGER_PATH}`)
+function main(argv) {
+  const recordArg = arg(argv, 'record')
+  const missionArg = arg(argv, 'mission')
+  const command = arg(argv, 'command')
+  const killed = arg(argv, 'killed')
+  const total = arg(argv, 'total')
+  const survived = argList(argv, 'survived') ?? []
+  const dryRun = argv.includes('--dry-run')
+
+  if ((!recordArg && !missionArg) || !command || killed === undefined || total === undefined) {
+    console.error('usage: --record N | --mission ID  --command "..." --killed K --total T [--survived a,b] [--dry-run]')
+    return 2
+  }
+
+  const rows = readFileSync(LEDGER_PATH, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l))
+
+  let idx
+  if (recordArg !== undefined) {
+    idx = Number(recordArg) - 1
+    if (!Number.isInteger(idx) || idx < 0 || idx >= rows.length) {
+      console.error(`--record ${recordArg} out of range (ledger has ${rows.length} records)`)
+      return 2
+    }
+  } else {
+    idx = rows.findIndex((r) => r.missionId === missionArg)
+    if (idx === -1) {
+      console.error(`no record with missionId ${missionArg}`)
+      return 2
+    }
+  }
+
+  const problems = sweepProblems(killed, total, survived)
+  if (problems.length) {
+    for (const p of problems) console.error(`invalid: ${p}`)
+    return 2
+  }
+
+  const k = Number(killed)
+  const t = Number(total)
+  const rec = rows[idx]
+  const before = rec.mutationSweep
+  rec.mutationSweep = { command, killed: k, total: t, survived }
+
+  console.log(`record #${idx + 1}  ${rec.missionId}`)
+  console.log(`  briefFile : ${rec.briefFile}`)
+  console.log(`  outcome   : ${rec.outcome}   verified: ${rec.verified}`)
+  console.log(`  was       : ${JSON.stringify(before ?? null)}`)
+  console.log(`  now       : ${JSON.stringify(rec.mutationSweep)}`)
+  console.log(`  accepted  : ${rec.outcome === 'landed' && rec.verified === true && k === t}`)
+
+  if (dryRun) {
+    console.log('--dry-run: nothing written')
+    return 0
+  }
+
+  const out = rows.map((r) => JSON.stringify(r)).join('\n') + '\n'
+  const tmp = LEDGER_PATH + '.tmp'
+  writeFileSync(tmp, out)
+  renameSync(tmp, LEDGER_PATH)
+  console.log(`written → ${LEDGER_PATH}`)
+  return 0
+}
+
+// Only run the CLI when invoked as a script. Under vitest argv[1] is the test
+// runner, so importing this module for its predicates must not touch the ledger.
+if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
+  process.exit(main(process.argv))
+}
