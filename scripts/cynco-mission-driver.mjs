@@ -57,6 +57,19 @@ const inferenceToken = localTokens.tokenFor('inference')
 const ws = new WebSocket(WS_URL, { headers: { Authorization: `Bearer ${bridgeToken}` } })
 let toolCount = 0
 let zeroToolCompletion = false
+// The marker appearing in git log means a commit LANDED, not that the run is
+// FINISHED. Measured on Gilded UI Wave 3d: the run committed 8ab7faf, the poll
+// below caught the marker and fired the verification check, which failed DoD 7
+// on four test names in the commit body that did not resolve — and while that
+// 57-second check was running the run amended the commit to 78429e0 with the
+// names corrected, which passes the same gate 59/59. So the ledger recorded
+// verified:false for a wave that passes, because the instrument read a commit
+// the run was still in the middle of fixing. Landing is now recorded but the
+// loop keeps waiting for the conversation to go quiet: a completed message with
+// no tool call after it for QUIET_MS. Any tool.start reopens the run.
+let sawMessageComplete = false
+let lastActivityAt = Date.now()
+const QUIET_MS = 60000
 ws.onopen = () => {
   console.log('[driver] connected, dispatching mission')
   // P4.2 (STATE doc Phase 4(a)): the check script IS the contract — the engine
@@ -86,7 +99,14 @@ ws.onmessage = (ev) => {
       console.log('[driver] WARNING: S5 ENFORCEMENT ACTIVE — restart engine with LOCALCODE_S5_ENFORCE=false (F7 risk, ledger labels confounded)')
       enforcedWarned = true
     }
-    if (m.type === 'tool.start') { toolCount++; console.log(`[cynco] tool: ${m.toolName}`) }
+    if (m.type === 'tool.start') {
+      toolCount++
+      console.log(`[cynco] tool: ${m.toolName}`)
+      // Any tool call means the run is still working, whatever it has committed.
+      sawMessageComplete = false
+      lastActivityAt = Date.now()
+    }
+    if (m.type === 'message.complete') { sawMessageComplete = true; lastActivityAt = Date.now() }
     if (m.type === 'tool.complete' && m.isError) console.log(`[cynco] TOOL ERROR (${m.toolName}): ${String(m.result).slice(0, 200)}`)
     if (m.type === 'approval.request') console.log(`[cynco] APPROVAL REQUESTED (${m.toolName ?? '?'}) — engine not in APPROVE_ALL mode? (F2)`)
     if (m.type === 'message.complete' && toolCount === 0) {
@@ -137,7 +157,8 @@ async function gitLog() {
 console.log(`[driver] baseline HEAD ${baselineSha ?? '(unknown)'} — looking for "${marker}" in commits after it`)
 const start = Date.now()
 let landed = false
-while (!landed && !zeroToolCompletion && (Date.now() - start) / 1000 < TIMEOUT_S) {
+let quiet = false
+while (!quiet && !zeroToolCompletion && (Date.now() - start) / 1000 < TIMEOUT_S) {
   await Bun.sleep(30000)
   try {
     const g = await fetch(GOV_URL, { headers: { Authorization: `Bearer ${inferenceToken}` } }).then(r => r.json())
@@ -146,13 +167,22 @@ while (!landed && !zeroToolCompletion && (Date.now() - start) / 1000 < TIMEOUT_S
   // Never let a git hiccup kill the loop — the ledger write at the end must run
   try {
     const log = await gitLog()
-    if (log.includes(marker)) {
+    if (log.includes(marker) && !landed) {
       console.log('[driver] COMMIT LANDED:\n' + log)
       landed = true
     }
   } catch (e) { console.log(`[driver] git poll failed: ${e?.message ?? e}`) }
+  // Only a landed mission is worth waiting for quiescence on; if nothing has
+  // landed the timeout is the right stop. A run that lands and then keeps
+  // working — amending the commit, fixing a name — must finish before the
+  // check runs, or the check measures a state that no longer exists.
+  if (landed && sawMessageComplete && Date.now() - lastActivityAt >= QUIET_MS) {
+    console.log(`[driver] run quiet for ${Math.round((Date.now() - lastActivityAt) / 1000)}s after a completed message — proceeding to verification`)
+    quiet = true
+  }
 }
 if (!landed) console.log('[driver] TIMEOUT without commit — log a failure entry (docs/cynco-failure-log.md)')
+else if (!quiet) console.log('[driver] WARNING: commit landed but the run never went quiet — the check below may read a commit the run is still amending (see QUIET_MS)')
 try {
   const p = Bun.spawn(['git', 'status', '--short'], { cwd: CWD, stdout: 'pipe' })
   console.log('[git status]\n' + await new Response(p.stdout).text())
