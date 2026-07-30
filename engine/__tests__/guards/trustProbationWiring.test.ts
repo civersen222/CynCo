@@ -16,8 +16,12 @@ import { ToolScorer } from '../../tools/toolScorer.js'
  * Measured on Gilded UI Wave 1. Bash reached 2 successes of 8 — confidence 0.30
  * against a 0.35 threshold — and `[trust] Demoted tools excluded: Bash` repeated
  * on 31 consecutive iterations with nothing able to bring it back. The task's own
- * contract assertion was "the verification command exits 0", which needs a shell,
- * and governance reported `status=warning stuck=0 toolOK=1` throughout.
+ * contract assertion was "the verification command exits 0", which needs a shell.
+ * (An earlier version of this comment added "and governance reported toolOK=1
+ * throughout". That was false and written without measuring — the run's
+ * governance lines carry both 1.00 and 0.95, so the failures WERE registered.
+ * `getSuccessRate` is a 20-call window over ALL tools and has no vocabulary for
+ * one broken tool; the per-tool signal, `ToolScorer`, caught it at 0.30.)
  *
  * The run also showed the exclusion is unenforced — Bash executed five times
  * inside that window, because the model can name a tool the advertised list

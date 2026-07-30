@@ -342,6 +342,16 @@ export class ConversationLoop {
   private offeredToolNames: Set<string> | null = null
   /** Loud record of every tool-floor rescue this run, for the outcome report. */
   floorEvents: string[] = []
+  /**
+   * Set once the two-stage tool router has been offered and ignored. The stage-1
+   * call costs a full prefill plus a full generation, and buys nothing at all if
+   * the model does not call select_category. Measured on the Gilded UI Wave 1
+   * run: 56 stage-1 calls, 175.4s of model time, and select_category chosen
+   * ZERO times — 32% of the run's model time for no narrowing. One strike is
+   * enough evidence for this session; per-instance, not process-global, so a new
+   * session re-measures instead of inheriting a verdict.
+   */
+  private routingDeclined = false
   // Brain stream: thinking persistence + uncertainty tracking
   private thinkingRecorder: ThinkingRecorder | null = null
   private uncertainty = new UncertaintyTracker()
@@ -2015,8 +2025,9 @@ export class ConversationLoop {
       // Two-stage tool routing for small context models
       try {
         const { shouldUseRouting, getToolsForCategory, CATEGORY_SELECTOR_TOOL } = await import('../tools/toolRouter.js')
-        if (shouldUseRouting(this.config.contextLength ?? 32768) && iterationTools.length > 5) {
+        if (!this.routingDeclined && shouldUseRouting(this.config.contextLength ?? 32768) && iterationTools.length > 5) {
           // Stage 1: send only category selector
+          let routed = false
           const routingGen = localCallModel({
             messages: this.messages,
             systemPrompt,
@@ -2032,9 +2043,17 @@ export class ConversationLoop {
               console.log(`[routing] Category selected: ${category}`)
               const { ALL_TOOLS } = await import('../tools/registry.js')
               iterationTools = toToolDefs(getToolsForCategory(category, ALL_TOOLS))
+              routed = true
               break
             }
             if (evt.type === 'message_stop') break // model didn't use the tool — fall through to all tools
+          }
+          if (!routed) {
+            // The stage-1 call cost a full prefill and a full generation and
+            // narrowed nothing. Falling through silently made that happen on
+            // every iteration for the whole run; one refusal is enough.
+            this.routingDeclined = true
+            console.log('[routing] Model ignored select_category — two-stage routing disabled for the rest of this session (the stage-1 call costs a full prefill and buys nothing when unused)')
           }
         }
       } catch (routeErr) {
