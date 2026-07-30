@@ -1982,14 +1982,25 @@ export class ConversationLoop {
         return
       }
 
-      // Filter out demoted tools (trust score decay)
+      // Filter out demoted tools (trust score decay).
+      //
+      // `excludeForIteration` rather than `getDemotedTools`: it advances each
+      // demoted tool's probation, so a tool that was withheld gets offered again
+      // after a few iterations. Without that the exclusion is permanent for the
+      // rest of the session — withheld, therefore never called, therefore never
+      // re-scored — and on Gilded UI Wave 1 that swallowed Bash, which is the
+      // only way to run the verification command the task's contract named.
       const scorer = this.executor.getToolScorer?.()
-      const demoted = scorer ? new Set(scorer.getDemotedTools()) : new Set<string>()
+      const demoted = scorer ? new Set(scorer.excludeForIteration()) : new Set<string>()
       let iterationTools = demoted.size > 0
         ? toolDefs.filter(t => !demoted.has(t.name))
         : toolDefs
       if (demoted.size > 0) {
         console.log(`[trust] Demoted tools excluded: ${[...demoted].join(', ')}`)
+      }
+      const probation = scorer?.probationTools() ?? []
+      if (probation.length > 0) {
+        console.log(`[trust] Offered again on probation: ${probation.join(', ')}`)
       }
 
       // S5's pre-loop decision, scoped to the iteration it was decided for.
