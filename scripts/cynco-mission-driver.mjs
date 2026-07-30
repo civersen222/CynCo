@@ -97,6 +97,10 @@ ws.onopen = () => {
   const readOnlyPaths = [resolve(taskFile).replace(/\\/g, '/')]
   ws.send(JSON.stringify({
     type: 'user.message', text: task, cwd: CWD, readOnlyPaths,
+    // This driver is a script, not a person. An AskUser raised here is broadcast
+    // to an empty room and "answered" only by the AskBroker's 300s timeout —
+    // measured on Gilded UI Wave 6, five minutes spent learning nothing.
+    unattended: true,
     ...(contract ? { contract } : {}),
   }))
 }

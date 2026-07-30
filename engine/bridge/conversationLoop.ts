@@ -207,6 +207,13 @@ export type TaskOpts = {
    * gate paths derived from `contract.assertions`.
    */
   readOnlyPaths?: string[]
+  /**
+   * No human can answer an AskUser during this task. Declared by the harness,
+   * which is the only party that knows it: the emitter is wired either way, so
+   * from inside the engine an unattended mission is indistinguishable from a
+   * person who has not typed yet.
+   */
+  unattended?: boolean
 }
 
 export type ConversationLoopOptions = {
@@ -866,6 +873,13 @@ export class ConversationLoop {
     // scoped to ONE task: a later task with no harness contract must not inherit
     // the last one's read-only set, or the agent is refused edits to a file
     // nothing is currently measuring and gets no way to find out why.
+    // Scoped to one task, like the read-only set below: a later message typed by
+    // a person must not inherit the last mission's "nobody is listening".
+    globalAskBroker.setUnattended(opts?.unattended === true)
+    if (opts?.unattended === true) {
+      console.log('[contract] Unattended task: AskUser resolves immediately, nobody can answer')
+    }
+
     const declared = (opts?.readOnlyPaths ?? []).map(p => p.replace(/\\/g, '/'))
     const gates = [...new Set([
       ...declared,

@@ -503,6 +503,12 @@ export type UserMessageCommand = {
    *  one that reads the environment. Absolute paths; unioned with the paths
    *  derived from `contract.assertions`; scoped to one message. */
   readOnlyPaths?: string[]
+  /** No human can answer an AskUser raised while handling this message. A
+   *  harness dispatches over the same socket a person would use, so the emitter
+   *  is wired and the question is broadcast to an empty room; without this the
+   *  run stalls for the full AskBroker timeout to learn what the dispatcher
+   *  already knew. Scoped to one message. */
+  unattended?: boolean
 }
 
 export type ApprovalResponseCommand = {

@@ -25,6 +25,7 @@ type PendingAsk = {
 export class AskBroker {
   private pending = new Map<string, PendingAsk>()
   private emitter: AskEmitter | null = null
+  private unattended = false
   private readonly timeoutMs: number
 
   constructor(opts?: { timeoutMs?: number }) {
@@ -36,10 +37,29 @@ export class AskBroker {
     this.emitter = emitter
   }
 
+  /**
+   * Declare whether a human can answer at all. A harness dispatches a mission
+   * over the same WebSocket a person would use, so the emitter is wired and the
+   * question does get broadcast — to nobody. Measured on Gilded UI Wave 6: one
+   * AskUser call burned the full 300s timeout before resolving to '', in a run
+   * with no human attached from the first token to the last.
+   */
+  setUnattended(unattended: boolean): void {
+    this.unattended = unattended
+  }
+
+  get isUnattended(): boolean {
+    return this.unattended
+  }
+
   /** Pose a question to the human; resolves with their answer (or '' on timeout). */
   ask(question: string, options?: string[]): Promise<string> {
+    // Nobody is listening, or nothing is wired to listen. Waiting out the
+    // timeout cannot produce an answer; it can only produce a delay.
+    if (this.unattended || !this.emitter) return Promise.resolve('')
+
     const requestId = randomUUID()
-    this.emitter?.({ requestId, question, options })
+    this.emitter({ requestId, question, options })
 
     return new Promise<string>((resolve) => {
       const timer = setTimeout(() => {

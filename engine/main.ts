@@ -520,6 +520,7 @@ async function handleCommand(command: TUICommand): Promise<void> {
       await loop.handleUserMessage(command.text, {
         contract: command.contract,
         readOnlyPaths: command.readOnlyPaths,
+        unattended: command.unattended,
       })
       break
 
