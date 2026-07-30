@@ -24,7 +24,7 @@
 import { basename, join, dirname, resolve } from 'node:path'
 import { mkdirSync, appendFileSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { createMissionCollector, buildMissionRecord } from './cynco-ledger.mjs'
+import { createMissionCollector, buildMissionRecord, missionCommitted } from './cynco-ledger.mjs'
 import { runCheck } from './cynco-verify.mjs'
 import { loadOrCreateTokens } from '../engine/security/localToken.js'
 
@@ -169,9 +169,10 @@ async function gitLog() {
   return await new Response(p.stdout).text()
 }
 
-console.log(`[driver] baseline HEAD ${baselineSha ?? '(unknown)'} — looking for "${marker}" in commits after it`)
+console.log(`[driver] baseline HEAD ${baselineSha ?? '(unknown)'} — any commit after it counts as landed; "${marker}" is recorded, not required`)
 const start = Date.now()
 let landed = false
+let markerSeen = false
 let quiet = false
 while (!quiet && !zeroToolCompletion && (Date.now() - start) / 1000 < TIMEOUT_S) {
   await Bun.sleep(30000)
@@ -182,8 +183,13 @@ while (!quiet && !zeroToolCompletion && (Date.now() - start) / 1000 < TIMEOUT_S)
   // Never let a git hiccup kill the loop — the ledger write at the end must run
   try {
     const log = await gitLog()
-    if (log.includes(marker) && !landed) {
-      console.log('[driver] COMMIT LANDED:\n' + log)
+    if (log.includes(marker)) markerSeen = true
+    // The marker is evidence about the commit MESSAGE, never about whether work
+    // landed. See missionCommitted() in cynco-ledger.mjs for why this decision
+    // has a name and a test instead of living here as an expression.
+    const committed = missionCommitted(log, marker, baselineSha)
+    if (committed && !landed) {
+      console.log(`[driver] COMMIT LANDED${markerSeen ? '' : ` (no "${marker}" in the subject — brief dictated another format)`}:\n` + log)
       landed = true
     }
   } catch (e) { console.log(`[driver] git poll failed: ${e?.message ?? e}`) }
@@ -226,6 +232,7 @@ try {
     missionId,
     briefFile: taskFile,
     marker,
+    markerSeen,
     cwd: CWD,
     dispatchedAt,
     durationS: Math.round((Date.now() - start) / 1000),

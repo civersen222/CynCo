@@ -12,8 +12,8 @@
 //
 //   verified      — the brief's own check command exited 0. Structural: the
 //                   suite collected, the counts held, the frozen files did not
-//                   move, the commit carried its marker. Set by the driver
-//                   (Phase 2(b)) when a check-cmd is supplied, else null.
+//                   move. Set by the driver (Phase 2(b)) when a check-cmd is
+//                   supplied, else null.
 //   mutationSweep — a withheld mutation set made the repo's OWN tests go red
 //                   for every rule the brief stated. Behavioural: it measures
 //                   whether the tests BITE. Recorded after the fact (sweeps
@@ -131,7 +131,31 @@ export function createMissionCollector(now = () => Date.now()) {
   }
 }
 
-// meta: { missionId, briefFile, marker, cwd, dispatchedAt, durationS,
+/**
+ * Did this mission commit anything?
+ *
+ * `log` must be `git log --oneline <baselineSha>..HEAD`. Scoped that way, every
+ * line in it is a commit this mission made, so the presence of ANY line is the
+ * answer — the marker string is not consulted. That scoping is also what stops
+ * a follow-up mission from matching its predecessor's subject line, which is
+ * the failure the marker check was originally added for.
+ *
+ * When the baseline SHA could not be read, the log is an unscoped `git log -3`
+ * and the marker is the only thing separating this mission's commits from
+ * pre-existing ones, so it is required.
+ *
+ * Why this is a function and not an inline expression: as an inline expression
+ * it read a landed, pushed, fully green UI Wave 6d as `outcome: "timeout"`,
+ * because that wave's brief dictated a rule-map commit subject with no marker
+ * in it. A driver that reports the opposite of what happened is worse than one
+ * that reports nothing, so the decision now has a name and a test.
+ */
+export function missionCommitted(log, marker, baselineSha) {
+  if (!baselineSha) return log.includes(marker)
+  return log.trim().length > 0
+}
+
+// meta: { missionId, briefFile, marker, markerSeen, cwd, dispatchedAt, durationS,
 //         outcome: 'landed' | 'timeout' | 'zero_tool_fail',
 //         verified?: boolean, verify?: object,  // Phase 2(b) check-script result
 //         mutationSweep?: { command, killed, total, survived: string[] } }
@@ -141,6 +165,11 @@ export function buildMissionRecord(collector, meta) {
     missionId: meta.missionId,
     briefFile: meta.briefFile,
     marker: meta.marker,
+    // Whether the marker actually appeared in the commit subject. It is NOT what
+    // decides `outcome` — the driver lands on any commit in baselineSha..HEAD —
+    // because a brief is free to dictate its own subject format, and UI Wave 6d's
+    // did. Kept so a record can still say whether the two agreed.
+    markerSeen: meta.markerSeen ?? null,
     cwd: meta.cwd,
     dispatchedAt: meta.dispatchedAt,
     durationS: meta.durationS,

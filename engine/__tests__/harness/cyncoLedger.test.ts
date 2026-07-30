@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 // The ledger collector is a plain .mjs module used by scripts/cynco-mission-driver.mjs
 // @ts-ignore — untyped harness module
-import { createMissionCollector, buildMissionRecord } from '../../../scripts/cynco-ledger.mjs'
+import { createMissionCollector, buildMissionRecord, missionCommitted } from '../../../scripts/cynco-ledger.mjs'
 
 describe('cynco mission outcome ledger', () => {
   const syntheticStream = [
@@ -294,5 +294,34 @@ describe('cynco mission outcome ledger', () => {
       missionId: 'm-nofid', briefFile: 'b.md', marker: 'x', cwd: '.', dispatchedAt: 0, durationS: 1, outcome: 'timeout',
     })
     expect(rec.regulatorFidelity).toBeNull()
+  })
+})
+
+// The driver's landing detector. It reported the OPPOSITE of what happened for
+// UI Wave 6d: brief-dictated commit subject "R12: test_r12_..." carried no
+// marker, so a landed + pushed + 973-green wave was headed for outcome
+// "timeout". A driver that lies about the outcome poisons every record scored
+// off this ledger, so the decision has a name and these tests.
+describe('missionCommitted — did this mission commit anything?', () => {
+  const MARKER = 'Wave 6d'
+  const SHA = 'deadbee'
+
+  it('a scoped log with commits but no marker is committed (the Wave 6d case)', () => {
+    const log = 'c64d8e4 R12: test_r12_treasury_unsigned_on_surface\n'
+    expect(log.includes(MARKER)).toBe(false) // the marker really is absent
+    expect(missionCommitted(log, MARKER, SHA)).toBe(true)
+  })
+
+  it('an empty scoped log is not committed', () => {
+    expect(missionCommitted('', MARKER, SHA)).toBe(false)
+    expect(missionCommitted('\n  \n', MARKER, SHA)).toBe(false)
+  })
+
+  it('without a baseline SHA the log is unscoped, so the marker is required', () => {
+    // `git log -3` can show commits that predate the mission; only the marker
+    // separates them.
+    const stale = 'aaa1111 fix: something from last week\nbbb2222 chore: older still\n'
+    expect(missionCommitted(stale, MARKER, null)).toBe(false)
+    expect(missionCommitted(`ccc3333 ${MARKER}: landed\n${stale}`, MARKER, null)).toBe(true)
   })
 })
