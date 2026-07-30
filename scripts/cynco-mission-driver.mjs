@@ -21,7 +21,7 @@
 // `verified` itself; without one, patch it after independent verification.
 // Human spot-audit every 5th record either way (STATE doc Phase 2(b)).
 
-import { basename, join, dirname } from 'node:path'
+import { basename, join, dirname, resolve } from 'node:path'
 import { mkdirSync, appendFileSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { createMissionCollector, buildMissionRecord } from './cynco-ledger.mjs'
@@ -64,7 +64,17 @@ ws.onopen = () => {
   const contract = checkCmd
     ? { title: `Mission: ${marker}`, brief: task.slice(0, 200), assertions: [`Verification command exits 0: ${checkCmd}`] }
     : undefined
-  ws.send(JSON.stringify({ type: 'user.message', text: task, cwd: CWD, ...(contract ? { contract } : {}) }))
+  // Finding (ag): the brief is the instrument this mission is judged against, and
+  // this driver is the only component that knows where it lives. Measured on
+  // Gilded L4.6b, a run rewrote the brief it had been Read three times with a
+  // plausible reconstruction of its own. Finding (ac) built the refusal but fed
+  // it from LOCALCODE_IMMUTABLE_PATHS, read inside the engine process — which
+  // this driver, a WebSocket client, cannot set. So it travels with the message.
+  const readOnlyPaths = [resolve(taskFile).replace(/\\/g, '/')]
+  ws.send(JSON.stringify({
+    type: 'user.message', text: task, cwd: CWD, readOnlyPaths,
+    ...(contract ? { contract } : {}),
+  }))
 }
 ws.onmessage = (ev) => {
   try {

@@ -233,6 +233,63 @@ export function harnessContractCommandError(
   return null
 }
 
+/**
+ * The instrument files a harness contract names: read-only for the task.
+ *
+ * Finding (ag), measured on Gilded UI Wave 0b. The brief said "do not create,
+ * edit, or delete anything under C:/tmp"; twenty minutes in the agent ran `Edit`
+ * on `C:/tmp/verify_ui0.py` — the gate script named in its own contract
+ * assertions — and nothing objected. The edit it made was, as it happens, the
+ * correct one, but a run that can edit the thing that scores it is unscoreable
+ * whether or not it cheats: a green gate no longer distinguishes work that
+ * passed from a gate that was made to pass.
+ *
+ * Finding (ac) built the enforcement for exactly this (executor.immutableTargetOf)
+ * and wired it to `LOCALCODE_IMMUTABLE_PATHS`, an environment variable. Nothing
+ * ever set it. It could not: the mission driver is a WebSocket client and the
+ * variable is read inside the engine process, so the one component that knows
+ * which files are instruments has no way to say so. Immutable paths have to
+ * travel with the task, and the harness contract is already the thing that
+ * travels with it.
+ *
+ * Only paths OUTSIDE the workspace are protected, and that boundary is the whole
+ * design. `python -m pytest gilded/tests -q` is a verification command that names
+ * a path, and `gilded/tests` is precisely the code the agent was sent to edit —
+ * protecting it would break every task. A file outside the workspace that a check
+ * command executes is the instrument; a file inside is the work.
+ *
+ * Known limit: a gate kept inside the repository is not covered here. That case
+ * is not silent — it is a tracked file, so commitScope and the dirty-path
+ * machinery both see it move — but it is not prevented.
+ */
+export function harnessGatePaths(
+  assertions: string[],
+  cwd: string,
+  exists: (p: string) => boolean = (p) => existsSync(p),
+): string[] {
+  const root = cwd.replace(/\\/g, '/').replace(/\/+$/, '')
+  const inWorkspace = (p: string) => {
+    const a = process.platform === 'win32' ? p.toLowerCase() : p
+    const b = process.platform === 'win32' ? root.toLowerCase() : root
+    return a === b || a.startsWith(b + '/')
+  }
+  const found = new Set<string>()
+  for (const text of assertions) {
+    const check = assertionCheck(text)
+    if (check?.kind !== 'command') continue
+    for (const rawToken of check.command.split(/\s+/)) {
+      const token = rawToken.replace(/^["']+|["':;,]+$/g, '')
+      // Path-shaped or nothing. A bare word is a program name or a flag.
+      if (!token || !/[\\/]/.test(token)) continue
+      const abs = (isAbsolute(token) ? token : resolve(cwd, token)).replace(/\\/g, '/')
+      if (inWorkspace(abs)) continue
+      if (!exists(abs)) continue
+      found.add(abs)
+    }
+  }
+  return [...found].sort()
+}
+
 /** Apply a harness-supplied contract spec. Returns true when applied. */
 export function applyHarnessContract(
   spec: HarnessContractSpec | undefined,

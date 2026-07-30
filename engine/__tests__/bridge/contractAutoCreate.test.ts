@@ -9,6 +9,7 @@ import { ContractState } from '../../tools/contract.js'
 import {
   applyHarnessContract,
   harnessContractCommandError,
+  harnessGatePaths,
   maybeAutoCreateContract,
 } from '../../bridge/contractAutoCreate.js'
 
@@ -387,5 +388,80 @@ describe('applyHarnessContract (P4.2)', () => {
       () => null,
     )).toBe(true)
     expect(c.snapshot().active).toBe(true)
+  })
+})
+
+/**
+ * Finding (ag), Gilded UI Wave 0b: the agent ran `Edit` on C:/tmp/verify_ui0.py
+ * — the gate script named in its own contract assertions — and nothing objected.
+ * A run that can edit the thing that scores it cannot be scored.
+ */
+describe('harnessGatePaths: the instruments a contract names', () => {
+  const gate = (p: string) => {
+    const d = mkdtempSync(join(tmpdir(), 'cynco-gate-'))
+    dirs.push(d)
+    const f = join(d, p)
+    mkdirSync(dirname(f), { recursive: true })
+    writeFileSync(f, '# gate\n', 'utf-8')
+    return { dir: d, file: f.replace(/\\/g, '/') }
+  }
+
+  it('finds the gate script a verification command runs', () => {
+    const { file } = gate('verify.py')
+    const found = harnessGatePaths(
+      [`Verification command exits 0: python ${file} the_suite_is_green`],
+      workspace('src/app.ts'),
+    )
+    expect(found).toEqual([file])
+  })
+
+  /**
+   * The boundary the whole design rests on. `python -m pytest gilded/tests -q`
+   * is a verification command that names a path, and that path is exactly the
+   * code the agent was sent to edit. Locking it would break every task.
+   */
+  it('never protects a path inside the workspace, however the command spells it', () => {
+    const ws = workspace('gilded/tests/test_ui.py')
+    expect(harnessGatePaths(
+      ['Verification command exits 0: python -m pytest gilded/tests -q'], ws,
+    )).toEqual([])
+    expect(harnessGatePaths(
+      [`Verification command exits 0: python -m pytest ${ws.replace(/\\/g, '/')}/gilded/tests -q`], ws,
+    )).toEqual([])
+  })
+
+  it('ignores path-shaped tokens that are not on disk', () => {
+    expect(harnessGatePaths(
+      ['Verification command exits 0: python C:/tmp/does-not-exist-9f3a.py'],
+      workspace('a.ts'),
+    )).toEqual([])
+  })
+
+  it('ignores flags, bare program names, and non-command assertions', () => {
+    const { file } = gate('g.py')
+    const found = harnessGatePaths([
+      'Changes committed to git',
+      'File gilded/ui/broadsheet.py was modified (git diff shows changes)',
+      `Verification command exits 0: GILDED_NARRATE=0 python ${file} -q --tb=short`,
+    ], workspace('gilded/ui/broadsheet.py'))
+    expect(found).toEqual([file])
+  })
+
+  it('strips surrounding quotes and trailing punctuation', () => {
+    const { file } = gate('g.py')
+    const found = harnessGatePaths(
+      [`Verification command exits 0: python "${file}"`],
+      workspace('a.ts'),
+    )
+    expect(found).toEqual([file])
+  })
+
+  it('reports each instrument once even when several checks run it', () => {
+    const { file } = gate('g.py')
+    const found = harnessGatePaths([
+      `Verification command exits 0: python ${file} check_one`,
+      `Verification command exits 0: python ${file} check_two`,
+    ], workspace('a.ts'))
+    expect(found).toEqual([file])
   })
 })

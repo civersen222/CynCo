@@ -493,7 +493,10 @@ async function handleCommand(command: TUICommand): Promise<void> {
           console.log(`[localcode] Ignoring invalid cwd: ${command.cwd}`)
         }
       }
-      await loop.handleUserMessage(command.text, { contract: command.contract })
+      await loop.handleUserMessage(command.text, {
+        contract: command.contract,
+        readOnlyPaths: command.readOnlyPaths,
+      })
       break
 
     case 'abort':

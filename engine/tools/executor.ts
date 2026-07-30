@@ -50,14 +50,41 @@ const WORKSPACE_MUTATING_TOOLS = new Set([
  * The rule is that the specification is evidence, not workspace: a document
  * the agent may rewrite is a document it cannot also be measured against.
  *
- * Populated from LOCALCODE_IMMUTABLE_PATHS (os-path-separated, like PATH).
- * Read at call time rather than construction so a test can set it.
+ * Two sources, unioned:
+ *
+ *  - LOCALCODE_IMMUTABLE_PATHS (os-path-separated, like PATH), for a path fixed
+ *    for the whole life of the process.
+ *  - `setTaskImmutablePaths`, for paths that belong to ONE task — the gate
+ *    scripts its harness contract names.
+ *
+ * The second exists because the first turned out to protect nothing. Finding
+ * (ag): the env var was the only source, and no production code ever set it —
+ * measured by grep, the only writers in the tree are this guard's own unit
+ * tests. It could not have worked. The component that knows which files are
+ * instruments is the mission driver, which is a WebSocket client in a different
+ * process from the one that reads the variable. A guard whose input can only be
+ * supplied by something that cannot supply it is decoration.
+ *
+ * Read at call time rather than construction so a test, and a task boundary,
+ * can change it.
  */
+let taskImmutablePaths: string[] = []
+
+/**
+ * Declare the instrument files for the current task. Replaces any previous set,
+ * so a task that supplies none clears the last task's — these are scoped to one
+ * task and must not leak into the next.
+ */
+export function setTaskImmutablePaths(paths: string[]): void {
+  taskImmutablePaths = [...paths]
+}
+
 function immutablePaths(): string[] {
   const raw = process.env.LOCALCODE_IMMUTABLE_PATHS
-  if (!raw) return []
-  return raw.split(process.platform === 'win32' ? ';' : ':')
-    .map(s => s.trim()).filter(Boolean)
+  const fromEnv = raw
+    ? raw.split(process.platform === 'win32' ? ';' : ':').map(s => s.trim()).filter(Boolean)
+    : []
+  return [...fromEnv, ...taskImmutablePaths]
 }
 
 /** Same spelling for two paths written by different authors. Win32 folds case. */
@@ -121,10 +148,12 @@ export class ToolExecutor {
     const immutable = immutableTargetOf(toolName, input, this.cwd)
     if (immutable) {
       return {
-        output: `Error: ${immutable} is this task's specification and is read-only.\n`
-          + `You may Read it as often as you like. Rewriting it would replace the thing your work `
-          + `is measured against with your own account of it. If it is wrong or unclear, say so in `
-          + `your reply and work from the code — do not correct the document.`,
+        output: `Error: ${immutable} is part of how this task is measured, and is read-only.\n`
+          + `It is either the specification you were given or a gate script that scores your work. `
+          + `You may Read it as often as you like. Changing it would replace the thing your work is `
+          + `measured against with your own account of it — and then passing proves nothing. If it `
+          + `is wrong, unclear, or looks out of date, say so in your reply and work from the code. `
+          + `Do not correct it yourself.`,
         isError: true,
       }
     }

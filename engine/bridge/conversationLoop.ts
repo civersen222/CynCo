@@ -20,7 +20,7 @@ import { loadSkills } from '../skills/loader.js'
 import { setLoadedSkills, getSkillByName, getSkillIndex } from '../skills/store.js'
 import { formatSkillIndexBlock } from '../skills/prompt.js'
 import { getWorkflowForSkill } from '../skills/workflowSkill.js'
-import { ToolExecutor, type RequestApprovalFn } from '../tools/executor.js'
+import { ToolExecutor, setTaskImmutablePaths, type RequestApprovalFn } from '../tools/executor.js'
 import { ToolScorer } from '../tools/toolScorer.js'
 import { DifficultyClassifier } from '../vsm/difficultyClassifier.js'
 import { withReflexion } from '../vsm/reflexionFeedback.js'
@@ -69,7 +69,7 @@ import { probeEdit } from '../vsm/groundingProbe.js'
 import { loadInterventionRates, saveInterventionRates } from '../vsm/interventionPersistence.js'
 import { applyNudgeTemperature } from '../vsm/controlSignals.js'
 import { globalContract } from '../tools/contract.js'
-import { applyHarnessContract, maybeAutoCreateContract, type HarnessContractSpec } from './contractAutoCreate.js'
+import { applyHarnessContract, harnessGatePaths, maybeAutoCreateContract, type HarnessContractSpec } from './contractAutoCreate.js'
 import { gitProbe } from '../tools/contractVerify.js'
 import { globalAskBroker } from '../tools/askBroker.js'
 import { setSideQuery, resetMergeTracking } from '../tools/impl/edit.js'
@@ -192,6 +192,21 @@ function classifyParallelBatches(toolBlocks: any[], readOnlySet: Set<string>): a
   }
   if (currentReadBatch.length > 0) batches.push(currentReadBatch)
   return batches
+}
+
+/**
+ * What the caller can say about ONE task. Everything here is scoped to a single
+ * user message and must not leak into the next one.
+ */
+export type TaskOpts = {
+  contract?: HarnessContractSpec
+  /**
+   * Instrument files: read-only for this task. Declared by the harness because
+   * only the harness knows them — the brief it wrote sits outside the contract
+   * mechanism entirely, so nothing in the assertions names it. Unioned with the
+   * gate paths derived from `contract.assertions`.
+   */
+  readOnlyPaths?: string[]
 }
 
 export type ConversationLoopOptions = {
@@ -762,7 +777,7 @@ export class ConversationLoop {
    * half-finished conversation, label it, and clear recorder.taskId so the real
    * finalize became a no-op.
    */
-  async handleUserMessage(text: string, opts?: { contract?: HarnessContractSpec }): Promise<void> {
+  async handleUserMessage(text: string, opts?: TaskOpts): Promise<void> {
     if (this.processing) {
       console.log('[loop] Already processing, ignoring message')
       return
@@ -785,7 +800,7 @@ export class ConversationLoop {
     }
   }
 
-  private async runUserMessage(text: string, opts?: { contract?: HarnessContractSpec }): Promise<void> {
+  private async runUserMessage(text: string, opts?: TaskOpts): Promise<void> {
     this.processing = true
     console.log(`[loop] Handling message: "${text.slice(0, 80)}..."`)
 
@@ -823,6 +838,28 @@ export class ConversationLoop {
       console.log(`[contract] Harness-supplied: "${opts.contract.title}" (${opts.contract.assertions.length} assertion(s))`)
       this.governance.setContractCreated()
       contractIsNew = true
+    }
+    // Finding (ag): the instruments that score the run — the gate scripts its
+    // contract names and the brief it was handed — may be read but not written.
+    //
+    // Two sources because the two instruments are known by different things. The
+    // gate is named in the contract's own assertions, so it can be derived here.
+    // The brief is named nowhere: it sits outside the contract mechanism
+    // entirely, which is exactly why finding (ac)'s guard had no way to learn it,
+    // so the harness declares it explicitly in `readOnlyPaths`.
+    //
+    // Unconditional, and outside the block above, on purpose. These locks are
+    // scoped to ONE task: a later task with no harness contract must not inherit
+    // the last one's read-only set, or the agent is refused edits to a file
+    // nothing is currently measuring and gets no way to find out why.
+    const declared = (opts?.readOnlyPaths ?? []).map(p => p.replace(/\\/g, '/'))
+    const gates = [...new Set([
+      ...declared,
+      ...(opts?.contract ? harnessGatePaths(opts.contract.assertions, this.executor['cwd']) : []),
+    ])]
+    setTaskImmutablePaths(gates)
+    if (gates.length > 0) {
+      console.log(`[contract] Read-only instrument(s) for this task: ${gates.join(', ')}`)
     }
     // Auto-create contract from EVERY user message — the model must finish what
     // the user asked. A COMPLETE stale contract from a prior task is replaced

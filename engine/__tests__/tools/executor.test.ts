@@ -1,5 +1,5 @@
 import { describe, expect, it, mock } from 'bun:test'
-import { ToolExecutor, immutableTargetOf } from '../../tools/executor.js'
+import { ToolExecutor, immutableTargetOf, setTaskImmutablePaths } from '../../tools/executor.js'
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -138,6 +138,87 @@ describe('a task cannot rewrite its own specification', () => {
     delete process.env.LOCALCODE_IMMUTABLE_PATHS
     try {
       expect(immutableTargetOf('Write', { file_path: brief }, dir)).toBeNull()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+/**
+ * Finding (ag): the guard above was real, and protected nothing.
+ *
+ * Its only input was LOCALCODE_IMMUTABLE_PATHS, and no production code ever set
+ * it — the only writers in the tree were the tests directly above. So on Gilded
+ * UI Wave 0b the agent ran `Edit` on C:/tmp/verify_ui0.py, the gate script named
+ * in its own contract assertions, and nothing objected. Instruments now travel
+ * with the task instead of the process environment.
+ */
+describe('a task cannot rewrite the gate that scores it', () => {
+  const mkGate = () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gate-'))
+    const gate = join(dir, 'verify.py')
+    writeFileSync(gate, '# the real gate\nassert True\n')
+    return { dir, gate }
+  }
+
+  it('refuses an Edit to a task-declared gate and leaves it byte-identical', async () => {
+    const { dir, gate } = mkGate()
+    const before = readFileSync(gate, 'utf8')
+    setTaskImmutablePaths([gate.replace(/\\/g, '/')])
+    try {
+      const executor = new ToolExecutor({
+        cwd: dir, requestApproval: mock(() => Promise.resolve(true)), approveAll: true,
+      })
+      const result = await executor.execute('Edit', {
+        file_path: gate, old_string: 'assert True', new_string: 'assert False',
+      })
+      expect(result.isError).toBe(true)
+      expect(result.output).toContain('read-only')
+      expect(readFileSync(gate, 'utf8')).toBe(before)
+    } finally {
+      setTaskImmutablePaths([])
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('still lets the task read the gate', async () => {
+    const { dir, gate } = mkGate()
+    setTaskImmutablePaths([gate.replace(/\\/g, '/')])
+    try {
+      const executor = new ToolExecutor({
+        cwd: dir, requestApproval: mock(() => Promise.resolve(true)), approveAll: true,
+      })
+      const read = await executor.execute('Read', { file_path: gate })
+      expect(read.isError).toBe(false)
+      expect(read.output).toContain('the real gate')
+    } finally {
+      setTaskImmutablePaths([])
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  /**
+   * These locks belong to one task. A later task that declares no gate must not
+   * inherit the last one's, or the agent is refused an edit to a file nothing is
+   * measuring and has no way to learn why.
+   */
+  it('releases the previous task gates when a new task declares none', () => {
+    const { dir, gate } = mkGate()
+    try {
+      setTaskImmutablePaths([gate.replace(/\\/g, '/')])
+      expect(immutableTargetOf('Edit', { file_path: gate }, dir)).not.toBeNull()
+      setTaskImmutablePaths([])
+      expect(immutableTargetOf('Edit', { file_path: gate }, dir)).toBeNull()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('protects nothing by default, so an ordinary task is unaffected', () => {
+    const { dir, gate } = mkGate()
+    try {
+      setTaskImmutablePaths([])
+      expect(immutableTargetOf('Write', { file_path: gate }, dir)).toBeNull()
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
