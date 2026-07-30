@@ -327,6 +327,14 @@ export class ConversationLoop {
   private _correctionAttempts = 0
   /** P1.8 bounded retry: consecutive malformed tool-call parses. 0 = healthy. */
   private _malformedToolCalls = 0
+  /**
+   * F16: the last message the USER actually supplied. Not the last user-ROLE
+   * message — nudges, governance signals, contract enforcement lines and
+   * context warnings all carry role 'user' so the model reads them as
+   * instruction, and treating them as things the user said made the engine
+   * measure agreement against its own prose.
+   */
+  private _lastExternalUserText = ''
   private toolGating = new ToolGating()
   private tddGov = new TestDrivenGovernor()
   private allowedTools?: string[]
@@ -828,6 +836,8 @@ export class ConversationLoop {
       role: 'user',
       content: [{ type: 'text', text }],
     })
+    // The one place genuine user input enters the loop (F16).
+    this._lastExternalUserText = text
 
     this.abortController = new AbortController()
     this.toolFailureCounts.clear()
@@ -2346,9 +2356,19 @@ export class ConversationLoop {
                 }, null, 2))
               } catch {}
 
-              // Governance: record turn completion with user message for task classification
-              const lastUserMsg = this.messages.filter(m => m.role === 'user').pop()
-              const userMsgText = lastUserMsg?.content?.[0]?.text ?? ''
+              // Governance: record turn completion with user message for task
+              // classification and for teachback agreement.
+              //
+              // F16: this used to read the last user-ROLE message, which after
+              // the first iteration is almost always the engine's own steering —
+              // a nudge, a governance signal, a contract enforcement line. The
+              // teachback heuristic then judged CynCo's prose for signs that the
+              // USER was confused ("Do not describe *what* you will do" matches
+              // its \bwhat\b rule), and because the engine writes a different
+              // nudge each time, the dedupe and the >=2-decided floor both let it
+              // through. Ratio latched at exactly 0.00 for 46 turns and the
+              // algedonic kill switch halted the Gilded Wave 2 run.
+              const userMsgText = this._lastExternalUserText
               this.governance.onTurnComplete({
                 toolsCalled: (assistantContent as any[]).filter((b: any) => b.type === 'tool_use').length,
                 thinkingTokens: thinkingTokensDerived,
