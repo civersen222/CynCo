@@ -1,23 +1,6 @@
 import { readFileSync, writeFileSync, existsSync } from 'fs'
 import { resolve } from 'path'
-import type { ToolImpl, ToolResult } from '../types.js'
-import { attemptSemanticMerge } from '../semanticMerge.js'
-
-// Track which files have been attempted for semantic merge this session
-const mergeAttemptedFiles = new Set<string>()
-
-/** Reset merge tracking at the start of each turn. Called from conversation loop. */
-export function resetMergeTracking(): void {
-  mergeAttemptedFiles.clear()
-}
-
-// Side query function — injected by conversation loop
-let _sideQuery: ((prompt: string, system?: string) => Promise<string>) | null = null
-
-/** Set the side query function for semantic merge. Called from conversation loop. */
-export function setSideQuery(fn: (prompt: string, system?: string) => Promise<string>): void {
-  _sideQuery = fn
-}
+import type { ToolImpl } from '../types.js'
 
 /**
  * When old_string is not found, quote back what the file actually says at the
@@ -94,7 +77,6 @@ export const editTool: ToolImpl = {
     try {
       let content = readFileSync(filePath, 'utf-8')
       // Normalize line endings for matching — model sends \n but file may have \r\n
-      const originalContent = content
       const usesCRLF = content.includes('\r\n')
       if (usesCRLF) {
         content = content.replace(/\r\n/g, '\n')
@@ -104,10 +86,12 @@ export const editTool: ToolImpl = {
       const occurrences = content.split(normalizedOld).length - 1
 
       if (occurrences === 0) {
-        // Semantic merge DISABLED — it corrupts files when the local model
-        // produces garbled output. Better to fail cleanly so the model retries
-        // with correct old_string, or uses ReplaceFunction for large edits.
-        console.log(`[edit] old_string not found in ${filePath} (${oldStr.length} chars). No semantic merge — failing cleanly.`)
+        // A no-match fails cleanly. An LLM-mediated "semantic merge" fallback
+        // used to live here; it was disabled because it corrupted files when the
+        // local model produced garbled output, and the disabled module has now
+        // been removed. Failing cleanly is right — the model retries with a
+        // correct old_string, or uses ReplaceFunction for a large span.
+        console.log(`[edit] old_string not found in ${filePath} (${oldStr.length} chars) — failing cleanly.`)
         // Failing cleanly is right; sending the model away to Read is not. This
         // message was the read attractor: measured on the L3-3.3 run, a failed
         // Edit whose old_string was 0.67-similar to a real span produced 344

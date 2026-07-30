@@ -9,7 +9,6 @@
  * 4. Per-tool trust score decay
  * 5. Contract / Definition of Done
  * 6. Two-stage tool routing (unit-level, no model needed)
- * 7. Semantic merge (unit-level, no model needed)
  *
  * Usage: Start engine first, then:
  *   bun engine/__tests__/integration/e2e-smallcode-features.ts
@@ -269,31 +268,9 @@ try {
   log(`  ERROR: ${err}`)
 }
 
-// ═══════════════════════════════════════════════════════════════
-// Test 7: Semantic Merge (unit verification)
-// ═══════════════════════════════════════════════════════════════
-
-log('')
-log('═══ Test 7: Semantic Merge Unit Check ═══')
-
-try {
-  const { attemptSemanticMerge } = await import('../../tools/semanticMerge.js')
-
-  const attempted = new Set<string>()
-  const prompt = attemptSemanticMerge('const x = 1;\nconst y = 2;', 'const z', 'const w', 'test.ts', attempted)
-  const tooLarge = attemptSemanticMerge(Array(501).fill('line').join('\n'), 'a', 'b', 'big.ts', new Set())
-  const duplicate = attemptSemanticMerge('code', 'a', 'b', 'test.ts', attempted) // already attempted
-
-  results.push({
-    name: 'Semantic merge guards and prompt',
-    pass: prompt !== null && tooLarge === null && duplicate === null && prompt.system.includes('merger'),
-    detail: `valid=${prompt !== null}, tooLarge=${tooLarge === null}, dedup=${duplicate === null}`,
-  })
-  log(`  Valid prompt: ${prompt !== null}, Large rejected: ${tooLarge === null}, Dedup: ${duplicate === null}`)
-} catch (err) {
-  results.push({ name: 'Semantic merge works', pass: false, detail: `Import error: ${err}` })
-  log(`  ERROR: ${err}`)
-}
+// Test 7 checked tools/semanticMerge.ts, an LLM-mediated Edit fallback that was
+// disabled in production (it corrupted files on garbled local-model output) and
+// has now been removed. Nothing calls it, so there is nothing to verify.
 
 // ═══════════════════════════════════════════════════════════════
 // Test 8: Contract Enforcement (via disagreement)

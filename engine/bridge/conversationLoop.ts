@@ -73,7 +73,6 @@ import { globalContract } from '../tools/contract.js'
 import { applyHarnessContract, harnessGatePaths, maybeAutoCreateContract, type HarnessContractSpec } from './contractAutoCreate.js'
 import { gitProbe } from '../tools/contractVerify.js'
 import { globalAskBroker } from '../tools/askBroker.js'
-import { setSideQuery, resetMergeTracking } from '../tools/impl/edit.js'
 import { estimateTokensAsync } from '../engine/contextBudget.js'
 import { checkCommitScope } from './commitScope.js'
 import { applyToolFloor, attributeRemoval } from './toolFloor.js'
@@ -397,12 +396,6 @@ export class ConversationLoop {
       trustProfile: opts.trustProfile,
       approveAll: opts.config.approveAll,
       toolScorer: this.toolScorer,
-    })
-
-    // Inject sideQuery into Edit tool for semantic merge fallback
-    setSideQuery((prompt: string, system?: string) => {
-      const fullPrompt = system ? `${system}\n\n${prompt}` : prompt
-      return this.sideQuery(fullPrompt)
     })
 
     this.workflowEngine = opts.workflowEngine ?? new WorkflowEngine((event) => {
@@ -1989,9 +1982,6 @@ export class ConversationLoop {
         await this.compactNow('loop-threshold')
         console.log(`[loop] Compressed to ${this.messages.length} messages (files tracked: ${this.fileTracker.getModifiedFiles().length} modified, ${this.fileTracker.getReadFiles().length} read)`)
       }
-
-      // Reset per-turn semantic merge tracking
-      resetMergeTracking()
 
       // Algedonic kill switch — HALT if critical failures accumulated
       try {

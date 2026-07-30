@@ -271,3 +271,40 @@ importers** in the TS engine or the Python TUI.
 
 Note: `scripts/embed.py` was **kept** — it remains a standalone embedding helper with no
 Postgres coupling.
+
+---
+
+## Phase 6 (Edit Fallback) — the disabled semantic merge
+
+> Grep evidence pass run 2026-07-30 against `engine/`, `tui/`, `scripts/`, `benchmark/`, `docs/`.
+
+This one was **dead but wired**, which is worse than dead and unwired: the chain read as
+live at every point except the one that mattered.
+
+#### `engine/tools/semanticMerge.ts`
+
+- **CALLED-BY (live):** NONE. `engine/tools/impl/edit.ts:4` imported `attemptSemanticMerge`
+  and never called it. The call site was removed when the feature was disabled — the comment
+  it left behind said *"it corrupts files when the local model produces garbled output"* —
+  but the import, the state, and the injection all stayed.
+- **The wiring that made it look alive:** `conversationLoop.ts:403` called `setSideQuery(...)`
+  every session, handing `edit.ts` a working closure over `this.sideQuery`. `edit.ts:15` stored
+  it in `_sideQuery`, which nothing ever read. `conversationLoop.ts:1988` called
+  `resetMergeTracking()` every turn, clearing a `Set` that nothing ever added to or read.
+- **The tests that kept the suite green over a feature doing nothing:**
+  `engine/__tests__/semanticMerge.test.ts` (10 cases) and
+  `engine/__tests__/integration/e2e-smallcode-features.ts:280-285` both imported the module
+  directly, so they exercised the *function* while production exercised none of it.
+- **Also dead, found while removing the rest:** `edit.ts:80` `const originalContent = content`
+  — assigned once, read nowhere. It existed to revert a merge that can no longer happen. And
+  `ToolResult` in the `edit.ts:3` type import, unused at HEAD before this commit touched it.
+- **DECISION: REMOVED 2026-07-30 (Phase 6)** — module, test file, e2e assertions, and all four
+  pieces of wiring. `Edit`'s no-match path is unchanged: it still quotes the file's own text at
+  the nearest matching location (`nearMissWindow`), which is what replaced the merge in practice.
+- **Claims corrected in the same commit:** `docs/MANUAL.md:266` described `Edit` as having a
+  "semantic merge fallback", and `e2e-smallcode-features.ts:12` listed "7. Semantic merge" in
+  its own header. Both described the removed feature as shipping.
+
+**The lesson worth keeping:** a disabled feature whose injection points are still called is
+indistinguishable from a working one at a glance, and its unit tests will stay green forever.
+When disabling something, remove the wiring in the same commit as the call site.

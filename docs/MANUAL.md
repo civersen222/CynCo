@@ -263,7 +263,7 @@ confirm — anything that mutates files or runs commands).
 | AskUser | auto | Ask the human a question (blocks for an answer) |
 | ContractStatus | auto | Check task-contract status |
 | Write | approve | Create / overwrite a file |
-| Edit | approve | In-place edit (semantic merge fallback) |
+| Edit | approve | In-place exact-string edit; a no-match quotes back the file's own text at the nearest location |
 | MultiEdit | approve | Multiple edits across a file |
 | ApplyPatch | approve | Apply a unified diff |
 | ReplaceFunction | approve | Replace a named function |
