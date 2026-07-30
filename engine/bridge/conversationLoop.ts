@@ -63,6 +63,7 @@ import { pruneRedundantReads } from './contextHygiene.js'
 import { promptTokensWithFloor } from './contextFloor.js'
 import { applyPreLoopRestriction, type PreLoopRestriction } from './s5Restriction.js'
 import { isBenignTestFailure, isDeclaredVerificationCheck } from './benignToolResult.js'
+import { formatToolError } from './toolErrorLog.js'
 import { runWithFinalize } from './finalizeGuard.js'
 import { parseTestSummary, classifyCheckCommand } from './testSummary.js'
 import { probeEdit } from '../vsm/groundingProbe.js'
@@ -3633,6 +3634,18 @@ export class ConversationLoop {
     const benignVerificationCheck = result.isError && globalContract.isActive()
       && isDeclaredVerificationCheck(toolName, toolInput, result.output, globalContract.getAssertionTexts())
     const countsAsFailure = result.isError && !benignTestFailure && !benignVerificationCheck
+
+    // F15: the line above says only isError=true, so a circuit-breaker trip was
+    // unauditable — the count survived in memory and its inputs survived
+    // nowhere. Log the argument, the classification, and a redacted payload.
+    if (result.isError) {
+      console.log(formatToolError(
+        toolName, toolInput, result.output,
+        benignTestFailure ? 'benign:test-failure'
+          : benignVerificationCheck ? 'benign:verification-check'
+            : 'counted',
+      ))
+    }
 
     // Circuit breaker: track consecutive failures per tool
     if (countsAsFailure) {
