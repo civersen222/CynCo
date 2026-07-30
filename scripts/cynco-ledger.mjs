@@ -7,9 +7,31 @@
 // step 2 (per-rule precision/recall) runs directly off these records.
 //
 // Records land in benchmark/cynco-ledger/missions.jsonl (committed to git).
-// Ground-truth label for scoring: outcome === 'landed' && verified === true
-// (`verified` is set by the driver's post-mission check script when a
-// check-cmd is supplied — Phase 2(b) — or patched in manually otherwise).
+//
+// TWO INDEPENDENT LABELS, and neither one implies the other:
+//
+//   verified      — the brief's own check command exited 0. Structural: the
+//                   suite collected, the counts held, the frozen files did not
+//                   move, the commit carried its marker. Set by the driver
+//                   (Phase 2(b)) when a check-cmd is supplied, else null.
+//   mutationSweep — a withheld mutation set made the repo's OWN tests go red
+//                   for every rule the brief stated. Behavioural: it measures
+//                   whether the tests BITE. Recorded after the fact (sweeps
+//                   run long after the mission), null until measured.
+//
+// `verified: true` alone is NOT ground truth for a wave that states behavioural
+// rules. Measured on this ledger: record #33 (ui2b_brief) is
+// outcome 'landed' + verified true, and the withheld sweep then killed only
+// 14/15 — the surviving mutation named a test that asserted `x == x`, and a
+// whole follow-up wave (ui2c) existed only to delete it. A scorer that reads
+// `verified` as acceptance would train on that record as a success.
+//
+// Ground truth for scoring, stated honestly:
+//   structurally sound : outcome === 'landed' && verified === true
+//   accepted           : the above AND mutationSweep &&
+//                        mutationSweep.killed === mutationSweep.total
+//   unmeasured         : mutationSweep === null — NOT a failure, and not a
+//                        success either. Exclude it; never default it.
 
 export function createMissionCollector(now = () => Date.now()) {
   return {
@@ -111,7 +133,8 @@ export function createMissionCollector(now = () => Date.now()) {
 
 // meta: { missionId, briefFile, marker, cwd, dispatchedAt, durationS,
 //         outcome: 'landed' | 'timeout' | 'zero_tool_fail',
-//         verified?: boolean, verify?: object } // Phase 2(b) check-script result
+//         verified?: boolean, verify?: object,  // Phase 2(b) check-script result
+//         mutationSweep?: { command, killed, total, survived: string[] } }
 export function buildMissionRecord(collector, meta) {
   return {
     schema: 1,
@@ -126,6 +149,11 @@ export function buildMissionRecord(collector, meta) {
     // true); null when no check command was supplied (manual-patch path).
     verified: meta.verified ?? null,
     verify: meta.verify ?? null, // { command, exitCode, timedOut, durationMs, outputTail }
+    // The second, independent label: did a withheld mutation set make the
+    // repo's own tests go red for every stated rule? null means UNMEASURED —
+    // a sweep that has not been run is not a sweep that passed, and it is not
+    // a sweep that failed. See the header for why `verified` cannot stand in.
+    mutationSweep: meta.mutationSweep ?? null,
     turns: collector.turns,
     s5Decisions: collector.s5Decisions,
     controlSignals: collector.controlSignals,

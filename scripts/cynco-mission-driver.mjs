@@ -192,10 +192,18 @@ try {
   appendFileSync(LEDGER_PATH, JSON.stringify(record) + '\n')
   console.log(`[ledger] ${outcome} record ${missionId} appended (${collector.turns.length} turns, ${collector.s5Decisions.length} S5 decisions) → ${LEDGER_PATH}`)
   if (!checkCmd) console.log('[ledger] no check-cmd given — patch "verified": true|false after independent verification')
+  // `verified` is one check command's exit code. It cannot say whether the new
+  // tests BITE — only a withheld mutation set can, and those run later. Say so
+  // on every record, so nobody reads verified:true as accepted.
+  console.log(`[ledger] mutationSweep: null (UNMEASURED) — patch it once the withheld set has run: { command, killed, total, survived[] }`)
   // 1-in-5 human spot-audit cadence (STATE doc Phase 2(b)).
   try {
     const count = readFileSync(LEDGER_PATH, 'utf8').split('\n').filter(Boolean).length
-    if (count % 5 === 0) console.log(`[ledger] SPOT-AUDIT DUE: record #${count} — human-verify this mission's label (1-in-5 cadence)`)
+    if (count % 5 === 0) {
+      console.log(`[ledger] SPOT-AUDIT DUE: record #${count} — human-verify this mission's label (1-in-5 cadence)`)
+      console.log(`[ledger]   verified=${verified ?? 'null'} is STRUCTURAL (${checkCmd ?? 'no check-cmd'}); mutationSweep is BEHAVIOURAL and still null.`)
+      console.log(`[ledger]   The audit question is not "did the check pass" but "would these tests have caught the rule breaking".`)
+    }
   } catch (e) {
     console.log(`[ledger] spot-audit count failed (reminder skipped): ${e?.message ?? e}`)
   }

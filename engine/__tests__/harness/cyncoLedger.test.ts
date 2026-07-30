@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'bun:test'
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 // The ledger collector is a plain .mjs module used by scripts/cynco-mission-driver.mjs
 // @ts-ignore — untyped harness module
 import { createMissionCollector, buildMissionRecord } from '../../../scripts/cynco-ledger.mjs'
@@ -194,6 +197,67 @@ describe('cynco mission outcome ledger', () => {
     })
     expect(rec.verified).toBeNull()
     expect(rec.verify).toBeNull()
+  })
+
+  // A wave that states behavioural rules is accepted only when a withheld
+  // mutation set makes the repo's OWN tests go red. `verified` cannot carry
+  // that: it is one check command's exit code. Measured on the real ledger —
+  // record #33 (ui2b_brief) is landed + verified:true, and the withheld sweep
+  // then killed only 14/15, which is why a ui2c wave had to exist at all. So
+  // the record needs a SECOND, independent label slot, and it must be null
+  // (unmeasured) rather than false or absent when no sweep has been run.
+  it('buildMissionRecord carries a mutationSweep label independent of verified', () => {
+    const c = createMissionCollector(() => 1000)
+    const rec = buildMissionRecord(c, {
+      missionId: 'm-sweep', briefFile: 'b.md', marker: 'x', cwd: '.',
+      dispatchedAt: 0, durationS: 1, outcome: 'landed',
+      verified: true,
+      verify: { command: 'python check.py', exitCode: 0, timedOut: false, durationMs: 10, outputTail: 'ok' },
+      mutationSweep: {
+        command: 'python C:/tmp/mutate_ui2.py',
+        killed: 14,
+        total: 15,
+        survived: ['14'],
+      },
+    })
+    expect(rec.verified).toBe(true)
+    expect(rec.mutationSweep.killed).toBe(14)
+    expect(rec.mutationSweep.total).toBe(15)
+    expect(rec.mutationSweep.survived).toEqual(['14'])
+    // the two labels disagree, and the record must be able to SAY they disagree
+    expect(rec.mutationSweep.killed === rec.mutationSweep.total).toBe(false)
+    const line = JSON.stringify(rec)
+    expect(line.includes('\n')).toBe(false)
+    expect(JSON.parse(line)).toEqual(rec)
+  })
+
+  it('no sweep run → mutationSweep is null (unmeasured), not false and not absent', () => {
+    const c = createMissionCollector(() => 1000)
+    const rec = buildMissionRecord(c, {
+      missionId: 'm-nosweep', briefFile: 'b.md', marker: 'x', cwd: '.',
+      dispatchedAt: 0, durationS: 1, outcome: 'landed', verified: true,
+    })
+    expect(rec.mutationSweep).toBeNull()
+    expect('mutationSweep' in rec).toBe(true)
+  })
+
+  // The 34 records written before mutationSweep existed carried the key ABSENT,
+  // while every record since carries it as null. Both mean "unmeasured", and a
+  // scorer excluding on `=== null` would silently keep the absent ones — one
+  // meaning with two encodings is how a default sneaks in. Backfilled to null;
+  // this pins it so the split cannot reopen.
+  it('every committed ledger record encodes unmeasured one way: the key present, value null', () => {
+    const here = dirname(fileURLToPath(import.meta.url))
+    const path = join(here, '..', '..', '..', 'benchmark', 'cynco-ledger', 'missions.jsonl')
+    const rows = readFileSync(path, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l))
+    expect(rows.length).toBeGreaterThan(0)
+    const absent = rows.filter((r) => !('mutationSweep' in r)).map((r) => r.missionId)
+    expect(absent).toEqual([])
+    // and no record may say "unmeasured" with a falsy non-null value
+    const falsyNonNull = rows
+      .filter((r) => r.mutationSweep !== null && !r.mutationSweep)
+      .map((r) => r.missionId)
+    expect(falsyNonNull).toEqual([])
   })
 
   it('turn records carry taskError + errorTrend from governance.status (P4.1)', () => {
