@@ -34,7 +34,13 @@ export function workspaceSkillsDir(): string {
  * Returns null if there is no well-formed frontmatter fence.
  */
 function splitFrontmatter(text: string): string | null {
-  const normalized = text.replace(/^\uFEFF/, '')
+  // CRLF has to go, not just the BOM. Git checks the shipped SKILL.md files out
+  // with CRLF on Windows, and a retained `\r` is tolerated by YAML after a plain
+  // scalar but NOT after a flow sequence's `]` — so `tools: [Read, Write]\r`
+  // raised "Unexpected scalar at node end" and the loader logged-and-skipped.
+  // Measured: that silently disabled ALL SEVEN shipped built-in skills. Every
+  // fixture in loader.test.ts was written with `\n`, so nothing caught it.
+  const normalized = text.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n')
   if (!normalized.startsWith('---')) return null
   const end = normalized.indexOf('\n---', 3)
   if (end === -1) return null
