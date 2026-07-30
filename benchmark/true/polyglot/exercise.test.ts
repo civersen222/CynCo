@@ -62,6 +62,65 @@ describe.skipIf(!existsSync(REAL_ROOT))('assertPristine', () => {
   })
 })
 
+/**
+ * The guard used to refuse on ANY porcelain output, which made it self-blocking:
+ * running the benchmark once leaves `__pycache__/` in every python exercise dir
+ * it touched (measured: 34 entries on this checkout, all of them that), so the
+ * next run cannot start. A guard that the act of running breaks is not a guard.
+ *
+ * Interpreter bytecode cannot smuggle a solution — it is regenerated from the
+ * source the harness itself controls, and the harness overwrites the tests
+ * before every verdict run. Everything a solution COULD hide in must still be
+ * fatal, which is what the two controls below pin.
+ */
+describe('assertPristine ignores generated caches but nothing else', () => {
+  // A committed python exercise, so "modified tracked file" is expressible.
+  function makePyRepo(): string {
+    const root = mkdtempSync(join(tmpdir(), 'polyglot-cache-'))
+    const ex = join(root, 'python', 'exercises', 'practice', 'demo')
+    mkdirSync(ex, { recursive: true })
+    writeFileSync(join(ex, 'demo.py'), 'def demo():\n    pass\n')
+    const git = (cmd: string) => execSync(`git -c core.autocrlf=false ${cmd}`, { cwd: root })
+    git('init -q')
+    git('add -A')
+    git('-c user.email=t@t -c user.name=t commit -qm x')
+    return root
+  }
+
+  const exDir = (root: string) => join(root, 'python', 'exercises', 'practice', 'demo')
+
+  function addCache(root: string) {
+    for (const name of ['__pycache__', '.pytest_cache']) {
+      const d = join(exDir(root), name)
+      mkdirSync(d, { recursive: true })
+      writeFileSync(join(d, 'demo.cpython-311.pyc'), 'bytecode')
+    }
+  }
+
+  it('tolerates __pycache__ and .pytest_cache left by a previous run', () => {
+    const root = makePyRepo()
+    addCache(root)
+    expect(execSync('git status --porcelain', { cwd: root, encoding: 'utf-8' }).trim()).not.toBe('')
+    expect(() => assertPristine(root)).not.toThrow()
+  })
+
+  it('still refuses on any other untracked file', () => {
+    const root = makePyRepo()
+    addCache(root)
+    writeFileSync(join(exDir(root), 'sneaky.py'), 'ANSWER = 42\n')
+    expect(() => assertPristine(root)).toThrow(/not pristine/)
+    expect(() => assertPristine(root)).toThrow(/sneaky\.py/)
+  })
+
+  it('still refuses on a modified tracked file, even alongside caches', () => {
+    const root = makePyRepo()
+    addCache(root)
+    writeFileSync(join(exDir(root), 'demo.py'), 'def demo():\n    return 42\n')
+    expect(() => assertPristine(root)).toThrow(/not pristine/)
+    expect(() => assertPristine(root)).toThrow(/demo\.py/)
+  })
+})
+
 describe('assertPristine CRLF guard', () => {
   // A checkout smudged by core.autocrlf=true is git-clean but every bash
   // script carries \r — gradlew dies instantly in the container and all 47

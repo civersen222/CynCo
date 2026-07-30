@@ -48,8 +48,20 @@ export function discoverExercises(
  * mutated (the retired 2025 adapter did exactly that) — results would be
  * unattributable. Refuse to run.
  */
+// Directories the harness's OWN test runs create. Refusing on these made the
+// guard self-blocking: one successful run leaves __pycache__ in every python
+// exercise it touched (measured: 34 entries on this checkout, ALL of them that),
+// so the next run could not start. Bytecode cannot smuggle a solution — it is
+// regenerated from source the harness controls, and injectTests overwrites the
+// tests before every verdict run. Anything a solution could hide in stays fatal.
+const GENERATED_CACHES = /(?:^|\/)(?:__pycache__|\.pytest_cache)\/?$/
+
 export function assertPristine(root: string): void {
-  const status = execSync('git status --porcelain', { cwd: root, encoding: 'utf-8' }).trim()
+  const status = execSync('git status --porcelain', { cwd: root, encoding: 'utf-8' })
+    .split('\n')
+    .filter(line => line.trim() && !GENERATED_CACHES.test(line.slice(3).trim()))
+    .join('\n')
+    .trim()
   if (status) {
     throw new Error(
       `exercises repo is not pristine — refusing to run.\n` +
