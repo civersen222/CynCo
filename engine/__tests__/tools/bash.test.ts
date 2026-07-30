@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 import { bashTool, failedOutput, formatBashFailure } from '../../tools/impl/bash.js'
+import { getShellInfo } from '../../tools/shellInfo.js'
 import { tmpdir } from 'os'
 import { mkdtempSync, writeFileSync } from 'fs'
 import { join } from 'path'
@@ -57,6 +58,23 @@ describe('Bash tool', () => {
     expect(result.isError).toBe(true)
     expect(result.output).toContain('timeout')
   }, 10000)
+
+  /**
+   * A killed command returned the bare sentence "Error: command timeout after
+   * 60000ms" and nothing else. Two of the Wave 4 agent's Bash errors were this,
+   * on a target suite measured at ~52s: it had asked for 60s (the default is
+   * 120s), lost the race, and got back zero information — not the partial pytest
+   * report, not the fact that it may ask for up to 600s. So it had no way to tell
+   * "my command hangs" from "my budget was too small", which are opposite fixes.
+   */
+  it('a timeout says what the budget was, that it can be raised, and how far the command got', async () => {
+    const cmd = 'node -e "process.stdout.write(\'collected 12 items\'); setTimeout(()=>{},60000)"'
+    const result = await bashTool.execute({ command: cmd, timeout: 1500 }, tmpdir())
+    expect(result.isError).toBe(true)
+    expect(result.output).toContain('1500ms')
+    expect(result.output).toContain('600000')
+    expect(result.output).toContain('collected 12 items')
+  }, 20000)
 })
 
 describe('failedOutput (which stream the model actually gets to see)', () => {
@@ -164,5 +182,40 @@ describe('Bash tool — redirecting the model to the purpose-built tool', () => 
     const result = await bashTool.execute({ command: 'echo done' }, dir)
     expect(result.isError).toBe(false)
     expect(result.output).not.toContain('Note: prefer')
+  }, 20000)
+})
+
+/**
+ * The unit tests in shellInfo.test.ts prove the translation; this proves it is
+ * wired in. Deliberately not conditioned on the host shell: the POSIX env prefix
+ * is what briefs are written with, and after this change it has to work on every
+ * shell CynCo runs on — natively on bash, by translation on either PowerShell.
+ */
+describe('Bash tool — a POSIX env-var prefix runs instead of being refused', () => {
+  // No `||` in here, deliberately. The first version of this probe read
+  // `process.env.X || 'unset'` and came back refused: the operator scan is
+  // textual and does not know that `||` inside a quoted JS argument is not a
+  // shell operator. That direction of error is the safe one — it falls through
+  // to the instructive message rather than mistranslating — but it is a real
+  // limit worth pinning here so nobody reads a future failure as a regression.
+  const readVar = 'node -e "process.stdout.write(String(process.env.CYNCO_PROBE))"'
+
+  it('sets the variable for the command', async () => {
+    const result = await bashTool.execute({ command: `CYNCO_PROBE=hello ${readVar}` }, tmpdir())
+    expect(result.isError).toBe(false)
+    expect(result.output).toContain('hello')
+  }, 20000)
+
+  it('still refuses — with the rewrite named — when a second command follows', async () => {
+    const result = await bashTool.execute(
+      { command: `CYNCO_PROBE=hello ${readVar}; echo after` },
+      tmpdir(),
+    )
+    if (getShellInfo().isPowerShell) {
+      expect(result.isError).toBe(true)
+      expect(result.output).toContain('$env:CYNCO_PROBE="hello"')
+    } else {
+      expect(result.isError).toBe(false)
+    }
   }, 20000)
 })

@@ -8,6 +8,10 @@
  *   2. Surface the real dialect in the tool description + system prompt,
  *   3. Pre-flight-reject && / || on 5.1 with an instructive, deterministic
  *      error (one cheap turn instead of a cryptic parse failure).
+ *   4. TRANSLATE the POSIX `NAME=value command` env prefix rather than reject it,
+ *      wherever the translation provably means the same thing. Instructing costs
+ *      a turn every time it happens, and it kept happening — five occurrences on
+ *      one run, long after the error had taught the lesson once.
  */
 import { execFileSync } from 'child_process'
 
@@ -35,7 +39,7 @@ export function classifyShell(platform: string, hasPwsh: boolean): ShellInfo {
       displayName: 'PowerShell 7 (pwsh)',
       supportsAndAnd: true,
       isPowerShell: true,
-      dialectNote: 'Shell is PowerShell 7 (pwsh). && and || are supported. Use PowerShell cmdlets, not Unix commands. Set an environment variable with $env:NAME="value"; — the POSIX prefix form NAME=value command is a parse error.',
+      dialectNote: 'Shell is PowerShell 7 (pwsh). && and || are supported. Use PowerShell cmdlets, not Unix commands. A POSIX env-var prefix (NAME=value command) is translated for you when the command is the whole remainder; to carry a variable across a sequence, write $env:NAME="value"; yourself.',
     }
   }
   return {
@@ -43,7 +47,7 @@ export function classifyShell(platform: string, hasPwsh: boolean): ShellInfo {
     displayName: 'Windows PowerShell 5.1',
     supportsAndAnd: false,
     isPowerShell: true,
-    dialectNote: "Shell is Windows PowerShell 5.1 — '&&' and '||' are NOT supported. Sequence commands with ';' (e.g. 'cd proj; python -m pytest') or use 'if ($?) { ... }' for conditional chaining. Set an environment variable with $env:NAME=\"value\"; — the POSIX prefix form NAME=value command is a parse error.",
+    dialectNote: "Shell is Windows PowerShell 5.1 — '&&' and '||' are NOT supported. Sequence commands with ';' (e.g. 'cd proj; python -m pytest') or use 'if ($?) { ... }' for conditional chaining. A POSIX env-var prefix (NAME=value command) is translated for you when the command is the whole remainder; to carry a variable across a sequence, write $env:NAME=\"value\"; yourself.",
   }
 }
 
@@ -77,7 +81,35 @@ export function translateEnvPrefix(command: string, info: ShellInfo): string {
       const value = pair.slice(eq + 1).replace(/^["']|["']$/g, '')
       return `$env:${name}="${value}"`
     })
-  return `${sets.join('; ')}; ${command.slice(prefix.index + prefix[0].length)}`
+  // ENV_PREFIX anchors on `^` OR `;`, so in `cd proj; FOO=1 pytest` the match
+  // begins at the semicolon — and slicing from the match's start threw the `cd`
+  // away. Keep the head. This is a silent wrong answer if left in:
+  // verifyAssertion runs what this returns, so a contract that changed directory
+  // first would have been measured somewhere else and the verdict believed.
+  const head = command.slice(0, prefix.index)
+  const tail = command.slice(prefix.index + prefix[0].length)
+  return `${head}${head ? '; ' : ''}${sets.join('; ')}; ${tail}`
+}
+
+/**
+ * The translation to apply automatically on the model's behalf, or null when
+ * there isn't one that provably means the same thing.
+ *
+ * POSIX `NAME=value cmd` scopes the variable to a single command; `$env:NAME=...;
+ * cmd` scopes it to the rest of the shell. Those agree only when `cmd` is the
+ * entire remainder — which is the case that matters, and is safe because every
+ * Bash call spawns a fresh shell that exits when the command does. A prefix that
+ * is not first, or that is followed by another command, would have its scope
+ * quietly widened, so it gets refused here and falls through to the instructive
+ * error in `checkShellDialect` instead.
+ */
+export function autoTranslateEnvPrefix(command: string, info: ShellInfo): string | null {
+  if (!info.isPowerShell) return null
+  const prefix = ENV_PREFIX.exec(command)
+  if (!prefix || prefix.index !== 0) return null
+  const tail = command.slice(prefix[0].length)
+  if (/;|&&|\|\|/.test(tail)) return null
+  return translateEnvPrefix(command, info)
 }
 
 /**

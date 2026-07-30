@@ -1,6 +1,14 @@
 // engine/__tests__/tools/shellInfo.test.ts
 import { describe, expect, it } from 'bun:test'
-import { classifyShell, checkShellDialect, getShellInfo, shellPreamble, validateVerificationCommand } from '../../tools/shellInfo.js'
+import {
+  autoTranslateEnvPrefix,
+  classifyShell,
+  checkShellDialect,
+  getShellInfo,
+  shellPreamble,
+  translateEnvPrefix,
+  validateVerificationCommand,
+} from '../../tools/shellInfo.js'
 
 describe('classifyShell', () => {
   it('non-Windows → /bin/bash, && supported', () => {
@@ -74,6 +82,81 @@ describe('checkShellDialect', () => {
   it('does not mistake an ordinary argument for an env-var prefix', () => {
     expect(checkShellDialect('python -m pytest -k test_x=1', ps51)).toBeNull()
     expect(checkShellDialect('git config user.name=someone', ps51)).toBeNull()
+  })
+})
+
+describe('translateEnvPrefix', () => {
+  const ps51 = classifyShell('win32', false)
+
+  it('rewrites a leading prefix into the $env: form', () => {
+    expect(translateEnvPrefix('FOO=1 python -m pytest', ps51))
+      .toBe('$env:FOO="1"; python -m pytest')
+  })
+
+  /**
+   * ENV_PREFIX anchors on `^` OR `;`, so a prefix in the SECOND command of a
+   * sequence matches at the `;` — and the rewrite sliced from the match's start,
+   * discarding everything before it. Measured: `cd proj; FOO=1 python -m pytest`
+   * came back `$env:FOO="1"; python -m pytest`, with the `cd` gone.
+   *
+   * That is a silent wrong answer rather than a failure, which is what makes it
+   * worth a test: verifyAssertion RUNS the translated string, so a contract that
+   * changed directory first would have been measured in the wrong directory and
+   * whatever verdict came back recorded as if it meant something.
+   */
+  it('keeps everything before the prefix it rewrites', () => {
+    expect(translateEnvPrefix('cd proj; FOO=1 python -m pytest', ps51))
+      .toBe('cd proj; $env:FOO="1"; python -m pytest')
+  })
+})
+
+/**
+ * `NAME=value command` is a parse error in every PowerShell, and the engine has
+ * always known the exact replacement — it quoted it back in an error and spent a
+ * turn. Measured on the Wave 4 run: five of the agent's thirty-eight Bash errors
+ * were this, long after the instructive error had already taught it once. The
+ * refusal does not carry across turns, so it is paid for repeatedly.
+ *
+ * bash.ts already rewrites what reaches the shell without changing what is
+ * reported (shellPreamble's UTF-8 redirection default). Translating the env
+ * prefix there is the same act — but only where the translation is provably
+ * meaning-identical.
+ *
+ * POSIX `NAME=value cmd` scopes the variable to ONE command; `$env:NAME=...; cmd`
+ * scopes it to the rest of the shell. Those agree only when `cmd` is the whole
+ * remainder, because each Bash call spawns a fresh shell that then exits. So a
+ * prefix that is not at the start, or one followed by another command, is refused
+ * and falls through to the instructive error rather than being quietly widened.
+ */
+describe('autoTranslateEnvPrefix (rewrite instead of refuse)', () => {
+  const ps51 = classifyShell('win32', false)
+  const pwsh = classifyShell('win32', true)
+  const bash = classifyShell('linux', false)
+
+  it('translates the single-command case on both PowerShells', () => {
+    for (const info of [ps51, pwsh]) {
+      expect(autoTranslateEnvPrefix('GILDED_NARRATE=0 SDL_VIDEODRIVER=dummy python -m pytest', info))
+        .toBe('$env:GILDED_NARRATE="0"; $env:SDL_VIDEODRIVER="dummy"; python -m pytest')
+    }
+  })
+
+  it('refuses when another command follows — the variable would outlive its scope', () => {
+    expect(autoTranslateEnvPrefix('FOO=1 pytest; git status', ps51)).toBeNull()
+    expect(autoTranslateEnvPrefix('FOO=1 pytest && git status', pwsh)).toBeNull()
+    expect(autoTranslateEnvPrefix('FOO=1 pytest || echo no', pwsh)).toBeNull()
+  })
+
+  it('refuses when the prefix is not the first thing in the command', () => {
+    expect(autoTranslateEnvPrefix('cd proj; FOO=1 pytest', ps51)).toBeNull()
+  })
+
+  it('returns null when there is nothing to translate', () => {
+    expect(autoTranslateEnvPrefix('python -m pytest', ps51)).toBeNull()
+    expect(autoTranslateEnvPrefix('python -m pytest -k test_x=1', ps51)).toBeNull()
+  })
+
+  it('never touches a shell that understands the POSIX form', () => {
+    expect(autoTranslateEnvPrefix('FOO=1 python -m pytest', bash)).toBeNull()
   })
 })
 
