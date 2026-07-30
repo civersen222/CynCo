@@ -106,6 +106,28 @@ Entry status: `OPEN` (improvement not yet shipped) | `SHIPPED` (fix in engine/dr
 - **Fix shipped:** the driver captures `git rev-parse HEAD` before dispatch and polls `git log --oneline <baseline>..HEAD`, so only commits made by this mission can match. If HEAD cannot be read it logs a WARNING naming the weakened behaviour rather than silently falling back.
 - **Status:** FIXED. The corrupt record is `ui1c_brief-1785386495993` (`outcome: landed`, `verified: false`, 1 turn) — left in place, annotated here, and excluded from the corpus by its `verified: false`.
 
+## F14 — The tool router was asked 56 times, answered 0 times, and cost 32% of the run
+- **Date:** 2026-07-29 · **Context:** measured from the Gilded UI Wave 1 engine log (96 model calls)
+- **How it failed:** `conversationLoop.ts` runs a two-stage tool router. Stage 1 is a full model call carrying only `select_category`; if the model calls it, stage 2 goes out with a narrowed tool list. If the model *doesn't*, the loop broke on `message_stop` and fell through to the full list — silently. Attributing every `print_timing` block to the `[callModel] Streaming ... N tools` line above it:
+
+  | call | count | prompt tok | prefill | gen tok | decode | total |
+  |---|---|---|---|---|---|---|
+  | stage-1 (1 tool) | 56 | 75,184 | 38.0s | 5,205 | 137.4s | **175.4s** |
+  | real (18-19 tools) | 60 | 125,747 | 54.6s | 13,554 | 312.9s | 367.5s |
+
+  `[routing] Category selected` printed **zero** times in the whole run. 175.4s of 542.9s of model time — **32%** — spent asking a question that was never answered.
+- **Why:** the fall-through was correct but silent, and nothing remembered that it had already happened. `shouldUseRouting` returns true for `contextLength <= 65536`, i.e. every model we run, so this was every iteration of every mission since the router landed. Its comment claimed the feature "saves ~2000 schema tokens" — an unmeasured assertion, and at the measured ~0.5 ms/token prefill that saving is about **1s** against **3.1s** average spent to obtain it. The optimisation cost three times what it saved even in the case where it worked.
+- **The generalisation:** an optimisation whose benefit is asserted in a comment and whose cost is a whole model call needs a measurement, not a threshold. This is the same shape as the `>= 557` floor and the `toolOK` claim — a number written down without being read.
+- **Fix shipped (`d1022f5`):** `ConversationLoop.routingDeclined` — one refusal disables routing for the rest of the session. Per-instance, not process-global, so a new session re-measures rather than inheriting a verdict. `engine/__tests__/guards/routingOneStrikeWiring.test.ts` guards it, and because the realistic regression is a per-iteration `routingDeclined = false` (which reads correctly and restores the loss), the guard asserts the flag is never assigned false outside its declaration. Both breaks verified red.
+- **Not fixed, noted:** `TOOL_CATEGORIES` omits `ReplaceFunction`, `TodoWrite` and the contract-assertion tools entirely, so if routing ever DID fire and pick `write`, the model would silently lose them. Latent, masked today by the tool floor and by the router never firing.
+- **Status:** FIXED.
+
+## F15 — Tool errors are not in the engine log, so a Bash failure cannot be diagnosed after the run
+- **Date:** 2026-07-29 · **Context:** Gilded UI Wave 1c, investigating `CIRCUIT BREAKER: Bash has failed 4 consecutive times`
+- **How it failed:** the log records `[loop] Tool result: Bash isError=true` and nothing else. No command, no exit code, no stderr. The brain telemetry at `~/.cynco/brain/<taskId>.jsonl` carries only `kind`/`turn_idx`/`tool_entropy`, so it does not help either. Four consecutive Bash failures tripped the breaker and there is no record of what any of them were.
+- **Why it matters:** every Bash-failure investigation so far (F12, the CRLF work, finding (g)) needed the error text. The circuit breaker is a *reaction* to a signal the log does not preserve, so its firing is unauditable.
+- **Status:** OPEN. Small change — log a truncated error payload alongside `isError=true`.
+
 ## Success observations (validated brief patterns)
 - **2026-07-12, mission 7 (CK event choice feedback):** 4-edit, 3-file brief landed first try in ~13 min, byte-exact except the known trailing-blank-line consumption by ReplaceFunction (cosmetic). Fresh engine, S5 cap active (`enforced: false` in ledger row 2).
 - **2026-07-11, mission 5 (AI movement):** whole-method replacement pattern again first-try (fresh engine, F7 rhythm respected). Minor deviation: CynCo's replacement also consumed the `# ── Diplomacy management` separator comment + blank lines between methods — harmless, but "replace down to line X" boundaries are approximate; keep verifying by full diff, not just tests.
