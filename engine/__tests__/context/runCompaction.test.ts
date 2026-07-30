@@ -29,8 +29,12 @@ describe('runCompaction', () => {
     expect(result.some(m => m.role === 'system' && (m.content[0].text as string).includes('THE SUMMARY'))).toBe(true)
     expect(result[0].role).toBe('system')
     expect(result[0].content[0].text as string).toContain('THE SUMMARY')
-    // tracker reset after compaction
-    expect(tracker.getModifiedFiles()).toEqual([])
+    // Summary window closed after compaction — but the task record survives it.
+    // The original assertion here was `getModifiedFiles()).toEqual([])`, which
+    // pinned finding (i): every measurement consumer reads that method, and each
+    // one is asking about the whole task rather than the last window.
+    expect(tracker.getModifiedFilesThisWindow()).toEqual([])
+    expect(tracker.getModifiedFiles()).toEqual(['a.ts'])
   })
 
   it('returns the original messages unchanged when nothing to compress', async () => {

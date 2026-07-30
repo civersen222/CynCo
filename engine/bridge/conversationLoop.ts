@@ -6,20 +6,21 @@
 
 import { randomUUID } from 'crypto'
 import type { EngineEvent, TUICommand, DiffHunk, DiffLine } from './protocol.js'
-import type { ThinkingConfig } from '../types.js'
+import type { ThinkingConfig, TurnCost } from '../types.js'
 import { asSystemPrompt } from '../types.js'
 import type { LocalCodeConfig } from '../config.js'
 import { isS5EnforcementEnabled, isAllToolsEnabled, isProactiveToolsEnabled } from '../config.js'
 import { classifyTaskClass } from '../s5/proactiveSurfacing.js'
 import type { Provider } from '../provider.js'
 import { localCallModel, type CallModelDeps } from '../engine/callModel.js'
+import { toToolDefs } from '../engine/messageConvert.js'
 import { ALL_TOOLS, getCoreTools, getExtendedTools } from '../tools/registry.js'
 import { LoadedToolSet } from '../tools/loadedToolSet.js'
 import { loadSkills } from '../skills/loader.js'
 import { setLoadedSkills, getSkillByName, getSkillIndex } from '../skills/store.js'
 import { formatSkillIndexBlock } from '../skills/prompt.js'
 import { getWorkflowForSkill } from '../skills/workflowSkill.js'
-import { ToolExecutor, type RequestApprovalFn } from '../tools/executor.js'
+import { ToolExecutor, setTaskImmutablePaths, type RequestApprovalFn } from '../tools/executor.js'
 import { ToolScorer } from '../tools/toolScorer.js'
 import { DifficultyClassifier } from '../vsm/difficultyClassifier.js'
 import { withReflexion } from '../vsm/reflexionFeedback.js'
@@ -55,21 +56,46 @@ import { getJournal } from '../training/decisionJournal.js'
 import { makeJournalEntry } from '../training/types.js'
 import { buildConceptTableForCwd } from '../vsm/conceptTable.js'
 import { evaluateGrounding, extractAddedText, extractTargetPaths } from '../vsm/groundingTrigger.js'
-import { ReadLoopGate, signature as readSignature } from '../vsm/readLoopGate.js'
+import { ReadLoopGate, rearmsGate, signature as readSignature } from '../vsm/readLoopGate.js'
 import { ToolDivergenceDetector } from '../brain/toolDivergence.js'
+import { BrainRecorder } from '../brain/brainRecorder.js'
 import { pruneRedundantReads } from './contextHygiene.js'
+import { promptTokensWithFloor } from './contextFloor.js'
+import { applyPreLoopRestriction, type PreLoopRestriction } from './s5Restriction.js'
+import { isBenignTestFailure, isDeclaredVerificationCheck } from './benignToolResult.js'
+import { formatToolError } from './toolErrorLog.js'
+import { runWithFinalize } from './finalizeGuard.js'
+import { parseTestSummary, classifyCheckCommand } from './testSummary.js'
 import { probeEdit } from '../vsm/groundingProbe.js'
 import { loadInterventionRates, saveInterventionRates } from '../vsm/interventionPersistence.js'
 import { applyNudgeTemperature } from '../vsm/controlSignals.js'
 import { globalContract } from '../tools/contract.js'
-import { applyHarnessContract, maybeAutoCreateContract, type HarnessContractSpec } from './contractAutoCreate.js'
+import { applyHarnessContract, harnessGatePaths, maybeAutoCreateContract, type HarnessContractSpec } from './contractAutoCreate.js'
+import { gitProbe } from '../tools/contractVerify.js'
 import { globalAskBroker } from '../tools/askBroker.js'
-import { setSideQuery, resetMergeTracking } from '../tools/impl/edit.js'
 import { estimateTokensAsync } from '../engine/contextBudget.js'
+import { checkCommitScope } from './commitScope.js'
+import { applyToolFloor, attributeRemoval } from './toolFloor.js'
+import { enforcementNudgeText } from './enforcementNudge.js'
+import { saysDone, shouldNudge } from './nudgeDecision.js'
 import { isMalformedInput } from '../engine/toolCallRepair.js'
 import { extractSimulatedToolCalls } from '../ollama/simulated.js'
 import { ThinkingRecorder } from '../memory/thinkingRecorder.js'
 import { UncertaintyTracker } from '../memory/uncertaintyTracker.js'
+// Trajectory recording and Best-of-N were reached through lazy require('*.js').
+// Nothing in either package imports back here, so there was no cycle to break —
+// and under vitest those requires threw, so every test that exercised a tool
+// call took the catch branch instead of the recording path. The training corpus
+// writer was uncovered by construction.
+import { getTrajectoryRecorder } from '../training/trajectoryRecorder.js'
+import { collectGitFacts, collectDirtyPaths, collectPathSignatures, changedBetween, commitsSince, collectUntrackedPaths, repoToplevel, canonicalPath } from '../training/gitFacts.js'
+import { buildComponents } from '../training/taskOutcome.js'
+import type { TaskOutcomeInput, TestObservation } from '../training/taskOutcome.js'
+import { finalizeTask } from '../training/rewardLabeler.js'
+import { detectTests } from '../bestOfN/testDetector.js'
+import { WorktreeManager } from '../bestOfN/worktreeManager.js'
+import { extractPatch } from '../bestOfN/patchExtractor.js'
+import { runTests, selectWinner, applyPatch } from '../bestOfN/sampler.js'
 
 /**
  * Phase 6: build structured diff hunks from a write-tool input for the file.diff
@@ -168,6 +194,21 @@ function classifyParallelBatches(toolBlocks: any[], readOnlySet: Set<string>): a
   return batches
 }
 
+/**
+ * What the caller can say about ONE task. Everything here is scoped to a single
+ * user message and must not leak into the next one.
+ */
+export type TaskOpts = {
+  contract?: HarnessContractSpec
+  /**
+   * Instrument files: read-only for this task. Declared by the harness because
+   * only the harness knows them — the brief it wrote sits outside the contract
+   * mechanism entirely, so nothing in the assertions names it. Unioned with the
+   * gate paths derived from `contract.assertions`.
+   */
+  readOnlyPaths?: string[]
+}
+
 export type ConversationLoopOptions = {
   config: LocalCodeConfig
   provider: Provider
@@ -186,6 +227,54 @@ export class ConversationLoop {
   private messages: Message[] = []
   private abortController: AbortController | null = null
   private processing = false
+  // Per-task observation buffers for the reward labeler. Reset at task start,
+  // consumed by finalizeTrajectory at task end.
+  private taskTestObservations: TestObservation[] = []
+  private taskCommandObservations: { kind: 'typecheck' | 'build'; ok: boolean }[] = []
+  private taskGitBaseSha: string | null = null
+  /**
+   * Paths already dirty when the task started, so diffClean can charge the agent
+   * for the mess it made rather than the mess it walked into. Null means the
+   * starting state was never read — not that the tree was clean.
+   */
+  private taskBaselineDirty: string[] | null = null
+  /** Set when the tool loop ran out of iterations instead of the model stopping. */
+  private taskHitIterationLimit = false
+  /**
+   * Set when the tool loop was aborted by an engine-side failure — the provider
+   * erroring, the request overflowing the context it was given, a crash. The
+   * reward labeler must tell this apart from the model stopping or spending its
+   * turn budget, because only those two are measurements of the model. See
+   * finding (m) in taskOutcome.ts.
+   */
+  private taskEndedInEngineError = false
+  /**
+   * The prompt size the server reported for the most recent request, in tokens
+   * it actually evaluated — or null when no request has been measured since the
+   * conversation last changed shape.
+   *
+   * Null is not zero. The context check uses this as a floor under its chars/4
+   * estimate, and a zero floor is no floor; "we have not measured this
+   * conversation yet" has to be distinguishable from "the server said 0".
+   *
+   * The floor argues "the prompt was at least N tokens, and the conversation
+   * has only grown since". That premise fails the moment the conversation
+   * shrinks — compaction, a read-loop prune, a best-of-N rollback — so the
+   * message count at the time of measurement is recorded with it and the floor
+   * is discarded rather than trusted when the count drops below it.
+   */
+  private lastMeasuredPromptTokens: number | null = null
+  private lastMeasuredAtMessageCount = 0
+  /**
+   * S5's once-per-user-message tool restriction, held rather than applied.
+   *
+   * It is decided from a governance report assembled before iteration 1, so it
+   * describes the first turn and nothing after it. Applying it to the task's
+   * tool array made it permanent — finding (j). See bridge/s5Restriction.ts.
+   */
+  private preLoopRestriction: PreLoopRestriction | null = null
+  /** Whether this task has already reported a trajectory-recording failure. */
+  private trajectoryErrorLogged = false
   private config: LocalCodeConfig
   private provider: Provider
   private emit: (event: EngineEvent) => void
@@ -218,6 +307,7 @@ export class ConversationLoop {
   private readLoopGate = new ReadLoopGate()
   private toolDivergence = new ToolDivergenceDetector()
   private lastToolEntropy: number | null = null
+  private brainRecorder = new BrainRecorder(() => getTrajectoryRecorder()?.brainDir ?? null)
   // _TRACE_STEERING=1: records the source of the intervention injected on the
   // PREVIOUS iteration so the next model-call trace line can attribute the
   // model's resulting action to it. Diagnostic only; null when tracing is off.
@@ -236,6 +326,14 @@ export class ConversationLoop {
   private _correctionAttempts = 0
   /** P1.8 bounded retry: consecutive malformed tool-call parses. 0 = healthy. */
   private _malformedToolCalls = 0
+  /**
+   * F16: the last message the USER actually supplied. Not the last user-ROLE
+   * message — nudges, governance signals, contract enforcement lines and
+   * context warnings all carry role 'user' so the model reads them as
+   * instruction, and treating them as things the user said made the engine
+   * measure agreement against its own prose.
+   */
+  private _lastExternalUserText = ''
   private toolGating = new ToolGating()
   private tddGov = new TestDrivenGovernor()
   private allowedTools?: string[]
@@ -250,6 +348,18 @@ export class ConversationLoop {
   // S5 restrictions, demotions, routing). In one-shot runs this is enforced
   // at execution time too — see executeOneTool.
   private offeredToolNames: Set<string> | null = null
+  /** Loud record of every tool-floor rescue this run, for the outcome report. */
+  floorEvents: string[] = []
+  /**
+   * Set once the two-stage tool router has been offered and ignored. The stage-1
+   * call costs a full prefill plus a full generation, and buys nothing at all if
+   * the model does not call select_category. Measured on the Gilded UI Wave 1
+   * run: 56 stage-1 calls, 175.4s of model time, and select_category chosen
+   * ZERO times — 32% of the run's model time for no narrowing. One strike is
+   * enough evidence for this session; per-instance, not process-global, so a new
+   * session re-measures instead of inheriting a verdict.
+   */
+  private routingDeclined = false
   // Brain stream: thinking persistence + uncertainty tracking
   private thinkingRecorder: ThinkingRecorder | null = null
   private uncertainty = new UncertaintyTracker()
@@ -286,12 +396,6 @@ export class ConversationLoop {
       trustProfile: opts.trustProfile,
       approveAll: opts.config.approveAll,
       toolScorer: this.toolScorer,
-    })
-
-    // Inject sideQuery into Edit tool for semantic merge fallback
-    setSideQuery((prompt: string, system?: string) => {
-      const fullPrompt = system ? `${system}\n\n${prompt}` : prompt
-      return this.sideQuery(fullPrompt)
     })
 
     this.workflowEngine = opts.workflowEngine ?? new WorkflowEngine((event) => {
@@ -377,17 +481,26 @@ export class ConversationLoop {
     this.uncertainty.reset()
     this.uncertaintyBatch = []
     this.uncertaintyIndex = 0
+    this.brainRecorder.reset()
     this.thinkingRecorder?.discardBuffer()
   }
 
   /** Track entropy + batch brain.uncertainty messages to the dashboard. */
   private observeUncertainty(kind: 'thinking' | 'output' | 'tool', logprobs: import('../types.js').TokenLogprob[]): void {
     this.uncertainty.observe(kind, logprobs)
-    if (!this.dashboardBroadcast) return
+    // Entropy is tracked whether or not anyone is watching. This loop used to
+    // sit behind the dashboard guard, which meant the divergence floor — and
+    // now the recorded telemetry — existed only while a dashboard happened to
+    // be attached. A measurement that depends on being observed is not one.
     for (const tl of logprobs) {
       const h = UncertaintyTracker.entropy(tl)
       if (h === null) continue
-      if (kind === 'tool') { this.toolDivergence.observeEntropy(h); this.lastToolEntropy = h }
+      if (kind === 'tool') {
+        this.toolDivergence.observeEntropy(h)
+        this.brainRecorder.observeToolEntropy(h)
+        this.lastToolEntropy = h
+      }
+      if (!this.dashboardBroadcast) continue
       this.uncertaintyBatch.push({ i: this.uncertaintyIndex++, h, kind, top: tl.top.slice(0, 8) })
     }
     if (this.uncertaintyBatch.length >= 16) this.flushUncertainty()
@@ -665,27 +778,66 @@ export class ConversationLoop {
     }
   }
 
-  async handleUserMessage(text: string, opts?: { contract?: HarnessContractSpec }): Promise<void> {
+  /**
+   * Public entry point. Thin wrapper so that the task boundary is closed on
+   * EVERY exit runUserMessage takes — an early return, any of the in-loop
+   * returns, the max-iterations fall-through, or a thrown error.
+   *
+   * The busy guard lives HERE, outside runWithFinalize, and not inside
+   * runUserMessage. A rejected concurrent message never started a task, so
+   * finalizing it would end the task that is still running: it would snapshot a
+   * half-finished conversation, label it, and clear recorder.taskId so the real
+   * finalize became a no-op.
+   */
+  async handleUserMessage(text: string, opts?: TaskOpts): Promise<void> {
     if (this.processing) {
       console.log('[loop] Already processing, ignoring message')
       return
     }
+    // `processing` MUST clear on every exit, not just the happy one. It is set
+    // in runUserMessage and cleared at the bottom of that method, so any throw
+    // in between used to leave it stuck `true` forever — and because the guard
+    // above returns silently, every later message in the session was dropped
+    // with no error surfaced anywhere. The session was bricked until restart.
+    // Same failure shape runWithFinalize was introduced to solve one layer
+    // down, so it gets the same remedy.
+    try {
+      return await runWithFinalize(
+        () => this.runUserMessage(text, opts),
+        () => this.finalizeTrajectory(),
+      )
+    } finally {
+      this.processing = false
+      this.abortController = null
+    }
+  }
+
+  private async runUserMessage(text: string, opts?: TaskOpts): Promise<void> {
     this.processing = true
     console.log(`[loop] Handling message: "${text.slice(0, 80)}..."`)
 
     await this.ensureSkillsLoaded()
 
+    // Where this task's transcript begins. Captured BEFORE the user message is
+    // pushed so the message that started the task is inside its own snapshot.
+    // this.messages is never reset at a task boundary, so without this the
+    // snapshot for task 2 is a strict superset of task 1's — see
+    // trajectoryRecorder.sliceTaskMessages.
+    const taskStartIndex = this.messages.length
+
     this.addMessage({
       role: 'user',
       content: [{ type: 'text', text }],
     })
+    // The one place genuine user input enters the loop (F16).
+    this._lastExternalUserText = text
 
     this.abortController = new AbortController()
     this.toolFailureCounts.clear()
     // Fresh request = fresh bounded retry: a discard last turn must not rob
     // the first malformed call of this turn of its retry (P1.8).
     this._malformedToolCalls = 0
-    this.governance.resetStuck() // Fresh start for each user message
+    this.governance.resetForNewTask() // Fresh start for each user message
     this.governance.resetKillSwitch() // Clear kill switch from previous task
     this.consecutiveNudges = 0
     this.readLoopGate.reset()
@@ -695,31 +847,78 @@ export class ConversationLoop {
 
     // P4.2: harness-supplied contract (mission mode — the brief's check script
     // IS the contract, STATE doc Phase 4(a)). Applied before auto-create.
+    let contractIsNew = false
     if (opts?.contract && applyHarnessContract(opts.contract)) {
       console.log(`[contract] Harness-supplied: "${opts.contract.title}" (${opts.contract.assertions.length} assertion(s))`)
       this.governance.setContractCreated()
+      contractIsNew = true
+    }
+    // Finding (ag): the instruments that score the run — the gate scripts its
+    // contract names and the brief it was handed — may be read but not written.
+    //
+    // Two sources because the two instruments are known by different things. The
+    // gate is named in the contract's own assertions, so it can be derived here.
+    // The brief is named nowhere: it sits outside the contract mechanism
+    // entirely, which is exactly why finding (ac)'s guard had no way to learn it,
+    // so the harness declares it explicitly in `readOnlyPaths`.
+    //
+    // Unconditional, and outside the block above, on purpose. These locks are
+    // scoped to ONE task: a later task with no harness contract must not inherit
+    // the last one's read-only set, or the agent is refused edits to a file
+    // nothing is currently measuring and gets no way to find out why.
+    const declared = (opts?.readOnlyPaths ?? []).map(p => p.replace(/\\/g, '/'))
+    const gates = [...new Set([
+      ...declared,
+      ...(opts?.contract ? harnessGatePaths(opts.contract.assertions, this.executor['cwd']) : []),
+    ])]
+    setTaskImmutablePaths(gates)
+    if (gates.length > 0) {
+      console.log(`[contract] Read-only instrument(s) for this task: ${gates.join(', ')}`)
     }
     // Auto-create contract from EVERY user message — the model must finish what
     // the user asked. A COMPLETE stale contract from a prior task is replaced
     // (P4.2 — otherwise taskError measures the wrong task); an INCOMPLETE one is
     // kept (live task / follow-up message). Skip in one-shot mission runs
     // (allowedTools pinned): the contract enforcer is calibrated for interactive
-    // coding ("run the test suite NOW with Bash") and blocks a mission from
-    // producing its final structured outcome (2026-06-12 weekly-digest incident).
-    else if (!this.allowedTools && maybeAutoCreateContract(text)) {
+    // coding and blocks a mission from producing its final structured outcome
+    // (2026-06-12 weekly-digest incident). The nudge text is now pluggable via
+    // engine/bridge/enforcementNudge.ts and is phase-aware; a mission-aware nudge
+    // variant is the right path to lifting this skip, not hardcoding new text here.
+    else if (!this.allowedTools && maybeAutoCreateContract(text, this.executor['cwd'])) {
       console.log(`[contract] Auto-created: ${globalContract.pendingCount()} assertions for "${text.slice(0, 50)}..."`)
       this.governance.setContractCreated()
+      contractIsNew = true
+    }
+
+    // Pin the repository state these assertions are measured against. Only on a
+    // fresh contract: a follow-up message that keeps a live contract must keep
+    // the baseline the work started from, or a commit the task already made
+    // would silently become "pre-existing" and stop counting as evidence.
+    if (contractIsNew) {
+      globalContract.setBaseline(await gitProbe(this.executor['cwd']).head())
     }
 
     // Start trajectory recording for this task
+    this.trajectoryErrorLogged = false
+    this.taskHitIterationLimit = false
+    this.taskEndedInEngineError = false
     try {
-      const { getTrajectoryRecorder } = require('../training/trajectoryRecorder.js')
       const { randomUUID } = require('crypto')
       const recorder = getTrajectoryRecorder()
       if (recorder) {
-        recorder.startTask(`task-${randomUUID().slice(0, 8)}`, this.config.model ?? 'unknown')
+        // No 'unknown' fallback: a placeholder model name is a fabricated
+        // attribution, and datasetBuilder groups DPO pairs by model. Two runs
+        // bucketed under 'unknown' would be paired as if they came from one
+        // policy. An empty name is excluded from pairing instead.
+        recorder.startTask(`task-${randomUUID().slice(0, 8)}`, this.config.model ?? '', undefined, taskStartIndex)
+        this.taskTestObservations = []
+        this.taskCommandObservations = []
+        this.taskGitBaseSha = this.readGitHead()
+        this.taskBaselineDirty = collectDirtyPaths(this.executor['cwd'])
       }
-    } catch {}
+    } catch (e) {
+      this.onTrajectoryError('startTask', e)
+    }
 
     // Compact when context exceeds the configured warning threshold.
     // With flash attention, attention is ~O(n) not O(n²), so we can use
@@ -820,11 +1019,7 @@ export class ConversationLoop {
     }
 
     // Build tool definitions in the format callModel expects (inputJSONSchema)
-    let toolDefs = activeTools.map(t => ({
-      name: t.name,
-      description: t.description,
-      inputJSONSchema: t.inputSchema,
-    }))
+    let toolDefs = toToolDefs(activeTools)
     const toolNames = activeTools.map(t => `- ${t.name}: ${t.description}`).join('\n')
 
     const promptParts = assembleBasePrompt(toolNames, this.executor['cwd'])
@@ -973,13 +1168,18 @@ export class ConversationLoop {
         const govReport = this.governance.getReport()
         const pm = this.governance.getPerformanceMetrics?.()
 
-        // Evaluate previous S5 decision outcome (feeds rule weight tuning)
+        // Evaluate previous S5 decision outcome. Feeds rule weight tuning AND
+        // backfills the decision journal with a per-decision label — the thing the
+        // S5 corpus is missing. Swallowing a failure here would silently stop the
+        // corpus growing, so it is logged.
         try {
           const outcomeResult = this.s5.evaluateLastDecision(govReport as any)
           if (outcomeResult) {
             console.log(`[s5] Outcome: ${outcomeResult.outcome} for rules [${outcomeResult.ruleIds.join(',')}]`)
           }
-        } catch {}
+        } catch (e) {
+          console.log(`[s5] evaluateLastDecision failed: ${e instanceof Error ? e.message : String(e)}`)
+        }
 
         const decision = await this.s5.makeDecision({
           userMessage: text.slice(0, 200),
@@ -1054,19 +1254,16 @@ export class ConversationLoop {
           }
         }
 
-        // Hard tool filtering: S5 decides, engine enforces — but never apply
-        // a restriction that would leave the model with zero tools.
+        // Hard tool filtering: S5 decides, engine enforces — for the iteration
+        // the decision was made about. This is recorded rather than applied
+        // here, because applying it means narrowing `toolDefs`, the array the
+        // whole task runs on, and a pre-task reading has no standing over turns
+        // that have not happened yet. See finding (j) in bridge/s5Restriction.ts.
+        this.preLoopRestriction = null
         if (decision.tools && !s5Enforce) {
           console.log(`[s5] WOULD-ENFORCE (capped at recommend): tool restriction to [${decision.tools.join(', ')}]`)
         } else if (decision.tools) {
-          const allowed = new Set(decision.tools)
-          const filtered = toolDefs.filter(t => allowed.has(t.name))
-          if (filtered.length > 0) {
-            console.log(`[s5] ENFORCE: tool restriction to [${decision.tools.join(', ')}]`)
-            toolDefs = filtered
-          } else {
-            console.log(`[s5] ENFORCE skipped: restriction [${decision.tools.join(', ')}] would remove every available tool`)
-          }
+          this.preLoopRestriction = { tools: decision.tools, reasoning: decision.reasoning }
         }
 
         // P4.5 Phase 3: proactive tool surfacing. Purely additive (append-only
@@ -1151,13 +1348,9 @@ export class ConversationLoop {
       const bonTemp = parseFloat(process.env.LOCALCODE_BEST_OF_N_TEMP ?? '0.8')
 
       if (bonEnabled) {
-        const { detectTests } = require('../bestOfN/testDetector.js')
         const testInfo = detectTests(this.executor['cwd'])
 
         if (testInfo.available) {
-          const { WorktreeManager } = require('../bestOfN/worktreeManager.js')
-          const { extractPatch } = require('../bestOfN/patchExtractor.js')
-          const { runTests, selectWinner, applyPatch } = require('../bestOfN/sampler.js')
           const mainCwd = this.executor['cwd']
 
           this.emit({ type: 'bestOfN.start', payload: { count: bonCount, framework: testInfo.framework, command: testInfo.command } } as any)
@@ -1280,6 +1473,7 @@ export class ConversationLoop {
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
         console.error(`[loop] ERROR: ${msg}`)
+        this.taskEndedInEngineError = true
         this.emit({ type: 'session.error', error: msg })
       }
     }
@@ -1486,9 +1680,15 @@ export class ConversationLoop {
     }
   }
 
-  /** Rough token estimate (chars/4) of the current message history. */
-  private estimateMessageTokens(): number {
-    return this.messages.reduce((sum, m) =>
+  /**
+   * Rough token estimate (chars/4) of the message history from `fromIndex` on.
+   *
+   * The slice exists for the context floor: the server has measured the prompt
+   * up to some message count, and only the messages after it need guessing.
+   * See contextFloor.ts and finding (r).
+   */
+  private estimateMessageTokens(fromIndex = 0): number {
+    return this.messages.slice(fromIndex).reduce((sum, m) =>
       sum + m.content.reduce((s, b: any) => s + (b.text?.length ?? JSON.stringify(b).length) / 4, 0), 0)
   }
 
@@ -1502,11 +1702,17 @@ export class ConversationLoop {
     try {
       const before = this.messages
       const contractText = globalContract.isActive() ? globalContract.snapshot().brief : undefined
+      // Finding (x): the agent came out of a compaction not knowing what it had
+      // already committed and began redoing finished work. Measured from git
+      // against the contract's baseline; null (no baseline, no repo) is passed
+      // through as undefined so the anchor says nothing rather than "no commits".
+      const commitLog = commitsSince(this.executor['cwd'], globalContract.getBaseline()) ?? undefined
       const compacted = await this.compressor.runCompaction(this.messages, this.fileTracker, {
         keepRecentPairs: 2,
         summarize: (prompt) => this.sideQuery(prompt),
         journal: (summary, fileOps) => { try { this.journal.appendCompaction(summary, fileOps) } catch (e) { console.log(`[session] compaction journal failed: ${e instanceof Error ? e.message : String(e)}`) } },
         contractText,
+        commitLog,
       })
       if (compacted === before) return false
       this.messages = compacted
@@ -1587,6 +1793,9 @@ export class ConversationLoop {
     // Session-scoped accumulators (survive across iterations within a single runModelLoop invocation)
     const toolsUsedInSession: string[] = []
     let summaryInjected = false
+    /** Evasion probes get their own small budget so they cannot consume the
+     *  stop-attempt enforcement budget, and cannot nag indefinitely. */
+    let evasionNudges = 0
 
     for (let i = 0; i < maxIterations; i++) {
       // ── Stuck loop escape: escalating intervention ──
@@ -1774,9 +1983,6 @@ export class ConversationLoop {
         console.log(`[loop] Compressed to ${this.messages.length} messages (files tracked: ${this.fileTracker.getModifiedFiles().length} modified, ${this.fileTracker.getReadFiles().length} read)`)
       }
 
-      // Reset per-turn semantic merge tracking
-      resetMergeTracking()
-
       // Algedonic kill switch — HALT if critical failures accumulated
       try {
         this.governance.checkOrHalt()
@@ -1787,21 +1993,42 @@ export class ConversationLoop {
         return
       }
 
-      // Filter out demoted tools (trust score decay)
+      // Filter out demoted tools (trust score decay).
+      //
+      // `excludeForIteration` rather than `getDemotedTools`: it advances each
+      // demoted tool's probation, so a tool that was withheld gets offered again
+      // after a few iterations. Without that the exclusion is permanent for the
+      // rest of the session — withheld, therefore never called, therefore never
+      // re-scored — and on Gilded UI Wave 1 that swallowed Bash, which is the
+      // only way to run the verification command the task's contract named.
       const scorer = this.executor.getToolScorer?.()
-      const demoted = scorer ? new Set(scorer.getDemotedTools()) : new Set<string>()
+      const demoted = scorer ? new Set(scorer.excludeForIteration()) : new Set<string>()
       let iterationTools = demoted.size > 0
         ? toolDefs.filter(t => !demoted.has(t.name))
         : toolDefs
       if (demoted.size > 0) {
         console.log(`[trust] Demoted tools excluded: ${[...demoted].join(', ')}`)
       }
+      const probation = scorer?.probationTools() ?? []
+      if (probation.length > 0) {
+        console.log(`[trust] Offered again on probation: ${probation.join(', ')}`)
+      }
+
+      // S5's pre-loop decision, scoped to the iteration it was decided for.
+      const preLoop = applyPreLoopRestriction(iterationTools, this.preLoopRestriction, i)
+      if (preLoop.applied) {
+        console.log(`[s5] ENFORCE: tool restriction to [${this.preLoopRestriction!.tools.join(', ')}] for iteration 1 (${this.preLoopRestriction!.reasoning})`)
+        iterationTools = preLoop.tools
+      } else if (this.preLoopRestriction && i === 1) {
+        console.log(`[s5] Pre-loop tool restriction lifted — it was decided before this task produced any observations`)
+      }
 
       // Two-stage tool routing for small context models
       try {
         const { shouldUseRouting, getToolsForCategory, CATEGORY_SELECTOR_TOOL } = await import('../tools/toolRouter.js')
-        if (shouldUseRouting(this.config.contextLength ?? 32768) && iterationTools.length > 5) {
+        if (!this.routingDeclined && shouldUseRouting(this.config.contextLength ?? 32768) && iterationTools.length > 5) {
           // Stage 1: send only category selector
+          let routed = false
           const routingGen = localCallModel({
             messages: this.messages,
             systemPrompt,
@@ -1816,14 +2043,18 @@ export class ConversationLoop {
               const category = (evt as any).input?.category ?? 'all'
               console.log(`[routing] Category selected: ${category}`)
               const { ALL_TOOLS } = await import('../tools/registry.js')
-              iterationTools = getToolsForCategory(category, ALL_TOOLS).map(t => ({
-                name: t.name,
-                description: t.description,
-                input_schema: t.inputSchema,
-              }))
+              iterationTools = toToolDefs(getToolsForCategory(category, ALL_TOOLS))
+              routed = true
               break
             }
             if (evt.type === 'message_stop') break // model didn't use the tool — fall through to all tools
+          }
+          if (!routed) {
+            // The stage-1 call cost a full prefill and a full generation and
+            // narrowed nothing. Falling through silently made that happen on
+            // every iteration for the whole run; one refusal is enough.
+            this.routingDeclined = true
+            console.log('[routing] Model ignored select_category — two-stage routing disabled for the rest of this session (the stage-1 call costs a full prefill and buys nothing when unused)')
           }
         }
       } catch (routeErr) {
@@ -1926,6 +2157,51 @@ export class ConversationLoop {
         }
       }
 
+      // ── Contract tool floor ─────────────────────────────────────────
+      // Enforcement will demand Bash + ContractAssertPass. Any of the narrowing
+      // layers above may have removed them without knowing that. Restore them,
+      // or — if the operator's own pin omits them — stop pretending we can
+      // verify and disable enforcement loudly.
+      if (globalContract.isActive() && !globalContract.isComplete() && globalContract.isEnforcementEnabled()) {
+        const allDefs = toToolDefs(ALL_TOOLS)
+        const verdict = applyToolFloor({
+          offered: iterationTools as any[],
+          allTools: allDefs,
+          operatorPin: this.allowedTools ?? null,
+          enforcementActive: true,
+          // What the TASK needs, not only what the enforcement message says.
+          // Finding (l): on L3-3.3b the floor restored Bash + ContractAssert*
+          // into a read-only set and stopped, leaving an agent that could claim
+          // the contract and not achieve it.
+          assertions: globalContract.getAssertionTexts(),
+        })
+        if (verdict.kind === 'restored') {
+          const phaseAllowed = this.workflowEngine.isActive ? this.workflowEngine.getAllowedTools() : null
+          const why = verdict.restored
+            .map(n => `${n} (removed by ${attributeRemoval(n, {
+              phaseName: this.workflowEngine.currentPhase?.name,
+              phaseAllowed,
+              demoted: [...demoted],
+            })})`)
+            .join(', ')
+          iterationTools = verdict.tools as any
+          const event = `restored ${verdict.restored.join(', ')}`
+          if (!this.floorEvents.includes(event)) {
+            console.log(`[tool-floor] Restored ${why} — required by active contract enforcement`)
+            this.floorEvents.push(event)
+            this.emit({ type: 'governance.alert', severity: 'medium', source: 'tool-floor', message: `Tool floor restored ${why} — required by active contract enforcement` })
+          }
+        } else if (verdict.kind === 'unsatisfiable') {
+          const event = `enforcement disabled: pin omits ${verdict.missing.join(', ')}`
+          if (!this.floorEvents.includes(event)) {
+            console.log(`[tool-floor] Contract enforcement DISABLED — allowedTools omits ${verdict.missing.join(', ')}; cannot verify completion`)
+            this.floorEvents.push(event)
+            this.emit({ type: 'governance.alert', severity: 'high', source: 'tool-floor', message: `Contract enforcement disabled — allowedTools omits ${verdict.missing.join(', ')}; completion can no longer be verified` })
+          }
+          globalContract.setEnforcementEnabled(false)
+        }
+      }
+
       if (currentStuck >= 3) {
         console.log(`[loop] Sending to model with ${iterationTools.length} tools: ${iterationTools.map((t: any) => t.name).join(', ')}`)
       }
@@ -1946,6 +2222,9 @@ export class ConversationLoop {
       let tokenCount = 0
       let reasoningTokenCount = 0
       let stopReason = 'end_turn'
+      // What the server said this turn cost. Stays null when it said nothing —
+      // a turn with no reported timings is unmeasured, not free.
+      let turnCost: TurnCost | null = null
       const modelCallStartTime = Date.now()
       let assistantContent: unknown[] = []
       const toolsUsedThisTurn: string[] = []
@@ -1989,7 +2268,21 @@ export class ConversationLoop {
               lastMessageId = event.message?.id ?? ''
               break
             case 'message_delta':
-              stopReason = event.delta?.stop_reason ?? stopReason
+              // Truthiness, not ??: a usage-only chunk carries no stop reason
+              // and says so with '', which must not overwrite a real one.
+              if (event.delta?.stop_reason) stopReason = event.delta.stop_reason
+              // The server's own count of the prompt it evaluated. This is a
+              // measurement; everything else in the context path is a chars/4
+              // guess. See finding (n) and the floor applied below.
+              if (event.usage?.input_tokens) {
+                this.lastMeasuredPromptTokens = event.usage.input_tokens
+                this.lastMeasuredAtMessageCount = this.messages.length
+              }
+              // The cost ledger rides the same chunk. Kept separate from
+              // input_tokens above because they answer different questions:
+              // that one is how big the prompt was, this one is how much of it
+              // the server actually had to evaluate.
+              if (event.usage?.cost) turnCost = event.usage.cost
               // Capture estimated output tokens from the stream translator
               if (event.usage?.output_tokens) {
                 const estimatedTokens = event.usage.output_tokens
@@ -1999,12 +2292,32 @@ export class ConversationLoop {
               break
             case 'message_stop': {
               const modelCallElapsedMs = Date.now() - modelCallStartTime
-              const tokPerSec = modelCallElapsedMs > 0 ? Math.round((tokenCount + reasoningTokenCount) / (modelCallElapsedMs / 1000) * 10) / 10 : 0
-              console.log(`[loop] message_stop, tokens=${tokenCount}+${reasoningTokenCount}r, ${tokPerSec} tok/s, stop=${stopReason}`)
+              // `tokenCount` and `reasoningTokenCount` count stream DELTAS, not
+              // tokens. One chunk can carry several tokens under speculative
+              // decoding / MTP, so the delta count is a floor on the real one and
+              // every rate derived from it reads low. `timings.predicted_n` is the
+              // server's own count of what it generated; when it is present, use
+              // it, and use `predicted_ms` with it — dividing a measured token
+              // count by a wall clock that includes queueing mixes the two.
+              const deltaCount = tokenCount + reasoningTokenCount
+              const measuredDecode = turnCost?.decodeTokens ?? null
+              const measuredDecodeMs = turnCost?.decodeMs ?? null
+              const rateTokens = measuredDecode ?? deltaCount
+              const rateMs = measuredDecode !== null && measuredDecodeMs !== null ? measuredDecodeMs : modelCallElapsedMs
+              const tokPerSec = rateMs > 0 ? Math.round(rateTokens / (rateMs / 1000) * 10) / 10 : 0
+              // Thinking is not reported separately by any server — `predicted_n`
+              // covers thinking and output together. The delta split is the only
+              // evidence of where the decode went, so it is used to apportion the
+              // measured total. This is a derived number, not a measured one: it
+              // assumes thinking and output average the same tokens per delta.
+              const thinkingTokensDerived = measuredDecode !== null && deltaCount > 0
+                ? Math.round(measuredDecode * (reasoningTokenCount / deltaCount))
+                : reasoningTokenCount
+              console.log(`[loop] message_stop, deltas=${tokenCount}+${reasoningTokenCount}r, decode=${measuredDecode ?? 'unmeasured'}, ${tokPerSec} tok/s, stop=${stopReason}`)
               this.lastTokPerSec = tokPerSec
               this.lastModelCallMs = modelCallElapsedMs
-              this.governance.setTokPerSec(tokPerSec, tokenCount + reasoningTokenCount)
-              this.governance.setThinkingTokens(reasoningTokenCount)
+              this.governance.setTokPerSec(tokPerSec, rateTokens)
+              this.governance.setThinkingTokens(thinkingTokensDerived)
               this.flushUncertainty()
               this.thinkingRecorder?.finalizeTurn({
                 tokenCount: reasoningTokenCount,
@@ -2033,13 +2346,23 @@ export class ConversationLoop {
                 }, null, 2))
               } catch {}
 
-              // Governance: record turn completion with user message for task classification
-              const lastUserMsg = this.messages.filter(m => m.role === 'user').pop()
-              const userMsgText = lastUserMsg?.content?.[0]?.text ?? ''
+              // Governance: record turn completion with user message for task
+              // classification and for teachback agreement.
+              //
+              // F16: this used to read the last user-ROLE message, which after
+              // the first iteration is almost always the engine's own steering —
+              // a nudge, a governance signal, a contract enforcement line. The
+              // teachback heuristic then judged CynCo's prose for signs that the
+              // USER was confused ("Do not describe *what* you will do" matches
+              // its \bwhat\b rule), and because the engine writes a different
+              // nudge each time, the dedupe and the >=2-decided floor both let it
+              // through. Ratio latched at exactly 0.00 for 46 turns and the
+              // algedonic kill switch halted the Gilded Wave 2 run.
+              const userMsgText = this._lastExternalUserText
               this.governance.onTurnComplete({
                 toolsCalled: (assistantContent as any[]).filter((b: any) => b.type === 'tool_use').length,
-                thinkingTokens: reasoningTokenCount,
-                totalTokens: tokenCount + reasoningTokenCount,
+                thinkingTokens: thinkingTokensDerived,
+                totalTokens: rateTokens,
                 latencyMs: Date.now() - iterationStartMs,
                 // Must be the real streamed text: '' here made responseStuck
                 // permanently true (uniform empty prefixes) — 2026-06-12
@@ -2047,6 +2370,13 @@ export class ConversationLoop {
                 response: streamedText,
                 userMessage: userMsgText,
                 contextUtilization: Math.min(1, this.estimateMessageTokens() / (this.config.contextLength ?? 32768)),
+                // Wall time is the one number the server cannot report: it does
+                // not see queueing or transport. `parseTurnCost` leaves it null
+                // for exactly this reason, and this is the only clock that was
+                // running around the request. Measured over the model call, not
+                // the iteration — the iteration includes tool execution, which
+                // is not what the model cost.
+                cost: turnCost ? { ...turnCost, wallMs: modelCallElapsedMs } : undefined,
               })
 
               // Emit governance status to TUI
@@ -2217,7 +2547,25 @@ export class ConversationLoop {
       const promptOverheadTokens =
         JSON.stringify(systemPrompt ?? '').length / 4 +
         JSON.stringify(iterationTools ?? []).length / 4
-      const estimatedTokens = promptOverheadTokens + this.estimateMessageTokens()
+      //
+      // The estimate is still a guess, and on the L3-3.3b run it guessed 75%
+      // of a request that was 103% (finding n). So where the server has told us
+      // what it actually evaluated, that measurement is a floor: the prompt was
+      // at least N tokens last request, and the conversation has only grown
+      // since. This is a lower bound backed by a measurement, not a second
+      // guess calibrated against the first.
+      // ...and the floor is the measurement PLUS what has been appended since
+      // it was taken. The measurement describes the prompt at message count M;
+      // the assistant turn and tool results added after M are unmeasured, and
+      // leaving them out is what let a 72% reading precede a 101% request.
+      // Finding (r).
+      const guessedTokens = promptOverheadTokens + this.estimateMessageTokens()
+      const estimatedTokens = promptTokensWithFloor(
+        guessedTokens,
+        { tokens: this.lastMeasuredPromptTokens, atMessageCount: this.lastMeasuredAtMessageCount },
+        this.messages.length,
+        this.estimateMessageTokens(this.lastMeasuredAtMessageCount),
+      )
       const contextLength = this.config.contextLength ?? 32768
       this.emit({
         type: 'context.status',
@@ -2257,23 +2605,19 @@ export class ConversationLoop {
 
       // Auto-retry: if the model produced no tool calls despite having tools available,
       // nudge it to use tools. Track consecutive nudges to escalate or give up.
-      const noToolsEndTurn = toolUseBlocks.length === 0 && stopReason === 'end_turn'
-      // Case 1: Only thinking tokens, no content — model deliberated but didn't act
-      const isThinkingWithoutActing = noToolsEndTurn && reasoningTokenCount > 0 && tokenCount === 0
-      // Case 2: Short text + heavy thinking — describing instead of doing
-      const isDescribingInsteadOfDoing = noToolsEndTurn && tokenCount > 0 && tokenCount < 100 && reasoningTokenCount > tokenCount * 2
-      // Case 3: Tools were used earlier in session but model stopped using them.
-      // This catches the "let me check... actually... wait..." narration pattern.
-      // BUT: if the model says it's done (completion signals), let it finish.
-      const completionSignals = /\b(task (is )?complete|i'm done|waiting for|ready for your|what would you like|no changes needed)\b/i
-      const modelSaysDone = completionSignals.test(streamedText)
-      const isMidPlanStop = noToolsEndTurn && toolsUsedInSession.length > 0 && !modelSaysDone
       // One-shot missions finish by emitting a ```json structured outcome —
       // that IS completion; never nudge it back into tool calls
       // (2026-06-12 weekly-digest incident: nudges pushed the model mid-answer
       // back to repeating the same Mfl call until HALT).
-      const producedStructuredOutcome = this.allowedTools != null && /```json/.test(streamedText)
-      if ((isThinkingWithoutActing || isDescribingInsteadOfDoing || isMidPlanStop) && !producedStructuredOutcome) {
+      if (shouldNudge({
+        noToolsEndTurn: toolUseBlocks.length === 0 && stopReason === 'end_turn',
+        reasoningTokens: reasoningTokenCount,
+        textTokens: tokenCount,
+        toolsUsedInSession: toolsUsedInSession.length > 0,
+        modelSaysDone: saysDone(streamedText),
+        contractComplete: globalContract.isActive() && globalContract.isComplete(),
+        producedStructuredOutcome: this.allowedTools != null && /```json/.test(streamedText),
+      })) {
         this.consecutiveNudges++
         if (this.consecutiveNudges <= 5) {
           const nudgeText = this.allowedTools
@@ -2304,26 +2648,47 @@ export class ConversationLoop {
         }
       }
 
-      // Contract enforcement: don't let model finish if contract is incomplete
-      // Fires when model stops WITHOUT tool calls, OR when model has been iterating
-      // for a while without marking assertions (prevents read-loop evasion)
+      // Contract enforcement: don't let the model finish while the contract is
+      // incomplete. Fires when the model stops without tool calls, or
+      // periodically to catch read-loop evasion.
       const contractActive = globalContract.isActive() && !globalContract.isComplete() && globalContract.isEnforcementEnabled()
-      const modelStopping = toolUseBlocks.length === 0 && stopReason === 'end_turn'
-      const readLoopEvasion = contractActive && i > 0 && i % 8 === 0 // every 8 iterations, check
+      // A truncated turn (max_tokens) is also a stop attempt — without this,
+      // the token cap becomes a way to bypass enforcement on a new path.
+      const modelStopping = toolUseBlocks.length === 0 && (stopReason === 'end_turn' || stopReason === 'max_tokens')
+      const readLoopEvasion = contractActive && i > 0 && i % 8 === 0 && evasionNudges < 3
       if (contractActive && (modelStopping || readLoopEvasion)) {
-        globalContract.enforcementRounds++
+        // Only a genuine stop attempt spends the enforcement budget. The
+        // periodic evasion probe has its own, so it cannot exhaust enforcement
+        // before the model has tried to finish even once.
+        if (modelStopping) globalContract.enforcementRounds++
+        else evasionNudges++
+
         if (globalContract.enforcementRounds <= 5) {
           const pending = globalContract.pendingCount()
           const failed = globalContract.failedCount()
-          const runTests = 'Run the test suite NOW with Bash to verify your changes work. If tests fail, fix the errors.'
+          const phaseAllowed = this.workflowEngine.isActive ? this.workflowEngine.getAllowedTools() : null
+          const authoringPhase = !!phaseAllowed && !phaseAllowed.includes('Bash')
+          const phaseName = this.workflowEngine.currentPhase?.name ?? null
+          const nudgeText = enforcementNudgeText({ pending, failed, phaseName, authoringPhase })
           this.addMessage({
             role: 'user',
-            content: [{ type: 'text', text: `[System] You are NOT done. Contract has ${pending} assertions pending, ${failed} failed. ${runTests} Then use ContractAssertPass to mark completed assertions. Do NOT keep reading files — ACT.` }],
+            content: [{ type: 'text', text: nudgeText }],
           })
           console.log(`[contract] Enforcement round ${globalContract.enforcementRounds}: ${pending} pending, ${failed} failed`)
           continue
         }
-        console.log(`[contract] Allowing completion after ${globalContract.enforcementRounds} enforcement rounds`)
+
+        // Budget exhausted. Resolve the contract as failed rather than allowing
+        // an unverified completion, and end the turn here instead of drifting
+        // through the other re-entry paths for several more rounds.
+        const unverified = globalContract.resolveUnverified()
+        console.log(`[contract] UNRESOLVED after ${globalContract.enforcementRounds} rounds — failing ${unverified.length} unverified assertion(s)`)
+        this.emit({
+          type: 'stream.token',
+          text: `\n[System] Contract unresolved — ${unverified.length} assertion(s) were never verified:\n${unverified.map(t => `  - ${t}`).join('\n')}\n`,
+        })
+        this.emit({ type: 'message.complete', messageId: '', stopReason: 'end_turn' })
+        return
       }
 
       if (toolUseBlocks.length === 0 || stopReason !== 'tool_use') {
@@ -2517,11 +2882,7 @@ export class ConversationLoop {
             const pinned = new Set(this.allowedTools)
             refreshed = refreshed.filter(t => pinned.has(t.name))
           }
-          toolDefs = refreshed.map(t => ({
-            name: t.name,
-            description: t.description,
-            inputJSONSchema: t.inputSchema,
-          }))
+          toolDefs = toToolDefs(refreshed)
           const lines = added.map(name => {
             const tool = ALL_TOOLS.find(t => t.name === name)!
             return `- ${tool.name}: ${tool.description}\n  schema: ${JSON.stringify(tool.inputSchema)}`
@@ -2536,6 +2897,15 @@ export class ConversationLoop {
       // Loop back to call model again with tool results
     }
 
+    if (globalContract.isActive() && !globalContract.isComplete()) {
+      const unverified = globalContract.resolveUnverified('iteration limit reached — never verified')
+      if (unverified.length > 0) {
+        console.log(`[contract] UNRESOLVED at iteration limit — failing ${unverified.length} unverified assertion(s)`)
+      }
+    }
+    // Recorded for the reward labeler: reaching here means the loop ended
+    // because the budget ran out, not because the model judged the work done.
+    this.taskHitIterationLimit = true
     console.warn('[loop] Max iterations reached')
     this.emit({ type: 'stream.token', text: '\n[System] Max tool call iterations reached. Stopping.\n' })
     this.emit({ type: 'message.complete', messageId: '', stopReason: 'max_iterations' })
@@ -2653,6 +3023,100 @@ export class ConversationLoop {
     return this.fileTracker
   }
 
+  private readGitHead(): string | null {
+    try {
+      const { execSync } = require('child_process')
+      return execSync('git rev-parse HEAD', {
+        cwd: this.executor['cwd'],
+        stdio: ['pipe', 'pipe', 'pipe'],
+      }).toString().trim()
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * Close the task: persist the conversation as training corpus, then label it.
+   * Called from handleUserMessage's finally, so it runs on every exit path.
+   * Idempotent — endTask clears the recorder's active task.
+   */
+  /**
+   * A trajectory failure must not take the turn down with it — but it must not
+   * be invisible either. Silence here means the training corpus quietly stops
+   * being written while the session looks healthy, and every reward computed
+   * afterwards rests on nothing. Reported once per task, since recordTurn runs
+   * on every tool call and a repeating fault would otherwise flood the log.
+   */
+  private onTrajectoryError(stage: string, e: unknown): void {
+    if (this.trajectoryErrorLogged) return
+    this.trajectoryErrorLogged = true
+    console.error(`[trajectory] ${stage} failed — this task will not be recorded for training: ${e}`)
+  }
+
+  /**
+   * Close whatever task is still open. finalizeTrajectory runs from
+   * handleUserMessage's finally, which does not run when the process dies
+   * mid-task — so every restart during a live task left a trajectory on disk
+   * with no reward label, and an unlabeled trajectory is invisible to the
+   * dataset builder. Shutdown calls this. The label will usually be degenerate,
+   * since an interrupted task has no outcome evidence, and that is the correct
+   * answer rather than a loss.
+   */
+  finalizeOpenTask(): void {
+    this.finalizeTrajectory()
+  }
+
+  private finalizeTrajectory(): void {
+    const recorder = getTrajectoryRecorder()
+    if (!recorder || !recorder.taskId) return
+
+    const taskId = recorder.taskId
+    const turns = recorder.turnIdx ?? 0
+
+    // The conversation snapshot is a separate artifact from the turn log, which
+    // is already on disk. Bailing out when the snapshot cannot be written left
+    // the task unlabeled, and an unlabeled trajectory is invisible to the
+    // dataset builder — the turns are lost over a failure in something else.
+    recorder.endTask(this.messages)
+
+    // Named rather than passed inline so it can be persisted alongside the
+    // reward. Finding (z): this object was built here, consumed once and
+    // dropped, which made every reward record permanent — when a labeler bug
+    // was found the row could only be kept wrong or thrown away, and sixteen
+    // labeler fixes in three days threw the corpus away sixteen times.
+    const outcome: TaskOutcomeInput = {
+      testObservations: this.taskTestObservations,
+      commandObservations: this.taskCommandObservations,
+      contract: globalContract.isActive()
+        ? {
+            active: true,
+            complete: globalContract.isComplete(),
+            failed: globalContract.failedCount(),
+            origin: globalContract.snapshot().origin,
+            passedAssertions: globalContract
+              .snapshot()
+              .assertions.filter(a => a.status === 'passed')
+              .map(a => a.text),
+          }
+        : null,
+      git: collectGitFacts(this.executor['cwd'], this.taskGitBaseSha),
+      trackedModifiedFiles: this.fileTracker.getModifiedFiles(),
+      baselineDirty: this.taskBaselineDirty,
+      // resetForNewTask() runs at the START of runUserMessage, so the counter still
+      // holds the finished task's value here. Hardcoding 0 would permanently
+      // disable the -0.5 stuck penalty — a fabricated measurement of exactly
+      // the kind this pipeline repair exists to remove.
+      stuckTurns: this.governance?.getStuckCount() ?? 0,
+      turns,
+      hitIterationLimit: this.taskHitIterationLimit,
+      endedInEngineError: this.taskEndedInEngineError,
+    }
+
+    const components = buildComponents(outcome)
+    const reward = finalizeTask(taskId, turns, components, recorder.rewardDir, outcome)
+    console.log(`[trajectory] Labeled ${taskId}: reward ${reward.reward.toFixed(3)} (${turns} turns)`)
+  }
+
   /** The active session journal (for session-end markers). */
   getJournal(): JSONLStore {
     return this.journal
@@ -2731,6 +3195,32 @@ export class ConversationLoop {
       this.groundingRatesLoaded = true
     }
 
+    /**
+     * Tell governance a call was refused before it ran.
+     *
+     * Every one of the six refusal paths below returns early, ahead of the single
+     * onToolResult() at the end of this method — so a turn in which every call was
+     * refused looked, to governance, like a turn in which nothing happened.
+     * Measured on the livelocked L3-3.2b run: 202 refused Reads, and the report
+     * still read `tools=0.95 stuck=0` while no progress was being made at all.
+     *
+     * A refusal is the strongest evidence of no progress there is, because the
+     * call provably did not run. Recording it puts the call's fingerprint in front
+     * of stuck detection, so a model that keeps re-emitting something the engine
+     * keeps refusing climbs toward the halt at 15 instead of looping to the
+     * iteration cap. Latency is 0 — nothing executed, and inventing a duration
+     * would put a made-up number into the success-rate window.
+     *
+     * `governanceDenial` keeps that climb pointed at stuck detection and away
+     * from the algedonic kill switch, which halts at FIVE consecutive pain
+     * signals. Without the flag, governance's own refusals were the pain, and
+     * the halt at 5 fired three times sooner than the halt at 15 this comment
+     * describes — measured 2026-07-28, five read-loop denials ended a Gilded
+     * run mid-edit. See AlgedonicIntegration.recordToolResult.
+     */
+    const recordDenial = () => this.governance.onToolResult(
+      toolName, false, 0, undefined, toolInput, { governanceDenial: true })
+
     // Hard tool pin (one-shot/unattended runs): enforce allowedTools at
     // execution time too — simulated-mode models can hallucinate tools that
     // were never offered in the prompt, and approveAll would run them.
@@ -2746,6 +3236,7 @@ export class ConversationLoop {
         is_error: true,
       })
       toolsUsedThisTurn.push(toolName)
+      recordDenial()
       toolResultsThisTurn.push('denied')
       toolsUsedInSession.push(toolName)
       return
@@ -2770,6 +3261,28 @@ export class ConversationLoop {
         is_error: true,
       })
       toolsUsedThisTurn.push(toolName)
+      recordDenial()
+      toolResultsThisTurn.push('denied')
+      toolsUsedInSession.push(toolName)
+      return
+    }
+
+    // ─── Commit scope guard ────────────────────────────────────────
+    // Prevention, not a rescue: a commit is hard to reverse once made, and an
+    // unattended run runs with approveAll so nothing else will stop it.
+    const commitVerdict = checkCommitScope(toolName, toolInput)
+    if (!commitVerdict.allowed) {
+      console.log(`[commit-scope] BLOCKED ${toolName}: repo-wide staging`)
+      this.emit({ type: 'tool.start', toolId, toolName, input: toolInput })
+      this.emit({ type: 'tool.complete', toolId, toolName, result: commitVerdict.reason!, isError: true })
+      toolResults.push({
+        type: 'tool_result',
+        tool_use_id: toolId,
+        content: [{ type: 'text', text: commitVerdict.reason! }],
+        is_error: true,
+      })
+      toolsUsedThisTurn.push(toolName)
+      recordDenial()
       toolResultsThisTurn.push('denied')
       toolsUsedInSession.push(toolName)
       return
@@ -2779,33 +3292,47 @@ export class ConversationLoop {
     // Deny redundant / stalled reads at execution time so the model is forced
     // to act or stop, instead of reading itself into the context-bloat timeout.
     const readLoopVerdict = this.readLoopGate.evaluate(toolName, toolInput)
-    if (readLoopVerdict.kind === 'deny' || readLoopVerdict.kind === 'escalate') {
-      console.log(`[read-loop] ${readLoopVerdict.kind.toUpperCase()} ${toolName}`)
-      if (readLoopVerdict.kind === 'escalate') {
-        // The model has confidently re-emitted a gate-disabled read past the
-        // escalation threshold (reasoning/action divergence). Break the attractor
-        // by deflating the poisoned context — remove the certified-redundant
-        // Read+DENIED pairs — before the next model call.
-        const verdict = this.toolDivergence.check({
-          tool: toolName,
-          entropy: this.lastToolEntropy ?? 0,
-          isDisabled: this.readLoopGate.isDisabled(toolName, toolInput),
-        })
-        const before = this.messages.length
-        this.messages = pruneRedundantReads(this.messages, new Set(readLoopVerdict.signatures), readSignature)
-        const prunedMessages = before - this.messages.length
-        this.dashboardBroadcast?.({
-          type: 'brain.toolDivergence',
-          tool: toolName,
-          prunedMessages,
-          signatures: readLoopVerdict.signatures,
-          entropy: verdict.entropy,
-          floor: verdict.floor,
-          diverged: verdict.diverged,
-        })
-        this.emit({ type: 'governance.alert', severity: 'warn', message: `[context-hygiene] Broke a ${toolName} attractor: pruned ${prunedMessages} redundant re-read messages.`, source: 'read-loop' } as any)
-        console.log(`[context-hygiene] pruned ${prunedMessages} messages to break ${toolName} attractor`)
+    let readLoopRelented: string | null = null
+    if (readLoopVerdict.kind === 'escalate') {
+      // The model has confidently re-emitted a gate-disabled read past the
+      // escalation threshold (reasoning/action divergence). Break the attractor
+      // by deflating the poisoned context — remove the certified-redundant
+      // Read+DENIED pairs — before the next model call.
+      console.log(`[read-loop] ESCALATE ${toolName}`)
+      const verdict = this.toolDivergence.check({
+        tool: toolName,
+        entropy: this.lastToolEntropy ?? 0,
+        isDisabled: this.readLoopGate.isDisabled(toolName, toolInput),
+      })
+      const before = this.messages.length
+      this.messages = pruneRedundantReads(this.messages, new Set(readLoopVerdict.signatures), readSignature)
+      const prunedMessages = before - this.messages.length
+      this.dashboardBroadcast?.({
+        type: 'brain.toolDivergence',
+        tool: toolName,
+        prunedMessages,
+        signatures: readLoopVerdict.signatures,
+        entropy: verdict.entropy,
+        floor: verdict.floor,
+        diverged: verdict.diverged,
+      })
+      const divTask = getTrajectoryRecorder()
+      if (divTask?.taskId) {
+        this.brainRecorder.recordDivergence(divTask.taskId, divTask.turnIdx, { ...verdict, prunedMessages })
       }
+      this.emit({ type: 'governance.alert', severity: 'warn', message: `[context-hygiene] Broke a ${toolName} attractor: pruned ${prunedMessages} redundant re-read messages.`, source: 'read-loop' } as any)
+      console.log(`[context-hygiene] pruned ${prunedMessages} messages to break ${toolName} attractor`)
+      // ...and then SERVE the read. Pruning alone made this worse: it deletes the
+      // Read+DENIED pairs, which are the model's only evidence that reading is
+      // blocked, so it re-emits the same read as if fresh and loops forever. The
+      // denial also told the model to "call Edit instead" while withholding the
+      // bytes Edit needs to build an exact `old_string`. Past this threshold the
+      // model has demonstrated it cannot proceed without this content, so the
+      // gate stops refusing and downgrades to a warning.
+      readLoopRelented = `[read-loop] You have requested this repeatedly, so here it is — but you have now read it more than once without making a change. Use it: call Edit or Write, or end your turn if the task is done.`
+    }
+    if (readLoopVerdict.kind === 'deny') {
+      console.log(`[read-loop] DENY ${toolName}`)
       if (process.env._TRACE_STEERING === '1') this.traceLastInjected = 'readLoopGate-deny'
       this.emit({ type: 'tool.start', toolId, toolName, input: toolInput })
       this.emit({ type: 'tool.complete', toolId, toolName, result: readLoopVerdict.message, isError: true })
@@ -2816,11 +3343,12 @@ export class ConversationLoop {
         is_error: true,
       })
       toolsUsedThisTurn.push(toolName)
+      recordDenial()
       toolResultsThisTurn.push('denied')
       toolsUsedInSession.push(toolName)
       return
     }
-    const readLoopWarn = readLoopVerdict.kind === 'warn' ? readLoopVerdict.message : null
+    const readLoopWarn = readLoopVerdict.kind === 'warn' ? readLoopVerdict.message : readLoopRelented
 
     // Vibe Guardian: check risk level before execution
     const { classifyRisk, describeRisk } = await import('./guardianRules.js')
@@ -2841,6 +3369,7 @@ export class ConversationLoop {
         is_error: true,
       })
       toolsUsedThisTurn.push(toolName)
+      recordDenial()
       toolResultsThisTurn.push('denied')
       toolsUsedInSession.push(toolName)
       return
@@ -2943,6 +3472,7 @@ export class ConversationLoop {
               is_error: true,
             })
             toolsUsedThisTurn.push(toolName)
+            recordDenial()
             toolResultsThisTurn.push('denied')
             toolsUsedInSession.push(toolName)
             return
@@ -2957,6 +3487,12 @@ export class ConversationLoop {
     this.emit({ type: 'tool.start', toolId, toolName, input: toolInput })
 
     const toolStartMs = Date.now()
+    // Only Bash can change a file without saying which one. Snapshot before, so
+    // the paths it touched can be measured after rather than guessed from the
+    // command text. Any other tool announces its file_path and is recorded below.
+    const shellSigBefore = toolName === 'Bash'
+      ? collectPathSignatures(this.executor['cwd'])
+      : null
     const result = await this.executor.execute(toolName, toolInput)
 
     // ─── SubAgent interception ─────────────────────────────────────
@@ -3094,8 +3630,35 @@ export class ConversationLoop {
 
     console.log(`[loop] Tool result: ${toolName} isError=${result.isError}`)
 
-    // Circuit breaker: track consecutive failures per tool
+    // A red test suite (pytest/jest/go-test reporting failing tests) exits
+    // non-zero but is expected TDD signal, not a tool fault. It must not count
+    // toward the circuit breaker or the algedonic kill switch, or the agent gets
+    // HALTed mid-development. The result output/isError are left intact so the
+    // agent still sees the failures and can fix them.
+    const benignTestFailure = result.isError && isBenignTestFailure(toolName, toolInput, result.output)
+    // Finding (ad): the same is true of the contract's own verification
+    // commands. A check that runs and answers "no" is the gate working; three
+    // of them in a row used to trip the circuit breaker and tell the agent to
+    // stop using Bash that way — i.e. to stop running the gate that decides
+    // whether it is done.
+    const benignVerificationCheck = result.isError && globalContract.isActive()
+      && isDeclaredVerificationCheck(toolName, toolInput, result.output, globalContract.getAssertionTexts())
+    const countsAsFailure = result.isError && !benignTestFailure && !benignVerificationCheck
+
+    // F15: the line above says only isError=true, so a circuit-breaker trip was
+    // unauditable — the count survived in memory and its inputs survived
+    // nowhere. Log the argument, the classification, and a redacted payload.
     if (result.isError) {
+      console.log(formatToolError(
+        toolName, toolInput, result.output,
+        benignTestFailure ? 'benign:test-failure'
+          : benignVerificationCheck ? 'benign:verification-check'
+            : 'counted',
+      ))
+    }
+
+    // Circuit breaker: track consecutive failures per tool
+    if (countsAsFailure) {
       const count = (this.toolFailureCounts.get(toolName) ?? 0) + 1
       this.toolFailureCounts.set(toolName, count)
       if (count >= 3) {
@@ -3131,8 +3694,9 @@ export class ConversationLoop {
       }
     }
 
-    // Governance: record tool result
-    this.governance.onToolResult(toolName, !result.isError, Date.now() - toolStartMs, result.output, toolInput)
+    // Governance: record tool result. A benign red test suite counts as a
+    // success for pain/kill-switch purposes (see benignTestFailure above).
+    this.governance.onToolResult(toolName, !countsAsFailure, Date.now() - toolStartMs, result.output, toolInput)
 
     // Deterministic tool gating: track usage so consecutive-overuse can be
     // attenuated out of the offered set on the next iteration (see runModelLoop).
@@ -3164,35 +3728,63 @@ export class ConversationLoop {
 
     // Record trajectory turn for future training
     try {
-      const { getTrajectoryRecorder } = require('../training/trajectoryRecorder.js')
       const recorder = getTrajectoryRecorder()
       if (recorder) {
         const { createHash } = require('crypto')
         const elapsed = Date.now() - toolStartMs
         const inputHash = createHash('sha256').update(JSON.stringify(toolInput)).digest('hex').slice(0, 12)
+
+        const command = toolName === 'Bash' ? (toolInput as { command?: unknown })?.command : undefined
+        let testsTotal = 0
+        let testsFailing = 0
+        if (typeof command === 'string') {
+          const summary = parseTestSummary(command, result.output ?? '')
+          if (summary) {
+            testsTotal = summary.total
+            testsFailing = summary.total - summary.passed
+            // The command comes along: without it the reward labeler can only
+            // compare scopes by how many cases each run collected, and a task
+            // that adds tests changes that number under its own feet (finding cc).
+            this.taskTestObservations.push({ passed: summary.passed, total: summary.total, command })
+          }
+          const kind = classifyCheckCommand(command)
+          if (kind) this.taskCommandObservations.push({ kind, ok: !result.isError })
+        }
+
+        // Read before recordTurn, which increments it. This is the index the
+        // row about to be written carries, and the brain telemetry has to key
+        // on the same one or the join lands on the neighbouring turn.
+        const joinTurnIdx = recorder.turnIdx
+
+        // diffSize, contextPct and varietyEntropy are omitted, not zeroed:
+        // nothing here measures them, and a persisted 0 is indistinguishable
+        // from a measured zero for every consumer downstream. stuckTurns IS
+        // measurable right here — the same reading finalizeTrajectory takes.
         recorder.recordTurn({
           toolCalls: [{ name: toolName, inputHash, success: !result.isError, latencyMs: elapsed }],
           stateFeatures: {
-            filesTouched: 0,
-            diffSize: 0,
-            testsTotal: 0,
-            testsFailing: 0,
+            filesTouched: this.fileTracker.getModifiedFiles().length,
+            testsTotal,
+            testsFailing,
             toolsUsed: [toolName],
-            contextPct: 0,
           },
           rewardComponents: {
-            toolSuccessRate: 1.0,
-            stuckTurns: 0,
-            varietyEntropy: 0,
+            toolSuccessRate: result.isError ? 0 : 1,
+            stuckTurns: this.governance?.getStuckCount() ?? 0,
           },
         })
+        if (recorder.taskId) {
+          this.brainRecorder.recordTurn(recorder.taskId, joinTurnIdx, this.brainRecorder.snapshot())
+        }
         this.emit({
           type: 'trajectory.turn',
           taskId: recorder.taskId ?? null,
           turnIdx: recorder.turnIdx ?? 0,
         })
       }
-    } catch {}
+    } catch (e) {
+      this.onTrajectoryError('recordTurn', e)
+    }
 
     // Autopoietic: update session homeostat with current measurements
     const sessionH = this.governance.getSessionHomeostat()
@@ -3220,15 +3812,31 @@ export class ConversationLoop {
     this.toolHistory.push(toolName)
     if (this.toolHistory.length > 50) this.toolHistory = this.toolHistory.slice(-50)
 
-    // Re-arm the read-loop gate whenever the model actually changes something.
-    if (!result.isError && ['Edit', 'Write', 'MultiEdit', 'ApplyPatch'].includes(toolName)) {
-      this.readLoopGate.onWrite()
+    // Re-arm the read-loop gate whenever the model actually changes something,
+    // and tell it *which* file, so the gate stops treating a post-edit look as a
+    // re-read. See rearmsGate: this counts shell string-surgery as an edit too,
+    // because a model that has been denied Read edits from the shell, and those
+    // edits used to leave the gate believing nothing had changed.
+    if (rearmsGate(toolName, toolInput, result.isError)) {
+      this.readLoopGate.onWrite(toolInput.file_path as string | undefined)
     }
 
     // S4: Track file operations for structured compaction
     const filePath = (toolInput.file_path as string) ?? (toolInput.path as string) ?? ''
     if (filePath) {
       this.fileTracker.record(filePath, toolName)
+    }
+
+    // Close the loop on the shell snapshot taken above. Without this, a file
+    // changed by `Add-Content` or `python -c "open(...,'w')"` was invisible to
+    // getModifiedFiles(), so filesTouched went into the training row as 0 while
+    // 193 lines had in fact been added (measured, L3-3.3), and diffClean charged
+    // the agent for its own honest edit. changedBetween returns [] when either
+    // snapshot is missing, so a non-git cwd records nothing rather than guessing.
+    if (shellSigBefore) {
+      for (const p of changedBetween(shellSigBefore, collectPathSignatures(this.executor['cwd']))) {
+        this.fileTracker.record(p, 'ShellWrite')
+      }
     }
 
     // Collect LSP diagnostics after Edit/Write operations
@@ -3255,7 +3863,39 @@ export class ConversationLoop {
       }
     }
 
-    const fullOutput = result.output + lspContext
+    // A file the task CREATED can be left out of the task's own commit with
+    // nothing anywhere noticing. Measured on Gilded L4.6b: the run was told in
+    // writing to stage gilded/tests/test_stage4_smoke.py. To find out what it
+    // had changed it ran `git diff --name-only` — which reports modified
+    // TRACKED files and cannot, by construction, name a file that did not exist
+    // before — then staged exactly that list and committed six files. The smoke
+    // file it had just been credited for was still untracked, one `git clean`
+    // from gone, and both of its contract assertions were true.
+    //
+    // git.ts already reports tracked leftovers after a commit and deliberately
+    // excludes untracked paths, on the sound ground that a file git has never
+    // seen is usually scratch. That holds for files the task did not write.
+    // What separates the two is the file tracker, and it lives here.
+    let createdWarn = ''
+    if (toolName === 'Git' && !result.isError
+        && String(toolInput.subcommand ?? '') === 'commit') {
+      const cwd = this.executor['cwd']
+      const untracked = collectUntrackedPaths(cwd)
+      const top = repoToplevel(cwd)
+      if (untracked && untracked.length > 0 && top) {
+        const wrote = new Set(this.fileTracker.getModifiedFiles().map(p => canonicalPath(p, cwd)))
+        const orphans = untracked.filter(p => wrote.has(canonicalPath(p, top)))
+        if (orphans.length > 0) {
+          createdWarn = `\n\n[git] ${orphans.length} file(s) this task CREATED are NOT in this commit and are still untracked:\n`
+            + orphans.map(p => `  ${p}`).join('\n')
+            + `\nA new file cannot appear in \`git diff\`, so listing your changes that way will always miss it.`
+            + ` If these belong to the work, \`git add\` them and commit again.`
+          console.log(`[git] commit omitted ${orphans.length} task-created file(s): ${orphans.join(', ')}`)
+        }
+      }
+    }
+
+    const fullOutput = result.output + lspContext + createdWarn
     const truncatedOutput = truncateToolOutput(toolName, fullOutput)
     if (truncatedOutput.length < fullOutput.length) {
       console.log(`[s3] Truncated ${toolName} output: ${fullOutput.length} → ${truncatedOutput.length} bytes`)

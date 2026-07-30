@@ -5,7 +5,7 @@ import { fileURLToPath } from 'url'
 import { RuleBasedS5 } from '../../s5/ruleBasedS5.js'
 import type { S5Input } from '../../s5/types.js'
 
-// BLOCKING flag guard (per CLAUDE.md): proactive tool surfacing is opt-in. With
+// BLOCKING flag guard (per CYNCO.md): proactive tool surfacing is opt-in. With
 // LOCALCODE_S5_PROACTIVE_TOOLS unset the P1 rule must not fire, no surfaceTools
 // may be produced, and the presence of the new STATE fields (taskClass,
 // loadedTools) must not change the decision — byte-identical to pre-feature.

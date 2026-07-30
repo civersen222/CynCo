@@ -392,7 +392,7 @@ describe('ConversationLoop with tools', () => {
     yield { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 5 } } as any
     yield { type: 'message_stop' } as any
   }
-  const READ_FILES = ['package.json', 'README.md', 'CLAUDE.md', '.gitignore', 'engine/main.ts']
+  const READ_FILES = ['package.json', 'README.md', 'CYNCO.md', '.gitignore', 'engine/main.ts']
   const OUTCOME = '```json\n{"ok": true, "summary": "digest", "recommendations": []}\n```'
 
   it.skipIf(SKIP)('varied narration across tool turns never accumulates stuck', async () => {

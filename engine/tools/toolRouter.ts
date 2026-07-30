@@ -43,7 +43,19 @@ export function isRoutingEnabled(): boolean {
   return routingOverride !== null ? routingOverride : false
 }
 
+/**
+ * Whether to ATTEMPT two-stage routing. The caller must stop attempting once the
+ * model has ignored the selector — see ConversationLoop.routingDeclined.
+ *
+ * The saving is real but small: the stage-2 call omits the schemas of the tools
+ * outside the chosen category, on the order of 2000 tokens, which at a measured
+ * ~0.5 ms/token prefill is about 1s. The stage-1 call that buys it costs a full
+ * prefill of the whole conversation plus a full generation — 3.1s on average
+ * across the 56 stage-1 calls measured on the Gilded UI Wave 1 run. So routing
+ * only pays when the model actually narrows; when it does not, this is a pure
+ * loss and the caller must stop asking.
+ */
 export function shouldUseRouting(contextLength: number): boolean {
   if (routingOverride !== null) return routingOverride
-  return contextLength <= 65536 // Active for all local models (saves ~2000 schema tokens)
+  return contextLength <= 65536 // every local model we run
 }

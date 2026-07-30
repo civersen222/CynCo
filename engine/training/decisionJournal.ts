@@ -44,9 +44,16 @@ export class DecisionJournalWriter {
   /**
    * Append a BackfillRecord to a system file.
    * Used to patch in outcomes that were unknown at decision time.
+   *
+   * `key` is either the journal line's timestamp (S2's only option) or a
+   * `{ decisionId }` — the exact key, for writers that journal one.
    */
-  backfill(system: SystemLevel, entryTimestamp: number, outcome: Record<string, unknown>): void {
-    const record: BackfillRecord = makeBackfillRecord({ system, entryTimestamp, outcome })
+  backfill(system: SystemLevel, key: number | { decisionId: string }, outcome: Record<string, unknown>): void {
+    const record: BackfillRecord = makeBackfillRecord(
+      typeof key === 'number'
+        ? { system, entryTimestamp: key, outcome }
+        : { system, decisionId: key.decisionId, outcome },
+    )
     this._write(system, record)
     this.counts[system]++
   }

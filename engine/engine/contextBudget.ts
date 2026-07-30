@@ -1,8 +1,9 @@
 /**
  * Context budget enforcement for local models.
  *
- * Local models have much smaller context windows than Claude (4k-32k vs 200k).
- * If messages exceed ~40% of context, model quality degrades. This module:
+ * Context windows here are measured in tens of thousands of tokens, not hundreds
+ * — our default is 64k. If messages exceed ~40% of context, model quality
+ * degrades. This module:
  *
  *   1. Estimates current context usage (rough char/4 heuristic)
  *   2. Signals when compaction is needed

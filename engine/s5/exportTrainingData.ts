@@ -35,6 +35,13 @@ export function formatJournalInput(input: Record<string, unknown>): string {
   return lines.join('\n')
 }
 
+// Bookkeeping that belongs in the journal but must never reach the training
+// target: `decisionId` is a UUID (the model would learn to hallucinate one),
+// while `ruleIds` and `rejected` describe how the rule engine reached the
+// decision. Including them would train imitation of the rule engine's internals,
+// which is the opposite of learning from the decision itself.
+const NON_TARGET_FIELDS = ['decisionId', 'ruleIds', 'rejected']
+
 /** Keep only decisions from viable sessions; output is the real logged decision. */
 export function joinViableExamples(
   entries: JournalEntry[],
@@ -44,7 +51,15 @@ export function joinViableExamples(
   for (const e of entries) {
     if (outcomeBySession.get(e.sessionId) !== 'viable') continue
     if (!e.input || !e.decision) continue
-    out.push({ input: formatJournalInput(e.input), output: JSON.stringify(e.decision) })
+    // Per-decision veto. The session label is coarse — it stamps one verdict on
+    // every decision the session made — so a decision measured to have made
+    // things worse is dropped even from a viable session. An `unknown` outcome
+    // is not a veto: it means nothing was measured, and the session label
+    // remains the only evidence there is.
+    if (e.outcome?.outcome === 'negative') continue
+    const target: Record<string, unknown> = { ...e.decision }
+    for (const f of NON_TARGET_FIELDS) delete target[f]
+    out.push({ input: formatJournalInput(e.input), output: JSON.stringify(target) })
   }
   return out
 }
@@ -70,6 +85,12 @@ export function exportViableExamples(opts: {
 
   const raw = readFileSync(opts.journalPath, 'utf-8')
   const entries: JournalEntry[] = []
+  // Backfills are appended after the entry they describe, so they cannot be
+  // merged in one pass. Collected here and folded on afterwards. Keyed on
+  // decisionId only: the timestamp key cannot address an S5 line (the writer and
+  // makeJournalEntry read the clock independently), so a timestamp-keyed
+  // backfill is left where it is rather than joined to an arbitrary neighbour.
+  const outcomeByDecision = new Map<string, Record<string, unknown>>()
   let skipped = 0
   for (const line of raw.split('\n')) {
     const t = line.trim()
@@ -81,10 +102,22 @@ export function exportViableExamples(opts: {
       skipped++
       continue
     }
-    if (rec && rec._backfill) continue
+    if (rec && rec._backfill) {
+      if (rec.decisionId && rec.outcome) outcomeByDecision.set(rec.decisionId, rec.outcome)
+      continue
+    }
     if (rec && rec.sessionId && rec.input && rec.decision) entries.push(rec as JournalEntry)
   }
   if (skipped > 0) console.warn(`[export] skipped ${skipped} malformed journal line(s)`)
+
+  for (const e of entries) {
+    const id = (e.decision as Record<string, unknown> | undefined)?.decisionId
+    if (typeof id !== 'string') continue
+    const backfilled = outcomeByDecision.get(id)
+    // Later wins over the entry's own outcome: the backfill is the measurement
+    // taken after the decision, which is the whole reason it exists.
+    if (backfilled) e.outcome = { ...e.outcome, ...backfilled }
+  }
 
   const examples = joinViableExamples(entries, opts.outcomeBySession)
   if (examples.length === 0) return { written: 0 }

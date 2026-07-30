@@ -86,10 +86,15 @@ describe('diagnoseError', () => {
     expect(result.formatted).toContain('[ERROR: syntax]')
   })
 
-  it('formats unknown with prefix and original message', () => {
+  it('formats unknown as the output itself, with no banner', () => {
+    // A banner is a claim. "[ERROR: unknown] Check the error output above" adds
+    // nothing to the output it is stapled to, and it asserts a diagnosis that
+    // was not made: a verification harness that ran fine and answered "no" came
+    // back to the model headed as an error. Say nothing rather than say wrong.
     const stderr = 'some weird error'
     const result = diagnoseError(stderr)
-    expect(result.formatted).toBe(`[ERROR: unknown] Check the error output above\n\n${stderr}`)
+    expect(result.formatted).toBe(stderr)
+    expect(result.formatted).not.toContain('[ERROR:')
   })
 
   it('returns type, hint, and formatted fields', () => {

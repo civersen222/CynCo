@@ -21,11 +21,12 @@
 // `verified` itself; without one, patch it after independent verification.
 // Human spot-audit every 5th record either way (STATE doc Phase 2(b)).
 
-import { basename, join, dirname } from 'node:path'
+import { basename, join, dirname, resolve } from 'node:path'
 import { mkdirSync, appendFileSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { createMissionCollector, buildMissionRecord } from './cynco-ledger.mjs'
 import { runCheck } from './cynco-verify.mjs'
+import { loadOrCreateTokens } from '../engine/security/localToken.js'
 
 const [taskFile, marker, cwdArg, timeoutArg, checkCmd] = process.argv.slice(2)
 if (!taskFile || !marker) {
@@ -46,9 +47,29 @@ const dispatchedAt = new Date().toISOString()
 const missionId = `${basename(taskFile).replace(/\.[^.]*$/, '')}-${Date.now()}`
 let enforcedWarned = false
 
-const ws = new WebSocket(WS_URL)
+// The bridge refuses an unauthenticated upgrade. Reading the same token file the
+// engine minted keeps this driver a zero-configuration tool; Bun's WebSocket
+// sends no Origin, so it is not mistaken for a browser.
+const localTokens = loadOrCreateTokens()
+const bridgeToken = localTokens.tokenFor('bridge')
+// The governance poll below reads the dashboard, which takes the inference scope.
+const inferenceToken = localTokens.tokenFor('inference')
+const ws = new WebSocket(WS_URL, { headers: { Authorization: `Bearer ${bridgeToken}` } })
 let toolCount = 0
 let zeroToolCompletion = false
+// The marker appearing in git log means a commit LANDED, not that the run is
+// FINISHED. Measured on Gilded UI Wave 3d: the run committed 8ab7faf, the poll
+// below caught the marker and fired the verification check, which failed DoD 7
+// on four test names in the commit body that did not resolve — and while that
+// 57-second check was running the run amended the commit to 78429e0 with the
+// names corrected, which passes the same gate 59/59. So the ledger recorded
+// verified:false for a wave that passes, because the instrument read a commit
+// the run was still in the middle of fixing. Landing is now recorded but the
+// loop keeps waiting for the conversation to go quiet: a completed message with
+// no tool call after it for QUIET_MS. Any tool.start reopens the run.
+let sawMessageComplete = false
+let lastActivityAt = Date.now()
+const QUIET_MS = 60000
 ws.onopen = () => {
   console.log('[driver] connected, dispatching mission')
   // P4.2 (STATE doc Phase 4(a)): the check script IS the contract — the engine
@@ -56,7 +77,17 @@ ws.onopen = () => {
   const contract = checkCmd
     ? { title: `Mission: ${marker}`, brief: task.slice(0, 200), assertions: [`Verification command exits 0: ${checkCmd}`] }
     : undefined
-  ws.send(JSON.stringify({ type: 'user.message', text: task, cwd: CWD, ...(contract ? { contract } : {}) }))
+  // Finding (ag): the brief is the instrument this mission is judged against, and
+  // this driver is the only component that knows where it lives. Measured on
+  // Gilded L4.6b, a run rewrote the brief it had been Read three times with a
+  // plausible reconstruction of its own. Finding (ac) built the refusal but fed
+  // it from LOCALCODE_IMMUTABLE_PATHS, read inside the engine process — which
+  // this driver, a WebSocket client, cannot set. So it travels with the message.
+  const readOnlyPaths = [resolve(taskFile).replace(/\\/g, '/')]
+  ws.send(JSON.stringify({
+    type: 'user.message', text: task, cwd: CWD, readOnlyPaths,
+    ...(contract ? { contract } : {}),
+  }))
 }
 ws.onmessage = (ev) => {
   try {
@@ -68,7 +99,14 @@ ws.onmessage = (ev) => {
       console.log('[driver] WARNING: S5 ENFORCEMENT ACTIVE — restart engine with LOCALCODE_S5_ENFORCE=false (F7 risk, ledger labels confounded)')
       enforcedWarned = true
     }
-    if (m.type === 'tool.start') { toolCount++; console.log(`[cynco] tool: ${m.toolName}`) }
+    if (m.type === 'tool.start') {
+      toolCount++
+      console.log(`[cynco] tool: ${m.toolName}`)
+      // Any tool call means the run is still working, whatever it has committed.
+      sawMessageComplete = false
+      lastActivityAt = Date.now()
+    }
+    if (m.type === 'message.complete') { sawMessageComplete = true; lastActivityAt = Date.now() }
     if (m.type === 'tool.complete' && m.isError) console.log(`[cynco] TOOL ERROR (${m.toolName}): ${String(m.result).slice(0, 200)}`)
     if (m.type === 'approval.request') console.log(`[cynco] APPROVAL REQUESTED (${m.toolName ?? '?'}) — engine not in APPROVE_ALL mode? (F2)`)
     if (m.type === 'message.complete' && toolCount === 0) {
@@ -80,31 +118,71 @@ ws.onmessage = (ev) => {
   } catch {}
 }
 ws.onerror = (e) => console.log('[driver] ws error', e?.message ?? e)
-ws.onclose = () => console.log('[driver] ws closed')
+let opened = false
+ws.addEventListener('open', () => { opened = true })
+ws.onclose = () => {
+  console.log('[driver] ws closed')
+  // Closed without ever opening means the bridge refused the upgrade — 401 no
+  // token, 409 a TUI already holds it. The mission was never dispatched, so
+  // sitting out the full timeout would only produce a misleading TIMEOUT record.
+  if (!opened) {
+    console.log('[driver] bridge refused the connection — no mission dispatched. ' +
+      'Check the engine is running and that no TUI already holds the bridge.')
+    process.exit(3)
+  }
+}
+
+async function gitHead() {
+  const p = Bun.spawn(['git', 'rev-parse', 'HEAD'], { cwd: CWD, stdout: 'pipe', stderr: 'ignore' })
+  const out = (await new Response(p.stdout).text()).trim()
+  return /^[0-9a-f]{7,40}$/.test(out) ? out : null
+}
+
+// The marker must appear in a commit THIS mission made, not in one that was
+// already there. Polling `git log -3` for the marker string meant a follow-up
+// mission whose marker matched the previous mission's own subject line reported
+// COMMIT LANDED on its first poll and closed after one turn — which is how UI
+// Wave 1c died 30 seconds in, having matched Wave 1b's commit.
+const baselineSha = await gitHead()
+if (!baselineSha) {
+  console.log('[driver] WARNING: could not read HEAD — commit detection will match ANY of the last 3 commits, including pre-existing ones')
+}
 
 async function gitLog() {
-  const p = Bun.spawn(['git', 'log', '--oneline', '-3'], { cwd: CWD, stdout: 'pipe' })
+  const range = baselineSha ? [`${baselineSha}..HEAD`] : ['-3']
+  const p = Bun.spawn(['git', 'log', '--oneline', ...range], { cwd: CWD, stdout: 'pipe' })
   return await new Response(p.stdout).text()
 }
 
+console.log(`[driver] baseline HEAD ${baselineSha ?? '(unknown)'} — looking for "${marker}" in commits after it`)
 const start = Date.now()
 let landed = false
-while (!landed && !zeroToolCompletion && (Date.now() - start) / 1000 < TIMEOUT_S) {
+let quiet = false
+while (!quiet && !zeroToolCompletion && (Date.now() - start) / 1000 < TIMEOUT_S) {
   await Bun.sleep(30000)
   try {
-    const g = await fetch(GOV_URL).then(r => r.json())
+    const g = await fetch(GOV_URL, { headers: { Authorization: `Bearer ${inferenceToken}` } }).then(r => r.json())
     console.log(`[gov] status=${g.status} stuck=${g.stuckTurns} toolOK=${g.toolSuccessRate}`)
   } catch { console.log('[gov] unreachable') }
   // Never let a git hiccup kill the loop — the ledger write at the end must run
   try {
     const log = await gitLog()
-    if (log.includes(marker)) {
+    if (log.includes(marker) && !landed) {
       console.log('[driver] COMMIT LANDED:\n' + log)
       landed = true
     }
   } catch (e) { console.log(`[driver] git poll failed: ${e?.message ?? e}`) }
+  // Only a landed mission is worth waiting for quiescence on; if nothing has
+  // landed the timeout is the right stop. A run that lands and then keeps
+  // working — amending the commit, fixing a name — must finish before the
+  // check runs, or the check measures a state that no longer exists.
+  if (landed && sawMessageComplete && Date.now() - lastActivityAt >= QUIET_MS) {
+    console.log(`[driver] run quiet for ${Math.round((Date.now() - lastActivityAt) / 1000)}s after a completed message — proceeding to verification`)
+    quiet = true
+  }
 }
 if (!landed) console.log('[driver] TIMEOUT without commit — log a failure entry (docs/cynco-failure-log.md)')
+else if (!quiet) console.log('[driver] WARNING: commit landed but the run never went quiet — the check below may read a commit the run is still amending (see QUIET_MS)')
 try {
   const p = Bun.spawn(['git', 'status', '--short'], { cwd: CWD, stdout: 'pipe' })
   console.log('[git status]\n' + await new Response(p.stdout).text())
@@ -144,10 +222,18 @@ try {
   appendFileSync(LEDGER_PATH, JSON.stringify(record) + '\n')
   console.log(`[ledger] ${outcome} record ${missionId} appended (${collector.turns.length} turns, ${collector.s5Decisions.length} S5 decisions) → ${LEDGER_PATH}`)
   if (!checkCmd) console.log('[ledger] no check-cmd given — patch "verified": true|false after independent verification')
+  // `verified` is one check command's exit code. It cannot say whether the new
+  // tests BITE — only a withheld mutation set can, and those run later. Say so
+  // on every record, so nobody reads verified:true as accepted.
+  console.log(`[ledger] mutationSweep: null (UNMEASURED) — patch it once the withheld set has run: { command, killed, total, survived[] }`)
   // 1-in-5 human spot-audit cadence (STATE doc Phase 2(b)).
   try {
     const count = readFileSync(LEDGER_PATH, 'utf8').split('\n').filter(Boolean).length
-    if (count % 5 === 0) console.log(`[ledger] SPOT-AUDIT DUE: record #${count} — human-verify this mission's label (1-in-5 cadence)`)
+    if (count % 5 === 0) {
+      console.log(`[ledger] SPOT-AUDIT DUE: record #${count} — human-verify this mission's label (1-in-5 cadence)`)
+      console.log(`[ledger]   verified=${verified ?? 'null'} is STRUCTURAL (${checkCmd ?? 'no check-cmd'}); mutationSweep is BEHAVIOURAL and still null.`)
+      console.log(`[ledger]   The audit question is not "did the check pass" but "would these tests have caught the rule breaking".`)
+    }
   } catch (e) {
     console.log(`[ledger] spot-audit count failed (reminder skipped): ${e?.message ?? e}`)
   }

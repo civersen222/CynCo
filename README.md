@@ -58,9 +58,11 @@ ollama pull jina-code-embeddings-0.5b
 
 If that model isn't installed it falls back to `nomic-embed-text` at runtime. Override with `LOCALCODE_EMBED_MODEL` — switching embed models requires a re-index.
 
-### Cascade (Optional)
+### A second model (optional)
 
-If you have a second GPU on the network, run a smaller model (e.g. Devstral-Small-2) as a cascade secondary. CynCo's S2 coordinator routes simple tasks to the fast model and complex tasks to your primary.
+Configure more than one model and S5 can switch between them mid-session. Rule W2 fires when latency is *measured* rising over at least five turns and an alternative is configured, and the conversation loop applies the switch.
+
+This is a reaction to observed slowness, not a router: nothing inspects a task and sends it to a smaller model up front. There is no dispatch-time complexity classifier, and no plan to add one — S5 already carries a measured difficulty signal (`promptDifficulty`, derived from turn telemetry), which is strictly better evidence than guessing from the wording of a request.
 
 ---
 
@@ -112,6 +114,8 @@ LOCALCODE_PROVIDER=llama-cpp \
 
 The engine auto-manages llama-server with: single-slot mode, context checkpoints for prefix-cache rollback (Qwen3.6 is a hybrid Gated DeltaNet model — warm turns only prefill new tokens instead of reprocessing the whole prompt), capped reasoning budget (256 tokens), and accurate tok/s from server eval timing. The engine keeps its prompt strictly append-only across turns to preserve the cache (enforced by a regression test). Measured live at 45K tokens of context: warm turns restore a checkpoint with ~0.998 prefix reuse and prefill only the ~500-900 genuinely new tokens (~0.6-0.9 s) instead of reprocessing the full prompt (~17 s) — each turn pays only for its new content. Side queries route through the same llama-server instance to avoid VRAM thrashing. Full tuning recipe: [docs/serving/rtx-5090-qwen3.6-27b.md](docs/serving/rtx-5090-qwen3.6-27b.md).
 
+Every turn's cost is recorded to the `measurements` table: prefill tokens, cached tokens, decode tokens, prefill/decode milliseconds, wall milliseconds, and the source the numbers came from. Prefill tokens are `timings.prompt_n` — the tokens the server actually evaluated — not `prompt_tokens`, which is the size of the whole prompt; conflating them makes a cached 60K prefix look identical to a cold one. A turn whose server reported no timings is stored as `NULL`, not zero: it is unmeasured, not free. `/spend` sums the session and reports how many turns it covers, so a partial total reads as a floor rather than a claim.
+
 ---
 
 ## Hardware Expectations
@@ -122,7 +126,7 @@ The engine auto-manages llama-server with: single-slot mode, context checkpoints
 | 16 GB | Devstral-Small-2 Q6 | Multi-file projects, sub-agents |
 | 24 GB | Qwen3.6-27B Q4_K_M | Full feature set, parallel agents |
 | **32 GB** | **Qwen3.6-27B Q6_K + MTP** | **Optimal. ~100 tok/s with room for 64K context + agents.** |
-| 32+16 GB (dual) | Primary + cascade secondary | Complex tasks on primary, simple on secondary |
+| 32+16 GB (dual) | Primary + a smaller alternative | S5 can switch to the alternative when latency rises (rule W2) |
 
 Smaller models (<7B) struggle with the tool-calling format. 24B+ recommended for real work.
 
@@ -238,10 +242,10 @@ Open `http://localhost:9161` during any session. Five tabs:
 **[Governance]** — Real-time VSM monitoring:
 - **Tool Activity** — stacked bar chart + live feed with latency
 - **Governance Health** — S3/S4 balance, variety ratio, stuck turns, algedonic alerts, and action-fingerprint repetition alarms (flags 3-identical / 6-alternating tool-call loops)
-- **Prediction Tracker** — 8 redesigned hypotheses measuring governance effectiveness (H1: Stuck Escape, H2: Nudge Response), model predictability (H4: Read-to-Edit, H5: Thinking Efficiency), and parameter tuning (H6: Temperature Effect, H7: S4 Reflection ROI)
+- **Prediction Tracker** — 8 redesigned hypotheses measuring governance effectiveness (H1: Stuck Escape, H2: Nudge Response), model predictability (H4: Read-to-Edit, H5: Thinking Efficiency), and parameter tuning (H6: Temperature Effect, H7: S4 Reflection ROI). Each is scored against a null baseline, and the baseline says where it came from: `measured` means the hypothesis's own success predicate was scored on the same tool stream at points where it was *not* triggered; `assumed` means the hand-written constant. Six of the eight can be measured; H3 reads governance state and H8 is scored once at session end, so both stay assumed. A significance verdict against an assumed baseline is a verdict against a guess, and `/predictions` now says so.
 - **Active Contract** — assertion status with pass/fail/pending
 - **S5 Decision Log** — live policy decisions with reasoning
-- **tok/s** — real-time inference speed from llama-server eval timing
+- **tok/s** — from `timings.predicted_n / predicted_ms`, the server's own count and clock. It used to be the engine's count of *stream deltas* over its own wall clock, which reads low under speculative decoding (one chunk can carry several tokens) and includes queueing the server never saw.
 
 **[Brain]** — Model cognition: thinking-token viewer, per-token entropy trace, and (with setup) a live concept workspace read from mid-network activations. See **The Brain** below.
 
@@ -250,6 +254,33 @@ Open `http://localhost:9161` during any session. Five tabs:
 **[Config]** — Temperature, context length, timeout sliders. System control toggles. All 21 VSM governance parameters with sliders and bounds.
 
 Survives page reload, auto-detects active sessions, auto-reconnects on disconnect. Polls governance every 3s and training data every 30s.
+
+### Local tokens
+
+The engine mints `~/.cynco/tokens.json` at startup (owner-only; on Windows the
+ACL is narrowed with `icacls`, since `chmod 0600` there is close to a no-op). One
+record shape carrying a scope vector, not one key type per capability:
+
+| Scope | Opens | Reaches its holder by |
+|---|---|---|
+| `bridge` | The TUI command channel on `:9160` — this drives the agent, and the agent has Bash | Read from the token file. The TUI, the mission driver and the probes all do this, so launching any of them takes no arguments. |
+| `inference` | Every dashboard read route and the event stream on `:9161` — session transcripts, thinking tokens, governance | Injected into the dashboard page at request time. |
+| `management` | `POST /config/*` and `/api/brain/layer` — anything that changes engine or governance configuration | Printed once at engine startup and pasted by hand. Never handed to a page. |
+
+The split is not ceremony. The inference token is delivered to a browser, so it
+is the secret most likely to escape; flipping `ablation` or
+`contractEnforcement` silently corrupts the measurements the research rests on,
+so that costs a deliberate paste. A management token also reads, because the
+`admin` holder carries both scopes.
+
+Two things follow from this that are easy to get wrong:
+
+- **Nothing here is protected by CORS.** A WebSocket handshake is not subject to
+  it at all, and `Content-Type: text/plain` makes a POST a "simple" request that
+  lands without a preflight. The tokens are the control; loopback binding is a
+  floor, and a browser is already inside loopback.
+- **Binding to `0.0.0.0` puts the token in front of the network.** That is a
+  64-hex secret in a file on one machine, not an auth system. Don't.
 
 ### The Brain
 
@@ -319,12 +350,26 @@ Read, Write, Edit, MultiEdit, ApplyPatch, ReplaceFunction, Bash, Git, Glob, Grep
 
 ## Fine-Tuned Models (Coming)
 
-CynCo collects governance decision data during every session — (input, decision, outcome) triples for each of its S1-S5 systems. This data is the foundation for fine-tuned models that will replace the rule-based governance with learned governance:
+CynCo collects governance decision data during every session, per VSM system, in `~/.cynco/training/s{1-5}-decisions.jsonl` (`engine/training/decisionJournal.ts`). This data is the foundation for fine-tuned models that will replace the rule-based governance with learned governance:
 
 ### S5 Decision Model
-The first fine-tuning target. Currently CynCo uses a rule-based S5 with 21 hand-coded rules. The decision journal collects every S5 decision with the full governance snapshot (context usage, tool success rate, variety balance, stuck turns, etc.) and the outcome (did the decision help?).
+The first fine-tuning target. Currently CynCo uses a rule-based S5 with 21 hand-coded rules. The decision journal collects every S5 decision with the full governance snapshot (context usage, tool success rate, variety balance, stuck turns, etc.).
 
-**Status:** Collecting training data. Need 500+ decisions with backfilled outcomes before LoRA fine-tuning is viable. The journal format is locked: `{ input: S5Input, decision: S5Decision, outcome: OutcomeScore }`.
+**Status:** Not yet trainable. The label path now exists; the volume does not.
+
+A journal line is `{ timestamp, sessionId, system, input, decision, outcome? }`. Until 2026-07-28 no S5 decision ever carried an `outcome`: the S5 writer omitted it (a policy decision has no result at the moment it is made), and `DecisionJournalWriter.backfill()` — which exists to patch one in afterwards — had a single call site, in `engine/agents/s2Coordinator.ts`, for S2. The only label was the one `engine/s5/exportTrainingData.ts` joined out of `governance.db` on `sessionId`: a *session*-level verdict stamped onto every decision the session made, enough to discard sessions that went badly but unable to tell two close calls inside one session apart.
+
+Each S5 decision now carries three things it did not before:
+
+- **`decisionId`** — a UUID, journaled inside the decision. The join key for the outcome. (The pre-existing `entryTimestamp` key cannot work here: `makeJournalEntry` reads the clock itself, so the writer never learns the line's timestamp.)
+- **`ruleIds`** — which of the 21 rules fired.
+- **`rejected`** — rules that fired and were *overridden* by `combineDecisions`. The merge is lossy on purpose (`model` takes the first non-null, `tools` intersects), and these losers are the only negative examples the rule engine produces. A rule returning `null` is not among them: its condition was simply false, so it proposed nothing.
+
+`S5Orchestrator.evaluateLastDecision()` writes the per-decision outcome, keyed on `decisionId`, from the measured change in `stuckTurns` and `toolSuccessRate`. When governance reports neither number the outcome is **`unknown`**, and it is written as `unknown` — not defaulted into a verdict. The exporter drops decisions measured `negative` even inside a viable session, and keeps `unknown` ones, where the session label remains the only evidence there is.
+
+The exporter strips `decisionId`, `ruleIds` and `rejected` from the training *target* — they are evidence about the decision, not part of it.
+
+So "500+ decisions" understates the requirement: it means 500+ with per-decision outcomes, and the counter starts from the date above.
 
 **Goal:** A small LoRA adapter (on Qwen3.6 or similar) that makes better governance decisions than the hand-coded rules — when to restrict tools, when to compact context, when to suggest model switches. The model sees the full governance state and outputs a coherent S5Decision.
 
@@ -360,8 +405,8 @@ All config via environment variables. No config files required.
 | `LOCALCODE_S5_PROACTIVE_TOOLS` | `false` | **Opt-in.** Let the S5 policy engine proactively pre-load task-relevant tools (e.g. surface `Bash`, `Grep`, `Read` for a debugging request) before the model asks. Append-only — never restricts. |
 | `LOCALCODE_SEARXNG_URL` | — | SearXNG instance URL for research |
 | `LOCALCODE_S5_MODEL` | — | Fine-tuned S5 model (when available) |
-| `LOCALCODE_DASHBOARD_HOST` | `127.0.0.1` | Dashboard bind address (set to `0.0.0.0` to expose on network) |
-| `LOCALCODE_BRIDGE_HOST` | `127.0.0.1` | TUI WebSocket bridge bind address (set to `0.0.0.0` to expose on network) |
+| `LOCALCODE_DASHBOARD_HOST` | `127.0.0.1` | Dashboard bind address. `0.0.0.0` puts the session transcripts and the event stream on the network, behind nothing but the inference token — see [Local tokens](#local-tokens). |
+| `LOCALCODE_BRIDGE_HOST` | `127.0.0.1` | TUI bridge bind address. `0.0.0.0` puts the agent's command channel on the network, behind nothing but the bridge token — see [Local tokens](#local-tokens). |
 | `LOCALCODE_CACHE_RAM` | llama.cpp default | llama-server host prompt-cache RAM (MB). The cache is required for context-checkpoint rollback on hybrid models (Qwen3.6) — don't set to `0`. |
 | `LOCALCODE_CTX_CHECKPOINTS` | `64` | Recurrent-state checkpoints for prefix-cache rollback on hybrid DeltaNet models. |
 | `LOCALCODE_CHECKPOINT_MIN_STEP` | `256` | Minimum token spacing between checkpoints. |

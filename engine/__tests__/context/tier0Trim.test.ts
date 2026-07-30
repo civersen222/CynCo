@@ -25,11 +25,16 @@ describe('tier0Trim', () => {
 })
 
 describe('FileOperationTracker.reset', () => {
-  it('clears recorded operations', () => {
+  it('closes the summary window without discarding the task record', () => {
+    // This test used to assert getModifiedFiles() went empty. That was the
+    // defect, not the contract — see finding (i) in trackerSurvivesCompaction:
+    // filesTouched read 0 for every training row after a compaction. reset()
+    // ends the window the summary prompt describes; the task record persists.
     const t = new FileOperationTracker()
     t.record('a.ts', 'Edit')
     expect(t.getModifiedFiles()).toEqual(['a.ts'])
     t.reset()
-    expect(t.getModifiedFiles()).toEqual([])
+    expect(t.getModifiedFilesThisWindow()).toEqual([])
+    expect(t.getModifiedFiles()).toEqual(['a.ts'])
   })
 })

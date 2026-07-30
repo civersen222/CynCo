@@ -35,4 +35,31 @@ describe('Bash Safety', () => {
     const result = checkBashSafety('cat .env')
     expect(result.reason).toContain('.env')
   })
+
+  /**
+   * On Windows the Bash tool is PowerShell, where setting a variable for one
+   * command is written `$env:NAME="value"`. The env-dump rule matched the bare
+   * word `env` anywhere in the string, so it caught every one of those — and
+   * the two POSIX alternatives are already unavailable (`NAME=value cmd` is a
+   * PowerShell parse error, `set NAME=... && ...` is refused by the 5.1
+   * dialect check). A live run hit all three in a row and escaped only by
+   * shelling out to `python -c "os.environ[...]"`.
+   *
+   * Setting a variable dumps nothing. Reading a secret one still does.
+   */
+  it('allows a PowerShell environment assignment — it dumps nothing', () => {
+    expect(checkBashSafety('$env:GILDED_NARRATE="0"; python -m pytest gilded/ -q').safe).toBe(true)
+    expect(checkBashSafety('cd proj; $env:SDL_VIDEODRIVER="dummy"; python -m pytest').safe).toBe(true)
+  })
+
+  it('still blocks the dump itself, in either shell', () => {
+    expect(checkBashSafety('env').safe).toBe(false)
+    expect(checkBashSafety('cd proj; printenv | sort').safe).toBe(false)
+    expect(checkBashSafety('Get-ChildItem Env:').safe).toBe(false)
+  })
+
+  it('still blocks reading a secret out of the PowerShell environment', () => {
+    expect(checkBashSafety('echo $env:AWS_SECRET_ACCESS_KEY').safe).toBe(false)
+    expect(checkBashSafety('Write-Output $env:GITHUB_TOKEN').safe).toBe(false)
+  })
 })

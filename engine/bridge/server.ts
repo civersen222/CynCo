@@ -7,9 +7,16 @@
 
 import type { EngineEvent, TUICommand } from './protocol.js'
 import { serializeEvent, parseCommand } from './protocol.js'
+import type { TokenSet } from '../security/localToken.js'
 
 export type WSServerOptions = {
   port: number
+  /**
+   * Required, and deliberately not optional-with-a-default. A missing token
+   * store must be a compile error at the call site, never a server that quietly
+   * starts up ungated.
+   */
+  tokens: TokenSet
   onCommand?: (command: TUICommand) => void
 }
 
@@ -21,12 +28,16 @@ export class LocalCodeWSServer {
   private _connected = false
   private onCommand: ((command: TUICommand) => void) | undefined
   private lastSessionReady: EngineEvent | null = null
+  private tokens: TokenSet
 
   constructor(options: WSServerOptions) {
     this._port = options.port
     // Bind loopback only by default — the bridge carries full conversation
-    // and tool traffic and must not be exposed on the network.
+    // and tool traffic and must not be exposed on the network. Note this is a
+    // floor, not the defence: a browser on this machine is already inside
+    // loopback. See the upgrade gates below.
     this._hostname = process.env.LOCALCODE_BRIDGE_HOST || '127.0.0.1'
+    this.tokens = options.tokens
     this.onCommand = options.onCommand
     this.start()
   }
@@ -44,7 +55,33 @@ export class LocalCodeWSServer {
         this.server = Bun.serve({
           port,
           hostname: this._hostname,
-          fetch(req, server) {
+          fetch: (req, server) => {
+            // Every check happens BEFORE server.upgrade. An accepted-then-closed
+            // socket has already run `open`, and `open` is where the TUI got
+            // displaced — closing afterwards does not undo that.
+
+            // (1) No browser may speak to this port. A page cannot suppress
+            // Origin on a WebSocket handshake; the Python client never sends it.
+            // The bridge has no browser client, so any Origin at all is hostile
+            // or misrouted, and the value is not worth allowlisting.
+            if (req.headers.get('origin') !== null) {
+              return new Response('bridge does not accept browser clients', { status: 403 })
+            }
+
+            // (2) Prove you hold the secret this process minted. Covers every
+            // non-browser caller, about which (1) says nothing.
+            const authz = req.headers.get('authorization') ?? ''
+            const presented = authz.startsWith('Bearer ') ? authz.slice(7) : null
+            if (!this.tokens.verify(presented, 'bridge')) {
+              return new Response('bridge token required', { status: 401 })
+            }
+
+            // (3) One client at a time, and the incumbent keeps the socket.
+            // Replacing it silently left the TUI connected but deaf.
+            if (this.client !== null) {
+              return new Response('bridge already has a client', { status: 409 })
+            }
+
             const success = server.upgrade(req)
             if (success) return undefined
             return new Response('WebSocket upgrade required', { status: 426 })

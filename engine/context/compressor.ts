@@ -13,38 +13,95 @@ export type CompressorConfig = {
  * S4 Environmental Memory: tracks file operations across compaction boundaries
  * so the model doesn't "forget" what it already read/edited.
  */
+type FileOperation = { path: string; tool: string; timestamp: number }
+
+const MODIFYING_TOOLS = ['Write', 'Edit', 'MultiEdit', 'ApplyPatch', 'ShellWrite']
+const READING_TOOLS = ['Read', 'Grep', 'Glob']
+
+function pathsFor(ops: FileOperation[], tools: string[]): string[] {
+  return [...new Set(ops.filter(op => tools.includes(op.tool)).map(op => op.path))]
+}
+
 export class FileOperationTracker {
-  private operations: { path: string; tool: string; timestamp: number }[] = []
+  /** Operations since the last compaction. */
+  private operations: FileOperation[] = []
+  /**
+   * Operations from before it. The tracker answers two questions with opposite
+   * lifetimes: the summary prompt asks about the window it is summarizing, and
+   * every measurement consumer asks about the whole task. `reset()` used to
+   * throw the first window away, which answered the summary's question and
+   * silently destroyed the answer to everyone else's.
+   */
+  private archived: FileOperation[] = []
 
   record(path: string, tool: string): void {
     this.operations.push({ path, tool, timestamp: Date.now() })
   }
 
+  /** Files modified in the current compaction window only — for the summary. */
+  getModifiedFilesThisWindow(): string[] {
+    return pathsFor(this.operations, MODIFYING_TOOLS)
+  }
+
+  /** Files read in the current compaction window only — for the summary. */
+  getReadFilesThisWindow(): string[] {
+    return pathsFor(this.operations, READING_TOOLS)
+  }
+
+  /**
+   * Files this session modified.
+   *
+   * 'ShellWrite' is not a tool the model can call. It is the label the
+   * conversation loop attaches to a path that git observed changing across a
+   * Bash call — the only way a shell mutation can be seen, since the four
+   * editing tools are the only ones that announce a file_path.
+   *
+   * Measured on the L3-3.3 run: 193 lines were added to a test file via
+   * `Add-Content` and `python -c "open(...,'w')"`, and this method returned an
+   * empty list. Both consumers were wrong as a result — the filesTouched state
+   * feature recorded in every training row, and diffClean, which asks this
+   * method whether a dirty path was the agent's own doing and so charged the
+   * agent for work it had honestly done.
+   *
+   * Spans the whole task, compactions included. Measured on L3-3.3 run 2: this
+   * read 2 until the single compaction at turn 79 and 0 for every training row
+   * after it. The claim is about the task, so the window it was last summarized
+   * in cannot be allowed to bound it.
+   */
   getModifiedFiles(): string[] {
-    return [...new Set(
-      this.operations
-        .filter(op => ['Write', 'Edit', 'MultiEdit', 'ApplyPatch'].includes(op.tool))
-        .map(op => op.path)
-    )]
+    return pathsFor([...this.archived, ...this.operations], MODIFYING_TOOLS)
   }
 
+  /** Files this session read, across the whole task. */
   getReadFiles(): string[] {
-    return [...new Set(
-      this.operations
-        .filter(op => ['Read', 'Grep', 'Glob'].includes(op.tool))
-        .map(op => op.path)
-    )]
+    return pathsFor([...this.archived, ...this.operations], READING_TOOLS)
   }
 
+  /**
+   * The whole task, not the current window — this feeds the crash-safety
+   * journal at runCompaction, and a restore that dropped everything before the
+   * last compaction would reopen the same hole.
+   */
   serialize(): string {
-    return JSON.stringify(this.operations)
+    return JSON.stringify([...this.archived, ...this.operations])
   }
 
-  /** Clear the op log — called after a compaction so stale ops don't accrue. */
+  /**
+   * Close the current compaction window. The ops are archived rather than
+   * dropped: the summary prompt stops seeing them, every measurement consumer
+   * still does.
+   */
   reset(): void {
+    this.archived.push(...this.operations)
     this.operations = []
   }
 
+  /**
+   * Restores the whole log into the current window, so the window/archive
+   * boundary does not survive a round trip. Only the next summary prompt can
+   * tell the difference, and it would be listing files that really were touched
+   * — the safe direction to be wrong in.
+   */
   static deserialize(json: string): FileOperationTracker {
     const tracker = new FileOperationTracker()
     try {
@@ -122,8 +179,11 @@ export class ContextCompressor {
     ]
 
     if (fileTracker) {
-      const modified = fileTracker.getModifiedFiles()
-      const read = fileTracker.getReadFiles()
+      // The window being summarized, not the whole task: this prompt describes
+      // one compaction's worth of conversation, and re-listing every file from
+      // earlier windows would attribute that work to this one.
+      const modified = fileTracker.getModifiedFilesThisWindow()
+      const read = fileTracker.getReadFilesThisWindow()
       if (modified.length > 0) lines.push(`Known modified files: ${modified.join(', ')}`)
       if (read.length > 0) lines.push(`Known read files: ${read.join(', ')}`)
       lines.push('')
@@ -176,6 +236,12 @@ export class ContextCompressor {
       journal: (summary: string, fileOps?: string) => void
       keepRecentPairs?: number
       contractText?: string
+      /**
+       * The task's own commits, subject and touched paths, as measured from
+       * git. Undefined means not measured and prints nothing; the empty string
+       * is the measured claim that nothing has been committed yet.
+       */
+      commitLog?: string
     },
   ): Promise<Message[]> {
     const trimmed = this.tier0Trim(messages)
@@ -188,6 +254,19 @@ export class ContextCompressor {
     cb.journal(summary, fileTracker.serialize())
     const compacted = this.compressMessages(trimmed, summary, fileTracker)
     const anchors = this.selectVerbatimAnchors(messages, cb.contractText)
+    // Finding (x): the summary is a paraphrase of the conversation, and the one
+    // fact the agent most needs on the far side of a compaction — what it has
+    // already committed — is a fact about the repository, not the conversation.
+    // Pinned verbatim so no summarizer can drop or soften it.
+    if (cb.commitLog !== undefined) {
+      const body = cb.commitLog.trim()
+        ? cb.commitLog.trim()
+        : 'no commits yet — nothing you have done in this task is on disk'
+      anchors.push({
+        role: 'system',
+        content: [{ type: 'text', text: `[Committed so far in this task]\n${body}` }],
+      })
+    }
     fileTracker.reset()
     // Splice anchors right after the summary system message (index 0).
     return [compacted[0], ...anchors, ...compacted.slice(1)]

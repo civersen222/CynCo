@@ -37,6 +37,92 @@ describe('ReadLoopGate — redundancy', () => {
     expect(abs.kind).toBe('warn') // same resolved path → redundant
   })
 
+  test('paging through one file with different offsets is not redundant', () => {
+    expect(gate.evaluate('Read', { file_path: '/a/big.ts', offset: 0, limit: 100 }).kind).toBe('allow')
+    expect(gate.evaluate('Read', { file_path: '/a/big.ts', offset: 100, limit: 100 }).kind).toBe('allow')
+    expect(gate.evaluate('Read', { file_path: '/a/big.ts', offset: 200, limit: 100 }).kind).toBe('allow')
+  })
+
+  test('the same page of a file read twice is redundant', () => {
+    expect(gate.evaluate('Read', { file_path: '/a/big.ts', offset: 100, limit: 100 }).kind).toBe('allow')
+    expect(gate.evaluate('Read', { file_path: '/a/big.ts', offset: 100, limit: 100 }).kind).toBe('warn')
+  })
+
+  test('Grep escalating from file list to matching content is not redundant', () => {
+    expect(gate.evaluate('Grep', { pattern: 'foo', path: '/a' }).kind).toBe('allow')
+    expect(gate.evaluate('Grep', { pattern: 'foo', path: '/a', output_mode: 'content' }).kind).toBe('allow')
+    expect(gate.evaluate('Grep', { pattern: 'foo', path: '/a', output_mode: 'content', '-C': 5 }).kind).toBe('allow')
+  })
+
+  test('Grep paging through matches is not redundant', () => {
+    expect(gate.evaluate('Grep', { pattern: 'foo', path: '/a', head_limit: 50 }).kind).toBe('allow')
+    expect(gate.evaluate('Grep', { pattern: 'foo', path: '/a', head_limit: 50, offset: 50 }).kind).toBe('allow')
+  })
+
+  test('escalation relents: a read the model keeps insisting on is finally served', () => {
+    const f = { file_path: '/a/needed.ts' }
+    expect(gate.evaluate('Read', f).kind).toBe('allow')
+    expect(gate.evaluate('Read', f).kind).toBe('warn')
+    expect(gate.evaluate('Read', f).kind).toBe('deny')
+    expect(gate.evaluate('Read', f).kind).toBe('deny')
+    expect(gate.evaluate('Read', f).kind).toBe('escalate')
+    // Nagging and blocking both failed. Blocking a read the model provably needs
+    // costs it the ability to Edit at all, so the gate must stop refusing.
+    expect(gate.evaluate('Read', f).kind).toBe('allow')
+    expect(gate.evaluate('Read', f).kind).toBe('allow')
+  })
+
+  test('relenting on one file does not relent on another', () => {
+    const f = { file_path: '/a/needed.ts' }
+    for (let n = 0; n < 5; n++) gate.evaluate('Read', f)
+    expect(gate.evaluate('Read', f).kind).toBe('allow')
+    expect(gate.evaluate('Read', { file_path: '/a/other.ts' }).kind).toBe('allow')
+    expect(gate.evaluate('Read', { file_path: '/a/other.ts' }).kind).toBe('deny')
+  })
+
+  test('reset clears relented signatures', () => {
+    const f = { file_path: '/a/needed.ts' }
+    for (let n = 0; n < 5; n++) gate.evaluate('Read', f)
+    expect(gate.evaluate('Read', f).kind).toBe('allow')
+    gate.reset()
+    expect(gate.evaluate('Read', f).kind).toBe('allow')
+    expect(gate.evaluate('Read', f).kind).toBe('warn')
+  })
+
+  test('editing a file makes reading it new information again', () => {
+    const f = { file_path: '/a/x.ts' }
+    expect(gate.evaluate('Read', f).kind).toBe('allow')
+    expect(gate.evaluate('Read', f).kind).toBe('warn')
+    gate.onWrite('/a/x.ts')
+    // The content on disk is not the content the model saw. This is not a re-read.
+    expect(gate.evaluate('Read', f).kind).toBe('allow')
+  })
+
+  test('editing a file does not un-see an unrelated file', () => {
+    expect(gate.evaluate('Read', { file_path: '/a/x.ts' }).kind).toBe('allow')
+    expect(gate.evaluate('Read', { file_path: '/a/y.ts' }).kind).toBe('allow')
+    gate.onWrite('/a/x.ts')
+    expect(gate.evaluate('Read', { file_path: '/a/y.ts' }).kind).toBe('warn')
+  })
+
+  test('editing a file invalidates a Grep that covered its directory', () => {
+    expect(gate.evaluate('Grep', { pattern: 'foo', path: '/a' }).kind).toBe('allow')
+    expect(gate.evaluate('Grep', { pattern: 'foo', path: '/b' }).kind).toBe('allow')
+    gate.onWrite('/a/nested/x.ts')
+    expect(gate.evaluate('Grep', { pattern: 'foo', path: '/a' }).kind).toBe('allow')
+    expect(gate.evaluate('Grep', { pattern: 'foo', path: '/b' }).kind).toBe('warn')
+  })
+
+  test('a written path still under denial is served once the file changes', () => {
+    const f = { file_path: '/a/x.ts' }
+    gate.evaluate('Read', f)
+    gate.evaluate('Read', f)
+    gate.evaluate('Read', { file_path: '/a/y.ts' })
+    expect(gate.evaluate('Read', { file_path: '/a/y.ts' }).kind).toBe('deny')
+    gate.onWrite('/a/y.ts')
+    expect(gate.evaluate('Read', { file_path: '/a/y.ts' }).kind).toBe('allow')
+  })
+
   test('non-read tools always allow', () => {
     expect(gate.evaluate('Bash', { command: 'ls' }).kind).toBe('allow')
     expect(gate.evaluate('Write', { file_path: '/a/x.ts' }).kind).toBe('allow')

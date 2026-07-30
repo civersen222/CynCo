@@ -7,7 +7,7 @@
 
 import type {
   ContentBlock, Message, ToolDefinition, CompletionResponse,
-  StreamEvent, StopReason, TokenUsage, TokenLogprob,
+  StreamEvent, StopReason, TokenUsage, TokenLogprob, TurnCost,
 } from '../types.js'
 import { parseNativeToolCalls } from '../engine/toolCallRepair.js'
 
@@ -125,7 +125,11 @@ export function fromOpenAIResponse(oai: {
     }
     finish_reason: string | null
   }>
-  usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number }
+  usage?: {
+    prompt_tokens: number; completion_tokens: number; total_tokens: number
+    prompt_tokens_details?: { cached_tokens?: number }
+  }
+  timings?: Record<string, unknown>
 }): CompletionResponse {
   if (!oai.choices || oai.choices.length === 0) {
     return { content: [], model: oai.model, stopReason: 'error', usage: { inputTokens: 0, outputTokens: 0 } }
@@ -149,7 +153,61 @@ export function fromOpenAIResponse(oai: {
     usage: {
       input_tokens: oai.usage?.prompt_tokens ?? 0,
       output_tokens: oai.usage?.completion_tokens ?? 0,
+      cost: parseTurnCost(oai),
     },
+  }
+}
+
+/**
+ * Extract what the turn cost from a server response.
+ *
+ * llama-server attaches a `timings` block to the final chunk (and to non-stream
+ * responses); OpenAI-compatible servers generally do not, and Ollama's shim does
+ * not. Anything the server did not report stays null — a missing timing is not a
+ * timing of zero.
+ */
+export function parseTurnCost(payload: {
+  usage?: { prompt_tokens?: number; completion_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } }
+  timings?: Record<string, unknown>
+}): TurnCost {
+  const n = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null)
+  const t = payload.timings
+
+  if (t && (n(t.prompt_n) !== null || n(t.predicted_n) !== null)) {
+    return {
+      // prompt_n is the work; usage.prompt_tokens is the size. They differ by
+      // exactly the cache hit, which is the number this ledger exists to expose.
+      prefillTokens: n(t.prompt_n),
+      cachedTokens: n(t.cache_n) ?? n(payload.usage?.prompt_tokens_details?.cached_tokens),
+      decodeTokens: n(t.predicted_n) ?? n(payload.usage?.completion_tokens),
+      prefillMs: n(t.prompt_ms),
+      decodeMs: n(t.predicted_ms),
+      wallMs: null, // filled by the caller, which is the only one holding a clock
+      slot: null,   // absent from the OpenAI-compatible response
+      source: 'server-timings',
+    }
+  }
+
+  if (payload.usage) {
+    return {
+      // No timings block: the token counts are known but how they split between
+      // fresh prefill and cache is not, so prefillTokens stays null rather than
+      // being set to the prompt size it is not.
+      prefillTokens: null,
+      cachedTokens: n(payload.usage.prompt_tokens_details?.cached_tokens),
+      decodeTokens: n(payload.usage.completion_tokens),
+      prefillMs: null,
+      decodeMs: null,
+      wallMs: null,
+      slot: null,
+      source: 'usage-only',
+    }
+  }
+
+  return {
+    prefillTokens: null, cachedTokens: null, decodeTokens: null,
+    prefillMs: null, decodeMs: null, wallMs: null, slot: null,
+    source: 'none',
   }
 }
 
@@ -190,11 +248,42 @@ export function fromOpenAIStreamChunk(chunk: {
     }
     finish_reason: string | null
   }>
-  usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number }
+  usage?: {
+    prompt_tokens: number; completion_tokens: number; total_tokens: number
+    prompt_tokens_details?: { cached_tokens?: number }
+  }
+  timings?: Record<string, unknown>
 }): StreamEvent[] {
   const events: StreamEvent[] = []
-  if (!chunk.choices || chunk.choices.length === 0) return events
-  const choice = chunk.choices[0]
+  const choice = chunk.choices?.[0]
+
+  // Usage is the ONE number in the context-management path that the server
+  // measured rather than the engine guessed: prompt_tokens is what llama-server
+  // actually evaluated. It arrives on a chunk with an EMPTY choices array, so
+  // the early return below — written to swallow error payloads — used to
+  // discard it before anything could read it. Finding (n): the engine's
+  // chars/4 estimate read 75% while the request was 67733 of 65536 tokens, the
+  // 80% compaction trigger never fired, and the run died mid-task.
+  //
+  // Emitted before the content events so a consumer that stops at the first
+  // message_delta still sees it.
+  if (chunk.usage) {
+    events.push({
+      type: 'message_delta',
+      // An empty stop_reason means "this chunk says nothing about how the turn
+      // ended" — a usage-only chunk genuinely doesn't. Consumers must not read
+      // it as a stop.
+      delta: { stop_reason: mapFinishReason(choice?.finish_reason ?? null) ?? '' },
+      usage: {
+        input_tokens: chunk.usage.prompt_tokens,
+        output_tokens: chunk.usage.completion_tokens,
+        // Rides the same chunk that carries the token counts, because
+        // llama-server attaches `timings` to exactly that chunk.
+        cost: parseTurnCost(chunk),
+      },
+    })
+  }
+
   if (!choice) return events
 
   const lp = parseChunkLogprobs(choice)

@@ -40,6 +40,7 @@ import { LSPManager } from './lsp/manager.js'
 import { VibeController } from './vibe/controller.js'
 import { TemplateLoader } from './prompts/templateLoader.js'
 import { initJournal } from './training/decisionJournal.js'
+import { loadOrCreateTokens, TOKEN_FILENAME } from './security/localToken.js'
 import { DashboardServer } from './dashboard/server.js'
 import { ActivationsConsumer } from './brain/activationsConsumer.js'
 import { JlensClient } from './brain/jlensClient.js'
@@ -109,6 +110,14 @@ if (runTaskIdx !== -1) {
   if (!taskFilePath) {
     console.error('[one-shot] --run-task requires a task file path')
     process.exit(1)
+  }
+  // One-shot exits before the interactive bootstrap below, so it needs its own
+  // recorder init. Without this the daemon — the path that runs unattended and
+  // should therefore produce most of the corpus — recorded nothing at all.
+  if (process.env.LOCALCODE_TRAJECTORY_ENABLED !== 'false') {
+    const { initTrajectoryRecorder } = await import('./training/trajectoryRecorder.js')
+    initTrajectoryRecorder()
+    console.log('[one-shot] Trajectory recorder initialized')
   }
   const { runOneShotTask } = await import('./daemon/oneShot.js')
   const exitCode = await runOneShotTask(taskFilePath, provider, config)
@@ -262,10 +271,24 @@ try {
   console.log(`[v2] Session count check skipped: ${e instanceof Error ? e.message : e}`)
 }
 
+// ─── Local capability tokens ──────────────────────────────────
+//
+// Minted once and reused, so a restarted engine does not lock out a TUI that is
+// already running. The TUI reads the bridge secret from the same file, which is
+// what keeps launching it a zero-argument operation.
+const tokens = loadOrCreateTokens()
+console.log(`[tokens] Local tokens at ~/.cynco/${TOKEN_FILENAME}`)
+// The management secret is never handed to a page. Printing it here is the whole
+// distribution mechanism: mutating engine or governance config should cost one
+// deliberate paste, because flipping `ablation` or `contractEnforcement` off
+// silently corrupts the measurements the research rests on.
+console.log(`[tokens] Management token (paste to change config): ${tokens.tokenFor('management')}`)
+
 // ─── WS Server + Conversation Loop ────────────────────────────
 
 const wsServer = new LocalCodeWSServer({
   port,
+  tokens,
   onCommand: (cmd) => {
     console.log(`[localcode] WS command received: ${JSON.stringify(cmd).slice(0, 200)}`)
     handleCommand(cmd).catch(err => {
@@ -330,6 +353,7 @@ let activationsConsumer: ActivationsConsumer | null = null
 try {
   dashboardServer = new DashboardServer({
     port: port + 1,
+    tokens,
     deps: {
       getGovernanceReport: () => loop.getGovernanceReport(),
       getPredictionStats: () => loop.getGovernance().getPredictionTracker().getStatistics(),
@@ -394,6 +418,16 @@ if (config.provider === 'llama-cpp' && dashboardServer) {
 
 // Write session outcome on clean shutdown
 async function cleanShutdown(signal: string) {
+  // Close any task still open. finalizeTrajectory runs from handleUserMessage's
+  // finally, which never runs when the process is killed mid-task, so a restart
+  // during live work left the trajectory on disk unlabeled — and unlabeled means
+  // invisible to the dataset builder. First, because a later failure here must
+  // not cost the corpus row.
+  try {
+    loop.finalizeOpenTask()
+  } catch (e) {
+    console.error(`[shutdown] trajectory finalize failed: ${e instanceof Error ? e.message : String(e)}`)
+  }
   // Record governance session outcome
   try {
     const govReport = loop.getGovernance?.()?.getReport?.()
@@ -410,21 +444,10 @@ async function cleanShutdown(signal: string) {
   }
   // Save S5 rule weights
   try { s5Orchestrator.saveWeights() } catch (e) { console.log(`[s5] saveWeights failed: ${e instanceof Error ? e.message : String(e)}`) }
-  // Auto-backfill training data (reward labeling + dataset export)
-  try {
-    const { RewardLabeler } = await import('./training/rewardLabeler.js')
-    const { DatasetBuilder } = await import('./training/datasetBuilder.js')
-    const labeler = new RewardLabeler()
-    const backfilled = labeler.backfillAll()
-    if (backfilled > 0) {
-      console.log(`[training] Auto-backfilled ${backfilled} task rewards on shutdown`)
-      const builder = new DatasetBuilder()
-      const result = builder.exportAll()
-      console.log(`[training] Dataset rebuilt: ${result.sft} SFT examples`)
-    }
-  } catch (e) {
-    console.log(`[training] Auto-backfill failed: ${e}`)
-  }
+  // No auto-backfill on shutdown. It called RewardLabeler.backfillAll(), which
+  // guessed every component it could not see and manufactured all 147 saturated
+  // 1.0 labels; tasks are now labeled live from observations as each one ends.
+  // Export the dataset explicitly with `runTraining.ts --stage dataset`.
   AuditLogger.writeSessionOutcome(signal)
   activationsConsumer?.stop()
   if (config.provider === 'llama-cpp' && provider && 'processManager' in provider) {
@@ -470,7 +493,10 @@ async function handleCommand(command: TUICommand): Promise<void> {
           console.log(`[localcode] Ignoring invalid cwd: ${command.cwd}`)
         }
       }
-      await loop.handleUserMessage(command.text, { contract: command.contract })
+      await loop.handleUserMessage(command.text, {
+        contract: command.contract,
+        readOnlyPaths: command.readOnlyPaths,
+      })
       break
 
     case 'abort':
@@ -551,6 +577,18 @@ async function handleCommand(command: TUICommand): Promise<void> {
           break
         }
 
+        case '/spend': {
+          const db = loop.getGovernance?.()?.getGovernanceDb?.()
+          if (!db) {
+            wsServer.emit({ type: 'stream.token', text: '[System] No governance database — nothing was recorded to spend against.\n' })
+          } else {
+            const { formatSpend } = await import('./vsm/spendReport.js')
+            wsServer.emit({ type: 'stream.token', text: formatSpend(db.getSessionSpend(loop.getSessionId())) })
+          }
+          wsServer.emit({ type: 'message.complete', messageId: '', stopReason: 'end_turn' })
+          break
+        }
+
         case '/read':
           if (args) await loop.handleUserMessage(`Read the file at ${args} and show me its contents.`)
           break
@@ -595,6 +633,15 @@ async function handleCommand(command: TUICommand): Promise<void> {
             wsServer.emit({ type: 'stream.token', text: `[System] Started workflow: ${wf.displayName}\nPhase: ${wf.initialPhase}\n\n${wf.phases[wf.initialPhase].instruction}\n` })
             wsServer.emit({ type: 'workflow.status', active: true, workflow: wf.name, phase: wf.initialPhase, displayName: wf.displayName })
             wsServer.emit({ type: 'message.complete', messageId: '', stopReason: 'end_turn' })
+            // If the command carried a task (e.g. `/tdd <task text>` from the
+            // dashboard's workflow selector), enqueue it as the opening user
+            // message so the turn actually starts. Without this the workflow
+            // starts but no user.message is ever sent, and the engine idles in
+            // the initial read-only phase while the UI looks frozen.
+            const task = args.trim()
+            if (task) {
+              await loop.handleUserMessage(task)
+            }
           }
           break
         }
@@ -677,19 +724,6 @@ async function handleCommand(command: TUICommand): Promise<void> {
           loop.cancelWorkflow()
           wsServer.emit({ type: 'stream.token', text: '[System] Workflow cancelled.\n' })
           wsServer.emit({ type: 'workflow.status', active: false, workflow: null, phase: null, displayName: null })
-          wsServer.emit({ type: 'message.complete', messageId: '', stopReason: 'end_turn' })
-          break
-        }
-
-        case '/cascade': {
-          const { classifyComplexity } = await import('./cascade/modelPicker.js')
-          const recentToolCount = parseInt(args, 10) || 0
-          const sampleMsg = args && isNaN(parseInt(args, 10)) ? args : 'current task'
-          const complexity = classifyComplexity(sampleMsg, recentToolCount)
-          wsServer.emit({
-            type: 'stream.token',
-            text: `[Cascade] Task complexity: ${complexity}\nSimple → fast model, Moderate → balanced, Complex → powerful.\n`,
-          })
           wsServer.emit({ type: 'message.complete', messageId: '', stopReason: 'end_turn' })
           break
         }
@@ -810,8 +844,16 @@ async function handleCommand(command: TUICommand): Promise<void> {
               table += '-----------|---------|----------|-----------|-------------\n'
               for (const s of stats) {
                 const ci = `[${s.confidenceInterval[0].toFixed(2)}, ${s.confidenceInterval[1].toFixed(2)}]`
-                table += `${s.hypothesis.padEnd(10)} | ${String(s.total).padEnd(7)} | ${(s.hitRate * 100).toFixed(0)}% ${ci} | ${(s.nullBaselineRate * 100).toFixed(0)}%       | ${s.significantlyBetter ? 'YES' : 'NO'}\n`
+                // The null rate is the number the significance verdict is made
+                // against. Printing it bare hid that most of them are guesses.
+                const nullRate = s.nullBaselineSource === 'measured'
+                  ? `${(s.nullBaselineRate * 100).toFixed(0)}% (n=${s.nullBaselineSamples})`
+                  : `${(s.nullBaselineRate * 100).toFixed(0)}% assumed`
+                table += `${s.hypothesis.padEnd(10)} | ${String(s.total).padEnd(7)} | ${(s.hitRate * 100).toFixed(0)}% ${ci} | ${nullRate.padEnd(9)} | ${s.significantlyBetter ? 'YES' : 'NO'}\n`
               }
+              table += '\n"assumed" null rates are hand-written constants, not measurements —\n'
+              table += 'a YES against one is a guess. Measured rates score the same predicate\n'
+              table += 'at points where the hypothesis was not triggered.\n'
               wsServer.emit({ type: 'stream.token', text: table })
             }
             // Intervention success rates — which governance directives actually helped.

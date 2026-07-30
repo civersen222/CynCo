@@ -3,6 +3,13 @@ import { pruneRedundantReads } from '../../bridge/contextHygiene.js'
 
 const sigOf = (name: string, input: any) => name === 'Read' ? `read:${input.file_path}` : null
 
+// The pruner must never emit string content (it crashes convertMessages().filter).
+// Read a marker's text whether it arrives as a ContentBlock[] or a bare string.
+const markerText = (m: any) =>
+  Array.isArray(m.content)
+    ? m.content.map((b: any) => b?.text ?? '').join('')
+    : (typeof m.content === 'string' ? m.content : '')
+
 describe('pruneRedundantReads', () => {
   it('prunes certified-redundant Read+DENIED pairs, keeps the most recent, inserts one marker', () => {
     const mk = (i: number) => ([
@@ -16,9 +23,13 @@ describe('pruneRedundantReads', () => {
     const out = pruneRedundantReads(messages as any, new Set(['read:a.csv']), sigOf)
     // task message survives
     expect(out[0]).toEqual(messages[0])
-    // exactly one marker inserted
-    const markers = out.filter((m: any) => typeof m.content === 'string' && m.content.includes('[context-hygiene]'))
+    // exactly one marker inserted, carried as a ContentBlock[] (never a bare
+    // string — a string content crashes downstream convertMessages().filter)
+    const markers = out.filter((m: any) => markerText(m).includes('[context-hygiene]'))
     expect(markers.length).toBe(1)
+    expect(Array.isArray(markers[0].content)).toBe(true)
+    // no message the pruner emits may carry string content
+    expect(out.every((m: any) => Array.isArray(m.content) || m === messages[0])).toBe(true)
     // most-recent exchange (t4) retained
     const ids = JSON.stringify(out)
     expect(ids).toContain('t4')
@@ -52,9 +63,10 @@ describe('pruneRedundantReads', () => {
     expect(out[0]).toEqual(messages[0])
     // fewer messages than input — pruning actually happened
     expect(out.length).toBeLessThan(messages.length)
-    // exactly one marker inserted
-    const markers = out.filter((m: any) => typeof m.content === 'string' && m.content.includes('[context-hygiene]'))
+    // exactly one marker inserted, carried as ContentBlock[] (never a bare string)
+    const markers = out.filter((m: any) => markerText(m).includes('[context-hygiene]'))
     expect(markers.length).toBe(1)
+    expect(Array.isArray(markers[0].content)).toBe(true)
     // most-recent exchange (t4) retained, earliest (t1) pruned
     const ids = JSON.stringify(out)
     expect(ids).toContain('t4')

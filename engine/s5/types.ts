@@ -69,6 +69,25 @@ export type S5Decision = {
   revert?: boolean
   decisionId?: string
   ruleIds?: string[]
+  // Rules that FIRED and lost. A rule returning null is uninformative — its
+  // condition was simply false. A rule that produced a proposal which
+  // `combineDecisions` then overrode is a genuine close call, and it is the only
+  // negative example the rule engine ever generates. Optional (additive) so
+  // existing S5Decision literals stay valid.
+  rejected?: RejectedProposal[]
+}
+
+// One fired-and-overridden proposal, recorded per (rule, field) rather than per
+// rule: a single rule can win on `priority` and lose on `model` in the same turn.
+export type RejectedProposal = {
+  ruleId: string
+  field: 'tools' | 'contextAction' | 'priority' | 'model' | 'spawnAgent'
+  proposed: unknown
+  applied: unknown
+  // The first rule whose proposal for this field matched what was applied. null
+  // when no single rule proposed the applied value — `tools` intersects, so the
+  // survivor can be narrower than anything any rule asked for.
+  wonBy: string | null
 }
 
 export type RuleTier = 'critical' | 'warning' | 'info'

@@ -1,11 +1,15 @@
 /**
- * Training Pipeline Orchestrator — end-to-end: backfill rewards → build
- * dataset → train → convert → promote.
+ * Training Pipeline Orchestrator — build dataset → gate → train → convert →
+ * promote.
+ *
+ * There is no backfill stage. Rewards are written by the live engine at task
+ * end (see conversationLoop.finalizeTrajectory); the offline heuristic that
+ * used to manufacture them was deleted on 2026-07-25.
  *
  * Usage:
- *   bun run engine/training/runTraining.ts --stage sft
- *   bun run engine/training/runTraining.ts --stage backfill
+ *   bun run engine/training/runTraining.ts --stage stats
  *   bun run engine/training/runTraining.ts --stage dataset
+ *   bun run engine/training/runTraining.ts --stage sft
  *   bun run engine/training/runTraining.ts --stage full
  */
 
@@ -13,7 +17,13 @@ import { execSync } from 'child_process'
 import { existsSync, readFileSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
-import { backfillRewards, exportDatasets, loadTrajectories, type DatasetStats } from './datasetBuilder.js'
+import {
+  evaluateReadiness,
+  exportDatasets,
+  loadTrajectories,
+  summarizeCorpus,
+  type DatasetStats,
+} from './datasetBuilder.js'
 
 const CYNCO_DIR = join(homedir(), '.cynco')
 const TRAJECTORY_DIR = join(CYNCO_DIR, 'trajectories')
@@ -25,15 +35,6 @@ function log(msg: string) {
   console.log(`[training] ${msg}`)
 }
 
-// ─── Stage: Backfill Rewards ──────────────────────────────────────
-
-function stageBackfill(): number {
-  log('Stage: Backfill rewards for unlabeled trajectories')
-  const count = backfillRewards(TRAJECTORY_DIR, REWARD_DIR)
-  log(`Backfilled ${count} task rewards`)
-  return count
-}
-
 // ─── Stage: Build Dataset ─────────────────────────────────────────
 
 function stageDataset(): DatasetStats {
@@ -42,14 +43,28 @@ function stageDataset(): DatasetStats {
 
   log(`Total tasks: ${stats.totalTasks}`)
   log(`Tasks with rewards: ${stats.tasksWithRewards}`)
+  log(`Usable examples: ${stats.usableExamples}`)
+  log(`Negative examples: ${stats.negativeExamples} (${stats.pairableNegatives} pairable)`)
+  log(`Legacy excluded (labeler v1): ${stats.legacyExcluded}`)
   log(`SFT examples: ${stats.sftExamples}`)
   log(`DPO pairs: ${stats.dpoPairs}`)
-  log(`Average reward: ${stats.avgReward.toFixed(3)}`)
+  log(`Average reward: ${stats.usableExamples > 0 ? stats.avgReward.toFixed(3) : 'not measured'}`)
   for (const b of stats.rewardDistribution) {
     log(`  ${b.bucket}: ${b.count}`)
   }
 
   return stats
+}
+
+// ─── Readiness reporting ──────────────────────────────────────────
+
+/** Print each condition and, when it failed, why — in its own numbers. */
+function logReadiness(readiness: ReturnType<typeof evaluateReadiness>): void {
+  log('Readiness:')
+  for (const c of readiness.conditions) {
+    log(`  [${c.ok ? 'PASS' : 'FAIL'}] ${c.name}: ${c.display} (need ${c.required})`)
+    if (c.reason) log(`         ${c.reason}`)
+  }
 }
 
 // ─── Stage: Train SFT ─────────────────────────────────────────────
@@ -59,24 +74,49 @@ function stageTrain(
   version: string,
   dryRun: boolean,
 ): void {
+  const statsPath = join(DATASET_DIR, 'stats.json')
   const dataPath = join(DATASET_DIR, 'sft.jsonl')
-  if (!existsSync(dataPath)) {
-    log(`ERROR: No SFT dataset at ${dataPath}. Run --stage dataset first.`)
+  if (!existsSync(dataPath) || !existsSync(statsPath)) {
+    log(`ERROR: No dataset at ${DATASET_DIR}. Run --stage dataset first.`)
     process.exit(1)
   }
 
-  // Count examples
-  const lines = readFileSync(dataPath, 'utf-8').trim().split('\n').length
-  log(`SFT dataset: ${lines} examples`)
-
-  if (lines < 10) {
-    log(`WARNING: Only ${lines} examples. Recommend 300+ for meaningful SFT.`)
-    log('Continue collecting trajectory data from CynCo sessions before training.')
-    if (!dryRun) {
-      log('Aborting training — insufficient data.')
-      return
+  let stats: DatasetStats
+  try {
+    stats = JSON.parse(readFileSync(statsPath, 'utf-8'))
+  } catch (e) {
+    log(`ERROR: ${statsPath} is not valid JSON (${e}). Run --stage dataset.`)
+    process.exit(1)
+  }
+  // A stats.json written before the grounded labeler has none of these fields,
+  // and the gate would then report a shortfall of "undefined". Refuse to read a
+  // corpus shape we cannot actually measure.
+  //
+  // sftExamples and dpoPairs are required HERE specifically: evaluateReadiness
+  // treats them as optional because the dashboard cannot compute them, but this
+  // is the gate that actually decides whether to train, and it must check the
+  // rows that were built and not only the rows that looked eligible.
+  for (const k of ['usableExamples', 'pairableNegatives', 'avgReward', 'sftExamples', 'dpoPairs'] as const) {
+    if (typeof stats[k] !== 'number') {
+      log(`ERROR: ${statsPath} has no ${k}. It predates the grounded labeler. Run --stage dataset.`)
+      process.exit(1)
     }
   }
+  const readiness = evaluateReadiness(stats)
+
+  logReadiness(readiness)
+
+  if (!readiness.ready) {
+    log('Corpus is not ready. Volume is not readiness — a corpus with no failures')
+    log('teaches the model that its failure modes are excellent work.')
+    if (!dryRun) {
+      log('Aborting training.')
+      return
+    }
+    log('Continuing anyway because --dry-run was passed (no weights are updated).')
+  }
+
+  log(`SFT dataset: ${stats.sftExamples} examples`)
 
   const outputDir = join(ADAPTER_DIR, `sft-${version}`)
   mkdirSync(outputDir, { recursive: true })
@@ -131,44 +171,61 @@ function stagePromote(version: string, basePath: string): void {
 // ─── Stage: Stats (read-only) ─────────────────────────────────────
 
 function stageStats(): void {
-  const trajectories = loadTrajectories(TRAJECTORY_DIR, REWARD_DIR)
-  const withRewards = trajectories.filter(t => t.reward !== null)
+  const trajectories = loadTrajectories(TRAJECTORY_DIR, REWARD_DIR, { loadSnapshots: false })
+  const stats = summarizeCorpus(trajectories)
   const totalTurns = trajectories.reduce((sum, t) => sum + t.turns.length, 0)
+  const readiness = evaluateReadiness(stats)
 
   log('=== Training Data Status ===')
-  log(`Trajectory files: ${trajectories.length}`)
+  log(`Trajectory files: ${stats.totalTasks}`)
   log(`Total turns: ${totalTurns}`)
-  log(`Tasks with rewards: ${withRewards.length}`)
+  log(`Tasks with rewards: ${stats.tasksWithRewards}`)
+  log(`Usable examples: ${stats.usableExamples}`)
+  log(`Negative examples: ${stats.negativeExamples} (${stats.pairableNegatives} pairable)`)
+  log(`Legacy excluded (labeler v1): ${stats.legacyExcluded}`)
+  log(
+    'Average reward (usable only): ' +
+    (stats.usableExamples > 0 ? stats.avgReward.toFixed(3) : 'not measured'),
+  )
 
-  if (withRewards.length > 0) {
-    const rewards = withRewards.map(t => t.reward!.reward)
-    const avg = rewards.reduce((a, b) => a + b, 0) / rewards.length
-    const good = rewards.filter(r => r >= 0.7).length
-    log(`Average reward: ${avg.toFixed(3)}`)
-    log(`High-reward tasks (>= 0.7): ${good}`)
-    log(`Ready for SFT: ${good >= 10 ? 'YES' : 'NO'} (need 10+ high-reward, have ${good})`)
-  } else {
-    log('No rewards yet — run: bun run engine/training/runTraining.ts --stage backfill')
-  }
+  logReadiness(readiness)
+  log(`Ready for SFT: ${readiness.ready ? 'YES' : 'NO'}`)
 
-  // Check for existing datasets
   const sftPath = join(DATASET_DIR, 'sft.jsonl')
   const dpoPath = join(DATASET_DIR, 'dpo.jsonl')
   if (existsSync(sftPath)) {
-    const lines = readFileSync(sftPath, 'utf-8').trim().split('\n').length
-    log(`SFT dataset: ${lines} examples`)
+    const body = readFileSync(sftPath, 'utf-8').trim()
+    log(`SFT dataset on disk: ${body ? body.split('\n').length : 0} examples`)
   }
   if (existsSync(dpoPath)) {
-    const lines = readFileSync(dpoPath, 'utf-8').trim().split('\n').length
-    log(`DPO dataset: ${lines} pairs`)
+    const body = readFileSync(dpoPath, 'utf-8').trim()
+    log(`DPO dataset on disk: ${body ? body.split('\n').length : 0} pairs`)
   }
 }
 
 // ─── CLI ──────────────────────────────────────────────────────────
 
 const args = process.argv.slice(2)
-const stage = args.find(a => !a.startsWith('-'))
-  ?? args[args.indexOf('--stage') + 1]
+
+/**
+ * The first bare token that is not some flag's value.
+ *
+ * `args.find(a => !a.startsWith('-'))` read the VALUE of a preceding flag, so
+ * `--base ./model --stage stats` resolved the stage to `./model`.
+ */
+const VALUE_FLAGS = new Set(['--stage', '--base', '--version'])
+function positionalStage(a: string[]): string | undefined {
+  for (let i = 0; i < a.length; i++) {
+    if (VALUE_FLAGS.has(a[i])) { i++; continue }
+    if (!a[i].startsWith('-')) return a[i]
+  }
+  return undefined
+}
+
+// An explicit --stage always wins over a positional.
+const stage =
+  (args.includes('--stage') ? args[args.indexOf('--stage') + 1] : undefined)
+  ?? positionalStage(args)
   ?? 'stats'
 const base = args[args.indexOf('--base') + 1] ?? 'unsloth/Qwen2.5-Coder-14B-Instruct'
 const version = args[args.indexOf('--version') + 1] ?? 'v1'
@@ -178,12 +235,7 @@ switch (stage) {
   case 'stats':
     stageStats()
     break
-  case 'backfill':
-    stageBackfill()
-    stageStats()
-    break
   case 'dataset':
-    stageBackfill()
     stageDataset()
     break
   case 'sft':
@@ -193,13 +245,12 @@ switch (stage) {
     stagePromote(version, base)
     break
   case 'full':
-    stageBackfill()
     stageDataset()
     stageTrain(base, version, dryRun)
     stagePromote(version, base)
     break
   default:
     log(`Unknown stage: ${stage}`)
-    log('Available stages: stats, backfill, dataset, sft, promote, full')
+    log('Available stages: stats, dataset, sft, promote, full')
     process.exit(1)
 }

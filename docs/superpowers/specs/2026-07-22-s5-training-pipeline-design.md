@@ -56,11 +56,14 @@ So the journal stays immutable and the exporter performs the join (`SELECT outco
 ### 1. Session outcome hygiene
 - **`engine/vsm/governanceDb.ts`** — `recordSession()` gains a write-time guard: reject records with `totalTurns <= 0` (return without insert; log a one-line `[governanceDb] rejected degenerate session <id> (0 turns)`). Add a `purgeDegenerateSessions(): number` method (`DELETE FROM sessions WHERE total_turns <= 0`, returns row count) plus cascade delete of orphaned `measurements`.
 - **`engine/vsm/cyberneticsGovernance.ts`** — `recordSessionOutcome()` (line 1001) builds the record with `totalTurns: this.turnCount` (line 1012), which the write-guard reads; confirm it early-returns cleanly when the guard rejects. **Also fix the banned empty `catch {}` at line 1016** — CLAUDE.md and the ratchet tests treat empty catch as a stop-the-line bug; since we are editing this method, log the error or emit a `governance.alert` instead of swallowing it.
-- **`engine/main.ts:399,953`** — stop passing hardcoded `'default', 0` for `strategy`/`configIndex`; thread the actual strategy/config from the governance layer (`loop.getGovernance().getStrategy?.()` / config index), falling back to `'default', 0` only if genuinely unset.
+- **`engine/main.ts:399,953`** — the `recordSessionOutcome(outcome, 'default', 0, ...)` calls hardcode strategy/configIndex. The engine has **no strategy concept today** (single implicit strategy), so `'default'/0` is the honest value — leave it, do not invent a strategy source (YAGNI). The degeneracy the guard targets is `total_turns==0`, not strategy. (If a multi-strategy A/B lands later, thread it then.)
 - **One-time purge:** call `purgeDegenerateSessions()` once behind a guarded startup migration in `main.ts` (idempotent — after the write-guard lands, it finds nothing on subsequent runs).
 
-### 2. Join foundation
-- **`engine/s5/orchestrator.ts:131-141`** — replace `sessionId: entry.timestamp.toString()` with the real session id. Thread the governance `sessionId` into the S5 decision path (the orchestrator is invoked from `conversationLoop`, which owns `this.sessionId` / `process.env.LOCALCODE_SESSION_ID`). Pass it in via the S5 input or an explicit arg; the journal entry must carry the same id `recordSession` uses.
+### 2. Join foundation — one canonical session id
+**Two ids exist today and never match** (discovered during design): `conversationLoop.sessionId` (`conversationLoop.ts:337`, also `process.env.LOCALCODE_SESSION_ID`) and `CyberneticsGovernance._sessionId` (`cyberneticsGovernance.ts:137`) — each an independent `session-${Date.now()}` generated at a different moment. `recordSession` uses the governance id; the S5 journal (even once fixed) uses the loop id; they cannot join. So this layer is a session-id *unification*, not just a one-line stamp fix:
+- Add `setSessionId(id)` to `CyberneticsGovernance` (`GovernanceLayer` is merely an alias for it — `conversationLoop.ts:26`). Sets `_sessionId := id`.
+- In `conversationLoop`, call `this.governance.setSessionId(this.sessionId)` right after the id is assigned — constructor (~337) and the resume path (~466).
+- **`engine/s5/orchestrator.ts:131-141`** — thread `sessionId` through `OrchestratorInput` (new field, passed from `conversationLoop`'s `makeDecision` call ~918) and stamp it on the journal entry, replacing `entry.timestamp.toString()` (fallback `process.env.LOCALCODE_SESSION_ID`). Result: journal id == governance id == the id `recordSession` writes.
 
 ### 3. Exporter (new)
 - **`engine/s5/exportTrainingData.ts`** — new module:

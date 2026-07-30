@@ -202,6 +202,12 @@ export type GovernanceStatusEvent = {
       hitRate: number
       confidenceInterval: [number, number]
       nullBaselineRate: number
+      /** 'measured' — the predicate scored at untriggered points in this
+       *  session; 'assumed' — the hand-written constant. A significance verdict
+       *  against an assumed baseline is a verdict against a guess, so the wire
+       *  carries the provenance and the display must show it. */
+      nullBaselineSource: 'measured' | 'assumed'
+      nullBaselineSamples: number
       significantlyBetter: boolean
     }[]
   }
@@ -490,6 +496,13 @@ export type UserMessageCommand = {
    *  check script is the contract). Applied before intent auto-create.
    *  Inlined type: this file stays import-free. */
   contract?: { title: string; brief?: string; assertions: string[] }
+  /** Finding (ag): instrument files for THIS task — read-only, not workspace.
+   *  The harness names them because only the harness knows them: the brief it
+   *  wrote, the gate it will run. `LOCALCODE_IMMUTABLE_PATHS` could never carry
+   *  this, because the harness is a WebSocket client in another process from the
+   *  one that reads the environment. Absolute paths; unioned with the paths
+   *  derived from `contract.assertions`; scoped to one message. */
+  readOnlyPaths?: string[]
 }
 
 export type ApprovalResponseCommand = {

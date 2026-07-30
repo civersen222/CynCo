@@ -4,7 +4,7 @@
   "bestOfN/testDetector.ts": 2,
   "bestOfN/worktreeManager.ts": 2,
   "bootstrapProvider.ts": 1,
-  "bridge/conversationLoop.ts": 21,
+  "bridge/conversationLoop.ts": 18,
   "context/compressor.ts": 1,
   "daemon/missionLedger.ts": 2,
   "daemon/ntfyChannel.ts": 3,

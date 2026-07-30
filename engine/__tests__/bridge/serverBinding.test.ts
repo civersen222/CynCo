@@ -10,8 +10,18 @@
  */
 
 import * as os from 'os'
+import { mkdtempSync, rmSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
 import { describe, test, expect } from 'vitest'
 import { LocalCodeWSServer } from '../../bridge/server.js'
+import { loadOrCreateTokens } from '../../security/localToken.js'
+
+// The bridge refuses an unauthenticated upgrade; binding is a separate concern,
+// so these tests just need a valid token store to construct the server at all.
+const tokenDir = mkdtempSync(join(tmpdir(), 'cynco-bind-tokens-'))
+const tokens = loadOrCreateTokens(tokenDir)
+process.on('exit', () => rmSync(tokenDir, { recursive: true, force: true }))
 
 // Ports spaced by 3: the bridge falls back to port+1/+2 on bind failure
 const DEFAULT_PORT = 19180
@@ -33,13 +43,17 @@ describe('bridge server hostname binding', () => {
     let server: LocalCodeWSServer | undefined
 
     try {
-      server = new LocalCodeWSServer({ port: DEFAULT_PORT })
+      server = new LocalCodeWSServer({ port: DEFAULT_PORT, tokens })
       expect(server.getHostname()).toBe('127.0.0.1')
 
-      // Non-upgrade HTTP request to loopback must reach the server (426)
+      // A plain HTTP request to loopback must REACH the server. 401 rather
+      // than 426: the token gate runs before the upgrade branch, so an
+      // unauthenticated caller is turned away without being told whether this
+      // endpoint speaks WebSocket. Either way it proves the port is bound —
+      // which is all this test is about.
       await new Promise(r => setTimeout(r, 100))
       const res = await fetch(`http://127.0.0.1:${server.port}/`)
-      expect(res.status).toBe(426)
+      expect(res.status).toBe(401)
     } finally {
       await server?.close()
       restoreEnv(saved)
@@ -52,12 +66,12 @@ describe('bridge server hostname binding', () => {
     let server: LocalCodeWSServer | undefined
 
     try {
-      server = new LocalCodeWSServer({ port: OVERRIDE_PORT })
+      server = new LocalCodeWSServer({ port: OVERRIDE_PORT, tokens })
       expect(server.getHostname()).toBe('0.0.0.0')
 
       await new Promise(r => setTimeout(r, 100))
       const res = await fetch(`http://127.0.0.1:${server.port}/`)
-      expect(res.status).toBe(426)
+      expect(res.status).toBe(401)
     } finally {
       await server?.close()
       restoreEnv(saved)
@@ -87,7 +101,7 @@ describe('bridge server hostname binding', () => {
     let server: LocalCodeWSServer | undefined
 
     try {
-      server = new LocalCodeWSServer({ port: NEGATIVE_PORT })
+      server = new LocalCodeWSServer({ port: NEGATIVE_PORT, tokens })
       expect(server.getHostname()).toBe('127.0.0.1')
 
       await new Promise(r => setTimeout(r, 100))

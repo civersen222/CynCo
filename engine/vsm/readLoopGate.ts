@@ -1,4 +1,29 @@
-import { resolve } from 'node:path'
+import { resolve, sep } from 'node:path'
+import { isSourceRewrite } from '../tools/toolHints.js'
+
+/** Tools whose whole job is to change a file. */
+const EDITOR_TOOLS = ['Edit', 'Write', 'MultiEdit', 'ApplyPatch', 'ReplaceFunction']
+
+/**
+ * Did this successful tool call change a file, and so re-arm the gate?
+ *
+ * Editor tools obviously do. Bash usually does not — but a model that has been
+ * denied Read reaches for the shell, and once there it edits with
+ * `python -c "content = open(f).read(); ...; open(f,'w').write(...)"`. Those edits
+ * used to be invisible here, which is how the gate could refuse reads on the
+ * grounds that no edit had been made while the model was making edits the whole
+ * time. Watched live: CynCo rewrote gilded/docket.py that way four times and the
+ * read counter never reset once.
+ *
+ * A shell rewrite gives no reliable path to invalidate, so callers get no path and
+ * the gate only resets its counters — it keeps remembering what was read, which is
+ * the conservative half.
+ */
+export function rearmsGate(toolName: string, input: any, isError: boolean): boolean {
+  if (isError) return false
+  if (EDITOR_TOOLS.includes(toolName)) return true
+  return toolName === 'Bash' && typeof input?.command === 'string' && isSourceRewrite(input.command)
+}
 
 export type ReadLoopVerdict =
   | { kind: 'allow' }
@@ -16,12 +41,35 @@ function norm(p: string): string {
 
 export function signature(toolName: string, input: any): string | null {
   switch (toolName) {
-    case 'Read': return input?.file_path ? `read:${norm(input.file_path)}` : null
-    case 'Grep': return `grep:${input?.pattern ?? ''}|${norm(input?.path ?? '.')}|${input?.glob ?? ''}`
+    // The signature must include every parameter that changes what content comes
+    // back, or a legitimate second look gets denied as a re-read. Paging a long
+    // file (offset 0, then offset 100) and escalating a Grep from a file list to
+    // matching lines are both *new* information, not loops.
+    case 'Read': return input?.file_path ? `read:${norm(input.file_path)}|${input?.offset ?? ''}|${input?.limit ?? ''}` : null
+    case 'Grep': return `grep:${input?.pattern ?? ''}|${norm(input?.path ?? '.')}|${input?.glob ?? ''}|${input?.type ?? ''}|${input?.output_mode ?? ''}|${input?.head_limit ?? ''}|${input?.offset ?? ''}|${input?.['-C'] ?? input?.['-A'] ?? input?.['-B'] ?? ''}`
     case 'Glob': return `glob:${input?.pattern ?? ''}|${norm(input?.path ?? '.')}`
     case 'Ls':   return `ls:${norm(input?.path ?? '.')}`
     default:     return null
   }
+}
+
+/**
+ * The filesystem location a read is scoped to: the file for Read, the search
+ * root for Grep/Glob/Ls. Used to decide which remembered reads a write
+ * invalidates.
+ */
+function scopeOf(toolName: string, input: any): string | null {
+  switch (toolName) {
+    case 'Read': return input?.file_path ? norm(input.file_path) : null
+    case 'Grep': return norm(input?.path ?? '.')
+    case 'Glob': return norm(input?.path ?? '.')
+    case 'Ls':   return norm(input?.path ?? '.')
+    default:     return null
+  }
+}
+
+function covers(scope: string, written: string): boolean {
+  return written === scope || written.startsWith(scope.endsWith(sep) ? scope : scope + sep)
 }
 
 function describe(toolName: string, input: any): string {
@@ -35,13 +83,23 @@ function describe(toolName: string, input: any): string {
 }
 
 export class ReadLoopGate {
-  private seen = new Set<string>()
+  // signature -> the filesystem scope it covers, so a write can un-see it.
+  private seen = new Map<string, string>()
   private warnedRedundant = false
   private warnedStall = false
   private readsSinceWrite = 0
   private consecutiveDenies = 0
   private lastDeniedSig: string | null = null
   private redundantSigs = new Set<string>()
+  // Reads the model kept demanding after a warn and repeated denials. Once a
+  // signature lands here the gate stops refusing it — see relent note below.
+  private relented = new Set<string>()
+  // The stall branch refuses reads the model has never seen, so its refusals carry
+  // a different signature every time and cannot accumulate in `consecutiveDenies`.
+  // It needs its own count, and its own latch, or the relent rule below is
+  // unreachable from here. Counted per-branch, not per-signature.
+  private stallDenies = 0
+  private stallRelented = false
   private static ESCALATE_AFTER = 3
 
   private denyOrEscalate(sig: string, message: string): ReadLoopVerdict {
@@ -49,6 +107,7 @@ export class ReadLoopGate {
     this.consecutiveDenies = (sig === this.lastDeniedSig) ? this.consecutiveDenies + 1 : 1
     this.lastDeniedSig = sig
     if (this.consecutiveDenies >= ReadLoopGate.ESCALATE_AFTER) {
+      this.relented.add(sig)
       return { kind: 'escalate', message, signatures: [...this.redundantSigs] }
     }
     return { kind: 'deny', message }
@@ -58,6 +117,12 @@ export class ReadLoopGate {
     const sig = signature(toolName, input)
     if (sig === null) return { kind: 'allow' }
     this.readsSinceWrite += 1
+    // A read that survived a warning and repeated denials is one the model
+    // provably cannot proceed without. Keep refusing it and the damage inverts:
+    // Edit needs an exact `old_string`, so a blinded model cannot perform the
+    // very action the denial message orders it to perform. Nagging is the right
+    // lever here; blocking is not. Serve it.
+    if (this.relented.has(sig)) return { kind: 'allow' }
     if (this.seen.has(sig)) {
       if (!this.warnedRedundant) {
         this.warnedRedundant = true
@@ -65,13 +130,26 @@ export class ReadLoopGate {
       }
       return this.denyOrEscalate(sig, `[read-loop] DENIED: you are re-reading sources you've already seen without making any change. You must now either (a) call Write/Edit/MultiEdit to act on what you've learned, or (b) end your turn if the task is genuinely complete. Reading is disabled until you make an edit.`)
     }
-    this.seen.add(sig)
-    if (this.readsSinceWrite >= STALL_CAP) {
+    this.seen.set(sig, scopeOf(toolName, input) ?? '')
+    if (this.readsSinceWrite >= STALL_CAP && !this.stallRelented) {
       if (!this.warnedStall) {
         this.warnedStall = true
         return { kind: 'warn', message: `[read-loop] ${this.readsSinceWrite} reads since your last edit. Consider whether you have enough to start implementing — use Write or Edit.` }
       }
-      return this.denyOrEscalate(sig, `[read-loop] DENIED: ${this.readsSinceWrite} reads since your last edit with no change made. Make an edit now, or end your turn if complete.`)
+      this.redundantSigs.add(sig)
+      this.stallDenies += 1
+      const message = `[read-loop] DENIED: ${this.readsSinceWrite} reads since your last edit with no change made. Make an edit now, or end your turn if complete.`
+      // Unlike a redundant read, the gate does not know this content is already in
+      // context — it is refusing on a *count*, which is a guess about whether the
+      // model has enough. Hold that guess for a few turns, then give way: the model
+      // has to quote an exact `old_string` to edit at all, so a stall gate that
+      // never yields converts "you should be editing by now" into "you may never
+      // edit again".
+      if (this.stallDenies >= ReadLoopGate.ESCALATE_AFTER) {
+        this.stallRelented = true
+        return { kind: 'escalate', message, signatures: [...this.redundantSigs] }
+      }
+      return { kind: 'deny', message }
     }
     return { kind: 'allow' }
   }
@@ -82,13 +160,29 @@ export class ReadLoopGate {
     return this.seen.has(sig) && this.warnedRedundant
   }
 
-  onWrite(): void {
+  /**
+   * Re-arm the gate after the model changed something. When the written path is
+   * known, forget every remembered read that covered it: the bytes on disk are
+   * no longer the bytes the model saw, so looking again is new information, not
+   * a loop. Without this the gate blinds the model to its own edit — and since
+   * Edit needs an exact `old_string`, a blinded model cannot make the next one.
+   */
+  onWrite(writtenPath?: string): void {
+    if (writtenPath) {
+      const written = norm(writtenPath)
+      for (const [sig, scope] of this.seen) {
+        if (scope && covers(scope, written)) this.seen.delete(sig)
+      }
+    }
     this.readsSinceWrite = 0
     this.warnedRedundant = false
     this.warnedStall = false
     this.consecutiveDenies = 0
     this.lastDeniedSig = null
     this.redundantSigs.clear()
+    this.relented.clear()
+    this.stallDenies = 0
+    this.stallRelented = false
   }
 
   reset(): void {
@@ -99,5 +193,8 @@ export class ReadLoopGate {
     this.consecutiveDenies = 0
     this.lastDeniedSig = null
     this.redundantSigs.clear()
+    this.relented.clear()
+    this.stallDenies = 0
+    this.stallRelented = false
   }
 }

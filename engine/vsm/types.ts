@@ -19,6 +19,8 @@ export type PredictionSnapshot = {
     hitRate: number
     confidenceInterval: [number, number]
     nullBaselineRate: number
+    nullBaselineSource: 'measured' | 'assumed'
+    nullBaselineSamples: number
     significantlyBetter: boolean
   }[]
 }

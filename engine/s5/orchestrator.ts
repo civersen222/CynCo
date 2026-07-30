@@ -44,8 +44,8 @@ export class S5Orchestrator {
   private lastDecision: {
     decisionId: string
     ruleIds: string[]
-    stuckTurnsBefore: number
-    toolSuccessRateBefore: number
+    stuckTurnsBefore: number | null
+    toolSuccessRateBefore: number | null
   } | null = null
 
   constructor(s5: S5Interface) {
@@ -105,8 +105,12 @@ export class S5Orchestrator {
       this.lastDecision = {
         decisionId: decision.decisionId,
         ruleIds: decision.ruleIds ?? [],
-        stuckTurnsBefore: (gov?.stuckTurns as number) ?? 0,
-        toolSuccessRateBefore: (gov?.toolSuccessRate as number) ?? 1.0,
+        // null, not 0/1.0. These are the "before" half of a delta that becomes a
+        // training label; a fabricated baseline produces a fabricated label. The
+        // old `?? 1.0` on success rate biased every unreported turn toward
+        // "positive", which is the worst direction for a reward signal to lean.
+        stuckTurnsBefore: typeof gov?.stuckTurns === 'number' ? gov.stuckTurns : null,
+        toolSuccessRateBefore: typeof gov?.toolSuccessRate === 'number' ? gov.toolSuccessRate : null,
       }
     }
 
@@ -147,10 +151,22 @@ export class S5Orchestrator {
           priority: decision.priority,
           reasoning: decision.reasoning,
           // ACTION half of the (state, surfaced-tools, outcome) triple. STATE
-          // (taskClass, loadedTools) rides in `input`; OUTCOME is joined later by
-          // sessionId via exportTrainingData. Always present ([] when nothing
-          // surfaced) so the exporter sees a stable schema.
+          // (taskClass, loadedTools) rides in `input`; OUTCOME is backfilled by
+          // evaluateLastDecision, keyed on decisionId. Always present ([] when
+          // nothing surfaced) so the exporter sees a stable schema.
           surfaceTools: decision.surfaceTools ?? [],
+          model: decision.model,
+          tools: decision.tools,
+          // The join key for the outcome backfill. Without it the record cannot be
+          // matched to its own result: makeJournalEntry stamps its own Date.now(),
+          // so the caller never learns the line's timestamp.
+          decisionId: decision.decisionId ?? null,
+          // Which rules produced this, and which fired and were overridden. The
+          // losers are the only negative examples the rule engine generates; the
+          // winners are what makes them interpretable. Both were dropped here
+          // until now, so every journaled S5 line was unattributable.
+          ruleIds: decision.ruleIds ?? [],
+          rejected: decision.rejected ?? [],
         },
       }))
     }
@@ -170,30 +186,51 @@ export class S5Orchestrator {
     return this.s5.name
   }
 
-  evaluateLastDecision(governance: Record<string, unknown>): { decisionId: string; ruleIds: string[]; outcome: 'positive' | 'negative' } | null {
+  evaluateLastDecision(governance: Record<string, unknown>): { decisionId: string; ruleIds: string[]; outcome: 'positive' | 'negative' | 'unknown' } | null {
     if (!this.lastDecision) return null
-    const stuckNow = (governance.stuckTurns as number) ?? 0
-    const successNow = (governance.toolSuccessRate as number) ?? 1.0
+    const { decisionId, ruleIds, stuckTurnsBefore, toolSuccessRateBefore } = this.lastDecision
+    const stuckNow = typeof governance.stuckTurns === 'number' ? governance.stuckTurns : null
+    const successNow = typeof governance.toolSuccessRate === 'number' ? governance.toolSuccessRate : null
 
-    const improved = stuckNow < this.lastDecision.stuckTurnsBefore ||
-      successNow > this.lastDecision.toolSuccessRateBefore + 0.1
+    // A comparison needs both halves measured. Either side missing means this turn
+    // produced no evidence — which is a fact worth recording, and is not the same
+    // as evidence that the decision was bad. The previous `?? 0` / `?? 1.0` turned
+    // "not reported" into a confident verdict.
+    const stuckImproved = stuckTurnsBefore !== null && stuckNow !== null && stuckNow < stuckTurnsBefore
+    const successImproved = toolSuccessRateBefore !== null && successNow !== null && successNow > toolSuccessRateBefore + 0.1
+    const measurable = (stuckTurnsBefore !== null && stuckNow !== null) ||
+      (toolSuccessRateBefore !== null && successNow !== null)
 
-    const outcome = improved ? 'positive' as const : 'negative' as const
+    const outcome: 'positive' | 'negative' | 'unknown' = !measurable
+      ? 'unknown'
+      : (stuckImproved || successImproved) ? 'positive' : 'negative'
 
-    // Adjust rule weights based on outcome
-    if (this.ruleWeights) {
-      for (const ruleId of this.lastDecision.ruleIds) {
+    // Adjust rule weights based on outcome — but never on an unmeasured one, which
+    // would move the weights on no information.
+    if (this.ruleWeights && outcome !== 'unknown') {
+      for (const ruleId of ruleIds) {
         this.ruleWeights.recordOutcome(ruleId, outcome)
       }
     }
 
-    const result = {
-      decisionId: this.lastDecision.decisionId,
-      ruleIds: this.lastDecision.ruleIds,
-      outcome,
-    }
+    // Backfill the journal so the decision carries its own result. Keyed on
+    // decisionId: exact, and unlike the entry timestamp it is known to both sides.
+    // Unknown outcomes are written too — the exporter needs to tell "measured and
+    // bad" from "never measured", and a missing line cannot say which it was.
+    try {
+      getJournal()?.backfill('S5', { decisionId }, {
+        outcome,
+        measured: outcome !== 'unknown',
+        ruleIds,
+        // The raw deltas ride along so a later reader can re-derive the verdict
+        // instead of trusting this function's thresholds. null means not reported.
+        stuckTurnsBefore, stuckTurnsAfter: stuckNow,
+        toolSuccessRateBefore, toolSuccessRateAfter: successNow,
+      })
+    } catch (e) { console.log(`[s5] outcome backfill failed: ${e instanceof Error ? e.message : String(e)}`) }
+
     this.lastDecision = null
-    return result
+    return { decisionId, ruleIds, outcome }
   }
 
   /** Record user dismissal of a governance recommendation. */

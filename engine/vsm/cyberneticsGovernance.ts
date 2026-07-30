@@ -271,7 +271,8 @@ export class CyberneticsGovernance {
     }
   }
 
-  onToolResult(name: string, success: boolean, latencyMs: number, _output?: string, input?: unknown): void {
+  onToolResult(name: string, success: boolean, latencyMs: number, _output?: string, input?: unknown,
+               opts?: { governanceDenial?: boolean }): void {
     // Reset stuck counter on successful write/edit/bash operations
     // These represent actual progress — the model is doing real work
     if (success && ['Write', 'Edit', 'MultiEdit', 'Bash', 'ApplyPatch'].includes(name)) {
@@ -283,6 +284,10 @@ export class CyberneticsGovernance {
     if (this.toolHistory.length > 50) {
       this.toolHistory = this.toolHistory.slice(-50)
     }
+    // Feed the null-baseline sampler. Here rather than in onTurnComplete because
+    // the predicates are per tool call, and a turn calling five tools is five
+    // observations, not one.
+    this._predictionTracker.observeToolCall(name)
     // Track tool signatures for smarter stuck detection
     this.lastToolSignatures.push(name)
     if (this.lastToolSignatures.length > 5) this.lastToolSignatures = this.lastToolSignatures.slice(-5)
@@ -304,7 +309,7 @@ export class CyberneticsGovernance {
     if (this._ablated || this._paused) return // Skip all governance when ablated or paused
 
     // Route through real algedonic channel
-    const action = this.algedonicIntegration.recordToolResult(name, success, latencyMs)
+    const action = this.algedonicIntegration.recordToolResult(name, success, latencyMs, opts)
 
     // Emit domain event
     this.eventBus.emit(events.DomainEvent.algedonicFired(
@@ -314,18 +319,21 @@ export class CyberneticsGovernance {
       `Tool ${name}: ${success ? 'success' : 'failure'} (${latencyMs}ms)`,
     ))
 
-    // Escalate immediate-action signals
+    // Escalate immediate-action signals. A denial is named as one: reading
+    // "Tool Read failure" against a Read the engine itself refused sent a live
+    // 2026-07-28 diagnosis looking for a broken filesystem for ten minutes.
+    const what = opts?.governanceDenial ? `Tool ${name} denied by governance` : `Tool ${name} failure`
     if (action.type === 'Immediate' && this.onAlert) {
       this.onAlert({
         source: 'algedonic',
         severity: 'critical',
-        message: `Critical: Tool ${name} failure requires immediate attention`,
+        message: `Critical: ${what} requires immediate attention`,
       })
     } else if (action.type === 'Delayed' && this.onAlert) {
       this.onAlert({
         source: 'algedonic',
         severity: 'high',
-        message: `Tool ${name} failure — monitoring for recovery`,
+        message: `${what} — monitoring for recovery`,
       })
     }
 
@@ -384,6 +392,10 @@ export class CyberneticsGovernance {
     userMessage?: string
     /** 0..1 fraction of the context window in use at turn end (2026-07-16 audit). */
     contextUtilization?: number
+    /** What the server reported this turn cost. Absent when it reported nothing;
+     *  passed through to the measurements row unchanged rather than defaulted,
+     *  so an unmeasured turn stays visibly unmeasured. */
+    cost?: import('./governanceDb.js').TurnCostRecord
   }): void {
     // ── Consume-on-read: snapshot + clear all per-turn flags in one place, ───
     // before any early return, so flags are never carried across turns
@@ -571,11 +583,29 @@ export class CyberneticsGovernance {
       const responseStuck = this.lastResponses.length >= 3 && uniqueResponses === 1
         && this.lastResponses[0] !== ''
       const toolStuck = this.lastToolCallSigs.length >= 3 && uniqueToolSigs === 1
-      if (responseStuck || toolStuck) {
+      // A PERIODIC loop is invisible to the two rules above, because both ask
+      // whether the whole window is uniform. Measured on the L3-3.3 run
+      // (trajectory task-17656b4b, turns 78-105): four byte-identical Read
+      // calls then one byte-identical ContractAssertFail, repeating. The
+      // 5-signature window therefore held two distinct entries on every turn,
+      // toolStuck was false on every turn, and the report read
+      // `tools=1.00 stuck=0` across thirty turns with filesTouched=0.
+      //
+      // FingerprintRepetitionDetector already measures exactly this and fired
+      // 'identical' throughout. It was reported and forwarded to S5 and
+      // consumed by nothing — the intervention half (P4.4) was never built.
+      // Consuming it here is that half.
+      const repetitionStuck = this.fingerprintRepetition.alarm() !== null
+      if (responseStuck || toolStuck || repetitionStuck) {
         this.stuckCount++
-      } else {
-        this.stuckCount = Math.max(0, this.stuckCount - 1)
       }
+      // No decay branch. Stuck evidence is cleared by PROGRESS — a successful
+      // mutating call (onToolResult) or real file change (recordFileProgress),
+      // both of which reset to 0 outright — never by the mere absence of a
+      // repetition on one turn. Decaying on absence is what made the measured
+      // cycle unkillable even once the alarm was consulted: 'identical' fires on
+      // 2 turns of the period-5 cycle, and -1 on the other 3 nets to -1 per
+      // period. Either half of this fix alone leaves the loop invisible.
     }
 
     // Persist measurement to SQLite for cross-session learning
@@ -589,6 +619,7 @@ export class CyberneticsGovernance {
           stuckTurns: this.stuckCount,
           tokenEfficiency: 1.0,
           s4Composite: 5.0,
+          cost: metrics.cost,
         })
       } catch {}
     }
@@ -669,38 +700,47 @@ export class CyberneticsGovernance {
     const snapshot = hasEnoughData ? this.varietyEngine.current() : null
     const successRate = this.getSuccessRate()
 
-    // S3/S4 balance from real variety metrics
-    let s3s4Balance: 'balanced' | 'critical'
+    // Variety balance from the variety engine — environment against regulator.
     let varietyBalance: 'balanced' | 'underload' | 'overload'
-
     if (snapshot) {
       // Map library's VarietyBalance enum to governance report
       // Library values: 'Critical' | 'Overload' | 'Underload' | 'Balanced'
       switch (snapshot.balance) {
         case 'Critical':
           varietyBalance = 'overload' // severe mismatch
-          s3s4Balance = 'critical'
           break
         case 'Overload':
           varietyBalance = 'overload' // environment exceeds regulatory capacity
-          s3s4Balance = snapshot.ratio < 0.5 ? 'critical' : 'balanced'
           break
         case 'Underload':
           varietyBalance = 'underload' // excess regulatory capacity
-          s3s4Balance = 'balanced'
-          break
-        case 'Balanced':
-          varietyBalance = 'balanced'
-          s3s4Balance = 'balanced'
           break
         default:
           varietyBalance = 'balanced'
-          s3s4Balance = 'balanced'
       }
     } else {
       varietyBalance = 'balanced'
-      s3s4Balance = 'balanced'
     }
+
+    // Finding (af): s3s4Balance used to be derived from that same variety
+    // snapshot. The two are different measurements — variety is environment
+    // against regulator, the homeostat is S3 operations against S4 intelligence
+    // — and they share only two of their four state names. A variety ratio
+    // outside [0.5, 2.0] reads Critical, and the observed ratios were 5.5 and
+    // 7.0 because tool entropy and task complexity are not on one scale. So the
+    // field read 'critical' on 287 of 308 reports across three watched runs, and
+    // could never once produce 's3_dominant' or 's4_dominant' — the two values
+    // ruleBasedS5's W6 branches on exclusively, which is why W6 had never fired.
+    //
+    // The reading was already being taken: the pressures are measured below on
+    // every turn, handed to the homeostat, classified, stored and emitted as a
+    // domain event that nothing read. Report it.
+    const homeostatBalance = this.homeostatIntegration.getLastBalance()
+    const s3s4Balance: 'balanced' | 's3_dominant' | 's4_dominant' | 'critical' =
+      homeostatBalance === 'S3Dominant' ? 's3_dominant'
+      : homeostatBalance === 'S4Dominant' ? 's4_dominant'
+      : homeostatBalance === 'Critical' ? 'critical'
+      : 'balanced'
 
     // Status derivation — variety alone should NOT trigger critical, need real failures
     let status: 'healthy' | 'warning' | 'critical'
@@ -1080,12 +1120,36 @@ export class CyberneticsGovernance {
     return this.stuckCount
   }
 
-  /** Reset stuck counter — call on new user message to give fresh start. */
-  resetStuck(): void {
+  /**
+   * Begin a new task with governance counters that describe THIS task.
+   *
+   * Called once per user message. It used to be named resetStuck and cleared
+   * only the stuck counter and tool signatures, which left
+   * `consecutiveUnstableCount` carrying the previous task's total into S5's
+   * first decision of the next one. Finding (k): on L3-3.3b, S5 read "homeostat
+   * unstable 72x" before iteration 1 had run, called it a crisis, and
+   * restricted the entire task to read-only tools.
+   *
+   * `consecutiveUnstable` answers "how long has this task been unstable". At
+   * the start of a task the honest answer is zero, and zero is a measurement —
+   * unlike seventy-two, which was an answer to a question about a different task.
+   *
+   * Zeroing the counter is only half of it. All three stuck rules read rolling
+   * windows, and an inherited window lets the FIRST turn of a new task complete
+   * a repetition begun by the previous one: the narration window needs three
+   * uniform entries and keeps five, and the fingerprint window needs a run of
+   * three and keeps twenty. A task that opens by reading the file the last task
+   * died reading was scored stuck on turn 1 — off one observation, which cannot
+   * be a repetition of anything.
+   */
+  resetForNewTask(): void {
     this.stuckCount = 0
     this.lastToolSignatures = []
     this.lastToolCallSigs = []
-    console.log('[vsm] Stuck counter reset (new user message)')
+    this.lastResponses = []
+    this.fingerprintRepetition.reset()
+    this.consecutiveUnstableCount = 0
+    console.log('[vsm] Governance counters reset for new task (stuck, repetition windows, consecutive instability)')
   }
 
   /** Tell governance whether a workflow read-only phase is active.

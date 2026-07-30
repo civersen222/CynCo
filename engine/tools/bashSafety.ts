@@ -13,8 +13,15 @@ const BLOCKED_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
   { pattern: /\/etc\/(shadow|passwd|sudoers)/, reason: 'Access to system credential files is blocked' },
   { pattern: /\brm\s+-rf\s+[\/~]/, reason: 'Destructive rm -rf on root or home is blocked' },
   { pattern: /\bmkfs\b/, reason: 'Filesystem format commands are blocked' },
-  { pattern: /\b(env|printenv)\b/, reason: 'Commands that dump all environment variables are blocked — may expose secrets' },
-  { pattern: /echo\s+\$[A-Z_]*(?:SECRET|KEY|TOKEN|PASSWORD|CREDENTIAL)/, reason: 'Echoing secret environment variables is blocked' },
+  // The dump, not the word. `$env:NAME="value"` is how PowerShell — which is
+  // the Bash tool's shell on Windows — sets a variable for one command, and it
+  // dumps nothing. Matching bare `env` anywhere caught all of those, leaving no
+  // legal way to set an environment variable on Windows at all: `NAME=value cmd`
+  // is a PowerShell parse error and `set NAME=... && ...` is refused by the 5.1
+  // dialect check.
+  { pattern: /(?<![\w$:.])(?:env|printenv)\b(?!:)/, reason: 'Commands that dump all environment variables are blocked — may expose secrets' },
+  { pattern: /\bGet-ChildItem\s+Env:/i, reason: 'Commands that dump all environment variables are blocked — may expose secrets' },
+  { pattern: /(?:echo|write-output|write-host)\s+\$(?:env:)?[A-Za-z_]*(?:SECRET|KEY|TOKEN|PASSWORD|CREDENTIAL)/i, reason: 'Echoing secret environment variables is blocked' },
   { pattern: /curl.*\|\s*(?:bash|sh)\b/, reason: 'Piping remote scripts to shell is blocked' },
   { pattern: /\bdd\b.*\bof=\/dev\//, reason: 'Direct disk write commands are blocked' },
 ]

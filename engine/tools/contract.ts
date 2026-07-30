@@ -7,6 +7,7 @@
  * task contracts that the model self-verifies.
  */
 import type { ToolImpl } from './types.js'
+import { assertionCheck, gitProbe, verifyAssertion } from './contractVerify.js'
 
 // ---------------------------------------------------------------------------
 // Core data types
@@ -20,11 +21,26 @@ export interface Assertion {
   evidence?: string
 }
 
+/**
+ * Who wrote this contract. 'harness' means a person authored it — a mission
+ * brief's check script, which IS the specification. 'auto' covers everything
+ * else: the loop synthesizing assertions from the shape of a user message, the
+ * model calling ContractCreate on itself, the vibe controller deriving them
+ * from locked decisions. None of those state what was asked for; they state
+ * file mechanics, or the model's own opinion of its job.
+ *
+ * The reward labeler has to tell them apart. Satisfying an auto-contract is not
+ * evidence the task was done — on the L2b run one certified taskCompleted=1 for
+ * work that skipped every test the brief demanded.
+ */
+export type ContractOrigin = 'auto' | 'harness'
+
 export interface ContractSnapshot {
   title: string
   brief: string
   active: boolean
   complete: boolean
+  origin: ContractOrigin
   assertions: Assertion[]
 }
 
@@ -37,6 +53,14 @@ export class ContractState {
   private brief: string = ''
   private assertions: Assertion[] = []
   private active: boolean = false
+  private origin: ContractOrigin = 'auto'
+  /**
+   * HEAD at the moment the contract was created. Without it "Changes committed
+   * to git" is unfalsifiable — a repo with any history satisfies it. The live
+   * failure this guards against: a run that made zero edits passed that
+   * assertion citing 1166a60, a commit made before the task began.
+   */
+  private baseline: string | null = null
   /** Number of times the contract has been checked / enforcement rounds run */
   enforcementRounds: number = 0
 
@@ -51,12 +75,29 @@ export class ContractState {
   }
 
   /** Create (or replace) the contract with a title, brief, and list of assertion texts. */
-  create(title: string, brief: string, assertionTexts: string[]): void {
+  create(title: string, brief: string, assertionTexts: string[], origin: ContractOrigin = 'auto'): void {
     this.title = title
     this.brief = brief
     this.assertions = assertionTexts.map(text => ({ text, status: 'pending' as AssertionStatus }))
+    this.origin = origin
     this.active = true
+    this.baseline = null
     this.enforcementRounds = 0
+    this.enforcementEnabled = true
+  }
+
+  /** Record the repository state this contract's work will be measured against. */
+  setBaseline(head: string | null): void {
+    this.baseline = head
+  }
+
+  getBaseline(): string | null {
+    return this.baseline
+  }
+
+  /** Assertion text at `index`, or null when out of range. */
+  assertionText(index: number): string | null {
+    return this.assertions[index]?.text ?? null
   }
 
   /** Mark assertion at `index` as passed, optionally recording evidence. */
@@ -78,6 +119,27 @@ export class ContractState {
     if (index < 0 || index >= this.assertions.length) return
     this.assertions[index].status = 'skipped'
     if (reason !== undefined) this.assertions[index].evidence = reason
+  }
+
+  /**
+   * Enforcement budget exhausted with work still unverified. Force every
+   * pending assertion to failed so the contract RESOLVES rather than silently
+   * expiring — an unverified run must never report success. Returns the texts
+   * of the assertions that were forced, for reporting.
+   */
+  resolveUnverified(reason: string = 'enforcement budget exhausted — never verified'): string[] {
+    const forced: string[] = []
+    for (const a of this.assertions) {
+      if (a.status === 'pending') {
+        a.status = 'failed'
+        a.evidence = reason
+        forced.push(a.text)
+      }
+    }
+    if (forced.length > 0) {
+      this.active = false
+    }
+    return forced
   }
 
   /** True when a contract has been created and not yet cleared. */
@@ -106,10 +168,18 @@ export class ContractState {
 
   /** Return a human-readable status block. */
   getStatus(): string {
-    if (!this.active) return 'No active contract.'
+    if (!this.active && this.assertions.length === 0) return 'No active contract.'
 
     const lines: string[] = []
     lines.push(`Contract: ${this.title}`)
+    // Where the assertions came from. Without this the two kinds are
+    // indistinguishable, and on Gilded L4.1e the agent read 35 harness
+    // assertions, concluded they "appear auto-generated", and replaced them.
+    // An inferred contract IS a guess and should be treated as one; a
+    // harness contract is what the task will be judged against.
+    lines.push(this.origin === 'harness'
+      ? 'Source: supplied with the task — this is the specification your work is judged against, not a guess. It cannot be replaced.'
+      : 'Source: inferred by the engine from the request — approximate.')
     if (this.brief) lines.push(`Brief: ${this.brief}`)
     lines.push(`Enforcement rounds: ${this.enforcementRounds}`)
     lines.push('')
@@ -136,6 +206,20 @@ export class ContractState {
     return lines.join('\n')
   }
 
+  /** Who authored these assertions. 'harness' means a person did. */
+  getOrigin(): ContractOrigin {
+    return this.origin
+  }
+
+  /**
+   * The assertion texts, for consumers that need to know what the task requires
+   * rather than how far along it is — the tool floor reads these to decide
+   * whether the offered tool set can achieve the contract at all.
+   */
+  getAssertionTexts(): string[] {
+    return this.assertions.map(a => a.text)
+  }
+
   /** Return a deep-copied, serializable snapshot of the contract state. */
   snapshot(): ContractSnapshot {
     return {
@@ -143,6 +227,7 @@ export class ContractState {
       brief: this.brief,
       active: this.active,
       complete: this.isComplete(),
+      origin: this.origin,
       assertions: this.assertions.map(a => ({ ...a })),
     }
   }
@@ -153,7 +238,10 @@ export class ContractState {
     this.brief = ''
     this.assertions = []
     this.active = false
+    this.origin = 'auto'
+    this.baseline = null
     this.enforcementRounds = 0
+    this.enforcementEnabled = true
   }
 }
 
@@ -207,6 +295,27 @@ export const contractCreateTool: ToolImpl = {
       return { output: 'assertions must be a non-empty array of strings', isError: true }
     }
 
+    // A harness contract is the task author's specification. Replacing it is
+    // rewriting the yardstick the work is measured by — on Gilded L4.1e the
+    // agent judged 35 harness assertions "auto-generated", swapped in 5 of its
+    // own, and marked them all passed. It had in fact done the work, and the
+    // labeler refused to credit a self-authored contract (taskCompleted came
+    // back 'unknown'), so that run lost only its measurement. The next one
+    // might delete a gate it could not pass instead.
+    if (globalContract.isActive() && globalContract.getOrigin() === 'harness') {
+      return {
+        output:
+          'This contract came with the task and cannot be replaced — it is the ' +
+          'specification your work is measured against, not a draft.\n\n' +
+          'If an assertion is wrong, unsatisfiable, or contradicts the task, mark ' +
+          'that one with ContractAssertFail giving the reason, and say so in your ' +
+          'answer. Do not restate the criteria in your own words: an assertion you ' +
+          'wrote and then passed proves nothing about the task you were given.\n\n' +
+          globalContract.getStatus(),
+        isError: true,
+      }
+    }
+
     globalContract.create(title, brief, assertions)
     return {
       output: `Contract created: "${title}" with ${assertions.length} assertion(s).\n\n${globalContract.getStatus()}`,
@@ -223,7 +332,9 @@ export const contractAssertPassTool: ToolImpl = {
   name: 'ContractAssertPass',
   description:
     'Mark an assertion in the active contract as PASSED. Provide the assertion index (0-based) ' +
-    'and optional evidence showing it was met. Use ContractStatus to see current assertion indices.',
+    'and optional evidence showing it was met. Use ContractStatus to see current assertion indices. ' +
+    'Assertions about files and commits are checked against the repository — the claim is rejected ' +
+    'if the repository contradicts it, whatever the evidence says.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -240,12 +351,43 @@ export const contractAssertPassTool: ToolImpl = {
   },
   tier: 'auto',
   core: true,
-  execute: async (input) => {
+  execute: async (input, cwd) => {
     if (!globalContract.isActive()) {
       return { output: 'No active contract. Use ContractCreate first.', isError: true }
     }
     const index = input.index as number
-    globalContract.assertPass(index, input.evidence as string | undefined)
+    let evidence = input.evidence as string | undefined
+
+    // The engine or the harness wrote these assertions, so it knows which of
+    // them the workspace can answer. Where it can, the workspace's answer wins:
+    // a contradicted claim is refused outright rather than recorded as passed on
+    // the strength of the model's prose.
+    //
+    // A command check only runs for a 'harness' contract. Assertion text is
+    // model-writable through ContractCreate, and executing a string the model
+    // authored would be an unapproved shell call wearing a verification's
+    // clothes. A person's check script is a specification; the agent's is a wish.
+    const text = globalContract.assertionText(index)
+    let check = text ? assertionCheck(text) : null
+    if (check?.kind === 'command' && globalContract.getOrigin() !== 'harness') check = null
+    if (check) {
+      const v = await verifyAssertion(check, gitProbe(cwd), globalContract.getBaseline())
+      if (v.status === 'contradicted') {
+        return {
+          output:
+            `Assertion ${index} was NOT marked passed — the repository contradicts it.\n\n` +
+            `  Assertion: ${text}\n` +
+            `  Repository: ${v.detail}\n\n` +
+            `Do the work, then assert it. If the assertion cannot be satisfied, use ContractAssertFail.`,
+          isError: true,
+        }
+      }
+      if (v.status === 'unverifiable') {
+        evidence = `[unverified: ${v.detail}] ${evidence ?? ''}`.trim()
+      }
+    }
+
+    globalContract.assertPass(index, evidence)
     return { output: globalContract.getStatus(), isError: false }
   },
 }

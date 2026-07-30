@@ -34,8 +34,27 @@ export class AlgedonicIntegration {
    * Returns the routing action (Immediate/Delayed/Badge/Log).
    *
    * Behavioral effect: consecutive pain signals activate the kill switch.
+   *
+   * `governanceDenial` marks a call the engine REFUSED to run — the read-loop
+   * gate, the commit-scope guard, the allowedTools pin, S5's live restriction.
+   * Nothing executed, so nothing in the environment failed, and the kill switch
+   * is the wrong instrument: it exists to stop a run whose world is broken.
+   * Measured 2026-07-28 in the Gilded L4.5 run — five consecutive read-loop
+   * denials halted a session that was making edits, losing 148 uncommitted
+   * lines. The denial is meant to climb toward stuck detection's halt at 15,
+   * which gives the model room to adapt; the algedonic halt at 5 pre-empted it.
+   *
+   * A denial is NEUTRAL for the counter, not forgiving: it neither increments
+   * nor clears, so a genuine failure streak cannot be laundered by interleaving
+   * refusals. It still reaches the channel, so the pain ratio tells the truth
+   * about how much of the run was being refused.
    */
-  recordToolResult(toolName: string, success: boolean, latencyMs: number): ReturnType<typeof algedonic.routeSignal> {
+  recordToolResult(
+    toolName: string,
+    success: boolean,
+    latencyMs: number,
+    opts?: { governanceDenial?: boolean },
+  ): ReturnType<typeof algedonic.routeSignal> {
     const baseScore = success ? 0.15 : 0.7
     const latencyPenalty = latencyMs > 30000 ? 0.2 : latencyMs > 10000 ? 0.1 : 0
     const score = Math.min(1.0, baseScore + latencyPenalty)
@@ -64,7 +83,9 @@ export class AlgedonicIntegration {
     } catch {}
 
     // Track consecutive pain for kill switch
-    if (signal.isPain()) {
+    if (opts?.governanceDenial) {
+      // Neither arm nor clear — see the note on this method.
+    } else if (signal.isPain()) {
       this.consecutivePainCount++
       if (this.consecutivePainCount >= this.KILL_THRESHOLD) {
         this.killSwitch.activate(

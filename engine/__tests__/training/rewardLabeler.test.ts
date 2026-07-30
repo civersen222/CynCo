@@ -2,7 +2,7 @@ import { describe, expect, it, beforeEach } from 'bun:test'
 import { mkdtempSync, readFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { computeReward, finalizeTask } from '../../training/rewardLabeler.js'
+import { computeReward, finalizeTask, hasOutcomeEvidence, LABELER_VERSION } from '../../training/rewardLabeler.js'
 import type { RewardComponents, TaskReward } from '../../training/rewardLabeler.js'
 
 // ─── Helpers ──────────────────────────────────────────────────────
@@ -26,7 +26,7 @@ function perfectComponents(): RewardComponents {
 
 describe('computeReward', () => {
   it('perfect task gets high reward (> 0.8)', () => {
-    // 1.0 + 0.5 + 0.3 + 0.2 + 0.5 + 0.3 = 2.8 → clipped to 1.0
+    // base 1.0 (all components perfect) + 0.3 satisfaction → clipped to 1.0
     const r = computeReward(perfectComponents())
     expect(r).toBeGreaterThan(0.8)
     expect(r).toBe(1.0)
@@ -220,5 +220,242 @@ describe('finalizeTask', () => {
     const filePath = join(nested, 'task-deep.reward.json')
     const parsed: TaskReward = JSON.parse(readFileSync(filePath, 'utf-8'))
     expect(parsed.taskId).toBe('task-deep')
+  })
+})
+
+// ─── Normalization (2026-07-25) ───────────────────────────────────
+
+describe('computeReward — normalization', () => {
+  const withTests = (testsPass: number): RewardComponents => ({
+    testsPass,
+    typecheckPass: 1,
+    buildPass: 1,
+    diffClean: 1,
+    taskCompleted: 1,
+    stuckTurns: 0,
+    iterFraction: 0,
+    userSatisfaction: 0,
+    testsUnmodified: 1,
+  })
+
+  it('is strictly monotonic in testsPass even with every other component perfect', () => {
+    // THE bug: weights summed to 2.8 and clipped to 1.0, so 0.43 and 1.0 tied.
+    const low = computeReward(withTests(0.4286))
+    const high = computeReward(withTests(1.0))
+    expect(low).toBeLessThan(high)
+    expect(high - low).toBeGreaterThan(0.15)
+  })
+
+  it('does not reach the ceiling on non-test components alone', () => {
+    const noTests = computeReward({ ...withTests(0), testsPass: 0 })
+    expect(noTests).toBeLessThan(1.0)
+  })
+
+  it('scores a total test failure as a failure, not partial credit for compiling', () => {
+    // Hygiene is table stakes. Under an even weighting this shape scored 0.4 —
+    // above the 0.3 negative threshold — so a wholly failed task produced no
+    // DPO negative and the corpus stayed all-positive.
+    const allRed = computeReward({
+      testsPass: 0,
+      typecheckPass: 1,
+      buildPass: 1,
+      diffClean: 1,
+      taskCompleted: 0,
+      stuckTurns: 0,
+      iterFraction: 0,
+      userSatisfaction: 0,
+      testsUnmodified: 1,
+    })
+    expect(allRed).toBeLessThan(0.3)
+  })
+
+  it('ranks a half-passing task above a wholly failing one', () => {
+    const shape = (testsPass: number, taskCompleted: number) => computeReward({
+      testsPass, taskCompleted, typecheckPass: 1, buildPass: 1, diffClean: 1,
+      stuckTurns: 0, iterFraction: 0, userSatisfaction: 0, testsUnmodified: 1,
+    })
+    expect(shape(0.5, 0)).toBeGreaterThan(shape(0, 0))
+    expect(shape(1, 1)).toBeGreaterThan(shape(0.5, 0))
+  })
+
+  it('excludes unknown components from the denominator', () => {
+    // Only testsPass is known, so the base is exactly testsPass.
+    const r = computeReward({
+      testsPass: 0.5,
+      typecheckPass: 'unknown',
+      buildPass: 'unknown',
+      diffClean: 'unknown',
+      taskCompleted: 'unknown',
+      stuckTurns: 0,
+      iterFraction: 0,
+      userSatisfaction: 0,
+      testsUnmodified: 1,
+    })
+    expect(r).toBeCloseTo(0.5, 6)
+  })
+
+  it('an unknown component neither helps nor hurts relative to being absent', () => {
+    const known = computeReward({ ...withTests(0.5), typecheckPass: 1, buildPass: 1, diffClean: 1, taskCompleted: 1 })
+    const unknown = computeReward({
+      ...withTests(0.5), typecheckPass: 'unknown', buildPass: 'unknown', diffClean: 'unknown', taskCompleted: 'unknown',
+    })
+    expect(known).toBeGreaterThan(unknown) // real passes raise the score
+    expect(unknown).toBeCloseTo(0.5, 6)    // unknowns leave it at testsPass alone
+  })
+
+  it('scores 0 when nothing at all could be measured', () => {
+    const r = computeReward({
+      testsPass: 'unknown',
+      typecheckPass: 'unknown',
+      buildPass: 'unknown',
+      diffClean: 'unknown',
+      taskCompleted: 'unknown',
+      stuckTurns: 0,
+      iterFraction: 0,
+      userSatisfaction: 0,
+      testsUnmodified: 1,
+    })
+    expect(r).toBe(0)
+  })
+
+  it('still returns -1.0 when the safety gate trips', () => {
+    expect(computeReward({ ...withTests(1.0), testsUnmodified: 0 })).toBe(-1.0)
+  })
+})
+
+describe('finalizeTask — labelerVersion', () => {
+  it('stamps the current labeler version on every record', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'reward-ver-'))
+    const r = finalizeTask('task-ver', 5, {
+      testsPass: 1, typecheckPass: 'unknown', buildPass: 'unknown',
+      diffClean: 'unknown', taskCompleted: 'unknown',
+      stuckTurns: 0, iterFraction: 0, userSatisfaction: 0, testsUnmodified: 1,
+    }, dir)
+    expect(r.labelerVersion).toBe(LABELER_VERSION)
+    const parsed = JSON.parse(readFileSync(join(dir, 'task-ver.reward.json'), 'utf-8'))
+    expect(parsed.labelerVersion).toBe(LABELER_VERSION)
+  })
+
+  it('flags a record with no measurable positive component as degenerate', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'reward-degen-'))
+    const r = finalizeTask('task-degen', 2, {
+      testsPass: 'unknown', typecheckPass: 'unknown', buildPass: 'unknown',
+      diffClean: 'unknown', taskCompleted: 'unknown',
+      stuckTurns: 0, iterFraction: 0, userSatisfaction: 0, testsUnmodified: 1,
+    }, dir)
+    expect(r.degenerate).toBe(true)
+  })
+})
+
+// ─── Outcome evidence (hygiene is not outcome) ────────────────────
+
+describe('hasOutcomeEvidence', () => {
+  const blank = (): RewardComponents => ({
+    testsPass: 'unknown', typecheckPass: 'unknown', buildPass: 'unknown',
+    diffClean: 'unknown', taskCompleted: 'unknown',
+    stuckTurns: 0, iterFraction: 0, userSatisfaction: 0, testsUnmodified: 1,
+  })
+
+  it('is false when nothing at all was measured', () => {
+    expect(hasOutcomeEvidence(blank())).toBe(false)
+  })
+
+  it('is true when a test run was observed', () => {
+    expect(hasOutcomeEvidence({ ...blank(), testsPass: 0 })).toBe(true)
+  })
+
+  it('is true when task completion was observed', () => {
+    expect(hasOutcomeEvidence({ ...blank(), taskCompleted: 0 })).toBe(true)
+  })
+
+  it('is false for hygiene components alone — they are not outcome', () => {
+    expect(hasOutcomeEvidence({ ...blank(), diffClean: 1 })).toBe(false)
+    expect(hasOutcomeEvidence({ ...blank(), typecheckPass: 1 })).toBe(false)
+    expect(hasOutcomeEvidence({ ...blank(), buildPass: 1 })).toBe(false)
+    expect(hasOutcomeEvidence({ ...blank(), typecheckPass: 1, buildPass: 1, diffClean: 1 })).toBe(false)
+  })
+})
+
+describe('finalizeTask — hygiene alone cannot qualify a row', () => {
+  it('marks the do-nothing task degenerate instead of rewarding it ~1.0', () => {
+    // The saturation bug relocated to the denominator: diffClean is measured on
+    // any git repo and a clean tree scores 1, so an agent that did nothing at
+    // all scored base 1.0 on a denominator of 0.1.
+    const dir = mkdtempSync(join(tmpdir(), 'reward-nothing-'))
+    const r = finalizeTask('task-nothing', 1, {
+      testsPass: 'unknown', typecheckPass: 'unknown', buildPass: 'unknown',
+      diffClean: 1, taskCompleted: 'unknown',
+      stuckTurns: 0, iterFraction: 0, userSatisfaction: 0, testsUnmodified: 1,
+    }, dir)
+    expect(r.reward).toBe(1.0)      // the raw score is still a weighted mean
+    expect(r.degenerate).toBe(true) // but the row carries no outcome evidence
+    const parsed: TaskReward = JSON.parse(readFileSync(join(dir, 'task-nothing.reward.json'), 'utf-8'))
+    expect(parsed.degenerate).toBe(true)
+  })
+
+  it('marks a row degenerate when only typecheck and build were measured', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'reward-hygiene-'))
+    const r = finalizeTask('task-hygiene', 4, {
+      testsPass: 'unknown', typecheckPass: 1, buildPass: 1,
+      diffClean: 1, taskCompleted: 'unknown',
+      stuckTurns: 0, iterFraction: 0, userSatisfaction: 0, testsUnmodified: 1,
+    }, dir)
+    expect(r.degenerate).toBe(true)
+  })
+
+  it('keeps a row with a real test run, however hygiene went', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'reward-outcome-'))
+    const r = finalizeTask('task-outcome', 9, {
+      testsPass: 0.5, typecheckPass: 'unknown', buildPass: 'unknown',
+      diffClean: 'unknown', taskCompleted: 'unknown',
+      stuckTurns: 0, iterFraction: 0, userSatisfaction: 0, testsUnmodified: 1,
+    }, dir)
+    expect(r.degenerate).toBeUndefined()
+  })
+
+  it('keeps a row whose only outcome measurement is a failed task', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'reward-failed-'))
+    const r = finalizeTask('task-failed', 30, {
+      testsPass: 'unknown', typecheckPass: 'unknown', buildPass: 'unknown',
+      diffClean: 0, taskCompleted: 0,
+      stuckTurns: 0, iterFraction: 0, userSatisfaction: 0, testsUnmodified: 1,
+    }, dir)
+    expect(r.degenerate).toBeUndefined()
+  })
+
+  it('does not make a row degenerate merely because the safety gate could not run', () => {
+    // testsUnmodified: 'unknown' is disclosure, not disqualification — the row
+    // still carries a measured test outcome.
+    const dir = mkdtempSync(join(tmpdir(), 'reward-nogate-'))
+    const r = finalizeTask('task-nogate', 6, {
+      testsPass: 1, typecheckPass: 'unknown', buildPass: 'unknown',
+      diffClean: 'unknown', taskCompleted: 'unknown',
+      stuckTurns: 0, iterFraction: 0, userSatisfaction: 0, testsUnmodified: 'unknown',
+    }, dir)
+    expect(r.degenerate).toBeUndefined()
+    const parsed: TaskReward = JSON.parse(readFileSync(join(dir, 'task-nogate.reward.json'), 'utf-8'))
+    expect(parsed.components.testsUnmodified).toBe('unknown')
+  })
+})
+
+// ─── The safety gate when it could not look (2026-07-25) ──────────
+
+describe('computeReward — testsUnmodified unknown', () => {
+  it('does not veto when the gate could not run', () => {
+    const r = computeReward({
+      testsPass: 1, typecheckPass: 'unknown', buildPass: 'unknown',
+      diffClean: 'unknown', taskCompleted: 'unknown',
+      stuckTurns: 0, iterFraction: 0, userSatisfaction: 0, testsUnmodified: 'unknown',
+    })
+    expect(r).toBe(1.0)
+  })
+
+  it('still vetoes on a measured 0', () => {
+    const r = computeReward({
+      testsPass: 1, typecheckPass: 'unknown', buildPass: 'unknown',
+      diffClean: 'unknown', taskCompleted: 'unknown',
+      stuckTurns: 0, iterFraction: 0, userSatisfaction: 0, testsUnmodified: 0,
+    })
+    expect(r).toBe(-1.0)
   })
 })

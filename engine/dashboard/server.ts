@@ -20,6 +20,13 @@ import type { EngineEvent } from '../bridge/protocol.js'
 import { setParam, GOVERNANCE_PARAMS, exportParamMetadata } from '../vsm/governanceParams.js'
 import { globalContract } from '../tools/contract.js'
 import { ThinkingRecorder } from '../memory/thinkingRecorder.js'
+import {
+  loadTrajectories,
+  summarizeCorpus,
+  evaluateReadiness,
+  GATE_MIN_USABLE,
+} from '../training/datasetBuilder.js'
+import type { TokenSet, TokenScope } from '../security/localToken.js'
 
 // ---------------------------------------------------------------------------
 // DashboardDeps — optional callbacks into the engine
@@ -43,26 +50,38 @@ export interface DashboardDeps {
 }
 
 // ---------------------------------------------------------------------------
-// CORS headers applied to every response
+// No CORS grant
 // ---------------------------------------------------------------------------
-
-const CORS_HEADERS: Record<string, string> = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type',
-}
+//
+// Every response used to carry `Access-Control-Allow-Origin: *`. That header is
+// precisely the grant that lets a cross-origin page READ a reply, and the replies
+// here include /api/sessions/<id>/transcript — the raw session journal, so every
+// file the Read tool pulled in, every diff, every Bash output — plus /api/thinking,
+// which is the model's reasoning. Any page open in any browser on this machine
+// could chain /api/thinking/sessions into the transcript route and exfiltrate the
+// lot on a page load. Binding to loopback does not help; the browser is already
+// inside loopback.
+//
+// The dashboard page is served from this origin, so it needs no grant at all.
+// Absent beats narrow: there is no legitimate cross-origin reader to name.
+//
+// This does NOT protect the POST /config/* routes, and it never did. An attacker
+// sends Content-Type: text/plain to make the request "simple" (no preflight), the
+// request lands, and req.json() parses the body regardless of the declared type.
+// The response is unreadable but the mutation already happened. Only a token or
+// an Origin check stops that; the management-scope gate below is what does it.
 
 function jsonResponse(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json' },
   })
 }
 
 function htmlResponse(body: string, status = 200): Response {
   return new Response(body, {
     status,
-    headers: { ...CORS_HEADERS, 'Content-Type': 'text/html; charset=utf-8' },
+    headers: { 'Content-Type': 'text/html; charset=utf-8' },
   })
 }
 
@@ -118,9 +137,16 @@ export class DashboardServer {
   private _port: number
   private _hostname: string
   private indexHtml: string
+  /**
+   * Required, and deliberately not optional-with-a-default. A missing token
+   * store must be a compile error at the call site, never a dashboard that
+   * quietly starts up serving transcripts to anyone who asks.
+   */
+  private tokens: TokenSet
 
-  constructor({ port = 9161, deps = {} }: { port?: number; deps?: DashboardDeps } = {}) {
+  constructor({ port = 9161, deps = {}, tokens }: { port?: number; deps?: DashboardDeps; tokens: TokenSet }) {
     this.deps = deps
+    this.tokens = tokens
     this._port = port
     this._hostname = process.env.LOCALCODE_DASHBOARD_HOST || '127.0.0.1'
 
@@ -145,23 +171,43 @@ export class DashboardServer {
         const pathname = url.pathname
         const method = req.method
 
-        // WebSocket upgrade at /ws
+        // WebSocket upgrade at /ws. The stream carries the same conversation
+        // content as the transcript route, so it takes the same scope — but a
+        // browser cannot set headers on a WebSocket handshake, which is why this
+        // one route reads the token from the query string. Refused before
+        // server.upgrade: an accepted-then-closed socket has already run `open`.
         if (pathname === '/ws') {
+          const denied = this.requireScope(req, 'inference', { allowQueryToken: true })
+          if (denied) return denied
           const success = server.upgrade(req)
           if (success) return undefined
           return new Response('WebSocket upgrade failed', { status: 400 })
         }
 
-        // Handle CORS preflight
+        // A preflight with no Access-Control-* headers in the reply is a refusal:
+        // the browser fails the CORS check and never sends the real request. The
+        // dashboard page is same-origin and never preflights.
         if (method === 'OPTIONS') {
-          return new Response(null, { status: 204, headers: CORS_HEADERS })
+          return new Response(null, { status: 204 })
         }
+
+        // GET / is the one ungated route: it is how the inference token reaches
+        // the page, so it cannot itself require one. With no ACAO on the reply a
+        // cross-origin page cannot read what it delivers — that is what makes
+        // this safe, and why the CORS removal had to come first.
+        if (method === 'GET' && pathname === '/') {
+          return this.serveIndex()
+        }
+
+        // Everything else is gated, including unknown paths: a 404 that answers
+        // before the token check turns the route table into public information.
+        const scope: TokenScope = method === 'GET' ? 'inference' : 'management'
+        const denied = this.requireScope(req, scope)
+        if (denied) return denied
 
         // GET routes
         if (method === 'GET') {
           switch (pathname) {
-            case '/':
-              return this.serveIndex()
             case '/api/governance':
               return this.getGovernance()
             case '/api/predictions':
@@ -201,39 +247,42 @@ export class DashboardServer {
             }
             case '/api/training': {
               try {
-                const { loadTrajectories } = require('../training/datasetBuilder.js')
-                const { homedir } = require('os')
-                const { join } = require('path')
-                const { readdirSync, readFileSync, existsSync } = require('fs')
                 const trajDir = join(homedir(), '.cynco', 'trajectories')
                 const rewDir = join(homedir(), '.cynco', 'rewards')
-                const dsDir = join(homedir(), '.cynco', 'datasets')
-                const trajFiles = existsSync(trajDir) ? readdirSync(trajDir).filter((f: string) => f.endsWith('.jsonl')).length : 0
-                const rewFiles = existsSync(rewDir) ? readdirSync(rewDir).filter((f: string) => f.endsWith('.json')).length : 0
-                let totalTurns = 0
-                if (existsSync(trajDir)) {
-                  for (const f of readdirSync(trajDir).filter((f: string) => f.endsWith('.jsonl'))) {
-                    totalTurns += readFileSync(join(trajDir, f), 'utf-8').trim().split('\n').length
-                  }
-                }
-                let sftExamples = 0
-                const sftPath = join(dsDir, 'sft.jsonl')
-                if (existsSync(sftPath)) {
-                  sftExamples = readFileSync(sftPath, 'utf-8').trim().split('\n').length
-                }
-                const readyForSFT = sftExamples >= 300
-                const targetExamples = 300
+
+                // loadSnapshots: false — this endpoint is polled and a snapshot
+                // runs to 2 MB. Eligibility only needs the file to exist.
+                const trajectories = loadTrajectories(trajDir, rewDir, { loadSnapshots: false })
+                const stats = summarizeCorpus(trajectories)
+                const readiness = evaluateReadiness(stats)
+                const totalTurns = trajectories.reduce((sum, t) => sum + t.turns.length, 0)
+
                 return jsonResponse({
-                  tasks: trajFiles,
+                  tasks: stats.totalTasks,
                   turns: totalTurns,
-                  rewards: rewFiles,
-                  sftExamples,
-                  targetExamples,
-                  readyForSFT,
-                  progress: Math.min(1, sftExamples / targetExamples),
+                  rewards: stats.tasksWithRewards,
+                  usableExamples: stats.usableExamples,
+                  negativeExamples: stats.negativeExamples,
+                  legacyExcluded: stats.legacyExcluded,
+                  // null, not 0, when nothing was averaged — a client must not
+                  // be able to render an unmeasured corpus as "0.000".
+                  avgReward: stats.usableExamples > 0 ? stats.avgReward : null,
+                  targetExamples: GATE_MIN_USABLE,
+                  readyForSFT: readiness.ready,
+                  conditions: readiness.conditions,
+                  progress: Math.min(1, stats.usableExamples / GATE_MIN_USABLE),
                 })
-              } catch {
-                return jsonResponse({ tasks: 0, turns: 0, rewards: 0, sftExamples: 0, targetExamples: 300, readyForSFT: false, progress: 0 })
+              } catch (e) {
+                // Counts are null, not 0. A corpus that could not be read must
+                // not render identically to an empty one — "0 usable examples"
+                // would be a measurement nobody took.
+                return jsonResponse({
+                  error: e instanceof Error ? e.message : String(e),
+                  tasks: null, turns: null, rewards: null, usableExamples: null,
+                  negativeExamples: null, legacyExcluded: null, avgReward: null,
+                  targetExamples: GATE_MIN_USABLE,
+                  readyForSFT: false, conditions: [], progress: null,
+                })
               }
             }
             case '/api/thinking/sessions': {
@@ -327,10 +376,101 @@ export class DashboardServer {
     })
   }
 
+  // ── Authorization ───────────────────────────────────────────────
+
+  /**
+   * Null when the caller holds `scope`, otherwise the refusal to return.
+   *
+   * 401 and 403 are different answers and must not render identically: 401 says
+   * "I do not know who you are", 403 says "I do, and you may not do this". The
+   * second is the one that matters here — the inference token is handed to a
+   * browser page in its own HTML, so it is the secret most likely to escape, and
+   * it must not carry configuration rights with it.
+   *
+   * `allowQueryToken` exists for /ws alone. Query strings reach access logs,
+   * shell history and Referer headers, so nothing that can use a header is
+   * permitted to use the query string instead.
+   */
+  private requireScope(
+    req: Request,
+    scope: TokenScope,
+    { allowQueryToken = false }: { allowQueryToken?: boolean } = {},
+  ): Response | null {
+    const authz = req.headers.get('authorization') ?? ''
+    let presented = authz.startsWith('Bearer ') ? authz.slice(7) : null
+    if (presented === null && allowQueryToken) {
+      presented = new URL(req.url).searchParams.get('token')
+    }
+
+    if (presented === null) return jsonResponse({ error: 'token required' }, 401)
+    if (this.tokens.verify(presented, scope)) return null
+    // A real token lacking the scope is told so; anything else is not
+    // acknowledged as a token at all.
+    if (this.tokens.isKnown(presented)) {
+      return jsonResponse({ error: `scope '${scope}' required` }, 403)
+    }
+    return jsonResponse({ error: 'token required' }, 401)
+  }
+
   // ── GET Handlers ────────────────────────────────────────────────
 
+  /**
+   * The page, with the inference token injected at request time.
+   *
+   * Injected rather than baked in at startup so the served copy always matches
+   * the current token file, and rather than fetched by the page from an endpoint
+   * — an endpoint handing out tokens to anyone who asks is the hole this closes.
+   */
   private serveIndex(): Response {
-    return htmlResponse(this.indexHtml)
+    const token = this.tokens.tokenFor('inference') ?? ''
+    const inject = `<script>
+window.__CYNCO_TOKEN = ${JSON.stringify(token)};
+(function () {
+  var raw = window.fetch;
+  function sameOrigin(input) {
+    // A relative URL, or an absolute one naming this origin. Anything else is a
+    // third party and must not receive our token.
+    var u = typeof input === 'string' ? input : (input && input.url) || '';
+    return u.indexOf('//') === -1 || u.indexOf(location.origin) === 0;
+  }
+  function withAuth(init, input, secret) {
+    init = Object.assign({}, init);
+    var h = new Headers(init.headers || (input && input.headers) || {});
+    h.set('Authorization', 'Bearer ' + secret);
+    init.headers = h;
+    return init;
+  }
+  window.fetch = function (input, init) {
+    if (!sameOrigin(input)) return raw(input, init);
+    return raw(input, withAuth(init, input, window.__CYNCO_TOKEN)).then(function (res) {
+      // 403 means the route wants the management scope, which is never handed to
+      // a page: the engine prints it once at startup and it is pasted by hand.
+      // Held in sessionStorage so one paste covers a sitting and none survives
+      // the tab closing.
+      if (res.status !== 403) return res;
+      var t = sessionStorage.getItem('cynco_management_token');
+      if (!t) {
+        t = window.prompt('Management token (printed by the engine at startup):');
+        if (!t) return res;
+        t = t.trim();
+        sessionStorage.setItem('cynco_management_token', t);
+      }
+      return raw(input, withAuth(init, input, t)).then(function (retry) {
+        // A stored token that is still refused is the wrong one. Drop it so the
+        // next attempt asks again rather than failing silently forever.
+        if (retry.status === 403) sessionStorage.removeItem('cynco_management_token');
+        return retry;
+      });
+    });
+  };
+})();
+</script>`
+    // Before any other script so no call site can run unauthenticated. If the
+    // page has no <head>, prepending still puts it first.
+    const body = this.indexHtml.includes('<head>')
+      ? this.indexHtml.replace('<head>', `<head>${inject}`)
+      : inject + this.indexHtml
+    return htmlResponse(body)
   }
 
   private getGovernance(): Response {
@@ -405,8 +545,14 @@ export class DashboardServer {
   }
 
   private getSessionTranscript(sessionId: string): Response {
+    // Both siblings — getThinkingTurns and getThinkingTurn — have always done
+    // this. This one had drifted, and joined ~/.cynco/sessions to whatever the
+    // URL carried, so `..%2f..%2f` reached any .jsonl on disk. 400 rather than an
+    // empty 200: "no such session" and "that is not a session id" are different
+    // answers and must not render the same.
+    if (!SESSION_ID_RE.test(sessionId)) return jsonResponse({ error: 'invalid session id' }, 400)
     try {
-      const sessionDir = join(homedir(), '.cynco', 'sessions')
+      const sessionDir = this.deps.sessionsDir ?? join(homedir(), '.cynco', 'sessions')
       const sessionFile = join(sessionDir, `${sessionId}.jsonl`)
       if (!existsSync(sessionFile)) return jsonResponse([])
       const lines = readFileSync(sessionFile, 'utf-8').trim().split('\n')

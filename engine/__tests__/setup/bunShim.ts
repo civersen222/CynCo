@@ -38,52 +38,42 @@ interface BunWS {
   data: unknown
 }
 
-function makeBunServe(options: BunWSServerOptions): BunServerLike {
-  // Map from raw http.IncomingMessage to upgrade callback
-  const pendingUpgrades = new Map<http.IncomingMessage, () => void>()
+const STATUS_TEXT: Record<number, string> = {
+  400: 'Bad Request', 401: 'Unauthorized', 403: 'Forbidden',
+  404: 'Not Found', 409: 'Conflict', 426: 'Upgrade Required',
+}
 
-  const httpServer = http.createServer(async (req, res) => {
-    // Build a minimal WHATWG Request for the fetch handler
-    const url = `http://localhost:${options.port}${req.url ?? '/'}`
+function makeBunServe(options: BunWSServerOptions): BunServerLike {
+  /** Rebuild a WHATWG Request from a raw Node request (headers only if no body). */
+  function toRequest(req: http.IncomingMessage, body?: Buffer): Request {
     const headers: Record<string, string> = {}
     for (const [k, v] of Object.entries(req.headers)) {
       if (typeof v === 'string') headers[k] = v
       else if (Array.isArray(v)) headers[k] = v.join(', ')
     }
+    return new Request(`http://localhost:${options.port}${req.url ?? '/'}`, {
+      method: req.method ?? 'GET',
+      headers,
+      body: body && body.length > 0 ? body : undefined,
+    })
+  }
 
+  const httpServer = http.createServer(async (req, res) => {
     let bodyChunks: Buffer[] = []
     await new Promise<void>(resolve => {
       req.on('data', (c: Buffer) => bodyChunks.push(c))
       req.on('end', resolve)
     })
-    const body = bodyChunks.length > 0 ? Buffer.concat(bodyChunks) : undefined
+    const request = toRequest(req, bodyChunks.length > 0 ? Buffer.concat(bodyChunks) : undefined)
 
-    const request = new Request(url, {
-      method: req.method ?? 'GET',
-      headers,
-      body: body && body.length > 0 ? body : undefined,
-    })
-
-    // Provide upgrade function — marks this request for WS upgrade.
-    // Like real Bun, upgrade() fails for plain HTTP requests; real WS
-    // handshakes never reach this handler (ws handles the 'upgrade' event).
-    let upgradeRequested = false
-    const isWsUpgrade = (req.headers['upgrade'] ?? '').toLowerCase() === 'websocket'
+    // upgrade() fails for plain HTTP, as in real Bun. WebSocket handshakes do
+    // not arrive here at all — Node routes them to the 'upgrade' event below.
     const serverLike: BunServerLike = {
-      upgrade: (_req: Request) => {
-        if (!isWsUpgrade) return false
-        upgradeRequested = true
-        return true
-      },
+      upgrade: (_req: Request) => false,
       stop: () => { httpServer.close() },
     }
 
     const response = await options.fetch(request, serverLike)
-
-    if (upgradeRequested) {
-      // The WebSocketServer's upgrade listener will handle it
-      return
-    }
 
     if (response == null) {
       res.writeHead(200)
@@ -107,7 +97,45 @@ function makeBunServe(options: BunWSServerOptions): BunServerLike {
     res.end()
   })
 
-  const wss = new WebSocketServer({ server: httpServer })
+  // `{ server: httpServer }` would make ws answer the handshake itself, and the
+  // fetch handler would never see it. Production code does its authorization in
+  // fetch, before calling server.upgrade — under that wiring every one of those
+  // checks was unreachable from the test suite, so the WS bridge could have been
+  // wide open and nothing here would have gone red. noServer + our own listener
+  // reproduces Bun's order: fetch first, upgrade only if it asked for one.
+  const wss = new WebSocketServer({ noServer: true })
+
+  httpServer.on('upgrade', async (req, socket, head) => {
+    let upgradeRequested = false
+    const serverLike: BunServerLike = {
+      upgrade: (_req: Request) => { upgradeRequested = true; return true },
+      stop: () => { httpServer.close() },
+    }
+
+    let response: Response | undefined
+    try {
+      response = await options.fetch(toRequest(req), serverLike)
+    } catch {
+      upgradeRequested = false
+      response = new Response('handler error', { status: 500 })
+    }
+
+    if (upgradeRequested) {
+      wss.handleUpgrade(req, socket as any, head, ws => wss.emit('connection', ws, req))
+      return
+    }
+
+    // Refused. Answer the handshake with the real status so the client can tell
+    // 401 from 403 from 409 — `ws` surfaces this as 'unexpected-response'.
+    const status = response?.status ?? 426
+    const body = response ? await response.text() : 'WebSocket upgrade required'
+    socket.write(
+      `HTTP/1.1 ${status} ${STATUS_TEXT[status] ?? 'Error'}\r\n` +
+      `Connection: close\r\n` +
+      `Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`,
+    )
+    socket.destroy()
+  })
 
   wss.on('connection', (ws: WsWebSocket) => {
     const bunWs: BunWS = {

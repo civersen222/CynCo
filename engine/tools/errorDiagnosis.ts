@@ -14,5 +14,12 @@ export function diagnoseError(stderr: string): Diagnosis {
   for (const { type, pattern, hint } of PATTERNS) {
     if (pattern.test(stderr)) return { type, hint, formatted: `[ERROR: ${type}] ${hint}\n\n${stderr}` }
   }
-  return { type: 'unknown', hint: 'Check the error output above', formatted: `[ERROR: unknown] Check the error output above\n\n${stderr}` }
+  // No pattern matched, so no diagnosis was made. The old banner —
+  // "[ERROR: unknown] Check the error output above" — said nothing the output
+  // did not already say, and it said it in the voice of a diagnosis. A
+  // verification harness that ran correctly and answered "no" came back to the
+  // model headed as an engine-level error, which teaches the model to distrust
+  // its own gate. Return the output unchanged: absence of a diagnosis is a
+  // legitimate result, and a plausible-sounding label is not.
+  return { type: 'unknown', hint: 'Check the error output above', formatted: stderr }
 }

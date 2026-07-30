@@ -88,6 +88,43 @@ export type TokenUsage = {
   cache_creation_input_tokens?: number
   server_tool_use?: { web_search_requests?: number }
   speed?: string
+  cost?: TurnCost
+}
+
+/**
+ * What one turn actually cost, as reported by the server.
+ *
+ * `input_tokens` above is the size of the prompt; it is NOT what the prompt cost.
+ * llama-server reports both: a turn with `prompt_tokens: 11` can have
+ * `cache_n: 7, prompt_n: 4` — eleven tokens of context, four tokens of work. For
+ * context accounting the first number is right and for cost accounting the second
+ * is, and conflating them makes a cached 60k-token prefix look identical to a
+ * cold one.
+ *
+ * Every field is nullable and `source` says which server produced them. A server
+ * that reports no timings yields nulls, never zeros: zero prefill milliseconds is
+ * a claim that the prefill was free.
+ */
+export type TurnCost = {
+  /** Tokens actually evaluated (llama.cpp `timings.prompt_n`). */
+  prefillTokens: number | null
+  /** Tokens served from KV cache (`timings.cache_n`). */
+  cachedTokens: number | null
+  /** Tokens generated (`timings.predicted_n`). */
+  decodeTokens: number | null
+  prefillMs: number | null
+  decodeMs: number | null
+  /** Engine-measured round trip. Includes queueing the server cannot see. */
+  wallMs: number | null
+  /** llama-server KV slot. Not present in the OpenAI-compatible response, so null
+   *  until something queries `/slots`; the column exists for the affinity work. */
+  slot: number | null
+  /**
+   * 'server-timings' — llama.cpp `timings` block, everything measured.
+   * 'usage-only'     — token counts only; no timing was reported.
+   * 'none'           — the server said nothing about cost.
+   */
+  source: 'server-timings' | 'usage-only' | 'none'
 }
 
 export type CompletionResponse = {

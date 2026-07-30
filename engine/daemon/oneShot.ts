@@ -68,6 +68,29 @@ export function extractOutcome(text: string): TaskOutcome {
   return { ok: true, summary: `(unstructured output) ${tail || '(no output)'}`, recommendations: [] }
 }
 
+/**
+ * How many turns the model actually took.
+ *
+ * A run whose model calls all failed (every request timing out, say) leaves the
+ * loop with no assistant messages at all: zero turns, zero files written. That
+ * is a failed run, and the outcome must say so — see runGovernedLoop.
+ *
+ * An assistant message counts only if it carried something: real text, or a
+ * tool call. Empty/whitespace shells are not turns.
+ */
+export function countAssistantTurns(messages: Message[]): number {
+  let turns = 0
+  for (const m of messages) {
+    if (m.role !== 'assistant') continue
+    const substantive = (m.content ?? []).some((block: any) => {
+      if (block?.type === 'text') return typeof block.text === 'string' && block.text.trim().length > 0
+      return block?.type === 'tool_use'
+    })
+    if (substantive) turns++
+  }
+  return turns
+}
+
 function collectAssistantText(messages: Message[]): string {
   const parts: string[] = []
   for (const m of messages) {
@@ -145,16 +168,26 @@ export async function runGovernedLoop(opts: {
     clearTimeout(timer)
   }
 
-  const collectedText = collectAssistantText(loop.getMessages())
+  const messages = loop.getMessages()
+  const collectedText = collectAssistantText(messages)
   const sessionId = loop.getSessionId()
-  if (timedOut) {
-    return { ok: false, summary: collectedText.slice(-1000), recommendations: [], error: 'Internal deadline exceeded', sessionId }
-  }
+  const meta = { sessionId, rescues: loop.floorEvents }
+
+  // Single gate for "this run did not succeed", so every exit path obeys the
+  // same rule and no branch can hardcode ok:true past it. The zero-turn case
+  // is the one that used to slip through: extractOutcome's unstructured
+  // fallback returned ok:true, so a run where every model call timed out —
+  // no turns, no files written — reported success to the daemon ledger.
   const haltReason = haltCapture.haltReason()
-  if (haltReason) {
-    return { ok: false, summary: collectedText.slice(-1000), recommendations: [], error: `HALTED: ${haltReason}`, sessionId }
+  const failure =
+    timedOut ? 'Internal deadline exceeded'
+    : haltReason ? `HALTED: ${haltReason}`
+    : countAssistantTurns(messages) === 0 ? 'No model turns completed — the run did no work'
+    : null
+  if (failure) {
+    return { ok: false, summary: collectedText.slice(-1000), recommendations: [], error: failure, ...meta }
   }
-  return { ...extractOutcome(collectedText), sessionId }
+  return { ...extractOutcome(collectedText), ...meta }
 }
 
 export async function runOneShotTask(
@@ -190,6 +223,9 @@ export async function runOneShotTask(
 
     writeOutcome(outcomePath, outcome)
     console.log(`[one-shot] Outcome written: ${outcomePath}`)
+    if (outcome.rescues?.length) {
+      console.log(`[one-shot] Engine self-corrections: ${outcome.rescues.join('; ')}`)
+    }
     return outcome.ok ? 0 : 1
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)

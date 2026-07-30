@@ -8,6 +8,10 @@
  *   2. Surface the real dialect in the tool description + system prompt,
  *   3. Pre-flight-reject && / || on 5.1 with an instructive, deterministic
  *      error (one cheap turn instead of a cryptic parse failure).
+ *   4. TRANSLATE the POSIX `NAME=value command` env prefix rather than reject it,
+ *      wherever the translation provably means the same thing. Instructing costs
+ *      a turn every time it happens, and it kept happening — five occurrences on
+ *      one run, long after the error had taught the lesson once.
  */
 import { execFileSync } from 'child_process'
 
@@ -15,6 +19,7 @@ export type ShellInfo = {
   shell: string           // executable passed to exec()
   displayName: string     // human-readable name for prompts/descriptions
   supportsAndAnd: boolean // whether && / || work in this shell
+  isPowerShell: boolean   // `NAME=value command` is a parse error in every PowerShell
   dialectNote: string     // one-line dialect guidance for the system prompt
 }
 
@@ -24,6 +29,7 @@ export function classifyShell(platform: string, hasPwsh: boolean): ShellInfo {
       shell: '/bin/bash',
       displayName: 'bash',
       supportsAndAnd: true,
+      isPowerShell: false,
       dialectNote: 'Shell is bash. Standard POSIX syntax (&&, ||, pipes) works.',
     }
   }
@@ -32,24 +38,196 @@ export function classifyShell(platform: string, hasPwsh: boolean): ShellInfo {
       shell: 'pwsh.exe',
       displayName: 'PowerShell 7 (pwsh)',
       supportsAndAnd: true,
-      dialectNote: 'Shell is PowerShell 7 (pwsh). && and || are supported. Use PowerShell cmdlets, not Unix commands.',
+      isPowerShell: true,
+      dialectNote: 'Shell is PowerShell 7 (pwsh). && and || are supported. Use PowerShell cmdlets, not Unix commands. A POSIX env-var prefix (NAME=value command) is translated for you when the command is the whole remainder; to carry a variable across a sequence, write $env:NAME="value"; yourself.',
     }
   }
   return {
     shell: 'powershell.exe',
     displayName: 'Windows PowerShell 5.1',
     supportsAndAnd: false,
-    dialectNote: "Shell is Windows PowerShell 5.1 — '&&' and '||' are NOT supported. Sequence commands with ';' (e.g. 'cd proj; python -m pytest') or use 'if ($?) { ... }' for conditional chaining.",
+    isPowerShell: true,
+    dialectNote: "Shell is Windows PowerShell 5.1 — '&&' and '||' are NOT supported. Sequence commands with ';' (e.g. 'cd proj; python -m pytest') or use 'if ($?) { ... }' for conditional chaining. A POSIX env-var prefix (NAME=value command) is translated for you when the command is the whole remainder; to carry a variable across a sequence, write $env:NAME=\"value\"; yourself.",
   }
+}
+
+/**
+ * A leading run of `NAME=value` assignments — the POSIX way to set variables for
+ * one command, and the first thing anyone reaches for because briefs are written
+ * that way. Anchored to the start of a command (string start or after `;`) so an
+ * ordinary argument that happens to contain `=` is left alone.
+ */
+const ENV_PREFIX = /(?:^|;)\s*((?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+)(?=\S)/
+
+/**
+ * Rewrite a POSIX env prefix into this shell's dialect, or return the command
+ * unchanged when there is nothing to rewrite.
+ *
+ * `NAME=value command` means the same thing in every shell that has a way to
+ * say it, so this is a translation and not a guess — which is what makes it
+ * safe to apply to a command the engine runs on its own behalf (a harness
+ * contract check) rather than only quoting back at the model.
+ */
+export function translateEnvPrefix(command: string, info: ShellInfo): string {
+  if (!info.isPowerShell) return command
+  const prefix = ENV_PREFIX.exec(command)
+  if (!prefix) return command
+  const sets = prefix[1]
+    .trim()
+    .split(/\s+/)
+    .map(pair => {
+      const eq = pair.indexOf('=')
+      const name = pair.slice(0, eq)
+      const value = pair.slice(eq + 1).replace(/^["']|["']$/g, '')
+      return `$env:${name}="${value}"`
+    })
+  // ENV_PREFIX anchors on `^` OR `;`, so in `cd proj; FOO=1 pytest` the match
+  // begins at the semicolon — and slicing from the match's start threw the `cd`
+  // away. Keep the head. This is a silent wrong answer if left in:
+  // verifyAssertion runs what this returns, so a contract that changed directory
+  // first would have been measured somewhere else and the verdict believed.
+  const head = command.slice(0, prefix.index)
+  const tail = command.slice(prefix.index + prefix[0].length)
+  return `${head}${head ? '; ' : ''}${sets.join('; ')}; ${tail}`
+}
+
+/**
+ * The translation to apply automatically on the model's behalf, or null when
+ * there isn't one that provably means the same thing.
+ *
+ * POSIX `NAME=value cmd` scopes the variable to a single command; `$env:NAME=...;
+ * cmd` scopes it to the rest of the shell. Those agree only when `cmd` is the
+ * entire remainder — which is the case that matters, and is safe because every
+ * Bash call spawns a fresh shell that exits when the command does. A prefix that
+ * is not first, or that is followed by another command, would have its scope
+ * quietly widened, so it gets refused here and falls through to the instructive
+ * error in `checkShellDialect` instead.
+ */
+export function autoTranslateEnvPrefix(command: string, info: ShellInfo): string | null {
+  if (!info.isPowerShell) return null
+  const prefix = ENV_PREFIX.exec(command)
+  if (!prefix || prefix.index !== 0) return null
+  const tail = command.slice(prefix[0].length)
+  if (/;|&&|\|\|/.test(tail)) return null
+  return translateEnvPrefix(command, info)
+}
+
+/**
+ * Shell settings the engine applies before every command it runs on the model's
+ * behalf. Empty for every shell that does not need one.
+ *
+ * Windows PowerShell 5.1 implements `>` as Out-File, whose default encoding is
+ * UTF-16LE. Measured on this machine: `'hello' > f` writes `ff fe 68 00 65 00`.
+ * So the ordinary habit of `command > out.txt` and then reading out.txt gives
+ * back a file git calls binary and every text tool reads as nonsense — and the
+ * agent has no way to see why, because it wrote the file itself.
+ *
+ * Setting Out-File's default parameter moves redirection to UTF-8. This is a
+ * shell setting, not a rewrite: nothing the model wrote changes meaning, only
+ * the bytes redirection emits. It is the same act as the PYTHONUTF8 injection
+ * bash.ts already performs, for the same reason.
+ *
+ * 5.1 has no BOM-less UTF-8 — `utf8NoBOM` arrives in PowerShell 6 — so the mark
+ * survives, and Read strips it. Only powershell.exe is touched: pwsh is not
+ * installed here and so cannot be measured, and an unmeasured shell gets the
+ * unchanged path rather than a guess.
+ */
+export function shellPreamble(info: ShellInfo): string {
+  if (info.shell !== 'powershell.exe') return ''
+  return `$PSDefaultParameterValues['Out-File:Encoding']='utf8'; `
 }
 
 /** Returns an instructive error if the command uses operators the shell rejects, else null. */
 export function checkShellDialect(command: string, info: ShellInfo): string | null {
+  if (info.isPowerShell) {
+    const translated = translateEnvPrefix(command, info)
+    if (translated !== command) {
+      return `Error: this system's shell is ${info.displayName}, where 'NAME=value command' is a parse error. Set each variable first, then run the command: '${translated}'`
+    }
+  }
   if (info.supportsAndAnd) return null
   if (/&&|\|\|/.test(command)) {
     return "Error: this system's shell is Windows PowerShell 5.1, which does not support '&&' or '||'. Rewrite the command using ';' to sequence steps (e.g. 'cd proj; python -m pytest') or 'if ($?) { ... }' for conditional execution."
   }
   return null
+}
+
+/**
+ * PowerShell script that parses a command and reports the first thing wrong
+ * with it. The command arrives through the environment so no quoting of the
+ * caller's text is needed anywhere.
+ *
+ * Two questions, in order:
+ *   1. does it parse?
+ *   2. does every command name it invokes exist on this machine?
+ *
+ * The second is the one that matters. Gilded L4.1d's contract read
+ * `... exits 0: python C:/tmp/bite41d.py  (every mutation in the L4.1 set ...)`
+ * — a trailing parenthetical of prose I wrote to explain the check. That
+ * PARSES: PowerShell reads `(...)` as a sub-expression and `every mutation ...`
+ * as a call to a command named `every`. It fails at resolution, which no parse
+ * check can see. So the check has to ask whether the names resolve.
+ */
+const PS_VALIDATE = `
+$errs = $null
+$ast = [System.Management.Automation.Language.Parser]::ParseInput($env:LOCALCODE_VALIDATE_CMD, [ref]$null, [ref]$errs)
+if ($errs.Count -gt 0) { Write-Output ("does not parse: " + $errs[0].Message); exit 1 }
+$names = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) |
+  ForEach-Object { $_.GetCommandName() } | Where-Object { $_ } | Select-Object -Unique
+foreach ($n in $names) {
+  if (-not (Get-Command $n -ErrorAction SilentlyContinue)) { Write-Output ("unknown command: " + $n); exit 1 }
+}
+exit 0
+`
+
+/** A command name that carries a path or an extension. */
+const QUALIFIED_NAME = /[\\/]|\.[A-Za-z0-9]+$/
+
+/**
+ * Check that a harness verification command could actually run, and return an
+ * instructive error if it could not.
+ *
+ * Only BARE names are held to the resolution standard. A name carrying a path
+ * or an extension (`./scripts/check.sh`, `build/run.exe`) may legitimately not
+ * exist yet — the task may be about to create it, and resolution is relative to
+ * a working directory this function cannot know. A bare word that resolves to
+ * nothing is not a command on this machine and never will be by accident.
+ *
+ * Returns null when nothing is wrong, INCLUDING when the check could not be
+ * run at all. An unavailable validator must not manufacture a verdict.
+ */
+export function validateVerificationCommand(command: string, info: ShellInfo = getShellInfo()): string | null {
+  // Judge what will actually run. verifyAssertion translates the POSIX env
+  // prefix before executing it, so `GILDED_NARRATE=0 python -m pytest` is a
+  // perfectly good assertion even though the raw string is a parse error in
+  // PowerShell — every L4.1 contract has carried one. Holding the raw text to
+  // the dialect standard would refuse contracts the engine runs without
+  // trouble. `&&` has no translation, so it still fails here.
+  const runnable = translateEnvPrefix(command, info)
+  const dialect = checkShellDialect(runnable, info)
+  if (dialect) return dialect
+  try {
+    if (info.isPowerShell) {
+      execFileSync(info.shell, ['-NoProfile', '-NonInteractive', '-Command', PS_VALIDATE], {
+        env: { ...process.env, LOCALCODE_VALIDATE_CMD: runnable },
+        stdio: ['ignore', 'pipe', 'ignore'],
+        timeout: 15_000,
+      })
+      return null
+    }
+    execFileSync(info.shell, ['-n'], { input: command, stdio: ['pipe', 'ignore', 'pipe'], timeout: 15_000 })
+    return null
+  } catch (err) {
+    const e = err as { stdout?: Buffer | string; stderr?: Buffer | string; code?: unknown }
+    const detail = String(e.stdout ?? '').trim() || String(e.stderr ?? '').trim()
+    if (!detail) return null
+    const unknown = /^unknown command: (.+)$/m.exec(detail)
+    // A qualified name may not exist yet; only a bare word is decidable here.
+    if (unknown && QUALIFIED_NAME.test(unknown[1])) return null
+    return `Verification command cannot run as written — ${detail}. ` +
+      'A verification assertion must contain the command and nothing else; ' +
+      'explanation of what it proves belongs in the brief, not after the command.'
+  }
 }
 
 function detectPwsh(): boolean {

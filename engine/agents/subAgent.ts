@@ -18,6 +18,7 @@ import type { Message, ContentBlock, ToolUseBlock, ToolDefinition } from '../typ
 import { asSystemPrompt } from '../types.js'
 import type { SubAgentConfig, SubAgentStatus, SubAgentResult } from './types.js'
 import { getToolsForTier } from './trustTier.js'
+import { toToolDefs } from '../engine/messageConvert.js'
 import { AGENT_PERSONAS, buildAgentPrompt } from './prism.js'
 import { getVocabulary, formatVocabularyPrompt } from './vocabulary.js'
 import { CyberneticsGovernance } from '../vsm/cyberneticsGovernance.js'
@@ -153,11 +154,7 @@ export class SubAgent {
       // 5. Get tools via trust tier
       const allowedTools = getToolsForTier(this.config.trustTier, this.config.persona)
       const allowedToolNames = new Set(allowedTools.map(t => t.name))
-      const toolDefs: { name: string; description: string; inputJSONSchema: { type: 'object'; properties?: Record<string, unknown>; required?: string[] } }[] = allowedTools.map(t => ({
-        name: t.name,
-        description: t.description,
-        inputJSONSchema: t.inputSchema,
-      }))
+      const toolDefs = toToolDefs(allowedTools)
 
       // 6. Build callModel deps
       const agentConfig: LocalCodeConfig = {
