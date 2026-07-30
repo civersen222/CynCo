@@ -74,8 +74,19 @@ ws.onopen = () => {
   console.log('[driver] connected, dispatching mission')
   // P4.2 (STATE doc Phase 4(a)): the check script IS the contract — the engine
   // creates a one-assertion DoD so taskError/errorTrend measure this mission.
+  //
+  // The command is REDACTED from the assertion text. Measured on Gilded Wave 5c
+  // (2026-07-30): the run read `Verification command exits 0: <path>` out of its
+  // own contract and ran that gate directly — the exact leak the held-out-gate
+  // rule exists to prevent, since a visible gate can be tuned to. The assertion
+  // still exists, so taskError/errorTrend still measure the mission; only the
+  // path is withheld.
   const contract = checkCmd
-    ? { title: `Mission: ${marker}`, brief: task.slice(0, 200), assertions: [`Verification command exits 0: ${checkCmd}`] }
+    ? {
+        title: `Mission: ${marker}`,
+        brief: task.slice(0, 200),
+        assertions: ['The held-out verification gate for this mission exits 0. The dispatcher runs it after the mission ends; it is not yours to run and you are not told what it is.'],
+      }
     : undefined
   // Finding (ag): the brief is the instrument this mission is judged against, and
   // this driver is the only component that knows where it lives. Measured on
