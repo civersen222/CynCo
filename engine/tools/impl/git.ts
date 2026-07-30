@@ -105,29 +105,42 @@ export const gitTool: ToolImpl = {
   tier: 'approval',
   core: true,
   execute: async (input, cwd) => {
-    const sub = input.subcommand as string
+    const rawSub = input.subcommand as string
     const args = (input.args as string) ?? ''
-    const fullCmd = `git ${sub} ${args}`.trim()
+    const fullCmd = `git ${rawSub} ${args}`.trim()
+
+    // A model that writes subcommand:"status --porcelain" means exactly what
+    // subcommand:"status", args:"--porcelain" means. Git does not agree: the
+    // whole string arrives as one argv element and it answers
+    //   git: 'status --porcelain' is not a git command
+    // which reads like a broken repo rather than a malformed call. Split here
+    // so both spellings run. Every guard below still evaluates `rawSub`, the
+    // unsplit string, so nothing moves from the strict check to the lax one.
+    const subTokens = tokenizeArgs(rawSub)
+    const sub = subTokens[0] ?? rawSub
+    const argTokens = [...subTokens.slice(1), ...tokenizeArgs(args)]
 
     // Check dangerous patterns against BOTH raw form and normalized tokenized form
     // so that quoted --force (e.g. '"--force"') is also caught.
-    const tokenizedCmd = [sub, ...tokenizeArgs(args)].join(' ')
+    const tokenizedCmd = [sub, ...argTokens].join(' ')
     for (const pattern of DANGEROUS_PATTERNS) {
       if (pattern.test(fullCmd) || pattern.test(tokenizedCmd)) {
         return { output: `Error: dangerous git command blocked: ${fullCmd}. This could cause data loss.`, isError: true }
       }
     }
 
-    // Metachar guard: check `sub` as-is (no quotes expected in subcommand),
-    // but for `args` only check the UNQUOTED regions — metacharacters inside
-    // quoted strings are inert when passed via array-based spawn.
-    if (SHELL_METACHAR.test(sub) || SHELL_METACHAR.test(unquotedParts(args))) {
+    // Metachar guard: check the subcommand field as SUBMITTED — the whole
+    // unsplit string, with no quote exemption — so folding extra words into it
+    // cannot buy the laxer treatment `args` gets. For `args` only the UNQUOTED
+    // regions are checked; metacharacters inside quotes are inert when passed
+    // via array-based spawn.
+    if (SHELL_METACHAR.test(rawSub) || SHELL_METACHAR.test(unquotedParts(args))) {
       return { output: `Error: dangerous git command blocked: ${fullCmd}. Shell metacharacters not allowed.`, isError: true }
     }
 
     // Argument-injection guard: per-token check for options whose values git
-    // would execute as programs.
-    const argTokens = tokenizeArgs(args)
+    // would execute as programs. argTokens already carries anything split off
+    // the subcommand field, so those tokens are checked too.
     for (let i = 0; i < argTokens.length; i++) {
       const token = argTokens[i]
       if (FORBIDDEN_OPTIONS.some((p) => p.test(token))) {
