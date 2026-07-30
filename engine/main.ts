@@ -97,6 +97,30 @@ try {
   }
 } catch {}
 
+// ─── One-shot preflight ──────────────────────────────────────
+// A malformed task file is a caller error, and it costs nothing to detect. But
+// bootstrapProvider() below loads a 27B model into VRAM first — measured at ~9s
+// of llama-server startup — and only then does runOneShotTask() read the file
+// and throw `Task file missing required field: triggerId`. Validate before the
+// model, so a typo fails in milliseconds instead of after a full load.
+{
+  const idx = process.argv.indexOf('--run-task')
+  if (idx !== -1) {
+    const p = process.argv[idx + 1]
+    if (!p) {
+      console.error('[one-shot] --run-task requires a task file path')
+      process.exit(1)
+    }
+    const { readTaskFile } = await import('./daemon/taskFile.js')
+    try {
+      readTaskFile(p)
+    } catch (err: any) {
+      console.error(`[one-shot] ${err?.message ?? err}`)
+      process.exit(1)
+    }
+  }
+}
+
 // ─── Provider Setup ──────────────────────────────────────────
 import { bootstrapProvider } from './bootstrapProvider.js'
 const { provider, contextLength } = await bootstrapProvider(config)
