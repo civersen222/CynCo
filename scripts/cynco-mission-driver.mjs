@@ -112,11 +112,29 @@ ws.onclose = () => {
   }
 }
 
+async function gitHead() {
+  const p = Bun.spawn(['git', 'rev-parse', 'HEAD'], { cwd: CWD, stdout: 'pipe', stderr: 'ignore' })
+  const out = (await new Response(p.stdout).text()).trim()
+  return /^[0-9a-f]{7,40}$/.test(out) ? out : null
+}
+
+// The marker must appear in a commit THIS mission made, not in one that was
+// already there. Polling `git log -3` for the marker string meant a follow-up
+// mission whose marker matched the previous mission's own subject line reported
+// COMMIT LANDED on its first poll and closed after one turn — which is how UI
+// Wave 1c died 30 seconds in, having matched Wave 1b's commit.
+const baselineSha = await gitHead()
+if (!baselineSha) {
+  console.log('[driver] WARNING: could not read HEAD — commit detection will match ANY of the last 3 commits, including pre-existing ones')
+}
+
 async function gitLog() {
-  const p = Bun.spawn(['git', 'log', '--oneline', '-3'], { cwd: CWD, stdout: 'pipe' })
+  const range = baselineSha ? [`${baselineSha}..HEAD`] : ['-3']
+  const p = Bun.spawn(['git', 'log', '--oneline', ...range], { cwd: CWD, stdout: 'pipe' })
   return await new Response(p.stdout).text()
 }
 
+console.log(`[driver] baseline HEAD ${baselineSha ?? '(unknown)'} — looking for "${marker}" in commits after it`)
 const start = Date.now()
 let landed = false
 while (!landed && !zeroToolCompletion && (Date.now() - start) / 1000 < TIMEOUT_S) {
