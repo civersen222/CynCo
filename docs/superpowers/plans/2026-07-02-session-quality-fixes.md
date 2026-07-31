@@ -8,7 +8,7 @@
 
 **Tech Stack:** TypeScript (Bun runtime, vitest-on-Node test harness via `npx vitest run` from repo root; test files import from `'bun:test'` which vitest aliases).
 
-**Branch:** `session-quality-fixes` off `main` (8a22e47). Verify `git branch --show-current` before EVERY commit — an external process on this machine switches branches mid-work. Commits end with `Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>`.
+**Branch:** `session-quality-fixes` off `main` (8a22e47). Verify `git branch --show-current` before EVERY commit — an external process on this machine switches branches mid-work.
 
 **Constraints (non-negotiable):**
 - NEVER mutate or strip existing conversation messages — the prompt prefix must stay byte-identical across turns (llama.cpp checkpoint cache; enforced by `engine/__tests__/prefixStability.test.ts`).
@@ -156,8 +156,6 @@ git branch --show-current   # MUST print session-quality-fixes
 git add engine/agents/subAgent.ts engine/__tests__/agents/subAgent.test.ts
 git commit -m "$(cat <<'EOF'
 fix: sub-agent with zero output reports failure, not silent success
-
-Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -426,8 +424,6 @@ git branch --show-current   # MUST print session-quality-fixes
 git add engine/tools/shellInfo.ts engine/tools/impl/bash.ts engine/engine/systemPromptText.ts engine/__tests__/tools/shellInfo.test.ts engine/__tests__/engine/systemPromptText.test.ts
 git commit -m "$(cat <<'EOF'
 fix: shell-dialect awareness — prefer pwsh, reject &&/|| on PS5.1 with instructive error
-
-Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -537,8 +533,6 @@ git branch --show-current   # MUST print session-quality-fixes
 git add engine/vsm/controlSignals.ts engine/__tests__/vsm/controlSignals.test.ts engine/bridge/conversationLoop.ts
 git commit -m "$(cat <<'EOF'
 fix: cool temperature after 2+ narration nudges — behavior change, not more words
-
-Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
 EOF
 )"
 ```

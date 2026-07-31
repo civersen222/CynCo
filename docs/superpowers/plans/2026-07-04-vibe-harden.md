@@ -15,7 +15,6 @@
 - Run all git commands from the repo root `C:\Users\civer\localcode` (bash: `cd /c/Users/civer/localcode`). NEVER run git with cwd inside `engine/` or `tui/` — both contain embedded git repos.
 - Engine tests: `npx vitest run <path>` from the repo root. TUI tests: `cd tui && python -m pytest tests/<file> -v` then `cd /c/Users/civer/localcode`.
 - `docs/superpowers/` is gitignored — use `git add -f` for plan/spec files.
-- Commit messages end with `Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>`.
 - Test imports come from `'bun:test'` (vitest aliases it) — EXCEPT `vi` for module mocking, which is not needed in this plan.
 
 ---
@@ -237,9 +236,7 @@ git commit -m "fix: route vibe + wizard sideQuery through provider-aware endpoin
 
 Both were hardcoded to Ollama /api/chat and silently failed on the
 llama-cpp primary backend, degrading every vibe question/analogy/
-verification and wizard query to catch-block fallbacks.
-
-Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
+verification and wizard query to catch-block fallbacks."
 ```
 
 ---
@@ -418,9 +415,7 @@ In `engine/main.ts` `getOrCreateVibeController()`, add after the `loop,` line of
 ```bash
 cd /c/Users/civer/localcode
 git add engine/vibe/controller.ts engine/main.ts engine/__tests__/vibe/controllerIntegration.test.ts
-git commit -m "fix: timeout on vibe sideQuery — degrade to fallbacks instead of hanging
-
-Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
+git commit -m "fix: timeout on vibe sideQuery — degrade to fallbacks instead of hanging"
 ```
 
 ---
@@ -567,9 +562,7 @@ Expected: PASS (sideQueryRouting + controllerIntegration + confidence + engine)
 ```bash
 cd /c/Users/civer/localcode
 git add engine/__tests__/vibe/controllerIntegration.test.ts
-git commit -m "test: vibe controller chain integration coverage (Q&A, build, report, escalation)
-
-Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
+git commit -m "test: vibe controller chain integration coverage (Q&A, build, report, escalation)"
 ```
 
 ---
@@ -721,9 +714,7 @@ Expected: PASS (4 passed). If the suppression assertion fails, the guard at `con
 ```bash
 cd /c/Users/civer/localcode
 git add engine/__tests__/vibe/vibeModeSuppression.test.ts
-git commit -m "test: regression guard for vibe-mode stream.token suppression
-
-Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
+git commit -m "test: regression guard for vibe-mode stream.token suppression"
 ```
 
 ---
@@ -830,9 +821,7 @@ Expected: PASS (all tests in the file)
 ```bash
 cd /c/Users/civer/localcode
 git add tui/localcode_tui/app.py tui/tests/test_vibe_integration.py
-git commit -m "fix: serialize vibe escalation dialogs — concurrent push_screen_wait raced
-
-Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
+git commit -m "fix: serialize vibe escalation dialogs — concurrent push_screen_wait raced"
 ```
 
 ---
@@ -966,9 +955,7 @@ If neither works cleanly, a plain `bun scripts/vibe-e2e.ts` started and immediat
 ```bash
 cd /c/Users/civer/localcode
 git add scripts/vibe-e2e.ts
-git commit -m "feat: manual E2E smoke script driving the vibe loop over WebSocket
-
-Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
+git commit -m "feat: manual E2E smoke script driving the vibe loop over WebSocket"
 ```
 
 ---
@@ -1007,9 +994,7 @@ Exit criterion: `[e2e] PASS — vibe loop built the file end-to-end`.
 ```bash
 cd /c/Users/civer/localcode
 git add <fixed files>
-git commit -m "fix: <root cause found by live vibe E2E>
-
-Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
+git commit -m "fix: <root cause found by live vibe E2E>"
 ```
 
 ---
@@ -1055,9 +1040,7 @@ Expected: 0 failures
 cd /c/Users/civer/localcode
 git add -f docs/superpowers/plans/2026-07-04-vibe-harden.md
 git add -u
-git commit -m "docs: check off vibe-harden plan tasks
-
-Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
+git commit -m "docs: check off vibe-harden plan tasks"
 ```
 
 ---

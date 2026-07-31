@@ -17,7 +17,7 @@
 - A live CynCo session may be modifying `engine/` files concurrently. If `git status` shows modified engine files you did not touch, leave them alone — commit ONLY the files your task created/modified, by explicit path.
 - Known pre-existing vitest failures (do NOT count as new): bun:sqlite-under-vitest family (governanceDb, predictionDb, executor, registry, approvalGate, conversationLoop, research/vibeIntegration), treeSitterChunker, profiles/loader, config.test, callModel 'passes system prompt to the provider', configHandlers 'validates correct YAML', glob 'finds files by pattern', bridge/server port contention in parallel runs.
 - Imports use `.js` extensions (`import { foo } from './bar.js'`).
-- Commit messages: conventional prefix (`feat:`, `fix:`, `docs:`, `test:`), 1-2 sentences, plus `Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>`.
+- Commit messages: conventional prefix (`feat:`, `fix:`, `docs:`, `test:`), 1-2 sentences.
 
 ## File structure
 
@@ -282,9 +282,7 @@ Expected: 4 passed
 
 ```bash
 git add engine/daemon/types.ts engine/daemon/taskFile.ts engine/__tests__/daemon/taskFile.test.ts
-git commit -m "feat: daemon shared types + task/outcome file contract
-
-Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
+git commit -m "feat: daemon shared types + task/outcome file contract"
 ```
 
 ---
@@ -494,9 +492,7 @@ Expected: only the known pre-existing failures (executor, registry bun:sqlite fa
 
 ```bash
 git add engine/tools/impl/mfl.ts engine/tools/registry.ts engine/__tests__/tools/mfl.test.ts
-git commit -m "feat: read-only MFL fantasy football API tool
-
-Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
+git commit -m "feat: read-only MFL fantasy football API tool"
 ```
 
 ---
@@ -719,9 +715,7 @@ Expected: 8 passed
 
 ```bash
 git add engine/daemon/missionLedger.ts engine/__tests__/daemon/missionLedger.test.ts
-git commit -m "feat: mission ledger — config, persisted state, run history, trust ladder
-
-Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
+git commit -m "feat: mission ledger — config, persisted state, run history, trust ladder"
 ```
 
 ---
@@ -896,9 +890,7 @@ Expected: 10 passed
 
 ```bash
 git add engine/daemon/scheduler.ts engine/__tests__/daemon/scheduler.test.ts
-git commit -m "feat: pure trigger scheduler — interval/daily/weekly + missed-run policy
-
-Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
+git commit -m "feat: pure trigger scheduler — interval/daily/weekly + missed-run policy"
 ```
 
 ---
@@ -1216,9 +1208,7 @@ Expected: 5 passed
 
 ```bash
 git add engine/daemon/ntfyChannel.ts engine/__tests__/daemon/ntfyChannel.test.ts
-git commit -m "feat: ntfy channel — JSON publish with action buttons, SSE command subscription, offline queue
-
-Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
+git commit -m "feat: ntfy channel — JSON publish with action buttons, SSE command subscription, offline queue"
 ```
 
 ---
@@ -1533,9 +1523,7 @@ Expected: no errors (warnings OK). Delete `/tmp/cynco-build-check` after.
 
 ```bash
 git add engine/daemon/oneShot.ts engine/main.ts engine/__tests__/daemon/oneShot.test.ts
-git commit -m "feat: one-shot engine mode (--run-task) — bounded tool loop, structured outcome, llama-server stopped on exit
-
-Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
+git commit -m "feat: one-shot engine mode (--run-task) — bounded tool loop, structured outcome, llama-server stopped on exit"
 ```
 
 CAUTION: `engine/main.ts` may have concurrent modifications from a live CynCo session. `git add engine/main.ts` stages the whole file — before committing, run `git diff --cached engine/main.ts` and verify the diff contains ONLY your `--run-task` branch. If unrelated hunks appear, stop and ask the user.
@@ -1790,9 +1778,7 @@ Expected: 7 passed
 
 ```bash
 git add engine/daemon/taskRunner.ts engine/__tests__/daemon/taskRunner.test.ts engine/__tests__/daemon/fixtures/stubEngine.mjs
-git commit -m "feat: task runner — GPU guard, one-shot engine spawn, hard timeout with process-tree kill
-
-Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
+git commit -m "feat: task runner — GPU guard, one-shot engine spawn, hard timeout with process-tree kill"
 ```
 
 ---
@@ -2224,9 +2210,7 @@ Expected: prints "No missions found ... Idling." and "daemon up — 0 mission(s)
 
 ```bash
 git add engine/daemon/missionRunner.ts engine/daemon/main.ts engine/__tests__/daemon/missionRunner.test.ts
-git commit -m "feat: liveness daemon — mission tick loop, MFL delta precheck, approvals, algedonic alerts
-
-Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
+git commit -m "feat: liveness daemon — mission tick loop, MFL delta precheck, approvals, algedonic alerts"
 ```
 
 ---
@@ -2361,9 +2345,7 @@ Expected: all new tests pass (taskFile 4, missionLedger 8, scheduler 10, ntfyCha
 
 ```bash
 git add engine/__tests__/daemon/integration.test.ts
-git commit -m "test: liveness layer end-to-end integration (stub engine + mock ntfy)
-
-Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
+git commit -m "test: liveness layer end-to-end integration (stub engine + mock ntfy)"
 ```
 
 ---
@@ -2510,9 +2492,7 @@ no public ports. See [docs/liveness-setup.md](docs/liveness-setup.md).
 
 ```bash
 git add docs/liveness-setup.md README.md
-git commit -m "docs: liveness daemon setup guide (ntfy + Tailscale + Task Scheduler) and README section
-
-Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
+git commit -m "docs: liveness daemon setup guide (ntfy + Tailscale + Task Scheduler) and README section"
 ```
 
 ---
