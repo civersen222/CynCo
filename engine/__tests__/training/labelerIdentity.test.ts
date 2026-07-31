@@ -99,6 +99,28 @@ const VECTORS: [string, TaskOutcomeInput][] = [
       turns: 60,
     },
   ],
+  // The vector above cannot see the crash rule: with git null its testsPass is
+  // already 'unknown', so the row was degenerate for want of any outcome at all
+  // and stayed degenerate for a different reason. task-25d8015a's shape is the
+  // one that mattered — a real green test run banked BEFORE the server died,
+  // enough outcome evidence to qualify, and an ending that never happened.
+  [
+    'cut off by an engine error after banking a green suite',
+    {
+      ...baseInput(),
+      testObservations: [{ passed: 30, total: 30 }],
+      contract: { active: true, complete: false, failed: 0, origin: 'harness', passedAssertions: [] },
+      git: {
+        changed: [{ path: 'src/a.test.ts', added: 97, deleted: 0, casesAdded: 7, casesLost: 0 }],
+        removed: [],
+        dirty: [],
+      },
+      trackedModifiedFiles: ['/repo/src/a.test.ts'],
+      baselineDirty: [],
+      endedInEngineError: true,
+      turns: 59,
+    },
+  ],
   [
     'ran out of turns with nothing to judge completion by',
     { ...baseInput(), testObservations: [{ passed: 4, total: 4 }], hitIterationLimit: true, turns: 500 },
@@ -213,6 +235,11 @@ function fingerprint(): string {
       input.turns,
       buildComponents(input),
       d,
+      // The outcome, not just the components. finalizeTask reads it directly —
+      // a run the engine killed is excluded from the corpus on that field
+      // alone — so a fingerprint that withheld it would have watched that rule
+      // change go by, which is the exact failure this file exists to prevent.
+      input,
     )
     return { name, ...verdict, reward: Number(verdict.reward.toFixed(6)) }
   })
@@ -230,6 +257,13 @@ function fingerprint(): string {
  */
 const SEMANTICS_HISTORY: Record<number, string> = {
   3: '8b8fdab1d63f89b8',
+  // 4 (2026-07-31): two changes to what a row means.
+  //   - diffClean stopped treating "the agent touched it" as an excuse for
+  //     leaving it uncommitted. task-25d8015a scored 1 with ten of its own
+  //     scratch files dirty in the tree.
+  //   - a run the engine killed is degenerate. Withholding taskCompleted was
+  //     not enough; testsPass alone then carried that same row to 0.9882.
+  4: '1353acea4b26c20d',
 }
 
 describe('the labeler names its own semantics', () => {

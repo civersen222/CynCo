@@ -4,6 +4,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { computeReward, finalizeTask, hasOutcomeEvidence, LABELER_VERSION } from '../../training/rewardLabeler.js'
 import type { RewardComponents, TaskReward } from '../../training/rewardLabeler.js'
+import type { TaskOutcomeInput } from '../../training/taskOutcome.js'
 
 // ─── Helpers ──────────────────────────────────────────────────────
 
@@ -435,6 +436,72 @@ describe('finalizeTask — hygiene alone cannot qualify a row', () => {
     expect(r.degenerate).toBeUndefined()
     const parsed: TaskReward = JSON.parse(readFileSync(join(dir, 'task-nogate.reward.json'), 'utf-8'))
     expect(parsed.components.testsUnmodified).toBe('unknown')
+  })
+})
+
+// ─── A run the engine killed is not a measurement of the model ────
+
+describe('finalizeTask — the engine died, so nothing here is a verdict', () => {
+  const crashedComponents = (): RewardComponents => ({
+    // task-25d8015a exactly: llama-server died at turn 59, the loop stopped
+    // mid-sentence, and the only outcome component that survived was a test run
+    // from before the crash. It scored 0.9882 — the best row in the corpus,
+    // awarded for a run that never reached an ending.
+    testsPass: 1, typecheckPass: 'unknown', buildPass: 'unknown',
+    diffClean: 1, taskCompleted: 'unknown',
+    stuckTurns: 0, iterFraction: 0.118, userSatisfaction: 0, testsUnmodified: 1,
+  })
+
+  const outcomeWith = (endedInEngineError: boolean): TaskOutcomeInput => ({
+    contract: null,
+    commandObservations: [],
+    testObservations: [],
+    git: null,
+    trackedModifiedFiles: [],
+    baselineDirty: [],
+    stuckTurns: 0,
+    turns: 59,
+    hitIterationLimit: false,
+    endedInEngineError,
+  })
+
+  it('marks the row degenerate when the harness died mid-run', () => {
+    // taskCompleted is already withheld for this case, and correctly so. What
+    // was missing is that withholding it is not enough: testsPass alone then
+    // carries the row on a denominator of one component, and the row enters the
+    // corpus as a near-perfect example. A truncated run has no ending to grade.
+    const dir = mkdtempSync(join(tmpdir(), 'reward-crash-'))
+    const r = finalizeTask('task-crash', 59, crashedComponents(), dir, outcomeWith(true))
+    expect(r.degenerate).toBe(true)
+    const parsed: TaskReward = JSON.parse(readFileSync(join(dir, 'task-crash.reward.json'), 'utf-8'))
+    expect(parsed.degenerate).toBe(true)
+  })
+
+  it('keeps the identical row when the run ended on its own', () => {
+    // The control. If this were also degenerate the rule would be measuring
+    // something other than the crash.
+    const dir = mkdtempSync(join(tmpdir(), 'reward-nocrash-'))
+    const r = finalizeTask('task-nocrash', 59, crashedComponents(), dir, outcomeWith(false))
+    expect(r.degenerate).toBeUndefined()
+  })
+
+  it('leaves the raw reward alone — degenerate is an exclusion, not a penalty', () => {
+    // Scoring the crash down would teach the model that being cut off is bad
+    // behaviour. It is not behaviour at all. The number stays honest and the
+    // row simply does not count.
+    const dir = mkdtempSync(join(tmpdir(), 'reward-crash-score-'))
+    const crashed = finalizeTask('task-cs', 59, crashedComponents(), dir, outcomeWith(true))
+    const healthy = finalizeTask('task-hs', 59, crashedComponents(), dir, outcomeWith(false))
+    expect(crashed.reward).toBe(healthy.reward)
+  })
+
+  it('does not claim a healthy run when no outcome evidence was supplied at all', () => {
+    // An absent outcome is not a report of "no crash". The degenerate verdict
+    // here comes from the components alone, and a row that does carry outcome
+    // evidence is left qualified rather than being failed on a guess.
+    const dir = mkdtempSync(join(tmpdir(), 'reward-nooutcome-'))
+    const r = finalizeTask('task-no', 59, crashedComponents(), dir)
+    expect(r.degenerate).toBeUndefined()
   })
 })
 

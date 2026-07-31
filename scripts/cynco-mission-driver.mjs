@@ -72,6 +72,13 @@ let zeroToolCompletion = false
 // no tool call after it for QUIET_MS. Any tool.start reopens the run.
 let sawMessageComplete = false
 let lastActivityAt = Date.now()
+// F19: the engine said it was dead and nobody was listening. Wave 7h run 2 lost
+// llama-server at turn 59; the engine caught the connection failure and emitted
+// session.error, but the crash happened mid-message so `message.complete` never
+// arrived and the quiescence test below kept answering "still working" for the
+// next 3351 seconds. Null until the engine says otherwise; the string it says is
+// kept, because "a crash happened" and "which crash" are different facts.
+let engineError = null
 ws.onopen = () => {
   console.log('[driver] connected, dispatching mission')
   // P4.2 (STATE doc Phase 4(a)): the check script IS the contract — the engine
@@ -124,6 +131,13 @@ ws.onmessage = (ev) => {
       lastActivityAt = Date.now()
     }
     if (m.type === 'message.complete') { sawMessageComplete = true; lastActivityAt = Date.now() }
+    if (m.type === 'session.error' && !engineError) {
+      // Terminal for this mission: conversationLoop only emits this after the
+      // model loop has thrown and unwound. Recorded, not thrown away, so the
+      // ledger can tell a repeated llama-server exit from a one-off.
+      engineError = String(m.error ?? 'session.error with no message')
+      console.log(`[driver] ENGINE ERROR — the run is over, not stalled: ${engineError}`)
+    }
     if (m.type === 'tool.complete' && m.isError) console.log(`[cynco] TOOL ERROR (${m.toolName}): ${String(m.result).slice(0, 200)}`)
     if (m.type === 'approval.request') console.log(`[cynco] APPROVAL REQUESTED (${m.toolName ?? '?'}) — engine not in APPROVE_ALL mode? (F2)`)
     if (m.type === 'message.complete' && toolCount === 0) {
@@ -200,12 +214,14 @@ while (!quiet && !zeroToolCompletion && (Date.now() - start) / 1000 < TIMEOUT_S)
   // before the check runs, or the check measures a state that no longer
   // exists. A run that stops without committing is simply over, and waiting
   // out its budget only buys a wrong label; see waitIsOver().
-  if (waitIsOver({ landed, sawMessageComplete, msSinceActivity: Date.now() - lastActivityAt })) {
-    console.log(`[driver] run quiet for ${Math.round((Date.now() - lastActivityAt) / 1000)}s after a completed message — ${landed ? 'proceeding to verification' : 'nothing committed; the run has stopped, not stalled'}`)
+  if (waitIsOver({ landed, sawMessageComplete, msSinceActivity: Date.now() - lastActivityAt, engineError })) {
+    if (engineError) console.log('[driver] leaving the wait loop on the engine error above — the git poll ran first, so a commit made before the crash is already recorded')
+    else console.log(`[driver] run quiet for ${Math.round((Date.now() - lastActivityAt) / 1000)}s after a completed message — ${landed ? 'proceeding to verification' : 'nothing committed; the run has stopped, not stalled'}`)
     quiet = true
   }
 }
-if (!landed && quiet) console.log('[driver] STOPPED WITHOUT COMMIT — the run went quiet with an uncommitted tree; log a failure entry (docs/cynco-failure-log.md)')
+if (engineError) console.log(`[driver] ENGINE ERROR outcome — the harness died, not the model: ${engineError}\n  Check the engine log for the llama-server exit code before re-dispatching; the mission budget was not the problem.`)
+else if (!landed && quiet) console.log('[driver] STOPPED WITHOUT COMMIT — the run went quiet with an uncommitted tree; log a failure entry (docs/cynco-failure-log.md)')
 else if (!landed) console.log('[driver] TIMEOUT without commit — log a failure entry (docs/cynco-failure-log.md)')
 else if (!quiet) console.log('[driver] WARNING: commit landed but the run never went quiet — the check below may read a commit the run is still amending (see QUIET_MS)')
 try {
@@ -242,7 +258,7 @@ if (checkCmd) {
 }
 
 // Append the labeled mission record to the outcome ledger
-const outcome = missionOutcome({ landed, zeroToolCompletion, wentQuiet: quiet })
+const outcome = missionOutcome({ landed, zeroToolCompletion, wentQuiet: quiet, engineError })
 try {
   const record = buildMissionRecord(collector, {
     missionId,
@@ -253,6 +269,7 @@ try {
     dispatchedAt,
     durationS: Math.round((Date.now() - start) / 1000),
     outcome,
+    engineError,
     verified,
     verify,
   })

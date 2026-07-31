@@ -102,8 +102,15 @@ export type DatasetStats = CorpusStats & {
  * That is the cost of the sixteen skipped bumps, and paying it is cheaper than
  * training on numbers nobody can vouch for. Runs from here carry their
  * evidence (see finalizeTask) and survive the next bump.
+ *
+ * Raised from 3 to 4 on 2026-07-31, and this is the bump that shows the
+ * evidence trail working. Two rules changed — diffClean stopped excusing a mess
+ * the agent made itself, and a run the engine killed no longer qualifies at all
+ * — so every version-3 label is stale. Unlike the last bump nothing is lost:
+ * those rows persisted their outcome, so `relabel` remeasures them and they
+ * come back at 4 with whatever the current semantics actually say.
  */
-export const MIN_LABELER_VERSION = 3
+export const MIN_LABELER_VERSION = 4
 export const SFT_MIN_REWARD = 0.7
 export const DPO_MAX_REWARD = 0.3
 

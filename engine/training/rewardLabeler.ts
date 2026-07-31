@@ -28,7 +28,7 @@ import type { TaskOutcomeInput } from './taskOutcome.js'
  * fingerprint test in engine/__tests__/training/labelerIdentity.test.ts binds
  * this number to what the labeler actually says, so a silent change fails.
  */
-export const LABELER_VERSION = 3
+export const LABELER_VERSION = 4
 
 // ─── Types ────────────────────────────────────────────────────────
 
@@ -181,7 +181,17 @@ export function finalizeTask(
     // alone — the saturation bug relocated from the clipping ceiling to the
     // denominator. Hygiene cannot stand in for outcome, so it cannot qualify
     // a row for the corpus on its own. See hasOutcomeEvidence.
-    ...(hasOutcomeEvidence(components) ? {} : { degenerate: true }),
+    //
+    // Degenerate too when the engine killed the run. buildComponents already
+    // withholds taskCompleted for that case, and that turned out not to be
+    // enough: with completion unknown, a test run observed BEFORE the crash was
+    // the only outcome component left, and task-25d8015a scored 0.9882 — the
+    // best row in the corpus — for a run that never reached an ending. A
+    // truncated run has no ending to grade. `=== true` because an absent
+    // outcome is not a report of "no crash".
+    ...(hasOutcomeEvidence(components) && outcome?.endedInEngineError !== true
+      ? {}
+      : { degenerate: true }),
   }
 
   const filePath = join(dir, `${taskId}.reward.json`)
