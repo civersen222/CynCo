@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test'
 import * as os from 'node:os'
 const SKIP_ENV = !process.env.CYNCO_INTEGRATION
-import { gitTool, tokenizeArgs } from '../../tools/impl/git.js'
+import { buildArgv, gitTool, tokenizeArgs } from '../../tools/impl/git.js'
 
 // Non-repo cwd: guards fire before spawn, but if a guard ever regresses the
 // command runs against an empty temp dir instead of this repository.
@@ -179,6 +179,70 @@ describe('Git tool — argument injection guard', () => {
     )
     // Must not be blocked by any guard; git itself errors (not a repository)
     expect(result.output).not.toContain('blocked')
+  })
+
+  // Identity config is the one -c the agent legitimately needs. Three
+  // consecutive missions shipped commits authored by the repo's placeholder
+  // identity because the brief mandated `git -c user.name=... commit` and this
+  // tool refused to run it. A guard that makes the correct action impossible
+  // does not prevent the mistake, it mandates it.
+  it('allows -c user.name= and -c user.email=', async () => {
+    const result = await gitTool.execute(
+      { subcommand: 'commit', args: '-c user.name=civersen222 -c user.email=civersen222@users.noreply.github.com -m "msg"' },
+      NON_REPO_CWD
+    )
+    expect(result.output).not.toContain('blocked')
+  })
+
+  it('still blocks every other -c key, even alongside an allowed one', async () => {
+    const result = await gitTool.execute(
+      { subcommand: 'commit', args: '-c user.name=x -c core.sshCommand=/tmp/evil.sh -m "msg"' },
+      NON_REPO_CWD
+    )
+    expect(result.isError).toBe(true)
+    expect(result.output).toContain('blocked')
+  })
+
+  it('allowed -c keys are case-insensitive like git config itself', async () => {
+    const result = await gitTool.execute(
+      { subcommand: 'commit', args: '-c User.Email=a@b.c -m "msg"' },
+      NON_REPO_CWD
+    )
+    expect(result.output).not.toContain('blocked')
+  })
+
+  it('does not allow a key that merely starts with an allowed one', async () => {
+    const result = await gitTool.execute(
+      { subcommand: 'commit', args: '-c user.namex=evil -m "msg"' },
+      NON_REPO_CWD
+    )
+    expect(result.isError).toBe(true)
+    expect(result.output).toContain('blocked')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// git only honours -c BEFORE the subcommand. The tool's schema puts everything
+// the model writes into `args`, which spawn places AFTER it, where git reads
+// `-c` as an argument to the subcommand and either errors or silently means
+// something else (`commit -c <commit>` reuses that commit's message!). So an
+// allowed -c must be hoisted, and the hoisting is what makes the allowlist
+// worth anything.
+// ---------------------------------------------------------------------------
+describe('Git tool: -c hoisting', () => {
+  it('hoists allowed -c pairs ahead of the subcommand', () => {
+    expect(buildArgv('commit', ['-c', 'user.name=x', '-m', 'msg']))
+      .toEqual(['-c', 'user.name=x', 'commit', '-m', 'msg'])
+  })
+
+  it('leaves a bare -c switch alone (switch -c <branch>)', () => {
+    expect(buildArgv('switch', ['-c', 'feature-x']))
+      .toEqual(['switch', '-c', 'feature-x'])
+  })
+
+  it('hoists both identity pairs in order, preserving the rest', () => {
+    expect(buildArgv('commit', ['-c', 'user.name=a b', '-c', 'user.email=c@d', '-m', 'msg']))
+      .toEqual(['-c', 'user.name=a b', '-c', 'user.email=c@d', 'commit', '-m', 'msg'])
   })
 })
 
