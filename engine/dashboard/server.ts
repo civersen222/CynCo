@@ -17,6 +17,7 @@ import { readFileSync, existsSync } from 'fs'
 import { homedir } from 'os'
 import type { Server, ServerWebSocket } from 'bun'
 import type { EngineEvent } from '../bridge/protocol.js'
+import { validateCommand } from '../bridge/commandSchema.js'
 import { setParam, GOVERNANCE_PARAMS, exportParamMetadata } from '../vsm/governanceParams.js'
 import { globalContract } from '../tools/contract.js'
 import { ThinkingRecorder } from '../memory/thinkingRecorder.js'
@@ -127,6 +128,13 @@ const DASHBOARD_ALLOWED_SLASH: ReadonlySet<unknown> = new Set([
  * Exported and pure so it is specified on its own terms: this is the whole of
  * the boundary, and a boundary only reachable through a live WebSocket is a
  * boundary nothing can cheaply prove.
+ *
+ * Two questions in order, and they are different questions. First: may a
+ * browser send this KIND of frame — the allowlists below, which are about
+ * authority. Then: is this frame the SHAPE that kind is declared to have —
+ * `validateCommand`, the same check the bridge entrance runs. Authority first
+ * because a well-formed `/approve-all` is exactly the frame finding #1 was
+ * about, and it must be refused for what it is, not for how it is spelled.
  */
 export function dashboardCommandRefusal(frame: unknown): string | null {
   if (typeof frame !== 'object' || frame === null) return 'frame is not an object'
@@ -140,11 +148,11 @@ export function dashboardCommandRefusal(frame: unknown): string | null {
   if (!DASHBOARD_ALLOWED_TYPES.has(type)) {
     return `frame type ${JSON.stringify(type) ?? String(type)} is not allowed from the dashboard`
   }
-  if (type !== 'command') return null
-  if (!DASHBOARD_ALLOWED_SLASH.has(command)) {
+  if (type === 'command' && !DASHBOARD_ALLOWED_SLASH.has(command)) {
     return `slash command ${JSON.stringify(command) ?? String(command)} is not allowed from the dashboard`
   }
-  return null
+  const shape = validateCommand(frame)
+  return shape.ok ? null : shape.reason
 }
 
 // ---------------------------------------------------------------------------

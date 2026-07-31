@@ -1,7 +1,13 @@
 /**
  * WebSocket protocol types shared between TS engine and Python TUI.
  * All messages are JSON-serialized with a `type` discriminator.
+ *
+ * The one import is the shape checker `parseCommand` runs, and it is the same
+ * one the dashboard socket runs. Keeping the two entrances on one validator is
+ * the point of it; a second private copy would be a mechanism that never gets
+ * to answer, and so one no test could ever observe failing.
  */
+import { validateCommand } from './commandSchema.js'
 
 /** Wire protocol version. Bump on any breaking event/command shape change. */
 export const PROTOCOL_VERSION = 1
@@ -655,14 +661,25 @@ export function serializeEvent(event: EngineEvent): string {
   return JSON.stringify(event)
 }
 
+/**
+ * Parse a frame off the bridge socket, or null if it is not a command.
+ *
+ * The shape check lives in commandSchema.ts and is the same one the dashboard
+ * socket runs. This used to be `'type' in obj` and a cast, which made every
+ * field the engine went on to read — `text`, `command`, `approved`, `patches` —
+ * `any` in practice; `approved: 'no'` approved the tool call.
+ */
 export function parseCommand(json: string): TUICommand | null {
+  let obj: unknown
   try {
-    const obj = JSON.parse(json)
-    if (obj && typeof obj === 'object' && 'type' in obj) {
-      return obj as TUICommand
-    }
-    return null
+    obj = JSON.parse(json)
   } catch {
     return null
   }
+  const result = validateCommand(obj)
+  if (!result.ok) {
+    console.warn(`[bridge] REFUSED command frame: ${result.reason}`)
+    return null
+  }
+  return result.command
 }
