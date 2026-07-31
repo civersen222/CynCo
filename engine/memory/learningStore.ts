@@ -230,15 +230,23 @@ export type SessionOutcome = 'viable' | 'marginal' | 'non-viable'
 
 /**
  * AWM promotion: promote every learning saved during `sessionId` to the
- * long-term playbook, but ONLY when the ledger-verified outcome is 'viable'.
+ * long-term playbook, but ONLY when the session produced positive evidence that
+ * it achieved something. `decision` comes from `promotionGate.ts`, which is
+ * where that judgement is made and explained.
+ *
+ * The parameter is the decision rather than the outcome string it used to be,
+ * so that the judgement has exactly one home. Passing 'viable' promoted, and
+ * 'viable' was the default verdict for any session that had not visibly fallen
+ * over — including one that did nothing at all.
+ *
  * Returns the number of learnings promoted.
  */
 export function promoteSessionLearnings(
   store: LearningStore,
   sessionId: string,
-  outcome: SessionOutcome,
+  decision: { promote: boolean },
 ): number {
-  if (outcome !== 'viable') return 0
+  if (!decision.promote) return 0
   const ids = store.idsForSession(sessionId)
   for (const id of ids) store.promote(id, true)
   return ids.length

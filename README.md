@@ -340,7 +340,7 @@ Read, Write, Edit, MultiEdit, ApplyPatch, ReplaceFunction, Bash, Git, Glob, Grep
 ### Session Persistence
 - **JSONL journaling** — every message saved, survives crashes
 - **Handoff system** — goal, progress, learnings, next steps persist across sessions
-- **Adaptive Working Memory (AWM)** — session learnings promoted into a durable ACE-style playbook only on ledger-verified viable outcomes, then recalled (capped ~5) at the start of later sessions
+- **Adaptive Working Memory (AWM)** — session learnings promoted into a durable ACE-style playbook only when the session can show it achieved something: every Definition-of-Done contract it opened resolved with no failed or unverified assertions, and at least one assertion passed. A session that opened no contract promotes nothing. The gate and its limits are in `engine/memory/promotionGate.ts` — assertions about files and commits are checked against the repository, but an engine-inferred contract can also pass an assertion on the model's own report, so this is a floor and not a proof. Promoted entries are recalled (capped ~5) at the start of later sessions
 - **Compaction that keeps the goal** — at context overflow, recent user messages and the active Definition-of-Done contract are anchored verbatim through summarization (durable facts flushed first) so constraints aren't silently erased
 - **Decision journals** — S1-S5 decisions logged as training data (JSONL)
 - **Governance DB** — SQLite with session outcomes and per-turn measurements

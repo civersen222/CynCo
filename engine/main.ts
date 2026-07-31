@@ -1125,16 +1125,29 @@ async function handleCommand(command: TUICommand): Promise<void> {
           console.log(`[governance] Session outcome: ${outcome}`)
           const flushed = loop.getGovernance().flushPredictions?.()
           if (flushed) console.log(`[governance] flushed ${flushed} completed prediction(s)`)
-          // AWM: promote this session's learnings only on a ledger-verified viable outcome.
+          // AWM: promote this session's learnings only when the session can show
+          // it achieved something — a resolved contract with at least one passed
+          // assertion. `outcome` alone is not that: it is 'viable' by default.
           try {
             const { LearningStore, promoteSessionLearnings, defaultLearningsDbPath } = await import('./memory/learningStore.js')
+            const { promotionDecision, sessionContracts, verdictOf } = await import('./memory/promotionGate.js')
+            const { globalContract } = await import('./tools/contract.js')
+            const live = globalContract.snapshot()
+            const contracts = [
+              ...sessionContracts.all(),
+              ...(live.assertions.length > 0 ? [verdictOf(live)] : []),
+            ]
+            const decision = promotionDecision({ outcome, contracts })
             const sid = loop.getSessionId?.()
             if (sid) {
               const store = new LearningStore(process.env.LOCALCODE_LEARNINGS_DB ?? defaultLearningsDbPath())
-              const n = promoteSessionLearnings(store, sid, outcome)
+              const n = promoteSessionLearnings(store, sid, decision)
               store.close()
-              if (n > 0) console.log(`[memory] AWM promoted ${n} learning(s) from viable session ${sid}`)
+              console.log(decision.promote
+                ? `[memory] AWM promoted ${n} learning(s) from session ${sid} — ${decision.reason}`
+                : `[memory] AWM promoted nothing from session ${sid} — ${decision.reason}`)
             }
+            sessionContracts.reset()
           } catch (e) { console.log(`[memory] AWM promotion skipped: ${e}`) }
         }
       } catch (err) {

@@ -8,6 +8,7 @@
  */
 import type { ToolImpl } from './types.js'
 import { assertionCheck, gitProbe, verifyAssertion } from './contractVerify.js'
+import { sessionContracts, verdictOf } from '../memory/promotionGate.js'
 
 // ---------------------------------------------------------------------------
 // Core data types
@@ -76,6 +77,12 @@ export class ContractState {
 
   /** Create (or replace) the contract with a title, brief, and list of assertion texts. */
   create(title: string, brief: string, assertionTexts: string[], origin: ContractOrigin = 'auto'): void {
+    // File the outgoing contract's verdict before it is overwritten. Promotion
+    // of a session's learnings is decided once, at shutdown, for the whole
+    // session; a gate that read only the live contract would let one trivial
+    // final task launder the learnings of the failed tasks before it. See
+    // memory/promotionGate.ts.
+    if (this.assertions.length > 0) sessionContracts.record(verdictOf(this))
     this.title = title
     this.brief = brief
     this.assertions = assertionTexts.map(text => ({ text, status: 'pending' as AssertionStatus }))
