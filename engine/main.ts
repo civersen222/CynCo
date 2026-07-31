@@ -376,7 +376,14 @@ if ((globalThis as any).__llamaProcessManager) {
 let activationsConsumer: ActivationsConsumer | null = null
 try {
   dashboardServer = new DashboardServer({
-    port: port + 1,
+    // `wsServer.port`, not `port`. `port` is the raw value parsed from
+    // LOCALCODE_WS_PORT; the bridge falls back to +1 then +2 when its first
+    // choice is taken, which after a restart is the ordinary case (TIME_WAIT).
+    // So `port + 1` was the bridge's own second choice: whenever the fallback
+    // fired, the dashboard collided with the bridge this same process had just
+    // bound, threw EADDRINUSE, and the catch below turned that into one warn
+    // line. The user got no dashboard and no clear reason why.
+    port: wsServer.port + 1,
     tokens,
     deps: {
       getGovernanceReport: () => loop.getGovernanceReport(),
@@ -419,9 +426,16 @@ try {
   })
   const dashboardHost = dashboardServer.getHostname()
   const dashboardDisplayHost = (dashboardHost === '0.0.0.0') ? 'localhost' : dashboardHost
-  console.log(`[dashboard] Governance dashboard on http://${dashboardDisplayHost}:${port + 1}`)
+  // The bound port, asked of the server, not the number we asked it for. A URL
+  // computed from the request is a guess printed as a fact.
+  console.log(`[dashboard] Governance dashboard on http://${dashboardDisplayHost}:${dashboardServer.getPort()}`)
 } catch (e) {
-  console.warn('[dashboard] Failed to start dashboard server:', e)
+  // Not console.warn. The dashboard is the only window onto governance, and a
+  // warn among a hundred startup lines reads as noise — the failure mode this
+  // replaces was a user hunting for a dashboard that was never running.
+  console.error('[dashboard] FAILED TO START — no governance dashboard this session.')
+  console.error(`[dashboard] Wanted port ${wsServer.port + 1}. Cause:`, e)
+  console.error('[dashboard] Set LOCALCODE_WS_PORT to a free port and restart to get it back.')
 }
 
 // ─── Brain Activations Consumer (Tier 3 — default-on, degrades silently) ─────
