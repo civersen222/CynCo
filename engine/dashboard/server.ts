@@ -50,6 +50,104 @@ export interface DashboardDeps {
 }
 
 // ---------------------------------------------------------------------------
+// What a browser may ask the engine to do
+// ---------------------------------------------------------------------------
+//
+// The dashboard's `/ws` is gated at scope `inference` — the READ scope. It has
+// to be: a browser cannot set headers on a WebSocket handshake, and the token
+// is injected into the page's own HTML by the one ungated route, so it is the
+// secret most likely to escape. That socket then landed on `handleCommand`, the
+// same privileged entry point the header-authenticated TUI bridge uses, with no
+// re-check of any kind. Two frames were enough:
+//
+//   {"type":"command","command":"/approve-all"}   → loop.setApproveAll(true)
+//   {"type":"user.message","text":"..."}          → the agent runs
+//
+// `approvalGate` short-circuits on that flag (`if (approveAll) return true`),
+// and `Bash`'s `tier: 'approval'` is the ONLY thing standing in front of an
+// unsandboxed `exec()` with the full inherited environment — `bashSafety.ts`
+// says of itself that it is a heuristic warning and not a sandbox. So the read
+// token was an arbitrary-shell-command token.
+//
+// Raising the socket to `management` is not the fix: the Chat tab is a shipped
+// feature and needs `user.message`. The boundary is where the restriction
+// belongs, so the allowlist lives here — and it is an ALLOWlist, so a slash
+// command added later is refused until someone puts it on this list on purpose
+// rather than inheriting the browser's reach by default.
+
+/**
+ * Frame types a dashboard socket may send.
+ *
+ * All of them drive the agent or answer it; none of them change what the agent
+ * is allowed to do. That is the line: `user.message` and the `vibe.*` family
+ * start work and still face every approval prompt, whereas `/approve-all`
+ * removes the prompts. The Chat tab and the Vibe tab both live on this side.
+ */
+const DASHBOARD_ALLOWED_TYPES: ReadonlySet<unknown> = new Set([
+  'user.message',
+  'abort',
+  'approval.response',
+  'ask.answer',
+  'command',
+  'vibe.start',
+  'vibe.answer',
+  'vibe.action',
+  'vibe.escalation_response',
+])
+
+/**
+ * Slash commands a dashboard socket may send.
+ *
+ * Every entry is either read-only (`/tools`, `/spend`, `/context`, `/s5`,
+ * `/governance`) or a canned `user.message` / workflow selection the Chat tab
+ * itself issues (`/git`, `/diff`, and the workflow verbs the page's own input
+ * handler forwards) — none of which grant more than `user.message` already
+ * does, and `user.message` is the feature.
+ *
+ * Absent, deliberately: `/approve-all` (the finding above), `/skill` (installs
+ * and deletes on disk), `/quit` and `/exit` (kill the engine), `/model`
+ * (rewrites live config), `/reset` (clears the governance kill switch), `/undo`
+ * (rewrites the working tree), `/compact` (destroys conversation history),
+ * `/commit` (writes git history), `/export`, `/analyze` and the `/audit-*`
+ * family (start and stamp audit records).
+ */
+const DASHBOARD_ALLOWED_SLASH: ReadonlySet<unknown> = new Set([
+  // read-only reports
+  '/tools', '/spend', '/context', '/s5', '/governance',
+  // canned prompts — no more privileged than typing the same sentence
+  '/git', '/diff',
+  // workflow selection, which constrains the agent rather than freeing it
+  '/tdd', '/debug', '/review', '/plan', '/brainstorm', '/critique', '/research', '/cancel',
+])
+
+/**
+ * Null when a dashboard socket may forward `frame` to the engine, otherwise the
+ * reason to log and refuse on.
+ *
+ * Exported and pure so it is specified on its own terms: this is the whole of
+ * the boundary, and a boundary only reachable through a live WebSocket is a
+ * boundary nothing can cheaply prove.
+ */
+export function dashboardCommandRefusal(frame: unknown): string | null {
+  if (typeof frame !== 'object' || frame === null) return 'frame is not an object'
+  const { type, command } = frame as { type?: unknown; command?: unknown }
+  // Both sets are typed over `unknown` on purpose. Set membership does not
+  // coerce, so a number, an array, or an object with a flattering `toString`
+  // is simply not a member — which means this one check answers both "is it a
+  // string" and "is it a permitted one". A `typeof` guard in front of it would
+  // be a second mechanism for a single rule, and the mechanism that never gets
+  // to answer is the one no test can ever observe failing.
+  if (!DASHBOARD_ALLOWED_TYPES.has(type)) {
+    return `frame type ${JSON.stringify(type) ?? String(type)} is not allowed from the dashboard`
+  }
+  if (type !== 'command') return null
+  if (!DASHBOARD_ALLOWED_SLASH.has(command)) {
+    return `slash command ${JSON.stringify(command) ?? String(command)} is not allowed from the dashboard`
+  }
+  return null
+}
+
+// ---------------------------------------------------------------------------
 // No CORS grant
 // ---------------------------------------------------------------------------
 //
@@ -357,17 +455,26 @@ export class DashboardServer {
           }
         },
         message: (_ws: ServerWebSocket<unknown>, message: string | Buffer) => {
-          // Forward commands from dashboard chat to engine
-          if (this.deps.onCommand) {
-            try {
-              const text = typeof message === 'string' ? message : message.toString()
-              const parsed = JSON.parse(text)
-              if (parsed && parsed.type) {
-                console.log(`[dashboard] Forwarding command: ${parsed.type}`)
-                this.deps.onCommand(parsed)
-              }
-            } catch {}
+          // Forward commands from dashboard chat to engine — but only the ones
+          // a read-scoped browser is allowed to send. See
+          // DASHBOARD_ALLOWED_SLASH above for why this list exists.
+          if (!this.deps.onCommand) return
+          let parsed: unknown
+          try {
+            parsed = JSON.parse(typeof message === 'string' ? message : message.toString())
+          } catch {
+            return
           }
+          const refusal = dashboardCommandRefusal(parsed)
+          if (refusal !== null) {
+            // Logged, not silently dropped: a refusal nobody can see is
+            // indistinguishable from a socket that dropped the frame, and the
+            // difference is the whole point of having a boundary.
+            console.warn(`[dashboard] REFUSED command frame: ${refusal}`)
+            return
+          }
+          console.log(`[dashboard] Forwarding command: ${(parsed as { type: string }).type}`)
+          this.deps.onCommand(parsed)
         },
         close: (ws: ServerWebSocket<unknown>) => {
           this.clients.delete(ws)
