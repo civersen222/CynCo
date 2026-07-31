@@ -810,7 +810,8 @@ async function handleCommand(command: TUICommand): Promise<void> {
 
         case '/analyze': {
           const { ProjectIndexer } = await import('./index/indexer.js')
-          const indexer = new ProjectIndexer(process.cwd(), config.baseUrl)
+          const { embedBaseUrlFor } = await import('./index/embedClient.js')
+          const indexer = new ProjectIndexer(process.cwd(), embedBaseUrlFor(config))
           wsServer.emit({ type: 'stream.token', text: '[System] Analyzing project...\n' })
           try {
             const result = await indexer.index((msg) => {
@@ -1170,7 +1171,8 @@ async function handleCommand(command: TUICommand): Promise<void> {
       // Auto-index if stale or missing
       try {
         const { ProjectIndexer } = await import('./index/indexer.js')
-        const indexer = new ProjectIndexer(process.cwd(), config.baseUrl)
+        const { embedBaseUrlFor } = await import('./index/embedClient.js')
+        const indexer = new ProjectIndexer(process.cwd(), embedBaseUrlFor(config))
         if (indexer.isStale()) {
           console.log('[vibe] Index stale — auto-indexing...')
           wsServer.emit({ type: 'stream.token', text: '[System] Indexing project for smarter questions...\n' })
@@ -1260,7 +1262,8 @@ provider.healthCheck().then(async ok => {
     // Auto-index project on startup — powers CodeIndex tool in ALL modes
     try {
       const { ProjectIndexer } = await import('./index/indexer.js')
-      const indexer = new ProjectIndexer(process.cwd(), config.baseUrl)
+      const { embedBaseUrlFor } = await import('./index/embedClient.js')
+      const indexer = new ProjectIndexer(process.cwd(), embedBaseUrlFor(config))
       if (indexer.isStale()) {
         console.log('[localcode] Auto-indexing project for CodeIndex tool...')
         await indexer.index((msg) => console.log(`[index] ${msg}`))

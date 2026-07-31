@@ -953,18 +953,27 @@ export class ConversationLoop {
       // Probe embed health so we can surface index degradation on context.status.
       // Non-blocking: a short deadline falls back to keyword-only retrieval.
       try {
-        const { EmbedClient } = await import('../index/embedClient.js')
-        const emb = await new EmbedClient().embedWithDeadline(text)
+        const { EmbedClient, warnEmbedUnavailable } = await import('../index/embedClient.js')
+        const client = new EmbedClient()
+        const emb = await client.embedWithDeadline(text)
         if (emb && emb.length) {
           this.indexDegraded = false
           this.lastQueryMode = process.env.LOCALCODE_HYBRID_SEARCH !== '0' ? 'hybrid' : 'vector'
         } else {
           this.indexDegraded = true
           this.lastQueryMode = 'keyword'
+          // `embedWithDeadline` swallows the failure to keep the turn moving, so
+          // this is the only place a silent degradation becomes audible to a
+          // terminal user. context.status carries it too, but only a dashboard
+          // reader sees that. Warns once per process.
+          warnEmbedUnavailable(client.baseUrlUsed, 'no embedding returned within the deadline')
         }
-      } catch {
+      } catch (e) {
         this.indexDegraded = true
         this.lastQueryMode = 'keyword'
+        const { warnEmbedUnavailable } = await import('../index/embedClient.js')
+        warnEmbedUnavailable(process.env.LOCALCODE_EMBED_BASE_URL ?? 'http://localhost:11434',
+          e instanceof Error ? e.message : String(e))
       }
       const results = await indexer.query({ query: text, topK: 5 })
       if (results.length > 0) {
