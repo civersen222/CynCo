@@ -7,9 +7,17 @@
 # Ollama-shaped on purpose: config.ts already defaults base_url to
 # http://localhost:11434, and the Quick Start is the Ollama path. The llama.cpp
 # direct provider is the faster way to run this and the README documents it, but
-# it is opt-in through LOCALCODE_PROVIDER and its own env, so the shipped
-# fallback should not presume a GGUF on disk.
+# it wants a GGUF on disk and its own env, which the Quick Start never sets up.
+#
+# `provider` is named here rather than left to the built-in default, because the
+# built-in default is 'llama-cpp'. The Quick Start sets no environment variables
+# at all and launches through the TUI, which forwards none, so without this line
+# the documented Ollama path booted the llama.cpp provider and hunted for a model
+# file nothing had downloaded. Resolution is env > profile > built-in, so a user
+# who sets LOCALCODE_PROVIDER still wins, and a user whose own profile names no
+# provider still falls through to 'llama-cpp'.
 name: default
+provider: ollama
 model: qwen3.6
 context_length: 65536
 temperature: 0.7

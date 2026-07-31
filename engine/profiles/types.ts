@@ -9,6 +9,7 @@
  */
 
 import type { TierSetting } from '../config.js'
+import type { ProviderType } from '../providers/factory.js'
 
 /** Tool allow/deny scoping. Both fields are optional. */
 export type ToolScoping = {
@@ -52,6 +53,18 @@ export type Profile = {
   model_file?: string
   runtime?: ProfileRuntime
   tier?: TierSetting
+  /**
+   * Which provider to drive. Every other field here follows env > profile >
+   * built-in default; this one did not exist, so provider selection was
+   * env-or-`llama-cpp` and nothing else. The README's Ollama Quick Start sets
+   * no env at all, so it booted the llama.cpp direct provider and went looking
+   * for a GGUF, while the config table said the default was `ollama`.
+   *
+   * The built-in default stays `llama-cpp`, so a setup that relies on it is
+   * unaffected. The profile that ships with the engine names `ollama`, which
+   * is the path the Quick Start documents.
+   */
+  provider?: ProviderType
   base_url?: string
   timeout?: number
   system_prompt_append?: string

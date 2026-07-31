@@ -198,7 +198,12 @@ export function loadConfig(): LocalCodeConfig {
   const expertise = (process.env.LOCALCODE_EXPERTISE ?? profile?.expertise ?? 'advanced') as 'beginner' | 'intermediate' | 'advanced'
 
   // --- provider ---
-  const provider = (process.env.LOCALCODE_PROVIDER ?? 'llama-cpp') as ProviderType
+  // env > profile > built-in, like every other field above. It used to skip the
+  // profile, which is why the Ollama Quick Start — no env vars anywhere in it —
+  // started the llama.cpp direct provider and looked for a GGUF nothing had
+  // downloaded. The built-in stays 'llama-cpp' so an existing setup relying on
+  // it is untouched; the shipped default profile names 'ollama'.
+  const provider = (process.env.LOCALCODE_PROVIDER ?? profile?.provider ?? 'llama-cpp') as ProviderType
 
   // --- apiKey ---
   const apiKey = process.env.LOCALCODE_API_KEY ?? ''

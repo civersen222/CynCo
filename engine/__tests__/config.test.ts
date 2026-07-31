@@ -310,11 +310,37 @@ runtime:
     const c = loadConfig()
     expect(c.model).toBe('qwen3.6')
 
+    // And the provider that can serve that tag. `qwen3.6` is an Ollama tag —
+    // `ollama pull` puts it in Ollama's store, and the llama.cpp direct provider
+    // knows nothing about tags, only about a GGUF path. Resolving a model while
+    // pointing at a provider that cannot answer for it is not a working default,
+    // and it is what the built-in fallback ('llama-cpp') produced on its own.
+    expect(c.provider).toBe('ollama')
+
     // Still undefined, and deliberately so: `model_file` and the draft-mtp
-    // runtime belong to the opt-in llama.cpp direct provider, so the shipped
-    // fallback must not presume a GGUF the Quick Start never downloads.
+    // runtime belong to the llama.cpp direct provider, so the shipped fallback
+    // must not presume a GGUF the Quick Start never downloads.
     expect(c.modelFile).toBeUndefined()
     expect(c.runtime).toBeUndefined()
+  })
+
+  it('provider resolves env > profile > built-in', () => {
+    // The middle term is the one that did not exist. `provider` was read as
+    // `process.env.LOCALCODE_PROVIDER ?? 'llama-cpp'` while every neighbouring
+    // field consulted the profile, so a profile could name a model and a
+    // base_url and still be overruled on which client would use them.
+    writeGlobalProfile('default', 'name: default\nmodel: m\nprovider: ollama\n')
+    expect(loadConfig().provider).toBe('ollama')
+
+    process.env.LOCALCODE_PROVIDER = 'llama-cpp'
+    expect(loadConfig().provider).toBe('llama-cpp')
+    delete process.env.LOCALCODE_PROVIDER
+
+    // A profile that names no provider must still reach the built-in. Changing
+    // that default would break every existing llama.cpp setup silently, so the
+    // fix added a layer beneath env rather than moving the floor.
+    writeGlobalProfile('default', 'name: default\nmodel: m\n')
+    expect(loadConfig().provider).toBe('llama-cpp')
   })
 
   it('env LOCALCODE_MODEL overrides the auto-default profile model', () => {

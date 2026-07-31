@@ -8,7 +8,7 @@ import { parse as parseYaml } from 'yaml'
  * BLOCKING wire-check: the README's Quick Start must install the model the
  * engine will actually run on.
  *
- * The Quick Start had three independent blockers, each sufficient on its own:
+ * The Quick Start had four independent blockers, each sufficient on its own:
  *
  *  1. No model resolved. `config.ts` falls back to the profile named `default`
  *     when `LOCALCODE_MODEL` is unset, and `main.ts` exits 1 with "No model
@@ -19,6 +19,10 @@ import { parse as parseYaml } from 'yaml'
  *  3. The TUI passes no model, on purpose — `build_engine_env` documents that
  *     forwarding a stale TUI config would silently override the engine profile.
  *     Sound, but it assumes the engine has a profile, and per (2) it did not.
+ *  4. The wrong provider. `config.ts` defaulted `provider` to `llama-cpp` and
+ *     read no profile for it, so the Ollama Quick Start — which sets no env at
+ *     all — booted the llama.cpp direct provider and went looking for a GGUF.
+ *     The README's own config table said the default was `ollama`.
  *
  * (2) is fixed in `profiles/loader.ts` and specified in
  * `engine/__tests__/profiles/loader.test.ts`. What is left is the coupling this
@@ -75,11 +79,28 @@ describe('the Quick Start installs the model the engine defaults to', () => {
 
   it('the fallback does not presume a GGUF the Quick Start never downloads', () => {
     // `model_file` and the draft-mtp runtime belong to the llama.cpp direct
-    // provider, which the README documents as opt-in through LOCALCODE_PROVIDER
-    // and its own env. Shipping them in the fallback makes the default path
-    // depend on a file no Quick Start step creates.
+    // provider, which the README documents with its own env and its own model
+    // path. Shipping them in the fallback makes the default path depend on a
+    // file no Quick Start step creates.
     const bundled = bundledDefault()
     expect(bundled.model_file).toBeUndefined()
     expect(bundled.runtime).toBeUndefined()
+  })
+
+  it('the fallback names the provider that serves the pulled tag', () => {
+    // A model tag is only meaningful to the provider that holds it. `ollama
+    // pull` puts the tag in Ollama's store; the llama.cpp direct provider reads
+    // a GGUF path and knows nothing about tags. So the profile that names
+    // `qwen3.6` must also name the provider that can answer for it — otherwise
+    // the two assertions above are satisfied by a config that still cannot run.
+    //
+    // This must be stated in the profile rather than left to the built-in
+    // default, which is `llama-cpp` (config.ts). Leaving it implicit is the bug
+    // this test exists for.
+    expect(
+      bundledDefault().provider,
+      'the shipped fallback pulls an Ollama tag but does not name the ollama provider, so a ' +
+        "fresh clone falls through to config.ts's built-in 'llama-cpp' and looks for a GGUF",
+    ).toBe('ollama')
   })
 })
