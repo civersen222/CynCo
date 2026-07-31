@@ -11,7 +11,7 @@ import * as os from 'os'
 import * as path from 'path'
 import { promisify } from 'util'
 import { validateFrontmatter, RISKY_TOOLS } from './types.js'
-import { workspaceSkillsDir } from './loader.js'
+import { assertInside, workspaceSkillsDir } from './loader.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -43,14 +43,27 @@ export function parseInstallSpec(spec: string): InstallSpec {
   return { owner, repo, ref, subdir: subParts.length ? subParts.join('/') : undefined }
 }
 
-/** Extract a .zip to destDir. Windows: PowerShell Expand-Archive; else `unzip`. */
-async function extractZip(zipPath: string, destDir: string): Promise<void> {
+/**
+ * Extract a .zip to destDir. Windows: PowerShell Expand-Archive; else `unzip`.
+ *
+ * The paths travel in the environment rather than in the command text. The
+ * previous form interpolated them into a single-quoted PowerShell literal, so a
+ * quote anywhere in either path ended the literal and handed the remainder to
+ * the parser. Both paths are mkdtemp-derived today, which made it latent rather
+ * than live — and latent is exactly the kind of thing that stops being latent
+ * when someone later passes a user-chosen destination.
+ */
+export async function extractZip(zipPath: string, destDir: string): Promise<void> {
   fs.mkdirSync(destDir, { recursive: true })
   if (process.platform === 'win32') {
     await execFileAsync('powershell', [
-      '-NoProfile', '-Command',
-      `Expand-Archive -Path '${zipPath}' -DestinationPath '${destDir}' -Force`,
-    ], { timeout: 60000 })
+      '-NoProfile', '-NonInteractive', '-Command',
+      "$ErrorActionPreference = 'Stop'; " +
+      'Expand-Archive -LiteralPath $env:CYNCO_ZIP_SRC -DestinationPath $env:CYNCO_ZIP_DEST -Force',
+    ], {
+      timeout: 60000,
+      env: { ...process.env, CYNCO_ZIP_SRC: zipPath, CYNCO_ZIP_DEST: destDir },
+    })
   } else {
     await execFileAsync('unzip', ['-o', zipPath, '-d', destDir], { timeout: 60000 })
   }
@@ -101,7 +114,11 @@ function findSkillDirs(root: string): string[] {
 /** Locate the one skill folder to install, honoring an explicit subdir. */
 function resolveSkillDir(extractRoot: string, subdir?: string): string {
   const root = repoRoot(extractRoot)
-  const base = subdir ? path.join(root, subdir) : root
+  // `path.join` here, with a subdir built by splitting the spec on '/', made
+  // `owner/repo/../../..` an ordinary path — and whatever it found got cpSync'd
+  // into ~/.cynco/skills. Locally supplied, so lower severity than /skill
+  // remove, but the same class of gap and the same fix.
+  const base = subdir ? assertInside(root, subdir) : root
   if (fs.existsSync(path.join(base, 'SKILL.md'))) return base
   const found = findSkillDirs(base)
   if (found.length === 1) return found[0]
@@ -109,13 +126,24 @@ function resolveSkillDir(extractRoot: string, subdir?: string): string {
   throw new Error(`multiple skills found — pass a subdir to pick one:\n${found.map(d => path.relative(root, d)).join('\n')}`)
 }
 
-function splitFrontmatter(text: string): string {
-  const t = text.replace(/^\uFEFF/, '')
+/**
+ * Split a SKILL.md into its frontmatter block and its prose body.
+ *
+ * The body is returned, not discarded, because the body is what the model is
+ * handed as instructions — and a confirmation that omits it is asking about
+ * something other than what it installs.
+ */
+function splitSkillMd(text: string): { frontmatter: string; body: string } {
+  const t = text.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n')
   if (!t.startsWith('---')) throw new Error('SKILL.md: missing frontmatter fence')
   const end = t.indexOf('\n---', 3)
   const firstNewline = t.indexOf('\n')
   if (end === -1 || firstNewline === -1 || firstNewline >= end) throw new Error('SKILL.md: malformed frontmatter fence')
-  return t.slice(firstNewline + 1, end)
+  const afterFence = t.indexOf('\n', end + 1)
+  return {
+    frontmatter: t.slice(firstNewline + 1, end),
+    body: afterFence === -1 ? '' : t.slice(afterFence + 1),
+  }
 }
 
 function parseYaml(input: string): unknown {
@@ -124,14 +152,38 @@ function parseYaml(input: string): unknown {
   return (require('yaml') as typeof import('yaml')).parse(input)
 }
 
-function buildReport(name: string, description: string, tools: string[], source: string): string {
+/** How much of an untrusted skill body the confirmation quotes verbatim. */
+export const BODY_PREVIEW_LINES = 40
+
+/**
+ * The text the user is asked to approve.
+ *
+ * Two ordering decisions, both deliberate:
+ *
+ *  - The risky-tool warning comes BEFORE the description. The description is a
+ *    line the repository author wrote and can aim at the warning ("the Bash
+ *    below is only for the test runner"); a warning that trails the prose
+ *    arguing against it is arguing second.
+ *  - The body is quoted, capped, and labelled as what the model will be told to
+ *    do. Name and description are metadata; the body is the payload, and it was
+ *    the one part the previous report never showed.
+ */
+function buildReport(name: string, description: string, tools: string[], body: string, source: string): string {
   const risky = tools.filter(t => RISKY_TOOLS.has(t))
-  const lines = [
-    `Install skill "${name}" from ${source}?`,
-    `  ${description}`,
-    tools.length ? `  Tools: ${tools.join(', ')}` : '  Tools: (none)',
-  ]
+  const lines = [`Install skill "${name}" from ${source}?`]
   if (risky.length) lines.push(`  ⚠ Risky tools (filesystem/shell/network): ${risky.join(', ')}`)
+  lines.push(tools.length ? `  Tools: ${tools.join(', ')}` : '  Tools: (none)')
+  lines.push(`  ${description}`)
+
+  const bodyLines = body.replace(/\n+$/, '').split('\n')
+  const total = bodyLines.length
+  const shown = bodyLines.slice(0, BODY_PREVIEW_LINES)
+  lines.push('', '  The body below is given to the model as instructions:', '  ---')
+  for (const l of shown) lines.push(`  | ${l}`)
+  lines.push('  ---')
+  if (total > shown.length) {
+    lines.push(`  (showing ${shown.length} of ${total} lines — ${total - shown.length} more lines not shown; the model receives all of them)`)
+  }
   return lines.join('\n')
 }
 
@@ -145,11 +197,11 @@ export async function installSkill(spec: string, opts: InstallOptions): Promise<
   const extractRoot = await fetchAndExtract(parsed)
 
   const skillDir = resolveSkillDir(extractRoot, parsed.subdir)
-  const raw = parseYaml(splitFrontmatter(fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf8')))
-  const fm = validateFrontmatter(raw, opts.knownTools)
+  const { frontmatter, body } = splitSkillMd(fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf8'))
+  const fm = validateFrontmatter(parseYaml(frontmatter), opts.knownTools)
 
   const source = `${parsed.owner}/${parsed.repo}${parsed.ref ? `@${parsed.ref}` : ''}`
-  const approved = await opts.confirm(buildReport(fm.name, fm.description, fm.tools, source))
+  const approved = await opts.confirm(buildReport(fm.name, fm.description, fm.tools, body, source))
   if (!approved) return { installed: false, name: fm.name }
 
   const workspaceDir = opts.workspaceDir ?? workspaceSkillsDir()

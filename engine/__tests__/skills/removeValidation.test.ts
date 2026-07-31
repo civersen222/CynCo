@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
-import { assertInsideSkillsDir, resolveWorkspaceSkillDir } from '../../skills/loader.js'
+import { assertInside, resolveWorkspaceSkillDir } from '../../skills/loader.js'
 import { SKILL_NAME_RE } from '../../skills/types.js'
 
 // Regression origin: `/skill remove <name>` did
@@ -84,25 +84,25 @@ describe('resolveWorkspaceSkillDir — traversal', () => {
   // tests above all still pass. That is what makes a backstop decorative. It
   // is specified separately here so it is measured on its own terms, against
   // the inputs a future caller (or a loosened regex) would actually hand it.
-  describe('assertInsideSkillsDir — the backstop, on its own terms', () => {
+  describe('assertInside — the backstop, on its own terms', () => {
     for (const bad of ['..', '.', '../..', '../../Documents', 'a/../..', '', './..']) {
       it(`refuses ${JSON.stringify(bad)}`, () => {
-        expect(() => assertInsideSkillsDir(root, bad)).toThrow()
+        expect(() => assertInside(root, bad)).toThrow()
       })
     }
 
     it('refuses an absolute path pointing elsewhere', () => {
       const elsewhere = path.resolve(root, '..')
-      expect(() => assertInsideSkillsDir(root, elsewhere)).toThrow()
+      expect(() => assertInside(root, elsewhere)).toThrow()
     })
 
     it('refuses the root itself — a skill dir is strictly inside it', () => {
-      expect(() => assertInsideSkillsDir(root, path.resolve(root))).toThrow()
+      expect(() => assertInside(root, path.resolve(root))).toThrow()
     })
 
     it('accepts a contained path and returns it resolved', () => {
-      expect(assertInsideSkillsDir(root, 'ok')).toBe(path.join(path.resolve(root), 'ok'))
-      expect(assertInsideSkillsDir(root, 'nested/child'))
+      expect(assertInside(root, 'ok')).toBe(path.join(path.resolve(root), 'ok'))
+      expect(assertInside(root, 'nested/child'))
         .toBe(path.join(path.resolve(root), 'nested', 'child'))
     })
 
@@ -110,7 +110,7 @@ describe('resolveWorkspaceSkillDir — traversal', () => {
       // `<root>-evil` startsWith `<root>` as a plain string; the separator in
       // the check is what makes that a rejection rather than an acceptance.
       const sibling = path.resolve(root) + '-evil'
-      expect(() => assertInsideSkillsDir(root, sibling)).toThrow()
+      expect(() => assertInside(root, sibling)).toThrow()
     })
   })
 

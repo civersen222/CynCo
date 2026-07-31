@@ -39,8 +39,12 @@ export function workspaceSkillsDir(): string {
  * observed to fail — remove it and no test notices, which makes it decoration
  * rather than defence. Given its own contract it gets its own tests, and a
  * mutation to it dies.
+ *
+ * `root` is a parameter, not the skills dir: `/skill install` needs the same
+ * check against a zipball's extraction root, where the value that escapes is
+ * the subdir out of the install spec rather than a skill name.
  */
-export function assertInsideSkillsDir(root: string, candidate: string): string {
+export function assertInside(root: string, candidate: string): string {
   const rootResolved = path.resolve(root)
   const dir = path.resolve(rootResolved, candidate)
   if (!dir.startsWith(rootResolved + path.sep)) {
@@ -66,7 +70,7 @@ export function resolveWorkspaceSkillDir(name: string, workspaceDir?: string): s
   if (typeof name !== 'string' || !SKILL_NAME_RE.test(name)) {
     throw new Error(`skill name must be lower-kebab-case (got ${JSON.stringify(name)})`)
   }
-  return assertInsideSkillsDir(workspaceDir ?? workspaceSkillsDir(), name)
+  return assertInside(workspaceDir ?? workspaceSkillsDir(), name)
 }
 
 /**
