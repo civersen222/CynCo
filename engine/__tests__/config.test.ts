@@ -31,7 +31,11 @@ describe('config', () => {
   it('returns defaults when no env vars', () => {
     const c = loadConfig()
     expect(c.baseUrl).toBe('http://localhost:11434')
-    expect(c.model).toBeUndefined()
+    // Not undefined. HOME and cwd are empty temp dirs here, which is the
+    // fresh-clone condition, and a fresh clone now resolves the profile that
+    // ships at engine/profiles/templates/default.yaml. This line used to assert
+    // undefined, which is the exact state main.ts exits 1 on.
+    expect(c.model).toBe('qwen3.6')
     expect(c.tier).toBe('auto')
     expect(c.temperature).toBe(0.7)
     expect(c.maxOutputTokens).toBe(16384)
@@ -296,9 +300,19 @@ runtime:
     expect(c.runtime?.specType).toBe('mtp')
   })
 
-  it('returns built-in defaults when no profile and no default.yaml', () => {
+  it('falls back to the profile that ships with the engine when the user has none', () => {
+    // Was "returns built-in defaults when no profile and no default.yaml", and
+    // asserted `model` came back undefined. There has always been a
+    // default.yaml — engine/profiles/templates/default.yaml — it was simply a
+    // path no code read, so this test was encoding the bug: undefined is the
+    // value main.ts prints "No model specified" and exits 1 on, which is what
+    // every command in the README's Quick Start did.
     const c = loadConfig()
-    expect(c.model).toBeUndefined()
+    expect(c.model).toBe('qwen3.6')
+
+    // Still undefined, and deliberately so: `model_file` and the draft-mtp
+    // runtime belong to the opt-in llama.cpp direct provider, so the shipped
+    // fallback must not presume a GGUF the Quick Start never downloads.
     expect(c.modelFile).toBeUndefined()
     expect(c.runtime).toBeUndefined()
   })
