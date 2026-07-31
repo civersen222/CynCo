@@ -13,7 +13,7 @@ CynCo is an AI coding assistant powered by local LLMs via [Ollama](https://ollam
 - **Edit files, run commands, search code** — full tool-calling loop on your hardware
 - **Build entire projects from a description** — guided Vibe mode asks smart questions, then builds autonomously
 - **Self-govern with enforced cybernetics** — S5 policy engine with 21 rules, 4-tier stuck loop escape, live governance signals injected every iteration
-- **Chat and monitor from the browser** — dashboard on port 9161 with a full chat UI plus real-time tool activity, contracts, predictions, training data progress, and variety control
+- **Chat and monitor from the browser** — dashboard with a full chat UI plus real-time tool activity, contracts, predictions, training data progress, and variety control
 - **Constrained decoding** *(opt-in: `LOCALCODE_GRAMMAR_ENABLED=true`)* — GBNF grammar enforcement on llama.cpp, post-validation on all providers
 - **Best-of-N sampling** *(opt-in: `LOCALCODE_BEST_OF_N=true`)* — run multiple candidates in git worktrees, select by test pass rate
 - **Tree-sitter code indexing** — AST-aware chunking with BM25 + vector hybrid search and PageRank repo map
@@ -33,30 +33,42 @@ CynCo works best with models that support native tool calling. Here are the test
 
 | Model | Type | VRAM | Speed (RTX 5090) | SWE-bench | Notes |
 |-------|------|------|-------------------|-----------|-------|
-| **Qwen3.6-27B** | Dense + MTP | ~22 GB (Q6_K) | ~100 tok/s (MTP) | 77.2% | **Best choice.** Run Q6_K via the llama.cpp provider with MTP speculative decoding. Native tool use. Apache 2.0. |
+| **Qwen3.6-27B** | Dense + MTP | ~16 GB (NVFP4) | 115 tok/s eval, measured | 77.2% | **What we run.** NVFP4 GGUF via the llama.cpp provider with MTP speculative decoding. Native tool use. Apache 2.0. |
 | Gemma4-31B | Dense | ~19 GB (Q4) | ~52 tok/s | ~65% | Good alternative. Native tool use. |
 | Devstral-Small-2-24B | Dense | ~15 GB (Q4) | ~70 tok/s | Good | Strong for agentic multi-file edits. Fits 16GB GPUs. |
 | Qwen3.6-35B-A3B | MoE | ~20 GB (Q4) | ~234 tok/s | 73.4% | Raw speed champion (3B active params), but 27B dense scores higher and MTP closes the speed gap. |
 
 ### Quantization
 
-We run **Q6_K** of Qwen3.6-27B — near-lossless quality, and MTP speculative decoding keeps it fast. Drop to Q4_K_M only if you're VRAM-constrained:
+We run the **NVFP4** GGUF of Qwen3.6-27B (`Qwen3.6-27B-NVFP4-MTP.gguf`, 16.2 GB on disk). It leaves ~16 GB of a 32 GB card free for KV at 64K context and for sub-agents, which Q6_K does not.
 
-| Quantization | Size (27B dense) | Speed | Quality | When to Use |
-|-------------|------------------|-------|---------|-------------|
-| **Q6_K** | ~22 GB | Fast (with MTP) | Near-lossless | **Default on 32GB GPUs — what we run** |
-| Q4_K_M | ~17 GB | Fastest | Good | 24GB GPUs, or when you need more context headroom |
-| Q3_K_M | ~13 GB | Fast | Noticeable loss | Only if you can't fit Q4 |
+| Quantization | Size (27B dense) | Measured decode | Quality | When to Use |
+|-------------|------------------|-----------------|---------|-------------|
+| **NVFP4 + MTP** | ~16 GB | 115 tok/s eval, 0.83 draft acceptance (live missions, 2026-07-10) | Tool-call structure intact | **What we run.** Frees the most VRAM for context and agents. |
+| Q6_K + MTP | ~22 GB | 153.7 tok/s median decode at `spec_draft_n=3` (benchAgentic A/B, 2026-07-01) | Near-lossless | The alternative if you have the headroom. |
+| Q4_K_M | ~17 GB | not measured here | Good | 24 GB GPUs. |
+| Q3_K_M | ~13 GB | not measured here | Noticeable loss | Only if you can't fit Q4. Tool-call structure degrades below 4-bit. |
+
+The two measured numbers came from different harnesses — one is a live mission stream, the other a controlled A/B bench — so they are reported separately rather than compared. Neither has been re-run against the other's setup.
+
+**One gotcha, and it cost us a session.** The community NVFP4 GGUF embeds a stricter Jinja chat template that raises on mid-conversation system messages, and CynCo injects exactly those (index chunks, project state). Point the profile at a known-good template:
+
+```yaml
+runtime:
+  chat_template_file: ~/.cynco/models/qwen3.6-27b-nvfp4/chat_template.jinja
+```
+
+The tool-call probe did not catch this, because it only sends system-first prompts. See [docs/cynco-failure-log.md](docs/cynco-failure-log.md).
 
 ### Embedding Model
 
-CynCo uses `jina-code-embeddings-0.5b` (code-specialized) for semantic code indexing and auto-pulls it on first index. It runs alongside your main model:
+Semantic indexing needs a *separate* embedding model — the chat model does not serve embeddings. CynCo asks for `jina-code-embeddings-0.5b` (code-specialized) and falls back to `nomic-embed-text` if that one is missing. Against an Ollama server it will also try to pull the missing model in the background, once; against an OpenAI-shaped server (`llama-server --embeddings`) there is nothing to pull, so install it yourself:
 
 ```bash
 ollama pull jina-code-embeddings-0.5b
 ```
 
-If that model isn't installed it falls back to `nomic-embed-text` at runtime. Override with `LOCALCODE_EMBED_MODEL` — switching embed models requires a re-index.
+Override with `LOCALCODE_EMBED_MODEL` — switching embed models requires a re-index. If no embedding server answers you get keyword search and the engine says so; see [Semantic Code Index](#semantic-code-index) for how it finds one.
 
 ### A second model (optional)
 
@@ -97,20 +109,28 @@ cd tui && python -m localcode_tui.app
 
 That's it. No API keys. No subscriptions. No data leaving your machine.
 
-Once running, interact in the TUI or open `http://localhost:9161` in your browser and chat from there.
+Once running, interact in the TUI or open the dashboard in your browser. The engine prints its URL at startup:
+
+```
+[dashboard] Governance dashboard on http://localhost:9161
+```
+
+That is the bridge's bound port plus one, not a fixed number. The bridge asks for `LOCALCODE_WS_PORT` (default `9160`) and falls back to the next free port when that one is taken — which, after a restart, is the ordinary case. Read the line; don't assume `9161`.
 
 ### Recommended: llama.cpp Direct Provider with MTP Speculative Decoding
 
-This is how we run CynCo: llama-server driven directly with Multi-Token Prediction on Qwen3.6-27B Q6_K, for ~100 tok/s generation (vs ~12 tok/s on Ollama):
+This is how we run CynCo — llama-server driven directly with Multi-Token Prediction on the Qwen3.6-27B NVFP4 GGUF:
 
 ```bash
 LOCALCODE_PROVIDER=llama-cpp \
-  LOCALCODE_MODEL_PATH=~/.cynco/models/qwen3.6-mtp/Qwen3.6-27B-Q6_K.gguf \
+  LOCALCODE_MODEL_PATH=~/.cynco/models/qwen3.6-27b-nvfp4/Qwen3.6-27B-NVFP4-MTP.gguf \
   LOCALCODE_SPEC_TYPE=draft-mtp \
   LOCALCODE_SPEC_DRAFT_N=3 \
   LOCALCODE_CONTEXT_LENGTH=65536 \
   bun engine/main.ts
 ```
+
+With NVFP4 you also need the chat-template override from [Quantization](#quantization) above, which is a profile key rather than an env var.
 
 The engine auto-manages llama-server with: single-slot mode, context checkpoints for prefix-cache rollback (Qwen3.6 is a hybrid Gated DeltaNet model — warm turns only prefill new tokens instead of reprocessing the whole prompt), capped reasoning budget (256 tokens), and accurate tok/s from server eval timing. The engine keeps its prompt strictly append-only across turns to preserve the cache (enforced by a regression test). Measured live at 45K tokens of context: warm turns restore a checkpoint with ~0.998 prefix reuse and prefill only the ~500-900 genuinely new tokens (~0.6-0.9 s) instead of reprocessing the full prompt (~17 s) — each turn pays only for its new content. Side queries route through the same llama-server instance to avoid VRAM thrashing. Full tuning recipe: [docs/serving/rtx-5090-qwen3.6-27b.md](docs/serving/rtx-5090-qwen3.6-27b.md).
 
@@ -124,8 +144,8 @@ Every turn's cost is recorded to the `measurements` table: prefill tokens, cache
 |------|------------------|------------|
 | 8-12 GB | Devstral-Small-2 Q4 | Solid tool calling, single-file tasks |
 | 16 GB | Devstral-Small-2 Q6 | Multi-file projects, sub-agents |
-| 24 GB | Qwen3.6-27B Q4_K_M | Full feature set, parallel agents |
-| **32 GB** | **Qwen3.6-27B Q6_K + MTP** | **Optimal. ~100 tok/s with room for 64K context + agents.** |
+| 24 GB | Qwen3.6-27B NVFP4 | Full feature set, parallel agents |
+| **32 GB** | **Qwen3.6-27B NVFP4 + MTP** | **What we develop on. 115 tok/s eval measured, with room for 64K context + agents.** |
 | 32+16 GB (dual) | Primary + a smaller alternative | S5 can switch to the alternative when latency rises (rule W2) |
 
 Smaller models (<7B) struggle with the tool-calling format. 24B+ recommended for real work.
@@ -137,7 +157,7 @@ Smaller models (<7B) struggle with the tool-calling format. 24B+ recommended for
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │  S5 Policy Engine (21 rules, 3 tiers, enforced)              │
-│  Critical: auto-enforce | Warning: TUI | Info: journal       │
+│  7 Critical: auto-enforce | 10 Warning: TUI | 4 Info: journal│
 └──────────────────────────┬───────────────────────────────────┘
                            │ enforces
 ┌──────────────────────────┴───────┐   WS   ┌─────────────────┐
@@ -155,7 +175,7 @@ Smaller models (<7B) struggle with the tool-calling format. 24B+ recommended for
 │  Ollama / llama.cpp              │        │                 │
 ├──────────────────────────────────┤        └─────────────────┘
 │  Governance Dashboard (HTTP+WS)  │
-│  http://localhost:9161           │   ← browser
+│  bridge port + 1 (9161 by dflt)  │   ← browser
 │  Live monitoring + param control │
 └──────────────────────────────────┘
 ```
@@ -185,6 +205,8 @@ Multi-source research workflow with 6 search engines:
 - **PubMed** — biomedical literature
 - **HuggingFace** — ML models and datasets
 
+A seventh, **SearXNG**, is implemented (`engine/research/engines/searxng.ts`) but only used when you point `LOCALCODE_SEARXNG_URL` at an instance.
+
 Results are scored by keyword relevance, recency, source authority, and cross-source corroboration. Fallback engine chain ensures results even when primary engine is unavailable.
 
 ### Sub-Agents
@@ -199,15 +221,20 @@ Results are scored by keyword relevance, recency, source authority, and cross-so
 S2 coordinator manages GPU utilization, queues agents when resources are constrained, and kills stuck agents via algedonic signals.
 
 ### Enforced Governance (VSM S1-S5)
-Not advisory — **enforced**. S5 is the single policy enforcer with 21 tiered rules:
+Not advisory — **enforced**. S5 is the single policy enforcer with 21 tiered rules, all in `engine/s5/ruleBasedS5.ts`: 7 Critical, 10 Warning, 4 Info.
 
-**Critical (auto-enforce, no user approval):**
-- Kill switch on 5+ consecutive tool failures
-- Tool exclusion when specific tool fails 3+ times
-- Context overflow compaction at 90% utilization
-- Doom loop breaking (3+ identical failing calls)
-- Variety critical tool restriction to top-5 by success rate
-- **Stuck loop escape** — restricts to unused tools when stuck 5+ turns, regardless of tool success rate
+**Critical — 7 rules, auto-enforced with no user approval:**
+- **C1** Kill switch on 5+ consecutive tool failures
+- **C2** Tool exclusion when a specific tool fails 3+ times
+- **C3** Context overflow compaction at 90% utilization
+- **C4** Doom loop breaking (3+ identical failing calls)
+- **C5** GPU exhaustion — block sub-agent spawns
+- **C6** Variety critical — restrict to top-5 tools by success rate
+- **C7** **Stuck loop escape** — restrict to unused tools when stuck 5+ turns, regardless of tool success rate
+
+One wart worth naming rather than hiding: the rule with `id: 'I4'` (heterarchy authority) sits in the Info block by name but declares `tier: 'warning'`, so it is enforced as a Warning. That is why the tiers count 7/10/4 while the ids read C1-C7, W1-W9, I1-I5.
+
+A 22nd rule, `P1` in `engine/s5/proactiveSurfacing.ts`, exists only when `LOCALCODE_S5_PROACTIVE_TOOLS=true`. It is append-only — it surfaces tools, never restricts them — and it is off by default.
 
 **Stuck Loop Escalation (4 tiers):**
 1. **Turn 3+** — governance signal appended to the conversation: "change your approach" (appended, not a system-prompt rewrite — keeps the prompt cache valid)
@@ -235,7 +262,7 @@ Every user message auto-creates a Definition of Done contract. The model cannot 
 - Up to 5 enforcement rounds — if the model tries to stop early, it gets told "you're NOT done"
 
 ### Governance Dashboard + Chat UI
-Open `http://localhost:9161` during any session. Five tabs:
+Open the URL the engine printed at startup (bridge port + 1; `http://localhost:9161` when the bridge got its default). Five tabs:
 
 **[Chat]** — Send prompts directly from the browser. Full tool output with expandable details, visible thinking tokens, streaming model text. Slash commands (`/plan`, `/tdd`, `/debug`) for workflows. Enter to send, Shift+Enter for newlines.
 
@@ -251,7 +278,7 @@ Open `http://localhost:9161` during any session. Five tabs:
 
 **[History]** — Session analytics with per-session metrics charts (tool success, stuck turns, context utilization over time), session transcript viewer, and session selector.
 
-**[Config]** — Temperature, context length, timeout sliders. System control toggles. All 21 VSM governance parameters with sliders and bounds.
+**[Config]** — Temperature, context length, timeout sliders. System control toggles. All 26 VSM governance parameters (`engine/vsm/governanceParams.ts`) with sliders and their declared bounds.
 
 Survives page reload, auto-detects active sessions, auto-reconnects on disconnect. Polls governance every 3s and training data every 30s.
 
@@ -263,8 +290,8 @@ record shape carrying a scope vector, not one key type per capability:
 
 | Scope | Opens | Reaches its holder by |
 |---|---|---|
-| `bridge` | The TUI command channel on `:9160` — this drives the agent, and the agent has Bash | Read from the token file. The TUI, the mission driver and the probes all do this, so launching any of them takes no arguments. |
-| `inference` | Every dashboard read route and the event stream on `:9161` — session transcripts, thinking tokens, governance | Injected into the dashboard page at request time. |
+| `bridge` | The TUI command channel on the bridge port — this drives the agent, and the agent has Bash | Read from the token file. The TUI, the mission driver and the probes all do this, so launching any of them takes no arguments. |
+| `inference` | Every dashboard read route, plus the dashboard WebSocket — session transcripts, thinking tokens, governance, and the Chat tab's own send path | Injected into the dashboard page at request time. |
 | `management` | `POST /config/*` and `/api/brain/layer` — anything that changes engine or governance configuration | Printed once at engine startup and pasted by hand. Never handed to a page. |
 
 The split is not ceremony. The inference token is delivered to a browser, so it
@@ -273,7 +300,24 @@ is the secret most likely to escape; flipping `ablation` or
 so that costs a deliberate paste. A management token also reads, because the
 `admin` holder carries both scopes.
 
-Two things follow from this that are easy to get wrong:
+**The `inference` scope opens a send path, so it is bounded by an allowlist too.**
+The Chat tab has to be able to talk to the agent — that is the feature — so the
+dashboard socket forwards frames. Which frames is not left to the page:
+`dashboardCommandRefusal` in `engine/dashboard/server.ts` asks two separate
+questions, in order. First *may a browser send this kind of frame at all* — an
+allowlist of nine frame types and fifteen slash commands, every one of them
+read-only or no more privileged than typing the same sentence. Then *is the frame
+the shape that kind is declared to have* — `validateCommand`, the same schema
+check the bridge entrance runs. Authority first, because a perfectly well-formed
+`/approve-all` has to be refused for what it is, not for how it is spelled.
+
+Absent from the allowlist, deliberately: `/approve-all`, `/skill` (installs and
+deletes on disk), `/quit` and `/exit`, `/model`, `/reset` (clears the governance
+kill switch), `/undo`, `/compact`, `/commit`, `/export`, `/analyze` and the
+`/audit-*` family. A refusal is logged rather than silently dropped — a boundary
+nobody can see is indistinguishable from a socket that lost the frame.
+
+Two more things follow from this that are easy to get wrong:
 
 - **Nothing here is protected by CORS.** A WebSocket handshake is not subject to
   it at all, and `Content-Type: text/plain` makes a POST a "simple" request that
@@ -307,6 +351,8 @@ your phone via self-hosted [ntfy](https://ntfy.sh) over Tailscale — approve or
 no public ports. See [docs/liveness-setup.md](docs/liveness-setup.md).
 
 ### Semantic Code Index
+**Requires an embedding server.** Vector indexing needs an embedding model running somewhere — it is not served by the chat model. The engine speaks both wire formats: Ollama's `/api/embed` and the OpenAI-shaped `/v1/embeddings` (which `llama-server --embeddings` and most local servers expose), trying each until one answers, or pinned with `LOCALCODE_EMBED_API=ollama|openai`. It looks at `LOCALCODE_EMBED_BASE_URL`, then at the chat URL if the chat provider is Ollama, then at `http://localhost:11434`. If nothing answers you get keyword search, and the engine says so once at the top of the session as well as on `context.status`.
+
 Automatic vector indexing via `jina-code-embeddings-0.5b` (code-specialized; `nomic-embed-text` runtime fallback). The model starts each task knowing your codebase — function signatures, class definitions, imports. Retrieval is a **BM25 + dense RRF hybrid** by default over an AST-boundary-aware chunker. A **repo map** is injected on the first turn (capped ~2k tokens), and index degradation is surfaced on `context.status` (`indexMode` / `indexDegraded` / `lastQueryMode`) — it falls back to keyword search, and says so, when the embedding model is unavailable.
 
 ### Workflows
@@ -327,8 +373,22 @@ The seven guided workflows above (`tdd`, `debug`, `review`, `plan`, `brainstorm`
 Manage skills with the `/skill` slash command:
 - `/skill list` — show discovered skills
 - `/skill new <name>` — scaffold a new skill (`~/.cynco/skills/<name>/SKILL.md`)
-- `/skill install <owner>/<repo>[@ref][/subdir] --yes` — install from a GitHub zipball (no git binary needed); risky tools declared by the skill are reported for confirmation before install
+- `/skill install <owner>/<repo>[@ref][/subdir] --yes` — install from a GitHub zipball (no git binary needed)
 - `/skill remove <name>` — delete a workspace skill
+
+Both of those write to disk on the strength of a name someone else chose, so both
+are bounded rather than trusted:
+
+- **Install shows you the payload before it asks.** A skill body is prose that
+  gets handed to the model as instructions, and a confirmation prompt that
+  summarised it was asking you to approve something you had not read. The
+  confirmation now quotes the first `BODY_PREVIEW_LINES` (40) of the body
+  verbatim alongside the declared tools and the source, and says when it has
+  truncated. The zip's own subdirectory is resolved through `assertInside`, so a
+  `../` in an archive path cannot escape the extraction root.
+- **Remove resolves through `resolveWorkspaceSkillDir`**, which is
+  `assertInside(workspaceSkillsDir(), name)`. `/skill remove ../../..` gets a
+  refusal, not a recursive delete.
 
 ### Tools (29 built-in)
 Read, Write, Edit, MultiEdit, ApplyPatch, ReplaceFunction, Bash, Git, Glob, Grep, Ls, CodeIndex, WebSearch, WebFetch, ImageView, NotebookEdit, SaveLearning, SubAgent, CollectAgent, AskUser, IndexResearch, Mfl, ContractCreate, ContractAssertPass, ContractAssertFail, ContractStatus, load_tools, run_skill, list_skills
@@ -340,7 +400,7 @@ Read, Write, Edit, MultiEdit, ApplyPatch, ReplaceFunction, Bash, Git, Glob, Grep
 ### Session Persistence
 - **JSONL journaling** — every message saved, survives crashes
 - **Handoff system** — goal, progress, learnings, next steps persist across sessions
-- **Adaptive Working Memory (AWM)** — session learnings promoted into a durable ACE-style playbook only on ledger-verified viable outcomes, then recalled (capped ~5) at the start of later sessions
+- **Adaptive Working Memory (AWM)** — session learnings promoted into a durable ACE-style playbook only when the session can show it achieved something: every Definition-of-Done contract it opened resolved with no failed or unverified assertions, and at least one assertion passed. A session that opened no contract promotes nothing. The gate and its limits are in `engine/memory/promotionGate.ts` — assertions about files and commits are checked against the repository, but an engine-inferred contract can also pass an assertion on the model's own report, so this is a floor and not a proof. Promoted entries are recalled (capped ~5) at the start of later sessions
 - **Compaction that keeps the goal** — at context overflow, recent user messages and the active Definition-of-Done contract are anchored verbatim through summarization (durable facts flushed first) so constraints aren't silently erased
 - **Decision journals** — S1-S5 decisions logged as training data (JSONL)
 - **Governance DB** — SQLite with session outcomes and per-turn measurements
@@ -391,13 +451,24 @@ Fine-tuned model adapters will be published on HuggingFace when validated.
 
 ## Configuration
 
-All config via environment variables. No config files required.
+Three layers, in order of precedence:
+
+1. **Environment variables** — `LOCALCODE_*`, listed below. Highest priority.
+2. **A YAML profile** — `.cynco/profiles/<name>.yaml` in the project, then
+   `~/.cynco/profiles/<name>.yaml`, then the one that ships with the engine at
+   `engine/profiles/templates/default.yaml`. `LOCALCODE_PROFILE` picks the name;
+   unset means `default`. Profiles compose through `extends:`.
+3. **Built-in defaults** — the fallbacks compiled into `engine/config.ts`.
+
+Nothing has to be configured to start: with no environment and no profile of your
+own, the shipped profile supplies the model and provider the Quick Start installs.
+Setting a variable overrides the profile for that one field and nothing else.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `LOCALCODE_MODEL` | *required* | Model name (e.g., `qwen3.6`) |
+| `LOCALCODE_MODEL` | from profile (`qwen3.6`) | Model name. Not required — the profile supplies it. |
 | `LOCALCODE_BASE_URL` | `http://localhost:11434` | Ollama server URL |
-| `LOCALCODE_PROVIDER` | `ollama` | Provider: `ollama` or `llama-cpp` |
+| `LOCALCODE_PROVIDER` | from profile (`ollama`) | Provider: `ollama` or `llama-cpp`. With no profile at all the built-in fallback is `llama-cpp`, which needs `LOCALCODE_MODEL_PATH`. |
 | `LOCALCODE_EMBED_MODEL` | `jina-code-embeddings-0.5b` | Model for code indexing (falls back to `nomic-embed-text`) |
 | `LOCALCODE_TEMPERATURE` | `0.7` | Sampling temperature |
 | `LOCALCODE_CONTEXT_LENGTH` | Auto-detected | Override context window |
@@ -412,6 +483,96 @@ All config via environment variables. No config files required.
 | `LOCALCODE_CHECKPOINT_MIN_STEP` | `256` | Minimum token spacing between checkpoints. |
 | `LOCALCODE_UBATCH_SIZE` | `2048` | llama-server physical prefill batch size. |
 | `LOCALCODE_REASONING_BUDGET` | `256` | llama-server reasoning token budget. >256 hurts tool-call accuracy; uncapped thinking wastes minutes. Raise if your model needs more deliberation. |
+
+### Full inventory
+
+That table is a shortlist. The engine reads considerably more than it, and the
+complete list is generated from the source rather than written by hand:
+
+<!-- BEGIN GENERATED ENV INVENTORY -->
+
+<!-- Generated by scripts/generate-env-docs.mjs. Do not edit by hand.
+     Regenerate with: bun scripts/generate-env-docs.mjs -->
+
+Every `LOCALCODE_*` variable the engine reads — 66 of them — with the fallback
+each read site uses when it is unset, and the profile key (if any) that sits between the
+two. Read out of the source by `scripts/generate-env-docs.mjs`, so it cannot drift from
+the code the way a hand-written list does.
+
+`*not derived*` is a statement about the generator, not about the engine: the read site
+resolves in a shape the scanner does not recognise, so no default is claimed for it. Two
+values separated by `/` mean two read sites disagree.
+
+| Variable | Default when unset | Profile key | Read in |
+|----------|--------------------|-------------|---------|
+| `LOCALCODE_ADAPTER_URL` | *not derived* | — | `engine/config.ts` |
+| `LOCALCODE_ADVISORS` | `false` | — | `engine/bridge/conversationLoop.ts` |
+| `LOCALCODE_ALL_TOOLS` | `false` | — | `engine/config.ts` |
+| `LOCALCODE_API_KEY` | *not derived* | — | `engine/config.ts` |
+| `LOCALCODE_APPROVE_ALL` | `false` | — | `engine/config.ts` |
+| `LOCALCODE_BASE_URL` | `http://localhost:11434` | `base_url` | `engine/config.ts`, `engine/engine/callModel.ts` |
+| `LOCALCODE_BATCH_SIZE` | `2048` | — | `engine/config.ts` |
+| `LOCALCODE_BEST_OF_N` | `false` | — | `engine/bridge/conversationLoop.ts`, `engine/dashboard/server.ts` |
+| `LOCALCODE_BEST_OF_N_COUNT` | `2` | — | `engine/bridge/conversationLoop.ts`, `engine/dashboard/server.ts` |
+| `LOCALCODE_BEST_OF_N_TEMP` | `0.8` | — | `engine/bridge/conversationLoop.ts` |
+| `LOCALCODE_BEST_OF_N_TURN_CAP` | `15` | — | `engine/bridge/conversationLoop.ts`, `engine/dashboard/server.ts` |
+| `LOCALCODE_BRAIN_LAYER` | `40` | — | `engine/main.ts` |
+| `LOCALCODE_BRIDGE_HOST` | `127.0.0.1` | — | `engine/bridge/server.ts` |
+| `LOCALCODE_CACHE_RAM` | *not derived* | — | `engine/llama/processManager.ts` |
+| `LOCALCODE_CHECKPOINT_MIN_STEP` | `256` | — | `engine/llama/processManager.ts` |
+| `LOCALCODE_CONTEXT_LENGTH` | *not derived* | — | `engine/bootstrapProvider.ts`, `engine/config.ts` |
+| `LOCALCODE_CTX_CHECKPOINTS` | `64` | — | `engine/llama/processManager.ts` |
+| `LOCALCODE_DASHBOARD_HOST` | `127.0.0.1` | — | `engine/dashboard/server.ts` |
+| `LOCALCODE_EMBED_API` | *not derived* | — | `engine/index/embedClient.ts` |
+| `LOCALCODE_EMBED_BASE_URL` | `http://localhost:11434` | — | `engine/bridge/conversationLoop.ts`, `engine/index/embedClient.ts` |
+| `LOCALCODE_EMBED_MODEL` | *not derived* | — | `engine/index/embedClient.ts` |
+| `LOCALCODE_EXPERTISE` | `advanced` | `expertise` | `engine/config.ts` |
+| `LOCALCODE_FLASH_ATTN` | `true` | — | `engine/config.ts` |
+| `LOCALCODE_GPU_LAYERS` | `999` | — | `engine/config.ts` |
+| `LOCALCODE_GRAMMAR_ENABLED` | `false` | — | `engine/dashboard/server.ts`, `engine/engine/callModel.ts` |
+| `LOCALCODE_HYBRID_SEARCH` | `true` | — | `engine/bridge/conversationLoop.ts`, `engine/index/indexer.ts` |
+| `LOCALCODE_IMMUTABLE_PATHS` | *not derived* | — | `engine/tools/executor.ts` |
+| `LOCALCODE_JLENS_URL` | `http://127.0.0.1:9163` | — | `engine/brain/jlensClient.ts` |
+| `LOCALCODE_LEARNINGS_DB` | *not derived* | — | `engine/bridge/conversationLoop.ts`, `engine/main.ts`, `engine/tools/impl/saveLearning.ts` |
+| `LOCALCODE_LLAMA_SERVER` | *not derived* | — | `engine/config.ts` |
+| `LOCALCODE_MAX_OUTPUT_TOKENS` | `16384` | `max_output_tokens` | `engine/config.ts` |
+| `LOCALCODE_MODEL` | *not derived* | `model` | `engine/config.ts` |
+| `LOCALCODE_MODEL_PATH` | *not derived* | — | `engine/config.ts` |
+| `LOCALCODE_NATIVE_TOOLS` | `false` | — | `engine/engine/callModel.ts` |
+| `LOCALCODE_NO_SCOUTS` | `false` | — | `engine/config.ts` |
+| `LOCALCODE_OPTIMIZED_PARAMS` | *not derived* | — | `engine/vsm/cyberneticsGovernance.ts` |
+| `LOCALCODE_PORT` | `8081` | — | `engine/config.ts` |
+| `LOCALCODE_PROFILE` | *not derived* | — | `engine/config.ts`, `engine/main.ts` |
+| `LOCALCODE_PROVIDER` | `llama-cpp` | `provider` | `engine/config.ts` |
+| `LOCALCODE_REASONING_BUDGET` | `256` | — | `engine/llama/processManager.ts` |
+| `LOCALCODE_RECALL_EMBED_TIMEOUT_MS` | `4000` | — | `engine/index/embedClient.ts` |
+| `LOCALCODE_RECALL_HALFLIFE_HOURS` | `72` | — | `engine/memory/learningStore.ts` |
+| `LOCALCODE_RECALL_PROMOTED_BONUS` | `0.15` | — | `engine/memory/learningStore.ts` |
+| `LOCALCODE_RECALL_W_IMPORTANCE` | `0.25` | — | `engine/memory/learningStore.ts` |
+| `LOCALCODE_RECALL_W_RECENCY` | `0.25` | — | `engine/memory/learningStore.ts` |
+| `LOCALCODE_RECALL_W_RELEVANCE` | `0.5` | — | `engine/memory/learningStore.ts` |
+| `LOCALCODE_REFLEXION` | `true` | — | `engine/vsm/reflexionFeedback.ts` |
+| `LOCALCODE_REPO_MAP` | `true` | — | `engine/bridge/conversationLoop.ts` |
+| `LOCALCODE_S5_ENFORCE` | `true` | — | `engine/config.ts` |
+| `LOCALCODE_S5_MODEL` | *not derived* | — | `engine/daemon/oneShot.ts`, `engine/main.ts` |
+| `LOCALCODE_S5_PROACTIVE_TOOLS` | `false` | — | `engine/config.ts` |
+| `LOCALCODE_SEARXNG_URL` | *not derived* | — | `engine/research/engines/searxng.ts` |
+| `LOCALCODE_SESSION_ID` | *not derived* | — | `engine/bridge/conversationLoop.ts`, `engine/s5/orchestrator.ts`, `engine/tools/impl/saveLearning.ts` |
+| `LOCALCODE_SIMULATED_TOOLS` | `false` | — | `engine/engine/callModel.ts` |
+| `LOCALCODE_SPEC_DRAFT_N` | *not derived* | — | `engine/bootstrapProvider.ts` |
+| `LOCALCODE_SPEC_TYPE` | *not derived* | — | `engine/bootstrapProvider.ts`, `engine/main.ts` |
+| `LOCALCODE_TDD_GOV` | `false` | — | `engine/bridge/conversationLoop.ts` |
+| `LOCALCODE_TEMPERATURE` | `0.7` | `temperature` | `engine/config.ts` |
+| `LOCALCODE_THREADS` | *not derived* | — | `engine/config.ts` |
+| `LOCALCODE_TIER` | *not derived* | `tier` | `engine/config.ts` |
+| `LOCALCODE_TIMEOUT` | `300000` | `timeout` | `engine/config.ts` |
+| `LOCALCODE_TOOL_TEMPERATURE` | *not derived* | — | `engine/engine/callModel.ts` |
+| `LOCALCODE_TRAJECTORY_ENABLED` | `true` | — | `engine/dashboard/server.ts`, `engine/main.ts` |
+| `LOCALCODE_UBATCH_SIZE` | `2048` | — | `engine/llama/processManager.ts` |
+| `LOCALCODE_VARIETY_CONTROL` | `true` | — | `engine/bridge/conversationLoop.ts`, `engine/dashboard/server.ts` |
+| `LOCALCODE_WS_PORT` | `9160` | — | `engine/main.ts` |
+
+<!-- END GENERATED ENV INVENTORY -->
 
 ---
 

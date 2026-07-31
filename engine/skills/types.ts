@@ -25,6 +25,16 @@ export type SkillIndexEntry = {
 }
 
 /**
+ * A skill's name is also its directory name under `~/.cynco/skills`, so it is
+ * the value that decides what `/skill remove` deletes. Exported and shared
+ * rather than re-typed: frontmatter validation and `scaffold.ts` each carried
+ * their own copy of this pattern and `/skill remove` carried none, which made
+ * `/skill remove ../../Documents` a recursive delete of an arbitrary directory.
+ * One rule, one place.
+ */
+export const SKILL_NAME_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/
+
+/**
  * Tools that can mutate the filesystem, run commands, or reach the network.
  * A skill that lists any of these is surfaced with a warning at install time so
  * the user can eyeball what they're granting.
@@ -53,7 +63,7 @@ export function validateFrontmatter(
   const o = raw as Record<string, unknown>
 
   const name = o.name
-  if (typeof name !== 'string' || !/^[a-z0-9]+(-[a-z0-9]+)*$/.test(name)) {
+  if (typeof name !== 'string' || !SKILL_NAME_RE.test(name)) {
     throw new Error(`frontmatter.name: must be lower-kebab-case (got ${JSON.stringify(name)})`)
   }
 

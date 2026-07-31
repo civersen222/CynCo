@@ -97,6 +97,30 @@ try {
   }
 } catch {}
 
+// ─── One-shot preflight ──────────────────────────────────────
+// A malformed task file is a caller error, and it costs nothing to detect. But
+// bootstrapProvider() below loads a 27B model into VRAM first — measured at ~9s
+// of llama-server startup — and only then does runOneShotTask() read the file
+// and throw `Task file missing required field: triggerId`. Validate before the
+// model, so a typo fails in milliseconds instead of after a full load.
+{
+  const idx = process.argv.indexOf('--run-task')
+  if (idx !== -1) {
+    const p = process.argv[idx + 1]
+    if (!p) {
+      console.error('[one-shot] --run-task requires a task file path')
+      process.exit(1)
+    }
+    const { readTaskFile } = await import('./daemon/taskFile.js')
+    try {
+      readTaskFile(p)
+    } catch (err: any) {
+      console.error(`[one-shot] ${err?.message ?? err}`)
+      process.exit(1)
+    }
+  }
+}
+
 // ─── Provider Setup ──────────────────────────────────────────
 import { bootstrapProvider } from './bootstrapProvider.js'
 const { provider, contextLength } = await bootstrapProvider(config)
@@ -352,7 +376,14 @@ if ((globalThis as any).__llamaProcessManager) {
 let activationsConsumer: ActivationsConsumer | null = null
 try {
   dashboardServer = new DashboardServer({
-    port: port + 1,
+    // `wsServer.port`, not `port`. `port` is the raw value parsed from
+    // LOCALCODE_WS_PORT; the bridge falls back to +1 then +2 when its first
+    // choice is taken, which after a restart is the ordinary case (TIME_WAIT).
+    // So `port + 1` was the bridge's own second choice: whenever the fallback
+    // fired, the dashboard collided with the bridge this same process had just
+    // bound, threw EADDRINUSE, and the catch below turned that into one warn
+    // line. The user got no dashboard and no clear reason why.
+    port: wsServer.port + 1,
     tokens,
     deps: {
       getGovernanceReport: () => loop.getGovernanceReport(),
@@ -395,9 +426,16 @@ try {
   })
   const dashboardHost = dashboardServer.getHostname()
   const dashboardDisplayHost = (dashboardHost === '0.0.0.0') ? 'localhost' : dashboardHost
-  console.log(`[dashboard] Governance dashboard on http://${dashboardDisplayHost}:${port + 1}`)
+  // The bound port, asked of the server, not the number we asked it for. A URL
+  // computed from the request is a guess printed as a fact.
+  console.log(`[dashboard] Governance dashboard on http://${dashboardDisplayHost}:${dashboardServer.getPort()}`)
 } catch (e) {
-  console.warn('[dashboard] Failed to start dashboard server:', e)
+  // Not console.warn. The dashboard is the only window onto governance, and a
+  // warn among a hundred startup lines reads as noise — the failure mode this
+  // replaces was a user hunting for a dashboard that was never running.
+  console.error('[dashboard] FAILED TO START — no governance dashboard this session.')
+  console.error(`[dashboard] Wanted port ${wsServer.port + 1}. Cause:`, e)
+  console.error('[dashboard] Set LOCALCODE_WS_PORT to a free port and restart to get it back.')
 }
 
 // ─── Brain Activations Consumer (Tier 3 — default-on, degrades silently) ─────
@@ -496,6 +534,7 @@ async function handleCommand(command: TUICommand): Promise<void> {
       await loop.handleUserMessage(command.text, {
         contract: command.contract,
         readOnlyPaths: command.readOnlyPaths,
+        unattended: command.unattended,
       })
       break
 
@@ -647,7 +686,7 @@ async function handleCommand(command: TUICommand): Promise<void> {
         }
 
         case '/skill': {
-          const { loadSkills, workspaceSkillsDir } = await import('./skills/loader.js')
+          const { loadSkills, resolveWorkspaceSkillDir } = await import('./skills/loader.js')
           const { setLoadedSkills, getSkillIndex } = await import('./skills/store.js')
           const { ALL_TOOLS } = await import('./tools/registry.js')
           const knownTools = new Set(ALL_TOOLS.map(t => t.name))
@@ -701,8 +740,12 @@ async function handleCommand(command: TUICommand): Promise<void> {
               const name = parts[1]
               if (!name) throw new Error('usage: /skill remove <name>')
               const fsMod = await import('fs')
-              const pathMod = await import('path')
-              const dir = pathMod.join(workspaceSkillsDir(), name)
+              // `path.join(workspaceSkillsDir(), name)` used to be enough here,
+              // and it was not: `name` is a raw argv token, `path.join` resolves
+              // `..`, and the `existsSync` below only confirms the target is
+              // there to be destroyed. `/skill remove ../../Documents` was an
+              // arbitrary recursive delete, reachable from the dashboard socket.
+              const dir = resolveWorkspaceSkillDir(name)
               if (!fsMod.existsSync(dir)) throw new Error(`skill "${name}" not found in workspace`)
               fsMod.rmSync(dir, { recursive: true, force: true })
               await refresh()
@@ -767,7 +810,8 @@ async function handleCommand(command: TUICommand): Promise<void> {
 
         case '/analyze': {
           const { ProjectIndexer } = await import('./index/indexer.js')
-          const indexer = new ProjectIndexer(process.cwd(), config.baseUrl)
+          const { embedBaseUrlFor } = await import('./index/embedClient.js')
+          const indexer = new ProjectIndexer(process.cwd(), embedBaseUrlFor(config))
           wsServer.emit({ type: 'stream.token', text: '[System] Analyzing project...\n' })
           try {
             const result = await indexer.index((msg) => {
@@ -1082,16 +1126,29 @@ async function handleCommand(command: TUICommand): Promise<void> {
           console.log(`[governance] Session outcome: ${outcome}`)
           const flushed = loop.getGovernance().flushPredictions?.()
           if (flushed) console.log(`[governance] flushed ${flushed} completed prediction(s)`)
-          // AWM: promote this session's learnings only on a ledger-verified viable outcome.
+          // AWM: promote this session's learnings only when the session can show
+          // it achieved something — a resolved contract with at least one passed
+          // assertion. `outcome` alone is not that: it is 'viable' by default.
           try {
             const { LearningStore, promoteSessionLearnings, defaultLearningsDbPath } = await import('./memory/learningStore.js')
+            const { promotionDecision, sessionContracts, verdictOf } = await import('./memory/promotionGate.js')
+            const { globalContract } = await import('./tools/contract.js')
+            const live = globalContract.snapshot()
+            const contracts = [
+              ...sessionContracts.all(),
+              ...(live.assertions.length > 0 ? [verdictOf(live)] : []),
+            ]
+            const decision = promotionDecision({ outcome, contracts })
             const sid = loop.getSessionId?.()
             if (sid) {
               const store = new LearningStore(process.env.LOCALCODE_LEARNINGS_DB ?? defaultLearningsDbPath())
-              const n = promoteSessionLearnings(store, sid, outcome)
+              const n = promoteSessionLearnings(store, sid, decision)
               store.close()
-              if (n > 0) console.log(`[memory] AWM promoted ${n} learning(s) from viable session ${sid}`)
+              console.log(decision.promote
+                ? `[memory] AWM promoted ${n} learning(s) from session ${sid} — ${decision.reason}`
+                : `[memory] AWM promoted nothing from session ${sid} — ${decision.reason}`)
             }
+            sessionContracts.reset()
           } catch (e) { console.log(`[memory] AWM promotion skipped: ${e}`) }
         }
       } catch (err) {
@@ -1114,7 +1171,8 @@ async function handleCommand(command: TUICommand): Promise<void> {
       // Auto-index if stale or missing
       try {
         const { ProjectIndexer } = await import('./index/indexer.js')
-        const indexer = new ProjectIndexer(process.cwd(), config.baseUrl)
+        const { embedBaseUrlFor } = await import('./index/embedClient.js')
+        const indexer = new ProjectIndexer(process.cwd(), embedBaseUrlFor(config))
         if (indexer.isStale()) {
           console.log('[vibe] Index stale — auto-indexing...')
           wsServer.emit({ type: 'stream.token', text: '[System] Indexing project for smarter questions...\n' })
@@ -1204,7 +1262,8 @@ provider.healthCheck().then(async ok => {
     // Auto-index project on startup — powers CodeIndex tool in ALL modes
     try {
       const { ProjectIndexer } = await import('./index/indexer.js')
-      const indexer = new ProjectIndexer(process.cwd(), config.baseUrl)
+      const { embedBaseUrlFor } = await import('./index/embedClient.js')
+      const indexer = new ProjectIndexer(process.cwd(), embedBaseUrlFor(config))
       if (indexer.isStale()) {
         console.log('[localcode] Auto-indexing project for CodeIndex tool...')
         await indexer.index((msg) => console.log(`[index] ${msg}`))

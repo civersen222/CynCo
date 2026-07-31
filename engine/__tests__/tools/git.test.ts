@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test'
 import * as os from 'node:os'
 const SKIP_ENV = !process.env.CYNCO_INTEGRATION
-import { gitTool, tokenizeArgs } from '../../tools/impl/git.js'
+import { buildArgv, gitTool, tokenizeArgs } from '../../tools/impl/git.js'
 
 // Non-repo cwd: guards fire before spawn, but if a guard ever regresses the
 // command runs against an empty temp dir instead of this repository.
@@ -180,6 +180,70 @@ describe('Git tool — argument injection guard', () => {
     // Must not be blocked by any guard; git itself errors (not a repository)
     expect(result.output).not.toContain('blocked')
   })
+
+  // Identity config is the one -c the agent legitimately needs. Three
+  // consecutive missions shipped commits authored by the repo's placeholder
+  // identity because the brief mandated `git -c user.name=... commit` and this
+  // tool refused to run it. A guard that makes the correct action impossible
+  // does not prevent the mistake, it mandates it.
+  it('allows -c user.name= and -c user.email=', async () => {
+    const result = await gitTool.execute(
+      { subcommand: 'commit', args: '-c user.name=civersen222 -c user.email=civersen222@users.noreply.github.com -m "msg"' },
+      NON_REPO_CWD
+    )
+    expect(result.output).not.toContain('blocked')
+  })
+
+  it('still blocks every other -c key, even alongside an allowed one', async () => {
+    const result = await gitTool.execute(
+      { subcommand: 'commit', args: '-c user.name=x -c core.sshCommand=/tmp/evil.sh -m "msg"' },
+      NON_REPO_CWD
+    )
+    expect(result.isError).toBe(true)
+    expect(result.output).toContain('blocked')
+  })
+
+  it('allowed -c keys are case-insensitive like git config itself', async () => {
+    const result = await gitTool.execute(
+      { subcommand: 'commit', args: '-c User.Email=a@b.c -m "msg"' },
+      NON_REPO_CWD
+    )
+    expect(result.output).not.toContain('blocked')
+  })
+
+  it('does not allow a key that merely starts with an allowed one', async () => {
+    const result = await gitTool.execute(
+      { subcommand: 'commit', args: '-c user.namex=evil -m "msg"' },
+      NON_REPO_CWD
+    )
+    expect(result.isError).toBe(true)
+    expect(result.output).toContain('blocked')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// git only honours -c BEFORE the subcommand. The tool's schema puts everything
+// the model writes into `args`, which spawn places AFTER it, where git reads
+// `-c` as an argument to the subcommand and either errors or silently means
+// something else (`commit -c <commit>` reuses that commit's message!). So an
+// allowed -c must be hoisted, and the hoisting is what makes the allowlist
+// worth anything.
+// ---------------------------------------------------------------------------
+describe('Git tool: -c hoisting', () => {
+  it('hoists allowed -c pairs ahead of the subcommand', () => {
+    expect(buildArgv('commit', ['-c', 'user.name=x', '-m', 'msg']))
+      .toEqual(['-c', 'user.name=x', 'commit', '-m', 'msg'])
+  })
+
+  it('leaves a bare -c switch alone (switch -c <branch>)', () => {
+    expect(buildArgv('switch', ['-c', 'feature-x']))
+      .toEqual(['switch', '-c', 'feature-x'])
+  })
+
+  it('hoists both identity pairs in order, preserving the rest', () => {
+    expect(buildArgv('commit', ['-c', 'user.name=a b', '-c', 'user.email=c@d', '-m', 'msg']))
+      .toEqual(['-c', 'user.name=a b', '-c', 'user.email=c@d', 'commit', '-m', 'msg'])
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -299,5 +363,87 @@ describe('Git tool — what a commit left behind', () => {
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The subcommand field arrives with the flags already folded in.
+//
+// Observed live on Gilded UI Wave 6d: the model called
+//   { subcommand: 'status --porcelain' }
+// and git answered `git: 'status --porcelain' is not a git command`, because
+// the whole string went in as ONE argv element. That reads like a broken git
+// or a broken repo, not a malformed call, so the turn was spent on the wrong
+// question. The two spellings mean the same thing and must now behave the same.
+//
+// The risk this introduces is that the subcommand field gets the laxer
+// treatment `args` gets. It must not: every guard still evaluates the unsplit
+// string, so the last three tests here are the ones that matter.
+// ---------------------------------------------------------------------------
+describe('Git tool — flags folded into the subcommand field', () => {
+  async function tinyRepo() {
+    const fs = await import('node:fs')
+    const path = await import('node:path')
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitfold-'))
+    await gitTool.execute({ subcommand: 'init', args: '-q .' }, dir)
+    fs.writeFileSync(path.join(dir, 'scratch.txt'), 'hi')
+    return { dir, fs }
+  }
+
+  it('runs `status --porcelain` submitted as one subcommand string', async () => {
+    const { dir, fs } = await tinyRepo()
+    try {
+      const result = await gitTool.execute({ subcommand: 'status --porcelain' }, dir)
+      expect(result.output).not.toContain('is not a git command')
+      expect(result.isError).toBeFalsy()
+      // --porcelain reached git as its own argv element: the short format is
+      // `?? scratch.txt`, the long format git prints without it is not.
+      expect(result.output).toContain('?? scratch.txt')
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('gives the folded and the split spelling the same output', async () => {
+    const { dir, fs } = await tinyRepo()
+    try {
+      const folded = await gitTool.execute({ subcommand: 'status --porcelain' }, dir)
+      const split = await gitTool.execute({ subcommand: 'status', args: '--porcelain' }, dir)
+      expect(folded.output).toBe(split.output)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('still blocks a dangerous command folded into the subcommand field', async () => {
+    const result = await gitTool.execute({ subcommand: 'push --force origin main' }, NON_REPO_CWD)
+    expect(result.isError).toBe(true)
+    expect(result.output).toContain('dangerous git command blocked')
+  })
+
+  it('still blocks shell metacharacters folded into the subcommand field', async () => {
+    const result = await gitTool.execute({ subcommand: 'status; rm -rf /' }, NON_REPO_CWD)
+    expect(result.isError).toBe(true)
+    expect(result.output).toContain('Shell metacharacters not allowed')
+  })
+
+  it('blocks an argument-injection option folded into the subcommand field', async () => {
+    const result = await gitTool.execute({ subcommand: 'clone --upload-pack=evil host:/r' }, NON_REPO_CWD)
+    expect(result.isError).toBe(true)
+    // Assert the GUARD spoke, not merely that something failed. Before the
+    // split, argTokens was built from `args` alone, so this option was invisible
+    // to the guard — and the call still "failed", because git rejected the
+    // whole folded string as an unknown subcommand. An error whose text happens
+    // to quote the command back is not evidence that anything inspected it.
+    expect(result.output).toContain('can execute arbitrary programs')
+  })
+
+  it('does not let quoting inside the subcommand field launder a metacharacter', async () => {
+    // `args` exempts quoted regions, because array-spawn makes them inert.
+    // The subcommand field gets no such exemption — if folding a string in
+    // bought that exemption, this would run.
+    const result = await gitTool.execute({ subcommand: 'log "--grep=$(whoami)"' }, NON_REPO_CWD)
+    expect(result.isError).toBe(true)
+    expect(result.output).toContain('Shell metacharacters not allowed')
   })
 })

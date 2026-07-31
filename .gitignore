@@ -84,3 +84,14 @@ AUX
 # Anchored to repo root so it does NOT swallow the benchmark task fixtures
 # under benchmark/true/tasks/civkings/ (those are versioned evidence).
 /civkings/
+
+# Engine runtime artifacts dropped into the task cwd, not sources.
+# .cynco-bash-output.txt is written by conversationLoop.ts when a Bash result is
+# too large to inline; .task_outcome.json is a model-written run summary that
+# lands in whatever cwd the mission had.
+.cynco-bash-output.txt
+.task_outcome.json
+
+# Throwaway preflight harnesses for the Gilded L4.x waves. Each one probes a
+# single mission's assumptions before dispatch and is superseded by the next.
+/preflight_l4*.ts

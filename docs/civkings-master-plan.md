@@ -2,7 +2,7 @@
 
 **From 65%-wired prototype to a sellable Steam game — a CynCo-driven production plan**
 
-*Date: 2026-07-13. Author: Claude (orchestrator) synthesizing: (1) deep codebase audit + independent wiring verification, (2) Civilization-series mechanics research, (3) CK3/Old World mechanics research, (4) indie 4X Steam market research. Implementer: CynCo (local agent, Qwen3.6-27B NVFP4) via the proven mission-brief pattern; every mission verified and recorded in `benchmark/cynco-ledger/missions.jsonl`.*
+*Date: 2026-07-13. Synthesized by the orchestrating operator from: (1) deep codebase audit + independent wiring verification, (2) Civilization-series mechanics research, (3) CK3/Old World mechanics research, (4) indie 4X Steam market research. Implementer: CynCo (local agent, Qwen3.6-27B NVFP4) via the proven mission-brief pattern; every mission verified and recorded in `benchmark/cynco-ledger/missions.jsonl`.*
 
 ---
 

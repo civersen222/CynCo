@@ -1,6 +1,6 @@
 # CivKings Audio Foundry (Mode A) Implementation Plan
 
-> **For agentic workers:** This plan is executed by **CynCo missions**, not a subagent. Each task below is authored as a CynCo mission brief (dispatched via `scripts/cynco-mission-driver.mjs`), then verified and ledger-labeled by the operator (Claude). Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** This plan is executed by **CynCo missions**, not a subagent. Each task below is authored as a CynCo mission brief (dispatched via `scripts/cynco-mission-driver.mjs`), then verified and ledger-labeled by the operator. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build a build-time audio foundry in the civkings repo that mass-produces the game's voice/SFX/ambience library as plain WAV/OGG assets from existing event/dynasty content.
 
@@ -13,7 +13,7 @@
 **Execution ground rules (from CynCo mission discipline):**
 - Fresh engine per mission (kill :9160 tree + llama-server, relaunch). `LOCALCODE_S5_ENFORCE=false`, `LOCALCODE_APPROVE_ALL=true`.
 - One mission in flight. cwd `C:\Users\civer\civkings`. Forward-slash brief paths. 900s timeout (1200s for game.py-heavy).
-- Operator (Claude) never hand-edits civkings code — CynCo applies briefs; operator dispatches/verifies/labels.
+- The operator never hand-edits civkings code — CynCo applies briefs; operator dispatches/verifies/labels.
 - On driver TIMEOUT: do a final `git log` marker check before labeling failure (F9 late-landing remedy).
 - Per-mission verify: AST-parse each touched file, run civkings pytest (baseline 25, no regression), run the brief's smoke script (must print OK), full-diff review vs brief. Patch ledger `verified:true` only if landed AND all checks pass.
 

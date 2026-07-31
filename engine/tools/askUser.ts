@@ -37,9 +37,17 @@ export const askUserTool: ToolImpl = {
     }
     const options = Array.isArray(input.options) ? (input.options as string[]) : undefined
 
+    const unattended = globalAskBroker.isUnattended
     const answer = await globalAskBroker.ask(question, options)
     if (!answer) {
-      return { output: 'No answer from the user (timed out). Proceed using your best judgment.', isError: false }
+      return {
+        output: unattended
+          ? 'No human is attached to this session, so this question cannot be answered — ' +
+            'now or later. Do not ask again. Decide from the task description alone, and ' +
+            'say in your final report which reading you chose and why.'
+          : 'No answer from the user (timed out). Proceed using your best judgment.',
+        isError: false,
+      }
     }
     return { output: answer, isError: false }
   },

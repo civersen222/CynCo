@@ -142,6 +142,14 @@ type Message = {
   content: { type: string; text?: string; [key: string]: unknown }[]
 }
 
+/**
+ * How many tool outcomes S5 can see. C4's doom-loop window is the last 3 and C2
+ * counts to 3, so anything below that makes those rules unreachable again; 20 is
+ * roughly two busy turns, which is far enough back to be evidence and near
+ * enough that a tool the model has since fixed stops being held against it.
+ */
+const RECENT_TOOL_WINDOW = 20
+
 const READ_ONLY_TOOLS = ['Read', 'Grep', 'Glob', 'Ls', 'Git', 'ImageView']
 const SAFE_MODE_TOOLS = [...READ_ONLY_TOOLS, 'Bash']
 
@@ -207,6 +215,13 @@ export type TaskOpts = {
    * gate paths derived from `contract.assertions`.
    */
   readOnlyPaths?: string[]
+  /**
+   * No human can answer an AskUser during this task. Declared by the harness,
+   * which is the only party that knows it: the emitter is wired either way, so
+   * from inside the engine an unattended mission is indistinguishable from a
+   * person who has not typed yet.
+   */
+  unattended?: boolean
 }
 
 export type ConversationLoopOptions = {
@@ -299,6 +314,16 @@ export class ConversationLoop {
   private runningAgents = new Map<string, SubAgent>()
   private agentResults = new Map<string, SubAgentResult>()
   private toolHistory: string[] = []  // Track tool names for VSM advisors
+  /**
+   * Rolling window of (tool, success) that S5 reads as `recentToolResults`.
+   *
+   * It used to be hardcoded `[]` at both S5 construction sites, which left C2
+   * ("3+ failures — exclude the tool") and C4 ("doom loop") with no reachable
+   * true branch, and pinned C6 and W4 to their degraded arms. Session-scoped,
+   * not per-turn: a doom loop is three identical failures in a row, and the
+   * third one routinely lands in the turn after the first two.
+   */
+  private recentToolOutcomes: { tool: string; success: boolean }[] = []
   private toolFailureCounts: Map<string, number> = new Map()
   private consecutiveNudges = 0
   private lastTokPerSec = 0
@@ -866,6 +891,13 @@ export class ConversationLoop {
     // scoped to ONE task: a later task with no harness contract must not inherit
     // the last one's read-only set, or the agent is refused edits to a file
     // nothing is currently measuring and gets no way to find out why.
+    // Scoped to one task, like the read-only set below: a later message typed by
+    // a person must not inherit the last mission's "nobody is listening".
+    globalAskBroker.setUnattended(opts?.unattended === true)
+    if (opts?.unattended === true) {
+      console.log('[contract] Unattended task: AskUser resolves immediately, nobody can answer')
+    }
+
     const declared = (opts?.readOnlyPaths ?? []).map(p => p.replace(/\\/g, '/'))
     const gates = [...new Set([
       ...declared,
@@ -939,18 +971,27 @@ export class ConversationLoop {
       // Probe embed health so we can surface index degradation on context.status.
       // Non-blocking: a short deadline falls back to keyword-only retrieval.
       try {
-        const { EmbedClient } = await import('../index/embedClient.js')
-        const emb = await new EmbedClient().embedWithDeadline(text)
+        const { EmbedClient, warnEmbedUnavailable } = await import('../index/embedClient.js')
+        const client = new EmbedClient()
+        const emb = await client.embedWithDeadline(text)
         if (emb && emb.length) {
           this.indexDegraded = false
           this.lastQueryMode = process.env.LOCALCODE_HYBRID_SEARCH !== '0' ? 'hybrid' : 'vector'
         } else {
           this.indexDegraded = true
           this.lastQueryMode = 'keyword'
+          // `embedWithDeadline` swallows the failure to keep the turn moving, so
+          // this is the only place a silent degradation becomes audible to a
+          // terminal user. context.status carries it too, but only a dashboard
+          // reader sees that. Warns once per process.
+          warnEmbedUnavailable(client.baseUrlUsed, 'no embedding returned within the deadline')
         }
-      } catch {
+      } catch (e) {
         this.indexDegraded = true
         this.lastQueryMode = 'keyword'
+        const { warnEmbedUnavailable } = await import('../index/embedClient.js')
+        warnEmbedUnavailable(process.env.LOCALCODE_EMBED_BASE_URL ?? 'http://localhost:11434',
+          e instanceof Error ? e.message : String(e))
       }
       const results = await indexer.query({ query: text, topK: 5 })
       if (results.length > 0) {
@@ -1189,7 +1230,7 @@ export class ConversationLoop {
           // activeToolNames: rules that restrict tools (C7) must pick from
           // what THIS run actually has — not a hardcoded coding-tool list.
           governance: { ...(govReport as any), activeToolNames: toolDefs.map(t => t.name) },
-          recentToolResults: [],
+          recentToolResults: this.getRecentToolResults(),
           availableModels: [this.config.model ?? 'unknown'],
           turnCount: this.messages.filter(m => m.role === 'user').length,
           varietyBalance: (govReport as any).varietyBalance ?? 'balanced',
@@ -2025,7 +2066,7 @@ export class ConversationLoop {
 
       // Two-stage tool routing for small context models
       try {
-        const { shouldUseRouting, getToolsForCategory, CATEGORY_SELECTOR_TOOL } = await import('../tools/toolRouter.js')
+        const { shouldUseRouting, getToolsForCategory, applyCategoryRouting, CATEGORY_SELECTOR_TOOL } = await import('../tools/toolRouter.js')
         if (!this.routingDeclined && shouldUseRouting(this.config.contextLength ?? 32768) && iterationTools.length > 5) {
           // Stage 1: send only category selector
           let routed = false
@@ -2043,7 +2084,24 @@ export class ConversationLoop {
               const category = (evt as any).input?.category ?? 'all'
               console.log(`[routing] Category selected: ${category}`)
               const { ALL_TOOLS } = await import('../tools/registry.js')
-              iterationTools = toToolDefs(getToolsForCategory(category, ALL_TOOLS))
+              // Intersect. `getToolsForCategory(category, ALL_TOOLS)` is a fresh
+              // derivation from the whole registry, so ASSIGNING it — which is
+              // what this line used to do — threw away the tool gate, the
+              // workflow phase, the caller pin, trust demotion and, one line
+              // above, S5's restriction. `[s5] ENFORCE` printed and the model was
+              // offered Bash anyway.
+              const before = iterationTools.length
+              const routing = applyCategoryRouting(
+                iterationTools, getToolsForCategory(category, ALL_TOOLS))
+              if (routing.conflict) {
+                // Two subsystems disagreeing is worth a line of its own. The
+                // governance decision stands and routing bought nothing; saying
+                // so is the difference between a heuristic that failed and a
+                // heuristic that failed invisibly, which is how the original
+                // discard survived as long as it did.
+                console.log(`[routing] CONFLICT: category '${category}' shares no tool with the ${before} currently allowed (${iterationTools.map((t: any) => t.name).join(', ')}) — keeping the restricted set, routing saves nothing this turn`)
+              }
+              iterationTools = routing.tools
               routed = true
               break
             }
@@ -2107,7 +2165,7 @@ export class ConversationLoop {
               currentPhase: this.workflowEngine.currentPhase?.name ?? null,
               contextUsagePercent: 0.5,
               governance: { ...(govReport as any), activeToolNames: iterationTools.map((t: any) => t.name) },
-              recentToolResults: [],
+              recentToolResults: this.getRecentToolResults(),
               availableModels: [this.config.model ?? 'unknown'],
               turnCount: this.messages.filter(m => m.role === 'user').length,
               varietyBalance: (govReport as any).varietyBalance ?? 'balanced',
@@ -3137,6 +3195,41 @@ export class ConversationLoop {
     this.governance.onContextCritical(utilization)
   }
 
+  /**
+   * Record one tool outcome in both the per-turn array governance reads and the
+   * rolling session window S5's rules read.
+   *
+   * One write path on purpose. The alternative — a second `push` beside each of
+   * the eight existing ones — is exactly the arrangement that let
+   * `recentToolResults` sit empty in the first place: the ninth site would have
+   * been added to one list and not the other, and the rules that read it would
+   * have gone quietly back to being unreachable.
+   *
+   * A denial counts as not-success. Nothing ran, so it is not a tool *error* —
+   * but every rule reading this field is asking "is this tool getting the model
+   * anywhere", and a call the engine refused three times running is the
+   * clearest available no. The distinction that matters (a refusal is evidence
+   * about the model, not the environment) is carried on the governance side by
+   * `governanceDenial`, which is where the algedonic channel reads it.
+   */
+  private recordToolOutcome(
+    toolName: string,
+    outcome: 'success' | 'failure' | 'denied',
+    turnResults: ('success' | 'failure' | 'denied')[],
+  ): void {
+    turnResults.push(outcome)
+    this.recentToolOutcomes.push({ tool: toolName, success: outcome === 'success' })
+    if (this.recentToolOutcomes.length > RECENT_TOOL_WINDOW) this.recentToolOutcomes.shift()
+  }
+
+  /**
+   * The window S5 reads. A copy: a rule that mutated this would be rewriting
+   * the history the next rule is about to judge.
+   */
+  getRecentToolResults(): { tool: string; success: boolean }[] {
+    return this.recentToolOutcomes.map(r => ({ ...r }))
+  }
+
   private async executeOneTool(
     block: any,
     toolResults: Message['content'],
@@ -3182,7 +3275,7 @@ export class ConversationLoop {
         is_error: true,
       })
       toolsUsedThisTurn.push(toolName)
-      toolResultsThisTurn.push('failure')
+      this.recordToolOutcome(toolName, 'failure', toolResultsThisTurn)
       toolsUsedInSession.push(toolName)
       return
     }
@@ -3237,17 +3330,30 @@ export class ConversationLoop {
       })
       toolsUsedThisTurn.push(toolName)
       recordDenial()
-      toolResultsThisTurn.push('denied')
+      this.recordToolOutcome(toolName, 'denied', toolResultsThisTurn)
       toolsUsedInSession.push(toolName)
       return
     }
 
-    // S5 live restriction (one-shot runs only): the model can keep calling a
-    // tool it saw earlier in history even after a stuck-loop restriction
-    // removed it from the prompt — 2026-06-12 replay looped WebSearch to
-    // stuck=15 this way. Enforce the per-iteration offered set, with feedback
-    // telling the model what it CAN use.
-    if (this.allowedTools && this.offeredToolNames && !this.offeredToolNames.has(toolName)) {
+    // S5 live restriction: the model can keep calling a tool it saw earlier in
+    // history even after a stuck-loop restriction removed it from the prompt —
+    // 2026-06-12 replay looped WebSearch to stuck=15 this way. Enforce the
+    // per-iteration offered set, with feedback telling the model what it CAN
+    // use.
+    //
+    // Not conditioned on `allowedTools`. It used to be, and `allowedTools` is
+    // the caller pin — set for harness and mission runs, null in an interactive
+    // session. So the one gate that makes a governance restriction survive the
+    // model's memory of earlier turns was live only in the runs that already had
+    // a pin enforced one branch above, and dead in the runs a human is actually
+    // sitting in front of. `offeredToolNames` is assigned every iteration in
+    // every run mode, so nothing but that conjunct was keeping it out of TUI
+    // sessions.
+    //
+    // The prompt-time narrowing is not a substitute: it controls what the model
+    // is OFFERED, and this controls what it can EXECUTE. A tool named from
+    // conversation history was never offered this turn and reaches here anyway.
+    if (this.offeredToolNames && !this.offeredToolNames.has(toolName)) {
       console.log(`[loop] BLOCKED (not offered this turn): ${toolName}`)
       const msg = `Tool "${toolName}" is not available this turn (governance restricted the tool set). ` +
         `Available tools: ${[...this.offeredToolNames].join(', ')}. ` +
@@ -3262,7 +3368,7 @@ export class ConversationLoop {
       })
       toolsUsedThisTurn.push(toolName)
       recordDenial()
-      toolResultsThisTurn.push('denied')
+      this.recordToolOutcome(toolName, 'denied', toolResultsThisTurn)
       toolsUsedInSession.push(toolName)
       return
     }
@@ -3283,7 +3389,7 @@ export class ConversationLoop {
       })
       toolsUsedThisTurn.push(toolName)
       recordDenial()
-      toolResultsThisTurn.push('denied')
+      this.recordToolOutcome(toolName, 'denied', toolResultsThisTurn)
       toolsUsedInSession.push(toolName)
       return
     }
@@ -3344,7 +3450,7 @@ export class ConversationLoop {
       })
       toolsUsedThisTurn.push(toolName)
       recordDenial()
-      toolResultsThisTurn.push('denied')
+      this.recordToolOutcome(toolName, 'denied', toolResultsThisTurn)
       toolsUsedInSession.push(toolName)
       return
     }
@@ -3370,7 +3476,7 @@ export class ConversationLoop {
       })
       toolsUsedThisTurn.push(toolName)
       recordDenial()
-      toolResultsThisTurn.push('denied')
+      this.recordToolOutcome(toolName, 'denied', toolResultsThisTurn)
       toolsUsedInSession.push(toolName)
       return
     }
@@ -3473,7 +3579,7 @@ export class ConversationLoop {
             })
             toolsUsedThisTurn.push(toolName)
             recordDenial()
-            toolResultsThisTurn.push('denied')
+            this.recordToolOutcome(toolName, 'denied', toolResultsThisTurn)
             toolsUsedInSession.push(toolName)
             return
           }
@@ -3807,7 +3913,7 @@ export class ConversationLoop {
 
     // Track for decision logging
     toolsUsedThisTurn.push(toolName)
-    toolResultsThisTurn.push(result.isError ? 'failure' : 'success')
+    this.recordToolOutcome(toolName, result.isError ? 'failure' : 'success', toolResultsThisTurn)
     toolsUsedInSession.push(toolName)
     this.toolHistory.push(toolName)
     if (this.toolHistory.length > 50) this.toolHistory = this.toolHistory.slice(-50)

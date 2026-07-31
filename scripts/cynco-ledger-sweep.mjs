@@ -1,4 +1,3 @@
-#!/usr/bin/env bun
 // Record a withheld-mutation-sweep result onto an existing ledger record.
 //
 // Sweeps run long after the mission (they take ~20 minutes and they are
@@ -6,6 +5,15 @@
 // Until it is filled in, `mutationSweep` is null = UNMEASURED, which is neither
 // pass nor fail — see the header of cynco-ledger.mjs for why `verified` cannot
 // stand in for it.
+//
+// No shebang, on purpose — invoke it with `bun`, never as `./`. This file is
+// also imported by engine/__tests__/harness/ledgerSweep.test.ts, and Vite's
+// module pipeline strips a `#!...\n` but chokes on a `#!...\r\n`. Since
+// core.autocrlf=true is the Git default on Windows, the shebang that used to
+// be here made that whole test file fail to PARSE on every fresh clone — and a
+// suite that fails collection reports `(0 test)`, so its twelve tests simply
+// vanished from a summary line that still read green. Guarded now by
+// engine/__tests__/guards/shebangCollection.test.ts.
 //
 // Usage:
 //   bun scripts/cynco-ledger-sweep.mjs --record 33 \

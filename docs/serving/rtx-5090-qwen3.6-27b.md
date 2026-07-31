@@ -5,6 +5,15 @@ single **RTX 5090 (32 GB)**. It maps the recipe to the *actual* flags LocalCode
 emits in `engine/llama/processManager.ts` (`buildServerArgs`), the `LOCALCODE_*`
 env vars in `engine/config.ts`, and the profile `runtime:` block.
 
+> **Quantization note (2026-07-31).** Every measured number below was taken on
+> **Q6_K**, and they are kept as measured. The default we now develop against is
+> the **NVFP4** GGUF (`Qwen3.6-27B-NVFP4-MTP.gguf`, 16.2 GB) — see the README's
+> Quantization table. The flags and the reasoning for them are unchanged; the
+> VRAM arithmetic below is Q6_K's and reads ~6 GB high for NVFP4. NVFP4 has not
+> been re-run through `benchAgentic`, so no NVFP4 row is claimed here. NVFP4 also
+> needs the `chat_template_file` profile override — see
+> [../cynco-failure-log.md](../cynco-failure-log.md).
+
 > Source of the tuning ideas: the `club-3090` repo (serving recipes for the same
 > Qwen3.x / llama.cpp / consumer-NVIDIA stack). See the `reference_club3090`
 > memory. This doc is **documentation only** — it does not change the defaults

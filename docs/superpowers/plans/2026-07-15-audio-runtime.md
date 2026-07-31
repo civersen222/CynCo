@@ -1,6 +1,6 @@
 # CivKings Audio Runtime (Mode B) Implementation Plan
 
-> **For agentic workers:** Executed by **CynCo missions** (dispatched via `scripts/cynco-mission-driver.mjs`), verified and ledger-labeled by the operator (Claude). Steps use checkbox (`- [ ]`) syntax.
+> **For agentic workers:** Executed by **CynCo missions** (dispatched via `scripts/cynco-mission-driver.mjs`), verified and ledger-labeled by the operator. Steps use checkbox (`- [ ]`) syntax.
 
 **Goal:** Add an optional runtime local-generation path so CivKings can voice per-run content live (the dynasty chronicle and event lines in a dynasty's cloned voice, optional locally-authored flavor text), hosted by Embeddable Lemonade, with graceful fallback to the Mode-A pre-baked assets whenever the runtime host is unavailable.
 

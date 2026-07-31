@@ -32,12 +32,19 @@ export class ProjectIndexer {
   private embedClient: EmbedClient
   private projectRoot: string
 
-  constructor(projectRoot: string, ollamaBaseUrl?: string) {
+  /**
+   * `embedBaseUrl` is the *embedding* endpoint, not the chat one. It used to be
+   * called `ollamaBaseUrl` and main.ts fed it `config.baseUrl`, which under the
+   * llama.cpp provider is the llama-server port — so the indexer embedded
+   * against a server with no embedding route while every other caller used the
+   * default. Resolve it with `embedBaseUrlFor(config)`.
+   */
+  constructor(projectRoot: string, embedBaseUrl?: string) {
     this.projectRoot = projectRoot
     const indexDir = join(projectRoot, '.cynco', 'index')
     mkdirSync(indexDir, { recursive: true })
     this.store = new IndexStore(join(indexDir, 'project.db'))
-    this.embedClient = new EmbedClient(ollamaBaseUrl)
+    this.embedClient = new EmbedClient(embedBaseUrl)
   }
 
   /** Full index of the project. Incremental — skips unchanged files. */

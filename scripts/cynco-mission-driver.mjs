@@ -6,7 +6,10 @@
 //   cwd:           target repo for the mission (default: C:\Users\civer\civkings)
 //   timeout-s:     max wait (default 600)
 //   check-cmd:     shell command run in cwd AFTER the mission ends (Phase 2b);
-//                  exit 0 => verified:true, else verified:false. Omit => null.
+//                  exit 0 => verified:true, nonzero => verified:false,
+//                  timeout/spawn failure => verified:null (UNMEASURED).
+//                  Omit => null. Cap the run with CYNCO_CHECK_TIMEOUT_MS
+//                  (default 300000); a mutation-testing gate needs more.
 //                  Also sent as a one-assertion DoD contract with the mission
 //                  dispatch (P4.2) so taskError/errorTrend measure the run.
 //
@@ -24,7 +27,7 @@
 import { basename, join, dirname, resolve } from 'node:path'
 import { mkdirSync, appendFileSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { createMissionCollector, buildMissionRecord } from './cynco-ledger.mjs'
+import { createMissionCollector, buildMissionRecord, missionCommitted } from './cynco-ledger.mjs'
 import { runCheck } from './cynco-verify.mjs'
 import { loadOrCreateTokens } from '../engine/security/localToken.js'
 
@@ -74,8 +77,19 @@ ws.onopen = () => {
   console.log('[driver] connected, dispatching mission')
   // P4.2 (STATE doc Phase 4(a)): the check script IS the contract — the engine
   // creates a one-assertion DoD so taskError/errorTrend measure this mission.
+  //
+  // The command is REDACTED from the assertion text. Measured on Gilded Wave 5c
+  // (2026-07-30): the run read `Verification command exits 0: <path>` out of its
+  // own contract and ran that gate directly — the exact leak the held-out-gate
+  // rule exists to prevent, since a visible gate can be tuned to. The assertion
+  // still exists, so taskError/errorTrend still measure the mission; only the
+  // path is withheld.
   const contract = checkCmd
-    ? { title: `Mission: ${marker}`, brief: task.slice(0, 200), assertions: [`Verification command exits 0: ${checkCmd}`] }
+    ? {
+        title: `Mission: ${marker}`,
+        brief: task.slice(0, 200),
+        assertions: ['The held-out verification gate for this mission exits 0. The dispatcher runs it after the mission ends; it is not yours to run and you are not told what it is.'],
+      }
     : undefined
   // Finding (ag): the brief is the instrument this mission is judged against, and
   // this driver is the only component that knows where it lives. Measured on
@@ -86,6 +100,10 @@ ws.onopen = () => {
   const readOnlyPaths = [resolve(taskFile).replace(/\\/g, '/')]
   ws.send(JSON.stringify({
     type: 'user.message', text: task, cwd: CWD, readOnlyPaths,
+    // This driver is a script, not a person. An AskUser raised here is broadcast
+    // to an empty room and "answered" only by the AskBroker's 300s timeout —
+    // measured on Gilded UI Wave 6, five minutes spent learning nothing.
+    unattended: true,
     ...(contract ? { contract } : {}),
   }))
 }
@@ -154,9 +172,10 @@ async function gitLog() {
   return await new Response(p.stdout).text()
 }
 
-console.log(`[driver] baseline HEAD ${baselineSha ?? '(unknown)'} — looking for "${marker}" in commits after it`)
+console.log(`[driver] baseline HEAD ${baselineSha ?? '(unknown)'} — any commit after it counts as landed; "${marker}" is recorded, not required`)
 const start = Date.now()
 let landed = false
+let markerSeen = false
 let quiet = false
 while (!quiet && !zeroToolCompletion && (Date.now() - start) / 1000 < TIMEOUT_S) {
   await Bun.sleep(30000)
@@ -167,8 +186,13 @@ while (!quiet && !zeroToolCompletion && (Date.now() - start) / 1000 < TIMEOUT_S)
   // Never let a git hiccup kill the loop — the ledger write at the end must run
   try {
     const log = await gitLog()
-    if (log.includes(marker) && !landed) {
-      console.log('[driver] COMMIT LANDED:\n' + log)
+    if (log.includes(marker)) markerSeen = true
+    // The marker is evidence about the commit MESSAGE, never about whether work
+    // landed. See missionCommitted() in cynco-ledger.mjs for why this decision
+    // has a name and a test instead of living here as an expression.
+    const committed = missionCommitted(log, marker, baselineSha)
+    if (committed && !landed) {
+      console.log(`[driver] COMMIT LANDED${markerSeen ? '' : ` (no "${marker}" in the subject — brief dictated another format)`}:\n` + log)
       landed = true
     }
   } catch (e) { console.log(`[driver] git poll failed: ${e?.message ?? e}`) }
@@ -192,16 +216,28 @@ try {
 // Runs for EVERY outcome — a timeout mission that somehow landed working code
 // earns verified:true, and a "landed" commit that breaks the check earns
 // verified:false. Both are exactly the labels the falsification program needs.
-const CHECK_TIMEOUT_MS = 300000
+// A check that itself times out earns verified:null, because it measured
+// nothing about the delivery.
+// A gate that mutates source and re-runs a suite per mutation takes minutes,
+// not seconds; the fixed 5-minute cap silently converted such gates into
+// timeouts. Configurable, because the right cap is a property of the check.
+const CHECK_TIMEOUT_MS = parseInt(process.env.CYNCO_CHECK_TIMEOUT_MS ?? '300000', 10)
 let verified
 let verify = null
 if (checkCmd) {
-  console.log(`[verify] running check in ${CWD}: ${checkCmd}`)
+  console.log(`[verify] running check in ${CWD}: ${checkCmd} (cap ${CHECK_TIMEOUT_MS}ms)`)
   const r = runCheck(checkCmd, CWD, CHECK_TIMEOUT_MS)
   verified = r.verified
-  verify = { command: checkCmd, exitCode: r.exitCode, timedOut: r.timedOut, durationMs: r.durationMs, outputTail: r.outputTail }
-  console.log(`[verify] ${verified ? 'PASS' : 'FAIL'} (exit=${r.exitCode ?? 'none'}${r.timedOut ? ', TIMED OUT' : ''}, ${r.durationMs}ms)`)
-  if (!verified) console.log(`[verify] output tail:\n${r.outputTail}`)
+  verify = { command: checkCmd, exitCode: r.exitCode, timedOut: r.timedOut, spawnFailed: r.spawnFailed, durationMs: r.durationMs, outputTail: r.outputTail }
+  // Three outcomes, not two. A check that never answered has not said the
+  // delivery is broken — it has said nothing, and the label must say nothing.
+  const verdict = r.verified === null ? 'UNMEASURED' : r.verified ? 'PASS' : 'FAIL'
+  console.log(`[verify] ${verdict} (exit=${r.exitCode ?? 'none'}${r.timedOut ? ', TIMED OUT' : ''}${r.spawnFailed ? ', SPAWN FAILED' : ''}, ${r.durationMs}ms)`)
+  if (r.verified !== true) console.log(`[verify] output tail:\n${r.outputTail}`)
+  if (r.verified === null) {
+    console.log(`[verify] verified stays null — the check did not finish. ` +
+      `Re-run it by hand, or raise CYNCO_CHECK_TIMEOUT_MS, then patch the record.`)
+  }
 }
 
 // Append the labeled mission record to the outcome ledger
@@ -211,6 +247,7 @@ try {
     missionId,
     briefFile: taskFile,
     marker,
+    markerSeen,
     cwd: CWD,
     dispatchedAt,
     durationS: Math.round((Date.now() - start) / 1000),

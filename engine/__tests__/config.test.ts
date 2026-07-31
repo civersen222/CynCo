@@ -31,7 +31,11 @@ describe('config', () => {
   it('returns defaults when no env vars', () => {
     const c = loadConfig()
     expect(c.baseUrl).toBe('http://localhost:11434')
-    expect(c.model).toBeUndefined()
+    // Not undefined. HOME and cwd are empty temp dirs here, which is the
+    // fresh-clone condition, and a fresh clone now resolves the profile that
+    // ships at engine/profiles/templates/default.yaml. This line used to assert
+    // undefined, which is the exact state main.ts exits 1 on.
+    expect(c.model).toBe('qwen3.6')
     expect(c.tier).toBe('auto')
     expect(c.temperature).toBe(0.7)
     expect(c.maxOutputTokens).toBe(16384)
@@ -296,11 +300,47 @@ runtime:
     expect(c.runtime?.specType).toBe('mtp')
   })
 
-  it('returns built-in defaults when no profile and no default.yaml', () => {
+  it('falls back to the profile that ships with the engine when the user has none', () => {
+    // Was "returns built-in defaults when no profile and no default.yaml", and
+    // asserted `model` came back undefined. There has always been a
+    // default.yaml — engine/profiles/templates/default.yaml — it was simply a
+    // path no code read, so this test was encoding the bug: undefined is the
+    // value main.ts prints "No model specified" and exits 1 on, which is what
+    // every command in the README's Quick Start did.
     const c = loadConfig()
-    expect(c.model).toBeUndefined()
+    expect(c.model).toBe('qwen3.6')
+
+    // And the provider that can serve that tag. `qwen3.6` is an Ollama tag —
+    // `ollama pull` puts it in Ollama's store, and the llama.cpp direct provider
+    // knows nothing about tags, only about a GGUF path. Resolving a model while
+    // pointing at a provider that cannot answer for it is not a working default,
+    // and it is what the built-in fallback ('llama-cpp') produced on its own.
+    expect(c.provider).toBe('ollama')
+
+    // Still undefined, and deliberately so: `model_file` and the draft-mtp
+    // runtime belong to the llama.cpp direct provider, so the shipped fallback
+    // must not presume a GGUF the Quick Start never downloads.
     expect(c.modelFile).toBeUndefined()
     expect(c.runtime).toBeUndefined()
+  })
+
+  it('provider resolves env > profile > built-in', () => {
+    // The middle term is the one that did not exist. `provider` was read as
+    // `process.env.LOCALCODE_PROVIDER ?? 'llama-cpp'` while every neighbouring
+    // field consulted the profile, so a profile could name a model and a
+    // base_url and still be overruled on which client would use them.
+    writeGlobalProfile('default', 'name: default\nmodel: m\nprovider: ollama\n')
+    expect(loadConfig().provider).toBe('ollama')
+
+    process.env.LOCALCODE_PROVIDER = 'llama-cpp'
+    expect(loadConfig().provider).toBe('llama-cpp')
+    delete process.env.LOCALCODE_PROVIDER
+
+    // A profile that names no provider must still reach the built-in. Changing
+    // that default would break every existing llama.cpp setup silently, so the
+    // fix added a layer beneath env rather than moving the floor.
+    writeGlobalProfile('default', 'name: default\nmodel: m\n')
+    expect(loadConfig().provider).toBe('llama-cpp')
   })
 
   it('env LOCALCODE_MODEL overrides the auto-default profile model', () => {

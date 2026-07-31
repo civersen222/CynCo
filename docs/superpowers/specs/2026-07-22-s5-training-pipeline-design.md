@@ -55,7 +55,7 @@ So the journal stays immutable and the exporter performs the join (`SELECT outco
 
 ### 1. Session outcome hygiene
 - **`engine/vsm/governanceDb.ts`** — `recordSession()` gains a write-time guard: reject records with `totalTurns <= 0` (return without insert; log a one-line `[governanceDb] rejected degenerate session <id> (0 turns)`). Add a `purgeDegenerateSessions(): number` method (`DELETE FROM sessions WHERE total_turns <= 0`, returns row count) plus cascade delete of orphaned `measurements`.
-- **`engine/vsm/cyberneticsGovernance.ts`** — `recordSessionOutcome()` (line 1001) builds the record with `totalTurns: this.turnCount` (line 1012), which the write-guard reads; confirm it early-returns cleanly when the guard rejects. **Also fix the banned empty `catch {}` at line 1016** — CLAUDE.md and the ratchet tests treat empty catch as a stop-the-line bug; since we are editing this method, log the error or emit a `governance.alert` instead of swallowing it.
+- **`engine/vsm/cyberneticsGovernance.ts`** — `recordSessionOutcome()` (line 1001) builds the record with `totalTurns: this.turnCount` (line 1012), which the write-guard reads; confirm it early-returns cleanly when the guard rejects. **Also fix the banned empty `catch {}` at line 1016** — CYNCO.md and the ratchet tests treat empty catch as a stop-the-line bug; since we are editing this method, log the error or emit a `governance.alert` instead of swallowing it.
 - **`engine/main.ts:399,953`** — the `recordSessionOutcome(outcome, 'default', 0, ...)` calls hardcode strategy/configIndex. The engine has **no strategy concept today** (single implicit strategy), so `'default'/0` is the honest value — leave it, do not invent a strategy source (YAGNI). The degeneracy the guard targets is `total_turns==0`, not strategy. (If a multi-strategy A/B lands later, thread it then.)
 - **One-time purge:** call `purgeDegenerateSessions()` once behind a guarded startup migration in `main.ts` (idempotent — after the write-guard lands, it finds nothing on subsequent runs).
 
@@ -106,7 +106,7 @@ So the journal stays immutable and the exporter performs the join (`SELECT outco
 - **`engine/__tests__/predictionDb.test.ts`** (extend): `recordCompletedPrediction` inserts a fully-populated row (predicted/actual/correct/turn) readable via `getAllPredictions`; a session-end flush of a `PredictionTracker` with N completed predictions writes exactly N rows.
 - **`engine/__tests__/s5/orchestratorSessionId.test.ts`** (new or extend orchestrator tests): journalled S5 entry carries the injected real session id, not the timestamp.
 - **E2E dry-run:** run the exporter on a fixture `~/.cynco` tree → run `python scripts/fine_tune_s5.py --training-data <fixture>.jsonl --validate-only` → expect "OK, N examples" with exit 0.
-- **Post-change verification (mandatory, per CLAUDE.md):** `npm test` incl. `engine/__tests__/guards/`, and `cd tui && python -m pytest tests/ -q`.
+- **Post-change verification (mandatory, per CYNCO.md):** `npm test` incl. `engine/__tests__/guards/`, and `cd tui && python -m pytest tests/ -q`.
 
 ## Wire check (BLOCKING — final task)
 

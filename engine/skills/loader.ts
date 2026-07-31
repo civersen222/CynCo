@@ -7,7 +7,7 @@
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
-import { validateFrontmatter, type Skill, type SkillIndexEntry } from './types.js'
+import { SKILL_NAME_RE, validateFrontmatter, type Skill, type SkillIndexEntry } from './types.js'
 
 /** Parse YAML using Bun's built-in parser, with npm `yaml` fallback. */
 function parseYaml(input: string): unknown {
@@ -27,6 +27,50 @@ export function builtinSkillsDir(): string {
 export function workspaceSkillsDir(): string {
   const home = process.env.HOME || os.homedir()
   return path.join(home, '.cynco', 'skills')
+}
+
+/**
+ * Assert that `candidate` resolves strictly inside `root`, and return the
+ * resolved path.
+ *
+ * Exported and specified in its own right rather than inlined into
+ * `resolveWorkspaceSkillDir`: it is the backstop behind that function's name
+ * rule, and a backstop that only ever runs behind a stricter check can never be
+ * observed to fail — remove it and no test notices, which makes it decoration
+ * rather than defence. Given its own contract it gets its own tests, and a
+ * mutation to it dies.
+ *
+ * `root` is a parameter, not the skills dir: `/skill install` needs the same
+ * check against a zipball's extraction root, where the value that escapes is
+ * the subdir out of the install spec rather than a skill name.
+ */
+export function assertInside(root: string, candidate: string): string {
+  const rootResolved = path.resolve(root)
+  const dir = path.resolve(rootResolved, candidate)
+  if (!dir.startsWith(rootResolved + path.sep)) {
+    throw new Error(`path ${JSON.stringify(candidate)} resolves outside ${rootResolved}`)
+  }
+  return dir
+}
+
+/**
+ * Resolve a skill name to its directory under the workspace skills dir,
+ * refusing anything that is not a bare lower-kebab-case name or that resolves
+ * outside that dir.
+ *
+ * `/skill remove <name>` did `path.join(workspaceSkillsDir(), name)` straight
+ * into an `rmSync` with `recursive: true, force: true` and neither check, so
+ * `/skill remove ../../Documents` was an arbitrary recursive delete — silent,
+ * unrecoverable, and reachable from the dashboard socket. `/skill new` and
+ * `/skill install` each validated the same value with their own private copy of
+ * the same pattern; remove was the one that shipped without one. Every caller
+ * that turns a skill name into a path on disk goes through here now.
+ */
+export function resolveWorkspaceSkillDir(name: string, workspaceDir?: string): string {
+  if (typeof name !== 'string' || !SKILL_NAME_RE.test(name)) {
+    throw new Error(`skill name must be lower-kebab-case (got ${JSON.stringify(name)})`)
+  }
+  return assertInside(workspaceDir ?? workspaceSkillsDir(), name)
 }
 
 /**
