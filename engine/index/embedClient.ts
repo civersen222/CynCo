@@ -105,23 +105,36 @@ export class EmbedClient {
     this.model = process.env.LOCALCODE_EMBED_MODEL ?? model
   }
 
-  async embed(text: string): Promise<number[]> {
-    const results = await this.embedBatch([text])
+  async embed(text: string, signal?: AbortSignal): Promise<number[]> {
+    const results = await this.embedBatch([text], signal)
     return results[0]
   }
 
   /**
    * Embed `text` but never block longer than `timeoutMs`. On timeout (or any
    * embed failure) resolves `undefined` so callers fall back to lexical recall.
-   * The losing embed promise is detached with a swallow so a late rejection can
-   * never surface as an unhandled rejection after the caller has moved on
-   * (this is what produced vitest teardown noise on cold/absent embed servers).
+   *
+   * The deadline CANCELS the work; it does not walk away from it. The previous
+   * version raced the embed against a timer, swallowed the loser's rejection,
+   * and left everything downstream of it running: the HTTP request, the
+   * fallback-model probe, and the fire-and-forget `pullModel` — each of which
+   * narrates to the console. Under vitest that console traffic arrived after the
+   * worker had begun tearing down, which vitest reports as
+   * `EnvironmentTeardownError: Closing rpc while "onUserConsoleLog" was pending`
+   * and which made `npm test` exit 1 with every test passing. The old comment
+   * here claimed the detach had settled it; it had settled the rejection half
+   * only, and the measurement disagreed with the comment.
+   *
+   * Silence after an abort is also the honest report. A cancelled request did
+   * not fail — nothing was learned about the server — so "no embedding endpoint
+   * answered" would be a claim this code is not entitled to make.
    */
   async embedWithDeadline(
     text: string,
     timeoutMs = Number(process.env.LOCALCODE_RECALL_EMBED_TIMEOUT_MS ?? 4000),
   ): Promise<number[] | undefined> {
-    const embedPromise = this.embed(text)
+    const abort = new AbortController()
+    const embedPromise = this.embed(text, abort.signal)
     embedPromise.catch(() => { /* detach: swallow a late rejection from the losing race side */ })
     let timer: ReturnType<typeof setTimeout> | undefined
     const timeout = new Promise<undefined>((resolve) => {
@@ -133,13 +146,22 @@ export class EmbedClient {
       return undefined
     } finally {
       if (timer) clearTimeout(timer)
+      // On the success path the request has already settled and this is a
+      // no-op; on the timeout path it is the whole point.
+      abort.abort()
     }
   }
 
-  async embedBatch(texts: string[]): Promise<number[][]> {
+  async embedBatch(texts: string[], signal?: AbortSignal): Promise<number[][]> {
     try {
-      return await this.embedWith(this.model, texts)
+      return await this.embedWith(this.model, texts, signal)
     } catch (err) {
+      // No abort check here, deliberately. `embedWith` refuses to go on once
+      // the signal is aborted, so what reaches this catch after a cancellation
+      // is an abort error — not a missing model — and falls through to the
+      // rethrow below without narrating or starting a pull. A second check for
+      // the same rule would be a mechanism no test could observe failing, and
+      // an unfalsifiable guard is worse than none: it looks like protection.
       if (this.model !== this.fallbackModel && this.isModelMissing(err)) {
         const wanted = this.model
         console.log(`[embed] "${wanted}" unavailable — falling back to ${this.fallbackModel}`)
@@ -154,7 +176,7 @@ export class EmbedClient {
             if (ok) console.log(`[embed] "${wanted}" pulled — future sessions will use it`)
           })
         }
-        return await this.embedWith(this.model, texts)
+        return await this.embedWith(this.model, texts, signal)
       }
       throw err
     }
@@ -182,14 +204,21 @@ export class EmbedClient {
     return ['ollama', 'openai']
   }
 
-  private async embedWith(model: string, texts: string[]): Promise<number[][]> {
+  private async embedWith(model: string, texts: string[], signal?: AbortSignal): Promise<number[][]> {
     let lastErr: unknown
     for (const dialect of this.dialectOrder()) {
       try {
-        const out = await this.post(dialect, model, texts)
+        const out = await this.post(dialect, model, texts, signal)
         this.dialect = dialect
         return out
       } catch (err) {
+        // The single place cancellation is honoured above the wire, and so the
+        // one that has to carry the whole rule: stop probing, do not narrate,
+        // do not fall back, do not start a background pull. A cancelled request
+        // also taught us nothing about the server, so continuing to the
+        // "no embedding endpoint answered" verdict below would be a judgement
+        // on a server that was never allowed to answer.
+        if (signal?.aborted) throw err
         // A server that answered about the model is the right server; do not
         // go looking for another one, let the fallback-model path handle it.
         if (this.isModelMissing(err)) {
@@ -202,17 +231,20 @@ export class EmbedClient {
         lastErr = err
       }
     }
+    // No abort check here either: the loop above throws on the first cancelled
+    // dialect, so a cancelled call never reaches this line.
     warnEmbedUnavailable(this.baseUrl, lastErr instanceof Error ? lastErr.message : undefined)
     throw lastErr
   }
 
   /** One request in one wire format. Throws EmbedHttpError on a non-2xx. */
-  private async post(dialect: EmbedDialect, model: string, texts: string[]): Promise<number[][]> {
+  private async post(dialect: EmbedDialect, model: string, texts: string[], signal?: AbortSignal): Promise<number[][]> {
     const url = dialect === 'ollama' ? `${this.baseUrl}/api/embed` : `${this.baseUrl}/v1/embeddings`
     const resp = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model, input: texts }),
+      signal,
     })
 
     if (!resp.ok) throw new EmbedHttpError(resp.status, await resp.text(), url)
