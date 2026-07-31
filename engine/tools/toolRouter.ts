@@ -33,6 +33,38 @@ export function getToolsForCategory(category: string, allTools: ToolImpl[]): Too
   return allTools.filter(t => nameSet.has(t.name))
 }
 
+/**
+ * Narrow `offered` to the tools in the routed category.
+ *
+ * Routing is a token-saving heuristic and every other narrowing in the loop is a
+ * policy: the core-by-default tool gate, the workflow phase, the caller pin,
+ * trust demotion, and S5's pre-loop restriction. The stage-2 tool list used to
+ * be built by calling `getToolsForCategory(category, ALL_TOOLS)` and assigning
+ * the result, which is a fresh derivation from the whole registry — so the
+ * heuristic silently overruled all five policies, `[s5] ENFORCE` printed and the
+ * model got the full tool set on the next line, and on the shipped 65536-token
+ * profile that was the default path.
+ *
+ * Hence an intersection, and hence `offered` is the array being filtered: the
+ * caller's definitions carry narrowing the registry entries do not.
+ *
+ * `conflict` means the router named a category that shares nothing with what
+ * policy left offered. The offered set is returned unchanged in that case,
+ * because the alternatives are handing the model nothing to act with — it cannot
+ * then recover from whatever caused the restriction — or handing it the routed
+ * set, which is the discard this function exists to prevent. Governance wins
+ * over a heuristic; the caller is expected to say so out loud.
+ */
+export function applyCategoryRouting<T extends { name: string }>(
+  offered: T[],
+  routed: { name: string }[],
+): { tools: T[]; conflict: boolean } {
+  const routedNames = new Set(routed.map(t => t.name))
+  const narrowed = offered.filter(t => routedNames.has(t.name))
+  if (narrowed.length === 0) return { tools: offered, conflict: offered.length > 0 }
+  return { tools: narrowed, conflict: false }
+}
+
 let routingOverride: boolean | null = null
 
 export function setRoutingEnabled(enabled: boolean | null): void {

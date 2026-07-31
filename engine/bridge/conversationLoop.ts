@@ -2039,7 +2039,7 @@ export class ConversationLoop {
 
       // Two-stage tool routing for small context models
       try {
-        const { shouldUseRouting, getToolsForCategory, CATEGORY_SELECTOR_TOOL } = await import('../tools/toolRouter.js')
+        const { shouldUseRouting, getToolsForCategory, applyCategoryRouting, CATEGORY_SELECTOR_TOOL } = await import('../tools/toolRouter.js')
         if (!this.routingDeclined && shouldUseRouting(this.config.contextLength ?? 32768) && iterationTools.length > 5) {
           // Stage 1: send only category selector
           let routed = false
@@ -2057,7 +2057,24 @@ export class ConversationLoop {
               const category = (evt as any).input?.category ?? 'all'
               console.log(`[routing] Category selected: ${category}`)
               const { ALL_TOOLS } = await import('../tools/registry.js')
-              iterationTools = toToolDefs(getToolsForCategory(category, ALL_TOOLS))
+              // Intersect. `getToolsForCategory(category, ALL_TOOLS)` is a fresh
+              // derivation from the whole registry, so ASSIGNING it — which is
+              // what this line used to do — threw away the tool gate, the
+              // workflow phase, the caller pin, trust demotion and, one line
+              // above, S5's restriction. `[s5] ENFORCE` printed and the model was
+              // offered Bash anyway.
+              const before = iterationTools.length
+              const routing = applyCategoryRouting(
+                iterationTools, getToolsForCategory(category, ALL_TOOLS))
+              if (routing.conflict) {
+                // Two subsystems disagreeing is worth a line of its own. The
+                // governance decision stands and routing bought nothing; saying
+                // so is the difference between a heuristic that failed and a
+                // heuristic that failed invisibly, which is how the original
+                // discard survived as long as it did.
+                console.log(`[routing] CONFLICT: category '${category}' shares no tool with the ${before} currently allowed (${iterationTools.map((t: any) => t.name).join(', ')}) — keeping the restricted set, routing saves nothing this turn`)
+              }
+              iterationTools = routing.tools
               routed = true
               break
             }
@@ -3256,12 +3273,25 @@ export class ConversationLoop {
       return
     }
 
-    // S5 live restriction (one-shot runs only): the model can keep calling a
-    // tool it saw earlier in history even after a stuck-loop restriction
-    // removed it from the prompt — 2026-06-12 replay looped WebSearch to
-    // stuck=15 this way. Enforce the per-iteration offered set, with feedback
-    // telling the model what it CAN use.
-    if (this.allowedTools && this.offeredToolNames && !this.offeredToolNames.has(toolName)) {
+    // S5 live restriction: the model can keep calling a tool it saw earlier in
+    // history even after a stuck-loop restriction removed it from the prompt —
+    // 2026-06-12 replay looped WebSearch to stuck=15 this way. Enforce the
+    // per-iteration offered set, with feedback telling the model what it CAN
+    // use.
+    //
+    // Not conditioned on `allowedTools`. It used to be, and `allowedTools` is
+    // the caller pin — set for harness and mission runs, null in an interactive
+    // session. So the one gate that makes a governance restriction survive the
+    // model's memory of earlier turns was live only in the runs that already had
+    // a pin enforced one branch above, and dead in the runs a human is actually
+    // sitting in front of. `offeredToolNames` is assigned every iteration in
+    // every run mode, so nothing but that conjunct was keeping it out of TUI
+    // sessions.
+    //
+    // The prompt-time narrowing is not a substitute: it controls what the model
+    // is OFFERED, and this controls what it can EXECUTE. A tool named from
+    // conversation history was never offered this turn and reaches here anyway.
+    if (this.offeredToolNames && !this.offeredToolNames.has(toolName)) {
       console.log(`[loop] BLOCKED (not offered this turn): ${toolName}`)
       const msg = `Tool "${toolName}" is not available this turn (governance restricted the tool set). ` +
         `Available tools: ${[...this.offeredToolNames].join(', ')}. ` +
