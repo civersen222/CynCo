@@ -27,7 +27,7 @@
 import { basename, join, dirname, resolve } from 'node:path'
 import { mkdirSync, appendFileSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { createMissionCollector, buildMissionRecord, missionCommitted } from './cynco-ledger.mjs'
+import { createMissionCollector, buildMissionRecord, missionCommitted, missionOutcome, waitIsOver, QUIET_MS } from './cynco-ledger.mjs'
 import { runCheck } from './cynco-verify.mjs'
 import { loadOrCreateTokens } from '../engine/security/localToken.js'
 
@@ -72,7 +72,6 @@ let zeroToolCompletion = false
 // no tool call after it for QUIET_MS. Any tool.start reopens the run.
 let sawMessageComplete = false
 let lastActivityAt = Date.now()
-const QUIET_MS = 60000
 ws.onopen = () => {
   console.log('[driver] connected, dispatching mission')
   // P4.2 (STATE doc Phase 4(a)): the check script IS the contract — the engine
@@ -196,16 +195,18 @@ while (!quiet && !zeroToolCompletion && (Date.now() - start) / 1000 < TIMEOUT_S)
       landed = true
     }
   } catch (e) { console.log(`[driver] git poll failed: ${e?.message ?? e}`) }
-  // Only a landed mission is worth waiting for quiescence on; if nothing has
-  // landed the timeout is the right stop. A run that lands and then keeps
-  // working — amending the commit, fixing a name — must finish before the
-  // check runs, or the check measures a state that no longer exists.
-  if (landed && sawMessageComplete && Date.now() - lastActivityAt >= QUIET_MS) {
-    console.log(`[driver] run quiet for ${Math.round((Date.now() - lastActivityAt) / 1000)}s after a completed message — proceeding to verification`)
+  // Quiescence ends the wait whether or not anything landed. A run that lands
+  // and then keeps working — amending the commit, fixing a name — must finish
+  // before the check runs, or the check measures a state that no longer
+  // exists. A run that stops without committing is simply over, and waiting
+  // out its budget only buys a wrong label; see waitIsOver().
+  if (waitIsOver({ landed, sawMessageComplete, msSinceActivity: Date.now() - lastActivityAt })) {
+    console.log(`[driver] run quiet for ${Math.round((Date.now() - lastActivityAt) / 1000)}s after a completed message — ${landed ? 'proceeding to verification' : 'nothing committed; the run has stopped, not stalled'}`)
     quiet = true
   }
 }
-if (!landed) console.log('[driver] TIMEOUT without commit — log a failure entry (docs/cynco-failure-log.md)')
+if (!landed && quiet) console.log('[driver] STOPPED WITHOUT COMMIT — the run went quiet with an uncommitted tree; log a failure entry (docs/cynco-failure-log.md)')
+else if (!landed) console.log('[driver] TIMEOUT without commit — log a failure entry (docs/cynco-failure-log.md)')
 else if (!quiet) console.log('[driver] WARNING: commit landed but the run never went quiet — the check below may read a commit the run is still amending (see QUIET_MS)')
 try {
   const p = Bun.spawn(['git', 'status', '--short'], { cwd: CWD, stdout: 'pipe' })
@@ -241,7 +242,7 @@ if (checkCmd) {
 }
 
 // Append the labeled mission record to the outcome ledger
-const outcome = landed ? 'landed' : zeroToolCompletion ? 'zero_tool_fail' : 'timeout'
+const outcome = missionOutcome({ landed, zeroToolCompletion, wentQuiet: quiet })
 try {
   const record = buildMissionRecord(collector, {
     missionId,

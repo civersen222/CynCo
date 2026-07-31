@@ -155,8 +155,47 @@ export function missionCommitted(log, marker, baselineSha) {
   return log.trim().length > 0
 }
 
+/** A run is quiet when its last message finished and nothing has happened since. */
+export const QUIET_MS = parseInt(process.env.CYNCO_QUIET_MS ?? '60000', 10)
+
+/**
+ * Has the driver seen everything it is going to see?
+ *
+ * Quiescence used to be consulted only for a mission that had already
+ * committed, on the reasoning that an un-landed run still had time left and
+ * might yet use it. UI Wave 7h falsified that: the run finished its contract,
+ * stopped talking 107 seconds in, and the driver waited out the remaining 88
+ * minutes for a commit that nothing was left running to make. A run that has
+ * gone quiet is not deciding what to do next — it has stopped, and the extra
+ * wait buys nothing but a wrong label and an hour and a half.
+ *
+ * `sawMessageComplete` is what separates quiet from busy: `tool.start` clears
+ * it, so a long Bash is activity no matter how stale the last message is.
+ */
+export function waitIsOver({ landed, sawMessageComplete, msSinceActivity }, quietMs = QUIET_MS) {
+  if (!sawMessageComplete) return false
+  return msSinceActivity >= quietMs
+}
+
+/**
+ * What to call a run that is over.
+ *
+ * `timeout` is reserved for a run that actually ran out of time — still
+ * working, budget exhausted. A run that went quiet without committing is a
+ * different animal and gets its own name: it had time left and chose to stop,
+ * usually having satisfied its contract while leaving the tree dirty. Spelling
+ * both `timeout` put two unrelated failures in one bucket, and the corpus
+ * cannot learn a distinction the ledger refuses to make.
+ */
+export function missionOutcome({ landed, zeroToolCompletion, wentQuiet }) {
+  if (landed) return 'landed'
+  if (zeroToolCompletion) return 'zero_tool_fail'
+  if (wentQuiet) return 'stopped_without_commit'
+  return 'timeout'
+}
+
 // meta: { missionId, briefFile, marker, markerSeen, cwd, dispatchedAt, durationS,
-//         outcome: 'landed' | 'timeout' | 'zero_tool_fail',
+//         outcome: 'landed' | 'timeout' | 'stopped_without_commit' | 'zero_tool_fail',
 //         verified?: boolean, verify?: object,  // Phase 2(b) check-script result
 //         mutationSweep?: { command, killed, total, survived: string[] } }
 export function buildMissionRecord(collector, meta) {

@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 // The ledger collector is a plain .mjs module used by scripts/cynco-mission-driver.mjs
 // @ts-ignore — untyped harness module
-import { createMissionCollector, buildMissionRecord, missionCommitted } from '../../../scripts/cynco-ledger.mjs'
+import { createMissionCollector, buildMissionRecord, missionCommitted, missionOutcome, waitIsOver, QUIET_MS } from '../../../scripts/cynco-ledger.mjs'
 
 describe('cynco mission outcome ledger', () => {
   const syntheticStream = [
@@ -323,5 +323,57 @@ describe('missionCommitted — did this mission commit anything?', () => {
     const stale = 'aaa1111 fix: something from last week\nbbb2222 chore: older still\n'
     expect(missionCommitted(stale, MARKER, null)).toBe(false)
     expect(missionCommitted(`ccc3333 ${MARKER}: landed\n${stale}`, MARKER, null)).toBe(true)
+  })
+})
+
+/**
+ * UI Wave 7h: the run stopped after 107 seconds having completed its contract
+ * but committed nothing, and the driver then sat for another 5298 seconds
+ * before recording `outcome: "timeout"`. Both halves are wrong. Waiting cannot
+ * help a run that has stopped talking, and "timeout" describes a run that ran
+ * out of time rather than one that quit early with a dirty tree. The corpus
+ * cannot learn the difference between those two if the ledger spells them the
+ * same way.
+ */
+describe('when the driver stops waiting, and what it calls the result', () => {
+  // The threshold the driver actually uses, not a copy of it — a duplicated
+  // constant here would keep passing after the real one moved.
+  const QUIET = QUIET_MS
+
+  it('a run that goes quiet without committing ends the wait — it is not working', () => {
+    // The exact Wave 7h shape: no commit, last message.complete long past.
+    expect(waitIsOver({ landed: false, sawMessageComplete: true, msSinceActivity: QUIET })).toBe(true)
+  })
+
+  it('a quiet un-landed run is stopped_without_commit, never timeout', () => {
+    expect(missionOutcome({ landed: false, zeroToolCompletion: false, wentQuiet: true }))
+      .toBe('stopped_without_commit')
+  })
+
+  it('a run still burning its budget with no quiet period is the only real timeout', () => {
+    expect(waitIsOver({ landed: false, sawMessageComplete: false, msSinceActivity: QUIET })).toBe(false)
+    expect(missionOutcome({ landed: false, zeroToolCompletion: false, wentQuiet: false }))
+      .toBe('timeout')
+  })
+
+  it('a tool call in flight is activity, however long the last message has been complete', () => {
+    // tool.start resets sawMessageComplete; a long Bash must not read as quiet.
+    expect(waitIsOver({ landed: false, sawMessageComplete: false, msSinceActivity: QUIET * 10 })).toBe(false)
+  })
+
+  it('quiet is a duration, not an event: a just-finished message is not yet quiet', () => {
+    expect(waitIsOver({ landed: false, sawMessageComplete: true, msSinceActivity: QUIET - 1 })).toBe(false)
+  })
+
+  it('the landed path is unchanged — quiescence still gates verification', () => {
+    expect(waitIsOver({ landed: true, sawMessageComplete: true, msSinceActivity: QUIET })).toBe(true)
+    expect(waitIsOver({ landed: true, sawMessageComplete: true, msSinceActivity: 0 })).toBe(false)
+    expect(missionOutcome({ landed: true, zeroToolCompletion: false, wentQuiet: true })).toBe('landed')
+  })
+
+  it('landed wins over every other label; zero-tool wins over stopping quietly', () => {
+    expect(missionOutcome({ landed: true, zeroToolCompletion: true, wentQuiet: true })).toBe('landed')
+    expect(missionOutcome({ landed: false, zeroToolCompletion: true, wentQuiet: true }))
+      .toBe('zero_tool_fail')
   })
 })
