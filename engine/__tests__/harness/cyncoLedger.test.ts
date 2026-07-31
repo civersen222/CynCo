@@ -377,3 +377,86 @@ describe('when the driver stops waiting, and what it calls the result', () => {
       .toBe('zero_tool_fail')
   })
 })
+
+/**
+ * F19/F20 — UI Wave 7h run 2: llama-server exited with code 9 at turn 59. The
+ * engine caught the resulting connection failure, set taskEndedInEngineError,
+ * and emitted `session.error`. The driver was not listening for it. There were
+ * no further messages and no further tool calls, so `sawMessageComplete` stayed
+ * false — it is set by `message.complete`, and the message never completed —
+ * and `waitIsOver` therefore answered "still working" for the next 3351
+ * seconds, until the budget ran out and the run was filed as `timeout`.
+ *
+ * Landing, liveness and crashing are three different facts. `sawMessageComplete`
+ * is a proxy for "the run reached a stopping point" that only covers the happy
+ * path: a run that stopped because the thing running it died never sets it.
+ * Dying IS a stopping point, and it is the one where waiting is most obviously
+ * futile — nothing is left to produce the message the loop is waiting for.
+ *
+ * The label matters as much as the wait. `timeout` and `engine_error` want
+ * opposite fixes: one says give the model more budget, the other says the
+ * budget was never the problem. Filing a crash as a timeout puts them in one
+ * bucket, and the corpus cannot learn a distinction the ledger refuses to make.
+ */
+describe('when the engine itself dies', () => {
+  const QUIET = QUIET_MS
+
+  it('a session error ends the wait immediately — a dead engine will not talk again', () => {
+    // The exact Wave 7h run-2 shape: mid-message crash, so no message.complete,
+    // and no elapsed quiet period yet. Both of the old exits are shut.
+    expect(waitIsOver({
+      landed: false, sawMessageComplete: false, msSinceActivity: 0, engineError: 'Unable to connect. Is the computer able to access the url?',
+    })).toBe(true)
+  })
+
+  it('the crash outranks quiet and timeout, but never a commit that landed', () => {
+    expect(missionOutcome({ landed: false, zeroToolCompletion: false, wentQuiet: false, engineError: 'boom' }))
+      .toBe('engine_error')
+    expect(missionOutcome({ landed: false, zeroToolCompletion: false, wentQuiet: true, engineError: 'boom' }))
+      .toBe('engine_error')
+    // Work that reached a commit before the crash is still work that landed.
+    expect(missionOutcome({ landed: true, zeroToolCompletion: false, wentQuiet: false, engineError: 'boom' }))
+      .toBe('landed')
+  })
+
+  it('an engine error is not a zero-tool fail — the tools ran, the server died', () => {
+    // F7's label says S5 restricted the tool set so nothing could run. Run 2
+    // made 59 turns of tool calls. Charging that to F7 would send the next
+    // investigation to the governance layer, which had nothing to do with it.
+    expect(missionOutcome({ landed: false, zeroToolCompletion: true, wentQuiet: false, engineError: 'boom' }))
+      .toBe('engine_error')
+  })
+
+  it('absent an engine error nothing changes — every existing label is untouched', () => {
+    // The new field is optional; every call site that does not pass it must
+    // behave exactly as before, including the three-way outcome precedence.
+    expect(missionOutcome({ landed: false, zeroToolCompletion: false, wentQuiet: false })).toBe('timeout')
+    expect(missionOutcome({ landed: false, zeroToolCompletion: false, wentQuiet: true })).toBe('stopped_without_commit')
+    expect(missionOutcome({ landed: false, zeroToolCompletion: true, wentQuiet: true })).toBe('zero_tool_fail')
+    expect(waitIsOver({ landed: false, sawMessageComplete: false, msSinceActivity: QUIET * 10 })).toBe(false)
+    expect(waitIsOver({ landed: false, sawMessageComplete: false, msSinceActivity: QUIET * 10, engineError: null })).toBe(false)
+  })
+
+  it('an empty error string is not evidence of a crash', () => {
+    // A falsy error would otherwise strand a healthy run on the crash path, and
+    // `engine_error` is the one label that cannot be re-derived from the record.
+    expect(waitIsOver({ landed: false, sawMessageComplete: false, msSinceActivity: 0, engineError: '' })).toBe(false)
+    expect(missionOutcome({ landed: false, zeroToolCompletion: false, wentQuiet: false, engineError: '' })).toBe('timeout')
+  })
+
+  it('the record carries the error text, so a crash can be told from a crash', () => {
+    const c = createMissionCollector(() => 1)
+    const rec = buildMissionRecord(c, {
+      missionId: 'm', briefFile: 'b', marker: 'X:', cwd: '.', dispatchedAt: 'now',
+      durationS: 1, outcome: 'engine_error', engineError: 'llama-server exited with code 9',
+    })
+    expect(rec.engineError).toBe('llama-server exited with code 9')
+    // And it is null, not absent, on every healthy record — an absent field
+    // reads as "no crash" and as "older driver" at the same time.
+    const ok = buildMissionRecord(c, {
+      missionId: 'm', briefFile: 'b', marker: 'X:', cwd: '.', dispatchedAt: 'now',
+      durationS: 1, outcome: 'landed',
+    })
+    expect(ok.engineError).toBeNull()
+  })
+})

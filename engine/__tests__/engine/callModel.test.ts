@@ -5,7 +5,7 @@ import { join } from 'path'
 import type { StreamEvent as LocalStreamEvent } from '../../types.js'
 import type { Provider, ModelCapabilities } from '../../provider.js'
 import type { LocalCodeConfig } from '../../config.js'
-import { localCallModel } from '../../engine/callModel.js'
+import { localCallModel, isRetryableError } from '../../engine/callModel.js'
 import { asSystemPrompt } from '../../types.js'
 
 // callModel injects "## Previous Session Context" on the first turn when it
@@ -791,7 +791,14 @@ describe('localCallModel', () => {
   // ─── Error Handling ───────────────────────────────────────────
 
   describe('error handling', () => {
-    it('yields SystemAPIErrorMessage on retryable provider error', async () => {
+    // F22: this test used to end at the api_retry event, because ending there
+    // was all the code did — it announced a retry and returned an empty stream.
+    // The announcement is still the thing worth asserting, so it stays; what is
+    // added is the other half, which the old behaviour had no way to express.
+    // A provider that refuses forever must eventually surface its error rather
+    // than resolve to nothing, or the caller cannot tell "the server is gone"
+    // from "the model had nothing to say".
+    it('announces a retryable provider error, and surfaces it once retries are spent', async () => {
       const provider: Provider = {
         name: 'mock',
         async *stream() {
@@ -805,18 +812,25 @@ describe('localCallModel', () => {
         async probeCapabilities() { return defaultCapabilities() },
       }
 
-      const gen = localCallModel({
-        ...defaultParams(),
-        deps: {
-          getProvider: () => provider,
-          loadConfig: () => defaultConfig(),
-          resolveCapabilities: () => defaultCapabilities(),
-        },
-      } as any)
+      const items: unknown[] = []
+      let threw: unknown = null
+      try {
+        // retryBaseDelayMs keeps the real backoff (2s, doubling) out of the suite.
+        const gen = localCallModel({
+          ...defaultParams({ options: { model: 'qwen3:32b', retryBaseDelayMs: 1 } }),
+          deps: {
+            getProvider: () => provider,
+            loadConfig: () => defaultConfig(),
+            resolveCapabilities: () => defaultCapabilities(),
+          },
+        } as any)
+        for await (const item of gen) items.push(item)
+      } catch (e) { threw = e }
 
-      const items = await collect(gen)
       const errorMsgs = items.filter((i: any) => i.type === 'system' && i.subtype === 'api_retry')
       expect(errorMsgs.length).toBeGreaterThanOrEqual(1)
+      expect(threw).not.toBeNull()
+      expect(String((threw as Error).message)).toContain('Connection refused')
     })
 
     it('rethrows non-retryable errors', async () => {
@@ -1277,5 +1291,166 @@ describe('localCallModel', () => {
       expect(capturedRequest.thinking).toBeDefined()
       expect(capturedRequest.thinking.budget_tokens).toBe(64)
     })
+  })
+})
+
+/**
+ * F22 — the engine had a retry vocabulary, a retry classifier and a retry
+ * event, and no retry.
+ *
+ * UI Wave 7h run 2: llama-server exited with code 9 at turn 59 of a 90-minute
+ * mission. The engine's next request hit a dead port, `runModelLoop` threw
+ * "Unable to connect. Is the computer able to access the url?", and the whole
+ * session ended. Fifty-nine turns of work were left uncommitted.
+ *
+ * Two independent defects, both measured here rather than argued:
+ *
+ * 1. RETRYABLE_ERROR_CODES was written against Node's error vocabulary
+ *    (ECONNREFUSED, ECONNRESET, ...) while this engine runs on Bun. Measured
+ *    directly: `bun -e 'await fetch("http://127.0.0.1:59999/")'` rejects with
+ *    `code === "ConnectionRefused"` and message "Unable to connect. Is the
+ *    computer able to access the url?". That code is not in the set, and the
+ *    message contains neither 'fetch failed' nor 'Connection refused' — note
+ *    "ConnectionRefused" is one word and the substring test is for two. So the
+ *    single commonest transient failure in this engine's actual runtime was
+ *    classified as permanent and rethrown.
+ *
+ * 2. Even when the classifier said "retryable", nothing retried. The handler
+ *    yielded `subtype: 'api_retry'` and returned. Nothing in the codebase
+ *    consumes `api_retry` — grep finds the type declaration and the two emit
+ *    sites, and no reader. A named event with no listener is not a retry, and
+ *    the empty stream it leaves behind is indistinguishable from a model that
+ *    chose to say nothing.
+ *
+ * The generalisation: an error taxonomy is a claim about a runtime, and it goes
+ * stale silently when the runtime changes. Nothing failed loudly when the codes
+ * stopped matching — the classifier just started answering "no" to everything
+ * and the retry path became unreachable, which is exactly the shape that
+ * survives review.
+ */
+describe('recovering from a dead inference server', () => {
+  /** The error Bun actually throws for a refused connection. Measured, not authored. */
+  function bunConnectionRefused(): Error {
+    const e = new Error('Unable to connect. Is the computer able to access the url?')
+    ;(e as any).code = 'ConnectionRefused'
+    return e
+  }
+
+  /**
+   * A provider that fails the first `failures` stream attempts and then works.
+   * `attempts` counts calls to stream(), which is what "did it retry" means.
+   */
+  function createFlakyProvider(failures: number, err: () => Error) {
+    const state = { attempts: 0 }
+    const provider: Provider = {
+      name: 'llama-cpp',
+      async *stream() {
+        state.attempts++
+        if (state.attempts <= failures) throw err()
+        yield { type: 'message_start', message: { id: 'm1', model: 'qwen3:32b' } } as any
+        yield { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } } as any
+        yield { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'recovered' } } as any
+        yield { type: 'content_block_stop', index: 0 } as any
+        yield { type: 'message_stop' } as any
+      },
+      async complete() { throw new Error('not implemented') },
+      async healthCheck() { return true },
+      async listModels() { return [] },
+      async probeCapabilities() { return defaultCapabilities() },
+    }
+    return { provider, state }
+  }
+
+  function paramsWith(provider: Provider) {
+    return {
+      ...defaultParams({
+        // Retry backoff must not make the suite sleep for real seconds.
+        options: { model: 'qwen3:32b', retryBaseDelayMs: 1 },
+      }),
+      deps: {
+        getProvider: () => provider,
+        loadConfig: () => defaultConfig(),
+        resolveCapabilities: () => defaultCapabilities(),
+      },
+    } as any
+  }
+
+  it("recognises Bun's ConnectionRefused — the runtime this engine actually runs on", () => {
+    // Defect 1, at the predicate. Node's spelling is ECONNREFUSED; Bun's is
+    // ConnectionRefused, and the message shares no substring with either
+    // literal the old predicate tested for.
+    expect(isRetryableError(bunConnectionRefused())).toBe(true)
+  })
+
+  it("still recognises Node's spellings — the fix adds a vocabulary, it does not swap one", () => {
+    for (const code of ['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'ENOTFOUND', 'EAI_AGAIN', 'EPIPE']) {
+      const e = new Error('boom')
+      ;(e as any).code = code
+      expect(isRetryableError(e)).toBe(true)
+    }
+    expect(isRetryableError(new Error('fetch failed'))).toBe(true)
+  })
+
+  it('does not call a real fault transient — a bad grammar must still surface', () => {
+    // The danger of widening a retry predicate is retrying something that will
+    // never succeed, which converts a clear error into a hang.
+    expect(isRetryableError(new Error('invalid grammar: unexpected token at line 3'))).toBe(false)
+    expect(isRetryableError(new Error('context length exceeded'))).toBe(false)
+    expect(isRetryableError('not even an error')).toBe(false)
+  })
+
+  it('actually re-issues the request — the whole point, and the part that was missing', async () => {
+    // Defect 2. The old code yielded api_retry and returned, so stream() was
+    // called exactly once no matter what. One failure then success must produce
+    // two attempts and the real content.
+    const { provider, state } = createFlakyProvider(1, bunConnectionRefused)
+    const items = await collect(localCallModel(paramsWith(provider)))
+    expect(state.attempts).toBe(2)
+    expect(JSON.stringify(items)).toContain('recovered')
+  })
+
+  it('survives a server restart: several refusals in a row, then success', async () => {
+    // llama-server takes tens of seconds to reload a 16 GB model, so one retry
+    // is not enough — the point is to outlast the reload, not to blink twice.
+    const { provider, state } = createFlakyProvider(3, bunConnectionRefused)
+    const items = await collect(localCallModel(paramsWith(provider)))
+    expect(state.attempts).toBe(4)
+    expect(JSON.stringify(items)).toContain('recovered')
+  })
+
+  it('gives up eventually rather than retrying forever', async () => {
+    // A permanently dead server must end the run with the real error, not spin.
+    // Unbounded retry would replace a 56-minute wrong label with an infinite one.
+    const { provider, state } = createFlakyProvider(999, bunConnectionRefused)
+    let threw: unknown = null
+    try {
+      await collect(localCallModel(paramsWith(provider)))
+    } catch (e) { threw = e }
+    expect(threw).not.toBeNull()
+    expect(String((threw as Error).message)).toContain('Unable to connect')
+    // Bounded: the attempt count is finite and small enough to fail fast.
+    expect(state.attempts).toBeGreaterThan(1)
+    expect(state.attempts).toBeLessThanOrEqual(6)
+  })
+
+  it('a non-retryable error is thrown on the first attempt, not retried', async () => {
+    const { provider, state } = createFlakyProvider(1, () => new Error('invalid grammar'))
+    let threw: unknown = null
+    try {
+      await collect(localCallModel(paramsWith(provider)))
+    } catch (e) { threw = e }
+    expect(threw).not.toBeNull()
+    expect(state.attempts).toBe(1)
+  })
+
+  it('announces each retry, so a run that recovered can be told from one that never failed', async () => {
+    // api_retry stops being decorative: it is now emitted BEFORE a real
+    // re-issue, which makes it evidence in the trajectory rather than a label
+    // on a silent give-up.
+    const { provider } = createFlakyProvider(2, bunConnectionRefused)
+    const items = await collect(localCallModel(paramsWith(provider)))
+    const retries = items.filter((i: any) => i?.type === 'system' && i?.subtype === 'api_retry')
+    expect(retries.length).toBe(2)
+    expect(String((retries[0] as any).message)).toContain('Unable to connect')
   })
 })

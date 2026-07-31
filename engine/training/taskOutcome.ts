@@ -424,18 +424,22 @@ export function buildComponents(input: TaskOutcomeInput): RewardComponents {
   // behind scored diffClean 0 because of three unrelated untracked files that
   // predated it by days.
   //
-  // A path the agent DID touch still counts against it, inherited or not:
-  // wasTracked answers true for those, so they pass the filter either way and
-  // this exclusion opens no loophole.
+  // A path the agent DID touch counts against it, inherited or not. The
+  // exclusion is for work that was not this task's — not for work this task did
+  // and failed to commit. Having authored the mess is the reason to charge for
+  // it, and reading it as an excuse is how task-25d8015a scored diffClean 1
+  // while ten scratch files it had created itself sat uncommitted in the tree.
+  //
   // Array.isArray, not `!== null`: an absent field is `undefined`, which would
   // pass a null check and then behave as an empty baseline — silently reasserting
   // "the tree started clean", the assumption this exists to remove.
   let diffClean: RewardComponents['diffClean'] = 'unknown'
   if (input.git && Array.isArray(input.baselineDirty)) {
     const inherited = new Set(input.baselineDirty)
-    diffClean = input.git.dirty
-      .filter(p => !inherited.has(p))
-      .every(p => wasTracked(p, input.trackedModifiedFiles)) ? 1 : 0
+    const charged = input.git.dirty.filter(
+      p => !inherited.has(p) || wasTracked(p, input.trackedModifiedFiles),
+    )
+    diffClean = charged.length === 0 ? 1 : 0
   }
 
   return {

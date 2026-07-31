@@ -422,13 +422,28 @@ describe('buildComponents — diffClean', () => {
     expect(buildComponents(base()).diffClean).toBe('unknown')
   })
 
-  it('is 1 when every dirty path was tracked as agent-modified', () => {
+  it('is 1 when the task left nothing behind at all', () => {
+    const c = buildComponents(base({
+      git: { changed: [], removed: [], dirty: [] },
+      trackedModifiedFiles: ['/repo/src/a.ts'],
+      baselineDirty: [],
+    }))
+    expect(c.diffClean).toBe(1)
+  })
+
+  // This case used to score 1: having touched a file was read as EXCUSING it
+  // being left uncommitted, so authorship laundered the mess. Measured on
+  // task-25d8015a — ten scratch files the agent created itself, all of them in
+  // trackedModifiedFiles, all still dirty at the end, diffClean 1, reward
+  // 0.9882. "Did the agent touch it" is the wrong question; the exclusion is
+  // for work that was NOT this task's.
+  it('is 0 when the task left its own uncommitted work in the tree', () => {
     const c = buildComponents(base({
       git: { changed: [], removed: [], dirty: ['src/a.ts'] },
       trackedModifiedFiles: ['/repo/src/a.ts'],
       baselineDirty: [],
     }))
-    expect(c.diffClean).toBe(1)
+    expect(c.diffClean).toBe(0)
   })
 
   it('is 0 when an untracked stray file is dirty', () => {
@@ -440,16 +455,30 @@ describe('buildComponents — diffClean', () => {
     expect(c.diffClean).toBe(0)
   })
 
-  // The live case this was written for: a run added one file, committed it, and
-  // left nothing behind, but scored 0 because three unrelated untracked files had
-  // been sitting in the tree for days.
+  // The live case the baseline exclusion was written for: a run added one file,
+  // committed it, and left nothing behind, but scored 0 because three unrelated
+  // untracked files had been sitting in the tree for days. Note the committed
+  // file is absent from `dirty` — that is what "committed it" means, and the
+  // old fixture left it there while claiming otherwise.
   it('is 1 when the only stray files were already dirty before the task', () => {
     const c = buildComponents(base({
-      git: { changed: [], removed: [], dirty: ['src/a.ts', 'PLAN.md', 'notes.txt'] },
+      git: { changed: [], removed: [], dirty: ['PLAN.md', 'notes.txt'] },
       trackedModifiedFiles: ['/repo/src/a.ts'],
       baselineDirty: ['PLAN.md', 'notes.txt'],
     }))
     expect(c.diffClean).toBe(1)
+  })
+
+  // The one case where the baseline exclusion must NOT apply. The file was
+  // already dirty, so the path is in the baseline — but the agent then edited it
+  // and walked away, and that edit is this task's to answer for.
+  it('still charges for an inherited file the task edited and left uncommitted', () => {
+    const c = buildComponents(base({
+      git: { changed: [], removed: [], dirty: ['PLAN.md'] },
+      trackedModifiedFiles: ['/repo/PLAN.md'],
+      baselineDirty: ['PLAN.md'],
+    }))
+    expect(c.diffClean).toBe(0)
   })
 
   it('still charges for a stray the task itself introduced', () => {

@@ -93,28 +93,76 @@ export type CallModelDeps = {
 
 // ─── Retryable Error Detection ──────────────────────────────────
 
+/**
+ * Transport failures worth another attempt.
+ *
+ * TWO vocabularies, because an error taxonomy is a claim about a runtime and
+ * this file used to make the claim about the wrong one. The E-prefixed names
+ * are libuv/Node's. The bare CamelCase names are Bun's, which is what actually
+ * executes here — measured, not inferred:
+ *
+ *   bun -e 'await fetch("http://127.0.0.1:59999/")'
+ *   -> code "ConnectionRefused", message "Unable to connect. Is the computer
+ *      able to access the url?"
+ *
+ * F22: with only the Node names present, that error matched nothing. Its code
+ * is not ECONNREFUSED, and its message contains neither 'fetch failed' nor
+ * 'Connection refused' — "ConnectionRefused" is one word, the old substring
+ * test was for two. So the commonest transient failure this engine can suffer,
+ * the inference server not answering, was classified as permanent. UI Wave 7h
+ * run 2 lost 59 turns of committed-nothing work to exactly that.
+ *
+ * Nothing failed loudly when the runtime changed: the predicate simply began
+ * answering "no" to everything and the retry path went unreachable.
+ */
 const RETRYABLE_ERROR_CODES = new Set([
+  // Node / libuv
   'ECONNREFUSED',
   'ECONNRESET',
   'ETIMEDOUT',
   'ENOTFOUND',
   'EAI_AGAIN',
   'EPIPE',
+  // Bun
+  'ConnectionRefused',
+  'ConnectionClosed',
+  'ConnectionTimedOut',
+  'FailedToOpenSocket',
 ])
 
-function isRetryableError(err: unknown): boolean {
-  if (err instanceof Error) {
-    const code = (err as any).code
-    if (typeof code === 'string' && RETRYABLE_ERROR_CODES.has(code)) {
-      return true
-    }
-    // Network-style errors
-    if (err.message.includes('fetch failed') || err.message.includes('Connection refused')) {
-      return true
-    }
-  }
-  return false
+/**
+ * Message-level fallbacks, for the case where the code is absent entirely.
+ * Deliberately narrow: widening this predicate too far converts a permanent
+ * fault — a malformed grammar, an over-length context — into a retry loop that
+ * looks like a hang, which is a worse failure than the one being fixed.
+ */
+const RETRYABLE_ERROR_MESSAGES = [
+  'fetch failed',
+  'Connection refused',
+  'Unable to connect',
+  'socket connection was closed',
+]
+
+export function isRetryableError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false
+  const code = (err as any).code
+  if (typeof code === 'string' && RETRYABLE_ERROR_CODES.has(code)) return true
+  return RETRYABLE_ERROR_MESSAGES.some(m => err.message.includes(m))
 }
+
+/**
+ * How many times to re-issue a request the transport refused, and how long to
+ * wait between attempts.
+ *
+ * Sized against the thing being waited for: llama-server reloads a 16 GB model
+ * in tens of seconds, so a retry budget that expires in two seconds would only
+ * confirm the server is still down. Exponential from 2s gives 2+4+8+16 = 30s of
+ * patience across four retries, which covers a restart without turning a truly
+ * dead server into an unbounded spin — the give-up is what keeps this a fix
+ * rather than a relocation of the 56-minute wait.
+ */
+const MAX_TRANSPORT_RETRIES = 4
+const RETRY_BASE_DELAY_MS = 2000
 
 // ─── Session Shutdown ──────────────────────────────────────────
 
@@ -413,26 +461,45 @@ export async function* localCallModel({
 
   // 9. Stream from provider and translate
   console.log(`[callModel] Streaming from provider with ${convertedMessages.length} messages, ${toolDefs.length} tools`)
-  let rawStream: AsyncIterable<LocalStreamEvent>
-  try {
-    rawStream = provider.stream(request)
-  } catch (err) {
-    if (isRetryableError(err)) {
+
+  // Open the stream, retrying transport failures until something comes back or
+  // the budget runs out.
+  //
+  // The retry lives HERE, around the first pull, and nowhere else. Two reasons.
+  // First, `provider.stream()` is an async generator: calling it constructs the
+  // generator and returns immediately, so a refused connection cannot throw at
+  // the call — it throws on the first `.next()`. The try/catch that used to
+  // wrap the call alone could therefore never fire for the failure it named.
+  // Second, once a single event has been delivered the request is no longer
+  // safely repeatable: re-issuing it would replay text the caller has already
+  // consumed. Before the first event there is nothing to duplicate, and after
+  // it a transport failure is a real interruption that must surface.
+  const retryBaseMs = (options as any).retryBaseDelayMs ?? RETRY_BASE_DELAY_MS
+  let iterator: AsyncIterator<any>
+  let firstEvent: IteratorResult<any>
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const it = translateStream(provider.stream(request), { simulatedToolUse, model })[Symbol.asyncIterator]()
+      const first = await it.next()
+      iterator = it
+      firstEvent = first
+      break
+    } catch (err) {
+      if (!isRetryableError(err) || attempt >= MAX_TRANSPORT_RETRIES) throw err
+      const message = err instanceof Error ? err.message : String(err)
+      const delay = retryBaseMs * 2 ** attempt
+      console.log(`[callModel] transport failed (${message}) — retry ${attempt + 1}/${MAX_TRANSPORT_RETRIES} in ${delay}ms`)
+      // Emitted before the re-issue, not instead of it. As a consolation prize
+      // for giving up, this event told the trajectory a retry had happened when
+      // none had; ahead of a real attempt it is evidence that one did.
       yield {
         type: 'system' as const,
         subtype: 'api_retry' as const,
-        message: err instanceof Error ? err.message : String(err),
+        message,
       }
-      return
+      await new Promise(r => setTimeout(r, delay))
     }
-    throw err
   }
-
-  // 10. Pipe through translateStream
-  const translatedStream = translateStream(rawStream, {
-    simulatedToolUse,
-    model,
-  })
 
   // 11. Process translated events
   let messageId = ''
@@ -443,7 +510,8 @@ export async function* localCallModel({
   let ttftMs: number | undefined
 
   try {
-    for await (const event of translatedStream) {
+    for (let step = firstEvent; !step.done; step = await iterator.next()) {
+      const event = step.value
       // Wrap every event in a stream_event envelope
       const streamEvent: StreamEvent = {
         type: 'stream_event',

@@ -1,6 +1,12 @@
 // engine/__tests__/llama/processManager.test.ts
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
-import { buildServerArgs, ProcessManager, validateChatTemplate } from '../../llama/processManager.js'
+import {
+  buildServerArgs,
+  ProcessManager,
+  recentRestartCount,
+  shouldRestartAfterExit,
+  validateChatTemplate,
+} from '../../llama/processManager.js'
 
 function argValue(args: string[], flag: string): string | undefined {
   const i = args.indexOf(flag)
@@ -340,6 +346,84 @@ describe('validateChatTemplate', () => {
     const fetchImpl = async () => { throw new Error('ECONNREFUSED') }
     const result = await validateChatTemplate('http://127.0.0.1:8080', fetchImpl as any)
     expect(result.ok).toBe(false)
+  })
+})
+
+/**
+ * F23 — the handler labelled "Handle unexpected exit" did not handle it.
+ *
+ * UI Wave 7h run 2, engine log line 8800: `llama-server exited with code 9`.
+ * That line is the entire response. The handler logged it, set `this.child`
+ * to null, and returned; the engine went on issuing HTTP requests to a port
+ * with nothing behind it until the session died. A 90-minute mission ended at
+ * turn 59 with 59 turns of work uncommitted, because the one component whose
+ * job is owning that process treated its death as a logging event.
+ *
+ * A comment is not a mechanism. "Handle unexpected exit" described an intent
+ * that no code discharged, and it read as covered in review for as long as
+ * nobody made the process die.
+ *
+ * The decision is a named function with a test rather than an `if` inside the
+ * exit callback, for the same reason missionCommitted() and waitIsOver() are:
+ * a restart policy that only exists inside a spawn callback can only be
+ * verified by spawning, so in practice it is never verified at all.
+ */
+describe('what to do when llama-server exits', () => {
+  it('restarts a server that died on its own', () => {
+    expect(shouldRestartAfterExit({ deliberate: false, recentRestarts: 0, maxRestarts: 3 })).toBe(true)
+  })
+
+  it('does not restart a server we killed ourselves', () => {
+    // stop(), restartWithAdapter() and restartWithoutAdapter() all kill the
+    // child on purpose. Restarting there would fight the caller — and
+    // restartWithAdapter would race its own startProcess, ending with two
+    // servers on one port.
+    expect(shouldRestartAfterExit({ deliberate: true, recentRestarts: 0, maxRestarts: 3 })).toBe(false)
+  })
+
+  it('gives up once the budget is spent, so a crash loop surfaces as an error', () => {
+    // A server that cannot stay up — bad model path, no VRAM — must stop being
+    // restarted, or the engine hides a permanent fault behind an infinite
+    // respawn and the run hangs instead of failing. Unbounded recovery is the
+    // 56-minute wait wearing a different hat.
+    expect(shouldRestartAfterExit({ deliberate: false, recentRestarts: 2, maxRestarts: 3 })).toBe(true)
+    expect(shouldRestartAfterExit({ deliberate: false, recentRestarts: 3, maxRestarts: 3 })).toBe(false)
+    expect(shouldRestartAfterExit({ deliberate: false, recentRestarts: 9, maxRestarts: 3 })).toBe(false)
+  })
+
+  it('counts restarts in a rolling window, so an all-day session is not condemned by breakfast', () => {
+    // The budget must be "3 crashes close together", not "3 crashes ever". A
+    // 6-hour run that loses the server once an hour is limping, not looping,
+    // and a lifetime counter would refuse to restart it after the third hour.
+    const WINDOW = 600_000
+    const now = 1_000_000
+    // Two inside the window, two well outside it.
+    const times = [now - 5_000_000, now - 700_000, now - 300_000, now - 1_000]
+    expect(recentRestartCount(times, now, WINDOW)).toBe(2)
+  })
+
+  it('counts a restart exactly at the window edge as outside it', () => {
+    // Boundaries get their own case because `>` and `>=` are one keystroke
+    // apart and the difference is invisible until a session sits on the edge.
+    const WINDOW = 600_000
+    const now = 1_000_000
+    expect(recentRestartCount([now - WINDOW], now, WINDOW)).toBe(0)
+    expect(recentRestartCount([now - WINDOW + 1], now, WINDOW)).toBe(1)
+  })
+
+  it('an empty history counts as zero, not as unknown', () => {
+    expect(recentRestartCount([], 1000, 600_000)).toBe(0)
+  })
+
+  it('the exit handler consults the policy — the wiring, not just the rule', () => {
+    // The rule being right is worth nothing if the callback still only logs.
+    // Wave 7h is exactly the case where a correct, tested, unreferenced
+    // function would have changed nothing.
+    const { readFileSync } = require('fs')
+    const src = readFileSync(require.resolve('../../llama/processManager.ts'), 'utf-8')
+    const handler = src.slice(src.indexOf("this.child.on('exit'"))
+    expect(handler).toContain('shouldRestartAfterExit')
+    expect(handler).toContain('startProcess')
   })
 })
 

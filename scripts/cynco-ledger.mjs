@@ -171,8 +171,19 @@ export const QUIET_MS = parseInt(process.env.CYNCO_QUIET_MS ?? '60000', 10)
  *
  * `sawMessageComplete` is what separates quiet from busy: `tool.start` clears
  * it, so a long Bash is activity no matter how stale the last message is.
+ *
+ * `engineError` is the third stopping point and it short-circuits both of the
+ * others. Wave 7h run 2 died mid-message when llama-server exited with code 9,
+ * so `message.complete` never arrived, `sawMessageComplete` stayed false, and
+ * this function answered "still working" for 3351 seconds about a process that
+ * no longer existed. `sawMessageComplete` is a proxy for "reached a stopping
+ * point" that only covers the happy path; dying is a stopping point too, and
+ * the one where waiting is most plainly futile — nothing is left to produce the
+ * message being waited for. The truthiness check is deliberate: an empty error
+ * string is not evidence of a crash.
  */
-export function waitIsOver({ landed, sawMessageComplete, msSinceActivity }, quietMs = QUIET_MS) {
+export function waitIsOver({ landed, sawMessageComplete, msSinceActivity, engineError }, quietMs = QUIET_MS) {
+  if (engineError) return true
   if (!sawMessageComplete) return false
   return msSinceActivity >= quietMs
 }
@@ -186,16 +197,33 @@ export function waitIsOver({ landed, sawMessageComplete, msSinceActivity }, quie
  * usually having satisfied its contract while leaving the tree dirty. Spelling
  * both `timeout` put two unrelated failures in one bucket, and the corpus
  * cannot learn a distinction the ledger refuses to make.
+ *
+ * `engine_error` is the same argument one layer down. Every label above it is a
+ * statement about the MODEL — it finished, it stopped early, it was restricted
+ * to no tools, it used all its time. A crashed inference server is a statement
+ * about the HARNESS, and the two want opposite fixes: `timeout` says raise the
+ * budget, `engine_error` says the budget was never the problem. Wave 7h run 2
+ * was filed as `timeout` because the default branch is where unmodelled causes
+ * go to be misattributed, and a fall-through default is a measurement
+ * assumption in disguise.
+ *
+ * It outranks `zero_tool_fail` on the same grounds: that label means S5
+ * restricted the tool set so nothing could run (F7), and sending the next
+ * investigation to the governance layer for a dead server wastes the finding.
+ * It does NOT outrank `landed` — work that reached a commit before the crash is
+ * still work that landed, and the verification gate can still read it.
  */
-export function missionOutcome({ landed, zeroToolCompletion, wentQuiet }) {
+export function missionOutcome({ landed, zeroToolCompletion, wentQuiet, engineError }) {
   if (landed) return 'landed'
+  if (engineError) return 'engine_error'
   if (zeroToolCompletion) return 'zero_tool_fail'
   if (wentQuiet) return 'stopped_without_commit'
   return 'timeout'
 }
 
 // meta: { missionId, briefFile, marker, markerSeen, cwd, dispatchedAt, durationS,
-//         outcome: 'landed' | 'timeout' | 'stopped_without_commit' | 'zero_tool_fail',
+//         outcome: 'landed' | 'timeout' | 'stopped_without_commit' | 'zero_tool_fail' | 'engine_error',
+//         engineError?: string,                 // session.error text, null when healthy
 //         verified?: boolean, verify?: object,  // Phase 2(b) check-script result
 //         mutationSweep?: { command, killed, total, survived: string[] } }
 export function buildMissionRecord(collector, meta) {
@@ -213,6 +241,12 @@ export function buildMissionRecord(collector, meta) {
     dispatchedAt: meta.dispatchedAt,
     durationS: meta.durationS,
     outcome: meta.outcome,
+    // What the engine said when it died, verbatim. Always present: an absent
+    // field reads as "no crash" and as "written by a driver that could not tell"
+    // at the same time, and those are the two readings that must not be
+    // confusable. `outcome: 'engine_error'` says a crash happened; this says
+    // which one, so a repeated llama-server exit can be told from a one-off.
+    engineError: meta.engineError ?? null,
     // Phase 2(b): set by the driver's post-mission check script (exit 0 =>
     // true); null when no check command was supplied (manual-patch path).
     verified: meta.verified ?? null,

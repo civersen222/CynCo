@@ -129,6 +129,44 @@ export async function validateChatTemplate(
   }
 }
 
+/** How far back a restart still counts against the budget. */
+const RESTART_WINDOW_MS = 600_000
+/** Restarts allowed inside one window before we call it a crash loop. */
+const MAX_RESTARTS_IN_WINDOW = 3
+
+/**
+ * How many of `times` fall inside the window ending at `now`.
+ *
+ * The comparison is strict, so a restart exactly `windowMs` old is outside the
+ * window — one keystroke of difference that only shows up when a long session
+ * sits on the boundary.
+ */
+export function recentRestartCount(times: number[], now: number, windowMs: number): number {
+  return times.filter(t => now - t < windowMs).length
+}
+
+/**
+ * Whether an exited llama-server should be brought back up.
+ *
+ * Deliberate stops are never restarted — stop(), restartWithAdapter() and
+ * restartWithoutAdapter() kill the child on purpose, and respawning there would
+ * race the caller's own startProcess and leave two servers on one port.
+ *
+ * The budget matters as much as the restart: a server that cannot stay up must
+ * eventually surface as an error rather than hide a permanent fault behind an
+ * infinite respawn.
+ */
+export function shouldRestartAfterExit(
+  { deliberate, recentRestarts, maxRestarts }: {
+    deliberate: boolean
+    recentRestarts: number
+    maxRestarts: number
+  },
+): boolean {
+  if (deliberate) return false
+  return recentRestarts < maxRestarts
+}
+
 export type ProcessManagerConfig = {
   binaryPath: string
   modelPath: string
@@ -154,6 +192,8 @@ export class ProcessManager {
   private baseConfig: ProcessManagerConfig
   private child: ChildProcess | null = null
   private currentLoraPath: string | null = null
+  /** Timestamps of crash-triggered restarts, for the rolling-window budget. */
+  private restartTimes: number[] = []
   onEvalTokPerSec?: (tps: number) => void
   /** Last chat-template validation failure reason, null when OK (P1.8). */
   templateWarning: string | null = null
@@ -267,12 +307,40 @@ export class ProcessManager {
       }
     })
 
-    // Handle unexpected exit
+    // Handle unexpected exit. `spawned` pins the identity of *this* process:
+    // stop() clears (or replaces) this.child before killing, so a handle that
+    // no longer points at us means the exit was ours to cause.
+    const spawned = this.child
     this.child.on('exit', (code) => {
-      if (this.child) {
-        console.log(`[llama-cpp] llama-server exited with code ${code}`)
-        this.child = null
+      const deliberate = this.child !== spawned
+      if (!deliberate) this.child = null
+
+      const now = Date.now()
+      const recentRestarts = recentRestartCount(this.restartTimes, now, RESTART_WINDOW_MS)
+      console.log(
+        `[llama-cpp] llama-server exited with code ${code}${deliberate ? ' (stopped on purpose)' : ''}`,
+      )
+
+      if (!shouldRestartAfterExit({ deliberate, recentRestarts, maxRestarts: MAX_RESTARTS_IN_WINDOW })) {
+        if (!deliberate) {
+          console.error(
+            `[llama-cpp] NOT restarting — ${recentRestarts} restarts in the last ` +
+            `${RESTART_WINDOW_MS / 1000}s exhausts the budget of ${MAX_RESTARTS_IN_WINDOW}. ` +
+            `The server cannot stay up; treat this as a fault, not a stall.`,
+          )
+        }
+        return
       }
+
+      this.restartTimes.push(now)
+      console.log(
+        `[llama-cpp] restarting llama-server (${recentRestarts + 1}/${MAX_RESTARTS_IN_WINDOW} in window)`,
+      )
+      this.startProcess().catch(err => {
+        console.error(
+          `[llama-cpp] restart failed: ${err instanceof Error ? err.message : String(err)}`,
+        )
+      })
     })
 
     // Wait for health check
