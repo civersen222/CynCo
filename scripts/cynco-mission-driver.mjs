@@ -6,7 +6,10 @@
 //   cwd:           target repo for the mission (default: C:\Users\civer\civkings)
 //   timeout-s:     max wait (default 600)
 //   check-cmd:     shell command run in cwd AFTER the mission ends (Phase 2b);
-//                  exit 0 => verified:true, else verified:false. Omit => null.
+//                  exit 0 => verified:true, nonzero => verified:false,
+//                  timeout/spawn failure => verified:null (UNMEASURED).
+//                  Omit => null. Cap the run with CYNCO_CHECK_TIMEOUT_MS
+//                  (default 300000); a mutation-testing gate needs more.
 //                  Also sent as a one-assertion DoD contract with the mission
 //                  dispatch (P4.2) so taskError/errorTrend measure the run.
 //
@@ -213,16 +216,28 @@ try {
 // Runs for EVERY outcome — a timeout mission that somehow landed working code
 // earns verified:true, and a "landed" commit that breaks the check earns
 // verified:false. Both are exactly the labels the falsification program needs.
-const CHECK_TIMEOUT_MS = 300000
+// A check that itself times out earns verified:null, because it measured
+// nothing about the delivery.
+// A gate that mutates source and re-runs a suite per mutation takes minutes,
+// not seconds; the fixed 5-minute cap silently converted such gates into
+// timeouts. Configurable, because the right cap is a property of the check.
+const CHECK_TIMEOUT_MS = parseInt(process.env.CYNCO_CHECK_TIMEOUT_MS ?? '300000', 10)
 let verified
 let verify = null
 if (checkCmd) {
-  console.log(`[verify] running check in ${CWD}: ${checkCmd}`)
+  console.log(`[verify] running check in ${CWD}: ${checkCmd} (cap ${CHECK_TIMEOUT_MS}ms)`)
   const r = runCheck(checkCmd, CWD, CHECK_TIMEOUT_MS)
   verified = r.verified
-  verify = { command: checkCmd, exitCode: r.exitCode, timedOut: r.timedOut, durationMs: r.durationMs, outputTail: r.outputTail }
-  console.log(`[verify] ${verified ? 'PASS' : 'FAIL'} (exit=${r.exitCode ?? 'none'}${r.timedOut ? ', TIMED OUT' : ''}, ${r.durationMs}ms)`)
-  if (!verified) console.log(`[verify] output tail:\n${r.outputTail}`)
+  verify = { command: checkCmd, exitCode: r.exitCode, timedOut: r.timedOut, spawnFailed: r.spawnFailed, durationMs: r.durationMs, outputTail: r.outputTail }
+  // Three outcomes, not two. A check that never answered has not said the
+  // delivery is broken — it has said nothing, and the label must say nothing.
+  const verdict = r.verified === null ? 'UNMEASURED' : r.verified ? 'PASS' : 'FAIL'
+  console.log(`[verify] ${verdict} (exit=${r.exitCode ?? 'none'}${r.timedOut ? ', TIMED OUT' : ''}${r.spawnFailed ? ', SPAWN FAILED' : ''}, ${r.durationMs}ms)`)
+  if (r.verified !== true) console.log(`[verify] output tail:\n${r.outputTail}`)
+  if (r.verified === null) {
+    console.log(`[verify] verified stays null — the check did not finish. ` +
+      `Re-run it by hand, or raise CYNCO_CHECK_TIMEOUT_MS, then patch the record.`)
+  }
 }
 
 // Append the labeled mission record to the outcome ledger

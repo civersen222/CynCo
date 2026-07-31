@@ -1,3 +1,4 @@
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 // @ts-ignore — untyped harness module
 import { runCheck } from '../../../scripts/cynco-verify.mjs'
@@ -22,11 +23,32 @@ describe('cynco mission check runner (Phase 2b)', () => {
     expect(r.outputTail).toContain('3 tests failed')
   })
 
-  it('timeout → verified false, exitCode null, timedOut flag', () => {
+  // A timeout is a fact about the harness, not about the delivery. Recording
+  // it as `false` puts a measurement in the ledger that was never taken.
+  it('timeout → verified null (UNMEASURED), exitCode null, timedOut flag', () => {
     const r = runCheck(`${RUNTIME} -e "setTimeout(() => {}, 60000)"`, process.cwd(), 1500)
-    expect(r.verified).toBe(false)
+    expect(r.verified).toBeNull()
+    expect(r.verified).not.toBe(false)
     expect(r.exitCode).toBeNull()
     expect(r.timedOut).toBe(true)
+  })
+
+  it('spawn failure → verified null (UNMEASURED), spawnFailed flag', () => {
+    // A cwd that does not exist fails the spawn itself, so the check never
+    // ran and cannot have an opinion about the delivery.
+    const r = runCheck(`${RUNTIME} -e "process.exit(0)"`,
+      join(process.cwd(), 'no-such-directory-a7f3c1'), 30000)
+    expect(r.verified).toBeNull()
+    expect(r.spawnFailed).toBe(true)
+    expect(r.timedOut).toBe(false)
+  })
+
+  it('a check that answered "no" is still false, not null', () => {
+    const r = runCheck(`${RUNTIME} -e "process.exit(1)"`, process.cwd(), 30000)
+    expect(r.verified).toBe(false)
+    expect(r.verified).not.toBeNull()
+    expect(r.timedOut).toBe(false)
+    expect(r.spawnFailed).toBe(false)
   })
 
   it('output tail is bounded to 2000 chars', () => {
