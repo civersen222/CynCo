@@ -4,9 +4,7 @@
 
 import * as fs from 'fs'
 import * as path from 'path'
-import { workspaceSkillsDir } from './loader.js'
-
-const NAME_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/
+import { resolveWorkspaceSkillDir } from './loader.js'
 
 export type ScaffoldResult = { name: string; dir: string; bodyPath: string }
 
@@ -27,9 +25,7 @@ calls run_skill("${name}"). List any tools the skill needs in the frontmatter
 }
 
 export function scaffoldSkill(name: string, opts?: { workspaceDir?: string }): ScaffoldResult {
-  if (!NAME_RE.test(name)) throw new Error(`skill name must be lower-kebab-case (got ${JSON.stringify(name)})`)
-  const workspaceDir = opts?.workspaceDir ?? workspaceSkillsDir()
-  const dir = path.join(workspaceDir, name)
+  const dir = resolveWorkspaceSkillDir(name, opts?.workspaceDir)
   if (fs.existsSync(dir)) throw new Error(`skill "${name}" already exists at ${dir}`)
   fs.mkdirSync(dir, { recursive: true })
   const bodyPath = path.join(dir, 'SKILL.md')

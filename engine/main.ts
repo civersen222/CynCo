@@ -672,7 +672,7 @@ async function handleCommand(command: TUICommand): Promise<void> {
         }
 
         case '/skill': {
-          const { loadSkills, workspaceSkillsDir } = await import('./skills/loader.js')
+          const { loadSkills, resolveWorkspaceSkillDir } = await import('./skills/loader.js')
           const { setLoadedSkills, getSkillIndex } = await import('./skills/store.js')
           const { ALL_TOOLS } = await import('./tools/registry.js')
           const knownTools = new Set(ALL_TOOLS.map(t => t.name))
@@ -726,8 +726,12 @@ async function handleCommand(command: TUICommand): Promise<void> {
               const name = parts[1]
               if (!name) throw new Error('usage: /skill remove <name>')
               const fsMod = await import('fs')
-              const pathMod = await import('path')
-              const dir = pathMod.join(workspaceSkillsDir(), name)
+              // `path.join(workspaceSkillsDir(), name)` used to be enough here,
+              // and it was not: `name` is a raw argv token, `path.join` resolves
+              // `..`, and the `existsSync` below only confirms the target is
+              // there to be destroyed. `/skill remove ../../Documents` was an
+              // arbitrary recursive delete, reachable from the dashboard socket.
+              const dir = resolveWorkspaceSkillDir(name)
               if (!fsMod.existsSync(dir)) throw new Error(`skill "${name}" not found in workspace`)
               fsMod.rmSync(dir, { recursive: true, force: true })
               await refresh()
