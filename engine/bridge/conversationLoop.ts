@@ -142,6 +142,14 @@ type Message = {
   content: { type: string; text?: string; [key: string]: unknown }[]
 }
 
+/**
+ * How many tool outcomes S5 can see. C4's doom-loop window is the last 3 and C2
+ * counts to 3, so anything below that makes those rules unreachable again; 20 is
+ * roughly two busy turns, which is far enough back to be evidence and near
+ * enough that a tool the model has since fixed stops being held against it.
+ */
+const RECENT_TOOL_WINDOW = 20
+
 const READ_ONLY_TOOLS = ['Read', 'Grep', 'Glob', 'Ls', 'Git', 'ImageView']
 const SAFE_MODE_TOOLS = [...READ_ONLY_TOOLS, 'Bash']
 
@@ -306,6 +314,16 @@ export class ConversationLoop {
   private runningAgents = new Map<string, SubAgent>()
   private agentResults = new Map<string, SubAgentResult>()
   private toolHistory: string[] = []  // Track tool names for VSM advisors
+  /**
+   * Rolling window of (tool, success) that S5 reads as `recentToolResults`.
+   *
+   * It used to be hardcoded `[]` at both S5 construction sites, which left C2
+   * ("3+ failures — exclude the tool") and C4 ("doom loop") with no reachable
+   * true branch, and pinned C6 and W4 to their degraded arms. Session-scoped,
+   * not per-turn: a doom loop is three identical failures in a row, and the
+   * third one routinely lands in the turn after the first two.
+   */
+  private recentToolOutcomes: { tool: string; success: boolean }[] = []
   private toolFailureCounts: Map<string, number> = new Map()
   private consecutiveNudges = 0
   private lastTokPerSec = 0
@@ -1212,7 +1230,7 @@ export class ConversationLoop {
           // activeToolNames: rules that restrict tools (C7) must pick from
           // what THIS run actually has — not a hardcoded coding-tool list.
           governance: { ...(govReport as any), activeToolNames: toolDefs.map(t => t.name) },
-          recentToolResults: [],
+          recentToolResults: this.getRecentToolResults(),
           availableModels: [this.config.model ?? 'unknown'],
           turnCount: this.messages.filter(m => m.role === 'user').length,
           varietyBalance: (govReport as any).varietyBalance ?? 'balanced',
@@ -2147,7 +2165,7 @@ export class ConversationLoop {
               currentPhase: this.workflowEngine.currentPhase?.name ?? null,
               contextUsagePercent: 0.5,
               governance: { ...(govReport as any), activeToolNames: iterationTools.map((t: any) => t.name) },
-              recentToolResults: [],
+              recentToolResults: this.getRecentToolResults(),
               availableModels: [this.config.model ?? 'unknown'],
               turnCount: this.messages.filter(m => m.role === 'user').length,
               varietyBalance: (govReport as any).varietyBalance ?? 'balanced',
@@ -3177,6 +3195,41 @@ export class ConversationLoop {
     this.governance.onContextCritical(utilization)
   }
 
+  /**
+   * Record one tool outcome in both the per-turn array governance reads and the
+   * rolling session window S5's rules read.
+   *
+   * One write path on purpose. The alternative — a second `push` beside each of
+   * the eight existing ones — is exactly the arrangement that let
+   * `recentToolResults` sit empty in the first place: the ninth site would have
+   * been added to one list and not the other, and the rules that read it would
+   * have gone quietly back to being unreachable.
+   *
+   * A denial counts as not-success. Nothing ran, so it is not a tool *error* —
+   * but every rule reading this field is asking "is this tool getting the model
+   * anywhere", and a call the engine refused three times running is the
+   * clearest available no. The distinction that matters (a refusal is evidence
+   * about the model, not the environment) is carried on the governance side by
+   * `governanceDenial`, which is where the algedonic channel reads it.
+   */
+  private recordToolOutcome(
+    toolName: string,
+    outcome: 'success' | 'failure' | 'denied',
+    turnResults: ('success' | 'failure' | 'denied')[],
+  ): void {
+    turnResults.push(outcome)
+    this.recentToolOutcomes.push({ tool: toolName, success: outcome === 'success' })
+    if (this.recentToolOutcomes.length > RECENT_TOOL_WINDOW) this.recentToolOutcomes.shift()
+  }
+
+  /**
+   * The window S5 reads. A copy: a rule that mutated this would be rewriting
+   * the history the next rule is about to judge.
+   */
+  getRecentToolResults(): { tool: string; success: boolean }[] {
+    return this.recentToolOutcomes.map(r => ({ ...r }))
+  }
+
   private async executeOneTool(
     block: any,
     toolResults: Message['content'],
@@ -3222,7 +3275,7 @@ export class ConversationLoop {
         is_error: true,
       })
       toolsUsedThisTurn.push(toolName)
-      toolResultsThisTurn.push('failure')
+      this.recordToolOutcome(toolName, 'failure', toolResultsThisTurn)
       toolsUsedInSession.push(toolName)
       return
     }
@@ -3277,7 +3330,7 @@ export class ConversationLoop {
       })
       toolsUsedThisTurn.push(toolName)
       recordDenial()
-      toolResultsThisTurn.push('denied')
+      this.recordToolOutcome(toolName, 'denied', toolResultsThisTurn)
       toolsUsedInSession.push(toolName)
       return
     }
@@ -3315,7 +3368,7 @@ export class ConversationLoop {
       })
       toolsUsedThisTurn.push(toolName)
       recordDenial()
-      toolResultsThisTurn.push('denied')
+      this.recordToolOutcome(toolName, 'denied', toolResultsThisTurn)
       toolsUsedInSession.push(toolName)
       return
     }
@@ -3336,7 +3389,7 @@ export class ConversationLoop {
       })
       toolsUsedThisTurn.push(toolName)
       recordDenial()
-      toolResultsThisTurn.push('denied')
+      this.recordToolOutcome(toolName, 'denied', toolResultsThisTurn)
       toolsUsedInSession.push(toolName)
       return
     }
@@ -3397,7 +3450,7 @@ export class ConversationLoop {
       })
       toolsUsedThisTurn.push(toolName)
       recordDenial()
-      toolResultsThisTurn.push('denied')
+      this.recordToolOutcome(toolName, 'denied', toolResultsThisTurn)
       toolsUsedInSession.push(toolName)
       return
     }
@@ -3423,7 +3476,7 @@ export class ConversationLoop {
       })
       toolsUsedThisTurn.push(toolName)
       recordDenial()
-      toolResultsThisTurn.push('denied')
+      this.recordToolOutcome(toolName, 'denied', toolResultsThisTurn)
       toolsUsedInSession.push(toolName)
       return
     }
@@ -3526,7 +3579,7 @@ export class ConversationLoop {
             })
             toolsUsedThisTurn.push(toolName)
             recordDenial()
-            toolResultsThisTurn.push('denied')
+            this.recordToolOutcome(toolName, 'denied', toolResultsThisTurn)
             toolsUsedInSession.push(toolName)
             return
           }
@@ -3860,7 +3913,7 @@ export class ConversationLoop {
 
     // Track for decision logging
     toolsUsedThisTurn.push(toolName)
-    toolResultsThisTurn.push(result.isError ? 'failure' : 'success')
+    this.recordToolOutcome(toolName, result.isError ? 'failure' : 'success', toolResultsThisTurn)
     toolsUsedInSession.push(toolName)
     this.toolHistory.push(toolName)
     if (this.toolHistory.length > 50) this.toolHistory = this.toolHistory.slice(-50)

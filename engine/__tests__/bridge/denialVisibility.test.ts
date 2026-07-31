@@ -31,13 +31,13 @@ afterAll(() => {
 describe('denial visibility (static)', () => {
   // The behavioural test below drives exactly one of the six paths. This guard
   // covers the other five and, more importantly, covers the seventh: a refusal
-  // path added later. Every `push('denied')` marks a call that did not run, so
+  // path added later. Every `'denied'` outcome marks a call that did not run, so
   // every one of them owes governance a record.
   it('every denial site records the refusal before marking the turn', () => {
-    const sites = loop.match(/^[ \t]+toolResultsThisTurn\.push\('denied'\)\r?$/gm) ?? []
+    const sites = loop.match(/^[ \t]+this\.recordToolOutcome\(toolName, 'denied', toolResultsThisTurn\)\r?$/gm) ?? []
     expect(sites.length).toBeGreaterThanOrEqual(6)
 
-    const paired = loop.match(/recordDenial\(\)\r?\n[ \t]+toolResultsThisTurn\.push\('denied'\)/g) ?? []
+    const paired = loop.match(/recordDenial\(\)\r?\n[ \t]+this\.recordToolOutcome\(toolName, 'denied', toolResultsThisTurn\)/g) ?? []
     expect(paired.length).toBe(sites.length)
   })
 
