@@ -58,6 +58,16 @@ export type TaskReward = {
   reward: number
   labelerVersion: number
   degenerate?: boolean
+  /**
+   * A person's judgement that this row's label does not describe its trajectory,
+   * and the reason they gave. Distinct from `degenerate`, which is DERIVED from
+   * the components on every labeling and so cannot hold a judgement: a hand-set
+   * `degenerate` is silently undone by the next relabel pass.
+   *
+   * The measurement is left exactly as taken. What quarantine changes is whether
+   * the row is offered as training data — see `isUsable`.
+   */
+  quarantined?: { reason: string; at: string }
 }
 
 // ─── computeReward ────────────────────────────────────────────────
@@ -228,5 +238,56 @@ export function relabel(taskId: string, baseDir?: string): TaskReward | null {
     return null
   }
 
-  return finalizeTask(taskId, outcome.turns, buildComponents(outcome), dir, outcome)
+  // Read before the rewrite. A quarantine is a judgement about the trajectory,
+  // not about the labeler, so a labeler fix is no reason to revisit it — and
+  // dropping it here would put an excluded row back in the corpus on the next
+  // remeasurement with nobody watching, which is the whole reason it is a field
+  // and not a hand-edit.
+  const held = readReward(taskId, dir)?.quarantined
+  const relabeled = finalizeTask(taskId, outcome.turns, buildComponents(outcome), dir, outcome)
+  return held ? applyQuarantine(taskId, held, dir) : relabeled
+}
+
+/** The stored record for a task, or null when there is none to read. */
+function readReward(taskId: string, dir: string): TaskReward | null {
+  const p = join(dir, `${taskId}.reward.json`)
+  if (!existsSync(p)) return null
+  try {
+    return JSON.parse(readFileSync(p, 'utf-8')) as TaskReward
+  } catch {
+    return null
+  }
+}
+
+function applyQuarantine(taskId: string, q: { reason: string; at: string }, dir: string): TaskReward {
+  const record = readReward(taskId, dir)
+  if (!record) throw new Error(`no reward record for ${taskId}`)
+  const next: TaskReward = { ...record, quarantined: q }
+  writeFileSync(join(dir, `${taskId}.reward.json`), JSON.stringify(next, null, 2) + '\n', 'utf-8')
+  return next
+}
+
+/**
+ * Take a row out of the corpus, on the record, without touching its numbers.
+ *
+ * Rewriting the reward would be inventing a measurement nobody took. The label
+ * stays as measured; the row simply stops being offered as something to learn
+ * from. The reason is required because an exclusion nobody can account for is
+ * indistinguishable from data that went missing.
+ *
+ * First reason and first time win, so re-running a quarantine pass does not
+ * rewrite the history of when a row left the corpus.
+ */
+export function quarantine(taskId: string, reason: string, baseDir?: string): TaskReward {
+  const dir = baseDir ?? join(homedir(), '.cynco', 'rewards')
+  const record = readReward(taskId, dir)
+  if (!record) throw new Error(`no reward record for ${taskId} — nothing to quarantine`)
+  if (reason.trim() === '') throw new Error('a quarantine needs a reason')
+  if (record.quarantined) return record
+  return applyQuarantine(taskId, { reason: reason.trim(), at: new Date().toISOString() }, dir)
+}
+
+/** Excluded from the corpus by a person, whatever its measurement says. */
+export function isQuarantined(reward: TaskReward): boolean {
+  return reward.quarantined !== undefined
 }
