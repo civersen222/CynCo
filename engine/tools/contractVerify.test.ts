@@ -12,6 +12,8 @@ import {
   fileAbsentAssertion,
   COMMITTED_ASSERTION,
   testCensusAssertion,
+  commandTimeoutMs,
+  MAX_COMMAND_TIMEOUT_MS,
   type RepoProbe,
 } from './contractVerify.js'
 import { getShellInfo } from './shellInfo.js'
@@ -569,4 +571,171 @@ describe('verifyAssertion — a killed check is unmeasured, not contradicted (F3
       { kind: 'command', command: cmd, withheld: true }, probe({ run: async () => 'timeout' }), 'aaaaaaaa')
     expect((v as { detail: string }).detail).not.toContain('verify_ui8b')
   })
+})
+
+/**
+ * One gate command, two timeout variables, and the operator sets the wrong one.
+ *
+ * The mission driver runs the held-out gate once at the end under
+ * CYNCO_CHECK_TIMEOUT_MS, and passes that same command into the contract, where
+ * the cockpit re-runs it on every taskCompleted under
+ * CYNCO_CONTRACT_CHECK_TIMEOUT_MS. Measured on Gilded Wave 9d: a 30-minute
+ * mutation gate dispatched with CYNCO_CHECK_TIMEOUT_MS=3600000 was killed at
+ * 300s on every single claim, so taskCompleted stayed "unknown" for 115 turns
+ * and the run could not pass whatever it wrote. Nothing lied -- the engine
+ * reported the kill honestly -- but the operator had raised the cap on the gate
+ * and the gate was still capped.
+ *
+ * So the driver's variable is the fallback. The contract-specific one still
+ * wins when set, because the two runs genuinely differ; what may not happen is
+ * a slow gate silently keeping the 300s default after its cap was raised.
+ */
+describe('commandTimeoutMs — the cap the operator actually raised', () => {
+  const saved = {
+    contract: process.env.CYNCO_CONTRACT_CHECK_TIMEOUT_MS,
+    driver: process.env.CYNCO_CHECK_TIMEOUT_MS,
+  }
+  beforeEach(() => {
+    delete process.env.CYNCO_CONTRACT_CHECK_TIMEOUT_MS
+    delete process.env.CYNCO_CHECK_TIMEOUT_MS
+  })
+  afterEach(() => {
+    for (const [k, v] of [
+      ['CYNCO_CONTRACT_CHECK_TIMEOUT_MS', saved.contract],
+      ['CYNCO_CHECK_TIMEOUT_MS', saved.driver],
+    ] as const) {
+      if (v === undefined) delete process.env[k]
+      else process.env[k] = v
+    }
+  })
+
+  test('neither set: the 300s default stands', () => {
+    expect(commandTimeoutMs()).toBe(300_000)
+  })
+
+  test('the contract-specific variable wins when set', () => {
+    process.env.CYNCO_CONTRACT_CHECK_TIMEOUT_MS = '900000'
+    process.env.CYNCO_CHECK_TIMEOUT_MS = '3600000'
+    expect(commandTimeoutMs()).toBe(900_000)
+  })
+
+  test("the driver's variable is honoured when the contract-specific one is unset", () => {
+    process.env.CYNCO_CHECK_TIMEOUT_MS = '3600000'
+    expect(commandTimeoutMs()).toBe(3_600_000)
+  })
+
+  test('a junk value in either is ignored rather than obeyed — 0 would wait forever', () => {
+    process.env.CYNCO_CONTRACT_CHECK_TIMEOUT_MS = '0'
+    process.env.CYNCO_CHECK_TIMEOUT_MS = 'soon'
+    expect(commandTimeoutMs()).toBe(300_000)
+  })
+
+  test('junk in the specific one falls through to a good value in the fallback', () => {
+    process.env.CYNCO_CONTRACT_CHECK_TIMEOUT_MS = 'nope'
+    process.env.CYNCO_CHECK_TIMEOUT_MS = '1800000'
+    expect(commandTimeoutMs()).toBe(1_800_000)
+  })
+})
+
+/**
+ * The remaining half of the Wave 9d defect: the fallback above lets an operator
+ * raise the cap only through the engine's OWN environment. But the mission
+ * driver is a WebSocket client to a separate engine daemon, so nothing it sets
+ * on its command line is visible to `commandTimeoutMs` at all — exactly the
+ * process boundary finding (ac)/(ag) hit with `readOnlyPaths`, and the answer
+ * is the same one: it travels with the message.
+ *
+ * So the cap becomes a property of the assertion that needs it. A 30-minute
+ * mutation gate declares 30 minutes; every other check in the same contract
+ * keeps the 300s default, which is the point — one slow gate must not lift the
+ * ceiling on a hung `pytest` somewhere else.
+ */
+describe('commandTimeoutMs — a cap that travels with the check', () => {
+  const saved = {
+    contract: process.env.CYNCO_CONTRACT_CHECK_TIMEOUT_MS,
+    driver: process.env.CYNCO_CHECK_TIMEOUT_MS,
+  }
+  beforeEach(() => {
+    delete process.env.CYNCO_CONTRACT_CHECK_TIMEOUT_MS
+    delete process.env.CYNCO_CHECK_TIMEOUT_MS
+  })
+  afterEach(() => {
+    for (const [k, v] of [
+      ['CYNCO_CONTRACT_CHECK_TIMEOUT_MS', saved.contract],
+      ['CYNCO_CHECK_TIMEOUT_MS', saved.driver],
+    ] as const) {
+      if (v === undefined) delete process.env[k]
+      else process.env[k] = v
+    }
+  })
+
+  test("the assertion's own cap outranks both variables", () => {
+    process.env.CYNCO_CONTRACT_CHECK_TIMEOUT_MS = '300000'
+    process.env.CYNCO_CHECK_TIMEOUT_MS = '300000'
+    expect(commandTimeoutMs(1_800_000)).toBe(1_800_000)
+  })
+
+  test('an absent cap changes nothing — the environment still decides', () => {
+    process.env.CYNCO_CHECK_TIMEOUT_MS = '900000'
+    expect(commandTimeoutMs(undefined)).toBe(900_000)
+  })
+
+  test('a junk cap falls through rather than wedging the engine forever', () => {
+    expect(commandTimeoutMs(0)).toBe(300_000)
+    expect(commandTimeoutMs(-1)).toBe(300_000)
+    expect(commandTimeoutMs(Number.NaN)).toBe(300_000)
+  })
+
+  /**
+   * A cap arrives over a socket from a harness the engine does not control, so
+   * "the sender asked for it" is not a reason to obey any number at all. Two
+   * hours is past every real gate — Wave 9d's 35-mutation sweep is thirty
+   * minutes — and a check still running after two hours has stopped being a
+   * check and become a hang.
+   */
+  test('a cap past the ceiling is clamped, not obeyed', () => {
+    expect(commandTimeoutMs(86_400_000)).toBe(MAX_COMMAND_TIMEOUT_MS)
+    expect(commandTimeoutMs(Number.POSITIVE_INFINITY)).toBe(300_000)
+  })
+
+  test('the ceiling applies to the environment too — one rule, not two', () => {
+    process.env.CYNCO_CHECK_TIMEOUT_MS = '86400000'
+    expect(commandTimeoutMs()).toBe(MAX_COMMAND_TIMEOUT_MS)
+  })
+})
+
+describe('verifyAssertion — the check is run under its own cap', () => {
+  test('the cap reaches the runner', async () => {
+    let seen: number | undefined = -1
+    await verifyAssertion(
+      { kind: 'command', command: 'gate', timeoutMs: 1_800_000 },
+      probe({ run: async (_cmd, timeoutMs) => { seen = timeoutMs; return 'passed' } }),
+      null,
+    )
+    expect(seen).toBe(1_800_000)
+  })
+
+  /**
+   * The kill message names a number, and "never report a number you did not
+   * measure" applies hardest here: a gate given 30 minutes and killed at 30
+   * minutes must not be reported as killed at 300s, or the operator reads a
+   * cap they already raised and raises it again.
+   */
+  test('the kill is reported at the cap that actually killed it', async () => {
+    const v = await verifyAssertion(
+      { kind: 'command', command: 'gate', timeoutMs: 1_800_000 },
+      probe({ run: async () => 'timeout' }),
+      null,
+    )
+    expect(v.status).toBe('unmeasured')
+    expect(v.status === 'unmeasured' && v.detail).toContain('1800s')
+  })
+})
+
+describe('gitProbe.run — an explicit cap really governs a real process', () => {
+  test('a command that outlives its cap is killed and answers timeout', async () => {
+    const p = gitProbe(process.cwd())
+    const sleep = getShellInfo().isPowerShell ? 'Start-Sleep -Seconds 30' : 'sleep 30'
+    expect(await p.run(sleep, 750)).toBe('timeout')
+  }, 20_000)
 })

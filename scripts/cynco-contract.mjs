@@ -62,6 +62,18 @@ function refuse(file, why) {
 const isPlainObject = (v) => typeof v === 'object' && v !== null && !Array.isArray(v)
 const nonBlank = (v) => typeof v === 'string' && v.trim() !== ''
 
+/** A cap is a positive, finite number of milliseconds, or it is not a cap. */
+const usableCap = (v) => typeof v === 'number' && Number.isFinite(v) && v > 0
+
+/**
+ * The cap as a spreadable field, so an absent one stays ABSENT.
+ *
+ * `{ timeoutMs: undefined }` would serialize the key away over the wire but
+ * survive in process as a key that is present and empty, which is the kind of
+ * difference that later reads as "somebody set this".
+ */
+const capOf = (v) => (usableCap(v) ? { timeoutMs: v } : {})
+
 /**
  * One sidecar entry → the assertion the engine will carry.
  *
@@ -115,7 +127,14 @@ function toAssertion(entry, file) {
       refuse(file, `withheld assertion "${entry.text}" has no command — the text is prose and ` +
         'the command is the whole of the check')
     }
-    return { text: entry.text, command: entry.command.trim() }
+    // Refused here, where a person is watching, rather than at the far end. A
+    // cap that fails the engine's number check silently reverts to the 300s
+    // default, so a bad one is worse than none: it looks set and is not.
+    if ('timeoutMs' in entry && !usableCap(entry.timeoutMs)) {
+      refuse(file, `withheld assertion "${entry.text}" has timeoutMs ` +
+        `${JSON.stringify(entry.timeoutMs)} — a cap must be a positive number of MILLISECONDS`)
+    }
+    return { text: entry.text, command: entry.command.trim(), ...capOf(entry.timeoutMs) }
   }
 
   refuse(file, `assertion ${JSON.stringify(entry)} names no known kind ` +
@@ -126,11 +145,18 @@ function toAssertion(entry, file) {
  * The assertions this mission is dispatched with, or null for no contract.
  *
  * `io` is injected so the whole of this is testable without a filesystem.
+ *
+ * `gateTimeoutMs` is the driver's own cap on the held-out gate, sent so the
+ * ENGINE runs it under the same one. The driver is a WebSocket client to a
+ * daemon it did not start, so the variable it was given governs only its own
+ * final run; the cockpit re-runs the identical command on every taskCompleted
+ * and, before this, always at 300s. Gilded Wave 9d spent 115 turns failing a
+ * 30-minute gate that was never allowed to finish.
  */
-export function loadMissionAssertions(taskFile, checkCmd, io) {
+export function loadMissionAssertions(taskFile, checkCmd, io, gateTimeoutMs) {
   const assertions = []
   if (nonBlank(checkCmd)) {
-    assertions.push({ text: HELD_OUT_GATE_TEXT, command: checkCmd })
+    assertions.push({ text: HELD_OUT_GATE_TEXT, command: checkCmd, ...capOf(gateTimeoutMs) })
   }
 
   const file = sidecarPath(taskFile)
@@ -150,6 +176,43 @@ export function loadMissionAssertions(taskFile, checkCmd, io) {
   }
 
   return assertions.length > 0 ? assertions : null
+}
+
+/** The capability an engine must advertise before it can be trusted to seal. */
+export const CAP_SEALED_GATES = 'sealed-gates'
+
+/**
+ * F41: may this mission be dispatched to THIS engine? Null to dispatch, a
+ * sentence to print and refuse on.
+ *
+ * Wave 9b was dispatched with a two-path seal to a daemon started seven hours
+ * before the seal was written. Nothing on either side of the socket was in a
+ * position to notice: the driver knew the contract sealed two files, the engine
+ * knew nothing about sealing at all, and an engine that knows nothing about
+ * sealing has no way to say so. The mission then read and ran its own grading
+ * gate four times and the gate's PASS had to be thrown away.
+ *
+ * So the check is on ABSENCE, and it has to be, because that is the only shape
+ * the failure comes in: a build too old to enforce a guarantee is also too old
+ * to fail a check for it. `capabilities` missing, null (no session.ready
+ * arrived), or present without the word all mean the same thing — UNKNOWN — and
+ * unknown is not permission. That is the never-assume-a-measurement rule
+ * applied to the engine's own competence.
+ *
+ * A mission with nothing sealed is unaffected. Most missions have nothing
+ * sealed, and a guard that stopped them would be traded away within a week.
+ */
+export function sealedDispatchRefusal({ sealedCount, capabilities }) {
+  if (!sealedCount) return null
+  if (Array.isArray(capabilities) && capabilities.includes(CAP_SEALED_GATES)) return null
+
+  const said = capabilities == null
+    ? 'the engine advertised no capabilities at all (a build older than the seal cannot say the word)'
+    : `the engine advertised [${capabilities.join(', ')}]`
+  return `this mission seals ${sealedCount} held-out instrument(s), but ${said}. `
+    + 'A seal the engine cannot enforce is worse than none: the mission would find '
+    + 'and run its own grading gate and every component would report success. '
+    + 'Restart the engine from the current tree and re-dispatch.'
 }
 
 /** `commandAssertion` is re-exported so the visible form has one definition. */

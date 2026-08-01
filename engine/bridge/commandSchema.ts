@@ -49,7 +49,13 @@ const isAssertion = (v: unknown): boolean => {
   if (isString(v)) return true
   if (!isPlainObject(v)) return false
   const a = v as Frame
-  return isString(a.text) && isString(a.command)
+  if (!isString(a.text) || !isString(a.command)) return false
+  // `timeoutMs` is how long THIS check may take — the only channel a cap has,
+  // since the mission driver is a WebSocket client and cannot set the engine's
+  // environment. It must be a real number of milliseconds: a sender who writes
+  // "30 minutes" gets NaN downstream, which silently reverts to the default and
+  // leaves a cap that looks set and is not.
+  return a.timeoutMs === undefined || (typeof a.timeoutMs === 'number' && Number.isFinite(a.timeoutMs) && a.timeoutMs > 0)
 }
 
 /** The harness-supplied DoD contract on `user.message`. */

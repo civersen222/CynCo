@@ -42,9 +42,10 @@
 import { basename, join, dirname, resolve } from 'node:path'
 import { mkdirSync, appendFileSync, readFileSync, existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { createMissionCollector, buildMissionRecord, missionCommitted, missionOutcome, waitIsOver, QUIET_MS } from './cynco-ledger.mjs'
+import { createMissionCollector, buildMissionRecord, missionCommitted, missionOutcome, waitIsOver, historyRewrite, QUIET_MS } from './cynco-ledger.mjs'
 import { runCheck } from './cynco-verify.mjs'
-import { loadMissionAssertions, sidecarPath } from './cynco-contract.mjs'
+import { loadMissionAssertions, sidecarPath, sealedDispatchRefusal } from './cynco-contract.mjs'
+import { withheldGatePaths } from '../engine/bridge/contractAutoCreate.js'
 import { loadOrCreateTokens } from '../engine/security/localToken.js'
 
 const [taskFile, marker, cwdArg, timeoutArg, checkCmd] = process.argv.slice(2)
@@ -64,12 +65,24 @@ console.log(`[driver] mission from ${taskFile} (${task.length} chars), marker="$
 // Built before the socket opens: a sidecar that cannot authorize what it claims
 // to authorize must stop the dispatch, not be discovered halfway through a
 // two-hour mission whose reward is already forfeit (finding (ai)).
+// A gate that mutates source and re-runs a suite per mutation takes minutes,
+// not seconds; the fixed 5-minute cap silently converted such gates into
+// timeouts. Configurable, because the right cap is a property of the check.
+const CHECK_TIMEOUT_MS = parseInt(process.env.CYNCO_CHECK_TIMEOUT_MS ?? '300000', 10)
+
+// Only a cap the OPERATOR set is sent onward. `300000` here is this script's
+// own default, not anybody's decision, and dispatching it would OVERRIDE a cap
+// the engine's own environment had set — a number nobody chose beating a number
+// somebody did. Absent means absent, and the engine then decides for itself.
+const DISPATCHED_CHECK_TIMEOUT_MS =
+  process.env.CYNCO_CHECK_TIMEOUT_MS === undefined ? undefined : CHECK_TIMEOUT_MS
+
 let missionAssertions
 try {
   missionAssertions = loadMissionAssertions(taskFile, checkCmd, {
     exists: (p) => existsSync(p),
     readFile: (p) => readFileSync(p, 'utf-8'),
-  })
+  }, DISPATCHED_CHECK_TIMEOUT_MS)
 } catch (e) {
   console.error(`[driver] ${e.message}`)
   process.exit(2)
@@ -78,8 +91,21 @@ if (missionAssertions && missionAssertions.length > (checkCmd ? 1 : 0)) {
   console.log(`[driver] ${sidecarPath(taskFile)} authorizes ${missionAssertions.length - (checkCmd ? 1 : 0)} assertion(s)`)
 }
 
+// F41. Derived HERE, from the same function the engine derives it from, so the
+// driver knows whether this mission depends on a guarantee before it decides
+// whether the engine on the other end of the socket has one. The count is all
+// that leaves this scope: the paths themselves are the withheld thing.
+const SEALED_COUNT = missionAssertions
+  ? withheldGatePaths(missionAssertions, CWD).length
+  : 0
+if (SEALED_COUNT > 0) console.log(`[driver] this mission seals ${SEALED_COUNT} held-out instrument(s)`)
+
 const collector = createMissionCollector()
 const dispatchedAt = new Date().toISOString()
+// F38's window. Seconds, because that is what the reflog speaks. Taken here
+// rather than at the ledger write so a commit made in the first poll interval is
+// still inside the mission.
+const sinceEpochS = Math.floor(Date.parse(dispatchedAt) / 1000)
 const missionId = `${basename(taskFile).replace(/\.[^.]*$/, '')}-${Date.now()}`
 let enforcedWarned = false
 
@@ -130,8 +156,28 @@ let workBegun = false
 // the old behaviour was three hours.
 const SILENCE_S = parseInt(process.env.CYNCO_SILENCE_S ?? '300', 10)
 let silentAfterDispatch = false
-ws.onopen = () => {
-  console.log('[driver] connected, dispatching mission')
+// F41. A mission that seals nothing goes out the moment the socket opens, as it
+// always has. A mission that seals something waits for the engine to say what it
+// can enforce, because Wave 9b proved that a driver holding a two-path seal and
+// an engine that had never heard of sealing look, from here, exactly like a
+// working pair. session.ready is replayed to every client on connect, so this
+// costs a mission with a live engine milliseconds.
+let dispatched = false
+const sealGateTimer = SEALED_COUNT > 0
+  ? setTimeout(() => {
+      if (dispatched) return
+      // No session.ready in this long means the engine's competence is UNKNOWN,
+      // and unknown is not permission — the same rule the ledger applies to a
+      // verification that never ran.
+      console.error(`[driver] REFUSED: ${sealedDispatchRefusal({ sealedCount: SEALED_COUNT, capabilities: null })}`)
+      process.exit(4)
+    }, parseInt(process.env.CYNCO_READY_S ?? '30', 10) * 1000)
+  : null
+
+function dispatchMission() {
+  if (dispatched) return
+  dispatched = true
+  if (sealGateTimer) clearTimeout(sealGateTimer)
   // P4.2 (STATE doc Phase 4(a)): the check script IS the contract — the engine
   // creates a one-assertion DoD so taskError/errorTrend measure this mission.
   //
@@ -162,10 +208,28 @@ ws.onopen = () => {
     ...(contract ? { contract } : {}),
   }))
 }
+
+ws.onopen = () => {
+  if (SEALED_COUNT > 0) {
+    console.log('[driver] connected, waiting for the engine to declare what it can enforce')
+    return
+  }
+  console.log('[driver] connected, dispatching mission')
+  dispatchMission()
+}
 ws.onmessage = (ev) => {
   try {
     const m = JSON.parse(ev.data)
     collector.ingest(m)
+    if (m.type === 'session.ready' && SEALED_COUNT > 0 && !dispatched) {
+      const refusal = sealedDispatchRefusal({ sealedCount: SEALED_COUNT, capabilities: m.capabilities })
+      if (refusal) {
+        console.error(`[driver] REFUSED: ${refusal}`)
+        process.exit(4)
+      }
+      console.log('[driver] engine declares it can enforce the seal — dispatching mission')
+      dispatchMission()
+    }
     if (WORK_BEGUN.has(m.type)) workBegun = true
     if (m.type === 's5.decision' && m.enforced === true && !enforcedWarned) {
       // Engine was started without LOCALCODE_S5_ENFORCE=false: S5 can restrict
@@ -297,10 +361,6 @@ try {
 // verified:false. Both are exactly the labels the falsification program needs.
 // A check that itself times out earns verified:null, because it measured
 // nothing about the delivery.
-// A gate that mutates source and re-runs a suite per mutation takes minutes,
-// not seconds; the fixed 5-minute cap silently converted such gates into
-// timeouts. Configurable, because the right cap is a property of the check.
-const CHECK_TIMEOUT_MS = parseInt(process.env.CYNCO_CHECK_TIMEOUT_MS ?? '300000', 10)
 let verified
 let verify = null
 if (checkCmd && silentAfterDispatch) {
@@ -327,6 +387,53 @@ if (checkCmd && silentAfterDispatch) {
   }
 }
 
+// F38. Ask the reflog what this mission committed and then threw away, because
+// every other label on this record — `verified`, `mutationSweep`, `markerSeen` —
+// reads the history that survived, and a mission is free to choose which history
+// that is. `null` on any failure: unknown is a truthful answer and "clean" is not.
+async function readHistoryRewrite() {
+  const git = async (args) => {
+    const p = Bun.spawn(['git', ...args], { cwd: CWD, stdout: 'pipe', stderr: 'ignore' })
+    const text = await new Response(p.stdout).text()
+    return (await p.exited) === 0 ? text : null
+  }
+  const raw = await git(['reflog', '--date=unix', '--format=%H%x09%gd%x09%gs'])
+  if (raw === null) return null
+  // `%gd` under --date=unix renders `HEAD@{1785570306}`; `%gs` is
+  // "commit: subject" / "commit (amend): subject" / "reset: moving to X".
+  const reflog = []
+  for (const line of raw.split('\n')) {
+    const [sha, gd, gs] = line.split('\t')
+    if (!sha || gs === undefined) continue
+    const stamp = /\{(\d+)\}/.exec(gd ?? '')
+    if (!stamp) continue // undatable entry: excluded, never assumed in-window
+    const cut = gs.indexOf(': ')
+    reflog.push({
+      sha,
+      at: parseInt(stamp[1], 10),
+      action: cut < 0 ? gs : gs.slice(0, cut),
+      message: cut < 0 ? '' : gs.slice(cut + 2),
+    })
+  }
+  // Reachable is HEAD's WHOLE ancestry, not baselineSha..HEAD: a discarded
+  // commit is one no ancestor path reaches, and the narrow range would call
+  // every pre-mission commit discarded. The mission window is enforced instead
+  // by `sinceEpochS` — a previous mission's discarded commit is unreachable too,
+  // and charging it here is the error missionCommitted() was named to stop.
+  const rev = await git(['rev-list', 'HEAD'])
+  if (rev === null) return null
+  const reachable = new Set(rev.split('\n').map(s => s.trim()).filter(Boolean))
+  return historyRewrite({ reflog, reachable, sinceEpochS })
+}
+const history = await readHistoryRewrite().catch(() => null)
+if (history === null) {
+  console.log('[history] UNMEASURED — the reflog could not be read. This record cannot say whether the run discarded any commit.')
+} else if (history.rewritten) {
+  console.log(`[history] REWRITTEN: ${history.discarded.length} commit(s) made by this mission are unreachable from HEAD.`)
+  console.log('[history] Not a failure by itself — but every gate reads the SURVIVING log, so read these before believing it:')
+  for (const d of history.discarded) console.log(`[history]   ${d.sha.slice(0, 7)}  ${d.message}`)
+}
+
 // Append the labeled mission record to the outcome ledger
 const outcome = missionOutcome({ landed, zeroToolCompletion, wentQuiet: quiet, engineError, neverDispatched: silentAfterDispatch })
 try {
@@ -342,6 +449,7 @@ try {
     engineError,
     verified,
     verify,
+    history,
   })
   mkdirSync(dirname(LEDGER_PATH), { recursive: true })
   appendFileSync(LEDGER_PATH, JSON.stringify(record) + '\n')

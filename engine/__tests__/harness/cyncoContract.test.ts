@@ -208,3 +208,83 @@ describe('the driver actually uses it', () => {
     expect(driver).toMatch(/const contract = missionAssertions/)
   })
 })
+
+/**
+ * The cap on the held-out gate has to travel in the contract, because there is
+ * no other road. The driver is a WebSocket client to an engine daemon it did
+ * not start, so `CYNCO_CHECK_TIMEOUT_MS` on its command line governs only its
+ * OWN final run of the gate — the cockpit's re-run, inside the engine, never
+ * sees it. Measured on Gilded Wave 9d: a 30-minute mutation gate dispatched
+ * with an hour's cap was killed at the engine's 300s default on every one of
+ * 115 turns, `taskCompleted` stayed "unknown" throughout, and the mission could
+ * not have passed whatever it wrote. The same shape as finding (ac), and the
+ * same answer: it travels with the message.
+ */
+describe('a slow gate carries its cap into the contract', () => {
+  it('the held-out gate is dispatched with the cap the driver was given', () => {
+    const a = loadMissionAssertions('C:/tmp/w8.md', GATE, fs({}), 3_600_000)
+    expect(a).toHaveLength(1)
+    expect(a[0].timeoutMs).toBe(3_600_000)
+  })
+
+  /**
+   * Absent, not a plausible default. A gate with no declared cap gets the
+   * engine's, and writing one here would be this harness inventing a number
+   * nobody chose.
+   */
+  it('no cap given means no cap sent', () => {
+    const a = loadMissionAssertions('C:/tmp/w8.md', GATE, fs({}))
+    expect(a[0].timeoutMs).toBeUndefined()
+  })
+
+  it('a junk cap is not sent as if it were a cap', () => {
+    for (const junk of [0, -1, Number.NaN, '1 hour']) {
+      const a = loadMissionAssertions('C:/tmp/w8.md', GATE, fs({}), junk as number)
+      expect(a[0].timeoutMs, `${JSON.stringify(junk)} was sent as a cap`).toBeUndefined()
+    }
+  })
+
+  it('a sidecar assertion may declare its own cap', () => {
+    const a = load({ assertions: [{ text: 'the slow half holds', command: 'python slow.py', timeoutMs: 1_800_000 }] })
+    const authored = a.find((x: { command?: string }) => x.command === 'python slow.py')
+    expect(authored.timeoutMs).toBe(1_800_000)
+  })
+
+  it('a sidecar assertion with no cap sends none', () => {
+    const a = load({ assertions: [{ text: 'x', command: 'python quick.py' }] })
+    expect(a.find((x: { command?: string }) => x.command === 'python quick.py').timeoutMs).toBeUndefined()
+  })
+
+  /**
+   * Refused at dispatch, where a person is watching. `"30 minutes"` is a cap
+   * that looks set and is not: it reaches the engine, fails the number check,
+   * and silently reverts to 300s — which is exactly the Wave 9d failure with an
+   * extra step of false comfort in front of it.
+   */
+  it.each([['a string', '30 minutes'], ['zero', 0], ['negative', -5], ['null', null]])(
+    'refuses a sidecar cap that is %s', (_label, bad) => {
+      expect(() => load({ assertions: [{ text: 'x', command: 'python slow.py', timeoutMs: bad }] })).toThrow()
+    })
+})
+
+describe('the driver hands its own cap to the contract', () => {
+  const driver = readFileSync('scripts/cynco-mission-driver.mjs', 'utf-8')
+
+  it('passes CHECK_TIMEOUT_MS into loadMissionAssertions', () => {
+    // Wired to nothing is finding (ag) again. The cap exists in the driver
+    // already; what was missing was the road from there to the engine.
+    // Bounded rather than `[\s\S]*` so it cannot be satisfied by the identifier
+    // turning up three hundred lines later in an unrelated statement.
+    expect(driver).toMatch(/loadMissionAssertions\([\s\S]{0,400}?CHECK_TIMEOUT_MS\s*\)/)
+  })
+
+  /**
+   * And the cap it sends is only one the operator set. `300000` is this
+   * script's own default; dispatching it would override a cap the ENGINE's
+   * environment had set, which is a number nobody chose beating one somebody
+   * did.
+   */
+  it('sends nothing when the operator set nothing', () => {
+    expect(driver).toMatch(/process\.env\.CYNCO_CHECK_TIMEOUT_MS === undefined\s*\?\s*undefined/)
+  })
+})

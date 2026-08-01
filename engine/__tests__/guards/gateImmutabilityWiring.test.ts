@@ -104,3 +104,67 @@ describe('gate immutability wiring guard', () => {
     }
   })
 })
+
+/**
+ * BLOCKING wire-check: the SEAL must stay connected (F37).
+ *
+ * Same lesson as the guard above, one permission further out. Read-only was the
+ * wrong shape for a held-out gate: on Gilded Wave 9 the run listed the scratch
+ * directory, read `verify_s9.py`, executed it, and then wrote what it had
+ * learned into its own commit message — "mutation testing with -x stops at
+ * first failure", "431 other tests", both facts about the gate rather than about
+ * the game. Every existing protection held and none of them applied, because
+ * they all guard writing, and `immutableTargetOf`'s refusal says in as many
+ * words "You may Read it as often as you like".
+ *
+ * The seal has three layers and any one alone leaves a hole, so this checks that
+ * all three are reached from the live path, and that the seal is derived from
+ * the WITHHELD assertions only — sealing a visible command's script would hide a
+ * file whose command the model was told out loud.
+ */
+describe('sealed instrument wiring guard', () => {
+  it('conversationLoop derives the withheld gates and seals them on every task', () => {
+    const src = read('engine/bridge/conversationLoop.ts')
+    expect(src).toMatch(/withheldGatePaths\(opts\.contract\.assertions, this\.executor\['cwd'\]\)/)
+    expect(src).toMatch(/setTaskSealedPaths\(sealed\)/)
+    // Unconditional, like the immutable set: a task carrying no withheld gate
+    // must CLEAR the last one's seal, and a refusal that by design cannot name
+    // its file is the worst possible thing to leave behind for the next task.
+    const call = src.indexOf('setTaskSealedPaths(sealed)')
+    expect(call).toBeGreaterThan(-1)
+    const before = src.slice(0, call)
+    expect(before.lastIndexOf('\n    }'))
+      .toBeGreaterThan(before.lastIndexOf('if (opts?.contract && applyHarnessContract('))
+  })
+
+  it('seals only the withheld form, never a command the model was told', () => {
+    const src = read('engine/bridge/contractAutoCreate.ts')
+    expect(src).toContain('export function withheldGatePaths')
+    // A plain-string assertion states its command in its own text. Filtering to
+    // the object form carrying a `command` is what makes this the withheld set;
+    // dropping the filter would seal every gate, including visible ones.
+    expect(src).toMatch(/typeof a !== 'string' && Boolean\(a\.command\)/)
+  })
+
+  it('the executor reaches both enforcement layers of the seal', () => {
+    const src = read('engine/tools/executor.ts')
+    // Layer 1: the refusal, and it must come BEFORE the immutable check, whose
+    // message invites the model to read the file.
+    expect(src).toContain('callTouchesSealed(toolName, input, this.cwd)')
+    expect(src).toContain('SEALED_REFUSAL')
+    expect(src.indexOf('callTouchesSealed')).toBeLessThan(src.indexOf('immutableTargetOf(toolName'))
+    // Layer 2: every tool's output is redacted, and before the cap — a result
+    // truncated first could be truncated in the middle of a redaction.
+    expect(src).toMatch(/capToolResult\(redactSealed\(result\.output\)/)
+  })
+
+  it('the seal names nothing, in the refusal or in the log', () => {
+    expect(read('engine/tools/sealedPaths.ts')).toContain('export const SEALED_REFUSAL')
+    // The console line counts sealed instruments; the named list is filtered
+    // down to the readable ones. An engine log is shipped into trajectories, and
+    // a path printed there is a path that can find its way back to a model.
+    const src = read('engine/bridge/conversationLoop.ts')
+    expect(src).toMatch(/gates\.filter\(g => !sealed\.includes\(g\)\)/)
+    expect(src).toMatch(/\$\{sealed\.length\} sealed instrument/)
+  })
+})

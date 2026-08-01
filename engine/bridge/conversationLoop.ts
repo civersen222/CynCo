@@ -21,6 +21,7 @@ import { setLoadedSkills, getSkillByName, getSkillIndex } from '../skills/store.
 import { formatSkillIndexBlock } from '../skills/prompt.js'
 import { getWorkflowForSkill } from '../skills/workflowSkill.js'
 import { ToolExecutor, setTaskImmutablePaths, type RequestApprovalFn } from '../tools/executor.js'
+import { getSealedDirs, setTaskSealedPaths } from '../tools/sealedPaths.js'
 import { ToolScorer } from '../tools/toolScorer.js'
 import { DifficultyClassifier } from '../vsm/difficultyClassifier.js'
 import { withReflexion } from '../vsm/reflexionFeedback.js'
@@ -70,7 +71,7 @@ import { probeEdit } from '../vsm/groundingProbe.js'
 import { loadInterventionRates, saveInterventionRates } from '../vsm/interventionPersistence.js'
 import { applyNudgeTemperature } from '../vsm/controlSignals.js'
 import { globalContract } from '../tools/contract.js'
-import { applyHarnessContract, harnessGatePaths, maybeAutoCreateContract, type HarnessContractSpec } from './contractAutoCreate.js'
+import { applyHarnessContract, harnessGatePaths, withheldGatePaths, maybeAutoCreateContract, type HarnessContractSpec } from './contractAutoCreate.js'
 import { gitProbe } from '../tools/contractVerify.js'
 import { globalAskBroker } from '../tools/askBroker.js'
 import { estimateTokensAsync } from '../engine/contextBudget.js'
@@ -89,7 +90,7 @@ import { UncertaintyTracker } from '../memory/uncertaintyTracker.js'
 // writer was uncovered by construction.
 import { getTrajectoryRecorder } from '../training/trajectoryRecorder.js'
 import { collectGitFacts, collectDirtyPaths, collectPathSignatures, changedBetween, commitsSince, collectUntrackedPaths, repoToplevel, canonicalPath } from '../training/gitFacts.js'
-import { buildComponents } from '../training/taskOutcome.js'
+import { buildComponents, contractFactsFrom } from '../training/taskOutcome.js'
 import type { TaskOutcomeInput, TestObservation } from '../training/taskOutcome.js'
 import { finalizeTask } from '../training/rewardLabeler.js'
 import { detectTests } from '../bestOfN/testDetector.js'
@@ -904,8 +905,35 @@ export class ConversationLoop {
       ...(opts?.contract ? harnessGatePaths(opts.contract.assertions, this.executor['cwd']) : []),
     ])]
     setTaskImmutablePaths(gates)
-    if (gates.length > 0) {
-      console.log(`[contract] Read-only instrument(s) for this task: ${gates.join(', ')}`)
+    // F37. A held-out gate is not read-only, it is sealed: unreadable,
+    // unlistable, unrunnable. Set unconditionally and from the same options, so
+    // a task that carries no withheld gate clears the last one's seal — a seal
+    // that outlived its task would refuse a later run a file nothing is
+    // measuring, with a refusal that by design cannot say which file.
+    const sealed = opts?.contract
+      ? withheldGatePaths(opts.contract.assertions, this.executor['cwd'])
+      : []
+    setTaskSealedPaths(sealed)
+    const readable = gates.filter(g => !sealed.includes(g))
+    if (readable.length > 0) {
+      console.log(`[contract] Read-only instrument(s) for this task: ${readable.join(', ')}`)
+    }
+    // Counted, never named. This log is shipped into trajectories and telemetry,
+    // and a path printed there is a path that can find its way back to a model.
+    if (sealed.length > 0) {
+      console.log(`[contract] ${sealed.length} sealed instrument(s) for this task `
+        + `(withheld: not readable, not listable, not runnable)`)
+      // Layer 3 engages only for a gate that has a directory to itself, and the
+      // harness is the only thing that can arrange that. Said out loud rather
+      // than left to the operator's memory: a gate sharing a directory with the
+      // brief is still refused by name and struck from every listing, but
+      // `cat <dir>/*.py` names nothing sealed and returns contents that hold no
+      // filename to strike. That is the hole, and moving the file closes it.
+      if (getSealedDirs().length === 0) {
+        console.log('[contract] WARNING: no sealed instrument has a directory of its own, '
+          + 'so a wildcard read of its directory is not refused. Put gates in a gates-only '
+          + 'directory to close that path.')
+      }
     }
     // Auto-create contract from EVERY user message — the model must finish what
     // the user asked. A COMPLETE stale contract from a prior task is replaced
@@ -3153,18 +3181,13 @@ export class ConversationLoop {
     const outcome: TaskOutcomeInput = {
       testObservations: this.taskTestObservations,
       commandObservations: this.taskCommandObservations,
-      contract: globalContract.isActive()
-        ? {
-            active: true,
-            complete: globalContract.isComplete(),
-            failed: globalContract.failedCount(),
-            origin: globalContract.snapshot().origin,
-            passedAssertions: globalContract
-              .snapshot()
-              .assertions.filter(a => a.status === 'passed')
-              .map(a => a.text),
-          }
-        : null,
+      // F43. This used to read `isActive() ? {…} : null`, which erased every
+      // contract `resolveUnverified` had just force-failed — that call
+      // deactivates the contract on purpose, so the next task cannot inherit
+      // it, and the deactivation took the failures with it. A run that verified
+      // nothing then recorded the same `contract: null` as a run that was never
+      // given a specification, and scored higher than one that failed honestly.
+      contract: contractFactsFrom(globalContract.snapshot()),
       git: collectGitFacts(this.executor['cwd'], this.taskGitBaseSha),
       trackedModifiedFiles: this.fileTracker.getModifiedFiles(),
       baselineDirty: this.taskBaselineDirty,

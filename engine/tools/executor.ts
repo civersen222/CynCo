@@ -4,6 +4,7 @@ import type { ToolResult } from './types.js'
 import { DoomLoopDetector } from './doomLoop.js'
 import { capToolResult } from './resultCap.js'
 import { ToolScorer } from './toolScorer.js'
+import { callTouchesSealed, redactSealed, SEALED_REFUSAL } from './sealedPaths.js'
 
 export type RequestApprovalFn = (
   toolName: string,
@@ -145,6 +146,13 @@ export class ToolExecutor {
       return { output: `Error: unknown tool "${toolName}"`, isError: true }
     }
 
+    // F37, and BEFORE the immutable check on purpose: that one's refusal says
+    // "you may Read it as often as you like", which is right for a brief and
+    // catastrophic for a held-out gate. A path that is both must answer sealed.
+    if (callTouchesSealed(toolName, input, this.cwd)) {
+      return { output: SEALED_REFUSAL, isError: true }
+    }
+
     const immutable = immutableTargetOf(toolName, input, this.cwd)
     if (immutable) {
       return {
@@ -180,7 +188,14 @@ export class ToolExecutor {
       // Doom loop detection: catch repeated failing tool calls. The whole input,
       // not a prefix — see finding (t) and doomLoop.ts.
       const isDoomLoop = this.doomLoop.check(toolName, JSON.stringify(input), result.isError)
-      const capped = { output: capToolResult(result.output, this.contextLength), isError: result.isError }
+      // F37 layer 2. Applied to every tool's output, not just the listing ones,
+      // because a sealed name can surface anywhere a path does — a grep hit, a
+      // stack trace, a `git status`. Before the cap, so a truncated result is
+      // truncated after the redaction and never after only part of it.
+      const capped = {
+        output: capToolResult(redactSealed(result.output), this.contextLength),
+        isError: result.isError,
+      }
       if (isDoomLoop) {
         // Appended, never substituted. The old code replaced the tool's output
         // with the scolding, so a model stuck on a failing test was denied the

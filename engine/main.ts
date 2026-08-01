@@ -32,6 +32,7 @@ import { loadConfig } from './config.js'
 import { LocalCodeWSServer } from './bridge/server.js'
 import type { TUICommand } from './bridge/protocol.js'
 import { PROTOCOL_VERSION } from './bridge/protocol.js'
+import { governanceCapabilities } from './bridge/capabilities.js'
 import { ConversationLoop } from './bridge/conversationLoop.js'
 import { S5Orchestrator } from './s5/orchestrator.js'
 import { RuleBasedS5 } from './s5/ruleBasedS5.js'
@@ -1252,6 +1253,11 @@ provider.healthCheck().then(async ok => {
       projectPath: process.cwd(),
       version: '0.1.0',
       protocolVersion: PROTOCOL_VERSION,
+      // F41: not what this SOURCE TREE guarantees — what this PROCESS has just
+      // proved it can do. A daemon left running across a governance fix is
+      // otherwise indistinguishable from one that carries it, and Wave 9b was
+      // graded by a build seven hours older than the seal it was relying on.
+      capabilities: governanceCapabilities(),
       sessionStartTime: new Date().toISOString(),
       lspServers,
       mcpServers: await discoverMcpServers(),

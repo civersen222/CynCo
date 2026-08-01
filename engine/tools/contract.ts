@@ -38,6 +38,19 @@ export interface Assertion {
    * back one forgotten `getStatus()` at a time.
    */
   command?: string
+  /**
+   * How long `command` may take, when the 300s default is not enough.
+   *
+   * Carried here because the harness that wrote the check is the only party
+   * who knows how slow it is, and — measured on Gilded Wave 9d — it has no
+   * other way to say so: the mission driver is a WebSocket client to a separate
+   * engine daemon, so the timeout variables it exports are read by nothing. A
+   * 30-minute mutation gate was killed at 300s on every one of 115 turns and
+   * `taskCompleted` stayed unknown throughout, so no correct work could have
+   * passed it. Per-assertion, not per-contract: one slow gate must not lift the
+   * ceiling on a hung `pytest` somewhere else in the same run.
+   */
+  timeoutMs?: number
 }
 
 /**
@@ -45,7 +58,7 @@ export interface Assertion {
  * the text itself, or a redacted text paired with the command that actually
  * decides it.
  */
-export type HarnessAssertion = string | { text: string; command: string }
+export type HarnessAssertion = string | { text: string; command: string; timeoutMs?: number }
 
 /**
  * Who wrote this contract. 'harness' means a person authored it — a mission
@@ -113,7 +126,7 @@ export class ContractState {
     this.assertions = assertionTexts.map(a =>
       typeof a === 'string'
         ? { text: a, status: 'pending' as AssertionStatus }
-        : { text: a.text, command: a.command, status: 'pending' as AssertionStatus })
+        : { text: a.text, command: a.command, timeoutMs: a.timeoutMs, status: 'pending' as AssertionStatus })
     this.origin = origin
     this.active = true
     this.baseline = null
@@ -424,7 +437,7 @@ export const contractAssertPassTool: ToolImpl = {
     // names out loud. Without the flag the failure message leaked the gate
     // (F34).
     let check: AssertionCheck | null = a?.command
-      ? { kind: 'command', command: a.command, withheld: true }
+      ? { kind: 'command', command: a.command, withheld: true, timeoutMs: a.timeoutMs }
       : text ? assertionCheck(text) : null
     if (check?.kind === 'command' && globalContract.getOrigin() !== 'harness') check = null
     if (check) {

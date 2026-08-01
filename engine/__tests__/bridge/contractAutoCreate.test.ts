@@ -10,6 +10,7 @@ import {
   applyHarnessContract,
   harnessContractCommandError,
   harnessGatePaths,
+  withheldGatePaths,
   maybeAutoCreateContract,
 } from '../../bridge/contractAutoCreate.js'
 
@@ -463,6 +464,50 @@ describe('harnessGatePaths: the instruments a contract names', () => {
       `Verification command exits 0: python ${file} check_two`,
     ], workspace('a.ts'))
     expect(found).toEqual([file])
+  })
+
+  /**
+   * F37: which of those instruments must never be SEEN.
+   *
+   * The distinction is the assertion's form, and nothing else. A plain string
+   * states its command in the text the model reads, so hiding the script would
+   * help nobody and would cost the model a file it was told about. The
+   * `{text, command}` form carries a redacted text beside a command the model is
+   * explicitly told it is not given — that one, and only that one, is the gate
+   * whose contents would turn the score into a different measurement.
+   */
+  describe('withheldGatePaths: the instruments it must never see', () => {
+    it('seals the script a withheld command runs', () => {
+      const { file } = gate('verify_s9.py')
+      const found = withheldGatePaths(
+        [{ text: 'A held-out check, not yours to run, exits 0.', command: `python ${file}` }],
+        workspace('gilded/society/schemes.py'),
+      )
+      expect(found).toEqual([file])
+    })
+
+    it('does NOT seal a visible command — its own text already names it', () => {
+      const { file } = gate('verify_s9.py')
+      const visible = [`Verification command exits 0: python ${file}`]
+      expect(harnessGatePaths(visible, workspace('a.ts'))).toEqual([file])
+      expect(withheldGatePaths(visible, workspace('a.ts'))).toEqual([])
+    })
+
+    it('seals only the withheld one when a contract carries both', () => {
+      const held = gate('held.py')
+      const open = gate('open.py')
+      const assertions = [
+        `Verification command exits 0: python ${open.file}`,
+        { text: 'A held-out check exits 0.', command: `python ${held.file}` },
+      ]
+      const ws = workspace('a.ts')
+      expect(withheldGatePaths(assertions, ws)).toEqual([held.file])
+      expect(harnessGatePaths(assertions, ws).sort()).toEqual([held.file, open.file].sort())
+    })
+
+    it('seals nothing for a contract with no command at all', () => {
+      expect(withheldGatePaths(['Changes committed to git'], workspace('a.ts'))).toEqual([])
+    })
   })
 })
 

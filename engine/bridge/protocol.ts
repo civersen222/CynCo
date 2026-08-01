@@ -38,6 +38,13 @@ export type SessionReadyEvent = {
   warnings?: string[]
   /** Phase 6: wire protocol version for the TUI handshake mismatch check. */
   protocolVersion?: number
+  /**
+   * F41: the governance guarantees THIS RUNNING BUILD can enforce, measured at
+   * startup rather than declared. Optional on purpose: a build older than the
+   * guarantee cannot say the word, and its silence is the signal a client must
+   * refuse on. See engine/bridge/capabilities.ts.
+   */
+  capabilities?: string[]
 }
 
 export type SessionErrorEvent = {

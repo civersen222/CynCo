@@ -79,7 +79,11 @@ export type AssertionCheck =
    * `assertionCheck`, because a visible `Verification command exits 0: <cmd>`
    * assertion names its command in its own text and hiding it would help nobody.
    */
-  | { kind: 'command'; command: string; withheld?: true }
+  /**
+   * `timeoutMs` is how long THIS check may take, carried beside it because the
+   * only party who knows is whoever wrote it. See `commandTimeoutMs`.
+   */
+  | { kind: 'command'; command: string; withheld?: true; timeoutMs?: number }
   | { kind: 'test_census'; path: string; min: number }
 
 /** Recover the machine-checkable claim from an engine-generated assertion. */
@@ -158,8 +162,8 @@ export type RepoProbe = {
   exists(path: string): boolean
   /** Contents of `path`, or null when it cannot be read. */
   read(path: string): string | null
-  /** What running `command` in the workspace established. */
-  run(command: string): Promise<CommandOutcome>
+  /** What running `command` in the workspace established, under `timeoutMs` if given. */
+  run(command: string, timeoutMs?: number): Promise<CommandOutcome>
 }
 
 export async function verifyAssertion(
@@ -205,7 +209,7 @@ export async function verifyAssertion(
     // Naming it is not what makes the message useful — saying it ran and
     // answered no is.
     const named = check.withheld ? '' : `: ${check.command}`
-    switch (await probe.run(check.command)) {
+    switch (await probe.run(check.command, check.timeoutMs)) {
       case 'passed':
         return { status: 'confirmed' }
       case 'failed':
@@ -215,7 +219,7 @@ export async function verifyAssertion(
           status: 'unmeasured',
           detail:
             `the verification command did not finish — still running after ` +
-            `${commandTimeoutMs() / 1000}s, so it was killed and answered nothing${named}`,
+            `${commandTimeoutMs(check.timeoutMs) / 1000}s, so it was killed and answered nothing${named}`,
         }
       case 'unrunnable':
         return { status: 'unverifiable', detail: `could not run the verification command${named}` }
@@ -275,13 +279,48 @@ function git(cwd: string, args: string[]): Promise<string | null> {
  * out the real cap — and so an operator dispatching a genuinely slow gate can
  * raise it. A bad value is ignored rather than obeyed: `0` or a non-number would
  * make `exec` wait forever, which is the failure this cap exists to prevent.
+ *
+ * CYNCO_CHECK_TIMEOUT_MS is the fallback because it is the SAME COMMAND. The
+ * driver takes a held-out gate, runs it once at the end under that variable,
+ * and hands it to the contract, where the cockpit re-runs it on every
+ * taskCompleted. Gilded Wave 9d was dispatched with CYNCO_CHECK_TIMEOUT_MS set
+ * to an hour for a 30-minute mutation gate; the cockpit killed that gate at 300s
+ * on every claim, so taskCompleted stayed "unknown" across 115 turns and no
+ * amount of correct work could have passed it. The operator had raised the cap
+ * on the gate, and the gate was still capped.
+ *
+ * `explicitMs` outranks both, and is how the cap reaches a check at all when
+ * the harness is not the engine's parent process. The mission driver is a
+ * WebSocket client to a separate daemon, so no variable it exports is visible
+ * here — the same process boundary finding (ac) hit with the immutable-path
+ * guard, answered the same way: the value travels with the message. It is a
+ * property of ONE assertion, so a 30-minute mutation gate does not lift the
+ * ceiling on every other check in the contract.
  */
-function commandTimeoutMs(): number {
-  const raw = Number(process.env.CYNCO_CONTRACT_CHECK_TIMEOUT_MS)
-  return Number.isFinite(raw) && raw > 0 ? raw : 300_000
+export function commandTimeoutMs(explicitMs?: number): number {
+  const usable = (raw: number): number | null =>
+    Number.isFinite(raw) && raw > 0 ? Math.min(raw, MAX_COMMAND_TIMEOUT_MS) : null
+  const explicit = usable(Number(explicitMs))
+  if (explicit !== null) return explicit
+  for (const name of ['CYNCO_CONTRACT_CHECK_TIMEOUT_MS', 'CYNCO_CHECK_TIMEOUT_MS']) {
+    const fromEnv = usable(Number(process.env[name]))
+    if (fromEnv !== null) return fromEnv
+  }
+  return 300_000
 }
 
-function runCommand(cwd: string, command: string): Promise<CommandOutcome> {
+/**
+ * The ceiling on any cap, however it arrives.
+ *
+ * A cap can come over a socket from a harness the engine does not control, so
+ * "the sender asked for it" is not a reason to obey any number at all. Two
+ * hours is past every real gate — Wave 9d's 35-mutation sweep is thirty
+ * minutes — and a check still running after two hours has stopped being a
+ * check and become a hang, which is the exact thing this cap exists to end.
+ */
+export const MAX_COMMAND_TIMEOUT_MS = 7_200_000
+
+function runCommand(cwd: string, command: string, timeoutMs?: number): Promise<CommandOutcome> {
   // The same shell the Bash tool uses. `exec` would otherwise default to
   // cmd.exe on Windows, so a check script written in the dialect the brief and
   // every other command in the session use — PowerShell here — would fail on
@@ -301,7 +340,7 @@ function runCommand(cwd: string, command: string): Promise<CommandOutcome> {
   // the work was never done in.
   const runnable = shellPreamble(info) + translateEnvPrefix(command, info)
   return new Promise(resolvePromise => {
-    exec(runnable, { cwd, shell, encoding: 'utf-8', timeout: commandTimeoutMs(), maxBuffer: 8 * 1024 * 1024 }, err => {
+    exec(runnable, { cwd, shell, encoding: 'utf-8', timeout: commandTimeoutMs(timeoutMs), maxBuffer: 8 * 1024 * 1024 }, err => {
       if (!err) return resolvePromise('passed')
       const e = err as Error & { code?: number | string; killed?: boolean }
       if (e.killed) return resolvePromise('timeout')
@@ -348,6 +387,6 @@ export function gitProbe(cwd: string): RepoProbe {
         return null
       }
     },
-    run: (command) => runCommand(cwd, command),
+    run: (command, timeoutMs) => runCommand(cwd, command, timeoutMs),
   }
 }
