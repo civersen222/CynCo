@@ -213,7 +213,10 @@ class ContextSidebar(Static):
         """Backward-compatible: display a file with its path as header."""
         if not content:
             try:
-                with open(path) as f:
+                # The preview displays and does not persist, so an undecodable
+                # byte becomes U+FFFD rather than killing the widget. Strict
+                # would be right anywhere the value is kept or written back.
+                with open(path, encoding="utf-8", errors="replace") as f:
                     content = f.read()
             except (FileNotFoundError, PermissionError) as e:
                 self.update(f"[red]Cannot read {path}: {e}[/red]")

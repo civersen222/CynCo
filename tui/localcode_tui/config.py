@@ -45,7 +45,10 @@ def load_config(path: Optional[Path] = None) -> Config:
     if not config_path.exists():
         return Config()
 
-    with open(config_path) as f:
+    # The config is UTF-8. Without this it is read as cp1252 on Windows, which
+    # does not raise — it mojibakes, so a hand-edited path silently becomes a
+    # different path.
+    with open(config_path, encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
 
     config = Config()
@@ -99,5 +102,5 @@ def save_config(config: Config, path: Optional[Path] = None) -> None:
         },
     }
 
-    with open(config_path, "w") as f:
-        yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+    with open(config_path, "w", encoding="utf-8") as f:
+        yaml.dump(data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
