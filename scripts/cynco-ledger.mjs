@@ -190,11 +190,50 @@ export const QUIET_MS = parseInt(process.env.CYNCO_QUIET_MS ?? '60000', 10)
  * the one where waiting is most plainly futile — nothing is left to produce the
  * message being waited for. The truthiness check is deliberate: an empty error
  * string is not evidence of a crash.
+ *
+ * `engineProcessing` outranks everything below the engine error, and it is the
+ * F57 fix. Everything else here reasons about the run from OUTSIDE it, by
+ * watching a socket; `engineProcessing` is the run's own `isProcessing` flag,
+ * read from /api/run. Gilded Wave 10 went quiet after `message.complete`, was
+ * declared finished, graded, and filed — and was still executing model calls
+ * forty minutes later, in the repo it had just been graded on. Silence is a
+ * symptom of stopping and also a symptom of thinking, and no amount of tuning
+ * `quietMs` separates them. Asking does.
+ *
+ * Three states, not two:
+ *   true  — the loop has the turn open. Not over, whatever the socket looks
+ *           like. Bounded by the driver's own TIMEOUT_S, so a loop that never
+ *           clears the flag costs a budget, not a hang.
+ *   false — the loop closed the turn. Over, and sooner than quiescence would
+ *           have said, without waiting out `quietMs` for a run already done.
+ *           Only trusted once `workBegun`: before the first turn event the flag
+ *           is legitimately false because nothing has started yet, and reading
+ *           that as "finished" would end every mission at the first poll.
+ *   null  — nobody answered: endpoint absent, engine older than this script,
+ *           HTTP failed. Falls back to the silence heuristic, and the caller
+ *           must record that the exit was inferred rather than observed. An
+ *           unreachable engine read as `false` would be the original defect
+ *           restored, this time with a confident-looking field behind it.
  */
-export function waitIsOver({ landed, sawMessageComplete, msSinceActivity, engineError }, quietMs = QUIET_MS) {
-  if (engineError) return true
-  if (!sawMessageComplete) return false
-  return msSinceActivity >= quietMs
+export function waitIsOver(state, quietMs = QUIET_MS) {
+  return waitExitReason(state, quietMs) !== null
+}
+
+/**
+ * Why the wait ended, or null while it has not. `waitIsOver` is this predicate;
+ * the reason exists separately because the ledger has to distinguish an exit the
+ * engine confirmed from one this script guessed at, and a boolean cannot say
+ * which of the two it was.
+ */
+export function waitExitReason(
+  { landed, sawMessageComplete, msSinceActivity, engineError, engineProcessing = null, workBegun = true },
+  quietMs = QUIET_MS,
+) {
+  if (engineError) return 'engine_error'
+  if (engineProcessing === true) return null
+  if (engineProcessing === false && workBegun) return 'engine_closed_the_turn'
+  if (!sawMessageComplete) return null
+  return msSinceActivity >= quietMs ? 'quiet_heuristic' : null
 }
 
 /**
@@ -290,7 +329,7 @@ export function missionOutcome({ landed, zeroToolCompletion, wentQuiet, engineEr
  * quiet, the gate is racing the mission for the tree, and `advisory` is what
  * that is spelled as.
  */
-export function gateDisposition({ neverDispatched, engineError, landed, quiet }) {
+export function gateDisposition({ neverDispatched, engineError, landed, quiet, runStillOpen }) {
   if (neverDispatched) {
     return {
       run: false, label: false,
@@ -310,6 +349,21 @@ export function gateDisposition({ neverDispatched, engineError, landed, quiet })
       run: true, label: false,
       why: 'the harness killed this run after a commit landed. The gate runs and its result is recorded, ' +
         'but verified stays null: an interrupted run\'s last commit may be work in progress, not delivery.',
+    }
+  }
+  // F57. `quiet` is this script's opinion about whether the run stopped;
+  // `runStillOpen` is the engine's own answer, taken after an abort it declined
+  // to honour. It outranks `quiet` in both directions — a run can look perfectly
+  // quiet on the socket and still be executing model calls in the workspace,
+  // which is exactly what Gilded Wave 10 did for forty minutes after its driver
+  // filed the record. The gate still RUNS: its output is evidence about a moving
+  // tree and worth keeping. It just may not put a label on it.
+  if (runStillOpen === true) {
+    return {
+      run: true, label: false,
+      why: 'the engine still had the turn open after an abort, so the mission is writing to the ' +
+        'workspace the gate is reading. The gate runs and its result is recorded, but verified stays ' +
+        'null: nothing here describes a finished delivery.',
     }
   }
   // `quiet === undefined` from an older caller is not a report that the run went
@@ -412,6 +466,27 @@ export function buildMissionRecord(collector, meta) {
     // a sweep that has not been run is not a sweep that passed, and it is not
     // a sweep that failed. See the header for why `verified` cannot stand in.
     mutationSweep: meta.mutationSweep ?? null,
+    // F57: how the driver came to believe the run was over, and whether it was.
+    //
+    // `exitReason` is one of 'engine_error' | 'engine_closed_the_turn' |
+    // 'quiet_heuristic' | 'timeout' | 'never_dispatched'. The distinction the
+    // ledger needs is between the second and the third: one is the engine
+    // saying it closed the turn, the other is this script inferring it from
+    // silence. Every row before this field was written was the third kind and
+    // could not say so, which is how Gilded Wave 10 was filed as finished
+    // forty minutes before it stopped running.
+    //
+    // `runStillOpen` is the answer to the same question asked of the engine at
+    // the end, AFTER an abort: true means the mission was still executing while
+    // this record was being written and while the gate above read the tree.
+    // `null` means nothing answered — an engine with no /api/run, so unknown.
+    // Never default it to false; that is the assumption the whole finding is.
+    exitReason: meta.exitReason ?? null,
+    runStillOpen: meta.runStillOpen ?? null,
+    // Tool calls the engine made AFTER the driver decided the run was over.
+    // Zero on a healthy mission. Anything above zero is F57 recurring, measured
+    // rather than reconstructed from timestamps three days later.
+    toolCallsAfterExit: meta.toolCallsAfterExit ?? null,
     // F38: `{ rewritten, discarded: [{ sha, message }] }` from historyRewrite().
     // null means the reflog could not be read — unknown, not clean. `verified`
     // and `mutationSweep` both read the surviving history; this is the only

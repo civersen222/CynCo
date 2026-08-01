@@ -392,6 +392,8 @@ try {
       getGovernance: () => loop.getGovernance(),
       getToolScorer: () => loop.getExecutor()?.getToolScorer?.(),
       getS4Reflector: () => loop.getGovernance().getReflector(),
+      // F57: the one fact a harness outside this process cannot infer.
+      getRunState: () => ({ processing: loop.isProcessing }),
       getSessionInfo: () => {
         let modelName = config.model || ''
         // For llama-cpp provider, show the actual GGUF file + spec type

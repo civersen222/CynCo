@@ -43,7 +43,7 @@ import { basename, join, dirname, resolve } from 'node:path'
 import { mkdirSync, appendFileSync, readFileSync, existsSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { createMissionCollector, buildMissionRecord, missionCommitted, missionOutcome, waitIsOver, gateDisposition, historyRewrite, QUIET_MS } from './cynco-ledger.mjs'
+import { createMissionCollector, buildMissionRecord, missionCommitted, missionOutcome, waitExitReason, gateDisposition, historyRewrite, QUIET_MS } from './cynco-ledger.mjs'
 import { runCheck } from './cynco-verify.mjs'
 import { loadMissionAssertions, sidecarPath, sealedDispatchRefusal, workspaceError } from './cynco-contract.mjs'
 import { withheldGatePaths } from '../engine/bridge/contractAutoCreate.js'
@@ -68,6 +68,7 @@ if (cwdError) {
 const TIMEOUT_S = parseInt(timeoutArg ?? '600', 10)
 const WS_URL = 'ws://localhost:9160'
 const GOV_URL = 'http://localhost:9161/api/governance'
+const RUN_URL = 'http://localhost:9161/api/run'
 const LEDGER_PATH = join(dirname(fileURLToPath(import.meta.url)), '..', 'benchmark', 'cynco-ledger', 'missions.jsonl')
 
 const task = await Bun.file(taskFile).text()
@@ -304,11 +305,32 @@ async function gitLog() {
   return await new Response(p.stdout).text()
 }
 
+/**
+ * Does the engine still have the turn open? `true`, `false`, or `null` for
+ * "nobody answered" — never a guess. F57: this is the only question that
+ * distinguishes a run that has stopped from one that is thinking, and this
+ * script spent three waves answering it by watching a socket go quiet.
+ *
+ * An engine predating /api/run returns 404, and an engine that has the route
+ * but no `getRunState` dep returns the JSON literal `null`. Both are "unknown",
+ * and both must stay distinct from `{processing:false}`.
+ */
+async function engineRunState() {
+  try {
+    const r = await fetch(RUN_URL, { headers: { Authorization: `Bearer ${inferenceToken}` } })
+    if (!r.ok) return null
+    const j = await r.json()
+    return typeof j?.processing === 'boolean' ? j.processing : null
+  } catch { return null }
+}
+
 console.log(`[driver] baseline HEAD ${baselineSha ?? '(unknown)'} — any commit after it counts as landed; "${marker}" is recorded, not required`)
 const start = Date.now()
 let landed = false
 let markerSeen = false
 let quiet = false
+let exitReason = null
+let runStateSeen = false
 while (!quiet && !zeroToolCompletion && !silentAfterDispatch && (Date.now() - start) / 1000 < TIMEOUT_S) {
   await Bun.sleep(30000)
   if (!workBegun && (Date.now() - start) / 1000 >= SILENCE_S) {
@@ -338,17 +360,51 @@ while (!quiet && !zeroToolCompletion && !silentAfterDispatch && (Date.now() - st
       landed = true
     }
   } catch (e) { console.log(`[driver] git poll failed: ${e?.message ?? e}`) }
+  // F57: ask the engine whether the turn is open before deciding it is closed.
+  const engineProcessing = await engineRunState()
+  if (engineProcessing !== null) runStateSeen = true
+  else console.log('[driver] /api/run UNANSWERED — falling back to the silence heuristic; the exit will be recorded as inferred, not observed')
   // Quiescence ends the wait whether or not anything landed. A run that lands
   // and then keeps working — amending the commit, fixing a name — must finish
   // before the check runs, or the check measures a state that no longer
   // exists. A run that stops without committing is simply over, and waiting
   // out its budget only buys a wrong label; see waitIsOver().
-  if (waitIsOver({ landed, sawMessageComplete, msSinceActivity: Date.now() - lastActivityAt, engineError })) {
-    if (engineError) console.log('[driver] leaving the wait loop on the engine error above — the git poll ran first, so a commit made before the crash is already recorded')
+  exitReason = waitExitReason({ landed, sawMessageComplete, msSinceActivity: Date.now() - lastActivityAt, engineError, engineProcessing, workBegun })
+  if (exitReason) {
+    if (exitReason === 'engine_error') console.log('[driver] leaving the wait loop on the engine error above — the git poll ran first, so a commit made before the crash is already recorded')
+    else if (exitReason === 'engine_closed_the_turn') console.log(`[driver] the engine reports the turn is closed — ${landed ? 'proceeding to verification' : 'nothing committed; the run is over'}`)
     else console.log(`[driver] run quiet for ${Math.round((Date.now() - lastActivityAt) / 1000)}s after a completed message — ${landed ? 'proceeding to verification' : 'nothing committed; the run has stopped, not stalled'}`)
     quiet = true
   }
 }
+// F57's second half: leaving the loop is this script's decision, and it does not
+// stop the engine. Wave 10 kept executing model calls for forty minutes after
+// its driver returned, in the repo the gate was about to read and the ledger was
+// about to describe. Whatever the reason for leaving, the turn must be closed
+// before the gate runs — and if the engine will not close it, the record has to
+// say so instead of implying a quiet workspace.
+let runStillOpen = false
+if (!silentAfterDispatch) {
+  if (await engineRunState() === true) {
+    console.log('[driver] engine still has the turn OPEN — sending abort')
+    try { ws.send(JSON.stringify({ type: 'abort' })) } catch (e) { console.log(`[driver] abort send failed: ${e?.message ?? e}`) }
+    const abortDeadline = Date.now() + parseInt(process.env.CYNCO_ABORT_S ?? '60', 10) * 1000
+    while (Date.now() < abortDeadline) {
+      await Bun.sleep(5000)
+      if (await engineRunState() === false) break
+    }
+    runStillOpen = await engineRunState() === true
+    if (runStillOpen) console.log('[driver] REFUSED TO STOP — the engine still has the turn open after abort. ' +
+      'Everything below measures a repo that is still being written to; the ledger records runStillOpen:true and the gate cannot speak for this delivery.')
+    else console.log('[driver] engine closed the turn on abort')
+  }
+}
+// The socket stays open on purpose for the rest of this script. The gate below
+// can run for the better part of an hour, and anything the engine does during
+// it is exactly what F57 was: work nothing was watching. Held open, those events
+// still reach the collector, and the delta below turns them into a number on the
+// record rather than a thing that happened to a repo nobody was looking at.
+const toolCountAtExit = toolCount
 if (engineError) console.log(`[driver] ENGINE ERROR outcome — the harness died, not the model: ${engineError}\n  Check the engine log for the llama-server exit code before re-dispatching; the mission budget was not the problem.`)
 else if (silentAfterDispatch) console.log('[driver] NEVER DISPATCHED — no turn ran. This says nothing about the model or the brief; ' +
   'it says this script and the engine did not agree on the wire. Log a failure entry (docs/cynco-failure-log.md).')
@@ -393,7 +449,7 @@ try {
 // is spelled as here; see gateDisposition() for why this decision has a name.
 let verified
 let verify = null
-const gate = gateDisposition({ neverDispatched: silentAfterDispatch, engineError, landed, quiet })
+const gate = gateDisposition({ neverDispatched: silentAfterDispatch, engineError, landed, quiet, runStillOpen })
 if (checkCmd && !gate.run) {
   console.log(`[verify] SKIPPED — ${gate.why}`)
 } else if (checkCmd) {
@@ -493,6 +549,14 @@ try {
     verified,
     verify,
     history,
+    // F57. `exitReason` stays null only if the loop never resolved one, which
+    // is the timeout path, and `silentAfterDispatch` has its own name for the
+    // case where no turn ever ran.
+    exitReason: exitReason ?? (silentAfterDispatch ? 'never_dispatched' : 'timeout'),
+    // Unknown when nothing ever answered /api/run — an older engine cannot be
+    // read as a quiet one.
+    runStillOpen: runStateSeen ? runStillOpen : null,
+    toolCallsAfterExit: toolCount - toolCountAtExit,
   })
   mkdirSync(dirname(LEDGER_PATH), { recursive: true })
   appendFileSync(LEDGER_PATH, JSON.stringify(record) + '\n')

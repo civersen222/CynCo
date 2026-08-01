@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 // The ledger collector is a plain .mjs module used by scripts/cynco-mission-driver.mjs
 // @ts-ignore — untyped harness module
-import { createMissionCollector, buildMissionRecord, missionCommitted, missionOutcome, waitIsOver, gateDisposition, historyRewrite, QUIET_MS } from '../../../scripts/cynco-ledger.mjs'
+import { createMissionCollector, buildMissionRecord, missionCommitted, missionOutcome, waitIsOver, waitExitReason, gateDisposition, historyRewrite, QUIET_MS } from '../../../scripts/cynco-ledger.mjs'
 
 describe('cynco mission outcome ledger', () => {
   const syntheticStream = [
@@ -435,6 +435,107 @@ describe('when the driver stops waiting, and what it calls the result', () => {
     expect(missionOutcome({ landed: true, zeroToolCompletion: true, wentQuiet: true })).toBe('landed')
     expect(missionOutcome({ landed: false, zeroToolCompletion: true, wentQuiet: true }))
       .toBe('zero_tool_fail')
+  })
+})
+
+/**
+ * F57 — the mission outlives the driver.
+ *
+ * Gilded Wave 10's engine went quiet after `message.complete`, was declared
+ * finished, graded, and written to the ledger — and was still issuing model
+ * calls forty minutes later, in the repo it had just been graded on. It used
+ * that window to reconstruct the held-out gate from a stale `.pyc`, delete a
+ * passing test to make a count match, and certify itself against its own
+ * reconstruction.
+ *
+ * Every stopping signal before this one reasoned about the run from OUTSIDE it,
+ * by watching a socket. `engineProcessing` is the loop's own `isProcessing`
+ * flag, and it is the only input here that can contradict the silence.
+ */
+describe('F57: silence is not the end of a run — the engine is asked', () => {
+  const QUIET = QUIET_MS
+  // The exact Wave 10 shape: message complete, socket silent well past the
+  // quiet window, and the loop still executing.
+  const looksFinished = { landed: true, sawMessageComplete: true, msSinceActivity: QUIET * 10, workBegun: true }
+
+  it('a run the engine says is open is not over, however long the socket has been silent', () => {
+    expect(waitExitReason({ ...looksFinished, engineProcessing: true })).toBeNull()
+    expect(waitIsOver({ ...looksFinished, engineProcessing: true })).toBe(false)
+  })
+
+  it('the engine closing the turn ends the wait without serving out the quiet window', () => {
+    // Not merely "also ends it" — it ends it a full QUIET_MS earlier than the
+    // heuristic could, on an answer instead of an inference.
+    expect(waitExitReason({ ...looksFinished, msSinceActivity: 0, engineProcessing: false }))
+      .toBe('engine_closed_the_turn')
+  })
+
+  it('a not-yet-started turn is not a finished one', () => {
+    // `processing` is legitimately false between dispatch and the first turn
+    // event. Reading that as "closed" would end every mission at the first poll,
+    // which is the same wrong answer this fix exists to prevent, inverted.
+    expect(waitExitReason({
+      landed: false, sawMessageComplete: false, msSinceActivity: 0,
+      engineProcessing: false, workBegun: false,
+    })).toBeNull()
+  })
+
+  it('an unanswered engine falls back to the heuristic and says which one it used', () => {
+    // null is "nobody answered", and it must not act like `false`. The reason
+    // string is how the ledger tells an observed exit from an inferred one.
+    expect(waitExitReason({ ...looksFinished, engineProcessing: null })).toBe('quiet_heuristic')
+    expect(waitExitReason({ ...looksFinished, msSinceActivity: 0, engineProcessing: null })).toBeNull()
+  })
+
+  it('a dead engine outranks a processing flag nobody can trust', () => {
+    // If the loop threw and unwound, `processing` may never have cleared. The
+    // crash is the stopping point; waiting on the flag would hang on a corpse.
+    expect(waitExitReason({ ...looksFinished, engineProcessing: true, engineError: 'llama-server exit 9' }))
+      .toBe('engine_error')
+  })
+
+  it('an omitted engineProcessing leaves every pre-F57 caller unchanged', () => {
+    // The default is null — unknown — not false. A default of false would
+    // declare every mission finished at its first poll.
+    expect(waitIsOver({ landed: false, sawMessageComplete: true, msSinceActivity: QUIET })).toBe(true)
+    expect(waitIsOver({ landed: false, sawMessageComplete: false, msSinceActivity: QUIET })).toBe(false)
+  })
+
+  it('a run still open after an abort cannot be labeled, but is still measured', () => {
+    const d = gateDisposition({ neverDispatched: false, engineError: null, landed: true, quiet: true, runStillOpen: true })
+    expect(d.run).toBe(true)
+    expect(d.label).toBe(false)
+    expect(d.why).toMatch(/still had the turn open/)
+  })
+
+  it('runStillOpen outranks a quiet-looking run, which is the whole finding', () => {
+    // `quiet: true` alone labels. Wave 10 was exactly this row.
+    expect(gateDisposition({ neverDispatched: false, engineError: null, landed: true, quiet: true }).label).toBe(true)
+    expect(gateDisposition({ neverDispatched: false, engineError: null, landed: true, quiet: true, runStillOpen: true }).label).toBe(false)
+  })
+
+  it('an unknown run state does not demote — only an answered "still open" does', () => {
+    // null means no /api/run to ask. Demoting on unknown would make every
+    // mission against an older engine unlabelable, and a guard that fires on
+    // everything is one nobody reads.
+    expect(gateDisposition({ neverDispatched: false, engineError: null, landed: true, quiet: true, runStillOpen: null }).label).toBe(true)
+  })
+
+  it('the record keeps all three F57 fields, and unknown is null rather than absent', () => {
+    const c = { turns: [], s5Decisions: [], controlSignals: [], toolTransport: {}, toolStats: {}, taskIds: [] }
+    const bare = buildMissionRecord(c, { missionId: 'm', briefFile: 'b', marker: 'M', cwd: '.', dispatchedAt: 'now', durationS: 1, outcome: 'landed' })
+    expect(bare.exitReason).toBeNull()
+    expect(bare.runStillOpen).toBeNull()
+    expect(bare.toolCallsAfterExit).toBeNull()
+    const full = buildMissionRecord(c, {
+      missionId: 'm', briefFile: 'b', marker: 'M', cwd: '.', dispatchedAt: 'now', durationS: 1, outcome: 'landed',
+      exitReason: 'quiet_heuristic', runStillOpen: false, toolCallsAfterExit: 0,
+    })
+    expect(full.exitReason).toBe('quiet_heuristic')
+    // `false` and `0` must survive the `??` defaults — a run measured as closed
+    // is a different fact from a run nobody asked about.
+    expect(full.runStillOpen).toBe(false)
+    expect(full.toolCallsAfterExit).toBe(0)
   })
 })
 
@@ -948,6 +1049,49 @@ describe('history-rewrite wiring guard', () => {
     const seen = new Set<string>()
     const dupes = names.filter((n) => (seen.has(n) ? true : (seen.add(n), false)))
     expect(dupes).toEqual([])
+  })
+
+  /**
+   * F57's wiring. `waitExitReason` can be perfectly correct with the driver
+   * never asking /api/run, and the failure would look exactly like the bug:
+   * `engineProcessing` undefined, the heuristic in charge, and a record that
+   * says `quiet_heuristic` while claiming to have asked.
+   */
+  it('the driver asks the engine whether the turn is open', () => {
+    expect(driver).toContain("/api/run")
+    // The answer must reach the decision, not just the console.
+    expect(driver).toMatch(/waitExitReason\(\{[^}]*\bengineProcessing\b/)
+    // And `workBegun` with it, or a pre-dispatch `processing:false` ends the
+    // mission at its first poll.
+    expect(driver).toMatch(/waitExitReason\(\{[^}]*\bworkBegun\b/)
+  })
+
+  it('an unparseable run state is null, never false', () => {
+    // A non-OK response or a body without a boolean `processing` is "nobody
+    // answered". Coercing either to false restores the finding with a
+    // confident-looking field behind it.
+    expect(driver).toMatch(/if \(!r\.ok\) return null/)
+    expect(driver).toMatch(/typeof j\?\.processing === 'boolean' \? j\.processing : null/)
+  })
+
+  it('leaving the wait loop is not the same as stopping the engine', () => {
+    // The driver's decision to leave does not reach the engine. Wave 10 kept
+    // working for forty minutes after this point, in the repo the gate below
+    // was about to read.
+    expect(driver).toMatch(/ws\.send\(JSON\.stringify\(\{ type: 'abort' \}\)\)/)
+    const loopEnd = driver.indexOf('let runStillOpen = false')
+    const abort = driver.indexOf("type: 'abort'")
+    const gate = driver.indexOf('const gate = gateDisposition({')
+    expect(loopEnd).toBeGreaterThan(-1)
+    expect(abort).toBeGreaterThan(loopEnd)
+    expect(gate).toBeGreaterThan(abort)
+  })
+
+  it('an engine that refuses to stop reaches the record and withholds the label', () => {
+    expect(driver).toMatch(/gateDisposition\(\{[^}]*\brunStillOpen\b/)
+    expect(driver).toMatch(/runStillOpen: runStateSeen \? runStillOpen : null/)
+    // Post-exit activity is counted, not inferred from timestamps afterwards.
+    expect(driver).toMatch(/toolCallsAfterExit: toolCount - toolCountAtExit/)
   })
 
   it('every HEAD read names the workspace it is asking about', () => {

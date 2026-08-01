@@ -40,6 +40,18 @@ export interface DashboardDeps {
   getToolScorer?: () => any
   getS4Reflector?: () => any
   getSessionInfo?: () => { model: string; contextLength: number; tier?: string } | null
+  /**
+   * F57: is the conversation loop still working on a turn?
+   *
+   * Every other signal about this is a proxy. The mission driver decided a run
+   * was over by watching for silence on its WebSocket, and Gilded Wave 10 went
+   * quiet, was filed as finished, and then kept running for another forty
+   * minutes with write access to the repo it had just been graded on — long
+   * enough to reconstruct the held-out gate from stale bytecode and certify
+   * itself against it. Silence is a symptom; `processing` is the run itself,
+   * and this is the only way for anything outside the engine process to ask.
+   */
+  getRunState?: () => { processing: boolean }
   applyEngineConfig?: (patches: Record<string, unknown>) => { applied: Record<string, unknown>; errors: { field: string; message: string }[] }
   setToolRouting?: (enabled: boolean) => void
   getToolRouting?: () => boolean
@@ -328,6 +340,13 @@ export class DashboardServer {
               return this.getSessions()
             case '/api/session':
               return jsonResponse(this.deps.getSessionInfo?.() ?? null)
+            case '/api/run':
+              // `null` when the engine did not wire the dep, and it must stay
+              // distinguishable from `{processing:false}`. A caller that reads
+              // "not wired" as "not running" is exactly the F57 mistake with a
+              // new coat of paint: it would conclude the run is over from the
+              // absence of an answer.
+              return jsonResponse(this.deps.getRunState?.() ?? null)
             case '/api/subsystems': {
               const recorder = (() => { try { return require('../training/trajectoryRecorder.js').getTrajectoryRecorder() } catch { return null } })()
               return jsonResponse({

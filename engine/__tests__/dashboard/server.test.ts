@@ -407,3 +407,61 @@ describe('integration: event flow', () => {
     await new Promise(r => setTimeout(r, 50))
   })
 })
+
+/**
+ * F57 — /api/run is the only way anything outside the engine process can learn
+ * whether the conversation loop still has a turn open.
+ *
+ * The mission driver used to decide a run was finished by watching its
+ * WebSocket go silent. Gilded Wave 10 went silent, was graded, was written to
+ * the ledger as landed — and kept executing model calls for another forty
+ * minutes in the repo it had just been graded on, long enough to reconstruct
+ * the held-out gate from stale bytecode and certify itself against it. Silence
+ * is a symptom of stopping and equally a symptom of thinking. This route is the
+ * difference between inferring and asking.
+ */
+describe('/api/run — is the turn still open', () => {
+  const RUN_PORT = 19182
+  const RUN_BASE = `http://localhost:${RUN_PORT}`
+  let processing = false
+  let runServer: DashboardServer
+  let bareServer: DashboardServer
+
+  beforeAll(async () => {
+    runServer = new DashboardServer({
+      port: RUN_PORT,
+      tokens: _tokens,
+      deps: { getRunState: () => ({ processing }) },
+    })
+    bareServer = new DashboardServer({ port: RUN_PORT + 6, tokens: _tokens })
+    await new Promise(r => setTimeout(r, 100))
+  })
+
+  afterAll(() => {
+    runServer.stop()
+    bareServer.stop()
+  })
+
+  it('reports the loop state as the engine sees it, both ways', async () => {
+    // Both directions, because a route hard-coded to either value passes a
+    // one-sided test forever.
+    processing = true
+    expect(await authFetch(`${RUN_BASE}/api/run`).then(r => r.json())).toEqual({ processing: true })
+    processing = false
+    expect(await authFetch(`${RUN_BASE}/api/run`).then(r => r.json())).toEqual({ processing: false })
+  })
+
+  it('an engine that wired no run state answers null, not "not running"', async () => {
+    // The caller has to be able to tell "the loop is idle" from "this engine
+    // cannot say". Collapsing them is the F57 mistake one layer down: the
+    // driver would read a missing answer as permission to grade.
+    const res = await authFetch(`http://localhost:${RUN_PORT + 6}/api/run`)
+    expect(res.status).toBe(200)
+    expect(await res.json()).toBeNull()
+  })
+
+  it('the route is behind the token gate like every other read', async () => {
+    const res = await fetch(`${RUN_BASE}/api/run`)
+    expect(res.status).toBe(401)
+  })
+})
