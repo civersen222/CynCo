@@ -78,6 +78,7 @@ import { estimateTokensAsync } from '../engine/contextBudget.js'
 import { checkCommitScope } from './commitScope.js'
 import { applyToolFloor, attributeRemoval } from './toolFloor.js'
 import { enforcementNudgeText } from './enforcementNudge.js'
+import { cyncoHome } from '../paths.js'
 import { saysDone, shouldNudge } from './nudgeDecision.js'
 import { isMalformedInput } from '../engine/toolCallRepair.js'
 import { extractSimulatedToolCalls } from '../ollama/simulated.js'
@@ -296,7 +297,7 @@ export class ConversationLoop {
   private emit: (event: EngineEvent) => void
   private executor: ToolExecutor
   private toolScorer = new ToolScorer()
-  private toolScorerPath = require('path').join(require('os').homedir(), '.cynco', 'tool-scores.json')
+  private toolScorerPath = require('path').join(cyncoHome(), 'tool-scores.json')
   // Observed task difficulty from turn telemetry — feeds S5Input.promptDifficulty
   private difficultyClassifier = new DifficultyClassifier()
   // Grounding trigger: concepts fired on, awaiting a re-edit to judge intervention success
@@ -1154,7 +1155,7 @@ export class ConversationLoop {
         const fs = await import('fs')
         const cwd = this.executor['cwd'] ?? process.cwd()
         const projectHash = crypto.createHash('md5').update(cwd).digest('hex').slice(0, 8)
-        const continuityDir = path.join(os.homedir(), '.cynco', 'continuity', projectHash)
+        const continuityDir = path.join(cyncoHome(), 'continuity', projectHash)
         const hasLedger = fs.existsSync(path.join(continuityDir, 'ledger.json'))
         const hasLearnings = fs.existsSync(path.join(continuityDir, 'learnings.json'))
         const hasFiles = fs.existsSync(cwd) && fs.readdirSync(cwd).filter(
@@ -1683,7 +1684,7 @@ export class ConversationLoop {
           // Persist everything — population configs, strategy memory graph
           const os = require('os')
           const path = require('path')
-          const popDir = path.join(os.homedir(), '.cynco', 'population')
+          const popDir = path.join(cyncoHome(), 'population')
           pop.save()
           stratMem.save(popDir)
 

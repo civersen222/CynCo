@@ -6,7 +6,7 @@
 
 import { readFileSync, existsSync, readdirSync } from 'fs'
 import { join } from 'path'
-import { homedir } from 'os'
+import { cyncoHome } from '../paths.js'
 
 export type Template = {
   name: string
@@ -19,7 +19,7 @@ export class TemplateLoader {
   private projectDir: string
 
   constructor(projectRoot?: string) {
-    this.globalDir = join(homedir(), '.cynco', 'prompts')
+    this.globalDir = join(cyncoHome(), 'prompts')
     this.projectDir = join(projectRoot ?? process.cwd(), '.cynco', 'prompts')
   }
 

@@ -13,7 +13,7 @@
  */
 import { readdirSync, readFileSync, existsSync } from 'fs'
 import { join } from 'path'
-import { homedir } from 'os'
+import { cyncoHome } from '../engine/paths.js'
 
 type Entropy = { n: number; mean: number; min: number; max: number }
 type BrainRow = {
@@ -72,7 +72,7 @@ function fmt(s: { n: number; mean: number; sd: number } | null): string {
 
 function main(): number {
   const argDir = process.argv.indexOf('--dir')
-  const base = argDir >= 0 ? process.argv[argDir + 1] : join(homedir(), '.cynco')
+  const base = argDir >= 0 ? process.argv[argDir + 1] : cyncoHome()
   const brainDir = join(base, 'brain')
   const trajDir = join(base, 'trajectories')
   const rewardDir = join(base, 'rewards')

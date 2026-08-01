@@ -14,7 +14,6 @@
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import { readFileSync, existsSync } from 'fs'
-import { homedir } from 'os'
 import type { Server, ServerWebSocket } from 'bun'
 import type { EngineEvent } from '../bridge/protocol.js'
 import { validateCommand } from '../bridge/commandSchema.js'
@@ -28,6 +27,7 @@ import {
   GATE_MIN_USABLE,
 } from '../training/datasetBuilder.js'
 import type { TokenSet, TokenScope } from '../security/localToken.js'
+import { cyncoHome } from '../paths.js'
 
 // ---------------------------------------------------------------------------
 // DashboardDeps — optional callbacks into the engine
@@ -372,8 +372,8 @@ export class DashboardServer {
             }
             case '/api/training': {
               try {
-                const trajDir = join(homedir(), '.cynco', 'trajectories')
-                const rewDir = join(homedir(), '.cynco', 'rewards')
+                const trajDir = join(cyncoHome(), 'trajectories')
+                const rewDir = join(cyncoHome(), 'rewards')
 
                 // loadSnapshots: false — this endpoint is polled and a snapshot
                 // runs to 2 MB. Eligibility only needs the file to exist.
@@ -645,7 +645,7 @@ window.__CYNCO_TOKEN = ${JSON.stringify(token)};
 
   private getHistory(): Response {
     try {
-      const eventsPath = join(homedir(), '.cynco', 'audit-log', 'events.jsonl')
+      const eventsPath = join(cyncoHome(), 'audit-log', 'events.jsonl')
       if (!existsSync(eventsPath)) {
         return jsonResponse([])
       }
@@ -694,7 +694,7 @@ window.__CYNCO_TOKEN = ${JSON.stringify(token)};
     // answers and must not render the same.
     if (!SESSION_ID_RE.test(sessionId)) return jsonResponse({ error: 'invalid session id' }, 400)
     try {
-      const sessionDir = this.deps.sessionsDir ?? join(homedir(), '.cynco', 'sessions')
+      const sessionDir = this.deps.sessionsDir ?? join(cyncoHome(), 'sessions')
       const sessionFile = join(sessionDir, `${sessionId}.jsonl`)
       if (!existsSync(sessionFile)) return jsonResponse([])
       const lines = readFileSync(sessionFile, 'utf-8').trim().split('\n')

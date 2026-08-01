@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'bun:test'
+import { join } from 'node:path'
 import { LearningStore, defaultLearningsDbPath } from '../../memory/learningStore.js'
+import { cyncoHome } from '../../paths.js'
 
 describe('LearningStore.save (schema + bitemporal + counters)', () => {
   it('saves a learning and reads it back with defaults', () => {
@@ -38,8 +40,12 @@ describe('LearningStore.save (schema + bitemporal + counters)', () => {
     store.close()
   })
 
-  it('defaultLearningsDbPath points under ~/.cynco', () => {
-    expect(defaultLearningsDbPath()).toContain('.cynco')
-    expect(defaultLearningsDbPath()).toContain('learnings.db')
+  it('defaultLearningsDbPath points under the CynCo state directory', () => {
+    // Was `toContain('.cynco')` — the literal directory name, which is the
+    // mechanism, not the property. The property is that the learnings DB lives
+    // under whatever CynCo currently calls home, and that is what has to keep
+    // holding once CYNCO_HOME can move it (F58). `toBe` over `toContain` also
+    // pins the filename to a position rather than to "appears somewhere".
+    expect(defaultLearningsDbPath()).toBe(join(cyncoHome(), 'learnings.db'))
   })
 })

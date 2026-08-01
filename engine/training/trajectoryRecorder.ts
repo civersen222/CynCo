@@ -8,9 +8,9 @@
 
 import { appendFileSync, mkdirSync, openSync, fsyncSync, closeSync, writeFileSync } from 'fs'
 import { join } from 'path'
-import { homedir } from 'os'
 import { sanitizeMessages } from './messageSnapshot.js'
 import type { Message } from '../types.js'
+import { cyncoHome } from '../paths.js'
 
 // ─── Types ────────────────────────────────────────────────────────
 
@@ -143,10 +143,10 @@ export class TrajectoryRecorder {
   private _messageStartIdx: number | null = null
 
   constructor(baseDir?: string, rewardDir?: string) {
-    this.baseDir = baseDir ?? join(homedir(), '.cynco', 'trajectories')
+    this.baseDir = baseDir ?? join(cyncoHome(), 'trajectories')
     this.rewardDir = rewardDir
-      ?? (baseDir ? join(baseDir, 'rewards') : join(homedir(), '.cynco', 'rewards'))
-    this.brainDir = baseDir ? join(baseDir, 'brain') : join(homedir(), '.cynco', 'brain')
+      ?? (baseDir ? join(baseDir, 'rewards') : join(cyncoHome(), 'rewards'))
+    this.brainDir = baseDir ? join(baseDir, 'brain') : join(cyncoHome(), 'brain')
     mkdirSync(this.baseDir, { recursive: true })
   }
 

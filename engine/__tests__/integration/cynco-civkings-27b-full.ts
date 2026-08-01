@@ -1,3 +1,4 @@
+import { cyncoHome } from '../../paths.js'
 #!/usr/bin/env bun
 /**
  * CivKings full sprint with Qwen3.6-27B dense (27B active params).
@@ -280,8 +281,8 @@ log(`Tools: ${greps} searches, ${reads} reads, ${edits} edits/writes, ${bashes} 
 
 const fs = require('fs'), os = require('os'), path = require('path')
 try {
-  const s5 = fs.readFileSync(path.join(os.homedir(), '.cynco', 'training', 's5-decisions.jsonl'), 'utf-8').trim().split('\n').length
-  const s1 = fs.readFileSync(path.join(os.homedir(), '.cynco', 'training', 's1-decisions.jsonl'), 'utf-8').trim().split('\n').length
+  const s5 = fs.readFileSync(path.join(cyncoHome(), 'training', 's5-decisions.jsonl'), 'utf-8').trim().split('\n').length
+  const s1 = fs.readFileSync(path.join(cyncoHome(), 'training', 's1-decisions.jsonl'), 'utf-8').trim().split('\n').length
   log(`Training data: S5=${s5}, S1=${s1}`)
 } catch { log('Training journal not found') }
 

@@ -1,3 +1,4 @@
+import { cyncoHome } from '../../paths.js'
 #!/usr/bin/env bun
 /**
  * CynCo CivKings Sprint — Automated task runner.
@@ -178,7 +179,7 @@ log(`Messages completed: ${messageCompleteCount}`)
 const fs = require('fs')
 const os = require('os')
 const path = require('path')
-const journalPath = path.join(os.homedir(), '.cynco', 'training', 's5-decisions.jsonl')
+const journalPath = path.join(cyncoHome(), 'training', 's5-decisions.jsonl')
 try {
   const lines = fs.readFileSync(journalPath, 'utf-8').trim().split('\n').length
   log(`S5 training entries: ${lines}`)

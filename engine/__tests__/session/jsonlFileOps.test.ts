@@ -1,10 +1,10 @@
 import { describe, expect, it, afterEach } from 'bun:test'
 import { existsSync, rmSync } from 'fs'
 import { join } from 'path'
-import { homedir } from 'os'
 import { JSONLStore } from '../../session/jsonlStore.js'
+import { cyncoHome } from '../../paths.js'
 
-function sessionFile(id: string) { return join(homedir(), '.cynco', 'sessions', `${id}.jsonl`) }
+function sessionFile(id: string) { return join(cyncoHome(), 'sessions', `${id}.jsonl`) }
 
 describe('JSONLStore file-ops + session-end marker', () => {
   const id = `test-fileops-${Date.now()}`

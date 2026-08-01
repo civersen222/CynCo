@@ -4,6 +4,7 @@ import type { DifficultyLevel } from '../vsm/difficultyClassifier.js'
 import { getJournal } from '../training/decisionJournal.js'
 import { makeJournalEntry } from '../training/types.js'
 import { RuleWeightManager } from './ruleWeights.js'
+import { cyncoHome } from '../paths.js'
 
 const MAX_HISTORY = 100
 
@@ -53,7 +54,7 @@ export class S5Orchestrator {
     try {
       const os = require('os')
       const path = require('path')
-      const dir = path.join(os.homedir(), '.cynco', 'training')
+      const dir = path.join(cyncoHome(), 'training')
       this.ruleWeights = new RuleWeightManager(dir)
     } catch {
       // Non-fatal — weights just won't persist

@@ -5,17 +5,17 @@
 //   CYNCO_NTFY_URL=http://100.x.y.z:8090 CYNCO_NTFY_TOKEN=tk_... bun engine/daemon/main.ts
 import { existsSync, readdirSync, mkdirSync } from 'fs'
 import { join } from 'path'
-import { homedir } from 'os'
 import { MissionLedger } from './missionLedger.js'
 import { MissionRunner } from './missionRunner.js'
 import { NtfyChannel } from './ntfyChannel.js'
 import { TaskRunner } from './taskRunner.js'
 import { buildMflExportUrl, loadMflApiKey } from '../tools/impl/mfl.js'
 import { createHash } from 'crypto'
+import { cyncoHome } from '../paths.js'
 
 const TICK_MS = 30000
 
-const missionsDir = process.env.CYNCO_MISSIONS_DIR ?? join(homedir(), '.cynco', 'missions')
+const missionsDir = process.env.CYNCO_MISSIONS_DIR ?? join(cyncoHome(), 'missions')
 const ntfyUrl = process.env.CYNCO_NTFY_URL
 if (!ntfyUrl) {
   console.error('[daemon] CYNCO_NTFY_URL is required (e.g. http://<tailscale-ip>:8090)')

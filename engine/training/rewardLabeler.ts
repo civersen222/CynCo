@@ -9,9 +9,9 @@
 
 import { writeFileSync, readFileSync, mkdirSync, existsSync } from 'fs'
 import { join } from 'path'
-import { homedir } from 'os'
 import { buildComponents } from './taskOutcome.js'
 import type { TaskOutcomeInput } from './taskOutcome.js'
+import { cyncoHome } from '../paths.js'
 
 /**
  * Which semantics produced a reward record.
@@ -164,7 +164,7 @@ export function finalizeTask(
   baseDir?: string,
   outcome?: TaskOutcomeInput,
 ): TaskReward {
-  const dir = baseDir ?? join(homedir(), '.cynco', 'rewards')
+  const dir = baseDir ?? join(cyncoHome(), 'rewards')
   mkdirSync(dir, { recursive: true })
 
   // The evidence, not just the verdict. Finding (z): buildComponents was called
@@ -227,7 +227,7 @@ export function finalizeTask(
  * two cannot drift apart.
  */
 export function relabel(taskId: string, baseDir?: string): TaskReward | null {
-  const dir = baseDir ?? join(homedir(), '.cynco', 'rewards')
+  const dir = baseDir ?? join(cyncoHome(), 'rewards')
   const outcomePath = join(dir, `${taskId}.outcome.json`)
   if (!existsSync(outcomePath)) return null
 
@@ -279,7 +279,7 @@ function applyQuarantine(taskId: string, q: { reason: string; at: string }, dir:
  * rewrite the history of when a row left the corpus.
  */
 export function quarantine(taskId: string, reason: string, baseDir?: string): TaskReward {
-  const dir = baseDir ?? join(homedir(), '.cynco', 'rewards')
+  const dir = baseDir ?? join(cyncoHome(), 'rewards')
   const record = readReward(taskId, dir)
   if (!record) throw new Error(`no reward record for ${taskId} — nothing to quarantine`)
   if (reason.trim() === '') throw new Error('a quarantine needs a reason')

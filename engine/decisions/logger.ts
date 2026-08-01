@@ -1,6 +1,6 @@
 import { mkdirSync, appendFileSync, readFileSync, existsSync, readdirSync } from 'fs'
 import { join } from 'path'
-import { homedir } from 'os'
+import { cyncoHome } from '../paths.js'
 
 export type DecisionRecord = {
   timestamp: number
@@ -20,7 +20,7 @@ export class DecisionLogger {
   private dir: string
 
   constructor(dir?: string) {
-    this.dir = dir ?? join(homedir(), '.cynco', 'decisions')
+    this.dir = dir ?? join(cyncoHome(), 'decisions')
     mkdirSync(this.dir, { recursive: true })
   }
 

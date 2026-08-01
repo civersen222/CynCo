@@ -25,7 +25,7 @@
  *   bun benchmark/true/grounding/abRun.ts --task city-yield-consumers --reps 1   # smoke
  */
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs'
-import { tmpdir, homedir } from 'node:os'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { loadConfig } from '../../../engine/config.js'
 import { bootstrapProvider } from '../../../engine/bootstrapProvider.js'
@@ -34,6 +34,7 @@ import { cloneRepo, checkoutRef, applyPatch, removeWorkdir } from '../harness/is
 import { runTask, countTurns } from '../harness/driver.js'
 import { scorePytest } from '../harness/scorer.js'
 import { runSuite, type RunOneArgs } from '../harness/orchestrate.js'
+import { cyncoHome } from '../../../engine/paths.js'
 
 function arg(name: string, fallback: string): string {
   const i = process.argv.indexOf(name)
@@ -52,7 +53,7 @@ async function main() {
 
   // Start from a clean grounding rates file so the gate fail-opens (fires) at the
   // start of the ON arm rather than inheriting a stale, possibly-suppressed rate.
-  const ratesFile = join(homedir(), '.cynco', 'training', 'intervention-rates.json')
+  const ratesFile = join(cyncoHome(), 'training', 'intervention-rates.json')
   if (existsSync(ratesFile)) {
     const bak = ratesFile + `.bak-${Date.now()}`
     rmSync(ratesFile, { force: true })

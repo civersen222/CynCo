@@ -8,6 +8,7 @@
  */
 
 import type { LocalCodeConfig } from '../config.js'
+import { cyncoHome } from '../paths.js'
 import type {
   ConfigCurrentEvent,
   ConfigUpdatedEvent,
@@ -215,7 +216,7 @@ export function handleProfileWrite(
     const fs = require('fs')
     const path = require('path')
     const os = require('os')
-    const dir = profilesDir ?? path.join(os.homedir(), '.cynco', 'profiles')
+    const dir = profilesDir ?? path.join(cyncoHome(), 'profiles')
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
     const filePath = path.join(dir, `${name}.yml`)
     fs.writeFileSync(filePath, yaml, 'utf-8')

@@ -7,8 +7,8 @@
  */
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync } from 'fs'
 import { join } from 'path'
-import { homedir } from 'os'
 import type { EntropyDigest } from './uncertaintyTracker.js'
+import { cyncoHome } from '../paths.js'
 
 export type TurnEntropy = { thinking: EntropyDigest | null; output: EntropyDigest | null; tool: EntropyDigest | null }
 
@@ -22,7 +22,7 @@ export type TurnThinkingRecord = {
 }
 
 function defaultDir(): string {
-  return join(homedir(), '.cynco', 'sessions')
+  return join(cyncoHome(), 'sessions')
 }
 
 function fileFor(sessionId: string, dir?: string): string {

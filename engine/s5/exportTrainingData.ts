@@ -10,6 +10,7 @@
  */
 
 import type { JournalEntry } from '../training/types.js'
+import { cyncoHome } from '../paths.js'
 
 export type TrainingExample = { input: string; output: string }
 
@@ -129,9 +130,9 @@ export function exportViableExamples(opts: {
 if (import.meta.main) {
   const os = require('os')
   const path = require('path')
-  const journalPath = process.argv[2] ?? path.join(os.homedir(), '.cynco', 'training', 's5-decisions.jsonl')
-  const dbPath = process.argv[3] ?? path.join(os.homedir(), '.cynco', 'governance', 'governance.db')
-  const outPath = process.argv[4] ?? path.join(os.homedir(), '.cynco', 'training', 's5_training_data.jsonl')
+  const journalPath = process.argv[2] ?? path.join(cyncoHome(), 'training', 's5-decisions.jsonl')
+  const dbPath = process.argv[3] ?? path.join(cyncoHome(), 'governance', 'governance.db')
+  const outPath = process.argv[4] ?? path.join(cyncoHome(), 'training', 's5_training_data.jsonl')
   const outcomeBySession = loadOutcomesFromDb(dbPath)
   const { written } = exportViableExamples({ journalPath, outPath, outcomeBySession })
   console.log(`[export] wrote ${written} viable-session example(s) to ${outPath}`)

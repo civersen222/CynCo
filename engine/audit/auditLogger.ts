@@ -5,8 +5,8 @@
 
 import { appendFileSync, mkdirSync, existsSync, openSync, fsyncSync, closeSync, writeFileSync, readFileSync } from 'fs'
 import { join } from 'path'
-import { homedir } from 'os'
 import { createHash } from 'crypto'
+import { cyncoHome } from '../paths.js'
 
 const STREAMS = [
   'events',
@@ -46,7 +46,7 @@ class AuditLoggerImpl {
   private taskSuccess: boolean | null = null
 
   init(sessionId: string, projectCwd: string, model?: string): void {
-    this.dir = join(homedir(), '.cynco', 'audit-log')
+    this.dir = join(cyncoHome(), 'audit-log')
     mkdirSync(this.dir, { recursive: true })
     this.sessionId = sessionId
     this.projectId = createHash('sha256').update(projectCwd).digest('hex').slice(0, 12)

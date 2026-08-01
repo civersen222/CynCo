@@ -55,6 +55,7 @@ import { RegulatorFidelityTracker } from './regulatorFidelity.js'
 import { globalContract } from '../tools/contract.js'
 import { getJournal } from '../training/decisionJournal.js'
 import { makeJournalEntry } from '../training/types.js'
+import { cyncoHome } from '../paths.js'
 
 // ─── Task Complexity Estimator (S4: environment scanning) ─────
 
@@ -218,7 +219,7 @@ export class CyberneticsGovernance {
     try {
       const os = require('os')
       const path = require('path')
-      const popDir = path.join(os.homedir(), '.cynco', 'population')
+      const popDir = path.join(cyncoHome(), 'population')
       const fs = require('fs')
       if (fs.existsSync(path.join(popDir, 'config_00.json'))) {
         this._population = ConfigPopulation.load(popDir)
@@ -261,7 +262,7 @@ export class CyberneticsGovernance {
     try {
       const os = require('os')
       const path = require('path')
-      const dbDir = path.join(os.homedir(), '.cynco', 'governance')
+      const dbDir = path.join(cyncoHome(), 'governance')
       require('fs').mkdirSync(dbDir, { recursive: true })
       const { GovernanceDB } = require('./governanceDb.js')
       this._db = new GovernanceDB(path.join(dbDir, 'governance.db'))

@@ -45,6 +45,7 @@ import { loadOrCreateTokens, TOKEN_FILENAME } from './security/localToken.js'
 import { DashboardServer } from './dashboard/server.js'
 import { ActivationsConsumer } from './brain/activationsConsumer.js'
 import { JlensClient } from './brain/jlensClient.js'
+import { cyncoHome } from './paths.js'
 
 // ─── MCP Discovery (standalone — standalone implementation) ──────
 
@@ -56,7 +57,7 @@ async function discoverMcpServers(): Promise<{ name: string; status: string }[]>
 
   // Check user-level and project-level MCP config files
   const configPaths = [
-    path.join(os.homedir(), '.cynco', 'mcp_servers.json'),
+    path.join(cyncoHome(), 'mcp_servers.json'),
     path.join(os.homedir(), '.config', 'synco', 'mcp_servers.json'),
     path.join(process.cwd(), '.mcp', 'servers.json'),
     path.join(process.cwd(), '.cynco', 'mcp_servers.json'),
@@ -91,7 +92,7 @@ try {
   const path = require('path')
   const fs = require('fs')
   const oldDir = path.join(os.homedir(), '.localcode')
-  const newDir = path.join(os.homedir(), '.cynco')
+  const newDir = cyncoHome()
   if (fs.existsSync(oldDir) && !fs.existsSync(newDir)) {
     fs.renameSync(oldDir, newDir)
     console.log(`[cynco] Migrated state ~/.localcode → ~/.cynco`)
@@ -158,9 +159,9 @@ if (exportTrainingIdx !== -1) {
   const os = await import('os')
   const path = await import('path')
   const outPath = process.argv[exportTrainingIdx + 1]
-    ?? path.join(os.homedir(), '.cynco', 'training', 's5_training_data.jsonl')
-  const journalPath = path.join(os.homedir(), '.cynco', 'training', 's5-decisions.jsonl')
-  const dbPath = path.join(os.homedir(), '.cynco', 'governance', 'governance.db')
+    ?? path.join(cyncoHome(), 'training', 's5_training_data.jsonl')
+  const journalPath = path.join(cyncoHome(), 'training', 's5-decisions.jsonl')
+  const dbPath = path.join(cyncoHome(), 'governance', 'governance.db')
   const { loadOutcomesFromDb, exportViableExamples } = await import('./s5/exportTrainingData.js')
   const outcomeBySession = loadOutcomesFromDb(dbPath)
   const { written } = exportViableExamples({ journalPath, outPath, outcomeBySession })
@@ -276,7 +277,7 @@ try {
   const { GovernanceDB } = await import('./vsm/governanceDb.js')
   const os = require('os')
   const path = require('path')
-  const dbPath = path.join(os.homedir(), '.cynco', 'governance', 'governance.db')
+  const dbPath = path.join(cyncoHome(), 'governance', 'governance.db')
   const db = new GovernanceDB(dbPath)
   const purged = db.purgeDegenerateSessions()
   if (purged > 0) console.log(`[govdb] purged ${purged} degenerate (zero-turn) session(s)`)
@@ -1101,7 +1102,7 @@ async function handleCommand(command: TUICommand): Promise<void> {
         const crypto = await import('crypto')
         const cwd = process.cwd()
         const projectHash = crypto.createHash('md5').update(cwd).digest('hex').slice(0, 8)
-        const baseDir = path.join(os.homedir(), '.cynco', 'continuity', projectHash)
+        const baseDir = path.join(cyncoHome(), 'continuity', projectHash)
         const project = cwd.split(/[/\\]/).pop() || 'unknown'
 
         const handoffData = loop.buildHandoff()

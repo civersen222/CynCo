@@ -1,12 +1,12 @@
 import { readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { join } from 'path'
-import { homedir } from 'os'
 import type { InterventionTracker, InterventionCounts } from './interventionTracker.js'
+import { cyncoHome } from '../paths.js'
 
 const FILE = 'intervention-rates.json'
 
 function dirFor(trainingDir?: string): string {
-  return trainingDir ?? join(homedir(), '.cynco', 'training')
+  return trainingDir ?? join(cyncoHome(), 'training')
 }
 
 /** Absolute path to the rates file (exposed for tests). */

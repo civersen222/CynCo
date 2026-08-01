@@ -16,7 +16,6 @@
 import { execSync } from 'child_process'
 import { existsSync, readFileSync, mkdirSync } from 'fs'
 import { join } from 'path'
-import { homedir } from 'os'
 import {
   evaluateReadiness,
   exportDatasets,
@@ -27,8 +26,9 @@ import {
 import { parseTrainingArgs } from './trainingArgs.js'
 import { adapterNames } from './adapterNames.js'
 import { resolveAdapter } from '../llama/modelResolver.js'
+import { cyncoHome } from '../paths.js'
 
-const CYNCO_DIR = join(homedir(), '.cynco')
+const CYNCO_DIR = cyncoHome()
 const TRAJECTORY_DIR = join(CYNCO_DIR, 'trajectories')
 const REWARD_DIR = join(CYNCO_DIR, 'rewards')
 const DATASET_DIR = join(CYNCO_DIR, 'datasets')

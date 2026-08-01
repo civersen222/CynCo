@@ -2,6 +2,7 @@
 // Read-only MyFantasyLeague API tool. Write endpoints (TYPE=import) are
 // deliberately unreachable — Phase C will add them behind S5 approval gates.
 import type { ToolImpl } from '../types.js'
+import { cyncoHome } from '../../paths.js'
 
 const ALLOWED_QUERIES = new Set([
   'league',          // league settings, franchises, deep links
@@ -54,7 +55,7 @@ export function loadMflApiKey(): string | undefined {
     const os = require('os')
     const path = require('path')
     const fs = require('fs')
-    const p = path.join(os.homedir(), '.cynco', 'credentials', 'mfl.json')
+    const p = path.join(cyncoHome(), 'credentials', 'mfl.json')
     if (!fs.existsSync(p)) return undefined
     const raw = JSON.parse(fs.readFileSync(p, 'utf-8'))
     return typeof raw.apiKey === 'string' && raw.apiKey ? raw.apiKey : undefined

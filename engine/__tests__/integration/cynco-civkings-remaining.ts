@@ -1,3 +1,4 @@
+import { cyncoHome } from '../../paths.js'
 #!/usr/bin/env bun
 /**
  * CivKings remaining tasks — contracts forced, 27B dense.
@@ -157,8 +158,8 @@ log(`Writes: ${writes}, Edits: ${edits}, Contracts: ${contracts}`)
 
 const fs = require('fs'), os = require('os'), path = require('path')
 try {
-  const s5 = fs.readFileSync(path.join(os.homedir(), '.cynco', 'training', 's5-decisions.jsonl'), 'utf-8').trim().split('\n').length
-  const s1 = fs.readFileSync(path.join(os.homedir(), '.cynco', 'training', 's1-decisions.jsonl'), 'utf-8').trim().split('\n').length
+  const s5 = fs.readFileSync(path.join(cyncoHome(), 'training', 's5-decisions.jsonl'), 'utf-8').trim().split('\n').length
+  const s1 = fs.readFileSync(path.join(cyncoHome(), 'training', 's1-decisions.jsonl'), 'utf-8').trim().split('\n').length
   log(`Training: S5=${s5}, S1=${s1}`)
 } catch {}
 

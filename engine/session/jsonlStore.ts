@@ -5,7 +5,7 @@
 
 import { appendFileSync, readFileSync, existsSync, mkdirSync, readdirSync } from 'fs'
 import { join } from 'path'
-import { homedir } from 'os'
+import { cyncoHome } from '../paths.js'
 
 type Message = {
   role: 'user' | 'assistant' | 'system'
@@ -22,7 +22,7 @@ export class JSONLStore {
   private filePath: string
 
   constructor(sessionId: string) {
-    const sessionDir = join(homedir(), '.cynco', 'sessions')
+    const sessionDir = join(cyncoHome(), 'sessions')
     mkdirSync(sessionDir, { recursive: true })
     this.filePath = join(sessionDir, `${sessionId}.jsonl`)
   }
@@ -103,7 +103,7 @@ export class JSONLStore {
 
   /** Delete session files whose mtime is older than `maxAgeDays`. Returns count removed. */
   static gcOldSessions(maxAgeDays = 30): number {
-    const sessionDir = join(homedir(), '.cynco', 'sessions')
+    const sessionDir = join(cyncoHome(), 'sessions')
     if (!existsSync(sessionDir)) return 0
     const cutoff = Date.now() - maxAgeDays * 86400_000
     let removed = 0
@@ -121,7 +121,7 @@ export class JSONLStore {
   }
 
   static listSessions(): { id: string; modified: number }[] {
-    const sessionDir = join(homedir(), '.cynco', 'sessions')
+    const sessionDir = join(cyncoHome(), 'sessions')
     if (!existsSync(sessionDir)) return []
     try {
       const { statSync } = require('fs')

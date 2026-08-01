@@ -21,6 +21,7 @@ import type { ToolLike } from './messageConvert.js'
 import { translateStream } from './streamTranslator.js'
 import { filterTools } from './toolFilter.js'
 import { repairToolCall, MALFORMED_KEY } from './toolCallRepair.js'
+import { cyncoHome } from '../paths.js'
 
 // ─── Output Types ──────
 
@@ -222,7 +223,7 @@ function registerShutdownHook() {
       const path = await import('path')
       const crypto = await import('crypto')
       const projectHash = crypto.createHash('md5').update(process.cwd()).digest('hex').slice(0, 8)
-      const baseDir = path.join(os.homedir(), '.cynco', 'continuity', projectHash)
+      const baseDir = path.join(cyncoHome(), 'continuity', projectHash)
       await onSessionEnd(baseDir, process.cwd().split('/').pop() || 'unknown', {
         goal: 'Session ended normally',
         now: 'Clean shutdown',
@@ -324,7 +325,7 @@ export async function* localCallModel({
       const path = await import('path')
       const crypto = await import('crypto')
       const projectHash = crypto.createHash('md5').update(process.cwd()).digest('hex').slice(0, 8)
-      const baseDir = path.join(os.homedir(), '.cynco', 'continuity', projectHash)
+      const baseDir = path.join(cyncoHome(), 'continuity', projectHash)
 
       const handoff = globalContract.isActive()
         ? handoffFromContract(globalContract.snapshot(), {
@@ -383,7 +384,7 @@ export async function* localCallModel({
       const path = await import('path')
       const crypto = await import('crypto')
       const projectHash = crypto.createHash('md5').update(process.cwd()).digest('hex').slice(0, 8)
-      const baseDir = path.join(os.homedir(), '.cynco', 'continuity', projectHash)
+      const baseDir = path.join(cyncoHome(), 'continuity', projectHash)
       const state = await onSessionStart(baseDir, process.cwd().split('/').pop() || 'unknown')
       if (state.recentHandoffs.length > 0) {
         const lastHandoff = state.recentHandoffs[state.recentHandoffs.length - 1]

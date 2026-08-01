@@ -12,7 +12,7 @@
  */
 import { describe, expect, it, afterAll } from 'vitest'
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'fs'
-import { homedir, tmpdir } from 'os'
+import { tmpdir } from 'os'
 import { join } from 'path'
 import { ConversationLoop } from '../../bridge/conversationLoop.js'
 import { initTrajectoryRecorder } from '../../training/trajectoryRecorder.js'
@@ -20,6 +20,7 @@ import { globalContract } from '../../tools/contract.js'
 import type { Provider, ModelCapabilities, CompletionRequest } from '../../provider.js'
 import type { StreamEvent } from '../../types.js'
 import type { LocalCodeConfig } from '../../config.js'
+import { cyncoHome } from '../../paths.js'
 
 const dirs: string[] = []
 function tempDir(prefix: string): string {
@@ -160,7 +161,7 @@ describe('trajectory recording is on a live path', () => {
     const trajDir = tempDir('cynco-traj-out-')
     const recorder = initTrajectoryRecorder(trajDir)
 
-    const realCorpus = join(homedir(), '.cynco', 'rewards')
+    const realCorpus = join(cyncoHome(), 'rewards')
     const before = existsSync(realCorpus) ? readdirSync(realCorpus).length : 0
 
     const loop = new ConversationLoop({

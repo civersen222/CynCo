@@ -8,9 +8,9 @@
 
 import { appendFileSync, mkdirSync, openSync, fsyncSync, closeSync } from 'fs'
 import { join } from 'path'
-import { homedir } from 'os'
 import type { JournalEntry, BackfillRecord, SystemLevel } from './types.js'
 import { makeBackfillRecord } from './types.js'
+import { cyncoHome } from '../paths.js'
 
 // ─── File mapping ────────────────────────────────────────────────
 
@@ -31,7 +31,7 @@ export class DecisionJournalWriter {
   }
 
   constructor(trainingDir?: string) {
-    this.dir = trainingDir ?? join(homedir(), '.cynco', 'training')
+    this.dir = trainingDir ?? join(cyncoHome(), 'training')
     mkdirSync(this.dir, { recursive: true })
   }
 

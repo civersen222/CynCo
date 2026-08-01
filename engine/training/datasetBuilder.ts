@@ -16,9 +16,9 @@
 
 import { readFileSync, readdirSync, writeFileSync, existsSync, mkdirSync } from 'fs'
 import { join } from 'path'
-import { homedir } from 'os'
 import type { TaskReward } from './rewardLabeler.js'
 import type { Message, ContentBlock } from '../types.js'
+import { cyncoHome } from '../paths.js'
 
 // ─── Types ────────────────────────────────────────────────────────
 
@@ -129,8 +129,8 @@ export function loadTrajectories(
   opts: { loadSnapshots?: boolean } = {},
 ): TrajectoryWithReward[] {
   const loadSnapshots = opts.loadSnapshots !== false
-  const trajDir = trajectoryDir ?? join(homedir(), '.cynco', 'trajectories')
-  const rewDir = rewardDir ?? join(homedir(), '.cynco', 'rewards')
+  const trajDir = trajectoryDir ?? join(cyncoHome(), 'trajectories')
+  const rewDir = rewardDir ?? join(cyncoHome(), 'rewards')
 
   if (!existsSync(trajDir)) return []
 
@@ -425,7 +425,7 @@ export function exportDatasets(
   trajectoryDir?: string,
   rewardDir?: string,
 ): DatasetStats {
-  const outDir = outputDir ?? join(homedir(), '.cynco', 'datasets')
+  const outDir = outputDir ?? join(cyncoHome(), 'datasets')
   mkdirSync(outDir, { recursive: true })
 
   const trajectories = loadTrajectories(trajectoryDir, rewardDir)

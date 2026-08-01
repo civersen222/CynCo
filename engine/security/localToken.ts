@@ -21,8 +21,8 @@
 import { randomBytes, timingSafeEqual } from 'crypto'
 import { mkdirSync, readFileSync, writeFileSync, chmodSync } from 'fs'
 import { join } from 'path'
-import { homedir } from 'os'
 import { execFileSync } from 'child_process'
+import { cyncoHome } from '../paths.js'
 
 export const TOKEN_FILENAME = 'tokens.json'
 
@@ -152,7 +152,7 @@ export class TokenSet {
  * that stops the engine coming up.
  */
 export function loadOrCreateTokens(dir?: string): TokenSet {
-  const base = dir ?? join(homedir(), '.cynco')
+  const base = dir ?? cyncoHome()
   mkdirSync(base, { recursive: true })
   const path = join(base, TOKEN_FILENAME)
 

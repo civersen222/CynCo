@@ -1,7 +1,7 @@
 import { Database } from 'bun:sqlite'
 import { join } from 'path'
-import { homedir } from 'os'
 import { mkdirSync } from 'fs'
+import { cyncoHome } from '../paths.js'
 
 export type SaveLearningInput = {
   type: string
@@ -60,7 +60,7 @@ CREATE INDEX IF NOT EXISTS idx_learn_type_content ON learnings(type, content);
 `
 
 export function defaultLearningsDbPath(): string {
-  const dir = join(homedir(), '.cynco')
+  const dir = cyncoHome()
   try { mkdirSync(dir, { recursive: true }) } catch { /* ignore */ }
   return join(dir, 'learnings.db')
 }

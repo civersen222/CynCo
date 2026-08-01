@@ -1,3 +1,4 @@
+import { cyncoHome } from '../../paths.js'
 #!/usr/bin/env bun
 /**
  * CynCo CivKings Sprint v2 — Targeted prompts with exact file paths.
@@ -118,7 +119,7 @@ const fs = require('fs')
 const os = require('os')
 const path = require('path')
 try {
-  const lines = fs.readFileSync(path.join(os.homedir(), '.cynco', 'training', 's5-decisions.jsonl'), 'utf-8').trim().split('\n').length
+  const lines = fs.readFileSync(path.join(cyncoHome(), 'training', 's5-decisions.jsonl'), 'utf-8').trim().split('\n').length
   log(`S5 training entries: ${lines}`)
 } catch { log('No training journal found') }
 

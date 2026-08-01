@@ -1,10 +1,10 @@
 import { describe, expect, it, afterEach } from 'bun:test'
 import { existsSync, mkdirSync, writeFileSync, rmSync, utimesSync } from 'fs'
 import { join } from 'path'
-import { homedir } from 'os'
 import { JSONLStore } from '../../session/jsonlStore.js'
+import { cyncoHome } from '../../paths.js'
 
-const sessionsDir = join(homedir(), '.cynco', 'sessions')
+const sessionsDir = join(cyncoHome(), 'sessions')
 
 describe('JSONLStore.gcOldSessions', () => {
   const oldId = `gc-old-${Date.now()}`, newId = `gc-new-${Date.now()}`

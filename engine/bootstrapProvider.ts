@@ -15,6 +15,7 @@
 import type { Provider } from './provider.js'
 import type { LocalCodeConfig } from './config.js'
 import { resolveCapabilities } from './ollama/probe.js'
+import { cyncoHome } from './paths.js'
 
 export async function bootstrapProvider(
   config: LocalCodeConfig,
@@ -65,7 +66,7 @@ export async function bootstrapProvider(
       const os = require('os')
       const path = require('path')
 
-      const cyncoDir = path.join(os.homedir(), '.cynco')
+      const cyncoDir = cyncoHome()
       const binDir = path.join(cyncoDir, 'bin')
       const modelsDir = path.join(cyncoDir, 'models')
       const adaptersDir = path.join(cyncoDir, 'adapters')

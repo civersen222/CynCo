@@ -41,6 +41,19 @@ describe('cyncoHome', () => {
     expect(after).toBe(join('C:', 'tmp', 'cynco-second'))
   })
 
+  it('is redirected away from the real ~/.cynco while the suite runs', () => {
+    // The guard on F58 itself. `engine/__tests__/setup/cyncoHome.ts` is what
+    // makes this true; if that setup file is dropped from vitest.config.ts, or
+    // a future consumer computes ~/.cynco without going through the seam, the
+    // suite silently resumes writing into the directory the live engine reads.
+    // Asserted here, in the suite, so the regression cannot be quiet.
+    //
+    // Note this reads the ambient environment deliberately — the afterEach
+    // above restores whatever the setup file set, so this sees the real thing.
+    expect(process.env.CYNCO_HOME).toBeTruthy()
+    expect(cyncoHome()).not.toBe(join(homedir(), '.cynco'))
+  })
+
   it('treats an empty CYNCO_HOME as unset rather than as the relative path ""', () => {
     // `process.env.CYNCO_HOME ?? default` would return '' here, and every
     // consumer joins onto it — so `sessions/` would be created relative to the
