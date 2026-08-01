@@ -44,7 +44,7 @@ import { mkdirSync, appendFileSync, readFileSync, existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { createMissionCollector, buildMissionRecord, missionCommitted, missionOutcome, waitIsOver, historyRewrite, QUIET_MS } from './cynco-ledger.mjs'
 import { runCheck } from './cynco-verify.mjs'
-import { loadMissionAssertions, sidecarPath, sealedDispatchRefusal } from './cynco-contract.mjs'
+import { loadMissionAssertions, sidecarPath, sealedDispatchRefusal, workspaceError } from './cynco-contract.mjs'
 import { withheldGatePaths } from '../engine/bridge/contractAutoCreate.js'
 import { loadOrCreateTokens } from '../engine/security/localToken.js'
 
@@ -54,6 +54,16 @@ if (!taskFile || !marker) {
   process.exit(2)
 }
 const CWD = cwdArg ?? 'C:\\Users\\civer\\civkings'
+// Checked before anything is DERIVED from it. A workspace root that matches
+// nothing makes every gate path look like it lives outside the workspace, so
+// the repository itself joins the sealed set and the mission is refused its own
+// code by a refusal that by design cannot say why. See `workspaceError`.
+const cwdError = workspaceError(CWD)
+if (cwdError) {
+  console.error(`[driver] ${cwdError} — nothing was dispatched`)
+  console.error('[driver] spell the path with forward slashes: C:/Users/civer/civkings')
+  process.exit(2)
+}
 const TIMEOUT_S = parseInt(timeoutArg ?? '600', 10)
 const WS_URL = 'ws://localhost:9160'
 const GOV_URL = 'http://localhost:9161/api/governance'
