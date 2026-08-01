@@ -418,8 +418,13 @@ export const contractAssertPassTool: ToolImpl = {
     // text no longer parsed, so nothing ran and the model's word stood.
     const a = globalContract.assertionAt(index)
     const text = a?.text ?? null
+    // `withheld` travels with the check because only this site knows the
+    // difference: `a.command` is the held-out gate, carried BESIDE a redacted
+    // text, while `assertionCheck(text)` recovers a command the text already
+    // names out loud. Without the flag the failure message leaked the gate
+    // (F34).
     let check: AssertionCheck | null = a?.command
-      ? { kind: 'command', command: a.command }
+      ? { kind: 'command', command: a.command, withheld: true }
       : text ? assertionCheck(text) : null
     if (check?.kind === 'command' && globalContract.getOrigin() !== 'harness') check = null
     if (check) {

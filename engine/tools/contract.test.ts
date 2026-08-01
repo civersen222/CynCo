@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { globalContract, contractCreateTool, contractAssertPassTool } from './contract.js'
-import { COMMITTED_ASSERTION, fileModifiedAssertion } from './contractVerify.js'
+import { COMMITTED_ASSERTION, fileModifiedAssertion, commandAssertion } from './contractVerify.js'
 
 describe('contract enforcer budget', () => {
   beforeEach(async () => {
@@ -80,5 +80,44 @@ describe('ContractAssertPass is checked against the repository', () => {
     } finally {
       rmSync(plain, { recursive: true, force: true })
     }
+  })
+})
+
+/**
+ * F34, wired end to end.
+ *
+ * `verifyAssertion` honouring a `withheld` flag is worth nothing if the flag is
+ * never set in production — finding (ag) was exactly that shape, a guard
+ * connected to no caller. This drives the real tool with a real harness
+ * contract carrying a withheld command that fails, and reads the string the
+ * model would actually be shown.
+ */
+describe('a withheld command is not leaked by the refusal the model reads (F34)', () => {
+  let dir: string
+  // Exits non-zero on every platform's shell without depending on a binary.
+  const gate = 'python -c "import sys; sys.exit(3)"'
+
+  beforeEach(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'contract-f34-'))
+    globalContract.create('wave', '', [{ text: 'The held-out gate exits 0.', command: gate }], 'harness')
+    globalContract.setBaseline(null)
+  })
+  afterEach(() => rmSync(dir, { recursive: true, force: true }))
+
+  test('the refusal says the gate answered no, and does not say what the gate is', async () => {
+    const r = await contractAssertPassTool.execute({ index: 0, evidence: 'done' }, dir)
+    expect(r.isError).toBe(true)
+    expect(r.output, `leaked: ${r.output}`).not.toContain('sys.exit')
+    expect(r.output).not.toContain(gate)
+    expect(r.output).toContain('did not exit 0')
+    expect(globalContract.snapshot().assertions[0].status).toBe('pending')
+  })
+
+  test('a VISIBLE command assertion still names its command — its own text already does', async () => {
+    globalContract.create('wave', '', [commandAssertion(gate)], 'harness')
+    globalContract.setBaseline(null)
+    const r = await contractAssertPassTool.execute({ index: 0, evidence: 'done' }, dir)
+    expect(r.isError).toBe(true)
+    expect(r.output).toContain('sys.exit')
   })
 })

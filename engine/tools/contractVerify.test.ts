@@ -479,3 +479,49 @@ describe('gitProbe against a real repository', () => {
     }
   })
 })
+
+/**
+ * F34: a withheld command is the held-out gate, and the failure message named it.
+ *
+ * `HELD_OUT_GATE_TEXT` promises the model "it is not yours to run and you are
+ * not told what it is". Every one of the three non-passing outcomes then
+ * interpolated `check.command` into the detail the model reads, so one
+ * ContractAssertPass on a gate that had not been satisfied yet handed over the
+ * gate's path — and a gate is a file. Wave 8b's gate lists all 22 mutation
+ * anchors and their replacements; a model that reads it can write tests that
+ * pin those 22 strings and nothing else, which is the exact failure two prior
+ * waves (L4.6d, 7i) were dispatched to correct.
+ *
+ * The redaction is only on WITHHELD commands. A visible `Verification command
+ * exits 0: <cmd>` assertion names its command in its own text, so hiding it
+ * from the failure message would help nobody.
+ */
+describe('verifyAssertion — a withheld command is not named in its own failure (F34)', () => {
+  const gate = 'python C:/tmp/verify_ui8b.py C:/Users/civer/civkings'
+  const withheld = { kind: 'command', command: gate, withheld: true } as const
+  const visible = { kind: 'command', command: gate } as const
+  const outcomes = ['failed', 'timeout', 'unrunnable'] as const
+
+  for (const outcome of outcomes) {
+    test(`withheld + ${outcome}: the detail does not leak the command`, async () => {
+      const v = await verifyAssertion(withheld, probe({ run: async () => outcome }), 'aaaaaaaa')
+      expect(v.status).not.toBe('confirmed')
+      const detail = (v as { detail: string }).detail
+      expect(detail, `leaked the gate: ${detail}`).not.toContain('verify_ui8b')
+      expect(detail).not.toContain(gate)
+      // Silence is not the fix either — the model must still learn WHY it was
+      // refused, or it retries the same assertion forever.
+      expect(detail.length).toBeGreaterThan(20)
+    })
+
+    test(`visible + ${outcome}: the command IS named, because the text already names it`, async () => {
+      const v = await verifyAssertion(visible, probe({ run: async () => outcome }), 'aaaaaaaa')
+      expect((v as { detail: string }).detail).toContain(gate)
+    })
+  }
+
+  test('a withheld command that passes is confirmed, exactly as a visible one is', async () => {
+    const v = await verifyAssertion(withheld, probe({ run: async () => 'passed' }), 'aaaaaaaa')
+    expect(v.status).toBe('confirmed')
+  })
+})

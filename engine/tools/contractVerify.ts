@@ -73,7 +73,13 @@ export type AssertionCheck =
   | { kind: 'file_exists'; path: string }
   | { kind: 'file_absent'; path: string }
   | { kind: 'committed' }
-  | { kind: 'command'; command: string }
+  /**
+   * `withheld` marks a command the model is not allowed to see — the held-out
+   * gate. It is set at the construction site in contract.ts, never by
+   * `assertionCheck`, because a visible `Verification command exits 0: <cmd>`
+   * assertion names its command in its own text and hiding it would help nobody.
+   */
+  | { kind: 'command'; command: string; withheld?: true }
   | { kind: 'test_census'; path: string; min: number }
 
 /** Recover the machine-checkable claim from an engine-generated assertion. */
@@ -177,18 +183,26 @@ export async function verifyAssertion(
   // and the command answers for itself. This is what makes an authored contract
   // worth more than the agent's own account of it.
   if (check.kind === 'command') {
+    // F34. The detail is the only thing the model reads about why it was
+    // refused, and it interpolated the command into all three non-passing
+    // outcomes. For the held-out gate that hands over a path, and the gate is a
+    // file: Wave 8b's lists all 22 mutation anchors with their replacements, so
+    // a model that reads it can pin those 22 strings and satisfy nothing else.
+    // Naming it is not what makes the message useful — saying it ran and
+    // answered no is.
+    const named = check.withheld ? '' : `: ${check.command}`
     switch (await probe.run(check.command)) {
       case 'passed':
         return { status: 'confirmed' }
       case 'failed':
-        return { status: 'contradicted', detail: `the verification command did not exit 0: ${check.command}` }
+        return { status: 'contradicted', detail: `the verification command did not exit 0${named}` }
       case 'timeout':
         return {
           status: 'contradicted',
-          detail: `the verification command was still running after ${COMMAND_TIMEOUT_MS / 1000}s and was killed: ${check.command}`,
+          detail: `the verification command was still running after ${COMMAND_TIMEOUT_MS / 1000}s and was killed${named}`,
         }
       case 'unrunnable':
-        return { status: 'unverifiable', detail: `could not run the verification command: ${check.command}` }
+        return { status: 'unverifiable', detail: `could not run the verification command${named}` }
     }
   }
 
