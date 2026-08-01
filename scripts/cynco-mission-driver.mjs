@@ -41,6 +41,7 @@
 
 import { basename, join, dirname, resolve } from 'node:path'
 import { mkdirSync, appendFileSync, readFileSync, existsSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { createMissionCollector, buildMissionRecord, missionCommitted, missionOutcome, waitIsOver, gateDisposition, historyRewrite, QUIET_MS } from './cynco-ledger.mjs'
 import { runCheck } from './cynco-verify.mjs'
@@ -359,7 +360,16 @@ else if (silentAfterDispatch) console.log('[driver] NEVER DISPATCHED — no turn
   'it says this script and the engine did not agree on the wire. Log a failure entry (docs/cynco-failure-log.md).')
 else if (!landed && quiet) console.log('[driver] STOPPED WITHOUT COMMIT — the run went quiet with an uncommitted tree; log a failure entry (docs/cynco-failure-log.md)')
 else if (!landed) console.log('[driver] TIMEOUT without commit — log a failure entry (docs/cynco-failure-log.md)')
-else if (!quiet) console.log('[driver] WARNING: commit landed but the run never went quiet — the check below may read a commit the run is still amending (see QUIET_MS)')
+else if (!quiet) console.log('[driver] WARNING: commit landed but the run never went quiet — the check below may read a commit the run is still amending (see QUIET_MS). The gate is ADVISORY in that case; verified stays null.')
+
+/** The SHA at HEAD, or null when git cannot say. Never a guess. */
+function gitHead(cwd) {
+  const r = spawnSync('git', ['rev-parse', 'HEAD'], { cwd, encoding: 'utf-8' })
+  if (r.error || r.status !== 0) return null
+  const sha = (r.stdout ?? '').trim()
+  return sha || null
+}
+
 try {
   const p = Bun.spawn(['git', 'status', '--short'], { cwd: CWD, stdout: 'pipe' })
   console.log('[git status]\n' + await new Response(p.stdout).text())
@@ -378,15 +388,31 @@ try {
 // is spelled as here; see gateDisposition() for why this decision has a name.
 let verified
 let verify = null
-const gate = gateDisposition({ neverDispatched: silentAfterDispatch, engineError, landed })
+const gate = gateDisposition({ neverDispatched: silentAfterDispatch, engineError, landed, quiet })
 if (checkCmd && !gate.run) {
   console.log(`[verify] SKIPPED — ${gate.why}`)
 } else if (checkCmd) {
   if (!gate.label) console.log(`[verify] ADVISORY — ${gate.why}`)
   console.log(`[verify] running check in ${CWD}: ${checkCmd} (cap ${CHECK_TIMEOUT_MS}ms)`)
+  // F56: which commit did the gate actually read? `runCheck` is synchronous and
+  // can run for the better part of an hour, and the mission is not necessarily
+  // finished when it starts — Gilded Wave 10 committed `ea9ac06` while its gate
+  // was mid-flight, and the ledger filed the gate's verdict on `43e7a94` as if
+  // it were about the delivery. Nothing in the record could tell them apart.
+  // Taking HEAD on both sides costs two git calls and turns a silent wrong
+  // answer into a visible mismatch.
+  const headBefore = gitHead(CWD)
   const r = runCheck(checkCmd, CWD, CHECK_TIMEOUT_MS)
+  const headAfter = gitHead(CWD)
   verified = gate.label ? r.verified : undefined
-  verify = { command: checkCmd, exitCode: r.exitCode, timedOut: r.timedOut, spawnFailed: r.spawnFailed, durationMs: r.durationMs, outputTail: r.outputTail }
+  verify = { command: checkCmd, exitCode: r.exitCode, timedOut: r.timedOut, spawnFailed: r.spawnFailed, durationMs: r.durationMs, outputTail: r.outputTail, gradedSha: headBefore, headAfterCheck: headAfter }
+  if (headBefore && headAfter && headBefore !== headAfter) {
+    // Demote here as well as in gateDisposition. That call reads `quiet`, which
+    // is a guess about whether the run had stopped; this is the thing itself.
+    console.log(`[verify] HEAD MOVED UNDER THE GATE: graded ${headBefore}, HEAD is now ${headAfter}. ` +
+      `verified stays null — the gate measured a commit this mission then committed past.`)
+    verified = undefined
+  }
   // Three outcomes, not two. A check that never answered has not said the
   // delivery is broken — it has said nothing, and the label must say nothing.
   const verdict = r.verified === null ? 'UNMEASURED' : r.verified ? 'PASS' : 'FAIL'

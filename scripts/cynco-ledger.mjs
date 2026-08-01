@@ -276,8 +276,21 @@ export function missionOutcome({ landed, zeroToolCompletion, wentQuiet, engineEr
  * really did land. This one answers "was the delivery measured", and those are
  * different questions about the same event — the whole reason they are separate
  * columns.
+ *
+ * F56 added `quiet`, and it is the same lesson arriving through a fourth door.
+ * The driver already knew about this case and already said so out loud —
+ * "WARNING: commit landed but the run never went quiet — the check below may
+ * read a commit the run is still amending" — and then labelled the record
+ * anyway. On Gilded Wave 10 that warning fired at dispatch-log line 728, the
+ * gate measured `43e7a94`, and the mission went on to commit `ea9ac06`, which
+ * deletes a test the gate's own H2 would have caught. `verified: false` went
+ * into the ledger as a verdict on a delivery nothing had read.
+ *
+ * A warning that changes no output is not a decision. If the run never went
+ * quiet, the gate is racing the mission for the tree, and `advisory` is what
+ * that is spelled as.
  */
-export function gateDisposition({ neverDispatched, engineError, landed }) {
+export function gateDisposition({ neverDispatched, engineError, landed, quiet }) {
   if (neverDispatched) {
     return {
       run: false, label: false,
@@ -297,6 +310,16 @@ export function gateDisposition({ neverDispatched, engineError, landed }) {
       run: true, label: false,
       why: 'the harness killed this run after a commit landed. The gate runs and its result is recorded, ' +
         'but verified stays null: an interrupted run\'s last commit may be work in progress, not delivery.',
+    }
+  }
+  // `quiet === undefined` from an older caller is not a report that the run went
+  // quiet, and must not be read as one. Only an explicit `false` demotes.
+  if (quiet === false) {
+    return {
+      run: true, label: false,
+      why: 'the run never went quiet, so the gate and the mission are racing for the same tree. ' +
+        'The gate runs and its result is recorded, but verified stays null: it measures whatever ' +
+        'HEAD was when it started, and the mission can commit past that before it finishes.',
     }
   }
   return { run: true, label: true, why: null }

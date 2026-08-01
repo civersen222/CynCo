@@ -622,6 +622,46 @@ describe('gateDisposition — may the gate speak for this delivery', () => {
     expect(g.label).toBe(true)
   })
 
+  it('a run that never went quiet: the gate runs, the label does not', () => {
+    // F56. The driver already printed "commit landed but the run never went
+    // quiet — the check below may read a commit the run is still amending" and
+    // then labeled the record anyway. On Gilded Wave 10 that warning fired, the
+    // gate measured `43e7a94`, and the mission went on to commit `ea9ac06`,
+    // which deletes a test the gate's own H2 would have caught. A warning that
+    // changes no output is not a decision.
+    const g = gateDisposition({ neverDispatched: false, engineError: null, landed: true, quiet: false })
+    expect(g.run).toBe(true)
+    expect(g.label).toBe(false)
+    expect(g.why).toContain('racing')
+  })
+
+  it('a run that did go quiet is measured and labeled', () => {
+    const g = gateDisposition({ neverDispatched: false, engineError: null, landed: true, quiet: true })
+    expect(g.run).toBe(true)
+    expect(g.label).toBe(true)
+    expect(g.why).toBeNull()
+  })
+
+  it('an absent `quiet` is not a report that the run kept going', () => {
+    // The demotion keys on `quiet === false`, not on `!quiet`. A caller that
+    // does not pass the field has said nothing about quiescence, and silence
+    // must not be read as bad news — that would strand every older caller on
+    // the unmeasured path and delete labels nobody asked to withhold.
+    const g = gateDisposition({ neverDispatched: false, engineError: null, landed: true, quiet: undefined })
+    expect(g.run).toBe(true)
+    expect(g.label).toBe(true)
+    expect(g.why).toBeNull()
+  })
+
+  it('the never-quiet demotion does not resurrect a harness kill', () => {
+    // Both conditions hold at once. The crash path is the stronger statement
+    // and must win: a run the harness killed before any commit has no delivery
+    // to grade, so the gate must not run at all.
+    const g = gateDisposition({ neverDispatched: false, engineError: 'boom', landed: false, quiet: false })
+    expect(g.run).toBe(false)
+    expect(g.label).toBe(false)
+  })
+
   it('every disposition that withholds the label says why, in words', () => {
     // A skip with no reason is indistinguishable from a bug, and the person
     // reading the log months later is the one who has to tell them apart.
@@ -629,6 +669,7 @@ describe('gateDisposition — may the gate speak for this delivery', () => {
       { neverDispatched: true, engineError: null, landed: false },
       { neverDispatched: false, engineError: 'boom', landed: false },
       { neverDispatched: false, engineError: 'boom', landed: true },
+      { neverDispatched: false, engineError: null, landed: true, quiet: false },
     ]) {
       const g = gateDisposition(args)
       expect(g.label).toBe(false)
@@ -813,9 +854,21 @@ describe('history-rewrite wiring guard', () => {
    * where it came from.
    */
   it('the driver asks gateDisposition instead of deciding inline', () => {
-    // All three inputs must reach it. An earlier shape passed only
-    // silentAfterDispatch and that is precisely the hole F52 came through.
-    expect(driver).toMatch(/gateDisposition\(\{ neverDispatched: silentAfterDispatch, engineError, landed \}\)/)
+    // Every input the disposition reads must reach it. An earlier shape passed
+    // only silentAfterDispatch and that is precisely the hole F52 came through;
+    // F56 added `quiet` and would have come through the same hole.
+    //
+    // Asserted field-by-field rather than as one quoted argument list: the
+    // property is "each input is wired", and a whole-call literal fails the
+    // next time someone reorders the object or adds a fifth field, which
+    // teaches that the test is noise rather than that the wiring broke.
+    const call = driver.match(/gateDisposition\(\{([^}]*)\}\)/)
+    expect(call).not.toBeNull()
+    const args = call[1]
+    expect(args).toMatch(/\bneverDispatched: silentAfterDispatch\b/)
+    expect(args).toMatch(/\bengineError\b/)
+    expect(args).toMatch(/\blanded\b/)
+    expect(args).toMatch(/\bquiet\b/)
     // And it must be the ledger's, not a local redefinition. The trailing path
     // is deliberately not spelled as a complete quoted module specifier, in the
     // assertion OR in this comment: shebangCollection.test.ts scans every test
@@ -831,6 +884,49 @@ describe('history-rewrite wiring guard', () => {
     // must go through gate.label or the guard is decorative.
     expect(driver).toMatch(/verified = gate\.label \? r\.verified : undefined/)
     expect(driver).toMatch(/if \(checkCmd && !gate\.run\)/)
+  })
+
+  /**
+   * F56 — the driver graded a tree the mission was still editing.
+   *
+   * `runCheck` is a synchronous `execSync` that can run for the better part of
+   * an hour, and it starts the moment the driver decides the mission is over —
+   * which is a guess. Gilded Wave 10 committed `ea9ac06` while its gate was
+   * mid-flight, and the ledger filed the gate's verdict on `43e7a94` as if it
+   * described the delivery. Nothing in the record could tell the two apart.
+   *
+   * `quiet` is the guess. This is the thing itself.
+   */
+  it('the driver records which commit the gate actually read', () => {
+    // Both sides. `gradedSha` alone cannot show a race: it is only a mismatch
+    // with the commit that followed that says the gate read a superseded tree.
+    expect(driver).toMatch(/gradedSha: headBefore/)
+    expect(driver).toMatch(/headAfterCheck: headAfter/)
+    // Taken around the check, not near it — a SHA read after `runCheck` on both
+    // sides would agree with itself forever and detect nothing.
+    const before = driver.indexOf('const headBefore = gitHead(')
+    const check = driver.indexOf('const r = runCheck(')
+    const after = driver.indexOf('const headAfter = gitHead(')
+    expect(before).toBeGreaterThan(-1)
+    expect(check).toBeGreaterThan(before)
+    expect(after).toBeGreaterThan(check)
+  })
+
+  it('a HEAD that moved under the gate withholds the label outright', () => {
+    // Not merely logged. The whole of F56 is that the driver already WARNED
+    // about this case and labeled the record anyway.
+    expect(driver).toMatch(/headBefore !== headAfter/)
+    expect(driver).toMatch(/HEAD MOVED UNDER THE GATE/)
+    // The demotion has to be an assignment, and it has to be null-ish: a `false`
+    // here would file a fabricated negative, which teaches as hard as a real one.
+    const race = driver.slice(driver.indexOf('headBefore !== headAfter'))
+    expect(race.slice(0, 600)).toMatch(/verified = undefined/)
+  })
+
+  it('gitHead reports null rather than guessing when git cannot say', () => {
+    // A SHA invented on a failed `rev-parse` would compare unequal to the next
+    // one and demote a healthy run, or compare equal and hide a real race.
+    expect(driver).toMatch(/if \(r\.error \|\| r\.status !== 0\) return null/)
   })
 })
 
