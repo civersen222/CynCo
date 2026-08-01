@@ -42,7 +42,7 @@
 import { basename, join, dirname, resolve } from 'node:path'
 import { mkdirSync, appendFileSync, readFileSync, existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { createMissionCollector, buildMissionRecord, missionCommitted, missionOutcome, waitIsOver, QUIET_MS } from './cynco-ledger.mjs'
+import { createMissionCollector, buildMissionRecord, missionCommitted, missionOutcome, waitIsOver, historyRewrite, QUIET_MS } from './cynco-ledger.mjs'
 import { runCheck } from './cynco-verify.mjs'
 import { loadMissionAssertions, sidecarPath } from './cynco-contract.mjs'
 import { loadOrCreateTokens } from '../engine/security/localToken.js'
@@ -80,6 +80,10 @@ if (missionAssertions && missionAssertions.length > (checkCmd ? 1 : 0)) {
 
 const collector = createMissionCollector()
 const dispatchedAt = new Date().toISOString()
+// F38's window. Seconds, because that is what the reflog speaks. Taken here
+// rather than at the ledger write so a commit made in the first poll interval is
+// still inside the mission.
+const sinceEpochS = Math.floor(Date.parse(dispatchedAt) / 1000)
 const missionId = `${basename(taskFile).replace(/\.[^.]*$/, '')}-${Date.now()}`
 let enforcedWarned = false
 
@@ -327,6 +331,53 @@ if (checkCmd && silentAfterDispatch) {
   }
 }
 
+// F38. Ask the reflog what this mission committed and then threw away, because
+// every other label on this record — `verified`, `mutationSweep`, `markerSeen` —
+// reads the history that survived, and a mission is free to choose which history
+// that is. `null` on any failure: unknown is a truthful answer and "clean" is not.
+async function readHistoryRewrite() {
+  const git = async (args) => {
+    const p = Bun.spawn(['git', ...args], { cwd: CWD, stdout: 'pipe', stderr: 'ignore' })
+    const text = await new Response(p.stdout).text()
+    return (await p.exited) === 0 ? text : null
+  }
+  const raw = await git(['reflog', '--date=unix', '--format=%H%x09%gd%x09%gs'])
+  if (raw === null) return null
+  // `%gd` under --date=unix renders `HEAD@{1785570306}`; `%gs` is
+  // "commit: subject" / "commit (amend): subject" / "reset: moving to X".
+  const reflog = []
+  for (const line of raw.split('\n')) {
+    const [sha, gd, gs] = line.split('\t')
+    if (!sha || gs === undefined) continue
+    const stamp = /\{(\d+)\}/.exec(gd ?? '')
+    if (!stamp) continue // undatable entry: excluded, never assumed in-window
+    const cut = gs.indexOf(': ')
+    reflog.push({
+      sha,
+      at: parseInt(stamp[1], 10),
+      action: cut < 0 ? gs : gs.slice(0, cut),
+      message: cut < 0 ? '' : gs.slice(cut + 2),
+    })
+  }
+  // Reachable is HEAD's WHOLE ancestry, not baselineSha..HEAD: a discarded
+  // commit is one no ancestor path reaches, and the narrow range would call
+  // every pre-mission commit discarded. The mission window is enforced instead
+  // by `sinceEpochS` — a previous mission's discarded commit is unreachable too,
+  // and charging it here is the error missionCommitted() was named to stop.
+  const rev = await git(['rev-list', 'HEAD'])
+  if (rev === null) return null
+  const reachable = new Set(rev.split('\n').map(s => s.trim()).filter(Boolean))
+  return historyRewrite({ reflog, reachable, sinceEpochS })
+}
+const history = await readHistoryRewrite().catch(() => null)
+if (history === null) {
+  console.log('[history] UNMEASURED — the reflog could not be read. This record cannot say whether the run discarded any commit.')
+} else if (history.rewritten) {
+  console.log(`[history] REWRITTEN: ${history.discarded.length} commit(s) made by this mission are unreachable from HEAD.`)
+  console.log('[history] Not a failure by itself — but every gate reads the SURVIVING log, so read these before believing it:')
+  for (const d of history.discarded) console.log(`[history]   ${d.sha.slice(0, 7)}  ${d.message}`)
+}
+
 // Append the labeled mission record to the outcome ledger
 const outcome = missionOutcome({ landed, zeroToolCompletion, wentQuiet: quiet, engineError, neverDispatched: silentAfterDispatch })
 try {
@@ -342,6 +393,7 @@ try {
     engineError,
     verified,
     verify,
+    history,
   })
   mkdirSync(dirname(LEDGER_PATH), { recursive: true })
   appendFileSync(LEDGER_PATH, JSON.stringify(record) + '\n')
