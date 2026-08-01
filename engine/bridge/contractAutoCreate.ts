@@ -14,7 +14,7 @@
 
 import { existsSync } from 'node:fs'
 import { isAbsolute, resolve } from 'node:path'
-import { ContractState, globalContract } from '../tools/contract.js'
+import { ContractState, globalContract, type HarnessAssertion } from '../tools/contract.js'
 import {
   COMMITTED_ASSERTION,
   assertionCheck,
@@ -27,7 +27,7 @@ import { validateVerificationCommand } from '../tools/shellInfo.js'
 export type HarnessContractSpec = {
   title: string
   brief?: string
-  assertions: string[]
+  assertions: HarnessAssertion[]
 }
 
 /**
@@ -221,16 +221,36 @@ export function maybeAutoCreateContract(
  * Caught here, at dispatch, it costs one error message before the run starts.
  */
 export function harnessContractCommandError(
-  assertions: string[],
+  assertions: HarnessAssertion[],
   validate: (cmd: string) => string | null = validateVerificationCommand,
 ): string | null {
-  for (const text of assertions) {
-    const check = assertionCheck(text)
-    if (check?.kind !== 'command') continue
-    const err = validate(check.command)
-    if (err) return `assertion "${text}" — ${err}`
+  for (const a of assertions) {
+    const command = assertionCommand(a)
+    if (command === null) continue
+    const err = validate(command)
+    if (err) return `assertion "${assertionTextOf(a)}" — ${err}`
   }
   return null
+}
+
+/** The text a harness assertion shows the model. */
+function assertionTextOf(a: HarnessAssertion): string {
+  return typeof a === 'string' ? a : a.text
+}
+
+/**
+ * The command a harness assertion runs, from wherever it is carried.
+ *
+ * The two forms are equivalent to every mechanism except rendering: a plain
+ * string states its command in the text, a withheld one states it in `command`
+ * and shows the model prose. Anything that reads only the text answers `null`
+ * for the withheld form, which is exactly how findings (ah) and (aj) happened —
+ * so nothing may read the text for this again.
+ */
+function assertionCommand(a: HarnessAssertion): string | null {
+  if (typeof a !== 'string') return a.command
+  const check = assertionCheck(a)
+  return check?.kind === 'command' ? check.command : null
 }
 
 /**
@@ -263,7 +283,7 @@ export function harnessContractCommandError(
  * machinery both see it move — but it is not prevented.
  */
 export function harnessGatePaths(
-  assertions: string[],
+  assertions: HarnessAssertion[],
   cwd: string,
   exists: (p: string) => boolean = (p) => existsSync(p),
 ): string[] {
@@ -274,10 +294,10 @@ export function harnessGatePaths(
     return a === b || a.startsWith(b + '/')
   }
   const found = new Set<string>()
-  for (const text of assertions) {
-    const check = assertionCheck(text)
-    if (check?.kind !== 'command') continue
-    for (const rawToken of check.command.split(/\s+/)) {
+  for (const a of assertions) {
+    const command = assertionCommand(a)
+    if (command === null) continue
+    for (const rawToken of command.split(/\s+/)) {
       const token = rawToken.replace(/^["']+|["':;,]+$/g, '')
       // Path-shaped or nothing. A bare word is a program name or a flag.
       if (!token || !/[\\/]/.test(token)) continue

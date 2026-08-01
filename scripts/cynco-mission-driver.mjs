@@ -84,17 +84,28 @@ ws.onopen = () => {
   // P4.2 (STATE doc Phase 4(a)): the check script IS the contract — the engine
   // creates a one-assertion DoD so taskError/errorTrend measure this mission.
   //
-  // The command is REDACTED from the assertion text. Measured on Gilded Wave 5c
-  // (2026-07-30): the run read `Verification command exits 0: <path>` out of its
-  // own contract and ran that gate directly — the exact leak the held-out-gate
-  // rule exists to prevent, since a visible gate can be tuned to. The assertion
-  // still exists, so taskError/errorTrend still measure the mission; only the
-  // path is withheld.
+  // The command is withheld from the assertion TEXT and travels beside it.
+  //
+  // Measured on Gilded Wave 5c (2026-07-30): the run read `Verification command
+  // exits 0: <path>` out of its own contract and ran that gate directly — the
+  // exact leak the held-out-gate rule exists to prevent, since a visible gate
+  // can be tuned to. The first repair deleted the command from the text, which
+  // was also the only place two other mechanisms read it from: `assertionCheck`
+  // stopped recognising the assertion (so ContractAssertPass verified nothing
+  // and taskCompleted became self-certified — finding (ah)) and
+  // `harnessGatePaths` stopped finding the gate script (so the file that scores
+  // the run became editable by the run — finding (aj)).
+  //
+  // Withholding is a property of what the model READS. `text` is rendered;
+  // `command` is not, and no render path touches it. See engine/tools/contract.ts.
   const contract = checkCmd
     ? {
         title: `Mission: ${marker}`,
         brief: task.slice(0, 200),
-        assertions: ['The held-out verification gate for this mission exits 0. The dispatcher runs it after the mission ends; it is not yours to run and you are not told what it is.'],
+        assertions: [{
+          text: 'The held-out verification gate for this mission exits 0. The dispatcher runs it after the mission ends; it is not yours to run and you are not told what it is.',
+          command: checkCmd,
+        }],
       }
     : undefined
   // Finding (ag): the brief is the instrument this mission is judged against, and

@@ -465,3 +465,84 @@ describe('harnessGatePaths: the instruments a contract names', () => {
     expect(found).toEqual([file])
   })
 })
+
+/**
+ * Finding (ah)/(aj): a withheld gate must still be a measurement.
+ *
+ * 2026-07-30 the mission driver stopped emitting `Verification command exits 0:
+ * <path>` and sent prose instead, because a run had read the gate path out of
+ * its own contract and run the gate directly. The redaction worked — and took
+ * two other things with it, silently, because both read the command out of that
+ * same text:
+ *
+ *   - `assertionCheck` no longer recognised the assertion, so ContractAssertPass
+ *     ran no check and accepted the model's word. `taskCompleted` is derived from
+ *     `complete && failed === 0`, so every mission since was self-certified.
+ *   - `harnessGatePaths` had nothing to parse, so the gate script stopped being
+ *     read-only — the exact defect finding (ag) was opened to fix.
+ *
+ * The repair separates the two audiences instead of choosing between them: the
+ * TEXT the model reads is redacted, and the COMMAND the engine runs travels
+ * beside it in a field no render path touches. Withholding is a property of the
+ * rendering, never of the measurement.
+ */
+describe('a harness assertion may withhold its command from the model (ah/aj)', () => {
+  const gate = (p: string) => {
+    const d = mkdtempSync(join(tmpdir(), 'cynco-withheld-'))
+    dirs.push(d)
+    const f = join(d, p)
+    mkdirSync(dirname(f), { recursive: true })
+    writeFileSync(f, '# gate\n', 'utf-8')
+    return f.split('\\').join('/')
+  }
+  const REDACTED = 'The held-out verification gate for this mission exits 0.'
+
+  it('locks the gate script named only by the withheld command', () => {
+    const file = gate('verify.py')
+    expect(harnessGatePaths(
+      [{ text: REDACTED, command: `python ${file} --strict` }],
+      workspace('src/app.ts'),
+    )).toEqual([file])
+  })
+
+  it('validates the withheld command, so an unrunnable gate is refused', () => {
+    const c = new ContractState()
+    const applied = applyHarnessContract(
+      { title: 'M', assertions: [{ text: REDACTED, command: 'python C:/tmp/nope.py' }] },
+      c,
+      cmd => (cmd.includes('nope') ? 'gate script does not exist' : null),
+    )
+    expect(applied).toBe(false)
+    expect(c.isActive()).toBe(false)
+  })
+
+  it('keeps the command out of every model-facing rendering', () => {
+    const c = new ContractState()
+    const secret = 'python C:/tmp/verify_secret_9f3a.py'
+    expect(applyHarnessContract(
+      { title: 'M', brief: 'b', assertions: [{ text: REDACTED, command: secret }] }, c, () => null,
+    )).toBe(true)
+    expect(c.getStatus()).not.toContain('verify_secret_9f3a')
+    expect(c.getStatus()).toContain('held-out')
+    expect(c.snapshot().assertions.map(a => a.text).join('\n')).not.toContain('verify_secret_9f3a')
+  })
+
+  it('carries the command through to the assertion, so the engine can still run it', () => {
+    const c = new ContractState()
+    const secret = 'python C:/tmp/verify_secret_9f3a.py'
+    applyHarnessContract(
+      { title: 'M', assertions: [{ text: REDACTED, command: secret }] }, c, () => null,
+    )
+    expect(c.assertionAt(0)?.command).toBe(secret)
+    expect(c.assertionAt(0)?.text).toBe(REDACTED)
+  })
+
+  it('still accepts the plain string form, which carries its command in the text', () => {
+    const c = new ContractState()
+    expect(applyHarnessContract(
+      { title: 'M', assertions: ['Changes committed to git'] }, c, () => null,
+    )).toBe(true)
+    expect(c.assertionAt(0)?.command).toBeUndefined()
+    expect(c.assertionAt(0)?.text).toBe('Changes committed to git')
+  })
+})

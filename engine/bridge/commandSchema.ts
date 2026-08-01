@@ -36,13 +36,29 @@ const isPlainObject = (v: unknown): boolean =>
 const oneOf = (...allowed: string[]) => (v: unknown): boolean =>
   typeof v === 'string' && allowed.includes(v)
 
+/**
+ * One assertion: plain text, or a redacted text paired with the command that
+ * actually decides it.
+ *
+ * The second form exists because a mission's gate is held out from the model
+ * (finding (ah)/(aj)) — the text is prose and the command travels beside it. A
+ * boundary that only knew the string form refused the frame outright, which
+ * would have turned "the gate is withheld" into "there is no contract".
+ */
+const isAssertion = (v: unknown): boolean => {
+  if (isString(v)) return true
+  if (!isPlainObject(v)) return false
+  const a = v as Frame
+  return isString(a.text) && isString(a.command)
+}
+
 /** The harness-supplied DoD contract on `user.message`. */
 const isContract = (v: unknown): boolean => {
   if (!isPlainObject(v)) return false
   const c = v as Frame
   return isString(c.title)
     && (c.brief === undefined || isString(c.brief))
-    && isStringArray(c.assertions)
+    && Array.isArray(c.assertions) && c.assertions.every(isAssertion)
 }
 
 /** Required field. */

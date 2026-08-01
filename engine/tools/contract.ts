@@ -7,7 +7,7 @@
  * task contracts that the model self-verifies.
  */
 import type { ToolImpl } from './types.js'
-import { assertionCheck, gitProbe, verifyAssertion } from './contractVerify.js'
+import { assertionCheck, gitProbe, verifyAssertion, type AssertionCheck } from './contractVerify.js'
 import { sessionContracts, verdictOf } from '../memory/promotionGate.js'
 
 // ---------------------------------------------------------------------------
@@ -20,7 +20,32 @@ export interface Assertion {
   text: string
   status: AssertionStatus
   evidence?: string
+  /**
+   * The check to run, when it must be withheld from `text`.
+   *
+   * Finding (ah)/(aj). A mission's gate is held out: the agent must not be told
+   * what grades it, because a visible gate can be tuned to. The 2026-07-30 fix
+   * achieved that by replacing the assertion text with prose — which also
+   * deleted the command from the only place two other mechanisms looked for it.
+   * `assertionCheck` stopped recognising the assertion (so ContractAssertPass
+   * verified nothing and the model self-certified `taskCompleted`), and
+   * `harnessGatePaths` stopped finding the gate script (so the file that scores
+   * the run became editable by the run).
+   *
+   * Withholding is a property of what the model READS, so it belongs in the
+   * text — and nowhere else. This field is the same claim addressed to the
+   * engine. No rendering path touches it, which is why the leak cannot come
+   * back one forgotten `getStatus()` at a time.
+   */
+  command?: string
 }
+
+/**
+ * How a harness supplies one assertion: plain text whose claim is legible in
+ * the text itself, or a redacted text paired with the command that actually
+ * decides it.
+ */
+export type HarnessAssertion = string | { text: string; command: string }
 
 /**
  * Who wrote this contract. 'harness' means a person authored it — a mission
@@ -75,8 +100,8 @@ export class ContractState {
     return this.enforcementEnabled
   }
 
-  /** Create (or replace) the contract with a title, brief, and list of assertion texts. */
-  create(title: string, brief: string, assertionTexts: string[], origin: ContractOrigin = 'auto'): void {
+  /** Create (or replace) the contract with a title, brief, and list of assertions. */
+  create(title: string, brief: string, assertionTexts: HarnessAssertion[], origin: ContractOrigin = 'auto'): void {
     // File the outgoing contract's verdict before it is overwritten. Promotion
     // of a session's learnings is decided once, at shutdown, for the whole
     // session; a gate that read only the live contract would let one trivial
@@ -85,7 +110,10 @@ export class ContractState {
     if (this.assertions.length > 0) sessionContracts.record(verdictOf(this))
     this.title = title
     this.brief = brief
-    this.assertions = assertionTexts.map(text => ({ text, status: 'pending' as AssertionStatus }))
+    this.assertions = assertionTexts.map(a =>
+      typeof a === 'string'
+        ? { text: a, status: 'pending' as AssertionStatus }
+        : { text: a.text, command: a.command, status: 'pending' as AssertionStatus })
     this.origin = origin
     this.active = true
     this.baseline = null
@@ -105,6 +133,16 @@ export class ContractState {
   /** Assertion text at `index`, or null when out of range. */
   assertionText(index: number): string | null {
     return this.assertions[index]?.text ?? null
+  }
+
+  /**
+   * The whole assertion at `index`, including a withheld `command`.
+   *
+   * Separate from `assertionText` because a caller that only wants to SHOW the
+   * assertion must not be handed the field it is supposed to withhold.
+   */
+  assertionAt(index: number): Assertion | null {
+    return this.assertions[index] ?? null
   }
 
   /** Mark assertion at `index` as passed, optionally recording evidence. */
@@ -374,8 +412,15 @@ export const contractAssertPassTool: ToolImpl = {
     // model-writable through ContractCreate, and executing a string the model
     // authored would be an unapproved shell call wearing a verification's
     // clothes. A person's check script is a specification; the agent's is a wish.
-    const text = globalContract.assertionText(index)
-    let check = text ? assertionCheck(text) : null
+    // A withheld command IS the assertion — the redacted text is only what the
+    // model is allowed to read. Reading the check out of the text alone is what
+    // made every mission since 2026-07-30 self-certified (finding (ah)): the
+    // text no longer parsed, so nothing ran and the model's word stood.
+    const a = globalContract.assertionAt(index)
+    const text = a?.text ?? null
+    let check: AssertionCheck | null = a?.command
+      ? { kind: 'command', command: a.command }
+      : text ? assertionCheck(text) : null
     if (check?.kind === 'command' && globalContract.getOrigin() !== 'harness') check = null
     if (check) {
       const v = await verifyAssertion(check, gitProbe(cwd), globalContract.getBaseline())
