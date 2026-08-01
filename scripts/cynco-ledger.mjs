@@ -435,7 +435,8 @@ export function historyRewrite({ reflog, reachable, sinceEpochS }) {
 //         outcome: 'landed' | 'timeout' | 'stopped_without_commit' | 'zero_tool_fail' | 'engine_error' | 'never_dispatched',
 //         engineError?: string,                 // session.error text, null when healthy
 //         verified?: boolean, verify?: object,  // Phase 2(b) check-script result
-//         mutationSweep?: { command, killed, total, survived: string[] } }
+//         mutationSweep?: { command, killed, total, survived: string[] },
+//         graderProbes?: { total, probes, uninspectable, byPattern, samples } }
 export function buildMissionRecord(collector, meta) {
   return {
     schema: 1,
@@ -487,6 +488,26 @@ export function buildMissionRecord(collector, meta) {
     // Zero on a healthy mission. Anything above zero is F57 recurring, measured
     // rather than reconstructed from timestamps three days later.
     toolCallsAfterExit: meta.toolCallsAfterExit ?? null,
+    // F57: how often the mission reached for the thing that grades it.
+    //
+    // Wave 10 found a stale `_verify_final.cpython-314.pyc` from a dead earlier
+    // mission and spent eighteen minutes walking its disassembly with
+    // `marshal.loads` to reconstruct the held-out gate, then deleted a passing
+    // test because its reconstruction said the count should be 48. That was
+    // found by reading a transcript. Nothing on the row recorded it, so it could
+    // not be counted, compared across missions, or noticed on a row nobody read.
+    //
+    // Named for what it OBSERVES — tool calls that touched the grading
+    // apparatus — not for intent. A mission tidying `__pycache__` and a mission
+    // disassembling one emit the same frame; calling the count "evasion" would
+    // encode a judgement as a measurement. The samples are what let a reader
+    // tell the two apart.
+    //
+    // `{ total, probes, uninspectable, byPattern, samples }`, or null when no
+    // frame carried an inspectable input — an engine too old to put `input` on
+    // the frame is not a mission that never probed. A measured `probes: 0` is a
+    // different fact from an unmeasured one and must not collapse into it.
+    graderProbes: meta.graderProbes ?? null,
     // F38: `{ rewritten, discarded: [{ sha, message }] }` from historyRewrite().
     // null means the reflog could not be read — unknown, not clean. `verified`
     // and `mutationSweep` both read the surviving history; this is the only

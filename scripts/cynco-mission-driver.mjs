@@ -44,6 +44,7 @@ import { mkdirSync, appendFileSync, readFileSync, existsSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { createMissionCollector, buildMissionRecord, missionCommitted, missionOutcome, waitExitReason, gateDisposition, historyRewrite, QUIET_MS } from './cynco-ledger.mjs'
+import { countGraderProbes } from './cynco-grader-probes.mjs'
 import { runCheck } from './cynco-verify.mjs'
 import { purgeBytecodeCaches } from './cynco-workspace.mjs'
 import { loadMissionAssertions, sidecarPath, sealedDispatchRefusal, workspaceError } from './cynco-contract.mjs'
@@ -134,6 +135,16 @@ const inferenceToken = localTokens.tokenFor('inference')
 const ws = new WebSocket(WS_URL, { headers: { Authorization: `Bearer ${bridgeToken}` } })
 let toolCount = 0
 let zeroToolCompletion = false
+// F57: every `tool.start` frame, kept so the run can be asked afterwards how
+// often it reached for the thing that grades it. Wave 10 walked a stale .pyc
+// with `marshal.loads` for eighteen minutes and the row said nothing, because
+// nothing was counting.
+//
+// Frames are kept by reference — these objects already exist, parsed from the
+// socket, and holding them only defers their collection. Pre-filtering here
+// instead would move the measurement into this untested file and out of
+// countGraderProbes, which is the only thing under test that can do it.
+const toolStartFrames = []
 // The marker appearing in git log means a commit LANDED, not that the run is
 // FINISHED. Measured on Gilded UI Wave 3d: the run committed 8ab7faf, the poll
 // below caught the marker and fired the verification check, which failed DoD 7
@@ -254,6 +265,7 @@ ws.onmessage = (ev) => {
     }
     if (m.type === 'tool.start') {
       toolCount++
+      toolStartFrames.push(m)
       console.log(`[cynco] tool: ${m.toolName}`)
       // Any tool call means the run is still working, whatever it has committed.
       sawMessageComplete = false
@@ -560,6 +572,9 @@ try {
     // read as a quiet one.
     runStillOpen: runStateSeen ? runStillOpen : null,
     toolCallsAfterExit: toolCount - toolCountAtExit,
+    // F57: null when no frame carried an inspectable input, which an engine too
+    // old to emit one cannot be told from a mission that never probed.
+    graderProbes: countGraderProbes(toolStartFrames),
   })
   mkdirSync(dirname(LEDGER_PATH), { recursive: true })
   appendFileSync(LEDGER_PATH, JSON.stringify(record) + '\n')
@@ -569,6 +584,19 @@ try {
   // tests BITE — only a withheld mutation set can, and those run later. Say so
   // on every record, so nobody reads verified:true as accepted.
   console.log(`[ledger] mutationSweep: null (UNMEASURED) — patch it once the withheld set has run: { command, killed, total, survived[] }`)
+  // F57 was found by reading a transcript, which is to say by luck. A row that
+  // records the count and says nothing at the console is the same amount of
+  // luck: the count still has to be read. Printed with a sample, because the
+  // number cannot tell tidying from disassembly and the sample can.
+  if (record.graderProbes === null) {
+    console.log('[probes] UNMEASURED — no tool.start frame carried an inspectable input (older engine?)')
+  } else if (record.graderProbes.probes > 0) {
+    const p = record.graderProbes
+    console.log(`[probes] GRADER TOUCHED ${p.probes}/${p.total} tool calls — ${JSON.stringify(p.byPattern)} (F57; read the samples on the record before labelling)`)
+    for (const s of p.samples) console.log(`[probes]   ${s}`)
+  } else {
+    console.log(`[probes] 0/${record.graderProbes.total} tool calls touched the grading apparatus`)
+  }
   // 1-in-5 human spot-audit cadence (STATE doc Phase 2(b)).
   try {
     const count = readFileSync(LEDGER_PATH, 'utf8').split('\n').filter(Boolean).length

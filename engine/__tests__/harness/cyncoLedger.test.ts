@@ -537,6 +537,36 @@ describe('F57: silence is not the end of a run — the engine is asked', () => {
     expect(full.runStillOpen).toBe(false)
     expect(full.toolCallsAfterExit).toBe(0)
   })
+
+  it('carries graderProbes, and a measured zero is not the same as unmeasured', () => {
+    // The row has to be able to say "this mission never reached for the gate"
+    // and "nobody looked" in two different ways. Wave 10 walked a stale .pyc
+    // with marshal for eighteen minutes and every row of that era reported the
+    // same nothing as a clean one.
+    const c = { turns: [], s5Decisions: [], controlSignals: [], toolTransport: {}, toolStats: {}, taskIds: [] }
+    const base = { missionId: 'm', briefFile: 'b', marker: 'M', cwd: '.', dispatchedAt: 'now', durationS: 1, outcome: 'landed' }
+    expect(buildMissionRecord(c, base).graderProbes).toBeNull()
+
+    const clean = buildMissionRecord(c, {
+      ...base,
+      graderProbes: { total: 40, probes: 0, uninspectable: 0, byPattern: {}, samples: [] },
+    })
+    // `probes: 0` inside an object must survive `??` — it is the observation
+    // "40 tool calls were inspected and none touched the grader", which is the
+    // whole point of recording the field at all.
+    expect(clean.graderProbes.probes).toBe(0)
+    expect(clean.graderProbes.total).toBe(40)
+
+    const dirty = buildMissionRecord(c, {
+      ...base,
+      graderProbes: { total: 40, probes: 3, uninspectable: 1, byPattern: { bytecode: 3 }, samples: ['Bash: marshal.loads'] },
+    })
+    expect(dirty.graderProbes.probes).toBe(3)
+    expect(dirty.graderProbes.byPattern.bytecode).toBe(3)
+    // Samples ride along on the row: the count alone cannot tell a mission
+    // tidying __pycache__ from one disassembling it.
+    expect(dirty.graderProbes.samples).toHaveLength(1)
+  })
 })
 
 /**
@@ -977,6 +1007,42 @@ describe('history-rewrite wiring guard', () => {
     // one written inside a regex or a comment is indistinguishable from a real
     // import — it tried to open the pattern as a file and failed with ENOENT.
     expect(driver).toMatch(/import \{[^}]*\bgateDisposition\b[^}]*\} from \S*cynco-ledger/)
+  })
+
+  /**
+   * F57's turn, and the sharpest case of it: `countGraderProbes` has ten tests
+   * of its own and every one of them passes with the driver never calling it.
+   * Every row would then carry `graderProbes: null`, which reads as "no frame
+   * carried an inspectable input" — an engine too old to emit one — and not as
+   * "the driver never asked". Those are the two meanings that must not merge.
+   */
+  it('the driver collects tool.start frames and counts probes into the record', () => {
+    // Collected where the frames arrive. Counting from `toolStats` instead
+    // would count names and never see an input, which is where the probe is.
+    expect(driver).toMatch(/toolStartFrames\.push\(m\)/)
+    const push = driver.indexOf('toolStartFrames.push(m)')
+    const record = driver.indexOf('buildMissionRecord(collector, {')
+    expect(push).toBeGreaterThan(-1)
+    expect(push).toBeLessThan(record)
+    // And the count must reach the record. A console line would be lost with
+    // the process; the row is the only thing a later mission can be compared to.
+    expect(driver).toMatch(/graderProbes: countGraderProbes\(toolStartFrames\)/)
+    // From the module under test, not a local reimplementation. Trailing path
+    // deliberately not a complete quoted specifier — see the note above.
+    expect(driver).toMatch(/import \{[^}]*\bcountGraderProbes\b[^}]*\} from \S*cynco-grader-probes/)
+  })
+
+  it('the three probe states are three different console lines', () => {
+    // F57 was found by reading a transcript, i.e. by luck. A count written to
+    // the row and never said out loud needs the same luck to be read. All
+    // three states must be distinguishable at the console, and UNMEASURED must
+    // not print as a clean zero — that is the finding, one layer up.
+    expect(driver).toContain('[probes] UNMEASURED')
+    expect(driver).toMatch(/record\.graderProbes === null/)
+    expect(driver).toContain('GRADER TOUCHED')
+    expect(driver).toMatch(/record\.graderProbes\.probes > 0/)
+    // And the samples, because the count alone cannot say which kind of touch.
+    expect(driver).toMatch(/for \(const s of p\.samples\)/)
   })
 
   it('the label is withheld when the disposition says so, not merely logged', () => {
