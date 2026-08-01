@@ -266,6 +266,19 @@ export type GovernanceSessionFidelityEvent = {
   } | null
 }
 
+/** F33: the trajectory recorder has started a task, and this is the id it will
+ *  file the reward under (~/.cynco/rewards/<taskId>.reward.json).
+ *
+ *  Emitted at task START, not at the end. The reward for a run that crashed is
+ *  exactly the reward most worth joining to its mission record, and an id that
+ *  only ships on a clean finish is missing whenever it matters. Everything else
+ *  about the task is already recorded elsewhere; this event carries the KEY. */
+export type TrajectoryTaskStartedEvent = {
+  type: 'trajectory.task_started'
+  taskId: string
+  model: string
+}
+
 export type GovernanceRecommendationEvent = {
   type: 'governance.recommendation'
   requestId: string
@@ -463,6 +476,7 @@ export type EngineEvent =
   | WorkflowStatusEvent
   | GovernanceStatusEvent
   | GovernanceSessionFidelityEvent
+  | TrajectoryTaskStartedEvent
   | GovernanceRecommendationEvent
   | GovernanceAlertEvent
   | SummaryInjectedEvent

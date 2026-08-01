@@ -42,6 +42,9 @@ export function createMissionCollector(now = () => Date.now()) {
     toolStats: { total: 0, errors: 0, byName: {} },
     enforcedSeen: false,
     regulatorFidelity: null,
+    // F33: the join key between this ledger and ~/.cynco/rewards/*.reward.json.
+    // Both datasets describe the same run and neither could name the other.
+    taskIds: [],
 
     ingest(m) {
       const t = now()
@@ -116,6 +119,12 @@ export function createMissionCollector(now = () => Date.now()) {
           break
         case 'governance.session_fidelity':
           this.regulatorFidelity = m.fidelity ?? null
+          break
+        case 'trajectory.task_started':
+          // A blank id is not a joinable task. Pushing null would mint a key
+          // that matches every reward file with a missing id — a join that
+          // silently succeeds against the wrong row is worse than no join.
+          if (typeof m.taskId === 'string' && m.taskId !== '') this.taskIds.push(m.taskId)
           break
         case 'tool.start': {
           this.toolStats.total++
@@ -276,5 +285,15 @@ export function buildMissionRecord(collector, meta) {
     // P4.3/4(e): session-level regulator fidelity (not per-turn); null when the
     // engine emitted no session_fidelity event (no contract / older engine).
     regulatorFidelity: collector.regulatorFidelity ?? null,
+    // F33: every trajectory task this mission started, in order. This is the
+    // ONLY key that joins a ledger row to the reward the model was trained on.
+    // Without it, UI Wave 8's reward of 0.983 and UI Wave 8's real verdict —
+    // 13 of 16 gated DoD items, six unowned rules — sat in two files with
+    // nothing in common but a timestamp nobody had checked.
+    //
+    // `[]` and absent are different facts and must stay so: `[]` is a driver
+    // that asked and was told nothing, absent is a record written before the
+    // question existed. Never null.
+    taskIds: collector.taskIds ?? [],
   }
 }

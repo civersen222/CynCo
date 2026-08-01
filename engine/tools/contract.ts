@@ -418,8 +418,13 @@ export const contractAssertPassTool: ToolImpl = {
     // text no longer parsed, so nothing ran and the model's word stood.
     const a = globalContract.assertionAt(index)
     const text = a?.text ?? null
+    // `withheld` travels with the check because only this site knows the
+    // difference: `a.command` is the held-out gate, carried BESIDE a redacted
+    // text, while `assertionCheck(text)` recovers a command the text already
+    // names out loud. Without the flag the failure message leaked the gate
+    // (F34).
     let check: AssertionCheck | null = a?.command
-      ? { kind: 'command', command: a.command }
+      ? { kind: 'command', command: a.command, withheld: true }
       : text ? assertionCheck(text) : null
     if (check?.kind === 'command' && globalContract.getOrigin() !== 'harness') check = null
     if (check) {
@@ -431,6 +436,22 @@ export const contractAssertPassTool: ToolImpl = {
             `  Assertion: ${text}\n` +
             `  Repository: ${v.detail}\n\n` +
             `Do the work, then assert it. If the assertion cannot be satisfied, use ContractAssertFail.`,
+          isError: true,
+        }
+      }
+      // F35. The check ran and was killed, so it said nothing — but a pass here
+      // would be the model's own word on the one assertion it is least entitled
+      // to give it on. Refuse like a contradiction, explain like the absence it
+      // is, and do not tell the model to change work that was never measured.
+      if (v.status === 'unmeasured') {
+        return {
+          output:
+            `Assertion ${index} was NOT marked passed — it could not be measured.\n\n` +
+            `  Assertion: ${text}\n` +
+            `  Check: ${v.detail}\n\n` +
+            `This says nothing about whether your work is correct. Do not change ` +
+            `working code on the strength of it. Carry on with the task; a check ` +
+            `too slow to finish in a turn is the dispatcher's to run at the end.`,
           isError: true,
         }
       }

@@ -295,6 +295,66 @@ describe('cynco mission outcome ledger', () => {
     })
     expect(rec.regulatorFidelity).toBeNull()
   })
+
+  // F33. The two datasets this program produces could not be joined. A mission
+  // lands here with its governance vector and its verified/mutationSweep labels;
+  // the same run lands in ~/.cynco/rewards/<taskId>.reward.json with the scalar
+  // the model is trained on. The taskId was minted inside conversationLoop and
+  // emitted to nothing, so "which reward belongs to which mission" had no
+  // answer — and the reward for UI Wave 8 (0.983) could not be set beside that
+  // mission's real verdict (3 of 16 DoD items undone) by any query.
+  it('trajectory.task_started lands the taskId on the record so rewards can be joined (F33)', () => {
+    const c = createMissionCollector(() => 1000)
+    c.ingest({ type: 'trajectory.task_started', taskId: 'task-735f144e', model: 'qwen' })
+    c.ingest({ type: 'governance.status', health: 'healthy' })
+    const rec = buildMissionRecord(c, {
+      missionId: 'm-join', briefFile: 'b.md', marker: 'x', cwd: '.', dispatchedAt: 0, durationS: 1, outcome: 'landed',
+    })
+    expect(rec.taskIds).toEqual(['task-735f144e'])
+  })
+
+  // Plural, and in order. A mission is one dispatched command today, but the
+  // engine starts a fresh task on every user message, so a session that is
+  // steered mid-run produces several reward files. A scalar field would keep
+  // one of them and silently drop the rest, which is the same class of quiet
+  // default this ledger exists to refuse.
+  it('several tasks in one mission all land, in order (F33)', () => {
+    const c = createMissionCollector(() => 1000)
+    c.ingest({ type: 'trajectory.task_started', taskId: 'task-aaa', model: 'qwen' })
+    c.ingest({ type: 'governance.status', health: 'healthy' })
+    c.ingest({ type: 'trajectory.task_started', taskId: 'task-bbb', model: 'qwen' })
+    const rec = buildMissionRecord(c, {
+      missionId: 'm-two', briefFile: 'b.md', marker: 'x', cwd: '.', dispatchedAt: 0, durationS: 1, outcome: 'landed',
+    })
+    expect(rec.taskIds).toEqual(['task-aaa', 'task-bbb'])
+  })
+
+  // An empty array, never absent and never null. `taskIds: []` says "the engine
+  // told me about no tasks"; an absent key says "this driver predates the join"
+  // and those are different facts. Older records carry the key absent, so a
+  // consumer must distinguish them rather than treat both as "no rewards".
+  it('no task events → taskIds is an empty array, not null (F33)', () => {
+    const c = createMissionCollector(() => 1000)
+    c.ingest({ type: 'governance.status', health: 'healthy' })
+    const rec = buildMissionRecord(c, {
+      missionId: 'm-none', briefFile: 'b.md', marker: 'x', cwd: '.', dispatchedAt: 0, durationS: 1, outcome: 'timeout',
+    })
+    expect(rec.taskIds).toEqual([])
+  })
+
+  // An event that arrives without an id is not a task this record can join on.
+  // Recording `null` in the array would produce a join key that matches every
+  // reward file with a missing id, which is worse than recording nothing.
+  it('a task_started with no id is not recorded as a joinable task (F33)', () => {
+    const c = createMissionCollector(() => 1000)
+    c.ingest({ type: 'trajectory.task_started', model: 'qwen' })
+    c.ingest({ type: 'trajectory.task_started', taskId: '', model: 'qwen' })
+    c.ingest({ type: 'trajectory.task_started', taskId: 'task-real', model: 'qwen' })
+    const rec = buildMissionRecord(c, {
+      missionId: 'm-blank', briefFile: 'b.md', marker: 'x', cwd: '.', dispatchedAt: 0, durationS: 1, outcome: 'landed',
+    })
+    expect(rec.taskIds).toEqual(['task-real'])
+  })
 })
 
 // The driver's landing detector. It reported the OPPOSITE of what happened for

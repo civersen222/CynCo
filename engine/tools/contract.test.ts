@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { globalContract, contractCreateTool, contractAssertPassTool } from './contract.js'
-import { COMMITTED_ASSERTION, fileModifiedAssertion } from './contractVerify.js'
+import { COMMITTED_ASSERTION, fileModifiedAssertion, commandAssertion } from './contractVerify.js'
 
 describe('contract enforcer budget', () => {
   beforeEach(async () => {
@@ -81,4 +81,95 @@ describe('ContractAssertPass is checked against the repository', () => {
       rmSync(plain, { recursive: true, force: true })
     }
   })
+})
+
+/**
+ * F34, wired end to end.
+ *
+ * `verifyAssertion` honouring a `withheld` flag is worth nothing if the flag is
+ * never set in production — finding (ag) was exactly that shape, a guard
+ * connected to no caller. This drives the real tool with a real harness
+ * contract carrying a withheld command that fails, and reads the string the
+ * model would actually be shown.
+ */
+describe('a withheld command is not leaked by the refusal the model reads (F34)', () => {
+  let dir: string
+  // Exits non-zero on every platform's shell without depending on a binary.
+  const gate = 'python -c "import sys; sys.exit(3)"'
+
+  beforeEach(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'contract-f34-'))
+    globalContract.create('wave', '', [{ text: 'The held-out gate exits 0.', command: gate }], 'harness')
+    globalContract.setBaseline(null)
+  })
+  afterEach(() => rmSync(dir, { recursive: true, force: true }))
+
+  test('the refusal says the gate answered no, and does not say what the gate is', async () => {
+    const r = await contractAssertPassTool.execute({ index: 0, evidence: 'done' }, dir)
+    expect(r.isError).toBe(true)
+    expect(r.output, `leaked: ${r.output}`).not.toContain('sys.exit')
+    expect(r.output).not.toContain(gate)
+    expect(r.output).toContain('did not exit 0')
+    expect(globalContract.snapshot().assertions[0].status).toBe('pending')
+  })
+
+  test('a VISIBLE command assertion still names its command — its own text already does', async () => {
+    globalContract.create('wave', '', [commandAssertion(gate)], 'harness')
+    globalContract.setBaseline(null)
+    const r = await contractAssertPassTool.execute({ index: 0, evidence: 'done' }, dir)
+    expect(r.isError).toBe(true)
+    expect(r.output).toContain('sys.exit')
+  })
+})
+
+/**
+ * F35 end to end: the refusal the model reads must not blame its work.
+ *
+ * The in-session cap is 300s; Wave 8b's gate needs about thirty minutes. Before
+ * this, one ContractAssertPass on the gate told a model with correct work
+ * "the repository contradicts it" and sent it back to rewrite code that had
+ * never been measured. A wrong reason is worse than no reason: it is actionable.
+ */
+describe('a check that was killed does not tell the model its work is wrong (F35)', () => {
+  let dir: string
+  let priorCap: string | undefined
+  // Outlives the cap without depending on `sleep` existing on Windows. The
+  // `chdir` is cleanup, not behaviour: a killed child goes on holding its cwd
+  // on Windows long enough that removing the temp dir is EPERM, so the child
+  // steps out of it before it hangs. It is still hung, still killed, still the
+  // same code path.
+  const slow = 'python -c "import os, tempfile, time; os.chdir(tempfile.gettempdir()); time.sleep(4000)"'
+
+  beforeEach(() => {
+    // The real cap is 300s, and waiting it out here would make one test twenty
+    // times the whole suite. `commandTimeoutMs` is read per call for exactly
+    // this: shorten the cap, not the thing being capped, so the code under test
+    // is the same code that runs in a session.
+    priorCap = process.env.CYNCO_CONTRACT_CHECK_TIMEOUT_MS
+    process.env.CYNCO_CONTRACT_CHECK_TIMEOUT_MS = '2000'
+    dir = mkdtempSync(join(tmpdir(), 'contract-f35-'))
+    globalContract.create('wave', '', [{ text: 'The held-out gate exits 0.', command: slow }], 'harness')
+    globalContract.setBaseline(null)
+  })
+  afterEach(() => {
+    if (priorCap === undefined) delete process.env.CYNCO_CONTRACT_CHECK_TIMEOUT_MS
+    else process.env.CYNCO_CONTRACT_CHECK_TIMEOUT_MS = priorCap
+    // On Windows the killed python still holds its cwd for a moment after the
+    // kill returns, so an immediate unlink is EPERM. Retry rather than skip the
+    // cleanup and leave temp dirs behind.
+    rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 })
+  })
+
+  test('the pass is refused, and the refusal says it was not measured', async () => {
+    const r = await contractAssertPassTool.execute({ index: 0, evidence: 'done' }, dir)
+    expect(r.isError).toBe(true)
+    // Refused, so the gate is never self-certified (finding (ah)).
+    expect(globalContract.snapshot().assertions[0].status).toBe('pending')
+    expect(r.output).toContain('could not be measured')
+    // And it does not claim a verdict nobody took.
+    expect(r.output, `blamed the work: ${r.output}`).not.toContain('the repository contradicts it')
+    expect(r.output).toContain('says nothing about whether your work is correct')
+    // Still withheld (F34).
+    expect(r.output).not.toContain('time.sleep')
+  }, 30_000)
 })
