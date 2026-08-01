@@ -171,6 +171,21 @@ function sameCommand(a: TestObservation, b: TestObservation): boolean {
   return a.command.trim() === b.command.trim()
 }
 
+/**
+ * Did the final reading cover less than the task itself had already run?
+ *
+ * Exported to nobody, but shared: two components read these observations, and
+ * when only one of them applied this rule the other paid for the run it
+ * disqualified. Scope is compared by what was RUN, so two readings from the
+ * same command cover the same tests however many cases each collected.
+ */
+function narrowerThanAnEarlierRun(obs: TestObservation[], last: TestObservation): boolean {
+  const widest = obs
+    .filter(o => !sameCommand(o, last))
+    .reduce((m, o) => Math.max(m, o.total), 0)
+  return last.total < widest
+}
+
 function assessTestsPass(
   obs: TestObservation[],
   git: GitFacts | null,
@@ -208,10 +223,7 @@ function assessTestsPass(
   // many cases each collected, and the later one is the verdict. Where no
   // command was recorded the comparison is unchanged, because a fix to a guard
   // may only ever add information to it.
-  const widest = obs
-    .filter(o => !sameCommand(o, last))
-    .reduce((m, o) => Math.max(m, o.total), 0)
-  if (last.total < widest) return 'unknown'
+  if (narrowerThanAnEarlierRun(obs, last)) return 'unknown'
 
   const first = firstObservation(obs)
   if (first && first.passed < first.total) return 1
@@ -393,7 +405,19 @@ function reduced(c: ChangedFile): boolean {
 export function buildComponents(input: TaskOutcomeInput): RewardComponents {
   const lastTest = lastObservation(input.testObservations)
   const testsPass = assessTestsPass(input.testObservations, input.git)
-  const greenRun = lastTest !== null && lastTest.passed >= lastTest.total
+  // The scope rule assessTestsPass applies, applied here too. It was not, and
+  // taskCompleted is worth 1.0: a run could end on `pytest tests/test_one.py`,
+  // satisfy an authored contract, and be paid for a suite standing red — with
+  // testsPass reading 'unknown' on the very same observations. Two components
+  // reading one set of facts may not disagree about what those facts cover.
+  //
+  // A narrow final run leaves `corroboration` null rather than false, because
+  // it is an absent corroboration and not a failed one. A red run that WAS
+  // broad enough still corroborates nothing, and that is a measured 0.
+  const corroboration = lastTest !== null && !narrowerThanAnEarlierRun(input.testObservations, lastTest)
+    ? lastTest
+    : null
+  const greenRun = corroboration !== null && corroboration.passed >= corroboration.total
 
   let taskCompleted: RewardComponents['taskCompleted']
   // An auto-contract asserts file mechanics — X was modified, changes were
@@ -422,7 +446,7 @@ export function buildComponents(input: TaskOutcomeInput): RewardComponents {
   } else if (input.contract?.complete) {
     // Contract assertions are agent-attested, so completion needs corroboration
     // from a real test run before it counts as 1 (decision D3).
-    taskCompleted = lastTest === null ? 'unknown' : greenRun ? 1 : 0
+    taskCompleted = corroboration === null ? 'unknown' : greenRun ? 1 : 0
   } else {
     taskCompleted = 'unknown'
   }

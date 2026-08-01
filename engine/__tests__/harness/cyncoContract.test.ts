@@ -36,7 +36,7 @@ import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { assertionCheck } from '../../tools/contractVerify.js'
 // @ts-ignore — untyped harness module
-import { sidecarPath, loadMissionAssertions } from '../../../scripts/cynco-contract.mjs'
+import { sidecarPath, loadMissionAssertions, workspaceError } from '../../../scripts/cynco-contract.mjs'
 
 const GATE = 'python C:/tmp/verify_w8.py'
 const SIDECAR = 'C:/tmp/w8.contract.json'
@@ -286,5 +286,95 @@ describe('the driver hands its own cap to the contract', () => {
    */
   it('sends nothing when the operator set nothing', () => {
     expect(driver).toMatch(/process\.env\.CYNCO_CHECK_TIMEOUT_MS === undefined\s*\?\s*undefined/)
+  })
+})
+
+/**
+ * Measured on the Wave 10 dispatch, 2026-08-01.
+ *
+ * The cwd argument was written `C:\Users\civer\civkings` in a bash command
+ * line, so the shell delivered `C:Userscivercivkings` — a path that does not
+ * exist. The driver took it without comment, printed
+ * `this mission seals 2 held-out instrument(s)` where one was expected, and
+ * then died in `gitHead` with a raw `ENOENT: uv_spawn 'git'` stack.
+ *
+ * The count is the finding, not the crash. `harnessGatePaths` skips any token
+ * that resolves INSIDE the workspace, because a gate the mission is meant to
+ * own is not a withheld instrument. With a workspace root that matches nothing,
+ * that skip never fires and the repository's own path is sealed alongside the
+ * gate. A sealed workspace refuses every Read, Glob and Bash naming it, with a
+ * refusal that by design cannot say which file it is protecting — so the model
+ * would spend its whole budget being told, unhelpfully, that it had touched
+ * something it is not allowed to know about.
+ *
+ * That the crash happened first is luck. `gitHead` runs after the seal is
+ * computed and after the socket work begins; a driver that read HEAD later, or
+ * a cwd that existed but was not the repository, dispatches the mission.
+ *
+ * So the workspace is checked before anything is derived from it, and the check
+ * is a real one: existing, a directory, and a git repository, because every use
+ * the driver makes of it is a git use.
+ */
+describe('the driver refuses a workspace it cannot have meant', () => {
+  const slash = (p: string) => p.split('\\').join('/')
+  const io = (present: string[]) => ({
+    exists: (p: string) => present.includes(slash(p)),
+    isDirectory: (p: string) => present.includes(slash(p)),
+  })
+
+  it('names a workspace that does not exist', () => {
+    // The measured spelling: backslashes eaten by the shell.
+    const err = workspaceError('C:Userscivercivkings', io([]))
+    expect(err).not.toBeNull()
+    expect(err).toContain('C:Userscivercivkings')
+  })
+
+  it('refuses a path that exists but is not a git repository', () => {
+    // The dangerous case: no crash to save us. Everything downstream is git.
+    const err = workspaceError('C:/tmp', io(['C:/tmp']))
+    expect(err).not.toBeNull()
+    expect(err).toContain('git')
+  })
+
+  it('refuses a file where a directory was meant', () => {
+    const err = workspaceError('C:/tmp/brief.txt', {
+      exists: (p: string) => slash(p) === 'C:/tmp/brief.txt',
+      isDirectory: () => false,
+    })
+    expect(err).not.toBeNull()
+  })
+
+  it('accepts a real repository', () => {
+    expect(workspaceError('C:/Users/civer/civkings', io([
+      'C:/Users/civer/civkings', 'C:/Users/civer/civkings/.git',
+    ]))).toBeNull()
+  })
+
+  it('accepts a repository spelled with backslashes', () => {
+    expect(workspaceError('C:\\Users\\civer\\civkings', io([
+      'C:/Users/civer/civkings', 'C:/Users/civer/civkings/.git',
+    ]))).toBeNull()
+  })
+
+  /**
+   * A worktree's `.git` is a FILE holding a gitdir pointer, not a directory.
+   * The gates are run against scratch worktrees, so a check that demanded a
+   * directory would refuse the very workspaces this harness creates.
+   */
+  it('accepts a linked worktree, whose .git is a file', () => {
+    expect(workspaceError('C:/tmp/wt', {
+      exists: (p: string) => ['C:/tmp/wt', 'C:/tmp/wt/.git'].includes(slash(p)),
+      isDirectory: (p: string) => slash(p) === 'C:/tmp/wt',
+    })).toBeNull()
+  })
+
+  it('is called before the driver derives anything from the workspace', () => {
+    // Wired to nothing is finding (ag). The refusal must precede the seal
+    // derivation, or it reports a fault the mission has already been given.
+    const src = readFileSync('scripts/cynco-mission-driver.mjs', 'utf-8')
+    const check = src.indexOf('workspaceError(')
+    const seal = src.indexOf('withheldGatePaths(')
+    expect(check).toBeGreaterThan(-1)
+    expect(check).toBeLessThan(seal)
   })
 })

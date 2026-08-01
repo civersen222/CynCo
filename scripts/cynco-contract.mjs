@@ -27,6 +27,7 @@
 // is graded on the model's own word (contract.ts:425) — an authorization that
 // authorizes by asking the subject whether it agrees.
 
+import { existsSync, statSync } from 'node:fs'
 import { assertionCheck, commandAssertion } from '../engine/tools/contractVerify.js'
 
 /**
@@ -52,6 +53,41 @@ export function sidecarPath(taskFile) {
   // directory and no extension at all.
   const stem = dot > slash ? p.slice(0, dot) : p
   return `${stem}.contract.json`
+}
+
+/**
+ * Why this workspace cannot be dispatched into, or null when it can.
+ *
+ * Measured on the Wave 10 dispatch. The cwd was written with backslashes in a
+ * bash command line, the shell ate them, and the driver was handed
+ * `C:Userscivercivkings` — which it accepted. It then reported sealing TWO
+ * held-out instruments where one was expected, and only died later, by luck, on
+ * a raw `ENOENT: uv_spawn 'git'`.
+ *
+ * The count was the finding. `harnessGatePaths` skips any path resolving INSIDE
+ * the workspace, because a gate the mission owns is not withheld from it. A
+ * workspace root that matches nothing makes that skip unreachable, so the
+ * repository's own path joins the sealed set — and a sealed workspace refuses
+ * every call naming it with a refusal that, by design, cannot say what it is
+ * protecting. The mission would spend its entire budget being told it had
+ * touched something it is not allowed to know about.
+ *
+ * Which is why this lives in the contract module rather than beside the argv
+ * parsing: the workspace root is an input to what gets sealed, and a wrong one
+ * is a sealing fault before it is a path fault.
+ *
+ * `.git` is checked for existence and not for being a directory — a linked
+ * worktree's `.git` is a FILE holding a gitdir pointer, and the gates are run
+ * against exactly those.
+ */
+export function workspaceError(cwd, io = {}) {
+  const exists = io.exists ?? ((p) => existsSync(p))
+  const isDirectory = io.isDirectory ?? ((p) => statSync(p, { throwIfNoEntry: false })?.isDirectory() === true)
+  const root = cwd.replace(/\\/g, '/').replace(/\/+$/, '')
+  if (!exists(root)) return `workspace ${cwd} does not exist`
+  if (!isDirectory(root)) return `workspace ${cwd} is not a directory`
+  if (!exists(`${root}/.git`)) return `workspace ${cwd} is not a git repository`
+  return null
 }
 
 /** Reject at dispatch, where a person is watching, rather than mid-mission. */
