@@ -44,7 +44,8 @@ import { mkdirSync, appendFileSync, readFileSync, existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { createMissionCollector, buildMissionRecord, missionCommitted, missionOutcome, waitIsOver, historyRewrite, QUIET_MS } from './cynco-ledger.mjs'
 import { runCheck } from './cynco-verify.mjs'
-import { loadMissionAssertions, sidecarPath } from './cynco-contract.mjs'
+import { loadMissionAssertions, sidecarPath, sealedDispatchRefusal } from './cynco-contract.mjs'
+import { withheldGatePaths } from '../engine/bridge/contractAutoCreate.js'
 import { loadOrCreateTokens } from '../engine/security/localToken.js'
 
 const [taskFile, marker, cwdArg, timeoutArg, checkCmd] = process.argv.slice(2)
@@ -77,6 +78,15 @@ try {
 if (missionAssertions && missionAssertions.length > (checkCmd ? 1 : 0)) {
   console.log(`[driver] ${sidecarPath(taskFile)} authorizes ${missionAssertions.length - (checkCmd ? 1 : 0)} assertion(s)`)
 }
+
+// F41. Derived HERE, from the same function the engine derives it from, so the
+// driver knows whether this mission depends on a guarantee before it decides
+// whether the engine on the other end of the socket has one. The count is all
+// that leaves this scope: the paths themselves are the withheld thing.
+const SEALED_COUNT = missionAssertions
+  ? withheldGatePaths(missionAssertions, CWD).length
+  : 0
+if (SEALED_COUNT > 0) console.log(`[driver] this mission seals ${SEALED_COUNT} held-out instrument(s)`)
 
 const collector = createMissionCollector()
 const dispatchedAt = new Date().toISOString()
@@ -134,8 +144,28 @@ let workBegun = false
 // the old behaviour was three hours.
 const SILENCE_S = parseInt(process.env.CYNCO_SILENCE_S ?? '300', 10)
 let silentAfterDispatch = false
-ws.onopen = () => {
-  console.log('[driver] connected, dispatching mission')
+// F41. A mission that seals nothing goes out the moment the socket opens, as it
+// always has. A mission that seals something waits for the engine to say what it
+// can enforce, because Wave 9b proved that a driver holding a two-path seal and
+// an engine that had never heard of sealing look, from here, exactly like a
+// working pair. session.ready is replayed to every client on connect, so this
+// costs a mission with a live engine milliseconds.
+let dispatched = false
+const sealGateTimer = SEALED_COUNT > 0
+  ? setTimeout(() => {
+      if (dispatched) return
+      // No session.ready in this long means the engine's competence is UNKNOWN,
+      // and unknown is not permission — the same rule the ledger applies to a
+      // verification that never ran.
+      console.error(`[driver] REFUSED: ${sealedDispatchRefusal({ sealedCount: SEALED_COUNT, capabilities: null })}`)
+      process.exit(4)
+    }, parseInt(process.env.CYNCO_READY_S ?? '30', 10) * 1000)
+  : null
+
+function dispatchMission() {
+  if (dispatched) return
+  dispatched = true
+  if (sealGateTimer) clearTimeout(sealGateTimer)
   // P4.2 (STATE doc Phase 4(a)): the check script IS the contract — the engine
   // creates a one-assertion DoD so taskError/errorTrend measure this mission.
   //
@@ -166,10 +196,28 @@ ws.onopen = () => {
     ...(contract ? { contract } : {}),
   }))
 }
+
+ws.onopen = () => {
+  if (SEALED_COUNT > 0) {
+    console.log('[driver] connected, waiting for the engine to declare what it can enforce')
+    return
+  }
+  console.log('[driver] connected, dispatching mission')
+  dispatchMission()
+}
 ws.onmessage = (ev) => {
   try {
     const m = JSON.parse(ev.data)
     collector.ingest(m)
+    if (m.type === 'session.ready' && SEALED_COUNT > 0 && !dispatched) {
+      const refusal = sealedDispatchRefusal({ sealedCount: SEALED_COUNT, capabilities: m.capabilities })
+      if (refusal) {
+        console.error(`[driver] REFUSED: ${refusal}`)
+        process.exit(4)
+      }
+      console.log('[driver] engine declares it can enforce the seal — dispatching mission')
+      dispatchMission()
+    }
     if (WORK_BEGUN.has(m.type)) workBegun = true
     if (m.type === 's5.decision' && m.enforced === true && !enforcedWarned) {
       // Engine was started without LOCALCODE_S5_ENFORCE=false: S5 can restrict

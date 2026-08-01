@@ -152,5 +152,42 @@ export function loadMissionAssertions(taskFile, checkCmd, io) {
   return assertions.length > 0 ? assertions : null
 }
 
+/** The capability an engine must advertise before it can be trusted to seal. */
+export const CAP_SEALED_GATES = 'sealed-gates'
+
+/**
+ * F41: may this mission be dispatched to THIS engine? Null to dispatch, a
+ * sentence to print and refuse on.
+ *
+ * Wave 9b was dispatched with a two-path seal to a daemon started seven hours
+ * before the seal was written. Nothing on either side of the socket was in a
+ * position to notice: the driver knew the contract sealed two files, the engine
+ * knew nothing about sealing at all, and an engine that knows nothing about
+ * sealing has no way to say so. The mission then read and ran its own grading
+ * gate four times and the gate's PASS had to be thrown away.
+ *
+ * So the check is on ABSENCE, and it has to be, because that is the only shape
+ * the failure comes in: a build too old to enforce a guarantee is also too old
+ * to fail a check for it. `capabilities` missing, null (no session.ready
+ * arrived), or present without the word all mean the same thing — UNKNOWN — and
+ * unknown is not permission. That is the never-assume-a-measurement rule
+ * applied to the engine's own competence.
+ *
+ * A mission with nothing sealed is unaffected. Most missions have nothing
+ * sealed, and a guard that stopped them would be traded away within a week.
+ */
+export function sealedDispatchRefusal({ sealedCount, capabilities }) {
+  if (!sealedCount) return null
+  if (Array.isArray(capabilities) && capabilities.includes(CAP_SEALED_GATES)) return null
+
+  const said = capabilities == null
+    ? 'the engine advertised no capabilities at all (a build older than the seal cannot say the word)'
+    : `the engine advertised [${capabilities.join(', ')}]`
+  return `this mission seals ${sealedCount} held-out instrument(s), but ${said}. `
+    + 'A seal the engine cannot enforce is worse than none: the mission would find '
+    + 'and run its own grading gate and every component would report success. '
+    + 'Restart the engine from the current tree and re-dispatch.'
+}
+
 /** `commandAssertion` is re-exported so the visible form has one definition. */
 export { commandAssertion }
