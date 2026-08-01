@@ -310,6 +310,31 @@ export function harnessGatePaths(
   return [...found].sort()
 }
 
+/**
+ * The subset of those instruments the model must never see (F37).
+ *
+ * The two harness assertion forms differ in exactly one way that matters here:
+ * a plain string states its command in the text the model reads, so hiding the
+ * file would help nobody; the `{text, command}` form carries a redacted text
+ * beside a command the model is told it is not given. Only the second is a
+ * held-out gate, and only the second gets sealed.
+ *
+ * Gilded Wave 9 is why this exists. The gate had been read-only since finding
+ * (ag) and unnamed in its own refusal since F34, and the run still listed the
+ * directory, read the file, and ran it — then wrote what it had learned into its
+ * commit message. Read-only was the wrong permission for a held-out instrument:
+ * `immutableTargetOf`'s refusal tells the model, correctly for a brief, that it
+ * may read the file as often as it likes.
+ */
+export function withheldGatePaths(
+  assertions: HarnessAssertion[],
+  cwd: string,
+  exists: (p: string) => boolean = (p) => existsSync(p),
+): string[] {
+  const withheld = assertions.filter(a => typeof a !== 'string' && Boolean(a.command))
+  return harnessGatePaths(withheld, cwd, exists)
+}
+
 /** Apply a harness-supplied contract spec. Returns true when applied. */
 export function applyHarnessContract(
   spec: HarnessContractSpec | undefined,

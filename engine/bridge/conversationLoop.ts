@@ -21,6 +21,7 @@ import { setLoadedSkills, getSkillByName, getSkillIndex } from '../skills/store.
 import { formatSkillIndexBlock } from '../skills/prompt.js'
 import { getWorkflowForSkill } from '../skills/workflowSkill.js'
 import { ToolExecutor, setTaskImmutablePaths, type RequestApprovalFn } from '../tools/executor.js'
+import { getSealedDirs, setTaskSealedPaths } from '../tools/sealedPaths.js'
 import { ToolScorer } from '../tools/toolScorer.js'
 import { DifficultyClassifier } from '../vsm/difficultyClassifier.js'
 import { withReflexion } from '../vsm/reflexionFeedback.js'
@@ -70,7 +71,7 @@ import { probeEdit } from '../vsm/groundingProbe.js'
 import { loadInterventionRates, saveInterventionRates } from '../vsm/interventionPersistence.js'
 import { applyNudgeTemperature } from '../vsm/controlSignals.js'
 import { globalContract } from '../tools/contract.js'
-import { applyHarnessContract, harnessGatePaths, maybeAutoCreateContract, type HarnessContractSpec } from './contractAutoCreate.js'
+import { applyHarnessContract, harnessGatePaths, withheldGatePaths, maybeAutoCreateContract, type HarnessContractSpec } from './contractAutoCreate.js'
 import { gitProbe } from '../tools/contractVerify.js'
 import { globalAskBroker } from '../tools/askBroker.js'
 import { estimateTokensAsync } from '../engine/contextBudget.js'
@@ -904,8 +905,35 @@ export class ConversationLoop {
       ...(opts?.contract ? harnessGatePaths(opts.contract.assertions, this.executor['cwd']) : []),
     ])]
     setTaskImmutablePaths(gates)
-    if (gates.length > 0) {
-      console.log(`[contract] Read-only instrument(s) for this task: ${gates.join(', ')}`)
+    // F37. A held-out gate is not read-only, it is sealed: unreadable,
+    // unlistable, unrunnable. Set unconditionally and from the same options, so
+    // a task that carries no withheld gate clears the last one's seal — a seal
+    // that outlived its task would refuse a later run a file nothing is
+    // measuring, with a refusal that by design cannot say which file.
+    const sealed = opts?.contract
+      ? withheldGatePaths(opts.contract.assertions, this.executor['cwd'])
+      : []
+    setTaskSealedPaths(sealed)
+    const readable = gates.filter(g => !sealed.includes(g))
+    if (readable.length > 0) {
+      console.log(`[contract] Read-only instrument(s) for this task: ${readable.join(', ')}`)
+    }
+    // Counted, never named. This log is shipped into trajectories and telemetry,
+    // and a path printed there is a path that can find its way back to a model.
+    if (sealed.length > 0) {
+      console.log(`[contract] ${sealed.length} sealed instrument(s) for this task `
+        + `(withheld: not readable, not listable, not runnable)`)
+      // Layer 3 engages only for a gate that has a directory to itself, and the
+      // harness is the only thing that can arrange that. Said out loud rather
+      // than left to the operator's memory: a gate sharing a directory with the
+      // brief is still refused by name and struck from every listing, but
+      // `cat <dir>/*.py` names nothing sealed and returns contents that hold no
+      // filename to strike. That is the hole, and moving the file closes it.
+      if (getSealedDirs().length === 0) {
+        console.log('[contract] WARNING: no sealed instrument has a directory of its own, '
+          + 'so a wildcard read of its directory is not refused. Put gates in a gates-only '
+          + 'directory to close that path.')
+      }
     }
     // Auto-create contract from EVERY user message — the model must finish what
     // the user asked. A COMPLETE stale contract from a prior task is replaced
