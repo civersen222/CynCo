@@ -1,6 +1,6 @@
 import { execSync } from 'child_process'
 import { existsSync, mkdirSync, unlinkSync, writeFileSync, readFileSync } from 'fs'
-import { join } from 'path'
+import { join, isAbsolute } from 'path'
 import type { SnapshotHash, DiffResult, FileDiff, FileStatus } from './types.js'
 
 /**
@@ -39,6 +39,69 @@ export class WorkspaceSnapshot {
     if (!lines.has(entry)) {
       const sep = existing === '' || existing.endsWith('\n') ? '' : '\n'
       writeFileSync(excludeFile, existing + sep + entry + '\n')
+    }
+  }
+
+  /**
+   * Ensure the WORKSPACE's own git repository ignores the snapshot store.
+   *
+   * `ensureExcludeEntry` above hides `.cynco-snapshots` from the SNAPSHOT
+   * repo's index, which is the only place it was ever hidden. The workspace is
+   * usually a git repository too, and to that repository a bare git repo simply
+   * appeared inside the working tree. A mission told to commit its work runs
+   * `git add -A` and takes the engine's entire snapshot store with it.
+   *
+   * Measured on 2026-08-01: a civkings worktree carried 2167 staged paths of
+   * `.localcode-snapshots/` — objects, hooks, index and all — added by a
+   * mission doing exactly what it was told.
+   *
+   * Written to `info/exclude`, never to `.gitignore`. `.gitignore` is a TRACKED
+   * file: writing to it would put the engine's own housekeeping into the user's
+   * diff, which is the same class of contamination one level down.
+   *
+   * `--git-common-dir`, not `--git-dir`: in a linked worktree the git dir is
+   * `…/.git/worktrees/<name>` and `info/exclude` is read from the COMMON dir.
+   * Excluding into the per-worktree dir would write a file git never reads and
+   * report success.
+   *
+   * Best effort throughout. A workspace that is not a git repository has
+   * nothing to protect, and a snapshot must never fail because of it.
+   */
+  private ensureHostIgnoresSnapshotDir(): void {
+    // NOT this.env(): that points GIT_DIR at the snapshot repo, which is the
+    // one repository this must not ask.
+    const env = { ...process.env } as Record<string, string>
+    delete env.GIT_DIR
+    delete env.GIT_WORK_TREE
+    let commonDir: string
+    try {
+      commonDir = execSync('git rev-parse --git-common-dir', {
+        cwd: this.workDir, env, stdio: ['pipe', 'pipe', 'pipe'],
+      }).toString().trim()
+    } catch {
+      return // not a git repository — nothing to protect
+    }
+    if (!commonDir) return
+    if (!isAbsolute(commonDir)) commonDir = join(this.workDir, commonDir)
+    try {
+      const dir = join(commonDir, 'info')
+      const file = join(dir, 'exclude')
+      if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+      const existing = existsSync(file) ? readFileSync(file, 'utf-8') : ''
+      const lines = new Set(existing.split('\n').map(l => l.trim()).filter(Boolean))
+      // Anchored and directory-suffixed: `/.cynco-snapshots/` matches the store
+      // at the repository root and nothing else. A bare `.cynco-snapshots`
+      // would also hide a file of that name the user wrote anywhere in the
+      // tree, and an exclude broad enough to hide the engine's leavings is
+      // broad enough to hide the work.
+      if (lines.has('/.cynco-snapshots/')) return
+      const sep = existing === '' || existing.endsWith('\n') ? '' : '\n'
+      writeFileSync(file, existing + sep + '/.cynco-snapshots/\n')
+    } catch (err) {
+      // Never fail a snapshot over housekeeping — but say so, because the
+      // silent form of this failure is the workspace quietly staying
+      // committable, which is the defect this method exists to close.
+      console.log(`[snapshot] could not exclude the snapshot store from the workspace repo: ${err instanceof Error ? err.message : String(err)}`)
     }
   }
 
@@ -147,6 +210,9 @@ export class WorkspaceSnapshot {
     // silently changing every text file. Pin it off in the snapshot repo.
     // Unconditional so pre-existing snapshot repos get repaired too.
     try { this.git('config core.autocrlf false') } catch { /* best effort */ }
+    // Unconditional for the same reason: every snapshot store created before
+    // this existed is sitting in a workspace that can still commit it.
+    this.ensureHostIgnoresSnapshotDir()
   }
 
   /**
@@ -194,6 +260,7 @@ export class WorkspaceSnapshot {
           })
           this.ensureExcludeEntry('.cynco-snapshots')
           try { this.git('config core.autocrlf false') } catch { /* best effort */ }
+          this.ensureHostIgnoresSnapshotDir()
           // Retry
           this.git('add -A')
           const hash = this.git('write-tree')
