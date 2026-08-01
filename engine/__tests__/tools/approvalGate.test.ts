@@ -25,6 +25,23 @@ describe('approvalGate', () => {
     expect(shouldAutoApprove('Edit', { trust })).toBe(false)
   })
 
+  it('an override that is not "auto" withholds approval from a tool that would have had it', () => {
+    // `Edit` above is absent from the map, so it reaches the tier check and
+    // proves nothing about the override. This is the case that does: a tool
+    // whose own tier is `auto`, named in the profile at a tier that is not.
+    const trust = { Read: 'approval' as const, Grep: 'always' as const }
+    expect(shouldAutoApprove('Read', { trust })).toBe(false)
+    expect(shouldAutoApprove('Grep', { trust })).toBe(false)
+  })
+
+  it('a tool that does not exist is never auto-approved', () => {
+    // Models name tools that were never registered. Whatever is done with such
+    // a call, it must not be done unattended.
+    expect(shouldAutoApprove('Read_file', undefined)).toBe(false)
+    expect(shouldAutoApprove('', undefined)).toBe(false)
+    expect(shouldAutoApprove('DeleteEverything', { trust: { Read: 'auto' } })).toBe(false)
+  })
+
   it('respects deny list', () => {
     const profile = { deny: ['WebFetch'] }
     expect(shouldAutoApprove('WebFetch', profile)).toBe(false)
