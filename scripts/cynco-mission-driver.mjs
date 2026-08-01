@@ -10,8 +10,23 @@
 //                  timeout/spawn failure => verified:null (UNMEASURED).
 //                  Omit => null. Cap the run with CYNCO_CHECK_TIMEOUT_MS
 //                  (default 300000); a mutation-testing gate needs more.
-//                  Also sent as a one-assertion DoD contract with the mission
-//                  dispatch (P4.2) so taskError/errorTrend measure the run.
+//                  Also sent as a DoD contract with the mission dispatch (P4.2)
+//                  so taskError/errorTrend measure the run. The command itself
+//                  is withheld from the text the model reads.
+//
+// Optional sidecar: <task-file with .contract.json instead of its extension>.
+// What the brief AUTHORIZES, which the brief text cannot say in a way any
+// mechanism reads. Finding (ai): assessTestsUnmodified vetoes the whole reward
+// (-1.0) when a test file loses cases or disappears, and clears only for paths
+// a passed assertion names — so a mission ORDERED to delete superseded cases
+// scored the maximum penalty for obeying. Shape:
+//
+//   { "assertions": [ { "testCensus": "gilded/tests/test_ui.py", "min": 40 },
+//                     { "fileAbsent": "gilded/tests/test_old.py" },
+//                     { "text": "<what the model reads>", "command": "<held out>" } ] }
+//
+// Malformed or unparseable => the dispatch is refused, exit 2. See
+// scripts/cynco-contract.mjs.
 //
 // Requires the engine running headless with LOCALCODE_APPROVE_ALL=true (F2)
 // and LOCALCODE_S5_ENFORCE=false (F7 — S5 capped at recommend so enforcement
@@ -25,10 +40,11 @@
 // Human spot-audit every 5th record either way (STATE doc Phase 2(b)).
 
 import { basename, join, dirname, resolve } from 'node:path'
-import { mkdirSync, appendFileSync, readFileSync } from 'node:fs'
+import { mkdirSync, appendFileSync, readFileSync, existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { createMissionCollector, buildMissionRecord, missionCommitted, missionOutcome, waitIsOver, QUIET_MS } from './cynco-ledger.mjs'
 import { runCheck } from './cynco-verify.mjs'
+import { loadMissionAssertions, sidecarPath } from './cynco-contract.mjs'
 import { loadOrCreateTokens } from '../engine/security/localToken.js'
 
 const [taskFile, marker, cwdArg, timeoutArg, checkCmd] = process.argv.slice(2)
@@ -44,6 +60,23 @@ const LEDGER_PATH = join(dirname(fileURLToPath(import.meta.url)), '..', 'benchma
 
 const task = await Bun.file(taskFile).text()
 console.log(`[driver] mission from ${taskFile} (${task.length} chars), marker="${marker}", cwd=${CWD}`)
+
+// Built before the socket opens: a sidecar that cannot authorize what it claims
+// to authorize must stop the dispatch, not be discovered halfway through a
+// two-hour mission whose reward is already forfeit (finding (ai)).
+let missionAssertions
+try {
+  missionAssertions = loadMissionAssertions(taskFile, checkCmd, {
+    exists: (p) => existsSync(p),
+    readFile: (p) => readFileSync(p, 'utf-8'),
+  })
+} catch (e) {
+  console.error(`[driver] ${e.message}`)
+  process.exit(2)
+}
+if (missionAssertions && missionAssertions.length > (checkCmd ? 1 : 0)) {
+  console.log(`[driver] ${sidecarPath(taskFile)} authorizes ${missionAssertions.length - (checkCmd ? 1 : 0)} assertion(s)`)
+}
 
 const collector = createMissionCollector()
 const dispatchedAt = new Date().toISOString()
@@ -84,28 +117,15 @@ ws.onopen = () => {
   // P4.2 (STATE doc Phase 4(a)): the check script IS the contract — the engine
   // creates a one-assertion DoD so taskError/errorTrend measure this mission.
   //
-  // The command is withheld from the assertion TEXT and travels beside it.
-  //
-  // Measured on Gilded Wave 5c (2026-07-30): the run read `Verification command
-  // exits 0: <path>` out of its own contract and ran that gate directly — the
-  // exact leak the held-out-gate rule exists to prevent, since a visible gate
-  // can be tuned to. The first repair deleted the command from the text, which
-  // was also the only place two other mechanisms read it from: `assertionCheck`
-  // stopped recognising the assertion (so ContractAssertPass verified nothing
-  // and taskCompleted became self-certified — finding (ah)) and
-  // `harnessGatePaths` stopped finding the gate script (so the file that scores
-  // the run became editable by the run — finding (aj)).
-  //
-  // Withholding is a property of what the model READS. `text` is rendered;
-  // `command` is not, and no render path touches it. See engine/tools/contract.ts.
-  const contract = checkCmd
+  // The gate's command is withheld from the assertion TEXT and travels beside
+  // it, and the brief's authorizations come from the sidecar. Both are built in
+  // scripts/cynco-contract.mjs, which is under test; the reasoning for each
+  // lives there. A malformed sidecar has already thrown by this point, above.
+  const contract = missionAssertions
     ? {
         title: `Mission: ${marker}`,
         brief: task.slice(0, 200),
-        assertions: [{
-          text: 'The held-out verification gate for this mission exits 0. The dispatcher runs it after the mission ends; it is not yours to run and you are not told what it is.',
-          command: checkCmd,
-        }],
+        assertions: missionAssertions,
       }
     : undefined
   // Finding (ag): the brief is the instrument this mission is judged against, and
