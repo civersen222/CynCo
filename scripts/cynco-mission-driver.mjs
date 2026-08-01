@@ -45,6 +45,7 @@ import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { createMissionCollector, buildMissionRecord, missionCommitted, missionOutcome, waitExitReason, gateDisposition, historyRewrite, QUIET_MS } from './cynco-ledger.mjs'
 import { runCheck } from './cynco-verify.mjs'
+import { purgeBytecodeCaches } from './cynco-workspace.mjs'
 import { loadMissionAssertions, sidecarPath, sealedDispatchRefusal, workspaceError } from './cynco-contract.mjs'
 import { withheldGatePaths } from '../engine/bridge/contractAutoCreate.js'
 import { loadOrCreateTokens } from '../engine/security/localToken.js'
@@ -111,6 +112,8 @@ const SEALED_COUNT = missionAssertions
   ? withheldGatePaths(missionAssertions, CWD).length
   : 0
 if (SEALED_COUNT > 0) console.log(`[driver] this mission seals ${SEALED_COUNT} held-out instrument(s)`)
+
+for (const line of purgeBytecodeCaches(CWD)) console.log(`[driver] ${line}`)
 
 const collector = createMissionCollector()
 const dispatchedAt = new Date().toISOString()
