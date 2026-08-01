@@ -94,6 +94,28 @@ describe('a well-formed frame is accepted', () => {
   it('accepts a variant whose optional fields are simply absent', () => {
     expect(validateCommand({ type: 'user.message', text: 'go' }).ok).toBe(true)
   })
+
+  /**
+   * Finding (ah)/(aj). A held-out gate travels as `{ text, command }` — prose
+   * for the model, the real check for the engine. This boundary refused it as
+   * "assertions must be an array of strings", which would have turned the whole
+   * repair into a dispatch that silently loses its contract.
+   */
+  it('accepts a harness assertion that withholds its command from the text', () => {
+    const res = validateCommand({
+      type: 'user.message', text: 'go',
+      contract: { title: 't', assertions: [{ text: 'the held-out gate exits 0', command: 'pytest -q' }] },
+    })
+    expect(res.ok ? null : res.reason).toBeNull()
+  })
+
+  it('accepts the plain string form and the withheld form together', () => {
+    const res = validateCommand({
+      type: 'user.message', text: 'go',
+      contract: { title: 't', assertions: ['Changes committed to git', { text: 'redacted', command: 'pytest -q' }] },
+    })
+    expect(res.ok ? null : res.reason).toBeNull()
+  })
 })
 
 describe('a frame of the right type but the wrong shape is refused', () => {

@@ -179,13 +179,14 @@ export function loadTrajectories(
 
 /**
  * Eligible as training data: labeled by the grounded labeler, not degenerate,
- * and with the real conversation on disk. A reward label without a
- * conversation is untrainable — there is no text to learn.
+ * not quarantined, and with the real conversation on disk. A reward label
+ * without a conversation is untrainable — there is no text to learn.
  */
 export function isUsable(t: TrajectoryWithReward): boolean {
   if (!t.reward) return false
   if ((t.reward.labelerVersion ?? 1) < MIN_LABELER_VERSION) return false
   if (t.reward.degenerate) return false
+  if (t.reward.quarantined) return false
   return t.hasSnapshot
 }
 
