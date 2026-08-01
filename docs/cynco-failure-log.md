@@ -418,3 +418,43 @@ Entry status: `OPEN` (improvement not yet shipped) | `SHIPPED` (fix in engine/dr
 - **The entry is anchored and directory-suffixed** (`/.cynco-snapshots/`). A bare `.cynco-snapshots` would also hide a file of that name the user wrote anywhere in the tree; an exclude broad enough to hide the engine's leavings is broad enough to hide the work.
 - **Proved through the mechanism the fault actually used:** the tests assert on `git status --porcelain`, which is what `git add -A` reads, not on the contents of any exclude file. Three earlier waves defeated checks that named a mechanism instead of the property. The paired case asserts the *other* half — a file the user wrote is still visible — so the over-broad exclude cannot pass. Applied unconditionally in `init()` and in the `track()` re-init branch, because every store created before this existed is sitting in a workspace that can still commit it.
 - **Status:** FIXED, `d0a73c4`, vitest 3586 passed, 0 failed.
+
+## F46 — a command that said "pytest" near a number was paid as a test run
+- **Date:** 2026-08-01 · **Context:** `engine/bridge/testSummary.ts:41` (`detectFramework`), used at `engine/bridge/conversationLoop.ts:3878`; `engine/__tests__/bridge/testSummary.test.ts`
+- **How it failed:** `detectFramework` matched a runner name **anywhere** in the model's command string (`/\bpytest\b/i`), and `parseTestSummary` then scraped `N passed` out of the output. Neither the exit code nor the fact of execution was consulted. Measured live against the running engine:
+
+  | command | output | recorded |
+  | --- | --- | --- |
+  | `echo "pytest suite: 452 passed"` | its own echo | `{pytest, 452/452}` |
+  | `rg -n pytest docs/brief.md` | the brief's own line | `{pytest, 3066/3066}` |
+  | `git commit -m "vitest: 3066 passed"` | git echoes the subject | `{vitest, 3066/3066}` |
+
+- **Why it is the expensive one:** `testsPass` carries **2.0 of a 3.6 denominator**. Worse, a large invented total also wins the widest-run comparison in `assessTestsPass`, so a fabricated 3066 does not merely add a reading — it **displaces** the real run beside it and turns that run's honest verdict into `unknown`.
+- **Reachable by accident, not only by gaming.** The middle row is the one that matters: grepping the brief for the word "pytest" is something an honest run does, and the brief itself supplies the number.
+- **The fix already existed thirty lines below it.** `classifyCheckCommand` had been hardened against exactly this shape — strip quoted text, split on shell separators, strip env assignments and wrapper runners, match at **command position**. `detectFramework` never got the same treatment. Both now share one `commandHeads()` helper so they cannot drift apart again.
+- **Every segment is checked, not just the last** — a runner in the middle of an `&&` chain really did run and its output really is in the buffer. That is deliberately the opposite of `classifyCheckCommand`, which reads an exit status and so may only speak for the segment that status belongs to.
+- **The only test that existed passed for the wrong reason.** `parseTestSummary('git status', '5 passed')` uses a command naming no runner at all, so it was green before and after; it never touched the substring rule. The fault was uncovered.
+- **One fixture in the suite was built on the defect.** `bash.test.ts` ran `node -e "…" python -m pytest tests/` — the trailing argv executed nothing and existed only so a substring search would find a runner. It is now a real `npm test`, which needs nothing installed and genuinely exits non-zero.
+- **Status:** FIXED, `4c599c7`, vitest 3599 passed, 0 failed.
+
+## F47 — the scope rule was applied by one component and read around by the other
+- **Date:** 2026-08-01 · **Context:** `engine/training/taskOutcome.ts:396,425` (`buildComponents`), `engine/__tests__/training/testsPassScope.test.ts`
+- **How it failed:** finding (h) taught `assessTestsPass` that a green run may only certify a suite it actually covered, and it has refused narrow certification ever since. `buildComponents` then computed its own `greenRun` straight off `lastObservation`, with no such guard. A run could end on one green test file, satisfy an authored contract, and be paid `taskCompleted = 1` — **weight 1.0** — for a suite standing red, with `testsPass` reading `unknown` on the very same observations and saying so.
+- **The shape of the bug is the lesson:** a rule enforced in one place and not the other is not a rule. The guard is now one named predicate, `narrowerThanAnEarlierRun`, called by both. Two components reading one set of facts may not disagree about what those facts cover.
+- **`unknown`, not 0.** A narrow final run is an *absent* corroboration, not a failed one, so it leaves the denominator. A run that WAS broad enough and came back red still corroborates nothing, and that stays a measured 0 — the corpus needs its negatives.
+- **Status:** FIXED, `4c599c7`, vitest 3599 passed, 0 failed.
+
+## F48 — a check that cannot fail was scoring as a check that passed
+- **Date:** 2026-08-01 · **Context:** `engine/bridge/conversationLoop.ts:3887-3888`, `engine/bridge/testSummary.ts` (`classifyCheckCommand`)
+- **How it failed:** the call site records `{ kind, ok: !result.isError }` — the classification of a *segment*, paired with the exit status of the *whole line*. `npx tsc --noEmit || true` exits 0 by construction, and recorded `typecheckPass = 1`. So did `npx tsc --noEmit | tee build.log`, where the pipeline reports tee's status and tee always succeeds; so did `npm run build && npm test`, where the status belongs to the test run. Worth 0.5 of a 3.6 denominator, for a check whose result was never in the number.
+- **Fix shipped:** `classifyCheckCommand` returns null when the line contains `;`, `|` or `||` at all, and otherwise classifies only the **last** `&&` segment — the one whose status the line carries.
+- **The remaining error is the safe one.** With `&&`, an earlier segment can fail and mark the check failed without it ever running. That direction only loses signal; the other invents it.
+- **Status:** FIXED, `4c599c7`, vitest 3599 passed, 0 failed.
+
+## F49 — three seals judged how a request was spelled, and a request can read a file while spelling none of it
+- **Date:** 2026-08-01 · **Context:** `engine/tools/sealedPaths.ts`, `engine/__tests__/tools/sealedPaths.test.ts`
+- **How it failed:** F37 built three layers around the held-out gate. Layer 1 refuses a Bash command whose **text** names the file, its basename, or the sealed directory. Layer 3 seals the directory so `cat <dir>/*.py` is caught. Both judge the spelling of the request. `find ~/.cynco -name '*.py' -exec cat {} +` spells none of them — it names only a grandparent, which is not sealed and **must not be**, since sealing it would refuse the mission its own scratch space. Layer 2 then struck only the lines mentioning the filename, so the mutation table flowed through intact: every anchor, every replacement, which is exactly what the withheld-mutation method depends on the model not having.
+- **Fix shipped — layer 4, CONTENT.** The sealed files' own lines are read once at `setTaskSealedPaths` and any tool output carrying them is discarded **whole**. This judges the answer rather than the question, so it holds for routes nobody enumerated. Whole-output because a partial redaction of a file's own text is a redaction with a hole, and the hole is where the remaining mutations are.
+- **A run of three consecutive lines, not one line, and none shorter than 20 characters.** A gate quotes the source it mutates and reading that source is the mission's job. The quotations survive comparison anyway — the gate spells a line as `'sigma = 20.0 if …',` with quotes and comma, the source spells it bare — but one accidental collision must never be able to withhold a legitimate read, and three consecutive cannot be an accident. A paired case asserts the model can still read source the gate quotes.
+- **Proved it bites:** the guard line was removed and the suite re-run; two of the four new cases went red, and the file was restored.
+- **Status:** FIXED, `4c599c7`, vitest 3599 passed, 0 failed.
