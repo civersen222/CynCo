@@ -207,3 +207,80 @@ describe('the executor refuses a sealed call, and its refusal names nothing (F37
     expect(r.output).toContain('ordinary work')
   })
 })
+
+/**
+ * Layer 4 — CONTENT.
+ *
+ * Layers 1 and 3 refuse a command that SPELLS the gate, its basename, or the
+ * directory holding it. A command can read the file and spell none of them:
+ * `find ~/.cynco -name '*.py' -exec cat {} +` names only a grandparent, which
+ * is not sealed and must not be — sealing it would refuse the mission its own
+ * scratch space. Layer 2 then strikes only the lines that mention the
+ * filename, so a `cat` of the gate flowed through with the mutation table
+ * intact: every anchor, every replacement, which is precisely the thing the
+ * withheld-mutation method depends on the model not having.
+ */
+
+/** A gate with enough substance to be recognizable, like a real one. */
+function realisticGate(): { dir: string; gate: string; text: string } {
+  const dir = mkdtempSync(join(tmpdir(), 'sealed4-'))
+  made.push(dir)
+  const text = [
+    'MUTATIONS = [',
+    '    ("D1-a", "demand", "witness_drift base probability 0.5 -> 0.6",',
+    '     "probability = 0.5 + weight * 0.1",',
+    '     "probability = 0.6 + weight * 0.1"),',
+    '    ("D2-a", "guard", "apply_drift subtracts where it added",',
+    '     "value = value + delta * rate",',
+    '     "value = value - delta * rate"),',
+    ']',
+  ].join('\n')
+  const gate = join(dir, 'verify_w9.py').replace(/\\/g, '/')
+  writeFileSync(gate, text + '\n')
+  return { dir: dir.replace(/\\/g, '/'), gate, text }
+}
+
+describe('layer 4 — a sealed instrument cannot be read around', () => {
+  it('discards output carrying the gate text, however the command spelled it', () => {
+    const { gate, text } = realisticGate()
+    setTaskSealedPaths([gate])
+    // The command named nothing sealed; the OUTPUT is the whole file.
+    const out = redactSealed(text)
+    expect(out).not.toContain('witness_drift')
+    expect(out).not.toContain('0.6 + weight')
+    expect(out).toContain('sealed')
+  })
+
+  it('does not fire before a task seals anything', () => {
+    const { text } = realisticGate()
+    setTaskSealedPaths([])
+    expect(redactSealed(text)).toBe(text)
+  })
+
+  it('lets the model read the source the gate quotes', () => {
+    // The gate quotes the code it mutates, and reading that code is the job.
+    // The quotation survives comparison because the gate spells it with the
+    // surrounding quotes and comma and the source spells it bare — and even a
+    // collision needs two more consecutive neighbours to withhold anything.
+    const { gate } = realisticGate()
+    setTaskSealedPaths([gate])
+    const source = [
+      'def witness_drift(char, weight):',
+      '    probability = 0.5 + weight * 0.1',
+      '    if char.rng.random() < probability:',
+      '        value = value + delta * rate',
+      '    return value',
+    ].join('\n')
+    expect(redactSealed(source)).toBe(source)
+  })
+
+  it('withholds the whole output rather than the matching lines', () => {
+    // A partial redaction of a file's own text is a redaction with a hole, and
+    // the hole is where the remaining mutations are.
+    const { gate, text } = realisticGate()
+    setTaskSealedPaths([gate])
+    const out = redactSealed('preamble line one\n' + text + '\ntrailing line')
+    expect(out).not.toContain('preamble line one')
+    expect(out).not.toContain('D2-a')
+  })
+})

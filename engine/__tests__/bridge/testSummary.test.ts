@@ -17,6 +17,27 @@ describe('detectFramework', () => {
     expect(detectFramework('git status --porcelain')).toBeNull()
     expect(detectFramework('ls -la')).toBeNull()
   })
+
+  it('does not read a runner out of quoted text', () => {
+    // All three were run against the live engine and all three reported a
+    // framework. `testsPass` carries 2.0 of a 3.6 denominator, so a command
+    // that merely SAYS "pytest" near a number was worth more than the work.
+    expect(detectFramework('echo "pytest suite: 452 passed"')).toBeNull()
+    expect(detectFramework('git commit -m "vitest: 3066 passed"')).toBeNull()
+  })
+
+  it('does not match a runner named as an argument', () => {
+    // Searching a brief for the word is the accidental form: no intent to
+    // fake anything, and the brief itself supplies the number.
+    expect(detectFramework('rg -n pytest docs/brief.md')).toBeNull()
+    expect(detectFramework('cat pytest.ini')).toBeNull()
+    expect(detectFramework('grep -r vitest package.json')).toBeNull()
+  })
+
+  it('still reaches a runner past a cd and env assignments', () => {
+    expect(detectFramework('cd gilded && PYTHONDONTWRITEBYTECODE=1 python -m pytest -q')).toBe('pytest')
+    expect(detectFramework('cd engine && npx vitest run')).toBe('vitest')
+  })
 })
 
 describe('parseTestSummary', () => {
@@ -105,5 +126,26 @@ describe('classifyCheckCommand', () => {
   it('returns null for test runs and unrelated commands', () => {
     expect(classifyCheckCommand('npm test')).toBeNull()
     expect(classifyCheckCommand('git status')).toBeNull()
+  })
+
+  it('returns null when the line can exit 0 while the check failed', () => {
+    // The caller has one thing to record the result with: the line's exit
+    // status. Each of these lines exits 0 with a broken typecheck inside it,
+    // so classifying them hands the labeler a pass that was never measured.
+    expect(classifyCheckCommand('npx tsc --noEmit || true')).toBeNull()
+    expect(classifyCheckCommand('npx tsc --noEmit ; echo done')).toBeNull()
+    // `| tee` is the same fault with a friendlier face: the pipeline reports
+    // tee's status, and tee always succeeds.
+    expect(classifyCheckCommand('npx tsc --noEmit | tee /tmp/tsc.log')).toBeNull()
+  })
+
+  it('returns null when the check is not the command the status belongs to', () => {
+    // `&&` short-circuits, so the line's status is the LAST segment's. Here
+    // that is the test run, and the build's result is not in the exit code.
+    expect(classifyCheckCommand('npm run build && npm test')).toBeNull()
+  })
+
+  it('still classifies a check that the exit status does belong to', () => {
+    expect(classifyCheckCommand('cd engine && npx tsc --noEmit')).toBe('typecheck')
   })
 })

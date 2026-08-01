@@ -107,6 +107,55 @@ describe('buildComponents — testsPass may not be certified by a narrower run',
 })
 
 /**
+ * The same rule, in the slot that was reading around it.
+ *
+ * assessTestsPass has refused narrow certification since finding (h), but
+ * buildComponents computed its own `greenRun` straight off the last
+ * observation. taskCompleted carries 1.0, so a run could end on one green
+ * file, satisfy an authored contract, and be paid for a suite that was red —
+ * with testsPass sitting at 'unknown' right beside it, saying so.
+ *
+ * The right answer is 'unknown', not 0. A narrow final run is not a failed
+ * corroboration; it is an absent one.
+ */
+describe('buildComponents — taskCompleted may not be corroborated by a narrower run', () => {
+  const CONTRACT = { active: true, complete: true, failed: 0, origin: 'harness' as const }
+
+  it('does not let one green test file corroborate a contract over a red suite', () => {
+    const c = buildComponents(base({
+      contract: CONTRACT,
+      testObservations: [
+        { passed: 422, total: 432, command: 'python -m pytest -q' },
+        { passed: 1, total: 1, command: 'python -m pytest tests/test_one.py' },
+      ],
+    }))
+    expect(c.taskCompleted).toBe('unknown')
+    // Both components read the same observations; they may not disagree.
+    expect(c.testsPass).toBe('unknown')
+  })
+
+  it('still corroborates when the final run is at least as broad', () => {
+    const c = buildComponents(base({
+      contract: CONTRACT,
+      testObservations: [
+        { passed: 422, total: 432, command: 'python -m pytest -q' },
+        { passed: 432, total: 432, command: 'python -m pytest -q' },
+      ],
+    }))
+    expect(c.taskCompleted).toBe(1)
+  })
+
+  it('still reports a measured red final run as a failed corroboration', () => {
+    // 0, not 'unknown': the suite was run and it was not green.
+    const c = buildComponents(base({
+      contract: CONTRACT,
+      testObservations: [{ passed: 400, total: 432, command: 'python -m pytest -q' }],
+    }))
+    expect(c.taskCompleted).toBe(0)
+  })
+})
+
+/**
  * Finding (cc), measured on two persisted reward records.
  *
  *   task-df75bf1b  ended 552/552 green, widest total observed 562  -> 'unknown'

@@ -25,7 +25,7 @@
  * must never see. Those are two different permissions and this module is the
  * second one.
  *
- * Three layers, because any one of them alone is a redaction with a hole:
+ * Four layers, because any one of them alone is a redaction with a hole:
  *
  *  1. REFERENCE. Any tool input path resolving to a sealed file, and any Bash
  *     command whose text names a sealed file, its basename, or the directory
@@ -40,18 +40,40 @@
  *     content, which contains no filename to strike). That directory is the
  *     harness's responsibility, not the engine's, and the engine says so by
  *     refusing the parent as well as the file.
+ *  4. CONTENT. Any tool output carrying the sealed file's own text is discarded
+ *     whole. The first three all judge how a request was SPELLED, and a request
+ *     can read the file while spelling none of it: `find ~/.cynco -name '*.py'
+ *     -exec cat {} +` names only a grandparent directory, which is not sealed
+ *     and must not be — and it is a command an honest run issues while looking
+ *     for something else. This layer judges the answer instead of the question,
+ *     so it holds for routes nobody enumerated.
  *
  * The refusal names nothing — F34's lesson, one level out. It says a sealed
  * instrument was named and the call was refused, so the model learns it was
  * measured and stops rather than retrying forever, and learns no more.
  */
 
-import { readdirSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 
 /** Scoped to ONE task, like the immutable set. A later task inherits nothing. */
 let taskSealedPaths: string[] = []
 /** Parents that hold nothing but sealed files — see `setTaskSealedPaths`. */
 let sealedDirs: string[] = []
+/** Layer 4: the sealed files' own lines, so content can be recognized. */
+let sealedLines = new Set<string>()
+
+/**
+ * Layer 4 thresholds.
+ *
+ * A run of consecutive lines, not a single line, because a gate quotes the
+ * source it mutates and the model is supposed to read that source. Those
+ * quotations survive exact comparison anyway — the gate spells the line as
+ * `'sigma = 20.0 if ...',`, quotes and comma included, and the source spells
+ * it bare — but one accidental collision must not be able to withhold a
+ * legitimate read, and three consecutive cannot be an accident.
+ */
+const CONTENT_RUN = 3
+const CONTENT_MIN_LINE = 20
 
 /** Win32 folds case; two authors spell the same path with different slashes. */
 function norm(p: string): string {
@@ -79,8 +101,26 @@ function parentOf(p: string): string {
 export function setTaskSealedPaths(
   paths: string[],
   listDir: (d: string) => string[] = (d) => readdirSync(d),
+  readFile: (p: string) => string = (p) => readFileSync(p, 'utf-8'),
 ): void {
   taskSealedPaths = paths.map(p => p.replace(/\\/g, '/')).filter(Boolean)
+
+  // Layer 4. Read each sealed file once, now, and remember what is IN it.
+  // Layers 1-3 all judge the spelling of a request; this one judges the answer,
+  // which is the only thing that holds when the request spelled nothing.
+  sealedLines = new Set<string>()
+  for (const p of taskSealedPaths) {
+    let text: string
+    try {
+      text = readFile(p)
+    } catch {
+      continue // an unreadable seal protects nothing, and cannot leak either
+    }
+    for (const line of text.split('\n')) {
+      const t = line.trim()
+      if (t.length >= CONTENT_MIN_LINE) sealedLines.add(t)
+    }
+  }
 
   // Layer 3. A parent is sealed only when it holds NOTHING BUT sealed files —
   // that is what makes it a gates directory rather than a scratch directory.
@@ -183,8 +223,47 @@ export const SEALED_REFUSAL =
  * the model can see that something was withheld and does not read the gap as a
  * directory that does not contain what it is looking for.
  */
+/**
+ * Layer 4: does this output carry a sealed file's CONTENT?
+ *
+ * Layers 1 and 3 refuse a Bash command that spells the gate, its basename or
+ * the directory holding it. A command can read the file and spell none of
+ * them — `find ~/.cynco -name '*.py' -exec cat {} +` names only a grandparent,
+ * and it is a thing an honest run does while looking for something else. Layer
+ * 2 then strikes only the lines that mention the filename, so the mutation
+ * table itself flows through intact: every anchor, every replacement.
+ *
+ * So this asks the question the other three cannot: is the file's text here,
+ * however it arrived? Blank and short lines neither extend nor break a run,
+ * because a gate's text is full of them and letting them break it would hand
+ * the check back its hole.
+ */
+export function outputCarriesSealedContent(output: string): boolean {
+  if (sealedLines.size === 0 || !output) return false
+  let run = 0
+  for (const line of output.split('\n')) {
+    const t = line.trim()
+    if (t.length < CONTENT_MIN_LINE) continue
+    if (sealedLines.has(t)) {
+      if (++run >= CONTENT_RUN) return true
+    } else {
+      run = 0
+    }
+  }
+  return false
+}
+
+export const SEALED_CONTENT_REFUSAL =
+  '[sealed: this output carried the text of a withheld instrument, and was '
+  + 'discarded in full. Some part of how this task is scored is deliberately '
+  + 'withheld from you. Reading it cannot improve your score and would make '
+  + 'your score meaningless. Go back to the brief and the code.]'
+
 export function redactSealed(output: string): string {
   if (taskSealedPaths.length === 0 || !output) return output
+  // Whole-output, not line-by-line: a partial redaction of a file's own text
+  // is a redaction with a hole, and the hole is where the mutations are.
+  if (outputCarriesSealedContent(output)) return SEALED_CONTENT_REFUSAL
   const bases = [...new Set(taskSealedPaths.map(basenameOf))].filter(Boolean)
   if (bases.length === 0) return output
   const lines = output.split('\n')

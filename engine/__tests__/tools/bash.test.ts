@@ -138,27 +138,41 @@ describe('formatBashFailure (no diagnosis banner on test-runner output)', () => 
 
 describe('Bash tool banner suppression (end to end)', () => {
   // The output is base64-carried so the same command string is valid in bash,
-  // pwsh and powershell; the trailing argv is what makes this a *pytest*
-  // command as far as framework detection is concerned.
-  const emit = (text: string, argv: string) =>
-    `node -e "process.stdout.write(Buffer.from('${Buffer.from(text).toString('base64')}','base64').toString()); process.exit(1)" ${argv}`
+  // pwsh and powershell.
+  const emit = (text: string) =>
+    `node -e "process.stdout.write(Buffer.from('${Buffer.from(text).toString('base64')}','base64').toString()); process.exit(1)"`
 
-  it('a failing pytest run comes back without the diagnosis banner', async () => {
-    const result = await bashTool.execute(
-      { command: emit(PYTEST_RED_OUTPUT, 'python -m pytest tests/') },
-      tmpdir(),
-    )
+  /**
+   * A directory whose `npm test` fails with the given output.
+   *
+   * This used to be `node -e "…" python -m pytest tests/` — the trailing argv
+   * ran nothing and existed only so that a substring search for "pytest" would
+   * find one. That search was the defect: it also found the word in `rg -n
+   * pytest docs/brief.md` and in a commit message, and invented a test result
+   * from each. Detection is anchored at command position now, so the fixture
+   * has to name a runner where a runner actually goes. `npm test` is one, it
+   * needs nothing installed, and the command really does run and really does
+   * exit non-zero.
+   */
+  function npmTestDir(output: string): string {
+    const dir = mkdtempSync(join(tmpdir(), 'banner-e2e-'))
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({
+      name: 'banner-e2e', version: '1.0.0', private: true,
+      scripts: { test: emit(output) },
+    }))
+    return dir
+  }
+
+  it('a failing test run comes back without the diagnosis banner', async () => {
+    const result = await bashTool.execute({ command: 'npm test' }, npmTestDir(PYTEST_RED_OUTPUT))
     // A non-zero exit is still an error result — only the banner is gone.
     expect(result.isError).toBe(true)
     expect(result.output).not.toContain('[ERROR:')
     expect(result.output).toContain('2 failed, 10 passed')
-  }, 20000)
+  }, 60000)
 
   it('a failing plain script still gets the diagnosis banner', async () => {
-    const result = await bashTool.execute(
-      { command: emit(SCRIPT_CRASH_OUTPUT, 'python myscript.py') },
-      tmpdir(),
-    )
+    const result = await bashTool.execute({ command: emit(SCRIPT_CRASH_OUTPUT) }, tmpdir())
     expect(result.isError).toBe(true)
     expect(result.output).toContain('[ERROR: runtime]')
   }, 20000)
