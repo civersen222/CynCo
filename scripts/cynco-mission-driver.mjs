@@ -112,6 +112,24 @@ let lastActivityAt = Date.now()
 // next 3351 seconds. Null until the engine says otherwise; the string it says is
 // kept, because "a crash happened" and "which crash" are different facts.
 let engineError = null
+// F32: dispatched, accepted by nobody. The bridge refused the frame — correctly,
+// on a real schema skew — and said so only in its own stdout. From here that is
+// indistinguishable from an engine still thinking, so this script waited, and
+// would have waited out all 10800s it was given. `[gov] status=warning stuck=0`
+// ticked the whole time and proved only that the dashboard was reachable.
+//
+// The absence of work has to have its own name. These four events are emitted
+// only while a turn is actually running, so the first of them is the moment the
+// mission demonstrably exists. session.ready is excluded on purpose: the bridge
+// replays the last one to every client on connect, so it arrives whether or not
+// anything was accepted.
+const WORK_BEGUN = new Set(['stream.token', 'stream.thinking', 'tool.start', 'message.complete'])
+let workBegun = false
+// Generous: a cold llama-server prefilling a 20k-token mission has taken over a
+// minute. The cost of being wrong here is a spurious re-dispatch; the cost of
+// the old behaviour was three hours.
+const SILENCE_S = parseInt(process.env.CYNCO_SILENCE_S ?? '300', 10)
+let silentAfterDispatch = false
 ws.onopen = () => {
   console.log('[driver] connected, dispatching mission')
   // P4.2 (STATE doc Phase 4(a)): the check script IS the contract — the engine
@@ -148,6 +166,7 @@ ws.onmessage = (ev) => {
   try {
     const m = JSON.parse(ev.data)
     collector.ingest(m)
+    if (WORK_BEGUN.has(m.type)) workBegun = true
     if (m.type === 's5.decision' && m.enforced === true && !enforcedWarned) {
       // Engine was started without LOCALCODE_S5_ENFORCE=false: S5 can restrict
       // tools mid-mission (F7) and enforcement confounds the ledger labels.
@@ -221,8 +240,18 @@ const start = Date.now()
 let landed = false
 let markerSeen = false
 let quiet = false
-while (!quiet && !zeroToolCompletion && (Date.now() - start) / 1000 < TIMEOUT_S) {
+while (!quiet && !zeroToolCompletion && !silentAfterDispatch && (Date.now() - start) / 1000 < TIMEOUT_S) {
   await Bun.sleep(30000)
+  if (!workBegun && (Date.now() - start) / 1000 >= SILENCE_S) {
+    // Not a stall — a non-event. Nothing was ever accepted, so there is no run
+    // to wait for and no budget that would have helped (F32).
+    console.log(`[driver] FAIL-FAST: ${SILENCE_S}s since dispatch and the engine has emitted no turn activity at all. ` +
+      'The mission was never accepted. Read the engine log for "[bridge] REFUSED command frame" — ' +
+      'a schema skew between this script and a long-running engine process looks exactly like this. ' +
+      'Restart the engine on current source before re-dispatching.')
+    silentAfterDispatch = true
+    break
+  }
   try {
     const g = await fetch(GOV_URL, { headers: { Authorization: `Bearer ${inferenceToken}` } }).then(r => r.json())
     console.log(`[gov] status=${g.status} stuck=${g.stuckTurns} toolOK=${g.toolSuccessRate}`)
@@ -252,6 +281,8 @@ while (!quiet && !zeroToolCompletion && (Date.now() - start) / 1000 < TIMEOUT_S)
   }
 }
 if (engineError) console.log(`[driver] ENGINE ERROR outcome — the harness died, not the model: ${engineError}\n  Check the engine log for the llama-server exit code before re-dispatching; the mission budget was not the problem.`)
+else if (silentAfterDispatch) console.log('[driver] NEVER DISPATCHED — no turn ran. This says nothing about the model or the brief; ' +
+  'it says this script and the engine did not agree on the wire. Log a failure entry (docs/cynco-failure-log.md).')
 else if (!landed && quiet) console.log('[driver] STOPPED WITHOUT COMMIT — the run went quiet with an uncommitted tree; log a failure entry (docs/cynco-failure-log.md)')
 else if (!landed) console.log('[driver] TIMEOUT without commit — log a failure entry (docs/cynco-failure-log.md)')
 else if (!quiet) console.log('[driver] WARNING: commit landed but the run never went quiet — the check below may read a commit the run is still amending (see QUIET_MS)')
@@ -272,7 +303,15 @@ try {
 const CHECK_TIMEOUT_MS = parseInt(process.env.CYNCO_CHECK_TIMEOUT_MS ?? '300000', 10)
 let verified
 let verify = null
-if (checkCmd) {
+if (checkCmd && silentAfterDispatch) {
+  // Not "skipped for speed". The check would run against a tree this mission
+  // never touched, and its exit code would be a true statement about the
+  // PREVIOUS state of the repo filed under this mission's id — including a
+  // verified:true for a delivery that does not exist. verified stays null,
+  // which is what "nobody measured this delivery" is spelled as here.
+  console.log('[verify] SKIPPED — the mission was never dispatched, so there is no delivery to check. ' +
+    'verified stays null; running the gate now would label the pre-existing tree as this mission\'s work.')
+} else if (checkCmd) {
   console.log(`[verify] running check in ${CWD}: ${checkCmd} (cap ${CHECK_TIMEOUT_MS}ms)`)
   const r = runCheck(checkCmd, CWD, CHECK_TIMEOUT_MS)
   verified = r.verified
@@ -289,7 +328,7 @@ if (checkCmd) {
 }
 
 // Append the labeled mission record to the outcome ledger
-const outcome = missionOutcome({ landed, zeroToolCompletion, wentQuiet: quiet, engineError })
+const outcome = missionOutcome({ landed, zeroToolCompletion, wentQuiet: quiet, engineError, neverDispatched: silentAfterDispatch })
 try {
   const record = buildMissionRecord(collector, {
     missionId,

@@ -437,6 +437,35 @@ describe('when the engine itself dies', () => {
     expect(waitIsOver({ landed: false, sawMessageComplete: false, msSinceActivity: QUIET * 10, engineError: null })).toBe(false)
   })
 
+  it('a mission the engine never accepted is never_dispatched, never timeout', () => {
+    // F32. The bridge refused the command frame on a schema skew between this
+    // repo's driver script and a long-running engine process, logged the reason
+    // to its own stdout, and left the socket open. No turn ran. The old code
+    // fell through to `timeout`, which is a claim about a model that was given a
+    // budget and did not finish — and this model was never asked anything. The
+    // wrong label is worse than no label: `timeout` says "raise the budget", and
+    // three hours would not have helped.
+    expect(missionOutcome({ landed: false, zeroToolCompletion: false, wentQuiet: false, neverDispatched: true }))
+      .toBe('never_dispatched')
+    // A run that never started is trivially also quiet. The quiet label means
+    // "it had time left and chose to stop", which presumes it started.
+    expect(missionOutcome({ landed: false, zeroToolCompletion: false, wentQuiet: true, neverDispatched: true }))
+      .toBe('never_dispatched')
+  })
+
+  it('never_dispatched yields to the labels that describe a run that did happen', () => {
+    // Guard the guard: a label that outranks everything is a label that erases
+    // evidence. If a commit landed, or the server died, or S5 starved the tools,
+    // then turns demonstrably ran and the silence flag is stale — the specific
+    // fact wins over the generic one.
+    expect(missionOutcome({ landed: true, zeroToolCompletion: false, wentQuiet: false, neverDispatched: true }))
+      .toBe('landed')
+    expect(missionOutcome({ landed: false, zeroToolCompletion: false, wentQuiet: false, engineError: 'boom', neverDispatched: true }))
+      .toBe('engine_error')
+    expect(missionOutcome({ landed: false, zeroToolCompletion: true, wentQuiet: false, neverDispatched: true }))
+      .toBe('zero_tool_fail')
+  })
+
   it('an empty error string is not evidence of a crash', () => {
     // A falsy error would otherwise strand a healthy run on the crash path, and
     // `engine_error` is the one label that cannot be re-derived from the record.

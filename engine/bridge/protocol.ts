@@ -669,14 +669,36 @@ export function serializeEvent(event: EngineEvent): string {
  * field the engine went on to read — `text`, `command`, `approved`, `patches` —
  * `any` in practice; `approved: 'no'` approved the tool call.
  */
-export function parseCommand(json: string): TUICommand | null {
+export type ParsedCommand =
+  | { ok: true; command: TUICommand }
+  | { ok: false; reason: string }
+
+/**
+ * Parse a frame and, when it is refused, say why in a value the caller can send
+ * back down the socket.
+ *
+ * The refusal used to go to `console.warn` and nowhere else. That is a log line
+ * in the engine's stdout, which the sender cannot read — so a refused frame and
+ * a healthy engine that has not answered yet are the same observation to a
+ * client, and the client's only recourse is to wait out its timeout. A mission
+ * driver did exactly that for thirteen minutes against a validator that had
+ * refused instantly and correctly (F32). Same shape as F19: the engine knew, and
+ * had no way to say it.
+ */
+export function parseCommandResult(json: string): ParsedCommand {
   let obj: unknown
   try {
     obj = JSON.parse(json)
   } catch {
-    return null
+    return { ok: false, reason: 'frame is not valid JSON' }
   }
   const result = validateCommand(obj)
+  if (!result.ok) return { ok: false, reason: result.reason }
+  return { ok: true, command: result.command }
+}
+
+export function parseCommand(json: string): TUICommand | null {
+  const result = parseCommandResult(json)
   if (!result.ok) {
     console.warn(`[bridge] REFUSED command frame: ${result.reason}`)
     return null
