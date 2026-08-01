@@ -179,6 +179,74 @@ describe('a frame of the right type but the wrong shape is refused', () => {
     expect(res.ok).toBe(false)
     expect(res.ok ? '' : res.reason).toMatch(/approved/)
   })
+
+  /**
+   * F44. The rule above held only for the flat fields. `contract` was checked by
+   * a predicate that answered true or false, so whatever was actually wrong was
+   * discarded at the boundary that exists to report it and the caller substituted
+   * one fixed sentence for every possible cause.
+   *
+   * Measured live against the running engine on 2026-08-01: a contract carrying
+   * `timeoutMs: "30 minutes"` was refused — correctly — with
+   *
+   *   user.message: contract must be an object with a string title and a
+   *   string[] of assertions when present
+   *
+   * which does not name `timeoutMs` and actively misdirects, because the title
+   * IS a string and the assertions ARE an array. F42's own rule, one level up:
+   * the refusal must name the value that caused it.
+   */
+  const NESTED: Array<[string, unknown, RegExp]> = [
+    ['the cap is a string',
+      { title: 't', assertions: [{ text: 'r', command: 'x', timeoutMs: '30 minutes' }] },
+      /assertions\[0\]\.timeoutMs.*30 minutes/],
+    ['the cap is zero, which is not a duration',
+      { title: 't', assertions: [{ text: 'r', command: 'x', timeoutMs: 0 }] },
+      /assertions\[0\]\.timeoutMs/],
+    ['the cap is NaN, the value a bad parse produces',
+      { title: 't', assertions: [{ text: 'r', command: 'x', timeoutMs: Number.NaN }] },
+      /assertions\[0\]\.timeoutMs/],
+    ['the bad assertion is not the first one',
+      { title: 't', assertions: ['fine', { text: 'r', command: 'x', timeoutMs: -1 }] },
+      /assertions\[1\]\.timeoutMs/],
+    ['the title is not a string',
+      { title: 1, assertions: [] },
+      /contract\.title/],
+    ['assertions is not an array',
+      { title: 't', assertions: 'Changes committed to git' },
+      /contract\.assertions must be an array/],
+    ['an assertion has no command beside its redacted text',
+      { title: 't', assertions: [{ text: 'r' }] },
+      /assertions\[0\]\.command/],
+    ['an assertion is neither a string nor an object',
+      { title: 't', assertions: [7] },
+      /assertions\[0\]/],
+    ['the brief is not a string',
+      { title: 't', brief: 42, assertions: [] },
+      /contract\.brief/],
+    // `/contract must be an object/` would be satisfied by the catch-all this
+    // whole block exists to remove — it is a prefix of it, and this case passed
+    // before a line of the fix was written. The refusal has to say what it got.
+    ['the contract is not an object at all',
+      ['Changes committed to git'],
+      /contract must be an object, not an array/],
+  ]
+
+  it.each(NESTED)('names what is wrong inside the contract when %s', (_label, contract, expected) => {
+    const res = validateCommand({ type: 'user.message', text: 'go', contract })
+    expect(res.ok, 'the validator accepted a malformed contract').toBe(false)
+    expect(res.ok ? '' : res.reason).toMatch(expected)
+  })
+
+  it('does not answer with the old catch-all sentence for any of them', () => {
+    // The single string that used to stand in for all ten causes above. If it
+    // comes back, the reasons have collapsed into one again.
+    for (const [label, contract] of NESTED) {
+      const res = validateCommand({ type: 'user.message', text: 'go', contract })
+      expect(res.ok ? '' : res.reason, label)
+        .not.toMatch(/an object with a string title and a string\[\] of assertions/)
+    }
+  })
 })
 
 describe('a frame that is not a command at all is refused', () => {

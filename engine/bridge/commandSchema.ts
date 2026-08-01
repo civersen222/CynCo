@@ -45,26 +45,62 @@ const oneOf = (...allowed: string[]) => (v: unknown): boolean =>
  * boundary that only knew the string form refused the frame outright, which
  * would have turned "the gate is withheld" into "there is no contract".
  */
-const isAssertion = (v: unknown): boolean => {
-  if (isString(v)) return true
-  if (!isPlainObject(v)) return false
+/** What `v` is, in a phrase a refusal can end on. */
+const shapeOf = (v: unknown): string =>
+  v === null ? 'null' : Array.isArray(v) ? 'an array' : typeof v
+
+/**
+ * The offending value, quoted, for a refusal to hand back.
+ *
+ * Numbers go through `String`, not `JSON.stringify`: `JSON.stringify(NaN)` is
+ * the text `null`, and NaN is precisely the value a bad cap parse produces, so
+ * the one case this exists for is the one it would misreport.
+ */
+const showValue = (v: unknown): string =>
+  typeof v === 'number' ? String(v) : (JSON.stringify(v) ?? String(v))
+
+/**
+ * One assertion: plain text, or a redacted text paired with the command that
+ * actually decides it.
+ *
+ * Answers the REASON rather than a boolean (F44). The predicate form threw the
+ * cause away at the boundary whose job is to report it, and the caller
+ * substituted one fixed sentence — "contract must be an object with a string
+ * title and a string[] of assertions" — for every possible fault. Against a bad
+ * `timeoutMs` that sentence is not merely unhelpful, it is false: the title IS a
+ * string and the assertions ARE an array, so the operator reads it and concludes
+ * the engine is wrong.
+ */
+const assertionProblem = (v: unknown, at: string): string | null => {
+  if (isString(v)) return null
+  if (!isPlainObject(v)) return `${at} must be a string, or an object with text and command — got ${shapeOf(v)}`
   const a = v as Frame
-  if (!isString(a.text) || !isString(a.command)) return false
+  if (!isString(a.text)) return `${at}.text must be a string`
+  if (!isString(a.command)) return `${at}.command must be a string`
   // `timeoutMs` is how long THIS check may take — the only channel a cap has,
   // since the mission driver is a WebSocket client and cannot set the engine's
   // environment. It must be a real number of milliseconds: a sender who writes
   // "30 minutes" gets NaN downstream, which silently reverts to the default and
   // leaves a cap that looks set and is not.
-  return a.timeoutMs === undefined || (typeof a.timeoutMs === 'number' && Number.isFinite(a.timeoutMs) && a.timeoutMs > 0)
+  if (a.timeoutMs === undefined) return null
+  if (typeof a.timeoutMs !== 'number' || !Number.isFinite(a.timeoutMs) || a.timeoutMs <= 0) {
+    return `${at}.timeoutMs must be a positive finite number of milliseconds — got ${showValue(a.timeoutMs)}`
+  }
+  return null
 }
 
 /** The harness-supplied DoD contract on `user.message`. */
-const isContract = (v: unknown): boolean => {
-  if (!isPlainObject(v)) return false
+const contractProblem = (v: unknown): string | null => {
+  if (!isPlainObject(v)) return `contract must be an object, not ${shapeOf(v)}`
   const c = v as Frame
-  return isString(c.title)
-    && (c.brief === undefined || isString(c.brief))
-    && Array.isArray(c.assertions) && c.assertions.every(isAssertion)
+  if (!isString(c.title)) return 'contract.title must be a string'
+  if (c.brief !== undefined && !isString(c.brief)) return 'contract.brief must be a string when present'
+  if (!Array.isArray(c.assertions)) return `contract.assertions must be an array, not ${shapeOf(c.assertions)}`
+  for (let i = 0; i < c.assertions.length; i++) {
+    const problem = assertionProblem(c.assertions[i], `contract.assertions[${i}]`)
+    if (problem !== null) return problem
+  }
+  return null
 }
 
 /** Required field. */
@@ -94,7 +130,9 @@ export const COMMAND_SCHEMA: Record<TUICommand['type'], Check[]> = {
   'user.message': [
     req('text', isString, 'a string'),
     opt('cwd', isString, 'a string'),
-    opt('contract', isContract, 'an object with a string title and a string[] of assertions'),
+    // Not `opt`, because `opt` can only report the field it was handed. The
+    // contract is nested and its faults have to be named where they occur.
+    f => (f.contract === undefined ? null : contractProblem(f.contract)),
     opt('readOnlyPaths', isStringArray, 'an array of strings'),
     opt('unattended', isBoolean, 'a boolean'),
   ],
