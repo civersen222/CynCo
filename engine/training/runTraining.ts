@@ -24,6 +24,7 @@ import {
   summarizeCorpus,
   type DatasetStats,
 } from './datasetBuilder.js'
+import { parseTrainingArgs } from './trainingArgs.js'
 
 const CYNCO_DIR = join(homedir(), '.cynco')
 const TRAJECTORY_DIR = join(CYNCO_DIR, 'trajectories')
@@ -205,31 +206,12 @@ function stageStats(): void {
 
 // ─── CLI ──────────────────────────────────────────────────────────
 
-const args = process.argv.slice(2)
-
-/**
- * The first bare token that is not some flag's value.
- *
- * `args.find(a => !a.startsWith('-'))` read the VALUE of a preceding flag, so
- * `--base ./model --stage stats` resolved the stage to `./model`.
- */
-const VALUE_FLAGS = new Set(['--stage', '--base', '--version'])
-function positionalStage(a: string[]): string | undefined {
-  for (let i = 0; i < a.length; i++) {
-    if (VALUE_FLAGS.has(a[i])) { i++; continue }
-    if (!a[i].startsWith('-')) return a[i]
-  }
-  return undefined
-}
-
-// An explicit --stage always wins over a positional.
-const stage =
-  (args.includes('--stage') ? args[args.indexOf('--stage') + 1] : undefined)
-  ?? positionalStage(args)
-  ?? 'stats'
-const base = args[args.indexOf('--base') + 1] ?? 'unsloth/Qwen2.5-Coder-14B-Instruct'
-const version = args[args.indexOf('--version') + 1] ?? 'v1'
-const dryRun = args.includes('--dry-run')
+// One parser for all four flags, in a module that can be imported without
+// running a training stage. The stage reader here had already been repaired for
+// the `indexOf` -1 bug and `--base`/`--version` had not, so `--stage sft`
+// trained against a base model literally named `--stage`.
+// See engine/__tests__/training/trainingArgs.test.ts.
+const { stage, base, version, dryRun } = parseTrainingArgs(process.argv.slice(2))
 
 switch (stage) {
   case 'stats':
