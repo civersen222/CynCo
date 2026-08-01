@@ -288,18 +288,12 @@ ws.onclose = () => {
   }
 }
 
-async function gitHead() {
-  const p = Bun.spawn(['git', 'rev-parse', 'HEAD'], { cwd: CWD, stdout: 'pipe', stderr: 'ignore' })
-  const out = (await new Response(p.stdout).text()).trim()
-  return /^[0-9a-f]{7,40}$/.test(out) ? out : null
-}
-
 // The marker must appear in a commit THIS mission made, not in one that was
 // already there. Polling `git log -3` for the marker string meant a follow-up
 // mission whose marker matched the previous mission's own subject line reported
 // COMMIT LANDED on its first poll and closed after one turn — which is how UI
 // Wave 1c died 30 seconds in, having matched Wave 1b's commit.
-const baselineSha = await gitHead()
+const baselineSha = gitHead(CWD)
 if (!baselineSha) {
   console.log('[driver] WARNING: could not read HEAD — commit detection will match ANY of the last 3 commits, including pre-existing ones')
 }
@@ -362,8 +356,19 @@ else if (!landed && quiet) console.log('[driver] STOPPED WITHOUT COMMIT — the 
 else if (!landed) console.log('[driver] TIMEOUT without commit — log a failure entry (docs/cynco-failure-log.md)')
 else if (!quiet) console.log('[driver] WARNING: commit landed but the run never went quiet — the check below may read a commit the run is still amending (see QUIET_MS). The gate is ADVISORY in that case; verified stays null.')
 
-/** The SHA at HEAD, or null when git cannot say. Never a guess. */
+/**
+ * The SHA at HEAD of the repo at `cwd`, or null when git cannot say. Never a guess.
+ *
+ * `cwd` is required and checked. Omitting it does not fail — it silently reads
+ * whichever repo the driver process happens to be running in, which is this one,
+ * not the mission's workspace. That is a wrong answer wearing the shape of a
+ * right one: `baselineSha` becomes localcode's HEAD, no commit in the target
+ * repo can ever be in `baselineSha..HEAD`, and the mission is filed as having
+ * landed nothing. A throw here is the difference between a broken run and a
+ * lying record.
+ */
 function gitHead(cwd) {
+  if (!cwd) throw new Error('gitHead: cwd is required — an unqualified HEAD reads the driver\'s own repo, not the mission workspace')
   const r = spawnSync('git', ['rev-parse', 'HEAD'], { cwd, encoding: 'utf-8' })
   if (r.error || r.status !== 0) return null
   const sha = (r.stdout ?? '').trim()

@@ -928,6 +928,37 @@ describe('history-rewrite wiring guard', () => {
     // one and demote a healthy run, or compare equal and hide a real race.
     expect(driver).toMatch(/if \(r\.error \|\| r\.status !== 0\) return null/)
   })
+
+  /**
+   * A regression the F56 fix itself shipped: the driver ended up with two
+   * `function gitHead` declarations in one module scope — an async `Bun.spawn`
+   * one that closed over CWD, and the new synchronous one taking `cwd` as a
+   * parameter. Declarations hoist, so the LAST one wins for every call site
+   * including the ones written against the first, and `await gitHead()` became
+   * a synchronous call with `cwd === undefined`. No error, no warning: the
+   * baseline SHA silently became the driver's own repo's HEAD, so no commit in
+   * the mission workspace could ever fall in `baselineSha..HEAD` and every
+   * mission would have been filed as landing nothing.
+   *
+   * The property is name uniqueness, not the specific pair — the next collision
+   * will be between two other helpers.
+   */
+  it('no top-level helper name is declared twice', () => {
+    const names = [...driver.matchAll(/^(?:async )?function (\w+)\s*\(/gm)].map((m) => m[1])
+    const seen = new Set<string>()
+    const dupes = names.filter((n) => (seen.has(n) ? true : (seen.add(n), false)))
+    expect(dupes).toEqual([])
+  })
+
+  it('every HEAD read names the workspace it is asking about', () => {
+    // `gitHead()` with no argument reads whichever repo the driver process runs
+    // in, which is localcode, never the mission's. The parameter is the whole
+    // guard, so a call site that omits it is the bug restated.
+    expect(driver).not.toMatch(/gitHead\(\s*\)/)
+    expect(driver).toMatch(/const baselineSha = gitHead\(CWD\)/)
+    // And omitting it is refused at the boundary rather than answered wrongly.
+    expect(driver).toMatch(/if \(!cwd\) throw new Error\('gitHead: cwd is required/)
+  })
 })
 
 /**
