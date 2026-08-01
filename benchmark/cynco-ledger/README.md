@@ -57,6 +57,12 @@ decisions still recorded here).
   "toolTransport": [        // one per toolcall.transport event (P1.8 repair ladder); absent in pre-P1.8 records
     { "t": 1783550000000, "stage": "repaired", "toolName": "Read", "detail": "..." }
   ],
+  // `errors` counts tool.complete events carrying isError, which for Bash means
+  // "exited non-zero" — a red pytest run during a normal TDD loop is counted
+  // here. It is NOT a count of tool faults, and nothing grades on it. The
+  // fault-vs-verdict distinction lives in governance's toolSuccessRate, which
+  // exempts red test suites and the contract's own verification commands
+  // (engine/bridge/benignToolResult.ts). Read this field as "non-zero exits".
   "toolStats": { "total": 12, "errors": 1, "byName": { "Read": 4, "Edit": 2, "Bash": 6 } }
 }
 ```
