@@ -25,9 +25,23 @@
  * silence can be caught.
  */
 import { callTouchesSealed, setTaskSealedPaths } from '../tools/sealedPaths.js'
+import { isS5EnforcementEnabled } from '../config.js'
 
 /** The engine can hide a held-out gate from the mission it is grading (F37). */
 export const CAP_SEALED_GATES = 'sealed-gates'
+
+/**
+ * F59: S5 is capped at recommend in this process, so the governor cannot
+ * restrict a mission's tools mid-run (F7) and cannot confound its ledger labels.
+ *
+ * A word for the SAFE state, not for the hazard, and that direction is the whole
+ * design. The driver used to learn enforcement was live from the first
+ * `s5.decision` frame that carried `enforced: true` — after dispatch, and only
+ * if some decision happened to enforce. Naming the hazard here would preserve
+ * that hole one level up: an engine too old to say either word would be
+ * indistinguishable from a capped one, and silence would read as permission.
+ */
+export const CAP_S5_ADVISORY = 's5-advisory'
 
 /**
  * A path that cannot collide with a real instrument, and says what it is to
@@ -42,12 +56,17 @@ type Wiring = {
   seal: (paths: string[], listDir?: (d: string) => string[]) => void
   probe: (command: string) => boolean
   unseal: () => void
+  s5Enforcing: () => boolean
 }
 
 const LIVE: Wiring = {
   seal: (paths, listDir) => setTaskSealedPaths(paths, listDir ?? (() => [])),
   probe: (command) => callTouchesSealed('Bash', { command }, '/'),
   unseal: () => setTaskSealedPaths([], () => []),
+  // The same predicate `conversationLoop` calls to decide whether to APPLY an S5
+  // decision. F42: a limit read in one place and enforced in another is two
+  // limits, and the one the operator sets is whichever is not the enforcing one.
+  s5Enforcing: () => isS5EnforcementEnabled(),
 }
 
 /**
@@ -76,6 +95,13 @@ export function governanceCapabilities(wiring: Wiring = LIVE): string[] {
     } catch (e) {
       console.log(`[capability] could not clear the probe seal: ${(e as Error)?.message ?? e}`)
     }
+  }
+  // F59. Separate try, because a seal probe that throws must not decide this
+  // one: two guarantees sharing a failure path is one guarantee.
+  try {
+    if (!wiring.s5Enforcing()) caps.push(CAP_S5_ADVISORY)
+  } catch (e) {
+    console.log(`[capability] ${CAP_S5_ADVISORY} probe threw, not advertised: ${(e as Error)?.message ?? e}`)
   }
   return caps
 }

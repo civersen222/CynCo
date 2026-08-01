@@ -251,5 +251,41 @@ export function sealedDispatchRefusal({ sealedCount, capabilities }) {
     + 'Restart the engine from the current tree and re-dispatch.'
 }
 
+/** The capability an engine must advertise before a mission may be measured on it. */
+export const CAP_S5_ADVISORY = 's5-advisory'
+
+/**
+ * F59: may this mission be measured on THIS engine? Null to dispatch, a sentence
+ * to print and refuse on.
+ *
+ * The driver's old detector was a console warning on the first `s5.decision`
+ * frame carrying `enforced: true`. Late twice over: after the dispatch, and only
+ * when a decision happened to enforce — so an engine with enforcement live that
+ * enforced nothing early produced a confounded run and said nothing at all.
+ *
+ * Enforcement can restrict tools mid-mission (F7 killed a run that way) and it
+ * confounds every label the mission produces, because the outcome then partly
+ * measures the governor. That makes it a precondition of dispatching, not a
+ * remark about a dispatch already made.
+ *
+ * Refuses on ABSENCE for the same reason `sealedDispatchRefusal` does: an engine
+ * too old to say the word is exactly the engine most likely to be running with
+ * defaults, and enforcement is ON by default. Unknown is not permission.
+ *
+ * Unlike the seal guard, this applies to every mission. A mission with nothing
+ * withheld has its labels confounded just as thoroughly.
+ */
+export function s5DispatchRefusal({ capabilities }) {
+  if (Array.isArray(capabilities) && capabilities.includes(CAP_S5_ADVISORY)) return null
+
+  const said = capabilities == null
+    ? 'the engine advertised no capabilities at all (a build older than this check cannot say the word)'
+    : `the engine advertised [${capabilities.join(', ')}]`
+  return `S5 enforcement may be live in this engine: ${said}, and the word for a capped `
+    + 'governor is absent. S5 can restrict the mission\'s tools mid-run (F7) and every '
+    + 'outcome label it produces would partly measure the governor rather than the work. '
+    + 'Restart the engine with LOCALCODE_S5_ENFORCE=false and re-dispatch.'
+}
+
 /** `commandAssertion` is re-exported so the visible form has one definition. */
 export { commandAssertion }

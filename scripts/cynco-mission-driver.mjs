@@ -47,7 +47,7 @@ import { createMissionCollector, buildMissionRecord, missionCommitted, missionOu
 import { countGraderProbes } from './cynco-grader-probes.mjs'
 import { runCheck } from './cynco-verify.mjs'
 import { purgeBytecodeCaches } from './cynco-workspace.mjs'
-import { loadMissionAssertions, sidecarPath, sealedDispatchRefusal, workspaceError } from './cynco-contract.mjs'
+import { loadMissionAssertions, sidecarPath, sealedDispatchRefusal, s5DispatchRefusal, workspaceError } from './cynco-contract.mjs'
 import { withheldGatePaths } from '../engine/bridge/contractAutoCreate.js'
 import { loadOrCreateTokens } from '../engine/security/localToken.js'
 
@@ -182,28 +182,32 @@ let workBegun = false
 // the old behaviour was three hours.
 const SILENCE_S = parseInt(process.env.CYNCO_SILENCE_S ?? '300', 10)
 let silentAfterDispatch = false
-// F41. A mission that seals nothing goes out the moment the socket opens, as it
-// always has. A mission that seals something waits for the engine to say what it
-// can enforce, because Wave 9b proved that a driver holding a two-path seal and
-// an engine that had never heard of sealing look, from here, exactly like a
-// working pair. session.ready is replayed to every client on connect, so this
-// costs a mission with a live engine milliseconds.
+// F41, widened by F59. Every mission now waits for the engine to say what it is
+// before anything is sent to it. Wave 9b proved that a driver holding a two-path
+// seal and an engine that had never heard of sealing look, from here, exactly
+// like a working pair; F59 is the same shape without a seal — S5 enforcement
+// confounds the labels of a mission that withholds nothing just as thoroughly,
+// so a guard that only ran on the sealed path was not a guard on the dispatch.
+// session.ready is replayed to every client on connect, so this costs a mission
+// with a live engine milliseconds.
 let dispatched = false
-const sealGateTimer = SEALED_COUNT > 0
-  ? setTimeout(() => {
-      if (dispatched) return
-      // No session.ready in this long means the engine's competence is UNKNOWN,
-      // and unknown is not permission — the same rule the ledger applies to a
-      // verification that never ran.
-      console.error(`[driver] REFUSED: ${sealedDispatchRefusal({ sealedCount: SEALED_COUNT, capabilities: null })}`)
-      process.exit(4)
-    }, parseInt(process.env.CYNCO_READY_S ?? '30', 10) * 1000)
-  : null
+const readyGateTimer = setTimeout(() => {
+  if (dispatched) return
+  // No session.ready in this long means the engine's competence is UNKNOWN, and
+  // unknown is not permission — the same rule the ledger applies to a
+  // verification that never ran. Both guards are asked with `capabilities: null`
+  // so the refusal names the guarantee that could not be established, rather
+  // than reporting a timeout and leaving the operator to guess which.
+  const refusal = s5DispatchRefusal({ capabilities: null })
+    ?? (SEALED_COUNT > 0 ? sealedDispatchRefusal({ sealedCount: SEALED_COUNT, capabilities: null }) : null)
+  console.error(`[driver] REFUSED: no session.ready in ${process.env.CYNCO_READY_S ?? '30'}s — ${refusal}`)
+  process.exit(4)
+}, parseInt(process.env.CYNCO_READY_S ?? '30', 10) * 1000)
 
 function dispatchMission() {
   if (dispatched) return
   dispatched = true
-  if (sealGateTimer) clearTimeout(sealGateTimer)
+  clearTimeout(readyGateTimer)
   // P4.2 (STATE doc Phase 4(a)): the check script IS the contract — the engine
   // creates a one-assertion DoD so taskError/errorTrend measure this mission.
   //
@@ -236,31 +240,32 @@ function dispatchMission() {
 }
 
 ws.onopen = () => {
-  if (SEALED_COUNT > 0) {
-    console.log('[driver] connected, waiting for the engine to declare what it can enforce')
-    return
-  }
-  console.log('[driver] connected, dispatching mission')
-  dispatchMission()
+  console.log('[driver] connected, waiting for the engine to declare what it is')
 }
 ws.onmessage = (ev) => {
   try {
     const m = JSON.parse(ev.data)
     collector.ingest(m)
-    if (m.type === 'session.ready' && SEALED_COUNT > 0 && !dispatched) {
-      const refusal = sealedDispatchRefusal({ sealedCount: SEALED_COUNT, capabilities: m.capabilities })
+    if (m.type === 'session.ready' && !dispatched) {
+      // F59 first: it applies to every mission, and an engine that cannot say
+      // this word is misconfigured in a way that costs the run whether or not
+      // anything is sealed.
+      const refusal = s5DispatchRefusal({ capabilities: m.capabilities })
+        ?? (SEALED_COUNT > 0 ? sealedDispatchRefusal({ sealedCount: SEALED_COUNT, capabilities: m.capabilities }) : null)
       if (refusal) {
         console.error(`[driver] REFUSED: ${refusal}`)
         process.exit(4)
       }
-      console.log('[driver] engine declares it can enforce the seal — dispatching mission')
+      console.log(`[driver] engine declares [${(m.capabilities ?? []).join(', ')}] — dispatching mission`)
       dispatchMission()
     }
     if (WORK_BEGUN.has(m.type)) workBegun = true
     if (m.type === 's5.decision' && m.enforced === true && !enforcedWarned) {
-      // Engine was started without LOCALCODE_S5_ENFORCE=false: S5 can restrict
-      // tools mid-mission (F7) and enforcement confounds the ledger labels.
-      console.log('[driver] WARNING: S5 ENFORCEMENT ACTIVE — restart engine with LOCALCODE_S5_ENFORCE=false (F7 risk, ledger labels confounded)')
+      // Kept as a second, independent detector. F59 moved the decision to
+      // dispatch time, where it reads the engine's own declaration; this reads
+      // the thing itself. If they ever disagree, the declaration is wrong, and
+      // that is worth a line in the log even though it is now too late to act.
+      console.log('[driver] WARNING: S5 ENFORCEMENT ACTIVE despite the capability check — restart engine with LOCALCODE_S5_ENFORCE=false (F7 risk, ledger labels confounded)')
       enforcedWarned = true
     }
     if (m.type === 'tool.start') {
