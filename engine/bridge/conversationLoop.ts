@@ -90,7 +90,7 @@ import { UncertaintyTracker } from '../memory/uncertaintyTracker.js'
 // writer was uncovered by construction.
 import { getTrajectoryRecorder } from '../training/trajectoryRecorder.js'
 import { collectGitFacts, collectDirtyPaths, collectPathSignatures, changedBetween, commitsSince, collectUntrackedPaths, repoToplevel, canonicalPath } from '../training/gitFacts.js'
-import { buildComponents } from '../training/taskOutcome.js'
+import { buildComponents, contractFactsFrom } from '../training/taskOutcome.js'
 import type { TaskOutcomeInput, TestObservation } from '../training/taskOutcome.js'
 import { finalizeTask } from '../training/rewardLabeler.js'
 import { detectTests } from '../bestOfN/testDetector.js'
@@ -3181,18 +3181,13 @@ export class ConversationLoop {
     const outcome: TaskOutcomeInput = {
       testObservations: this.taskTestObservations,
       commandObservations: this.taskCommandObservations,
-      contract: globalContract.isActive()
-        ? {
-            active: true,
-            complete: globalContract.isComplete(),
-            failed: globalContract.failedCount(),
-            origin: globalContract.snapshot().origin,
-            passedAssertions: globalContract
-              .snapshot()
-              .assertions.filter(a => a.status === 'passed')
-              .map(a => a.text),
-          }
-        : null,
+      // F43. This used to read `isActive() ? {…} : null`, which erased every
+      // contract `resolveUnverified` had just force-failed — that call
+      // deactivates the contract on purpose, so the next task cannot inherit
+      // it, and the deactivation took the failures with it. A run that verified
+      // nothing then recorded the same `contract: null` as a run that was never
+      // given a specification, and scored higher than one that failed honestly.
+      contract: contractFactsFrom(globalContract.snapshot()),
       git: collectGitFacts(this.executor['cwd'], this.taskGitBaseSha),
       trackedModifiedFiles: this.fileTracker.getModifiedFiles(),
       baselineDirty: this.taskBaselineDirty,

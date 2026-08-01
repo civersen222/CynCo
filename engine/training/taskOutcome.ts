@@ -12,6 +12,7 @@
 
 import { isTestPath, type ChangedFile, type GitFacts } from './gitFacts.js'
 import { assertionCheck } from '../tools/contractVerify.js'
+import type { ContractSnapshot } from '../tools/contract.js'
 import type { RewardComponents } from './rewardLabeler.js'
 
 /**
@@ -39,6 +40,39 @@ export type ContractFacts = {
    * it says nothing about a subject nobody made a claim on.
    */
   passedAssertions: string[]
+}
+
+/**
+ * What can honestly be said about the contract this task ran under, or null
+ * when it ran under none.
+ *
+ * Keyed on whether the contract HAS assertions, never on whether it is still
+ * active. `resolveUnverified` — the mechanism whose entire purpose is that an
+ * unverified run must never report success (contract.ts:182) — forces every
+ * pending assertion to failed and then DEACTIVATES the contract so the next
+ * task cannot inherit it. Reading `isActive()` here threw the forced failures
+ * away along with it, and the two states that collapsed together are the two
+ * furthest apart in this file: a task that had no specification, honestly
+ * 'unknown', and a task that had one and never satisfied it, a measured 0.
+ *
+ * The conflation paid, which is why it survived. 'unknown' leaves the reward
+ * denominator and 0 does not, so the run that verified nothing scored ABOVE the
+ * run that failed openly: Gilded Wave 9d, 115 turns, one assertion never met,
+ * reward 0.927. `active` is returned as it truly is — the field was always
+ * there for exactly this, and a resolved contract is not an absent one.
+ *
+ * `failed` is counted off the same array that yields `passedAssertions`, so the
+ * two can never disagree about the snapshot they describe.
+ */
+export function contractFactsFrom(snapshot: ContractSnapshot): ContractFacts | null {
+  if (snapshot.assertions.length === 0) return null
+  return {
+    active: snapshot.active,
+    complete: snapshot.complete,
+    failed: snapshot.assertions.filter(a => a.status === 'failed').length,
+    origin: snapshot.origin,
+    passedAssertions: snapshot.assertions.filter(a => a.status === 'passed').map(a => a.text),
+  }
 }
 
 export type TaskOutcomeInput = {
