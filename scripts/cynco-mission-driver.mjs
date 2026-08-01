@@ -65,12 +65,24 @@ console.log(`[driver] mission from ${taskFile} (${task.length} chars), marker="$
 // Built before the socket opens: a sidecar that cannot authorize what it claims
 // to authorize must stop the dispatch, not be discovered halfway through a
 // two-hour mission whose reward is already forfeit (finding (ai)).
+// A gate that mutates source and re-runs a suite per mutation takes minutes,
+// not seconds; the fixed 5-minute cap silently converted such gates into
+// timeouts. Configurable, because the right cap is a property of the check.
+const CHECK_TIMEOUT_MS = parseInt(process.env.CYNCO_CHECK_TIMEOUT_MS ?? '300000', 10)
+
+// Only a cap the OPERATOR set is sent onward. `300000` here is this script's
+// own default, not anybody's decision, and dispatching it would OVERRIDE a cap
+// the engine's own environment had set — a number nobody chose beating a number
+// somebody did. Absent means absent, and the engine then decides for itself.
+const DISPATCHED_CHECK_TIMEOUT_MS =
+  process.env.CYNCO_CHECK_TIMEOUT_MS === undefined ? undefined : CHECK_TIMEOUT_MS
+
 let missionAssertions
 try {
   missionAssertions = loadMissionAssertions(taskFile, checkCmd, {
     exists: (p) => existsSync(p),
     readFile: (p) => readFileSync(p, 'utf-8'),
-  })
+  }, DISPATCHED_CHECK_TIMEOUT_MS)
 } catch (e) {
   console.error(`[driver] ${e.message}`)
   process.exit(2)
@@ -349,10 +361,6 @@ try {
 // verified:false. Both are exactly the labels the falsification program needs.
 // A check that itself times out earns verified:null, because it measured
 // nothing about the delivery.
-// A gate that mutates source and re-runs a suite per mutation takes minutes,
-// not seconds; the fixed 5-minute cap silently converted such gates into
-// timeouts. Configurable, because the right cap is a property of the check.
-const CHECK_TIMEOUT_MS = parseInt(process.env.CYNCO_CHECK_TIMEOUT_MS ?? '300000', 10)
 let verified
 let verify = null
 if (checkCmd && silentAfterDispatch) {

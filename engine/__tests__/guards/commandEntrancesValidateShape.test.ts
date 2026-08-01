@@ -109,6 +109,20 @@ describe('a well-formed frame is accepted', () => {
     expect(res.ok ? null : res.reason).toBeNull()
   })
 
+  /**
+   * A gate slower than the 300s default has to say so, and the only channel is
+   * this frame: the mission driver is a WebSocket client, so no cap it exports
+   * reaches the engine process. Measured on Gilded Wave 9d — a 30-minute
+   * mutation gate was killed at 300s on all 115 turns.
+   */
+  it('accepts a withheld assertion that declares its own cap', () => {
+    const res = validateCommand({
+      type: 'user.message', text: 'go',
+      contract: { title: 't', assertions: [{ text: 'redacted', command: 'pytest -q', timeoutMs: 1800000 }] },
+    })
+    expect(res.ok ? null : res.reason).toBeNull()
+  })
+
   it('accepts the plain string form and the withheld form together', () => {
     const res = validateCommand({
       type: 'user.message', text: 'go',
@@ -129,6 +143,10 @@ describe('a frame of the right type but the wrong shape is refused', () => {
     ['user.message whose cwd is null', { type: 'user.message', text: 'go', cwd: null }],
     ['user.message whose readOnlyPaths holds a non-string', { type: 'user.message', text: 'go', readOnlyPaths: ['/a', 2] }],
     ['user.message whose contract has no assertions', { type: 'user.message', text: 'go', contract: { title: 't' } }],
+    // A cap is a number of milliseconds. "30 minutes" is a sender who thinks it
+    // is being helpful, and Number('30 minutes') is NaN, which would silently
+    // become the default — the cap looks set and is not.
+    ['user.message whose assertion cap is a string', { type: 'user.message', text: 'go', contract: { title: 't', assertions: [{ text: 'r', command: 'x', timeoutMs: '30 minutes' }] } }],
     ['user.message whose contract title is a number', { type: 'user.message', text: 'go', contract: { title: 1, assertions: [] } }],
     ['user.message whose unattended is the string "true"', { type: 'user.message', text: 'go', unattended: 'true' }],
     // The one that decides whether a tool call runs.

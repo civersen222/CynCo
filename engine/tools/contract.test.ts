@@ -173,3 +173,55 @@ describe('a check that was killed does not tell the model its work is wrong (F35
     expect(r.output).not.toContain('time.sleep')
   }, 30_000)
 })
+
+/**
+ * The cap travels with the check, wired end to end through the real tool.
+ *
+ * The env fallback alone cannot fix Wave 9d: the mission driver is a WebSocket
+ * client to a separate engine daemon, so a cap it exports is invisible to the
+ * process that runs the check. Here NEITHER variable is set, so the default is
+ * 300s — and the gate is killed in about two seconds because the assertion
+ * itself said two seconds. If the cap did not survive the tool path, this test
+ * would sit for five minutes and then fail on its own timeout.
+ */
+describe('a slow gate declares its own cap, and the cap reaches the runner', () => {
+  let dir: string
+  const saved = {
+    contract: process.env.CYNCO_CONTRACT_CHECK_TIMEOUT_MS,
+    driver: process.env.CYNCO_CHECK_TIMEOUT_MS,
+  }
+  // Same shape as F35's: outlives any cap, and steps out of the temp dir first
+  // so the kill does not leave Windows holding the cwd against cleanup.
+  const slow = 'python -c "import os, tempfile, time; os.chdir(tempfile.gettempdir()); time.sleep(4000)"'
+
+  beforeEach(() => {
+    delete process.env.CYNCO_CONTRACT_CHECK_TIMEOUT_MS
+    delete process.env.CYNCO_CHECK_TIMEOUT_MS
+    dir = mkdtempSync(join(tmpdir(), 'contract-cap-'))
+    globalContract.create(
+      'wave', '', [{ text: 'The held-out gate exits 0.', command: slow, timeoutMs: 2000 }], 'harness')
+    globalContract.setBaseline(null)
+  })
+  afterEach(() => {
+    for (const [k, v] of [
+      ['CYNCO_CONTRACT_CHECK_TIMEOUT_MS', saved.contract],
+      ['CYNCO_CHECK_TIMEOUT_MS', saved.driver],
+    ] as const) {
+      if (v === undefined) delete process.env[k]
+      else process.env[k] = v
+    }
+    rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 })
+  })
+
+  test('the check is killed at the cap the assertion declared, not at the default', async () => {
+    const started = Date.now()
+    const r = await contractAssertPassTool.execute({ index: 0, evidence: 'done' }, dir)
+    const elapsed = Date.now() - started
+    expect(r.isError).toBe(true)
+    expect(globalContract.snapshot().assertions[0].status).toBe('pending')
+    expect(r.output).toContain('could not be measured')
+    // The declared cap, reported honestly — not the 300s nobody applied.
+    expect(r.output).toContain('2s')
+    expect(elapsed, `waited ${elapsed}ms, so the declared cap did not govern`).toBeLessThan(60_000)
+  }, 90_000)
+})
