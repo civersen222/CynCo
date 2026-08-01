@@ -25,6 +25,8 @@ import {
   type DatasetStats,
 } from './datasetBuilder.js'
 import { parseTrainingArgs } from './trainingArgs.js'
+import { adapterNames } from './adapterNames.js'
+import { resolveAdapter } from '../llama/modelResolver.js'
 
 const CYNCO_DIR = join(homedir(), '.cynco')
 const TRAJECTORY_DIR = join(CYNCO_DIR, 'trajectories')
@@ -111,15 +113,18 @@ function stageTrain(
     log('Corpus is not ready. Volume is not readiness — a corpus with no failures')
     log('teaches the model that its failure modes are excellent work.')
     if (!dryRun) {
+      // Non-zero, because a refusal to train is not a successful training run.
+      // It also stops `--stage full` here, which would otherwise go on to
+      // promote whatever adapter a PREVIOUS run left at this version.
       log('Aborting training.')
-      return
+      process.exit(1)
     }
     log('Continuing anyway because --dry-run was passed (no weights are updated).')
   }
 
   log(`SFT dataset: ${stats.sftExamples} examples`)
 
-  const outputDir = join(ADAPTER_DIR, `sft-${version}`)
+  const outputDir = join(ADAPTER_DIR, adapterNames(version).dir)
   mkdirSync(outputDir, { recursive: true })
 
   const scriptPath = join(__dirname, 'scripts', 'train_sft.py')
@@ -149,23 +154,38 @@ function stageTrain(
 // ─── Stage: Convert & Promote ─────────────────────────────────────
 
 function stagePromote(version: string, basePath: string): void {
-  const adapterDir = join(ADAPTER_DIR, `sft-${version}`)
+  const names = adapterNames(version)
+  const adapterDir = join(ADAPTER_DIR, names.dir)
   if (!existsSync(adapterDir)) {
     log(`ERROR: Adapter not found at ${adapterDir}`)
     process.exit(1)
   }
 
   const scriptPath = join(__dirname, 'scripts', 'convert_and_promote.sh')
-  const tag = `cynco-personalized:${version}`
-  const cmd = `bash "${scriptPath}" --adapter "${adapterDir}" --base "${basePath}" --tag "${tag}"`
+  const cmd = `bash "${scriptPath}" --adapter "${adapterDir}" --base "${basePath}"`
+    + ` --name "${names.file}" --tag "${names.ollamaTag}"`
 
   log(`Running: ${cmd}`)
 
   try {
     execSync(cmd, { stdio: 'inherit', timeout: 600_000 })
-    log(`Adapter promoted as: ${tag}`)
   } catch (e: any) {
+    // Non-zero. This catch used to log and return, so a promotion that failed
+    // and a promotion that worked were the same exit code to every caller.
     log(`Promotion failed: ${e.message ?? e}`)
+    process.exit(1)
+  }
+
+  // The claim "promoted" is checkable, so check it rather than announce it.
+  // The colon defect below produced a file the engine could never resolve
+  // while this stage printed success — see adapterNames.ts.
+  try {
+    const path = resolveAdapter(names.file, ADAPTER_DIR)
+    log(`Adapter promoted: ${path}`)
+    log(`To use it: set LOCALCODE_ADAPTER=${names.file}`)
+  } catch (e: any) {
+    log(`Promotion reported success but the engine cannot load the result: ${e.message ?? e}`)
+    process.exit(1)
   }
 }
 
