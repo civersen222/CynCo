@@ -243,6 +243,66 @@ export function missionOutcome({ landed, zeroToolCompletion, wentQuiet, engineEr
 }
 
 /**
+ * F52: may the held-out gate speak for this delivery, and is there one to read?
+ *
+ * `verified` is the reward-bearing label. It means one thing: THIS MISSION'S
+ * FINISHED DELIVERY was measured against the gate and the gate said so. A run
+ * the harness cut short has no finished delivery, and a `false` filed for one is
+ * a fabricated negative — the model did not fail, the inference server did.
+ *
+ * Measured on Gilded Wave 10. llama-server exited with code 9 at turn 40 with 35
+ * tests written and uncommitted; the driver printed "ENGINE ERROR outcome — the
+ * harness died, not the model" and then ran the 50-minute gate anyway, against a
+ * HEAD that had never received the work. Its exit code would have been a true
+ * statement about the PREVIOUS state of the repository, filed under this
+ * mission's id as its verdict. That is the identical error `neverDispatched`
+ * already guards, arriving through a door nobody had shut.
+ *
+ * Three dispositions, because the two failures differ in what exists to read:
+ *
+ *  - `skip`: nothing was committed, so there is no delivery. Running the gate
+ *    can only mislabel the pre-existing tree — and costs a gate's full budget to
+ *    do it.
+ *  - `advisory`: a commit landed before the crash, so the gate CAN read
+ *    something. It runs and its exit code is recorded in `verify`, because that
+ *    is real evidence and discarding it would be its own kind of assumption. But
+ *    `verified` stays null: the run never reached its own end, so a red gate may
+ *    be measuring work in progress rather than work delivered. Promote the label
+ *    by hand after re-running, or re-dispatch.
+ *  - `measure`: the ordinary path, where the label means what it says.
+ *
+ * Note this does NOT contradict `missionOutcome`, where `landed` outranks
+ * `engine_error`. That field answers "what happened to the run" and a commit
+ * really did land. This one answers "was the delivery measured", and those are
+ * different questions about the same event — the whole reason they are separate
+ * columns.
+ */
+export function gateDisposition({ neverDispatched, engineError, landed }) {
+  if (neverDispatched) {
+    return {
+      run: false, label: false,
+      why: 'the mission was never dispatched, so there is no delivery to check. ' +
+        'verified stays null; running the gate now would label the pre-existing tree as this mission\'s work.',
+    }
+  }
+  if (engineError && !landed) {
+    return {
+      run: false, label: false,
+      why: 'the harness killed this run before it committed anything, so there is no delivery to check. ' +
+        'verified stays null; the gate would report on a HEAD this mission never touched.',
+    }
+  }
+  if (engineError) {
+    return {
+      run: true, label: false,
+      why: 'the harness killed this run after a commit landed. The gate runs and its result is recorded, ' +
+        'but verified stays null: an interrupted run\'s last commit may be work in progress, not delivery.',
+    }
+  }
+  return { run: true, label: true, why: null }
+}
+
+/**
  * What did this mission commit and then throw away?
  *
  * F38. Every gate in this harness reads `git log`, and `git log` is not the

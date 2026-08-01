@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 // The ledger collector is a plain .mjs module used by scripts/cynco-mission-driver.mjs
 // @ts-ignore — untyped harness module
-import { createMissionCollector, buildMissionRecord, missionCommitted, missionOutcome, waitIsOver, historyRewrite, QUIET_MS } from '../../../scripts/cynco-ledger.mjs'
+import { createMissionCollector, buildMissionRecord, missionCommitted, missionOutcome, waitIsOver, gateDisposition, historyRewrite, QUIET_MS } from '../../../scripts/cynco-ledger.mjs'
 
 describe('cynco mission outcome ledger', () => {
   const syntheticStream = [
@@ -551,6 +551,94 @@ describe('when the engine itself dies', () => {
 })
 
 /**
+ * F52 — the gate ran for a delivery that did not exist.
+ *
+ * Gilded Wave 10. llama-server exited with code 9 at turn 40; the mission had
+ * written 35 tests and committed none of them. The driver printed, correctly,
+ * "ENGINE ERROR outcome — the harness died, not the model", and then started the
+ * 50-minute held-out gate against a HEAD the mission had never written to. Its
+ * exit code would have been a true statement about the state of the repository
+ * BEFORE the mission, filed under the mission's id as its verdict.
+ *
+ * The driver already refuses exactly this for `never_dispatched`, in a comment
+ * that gives the reason in full. Nobody had asked whether a second door led to
+ * the same room. This is that door.
+ *
+ * `verified` is the reward-bearing label and it means one thing: THIS MISSION'S
+ * FINISHED DELIVERY was measured. A run the harness cut short did not finish, so
+ * a `false` filed for it is a fabricated negative — and a fabricated negative
+ * teaches as hard as a real one.
+ */
+describe('gateDisposition — may the gate speak for this delivery', () => {
+  it('an ordinary run is measured and labeled', () => {
+    const g = gateDisposition({ neverDispatched: false, engineError: null, landed: true })
+    expect(g.run).toBe(true)
+    expect(g.label).toBe(true)
+    expect(g.why).toBeNull()
+  })
+
+  it('a run that stopped without committing is still measured — that is a real verdict', () => {
+    // The mission had its full budget, ran out of it or chose to stop, and left
+    // nothing. A red gate there is a true statement about the model. Only a
+    // HARNESS fault is excluded; this guard must not quietly swallow honest
+    // failures, or the corpus loses every negative it is supposed to learn from.
+    const g = gateDisposition({ neverDispatched: false, engineError: null, landed: false })
+    expect(g.run).toBe(true)
+    expect(g.label).toBe(true)
+  })
+
+  it('a mission never dispatched is neither run nor labeled', () => {
+    const g = gateDisposition({ neverDispatched: true, engineError: null, landed: false })
+    expect(g.run).toBe(false)
+    expect(g.label).toBe(false)
+    expect(g.why).toContain('never dispatched')
+  })
+
+  it('the harness killed it before any commit: no gate, no label', () => {
+    // Wave 10 exactly. There is no delivery, so the gate can only mislabel the
+    // pre-existing tree — and spend a full gate budget doing it.
+    const g = gateDisposition({ neverDispatched: false, engineError: 'llama-server exited with code 9', landed: false })
+    expect(g.run).toBe(false)
+    expect(g.label).toBe(false)
+    expect(g.why).toContain('no delivery')
+  })
+
+  it('the harness killed it after a commit: the gate runs, the label does not', () => {
+    // A commit exists, so the gate reads something real and its exit code is
+    // evidence worth keeping. But the run never reached its own end, so that
+    // commit may be work in progress — `verified` would be claiming the run
+    // delivered it. Record the reading, withhold the verdict.
+    const g = gateDisposition({ neverDispatched: false, engineError: 'llama-server exited with code 9', landed: true })
+    expect(g.run).toBe(true)
+    expect(g.label).toBe(false)
+    expect(g.why).toContain('work in progress')
+  })
+
+  it('an empty error string is not evidence of a crash here either', () => {
+    // Same trap as waitIsOver and missionOutcome: a falsy error must not strand
+    // a healthy run on the unmeasured path, where its verdict is silently lost.
+    const g = gateDisposition({ neverDispatched: false, engineError: '', landed: false })
+    expect(g.run).toBe(true)
+    expect(g.label).toBe(true)
+  })
+
+  it('every disposition that withholds the label says why, in words', () => {
+    // A skip with no reason is indistinguishable from a bug, and the person
+    // reading the log months later is the one who has to tell them apart.
+    for (const args of [
+      { neverDispatched: true, engineError: null, landed: false },
+      { neverDispatched: false, engineError: 'boom', landed: false },
+      { neverDispatched: false, engineError: 'boom', landed: true },
+    ]) {
+      const g = gateDisposition(args)
+      expect(g.label).toBe(false)
+      expect(typeof g.why).toBe('string')
+      expect(g.why.length).toBeGreaterThan(40)
+    }
+  })
+})
+
+/**
  * F38 — the commit message is not the history.
  *
  * Gilded Wave 9 committed `18e8037`, subject "S9: rename test file to run first
@@ -676,10 +764,16 @@ describe('historyRewrite — what the run committed and then discarded', () => {
  * not be read", the one meaning that must not be confusable with "nobody asked".
  */
 describe('history-rewrite wiring guard', () => {
+  // Line endings normalized because `core.autocrlf` is true on Windows, so a
+  // fresh clone hands these assertions CRLF and every `\n` anchor below misses.
+  // Audit F4's shape — a test that passes only in the tree it was written in is
+  // a test the next clone silently loses. Measured: a stash round trip rewrote
+  // this file to CRLF and the `\n {4}history,\n` anchor failed on unchanged
+  // source, which is exactly what a fresh clone would have seen all along.
   const driver = readFileSync(
     join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'scripts', 'cynco-mission-driver.mjs'),
     'utf8',
-  )
+  ).replace(/\r\n/g, '\n')
 
   it('the driver asks git for both halves of the question', () => {
     // The reflog is the story that was overwritten...
@@ -710,6 +804,33 @@ describe('history-rewrite wiring guard', () => {
     // a worse outcome than a missing field.
     expect(driver).toMatch(/const history = await readHistoryRewrite\(\)\.catch\(\(\) => null\)/)
     expect(driver).toContain('[history] UNMEASURED')
+  })
+
+  /**
+   * Same lesson, F52's turn. `gateDisposition` can pass every test above with the
+   * driver still hard-coding `verified = r.verified`, and the failure would be
+   * invisible: the record would carry a plausible boolean and no field would say
+   * where it came from.
+   */
+  it('the driver asks gateDisposition instead of deciding inline', () => {
+    // All three inputs must reach it. An earlier shape passed only
+    // silentAfterDispatch and that is precisely the hole F52 came through.
+    expect(driver).toMatch(/gateDisposition\(\{ neverDispatched: silentAfterDispatch, engineError, landed \}\)/)
+    // And it must be the ledger's, not a local redefinition. The trailing path
+    // is deliberately not spelled as a complete quoted module specifier, in the
+    // assertion OR in this comment: shebangCollection.test.ts scans every test
+    // file for that exact shape to find the .mjs modules the suite imports, and
+    // one written inside a regex or a comment is indistinguishable from a real
+    // import — it tried to open the pattern as a file and failed with ENOENT.
+    expect(driver).toMatch(/import \{[^}]*\bgateDisposition\b[^}]*\} from \S*cynco-ledger/)
+  })
+
+  it('the label is withheld when the disposition says so, not merely logged', () => {
+    // `verified = r.verified` unconditionally is the defect. The gate's reading
+    // still reaches `verify` — evidence is kept — but the reward-bearing field
+    // must go through gate.label or the guard is decorative.
+    expect(driver).toMatch(/verified = gate\.label \? r\.verified : undefined/)
+    expect(driver).toMatch(/if \(checkCmd && !gate\.run\)/)
   })
 })
 
