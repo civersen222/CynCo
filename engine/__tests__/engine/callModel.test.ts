@@ -1453,4 +1453,64 @@ describe('recovering from a dead inference server', () => {
     expect(retries.length).toBe(2)
     expect(String((retries[0] as any).message)).toContain('Unable to connect')
   })
+
+  /**
+   * F51 — the gap between the two recovery layers.
+   *
+   * Gilded Wave 10 died at turn 40 with 35 tests written and uncommitted, and
+   * both recovery mechanisms worked. From engine_20260801_f49b.log, in order:
+   * llama-server exited with code 9 mid `prompt_save`; the transport retry fired
+   * correctly on the refused socket ("retry 1/4 in 2000ms"); the supervisor
+   * relaunched ("restarting llama-server (1/3 in window)"); and the retry, two
+   * seconds later, landed inside the load window and got
+   *
+   *   llama-server HTTP 503: {"error":{"message":"Loading model",
+   *                           "type":"unavailable_error","code":503}}
+   *
+   * which the predicate did not recognise, so the session ended. The server was
+   * listening again 7.04 seconds later, with 28 seconds of retry budget unspent.
+   *
+   * A supervisor whose restarts are always killed by the loop inside its own
+   * restart window cannot recover anything, which is what makes this worth a
+   * test rather than a one-line widening: the two layers were each correct and
+   * the seam between them was the whole failure.
+   */
+  describe('F51: the server is up, answering, and not ready yet', () => {
+    /** Verbatim from provider.ts's throw site, with llama.cpp's real body. */
+    function loadingModel(): Error {
+      return new Error(
+        'llama-server HTTP 503: {"error":{"message":"Loading model",' +
+        '"type":"unavailable_error","code":503}}',
+      )
+    }
+
+    it('treats a 503 "Loading model" as transient', () => {
+      expect(isRetryableError(loadingModel())).toBe(true)
+    })
+
+    it('outlasts the load window: the request is re-issued until the model is up', async () => {
+      // The measured window is ~7s and the budget spends 2+4+8+16. Three
+      // failures then success is the shape the incident had.
+      const { provider, state } = createFlakyProvider(3, loadingModel)
+      const items = await collect(localCallModel(paramsWith(provider)))
+      expect(state.attempts).toBe(4)
+      expect(JSON.stringify(items)).toContain('recovered')
+    })
+
+    it('does not retry a 503 that is not a load window', () => {
+      // A proxy in front of a permanently dead upstream serves 503 forever.
+      // Retrying that is the hang this predicate is deliberately narrow to
+      // avoid, so the status alone must not be enough.
+      expect(isRetryableError(new Error('llama-server HTTP 503: Service Unavailable'))).toBe(false)
+      expect(isRetryableError(new Error('HTTP 503: upstream connect error'))).toBe(false)
+    })
+
+    it('does not retry other HTTP errors from the same throw site', () => {
+      // Same sentence shape, permanent faults. If these ever start retrying,
+      // the predicate has been widened to "any HTTP error", which is a hang.
+      expect(isRetryableError(new Error('llama-server HTTP 400: invalid grammar'))).toBe(false)
+      expect(isRetryableError(new Error('llama-server HTTP 500: internal error'))).toBe(false)
+      expect(isRetryableError(new Error('llama-server HTTP 413: context length exceeded'))).toBe(false)
+    })
+  })
 })

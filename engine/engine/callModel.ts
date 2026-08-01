@@ -143,10 +143,53 @@ const RETRYABLE_ERROR_MESSAGES = [
   'socket connection was closed',
 ]
 
+/**
+ * F51: the inference server is up, answering, and not ready yet.
+ *
+ * Everything above this line describes a connection that did not happen. A 503
+ * is the opposite shape: the socket opens, the server replies, and the reply is
+ * "not yet". `provider.ts` raises it as a plain `Error` with no `code`, and its
+ * message contains none of the four substrings above — so both vocabularies
+ * answer "no" and a load window reads as a permanent fault.
+ *
+ * Measured on Gilded Wave 10 (engine_20260801_f49b.log, lines 4367-4416). The
+ * sequence was, in order:
+ *
+ *   llama-server exited with code 9      (mid prompt_save, a 2863 MiB checkpoint)
+ *   transport failed (Unable to connect) — retry 1/4 in 2000ms   <- this worked
+ *   restarting llama-server (1/3 in window)
+ *   llama_server: loading model
+ *   [loop] ERROR: llama-server HTTP 503: {"message":"Loading model", ...}
+ *   ... 7.04s later ...  llama_server: model loaded / server is listening
+ *
+ * So the process supervisor recovered, the transport retry recovered, and the
+ * session died anyway — in the two-second gap between them, on the one error
+ * neither layer claimed. A supervisor whose restart is guaranteed to be killed
+ * by the loop inside its own restart window can never recover anything.
+ *
+ * The BUDGET was already right and never got to run: the comment below sized it
+ * against exactly this event, and 4+8+16 = 28s of patience remained when the
+ * throw happened, against a 7.04s load. Three cold starts in the logs measure
+ * 7.001s, 7.140s and 7.772s. Nothing here changes the budget; the defect was
+ * entirely in the predicate.
+ *
+ * Narrow on purpose, per the warning above. 503 ALONE is not enough — a proxy
+ * in front of a permanently dead upstream serves 503 forever, and retrying that
+ * is the hang this file is trying not to cause. The status and a loading marker
+ * together are a claim the server is making about itself: come back shortly.
+ */
+const LOADING_STATUS = 'HTTP 503'
+const LOADING_MARKERS = ['Loading model', 'unavailable_error']
+
+function isModelLoading(message: string): boolean {
+  return message.includes(LOADING_STATUS) && LOADING_MARKERS.some(m => message.includes(m))
+}
+
 export function isRetryableError(err: unknown): boolean {
   if (!(err instanceof Error)) return false
   const code = (err as any).code
   if (typeof code === 'string' && RETRYABLE_ERROR_CODES.has(code)) return true
+  if (isModelLoading(err.message)) return true
   return RETRYABLE_ERROR_MESSAGES.some(m => err.message.includes(m))
 }
 

@@ -42,7 +42,7 @@
 import { basename, join, dirname, resolve } from 'node:path'
 import { mkdirSync, appendFileSync, readFileSync, existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { createMissionCollector, buildMissionRecord, missionCommitted, missionOutcome, waitIsOver, historyRewrite, QUIET_MS } from './cynco-ledger.mjs'
+import { createMissionCollector, buildMissionRecord, missionCommitted, missionOutcome, waitIsOver, gateDisposition, historyRewrite, QUIET_MS } from './cynco-ledger.mjs'
 import { runCheck } from './cynco-verify.mjs'
 import { loadMissionAssertions, sidecarPath, sealedDispatchRefusal, workspaceError } from './cynco-contract.mjs'
 import { withheldGatePaths } from '../engine/bridge/contractAutoCreate.js'
@@ -371,27 +371,29 @@ try {
 // verified:false. Both are exactly the labels the falsification program needs.
 // A check that itself times out earns verified:null, because it measured
 // nothing about the delivery.
+// Not "skipped for speed". A gate run against a tree this mission never
+// delivered to reports a true fact about the PREVIOUS state of the repo, filed
+// under this mission's id as its verdict — including a verified:true for a
+// delivery that does not exist. `null` is what "nobody measured this delivery"
+// is spelled as here; see gateDisposition() for why this decision has a name.
 let verified
 let verify = null
-if (checkCmd && silentAfterDispatch) {
-  // Not "skipped for speed". The check would run against a tree this mission
-  // never touched, and its exit code would be a true statement about the
-  // PREVIOUS state of the repo filed under this mission's id — including a
-  // verified:true for a delivery that does not exist. verified stays null,
-  // which is what "nobody measured this delivery" is spelled as here.
-  console.log('[verify] SKIPPED — the mission was never dispatched, so there is no delivery to check. ' +
-    'verified stays null; running the gate now would label the pre-existing tree as this mission\'s work.')
+const gate = gateDisposition({ neverDispatched: silentAfterDispatch, engineError, landed })
+if (checkCmd && !gate.run) {
+  console.log(`[verify] SKIPPED — ${gate.why}`)
 } else if (checkCmd) {
+  if (!gate.label) console.log(`[verify] ADVISORY — ${gate.why}`)
   console.log(`[verify] running check in ${CWD}: ${checkCmd} (cap ${CHECK_TIMEOUT_MS}ms)`)
   const r = runCheck(checkCmd, CWD, CHECK_TIMEOUT_MS)
-  verified = r.verified
+  verified = gate.label ? r.verified : undefined
   verify = { command: checkCmd, exitCode: r.exitCode, timedOut: r.timedOut, spawnFailed: r.spawnFailed, durationMs: r.durationMs, outputTail: r.outputTail }
   // Three outcomes, not two. A check that never answered has not said the
   // delivery is broken — it has said nothing, and the label must say nothing.
   const verdict = r.verified === null ? 'UNMEASURED' : r.verified ? 'PASS' : 'FAIL'
-  console.log(`[verify] ${verdict} (exit=${r.exitCode ?? 'none'}${r.timedOut ? ', TIMED OUT' : ''}${r.spawnFailed ? ', SPAWN FAILED' : ''}, ${r.durationMs}ms)`)
+  console.log(`[verify] ${gate.label ? verdict : `${verdict} (advisory — verified stays null)`} ` +
+    `(exit=${r.exitCode ?? 'none'}${r.timedOut ? ', TIMED OUT' : ''}${r.spawnFailed ? ', SPAWN FAILED' : ''}, ${r.durationMs}ms)`)
   if (r.verified !== true) console.log(`[verify] output tail:\n${r.outputTail}`)
-  if (r.verified === null) {
+  if (gate.label && r.verified === null) {
     console.log(`[verify] verified stays null — the check did not finish. ` +
       `Re-run it by hand, or raise CYNCO_CHECK_TIMEOUT_MS, then patch the record.`)
   }

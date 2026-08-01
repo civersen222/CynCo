@@ -3203,7 +3203,16 @@ export class ConversationLoop {
 
     const components = buildComponents(outcome)
     const reward = finalizeTask(taskId, turns, components, recorder.rewardDir, outcome)
-    console.log(`[trajectory] Labeled ${taskId}: reward ${reward.reward.toFixed(3)} (${turns} turns)`)
+    // F52: say DEGENERATE out loud. The number is written either way, and a
+    // number in a log is read as a verdict — Gilded Wave 10's crash printed
+    // "reward -0.006 (32 turns)" for a run llama-server had killed, and that
+    // line was read, correctly on its face and wrongly in fact, as the corpus
+    // having been taught that an interrupted run is a bad run. The row was
+    // already excluded; nothing but the log said so. A label whose exclusion is
+    // invisible is one an operator has to go and check, and checking is exactly
+    // what a log line is supposed to save.
+    console.log(`[trajectory] Labeled ${taskId}: reward ${reward.reward.toFixed(3)} (${turns} turns)` +
+      (reward.degenerate ? ' — DEGENERATE, excluded from the training corpus (no outcome evidence, or the run was cut short)' : ''))
   }
 
   /** The active session journal (for session-end markers). */
