@@ -9,6 +9,10 @@ const repoRoot = join(here, '..', '..', '..')
 /** Engine event types the TUI intentionally does NOT parse. Every entry needs a reason. */
 const NON_TUI_CONSUMERS: Record<string, string> = {
   'governance.session_fidelity': 'consumed by the mission driver, not the TUI',
+  'trajectory.task_started':
+    'F33 join key, consumed by the mission driver. It carries nothing a human ' +
+    'watching a session needs — the id exists so a ledger row can name the reward ' +
+    'file the run produced — and rendering it would only add noise to the chat.',
 }
 
 /** TUI event types handled bespoke in the receiver (app.py), not via the dispatch table. */

@@ -942,7 +942,15 @@ export class ConversationLoop {
         // attribution, and datasetBuilder groups DPO pairs by model. Two runs
         // bucketed under 'unknown' would be paired as if they came from one
         // policy. An empty name is excluded from pairing instead.
-        recorder.startTask(`task-${randomUUID().slice(0, 8)}`, this.config.model ?? '', undefined, taskStartIndex)
+        const taskId = `task-${randomUUID().slice(0, 8)}`
+        recorder.startTask(taskId, this.config.model ?? '', undefined, taskStartIndex)
+        // F33: say the id out loud. It is the only key that joins this run's
+        // reward file to the mission ledger row that records what the run
+        // actually achieved, and until now it was minted here and told to
+        // nobody — so the reward and the verdict for the same wave lived in two
+        // files with nothing in common. Emitted at START so a crashed task,
+        // where the label matters most, still has a key.
+        this.emit({ type: 'trajectory.task_started', taskId, model: this.config.model ?? '' })
         this.taskTestObservations = []
         this.taskCommandObservations = []
         this.taskGitBaseSha = this.readGitHead()
