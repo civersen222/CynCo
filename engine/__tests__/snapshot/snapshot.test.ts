@@ -225,4 +225,55 @@ describe('WorkspaceSnapshot', () => {
     expect(after).toContain('.cynco-snapshots')
     expect(after).toContain('sub/')
   })
+
+  // 14. The snapshot repo is invisible to the WORKSPACE's own git.
+  //
+  // `.cynco-snapshots` was excluded from the snapshot repo's index and from
+  // nothing else, so a workspace that is itself a git repository saw a bare
+  // repo appear inside it and would happily commit it. Measured on 2026-08-01:
+  // a civkings worktree carried 2167 staged paths of the engine's own snapshot
+  // store, added by a mission doing exactly what it was told.
+  //
+  // Asserted through `git status --porcelain`, which is what a mission's
+  // `git add -A` actually reads — not through the contents of any particular
+  // exclude file. Three earlier waves defeated checks that named a mechanism.
+  const hostStatus = (dir: string): string => {
+    const env = { ...process.env } as Record<string, string>
+    delete env.GIT_DIR
+    delete env.GIT_WORK_TREE
+    return execSync('git status --porcelain', {
+      cwd: dir, env, stdio: ['pipe', 'pipe', 'pipe'],
+    }).toString()
+  }
+
+  it('a snapshot leaves nothing for the workspace repo to commit', () => {
+    execSync('git init', { cwd: tempDir, stdio: ['pipe', 'pipe', 'pipe'] })
+    snap.init()
+    snap.track()
+
+    const status = hostStatus(tempDir)
+    // The workspace is empty apart from what the engine put there, so the
+    // whole of `status` is the engine's leavings. Asserting on the substring
+    // alone would pass if git reported the directory under some other name.
+    expect(status).not.toContain('.cynco-snapshots')
+    expect(status.trim()).toBe('')
+  })
+
+  it('a file the user wrote is still visible to the workspace repo', () => {
+    execSync('git init', { cwd: tempDir, stdio: ['pipe', 'pipe', 'pipe'] })
+    snap.init()
+    writeFileSync(join(tempDir, 'user.txt'), 'the user wrote this')
+    snap.track()
+
+    // The other half of the claim. An exclude rule broad enough to hide the
+    // snapshot store could also hide the work, and a test that only checked
+    // for absence would call that a pass.
+    expect(hostStatus(tempDir)).toContain('user.txt')
+  })
+
+  it('init() does not throw when the workspace is not a git repository', () => {
+    expect(existsSync(join(tempDir, '.git'))).toBe(false)
+    expect(() => snap.init()).not.toThrow()
+    expect(() => snap.track()).not.toThrow()
+  })
 })
