@@ -39,7 +39,10 @@ def main():
         print(f"ERROR: Data file not found: {args.data}")
         sys.exit(1)
 
-    with open(args.data) as f:
+    # The dataset is written as UTF-8 by exportDatasets. Opening it with the
+    # platform default codec crashes on any non-ASCII byte in a trajectory —
+    # cp1252 on Windows, which is where this pipeline runs.
+    with open(args.data, encoding="utf-8") as f:
         examples = [json.loads(line) for line in f if line.strip()]
 
     print(f"Loaded {len(examples)} training examples from {args.data}")
@@ -147,7 +150,7 @@ def main():
         "lr": args.lr,
         "max_seq_len": args.max_seq_len,
     }
-    with open(os.path.join(args.output, "training_meta.json"), "w") as f:
+    with open(os.path.join(args.output, "training_meta.json"), "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
 
     print("Training complete!")
