@@ -197,9 +197,12 @@ describe('verifyAssertion — command', () => {
   })
 
   test('a timeout says it was killed, because that part really was measured', async () => {
+    // The kill is measured; the assertion is not. F35 split those apart — the
+    // status is now `unmeasured`, but the message still reports the one fact
+    // the engine does own, which is that it killed the process itself.
     const v = await verifyAssertion({ kind: 'command', command: 'sleep 999' }, probe({ run: async () => 'timeout' }), null)
-    expect(v.status).toBe('contradicted')
-    const detail = v.status === 'contradicted' ? v.detail : ''
+    expect(v.status).toBe('unmeasured')
+    const detail = v.status === 'unmeasured' ? v.detail : ''
     expect(detail).toContain('killed')
     expect(detail).not.toMatch(/exit code \d/)
   })
@@ -523,5 +526,47 @@ describe('verifyAssertion — a withheld command is not named in its own failure
   test('a withheld command that passes is confirmed, exactly as a visible one is', async () => {
     const v = await verifyAssertion(withheld, probe({ run: async () => 'passed' }), 'aaaaaaaa')
     expect(v.status).toBe('confirmed')
+  })
+})
+
+/**
+ * F35: a check that was killed measured nothing, and said the repository said no.
+ *
+ * A timed-out command produced no verdict about the work. Reporting it as
+ * `contradicted` — whose message is literally "the repository contradicts it" —
+ * manufactures a negative out of an absent measurement, which is the one thing
+ * the whole reward pipeline is built to never do. It is also live: the in-session
+ * cap is 300s and Wave 8b's gate needs about thirty minutes, so a single
+ * ContractAssertPass would have told a model with correct work that its work was
+ * wrong, and sent it back to rewrite it.
+ *
+ * Refusing the pass is still right. Only the reason was a lie. `unmeasured`
+ * refuses exactly as `contradicted` does and says the true thing instead.
+ */
+describe('verifyAssertion — a killed check is unmeasured, not contradicted (F35)', () => {
+  const cmd = 'python C:/tmp/verify_ui8b.py'
+
+  test('a timeout is unmeasured', async () => {
+    const v = await verifyAssertion({ kind: 'command', command: cmd }, probe({ run: async () => 'timeout' }), 'aaaaaaaa')
+    expect(v.status).toBe('unmeasured')
+  })
+
+  test('a real non-zero exit is still contradicted — that IS a measurement', async () => {
+    const v = await verifyAssertion({ kind: 'command', command: cmd }, probe({ run: async () => 'failed' }), 'aaaaaaaa')
+    expect(v.status).toBe('contradicted')
+  })
+
+  test('the unmeasured detail says the check did not finish, and how long it got', async () => {
+    const v = await verifyAssertion({ kind: 'command', command: cmd }, probe({ run: async () => 'timeout' }), 'aaaaaaaa')
+    expect(v.status).toBe('unmeasured')
+    const detail = (v as { detail: string }).detail
+    expect(detail).toContain('300')
+    expect(detail).toContain('did not finish')
+  })
+
+  test('withheld still applies — an unmeasured verdict does not leak the gate either', async () => {
+    const v = await verifyAssertion(
+      { kind: 'command', command: cmd, withheld: true }, probe({ run: async () => 'timeout' }), 'aaaaaaaa')
+    expect((v as { detail: string }).detail).not.toContain('verify_ui8b')
   })
 })

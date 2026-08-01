@@ -439,6 +439,22 @@ export const contractAssertPassTool: ToolImpl = {
           isError: true,
         }
       }
+      // F35. The check ran and was killed, so it said nothing — but a pass here
+      // would be the model's own word on the one assertion it is least entitled
+      // to give it on. Refuse like a contradiction, explain like the absence it
+      // is, and do not tell the model to change work that was never measured.
+      if (v.status === 'unmeasured') {
+        return {
+          output:
+            `Assertion ${index} was NOT marked passed — it could not be measured.\n\n` +
+            `  Assertion: ${text}\n` +
+            `  Check: ${v.detail}\n\n` +
+            `This says nothing about whether your work is correct. Do not change ` +
+            `working code on the strength of it. Carry on with the task; a check ` +
+            `too slow to finish in a turn is the dispatcher's to run at the end.`,
+          isError: true,
+        }
+      }
       if (v.status === 'unverifiable') {
         evidence = `[unverified: ${v.detail}] ${evidence ?? ''}`.trim()
       }

@@ -105,6 +105,20 @@ export type Verification =
   | { status: 'confirmed' }
   | { status: 'contradicted'; detail: string }
   | { status: 'unverifiable'; detail: string }
+  /**
+   * The check ran and was killed before it answered (F35).
+   *
+   * Distinct from both its neighbours, and the distinction is the point.
+   * `contradicted` says the repository answered no; a killed process said
+   * nothing at all, and recording it as a negative manufactures the one kind of
+   * evidence this pipeline exists to never manufacture. `unverifiable` says the
+   * question could not be put — and lets the pass through, which would hand the
+   * held-out gate back to the model's own word.
+   *
+   * So `unmeasured` refuses the pass exactly as `contradicted` does, and gives
+   * the true reason for the refusal.
+   */
+  | { status: 'unmeasured'; detail: string }
 
 /**
  * The repository facts a check needs. Each method returns null when the
@@ -198,8 +212,10 @@ export async function verifyAssertion(
         return { status: 'contradicted', detail: `the verification command did not exit 0${named}` }
       case 'timeout':
         return {
-          status: 'contradicted',
-          detail: `the verification command was still running after ${COMMAND_TIMEOUT_MS / 1000}s and was killed${named}`,
+          status: 'unmeasured',
+          detail:
+            `the verification command did not finish — still running after ` +
+            `${commandTimeoutMs() / 1000}s, so it was killed and answered nothing${named}`,
         }
       case 'unrunnable':
         return { status: 'unverifiable', detail: `could not run the verification command${named}` }
@@ -252,8 +268,18 @@ function git(cwd: string, args: string[]): Promise<string | null> {
   })
 }
 
-/** Long enough for a real test suite, short enough that a hung check ends the turn. */
-const COMMAND_TIMEOUT_MS = 300_000
+/**
+ * Long enough for a real test suite, short enough that a hung check ends the turn.
+ *
+ * Read per call, not once at import, so a test can shorten it without waiting
+ * out the real cap — and so an operator dispatching a genuinely slow gate can
+ * raise it. A bad value is ignored rather than obeyed: `0` or a non-number would
+ * make `exec` wait forever, which is the failure this cap exists to prevent.
+ */
+function commandTimeoutMs(): number {
+  const raw = Number(process.env.CYNCO_CONTRACT_CHECK_TIMEOUT_MS)
+  return Number.isFinite(raw) && raw > 0 ? raw : 300_000
+}
 
 function runCommand(cwd: string, command: string): Promise<CommandOutcome> {
   // The same shell the Bash tool uses. `exec` would otherwise default to
@@ -275,7 +301,7 @@ function runCommand(cwd: string, command: string): Promise<CommandOutcome> {
   // the work was never done in.
   const runnable = shellPreamble(info) + translateEnvPrefix(command, info)
   return new Promise(resolvePromise => {
-    exec(runnable, { cwd, shell, encoding: 'utf-8', timeout: COMMAND_TIMEOUT_MS, maxBuffer: 8 * 1024 * 1024 }, err => {
+    exec(runnable, { cwd, shell, encoding: 'utf-8', timeout: commandTimeoutMs(), maxBuffer: 8 * 1024 * 1024 }, err => {
       if (!err) return resolvePromise('passed')
       const e = err as Error & { code?: number | string; killed?: boolean }
       if (e.killed) return resolvePromise('timeout')
