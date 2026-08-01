@@ -3,7 +3,7 @@ import type { ToolImpl } from '../types.js'
 import { checkBashSafety } from '../bashSafety.js'
 import { diagnoseError } from '../errorDiagnosis.js'
 import { parseTestSummary } from '../../bridge/testSummary.js'
-import { getShellInfo, autoTranslateEnvPrefix, checkShellDialect, shellPreamble } from '../shellInfo.js'
+import { getShellInfo, autoTranslateEnvPrefix, checkShellDialect, shellPreamble, stripTrailingStderrMerge } from '../shellInfo.js'
 import { withToolHint } from '../toolHints.js'
 
 /**
@@ -86,9 +86,15 @@ export const bashTool: ToolImpl = {
     // Use async exec — execSync blocks the entire event loop (freezes WebSocket)
     const shell = shellInfo.shell
 
+    // F60. A trailing `2>&1` is a request to see stderr, and in PowerShell it is
+    // also a request to fail: it leaves `$?` false for any command that wrote to
+    // stderr at all, so a successful `git worktree add` came back as an error.
+    // Drop it and honour the request on the success path instead.
+    const merged = stripTrailingStderrMerge(dialected, shellInfo)
+
     // The command is reported, diagnosed and hinted on as the model wrote it;
     // only what reaches the shell carries the preamble. See shellPreamble.
-    const runnable = shellPreamble(shellInfo) + dialected
+    const runnable = shellPreamble(shellInfo) + merged.command
 
     return new Promise((resolve) => {
       const child = exec(runnable, {
@@ -122,10 +128,15 @@ export const bashTool: ToolImpl = {
           resolve({ output: formatBashFailure(command, rawOutput), isError: true })
           return
         }
+        // F60. Only when a merge was stripped, so the model gets exactly what it
+        // asked for and no other run gains SDL/pygame stderr noise it did not.
+        const succeeded = merged.stripped
+          ? (failedOutput(stderr, stdout, 0).replace(/^Command exited with code 0$/, '(no output)'))
+          : (stdout || stderr || '(no output)')
         // Hint on success only. A failing command already has the model's full
         // attention on its own error; adding tool advice there buries the reason
         // it failed under advice it did not ask for.
-        resolve({ output: withToolHint(command, stdout || stderr || '(no output)'), isError: false })
+        resolve({ output: withToolHint(command, succeeded), isError: false })
       })
     })
   },

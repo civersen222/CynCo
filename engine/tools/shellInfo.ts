@@ -113,6 +113,51 @@ export function autoTranslateEnvPrefix(command: string, info: ShellInfo): string
 }
 
 /**
+ * A trailing `2>&1`, which means something different in PowerShell than the
+ * model thinks, and turns a successful command into a reported failure.
+ *
+ * In bash `2>&1` points one file descriptor at another. In PowerShell it merges
+ * the ERROR STREAM into the success pipeline as ErrorRecord objects, and a
+ * native command that wrote a single byte to stderr therefore leaves `$?` false
+ * — so `powershell.exe -Command` exits 1. Measured: `git worktree add --detach
+ * <p> HEAD 2>&1` creates the worktree, git exits 0, PowerShell exits 1, because
+ * git writes "Preparing worktree" to stderr on an ordinary success. bash.ts
+ * keys isError off the exit status, so the model is sent to repair work that
+ * was never broken. It is the universal bash idiom, so it is everywhere: 165 of
+ * 782 Bash calls in the trajectory corpus end in one.
+ *
+ * Removing it is a TRANSLATION and not a guess — the same argument as
+ * autoTranslateEnvPrefix. exec() captures both streams separately no matter what
+ * the command says, and bash.ts reports both, so a trailing merge asks for
+ * something it receives regardless. The caller must honour that by showing
+ * stderr on the success path when this returns stripped, or the fix trades a
+ * false failure for a silent truncation.
+ *
+ * Only a TRAILING merge. `cmd 2>&1 | Select-String x` routes stderr into the
+ * next command, which is a real statement about the pipeline and means what it
+ * says; stripping it would change the program rather than its plumbing.
+ *
+ * The `$` anchor is the whole guard, and it is sufficient. This carried a quote
+ * parity check as well, meant to spare a `2>&1` written inside a string such as
+ * `python -c "print(1) 2>&1"` — but that command ends in a quote, so the anchor
+ * had already refused it, and no mutation against the parity check could be
+ * killed. A token inside a string cannot end the command, because the string
+ * that opened before it must close after it. What the check did do was decline
+ * to fix `git commit -m "don't break it" 2>&1`, where a lone apostrophe made
+ * the count odd, so it removed the fix from exactly the commands models write.
+ */
+export function stripTrailingStderrMerge(
+  command: string,
+  info: ShellInfo,
+): { command: string; stripped: boolean } {
+  if (!info.isPowerShell) return { command, stripped: false }
+  const trimmed = command.replace(/\s+$/, '')
+  const m = /\s*2>&1$/.exec(trimmed)
+  if (!m) return { command, stripped: false }
+  return { command: trimmed.slice(0, m.index).replace(/\s+$/, ''), stripped: true }
+}
+
+/**
  * Shell settings the engine applies before every command it runs on the model's
  * behalf. Empty for every shell that does not need one.
  *
