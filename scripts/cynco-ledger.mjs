@@ -212,17 +212,29 @@ export function waitIsOver({ landed, sawMessageComplete, msSinceActivity, engine
  * investigation to the governance layer for a dead server wastes the finding.
  * It does NOT outrank `landed` — work that reached a commit before the crash is
  * still work that landed, and the verification gate can still read it.
+ *
+ * `never_dispatched` is that argument one layer further down again, and it is
+ * the only label here that is a statement about neither the model nor the
+ * inference server but about THIS SCRIPT and the engine failing to agree on a
+ * wire format. F32: the bridge refused the command frame on a schema skew,
+ * logged the refusal to its own stdout, and left the socket open; no turn ever
+ * ran. Every label above would be a lie about a model that was never asked
+ * anything, and `timeout` — where it would otherwise fall through — is the
+ * worst of them, because it says "raise the budget" about a mission that no
+ * budget could have helped.
  */
-export function missionOutcome({ landed, zeroToolCompletion, wentQuiet, engineError }) {
+export function missionOutcome({ landed, zeroToolCompletion, wentQuiet, engineError, neverDispatched }) {
   if (landed) return 'landed'
   if (engineError) return 'engine_error'
   if (zeroToolCompletion) return 'zero_tool_fail'
+  // Above `wentQuiet`, because a run that never started is also trivially quiet.
+  if (neverDispatched) return 'never_dispatched'
   if (wentQuiet) return 'stopped_without_commit'
   return 'timeout'
 }
 
 // meta: { missionId, briefFile, marker, markerSeen, cwd, dispatchedAt, durationS,
-//         outcome: 'landed' | 'timeout' | 'stopped_without_commit' | 'zero_tool_fail' | 'engine_error',
+//         outcome: 'landed' | 'timeout' | 'stopped_without_commit' | 'zero_tool_fail' | 'engine_error' | 'never_dispatched',
 //         engineError?: string,                 // session.error text, null when healthy
 //         verified?: boolean, verify?: object,  // Phase 2(b) check-script result
 //         mutationSweep?: { command, killed, total, survived: string[] } }

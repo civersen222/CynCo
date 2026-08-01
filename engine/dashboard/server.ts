@@ -462,23 +462,31 @@ export class DashboardServer {
             try { ws.send(json) } catch (err) { console.log('[dashboard] replay send failed:', err) }
           }
         },
-        message: (_ws: ServerWebSocket<unknown>, message: string | Buffer) => {
+        message: (ws: ServerWebSocket<unknown>, message: string | Buffer) => {
           // Forward commands from dashboard chat to engine — but only the ones
           // a read-scoped browser is allowed to send. See
           // DASHBOARD_ALLOWED_SLASH above for why this list exists.
           if (!this.deps.onCommand) return
+          // Answer the sender, not just this process's stdout. F32: the bridge
+          // had the same shape and it cost thirteen minutes of a mission that
+          // was never accepted — a client cannot tell "refused" from "still
+          // thinking" unless the refusal is on the wire it is already reading.
+          const refuse = (reason: string) => {
+            console.warn(`[dashboard] REFUSED command frame: ${reason}`)
+            try {
+              ws.send(JSON.stringify({ type: 'session.error', error: `command frame refused: ${reason}` }))
+            } catch (err) { console.log('[dashboard] refusal send failed:', err) }
+          }
           let parsed: unknown
           try {
             parsed = JSON.parse(typeof message === 'string' ? message : message.toString())
           } catch {
+            refuse('frame is not valid JSON')
             return
           }
           const refusal = dashboardCommandRefusal(parsed)
           if (refusal !== null) {
-            // Logged, not silently dropped: a refusal nobody can see is
-            // indistinguishable from a socket that dropped the frame, and the
-            // difference is the whole point of having a boundary.
-            console.warn(`[dashboard] REFUSED command frame: ${refusal}`)
+            refuse(refusal)
             return
           }
           console.log(`[dashboard] Forwarding command: ${(parsed as { type: string }).type}`)

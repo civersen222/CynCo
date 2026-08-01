@@ -6,7 +6,7 @@
  */
 
 import type { EngineEvent, TUICommand } from './protocol.js'
-import { serializeEvent, parseCommand } from './protocol.js'
+import { serializeEvent, parseCommandResult } from './protocol.js'
 import type { TokenSet } from '../security/localToken.js'
 
 export type WSServerOptions = {
@@ -96,9 +96,21 @@ export class LocalCodeWSServer {
             },
             message: (_ws: any, message: string | Buffer) => {
               const text = typeof message === 'string' ? message : message.toString()
-              const command = parseCommand(text)
-              if (command && this.onCommand) {
-                this.onCommand(command)
+              const parsed = parseCommandResult(text)
+              if (!parsed.ok) {
+                // Tell the sender. A refusal that goes only to this process's
+                // stdout is, from the client's side, indistinguishable from an
+                // engine that simply has not answered yet — so the client waits
+                // out its whole timeout on work that was never accepted (F32).
+                console.warn(`[bridge] REFUSED command frame: ${parsed.reason}`)
+                this.emit({
+                  type: 'session.error',
+                  error: `command frame refused: ${parsed.reason}`,
+                })
+                return
+              }
+              if (this.onCommand) {
+                this.onCommand(parsed.command)
               }
             },
             close: () => {
