@@ -104,8 +104,18 @@ describe('liveness layer end-to-end', () => {
 
     expect(ledger.state.pending['rec-stub']).toBeUndefined()
     expect(ledger.state.trust.waiver.approvedStreak).toBe(1)
+
+    // `handleCommand` clears `pending` synchronously and only THEN publishes,
+    // twice, over HTTP. Waiting on the pending key therefore returns while both
+    // pushes are still in flight — reading `mock.captured` here was a race that
+    // stayed green in isolation and went red under full-suite load. Wait for the
+    // push being asserted, not for an earlier step that merely precedes it.
+    await waitFor(() => mock.captured.some((c) => c?.title?.match(/promot/i)))
     const promo = mock.captured.find((c) => c?.title?.match(/promot/i))
-    expect(promo).toBeDefined()
+    // The wait establishes only that SOMETHING said "promotion". These say which
+    // lane was promoted and on what streak — neither is implied by the wait.
+    expect(promo.title).toContain('waiver')
+    expect(promo.message).toContain('approved the last 1 waiver')
 
     // 3. Second tick with unchanged snapshot → engine NOT spawned again
     ledger.setNextFire('poll', new Date(Date.now() - 1000).toISOString())
