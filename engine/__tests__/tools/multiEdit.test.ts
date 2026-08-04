@@ -47,6 +47,67 @@ describe('MultiEdit tool', () => {
     rmSync(dir, { recursive: true, force: true })
   })
 
+  // Measured on three consecutive civkings waves (I4c1a runs 1-3): every
+  // multi-line MultiEdit against a CRLF file failed with `old_string not
+  // found`, and the same anchors then applied cleanly through Edit. Edit
+  // normalises CRLF before matching; MultiEdit did not. Single-line anchors
+  // hid the bug because they contain no newline.
+  it('matches a multi-line old_string in a CRLF file', async () => {
+    const dir = join(tmpdir(), 'lc-me-crlf-' + Date.now())
+    mkdirSync(dir, { recursive: true })
+    const file = join(dir, 'crlf.py')
+    writeFileSync(file, 'def f():\r\n    return 11\r\n\r\ndef g():\r\n    return 2\r\n')
+
+    const result = await multiEditTool.execute({
+      edits: [
+        { file_path: file, old_string: 'def f():\n    return 11', new_string: 'def f():\n    return 12' },
+      ],
+    }, dir)
+
+    expect(result.output).not.toContain('old_string not found')
+    expect(result.isError).toBe(false)
+    const after = readFileSync(file, 'utf-8')
+    expect(after).toContain('return 12')
+    // The file was CRLF and must stay CRLF, including on the rewritten lines.
+    expect(after).toBe('def f():\r\n    return 12\r\n\r\ndef g():\r\n    return 2\r\n')
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('does not convert an LF file to CRLF', async () => {
+    const dir = join(tmpdir(), 'lc-me-lf-' + Date.now())
+    mkdirSync(dir, { recursive: true })
+    const file = join(dir, 'lf.py')
+    writeFileSync(file, 'def f():\n    return 11\n')
+
+    const result = await multiEditTool.execute({
+      edits: [
+        { file_path: file, old_string: 'def f():\n    return 11', new_string: 'def f():\n    return 12' },
+      ],
+    }, dir)
+
+    expect(result.isError).toBe(false)
+    expect(readFileSync(file, 'utf-8')).toBe('def f():\n    return 12\n')
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('quotes the near-miss window when a multi-line anchor does not match', async () => {
+    const dir = join(tmpdir(), 'lc-me-near-' + Date.now())
+    mkdirSync(dir, { recursive: true })
+    const file = join(dir, 'near.py')
+    writeFileSync(file, 'def uniquely_named_thing():\r\n    return 11\r\n')
+
+    const result = await multiEditTool.execute({
+      edits: [
+        { file_path: file, old_string: 'def uniquely_named_thing():\n    return 99', new_string: 'x' },
+      ],
+    }, dir)
+
+    expect(result.isError).toBe(true)
+    // Not just "not found" — the engine has the answer in hand and must say it.
+    expect(result.output).toContain('return 11')
+    rmSync(dir, { recursive: true, force: true })
+  })
+
   it('has correct metadata', () => {
     expect(multiEditTool.name).toBe('MultiEdit')
     expect(multiEditTool.tier).toBe('approval')
