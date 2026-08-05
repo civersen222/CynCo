@@ -1,5 +1,6 @@
 import { describe, expect, it, mock } from 'bun:test'
 import { ToolExecutor, immutableTargetOf, setTaskImmutablePaths } from '../../tools/executor.js'
+import { globalContract } from '../../tools/contract.js'
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -222,5 +223,19 @@ describe('a task cannot rewrite the gate that scores it', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
+  })
+
+  // The executor rebuilds the result to redact and cap it. That rebuild is the
+  // one place a classification set by the tool can be silently dropped, and
+  // downstream cannot recover it: the whole point of arbiterVerdict is that the
+  // verdict is invisible in the prose.
+  it('carries arbiterVerdict through the redact-and-cap rebuild', async () => {
+    const executor = new ToolExecutor({ cwd: process.cwd(), requestApproval: async () => true })
+    globalContract.create('Mission', 'brief',
+      [{ text: 'The held-out gate exits 0.', command: 'exit 1' }], 'harness')
+    const result = await executor.execute('ContractAssertPass', { index: 0 })
+    expect(result.isError).toBe(true)
+    expect(result.arbiterVerdict).toBe(true)
+    globalContract.clear()
   })
 })

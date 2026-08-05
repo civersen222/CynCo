@@ -3790,7 +3790,18 @@ export class ConversationLoop {
     // whether it is done.
     const benignVerificationCheck = result.isError && globalContract.isActive()
       && isDeclaredVerificationCheck(toolName, toolInput, result.output, globalContract.getAssertionTexts())
-    const countsAsFailure = result.isError && !benignTestFailure && !benignVerificationCheck
+    // ...and the same again for the verdict a tool OTHER than Bash carries.
+    // `isDeclaredVerificationCheck` recovers the command from the assertion
+    // text, so it can only ever recognise a check the agent is told about. A
+    // held-out gate is the opposite by construction: its text is redacted and
+    // its verdict arrives through ContractAssertPass. Measured on Gilded
+    // I4d2b3d — five honest "not yet" verdicts in a row tripped the breaker and
+    // told the run to stop asserting the contract it is judged by. So the tool
+    // that ran the check states the classification itself rather than leaving
+    // it to be inferred from prose the tool deliberately withheld.
+    const benignArbiterVerdict = result.isError && result.arbiterVerdict === true
+    const countsAsFailure = result.isError && !benignTestFailure
+      && !benignVerificationCheck && !benignArbiterVerdict
 
     // F15: the line above says only isError=true, so a circuit-breaker trip was
     // unauditable — the count survived in memory and its inputs survived
@@ -3800,7 +3811,8 @@ export class ConversationLoop {
         toolName, toolInput, result.output,
         benignTestFailure ? 'benign:test-failure'
           : benignVerificationCheck ? 'benign:verification-check'
-            : 'counted',
+            : benignArbiterVerdict ? 'benign:arbiter-verdict'
+              : 'counted',
       ))
     }
 

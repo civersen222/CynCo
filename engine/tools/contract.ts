@@ -450,6 +450,11 @@ export const contractAssertPassTool: ToolImpl = {
             `  Repository: ${v.detail}\n\n` +
             `Do the work, then assert it. If the assertion cannot be satisfied, use ContractAssertFail.`,
           isError: true,
+          // The check ran and answered. That is this tool working, not failing:
+          // the run is expected to keep asking until the answer changes, and a
+          // circuit breaker counting each honest "not yet" tells it to stop
+          // asking the only question that ends the task.
+          arbiterVerdict: true,
         }
       }
       // F35. The check ran and was killed, so it said nothing — but a pass here
@@ -466,6 +471,9 @@ export const contractAssertPassTool: ToolImpl = {
             `working code on the strength of it. Carry on with the task; a check ` +
             `too slow to finish in a turn is the dispatcher's to run at the end.`,
           isError: true,
+          // Same reason, more sharply: a check the agent cannot make finish is
+          // the last thing it should be penalised for attempting.
+          arbiterVerdict: true,
         }
       }
       if (v.status === 'unverifiable') {

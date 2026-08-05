@@ -363,4 +363,24 @@ describe('a command assertion only runs when a person authored it', () => {
     expect(result.isError).toBe(false)
     expect(globalContract.snapshot().assertions[0].status).toBe('passed')
   })
+
+  // A held-out gate answering 'not yet' is the gate WORKING. It is reported
+  // through this tool, not through Bash, so the Bash-only exemption in
+  // isDeclaredVerificationCheck cannot see it -- and on Gilded I4d2b3d five
+  // honest verdicts in a row tripped the per-tool circuit breaker and told the
+  // run to stop asserting the contract it is judged by.
+  it('flags a contradicted verdict as the arbiter answering, not a tool fault', async () => {
+    globalContract.create('Mission', 'brief',
+      [{ text: 'The held-out gate exits 0. It is not yours to run.', command: 'exit 1' }], 'harness')
+    const result = await contractAssertPassTool.execute({ index: 0 }, process.cwd())
+    expect(result.isError).toBe(true)
+    expect(result.arbiterVerdict).toBe(true)
+  })
+
+  it('does NOT flag a refusal that no check decided', async () => {
+    globalContract.clear()
+    const result = await contractAssertPassTool.execute({ index: 0 }, process.cwd())
+    expect(result.isError).toBe(true)
+    expect(result.arbiterVerdict).toBeUndefined()
+  })
 })

@@ -187,7 +187,12 @@ export class ToolExecutor {
 
       // Doom loop detection: catch repeated failing tool calls. The whole input,
       // not a prefix — see finding (t) and doomLoop.ts.
-      const isDoomLoop = this.doomLoop.check(toolName, JSON.stringify(input), result.isError)
+      // An arbiter's "not yet" is not a failing call. The run is SUPPOSED to
+      // keep asking the same question with the same arguments until the answer
+      // changes; that is the shape of the doom loop only if you cannot tell a
+      // verdict from a fault, which is what `arbiterVerdict` exists to say.
+      const isDoomLoop = this.doomLoop.check(
+        toolName, JSON.stringify(input), result.isError && !result.arbiterVerdict)
       // F37 layer 2. Applied to every tool's output, not just the listing ones,
       // because a sealed name can surface anywhere a path does — a grep hit, a
       // stack trace, a `git status`. Before the cap, so a truncated result is
@@ -195,6 +200,11 @@ export class ToolExecutor {
       const capped = {
         output: capToolResult(redactSealed(result.output), this.contextLength),
         isError: result.isError,
+        // Carried, not re-derived. Rebuilding the result here is the one place
+        // a classification set by the tool that ran the check can be silently
+        // dropped, and downstream has no way to recover it: the whole point of
+        // the flag is that the verdict is invisible in the prose.
+        arbiterVerdict: result.arbiterVerdict,
       }
       if (isDoomLoop) {
         // Appended, never substituted. The old code replaced the tool's output
@@ -205,6 +215,7 @@ export class ToolExecutor {
         return {
           output: `${capped.output}\n\n[engine] DOOM LOOP DETECTED: ${this.doomLoop.getSuggestion()}`,
           isError: true,
+          arbiterVerdict: capped.arbiterVerdict,
         }
       }
 
