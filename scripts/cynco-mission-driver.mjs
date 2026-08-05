@@ -91,6 +91,20 @@ const CHECK_TIMEOUT_MS = parseInt(process.env.CYNCO_CHECK_TIMEOUT_MS ?? '300000'
 const DISPATCHED_CHECK_TIMEOUT_MS =
   process.env.CYNCO_CHECK_TIMEOUT_MS === undefined ? undefined : CHECK_TIMEOUT_MS
 
+// A check command with no operator-chosen cap silently inherits 300000ms, and
+// 300s is shorter than any gate that mutates source and re-runs a suite. The
+// cost of getting this wrong is not a failed check -- it is UNMEASURED, two
+// hours after the only moment it could have been fixed. So refuse now, when it
+// costs one line, rather than at the far end when it costs the whole mission.
+// Setting it to 300000 explicitly is a choice and is accepted.
+if (checkCmd && process.env.CYNCO_CHECK_TIMEOUT_MS === undefined) {
+  console.error('[driver] a check command was given but CYNCO_CHECK_TIMEOUT_MS is unset —')
+  console.error(`[driver] the check would inherit this script's ${CHECK_TIMEOUT_MS}ms default, which nobody chose,`)
+  console.error('[driver] and a mutation gate killed at that cap reports UNMEASURED, not FAIL.')
+  console.error('[driver] set it explicitly, e.g. CYNCO_CHECK_TIMEOUT_MS=1800000 — nothing was dispatched')
+  process.exit(2)
+}
+
 let missionAssertions
 try {
   missionAssertions = loadMissionAssertions(taskFile, checkCmd, {
