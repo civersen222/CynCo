@@ -48,6 +48,7 @@ import { countGraderProbes } from './cynco-grader-probes.mjs'
 import { runCheck } from './cynco-verify.mjs'
 import { purgeBytecodeCaches } from './cynco-workspace.mjs'
 import { loadMissionAssertions, sidecarPath, sealedDispatchRefusal, s5DispatchRefusal, workspaceError } from './cynco-contract.mjs'
+import { engineEndpoints } from './cynco-endpoints.mjs'
 import { withheldGatePaths } from '../engine/bridge/contractAutoCreate.js'
 import { loadOrCreateTokens } from '../engine/security/localToken.js'
 
@@ -68,13 +69,32 @@ if (cwdError) {
   process.exit(2)
 }
 const TIMEOUT_S = parseInt(timeoutArg ?? '600', 10)
-const WS_URL = 'ws://localhost:9160'
-const GOV_URL = 'http://localhost:9161/api/governance'
-const RUN_URL = 'http://localhost:9161/api/run'
+// One engine per wave: the bridge takes one client at a time, on purpose. So
+// two waves in parallel means a second daemon on its own port with its own
+// CYNCO_HOME, and this is where the driver is told which of them it belongs to.
+// Resolved before anything is dispatched, because a port that is not a port
+// spells `ws://localhost:NaN` and fails as something indistinguishable from a
+// dead engine.
+let ENDPOINTS
+try {
+  ENDPOINTS = engineEndpoints(process.env)
+} catch (e) {
+  console.error(`[driver] ${e.message} — nothing was dispatched`)
+  process.exit(2)
+}
+const WS_URL = ENDPOINTS.ws
+const GOV_URL = ENDPOINTS.governance
+const RUN_URL = ENDPOINTS.run
 const LEDGER_PATH = join(dirname(fileURLToPath(import.meta.url)), '..', 'benchmark', 'cynco-ledger', 'missions.jsonl')
 
 const task = await Bun.file(taskFile).text()
 console.log(`[driver] mission from ${taskFile} (${task.length} chars), marker="${marker}", cwd=${CWD}`)
+// Said out loud, because two waves running at once is the case where driving
+// the WRONG engine still connects, still runs, and lands its commits in a
+// worktree somebody else is measuring. The home is here too: it is where the
+// token came from, so a mismatch shows up as a 401 rather than a mystery.
+console.log(`[driver] engine ${WS_URL} (port from ${ENDPOINTS.source}), `
+  + `home=${process.env.CYNCO_HOME ?? '~/.cynco'}`)
 
 // Built before the socket opens: a sidecar that cannot authorize what it claims
 // to authorize must stop the dispatch, not be discovered halfway through a
