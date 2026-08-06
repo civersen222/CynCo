@@ -49,6 +49,36 @@ function findRg(): string {
   return 'rg' // fallback: assume on PATH
 }
 
+/**
+ * What a failed ripgrep run should look like to the model.
+ *
+ * This used to be `Grep error: ${stderr}`, which is exactly right when ripgrep
+ * complains and says nothing at all when it doesn't. Measured on Gilded
+ * I4d2b3g: five calls in a row came back as the literal string "Grep error: "
+ * with nothing after it. The run could not tell a bad pattern from a ripgrep
+ * that never ran, so it rewrote the pattern four times, tripped the circuit
+ * breaker, and abandoned the tool.
+ *
+ * So when ripgrep is silent, say what the tool itself knows — how it ended, and
+ * what was run — and say plainly that the pattern is not the suspect. That last
+ * part is the load-bearing half: the failure mode here is not a missing detail,
+ * it is a model correctly concluding that the only thing it controls must be at
+ * fault.
+ */
+export function grepFailure(
+  argv: string[],
+  exitCode: number | null,
+  signalCode: string | null,
+  stderr: string,
+): string {
+  const said = stderr.trim()
+  if (said) return `Grep error: ${said}`
+  const how = signalCode ? `killed by ${signalCode}` : `exit code ${exitCode}`
+  return `Grep error: ripgrep ended with ${how} and wrote nothing to stderr. `
+    + `A search that reports no error is not the pattern — the pattern was never `
+    + `judged. Suspect the environment, and reproduce by hand: ${argv.join(' ')}`
+}
+
 export const grepTool: ToolImpl = {
   name: 'Grep',
   description: 'Search file contents using regex patterns. Returns matching lines with file paths and line numbers.',
@@ -86,7 +116,10 @@ export const grepTool: ToolImpl = {
         return { output: 'No matches found', isError: false }
       }
       if (proc.exitCode !== 0 && proc.exitCode !== 1) {
-        return { output: `Grep error: ${stderr}`, isError: true }
+        return {
+          output: grepFailure(args, proc.exitCode, proc.signalCode ?? null, stderr),
+          isError: true,
+        }
       }
       const lines = stdout.split('\n').slice(0, 250)
       return { output: lines.join('\n'), isError: false }

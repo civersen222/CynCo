@@ -38,10 +38,36 @@ export function formatBashFailure(command: string, rawOutput: string): string {
  * on stderr replaced the entire test report, and the model was left to reason
  * about a failure it could not see. Show both, stdout first, since that is where
  * a test runner puts its verdict.
+ *
+ * The both-empty case is the one that used to say least and needed to say most.
+ * Measured on Gilded I4d2b3g: every Bash call in the run came back as the bare
+ * line `Command exited with code 66` — no stream, no signal, no shell named.
+ * `python --version` failed that way, and so did `Write-Host "hello"`, but the
+ * model could not see that they had failed for the same reason, so it read the
+ * fault as its own and rewrote the command eight times. A command that prints
+ * nothing is the one failure the model cannot reason about unaided, so `context`
+ * carries what the tool knows (which shell, which signal) and the text says
+ * outright that the command it wrote is not the suspect.
  */
-export function failedOutput(stderr: string, stdout: string, code: unknown): string {
+export function failedOutput(
+  stderr: string,
+  stdout: string,
+  code: unknown,
+  context?: string,
+  whenSilent?: string,
+): string {
   const parts = [stdout, stderr].filter(s => s && s.trim().length > 0)
-  if (parts.length === 0) return `Command exited with code ${code}`
+  if (parts.length === 0) {
+    if (whenSilent !== undefined) return whenSilent
+    const where = context ? ` [${context}]` : ''
+    // Kept under 300 characters on purpose: the circuit breaker quotes the
+    // original error back through `.slice(0, 300)`, and this text matters most
+    // in exactly the case that trips the breaker.
+    return `Command exited with code ${code}, no output on either stream${where}. `
+      + `Nothing printed at all usually means the shell or environment failed to run it, `
+      + `not that the command was wrong. Rewording will not help; if a trivial `
+      + `command fails the same way, the shell is at fault.`
+  }
   return parts.join('\n')
 }
 
@@ -115,7 +141,7 @@ export const bashTool: ToolImpl = {
             // fixes. Measured on the Wave 4 run: it asked for 60s against a
             // ~52s suite, lost the race twice, and got back neither the partial
             // pytest report nor the fact that it may ask for up to 600000ms.
-            const partial = failedOutput(stderr, stdout, (err as any).code)
+            const partial = failedOutput(stderr, stdout, (err as any).code, undefined, '(nothing)')
             resolve({
               output: `Error: command timeout after ${timeout}ms. If the command was ` +
                 `making progress rather than hanging, retry it with a larger ` +
@@ -124,7 +150,8 @@ export const bashTool: ToolImpl = {
             })
             return
           }
-          const rawOutput = failedOutput(stderr, stdout, (err as any).code)
+          const rawOutput = failedOutput(stderr, stdout, (err as any).code,
+            `shell=${shell}, signal=${(err as any).signal ?? 'none'}`)
           resolve({ output: formatBashFailure(command, rawOutput), isError: true })
           return
         }

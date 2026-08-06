@@ -95,6 +95,57 @@ describe('failedOutput (which stream the model actually gets to see)', () => {
     expect(failedOutput('', '', 137)).toContain('137')
   })
 
+  // Gilded I4d2b3g. Every Bash call in that run came back as the single line
+  // `Command exited with code 66` — no stream, no signal, no shell named. The
+  // run read that as its own mistake, rewrote the command eight times, and
+  // never learned that `Write-Host "hello"` was failing too. A failure that
+  // prints nothing at all is the one case where the tool must volunteer what
+  // it knows, because the model has nothing else to reason from.
+  it('names the shell when a failure produced no output at all', () => {
+    const out = failedOutput('', '', 66, 'shell=powershell.exe, signal=none')
+    expect(out).toContain('66')
+    expect(out).toContain('powershell.exe')
+    expect(out).toContain('no output')
+  })
+
+  it('tells the model that a no-output failure is not the command it wrote', () => {
+    const out = failedOutput('', '', 66, 'shell=powershell.exe, signal=none')
+    expect(out).toContain('not that the command was wrong')
+  })
+
+  it('reports the signal when the shell was killed rather than exiting', () => {
+    const out = failedOutput('', '', null, 'shell=powershell.exe, signal=SIGKILL')
+    expect(out).toContain('SIGKILL')
+  })
+
+  // The timeout branch reuses this to show whatever was collected before the
+  // kill, and there the explanation is already known and is the opposite one:
+  // the command DID run, it ran too long. Handing it "the shell failed to run
+  // it" would contradict the sentence it is pasted underneath.
+  it('offers no shell theory when the caller already knows why it died', () => {
+    const out = failedOutput('', '', null, undefined, 'nothing')
+    expect(out).toBe('nothing')
+  })
+
+  // The diagnosis banner is applied on top of failedOutput's text, and it must
+  // not swallow the one message that carries the whole explanation.
+  it('the no-output explanation survives formatBashFailure', () => {
+    const out = formatBashFailure('python --version',
+      failedOutput('', '', 66, 'shell=powershell.exe, signal=none'))
+    expect(out).toContain('no output')
+    expect(out).toContain('powershell.exe')
+  })
+
+  // The circuit breaker quotes the original error back through `.slice(0, 300)`,
+  // and this explanation matters most in exactly the case that trips it: three
+  // silent failures in a row. If it does not fit, the mechanism reacting to the
+  // retry loop decapitates the one message that would have ended it.
+  it('fits inside the 300 characters the circuit breaker quotes back', () => {
+    const out = formatBashFailure('python --version',
+      failedOutput('', '', 66, 'shell=powershell.exe, signal=none'))
+    expect(out.slice(0, 300)).toContain('not that the command was wrong')
+  })
+
   it('a red pytest run with stderr noise is not mistaken for a runtime error', () => {
     const out = failedOutput('libpng warning: iCCP known incorrect sRGB profile\n', PYTEST_RED_OUTPUT, 1)
     expect(out).not.toContain('[ERROR:')
