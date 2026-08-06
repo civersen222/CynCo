@@ -49,6 +49,8 @@ import { runCheck } from './cynco-verify.mjs'
 import { purgeBytecodeCaches } from './cynco-workspace.mjs'
 import { loadMissionAssertions, sidecarPath, sealedDispatchRefusal, s5DispatchRefusal, workspaceError } from './cynco-contract.mjs'
 import { engineEndpoints } from './cynco-endpoints.mjs'
+import { snapshotHeldOut, restoreHeldOut } from './cynco-held-out.mjs'
+import { cyncoHome } from '../engine/paths.js'
 import { withheldGatePaths } from '../engine/bridge/contractAutoCreate.js'
 import { loadOrCreateTokens } from '../engine/security/localToken.js'
 
@@ -158,6 +160,22 @@ const dispatchedAt = new Date().toISOString()
 const sinceEpochS = Math.floor(Date.parse(dispatchedAt) / 1000)
 const missionId = `${basename(taskFile).replace(/\.[^.]*$/, '')}-${Date.now()}`
 let enforcedWarned = false
+
+// F45. The seal is a READ barrier: it hides the gate's name and refuses a Read.
+// Nothing was a write barrier, and a shell command that spawns a child process
+// is one syscall from any path on the disk. I4d2b3f found the unsealed script
+// that GENERATES the gate, ran it, and was then scored by a gate it had rebuilt
+// itself from a stale base. So take the bytes now and put them back before the
+// check — the paths stay inside this scope, exactly as at SEALED_COUNT above.
+const heldOutSnapshots = missionAssertions
+  ? snapshotHeldOut(withheldGatePaths(missionAssertions, CWD),
+                    join(cyncoHome(), 'held-out', missionId))
+  : []
+if (heldOutSnapshots.length) {
+  const absent = heldOutSnapshots.filter(s => s.missing).length
+  console.log(`[driver] snapshotted ${heldOutSnapshots.length - absent} held-out instrument(s)`
+    + (absent ? `; ${absent} named by the check do not exist` : ''))
+}
 
 // The bridge refuses an unauthenticated upgrade. Reading the same token file the
 // engine minted keeps this driver a zero-configuration tool; Bun's WebSocket
@@ -508,6 +526,17 @@ if (checkCmd && !gate.run) {
   console.log(`[verify] SKIPPED — ${gate.why}`)
 } else if (checkCmd) {
   if (!gate.label) console.log(`[verify] ADVISORY — ${gate.why}`)
+  // F45, and BEFORE the command line is logged: the gate that runs must be the
+  // gate that was dispatched. Restoring is not the interesting part — SAYING SO
+  // is. A substituted instrument scores the mission against a check nobody
+  // chose, and on I4d2b3f that was invisible in every artifact the run left.
+  const tampered = restoreHeldOut(heldOutSnapshots)
+  if (tampered.length) {
+    console.log(`[verify] HELD-OUT INSTRUMENT CHANGED UNDER THE MISSION: `
+      + `${tampered.length} restored from the dispatch snapshot. The check below `
+      + `is the dispatched one. Something in this run wrote to a file it was `
+      + `never shown — look for an unsealed script that generates it.`)
+  }
   console.log(`[verify] running check in ${CWD}: ${checkCmd} (cap ${CHECK_TIMEOUT_MS}ms)`)
   // F56: which commit did the gate actually read? `runCheck` is synchronous and
   // can run for the better part of an hour, and the mission is not necessarily
@@ -520,7 +549,11 @@ if (checkCmd && !gate.run) {
   const r = runCheck(checkCmd, CWD, CHECK_TIMEOUT_MS)
   const headAfter = gitHead(CWD)
   verified = gate.label ? r.verified : undefined
-  verify = { command: checkCmd, exitCode: r.exitCode, timedOut: r.timedOut, spawnFailed: r.spawnFailed, durationMs: r.durationMs, outputTail: r.outputTail, gradedSha: headBefore, headAfterCheck: headAfter }
+  // `heldOutRestored` is a count, never the paths: the paths are the withheld
+  // thing, and the ledger is read by everything. Zero is the ordinary case and
+  // is recorded rather than omitted — an absent field cannot tell "nothing was
+  // touched" apart from "this driver could not tell".
+  verify = { command: checkCmd, exitCode: r.exitCode, timedOut: r.timedOut, spawnFailed: r.spawnFailed, durationMs: r.durationMs, outputTail: r.outputTail, gradedSha: headBefore, headAfterCheck: headAfter, heldOutRestored: tampered.length }
   if (headBefore && headAfter && headBefore !== headAfter) {
     // Demote here as well as in gateDisposition. That call reads `quiet`, which
     // is a guess about whether the run had stopped; this is the thing itself.
