@@ -38,6 +38,19 @@ describe('detectFramework', () => {
     expect(detectFramework('cd gilded && PYTHONDONTWRITEBYTECODE=1 python -m pytest -q')).toBe('pytest')
     expect(detectFramework('cd engine && npx vitest run')).toBe('vitest')
   })
+
+  it('reaches pytest past interpreter flags between python and -m', () => {
+    // The exact command every Gilded wave runs. Undetected, an ordinary red
+    // suite counts as a Bash fault and the circuit breaker locks the agent out
+    // of its own tests.
+    expect(detectFramework('cd C:\\Users\\civer\\civkings; python -X utf8=0 -m pytest gilded/ -v -n 16')).toBe('pytest')
+    expect(detectFramework('python3.14 -X utf8=0 -m pytest gilded/ -q')).toBe('pytest')
+    expect(detectFramework('python -u -W ignore -m unittest discover')).toBe('pytest')
+  })
+
+  it('does not treat a script argument as an interpreter flag', () => {
+    expect(detectFramework('python manage.py -m pytest')).toBeNull()
+  })
 })
 
 describe('parseTestSummary', () => {

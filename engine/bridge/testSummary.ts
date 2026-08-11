@@ -16,7 +16,15 @@
  * whole line. See detectFramework for why.
  */
 const FRAMEWORK_PATTERNS: { framework: string; re: RegExp }[] = [
-  { framework: 'pytest', re: /^(pytest|py\.test|python[0-9.]*\s+-m\s+(pytest|unittest))\b/i },
+  // Interpreter flags may sit between the interpreter and `-m`. Measured on the
+  // live engine 2026-08-11: every Gilded wave runs `python -X utf8=0 -m pytest`
+  // (the harness forces PYTHONUTF8=1, so encoding defects are only reproducible
+  // with the flag). The old head required `-m` immediately after `python`, so
+  // every one of those runs detected as "not a test runner" — which made an
+  // ordinary red suite ("11 failed, 12 passed") count as a Bash FAULT. Two of
+  // them tripped the per-tool circuit breaker and locked the agent out of its
+  // own suite mid-repair. Flags are `-X`, `-u`, `-W ignore` and their values.
+  { framework: 'pytest', re: /^(pytest|py\.test|python[0-9.]*(?:\s+-\S+(?:\s+[^-\s]\S*)?)*\s+-m\s+(pytest|unittest))\b/i },
   { framework: 'vitest', re: /^vitest\b/i },
   { framework: 'jest', re: /^jest\b/i },
   { framework: 'bun', re: /^bun\s+test\b/i },
