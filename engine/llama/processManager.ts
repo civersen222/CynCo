@@ -356,7 +356,9 @@ export class ProcessManager {
     }
   }
 
-  private async waitForHealth(timeoutMs = 60000): Promise<void> {
+  private async waitForHealth(
+    timeoutMs = Number(process.env.LOCALCODE_LLAMA_HEALTH_TIMEOUT_MS) || 300000,
+  ): Promise<void> {
     const start = Date.now()
     const url = `http://127.0.0.1:${this.port}/health`
 
