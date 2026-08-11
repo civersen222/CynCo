@@ -267,6 +267,49 @@ describe('a slow gate carries its cap into the contract', () => {
     })
 })
 
+/**
+ * Finding (aq): the engine refuses a harness contract whose command cannot run
+ * in this system's shell — `applyHarnessContract` returns false and drops ALL
+ * of it — and it says so only on its own stdout. The driver, a WebSocket client,
+ * cannot see that. So a sidecar carrying `cd proj && python gate.py` printed
+ * "authorizes 12 assertion(s)", dispatched, and the mission ran with no contract
+ * at all: `ContractStatus` answered "No active contract." and the run closed its
+ * turn believing itself done. Measured on Gilded Stage 5E.
+ *
+ * The refusal has to happen HERE, at load, where a person is watching — the same
+ * reason the cap and the round trips are checked here. It delegates to the
+ * engine's own `harnessContractCommandError` rather than restating the rule,
+ * because a second opinion about which commands are runnable is a second thing
+ * that can disagree with the one that decides.
+ */
+describe('a command the engine will refuse is refused at dispatch', () => {
+  it('refuses a sidecar command using && on a shell that has no &&', () => {
+    const bad = { assertions: [{ text: 'the gate holds', command: 'cd C:/proj && python gate.py' }] }
+    expect(() => load(bad)).toThrow(/&&|shell/i)
+  })
+
+  it('refuses the driver-supplied gate command too, not just the sidecar', () => {
+    // The gate assertion is prepended from `checkCmd` and never passed through
+    // `toAssertion`, so a per-entry check would let this one straight through.
+    expect(() => loadMissionAssertions('C:/tmp/w8.md', 'cd C:/proj && python gate.py', sidecar({
+      assertions: ['File gilded/ui/policy.py exists after changes'],
+    }))).toThrow(/&&|shell/i)
+  })
+
+  it('accepts the same commands once they are sequenced the way the shell allows', () => {
+    const good = { assertions: [{ text: 'the gate holds', command: 'python gate.py' }] }
+    expect(() => load(good, undefined)).not.toThrow()
+  })
+
+  it('accepts a POSIX env prefix, which the engine translates rather than refuses', () => {
+    // `CHK=1 python gate.py` is a parse error in PowerShell as written, and the
+    // engine translates it before running. Refusing it here would reject
+    // contracts the engine runs without trouble — every Gilded gate carries one.
+    const good = { assertions: [{ text: 'the gate holds', command: 'CHK5E_MIN=1675 python gate.py' }] }
+    expect(() => load(good, undefined)).not.toThrow()
+  })
+})
+
 describe('the driver hands its own cap to the contract', () => {
   const driver = readFileSync('scripts/cynco-mission-driver.mjs', 'utf-8')
 

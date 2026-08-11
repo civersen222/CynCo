@@ -29,6 +29,7 @@
 
 import { existsSync, statSync } from 'node:fs'
 import { assertionCheck, commandAssertion } from '../engine/tools/contractVerify.js'
+import { harnessContractCommandError } from '../engine/bridge/contractAutoCreate.js'
 
 /**
  * The text the model reads for the held-out gate.
@@ -209,6 +210,24 @@ export function loadMissionAssertions(taskFile, checkCmd, io, gateTimeoutMs) {
     // the shape most likely to be mistaken for working.
     if (parsed.assertions.length === 0) refuse(file, 'has an empty "assertions" array')
     for (const entry of parsed.assertions) assertions.push(toAssertion(entry, file))
+  }
+
+  // Finding (aq): the engine drops the WHOLE contract when any one command
+  // cannot run in this system's shell, and announces it on a stdout no
+  // WebSocket client can read. The mission then runs with no contract while the
+  // driver reports the count it sent — measured on Gilded Stage 5E, where every
+  // command carried a `cd ... &&` prefix and all twelve assertions vanished.
+  //
+  // Asked of the engine's own function, not restated: a second opinion about
+  // which commands are runnable is a second thing that can disagree with the
+  // one that decides. Applied to the assembled list so the driver-supplied gate
+  // is judged too — it never passes through `toAssertion`.
+  if (assertions.length > 0) {
+    const bad = harnessContractCommandError(assertions)
+    if (bad) {
+      refuse(file, `${bad} — the engine would refuse this contract and drop all ` +
+        `${assertions.length} assertion(s), leaving the mission unmeasured`)
+    }
   }
 
   return assertions.length > 0 ? assertions : null
