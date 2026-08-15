@@ -23,6 +23,36 @@ import { spawnSync } from 'node:child_process'
 
 const OUTPUT_TAIL_CHARS = 2000
 
+// `NAME=value ` repeated at the head of the command, value optionally quoted.
+const ENV_PREFIX = /^([A-Za-z_][A-Za-z0-9_]*)=("[^"]*"|'[^']*'|\S*)\s+/
+
+/**
+ * Lift a leading POSIX env prefix out of the command and into the child's env.
+ *
+ * `spawnSync(..., { shell: true })` uses cmd.exe on Windows, which does not
+ * understand `FOO=1 prog` and answers `'FOO' is not recognized as an internal
+ * or external command` in ~20ms. The engine's own contract runner accepts that
+ * prefix (translateEnvPrefix, engine/tools/shellInfo.ts) — so the SAME command
+ * ran as an assertion and refused as a check, and the ledger recorded
+ * `verified: false` for a gate that never executed. A harness disagreeing with
+ * itself about what is runnable writes false failures into the training corpus.
+ *
+ * Returns { command, env } with the prefix removed and applied.
+ */
+export function liftEnvPrefix(command, baseEnv) {
+  let rest = String(command ?? '')
+  let env = null
+  let m
+  while ((m = ENV_PREFIX.exec(rest)) !== null) {
+    const [, name, rawValue] = m
+    const quoted = /^(".*"|'.*')$/s.test(rawValue)
+    env = env ?? { ...baseEnv }
+    env[name] = quoted ? rawValue.slice(1, -1) : rawValue
+    rest = rest.slice(m[0].length)
+  }
+  return { command: rest, env }
+}
+
 /**
  * Run a shell check command in `cwd` with a hard timeout.
  * Returns { verified, exitCode, timedOut, spawnFailed, durationMs, outputTail }.
@@ -30,12 +60,14 @@ const OUTPUT_TAIL_CHARS = 2000
  */
 export function runCheck(command, cwd, timeoutMs) {
   const start = Date.now()
-  const result = spawnSync(command, {
+  const lifted = liftEnvPrefix(command, process.env)
+  const result = spawnSync(lifted.command, {
     shell: true, // cmd.exe on Windows, /bin/sh elsewhere
     cwd,
     timeout: timeoutMs,
     encoding: 'utf8',
     windowsHide: true,
+    ...(lifted.env ? { env: lifted.env } : {}),
   })
   const durationMs = Date.now() - start
   const timedOut = result.error?.code === 'ETIMEDOUT'
