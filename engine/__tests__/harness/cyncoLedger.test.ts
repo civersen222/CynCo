@@ -1,10 +1,12 @@
-import { describe, expect, it } from 'bun:test'
-import { readFileSync } from 'node:fs'
+import { afterAll, beforeAll, describe, expect, it } from 'bun:test'
+import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 // The ledger collector is a plain .mjs module used by scripts/cynco-mission-driver.mjs
 // @ts-ignore — untyped harness module
 import { createMissionCollector, buildMissionRecord, missionCommitted, missionOutcome, waitIsOver, waitExitReason, gateDisposition, historyRewrite, QUIET_MS } from '../../../scripts/cynco-ledger.mjs'
+import { readLedger, shardPaths, shardIndex, activeShardPath, ledgerCount } from '../../../scripts/cynco-ledger-shards.mjs'
 
 describe('cynco mission outcome ledger', () => {
   const syntheticStream = [
@@ -247,9 +249,9 @@ describe('cynco mission outcome ledger', () => {
   // meaning with two encodings is how a default sneaks in. Backfilled to null;
   // this pins it so the split cannot reopen.
   it('every committed ledger record encodes unmeasured one way: the key present, value null', () => {
-    const here = dirname(fileURLToPath(import.meta.url))
-    const path = join(here, '..', '..', '..', 'benchmark', 'cynco-ledger', 'missions.jsonl')
-    const rows = readFileSync(path, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l))
+    // Across every shard: an invariant checked on only the frozen head would
+    // stop covering the records that are still being written.
+    const rows = readLedger()
     expect(rows.length).toBeGreaterThan(0)
     const absent = rows.filter((r) => !('mutationSweep' in r)).map((r) => r.missionId)
     expect(absent).toEqual([])
@@ -1177,10 +1179,7 @@ describe('history-rewrite wiring guard', () => {
  * excluding on one of them silently keeps the other.
  */
 describe('the committed ledger encodes what it does not know', () => {
-  const rows = readFileSync(
-    join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'benchmark', 'cynco-ledger', 'missions.jsonl'),
-    'utf8',
-  ).split('\n').filter(Boolean).map((l) => JSON.parse(l))
+  const rows = readLedger()
 
   it('every row carries the F38 history key, null where nothing measured it', () => {
     expect(rows.length).toBeGreaterThan(0)
@@ -1210,5 +1209,93 @@ describe('the committed ledger encodes what it does not know', () => {
         expect(r[f], `${r.missionId}.${f} must be null, not ${JSON.stringify(r[f])}`).toBeNull()
       }
     }
+  })
+})
+
+/**
+ * The ledger outgrew one file. GitHub warns at 50 MB and REFUSES a push at
+ * 100 MB, and `missions.jsonl` was 58.7 MB at 193 records with ~1 MB going on
+ * per mission — roughly 34 missions from a hard failure that would have landed
+ * mid-wave on a push that had to succeed.
+ *
+ * What these pin is the property that makes the split safe: no record ever
+ * MOVES. `missions.jsonl` is frozen, new shards are appended alongside it, and
+ * the concatenation order is stable — so `--record N` means the same mission
+ * forever, which is what the sweep tool and every hand-written note assume.
+ */
+describe('the ledger is sharded so no record has to move', () => {
+  const tmp = join(tmpdir(), `ledger-shards-${process.pid}-${Math.random().toString(36).slice(2)}`)
+  beforeAll(() => mkdirSync(tmp, { recursive: true }))
+  afterAll(() => rmSync(tmp, { recursive: true, force: true }))
+
+  it('orders the frozen head first and numbered shards after it, numerically', () => {
+    expect(shardIndex('missions.jsonl')).toBe(1)
+    expect(shardIndex('missions.0002.jsonl')).toBe(2)
+    expect(shardIndex('missions.0010.jsonl')).toBe(10)
+    // Anything else in the directory is not a shard and must not be read as one:
+    // a stray .tmp from an interrupted sweep would otherwise join the ledger.
+    expect(shardIndex('missions.jsonl.tmp')).toBeNull()
+    expect(shardIndex('missions.2.jsonl')).toBeNull()
+    expect(shardIndex('README.md')).toBeNull()
+  })
+
+  it('reads every shard in record order, tagging each row with the file it came from', () => {
+    const d = join(tmp, 'read'); mkdirSync(d, { recursive: true })
+    writeFileSync(join(d, 'missions.jsonl'), '{"missionId":"a"}\n{"missionId":"b"}\n')
+    writeFileSync(join(d, 'missions.0002.jsonl'), '{"missionId":"c"}\n')
+    // Deliberately out of lexicographic step with 0002 to prove numeric sorting.
+    writeFileSync(join(d, 'missions.0010.jsonl'), '{"missionId":"d"}\n')
+    writeFileSync(join(d, 'missions.0003.jsonl'), '{"missionId":"e"}\n')
+    const got = readLedger(d)
+    expect(got.map((r) => r.missionId)).toEqual(['a', 'b', 'c', 'e', 'd'])
+    expect(got[0].__shard).toBe(join(d, 'missions.jsonl'))
+    expect(got[1].__line).toBe(1)
+    expect(got[4].__shard).toBe(join(d, 'missions.0010.jsonl'))
+    // The tags are bookkeeping, not ledger content: a sweep re-serializes rows
+    // with JSON.stringify, so a visible __shard would be WRITTEN BACK into the
+    // record and every row would grow a field nothing put there.
+    expect(JSON.parse(JSON.stringify(got[0]))).toEqual({ missionId: 'a' })
+    expect(ledgerCount(d)).toBe(5)
+  })
+
+  it('appends to the newest shard until it hits the cap, then starts a new one', () => {
+    const d = join(tmp, 'roll'); mkdirSync(d, { recursive: true })
+    // Nothing yet: the very first record goes to the name every old tool knows.
+    expect(activeShardPath(d, 100)).toBe(join(d, 'missions.jsonl'))
+    writeFileSync(join(d, 'missions.jsonl'), 'x'.repeat(40))
+    expect(activeShardPath(d, 100)).toBe(join(d, 'missions.jsonl'))
+    // Over the cap: roll rather than grow. The head is not rewritten or moved.
+    writeFileSync(join(d, 'missions.jsonl'), 'x'.repeat(200))
+    expect(activeShardPath(d, 100)).toBe(join(d, 'missions.0002.jsonl'))
+    writeFileSync(join(d, 'missions.0002.jsonl'), 'x'.repeat(10))
+    expect(activeShardPath(d, 100)).toBe(join(d, 'missions.0002.jsonl'))
+    writeFileSync(join(d, 'missions.0002.jsonl'), 'x'.repeat(300))
+    expect(activeShardPath(d, 100)).toBe(join(d, 'missions.0003.jsonl'))
+    // Rolling never touched what was already written.
+    expect(readFileSync(join(d, 'missions.jsonl'), 'utf8').length).toBe(200)
+  })
+
+  it('keeps the real ledger under the size that makes GitHub refuse a push', () => {
+    const shards = shardPaths()
+    expect(shards.length).toBeGreaterThan(0)
+    for (const p of shards) {
+      // The frozen head is already past the 50 MB warning and cannot shrink
+      // without rewriting history; what must never happen is any shard nearing
+      // the 100 MB refusal, which is what rolling exists to prevent.
+      expect(statSync(p).size, `${p} is within a rounding error of GitHub's 100 MB refusal`)
+        .toBeLessThan(90 * 1024 * 1024)
+    }
+  })
+
+  it('the driver appends through the shard chooser rather than a hardcoded path', () => {
+    const driver = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'scripts', 'cynco-mission-driver.mjs'),
+      'utf8',
+    )
+    expect(driver).toMatch(/appendFileSync\(shard,/)
+    expect(driver).toMatch(/activeShardPath\(\)/)
+    // A reintroduced constant path is exactly how the roll would stop happening
+    // while every test above still passed.
+    expect(driver).not.toMatch(/'missions\.jsonl'/)
   })
 })

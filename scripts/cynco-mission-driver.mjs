@@ -34,15 +34,14 @@
 // Mission briefs should follow the F3 pattern: one focused task, single-line
 // unique Edit anchor (grep-verified), full replacement block verbatim.
 //
-// Every mission appends one labeled record to benchmark/cynco-ledger/missions.jsonl
+// Every mission appends one labeled record to benchmark/cynco-ledger/ (sharded)
 // (governance falsification program, step 1). With a check-cmd the driver sets
 // `verified` itself; without one, patch it after independent verification.
 // Human spot-audit every 5th record either way (STATE doc Phase 2(b)).
 
-import { basename, join, dirname, resolve } from 'node:path'
-import { mkdirSync, appendFileSync, readFileSync, existsSync } from 'node:fs'
+import { basename, join, resolve } from 'node:path'
+import { appendFileSync, readFileSync, existsSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
-import { fileURLToPath } from 'node:url'
 import { createMissionCollector, buildMissionRecord, missionCommitted, missionOutcome, waitExitReason, gateDisposition, historyRewrite, QUIET_MS } from './cynco-ledger.mjs'
 import { countGraderProbes } from './cynco-grader-probes.mjs'
 import { runCheck } from './cynco-verify.mjs'
@@ -50,6 +49,7 @@ import { purgeBytecodeCaches } from './cynco-workspace.mjs'
 import { loadMissionAssertions, sidecarPath, sealedDispatchRefusal, s5DispatchRefusal, workspaceError } from './cynco-contract.mjs'
 import { engineEndpoints } from './cynco-endpoints.mjs'
 import { snapshotHeldOut, restoreHeldOut } from './cynco-held-out.mjs'
+import { activeShardPath, ledgerCount, ensureLedgerDir } from './cynco-ledger-shards.mjs'
 import { cyncoHome } from '../engine/paths.js'
 import { withheldGatePaths } from '../engine/bridge/contractAutoCreate.js'
 import { loadOrCreateTokens } from '../engine/security/localToken.js'
@@ -87,7 +87,9 @@ try {
 const WS_URL = ENDPOINTS.ws
 const GOV_URL = ENDPOINTS.governance
 const RUN_URL = ENDPOINTS.run
-const LEDGER_PATH = join(dirname(fileURLToPath(import.meta.url)), '..', 'benchmark', 'cynco-ledger', 'missions.jsonl')
+// Sharded — see cynco-ledger-shards.mjs. `missions.jsonl` is frozen at 193
+// records; new ones land in missions.NNNN.jsonl so no push ever hits GitHub's
+// 100 MB file ceiling mid-wave.
 
 const task = await Bun.file(taskFile).text()
 console.log(`[driver] mission from ${taskFile} (${task.length} chars), marker="${marker}", cwd=${CWD}`)
@@ -648,9 +650,10 @@ try {
     // old to emit one cannot be told from a mission that never probed.
     graderProbes: countGraderProbes(toolStartFrames),
   })
-  mkdirSync(dirname(LEDGER_PATH), { recursive: true })
-  appendFileSync(LEDGER_PATH, JSON.stringify(record) + '\n')
-  console.log(`[ledger] ${outcome} record ${missionId} appended (${collector.turns.length} turns, ${collector.s5Decisions.length} S5 decisions) → ${LEDGER_PATH}`)
+  ensureLedgerDir()
+  const shard = activeShardPath()
+  appendFileSync(shard, JSON.stringify(record) + '\n')
+  console.log(`[ledger] ${outcome} record ${missionId} appended (${collector.turns.length} turns, ${collector.s5Decisions.length} S5 decisions) → ${shard}`)
   if (!checkCmd) console.log('[ledger] no check-cmd given — patch "verified": true|false after independent verification')
   // `verified` is one check command's exit code. It cannot say whether the new
   // tests BITE — only a withheld mutation set can, and those run later. Say so
@@ -671,7 +674,9 @@ try {
   }
   // 1-in-5 human spot-audit cadence (STATE doc Phase 2(b)).
   try {
-    const count = readFileSync(LEDGER_PATH, 'utf8').split('\n').filter(Boolean).length
+    // Counted across every shard: the 1-in-5 cadence is over the whole ledger,
+    // and counting only the live shard would restart the cadence at each roll.
+    const count = ledgerCount()
     if (count % 5 === 0) {
       console.log(`[ledger] SPOT-AUDIT DUE: record #${count} — human-verify this mission's label (1-in-5 cadence)`)
       console.log(`[ledger]   verified=${verified ?? 'null'} is STRUCTURAL (${checkCmd ?? 'no check-cmd'}); mutationSweep is BEHAVIOURAL and still null.`)

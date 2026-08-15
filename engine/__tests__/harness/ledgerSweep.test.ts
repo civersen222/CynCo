@@ -1,6 +1,9 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 // @ts-ignore — untyped harness module
-import { arg, argList, sweepProblems } from '../../../scripts/cynco-ledger-sweep.mjs'
+import { arg, argList, sweepProblems, main } from '../../../scripts/cynco-ledger-sweep.mjs'
 
 // Regression origin: recording a 21/29 sweep with eight survivors wrote
 // `survived: ["11"]`. Two defects combined — `--survived` read only one argv
@@ -79,5 +82,65 @@ describe('cynco-ledger-sweep validation', () => {
     expect(sweepProblems('abc', '29', []).some((p: string) => p.includes('not a count'))).toBe(true)
     expect(sweepProblems('1', '0', []).some((p: string) => p.includes('positive count'))).toBe(true)
     expect(sweepProblems('30', '29', []).some((p: string) => p.includes('killed (30) > total (29)'))).toBe(true)
+  })
+})
+
+/**
+ * The write path went untested for as long as the only way to run it was to
+ * write to the real 58 MB ledger. Splitting that file across shards changed
+ * exactly this code — it now has to pick the right shard and rewrite only that
+ * one — so it gets a throwaway ledger and real assertions.
+ */
+describe('cynco-ledger-sweep writes back to the shard the record lives in', () => {
+  let dir: string
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'sweep-'))
+    writeFileSync(join(dir, 'missions.jsonl'),
+      '{"missionId":"a","mutationSweep":null}\n{"missionId":"b","mutationSweep":null}\n')
+    writeFileSync(join(dir, 'missions.0002.jsonl'),
+      '{"missionId":"c","mutationSweep":null}\n')
+  })
+  afterEach(() => rmSync(dir, { recursive: true, force: true }))
+
+  const read = (f: string) => readFileSync(join(dir, f), 'utf8')
+    .split('\n').filter(Boolean).map((l) => JSON.parse(l))
+
+  it('--record N counts across shards, so N is the Nth mission ever run', () => {
+    // Record 3 is the only row in the SECOND shard. Numbering that restarted
+    // per file would have edited row "a" here.
+    expect(main(argv('--record', '3', '--command', 'x', '--killed', '2', '--total', '2'), dir)).toBe(0)
+    expect(read('missions.0002.jsonl')[0].mutationSweep).toEqual(
+      { command: 'x', killed: 2, total: 2, survived: [] })
+    // The other shard is untouched, byte for byte.
+    expect(read('missions.jsonl').map((r) => r.mutationSweep)).toEqual([null, null])
+  })
+
+  it('leaves every other shard alone, and every other row in its own shard intact', () => {
+    expect(main(argv('--mission', 'b', '--command', 'y', '--killed', '1', '--total', '2',
+      '--survived', 'r7'), dir)).toBe(0)
+    const head = read('missions.jsonl')
+    expect(head).toHaveLength(2)
+    expect(head[0]).toEqual({ missionId: 'a', mutationSweep: null })
+    expect(head[1].mutationSweep).toEqual({ command: 'y', killed: 1, total: 2, survived: ['r7'] })
+    expect(read('missions.0002.jsonl')[0].mutationSweep).toBeNull()
+  })
+
+  // The shard tag is bookkeeping the reader attaches, not ledger content. A
+  // visible one would be re-serialized straight back into every rewritten row.
+  it('does not write its own bookkeeping into the records', () => {
+    expect(main(argv('--record', '1', '--command', 'z', '--killed', '1', '--total', '1'), dir)).toBe(0)
+    expect(read('missions.jsonl').every((r) => !('__shard' in r) && !('__line' in r))).toBe(true)
+  })
+
+  it('--dry-run and an out-of-range record both leave the ledger exactly as it was', () => {
+    const before = read('missions.jsonl')
+    expect(main(argv('--record', '1', '--command', 'z', '--killed', '1', '--total', '1',
+      '--dry-run'), dir)).toBe(0)
+    expect(main(argv('--record', '99', '--command', 'z', '--killed', '1', '--total', '1'), dir)).toBe(2)
+    expect(main(argv('--mission', 'nope', '--command', 'z', '--killed', '1', '--total', '1'), dir)).toBe(2)
+    // An invalid sweep must not write either: a half-written record reads as
+    // measured, which is worse than no record.
+    expect(main(argv('--record', '1', '--command', 'z', '--killed', '1', '--total', '3'), dir)).toBe(2)
+    expect(read('missions.jsonl')).toEqual(before)
   })
 })

@@ -6,7 +6,8 @@
 // outcome. This is the dataset that makes the VSM/S5 layer falsifiable —
 // step 2 (per-rule precision/recall) runs directly off these records.
 //
-// Records land in benchmark/cynco-ledger/missions.jsonl (committed to git).
+// Records land in benchmark/cynco-ledger/ (committed to git), split across
+// missions.jsonl + missions.NNNN.jsonl — see cynco-ledger-shards.mjs.
 //
 // TWO INDEPENDENT LABELS, and neither one implies the other:
 //

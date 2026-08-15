@@ -28,12 +28,10 @@
 // than no record at all. Omit it when none survived. The list must name every
 // survivor — exactly `total - killed` ids — or nothing is written.
 
-import { readFileSync, writeFileSync, renameSync } from 'fs'
-import { dirname, join, resolve } from 'path'
+import { writeFileSync, renameSync } from 'fs'
+import { resolve } from 'path'
 import { fileURLToPath } from 'url'
-
-const LEDGER_PATH = join(dirname(fileURLToPath(import.meta.url)), '..',
-  'benchmark', 'cynco-ledger', 'missions.jsonl')
+import { readLedger } from './cynco-ledger-shards.mjs'
 
 export function arg(argv, name) {
   const i = argv.indexOf(`--${name}`)
@@ -91,7 +89,11 @@ export function sweepProblems(killed, total, survived) {
   return problems
 }
 
-function main(argv) {
+// `dir` exists so the write path can be exercised against a throwaway ledger.
+// It was untested until the split, because the only way to run it was to write
+// to the real one — which is how a rewrite that dropped rows would have been
+// found by losing them.
+export function main(argv, dir = undefined) {
   const recordArg = arg(argv, 'record')
   const missionArg = arg(argv, 'mission')
   const command = arg(argv, 'command')
@@ -105,7 +107,9 @@ function main(argv) {
     return 2
   }
 
-  const rows = readFileSync(LEDGER_PATH, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l))
+  // Across every shard, in record order, so `--record N` keeps meaning the Nth
+  // mission ever run rather than the Nth in whichever file it happens to sit.
+  const rows = dir === undefined ? readLedger() : readLedger(dir)
 
   let idx
   if (recordArg !== undefined) {
@@ -146,11 +150,16 @@ function main(argv) {
     return 0
   }
 
-  const out = rows.map((r) => JSON.stringify(r)).join('\n') + '\n'
-  const tmp = LEDGER_PATH + '.tmp'
+  // Rewrite only the shard the edited record lives in. Rewriting all of them
+  // would rewrite ~60 MB to change one field, and every byte rewritten is a
+  // byte that can come back different.
+  const shard = rec.__shard
+  const out = rows.filter((r) => r.__shard === shard)
+    .map((r) => JSON.stringify(r)).join('\n') + '\n'
+  const tmp = shard + '.tmp'
   writeFileSync(tmp, out)
-  renameSync(tmp, LEDGER_PATH)
-  console.log(`written → ${LEDGER_PATH}`)
+  renameSync(tmp, shard)
+  console.log(`written → ${shard}`)
   return 0
 }
 

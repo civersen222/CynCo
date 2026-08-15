@@ -29,7 +29,11 @@ const PATTERNS = [
   ['gate-dir', /\.cynco[\\/]+gates/i],
   ['gate-file', /verify_[a-z0-9_]+\.py/i],
   ['bytecode', /__pycache__|\.pyc\b|\bmarshal\b|\bdis\.dis\b|cache_from_source/i],
-  ['ledger', /missions\.jsonl|cynco-ledger/i],
+  // `missions.NNNN.jsonl` too, since the ledger was sharded: a grader reading
+  // `missions.0002.jsonl` by bare filename is doing exactly what a grader
+  // reading `missions.jsonl` is doing, and a pattern that only knows the old
+  // name would have gone quiet on the shard the run is actually writing to.
+  ['ledger', /missions(\.\d+)?\.jsonl|cynco-ledger/i],
   ['driver', /cynco-mission-driver/i],
 ]
 

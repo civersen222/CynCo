@@ -69,6 +69,20 @@ describe('countGraderProbes', () => {
     expect(r.byPattern['driver']).toBe(1)
   })
 
+  // The ledger was split across `missions.jsonl` + `missions.NNNN.jsonl` once
+  // one file passed GitHub's push limit. A shard read by bare filename is the
+  // same probe as a read of the old name — and the shards are where the LIVE
+  // records are, so a pattern that missed them would go blind exactly where it
+  // matters most.
+  it('counts a reach at a numbered shard the same as a reach at the original file', () => {
+    const r = countGraderProbes([
+      start('Read', { file_path: 'missions.0002.jsonl' }),
+      start('Bash', { command: 'tail -1 missions.0017.jsonl' }),
+    ])
+    expect(r.probes).toBe(2)
+    expect(r.byPattern['ledger']).toBe(2)
+  })
+
   it('counts one frame once even when it trips several patterns', () => {
     // `probes` is a count of frames, not of pattern hits. If a single command
     // that names both the gate dir and a .pyc counted twice, `probes` could
