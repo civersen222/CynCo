@@ -496,6 +496,32 @@ describe('F57: silence is not the end of a run — the engine is asked', () => {
       .toBe('engine_error')
   })
 
+  // F88: the shape that hung. `tool.start` clears `sawMessageComplete`, so an
+  // engine killed mid-turn leaves NO exit open — engineProcessing is null
+  // forever and the quiet heuristic is gated behind a message.complete that will
+  // never arrive. Stage 11K's third dispatch polled a dead port and would have
+  // held its record for six hours.
+  const killedMidTurn = { landed: true, sawMessageComplete: false, msSinceActivity: QUIET * 10, workBegun: true, engineProcessing: null }
+
+  it('an engine killed mid-turn hangs the wait forever without engineGone', () => {
+    expect(waitExitReason(killedMidTurn)).toBeNull()
+  })
+
+  it('a socket that closed on an engine which used to answer is absence, not silence', () => {
+    expect(waitExitReason({ ...killedMidTurn, engineGone: true })).toBe('engine_gone')
+  })
+
+  it('engine_gone does not outrank a reported error, which says more', () => {
+    expect(waitExitReason({ ...killedMidTurn, engineGone: true, engineError: 'llama-server exit 9' }))
+      .toBe('engine_error')
+  })
+
+  it('engine_gone is opt-in, so an engine too old for /api/run still uses the heuristic', () => {
+    // The driver only sets it once /api/run has answered at least once in THIS
+    // run. Absent that, `null` means "no endpoint", not "no engine".
+    expect(waitExitReason({ ...looksFinished, engineProcessing: null })).toBe('quiet_heuristic')
+  })
+
   it('an omitted engineProcessing leaves every pre-F57 caller unchanged', () => {
     // The default is null — unknown — not false. A default of false would
     // declare every mission finished at its first poll.

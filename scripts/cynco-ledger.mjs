@@ -227,10 +227,21 @@ export function waitIsOver(state, quietMs = QUIET_MS) {
  * which of the two it was.
  */
 export function waitExitReason(
-  { landed, sawMessageComplete, msSinceActivity, engineError, engineProcessing = null, workBegun = true },
+  { landed, sawMessageComplete, msSinceActivity, engineError, engineProcessing = null, workBegun = true, engineGone = false },
   quietMs = QUIET_MS,
 ) {
   if (engineError) return 'engine_error'
+  // Absence, not silence. `tool.start` clears `sawMessageComplete`, so an engine
+  // that dies mid-turn leaves this predicate with no way out: engineProcessing
+  // is null forever because nothing is listening, and the quiet heuristic is
+  // gated behind a message.complete that will never arrive. Stage 11K's third
+  // dispatch sat in exactly that state polling a dead port, and would have sat
+  // there for the full six-hour budget without writing the record it had already
+  // earned. The caller only sets this once /api/run has answered at least once
+  // in THIS run and the socket has since closed, so an engine too old to have
+  // the endpoint still falls through to the heuristic rather than being called
+  // dead.
+  if (engineGone) return 'engine_gone'
   if (engineProcessing === true) return null
   if (engineProcessing === false && workBegun) return 'engine_closed_the_turn'
   if (!sawMessageComplete) return null

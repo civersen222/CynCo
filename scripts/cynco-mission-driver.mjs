@@ -351,7 +351,9 @@ ws.onmessage = (ev) => {
 ws.onerror = (e) => console.log('[driver] ws error', e?.message ?? e)
 let opened = false
 ws.addEventListener('open', () => { opened = true })
+let wsClosed = false
 ws.onclose = () => {
+  wsClosed = true
   console.log('[driver] ws closed')
   // Closed without ever opening means the bridge refused the upgrade — 401 no
   // token, 409 a TUI already holds it. The mission was never dispatched, so
@@ -443,9 +445,10 @@ while (!quiet && !zeroToolCompletion && !silentAfterDispatch && (Date.now() - st
   // before the check runs, or the check measures a state that no longer
   // exists. A run that stops without committing is simply over, and waiting
   // out its budget only buys a wrong label; see waitIsOver().
-  exitReason = waitExitReason({ landed, sawMessageComplete, msSinceActivity: Date.now() - lastActivityAt, engineError, engineProcessing, workBegun })
+  exitReason = waitExitReason({ landed, sawMessageComplete, msSinceActivity: Date.now() - lastActivityAt, engineError, engineProcessing, workBegun, engineGone: wsClosed && runStateSeen && engineProcessing === null })
   if (exitReason) {
     if (exitReason === 'engine_error') console.log('[driver] leaving the wait loop on the engine error above — the git poll ran first, so a commit made before the crash is already recorded')
+    else if (exitReason === 'engine_gone') console.log('[driver] the engine is GONE — the socket closed and /api/run, which answered earlier in this run, no longer answers. Not silence, absence.')
     else if (exitReason === 'engine_closed_the_turn') console.log(`[driver] the engine reports the turn is closed — ${landed ? 'proceeding to verification' : 'nothing committed; the run is over'}`)
     else console.log(`[driver] run quiet for ${Math.round((Date.now() - lastActivityAt) / 1000)}s after a completed message — ${landed ? 'proceeding to verification' : 'nothing committed; the run has stopped, not stalled'}`)
     quiet = true
@@ -523,7 +526,11 @@ try {
 // is spelled as here; see gateDisposition() for why this decision has a name.
 let verified
 let verify = null
-const gate = gateDisposition({ neverDispatched: silentAfterDispatch, engineError, landed, quiet, runStillOpen })
+// `engine_gone` is the same fact as `engineError` as far as the gate is
+// concerned — the harness stopped the run — so it takes the same advisory path.
+// The ledger's own `engineError` field stays null, because no error was reported;
+// the engine simply stopped answering, and `exitReason` is where that is said.
+const gate = gateDisposition({ neverDispatched: silentAfterDispatch, engineError: engineError ?? (exitReason === 'engine_gone' || null), landed, quiet, runStillOpen })
 if (checkCmd && !gate.run) {
   console.log(`[verify] SKIPPED — ${gate.why}`)
 } else if (checkCmd) {
