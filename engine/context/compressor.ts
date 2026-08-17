@@ -223,7 +223,14 @@ export class ContextCompressor {
     const userMsgs = messages.filter(m => m.role === 'user').slice(-maxUserMsgs)
     for (const u of userMsgs) {
       const text = u.content.filter(b => b.type === 'text' && b.text).map(b => b.text as string).join(' ')
-      if (text) anchors.push({ role: 'system', content: [{ type: 'text', text: `[Pinned user request]\n${text}` }] })
+      // Pinned as `user`, not `system`. Every real user turn ends up either
+      // summarized away or held in the tail as a tool_result, and Qwen's chat
+      // template scans backwards for a user message that is not a bare
+      // <tool_response> — finding none, it raised and llama-server answered 400
+      // mid-run. A compacted conversation with no user turn is malformed for any
+      // template, so the anchor restores the thing that went missing rather than
+      // describing it.
+      if (text) anchors.push({ role: 'user', content: [{ type: 'text', text: `[Pinned user request]\n${text}` }] })
     }
     return anchors
   }
