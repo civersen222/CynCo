@@ -83,6 +83,42 @@ describe('buildServerArgs', () => {
     expect(args).not.toContain('--chat-template-file')
   })
 
+  it('adds --chat-template-kwargs as JSON when chatTemplateKwargs is set', () => {
+    const args = buildServerArgs({
+      modelPath: '/models/qwen38.gguf',
+      port: 8081,
+      chatTemplateKwargs: { reasoning_effort: 'medium', preserve_thinking: true },
+    })
+    const i = args.indexOf('--chat-template-kwargs')
+    expect(i).toBeGreaterThan(-1)
+    expect(JSON.parse(args[i + 1]!)).toEqual({
+      reasoning_effort: 'medium',
+      preserve_thinking: true,
+    })
+  })
+
+  it('does not add --chat-template-kwargs when it is unset or empty', () => {
+    expect(buildServerArgs({ modelPath: '/m.gguf', port: 8081 }))
+      .not.toContain('--chat-template-kwargs')
+    expect(buildServerArgs({ modelPath: '/m.gguf', port: 8081, chatTemplateKwargs: {} }))
+      .not.toContain('--chat-template-kwargs')
+  })
+
+  it('adds --cache-type-k/v only when set', () => {
+    const args = buildServerArgs({
+      modelPath: '/models/qwen38.gguf',
+      port: 8081,
+      cacheTypeK: 'q8_0',
+      cacheTypeV: 'q8_0',
+    })
+    expect(args[args.indexOf('--cache-type-k') + 1]).toBe('q8_0')
+    expect(args[args.indexOf('--cache-type-v') + 1]).toBe('q8_0')
+
+    const bare = buildServerArgs({ modelPath: '/m.gguf', port: 8081 })
+    expect(bare).not.toContain('--cache-type-k')
+    expect(bare).not.toContain('--cache-type-v')
+  })
+
   it('adds speculative decoding flags when specType is set', () => {
     const args = buildServerArgs({
       modelPath: '/models/qwen-mtp.gguf',

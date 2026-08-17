@@ -66,6 +66,9 @@ export type RuntimeConfig = {
   checkpointMinStep?: number
   ubatchSize?: number
   chatTemplateFile?: string
+  cacheTypeK?: string
+  cacheTypeV?: string
+  chatTemplateKwargs?: Record<string, string | number | boolean>
 }
 
 export type LocalCodeConfig = {
@@ -170,6 +173,9 @@ export function loadConfig(): LocalCodeConfig {
         checkpointMinStep: pr.checkpoint_min_step,
         ubatchSize: pr.ubatch_size,
         chatTemplateFile: pr.chat_template_file,
+        cacheTypeK: pr.cache_type_k,
+        cacheTypeV: pr.cache_type_v,
+        chatTemplateKwargs: pr.chat_template_kwargs,
       }
     : undefined
 

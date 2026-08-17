@@ -37,6 +37,14 @@ export type ProfileRuntime = {
   flash_attn?: boolean
   cache_ram?: number
   reasoning_budget?: number
+  ctx_checkpoints?: number
+  checkpoint_min_step?: number
+  ubatch_size?: number
+  chat_template_file?: string
+  cache_type_k?: string
+  cache_type_v?: string
+  /** Extra jinja template variables. Qwen3.8: reasoning_effort, preserve_thinking. */
+  chat_template_kwargs?: Record<string, string | number | boolean>
 }
 
 /**

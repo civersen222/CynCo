@@ -19,6 +19,9 @@ export type ServerConfig = {
   checkpointMinStep?: number
   ubatchSize?: number
   chatTemplateFile?: string
+  cacheTypeK?: string
+  cacheTypeV?: string
+  chatTemplateKwargs?: Record<string, string | number | boolean>
 }
 
 function envInt(name: string): number | undefined {
@@ -64,6 +67,18 @@ export function buildServerArgs(config: ServerConfig): string[] {
   if (config.chatTemplateFile) {
     args.push('--chat-template-file', config.chatTemplateFile)
   }
+
+  // Extra kwargs handed to the jinja template. Qwen3.8 reads `reasoning_effort`
+  // (low | medium | xhigh) and `preserve_thinking` from here; other models
+  // ignore unknown keys.
+  if (config.chatTemplateKwargs && Object.keys(config.chatTemplateKwargs).length > 0) {
+    args.push('--chat-template-kwargs', JSON.stringify(config.chatTemplateKwargs))
+  }
+
+  // KV cache quantisation. Left at the server default (f16) unless a profile
+  // asks for less — quantised KV costs accuracy and we have the VRAM.
+  if (config.cacheTypeK) args.push('--cache-type-k', config.cacheTypeK)
+  if (config.cacheTypeV) args.push('--cache-type-v', config.cacheTypeV)
 
   if (config.specType) {
     args.push('--spec-type', config.specType)
@@ -184,6 +199,9 @@ export type ProcessManagerConfig = {
   checkpointMinStep?: number
   ubatchSize?: number
   chatTemplateFile?: string
+  cacheTypeK?: string
+  cacheTypeV?: string
+  chatTemplateKwargs?: Record<string, string | number | boolean>
 }
 
 export class ProcessManager {
