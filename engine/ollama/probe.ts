@@ -26,6 +26,7 @@ type KnownEntry = {
  */
 export const KNOWN_MODEL_CAPABILITIES: Map<string, KnownEntry> = new Map([
   // ── Spec-defined entries ──
+  ['qwen3.8',     { toolUse: 'native',    thinking: 'native',    vision: true,  contextLength: 262144 }],
   ['qwen3.6',     { toolUse: 'native',    thinking: 'native',    vision: true,  contextLength: 262144 }],
   ['qwen3',       { toolUse: 'native',    thinking: 'native',    vision: false, contextLength: 32768 }],
   ['llama4',      { toolUse: 'native',    thinking: 'native',    vision: true,  contextLength: 131072 }],

@@ -504,7 +504,13 @@ export async function* localCallModel({
   }
 
   // 9. Stream from provider and translate
-  console.log(`[callModel] Streaming from provider with ${convertedMessages.length} messages, ${toolDefs.length} tools`)
+  // Say which tool MODE is in force, not just how many tools exist. An unknown
+  // model family resolves to toolUse:'none', which sends no tools array at all
+  // — and the old wording ("19 tools") reported the registry count either way,
+  // so a whole run could go by producing prose while the log looked healthy.
+  const toolMode = noToolUse ? 'NO TOOLS SENT (model family unknown to the capability table)'
+    : simulatedToolUse ? 'simulated' : 'native'
+  console.log(`[callModel] Streaming from provider with ${convertedMessages.length} messages, ${toolDefs.length} tools, mode=${toolMode}`)
 
   // Open the stream, retrying transport failures until something comes back or
   // the budget runs out.

@@ -56,6 +56,21 @@ describe('lookupKnownCapabilities', () => {
   })
 })
 
+describe('local model directory names', () => {
+  // llama.cpp profiles name models after their download directory, e.g.
+  // 'qwen3.8-27b-nvfp4', which has no colon to strip. A family missing from the
+  // table resolves to toolUse:'none', which means callModel sends no tools array
+  // at all and the model answers in prose forever. These are the names actually
+  // in ~/.cynco/profiles.
+  it.each([
+    ['qwen3.8-27b-nvfp4', 'native'],
+    ['qwen3.6-27b-nvfp4', 'native'],
+    ['qwen3.6-mtp', 'native'],
+  ])('%s resolves to %s tool use', (model, toolUse) => {
+    expect(resolveCapabilities(model).toolUse).toBe(toolUse as 'native')
+  })
+})
+
 describe('resolveCapabilities', () => {
   it('uses known table when available', () => {
     const caps = resolveCapabilities('qwen3:32b')
