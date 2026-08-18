@@ -80,6 +80,7 @@ import { applyToolFloor, attributeRemoval } from './toolFloor.js'
 import { enforcementNudgeText } from './enforcementNudge.js'
 import { cyncoHome } from '../paths.js'
 import { saysDone, shouldNudge } from './nudgeDecision.js'
+import { iterationBudgetNotice } from './iterationBudget.js'
 import { isMalformedInput } from '../engine/toolCallRepair.js'
 import { extractSimulatedToolCalls } from '../ollama/simulated.js'
 import { ThinkingRecorder } from '../memory/thinkingRecorder.js'
@@ -1866,7 +1867,7 @@ export class ConversationLoop {
     thinkingConfig: ThinkingConfig,
     toolDefs: { name: string; description: string; inputJSONSchema: { type: 'object'; properties: Record<string, unknown>; required?: string[] } }[],
     deps: CallModelDeps,
-    maxIterations = 500,
+    maxIterations = Number(process.env.LOCALCODE_MAX_ITERATIONS) || 500,
   ): Promise<void> {
     // Session-scoped accumulators (survive across iterations within a single runModelLoop invocation)
     const toolsUsedInSession: string[] = []
@@ -1907,6 +1908,16 @@ export class ConversationLoop {
               'Do NOT repeat any tool call you have made in the last 5 turns.',
           }],
         })
+      }
+
+      // ── Iteration budget notice ──
+      // Not a stuck-loop tier: a run can be perfectly healthy and still spend its
+      // whole budget investigating. Pushed directly and NOT `continue`d, so the
+      // warning costs no iteration of the budget it is warning about.
+      const budgetNotice = iterationBudgetNotice(i, maxIterations)
+      if (budgetNotice) {
+        console.log(`[loop] Iteration budget: ${i}/${maxIterations} used — notifying the model`)
+        this.addMessage({ role: 'user', content: [{ type: 'text', text: budgetNotice }] })
       }
 
       const iterationStartMs = Date.now()
