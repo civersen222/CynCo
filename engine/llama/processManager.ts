@@ -100,7 +100,15 @@ export function buildServerArgs(config: ServerConfig): string[] {
   if (cacheRam != null && cacheRam !== '') {
     args.push('--cache-ram', cacheRam)
   }
-  args.push('--ctx-checkpoints', String(config.ctxCheckpoints ?? envInt('LOCALCODE_CTX_CHECKPOINTS') ?? 64))
+  // 32 is llama-server's own default, and it is a default we must not exceed
+  // without also raising --cache-ram. 37461e1 restored --cache-ram to the server
+  // default (8192 MiB) and doubled this to 64 in the same commit; nobody measured
+  // the product. At 65536 ctx a checkpoint is ~249 MiB, so 64 of them is ~15.9 GB
+  // against an 8192 MiB budget. It survives short sessions and kills long ones:
+  // CivKings 11M ran 753 turns before llama-server logged
+  // "alloc: failed to allocate memory for prompt cache state: bad allocation",
+  // exited with code 9 three times, and exhausted its restart budget (F91).
+  args.push('--ctx-checkpoints', String(config.ctxCheckpoints ?? envInt('LOCALCODE_CTX_CHECKPOINTS') ?? 32))
   args.push('--checkpoint-min-step', String(config.checkpointMinStep ?? envInt('LOCALCODE_CHECKPOINT_MIN_STEP') ?? 256))
   // Default 256: >256 thinking tokens hurts tool-call accuracy and uncapped reasoning
   // can burn 30K+ invisible tokens (5+ min wasted per iteration).

@@ -183,6 +183,28 @@ describe('buildServerArgs', () => {
       expect(args[budgetIdx + 1]).toBe('256')
     })
 
+    // F91: --cache-ram is left at llama-server's 8192 MiB default, so the
+    // checkpoint count must stay inside that budget. A ~249 MiB checkpoint at
+    // 65536 ctx means 64 checkpoints is ~15.9 GB — the server allocates until it
+    // cannot and exits with code 9, hours into a long run.
+    it('keeps ctx-checkpoints inside the default cache-ram budget', () => {
+      const args = buildServerArgs({ modelPath: '/models/qwen.gguf', port: 8081 })
+      const idx = args.indexOf('--ctx-checkpoints')
+      expect(idx).toBeGreaterThanOrEqual(0)
+      expect(args[idx + 1]).toBe('32')
+      expect(args).not.toContain('--cache-ram')
+    })
+
+    it('uses LOCALCODE_CTX_CHECKPOINTS when a run can afford more', () => {
+      process.env.LOCALCODE_CTX_CHECKPOINTS = '64'
+      try {
+        const args = buildServerArgs({ modelPath: '/models/qwen.gguf', port: 8081 })
+        expect(args[args.indexOf('--ctx-checkpoints') + 1]).toBe('64')
+      } finally {
+        delete process.env.LOCALCODE_CTX_CHECKPOINTS
+      }
+    })
+
     it('uses LOCALCODE_CACHE_RAM when set', () => {
       process.env.LOCALCODE_CACHE_RAM = '2048'
       const args = buildServerArgs({ modelPath: '/models/qwen.gguf', port: 8081 })
@@ -308,7 +330,10 @@ describe('buildServerArgs — checkpoint caching (prefill elimination)', () => {
 
   it('adds checkpoint and ubatch defaults', () => {
     const args = buildServerArgs(base)
-    expect(argValue(args, '--ctx-checkpoints')).toBe('64')
+    // 32, not 64 — see F91. The pair below is the constraint: with --cache-ram
+    // omitted the server's 8192 MiB budget applies, and 64 checkpoints of
+    // ~249 MiB each overruns it and kills the server mid-run.
+    expect(argValue(args, '--ctx-checkpoints')).toBe('32')
     expect(argValue(args, '--checkpoint-min-step')).toBe('256')
     expect(argValue(args, '--ubatch-size')).toBe('2048')
   })
