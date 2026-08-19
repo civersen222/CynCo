@@ -92,22 +92,59 @@ export function translateEnvPrefix(command: string, info: ShellInfo): string {
 }
 
 /**
+ * True when `text` ends part-way through a quoted string.
+ *
+ * Tracks which quote is open rather than counting quote characters, because an
+ * apostrophe inside a double-quoted string is an ordinary letter. Counting is
+ * the mistake stripTrailingStderrMerge's comment records: a parity check there
+ * made `git commit -m "don't break it"` look unbalanced and withdrew the fix
+ * from exactly the commands models write.
+ */
+function endsInsideQuote(text: string): boolean {
+  let open: string | null = null
+  for (const ch of text) {
+    if (open) {
+      if (ch === open) open = null
+    } else if (ch === '"' || ch === "'") {
+      open = ch
+    }
+  }
+  return open !== null
+}
+
+/**
  * The translation to apply automatically on the model's behalf, or null when
  * there isn't one that provably means the same thing.
  *
  * POSIX `NAME=value cmd` scopes the variable to a single command; `$env:NAME=...;
- * cmd` scopes it to the rest of the shell. Those agree only when `cmd` is the
- * entire remainder — which is the case that matters, and is safe because every
- * Bash call spawns a fresh shell that exits when the command does. A prefix that
- * is not first, or that is followed by another command, would have its scope
- * quietly widened, so it gets refused here and falls through to the instructive
- * error in `checkShellDialect` instead.
+ * cmd` scopes it to the rest of the shell. Those agree exactly when nothing runs
+ * AFTER the prefixed command — because every Bash call spawns a fresh shell that
+ * exits when the command does, so a widened scope has nothing left to leak into.
+ *
+ * The rule used to be "the prefix must be at position 0", which is stricter than
+ * that argument requires and refused `cd proj; FOO=1 pytest` — the shape mission
+ * briefs are actually written in, and 21 of mission 11N's 177 errors. Everything
+ * before the prefix is carried through verbatim by translateEnvPrefix and runs
+ * before the assignment either way, so a head is harmless; only a TAIL can be
+ * handed a variable it was scoped away from. Refusals here fall through to the
+ * instructive error in `checkShellDialect`, so the cost of refusing is a turn.
  */
 export function autoTranslateEnvPrefix(command: string, info: ShellInfo): string | null {
   if (!info.isPowerShell) return null
   const prefix = ENV_PREFIX.exec(command)
-  if (!prefix || prefix.index !== 0) return null
-  const tail = command.slice(prefix[0].length)
+  if (!prefix) return null
+  // ENV_PREFIX anchors on any `;`, including one inside a string argument, so
+  // `git commit -m "fix; VAR=1 broke"` matches inside the message. That was
+  // unreachable while the prefix had to come first; now it has to be refused, or
+  // bash.ts executes a command with different words and different quoting than
+  // the model wrote. If the head ends mid-string, the `;` we matched on is not a
+  // command separator at all.
+  if (endsInsideQuote(command.slice(0, prefix.index))) return null
+  // Note the offset: prefix.index, not 0. prefix[0] starts at the `;`, so the
+  // old `command.slice(prefix[0].length)` was only ever correct because index
+  // was pinned to 0 — on `cd proj; FOO=1 python` it would have cut the tail to
+  // "RATE=0 python" and tested the wrong text for a following command.
+  const tail = command.slice(prefix.index + prefix[0].length)
   if (/;|&&|\|\|/.test(tail)) return null
   return translateEnvPrefix(command, info)
 }

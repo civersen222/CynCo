@@ -146,8 +146,16 @@ describe('autoTranslateEnvPrefix (rewrite instead of refuse)', () => {
     expect(autoTranslateEnvPrefix('FOO=1 pytest || echo no', pwsh)).toBeNull()
   })
 
-  it('refuses when the prefix is not the first thing in the command', () => {
-    expect(autoTranslateEnvPrefix('cd proj; FOO=1 pytest', ps51)).toBeNull()
+  /**
+   * Superseded, deliberately. This case used to read `'cd proj; FOO=1 pytest'`
+   * → null, because the rule was "the prefix must be at position 0". Position
+   * was never what made a widening unsafe: what matters is that nothing runs
+   * AFTER the prefixed command, since the shell exits with it. The old rule
+   * refused exactly the shape briefs are written in and charged 21 of mission
+   * 11N's 177 errors for it. See 'env prefix after a leading cd' below.
+   */
+  it('refuses when the widened scope would reach a later command', () => {
+    expect(autoTranslateEnvPrefix('cd proj; FOO=1 pytest; git status', ps51)).toBeNull()
   })
 
   it('returns null when there is nothing to translate', () => {
@@ -157,6 +165,61 @@ describe('autoTranslateEnvPrefix (rewrite instead of refuse)', () => {
 
   it('never touches a shell that understands the POSIX form', () => {
     expect(autoTranslateEnvPrefix('FOO=1 python -m pytest', bash)).toBeNull()
+  })
+})
+
+describe('env prefix after a leading cd', () => {
+  const ps = classifyShell('win32', false)
+
+  it('auto-translates a prefix that follows a cd, which is the shape briefs are written in', () => {
+    // Measured: 21 occurrences in mission 11N of the instructive error for this
+    // family. `cd X; NAME=v cmd` is safe to translate for the same reason
+    // `NAME=v cmd` is — every Bash call spawns a fresh shell that exits when the
+    // command does, so the widened scope has nothing left to leak into.
+    const out = autoTranslateEnvPrefix('cd proj; GILDED_NARRATE=0 python -m pytest', ps)
+    expect(out).toBe('cd proj; $env:GILDED_NARRATE="0"; python -m pytest')
+  })
+
+  it('still refuses when another command follows the prefixed one', () => {
+    // Here the widened scope would reach a command the author scoped it away
+    // from, so the instructive error is the correct answer.
+    expect(autoTranslateEnvPrefix('FOO=1 a; b', ps)).toBeNull()
+  })
+
+  it('leaves a non-PowerShell shell alone', () => {
+    const bash = classifyShell('linux', false)
+    expect(autoTranslateEnvPrefix('cd proj; FOO=1 cmd', bash)).toBeNull()
+  })
+
+  it('keeps a head that is itself a sequence', () => {
+    expect(autoTranslateEnvPrefix('cd a; cd b; FOO=1 cmd', ps))
+      .toBe('cd a; cd b; $env:FOO="1"; cmd')
+  })
+
+  /**
+   * The one shape dropping the position-0 guard newly exposes, and the reason
+   * this file grew a quote scanner. ENV_PREFIX anchors on any `;`, including one
+   * INSIDE a string argument, so `git commit -m "fix; VAR=1 broke"` matches at
+   * the `;` in the message. Translating it yields
+   * `git commit -m "fix; $env:VAR="1"; broke"` — a different command, with
+   * different quoting, which bash.ts would then EXECUTE. While the prefix had to
+   * be first this was unreachable; now it has to be refused explicitly.
+   */
+  it('refuses a semicolon that lives inside a quoted argument', () => {
+    expect(autoTranslateEnvPrefix('git commit -m "fix; VAR=1 broke"', ps)).toBeNull()
+    expect(autoTranslateEnvPrefix("echo 'hi; FOO=1 there'", ps)).toBeNull()
+  })
+
+  /**
+   * A lone apostrophe inside a double-quoted string is an ordinary character,
+   * not an opening quote. Counting quote characters instead of tracking the
+   * quote state gets this wrong — the mistake stripTrailingStderrMerge's comment
+   * records, where a parity check disabled the fix for `git commit -m "don't ..."`,
+   * i.e. for exactly the commands models write.
+   */
+  it('is not fooled by an apostrophe inside a double-quoted head', () => {
+    expect(autoTranslateEnvPrefix('git commit -m "don\'t break it"; FOO=1 pytest', ps))
+      .toBe('git commit -m "don\'t break it"; $env:FOO="1"; pytest')
   })
 })
 
