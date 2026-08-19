@@ -76,17 +76,28 @@ decisions still recorded here).
   // 340 — the number that a per-name histogram cannot express at all, because
   // it is a property of the ORDER and byName has thrown the order away.
   //
-  // `commits` / `maxCallsWithoutCommit` are declared but not yet filled: the
-  // wave commits through Bash, so the count has to come from a HEAD poll in the
-  // driver rather than from a tool name. Until that lands they are a hard 0,
-  // which reads as "committed nothing" when it means "nobody counted". Do not
-  // read them as measurement yet.
+  // `commits` / `maxCallsWithoutCommit` come from the driver's 30s HEAD poll,
+  // not from a tool name — the wave commits through Bash, so there is nothing in
+  // the tool stream to watch for. The dispatch baseline is seeded before the
+  // first poll, so the commit the mission was dispatched ON is never counted as
+  // one it made. `maxCallsWithoutCommit` is the longest run of calls that saved
+  // nothing, and the poll period bounds its precision: calls made between a
+  // commit and the next poll are still charged to the previous gap, which
+  // over-reports by at most one interval. This is the number to read against the
+  // eight consecutive runs that ended with an uncommitted tree — 11N managed 2
+  // commits in 1805 calls; 11k4, 11L and 11M managed none.
+  //
+  // Rows written before 2026-08-18 carry a hard `0` in both fields, which on
+  // those rows means "nobody counted", not "committed nothing". Records with
+  // `commits: 0` AND `maxCallsWithoutCommit: 0` while `total > 0` are the
+  // unmeasured ones; a measured mission that never committed has
+  // `maxCallsWithoutCommit === total`.
   "toolStats": {
-    "total": 12, "errors": 1,
-    "byName": { "Read": 4, "Edit": 2, "Bash": 6 },
-    "byClass": { "sourceEdit": 2, "fileWrite": 0, "inspect": 10 },
-    "maxCallsWithoutSourceEdit": 7,
-    "commits": 0, "maxCallsWithoutCommit": 0
+    "total": 13, "errors": 1,
+    "byName": { "Read": 7, "Grep": 1, "Edit": 1, "Bash": 4 },
+    "byClass": { "sourceEdit": 1, "fileWrite": 0, "inspect": 12 },
+    "maxCallsWithoutSourceEdit": 9,
+    "commits": 2, "maxCallsWithoutCommit": 6
   }
 }
 ```

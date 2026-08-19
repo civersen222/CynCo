@@ -58,12 +58,11 @@ export function createMissionCollector(now = () => Date.now()) {
     // Serialised verbatim into the record by buildMissionRecord, so everything
     // in here is a published field and nothing in here may be a private counter.
     //
-    // `commits` and `maxCallsWithoutCommit` are declared here but nothing fills
-    // them yet — the wave commits through Bash, so there is no tool name to
-    // watch and the number has to come from a HEAD poll in the driver. Until
-    // that lands they are a hard 0, which reads as "this mission committed
-    // nothing" when it means "nobody counted". Do not dispatch a mission and
-    // then read those two fields as measurement before the poll exists.
+    // `commits` and `maxCallsWithoutCommit` are filled by observeCommit() below,
+    // driven by the driver's HEAD poll rather than by a tool name: the wave
+    // commits through Bash, so there is nothing in the tool stream to watch for.
+    // A collector nobody polls therefore still reports 0/0 — see seedBaselineHead
+    // for the one case where that 0 is a fact and not an absence.
     toolStats: {
       total: 0,
       errors: 0,
@@ -78,6 +77,10 @@ export function createMissionCollector(now = () => Date.now()) {
     // carry the statistic, not the bookkeeping that produced it.
     _sinceSourceEdit: 0,
     _sinceCommit: 0,
+    // The last HEAD this collector was shown. null means "nothing seen yet", and
+    // the first sha handed over counts as a commit — which is why the driver
+    // must seed the dispatch baseline before it starts polling.
+    _lastHead: null,
     enforcedSeen: false,
     regulatorFidelity: null,
     // F33: the join key between this ledger and ~/.cynco/rewards/*.reward.json.
@@ -210,6 +213,56 @@ export function createMissionCollector(now = () => Date.now()) {
           this.toolStats.maxCallsWithoutSourceEdit = this._sinceSourceEdit
         }
       }
+
+      // Every call widens the commit gap, including the source edits that reset
+      // the gap above. The asymmetry is deliberate: a source edit IS a tool call
+      // and so resets its own counter on the call that performed it, whereas a
+      // commit is observed out of band by the driver's poll and resets this one
+      // without ever appearing in the tool stream.
+      this._sinceCommit++
+      if (this._sinceCommit > this.toolStats.maxCallsWithoutCommit) {
+        this.toolStats.maxCallsWithoutCommit = this._sinceCommit
+      }
+    },
+
+    /**
+     * The HEAD the mission was dispatched on, which is the one commit in the
+     * repo this mission did not make.
+     *
+     * Without this the driver's first poll hands observeCommit a sha it has
+     * never seen, and every row in the ledger reads `commits: 1` for a mission
+     * that committed nothing. That is strictly worse than the hard 0 this task
+     * replaced: a 0 nobody filled is visibly unmeasured, whereas a fabricated 1
+     * is indistinguishable from a delivery. Eight consecutive runs ended
+     * uncommitted; the field exists to say so, and it can only say so if the
+     * baseline is excluded by construction.
+     *
+     * A null baseline is left unseeded on purpose. gitHead() returns null rather
+     * than guessing when it cannot read the repo, and pinning _lastHead to a
+     * falsy value would make the first real commit compare equal to "unknown"
+     * and vanish.
+     */
+    seedBaselineHead(head) {
+      if (head) this._lastHead = head
+    },
+
+    /**
+     * A new HEAD in the mission workspace. Called by the driver's poll, not by
+     * the model: the wave commits through Bash, so there is no tool name to
+     * watch for. Idempotent on an unchanged HEAD because the poll fires on a
+     * timer and most polls see nothing new.
+     *
+     * The poll's period bounds the precision of `maxCallsWithoutCommit`: calls
+     * made between a commit and the next poll are still charged to the previous
+     * gap. That over-reports by at most one poll interval's worth of calls, and
+     * over-reporting a gap is the safe direction for a number whose whole job is
+     * to notice that nothing is being saved.
+     */
+    observeCommit(head) {
+      if (!head || head === this._lastHead) return
+      this._lastHead = head
+      this.toolStats.commits++
+      this._sinceCommit = 0
     },
   }
 }

@@ -401,6 +401,24 @@ async function engineRunState() {
 }
 
 console.log(`[driver] baseline HEAD ${baselineSha ?? '(unknown)'} — any commit after it counts as landed; "${marker}" is recorded, not required`)
+
+// HEAD is polled rather than parsed out of Bash commands: the wave commits with
+// whatever git incantation it likes, and a commit that lands is a fact about the
+// repo, not about the command that produced it. `landed` above answers "did it
+// commit at all" and stops caring after the first; this counts EVERY commit and
+// the calls between them, which is the number the commit-pressure threshold is
+// derived from. Eight consecutive runs ended uncommitted and nothing on the row
+// could say how close any of them came.
+//
+// The baseline is seeded first, or the very first poll would file the commit the
+// mission was dispatched ON as a commit the mission made.
+collector.seedBaselineHead(baselineSha)
+const headPoll = setInterval(() => { collector.observeCommit(gitHead(CWD)) }, 30_000)
+// The poll must never be the reason the process stays alive: the record write at
+// the end is what this script exists for, and a live timer holding the loop open
+// past it would be a hang caused by telemetry.
+headPoll.unref?.()
+
 const start = Date.now()
 let landed = false
 let markerSeen = false
@@ -628,6 +646,14 @@ if (history === null) {
   console.log('[history] Not a failure by itself — but every gate reads the SURVIVING log, so read these before believing it:')
   for (const d of history.discarded) console.log(`[history]   ${d.sha.slice(0, 7)}  ${d.message}`)
 }
+
+// Stop polling and take one final reading. The interval ran through the gate as
+// well as the wait loop — deliberately, because the socket stays open there and
+// a mission that refused to stop can still commit while its gate runs — but the
+// record must describe a fixed HEAD, so the last observation is taken here
+// rather than left to whichever tick happened to fire last.
+clearInterval(headPoll)
+collector.observeCommit(gitHead(CWD))
 
 // Append the labeled mission record to the outcome ledger
 const outcome = missionOutcome({ landed, zeroToolCompletion, wentQuiet: quiet, engineError, neverDispatched: silentAfterDispatch })

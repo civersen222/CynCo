@@ -35,3 +35,58 @@ describe('toolStats verb classes', () => {
     expect(c.toolStats.total).toBe(1)
   })
 })
+
+describe('commit cadence', () => {
+  it('records the longest run of calls with no new commit', () => {
+    const c = createMissionCollector()
+    c.observeToolCall({ name: 'Read', isError: false })
+    c.observeToolCall({ name: 'Bash', isError: false })
+    c.observeCommit('aaaaaaa')       // two calls elapsed before the first commit
+    c.observeToolCall({ name: 'Read', isError: false })
+    c.observeToolCall({ name: 'Read', isError: false })
+    c.observeToolCall({ name: 'Read', isError: false })
+    c.observeCommit('bbbbbbb')       // three since
+    expect(c.toolStats.commits).toBe(2)
+    expect(c.toolStats.maxCallsWithoutCommit).toBe(3)
+  })
+
+  it('ignores a repeated HEAD — polling must not invent commits', () => {
+    const c = createMissionCollector()
+    c.observeCommit('aaaaaaa')
+    c.observeCommit('aaaaaaa')
+    expect(c.toolStats.commits).toBe(1)
+  })
+
+  /**
+   * The dispatch baseline is the one HEAD the mission did NOT make. Without
+   * this seam the driver's very first poll hands `observeCommit` a sha it has
+   * never seen and every mission in the ledger reports `commits: 1` — a
+   * fabricated delivery, which is a worse failure than the hard 0 this task
+   * exists to remove.
+   */
+  it('does not count the pre-existing HEAD the mission was dispatched on', () => {
+    const c = createMissionCollector()
+    c.seedBaselineHead('aaaaaaa')
+    c.observeCommit('aaaaaaa')
+    expect(c.toolStats.commits).toBe(0)
+    c.observeCommit('bbbbbbb')
+    expect(c.toolStats.commits).toBe(1)
+  })
+
+  it('leaves the baseline unseeded when HEAD could not be read', () => {
+    // gitHead() returns null rather than guessing. Seeding null must not pin
+    // _lastHead to a falsy value that then swallows the first real commit.
+    const c = createMissionCollector()
+    c.seedBaselineHead(null)
+    c.observeCommit('aaaaaaa')
+    expect(c.toolStats.commits).toBe(1)
+  })
+
+  it('counts a commit that lands with no tool calls between polls', () => {
+    const c = createMissionCollector()
+    c.observeCommit('aaaaaaa')
+    c.observeCommit('bbbbbbb')
+    expect(c.toolStats.commits).toBe(2)
+    expect(c.toolStats.maxCallsWithoutCommit).toBe(0)
+  })
+})
