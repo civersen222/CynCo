@@ -72,6 +72,14 @@ export function translateEnvPrefix(command: string, info: ShellInfo): string {
   if (!info.isPowerShell) return command
   const prefix = ENV_PREFIX.exec(command)
   if (!prefix) return command
+  // A `;` inside a string argument is not a command separator, so the thing that
+  // looks like a prefix after it is just words. `git commit -m "fix; VAR=1 broke"`
+  // matched here and came back requoted into a different command. That reaches
+  // further than the auto-translation: checkShellDialect compares this result to
+  // the original and, when they differ, REFUSES the command and quotes the
+  // mangled form back as the fix — so a valid commit message with a semicolon in
+  // it was blocked, with advice that would have broken it.
+  if (endsInsideQuote(command.slice(0, prefix.index))) return command
   const sets = prefix[1]
     .trim()
     .split(/\s+/)

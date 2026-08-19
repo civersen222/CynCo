@@ -108,6 +108,46 @@ describe('translateEnvPrefix', () => {
     expect(translateEnvPrefix('cd proj; FOO=1 python -m pytest', ps51))
       .toBe('cd proj; $env:FOO="1"; python -m pytest')
   })
+
+  /**
+   * The quote guard belongs HERE, not only in autoTranslateEnvPrefix, because
+   * this function has three other callers and the worst of them is not the
+   * auto-translation. checkShellDialect rewrites the command, compares the
+   * result to the original, and refuses whenever they differ — quoting the
+   * rewrite back as the correction. So before this guard, a valid
+   * `git commit -m "fix; VAR=1 broke"` was BLOCKED, and the advice offered
+   * instead would have broken it. verifyAssertion and validateVerificationCommand
+   * run what this returns, so the same mangling reaches executed contract checks.
+   */
+  it('leaves a semicolon inside a quoted argument alone', () => {
+    expect(translateEnvPrefix('git commit -m "fix; VAR=1 broke"', ps51))
+      .toBe('git commit -m "fix; VAR=1 broke"')
+    expect(translateEnvPrefix("echo 'hi; FOO=1 there'", ps51))
+      .toBe("echo 'hi; FOO=1 there'")
+  })
+
+  it('still rewrites once the quoted string has closed', () => {
+    expect(translateEnvPrefix('git commit -m "don\'t stop"; FOO=1 pytest', ps51))
+      .toBe('git commit -m "don\'t stop"; $env:FOO="1"; pytest')
+  })
+})
+
+/**
+ * checkShellDialect is where the mangling actually cost something: it refuses on
+ * `translated !== command`, so any command translateEnvPrefix wrongly rewrote was
+ * rejected outright rather than merely rewritten. These two are ordinary commands
+ * an agent writes constantly.
+ */
+describe('checkShellDialect does not refuse a quoted semicolon', () => {
+  const ps51 = classifyShell('win32', false)
+
+  it('accepts a commit message containing a semicolon', () => {
+    expect(checkShellDialect('git commit -m "fix; VAR=1 broke"', ps51)).toBeNull()
+  })
+
+  it('still refuses a genuine POSIX env prefix', () => {
+    expect(checkShellDialect('FOO=1 pytest', ps51)).toContain('$env:FOO="1"')
+  })
 })
 
 /**
