@@ -81,6 +81,7 @@ import { enforcementNudgeText } from './enforcementNudge.js'
 import { cyncoHome } from '../paths.js'
 import { saysDone, shouldNudge } from './nudgeDecision.js'
 import { iterationBudgetNotice } from './iterationBudget.js'
+import { commitPressureNotice, commitPressureDue } from './commitPressure.js'
 import { buildSideQueryBody, readSideQueryContent } from './sideQuery.js'
 import { isMalformedInput } from '../engine/toolCallRepair.js'
 import { extractSimulatedToolCalls } from '../ollama/simulated.js'
@@ -259,6 +260,24 @@ export class ConversationLoop {
   private taskBaselineDirty: string[] | null = null
   /** Set when the tool loop ran out of iterations instead of the model stopping. */
   private taskHitIterationLimit = false
+  /**
+   * Tool calls observed since this run last saw a new HEAD. Reset by
+   * observeCommit(). Counted per tool call rather than per iteration because
+   * that is the unit the ledger's maxCallsWithoutCommit uses, so the notice and
+   * the record afterwards speak about the same number.
+   */
+  private callsSinceCommit = 0
+  /**
+   * The HEAD this run last observed. Null means "not yet read": the first
+   * reading seeds this field and is NOT a commit, so a mission whose baseline
+   * HEAD is read at its first tool call does not start life one commit ahead.
+   */
+  private lastCommitHead: string | null = null
+  /**
+   * The highest calls-since-commit threshold already announced, so a threshold
+   * stepped over by a parallel tool batch is still announced exactly once.
+   */
+  private commitPressureNotifiedAt = 0
   /**
    * Set when the tool loop was aborted by an engine-side failure — the provider
    * erroring, the request overflowing the context it was given, a crash. The
@@ -1922,6 +1941,25 @@ export class ConversationLoop {
         this.addMessage({ role: 'user', content: [{ type: 'text', text: budgetNotice }] })
       }
 
+      // ── Commit pressure ──
+      // Same contract as the budget notice above: pushed directly, NOT
+      // `continue`d, so warning about unsaved work does not itself consume the
+      // budget. Fires on a measured condition rather than on wording — the
+      // system prompt's absolute imperatives ("MANDATORY FIRST STEP" for
+      // CodeIndex) run at ~0% compliance on this model, so a stronger sentence
+      // in the prompt is not a control surface. The threshold is read through
+      // commitPressureDue, not compared for equality, because the counter it
+      // reads advances per tool call while this block runs per iteration.
+      const commitDue = commitPressureDue(this.callsSinceCommit, this.commitPressureNotifiedAt)
+      if (commitDue > 0) {
+        const commitNotice = commitPressureNotice(commitDue)
+        if (commitNotice) {
+          console.log(`[loop] Commit pressure: ${this.callsSinceCommit} calls since last commit`)
+          this.commitPressureNotifiedAt = commitDue
+          this.addMessage({ role: 'user', content: [{ type: 'text', text: commitNotice }] })
+        }
+      }
+
       const iterationStartMs = Date.now()
 
       // S2: Check for steering interrupts
@@ -3131,6 +3169,47 @@ export class ConversationLoop {
     return this.fileTracker
   }
 
+  /**
+   * A new commit landed in the workspace: the calls-since-commit counter and the
+   * notice's once-per-threshold memory both start again.
+   */
+  observeCommit(): void {
+    this.callsSinceCommit = 0
+    this.commitPressureNotifiedAt = 0
+  }
+
+  /**
+   * Account one tool call against the commit-pressure counter, reading HEAD to
+   * see whether the workspace has moved.
+   *
+   * HEAD is polled rather than parsed out of the Bash command, because the wave
+   * commits with whatever git incantation it likes — `git commit`, `commit -am`,
+   * an alias, a script — and a commit that lands is a fact about the repo, not
+   * about the string that produced it. The poll costs one `git rev-parse`
+   * (~21 ms measured on this machine) per tool call, which is ~37 s across a
+   * 1,800-call mission: 0.2% of a six-hour run, for the only reading that cannot
+   * be fooled.
+   *
+   * Called at the TOP of executeOneTool so it runs on every attempted call,
+   * including the ones that return early (malformed arguments, denied approval).
+   * A refused call is still a call the run spent, and the ledger counts it too.
+   */
+  private accountCommitPressure(): void {
+    const head = this.readGitHead()
+    if (head && head !== this.lastCommitHead) {
+      const seeding = this.lastCommitHead === null
+      this.lastCommitHead = head
+      // The first reading is the baseline, not delivery. Task 2 of this plan hit
+      // the mirror-image bug driver-side, where the dispatch baseline was
+      // counted as a commit and every mission would have read `commits: 1`.
+      if (!seeding) {
+        this.observeCommit()
+        return
+      }
+    }
+    this.callsSinceCommit++
+  }
+
   private readGitHead(): string | null {
     try {
       const { execSync } = require('child_process')
@@ -3296,6 +3375,10 @@ export class ConversationLoop {
     const toolInput = block.input ?? {}
 
     console.log(`[loop] Executing tool: ${toolName}`)
+
+    // Count this call against the commit-pressure clock before any of the early
+    // returns below can skip it. Read by runModelLoop's notice block.
+    this.accountCommitPressure()
 
     // ─── P1.8 repair ladder: malformed arguments ─────────────────────
     // The transport marked this call's arguments unparseable (JSON.parse and
