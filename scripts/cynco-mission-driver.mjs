@@ -49,6 +49,7 @@ import { purgeBytecodeCaches } from './cynco-workspace.mjs'
 import { loadMissionAssertions, sidecarPath, sealedDispatchRefusal, s5DispatchRefusal, workspaceError } from './cynco-contract.mjs'
 import { engineEndpoints } from './cynco-endpoints.mjs'
 import { snapshotHeldOut, restoreHeldOut } from './cynco-held-out.mjs'
+import { snapshotUncommittedWork } from './cynco-work-snapshot.mjs'
 import { activeShardPath, ledgerCount, ensureLedgerDir } from './cynco-ledger-shards.mjs'
 import { cyncoHome } from '../engine/paths.js'
 import { withheldGatePaths } from '../engine/bridge/contractAutoCreate.js'
@@ -654,6 +655,26 @@ if (history === null) {
 // rather than left to whichever tick happened to fire last.
 clearInterval(headPoll)
 collector.observeCommit(gitHead(CWD))
+
+// Keep whatever the tree was still holding. Eight consecutive missions ended
+// uncommitted and nothing kept any of it — 11N was holding a working
+// `tick_loyalty` when the iteration cap closed the loop, and it survived only
+// because a human read the diff. This runs on EVERY exit path (the driver's
+// tail is linear, so there is only one), before the record is built, and in its
+// own try: a snapshot failure must never cost the ledger its record.
+try {
+  const snap = snapshotUncommittedWork(CWD, 'C:/tmp', missionId)
+  if (snap.written) {
+    console.log(`[driver] uncommitted work preserved → ${snap.patchPath}`)
+  } else if (snap.untracked.length) {
+    console.log(`[driver] tree has no tracked changes; ${snap.untracked.length} untracked file(s) left in place`)
+  }
+  // A snapshot that failed reads exactly like a clean tree at the console. Say
+  // which one it was, or the next run is told the work was saved when it wasn't.
+  if (snap.error) console.log(`[driver] work snapshot FAILED (uncommitted work NOT preserved): ${snap.error}`)
+} catch (e) {
+  console.log(`[driver] work snapshot threw (uncommitted work NOT preserved): ${e?.message ?? e}`)
+}
 
 // Append the labeled mission record to the outcome ledger
 const outcome = missionOutcome({ landed, zeroToolCompletion, wentQuiet: quiet, engineError, neverDispatched: silentAfterDispatch })
