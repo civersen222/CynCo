@@ -34,13 +34,50 @@
 //   unmeasured         : mutationSweep === null — NOT a failure, and not a
 //                        success either. Exclude it; never default it.
 
+/**
+ * Tool verb classes. Measured on 11k4/11L/11M/11N: "delivery" counted as
+ * Edit+Write reads 4.9-8.3% and looks healthy, because scratch Writes
+ * (base_realm.py copies, probe dumps, *_diff.txt) dominate it. Splitting the
+ * classes is what makes the 2% source-edit rate visible.
+ */
+const SOURCE_EDIT_TOOLS = new Set(['Edit', 'MultiEdit', 'ReplaceFunction', 'ApplyPatch', 'NotebookEdit'])
+const FILE_WRITE_TOOLS = new Set(['Write'])
+
+export function classifyTool(name) {
+  if (SOURCE_EDIT_TOOLS.has(name)) return 'sourceEdit'
+  if (FILE_WRITE_TOOLS.has(name)) return 'fileWrite'
+  return 'inspect'
+}
+
 export function createMissionCollector(now = () => Date.now()) {
   return {
     turns: [],
     s5Decisions: [],
     controlSignals: [],
     toolTransport: [],
-    toolStats: { total: 0, errors: 0, byName: {} },
+    // Serialised verbatim into the record by buildMissionRecord, so everything
+    // in here is a published field and nothing in here may be a private counter.
+    //
+    // `commits` and `maxCallsWithoutCommit` are declared here but nothing fills
+    // them yet — the wave commits through Bash, so there is no tool name to
+    // watch and the number has to come from a HEAD poll in the driver. Until
+    // that lands they are a hard 0, which reads as "this mission committed
+    // nothing" when it means "nobody counted". Do not dispatch a mission and
+    // then read those two fields as measurement before the poll exists.
+    toolStats: {
+      total: 0,
+      errors: 0,
+      byName: {},
+      byClass: { sourceEdit: 0, fileWrite: 0, inspect: 0 },
+      maxCallsWithoutSourceEdit: 0,
+      commits: 0,
+      maxCallsWithoutCommit: 0,
+    },
+    // Running counters, deliberately siblings of toolStats rather than fields
+    // in it: toolStats goes into the record as-is, and the ledger's rows should
+    // carry the statistic, not the bookkeeping that produced it.
+    _sinceSourceEdit: 0,
+    _sinceCommit: 0,
     enforcedSeen: false,
     regulatorFidelity: null,
     // F33: the join key between this ledger and ~/.cynco/rewards/*.reward.json.
@@ -128,14 +165,50 @@ export function createMissionCollector(now = () => Date.now()) {
           if (typeof m.taskId === 'string' && m.taskId !== '') this.taskIds.push(m.taskId)
           break
         case 'tool.start': {
-          this.toolStats.total++
-          const name = m.toolName ?? 'unknown'
-          this.toolStats.byName[name] = (this.toolStats.byName[name] ?? 0) + 1
+          // No isError here, and that is not an oversight: a tool.start frame
+          // never carries one. The engine emits the outcome on the separate
+          // tool.complete frame below, so passing m.isError through would
+          // either read undefined forever or, if the frame ever grew the field,
+          // count the same failure twice.
+          this.observeToolCall({ name: m.toolName ?? 'unknown' })
           break
         }
         case 'tool.complete':
           if (m.isError) this.toolStats.errors++
           break
+      }
+    },
+
+    /**
+     * One tool call, accounted once.
+     *
+     * This exists as a named method so the accounting can be tested without
+     * standing up a websocket, and the tool.start branch above calls it rather
+     * than keeping its own copy — two implementations of a count are two counts
+     * that will eventually disagree, and the disagreement would show up as a
+     * ledger row nobody could reproduce.
+     *
+     * `isError` is honoured for a caller that has the outcome in hand; the
+     * live path does not, and counts errors from tool.complete instead.
+     */
+    observeToolCall(m) {
+      const name = m.name
+      this.toolStats.total++
+      this.toolStats.byName[name] = (this.toolStats.byName[name] ?? 0) + 1
+      if (m.isError) this.toolStats.errors++
+
+      // An unknown verb falls into `inspect` rather than being dropped: a tool
+      // this script has never heard of still consumed a call, and a total that
+      // does not equal the sum of its classes is a total nobody can check.
+      const cls = classifyTool(name)
+      this.toolStats.byClass[cls]++
+      if (cls === 'sourceEdit') {
+        this._sinceSourceEdit = 0
+      } else {
+        this._sinceSourceEdit++
+        if (this._sinceSourceEdit > this.toolStats.maxCallsWithoutSourceEdit) {
+          this.toolStats.maxCallsWithoutSourceEdit = this._sinceSourceEdit
+        }
       }
     },
   }

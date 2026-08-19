@@ -7,7 +7,18 @@ export default defineConfig({
       'bun:test': './engine/__tests__/setup/bunTestShim.ts',
       'bun:sqlite': './engine/__tests__/setup/bunSqliteShim.ts',
     },
-    include: ['engine/__tests__/**/*.test.ts', 'engine/vsm/**/*.test.ts', 'engine/tools/**/*.test.ts', 'benchmark/true/**/*.test.ts'],
+    // `scripts/__tests__/**/*.test.mjs` is here because the harness scripts are
+    // plain .mjs and their tests are too. Without this glob a test file under
+    // scripts/ is not merely unrun — `npx vitest run <that path>` answers "No
+    // test files found, exiting with code 1", which is easy to read as a
+    // toolchain hiccup rather than as a suite that never covered the driver.
+    include: [
+      'engine/__tests__/**/*.test.ts',
+      'engine/vsm/**/*.test.ts',
+      'engine/tools/**/*.test.ts',
+      'benchmark/true/**/*.test.ts',
+      'scripts/__tests__/**/*.test.mjs',
+    ],
     // cyncoHome first: it redirects ~/.cynco to a temp dir. F58 was the suite
     // writing 117 session journals into the directory the live engine resumes
     // from, so nothing that touches state may load before the redirect.

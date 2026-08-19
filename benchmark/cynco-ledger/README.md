@@ -63,7 +63,31 @@ decisions still recorded here).
   // fault-vs-verdict distinction lives in governance's toolSuccessRate, which
   // exempts red test suites and the contract's own verification commands
   // (engine/bridge/benignToolResult.ts). Read this field as "non-zero exits".
-  "toolStats": { "total": 12, "errors": 1, "byName": { "Read": 4, "Edit": 2, "Bash": 6 } }
+  //
+  // `byClass` splits the verbs three ways because the two-way split was hiding
+  // the finding. Counting "delivery" as Edit+Write reads 4.9-8.3% across
+  // 11k4/11L/11M/11N and looks survivable; splitting it shows source edits at
+  // 1.2-2.2% with scratch Writes (base_realm.py copies, probe dumps) running
+  // 2-3x higher. An unrecognised tool counts as `inspect` rather than being
+  // dropped, so the three classes always sum to `total`.
+  //
+  // `maxCallsWithoutSourceEdit` is the longest run of calls that changed no
+  // source file. Replayed off the real 11N engine log it is 417, and off 11M
+  // 340 — the number that a per-name histogram cannot express at all, because
+  // it is a property of the ORDER and byName has thrown the order away.
+  //
+  // `commits` / `maxCallsWithoutCommit` are declared but not yet filled: the
+  // wave commits through Bash, so the count has to come from a HEAD poll in the
+  // driver rather than from a tool name. Until that lands they are a hard 0,
+  // which reads as "committed nothing" when it means "nobody counted". Do not
+  // read them as measurement yet.
+  "toolStats": {
+    "total": 12, "errors": 1,
+    "byName": { "Read": 4, "Edit": 2, "Bash": 6 },
+    "byClass": { "sourceEdit": 2, "fileWrite": 0, "inspect": 10 },
+    "maxCallsWithoutSourceEdit": 7,
+    "commits": 0, "maxCallsWithoutCommit": 0
+  }
 }
 ```
 
