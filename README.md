@@ -471,15 +471,15 @@ Setting a variable overrides the profile for that one field and nothing else.
 | `LOCALCODE_PROVIDER` | from profile (`ollama`) | Provider: `ollama` or `llama-cpp`. With no profile at all the built-in fallback is `llama-cpp`, which needs `LOCALCODE_MODEL_PATH`. |
 | `LOCALCODE_EMBED_MODEL` | `jina-code-embeddings-0.5b` | Model for code indexing (falls back to `nomic-embed-text`) |
 | `LOCALCODE_TEMPERATURE` | `0.7` | Sampling temperature |
-| `LOCALCODE_CONTEXT_LENGTH` | Auto-detected | Override context window |
+| `LOCALCODE_CONTEXT_LENGTH` | `131072` (llama-cpp), auto-detected on Ollama | Override context window. On the llama-cpp path a profile's `context_length` wins over this default; `LOCALCODE_CACHE_RAM` is derived from whichever value ends up in force. |
 | `LOCALCODE_ALL_TOOLS` | `false` | Surface every tool up front instead of loading extended tools on demand via `load_tools` |
 | `LOCALCODE_S5_PROACTIVE_TOOLS` | `false` | **Opt-in.** Let the S5 policy engine proactively pre-load task-relevant tools (e.g. surface `Bash`, `Grep`, `Read` for a debugging request) before the model asks. Append-only — never restricts. |
 | `LOCALCODE_SEARXNG_URL` | — | SearXNG instance URL for research |
 | `LOCALCODE_S5_MODEL` | — | Fine-tuned S5 model (when available) |
 | `LOCALCODE_DASHBOARD_HOST` | `127.0.0.1` | Dashboard bind address. `0.0.0.0` puts the session transcripts and the event stream on the network, behind nothing but the inference token — see [Local tokens](#local-tokens). |
 | `LOCALCODE_BRIDGE_HOST` | `127.0.0.1` | TUI bridge bind address. `0.0.0.0` puts the agent's command channel on the network, behind nothing but the bridge token — see [Local tokens](#local-tokens). |
-| `LOCALCODE_CACHE_RAM` | llama.cpp default | llama-server host prompt-cache RAM (MB). The cache is required for context-checkpoint rollback on hybrid models (Qwen3.6) — don't set to `0`. |
-| `LOCALCODE_CTX_CHECKPOINTS` | `32` | Recurrent-state checkpoints for prefix-cache rollback on hybrid DeltaNet models. Each checkpoint scales with the tokens in it, and all of them must fit inside `LOCALCODE_CACHE_RAM` — `64` killed llama-server with `bad allocation` (F91). Raise these two together or not at all. |
+| `LOCALCODE_CACHE_RAM` | derived — `21504` at the default context | llama-server host prompt-cache RAM (MiB), a ceiling on **system** memory, not VRAM. Derived as `ctx-checkpoints × (149.65 MiB + 4.02 KiB × context)`, the measured cost of one checkpoint, so the budget always holds one complete conversation's checkpoints. The cache is required for context-checkpoint rollback on hybrid models (Qwen3.6/3.8) — don't set to `0`. Setting it explicitly overrides the derivation, which also means you own the F91 arithmetic. |
+| `LOCALCODE_CTX_CHECKPOINTS` | `32` | Recurrent-state checkpoints for prefix-cache rollback on hybrid DeltaNet models. `64` killed llama-server with `bad allocation` against a fixed 8192 MiB cache (F91); `LOCALCODE_CACHE_RAM` is now derived from this value, so raising it raises the budget with it — unless you pin `LOCALCODE_CACHE_RAM` too, which re-creates F91 by hand. |
 | `LOCALCODE_CHECKPOINT_MIN_STEP` | `256` | Minimum token spacing between checkpoints. |
 | `LOCALCODE_UBATCH_SIZE` | `2048` | llama-server physical prefill batch size. |
 | `LOCALCODE_REASONING_BUDGET` | `256` | llama-server reasoning token budget. >256 hurts tool-call accuracy; uncapped thinking wastes minutes. Raise if your model needs more deliberation. |

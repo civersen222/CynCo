@@ -86,13 +86,17 @@ export async function bootstrapProvider(
       console.log(`[llama-cpp] Model: ${modelPath}`)
 
       // 3. Start/connect to llama-server
-      const { ProcessManager } = await import('./llama/processManager.js')
+      const { ProcessManager, DEFAULT_CTX_SIZE } = await import('./llama/processManager.js')
       const rt = config.runtime
       const processManager = new ProcessManager({
         binaryPath,
         modelPath,
         port: config.port,
-        ctxSize: config.contextLength ?? 32768,
+        // DEFAULT_CTX_SIZE, not a literal: this `??` is the value that actually
+        // reaches llama-server when no profile or env pins the window, so a
+        // literal here silently overrides processManager's own default and
+        // makes changing it there a no-op.
+        ctxSize: config.contextLength ?? DEFAULT_CTX_SIZE,
         batchSize: rt?.batchSize ?? config.batchSize,
         gpuLayers: rt?.gpuLayers ?? config.gpuLayers,
         flashAttn: rt?.flashAttn ?? config.flashAttn,
@@ -126,7 +130,10 @@ export async function bootstrapProvider(
         processManager,
       })
 
-      contextLength = config.contextLength ?? 32768
+      // Must be the same expression as ctxSize above — the loop's compaction
+      // trigger is a fraction of this number, so a mismatch would compact at a
+      // quarter of the window the server actually has.
+      contextLength = config.contextLength ?? DEFAULT_CTX_SIZE
       config.contextLength = contextLength
 
       // Cleanup on exit — must run before the later SIGINT/SIGTERM handlers that call process.exit()

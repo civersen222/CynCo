@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
 import {
   buildServerArgs,
+  DEFAULT_CTX_SIZE,
   ProcessManager,
   recentRestartCount,
   shouldRestartAfterExit,
@@ -28,7 +29,7 @@ describe('buildServerArgs', () => {
     expect(args).toContain('--flash-attn')
     expect(args).toContain('on')
     expect(args).toContain('--ctx-size')
-    expect(args).toContain('32768')
+    expect(args).toContain('131072')
     expect(args).toContain('--batch-size')
     expect(args).toContain('2048')
     expect(args).toContain('--host')
@@ -175,24 +176,26 @@ describe('buildServerArgs', () => {
       }
     })
 
-    it('omits cache-ram and defaults reasoning-budget to 256 when env unset', () => {
+    it('derives cache-ram and defaults reasoning-budget to 256 when env unset', () => {
       const args = buildServerArgs({ modelPath: '/models/qwen.gguf', port: 8081 })
-      expect(args).not.toContain('--cache-ram')
+      // Not "omitted" any more: llama-server's fixed 8192 MiB default does not
+      // move with the context window, and F91 is what happens when it doesn't.
+      expect(args[args.indexOf('--cache-ram') + 1]).toBe('21504')
       const budgetIdx = args.indexOf('--reasoning-budget')
       expect(budgetIdx).toBeGreaterThanOrEqual(0)
       expect(args[budgetIdx + 1]).toBe('256')
     })
 
-    // F91: --cache-ram is left at llama-server's 8192 MiB default, so the
-    // checkpoint count must stay inside that budget. A ~249 MiB checkpoint at
-    // 65536 ctx means 64 checkpoints is ~15.9 GB — the server allocates until it
-    // cannot and exits with code 9, hours into a long run.
-    it('keeps ctx-checkpoints inside the default cache-ram budget', () => {
+    // F91: a ~249 MiB checkpoint at 65536 ctx means 64 checkpoints is ~15.9 GB —
+    // the server allocates until it cannot and exits with code 9, hours into a
+    // long run. 32 checkpoints inside a budget that tracks the context is the
+    // pair; neither half of it may move alone.
+    it('keeps ctx-checkpoints inside a cache-ram budget sized for the context', () => {
       const args = buildServerArgs({ modelPath: '/models/qwen.gguf', port: 8081 })
       const idx = args.indexOf('--ctx-checkpoints')
       expect(idx).toBeGreaterThanOrEqual(0)
       expect(args[idx + 1]).toBe('32')
-      expect(args).not.toContain('--cache-ram')
+      expect(args.indexOf('--cache-ram')).toBeGreaterThanOrEqual(0)
     })
 
     it('uses LOCALCODE_CTX_CHECKPOINTS when a run can afford more', () => {
@@ -255,7 +258,7 @@ describe('buildServerArgs — config-driven cacheRam/reasoningBudget', () => {
 
   it('falls back to env then default when config omits them', () => {
     const a1 = buildServerArgs({ modelPath: '/m/x.gguf', port: 8081 })
-    expect(a1).not.toContain('--cache-ram')
+    expect(argValue(a1, '--cache-ram')).toBe('21504')
     expect(argValue(a1, '--reasoning-budget')).toBe('256')
     process.env.LOCALCODE_CACHE_RAM = '2048'
     const a2 = buildServerArgs({ modelPath: '/m/x.gguf', port: 8081 })
@@ -338,9 +341,9 @@ describe('buildServerArgs — checkpoint caching (prefill elimination)', () => {
     expect(argValue(args, '--ubatch-size')).toBe('2048')
   })
 
-  it('omits --cache-ram by default so the llama.cpp default applies', () => {
+  it('derives --cache-ram by default rather than inheriting llama.cpp\'s fixed 8192', () => {
     const args = buildServerArgs(base)
-    expect(args).not.toContain('--cache-ram')
+    expect(argValue(args, '--cache-ram')).toBe('21504')
   })
 
   it('honors explicit cacheRam config', () => {
@@ -375,6 +378,98 @@ describe('buildServerArgs — checkpoint caching (prefill elimination)', () => {
     process.env.LOCALCODE_UBATCH_SIZE = 'abc'
     const args = buildServerArgs(base)
     expect(argValue(args, '--ubatch-size')).toBe('2048')
+  })
+})
+
+/**
+ * F91: --ctx-size, --ctx-checkpoints and --cache-ram are one decision wearing
+ * three names. 11M died because --ctx-checkpoints was doubled to 64 while
+ * --cache-ram sat on llama-server's fixed 8192 MiB default: "failed to allocate
+ * memory for prompt cache state: bad allocation", exit code 9, restart budget
+ * exhausted, six-hour run over.
+ *
+ * The checkpoint cost model these numbers rest on is AFFINE and was measured on
+ * a real server on 2026-08-18, from llama-server's own create_check lines:
+ * 22 tokens -> 149.713 MiB, 91867 -> 510.234 MiB, 93911 -> 518.257 MiB, which
+ * fit 149.65 MiB + 4.02 KiB/token to within 0.02 MiB. Dividing a single
+ * observation by its token count reads that intercept as a slope and
+ * over-estimates by 3.6x at a 131072 window — so these tests check the shape of
+ * the relationship, not a remembered pair of literals.
+ */
+describe('context size, checkpoints and cache-ram move together (F91)', () => {
+  const base = { modelPath: '/models/qwen.gguf', port: 8081 }
+  const cacheRamAt = (over: Record<string, number>) =>
+    Number(argValue(buildServerArgs({ ...base, ...over }), '--cache-ram'))
+  let savedCacheRam: string | undefined
+
+  beforeEach(() => {
+    savedCacheRam = process.env.LOCALCODE_CACHE_RAM
+    delete process.env.LOCALCODE_CACHE_RAM
+  })
+
+  afterEach(() => {
+    if (savedCacheRam === undefined) {
+      delete process.env.LOCALCODE_CACHE_RAM
+    } else {
+      process.env.LOCALCODE_CACHE_RAM = savedCacheRam
+    }
+  })
+
+  it('defaults to a 131072 context', () => {
+    expect(argValue(buildServerArgs(base), '--ctx-size')).toBe('131072')
+  })
+
+  it('exports that default so callers cannot pick a different one', () => {
+    expect(DEFAULT_CTX_SIZE).toBe(131072)
+    expect(argValue(buildServerArgs(base), '--ctx-size')).toBe(String(DEFAULT_CTX_SIZE))
+  })
+
+  it('always emits --cache-ram rather than inheriting a fixed server default', () => {
+    // llama-server's 8192 MiB default does not move when the window does, which
+    // is the entire mechanism of F91.
+    expect(buildServerArgs(base)).toContain('--cache-ram')
+  })
+
+  it('budgets a whole slot of checkpoints at the far end of the window', () => {
+    const args = buildServerArgs(base)
+    const ctx = Number(argValue(args, '--ctx-size'))
+    const checkpoints = Number(argValue(args, '--ctx-checkpoints'))
+    const cacheRamMib = Number(argValue(args, '--cache-ram'))
+    // Measured affine cost, recomputed here rather than imported, so a change
+    // to the constants has to be justified against the numbers again.
+    const worstCheckpointMib = 149.65 + (ctx * 4.02) / 1024
+    expect(checkpoints).toBe(32)
+    expect(cacheRamMib).toBeGreaterThanOrEqual(worstCheckpointMib * checkpoints)
+    // ...and not wastefully more: within one GiB of the requirement.
+    expect(cacheRamMib - worstCheckpointMib * checkpoints).toBeLessThan(1024)
+  })
+
+  it('raises the budget when the checkpoint count is raised — the F91 commit, made harmless', () => {
+    // 37461e1 set this to 64 and left cache-ram alone. Now it cannot.
+    expect(cacheRamAt({ ctxCheckpoints: 64 })).toBe(2 * cacheRamAt({ ctxCheckpoints: 32 }))
+  })
+
+  it('is monotonic in the context size', () => {
+    expect(cacheRamAt({ ctxSize: 32768 })).toBeLessThan(cacheRamAt({ ctxSize: 65536 }))
+    expect(cacheRamAt({ ctxSize: 65536 })).toBeLessThan(cacheRamAt({ ctxSize: 131072 }))
+    expect(cacheRamAt({ ctxSize: 131072 })).toBeLessThan(cacheRamAt({ ctxSize: 262144 }))
+  })
+
+  it('pins the values a real server has been proved to accept', () => {
+    // 21504 at the 131072 default is the value verified against llama-server on
+    // 2026-08-18: it loaded, reported "prompt cache is enabled, size limit:
+    // 21504 MiB", prefilled 93,915 tokens and generated. The rest of the row is
+    // the same formula, recorded so a change to it is visible in a diff.
+    expect(cacheRamAt({ ctxSize: 32768 })).toBe(9216)
+    expect(cacheRamAt({ ctxSize: 65536 })).toBe(13312)
+    expect(cacheRamAt({ ctxSize: 131072 })).toBe(21504)
+    expect(cacheRamAt({ ctxSize: 262144 })).toBe(37888)
+  })
+
+  it('still lets an operator override the derivation', () => {
+    expect(cacheRamAt({ cacheRam: 4096 })).toBe(4096)
+    process.env.LOCALCODE_CACHE_RAM = '2048'
+    expect(argValue(buildServerArgs(base), '--cache-ram')).toBe('2048')
   })
 })
 

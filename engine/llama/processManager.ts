@@ -24,6 +24,76 @@ export type ServerConfig = {
   chatTemplateKwargs?: Record<string, string | number | boolean>
 }
 
+/**
+ * Default context window, in tokens.
+ *
+ * 131072 is half of what Qwen3.8-27B is trained for (262144) and costs ~2.5 GB
+ * of f16 KV on the 32 GB card this stack targets. It is doubled from the 65536
+ * the profiles carried because at 65536 the engine compacted 101 times in 900
+ * turns on CivKings 11N — once every ~9 turns — and 49 times on 11M.
+ *
+ * Exported because `bootstrapProvider` needs the same number for the token
+ * budget it hands the conversation loop: a ProcessManager started at 131072
+ * while the loop believed 32768 would compact at a quarter of the real window.
+ */
+export const DEFAULT_CTX_SIZE = 131072
+
+/**
+ * A context checkpoint's host-memory cost is AFFINE in the tokens it covers,
+ * not proportional to them. Measured 2026-08-18 from llama-server's own
+ * `create_check: ... created context checkpoint` lines on this build and model
+ * (Qwen3.8-27B-NVFP4-MTP, --flash-attn on, --parallel 1):
+ *
+ *     22 tokens -> 149.713 MiB
+ *  91867 tokens -> 510.234 MiB
+ *  93911 tokens -> 518.257 MiB
+ *
+ * Those three points fit `149.64 MiB + 4.02 KiB/token` to within 0.02 MiB. The
+ * fixed part is the hybrid model's recurrent (Gated DeltaNet) state, which is
+ * the same size no matter where in the window the checkpoint sits; only the
+ * attention KV slice grows with position.
+ *
+ * This matters because dividing ONE observation by its token count reads the
+ * intercept as a slope. The F91 write-up did exactly that — "187.9 MiB at 9757
+ * tokens" gives 19.7 KiB/token — and the affine model reproduces that same
+ * observation as 187.94 MiB, so both descriptions fit the point they were taken
+ * from. They disagree everywhere else: at 104858 tokens the proportional
+ * reading predicts 2017 MiB against a measured ~561 MiB, a 3.6x over-estimate.
+ */
+const CHECKPOINT_BASE_MIB = 149.65
+const CHECKPOINT_KIB_PER_TOKEN = 4.02
+
+/** Host memory one context checkpoint costs at the far end of a `ctxSize` window. */
+function worstCheckpointMib(ctxSize: number): number {
+  return CHECKPOINT_BASE_MIB + (ctxSize * CHECKPOINT_KIB_PER_TOKEN) / 1024
+}
+
+/**
+ * The host prompt-cache budget (`--cache-ram`, MiB) that a given context and
+ * checkpoint count require, rounded up to a whole GiB so the number is legible
+ * in the `[llama-cpp] Starting:` line.
+ *
+ * The rule is: the cache must hold at least ONE complete slot's worth of
+ * checkpoints. Below that the cache cannot keep even a single conversation
+ * whole, so it evicts the state the checkpoints exist to restore and the
+ * mechanism pays its memory cost for nothing.
+ *
+ * Deriving it from BOTH inputs is the point. F91 was `--ctx-checkpoints` being
+ * doubled to 64 while `--cache-ram` sat on llama-server's fixed 8192 MiB
+ * default; 753 turns later the server logged "failed to allocate memory for
+ * prompt cache state: bad allocation", exited 9, and burned its restart budget.
+ * With this derivation that commit would have raised the budget with the count
+ * automatically, and the pair cannot be desynchronised by editing one of them.
+ *
+ * `--cache-ram` is a maximum, not a reservation (llama-server: "set the maximum
+ * cache size in MiB"), and it is HOST memory, not VRAM — 21504 MiB at the
+ * 131072 default is a ceiling on 63.5 GiB of system RAM, filled lazily.
+ */
+function derivedCacheRamMib(ctxSize: number, ctxCheckpoints: number): number {
+  const totalMib = worstCheckpointMib(ctxSize) * ctxCheckpoints
+  return Math.max(1024, Math.ceil(totalMib / 1024) * 1024)
+}
+
 function envInt(name: string): number | undefined {
   const v = process.env[name]
   if (v == null || v === '') return undefined
@@ -39,7 +109,7 @@ export function buildServerArgs(config: ServerConfig): string[] {
     '--model', config.modelPath,
     '--port', String(config.port),
     '--host', '127.0.0.1',
-    '--ctx-size', String(config.ctxSize ?? 32768),
+    '--ctx-size', String(config.ctxSize ?? DEFAULT_CTX_SIZE),
     '--n-gpu-layers', String(config.gpuLayers ?? 999),
     '--batch-size', String(config.batchSize ?? 2048),
     '--ubatch-size', String(config.ubatchSize ?? envInt('LOCALCODE_UBATCH_SIZE') ?? 2048),
@@ -87,28 +157,38 @@ export function buildServerArgs(config: ServerConfig): string[] {
 
   // Single slot — we only process one request at a time
   args.push('--parallel', '1')
-  // Qwen3.6 is a hybrid Gated DeltaNet + attention model. llama.cpp context
+  // Qwen3.6/3.8 are hybrid Gated DeltaNet + attention models. llama.cpp context
   // checkpoints snapshot recurrent state during prefill so warm turns roll
   // back to the nearest checkpoint instead of re-prefilling from token 0
-  // (ggml-org/llama.cpp#21831). This needs the host-memory prompt cache, so
-  // --cache-ram is left at the server default unless explicitly overridden.
+  // (ggml-org/llama.cpp#21831). Those snapshots live in the host prompt cache,
+  // which --cache-ram caps.
+  //
+  // F91: --cache-ram is DERIVED from the context and the checkpoint count
+  // rather than left on llama-server's fixed 8192 MiB, because the three are
+  // one decision. Raising the window raises what each checkpoint can cost
+  // (see the affine model above — 407 MiB at 65536, 664 MiB at 131072) and
+  // raising the count multiplies it; leaving the budget behind is what produced
+  // "failed to allocate memory for prompt cache state: bad allocation" 753
+  // turns into CivKings 11M.
+  //
   // NOTE: prefix reuse also requires the client prompt to be strictly
   // append-only — see engine/__tests__/engine/prefixStability.test.ts.
+  //
+  // 32 checkpoints is llama-server's own default. 37461e1 doubled it to 64 in
+  // the same commit that left --cache-ram at the server default, and nobody
+  // multiplied the two; that product is F91.
+  const ctxCheckpoints = config.ctxCheckpoints ?? envInt('LOCALCODE_CTX_CHECKPOINTS') ?? 32
+  // Read the context back out of `args` rather than off `config`, so the
+  // derivation follows whatever actually reached the server — including the
+  // default. A cache-ram computed from a ctxSize the server never saw is the
+  // same bug in a new place.
+  const emittedCtxSize = Number(args[args.indexOf('--ctx-size') + 1])
   const cacheRam = config.cacheRam != null
     ? String(config.cacheRam)
-    : process.env.LOCALCODE_CACHE_RAM // string passthrough — value forwarded verbatim, no envInt
-  if (cacheRam != null && cacheRam !== '') {
-    args.push('--cache-ram', cacheRam)
-  }
-  // 32 is llama-server's own default, and it is a default we must not exceed
-  // without also raising --cache-ram. 37461e1 restored --cache-ram to the server
-  // default (8192 MiB) and doubled this to 64 in the same commit; nobody measured
-  // the product. At 65536 ctx a checkpoint is ~249 MiB, so 64 of them is ~15.9 GB
-  // against an 8192 MiB budget. It survives short sessions and kills long ones:
-  // CivKings 11M ran 753 turns before llama-server logged
-  // "alloc: failed to allocate memory for prompt cache state: bad allocation",
-  // exited with code 9 three times, and exhausted its restart budget (F91).
-  args.push('--ctx-checkpoints', String(config.ctxCheckpoints ?? envInt('LOCALCODE_CTX_CHECKPOINTS') ?? 32))
+    // string passthrough — value forwarded verbatim, no envInt
+    : process.env.LOCALCODE_CACHE_RAM || String(derivedCacheRamMib(emittedCtxSize, ctxCheckpoints))
+  args.push('--cache-ram', cacheRam)
+  args.push('--ctx-checkpoints', String(ctxCheckpoints))
   args.push('--checkpoint-min-step', String(config.checkpointMinStep ?? envInt('LOCALCODE_CHECKPOINT_MIN_STEP') ?? 256))
   // Default 256: >256 thinking tokens hurts tool-call accuracy and uncapped reasoning
   // can burn 30K+ invisible tokens (5+ min wasted per iteration).

@@ -211,11 +211,13 @@ describe('Fix 5 — cache-ram configurable via LOCALCODE_CACHE_RAM', () => {
     expect(args[idx + 1]).toBe('1024')
   })
 
-  it('omits cache-ram and defaults reasoning-budget to 256 when env vars unset', () => {
+  it('derives cache-ram from the context and defaults reasoning-budget to 256 when env vars unset', () => {
     delete process.env.LOCALCODE_CACHE_RAM
     delete process.env.LOCALCODE_REASONING_BUDGET
     const args = buildServerArgs({ modelPath: '/models/test.gguf', port: 8081 })
-    expect(args).not.toContain('--cache-ram')
+    // F91: the flag is always emitted now, sized from --ctx-size. Leaving it off
+    // meant inheriting llama-server's fixed 8192 MiB while the window doubled.
+    expect(args[args.indexOf('--cache-ram') + 1]).toBe('21504')
     const budgetIdx = args.indexOf('--reasoning-budget')
     expect(budgetIdx).toBeGreaterThanOrEqual(0)
     expect(args[budgetIdx + 1]).toBe('256')
