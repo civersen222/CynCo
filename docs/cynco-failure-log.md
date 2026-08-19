@@ -895,3 +895,23 @@ Entry status: `OPEN` (improvement not yet shipped) | `SHIPPED` (fix in engine/dr
 - **Rule 2 broke a fifth time, larger again.** 36 `probe_11o*.py` files **committed into the repo**, plus 43 untracked scratch files left in the tree — after a brief whose opening item was deleting 11N's sixteen and whose pacing section banned the exact `probe_N` naming by example. 229 of 1907 calls were `Write`. And it made four commits after the cleanup against a stated cap of two.
 - **Engine-side, the F92 and F90/F91 fixes held.** 22 compactions, **0 empty**, median summary 3196 chars (11N: 101 compactions, 77 empty, longest 318). Source edits 66/1907 = **3.5%** against 11N's 2%; commits 2 → 5. The run stopped by closing its turn, not by hitting the cap. The wave now remembers and commits. What it does with that memory is the next problem.
 - **Status:** ENGINE OK, STAGE NOT DELIVERED. `_richest_rival` is still unfixed and the `family_fallback` needs reverting. Re-issue as 11P with the means pinned by tests.
+
+## F94 — the generation request has no timeout, so a wedged llama-server stops the wave forever and nothing notices
+- **Date:** 2026-08-19 · **Context:** mission `mission_11P`, caught live 66 minutes into the stall by a human asking "why is cynco idle"
+- **What happened.** At 15:55:57 every writer in the system stopped in the same second — the session journal, the thinking journal, the trajectory log, the audit log, all frozen at turn 224. The run had already landed three good commits. It then did nothing at all for 66 minutes and would have done nothing for the remaining 3.5 hours of its budget.
+- **It did not look like a stall from anywhere that was watching.**
+
+  | signal | what it said |
+  |---|---|
+  | driver | `[gov] status=warning stuck=0 toolOK=0.95`, repeated 128 times |
+  | llama-server `/health` | `{"status":"ok"}` |
+  | llama-server CPU | climbing steadily — 12 CPU-seconds per 12 wall-seconds |
+  | GPU | 21% utilisation, 29.6 GB resident |
+  | TCP | one ESTABLISHED connection, engine → server, held open |
+
+  Every instrument reported a healthy, busy system. **`stuck=0` for the entire hour.** The one measurement nobody took was whether a single token had arrived, and the answer was no: the `.thinking.jsonl` is appended as reasoning streams, and it had the same frozen mtime as everything else.
+- **The cause, in one missing argument.** `engine/llama/provider.ts` `stream()` posts to `/v1/chat/completions` with no `signal` and no inter-token deadline. The same file aborts `/props` after 5000 ms and the health probe after 2000 ms; the request that runs for hours is the one with no bound on it at all. So when the server accepted a request and never emitted, `await fetch` simply never settled, and the conversation loop had nothing to time out *on* — it was not looping, not retrying, not erroring. It was waiting, correctly, forever.
+- **Why `stuck` could not see it.** The governance stall detector counts turns that make no progress. A wave that is blocked mid-turn produces no turns, so the counter has nothing to increment and holds at 0 — the healthiest possible reading — for exactly as long as the fault lasts. **This is F86 and F92's shape a third time: the log printed a number next to the broken thing and so reassured instead of warning.** A stall detector that reads zero while the process is dead is worse than none, because it is consulted and believed.
+- **The recovery, and why it was safe.** `llama-server` is spawned as a child of the engine, so `processManager`'s exit handler owns it and restarts it on a 3-in-600s budget with none used. Killing PID 38408 made the hung `fetch` reject, the child-exit handler respawned the server, and the wave resumed issuing tool calls within 90 seconds — three commits and the working tree intact. Checked before acting: a server the engine did NOT spawn would not have been restarted, and the same kill would have ended the run.
+- **The rule.** *A request with no deadline is a stall with no symptom.* Every outbound call gets a bound, and the long-running one needs it most, not least — a stream needs an inter-token deadline rather than a total one, because the legitimate case genuinely does run for minutes. And a liveness signal must be derived from something that MOVES when the system is working (bytes arriving, journal growing), never from a counter that only advances on completed work — that counter reads perfect precisely when the system is most broken.
+- **Status:** DIAGNOSED, recovered by hand. Fix outstanding: an idle-token `AbortSignal` on `stream()`, and a stall signal computed from journal growth rather than completed turns.
