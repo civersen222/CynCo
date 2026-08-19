@@ -81,6 +81,7 @@ import { enforcementNudgeText } from './enforcementNudge.js'
 import { cyncoHome } from '../paths.js'
 import { saysDone, shouldNudge } from './nudgeDecision.js'
 import { iterationBudgetNotice } from './iterationBudget.js'
+import { buildSideQueryBody, readSideQueryContent } from './sideQuery.js'
 import { isMalformedInput } from '../engine/toolCallRepair.js'
 import { extractSimulatedToolCalls } from '../ollama/simulated.js'
 import { ThinkingRecorder } from '../memory/thinkingRecorder.js'
@@ -1788,7 +1789,12 @@ export class ConversationLoop {
       const commitLog = commitsSince(this.executor['cwd'], globalContract.getBaseline()) ?? undefined
       const compacted = await this.compressor.runCompaction(this.messages, this.fileTracker, {
         keepRecentPairs: 2,
-        summarize: (prompt) => this.sideQuery(prompt),
+        // F92: 200 (the default) produced empty summaries in 121 of 150
+        // measured compactions across 11M and 11N. 8000 is sized from the
+        // structured summary schema, not guessed: the longest well-formed
+        // summary this prompt has ever produced was 1,218 chars (~300 tokens)
+        // on a 5,670-token window, and real windows are ~10x that.
+        summarize: (prompt) => this.sideQuery(prompt, 8000),
         journal: (summary, fileOps) => { try { this.journal.appendCompaction(summary, fileOps) } catch (e) { console.log(`[session] compaction journal failed: ${e instanceof Error ? e.message : String(e)}`) } },
         contractText,
         commitLog,
@@ -1826,19 +1832,15 @@ export class ConversationLoop {
       const resp = await fetch(`${providerUrl}/v1/chat/completions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+        body: JSON.stringify(buildSideQueryBody({
+          prompt,
+          maxTokens,
           model: this.config.model,
-          messages: [
-            ...(system ? [{ role: 'system', content: system }] : []),
-            { role: 'user', content: '/no_think\n' + prompt },
-          ],
-          max_tokens: maxTokens,
-          temperature: 0.3,
-        }),
+          system,
+        })),
       })
       if (!resp.ok) throw new Error(`sideQuery HTTP ${resp.status}`)
-      const data: any = await resp.json()
-      return data.choices?.[0]?.message?.content ?? ''
+      return readSideQueryContent(await resp.json())
     }
 
     // Ollama: use native API with think:false
