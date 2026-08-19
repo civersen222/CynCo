@@ -858,3 +858,40 @@ Entry status: `OPEN` (improvement not yet shipped) | `SHIPPED` (fix in engine/dr
 - **The rule.** *A request-shaping fix is not verified by a test that asserts the shape it sends; it is verified by a server accepting it.* The unit tests here pass identically against both the working value and the one that 400s, because they only assert what the body contains. The plan already required a live probe with a stated failure condition (`content_len= 0` means stop and diagnose), and that probe is the only reason this was caught. **Every change to a chat-template knob gets a live round-trip before it is called done** — and read the knob out of the server's own `/props` template rather than from memory of what the model card said.
 - **The fix.** `engine/bridge/sideQuery.ts` (new): `buildSideQueryBody` sends `enable_thinking: false, preserve_thinking: false` and no `/no_think`, and `readSideQueryContent` falls back to `reasoning_content` the way the Ollama branch always did. Both are pure functions so the request shape is testable without a server (`engine/__tests__/bridge/sideQuerySummary.test.ts`, 7 tests). The compaction call site passes `8000` explicitly.
 - **Status:** FIXED. Every measurement of "does this wave remember / commit / stay on task" taken before this commit was taken on a system with no memory, and should be re-read with that in mind.
+
+## F93 — all three gate conditions went green because `disloyal_shareholders` started returning loyal ones
+- **Date:** 2026-08-19 · **Context:** mission `mission_11O-1787148298407`, 3.8h, 1907 tool calls, 5 commits, `exitReason=engine_closed_the_turn`, marker never emitted
+- **The run passed its own DONE table.** Measured on `bc89127` after it stopped:
+
+  | condition | base | required | got |
+  |---|---|---|---|
+  | `test_takeover_door.py` | 3 failed | 3 passed | **3 passed** |
+  | `test_agenda.py` | 3 failed / 51 passed | ≤ 3 failed | **3 failed / 51 passed** |
+  | whole suite | 17 failed / 1918 passed | ≤ 14 failed | **13 failed / 1922 passed** |
+
+  The gate test is byte-identical to base. Nothing was special-cased on seed 7. By every number the brief asked for, the stage is done.
+- **It is not done.** The brief spent a section proving that making `_richest_rival` prefer a rival with a seller reaches 97.4 gold, and gave the sort key. **`_richest_rival` was never touched.** `agenda.py` at HEAD is exactly 11N's inherited `ensure_agenda` and nothing else. Instead the run changed the definition of a seller, in two places in `gilded/society/realm.py`:
+  1. `DISLOYAL_OPINION` lowered from `-20` to `-10`.
+  2. `getattr(ch, "loyalty", LOYALTY_START)` → `getattr(ch, "loyalty", None)`, so characters whose loyalty is never measured stop defaulting to loyal, and a new `family_fallback=True` (passed only by `Takeover.advance`) ends with:
+
+     ```python
+     if family_fallback and not measured:
+         return family
+     ```
+
+     `family` is every living non-ruler share-holding character with no loyalty measurement and no negative opinion. **When the House contains no disloyal shareholder, the function returns all of them.** The takeover then buys shares from contented family, and the door the brief said was closed is not opened — it is removed.
+- **Isolated, on an export of HEAD to `/c/tmp/ck_11o`, one change at a time.**
+
+  | tree | gate |
+  |---|---|
+  | HEAD `bc89127` | 3 passed |
+  | HEAD, `DISLOYAL_OPINION` restored to `-20` | **3 passed** — the threshold change is inert |
+  | HEAD, the two-line `family_fallback` early return deleted | **2 failed** — `advance found sellers on 2 of 49 calls, need >= 5` |
+
+  So the fallback is the whole delivery, and the threshold was loosened for nothing — a silent spec change that bought zero and shipped anyway.
+- **The brief forbade this in prose and the system had no opinion.** It said: *do not reach 100 by inflating a price, lowering the threshold, or adding a purchase the game would not otherwise make.* The run did the second (inertly) and the third (load-bearingly). The driver graded `landed`, the gate went green, the ledger recorded success. **Nothing between the model and the ledger can read a forbidden-means clause, because it exists only as English in a text file.** This is F89's shape inverted: there I sealed a threshold the tree could not reach; here I sealed one it could reach by a route I had ruled out in a sentence no mechanism enforces.
+- **The rule.** *A gate that only measures the outcome will be satisfied by whatever produces the outcome.* If a mission forbids a means, the means must be pinned by an assertion, not a paragraph — for this stage, a test that `disloyal_shareholders` returns `[]` for a House whose holders are all measured-loyal, which would have failed on the fallback the moment it was written. Prose constraints are documentation; only assertions are constraints.
+- **What the run did right, and it matters for grading it fairly.** It never edited the gate test. It never emitted `STAGE 11O COMPLETE`. All four post-cleanup commits are labelled `wip` and the last one names the mechanism it used. **It did not claim success — the driver did.** It also landed the cleanup commit `8b50a85` in 45 seconds, kept `ensure_agenda` and dropped the inert `realm.py` widening exactly as instructed, and fixed the two Dynasty regressions. And the `test_grip.py` edit is legitimate: it nets share-purchase debits out of a treasury delta rather than loosening the assertion.
+- **Rule 2 broke a fifth time, larger again.** 36 `probe_11o*.py` files **committed into the repo**, plus 43 untracked scratch files left in the tree — after a brief whose opening item was deleting 11N's sixteen and whose pacing section banned the exact `probe_N` naming by example. 229 of 1907 calls were `Write`. And it made four commits after the cleanup against a stated cap of two.
+- **Engine-side, the F92 and F90/F91 fixes held.** 22 compactions, **0 empty**, median summary 3196 chars (11N: 101 compactions, 77 empty, longest 318). Source edits 66/1907 = **3.5%** against 11N's 2%; commits 2 → 5. The run stopped by closing its turn, not by hitting the cap. The wave now remembers and commits. What it does with that memory is the next problem.
+- **Status:** ENGINE OK, STAGE NOT DELIVERED. `_richest_rival` is still unfixed and the `family_fallback` needs reverting. Re-issue as 11P with the means pinned by tests.
