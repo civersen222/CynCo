@@ -1028,10 +1028,20 @@ Entry status: `OPEN` (improvement not yet shipped) | `SHIPPED` (fix in engine/dr
 
 ## F103
 
+> **CORRECTED once F104 was fixed.** The "4 of 6 on committed HEAD" below was
+> the broken instrument talking. With the gate counting the completion *event*
+> instead of live-list membership, committed HEAD `c6144d8` scores **6 of 6**,
+> and the ledger record is now `verified: true`. The mission was not a
+> near-miss — it landed the stage. What survives of this entry is the smaller
+> real point: the run still ended with a dirty tree carrying a further
+> improvement (seed 7: 1 -> 2 completions), and nothing at turn-close noticed.
+> The claim-2 "regression" reported below was likewise an artefact — the old
+> probe counted *lapsed* campaigns as still running.
+
 **Where:** Stage 11R re-run, `mission_11R-1787235391528`, civkings base `0f0988d`.
 
 **How it showed up:** the held-out instrument scores **6 of 6 on the working
-tree and 4 of 6 on committed HEAD**. The run's last and most consequential
+tree and (as then measured) 4 of 6 on committed HEAD**. The run's last
 change — the `end_turn` loop restructuring in `gilded/chassis.py` that keeps a
 completed campaign observable and drops a lapsed one — was never committed. The
 driver caught it and wrote `C:\tmp\mission_11R-1787235391528.uncommitted.patch`,
@@ -1086,12 +1096,39 @@ watched list. Here that was also the honest fix — a fall you cannot observe is
 not much of a fall — but the mechanism is assertion-shaped engineering and it
 would have been a cheat against a worse-chosen assertion.
 
-**Fix:** an outcome assertion must name the outcome, not a container. Claim 1
-should count `completed_takeovers` (or any campaign ever seen with
-`complete=True`, recorded as it happens), never "campaigns still in the live
-list that happen to be flagged complete". Sealed-gate authoring guidance already
-says "count purchases, not return values"; extend it to "count the event, not
-the collection the event is filed under."
+**The damage was much larger than one mission.** Once the probe was corrected to
+hold a reference to every campaign ever opened and ask each object directly, the
+whole 11Q/11R commit line reads differently:
+
+| rev | seed 61 | seed 7 | stranded |
+| --- | --- | --- | --- |
+| `632e73c` gate BASE | **2 completions** | 0 | 2 |
+| `2bd54cd` 11Q landed | 2 | 0 | 0 |
+| `0f0988d` 11R base | 2 | **0** | 0 |
+| `c6144d8` 11R committed | 3 | **1** | 0 |
+
+The base **always** completed takeovers. Claim 1 as posed — "at least one
+completes somewhere across the seeds" — was already true before either stage
+began, so it could not fail and taught the waves nothing. Two mission briefs
+quoted `base 632e73c: seed 61: 0, seed 7: 0` as the measured defect. That number
+never existed. A gate line printed `f"seed {r['seed']}: 0"` — the base figure
+was **hardcoded**, not read.
+
+The real, durable absence was always seed 7, and closing it is what 11R actually
+achieved.
+
+**Fix (applied):** the probe now sweeps `takeovers` *and* `completed_takeovers`
+into a `seen` dict each turn and tests `complete` on the held references, so
+eviction cannot hide a completion; "stranded" now excludes `lapsed` campaigns,
+since a lapsed campaign is not running; claim 1 now requires a completion on
+**every** seed, which bites exactly at seed 7 and is not F89 because both halves
+are demonstrated reachable; and the base column is read from the base probe
+instead of being hardcoded.
+
+The general rule: an outcome assertion must name the outcome, not a container.
+Sealed-gate authoring guidance already says "count purchases, not return
+values"; extend it to **"count the event, not the collection the event is filed
+under — and never hardcode the base column."**
 
 
 ## F105
