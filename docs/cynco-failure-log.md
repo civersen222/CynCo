@@ -1025,3 +1025,94 @@ Entry status: `OPEN` (improvement not yet shipped) | `SHIPPED` (fix in engine/dr
 - **Why it matters more here than in a normal app.** This is the one input in the system with the *least* provenance. It is not the user typing; it is generated text, and it reached the shell on a read-only search path the trust tier marks `auto` — no approval, no confirmation. A prompt-injected file read earlier in the same session is enough to steer it.
 - **The rule.** *Untrusted text must reach a program as one element of argv, never as syntax in a command line.* Escaping is a promise to get every dialect's quoting right forever; argv is a structure that cannot be talked out of. Where a program parses its own script text — PowerShell's `-Command` — pass the value in the environment and reference the variable, so it is never in the text being parsed.
 - **Status: fixed.** `execFile` with argv throughout; the PowerShell pattern travels as `$env:LOCALCODE_CI_QUERY`; the `| head -30` pipe is replaced by a slice in JS so no shell is needed for it. Tests cover seven metacharacter payloads plus a legitimate query containing quotes, which the old code could not search for either.
+
+## F103
+
+**Where:** Stage 11R re-run, `mission_11R-1787235391528`, civkings base `0f0988d`.
+
+**How it showed up:** the held-out instrument scores **6 of 6 on the working
+tree and 4 of 6 on committed HEAD**. The run's last and most consequential
+change — the `end_turn` loop restructuring in `gilded/chassis.py` that keeps a
+completed campaign observable and drops a lapsed one — was never committed. The
+driver caught it and wrote `C:\tmp\mission_11R-1787235391528.uncommitted.patch`,
+which is the only reason the work still exists.
+
+Committed HEAD `c6144d8` fails claim 1 (`seed 61: 0 of 8, seed 7: 0 of 16`) and
+*regresses* claim 2 (stranded `seed 7: 0 -> 3`, worse than base). Both go green
+the moment the uncommitted diff is applied.
+
+**Why:** the brief said "Commit after every cut. The commit is your only
+backup," and the model committed four times — then made a fifth change, verified
+it passing, and closed the turn. Nothing at turn-close asks "is the tree
+dirty?". `ContractAssertPass` reads the working tree, so every assertion looked
+green to the model while the graded artifact was two commits behind.
+
+**Fix:** the driver already preserves the patch; that is detection, not
+prevention. Turn-close needs to refuse — or at minimum loudly warn — when the
+working tree is dirty and the contract passes, because that combination means
+the grade and the delivery have diverged. A cheap version: have `ContractStatus`
+report tracked-file dirtiness alongside the assertion results, so "6 of 6" never
+appears next to a silent " M ".
+
+**Not fixed by me:** per the CynCo-only-scope rule the civkings tree is not mine
+to commit into, so the patch stays uncommitted and landing it is the first task
+of the follow-up mission.
+
+
+## F104
+
+**Where:** `C:\tmp\check_completes.py` (my restatement of claim 1) and
+`~/.cynco/heldout/11/g11q_the_takeover_concludes.py` (the sealed gate).
+
+**How it showed up:** both observe completions by scanning `game.takeovers`
+after each `end_turn()`. The game removes a campaign from that list in the same
+`end_turn()` in which it completes. So a tree that genuinely completes four
+takeovers reports zero: at committed HEAD `c6144d8` the live-list scan says
+`seed 61: 0 of 8` while `game.completed_takeovers` holds three finished
+campaigns, `Ashworth -> Brandtner`, `Ashworth -> Ferrenholt`,
+`Ashworth -> Vantrell`.
+
+The measurement was blind to the thing it was measuring.
+
+**Why:** the gate was written against a tree where completed campaigns stayed
+in `takeovers`, and the observation shape was never re-derived when the game
+started evicting them. This is the same class as F89 — a gate that measures a
+proxy and calls it the outcome.
+
+**Consequence beyond the false negative:** the contract handed the model the
+assertion's command line, so the model could and did read exactly what was being
+watched, then changed the data structure so the completions landed in the
+watched list. Here that was also the honest fix — a fall you cannot observe is
+not much of a fall — but the mechanism is assertion-shaped engineering and it
+would have been a cheat against a worse-chosen assertion.
+
+**Fix:** an outcome assertion must name the outcome, not a container. Claim 1
+should count `completed_takeovers` (or any campaign ever seen with
+`complete=True`, recorded as it happens), never "campaigns still in the live
+list that happen to be flagged complete". Sealed-gate authoring guidance already
+says "count purchases, not return values"; extend it to "count the event, not
+the collection the event is filed under."
+
+
+## F105
+
+**Where:** engine PID 31508, started `2026-08-19 08:04:42`.
+
+**How it showed up:** the user noticed the model "still is only reading grepping
+and globbing, no codeindex tool use ever". Correct: the 11R run made 1185 tool
+calls with **zero** `CodeIndex` and **zero** `load_tools`.
+
+The CodeIndex repair — `core: true`, the `k = ?` knn fix, the injection fix —
+landed in `4704a18` at `2026-08-19 21:13:55`, thirteen hours after the engine
+process that served this mission started. The fix was committed, unit-tested and
+verified on disk, and never loaded. The mission ran against pre-fix code in which
+CodeIndex is non-core (so it costs a `load_tools` round trip and is absent from
+the default tool set), `store.search` throws on every knn query, and
+`regexFallback` still interpolates the query into a shell string.
+
+**Why:** I treated "committed and green" as "in effect". The zombie-server rule
+in memory covers exactly this and I did not apply it to my own fix.
+
+**Fix:** restart the engine after any change to tool registration or tool
+implementation, and verify the change is live by observing the tool in a real
+run's call log — not by re-reading the file on disk.
