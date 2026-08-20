@@ -1196,3 +1196,64 @@ mission at all when `approveAll` is false, the same way the driver already
 refuses when S5 enforcement is live. A refusal at connect time is worth more
 than a warning at first tool call, because the warning only appears once the
 model has already spent context getting there.
+
+## F107 — the loop read "measuring" as "given up", and killed the mission at turn 46 of 1200
+
+**Where:** `engine/bridge/conversationLoop.ts`, the `unproductiveNudges`
+counter. Stage 11I, first real dispatch, `2026-08-20`.
+
+**How it showed up:** the run ended after 46 turns and 75 tool calls with only
+the patch it had been handed committed. Nothing was wrong with the tree, the
+brief, or the contract. The driver simply reported `the engine reports the turn
+is closed` and went to verification.
+
+The model's last message is the tell. It had just found something real:
+
+> The brief states the constants as 3/6 but my tree has 5/10 — a discrepancy.
+> Before I trust either, let me measure the actual mechanism. Let me check
+> `expand_cost_mod` and trace the expansion grants.
+
+That is a run working well, one turn from the answer. It was cut off there.
+
+**Why:** a chain of three, each individually defensible.
+
+1. `unproductiveNudges` was cleared **only** by `Edit`/`Write`/`MultiEdit`/
+   `ApplyPatch`. Every brief this project writes says MEASURE BEFORE YOU
+   CHANGE, so every run opens with a long stretch of `Read`/`Grep`/`Bash` that
+   mutates nothing. To the counter, obeying the brief and giving up look the
+   same.
+2. Three tool-less turns anywhere in that stretch — ordinary, since the model
+   narrates between probes — exhausted `UNPRODUCTIVE_NUDGE_LIMIT`. From then on
+   `[s2] Nudge backstop: 3 nudges produced no file change — accepting the
+   model's completion` fired at **every** subsequent stop.
+3. The nudge had been the thing absorbing those stops. With it silent, the
+   contract's five enforcement rounds were spent almost consecutively —
+   `Enforcement round 1` through `round 5` — and then `UNRESOLVED after 6
+   rounds`, which ends the turn. Six rounds is a generous budget against a
+   model that occasionally stops; it is nothing against one that stops every
+   turn because the absorber upstream was disabled.
+
+A second defect is visible in the same log and is **still open**: every round
+logged `9 pending, 0 failed`. The contract never evaluated its own assertion
+commands, so enforcement could not tell the model *which* assertion was unmet —
+only that some were. A checklist the engine never runs is a checklist that can
+only nag.
+
+**Fix:** `9dd5709`. A nudge asks for exactly one thing — "Call a tool now" — so
+any turn that calls a tool has answered it, whatever the tool was. The counter
+is now cleared by any tool-bearing turn. This cannot revive the echo loop the
+backstop was built for, because `shouldNudge` requires `noToolsEndTurn`: a model
+calling tools is never nudged, so the counter never climbs on those turns
+either. Increment and reset now watch the same event.
+
+Pinned by `engine/__tests__/bridge/nudgeMeasurementPhase.test.ts`, calibrated
+both ways: 3 nudges without the fix, 5 with it, and a second case proving
+prose-only turns still exhaust the backstop.
+
+**Confirmed live:** the re-dispatched run reached the same depth with **zero**
+backstop firings and enforcement still at round 0.
+
+**The general lesson:** a progress signal that counts only writes will always
+mistake thinking for idleness. If a harness rewards a behaviour in prose, it
+must not punish that behaviour in code — the brief and the loop were asking for
+opposite things, and the loop won silently.
