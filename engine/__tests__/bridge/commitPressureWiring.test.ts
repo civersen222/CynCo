@@ -98,7 +98,13 @@ function noticeText(loop: ConversationLoop): string[] {
     .flatMap(m => (Array.isArray(m.content) ? m.content : []) as any[])
     .filter(c => c?.type === 'text')
     .map(c => String(c.text))
-    .filter(t => t.includes('tool calls since the last commit'))
+    // Match the prefix both wordings share. The notice has two branches — one
+    // for a tree holding unsaved work, one for a tree holding no work at all —
+    // and these tests are about whether the notice REACHES the conversation,
+    // not about which of the two it chose. Filtering on wording unique to the
+    // dirty branch made the whole file silently stop testing the wiring the
+    // moment the clean branch was added.
+    .filter(t => t.includes('[System] You have made '))
 }
 
 describe('the commit-pressure counter is advanced by real tool calls', () => {
@@ -190,8 +196,54 @@ describe('the notice reaches the conversation', () => {
 
     const notices = noticeText(loop)
     expect(notices.length).toBe(1)
-    expect(notices[0]).toContain(`${COMMIT_PRESSURE_PERIOD} tool calls since the last commit`)
+    // This workspace is a fresh repo with nothing modified, so the notice takes
+    // the clean branch — the run has drafted nothing, which is a different
+    // failure from having drafted and not saved.
+    expect(notices[0]).toContain(`${COMMIT_PRESSURE_PERIOD} tool calls`)
+    expect(notices[0]).toContain('have not changed a single source file')
     expect(logs.some(l => l.includes('[loop] Commit pressure'))).toBe(true)
+    expect(logs.some(l => l.includes('CLEAN — nothing drafted'))).toBe(true)
+    globalContract.clear()
+  }, 30000)
+
+  it('takes the unsaved-work branch when a tracked file really is modified', async () => {
+    // The other half. Without this, the selector could be hardwired to "clean"
+    // and every test above would still pass — and a run that HAS unsaved work
+    // would be told to stop drafting, which is the F107 mistake inverted.
+    globalContract.clear()
+    const cwd = tempDir('cynco-cp-dirty-')
+    const git = (...args: string[]) => spawnSync('git', args, { cwd, encoding: 'utf-8' })
+    git('init')
+    git('config', 'user.email', 't@t')
+    git('config', 'user.name', 't')
+    writeFileSync(join(cwd, 'a.txt'), 'one\n')
+    git('add', 'a.txt')
+    git('commit', '-m', 'base')
+    // Modify a TRACKED file. An untracked scratch file must not count as work
+    // — that is precisely what Stage 11I's second attempt produced 38 times
+    // while the product never moved — so this test would not discriminate if
+    // it only wrote a new file.
+    writeFileSync(join(cwd, 'a.txt'), 'the model drafted this and did not commit\n')
+
+    const loop = new ConversationLoop({
+      cwd,
+      config: config(),
+      provider: mockProvider([
+        readToolUse(join(cwd, 'nonexistent.txt')),
+        textResponse('done'),
+      ]),
+      emit: () => {},
+      allowedTools: ['Read'],
+    })
+
+    ;(loop as any).callsSinceCommit = COMMIT_PRESSURE_PERIOD - 1
+    await loop.handleUserMessage('keep going')
+
+    const notices = noticeText(loop)
+    expect(notices.length).toBe(1)
+    expect(notices[0]).toContain('tool calls since the last commit')
+    expect(notices[0]).toContain('commit it now')
+    expect(notices[0]).not.toContain('have not changed a single source file')
     globalContract.clear()
   }, 30000)
 
@@ -220,7 +272,13 @@ describe('the notice reaches the conversation', () => {
     expect(notices.length).toBe(1)
     // Reported at the threshold it crossed, not at the counter's exact value —
     // an exact-equality check here would have found nothing to say at all.
-    expect(notices[0]).toContain(`${COMMIT_PRESSURE_PERIOD} tool calls since the last commit`)
+    expect(notices[0]).toContain(`${COMMIT_PRESSURE_PERIOD} tool calls`)
+    expect(notices[0]).not.toContain(`${COMMIT_PRESSURE_PERIOD + 1} tool calls`)
+    // This workspace is clean, so the notice must take the clean branch. Kept
+    // as a second guard on the selector: with `readTreeIsClean` stubbed out,
+    // exactly one test in this file failed, which is a thin margin for a
+    // mechanism whose whole job is to fire correctly on a rare condition.
+    expect(notices[0]).toContain('have not changed a single source file')
     globalContract.clear()
   }, 30000)
 

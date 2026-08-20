@@ -1965,9 +1965,15 @@ export class ConversationLoop {
       // reads advances per tool call while this block runs per iteration.
       const commitDue = commitPressureDue(this.callsSinceCommit, this.commitPressureNotifiedAt)
       if (commitDue > 0) {
-        const commitNotice = commitPressureNotice(commitDue)
+        // Read the tree only when the notice is about to fire — once per 150
+        // calls — so the common path pays nothing. Which of the two failures
+        // this is depends entirely on the answer: unsaved work, or no work.
+        const treeIsClean = this.readTreeIsClean()
+        const commitNotice = commitPressureNotice(commitDue, treeIsClean)
         if (commitNotice) {
-          console.log(`[loop] Commit pressure: ${this.callsSinceCommit} calls since last commit`)
+          console.log(
+            `[loop] Commit pressure: ${this.callsSinceCommit} calls since last commit` +
+            ` (tree ${treeIsClean === null ? 'unreadable' : treeIsClean ? 'CLEAN — nothing drafted' : 'dirty'})`)
           this.commitPressureNotifiedAt = commitDue
           this.addMessage({ role: 'user', content: [{ type: 'text', text: commitNotice }] })
         }
@@ -3249,6 +3255,30 @@ export class ConversationLoop {
         cwd: this.executor['cwd'],
         stdio: ['pipe', 'pipe', 'pipe'],
       }).toString().trim()
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * Whether the workspace holds no modified TRACKED file, or null if git could
+   * not be read. Untracked entries are ignored deliberately: a run that has
+   * only written a scratch probe has not changed the product, and Stage 11I's
+   * second attempt spent 300 calls rewriting one untracked probe.py while the
+   * tracked tree never moved.
+   *
+   * Read only when the commit-pressure notice is about to fire, so this costs
+   * one `git status` per 150 tool calls rather than one per call.
+   */
+  private readTreeIsClean(): boolean | null {
+    try {
+      const { execSync } = require('child_process')
+      const out = execSync('git status --porcelain', {
+        cwd: this.executor['cwd'],
+        stdio: ['pipe', 'pipe', 'pipe'],
+      }).toString()
+      const tracked = out.split('\n').filter(l => l.trim() && !l.startsWith('??'))
+      return tracked.length === 0
     } catch {
       return null
     }
