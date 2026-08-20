@@ -39,21 +39,51 @@ makes a stranger able to start.
 
 ## Block A — close the simulation. Three stages.
 
-### Stage 11I — the old decisions are being crowded off the docket
-*Carried forward from 11H, which committed Cut 1 and ran out of turns on Cut 2.*
+### Stage 11I — the world is printing money
+*Carried forward from 11H. Dispatched 2026-08-20 at base `c6144d8`.*
 
-Fourteen kinds compete for six docket slots (`MAX_PETITIONS = 6`, and `open_turn()` builds
-`(carried + fresh)[:MAX_PETITIONS]` after deduping fresh petitions by kind). `capital_request`
-fell from 22 appearances to 7 over twelve turns; `charter`, `share purchase` and
-`strike buyoff` now spend **zero** because they are never offered. The money symptom is
-downstream: the base is an equilibrium of 31924 gold created against 31323 destroyed, and
-removing three sinks inflates the world.
+**The symptom named above was the wrong one and has since been fixed.** The docket-crowding
+reading — `charter`, `share purchase` and `strike buyoff` never offered — no longer holds;
+the sealed instrument's "all 6 spending decisions of the base still happen" reads green.
+What remains is a real inflation, and it is not a missing sink. Measured 2026-08-20, seed 7,
+twelve turns, against calibration base `d7fa68f`:
+
+| | base | rev | delta |
+|---|---|---|---|
+| total gold | 14601 | 18729 | **+28%** |
+| net created over 12 turns | +601 | +4729 | +4128 |
+| dividends (credited) | 31915 | 39787 | +7872 |
+| expansion (debited) | 22013 | 25266 | −3253 |
+| enterprise count | 19 | 19 | **identical** |
+| tier mix | `{1:6, 2:1, 3:4, 4:6, 5:2}` | `{1:6, 2:1, 3:3, 4:5, 5:4}` | **two more tier-5** |
+
+Nobody founded an extra venture. The same nineteen exist — but two climbed to tier 5, and
+`output_gold` is **linear in tier**. The dividend engine grew 7872 while the expansion sink
+grew only 3253, and that gap *is* the inflation. Per House it lands exactly where that
+predicts: Vantrell +303% and Brandtner +164% are precisely the two that gained a second
+tier-5, while Ashworth — which paid to lift a mill from tier 2 to tier 4 — went **−77%**.
+Houses that upgraded nothing barely moved.
+
+`gilded/enterprises.py` and `gilded/society/shares.py` are **byte-identical** to `d7fa68f`,
+so `EXPAND_COST`, `EXPAND_TURNS`, `TIER_MAX`, `output_gold` and the dividend split are all
+untouched. No constant was tampered with. The cause is in the **decision layer** — who
+chooses to expand, how often they are offered the choice, and what the unattended path does
+when nobody rules (`ATTENTION_PER_TURN` 3 against `MAX_PETITIONS` 6, so most petitions
+resolve unattended). One lead, unconfirmed: `docket.py:135` prices an expansion as
+`EXPAND_COST[tier+1] * expand_cost_mod` while `docket.py:1097` prices one as bare
+`EXPAND_COST[tier+1]`.
 
 **Exit:** seed 7, twelve turns, `end_turn()` only, nobody ruling —
 total gold in **13141–16061** (14601 ±10%); no House more than 40% from its base purse;
-each of the six base labels spending ≥10% of its base amount; all 14 kinds still offered
-over a century with none above 25%. Three new tests, each passing alone.
-*Gate: `g10_the_money_supply.py` 4/4, `g9` 8/8, `d3_alone` ≥3.*
+all 6 base spending labels still spending; all 14 kinds still offered over a century with
+none above 25%. Plus a new `gilded/tests/test_money_supply.py` asserting the **total**, not
+one House, calibrated to fail at `c6144d8`.
+*Gate: `g10_the_money_supply.py` 4/4, `g9` 8/8. Runnable restatement: `C:/tmp/check_money.py`.*
+
+**Not available as fixes** (each was tried by an earlier wave and each failed the band):
+raising `EXPAND_COST` as a hidden throttle; giving the one-sided sinks a counterparty credit
+to "fix the accounting" — those sinks *are* the brake; deleting or rarefying a decision;
+draining every House equally, which fails a two-sided band exactly as hard as inflating them.
 
 ### Stage 12 — the suite goes green and stays green
 ~70 tests are red and every one traces to 11I. This stage is the proof that they did.
