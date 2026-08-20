@@ -23,9 +23,34 @@ export function capRepoMap(map: string, maxTokens = 2000): string {
   return `${body}\n[repo map truncated to ~${maxTokens} tokens]`
 }
 
+/**
+ * Is `relativePath` a path the project actually contains?
+ *
+ * Callers hand `reindexFile` the result of `path.relative(cwd, ...)`, which for
+ * a scratch file or a worktree outside the repo yields a `..\..` traversal. The
+ * file is real, so the index stored it happily — and then answered queries with
+ * paths the model could not open. Reject anything that leaves the tree.
+ */
+export function isInsideProject(relativePath: string): boolean {
+  if (!relativePath) return false
+  if (/^([a-zA-Z]:[\\/]|[\\/])/.test(relativePath)) return false
+  return !relativePath.split(/[\\/]/).includes('..')
+}
+
 const SOURCE_EXTS = new Set(['.py', '.ts', '.tsx', '.js', '.jsx', '.rs', '.go', '.java', '.c', '.cpp', '.rb', '.cs', '.lua', '.sh'])
 const IGNORE_DIRS = new Set(['.git', 'node_modules', '__pycache__', 'venv', '.venv', 'dist', 'build', '.cynco', '.next', 'target'])
 const MAX_FILE_SIZE = 100_000 // 100KB — skip huge files
+
+/**
+ * Would a full `walkFiles()` pass collect this path? `reindexFile` used to
+ * accept anything the model edited, so the index accumulated `.task_outcome.json`
+ * and build logs that a full re-index would then silently drop. Both entry
+ * points have to agree on what the index contains.
+ */
+export function isIndexableSource(relativePath: string): boolean {
+  if (!isInsideProject(relativePath)) return false
+  return SOURCE_EXTS.has(extname(relativePath).toLowerCase())
+}
 
 export class ProjectIndexer {
   private store: IndexStore
@@ -219,6 +244,10 @@ export class ProjectIndexer {
 
   /** Re-index a single file after it's been edited. Fast — only processes one file. */
   async reindexFile(relativePath: string): Promise<void> {
+    if (!isIndexableSource(relativePath)) {
+      console.log(`[index] Skipped re-index of ${relativePath}: not an indexable source file in this project`)
+      return
+    }
     const absPath = join(this.projectRoot, relativePath)
     try {
       const content = readFileSync(absPath, 'utf-8')
