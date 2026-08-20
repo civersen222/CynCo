@@ -1,5 +1,6 @@
 
-import { readFileSync, existsSync, readdirSync, statSync, mkdirSync } from 'fs'
+import { execFileSync } from 'child_process'
+import { readFileSync, readdirSync, statSync, mkdirSync } from 'fs'
 import { join, relative, extname } from 'path'
 import { createHash } from 'crypto'
 import { EmbedClient } from './embedClient.js'
@@ -52,6 +53,59 @@ export function isIndexableSource(relativePath: string): boolean {
   return SOURCE_EXTS.has(extname(relativePath).toLowerCase())
 }
 
+/** Depth-limited recursive walk. Only used when the project is not a git repo. */
+function walkFromDisk(projectRoot: string): string[] {
+  const files: string[] = []
+  const walk = (dir: string, depth: number) => {
+    if (depth > 8) return
+    try {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        if (entry.name.startsWith('.')) continue
+        if (IGNORE_DIRS.has(entry.name)) continue
+        const full = join(dir, entry.name)
+        if (entry.isDirectory()) walk(full, depth + 1)
+        else if (SOURCE_EXTS.has(extname(entry.name).toLowerCase())) files.push(relative(projectRoot, full))
+      }
+    } catch {}
+  }
+  walk(projectRoot, 0)
+  return files
+}
+
+/**
+ * The source files that belong to this project.
+ *
+ * Git is the authority on what a project contains. A hand-maintained
+ * IGNORE_DIRS list cannot know that a given repo vendors a sklearn corpus under
+ * `benchmark/swebench-workspace`, and when it doesn't know, that corpus becomes
+ * 73% of the index and drowns the real answers in semantic search.
+ * `ls-files --cached --others --exclude-standard` is precisely "tracked, plus
+ * untracked and not ignored". Outside a repo, fall back to walking the disk.
+ */
+export function listProjectFiles(projectRoot: string): string[] {
+  let candidates: string[]
+  try {
+    const out = execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard', '-z'], {
+      cwd: projectRoot,
+      encoding: 'utf-8',
+      maxBuffer: 32 * 1024 * 1024,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+    candidates = [...new Set(out.split('\0').filter(Boolean))]
+  } catch {
+    candidates = walkFromDisk(projectRoot)
+  }
+
+  return candidates.filter(rel => {
+    if (!isIndexableSource(rel)) return false
+    try {
+      return statSync(join(projectRoot, rel)).size <= MAX_FILE_SIZE
+    } catch {
+      return false
+    }
+  })
+}
+
 export class ProjectIndexer {
   private store: IndexStore
   private embedClient: EmbedClient
@@ -69,7 +123,10 @@ export class ProjectIndexer {
     const indexDir = join(projectRoot, '.cynco', 'index')
     mkdirSync(indexDir, { recursive: true })
     this.store = new IndexStore(join(indexDir, 'project.db'))
-    this.embedClient = new EmbedClient(embedBaseUrl)
+    // Query vectors are only comparable to the index if they come from the same
+    // model, so an existing index dictates the model rather than the process
+    // default. A fresh index has nothing to say yet and keeps the default.
+    this.embedClient = new EmbedClient(embedBaseUrl, this.store.getMeta('embed_model') ?? undefined)
   }
 
   /** Full index of the project. Incremental — skips unchanged files. */
@@ -178,8 +235,11 @@ export class ProjectIndexer {
       const queryEmbedding = await this.embedClient.embed(q.query)
       // Cast a wider candidate net when fusing so BM25 can re-rank.
       vectorResults = this.store.search(queryEmbedding, hybridEnabled ? topK * 4 : topK)
-    } catch {
-      // Vector search failed — fall through to keyword
+    } catch (e) {
+      // Falling through to keyword search is the right recovery, but it must be
+      // audible: a malformed knn query degraded retrieval to LIKE-matching for
+      // weeks and looked identical to "the index had no answer".
+      console.log(`[index] Vector search failed, using keyword search only: ${e}`)
     }
 
     if (!hybridEnabled) {
@@ -284,28 +344,6 @@ export class ProjectIndexer {
   // ─── Private ───────────────────────────────────────────────────
 
   private walkFiles(): string[] {
-    const files: string[] = []
-    const walk = (dir: string, depth: number) => {
-      if (depth > 5) return
-      try {
-        for (const entry of readdirSync(dir, { withFileTypes: true })) {
-          if (entry.name.startsWith('.') && entry.name !== '.cynco') continue
-          if (IGNORE_DIRS.has(entry.name)) continue
-          const full = join(dir, entry.name)
-          if (entry.isDirectory()) {
-            walk(full, depth + 1)
-          } else if (SOURCE_EXTS.has(extname(entry.name).toLowerCase())) {
-            try {
-              const stat = statSync(full)
-              if (stat.size <= MAX_FILE_SIZE) {
-                files.push(relative(this.projectRoot, full))
-              }
-            } catch {}
-          }
-        }
-      } catch {}
-    }
-    walk(this.projectRoot, 0)
-    return files
+    return listProjectFiles(this.projectRoot)
   }
 }

@@ -113,15 +113,18 @@ export class IndexStore {
   search(queryEmbedding: number[], topK = 5): IndexResult[] {
     if (!this.vecEnabled) return []
 
+    // `k = ?` rather than `LIMIT ?`: sqlite-vec plans a knn scan up front and
+    // rejects a bound LIMIT outright ("A LIMIT or 'k = ?' constraint is
+    // required on vec0 knn queries"). That error used to be swallowed upstream,
+    // so this was a silent fallback to keyword search rather than a crash.
     const vec = new Float32Array(queryEmbedding)
     const rows = this.db.prepare(`
       SELECT v.chunk_id, v.distance, c.file_path, c.name, c.chunk_type, c.start_line, c.end_line, c.content
       FROM vec_chunks v
       JOIN chunks c ON c.id = v.chunk_id
-      WHERE v.embedding MATCH ?
+      WHERE v.embedding MATCH ? AND k = ?
       ORDER BY v.distance
-      LIMIT ?
-    `).all(vec, topK) as any[]
+    `).all(vec, Math.max(1, Math.floor(topK))) as any[]
 
     return rows.map(r => ({
       filePath: r.file_path,
