@@ -2601,12 +2601,20 @@ export class ConversationLoop {
             case 'content_block_start': {
               const block = event.content_block
               if (block?.type === 'tool_use') {
-                this.emit({
-                  type: 'tool.start',
-                  toolId: block.id ?? randomUUID(),
-                  toolName: block.name ?? 'unknown',
-                  input: {},
-                })
+                // Deliberately does NOT emit `tool.start`. It used to, as a
+                // preview so the TUI could show the tool name the moment the
+                // block began streaming, and `executeOneTool` emitted it again
+                // with the real arguments. Same type, same toolId, so no
+                // consumer could tell them apart and every one of them counted
+                // each call twice: the driver's toolCount and so the ledger's
+                // `toolCalls`, AuditLogger.trackToolCall and so session
+                // outcomes, and the TUI, which printed each tool twice on
+                // screen. A run whose log read 714 calls had made 357.
+                //
+                // The preview could not be the survivor: its input is `{}`,
+                // because no arguments have streamed yet, and the TUI reads
+                // `input.file_path` off `tool.start` to caption the matching
+                // `tool.complete`.
                 if ((block as any).logprobs?.length) this.observeUncertainty('tool', (block as any).logprobs)
               }
               break

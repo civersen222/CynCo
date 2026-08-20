@@ -1332,3 +1332,63 @@ like, because nothing about the first fix prevents it.
 **And a second, narrower one:** the wiring test filtered on the exact wording of
 the only branch that existed when it was written. That is a test that decays into
 a no-op the instant the code grows a second path, without ever going red.
+
+---
+
+## F109 — every tool call was announced twice, so every count built on the announcement was double
+
+**Where:** `engine/bridge/conversationLoop.ts`, `content_block_start`.
+
+**How it showed up:** while checking why the F108 notice had not fired at what
+the driver log called call 151, the two counters disagreed: the driver had
+logged 151 `[cynco] tool:` lines while the engine had logged 77
+`[loop] Executing tool:` lines. Measured over a longer window of the same run,
+driver 215 against engine 106 — a ratio of **2.028**.
+
+**Why:** `tool.start` was emitted twice for every call. Once from
+`content_block_start`, the moment the tool block began streaming, carrying
+`input: {}` because no arguments had arrived yet; and once from `executeOneTool`
+with the real arguments. Same event type, same `toolId`, so nothing downstream
+could tell them apart. The ratio sits slightly above 2 because a block that is
+announced but never executed — malformed arguments, denied approval — still
+produced its preview.
+
+**What it corrupted:**
+
+- the driver's `toolCount`, and so `toolStats` in every ledger record
+- `AuditLogger.trackToolCall`, and so session-outcomes
+- the TUI, which prints `▶ Running tool: X` and logs a sidebar row on
+  `tool.start` — so the operator watched every tool appear twice for months
+- my own F108 write-up, which quoted 322 and 714 calls from driver logs; the
+  true figures are ~160 and ~350
+
+**What it did NOT corrupt**, checked rather than assumed: the constants in
+`commitPressure.ts`. `callsSinceCommit` is advanced by `accountCommitPressure`
+inside `executeOneTool`, which runs once per call, so the counter itself was
+always right. Re-derived first-mutation from the surviving engine logs: 11N's
+first `Edit` is call **11** of 1780, 11O's is call **20** of 2475, against the
+recorded 12 and 22. Engine-derived and sound. The `commitPressureDue` rationale
+also survives — 1780 calls across ~900 turns really is ~2 calls per iteration.
+
+**Fix:** delete the preview emit; keep the `observeUncertainty` call beside it,
+which is a real signal. The preview could not be the survivor: its input is
+always `{}`, and the TUI reads `input.file_path` off `tool.start` to caption the
+matching `tool.complete`.
+
+**Calibrated:** 4 new tests in `engine/__tests__/bridge/toolStartOnce.test.ts`,
+all 4 red before the change and green after. The sharpest is the pairing test —
+before the fix a 2-call batch emitted 4 starts across 2 distinct `toolId`s, so
+the duplication is proved by identity and not merely by arithmetic. 774 tests
+across bridge, harness and dashboard pass unchanged.
+
+**The general lesson:** an instrument that over-reports is far more dangerous
+than one that under-reports, because over-reporting looks like productivity. A
+run that had made 357 calls and changed nothing read as 714 calls of hard work.
+Two independent counters existed the whole time and nobody had ever subtracted
+them. When two parts of the system count the same thing, make them disagree out
+loud — the check is one `grep -c` against each log.
+
+**And a second one:** this bug was on screen, in the TUI, every single session.
+Duplicated tool lines read as the model being repetitive rather than as the
+engine speaking twice. A defect in the display of a metric is invisible exactly
+because the display is the only thing anyone checks it against.
