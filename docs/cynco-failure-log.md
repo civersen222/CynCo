@@ -1153,3 +1153,46 @@ in memory covers exactly this and I did not apply it to my own fix.
 **Fix:** restart the engine after any change to tool registration or tool
 implementation, and verify the change is live by observing the tool in a real
 run's call log — not by re-reading the file on disk.
+
+## F106 — the restart that fixed one thing broke two others, in the file written to stop exactly that
+
+**Where:** operator. Stage 11I dispatch, `2026-08-20`.
+
+**How it showed up:** two dispatches refused in a row.
+
+1. `[driver] REFUSED: S5 enforcement may be live in this engine` — the driver
+   caught it before a single tool ran.
+2. Relaunched with `LOCALCODE_S5_ENFORCE=false` only, and got
+   `[cynco] APPROVAL REQUESTED (Bash) — engine not in APPROVE_ALL mode? (F2)` —
+   the mission parked on a prompt no human was there to answer, and had to be
+   killed after three tool calls.
+
+**Why:** fixing F105 required restarting the engine, and I restarted it by hand
+with `bun engine/main.ts`, then a second time with the one flag the driver had
+just named. Both times I reconstructed the launch environment from what I
+happened to remember. `scripts/dispatch-mission.sh` exists precisely so that
+environment is never retyped — it was written as the remediation for F80, which
+is this same failure, with the same missing variable, from the same cause.
+
+The script's own header says *"Do not dispatch a mission by typing the env out
+again."* I did not read it, because I was not thinking of what I was doing as a
+dispatch — I was thinking of it as "restarting the engine after a fix". That gap
+is the whole finding: the canonical launcher only protects the path that goes
+through it, and an out-of-band restart looks like a different kind of act right
+up until the next mission inherits its environment.
+
+Cheap, because the driver refused on (1) and the harness noticed (2) within
+ninety seconds. It would not have been cheap if `LOCALCODE_APPROVE_ALL` had been
+the only thing missing: that failure mode is a silent stall, not a refusal.
+
+**Fix:** never leave a hand-started engine running. If the engine must be
+restarted out of band — to load a fix, to clear a zombie — the next mission is
+dispatched with `scripts/dispatch-mission.sh`, which kills the tree and rebuilds
+the environment itself. Do not "save time" by dispatching onto an engine that is
+already up; the script kills it anyway, and that is the feature.
+
+**Harness improvement (OPEN):** the engine should refuse to serve a driver
+mission at all when `approveAll` is false, the same way the driver already
+refuses when S5 enforcement is live. A refusal at connect time is worth more
+than a warning at first tool call, because the warning only appears once the
+model has already spent context getting there.
