@@ -350,11 +350,14 @@ export class ConversationLoop {
   private toolFailureCounts: Map<string, number> = new Map()
   private consecutiveNudges = 0
   /**
-   * Nudges issued since the last file mutation. The behavioural half of the
-   * completion check — see UNPRODUCTIVE_NUDGE_LIMIT in nudgeDecision.ts. Any
-   * successful Edit/Write/MultiEdit/ApplyPatch clears it, so it only climbs
-   * while the loop is demanding action from a model that has stopped changing
-   * anything.
+   * Nudges issued since the model last called a tool. The behavioural half of
+   * the completion check — see UNPRODUCTIVE_NUDGE_LIMIT in nudgeDecision.ts.
+   * Any turn containing a tool call clears it, so it only climbs while the loop
+   * is demanding action from a model that answers with prose and nothing else.
+   *
+   * This used to be cleared only by a file mutation, which made a legitimate
+   * measurement phase — all Read/Grep/Bash — look identical to a model that had
+   * given up. See the comment at the reset site.
    */
   private unproductiveNudges = 0
   private lastTokPerSec = 0
@@ -2648,6 +2651,19 @@ export class ConversationLoop {
       if (toolUseBlocks.length > 0) {
         const toolNames = toolUseBlocks.map((b: any) => b.name).join(', ')
         console.log(`[loop] Tool calls: ${toolNames}`)
+        // A nudge asks for exactly one thing — "Call a tool now" — so a turn
+        // that calls one has answered it, whatever the tool was. Crediting only
+        // Edit/Write/MultiEdit/ApplyPatch punished the model for obeying a brief
+        // that said MEASURE BEFORE YOU CHANGE: an investigation phase is all
+        // Read/Grep/Bash, mutates nothing, and drove the counter to the backstop
+        // in three tool-less turns. Stage 11I died that way at turn 46 of 1200,
+        // still in its measurement phase, with the job untouched.
+        //
+        // This cannot revive the echo loop the backstop was built for, because
+        // `shouldNudge` requires `noToolsEndTurn`: a model calling tools is never
+        // nudged, so the counter never climbs on those turns either. Increment
+        // and reset now watch the same event.
+        this.unproductiveNudges = 0
       }
 
       // Fallback: if model output <tool_call> XML text instead of native tool_use blocks,
@@ -4108,13 +4124,6 @@ export class ConversationLoop {
       for (const p of changedBetween(shellSigBefore, collectPathSignatures(this.executor['cwd']))) {
         this.fileTracker.record(p, 'ShellWrite')
       }
-    }
-
-    // A successful mutation is the evidence that the model still has work in
-    // it, so it clears the "nudged and nothing changed" count that would
-    // otherwise eventually let the loop conclude the task is finished.
-    if (!result.isError && ['Edit', 'Write', 'MultiEdit', 'ApplyPatch'].includes(toolName)) {
-      this.unproductiveNudges = 0
     }
 
     // Collect LSP diagnostics after Edit/Write operations

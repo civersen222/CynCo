@@ -29,20 +29,32 @@ export type NudgeSignals = {
   /** A one-shot mission's ```json outcome IS its completion. */
   producedStructuredOutcome: boolean
   /**
-   * How many nudges in a row have been answered without a single file mutation
-   * or new commit. Reset to 0 by any real change. See UNPRODUCTIVE_NUDGE_LIMIT.
+   * How many nudges in a row have been answered with prose and no tool call at
+   * all. Reset to 0 by any turn that calls a tool. See UNPRODUCTIVE_NUDGE_LIMIT.
    */
   unproductiveNudges: number
 }
 
 /**
- * After this many nudges that changed nothing, stop and believe the model.
+ * After this many nudges answered with no tool call at all, stop and believe
+ * the model.
  *
  * This is the backstop for both prose hatches failing at once, which is exactly
  * what happened on 11R. A lexical check can always be out-phrased and a
- * contract can be authored so that it never completes; neither can fake a file
- * mutation. Three is enough to distinguish a model that stalled mid-plan (it
- * resumes on the first or second nudge) from one that is genuinely finished.
+ * contract can be authored so that it never completes; neither can fake an
+ * actual tool call. Three is enough to distinguish a model that stalled
+ * mid-plan (it resumes on the first or second nudge) from one that is
+ * genuinely finished.
+ *
+ * The counter used to be cleared only by a file mutation, and that was wrong in
+ * a way that cost a whole mission. Every good brief says measure before you
+ * change, so a run opens with a long investigation — Read, Grep, Bash, and no
+ * mutation for many turns. Three tool-less turns anywhere in that stretch
+ * exhausted the budget, the backstop began accepting completion on every
+ * subsequent stop, and with the nudge no longer absorbing them the contract's
+ * five enforcement rounds drained in a handful of turns. Stage 11I ended at
+ * turn 46 of a 1200-iteration budget, mid-measurement, having done nothing but
+ * commit the patch it was handed.
  */
 export const UNPRODUCTIVE_NUDGE_LIMIT = 3
 
