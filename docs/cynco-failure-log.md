@@ -1267,3 +1267,68 @@ opposite things, and the loop won silently.
 one imaginary one in the same log, and the imaginary one was more confidently
 written. A count of zero means "this did not happen"; it does not tell you
 whether it was *prevented* or merely *not yet reached*.
+
+---
+
+## F108 — the fix for F107 worked, and the run failed the other way
+
+**Where:** Stage 11I, second attempt (`mission_11money`), 2026-08-20.
+
+**What happened:** the F107 nudge fix held perfectly — **zero** backstop firings
+across the whole run, against six by turn 46 on the attempt before it. The run
+then spent **322 tool calls and just over two hours** on Read/Grep/Bash without
+the tracked tree moving once. 103 Greps, 99 Reads, 81 Bashes, 38 Writes and one
+Edit — every Write and the Edit to a single untracked `probe.py`. Five in-loop
+compactions. `HEAD` never left the baseline.
+
+The governor read healthy throughout: `status=warning stuck=0 toolOK=0.95`. Its
+stuck detector watches for repeated identical calls, and the model varied its
+greps continuously, so it never tripped. Varied motion is not progress.
+
+**Why the existing brake did not brake.** Commit pressure fired on schedule, at
+150 and again at 300. Both notices are written for a run that has drafted work
+and not saved it:
+
+> nth 1: "If you have changed a source file and it is even partly right, commit
+> it now."
+> nth 2: "commit whatever is in the tree — including work you consider
+> unfinished."
+
+Against a clean tree the model reads both, correctly concludes it has nothing to
+commit, and returns to reading. **The notice was a no-op at exactly the moment it
+was most needed.** It could name the symptom it was built for — unsaved work —
+and had no words at all for the opposite condition.
+
+That the probe was good made it worse. `probe.py` was a correct money-supply
+measurement broken down by journal label: exactly what the brief asked for. The
+run was not confused. It was doing a legitimate first step, forever.
+
+**Fix:** `b77a661`. The notice now reads `git status --porcelain` when it is
+about to fire — once per 150 calls, not per call — and selects between two
+different failures: unsaved work, or no work. Untracked files are ignored,
+because 38 rewrites of a scratch probe are not a change to the product. Unknown
+(git unreadable) falls back to the unsaved-work wording deliberately: guessing
+"clean" would tell a run that *does* hold unsaved work to stop drafting, which
+is F107 inverted.
+
+Base printed beside the requirement, per F89: calls-to-first-source-mutation is
+**12** on 11N (1783 calls total) and **22** on 11O (2490). Both were briefed to
+measure before changing anything, and both touched source inside two dozen
+calls. Measuring and changing interleave; they are not two phases. 150 calls
+with nothing touched is an order of magnitude outside what real work looks like.
+
+Calibrated: 26 pass with the fix, 2 fail with the selector stubbed to null. The
+existing wiring helper filtered notices on wording unique to the dirty branch,
+so it would have silently stopped testing the wiring the moment a second branch
+existed — it now matches the prefix both share.
+
+**The general lesson:** F107 and F108 are the same defect at opposite signs. The
+loop had a signal for "stopped too early" and a signal for "worked without
+saving", and neither could see "never started". A control surface that can only
+name the failure it was built for will read every other failure as health — and
+fixing one sign of an error is a good moment to ask what the other sign looks
+like, because nothing about the first fix prevents it.
+
+**And a second, narrower one:** the wiring test filtered on the exact wording of
+the only branch that existed when it was written. That is a test that decays into
+a no-op the instant the code grows a second path, without ever going red.
