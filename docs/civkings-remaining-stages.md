@@ -110,15 +110,76 @@ replays ten more turns to a byte-identical outcome; and a load of a save written
 This is the block that turns a working simulation into a game someone buys. Everything here
 is about **the player having a reason to make a different choice next time.**
 
-### Stage 14 — alliances that bind
-`MarriageContract.alliance` is a flag nothing reads, and `truces` is the whole of diplomacy.
-A CK-style game is bought for its web of obligation.
+### Stage 14A — wars that end
 
-**Exit:** a House can be called into another's war and can refuse at a named cost; a marriage
-that carries `alliance=True` creates a standing pact visible on the drawn page; over a played
-century at three seeds, at least 8 pacts form, at least 2 are called on, and at least 1 is
-broken — measured from the simulation, not from return values.
+**This stage did not exist until the substrate was measured, and it displaces the one that
+did.** What follows is measurement, not design intent.
+
+Base `305daff`, seeds 7/61/42, 120 turns each, driven by `end_turn()` alone:
+
+| | seed 7 | seed 61 | seed 42 |
+|---|---|---|---|
+| wars declared | 3 | 3 | 3 |
+| wars ended | **0** | **0** | **0** |
+| `war_score` at turn 120 | 0.0 | 0.0 | 0.0 |
+| truces formed | 0 | 0 | 0 |
+| regiments in the world | **0** | **0** | **0** |
+
+Two of the three wars are declared on **turn 2**, at relation 0, before diplomacy has
+happened at all. They are still running at turn 120. On seed 61, Duval-Corse spends 118
+consecutive turns at war with three Houses simultaneously and nothing occurs.
+
+The chain, root-caused rather than guessed:
+
+1. `ai.py` never calls `raise_regiments`. Mustering is reachable **only** from player
+   petitions — `docket.py:618`, `:1202`, `:1327`. An unattended House never raises a soldier.
+2. So every `Front` sits at `attacker_regiments=0, defender_regiments=0` forever.
+3. `resolve_front` (`fronts.py:245`) derives `power_a`/`power_d` from those counts. Zero
+   against zero grinds nothing.
+4. `war_score` therefore never leaves 0.0, and `WAR_SCORE_WIN` is ±100.
+5. `ai_peace_check` gates on `war_score`, so it never returns terms and
+   `negotiate_peace` (`fronts.py:404`) never fires.
+6. `at_war_with` is never cleared and `truces` stays `{}`.
+
+`test_fronts.py` calls `resolve_front` about thirty times and passes. It constructs fronts by
+hand with regiments already on them, so it exercises step 3 and never observes that steps 1–2
+do not happen in a played game. This is the wiring-bug signature: a well-tested subsystem that
+is inert in the product.
+
+`docket.py:1278` already contains a stalemate escape keyed on exactly this state —
+`all(f.attacker_regiments == 0 and f.defender_regiments == 0 ...) and abs(war.war_score) < 0.05`
+— but it is reachable only from a player-initiated peace petition, so unattended play never
+takes it.
+
+**Exit:** over a played century at three seeds, every war that starts either concludes or is
+still credibly contested — `war_score` moves off 0.0, at least half of wars declared reach
+peace, and truces exist at turn 120. Bought by the mechanism: `WAR_SCORE_WIN` stays ±100,
+`test_fronts.py` stays byte-identical, and deleting or suppressing war declarations does not
+count as ending a war.
 *Gate: new.*
+
+### Stage 14B — alliances that bind
+`MarriageContract.alliance` is a flag nothing reads. It is set `alliance=True` on every
+contract (`marriages.py:118`) and read exactly once (`:157`) to add +10 to a relation bonus.
+The game prints `"Blood ties seal an ALLIANCE between X and Y"` and the alliance means
+nothing: `_weaker_neighbor` (`ai.py:76-82`) picks war targets on `at_war_with` and `truces`
+only, and never consults `relations`. On seed 61 turn 62, Ferrenholt declares war on
+Duval-Corse at relation **100** — the maximum the scale allows.
+
+**This stage is blocked by 14A and its original exit criterion was unreachable.** That
+criterion asked for "at least 2 pacts called on" per century. Measured, the base offers
+**exactly 1** call-to-arms opportunity per game on all three seeds — a war whose defender has
+an uninvolved ally — and it offers only that many *because* wars never end, so the only wars
+that exist were declared before any alliance formed. A gate demanding 2 would have been F89
+again: a bar above anything the substrate can produce. Alliances cannot be shown to bind
+until war moves.
+
+**Exit:** to be set against the post-14A substrate, once the number of alliance-relevant wars
+per century has been measured rather than assumed. The one claim already safe to make is that
+a House does not declare war on a House it is allied with — probed directly against the
+target picker, not waited for across seeds, since betrayal occurs 0/1/0 times at base and a
+"no betrayals" claim would pass on two seeds out of three without any work at all.
+*Gate: new, blocked on 14A.*
 
 ### Stage 15 — consequences that outlive the turn
 Petitions resolve and vanish. `event_chains.py` is 82 lines and `saga/` is 406 against the
