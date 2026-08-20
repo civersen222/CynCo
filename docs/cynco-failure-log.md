@@ -1233,11 +1233,16 @@ That is a run working well, one turn from the answer. It was cut off there.
    model that occasionally stops; it is nothing against one that stops every
    turn because the absorber upstream was disabled.
 
-A second defect is visible in the same log and is **still open**: every round
-logged `9 pending, 0 failed`. The contract never evaluated its own assertion
-commands, so enforcement could not tell the model *which* assertion was unmet —
-only that some were. A checklist the engine never runs is a checklist that can
-only nag.
+> **I claimed a second defect here and it was not one.** Every round logged
+> `9 pending, 0 failed`, and I wrote that up as "the contract never evaluates
+> its own assertion commands". Wrong. `ContractAssertPass` (`contract.ts:390`)
+> runs the real withheld command through `verifyAssertion` and refuses the model
+> outright when the repository contradicts it. Verification is on the model's
+> initiative by design, and `9 pending, 0 failed` is the *correct* reading for a
+> run that had not yet asserted anything — this one died in its measurement
+> phase, with nothing to assert. Recorded because the mistake is the same shape
+> as F104: reading a counter as evidence of absence without checking what the
+> counter counts.
 
 **Fix:** `9dd5709`. A nudge asks for exactly one thing — "Call a tool now" — so
 any turn that calls a tool has answered it, whatever the tool was. The counter
@@ -1257,3 +1262,8 @@ backstop firings and enforcement still at round 0.
 mistake thinking for idleness. If a harness rewards a behaviour in prose, it
 must not punish that behaviour in code — the brief and the loop were asking for
 opposite things, and the loop won silently.
+
+**And the lesson from the correction above:** I diagnosed one real defect and
+one imaginary one in the same log, and the imaginary one was more confidently
+written. A count of zero means "this did not happen"; it does not tell you
+whether it was *prevented* or merely *not yet reached*.
