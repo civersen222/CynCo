@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { saysDone, shouldNudge, type NudgeSignals } from '../../bridge/nudgeDecision.js'
+import { saysDone, shouldNudge, UNPRODUCTIVE_NUDGE_LIMIT, type NudgeSignals } from '../../bridge/nudgeDecision.js'
 
 function signals(over: Partial<NudgeSignals> = {}): NudgeSignals {
   return {
@@ -10,6 +10,7 @@ function signals(over: Partial<NudgeSignals> = {}): NudgeSignals {
     modelSaysDone: false,
     contractComplete: false,
     producedStructuredOutcome: false,
+    unproductiveNudges: 0,
     ...over,
   }
 }
@@ -59,6 +60,31 @@ describe('shouldNudge', () => {
   it('does not nudge a one-shot mission that emitted its structured outcome', () => {
     expect(shouldNudge(signals({ reasoningTokens: 400, producedStructuredOutcome: true }))).toBe(false)
   })
+
+  /**
+   * The 11R regression, and the reason this signal is behavioural rather than
+   * lexical. Both prose escape hatches were shut: the contract carried an
+   * assertion that could never pass (a bare `pytest` over a suite with 16
+   * known failures the mission forbade fixing), and the model announced
+   * completion in wording `saysDone` did not match. It then spent the rest of
+   * the run re-running `git status` because the loop demanded a tool call.
+   *
+   * Phrasing can always drift out from under a regex. Mutation cannot: a model
+   * that has been told to act three times and has changed no file and made no
+   * commit is telling the truth about being finished. Believe the behaviour.
+   */
+  it('stops nudging once repeated nudges have produced no change', () => {
+    const stuck = { reasoningTokens: 400, textTokens: 40, toolsUsedInSession: true }
+    expect(shouldNudge(signals({ ...stuck, unproductiveNudges: 0 }))).toBe(true)
+    expect(shouldNudge(signals({ ...stuck, unproductiveNudges: 2 }))).toBe(true)
+    expect(shouldNudge(signals({ ...stuck, unproductiveNudges: UNPRODUCTIVE_NUDGE_LIMIT }))).toBe(false)
+    expect(shouldNudge(signals({ ...stuck, unproductiveNudges: 99 }))).toBe(false)
+  })
+
+  it('keeps nudging a model that is still changing things', () => {
+    // Progress resets the counter, so a productive model is never cut off.
+    expect(shouldNudge(signals({ reasoningTokens: 400, unproductiveNudges: 0 }))).toBe(true)
+  })
 })
 
 describe('saysDone', () => {
@@ -71,6 +97,26 @@ describe('saysDone', () => {
       "I'm done here.",
       'No changes needed.',
       'Ready for your next instruction.',
+    ]) {
+      expect(saysDone(text)).toBe(true)
+    }
+  })
+
+  /**
+   * Every one of these is a verbatim completion announcement from the 11R run.
+   * The regex matched none of them: it wanted the noun "task" where the model
+   * wrote "mission", and "ready for your" where the model wrote "ready for the
+   * gate result". Six clear statements of done, zero matches, and the loop
+   * nudged through all of them.
+   */
+  it('recognizes the ways the model announced completion on the 11R run', () => {
+    for (const text of [
+      'The 11R mission is fully complete on my side — every actionable contract item is done and verified.',
+      'There is no remaining work in this workspace, and I will stop re-running identical verifications.',
+      'There is nothing further that can be done here.',
+      'There is no remaining executable action in this workspace.',
+      'No further executable work exists in this workspace; I am idle and ready to act on new input.',
+      "I'm idle, ready for the gate result or a new task.",
     ]) {
       expect(saysDone(text)).toBe(true)
     }

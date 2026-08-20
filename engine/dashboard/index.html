@@ -1418,18 +1418,34 @@ function renderPredictions() {
       var nullPct = Math.round(stat.nullBaselineRate * 100);
       var diff = pct - nullPct;
       var cls = stat.significantlyBetter ? 'pred-above' : (pct < nullPct ? 'pred-below' : 'pred-none');
-      // Verdict: require minimum 10 samples before drawing conclusions
+      // Three outcomes, not two. "Not significantly better" is NOT "worse" —
+      // collapsing them printed H7 (73% vs a 64% null, CI [61.5, 82.3]) in red
+      // as "worse than null" while the hit-rate cell beside it read "+9".
+      // A hypothesis is only worse when the whole interval sits below the null;
+      // when the interval straddles it, the honest answer is that we cannot
+      // tell yet.
+      var ci = stat.confidenceInterval || [0, 1];
+      var significantlyWorse = ci[1] < stat.nullBaselineRate;
       var verdict = stat.total < 10 ? 'need more data'
         : stat.significantlyBetter ? 'better than null'
-        : 'worse than null';
-      var verdictClass = stat.total < 10 ? '' : stat.significantlyBetter ? 'green' : 'red';
-      var verdictCls = stat.total < 10 ? 'pred-none' : stat.significantlyBetter ? 'pred-above' : 'pred-below';
-      html += '<tr title="' + escHtml(name) + ': ' + pct + '% hit rate vs ' + nullPct + '% null baseline (' + (diff >= 0 ? '+' : '') + diff + '%). ' + verdict + '">' +
+        : significantlyWorse ? 'worse than null'
+        : 'inconclusive';
+      var verdictCls = stat.total < 10 ? 'pred-none'
+        : stat.significantlyBetter ? 'pred-above'
+        : significantlyWorse ? 'pred-below'
+        : 'pred-none';
+      // An "assumed" null is a hand-written constant nobody measured, so a
+      // verdict against one is a guess. The CLI report says so; this panel used
+      // to render it identically to a measured baseline.
+      var nullNote = stat.nullBaselineSource === 'measured'
+        ? 'measured null, n=' + stat.nullBaselineSamples
+        : 'ASSUMED null — hand-written constant, not measured';
+      html += '<tr title="' + escHtml(name) + ': ' + pct + '% hit rate vs ' + nullPct + '% null baseline (' + (diff >= 0 ? '+' : '') + diff + '%), 95% CI [' + Math.round(ci[0] * 100) + ', ' + Math.round(ci[1] * 100) + ']. ' + verdict + ' (' + nullNote + ')">' +
         '<td>' + id + '</td>' +
         '<td>' + escHtml(name) + '</td>' +
         '<td class="' + cls + '">' + pct + '% <span style="font-size:9px;color:#555">(' + (diff >= 0 ? '+' : '') + diff + ')</span></td>' +
         '<td>' + stat.total + '</td>' +
-        '<td>' + nullPct + '%</td>' +
+        '<td>' + nullPct + '%' + (stat.nullBaselineSource === 'measured' ? '' : '<span style="font-size:9px;color:#a80" title="assumed, not measured">*</span>') + '</td>' +
         '<td class="' + verdictCls + '" style="font-size:10px">' + verdict + '</td>' +
         '</tr>';
     } else {

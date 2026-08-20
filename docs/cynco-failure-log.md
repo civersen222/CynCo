@@ -947,3 +947,45 @@ Entry status: `OPEN` (improvement not yet shipped) | `SHIPPED` (fix in engine/dr
 - **Why this is the F93 family again.** F93's lesson was that a constraint stated in English is not a constraint. Here the constraint is stated in English *and* the artifact it protects sits one recursive listing away, inside a directory tree the wave has every reason to traverse because its own home lives there. The protection is the wave's incuriosity, which is not a mechanism.
 - **The rule.** *A held-out instrument must be somewhere the wave has no reason to look and no path to reach — not merely somewhere it was asked not to look.* Secrecy enforced by request is secrecy at the pleasure of the reader.
 - **Status:** no harm this run. Two fixes outstanding: move the heldout tree out of `~/.cynco` entirely, so no sweep of the agent's own home enumerates it; and extend the probe detector to escalate a READ of a heldout path from a logged sample to a refusal, the way `heldOutRestored` already escalates a write.
+
+## F97 — I wrote a contract assertion that could never pass, and it welded the loop's exit shut
+- **Date:** 2026-08-19 · **Context:** mission `mission_11R`, killed by hand after the wave spent the back half of the run re-running `git status`. **Authoring failure of mine, with an engine defect behind it.**
+- **What happened.** Assertion 5 of `mission_11R.contract.json` was `python -m pytest gilded/tests -q`, with the text "no more than 16 failed". The suite has 16 pre-existing failures that the same brief explicitly forbids fixing. So the command exits non-zero on every tree the mission is permitted to produce. **I asserted a condition the wave was banned from satisfying.**
+- **Why that was not merely a wasted assertion.** `shouldNudge` (`engine/bridge/nudgeDecision.ts`) has two escape hatches that stop the loop demanding tool calls from a model with nothing left to do: `contractComplete`, and `modelSaysDone`. An unsatisfiable assertion holds `contractComplete` false forever, so the first hatch was welded shut by my contract. The second was a keyword regex, and the model's prose walked past it — six clear completion statements, zero matches:
+
+  | what the model wrote | why the regex missed |
+  |---|---|
+  | "The 11R mission is fully complete on my side" | pattern wanted the noun `task`, not `mission`; `fully` not in the alternation |
+  | "There is no remaining work in this workspace" | no pattern for "no remaining work" |
+  | "There is nothing further that can be done here" | no pattern for "nothing further" |
+  | "I'm idle, ready for the gate result" | pattern wanted `ready for your` |
+
+  With both hatches shut the escalation ran to "FINAL WARNING", then `conversationLoop.ts` reset `consecutiveNudges = 2` and started the cycle again, with no cap. The wave wrote, in its own reasoning: *"I've been idling. There's really nothing to do... I keep being prompted to call the tool. But the work is genuinely complete."* It then called `git status` again.
+- **The cost is not latency.** `nudgeDecision.ts`'s own docstring, written after the L2b echo-loop incident, already says it: those turns are recorded into the training corpus as tool calls, so **the loop teaches the model to burn turns on no-op verification.** This is the second time the same defect has produced corpus pollution; the first fix addressed the phrasings seen that day.
+- **The shape of the error.** Both completion signals are *claims about the world* — one from a checker I authored wrongly, one from a regex over prose that drifts. Neither is grounded in what the model did. A model that has been ordered to act three times and has changed no file is not stalling, it is finished, and that is observable without trusting anyone's wording.
+- **The rule, two parts.** *A contract assertion must be satisfiable by a tree the brief permits* — when the brief excludes pre-existing failures from scope, the assertion must be differential (count failures, compare to budget) and must not inherit the raw exit code of a command that fails for excluded reasons. And *a completion check must have a behavioural backstop*, because any lexical check can be out-phrased and any checker can be misauthored, but neither can fake a file mutation.
+- **Status: fixed.** `UNPRODUCTIVE_NUDGE_LIMIT = 3` added to `nudgeDecision.ts` — three nudges with no successful `Edit`/`Write`/`MultiEdit`/`ApplyPatch` and the loop accepts completion; the counter is cleared by any real mutation, so a productive model is never cut off. `COMPLETION_SIGNALS` broadened and pinned by a test carrying all six verbatim 11R phrasings. Assertion 5 rewritten to parse the failure count and exit on a budget of 16 — verified: `16 failed (budget 16)`, `EXIT=0`.
+
+## F98 — the predictions panel scored "inconclusive" as "worse than null"
+- **Date:** 2026-08-19 · **Context:** noticed by the user looking at the H1–H8 tracker, not by any check of mine
+- **What happened.** `engine/dashboard/index.html` decided the verdict with a two-way branch over a three-way outcome:
+
+  ```js
+  var verdict = stat.total < 10 ? 'need more data'
+    : stat.significantlyBetter ? 'better than null'
+    : 'worse than null';
+  ```
+
+  `significantlyBetter` is `CI_lower > null`. Its negation contains both "the interval sits below the null" **and** "the interval straddles the null". The panel printed the second as the first.
+- **What it was reporting wrongly.** Recomputed with the repo's own `wilsonScore`:
+
+  | id | n | hit | null | 95% CI | truth | panel said |
+  |---|---|---|---|---|---|---|
+  | H2 | 330 | 30% | 34% | [25.3, 35.2] | inconclusive | worse than null |
+  | H4 | 16 | 13% | 25% | [3.5, 36.0] | inconclusive | worse than null |
+  | H7 | 67 | 73% | 64% | [61.5, 82.3] | inconclusive | worse than null |
+
+  H7 is **nine points better** than its null and was rendered in red as worse. Line 1420 of the same function already computed the three-way split correctly for the hit-rate cell, so the row displayed "73% (+9)" in the positive colour beside a red "worse than null".
+- **Why it went unnoticed for months.** This is the recorded belief that "H1–H8 are all broken, all always red." They were not all failing; the panel was converting *we cannot tell yet* into *this is harming you*, on a governance layer whose entire purpose is to be falsifiable. A falsification programme that cannot report "inconclusive" has no way to say "keep measuring", so every under-powered hypothesis looked like a refutation.
+- **The rule.** *A significance test has three outcomes and a display that offers two will silently pick the wrong one.* Report "inconclusive" whenever the interval contains the null, and never let a verdict column disagree with the effect-size column beside it.
+- **Status: fixed.** Verdict is now four-way (`need more data` / `better than null` / `worse than null` / `inconclusive`), `worse` requires `CI_upper < null`, the tooltip carries the interval, and an assumed (hand-written, never measured) null baseline is now marked with a `*` — the CLI report warned about those; the panel had been rendering them identically to measured ones.

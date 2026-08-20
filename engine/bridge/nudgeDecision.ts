@@ -28,10 +28,42 @@ export type NudgeSignals = {
   contractComplete: boolean
   /** A one-shot mission's ```json outcome IS its completion. */
   producedStructuredOutcome: boolean
+  /**
+   * How many nudges in a row have been answered without a single file mutation
+   * or new commit. Reset to 0 by any real change. See UNPRODUCTIVE_NUDGE_LIMIT.
+   */
+  unproductiveNudges: number
 }
 
-const COMPLETION_SIGNALS =
-  /\b(task (is )?(genuinely |now )?complete|(i am|i'm) done|all done|waiting for|ready for your|what would you like|no changes needed)\b/i
+/**
+ * After this many nudges that changed nothing, stop and believe the model.
+ *
+ * This is the backstop for both prose hatches failing at once, which is exactly
+ * what happened on 11R. A lexical check can always be out-phrased and a
+ * contract can be authored so that it never completes; neither can fake a file
+ * mutation. Three is enough to distinguish a model that stalled mid-plan (it
+ * resumes on the first or second nudge) from one that is genuinely finished.
+ */
+export const UNPRODUCTIVE_NUDGE_LIMIT = 3
+
+const COMPLETION_SIGNALS = new RegExp(
+  [
+    // "the task / this mission / the work is (genuinely, now, fully) complete"
+    String.raw`\b(task|mission|stage|work|run)\b[^.!?\n]{0,40}?\bis\b[^.!?\n]{0,30}?\b(complete|finished|done)\b`,
+    String.raw`\btask (is )?(genuinely |now |fully )?complete\b`,
+    String.raw`\b(i am|i'm) (done|idle|finished)\b`,
+    String.raw`\ball done\b`,
+    // "no remaining work", "no further executable action", "nothing left to do"
+    String.raw`\bno (remaining|further|more|additional) [a-z ]{0,24}?(work|action|steps?|changes?|tasks?)\b`,
+    String.raw`\bnothing (further|left|more|else)\b`,
+    String.raw`\bno (work|action|changes?) (remains?|is remaining|left)\b`,
+    String.raw`\bwaiting for\b`,
+    String.raw`\bready for\b`,
+    String.raw`\bwhat would you like\b`,
+    String.raw`\bno changes needed\b`,
+  ].join('|'),
+  'i',
+)
 
 /** Did the model announce completion in its narration? */
 export function saysDone(text: string): boolean {
@@ -45,6 +77,9 @@ export function shouldNudge(s: NudgeSignals): boolean {
   // from a model with nothing left to do, which is how the echo loop happened.
   if (s.modelSaysDone || s.contractComplete) return false
   if (s.producedStructuredOutcome) return false
+  // Neither statement is trustworthy on its own — 11R shut both — so the last
+  // word belongs to what the model actually did with the nudges it already got.
+  if (s.unproductiveNudges >= UNPRODUCTIVE_NUDGE_LIMIT) return false
 
   // Deliberated but never acted.
   if (s.reasoningTokens > 0 && s.textTokens === 0) return true

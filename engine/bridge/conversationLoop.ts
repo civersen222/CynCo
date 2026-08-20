@@ -79,7 +79,7 @@ import { checkCommitScope } from './commitScope.js'
 import { applyToolFloor, attributeRemoval } from './toolFloor.js'
 import { enforcementNudgeText } from './enforcementNudge.js'
 import { cyncoHome } from '../paths.js'
-import { saysDone, shouldNudge } from './nudgeDecision.js'
+import { saysDone, shouldNudge, UNPRODUCTIVE_NUDGE_LIMIT } from './nudgeDecision.js'
 import { iterationBudgetNotice } from './iterationBudget.js'
 import { commitPressureNotice, commitPressureDue } from './commitPressure.js'
 import { buildSideQueryBody, readSideQueryContent } from './sideQuery.js'
@@ -349,6 +349,14 @@ export class ConversationLoop {
   private recentToolOutcomes: { tool: string; success: boolean }[] = []
   private toolFailureCounts: Map<string, number> = new Map()
   private consecutiveNudges = 0
+  /**
+   * Nudges issued since the last file mutation. The behavioural half of the
+   * completion check — see UNPRODUCTIVE_NUDGE_LIMIT in nudgeDecision.ts. Any
+   * successful Edit/Write/MultiEdit/ApplyPatch clears it, so it only climbs
+   * while the loop is demanding action from a model that has stopped changing
+   * anything.
+   */
+  private unproductiveNudges = 0
   private lastTokPerSec = 0
   private lastModelCallMs = 0
   private steering = new SteeringQueue()
@@ -781,6 +789,7 @@ export class ConversationLoop {
   resetGovernance(): void {
     this.governance.resetKillSwitch()
     this.consecutiveNudges = 0
+    this.unproductiveNudges = 0
     this.readLoopGate.reset()
     this.toolDivergence.reset()
     this.lastToolEntropy = null
@@ -888,6 +897,7 @@ export class ConversationLoop {
     this.governance.resetForNewTask() // Fresh start for each user message
     this.governance.resetKillSwitch() // Clear kill switch from previous task
     this.consecutiveNudges = 0
+    this.unproductiveNudges = 0
     this.readLoopGate.reset()
     this.toolDivergence.reset()
     this.lastToolEntropy = null
@@ -2755,16 +2765,22 @@ export class ConversationLoop {
       // that IS completion; never nudge it back into tool calls
       // (2026-06-12 weekly-digest incident: nudges pushed the model mid-answer
       // back to repeating the same Mfl call until HALT).
+      const noToolsEndTurn = toolUseBlocks.length === 0 && stopReason === 'end_turn'
+      if (noToolsEndTurn && this.unproductiveNudges >= UNPRODUCTIVE_NUDGE_LIMIT) {
+        console.log(`[s2] Nudge backstop: ${this.unproductiveNudges} nudges produced no file change — accepting the model's completion`)
+      }
       if (shouldNudge({
-        noToolsEndTurn: toolUseBlocks.length === 0 && stopReason === 'end_turn',
+        noToolsEndTurn,
         reasoningTokens: reasoningTokenCount,
         textTokens: tokenCount,
         toolsUsedInSession: toolsUsedInSession.length > 0,
         modelSaysDone: saysDone(streamedText),
         contractComplete: globalContract.isActive() && globalContract.isComplete(),
         producedStructuredOutcome: this.allowedTools != null && /```json/.test(streamedText),
+        unproductiveNudges: this.unproductiveNudges,
       })) {
         this.consecutiveNudges++
+        this.unproductiveNudges++
         if (this.consecutiveNudges <= 5) {
           const nudgeText = this.allowedTools
             ? `Do not narrate. Either call one of your available tools (${this.allowedTools.join(', ')}) to gather missing data, or produce your final structured outcome (the \`\`\`json block) now.`
@@ -4092,6 +4108,13 @@ export class ConversationLoop {
       for (const p of changedBetween(shellSigBefore, collectPathSignatures(this.executor['cwd']))) {
         this.fileTracker.record(p, 'ShellWrite')
       }
+    }
+
+    // A successful mutation is the evidence that the model still has work in
+    // it, so it clears the "nudged and nothing changed" count that would
+    // otherwise eventually let the loop conclude the task is finished.
+    if (!result.isError && ['Edit', 'Write', 'MultiEdit', 'ApplyPatch'].includes(toolName)) {
+      this.unproductiveNudges = 0
     }
 
     // Collect LSP diagnostics after Edit/Write operations
