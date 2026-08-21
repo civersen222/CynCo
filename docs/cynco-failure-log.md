@@ -1987,3 +1987,72 @@ rewrote line endings would put every gate one newline-convention away from its
 snapshot). The import is the tree as it stands; everything before it is
 unrecoverable, and that is what F96 cost. The tree stays OUTSIDE the localcode
 repository so that a mission cannot read its own grader from its cwd.
+
+---
+
+## F118 — "the suite does not regress" counted to sixteen and never looked at which sixteen
+
+**Where.** Every mission contract since Stage 11 closes with a suite assertion of
+the form *"passes at 16 or fewer failures"*, implemented as
+`re.search(r'(\d+) failed', pytest_output)` and a threshold. Stage 14A's contract
+carries it verbatim.
+
+**How it failed.** Stage 14A asks the AI to muster regiments so that wars can
+actually be fought. I proved the numbers attainable with a ~30-line throwaway,
+ran the suite on it, read **16 failed, 1927 passed**, and wrote into the brief
+that "a muster does not disturb anything else in this repository."
+
+It disturbs five things. The sixteen are not the same sixteen:
+
+```
+gone (4+1)                          arrived (3+2)
+  test_i6b_measurement  x4            test_money_supply::test_total_gold_stays_in_band
+  test_ui_ledger::r13_no_overflow     test_grip::test_every_house_reports_after...
+                                      test_ui_actions::test_decided_sell_moves_stock_and_gold
+                                      test_ui_broadsheet::test_grip_banner_shows_computed_band
+                                      test_ui_broadsheet::test_grip_banner_band_matches_report
+```
+
+Five out, five in, and the count never moved. The threshold read green on a tree
+that had broken the money-supply assertion Stage 11U had landed three commits
+earlier, produced the game's first **negative dividend** (`-1.2`, and
+`test_grip` asserts `>= 0`), and desynchronised the share-sale gold arithmetic in
+the UI. It also, genuinely and for free, fixed the four `i6b` failures — those
+tests need a DISABLED control to exist on the drawn page, and until a House could
+not afford a regiment, no control on that page was ever disabled. That is the
+F117 family in a fourth costume: a test that measures whether the generated world
+happened to contain its subject.
+
+**Why the count is the wrong instrument.** A threshold on a total is a
+conservation law, and the thing being conserved is the *number* of red tests, not
+their identity. Any change that repairs as many tests as it breaks passes it. The
+budget exists to say "you did not damage anything"; what it actually says is "you
+did not damage more than you fixed", and those are different sentences. It is the
+same defect as F86/F92/F94 — an assertion that reads green while measuring
+nothing — arrived at from the opposite direction.
+
+**Fix.** The suite assertion must compare the failing NODE ID SET against a
+pinned baseline set, not a count:
+- any node id red on the rev and green on the base is a **regression** and fails;
+- any node id red on the base and green on the rev is a **repair** and is
+  reported, not punished;
+- the baseline set is pinned in the contract as node ids, so a brief that quotes
+  "sixteen failures" also has to say which sixteen, which is the part I could not
+  have got wrong silently.
+
+The count is still worth printing. It is not worth deciding on.
+
+**Second finding, from the same measurement.** Stage 14A and Stage 11U's
+`test_total_gold_stays_in_band` are in real conflict, and it is not noise. The
+ensemble band survives perturbation cleanly — burning 1..8 extra `rng.random()`
+per turn on the base moves the twelve-seed mean only between 14655 and 15553,
+all nine inside 13766-16825, which is rule 11 satisfied for that test. Mustering
+moves it to **17706 (+15.8%)**, and the throwaway lands at 17731, so it is the
+mechanism and not the implementation. The gate's claims 3, 4 and 5 stay green —
+nothing is minted, purses still reconcile to 2.2e-11 — so the extra gold is
+earned: conquest consolidates enterprise shares into House hands, and dividends
+that used to pay outside holders now land in a purse. That is war working for the
+first time, and the band was calibrated on a world where it never did. The band
+is due an honest re-anchor once 14A lands, which is a re-baseline of a changed
+GAME rather than of a changed SAMPLE, and the log should be able to tell those
+two apart by now.
