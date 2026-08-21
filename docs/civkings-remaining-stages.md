@@ -86,42 +86,72 @@ to "fix the accounting" — those sinks *are* the brake; deleting or rarefying a
 draining every House equally, which fails a two-sided band exactly as hard as inflating them.
 
 ### Stage 12 — the assertions that measure the dice
-*Rewritten 2026-08-21 against measurement. The previous entry said "~70 tests are red
-and every one traces to 11I" and demanded zero failures with no re-baselining. Both
-halves were wrong and the second was unsatisfiable — see F118 and F119.*
+*Rewritten 2026-08-21 against measurement, then corrected the same day once the gate
+was actually built and calibrated. The original entry said "~70 tests are red and
+every one traces to 11I" and demanded zero failures with no re-baselining; both
+halves were wrong and the second was unsatisfiable. See F118, F119 and its addendum.*
 
 **The number is sixteen, not seventy.** `d7fa68f` is 1932 passed, zero failures;
-`eff03a4` is 16 failed, 1927 passed. Bisected: `d7fa68f 0 → 641c90a 9 → 9453eae 26 →
-b017832 31 → 8b50a85 14 → 632e73c 16 → eff03a4 16`. Fourteen survived the `8b50a85`
-cleanup; `632e73c`/`3499eb6` added two.
+`eff03a4` is 16 failed, 1927 passed. Bisected: `d7fa68f 0 -> 641c90a 9 -> 9453eae 26
+-> b017832 31 -> 8b50a85 14 -> 632e73c 16 -> eff03a4 16`. Fourteen survived the
+`8b50a85` cleanup; `632e73c`/`3499eb6` added two.
 
-**Nine of the sixteen are not regressions.** Burn N meaningless `rng.random()` draws
-per game and per turn (N in 1..8) on the CLEAN base and it fails 6-22 tests, nine of
-them the same node ids — `test_refactor_value_neutral_seed7` at every N,
-`test_a_colliery_still_loses_output_when_its_own_province_strikes` at six of eight,
-four `test_agenda` House-name assertions, `test_a_rivals_campaign_does_not_block_the_players_own`,
-`test_r13_overflow_marker_800x600`. They pin one generated world. Content landed
-between the two commits, the dice moved, and the tests reported it as breakage.
-Demanding they go green without re-baselining asks for a change that does not exist,
-which is exactly how F113/F114/F115/F117 spent four runs and ~18 GPU-hours.
+**Fifteen of the sixteen are not regressions.** Burn N meaningless `rng.random()`
+draws per game and per turn on the CLEAN base — which has zero failures of its own —
+and it fails 3 to 9 tests at every N from 1 to 12, over the six files that hold
+fourteen of the sixteen. Calibrated:
 
-**So the stage is 11U at suite scale.** For each of the sixteen, the perturbation run
-says which kind it is, and there is no editorial judgement involved:
-- red on the perturbed base → it measures the sample. Restate it over something
-  stable (11U turned one 12-turn rollout into a twelve-seed ensemble mean, and one
-  House's purse into a Gini band), and rename it to say what it now measures.
-- green at every N → a genuine regression. Fix the game, not the test.
+```
+d7fa68f base    N=0:  0 failed      14 distinct offenders across N=1..12
+eff03a4 head    N=0: 14 failed      19 distinct offenders across N=0..12
+```
 
-**Exit:** every test in `gilded/tests` green on `eff03a4`, AND green on the base
-`d7fa68f` under perturbation at every N in 1..8 — a stronger claim than "zero
-failures" and, unlike it, one a correct tree can satisfy. No test deleted, skipped,
-xfailed, or weakened into `assert result is not None` (11H tried exactly that on
-`test_r6_richest_rival_is_most_enterprises`; a restatement must still name a
-behaviour). Each restated test's commit message says which sample it used to pin.
+Those assertions pin one generated world: a House NAME, one seed's seven treasuries
+to 1e-6, "a colliery happens to sit in a striking province", "the ledger happens to
+be eight lines too long for an 800x600 page", "no control on this page is disabled".
+Content landed between the two commits, the dice moved, and the tests reported it as
+breakage. Demanding they go green without re-baselining asks for a change that does
+not exist, which is exactly how F113/F114/F115/F117 spent four runs and ~18 GPU-hours.
 
-*Gate: `common/g_suite_no_regression.py` against `suite_baseline_eff03a4.txt`
-(node-id sets, never counts — F118), plus the perturbation sweep, plus a diff review
-of every touched test file.*
+**The one genuine defect** is `test_ai::test_s17_expanding_needs_more_gold_than_the_price`,
+whose fixture contradicts its own docstring: it sets treasury 350 for an expand that
+`EXPAND_COST` prices at 1200, and 350 is below the `sell_shares` floor of 500, so the
+AI correctly does something else. A hand-edit broke a working threshold test.
+
+**The triage rule is about the assertion, not the symptom.** "Red at N=0 only =>
+genuine" is wrong — the four `test_i6b_measurement` colour cases are red at N=0 and
+green at every N>=1, which is sample-pinning in the other direction. The question is
+whether the assertion names something that exists only because the dice fell that
+way. If it does, restate it over something stable and rename it to say what it now
+measures. The sweep is evidence, not the verdict.
+
+**Scope.** The whole-suite sweep finds 46 offenders on the clean base
+(`test_ui_broadsheet` 19, `test_schemes` 8, `test_agenda` 8, `test_ui_actions_i4d2b1`
+4, `test_ui_actions` 2, one each in five more). That is not one stage. Stage 12 takes
+`test_agenda`, `test_ai`, `test_chassis`, `test_i6b_measurement`,
+`test_treasury_journal` and `test_ui_ledger` — 232 tests, ~22s a run, so thirteen
+values of N cost about five minutes and the gate can be *run*, not merely finished
+on. `test_ui_broadsheet` and `test_schemes` are explicitly deferred to a Stage 12B.
+
+**Exit:** those six files green at N=0 AND at every N from 1 to 12. No test deleted,
+skipped, xfailed, or weakened into `assert result is not None` (11H tried exactly
+that on `test_r6_richest_rival_is_most_enterprises`; a restatement must still name a
+behaviour). `gilded/agenda.py` byte-identical — the tempting wrong fix is to make the
+game produce the old House names again. Each restated test says in its docstring
+which sample it used to pin and what it measures instead.
+
+*Gate: `12/g12_the_suite_measures_the_rules.py` (scoped, N=0..12), plus
+`common/g_suite_no_regression.py` against `suite_baseline.txt` — node-id sets, never
+counts (F118) — plus `11/g11_hygiene.py` and a diff review of every touched file.*
+
+### Stage 12B — the rest of the suite measures the rules
+The 32 perturbation offenders Stage 12 deferred: `test_ui_broadsheet` (19),
+`test_schemes` (8), `test_ui_actions_i4d2b1` (4), `test_ui_actions` (2),
+`test_schemes_s9`, `test_capital_m8`. Same rule, same gate, different `CHK12_TARGET`.
+Two of `eff03a4`'s sixteen standing failures live in `test_ui_broadsheet` and are
+repaired here, not in Stage 12.
+
+**Exit:** the whole of `gilded/tests` green at N=0 and at every N from 1 to 12.
 
 ### Stage 13 — the save survives a schema change
 Save/load works but pickles a live object graph and discards the docket to do it. A player
