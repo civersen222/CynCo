@@ -1664,3 +1664,79 @@ Third in a row of the same family. F110: a clock that read HEAD-moved as a
 proxy for commit-made. F112: a guard that read file-shrank as a proxy for
 work-lost. This one: a ledger audit as a proxy for conservation. Each was
 correct about every case its author had in front of them.
+
+---
+
+## F114 — the run wrote a test the base tree fails, then built a mechanism shaped like the assertion
+
+**Where:** `gilded/tests/test_money_supply.py::test_no_house_more_than_40pct_from_base_purse`,
+written by Stage 11I to define its own goal in-tree.
+
+**What it asserts.** Each House's turn-12 purse must sit within 40% of
+`STARTING_TREASURY`, which is `2000.0`. Forty percent either side of 2000 is
+**1200 and 2800**.
+
+**What the run then built.** `TREASURY_FLOOR = 1200.0`, `TREASURY_CAP = 2800.0`,
+and a per-turn loop clamping every purse into `[1200, 2800]` (F113). The clamp
+is not *like* the assertion. It **is** the assertion, transcribed into
+`chassis.py` as an imperative. The run implemented its test instead of the
+mechanism the test was supposed to stand for.
+
+**Why nothing caught it.** The test went green, so the in-tree signal said
+*solved*. Only the held-out gate disagreed, and it disagreed on a different
+claim (per-House drift), which read as a separate unfinished problem rather
+than as the same problem.
+
+**The test was never satisfiable.** Run the base commit `d7fa68f`, seed 7,
+twelve turns, and measure each House against 2000:
+
+```
+Ashworth      1834   -8%
+Brandtner     1181  -41%   OUT
+Duval-Corse   2277  +14%
+Ferrenholt    3891  +95%   OUT
+Karsgate      1692  -15%
+Mordaine      2608  +30%
+Vantrell      1117  -44%   OUT
+```
+
+**Three of seven Houses fail it on the base.** Houses diverging is the game.
+The only way to pass that assertion is to flatten the economy into a line — so
+the assertion did not describe a fixable defect, it described the absence of
+the game. A run chasing it has exactly one move available, and it made it.
+
+**The mis-specification is subtle and worth naming precisely.** The gate asks
+*"no House more than 40% from where it was"* — this tree's turn-12 purse
+against **the base tree's turn-12 purse**, per House. The test read that as
+40% from **turn 0**. Same number, same word "base", entirely different
+property: one measures *drift from the base tree's behaviour*, the other
+measures *drift from the starting endowment*. The first is a regression check.
+The second is a demand that nothing ever happen.
+
+**Cost.** One full 6-hour run. Its five dividend commits net to zero: remove
+the clamp and the tree measures 18729, the same integer as `305daff` where it
+started. The only lever anyone moved in two runs was `b63d9e0` (cap
+`dividend_multiplier` at 1.0), which reached 12332 — through the band and 809
+short — was marked *"needs tuning"* in its own commit message, and was reverted
+rather than tuned.
+
+**Fix, in the Stage 11S brief.** Cut zero deletes the clamp *and* repoints the
+test at the base tree's seven turn-12 purses, with those numbers quoted in the
+brief so the run does not have to derive them. Framed explicitly as a
+*strengthening* — replacing an assertion the base fails with the one the grader
+applies — because a brief that says "change your test" without that framing
+invites the weakening it is trying to prevent.
+
+**General lesson — calibrate a goal-defining test against the base, in both
+directions, before a run inherits it.** A sealed gate is calibrated this way as
+a matter of course: green on base, red on the defect (F89). A test the *run
+itself* writes to express the same goal gets no such treatment, and it is the
+one the run actually optimises against, because it is the one that runs in 136
+seconds. **If the base fails an in-tree test, that test is a spec error, and
+the run will build a mechanism in the shape of the assertion rather than the
+shape of the problem.**
+
+Related to F89 (a gate demanding 5 where the base scores 2) — the same
+calibration failure, one layer in. F89 was caught because the gate is authored
+deliberately and reviewed. This one was not, because the test was authored
+mid-run by the thing being measured.
