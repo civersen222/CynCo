@@ -1455,3 +1455,67 @@ it met, a count that was double, a clock that could be switched off. None of the
 three would ever have gone red on its own. The only thing that caught all three
 was comparing two independent measurements of the same quantity and asking why
 they disagreed.
+
+---
+
+## F111 — the operator raised the cap on the gate, and the model's copy of the same command was still capped at two minutes
+
+**Where:** `engine/tools/impl/bash.ts:89` — `Math.min(input.timeout ?? 120000, 600000)`.
+
+**Measured, on the Stage 11I money-supply run:** five Bash calls came back as
+
+```
+Error: command timeout after 120000ms. ... Output collected before the kill:
+(nothing)
+```
+
+Every one of them was `python -m pytest gilded/tests`. That suite takes 135
+seconds. The default budget is 120. It could never have finished, on any call,
+on any run, in this repository.
+
+**Why it mattered more than the ten minutes it cost:** half of what the run was
+graded on was *"the suite comes back to its baseline — 16 failures or fewer"*.
+The brief said so, the contract asserted it, and the model was told the suite
+takes about 2m15s. It was never able to read the number. Not "read it late" —
+never. `(nothing)` collected, five times.
+
+**The shape of it.** `scripts/dispatch-mission.sh` already exports
+`CYNCO_CHECK_TIMEOUT_MS=600000`, with a comment explaining why. That variable
+reaches `commandTimeoutMs` in `contractVerify.ts` and lets the **driver** finish
+the held-out gate. The gate *wraps the same pytest run*. So the cap was lifted
+on the operator's copy of the command and left in place on the model's — which
+is Wave 9d's finding (contractVerify.ts:283, "the operator had raised the cap on
+the gate, and the gate was still capped") repeating one layer further down. That
+finding was written up, fixed, and tested; it did not generalise, because it was
+fixed as a fact about `commandTimeoutMs` rather than as a fact about caps.
+
+**Fix:** `bashDefaultTimeoutMs()` — reads `CYNCO_BASH_TIMEOUT_MS`, falls back to
+`CYNCO_CHECK_TIMEOUT_MS` *because it is the same command*, defaults to 120s, and
+ignores any value meaning "wait forever" (0, negative, unparseable) since `exec`
+drops the timeout entirely for those. `dispatch-mission.sh` now sets it to
+300000 **on the engine process**, not the driver: the driver is a WebSocket
+client to the engine daemon, so nothing it exports is visible where the tool
+runs. That process boundary has now been the trap three times.
+
+An explicit `timeout` on the call still wins in both directions — a raised floor
+must not stop the model asking for a *shorter* budget on something it expects to
+hang, or every probe costs ten minutes.
+
+**The schema description is part of the fix, not decoration.** It is the only
+place the model learns what the default is, so it is now a getter that reports
+the live value. A schema advertising 120000 against a 300000 floor makes the
+model ration a budget it already has — the mirror image of the Stage 11C
+finding, where a 3-second check described in prose as "a few minutes" was run
+twice in 911 tool calls. A wrong number in a tool description is not cosmetic;
+it is an instruction.
+
+**Calibrated:** 8 new tests in `engine/__tests__/tools/bash.test.ts`; 33 pass in
+that file. Red first for the right reason (`bashDefaultTimeoutMs` not exported).
+
+**The general lesson:** a limit that exists in two places — once where the
+operator sets it and once where the work happens — will be raised in one of
+them. Ask of every cap: *who else runs this command?* Here the answer was
+written in the launcher's own comment and nobody followed it across the process
+boundary. And the tell was in plain sight the whole time: `(nothing)` collected
+before the kill, five times, in a log nobody read until the calls-per-minute
+went strange.

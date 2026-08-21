@@ -50,6 +50,14 @@ LOCALCODE_MAX_ITERATIONS=${LOCALCODE_MAX_ITERATIONS:-1200}
 # to dispatch at all unless this is set deliberately.
 CYNCO_CHECK_TIMEOUT_MS=${CYNCO_CHECK_TIMEOUT_MS:-600000}
 
+# The MODEL's copy of that same command. Raising the cap above only lets the
+# DRIVER finish the gate; the Bash tool's own default is 120s and the civkings
+# suite takes 135, so the Stage 11I run lost five `python -m pytest
+# gilded/tests` calls to the kill and never saw the failure count it was half
+# graded on. Set on the ENGINE, not the driver: the driver is a WebSocket
+# client to the engine daemon, so nothing it exports reaches the tool.
+CYNCO_BASH_TIMEOUT_MS=${CYNCO_BASH_TIMEOUT_MS:-300000}
+
 STAMP=$(basename "$BRIEF" | sed 's/\.[^.]*$//')
 ENGINE_LOG=${ENGINE_LOG:-/c/tmp/engine_${STAMP}.log}
 DRIVER_LOG=${DRIVER_LOG:-/c/tmp/driver_${STAMP}.log}
@@ -74,11 +82,12 @@ fi
 # The window and the cache budget are deliberately absent from this line. An
 # exported LOCALCODE_CONTEXT_LENGTH still reaches the engine through the normal
 # environment; re-stating it here is what let the two drift apart before.
-echo "[dispatch] iterations=$LOCALCODE_MAX_ITERATIONS (ctx and cache-ram come from the profile and the derivation — confirmed below)"
+echo "[dispatch] iterations=$LOCALCODE_MAX_ITERATIONS bash-timeout=${CYNCO_BASH_TIMEOUT_MS}ms (ctx and cache-ram come from the profile and the derivation — confirmed below)"
 echo "[dispatch] engine log $ENGINE_LOG"
 LOCALCODE_APPROVE_ALL=true \
 LOCALCODE_S5_ENFORCE=false \
 LOCALCODE_MAX_ITERATIONS="$LOCALCODE_MAX_ITERATIONS" \
+CYNCO_BASH_TIMEOUT_MS="$CYNCO_BASH_TIMEOUT_MS" \
   bun engine/main.ts > "$ENGINE_LOG" 2>&1 &
 
 echo "[dispatch] waiting for the model to load"

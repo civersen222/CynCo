@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import { bashTool, failedOutput, formatBashFailure } from '../../tools/impl/bash.js'
+import { bashDefaultTimeoutMs, bashTool, failedOutput, formatBashFailure } from '../../tools/impl/bash.js'
 import { getShellInfo } from '../../tools/shellInfo.js'
 import { tmpdir } from 'os'
 import { mkdtempSync, writeFileSync } from 'fs'
@@ -283,4 +283,103 @@ describe('Bash tool — a POSIX env-var prefix runs instead of being refused', (
       expect(result.isError).toBe(false)
     }
   }, 20000)
+})
+
+/**
+ * The default budget is 120s, and the mission the engine spends most of its
+ * life running has a test suite that takes 135.
+ *
+ * Measured on the Stage 11I money-supply run: five Bash calls died with
+ * "command timeout after 120000ms" and zero bytes collected, every one of them
+ * `python -m pytest gilded/tests`. Half that mission's stated job was "bring
+ * the suite back to 16 failures or fewer", and the model could not once see
+ * the number it was being graded on. Ten minutes of wall clock went to killed
+ * processes, but the cost that mattered was the missing measurement.
+ *
+ * The operator ALREADY raises this cap — `scripts/dispatch-mission.sh` exports
+ * CYNCO_CHECK_TIMEOUT_MS=600000 so the driver's copy of the gate can finish.
+ * The model's copy of the same command was still capped at two minutes, which
+ * is the Wave 9d finding (`commandTimeoutMs`, contractVerify.ts:283) one layer
+ * down: the cap was raised where the operator could see it and left alone
+ * where the work happens.
+ *
+ * `timeout` passed on the call still wins, and the 600s ceiling still holds —
+ * this only moves the floor that applies when the model says nothing.
+ */
+describe('the default timeout is the operator\'s to raise', () => {
+  const clear = () => {
+    delete process.env.CYNCO_BASH_TIMEOUT_MS
+    delete process.env.CYNCO_CHECK_TIMEOUT_MS
+  }
+
+  it('is two minutes when the operator has said nothing', () => {
+    clear()
+    expect(bashDefaultTimeoutMs()).toBe(120_000)
+  })
+
+  it('reads CYNCO_BASH_TIMEOUT_MS', () => {
+    clear()
+    process.env.CYNCO_BASH_TIMEOUT_MS = '300000'
+    expect(bashDefaultTimeoutMs()).toBe(300_000)
+    clear()
+  })
+
+  it('falls back to CYNCO_CHECK_TIMEOUT_MS, because it is the same command', () => {
+    // The driver runs the held-out gate under this variable and the model runs
+    // the suite the gate wraps. An operator who raised one meant both.
+    clear()
+    process.env.CYNCO_CHECK_TIMEOUT_MS = '450000'
+    expect(bashDefaultTimeoutMs()).toBe(450_000)
+    clear()
+  })
+
+  it('prefers the more specific variable when both are set', () => {
+    clear()
+    process.env.CYNCO_BASH_TIMEOUT_MS = '200000'
+    process.env.CYNCO_CHECK_TIMEOUT_MS = '450000'
+    expect(bashDefaultTimeoutMs()).toBe(200_000)
+    clear()
+  })
+
+  it('ignores a value that would mean "wait forever"', () => {
+    // 0 and NaN both make exec() drop the timeout entirely. That is the exact
+    // failure the cap exists to prevent, so a bad value is ignored rather than
+    // obeyed.
+    for (const bad of ['0', '-1', 'soon', '']) {
+      clear()
+      process.env.CYNCO_BASH_TIMEOUT_MS = bad
+      expect(bashDefaultTimeoutMs()).toBe(120_000)
+    }
+    clear()
+  })
+
+  it('does not let the environment raise the ceiling past ten minutes', () => {
+    clear()
+    process.env.CYNCO_BASH_TIMEOUT_MS = '99999999'
+    expect(bashDefaultTimeoutMs()).toBe(600_000)
+    clear()
+  })
+
+  it('still lets an explicit timeout win, and still caps it', async () => {
+    clear()
+    process.env.CYNCO_BASH_TIMEOUT_MS = '600000'
+    // A raised floor must not stop the model asking for a SHORTER budget on a
+    // command it expects to hang; otherwise every probe costs ten minutes.
+    const result = await bashTool.execute({ command: 'sleep 30', timeout: 1000 }, tmpdir())
+    expect(result.isError).toBe(true)
+    expect(result.output).toContain('1000ms')
+    clear()
+  }, 20000)
+
+  it('tells the model the budget it actually has', () => {
+    // The schema description is the only place the model learns the default.
+    // If it says 120000 while the floor is 300000, the model rations a budget
+    // it does not have — the mirror of the Stage 11C finding, where a 3-second
+    // check described as "a few minutes" was called twice in 911 calls.
+    clear()
+    process.env.CYNCO_BASH_TIMEOUT_MS = '300000'
+    const desc = (bashTool.inputSchema as any).properties.timeout.description
+    expect(desc).toContain('300000')
+    clear()
+  })
 })

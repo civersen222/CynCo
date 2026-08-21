@@ -71,6 +71,37 @@ export function failedOutput(
   return parts.join('\n')
 }
 
+/** The ceiling on any Bash budget, however it arrives. */
+export const MAX_BASH_TIMEOUT_MS = 600_000
+
+/**
+ * The budget a command gets when the model does not ask for one.
+ *
+ * Two minutes is right for a shell session and wrong for a mission: the Stage
+ * 11I run lost five `python -m pytest gilded/tests` calls to it, because that
+ * suite takes 135 seconds, and "bring the suite back to 16 failures" was half
+ * of what the run was graded on. It never once saw the number.
+ *
+ * CYNCO_CHECK_TIMEOUT_MS is the fallback because it is the SAME COMMAND seen
+ * from the other side: `scripts/dispatch-mission.sh` already exports it so the
+ * driver's copy of the held-out gate can finish, and that gate wraps the suite
+ * the model is running here. An operator who raised one meant both. Leaving
+ * this capped while that one is raised is the Wave 9d finding
+ * (`commandTimeoutMs`, contractVerify.ts:283) one layer down — the cap lifted
+ * where the operator can see it and left in place where the work happens.
+ *
+ * A value that would mean "wait forever" — 0, negative, unparseable — is
+ * ignored rather than obeyed, since `exec` drops the timeout entirely for
+ * those and a hang with no deadline is the failure the cap exists to prevent.
+ */
+export function bashDefaultTimeoutMs(): number {
+  for (const name of ['CYNCO_BASH_TIMEOUT_MS', 'CYNCO_CHECK_TIMEOUT_MS']) {
+    const raw = Number(process.env[name])
+    if (Number.isFinite(raw) && raw > 0) return Math.min(raw, MAX_BASH_TIMEOUT_MS)
+  }
+  return 120_000
+}
+
 export const bashTool: ToolImpl = {
   name: 'Bash',
   description: `Execute a shell command and return its output. The working directory persists between calls. ${getShellInfo().dialectNote}`,
@@ -78,7 +109,17 @@ export const bashTool: ToolImpl = {
     type: 'object',
     properties: {
       command: { type: 'string', description: 'The shell command to execute' },
-      timeout: { type: 'number', description: 'Timeout in milliseconds (default: 120000, max: 600000)' },
+      timeout: {
+        type: 'number',
+        // A getter, not a constant, so the number the model is told matches the
+        // number it gets. A schema that advertises 120000 while the floor is
+        // 300000 makes the model ration a budget it has — the mirror of the
+        // Stage 11C finding, where a 3-second check described as "a few
+        // minutes" was run twice in 911 tool calls.
+        get description() {
+          return `Timeout in milliseconds (default: ${bashDefaultTimeoutMs()}, max: ${MAX_BASH_TIMEOUT_MS})`
+        },
+      },
     },
     required: ['command'],
   },
@@ -86,7 +127,7 @@ export const bashTool: ToolImpl = {
   core: true,
   execute: async (input, cwd) => {
     const command = input.command as string
-    const timeout = Math.min((input.timeout as number) ?? 120000, 600000)
+    const timeout = Math.min((input.timeout as number) ?? bashDefaultTimeoutMs(), MAX_BASH_TIMEOUT_MS)
 
     const safety = checkBashSafety(command)
     if (!safety.safe) {
@@ -145,7 +186,7 @@ export const bashTool: ToolImpl = {
             resolve({
               output: `Error: command timeout after ${timeout}ms. If the command was ` +
                 `making progress rather than hanging, retry it with a larger ` +
-                `timeout (max 600000ms). Output collected before the kill:\n${partial}`,
+                `timeout (max ${MAX_BASH_TIMEOUT_MS}ms). Output collected before the kill:\n${partial}`,
               isError: true,
             })
             return
