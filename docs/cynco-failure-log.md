@@ -2049,13 +2049,33 @@ per turn on the base moves the twelve-seed mean only between 14655 and 15553,
 all nine inside 13766-16825, which is rule 11 satisfied for that test. Mustering
 moves it to **17706 (+15.8%)**, and the throwaway lands at 17731, so it is the
 mechanism and not the implementation. The gate's claims 3, 4 and 5 stay green —
-nothing is minted, purses still reconcile to 2.2e-11 — so the extra gold is
-earned: conquest consolidates enterprise shares into House hands, and dividends
-that used to pay outside holders now land in a purse. That is war working for the
-first time, and the band was calibrated on a world where it never did. The band
-is due an honest re-anchor once 14A lands, which is a re-baseline of a changed
-GAME rather than of a changed SAMPLE, and the log should be able to tell those
-two apart by now.
+nothing is minted, purses still reconcile to 2.2e-11.
+
+**Where the extra gold comes from is not established, and the first explanation I
+wrote in this entry was wrong.** I recorded that conquest consolidates enterprise
+shares into House hands. It does not, at least not here: at seed 7 over twelve
+turns no peace is signed, `reparations` appears in neither journal, and the tree
+carries *one fewer* enterprise than the base. The whole difference is one label:
+
+```
+                    base d7fa68f      with the muster
+  CREDIT dividends        31915             43854     (+37%)
+  DEBIT  expansion        22013             24785     (+13%)
+  enterprises                19                18
+```
+
+Houses are earning more per venture, not owning more of them. It is not staffing
+either — `output_gold` takes `staffing = min(1.0, population / workforce)`, so
+spending population on regiments can only ever *lower* output. The likeliest
+remaining route is compounding: more expansion lands, tiers climb, output climbs,
+and twelve turns of that is worth 37%. That is a hypothesis and it is written
+here as one. **It does not go into a brief until it has been measured** — this
+entry already contained one confident wrong cause, which is the precise failure
+mode the log exists to prevent.
+
+Either way the band is due an honest re-anchor once 14A lands: a re-baseline of a
+changed GAME rather than of a changed SAMPLE, and the log should be able to tell
+those two apart by now. It should not be re-anchored by the run that moved it.
 
 ---
 
