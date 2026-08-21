@@ -26,6 +26,10 @@ export type ConsumerOpts = {
    *  The patched binary serves /activations (empty forever) even with taps off,
    *  so a 200 alone must not count as tap up. Default true (external servers). */
   tapConfigured?: boolean
+  /** How often to re-check the two dependencies while the tier is degraded.
+   *  Default 10s. Only armed when tapConfigured — the env var cannot change
+   *  inside a running process, so a false there is permanent by construction. */
+  reprobeMs?: number
 }
 
 export type BrainTier = 'live' | 'record-only' | 'entropy-only'
@@ -35,8 +39,11 @@ export class ActivationsConsumer {
   layer: number
   private readonly stride: number
   private timer: ReturnType<typeof setInterval> | null = null
+  private reprobeTimer: ReturnType<typeof setInterval> | null = null
   private readonly fetchFn: typeof fetch
   private inFlight = false
+  private tier: BrainTier = 'entropy-only'
+  private announced = false
 
   constructor(private opts: ConsumerOpts) {
     this.layer = opts.layer
@@ -44,21 +51,61 @@ export class ActivationsConsumer {
     this.fetchFn = opts.fetchFn ?? fetch
   }
 
-  /** Probe deps, report tier, start polling if the tap is up. */
+  /** Probe deps, report tier, start polling if the tap is up.
+   *
+   *  The tier used to be decided once here and never revisited, so a jlens
+   *  sidecar started a minute after the engine left the dashboard reading
+   *  `record-only` until the next restart — and the operator, seeing a stale
+   *  badge, concluded the sidecar had failed. Re-probe on a timer instead.
+   */
   async start(): Promise<BrainTier> {
+    const tier = await this.evaluate()
+    // No re-probe when the tap was never configured: LLAMA_ACTIVATIONS_LAYERS
+    // is read from our own env at spawn, so it cannot become true later.
+    if (this.opts.tapConfigured ?? true) {
+      this.reprobeTimer = setInterval(() => { void this.evaluate() }, this.opts.reprobeMs ?? 10_000)
+    }
+    return tier
+  }
+
+  /** Probe both dependencies, announce the tier if it moved, and make the
+   *  drain loop match. Idempotent — safe to call on a timer. */
+  private async evaluate(): Promise<BrainTier> {
     const tapUp = (this.opts.tapConfigured ?? true) && await this.pollOnce()
     const lens = await this.opts.jlens.health()
     const lensUp = lens !== null
     const tier: BrainTier = tapUp && lensUp ? 'live' : tapUp ? 'record-only' : 'entropy-only'
-    console.log(`[brain] tier: ${tier} (tap=${tapUp} lens=${lensUp})`)
-    this.opts.broadcast({ type: 'brain.tier', tier, layers: lens?.layers ?? [], layer: this.layer })
-    if (tapUp) this.timer = setInterval(() => { void this.pollOnce() }, this.opts.intervalMs ?? 100)
+
+    if (!this.announced || tier !== this.tier) {
+      this.announced = true
+      this.tier = tier
+      console.log(`[brain] tier: ${tier} (tap=${tapUp} lens=${lensUp})`)
+      // `tap`/`lens`/`tapConfigured` ride along so the dashboard can name the
+      // dependency that is actually missing. It used to hardcode "unpatched
+      // server" for every entropy-only, which is wrong whenever the binary is
+      // patched but was launched with taps off — the common case, and one that
+      // sent the operator looking at the wrong thing.
+      this.opts.broadcast({
+        type: 'brain.tier', tier,
+        tap: tapUp, lens: lensUp, tapConfigured: this.opts.tapConfigured ?? true,
+        layers: lens?.layers ?? [], layer: this.layer,
+      })
+    }
+
+    if (tapUp && !this.timer) {
+      this.timer = setInterval(() => { void this.pollOnce() }, this.opts.intervalMs ?? 100)
+    } else if (!tapUp && this.timer) {
+      clearInterval(this.timer)
+      this.timer = null
+    }
     return tier
   }
 
   stop(): void {
     if (this.timer) clearInterval(this.timer)
     this.timer = null
+    if (this.reprobeTimer) clearInterval(this.reprobeTimer)
+    this.reprobeTimer = null
   }
 
   /** One drain + readout pass. Returns whether the tap responded. */

@@ -67,7 +67,10 @@ describe('ActivationsConsumer', () => {
     const tier = await c.start()
     c.stop()
     expect(tier).toBe('live')
-    expect(broadcast).toHaveBeenCalledWith({ type: 'brain.tier', tier: 'live', layers: [24, 40, 56], layer: 40 })
+    expect(broadcast).toHaveBeenCalledWith({
+      type: 'brain.tier', tier: 'live', tap: true, lens: true, tapConfigured: true,
+      layers: [24, 40, 56], layer: 40,
+    })
   })
 
   it('start() reports entropy-only when tapConfigured=false even if the route responds (patched binary, taps disabled)', async () => {
@@ -85,7 +88,10 @@ describe('ActivationsConsumer', () => {
     c.stop()
     expect(tier).toBe('entropy-only')
     expect(fetchFn).not.toHaveBeenCalled()   // no probe, no polling loop
-    expect(broadcast).toHaveBeenCalledWith({ type: 'brain.tier', tier: 'entropy-only', layers: [24, 40], layer: 40 })
+    expect(broadcast).toHaveBeenCalledWith({
+      type: 'brain.tier', tier: 'entropy-only', tap: false, lens: true, tapConfigured: false,
+      layers: [24, 40], layer: 40,
+    })
   })
 
   it('start() reports entropy-only with empty layers when both deps down', async () => {
@@ -99,6 +105,51 @@ describe('ActivationsConsumer', () => {
     const tier = await c.start()
     c.stop()
     expect(tier).toBe('entropy-only')
-    expect(broadcast).toHaveBeenCalledWith({ type: 'brain.tier', tier: 'entropy-only', layers: [], layer: 40 })
+    expect(broadcast).toHaveBeenCalledWith({
+      type: 'brain.tier', tier: 'entropy-only', tap: false, lens: false, tapConfigured: true,
+      layers: [], layer: 40,
+    })
+  })
+
+  it('promotes record-only -> live when the jlens sidecar comes up later', async () => {
+    // The tier used to be latched at start(), so a sidecar started after the
+    // engine never registered and the badge lied until the next restart.
+    const fetched = { cursor: 0, n_embd: 4, entries: [] }
+    const broadcast = vi.fn()
+    let lensUp = false
+    const c = new ActivationsConsumer({
+      activationsUrl: 'http://x',
+      fetchFn: (async () => new Response(JSON.stringify(fetched), { status: 200 })) as any,
+      jlens: {
+        readout: vi.fn(),
+        health: async () => (lensUp ? { ok: true, layers: [24, 40] } : null),
+      } as any,
+      broadcast, layer: 40, stride: 1, reprobeMs: 5,
+    })
+    expect(await c.start()).toBe('record-only')
+
+    lensUp = true
+    await vi.waitFor(() => {
+      expect(broadcast).toHaveBeenCalledWith(expect.objectContaining({
+        type: 'brain.tier', tier: 'live', lens: true, layers: [24, 40],
+      }))
+    }, { timeout: 1000 })
+    c.stop()
+  })
+
+  it('announces the tier once, not on every re-probe', async () => {
+    const fetched = { cursor: 0, n_embd: 4, entries: [] }
+    const broadcast = vi.fn()
+    const c = new ActivationsConsumer({
+      activationsUrl: 'http://x',
+      fetchFn: (async () => new Response(JSON.stringify(fetched), { status: 200 })) as any,
+      jlens: { readout: vi.fn(), health: async () => ({ ok: true, layers: [40] }) } as any,
+      broadcast, layer: 40, stride: 1, reprobeMs: 5,
+    })
+    await c.start()
+    await new Promise(r => setTimeout(r, 60))       // ~12 re-probes
+    c.stop()
+    const tiers = broadcast.mock.calls.filter(([m]: any[]) => m.type === 'brain.tier')
+    expect(tiers).toHaveLength(1)
   })
 })

@@ -2683,14 +2683,26 @@ function brainMaybeCloseThinking() {
 // ── Brain workspace panel (Tier 2/3) ─────────────────────────
 var brainWorkspace = { rows: [] };  // last N readouts
 
+// Name the dependency that is actually missing. The old text said "unpatched
+// server" for every entropy-only, which is wrong in the common case: the binary
+// is patched but was launched without LLAMA_ACTIVATIONS_LAYERS, so it serves
+// /activations and returns nothing forever. That message cost an afternoon.
+function brainTierReason(msg, tier) {
+  if (tier === 'live') return '';
+  if (tier === 'record-only') return 'jlens sidecar down (port 9163) — activations recorded, no readout';
+  var why = [];
+  if (msg.tapConfigured === false) why.push('activation tap not configured (LLAMA_ACTIVATIONS_LAYERS unset at engine start — needs a restart)');
+  else if (msg.tap === false) why.push('activation tap not answering (unpatched server, or llama-server down)');
+  if (msg.lens === false) why.push('jlens sidecar down (port 9163)');
+  return why.length ? 'entropy only — ' + why.join('; ') : 'entropy only';
+}
+
 function brainOnTier(msg) {
   var tier = msg.tier || 'entropy-only';
   var badge = document.getElementById('brain-tier-badge');
   if (badge) badge.textContent = tier;
   var status = document.getElementById('brain-workspace-status');
-  if (status) status.textContent =
-    tier === 'live' ? '' : tier === 'record-only' ? 'lens sidecar offline — activations recorded only'
-                         : 'workspace offline (unpatched server) — entropy only';
+  if (status) status.textContent = brainTierReason(msg, tier);
   brainFillLayers(msg.layers, msg.layer);
 }
 
