@@ -156,3 +156,51 @@ Do not redesign the H1-H8 predictions or grant any S5 rule enforcement
 authority until this file has **30-50 labeled missions**. Each rule must then
 demonstrate predictive precision here ("when X fires, mission fails within N
 turns at ≥Y% rate") before it earns back `enforce`.
+
+## Step 2 result — 2026-08-21, 75 labeled missions
+
+The gate above is cleared: 226 rows, **75 labeled**, 28 failures, base failure
+rate 37.3%. Run it yourself with `node scripts/cynco-signal-validation.mjs`.
+
+Note the gap between 226 and 75. The other 151 rows are excluded because
+`mutationSweep` was never patched — the labeling rule at the top of this file
+says an unmeasured mission is not a passing one, and 151 of them is the cost of
+treating that patch step as optional. A count of "landed and verified" reads
+111; that is not the labeled set and must not be used as one.
+
+**No rule earns enforcement authority.**
+
+| rule | fired | labeled | precision | lift vs base | p (Holm) | verdict |
+|------|-------|---------|-----------|--------------|----------|---------|
+| I4 | 223 | 74 | 37.8% | +0.5pp | 1.000 | fires on 223 of 226 missions — a constant, not a signal |
+| I3 | 116 | 23 | 56.5% | +19.2pp | 0.260 | best candidate; does not survive correction |
+| I1 | 106 | 51 | 29.4% | −7.9pp | 0.272 | points the wrong way — fires more on successes |
+| W8 | 86 | 40 | 30.0% | −7.3pp | 1.000 | no evidence |
+| W7 | 27 | 15 | 26.7% | −10.7pp | 1.000 | no evidence |
+| C2 | 17 | 5 | 20.0% | −17.3pp | 1.000 | too few |
+| W6 | 14 | 3 | 33.3% | −4.0pp | 1.000 | too few |
+| C4 | 1 | 0 | — | — | — | never fired on a labeled mission |
+
+Raw p reads 0.037 for I3 and 0.045 for I1, and neither survives Holm across
+seven tested rules. Two rules landing just under 0.05 out of seven tested is
+what chance looks like; quoting the raw values would manufacture a green light
+out of how many rules we happen to have.
+
+Three things follow.
+
+1. **I4 is not a signal.** It fires on 98.7% of missions, so its precision
+   *cannot* differ from the base rate. Whatever it is measuring, it is not a
+   property that distinguishes one mission from another.
+2. **I1 is a candidate to retire or reverse**, not to enforce. It is the second
+   most active rule and its association runs backwards.
+3. **The binding constraint is `mutationSweep`, not mission count.** Another
+   150 missions dispatched the same way adds ~0 labeled rows. Patching the
+   sweep on existing rows is worth more than any number of new runs.
+
+### On training
+
+This is why step 3 is not next. Fine-tuning an S5 model on these decisions
+would teach it to imitate one constant, one backwards rule, and five rules the
+data cannot distinguish from noise — at 75 examples, one to two orders of
+magnitude short of a LoRA regardless. The ledger is doing its job: it just
+falsified the thing it was built to test.
