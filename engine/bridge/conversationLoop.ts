@@ -274,6 +274,13 @@ export class ConversationLoop {
    */
   private lastCommitHead: string | null = null
   /**
+   * Every HEAD this run has observed. A commit is a HEAD we have NOT seen
+   * before; checking a previously-visited commit back out is not delivery, and
+   * without this set the return leg of a `git checkout base && git checkout
+   * master` round trip looks exactly like one (F110).
+   */
+  private seenHeads = new Set<string>()
+  /**
    * The highest calls-since-commit threshold already announced, so a threshold
    * stepped over by a parallel tool batch is still announced exactly once.
    */
@@ -3243,12 +3250,28 @@ export class ConversationLoop {
   private accountCommitPressure(): void {
     const head = this.readGitHead()
     if (head && head !== this.lastCommitHead) {
-      const seeding = this.lastCommitHead === null
+      const previous = this.lastCommitHead
       this.lastCommitHead = head
+      const firstSeen = !this.seenHeads.has(head)
+      this.seenHeads.add(head)
       // The first reading is the baseline, not delivery. Task 2 of this plan hit
       // the mirror-image bug driver-side, where the dispatch baseline was
       // counted as a commit and every mission would have read `commits: 1`.
-      if (!seeding) {
+      //
+      // Beyond that, a moved HEAD is not a commit. Stage 11I's fourth attempt
+      // checked the base out in the live worktree and then checked master back
+      // out; both moves read as delivery and each zeroed the clock, so 161
+      // calls passed on an untouched tree without one notice (F110). These
+      // repositories are also known to have an external process that switches
+      // branches mid-run, so the clock could be reset by something the model
+      // never did.
+      //
+      // Delivery is a HEAD we have never seen that descends from the one it
+      // replaced. Both halves are load-bearing: ancestry alone still accepts
+      // the return leg of a round trip, because the tip genuinely does descend
+      // from the base; novelty alone still accepts a checkout to an older
+      // commit this run happens not to have visited yet.
+      if (previous !== null && firstSeen && this.isAncestor(previous, head)) {
         this.observeCommit()
         return
       }
@@ -3278,6 +3301,30 @@ export class ConversationLoop {
    * Read only when the commit-pressure notice is about to fire, so this costs
    * one `git status` per 150 tool calls rather than one per call.
    */
+  /**
+   * Whether `ancestor` is reachable from `descendant`. Runs only when HEAD has
+   * actually moved, which is rare, so it costs nothing on the common path.
+   *
+   * Both arguments are checked against a hex pattern before reaching a shell:
+   * they come from `git rev-parse` today, but this builds a command string and
+   * a future caller passing a branch name must not be able to smuggle one.
+   */
+  private isAncestor(ancestor: string, descendant: string): boolean {
+    const sha = /^[0-9a-f]{7,40}$/
+    if (!sha.test(ancestor) || !sha.test(descendant)) return false
+    try {
+      const { execSync } = require('child_process')
+      execSync(`git merge-base --is-ancestor ${ancestor} ${descendant}`, {
+        cwd: this.executor['cwd'],
+        stdio: ['pipe', 'pipe', 'pipe'],
+      })
+      return true
+    } catch {
+      // Non-zero exit means "not an ancestor", which is the answer, not a fault.
+      return false
+    }
+  }
+
   private readTreeIsClean(): boolean | null {
     try {
       const { execSync } = require('child_process')

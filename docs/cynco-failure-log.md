@@ -1392,3 +1392,66 @@ loud — the check is one `grep -c` against each log.
 Duplicated tool lines read as the model being repetitive rather than as the
 engine speaking twice. A defect in the display of a metric is invisible exactly
 because the display is the only thing anyone checks it against.
+
+---
+
+## F110 — a moved HEAD read as a commit, so a checkout silently switched the pacing clock off
+
+**Where:** `engine/bridge/conversationLoop.ts`, `accountCommitPressure`.
+
+**How it showed up:** Stage 11I's fourth attempt reached 161 tool calls with an
+untouched tree and *no* commit-pressure notice — the exact condition the notice
+exists to name. The previous run, on the same code, had fired correctly at 150
+and 300. The reflog gave it away:
+
+    b63d9e0 HEAD@{1}: checkout: moving from 305daff to master
+    305daff HEAD@{2}: checkout: moving from master to 305daff
+
+**Why:** the counter watched HEAD and treated *any* new value as delivery. The
+model checked the base out in the live worktree to compare against it, then
+checked master back out. Both moves called `observeCommit()`; each zeroed
+`callsSinceCommit`. The instrument did not misreport — it went quiet, and a
+quiet pacing clock is indistinguishable in the ledger from a run that was
+committing properly.
+
+**Why it is worse than one model's bad habit:** these repositories are already
+known (see the env-hazards note) to have an external process that switches
+branches mid-run. The pacing clock could be reset by something the model never
+did, in a run nobody would think to suspect.
+
+**Fix:** delivery is a HEAD **this run has never seen** that **descends from the
+HEAD it replaced**. Both halves are load-bearing, and each alone is wrong:
+
+- ancestry alone accepts the *return* leg of a round trip, because the tip
+  genuinely does descend from the base it was compared against;
+- novelty alone accepts a checkout to an *older* commit this run has not
+  happened to visit yet.
+
+`git merge-base --is-ancestor` runs only when HEAD has moved, so the common path
+still costs one `rev-parse`. Both arguments are hex-checked before reaching a
+shell — they come from `rev-parse` today, but the call builds a command string.
+
+Where the rule is deliberately conservative: `--amend` produces a commit that
+does not descend from the HEAD it replaced, so it will not reset the clock. That
+error has the safe sign. Failing to reset means the notice fires at a run that
+did commit — visible, and corrected by the next ordinary commit. Falsely
+resetting is what F110 *was*: silence, forever, with nothing to see.
+
+**Calibrated:** 4 new tests in `commitPressureWiring.test.ts`. Before the fix 3
+of the 4 were red and the fourth — a genuine two-commit burst — was already
+green, which is the point: the change must not buy correctness on checkouts by
+losing it on commits. 778 tests across bridge, harness and dashboard pass.
+
+**The general lesson:** the signal was derived from a proxy (HEAD changed)
+rather than from the event (a commit was created), and the proxy had a second
+cause nobody had enumerated. When a control surface reads a proxy, the question
+to ask is not "does this fire when the event happens" — it is "what ELSE makes
+this fire, and what else makes it STOP". F108 fixed the first question on this
+same counter. This is the second.
+
+**And a third time in three failures:** F108, F109 and F110 are all instruments
+that were wrong while looking healthy — a notice that could not name the failure
+it met, a count that was double, a clock that could be switched off. None of the
+three would ever have gone red on its own. The only thing that caught all three
+was comparing two independent measurements of the same quantity and asking why
+they disagreed.

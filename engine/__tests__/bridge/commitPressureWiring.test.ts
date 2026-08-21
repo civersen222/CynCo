@@ -308,3 +308,134 @@ describe('the notice reaches the conversation', () => {
     globalContract.clear()
   }, 30000)
 })
+
+/**
+ * F110. Stage 11I's fourth attempt ran 161 tool calls without one notice
+ * firing, on a tree that had never been touched — the exact condition the
+ * notice exists to name. The reflog said why:
+ *
+ *   b63d9e0 HEAD@{1}: checkout: moving from 305daff to master
+ *   305daff HEAD@{2}: checkout: moving from master to 305daff
+ *
+ * The model checked the base out in the live worktree to compare it, then
+ * checked master back out. `accountCommitPressure` watches HEAD and treats any
+ * new value as delivery, so those two checkouts each called `observeCommit()`
+ * and each zeroed the clock. The instrument did not misreport — it went silent,
+ * which in the ledger is indistinguishable from a run that was committing
+ * properly.
+ *
+ * This matters beyond the model's own behaviour: these repositories are known
+ * to have an external process that switches branches mid-run, so the pacing
+ * clock could be reset by something the model never did.
+ *
+ * The rule that fixes it: a commit is a HEAD THIS RUN HAS NEVER SEEN whose
+ * ancestry contains the HEAD it replaced. Checking out an older commit fails
+ * the ancestry half; checking a previously-seen one back out fails the novelty
+ * half. Both halves are needed — either alone still resets on the return trip.
+ */
+describe('moving HEAD is not the same as making a commit', () => {
+  function repo(prefix: string) {
+    const cwd = tempDir(prefix)
+    const git = (...args: string[]) => spawnSync('git', args, { cwd, encoding: 'utf-8' })
+    git('init')
+    git('config', 'user.email', 't@t')
+    git('config', 'user.name', 't')
+    writeFileSync(join(cwd, 'a.txt'), 'one\n')
+    git('add', 'a.txt')
+    git('commit', '-m', 'first')
+    const first = git('rev-parse', 'HEAD').stdout.trim()
+    writeFileSync(join(cwd, 'a.txt'), 'two\n')
+    git('add', 'a.txt')
+    git('commit', '-m', 'second')
+    const second = git('rev-parse', 'HEAD').stdout.trim()
+    return { cwd, git, first, second }
+  }
+
+  function loopOn(cwd: string): ConversationLoop {
+    return new ConversationLoop({
+      cwd,
+      config: config(),
+      provider: mockProvider([textResponse('done')]),
+      emit: () => {},
+      allowedTools: ['Read'],
+    })
+  }
+
+  it('does not reset when an older commit is checked out', () => {
+    globalContract.clear()
+    const { cwd, git } = repo('cynco-cp-co-back-')
+    const loop = loopOn(cwd)
+
+    // Seed on the tip, then spend calls without committing.
+    ;(loop as any).accountCommitPressure()
+    for (let n = 0; n < 20; n++) (loop as any).accountCommitPressure()
+    expect((loop as any).callsSinceCommit).toBe(21)
+
+    // The model checks the base out to compare against it. Nothing was
+    // delivered; the clock must keep running.
+    git('checkout', '--detach', 'HEAD~1')
+    ;(loop as any).accountCommitPressure()
+    expect((loop as any).callsSinceCommit).toBe(22)
+    globalContract.clear()
+  }, 30000)
+
+  it('does not reset when the newer commit is checked back out', () => {
+    globalContract.clear()
+    const { cwd, git, second } = repo('cynco-cp-co-fwd-')
+    const loop = loopOn(cwd)
+
+    ;(loop as any).accountCommitPressure()
+    git('checkout', '--detach', 'HEAD~1')
+    ;(loop as any).accountCommitPressure()
+
+    // The return trip is the half an ancestry test alone gets wrong: the tip
+    // really is a descendant of the base, so "descends from the last HEAD"
+    // reads it as a commit. It is a HEAD we have already seen.
+    git('checkout', second)
+    ;(loop as any).accountCommitPressure()
+    expect((loop as any).callsSinceCommit).toBe(3)
+    globalContract.clear()
+  }, 30000)
+
+  it('still resets on a genuine commit made after a checkout round trip', () => {
+    globalContract.clear()
+    const { cwd, git, second } = repo('cynco-cp-co-real-')
+    const loop = loopOn(cwd)
+
+    ;(loop as any).accountCommitPressure()
+    git('checkout', '--detach', 'HEAD~1')
+    ;(loop as any).accountCommitPressure()
+    git('checkout', second)
+    ;(loop as any).accountCommitPressure()
+    expect((loop as any).callsSinceCommit).toBe(3)
+
+    // Now the model actually delivers. This must still be recognised, or the
+    // fix for a silent instrument would be an instrument that never resets.
+    writeFileSync(join(cwd, 'a.txt'), 'three\n')
+    git('add', 'a.txt')
+    git('commit', '-m', 'the model saved its work')
+    ;(loop as any).accountCommitPressure()
+    expect((loop as any).callsSinceCommit).toBe(0)
+    globalContract.clear()
+  }, 30000)
+
+  it('resets once for a burst of several commits', () => {
+    globalContract.clear()
+    const { cwd, git } = repo('cynco-cp-co-burst-')
+    const loop = loopOn(cwd)
+
+    ;(loop as any).accountCommitPressure()
+    for (let n = 0; n < 5; n++) (loop as any).accountCommitPressure()
+
+    // Two commits land between one tool call and the next; HEAD jumps by two.
+    // The new tip is unseen and descends from the old one, so this is delivery.
+    for (const body of ['three\n', 'four\n']) {
+      writeFileSync(join(cwd, 'a.txt'), body)
+      git('add', 'a.txt')
+      git('commit', '-m', body.trim())
+    }
+    ;(loop as any).accountCommitPressure()
+    expect((loop as any).callsSinceCommit).toBe(0)
+    globalContract.clear()
+  }, 30000)
+})
