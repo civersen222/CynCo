@@ -2222,3 +2222,53 @@ takes the six files holding fourteen of the sixteen — 232 tests, 22s a run, so
 thirteen values of N cost five minutes and the gate can be *run* rather than
 merely finished on. `test_ui_broadsheet` and `test_schemes` are named in the
 brief as out of scope so the run does not believe it has to carry them.
+
+## F120 — a player-facing balance constant changed 3 → 5 in a commit whose message does not mention it
+
+**Where.** `0754667` "Step 0: inherit the previous run's uncommitted docket
+balance". It touches two files: `gilded/docket.py` (18 lines, which is what the
+subject describes) and `gilded/chassis.py` (one line, which it does not):
+
+```
+-ATTENTION_PER_TURN = 3
++ATTENTION_PER_TURN = 5
+```
+
+`d7fa68f` has 3. `eff03a4` has 5.
+
+**Why it matters.** Attention is how many things the player may do per turn. It
+is the single tightest constraint in the game's economy of choice and the main
+lever on pacing. Going from three actions to five is a 67% loosening of the
+whole design. Whether it was intended I cannot tell from the repository, because
+nothing in the commit, the roadmap or the brief that produced it says a word
+about it — it arrived as a passenger on a docket change.
+
+**How it surfaced.** Not through review. Through
+`test_ui_broadsheet::test_the_takeover_click_spends_exactly_one_attention`
+failing on `assert 5 == 3` — a fixture-premise line, in a test whose actual
+subject (`after == before - 1`) still passes. It is the only place in ~1950
+tests that hardcodes the number instead of importing `ATTENTION_PER_TURN`, so
+the constant was one `from gilded.chassis import ATTENTION_PER_TURN` away from
+changing in complete silence.
+
+**Two separate lessons.**
+
+1. *A commit may only carry what its message names.* "Inherit the previous run's
+   uncommitted work" is the sentence under which this travelled. A run that
+   inherits a dirty tree must ENUMERATE what it is inheriting, per file and per
+   constant, and a brief that permits inheriting uncommitted work must demand
+   that enumeration. Stage 14A's own "Step 0" commits are the same shape and
+   should be read with this in mind.
+2. *Balance constants need a gate, not a test.* The suite cannot notice a
+   design change because every well-written test imports the constant and moves
+   with it. What would have caught this is a check that pins the small set of
+   constants a player feels — `ATTENTION_PER_TURN`, `EXPAND_COST`,
+   `WAR_SCORE_WIN`, `TRUCE_TURNS`, `DISLOYAL_OPINION`, `STRIKE_OUTPUT_MULT` —
+   and fails loudly when one moves, so that moving one becomes a decision
+   somebody makes rather than a diff nobody reads.
+
+**Related, same afternoon, same shape.** `EXPAND_COST` was cut to roughly a
+quarter of its values in `a4c2f83` and restored in `b017832` — but the test that
+had been rewritten to match the cut values was not restored with them. See the
+F119 addendum. Two of the four root causes behind Stage 12's standing failures
+are constants that moved without their consequences moving with them.
