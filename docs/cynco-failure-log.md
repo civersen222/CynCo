@@ -1892,3 +1892,92 @@ one present.** A diagnostic that guesses plausibly is worse than one that says
 "I cannot reach an engine on 9160" — the operator spent the first minutes
 checking S5, which was already off. Where a check cannot distinguish two causes,
 it should report what it observed, not the more interesting hypothesis.
+
+---
+
+## F117 — a single rollout is not a money supply; the gate's last claim was the dice too
+
+**Where.** `~/.cynco/heldout/11/g10_the_money_supply.py`, claim 1: "the world's
+money supply is within 10% of the base". Cost Stages 11I, 11S and 11T — roughly
+eighteen GPU-hours — and the tree that all three were sent to fix was already
+correct when 11S ended.
+
+**What the claim did.** It ran the game once, at seed 7, for twelve turns, on
+the base and on the candidate, and demanded the candidate's total sit inside
+±10% of the base's. The base at seed 7 totals 14601, so the band was 13141–16061
+— the same two numbers `gilded/tests/test_money_supply.py` pins as `TOTAL_LO`
+and `TOTAL_HI`. The tree read 18729, +28%, and three runs were dispatched to
+close that gap.
+
+**Why it was wrong.** A twelve-turn rollout is a stochastic sample. The total is
+not a property of the rules, and the ±10% band is far narrower than the sample's
+own spread:
+
+```
+base d7fa68f, seeds 1-12:  15099 17421 17940 10558  7382 17442
+                           14601  9988 21127 19940 20020 12025   mean 15295
+```
+
+Nearly 3x between the smallest and the largest. And on the base tree *itself*,
+burning meaningless extra `rng.random()` draws on seed 7 — no rule changed, no
+gold created — produced totals from 13009 to 17076, with **7 of 30 outside
+claim 1's own band**. The gate could fail the base roughly a quarter of the time
+by shuffling the dice.
+
+Measured over the ensemble instead, the tree the three runs inherited reads:
+
+```
+tree 79d7040, same seeds:  17184 14715 16867 12151  9317 21081
+                           18729 10854 19403 20448 20577 11918   mean 16104
+```
+
+**+5.3% on the mean, inside the band.** Seed 7 is the single worst of the twelve;
+on four of them the tree holds *less* gold than the base. There was no money
+supply defect. There was one unlucky seed, and it was the only seed measured.
+
+**What that cost, concretely.** 11I could not move seed 7 by any legitimate
+mechanism, so it wrote a `[1200, 2800]` treasury clamp — F113/F114. 11S removed
+the clamp correctly, then found +1% by routing new petition kinds onto their own
+rng sub-streams (`bd84da9`), correctly recognised that as tuning noise and
+reverted it (`1e660bc`, `79d7040`). Right instinct, and it could not have reached
+the right conclusion, because the claim it was tuning against *was* noise. 11T,
+briefed on a defect that did not exist, rediscovered the same banned sub-stream
+within a few hundred tool calls and was stopped mid-run.
+
+**Fix.** Claim 1 now asks for the **mean over twelve seeds** within 10% of the
+base's mean over the same seeds, one interpreter per tree (the whole gate runs in
+5.2s). Calibrated against trees whose behaviour is known:
+
+```
+d7fa68f  base                        mean 15295     —     5/5 on the fixed gate
+a4c2f83  "economy inflated"          mean 27961   +83%    red on claim 1
+b63d9e0  dividend multiplier capped  mean 11471   -25%    red on claim 1
+c6c04d0  the [1200,2800] clamp       mean 16488    +8%    GREEN on claim 1,
+                                                          red on claims 2 and 5
+79d7040  the inherited tree          mean 16104   +5.3%   5/5
+```
+
+The clamp passing claim 1 is not slack. Claim 1 asks how much money exists; the
+clamp does not change much of that. What the clamp does wrong is flatten the
+spread (claim 2, Gini 0.146) and mint through its floor (claim 5, +2314
+unjournalled). Each claim answers one question and the set answers the stage.
+
+**General lesson — state a claim about a stochastic simulation over an aggregate,
+never over one sample.** If the quantity moves when you perturb the dice on the
+*base*, it is not measuring the rules, and a run that cannot change the rules to
+move it will change the dice until it lands. Both of 11S's and 11T's rng
+sub-stream commits were rational responses to an irrational bar.
+
+**This is the fourth consecutive Stage-11 failure of the same shape** — F89 (a
+gate demanding 5 where the base scores 2), F114 (an in-tree test the base fails
+on 3 of 7 Houses), F115 (claim 2 scoring "did you reproduce the base's exact
+rollout"), and now F117. Every one is a bar nobody ran against the base before
+dispatching a run at it. **The rule that would have caught all four: before a
+gate or a test ships, run it against the BASE, and run it against the base
+PERTURBED. If the base fails, the bar is a spec error. If a meaningless
+perturbation of the base fails, the bar is measuring the dice.** That check is
+seconds of work and has now cost four stages.
+
+**Still open: F96.** The held-out tree at `~/.cynco/heldout` is not a git
+repository, so the claim-1 and claim-2 rewrites — the two changes that turned
+Stage 11 from a three-run sink into a pass — have no history and no diff.
