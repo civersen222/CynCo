@@ -466,6 +466,84 @@ describe('/api/run — is the turn still open', () => {
   })
 })
 
+// ── GET /api/sessions ─────────────────────────────────────────────
+
+/**
+ * This list is how the user sees their own work, and it showed them none of it:
+ * a `sessions` row is written once, at session end, so every mission on a
+ * server-mode engine that never exits was missing, and a mission still running
+ * could not appear at all. The fix unions in the sessions that `measurements`
+ * knows about and `sessions` does not.
+ *
+ * That union is mostly HISTORY — on the real governance.db, 63 finished
+ * sessions to 1 live one — so the label matters as much as the row.
+ */
+describe('GET /api/sessions', () => {
+  const SESS_PORT = 19191
+  const SESS_BASE = `http://localhost:${SESS_PORT}`
+  let sessServer: DashboardServer
+  let currentSessionId = 'sess-live'
+
+  const fakeDb = {
+    getLiveSessions: () => ([
+      { sessionId: 'sess-live', outcome: 'unrecorded', configIndex: 0, strategy: '',
+        toolSuccessRate: 1, stuckTurns: 0, totalTurns: 12, filesChanged: 0 },
+      { sessionId: 'sess-abandoned', outcome: 'unrecorded', configIndex: 0, strategy: '',
+        toolSuccessRate: 1, stuckTurns: 0, totalTurns: 400, filesChanged: 0 },
+    ]),
+    getRecentSessions: () => ([
+      { sessionId: 'sess-done', outcome: 'viable', configIndex: 0, strategy: 'default',
+        toolSuccessRate: 1, stuckTurns: 0, totalTurns: 30, filesChanged: 2 },
+    ]),
+  }
+
+  beforeAll(async () => {
+    sessServer = new DashboardServer({
+      port: SESS_PORT,
+      tokens: _tokens,
+      deps: {
+        getGovernance: () => ({
+          getGovernanceDb: () => fakeDb,
+          getSessionId: () => currentSessionId,
+        }),
+      } as any,
+    })
+    await new Promise(r => setTimeout(r, 100))
+  })
+
+  afterAll(() => { sessServer.stop() })
+
+  it('lists sessions that have no outcome row alongside the ones that do', async () => {
+    const rows = await authFetch(`${SESS_BASE}/api/sessions`).then(r => r.json()) as any[]
+    const ids = rows.map(r => r.sessionId)
+    expect(ids).toContain('sess-live')
+    expect(ids).toContain('sess-abandoned')
+    expect(ids).toContain('sess-done')
+  })
+
+  it('calls only the engine\'s actual session running, and the rest unrecorded', async () => {
+    const rows = await authFetch(`${SESS_BASE}/api/sessions`).then(r => r.json()) as any[]
+    const by = (id: string) => rows.find(r => r.sessionId === id)
+    expect(by('sess-live').outcome).toBe('running')
+    // The one that matters. This session ended long ago and will never get an
+    // outcome; calling it 'running' would be a claim nobody checked, repeated
+    // dozens of times down the list.
+    expect(by('sess-abandoned').outcome).toBe('unrecorded')
+    expect(by('sess-done').outcome).toBe('viable')
+  })
+
+  it('follows the engine when the live session id changes', async () => {
+    // A server-mode engine rotates session ids mission after mission. A label
+    // computed once at boot would mark the wrong row forever.
+    currentSessionId = 'sess-abandoned'
+    const rows = await authFetch(`${SESS_BASE}/api/sessions`).then(r => r.json()) as any[]
+    const by = (id: string) => rows.find(r => r.sessionId === id)
+    expect(by('sess-abandoned').outcome).toBe('running')
+    expect(by('sess-live').outcome).toBe('unrecorded')
+    currentSessionId = 'sess-live'
+  })
+})
+
 // Distinct from every other port range in this file so parallel workers cannot
 // collide on the block this suite deliberately occupies.
 const WALK_PORT = 19241

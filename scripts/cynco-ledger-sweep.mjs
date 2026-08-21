@@ -41,6 +41,9 @@ import { writeFileSync, renameSync } from 'fs'
 import { resolve } from 'path'
 import { fileURLToPath } from 'url'
 import { readLedger } from './cynco-ledger-shards.mjs'
+// The predicate that actually labels the ledger. Imported, not reimplemented,
+// so the line this script prints cannot drift from the line the scorer reads.
+import { labelOf } from './cynco-signal-validation.mjs'
 
 export function arg(argv, name) {
   const i = argv.indexOf(`--${name}`)
@@ -165,7 +168,15 @@ export function main(argv, dir = undefined) {
   console.log(`  outcome   : ${rec.outcome}   verified: ${rec.verified}`)
   console.log(`  was       : ${JSON.stringify(before ?? null)}`)
   console.log(`  now       : ${JSON.stringify(rec.mutationSweep)}`)
-  console.log(`  accepted  : ${rec.outcome === 'landed' && rec.verified === true && k === t}`)
+  // Delegate to the scorer's own predicate instead of restating it here. This
+  // line used to compute `killed === total` itself, which predates --kind: it
+  // printed `accepted: false` for a derived sweep with survivors even though
+  // labelOf() reads that same row as a success, because a derived survivor is a
+  // coverage finding and not a rule the DoD claimed to own. A status line that
+  // disagrees with the thing that actually scores the ledger is worse than no
+  // status line — it invites re-running a sweep that already landed.
+  const label = labelOf(rec)
+  console.log(`  accepted  : ${label === null ? 'unlabeled' : label}`)
 
   if (dryRun) {
     console.log('--dry-run: nothing written')

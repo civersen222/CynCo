@@ -158,6 +158,48 @@ describe('cynco-ledger-sweep writes back to the shard the record lives in', () =
     expect(read('missions.jsonl')).toEqual(before)
   })
 
+  /**
+   * The `accepted:` line this script prints is the only feedback a human gets
+   * at the moment a sweep is recorded, and it used to compute its own verdict
+   * as `killed === total`. That predates `--kind`: it printed
+   * `accepted: false` for a derived sweep with survivors that labelOf() reads
+   * as a SUCCESS, which invites re-running a sweep that already landed, or
+   * worse, treating a labeled row as still unlabeled. It now delegates, and
+   * these cases pin the delegation across the three verdicts.
+   */
+  it('the printed verdict is labelOf, not a second opinion', async () => {
+    // @ts-ignore — untyped harness module
+    const { labelOf } = await import('../../../scripts/cynco-signal-validation.mjs')
+    writeFileSync(join(dir, 'missions.jsonl'),
+      '{"missionId":"authored","outcome":"landed","verified":true,"mutationSweep":null}\n' +
+      '{"missionId":"derived","outcome":"landed","verified":true,"mutationSweep":null}\n' +
+      '{"missionId":"unverified","outcome":"landed","verified":null,"mutationSweep":null}\n')
+
+    const lines: string[] = []
+    const real = console.log
+    console.log = (...a: unknown[]) => { lines.push(a.join(' ')) }
+    try {
+      main(argv('--mission', 'authored', '--command', 'z', '--killed', '1', '--total', '2',
+        '--survived', 'r7'), dir)
+      main(argv('--mission', 'derived', '--command', 'z', '--killed', '1', '--total', '2',
+        '--survived', 'ai.py:1:cmp->Lt', '--kind', 'derived'), dir)
+      main(argv('--mission', 'unverified', '--command', 'z', '--killed', '2', '--total', '2'), dir)
+    } finally {
+      console.log = real
+    }
+
+    const verdicts = lines.filter((l) => l.includes('accepted  :')).map((l) => l.split(': ')[1])
+    // An authored survivor is an unmet DoD claim: false. A derived survivor is a
+    // coverage finding: true. No check-cmd means nothing judged it: unlabeled.
+    expect(verdicts).toEqual(['false', 'true', 'unlabeled'])
+
+    // And the same rows, read back off disk through the shipping predicate,
+    // must agree — a print that matched a hand-written expectation but not the
+    // scorer would be the exact drift this test exists to stop.
+    const rows = read('missions.jsonl')
+    expect(rows.map((r) => String(labelOf(r) ?? 'unlabeled'))).toEqual(verdicts)
+  })
+
   it('--dry-run and an out-of-range record both leave the ledger exactly as it was', () => {
     const before = read('missions.jsonl')
     expect(main(argv('--record', '1', '--command', 'z', '--killed', '1', '--total', '1',

@@ -29,8 +29,14 @@
 //
 // Ground truth for scoring, stated honestly:
 //   structurally sound : outcome === 'landed' && verified === true
-//   accepted           : the above AND mutationSweep &&
-//                        mutationSweep.killed === mutationSweep.total
+//   accepted           : the above AND mutationSweep left no survivor that a
+//                        DoD item claimed to own. For an AUTHORED sweep that is
+//                        killed === total, since every mutation in it was
+//                        written against a stated rule. A DERIVED sweep
+//                        (--kind derived) enumerates mutations over lines the
+//                        mission merely touched, so its survivors are coverage
+//                        findings and do not fail the row. labelOf() in
+//                        cynco-signal-validation.mjs is the one implementation.
 //   unmeasured         : mutationSweep === null — NOT a failure, and not a
 //                        success either. Exclude it; never default it.
 

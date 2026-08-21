@@ -1735,6 +1735,28 @@ export class ConversationLoop {
             identityGuardActive: guardResult.passed,
           })
 
+          // Persist the outcome, don't just log it.
+          //
+          // Until this line existed, `recordSessionOutcome` was reachable only
+          // from process exit (engine/main.ts shutdown and handoff). A
+          // server-mode engine serves mission after mission and never exits, so
+          // the `sessions` table sat frozen at 14 rows from a previous era while
+          // `measurements` grew past 76,000 — the dashboard's session list
+          // (GovernanceDB.getRecentSessions via /api/sessions) showed none of the
+          // user's actual work, and engine/s5/exportTrainingData.ts, which maps
+          // sessionId -> outcome from this same table, could not label a single
+          // headless mission's decisions.
+          //
+          // finalOutcome is what the guard and the S4 override actually
+          // concluded; it is passed through rather than reduced, because a row
+          // that always says 'viable' is worse than no row at all.
+          this.governance.recordSessionOutcome(
+            finalOutcome as 'viable' | 'marginal' | 'non-viable',
+            selected.strategy ?? '',
+            selected.index,
+            this.fileTracker.getModifiedFiles().length,
+          )
+
           console.log(`[vsm] Session end: outcome=${finalOutcome}, autopoietic=${assessment.isAutopoietic}, config=${selected.index}`)
         }
       } catch (e) {

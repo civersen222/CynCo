@@ -157,8 +157,13 @@ export class GovernanceDB {
         stuck_turns         INTEGER NOT NULL,
         token_efficiency    REAL NOT NULL,
         s4_composite        REAL NOT NULL,
-        created_at          TEXT NOT NULL DEFAULT (datetime('now')),
-        FOREIGN KEY (session_id) REFERENCES sessions(session_id)
+        created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+        -- No FOREIGN KEY to sessions(session_id), deliberately. Measurements are
+        -- written every turn; the session row is written once, at session END.
+        -- A measurement therefore ALWAYS precedes its parent, and the constraint
+        -- was never satisfiable — it only appeared to hold because bun:sqlite
+        -- leaves foreign_keys OFF. Under any driver that enforces it, every
+        -- per-turn write fails and a live session records nothing.
       )
     `)
 
@@ -255,6 +260,57 @@ export class GovernanceDB {
       stuckTurns: row.stuck_turns,
       totalTurns: row.total_turns,
       filesChanged: row.files_changed,
+    }))
+  }
+
+  /**
+   * Sessions that have taken turns but have not ended — work in flight.
+   *
+   * A `sessions` row is only written at session end, so a mission that has been
+   * running for hours is invisible to anything reading `getRecentSessions`,
+   * including the dashboard's session list. `measurements` has carried a row per
+   * turn since turn one the whole time; nothing ever asked it which sessions it
+   * knew about that `sessions` did not.
+   *
+   * The derived fields are what the measurements actually say, not placeholders:
+   * turns is the number of sealed turns, toolSuccessRate is 1 - mean tool error
+   * rate over them, stuckTurns is the worst seen.
+   *
+   * `outcome` is 'unrecorded', which is the whole truth this query has. Most of
+   * these are not in flight at all — they are sessions from before the outcome
+   * was written at session end, and they will never get one. Calling those
+   * 'running' would be a claim about 63 finished sessions that nothing checked.
+   * Only a caller that knows which session id is live can say more, and the
+   * dashboard does exactly that.
+   *
+   * `filesChanged` is 0 for the same reason it is not null: this query cannot
+   * see the file tracker at all, and the count only becomes knowable at session
+   * end.
+   */
+  getLiveSessions(limit: number): Array<Omit<SessionRecord, 'outcome'> & { outcome: 'unrecorded' }> {
+    const stmt = this.db.prepare(`
+      SELECT m.session_id           AS session_id,
+             COUNT(*)               AS turns,
+             AVG(m.tool_error_rate) AS err_rate,
+             MAX(m.stuck_turns)     AS stuck_turns,
+             MAX(m.created_at)      AS last_at
+      FROM measurements m
+      LEFT JOIN sessions s ON s.session_id = m.session_id
+      WHERE s.session_id IS NULL
+      GROUP BY m.session_id
+      ORDER BY last_at DESC
+      LIMIT ?
+    `)
+    const rows = stmt.all(limit) as any[]
+    return rows.map(row => ({
+      sessionId: row.session_id,
+      outcome: 'unrecorded' as const,
+      configIndex: 0,
+      strategy: '',
+      toolSuccessRate: 1 - (row.err_rate ?? 0),
+      stuckTurns: row.stuck_turns,
+      totalTurns: row.turns,
+      filesChanged: 0,
     }))
   }
 

@@ -691,8 +691,21 @@ window.__CYNCO_TOKEN = ${JSON.stringify(token)};
       const gov = this.deps.getGovernance?.() as any
       const db = gov?.getGovernanceDb?.()
       if (!db) return jsonResponse([])
+      // Sessions with no outcome row first, and they are a separate query on
+      // purpose: a `sessions` row is only written at session end, so a mission
+      // that has been running for hours has no row and this list showed the
+      // user everything except the work they were actually watching.
+      //
+      // Exactly one of them can be in flight, and this is the only place that
+      // knows which: the governance object's own session id. The rest are
+      // finished sessions whose outcome was never written, so they stay
+      // 'unrecorded' — labelling all of them 'running' would be a claim about
+      // dozens of sessions that nothing checked.
+      const current = gov?.getSessionId?.()
+      const live = db.getLiveSessions(50).map((s: any) =>
+        s.sessionId === current ? { ...s, outcome: 'running' } : s)
       const sessions = db.getRecentSessions(50)
-      return jsonResponse(sessions)
+      return jsonResponse([...live, ...sessions])
     } catch {
       return jsonResponse([])
     }

@@ -53,6 +53,12 @@ import { ProgressModel } from './progressModel.js'
 import { classifyExploration } from './explorationState.js'
 import { RegulatorFidelityTracker } from './regulatorFidelity.js'
 import { globalContract } from '../tools/contract.js'
+// Statically imported, not require()d from inside the constructor. A runtime
+// require of a relative TS path resolves under Bun and not under the vitest
+// transform, so the DB silently failed to init in half the test suite — every
+// governance-level test of a persisted row was really testing the no-database
+// branch. The construction below is still guarded; only the resolution moved.
+import { GovernanceDB } from './governanceDb.js'
 import { getJournal } from '../training/decisionJournal.js'
 import { makeJournalEntry } from '../training/types.js'
 import { cyncoHome } from '../paths.js'
@@ -264,7 +270,6 @@ export class CyberneticsGovernance {
       const path = require('path')
       const dbDir = path.join(cyncoHome(), 'governance')
       require('fs').mkdirSync(dbDir, { recursive: true })
-      const { GovernanceDB } = require('./governanceDb.js')
       this._db = new GovernanceDB(path.join(dbDir, 'governance.db'))
       console.log('[vsm] GovernanceDB initialized')
     } catch (e) {
@@ -622,7 +627,13 @@ export class CyberneticsGovernance {
           s4Composite: 5.0,
           cost: metrics.cost,
         })
-      } catch {}
+      } catch (e) {
+        // Not silent. This catch swallowed every failed measurement write for as
+        // long as it existed, so a governance.db that was rejecting rows looked
+        // exactly like one that was being written to — and `measurements` is the
+        // only per-turn record of a session that is still running.
+        console.warn(`[vsm] measurement write failed: ${e instanceof Error ? e.message : String(e)}`)
+      }
     }
 
     // Variety mismatch alert — Ashby's Law violation
