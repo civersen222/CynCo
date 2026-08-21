@@ -1978,6 +1978,12 @@ PERTURBED. If the base fails, the bar is a spec error. If a meaningless
 perturbation of the base fails, the bar is measuring the dice.** That check is
 seconds of work and has now cost four stages.
 
-**Still open: F96.** The held-out tree at `~/.cynco/heldout` is not a git
-repository, so the claim-1 and claim-2 rewrites — the two changes that turned
-Stage 11 from a three-run sink into a pass — have no history and no diff.
+**F96 closed, on the back of this.** The held-out tree at `~/.cynco/heldout` was
+not a git repository, so the claim-1 and claim-2 rewrites — the two changes that
+turned Stage 11 from a three-run sink into a pass — had no history and no diff.
+It is one now (`32203a6`, plus `.gitattributes` with `* -text` at `2ec8cb7`,
+because `restoreHeldOut` compares instruments byte for byte and a checkout that
+rewrote line endings would put every gate one newline-convention away from its
+snapshot). The import is the tree as it stands; everything before it is
+unrecoverable, and that is what F96 cost. The tree stays OUTSIDE the localcode
+repository so that a mission cannot read its own grader from its cwd.
