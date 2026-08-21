@@ -574,6 +574,7 @@ export function historyRewrite({ reflog, reachable, sinceEpochS }) {
 //         engineError?: string,                 // session.error text, null when healthy
 //         verified?: boolean, verify?: object,  // Phase 2(b) check-script result
 //         mutationSweep?: { command, killed, total, survived: string[] },
+//         baselineSha?: string|null, finalSha?: string|null,  // -> commitRange
 //         graderProbes?: { total, probes, uninspectable, byPattern, samples } }
 export function buildMissionRecord(collector, meta) {
   return {
@@ -605,6 +606,28 @@ export function buildMissionRecord(collector, meta) {
     // a sweep that has not been run is not a sweep that passed, and it is not
     // a sweep that failed. See the header for why `verified` cannot stand in.
     mutationSweep: meta.mutationSweep ?? null,
+    // The commits this mission produced, as a range a diff tool can take.
+    //
+    // This exists because 150 of the ledger's first 226 rows are permanently
+    // unsweepable, and not for want of effort: a derived sweep
+    // (scripts/cynco-mutation-sweep.py) mutates the lines the mission ADDED, so
+    // it needs to know which commits were the mission's. The driver has always
+    // known — it reads HEAD before dispatch and prints it — and never wrote it
+    // down. The only surviving trace on those rows is prose inside
+    // `verify.outputTail` ("REV 5dc9510 vs BASE c1bff64"), which is archaeology,
+    // not a field. Every row from here on can be labeled later instead of only
+    // now, which is the whole difference between the ledger growing and the
+    // labeled set growing.
+    //
+    // Null when either end is unknown — never half a range. gitHead() returns
+    // null rather than guessing when it cannot read the repo, and a `head: null`
+    // invites the reader to substitute HEAD-as-of-now, which would sweep every
+    // commit anything has made since. base === head is NOT that case: it is the
+    // measured answer "this mission committed nothing", an empty diff, and it
+    // has to stay distinguishable from "nobody looked".
+    commitRange: meta.baselineSha && meta.finalSha
+      ? { base: meta.baselineSha, head: meta.finalSha }
+      : null,
     // F57: how the driver came to believe the run was over, and whether it was.
     //
     // `exitReason` is one of 'engine_error' | 'engine_closed_the_turn' |
