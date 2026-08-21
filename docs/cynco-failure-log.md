@@ -2152,3 +2152,73 @@ a stronger claim than "zero failures" and, unlike it, is true of a correct tree.
 
 **And it cannot be graded by counting.** See F118 — the sibling finding from the
 same afternoon. `16 or fewer` passed a tree that had swapped five of the sixteen.
+
+### F119 addendum — "nine dice, seven genuine" was my count, and it was wrong
+
+Written the same day, after actually building the gate and calibrating it. The
+9/7 split above came from an N in 1..8 sweep on seven files. A denser sweep
+(N = 0..12) scoped to the six files that hold fourteen of the sixteen changes
+the answer, and the direction of the change matters more than the numbers.
+
+**Eighteen of the nineteen are the dice, not one.** Calibrated:
+
+```
+d7fa68f base    N=0: 0 failed    14 distinct offenders across N=1..12
+eff03a4 head    N=0: 14 failed   19 distinct offenders across N=0..12
+```
+
+Of the "seven genuine", four — every `test_i6b_measurement` colour case — are
+sample-pinned in the direction I had not thought to look for. They fail with
+`No DISABLED regions found`, at N=0 **only**, and PASS at every N from 1 to 12
+on this same tree. The fixture draws seed 42 turn 3 and searches the page for a
+control the UI has refused. Since 11I made every House rich, nothing is refused.
+Jiggle the dice and one is, and the test goes green for a reason it has no right
+to. I had classified them as "the game is wrong" on the strength of the failure
+message.
+
+**So the triage rule I wrote is wrong.** "Red at N=0 only ⇒ genuine" is a rule
+about a *symptom*. The real question is whether the assertion names something
+that only exists because the dice fell that way — a House name, a gold total to
+1e-6, `"+ 8 more"`, "there is a colliery in a striking province", "no control on
+this page is disabled". If it names one, it pins a sample regardless of what the
+sweep says. The sweep is evidence, not the verdict. `test_r9_target_for_conquest`
+proves the other edge: quiet across all thirteen N on the base, but it compares
+to a literal House name and its four siblings all move, so it is a sample too.
+
+**The one genuine defect is a hand-edit, not a regression.**
+`test_ai::test_s17_expanding_needs_more_gold_than_the_price` says in its
+docstring *"tier 4 (expand to tier 5 costs 600). Treasury set to 600 to avoid
+sell_shares trigger (< 500)"* and then in code sets `a.tier = 4`, comments
+*"costs 350"*, and sets treasury 350. `EXPAND_COST` is `{2:300, 3:500, 4:800,
+5:1200}` — tier 4→5 costs 1200, and 350 is below the sell-shares floor, so the
+AI correctly reaches for `sell_shares` and the assertion `result is None` fails.
+The base's version of the same test uses tier 2 and treasury 500 and passes.
+Someone retyped a constant and broke a working threshold test. Fix: read the
+price out of `EXPAND_COST` and assert the precondition the docstring only
+claimed.
+
+**Do not brief a restatement you have not run.** Every prescription in the
+Stage 12 brief was executed on both trees at all thirteen N before it was
+written down, and three of them were wrong the first time:
+
+- the routing restatement was fine (green both trees, red against a mutated
+  `_target_for` at every N);
+- the colliery restatement built a `Movement` and set it striking — and
+  `tick_movement` stood it back DOWN inside the very `end_turn` being measured,
+  because the province's unrest was below `STRIKE_END`, so both branches came
+  out identical;
+- with the ladder stubbed it still failed at seed 5, N=1, because the House
+  broke ground on the colliery that turn and an enterprise under construction
+  pays nothing — both branches read `0.000000` and the comparison was vacuous,
+  not wrong. Capping the tier at 5 and asserting `calm > 0` fixed it.
+
+Two of the three failures were the prescription itself going looking for a
+world instead of building one — the exact mistake the stage exists to correct.
+
+**Scope, honestly.** The whole-suite sweep finds 46 offenders on the clean base
+(test_ui_broadsheet 19, test_schemes 8, test_agenda 8, test_ui_actions_i4d2b1 4,
+test_ui_actions 2, and one each in five more). That is not one stage. Stage 12
+takes the six files holding fourteen of the sixteen — 232 tests, 22s a run, so
+thirteen values of N cost five minutes and the gate can be *run* rather than
+merely finished on. `test_ui_broadsheet` and `test_schemes` are named in the
+brief as out of scope so the run does not believe it has to carry them.
