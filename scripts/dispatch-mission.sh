@@ -101,6 +101,28 @@ grep -q "Chat template supports native tool calls" "$ENGINE_LOG" || {
 }
 grep -E "^\[llama-cpp\] Starting" "$ENGINE_LOG" | head -1
 
+# The engine and the driver resolve the WebSocket port INDEPENDENTLY, from the
+# same defaults. When the engine's port is already held it does not fail — it
+# logs "[ws] Port N in use, using M instead" and binds M. The driver never sees
+# that line; it dials N, finds whatever is there, and reports a refusal that
+# describes the stale engine rather than the collision.
+#
+# Stage 11T lost 30 minutes to exactly this. A previous engine's socket outlived
+# its process (netstat still showed 9160/9161 LISTENING against a PID that both
+# Get-Process and Get-CimInstance said did not exist), the kill sweep above only
+# matches `bun.exe ... engine/main.ts` and so could not have cleared it, and the
+# driver came back "no session.ready in 30s — S5 enforcement may be live", which
+# is a real failure mode and not this one. Two true statements, neither the cause.
+#
+# So: refuse on the fallback line itself. Pass LOCALCODE_WS_PORT to move both
+# sides together onto a free port.
+if grep -qE "^\[ws\] Port [0-9]+ in use" "$ENGINE_LOG"; then
+  echo "[dispatch] refusing: $(grep -E '^\[ws\] Port [0-9]+ in use' "$ENGINE_LOG" | head -1)" >&2
+  echo "[dispatch] the driver resolves its port independently and would dial the busy one." >&2
+  echo "[dispatch] re-run with LOCALCODE_WS_PORT=<free port> to move both sides together." >&2
+  exit 1
+fi
+
 # F91 check, made at dispatch time against the args the engine actually used
 # rather than against what this script hoped it would use. A window with no
 # cache budget beside it is the exact shape that killed a run with "bad
