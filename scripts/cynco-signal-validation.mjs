@@ -20,7 +20,8 @@
  *
  * Labels follow benchmark/cynco-ledger/README.md exactly and are not relaxed:
  *
- *   success   = outcome === 'landed' && verified === true
+ *   success   = outcome === 'landed' && verified === true && the sweep left no
+ *               survivor that a DoD item claimed to own
  *   failure   = labeled and not success
  *   unlabeled = verified === null || mutationSweep === null   (EXCLUDED)
  *
@@ -116,11 +117,30 @@ export function readLedger(dir) {
   return rows
 }
 
-/** true = success, false = failure, null = unlabeled. See README labeling rule. */
+/** true = success, false = failure, null = unlabeled. See README labeling rule.
+ *
+ * The survivor clause is not optional and was missing here at first. The README
+ * has always said success requires `mutationSweep` to have "no survivor that a
+ * DoD item claimed to own", and cynco-ledger.mjs has always defined `accepted`
+ * as killed === total. Dropping that clause silently relabeled 19 of 75 rows
+ * from failure to success and moved the base failure rate from 62.7% to 37.3%
+ * — a mission that landed, passed its check-cmd, and left eight of its own
+ * claimed rules unpinned is not a success, and counting it as one is the exact
+ * laundering this ledger was built to prevent.
+ */
 export function labelOf(row) {
   if (row.verified === null || row.verified === undefined) return null
-  if (row.mutationSweep === null || row.mutationSweep === undefined) return null
-  return row.outcome === 'landed' && row.verified === true
+  const sweep = row.mutationSweep
+  if (sweep === null || sweep === undefined) return null
+  if (row.outcome !== 'landed' || row.verified !== true) return false
+  // A DERIVED sweep mutates whatever expressions the mission's diff happened to
+  // add (see scripts/cynco-mutation-sweep.py). Its survivors are real findings
+  // about test coverage, but they are not rules a DoD item claimed to own, so
+  // they cannot be read as "the mission failed its own definition of done".
+  // Conflating the two would fail every mission whose brief told it not to add
+  // tests. It still counts as MEASURED, which is the point of running it.
+  if (sweep.kind === 'derived') return true
+  return (sweep.survived ?? []).length === 0
 }
 
 /** Rule ids that fired at least once during a mission. Set, not multiset: the

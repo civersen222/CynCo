@@ -27,6 +27,15 @@
 // failure, and a record that reads "1 survivor" when eight survived is worse
 // than no record at all. Omit it when none survived. The list must name every
 // survivor — exactly `total - killed` ids — or nothing is written.
+//
+// --kind authored (default) | derived. An AUTHORED sweep is a withheld set
+// written per stage against the DoD's own rule ids, so a survivor is a rule the
+// mission claimed and failed to pin, and the labeling rule reads it as a failed
+// mission. A DERIVED sweep comes from scripts/cynco-mutation-sweep.py, which
+// mutates whatever expressions the mission's diff added; a survivor there says
+// the delivered tests do not cover a line, which is worth knowing but is not an
+// unmet claim. Both count as MEASURED — that is the point, since 151 rows sat
+// unlabeled waiting for a sweep nobody was going to hand-author.
 
 import { writeFileSync, renameSync } from 'fs'
 import { resolve } from 'path'
@@ -101,9 +110,20 @@ export function main(argv, dir = undefined) {
   const total = arg(argv, 'total')
   const survived = argList(argv, 'survived') ?? []
   const dryRun = argv.includes('--dry-run')
+  // 'authored' = a withheld set written per stage against the DoD's own rule
+  // ids, so a survivor is a rule the mission claimed and did not pin — that
+  // fails the mission. 'derived' = scripts/cynco-mutation-sweep.py mutating
+  // whatever expressions the diff added, so a survivor is a coverage finding
+  // instead. Both make the row MEASURED; only the first can fail it. Absent
+  // means authored, which is what all 42 pre-existing sweeps are.
+  const kind = arg(argv, 'kind') ?? 'authored'
+  if (kind !== 'authored' && kind !== 'derived') {
+    console.error(`--kind must be 'authored' or 'derived', got ${kind}`)
+    return 2
+  }
 
   if ((!recordArg && !missionArg) || !command || killed === undefined || total === undefined) {
-    console.error('usage: --record N | --mission ID  --command "..." --killed K --total T [--survived a,b] [--dry-run]')
+    console.error('usage: --record N | --mission ID  --command "..." --killed K --total T [--survived a,b] [--kind authored|derived] [--dry-run]')
     return 2
   }
 
@@ -136,7 +156,9 @@ export function main(argv, dir = undefined) {
   const t = Number(total)
   const rec = rows[idx]
   const before = rec.mutationSweep
-  rec.mutationSweep = { command, killed: k, total: t, survived }
+  rec.mutationSweep = kind === 'derived'
+    ? { kind, command, killed: k, total: t, survived }
+    : { command, killed: k, total: t, survived }
 
   console.log(`record #${idx + 1}  ${rec.missionId}`)
   console.log(`  briefFile : ${rec.briefFile}`)

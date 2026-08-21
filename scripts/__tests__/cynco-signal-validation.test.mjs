@@ -52,10 +52,43 @@ describe('wilson', () => {
 })
 
 describe('labelOf', () => {
-  const base = { outcome: 'landed', verified: true, mutationSweep: { killed: 3, survived: [] } }
+  const base = { outcome: 'landed', verified: true, mutationSweep: { killed: 3, total: 3, survived: [] } }
 
-  it('landed + verified + swept is a success', () => {
+  it('landed + verified + swept clean is a success', () => {
     expect(labelOf(base)).toBe(true)
+  })
+
+  it('a surviving mutation the DoD claimed to own is a FAILURE, not a success', () => {
+    // README: success requires "no survivor that a DoD item claimed to own".
+    // This clause was missing from labelOf at first and it relabeled 19 of 75
+    // real rows — a mission that left eight claimed rules unpinned was being
+    // counted as evidence of what a successful mission looks like.
+    const leaky = { ...base, mutationSweep: { killed: 2, total: 3, survived: ['W6'] } }
+    expect(labelOf(leaky)).toBe(false)
+  })
+
+  it('counts every survivor, not just a lone one', () => {
+    const leaky = { ...base, mutationSweep: { killed: 0, total: 8, survived: ['X1', 'X2', 'X3'] } }
+    expect(labelOf(leaky)).toBe(false)
+  })
+
+  it('a DERIVED sweep survivor does not fail the mission, but does label it', () => {
+    // scripts/cynco-mutation-sweep.py mutates whatever the diff added, so its
+    // survivors are coverage findings rather than unmet DoD claims. A brief
+    // that forbids touching the test file would otherwise fail by obeying.
+    const derived = {
+      ...base,
+      mutationSweep: { kind: 'derived', killed: 0, total: 14, survived: ['gilded/ai.py:224:bool->Or'] },
+    }
+    expect(labelOf(derived)).toBe(true)
+  })
+
+  it('a derived sweep cannot rescue a mission that did not land', () => {
+    const derived = {
+      outcome: 'void-bad-brief', verified: true,
+      mutationSweep: { kind: 'derived', killed: 14, total: 14, survived: [] },
+    }
+    expect(labelOf(derived)).toBe(false)
   })
 
   it('an unmeasured mutation sweep is unlabeled, NOT a pass', () => {

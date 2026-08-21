@@ -132,6 +132,32 @@ describe('cynco-ledger-sweep writes back to the shard the record lives in', () =
     expect(read('missions.jsonl').every((r) => !('__shard' in r) && !('__line' in r))).toBe(true)
   })
 
+  // `kind` decides whether a survivor FAILS the mission or merely reports thin
+  // coverage (see labelOf in scripts/cynco-signal-validation.mjs), so the two
+  // must be distinguishable in the written record and must not be conflated.
+  it('an authored sweep records no kind, keeping all 42 existing rows valid', () => {
+    expect(main(argv('--record', '1', '--command', 'z', '--killed', '1', '--total', '1'), dir)).toBe(0)
+    const rec = read('missions.jsonl')[0].mutationSweep
+    expect('kind' in rec).toBe(false)
+    expect(rec).toEqual({ command: 'z', killed: 1, total: 1, survived: [] })
+  })
+
+  it('a derived sweep is marked, so its survivors are not read as unmet DoD claims', () => {
+    expect(main(argv('--record', '1', '--command', 'gen', '--killed', '0', '--total', '2',
+      '--survived', 'ai.py:12:cmp->LtE,ai.py:13:bool->Or', '--kind', 'derived'), dir)).toBe(0)
+    expect(read('missions.jsonl')[0].mutationSweep).toEqual({
+      kind: 'derived', command: 'gen', killed: 0, total: 2,
+      survived: ['ai.py:12:cmp->LtE', 'ai.py:13:bool->Or'],
+    })
+  })
+
+  it('an unknown --kind writes nothing rather than guessing', () => {
+    const before = read('missions.jsonl')
+    expect(main(argv('--record', '1', '--command', 'z', '--killed', '1', '--total', '1',
+      '--kind', 'advisory'), dir)).toBe(2)
+    expect(read('missions.jsonl')).toEqual(before)
+  })
+
   it('--dry-run and an out-of-range record both leave the ledger exactly as it was', () => {
     const before = read('missions.jsonl')
     expect(main(argv('--record', '1', '--command', 'z', '--killed', '1', '--total', '1',

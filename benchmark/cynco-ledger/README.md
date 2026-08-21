@@ -159,8 +159,17 @@ turns at ≥Y% rate") before it earns back `enforce`.
 
 ## Step 2 result — 2026-08-21, 75 labeled missions
 
-The gate above is cleared: 226 rows, **75 labeled**, 28 failures, base failure
-rate 37.3%. Run it yourself with `node scripts/cynco-signal-validation.mjs`.
+The gate above is cleared: 226 rows, **75 labeled**, 47 failures, base failure
+rate 62.7%. Run it yourself with `node scripts/cynco-signal-validation.mjs`.
+
+> **Corrected 2026-08-21.** The first version of this section read 28 failures
+> and a 37.3% base rate, because `labelOf` implemented `landed && verified` and
+> dropped the rest of the rule three paragraphs above it: success also requires
+> the sweep to leave **no survivor a DoD item claimed to own**. Nineteen rows —
+> `mission_ui7e` at 0/8, `mission_i4d1` at 0/20, `mission_ui8` at 1/7 — had
+> landed, passed their check-cmd, and left most of their own claimed rules
+> unpinned, and were being counted as examples of what success looks like. The
+> conclusion below did not change, which is the only reassuring thing about it.
 
 Note the gap between 226 and 75. The other 151 rows are excluded because
 `mutationSweep` was never patched — the labeling rule at the top of this file
@@ -172,19 +181,26 @@ treating that patch step as optional. A count of "landed and verified" reads
 
 | rule | fired | labeled | precision | lift vs base | p (Holm) | verdict |
 |------|-------|---------|-----------|--------------|----------|---------|
-| I4 | 223 | 74 | 37.8% | +0.5pp | 1.000 | fires on 223 of 226 missions — a constant, not a signal |
-| I3 | 116 | 23 | 56.5% | +19.2pp | 0.260 | best candidate; does not survive correction |
-| I1 | 106 | 51 | 29.4% | −7.9pp | 0.272 | points the wrong way — fires more on successes |
-| W8 | 86 | 40 | 30.0% | −7.3pp | 1.000 | no evidence |
-| W7 | 27 | 15 | 26.7% | −10.7pp | 1.000 | no evidence |
-| C2 | 17 | 5 | 20.0% | −17.3pp | 1.000 | too few |
-| W6 | 14 | 3 | 33.3% | −4.0pp | 1.000 | too few |
+| I4 | 223 | 74 | 62.2% | −0.5pp | 1.000 | fires on 223 of 226 missions — a constant, not a signal |
+| I3 | 116 | 23 | 78.3% | +15.6pp | 0.432 | best candidate; not significant even uncorrected |
+| I1 | 106 | 51 | 54.9% | −7.8pp | 0.432 | points the wrong way — fires more on successes |
+| W8 | 86 | 40 | 55.0% | −7.7pp | 0.638 | no evidence |
+| W7 | 27 | 15 | 46.7% | −16.0pp | 0.696 | no evidence |
+| C2 | 17 | 5 | 20.0% | −42.7pp | 0.430 | too few |
+| W6 | 14 | 3 | 100.0% | +37.3pp | 0.696 | too few |
 | C4 | 1 | 0 | — | — | — | never fired on a labeled mission |
 
-Raw p reads 0.037 for I3 and 0.045 for I1, and neither survives Holm across
-seven tested rules. Two rules landing just under 0.05 out of seven tested is
-what chance looks like; quoting the raw values would manufacture a green light
-out of how many rules we happen to have.
+Not one rule reaches 0.05 even before correction — the smallest raw p is 0.061,
+on C2, which fired on five labeled missions. Holm is still applied and still
+reported, because seven rules is seven chances and the correction has to be in
+place before a rule ever does clear the bar, not added afterwards once someone
+dislikes the answer.
+
+Under the earlier, wrong labeling I3 read p=0.037 and I1 read p=0.045, and the
+write-up leaned on Holm to explain them away. Both were artifacts of counting
+nineteen unpinned missions as successes. It is worth noticing that the *stated*
+conclusion survived a bug large enough to move the base rate by 25 points —
+that is a sign the conclusion is coarse, not a sign the analysis was careful.
 
 Three things follow.
 
@@ -196,6 +212,18 @@ Three things follow.
 3. **The binding constraint is `mutationSweep`, not mission count.** Another
    150 missions dispatched the same way adds ~0 labeled rows. Patching the
    sweep on existing rows is worth more than any number of new runs.
+
+   `scripts/cynco-mutation-sweep.py` exists to remove that constraint. Sweeps
+   were null on 151 rows because they were hand-authored per stage after
+   reading the landed code; that tool derives them instead from the mission's
+   own diff — mutate the source lines the mission added, run the tests it
+   delivered. Record a derived sweep with `--kind derived`: its survivors are
+   findings about test coverage, not unmet DoD claims, so they label the row
+   without failing the mission.
+
+4. **62.7% of labeled missions failed.** Two thirds. That number is not the
+   S5 rules' fault and no amount of rule analysis addresses it; it is the
+   thing the rules were supposed to predict, and it is the thing to fix.
 
 ### On training
 
