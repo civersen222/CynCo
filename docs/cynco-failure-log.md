@@ -1740,3 +1740,83 @@ Related to F89 (a gate demanding 5 where the base scores 2) — the same
 calibration failure, one layer in. F89 was caught because the gate is authored
 deliberately and reviewed. This one was not, because the test was authored
 mid-run by the thing being measured.
+
+---
+
+## F115 — a gate claim that scored "reproduce the base's dice", and cost two runs
+
+**Where:** `~/.cynco/heldout/11/g10_the_money_supply.py`, claim 2 — *"no single
+House is more than 40% from where it was"*, comparing each House's turn-12
+purse against **the same House's** turn-12 purse in the base tree.
+
+**It reads like a regression check.** It is not. It is a demand that the tree
+reproduce the base's *specific random rollout*, House by House.
+
+**The measurement that settles it.** Take the base tree, change no rule, create
+no gold, and burn N extra `rng.random()` draws per turn — a perturbation with no
+economic content whatsoever:
+
+```
+burn=0:  0/7 out of band
+burn=1:  2/7   Ashworth 2621 +43%; Vantrell 1737 +55%
+burn=2:  0/7
+burn=3:  3/7   Ashworth 952 -48%; Brandtner 1767 +50%; Vantrell 1875 +68%
+burn=5:  2/7   Karsgate 937 -45%; Vantrell 502 -55%
+burn=8:  1/7   Vantrell +150%
+```
+
+**One extra draw per turn fails the claim.** The mechanism is visible: a
+different draw sequence sends a different enterprise to tier 5, and whoever owns
+it ends the century rich. Any commit adding content that draws from the shared
+`game.rng` — which is every content commit — shifts that sequence.
+
+**Contrast with claim 1, which is fair.** The same perturbation leaves the world
+total inside its ±10% band every time (13718–15870 against a band of
+13141–16061). Claim 1 measures something real; claim 2 measured the seed.
+
+**Cost: two runs, ~12 hours.** Stage 11I's second run reached for the
+`[1200, 2800]` clamp partly to satisfy it (F113/F114). Stage 11S then diagnosed
+the *cause* correctly — its commits say "route post-base petition-kind rulings
+onto their own RNG sub-streams so their extra draws do not shift the core
+stream" — got the total to +1% and claim 1 green, then **reverted its own work**
+with the right instinct and the wrong conclusion:
+
+> `1e660bc  11S: revert sub-stream RNG routing - it reorders the core AI/dividend
+> stream and breaks the 4 in-band Houses`
+
+It was correct that re-streaming the rng until the dice land is tuning noise.
+It could not know that the claim it was tuning against was noise too, so it
+backed out a real fix and finished at its starting number.
+
+**Fix — ask the distributional question instead.** The Gini coefficient of the
+seven purses survives a reshuffle: on the base under every perturbation above it
+stays in 0.194–0.323. Claim 2 is now a 0.15–0.38 band on that.
+
+Calibrated in both directions before landing, per F89:
+
+```
+79d7040 (clamp removed)   ok    Gini 0.253 (base 0.230)
+c6c04d0 (banned clamp)    MISS  Gini 0.146  — WEALTH IS FLATTENED
+```
+
+The floor is load-bearing, not slack. Flattening the economy is the one
+mechanism this stage has already had to ban by name, and it now trips claim 2
+*and* claim 5 independently rather than passing claim 2 outright. The tree that
+had been reading 3/5 reads **4/5** — the stage was one real defect from done and
+the gate was hiding that behind a second, unsatisfiable one.
+
+**General lesson — a claim stated over per-entity outcomes in a stochastic
+simulation is measuring the seed unless you have proved otherwise, and the proof
+is cheap.** Perturb the base in a way that carries no meaning — burn a draw,
+reorder an iteration — and re-score. Whatever moves is rollout identity, not
+behaviour. State the claim over a distribution instead, and calibrate its floor
+against the degenerate mechanism you are trying to forbid, so the band has two
+live edges rather than one.
+
+This is F89 (a gate demanding 5 where the base scores 2) and F114 (an in-tree
+test the base itself fails) a third time: **three consecutive stages lost to a
+bar nobody checked the base against.** F89 was about the level of the bar. F114
+was about the reference point. This one is about the bar measuring a quantity
+that is not stable in the first place — the hardest of the three to see, because
+the claim is satisfied by the base exactly, and only stops being satisfied when
+you nudge it.
