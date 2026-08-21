@@ -130,9 +130,12 @@ describe('session outcomes reach the sessions table', () => {
     const live = db.getLiveSessions(50)
     const mine = live.find((r: any) => r.sessionId === 'session-in-flight')
     expect(mine).toBeDefined()
-    // 'running' and not a viability verdict: nothing has judged this session,
-    // and rendering it as 'viable' would be a claim nobody made.
-    expect(mine!.outcome).toBe('running')
+    // 'unrecorded', not a viability verdict and not 'running' either. Nothing
+    // has judged this session, and the DB cannot tell a session in flight from
+    // one that ended before outcomes were written — on the real governance.db
+    // that is 63 finished sessions to 1 live one. Only the dashboard, which
+    // knows the live session id, may narrow it.
+    expect(mine!.outcome).toBe('unrecorded')
     expect(mine!.totalTurns).toBeGreaterThan(0)
   })
 

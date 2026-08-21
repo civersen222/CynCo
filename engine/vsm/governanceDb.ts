@@ -274,14 +274,20 @@ export class GovernanceDB {
    *
    * The derived fields are what the measurements actually say, not placeholders:
    * turns is the number of sealed turns, toolSuccessRate is 1 - mean tool error
-   * rate over them, stuckTurns is the worst seen. `outcome` is 'running' because
-   * no verdict exists yet — a session in flight has not been judged viable or
-   * otherwise, and rendering it as either would be a claim nobody made.
+   * rate over them, stuckTurns is the worst seen.
+   *
+   * `outcome` is 'unrecorded', which is the whole truth this query has. Most of
+   * these are not in flight at all — they are sessions from before the outcome
+   * was written at session end, and they will never get one. Calling those
+   * 'running' would be a claim about 63 finished sessions that nothing checked.
+   * Only a caller that knows which session id is live can say more, and the
+   * dashboard does exactly that.
+   *
    * `filesChanged` is 0 for the same reason it is not null: this query cannot
    * see the file tracker at all, and the count only becomes knowable at session
    * end.
    */
-  getLiveSessions(limit: number): Array<Omit<SessionRecord, 'outcome'> & { outcome: 'running' }> {
+  getLiveSessions(limit: number): Array<Omit<SessionRecord, 'outcome'> & { outcome: 'unrecorded' }> {
     const stmt = this.db.prepare(`
       SELECT m.session_id           AS session_id,
              COUNT(*)               AS turns,
@@ -298,7 +304,7 @@ export class GovernanceDB {
     const rows = stmt.all(limit) as any[]
     return rows.map(row => ({
       sessionId: row.session_id,
-      outcome: 'running' as const,
+      outcome: 'unrecorded' as const,
       configIndex: 0,
       strategy: '',
       toolSuccessRate: 1 - (row.err_rate ?? 0),
