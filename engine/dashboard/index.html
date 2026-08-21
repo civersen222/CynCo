@@ -2213,14 +2213,19 @@ function fetchSessions() {
       sel.innerHTML = '<option value="">No sessions found</option>';
       return;
     }
+    // Rebuilding the list must not yank the selection out from under someone
+    // reading a session, now that it rebuilds on a timer.
+    var wasSelected = sel.value;
     sel.innerHTML = '';
     sessions.forEach(function(s) {
       var opt = document.createElement('option');
       opt.value = s.sessionId;
-      var label = s.sessionId.slice(0, 12) + ' | ' + s.outcome + ' | ' + s.totalTurns + ' turns | ' + Math.round(s.toolSuccessRate * 100) + '% success';
+      var mark = s.outcome === 'running' ? '* ' : '';
+      var label = mark + s.sessionId.slice(0, 12) + ' | ' + s.outcome + ' | ' + s.totalTurns + ' turns | ' + Math.round(s.toolSuccessRate * 100) + '% success';
       opt.textContent = label;
       sel.appendChild(opt);
     });
+    if (wasSelected) sel.value = wasSelected;
   }).catch(function() {});
 }
 
@@ -2291,8 +2296,12 @@ function drawHistoryChart(measurements) {
   ctx.stroke();
 }
 
-// Load sessions on startup
+// Load sessions on startup, then keep the list current. It used to be fetched
+// exactly once, so a dashboard left open — which is how it is actually used,
+// while a mission runs for hours — never showed the mission that started after
+// the page did.
 fetchSessions();
+setInterval(fetchSessions, 15000);
 
 // ── Tab Switching ─────────────────────────────────────────
 function switchTab(name) {

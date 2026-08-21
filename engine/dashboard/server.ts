@@ -691,8 +691,13 @@ window.__CYNCO_TOKEN = ${JSON.stringify(token)};
       const gov = this.deps.getGovernance?.() as any
       const db = gov?.getGovernanceDb?.()
       if (!db) return jsonResponse([])
+      // In-flight sessions first, and they are a separate query on purpose: a
+      // `sessions` row is only written at session end, so a mission that has
+      // been running for hours has no row and this list showed the user
+      // everything except the work they were actually watching.
+      const live = db.getLiveSessions(50)
       const sessions = db.getRecentSessions(50)
-      return jsonResponse(sessions)
+      return jsonResponse([...live, ...sessions])
     } catch {
       return jsonResponse([])
     }
