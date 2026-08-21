@@ -1519,3 +1519,70 @@ written in the launcher's own comment and nobody followed it across the process
 boundary. And the tell was in plain sight the whole time: `(nothing)` collected
 before the kill, five times, in a log nobody read until the calls-per-minute
 went strange.
+
+---
+
+## F112 — the write guard protected the one file every brief calls disposable
+
+**Where:** `engine/tools/impl/write.ts:51` — the shrink guard, which refuses a
+Write that cuts a file of 1000+ bytes to under half its size.
+
+**Measured, on the Stage 11I money-supply run:** nine Write calls refused. Every
+one of them was `probe.py`:
+
+```
+ERROR: Refusing to write C:\Users\civer\civkings\probe.py — this would cut it
+from 1898 bytes to 849, discarding 1049 bytes you have not shown you meant to
+lose.
+```
+
+`probe.py` is the single scratch file that brief — and every brief before it —
+explicitly mandates: *"Write at most ONE probe.py and delete it in the same
+cut."* It is the only name `g11_hygiene.py` whitelists (`ALLOWED_UNTRACKED =
+{"probe.py"}`). The instrument designates the file as disposable and the engine
+treated it as precious.
+
+**The refusal's own escape hatch is the argument against it.** It says "delete
+it first, then write". For an untracked file that is a no-op: nothing is
+recovered by deleting first, no trace is left anywhere git can see, and the
+transcript records the same intent either way. The guard was charging a Read
+plus a retry for a ceremony that bought nothing it could name.
+
+**And the alternative it pushed toward is worse than the cost it imposed.** Told
+to use Edit instead, a model patches the new measurement in beside the old one
+rather than replacing it, and the probe accumulates dead code until it prints a
+confident number for something it is no longer measuring. On a stage whose
+entire job was reading one figure correctly, a stale probe is not a smaller
+failure than a lost call — it is the larger one.
+
+**Fix:** the guard protects HISTORY, so it does not apply to a file git has
+never seen. `gitKnowsFile` runs `git ls-files -- <path>` and answers all three
+states in one call: output means tracked, empty output with a clean exit means
+untracked inside a repo, non-zero exit means no repo or no git. Only the middle
+state lifts the guard. **Unknown means protect** — outside a repository the
+guard stays on, which is what keeps the seven pre-existing tests (all of which
+run in a bare tmpdir) green and unchanged.
+
+Staged counts as tracked. `git add` is the model saying *this is work*, and from
+that moment the content is recoverable from the index. That is the line, not
+committing.
+
+The call is behind the size check, so the common Write pays nothing.
+
+**Calibrated:** 4 new tests. Red first, and exactly one of the four — the
+untracked rewrite — which is the point: the change had to buy the scratch case
+without losing the tracked one. The guard still refuses to gut a committed
+suite, still refuses once a probe is staged, and still fires outside a repo.
+28 pass across write, writeShrinkGuard and toolHints.
+
+**The general lesson:** a guard is a claim about what is worth losing, and that
+claim has to be checked against what the work actually is. This one was written
+from a real incident — a 73-case suite replaced by four — and the incident was
+about a *tracked* file. Generalising it to every file on disk swept in the
+category the harness itself had already labelled throwaway. When a guard fires
+repeatedly on one filename, that is not the model misbehaving; it is the guard
+being asked a question it was never designed to answer.
+
+Same shape as F111 directly above it: a limit correct in the place it was
+written and wrong one step outside it. Both were visible in the driver log for
+hours as a repeating error nobody read.

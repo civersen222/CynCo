@@ -1,4 +1,5 @@
 import { writeFileSync, mkdirSync, statSync } from 'fs'
+import { execFileSync } from 'child_process'
 import { resolve, dirname } from 'path'
 import type { ToolImpl } from '../types.js'
 
@@ -6,6 +7,40 @@ import type { ToolImpl } from '../types.js'
 const SUBSTANTIAL_BYTES = 1000
 // Below this fraction of what is already there, the write is a truncation, not a revision.
 const SHRINK_FLOOR = 0.5
+
+/**
+ * Does git, in this working tree, already know about `path`?
+ *
+ * The shrink guard protects HISTORY, and a file git has never seen has none.
+ * The Stage 11I run lost nine Write calls to the guard, every one of them
+ * `probe.py` — the single scratch file every mission brief mandates and the
+ * only name the hygiene gate whitelists. The refusal told it to "delete the
+ * file first, then write", which for an untracked file recovers nothing and
+ * leaves no trace: a Read and a retry charged for a ceremony.
+ *
+ * Worse, it pushed toward Edit, and a probe edited rather than rewritten
+ * accumulates its old measurement beside the new one until it prints a
+ * confident number for something it is no longer measuring.
+ *
+ * `ls-files` answers all three states in one call: a line of output means
+ * tracked, empty output with a clean exit means untracked inside a repo, and a
+ * non-zero exit means no repo or no git. Only the middle case lifts the guard —
+ * unknown means protect, which is what keeps the guard on outside a repository.
+ *
+ * Staged counts as tracked. `git add` is the model saying this is work, and
+ * from that moment the content is recoverable from the index.
+ */
+function gitKnowsFile(path: string): boolean | null {
+  try {
+    const out = execFileSync('git', ['-C', dirname(path), 'ls-files', '--', path], {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+    })
+    return out.trim().length > 0
+  } catch {
+    return null
+  }
+}
 
 /** Bytes currently on disk at `path`, or null if there is nothing there to lose. */
 function existingSize(path: string): number | null {
@@ -48,7 +83,8 @@ export const writeTool: ToolImpl = {
     // deliberate truncation stays possible and leaves a trace in the transcript.
     const before = existingSize(filePath)
     const after = Buffer.byteLength(content)
-    if (before !== null && before >= SUBSTANTIAL_BYTES && after < before * SHRINK_FLOOR) {
+    if (before !== null && before >= SUBSTANTIAL_BYTES && after < before * SHRINK_FLOOR
+        && gitKnowsFile(filePath) !== false) {
       return {
         output:
           `ERROR: Refusing to write ${filePath} — this would cut it from ${before} bytes to ${after}, ` +
