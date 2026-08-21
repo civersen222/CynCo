@@ -85,14 +85,43 @@ raising `EXPAND_COST` as a hidden throttle; giving the one-sided sinks a counter
 to "fix the accounting" — those sinks *are* the brake; deleting or rarefying a decision;
 draining every House equally, which fails a two-sided band exactly as hard as inflating them.
 
-### Stage 12 — the suite goes green and stays green
-~70 tests are red and every one traces to 11I. This stage is the proof that they did.
+### Stage 12 — the assertions that measure the dice
+*Rewritten 2026-08-21 against measurement. The previous entry said "~70 tests are red
+and every one traces to 11I" and demanded zero failures with no re-baselining. Both
+halves were wrong and the second was unsatisfiable — see F118 and F119.*
 
-**Exit:** ≥1907 collected, zero failures, three runs in a row, with no test deleted,
-skipped, xfailed, or re-baselined into a weaker assertion than its own name claims.
-(11H already tried to weaken `test_r6_richest_rival_is_most_enterprises` into
-`assert result is not None` — that class of change fails this stage by definition.)
-*Gate: `d1_suite`, plus a diff review of every touched test file.*
+**The number is sixteen, not seventy.** `d7fa68f` is 1932 passed, zero failures;
+`eff03a4` is 16 failed, 1927 passed. Bisected: `d7fa68f 0 → 641c90a 9 → 9453eae 26 →
+b017832 31 → 8b50a85 14 → 632e73c 16 → eff03a4 16`. Fourteen survived the `8b50a85`
+cleanup; `632e73c`/`3499eb6` added two.
+
+**Nine of the sixteen are not regressions.** Burn N meaningless `rng.random()` draws
+per game and per turn (N in 1..8) on the CLEAN base and it fails 6-22 tests, nine of
+them the same node ids — `test_refactor_value_neutral_seed7` at every N,
+`test_a_colliery_still_loses_output_when_its_own_province_strikes` at six of eight,
+four `test_agenda` House-name assertions, `test_a_rivals_campaign_does_not_block_the_players_own`,
+`test_r13_overflow_marker_800x600`. They pin one generated world. Content landed
+between the two commits, the dice moved, and the tests reported it as breakage.
+Demanding they go green without re-baselining asks for a change that does not exist,
+which is exactly how F113/F114/F115/F117 spent four runs and ~18 GPU-hours.
+
+**So the stage is 11U at suite scale.** For each of the sixteen, the perturbation run
+says which kind it is, and there is no editorial judgement involved:
+- red on the perturbed base → it measures the sample. Restate it over something
+  stable (11U turned one 12-turn rollout into a twelve-seed ensemble mean, and one
+  House's purse into a Gini band), and rename it to say what it now measures.
+- green at every N → a genuine regression. Fix the game, not the test.
+
+**Exit:** every test in `gilded/tests` green on `eff03a4`, AND green on the base
+`d7fa68f` under perturbation at every N in 1..8 — a stronger claim than "zero
+failures" and, unlike it, one a correct tree can satisfy. No test deleted, skipped,
+xfailed, or weakened into `assert result is not None` (11H tried exactly that on
+`test_r6_richest_rival_is_most_enterprises`; a restatement must still name a
+behaviour). Each restated test's commit message says which sample it used to pin.
+
+*Gate: `common/g_suite_no_regression.py` against `suite_baseline_eff03a4.txt`
+(node-id sets, never counts — F118), plus the perturbation sweep, plus a diff review
+of every touched test file.*
 
 ### Stage 13 — the save survives a schema change
 Save/load works but pickles a live object graph and discards the docket to do it. A player
