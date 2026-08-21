@@ -299,16 +299,21 @@ describe.runIf(!process.env.CI)('cynco-mutation-sweep --mutate (tests-only missi
     } finally { rmSync(repo.dir, { recursive: true, force: true }) }
   }, 180_000)
 
-  it('records a --mutate run as authored, and a derived run as derived', () => {
+  it('still records as derived — naming a file is not naming a rule', () => {
     if (!havePython) return
     const repo = testsOnly(OWNS_BOTH)
     try {
       const { out } = sweep(repo, ['--mutate', 'pkg/rules.py'])
       const j = parseJson(out)
-      // A human chose the files, so a survivor is an unmet claim, and the
-      // labeling rule must read it that way.
-      expect(j.kind, out).toBe('authored')
-      expect(out).toContain('--kind authored')
+      // An `authored` survivor FAILS the mission under the labeling rule. The
+      // mutation set here is machine-enumerated over an entire file, so a
+      // survivor is a coverage gap over lines the mission may never have
+      // claimed. Defaulting to authored would fail missions for them.
+      expect(j.kind, out).toBe('derived')
+      expect(out).toContain('--kind derived')
+      // ...but the operator is told the choice exists, or nobody ever records
+      // an authored sweep and the stronger reading is dead.
+      expect(out).toMatch(/--kind authored only if/)
       // The command it prints must reproduce the run, --mutate included, or the
       // ledger records a command that measures something else.
       expect(j.command).toContain('--mutate "pkg/rules.py"')
@@ -327,6 +332,8 @@ describe.runIf(!process.env.CI)('cynco-mutation-sweep --mutate (tests-only missi
       expect(j.kind, out).toBe('derived')
       expect(out).toContain('--kind derived')
       expect(j.command).not.toContain('--mutate')
+      // The authored note belongs only to a run where a human chose the files.
+      expect(out).not.toMatch(/--kind authored only if/)
     } finally { rmSync(repo.dir, { recursive: true, force: true }) }
   }, 180_000)
 

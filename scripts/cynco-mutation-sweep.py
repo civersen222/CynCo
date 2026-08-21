@@ -56,9 +56,11 @@ sharper form of it:
     do the tests this mission delivered actually own the rules it claims?
 
 A survivor under --mutate is a rule in a file the mission said it now measures,
-which its tests still cannot tell is wrong. Record those with `--kind authored`:
-the paths were chosen by a human asserting a claim, so a survivor is an unmet
-claim, not the incidental coverage gap a derived sweep reports.
+which its tests still cannot tell is wrong. It is still recorded as `derived`:
+naming a file is not naming a rule, the mutation set is machine-enumerated over
+everything in that file, and an `authored` survivor fails the mission under the
+labeling rule. Record `authored` only when the files named ARE the DoD's rule
+set, and then deliberately.
 
 Usage
 -----
@@ -429,17 +431,23 @@ def main(argv=None):
                f"--base {a.base} --head {a.head}"
                + (f' --tests "{a.tests}"' if a.tests.strip() else "")
                + (f' --mutate "{a.mutate}"' if whole_file else ""))
-        # A --mutate run is AUTHORED: a human named the files, asserting the
-        # mission's tests own the rules in them, so a survivor is an unmet claim
-        # and the labeling rule should read it as one. Without --mutate the
-        # mutation set came from the diff alone and nobody claimed anything, so
-        # a survivor is a coverage finding — derived.
-        kind = "authored" if whole_file else "derived"
+        # DERIVED, including under --mutate. Naming a file is not naming a rule:
+        # the mutation set is still machine-enumerated over everything in it, so
+        # a survivor says "no delivered test can tell this line is wrong", which
+        # is a coverage finding. An AUTHORED sweep is a withheld set written
+        # against the DoD's own rule ids, where a survivor is an unmet claim and
+        # the labeling rule fails the mission for it. Defaulting --mutate to
+        # authored would fail missions over lines they never claimed.
+        kind = "derived"
         print()
         print("Record it with:")
         print(f'  bun scripts/cynco-ledger-sweep.mjs --mission <id> --kind {kind} \\')
         print(f'      --command "{cmd}" --killed {len(killed)} --total {total}'
               + (" \\\n      --survived " + ",".join(survived) if survived else ""))
+        if whole_file:
+            print()
+            print("  (--kind authored only if the files you named ARE the DoD's rule set;")
+            print("   a survivor then fails the mission, so choose it deliberately.)")
 
         if a.json:
             print()
