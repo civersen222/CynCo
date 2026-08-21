@@ -2056,3 +2056,79 @@ first time, and the band was calibrated on a world where it never did. The band
 is due an honest re-anchor once 14A lands, which is a re-baseline of a changed
 GAME rather than of a changed SAMPLE, and the log should be able to tell those
 two apart by now.
+
+---
+
+## F119 — the suite is not perturbation-stable: nine of Stage 12's sixteen "regressions" are the base's own dice
+
+**Where.** `docs/civkings-remaining-stages.md`, Stage 12 — *"~70 tests are red and
+every one traces to 11I. This stage is the proof that they did. Exit: zero
+failures, three runs in a row, with no test deleted, skipped, xfailed, or
+re-baselined."* Not yet dispatched, which is the only reason this is a near-miss
+and not a fifth burnt run.
+
+**What the number actually is.** The base `d7fa68f` is **1932 passed, zero
+failures**; `eff03a4` is **16 failed, 1927 passed**. Not ~70. Bisected, the
+sixteen arrive as `d7fa68f 0 → 641c90a 9 → 9453eae 26 → b017832 31 → 8b50a85 14
+→ 632e73c 16 → eff03a4 16`, so fourteen survived the `8b50a85` cleanup and
+`632e73c`/`3499eb6` added two. "Every one traces to 11I" was also wrong.
+
+**The finding that matters.** Rule 11 says: perturb the base meaninglessly and
+re-run the bar. Applied to the whole suite — burn N extra `rng.random()` per
+`GildedGame` and per `end_turn()`, N in 1..8, nothing about the rules touched —
+the CLEAN base, which has zero failures, produces:
+
+```
+N=1  9 failed    N=2  8    N=3  6    N=4 12
+N=5 12 failed    N=6  9    N=7 22    N=8  7      (seven test files, base tree)
+```
+
+and among them, **nine of eff03a4's sixteen standing failures reproduce on the
+clean base**:
+
+```
+test_treasury_journal::test_refactor_value_neutral_seed7          all eight N
+test_chassis::test_a_colliery_still_loses_output_when_..._strikes  6 of 8
+test_agenda::test_r9_target_for_dynasty                            6 of 8
+test_ui_broadsheet::test_a_rivals_campaign_does_not_block_...      6 of 8
+test_agenda::test_goal_initiative_dynasty_skips_when_already_tied  4 of 8
+test_agenda::test_r12_families_tiebreak_conquest_wins_over_...     3 of 8
+test_agenda::test_r6_richest_rival_is_most_enterprises             2 of 8
+test_ui_ledger::test_r13_overflow_marker_800x600                   1 of 8
+test_agenda::test_r9_target_for_conquest    — not seen, but its four siblings
+        (buyout, dynasty, intrigue, glory) all are, off the same fixture
+```
+
+These tests did not break. They were never measuring anything that survives the
+world being generated slightly differently. `test_agenda` asserts House names off
+one generated world (`'Duval-Corse' == 'Ashworth'`); `test_chassis` needs a
+colliery to happen to sit in a striking province and says so in its own failure
+message (*"fixture: no colliery sits in a province with a non-striking
+movement"*); `test_refactor_value_neutral_seed7` compares one seed's total to a
+literal. Content was added between `d7fa68f` and `eff03a4`; the dice moved; the
+tests reported it as breakage.
+
+**Why the exit criterion was unwritable.** "Zero failures, and no re-baselining"
+asks a run to make nine assertions green that the base tree itself fails half the
+time, by changing the game rather than the assertion. There is no such change.
+The only things that move those numbers are the rng and the state — which is
+precisely the F113/F114/F115/F117 sequence, four runs and ~18 GPU-hours, each one
+a rational response to a bar made of dice. The re-baselining ban was written to
+stop 11H's `assert result is not None` (a real weakening, correctly banned) and
+generalised into a ban on the only honest fix available.
+
+**Fix — Stage 12 is not "go green", it is 11U at suite scale.** For each of the
+sixteen, first ask which kind it is, and the perturbation run answers it:
+- **red on the perturbed base** → the assertion measures the sample. Restate it
+  over something stable, as 11U restated one 12-turn rollout into a twelve-seed
+  ensemble mean and one House's purse into a Gini band. Rename it to say what it
+  now measures. This is a strengthening.
+- **green on every perturbed base** → a genuine regression. Fix the game.
+
+The criterion that separates them is not editorial: a restatement must be **green
+on the base at every N in 1..8**, and that is checkable. The exit is "no
+assertion in `gilded/tests` is red under perturbation of its own base", which is
+a stronger claim than "zero failures" and, unlike it, is true of a correct tree.
+
+**And it cannot be graded by counting.** See F118 — the sibling finding from the
+same afternoon. `16 or fewer` passed a tree that had swapped five of the sixteen.
