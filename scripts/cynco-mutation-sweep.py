@@ -40,11 +40,31 @@ The repo is never touched
 Everything runs against `git archive HEAD` unpacked into a temp dir. The graded
 repo is not written to, not checked out, not stashed.
 
+Tests-only missions, and why --mutate exists
+--------------------------------------------
+The paragraph above assumes the mission changed source. A whole class of them
+does not: a mission whose entire job is "make the suite measure the rules"
+delivers tests and touches no game code at all. Its diff has no source to
+mutate, so this tool correctly refuses and the row lands UNMEASURED — the exact
+outcome the tool was written to stop.
+
+`--mutate <paths>` is the escape. It names the source files the mission's tests
+CLAIM to own, and mutates all of them rather than only added lines, because a
+tests-only mission added none. The question is unchanged and is if anything the
+sharper form of it:
+
+    do the tests this mission delivered actually own the rules it claims?
+
+A survivor under --mutate is a rule in a file the mission said it now measures,
+which its tests still cannot tell is wrong. Record those with `--kind authored`:
+the paths were chosen by a human asserting a claim, so a survivor is an unmet
+claim, not the incidental coverage gap a derived sweep reports.
+
 Usage
 -----
     python scripts/cynco-mutation-sweep.py --repo C:/Users/civer/civkings \\
         --base 305daff --head 43434ca [--tests "gilded/tests/test_fronts.py"] \\
-        [--max 25] [--json]
+        [--mutate "gilded/agenda.py gilded/ai.py"] [--max 25] [--json]
 
 --tests defaults to the test files the diff itself touched. Exit code is 0 when
 every mutation died, 1 when any survived, 2 when the sweep could not be run at
@@ -123,13 +143,21 @@ BOOL_SWAP = {ast.And: ast.Or, ast.Or: ast.And}
 
 
 class Collector(ast.NodeVisitor):
-    """Every mutation available on the mission's own added lines."""
+    """Every mutation available on the mission's own added lines.
+
+    `lines=None` means the whole file is in scope. That is the --mutate case: a
+    tests-only mission added no source lines, so restricting to added lines
+    would enumerate nothing and report UNMEASURED for a mission that in fact has
+    a very answerable claim to check.
+    """
 
     def __init__(self, lines):
         self.lines = lines
         self.found = []          # (node_id_suffix, node, kind, payload)
 
     def _on_mission_line(self, node):
+        if self.lines is None:
+            return getattr(node, "lineno", None) is not None
         return getattr(node, "lineno", None) in self.lines
 
     def visit_Compare(self, node):
@@ -235,17 +263,37 @@ def main(argv=None):
     ap.add_argument("--base", required=True)
     ap.add_argument("--head", default="HEAD")
     ap.add_argument("--tests", default="")
+    ap.add_argument("--mutate", default="",
+                    help="source paths to mutate in full, for missions whose diff "
+                         "is tests-only; defaults to the sources the diff changed")
     ap.add_argument("--max", type=int, default=25)
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args(argv)
 
     files = changed_files(a.repo, a.base, a.head)
-    sources = [f for f in files if f.endswith(".py") and not is_test_path(f)]
     delivered_tests = [f for f in files if f.endswith(".py") and is_test_path(f)]
     targets = a.tests.split() if a.tests.strip() else delivered_tests
 
+    named = [p.strip().replace("\\", "/") for p in a.mutate.split() if p.strip()]
+    whole_file = bool(named)
+    if named:
+        # Operator input, so it is checked rather than trusted. A typo'd path
+        # would otherwise be skipped in silence and the sweep would report a
+        # clean N/N over the files that happened to spell correctly.
+        bad = [p for p in named if is_test_path(p)]
+        if bad:
+            print(f"g-sweep: --mutate names test file(s): {', '.join(bad)}")
+            print("         Mutating tests measures whether the GAME notices a broken test,")
+            print("         which is the question backwards. Name the source they claim to own.")
+            return 2
+        sources = named
+    else:
+        sources = [f for f in files if f.endswith(".py") and not is_test_path(f)]
+
     if not sources:
         print("g-sweep: the mission changed no non-test .py source — nothing to mutate.")
+        print("         If this was a tests-only mission, name the source its tests claim")
+        print("         to own:  --mutate \"gilded/agenda.py gilded/ai.py\"")
         print("         UNMEASURED. Do not record a sweep.")
         return 2
     if not targets:
@@ -266,7 +314,8 @@ def main(argv=None):
             return 2
 
         print(f"g-sweep: {a.repo} {a.base}..{a.head}")
-        print(f"  mutating : {', '.join(sources)} (added lines only)")
+        scope = "whole file, named by --mutate" if whole_file else "added lines only"
+        print(f"  mutating : {', '.join(sources)} ({scope})")
         print(f"  running  : {' '.join(targets)}")
         print()
 
@@ -279,11 +328,15 @@ def main(argv=None):
         for src in sources:
             path = os.path.join(tree_dir, src.replace("/", os.sep))
             if not os.path.exists(path):
+                if whole_file:
+                    print(f"g-sweep: --mutate names {src}, which does not exist at {a.head}.")
+                    print("         UNMEASURED. Do not record a sweep.")
+                    return 2
                 continue
             with open(path, "r", encoding="utf-8") as fh:
                 text = fh.read()
             originals[src] = (path, text)
-            mission_lines[src] = added_lines(a.repo, a.base, a.head, src)
+            mission_lines[src] = None if whole_file else added_lines(a.repo, a.base, a.head, src)
             found = enumerate_mutations(ast.parse(text), mission_lines[src])
             # Carry the INDEX, not the node. Node objects belong to the parse
             # that produced them; a node from this planning tree is not
@@ -294,7 +347,8 @@ def main(argv=None):
                 plan.append((src, idx, lineno, kind, payload))
 
         if not plan:
-            print("g-sweep: no mutable expression on any line this mission added.")
+            where = "in any file named by --mutate" if whole_file else "on any line this mission added"
+            print(f"g-sweep: no mutable expression {where}.")
             print("         UNMEASURED. Do not record a sweep.")
             return 2
 
@@ -312,8 +366,21 @@ def main(argv=None):
         print(f"  identity : green ({len(plan)} mutation(s) available)")
 
         if len(plan) > a.max:
-            print(f"  capped   : {len(plan)} available, running the first {a.max}")
-            plan = plan[: a.max]
+            if whole_file:
+                # Spread, don't truncate. A whole-file plan runs into the
+                # hundreds, and the first 25 of it are the first 25 lines of the
+                # first file — a sweep that would report "25/25 killed" having
+                # never looked past one file's imports. Evenly spaced keeps it
+                # deterministic (same commit, same ids) while covering every file
+                # in proportion to how much of it is mutable.
+                available = len(plan)
+                step = available / a.max
+                plan = [plan[int(i * step)] for i in range(a.max)]
+                print(f"  capped   : {a.max} of {available} available, "
+                      f"evenly spaced across every named file")
+            else:
+                print(f"  capped   : {len(plan)} available, running the first {a.max}")
+                plan = plan[: a.max]
         print()
 
         killed, survived = [], []
@@ -360,16 +427,23 @@ def main(argv=None):
 
         cmd = (f"python scripts/cynco-mutation-sweep.py --repo {a.repo} "
                f"--base {a.base} --head {a.head}"
-               + (f' --tests "{a.tests}"' if a.tests.strip() else ""))
+               + (f' --tests "{a.tests}"' if a.tests.strip() else "")
+               + (f' --mutate "{a.mutate}"' if whole_file else ""))
+        # A --mutate run is AUTHORED: a human named the files, asserting the
+        # mission's tests own the rules in them, so a survivor is an unmet claim
+        # and the labeling rule should read it as one. Without --mutate the
+        # mutation set came from the diff alone and nobody claimed anything, so
+        # a survivor is a coverage finding — derived.
+        kind = "authored" if whole_file else "derived"
         print()
         print("Record it with:")
-        print(f'  bun scripts/cynco-ledger-sweep.mjs --mission <id> \\')
+        print(f'  bun scripts/cynco-ledger-sweep.mjs --mission <id> --kind {kind} \\')
         print(f'      --command "{cmd}" --killed {len(killed)} --total {total}'
               + (" \\\n      --survived " + ",".join(survived) if survived else ""))
 
         if a.json:
             print()
-            print(json.dumps({"command": cmd, "killed": len(killed),
+            print(json.dumps({"command": cmd, "kind": kind, "killed": len(killed),
                               "total": total, "survived": survived}))
         return 0 if not survived else 1
     finally:

@@ -44,7 +44,10 @@ function makeRepo({ source, test: testSrc, baseSource = null, baseTest = null })
   git('commit', '-q', '-m', 'base')
   const base = git('rev-parse', 'HEAD').trim()
 
-  writeFileSync(join(dir, 'pkg', 'rules.py'), source)
+  // source: null is a tests-only mission — the case --mutate exists for. The
+  // file must be left exactly as the base commit wrote it, or the diff is not
+  // tests-only and the test proves nothing.
+  if (source !== null) writeFileSync(join(dir, 'pkg', 'rules.py'), source)
   writeFileSync(join(dir, 'pkg', 'tests', 'test_rules.py'), testSrc)
   git('add', '-A')
   git('commit', '-q', '-m', 'mission')
@@ -194,6 +197,163 @@ describe.runIf(!process.env.CI)('cynco-mutation-sweep', () => {
       // total - killed, so the two must agree or the printed command is unusable.
       expect(j.survived.length).toBe(j.total - j.killed)
       if (j.survived.length) expect(out).toContain(`--survived ${j.survived.join(',')}`)
+    } finally { rmSync(repo.dir, { recursive: true, force: true }) }
+  }, 180_000)
+})
+
+/**
+ * A mission whose whole job is "make the suite measure the rules" delivers
+ * tests and touches no source. Its diff therefore contains nothing to mutate,
+ * and the sweep — correctly, on its own terms — reported UNMEASURED and the
+ * row landed unlabeled. That is the exact outcome this tool was written to
+ * stop, and it hit Stage 12, which passed a 13-perturbation gate and still
+ * could not be scored.
+ *
+ * --mutate names the source the delivered tests CLAIM to own and mutates all of
+ * it. The claim is a human's, so the result is recorded as `authored`.
+ */
+describe.runIf(!process.env.CI)('cynco-mutation-sweep --mutate (tests-only missions)', () => {
+  const RULES = [
+    'def fee(gold):',
+    '    if gold > 100:',
+    '        return 10',
+    '    return 1',
+    '',
+    'def toll(n):',
+    '    if n > 5:',
+    '        return 2',
+    '    return 0',
+    '',
+  ].join('\n')
+
+  /** A mission that changed only pkg/tests/test_rules.py. */
+  const testsOnly = (testSrc) => makeRepo({
+    baseSource: RULES,
+    baseTest: 'def test_placeholder():\n    assert True\n',
+    source: null,
+    test: testSrc,
+  })
+
+  const OWNS_BOTH = [
+    'from pkg.rules import fee, toll',
+    'def test_fee_band():',
+    '    assert fee(101) == 10',
+    '    assert fee(100) == 1',
+    '    assert fee(0) == 1',
+    'def test_toll_band():',
+    '    assert toll(6) == 2',
+    '    assert toll(5) == 0',
+    '    assert toll(0) == 0',
+    '',
+  ].join('\n')
+
+  it('without --mutate a tests-only mission is UNMEASURED, and says how to fix that', () => {
+    if (!havePython) return
+    const repo = testsOnly(OWNS_BOTH)
+    try {
+      const { status, out } = sweep(repo)
+      expect(status, out).toBe(2)
+      expect(out).toMatch(/no non-test \.py source/)
+      // The message has to name the escape or the operator is back to hand-
+      // authoring, which is the thing nobody was going to do.
+      expect(out).toMatch(/--mutate/)
+      expect(parseJson(out)).toBeNull()
+    } finally { rmSync(repo.dir, { recursive: true, force: true }) }
+  }, 180_000)
+
+  it('with --mutate it measures the mission the diff could not', () => {
+    if (!havePython) return
+    const repo = testsOnly(OWNS_BOTH)
+    try {
+      const { status, out } = sweep(repo, ['--mutate', 'pkg/rules.py'])
+      const j = parseJson(out)
+      expect(j, out).not.toBeNull()
+      expect(j.total, out).toBeGreaterThan(0)
+      expect(j.survived, out).toEqual([])
+      expect(status).toBe(0)
+    } finally { rmSync(repo.dir, { recursive: true, force: true }) }
+  }, 180_000)
+
+  it('--mutate covers the whole file, not just the (empty) added lines', () => {
+    if (!havePython) return
+    // Only `fee` is pinned. `toll`'s boundary is never asserted, so if the
+    // sweep is really reading the whole file, `toll` must produce a survivor.
+    const repo = testsOnly([
+      'from pkg.rules import fee, toll',
+      'def test_fee_band():',
+      '    assert fee(101) == 10',
+      '    assert fee(100) == 1',
+      '    assert fee(0) == 1',
+      'def test_toll_smoke():',
+      '    assert toll(99) == 2',
+      '',
+    ].join('\n'))
+    try {
+      const { status, out } = sweep(repo, ['--mutate', 'pkg/rules.py'])
+      const j = parseJson(out)
+      expect(j, out).not.toBeNull()
+      expect(j.survived.length, out).toBeGreaterThan(0)
+      // Named at a line in the base file — proof it did not restrict to the diff.
+      expect(j.survived.some(s => s.startsWith('pkg/rules.py:')), out).toBe(true)
+      expect(status).toBe(1)
+    } finally { rmSync(repo.dir, { recursive: true, force: true }) }
+  }, 180_000)
+
+  it('records a --mutate run as authored, and a derived run as derived', () => {
+    if (!havePython) return
+    const repo = testsOnly(OWNS_BOTH)
+    try {
+      const { out } = sweep(repo, ['--mutate', 'pkg/rules.py'])
+      const j = parseJson(out)
+      // A human chose the files, so a survivor is an unmet claim, and the
+      // labeling rule must read it that way.
+      expect(j.kind, out).toBe('authored')
+      expect(out).toContain('--kind authored')
+      // The command it prints must reproduce the run, --mutate included, or the
+      // ledger records a command that measures something else.
+      expect(j.command).toContain('--mutate "pkg/rules.py"')
+    } finally { rmSync(repo.dir, { recursive: true, force: true }) }
+  }, 180_000)
+
+  it('a diff-derived run is still recorded as derived', () => {
+    if (!havePython) return
+    const repo = makeRepo({
+      source: 'def fee(gold):\n    if gold > 100:\n        return 10\n    return 1\n',
+      test: 'from pkg.rules import fee\ndef test_band():\n    assert fee(101) == 10\n    assert fee(100) == 1\n',
+    })
+    try {
+      const { out } = sweep(repo)
+      const j = parseJson(out)
+      expect(j.kind, out).toBe('derived')
+      expect(out).toContain('--kind derived')
+      expect(j.command).not.toContain('--mutate')
+    } finally { rmSync(repo.dir, { recursive: true, force: true }) }
+  }, 180_000)
+
+  it('refuses to mutate a test file', () => {
+    if (!havePython) return
+    const repo = testsOnly(OWNS_BOTH)
+    try {
+      const { status, out } = sweep(repo, ['--mutate', 'pkg/tests/test_rules.py'])
+      // Mutating the tests asks whether the game notices a broken test, which
+      // is the question backwards. 2, not a cheerful N/N.
+      expect(status, out).toBe(2)
+      expect(out).toMatch(/test file/)
+      expect(parseJson(out)).toBeNull()
+    } finally { rmSync(repo.dir, { recursive: true, force: true }) }
+  }, 180_000)
+
+  it('refuses a --mutate path that does not exist rather than sweeping what is left', () => {
+    if (!havePython) return
+    const repo = testsOnly(OWNS_BOTH)
+    try {
+      const { status, out } = sweep(repo, ['--mutate', 'pkg/rules.py pkg/typo.py'])
+      // A typo'd path used to be skipped in silence, so the run would report a
+      // clean sweep over the files that happened to spell correctly — measured-
+      // looking, and wrong about what was measured.
+      expect(status, out).toBe(2)
+      expect(out).toMatch(/pkg\/typo\.py/)
+      expect(parseJson(out)).toBeNull()
     } finally { rmSync(repo.dir, { recursive: true, force: true }) }
   }, 180_000)
 })
