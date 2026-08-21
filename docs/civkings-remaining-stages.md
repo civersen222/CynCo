@@ -151,7 +151,21 @@ The 32 perturbation offenders Stage 12 deferred: `test_ui_broadsheet` (19),
 Two of `eff03a4`'s sixteen standing failures live in `test_ui_broadsheet` and are
 repaired here, not in Stage 12.
 
+Both are diagnosed already. `test_the_takeover_click_spends_exactly_one_attention`
+fails on a fixture-premise line, `assert 5 == 3`, because `ATTENTION_PER_TURN`
+went 3 → 5 in `0754667` (see F120); its real subject, `after == before - 1`, still
+passes, and the fix is to import the constant like every other site does.
+`test_a_rivals_campaign_does_not_block_the_players_own` is dice — red at six of
+eight N on the clean base.
+
 **Exit:** the whole of `gilded/tests` green at N=0 and at every N from 1 to 12.
+
+**Also here, or sooner:** a gate that pins the player-facing balance constants —
+`ATTENTION_PER_TURN`, `EXPAND_COST`, `WAR_SCORE_WIN`, `TRUCE_TURNS`,
+`DISLOYAL_OPINION`, `STRIKE_OUTPUT_MULT` — so that moving one is a decision
+somebody makes rather than a diff nobody reads. A correct test suite is
+structurally blind to these, because a well-written test imports the constant and
+moves with it. F120.
 
 ### Stage 13 — the save survives a schema change
 Save/load works but pickles a live object graph and discards the docket to do it. A player
