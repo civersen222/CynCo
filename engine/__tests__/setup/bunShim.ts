@@ -38,6 +38,19 @@ interface BunWS {
   data: unknown
 }
 
+/**
+ * Ports this shim currently holds.
+ *
+ * Real `Bun.serve` throws synchronously when the port is taken, which is what
+ * production code catches in order to walk to the next free port. Node's
+ * `httpServer.listen()` fails asynchronously on an 'error' event instead, so
+ * under the shim that same conflict escaped as an uncaught EADDRINUSE and the
+ * walk was untestable — the shim could not express the failure it stands in
+ * for. Tracking our own bindings reproduces Bun's contract for the case that
+ * matters here: two servers asking for one port inside one process.
+ */
+const boundPorts = new Set<number>()
+
 const STATUS_TEXT: Record<number, string> = {
   400: 'Bad Request', 401: 'Unauthorized', 403: 'Forbidden',
   404: 'Not Found', 409: 'Conflict', 426: 'Upgrade Required',
@@ -156,9 +169,21 @@ function makeBunServe(options: BunWSServerOptions): BunServerLike {
   })
 
   const bindHost = options.hostname ?? '0.0.0.0'
+  // Match Bun: a taken port is a synchronous throw, not a later 'error' event.
+  // Port 0 means "OS, pick one" and is never a conflict.
+  if (options.port !== 0 && boundPorts.has(options.port)) {
+    throw new Error(`Failed to start server. Is port ${options.port} in use?`)
+  }
   // exclusive: false → SO_REUSEADDR on Windows, allowing bind when prior
   // connections are in TIME_WAIT (common in rapid test re-runs).
   httpServer.listen({ port: options.port, host: bindHost, exclusive: false })
+  if (options.port !== 0) boundPorts.add(options.port)
+  // A squatter outside this process still fails asynchronously. Surface it as a
+  // console line rather than an uncaught exception that fails an unrelated test.
+  httpServer.on('error', (err) => {
+    if (options.port !== 0) boundPorts.delete(options.port)
+    console.log(`[bunShim] listen failed on ${bindHost}:${options.port}: ${err}`)
+  })
 
   // Expose the actual bound port (useful when port=0 for OS-assigned ephemeral ports).
   const getPort = () => (httpServer.address() as any)?.port ?? options.port
@@ -167,6 +192,7 @@ function makeBunServe(options: BunWSServerOptions): BunServerLike {
     hostname: bindHost,
     upgrade: () => false,
     stop: () => {
+      if (options.port !== 0) boundPorts.delete(options.port)
       wss.close()
       httpServer.close()
     },

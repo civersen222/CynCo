@@ -465,3 +465,38 @@ describe('/api/run — is the turn still open', () => {
     expect(res.status).toBe(401)
   })
 })
+
+// Distinct from every other port range in this file so parallel workers cannot
+// collide on the block this suite deliberately occupies.
+const WALK_PORT = 19241
+
+describe('port walking', () => {
+  // The caller passes `wsServer.port + 1`, which is a wish rather than a free
+  // port: the WS bridge falls back when its own first choice is taken, so +1
+  // lands wherever that fallback put it. It has collided with the bridge in the
+  // same process, and with the jlens sidecar on 9163. Both times the
+  // constructor threw and the operator got no dashboard and no reason why.
+  it('binds the next free port when the requested one is taken, and reports it', () => {
+    const squatter = new DashboardServer({ port: WALK_PORT, tokens: _tokens })
+    expect(squatter.getPort()).toBe(WALK_PORT)
+
+    const walker = new DashboardServer({ port: WALK_PORT, tokens: _tokens })
+    expect(walker.getPort()).toBe(WALK_PORT + 1)
+
+    walker.stop()
+    squatter.stop()
+  })
+
+  it('serves on the port it reports, not the one it was asked for', async () => {
+    const squatter = new DashboardServer({ port: WALK_PORT + 4, tokens: _tokens })
+    const walker = new DashboardServer({ port: WALK_PORT + 4, tokens: _tokens })
+
+    const bound = walker.getPort()
+    expect(bound).not.toBe(WALK_PORT + 4)
+    const res = await fetch(`http://localhost:${bound}/`)
+    expect(res.status).toBe(200)
+
+    walker.stop()
+    squatter.stop()
+  })
+})

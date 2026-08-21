@@ -279,7 +279,14 @@ export class DashboardServer {
         '<body><h1>CynCo Governance Dashboard</h1><p>Dashboard UI not yet built. Coming soon.</p></body></html>'
     }
 
-    this.server = Bun.serve({
+    // The caller passes `wsServer.port + 1`, and the WS bridge itself falls
+    // back when its first choice is taken — so this number is a wish, not a
+    // free port. It has now collided twice: once with the bridge this same
+    // process had just bound, and once with the jlens sidecar on 9163 (bridge
+    // pushed to 9162 by a stale listener, +1 landed on the lens). Both times
+    // the constructor threw and the operator got no dashboard and no reason.
+    // Step to the next free port instead, and say which one we took.
+    const serveOptions = {
       port,
       hostname: this._hostname,
       // Note: after Bun.serve() this.server.port reflects the actual bound port
@@ -515,7 +522,24 @@ export class DashboardServer {
           this.clients.delete(ws)
         },
       },
-    })
+    }
+
+    // port 0 means "OS, pick one" — never walk that, it always succeeds.
+    const candidates = port === 0 ? [0] : [port, port + 1, port + 2, port + 3]
+    let lastErr: unknown = null
+    for (const p of candidates) {
+      try {
+        this.server = Bun.serve({ ...serveOptions, port: p })
+        if (p !== port) {
+          console.log(`[dashboard] Port ${port} was taken; bound ${p} instead.`)
+        }
+        this._port = p
+        return
+      } catch (e) {
+        lastErr = e
+      }
+    }
+    throw lastErr
   }
 
   // ── Authorization ───────────────────────────────────────────────
