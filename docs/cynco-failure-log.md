@@ -1820,3 +1820,75 @@ was about the reference point. This one is about the bar measuring a quantity
 that is not stable in the first place — the hardest of the three to see, because
 the claim is satisfied by the base exactly, and only stops being satisfied when
 you nudge it.
+
+---
+
+## F116 — the engine rebound its port, the driver dialled the old one, and the refusal named the wrong cause
+
+**Where:** `scripts/dispatch-mission.sh`, and the port fallback in the engine's
+WebSocket startup.
+
+**What happened.** Stage 11T was dispatched and sat at **zero tool calls for
+thirty minutes**. The engine log had the whole story in one line:
+
+```
+[ws] Port 9160 in use, using 9162 instead
+```
+
+The engine and the driver resolve the WebSocket port **independently**, from the
+same defaults (`cynco-endpoints.mjs`, `DEFAULT_PORT = 9160`). When the engine
+finds its port held it does not fail — it takes the next one and logs it. The
+driver never reads the engine log. It dialled 9160, got whatever was still
+answering there, and refused:
+
+> `[driver] REFUSED: no session.ready in 30s — S5 enforcement may be live in this
+> engine: the engine advertised no capabilities at all ... Restart the engine
+> with LOCALCODE_S5_ENFORCE=false and re-dispatch.`
+
+That message is *accurate* and describes a genuine failure mode (F7). It is not
+this one. `LOCALCODE_S5_ENFORCE=false` was already set, one line above in the
+same script, so following the advice would have changed nothing.
+
+**Why the existing guard could not catch it.** The script already kills the
+engine tree before dispatching, and already refuses if `llama-server.exe`
+survives. But the sweep matches `bun.exe` with `engine/main.ts` in its command
+line, and the thing holding 9160 was not a live process at all:
+
+```
+netstat -ano   ->  127.0.0.1:9160  LISTENING  31692
+Get-Process -Id 31692        ->  no such process
+Get-CimInstance ProcessId=31692  ->  (nothing)
+tasklist                     ->  exactly one bun.exe, and it was the new one
+```
+
+An orphaned listening socket outliving its process. Nothing the kill sweep can
+reach, and the port check it *did* perform (llama-server) was green.
+
+**Fix.** Refuse on the fallback line itself, at dispatch time, next to the F91
+`ctx`/`cache-ram` check:
+
+```bash
+if grep -qE "^\[ws\] Port [0-9]+ in use" "$ENGINE_LOG"; then
+  echo "[dispatch] refusing: $(grep -E '^\[ws\] Port [0-9]+ in use' "$ENGINE_LOG" | head -1)" >&2
+  echo "[dispatch] the driver resolves its port independently and would dial the busy one." >&2
+  echo "[dispatch] re-run with LOCALCODE_WS_PORT=<free port> to move both sides together." >&2
+  exit 1
+fi
+```
+
+`LOCALCODE_WS_PORT` is honoured by the engine and by `cynco-endpoints.mjs`, so
+it moves both sides together. Re-dispatched on 9170 and the mission ran.
+
+**General lesson — a graceful fallback on one side of a process boundary is a
+silent failure on the other.** The rebind is good behaviour for an interactive
+engine and wrong for a dispatched one, because the peer that has to agree about
+the port is not in the room. Same boundary as F109 and the
+`CYNCO_BASH_TIMEOUT_MS` half of F111: **the driver is a WebSocket client to a
+separate daemon, and nothing either side infers privately is shared.** Third
+time this boundary has cost a run.
+
+And a second, sharper one: **the refusal named a real defect that was not the
+one present.** A diagnostic that guesses plausibly is worse than one that says
+"I cannot reach an engine on 9160" — the operator spent the first minutes
+checking S5, which was already off. Where a check cannot distinguish two causes,
+it should report what it observed, not the more interesting hypothesis.
