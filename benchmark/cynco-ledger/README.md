@@ -235,6 +235,13 @@ Three things follow.
    labeled *later*; that is the difference between the ledger growing and the
    labeled set growing.
 
+   Backfill was measured before it was abandoned, so it does not need measuring
+   again: of the **129 rows with `verified` set but no sweep, 3** carry an
+   explicit `REV … vs BASE …` pair in `verify.outputTail`, 23 carry some
+   sha-shaped token with no pair, and 103 carry nothing sha-like at all.
+   Recovering three rows does not justify a parser. Those rows stay unlabeled;
+   the fix was never going to be retroactive.
+
    Second, `scripts/cynco-mutation-sweep.py` exists to run it. Sweeps
    were null on 151 rows because they were hand-authored per stage after
    reading the landed code; that tool derives them instead from the mission's
