@@ -233,6 +233,62 @@ describe('cynco mission outcome ledger', () => {
     expect(JSON.parse(line)).toEqual(rec)
   })
 
+  // 150 of 226 rows cannot be swept at all, and not because sweeping them is
+  // hard: nothing on the row says which commits the mission produced. The driver
+  // knows — it reads HEAD before dispatch and prints it — and then throws it
+  // away. Without a base..head pair, scripts/cynco-mutation-sweep.py has no diff
+  // to mutate, so the row stays UNMEASURED forever and the labeling rule
+  // (correctly) excludes it. This field is the difference between a ledger that
+  // can be labeled later and one that can only be labeled now.
+  describe('commitRange — the base..head pair a derived sweep needs', () => {
+    const meta = {
+      missionId: 'm-range', briefFile: 'b.md', marker: 'x', cwd: '/repo',
+      dispatchedAt: 0, durationS: 1, outcome: 'landed' as const,
+    }
+
+    it('records the dispatch base and the final head, so the diff is recoverable', () => {
+      const c = createMissionCollector(() => 1000)
+      const rec = buildMissionRecord(c, { ...meta, baselineSha: 'aaa111', finalSha: 'bbb222' })
+      expect(rec.commitRange).toEqual({ base: 'aaa111', head: 'bbb222' })
+    })
+
+    // A mission that committed nothing has base === head. That is a real,
+    // measurable answer ("empty diff, nothing to mutate"), and it must not be
+    // confusable with "the driver could not read the repo".
+    it('a mission that committed nothing records base === head, not null', () => {
+      const c = createMissionCollector(() => 1000)
+      const rec = buildMissionRecord(c, { ...meta, baselineSha: 'aaa111', finalSha: 'aaa111' })
+      expect(rec.commitRange).toEqual({ base: 'aaa111', head: 'aaa111' })
+    })
+
+    // gitHead() returns null rather than guessing when it cannot read the repo.
+    // Half a range is not a range: a base with no head cannot be diffed, and
+    // recording `{base, head: null}` invites a caller to substitute HEAD-now,
+    // which would sweep every commit made since by anything.
+    it('an unreadable base or head makes the whole range null, never half of one', () => {
+      const c = createMissionCollector(() => 1000)
+      expect(buildMissionRecord(c, { ...meta, baselineSha: null, finalSha: 'bbb222' }).commitRange).toBeNull()
+      expect(buildMissionRecord(c, { ...meta, baselineSha: 'aaa111', finalSha: null }).commitRange).toBeNull()
+    })
+
+    // The 226 rows already on disk have no range and never will. They must read
+    // as UNMEASURED-and-unsweepable, which is what null says, and the key must
+    // be present so a reader can tell the two encodings apart — the same
+    // one-meaning-two-encodings trap mutationSweep already fell into once.
+    it('is present-and-null when the driver did not supply one', () => {
+      const c = createMissionCollector(() => 1000)
+      const rec = buildMissionRecord(c, meta)
+      expect(rec.commitRange).toBeNull()
+      expect('commitRange' in rec).toBe(true)
+    })
+
+    it('survives the JSONL round trip', () => {
+      const c = createMissionCollector(() => 1000)
+      const rec = buildMissionRecord(c, { ...meta, baselineSha: 'aaa111', finalSha: 'bbb222' })
+      expect(JSON.parse(JSON.stringify(rec)).commitRange).toEqual({ base: 'aaa111', head: 'bbb222' })
+    })
+  })
+
   it('no sweep run → mutationSweep is null (unmeasured), not false and not absent', () => {
     const c = createMissionCollector(() => 1000)
     const rec = buildMissionRecord(c, {

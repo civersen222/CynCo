@@ -678,6 +678,12 @@ try {
 
 // Append the labeled mission record to the outcome ledger
 const outcome = missionOutcome({ landed, zeroToolCompletion, wentQuiet: quiet, engineError, neverDispatched: silentAfterDispatch })
+// Read HEAD one last time, AFTER the snapshot above and after the check script
+// has run, so `baselineSha..finalSha` is exactly the commits this mission made.
+// Not taken from the 30s poll: the poll can miss a commit made in its last
+// interval, and a range that is short by one commit silently drops those lines
+// from every sweep derived from it.
+const finalSha = gitHead(CWD)
 try {
   const record = buildMissionRecord(collector, {
     missionId,
@@ -692,6 +698,10 @@ try {
     verified,
     verify,
     history,
+    // -> `commitRange`. The pair that makes this row sweepable later; see the
+    // field's comment in cynco-ledger.mjs for the 150 rows that had no pair.
+    baselineSha,
+    finalSha,
     // F57. `exitReason` stays null only if the loop never resolved one, which
     // is the timeout path, and `silentAfterDispatch` has its own name for the
     // case where no turn ever ran.
@@ -713,6 +723,19 @@ try {
   // tests BITE — only a withheld mutation set can, and those run later. Say so
   // on every record, so nobody reads verified:true as accepted.
   console.log(`[ledger] mutationSweep: null (UNMEASURED) — patch it once the withheld set has run: { command, killed, total, survived[] }`)
+  // Print the sweep as a command that can be pasted, not as a chore to remember.
+  // 150 rows went unlabeled because the sweep was a hand-authored step happening
+  // days later against code nobody had the range for; the range is now on the
+  // row, so the only remaining cost is knowing what to type.
+  if (record.commitRange === null) {
+    console.log('[sweep] commitRange: null — HEAD was unreadable at one end, so this row cannot be swept from its own diff')
+  } else if (record.commitRange.base === record.commitRange.head) {
+    console.log('[sweep] commitRange is empty (base === head) — this mission committed nothing, so there is no diff to mutate')
+  } else {
+    const { base, head } = record.commitRange
+    console.log(`[sweep] derive it:  python scripts/cynco-mutation-sweep.py --repo "${CWD}" --base ${base} --head ${head}`)
+    console.log(`[sweep] then record: bun scripts/cynco-ledger-sweep.mjs --mission ${missionId} --kind derived --command "..." --killed K --total T [--survived ...]`)
+  }
   // F57 was found by reading a transcript, which is to say by luck. A row that
   // records the count and says nothing at the console is the same amount of
   // luck: the count still has to be read. Printed with a sample, because the

@@ -39,6 +39,17 @@ decisions still recorded here).
   },
   "mutationSweep": null,    // BEHAVIOURAL: null = UNMEASURED, never "clean"
   // { "command": "...", "killed": 1, "total": 7, "survived": ["W1","W5"], "note": "..." }
+  // The commits this mission made. `base` is HEAD at dispatch, `head` is HEAD
+  // after the check script ran, so `base..head` is exactly the mission's diff —
+  // which is what a DERIVED sweep mutates. null when either end was unreadable;
+  // never half a range, because a `head: null` invites substituting HEAD-now and
+  // sweeping everything committed since. base === head is the measured answer
+  // "committed nothing", not a missing measurement.
+  //
+  // Absent on every row before 2026-08-21. That absence is why 150 of the first
+  // 226 rows can never be swept: the range existed only as prose inside
+  // verify.outputTail ("REV 5dc9510 vs BASE c1bff64").
+  "commitRange": { "base": "43434ca...", "head": "9f21bd0..." },
   "turns": [                // one per governance.status event (per turn)
     { "t": 1783550000000, "health": "healthy", "s3s4Balance": "critical",
       "toolSuccessRate": 0.9, "stuckTurns": 0, "varietyRatio": 9,
@@ -213,7 +224,18 @@ Three things follow.
    150 missions dispatched the same way adds ~0 labeled rows. Patching the
    sweep on existing rows is worth more than any number of new runs.
 
-   `scripts/cynco-mutation-sweep.py` exists to remove that constraint. Sweeps
+   Two changes remove that constraint, and both were needed.
+
+   First, **`commitRange` is now on every new row** (`{base, head}`). A derived
+   sweep mutates the lines the mission added, so it needs the mission's diff;
+   the driver has always known the dispatch HEAD and printed it, and never
+   wrote it down. On the 226 rows written before this, the only trace of a
+   range is prose in `verify.outputTail`, which is why those rows are
+   unsweepable rather than merely unswept. Every row from here on can be
+   labeled *later*; that is the difference between the ledger growing and the
+   labeled set growing.
+
+   Second, `scripts/cynco-mutation-sweep.py` exists to run it. Sweeps
    were null on 151 rows because they were hand-authored per stage after
    reading the landed code; that tool derives them instead from the mission's
    own diff — mutate the source lines the mission added, run the tests it
