@@ -2331,3 +2331,66 @@ the sealed-gate authoring rules: keep four trees per gate — base, ≥1 cheat, 
 perturbation, and a POSITIVE shim that satisfies the claim the cheapest honest
 way — and re-run all four after EVERY edit to the gate, watching the finding
 COUNTS and not just the exit codes.
+
+---
+
+## F122 — F116's guard existed, fired never, and lost the dispatch again: the check ran before the line it looks for was written
+
+**Where:** `scripts/dispatch-mission.sh`, the WebSocket-collision refusal added
+by F116.
+
+**What happened.** Stage 15 was dispatched and came back in seconds with the
+same refusal F116 was written to prevent:
+
+> `[driver] REFUSED: no session.ready in 30s — S5 enforcement may be live in
+> this engine ... Restart the engine with LOCALCODE_S5_ENFORCE=false and
+> re-dispatch.`
+
+And the engine log had, again, the one line that explains it:
+
+```
+[ws] Port 9160 in use, using 9162 instead
+```
+
+Same orphaned socket as F116, down to the detail that `netstat` showed
+`127.0.0.1:9160 LISTENING 31484` while `tasklist /FI "PID eq 31484"` reported no
+such process. The socket had been inherited by the previous run's
+`llama-server.exe`, which outlived the `bun` parent the kill sweep matches.
+
+**Why the guard did not fire.** It is written correctly and it ran. It ran
+against a log that did not contain the line yet:
+
+```
+line 57   [llama-cpp] Chat template supports native tool calls      <- wait loop breaks here
+line 68   [ws] Port 9160 in use, using 9162 instead                 <- guard looks for this
+line 74   [localcode] Ready. Waiting for TUI connection on ws://localhost:9160
+```
+
+The wait loop breaks on the **llama health** line, which the engine emits before
+it binds the bridge. The guard then greps for a line the engine has not written
+yet, finds nothing, reports nothing, and dispatches. `grep -c` on the finished
+log returns 1 — the pattern was never wrong.
+
+Note line 74 as well: the Ready line prints the port the engine was **asked
+for**, not the one it bound. It says 9160 while listening on 9162. It is usable
+as a sequencing signal and must never be read as a source for the port.
+
+**Fix.** Wait for the bind to have *happened* before asking whether it collided
+— a second wait loop on the Ready line, ahead of the existing collision check.
+Guarded by `engine/__tests__/guards/dispatchPortCheckWaitsForBind.test.ts`,
+which asserts against the script source that the wait precedes the check.
+
+**General lesson — a check on a log is a check on a race, and the passing case
+looks identical to the absent case.** `grep -q` returning false means "not
+there", and "not there" covers both "did not happen" and "has not happened
+yet"; the guard cannot tell them apart and neither can the operator reading a
+clean dispatch. Any assertion made against a growing file must first wait for a
+marker that is written **after** the thing it asks about. This is the same shape
+as F121 — a measurement taken at the wrong moment reporting health — arriving
+this time through the operator's tooling rather than a gate.
+
+And: **a fix is not landed because it is written.** F116's guard sat in the
+script through several stages without ever being exercised, because the
+collision it refuses is rare. A guard that has never fired is a guard that has
+never been tested. Where a refusal is cheap to provoke, provoke it once on
+purpose.

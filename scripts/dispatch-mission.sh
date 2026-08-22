@@ -116,6 +116,26 @@ grep -E "^\[llama-cpp\] Starting" "$ENGINE_LOG" | head -1
 #
 # So: refuse on the fallback line itself. Pass LOCALCODE_WS_PORT to move both
 # sides together onto a free port.
+#
+# That refusal is ORDER-DEPENDENT and Stage 15 lost a dispatch to the ordering.
+# The loop above breaks on the llama health line, which the engine emits BEFORE
+# it binds the WebSocket — measured on that run, "Chat template supports native
+# tool calls" is log line 57 and "[ws] Port 9160 in use, using 9162 instead" is
+# line 68. The check below ran against a log that did not contain the line yet,
+# found nothing, dispatched, and the driver came back with the S5 refusal again.
+# So wait for the bind to have HAPPENED before asking whether it collided. The
+# Ready line is emitted after the bridge binds — and note it prints the port the
+# engine was ASKED for, not the one it got (it said 9160 while listening on
+# 9162), so it is a sequencing signal only and never a source for the port.
+for _ in $(seq 1 24); do
+  if grep -q "^\[localcode\] Ready\. Waiting for TUI connection" "$ENGINE_LOG" 2>/dev/null; then break; fi
+  sleep 5
+done
+grep -q "^\[localcode\] Ready\. Waiting for TUI connection" "$ENGINE_LOG" || {
+  echo "[dispatch] engine never bound its WebSocket — see $ENGINE_LOG" >&2
+  exit 1
+}
+
 if grep -qE "^\[ws\] Port [0-9]+ in use" "$ENGINE_LOG"; then
   echo "[dispatch] refusing: $(grep -E '^\[ws\] Port [0-9]+ in use' "$ENGINE_LOG" | head -1)" >&2
   echo "[dispatch] the driver resolves its port independently and would dial the busy one." >&2
