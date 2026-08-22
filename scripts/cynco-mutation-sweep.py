@@ -81,6 +81,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from collections import Counter
 
 # Nodes are mutated one at a time; each mutation gets an id that names the file,
 # the line and what was done, so a survivor is actionable without re-running.
@@ -385,9 +386,24 @@ def main(argv=None):
                 plan = plan[: a.max]
         print()
 
+        # A mutation id must be unique, because the recorder refuses a
+        # --survived list that repeats one and a sweep whose own output it
+        # refuses is a sweep that cannot be written down. `src:line:op` is not
+        # unique on its own: one line can carry two mutations of the same shape
+        # (`a > b and c > d` enumerates cmp->Gt twice), which is exactly how
+        # Stage 13's sweep produced a list the recorder rejected. The
+        # enumeration index disambiguates and is deterministic for a given
+        # commit. It is appended ONLY where a collision exists, so the plain
+        # form still matches the hand-authored rule ids an `authored` sweep is
+        # compared against.
+        seen = Counter(f"{src}:{lineno}:{op_name(kind, payload)}"
+                       for src, _idx, lineno, kind, payload in plan)
+
         killed, survived = [], []
         for src, idx, lineno, kind, payload in plan:
             mid = f"{src}:{lineno}:{op_name(kind, payload)}"
+            if seen[mid] > 1:
+                mid = f"{mid}#{idx}"
             path, text = originals[src]
             tree = ast.parse(text)
             # enumerate_mutations is a pure function of (text, lines) and sorts
