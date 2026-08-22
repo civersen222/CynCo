@@ -2505,3 +2505,55 @@ test: it stops measuring the system the moment the system moves. Rule 11 asks
 whether the gate can tell a correct build from a broken one; this is the
 question beside it — **can the gate tell a true sentence from a false one, or
 only a matching one from a non-matching one?**
+
+---
+
+## F125 — the dispatch guard matched on an image name, and Ollama ships a binary with the same one
+
+**Where.** `scripts/dispatch-mission.sh`, the pre-dispatch sweep that clears a
+stale engine tree before starting a new one.
+
+**How it failed.** Stage 18's dispatch refused twice, immediately, with:
+
+    [dispatch] killing any live engine tree
+    [dispatch] llama-server survived the kill — refusing to dispatch onto it
+
+The sweep was `taskkill //IM llama-server.exe //F` followed by
+`tasklist | grep -qiE "llama-server\.exe"`. Both match the IMAGE NAME only.
+
+Ollama bundles its own inference server under the same name, at
+`AppData/Local/Programs/Ollama/lib/ollama/llama-server.exe`, and `ollama.exe
+serve` respawns it the instant anything asks it for a model. So the sweep killed
+Ollama's server, Ollama put it straight back within the three-second sleep, and
+the guard refused on a process that had never held our port and never would.
+Confirmed by parentage: the surviving PID's `ParentProcessId` was `ollama.exe`,
+and its PID changed on every attempt — 38664, then 6268, then 17780, then 39408
+— which is a respawn, not a survival.
+
+**Why it happened.** The guard's comment states its own purpose exactly right —
+"a killed engine leaves ITS llama-server holding the port" — and then implements
+something weaker than what the comment says. `ours` and `any process with this
+name` were the same set on the day it was written, so the difference was
+invisible until a second vendor shipped the same filename. The check had no way
+to express the possessive the comment used.
+
+**The fix.** Match on path, which is the property that actually carries
+ownership. Ours lives under `~/.cynco` (`bin/` for the loop, `bin-brain/` for
+the activations tier); nothing else does.
+
+    LC_LLAMA_Q="Get-CimInstance Win32_Process -Filter \"Name='llama-server.exe'\" |
+                Where-Object { \$_.ExecutablePath -like '*\.cynco\*' } |
+                Select-Object -ExpandProperty ProcessId"
+
+Kill by that list, then refuse only if that list is still non-empty. Ollama's
+server is now left entirely alone, which is also the correct behaviour: it was
+never ours to kill.
+
+**General lesson — when a guard's comment uses a possessive, the check must
+too.** "Its llama-server", "our port", "this mission's snapshot" are all claims
+about ownership, and an image name, a port number or a filename are not
+ownership — they are coincidences that hold until someone else picks the same
+one. Guards written against a name fail in the two worst directions at once:
+they kill things that are not theirs, and they refuse on things that are not
+theirs either. Ask of every guard: **what property here is actually mine, and
+would this check still be right if a stranger chose the same name?**

@@ -72,10 +72,20 @@ for pid in $(powershell -NoProfile -Command \
       2>/dev/null | tr -d '\r'); do
   taskkill //PID "$pid" //T //F >/dev/null 2>&1 || true
 done
-taskkill //IM llama-server.exe //F >/dev/null 2>&1 || true
+# Match on PATH, not on image name. Ollama ships a binary called llama-server
+# too, at AppData/Local/Programs/Ollama/lib/ollama/llama-server.exe, and it is
+# respawned by `ollama.exe serve` the instant anything asks it for a model. A
+# name-only sweep kills that one, ollama puts it straight back, and the guard
+# below then refuses forever on a process that never held our port. Ours lives
+# under ~/.cynco (bin/ for the loop, bin-brain/ for the activations tier);
+# nothing else does.
+LC_LLAMA_Q="Get-CimInstance Win32_Process -Filter \"Name='llama-server.exe'\" | Where-Object { \$_.ExecutablePath -like '*\\.cynco\\*' } | Select-Object -ExpandProperty ProcessId"
+for pid in $(powershell -NoProfile -Command "$LC_LLAMA_Q" 2>/dev/null | tr -d '\r'); do
+  taskkill //PID "$pid" //T //F >/dev/null 2>&1 || true
+done
 sleep 3
-if tasklist | grep -qiE "llama-server\.exe"; then
-  echo "[dispatch] llama-server survived the kill — refusing to dispatch onto it" >&2
+if [ -n "$(powershell -NoProfile -Command "$LC_LLAMA_Q" 2>/dev/null | tr -d '\r')" ]; then
+  echo "[dispatch] our llama-server survived the kill — refusing to dispatch onto it" >&2
   exit 1
 fi
 
