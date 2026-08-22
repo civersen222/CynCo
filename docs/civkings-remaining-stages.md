@@ -497,13 +497,52 @@ Five root causes, all measured at `537283a`:
    and returns without showing it. On turn one 24 of the 40 registered actions are refused,
    every one with a non-empty reason already computed, and the player is told none of them.
 
-*Gate: new (`g17_turn_one.py`). Rule 11 + Rule 14 — 9 findings on the base, 0 on an honest
+*Gate: new (`g17_turn_one.py`). Rule 11 + Rule 14 — 11 findings on the base, 0 on an honest
 repair, with a repetition trap (48 identical words must survive wrapping) that a dedupe of
 `wrap()` fails and a cure of `_word_groups` passes.* **Expect a casualty:** the honest repair
 measured 4 red in `test_ui_broadsheet.py` — the per-tab region censuses and
 `test_every_control_on_every_tab_explains_itself` — because a guide control genuinely now
 exists on every tab. That premise really changed and belongs fixed in the census, not
 loosened.
+
+**LANDED `ada2e8f` (2026-08-22, mission_17-1787413154364, 213 turns, 2 cuts, 0 of 193 tool
+calls touched the grading apparatus).** Both sealed gates re-run by hand at the landed head:
+`turnone` PASS on all five phases, `suite` 1974 passed / 0 failed against an EMPTY baseline.
+
+| bar | base `537283a` | landed | need |
+|---|---|---|---|
+| wrapped paragraphs that read back as themselves | 330 / 384 | 384 / 384 | all |
+| 48 identical words survive wrapping | 92 words | 48 words | 48 |
+| objective named on the opening frame | 0 / 24 | 24 / 24 | 24 |
+| what ends it named on the opening frame | 0 / 24 | 24 / 24 | 24 |
+| clickable region in group `guide` | 0 | 1 on every frame | ≥1 |
+| blind walk rules a petition and reaches turn 2 | 0 / 24 | **24 / 24 in 2..4 clicks** | ≥22 |
+| `rule` / `set_stance` / `place_informant` answered | 0 / 24 each | 24 / 24 each | ≥22 |
+| distinct rulings across 24 worlds | 0 | 24 | ≥6 |
+| refused clicks that show their reason | 0 / 48 (0%) | 48 / 48 (100%) | ≥95% |
+
+The censuses moved honestly: every tab +1, the picker 22→23, the tooltip sweep 212→223. No
+assertion loosened, skipped or xfailed.
+
+**Two debts, both for Stage 18.**
+
+**The opening statement teaches a false number.** It says *"The century ends after a hundred
+turns"*; `chassis.TURN_BUDGET` is **70** and a measured game reports `game_over at turn 71 ->
+century`. This is **the gate's fault, not the run's** — phase 3's published ender vocabulary
+included the literals `hundred turns` and `100 turns`, which this game has never used, and the
+run wrote to the list it was given. Logged as **F124**: a gate may accept a synonym for a
+concept but never a literal for a quantity. Stage 18 must state the real budget and tie the
+rendered text to `TURN_BUDGET` in a test. The neighbouring claim *"You win by keeping your
+standing high"* is a half-truth worth sharpening too — `judge()` awards *Hegemon of the Age*
+on capital **and** standing together.
+
+**Cut 2 shipped behaviour with no test.** Cut 1 delivered six good ones that assert both halves
+(the stance line names the key *and* where it landed; the refusal appears *verbatim*). Cut 2
+delivered zero: `grep` for `next_step`, `GUIDE_STATEMENT` or `group="guide"` across
+`gilded/tests/` returns nothing. Deleting `_draw_guide` would be caught by the region
+censuses, but rewording the statement, breaking `next_step`'s action, or repointing the button
+at a harmless view verb all pass the full suite. The only thing that ever checked the guide is
+a held-out gate the repository does not have.
 
 ### Stage 18 — it does not break in front of a stranger
 Robustness pass. Fuzz the input, play to the century at fifty seeds, catch every unhandled
