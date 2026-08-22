@@ -247,12 +247,45 @@ that exist were declared before any alliance formed. A gate demanding 2 would ha
 again: a bar above anything the substrate can produce. Alliances cannot be shown to bind
 until war moves.
 
-**Exit:** to be set against the post-14A substrate, once the number of alliance-relevant wars
-per century has been measured rather than assumed. The one claim already safe to make is that
-a House does not declare war on a House it is allied with — probed directly against the
-target picker, not waited for across seeds, since betrayal occurs 0/1/0 times at base and a
-"no betrayals" claim would pass on two seeds out of three without any work at all.
-*Gate: new, blocked on 14A.*
+**The post-14A substrate, measured 2026-08-21 at `1205ce7`**, 120 turns, seeds 7/42/61,
+`end_turn()` alone:
+
+| | seed 7 | seed 42 | seed 61 |
+|---|---|---|---|
+| wars declared / ended | 4 / 2 | 2 / 2 | 4 / 4 |
+| `war_score` left 0.0 | 2 of 4 | 2 of 2 | 4 of 4 |
+| truce entries at 120 | 4 | 4 | 8 |
+| **allied House pairs at 120** | **15 of 21** | 6 of 21 | **17 of 21** |
+| alliance-relevant wars | 2 | **0** | 3 |
+| betrayals (war on an ally) | 0 | 0 | **2** |
+
+14A holds: wars end, `war_score` moves, truces exist. Three things this changes about 14B:
+
+1. **The alliance is degenerate before it is unread.** Every marriage sets `alliance=True`,
+   and marriages are frequent — 15 of the 21 possible House pairs are "allied" by turn 120 on
+   seed 7, 17 of 21 on seed 61. An alliance three quarters of the map holds is a phone book.
+   The scarcity defect is upstream of the "nothing reads it" defect and has to be fixed first,
+   which the original framing did not see.
+2. **"Never attack an ally" and 14A are in direct conflict at these densities.** If 17 of 21
+   pairs are allied and the target picker refuses allies, war very nearly stops — and 14A's
+   exit goes red. Any 14B gate must re-assert 14A's numbers, because suppressing war is the
+   cheapest way to pass a no-betrayal claim.
+3. **Call-to-arms opportunities are 2 / 0 / 3.** Better than the base's 1, but seed 42 offers
+   none, so an observational floor per seed is still F89. The gate builds the situation
+   (declare a war on a House with an uninvolved ally, assert the ally joins or refuses for a
+   recorded reason) and uses the played century only as a combined-across-seeds floor of ≥1.
+
+Betrayal is now 0/0/**2** rather than 0/1/0 — seed 61's Karsgate attacks Brandtner at turn 41
+and Ferrenholt at turn 63 while allied with both — so a played-century no-betrayal claim is no
+longer vacuous, but it is still probed directly against the picker as well.
+
+**Exit:** alliances are an explicit, scarce pact rather than a side effect of every wedding —
+standing pacts at turn 120 are between 1 and 8 at each of the three seeds; the target picker,
+probed directly by construction, never selects a House the aggressor holds a pact with, and a
+played century shows 0 betrayals at all three seeds; a call to arms fires by construction and
+at least once across the three played centuries; and 14A's numbers hold — at least half of
+wars declared reach peace and truces exist at turn 120.
+*Gate: new, blocked on 14A (now unblocked; substrate measured above).*
 
 ### Stage 15 — consequences that outlive the turn
 Petitions resolve and vanish. `event_chains.py` is 82 lines and `saga/` is 406 against the
