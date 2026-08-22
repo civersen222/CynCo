@@ -356,14 +356,79 @@ after the trigger repairs, never from the authored inventory.
 *Gate: new. Rule 11 + Rule 14 — this stage needs a positive shim, because its central
 claim is one the base fails for four independent reasons.*
 
+**LANDED 2026-08-22 at `2f44568`.** Two cuts, 117 tool calls, none of which touched the
+grading apparatus. `g15 chains` PASS on all five phases, `g_suite` 1963 passed / 0 failed
+against the empty `cd48f40` baseline, hygiene clean. The gate was calibrated against six
+trees before dispatch — base (15 findings), wire-only (12), teleprompter (15), a positive
+shim (0), and that shim perturbed by 1 and by 8 extra rng draws per turn (0 and 0) — and
+the landed run reproduces the shim's numbers exactly:
+
+* 8 / 5 / 8 chains completed at seeds 7 / 42 / 61, union of 8, two distinct completed-set
+  shapes across the seeds, and `mine_inquiry` completing with ≥3 beats at every seed.
+* Every completed chain names a real province, House or person, so no beat reached the
+  gazette with its braces unfilled.
+* All 7 AI Houses hold a living designated heir by turn 12, and at each seed an heir named
+  before the ruler's death is the one who inherited — `succession.py:39`'s designated-heir
+  branch executes in unattended play for the first time.
+* 14A and 14B re-assert green in the same century (19 wars declared across the three).
+
+The four ported reads were repaired honestly: every threshold (`unrest >= 35`, dial `>= 60`
+/ `>= 80` / `<= 30`, `militancy >= 60`) is preserved verbatim and only the object being read
+changed — `game.cities` → `atlas.provinces`, the dial joined back from the enterprises sited
+in the province, `scheme_manager` → `scheme_mgr`. No existing test was modified; the
+`test_true_believer_transforms_instead` casualty was resolved in the game, as specified, by
+a fallen-House guard in `_drain_legitimacy`. The dice were not touched.
+
+**Carried debt — `name_heir` does not pick who its own docstring says.** It claims "the
+oldest living adult, else the oldest minor", but iterates `dynasty.all_characters` in dict
+insertion order and takes the first match, while `succession_order`'s tier 1 sorts by age
+descending. At turn 0 the two agree in 42 of 42 realms, which is why
+`test_name_heir_designates_who_the_line_would_pick` passes; after 70 turns they diverge in
+**16 of 21**. The divergence is married-in spouses: they enter the dynasty late but old, so
+the line names a 74-year-old in-law and `name_heir` names a 35-year-old of the bloodline.
+Two consequences, neither caught by the gate because neither breaks a claim the stage made:
+the docstring is false, and that test is turn-0-lucky — precisely the coincidental-agreement
+shape the brief warned about, arriving in the half of the test the brief did not name.
+`name_heir`'s pick is arguably the better *game* rule, so this is a decision to make
+explicitly, not a bug to patch quietly. Fold into Stage 18 with the 14B survivors.
+
+**Carried debt — the authored trigger thresholds are unpinned.** Full-suite mutation sweep
+over the stage's diff, `gilded/tests` as the test set: **8 of 25 killed**. All 17 survivors
+are trigger predicates in `chains_pack1.py` and `chains_pack2.py` — comparisons that can be
+inverted (`>=` → `>`, `==` → `!=`) and constants that can move 15 points, with no test in
+1963 noticing. The wiring is pinned; the content is not. Recorded on ledger record #231.
+Fold into Stage 18.
+
 ### Stage 16 — the ending you got is the ending you earned
 The four axes and the epilogue exist and pass `g8`. What is not yet true is that different
 play produces different endings.
 
-**Exit:** across twelve seeds played by three scripted strategies (hoarder, conqueror,
-dynast), at least 4 distinct named verdicts appear, no single verdict is more than 40% of
-outcomes, and each strategy's modal verdict differs from the other two's.
-*Gate: new. This is the replayability number.*
+**~~Exit:~~ RETIRED as an F89 spec error — every clause measured wrong.** The written exit
+asked for "at least 4 distinct named verdicts, no single verdict more than 40%, and each
+strategy's modal verdict differs from the other two's". Measured over 120 games (24 seeds ×
+5 stances) at `2f44568`: the base **already** produces 4 distinct verdicts, so that clause
+is free. No honest repair measured got any verdict below **43.3%**, so "no verdict above
+40%" is a bar above what the substrate produces. And no honest repair separated all four
+modals — the ceiling is **3 of 4**, because `hoarder` and `dynast` both end quiet and rich
+and there is no fifth verdict for them to split into.
+
+**Exit (re-derived from measurement):** over 24 seeds × 5 stances = 120 centuries —
+≥5 distinct verdicts pooled, no verdict above 58.0%, `The Quiet Throne` reached ≥25 times
+(it is reached **0** times today — one of the five named endings is dead content), ≥3
+distinct modal verdicts across the four scripted stances, on ≥18 of 24 worlds the four
+reigns end ≥3 distinct ways, a century of war putting ≥12.0 on the player's **own** ledger
+(`tide.house_atrocities`, today 3.0), and a blood axis taking ≥5 distinct 5-point values
+while pinned at 100.0 in at most 85 games (today: 119 of 120 pinned).
+
+Four root causes, all measured: `fronts.py:220` calls `record_atrocity("war")` with no
+`house=` — the one atrocity in the tree charged to nobody; `ATROCITY_WEIGHTS` has no `"war"`
+key so a battle is tariffed below a cover-up; `endings.py` judges `tide.atrocities` (the
+world's) in both `_axis_world` and the Quiet Throne branch though `tide.house_atrocities`
+exists and is populated; and `_axis_blood` passes 100 at four living members and never comes
+back.
+*Gate: new. Rule 11 + Rule 14 — calibrated red on the base and on two cheat shims (constant
+tuning; `house=` alone), green on the minimal honest repair, a fuller repair, and that
+repair perturbed by 1, 3, 5 and 8 extra rng draws per turn.*
 
 ---
 
