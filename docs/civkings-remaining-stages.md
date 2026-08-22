@@ -287,14 +287,74 @@ at least once across the three played centuries; and 14A's numbers hold — at l
 wars declared reach peace and truces exist at turn 120.
 *Gate: new, blocked on 14A (now unblocked; substrate measured above).*
 
-### Stage 15 — consequences that outlive the turn
-Petitions resolve and vanish. `event_chains.py` is 82 lines and `saga/` is 406 against the
-docket's 1616. A decision the player made forty turns ago should still be visible.
+**LANDED 2026-08-21 at `cd48f40`.** `gilded/pacts.py` is the one place a pact is defined,
+read and enforced; `may_declare_war` is asked on all three war paths (`ai.py:83`,
+`agenda.py:262`, `docket.py:1348`). Gate green on all five phases: 6 / 3 / 6 pacts standing
+at turn 120 with at most 2 per House, both pickers refuse a target they named themselves at
+all three seeds, the call to arms is answered at all three (seed 7 by a recorded refusal,
+42 and 61 by the ally joining), and 14A held with 15 wars declared against the base's 10.
+Suite 1957 passed / 0 failed. Weddings were **not** suppressed to get there — marriages ran
+59/33/73 at base against 60/33/71 at head.
 
-**Exit:** at least 6 petition kinds create durable state a later turn reads; at least 3
-chains of length ≥3 fire in a played century; the Gazette names the earlier decision by its
-own text when the consequence lands. Measured over a century at three seeds.
-*Gate: new.*
+The driver recorded `verified=false`; that was a **false negative from the gate**, not a
+verdict on the work — see **F121**. It is also the origin of sealed-gate **rule 14**.
+
+**Carried debt from the mutation sweep (18/25 killed).** Two survivors are real and belong
+in a later stage's brief rather than being patched silently:
+
+* `pacts.py:99:cmp->Gt` / `:100:const->True` — the per-House scarcity cap is checked
+  symmetrically for `house_a` and `house_b`, but only the `house_a` half is killed. The
+  `house_b` half is unprotected, so the cap is proven to bind on one of the two Houses and
+  merely *asserted* on the other. Same "green while measuring nothing" family as F118,
+  reached through an untested symmetry.
+* `fronts.py:410:cmp->IsNot` — `if w is war` in the `pact_pledges` cleanup can be inverted
+  to delete every pledge *except* the one that should go, and nothing notices.
+
+Not gaps in the game; gaps in what its own tests can tell is wrong. Fold into Stage 18.
+
+### Stage 15 — consequences that outlive the turn
+Petitions resolve and vanish. A decision the player made forty turns ago should still be
+visible.
+
+**The substrate was measured on 026d38f before this stage was specified, and the
+measurement overturned the exit that was written here first.** The old exit asked for
+"at least 3 chains of length ≥3 fire in a played century". That is unreachable, and the
+gate would have been an F89 spec error:
+
+* `event_chains.py` (82 lines) is complete and correct — `ChainManager.tick` arms triggers
+  and advances steps, deterministically. Twelve `ChainDef`s are authored across
+  `event_content/chains_pack1.py` and `chains_pack2.py`.
+* **None of it is wired.** `build_pack1`/`build_pack2` have zero callers and `ChainManager`
+  is never instantiated in `chassis.py`. It *was* wired, at `legacy/civkings/game.py:552-557`
+  — the port to `gilded/` dropped it. Same signature as 14A's `raise_regiments`.
+* Exactly **three** of the twelve chains have ≥3 steps (`mine_inquiry`,
+  `heir_radicalization`, `tabloid_war`); the other nine have 2. So the old exit needed all
+  three of them.
+* Wired experimentally and played a century at seeds 7/42/61, **2 of 12 chains ever fire**
+  (`coping_spiral`, `succession_vultures`) — both 2-step. **All three 3-step chains fire at
+  no seed.** Each is dead for its own reason:
+  * `mine_inquiry` reads `getattr(game, "cities", None) or {}`. `GildedGame` has no
+    `cities` attribute at all — the world is `atlas.provinces`. The `or {}` swallows it, so
+    it fails silently rather than raising.
+  * `heir_radicalization` needs `is_heir`. That flag is set `False` at
+    `society/characters.py:153` and the only writer of `True` in the tree is
+    `ui/court_actions.py:283` — **a player-only UI action**. An unattended century has 351
+    characters and **zero** heirs. This also makes `succession.py:39`'s "a living designated
+    heir stands FIRST, ahead of all tiers" branch unreachable in AI play.
+  * `tabloid_war` needs two rulers to hold **mutual** opinion ≤ -40. The most negative
+    one-way opinion measured is -80 at seed 42, and 0 at seeds 7 and 61.
+* Separately: `chassis.py:174` does `self.events = []` at the **top** of every `end_turn()`,
+  so `game.events` only ever holds the last resolved turn. Consequences literally cannot
+  outlive the turn *in the record* today.
+
+**Exit (to be pinned against a positive shim before dispatch):** the chain system is wired
+into the turn; a named, reachable set of chains fires and runs to completion in a played
+century at three seeds; at least 6 petition kinds write durable state a later turn reads,
+with the reader cited; and the Gazette names the earlier decision by its own text when the
+consequence lands. The chain count and which chains must be quoted from a re-measurement
+after the trigger repairs, never from the authored inventory.
+*Gate: new. Rule 11 + Rule 14 — this stage needs a positive shim, because its central
+claim is one the base fails for four independent reasons.*
 
 ### Stage 16 — the ending you got is the ending you earned
 The four axes and the epilogue exist and pass `g8`. What is not yet true is that different
