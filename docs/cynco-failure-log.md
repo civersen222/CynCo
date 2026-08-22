@@ -2394,3 +2394,51 @@ script through several stages without ever being exercised, because the
 collision it refuses is rare. A guard that has never fired is a guard that has
 never been tested. Where a refusal is cheap to provoke, provoke it once on
 purpose.
+
+---
+
+## F123 — an escaped double quote in one assertion's command would have dropped all four
+
+**Where.** Stage 16 dispatch, `C:/tmp/mission_16.contract.json`, hygiene
+assertion.
+
+**What happened.** The driver refused the contract before the mission started:
+
+```
+[driver] mission contract sidecar C:/tmp/mission_16.contract.json: assertion
+"Hygiene when you stop: ..." — Verification command cannot run as written —
+does not parse: The string is missing the terminator: '..
+— the engine would refuse this contract and drop all 4 assertion(s),
+   leaving the mission unmeasured
+```
+
+The command was a `python -c "..."` one-liner containing
+`l[3:].strip().strip('\"')` — a double quote escaped for JSON, which then had
+to survive PowerShell's parse of the outer double-quoted `-c` argument. It does
+not. PowerShell ends the string at the inner quote and reports an unterminated
+string.
+
+**Why this one is worth logging even though nothing broke.** The refusal is
+all-or-nothing: one unparseable command drops **every** assertion in the
+sidecar, not just its own. A mission dispatched with a contract the engine
+silently declined would run to completion and land unmeasured, and the ledger
+would record `hadContract: false` on a mission that was written with four
+assertions. The driver's pre-flight parse is the only thing standing between an
+authoring typo and an unmeasured stage — and it is a *refusal*, not a warning,
+for exactly that reason.
+
+**Fix.** Rewritten with no double quote anywhere inside the `-c` payload:
+`p.rstrip('/') != 'probe.py'`, `os.path.isdir(...)`, single quotes throughout.
+Re-verified by running the command against the base tree clean (exit 0) and
+against a tree with a planted untracked directory (exit 1, reported as
+`untracked: scratchdir/ (DIRECTORY)`).
+
+**General lesson — a contract assertion's command crosses three parsers before
+it runs: JSON, PowerShell, and Python.** Only the last one is the one being
+written. Rule 11 says calibrate the gate against BASE and PERTURBED; this is its
+sibling for the harness — **run every assertion command exactly as the JSON
+holds it, in the shell the driver will use, before dispatch.** A command that is
+correct Python and invalid PowerShell reads as correct in every editor. Cheapest
+possible check: extract each `command` from the sidecar with `json.load` and
+`eval` it, once clean and once against a deliberately failing tree, and confirm
+both the exit code and the message.
