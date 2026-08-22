@@ -2442,3 +2442,66 @@ correct Python and invalid PowerShell reads as correct in every editor. Cheapest
 possible check: extract each `command` from the sidecar with `json.load` and
 `eval` it, once clean and once against a deliberately failing tree, and confirm
 both the exit code and the message.
+
+
+## F124 — the gate's own synonym list taught the run a number the game does not use
+
+**Where.** Stage 17 gate authoring, `~/.cynco/heldout/17/g17_turn_one.py` phase 3
+and the matching paragraph of `C:/tmp/mission_17.txt`. Landed at `ada2e8f`.
+
+**What happened.** Phase 3 required the opening frame to name "what ends it",
+and — so the run would not have to guess at prose — the brief published the
+accepted terms verbatim:
+
+```
+what ends it  : the game ends, game over, you lose, ends when,
+                the century ends, ends the game, ruin, the age ends,
+                hundred turns, 100 turns
+```
+
+The last two are numbers, and they are the wrong numbers. `chassis.TURN_BUDGET`
+is **70**; a game measured end to end reports `game_over at turn 71 -> century`.
+There is no hundred anywhere in the loop. The run wrote a teaching statement to
+satisfy the list and shipped, on the first frame of every new game, the sentence
+
+> The century ends after a hundred turns, or sooner in ruin — then the game ends.
+
+The gate passed it. Of course it did: it was checking for its own string.
+
+**Why it matters more than a wrong constant.** The whole stage is *a stranger
+can play turn one*. The single artefact the stage exists to add is the one text
+a first-time player reads before anything else, and it now states a false fact
+about the game's length with the authority of the game itself. A gate that
+measures teaching, and accepts a lie as teaching, has inverted its own purpose.
+
+The failure is upstream of the run and the run behaved correctly. It was told
+the accepted vocabulary and it used it. Nothing in the brief asked it to check
+the number, and a phase-3 pass is indistinguishable from a phase-3 pass on a
+true sentence.
+
+**Root cause.** The synonym families were written from the *concept* ("what ends
+the game") without reading the constant that implements it. Every other family
+in that list is a phrase — `the game ends`, `you lose`, `ruin` — and phrases
+cannot be wrong. Two of the ten were facts, and facts have to be measured.
+
+**Fix.**
+1. `g17_turn_one.py` is left exactly as it ran — it is the record of what Stage
+   17 was measured against, and rewriting a gate after it has graded a run makes
+   the recorded grade mean something it never meant. The correction goes
+   forward, not backward.
+2. No future gate publishes a literal quantity as an accepted term. Where a bar
+   wants a number on screen it reads that number from the tree under test at
+   gate time — `from gilded.chassis import TURN_BUDGET` — and asserts the
+   rendered text agrees with it.
+3. Stage 18 carries the repair as a requirement: the opening statement states
+   the real budget, and a test in the repo ties the rendered text to
+   `chassis.TURN_BUDGET` so the two cannot drift again.
+
+**General lesson — a gate may accept a synonym for a concept, but never a
+literal for a quantity.** If a bar wants a number on screen, it must read that
+number from the code under test at gate time and compare, not carry a copy. A
+hardcoded quantity in a gate is the same defect as a hardcoded quantity in a
+test: it stops measuring the system the moment the system moves. Rule 11 asks
+whether the gate can tell a correct build from a broken one; this is the
+question beside it — **can the gate tell a true sentence from a false one, or
+only a matching one from a non-matching one?**
