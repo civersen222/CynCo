@@ -430,6 +430,25 @@ back.
 tuning; `house=` alone), green on the minimal honest repair, a fuller repair, and that
 repair perturbed by 1, 3, 5 and 8 extra rng draws per turn.*
 
+**LANDED at `537283a`** (3 commits, 4 files, +182/−15, 89 turns; ledger record #232).
+Both sealed gates re-run by hand on the landed head: endings PASS on all five phases,
+suite **1968 passed, 0 failed**. Every bar cleared with room: 5 distinct verdicts, largest
+share **45.0%** (bar 58.0), `The Quiet Throne` reached **54** times (bar 25, base 0),
+**3** distinct modals, **23 of 24** worlds ending ≥3 ways (bar 18, base 5), a century of war
+putting **17.0** on the player's own ledger against the hoarder's 0.0 (bar 12.0, base 3.0),
+and blood in **14** five-point buckets pinned at 100.0 in **27** of 120 (bar ≤85, base 119).
+The repair went to the root of all four defects and no existing test was edited, skipped or
+xfailed. 0 of 71 tool calls touched the grading apparatus.
+
+Two debts, both for Stage 18. **`_axis_blood` still adds 5.0 for every _dead_ member**, so a
+house that buried ten scores 50 above one that buried none — pre-existing at `2f44568`,
+carried through the rewrite unexamined, and now the one term in the axis that does not read
+the state of the line. And the **mutation sweep is 4 of 25 killed** (`gilded/tests` over the
+stage's diff): all 21 survivors are coefficients or comparisons inside the new `_axis_blood`
+(lines 92–100, 112) and the Quiet Throne threshold (line 133). The delivered tests pin the
+_direction_ of every property and not one magnitude; the magnitudes are held only by the
+held-out gate, which does not ship.
+
 ---
 
 ## Block C — make it startable. Two stages.
@@ -438,13 +457,53 @@ repair perturbed by 1, 3, 5 and 8 extra rng draws per turn.*
 No tutorial, no welcome, no onboarding of any kind. This is the single largest gap between
 the current build and a purchasable one, and it is the cheapest to close.
 
-**Exit:** a first-run flow that names the goal, the three things the player spends
-(attention, gold, standing) and the one thing that ends the game; every one of the 11 tabs
-carries a one-sentence "what this is for"; and a scripted new-player path — start, rule one
-petition, end turn, see the consequence — that completes without the player needing anything
-outside the window. Assertable as: the path draws, every step names its next action, and no
-step is reachable only by keyboard shortcut.
-*Gate: new.*
+**~~Exit:~~ RETIRED — two of its four clauses are already true at `537283a`.** The written
+exit asked for "every one of the 11 tabs carries a one-sentence 'what this is for'" and "no
+step is reachable only by keyboard shortcut". Measured: `TAB_HINTS` already gives all 11
+tabs a sentence, delivered as `hint=` on each tab `Region` — that clause is free. And the
+build has **no keyboard handlers at all** (navigation is click-only, `handle_click` is the
+sole input path), so "no keyboard-only step" is vacuously true. Passing them proves nothing.
+
+What the hint clause was reaching for is real but different: the sentences exist **only as
+hover tooltips**. On the Briefing tab 14 of 16 regions' hints appear nowhere in the drawn
+text, and `TAB_HINTS` is a dict literal rebuilt inside `_draw_tab_bar` on every frame. A
+stranger who does not know to hover never sees a word of it.
+
+**Exit (re-derived from measurement):** over 24 worlds, driving the real pygame UI headlessly
+through `new_app_state`, `view.draw`, `view.regions`, `view.handle_click` and
+`app._apply_action` — the same seed draws the same frame twice; **`wrap()` reproduces its
+input word for word**; the first frame of a new game names the objective, what ends the game,
+and all three spends; a **blind walk that clicks only regions in group `guide`** rules a
+petition and reaches turn 2 on ≥22 of 24 worlds; and acting and refusing are both answered on
+screen — `rule`/`set_stance`/`place_informant` each put a line up on ≥22 of 24 worlds with
+≥6 distinct rulings, and ≥95% of refused clicks show the reason the game already computed.
+
+Five root causes, all measured at `537283a`:
+
+1. **Every multi-line paragraph the game draws is doubled.** `widgets._word_groups` appends
+   `current` to `groups` inside `if current:` and then again in the `else:` below it — the
+   intervening `if surf.get_width() <= width` is the negation of the branch it sits in and can
+   never be true. Measured in the real draw path: 54 of 384 `wrap()` calls in a pass over 6
+   worlds × 11 tabs × turns 1/13/40 come back with every line twice, and it is the Gazette's
+   prose that doubles. **1963 tests pass.**
+2. **Nothing on the opening frame says what the game is.** 24 of 24 first frames draw
+   ~900–1400 characters and name the objective 0 times and what ends the game 0 times.
+3. **The game explains itself only on hover** (above).
+4. **Acting is answered with silence.** `_rule_dispatch` calls `docket_rule(...)`, which
+   returns narration lines, and throws them away — `return []`. `_set_stance_dispatch` and
+   `_place_informant_dispatch` are silent too. The channel works: `_apply_action` appends any
+   returned string to `view._action_messages` and `_draw_action_messages` draws it.
+5. **Refusal is answered with silence.** `app._apply_action` binds the reason into `_reason`
+   and returns without showing it. On turn one 24 of the 40 registered actions are refused,
+   every one with a non-empty reason already computed, and the player is told none of them.
+
+*Gate: new (`g17_turn_one.py`). Rule 11 + Rule 14 — 9 findings on the base, 0 on an honest
+repair, with a repetition trap (48 identical words must survive wrapping) that a dedupe of
+`wrap()` fails and a cure of `_word_groups` passes.* **Expect a casualty:** the honest repair
+measured 4 red in `test_ui_broadsheet.py` — the per-tab region censuses and
+`test_every_control_on_every_tab_explains_itself` — because a guide control genuinely now
+exists on every tab. That premise really changed and belongs fixed in the census, not
+loosened.
 
 ### Stage 18 — it does not break in front of a stranger
 Robustness pass. Fuzz the input, play to the century at fifty seeds, catch every unhandled
