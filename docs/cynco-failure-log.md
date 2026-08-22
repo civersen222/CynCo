@@ -2272,3 +2272,62 @@ quarter of its values in `a4c2f83` and restored in `b017832` — but the test th
 had been rewritten to match the cut values was not restored with them. See the
 F119 addendum. Two of the four root causes behind Stage 12's standing failures
 are constants that moved without their consequences moving with them.
+
+---
+
+## F121 — a sealed gate failed a CORRECT build, and four-way calibration reported it healthy
+
+**Where.** `~/.cynco/heldout/14b/g14b_alliances_bind.py`, phase 4 ("a call to
+arms fires, by construction"). Stage 14B, graded 2026-08-21.
+
+**What happened.** The driver's own final verdict on Stage 14B was
+`FAIL — 1 finding(s)`: seed 7, *"Brandtner's ally Duval-Corse neither joined nor
+was recorded refusing — the pact said nothing"*. The run's tree was correct. The
+gate was wrong.
+
+Phase 4 took `before = len(g.events)`, opened a war, ticked three turns, then
+read `g.events[before:]`. But `chassis.end_turn()` does `self.events = []` at the
+TOP of every tick, so `game.events` only ever holds the LAST resolved turn. The
+slice indexed a fresh, shorter list with a stale index and discarded the record.
+
+Seeds 42 and 61 passed because their ally *joins* the war — that answer is read
+from `at_war_with`, not from events. Seed 7's ally *refuses*, and a refusal has
+nowhere to live but `game.events`. So the gate could see one of the two
+legitimate answers and was blind to the other, and the blindness only showed on
+a build that produced the answer it could not see.
+
+**Why every control missed it.** Rule 11 calibration was run four ways — base,
+two cheat shims, one perturbation — and reported the gate healthy. It could not
+have done otherwise: **all four of those trees fail phase 4 anyway**, because
+none of them has a call to arms in it at all. A negative control cannot detect a
+defect that only manifests on a build that does the right thing. Caught only by
+building a deliberately CORRECT shim (`/c/tmp/s14bpos/gilded/pacts.py`, ~60
+lines) and finding it red at all three seeds.
+
+**Two false passes on the way to the fix, both caught by counting.** Collecting
+the window turn-by-turn made the BASE tree pass — three turns of concatenated
+gazette happened to contain both House names in unrelated sentences. Visible
+only as finding counts dropping by exactly 2 on each tree (15→13, 9→7, 18→16);
+every exit code was unchanged. Tightening to "both names in ONE event" still
+passed the base, on:
+
+    "Ishtar Ashworth quietly holds 2% of House Ferrenholt"
+
+Character surnames ARE House names in this game, so name-substring matching on
+generated prose is never sound on its own. Required a call-to-arms vocabulary
+stem alongside both names, and the stem list is now quoted verbatim in the brief
+so the wording of the record is not a guessing game.
+
+**Cost.** The mission landed correct and was recorded `verified=false` with
+`mutationSweep: null`. Had this not been chased, a green stage would have been
+graded a failure and Stage 15 would have been written to re-fix work that was
+already done.
+
+**Fix.** Gate corrected (per-tick window collection + single-event + stem
+check); re-run against the same graded sha `cd48f40` it reports PASS on all five
+phases. Ledger record `mission_14b-1787376305914` patched to `verified: true`
+with a `verifyCorrection` block naming this defect. Written up as **rule 14** in
+the sealed-gate authoring rules: keep four trees per gate — base, ≥1 cheat, a
+perturbation, and a POSITIVE shim that satisfies the claim the cheapest honest
+way — and re-run all four after EVERY edit to the gate, watching the finding
+COUNTS and not just the exit codes.
