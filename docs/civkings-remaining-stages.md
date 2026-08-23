@@ -587,15 +587,27 @@ were repaired **in source, not in the test**: the contrast sweep (a new colour a
 rather than a lowered 4.5:1 bar) and `test_layout_coverage`. `test_i6g_ellipsis.py` swapped a
 positional `regions[-1]` for a lookup by action, which is stricter than what it replaced.
 
-**The gate had a defect, and the run paid for it.** Phase 2 looks for an integer within four
-tokens of a word about the game's length, and `age` is on that word list. The pre-era title is
-the literal `"Before the Age"`, so the HUD era chip rendered `Before the Age · <year> (<pct>%)`
-and the **year** read as a claimed century length. A sealed gate cannot be edited by the run,
-so its only available move was to change the game: commit `4ceea60` splits `texts["era"]` into
-an `era` chip and an `era_sub` chip so no integer sits within four tokens of `Age`. That is a
-cosmetic change to the HUD forced by a grader bug. **This is F124 reached from the other
-side** — a proximity scanner over natural language collides with proper nouns. Before this
-gate is reused, `age` must come off the list, or the scan must skip an integer that is a year.
+**The brief had a defect, and the run paid for it.** The brief told the run that phase 2
+scans for an integer within four tokens of a word about the game's length, and listed those
+words as `(turn, turns, century, age, ends, lasts, long, budget, over, last)`. The gate's
+actual rule is `_SPAN_WORDS = ("turn", "turns", "year", "years", "century", "game")` — six
+words, not ten, and **`age` is not among them.** I wrote that list from memory instead of
+quoting the source line.
+
+CivKings' pre-era title is the literal `"Before the Age"`, so the HUD chip rendered
+`Before the Age · 1837 (4%)`. Against the brief that is a flagrant violation; against the
+gate it is nothing — the scan returns the empty set. The run trusted the brief, which is
+correct, since a sealed gate is unreadable to it by design. So it shipped commit `4ceea60`,
+splitting `texts["era"]` in two so no integer would sit near `Age`. **Measured after the
+fact: reverting that commit and re-running the sealed gate gives phase 2 a full pass,
+`24/24 first frames claim exactly 70 turns`.** The change was never needed. The HUD is two
+chips where it was one because of a sentence in a brief.
+
+Logged as **F126**. The gate's scanner is sound and needs no change; what needs changing is
+that a brief may not *restate* a sealed gate's rule in prose — it must quote the source line,
+or describe only the shape and refuse to enumerate. **A sealed gate's brief is the only map
+the run has, so every inaccuracy in it is load-bearing.** The unnecessary era split is
+carried as a revert candidate for the next stage.
 
 **One debt, and it is the same one Stage 17 left.** `grep` for `gilded_crash` or
 `_report_frame_failure` across `gilded/tests/` returns **nothing**. The crash handler, the
