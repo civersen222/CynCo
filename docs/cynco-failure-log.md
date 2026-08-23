@@ -2560,54 +2560,70 @@ would this check still be right if a stranger chose the same name?**
 
 ---
 
-## F126 — the gate scanned for a word about length and hit a proper noun; the run had to move the game
+## F126 — the brief described the sealed gate's rule in prose, the prose was wrong, and the run defended against a phantom
 
-**Where.** `~/.cynco/heldout/18/g18_finished.py`, phase 2 ("the opening frame's
-century is the century the code runs"), grading Stage 18.
+**Where.** `C:/tmp/mission_18.txt` and its contract, describing phase 2 of
+`~/.cynco/heldout/18/g18_finished.py`. Found while grading Stage 18 — after the
+grade had already been written, merged, and logged **incorrectly** as a defect
+in the gate. See the correction note at the end.
 
-**How it looked.** The phase reads `chassis.TURN_BUDGET` out of the tree under
-test, then scans every string the opening frame draws for an integer standing
-within four tokens of a word about the game's length — `turn, turns, century,
-age, ends, lasts, long, budget, over, last`. Any such integer is treated as a
-claim about how long the century is, and every claim must equal `TURN_BUDGET`.
+**What the brief said.** Phase 2 "scans the text actually drawn on the first
+frame … for any integer standing within four tokens of a word about the game's
+length (turn, turns, century, **age**, ends, lasts, long, budget, over, last)".
 
-That is the right shape for the defect it was written for. Stage 17's guide said
-*"The century ends after a hundred turns"* while the budget was 70, so a scanner
-that finds the number and compares it to the constant is exactly the check.
+**What the gate actually does.**
 
-**What actually happened.** `age` is on the list, and CivKings has a pre-era
-title that is the literal string `"Before the Age"`
-(`gilded/tests/test_dashboard_ui7g.py:176`). The HUD era chip rendered
+    _SPAN_WORDS = ("turn", "turns", "year", "years", "century", "game")
 
-    Before the Age · 1837 (4%)
+Six words. Not ten. `age`, `ends`, `lasts`, `long`, `budget`, `over` and `last`
+are **not in the gate**, and `year`, `years` and `game` are in the gate but not
+in the brief. I wrote the brief's list from memory instead of quoting the source
+line, and no one — including me — compared the two.
 
-so `1837` — a **year** — stood two tokens from `Age` and read as a claim that
-the century is 1837 turns long. Phase 2 failed on worlds that had drawn nothing
-wrong at all.
+**What it cost.** CivKings has a pre-era title that is the literal string
+`"Before the Age"`, so the HUD era chip rendered `Before the Age · 1837 (4%)`.
+Reading the brief, that is a flagrant violation: an integer four tokens from
+`age`, claiming a century of 1837. Reading the *gate*, it is nothing at all —
+`age` is not a span word and the scan returns the empty set. Measured directly:
 
-**Why it cost something.** A sealed gate cannot be edited by the run being
-graded; that is the whole point of sealing it. So the only move available was to
-change the game to stop matching. Commit `4ceea60` splits `texts["era"]` into an
-`era` chip and an `era_sub` chip purely so that no integer sits within four
-tokens of `Age`. The HUD is now two chips where it was one, in a build that had
-no defect there. **A grader bug was paid for out of the product.**
+    scan(['Before the Age · 1837 (4%)'])        -> set()
+    scan(['The Gilded Peace · 1837 (4%)'])      -> set()
 
-**The fix.** Drop `age` from the word list, or require that the integer not be a
-plausible year, or scan only strings the guide group draws. The narrow version
-is best: the check is about the *teaching sentence*, and it did not need to walk
-the HUD at all.
+The run trusted the brief, which is correct behaviour — the brief is the only
+specification it has, and the gate is sealed precisely so it cannot read it. So
+it spent calls on a defect that did not exist and shipped commit `4ceea60`,
+splitting `texts["era"]` into an `era` chip and an `era_sub` chip so that no
+integer would sit near `Age`. **Proved unnecessary after the fact:** reverting
+that commit in a scratch tree and re-running the sealed gate gives phase 2
+`24/24 first frames claim exactly 70 turns` — a full pass. The HUD is now two
+chips where it was one, in a build that never had a defect there, because of a
+sentence I wrote.
 
-**General lesson — a proximity scan over natural language will hit proper
-nouns, and a sealed gate turns every false positive into a product change.**
-F124 said a gate may accept a synonym for a concept but never a literal for a
-quantity. This is the same error from the other side: the gate reasoned about a
-*concept* ("a word about length") using a *token match*, and tokens do not know
-that "the Age of X" is a name while "lasts X turns" is a measurement. The
-asymmetry that makes it expensive is structural: when a normal test is wrong you
-fix the test, but when a **sealed** gate is wrong the run cannot reach it, so it
-contorts the code instead — and the contortion lands in the repository and
-outlives the mission. Before sealing a gate that pattern-matches prose, ask:
-**what in this tree already contains these words for an unrelated reason?** Grep
-for them. Every calibration variant I built moved the *number*; not one of them
-moved the *vocabulary*, which is why four-way calibration passed a gate that
-still had this in it.
+**The fix.** A brief may not *restate* a sealed gate's rule in prose. Where the
+run needs to know the rule, **quote the source line verbatim** — `_SPAN_WORDS =
+("turn", "turns", "year", "years", "century", "game")` is 60 characters and
+could not have drifted. Where the rule is too large to quote, describe the
+*shape* ("a number near a word meaning a span of the game") and refuse to
+enumerate, so the run probes rather than pattern-matches against a list that may
+be wrong.
+
+**General lesson — a sealed gate's brief is the only map the run has, and a
+wrong map is worse than a blank one.** Sealing creates an asymmetry that makes
+this failure uniquely expensive. With an ordinary test the run reads the
+assertion, sees the truth, and any error in my description is corrected within
+one tool call. With a sealed gate the run *cannot* look, so my prose is not a
+hint about the rule — it **is** the rule, as far as the run can ever know. Every
+inaccuracy is therefore load-bearing, and the run will faithfully contort the
+product to satisfy it. Ask of every brief: **for each claim I make about the
+gate, can I point at the line of the gate it came from?** If it came from
+memory, it is a guess, and a guess in a brief is indistinguishable from a
+requirement.
+
+**Correction — this entry originally said the opposite, and was merged.** As
+first written and shipped in PR #90, F126 blamed the *gate*: it claimed `age`
+was on the gate's word list and that the false positive was a grader bug the run
+had no choice but to work around. That was wrong, and the roadmap's Stage 18
+block repeated it. The mistake was made the same way as the mistake it
+describes — I characterised the gate from memory rather than reading
+`_SPAN_WORDS`, in a report *about* not doing that. The gate's proximity scan is
+sound and needs no change. What needed correcting was the brief, and the record.
