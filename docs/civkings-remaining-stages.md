@@ -457,12 +457,18 @@ held-out gate, which does not ship.
 No tutorial, no welcome, no onboarding of any kind. This is the single largest gap between
 the current build and a purchasable one, and it is the cheapest to close.
 
-**~~Exit:~~ RETIRED — two of its four clauses are already true at `537283a`.** The written
+**~~Exit:~~ RETIRED — one of its four clauses was already true at `537283a`.** The written
 exit asked for "every one of the 11 tabs carries a one-sentence 'what this is for'" and "no
 step is reachable only by keyboard shortcut". Measured: `TAB_HINTS` already gives all 11
-tabs a sentence, delivered as `hint=` on each tab `Region` — that clause is free. And the
-build has **no keyboard handlers at all** (navigation is click-only, `handle_click` is the
-sole input path), so "no keyboard-only step" is vacuously true. Passing them proves nothing.
+tabs a sentence, delivered as `hint=` on each tab `Region` — that clause is free.
+
+**Correction, made while grading Stage 18's base.** The second retirement was wrong. This
+note claimed the build has "no keyboard handlers at all"; `app.step_once` handles Esc, F5
+and N today, and `_quicksave` is bound to F5 and reachable no other way. The clause retired
+as vacuously true is measurably **false**: saving and quitting are keyboard-only, and no
+tab, hint or drawn string in the build mentions either key. It was retired on a claim about
+the code that was never measured — the same shape as F124, one level up. Stage 18 carries
+it as a real bar: a click must be able to put the century down and take it back up.
 
 What the hint clause was reaching for is real but different: the sentences exist **only as
 hover tooltips**. On the Briefing tab 14 of 16 regions' hints appear nowhere in the drawn
@@ -548,11 +554,63 @@ a held-out gate the repository does not have.
 Robustness pass. Fuzz the input, play to the century at fifty seeds, catch every unhandled
 exception.
 
-**Exit:** 50 seeds played to natural end with every tab drawn every turn, zero unhandled
-exceptions; save/load exercised at a random turn in each; and a crash handler that writes a
-report rather than closing the window.
-*Gate: new, and this is the one that should also finally run the `mutationSweep` that has
-been `null (UNMEASURED)` on every record in the ledger.*
+**~~Exit:~~ REWRITTEN before dispatch.** The written exit asked for "50 seeds played to
+natural end, zero unhandled exceptions". Measured on the base: **12 worlds already play to
+natural end drawing all 11 tabs with 0 crashes, 4800 fuzzed clicks raise nothing, 8 malformed
+action dicts raise nothing.** The build is not fragile, so that bar was already met and would
+have proved nothing (F89 from the other side — a bar the substrate passes on arrival). The
+real defect is the opposite: `gilded/ui/app.py` contained **no `except` at all**, so on the
+day something *does* raise, the window vanishes with the century in it and no report is left.
+The stage was re-scoped onto four measured defects.
+
+**LANDED `2092b0c` (2026-08-22, mission_18-1787435374870, 416 turns, 4 commits, 0 of 349 tool
+calls touched the grading apparatus; ledger record #234).** Both sealed gates re-run by hand
+at the landed head: `finished` PASS on all five phases (12/12 findings), `suite` 1978 passed /
+0 failed against an EMPTY baseline.
+
+| bar | base `ada2e8f` | landed | need |
+|---|---|---|---|
+| blind walk rules a petition and reaches turn 2 (Stage 17's win) | 24 / 24 | 24 / 24 in 2..4 clicks | ≥22 |
+| opening frame claims a century length | 24 / 24 | 24 / 24 | 24 |
+| the length it claims equals `TURN_BUDGET` | **0 / 24** | **24 / 24** | 24 |
+| a click writes the game to disk | 0 / 6 | 6 / 6 | 6 |
+| a click brings an earlier turn back | 0 / 6 | 6 / 6 | 6 |
+| an in-frame failure escapes `step_once` | 4 / 4 | **0 / 4** | 0 |
+| the failure is written down with its traceback | 0 / 4 | 4 / 4 | 4 |
+| burials that raise the blood axis | 36 / 36 | **0 / 36** | 0 |
+| blood axis still varies (buckets / spread / pinned) | 7 / 48.0 / 0 | 7 / 48.0 / 0 | ≥5 / ≥20 / ≤20 |
+
+The censuses moved honestly: every tab **+2** for the Save and Open controls, the picker
+23→25, the tooltip sweep 223→245, the registry 40→42 — all four exactly the casualties the
+brief predicted. No assertion loosened, skipped or xfailed. Two tests that went red mid-run
+were repaired **in source, not in the test**: the contrast sweep (a new colour at 5.59:1
+rather than a lowered 4.5:1 bar) and `test_layout_coverage`. `test_i6g_ellipsis.py` swapped a
+positional `regions[-1]` for a lookup by action, which is stricter than what it replaced.
+
+**The gate had a defect, and the run paid for it.** Phase 2 looks for an integer within four
+tokens of a word about the game's length, and `age` is on that word list. The pre-era title is
+the literal `"Before the Age"`, so the HUD era chip rendered `Before the Age · <year> (<pct>%)`
+and the **year** read as a claimed century length. A sealed gate cannot be edited by the run,
+so its only available move was to change the game: commit `4ceea60` splits `texts["era"]` into
+an `era` chip and an `era_sub` chip so no integer sits within four tokens of `Age`. That is a
+cosmetic change to the HUD forced by a grader bug. **This is F124 reached from the other
+side** — a proximity scanner over natural language collides with proper nouns. Before this
+gate is reused, `age` must come off the list, or the scan must skip an integer that is a year.
+
+**One debt, and it is the same one Stage 17 left.** `grep` for `gilded_crash` or
+`_report_frame_failure` across `gilded/tests/` returns **nothing**. The crash handler, the
+save and open controls, and the `state.game = result` resync all ship with **zero tests of
+their own** — the only thing that has ever checked them is a held-out gate the repository does
+not have. The mutation sweep confirms the shape: **9 of 25 killed** (62 available, first 25
+run, so a sample not a census), with survivors clustered as flipping `return False`→`True` in
+both refusal guards (`actions.py:69,82` — nothing tests *why* Save or Open refuse),
+`attention_cost=0, gold_cost=0` unpinned on both new actions (`actions.py:1153,1158` — nothing
+stops saving becoming a paid action a broke player cannot afford), and the quickload resync
+itself (`app.py:93`). Seven more sit on `endings.py:99`, the blood axis, where `8.0` mutates
+freely to `1.0/5.0/9.0/16.0` — **the pre-existing Stage 16 magnitude debt, on the exact line
+this stage edited.** Two more (`app.py:133,135`, the F5 and N handlers) are a measurement
+artifact: pre-existing lines the diff counts as added only because they were re-indented into
+the new `try`.
 
 ---
 
@@ -572,14 +630,35 @@ finished and worth dressing. Doing it before then dresses something that is stil
 ## The burndown
 
 ```
-Block A  close the simulation      11I  12  13
-Block B  worth a second run        14   15  16
-Block C  startable by a stranger   17   18
+Block A  close the simulation      11I  12  13     ✓ ✓ ✓
+Block B  worth a second run        14   15  16     ✓ ✓ ✓
+Block C  startable by a stranger   17   18         ✓ ✓
                                    ─────────────
-                                   8 stages
+                                   8 stages, 8 landed
 ```
 
 Eight. Not a counter — a list. A failed run re-issues its stage; it does not add one.
-The three Block B stages are the ones that decide whether this is a tech demo or a game,
-and they are the ones with no gate written yet, so **authoring those three gates is the next
-piece of my own work after 11I lands.**
+
+**All eight have landed. Seven carry a hand-verified record** — a sealed gate re-run by hand
+at the landed head, `verified: true` in the ledger. `python -m gilded` opens a game that a
+stranger can start, understand, put down, pick up again, and be told the truth by when it
+breaks.
+
+**The eighth is Stage 11I, and it is not closed on paper.** Its missions
+(`mission_11money`, `mission_11money2`) are `landed` but `verified: false` in the ledger, and
+the section above still ends at its **Exit**, with no landed block and no measured close. The
+artifact it was asked for does exist — `gilded/tests/test_money_supply.py` is in the tree and
+green inside the 1978 — but nobody re-ran its gate (`g10_the_money_supply.py` 4/4, `g9` 8/8)
+by hand afterwards. Treat the money-supply band as **unconfirmed**, not as passed. It is the
+one place in this document where "landed" has been allowed to stand in for "measured".
+
+**What "finished" here does and does not mean.** It means the eight defects this document
+set out to close are closed and measured. It does not mean the build is beyond criticism,
+and the honest reading of the last two stages is that the roadmap ran out before the
+*testing* did. Stage 17 shipped its guide with no tests; Stage 18 shipped its crash handler
+with no tests; the blood axis has had no magnitude test since Stage 16 and has now been
+edited twice without gaining one. Every one of those is defended solely by a held-out gate
+that the repository does not contain — which is exactly the arrangement this document
+complains about elsewhere. A ninth stage that writes the repo's own tests for Stages 16–18's
+behaviour would be the highest-value thing left, and it is not on this list because the list
+was written before the debt existed.

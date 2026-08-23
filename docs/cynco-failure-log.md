@@ -2557,3 +2557,57 @@ one. Guards written against a name fail in the two worst directions at once:
 they kill things that are not theirs, and they refuse on things that are not
 theirs either. Ask of every guard: **what property here is actually mine, and
 would this check still be right if a stranger chose the same name?**
+
+---
+
+## F126 — the gate scanned for a word about length and hit a proper noun; the run had to move the game
+
+**Where.** `~/.cynco/heldout/18/g18_finished.py`, phase 2 ("the opening frame's
+century is the century the code runs"), grading Stage 18.
+
+**How it looked.** The phase reads `chassis.TURN_BUDGET` out of the tree under
+test, then scans every string the opening frame draws for an integer standing
+within four tokens of a word about the game's length — `turn, turns, century,
+age, ends, lasts, long, budget, over, last`. Any such integer is treated as a
+claim about how long the century is, and every claim must equal `TURN_BUDGET`.
+
+That is the right shape for the defect it was written for. Stage 17's guide said
+*"The century ends after a hundred turns"* while the budget was 70, so a scanner
+that finds the number and compares it to the constant is exactly the check.
+
+**What actually happened.** `age` is on the list, and CivKings has a pre-era
+title that is the literal string `"Before the Age"`
+(`gilded/tests/test_dashboard_ui7g.py:176`). The HUD era chip rendered
+
+    Before the Age · 1837 (4%)
+
+so `1837` — a **year** — stood two tokens from `Age` and read as a claim that
+the century is 1837 turns long. Phase 2 failed on worlds that had drawn nothing
+wrong at all.
+
+**Why it cost something.** A sealed gate cannot be edited by the run being
+graded; that is the whole point of sealing it. So the only move available was to
+change the game to stop matching. Commit `4ceea60` splits `texts["era"]` into an
+`era` chip and an `era_sub` chip purely so that no integer sits within four
+tokens of `Age`. The HUD is now two chips where it was one, in a build that had
+no defect there. **A grader bug was paid for out of the product.**
+
+**The fix.** Drop `age` from the word list, or require that the integer not be a
+plausible year, or scan only strings the guide group draws. The narrow version
+is best: the check is about the *teaching sentence*, and it did not need to walk
+the HUD at all.
+
+**General lesson — a proximity scan over natural language will hit proper
+nouns, and a sealed gate turns every false positive into a product change.**
+F124 said a gate may accept a synonym for a concept but never a literal for a
+quantity. This is the same error from the other side: the gate reasoned about a
+*concept* ("a word about length") using a *token match*, and tokens do not know
+that "the Age of X" is a name while "lasts X turns" is a measurement. The
+asymmetry that makes it expensive is structural: when a normal test is wrong you
+fix the test, but when a **sealed** gate is wrong the run cannot reach it, so it
+contorts the code instead — and the contortion lands in the repository and
+outlives the mission. Before sealing a gate that pattern-matches prose, ask:
+**what in this tree already contains these words for an unrelated reason?** Grep
+for them. Every calibration variant I built moved the *number*; not one of them
+moved the *vocabulary*, which is why four-way calibration passed a gate that
+still had this in it.
