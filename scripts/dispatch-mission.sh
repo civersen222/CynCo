@@ -94,9 +94,21 @@ fi
 # environment; re-stating it here is what let the two drift apart before.
 echo "[dispatch] iterations=$LOCALCODE_MAX_ITERATIONS bash-timeout=${CYNCO_BASH_TIMEOUT_MS}ms (ctx and cache-ram come from the profile and the derivation — confirmed below)"
 echo "[dispatch] engine log $ENGINE_LOG"
+# The engine's startup auto-index covers only its own process.cwd() (localcode);
+# the mission repo never got indexed, so every CodeIndex call degraded to regex.
+# Build/refresh the mission repo's index before launch so the first semantic
+# query answers from vectors. Non-fatal: the tool also self-builds on first use.
+LOCALCODE_EMBED_MODEL="${LOCALCODE_EMBED_MODEL:-nomic-embed-text}" \
+  bun scripts/build-code-index.ts "$MISSION_CWD" \
+  || echo "[dispatch] warning: code-index build failed — CodeIndex will fall back to regex" >&2
+
+# LOCALCODE_EMBED_MODEL: the engine's built-in default embed model is not in
+# the ollama registry (its pull 404s every session), so CodeIndex vector search
+# silently degraded to regex fallback on every mission. Pin the installed model.
 LOCALCODE_APPROVE_ALL=true \
 LOCALCODE_S5_ENFORCE=false \
 LOCALCODE_MAX_ITERATIONS="$LOCALCODE_MAX_ITERATIONS" \
+LOCALCODE_EMBED_MODEL="${LOCALCODE_EMBED_MODEL:-nomic-embed-text}" \
 CYNCO_BASH_TIMEOUT_MS="$CYNCO_BASH_TIMEOUT_MS" \
   bun engine/main.ts > "$ENGINE_LOG" 2>&1 &
 

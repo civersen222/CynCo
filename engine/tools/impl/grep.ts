@@ -81,7 +81,7 @@ export function grepFailure(
 
 export const grepTool: ToolImpl = {
   name: 'Grep',
-  description: 'Search file contents using regex patterns. Returns matching lines with file paths and line numbers.',
+  description: 'Search file contents using regex patterns. Returns matching lines with file paths and line numbers. Use ONLY when you need an exact string or regex match; for conceptual questions ("where is combat resolved") call CodeIndex first.',
   inputSchema: {
     type: 'object',
     properties: {
