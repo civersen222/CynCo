@@ -614,6 +614,11 @@ export class ConversationLoop {
     return this.processing
   }
 
+  /** Tool calls made this session — the dashboard's iteration-budget gauge. */
+  get toolCallCount(): number {
+    return this.toolHistory.length
+  }
+
   abort(): void {
     if (this.abortController) {
       this.abortController.abort()

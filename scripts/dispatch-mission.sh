@@ -105,10 +105,20 @@ LOCALCODE_EMBED_MODEL="${LOCALCODE_EMBED_MODEL:-nomic-embed-text}" \
 # LOCALCODE_EMBED_MODEL: the engine's built-in default embed model is not in
 # the ollama registry (its pull 404s every session), so CodeIndex vector search
 # silently degraded to regex fallback on every mission. Pin the installed model.
+#
+# LOCALCODE_MISSION_*: the dashboard's Mission panel (/api/mission) reads these
+# to show commits since baseline, marker sighting and budget consumption — the
+# same evidence the driver grades at close, visible while the run is live.
+MISSION_BASE=$(git -C "$MISSION_CWD" rev-parse HEAD)
+echo "[dispatch] mission baseline $MISSION_BASE"
 LOCALCODE_APPROVE_ALL=true \
 LOCALCODE_S5_ENFORCE=false \
 LOCALCODE_MAX_ITERATIONS="$LOCALCODE_MAX_ITERATIONS" \
 LOCALCODE_EMBED_MODEL="${LOCALCODE_EMBED_MODEL:-nomic-embed-text}" \
+LOCALCODE_MISSION_MARKER="$MARKER" \
+LOCALCODE_MISSION_CWD="$MISSION_CWD" \
+LOCALCODE_MISSION_BASE="$MISSION_BASE" \
+LOCALCODE_MISSION_CHECK="${CHECK_CMD:-}" \
 CYNCO_BASH_TIMEOUT_MS="$CYNCO_BASH_TIMEOUT_MS" \
   bun engine/main.ts > "$ENGINE_LOG" 2>&1 &
 

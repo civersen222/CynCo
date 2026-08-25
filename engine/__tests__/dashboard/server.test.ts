@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeAll, afterAll, beforeEach } from 'bun:test'
+import { describe, expect, it, beforeAll, afterAll, beforeEach, afterEach } from 'bun:test'
 import { DashboardServer } from '../../dashboard/server.js'
 import { resetParams, getParam } from '../../vsm/governanceParams.js'
 import { globalContract } from '../../tools/contract.js'
@@ -576,5 +576,93 @@ describe('port walking', () => {
 
     walker.stop()
     squatter.stop()
+  })
+})
+
+// ── GET /api/mission ─────────────────────────────────────────────
+
+describe('GET /api/mission', () => {
+  const MISSION_VARS = ['LOCALCODE_MISSION_MARKER', 'LOCALCODE_MISSION_CWD', 'LOCALCODE_MISSION_BASE', 'LOCALCODE_MISSION_CHECK'] as const
+  let saved: Record<string, string | undefined>
+
+  beforeEach(() => {
+    saved = {}
+    for (const k of MISSION_VARS) { saved[k] = process.env[k]; delete process.env[k] }
+  })
+  afterEach(() => {
+    for (const k of MISSION_VARS) {
+      if (saved[k] === undefined) delete process.env[k]
+      else process.env[k] = saved[k]
+    }
+  })
+
+  it('answers active:false when no mission env is exported (interactive session)', async () => {
+    const res = await authFetch(`${BASE}/api/mission`)
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ active: false })
+  })
+
+  it('reports commits since baseline and marker sighting from the mission repo itself', async () => {
+    const repo = mkdtempSync(join(tmpdir(), 'cynco-mission-test-'))
+    const git = (...args: string[]) =>
+      Bun.spawnSync(['git', '-C', repo, ...args], {
+        env: {
+          ...process.env,
+          GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t',
+          GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t',
+        },
+      })
+    git('init')
+    await Bun.write(join(repo, 'a.txt'), 'one')
+    git('add', 'a.txt'); git('commit', '-m', 'baseline')
+    const base = git('rev-parse', 'HEAD').stdout.toString().trim()
+    await Bun.write(join(repo, 'a.txt'), 'two')
+    git('add', 'a.txt'); git('commit', '-m', 'work in progress')
+    await Bun.write(join(repo, 'a.txt'), 'three')
+    git('add', 'a.txt'); git('commit', '-m', 'campaign test complete')
+
+    process.env.LOCALCODE_MISSION_MARKER = 'campaign test complete'
+    process.env.LOCALCODE_MISSION_CWD = repo
+    process.env.LOCALCODE_MISSION_BASE = base
+    process.env.LOCALCODE_MISSION_CHECK = 'python gate.py'
+
+    const res = await authFetch(`${BASE}/api/mission`)
+    expect(res.status).toBe(200)
+    const m = await res.json()
+    expect(m.active).toBe(true)
+    expect(m.base).toBe(base)
+    expect(m.commitsSinceBase).toBe(2)
+    expect(m.markerSeen).toBe(true)
+    expect(m.checkCmd).toBe('python gate.py')
+    expect(m.recentCommits[0]).toContain('campaign test complete')
+
+    rmSync(repo, { recursive: true, force: true })
+  })
+
+  it('does not read marker sightings from the baseline itself', async () => {
+    const repo = mkdtempSync(join(tmpdir(), 'cynco-mission-base-'))
+    const git = (...args: string[]) =>
+      Bun.spawnSync(['git', '-C', repo, ...args], {
+        env: {
+          ...process.env,
+          GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t',
+          GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t',
+        },
+      })
+    git('init')
+    await Bun.write(join(repo, 'a.txt'), 'one')
+    git('add', 'a.txt'); git('commit', '-m', 'campaign test complete')
+    const base = git('rev-parse', 'HEAD').stdout.toString().trim()
+
+    process.env.LOCALCODE_MISSION_MARKER = 'campaign test complete'
+    process.env.LOCALCODE_MISSION_CWD = repo
+    process.env.LOCALCODE_MISSION_BASE = base
+
+    const m = await (await authFetch(`${BASE}/api/mission`)).json()
+    expect(m.active).toBe(true)
+    expect(m.commitsSinceBase).toBe(0)
+    expect(m.markerSeen).toBe(false)
+
+    rmSync(repo, { recursive: true, force: true })
   })
 })

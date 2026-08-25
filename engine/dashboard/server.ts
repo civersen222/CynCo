@@ -14,6 +14,7 @@
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import { readFileSync, existsSync } from 'fs'
+import { execFileSync } from 'child_process'
 import type { Server, ServerWebSocket } from 'bun'
 import type { EngineEvent } from '../bridge/protocol.js'
 import { validateCommand } from '../bridge/commandSchema.js'
@@ -51,7 +52,7 @@ export interface DashboardDeps {
    * itself against it. Silence is a symptom; `processing` is the run itself,
    * and this is the only way for anything outside the engine process to ask.
    */
-  getRunState?: () => { processing: boolean }
+  getRunState?: () => { processing: boolean; toolCalls?: number }
   applyEngineConfig?: (patches: Record<string, unknown>) => { applied: Record<string, unknown>; errors: { field: string; message: string }[] }
   setToolRouting?: (enabled: boolean) => void
   getToolRouting?: () => boolean
@@ -335,6 +336,8 @@ export class DashboardServer {
           switch (pathname) {
             case '/api/governance':
               return this.getGovernance()
+            case '/api/mission':
+              return this.getMission()
             case '/api/predictions':
               return this.getPredictions()
             case '/api/contracts':
@@ -642,6 +645,54 @@ window.__CYNCO_TOKEN = ${JSON.stringify(token)};
   private getGovernance(): Response {
     const report = this.deps.getGovernanceReport?.() ?? null
     return jsonResponse(report)
+  }
+
+  /**
+   * Mission telemetry for the dispatch-mode dashboard.
+   *
+   * The env vars are exported by scripts/dispatch-mission.sh at engine launch;
+   * their absence means this engine is an interactive session, and the page
+   * uses { active: false } to keep its normal layout. Commit facts come from
+   * the mission repo itself — the same evidence the driver will grade at close
+   * — rather than from anything the model reports about its own progress.
+   */
+  private getMission(): Response {
+    const marker = process.env.LOCALCODE_MISSION_MARKER
+    const cwd = process.env.LOCALCODE_MISSION_CWD
+    const base = process.env.LOCALCODE_MISSION_BASE
+    if (!marker || !cwd || !base) return jsonResponse({ active: false })
+
+    let commits: string[] = []
+    let markerSeen = false
+    try {
+      const out = execFileSync(
+        'git', ['-C', cwd, 'log', '--oneline', `${base}..HEAD`],
+        { encoding: 'utf-8', timeout: 10_000 },
+      )
+      commits = out.trim() ? out.trim().split('\n') : []
+      const msgs = execFileSync(
+        'git', ['-C', cwd, 'log', '--format=%B', `${base}..HEAD`],
+        { encoding: 'utf-8', timeout: 10_000 },
+      )
+      markerSeen = msgs.includes(marker)
+    } catch (e) {
+      console.log(`[dashboard] mission git read failed for ${cwd}: ${e instanceof Error ? e.message.split('\n')[0] : e}`)
+    }
+
+    const run = this.deps.getRunState?.() ?? null
+    return jsonResponse({
+      active: true,
+      marker,
+      markerSeen,
+      cwd,
+      base,
+      checkCmd: process.env.LOCALCODE_MISSION_CHECK ?? null,
+      maxIterations: Number(process.env.LOCALCODE_MAX_ITERATIONS ?? 0) || null,
+      toolCalls: run?.toolCalls ?? null,
+      processing: run?.processing ?? null,
+      commitsSinceBase: commits.length,
+      recentCommits: commits.slice(0, 5),
+    })
   }
 
   private getPredictions(): Response {
