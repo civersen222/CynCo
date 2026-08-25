@@ -754,11 +754,22 @@ export class CyberneticsGovernance {
       : homeostatBalance === 'Critical' ? 'critical'
       : 'balanced'
 
-    // Status derivation — variety alone should NOT trigger critical, need real failures
+    // Status derivation — variety alone should NOT trigger critical, need real failures.
+    //
+    // Measured on the C1-wave2 mission (784 turns, sealed gate PASS): the old
+    // `varietyBalance === 'overload'` clause held status at 'warning' on
+    // 777/784 turns, because agentic tool-use runs at varietyRatio 5.5–8.5
+    // against a healthy band of [0.5, 2.0] — the band judges a chat session,
+    // not a mission. A lamp lit 99% of the time on a passing run carries no
+    // information, so variety no longer degrades status (the field itself is
+    // still reported and visible). s3s4Balance 'critical' varied with the work
+    // on that same run (196/784 turns) and was previously invisible unless
+    // successRate had already collapsed — it is the mismatch signal that now
+    // marks 'warning' on its own.
     let status: 'healthy' | 'warning' | 'critical'
     if (this.stuckCount >= 5 || (s3s4Balance === 'critical' && successRate < 0.5)) {
       status = 'critical'
-    } else if (successRate < 0.5 || varietyBalance === 'overload' || this.stuckCount >= 3) {
+    } else if (successRate < 0.5 || s3s4Balance === 'critical' || this.stuckCount >= 3) {
       status = 'warning'
     } else {
       status = 'healthy'
