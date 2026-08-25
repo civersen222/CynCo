@@ -6,7 +6,7 @@ Gates (sealed, outside repo): `~/.cynco/heldout/civkings-redesign/c<N>/`
 | campaign | BASE commit | gate sha256 | calib BASE | calib STUB | waves | verdict |
 |---|---|---|---|---|---|---|
 | C1 — the sim becomes visible | 2092b0c | f2dd97feb5db182f | clean MISS (8 surface fails, exit 1, no traceback) | discriminators FAIL both seeds: G1.1c, G1.3a.season/inquiry/deflection, G1.3c, G1.4a.verbs | wave 1 MISS (ledger c1-wave1-1787631354668: landed, verified False, markerSeen False; gate: acts+registry missing ×2 seeds; ladder/beats landed as methods with domain beat kinds — substance real, shape wrong) · wave 2 dispatched (adapt-shape brief c1-wave2.txt, BASE 185e9ec) | **PASS** — wave 2 (ledger c1-wave2-1787667568006, 784 turns): driver verify PASS 7166ms; hand re-run exit 0, 149 checks 0 fails; marker exact in a418d49 with wire-check proof; frames rendered (Briefing ladder + Gazette headlines, seed 7 t8); mutation sweep pending |
-| C2 — the player has a stake | TBD (post-C1 head) | 1f6b4bc6ca740b5b (provisional) | PROVISIONAL on pre-C1 tree: clean MISS (9 surface fails + 4 derived, exit 1, no traceback) | discriminators FAIL all 3 seeds: G2.4b.t4 ×3, G2.2c, G2.3.failable; 180 other checks PASS | not dispatched | — |
+| C2 — the player has a stake | a418d49 | 1f6b4bc6ca740b5b | clean MISS (13 fails: 9 surface + 4 derived; 150 PASS incl. the full C1 chain green; exit 1, no traceback) | discriminators FAIL all 3 seeds: G2.4b.t4 ×3, G2.2c, G2.3.failable; 180 checks PASS | wave 1 ready (awaiting sweep completion) | — |
 | C3 — the world pushes back | — | — | — | — | — | — |
 | C4 — one living UI | — | — | — | — | — | — |
 | C5 — the world is big | — | — | — | — | — | — |
@@ -45,10 +45,17 @@ Attributeds could satisfy G1.2; countered by G1.3c (causes>=1), the brief's
 "deltas() IS the render source" contract (asserted structurally in C4), and
 mutation sweep at verdict.
 
-### C2 (2026-08-24, PROVISIONAL — calibrated on pre-C1 tree; MUST re-calibrate
-### on the post-C1 BASE before dispatch. gate 1f6b4bc6ca740b5b)
+### C2 (2026-08-25, FINAL — re-calibrated on post-C1 BASE a418d49; the
+### provisional pre-C1 run gave identical discriminators. gate 1f6b4bc6ca740b5b)
 
-BASE run (pre-C1 tree, `CYNCO_GATE_SKIP_C1=1`; expect clean FAIL — features absent):
+BASE run on a418d49 (full gate incl. C1 chain): identical C2 fails to the
+transcript below, plus 150 PASS — the entire C1 regression chain runs green
+inside the C2 gate. Stub run on a418d49: identical to the transcript below
+(perturb updated to piggyback the real C1 beats facade, which chassis's
+end_turn_close call now requires).
+
+Original provisional BASE run (pre-C1 tree, `CYNCO_GATE_SKIP_C1=1`; expect clean
+FAIL — features absent):
 
 ```
 s7/s11/s13.surface.set_ambition: FAIL game.set_ambition missing
