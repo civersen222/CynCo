@@ -6,7 +6,7 @@ Gates (sealed, outside repo): `~/.cynco/heldout/civkings-redesign/c<N>/`
 | campaign | BASE commit | gate sha256 | calib BASE | calib STUB | waves | verdict |
 |---|---|---|---|---|---|---|
 | C1 — the sim becomes visible | 2092b0c | f2dd97feb5db182f | clean MISS (8 surface fails, exit 1, no traceback) | discriminators FAIL both seeds: G1.1c, G1.3a.season/inquiry/deflection, G1.3c, G1.4a.verbs | wave 1 dispatched | — |
-| C2 — the player has a stake | — | — | — | — | — | — |
+| C2 — the player has a stake | TBD (post-C1 head) | 1f6b4bc6ca740b5b (provisional) | PROVISIONAL on pre-C1 tree: clean MISS (9 surface fails + 4 derived, exit 1, no traceback) | discriminators FAIL all 3 seeds: G2.4b.t4 ×3, G2.2c, G2.3.failable; 180 other checks PASS | not dispatched | — |
 | C3 — the world pushes back | — | — | — | — | — | — |
 | C4 — one living UI | — | — | — | — | — | — |
 | C5 — the world is big | — | — | — | — | — | — |
@@ -44,3 +44,41 @@ Known accepted residual: a delta list containing only trivial self-consistent
 Attributeds could satisfy G1.2; countered by G1.3c (causes>=1), the brief's
 "deltas() IS the render source" contract (asserted structurally in C4), and
 mutation sweep at verdict.
+
+### C2 (2026-08-24, PROVISIONAL — calibrated on pre-C1 tree; MUST re-calibrate
+### on the post-C1 BASE before dispatch. gate 1f6b4bc6ca740b5b)
+
+BASE run (pre-C1 tree, `CYNCO_GATE_SKIP_C1=1`; expect clean FAIL — features absent):
+
+```
+s7/s11/s13.surface.set_ambition: FAIL game.set_ambition missing
+s7/s11/s13.surface.ambitions: FAIL game.ambitions missing
+s7/s11/s13.surface.ui.house: FAIL gilded.ui.house missing
+G2.2b: FAIL AttributeError("'Character' object has no attribute 'want'")
+G2.2c: FAIL stances across seeds: []
+G2.3.achievable: FAIL no ambition ever fulfilled: []
+G2.3.failable: FAIL no ambition ever failed: []
+GATE: MISS (13 fails)  exit 1, no traceback
+```
+
+Cheat-stub run (perturb_c2.py — every want "backs" with first disposition key,
+banner clock frozen at "turn 1 of 10", ambitions always fulfilled; skips the C1
+regression chain via `CYNCO_GATE_SKIP_C1`; discriminators must FAIL):
+
+```
+s7.G2.4b.t4: FAIL banner={'family': 'Consolidation', 'clock': 'turn 1 of 10'}
+s11.G2.4b.t4: FAIL banner={'family': 'Glory', 'clock': 'turn 1 of 10'}
+s13.G2.4b.t4: FAIL banner={'family': 'Buyout', 'clock': 'turn 1 of 10'}
+G2.2c: FAIL stances across seeds: ['backs']
+G2.3.failable: FAIL no ambition ever failed: [True, True, True]
+GATE: MISS (5 fails), 180 checks PASS — stub cannot pass; gate discriminates.
+```
+
+Stub notes: real `intel.report` runs unmodified against the stubbed agenda
+(tier-3 path reads `goal.why`); `gilded.provenance.Cause(label, amount, source)`.
+Known accepted residuals: G2.2a cannot tell a genuinely disposition-derived want
+from a want that merely name-drops a disposition key — countered by G2.2c
+(stance diversity across seeds must emerge from the derivation) and mutation
+sweep at verdict. G2.3.achievable/failable need both outcomes across the
+3-seed grid; a degenerate coin-flip implementation could satisfy them but would
+break G2.2b determinism and the honest-levers rule.
