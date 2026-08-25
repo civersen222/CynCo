@@ -1,0 +1,154 @@
+MISSION C2 — THE PLAYER HAS A STAKE (long-horizon; work until the contract holds, then commit the marker)
+
+Repo: C:\Users\civer\civkings
+BASE: a418d49  (C1 landed: game.ladder.standings(), game.beats.{log,deltas,inquire},
+game.acts.set_dial, gilded.ui.registry all live. C1 must STAY green — the sealed
+C2 gate re-runs the entire C1 gate as a regression chain.)
+
+DESTINATION
+The player picks the same kind of Goal the AI plays, the court gains private
+wants that back or oppose it, and the House screen shows all of it. This is
+campaign 2 of 5 of the CivKings redesign: the game stops being a diorama and
+gives the player a stake.
+
+SPEC (verbatim, from docs/civkings-redesign-spec.md)
+
+  3.2 Ambitions — both levels, in tension
+  - House ambition (player-chosen): the player picks a Goal from the same 7
+    families the AI uses (Conquest, Dominion, Buyout, Dynasty, Intrigue, Glory,
+    Consolidation) with the same 10-turn commit and honest levers. Symmetry:
+    rivals read the player's agenda through THEIR fog, exactly as the player
+    reads theirs.
+  - Character wants (derived — the one new mechanic): each family member derives
+    a private want from their 30 dispositions. Wants align or clash with the
+    house ambition, yielding a stance: backs / wary / opposes.
+  - Completing an ambition pays ladder movement on its natural axis and unlocks
+    the next choice.
+
+  4. House screen: the Court in Session
+  - Ambition banner on top: seal, family, target, why-string, commit clock
+    ("turn 3 of 10").
+  - Court grid: portrait cards — name, age, relation, small-caps traits, stance
+    badge, and their one-line want citing the driving disposition.
+  - Stances are COMPUTED from dispositions vs. the ambition — never random,
+    always inspectable.
+
+REQUIRED API SURFACE (the sealed gate consumes exactly this — every name, every
+signature, every field, every string, verbatim; wave 1 of C1 was lost to shape
+divergence, do not repeat it)
+- game.set_ambition(house, family, target=None)
+  Writes the player's Goal into game.agendas — the SAME store the AI's agendas
+  live in and gilded/intel.py reads from (this is what makes fog symmetry free:
+  with an informant + ties, intel.report(...).apparent_intent must contain
+  f"Pursuing {family}" with NO changes to intel.py). The stored goal must have
+  .family == family and .commit_turns == 10. target is a house name (used by
+  e.g. Buyout) or None.
+- game.ambitions.status(house) -> dict with keys: family, target, turns_left,
+  progress, fulfilled. turns_left decrements once per end_turn; fulfilled is
+  None while the clock runs and becomes True or False (a real evaluation of the
+  family's win condition — honest levers, no coin flips) when it reaches 0.
+  The evaluation emits a beat whose .text contains the word "ambition"; a
+  FULFILLED ambition pays ladder movement on its natural axis, and that delta
+  appears in game.beats.deltas(game.resolved_turn) with a Cause whose label
+  contains "ambition".
+- Every ADULT character (age >= 16, in game.realms[house].characters) gets
+  character.want -> {"text": str (non-empty, one line),
+                     "disposition": a key present in character.dispositions,
+                     "stance": one of "backs" | "wary" | "opposes"}
+  Deterministic given seed (two boots of seed 7 produce byte-identical wants).
+  Stances are DERIVED from the 30 dispositions vs. the active ambition family —
+  across ordinary seeds all three stances occur; a court that always agrees is
+  a calibration failure the gate checks for.
+- gilded.ui.house module (new) with:
+    court_cards(game, house) -> list[dict], one card per adult, keys:
+      "cid" (character id), "traits" (== character.traits),
+      "stance" (== character.want["stance"]), "want_text" (== character.want["text"])
+      Cards mirror the model EXACTLY — same set of ids, same values.
+    banner(game, house) -> dict with "family" (the active ambition family) and
+      "clock" == f"turn {10 - turns_left + 1} of 10" at read time
+      ("turn 1 of 10" immediately after set_ambition; "turn 4 of 10" after
+      three end_turns).
+- Wire it into the House tab: the Court in Session renders from court_cards()
+  and banner() (the gate checks the functions; campaign C4 will assert the
+  screen wiring structurally — build it that way now).
+- Register every new player verb (set_ambition at minimum) in
+  gilded.ui.registry.VERBS with non-empty what/why_now/serves, and route it
+  through game.acts so it emits an instant signature beat.
+
+CONTRACT — success is exactly this (seeds 7/11/13 public; the sealed gate adds
+an undisclosed seed). Grid: seed 7 Consolidation, seed 11 Glory, seed 13 Buyout
+(target = first rival by sorted house name).
+| id | assertion |
+| G2.1a | after set_ambition: game.agendas.get(player).family == family, .commit_turns == 10 |
+| G2.1b | with informant (rival,player) + relations 5: intel.report(g, rival, player).tier >= 2 and f"Pursuing {family}" in .apparent_intent — through UNCHANGED intel.py |
+| G2.2a | every adult has want{text, disposition in dispositions, stance in backs/wary/opposes} |
+| G2.2b | two seed-7 boots: (id, text, disposition, stance) lists byte-identical |
+| G2.2c | across the 3-seed grid, all three stances occur |
+| G2.3.mid | after 3 end_turns: status turns_left == 7, fulfilled is None |
+| G2.3.end | after 10 end_turns: fulfilled in (True, False); a beat's text contains "ambition" |
+| G2.3.cause | if fulfilled: some Cause label in beats.deltas(resolved_turn) contains "ambition" |
+| G2.3.achievable | at least one grid seed fulfils its ambition |
+| G2.3.failable | at least one grid seed FAILS its ambition (win conditions must be real) |
+| G2.4a | court_cards ids == adult ids exactly; each card's traits/stance/want_text mirror the model |
+| G2.4b | banner clock == "turn 1 of 10" at set, == "turn 4 of 10" after 3 end_turns |
+| G2.4c | the ENTIRE C1 gate still passes (regression chain inside the C2 gate) |
+
+SELF-CHECK COMMAND (run it yourself EXACTLY as written BEFORE the marker commit;
+it must print C2 CONTRACT HOLDS. Do not substitute your own probe.)
+  cd C:\Users\civer\civkings && SDL_VIDEODRIVER=dummy python - <<'EOF'
+  from gilded.ui.app import new_app_state
+  from gilded.ui import house as ui_house
+  from gilded import intel
+  for seed, family in ((7, "Consolidation"), (11, "Glory"), (13, "Buyout")):
+      s = new_app_state(seed=seed); g = s.game; player = s.house
+      rival = next(h for h in sorted(g.houses) if h != player)
+      g.set_ambition(player, family, rival if family == "Buyout" else None)
+      goal = g.agendas.get(player)
+      assert goal.family == family and goal.commit_turns == 10, goal
+      g.informants.add((rival, player)); g.houses[rival].relations[player] = 5
+      rep = intel.report(g, rival, player)
+      assert rep.tier >= 2 and f"Pursuing {family}" in rep.apparent_intent, rep
+      chars = g.realms[player].characters
+      it = chars.values() if hasattr(chars, "values") else chars
+      adults = [c for c in it if getattr(c, "age", 0) >= 16]
+      for c in adults:
+          w = c.want
+          assert w["text"] and w["disposition"] in c.dispositions
+          assert w["stance"] in ("backs", "wary", "opposes"), w
+      cards = ui_house.court_cards(g, player)
+      assert {card["cid"] for card in cards} == {c.id for c in adults}
+      assert ui_house.banner(g, player)["clock"] == "turn 1 of 10"
+      for _ in range(3):
+          g.end_turn()
+      assert ui_house.banner(g, player)["clock"] == "turn 4 of 10"
+      st = g.ambitions.status(player)
+      assert st["turns_left"] == 7 and st["fulfilled"] is None, st
+      for _ in range(7):
+          g.end_turn()
+      st = g.ambitions.status(player)
+      assert st["fulfilled"] in (True, False), st
+      assert any("ambition" in (b.text or "").lower() for b in g.beats.log)
+      print(seed, family, "fulfilled:", st["fulfilled"])
+  print("C2 CONTRACT HOLDS")
+  EOF
+Sanity beyond the heredoc: the three "fulfilled:" lines must include at least
+one True AND at least one False, and across the three courts all of backs/wary/
+opposes must have appeared — the sealed gate asserts both.
+
+RULES
+- Honest levers only. Deterministic given seed. No debug hooks in game logic.
+- Wants derive from the 30 dispositions — not from a lookup table of names, not
+  from randomness. The derivation must survive a reader asking "why does THIS
+  character oppose THIS ambition?" with a disposition-grounded answer.
+- Ship pytest tests for every new module, in gilded/tests/, same style as the
+  existing suite. python -m pytest gilded/tests -x -q must stay green.
+- Wire-check before finishing: grep every new symbol (set_ambition, ambitions,
+  want, court_cards, banner) and prove each is imported AND called from the
+  live game/UI, not just defined. Put the grep proof in the final commit message.
+- Commit early and often.
+
+DONE WHEN
+The self-check prints C2 CONTRACT HOLDS with both a True and a False among the
+fulfilled lines. Then make a final commit whose message contains exactly this
+marker (lowercase, exact string):
+  campaign c2 complete
