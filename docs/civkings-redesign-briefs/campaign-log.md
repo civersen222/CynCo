@@ -5,7 +5,7 @@ Gates (sealed, outside repo): `~/.cynco/heldout/civkings-redesign/c<N>/`
 
 | campaign | BASE commit | gate sha256 | calib BASE | calib STUB | waves | verdict |
 |---|---|---|---|---|---|---|
-| C1 — the sim becomes visible | 2092b0c | f2dd97feb5db182f | clean MISS (8 surface fails, exit 1, no traceback) | discriminators FAIL both seeds: G1.1c, G1.3a.season/inquiry/deflection, G1.3c, G1.4a.verbs | wave 1 dispatched | — |
+| C1 — the sim becomes visible | 2092b0c | f2dd97feb5db182f | clean MISS (8 surface fails, exit 1, no traceback) | discriminators FAIL both seeds: G1.1c, G1.3a.season/inquiry/deflection, G1.3c, G1.4a.verbs | wave 1 MISS (ledger c1-wave1-1787631354668: landed, verified False, markerSeen False; gate: acts+registry missing ×2 seeds; ladder/beats landed as methods with domain beat kinds — substance real, shape wrong) · wave 2 dispatched (adapt-shape brief c1-wave2.txt, BASE 185e9ec) | — |
 | C2 — the player has a stake | TBD (post-C1 head) | 1f6b4bc6ca740b5b (provisional) | PROVISIONAL on pre-C1 tree: clean MISS (9 surface fails + 4 derived, exit 1, no traceback) | discriminators FAIL all 3 seeds: G2.4b.t4 ×3, G2.2c, G2.3.failable; 180 other checks PASS | not dispatched | — |
 | C3 — the world pushes back | — | — | — | — | — | — |
 | C4 — one living UI | — | — | — | — | — | — |

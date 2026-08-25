@@ -1,0 +1,101 @@
+MISSION C1 WAVE 2 — SAME CONTRACT, EXACT API SHAPE (work until the contract holds, then commit the marker)
+
+Repo: C:\Users\civer\civkings
+BASE: 185e9ec  (wave 1 head — your own work; build on it, do not revert)
+
+WHAT WAVE 1 ACHIEVED (measured on BASE, seed 7 — the substance is good, keep it)
+  ladder() -> list [LadderRow(rank=1, house='Ferrenholt', composite=68.624890625,
+    axes={'capital': Attributed(value=100.0, previous=0.0, causes=(Cause(label='treasury 2120 gold', ...
+  beats() -> list [Beat(turn=1, kind='dividends', house='Ashworth',
+    text='Dividends: 134 gold to the House treasury', source='houses.House.credit',
+    causes=(Cause(label='diplomatic summit', amount=34, ...
+Real ranks, real Attributed axes, real Cause chains on beats. Do not rebuild this.
+
+WHY THE GATE STILL MISSED (sealed gate output, verbatim)
+  s7.surface.acts: FAIL game.acts missing
+  s7.surface.registry: FAIL gilded.ui.registry missing
+  s11.surface.acts: FAIL game.acts missing
+  s11.surface.registry: FAIL gilded.ui.registry missing
+  GATE: MISS (4 fails)
+
+And beyond the surface fails, the shapes diverge from the contract (measured):
+  beats type: method log: False deltas: False inquire: False
+  AttributeError: 'function' object has no attribute 'standings'   # g.ladder.standings()
+The gate consumes the REQUIRED API SURFACE below LITERALLY. `game.ladder` and
+`game.beats` are currently methods; the gate needs objects with named members.
+Your Beat.kind values are domain words ('dividends'); the gate needs the four
+spec kinds. Nothing about your simulation logic is wrong — the delivery shape is.
+
+THE MISSION
+Adapt what you built to the exact surface below. Wrap, don't rewrite: e.g. make
+game.ladder an object that is still callable if you like, but MUST expose
+.standings(); make game.beats an object exposing .log, .deltas(turn),
+.inquire(label, turn). Classify every beat into the four kinds (your current
+kinds like 'dividends' can live in the text or an extra field). Add the two
+missing modules: game.acts and gilded.ui.registry.
+
+REQUIRED API SURFACE (the sealed gate consumes exactly this — every name, every
+signature, every field, verbatim)
+- game.ladder.standings() -> list[(house:str, rank:int, axes:dict[str,float])]
+  All houses; ranks a strict total order 1..N from the four endings.py axes.
+  NOTE axes is a plain dict[str,float] here (floats, not Attributed).
+- game.beats.log -> list[Beat]; Beat has .kind in {"signature","season",
+  "inquiry","deflection"}, .turn:int, .text:str, .face:str|None,
+  .provenance:Attributed|None
+- game.beats.deltas(turn) -> list[(label:str, att:Attributed)]
+  EVERY player-visible numeric delta for that turn; att.check(1e-6) must hold.
+- game.beats.inquire(label, turn) -> Attributed with >=1 Cause (the "why?" chain)
+- game.acts.* : ALL player verbs route through this module and each emits an
+  instant signature beat. Minimum: game.acts.set_dial(eid, value) (wraps
+  Enterprise.extraction_dial).
+- gilded.ui.registry with:
+    VERBS: dict[verb_id -> {"what":str, "why_now":str, "serves":str}]
+      (every acts.* verb registered; all three fields non-empty; "serves" names
+       a ladder axis or ambition; "set_dial" must be a key)
+    DATA: dict[datum_id -> screen_id]  (one owner screen per datum; non-empty)
+
+BEAT KINDS (spec 8 — how to classify what you already emit)
+1. signature: instant acknowledgement of a player act (emitted by acts.*)
+2. season: the End Turn headline beats (your dividends/summits belong here)
+3. inquiry: a "why?" answer — emitted when provenance is materialized for a delta
+4. deflection: the world thwarts the player; MUST have non-empty .face (a person:
+   the Movement leader from society/labor.py or the Master of the Press from
+   papers.py) and .text naming the thwarted act. Never a silent fizzle. All four
+   kinds must actually occur in a 20-turn seed-7 run.
+
+CONTRACT — unchanged from wave 1 (G1.1a..G1.4a). The definition of done is the
+SELF-CHECK COMMAND. Run it EXACTLY as written; it must print C1 CONTRACT HOLDS.
+Do not substitute your own probe for this one. Run it BEFORE the marker commit.
+
+  cd C:\Users\civer\civkings && SDL_VIDEODRIVER=dummy python - <<'EOF'
+  from gilded.ui.app import new_app_state
+  s = new_app_state(seed=7); g = s.game
+  mine = [e for e in g.enterprises if e.house == s.house]
+  g.acts.set_dial(mine[0].eid, 75.0)
+  assert any(b.kind == "signature" for b in g.beats.log)
+  for t in range(20):
+      g.end_turn()
+      lad = g.ladder.standings()
+      assert sorted(r for h, r, ax in lad) == list(range(1, len(lad) + 1))
+      assert all(att.check(1e-6) for _, att in g.beats.deltas(g.resolved_turn))
+  kinds = {b.kind for b in g.beats.log}
+  assert kinds >= {"signature", "season", "inquiry", "deflection"}, kinds
+  lbl, _ = g.beats.deltas(g.resolved_turn)[0]
+  att = g.beats.inquire(lbl, g.resolved_turn)
+  assert att.causes and att.check(1e-6)
+  from gilded.ui import registry
+  assert registry.VERBS["set_dial"]["what"]
+  print("C1 CONTRACT HOLDS")
+  EOF
+
+RULES (unchanged)
+- Honest levers only. Deterministic given seed. No debug hooks in game logic.
+- Ship pytest tests for every new module, in gilded/tests/.
+- Wire-check before finishing: grep every new symbol and prove each is imported
+  AND called from the live game loop; put the grep proof in the final commit msg.
+- Commit early and often. python -m pytest gilded/tests -x -q must stay green.
+
+DONE WHEN
+The self-check prints C1 CONTRACT HOLDS. Then make a final commit whose message
+contains exactly this marker (lowercase, exact string):
+  campaign c1 complete
