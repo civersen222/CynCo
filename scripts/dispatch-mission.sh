@@ -166,6 +166,19 @@ if [ -z "$CTX" ] || [ -z "$CRAM" ]; then
 fi
 echo "[dispatch] ctx=$CTX cache-ram=${CRAM} MiB — coupled, as launched"
 
+# --- visibility ------------------------------------------------------------
+# The bridge port (LOCALCODE_WS_PORT, default 9160) rejects browsers by design:
+# it carries the raw conversation and answers 401 "bridge token required". The
+# human-facing view is the dashboard the engine binds one port up, and the
+# engine has already logged its real URL by the time Ready appears. Print it on
+# every dispatch so nobody dials the bridge port in a browser again.
+DASH_URL=$(sed -n 's/^\[dashboard\] Governance dashboard on //p' "$ENGINE_LOG" | head -1 | tr -d '\r')
+if [ -n "$DASH_URL" ]; then
+  echo "[dispatch] WATCH THE MISSION IN THE BROWSER: $DASH_URL"
+else
+  echo "[dispatch] warning: engine log has no dashboard line — see $ENGINE_LOG" >&2
+fi
+
 echo "[dispatch] driver log $DRIVER_LOG"
 CYNCO_CHECK_TIMEOUT_MS="$CYNCO_CHECK_TIMEOUT_MS" \
   bun scripts/cynco-mission-driver.mjs \
