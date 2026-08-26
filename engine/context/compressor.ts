@@ -237,6 +237,7 @@ export class ContextCompressor {
       anchors.push({ role: 'user', content: [{ type: 'text', text: `[Pinned original task]\n${textOf(first)}` }] })
     }
     const userMsgs = allUserMsgs.slice(-maxUserMsgs).filter(m => m !== first)
+    let recentPins = 0
     for (const u of userMsgs) {
       const text = textOf(u)
       // Pinned as `user`, not `system`. Every real user turn ends up either
@@ -246,8 +247,17 @@ export class ContextCompressor {
       // mid-run. A compacted conversation with no user turn is malformed for any
       // template, so the anchor restores the thing that went missing rather than
       // describing it.
-      if (text) anchors.push({ role: 'user', content: [{ type: 'text', text: `[Pinned user request]\n${text}` }] })
+      if (text) {
+        anchors.push({ role: 'user', content: [{ type: 'text', text: `[Pinned user request]\n${text}` }] })
+        recentPins++
+      }
     }
+    // F129 observability: anchors are spliced in-memory and never reach the
+    // session jsonl, so the C3 post-mortem could not SEE whether the original
+    // task survived compaction and had to infer it from message counts. One
+    // line in the engine log, next to the other [compact] lines, settles it.
+    console.log(`[compact] anchors: contract=${contractText?.trim() ? `${contractText.length}ch` : 'none'}`
+      + ` originalTask=${first ? `${textOf(first).length}ch` : 'NONE'} recentUserPins=${recentPins}`)
     return anchors
   }
 
