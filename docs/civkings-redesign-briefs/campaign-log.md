@@ -7,7 +7,7 @@ Gates (sealed, outside repo): `~/.cynco/heldout/civkings-redesign/c<N>/`
 |---|---|---|---|---|---|---|
 | C1 — the sim becomes visible | 2092b0c | f2dd97feb5db182f | clean MISS (8 surface fails, exit 1, no traceback) | discriminators FAIL both seeds: G1.1c, G1.3a.season/inquiry/deflection, G1.3c, G1.4a.verbs | wave 1 MISS (ledger c1-wave1-1787631354668: landed, verified False, markerSeen False; gate: acts+registry missing ×2 seeds; ladder/beats landed as methods with domain beat kinds — substance real, shape wrong) · wave 2 dispatched (adapt-shape brief c1-wave2.txt, BASE 185e9ec) | **PASS** — wave 2 (ledger c1-wave2-1787667568006, 784 turns): driver verify PASS 7166ms; hand re-run exit 0, 149 checks 0 fails; marker exact in a418d49 with wire-check proof; frames rendered (Briefing ladder + Gazette headlines, seed 7 t8); sweep 4/25 killed (record #236) — 15/21 survivors sit in the committed `_c1_selfcheck.py` probe, not game logic; real-logic survivors: acts.py:25/:41, beats.py:139/189/199/201 (thin-tests residual, carried to close-out) |
 | C2 — the player has a stake | a418d49 | 1f6b4bc6ca740b5b | clean MISS (13 fails: 9 surface + 4 derived; 150 PASS incl. the full C1 chain green; exit 1, no traceback) | discriminators FAIL all 3 seeds: G2.4b.t4 ×3, G2.2c, G2.3.failable; 180 checks PASS | wave 1 MISS (ledger c2-wave1-1787691757144: landed, verified False, 659 turns; exactly one gate fail — G2.2b `AttributeError("'Character' object has no attribute 'want'")`, wants only derived inside set_ambition, absent at boot; CynCo misdiagnosed the sealed command as MSYS backslash-stripping and self-stopped at marker 79e0bca; sweep 0/25 killed (record #237) — all 25 sampled mutants sat in the `_c2_grid.py` scratch probe (25-cap sampled alphabetically; 298 available), so it measures probe pollution, not game logic — the probes wave 2 deleted) · wave 2 (adapt-shape brief c2-wave2.txt quoting the fail verbatim, BASE 79e0bca) | **PASS** — wave 2 (ledger c2-wave2-1787700776646, 40 turns): driver verify PASS 22846ms; hand re-run exit 0, 335 PASS 0 FAIL incl. G2.4c "0 C1 regressions"; marker exact in 9c4b773 (wants from boot: vs-agenda if one exists, else neutral from strongest disposition; committed gilded/tests/test_c2_contract.py; all 7 scratch probes removed incl. `_c1_selfcheck.py`); House frames render (banner family/why/clock "turn 4 of 10" + court cards with stance/want per adult, seed 7); sweep 2/8 killed (record #238) — 6 survivors all in ambitions.py:291-302 boot-want derivation (age-threshold + cmp mutants; thin-tests residual, same class as C1's) |
-| C3 — the world pushes back | 9c4b773 | 90fa086ac43242e5 | clean MISS (5 fails: s7/s11 surface.orders + surface.hold_seat, G3.4a; 336 PASS incl. full C1+C2 chain green; exit 1, no traceback) | inert-orders stub FAILs exactly the 9 discriminators: G3.3a ×4 (no head-faced beats), G3.4a.deflection, G3.5a ×4 (seat run identical to control); 46 anatomy/fog checks PASS | wave 1 pending | — |
+| C3 — the world pushes back | 9c4b773 | 9c0a6fbd4027a7c2 (hardened; was 90fa086ac43242e5) | clean MISS (hardened gate: 6 fails, independent surface prongs; exit 1, no traceback) | inert-orders stub FAILs exactly the 9 discriminators: G3.3a ×4 (no head-faced beats), G3.4a.deflection, G3.5a ×4 (seat run identical to control); 46 anatomy/fog checks PASS — re-verified post-hardening in a BASE worktree | wave 1 MISS (shape divergence: keys Church/Crown/Guilds/Treasury, no hold_seat; 8 fails, 336 PASS); wave 2 pending | — |
 | C4 — one living UI | — | — | — | — | — | — |
 | C5 — the world is big | — | — | — | — | — | — |
 
@@ -123,3 +123,56 @@ byte-identical) makes divergence attributable to the seat. G3.4a's seed scan
 Receivership somewhere in that window — the brief states this explicitly.
 G3.4a.thwarted passed under the stub (seed-3 buyout failed naturally);
 the deflection beat is the real discriminator, as designed.
+
+#### C3 wave 1 — MISS (ledger c3-wave1-1787708879995, 388 turns, head 52c90ca)
+
+Shape divergence, the C1-wave-1 failure class again: CynCo built real Order
+machinery (gilded/orders.py, committed tests in gilded/tests/test_c3_orders.py
+— F127 held, no scratch probes) but invented its own world — orders keyed
+`['Church', 'Crown', 'Guilds', 'Treasury']` instead of the spec §6 table's
+Combine/Bank/Church/Gazette, and no `hold_seat` at all. Probing the head
+(seed 7, 1 end_turn) shows the divergence runs deeper than keys: order goals
+draw from the C2 HOUSE families (`Crown: Dominion, Treasury: Buyout, Guilds:
+Consolidation, Church: Intrigue`), not the spec's order-specific family
+lists; `.reach` is an int (`5505`), not a set; treasuries sit at 0.0. Real
+substance exists (Order class with head Characters — "Corbin Crown",
+"Maren Treasury" — goal objects with commit_turns=10, tick_orders wired into
+chassis.end_turn, intel order path, committed tests), so wave 2 is a
+remap-plus-behaviour wave, not a rebuild — but not a rename-only either.
+
+ContractAssertPass economics worked live: CynCo tried to self-mark the gate
+assertion passed; the engine checked the repo and denied it ("Assertion 0 was
+NOT marked passed — the repository contradicts it"), and CynCo kept working.
+0/358 tool calls touched the grading apparatus.
+
+CodeIndex adoption negative result: this 388-turn exploratory run was the real
+test of the steering changes, and CodeIndex was called **0** times (Grep 60,
+Read 108, Bash 145, total 358). C2-wave-2's single call remains the only use.
+
+Gate hardening (sha 90fa086ac43242e5 → 9c0a6fbd4027a7c2): the original gate
+crashed with `KeyError: 'Combine'` on the wave-1 head — it checked
+`hasattr(g, "orders")` but then indexed by canonical names, and surface_ok's
+early return on missing hold_seat hid the names-mismatch report. Fixes:
+`orders_shaped()` guard before any by-name indexing (fog/levers/collision/
+seats now emit clean FAILs on wrong-shape trees), and independent surface
+prongs. Contract semantics unchanged — only guard/reporting paths. Rule 11
+re-run in a worktree at BASE 9c4b773 (path-swapped calibration copies, only
+the sys.path line differs): BASE clean MISS (6 fails — one per guarded
+section, exit 1, no traceback); cheat stub MISS with the same 9
+discriminators. NEW CALIBRATION LESSON: the perturb suite must include a
+wrong-shape variant (orders present, wrongly keyed), not just an inert one —
+that variant would have caught the KeyError before dispatch.
+
+Wave-1 verbatim fails (hardened gate on head 52c90ca — the wave-2 contract):
+
+```
+s7.surface.hold_seat: FAIL game.hold_seat missing
+s7.surface.names: FAIL orders = ['Church', 'Crown', 'Guilds', 'Treasury']
+s11.surface.hold_seat: FAIL game.hold_seat missing
+s11.surface.names: FAIL orders = ['Church', 'Crown', 'Guilds', 'Treasury']
+s7.G3.2b: FAIL orders dict absent or wrongly keyed — fog unreadable
+s7.G3.3a: FAIL orders dict absent or wrongly keyed — no lever beats to find
+G3.4a: FAIL orders dict absent or wrongly keyed — no Bank to collide with
+s11.G3.5a: FAIL orders dict absent/wrongly keyed or hold_seat missing — no seats to test
+GATE: MISS (8 fails)   336 prior-chain checks PASS
+```
