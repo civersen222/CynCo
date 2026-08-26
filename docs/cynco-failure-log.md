@@ -2691,7 +2691,14 @@ sealed gate zero checks. The work it did do (levers, faces, provenance) is
 real and reusable, but it was wave-3 work done before wave-2 work, on a world
 the contract rejects.
 
-**Root cause (best hypothesis).** The brief's WHAT WAVE 1 ACHIEVED section
+**Root cause (best hypothesis — SUPERSEDED by F129).** Wave 3's forensics
+proved the primary cause was the engine, not the model: compaction paraphrased
+the brief away, and the first compaction summary of this very run enshrined
+"(Crown/Treasury/Guilds/Church)" as the goal — the wrong keys were baked into
+the only surviving statement of the mission. The anchoring story below is real
+but secondary. See F129.
+
+**Original hypothesis.** The brief's WHAT WAVE 1 ACHIEVED section
 praised the machinery, and the run's own wave-1 code carried `_press` stubs —
 a visible TODO in its own handwriting. It anchored on finishing its own plan
 over reading the fail list. The one file that would have forced the issue —
@@ -2717,3 +2724,61 @@ list of gaps and a pile of its own unfinished ideas will finish its own ideas
 first; the brief has to take that choice away. And a completion doc that
 renames the contract's nouns is not a completion doc — it is the failure
 signature.
+
+## F129 — compaction paraphrased the mission away: three waves lost to the same engine defect
+
+**Where.** CivKings redesign campaign C3, all three waves (2026-08-24/26).
+Proven on wave 3 (brief `c3-wave3.txt`, BASE 17646bc, 217 tool calls, exit
+`engine_closed_the_turn`, markerSeen false, delivered a 2-line window-title
+rename); retro-diagnosed on waves 1 and 2 from session transcripts.
+
+**How.** The 12,407-char brief arrived intact as user message #1. The engine's
+compaction (`ContextCompressor.selectVerbatimAnchors`) pinned only the LAST 6
+user messages plus the contract text — and:
+
+1. `.slice(-6)` can never reach user message #1 once tool traffic exists; in
+   an unattended mission every later "user" message is a bare tool_result with
+   no text, so effectively NOTHING of the ask survived verbatim.
+2. The driver passed `brief: task.slice(0, 200)` as the contract, so the
+   pinned contract anchor held only the title line.
+3. The brief's only survival path was the LLM-written compaction summary — a
+   paraphrase, re-paraphrased each cycle. Chinese whispers: wave 3 drifted
+   "rename the world to the spec" → "rename display names" → "rename the
+   window title" across three compactions. Wave 2's first compaction enshrined
+   the wrong keys "(Crown/Treasury/Guilds/Church)" as the goal. Wave 1's
+   compaction turned anatomy attribute names into institution names — the
+   invented world itself was a compaction artifact.
+4. Aggravator: stale scratch. `.cynco-plan.md` (June 13) and wave 2's
+   `.cynco-state.md` sat in the mission cwd, and `conversationLoop.ts`
+   injects `.cynco-state.md` as system context — so when the summary went
+   vague, the model re-grounded on the PREVIOUS mission's goals.
+
+**Why it cost something.** Three full mission budgets (~12h of runtime) on one
+campaign, two of them misattributed to model failure (F128's "contract
+inversion" was written before this was found). The sealed gate caught every
+wave — the measurement held; the engine was the recidivist.
+
+**The fix.** Three parts, all in localcode:
+1. `engine/context/compressor.ts`: `selectVerbatimAnchors` now always pins the
+   FIRST user message with real text as `[Pinned original task]`, verbatim, as
+   a real `user` turn (system-role-only anchors are the "no user query" shape
+   that 400s Qwen's template). Regression-tested in
+   `engine/__tests__/context/verbatimAnchor.test.ts`.
+2. `scripts/cynco-workspace.mjs`: `purgeStaleAgentState` removes untracked
+   `.cynco-plan.md`/`.cynco-state.md` from the workspace root at dispatch
+   (same tracked-abort contract as the F57 bytecode purge); wired into the
+   driver beside the bytecode purge.
+3. Driver's `brief: task.slice(0, 200)` left as-is — the first-message pin
+   makes the full brief survive, and duplicating 12KB per compaction would
+   pay twice for the same guarantee.
+
+**Wave-budget ruling.** Wave 3 was not a fair test of the model. The void run
+does not consume the final wave; the same `c3-wave3.txt` is re-dispatched
+after the fix.
+
+**General lesson.** A summary is a paraphrase, and a paraphrase of a paraphrase
+is a rumor. Anything the mission is GRADED on — the literal ask, the contract,
+what is already committed — must survive compaction verbatim, not descriptively.
+When a long-horizon agent drifts off-goal, check what its context actually
+contained after compaction before blaming the model: the gate measures the
+model+engine system, and the engine is part of the suspect pool.

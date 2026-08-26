@@ -7,7 +7,7 @@
  * mission something the previous one left behind.
  */
 
-import { readdirSync, rmSync } from 'node:fs'
+import { existsSync, readdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 
@@ -73,6 +73,50 @@ export function purgeBytecodeCaches(cwd, io = { readdirSync, rmSync, spawnSync }
   }
   const lines = [`purged ${found.length} __pycache__ ${found.length === 1 ? 'directory' : 'directories'} — ` +
     "a previous mission's compiled verification logic is not this one's to read (F57)"]
+  for (const f of failed) lines.push(`could not remove ${f}`)
+  return lines
+}
+
+/**
+ * The engine's scratch files, named here so the driver and the engine cannot
+ * drift apart on what "stale agent state" means.
+ */
+export const AGENT_STATE_FILES = ['.cynco-plan.md', '.cynco-state.md']
+
+/**
+ * Remove a previous mission's agent scratch state from the workspace root.
+ *
+ * F129. The engine writes `.cynco-plan.md` and `.cynco-state.md` into the
+ * mission cwd (engine/vibe/controller.ts) and injects `.cynco-state.md` back
+ * into every session that starts there (conversationLoop.ts). CivKings C3
+ * wave 3 started with a June plan file and wave 2's state file in the repo;
+ * when compaction garbled the brief, the model re-grounded itself on the
+ * PREVIOUS mission's goals. Scratch is per-mission by definition — it never
+ * has the right to outlive the mission that wrote it.
+ *
+ * Same contract as purgeBytecodeCaches: only untracked files are removed, a
+ * tracked path aborts, a git that cannot answer aborts, and the returned lines
+ * are the caller's log. Empty means nothing to do.
+ */
+export function purgeStaleAgentState(cwd, io = { existsSync, rmSync, spawnSync }) {
+  const present = AGENT_STATE_FILES.filter(f => io.existsSync(join(cwd, f)))
+  if (present.length === 0) return []
+
+  const r = io.spawnSync('git', ['ls-files', '--', ...present], { cwd, encoding: 'utf-8' })
+  if (r.error || r.status !== 0) {
+    return [`AGENT STATE PURGE SKIPPED — git could not say whether these are tracked: ${present.join(', ')}`]
+  }
+  const tracked = (r.stdout ?? '').split('\n').filter(Boolean)
+  if (tracked.length > 0) {
+    return [`AGENT STATE PURGE ABORTED — tracked, and deleting them would edit the delivery: ${tracked.join(', ')}`]
+  }
+
+  const failed = []
+  for (const f of present) {
+    try { io.rmSync(join(cwd, f), { force: true }) } catch (e) { failed.push(`${f}: ${e?.message ?? e}`) }
+  }
+  const lines = [`purged stale agent state: ${present.join(', ')} — ` +
+    "a previous mission's plan is not this one's grounding (F129)"]
   for (const f of failed) lines.push(`could not remove ${f}`)
   return lines
 }

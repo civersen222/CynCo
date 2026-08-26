@@ -1,9 +1,12 @@
 MISSION C3 — WAVE 3, FINAL: RENAME THE WORLD TO THE SPEC. NOTHING ELSE FIRST.
 
 Repo: C:\Users\civer\civkings
-BASE: 17646bc  (your wave-2 work: levers, faces, causes, determinism — GOOD.
-KEEP ALL OF IT. This brief is self-contained; every path it mentions is in
-this file or in your repo. Do not go looking for other briefs.)
+BASE: a866d7d  (= your wave-2 work at 17646bc — levers, faces, causes,
+determinism — GOOD, KEEP ALL OF IT — plus two stray commits from a voided
+run: a 2-line window-title rename, harmless, and a FALSE completion doc,
+removed in CLEANUP below. This brief is self-contained; every path it
+mentions is in this file or in your repo. Do not go looking for other
+briefs.)
 
 READ THIS PARAGRAPH TWICE. Wave 2 was measured by the sealed gate and moved
 it ZERO checks: the same 8 checks fail at your head as at your base. You were
@@ -121,8 +124,9 @@ chain — 336 checks — and a regression fails the wave):
   intel's HOUSE path
 
 CLEANUP (required, small):
-- git rm docs/mission_c3_complete.md and docs/mission_c3_wave2_complete.md —
-  both claim completions the gate refutes. The marker commit is the signal.
+- git rm docs/mission_c3_complete.md, docs/mission_c3_wave2_complete.md and
+  docs/mission_c3_wave3_complete.md — all three claim completions the gate
+  refutes. The marker commit is the signal.
 
 SELF-CHECK — replace gilded/tests/test_c3_contract.py with EXACTLY this
 content (this is the contract's shape; if a test here fails, the CODE is

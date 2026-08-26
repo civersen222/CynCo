@@ -220,9 +220,25 @@ export class ContextCompressor {
     if (contractText && contractText.trim()) {
       anchors.push({ role: 'system', content: [{ type: 'text', text: `[Pinned Contract]\n${contractText}` }] })
     }
-    const userMsgs = messages.filter(m => m.role === 'user').slice(-maxUserMsgs)
+    const textOf = (m: Message) =>
+      m.content.filter(b => b.type === 'text' && b.text).map(b => b.text as string).join(' ')
+    // F129: the ORIGINAL task is user message #1, and `.slice(-maxUserMsgs)`
+    // can never reach it once tool traffic has pushed it out. CivKings C3 lost
+    // three full missions to this: each compaction replaced the 12KB brief with
+    // a paraphrase, and by the third cycle "rename the orders to the spec's
+    // names" had drifted to "rename the window title". The first user message
+    // with real text is the mission and is pinned verbatim, always.
+    // Pinned as a real `user` turn even when the contract carries the same
+    // text: a compacted conversation whose only user content is a system-role
+    // anchor is the "no user query" shape that 400s Qwen's template (below).
+    const allUserMsgs = messages.filter(m => m.role === 'user')
+    const first = allUserMsgs.find(m => textOf(m))
+    if (first) {
+      anchors.push({ role: 'user', content: [{ type: 'text', text: `[Pinned original task]\n${textOf(first)}` }] })
+    }
+    const userMsgs = allUserMsgs.slice(-maxUserMsgs).filter(m => m !== first)
     for (const u of userMsgs) {
-      const text = u.content.filter(b => b.type === 'text' && b.text).map(b => b.text as string).join(' ')
+      const text = textOf(u)
       // Pinned as `user`, not `system`. Every real user turn ends up either
       // summarized away or held in the tail as a tool_result, and Qwen's chat
       // template scans backwards for a user message that is not a bare
