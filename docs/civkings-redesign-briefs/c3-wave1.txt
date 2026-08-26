@@ -1,0 +1,221 @@
+MISSION C3 — THE WORLD PUSHES BACK (long-horizon; work until the contract holds, then commit the marker)
+
+Repo: C:\Users\civer\civkings
+BASE: 9c4b773  (C2 landed: set_ambition/agendas/ambitions.status, boot-time
+wants, gilded.ui.house court_cards+banner. C1 AND C2 must STAY green — the
+sealed C3 gate re-runs the entire C1+C2 gate as a regression chain.)
+
+DESTINATION
+Four institutions become first-class actors with the same anatomy as houses:
+treasuries, reach, real characters as heads, agenda.py goals the intel fog
+reads unchanged. They act every turn through honest levers, and when the
+player crosses one, the thwart has a FACE and a paper trail. This is campaign
+3 of 5 of the CivKings redesign: the world starts pushing back.
+
+SPEC (verbatim, from docs/civkings-redesign-spec.md §6)
+
+  ## 6. The Four Orders (locked "B" — full first-class actors)
+
+  Institutions are actors with the same anatomy as houses — **not** aggregation shims:
+
+  | Order | Treasury | Reach | Head | Goal families |
+  |---|---|---|---|---|
+  | **The Combine** (labor) | strike fund | provinces with Movements | elected leader (exists) | Organize, Recognition, General Strike, Purge Scabs |
+  | **The Continental Bank** | capital reserve | every house's debt book | Chairman | Solvency, Expansion, Receivership, King-making |
+  | **The Church** | tithe income | parishes (population piety) | Prelate | Endowment, Crusade of Morals, Sanctuary, Schism |
+  | **The Gazette** (press) | circulation | literate provinces | Editor (seat exists) | Circulation War, Exposé, Respectability, Patronage |
+
+  - Each order runs `Goal(family, target, commit_turns=10, why)` — the agenda.py shape with order-specific families — so **intel fog reads Orders unchanged** (informant in the union hall → tier 3 on the Combine).
+  - **Heads are real characters** (30 dispositions, wants, stress, secrets) in a fifth realm. They can be courted, schemed against, or martyred — with `martyrdom: 4.0` tide cost already priced in `ideology.py`.
+  - Orders act through honest levers each turn: fund strikes / call loans, buy shares (`shares.py`) / swing piety, denounce / print exposés feeding the scandal system.
+  - **Deflection = crossing an order's active goal.** The paper trail is the goal itself: "Why did my takeover stall?" → "The Bank is committed to Receivership of Duval-Corse (turn 6 of 10); the Chairman froze the share registry."
+  - **One holdable seat per order** (Master of the Press is the template): Director's chair, Lay Patron, recognized-bargaining seat. Seats give influence, never control.
+  - Orders don't climb the ladder but can **end** a house: receivership, general strike, schism.
+
+REQUIRED API SURFACE (the sealed gate consumes exactly this — every name,
+every signature, every field, every string, verbatim; C1 wave 1 was lost to
+shape divergence, do not repeat it)
+- game.orders -> dict with keys exactly {"Combine", "Bank", "Church", "Gazette"}.
+  Each value (an Order) has:
+    .treasury -> float >= 0
+    .reach    -> non-empty set
+    .head     -> a Character with EXACTLY the same 30 disposition keys house
+                 characters carry. Heads live in a FIFTH realm: a head's .id
+                 must NOT appear among any house realm's characters.
+    .goal     -> the agenda.py Goal shape (.family, .target, .commit_turns,
+                 .opened_turn, .why) with .commit_turns == 10 and .family drawn
+                 from THAT order's family list in the spec table above.
+                 ("Exposé" may be spelled "Expose"; the gate accepts both.)
+  Goals exist from the first resolved turn onward (the gate checks after one
+  end_turn), on every seed.
+- Goal selection is a DETERMINISTIC function of (seed, state) — two runs of the
+  same seed produce identical order goals every turn. It must rotate through
+  real families: the sealed gate scans seeds 3..18, up to 16 turns each, for a
+  turn where game.orders["Bank"].goal is a FRESH Receivership
+  (.family == "Receivership", .opened_turn == game.resolved_turn, .target a
+  house that is not the player). At least one seed in that window MUST produce
+  one — if Receivership is unreachable, the contract fails.
+- gilded.intel.report(game, viewer, order_name) accepts an ORDER name as
+  subject, through the unchanged fog machinery:
+    no informant  -> tier 0, .apparent_intent contains
+                     "Their intentions are unknown"
+    after game.informants.add((viewer, order_name)) -> tier >= 2 and
+                     .apparent_intent contains f"Pursuing {goal.family}"
+- Orders ACT: over 40 turns of seed 7, EVERY order performs at least one lever
+  action that lands in game.beats.log as a beat whose .face is that order's
+  head's .name and which carries provenance (.causes or .provenance non-empty).
+  Levers are honest: fund strikes / call loans / swing piety / print exposés —
+  acts that move real quantities, with Causes.
+- Deflection: when a player ambition crosses an order's ACTIVE goal (the gate's
+  scenario: player Buyout of X while the Bank is committed to Receivership of
+  X), the ambition must FAIL (ambitions.status fulfilled False) AND a beat must
+  exist with .kind == "deflection", .face == the Bank head's .name, and .text
+  containing "Receivership" and the commit clock (the substring "of 10", as in
+  "turn 6 of 10"). Never a silent fizzle, never a dice roll.
+- game.hold_seat(house, order_name): one holdable seat per order. Holding a
+  seat must CHANGE the game: with everything else equal (same seed), a run
+  where the player holds a seat must diverge from a no-seat control run in the
+  player house's (treasury, prestige) trajectory within 20 turns — through the
+  order's honest levers (better loan terms, spared strikes, softer exposés...),
+  NOT a direct credit on hold_seat. Influence, never control.
+- The Powers screen dossiers must include the 4 Orders (engraved head, intel-
+  gated goal). The gate checks the model surface; campaign C4 asserts screen
+  wiring structurally — build it that way now.
+- Register every new player verb (hold_seat and informant-on-order at minimum)
+  in gilded.ui.registry.VERBS with non-empty what/why_now/serves, routed
+  through game.acts so each emits an instant signature beat.
+
+CONTRACT — success is exactly this (seeds 7/11 public for anatomy, seed 7 for
+levers, seeds 3..18 scanned for the collision, seed 11 for seats; the sealed
+gate adds an undisclosed seed).
+| id | assertion |
+| G3.1a | 4 orders exist with treasury >= 0, non-empty reach, head with exactly the 30 disposition keys, head NOT in any house realm |
+| G3.2a | each order's goal.family is from its own family list, commit_turns == 10, present after one end_turn |
+| G3.2b | intel.report(g, player, "Combine") at tier 0 contains "Their intentions are unknown"; with informant placed it is tier >= 2 and contains "Pursuing <family>" |
+| G3.3a | over 40 turns (seed 7) each order lands >= 1 beat with .face == its head's name and provenance |
+| G3.4a | scripted collision (player Buyout of X while Bank freshly committed to Receivership of X): ambition fulfilled False AND a deflection beat with .face == Bank head's name, "Receivership" and "of 10" in .text |
+| G3.5a | hold_seat for each order diverges the player's (treasury, prestige) trajectory vs a no-seat control of the same seed; two no-seat runs must be byte-identical (determinism guard) |
+| G3.6 | the ENTIRE C1+C2 gate still passes (regression chain inside the C3 gate) |
+
+SELF-CHECK (committed test file, NOT a scratch probe — write it as
+gilded/tests/test_c3_contract.py, commit it, and run it EXACTLY as:
+  python -m pytest gilded/tests/test_c3_contract.py -q
+It must pass before the marker commit. Content:)
+
+  import os
+  os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+  from gilded.ui.app import new_app_state
+  from gilded import intel
+
+  ORDER_FAMILIES = {
+      "Combine": ["Organize", "Recognition", "General Strike", "Purge Scabs"],
+      "Bank": ["Solvency", "Expansion", "Receivership", "King-making"],
+      "Church": ["Endowment", "Crusade of Morals", "Sanctuary", "Schism"],
+      "Gazette": ["Circulation War", "Expos\u00e9", "Expose", "Respectability", "Patronage"],
+  }
+
+  def adults(g, house):
+      chars = g.realms[house].characters
+      it = chars.values() if hasattr(chars, "values") else chars
+      return [c for c in it if getattr(c, "age", 0) >= 16]
+
+  def test_orders_anatomy_and_goals():
+      s = new_app_state(seed=7)
+      g = s.game
+      g.end_turn()
+      assert set(g.orders) == set(ORDER_FAMILIES)
+      canon = set(adults(g, s.house)[0].dispositions)
+      house_ids = {c.id for h in g.houses for c in adults(g, h)}
+      for name, order in g.orders.items():
+          assert order.treasury >= 0
+          assert isinstance(order.reach, (set, frozenset)) and order.reach
+          assert set(order.head.dispositions) == canon
+          assert order.head.id not in house_ids
+          assert order.goal.family in ORDER_FAMILIES[name]
+          assert order.goal.commit_turns == 10
+
+  def test_fog_reads_orders():
+      s = new_app_state(seed=7)
+      g = s.game
+      g.end_turn()
+      rep = intel.report(g, s.house, "Combine")
+      assert rep.tier == 0 and "Their intentions are unknown" in rep.apparent_intent
+      g.informants.add((s.house, "Combine"))
+      rep = intel.report(g, s.house, "Combine")
+      fam = g.orders["Combine"].goal.family
+      assert rep.tier >= 2 and f"Pursuing {fam}" in rep.apparent_intent
+
+  def test_orders_act_with_faces():
+      s = new_app_state(seed=7)
+      g = s.game
+      faces = {n: set() for n in ORDER_FAMILIES}
+      for _ in range(40):
+          g.end_turn()
+          for n, o in g.orders.items():
+              faces[n].add(o.head.name)
+      for n in ORDER_FAMILIES:
+          hits = [b for b in g.beats.log if b.face in faces[n]
+                  and (getattr(b, "causes", None) or getattr(b, "provenance", None))]
+          assert hits, f"{n} never acted with its head's face in 40 turns"
+
+  def test_collision_thwarts_with_deflection():
+      for seed in range(3, 19):
+          s = new_app_state(seed=seed)
+          g = s.game
+          for _ in range(16):
+              g.end_turn()
+              goal = g.orders["Bank"].goal
+              if (goal.family == "Receivership" and goal.target in g.houses
+                      and goal.target != s.house
+                      and goal.opened_turn == g.resolved_turn):
+                  bank_head = g.orders["Bank"].head.name
+                  g.set_ambition(s.house, "Buyout", goal.target)
+                  for _ in range(10):
+                      g.end_turn()
+                  st = g.ambitions.status(s.house)
+                  assert st["fulfilled"] is False, st
+                  defl = [b for b in g.beats.log if b.kind == "deflection"
+                          and b.face == bank_head
+                          and "Receivership" in (b.text or "")
+                          and "of 10" in (b.text or "")]
+                  assert defl, "no deflection beat with the Bank's face"
+                  return
+      raise AssertionError("no seed 3..18 opened a fresh Bank Receivership in 16 turns")
+
+  def test_seat_changes_the_game():
+      def run(seat):
+          s = new_app_state(seed=11)
+          if seat:
+              s.game.hold_seat(s.house, seat)
+          hs = s.game.houses[s.house]
+          out = []
+          for _ in range(20):
+              s.game.end_turn()
+              out.append((round(hs.treasury, 6), round(hs.prestige, 6)))
+          return out
+      control = run(None)
+      assert control == run(None), "sim not deterministic"
+      for name in ORDER_FAMILIES:
+          assert run(name) != control, f"{name} seat changed nothing"
+
+RULES
+- Honest levers only. Deterministic given seed. No debug hooks in game logic.
+- NO scratch probe files in the repo root (no _*.py snapshots — they poisoned
+  two mutation sweeps). Self-checks live in gilded/tests/ and are committed.
+- Do not spend turns re-verifying C1/C2 surfaces beyond keeping the suite
+  green; do not modify gilded/ambitions.py want derivation, gilded/ui/house.py,
+  ladder, beats, acts, registry, or intel's HOUSE path except where this
+  contract requires the order path to join them.
+- Ship pytest tests for every new module, in gilded/tests/, same style as the
+  existing suite. python -m pytest gilded/tests -x -q must stay green.
+- Wire-check before finishing: grep every new symbol (orders, hold_seat, the
+  Order class, the order-goal ticker, the deflection emitter) and prove each is
+  imported AND called from the live game/UI, not just defined. Put the grep
+  proof in the final commit message.
+- Commit early and often.
+
+DONE WHEN
+python -m pytest gilded/tests/test_c3_contract.py -q passes (5 tests) and the
+full suite stays green. Then make a final commit whose message contains exactly
+this marker (lowercase, exact string):
+  campaign c3 complete
