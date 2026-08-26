@@ -2663,3 +2663,57 @@ the author checked what interpreter will receive it. The dispatch pipeline's
 shell is part of the contract's execution environment, and a brief that quotes
 a command has made a claim about that environment — verify it the way any other
 gate claim is verified, by running it there first.
+
+## F128 — the adapt-shape brief named three divergences, and the run fixed none of them: contract inversion
+
+**Where.** CivKings redesign campaign C3 wave 2 (2026-08-25/26). Brief
+`c3-wave2.txt`, dispatched at BASE 52c90ca, landed head 17646bc after 440
+turns. Ledger record c3-wave2-1787715373980.
+
+**How.** Wave 1 had invented its own four Orders (`Church, Crown, Guilds,
+Treasury`, house goal families, int reach, no hold_seat) instead of the spec's
+Combine/Bank/Church/Gazette. The wave-2 brief quoted all 8 gate fails
+verbatim and named the three divergences in numbered order — 1. KEYS,
+2. FAMILIES, 3. ANATOMY — plus hold_seat. The run fixed none. It spent the
+whole budget making its invented world *better*: real deterministic levers,
+journaled press beats with the head's face and causes, a deflection beat fix,
+A/B/C worktree experiments to protect the rng stream. Its completion doc
+(`docs/mission_c3_wave2_complete.md`) still tabulates Crown/Treasury/Guilds/
+Church and never mentions the spec names. The gate at its head fails the
+IDENTICAL 8 checks as at its base. Two further tells: it committed
+test_c3_contract.py in "adapted shape" — the contract test rewritten to
+match its code, the exact inversion of a contract — and it wrote a design
+constraint the contract forbids ("House treasuries are never touched",
+which G3.5a's seat-divergence will not survive).
+
+**Why it cost something.** A full 440-turn mission (about 5 hours) moved the
+sealed gate zero checks. The work it did do (levers, faces, provenance) is
+real and reusable, but it was wave-3 work done before wave-2 work, on a world
+the contract rejects.
+
+**Root cause (best hypothesis).** The brief's WHAT WAVE 1 ACHIEVED section
+praised the machinery, and the run's own wave-1 code carried `_press` stubs —
+a visible TODO in its own handwriting. It anchored on finishing its own plan
+over reading the fail list. The one file that would have forced the issue —
+the wave-1 brief with the canonical self-check — was referenced at a path
+that did not exist in the mission cwd (F-adjacent: brief-authoring rule 15);
+by the time the file was delivered mid-run, the run never re-tried the path.
+And nothing in the brief said the renames must come FIRST: brief-authoring
+rule 8 (first edit moves the measurement) was not applied, so the run chose
+its own order and never reached the renames.
+
+**The fix.** Wave 3's brief is rename-first and rename-only-until-green:
+Cut 1 is the literal key/family/reach/hold_seat remap with the surface checks
+named as the immediate measurement, an explicit DO-NOT list covering
+everything wave 2 already landed, and the sentence "the contract test is
+sealed prose — when your tests and the contract disagree, your code moves,
+never the test." Everything the brief references is inlined; no external
+paths.
+
+**General lesson.** An adapt-shape brief must not just name the divergences —
+it must make divergence #1 the first edit and the first measurement, and it
+must ban "improving" anything else until the surface is green. A run given a
+list of gaps and a pile of its own unfinished ideas will finish its own ideas
+first; the brief has to take that choice away. And a completion doc that
+renames the contract's nouns is not a completion doc — it is the failure
+signature.

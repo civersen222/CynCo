@@ -1,0 +1,239 @@
+MISSION C3 — WAVE 3, FINAL: RENAME THE WORLD TO THE SPEC. NOTHING ELSE FIRST.
+
+Repo: C:\Users\civer\civkings
+BASE: 17646bc  (your wave-2 work: levers, faces, causes, determinism — GOOD.
+KEEP ALL OF IT. This brief is self-contained; every path it mentions is in
+this file or in your repo. Do not go looking for other briefs.)
+
+READ THIS PARAGRAPH TWICE. Wave 2 was measured by the sealed gate and moved
+it ZERO checks: the same 8 checks fail at your head as at your base. You were
+given three numbered divergences and fixed none. Instead you finished your
+own wave-1 plan and committed a "contract test" adapted to your code. The
+contract is sealed prose: WHEN YOUR TESTS AND THE CONTRACT DISAGREE, YOUR
+CODE MOVES, NEVER THE TEST. This is the final wave of campaign C3.
+
+THE 8 FAILING CHECKS (verbatim, measured at 17646bc):
+
+  s7.surface.hold_seat: FAIL game.hold_seat missing
+  s7.surface.names: FAIL orders = ['Church', 'Crown', 'Guilds', 'Treasury']
+  s11.surface.hold_seat: FAIL game.hold_seat missing
+  s11.surface.names: FAIL orders = ['Church', 'Crown', 'Guilds', 'Treasury']
+  s7.G3.2b: FAIL orders dict absent or wrongly keyed — fog unreadable
+  s7.G3.3a: FAIL orders dict absent or wrongly keyed — no lever beats to find
+  G3.4a: FAIL orders dict absent or wrongly keyed — no Bank to collide with
+  s11.G3.5a: FAIL orders dict absent/wrongly keyed or hold_seat missing — no seats to test
+  GATE: MISS (8 fails)
+
+Every one traces to two facts: the orders dict has the wrong KEYS, and
+hold_seat does not exist. Your levers, heads, ticker, journal — none of it
+can even be graded until the keys are right.
+
+CUT 1 — THE REMAP. YOUR FIRST EDIT IS THE KEY RENAME.
+
+The spec (docs/civkings-redesign-spec.md §6 — it is in your repo) names the
+four Orders. game.orders must be keyed EXACTLY:
+
+  "Combine"  (labor)      — was your Guilds     (the mills, the unions)
+  "Bank"                  — was your Treasury   (capital, debt)
+  "Church"                — keep the key, fix families below
+  "Gazette"  (press)      — was your Crown      (closest fit: public voice;
+                            rename head, reach, levers to press-flavoured)
+
+  (The old->new mapping above is a suggestion to preserve your lever code —
+  you may re-derive flavour, but the four KEYS are not negotiable.)
+
+Each order's GOAL FAMILIES are its OWN list — never the house families
+(Dominion/Buyout/Consolidation/Intrigue are HOUSE agendas, not Order goals):
+
+  Combine: Organize, Recognition, General Strike, Purge Scabs
+  Bank:    Solvency, Expansion, Receivership, King-making
+  Church:  Endowment, Crusade of Morals, Sanctuary, Schism
+  Gazette: Circulation War, Exposé, Respectability, Patronage
+           ("Exposé" may be spelled "Expose"; both are accepted.)
+
+Anatomy corrections in the same cut:
+  .reach    -> a NON-EMPTY SET (Combine: provinces with labor presence;
+               Bank: the houses in its debt book; Church: parishes;
+               Gazette: literate provinces), not an int.
+  .treasury -> float >= 0 (already true; levers must keep moving it).
+  .head     -> a Character with EXACTLY the same 30 disposition keys house
+               characters carry, whose .id appears in NO house realm
+               (a fifth realm — your wave-1 heads may already satisfy this;
+               the gate will check, do not assume).
+  .goal     -> .family from the order's OWN list above, .commit_turns == 10,
+               .target, .opened_turn, .why — present after one end_turn on
+               every seed. Goal selection stays a DETERMINISTIC function of
+               (seed, state) and must rotate through the real families over
+               turns — a Bank frozen on Solvency forever fails the collision
+               scan below.
+
+And game.hold_seat(house, order_name) must EXIST (Cut 1 makes it exist and
+registers it; Cut 2 makes it matter):
+  - one holdable seat per order; register hold_seat AND informant-on-order in
+    gilded.ui.registry.VERBS with non-empty what/why_now/serves, routed
+    through game.acts so each emits an instant signature beat.
+
+Commit Cut 1 the moment this one-line probe prints the four names
+(PowerShell-safe, run from the repo root):
+
+  python -c "import os; os.environ.setdefault('SDL_VIDEODRIVER','dummy'); from gilded.ui.app import new_app_state; s=new_app_state(seed=7); s.game.end_turn(); print(sorted(s.game.orders)); print(hasattr(s.game,'hold_seat'))"
+
+Expected: ['Bank', 'Church', 'Combine', 'Gazette'] then True.
+
+CUT 2 — THE BEHAVIOUR THE KEYS UNLOCK. The gate then grades (exact strings):
+
+- Fog (G3.2b): gilded.intel.report(g, player, "Combine") with no informant ->
+  tier 0 and .apparent_intent contains "Their intentions are unknown". After
+  g.informants.add((player, "Combine")) -> tier >= 2 and .apparent_intent
+  contains f"Pursuing {goal.family}". Your intel order path exists; point it
+  at the new keys and these exact strings.
+- Levers (G3.3a): over 40 turns of seed 7, EVERY order lands >= 1 beat in
+  g.beats.log with .face == its head's .name and non-empty .causes or
+  .provenance. Your wave-2 press beats already do this — keep them; they just
+  need the new names.
+- Collision (G3.4a): the gate scans seeds 3..18, up to 16 turns each, for a
+  turn where game.orders["Bank"].goal is a FRESH Receivership
+  (.family == "Receivership", .opened_turn == game.resolved_turn, .target a
+  non-player house). At least one seed in that window MUST produce one. Then:
+  player Buyout of that target must end fulfilled False (ambitions.status)
+  AND a beat must exist with .kind == "deflection", .face == the Bank head's
+  .name, and .text containing "Receivership" and "of 10" (the commit clock,
+  as in "turn 6 of 10"). Never a silent fizzle, never a dice roll.
+- Seats (G3.5a): with the same seed (11), a run where the player holds an
+  order's seat must diverge from a no-seat control in the player house's
+  (treasury, prestige) trajectory within 20 turns — for EACH of the four
+  orders — through the order's honest levers (better loan terms, spared
+  strikes, softer exposés), NOT a direct credit on hold_seat. Two no-seat
+  runs of the same seed must stay byte-identical.
+  YOUR WAVE-2 RULE "House treasuries are never touched" IS NOT A CONTRACT
+  RULE AND CANNOT SURVIVE THIS CHECK. Orders may move house money through
+  honest levers (loan interest, strike losses, tithe relief). If the agenda
+  tests you protected go red because strength shifts, fix the interaction —
+  do not re-ban the money and do not weaken this check to prestige-only.
+- Powers screen dossiers include the 4 Orders (engraved head, intel-gated
+  goal) — C4 asserts the wiring; build the model surface now.
+
+DO NOT TOUCH (wave 2 landed these; the sealed gate re-runs the ENTIRE C1+C2
+chain — 336 checks — and a regression fails the wave):
+- lever press mechanics, journal/beat plumbing, causes, the deterministic
+  goal ticker's rng protections (the docket sub-stream lesson stands)
+- house want derivation, gilded/ui/house.py, ladder, beats/acts internals,
+  intel's HOUSE path
+
+CLEANUP (required, small):
+- git rm docs/mission_c3_complete.md and docs/mission_c3_wave2_complete.md —
+  both claim completions the gate refutes. The marker commit is the signal.
+
+SELF-CHECK — replace gilded/tests/test_c3_contract.py with EXACTLY this
+content (this is the contract's shape; if a test here fails, the CODE is
+wrong):
+
+  import os
+  os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+  from gilded.ui.app import new_app_state
+  from gilded import intel
+
+  ORDER_FAMILIES = {
+      "Combine": ["Organize", "Recognition", "General Strike", "Purge Scabs"],
+      "Bank": ["Solvency", "Expansion", "Receivership", "King-making"],
+      "Church": ["Endowment", "Crusade of Morals", "Sanctuary", "Schism"],
+      "Gazette": ["Circulation War", "Expos\u00e9", "Expose", "Respectability", "Patronage"],
+  }
+
+  def adults(g, house):
+      chars = g.realms[house].characters
+      it = chars.values() if hasattr(chars, "values") else chars
+      return [c for c in it if getattr(c, "age", 0) >= 16]
+
+  def test_orders_anatomy_and_goals():
+      s = new_app_state(seed=7)
+      g = s.game
+      g.end_turn()
+      assert set(g.orders) == set(ORDER_FAMILIES)
+      canon = set(adults(g, s.house)[0].dispositions)
+      house_ids = {c.id for h in g.houses for c in adults(g, h)}
+      for name, order in g.orders.items():
+          assert order.treasury >= 0
+          assert isinstance(order.reach, (set, frozenset)) and order.reach
+          assert set(order.head.dispositions) == canon
+          assert order.head.id not in house_ids
+          assert order.goal.family in ORDER_FAMILIES[name]
+          assert order.goal.commit_turns == 10
+
+  def test_fog_reads_orders():
+      s = new_app_state(seed=7)
+      g = s.game
+      g.end_turn()
+      rep = intel.report(g, s.house, "Combine")
+      assert rep.tier == 0 and "Their intentions are unknown" in rep.apparent_intent
+      g.informants.add((s.house, "Combine"))
+      rep = intel.report(g, s.house, "Combine")
+      fam = g.orders["Combine"].goal.family
+      assert rep.tier >= 2 and f"Pursuing {fam}" in rep.apparent_intent
+
+  def test_orders_act_with_faces():
+      s = new_app_state(seed=7)
+      g = s.game
+      faces = {n: set() for n in ORDER_FAMILIES}
+      for _ in range(40):
+          g.end_turn()
+          for n, o in g.orders.items():
+              faces[n].add(o.head.name)
+      for n in ORDER_FAMILIES:
+          hits = [b for b in g.beats.log if b.face in faces[n]
+                  and (getattr(b, "causes", None) or getattr(b, "provenance", None))]
+          assert hits, f"{n} never acted with its head's face in 40 turns"
+
+  def test_collision_thwarts_with_deflection():
+      for seed in range(3, 19):
+          s = new_app_state(seed=seed)
+          g = s.game
+          for _ in range(16):
+              g.end_turn()
+              goal = g.orders["Bank"].goal
+              if (goal.family == "Receivership" and goal.target in g.houses
+                      and goal.target != s.house
+                      and goal.opened_turn == g.resolved_turn):
+                  bank_head = g.orders["Bank"].head.name
+                  g.set_ambition(s.house, "Buyout", goal.target)
+                  for _ in range(10):
+                      g.end_turn()
+                  st = g.ambitions.status(s.house)
+                  assert st["fulfilled"] is False, st
+                  defl = [b for b in g.beats.log if b.kind == "deflection"
+                          and b.face == bank_head
+                          and "Receivership" in (b.text or "")
+                          and "of 10" in (b.text or "")]
+                  assert defl, "no deflection beat with the Bank's face"
+                  return
+      raise AssertionError("no seed 3..18 opened a fresh Bank Receivership in 16 turns")
+
+  def test_seat_changes_the_game():
+      def run(seat):
+          s = new_app_state(seed=11)
+          if seat:
+              s.game.hold_seat(s.house, seat)
+          hs = s.game.houses[s.house]
+          out = []
+          for _ in range(20):
+              s.game.end_turn()
+              out.append((round(hs.treasury, 6), round(hs.prestige, 6)))
+          return out
+      control = run(None)
+      assert control == run(None), "sim not deterministic"
+      for name in ORDER_FAMILIES:
+          assert run(name) != control, f"{name} seat changed nothing"
+
+Update gilded/tests/test_c3_orders.py and test_c3_wave2.py to the new keys
+(rename strings, keep the assertions' strength). Run, from the repo root:
+  python -m pytest gilded/tests/test_c3_contract.py -q
+  python -m pytest gilded/tests -x -q
+Both green before the marker. Commit after Cut 1, after Cut 2, and after any
+fix — an uncommitted tree at the turn cap is thrown away. You may not revert
+a file, ever, for any reason; no git checkout --, no git restore, no
+git stash, no rebuilding from copies.
+
+DONE WHEN
+Both pytest commands pass. Then make a final commit whose message contains
+exactly this marker (lowercase, exact string):
+  campaign c3 complete
