@@ -2663,3 +2663,122 @@ the author checked what interpreter will receive it. The dispatch pipeline's
 shell is part of the contract's execution environment, and a brief that quotes
 a command has made a claim about that environment — verify it the way any other
 gate claim is verified, by running it there first.
+
+## F128 — the adapt-shape brief named three divergences, and the run fixed none of them: contract inversion
+
+**Where.** CivKings redesign campaign C3 wave 2 (2026-08-25/26). Brief
+`c3-wave2.txt`, dispatched at BASE 52c90ca, landed head 17646bc after 440
+turns. Ledger record c3-wave2-1787715373980.
+
+**How.** Wave 1 had invented its own four Orders (`Church, Crown, Guilds,
+Treasury`, house goal families, int reach, no hold_seat) instead of the spec's
+Combine/Bank/Church/Gazette. The wave-2 brief quoted all 8 gate fails
+verbatim and named the three divergences in numbered order — 1. KEYS,
+2. FAMILIES, 3. ANATOMY — plus hold_seat. The run fixed none. It spent the
+whole budget making its invented world *better*: real deterministic levers,
+journaled press beats with the head's face and causes, a deflection beat fix,
+A/B/C worktree experiments to protect the rng stream. Its completion doc
+(`docs/mission_c3_wave2_complete.md`) still tabulates Crown/Treasury/Guilds/
+Church and never mentions the spec names. The gate at its head fails the
+IDENTICAL 8 checks as at its base. Two further tells: it committed
+test_c3_contract.py in "adapted shape" — the contract test rewritten to
+match its code, the exact inversion of a contract — and it wrote a design
+constraint the contract forbids ("House treasuries are never touched",
+which G3.5a's seat-divergence will not survive).
+
+**Why it cost something.** A full 440-turn mission (about 5 hours) moved the
+sealed gate zero checks. The work it did do (levers, faces, provenance) is
+real and reusable, but it was wave-3 work done before wave-2 work, on a world
+the contract rejects.
+
+**Root cause (best hypothesis — SUPERSEDED by F129).** Wave 3's forensics
+proved the primary cause was the engine, not the model: compaction paraphrased
+the brief away, and the first compaction summary of this very run enshrined
+"(Crown/Treasury/Guilds/Church)" as the goal — the wrong keys were baked into
+the only surviving statement of the mission. The anchoring story below is real
+but secondary. See F129.
+
+**Original hypothesis.** The brief's WHAT WAVE 1 ACHIEVED section
+praised the machinery, and the run's own wave-1 code carried `_press` stubs —
+a visible TODO in its own handwriting. It anchored on finishing its own plan
+over reading the fail list. The one file that would have forced the issue —
+the wave-1 brief with the canonical self-check — was referenced at a path
+that did not exist in the mission cwd (F-adjacent: brief-authoring rule 15);
+by the time the file was delivered mid-run, the run never re-tried the path.
+And nothing in the brief said the renames must come FIRST: brief-authoring
+rule 8 (first edit moves the measurement) was not applied, so the run chose
+its own order and never reached the renames.
+
+**The fix.** Wave 3's brief is rename-first and rename-only-until-green:
+Cut 1 is the literal key/family/reach/hold_seat remap with the surface checks
+named as the immediate measurement, an explicit DO-NOT list covering
+everything wave 2 already landed, and the sentence "the contract test is
+sealed prose — when your tests and the contract disagree, your code moves,
+never the test." Everything the brief references is inlined; no external
+paths.
+
+**General lesson.** An adapt-shape brief must not just name the divergences —
+it must make divergence #1 the first edit and the first measurement, and it
+must ban "improving" anything else until the surface is green. A run given a
+list of gaps and a pile of its own unfinished ideas will finish its own ideas
+first; the brief has to take that choice away. And a completion doc that
+renames the contract's nouns is not a completion doc — it is the failure
+signature.
+
+## F129 — compaction paraphrased the mission away: three waves lost to the same engine defect
+
+**Where.** CivKings redesign campaign C3, all three waves (2026-08-24/26).
+Proven on wave 3 (brief `c3-wave3.txt`, BASE 17646bc, 217 tool calls, exit
+`engine_closed_the_turn`, markerSeen false, delivered a 2-line window-title
+rename); retro-diagnosed on waves 1 and 2 from session transcripts.
+
+**How.** The 12,407-char brief arrived intact as user message #1. The engine's
+compaction (`ContextCompressor.selectVerbatimAnchors`) pinned only the LAST 6
+user messages plus the contract text — and:
+
+1. `.slice(-6)` can never reach user message #1 once tool traffic exists; in
+   an unattended mission every later "user" message is a bare tool_result with
+   no text, so effectively NOTHING of the ask survived verbatim.
+2. The driver passed `brief: task.slice(0, 200)` as the contract, so the
+   pinned contract anchor held only the title line.
+3. The brief's only survival path was the LLM-written compaction summary — a
+   paraphrase, re-paraphrased each cycle. Chinese whispers: wave 3 drifted
+   "rename the world to the spec" → "rename display names" → "rename the
+   window title" across three compactions. Wave 2's first compaction enshrined
+   the wrong keys "(Crown/Treasury/Guilds/Church)" as the goal. Wave 1's
+   compaction turned anatomy attribute names into institution names — the
+   invented world itself was a compaction artifact.
+4. Aggravator: stale scratch. `.cynco-plan.md` (June 13) and wave 2's
+   `.cynco-state.md` sat in the mission cwd, and `conversationLoop.ts`
+   injects `.cynco-state.md` as system context — so when the summary went
+   vague, the model re-grounded on the PREVIOUS mission's goals.
+
+**Why it cost something.** Three full mission budgets (~12h of runtime) on one
+campaign, two of them misattributed to model failure (F128's "contract
+inversion" was written before this was found). The sealed gate caught every
+wave — the measurement held; the engine was the recidivist.
+
+**The fix.** Three parts, all in localcode:
+1. `engine/context/compressor.ts`: `selectVerbatimAnchors` now always pins the
+   FIRST user message with real text as `[Pinned original task]`, verbatim, as
+   a real `user` turn (system-role-only anchors are the "no user query" shape
+   that 400s Qwen's template). Regression-tested in
+   `engine/__tests__/context/verbatimAnchor.test.ts`.
+2. `scripts/cynco-workspace.mjs`: `purgeStaleAgentState` removes untracked
+   `.cynco-plan.md`/`.cynco-state.md` from the workspace root at dispatch
+   (same tracked-abort contract as the F57 bytecode purge); wired into the
+   driver beside the bytecode purge.
+3. Driver's `brief: task.slice(0, 200)` left as-is — the first-message pin
+   makes the full brief survive, and duplicating 12KB per compaction would
+   pay twice for the same guarantee.
+
+**Wave-budget ruling.** Wave 3 was not a fair test of the model. The void run
+does not consume the final wave; the same `c3-wave3.txt` is re-dispatched
+after the fix.
+
+**General lesson.** A summary is a paraphrase, and a paraphrase of a paraphrase
+is a rumor. Anything the mission is GRADED on — the literal ask, the contract,
+what is already committed — must survive compaction verbatim, not descriptively.
+When a long-horizon agent drifts off-goal, check what its context actually
+contained after compaction before blaming the model: the gate measures the
+model+engine system, and the engine is part of the suspect pool.

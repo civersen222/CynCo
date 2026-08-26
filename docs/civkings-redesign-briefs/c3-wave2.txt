@@ -1,0 +1,109 @@
+MISSION C3 — WAVE 2: THE FOUR ORDERS, AS SPECIFIED (adapt-shape wave)
+
+Repo: C:\Users\civer\civkings
+BASE: 52c90ca  (your wave-1 work. The machinery is real; the world is wrong.)
+
+WHAT WAVE 1 ACHIEVED (measured — the sealed gate was run by hand at 52c90ca):
+336 checks PASS, including the ENTIRE C1+C2 regression chain. You built a real
+Order class (gilded/orders.py) with head Characters, Goal objects with
+commit_turns=10, tick_orders wired into chassis.end_turn, an intel order path,
+and committed tests in gilded/tests/test_c3_orders.py. None of that was wasted.
+
+But the gate could not read any of it. Verbatim, every C3 fail:
+
+  s7.surface.hold_seat: FAIL game.hold_seat missing
+  s7.surface.names: FAIL orders = ['Church', 'Crown', 'Guilds', 'Treasury']
+  s11.surface.hold_seat: FAIL game.hold_seat missing
+  s11.surface.names: FAIL orders = ['Church', 'Crown', 'Guilds', 'Treasury']
+  s7.G3.2b: FAIL orders dict absent or wrongly keyed — fog unreadable
+  s7.G3.3a: FAIL orders dict absent or wrongly keyed — no lever beats to find
+  G3.4a: FAIL orders dict absent or wrongly keyed — no Bank to collide with
+  s11.G3.5a: FAIL orders dict absent/wrongly keyed or hold_seat missing — no seats to test
+  GATE: MISS (8 fails)
+
+THE ACTUAL GAP — you invented your own four Orders. The spec names them.
+Measured at your head (seed 7, one end_turn):
+
+  Crown    | head: Corbin Crown      | goal: Dominion      | treasury: 0.0 | reach: 5505 (int)
+  Treasury | head: Maren Treasury    | goal: Buyout        | treasury: 0.0 | reach: 5505 (int)
+  Guilds   | head: Halden Guilds     | goal: Consolidation | treasury: 0.0 | reach: 5505 (int)
+  Church   | head: Seraphine Church  | goal: Intrigue      | treasury: 0.0 | reach: 5505 (int)
+
+Three distinct divergences, all from the spec table in the wave-1 brief:
+
+1. KEYS. game.orders must be keyed EXACTLY {"Combine", "Bank", "Church",
+   "Gazette"}. Not Crown, not Treasury, not Guilds. Remap/rename your
+   existing machinery — the Order class, heads, ticker all carry over.
+
+2. FAMILIES. Your orders pursue HOUSE goal families (Dominion, Buyout,
+   Consolidation, Intrigue). Each order has its OWN family list — spec §6:
+     Combine (labor):  Organize, Recognition, General Strike, Purge Scabs
+     Bank:             Solvency, Expansion, Receivership, King-making
+     Church:           Endowment, Crusade of Morals, Sanctuary, Schism
+     Gazette (press):  Circulation War, Exposé, Respectability, Patronage
+   Goal selection stays a DETERMINISTIC function of (seed, state) and must
+   rotate through real families. The sealed gate scans seeds 3..18, up to 16
+   turns each, for a turn where game.orders["Bank"].goal is a FRESH
+   Receivership (.family == "Receivership", .opened_turn == game.resolved_turn,
+   .target a house that is not the player). At least one seed in that window
+   MUST produce one.
+
+3. ANATOMY. .reach must be a NON-EMPTY SET (the spec's reach: provinces with
+   Movements for the Combine, the debt book for the Bank, parishes for the
+   Church, literate provinces for the Gazette), not an int. .treasury stays a
+   float >= 0, but the levers below must move it — a strike fund that never
+   funds a strike is a prop.
+
+AND THE BEHAVIOUR THE SURFACE FAILURE HID — these checks never ran in wave 1;
+they will all run this time (full detail + exact strings in the wave-1 brief,
+docs/civkings-redesign-briefs/c3-wave1.txt, which still binds):
+
+- G3.2b fog: gilded.intel.report(g, player, "Combine") -> tier 0 with
+  "Their intentions are unknown"; after g.informants.add((player, "Combine"))
+  -> tier >= 2 with f"Pursuing {goal.family}".
+- G3.3a levers: over 40 turns of seed 7, EVERY order lands >= 1 beat in
+  g.beats.log with .face == its head's .name and provenance (.causes or
+  .provenance non-empty). Honest levers: fund strikes / call loans / swing
+  piety / print exposés — acts that move real quantities, with Causes.
+- G3.4a deflection: player Buyout of X while the Bank is freshly committed to
+  Receivership of X -> ambitions.status fulfilled False AND a beat with
+  .kind == "deflection", .face == the Bank head's .name, .text containing
+  "Receivership" and "of 10". Never a silent fizzle, never a dice roll.
+- G3.5a seats: game.hold_seat(house, order_name) — one holdable seat per
+  order. Same seed (11), a seat-holding run must diverge from a no-seat
+  control in the player's (treasury, prestige) trajectory within 20 turns,
+  through the order's honest levers (better loan terms, spared strikes,
+  softer exposés), NOT a direct credit on hold_seat. Two no-seat runs of the
+  same seed must be byte-identical.
+- Register hold_seat and informant-on-order in gilded.ui.registry.VERBS with
+  non-empty what/why_now/serves, routed through game.acts.
+- Powers screen dossiers include the 4 Orders (engraved head, intel-gated
+  goal) — build it now; C4 asserts the wiring structurally.
+
+KEEP GREEN — the sealed gate re-runs the ENTIRE C1+C2 chain (336 checks).
+Do not modify house want derivation, gilded/ui/house.py, ladder, beats, acts
+internals, or intel's HOUSE path except where the order path joins them.
+
+CLEANUP (required)
+- docs/mission_c3_complete.md claims a completion that did not happen. Delete
+  it (git rm); the marker commit is the completion signal, not a doc.
+- Remove the untracked .tmp-base/ directory if present. Never commit scratch
+  probes; tests live in gilded/tests/.
+
+SELF-CHECK (committed pytest, no shell heredocs)
+- Update gilded/tests/test_c3_orders.py to the canonical keys/families above
+  (or fold it into the file below).
+- Create gilded/tests/test_c3_contract.py EXACTLY as specified in the wave-1
+  brief's SELF-CHECK section (5 tests: anatomy+goals, fog, faces, collision
+  deflection, seats). Run:
+    python -m pytest gilded/tests/test_c3_contract.py -q
+  It must pass, and the full suite must stay green:
+    python -m pytest gilded/tests -x -q
+- Wire-check before finishing: grep hold_seat, the renamed order keys, the
+  deflection emitter — prove each is imported AND called from live game/UI.
+  Put the grep proof in the final commit message.
+
+DONE WHEN
+Both pytest commands pass. Then make a final commit whose message contains
+exactly this marker (lowercase, exact string):
+  campaign c3 complete

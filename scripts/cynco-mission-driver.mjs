@@ -45,7 +45,7 @@ import { spawnSync } from 'node:child_process'
 import { createMissionCollector, buildMissionRecord, missionCommitted, missionOutcome, waitExitReason, gateDisposition, historyRewrite, QUIET_MS } from './cynco-ledger.mjs'
 import { countGraderProbes } from './cynco-grader-probes.mjs'
 import { runCheck } from './cynco-verify.mjs'
-import { purgeBytecodeCaches } from './cynco-workspace.mjs'
+import { purgeBytecodeCaches, purgeStaleAgentState } from './cynco-workspace.mjs'
 import { loadMissionAssertions, sidecarPath, sealedDispatchRefusal, s5DispatchRefusal, workspaceError } from './cynco-contract.mjs'
 import { engineEndpoints } from './cynco-endpoints.mjs'
 import { snapshotHeldOut, restoreHeldOut } from './cynco-held-out.mjs'
@@ -154,6 +154,7 @@ const SEALED_COUNT = missionAssertions
 if (SEALED_COUNT > 0) console.log(`[driver] this mission seals ${SEALED_COUNT} held-out instrument(s)`)
 
 for (const line of purgeBytecodeCaches(CWD)) console.log(`[driver] ${line}`)
+for (const line of purgeStaleAgentState(CWD)) console.log(`[driver] ${line}`)
 
 const collector = createMissionCollector()
 const dispatchedAt = new Date().toISOString()
