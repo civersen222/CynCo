@@ -3,6 +3,9 @@ import type { ToolImpl } from '../types.js'
 import { ProjectIndexer } from '../../index/indexer.js'
 
 const indexers = new Map<string, ProjectIndexer>()
+// One build attempt per cwd per process — a repo that cannot index (no embed
+// server, unreadable tree) must not pay the build cost on every query.
+const buildAttempted = new Set<string>()
 
 const SEARCH_GLOBS = '*.{py,ts,js,tsx,jsx,rs,go,java,c,cpp,rb}'
 const MAX_HITS = 30
@@ -90,6 +93,22 @@ export const codeIndexTool: ToolImpl = {
         indexers.set(cwd, indexer)
       } catch (e) {
         console.log(`[CodeIndex] Could not open the index for ${cwd}: ${e}`)
+      }
+    }
+
+    // Startup only auto-indexes the engine's own process.cwd(), so the first
+    // query against any OTHER repo (a mission cwd) used to find an empty store
+    // and silently degrade to regex for the whole run. Build it once, here.
+    if (indexer && !buildAttempted.has(cwd)) {
+      buildAttempted.add(cwd)
+      try {
+        if (!indexer.hasEverIndexed()) {
+          console.log(`[CodeIndex] No index for ${cwd} — building it now`)
+          const r = await indexer.index((m) => console.log(`[CodeIndex] ${m}`))
+          console.log(`[CodeIndex] Built: ${r.chunks} chunks from ${r.files} files`)
+        }
+      } catch (e) {
+        console.log(`[CodeIndex] First-use build failed for ${cwd} (non-fatal): ${e}`)
       }
     }
 

@@ -268,6 +268,11 @@ export class ProjectIndexer {
     return formatRepoMap(graph.pageRank(seedFiles, topK))
   }
 
+  /** True once a full index() pass has ever completed for this project. */
+  hasEverIndexed(): boolean {
+    return this.store.getMeta('last_indexed') != null
+  }
+
   /** Check if the index is stale (files changed since last index). */
   isStale(): boolean {
     const lastIndexed = this.store.getMeta('last_indexed')

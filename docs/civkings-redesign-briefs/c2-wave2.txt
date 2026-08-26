@@ -1,0 +1,84 @@
+MISSION C2 — WAVE 2: WANTS EXIST FROM BOOT (adapt-shape wave; small, surgical)
+
+Repo: C:\Users\civer\civkings
+BASE: 79e0bca  (your wave-1 work. Nearly everything landed.)
+
+WHAT WAVE 1 ACHIEVED (measured — the sealed gate was run by hand at 79e0bca):
+333 checks PASS, including the ENTIRE C1 regression chain, G2.1a/b intel
+symmetry, G2.2a want shape, G2.2c stance diversity, G2.3 achievable AND
+failable (7 True / 11 True / 13 False), G2.4a card mirroring, G2.4b clock.
+The ambition system, the derivation, the House screen — all real, all passing.
+
+Exactly ONE check failed. Verbatim:
+
+  G2.2b: FAIL AttributeError("'Character' object has no attribute 'want'")
+  GATE: MISS (1 fails)
+
+Nothing is wrong with the gate command's syntax. The wave-1 note about MSYS
+stripping backslashes in `cd C:\Users\civer\civkings` applied to the BRIEF's
+self-check heredoc, not to the gate: the driver runs
+`python C:/Users/civer/.cynco/heldout/civkings-redesign/c2/gate_c2.py`
+with the working directory already set. It ran fine and produced the line
+above. Do not spend any turns on shell syntax.
+
+THE ACTUAL GAP
+G2.2b boots seed 7 twice and NEVER calls set_ambition:
+
+    s = new_app_state(seed=7)          # no set_ambition
+    [(c.id, c.want["text"], c.want["disposition"], c.want["stance"])
+     for c in sorted(adults, key=lambda c: c.id)]   # byte-identical across boots
+
+Your gilded/ambitions.py:275 `wants()` returns [] when the house has no goal,
+and c.want is only assigned inside that derivation — so at boot, before any
+ambition is set, adults have NO .want attribute at all. The contract line was
+unconditional: "Every ADULT character (age >= 16 ...) gets character.want".
+A courtier has private wants before the house declares an ambition — that is
+the point of the mechanic.
+
+THE FIX (keep it small — do not rework what passes)
+1. Derive wants at boot for every house's adults, inside world construction
+   (new_app_state path), so c.want exists immediately:
+   - If the house already has an agenda at boot (AI houses may), derive
+     against it exactly as you do now.
+   - If the house has NO agenda, derive a neutral want from the character's
+     own dispositions — e.g. their strongest disposition drives the text and
+     the disposition key; stance from that disposition's value. It must still
+     satisfy the G2.2a shape: {"text": non-empty one line,
+     "disposition": a key present in c.dispositions,
+     "stance": one of "backs" | "wary" | "opposes"}.
+   - Deterministic given seed: two boots of seed 7 must produce byte-identical
+     (id, text, disposition, stance) lists. No randomness, no dict-order
+     dependence — sort where needed.
+2. Keep the existing re-derivation on set_ambition unchanged (it passes).
+3. DO NOT touch: intel, ladder, beats, acts, registry, the fulfilment
+   evaluation, gilded/ui/house.py — all green, and the sealed gate re-runs
+   every one of them. A regression there fails the wave.
+
+CLEANUP (required — these polluted the C1 mutation sweep and will pollute
+this one):
+- git rm the committed scratch probes at repo root: _c1_selfcheck.py,
+  _c2_grid.py, _c2_grid.txt, _c2_grid_out.txt, _c2_selfcheck.py,
+  _gate_exact.py, _gate_probe.py. They are probes, not game code; nothing
+  imports them. Delete the untracked _gate_run.sh, _gate_sh2.txt,
+  _gate_sh_out.txt, _gate_verbatim.sh, _mission_c1w2.txt, _mission_c2.txt too.
+- Never commit scratch probes again. Tests live in gilded/tests/.
+
+SELF-CHECK (ships as a COMMITTED pytest file — no shell heredocs)
+Create gilded/tests/test_c2_contract.py containing, at minimum:
+- test_boot_wants_exist_and_deterministic: two new_app_state(seed=7) boots,
+  no set_ambition; every adult in EVERY house has a shape-valid .want; the
+  player house's (id, text, disposition, stance) lists are equal across the
+  two boots.
+- test_grid_contract: port your wave-1 grid loop (seeds 7/11/13, families
+  Consolidation/Glory/Buyout with target for Buyout) — set_ambition, intel
+  symmetry, banner clock turn 1/turn 4, status mid/end, ambition beat,
+  achievable-and-failable across the grid.
+Run it EXACTLY as (PowerShell-safe, run from the repo root):
+  python -m pytest gilded/tests/test_c2_contract.py -q
+It must pass, and the full suite must stay green:
+  python -m pytest gilded/tests -x -q
+
+DONE WHEN
+Both pytest commands pass. Then make a final commit whose message contains
+exactly this marker (lowercase, exact string):
+  campaign c2 complete

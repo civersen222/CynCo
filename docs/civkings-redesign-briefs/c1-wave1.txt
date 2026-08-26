@@ -1,0 +1,114 @@
+MISSION C1 — THE SIM BECOMES VISIBLE (long-horizon; work until the contract holds, then commit the marker)
+
+Repo: C:\Users\civer\civkings
+BASE: 2092b0c
+base: houses 7 | has ladder: False | has beats: False | no gilded.ui.registry
+
+DESTINATION
+A player watching seed 7 can see who is winning and why anything changed.
+This is campaign 1 of 5 of the CivKings redesign. You are building the game's
+nervous system: a public ladder and four consequence beats, with provenance
+behind every number.
+
+SPEC (verbatim, from docs/civkings-redesign-spec.md)
+
+  3.1 The Ladder
+  - Rank across the four axes (`_axis_capital`, `_axis_standing`, `_axis_blood`,
+    `_axis_world`) is computed for ALL houses every turn and the overall rank is
+    ALWAYS public.
+  - The WHY is earned: per-axis breakdowns, trajectories, and rival agendas are
+    gated behind the existing 4-tier intel fog (blind -> mood -> intent -> depth;
+    sources: border, ties, assets, informant).
+  - Victory: the century ends (existing `TURN_BUDGET`); the house atop the ladder
+    wins the age, with `judge()`'s epilogues ("Hegemon of the Age", "The Long
+    Ledger", ...) keyed to how they won. Extinction/revolution endings remain as
+    loss states.
+
+  8. Consequence beats (how results reach the player)
+  1. Signature (instant): the player's act is acknowledged on the spot - ink,
+     stamp, sound.
+  2. Season (End Turn): the Gazette front page prints above the fold with the
+     turn's true headlines.
+  3. Inquiry ("why?"): every changed number chains back through `provenance.py`
+     Cause/Attributed - wired to ALL systems, not just legitimacy. `.check()`
+     guarantees causes sum to the delta.
+  4. Deflection: when the world thwarts the player, the thwart has an
+     institutional FACE and a paper trail. Never a silent fizzle, never an
+     unexplained dice roll. (Until campaign C3 ships the full Orders, valid
+     faces are the union Movement leader (society/labor.py) and the Master of
+     the Press (papers.py).)
+
+REQUIRED API SURFACE (the sealed gate consumes exactly this)
+- game.ladder.standings() -> list[(house:str, rank:int, axes:dict[str,float])]
+  All houses; ranks a strict total order 1..N from the four endings.py axes.
+- game.beats.log -> list[Beat]; Beat has .kind in {"signature","season",
+  "inquiry","deflection"}, .turn:int, .text:str, .face:str|None,
+  .provenance:Attributed|None
+- game.beats.deltas(turn) -> list[(label:str, att:Attributed)]
+  EVERY player-visible numeric delta for that turn. deltas() IS the render
+  source: the Ledger and Gazette must draw their numbers from it (campaign C4
+  will assert this wiring structurally; build it that way now).
+- game.beats.inquire(label, turn) -> Attributed  (the "why?" chain)
+- game.acts.* : ALL player verbs route through this module and each emits an
+  instant signature beat. Minimum for this campaign: game.acts.set_dial(eid,
+  value) (wraps Enterprise.extraction_dial).
+- gilded.ui.registry with:
+    VERBS: dict[verb_id -> {"what":str, "why_now":str, "serves":str}]
+      (every acts.* verb registered; all three fields non-empty; "serves" names
+       a ladder axis or ambition)
+    DATA: dict[datum_id -> screen_id]  (one owner screen per datum; seed it
+      with everything you add this campaign)
+
+CONTRACT — success is exactly this (seed 7 public; the sealed gate adds an
+undisclosed seed):
+| id | assertion |
+| G1.1a | after each of 20 end_turn(): standings() covers exactly game.houses |
+| G1.1b | ranks each turn are exactly 1..N (strict total order) |
+| G1.1c | the rank ordering changes at least once across the 20 turns |
+| G1.2  | every delta in beats.deltas(resolved_turn) has att.check(1e-6)==True, every turn |
+| G1.2b | deltas(resolved_turn) is non-empty after a resolved turn |
+| G1.3a | >=1 beat of each of the 4 kinds over the run; acts.set_dial on a
+          player enterprise emits a signature beat the same turn, instantly |
+| G1.3b | every deflection beat has non-empty .face and .text naming the thwarted act |
+| G1.3c | inquire(label, turn) returns an Attributed with >=1 Cause and .check(1e-6) |
+| G1.4a | every VERBS entry has what/why_now/serves non-empty (set_dial included);
+          every DATA datum has exactly one owner screen |
+
+SELF-CHECK COMMAND (run it yourself; the gate is this plus an undisclosed seed)
+  cd C:\Users\civer\civkings && SDL_VIDEODRIVER=dummy python - <<'EOF'
+  from gilded.ui.app import new_app_state
+  s = new_app_state(seed=7); g = s.game
+  mine = [e for e in g.enterprises if e.house == s.house]
+  g.acts.set_dial(mine[0].eid, 75.0)
+  assert any(b.kind == "signature" for b in g.beats.log)
+  for t in range(20):
+      g.end_turn()
+      lad = g.ladder.standings()
+      assert sorted(r for h, r, ax in lad) == list(range(1, len(lad) + 1))
+      assert all(att.check(1e-6) for _, att in g.beats.deltas(g.resolved_turn))
+  kinds = {b.kind for b in g.beats.log}
+  assert kinds >= {"signature", "season", "inquiry", "deflection"}, kinds
+  lbl, _ = g.beats.deltas(g.resolved_turn)[0]
+  att = g.beats.inquire(lbl, g.resolved_turn)
+  assert att.causes and att.check(1e-6)
+  from gilded.ui import registry
+  assert registry.VERBS["set_dial"]["what"]
+  print("C1 CONTRACT HOLDS")
+  EOF
+
+RULES
+- Honest levers only. Deterministic given seed. No debug hooks in game logic.
+- provenance.py Cause/Attributed everywhere a shown number changes; .check()
+  must hold — wire it to market, labor, wars, enterprises, legitimacy alike.
+- Ship pytest tests for every new module, in gilded/tests/, same style as the
+  existing 100 test files.
+- Wire-check before finishing: grep every new symbol (ladder, beats, acts,
+  registry) and prove each is imported AND called from the live game loop, not
+  just defined. Put the grep proof in your final commit message.
+- Commit early and often. The existing test suite must stay green:
+  python -m pytest gilded/tests -x -q
+
+DONE WHEN
+All G1.* hold via the self-check command above. Then make a final commit whose
+message contains exactly this marker:
+  campaign c1 complete

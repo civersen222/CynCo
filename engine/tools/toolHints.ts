@@ -150,7 +150,7 @@ export function betterToolHint(command: string): string | null {
   if (!sawRead && !sawSearch) return null
 
   return sawSearch
-    ? 'Note: prefer the Grep tool for searching file contents — it returns matches with line numbers across many files in one call.'
+    ? 'Note: prefer the CodeIndex tool for searching — a semantic query ("where X is decided") returns ranked functions with paths and line numbers in one call. Use the Grep tool only when you need an exact string or regex match.'
     : 'Note: prefer the Read tool for reading files — it returns the contents with line numbers in a single call, and takes an offset and limit for long files.'
 }
 

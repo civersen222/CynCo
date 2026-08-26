@@ -2627,3 +2627,39 @@ block repeated it. The mistake was made the same way as the mistake it
 describes — I characterised the gate from memory rather than reading
 `_SPAN_WORDS`, in a report *about* not doing that. The gate's proximity scan is
 sound and needs no change. What needed correcting was the brief, and the record.
+
+## F127 — the brief's self-check was written in bash, the run's shell is PowerShell, and the workaround polluted the mutation sweep
+
+**Where.** CivKings redesign campaigns C1 wave 2 and C2 wave 1 (2026-08-24/25).
+Briefs `c1-wave2.txt` and `c2-wave1.txt`, section SELF-CHECK COMMAND.
+
+**How.** Both briefs order the run to execute the self-check "EXACTLY as
+written" — and write it as a bash heredoc: `cd ... && SDL_VIDEODRIVER=dummy
+python - <<'EOF'`. The engine's Bash tool is Windows PowerShell 5.1, where
+`VAR=value command` is a parse error, `&&` is unsupported, and heredocs do not
+exist. The run's literal attempts failed with shell errors
+("this system's shell is Windows PowerShell 5.1, where 'NAME=value command' is
+a parse error"), so it did the sensible thing: wrote the heredoc body to a
+scratch file and ran that.
+
+**Why it cost something.** In C1 wave 2 the scratch file `_c1_selfcheck.py` was
+committed at the repo root ("commit the C1 verification probe so a clean
+checkout of committed files includes it" — the run treating my instruction's
+spirit as binding). The mutation sweep then mutated the mission's added lines,
+and 15 of its 21 survivors (25 capped slots) were mutants of the *probe*, not of
+game logic — the sweep's signal was two-thirds noise, and 15 slots that should
+have interrogated acts.py/beats.py were spent mutating assertions.
+
+**The fix.** A brief must give the self-check in a form the RUN'S OWN SHELL can
+execute verbatim, and the durable form is not a shell command at all: from C3
+onward the self-check ships as a pytest file the brief tells the run to create
+at `gilded/tests/test_c<N>_contract.py` and run with
+`python -m pytest gilded/tests/test_c<N>_contract.py -q`. That is
+shell-portable, it is *supposed* to be committed, it hardens the suite the
+mutation sweep runs, and it stops scratch probes at the root.
+
+**General lesson.** "Run it EXACTLY as written" is only a legitimate order if
+the author checked what interpreter will receive it. The dispatch pipeline's
+shell is part of the contract's execution environment, and a brief that quotes
+a command has made a claim about that environment — verify it the way any other
+gate claim is verified, by running it there first.

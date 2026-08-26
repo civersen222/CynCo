@@ -94,9 +94,31 @@ fi
 # environment; re-stating it here is what let the two drift apart before.
 echo "[dispatch] iterations=$LOCALCODE_MAX_ITERATIONS bash-timeout=${CYNCO_BASH_TIMEOUT_MS}ms (ctx and cache-ram come from the profile and the derivation — confirmed below)"
 echo "[dispatch] engine log $ENGINE_LOG"
+# The engine's startup auto-index covers only its own process.cwd() (localcode);
+# the mission repo never got indexed, so every CodeIndex call degraded to regex.
+# Build/refresh the mission repo's index before launch so the first semantic
+# query answers from vectors. Non-fatal: the tool also self-builds on first use.
+LOCALCODE_EMBED_MODEL="${LOCALCODE_EMBED_MODEL:-nomic-embed-text}" \
+  bun scripts/build-code-index.ts "$MISSION_CWD" \
+  || echo "[dispatch] warning: code-index build failed — CodeIndex will fall back to regex" >&2
+
+# LOCALCODE_EMBED_MODEL: the engine's built-in default embed model is not in
+# the ollama registry (its pull 404s every session), so CodeIndex vector search
+# silently degraded to regex fallback on every mission. Pin the installed model.
+#
+# LOCALCODE_MISSION_*: the dashboard's Mission panel (/api/mission) reads these
+# to show commits since baseline, marker sighting and budget consumption — the
+# same evidence the driver grades at close, visible while the run is live.
+MISSION_BASE=$(git -C "$MISSION_CWD" rev-parse HEAD)
+echo "[dispatch] mission baseline $MISSION_BASE"
 LOCALCODE_APPROVE_ALL=true \
 LOCALCODE_S5_ENFORCE=false \
 LOCALCODE_MAX_ITERATIONS="$LOCALCODE_MAX_ITERATIONS" \
+LOCALCODE_EMBED_MODEL="${LOCALCODE_EMBED_MODEL:-nomic-embed-text}" \
+LOCALCODE_MISSION_MARKER="$MARKER" \
+LOCALCODE_MISSION_CWD="$MISSION_CWD" \
+LOCALCODE_MISSION_BASE="$MISSION_BASE" \
+LOCALCODE_MISSION_CHECK="${CHECK_CMD:-}" \
 CYNCO_BASH_TIMEOUT_MS="$CYNCO_BASH_TIMEOUT_MS" \
   bun engine/main.ts > "$ENGINE_LOG" 2>&1 &
 
@@ -165,6 +187,19 @@ if [ -z "$CTX" ] || [ -z "$CRAM" ]; then
   exit 1
 fi
 echo "[dispatch] ctx=$CTX cache-ram=${CRAM} MiB — coupled, as launched"
+
+# --- visibility ------------------------------------------------------------
+# The bridge port (LOCALCODE_WS_PORT, default 9160) rejects browsers by design:
+# it carries the raw conversation and answers 401 "bridge token required". The
+# human-facing view is the dashboard the engine binds one port up, and the
+# engine has already logged its real URL by the time Ready appears. Print it on
+# every dispatch so nobody dials the bridge port in a browser again.
+DASH_URL=$(sed -n 's/^\[dashboard\] Governance dashboard on //p' "$ENGINE_LOG" | head -1 | tr -d '\r')
+if [ -n "$DASH_URL" ]; then
+  echo "[dispatch] WATCH THE MISSION IN THE BROWSER: $DASH_URL"
+else
+  echo "[dispatch] warning: engine log has no dashboard line — see $ENGINE_LOG" >&2
+fi
 
 echo "[dispatch] driver log $DRIVER_LOG"
 CYNCO_CHECK_TIMEOUT_MS="$CYNCO_CHECK_TIMEOUT_MS" \

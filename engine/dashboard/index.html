@@ -438,6 +438,17 @@ input[type="range"]:disabled::-webkit-slider-thumb { cursor: not-allowed; }
   font-size: 11px; pointer-events: none; z-index: 100; white-space: nowrap;
   font-family: 'Cascadia Code', 'Fira Code', monospace;
 }
+/* Mission mode (dispatch runs): hide panels that carry no signal while an
+   unattended mission is the only session — grammar/best-of-N are disabled,
+   training data is zeros, and the brain/history readouts describe past
+   sessions, not this run. The Mission panel takes their place. */
+body.mission-mode #panelGrammar,
+body.mission-mode #panelTraining,
+body.mission-mode #panelBestOfN,
+body.mission-mode #brain-pane,
+body.mission-mode #historyPanel { display: none; }
+#missionCommitList { margin-top: 6px; font-size: 11px; color: #9a9a9a; }
+#missionCommitList div { padding: 1px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 </style>
 </head>
 <body>
@@ -506,6 +517,22 @@ input[type="range"]:disabled::-webkit-slider-thumb { cursor: not-allowed; }
       <span id="ctxText">0 / 0 tokens (0%)</span>
       <span class="action-badge proceed" id="ctxAction">proceed</span>
     </div>
+  </div>
+
+  <!-- Mission panel: only visible when the engine was launched by
+       dispatch-mission.sh (/api/mission answers active:true). The facts come
+       from the mission repo's git history — the evidence the driver grades —
+       not from the model's own account of its progress. -->
+  <div class="panel" id="panelMission" style="display:none">
+    <div class="panel-title">Mission</div>
+    <div class="gov-stats" id="missionStats">
+      <div><span class="label">Marker: </span><span class="value" id="missionMarker">&mdash;</span></div>
+      <div><span class="label">Marker seen: </span><span class="value" id="missionMarkerSeen">no</span></div>
+      <div><span class="label">Commits since baseline: </span><span class="value" id="missionCommits">0</span></div>
+      <div><span class="label">Tool calls: </span><span class="value" id="missionBudget">&mdash;</span></div>
+      <div><span class="label">Verdict at close: </span><span class="value" id="missionCheck">&mdash;</span></div>
+    </div>
+    <div class="decision-list" id="missionCommitList"></div>
   </div>
 
   <!-- Row 2: Governance Health -->
@@ -2022,6 +2049,37 @@ function fetchSessionState() {
   }
   pollGovernance();
   setInterval(pollGovernance, 3000);
+
+  // Mission mode: when dispatch launched this engine, show the Mission panel
+  // and hide the panels that carry no signal during an unattended run.
+  function pollMission() {
+    fetch('/api/mission').then(function(r) { return r.json(); }).then(function(m) {
+      if (!m || !m.active) return;
+      document.body.classList.add('mission-mode');
+      document.getElementById('panelMission').style.display = '';
+      document.getElementById('missionMarker').textContent = '"' + m.marker + '"';
+      var seen = document.getElementById('missionMarkerSeen');
+      seen.textContent = m.markerSeen ? 'YES' : 'not yet';
+      seen.style.color = m.markerSeen ? 'var(--green, #4caf50)' : '';
+      document.getElementById('missionCommits').textContent =
+        m.commitsSinceBase + ' (baseline ' + String(m.base).slice(0, 7) + ')';
+      document.getElementById('missionBudget').textContent =
+        m.toolCalls != null && m.maxIterations
+          ? m.toolCalls + ' / ' + m.maxIterations + ' (' + Math.round(100 * m.toolCalls / m.maxIterations) + '%)'
+          : (m.toolCalls != null ? String(m.toolCalls) : '—');
+      document.getElementById('missionCheck').textContent =
+        m.checkCmd ? 'driver runs: ' + m.checkCmd : 'no check-cmd';
+      var list = document.getElementById('missionCommitList');
+      list.innerHTML = '';
+      (m.recentCommits || []).forEach(function(line) {
+        var div = document.createElement('div');
+        div.textContent = line;
+        list.appendChild(div);
+      });
+    }).catch(function() {});
+  }
+  pollMission();
+  setInterval(pollMission, 10000);
 
   fetchPredictions();
   fetchContracts();
