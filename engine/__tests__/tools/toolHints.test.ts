@@ -1,5 +1,12 @@
-import { describe, expect, it } from 'vitest'
-import { betterToolHint, withToolHint } from '../../tools/toolHints.js'
+import { beforeEach, describe, expect, it } from 'vitest'
+import {
+  betterToolHint,
+  codeIndexAdoptionHint,
+  looksSemantic,
+  resetCodeIndexNudgeState,
+  withCodeIndexNudge,
+  withToolHint,
+} from '../../tools/toolHints.js'
 
 describe('betterToolHint — file reads', () => {
   it('catches the exact PowerShell paging CynCo used eight times in one task', () => {
@@ -92,5 +99,89 @@ describe('withToolHint', () => {
 
   it('returns the output untouched when there is no hint', () => {
     expect(withToolHint('git status', 'clean')).toBe('clean')
+  })
+})
+
+describe('codeIndexAdoptionHint', () => {
+  beforeEach(() => resetCodeIndexNudgeState())
+
+  it('nudges toward CodeIndex when Grep finds nothing, quoting the query', () => {
+    const hint = codeIndexAdoptionHint('Grep', { pattern: 'hold_seat' }, 'No matches found', false)
+    expect(hint).toContain('CodeIndex')
+    expect(hint).toContain('"hold_seat"')
+  })
+
+  it('nudges when a Grep pattern is prose, not a regex', () => {
+    const hint = codeIndexAdoptionHint(
+      'Grep', { pattern: 'where orders are resolved' }, 'game.py:12: ...', false)
+    expect(hint).toContain('CodeIndex')
+    expect(hint).toContain('"where orders are resolved"')
+  })
+
+  it('leaves exact-string and regex Grep calls alone', () => {
+    for (const pattern of ['def resolve_combat', 'hold seat', 'foo.*bar', 'orders\[', 'x']) {
+      expect(codeIndexAdoptionHint('Grep', { pattern }, 'game.py:12: hit', false), pattern).toBeNull()
+    }
+  })
+
+  it('says nothing on an errored call — the error is the message', () => {
+    expect(codeIndexAdoptionHint('Grep', { pattern: 'how orders work here' }, 'Grep error: boom', true)).toBeNull()
+  })
+
+  it('fires the crawl nudge on the 15th retrieval call without CodeIndex, then again at 30', () => {
+    for (let i = 1; i <= 14; i++) {
+      expect(codeIndexAdoptionHint('Read', {}, 'contents', false), `call ${i}`).toBeNull()
+    }
+    const at15 = codeIndexAdoptionHint('Read', {}, 'contents', false)
+    expect(at15).toContain('15')
+    expect(at15).toContain('CodeIndex')
+    for (let i = 16; i <= 29; i++) {
+      expect(codeIndexAdoptionHint('Glob', {}, 'files', false), `call ${i}`).toBeNull()
+    }
+    expect(codeIndexAdoptionHint('Read', {}, 'contents', false)).toContain('30')
+  })
+
+  it('a CodeIndex call resets the crawl counter', () => {
+    for (let i = 1; i <= 14; i++) codeIndexAdoptionHint('Read', {}, 'contents', false)
+    expect(codeIndexAdoptionHint('CodeIndex', { query: 'q' }, 'results', false)).toBeNull()
+    expect(codeIndexAdoptionHint('Read', {}, 'contents', false)).toBeNull()
+  })
+
+  it('non-retrieval tools neither count nor get hints', () => {
+    for (let i = 1; i <= 40; i++) {
+      expect(codeIndexAdoptionHint('Bash', { command: 'ls' }, 'out', false)).toBeNull()
+    }
+    expect(codeIndexAdoptionHint('Read', {}, 'contents', false)).toBeNull()
+  })
+})
+
+describe('looksSemantic', () => {
+  it('three or more plain words is a question', () => {
+    expect(looksSemantic('where orders are resolved')).toBe(true)
+    expect(looksSemantic('how turn processing works')).toBe(true)
+  })
+
+  it('regex metacharacters mean they meant regex', () => {
+    expect(looksSemantic('def [a-z]+ resolve')).toBe(false)
+    expect(looksSemantic('one two three.*')).toBe(false)
+  })
+
+  it('one or two words is an exact-string search', () => {
+    expect(looksSemantic('hold_seat')).toBe(false)
+    expect(looksSemantic('hold seat')).toBe(false)
+  })
+})
+
+describe('withCodeIndexNudge', () => {
+  beforeEach(() => resetCodeIndexNudgeState())
+
+  it('prepends the hint and keeps every byte of the output', () => {
+    const out = withCodeIndexNudge('Grep', { pattern: 'ghost_function' }, 'No matches found', false)
+    expect(out).toContain('CodeIndex')
+    expect(out).toContain('No matches found')
+  })
+
+  it('returns the output untouched when there is no hint', () => {
+    expect(withCodeIndexNudge('Grep', { pattern: 'def foo' }, 'a.py:1: def foo', false)).toBe('a.py:1: def foo')
   })
 })

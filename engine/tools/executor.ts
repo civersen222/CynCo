@@ -5,6 +5,7 @@ import { DoomLoopDetector } from './doomLoop.js'
 import { capToolResult } from './resultCap.js'
 import { ToolScorer } from './toolScorer.js'
 import { callTouchesSealed, redactSealed, SEALED_REFUSAL } from './sealedPaths.js'
+import { withCodeIndexNudge } from './toolHints.js'
 
 export type RequestApprovalFn = (
   toolName: string,
@@ -197,8 +198,13 @@ export class ToolExecutor {
       // because a sealed name can surface anywhere a path does — a grep hit, a
       // stack trace, a `git status`. Before the cap, so a truncated result is
       // truncated after the redaction and never after only part of it.
+      // CodeIndex adoption nudge (see toolHints.ts): prepended AFTER the cap so
+      // the hint cannot be truncated away, and unconditionally so a CodeIndex
+      // call resets the crawl counter even on a doom-loop turn.
+      const nudged = withCodeIndexNudge(
+        toolName, input, capToolResult(redactSealed(result.output), this.contextLength), result.isError)
       const capped = {
-        output: capToolResult(redactSealed(result.output), this.contextLength),
+        output: nudged,
         isError: result.isError,
         // Carried, not re-derived. Rebuilding the result here is the one place
         // a classification set by the tool that ran the check can be silently

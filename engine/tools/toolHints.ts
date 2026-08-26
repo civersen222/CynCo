@@ -159,3 +159,104 @@ export function withToolHint(command: string, output: string): string {
   const hint = betterToolHint(command)
   return hint ? `${hint}\n\n${output}` : output
 }
+
+/*
+ * --- CodeIndex adoption -----------------------------------------------------
+ *
+ * Measured across all 8 redesign campaign missions (ledger toolStats.byName):
+ * CodeIndex was called 5 times out of 3,288 tool calls — zero in the last five
+ * missions — while the system prompt named it "MANDATORY FIRST STEP" in five
+ * places. The exhortation is simply not load-bearing: the model's tool prior
+ * (Grep/Read/Bash) wins by turn three and the prompt is never consulted again.
+ *
+ * The mechanism that HAS moved this model (see the header of this file) is a
+ * correction riding on the output of the tool it did choose, arriving at the
+ * moment of the mistake. Three such moments, in order of receptiveness:
+ *
+ *   1. Grep returned nothing — the exact moment the model knows its wording
+ *      failed, and a semantic search is the alternative it forgot it had.
+ *   2. Grep was given prose, not a regex — the model is already asking a
+ *      conceptual question, just of the wrong tool.
+ *   3. A long retrieval crawl with the index never consulted — each crawl
+ *      turn costs a full prefill, so the tax compounds.
+ *
+ * Never blocks, never substitutes: the model still gets what it asked for.
+ */
+
+const RETRIEVAL_TOOLS = new Set(['Grep', 'Read', 'Glob', 'Ls'])
+
+const CRAWL_NUDGE_EVERY = 15
+
+let retrievalSinceCodeIndex = 0
+
+/** Test seam: the counter is process state, and tests must not share it. */
+export function resetCodeIndexNudgeState(): void {
+  retrievalSinceCodeIndex = 0
+}
+
+/**
+ * A Grep pattern that reads like a question rather than a regex: three or more
+ * words with no regex metacharacters. Two words ("hold seat") is a legitimate
+ * exact-string search and gets no lecture.
+ */
+export function looksSemantic(pattern: string): boolean {
+  if (/[\\[\](){}|^$*+?.]/.test(pattern)) return false
+  return pattern.trim().split(/\s+/).length >= 3
+}
+
+/**
+ * The one-line nudge for this call, or null. Also the counter's bookkeeping:
+ * call it for EVERY tool call so a CodeIndex use resets the crawl count.
+ */
+export function codeIndexAdoptionHint(
+  toolName: string,
+  input: Record<string, unknown>,
+  output: string,
+  isError: boolean,
+): string | null {
+  if (toolName === 'CodeIndex') {
+    retrievalSinceCodeIndex = 0
+    return null
+  }
+  if (!RETRIEVAL_TOOLS.has(toolName)) return null
+  retrievalSinceCodeIndex++
+  if (isError) return null
+
+  if (toolName === 'Grep') {
+    const pattern = String(input.pattern ?? '')
+    if (output.startsWith('No matches found')) {
+      return (
+        `Note: 0 matches. CodeIndex({ query: ${JSON.stringify(pattern)} }) searches by meaning ` +
+        'rather than spelling and often finds what a pattern\u2019s exact wording misses.'
+      )
+    }
+    if (looksSemantic(pattern)) {
+      return (
+        'Note: this pattern reads like a question, not a regex. ' +
+        `CodeIndex({ query: ${JSON.stringify(pattern)} }) returns ranked functions with paths and ` +
+        'line numbers in one call; Grep is for exact strings.'
+      )
+    }
+  }
+
+  if (retrievalSinceCodeIndex % CRAWL_NUDGE_EVERY === 0) {
+    return (
+      `Note: ${retrievalSinceCodeIndex} Grep/Read/Glob calls since your last CodeIndex query. ` +
+      'When the question is WHERE something lives or HOW it works, ' +
+      'CodeIndex({ query: "..." }) answers in one call what a crawl answers in ten \u2014 ' +
+      'and every crawl turn pays a full prompt prefill.'
+    )
+  }
+  return null
+}
+
+/** Prepend the CodeIndex nudge to a tool result, when there is one to give. */
+export function withCodeIndexNudge(
+  toolName: string,
+  input: Record<string, unknown>,
+  output: string,
+  isError: boolean,
+): string {
+  const hint = codeIndexAdoptionHint(toolName, input, output, isError)
+  return hint ? `${hint}\n\n${output}` : output
+}
