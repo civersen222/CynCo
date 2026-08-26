@@ -1,5 +1,5 @@
 import { getToolByName } from './registry.js'
-import { shouldAutoApprove, getToolRisk, type ToolTrustProfile } from './approvalGate.js'
+import { shouldAutoApprove, getToolRisk, isDownloadCommand, DOWNLOAD_REFUSAL, type ToolTrustProfile } from './approvalGate.js'
 import type { ToolResult } from './types.js'
 import { DoomLoopDetector } from './doomLoop.js'
 import { capToolResult } from './resultCap.js'
@@ -167,7 +167,15 @@ export class ToolExecutor {
       }
     }
 
-    const autoApprove = shouldAutoApprove(toolName, this.trustProfile, this.approveAll)
+    // Downloads never ride on approve-all (see approvalGate.ts). Under
+    // approve-all there is no user to ask, so the answer is a refusal that
+    // names the sanctioned route; interactively, it is a forced approval card.
+    const download = toolName === 'Bash' && isDownloadCommand(String(input.command ?? ''))
+    if (download && this.approveAll) {
+      return { output: DOWNLOAD_REFUSAL, isError: true }
+    }
+
+    const autoApprove = !download && shouldAutoApprove(toolName, this.trustProfile, this.approveAll)
     if (!autoApprove) {
       const risk = getToolRisk(toolName)
       const approved = await this.requestApproval(toolName, input, risk)

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import { shouldAutoApprove } from '../../tools/approvalGate.js'
+import { isDownloadCommand, shouldAutoApprove } from '../../tools/approvalGate.js'
 
 describe('approvalGate', () => {
   it('auto-approves read-tier tools with no profile override', () => {
@@ -50,5 +50,47 @@ describe('approvalGate', () => {
   it('approve-all mode auto-approves everything', () => {
     expect(shouldAutoApprove('Bash', undefined, true)).toBe(true)
     expect(shouldAutoApprove('Edit', undefined, true)).toBe(true)
+  })
+})
+
+describe('isDownloadCommand', () => {
+  it('catches fetch commands anywhere in a pipeline', () => {
+    for (const cmd of [
+      'curl -sL -o out.ttf https://example.com/f.ttf',
+      'wget https://example.com/f.zip',
+      'cd /tmp && curl -O https://example.com/x',
+      'Invoke-WebRequest -Uri https://example.com -OutFile x',
+      'iwr https://example.com | Select-Object Content',
+      'certutil -urlcache -split -f https://example.com/x x.exe',
+    ]) {
+      expect(isDownloadCommand(cmd), cmd).toBe(true)
+    }
+  })
+
+  it('catches package-manager fetches', () => {
+    for (const cmd of [
+      'pip install requests',
+      'python -m pip install pygame',
+      'npm install left-pad',
+      'npm ci',
+      'bun add zod',
+      'cargo install ripgrep',
+    ]) {
+      expect(isDownloadCommand(cmd), cmd).toBe(true)
+    }
+  })
+
+  it('leaves ordinary shell work and near-miss words alone', () => {
+    for (const cmd of [
+      'git status',
+      'git push origin main',
+      'python -m pytest gilded/tests -x -q',
+      'ls -la && cat curly.txt',
+      'pip list',
+      'npm run build',
+      'npm test',
+    ]) {
+      expect(isDownloadCommand(cmd), cmd).toBe(false)
+    }
   })
 })
