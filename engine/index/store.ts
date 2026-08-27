@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS meta (
 );
 
 CREATE INDEX IF NOT EXISTS idx_chunks_file ON chunks(file_path);
+CREATE INDEX IF NOT EXISTS idx_chunks_name ON chunks(name);
 CREATE INDEX IF NOT EXISTS idx_chunks_hash ON chunks(file_hash);
 CREATE INDEX IF NOT EXISTS idx_rels_source ON relationships(source_chunk_id);
 `
@@ -135,6 +136,28 @@ export class IndexStore {
       content: r.content,
       score: 1.0 - (r.distance ?? 0), // distance → similarity
     }))
+  }
+
+  /**
+   * Exact-name definition lookup (symbol-first retrieval). Exact match first;
+   * when that pass is empty and `ciFallback` is true, a case-insensitive pass.
+   * Score 1.0 — a name match is definitional, not similarity.
+   */
+  findByName(name: string, ciFallback = true): IndexResult[] {
+    const map = (rows: any[]): IndexResult[] => rows.map(r => ({
+      filePath: r.file_path,
+      name: r.name,
+      chunkType: r.chunk_type,
+      startLine: r.start_line,
+      endLine: r.end_line,
+      content: r.content,
+      score: 1.0,
+    }))
+    const cols = 'file_path, name, chunk_type, start_line, end_line, content'
+    const exact = this.db.prepare(`SELECT ${cols} FROM chunks WHERE name = ?`).all(name) as any[]
+    if (exact.length > 0 || !ciFallback) return map(exact)
+    const ci = this.db.prepare(`SELECT ${cols} FROM chunks WHERE LOWER(name) = LOWER(?)`).all(name) as any[]
+    return map(ci)
   }
 
   /** Keyword fallback search when sqlite-vec is not available. */
