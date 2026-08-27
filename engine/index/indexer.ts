@@ -239,6 +239,8 @@ export class ProjectIndexer {
     this.store.setMeta('project_root', this.projectRoot)
     this.store.setMeta('file_count', String(files.length))
     this.store.setMeta('chunk_count', String(this.store.getChunkCount()))
+    const head = this.gitHead()
+    if (head) this.store.setMeta('indexed_head', head)
 
     onProgress?.(`Done: ${chunks} chunks indexed, ${skipped} files unchanged`)
     console.log(`[index] Indexed ${chunks} chunks from ${files.length - skipped} files (${skipped} skipped)`)
@@ -356,10 +358,13 @@ export class ProjectIndexer {
   }
 
   /**
-   * Reindex anything git says changed since the stored hash. Runs at query
-   * time so the index is never staler than the question being asked — files
-   * created by Bash/ApplyPatch mid-mission used to be invisible until the
-   * >5-file/1h staleness rebuild. Non-git cwd or git failure ⇒ silent no-op.
+   * Reindex anything that changed since the last index — both dirty files
+   * (git status) and COMMITTED drift (git diff against the recorded head).
+   * Missions commit constantly, so status alone left the index permanently
+   * stale: the 2026-08-27 eval found wed_match and can_place_informant
+   * missing from the civkings index because their files were committed clean.
+   * Runs at query time so the index is never staler than the question being
+   * asked. Non-git cwd or git failure ⇒ no-op.
    */
   async refreshFromGitStatus(): Promise<void> {
     let out: string
@@ -370,11 +375,38 @@ export class ProjectIndexer {
     } catch {
       return
     }
+    const candidates = new Set<string>()
     for (const line of out.split('\n')) {
       if (!line.trim()) continue
       let rel = line.slice(3).trim().replace(/^"|"$/g, '')
       if (rel.includes(' -> ')) rel = rel.split(' -> ')[1]   // renames: index the new path
-      rel = rel.replace(/\//g, sep)
+      candidates.add(rel.replace(/\//g, sep))
+    }
+
+    // Committed drift since the last refresh/build.
+    const head = this.gitHead()
+    if (head && head !== this.store.getMeta('indexed_head')) {
+      const last = this.store.getMeta('indexed_head')
+      let drifted: string[] | null = null
+      if (last) {
+        try {
+          drifted = execFileSync('git', ['diff', '--name-only', `${last}..${head}`], {
+            cwd: this.projectRoot, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 10000,
+          }).split('\n').filter(Boolean)
+        } catch (e) {
+          // Recorded head unreachable (rebase, gc, fresh clone) — sweep instead.
+          console.log(`[index] git diff ${last.slice(0, 8)}..HEAD failed, falling back to hash sweep: ${e instanceof Error ? e.message.split('\n')[0] : e}`)
+        }
+      }
+      // No recorded head (legacy index) or diff failed: hash-sweep every
+      // indexed file. O(files) reads, only run once — the head is recorded after.
+      for (const rel of drifted ?? this.store.getIndexedFiles()) {
+        candidates.add(rel.replace(/\//g, sep))
+      }
+      this.store.setMeta('indexed_head', head)
+    }
+
+    for (const rel of candidates) {
       if (!isIndexableSource(rel)) continue
       try {
         const content = readFileSync(join(this.projectRoot, rel), 'utf-8')
@@ -384,6 +416,18 @@ export class ProjectIndexer {
         // Deleted or unreadable — nothing fresh to serve for this path.
         console.log(`[index] Skipped refresh of ${rel}: ${e instanceof Error ? e.message.split('\n')[0] : e}`)
       }
+    }
+  }
+
+  /** Current commit hash, or null outside a git repo / before the first commit. */
+  private gitHead(): string | null {
+    try {
+      return execFileSync('git', ['rev-parse', 'HEAD'], {
+        cwd: this.projectRoot, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000,
+      }).trim()
+    } catch (e) {
+      console.log(`[index] git rev-parse HEAD failed in ${this.projectRoot}: ${e instanceof Error ? e.message.split('\n')[0] : e}`)
+      return null
     }
   }
 
