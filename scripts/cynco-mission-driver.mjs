@@ -574,6 +574,35 @@ if (checkCmd && !gate.run) {
   // it were about the delivery. Nothing in the record could tell them apart.
   // Taking HEAD on both sides costs two git calls and turns a silent wrong
   // answer into a visible mismatch.
+  // F132: the gate must grade the COMMIT, not the working tree. C5 wave 1
+  // committed chassis.py importing GENTRY_SURNAMES while the definition sat
+  // uncommitted in world.py — verify and the sealed gate both read the tree,
+  // so a head that dies on ImportError from a clean checkout was graded as if
+  // it stood alone. Preserve tracked changes to the patch FIRST (same snapshot
+  // the tail takes on every exit path), then reset, so the check reads what a
+  // clean checkout of gradedSha would. Skipped while the run is still open:
+  // reverting files under a live mission destroys its in-flight work, and that
+  // verify is already advisory. If the snapshot cannot be written the tree is
+  // left alone — grading the tree is a gap; losing the work is worse.
+  let dirtyAtVerify = 0
+  if (!runStillOpen) {
+    try {
+      const st = spawnSync('git', ['status', '--porcelain', '-uno'], { cwd: CWD, encoding: 'utf8' })
+      const lines = (st.status === 0 ? st.stdout.trim() : '') ? st.stdout.trim().split('\n') : []
+      dirtyAtVerify = lines.length
+      if (dirtyAtVerify > 0) {
+        const snap = snapshotUncommittedWork(CWD, 'C:/tmp', missionId)
+        if (snap.written) {
+          console.log(`[verify] tree dirty at gate time: ${dirtyAtVerify} tracked file(s) — preserved → ${snap.patchPath}; resetting so the gate grades the commit, not the tree (F132)`)
+          spawnSync('git', ['checkout', '--', '.'], { cwd: CWD })
+        } else {
+          console.log(`[verify] tree dirty (${dirtyAtVerify} tracked) but the snapshot was not written — NOT resetting; this gate grades the tree (F132 gap stands for this run)`)
+        }
+      }
+    } catch (e) {
+      console.log(`[verify] F132 quarantine failed (${e?.message ?? e}) — this gate grades the tree`)
+    }
+  }
   const headBefore = gitHead(CWD)
   const r = runCheck(checkCmd, CWD, CHECK_TIMEOUT_MS)
   const headAfter = gitHead(CWD)
@@ -582,7 +611,7 @@ if (checkCmd && !gate.run) {
   // thing, and the ledger is read by everything. Zero is the ordinary case and
   // is recorded rather than omitted — an absent field cannot tell "nothing was
   // touched" apart from "this driver could not tell".
-  verify = { command: checkCmd, exitCode: r.exitCode, timedOut: r.timedOut, spawnFailed: r.spawnFailed, durationMs: r.durationMs, outputTail: r.outputTail, gradedSha: headBefore, headAfterCheck: headAfter, heldOutRestored: tampered.length }
+  verify = { command: checkCmd, exitCode: r.exitCode, timedOut: r.timedOut, spawnFailed: r.spawnFailed, durationMs: r.durationMs, outputTail: r.outputTail, gradedSha: headBefore, headAfterCheck: headAfter, heldOutRestored: tampered.length, dirtyAtVerify }
   if (headBefore && headAfter && headBefore !== headAfter) {
     // Demote here as well as in gateDisposition. That call reads `quiet`, which
     // is a guess about whether the run had stopped; this is the thing itself.

@@ -2888,3 +2888,37 @@ AND driver-process exit. First live exercise: the C5 wave-1 verdict (that
 wave was dispatched pre-fix, so its engine still needs the hand-kill; the
 /quit path gets tested against the idle engine booted to restore the
 dashboard afterwards).
+
+## F132 — the gate graded a tree the commit could not reproduce
+
+**Where.** C5 wave 1 (ledger c5-wave1-1787844497777, head 35050f9, exitReason
+timeout at 685 turns). The mission committed `gilded/chassis.py` importing
+`GENTRY_SURNAMES` from `gilded.world` — but the definition itself was still an
+uncommitted working-tree edit when the 6h wall clock closed the run. A clean
+checkout of 35050f9 dies on ImportError at boot.
+
+**How it was caught.** Not by the instruments. The driver's verify and the
+supervisor's hand re-run both execute in the mission working tree, which still
+held the uncommitted world.py edit, so both graded the tree-state and reported
+the C5 sections green. The supervisor's `git stash` + boot probe — run only
+because the preserved patch looked suspicious (an ADD of a symbol the head
+already imported) — was what proved the head does not stand alone.
+
+**Why it matters.** `verified` and the sealed gate speak about gradedSha in
+every downstream reader (ledger, campaign log, economics), but what they
+measured was gradedSha PLUS whatever the timeout happened to strand in the
+tree. A wave could pass its gate on work that no checkout can reproduce, and
+the ledger row would say so in no field at all.
+
+**The fix (shipped same day).** Driver: when the run is closed and the tree
+has tracked changes at verify time, preserve them to the mission patch FIRST
+(same snapshot the tail takes), then `git checkout -- .` so the check reads
+what a clean checkout of gradedSha would; `verify.dirtyAtVerify` records the
+count on the row. Skipped while the run is still open (reverting files under
+a live mission destroys in-flight work; that verify is already advisory), and
+skipped when the snapshot cannot be written (grading the tree is a gap;
+losing the work is worse).
+
+**General lesson.** An instrument that runs where the work happened inherits
+whatever the work left lying around. Grade deliveries from the commit graph,
+not from the desk it was assembled on.

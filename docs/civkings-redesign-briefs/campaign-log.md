@@ -8,8 +8,8 @@ Gates (sealed, outside repo): `~/.cynco/heldout/civkings-redesign/c<N>/`
 | C1 — the sim becomes visible | 2092b0c | f2dd97feb5db182f | clean MISS (8 surface fails, exit 1, no traceback) | discriminators FAIL both seeds: G1.1c, G1.3a.season/inquiry/deflection, G1.3c, G1.4a.verbs | wave 1 MISS (ledger c1-wave1-1787631354668: landed, verified False, markerSeen False; gate: acts+registry missing ×2 seeds; ladder/beats landed as methods with domain beat kinds — substance real, shape wrong) · wave 2 dispatched (adapt-shape brief c1-wave2.txt, BASE 185e9ec) | **PASS** — wave 2 (ledger c1-wave2-1787667568006, 784 turns): driver verify PASS 7166ms; hand re-run exit 0, 149 checks 0 fails; marker exact in a418d49 with wire-check proof; frames rendered (Briefing ladder + Gazette headlines, seed 7 t8); sweep 4/25 killed (record #236) — 15/21 survivors sit in the committed `_c1_selfcheck.py` probe, not game logic; real-logic survivors: acts.py:25/:41, beats.py:139/189/199/201 (thin-tests residual, carried to close-out) |
 | C2 — the player has a stake | a418d49 | 1f6b4bc6ca740b5b | clean MISS (13 fails: 9 surface + 4 derived; 150 PASS incl. the full C1 chain green; exit 1, no traceback) | discriminators FAIL all 3 seeds: G2.4b.t4 ×3, G2.2c, G2.3.failable; 180 checks PASS | wave 1 MISS (ledger c2-wave1-1787691757144: landed, verified False, 659 turns; exactly one gate fail — G2.2b `AttributeError("'Character' object has no attribute 'want'")`, wants only derived inside set_ambition, absent at boot; CynCo misdiagnosed the sealed command as MSYS backslash-stripping and self-stopped at marker 79e0bca; sweep 0/25 killed (record #237) — all 25 sampled mutants sat in the `_c2_grid.py` scratch probe (25-cap sampled alphabetically; 298 available), so it measures probe pollution, not game logic — the probes wave 2 deleted) · wave 2 (adapt-shape brief c2-wave2.txt quoting the fail verbatim, BASE 79e0bca) | **PASS** — wave 2 (ledger c2-wave2-1787700776646, 40 turns): driver verify PASS 22846ms; hand re-run exit 0, 335 PASS 0 FAIL incl. G2.4c "0 C1 regressions"; marker exact in 9c4b773 (wants from boot: vs-agenda if one exists, else neutral from strongest disposition; committed gilded/tests/test_c2_contract.py; all 7 scratch probes removed incl. `_c1_selfcheck.py`); House frames render (banner family/why/clock "turn 4 of 10" + court cards with stance/want per adult, seed 7); sweep 2/8 killed (record #238) — 6 survivors all in ambitions.py:291-302 boot-want derivation (age-threshold + cmp mutants; thin-tests residual, same class as C1's) |
 | C3 — the world pushes back | 9c4b773 | 9c0a6fbd4027a7c2 (hardened; was 90fa086ac43242e5) | clean MISS (hardened gate: 6 fails, independent surface prongs; exit 1, no traceback) | inert-orders stub FAILs exactly the 9 discriminators: G3.3a ×4 (no head-faced beats), G3.4a.deflection, G3.5a ×4 (seat run identical to control); 46 anatomy/fog checks PASS — re-verified post-hardening in a BASE worktree | wave 1 MISS (shape divergence: keys Church/Crown/Guilds/Treasury, no hold_seat; 8 fails, 336 PASS); wave 2 MISS (contract inversion F128 — root cause superseded by F129, IDENTICAL 8 fails, 440 turns spent improving the invented world); wave 3 run 1 VOID (engine defect F129: compaction destroyed the brief; 217 tool calls, 2-line diff, not chargeable to the wave budget); wave 3 re-run post-fix | **PASS** — wave 3 re-run (ledger c3-wave3-1787773124818, 581 turns, 88 min): driver verify PASS 58735ms; hand re-run exit 0, full C1+C2+C3 chain green incl. G3.6 "0 C1+C2 regressions"; marker exact in 4c67cae; 0/558 tool calls touched grading apparatus; 9 compactions survived with the brief pinned (F129 fix validated: same brief+model+base that produced a 2-line rename now landed the campaign); Powers frames render: 4 Orders fogged at t8, informant on Combine opens "Pursuing Purge Scabs" while others stay fogged (C4 warts: "House " prefix on Order rows, last-two-row overlap); sweeps — wave1 15/25 killed (survivors: orders.py:48-51 head-stat consts + 2 ambitions bools), wave2 8/23 (survivors: orders.py lever consts), final 5/25 (16 of 20 survivors = ambitions.py:50-65 Order-family disposition weights, ±1.0→2.0 keeps ordering; thin-tests residual, pin in C4); void-run sweep UNMEASURED and itself the finding: no test files delivered to own the change |
-| C4 — one living UI | — | — | — | — | — | — |
-| C5 — the world is big | — | — | — | — | — | — |
+| C4 — one living UI | 4c67cae | 05ea014c667311c7 | clean MISS (surface fails only, chain green) | claims-vs-pixels discriminators FAIL (TABS mutants + one-tier hedge) | wave 1 MISS (206 turns, head a731d57) · wave 2 VOID (harness failure F130) · wave 3 LANDED at the 1200-iteration budget | **PASS** — wave 3 (ledger c4-wave3-1787791284792): driver verify PASS all four sections at 3fc2de9; supervisor re-run identical; perturb MISS via G4.2a.one_tier; markerSeen:false is bookkeeping (budget landed during post-green polish); F131 filed (engine undead 7.3h post-verdict); first measured tokenStats (32:1 cached:prefill); sweep 7/25 killed (record #245, 18 UI-draw survivors, thin-UI-tests class) |
+| C5 — the world is big | 3fc2de9 | 0c4e6b30c2178a22 | clean MISS (10 fails, all C5-only: gentry ×3, provinces ×3, events ×3, mobility; houses/perf green, C1-C4 chain green) | counts-only cheat stub: s*.G5.1a.gentry/provinces PASS as designed, MISS (4 fails) via s*.G5.2a.events ×3 + G5.2a.mobility — the gate cannot be passed by counts | wave 1 MISS (ledger c5-wave1-1787844497777, 685 turns, 6h timeout, head 35050f9: whole C5 surface GREEN — 194-201 provinces, 24 gentry, 56-58 gentry beats/seed, mobility in all 3 seeds, perf 11.7ms/30.6 — but head not self-contained (F132: GENTRY_SURNAMES uncommitted, clean checkout dies on ImportError) and ONE chain regression G3.4a.deflection seed 3) · wave 2 dispatched (c5-wave2.txt, BASE 35050f9: commit the stranded definition + restore the Bank's deflection beat) | — |
 
 ## Calibration transcripts
 
@@ -348,3 +348,55 @@ predicates with no pixel-level assertion); the C4 probe/ACCENTS gate checks
 claims-vs-pixels at specific coordinates, which is why the killed 7 are the
 ones that shift geometry it measures. Carried as known debt — the C5 residual
 test (war-panel hit-test over every centroid) bites exactly this class.
+
+### C5 (2026-08-27, BASE 3fc2de9, gate 0c4e6b30c2178a22)
+
+Perf baseline measured at BASE per F89: end_turn() median over 20 turns —
+seed 7: 10.2ms, seed 11: 9.8ms, seed 13: 11.1ms → cap T = 3x the 10.2ms
+median-of-medians = 30.6ms. BASE calibration: GATE: MISS (10 fails), every
+fail C5-only (s*.G5.1a.gentry "g.gentry missing" ×3, s*.G5.1a.provinces
+50/53/58 ×3, s*.G5.2a.events ×3, G5.2a.mobility), houses + perf green and
+"G5.4a: PASS 0 C1+C2+C3+C4 regressions" — the whole prior chain survives at
+BASE. Perturb stub (counts without a sim: 25 fake gentry names, provinces
+dict padded to 180 by re-aliasing Province objects): all count checks PASS
+as designed, GATE: MISS (4 fails) via the liveness discriminators —
+s7/s11/s13.G5.2a.events + G5.2a.mobility. Counts a gate would take at face
+value are caught by the checks that watch the world move.
+
+#### C5 wave 1 — MISS (ledger c5-wave1-1787844497777, 685 turns, head 35050f9)
+
+6h wall-clock timeout (exitReason timeout), marker never committed, 4 commits
+landed: atlas 144x144 grid / ~200 provinces via bounded-ring Voronoi
+(claimed bit-identical to naive scan), rule-4 glyph tests re-pinned to the
+tiered world, war drawer out of the map field (C4 residual: rule-6
+all-centroid click + war verbs reachable, test_c5_residuals committed),
+test_c5_contract committed verbatim, gentry on a dedicated rng stream
+(seed ^ 0x5C5) to keep the pre-C5 sim bit-identical.
+
+The verdict has two defects and one triumph. Triumph: the ENTIRE C5 surface
+is green at the delivered state — s7/s11/s13 G5.1a 194/195/201 provinces +
+24 gentry each, G5.2a 56/56/58 share/board/marriage beats over 60 turns,
+mobility (falls + rise/fall beats) in ALL THREE seeds (gate needs one),
+G5.3a end_turn median 11.7ms against the 30.6 cap at full scale. Defect 1
+(F132): the head does not stand alone — chassis.py (committed) imports
+GENTRY_SURNAMES from world.py where it exists only as an uncommitted
+working-tree edit; a clean checkout of 35050f9 dies on ImportError. Both the
+driver verify and the supervisor hand re-run graded tree-state; the stash +
+boot probe caught it. Driver fixed same-day: verify now quarantines tracked
+changes (preserve to patch → reset → grade the commit) and records
+verify.dirtyAtVerify. Defect 2: sealed gate MISS (3 fails), root is exactly
+one chain regression — G3.4a.deflection seed 3: the Buyout-vs-Receivership
+collision still THWARTS (G3.4a.thwarted passes) but no deflection beat with
+face='Maren Bank', 'Receivership' and the 'of 10' clock appears: the world
+pushes back silently at the new scale, which is the Clarity Law violation C3
+exists to forbid. G4.6/G5.4a fails are the cascade of that one check.
+
+618 tool calls, 79 errors (Bash 236 / Read 174 / Grep 129 / Edit 35 /
+Write 21 / CodeIndex 14 / Glob 4 / MultiEdit 3 / Ls 1 / Git 1). Grader
+probes: 0/618. CodeIndex: 14/618 (2.3%) — first wave on the symbol-first
+index (PR #104), up 6x from wave C4w3's 0.4% but still marginal; #39
+(crawl-tool restriction) stays open, decide on wave-2 data. tokenStats:
+prefill 904,330 / cached 22,603,979 / decode 416,003 over 685/685 measured
+turns (25:1 cached:prefill). Wave 2 dispatched from BASE 35050f9
+(c5-wave2.txt): commit the stranded definition, restore the Bank's
+deflection beat, committed reproduction test, marker.
