@@ -55,20 +55,70 @@ function rankDefs(defs: IndexResult[], query: string, symbol: string): IndexResu
   return [...defs].sort((a, b) => scoreOf(b) - scoreOf(a))
 }
 
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+/**
+ * Module-level constants (TREASURY_LABELS, ACCEPT_SCORE) have no named chunk,
+ * so findByName never fires for them. A chunk whose content assigns the
+ * candidate at line start is its definition in every way that matters.
+ * Measured: both eval misses of this shape pointed at the defining module,
+ * while keyword rowid order served their test files instead.
+ */
+function assignmentDefs(store: IndexStore, candidate: string): IndexResult[] {
+  const re = new RegExp(`^\\s*${escapeRe(candidate)}\\s*[:=][^=]`, 'm')
+  return store.keywordSearch(candidate, 50)
+    .filter(h => re.test(h.content))
+    .map(h => ({ ...h, score: 1.0 }))
+}
+
+/**
+ * References ordered file-diverse: one chunk per referencing file before any
+ * file repeats, non-definition files first. Retrieval is scored per FILE in
+ * top-k — five rowid-adjacent chunks from one test file used to fill every
+ * slot while the actual second file (registry.py, 2026-08-27 eval) was cut.
+ */
+function diverseReferences(refs: IndexResult[], defFiles: Set<string>, cap: number): IndexResult[] {
+  const byFile = new Map<string, IndexResult[]>()
+  for (const r of refs) {
+    if (!byFile.has(r.filePath)) byFile.set(r.filePath, [])
+    byFile.get(r.filePath)!.push(r)
+  }
+  const files = [...byFile.keys()].sort((a, b) => (defFiles.has(a) ? 1 : 0) - (defFiles.has(b) ? 1 : 0))
+  const out: IndexResult[] = []
+  for (let round = 0; out.length < cap; round++) {
+    let served = false
+    for (const f of files) {
+      const chunk = byFile.get(f)![round]
+      if (!chunk) continue
+      out.push(chunk)
+      served = true
+      if (out.length >= cap) break
+    }
+    if (!served) break
+  }
+  return out
+}
+
 /**
  * Resolve the most specific identifier in `query` to its definition chunks and
- * referencing chunks. First identifier (longest-first) with a name hit wins;
- * null when nothing resolves — the caller falls through to semantic search.
+ * referencing chunks. Two passes over the identifiers (longest-first): named
+ * definitions beat assignment-style ones for ANY candidate; null when nothing
+ * resolves — the caller falls through to semantic search.
  */
 export function lookupSymbol(store: IndexStore, query: string): SymbolLookupResult | null {
-  for (const candidate of extractIdentifiers(query)) {
-    const defs = store.findByName(candidate)
-    if (defs.length === 0) continue
-    const defKeys = new Set(defs.map(d => `${d.filePath}:${d.startLine}`))
-    const references = store.keywordSearch(candidate, 20)
-      .filter(r => !defKeys.has(`${r.filePath}:${r.startLine}`))
-      .slice(0, 10)
-    return { symbol: candidate, definitions: rankDefs(defs, query, candidate), references }
+  const candidates = extractIdentifiers(query)
+  for (const named of [true, false]) {
+    for (const candidate of candidates) {
+      const defs = named ? store.findByName(candidate) : assignmentDefs(store, candidate)
+      if (defs.length === 0) continue
+      const defKeys = new Set(defs.map(d => `${d.filePath}:${d.startLine}`))
+      const references = diverseReferences(
+        store.keywordSearch(candidate, 50).filter(r => !defKeys.has(`${r.filePath}:${r.startLine}`)),
+        new Set(defs.map(d => d.filePath)),
+        10,
+      )
+      return { symbol: candidate, definitions: rankDefs(defs, query, candidate), references }
+    }
   }
   return null
 }

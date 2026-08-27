@@ -81,6 +81,54 @@ describe('lookupSymbol', () => {
     for (let i = 0; i < 15; i++) put(s, `caller${i}`, 'x = tick()', `c/${i}.py`)
     expect(lookupSymbol(s, 'tick')!.references.length).toBeLessThanOrEqual(10)
   })
+
+  // Eval miss (2026-08-27 after-eval): power_row_title's gold file registry.py
+  // never surfaced — rowid-ordered references filled all top-k slots from the
+  // definition's own file and its test before any other referencing file.
+  it('references cover distinct files before repeating one file', () => {
+    const s = store()
+    s.insertChunk({ filePath: 'gilded/ui/broadsheet.py', chunkType: 'function', name: 'power_row_title',
+      startLine: 553, endLine: 560, content: 'def power_row_title(ln): ...', fileHash: 'h' }, [])
+    for (let i = 0; i < 3; i++) put(s, `t${i}`, 'assert power_row_title(x)', 'gilded/tests/test_broadsheet.py')
+    put(s, 'reg', 'row = power_row_title(ln)', 'gilded/ui/registry.py')
+    const refs = lookupSymbol(s, 'power_row_title')!.references
+    const firstTwoFiles = refs.slice(0, 2).map(r => r.filePath)
+    expect(new Set(firstTwoFiles).size).toBe(2)
+    expect(refs.map(r => r.filePath)).toContain('gilded/ui/registry.py')
+  })
+
+  it('reference recall reaches past 20 rowid-ordered chunks', () => {
+    const s = store()
+    s.insertChunk({ filePath: 'def.py', chunkType: 'function', name: 'tick',
+      startLine: 1, endLine: 3, content: 'def tick(): pass', fileHash: 'h' }, [])
+    for (let i = 0; i < 24; i++) put(s, `f${i}`, 'x = tick()', 'noise/callers.py')
+    put(s, 'late', 'y = tick()', 'gilded/registry.py')  // rowid 26 — past the old LIMIT 20
+    expect(lookupSymbol(s, 'tick')!.references.map(r => r.filePath)).toContain('gilded/registry.py')
+  })
+
+  // Eval misses TREASURY_LABELS and ACCEPT_SCORE: module-level constants have
+  // no named chunk, so the symbol leg never fired and keyword rowid order
+  // served test files ahead of the defining module.
+  it('finds a module-level constant assignment as its definition', () => {
+    const s = store()
+    put(s, null as any, 'import x\n\nTREASURY_LABELS = {\n  "war": "War chest",\n}', 'gilded/houses.py')
+    put(s, 'test_labels', 'from gilded.houses import TREASURY_LABELS\nassert TREASURY_LABELS', 'gilded/tests/test_treasury_journal.py')
+    const r = lookupSymbol(s, 'TREASURY_LABELS')!
+    expect(r).not.toBeNull()
+    expect(r.definitions[0].filePath).toBe('gilded/houses.py')
+    expect(r.definitions[0].score).toBe(1.0)
+  })
+
+  it('a named definition wins over an assignment-looking chunk', () => {
+    const s = store()
+    put(s, 'wed_match', 'def wed_match(a, b): ...', 'gilded/society/marriages.py')
+    put(s, null as any, 'wed_match = stub()', 'gilded/tests/conftest.py')
+    expect(lookupSymbol(s, 'wed_match')!.definitions[0].filePath).toBe('gilded/society/marriages.py')
+  })
+
+  it('assignment fallback still returns null for prose queries', () => {
+    expect(lookupSymbol(store(), 'overall retrieval architecture notes')).toBeNull()
+  })
 })
 
 describe('formatDefinitionCard', () => {
