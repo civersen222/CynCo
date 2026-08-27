@@ -143,6 +143,11 @@ export class ProjectIndexer {
     const indexDir = join(projectRoot, '.cynco', 'index')
     mkdirSync(indexDir, { recursive: true })
     this.store = new IndexStore(join(indexDir, 'project.db'))
+    // Stale rows from before the isIndexableSource guard served markdown files
+    // and out-of-tree paths as answers (measured: SESSION_HANDOFF.md returned
+    // for a code query). Purge on open; say so once.
+    const purged = this.store.purgeWhere(isIndexableSource)
+    if (purged > 0) console.log(`[index] Purged ${purged} non-indexable files from the index`)
     // Query vectors are only comparable to the index if they come from the same
     // model, so an existing index dictates the model rather than the process
     // default. A fresh index has nothing to say yet and keeps the default.

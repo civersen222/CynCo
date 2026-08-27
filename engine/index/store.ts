@@ -192,6 +192,18 @@ export class IndexStore {
     }))
   }
 
+  /** Delete chunks (and their vec/relationship rows) whose file_path fails `keep`. Returns purge count. */
+  purgeWhere(keep: (filePath: string) => boolean): number {
+    let purged = 0
+    for (const f of this.getIndexedFiles()) {
+      if (!keep(f)) {
+        this.removeFile(f)
+        purged++
+      }
+    }
+    return purged
+  }
+
   /** Set a metadata value. */
   setMeta(key: string, value: string): void {
     this.db.prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)').run(key, value)
