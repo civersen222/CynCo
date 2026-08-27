@@ -32,6 +32,14 @@ CREATE INDEX IF NOT EXISTS idx_chunks_hash ON chunks(file_hash);
 CREATE INDEX IF NOT EXISTS idx_rels_source ON relationships(source_chunk_id);
 `
 
+/**
+ * Canonical stored form for file paths is forward slashes. Callers pass
+ * whatever the OS handed them; mixing forms in the DB indexed the same file
+ * twice (gilded\docket.py AND gilded/docket.py, 2026-08-27 civkings probe),
+ * which ate top-k result slots and made removeFile miss the twin's rows.
+ */
+const normPath = (p: string): string => p.replace(/\\/g, '/')
+
 export class IndexStore {
   private db: Database
   private vecEnabled = false
@@ -40,6 +48,8 @@ export class IndexStore {
   constructor(dbPath: string, embeddingDim = 768) {
     this.db = new Database(dbPath)
     this.db.exec('PRAGMA journal_mode=WAL;')
+    // The eval harness and a live mission engine can hold this DB at once.
+    this.db.exec('PRAGMA busy_timeout=5000;')
     this.db.exec(BASE_SCHEMA)
 
     // Detect embedding dimension from stored metadata if available
@@ -67,25 +77,66 @@ export class IndexStore {
     } catch (e) {
       console.log(`[index] sqlite-vec not available — falling back to keyword search: ${e}`)
     }
+
+    this.migrateMixedSeparators()
   }
 
-  /** Remove all chunks for a given file (before re-indexing). */
-  removeFile(filePath: string): void {
-    const chunks = this.db.prepare('SELECT id FROM chunks WHERE file_path = ?').all(filePath) as any[]
+  /**
+   * One-time repair for indexes written before path normalization: collapse
+   * separator twins (keep the newer rows — higher max id = later index run)
+   * and rewrite every stored path to the canonical forward-slash form.
+   */
+  private migrateMixedSeparators(): void {
+    const backRows = this.db.prepare(
+      `SELECT DISTINCT file_path FROM chunks WHERE instr(file_path, ?) > 0`
+    ).all('\\') as any[]
+    if (backRows.length > 0) {
+      let collapsed = 0
+      for (const { file_path: backPath } of backRows) {
+        const fwd = normPath(backPath)
+        const twin = this.db.prepare('SELECT MAX(id) AS m FROM chunks WHERE file_path = ?').get(fwd) as any
+        if (twin?.m != null) {
+          const backMax = (this.db.prepare('SELECT MAX(id) AS m FROM chunks WHERE file_path = ?').get(backPath) as any).m
+          // Delete the older form's rows (vec + relationships included)
+          this.deleteChunkRows(backMax > twin.m ? fwd : backPath)
+          collapsed++
+        }
+      }
+      this.db.prepare(`UPDATE chunks SET file_path = REPLACE(file_path, ?, ?)`).run('\\', '/')
+      console.log(`[index] Normalized ${backRows.length} legacy path(s) to forward slashes (${collapsed} separator twin(s) collapsed)`)
+    }
+    this.db.prepare(`UPDATE relationships SET target_file = REPLACE(target_file, ?, ?)`).run('\\', '/')
+  }
+
+  /** Delete all rows (chunks + vec + relationships) stored under an exact path string. */
+  private deleteChunkRows(storedPath: string): void {
+    const chunks = this.db.prepare('SELECT id FROM chunks WHERE file_path = ?').all(storedPath) as any[]
     for (const c of chunks) {
       this.db.prepare('DELETE FROM relationships WHERE source_chunk_id = ?').run(c.id)
       if (this.vecEnabled) {
         this.db.prepare('DELETE FROM vec_chunks WHERE chunk_id = ?').run(c.id)
       }
     }
-    this.db.prepare('DELETE FROM chunks WHERE file_path = ?').run(filePath)
+    this.db.prepare('DELETE FROM chunks WHERE file_path = ?').run(storedPath)
+  }
+
+  /** Remove all chunks for a given file (before re-indexing). */
+  removeFile(filePath: string): void {
+    const chunks = this.db.prepare('SELECT id FROM chunks WHERE file_path = ?').all(normPath(filePath)) as any[]
+    for (const c of chunks) {
+      this.db.prepare('DELETE FROM relationships WHERE source_chunk_id = ?').run(c.id)
+      if (this.vecEnabled) {
+        this.db.prepare('DELETE FROM vec_chunks WHERE chunk_id = ?').run(c.id)
+      }
+    }
+    this.db.prepare('DELETE FROM chunks WHERE file_path = ?').run(normPath(filePath))
   }
 
   /** Insert a chunk and its embedding. Returns the chunk ID. */
   insertChunk(chunk: Chunk, embedding: number[]): number {
     const result = this.db.prepare(
       'INSERT INTO chunks (file_path, chunk_type, name, start_line, end_line, content, file_hash) VALUES (?, ?, ?, ?, ?, ?, ?)'
-    ).run(chunk.filePath, chunk.chunkType, chunk.name, chunk.startLine, chunk.endLine, chunk.content, chunk.fileHash)
+    ).run(normPath(chunk.filePath), chunk.chunkType, chunk.name, chunk.startLine, chunk.endLine, chunk.content, chunk.fileHash)
 
     const chunkId = Number(result.lastInsertRowid)
 
@@ -101,12 +152,12 @@ export class IndexStore {
   insertRelationship(rel: Relationship): void {
     this.db.prepare(
       'INSERT INTO relationships (source_chunk_id, target_file, rel_type) VALUES (?, ?, ?)'
-    ).run(rel.sourceChunkId, rel.targetFile, rel.relType)
+    ).run(rel.sourceChunkId, normPath(rel.targetFile), rel.relType)
   }
 
   /** Get file hash from index (for incremental update checks). */
   getFileHash(filePath: string): string | null {
-    const row = this.db.prepare('SELECT file_hash FROM chunks WHERE file_path = ? LIMIT 1').get(filePath) as any
+    const row = this.db.prepare('SELECT file_hash FROM chunks WHERE file_path = ? LIMIT 1').get(normPath(filePath)) as any
     return row?.file_hash ?? null
   }
 
