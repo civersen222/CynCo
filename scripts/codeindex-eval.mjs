@@ -189,7 +189,7 @@ for (const c of scorable) {
   if (g) stats[cls].grep++
   if (x) stats[cls].ci++
   scoreDump.push({ cls, hit: x, topScore: ci.scores?.[0] ?? null })
-  perQuery.push({ cls, pattern: c.pattern.slice(0, 80), gold: c.gold.map(norm), grep: g, ci: x, ciTop: (ci.files ?? [])[0] ?? '' })
+  perQuery.push({ cls, pattern: c.pattern.slice(0, 80), gold: c.gold.map(norm), grep: g, ci: x, ciFiles: (ci.files ?? []).slice(0, TOPK) })
 }
 
 // Burned CodeIndex queries, verbatim
@@ -231,9 +231,9 @@ misses: ${scoreDump.filter(s => !s.hit).map(s => s.topScore).filter(s => s != nu
 
 ## Per-query detail
 
-| class | pattern | grep | ci | ci top-1 |
-|---|---|---|---|---|
-${perQuery.map(q => `| ${q.cls} | \`${q.pattern.replace(/\|/g, '\\|')}\` | ${q.grep ? 'HIT' : 'miss'} | ${q.ci ? 'HIT' : 'miss'} | ${String(q.ciTop).replace(/\|/g, '\\|')} |`).join('\n')}
+| class | pattern | grep | ci | gold | ci top-3 |
+|---|---|---|---|---|---|
+${perQuery.map(q => `| ${q.cls} | \`${q.pattern.replace(/\|/g, '\\|')}\` | ${q.grep ? 'HIT' : 'miss'} | ${q.ci ? 'HIT' : 'miss'} | ${q.gold.map(g => g.split('\\').pop()).join(', ')} | ${q.ciFiles.map(f => String(f).replace(/\|/g, '\\|')).join(', ')} |`).join('\n')}
 `
 const outPath = join(outDir, `results-${date}-${LABEL}.md`)
 writeFileSync(outPath, report)

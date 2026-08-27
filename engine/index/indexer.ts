@@ -13,11 +13,12 @@ import { lookupSymbol, formatDefinitionCard, extractIdentifiers } from './symbol
 import type { IndexResult, IndexQuery } from './types.js'
 
 /**
- * Confidence floor for semantic results. Placeholder pending calibration —
- * the eval score dump (benchmark/codeindex-eval/) recalibrates this with the
- * value separating gold hits from misses, cited here when it lands.
- * Applied to the TOP result's native score: vector similarity when the
- * semantic leg answered; the 0.5 keyword marker score is treated as always
+ * Confidence floor for semantic results. Calibrated against the 2026-08-27
+ * after-eval score dump (benchmark/codeindex-eval/results-2026-08-27-after.md):
+ * semantic-path misses scored ≤0.25, the best semantic-path hit 0.38 — any
+ * floor in (0.25, 0.38] flags every measured miss; 0.35 keeps margin on the
+ * miss side. Applied to the TOP result's native score: vector similarity when
+ * the semantic leg answered; the 0.5 keyword marker score is treated as always
  * below the floor (a demoted-fallback answer is by construction unverified).
  */
 export const SCORE_FLOOR = 0.35
