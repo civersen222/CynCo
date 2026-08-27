@@ -111,6 +111,23 @@ export class EmbedClient {
   }
 
   /**
+   * Embed a QUERY (asymmetric retrieval). nomic-embed-text documents
+   * `search_query:` as required on the query side; jina-code-embeddings uses a
+   * task instruction. Documents keep their raw embedding — the query-side
+   * prefix is the documented usage for these models, and the eval
+   * before/after (benchmark/codeindex-eval/) catches regressions empirically.
+   */
+  async embedQuery(text: string, signal?: AbortSignal): Promise<number[]> {
+    return this.embed(this.queryPrefix() + text, signal)
+  }
+
+  private queryPrefix(): string {
+    if (this.model.startsWith('nomic-')) return 'search_query: '
+    if (this.model.includes('jina-code')) return 'Find the most relevant code snippet given the following query:\n'
+    return ''
+  }
+
+  /**
    * Embed `text` but never block longer than `timeoutMs`. On timeout (or any
    * embed failure) resolves `undefined` so callers fall back to lexical recall.
    *

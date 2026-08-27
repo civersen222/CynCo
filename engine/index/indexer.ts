@@ -232,7 +232,7 @@ export class ProjectIndexer {
 
     let vectorResults: IndexResult[] = []
     try {
-      const queryEmbedding = await this.embedClient.embed(q.query)
+      const queryEmbedding = await this.embedClient.embedQuery(q.query)
       // Cast a wider candidate net when fusing so BM25 can re-rank.
       vectorResults = this.store.search(queryEmbedding, hybridEnabled ? topK * 4 : topK)
     } catch (e) {
