@@ -264,3 +264,48 @@ since 2026-08-24): frontier $316.96 real spend vs ~$464.00 displaced
 generation (ratio 1.46, up from 1.30 pre-wave-3) + $1.24 electricity for
 13.8 local hours. Frontier side still conflates engine-dev (F129) with pure
 supervision; ledger still lacks local token counts (task #31).
+
+### C4 (2026-08-26, BASE 4c67cae, gate 05ea014c667311c7)
+
+One Living UI: the 11 broadsheet tabs dissolve into three spines (House ·
+Powers · Atlas) carried by the Banknote art system — 11 pinned inks, shipped
+fonts, a vermillion accent law read off rendered pixels via
+`gilded.ui.probe.render_screen`. Sealed gate re-runs the full C1+C2+C3 chain
+as regression (G4.6). Calibration: BASE clean-FAIL on the C4 assertions with
+C1-C3 green; gate + perturb sealed at
+`~/.cynco/heldout/civkings-redesign/c4/` (sha256 05ea014c667311c7).
+
+#### C4 wave 1 — MISS (ledger c4-wave1-1787784262451, 206 turns, head a731d57)
+
+3,430s, 208 tool calls (Bash 110 / Read 44 / Grep 27 / Edit 18 / Write 4 /
+CodeIndex 1), 1 commit, exit engine_closed_the_turn, 0/208 probes on the
+grading apparatus. Delivered the foundations: `palette.py`, registry
+SCREENS/GLYPHS/FONTS/DATA/VERBS, widget font routing. Gate: MISS, 4 fails —
+G4.1a.tabs (TABS still the 11 old tabs), G4.1a.old_tabs (broadsheet.py:76
+still registers 8 dissolved tabs), s7.G4.3 + s11.G4.3
+(ModuleNotFoundError: gilded.ui.probe). G4.2a glyph coverage, G4.4a verb
+coverage, and the whole C1+C2+C3 regression chain PASS. CodeIndex usage:
+1 of 208 calls. Mutation sweep: UNMEASURED by construction — the wave
+delivered 3 source files (palette.py, registry.py, widgets.py) and zero test
+files, which the sweep script names as itself the finding ("nothing was
+delivered to own the change"). `mutationSweep` stays null on the row.
+
+#### C4 wave 2 — VOID, harness failure F130 (ledger c4-wave2-1787788357499)
+
+Not chargeable to the model (F129 precedent). 1,465s of a 12h budget, 63 tool
+calls, exit `engine_error`: the SUPERVISOR's session executed `main.ts` via a
+mistaken `bun -e` smoke test while the mission ran; the stray engine's
+zombie-server sweep killed the mission's llama-server on port 8081, and
+`callModel`'s 30s retry ladder lost to the ~3.2-minute model reload
+(4× HTTP 503 "Loading model"). The run committed its adoption step first —
+ad934c5 (fonts + OFL licences committed, type-scale tests adapted to font
+routing, root scratch probes deleted) — and was actively triaging the TABS
+front when killed. Hand re-run of the sealed gate at ad934c5: same 4 fails as
+wave 1, everything else green. Ruling: ad934c5 is kept as the new BASE; the
+void run does not consume a wave; remaining fronts (TABS dissolution,
+`gilded.ui.probe` + ACCENTS) re-dispatch as the wave-2 re-run. The
+"driver kills on first commit" hypothesis this produced was investigated and
+falsified — see F130. CodeIndex usage: 1 of 63 calls. Mutation sweep:
+UNMEASURED — ad934c5 changed fonts, licences and test files only, no
+non-test source to mutate; the sweep script rules "do not record". Untracked
+`.wt_base/` `.wt_c3/` worktree litter noted for the re-run brief.
