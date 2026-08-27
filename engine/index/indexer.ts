@@ -1,7 +1,7 @@
 
 import { execFileSync } from 'child_process'
 import { readFileSync, readdirSync, statSync, mkdirSync } from 'fs'
-import { join, relative, extname } from 'path'
+import { join, relative, extname, sep } from 'path'
 import { createHash } from 'crypto'
 import { EmbedClient } from './embedClient.js'
 import { IndexStore } from './store.js'
@@ -353,6 +353,35 @@ export class ProjectIndexer {
     return results.map(r =>
       `--- ${r.filePath}:${r.startLine}-${r.endLine} (${r.chunkType}${r.name ? ': ' + r.name : ''}) [score: ${r.score.toFixed(2)}] ---\n${r.content}`
     ).join('\n\n')
+  }
+
+  /**
+   * Reindex anything git says changed since the stored hash. Runs at query
+   * time so the index is never staler than the question being asked — files
+   * created by Bash/ApplyPatch mid-mission used to be invisible until the
+   * >5-file/1h staleness rebuild. Non-git cwd or git failure ⇒ silent no-op.
+   */
+  async refreshFromGitStatus(): Promise<void> {
+    let out: string
+    try {
+      out = execFileSync('git', ['status', '--porcelain'], {
+        cwd: this.projectRoot, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000,
+      })
+    } catch {
+      return
+    }
+    for (const line of out.split('\n')) {
+      if (!line.trim()) continue
+      let rel = line.slice(3).trim().replace(/^"|"$/g, '')
+      if (rel.includes(' -> ')) rel = rel.split(' -> ')[1]   // renames: index the new path
+      rel = rel.replace(/\//g, sep)
+      if (!isIndexableSource(rel)) continue
+      try {
+        const content = readFileSync(join(this.projectRoot, rel), 'utf-8')
+        const hash = createHash('sha256').update(content).digest('hex').slice(0, 16)
+        if (this.store.getFileHash(rel) !== hash) await this.reindexFile(rel)
+      } catch { /* deleted or unreadable — nothing fresh to serve */ }
+    }
   }
 
   /** Re-index a single file after it's been edited. Fast — only processes one file. */

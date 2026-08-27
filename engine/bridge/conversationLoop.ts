@@ -4250,7 +4250,7 @@ export class ConversationLoop {
 
     // Collect LSP diagnostics after Edit/Write operations
     let lspContext = ''
-    if (!result.isError && ['Edit', 'Write', 'MultiEdit'].includes(toolName)) {
+    if (!result.isError && ['Edit', 'Write', 'MultiEdit', 'ReplaceFunction'].includes(toolName)) {
       const filePath = (toolInput.file_path as string) ?? ''
       if (filePath) {
         try {
@@ -4267,6 +4267,21 @@ export class ConversationLoop {
           const indexer = new ProjectIndexer(this.executor['cwd'])
           const relative = path.relative(this.executor['cwd'], path.resolve(this.executor['cwd'], filePath))
           await indexer.reindexFile(relative)
+          indexer.close()
+        } catch { /* index not available — non-fatal */ }
+      }
+    }
+
+    // ApplyPatch carries no file_path — the touched files live in the diff
+    // headers. Reindex each so CodeIndex stays current after patches too.
+    if (!result.isError && toolName === 'ApplyPatch') {
+      const paths = [...String(toolInput.patch ?? '').matchAll(/^\+\+\+ b\/(.+)$/gm)].map(m => m[1])
+      for (const p of paths) {
+        try {
+          const { ProjectIndexer } = await import('../index/indexer.js')
+          const path = require('path')
+          const indexer = new ProjectIndexer(this.executor['cwd'])
+          await indexer.reindexFile(path.relative(this.executor['cwd'], path.resolve(this.executor['cwd'], p)))
           indexer.close()
         } catch { /* index not available — non-fatal */ }
       }
