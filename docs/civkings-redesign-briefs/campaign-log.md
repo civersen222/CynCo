@@ -338,3 +338,13 @@ so it is the last wave on the old retrieval. FIRST fully-measured tokenStats
 row: prefill 1,600,743 / cached 51,744,186 / decode 520,129 across 1200/1200
 measured turns — the cache-to-prefill ratio (32:1) is the number the
 economics model has been waiting for.
+
+Derived sweep (record #245): 7/25 killed over the ad934c5..3fc2de9 diff. All
+18 survivors sit in UI rendering paths the pytest suite cannot see —
+actions.py:1280/1285 spine-layout constants, atlas_view.py:414-440
+glyph-tier/ACCENTS draw conditionals, broadsheet.py:868-888 panel-order
+conditionals. Same thin-UI-tests residual class as C1-C3 (constants and draw
+predicates with no pixel-level assertion); the C4 probe/ACCENTS gate checks
+claims-vs-pixels at specific coordinates, which is why the killed 7 are the
+ones that shift geometry it measures. Carried as known debt — the C5 residual
+test (war-panel hit-test over every centroid) bites exactly this class.
