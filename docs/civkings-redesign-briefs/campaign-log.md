@@ -309,3 +309,32 @@ falsified — see F130. CodeIndex usage: 1 of 63 calls. Mutation sweep:
 UNMEASURED — ad934c5 changed fonts, licences and test files only, no
 non-test source to mutate; the sweep script rules "do not record". Untracked
 `.wt_base/` `.wt_c3/` worktree litter noted for the re-run brief.
+
+#### C4 wave 3 — LANDED, gate PASS (ledger c4-wave3-1787791284792, 1200 turns, head 3fc2de9)
+
+25,449s (~7.1h), stopped by the 1,200-iteration budget, exit
+engine_closed_the_turn. The driver's own verify ran the sealed gate at 3fc2de9:
+exit 0, all four sections green — C4 PASS plus G2.4c/G3.6/G4.6 zero
+regressions across the whole C1+C2+C3 chain. The cap landed during post-green
+polish (atlas war-panel full-width rect shadowing province centroids —
+"All 190 pass" in the stream log ~iteration 1180), so the marker commit was
+never made; markerSeen:false is bookkeeping, not a miss. Supervisor gate
+re-run at 09:02: PASS, identical. Perturb cheat-stub: MISS via G4.2a.one_tier
+(the hedged two-tier "city" claim); the two G4.1a TABS discriminators are moot
+at a compliant tree — their mutation premise (the 11 old tabs) no longer
+exists, and the claims-vs-pixels check still discriminates. Post-run defect
+F131: the engine process never exited after writing the landed row — watcher
+muted 7.3h until hand-killed at 09:05. Untracked scratch probes left in the
+repo root (.probe_*.py, _atlasdiff.py, .base_*) despite the brief's scratch
+ban — hygiene residual for the C5 brief.
+
+1,071 tool calls, 151 errors (Bash 374 / Read 348 / Grep 220 / Edit 91 /
+Write 19 / CodeIndex 4 / Glob 4 / Git 4 / ReplaceFunction 3 / ContractCreate 2
+/ ContractStatus 1 / MultiEdit 1 / Ls 1). Grader probes: 2 of 1,071 flagged
+(pattern "bytecode"), both plain `gilded.ui.app` boot probes — benign.
+CodeIndex usage: 4 of 1,071 calls (0.4%) — adoption unchanged and dismal;
+this wave ran PRE-merge of the symbol-first index (PR #104 landed mid-run),
+so it is the last wave on the old retrieval. FIRST fully-measured tokenStats
+row: prefill 1,600,743 / cached 51,744,186 / decode 520,129 across 1200/1200
+measured turns — the cache-to-prefill ratio (32:1) is the number the
+economics model has been waiting for.
