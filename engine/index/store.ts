@@ -243,6 +243,31 @@ export class IndexStore {
     }))
   }
 
+  /**
+   * One chunk per distinct FILE whose content or name contains `term`.
+   * Coverage ranking needs file presence, not chunk lists — keywordSearch's
+   * rowid-ordered LIMIT let one scratch file hoard all 50 slots for seed_42
+   * while the gold file never entered the map (2026-08-27 replay).
+   */
+  filesContaining(term: string, cap = 50): IndexResult[] {
+    const t = term.toLowerCase()
+    const rows = this.db.prepare(`
+      SELECT file_path, name, chunk_type, start_line, end_line, content, MIN(id)
+      FROM chunks
+      WHERE LOWER(content) LIKE '%' || ? || '%' OR LOWER(name) LIKE '%' || ? || '%'
+      GROUP BY file_path LIMIT ?
+    `).all(t, t, cap) as any[]
+    return rows.map(r => ({
+      filePath: r.file_path,
+      name: r.name,
+      chunkType: r.chunk_type,
+      startLine: r.start_line,
+      endLine: r.end_line,
+      content: r.content,
+      score: 0.5,
+    }))
+  }
+
   /** Delete chunks (and their vec/relationship rows) whose file_path fails `keep`. Returns purge count. */
   purgeWhere(keep: (filePath: string) => boolean): number {
     let purged = 0

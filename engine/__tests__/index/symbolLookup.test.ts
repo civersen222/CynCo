@@ -197,6 +197,17 @@ describe('lookupSymbol — multi-identifier queries', () => {
     expect(r.definitions[0].filePath).toBe('gilded/houses.py')
   })
 
+  // Live replay: all 50 keyword slots for seed_42 were rowid-ordered chunks of
+  // one scratch file, so the gold file never entered the coverage map.
+  it('coverage sees a file even when another file hoards the keyword slots', () => {
+    const s = store()
+    for (let i = 0; i < 60; i++) put(s, `n${i}`, `x = seed_42(${i})`, '.base_broadsheet_test.py')
+    put(s, 'g', 'def test_seed_42_wars():\n    garrison_stub()', 'gilded/tests/test_war_verbs_m6b.py')
+    const r = lookupSymbol(s, 'garrison_stub seed_42')!
+    expect(r).not.toBeNull()
+    expect(r.references[0].filePath).toBe('gilded/tests/test_war_verbs_m6b.py')
+  })
+
   it('coverage fallback needs 2+ structural identifiers — prose still returns null', () => {
     const s = store()
     put(s, 'a', 'the game architecture overall', 'gilded/docs.py')

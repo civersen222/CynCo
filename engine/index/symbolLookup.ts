@@ -123,7 +123,9 @@ function coverageLookup(store: IndexStore, candidates: string[]): SymbolLookupRe
   const covered = new Map<string, Set<string>>()
   const firstChunk = new Map<string, IndexResult>()
   for (const id of ids) {
-    for (const hit of store.keywordSearch(id, 50)) {
+    // filesContaining, not keywordSearch: one row per FILE, so a chunk-heavy
+    // file cannot hoard every slot and hide the file covering more identifiers.
+    for (const hit of store.filesContaining(id, 50)) {
       if (!covered.has(hit.filePath)) covered.set(hit.filePath, new Set())
       covered.get(hit.filePath)!.add(id)
       if (!firstChunk.has(hit.filePath)) firstChunk.set(hit.filePath, hit)
