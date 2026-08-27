@@ -43,6 +43,8 @@ benchmark/*
 !benchmark/true/
 # Mission outcome ledger is versioned evidence (governance falsification step 1)
 !benchmark/cynco-ledger/
+# CodeIndex retrieval eval reports are versioned evidence (before/after gate)
+!benchmark/codeindex-eval/
 benchmark-manual
 benchmark-results
 benchmark-workspace-06
