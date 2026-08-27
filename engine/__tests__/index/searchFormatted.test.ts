@@ -49,7 +49,9 @@ describe('ProjectIndexer.searchFormatted', () => {
     const out = await indexer.searchFormatted({ query: 'power_row_title', topK: 5 })
     expect(out).toContain('=== DEFINITION a.py:')
     expect(out).toContain('power_row_title')
-    expect(out).toContain('=== REFERENCES (1) ===')
+    // v2 chunker: b.py's import line and its assignment line are separate
+    // chunks, so both surface as references.
+    expect(out).toContain('=== REFERENCES (2) ===')
     expect(out).toContain('b.py:')
     indexer.close()
   })

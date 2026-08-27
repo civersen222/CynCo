@@ -10,6 +10,15 @@ export type ASTChunk = Chunk & {
   signature?: string
 }
 
+/**
+ * Bump when chunk emission changes shape. An already-indexed file's content
+ * hash is unchanged, so without a version bump the hash-compare in
+ * refreshFromGitStatus would never re-chunk it and old chunk sets (missing
+ * class methods / module constants, 2026-08-27 eval) would live forever.
+ * v2: class-body methods and module-level assignments get named chunks.
+ */
+export const CHUNKER_VERSION = '2'
+
 // ─── Language Mapping ─────────────────────────────────────────────────────────
 
 const EXT_TO_LANG: Record<string, string> = {
@@ -131,10 +140,53 @@ export async function treeSitterChunk(filePath: string, content: string): Promis
   const chunks: ASTChunk[] = []
   const importNodes: unknown[] = []
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const push = (node: any, chunkType: 'function' | 'class' | 'module', name: string | null): void => {
+    const startLine = (node.startPosition.row as number) + 1
+    const rawEnd = (node.endPosition.row as number) + 1
+    const endLine = Math.min(rawEnd, startLine + 79)
+    chunks.push({
+      filePath, chunkType, name,
+      startLine, endLine,
+      content: lines.slice(startLine - 1, endLine).join('\n'),
+      fileHash: hash,
+      signature: name ?? undefined,
+    })
+  }
+
+  // Class methods past the class chunk's 80-line cap existed in NO chunk
+  // (wed_match, marriages.py:209 — 2026-08-27 eval), so each def in a class
+  // body gets its own named function chunk regardless of the cap.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const pushClassMethods = (classNode: any): void => {
+    const body = classNode.childForFieldName?.('body')
+    if (!body) return
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    for (const member of (body.children as any[])) {
+      const def = member.type === 'decorated_definition'
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ? (member.children as any[]).find((c: any) => c.type === 'function_definition')
+        : member
+      if (!def) continue
+      if (def.type === 'function_definition' || def.type === 'method_definition') {
+        push(member, 'function', def.childForFieldName?.('name')?.text ?? null)
+      }
+    }
+  }
+
   // Walk top-level children of the root
   const root = tree.rootNode
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  for (const node of (root.children as any[])) {
+  for (let node of (root.children as any[])) {
+    // Python decorated defs wrap the real definition; keep the decorator lines
+    // by chunking from the wrapper but classifying/naming from the inner def.
+    const wrapper = node
+    if (node.type === 'decorated_definition') {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const inner = (node.children as any[]).find((c: any) =>
+        c.type === 'function_definition' || c.type === 'class_definition')
+      if (inner) node = inner
+    }
     const type: string = node.type
 
     // Collect import nodes to merge into a single import_block later
@@ -155,20 +207,7 @@ export async function treeSitterChunk(filePath: string, content: string): Promis
       type === 'function_definition' ||      // Python
       type === 'method_definition'
     ) {
-      const nameNode = node.childForFieldName?.('name')
-      const name: string | null = nameNode?.text ?? null
-      const startLine = (node.startPosition.row as number) + 1
-      const rawEnd = (node.endPosition.row as number) + 1
-      const endLine = Math.min(rawEnd, startLine + 79)
-      const chunkContent = lines.slice(startLine - 1, endLine).join('\n')
-
-      chunks.push({
-        filePath, chunkType: 'function', name,
-        startLine, endLine,
-        content: chunkContent,
-        fileHash: hash,
-        signature: name ?? undefined,
-      })
+      push(wrapper, 'function', node.childForFieldName?.('name')?.text ?? null)
       continue
     }
 
@@ -177,20 +216,25 @@ export async function treeSitterChunk(filePath: string, content: string): Promis
       type === 'class_declaration' ||
       type === 'class_definition'   // Python
     ) {
-      const nameNode = node.childForFieldName?.('name')
-      const name: string | null = nameNode?.text ?? null
-      const startLine = (node.startPosition.row as number) + 1
-      const rawEnd = (node.endPosition.row as number) + 1
-      const endLine = Math.min(rawEnd, startLine + 79)
-      const chunkContent = lines.slice(startLine - 1, endLine).join('\n')
+      push(wrapper, 'class', node.childForFieldName?.('name')?.text ?? null)
+      pushClassMethods(node)
+      continue
+    }
 
-      chunks.push({
-        filePath, chunkType: 'class', name,
-        startLine, endLine,
-        content: chunkContent,
-        fileHash: hash,
-        signature: name ?? undefined,
-      })
+    // Module-level assignments: TREASURY_LABELS/ACCEPT_SCORE-style constants
+    // had no chunk at all (2026-08-27 eval misses), so findByName never fired.
+    if (langName === 'python' && type === 'expression_statement') {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const assign = (node.children as any[]).find((c: any) => c.type === 'assignment')
+      const left = assign?.childForFieldName?.('left')
+      if (left?.type === 'identifier') push(node, 'module', left.text)
+      continue
+    }
+    if (type === 'lexical_declaration' || type === 'variable_declaration') {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const declName = (node.children as any[])
+        .find((c: any) => c.type === 'variable_declarator')?.childForFieldName?.('name')?.text
+      if (declName) push(node, 'module', declName)
       continue
     }
 
@@ -207,26 +251,13 @@ export async function treeSitterChunk(filePath: string, content: string): Promis
         c.type === 'lexical_declaration'
       )
       if (inner) {
-        const innerType = inner.type
-        const isClass = innerType === 'class_declaration'
-        const chunkType = isClass ? 'class' : 'function'
+        const isClass = inner.type === 'class_declaration'
         const nameNode = inner.childForFieldName?.('name') ??
           // lexical_declaration: grab first variable_declarator name
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           (inner.children as any[]).find((c: any) => c.type === 'variable_declarator')?.childForFieldName?.('name')
-        const name: string | null = nameNode?.text ?? null
-        const startLine = (node.startPosition.row as number) + 1
-        const rawEnd = (node.endPosition.row as number) + 1
-        const endLine = Math.min(rawEnd, startLine + 79)
-        const chunkContent = lines.slice(startLine - 1, endLine).join('\n')
-
-        chunks.push({
-          filePath, chunkType, name,
-          startLine, endLine,
-          content: chunkContent,
-          fileHash: hash,
-          signature: name ?? undefined,
-        })
+        push(node, isClass ? 'class' : 'function', nameNode?.text ?? null)
+        if (isClass) pushClassMethods(inner)
       }
     }
   }

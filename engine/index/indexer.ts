@@ -6,6 +6,7 @@ import { createHash } from 'crypto'
 import { EmbedClient } from './embedClient.js'
 import { IndexStore } from './store.js'
 import { chunkFile, chunkFileAsync, extractRelationships } from './chunker.js'
+import { CHUNKER_VERSION } from '../retrieval/treeSitterChunker.js'
 import { hybridRank } from './hybridRank.js'
 import { buildRepoGraph, formatRepoMap } from './repoMapBuilder.js'
 import { lookupSymbol, formatDefinitionCard, extractIdentifiers } from './symbolLookup.js'
@@ -241,6 +242,7 @@ export class ProjectIndexer {
     this.store.setMeta('chunk_count', String(this.store.getChunkCount()))
     const head = this.gitHead()
     if (head) this.store.setMeta('indexed_head', head)
+    this.store.setMeta('chunker_version', CHUNKER_VERSION)
 
     onProgress?.(`Done: ${chunks} chunks indexed, ${skipped} files unchanged`)
     console.log(`[index] Indexed ${chunks} chunks from ${files.length - skipped} files (${skipped} skipped)`)
@@ -383,6 +385,18 @@ export class ProjectIndexer {
       candidates.add(rel.replace(/\//g, sep))
     }
 
+    // Chunker upgrade: unchanged content hashes would skip every indexed file,
+    // so a version mismatch forces a one-time re-chunk of all of them.
+    const force = new Set<string>()
+    const chunkerStale = this.store.getMeta('chunker_version') !== CHUNKER_VERSION
+    if (chunkerStale) {
+      for (const rel of this.store.getIndexedFiles()) {
+        const r = rel.replace(/\//g, sep)
+        candidates.add(r)
+        force.add(r)
+      }
+    }
+
     // Committed drift since the last refresh/build.
     const head = this.gitHead()
     let driftHandled: string | null = null
@@ -412,15 +426,16 @@ export class ProjectIndexer {
       try {
         const content = readFileSync(join(this.projectRoot, rel), 'utf-8')
         const hash = createHash('sha256').update(content).digest('hex').slice(0, 16)
-        if (this.store.getFileHash(rel) !== hash) await this.reindexFile(rel)
+        if (force.has(rel) || this.store.getFileHash(rel) !== hash) await this.reindexFile(rel)
       } catch (e) {
         // Deleted or unreadable — nothing fresh to serve for this path.
         console.log(`[index] Skipped refresh of ${rel}: ${e instanceof Error ? e.message.split('\n')[0] : e}`)
       }
     }
     // Only after the sweep completes — a process killed mid-sweep must not
-    // record the head and leave the un-swept remainder permanently stale.
+    // record the head/version and leave the un-swept remainder permanently stale.
     if (driftHandled) this.store.setMeta('indexed_head', driftHandled)
+    if (chunkerStale) this.store.setMeta('chunker_version', CHUNKER_VERSION)
   }
 
   /** Current commit hash, or null outside a git repo / before the first commit. */

@@ -86,6 +86,30 @@ describe('refreshFromGitStatus', () => {
     indexer.close()
   })
 
+  // A better chunker is useless to already-indexed files: their content hash
+  // is unchanged, so the hash-compare skips them and the old chunk set (missing
+  // wed_match-style methods) lives forever. A chunker_version bump must force
+  // a re-chunk of every indexed file exactly once.
+  it('re-chunks unchanged files when the chunker version is stale', async () => {
+    const { indexer } = await gitProject()
+    const store = (indexer as any).store as IndexStore
+    // Simulate an index built by an older chunker: version stale, symbol missing.
+    ;(store as any).db.prepare(`UPDATE meta SET value = '0' WHERE key = 'chunker_version'`).run()
+    ;(store as any).db.prepare(`UPDATE chunks SET name = NULL WHERE name = 'old_sym'`).run()
+    expect(store.findByName('old_sym').length).toBe(0)
+    await indexer.refreshFromGitStatus()
+    expect(store.findByName('old_sym').length).toBeGreaterThan(0)
+    expect(store.getMeta('chunker_version')).not.toBe('0')
+    indexer.close()
+  })
+
+  it('records the chunker version at full build', async () => {
+    const { indexer } = await gitProject()
+    const store = (indexer as any).store as IndexStore
+    expect(store.getMeta('chunker_version')).toBeTruthy()
+    indexer.close()
+  })
+
   it('non-git project resolves without throwing', async () => {
     const root = mkdtempSync(join(tmpdir(), 'ci-nogit-'))
     globalThis.fetch = (async () => new Response('down', { status: 500 })) as any

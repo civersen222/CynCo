@@ -124,6 +124,70 @@ def main():
   })
 })
 
+// ─── Coverage gaps found by the 2026-08-27 after-eval ─────────────────────────
+// wed_match (marriages.py:209, method past the class chunk's 80-line cap) and
+// TREASURY_LABELS (houses.py:12, module-level assignment) existed in NO chunk,
+// so findByName could never resolve them.
+
+describe('treeSitterChunker — class methods get their own named chunks', () => {
+  it('a Python method past the 80-line class cap is a named function chunk', async () => {
+    const filler = Array.from({ length: 90 }, (_, i) => `    x${i} = ${i}`).join('\n')
+    const code = `class House:\n${filler}\n\n    def wed_match(self, other):\n        return True\n`
+    const chunks = await treeSitterChunk('marriages.py', code)
+    expect(chunks).not.toBeNull()
+    const m = chunks!.find(c => c.name === 'wed_match')
+    expect(m).toBeDefined()
+    expect(m!.chunkType).toBe('function')
+    expect(m!.content).toContain('def wed_match')
+  })
+
+  it('a decorated Python method is still found by name', async () => {
+    const code = `class House:\n    @property\n    def treasury(self):\n        return self._gold\n`
+    const chunks = await treeSitterChunk('houses.py', code)
+    expect(chunks).not.toBeNull()
+    const m = chunks!.find(c => c.name === 'treasury')
+    expect(m).toBeDefined()
+    expect(m!.chunkType).toBe('function')
+  })
+
+  it('a TypeScript class method is a named function chunk', async () => {
+    const code = `export class Greeter {\n  greetLoud(): string {\n    return 'HI'\n  }\n}\n`
+    const chunks = await treeSitterChunk('greeter.ts', code)
+    expect(chunks).not.toBeNull()
+    const m = chunks!.find(c => c.name === 'greetLoud')
+    expect(m).toBeDefined()
+    expect(m!.chunkType).toBe('function')
+  })
+})
+
+describe('treeSitterChunker — module-level assignments', () => {
+  it('a Python module-level constant is a named chunk', async () => {
+    const code = `import os\n\nTREASURY_LABELS = frozenset({\n    "war",\n    "dowry",\n})\n\ndef main():\n    pass\n`
+    const chunks = await treeSitterChunk('houses.py', code)
+    expect(chunks).not.toBeNull()
+    const c = chunks!.find(x => x.name === 'TREASURY_LABELS')
+    expect(c).toBeDefined()
+    expect(c!.content).toContain('frozenset')
+  })
+
+  it('a bare TS top-level const is a named chunk', async () => {
+    const code = `const ACCEPT_SCORE = 0.75\n\nexport function decide() {\n  return ACCEPT_SCORE\n}\n`
+    const chunks = await treeSitterChunk('ai.ts', code)
+    expect(chunks).not.toBeNull()
+    const c = chunks!.find(x => x.name === 'ACCEPT_SCORE')
+    expect(c).toBeDefined()
+  })
+
+  it('a decorated top-level Python function is found by name', async () => {
+    const code = `import functools\n\n@functools.cache\ndef can_place_informant(state):\n    return True\n`
+    const chunks = await treeSitterChunk('broadsheet.py', code)
+    expect(chunks).not.toBeNull()
+    const c = chunks!.find(x => x.name === 'can_place_informant')
+    expect(c).toBeDefined()
+    expect(c!.chunkType).toBe('function')
+  })
+})
+
 // ─── Unsupported ──────────────────────────────────────────────────────────────
 
 describe('treeSitterChunker — unsupported', () => {
