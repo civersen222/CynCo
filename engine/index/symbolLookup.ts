@@ -99,28 +99,67 @@ function diverseReferences(refs: IndexResult[], defFiles: Set<string>, cap: numb
   return out
 }
 
+const isStructuralId = (t: string): boolean => t.includes('_') || humpRe.test(t)
+
 /**
- * Resolve the most specific identifier in `query` to its definition chunks and
- * referencing chunks. Two passes over the identifiers (longest-first): named
- * definitions beat assignment-style ones for ANY candidate; null when nothing
- * resolves — the caller falls through to semantic search.
+ * No candidate has a definition, but the query names 2+ structural identifiers
+ * (grep-alternation shape: `garrison_stub\|heir_picker_rows\|seed_42`). The
+ * file covering the MOST distinct identifiers is almost certainly the answer —
+ * the 2026-08-27 eval's gold test file contained all three while single-symbol
+ * lookup chased each in isolation. Prose queries never reach here: plain words
+ * are not structural, and <2 identifiers returns null (semantic fallback).
+ */
+function coverageLookup(store: IndexStore, candidates: string[]): SymbolLookupResult | null {
+  const ids = candidates.filter(isStructuralId)
+  if (ids.length < 2) return null
+  const covered = new Map<string, Set<string>>()
+  const firstChunk = new Map<string, IndexResult>()
+  for (const id of ids) {
+    for (const hit of store.keywordSearch(id, 50)) {
+      if (!covered.has(hit.filePath)) covered.set(hit.filePath, new Set())
+      covered.get(hit.filePath)!.add(id)
+      if (!firstChunk.has(hit.filePath)) firstChunk.set(hit.filePath, hit)
+    }
+  }
+  const ranked = [...covered.entries()].sort((a, b) => b[1].size - a[1].size)
+  if (ranked.length === 0 || ranked[0][1].size < 2) return null
+  return {
+    symbol: ids.join(' '),
+    definitions: [],
+    references: ranked.slice(0, 10).map(([file]) => firstChunk.get(file)!),
+  }
+}
+
+/**
+ * Resolve the identifiers in `query` to definition chunks and referencing
+ * chunks. EVERY candidate that resolves contributes its definitions (longest
+ * candidate first — all 3 CI-only misses of the 2026-08-27 after-eval were
+ * grep alternations where the second symbol's defining file never surfaced).
+ * Per candidate: named definitions, else assignment-style; capped at 2 defs
+ * each (rankDefs picks the ones matching the rest of the query — `__init__`
+ * alone would flood the card) and 6 total. References follow the primary
+ * (longest resolving) candidate. Nothing resolves ⇒ coverage fallback, then
+ * null — the caller falls through to semantic search.
  */
 export function lookupSymbol(store: IndexStore, query: string): SymbolLookupResult | null {
   const candidates = extractIdentifiers(query)
-  for (const named of [true, false]) {
-    for (const candidate of candidates) {
-      const defs = named ? store.findByName(candidate) : assignmentDefs(store, candidate)
-      if (defs.length === 0) continue
-      const defKeys = new Set(defs.map(d => `${d.filePath}:${d.startLine}`))
-      const references = diverseReferences(
-        store.keywordSearch(candidate, 50).filter(r => !defKeys.has(`${r.filePath}:${r.startLine}`)),
-        new Set(defs.map(d => d.filePath)),
-        10,
-      )
-      return { symbol: candidate, definitions: rankDefs(defs, query, candidate), references }
-    }
+  const resolved: { candidate: string; defs: IndexResult[] }[] = []
+  for (const candidate of candidates) {
+    const named = store.findByName(candidate)
+    const defs = named.length > 0 ? named : assignmentDefs(store, candidate)
+    if (defs.length > 0) resolved.push({ candidate, defs: rankDefs(defs, query, candidate).slice(0, 2) })
   }
-  return null
+  if (resolved.length === 0) return coverageLookup(store, candidates)
+
+  const definitions = resolved.flatMap(r => r.defs).slice(0, 6)
+  const defKeys = new Set(definitions.map(d => `${d.filePath}:${d.startLine}`))
+  const primary = resolved[0].candidate
+  const references = diverseReferences(
+    store.keywordSearch(primary, 50).filter(r => !defKeys.has(`${r.filePath}:${r.startLine}`)),
+    new Set(definitions.map(d => d.filePath)),
+    10,
+  )
+  return { symbol: primary, definitions, references }
 }
 
 /** The one-call answer: full definition bodies, then reference sites one line each. */

@@ -131,6 +131,57 @@ describe('lookupSymbol', () => {
   })
 })
 
+// The 3 remaining CI-only misses of the 2026-08-27 after-eval were ALL
+// multi-identifier alternation queries (grep `a\|b`): only the longest
+// identifier resolved, so the other symbol's defining file never surfaced.
+describe('lookupSymbol — multi-identifier queries', () => {
+  it('returns definitions for every resolving identifier, longest first', () => {
+    const s = store()
+    s.insertChunk({ filePath: 'gilded/ui/broadsheet.py', chunkType: 'function', name: 'power_row_title',
+      startLine: 553, endLine: 560, content: 'def power_row_title(ln): ...', fileHash: 'h' }, [])
+    s.insertChunk({ filePath: 'gilded/ui/registry.py', chunkType: 'function', name: '_accent_counts',
+      startLine: 10, endLine: 20, content: 'def _accent_counts(rows): ...', fileHash: 'h' }, [])
+    const r = lookupSymbol(s, 'power_row_title _accent_counts')!
+    expect(r.symbol).toBe('power_row_title')
+    const defFiles = r.definitions.map(d => d.filePath)
+    expect(defFiles).toContain('gilded/ui/broadsheet.py')
+    expect(defFiles).toContain('gilded/ui/registry.py')
+  })
+
+  it('an ambiguous name like __init__ contributes at most 2 defs, best-ranked first', () => {
+    const s = store()
+    s.insertChunk({ filePath: 'gilded/chassis.py', chunkType: 'class', name: 'GildedGame',
+      startLine: 1, endLine: 40, content: 'class GildedGame: ...', fileHash: 'h' }, [])
+    s.insertChunk({ filePath: 'gilded/chassis.py', chunkType: 'function', name: '__init__',
+      startLine: 5, endLine: 20, content: 'def __init__(self, seed): # GildedGame init', fileHash: 'h' }, [])
+    for (let i = 0; i < 4; i++) s.insertChunk({ filePath: `noise/${i}.py`, chunkType: 'function', name: '__init__',
+      startLine: 1, endLine: 3, content: 'def __init__(self): pass', fileHash: 'h' }, [])
+    const r = lookupSymbol(s, 'GildedGame __init__ seed')!
+    const initDefs = r.definitions.filter(d => d.name === '__init__')
+    expect(initDefs.length).toBeLessThanOrEqual(2)
+    expect(initDefs[0].filePath).toBe('gilded/chassis.py')
+  })
+
+  it('with no definitions anywhere, the file covering the most identifiers wins', () => {
+    // garrison_stub|heir_picker_rows|seed_42.*wars — the gold test file
+    // contains ALL the identifiers; every other file contains just one.
+    const s = store()
+    put(s, 'a', 'x = garrison_stub()', 'gilded/docket.py')
+    put(s, 'b', 'rows = heir_picker_rows(h)', 'gilded/ui/house_tab.py')
+    put(s, 'c', 'def test_wars():\n    g = garrison_stub()\n    heir_picker_rows(g)\n    seed_42(g)', 'gilded/tests/test_war_verbs_m6b.py')
+    const r = lookupSymbol(s, 'garrison_stub heir_picker_rows seed_42 wars')!
+    expect(r).not.toBeNull()
+    expect(r.definitions.length).toBe(0)
+    expect(r.references[0].filePath).toBe('gilded/tests/test_war_verbs_m6b.py')
+  })
+
+  it('coverage fallback needs 2+ structural identifiers — prose still returns null', () => {
+    const s = store()
+    put(s, 'a', 'the game architecture overall', 'gilded/docs.py')
+    expect(lookupSymbol(s, 'overall game architecture')).toBeNull()
+  })
+})
+
 describe('formatDefinitionCard', () => {
   it('emits the card shape from the spec', () => {
     const card = formatDefinitionCard({
