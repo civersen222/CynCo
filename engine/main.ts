@@ -573,8 +573,13 @@ async function handleCommand(command: TUICommand): Promise<void> {
       switch (cmd) {
         case '/quit':
         case '/exit':
+          // F131: a bare process.exit here left llama-server and the jlens
+          // sidecar alive — the C4 wave-3 engine sat "finished-but-undead" for
+          // 7.3 hours after its landed ledger row. cleanShutdown stops the
+          // provider process manager, sidecars and flushes governance, then
+          // exits itself.
           await wsServer.close()
-          process.exit(0)
+          await cleanShutdown('/quit')
           break
 
         case '/model':
