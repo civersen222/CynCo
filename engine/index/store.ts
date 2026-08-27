@@ -160,12 +160,20 @@ export class IndexStore {
     return map(ci)
   }
 
-  /** Keyword fallback search when sqlite-vec is not available. */
+  /**
+   * Keyword fallback search. Demoted (2026-08-27): identifier-like terms are
+   * ANDed and query-filler words are dropped entirely — the OR-over-everything
+   * version served a Spy class for "_gen_betrothal_offer function body"
+   * because "function" matched. "No results" beats a wrong answer.
+   */
   keywordSearch(query: string, topK = 5): IndexResult[] {
-    const terms = query.toLowerCase().split(/\s+/).filter(t => t.length > 2)
+    // require() rather than a top-level import: symbolLookup type-imports this
+    // module, and a runtime edge back would be a cycle.
+    const { extractIdentifiers } = require('./symbolLookup.js') as typeof import('./symbolLookup.js')
+    const terms = extractIdentifiers(query).map(t => t.toLowerCase())
     if (terms.length === 0) return []
 
-    const where = terms.map(() => `(LOWER(content) LIKE '%' || ? || '%' OR LOWER(name) LIKE '%' || ? || '%')`).join(' OR ')
+    const where = terms.map(() => `(LOWER(content) LIKE '%' || ? || '%' OR LOWER(name) LIKE '%' || ? || '%')`).join(' AND ')
     const params = terms.flatMap(t => [t, t])
 
     const rows = this.db.prepare(`
