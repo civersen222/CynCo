@@ -78,6 +78,13 @@ export function createMissionCollector(now = () => Date.now()) {
       commits: 0,
       maxCallsWithoutCommit: 0,
     },
+    // Real token counts from the server's own timings (session.tokenStats,
+    // cumulative — each frame supersedes the last, so keeping the newest IS
+    // the sum). null means the engine never reported: an older engine or a
+    // run that died before its first model turn. null, not zeros — economics
+    // must fall back to its labelled estimate, never mistake absence for a
+    // free mission.
+    tokenStats: null,
     // Running counters, deliberately siblings of toolStats rather than fields
     // in it: toolStats goes into the record as-is, and the ledger's rows should
     // carry the statistic, not the bookkeeping that produced it.
@@ -121,6 +128,17 @@ export function createMissionCollector(now = () => Date.now()) {
             heterarchy: m.heterarchy ?? null,
             snapshot: null,
           })
+          break
+        case 'session.tokenStats':
+          // Cumulative frame: overwrite, don't add. The engine sums; the
+          // collector keeps the latest sum it has seen.
+          this.tokenStats = {
+            prefillTokens: m.prefillTokens ?? 0,
+            cachedTokens: m.cachedTokens ?? 0,
+            decodeTokens: m.decodeTokens ?? 0,
+            measuredTurns: m.measuredTurns ?? 0,
+            unmeasuredTurns: m.unmeasuredTurns ?? 0,
+          }
           break
         case 'snapshot.taken': {
           const lastTurn = this.turns[this.turns.length - 1]
@@ -685,6 +703,8 @@ export function buildMissionRecord(collector, meta) {
     controlSignals: collector.controlSignals,
     toolTransport: collector.toolTransport,
     toolStats: collector.toolStats,
+    // Measured token totals (session.tokenStats) or null — see the collector.
+    tokenStats: collector.tokenStats ?? null,
     // P4.3/4(e): session-level regulator fidelity (not per-turn); null when the
     // engine emitted no session_fidelity event (no contract / older engine).
     regulatorFidelity: collector.regulatorFidelity ?? null,

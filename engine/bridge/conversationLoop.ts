@@ -21,6 +21,7 @@ import { setLoadedSkills, getSkillByName, getSkillIndex } from '../skills/store.
 import { formatSkillIndexBlock } from '../skills/prompt.js'
 import { getWorkflowForSkill } from '../skills/workflowSkill.js'
 import { ToolExecutor, setTaskImmutablePaths, type RequestApprovalFn } from '../tools/executor.js'
+import { emptyTokenTotals, addTurnCost } from './tokenTotals.js'
 import { getSealedDirs, setTaskSealedPaths } from '../tools/sealedPaths.js'
 import { ToolScorer } from '../tools/toolScorer.js'
 import { DifficultyClassifier } from '../vsm/difficultyClassifier.js'
@@ -310,6 +311,12 @@ export class ConversationLoop {
    */
   private lastMeasuredPromptTokens: number | null = null
   private lastMeasuredAtMessageCount = 0
+  /**
+   * Session-lifetime token totals (see bridge/tokenTotals.ts). Emitted
+   * cumulatively at every message_stop, so the driver's last-seen frame IS
+   * the session total no matter how the session ends.
+   */
+  private tokenTotals = emptyTokenTotals()
   /**
    * S5's once-per-user-message tool restriction, held rather than applied.
    *
@@ -2515,6 +2522,9 @@ export class ConversationLoop {
               console.log(`[loop] message_stop, deltas=${tokenCount}+${reasoningTokenCount}r, decode=${measuredDecode ?? 'unmeasured'}, ${tokPerSec} tok/s, stop=${stopReason}`)
               this.lastTokPerSec = tokPerSec
               this.lastModelCallMs = modelCallElapsedMs
+              // Supervision-economics ledger: sum what the server MEASURED.
+              addTurnCost(this.tokenTotals, turnCost)
+              this.emit({ type: 'session.tokenStats', ...this.tokenTotals })
               this.governance.setTokPerSec(tokPerSec, rateTokens)
               this.governance.setThinkingTokens(thinkingTokensDerived)
               this.flushUncertainty()

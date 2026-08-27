@@ -465,6 +465,28 @@ export type ProfileWrittenEvent = {
   path: string
 }
 
+/**
+ * Session-lifetime token totals, from the server's own timings — measured
+ * counts, never chars/4 estimates. Emitted cumulatively after every model
+ * turn so whoever is listening (the mission driver, chiefly) holds the final
+ * figure whenever the session ends, however it ends.
+ *
+ * `unmeasuredTurns` counts turns the server reported no cost for; those turns
+ * are absent from the totals. Absent, not zero — a consumer that needs "all
+ * turns" must check this field before claiming the totals are complete.
+ */
+export type SessionTokenStatsEvent = {
+  type: 'session.tokenStats'
+  /** Prompt tokens actually evaluated (llama.cpp timings.prompt_n), summed. */
+  prefillTokens: number
+  /** Prompt tokens served from KV cache (timings.cache_n), summed. */
+  cachedTokens: number
+  /** Tokens generated (timings.predicted_n), summed. */
+  decodeTokens: number
+  measuredTurns: number
+  unmeasuredTurns: number
+}
+
 export type EngineEvent =
   | SessionReadyEvent
   | SessionErrorEvent
@@ -482,6 +504,7 @@ export type EngineEvent =
   | MemoryWrittenEvent
   | WorkflowStatusEvent
   | GovernanceStatusEvent
+  | SessionTokenStatsEvent
   | GovernanceSessionFidelityEvent
   | TrajectoryTaskStartedEvent
   | GovernanceRecommendationEvent
