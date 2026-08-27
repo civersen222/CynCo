@@ -1,0 +1,199 @@
+MISSION C4 WAVE 3 — FINISH THE LIVING UI (long-horizon; work until the contract holds, then commit the marker)
+
+Repo: C:\Users\civer\civkings
+BASE: ad934c5  (wave 1 landed palette.py + registry SCREENS/GLYPHS/FONTS/
+DATA/VERBS + widgets font routing; wave 2 landed the adoption commit: fonts
+committed, type-scale tests adapted, root scratch probes deleted. All of
+that PASSES the sealed gate — do not rework it. C1+C2+C3 must STAY green.
+Wave 2 was cut short by a harness failure, not by anything you did wrong;
+the two fronts below are all that remain.)
+
+FIRST — CLEAN THE TREE
+The repo root has two untracked worktree directories left behind by an
+earlier verification pass: .wt_base/ and .wt_c3/. They are NOT your work
+and must not be committed.
+  git worktree list          # if either is registered, use:
+  git worktree remove --force .wt_base ; git worktree remove --force .wt_c3
+  # if not registered as worktrees, just delete the directories.
+Then confirm `git status` shows a clean tree (no untracked dirs) before any
+new work. Do NOT run git clean -fd blindly — remove exactly these two.
+
+WHAT REMAINS (the sealed gate currently fails exactly these)
+| id | assertion still failing |
+| G4.1a.tabs | broadsheet.TABS is still the 11 old tabs; must be exactly ["House","Powers","Atlas"] |
+| G4.1a.old_tabs | broadsheet.py:76 still registers Briefing/Gazette/Ledger/Letters/Docket/Policies/Enterprises/War in a TABS assignment |
+| G4.3 (s7, s11) | gilded.ui.probe does not exist; registry.ACCENTS does not exist |
+
+Everything else passes. Finish these two fronts and the committed
+self-check, and the campaign lands.
+
+FRONT 1 — DISSOLVE THE TABS (spec §2, verbatim)
+
+  **House · Powers · Atlas.** The 11 broadsheet tabs are dissolved:
+
+  | Old tab | Fate |
+  |---|---|
+  | Briefing | dies — agenda card becomes the House ambition banner; alerts become desk letters |
+  | Gazette | not a destination — the End Turn beat printing over the map, then archived (readable from the desk) |
+  | Ledger | House inner page (and the Income/Outlay/Net = 0 bug fixed on the way) |
+  | Letters | desk strip on the Atlas |
+  | Docket | dies — its decisions are the desk strip |
+  | Policies | House edicts, signed from the Court in Session — each slider move is a decision with a signature beat and family stances |
+  | Enterprises | governance (directors, dials, dividends) = House inner page; the physical mills = Atlas glyphs, click-through to the card |
+  | Powers | remains as the Powers chassis, reworked (§5) |
+  | War | dies — wars are drawn on the map; "Declare War" is a verb inside a rival's dossier |
+
+- broadsheet.TABS == ["House", "Powers", "Atlas"] exactly. NO assignment
+  line anywhere under gilded/ui may register a dissolved tab name in any
+  TABS variable.
+- The old tabs' CONTENT survives per the fate table above. Dissolving a tab
+  by deleting its information (letters unreadable, ledger gone, policies
+  unreachable) violates the Clarity Law — every datum keeps exactly one
+  home, reachable from its spine as an inner page or desk strip.
+- registry.DATA must keep tracking the homes you already declared; if a
+  datum moves while you re-home content, move its DATA entry with it.
+- The existing tab tests will break — rewrite them to the three-spine
+  world; python -m pytest gilded/tests -x -q must be green at the end.
+
+FRONT 2 — THE PROBE AND THE ACCENT LEDGER (the gate consumes exactly this)
+- gilded/ui/probe.py (NEW MODULE) with
+    render_screen(state, screen) -> pygame.Surface
+  a headless render of one full spine screen ("House"/"Powers"/"Atlas") for
+  the given app state, using the same draw code the game uses (not a stub
+  surface). The gate renders all three spines on seeds 7 and 11 after one
+  end_turn and requires: >= 8 distinct colours per frame (no blanks),
+  vermillion (#c23a22) <= 2% of pixels, and the three spine frames pairwise
+  DIFFERENT (byte-compare) — House, Powers and Atlas must actually render
+  their own content.
+- registry.ACCENTS(screen, state) -> dict with integer fields "vermillion"
+  (number of vermillion accent marks the named screen draws for this state;
+  law: <= 5) and "gold_nonplayer" (gold marks on anything that is not the
+  player; law: == 0). This must COUNT the real draw calls — have the
+  renderer report what it drew (e.g. a counter the draw pass fills), not a
+  hardcoded number. The gate cross-checks the claim against the rendered
+  pixels; a claimed 0 with vermillion pixels present on the frame is an
+  automatic FAIL. Accent law (spec §9): vermillion = consequence only;
+  gold = the player only.
+
+SELF-CHECK (committed, NOT a scratch probe — gilded/tests/test_c4_contract.py,
+run EXACTLY as: python -m pytest gilded/tests/test_c4_contract.py -q
+It must pass before the marker commit. Content:)
+
+  import os
+  os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+  import pygame
+  from gilded.ui.app import new_app_state
+  from gilded.ui import registry, broadsheet, palette
+  from gilded.ui.probe import render_screen
+
+  SPINES = ["House", "Powers", "Atlas"]
+  INKS = {"PAPER": "#f5f0e1", "FIELD": "#ece5d0", "CARD": "#fbf8ec",
+          "INK": "#1f2d26", "INK2": "#44513f", "DIM": "#84876f",
+          "VERMILLION": "#c23a22", "VERMILLION_DARK": "#8e2917",
+          "GOLD": "#a8842c", "SAGE": "#ccd6bd", "WHEAT": "#e3d7ae",
+          "SLATE": "#bccad2", "RIVER": "#6f93ad"}
+  GLYPH_KEYS = {"city", "regiment", "battle", "strike", "train", "ship", "informant"}
+  VERB_KEYS = {"set_dial", "set_ambition", "hold_seat", "informant_on_order",
+               "declare_war", "propose_marriage", "place_informant"}
+
+  def test_spines_and_tabs():
+      assert list(registry.SCREENS) == SPINES
+      assert list(broadsheet.TABS) == SPINES
+
+  def test_palette_pinned():
+      for name, hexval in INKS.items():
+          assert getattr(palette, name).lower() == hexval
+      dupes = [n for n in dir(palette) if not n.startswith("_") and n != "RIVER"
+               and isinstance(getattr(palette, n), str)
+               and getattr(palette, n).lower() == INKS["RIVER"]]
+      assert not dupes
+
+  def test_glyph_tiers_single():
+      assert GLYPH_KEYS <= set(registry.GLYPHS)
+      for k, v in registry.GLYPHS.items():
+          assert isinstance(v["tier"], str) and v["tier"] in {"continent", "region", "parish"}
+
+  def test_data_homed_and_verbs_annotated():
+      for k, v in registry.DATA.items():
+          assert v.split("/")[0] in SPINES, (k, v)
+      assert registry.DATA["ladder"].split("/")[0] == "Powers"
+      assert registry.DATA["ambition_banner"].split("/")[0] == "House"
+      assert registry.DATA["desk"].split("/")[0] == "Atlas"
+      assert VERB_KEYS <= set(registry.VERBS)
+      for k, v in registry.VERBS.items():
+          for f in ("what", "why_now", "serves"):
+              assert v[f].strip(), (k, f)
+
+  def test_accents_and_frames():
+      s = new_app_state(seed=7)
+      s.game.end_turn()
+      frames = {}
+      for screen in SPINES:
+          a = registry.ACCENTS(screen, s)
+          assert isinstance(a["vermillion"], int) and a["vermillion"] <= 5
+          assert a["gold_nonplayer"] == 0
+          surf = render_screen(s, screen)
+          raw = pygame.image.tostring(surf, "RGB")
+          frames[screen] = raw
+          colours = {raw[i:i + 3] for i in range(0, min(len(raw), 60000), 3)}
+          assert len(colours) >= 8, f"{screen} renders near-blank"
+      assert frames["House"] != frames["Powers"] != frames["Atlas"]
+      assert frames["House"] != frames["Atlas"]
+
+  def test_fonts_shipped_and_loaded():
+      pygame.font.init()
+      for role, needle in (("display", "BodoniModa"), ("body", "EBGaramond")):
+          path = registry.FONTS[role]
+          assert needle in os.path.basename(path)
+          pygame.font.Font(path if os.path.isabs(path) else
+                           os.path.join(os.path.dirname(__file__), "..", "..", path), 16)
+
+FOLDED-IN C3 RESIDUALS (still owed — committed tests, same file or
+gilded/tests/test_c4_residuals.py)
+- Order rows are not houses: the Powers rendering currently builds
+  _clean(f"House {ln.house}") so Order rows would read "House Combine".
+  Rendered Powers titles for the 4 Orders must NOT start with "House ".
+  Expose the title logic as a testable function (e.g. power_row_title(line))
+  and pin it with a test.
+- Powers layout must not overlap: no two row/dossier rects may intersect;
+  a committed test proves it on the fullest state you can construct.
+- Pin the C3 balance constants EXACTLY (a committed test must fail if any
+  value drifts): ambitions.py FAMILY_DISPOSITION — all 16 Order-family
+  entries as shipped (e.g. Organize -> ("bold_craven", 1.0), General Strike
+  -> ("cruel_compassionate", -1.0), Schism -> ("pious_secular", -1.0));
+  orders.py lever constants (_BANK_DEBT = 50.0, _BANK_SEAT_LOAN = 25.0,
+  _CHURCH_EYES = 0.25, _CHURCH_SEAT_RELIEF = 5.0, _GAZETTE_EYES = 0.25,
+  _GAZETTE_SEAT_PRESTIGE = 0.5, _COMBINE_STRIKE = 0.5,
+  _COMBINE_SEAT_PRESTIGE = 0.5); and _head_stats bonuses (base 7s, +3 to
+  Combine:command, Bank:industry, Church:intrigue, Gazette:science).
+
+RULES
+- Honest rendering only: probe.render_screen uses the game's real draw code;
+  ACCENTS counts what is actually drawn. The gate reads pixels and will
+  catch a lie.
+- NO downloads. The fonts are already committed. Any curl/wget/pip-install
+  attempt will be refused by the engine.
+- NO scratch probe files in the repo root. Self-checks live in gilded/tests/
+  and are committed.
+- Deterministic given seed. No debug hooks in game logic.
+- Do not modify the C1/C2/C3 model surfaces (ladder maths, beats, acts,
+  ambitions/wants derivation, orders anatomy/levers, intel) except where
+  re-homing their PRESENTATION requires it. The sealed gate re-runs all
+  three prior gates.
+- Ship pytest tests for every new module, in gilded/tests/, same style as
+  the existing suite. python -m pytest gilded/tests -x -q must stay green.
+- Use the CodeIndex tool to find symbols before crawling with Grep/Read —
+  it is faster and it is being measured.
+- Wire-check before finishing: grep every new symbol (probe, render_screen,
+  ACCENTS, power_row_title, the desk strip, the inner pages) and prove each
+  is imported AND called from the live game/UI, not just defined. Put the
+  grep proof in the final commit message.
+- Commit early and often. Do NOT declare the mission complete until
+  test_c4_contract.py passes and the full suite is green — wave 1 ended
+  with the contract file unwritten; that is a MISS, not a finish.
+
+DONE WHEN
+python -m pytest gilded/tests/test_c4_contract.py -q passes and the full
+suite stays green. Then make a final commit whose message contains exactly
+this marker (lowercase, exact string):
+  campaign c4 complete
