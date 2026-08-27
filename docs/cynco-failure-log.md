@@ -2874,3 +2874,17 @@ the ledger row.
 **General lesson.** "Is it still running?" has three answers, not two: working,
 hung, and finished-but-undead. The third looks exactly like the second from
 the outside, and only the ledger can tell them apart.
+
+**Fix shipped (2026-08-27, same day).** (1) Driver: after its ledger append,
+under `CYNCO_TEARDOWN_ENGINE=1` it sends `/quit` over the socket and waits up
+to 20s for the close (skipped when the socket is already gone — engine_gone is
+not undead). (2) Engine: the `/quit` handler now runs `cleanShutdown` instead
+of a bare `process.exit`, so llama-server and the jlens sidecar die with it —
+a bare exit would have manufactured orphans in the very fix for orphans.
+(3) dispatch-mission.sh sets `CYNCO_TEARDOWN_ENGINE=1` on the driver line and
+nowhere else: a driver run by hand against an engine it does not own must
+never inherit teardown. (4) The C5 watcher polls marker commit, ledger row,
+AND driver-process exit. First live exercise: the C5 wave-1 verdict (that
+wave was dispatched pre-fix, so its engine still needs the hand-kill; the
+/quit path gets tested against the idle engine booted to restore the
+dashboard afterwards).

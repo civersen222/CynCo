@@ -767,4 +767,33 @@ try {
   console.log(`[ledger] FAILED to write record: ${e?.message ?? e}`)
 }
 
+// F131: the C4 wave-3 engine wrote its landed row and then sat alive for 7.3
+// hours — children (llama-server, jlens) up, watcher blind, dashboard showing
+// a mission that had already been graded. The ledger row above IS the verdict;
+// nothing after it needs this engine. Opt-in (dispatch-mission.sh sets
+// CYNCO_TEARDOWN_ENGINE=1) because this driver is also pointed at engines it
+// does not own, and killing someone's live session over a shared socket is
+// worse than the undead engine was. The engine's /quit path runs cleanShutdown,
+// which stops llama-server and the sidecars — a bare exit would orphan them.
+// NOTE: the 9161 dashboard rides the engine process and goes down with it.
+if (process.env.CYNCO_TEARDOWN_ENGINE === '1' && wsClosed) {
+  console.log('[driver] F131 teardown: socket already closed (engine gone) — nothing to quit; if the process survived, kill the tree by hand')
+} else if (process.env.CYNCO_TEARDOWN_ENGINE === '1') {
+  await new Promise((done) => {
+    const t = setTimeout(() => {
+      console.log('[driver] F131 teardown: engine did not close its socket within 20s of /quit — still undead, kill the tree by hand')
+      done()
+    }, 20000)
+    ws.onclose = () => { wsClosed = true; clearTimeout(t); console.log('[driver] F131 teardown: engine socket closed — engine and children are down (dashboard 9161 included)'); done() }
+    try {
+      console.log('[driver] F131 teardown: sending /quit — engine exits via cleanShutdown, llama-server and sidecars go with it')
+      ws.send(JSON.stringify({ type: 'command', command: '/quit', args: '' }))
+    } catch (e) {
+      clearTimeout(t)
+      console.log(`[driver] F131 teardown: /quit send failed (${e?.message ?? e}) — kill the engine tree by hand`)
+      done()
+    }
+  })
+}
+
 process.exit(landed ? 0 : 1)

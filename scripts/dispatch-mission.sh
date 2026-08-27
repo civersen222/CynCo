@@ -202,7 +202,13 @@ else
 fi
 
 echo "[dispatch] driver log $DRIVER_LOG"
+# CYNCO_TEARDOWN_ENGINE (F131): this engine exists only for this mission, so
+# the driver sends /quit after its ledger row and the engine exits via
+# cleanShutdown, children included. Without it the C4 wave-3 engine sat
+# finished-but-undead for 7.3 hours. Set here and only here: the driver run by
+# hand against an engine it does not own must never inherit it.
 CYNCO_CHECK_TIMEOUT_MS="$CYNCO_CHECK_TIMEOUT_MS" \
+CYNCO_TEARDOWN_ENGINE=1 \
   bun scripts/cynco-mission-driver.mjs \
     "$BRIEF" "$MARKER" "$MISSION_CWD" "$TIMEOUT_S" ${CHECK_CMD:+"$CHECK_CMD"} \
   > "$DRIVER_LOG" 2>&1 &
