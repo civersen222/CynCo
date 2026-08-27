@@ -71,14 +71,26 @@ export async function bootstrapProvider(
       const modelsDir = path.join(cyncoDir, 'models')
       const adaptersDir = path.join(cyncoDir, 'adapters')
 
-      // 1. Resolve llama-server binary
+      // 1. Resolve llama-server binary. bin-brain (the locally patched build:
+      // activation tap + toolcall logprobs) outranks the stock download — the
+      // J-Space readout is dead without it, and it sat unselected for five
+      // weeks while every launch silently served the unpatched binary.
       const { resolveBinary, downloadBinary } = await import('./llama/binaryManager.js')
-      let binaryPath = resolveBinary(config.llamaServer, binDir)
+      const brainBinDir = path.join(cyncoDir, 'bin-brain')
+      let binaryPath = resolveBinary(config.llamaServer, binDir, brainBinDir)
       if (!binaryPath) {
         console.log('[llama-cpp] llama-server not found — downloading...')
         binaryPath = await downloadBinary(binDir, (msg) => console.log(msg))
       }
       console.log(`[llama-cpp] Binary: ${binaryPath}`)
+      if (binaryPath.startsWith(brainBinDir) && !process.env.LLAMA_ACTIVATIONS_LAYERS) {
+        // The tap layers ship with the brain build's default readout config
+        // (jlens artifacts are exported for exactly these five layers). The
+        // patched server without this env serves /props but no activations —
+        // the "tap not configured" tier the dashboard warns about.
+        process.env.LLAMA_ACTIVATIONS_LAYERS = '24,32,40,48,56'
+        console.log('[llama-cpp] brain build selected — LLAMA_ACTIVATIONS_LAYERS defaulted to 24,32,40,48,56')
+      }
 
       // 2. Resolve GGUF model
       const { resolveModel } = await import('./llama/modelResolver.js')

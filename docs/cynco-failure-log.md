@@ -2782,3 +2782,51 @@ what is already committed — must survive compaction verbatim, not descriptivel
 When a long-horizon agent drifts off-goal, check what its context actually
 contained after compaction before blaming the model: the gate measures the
 model+engine system, and the engine is part of the suspect pool.
+
+## F130 — the supervisor's "type-check" spawned a second engine and shot the mission's inference server
+
+**Where.** CivKings redesign C4 wave 2 (ledger `c4-wave2-1787788357499`,
+2026-08-26). Exit `engine_error` at 1,465s of a 12h budget — the model was
+mid-work on the TABS/probe fronts (stash + failing-test triage visible in the
+driver log right up to the error) when `callModel` died on llama-server
+HTTP 503 "Loading model".
+
+**How.** While the mission ran, the supervising session tried to smoke-test the
+new `jlensSidecar` wiring with `bun -e "await import('./main.ts...')"`. That
+does not type-check `main.ts` — it EXECUTES it. `main.ts` has top-level side
+effects: a full engine boot, whose zombie-server policy (feedback_zombie_servers)
+killed the "stale" llama-server it found on port 8081 — the mission's. The
+mission engine respawned its server, but the model takes ~3.2 minutes to load
+and `callModel`'s retry ladder is 2+4+8+16s ≈ 30s. Four 503s later the loop
+errored, the engine closed the turn, and the driver correctly filed
+`engine_error`.
+
+**The false lead this created.** The verify block's advisory — "the harness
+killed this run after a commit landed" — was read as evidence that the driver
+treats any post-baseline commit as mission completion and kills the run. It
+does not. The wait loop demonstrably continued after `COMMIT LANDED` (dozens
+of tool calls between driver-log lines 37 and 170); `landed` only labels the
+outcome. `missionCommitted()`'s semantics are intentional, documented, and
+tested (the UI Wave 6d misreporting fix). No driver change was made. The
+advisory's phrasing ("the harness killed") means "the harness DIED", and it
+cost a session's worth of analysis planning a fix for a defect that does not
+exist.
+
+**Why it cost something.** One mission budget voided; wave 2's gate MISS is
+uninterpretable as a model measure (24 minutes into 12 hours). Plus the
+supervisor time spent designing the phantom driver fix.
+
+**The fix.**
+1. Rule: NEVER import `engine/main.ts` (or any entrypoint with boot side
+   effects) as a load check. Verification path for engine changes is
+   `bun test` + wire-check greps — and any live-boot test waits until no
+   mission is running.
+2. Wave-budget ruling (F129 precedent): the void run does not consume a wave.
+   The adoption commit ad934c5 landed before the kill and is kept as the new
+   BASE; the remaining fronts re-dispatch as the wave-2 re-run.
+
+**General lesson.** The supervisor is part of the harness. A harness-class
+failure can originate in the supervising session's own shell, and the ledger
+will file it under `engine_error` with nothing pointing back at the true
+cause — correlate mission engine logs with supervisor actions before charging
+the model or the engine.

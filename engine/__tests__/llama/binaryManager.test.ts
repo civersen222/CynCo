@@ -40,6 +40,35 @@ describe('resolveBinary', () => {
     expect(result).toBeNull()
   })
 
+  it('prefers the brain build over the stock binary when both exist', () => {
+    const binDir = path.join(tmpDir, 'bin')
+    const brainDir = path.join(tmpDir, 'bin-brain')
+    fs.mkdirSync(binDir)
+    fs.mkdirSync(brainDir)
+    fs.writeFileSync(path.join(binDir, LLAMA_SERVER_BINARY), 'stock')
+    fs.writeFileSync(path.join(brainDir, LLAMA_SERVER_BINARY), 'patched')
+    expect(resolveBinary(undefined, binDir, brainDir))
+      .toBe(path.join(brainDir, LLAMA_SERVER_BINARY))
+  })
+
+  it('falls back to the stock binary when the brain dir has no binary', () => {
+    const binDir = path.join(tmpDir, 'bin')
+    const brainDir = path.join(tmpDir, 'bin-brain')
+    fs.mkdirSync(binDir)
+    fs.writeFileSync(path.join(binDir, LLAMA_SERVER_BINARY), 'stock')
+    expect(resolveBinary(undefined, binDir, brainDir))
+      .toBe(path.join(binDir, LLAMA_SERVER_BINARY))
+  })
+
+  it('explicit env path outranks the brain build', () => {
+    const brainDir = path.join(tmpDir, 'bin-brain')
+    fs.mkdirSync(brainDir)
+    fs.writeFileSync(path.join(brainDir, LLAMA_SERVER_BINARY), 'patched')
+    const envBin = path.join(tmpDir, LLAMA_SERVER_BINARY)
+    fs.writeFileSync(envBin, 'explicit')
+    expect(resolveBinary(envBin, tmpDir, brainDir)).toBe(envBin)
+  })
+
   it('LLAMA_SERVER_BINARY is llama-server.exe on Windows', () => {
     if (process.platform === 'win32') {
       expect(LLAMA_SERVER_BINARY).toBe('llama-server.exe')

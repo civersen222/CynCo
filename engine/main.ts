@@ -45,6 +45,7 @@ import { loadOrCreateTokens, TOKEN_FILENAME } from './security/localToken.js'
 import { DashboardServer } from './dashboard/server.js'
 import { ActivationsConsumer } from './brain/activationsConsumer.js'
 import { JlensClient } from './brain/jlensClient.js'
+import { startJlensSidecar, type JlensSidecarHandle } from './brain/jlensSidecar.js'
 import { cyncoHome } from './paths.js'
 
 // ─── MCP Discovery (standalone — standalone implementation) ──────
@@ -376,6 +377,7 @@ if ((globalThis as any).__llamaProcessManager) {
 // Declared before the dashboard server so its setBrainLayer dep can late-bind
 // to the consumer created below (Brain Tier 3).
 let activationsConsumer: ActivationsConsumer | null = null
+let jlensSidecar: JlensSidecarHandle | null = null
 try {
   dashboardServer = new DashboardServer({
     // `wsServer.port`, not `port`. `port` is the raw value parsed from
@@ -446,6 +448,10 @@ try {
 // Only wired when provider is llama-cpp (Ollama has no activation tap).
 // (declared above the dashboard server for the setBrainLayer late-binding)
 if (config.provider === 'llama-cpp' && dashboardServer) {
+  // The lens half of the J-Space viewer. Managed here so the workspace works
+  // without the four-step README ritual nobody performed; the consumer below
+  // re-probes, so the tier upgrades on its own once the artifacts load.
+  jlensSidecar = startJlensSidecar({ log: console.log })
   activationsConsumer = new ActivationsConsumer({
     activationsUrl: `${providerUrl}/activations`,
     jlens: new JlensClient(),
@@ -492,6 +498,7 @@ async function cleanShutdown(signal: string) {
   // Export the dataset explicitly with `runTraining.ts --stage dataset`.
   AuditLogger.writeSessionOutcome(signal)
   activationsConsumer?.stop()
+  jlensSidecar?.stop()
   if (config.provider === 'llama-cpp' && provider && 'processManager' in provider) {
     const pm = (provider as any).processManager
     if (pm?.stop) await pm.stop()

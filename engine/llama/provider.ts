@@ -332,6 +332,15 @@ export class LlamaCppProvider implements Provider {
       body.top_logprobs = 8
     }
 
+    if (stream) {
+      // Without this llama-server sends NO usage chunk at all, every turn's
+      // TurnCost stays null, and the supervision-economics ledger records the
+      // whole mission as unmeasured (verified against b9529: the final chunk
+      // then carries usage AND the timings block — prompt_n/predicted_n/
+      // cache_n — which parseTurnCost maps to source 'server-timings').
+      body.stream_options = { include_usage: true }
+    }
+
     return body
   }
 }
