@@ -66,11 +66,11 @@ export async function regexFallback(query: string, cwd: string): Promise<string>
 
 export const codeIndexTool: ToolImpl = {
   name: 'CodeIndex',
-  description: 'Search the codebase — tries semantic vector search first, falls back to regex pattern matching. Returns relevant functions, classes, and code blocks. Use this BEFORE Read to find the right files.',
+  description: 'Search the codebase. Give an exact identifier (function/class name) to get its DEFINITION with full body plus ranked references in one call — better than Grep for symbols. Or describe behaviour in words for semantic search. Falls back to regex. Use this BEFORE Read/Grep to find the right files.',
   inputSchema: {
     type: 'object',
     properties: {
-      query: { type: 'string', description: 'What to search for — natural language ("combat system") or exact patterns ("def resolve_combat")' },
+      query: { type: 'string', description: 'An exact symbol name ("_bank_debt_lever", "power_row_title") or a natural-language description ("where wars are declared")' },
       top_k: { type: 'number', description: 'Number of results to return (default: 5, max: 20)' },
     },
     required: ['query'],
