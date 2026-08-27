@@ -114,16 +114,16 @@ export const codeIndexTool: ToolImpl = {
 
     if (indexer) {
       try {
-        const results = await indexer.query({ query, topK })
-        if (results.length > 0) {
-          return { output: indexer.formatResults(results), isError: false }
+        const output = await indexer.searchFormatted({ query, topK })
+        if (output) {
+          return { output, isError: false }
         }
       } catch (e) {
-        console.log(`[CodeIndex] Vector query failed for "${query.slice(0, 40)}": ${e}`)
+        console.log(`[CodeIndex] Query failed for "${query.slice(0, 40)}": ${e}`)
       }
     }
 
-    // Vector search returned nothing — fall back to regex
+    // Symbol + semantic legs returned nothing — fall back to regex
     console.log(`[CodeIndex] Vector search empty for "${query.slice(0, 40)}" — falling back to regex`)
     const regexResults = await regexFallback(query, cwd)
     if (regexResults) {

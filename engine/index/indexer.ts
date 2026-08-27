@@ -8,7 +8,27 @@ import { IndexStore } from './store.js'
 import { chunkFile, chunkFileAsync, extractRelationships } from './chunker.js'
 import { hybridRank } from './hybridRank.js'
 import { buildRepoGraph, formatRepoMap } from './repoMapBuilder.js'
+import { lookupSymbol, formatDefinitionCard, extractIdentifiers } from './symbolLookup.js'
 import type { IndexResult, IndexQuery } from './types.js'
+
+/**
+ * Confidence floor for semantic results. Placeholder pending calibration —
+ * the eval score dump (benchmark/codeindex-eval/) recalibrates this with the
+ * value separating gold hits from misses, cited here when it lands.
+ * Applied to the TOP result's native score: vector similarity when the
+ * semantic leg answered; the 0.5 keyword marker score is treated as always
+ * below the floor (a demoted-fallback answer is by construction unverified).
+ */
+export const SCORE_FLOOR = 0.35
+export const LOW_CONFIDENCE_PREFIX = '[low confidence — verify with Read]\n'
+
+/** Prefix `formatted` when the results do not clear the confidence floor. */
+export function annotateByScore(results: IndexResult[], formatted: string): string {
+  if (!formatted) return formatted
+  const top = results[0]?.score ?? 0
+  const keywordOnly = results.length > 0 && results.every(r => r.score === 0.5)
+  return top < SCORE_FLOOR || keywordOnly ? LOW_CONFIDENCE_PREFIX + formatted : formatted
+}
 
 /**
  * Cap a repo-map block to ~maxTokens (≈4 chars/token) so the default-on map
@@ -252,6 +272,29 @@ export class ProjectIndexer {
     if (keywordResults.length === 0) return vectorResults.slice(0, topK)
 
     return hybridRank(vectorResults, keywordResults, q.query, topK)
+  }
+
+  /**
+   * Full retrieval pipeline: symbol lookup → semantic hybrid → ''. An empty
+   * string tells codeIndex.ts to run its regex fallback (existing behavior).
+   *
+   * Symbol hit → definition card (full body + references), the one-call
+   * answer Grep cannot give. When the card is a single weak hit and the query
+   * is wordy, semantic results are appended (common-word collision guard).
+   */
+  async searchFormatted(q: IndexQuery): Promise<string> {
+    const sym = lookupSymbol(this.store, q.query)
+    if (sym) {
+      let card = formatDefinitionCard(sym)
+      const nonIdTerms = q.query.split(/\s+/).filter(Boolean).length - extractIdentifiers(q.query).length
+      if (sym.references.length < 2 && nonIdTerms >= 3) {
+        const extra = await this.query(q)
+        if (extra.length > 0) card += '\n\n=== SEMANTIC RESULTS ===\n' + this.formatResults(extra)
+      }
+      return card
+    }
+    const results = await this.query(q)
+    return annotateByScore(results, this.formatResults(results))
   }
 
   /**
