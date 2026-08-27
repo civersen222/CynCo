@@ -380,7 +380,10 @@ export class ProjectIndexer {
         const content = readFileSync(join(this.projectRoot, rel), 'utf-8')
         const hash = createHash('sha256').update(content).digest('hex').slice(0, 16)
         if (this.store.getFileHash(rel) !== hash) await this.reindexFile(rel)
-      } catch { /* deleted or unreadable — nothing fresh to serve */ }
+      } catch (e) {
+        // Deleted or unreadable — nothing fresh to serve for this path.
+        console.log(`[index] Skipped refresh of ${rel}: ${e instanceof Error ? e.message.split('\n')[0] : e}`)
+      }
     }
   }
 

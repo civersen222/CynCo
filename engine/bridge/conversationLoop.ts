@@ -4283,7 +4283,9 @@ export class ConversationLoop {
           const indexer = new ProjectIndexer(this.executor['cwd'])
           await indexer.reindexFile(path.relative(this.executor['cwd'], path.resolve(this.executor['cwd'], p)))
           indexer.close()
-        } catch { /* index not available — non-fatal */ }
+        } catch (e) {
+          console.log(`[index] Re-index after ApplyPatch skipped for ${p} (non-fatal): ${e}`)
+        }
       }
     }
 

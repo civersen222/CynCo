@@ -115,7 +115,11 @@ export const codeIndexTool: ToolImpl = {
     if (indexer) {
       // Freshness: reindex anything git says changed, so a file created by
       // Bash or a patch ten seconds ago is answerable now.
-      try { await indexer.refreshFromGitStatus() } catch { /* best-effort */ }
+      try {
+        await indexer.refreshFromGitStatus()
+      } catch (e) {
+        console.log(`[CodeIndex] Freshness refresh failed (non-fatal): ${e}`)
+      }
       try {
         const output = await indexer.searchFormatted({ query, topK })
         if (output) {
