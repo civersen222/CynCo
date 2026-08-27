@@ -385,6 +385,7 @@ export class ProjectIndexer {
 
     // Committed drift since the last refresh/build.
     const head = this.gitHead()
+    let driftHandled: string | null = null
     if (head && head !== this.store.getMeta('indexed_head')) {
       const last = this.store.getMeta('indexed_head')
       let drifted: string[] | null = null
@@ -403,7 +404,7 @@ export class ProjectIndexer {
       for (const rel of drifted ?? this.store.getIndexedFiles()) {
         candidates.add(rel.replace(/\//g, sep))
       }
-      this.store.setMeta('indexed_head', head)
+      driftHandled = head
     }
 
     for (const rel of candidates) {
@@ -417,6 +418,9 @@ export class ProjectIndexer {
         console.log(`[index] Skipped refresh of ${rel}: ${e instanceof Error ? e.message.split('\n')[0] : e}`)
       }
     }
+    // Only after the sweep completes — a process killed mid-sweep must not
+    // record the head and leave the un-swept remainder permanently stale.
+    if (driftHandled) this.store.setMeta('indexed_head', driftHandled)
   }
 
   /** Current commit hash, or null outside a git repo / before the first commit. */

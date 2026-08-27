@@ -27,9 +27,10 @@ function filesFromFormatted(out: string, topN: number): { files: string[]; score
     const m = lineRe.exec(line)
     lineRe.lastIndex = 0
     if (!m) continue
-    if (seen.has(m[1])) continue
-    seen.add(m[1])
-    files.push(m[1])
+    const canonical = m[1].replace(/\\/g, '/')
+    if (seen.has(canonical)) continue
+    seen.add(canonical)
+    files.push(canonical)
     const s = scoreRe.exec(line)
     scores.push(line.startsWith('=== DEFINITION') ? 1.0 : s ? parseFloat(s[1]) : null)
     if (files.length >= topN) break
@@ -56,6 +57,10 @@ async function main() {
     }
     const anyIndexer = indexer as any
     if (typeof anyIndexer.searchFormatted === 'function') {
+      // Match the real tool path (codeIndex.ts): freshness refresh, then search.
+      if (typeof anyIndexer.refreshFromGitStatus === 'function') {
+        try { await anyIndexer.refreshFromGitStatus() } catch (e) { console.error(`refresh failed: ${e}`) }
+      }
       const out: string = await anyIndexer.searchFormatted({ query, topK })
       console.log(JSON.stringify(filesFromFormatted(out ?? '', topK)))
     } else {
