@@ -1,0 +1,116 @@
+MISSION C5 WAVE 2 — THE HEAD MUST STAND ALONE, AND THE BANK MUST SPEAK
+(short adapt wave; fix exactly two things, then commit the marker)
+
+Repo: C:\Users\civer\civkings
+BASE: 35050f9  (C5 wave 1: the tiered world LANDED and its whole new surface
+is GREEN — 194-201 provinces across seeds, 24 gentry, 56-58 gentry
+share/board/marriage beats per seed over 60 turns, gentry falls with their
+rise/fall beats in all three seeds, end_turn median 11.7ms against the
+30.6ms cap. Do NOT rework any of that. The wave still MISSED, on exactly
+the two defects below.)
+
+DEFECT 1 — THE COMMITTED HEAD DOES NOT STAND ALONE
+Your predecessor's run was closed by the 6-hour wall clock mid-commit-cycle.
+The committed head imports a symbol whose definition was never committed:
+
+  gilded/chassis.py:15   from gilded.world import GENTRY_SURNAMES, generate_atlas
+  gilded/world.py        GENTRY_SURNAMES exists ONLY as an uncommitted
+                         working-tree edit (a 40-surname list above class Atlas)
+
+A clean checkout of 35050f9 dies at boot:
+  ImportError: cannot import name 'GENTRY_SURNAMES' from 'gilded.world'
+
+The definition is sitting in your working tree right now, exactly as your
+predecessor wrote it. FIRST ACTION: commit gilded/world.py as-is (message
+should say it completes 35050f9). Then prove the head stands alone:
+`git status` clean, then `python -m pytest gilded/tests/test_c5_contract.py -q`
+passes from the committed tree. Do this before anything else — every later
+commit inherits the proof.
+
+DEFECT 2 — THE SEALED GATE'S ONLY FAIL (verbatim, from the re-run at 35050f9
+plus the working-tree edit; everything else in the C1-C5 chain is green):
+
+  G3.4a.deflection: FAIL seed 3: no deflection beat with face='Maren Bank',
+  'Receivership' and the commit clock ('of 10') in text
+
+What the C3 contract (spec §8.4, Clarity Law) requires, unchanged since the
+C3 campaign: when the player's ambition collides with a freshly committed
+Order goal, the ambition is THWARTED and a beat of kind "deflection" is
+logged, faced by the Order's current head, whose text names the Order's
+committed family and the commit clock ("of 10"). State change + its beat,
+always. At 35050f9 the thwart still resolves (G3.4a.thwarted PASSES at
+seed 3) but the beat with that face/text never appears — the world pushes
+back silently, which is exactly what the Clarity Law forbids.
+
+Known context for the diagnosis: wave 1 scaled the atlas to a 144x144 grid
+(~200 provinces) and moved gentry onto a dedicated rng stream (seed ^ 0x5C5)
+precisely so the pre-C5 sim would stay bit-identical. The thwart fires; the
+beat does not. Find where the deflection beat is emitted (or suppressed,
+or emitted with a different face/text) at the new scale and make the beat
+match the contract again. Do not special-case seed 3 — the contract is
+deterministic-per-seed across the whole scan (seeds 3-18, first fresh Bank
+Receivership of a non-player house within 16 turns, then 10 turns after
+set_ambition(player, "Buyout", target)).
+
+SELF-CHECK (committed, NOT a scratch probe —
+gilded/tests/test_c5_wave2_deflection.py, run EXACTLY as:
+python -m pytest gilded/tests/test_c5_wave2_deflection.py -q
+It must pass before the marker commit. Content:)
+
+  import os
+  os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+  from gilded.ui.app import new_app_state
+
+  def _head_name(order):
+      h = getattr(order, "head", None)
+      return getattr(h, "name", h)
+
+  def test_bank_receivership_collision_logs_deflection_beat():
+      for seed in range(3, 19):
+          s = new_app_state(seed=seed)
+          g = s.game
+          player = s.house
+          for _ in range(16):
+              g.end_turn()
+              goal = getattr(g.orders["Bank"], "goal", None)
+              if (goal is not None
+                      and getattr(goal, "family", None) == "Receivership"
+                      and getattr(goal, "target", None) in g.houses
+                      and goal.target != player
+                      and getattr(goal, "opened_turn", None) == g.resolved_turn):
+                  target = goal.target
+                  bank_head = _head_name(g.orders["Bank"])
+                  g.set_ambition(player, "Buyout", target)
+                  for _ in range(10):
+                      g.end_turn()
+                  st = g.ambitions.status(player)
+                  assert st.get("fulfilled") is False, f"seed {seed}: {st!r}"
+                  defl = [bt for bt in g.beats.log
+                          if getattr(bt, "kind", None) == "deflection"
+                          and getattr(bt, "face", None) == bank_head
+                          and "Receivership" in (getattr(bt, "text", "") or "")
+                          and "of 10" in (getattr(bt, "text", "") or "")]
+                  assert defl, (f"seed {seed}: thwarted but no deflection beat "
+                                f"faced by {bank_head!r} naming Receivership + 'of 10'")
+                  return
+      raise AssertionError("no seed in 3-18 opened a fresh Bank Receivership "
+                          "of a non-player house within 16 turns")
+
+RULES
+- NO downloads. NO scratch probe files in the repo root — committed tests only.
+- Do NOT rework the green C5 surfaces (atlas scale, gentry sim, war drawer)
+  or any C1-C4 surface except where the deflection fix itself requires it.
+- Deterministic given seed. No debug hooks in game logic.
+- The full committed suite must stay green: python -m pytest gilded/tests -x -q
+- Use the CodeIndex tool FIRST for every symbol lookup (definitions and
+  references in one call) before any Grep/Read crawl.
+- Wire-check before finishing: grep the deflection-beat emission path and
+  prove it is called from the live end_turn resolution, not just defined.
+  Put the grep proof in the final commit message.
+- Commit early and often — Defect 1's commit is your first, within minutes.
+
+DONE WHEN
+Defect 1 committed (head stands alone), the self-check above passes,
+python -m pytest gilded/tests -x -q is green, and the final commit message
+contains exactly this marker (lowercase, exact string):
+  campaign c5 complete
