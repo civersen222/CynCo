@@ -175,6 +175,28 @@ describe('lookupSymbol — multi-identifier queries', () => {
     expect(r.references[0].filePath).toBe('gilded/tests/test_war_verbs_m6b.py')
   })
 
+  // In the live replay, `wars` (from grep `seed_42.*wars`) matched an
+  // assignment line in docket.py and hijacked the whole query away from the
+  // coverage fallback — the gold file covering 2 of 3 identifiers never ranked.
+  it('a plain lowercase word with an assignment does not hijack the query', () => {
+    const s = store()
+    put(s, 'd', 'wars = totals()', 'gilded/docket.py')
+    put(s, 'c', 'def test_garrison_stub_x():\n    seed_42_check()', 'gilded/tests/test_war_verbs_m6b.py')
+    put(s, 'h', 'rows = heir_picker_rows(h)', 'gilded/ui/house_tab.py')
+    const r = lookupSymbol(s, 'garrison_stub heir_picker_rows seed_42 wars')!
+    expect(r).not.toBeNull()
+    expect(r.definitions.length).toBe(0)
+    expect(r.references[0].filePath).toBe('gilded/tests/test_war_verbs_m6b.py')
+  })
+
+  it('an ALL-CAPS name without underscore still resolves via assignment', () => {
+    const s = store()
+    put(s, null as any, 'BUDGET = 500', 'gilded/houses.py')
+    const r = lookupSymbol(s, 'BUDGET')!
+    expect(r).not.toBeNull()
+    expect(r.definitions[0].filePath).toBe('gilded/houses.py')
+  })
+
   it('coverage fallback needs 2+ structural identifiers — prose still returns null', () => {
     const s = store()
     put(s, 'a', 'the game architecture overall', 'gilded/docs.py')

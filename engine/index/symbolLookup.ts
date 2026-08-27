@@ -102,6 +102,14 @@ function diverseReferences(refs: IndexResult[], defFiles: Set<string>, cap: numb
 const isStructuralId = (t: string): boolean => t.includes('_') || humpRe.test(t)
 
 /**
+ * Only constant-looking names may resolve via assignment: plain lowercase
+ * words match ordinary local assignments everywhere (`wars = ...` hijacked a
+ * whole replay from the coverage fallback), while the module constants the
+ * assignment leg exists for are structural or ALL_CAPS.
+ */
+const isConstLike = (t: string): boolean => isStructuralId(t) || (t.length >= 3 && t === t.toUpperCase())
+
+/**
  * No candidate has a definition, but the query names 2+ structural identifiers
  * (grep-alternation shape: `garrison_stub\|heir_picker_rows\|seed_42`). The
  * file covering the MOST distinct identifiers is almost certainly the answer —
@@ -146,7 +154,7 @@ export function lookupSymbol(store: IndexStore, query: string): SymbolLookupResu
   const resolved: { candidate: string; defs: IndexResult[] }[] = []
   for (const candidate of candidates) {
     const named = store.findByName(candidate)
-    const defs = named.length > 0 ? named : assignmentDefs(store, candidate)
+    const defs = named.length > 0 ? named : isConstLike(candidate) ? assignmentDefs(store, candidate) : []
     if (defs.length > 0) resolved.push({ candidate, defs: rankDefs(defs, query, candidate).slice(0, 2) })
   }
   if (resolved.length === 0) return coverageLookup(store, candidates)
