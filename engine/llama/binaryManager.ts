@@ -16,12 +16,18 @@ export type VersionInfo = {
  *
  * Resolution order:
  * 1. Explicit envPath (LOCALCODE_LLAMA_SERVER) — must exist
- * 2. binDir/llama-server[.exe] (e.g., ~/.cynco/bin/)
- * 3. null — caller should trigger download or fall back
+ * 2. brainDir/llama-server[.exe] (e.g., ~/.cynco/bin-brain/) — the locally
+ *    patched build (activation tap + toolcall logprobs). It sat unused for
+ *    five weeks because nothing ever selected it: the J-Space readout needs
+ *    the tap, and the stock binary silently downgraded the brain to
+ *    entropy-only on every default launch.
+ * 3. binDir/llama-server[.exe] (e.g., ~/.cynco/bin/)
+ * 4. null — caller should trigger download or fall back
  */
 export function resolveBinary(
   envPath: string | undefined,
   binDir: string,
+  brainDir?: string,
 ): string | null {
   // 1. Explicit path
   if (envPath) {
@@ -31,13 +37,21 @@ export function resolveBinary(
     return envPath
   }
 
-  // 2. ~/.cynco/bin/
+  // 2. ~/.cynco/bin-brain/ — patched build wins over stock
+  if (brainDir) {
+    const brainBin = path.join(brainDir, LLAMA_SERVER_BINARY)
+    if (fs.existsSync(brainBin)) {
+      return brainBin
+    }
+  }
+
+  // 3. ~/.cynco/bin/
   const cyncoBin = path.join(binDir, LLAMA_SERVER_BINARY)
   if (fs.existsSync(cyncoBin)) {
     return cyncoBin
   }
 
-  // 3. Not found
+  // 4. Not found
   return null
 }
 

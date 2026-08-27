@@ -440,12 +440,13 @@ input[type="range"]:disabled::-webkit-slider-thumb { cursor: not-allowed; }
 }
 /* Mission mode (dispatch runs): hide panels that carry no signal while an
    unattended mission is the only session — grammar/best-of-N are disabled,
-   training data is zeros, and the brain/history readouts describe past
-   sessions, not this run. The Mission panel takes their place. */
+   training data is zeros, and the history readouts describe past sessions,
+   not this run. The Mission panel takes their place. The brain pane is NOT
+   hidden: its tail/sparkline/J-Space workspace stream from the live engine,
+   and a mission is when you most want to watch the model think. */
 body.mission-mode #panelGrammar,
 body.mission-mode #panelTraining,
 body.mission-mode #panelBestOfN,
-body.mission-mode #brain-pane,
 body.mission-mode #historyPanel { display: none; }
 #missionCommitList { margin-top: 6px; font-size: 11px; color: #9a9a9a; }
 #missionCommitList div { padding: 1px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

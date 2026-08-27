@@ -178,6 +178,30 @@ describe('LlamaCppProvider', () => {
     }
   })
 
+  it('every stream request asks for the usage chunk (stream_options.include_usage)', async () => {
+    // Without it llama-server sends no usage/timings chunk, TurnCost stays
+    // null, and the economics ledger records the whole mission as unmeasured.
+    const bodies: any[] = []
+    const realFetch = globalThis.fetch
+    const sse = 'data: {"id":"c","model":"m","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'
+    globalThis.fetch = (async (_url: any, init: any) => {
+      bodies.push(JSON.parse(init.body))
+      return new Response(sse, { status: 200, headers: { 'Content-Type': 'text/event-stream' } })
+    }) as any
+    try {
+      const provider = new LlamaCppProvider({ primaryUrl: 'http://127.0.0.1:9999', modelName: 'qwen3.6', modelsDir: '/tmp' })
+      const req = {
+        model: 'qwen3.6',
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+      } as any
+      for await (const _e of provider.stream(req)) { /* drain */ }
+      expect(bodies).toHaveLength(1)
+      expect(bodies[0].stream_options).toEqual({ include_usage: true })
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+
   it('still throws on non-logprobs 400s in stream', async () => {
     const realFetch = globalThis.fetch
     globalThis.fetch = (async () => {
