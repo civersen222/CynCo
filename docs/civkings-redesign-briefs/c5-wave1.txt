@@ -1,0 +1,166 @@
+MISSION C5 WAVE 1 — THE WORLD IS BIG (long-horizon; work until the contract holds, then commit the marker)
+
+Repo: C:\Users\civer\civkings
+BASE: 3fc2de9  (C4 landed: three spines, Banknote palette, probe + ACCENTS,
+fonts, verb/data registry. The sealed gate re-runs ALL FOUR prior campaigns —
+C1 ladder/beats, C2 wants, C3 Orders, C4 living UI — as regression. Do not
+rework what passes; make it survive the bigger world.)
+
+FIRST — CLEAN THE TREE
+The repo root has five untracked scratch files left by the C4 run. They are
+diagnostic litter and must not be committed. Delete exactly these:
+  .base_broadsheet_test.py  .base_brodsheet.py  .probe_regions.py
+  .probe_war.py  _atlasdiff.py
+Then confirm `git status` is clean before any new work. Do NOT run
+git clean -fd blindly — remove exactly these five.
+
+THE DESIGN (spec §10, verbatim)
+
+  ## 10. World scope: tiered
+
+  - **6–8 great houses** (full simulation) + **20–30 minor gentry** (light
+    sim: shares, board seats, marriages; can rise to great or fall out) +
+    **4 Orders**.
+  - **150–250 provinces** across the three zoom tiers (today: 7 houses /
+    50 provinces / 20 characters).
+  - Every house enmeshed in a system of systems; most player actions
+    resolve as intended, some are deflected by the mesh (§8.4).
+
+SUCCESS CONTRACT (the sealed gate asserts exactly this, seeds 7 / 11 / 13)
+
+| id | assertion |
+|---|---|
+| G5.1a | len(game.houses) in [6,8]; game.gentry exists with 20-30 minor gentry; len(game.atlas.provinces) in [150,250] |
+| G5.2a | over 60 end_turns per seed: >= 1 beat of kind "gentry" with facet in {"share","board","marriage"}; AND in >= 1 of the 3 seeds a gentry HOUSE MEMBERSHIP change happens (a gentry name appears in game.houses = rose, or leaves game.gentry without rising = fell) together with >= 1 beat of kind "gentry", facet "rise" or "fall" |
+| G5.3a | end_turn() median over 20 turns at full scale <= 30.6 ms (measured cap: BASE 3fc2de9 medians were seed 7: 10.2ms, seed 11: 9.8ms, seed 13: 11.1ms -> 3x the 10.2ms median-of-medians) |
+| G5.4a | the C1+C2+C3+C4 sealed gates pass unchanged at the new scale |
+
+PINNED SURFACES (the gate reads exactly these names)
+- game.gentry — the minor-gentry collection: a mapping name -> state (or an
+  iterable of objects with .name). 20-30 entries at boot on every seed.
+- Gentry beats ride the existing beats system: kind == "gentry", facet in
+  {"share", "board", "marriage"} for light-sim events; facet in
+  {"rise", "fall"} for mobility. Use the existing Beat fields (face, text,
+  house, turn) so the Gazette prints them like any other beat.
+- Provinces stay where they live: game.atlas.provinces (dict id -> Province).
+  Scale it to 150-250 per seed ACROSS THE THREE ZOOM TIERS — the C4 glyph
+  tier system (continent / region / parish) must place the new provinces,
+  and the atlas must still render (the C4 probe/ACCENTS gate re-runs).
+
+HONESTY RULES FOR THE SIM (the gate is built to catch claims)
+- Counts alone do not pass: a world with 25 gentry and 180 provinces but no
+  gentry beats over 60 turns is a MISS (this exact cheat is the calibration
+  stub). The world must MOVE.
+- A rise/fall beat without the membership change, or the change without the
+  beat, is a MISS — state change + its beat, always (Clarity Law).
+- Deterministic given seed. No debug hooks in game logic.
+
+PERFORMANCE (G5.3a)
+3-5x the provinces and ~4x the actors must not make End Turn feel worse.
+Budget: end_turn() median over 20 turns <= 30.6ms at seed 7 full scale.
+Light sim means LIGHT — gentry do not run house-grade agendas; shares,
+board seats, marriages, and the rise/fall check are bookkeeping passes,
+not full actors. If you approach the cap, profile before restructuring
+(python -m cProfile on 20 end_turns) and commit the finding.
+
+C4 RESIDUAL (owed, committed test — gilded/tests/test_c5_residuals.py)
+The atlas war panel is full-width (x 28 -> 1272) and the hit-test scans
+last-added-first, so the panel shadows every province centroid (all
+centroids sit at x <= 857; the atlas actions panel starts at x >= 1024 —
+measurements from the C4 run's own diagnosis). Move the war panel out of
+the map field (right column x >= 1024, stacked with the actions panel, or
+a desk-strip drawer). Committed test: with no overlay open, a click on
+every visible province centroid must resolve to select_province — and the
+war verbs must remain reachable (their buttons still hit-test somewhere).
+
+SELF-CHECK (committed, NOT a scratch probe — gilded/tests/test_c5_contract.py,
+run EXACTLY as: python -m pytest gilded/tests/test_c5_contract.py -q
+It must pass before the marker commit. Content:)
+
+  import os
+  os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+  import statistics
+  import time
+  from gilded.ui.app import new_app_state
+
+  SEEDS = (7, 11, 13)
+  GENTRY_FACETS = {"share", "board", "marriage"}
+
+  def _names(g):
+      gen = g.gentry
+      if hasattr(gen, "keys"):
+          return {str(k) for k in gen.keys()}
+      return {str(getattr(x, "name", x)) for x in gen}
+
+  def test_scale_counts():
+      for seed in SEEDS:
+          g = new_app_state(seed=seed).game
+          assert 6 <= len(g.houses) <= 8
+          assert 20 <= len(_names(g)) <= 30
+          assert 150 <= len(g.atlas.provinces) <= 250
+
+  def test_gentry_light_sim_beats():
+      for seed in SEEDS:
+          g = new_app_state(seed=seed).game
+          base = len(g.beats.log)
+          for _ in range(60):
+              g.end_turn()
+          ev = [b for b in g.beats.log[base:]
+                if b.kind == "gentry" and b.facet in GENTRY_FACETS]
+          assert ev, f"seed {seed}: no gentry share/board/marriage beat in 60 turns"
+
+  def test_gentry_mobility_somewhere():
+      moved = False
+      for seed in SEEDS:
+          g = new_app_state(seed=seed).game
+          names0 = _names(g)
+          base = len(g.beats.log)
+          for _ in range(60):
+              g.end_turn()
+          names1 = _names(g)
+          houses1 = {str(h) for h in g.houses}
+          rose = names0 & houses1
+          fell = names0 - names1 - houses1
+          mob = [b for b in g.beats.log[base:]
+                 if b.kind == "gentry" and b.facet in {"rise", "fall"}]
+          if (rose or fell) and mob:
+              moved = True
+      assert moved, "no seed showed gentry mobility (membership change + rise/fall beat)"
+
+  def test_end_turn_performance():
+      g = new_app_state(seed=7).game
+      times = []
+      for _ in range(20):
+          t0 = time.perf_counter()
+          g.end_turn()
+          times.append((time.perf_counter() - t0) * 1000.0)
+      assert statistics.median(times) <= 30.6
+
+RULES
+- NO downloads. Everything needed is in the repo. Any curl/wget/pip-install
+  attempt will be refused by the engine.
+- NO scratch probe files in the repo root. Self-checks live in gilded/tests/
+  and are committed.
+- Do not modify the C1/C2/C3/C4 model and UI surfaces (ladder maths, beats,
+  acts, ambitions/wants, orders anatomy/levers, intel, spines, palette,
+  probe, ACCENTS, registry keys) except where the bigger world requires
+  it — the sealed gate re-runs all four prior gates and every committed
+  test suite must stay green: python -m pytest gilded/tests -x -q.
+- The existing suite WILL notice the world change (region counts, fixture
+  sizes). Adapt those tests to the tiered world honestly — do not pin them
+  to yesterday's 50 provinces, and do not gut an assertion to make it fit.
+- Use the CodeIndex tool FIRST for every symbol lookup (definitions and
+  references in one call) before any Grep/Read crawl — it is faster and it
+  is being measured.
+- Wire-check before finishing: grep every new symbol (gentry state, the
+  gentry tick, rise/fall resolution, the new province generation) and prove
+  each is imported AND called from the live game, not just defined. Put the
+  grep proof in the final commit message.
+- Commit early and often — after every coherent step, not at the end.
+
+DONE WHEN
+python -m pytest gilded/tests/test_c5_contract.py -q passes,
+gilded/tests/test_c5_residuals.py passes, and the full suite is green.
+Then make a final commit whose message contains exactly this marker
+(lowercase, exact string):
+  campaign c5 complete

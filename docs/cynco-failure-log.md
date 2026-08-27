@@ -2830,3 +2830,47 @@ failure can originate in the supervising session's own shell, and the ledger
 will file it under `engine_error` with nothing pointing back at the true
 cause — correlate mission engine logs with supervisor actions before charging
 the model or the engine.
+
+## F131 — the mission landed, the verdict was written, and the engine refused to die
+
+**Where.** CivKings redesign C4 wave 3 (ledger `c4-wave3-1787791284792`,
+dispatched 2026-08-26 18:41 local). The run itself SUCCEEDED: it hit the
+1,200-iteration budget (`dispatch-mission.sh` default) at ~01:45 after 25,449s,
+the driver ran the sealed gate as its verify step (exit 0, GATE: PASS at
+3fc2de9), and wrote a complete `outcome:"landed", verified:true` row. No model
+failure and no lost work — the cap landed during post-green polish (an atlas
+war-panel layout nit), after the stream log's "All 190 pass" at ~iteration 1180.
+
+**How.** After the row was written, the engine PROCESS never exited. `bun`
+(PID 17652) sat alive with an idle event loop from ~01:45 until the supervisor
+killed the tree at 09:05 — 7.3 hours. Its children were still up the whole
+time: the mission's llama-server (44028, slot idle since the iteration-1200
+generation, `is_processing:false`, no request ever arrived after it) and the
+jlens sidecar (`python -m jlens_service.server`, 36292, grown to 5.1 GB RSS).
+The obvious suspect is teardown: the mission loop returned but the sidecar and
+inference-server child handles (and/or their stdio pipes) kept the runtime
+alive, and nothing calls an explicit exit after the ledger flush.
+
+**Why it cost something.** The supervision watcher waits for the marker commit
+OR engine exit. The marker was never committed (markerSeen:false — the cap hit
+before the model got to it, which is legitimate), and the exit never came, so
+the watcher stayed silent past the nominal 12h window and the wave verdict sat
+unprocessed for 7.3h until the user noticed "cynco is not working". The wave
+itself lost nothing; supervision lost half a night. A second, smaller cost:
+diagnosis initially read the silence as a hung tool call, because a
+landed-but-alive engine is indistinguishable from a hung one until you read
+the ledger row.
+
+**The fix.**
+1. Engine: after the driver writes the mission row, tear down children
+   (llama-server, jlens sidecar) and exit the process explicitly. A mission
+   engine that has written its verdict has no business being alive.
+2. Watcher: also poll the LEDGER for the mission row, not just marker/exit —
+   the row existed at ~01:45 and named everything needed for the verdict; the
+   watcher's two signals were both optional in exactly this failure shape.
+3. Triage rule: engine silent but process alive → read the ledger row FIRST.
+   `outcome:"landed"` means grade the wave, not debug a hang.
+
+**General lesson.** "Is it still running?" has three answers, not two: working,
+hung, and finished-but-undead. The third looks exactly like the second from
+the outside, and only the ledger can tell them apart.
