@@ -66,11 +66,11 @@ export async function regexFallback(query: string, cwd: string): Promise<string>
 
 export const codeIndexTool: ToolImpl = {
   name: 'CodeIndex',
-  description: 'Search the codebase — tries semantic vector search first, falls back to regex pattern matching. Returns relevant functions, classes, and code blocks. Use this BEFORE Read to find the right files.',
+  description: 'Search the codebase. Give an exact identifier (function/class name) to get its DEFINITION with full body plus ranked references in one call — better than Grep for symbols. Or describe behaviour in words for semantic search. Falls back to regex. Use this BEFORE Read/Grep to find the right files.',
   inputSchema: {
     type: 'object',
     properties: {
-      query: { type: 'string', description: 'What to search for — natural language ("combat system") or exact patterns ("def resolve_combat")' },
+      query: { type: 'string', description: 'An exact symbol name ("_bank_debt_lever", "power_row_title") or a natural-language description ("where wars are declared")' },
       top_k: { type: 'number', description: 'Number of results to return (default: 5, max: 20)' },
     },
     required: ['query'],
@@ -113,17 +113,24 @@ export const codeIndexTool: ToolImpl = {
     }
 
     if (indexer) {
+      // Freshness: reindex anything git says changed, so a file created by
+      // Bash or a patch ten seconds ago is answerable now.
       try {
-        const results = await indexer.query({ query, topK })
-        if (results.length > 0) {
-          return { output: indexer.formatResults(results), isError: false }
+        await indexer.refreshFromGitStatus()
+      } catch (e) {
+        console.log(`[CodeIndex] Freshness refresh failed (non-fatal): ${e}`)
+      }
+      try {
+        const output = await indexer.searchFormatted({ query, topK })
+        if (output) {
+          return { output, isError: false }
         }
       } catch (e) {
-        console.log(`[CodeIndex] Vector query failed for "${query.slice(0, 40)}": ${e}`)
+        console.log(`[CodeIndex] Query failed for "${query.slice(0, 40)}": ${e}`)
       }
     }
 
-    // Vector search returned nothing — fall back to regex
+    // Symbol + semantic legs returned nothing — fall back to regex
     console.log(`[CodeIndex] Vector search empty for "${query.slice(0, 40)}" — falling back to regex`)
     const regexResults = await regexFallback(query, cwd)
     if (regexResults) {

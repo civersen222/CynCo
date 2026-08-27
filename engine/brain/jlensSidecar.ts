@@ -68,14 +68,19 @@ function killStaleSidecars(log: (msg: string) => void): void {
       ).toString().split(/\s+/).filter(Boolean)
       for (const pid of pids) {
         log(`[jlens] killing stale sidecar pid ${pid}`)
-        try { execSync(`taskkill /PID ${pid} /T /F`, { stdio: 'ignore', timeout: 10000 }) } catch { /* already gone */ }
+        try {
+          execSync(`taskkill /PID ${pid} /T /F`, { stdio: 'ignore', timeout: 10000 })
+        } catch (e) {
+          log(`[jlens] stale pid ${pid} already gone: ${e instanceof Error ? e.message.split('\n')[0] : e}`)
+        }
       }
     } else {
       execSync(`pkill -f ${SIDECAR_MODULE}`, { stdio: 'ignore', timeout: 10000 })
     }
-  } catch {
+  } catch (e) {
     // No stale processes found (pkill exits 1) or the probe itself failed —
     // either way the spawn below is the source of truth.
+    log(`[jlens] stale-sidecar probe: nothing to kill (${e instanceof Error ? e.message.split('\n')[0] : e})`)
   }
 }
 
@@ -136,7 +141,11 @@ export function startJlensSidecar(opts: {
       if (process.platform === 'win32' && proc.pid) {
         // proc.kill() only signals the direct child; taskkill /T takes the
         // tree, which is what actually releases the port on Windows.
-        try { execSync(`taskkill /PID ${proc.pid} /T /F`, { stdio: 'ignore', timeout: 10000 }) } catch { /* already gone */ }
+        try {
+          execSync(`taskkill /PID ${proc.pid} /T /F`, { stdio: 'ignore', timeout: 10000 })
+        } catch (e) {
+          console.log(`[jlens] sidecar pid ${proc.pid} already gone: ${e instanceof Error ? e.message.split('\n')[0] : e}`)
+        }
       } else {
         proc.kill('SIGTERM')
       }

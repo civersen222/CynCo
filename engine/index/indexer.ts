@@ -1,14 +1,36 @@
 
 import { execFileSync } from 'child_process'
 import { readFileSync, readdirSync, statSync, mkdirSync } from 'fs'
-import { join, relative, extname } from 'path'
+import { join, relative, extname, sep } from 'path'
 import { createHash } from 'crypto'
 import { EmbedClient } from './embedClient.js'
 import { IndexStore } from './store.js'
 import { chunkFile, chunkFileAsync, extractRelationships } from './chunker.js'
+import { CHUNKER_VERSION } from '../retrieval/treeSitterChunker.js'
 import { hybridRank } from './hybridRank.js'
 import { buildRepoGraph, formatRepoMap } from './repoMapBuilder.js'
+import { lookupSymbol, formatDefinitionCard, extractIdentifiers } from './symbolLookup.js'
 import type { IndexResult, IndexQuery } from './types.js'
+
+/**
+ * Confidence floor for semantic results. Calibrated against the 2026-08-27
+ * after-eval score dump (benchmark/codeindex-eval/results-2026-08-27-after.md):
+ * semantic-path misses scored ≤0.25, the best semantic-path hit 0.38 — any
+ * floor in (0.25, 0.38] flags every measured miss; 0.35 keeps margin on the
+ * miss side. Applied to the TOP result's native score: vector similarity when
+ * the semantic leg answered; the 0.5 keyword marker score is treated as always
+ * below the floor (a demoted-fallback answer is by construction unverified).
+ */
+export const SCORE_FLOOR = 0.35
+export const LOW_CONFIDENCE_PREFIX = '[low confidence — verify with Read]\n'
+
+/** Prefix `formatted` when the results do not clear the confidence floor. */
+export function annotateByScore(results: IndexResult[], formatted: string): string {
+  if (!formatted) return formatted
+  const top = results[0]?.score ?? 0
+  const keywordOnly = results.length > 0 && results.every(r => r.score === 0.5)
+  return top < SCORE_FLOOR || keywordOnly ? LOW_CONFIDENCE_PREFIX + formatted : formatted
+}
 
 /**
  * Cap a repo-map block to ~maxTokens (≈4 chars/token) so the default-on map
@@ -123,6 +145,11 @@ export class ProjectIndexer {
     const indexDir = join(projectRoot, '.cynco', 'index')
     mkdirSync(indexDir, { recursive: true })
     this.store = new IndexStore(join(indexDir, 'project.db'))
+    // Stale rows from before the isIndexableSource guard served markdown files
+    // and out-of-tree paths as answers (measured: SESSION_HANDOFF.md returned
+    // for a code query). Purge on open; say so once.
+    const purged = this.store.purgeWhere(isIndexableSource)
+    if (purged > 0) console.log(`[index] Purged ${purged} non-indexable files from the index`)
     // Query vectors are only comparable to the index if they come from the same
     // model, so an existing index dictates the model rather than the process
     // default. A fresh index has nothing to say yet and keeps the default.
@@ -214,6 +241,9 @@ export class ProjectIndexer {
     this.store.setMeta('project_root', this.projectRoot)
     this.store.setMeta('file_count', String(files.length))
     this.store.setMeta('chunk_count', String(this.store.getChunkCount()))
+    const head = this.gitHead()
+    if (head) this.store.setMeta('indexed_head', head)
+    this.store.setMeta('chunker_version', CHUNKER_VERSION)
 
     onProgress?.(`Done: ${chunks} chunks indexed, ${skipped} files unchanged`)
     console.log(`[index] Indexed ${chunks} chunks from ${files.length - skipped} files (${skipped} skipped)`)
@@ -232,7 +262,7 @@ export class ProjectIndexer {
 
     let vectorResults: IndexResult[] = []
     try {
-      const queryEmbedding = await this.embedClient.embed(q.query)
+      const queryEmbedding = await this.embedClient.embedQuery(q.query)
       // Cast a wider candidate net when fusing so BM25 can re-rank.
       vectorResults = this.store.search(queryEmbedding, hybridEnabled ? topK * 4 : topK)
     } catch (e) {
@@ -252,6 +282,29 @@ export class ProjectIndexer {
     if (keywordResults.length === 0) return vectorResults.slice(0, topK)
 
     return hybridRank(vectorResults, keywordResults, q.query, topK)
+  }
+
+  /**
+   * Full retrieval pipeline: symbol lookup → semantic hybrid → ''. An empty
+   * string tells codeIndex.ts to run its regex fallback (existing behavior).
+   *
+   * Symbol hit → definition card (full body + references), the one-call
+   * answer Grep cannot give. When the card is a single weak hit and the query
+   * is wordy, semantic results are appended (common-word collision guard).
+   */
+  async searchFormatted(q: IndexQuery): Promise<string> {
+    const sym = lookupSymbol(this.store, q.query)
+    if (sym) {
+      let card = formatDefinitionCard(sym)
+      const nonIdTerms = q.query.split(/\s+/).filter(Boolean).length - extractIdentifiers(q.query).length
+      if (sym.references.length < 2 && nonIdTerms >= 3) {
+        const extra = await this.query(q)
+        if (extra.length > 0) card += '\n\n=== SEMANTIC RESULTS ===\n' + this.formatResults(extra)
+      }
+      return card
+    }
+    const results = await this.query(q)
+    return annotateByScore(results, this.formatResults(results))
   }
 
   /**
@@ -305,6 +358,97 @@ export class ProjectIndexer {
     return results.map(r =>
       `--- ${r.filePath}:${r.startLine}-${r.endLine} (${r.chunkType}${r.name ? ': ' + r.name : ''}) [score: ${r.score.toFixed(2)}] ---\n${r.content}`
     ).join('\n\n')
+  }
+
+  /**
+   * Reindex anything that changed since the last index — both dirty files
+   * (git status) and COMMITTED drift (git diff against the recorded head).
+   * Missions commit constantly, so status alone left the index permanently
+   * stale: the 2026-08-27 eval found wed_match and can_place_informant
+   * missing from the civkings index because their files were committed clean.
+   * Runs at query time so the index is never staler than the question being
+   * asked. Non-git cwd or git failure ⇒ no-op.
+   */
+  async refreshFromGitStatus(): Promise<void> {
+    let out: string
+    try {
+      out = execFileSync('git', ['status', '--porcelain'], {
+        cwd: this.projectRoot, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000,
+      })
+    } catch {
+      return
+    }
+    const candidates = new Set<string>()
+    for (const line of out.split('\n')) {
+      if (!line.trim()) continue
+      let rel = line.slice(3).trim().replace(/^"|"$/g, '')
+      if (rel.includes(' -> ')) rel = rel.split(' -> ')[1]   // renames: index the new path
+      candidates.add(rel.replace(/\//g, sep))
+    }
+
+    // Chunker upgrade: unchanged content hashes would skip every indexed file,
+    // so a version mismatch forces a one-time re-chunk of all of them.
+    const force = new Set<string>()
+    const chunkerStale = this.store.getMeta('chunker_version') !== CHUNKER_VERSION
+    if (chunkerStale) {
+      for (const rel of this.store.getIndexedFiles()) {
+        const r = rel.replace(/\//g, sep)
+        candidates.add(r)
+        force.add(r)
+      }
+    }
+
+    // Committed drift since the last refresh/build.
+    const head = this.gitHead()
+    let driftHandled: string | null = null
+    if (head && head !== this.store.getMeta('indexed_head')) {
+      const last = this.store.getMeta('indexed_head')
+      let drifted: string[] | null = null
+      if (last) {
+        try {
+          drifted = execFileSync('git', ['diff', '--name-only', `${last}..${head}`], {
+            cwd: this.projectRoot, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 10000,
+          }).split('\n').filter(Boolean)
+        } catch (e) {
+          // Recorded head unreachable (rebase, gc, fresh clone) — sweep instead.
+          console.log(`[index] git diff ${last.slice(0, 8)}..HEAD failed, falling back to hash sweep: ${e instanceof Error ? e.message.split('\n')[0] : e}`)
+        }
+      }
+      // No recorded head (legacy index) or diff failed: hash-sweep every
+      // indexed file. O(files) reads, only run once — the head is recorded after.
+      for (const rel of drifted ?? this.store.getIndexedFiles()) {
+        candidates.add(rel.replace(/\//g, sep))
+      }
+      driftHandled = head
+    }
+
+    for (const rel of candidates) {
+      if (!isIndexableSource(rel)) continue
+      try {
+        const content = readFileSync(join(this.projectRoot, rel), 'utf-8')
+        const hash = createHash('sha256').update(content).digest('hex').slice(0, 16)
+        if (force.has(rel) || this.store.getFileHash(rel) !== hash) await this.reindexFile(rel)
+      } catch (e) {
+        // Deleted or unreadable — nothing fresh to serve for this path.
+        console.log(`[index] Skipped refresh of ${rel}: ${e instanceof Error ? e.message.split('\n')[0] : e}`)
+      }
+    }
+    // Only after the sweep completes — a process killed mid-sweep must not
+    // record the head/version and leave the un-swept remainder permanently stale.
+    if (driftHandled) this.store.setMeta('indexed_head', driftHandled)
+    if (chunkerStale) this.store.setMeta('chunker_version', CHUNKER_VERSION)
+  }
+
+  /** Current commit hash, or null outside a git repo / before the first commit. */
+  private gitHead(): string | null {
+    try {
+      return execFileSync('git', ['rev-parse', 'HEAD'], {
+        cwd: this.projectRoot, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000,
+      }).trim()
+    } catch (e) {
+      console.log(`[index] git rev-parse HEAD failed in ${this.projectRoot}: ${e instanceof Error ? e.message.split('\n')[0] : e}`)
+      return null
+    }
   }
 
   /** Re-index a single file after it's been edited. Fast — only processes one file. */
