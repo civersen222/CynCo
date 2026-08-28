@@ -2922,3 +2922,41 @@ losing the work is worse).
 **General lesson.** An instrument that runs where the work happened inherits
 whatever the work left lying around. Grade deliveries from the commit graph,
 not from the desk it was assembled on.
+
+## F133 — the suite-green clause was prose, so 142 broken tests rode a green gate
+
+**Where.** C5 waves 1-2 (heads 35050f9, c2ffb12). Wave 1's atlas rescale broke
+~142 committed tests — almost the entire war layer (test_fronts 36,
+test_war_tab_m6a 23, test_war_tab_doctrines 16, test_war_turn 14, test_ai 12,
+test_war_verbs_m6b 10, test_ui_actions 9, + stragglers). Both briefs said "The
+full committed suite must stay green: python -m pytest gilded/tests -x -q".
+Neither wave met it. The wave-1 verdict called the C5 surface "all green"; the
+wave-2 sealed gate hand re-run PASSED the whole C1-C5 chain at c2ffb12 while
+`pytest gilded/tests` reported 152 failed, 1893 passed (BASE 3fc2de9: 10
+failed, 2026 passed — those 10 are C4-era UI debt from a head committed as
+"wip").
+
+**How it was caught.** Not by the instruments, and not by the supervisor's
+wave-1 grading. The wave-2 mission itself measured the suite and wrote "152
+remaining are pre-existing" into its marker commit — true from its own BASE
+(35050f9), false from the campaign BASE. The supervisor's suspicion at that
+phrase (prior campaigns closed green) triggered the head-vs-base counts that
+exposed the delta.
+
+**Why it matters.** The sealed gate measures the contract surface; the suite
+is the dev surface every FUTURE campaign builds on. A gate-green wave that
+torches the suite converts the next campaign's brief into archaeology, and
+"suite must stay green" written as prose in RULES is exactly the
+contract-vs-gate divergence already root-caused: an order without an
+assertion and a command is a wish.
+
+**The fix.** (1) Sealed suite-gate gate_c5s.py: S.count (0 failed AND >= 2040
+passed — the floor kills fix-by-deleting-tests), S.skip (no skip/xfail marks
+added since BASE — kills fix-by-skipping), S.chain (gate_c5.py still exits 0).
+Rule-11 calibrated: clean-FAIL at c2ffb12, deletion-stub FAIL via the floor.
+(2) C5 wave 3 (c5-wave3.txt) dispatched to restore the suite. (3) Standing
+brief-authoring rule: every "must stay green" clause gets a gate check or it
+does not get written.
+
+**General lesson.** A rule the gate cannot see is a rule the mission can
+break in a green run. If the suite is load-bearing, gate the suite.

@@ -1,0 +1,94 @@
+MISSION C5 WAVE 3 — THE SUITE IS THE DEV SURFACE; MAKE IT GREEN AGAIN
+(restoration wave; the sealed contract chain is green — do not touch it —
+but the committed test suite is red and that is the whole mission)
+
+Repo: C:\Users\civer\civkings
+BASE: c2ffb12  (C5 wave 2 LANDED: head stands alone, the Bank's deflection
+beat is back, and the ENTIRE sealed C1-C5 chain is green at this commit —
+G5.4a: PASS 0 C1+C2+C3+C4 regressions. Do NOT rework any contract surface.)
+
+THE DEFECT (measured verbatim, this repo, this head):
+
+  python -m pytest gilded/tests -q
+    152 failed, 1893 passed, 3 warnings in 1197.57s (0:19:57)
+
+  Same command at the campaign BASE 3fc2de9 (pre-C5):
+    10 failed, 2026 passed, 3 warnings in 175.66s (0:02:55)
+
+C5 wave 1 scaled the atlas to a 144x144 grid (~200 provinces, three-spine
+world) and ~142 tests broke and were never adapted. Your predecessor's
+commit called them "pre-existing" — they pre-date wave 2, but NOT the
+campaign. Every earlier campaign closed with this suite green. Yours will
+too.
+
+WHERE THE 152 LIVE (files x failing tests, from the head run):
+
+  36  gilded/tests/test_fronts.py
+  23  gilded/tests/test_war_tab_m6a.py
+  16  gilded/tests/test_war_tab_doctrines.py
+  14  gilded/tests/test_war_turn.py
+  12  gilded/tests/test_ai.py
+  10  gilded/tests/test_war_verbs_m6b.py
+   9  gilded/tests/test_ui_actions.py
+   5  gilded/tests/test_agenda.py
+   4  gilded/tests/test_ui_paper.py
+   4  gilded/tests/test_capital_m8.py
+   3  gilded/tests/test_war_tab_m6d.py
+   3  gilded/tests/test_ui_broadsheet.py
+   3  gilded/tests/test_docket.py
+   2  gilded/tests/test_ui_powers.py
+   2  gilded/tests/test_money_supply.py
+   2  gilded/tests/test_grip.py
+   1  each: test_ui_actions_i4d2b1.py, test_schemes_s9.py, test_market.py,
+      test_heir_controls.py
+
+The war layer (fronts, war_tab, war_turn, war_verbs, doctrines, ai) is
+~102 of the 152 — wave 1 moved the world under it. Ten of the 152 are
+OLDER debt from the C4 head (committed as "wip"), also yours to clear:
+
+  test_heir_controls.py::test_heir_picker_offers_men_in_succession_order
+  test_ui_atlas_layout.py::test_rule6_centroid_click_selects_province_seed7
+  test_ui_atlas_layout.py::test_rule6_centroid_click_selects_province_seed42
+  test_ui_atlas_layout.py::test_rule5_glyph_floor_seed42_1280x900
+  test_ui_paper.py::test_rule3_exact_594_at_18pt
+  test_ui_paper.py::test_rule10_column_major_fill
+  test_ui_paper.py::test_rule10_second_column_used
+  test_ui_paper.py::test_rule6_horizontal_rule_thickness
+  test_ui_powers.py::test_overflow_at_40_rows
+  test_ui_powers.py::test_no_overflow_at_30_rows
+
+HOW TO DECIDE, TEST BY TEST (this is the judgment the mission exists for):
+- If the test encodes the OLD world (hardcoded province/region counts,
+  pre-tier geography, old fixture seeds) and the behavior it protects still
+  holds at the new scale: ADAPT the test to measure the same behavior in
+  the tiered world. The assertion must stay as sharp as it was — same
+  property, new numbers, and the new numbers must be MEASURED, not guessed.
+- If the game behavior itself broke (a real regression wave 1 caused):
+  FIX THE GAME CODE. The sealed chain green does not mean the war layer
+  works — its contract gates are C4-era and thinner than these tests.
+- Announce the split in commit messages: "adapt: <why the world changed>"
+  vs "fix: <what was actually broken>". Never both in one commit blob.
+
+RULES
+- FORBIDDEN: deleting test files or test functions, @pytest.mark.skip,
+  @pytest.mark.xfail, pytest.skip()/xfail() calls, weakening an assertion
+  to vacuity (assert True, asserting on len()>=0, try/except around the
+  assert). The grader checks for every one of these.
+- Do NOT rework any sealed contract surface (C1-C5 gates must stay green;
+  end_turn perf stays under its cap).
+- NO downloads. NO scratch probe files in the repo root.
+- Deterministic given seed. No debug hooks in game logic.
+- Use the CodeIndex tool FIRST for every symbol lookup (definitions and
+  references in one call) before any Grep/Read crawl.
+- Commit early and often — per-file or per-cluster commits, each one
+  leaving the suite strictly less red than before. Your first commit lands
+  within the first hour.
+- Verify as you go: run the failing file you are fixing, not the whole
+  suite, until the end. The full suite is ~3 min green, ~20 min red.
+
+DONE WHEN
+python -m pytest gilded/tests -q reports 0 failed with at least 2040
+passed, python -m pytest gilded/tests/test_c5_contract.py -q still passes,
+and the final commit message contains exactly this marker (lowercase,
+exact string):
+  campaign c5 suite green
