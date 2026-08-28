@@ -1,0 +1,17 @@
+=== GENERATION THROUGHPUT PROBE (single request, llama-server /completion timings) ===
+date: 2026-08-28
+model: qwen3.8-27b-nvfp4 (Qwen3.8-27B-NVFP4-MTP-VERY-HIGH.gguf)
+server: llama-server --ctx-size 131072 --cache-ram 21504 --spec-type ngram-mod,draft-mtp --spec-draft-n-max 3
+hardware: RTX 5090 (32 GB), engine idle (no concurrent mission)
+method: 512-token completions, t=0.2, timings.predicted_per_second as reported by llama-server
+
+per-content-type (MTP/ngram acceptance drives the spread):
+  prose (CAP theorem explanation):        94.9 tok/s
+  code  (red-black tree implementation): 101.1 tok/s
+  json  (repetitive 40-object array):    119.3 tok/s
+
+range: 94-119 tok/s generation, single stream, short prompts.
+note: the previously quoted 120-137 tok/s (project memory) is NOT reproduced by
+this probe; treat 94-119 as the citable measured range until a fuller
+benchAgentic run replaces it. Prefill measured 31.7 tok/s on a cold short
+prompt (not representative of cached agentic prefill).
