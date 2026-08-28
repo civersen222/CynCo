@@ -109,9 +109,54 @@ decisions still recorded here).
     "byClass": { "sourceEdit": 1, "fileWrite": 0, "inspect": 12 },
     "maxCallsWithoutSourceEdit": 9,
     "commits": 2, "maxCallsWithoutCommit": 6
-  }
+  },
+  // F57. How the drive loop resolved. "timeout" is the only value assigned by
+  // fallback; "never_dispatched" means no turn ever ran.
+  "exitReason": "engine_closed_the_turn",
+  "markerSeen": true,        // commit-marker substring found in `git log`
+  "engineError": null,       // non-null when the engine process died (outcome "engine_error")
+  // /api/run still reported an open run at exit. null = nothing ever answered
+  // /api/run — an older engine cannot be read as a quiet one.
+  "runStillOpen": false,
+  "toolCallsAfterExit": 0,   // tool.start frames after the exit decision resolved
+  // F33: join key to ~/.cynco/rewards/*.reward.json. `[]` = driver asked and
+  // was told nothing; absent = record written before the question existed.
+  "taskIds": ["task-54da9ac4"],
+  // F38: from historyRewrite() — the only field that can say the surviving git
+  // history is not all of it. null = reflog unreadable (unknown, not clean).
+  "history": { "rewritten": false, "discarded": [] },
+  // Stage 1 (S3*): what the in-loop probe saw and did. The driver runs the
+  // probe-cmd at quiescent turn boundaries after a landed commit and injects a
+  // FAIL's verbatim tail as a user message, capped by CYNCO_MAX_PROBE_OVERRIDES.
+  // null when the mission was dispatched without a probe-cmd.
+  "probe": { "command": "python -m pytest test_x.py -q", "runs": 2, "fails": 1,
+    "overrides": 1, "lastExit": 0, "lastVerified": true,
+    "exhausted": false, "blockedBySocket": 0 },
+  // Grader-probe scan of tool.start inputs. null when no frame carried an
+  // inspectable input (engine too old) — a measured `probes: 0` is a different
+  // fact from an unmeasured one and must not collapse into it.
+  "graderProbes": { "total": 13, "probes": 0, "uninspectable": 0,
+    "byPattern": {}, "samples": [] },
+  // Real token counts from the server's own timings (session.tokenStats,
+  // cumulative — collector keeps the latest sum). null, not zeros, when the
+  // run died before its first model turn: economics must fall back to its
+  // labelled estimate, never mistake absence for a free mission.
+  "tokenStats": { "prefillTokens": 29995, "cachedTokens": 252043,
+    "decodeTokens": 4081, "measuredTurns": 23, "unmeasuredTurns": 0 },
+  // P4.3/4(e): session-level regulator fidelity; null when the engine emitted
+  // no session_fidelity event (no contract / older engine).
+  "regulatorFidelity": { "hadContract": true, "resolutionRate": 1,
+    "finalTaskError": 0, "contractReplacements": 0 }
 }
 ```
+
+Two fields are patched in by hand and appear only on some rows:
+
+- **`spotAudit`** — the every-5th-record audit result (see "Spot-audit cadence"
+  below): `{ auditedAt, record, labelCorrect, wouldOwnTestsHaveCaughtIt,
+  testsEditedOrSkipped, ... }`.
+- **`verifyCorrection`** — a hand correction to `verified` with its evidence,
+  written when an independent re-run contradicts the driver's patched value.
 
 ## Labeling rule
 
