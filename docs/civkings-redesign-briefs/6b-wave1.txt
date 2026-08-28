@@ -239,10 +239,10 @@ RULES
   prove each is imported AND called from the live game, not just defined.
   Put the grep proof in the final commit message.
 - Commit early and often — after every coherent step, not at the end. An
-  automated probe runs the full suite against your latest commit whenever
-  you go quiet; if it fails you will be told verbatim and the mission
-  continues. Committing the marker does not end the mission while that
-  check fails.
+  automated probe runs the war-and-AI test fleet plus your committed
+  contract test against your latest commit whenever you go quiet; if it
+  fails you will be told verbatim and the mission continues. Committing
+  the marker does not end the mission while that check fails.
 
 DONE WHEN
 python -m pytest gilded/tests/test_6b_contract.py -q passes and the full
