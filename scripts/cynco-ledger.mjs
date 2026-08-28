@@ -625,6 +625,12 @@ export function buildMissionRecord(collector, meta) {
     // true); null when no check command was supplied (manual-patch path).
     verified: meta.verified ?? null,
     verify: meta.verify ?? null, // { command, exitCode, timedOut, durationMs, outputTail }
+    // Stage 1 (S3*, docs/cynco-self-orchestration-spec.md): what the in-loop
+    // probe saw and did at each turn boundary. null = no probe-cmd dispatched,
+    // which an absent field could not distinguish from an old driver.
+    // { command, runs, fails, overrides, lastExit, lastVerified, exhausted,
+    //   blockedBySocket } — see scripts/cynco-probe.mjs.
+    probe: meta.probe ?? null,
     // The second, independent label: did a withheld mutation set make the
     // repo's own tests go red for every stated rule? null means UNMEASURED —
     // a sweep that has not been run is not a sweep that passed, and it is not

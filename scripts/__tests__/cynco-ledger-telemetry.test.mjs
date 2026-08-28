@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { createMissionCollector } from '../cynco-ledger.mjs'
+import { createMissionCollector, buildMissionRecord } from '../cynco-ledger.mjs'
 
 /**
  * The verb classes exist because "delivery" measured as Edit+Write was
@@ -88,5 +88,20 @@ describe('commit cadence', () => {
     c.observeCommit('bbbbbbb')
     expect(c.toolStats.commits).toBe(2)
     expect(c.toolStats.maxCallsWithoutCommit).toBe(0)
+  })
+})
+
+describe('buildMissionRecord probe block', () => {
+  const minimalMeta = {
+    missionId: 'm-1', briefFile: 'b.txt', marker: 'mk', cwd: 'C:/tmp/x',
+    dispatchedAt: '2026-08-28T00:00:00.000Z', durationS: 1, outcome: 'landed',
+  }
+  it('carries the probe block verbatim and defaults to null', () => {
+    const c = createMissionCollector()
+    const probe = { command: 'pytest -q', runs: 2, fails: 1, overrides: 1, lastExit: 0, lastVerified: true, exhausted: false, blockedBySocket: 0 }
+    const withProbe = buildMissionRecord(c, { ...minimalMeta, probe })
+    expect(withProbe.probe).toEqual(probe)
+    const without = buildMissionRecord(createMissionCollector(), minimalMeta)
+    expect(without.probe).toBeNull()
   })
 })
