@@ -5,17 +5,18 @@
 # The fix that log asked for was "a canonical launch snippet so it can't be
 # dropped". This is it. Do not dispatch a mission by typing the env out again.
 #
-# Usage: scripts/dispatch-mission.sh <brief-file> <marker> [cwd] [timeout-s] [check-cmd]
+# Usage: scripts/dispatch-mission.sh <brief-file> <marker> [cwd] [timeout-s] [check-cmd] [probe-cmd]
 #
 # Every value below can be overridden from the caller's environment; the
 # defaults are the ones measured on the run that set them.
 set -euo pipefail
 
-BRIEF=${1:?usage: dispatch-mission.sh <brief-file> <marker> [cwd] [timeout-s] [check-cmd]}
+BRIEF=${1:?usage: dispatch-mission.sh <brief-file> <marker> [cwd] [timeout-s] [check-cmd] [probe-cmd]}
 MARKER=${2:?missing commit marker}
 MISSION_CWD=${3:-C:\\Users\\civer\\civkings}
 TIMEOUT_S=${4:-21600}
 CHECK_CMD=${5:-}
+PROBE_CMD=${6:-}
 
 # --- context ---------------------------------------------------------------
 # Nothing is set here any more, and that is the point.
@@ -49,6 +50,12 @@ LOCALCODE_MAX_ITERATIONS=${LOCALCODE_MAX_ITERATIONS:-1200}
 # The check is a pytest run of seconds, not a mutation sweep; the driver refuses
 # to dispatch at all unless this is set deliberately.
 CYNCO_CHECK_TIMEOUT_MS=${CYNCO_CHECK_TIMEOUT_MS:-600000}
+
+# Stage 1 (S3*, docs/cynco-self-orchestration-spec.md): the in-loop probe's cap.
+# The probe must be CHEAP — a suite count, not the sealed chain — and NEVER a
+# perf-measuring command (wall-clock contention corrupts the measurement, C5
+# lesson). The driver refuses a probe-cmd unless this is set.
+CYNCO_PROBE_TIMEOUT_MS=${CYNCO_PROBE_TIMEOUT_MS:-600000}
 
 # The MODEL's copy of that same command. Raising the cap above only lets the
 # DRIVER finish the gate; the Bash tool's own default is 120s and the civkings
@@ -208,8 +215,9 @@ echo "[dispatch] driver log $DRIVER_LOG"
 # finished-but-undead for 7.3 hours. Set here and only here: the driver run by
 # hand against an engine it does not own must never inherit it.
 CYNCO_CHECK_TIMEOUT_MS="$CYNCO_CHECK_TIMEOUT_MS" \
+CYNCO_PROBE_TIMEOUT_MS="$CYNCO_PROBE_TIMEOUT_MS" \
 CYNCO_TEARDOWN_ENGINE=1 \
   bun scripts/cynco-mission-driver.mjs \
-    "$BRIEF" "$MARKER" "$MISSION_CWD" "$TIMEOUT_S" ${CHECK_CMD:+"$CHECK_CMD"} \
+    "$BRIEF" "$MARKER" "$MISSION_CWD" "$TIMEOUT_S" "${CHECK_CMD:-}" ${PROBE_CMD:+"$PROBE_CMD"} \
   > "$DRIVER_LOG" 2>&1 &
 echo "[dispatch] dispatched — tail -f $DRIVER_LOG"
