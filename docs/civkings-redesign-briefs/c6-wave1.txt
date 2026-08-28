@@ -1,0 +1,262 @@
+MISSION C6 WAVE 1 — THE VERTICAL SLICE: MENU -> PLAY -> ENDING (long-horizon; work until the contract holds, then commit the marker)
+
+Repo: C:\Users\civer\civkings
+BASE: TBD-AT-CALIBRATION  (post-6B head. War is alive; ALL SIX prior campaigns
+re-run as regression through the sealed gate. Do not rework what passes; wrap
+the working game in a slice a stranger could play.)
+
+THE DIAGNOSIS (measured 2026-08-28 at fd5414d in an isolated clone — verbatim)
+
+  The game under the hood is real: boot 4.26 s, 10 end_turns in 0.10 s,
+  draw 21 ms/frame, 7 houses, 204 provinces, 53 living characters at
+  seed 42. Endings EXIST (gilded/endings.py: check_ending, judge ->
+  Epilogue over four axes with a saga coda). Save/load EXISTS
+  (gilded/save.py: versioned header + pickle, quicksave). Do NOT rebuild
+  endings, save, combat, beats, orders, or the atlas — they are done.
+
+  But there is no game AROUND the game. app.py boots STRAIGHT into play
+  (new_app_state -> set_mode at app.py:56): no main menu, no way to
+  continue a save from the UI, no settings of any kind. There is ZERO
+  audio — no mixer call, no .wav/.ogg anywhere in gilded/. The House tab
+  draws text sections on top of each other (screenshot-verified overdraw
+  — a Clarity Law violation you can measure). A cold-open player is
+  never told the win condition or the core verbs: no onboarding exists.
+  And no fresh seeded run has ever been required to actually REACH an
+  ending — the epilogue is code that nothing steers the world toward.
+
+THE DESIGN INTENT (spec §4.1: the slice)
+A player who has never seen the game: launches -> main menu -> New Game ->
+plays seed 42 -> is taught the win condition and core verbs in the first
+5 turns -> reaches an ending within 70 turns -> reads the epilogue. Every
+step demo-grade. Deterministic given the seed. The mechanism for pacing
+the world to an ending is your choice; the gate only demands the outcome.
+
+SUCCESS CONTRACT (the sealed gate asserts exactly this, seed 42)
+
+| id | assertion |
+|---|---|
+| C6.1a | new_app_state(seed=42, start="menu") boots with s.game is None and draws >= 4 menu verbs (group="menu": new_game/continue/settings/quit) |
+| C6.1b | with no save in cwd, Continue is drawn DISABLED with a non-empty reason — not omitted |
+| C6.1c | pressing New Game constructs a playable world (>= 6 houses; end_turn and draw work) |
+| C6.2 | after saving a 4-turn game, a fresh menu draws Continue ENABLED and pressing it loads that save (turn >= 4) |
+| C6.3 | pressing Settings then the mute control writes gilded_settings.json in cwd; a FRESH PROCESS reads load_settings().mute == True |
+| C6.4a | gilded.audio.SOUND_EVENTS covers ui_press, end_turn, war_declared, beat, ending, ambient and resolve(event) is an existing file for each |
+| C6.4b | gilded.audio.play("ui_press", Settings(mute=True)) is False — mute is honored, play never raises |
+| C6.4c | gilded/assets/audio/LICENSES.md exists |
+| C6.5 | on tabs House/Powers/Atlas at turns 0/10/40: view.text_rows is populated and NO two row rects collide; House at turn 0 has >= TEXT_ROWS_FLOOR rows (floor measured at BASE) |
+| C6.6 | in a menu-started seed-42 run, beats kind="onboarding" with facets win/orders/ambitions/war/turn ALL land within the first 5 turns |
+| C6.7 | in the same 70-turn run, beats kind="chain": >= 3 distinct chain facets, each with >= 3 beats spanning >= 2 turns |
+| C6.8 | the same run reaches check_ending(game, player) non-None within 70 turns and judge() yields an Epilogue with a non-empty ending_key |
+| C6.9 | the C1..C5+6B sealed gates pass unchanged |
+
+HONESTY RULES (the gate is built to catch claims)
+- A menu that draws but does nothing does not pass: the calibration cheat
+  stub renders exactly the right regions with the right actions — it flips
+  C6.1a/1b green and still MISSes C6.1c/2/3 (its presses build nothing and
+  persist nothing) and C6.6/7/8 (no menu-started game exists).
+- Audio keys without files do not pass: SOUND_EVENTS entries are checked
+  with os.path.isfile on resolve(); play() must return False when muted.
+- An empty text_rows does not pass: the House tab must report at least the
+  measured floor of drawn rows — you cannot silence the page to dodge the
+  overlap check. Fix the overdraw by laying the sections out, not by
+  hiding text.
+- Onboarding and chain beats flow through the EXISTING beats system like
+  any other beat (Clarity Law: state change + its beat, always). Fabricated
+  beat spam that references nothing will be caught at verdict review.
+- Deterministic given seed. No debug hooks in game logic.
+
+PINNED SURFACES (the gate reads exactly these names — do not rename them)
+- gilded.ui.app.new_app_state(seed, ..., start="game"): new keyword;
+  start="menu" boots to the drawn main menu with s.game is None; the
+  DEFAULT start="game" keeps every prior surface byte-identical — six
+  campaigns of sealed gates and the whole committed suite call it bare.
+- Menu regions: group="menu", action {"menu": "new_game"|"continue"|
+  "settings"|"quit"}; refusals are RegionState.DISABLED with a non-empty
+  .reason. Presses go through view.handle_click + _apply_action.
+- gilded.settings: Settings(window_size, narrate, volume, mute),
+  load_settings(path=None), save_settings(settings, path=None); the file
+  is gilded_settings.json in cwd. Settings regions: group="settings",
+  action {"setting": <field>}; a press changes the value AND writes the file.
+- gilded.audio: SOUND_EVENTS dict, resolve(event) -> absolute path under
+  gilded/assets/audio/, play(event, settings) -> bool. play returns False
+  when settings.mute or when the mixer is unavailable; it never raises.
+  Wire real play() calls into the live game: UI presses, end turn, war
+  declaration, beat arrival, the ending.
+- view.text_rows: after view.draw(screen), a list of (pygame.Rect, str) —
+  one entry per text line drawn on the active tab, rebuilt every draw.
+- Onboarding beats: kind="onboarding", facet in
+  {"win","orders","ambitions","war","turn"} — each names its verb and what
+  it is for, in prose a stranger can act on.
+- Chain beats: kind="chain", facet=<stable chain id>. Three chains minimum,
+  one per act: a situation that arrives, escalates across turns, and
+  resolves with consequences the epilogue can reference.
+- gilded.ui.app._apply_action and new_app_state keep their signatures
+  (new_app_state gains only the start keyword with default "game").
+
+STAGED ASSETS (downloads are refused by the engine — these are already here)
+- The 6 audio files + LICENSES.md are PRE-STAGED at
+  C:\Users\civer\.cynco\staged-assets\c6-audio\
+  (ui_press.ogg, end_turn.ogg, war_declared.ogg, beat.ogg, ending.ogg,
+  ambient.wav — Kenney CC0 + one authored file; licenses recorded).
+  Copy them into gilded/assets/audio/ and COMMIT them with LICENSES.md.
+  Do not substitute, download, or synthesize different files.
+
+SELF-CHECK (committed, NOT a scratch probe — gilded/tests/test_c6_contract.py,
+run EXACTLY as: python -m pytest gilded/tests/test_c6_contract.py -q
+It must pass before the marker commit. Content:)
+
+  import os
+  os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+  os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+  import subprocess
+  import sys
+  from gilded.ui.app import new_app_state, _apply_action
+  from gilded.ui.widgets import RegionState
+
+  SEED = 42
+
+  def _regions(s, group):
+      s.view.draw(s.screen)
+      return [r for r in s.view.regions._regions
+              if getattr(r, "group", "") == group
+              and isinstance(r.action, dict)]
+
+  def _press(s, region):
+      action = s.view.handle_click(region.rect.center)
+      assert action is not None, f"press refused: {getattr(region, 'reason', None)!r}"
+      _apply_action(s, action)
+
+  def _menu(s):
+      return {r.action.get("menu"): r for r in _regions(s, "menu")}
+
+  def test_menu_boots_and_new_game_plays(tmp_path, monkeypatch):
+      monkeypatch.chdir(tmp_path)
+      s = new_app_state(seed=SEED, start="menu")
+      assert s.game is None
+      menu = _menu(s)
+      assert {"new_game", "continue", "settings", "quit"} <= set(menu)
+      cont = menu["continue"]
+      assert cont.state == RegionState.DISABLED
+      assert (cont.reason or "").strip()
+      _press(s, menu["new_game"])
+      assert s.game is not None and len(s.game.houses) >= 6
+      s.game.end_turn()
+      s.view.draw(s.screen)
+
+  def test_continue_loads_save(tmp_path, monkeypatch):
+      monkeypatch.chdir(tmp_path)
+      s = new_app_state(seed=SEED, start="menu")
+      _press(s, _menu(s)["new_game"])
+      for _ in range(4):
+          s.game.end_turn()
+      import gilded.save as gsave
+      writer = getattr(gsave, "save_game", None) or getattr(gsave, "save", None)
+      writer(s.game, s.save_path)
+      s2 = new_app_state(seed=SEED, start="menu")
+      cont = _menu(s2)["continue"]
+      assert cont.state == RegionState.ENABLED
+      _press(s2, cont)
+      assert s2.game is not None and s2.game.turn >= 4
+
+  def test_settings_persist_across_process(tmp_path, monkeypatch):
+      monkeypatch.chdir(tmp_path)
+      s = new_app_state(seed=SEED, start="menu")
+      _press(s, _menu(s)["settings"])
+      setts = {r.action.get("setting"): r for r in _regions(s, "settings")}
+      _press(s, setts["mute"])
+      assert (tmp_path / "gilded_settings.json").exists()
+      p = subprocess.run(
+          [sys.executable, "-c",
+           "from gilded.settings import load_settings; "
+           "import sys; sys.exit(0 if load_settings().mute else 1)"],
+          cwd=tmp_path, env={**os.environ,
+                             "PYTHONPATH": os.getcwd()},
+          capture_output=True, text=True, timeout=120)
+      assert p.returncode == 0, p.stderr
+
+  def test_audio_registry_real_and_mutable(tmp_path, monkeypatch):
+      monkeypatch.chdir(tmp_path)
+      from gilded import audio
+      from gilded.settings import Settings
+      for e in ("ui_press", "end_turn", "war_declared",
+                "beat", "ending", "ambient"):
+          assert e in audio.SOUND_EVENTS, e
+          assert os.path.isfile(audio.resolve(e)), e
+      assert audio.play("ui_press", Settings(mute=True)) is False
+      assert audio.play("ui_press", Settings(mute=False)) in (True, False)
+
+  def test_no_text_overlap(tmp_path, monkeypatch):
+      monkeypatch.chdir(tmp_path)
+      s = new_app_state(seed=SEED)
+      for stop in (0, 10):
+          while s.game.turn < stop:
+              s.game.end_turn()
+          for tab in ("House", "Powers", "Atlas"):
+              s.view.active_tab = tab
+              s.view.draw(s.screen)
+              rows = s.view.text_rows
+              assert rows, f"{tab}: no text rows"
+              for i in range(len(rows)):
+                  for j in range(i + 1, len(rows)):
+                      assert not rows[i][0].colliderect(rows[j][0]), \
+                          (tab, stop, rows[i][1][:40], rows[j][1][:40])
+
+  def test_slice_run_onboards_chains_ends(tmp_path, monkeypatch):
+      monkeypatch.chdir(tmp_path)
+      from gilded.endings import check_ending, judge
+      s = new_app_state(seed=SEED, start="menu")
+      _press(s, _menu(s)["new_game"])
+      g, house = s.game, s.house
+      ended_at = None
+      for t in range(1, 71):
+          g.end_turn()
+          if ended_at is None and check_ending(g, house):
+              ended_at = t
+      ob = {b.facet for b in g.beats.log
+            if getattr(b, "kind", "") == "onboarding" and b.turn <= 5}
+      assert {"win", "orders", "ambitions", "war", "turn"} <= ob, ob
+      chains = {}
+      for b in g.beats.log:
+          if getattr(b, "kind", "") == "chain":
+              chains.setdefault(b.facet, []).append(b)
+      good = [c for c, bs in chains.items()
+              if len(bs) >= 3 and len({b.turn for b in bs}) >= 2]
+      assert len(good) >= 3, {c: len(bs) for c, bs in chains.items()}
+      assert ended_at is not None, "no ending within 70 turns"
+      assert judge(g, house).ending_key
+
+RULES
+- NO downloads. The audio is already staged (see STAGED ASSETS). Any
+  curl/wget/pip-install attempt will be refused by the engine.
+- NO scratch probe files in the repo root. Self-checks live in gilded/tests/
+  and are committed.
+- Do not modify the C1..C6B model and UI surfaces (ladder maths, beats
+  anatomy, acts, ambitions/wants, orders, intel, spines, palette, probe,
+  ACCENTS, registry keys, gentry, atlas generation, fronts/war) except
+  where the slice requires it — the sealed gate re-runs all six prior
+  gates and every committed test suite must stay green:
+  python -m pytest gilded/tests -x -q.
+- The existing suite WILL notice the world pacing toward endings and the
+  new beats kinds (fixture beat counts, kind inventories). Adapt those
+  tests to the slice honestly — do not pin them to yesterday's endless
+  world, and do not gut an assertion to make it fit.
+- Use the CodeIndex tool FIRST for every symbol lookup (definitions and
+  references in one call) before any Grep/Read crawl — it is faster and it
+  is being measured.
+- Wire-check before finishing: grep every new symbol (the menu path, the
+  settings module, the audio module and each play() call site, text_rows,
+  the onboarding emitter, each chain, the ending pacing) and prove each is
+  imported AND called from the live game, not just defined. Put the grep
+  proof in the final commit message.
+- Commit early and often — after every coherent step, not at the end. An
+  automated probe runs your committed contract test against your latest
+  commit whenever you go quiet; if it fails you will be told verbatim and
+  the mission continues. Committing the marker does not end the mission
+  while that check fails.
+
+DONE WHEN
+python -m pytest gilded/tests/test_c6_contract.py -q passes and the full
+suite is green: python -m pytest gilded/tests -x -q.
+Then make a final commit whose message contains exactly this marker
+(lowercase, exact string):
+  stage c6 complete
