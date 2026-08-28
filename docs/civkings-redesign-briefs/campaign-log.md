@@ -484,3 +484,41 @@ MultiEdit 5 / ContractAssertPass 1), 71 errors.
 
 C5 verdict: **PASS**. The world is big, the head stands alone, the Bank
 speaks when it thwarts you, and the suite that guards it all is green.
+
+---
+
+## Stage 6B — war is alive in the tiered world (dispatched 2026-08-28)
+
+BASE: fd5414d (C5 close). Gate: `~/.cynco/heldout/civkings-redesign/6b/`
+(gate_6b.py sha256 b2aad1f58b8bf9b3…, perturb_6b.py).
+
+**Re-grade first** (the 2026-08-12 grade pressed a War tab that C4/C5
+deleted): a drawer-aware press-through probe at the C5 head shows 4 of the
+six old FAILs are already fixed — war verbs reachable via the drawer,
+declare press opens a war, muster press raises+commits ("Raised 1
+regiment(s) from Brenwick"), appoint press lands a commander, peace and
+marriage answers reach the page. The old muster/commit TypeErrors are gone.
+
+**What survives is bigger than the six items:** every demesne is an island.
+0 house-house border pairs at seeds 7/11/42/99, ownership frozen over 60
+turns (owned=39, borders=0, wars=0 throughout), so `_contested_pairs()` is
+always empty, every declared war forms 0 fronts, the front controls never
+render, and the AI never reaches a war. The combat engine works — with one
+hand-constructed border at BASE: line +0.25/turn, war_score +15.00 by turn
+5, defender AI musters back by turn 14. War is structurally dead for want
+of front formation alone. Plus two sores: refusal classes (own house,
+at-war house) silently omitted from the declare list, and the no-war
+garrison letter leaks "fronts arrive in G16".
+
+Calibration (Rule 11): gate at BASE = clean MISS, 22 fails, exactly the
+predicted set (war-letter + C1..C5 chain PASS, all else FAIL, no errors).
+Perturbed base (declare_war wrapped to append a Front with an EMPTY
+border — the count claim): flips only s*.G6B.1a; every discriminator
+(1c muster-press, 1d war-moves, 2a/2b refusals, 3 ai-war, 4 letter)
+still FAILs. Contract test at BASE: 6/6 fail by assertion, none by error.
+
+**First wave with the Stage 1 S3* probe live**: check-cmd = the committed
+contract test; probe-cmd = full suite `python -m pytest gilded/tests -x -q`
+run at quiescent exits after commits, FAIL tail injected verbatim
+(spec Stage 1 metric: gate-FAIL-at-verdict rate vs the C1-C5 baseline of
+5/12 waves MISSed).
