@@ -22,6 +22,7 @@ CynCo is an AI coding assistant powered by local LLMs via [Ollama](https://ollam
 - **Spawn parallel sub-agents** — 6 typed personas (scout/oracle/kraken/spark/architect/researcher) with GPU-aware scheduling
 - **Index your codebase semantically** — vector + BM25 hybrid search finds relevant code instantly
 - **Persist across sessions** — handoff files, decision journals, governance DB, rule weight learning, and trajectory data for training
+- **Run unattended long-horizon missions** — dispatch one brief, drive to a marker commit, verify with a check command, and append a labeled row to an outcome ledger — see [Autonomous missions](#autonomous-missions--calibrated-gate-supervision)
 
 ---
 
@@ -33,14 +34,15 @@ CynCo works best with models that support native tool calling. Here are the test
 
 | Model | Type | VRAM | Speed (RTX 5090) | SWE-bench | Notes |
 |-------|------|------|-------------------|-----------|-------|
-| **Qwen3.6-27B** | Dense + MTP | ~16 GB (NVFP4) | 115 tok/s eval, measured | 77.2% | **What we run.** NVFP4 GGUF via the llama.cpp provider with MTP speculative decoding. Native tool use. Apache 2.0. |
+| **Qwen3.8-27B** | Hybrid (Gated DeltaNet) + MTP | ~20 GB (NVFP4) | 94–119 tok/s, measured | not measured here | **What we run.** NVFP4 GGUF via the llama.cpp provider with MTP+ngram speculative decoding — acceptance drives the spread (prose 94.9, code 101.1, repetitive JSON 119.3 tok/s). 16/16 streamed tool calls, zero drops. Trained to 262K context; we serve 131K. Native tool use. Apache 2.0. |
+| Qwen3.6-27B | Dense + MTP | ~16 GB (NVFP4) | 115 tok/s eval, measured | 77.2% | The previous default — every number in the serving guide was measured on it. NVFP4 GGUF with MTP speculative decoding. Native tool use. Apache 2.0. |
 | Gemma4-31B | Dense | ~19 GB (Q4) | ~52 tok/s | ~65% | Good alternative. Native tool use. |
 | Devstral-Small-2-24B | Dense | ~15 GB (Q4) | ~70 tok/s | Good | Strong for agentic multi-file edits. Fits 16GB GPUs. |
 | Qwen3.6-35B-A3B | MoE | ~20 GB (Q4) | ~234 tok/s | 73.4% | Raw speed champion (3B active params), but 27B dense scores higher and MTP closes the speed gap. |
 
 ### Quantization
 
-We run the **NVFP4** GGUF of Qwen3.6-27B (`Qwen3.6-27B-NVFP4-MTP.gguf`, 16.2 GB on disk). It leaves ~16 GB of a 32 GB card free for KV at 64K context and for sub-agents, which Q6_K does not.
+We run the **NVFP4** GGUF of Qwen3.8-27B (`Qwen3.8-27B-NVFP4-MTP-VERY-HIGH.gguf`, 19.7 GB on disk), measured 2026-08-28 at 94–119 tok/s single-stream with 16/16 streamed tool calls and zero drops (`benchmark/true/results/`). The trade-off logic is unchanged from Qwen3.6: NVFP4 frees the most VRAM on a 32 GB card for KV and sub-agents, which Q6_K does not. The quantization table below was measured on the previous default (Qwen3.6-27B) and is kept for the shape of the trade-off:
 
 | Quantization | Size (27B dense) | Measured decode | Quality | When to Use |
 |-------------|------------------|-----------------|---------|-------------|
@@ -59,6 +61,8 @@ runtime:
 ```
 
 The tool-call probe did not catch this, because it only sends system-first prompts. See [docs/cynco-failure-log.md](docs/cynco-failure-log.md).
+
+**Qwen3.8 has its own template gotchas.** The same template-file override applies (a known-good `chat_template.jinja` ships next to our GGUF), and two things are new. Its template reads `reasoning_effort` (`low | medium | xhigh`) and `preserve_thinking` from `--chat-template-kwargs` — profile key `chat_template_kwargs`, which the engine forwards; other models ignore unknown keys. And it raises `No user query found in messages.` — a hard 400 — on any prompt with no user message, which is one reason the engine's compaction anchors recent user messages verbatim (enforced by a regression test).
 
 ### Embedding Model
 
@@ -119,20 +123,21 @@ That is the bridge's bound port plus one, not a fixed number. The bridge asks fo
 
 ### Recommended: llama.cpp Direct Provider with MTP Speculative Decoding
 
-This is how we run CynCo — llama-server driven directly with Multi-Token Prediction on the Qwen3.6-27B NVFP4 GGUF:
+This is how we run CynCo — llama-server driven directly with Multi-Token Prediction on the Qwen3.8-27B NVFP4 GGUF:
 
 ```bash
 LOCALCODE_PROVIDER=llama-cpp \
-  LOCALCODE_MODEL_PATH=~/.cynco/models/qwen3.6-27b-nvfp4/Qwen3.6-27B-NVFP4-MTP.gguf \
-  LOCALCODE_SPEC_TYPE=draft-mtp \
+  LOCALCODE_MODEL_PATH=~/.cynco/models/qwen3.8-27b-nvfp4/Qwen3.8-27B-NVFP4-MTP-VERY-HIGH.gguf \
+  LOCALCODE_SPEC_TYPE=ngram-mod,draft-mtp \
   LOCALCODE_SPEC_DRAFT_N=3 \
-  LOCALCODE_CONTEXT_LENGTH=65536 \
   bun engine/main.ts
 ```
 
+Context defaults to 131072 — half of what Qwen3.8-27B is trained for (262144), ~2.5 GB of f16 KV — because at 65536 the engine compacted once every ~9 turns on long missions. Override with `LOCALCODE_CONTEXT_LENGTH` if you have less VRAM.
+
 With NVFP4 you also need the chat-template override from [Quantization](#quantization) above, which is a profile key rather than an env var.
 
-The engine auto-manages llama-server with: single-slot mode, context checkpoints for prefix-cache rollback (Qwen3.6 is a hybrid Gated DeltaNet model — warm turns only prefill new tokens instead of reprocessing the whole prompt), capped reasoning budget (256 tokens), and accurate tok/s from server eval timing. The engine keeps its prompt strictly append-only across turns to preserve the cache (enforced by a regression test). Measured live at 45K tokens of context: warm turns restore a checkpoint with ~0.998 prefix reuse and prefill only the ~500-900 genuinely new tokens (~0.6-0.9 s) instead of reprocessing the full prompt (~17 s) — each turn pays only for its new content. Side queries route through the same llama-server instance to avoid VRAM thrashing. Full tuning recipe: [docs/serving/rtx-5090-qwen3.6-27b.md](docs/serving/rtx-5090-qwen3.6-27b.md).
+The engine auto-manages llama-server with: single-slot mode, context checkpoints for prefix-cache rollback (Qwen3.6 and 3.8 are hybrid Gated DeltaNet models — warm turns only prefill new tokens instead of reprocessing the whole prompt), capped reasoning budget (256 tokens), and accurate tok/s from server eval timing. The engine keeps its prompt strictly append-only across turns to preserve the cache (enforced by a regression test). Measured live at 45K tokens of context: warm turns restore a checkpoint with ~0.998 prefix reuse and prefill only the ~500-900 genuinely new tokens (~0.6-0.9 s) instead of reprocessing the full prompt (~17 s) — each turn pays only for its new content. Side queries route through the same llama-server instance to avoid VRAM thrashing. Full tuning recipe: [docs/serving/rtx-5090-qwen3.6-27b.md](docs/serving/rtx-5090-qwen3.6-27b.md).
 
 Every turn's cost is recorded to the `measurements` table: prefill tokens, cached tokens, decode tokens, prefill/decode milliseconds, wall milliseconds, and the source the numbers came from. Prefill tokens are `timings.prompt_n` — the tokens the server actually evaluated — not `prompt_tokens`, which is the size of the whole prompt; conflating them makes a cached 60K prefix look identical to a cold one. A turn whose server reported no timings is stored as `NULL`, not zero: it is unmeasured, not free. `/spend` sums the session and reports how many turns it covers, so a partial total reads as a floor rather than a claim.
 
@@ -145,7 +150,7 @@ Every turn's cost is recorded to the `measurements` table: prefill tokens, cache
 | 8-12 GB | Devstral-Small-2 Q4 | Solid tool calling, single-file tasks |
 | 16 GB | Devstral-Small-2 Q6 | Multi-file projects, sub-agents |
 | 24 GB | Qwen3.6-27B NVFP4 | Full feature set, parallel agents |
-| **32 GB** | **Qwen3.6-27B NVFP4 + MTP** | **What we develop on. 115 tok/s eval measured, with room for 64K context + agents.** |
+| **32 GB** | **Qwen3.8-27B NVFP4 + MTP** | **What we develop on. 94–119 tok/s measured, with room for 131K context + agents.** |
 | 32+16 GB (dual) | Primary + a smaller alternative | S5 can switch to the alternative when latency rises (rule W2) |
 
 Smaller models (<7B) struggle with the tool-calling format. 24B+ recommended for real work.
@@ -350,10 +355,20 @@ fantasy league"), wakes the engine on-demand for one-shot tasks, and pushes reco
 your phone via self-hosted [ntfy](https://ntfy.sh) over Tailscale — approve or reject with one tap,
 no public ports. See [docs/liveness-setup.md](docs/liveness-setup.md).
 
+### Autonomous missions & calibrated-gate supervision
+
+CynCo's proving ground is the unattended mission: one long-horizon brief, no user round-trips, graded at a sealed gate. `scripts/dispatch-mission.sh <brief> <marker> [cwd] [timeout-s] [check-cmd] [probe-cmd]` boots a fresh engine and `scripts/cynco-mission-driver.mjs` drives the run until a marker commit lands, a timeout closes it, or the engine goes quiet. The harness around it:
+
+- **Outcome ledger.** Every mission appends one labeled row to `benchmark/cynco-ledger/missions.NNNN.jsonl`: outcome, check-cmd verdict, exact commit range, per-tool call stats, measured token counts from the server's own timings, and a separately-patched mutation-sweep label. An unmeasured mission is never defaulted to a passing one. Schema and labeling rules: [benchmark/cynco-ledger/README.md](benchmark/cynco-ledger/README.md).
+- **In-loop probe (Stage 1).** Pass a cheap probe command and the driver runs it at quiescent turn boundaries after each landed commit; a FAIL's verbatim tail is injected back into the conversation as a user message, capped by `CYNCO_MAX_PROBE_OVERRIDES` (default 3) and fail-closed on `CYNCO_PROBE_TIMEOUT_MS`. The probe's full history lands in the ledger row's `probe` block.
+- **Sealed, calibrated gates.** Success is graded by held-out gate scripts kept outside the supervised repository. Before dispatch, every gate must FAIL cleanly on the base commit and still FAIL against a cheat-stub perturbation — a gate that errors on the base measures nothing, and a gate a trivial stub can pass cannot discriminate real work from fakery.
+- **Measured supervision economics.** `scripts/supervision-economics.mjs` accounts real frontier-model supervision spend against API-priced displaced generation. Over the five CivKings redesign campaigns (2026-08, all passed their sealed gates): $1 of frontier supervision oversaw ~$1.39 of displaced generation, and that generation ran locally for ~$9.34 of electricity — ~349× cheaper than API pricing. Method, campaigns, and failure modes: [docs/supervision-economics-paper.md](docs/supervision-economics-paper.md).
+- **Failure-log discipline.** Every harness failure gets an F-number, a root cause, and a fix in [docs/cynco-failure-log.md](docs/cynco-failure-log.md). The rule: never fail the same way twice.
+
 ### Semantic Code Index
 **Requires an embedding server.** Vector indexing needs an embedding model running somewhere — it is not served by the chat model. The engine speaks both wire formats: Ollama's `/api/embed` and the OpenAI-shaped `/v1/embeddings` (which `llama-server --embeddings` and most local servers expose), trying each until one answers, or pinned with `LOCALCODE_EMBED_API=ollama|openai`. It looks at `LOCALCODE_EMBED_BASE_URL`, then at the chat URL if the chat provider is Ollama, then at `http://localhost:11434`. If nothing answers you get keyword search, and the engine says so once at the top of the session as well as on `context.status`.
 
-Automatic vector indexing via `jina-code-embeddings-0.5b` (code-specialized; `nomic-embed-text` runtime fallback). The model starts each task knowing your codebase — function signatures, class definitions, imports. Retrieval is a **BM25 + dense RRF hybrid** by default over an AST-boundary-aware chunker. A **repo map** is injected on the first turn (capped ~2k tokens), and index degradation is surfaced on `context.status` (`indexMode` / `indexDegraded` / `lastQueryMode`) — it falls back to keyword search, and says so, when the embedding model is unavailable.
+Automatic vector indexing via `jina-code-embeddings-0.5b` (code-specialized; `nomic-embed-text` runtime fallback). The model starts each task knowing your codebase — function signatures, class definitions, imports. Retrieval is **symbol-first**: ~85% of real mission queries are exact-identifier lookups, and routing those through cosine similarity like prose scored 63% top-3 against Grep's 92% — so identifier-looking queries now hit the AST symbol table first (`engine/index/symbolLookup.ts`), returning the definition (full body, `file:line`) plus ranked references in one call, an answer Grep structurally cannot give. Prose queries fall through to the **BM25 + dense RRF hybrid** over an AST-boundary-aware chunker. A **repo map** is injected on the first turn (capped ~2k tokens), and index degradation is surfaced on `context.status` (`indexMode` / `indexDegraded` / `lastQueryMode`) — it falls back to keyword search, and says so, when the embedding model is unavailable.
 
 ### Workflows
 Structured multi-phase workflows with tool restrictions and advancement gates:
