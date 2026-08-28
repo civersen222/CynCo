@@ -1,0 +1,252 @@
+MISSION 6B WAVE 1 — WAR IS ALIVE IN THE TIERED WORLD (long-horizon; work until the contract holds, then commit the marker)
+
+Repo: C:\Users\civer\civkings
+BASE: fd5414d  (C5 landed: 144x144 atlas, ~200 provinces, 20-30 gentry, war
+drawer on the Atlas tab. The sealed gate re-runs ALL FIVE prior campaigns as
+regression. Do not rework what passes; make war live inside it.)
+
+THE DIAGNOSIS (measured at BASE fd5414d, 2026-08-28 — verbatim)
+
+  Every house demesne is an island: 0 house-house border pairs at seeds
+  7/11/42/99 (seed 42 ownership: 165 unowned provinces, houses own 5-6
+  each), and ownership is FROZEN — owned=39 borders=0 wars=0 at turns
+  1/10/20/40/60. _contested_pairs() requires direct ownership adjacency,
+  so EVERY declared war forms 0 fronts, the muster/commit/appoint controls
+  are never drawn (war_tab.py iterates war.fronts to draw them), and the
+  AI never reaches a war.
+
+  The combat engine itself WORKS. With one border constructed by hand at
+  BASE: declare -> 1 front; 3 pressed musters -> "Raised 1 regiment(s)
+  from Brenwick", "Committed 1 regiment(s) to front 1"; then line
+  +0.25/turn, war_score +15.00 by turn 5, and the defender AI musters
+  back by turn 14 (regs 18v3). Appoint press works ("Marcus Vantrell
+  appointed commander on front 1"). Peace and marriage answers reach the
+  page. Do NOT rebuild combat, muster, appoint, peace, or marriage — they
+  are done. The mission is FRONT FORMATION plus two smaller sores below.
+
+THE DESIGN INTENT (spec: "the War tab dies — wars are drawn on the map")
+When two demesnes do not touch, a declared war must still produce at least
+one front: the armies march and meet in the field between the two houses —
+e.g. a contested corridor of provinces along the way. The mechanism is your
+choice, but it must be deterministic given the seed, front.border must
+reference REAL province pids from game.atlas.provinces (the map draws the
+front from them), and it must work for ANY pair of houses, including the
+two farthest apart. The AI must use it too: houses pursue their conquest
+agendas again instead of sitting frozen forever.
+
+SUCCESS CONTRACT (the sealed gate asserts exactly this, seeds 7 / 11 / 42)
+
+| id | assertion |
+|---|---|
+| G6B.1a | declare_war(game, player, FARTHEST house by demesne-center distance, WarGoal(kind="humble")) yields a war with >= 1 front |
+| G6B.1b | on the drawn Atlas surface: press the war-drawer toggle, then press the ENABLED declare control for the NEAREST house -> exactly one player-vs-that-house war exists with >= 1 front |
+| G6B.1c | with that war open, an ENABLED muster control is drawn in the drawer and pressing it (up to 3 tries) lands >= 1 regiment on the player's side of the front |
+| G6B.1d | within 15 end_turns after mustering, the war MOVES: some front.line != 0, or war_score != 0, or the war resolves |
+| G6B.2a | the drawer's declare list draws the player's OWN house as a DISABLED refusal with a non-empty reason — not omitted |
+| G6B.2b | an at-war enemy is drawn as a DISABLED refusal with a non-empty reason — not omitted |
+| G6B.3 | a fresh game with NO player input reaches >= 1 war within 40 end_turns, every seed |
+| G6B.4 | initiative(game, player, "adjust_garrison", executor) prose contains no milestone token matching \bG\d+\b, at war AND at peace (today the no-war letter says "fronts arrive in G16" — that string must go) |
+| G6B.5 | the C1+C2+C3+C4+C5 sealed gates pass unchanged |
+
+HONESTY RULES (the gate is built to catch claims)
+- A fabricated front does not pass: the calibration cheat stub appends a
+  Front with an EMPTY border to every war — it flips the front COUNT green
+  and still MISSes G6B.1c/1d/2/3/4. The war must be fightable from the
+  drawn surface and must move.
+- Deterministic given seed. No debug hooks in game logic.
+- State change + its beat, always (Clarity Law): if a war-relevant state
+  changes, the existing beats system reports it like any other beat.
+
+PINNED SURFACES (the gate reads exactly these names — do not rename them)
+- game.wars, War.fronts, War.war_score, Front.border, Front.line,
+  Front.attacker_regiments / defender_regiments, Front.commander_a_id /
+  commander_d_id (gilded/fronts.py).
+- The Atlas war drawer: a drawn region whose action contains
+  "toggle_war_drawer"; war controls carry group="war_actions"; declare
+  regions carry action {"declare_war": <house>}; refusals are
+  RegionState.DISABLED with a non-empty .reason.
+- gilded.ui.app._apply_action and new_app_state keep their signatures.
+
+SELF-CHECK (committed, NOT a scratch probe — gilded/tests/test_6b_contract.py,
+run EXACTLY as: python -m pytest gilded/tests/test_6b_contract.py -q
+It must pass before the marker commit. Content:)
+
+  import os
+  os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+  import re
+  from gilded.ui.app import new_app_state, _apply_action
+  from gilded.ui.widgets import RegionState
+  from gilded.fronts import declare_war, WarGoal
+  from gilded.docket import initiative
+
+  SEEDS = (7, 11, 42)
+
+  def _center(g, house):
+      pts = [p.center for p in g.atlas.provinces.values() if p.owner == house]
+      return (sum(x for x, _ in pts) / len(pts),
+              sum(y for _, y in pts) / len(pts))
+
+  def _nearest(g, p):
+      me = _center(g, p)
+      return min((h for h in g.houses if h != p),
+                 key=lambda h: (_center(g, h)[0] - me[0]) ** 2
+                 + (_center(g, h)[1] - me[1]) ** 2)
+
+  def _open_drawer(s):
+      s.view.active_tab = "Atlas"
+      s.view.draw(s.screen)
+      tog = [r for r in s.view.regions._regions
+             if isinstance(r.action, dict) and "toggle_war_drawer" in r.action]
+      assert tog, "war drawer toggle not drawn on Atlas"
+      s.view.handle_click(tog[0].rect.center)
+      assert s.view.war_drawer
+      s.view.draw(s.screen)
+      return [r for r in s.view.regions._regions
+              if getattr(r, "group", "") == "war_actions"]
+
+  def _war_regions(s):
+      s.view.draw(s.screen)
+      return [r for r in s.view.regions._regions
+              if getattr(r, "group", "") == "war_actions"]
+
+  def _press(s, region):
+      action = s.view.handle_click(region.rect.center)
+      assert action is not None, f"press refused: {region.reason!r}"
+      _apply_action(s, action)
+
+  def test_fronts_form_even_far_apart():
+      for seed in SEEDS:
+          s = new_app_state(seed=seed)
+          g, p = s.game, s.house
+          me = _center(g, p)
+          far = max((h for h in g.houses if h != p),
+                    key=lambda h: (_center(g, h)[0] - me[0]) ** 2
+                    + (_center(g, h)[1] - me[1]) ** 2)
+          war = declare_war(g, p, far, WarGoal(kind="humble"))
+          assert len(war.fronts) >= 1, f"seed {seed}: war on {far} has no front"
+
+  def test_declare_press_opens_war_with_fronts():
+      for seed in SEEDS:
+          s = new_app_state(seed=seed)
+          g, p = s.game, s.house
+          near = _nearest(g, p)
+          wa = _open_drawer(s)
+          decl = [r for r in wa if isinstance(r.action, dict)
+                  and r.action.get("declare_war") == near
+                  and r.state == RegionState.ENABLED]
+          assert decl, f"seed {seed}: no enabled declare control for {near}"
+          _press(s, decl[0])
+          wars = [w for w in g.wars
+                  if {w.aggressor, w.defender} == {p, near}]
+          assert len(wars) == 1 and len(wars[0].fronts) >= 1
+
+  def test_muster_lands_and_war_moves():
+      s = new_app_state(seed=42)
+      g, p = s.game, s.house
+      near = _nearest(g, p)
+      wa = _open_drawer(s)
+      decl = [r for r in wa if isinstance(r.action, dict)
+              and r.action.get("declare_war") == near
+              and r.state == RegionState.ENABLED]
+      assert decl
+      _press(s, decl[0])
+      war = [w for w in g.wars if {w.aggressor, w.defender} == {p, near}][0]
+      landed = False
+      for _ in range(3):
+          musters = [r for r in _war_regions(s)
+                     if isinstance(r.action, dict) and "muster" in r.action
+                     and r.state == RegionState.ENABLED]
+          assert musters, "no enabled muster control during a fronted war"
+          _press(s, musters[0])
+          f0 = war.fronts[0]
+          side = (f0.attacker_regiments if war.aggressor == p
+                  else f0.defender_regiments)
+          if side > 0:
+              landed = True
+              break
+      assert landed, "3 muster presses landed no regiment on the front"
+      moved = False
+      for _ in range(15):
+          g.end_turn()
+          if war not in g.wars:
+              moved = True
+              break
+          if any(abs(f.line) > 1e-9 for f in war.fronts) \
+                  or abs(war.war_score) > 1e-9:
+              moved = True
+              break
+      assert moved, "war did not move within 15 turns of mustering"
+
+  def test_refusal_classes_drawn():
+      s = new_app_state(seed=7)
+      g, p = s.game, s.house
+      enemy = sorted(h for h in g.houses if h != p)[0]
+      declare_war(g, p, enemy, WarGoal(kind="humble"))
+      wa = _open_drawer(s)
+      decl = {r.action["declare_war"]: r for r in wa
+              if isinstance(r.action, dict) and "declare_war" in r.action}
+      own = decl.get(p)
+      assert own is not None and own.state == RegionState.DISABLED \
+          and (own.reason or "").strip(), \
+          "own house must be drawn as a refusal with a reason, not omitted"
+      at = decl.get(enemy)
+      assert at is not None and at.state == RegionState.DISABLED \
+          and (at.reason or "").strip(), \
+          "an at-war house must be drawn as a refusal with a reason, not omitted"
+
+  def test_ai_reaches_a_war_alone():
+      for seed in SEEDS:
+          g = new_app_state(seed=seed).game
+          t = 0
+          while t < 40 and not g.wars:
+              g.end_turn()
+              t += 1
+          assert g.wars, f"seed {seed}: no AI war within 40 turns"
+
+  def test_letters_carry_no_milestone_tokens():
+      for at_war in (False, True):
+          s = new_app_state(seed=42)
+          g, p = s.game, s.house
+          if at_war:
+              enemy = sorted(h for h in g.houses if h != p)[0]
+              declare_war(g, p, enemy, WarGoal(kind="humble"))
+          realm = g.realms[p]
+          ex = max((c for c in realm.characters if c.is_alive),
+                   key=lambda c: c.age)
+          out = " ".join(initiative(g, p, "adjust_garrison", ex))
+          assert not re.findall(r"\bG\d+\b", out), out
+
+RULES
+- NO downloads. Everything needed is in the repo. Any curl/wget/pip-install
+  attempt will be refused by the engine.
+- NO scratch probe files in the repo root. Self-checks live in gilded/tests/
+  and are committed.
+- Do not modify the C1..C5 model and UI surfaces (ladder maths, beats, acts,
+  ambitions/wants, orders anatomy/levers, intel, spines, palette, probe,
+  ACCENTS, registry keys, gentry light sim, atlas generation) except where
+  living war requires it — the sealed gate re-runs all five prior gates and
+  every committed test suite must stay green:
+  python -m pytest gilded/tests -x -q.
+- The existing suite WILL notice wars appearing in the AI world (fixtures
+  that assume eternal peace, beat counts, agenda premises). Adapt those
+  tests to the warring world honestly — do not pin them to yesterday's
+  frozen peace, and do not gut an assertion to make it fit.
+- Use the CodeIndex tool FIRST for every symbol lookup (definitions and
+  references in one call) before any Grep/Read crawl — it is faster and it
+  is being measured.
+- Wire-check before finishing: grep every new symbol (the front-formation
+  path, the AI declare path, the refusal rendering, the letter fix) and
+  prove each is imported AND called from the live game, not just defined.
+  Put the grep proof in the final commit message.
+- Commit early and often — after every coherent step, not at the end. An
+  automated probe runs the full suite against your latest commit whenever
+  you go quiet; if it fails you will be told verbatim and the mission
+  continues. Committing the marker does not end the mission while that
+  check fails.
+
+DONE WHEN
+python -m pytest gilded/tests/test_6b_contract.py -q passes and the full
+suite is green: python -m pytest gilded/tests -x -q.
+Then make a final commit whose message contains exactly this marker
+(lowercase, exact string):
+  stage 6b complete
