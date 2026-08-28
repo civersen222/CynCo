@@ -1,6 +1,6 @@
 // Canonical CynCo mission driver (see docs/cynco-failure-log.md F5).
 //
-// Usage: bun scripts/cynco-mission-driver.mjs <task-file> <commit-marker> [cwd] [timeout-s] [check-cmd]
+// Usage: bun scripts/cynco-mission-driver.mjs <task-file> <commit-marker> [cwd] [timeout-s] [check-cmd] [probe-cmd]
 //   task-file:     path to a text file containing the full mission brief
 //   commit-marker: substring expected in `git log --oneline` when the mission lands
 //   cwd:           target repo for the mission (default: C:\Users\civer\civkings)
@@ -13,6 +13,14 @@
 //                  Also sent as a DoD contract with the mission dispatch (P4.2)
 //                  so taskError/errorTrend measure the run. The command itself
 //                  is withheld from the text the model reads.
+//   probe-cmd:     Stage 1 (S3*, docs/cynco-self-orchestration-spec.md): cheap
+//                  PUBLIC check run at every quiescent turn boundary once a
+//                  commit has landed. FAIL => verbatim output injected as a new
+//                  user turn and the mission continues (max
+//                  CYNCO_MAX_PROBE_OVERRIDES, default 3). PASS/UNMEASURED =>
+//                  the exit stands. Requires CYNCO_PROBE_TIMEOUT_MS, fail-closed
+//                  like check-cmd. Never a perf-measuring command: it shares
+//                  the machine with the run it is probing.
 //
 // Optional sidecar: <task-file with .contract.json instead of its extension>.
 // What the brief AUTHORIZES, which the brief text cannot say in a way any
@@ -45,6 +53,7 @@ import { spawnSync } from 'node:child_process'
 import { createMissionCollector, buildMissionRecord, missionCommitted, missionOutcome, waitExitReason, gateDisposition, historyRewrite, QUIET_MS } from './cynco-ledger.mjs'
 import { countGraderProbes } from './cynco-grader-probes.mjs'
 import { runCheck } from './cynco-verify.mjs'
+import { probeConfigError, shouldProbe, overrideDecision, probeMessage } from './cynco-probe.mjs'
 import { purgeBytecodeCaches, purgeStaleAgentState } from './cynco-workspace.mjs'
 import { loadMissionAssertions, sidecarPath, sealedDispatchRefusal, s5DispatchRefusal, workspaceError } from './cynco-contract.mjs'
 import { engineEndpoints } from './cynco-endpoints.mjs'
@@ -55,9 +64,9 @@ import { cyncoHome } from '../engine/paths.js'
 import { withheldGatePaths } from '../engine/bridge/contractAutoCreate.js'
 import { loadOrCreateTokens } from '../engine/security/localToken.js'
 
-const [taskFile, marker, cwdArg, timeoutArg, checkCmd] = process.argv.slice(2)
+const [taskFile, marker, cwdArg, timeoutArg, checkCmd, probeCmd] = process.argv.slice(2)
 if (!taskFile || !marker) {
-  console.error('usage: bun scripts/cynco-mission-driver.mjs <task-file> <commit-marker> [cwd] [timeout-s] [check-cmd]')
+  console.error('usage: bun scripts/cynco-mission-driver.mjs <task-file> <commit-marker> [cwd] [timeout-s] [check-cmd] [probe-cmd]')
   process.exit(2)
 }
 const CWD = cwdArg ?? 'C:\\Users\\civer\\civkings'
@@ -129,6 +138,19 @@ if (checkCmd && process.env.CYNCO_CHECK_TIMEOUT_MS === undefined) {
   console.error('[driver] set it explicitly, e.g. CYNCO_CHECK_TIMEOUT_MS=1800000 — nothing was dispatched')
   process.exit(2)
 }
+
+// Stage 1 (S3*): same fail-closed shape for the probe's cap — a probe killed at
+// a default nobody chose reports UNMEASURED at the exact moment it was needed.
+const probeError = probeConfigError(probeCmd, process.env.CYNCO_PROBE_TIMEOUT_MS)
+if (probeError) {
+  console.error(`[driver] ${probeError} — nothing was dispatched`)
+  process.exit(2)
+}
+const PROBE_TIMEOUT_MS = probeCmd ? parseInt(process.env.CYNCO_PROBE_TIMEOUT_MS, 10) : 0
+const MAX_PROBE_OVERRIDES = parseInt(process.env.CYNCO_MAX_PROBE_OVERRIDES ?? '3', 10)
+const probeState = probeCmd
+  ? { command: probeCmd, runs: 0, fails: 0, overrides: 0, lastExit: null, lastVerified: null, exhausted: false, blockedBySocket: 0 }
+  : null
 
 let missionAssertions
 try {
@@ -260,6 +282,15 @@ const readyGateTimer = setTimeout(() => {
   process.exit(4)
 }, parseInt(process.env.CYNCO_READY_S ?? '30', 10) * 1000)
 
+// Finding (ag): the brief is the instrument this mission is judged against, and
+// this driver is the only component that knows where it lives. Measured on
+// Gilded L4.6b, a run rewrote the brief it had been Read three times with a
+// plausible reconstruction of its own. Finding (ac) built the refusal but fed
+// it from LOCALCODE_IMMUTABLE_PATHS, read inside the engine process — which
+// this driver, a WebSocket client, cannot set. So it travels with the message —
+// dispatch and probe injection alike (Stage 1 sends user.messages too).
+const readOnlyPaths = [resolve(taskFile).replace(/\\/g, '/')]
+
 function dispatchMission() {
   if (dispatched) return
   dispatched = true
@@ -278,13 +309,6 @@ function dispatchMission() {
         assertions: missionAssertions,
       }
     : undefined
-  // Finding (ag): the brief is the instrument this mission is judged against, and
-  // this driver is the only component that knows where it lives. Measured on
-  // Gilded L4.6b, a run rewrote the brief it had been Read three times with a
-  // plausible reconstruction of its own. Finding (ac) built the refusal but fed
-  // it from LOCALCODE_IMMUTABLE_PATHS, read inside the engine process — which
-  // this driver, a WebSocket client, cannot set. So it travels with the message.
-  const readOnlyPaths = [resolve(taskFile).replace(/\\/g, '/')]
   ws.send(JSON.stringify({
     type: 'user.message', text: task, cwd: CWD, readOnlyPaths,
     // This driver is a script, not a person. An AskUser raised here is broadcast
@@ -467,6 +491,38 @@ while (!quiet && !zeroToolCompletion && !silentAfterDispatch && (Date.now() - st
   // out its budget only buys a wrong label; see waitIsOver().
   exitReason = waitExitReason({ landed, sawMessageComplete, msSinceActivity: Date.now() - lastActivityAt, engineError, engineProcessing, workBegun, engineGone: wsClosed && runStateSeen && engineProcessing === null })
   if (exitReason) {
+    // Stage 1 (S3*): the probe runs where the exit decision resolves — the same
+    // place GVS5H runs its verifier, between worker turns. The engine ignores
+    // user.message while a turn is open (conversationLoop.ts:872), so this
+    // boundary is the only moment an injection can land. On FAIL with budget
+    // and a live socket, the injection IS the hard override: the wait continues.
+    if (probeState && shouldProbe({ probeCmd, landed, exitReason })) {
+      const probedSha = gitHead(CWD)
+      console.log(`[probe] running in ${CWD}: ${probeCmd} (cap ${PROBE_TIMEOUT_MS}ms, run ${probeState.runs + 1})`)
+      const pr = runCheck(probeCmd, CWD, PROBE_TIMEOUT_MS)
+      probeState.runs++
+      probeState.lastExit = pr.exitCode
+      probeState.lastVerified = pr.verified
+      if (pr.verified === false) probeState.fails++
+      const d = overrideDecision({ verified: pr.verified, overridesUsed: probeState.overrides, maxOverrides: MAX_PROBE_OVERRIDES, socketOpen: !wsClosed })
+      console.log(`[probe] ${pr.verified === null ? 'UNMEASURED' : pr.verified ? 'PASS' : 'FAIL'} (exit=${pr.exitCode ?? 'none'}${pr.timedOut ? ', TIMED OUT' : ''}, ${pr.durationMs}ms) — ${d.why}`)
+      if (pr.verified === false && wsClosed) probeState.blockedBySocket++
+      if (d.inject) {
+        probeState.overrides++
+        console.log('[probe] injecting the verbatim FAIL and continuing the wait — the mission is not done')
+        try {
+          ws.send(JSON.stringify({ type: 'user.message', text: probeMessage({ sha: probedSha, ...pr }), cwd: CWD, readOnlyPaths, unattended: true }))
+          sawMessageComplete = false
+          lastActivityAt = Date.now()
+          exitReason = null
+          continue
+        } catch (e) {
+          console.log(`[probe] injection FAILED (${e?.message ?? e}) — the exit stands after all`)
+        }
+      } else if (pr.verified === false) {
+        probeState.exhausted = probeState.overrides >= MAX_PROBE_OVERRIDES
+      }
+    }
     if (exitReason === 'engine_error') console.log('[driver] leaving the wait loop on the engine error above — the git poll ran first, so a commit made before the crash is already recorded')
     else if (exitReason === 'engine_gone') console.log('[driver] the engine is GONE — the socket closed and /api/run, which answered earlier in this run, no longer answers. Not silence, absence.')
     else if (exitReason === 'engine_closed_the_turn') console.log(`[driver] the engine reports the turn is closed — ${landed ? 'proceeding to verification' : 'nothing committed; the run is over'}`)
@@ -727,6 +783,8 @@ try {
     engineError,
     verified,
     verify,
+    // Stage 1 (S3*): what the in-loop probe saw and did. null when no probe-cmd.
+    probe: probeState,
     history,
     // -> `commitRange`. The pair that makes this row sweepable later; see the
     // field's comment in cynco-ledger.mjs for the 150 rows that had no pair.
