@@ -805,8 +805,41 @@ try {
 // worse than the undead engine was. The engine's /quit path runs cleanShutdown,
 // which stops llama-server and the sidecars — a bare exit would orphan them.
 // NOTE: the 9161 dashboard rides the engine process and goes down with it.
+// F131 residual (C5 wave 3): the engine can close the MISSION socket at the
+// end of its turn loop and keep running — wsClosed proves the socket died,
+// not the process. Probe with a fresh connection: if it accepts, the engine
+// is alive and gets its /quit over the new socket; if it refuses, it is gone.
 if (process.env.CYNCO_TEARDOWN_ENGINE === '1' && wsClosed) {
-  console.log('[driver] F131 teardown: socket already closed (engine gone) — nothing to quit; if the process survived, kill the tree by hand')
+  await new Promise((done) => {
+    let probe
+    let opened = false
+    let settled = false
+    const settle = (msg) => {
+      if (settled) return
+      settled = true
+      clearTimeout(t)
+      console.log(msg)
+      done()
+    }
+    const t = setTimeout(() => {
+      try { probe?.close() } catch {}
+      settle('[driver] F131 teardown: reconnect probe hung 20s — engine state unknown, kill the tree by hand')
+    }, 20000)
+    try {
+      probe = new WebSocket(WS_URL, { headers: { Authorization: `Bearer ${bridgeToken}` } })
+      probe.onopen = () => {
+        opened = true
+        console.log('[driver] F131 teardown: mission socket was closed but the engine still accepts connections — sending /quit over a fresh socket')
+        try { probe.send(JSON.stringify({ type: 'command', command: '/quit', args: '' })) } catch {}
+      }
+      probe.onclose = () => settle(opened
+        ? '[driver] F131 teardown: probe socket closed — engine and children are down (dashboard 9161 included)'
+        : '[driver] F131 teardown: reconnect refused — engine really is gone, nothing to quit')
+      probe.onerror = () => { if (!opened) settle('[driver] F131 teardown: reconnect refused — engine really is gone, nothing to quit') }
+    } catch (e) {
+      settle(`[driver] F131 teardown: reconnect probe failed (${e?.message ?? e}) — engine really is gone, nothing to quit`)
+    }
+  })
 } else if (process.env.CYNCO_TEARDOWN_ENGINE === '1') {
   await new Promise((done) => {
     const t = setTimeout(() => {

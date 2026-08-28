@@ -2889,6 +2889,18 @@ wave was dispatched pre-fix, so its engine still needs the hand-kill; the
 /quit path gets tested against the idle engine booted to restore the
 dashboard afterwards).
 
+**Residual found at first full exercise (C5 wave 3) and closed same day.**
+The teardown trusted `wsClosed` as proof the engine was gone — but the engine
+closes the MISSION socket at the end of its turn loop and keeps running
+(exitReason engine_closed_the_turn; bun + llama-server alive on 9160/9161/8081
+after the ledger row). A closed socket proves the socket died, not the process.
+Fix: when teardown is wanted and the socket is already closed, the driver now
+probes with a FRESH authenticated WebSocket — if the bridge accepts (its one
+client slot is free precisely because the mission socket closed), the engine is
+alive and gets its /quit over the probe; if the connect is refused, it is
+really gone. Validated live against the undead wave-3 engine: probe connected,
+/quit landed, engine and llama-server fully down.
+
 ## F132 — the gate graded a tree the commit could not reproduce
 
 **Where.** C5 wave 1 (ledger c5-wave1-1787844497777, head 35050f9, exitReason
