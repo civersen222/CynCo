@@ -1,0 +1,139 @@
+MISSION C6 WAVE 2 — COMPLETE THE TEXT LEDGER (narrow remediation; work until the contract holds, then commit the marker)
+
+Repo: C:\Users\civer\civkings
+BASE: be130a7  (your own wave-1 head. Wave 1 built the whole slice and it
+WORKS: menu, save/continue, settings, audio, onboarding, chains, ending —
+every sealed-gate check PASSED at be130a7 except ONE. Do not rework any of
+it. This wave closes that one gap.)
+
+THE ONE FAIL (sealed gate at be130a7, verbatim)
+
+  C6.5.t0.House: FAIL rows=42 overlaps=0 first=[]
+
+  Every other line: PASS. C6.9 prior chain: PASS, 0 regressions.
+
+THE DIAGNOSIS (measured 2026-08-28 at be130a7 — verbatim)
+
+  House t0: font renders=100 text_rows=42
+
+  A counted draw of the House tab at turn 0 (seed 42, warmed caches)
+  renders 100 distinct text blits; view.text_rows records only 42. The
+  58 unrecorded strings are the text drawn WITHOUT going through
+  gilded.ui.widgets.blit_text: button labels, section headers, the heir
+  controls, tab chrome — every site that still calls font.render +
+  surface.blit directly. Your blit_text -> _text_rows wiring
+  (widgets.py:139-154) is correct; it just is not the only door text
+  leaves through. The overlap check is blind to text it cannot see, and
+  the floor (measured at BASE) exists precisely to catch that blindness.
+
+  Your wave-1 run knew this: the driver preserved your uncommitted
+  in-flight edit adding a text-line record to house_tab.py's body loop.
+  That specific site is already covered by blit_text at be130a7 — the
+  REMAINING gap is the other draw sites.
+
+THE WORK (one cut)
+
+Route every text draw on the tab surfaces (House, Powers, Atlas at
+minimum; all tabs preferably) through blit_text — or through any
+equivalent that records the drawn rect + string into the same ledger.
+Mechanism is your choice; the gate only demands the outcome:
+
+| id | assertion (unchanged from wave 1, plus hardening) |
+|---|---|
+| C6.5 | on tabs House/Powers/Atlas at turns 0/10/40: view.text_rows is populated and NO two row rects collide; House at turn 0 has >= TEXT_ROWS_FLOOR rows (floor measured at BASE) |
+| NEW | every string in text_rows must have ACTUALLY been rendered through pygame.font.Font.render in-process — the gate cross-checks against a render capture. Fabricated/stuffed rows are detected and named in the FAIL line |
+| C6.9 | the C1..C5+6B sealed gates pass unchanged, and every wave-1 surface keeps passing |
+
+HONESTY RULES
+- You cannot pass by drawing LESS: the floor is measured against the real
+  page and removing text to reduce collisions is a Clarity Law violation.
+  Fix layout, keep the text.
+- You cannot pass by stuffing text_rows: entries nobody rendered FAIL the
+  gate by name (see NEW above).
+- Rows that overlap after you record them are REAL overlaps that were
+  invisible before — lay the sections out; do not un-record the text.
+
+HARD RULE — YOUR DELIVERY IS GRADED AT HEAD (learned from your wave 1)
+- Do NOT create worktrees or clones inside the repo, and do NOT run
+  `git -C <dir>` against anything that is not a verified repo: wave 1 ran
+  `git -C .c6base checkout -f 36fddfd` against a broken worktree
+  directory, git fell through to the PARENT repo, and your six good
+  commits were graded as if they did not exist.
+- Never check out another commit for any reason. Your work is graded at
+  whatever HEAD is when you stop. If you need to read old code:
+  git show <sha>:<path>.
+
+SELF-CHECK (committed — EXTEND gilded/tests/test_c6_contract.py, run
+EXACTLY as: python -m pytest gilded/tests/test_c6_contract.py -q
+Add this test; do not weaken the existing six:)
+
+  _COMPLETENESS_PROBE = r"""
+  import os
+  os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+  os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+  import pygame
+  rendered = set()
+  class _F(pygame.font.Font):
+      def render(self, text, *a, **kw):
+          if isinstance(text, str) and text.strip():
+              rendered.add(text)
+          return super().render(text, *a, **kw)
+  pygame.font.Font = _F   # BEFORE any gilded import: widgets caches fonts
+  from gilded.ui.app import new_app_state
+  s = new_app_state(seed=42)
+  for tab in ("House", "Powers", "Atlas"):
+      s.view.active_tab = tab
+      s.view.draw(s.screen)      # warm-up draw fills caches
+      rendered.clear()
+      s.view.draw(s.screen)      # measured draw
+      rows = {t for _, t in s.view.text_rows if t.strip()}
+      missing = rendered - rows
+      assert not missing, (tab, sorted(missing)[:5], len(missing))
+  print("COMPLETE")
+  """
+
+  def test_text_rows_complete(tmp_path, monkeypatch):
+      monkeypatch.chdir(tmp_path)
+      repo = os.path.dirname(os.path.dirname(os.path.dirname(
+          os.path.abspath(__file__))))
+      p = subprocess.run(
+          [sys.executable, "-c", _COMPLETENESS_PROBE],
+          cwd=tmp_path, env={**os.environ, "PYTHONPATH": repo},
+          capture_output=True, text=True, timeout=300)
+      assert p.returncode == 0, p.stdout + p.stderr
+      assert "COMPLETE" in p.stdout
+
+  (The subprocess is REQUIRED: the render hook must be installed before
+  any gilded import, and the pytest process has long since imported
+  gilded. This is the same pattern as test_settings_persist_across_process.)
+
+RULES
+- NO downloads. NO scratch probe files in the repo root; self-checks live
+  in gilded/tests/ and are committed.
+- Do not touch the menu, save, settings, audio, beats, endings, or any
+  C1..C6B surface except the draw sites this cut needs — the sealed gate
+  re-runs everything and every committed test must stay green:
+  python -m pytest gilded/tests -x -q.
+- If recording previously-invisible text exposes REAL overlaps on any
+  tab/turn the gate reads (House/Powers/Atlas at 0/10/40), fixing that
+  layout is IN scope — that is the point of the ledger.
+- Use the CodeIndex tool FIRST for every symbol lookup (definitions and
+  references in one call) before any Grep/Read crawl — it is faster and
+  it is being measured.
+- Wire-check before finishing: grep for font.render and surface.blit
+  call sites under gilded/ui/ and prove each tab-surface text draw either
+  goes through blit_text or records to the same ledger. Put the grep
+  proof in the final commit message.
+- Commit early and often — after every coherent step, not at the end. An
+  automated probe runs your committed contract test against your latest
+  commit whenever you go quiet; if it fails you will be told verbatim and
+  the mission continues. Committing the marker does not end the mission
+  while that check fails.
+
+DONE WHEN
+python -m pytest gilded/tests/test_c6_contract.py -q passes (all seven
+tests including test_text_rows_complete) and the full suite is green:
+python -m pytest gilded/tests -x -q.
+Then make a final commit whose message contains exactly this marker:
+
+stage c6 complete

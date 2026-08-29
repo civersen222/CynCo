@@ -3010,3 +3010,50 @@ suites must include a multi-instance variant (two wars, two saves, two
 whatever) so single-instance indexing fails at calibration, not at verdict.
 Stage-1 metric note: this wave's gate-FAIL-at-verdict was a GATE defect, not
 a delivery defect — count it accordingly.
+
+## F135 — `git -C` fell through to the parent repo and the driver graded BASE with the delivery one reflog entry away
+
+**Where.** C6 wave 1 (row `c6-wave1-1787963208722`, base 36fddfd). The row
+landed with `verify.gradedSha = 36fddfd` (= BASE), verify FAIL (all 6
+contract-test fails by absence), `commitRange.base === head` ("committed
+nothing"), and `history.rewritten: true` naming six "discarded" commits —
+which were sitting intact on master the whole time, tip be130a7.
+
+**How it failed.** The mission built a grading sandbox: `git worktree add
+.c6base 36fddfd` (driver log line 470). The worktree's registration later
+broke (`.c6base` ended up a plain directory absent from `git worktree list`).
+At 23:22:09 — 18 minutes after its last commit, 4 minutes before the 6h
+timeout — the mission ran `git -C .c6base checkout -f 36fddfd` (line 1812).
+`git -C <dir>` does not fail when `<dir>` is not a repo: it resolves the
+nearest ENCLOSING repo, which was the mission repo itself. The checkout
+detached the mission repo's HEAD at BASE. Reflog: `36fddfd HEAD@{2026-08-28
+23:22:09}: checkout: moving from master to 36fddfd`. The driver then graded
+HEAD blind: contract test at bare BASE fails by absence, the sweep prints
+"this mission committed nothing", and the history collector — working
+exactly as F38 designed — labels the six real commits discarded.
+
+**Why.** Two stacked assumptions, one per party. The mission assumed `git -C
+<dir>` addresses that directory's repo; git's contract is "nearest enclosing
+repo", and a broken worktree is not a repo. The driver assumed HEAD at grade
+time is the mission's delivery head; HEAD is merely where the last checkout
+left the pointer, and a mission is free (and here, accidentally able) to park
+it anywhere.
+
+**The fix (shipped same day, tested).** `gradedHeadSuspect()` in
+scripts/cynco-ledger.mjs: when the graded sha IS the baseline and the reflog
+holds in-window commits unreachable from it, the driver stamps
+`history.gradedHeadSuspect` with the newest such commit and prints `GRADED
+HEAD IS THE MISSION BASE` plus a re-grade command. Silent for ordinary
+amend/squash runs (that is F38's `rewritten` flag, already on the row) and
+for unmeasured histories. Detection only — checking out a candidate head
+under the gate is exactly the intervention F132 bounded to a supervisor.
+Regression tests in engine/__tests__/harness/cyncoLedger.test.ts (114 pass),
+including a wire check that the driver calls it and stamps the row. This
+verdict was re-graded by hand at be130a7: contract test 6/6 PASS, sealed
+gate MISS (1 fail) — a REAL wave-2 signal the accident had been masking.
+
+**General lesson.** HEAD is not the delivery; it is where the last checkout
+left the pointer. Any grader that reads HEAD must cross-examine it against
+the reflog before believing it — the same F38 move, one level up: `git log`
+is the history that survived, and HEAD is the history that happened to be
+checked out.

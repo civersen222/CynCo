@@ -593,6 +593,31 @@ export function historyRewrite({ reflog, reachable, sinceEpochS }) {
   return { rewritten: discarded.length > 0, discarded }
 }
 
+/**
+ * Was the graded HEAD the mission BASE while real work sat in the reflog?
+ *
+ * F135. C6 wave 1 committed six times, then ran `git -C .c6base checkout -f
+ * <BASE>` against a worktree whose registration had broken. `git -C <dir>`
+ * does not fail when <dir> is not a repo — it walks UP to the nearest
+ * enclosing one — so the checkout detached the MISSION repo's HEAD at BASE,
+ * four minutes before the timeout. The driver graded HEAD blind: verify ran
+ * the check against bare BASE (6 fails, all by absence), commitRange came out
+ * empty, and six real delivery commits were labeled "discarded" when they
+ * were sitting intact on master the whole time.
+ *
+ * The driver cannot stop a mission from moving HEAD. What it can do is refuse
+ * to pretend that a base-parked HEAD plus in-window unreachable commits is a
+ * graded delivery. This returns the newest discarded sha — the likely real
+ * head — when the graded sha IS the baseline and the reflog says the mission
+ * committed; null otherwise. Detection only: checking out a candidate under
+ * the gate is exactly the intervention F132 bounded to a supervisor.
+ */
+export function gradedHeadSuspect({ history, gradedSha, baselineSha }) {
+  if (!history?.rewritten || !history.discarded?.length) return null
+  if (!gradedSha || !baselineSha || gradedSha !== baselineSha) return null
+  return history.discarded[0].sha
+}
+
 // meta: { missionId, briefFile, marker, markerSeen, cwd, dispatchedAt, durationS,
 //         outcome: 'landed' | 'timeout' | 'stopped_without_commit' | 'zero_tool_fail' | 'engine_error' | 'never_dispatched',
 //         engineError?: string,                 // session.error text, null when healthy
