@@ -522,3 +522,66 @@ contract test; probe-cmd = full suite `python -m pytest gilded/tests -x -q`
 run at quiescent exits after commits, FAIL tail injected verbatim
 (spec Stage 1 metric: gate-FAIL-at-verdict rate vs the C1-C5 baseline of
 5/12 waves MISSed).
+
+**6B wave 1 verdict (2026-08-28).** Row `6b-wave1-1787938365327`: landed,
+verified true, markerSeen, exitReason engine_closed_the_turn, 16,169 s
+(4h29m), 547 turns, 4 commits fd5414d → 36fddfd. Delivery: 966727e war
+index resolution (global + house-relative) across docket
+commit/muster/appoint, fb33821 + 115772e test repairs, 36fddfd marker.
+
+The sealed gate at 36fddfd first said **MISS (3 fails)** —
+`s7.G6B.1c.muster-press: FAIL pressed muster on the drawn drawer; err=None`
+on every seed — and that MISS was a **gate defect, not a delivery defect**
+(F134). The delivery draws one muster region PER LIVE WAR; the gate had two
+wars live at 1c and pressed `musters[0]` (the far war) while watching the
+near war's front. A read-only probe proved the war-matched region lands
+regiments exactly where it should. Gate repaired (press EVERY enabled
+muster; only growth on the watched war counts), re-run: **GATE PASS** on
+seeds 7/11/42 plus the full C1..C5 chain, zero fails. The perturb stub
+never modelled a two-war world — perturb suites now must include a
+multi-instance variant (F134, same class as C3's wrong-shape lesson).
+
+**Stage-1 probe, first live report:** 1 run, 0 fails, 0 overrides,
+lastExit 0, verified, not exhausted — full suite PASS in 235 s at a
+quiescent exit, under the 900 s cap. Stage-1 metric note: this wave DID
+show gate-FAIL-at-verdict, but the fail was the gate's, so the probe's
+record stands clean — the suite it guarded was in fact green: the full
+committed suite at 36fddfd is **2052 passed, 0 failed** (2046 at C5
+close; the F133 floor holds with room).
+
+Tools: 510 calls, 46 errors (9.0%) — Read 224 / Grep 143 / Bash 88 /
+Edit 32 / **CodeIndex 15** / Glob 4 / MultiEdit 1 / Write 1. CodeIndex
+2.9%, best wave yet (0.4 → 2.3 → 1.4 → 2.7 → 2.9 across the symbol-first
+era). tokenStats: prefill 816,483 / cached 20,839,102 / decode 274,311
+over 547/547 measured turns. graderProbes 0/510; history clean.
+Economics refresh: $1 frontier supervision : ~$1.33 displaced generation,
+~$9.76 total electricity across all campaigns. Derived mutation sweep
+(record #254): killed 5 / total 25 — 20 survivors, ALL in
+gilded/docket.py:1427-1500, the war-index eligibility conditions the wave
+added. The sealed gate owns those rules (it presses them); the delivered
+TESTS mostly do not. A follow-up wave that wants to touch docket
+eligibility must bring tests that kill that cluster first.
+
+6B verdict: **PASS**. War is alive in the tiered world: fronts form
+against any house, the drawn drawer declares/musters/moves, refusals
+speak, the AI reaches its own wars, and the letters stay clean.
+
+---
+
+## Campaign C6 — the vertical slice (calibrated 2026-08-28)
+
+BASE: 36fddfd (6B head). Gate: `~/.cynco/heldout/civkings-redesign/c6/`
+(gate_c6.py, perturb_c6.py). Brief: c6-wave1.txt.
+
+Calibration (Rule 11): gate at BASE = clean MISS, **20 fails, all by
+absence** (`new_app_state(start="menu") not accepted`, `gilded.audio
+absent`, `view.text_rows absent`, no menu-started game), zero gate
+errors, and C6.9 = 0 prior-campaign regressions (all six prior gates
+PASS in-chain). Perturb stub (fake menu whose New Game press builds
+nothing, claimed audio files that do not exist, settings that never touch
+disk): flips ONLY C6.1a/1b — every discriminator (1c, 2, 3, 4a/b/c, 5.*,
+6/7/8) still FAILs. TEXT_ROWS_FLOOR measured at BASE: 113 non-empty font
+renders on the House tab (seed 42, warmed draw) → floor 56. Save entry
+point confirmed: `gilded/save.py:28 def save_game`. F134 review: gate_c6
+has no `[0]` indexing into drawn surfaces — all lookups keyed by action
+value, every check grades the outcome, not the region pressed.

@@ -1,7 +1,7 @@
 MISSION C6 WAVE 1 — THE VERTICAL SLICE: MENU -> PLAY -> ENDING (long-horizon; work until the contract holds, then commit the marker)
 
 Repo: C:\Users\civer\civkings
-BASE: TBD-AT-CALIBRATION  (post-6B head. War is alive; ALL SIX prior campaigns
+BASE: 36fddfd  (6B head. War is alive; ALL SIX prior campaigns
 re-run as regression through the sealed gate. Do not rework what passes; wrap
 the working game in a slice a stranger could play.)
 

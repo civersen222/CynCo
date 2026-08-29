@@ -2972,3 +2972,41 @@ does not get written.
 
 **General lesson.** A rule the gate cannot see is a rule the mission can
 break in a green run. If the suite is load-bearing, gate the suite.
+
+## F134 — the sealed gate pressed musters[0] in a two-war world and graded the wrong war
+
+**Where.** 6B wave 1 verdict (head 36fddfd, delivery commit 966727e). The
+sealed gate's G6B.1c MISSed on all three seeds — `s7.G6B.1c.muster-press:
+FAIL pressed muster on the drawn drawer; err=None` — while the mission's own
+check-cmd (test_6b_contract.py, 0 fails) and the in-run Stage-1 probe (1 run,
+0 fails, PASS in 235s) were green.
+
+**How it failed.** The delivery's war-index resolution draws ONE muster
+region PER LIVE WAR (`{'muster': 33, 'war_id': 0, ...}` and `{'muster': 33,
+'war_id': 1, ...}`). The gate had two wars live at 1c — 1a's API war on the
+farthest house plus 1b's pressed war on the nearest — and pressed
+`musters[0]` (the far war's region) while watching the NEAR war's
+`fronts[0]`. A read-only probe confirmed: pressing war_id=0 grew war 0's
+regiments 0→1→2→3; pressing the war_id=1 region grew the watched war 0→1.
+The delivery was correct. The gate graded the wrong war.
+
+**Why.** The calibration stub (Rule 11 perturb) never modelled a two-war
+world — one war, one muster region, `musters[0]` was always right. The
+delivery legitimately generalized to per-war regions and the gate's
+single-instance assumption broke silently (err stayed None; the press
+succeeded, just elsewhere). Same class as C3's wrong-shape-variant lesson:
+the perturb suite exercised the mechanism the stub had, not the mechanisms a
+correct delivery is allowed to have.
+
+**The fix (shipped same day, sealed-gate repair — supervisor work, allowed).**
+G6B.1c now presses EVERY enabled muster region and only counts growth on the
+watched war's front — mechanism-agnostic, cannot false-pass. Repaired gate:
+GATE PASS on seeds 7/11/42 plus the full C1..C5 chain (6 PASS lines, 0
+FAILs). Repair comment in gate_6b.py records the defect and the rule.
+
+**General lesson.** A gate that indexes into a drawn surface with `[0]`
+encodes an assumption about how many instances the delivery draws. Perturb
+suites must include a multi-instance variant (two wars, two saves, two
+whatever) so single-instance indexing fails at calibration, not at verdict.
+Stage-1 metric note: this wave's gate-FAIL-at-verdict was a GATE defect, not
+a delivery defect — count it accordingly.
