@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 // The ledger collector is a plain .mjs module used by scripts/cynco-mission-driver.mjs
 // @ts-ignore — untyped harness module
-import { createMissionCollector, buildMissionRecord, missionCommitted, missionOutcome, waitIsOver, waitExitReason, gateDisposition, historyRewrite, QUIET_MS } from '../../../scripts/cynco-ledger.mjs'
+import { createMissionCollector, buildMissionRecord, missionCommitted, missionOutcome, waitIsOver, waitExitReason, gateDisposition, historyRewrite, gradedHeadSuspect, QUIET_MS } from '../../../scripts/cynco-ledger.mjs'
 import { readLedger, shardPaths, shardIndex, activeShardPath, ledgerCount } from '../../../scripts/cynco-ledger-shards.mjs'
 
 describe('cynco mission outcome ledger', () => {
@@ -1379,5 +1379,53 @@ describe('the ledger is sharded so no record has to move', () => {
     // A reintroduced constant path is exactly how the roll would stop happening
     // while every test above still passed.
     expect(driver).not.toMatch(/'missions\.jsonl'/)
+  })
+})
+
+/**
+ * F135 — the graded HEAD was the mission BASE while the delivery sat in the
+ * reflog. C6 wave 1 ran `git -C .c6base checkout -f <BASE>` against a broken
+ * worktree; `git -C <dir>` walks UP to the enclosing repo when <dir> is not
+ * one, so the mission repo's own HEAD detached at BASE and the driver graded
+ * bare BASE with six real commits one reflog entry away, labeled "discarded".
+ */
+describe('gradedHeadSuspect — F135, grading BASE while the delivery is in the reflog', () => {
+  const c6 = {
+    rewritten: true,
+    discarded: [
+      { sha: 'be130a7', message: 'C6: beat emitters + wiring' },  // newest first, reflog order
+      { sha: 'f4bab91', message: 'C6: settings + audio modules' },
+    ],
+  }
+
+  it('names the newest unreachable commit when the graded sha IS the baseline', () => {
+    expect(gradedHeadSuspect({ history: c6, gradedSha: '36fddfd', baselineSha: '36fddfd' })).toBe('be130a7')
+  })
+
+  it('is silent when the graded sha moved past the baseline — an ordinary amend/squash run', () => {
+    // Rewritten history with a real head is the F38 case, already flagged as
+    // `rewritten`; promoting every tidy-up to a wrong-head alarm would teach
+    // supervisors to ignore the alarm.
+    expect(gradedHeadSuspect({ history: c6, gradedSha: 'aaa1111', baselineSha: '36fddfd' })).toBeNull()
+  })
+
+  it('is silent on a clean history, even at base — committing nothing is not a grading accident', () => {
+    expect(gradedHeadSuspect({ history: { rewritten: false, discarded: [] }, gradedSha: '36fddfd', baselineSha: '36fddfd' })).toBeNull()
+  })
+
+  it('an unmeasured history or an unreadable head stays unknown, never an alarm', () => {
+    expect(gradedHeadSuspect({ history: null, gradedSha: '36fddfd', baselineSha: '36fddfd' })).toBeNull()
+    expect(gradedHeadSuspect({ history: c6, gradedSha: null, baselineSha: '36fddfd' })).toBeNull()
+    expect(gradedHeadSuspect({ history: c6, gradedSha: '36fddfd', baselineSha: null })).toBeNull()
+  })
+
+  it('the driver wires the suspect onto the row and warns at the console', () => {
+    const driver = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'scripts', 'cynco-mission-driver.mjs'),
+      'utf8',
+    )
+    expect(driver).toMatch(/gradedHeadSuspect\(\{ history,/)
+    expect(driver).toMatch(/history\.gradedHeadSuspect = suspect/)
+    expect(driver).toMatch(/GRADED HEAD IS THE MISSION BASE/)
   })
 })

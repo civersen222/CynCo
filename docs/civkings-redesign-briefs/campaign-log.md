@@ -585,3 +585,68 @@ renders on the House tab (seed 42, warmed draw) → floor 56. Save entry
 point confirmed: `gilded/save.py:28 def save_game`. F134 review: gate_c6
 has no `[0]` indexing into drawn surfaces — all lookups keyed by action
 value, every check grades the outcome, not the region pressed.
+
+#### C6 wave 1 — MISS by one check; the grading itself was the second story (ledger c6-wave1-1787963208722, 990 turns, real head be130a7)
+
+The row as the driver wrote it said: verify FAIL (all six contract tests
+failing), commitRange empty, six commits "discarded". Every word of that
+was an artifact — **F135**. The mission had built a grading sandbox
+(`git worktree add .c6base 36fddfd`), the worktree's registration broke,
+and its `git -C .c6base checkout -f 36fddfd` fell through to the parent
+repo (git -C resolves the nearest ENCLOSING repo when the directory is
+not one), detaching the mission repo's HEAD at BASE 4 minutes before the
+21,600s timeout. The driver graded bare BASE. The actual delivery — six
+commits, tip be130a7 — sat intact on master the whole time. Row corrected
+(verifyCorrection + spotAudit on record #255); the driver now
+cross-examines a base-parked graded sha against the reflog and stamps
+`history.gradedHeadSuspect` instead of silently grading BASE
+(gradedHeadSuspect() in cynco-ledger.mjs, regression-tested, 114 green).
+
+Graded by hand at the real head be130a7:
+
+- Contract test: **6/6 PASS** (4.7s).
+- Sealed gate: **MISS (1 fail)** — `C6.5.t0.House: FAIL rows=42
+  overlaps=0` against the floor of 56. Every other check PASS: menu
+  boots/refuses/builds, continue loads turn 6, settings persist across a
+  fresh process, audio registry real + mute honored + LICENSES, all
+  other C6.5 tabs/turns, cold-open onboarding (5/5 facets in 5 turns),
+  chains {enterprise:3, labor:3, war:3}, ending at turn 70 ('The Quiet
+  Throne'), and C6.9 = 0 prior-campaign regressions.
+- The gap, measured: `House t0: font renders=100 text_rows=42` — 58
+  drawn strings (button labels, headers, heir controls) never reach the
+  ledger, so the overlap check is blind to them. The driver-preserved
+  uncommitted patch is the mission's own in-flight fix for exactly this:
+  it found the defect and ran out of clock.
+- Suite at be130a7: **10 failed / 2048 passed** (2052/0 at BASE) — ten
+  UI census/registry tests (region counts, drawn-key registration,
+  docket/executor click paths, hover pos) that wave 1's menu/powers/house
+  changes disturbed and the timeout never let it adapt. All in wave 2's
+  DONE-WHEN scope.
+
+Run shape: exitReason timeout at 21,615s, 990/990 measured turns, marker
+never committed, Stage-1 probe 0 runs (fires on quiescence; the mission
+never went quiet — consistent, not broken). tokenStats prefill 1,593,411
+/ cached 36,897,817 / decode 527,174. Tools 954 calls / 117 errors
+(12.3%). CodeIndex 16/954 = **1.7%** (trend 0.4 → 2.3 → 1.4 → 2.7 → 2.9
+→ 1.7 — the plateau holds). Derived mutation sweep 36fddfd→be130a7
+running at press time; ledger record follows.
+
+Wave 2 dispatched same day at BASE be130a7 (brief c6-wave2.txt): one cut
+— route every tab-surface text draw through the recording path. Gate
+HARDENED first (F134's lesson applied forward): C6.5 now cross-checks
+every text_rows string against a cumulative font-render capture, so
+stuffing the ledger to meet the floor FAILs by name. Re-calibrated at
+be130a7: plain run unchanged (MISS, exactly the one real fail, zero
+FABRICATED noise); CYNCO_PERTURB_STUFF=1 (80 tidy fabricated rows, floor
+met, zero overlaps) FAILs all nine C6.5 lines with FABRICATED=80. The
+brief also carries the F135 hard rule (your delivery is graded at HEAD;
+no worktrees inside the repo, no git -C into unverified directories) and
+a mandated committed completeness self-check (test_text_rows_complete,
+render-capture subprocess).
+
+Sweep landed after press: **2/25 mutants killed** (36fddfd→be130a7 diff). The
+23 survivors cluster in `gilded/audio.py` constants and `gilded/beats.py`
+chain arithmetic — wave 1's committed tests exercise those modules through
+their happy path only. Recorded on the ledger row as `sweep.kind=derived`.
+Weak coverage of audio/beats is a candidate for a later hardening cut, not
+wave 2 (whose one cut is the text ledger).

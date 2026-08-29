@@ -50,7 +50,7 @@
 import { basename, join, resolve } from 'node:path'
 import { appendFileSync, readFileSync, existsSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
-import { createMissionCollector, buildMissionRecord, missionCommitted, missionOutcome, waitExitReason, gateDisposition, historyRewrite, QUIET_MS } from './cynco-ledger.mjs'
+import { createMissionCollector, buildMissionRecord, missionCommitted, missionOutcome, waitExitReason, gateDisposition, historyRewrite, gradedHeadSuspect, QUIET_MS } from './cynco-ledger.mjs'
 import { countGraderProbes } from './cynco-grader-probes.mjs'
 import { runCheck } from './cynco-verify.mjs'
 import { probeConfigError, shouldProbe, overrideDecision, probeMessage } from './cynco-probe.mjs'
@@ -732,6 +732,18 @@ if (history === null) {
   console.log(`[history] REWRITTEN: ${history.discarded.length} commit(s) made by this mission are unreachable from HEAD.`)
   console.log('[history] Not a failure by itself — but every gate reads the SURVIVING log, so read these before believing it:')
   for (const d of history.discarded) console.log(`[history]   ${d.sha.slice(0, 7)}  ${d.message}`)
+}
+
+// F135. `git -C <dir>` walks up to the enclosing repo when <dir> is not one;
+// a mission aiming at a broken worktree detached THIS repo's HEAD at BASE and
+// the verdict above graded bare BASE with the delivery one reflog entry away.
+// Flag it on the row and at the console; re-grading stays supervisor work.
+const suspect = gradedHeadSuspect({ history, gradedSha: verify?.gradedSha ?? null, baselineSha })
+if (suspect) {
+  history.gradedHeadSuspect = suspect
+  console.log(`[history] GRADED HEAD IS THE MISSION BASE while ${history.discarded.length} in-window commit(s) are unreachable from it.`)
+  console.log(`[history] The verify above graded ${verify.gradedSha.slice(0, 7)} — likely NOT the delivery. Newest unreachable commit: ${suspect.slice(0, 7)}`)
+  console.log(`[history] Re-grade by hand: git -C "${CWD}" branch --all --contains ${suspect.slice(0, 7)}  → run the check at that ref, then patch the row.`)
 }
 
 // Stop polling and take one final reading. The interval ran through the gate as
