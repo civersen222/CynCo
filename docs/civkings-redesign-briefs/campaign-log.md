@@ -650,3 +650,76 @@ chain arithmetic — wave 1's committed tests exercise those modules through
 their happy path only. Recorded on the ledger row as `sweep.kind=derived`.
 Weak coverage of audio/beats is a candidate for a later hardening cut, not
 wave 2 (whose one cut is the text ledger).
+
+#### C6 wave 2 — the gate PASSes; the suite says the cut clipped the controls (ledger c6-wave2-1788029416769, 677 turns, head c4794d8)
+
+Two runs, one wave. The first dispatch (2026-08-29 ~01:04 MDT) died with
+the machine at 06:29 — host went down mid-run at iteration 953, no ledger
+row, marker uncommitted. Its work survived on master: 5 commits past BASE
+be130a7 plus a staged in-flight diff (preserved to
+`/tmp/c6w2-inflight-20260829.patch` before resume). Re-dispatched same
+brief at the new baseline 69ed57c after reboot (12:50 MDT); the second
+run added 3 commits (route remaining tab-surface draws through blit_text;
+reserve guide strip/ambition button/bottom bar from tab content; layout
+fixes), tip **c4794d8**.
+
+Graded at c4794d8 after F131 teardown:
+
+- Contract test: **7/7 PASS** (5.77s), including the mandated committed
+  `test_text_rows_complete`.
+- Sealed gate: **PASS, 0 fails.** The wave's one target, verbatim:
+  `C6.5.t0.House: PASS rows=57 overlaps=0 first=[]` — up from 42 against
+  the floor of 56, FABRICATED=0 under the pre-wave-2 hardened
+  render-capture cross-check. All nine C6.5 lines PASS, C6.6/7/8 hold
+  (onboarding 5/5 facets, chains {enterprise:3, labor:3, war:3}, ending
+  turn 70 'The Quiet Throne'), C6.9 = 0 prior-campaign regressions.
+- Suite at c4794d8: **13 failed / 2046 passed** (clean re-run, 21:10;
+  identical list under load — deterministic). All 13 are the interactive
+  region/click family: 11 in `test_ui_broadsheet.py` plus
+  `test_ui_actions.py::test_every_drawn_key_is_registered` and
+  `test_ui_app.py::test_mousemotion_stores_hover_pos`. Measured cause:
+  `region census moved: {'House': 18, 'Powers': 19, 'Atlas': 28}` against
+  expected House **26**, Atlas **29** — bounding sections to the content
+  band ("headers skip when no room") dropped eight House controls and one
+  Atlas control from the draw, and `test_policies_tab_draws_and_clicks`
+  finds `v._dial_hits == []`: the Policies page draws no dial hit-regions
+  at all. Text that is not drawn cannot overlap; controls that are not
+  drawn cannot be clicked. The gate measures the former and PASSed; the
+  suite measures the latter and did not.
+- The mission knew: it never committed the marker, and its gate-time
+  uncommitted experiment (preserved by the driver to
+  `C:\tmp\c6-wave2-1788029416769.uncommitted.patch`, reset before
+  grading per F132) deletes the House "Policies" page outright — an
+  attempt to reconcile the census by removing what it could no longer
+  fit. Left unapplied; the wave-3 cut restores controls, it does not
+  amputate them.
+
+Row facts: exitReason timeout at 21,630s, markerSeen false, verified
+null→true by verifyCorrection (ADVISORY race — the run never went quiet;
+independent re-run of the check-cmd and the sealed gate at the settled
+HEAD, evidence on the row). tokenStats prefill 733,477 / cached
+23,201,471 / decode 384,997 over 677 measured turns. Tools 594 calls /
+71 errors (12.0%). Probes: 0/594 touched the grading apparatus; Stage-1
+probe 0 runs (never quiet — consistent with wave 1). CodeIndex 5/594 =
+**0.8%** (trend 0.4 → 2.3 → 1.4 → 2.7 → 2.9 → 1.7 → 0.8 — the plateau
+sags when the work is pure layout iteration).
+
+Derived sweep over the full wave span be130a7→c4794d8 (the dispatch-local
+span 69ed57c→c4794d8 delivered no test files — itself the finding, so the
+wave span is what was measured): **5/25 killed**, 20 survivors, all
+layout arithmetic (`atlas_view.py` offset constants, `broadsheet.py`
+padding/comparison constants). Same shape as wave 1's audio/beats
+survivors: committed tests own the routing rule, not the geometry.
+
+Economics after this wave (supervision-economics.mjs): C6 = 2 missions,
+12.01h local, $1.08 electricity vs $193.47 measured-token API
+equivalent; global ratio $1 frontier verify oversees ~$1.46 displaced
+generation.
+
+Verdict: the wave's one cut landed — the text ledger is complete and the
+sealed gate PASSes end to end. The DONE-WHEN did not: the same bounding
+that completed the ledger clipped nine interactive regions off House and
+Atlas, 13 committed tests are red, and the marker was rightly never
+committed. Wave 3 dispatched at BASE c4794d8: restore every dropped
+region and click path while keeping text_rows complete and the suite
+green.

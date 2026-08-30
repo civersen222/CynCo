@@ -1,0 +1,107 @@
+MISSION C6 WAVE 3 — PUT THE CONTROLS BACK (narrow remediation; work until the contract holds, then commit the marker)
+
+Repo: C:\Users\civer\civkings
+BASE: c4794d8  (your own wave-2 head. Wave 2 WORKS where it aimed: the
+text ledger is complete and the sealed gate PASSes end to end —
+C6.5.t0.House rows=57 against the floor of 56, zero fabricated, zero
+overlaps, C6.9 zero prior-campaign regressions. Do not rework any of
+that. But the same cut that completed the ledger CLIPPED CONTROLS OFF
+THE SCREEN, and 13 committed tests are red because of it.)
+
+THE FAILURES (full suite at c4794d8, 13 failed / 2046 passed — verbatim)
+
+  FAILED gilded/tests/test_ui_actions.py::test_every_drawn_key_is_registered
+  FAILED gilded/tests/test_ui_app.py::test_mousemotion_stores_hover_pos
+  FAILED gilded/tests/test_ui_broadsheet.py::test_briefing_agenda_rules_a_petition
+  FAILED gilded/tests/test_ui_broadsheet.py::test_docket_option_returns_rule_action
+  FAILED gilded/tests/test_ui_broadsheet.py::test_executor_cycle_changes_choice_not_game
+  FAILED gilded/tests/test_ui_broadsheet.py::test_policies_tab_draws_and_clicks
+  FAILED gilded/tests/test_ui_broadsheet.py::test_registry_is_rebuilt_not_accumulated
+  FAILED gilded/tests/test_ui_broadsheet.py::test_every_tab_draws_its_measured_number_of_regions
+  FAILED gilded/tests/test_ui_broadsheet.py::test_rule_click_works_without_legacy_option_hits
+  FAILED gilded/tests/test_ui_broadsheet.py::test_cycle_exec_click_works_without_legacy_exec_hits
+  FAILED gilded/tests/test_ui_broadsheet.py::test_set_stance_click_works_without_legacy_dial_hits
+  FAILED gilded/tests/test_ui_broadsheet.py::test_enterprises_picker_open_census
+  FAILED gilded/tests/test_ui_broadsheet.py::test_every_control_on_every_tab_explains_itself
+
+THE DIAGNOSIS (measured 2026-08-29 at c4794d8 — verbatim)
+
+  region census moved: {'House': 18, 'Powers': 19, 'Atlas': 28}
+
+  Expected (gilded/tests/test_ui_broadsheet.py:32, committed and correct):
+
+    "House": 26,   # rule x3, dismiss_seat x6, cycle_exec, set_stance x5
+                   # (House edicts — the dissolved Policies tab re-homed),
+                   # open_ambition_picker, open_heir_picker,
+                   # open_scheme_picker, clear_heir, tab x3, save, open,
+                   # end_turn, narrate
+    "Powers": 19,  # unchanged — PASSES
+    "Atlas": 29,   # select_province, tour_province x3, acquire_minor x12,
+                   # build_rail x7, toggle_war_drawer, tab x3, quicksave,
+                   # quickload, end_turn, narrate, rule
+
+  House draws 18 of 26 regions; Atlas draws 28 of 29. And on the House
+  Policies page:
+
+    assert v._dial_hits          # dial hit-regions were built
+    E       assert []
+
+  Wave 2 bounded every section to the content band and made headers and
+  buttons "skip when no room". The skipping is the bug: eight House
+  controls (the set_stance dials among them) and one Atlas control now
+  never draw, so they never register, so they cannot be clicked, hovered,
+  or explained. A control that does not fit is a LAYOUT problem to solve,
+  not a control to drop. Your own gate-time experiment — deleting the
+  Policies page to make the census match — was the same mistake with a
+  bigger knife. It was reset, not committed, and stays that way.
+
+THE WORK (one cut)
+
+Rework the House and Atlas tab layouts so that EVERY expected control
+draws, registers, and is clickable at the default window size — while
+text_rows stays complete (every drawn string still goes through
+blit_text or the equivalent recording path) and nothing overlaps.
+Mechanism is your choice: tighter row heights, scrollable or paged
+sections that still register all their controls, two-column packing —
+anything that fits 26 real House regions and 29 real Atlas regions into
+the band WITHOUT dropping any and WITHOUT text overlap. The committed
+censuses and click-path tests are the spec; do not edit them to match
+the screen — edit the screen to match them.
+
+RULES
+- NO downloads. NO scratch probe files in the repo root; self-checks live
+  in gilded/tests/ and are committed. Delete stale repo-root scratch you
+  find (.c6base/, .suite*.err/out/pid, _c6.diff, _h_rows.txt,
+  _head_failures.txt) — none of it is tracked, none of it is yours to
+  read (your delivery is graded at HEAD; no worktrees inside the repo,
+  no git -C into unverified directories).
+- Do not touch the menu, save, settings, audio, beats, endings, or any
+  C1..C6B surface except the House/Atlas draw sites this cut needs — the
+  sealed gate re-runs everything and every committed test must stay
+  green: python -m pytest gilded/tests -x -q.
+- Do not weaken any committed test. The census numbers and the dial/click
+  assertions are the contract. If a test is red, the screen is wrong.
+- Keep the ledger honest: if repacking the layout exposes REAL text
+  overlaps on any tab/turn the gate reads (House/Powers/Atlas at
+  0/10/40), fixing that layout is IN scope. rows on the House tab at
+  turn 0 must stay at or above the floor of 56 — verify with your own
+  committed test_text_rows_complete before finishing.
+- Use the CodeIndex tool FIRST for every symbol lookup (definitions and
+  references in one call) before any Grep/Read crawl — it is faster and
+  it is being measured.
+- Wire-check before finishing: run
+  python -m pytest gilded/tests/test_ui_broadsheet.py gilded/tests/test_ui_actions.py gilded/tests/test_ui_app.py -q
+  and put the passing tail in the final commit message.
+- Commit early and often — after every coherent step, not at the end. An
+  automated probe runs the broadsheet suite against your latest commit
+  whenever you go quiet; if it fails you will be told verbatim and the
+  mission continues. Committing the marker does not end the mission
+  while that check fails.
+
+DONE WHEN
+python -m pytest gilded/tests -q passes with ZERO failures (all 2059
+tests) — that includes the seven C6 contract tests and all 13 currently
+red. Then make a final commit whose message contains exactly this
+marker:
+
+stage c6 complete
