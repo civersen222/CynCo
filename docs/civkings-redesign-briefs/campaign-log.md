@@ -826,3 +826,52 @@ Verdict: MISS — no delivery, but both instrument findings (the ghost
 listener, the unteaching denial) are fixed and pinned. Wave 5 re-issues
 the wave-4 work order with the draw-site files named verbatim so the
 phantom premise cannot form, under the new hinting engine.
+
+#### C6 wave 5 — a real run at last: 5 commits, the harness landed, the gate held — and the cut still isn't a cut (ledger c6-wave5-1788193116328, 776 turns, head da6a5fd)
+
+The process failures of waves 3–4 are gone. The mission committed its
+harness FIRST with real assertions (6410a76), deleted the banned
+repo-root scratch, worked the full 6h budget (exitReason timeout,
+712 tool calls, 12 sourceEdits, 5 commits, maxCallsWithoutCommit=302),
+and the F136 hinting engine held: zero phantom-file fixations. Clean
+teardown again. CodeIndex 10/712 = 1.4%.
+
+Graded clean at da6a5fd:
+
+- Sealed gate: **PASS, exit 0** — C6.9 zero prior-campaign regressions,
+  C1..C6B all hold.
+- Full suite: **14 failed / 2046 passed** (was 12 at BASE 9293226).
+  The committed 12 stand. Plus TWO new reds, both wave 5's own:
+  - `test_c6c_layout.py::test_house_overview_fits_band` — the mission
+    committed its own harness RED at its own head (TypeError:
+    groups.get("rule") is None; the docket never registers). The
+    instrument is right; the screen is still wrong.
+  - `test_heir_controls.py::test_heir_picker_offers_men_in_succession_order`
+    — REGRESSION: "480px content rect fits 8 candidate rows, got 10."
+    The compression changed a row metric the heir picker shares.
+- The arithmetic, from its own committed probe (verbatim):
+    content band: y=160 bottom=782 height=622
+    house_tab: -> 734  (band ends 782)
+    TOTAL regions=10
+  The 4-column packing (da6a5fd) bought 6px (740 → 734) of the ~300
+  needed; ladder/intrigue/policies still skip for no room, and its own
+  final commit message says so.
+- Derived sweep 9293226→da6a5fd: **UNMEASURED, itself a finding** —
+  the unmutated tree is already red under the delivered tests, so every
+  mutant dies for a reason that is not the mutation. A committed-red
+  harness cannot grade mutants.
+- verified null→**false** by verifyCorrection (verify.exitCode=1 was on
+  the row; independent full-suite + probe re-runs are the evidence).
+- F57 probe flag: 2/712 bytecode-pattern touches — both os.walk
+  __pycache__ hygiene sweeps consistent with the RULES section, not
+  grader reads.
+
+Economics after this wave: C6 = 5 missions, 24.92h local, $2.24
+electricity vs $386.56 measured-token API equivalent; global ratio $1
+frontier verify oversees ~$1.50 displaced generation.
+
+Verdict: MISS with real progress — instrument landed, discipline held,
+gate green; the cut itself remains. Wave 6 dispatched at BASE da6a5fd
+with the return-by-y=430 arithmetic made explicit, the heir-picker
+regression quoted verbatim with its fix (own row height, not the shared
+constant), and the harness ordered None-safe then green by cutting.
