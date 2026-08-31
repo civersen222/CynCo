@@ -891,16 +891,42 @@ try {
 function killEngineTree(reason) {
   const ps = (q) => (spawnSync('powershell', ['-NoProfile', '-Command', q], { encoding: 'utf-8' }).stdout ?? '')
     .split(/\r?\n/).map((s) => s.trim()).filter(Boolean)
-  const pids = [
+  const roots = [
     ...ps("Get-CimInstance Win32_Process -Filter \"Name='bun.exe'\" | Where-Object { $_.CommandLine -like '*engine/main.ts*' } | Select-Object -ExpandProperty ProcessId"),
     ...ps("Get-CimInstance Win32_Process -Filter \"Name='llama-server.exe'\" | Where-Object { $_.ExecutablePath -like '*\\.cynco\\*' } | Select-Object -ExpandProperty ProcessId"),
   ]
-  if (pids.length === 0) {
+  if (roots.length === 0) {
     console.log(`[driver] F131 escalation (${reason}): no engine tree found — already gone`)
     return
   }
-  for (const pid of pids) spawnSync('taskkill', ['/PID', pid, '/T', '/F'], { encoding: 'utf-8' })
-  console.log(`[driver] F131 escalation (${reason}): tree-killed PID(s) ${pids.join(', ')}`)
+  // F131 residual 3: taskkill /T walks the LIVE parent chain, so once any
+  // intermediate process dies its children are orphans /T never reaches. One
+  // such orphan — a mission-spawned python stuck in an infinite loop — kept the
+  // bridge's inherited socket handles alive for two days after the wave-3
+  // hand-kill; netstat showed the DEAD engine PID still LISTENING on 9160/9161
+  // and the next dispatch refused the port. So: enumerate the descendant set
+  // ourselves from the CIM snapshot (ParentProcessId is recorded even when the
+  // parent is gone), guard against PID reuse by requiring the child to be
+  // younger than its parent, then kill every PID individually.
+  const rows = ps("Get-CimInstance Win32_Process | ForEach-Object { \"$($_.ProcessId)|$($_.ParentProcessId)|$($_.CreationDate.Ticks)\" }")
+    .map((r) => r.split('|'))
+    .filter((r) => r.length === 3)
+    .map(([pid, ppid, born]) => ({ pid, ppid, born: Number(born) }))
+  const born = new Map(rows.map((r) => [r.pid, r.born]))
+  const doomed = new Set(roots)
+  let grew = true
+  while (grew) {
+    grew = false
+    for (const r of rows) {
+      if (doomed.has(r.pid) || !doomed.has(r.ppid)) continue
+      const parentBorn = born.get(r.ppid)
+      if (parentBorn !== undefined && r.born < parentBorn) continue // stale ppid: PID was reused
+      doomed.add(r.pid)
+      grew = true
+    }
+  }
+  for (const pid of doomed) spawnSync('taskkill', ['/PID', pid, '/T', '/F'], { encoding: 'utf-8' })
+  console.log(`[driver] F131 escalation (${reason}): tree-killed PID(s) ${[...doomed].join(', ')} (${roots.length} root(s), ${doomed.size - roots.length} descendant(s))`)
 }
 if (process.env.CYNCO_TEARDOWN_ENGINE === '1' && wsClosed) {
   await new Promise((done) => {

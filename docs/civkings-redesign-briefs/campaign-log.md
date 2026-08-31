@@ -781,3 +781,48 @@ Verdict: MISS — 1 of 13 closed, no marker, the layout cut never
 attempted. Wave 4 dispatched at BASE 9293226 with the mission's own
 arithmetic quoted back at it, its own harness ordered committed first,
 and an explicit anti-stall pacing rule.
+
+#### C6 wave 4 — dead in 47 minutes: a filename that never existed beat a six-hour budget (ledger c6-wave4-1788187167100, 32 turns, HEAD unmoved at 9293226)
+
+The dispatch itself was blocked first: 9160/9161 were held by a ghost —
+a wave-3 python orphan stuck in an infinite `while ... pass` loop since
+08-29, invisible to every name-matched sweep, holding the dead engine's
+inherited socket handles (netstat listed the DEAD PID as the listener).
+The port-drift guard refused correctly; the orphan was found and killed;
+F131 residual 3 logged and `killEngineTree()` rewritten to enumerate
+descendants from the CIM snapshot instead of trusting `taskkill /T`.
+
+The run then died on its own:
+
+- The model opened well — obeyed step 1's spirit by rewriting
+  `gilded/tests/test_c6c_layout.py` (Write, uncommitted) and ran the red
+  subset — then asked for `gilded/ui/broadcast.py`. No such file has
+  ever existed; the real one is `broadsheet.py`, one edit away. It
+  retried the phantom 7 times across Read, Grep and `Get-Content`,
+  because "file not found" carries no steering information, until
+  the engine's safety halt fired verbatim: `System halted: 5
+  consecutive failures — system halted for safety`. 32 turns, 47 min,
+  ZERO commits. toolStats: 34 calls, 10 errors (29%), sourceEdit=0,
+  commits=0. CodeIndex 2/34 = 5.9%.
+- Grading is trivial: HEAD never moved, contract unchanged (12 red at
+  9293226), sweep base===head — nothing to mutate. verified false on
+  the row (driver-recorded, no correction needed).
+- First live exercise of the F131 fixes: PASSED. `/quit` over a fresh
+  socket brought engine and children down cleanly, dashboard included,
+  and the driver's own log says so.
+- F136 logged and closed same day: `missingFileHint()` in
+  engine/tools/impl/pathHint.ts — Read/Edit/MultiEdit/ReplaceFunction
+  now answer a missing path with the real directory listing, a
+  Levenshtein "Did you mean: broadsheet.py?", and "Do not retry this
+  path." The wave-4 phantom is the pinned regression test (115
+  tool+harness tests green). A denial the model can receive twice must
+  teach; the halt is the backstop, not the teacher.
+
+Economics after this wave: C6 = 4 missions, 18.83h local, $1.69
+electricity vs $294.21 measured-token API equivalent; global ratio $1
+frontier verify oversees ~$1.48 displaced generation.
+
+Verdict: MISS — no delivery, but both instrument findings (the ghost
+listener, the unteaching denial) are fixed and pinned. Wave 5 re-issues
+the wave-4 work order with the draw-site files named verbatim so the
+phantom premise cannot form, under the new hinting engine.

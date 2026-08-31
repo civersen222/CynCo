@@ -13,6 +13,11 @@ const NON_TUI_CONSUMERS: Record<string, string> = {
     'F33 join key, consumed by the mission driver. It carries nothing a human ' +
     'watching a session needs — the id exists so a ledger row can name the reward ' +
     'file the run produced — and rendering it would only add noise to the chat.',
+  'session.tokenStats':
+    'Cumulative measured token totals (fd14b41), consumed by the ledger collector ' +
+    '(scripts/cynco-ledger.mjs) so supervision-economics prices missions from real ' +
+    'counts instead of per-turn estimates. The TUI already shows live token flow ' +
+    'from its own stream; a second cumulative frame would render nothing new.',
 }
 
 /** TUI event types handled bespoke in the receiver (app.py), not via the dispatch table. */

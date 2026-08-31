@@ -12,6 +12,7 @@
 import { readFileSync, writeFileSync, existsSync } from 'fs'
 import { resolve } from 'path'
 import type { ToolImpl } from '../types.js'
+import { missingFileHint } from './pathHint.js'
 
 /** The class a Python `def` at `defIndent` sits inside, or null at module level. */
 function enclosingClass(lines: string[], defIdx: number, defIndent: number): string | null {
@@ -52,7 +53,7 @@ export const replaceFunctionTool: ToolImpl = {
     const newBody = input.new_body as string
 
     if (!existsSync(filePath)) {
-      return { output: `Error: file not found: ${filePath}`, isError: true }
+      return { output: missingFileHint(filePath), isError: true }
     }
 
     const content = readFileSync(filePath, 'utf-8')
