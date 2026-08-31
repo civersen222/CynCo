@@ -2924,6 +2924,27 @@ redone by hand at the settled head. Check-cmds must fit their cap with a
 LIVE engine resident, which for this suite means the discriminating subset,
 not the whole thing.
 
+**Residual 3 (found 2026-08-31 at the C6 wave-4 dispatch, closed same day).**
+The wave-3 hand-kill itself left a survivor. A mission-spawned python — stuck
+since 2026-08-29 in an infinite `while ... pass` loop from one of the model's
+own buggy `-c` one-liners — had a parent that was already dead, so
+`taskkill /T` on the engine could not traverse to it. It inherited the
+bridge's listening socket handles and held 9160/9161 for two days as a ghost:
+netstat kept reporting the DEAD engine PID (20804) as the LISTENER, and the
+wave-4 dispatch correctly refused the drifted port ("the driver resolves its
+port independently and would dial the busy one"). Nothing name-matched it —
+the sweeps look for bun.exe and llama-server.exe, and its command line
+contained no repo path either (the engine sets cwd; the cwd does not appear
+in the child's command line). Fix: `killEngineTree()` no longer trusts
+`taskkill /T` to find the tree. It snapshots Win32_Process once, computes the
+descendant closure itself from ParentProcessId (which CIM records even after
+the parent dies), guards PID reuse by requiring a child to be younger than
+its parent, and kills every PID individually. Lesson: on Windows, a process
+tree is a fiction that dies with its intermediate nodes; anything that must
+kill a tree must enumerate it while it can, not walk it when it's too late —
+and a listener whose owning PID does not exist is a handle inherited by an
+orphan you have not found yet.
+
 ## F132 — the gate graded a tree the commit could not reproduce
 
 **Where.** C5 wave 1 (ledger c5-wave1-1787844497777, head 35050f9, exitReason
@@ -3080,3 +3101,47 @@ left the pointer. Any grader that reads HEAD must cross-examine it against
 the reflog before believing it — the same F38 move, one level up: `git log`
 is the history that survived, and HEAD is the history that happened to be
 checked out.
+
+## F136 — one phantom filename ate the whole run: "file not found" taught nothing, so the model never stopped asking
+
+**Where.** C6 wave 4 (ledger c6-wave4-1788187167100, outcome
+stopped_without_commit, 32 turns / 47 min of a 6h budget, HEAD unmoved at
+9293226). The model started well — rewrote the layout harness per the
+brief's step 1 (Write at turn ~28, uncommitted) and ran the red suite — then
+asked to Read `gilded/ui/broadcast.py`. That file has never existed in the
+repo's history; the real file is `broadsheet.py`, one edit away. Pure
+conflation, not index pollution: the wave-2 scratch file CodeIndex had
+re-indexed contains zero mentions of "broadcast".
+
+**How it died.** The model retried the phantom path 7 times — Read twice,
+Grep twice, `Get-Content` via Bash twice more, Read again — interleaved with
+real work, until the tail of the run was 5 consecutive counted failures and
+the engine's safety halt ended it: `System halted: 5 consecutive failures —
+system halted for safety`. Zero commits; the driver recorded
+stopped_without_commit and the F131 teardown (first live exercise of the
+`stop(true)` + escalation fix) brought the engine down cleanly, dashboard
+included.
+
+**Why.** `Error: file not found: <path>` is a denial that does not teach
+(the same shape as F-editNearMiss: "re-read the file" was the read
+attractor; here "not found" was the retry attractor). The model held a
+confident wrong belief about a filename, and nothing in the error gave it
+the one bit that kills the belief — what the directory ACTUALLY contains.
+Each tool phrased the refusal differently (Read/Grep/PowerShell), so it
+read as three flaky tools rather than one wrong premise.
+
+**The fix (shipped same day, tested).** `missingFileHint()` in
+engine/tools/impl/pathHint.ts, wired into Read, Edit, MultiEdit and
+ReplaceFunction: a missing path now answers with the nearest existing
+ancestor directory's listing, a Levenshtein-nearest "Did you mean:
+broadsheet.py?" when a sibling is close, and an explicit "Do not retry this
+path — it does not exist." The measured wave-4 phantom is the pinned test
+case (engine/__tests__/tools/pathHint.test.ts; 115 tool+harness tests
+green). The brief-side companion: wave 5 names the real draw-site files
+verbatim so the premise never forms.
+
+**General lesson.** A fixation loop is a belief the errors keep failing to
+falsify. Any denial the model can receive twice must carry steering
+information — what IS there, not merely that the guess wasn't. The
+5-failure halt is the backstop, not the teacher; by the time it fires, the
+budget is spent.

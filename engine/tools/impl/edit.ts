@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync, existsSync } from 'fs'
 import { resolve } from 'path'
 import type { ToolImpl } from '../types.js'
+import { missingFileHint } from './pathHint.js'
 
 /**
  * When old_string is not found, quote back what the file actually says at the
@@ -71,7 +72,7 @@ export const editTool: ToolImpl = {
     console.log(`[edit]   new_string (${newStr.length} chars): ${newStr.slice(0, 200)}`)
 
     if (!existsSync(filePath)) {
-      return { output: `Error: file not found: ${filePath}`, isError: true }
+      return { output: missingFileHint(filePath), isError: true }
     }
 
     try {

@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync, existsSync } from 'fs'
 import { resolve } from 'path'
 import type { ToolImpl } from '../types.js'
 import { nearMissWindow } from './edit.js'
+import { missingFileHint } from './pathHint.js'
 
 type EditOp = { file_path: string; old_string: string; new_string: string }
 
@@ -36,7 +37,7 @@ export const multiEditTool: ToolImpl = {
     for (const edit of edits) {
       const filePath = resolve(cwd, edit.file_path)
       if (!existsSync(filePath)) {
-        results.push(`FAIL: ${edit.file_path} — file not found`)
+        results.push(`FAIL: ${edit.file_path} — ${missingFileHint(filePath)}`)
         continue
       }
       let content = readFileSync(filePath, 'utf-8')

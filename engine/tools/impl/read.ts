@@ -2,6 +2,7 @@ import { readFileSync, existsSync, statSync } from 'fs'
 import { resolve } from 'path'
 import { readFile } from 'fs/promises'
 import type { ToolImpl } from '../types.js'
+import { missingFileHint } from './pathHint.js'
 
 /**
  * Decode a file's bytes, honouring a byte order mark if one is there.
@@ -45,7 +46,7 @@ export const readTool: ToolImpl = {
   execute: async (input, cwd) => {
     const filePath = resolve(cwd, input.file_path as string)
     if (!existsSync(filePath)) {
-      return { output: `Error: file not found: ${filePath}`, isError: true }
+      return { output: missingFileHint(filePath), isError: true }
     }
     const stat = statSync(filePath)
     if (stat.isDirectory()) {
