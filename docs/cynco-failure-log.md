@@ -2901,6 +2901,29 @@ alive and gets its /quit over the probe; if the connect is refused, it is
 really gone. Validated live against the undead wave-3 engine: probe connected,
 /quit landed, engine and llama-server fully down.
 
+**Residual 2 (C6 wave 3, found 2026-08-30, closed 2026-08-31).** /quit is a
+request, not a guarantee. The c6-wave3 driver hit ITS 21,600s timeout while
+the engine was mid-iteration (857 turns of a 1,200 budget), sent /quit over
+the still-open mission socket, waited its 20s, printed "kill the tree by
+hand", and exited. The engine sat undead for ~18h — bun + llama-server +
+jlens alive, the dashboard poller logging 1,599 `spawnSync git ETIMEDOUT`
+lines against the mission repo — until the supervisor killed the tree by
+hand the next evening. Two contributing shapes, both closed: (1) the engine's
+`wsServer.close()` used Bun's graceful `stop()`, which waits for connected
+clients — and the one connected client was the driver, waiting for the
+ENGINE to close. `stop(true)` now force-closes; an engine told to quit has
+no clients worth waiting for. (2) Every driver teardown path that ended in
+"kill the tree by hand" now escalates instead: `killEngineTree()` sweeps
+engines by command line and llama-server by ExecutablePath under `~/.cynco`
+(Ollama's copy is never matched — same rules as dispatch-mission.sh) and
+taskkills the tree. The polite path is still tried first; the hand is now
+attached to the driver. Cost of the recurrence: the wave-3 check-cmd (the
+21-minute full suite) ran while the busy engine still held the machine and
+TIMED OUT at its 30-minute cap, leaving `verified` null — grading had to be
+redone by hand at the settled head. Check-cmds must fit their cap with a
+LIVE engine resident, which for this suite means the discriminating subset,
+not the whole thing.
+
 ## F132 — the gate graded a tree the commit could not reproduce
 
 **Where.** C5 wave 1 (ledger c5-wave1-1787844497777, head 35050f9, exitReason

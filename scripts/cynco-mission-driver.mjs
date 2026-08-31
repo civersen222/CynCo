@@ -879,6 +879,29 @@ try {
 // end of its turn loop and keep running — wsClosed proves the socket died,
 // not the process. Probe with a fresh connection: if it accepts, the engine
 // is alive and gets its /quit over the new socket; if it refuses, it is gone.
+//
+// F131 residual 2 (c6-wave3): /quit is a request, not a guarantee. The wave-3
+// engine got its /quit over an open socket and sat undead for ~18h anyway —
+// the driver exits on ITS timeout, so the engine can still be mid-iteration
+// with the command parked behind the busy loop, and the polite 20s wait loses.
+// When any teardown path ends in "kill the tree by hand", the driver now IS
+// the hand: same match rules as dispatch-mission.sh (engines by command line,
+// llama-server by ExecutablePath under ~/.cynco so Ollama's copy is never
+// touched).
+function killEngineTree(reason) {
+  const ps = (q) => (spawnSync('powershell', ['-NoProfile', '-Command', q], { encoding: 'utf-8' }).stdout ?? '')
+    .split(/\r?\n/).map((s) => s.trim()).filter(Boolean)
+  const pids = [
+    ...ps("Get-CimInstance Win32_Process -Filter \"Name='bun.exe'\" | Where-Object { $_.CommandLine -like '*engine/main.ts*' } | Select-Object -ExpandProperty ProcessId"),
+    ...ps("Get-CimInstance Win32_Process -Filter \"Name='llama-server.exe'\" | Where-Object { $_.ExecutablePath -like '*\\.cynco\\*' } | Select-Object -ExpandProperty ProcessId"),
+  ]
+  if (pids.length === 0) {
+    console.log(`[driver] F131 escalation (${reason}): no engine tree found — already gone`)
+    return
+  }
+  for (const pid of pids) spawnSync('taskkill', ['/PID', pid, '/T', '/F'], { encoding: 'utf-8' })
+  console.log(`[driver] F131 escalation (${reason}): tree-killed PID(s) ${pids.join(', ')}`)
+}
 if (process.env.CYNCO_TEARDOWN_ENGINE === '1' && wsClosed) {
   await new Promise((done) => {
     let probe
@@ -893,7 +916,8 @@ if (process.env.CYNCO_TEARDOWN_ENGINE === '1' && wsClosed) {
     }
     const t = setTimeout(() => {
       try { probe?.close() } catch {}
-      settle('[driver] F131 teardown: reconnect probe hung 20s — engine state unknown, kill the tree by hand')
+      killEngineTree('reconnect probe hung 20s')
+      settle('[driver] F131 teardown: reconnect probe hung 20s — escalated to tree-kill')
     }, 20000)
     try {
       probe = new WebSocket(WS_URL, { headers: { Authorization: `Bearer ${bridgeToken}` } })
@@ -913,7 +937,8 @@ if (process.env.CYNCO_TEARDOWN_ENGINE === '1' && wsClosed) {
 } else if (process.env.CYNCO_TEARDOWN_ENGINE === '1') {
   await new Promise((done) => {
     const t = setTimeout(() => {
-      console.log('[driver] F131 teardown: engine did not close its socket within 20s of /quit — still undead, kill the tree by hand')
+      console.log('[driver] F131 teardown: engine did not close its socket within 20s of /quit — still undead, escalating')
+      killEngineTree('no socket close within 20s of /quit')
       done()
     }, 20000)
     ws.onclose = () => { wsClosed = true; clearTimeout(t); console.log('[driver] F131 teardown: engine socket closed — engine and children are down (dashboard 9161 included)'); done() }
@@ -922,7 +947,8 @@ if (process.env.CYNCO_TEARDOWN_ENGINE === '1' && wsClosed) {
       ws.send(JSON.stringify({ type: 'command', command: '/quit', args: '' }))
     } catch (e) {
       clearTimeout(t)
-      console.log(`[driver] F131 teardown: /quit send failed (${e?.message ?? e}) — kill the engine tree by hand`)
+      console.log(`[driver] F131 teardown: /quit send failed (${e?.message ?? e}) — escalating to tree-kill`)
+      killEngineTree('/quit send failed')
       done()
     }
   })
