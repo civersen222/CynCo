@@ -142,7 +142,12 @@ export class LocalCodeWSServer {
 
   async close(): Promise<void> {
     if (this.server) {
-      this.server.stop()
+      // stop(true): force-close active WebSocket connections. The graceful
+      // default waits for clients to disconnect — but at /quit time the
+      // driver's socket is open, WAITING for us to close it (F131 residual 2:
+      // both sides politely waited and the engine sat undead for 18h). An
+      // engine that has been told to quit has no clients worth waiting for.
+      this.server.stop(true)
       this.server = null
     }
     this.client = null

@@ -1,0 +1,105 @@
+MISSION C6 WAVE 4 — COMPRESS THE HOUSE TABLE, LAND THE CONTROLS (narrow remediation; work until the contract holds, then commit the marker)
+
+Repo: C:\Users\civer\civkings
+BASE: 9293226  (your own wave-3 head. The sealed gate PASSes end to end
+and the text ledger is complete — C6.5.t0.House rows=57, floor 56, zero
+overlaps. Do not rework any of that. 12 committed tests are red, all for
+one measured reason, and wave 3 already found it.)
+
+THE FAILURES (full suite at 9293226, 12 failed / 2048 passed — verbatim)
+
+  FAILED gilded/tests/test_ui_actions.py::test_every_drawn_key_is_registered
+  FAILED gilded/tests/test_ui_broadsheet.py::test_briefing_agenda_rules_a_petition
+  FAILED gilded/tests/test_ui_broadsheet.py::test_docket_option_returns_rule_action
+  FAILED gilded/tests/test_ui_broadsheet.py::test_executor_cycle_changes_choice_not_game
+  FAILED gilded/tests/test_ui_broadsheet.py::test_policies_tab_draws_and_clicks
+  FAILED gilded/tests/test_ui_broadsheet.py::test_registry_is_rebuilt_not_accumulated
+  FAILED gilded/tests/test_ui_broadsheet.py::test_every_tab_draws_its_measured_number_of_regions
+  FAILED gilded/tests/test_ui_broadsheet.py::test_rule_click_works_without_legacy_option_hits
+  FAILED gilded/tests/test_ui_broadsheet.py::test_cycle_exec_click_works_without_legacy_exec_hits
+  FAILED gilded/tests/test_ui_broadsheet.py::test_set_stance_click_works_without_legacy_dial_hits
+  FAILED gilded/tests/test_ui_broadsheet.py::test_enterprises_picker_open_census
+  FAILED gilded/tests/test_ui_broadsheet.py::test_every_control_on_every_tab_explains_itself
+
+THE DIAGNOSIS — YOUR OWN, from wave 3 (verbatim output of
+gilded/tests/test_c6c_layout.py, the measurement harness YOU wrote and
+left uncommitted in the tree; it is still there)
+
+  content band: y=160 bottom=782 height=622
+  house_tab: -> 740  groups={'court_seats': 6, 'heir_controls': 2}
+  ladder_agenda: groups={'court_seats': 6, 'heir_controls': 2}
+  intrigue: groups={'court_seats': 6, 'heir_controls': 2, 'intrigue': 1}
+  policies: -> 740  groups={'court_seats': 6, 'heir_controls': 2, 'intrigue': 1}
+  ambition: groups={'court_seats': 6, 'heir_controls': 2, 'intrigue': 1, 'ambition_picker': 1}
+  TOTAL regions=10
+
+  draw_house_tab spends 580 of the 622px band on 8 regions (~72px per
+  control). Everything after it — the briefing ladder and agenda (the
+  rule x3 docket), intrigue, the re-homed Policies dials (set_stance
+  x5), cycle_exec — skips "for no room" and registers nothing. The
+  census expects 26 regions on House (test_ui_broadsheet.py:32,
+  committed and correct); 26 controls in 622px is ~24px per control.
+  The court-seats table is the budget hog. Compress IT; do not delete
+  content, do not skip sections, do not touch the census.
+
+  Atlas draws 28 of its expected 29 for the same skip-for-no-room
+  reason at the band's tail.
+
+THE WORK (one cut, in this order)
+
+1. FIRST COMMIT (do this before anything else): commit
+   gilded/tests/test_c6c_layout.py as your measurement harness. Tighten
+   its assertion while you are there: after drawing ALL House Overview
+   sections at 1280x900, assert the registered groups include court
+   seats, heir controls, the docket rules, the set_stance dials,
+   cycle_exec, and the pickers — the harness that only prints numbers
+   graded nothing in wave 3.
+
+2. THE CUT: compress the House court-seats table (and whatever else
+   draw_house_tab overspends on) so every section below it draws and
+   registers inside the band. Tighter row heights, one line per seat,
+   two-column packing, smaller section paddings — mechanism is your
+   choice; the committed tests are the spec. Then do the same at the
+   Atlas tail for its one dropped control. text_rows must stay complete
+   (every drawn string through blit_text or the equivalent recording
+   path), rows on House t0 must stay at or above the floor of 56, and
+   overlaps must stay zero — compression that makes text collide is
+   not compression, it is a different failure.
+
+PACING (this is a rule, not advice — wave 3 made 763 tool calls without
+a commit and delivered one fix in six hours)
+- Measure ONCE with your committed harness, then EDIT.
+- If you have made 30 tool calls without an Edit or a commit, you are
+  stalling: make the smallest compressing edit, re-run the harness, and
+  commit if the numbers moved the right way.
+- Commit after every coherent step. An automated probe runs the red
+  tests against your latest commit whenever you go quiet; if it fails
+  you will be told verbatim and the mission continues.
+
+RULES
+- NO downloads. NO scratch probe files in the repo root; self-checks
+  live in gilded/tests/ and are committed. Delete the stale repo-root
+  scratch you find (.c6be130a7.py, _probe2.py, .c6base/ and friends) —
+  untracked, banned, and not yours to read (your delivery is graded at
+  HEAD; no worktrees inside the repo, no git -C into unverified
+  directories).
+- Do not touch the menu, save, settings, audio, beats, endings, or any
+  C1..C6B surface except the House/Atlas draw sites this cut needs —
+  the sealed gate re-runs everything.
+- Do not weaken any committed test. The census numbers and the
+  dial/click assertions are the contract. If a test is red, the screen
+  is wrong.
+- Use the CodeIndex tool FIRST for every symbol lookup (definitions and
+  references in one call) before any Grep/Read crawl — it is faster and
+  it is being measured.
+- Wire-check before finishing: run
+  python -m pytest gilded/tests/test_ui_broadsheet.py gilded/tests/test_ui_actions.py gilded/tests/test_ui_app.py -q
+  and put the passing tail in the final commit message.
+
+DONE WHEN
+python -m pytest gilded/tests -q passes with ZERO failures — that
+includes the seven C6 contract tests, all 12 currently red, and your
+committed harness. Then make a final commit whose message contains
+exactly this marker:
+
+stage c6 complete

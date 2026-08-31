@@ -723,3 +723,61 @@ Atlas, 13 committed tests are red, and the marker was rightly never
 committed. Wave 3 dispatched at BASE c4794d8: restore every dropped
 region and click path while keeping text_rows complete and the suite
 green.
+
+#### C6 wave 3 — six hours of measuring, one commit; and the harness had to be killed by hand (ledger c6-wave3-1788054981336, 857 turns, head 9293226)
+
+Graded clean at 9293226 after the undead engine was hand-killed (below):
+
+- Contract test: **7/7 PASS**. Sealed gate: **PASS, 0 fails** — unchanged
+  from wave 2, `C6.5.t0.House: PASS rows=57 overlaps=0` holds.
+- Suite: **12 failed / 2048 passed** (was 13 at BASE c4794d8). The one
+  commit — `9293226 c6: step_once handles MOUSEMOTION -> handle_hover` —
+  fixed exactly `test_ui_app.py::test_mousemotion_stores_hover_pos`. The
+  other 12 (census, dial, click-path, explain-itself) stand untouched.
+- The run's shape is the verdict: 811 tool calls, 109 errors (13.4%),
+  **13 sourceEdits, 1 commit, maxCallsWithoutCommit=763**. It measured
+  for six hours. It even built the right instrument —
+  `gilded/tests/test_c6c_layout.py`, a band-budget probe that prints the
+  House Overview layout arithmetic — and left it UNCOMMITTED in the
+  tree, next to fresh banned repo-root scratch (`.c6be130a7.py`,
+  `_probe2.py`). Its own measurement, run at HEAD (verbatim):
+
+    content band: y=160 bottom=782 height=622
+    house_tab: -> 740  groups={'court_seats': 6, 'heir_controls': 2}
+    policies: -> 740  groups={...}
+    TOTAL regions=10
+
+  `draw_house_tab` spends 580 of the 622px band on 8 regions; ladder,
+  agenda, intrigue, and the re-homed Policies dials then all "skip for
+  no room" and register nothing. The wall both waves hit has a number
+  now: the court-seats table is ~72px per control, and 26 controls need
+  ~24. The mission found this and never made the cut it implies.
+- Derived sweep c4794d8→9293226: **UNMEASURED, itself the finding** —
+  the mission delivered no test files (the harness that would have
+  counted was never committed). CodeIndex 7/811 = **0.9%**.
+- tokenStats prefill 1,171,528 / cached 28,419,061 / decode 509,949.
+  exitReason timeout, markerSeen false, verified null→**false** by
+  verifyCorrection (check-cmd timed out under the undead engine;
+  independent clean re-run is the evidence on the row).
+
+**F131 residual 2, found and closed.** The driver timed out while the
+engine was mid-iteration (857/1200), sent /quit, waited 20s, printed
+"kill the tree by hand," and exited. The engine sat undead ~18h — bun,
+llama-server, jlens alive; 1,599 `spawnSync git ETIMEDOUT` dashboard
+polls — and its residency pushed the 21-minute check-cmd past its
+30-minute cap (verified null). Fixes shipped: `wsServer.close()` now
+`stop(true)` (the graceful stop waited for the driver's own socket —
+mutual politeness, 18 hours), and every driver teardown path that ended
+in "kill by hand" now escalates to `killEngineTree()` itself. Lesson
+applied forward: a check-cmd must fit its cap with a LIVE engine
+resident — wave 4's check is the discriminating subset (5:31 measured),
+the full suite is graded by hand at verdict.
+
+Economics after this wave: C6 = 3 missions, 18.57h local, $1.67
+electricity vs $291.91 measured-token API equivalent; global ratio $1
+frontier verify oversees ~$1.49 displaced generation.
+
+Verdict: MISS — 1 of 13 closed, no marker, the layout cut never
+attempted. Wave 4 dispatched at BASE 9293226 with the mission's own
+arithmetic quoted back at it, its own harness ordered committed first,
+and an explicit anti-stall pacing rule.
