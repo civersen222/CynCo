@@ -1,0 +1,119 @@
+MISSION C6 WAVE 6 — THE CUT ITSELF: END THE HOUSE TABLE BY y=430 (wave 5
+built the right instrument and committed it red; this wave makes it green)
+
+Repo: C:\Users\civer\civkings
+BASE: da6a5fd  (wave-5 head. The sealed gate PASSes end to end — zero
+prior-campaign regressions — the layout harness is COMMITTED at
+gilded/tests/test_c6c_layout.py with real assertions, the measurement
+probe is at gilded/tests/_probe_c6c.py, and the repo-root scratch is
+gone. Do not rework any of that. The screen is still wrong.)
+
+THE FILES (exact, verified at BASE — the ONLY UI draw sites this
+mission touches)
+
+  gilded/ui/house_tab.py    — draw_house_tab at line 345. Still the
+                              budget hog after wave 5's 4-column packing.
+  gilded/ui/broadsheet.py   — _draw_ladder_and_agenda, _draw_intrigue,
+                              _draw_policies, ambition controls.
+  gilded/ui/atlas_view.py   — draw_atlas at line 397; one dropped
+                              control at the band's tail.
+
+  There is NO broadcast.py. If a Read or Grep says "file not found",
+  believe the directory listing in the error and do not retry the path.
+
+THE MEASUREMENT (python gilded/tests/_probe_c6c.py at BASE — verbatim;
+this is YOUR OWN committed probe)
+
+  content band: y=160 bottom=782 height=622
+  house_tab: -> 734  (band ends 782)
+  ladder_agenda: -> 742
+  intrigue: -> 810
+  policies: -> 810
+  TOTAL regions=10
+  groups={'dismiss_seat': 6, 'open_heir_picker': 1, 'clear_heir': 1, 'open_scheme_picker': 1, 'open_ambition_picker': 1}
+
+THE ARITHMETIC (why wave 5's cut was not a cut)
+
+  draw_house_tab consumes 574 of the 622px band (160 -> 734) and leaves
+  48px. The sections below it need to register: the docket rules
+  (rule x3), intrigue (1), the set_stance dials (x5), cycle_exec, plus
+  what already fits — roughly 16 more controls. At ~22px per control
+  that is ~350px. So draw_house_tab MUST RETURN BY ~y=430. Wave 5's
+  4-column packing bought 6px (740 -> 734); you need ~300. That means
+  the court-seats table itself — per-seat row height, header, padding,
+  the dossier block — must shrink by an order, not a margin. One line
+  per seat at font height, header collapsed, paddings single-digit.
+  Do not delete content, do not skip sections, do not touch the census.
+
+THE FAILURES AT BASE (14 failed / 2046 passed, measured full-suite —
+the committed 12, your own harness, and ONE REGRESSION you introduced)
+
+  gilded/tests/test_heir_controls.py::test_heir_picker_offers_men_in_succession_order
+  — REGRESSION, green before your wave. Verbatim:
+    AssertionError: 480px content rect fits 8 candidate rows, got 10
+  Your compression changed a row metric the heir PICKER shares (rows
+  now 27px tall). The picker's 8-rows-per-480px is a committed measured
+  contract. Fix: give the court-seats table its OWN row height; put the
+  shared constant back. Compress your table, not everyone's.
+
+  gilded/tests/test_c6c_layout.py::test_house_overview_fits_band — dies
+  TypeError: groups.get("rule") is None because the docket never
+  registers. First fix the assert to be None-safe
+  ((groups.get("rule") or 0) >= 3 — a crash is a worse failure report
+  than a count), then make it PASS by cutting, never by weakening.
+
+  The 12 committed: test_ui_actions.py::test_every_drawn_key_is_registered
+  and the 11 in test_ui_broadsheet.py (briefing_agenda, docket_option,
+  executor_cycle, policies_tab, registry_rebuilt, every_tab_draws,
+  rule_click, cycle_exec_click, set_stance_click, enterprises_picker,
+  every_control_explains). The census expects 26 regions on House
+  (test_ui_broadsheet.py:32). All red for the one measured reason above.
+
+THE WORK (one cut, in this order)
+
+1. Run YOUR probe once: python gilded/tests/_probe_c6c.py — confirm the
+   numbers above. That is your whole measurement budget. Then EDIT.
+2. Cut draw_house_tab to return by ~y=430: one line per seat, collapsed
+   header, single-digit paddings, dossier folded into the seat line or
+   moved beside the table, whatever mechanism you choose — the
+   committed tests are the spec. Re-run the probe; commit when
+   house_tab's return y drops materially. Repeat until every section
+   below draws and registers inside the band.
+3. Then the Atlas tail: its one dropped control (28 of 29) — same
+   skip-for-no-room shape at gilded/ui/atlas_view.py:397.
+4. Constraints that make it a cut and not a different failure:
+   text_rows stays complete (every drawn string through blit_text or
+   the equivalent recording path), rows on House t0 stays >= 56, and
+   overlaps stay ZERO — the sealed gate re-checks all of it.
+
+PACING (a rule, not advice)
+- If you have made 30 tool calls without an Edit or a commit, you are
+  stalling: make the smallest compressing edit, re-run the probe, and
+  commit if the number moved the right way.
+- If the same tool call fails twice, the premise is wrong — change the
+  premise, not the phrasing.
+- Commit after every coherent step. An automated probe runs the red
+  tests against your latest commit whenever you go quiet.
+
+RULES
+- NO downloads. NO scratch files in the repo root; self-checks live in
+  gilded/tests/ and are committed. No worktrees inside the repo, no
+  git -C into unverified directories.
+- Do not touch the menu, save, settings, audio, beats, endings, or any
+  C1..C6B surface except the House/Atlas draw sites this cut needs —
+  the sealed gate re-runs everything.
+- Do not weaken any committed test. Census numbers and the dial/click
+  assertions are the contract; the harness assert may become None-safe
+  but its thresholds may not drop.
+- Use the CodeIndex tool FIRST for every symbol lookup (definitions
+  and references in one call) before any Grep/Read crawl.
+- Wire-check before finishing: run
+  python -m pytest gilded/tests/test_ui_broadsheet.py gilded/tests/test_ui_actions.py gilded/tests/test_ui_app.py -q
+  and put the passing tail in the final commit message.
+
+DONE WHEN
+python -m pytest gilded/tests -q passes with ZERO failures — the seven
+C6 contract tests, the 12 currently red, and your harness. Then make a
+final commit whose message contains exactly this marker:
+
+stage c6 complete
