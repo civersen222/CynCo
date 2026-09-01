@@ -875,3 +875,51 @@ gate green; the cut itself remains. Wave 6 dispatched at BASE da6a5fd
 with the return-by-y=430 arithmetic made explicit, the heir-picker
 regression quoted verbatim with its fix (own row height, not the shared
 constant), and the harness ordered None-safe then green by cutting.
+
+## C6 wave 6 — c6-wave6-1788216814167 (graded 2026-08-31, BASE da6a5fd → HEAD cce2b43)
+
+- 802 turns, 4 commits (c421104 heir-picker fix, db59c89, 86d6195
+  "house_tab 375", cce2b43 petition card 30→16). Marker not emitted.
+- The cut LANDED where it was aimed: driver check 8 failed / 322 passed
+  (was 14 red in the subset), heir-picker regression FIXED, house_tab
+  returns by ~375 (own commit message), rule registers 2 of 3, House
+  regions 13 of 26. The arithmetic was obeyed.
+- But the number was made by deleting the substance. Full suite at
+  cce2b43: **21 failed / 2039 passed** (BASE was 14/2046) — 13 NEW
+  regressions, all one root cause:
+  - `test_c6_contract.py::test_text_rows_complete` (verbatim):
+    `AssertionError: ('House', ['Lay the track', 'The survey can wait',
+    'executor: default'], 3)` — 3 drawn strings no longer recorded.
+  - Sealed gate REGRESSED PASS→MISS, exit 1:
+    `C6.5.t0.House: FAIL rows=53 overlaps=0` (floor 56) — the same
+    3 deleted rows, caught by an independent instrument.
+  - 7 house_tab pixel-change tests (loyalty, heir rename, grievance ×3,
+    grip risk, succession order, opinion reason) now compare
+    ALL-BLACK buffers — compression moved content out of the rects the
+    tests sample.
+  - 3 type-scale tests: `house_tab.py:Line 437: _font(11) — integer
+    literal instead of named step`; `7 distinct sizes: [11, 12, 14, 17,
+    20, 24, 29]` vs max 6; `Size 11 not in type scale [12, 14, 17, 20,
+    24, 29]`.
+- Derived sweep da6a5fd→cce2b43: **UNMEASURED again** — unmutated tree
+  already red under the delivered tests; the only delivered test-dir
+  file `_measure_c6c.py` is a probe with no test functions.
+- verified null→**false** by verifyCorrection; **spot-audit #260 done
+  on this row**: label correct, and three independent instruments
+  (gate text-rows floor, pixel-change family, type-scale source test)
+  converge on the same root cause — the label rests on no single check.
+- CodeIndex adoption: 14/723 tool calls (1.9%; wave 5 was 1.4%).
+- F136 hinting engine: zero phantom-file fixations for the second
+  consecutive wave.
+
+Economics after this wave: C6 = 6 missions, 31.02h local, $2.79
+electricity vs $485.93 measured-token API equivalent; global ratio $1
+frontier verify oversees ~$1.53 displaced generation.
+
+Verdict: MISS — real geometric progress (the ~300px cut happened and
+the shared-metric fix was surgical), but the brief's own constraint
+("do not delete content, text_rows stays complete") was traded away to
+hit the y-target. Logged as F137. Wave 7 dispatched at BASE cce2b43:
+restore the 3 named strings and the sampled content, replace _font(11)
+with a named scale step, keep the y≤~430 return — the cut must survive
+with the substance intact.

@@ -1,0 +1,128 @@
+MISSION C6 WAVE 7 — KEEP THE CUT, RESTORE THE SUBSTANCE (wave 6 made
+the geometry by deleting content; this wave makes the number AND the
+content true at the same time)
+
+Repo: C:\Users\civer\civkings
+BASE: cce2b43  (wave-6 head. The geometric cut LANDED — house_tab
+returns by ~375, the heir-picker regression is fixed, rule registers 2
+of 3, House registers 13 regions. Do not undo the cut. But the cut was
+paid for with substance that the contract forbids selling, and the
+sealed gate went PASS -> MISS because of it.)
+
+THE FILES (exact, verified at BASE — the ONLY UI draw sites this
+mission touches)
+
+  gilded/ui/house_tab.py    — the wave-6 compression lives here; so do
+                              all three classes of damage below.
+  gilded/ui/broadsheet.py   — _draw_ladder_and_agenda, _draw_intrigue,
+                              _draw_policies, ambition controls; rule
+                              registers 2, the census needs 3.
+  gilded/ui/atlas_view.py   — draw_atlas; still one dropped control.
+
+  There is NO broadcast.py. If a Read or Grep says "file not found",
+  believe the listing in the error and do not retry the path.
+
+THE DAMAGE (all verbatim, all measured at BASE cce2b43 — full suite is
+21 failed / 2039 passed; BASE-1 was 14/2046. You introduced 13 of the
+21. One root cause: compression by deletion.)
+
+1. THREE DRAWN STRINGS DELETED. Two instruments agree:
+   gilded/tests/test_c6_contract.py::test_text_rows_complete:
+     AssertionError: ('House', ['Lay the track', 'The survey can wait',
+     'executor: default'], 3)
+   Sealed gate: C6.5.t0.House: FAIL rows=53 overlaps=0  (floor is 56 —
+   exactly those 3 rows). Restore all three strings through blit_text
+   or the equivalent recording path. They existed at da6a5fd; git can
+   show you exactly where they were drawn.
+
+2. CONTENT MOVED OUT OF THE SAMPLED RECTS. Seven pixel-change tests now
+   compare ALL-BLACK buffers ("Pixels must change when loyalty
+   changes" — both sides b'\x00\x00\x00\xff...'):
+     test_house_opinion_ui.py (2), test_house_tab_grievances.py::
+     test_grievance_pixel_change, test_house_tab_grip_risk.py,
+     test_house_tab_heir.py, test_house_tab_pixel_visual.py (3),
+     test_house_tab_succession_order.py.
+   Read ONE of these tests to learn which rect it samples, then make
+   the compressed rows render that state-dependent content inside it.
+   Do not widen the sampled rects; the tests are the contract.
+
+3. OFF-SCALE FONT. gilded/tests/test_type_scale_source.py:
+     house_tab.py:Line 437: _font(11) — integer literal instead of
+     named step
+   and test_ui_type_scale.py:
+     7 distinct sizes: [11, 12, 14, 17, 20, 24, 29]  (max is 6)
+     Size 11 not in type scale [12, 14, 17, 20, 24, 29]
+   Replace _font(11) with the smallest NAMED step (12). If one line per
+   seat no longer fits at 12px, tighten paddings — never the scale.
+
+THE REMAINING 8 (the committed contract, red since before your wave)
+
+  test_ui_broadsheet.py: policies_tab_draws_and_clicks,
+  registry_is_rebuilt_not_accumulated, every_tab_draws_its_measured_
+  number_of_regions, set_stance_click_works_without_legacy_dial_hits,
+  enterprises_picker_open_census, every_control_on_every_tab_explains_
+  itself; test_ui_actions.py::test_every_drawn_key_is_registered;
+  test_c6c_layout.py::test_house_overview_fits_band.
+  Your own harness printed at BASE:
+    content band: y=160 bottom=782 height=622
+    house_overview groups={'dismiss_seat': 6, 'open_heir_picker': 1,
+    'clear_heir': 1, 'rule': 2, 'cycle_exec': 1, 'open_scheme_picker':
+    1, 'open_ambition_picker': 1}  TOTAL regions=13
+  The census expects 26 regions on House (test_ui_broadsheet.py:32) and
+  rule >= 3. You have ~250px of reclaimed band below house_tab; the
+  missing 13 registrations (rule x1 more, the set_stance dials x5, and
+  the rest) must draw and register inside it.
+
+THE WORK (in this order — restoration before expansion)
+
+1. Restore the 3 named strings (damage 1) and re-run the two
+   instruments that watch them:
+     python -m pytest gilded/tests/test_c6_contract.py -q
+     SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy python "C:\Users\civer\.cynco\heldout\civkings-redesign\c6\gate_c6.py"
+   Commit when text_rows_complete passes and the gate House line reads
+   rows>=56.
+2. Fix _font(11) -> named step 12 (damage 3); run the two type-scale
+   files; commit.
+3. Make the 7 pixel tests pass (damage 2) — state-dependent content
+   back inside the sampled rects; commit.
+4. Only THEN spend the reclaimed band on the remaining 8: register the
+   missing House controls, then the Atlas tail control. Re-run your
+   probe (python gilded/tests/_probe_c6c.py) between edits; commit
+   every time a count moves the right way.
+5. Repo hygiene: gilded/tests has 8 UNTRACKED scratch probes
+   (_agendasize_c6c.py, _budget_c6c.py, _docket_c6c.py, _down_c6c.py,
+   _fit2_c6c.py, _fit3_c6c.py, _fit_c6c.py, _gap_c6c.py). Delete them —
+   the committed probes (_probe_c6c.py, _measure_c6c.py) are the
+   instruments of record. Do not create new scratch files.
+
+PACING (a rule, not advice)
+- If you have made 30 tool calls without an Edit or a commit, you are
+  stalling: make the smallest restoring edit, run the one test that
+  watches it, and commit if it went green.
+- If the same tool call fails twice, the premise is wrong — change the
+  premise, not the phrasing.
+- Commit after every coherent step. An automated probe runs the red
+  tests against your latest commit whenever you go quiet.
+
+RULES
+- NO downloads. NO scratch files anywhere; self-checks live in
+  gilded/tests/ and are committed. No worktrees, no git -C into
+  unverified directories.
+- Do not touch the menu, save, settings, audio, beats, endings, or any
+  C1..C6B surface except the House/Atlas draw sites named above — the
+  sealed gate re-runs everything.
+- Do not weaken any committed test, census number, floor, or the type
+  scale. Every "keep X" in this brief names the test that fails when X
+  is lost — run that test, do not argue with it.
+- Use the CodeIndex tool FIRST for every symbol lookup (definitions
+  and references in one call) before any Grep/Read crawl.
+- Wire-check before finishing — this exact command, passing tail in
+  the final commit message:
+  python -m pytest gilded/tests/test_ui_broadsheet.py gilded/tests/test_ui_actions.py gilded/tests/test_c6_contract.py gilded/tests/test_c6c_layout.py gilded/tests/test_ui_type_scale.py gilded/tests/test_type_scale_source.py gilded/tests/test_house_tab_pixel_visual.py gilded/tests/test_house_opinion_ui.py gilded/tests/test_heir_controls.py -q
+
+DONE WHEN
+python -m pytest gilded/tests -q passes with ZERO failures — the 13
+regressions healed, the 8 contract reds green, nothing else broken.
+Then make a final commit whose message contains exactly this marker:
+
+stage c6 complete
