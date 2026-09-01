@@ -1,0 +1,112 @@
+MISSION C6 WAVE 9 — ARITHMETIC, NOT ARCHAEOLOGY: 538 BECOMES 430 WITH
+EVERY TOKEN STILL VISIBLE (wave 8 won the overlap war and was reaped
+by the clock; this wave finishes the count)
+
+Repo: C:\Users\civer\civkings
+BASE: e094c3f  (wave-8 head. The sealed gate PASSES end to end —
+overlaps ZERO at every House timestep, zero prior-campaign
+regressions, honest return-y in place, repo clean of scratch. Do not
+rework any of that. KEEP-GREEN set, run them before your final
+commit: test_c6_contract.py entire file, the type-scale files, and
+gilded/tests/test_house_tab_pixel_visual.py — they are the wave-7/8
+victories and they are the contract.)
+
+THE SCOREBOARD AT BASE (full suite: 16 failed / 2044 passed)
+
+  Your own probe (python gilded/tests/_probe_c6c.py) prints:
+    content band: y=160 bottom=782 height=622
+    house_tab: -> 538  (band ends 782)
+    ladder_agenda: -> 743
+    intrigue: -> 811        <- 29px PAST the band end
+    policies: -> 811        <- same
+    TOTAL regions=10
+    groups={'dismiss_seat': 6, 'open_heir_picker': 1, 'clear_heir': 1,
+    'open_scheme_picker': 1, 'open_ambition_picker': 1}
+  No 'rule' group: the docket never draws. The census
+  (test_ui_broadsheet.py:32) expects 26 regions on House, 19 Powers,
+  29 Atlas.
+
+THE WORK (numbered commit points — each names the instrument that
+proves it; commit AT each point, not later)
+
+0. FIRST EDIT (outstanding since wave 6 — do it before anything):
+   gilded/tests/test_c6c_layout.py line 82 dies
+     TypeError: '>=' not supported between instances of 'NoneType' and 'int'
+   because groups.get("rule") is None. Make it None-safe —
+   ((groups.get("rule") or 0) >= 3) — a crash is a worse failure
+   report than a count. Thresholds may NOT drop. COMMIT 0: the test
+   now FAILS with an AssertionError instead of dying.
+
+1. TOKEN VISIBILITY. Wave 8's truncation cut the DIFFERING tails of
+   state strings. Three tests red for it (verbatim):
+     test_house_opinion_ui.py:135/:161 — "Pixels should differ when
+     only the grievance differs" (buffers identical, not black)
+     test_house_tab_grievances.py::test_grievance_pixel_change
+   The state-dependent token (grievance text, opinion reason) must
+   render INSIDE the visible column width — lead with it, wrap it, or
+   widen its column; never let the truncation eat it. Overlaps must
+   stay zero while you do it (test_c6_contract.py::test_no_text_overlap
+   watches). COMMIT 1: those three files green AND test_c6_contract
+   still green.
+
+2. THE 108px. house_tab's honest bottom is 538; everything below needs
+   it at ~430 (the docket + ladder + intrigue + policies need ~350 and
+   the band below 538 holds only 244 — intrigue and policies already
+   spill to 811, past 782). Find the ~108px inside the seats table and
+   dossier grid: row heights, the grid's row count, blank leading, the
+   header — your call, but by SHRINKING SPACE, never by hiding tokens
+   (step 1's tests re-check) and never off the type scale
+   (test_ui_type_scale.py, test_type_scale_source.py watch; smallest
+   named step is 12). COMMIT 2: probe shows house_tab -> ~430,
+   KEEP-GREEN set still green.
+3. FEED THE DOCKET. With the room reclaimed, the docket draws and
+   registers: rule x3 in the probe's groups, and these five (verbatim
+   failure today: "assert [] == view._option_hits — the briefing
+   surfaces the docket as an Agenda") go green:
+     test_ui_broadsheet.py::test_briefing_agenda_rules_a_petition,
+     ::test_docket_option_returns_rule_action,
+     ::test_executor_cycle_changes_choice_not_game,
+     ::test_rule_click_works_without_legacy_option_hits,
+     ::test_cycle_exec_click_works_without_legacy_exec_hits
+   COMMIT 3.
+4. THE CENSUS. Register the rest to 26 on House (set_stance x5,
+   cycle_exec, the remainder), intrigue and policies back inside the
+   band (probe must show every section <= 782), then the Atlas 29th
+   control. Run the probe between edits; COMMIT every time a count
+   moves the right way — a count that moved is a coherent step.
+5. FULL PASS: python -m pytest gilded/tests -q, output to
+   C:\tmp\w9_full.txt if you need to study it.
+
+PACING (the clock killed wave 8 at 2 commits in 586 calls — these are
+orders)
+- COMMIT AT THE NUMBERED POINTS. If you are 30 tool calls past your
+  last commit and no instrument went green, make the smallest edit
+  that moves one number and commit that.
+- If the same tool call fails twice, the premise is wrong — change
+  the premise, not the phrasing.
+- Budget: you have ~6 hours of wall clock. Steps 0 and 1 are small;
+  they should be committed within your first hour.
+
+RULES
+- NO downloads. NO new files inside the repo; long command output
+  goes under C:\tmp. Self-checks live in gilded/tests/ and are
+  committed.
+- Do not touch the menu, save, settings, audio, beats, endings, or
+  any C1..C6B surface except gilded/ui/house_tab.py,
+  gilded/ui/broadsheet.py, gilded/ui/atlas_view.py — the sealed gate
+  re-runs everything. There is NO broadcast.py; believe the listing
+  in any file-not-found error.
+- Do not weaken any committed test, census number, floor, or the
+  type scale. Step 0's None-safety is the only permitted test edit.
+- Use the CodeIndex tool FIRST for every symbol lookup (definitions
+  and references in one call) before any Grep/Read crawl.
+- Wire-check before finishing — this exact command, passing tail in
+  the final commit message:
+  python -m pytest gilded/tests/test_ui_broadsheet.py gilded/tests/test_ui_actions.py gilded/tests/test_c6_contract.py gilded/tests/test_c6c_layout.py gilded/tests/test_ui_type_scale.py gilded/tests/test_type_scale_source.py gilded/tests/test_house_tab_pixel_visual.py gilded/tests/test_house_opinion_ui.py gilded/tests/test_house_tab_grievances.py gilded/tests/test_heir_controls.py -q
+
+DONE WHEN
+python -m pytest gilded/tests -q passes with ZERO failures — the 16
+reds healed, the gate still PASS, the census at 26/19/29. Then make a
+final commit whose message contains exactly this marker:
+
+stage c6 complete
