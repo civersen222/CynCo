@@ -923,3 +923,55 @@ hit the y-target. Logged as F137. Wave 7 dispatched at BASE cce2b43:
 restore the 3 named strings and the sampled content, replace _font(11)
 with a named scale step, keep the y≤~430 return — the cut must survive
 with the substance intact.
+
+## C6 wave 7 — c6-wave7-1788240497006 (graded 2026-09-01, BASE cce2b43 → HEAD 40c7865)
+
+- 693 turns, 5 commits, restoration-first exactly as ordered, each
+  commit naming the instrument it turned green: 3526344 (strings back
+  through blit_text, gate House rows=56), dc8de94 (_font(11) → named
+  TYPE_CAPTION(12)), 7b55c80/f5a0aa5 (dossier grid, returns y=376),
+  40c7865 (compressed-dossier loop fix, 7 pixel files green).
+- Full suite at 40c7865: **9 failed / 2051 passed** — from 21 at BASE,
+  and better than the pre-wave-6 14. ALL 13 F137 regressions healed.
+  The F137 rule worked: the conservation instruments rode in the check
+  command, and this time the model ran them and obeyed them.
+- The 9 red: the committed 8 (6 ui_broadsheet + ui_actions
+  every_drawn_key + c6c_layout fits_band) plus ONE new,
+  `test_c6_contract.py::test_no_text_overlap` (verbatim):
+    AssertionError: ('House', 0, 'Ruler: Alexios Ashworth (age 29)',
+    'The Ladder')  — Rect(12, 356, 152, 17).colliderect(Rect(16, 364,
+    110, 27))
+  house_tab reports return y=376 but its lowest drawn row extends past
+  y=364 where broadsheet places The Ladder — the reported return and
+  the actual bottom disagree.
+- Sealed gate MISS exit 1, 3 of 9 checks (verbatim):
+    C6.5.t0.House: FAIL rows=129 overlaps=79 first=[('Ruler: Alexios
+    Ashworth (age 2', 'The Ladder'), ('COURT SEATS', 'The Ladder')]
+    C6.5.t10.House: FAIL rows=149 overlaps=99 ...
+    C6.5.t40.House: FAIL rows=144 overlaps=145 first=[('  Board
+    Chairman: Aurelius Ash', '  #2 Ramses Brandtner  loyalty'), ...]
+  Two overlap classes: the boundary (house vs The Ladder, t0) and the
+  internal dossier-grid-vs-seat-rows collisions that grow with t.
+- Derived sweep cce2b43→40c7865: **MEASURED — first of the campaign**,
+  and the number is the finding: 0/25 killed against the green
+  pre-existing owners (type-scale + pixel + heir files). Every mutant
+  of the new geometry (broadsheet.py:1463–1502, house_tab.py:445/450)
+  survives, because geometry is owned by the overlap/census instruments
+  that are still red. Ownership closes exactly when the reds go green.
+- verified null→**false** by verifyCorrection.
+- Hygiene DEFIED: brief step 5 ordered the 8 scratch probes deleted;
+  all 8 remain and the run ADDED two (_fullsuite_err.txt,
+  _fullsuite_out.txt) against "NO scratch files anywhere". Logged F138.
+- CodeIndex adoption: 5/616 (0.8%; wave 6 was 1.9%). F136 hinting:
+  third consecutive wave with zero phantom-path fixations.
+
+Economics after this wave: C6 = 7 missions, 37.12h local, $3.34
+electricity vs $565.57 measured-token API equivalent; global ratio $1
+frontier verify oversees ~$1.55 displaced generation.
+
+Verdict: MISS but the campaign's best wave — restoration complete,
+discipline held, one defect class left (overlap: one boundary lie, one
+growing internal collision) standing between here and the 26-region
+census. Wave 8 dispatched at BASE 40c7865: make the reported return-y
+tell the truth, clip the dossier grid against the seat rows, then spend
+the honest band on the missing 13 registrations.
