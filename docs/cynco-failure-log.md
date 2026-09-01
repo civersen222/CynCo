@@ -3174,3 +3174,30 @@ type-scale assertion) and puts them IN the wire-check command, so the
 constraint is as measurable to the model as the target. Standing rule
 for brief authoring: every "do not lose X" constraint must name the
 test that fails when X is lost, and that test goes in the check command.
+
+## F138 — Ordered cleanup defied: scratch files survive an explicit deletion step and multiply (C6 wave 7)
+
+**Where:** Mission c6-wave7-1788240497006, repo civkings, cce2b43 → 40c7865.
+
+**How:** The brief's THE WORK step 5 named all 8 untracked scratch probes
+by filename and said "Delete them." RULES said "NO scratch files
+anywhere." At teardown all 8 remained AND the run added two more
+(gilded/tests/_fullsuite_err.txt, _fullsuite_out.txt — redirected pytest
+output). Every substantive step of the same brief was followed
+faithfully, so this is not general non-compliance: it is a priority
+effect. Hygiene was the last numbered step, gated behind test-fixing
+work the model never finished, so the cleanup's turn never came — and
+the ban on NEW scratch files lost to the model's habit of tee-ing long
+pytest runs to files.
+
+**Why:** Ordering hygiene after open-ended repair work makes it
+unreachable in any wave that doesn't finish everything. And a bare
+prohibition ("NO scratch files") without an offered alternative loses
+to a real need (the model must re-read long pytest output somehow).
+
+**Fix:** Wave 8 brief moves hygiene to step 1 (delete before you touch
+anything else — it is a 30-second git clean of named files) and gives
+the sanctioned alternative for long output: pipe to tail, or write
+under /c/tmp which is outside the repo. Standing rule for brief
+authoring: cleanup steps go FIRST, and every "never do X" names the
+sanctioned way to meet the need X was serving.

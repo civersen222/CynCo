@@ -1,0 +1,140 @@
+MISSION C6 WAVE 8 — THE HONEST BOTTOM: KILL THE OVERLAPS, THEN SPEND
+THE BAND (wave 7 restored every string, every pixel, every font step —
+one defect class remains between here and the 26-region census)
+
+Repo: C:\Users\civer\civkings
+BASE: 40c7865  (wave-7 head. Full suite is 9 failed / 2051 passed —
+the best this campaign has been. The 3 strings are back, the type
+scale is clean, all 7 pixel files are green. Do not rework any of
+that. Everything left red fails for ONE reason: text draws on top of
+text.)
+
+STEP 1 — HYGIENE, BEFORE ANYTHING ELSE (30 seconds, do it first)
+
+  gilded/tests/ holds 10 UNTRACKED files a previous run left behind:
+    _agendasize_c6c.py _budget_c6c.py _docket_c6c.py _down_c6c.py
+    _fit2_c6c.py _fit3_c6c.py _fit_c6c.py _gap_c6c.py
+    _fullsuite_err.txt _fullsuite_out.txt
+  Delete all 10 and commit nothing for it (they are untracked; rm is
+  enough). The committed probes (_probe_c6c.py, _measure_c6c.py) are
+  the instruments of record. When you need to keep long pytest output,
+  write it under C:\tmp — NEVER inside the repo.
+
+THE FILES (exact, verified at BASE — the ONLY UI draw sites this
+mission touches)
+
+  gilded/ui/house_tab.py    — the dossier grid (added ~line 445) and
+                              the returned y. Both overlap classes
+                              start here.
+  gilded/ui/broadsheet.py   — places The Ladder from house_tab's
+                              returned y; the stance dials, rule x3,
+                              and the rest of the missing House
+                              registrations (added lines ~1463-1502).
+  gilded/ui/atlas_view.py   — draw_atlas; one dropped control (28/29).
+
+  There is NO broadcast.py. If a Read or Grep says "file not found",
+  believe the listing in the error and do not retry the path.
+
+THE DEFECT (all verbatim at BASE — one class, two shapes)
+
+Shape A — the boundary lies. house_tab REPORTS return y=376 but its
+lowest drawn row extends past y=364, where broadsheet places the next
+section. gilded/tests/test_c6_contract.py::test_no_text_overlap:
+    AssertionError: ('House', 0, 'Ruler: Alexios Ashworth (age 29)',
+    'The Ladder')
+    where Rect(12, 356, 152, 17).colliderect(Rect(16, 364, 110, 27))
+And the sealed gate at t0:
+    C6.5.t0.House: FAIL rows=129 overlaps=79 first=[('Ruler: Alexios
+    Ashworth (age 2', 'The Ladder'), ('COURT SEATS', 'The Ladder')]
+The fix is truth, not padding: make draw_house_tab return the actual
+max bottom of everything it drew (track it where rows are blitted; the
+wave-7 max_bottom variable exists for exactly this), and make
+broadsheet lay The Ladder from that returned value. Do not just add a
+constant gap — at t10/t40 the table is taller and a constant will lie
+again.
+
+Shape B — the dossier grid collides with the seat rows, and it grows
+with t. Gate:
+    C6.5.t10.House: FAIL rows=149 overlaps=99 first=[('  Board
+    Chairman: Aurelius Ash', '  #2 Wei Vantrell  loyalty 50 '), ...]
+    C6.5.t40.House: FAIL rows=144 overlaps=145 first=[('  Board
+    Chairman: Aurelius Ash', '  #2 Ramses Brandtner  loyalty'), ...]
+The 8x10 column grid (house_tab.py ~445) starts at a y that seat rows
+also occupy once the court grows. The grid must start BELOW the last
+seat row actually drawn (derive its origin from the seat cursor, not a
+constant) and clip at its own bottom the same honest way.
+
+THE PRIZE (the committed 8, red since wave 4, all waiting on the band)
+
+  test_ui_broadsheet.py: policies_tab_draws_and_clicks,
+  registry_is_rebuilt_not_accumulated,
+  every_tab_draws_its_measured_number_of_regions,
+  set_stance_click_works_without_legacy_dial_hits,
+  enterprises_picker_open_census,
+  every_control_on_every_tab_explains_itself;
+  test_ui_actions.py::test_every_drawn_key_is_registered;
+  test_c6c_layout.py::test_house_overview_fits_band.
+
+  Your own harness at BASE prints:
+    content band: y=160 bottom=782 height=622
+    house_overview groups={'dismiss_seat': 6, 'open_heir_picker': 1,
+    'clear_heir': 1, 'rule': 2, 'cycle_exec': 1, 'open_scheme_picker':
+    1, 'open_ambition_picker': 1}  TOTAL regions=13
+  The census (test_ui_broadsheet.py:32) expects 26 on House, 19 on
+  Powers, 29 on Atlas — 74 total; the explain-itself walk currently
+  reaches 68. Missing on House: rule x1 more, set_stance x5, and the
+  rest to 26. Once the bottoms are honest you know exactly how much
+  band is real; spend it on these registrations, smallest first.
+
+THE WORK (in this order)
+
+1. Hygiene (above). rm the 10 files.
+2. Shape A: honest return-y from draw_house_tab; broadsheet places The
+   Ladder from it. Run:
+     python -m pytest gilded/tests/test_c6_contract.py -q
+   Commit when test_no_text_overlap passes at t0.
+3. Shape B: derive the grid origin from the seat cursor; re-run the
+   gate command you were given in wave 7 — all three House timesteps
+   must read overlaps=0. Commit.
+4. Spend the honest band: register the missing House controls (rule
+   x3 total, set_stance x5, the rest to 26), then the Atlas tail
+   control (29th). Run your probe between edits
+   (python gilded/tests/_probe_c6c.py); commit every time a count
+   moves the right way.
+5. Full pass: python -m pytest gilded/tests -q with output to
+   C:\tmp\w8_full.txt if you need to study it.
+
+PACING (a rule, not advice)
+- If you have made 30 tool calls without an Edit or a commit, you are
+  stalling: make the smallest honest-bottom edit, run the one test
+  that watches it, and commit if it went green.
+- If the same tool call fails twice, the premise is wrong — change the
+  premise, not the phrasing.
+- Commit after every coherent step. An automated probe runs the red
+  tests against your latest commit whenever you go quiet.
+
+RULES
+- NO downloads. NO new files inside the repo except source edits to
+  the three named files; long command output goes under C:\tmp.
+- Do not touch the menu, save, settings, audio, beats, endings, or any
+  C1..C6B surface except the House/Atlas draw sites named above — the
+  sealed gate re-runs everything.
+- Do not weaken any committed test, census number, floor, or the type
+  scale. Every "keep X" here names the test that fails when X is lost
+  — run that test, do not argue with it. The wave-7 restorations
+  (3 strings, TYPE_CAPTION(12), pixel content in sampled rects) are
+  now part of "keep X": test_c6_contract.py::test_text_rows_complete,
+  the type-scale files, and the 7 pixel files must STAY green.
+- Use the CodeIndex tool FIRST for every symbol lookup (definitions
+  and references in one call) before any Grep/Read crawl.
+- Wire-check before finishing — this exact command, passing tail in
+  the final commit message:
+  python -m pytest gilded/tests/test_ui_broadsheet.py gilded/tests/test_ui_actions.py gilded/tests/test_c6_contract.py gilded/tests/test_c6c_layout.py gilded/tests/test_ui_type_scale.py gilded/tests/test_type_scale_source.py gilded/tests/test_house_tab_pixel_visual.py gilded/tests/test_house_opinion_ui.py gilded/tests/test_heir_controls.py -q
+
+DONE WHEN
+python -m pytest gilded/tests -q passes with ZERO failures — the
+overlap healed at all timesteps, the 8 contract reds green, the wave-7
+restorations intact, the repo clean of scratch. Then make a final
+commit whose message contains exactly this marker:
+
+stage c6 complete
