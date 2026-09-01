@@ -3201,3 +3201,26 @@ the sanctioned alternative for long output: pipe to tail, or write
 under /c/tmp which is outside the repo. Standing rule for brief
 authoring: cleanup steps go FIRST, and every "never do X" names the
 sanctioned way to meet the need X was serving.
+
+## F139 — Pacing rule ignored as advisory: 276 tool calls without a commit, then the wall clock reaped the run (C6 wave 8)
+
+**Where:** Mission c6-wave8-1788275916397, repo civkings, 40c7865 → e094c3f.
+
+**How:** The brief's PACING section says "if you have made 30 tool calls
+without an Edit or a commit, you are stalling" and "commit after every
+coherent step." The run made 2 commits in 586 tool calls with a maximum
+gap of 276 calls, then hit the 6h wall clock (exitReason=timeout,
+21962s) with the mission roughly half done. Both commits it did make
+were excellent — the loss was cadence, not quality.
+
+**Why:** The pacing text reads as advice and carries no numbers the
+model checks itself against mid-run. Every enforcement we have
+(iteration budget notices, quiet-probe) measures other things; nothing
+tells the model "you are N calls past the commit rule NOW."
+
+**Fix:** Wave 9 brief converts pacing into numbered commit points bound
+to instruments (commit WHEN test X goes green, listed per work item),
+which the model has repeatedly shown it honors when a step names its
+instrument (waves 7 and 8 commits did exactly this). Engine-side: a
+governance nudge at maxCallsWithoutCommit > 60 is the durable fix —
+filed as a requirement on the CynCo engine, not hand-edited here.

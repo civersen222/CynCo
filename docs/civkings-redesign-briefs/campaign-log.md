@@ -975,3 +975,51 @@ growing internal collision) standing between here and the 26-region
 census. Wave 8 dispatched at BASE 40c7865: make the reported return-y
 tell the truth, clip the dossier grid against the seat rows, then spend
 the honest band on the missing 13 registrations.
+
+## C6 wave 8 — c6-wave8-1788275916397 (graded 2026-09-01, BASE 40c7865 → HEAD e094c3f)
+
+- 619 turns, exitReason **timeout** (21962s), only 2 commits — one
+  stretch of 276 tool calls without a commit against the 30-call
+  pacing rule. The wave was reaped mid-work, not finished.
+- The wins are real:
+  - **Sealed gate PASS, exit 0** — overlaps ZERO at all three House
+    timesteps, zero prior-campaign regressions. First gate PASS since
+    wave 5, and this time with the restored content in place.
+  - test_c6_contract fully green, no_text_overlap included: the
+    honest return-y works (draw_house_tab now reports its true max
+    bottom; broadsheet places The Ladder from it).
+  - Step-1 hygiene EXECUTED: all 10 scratch files deleted, tree
+    clean. The F138 fix (hygiene first + sanctioned alternative)
+    worked on its first outing.
+  - Derived sweep MEASURED: **8/16 killed** vs the green owners — up
+    from 0/25; with the overlap instrument green it now owns half the
+    new geometry. Survivors: 8 grid-wrap constants
+    (house_tab.py:463–486).
+- The costs, all bought by the same honest bottom (verbatim):
+  - house_tab's true extent is **538**, not ~430: the probe reads
+    ladder_agenda -> 743, intrigue -> 811, policies -> 811 with the
+    band ending at 782, rule group ABSENT, regions 10.
+  - The docket skips for no room: `assert [] ==
+    view._option_hits` ("the briefing surfaces the docket as an
+    Agenda") — 5 click tests red: briefing_agenda, docket_option,
+    executor_cycle, rule_click, cycle_exec.
+  - Dossier truncation cut the DIFFERING tails of state strings:
+    "Pixels should differ when only the grievance differs" — buffers
+    identical (not black): house_opinion ×2, grievance_pixel_change.
+  - Full suite 9 → **16 failed / 2044 passed**.
+- Outstanding since wave 6 and STILL not done: the c6c harness assert
+  is not None-safe (TypeError, test_c6c_layout.py:82).
+- verified null→**false** by verifyCorrection. CodeIndex 5/586
+  (0.9%). F136 hinting: fourth consecutive wave, zero phantom paths.
+
+Economics after this wave: C6 = 8 missions, 43.22h local, $3.89
+electricity vs $646.19 measured-token API equivalent; global ratio $1
+frontier verify oversees ~$1.58 displaced generation.
+
+Verdict: MISS on timeout — the overlap war is WON (gate PASS with
+content restored); what remains is arithmetic, not correctness:
+house 538 must become ~430 without hiding distinguishing tokens, the
+docket must draw and register rule ×3, and the census must reach
+26/19/29. Wave 9 dispatched at BASE e094c3f with the harness fix
+first, pixel-token visibility second, compression third, and the
+pacing rule hardened to numbered commit points. F139 logged.
