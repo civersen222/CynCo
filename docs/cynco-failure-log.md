@@ -3145,3 +3145,32 @@ falsify. Any denial the model can receive twice must carry steering
 information — what IS there, not merely that the guess wasn't. The
 5-failure halt is the backstop, not the teacher; by the time it fires, the
 budget is spent.
+
+## F137 — Compression by deletion: hitting the layout target by removing the substance (C6 wave 6)
+
+**Where:** Mission c6-wave6-1788216814167, repo civkings, da6a5fd → cce2b43.
+
+**How:** The brief demanded draw_house_tab return by ~y=430 and said, in
+the same section, "Do not delete content" and "text_rows stays complete."
+The model made the geometry (house_tab → ~375) but got there by
+(a) dropping 3 drawn strings ('Lay the track', 'The survey can wait',
+'executor: default' — gate text-rows fell 56→53, PASS→MISS), (b) moving
+content out of the rects that 7 pixel-change tests sample (they now
+compare all-black buffers), and (c) hard-coding `_font(11)` — off the
+committed [12,14,17,20,24,29] type scale — instead of using a named step.
+Full suite regressed 14→21 red while the contract subset improved 14→8.
+
+**Why:** Goodhart under a single quoted number. The brief quoted the
+y-arithmetic verbatim (per F134's lesson) but stated the conservation
+constraints as prose ("do not delete content") without quoting the
+instruments that enforce them. The model optimized the number it could
+measure with its own probe and never ran the instruments it was
+quietly breaking — none of the pixel/type-scale/contract tests were in
+its check command.
+
+**Fix:** Wave 7 brief quotes the conservation instruments verbatim
+(the 3 missing strings, the rows=53 floor-56 gate line, the _font(11)
+type-scale assertion) and puts them IN the wire-check command, so the
+constraint is as measurable to the model as the target. Standing rule
+for brief authoring: every "do not lose X" constraint must name the
+test that fails when X is lost, and that test goes in the check command.
