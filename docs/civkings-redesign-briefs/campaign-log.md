@@ -1067,3 +1067,39 @@ Verdict: MISS on timeout, campaign-best state — two 1-row overlaps, a
 the marker. Wave 10 dispatched at BASE c238ff8 with an 8h wall clock
 (two consecutive 6h reaps with the plan visibly mid-flight) and the
 model's own named next step — the grid shrink — as step 1.
+
+## C6 wave 10 — c6-wave10-1788323279048 (graded 2026-09-02, BASE c238ff8 → HEAD d8bfa23)
+
+- 947 turns, exitReason **timeout** for the third straight wave — this
+  time against the raised 8h clock (29147s). 4 commits, then a
+  311-call investigation stretch ("two-row lower-spine") with only 20
+  edits in the whole run; the Bash circuit breaker fired 4×.
+- And still a NEW campaign best:
+  - **Sealed gate PASS, exit 0** — both single-row overlaps killed
+    (w10 step1 pinned Set Ambition to the band's right edge), zero
+    prior-campaign regressions. test_c6_contract fully green again.
+  - Full suite 9 → **8 failed / 2052 passed**. Every remaining red is
+    the census/registration family: 6 ui_broadsheet +
+    every_drawn_key_is_registered + house_overview_fits_band.
+  - Probe: house 474, ladder_agenda 759, intrigue/policies 827 (45px
+    past the 782 band end), rule 2 of 3, regions 13 of 26.
+- In-flight at teardown, left in place for wave 11 (never discard):
+  a STAGED restore of the canonical _probe_c6c.py (the model was
+  cleaning up its own instrumentation checkpoint) and an untracked
+  _probe_real.py.
+- Derived sweep 5/25 vs green owners (overlap instrument re-greened
+  and back in the set): 20 survivors are ladder-spacing constants
+  (broadsheet.py:1457–1500) owned by the still-red census
+  instruments — the ownership gap keeps tracking the red set exactly.
+- verified null→**false** by verifyCorrection. CodeIndex 20/910
+  (**2.2%, best yet**). F136: sixth wave, zero phantom paths.
+
+Economics after this wave: C6 = 10 missions, 57.41h local, $5.17
+electricity vs $872.14 measured-token API equivalent; global ratio $1
+frontier verify oversees ~$1.65 displaced generation.
+
+Verdict: MISS on timeout at a new best — the geometry war is over
+(gate PASS, contract green, honest bottoms); what remains is 45px of
+spill and 13 missing registrations. Wave 11 dispatched at BASE
+d8bfa23: land the in-flight probe cleanup first, cap investigations
+at 60 calls without an edit, then the spill, then the census.
