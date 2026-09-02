@@ -1023,3 +1023,47 @@ docket must draw and register rule ×3, and the census must reach
 26/19/29. Wave 9 dispatched at BASE e094c3f with the harness fix
 first, pixel-token visibility second, compression third, and the
 pacing rule hardened to numbered commit points. F139 logged.
+
+## C6 wave 9 — c6-wave9-1788299630763 (graded 2026-09-01, BASE e094c3f → HEAD c238ff8)
+
+- 759 turns, exitReason **timeout** again (21953s) — but the F139 fix
+  held while it ran: all five numbered commit points honored in order
+  (C6w9-0 none-safe harness, 9-1 token visibility, 9-2a/2b/2c
+  compression steps), then a 453-call uncommitted stretch on the grid
+  shrink the clock interrupted.
+- Full suite 16 → **9 failed / 2051 passed** — ties wave 7's count in
+  a strictly better state:
+  - Harness None-safe (outstanding since wave 6, finally done):
+    fails as `AssertionError: agenda docket rules missing/skipped`
+    with rule=2, instead of dying TypeError.
+  - Token visibility restored: grievance token leads the line; the 3
+    pixel files and test_heir_controls green.
+  - The docket DRAWS: all 5 click tests green, rule registers 2 of 3.
+  - house_tab 538 → 474; ladder_agenda ends 781, inside the band.
+- Sealed gate MISS exit 1 — but down to TWO SINGLE overlaps (verbatim):
+    C6.5.t0.House: FAIL rows=128 overlaps=1 first=[('The survey can
+    wait', 'Set Ambition')]
+    C6.5.t10.House: FAIL rows=149 overlaps=1 first=[('Start Scheme',
+    'Attention: 5')]
+  from 79/99/145 two waves ago. The final commit message names the
+  fix it ran out of clock for: "overlap at docket/Set-Ambition
+  resolved by the grid shrink next."
+- Still open: intrigue/policies spill to 849 (67 past band end 782),
+  rule 2 of 3, regions 13 of 26, atlas 28 of 29.
+- Derived sweep 0/9 vs green owners (test_c6_contract excluded while
+  no_text_overlap is red): survivors are layout constants owned by
+  that red instrument — the wave-7 ownership pattern, expected to
+  close at overlaps=0.
+- verified null→**false** by verifyCorrection. CodeIndex 4/678
+  (0.6%). F136: fifth consecutive wave, zero phantom paths. Tree
+  clean — F138 hygiene holding.
+
+Economics after this wave: C6 = 9 missions, 49.31h local, $4.44
+electricity vs $744.60 measured-token API equivalent; global ratio $1
+frontier verify oversees ~$1.61 displaced generation.
+
+Verdict: MISS on timeout, campaign-best state — two 1-row overlaps, a
+67px spill, one missing rule, and the census stand between here and
+the marker. Wave 10 dispatched at BASE c238ff8 with an 8h wall clock
+(two consecutive 6h reaps with the plan visibly mid-flight) and the
+model's own named next step — the grid shrink — as step 1.
