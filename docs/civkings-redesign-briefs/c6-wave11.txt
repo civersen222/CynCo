@@ -1,0 +1,103 @@
+MISSION C6 WAVE 11 — 45 PIXELS AND 13 REGISTRATIONS (the geometry war
+is over: gate PASS, contract green, honest bottoms. What remains is a
+spill and a census. 8 hours.)
+
+Repo: C:\Users\civer\civkings
+BASE: d8bfa23  (wave-10 head. Full suite 8 failed / 2052 passed — the
+best yet. Sealed gate PASSES end to end. KEEP-GREEN set, run before
+your final commit: test_c6_contract.py, the type-scale files,
+test_house_tab_pixel_visual.py, test_house_opinion_ui.py,
+test_house_tab_grievances.py, test_heir_controls.py.)
+
+STEP 0 — LAND YOUR OWN IN-FLIGHT CLEANUP (it is already staged)
+
+  The tree at BASE has a STAGED restore of the canonical
+  gilded/tests/_probe_c6c.py (you were un-instrumenting it when the
+  clock hit) and an untracked gilded/tests/_probe_real.py. Run the
+  staged probe once to confirm it prints the section report, COMMIT
+  it, and delete _probe_real.py. Nothing else goes in that commit.
+
+THE SCOREBOARD AT BASE (your probe prints)
+
+    content band: y=160 bottom=782 height=622
+    house_tab: -> 474  (band ends 782)
+    ladder_agenda: -> 759
+    intrigue: -> 827        <- 45px PAST the band end
+    policies: -> 827        <- same
+    TOTAL regions=13
+    groups={'dismiss_seat': 6, 'open_heir_picker': 1, 'clear_heir': 1,
+    'rule': 2, 'cycle_exec': 1, 'open_scheme_picker': 1,
+    'open_ambition_picker': 1}
+
+  The 8 red (ALL of them the same story — controls that never draw or
+  never register):
+    test_c6c_layout.py::test_house_overview_fits_band  (rule 2, needs
+      >= 3; every section must end <= 782)
+    test_ui_actions.py::test_every_drawn_key_is_registered
+    test_ui_broadsheet.py:: policies_tab_draws_and_clicks,
+      registry_is_rebuilt_not_accumulated,
+      every_tab_draws_its_measured_number_of_regions,
+      set_stance_click_works_without_legacy_dial_hits,
+      enterprises_picker_open_census,
+      every_control_on_every_tab_explains_itself
+  The census (test_ui_broadsheet.py:32): 26 regions on House, 19
+  Powers, 29 Atlas. House has 13 — missing: the 3rd rule, set_stance
+  x5, and the remainder the census test itself will name for you.
+
+THE WORK (numbered commit points — commit AT each)
+
+1. THE 45px. intrigue and policies must end <= 782. You have slack:
+   ladder_agenda could end sooner (759 today), and house_tab may go
+   as low as ~430 (474 today, 44px available). Shrink SPACE, never
+   tokens (KEEP-GREEN re-checks), never leave the type scale
+   (smallest named step is 12), overlaps stay ZERO
+   (test_c6_contract::test_no_text_overlap watches). COMMIT 1: probe
+   shows every section <= 782, KEEP-GREEN green.
+2. THE THIRD RULE. The docket draws 2 rule options; the census and
+   fits_band want 3. Find why the third is dropped (room, cap, or
+   data) and give it room. COMMIT 2: probe groups shows rule: 3,
+   fits_band green.
+3. THE CENSUS TO 26. set_stance x5 and the rest. The failing tests
+   name each missing control; register them inside the band. COMMIT
+   every time regions climbs. Then the Atlas 29th control (one
+   dropped at the band tail of draw_atlas). Then Powers if its 19 is
+   short.
+4. FULL PASS: python -m pytest gilded/tests -q, output to
+   C:\tmp\w11_full.txt. Fix what it shows, then the wire-check below.
+
+PACING (three waves have died at the clock; the loss pattern is long
+investigations — these are orders)
+- INVESTIGATION CAP: if you have spent 60 tool calls without an Edit,
+  STOP investigating. Write your current hypothesis into a commit
+  message on the smallest edit that tests it, and move to the next
+  numbered step.
+- COMMIT AT THE NUMBERED POINTS. 30 calls past your last commit with
+  no instrument green = make the smallest edit that moves one number
+  and commit that.
+- If the same tool call fails twice, the premise is wrong — change
+  the premise, not the phrasing.
+
+RULES
+- NO downloads. NO new files inside the repo; long command output
+  goes under C:\tmp. Self-checks live in gilded/tests/ and are
+  committed.
+- Do not touch the menu, save, settings, audio, beats, endings, or
+  any C1..C6B surface except gilded/ui/house_tab.py,
+  gilded/ui/broadsheet.py, gilded/ui/atlas_view.py — the sealed gate
+  re-runs everything. There is NO broadcast.py; believe the listing
+  in any file-not-found error.
+- Do not weaken any committed test, census number, floor, or the
+  type scale.
+- Use the CodeIndex tool FIRST for every symbol lookup (definitions
+  and references in one call) before any Grep/Read crawl.
+- Wire-check before finishing — this exact command, passing tail in
+  the final commit message:
+  python -m pytest gilded/tests/test_ui_broadsheet.py gilded/tests/test_ui_actions.py gilded/tests/test_c6_contract.py gilded/tests/test_c6c_layout.py gilded/tests/test_ui_type_scale.py gilded/tests/test_type_scale_source.py gilded/tests/test_house_tab_pixel_visual.py gilded/tests/test_house_opinion_ui.py gilded/tests/test_house_tab_grievances.py gilded/tests/test_heir_controls.py -q
+
+DONE WHEN
+python -m pytest gilded/tests -q passes with ZERO failures — the 8
+reds healed, the gate still PASS, the census at 26/19/29, the tree
+clean. Then make a final commit whose message contains exactly this
+marker:
+
+stage c6 complete
