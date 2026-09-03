@@ -1,0 +1,110 @@
+MISSION C6 WAVE 12 — LAND YOUR OWN PATCH, THEN THE CENSUS (wave 11 did
+not lose to the clock: the machine ran out of memory under it 55 minutes
+early. Your last uncommitted edit is preserved and it is BETTER than
+HEAD. Start from it. 8 hours.)
+
+Repo: C:\Users\civer\civkings
+BASE: c1c08f1  (wave-11 head. Sealed gate PASSES end to end, zero prior-
+campaign regressions. KEEP-GREEN set, run before your final commit:
+test_c6_contract.py, the type-scale files, test_house_tab_pixel_visual.py,
+test_house_opinion_ui.py, test_house_tab_grievances.py,
+test_heir_controls.py.)
+
+STEP 0 — APPLY THE PRESERVED PATCH (commit within your first 20 calls)
+
+  When wave 11 ended, your working tree held a 133-line two-column House
+  layout (ladder+agenda left column 400px wide; policies dials in the
+  right column at band top with intrigue stacked beneath). The driver
+  saved it verbatim; HEAD reverted to the sequential layout without it.
+  The file:
+    C:\tmp\c6-wave11-1788370425439.uncommitted.patch
+  (backup copy: C:\Users\civer\localcode\docs\civkings-redesign-briefs\c6-wave11-inflight.patch)
+  Apply it: git apply <that path>. It applies cleanly on c1c08f1 — this
+  was verified at grading.
+
+  Measured at grading, HEAD vs HEAD+patch (your probe prints):
+    HEAD:        house 474, ladder_agenda 743, intrigue 811, policies 811   <- 29px PAST 782
+                 TOTAL regions=13, rule: 2, no set_stance
+    HEAD+patch:  house 474, ladder_agenda 761, policies 712, intrigue 780   <- ALL inside the band
+                 TOTAL regions=18, rule: 2, set_stance: 5
+  KEEP-GREEN + census set under the patch: 3 failed / 366 passed (HEAD:
+  7 failed / 362). ALL FIVE test_ui_broadsheet reds go green under it.
+  The patch introduces exactly one new red, and it is the one you must
+  fix before committing it:
+    test_c6_contract.py::test_no_text_overlap
+    AssertionError: ('House', 0, 'Dismiss Aurelius Ashworth', 'Dismiss Temujin Ashworth')
+    Rect(20, 216, 176, 23).colliderect(Rect(145, 216, 175, 23))
+  The dismiss buttons of two seats now share a row in a 400px column and
+  overlap by 51px. Stack them, or narrow the label to the seat name only,
+  or widen the left column — but overlaps must be ZERO. COMMIT 0: patch
+  applied, no_text_overlap green, probe shows every section <= 782 and
+  regions >= 18, KEEP-GREEN green.
+
+THE TWO REDS THAT REMAIN AFTER STEP 0 (verbatim from the run at grading)
+
+  test_c6c_layout.py::test_house_overview_fits_band
+    AssertionError: agenda docket rules missing/skipped: {'dismiss_seat': 6,
+    'open_heir_picker': 1, 'clear_heir': 1, 'rule': 2, 'cycle_exec': 1,
+    'open_scheme_picker': 1, 'open_ambition_picker': 1}
+    assert ((2)) >= 3
+  test_ui_actions.py::test_every_drawn_key_is_registered
+    AssertionError: the drawn set moved: [...]
+    Extra items in the right set:
+    'cycle_exec'
+  (cycle_exec is drawn on House but is not in the registered verb set
+  that test compares against — register the verb where the other House
+  verbs are registered, do NOT edit the test's expected list.)
+
+THE WORK (numbered commit points — commit AT each)
+
+1. THE THIRD RULE. The docket draws 2 rule options; fits_band wants 3.
+   Find why the third is dropped (room, cap, or data) and give it room
+   inside the band. COMMIT 1: probe groups shows rule: 3, fits_band
+   green.
+2. cycle_exec REGISTERED. COMMIT 2: every_drawn_key_is_registered green.
+3. THE CENSUS (test_ui_broadsheet.py:32): 26 regions on House, 19
+   Powers, 29 Atlas. House is at 18 after step 0. The census tests name
+   each missing control; register them inside the band. COMMIT every
+   time regions climbs. Then the Atlas 29th control (one dropped at the
+   band tail of draw_atlas). Then Powers if its 19 is short.
+4. FULL PASS: python -m pytest gilded/tests -q, output to
+   C:\tmp\w12_full.txt. Fix what it shows, then the wire-check below.
+
+PACING (these are orders; wave 11 went 172 calls without a source edit
+and 303 without a commit while under the same orders — the cost was
+the whole second half of the run)
+- INVESTIGATION CAP: 40 tool calls without an Edit = STOP investigating.
+  Write your current hypothesis into a commit message on the smallest
+  edit that tests it, and move to the next numbered step.
+- COMMIT AT THE NUMBERED POINTS. 30 calls past your last commit with no
+  instrument green = make the smallest edit that moves one number and
+  commit that.
+- Never revert a landed layout to investigate; branch the question
+  into the probe instead. Wave 11 committed the two-column layout,
+  reverted it, then rebuilt it uncommitted — three commits for zero
+  net progress.
+- If the same tool call fails twice, the premise is wrong — change the
+  premise, not the phrasing.
+
+RULES
+- NO downloads. NO new files inside the repo; long command output goes
+  under C:\tmp. Self-checks live in gilded/tests/ and are committed.
+- Do not touch the menu, save, settings, audio, beats, endings, or any
+  C1..C6B surface except gilded/ui/house_tab.py, gilded/ui/broadsheet.py,
+  gilded/ui/atlas_view.py — the sealed gate re-runs everything. There
+  is NO broadcast.py; believe the listing in any file-not-found error.
+- Do not weaken any committed test, census number, floor, or the type
+  scale. Overlaps stay ZERO (test_c6_contract::test_no_text_overlap).
+  Shrink SPACE, never tokens; smallest named type step is 12.
+- Use the CodeIndex tool FIRST for every symbol lookup (definitions and
+  references in one call) before any Grep/Read crawl.
+- Wire-check before finishing — this exact command, passing tail in the
+  final commit message:
+  python -m pytest gilded/tests/test_ui_broadsheet.py gilded/tests/test_ui_actions.py gilded/tests/test_c6_contract.py gilded/tests/test_c6c_layout.py gilded/tests/test_ui_type_scale.py gilded/tests/test_type_scale_source.py gilded/tests/test_house_tab_pixel_visual.py gilded/tests/test_house_opinion_ui.py gilded/tests/test_house_tab_grievances.py gilded/tests/test_heir_controls.py -q
+
+DONE WHEN
+python -m pytest gilded/tests -q passes with ZERO failures — the reds
+healed, the gate still PASS, the census at 26/19/29, the tree clean.
+Then make a final commit whose message contains exactly this marker:
+
+stage c6 complete

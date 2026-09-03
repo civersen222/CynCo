@@ -1,0 +1,133 @@
+diff --git a/gilded/tests/_probe_c6c.py b/gilded/tests/_probe_c6c.py
+index 76c487c..2a7acc4 100644
+--- a/gilded/tests/_probe_c6c.py
++++ b/gilded/tests/_probe_c6c.py
+@@ -24,12 +24,19 @@ print(f"content band: y={content.y} bottom={content.bottom} height={content.heig
+ v.regions._regions.clear()
+ y1 = draw_house_tab(surf, content, rpt, v)
+ print(f"house_tab: -> {y1}  (band ends {content.bottom})")
+-y2 = v._draw_ladder_and_agenda(surf, content, y1 + 8, bottom=content.bottom - 40)
++# Mirror the two-column House layout in _draw_house: left column carries
++# ladder + agenda (spine text), the right column the policies dials at band
++# top with intrigue stacked beneath them. Both share the content bottom.
++left = pygame.Rect(content.x, y1 + 2, 400, content.bottom - (y1 + 2))
++right = pygame.Rect(content.x + 414, content.y + 40,
++                    content.width - 414,
++                    content.bottom - (content.y + 40))
++y2 = v._draw_ladder_and_agenda(surf, left, left.y, bottom=content.bottom - 40)
+ print(f"ladder_agenda: -> {y2}")
+-y3 = v._draw_intrigue(surf, content, y2, bottom=content.bottom - 40)
+-print(f"intrigue: -> {y3}")
+-y4 = v._draw_policies(surf, content, y3, bottom=content.bottom - 40)
++y4 = v._draw_policies(surf, right, right.y, bottom=content.bottom - 40)
+ print(f"policies: -> {y4}")
++y3 = v._draw_intrigue(surf, right, y4, bottom=content.bottom - 40)
++print(f"intrigue: -> {y3}")
+ v._draw_ambition_controls(surf, content)
+ n = len(v.regions._regions)
+ print(f"TOTAL regions={n}")
+diff --git a/gilded/ui/broadsheet.py b/gilded/ui/broadsheet.py
+index 7c4bab7..dd58f81 100644
+--- a/gilded/ui/broadsheet.py
++++ b/gilded/ui/broadsheet.py
+@@ -1428,7 +1428,7 @@ class BroadsheetView:
+             return y
+         blit_text(surface, head, "The Ladder", (PAD, y), INK)
+         y += head.get_height() + 4
+-        for row in rows[:5]:
++        for row in rows[:4]:
+             who = row.house + (" (you)" if row.house == self.house else "")
+             line = f"{row.rank}. {who}  {row.composite:.0f}"
+             blit_text(surface, body, line, (PAD + 10, y),
+@@ -2769,17 +2769,29 @@ class BroadsheetView:
+         from gilded.ui.court_actions import _get_appointment_pool
+         rpt = peerage_report(self.game, self.house)
+         y = draw_house_tab(surface, content, rpt, self)
++        # C6C: two-column layout — the spine text (ladder + agenda + intrigue)
++        # in the left column, the interactive controls (policies dials) in the
++        # right column at band top. Both share the content bottom, so
++        # everything ends <= content.bottom (the 45px spill healed; the
++        # set_stance dials register inside the band).
++        left = pygame.Rect(content.x, y + 2, 400, content.bottom - (y + 2))
++        right = pygame.Rect(content.x + 414, content.y + 40,
++                            content.width - 414,
++                            content.bottom - (content.y + 40))
+         # spec §2: the Briefing's ladder + agenda re-homed here (the House
+-        # spine is their home now); the agenda cards are the docket's decisions.
+-        y = self._draw_ladder_and_agenda(surface, content, y + 8,
+-                                         bottom=content.bottom - 40)
+-        # Draw intrigue section (plot visibility)
+-        y = self._draw_intrigue(surface, content, y,
+-                                bottom=content.bottom - 40)
++        # spine is their home now); the agenda cards are the docket's
++        # decisions. The left column carries only the spine text so it stays
++        # short enough to fit the band.
++        self._draw_ladder_and_agenda(surface, left, left.y,
++                                     bottom=content.bottom - 40)
+         # spec §2: the dissolved Policies tab is re-homed onto the House
+         # spine — the five standing directive dials (set_stance) draw on the
+-        # Overview page, not a separate tab.
+-        self._draw_policies(surface, content, y,
++        # Overview page (right column at band top), not a separate tab.
++        y_right = self._draw_policies(surface, right, right.y,
++                                      bottom=content.bottom - 40)
++        # The intrigue section (plot visibility) stacks under the policies
++        # dials in the right column so the left column never overflows the band.
++        self._draw_intrigue(surface, right, y_right,
+                             bottom=content.bottom - 40)
+         # C2: the Set Ambition button, then the family picker when open
+         self._draw_ambition_controls(surface, content)
+diff --git a/gilded/ui/house_tab.py b/gilded/ui/house_tab.py
+index 0d8c055..ffbb40d 100644
+--- a/gilded/ui/house_tab.py
++++ b/gilded/ui/house_tab.py
+@@ -381,9 +381,13 @@ def draw_house_tab(surface: pygame.Surface, content: pygame.Rect,
+         game = getattr(view, 'game', None)
+         house = getattr(view, 'house', None)
+ 
+-        # Draw 6 seat buttons in a 3x2 grid at the top
++        # Draw 6 seat buttons in a 3x2 grid at the top.  The grid is
++        # constrained to the left column (400px wide): the right column is
++        # reserved for the policies dials drawn by _draw_house, and a
++        # full-width grid's 3rd column would collide with them.
+         cols = 3
+-        col_w = (content.width - PAD * 2) // cols
++        grid_w = min(content.width, 400)
++        col_w = (grid_w - PAD * 2) // cols
+         for idx, seat in enumerate(report.seats):
+             col = idx % cols
+             row = idx // cols
+@@ -404,7 +408,7 @@ def draw_house_tab(surface: pygame.Surface, content: pygame.Rect,
+             else:
+                 btn_text = f"Dismiss {seat.holder_name}"
+ 
+-            btn_rect = _draw_button(surface, btn_text, btn_x, btn_y, col_w - 4, seat_h, refusal is None)
++            btn_rect = _draw_button(surface, btn_text, btn_x, btn_y, col_w - 4, max(14, seat_h), refusal is None)
+             hint = _seat_action_label(seat)
+ 
+             if refusal:
+@@ -436,13 +440,13 @@ def draw_house_tab(surface: pygame.Surface, content: pygame.Rect,
+         if y > content.bottom - 40:
+             return y
+ 
+-     # Compressed dossier: 8 columns x 10 rows at the smallest NAMED scale
++     # Compressed dossier: 8 columns x 7 rows at the smallest NAMED scale
+     # step (TYPE_CAPTION=12). Each line is wrapped to its column width so
+     # no drawn row ever spills into the adjacent column's x-span. Lines
+     # that overflow the grid are moved to the right margin (still drawn
+     # through blit_text, so text_rows stays complete).
+     cols = 8
+-    per = 9
++    per = 7
+     small = _font(TYPE_CAPTION)
+     col_w = (content.width - PAD * 2) // cols
+     non_blank = [l for l in lines if l.strip()]
+@@ -471,7 +475,7 @@ def draw_house_tab(surface: pygame.Surface, content: pygame.Rect,
+         elif line.startswith("  "):
+             color = TONES.get("warn", INK)
+         # Truncate to the column width — one line per cell, so the grid
+-        # stays a fixed 10 rows tall and never overflows its column.
++        # stays a fixed 7 rows tall and never overflows its column.
+         seg = line
+         max_w = col_w - 4
+         if small.size(seg)[0] > max_w:

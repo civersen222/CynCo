@@ -3224,3 +3224,48 @@ which the model has repeatedly shown it honors when a step names its
 instrument (waves 7 and 8 commits did exactly this). Engine-side: a
 governance nudge at maxCallsWithoutCommit > 60 is the durable fix —
 filed as a requirement on the CynCo engine, not hand-edited here.
+
+## F140 — A foreign process exhausted the commit charge; llama-server died six times on a 3.3 GB prompt-cache save and the restart budget declared a fault 55 minutes before the clock (C6 wave 11)
+
+**Where:** Mission c6-wave11-1788370425439, repo civkings, d8bfa23 → c1c08f1.
+Engine log C:\tmp\engine_c6-wave11.log lines 584350–622114; Windows System
+event log, provider Microsoft-Windows-Resource-Exhaustion-Detector, id 2004.
+
+**How:** 6.6h in (model-call iteration ~870) llama-server logged
+`E srv alloc: failed to allocate memory for prompt cache state: bad
+allocation` while saving a 47,784-token prompt (state 3324.6 MiB) and
+exited with code 9. The process manager restarted it. It died the same
+way six times between 18:18 and 18:32 local; the last three fell inside
+one 600s window, so `shouldRestartAfterExit` refused
+(MAX_RESTARTS_IN_WINDOW=3), callModel burned its 4 transport retries,
+and the run ended exitReason=engine_error at 25510s of a 28800s clock —
+with the model mid-step and a 133-line two-column House layout patch
+uncommitted (preserved by the driver at
+C:\tmp\c6-wave11-1788370425439.uncommitted.patch; never discard).
+
+**Why:** Not F91 — cache-ram was present and coupled (21504 MiB at ctx
+131072) — and not llama-server's own growth: the failing allocation
+happened 0.5s after a fresh start with 0 prompts cached. The event log
+fired six times in the same 14 minutes and named the consumers each
+time: firefox.exe PID 10628 at 196→209 GB of committed virtual memory,
+llama-server at 10–50 GB (normal, VMM-mapped), python.exe 26464 (the
+jlens sidecar) at 6.9 GB. The commit limit is 153.5 GB (63.6 GB RAM +
+92 GB auto-managed pagefile; peak pagefile use 63 GB). One browser
+process overran the whole limit, so every multi-GB prompt-cache save
+after that failed. Firefox was restarted before grading (every process
+dates from 2026-09-03 08:49) so the tab cannot be identified. The
+dashboard page is not the obvious suspect — its buffers are all capped
+(MAX_FEED 50, MAX_DECISIONS 20, entropies 2000, workspace rows 40) — but
+it was the one tab known to be open for the whole run. Unverified.
+
+**Fix:** (1) Environmental, now: no browser left open on the mission
+machine during unattended 8h runs; if it recurs, capture `about:memory`
+BEFORE restarting Firefox so the tab is named. Recorded in the env
+hazards memory. (2) Engine requirement, filed here and not hand-edited:
+the llama process manager should back off between restarts (60/120/240s)
+instead of relaunching immediately, so a transient host-memory event —
+this one lasted 14 minutes — cannot burn the 3-in-600s budget and turn a
+stall into a declared fault; and an exit following "prompt cache state:
+bad allocation" should log the host's free commit charge, so the next
+engine log names the cause without an event-log dig. (3) The wave-12
+brief makes landing the preserved patch step 0, graded first.
