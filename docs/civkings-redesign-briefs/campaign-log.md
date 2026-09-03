@@ -1103,3 +1103,67 @@ Verdict: MISS on timeout at a new best — the geometry war is over
 spill and 13 missing registrations. Wave 11 dispatched at BASE
 d8bfa23: land the in-flight probe cleanup first, cap investigations
 at 60 calls without an edit, then the spill, then the census.
+
+## C6 wave 11 — c6-wave11-1788370425439 (graded 2026-09-03, BASE d8bfa23 → HEAD c1c08f1)
+
+- 931 turns, exitReason **engine_error** — the first wave that did NOT
+  die on the clock: it died under the clock. At 25510s of the 28800s
+  budget llama-server logged `failed to allocate memory for prompt cache
+  state: bad allocation` and exited code 9; it did so six times between
+  18:18 and 18:32 local, the last three inside one 600s window, so the
+  process manager refused the fourth restart and the loop ended. The
+  Windows Resource-Exhaustion-Detector fired six times in the same
+  minutes and named the consumer each time: firefox.exe at 196→209 GB
+  committed against a 153.5 GB commit limit (63.6 GB RAM + 92 GB
+  pagefile). Not F91 (cache-ram coupled at 21504/131072), not llama's own
+  growth (the failing alloc came 0.5s after a fresh start with 0 prompts
+  cached). Logged as **F140**; engine requirement filed: restart backoff
+  instead of immediate relaunch.
+- 4 commits, and the model honored step 0 (probe cleanup landed, scratch
+  file deleted) inside its first commit. Then it oscillated: two-column
+  House layout committed (f454a39, "sections <= 782"), REVERTED to
+  sequential (8cb987b, "Intrigue/policies still past band end"), then
+  rebuilt two-column uncommitted. The pacing orders (60-call
+  investigation cap) were ignored again: maxCallsWithoutSourceEdit 172,
+  maxCallsWithoutCommit 303.
+- State at HEAD c1c08f1:
+  - **Sealed gate PASS, exit 0** — 499 PASS / 0 FAIL, identical to wave
+    10 line for line except perf median 9.9→10.2ms (noise; cap 30.6).
+  - Full suite 8 → **7 failed / 2053 passed** (new best):
+    enterprises_picker_open_census healed by the picker-census-21
+    commit. Remaining 7 = 5 ui_broadsheet + every_drawn_key + fits_band.
+  - Probe: house 474, ladder 743, intrigue/policies **811** (29px past
+    782, was 45), rule 2 of 3, regions 13 of 26.
+- **The preserved patch is better than HEAD.** The driver saved the
+  133-line uncommitted two-column layout to
+  C:\tmp\c6-wave11-1788370425439.uncommitted.patch (backup committed as
+  c6-wave11-inflight.patch beside this log). Applied on c1c08f1 in a
+  throwaway worktree: probe 474 / 761 / policies 712 / intrigue 780 —
+  every section inside the band — TOTAL regions=18 with set_stance: 5;
+  KEEP-GREEN + census set 7 → **3 failed / 366 passed**; all five
+  ui_broadsheet reds green. One new red, verbatim:
+    test_no_text_overlap: ('House', 0, 'Dismiss Aurelius Ashworth',
+    'Dismiss Temujin Ashworth') Rect(20, 216, 176, 23).colliderect(
+    Rect(145, 216, 175, 23))
+  plus the two carried reds (fits_band rule 2 >= 3; every_drawn_key
+  "Extra items in the right set: 'cycle_exec'").
+- Derived sweep 0/6 vs green owners: survivors are ladder spacing
+  (broadsheet.py:1444, 1447), BUTTON_H = 26 (1889) and the policies-chain
+  bottom offset (2783) — owned by the still-red census instruments, the
+  wave-7 ownership pattern again.
+- verified null→**false** by verifyCorrection. CodeIndex 10/891 (1.1%,
+  down from 2.2%). F136: seventh wave, zero phantom paths (all 4 "not
+  found" errors were Edit old_string misses, none a fabricated file).
+  Tree clean at teardown.
+- Spot-audit due on ledger record #265 (1-in-5 cadence) — human verify.
+
+Economics after this wave: C6 = 11 missions, 64.50h local, $5.80
+electricity vs $995.34 measured-token API equivalent; global ratio $1
+frontier verify oversees ~$1.68 displaced generation.
+
+Verdict: MISS on engine fault (F140) at a new best — 7 red, gate PASS,
+and the run's own unlanded patch already heals the spill and five of
+the seven reds. Wave 12 dispatched at BASE c1c08f1: STEP 0 applies the
+preserved patch and fixes its one overlap, then the third rule,
+cycle_exec registration, and the census to 26/19/29; investigation cap
+tightened to 40 calls.
