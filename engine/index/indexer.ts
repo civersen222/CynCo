@@ -128,10 +128,28 @@ export function listProjectFiles(projectRoot: string): string[] {
   })
 }
 
+/**
+ * Every ProjectIndexer whose store is still open. An indexer holds a SQLite
+ * handle on <project>/.cynco/index/project.db; on Windows that handle pins the
+ * whole project directory (rmSync -> EPERM), and in a long engine run each
+ * unclosed instance is a leaked file descriptor. Instances register here on
+ * construction and leave on close(), so shutdown and the test harness have one
+ * place to release them all.
+ */
+const openIndexers = new Set<ProjectIndexer>()
+
+/** Close every open ProjectIndexer in this process. Returns how many were open. */
+export function closeAllIndexers(): number {
+  const n = openIndexers.size
+  for (const ix of [...openIndexers]) ix.close()
+  return n
+}
+
 export class ProjectIndexer {
   private store: IndexStore
   private embedClient: EmbedClient
   private projectRoot: string
+  private closed = false
 
   /**
    * `embedBaseUrl` is the *embedding* endpoint, not the chat one. It used to be
@@ -154,6 +172,12 @@ export class ProjectIndexer {
     // model, so an existing index dictates the model rather than the process
     // default. A fresh index has nothing to say yet and keeps the default.
     this.embedClient = new EmbedClient(embedBaseUrl, this.store.getMeta('embed_model') ?? undefined)
+    openIndexers.add(this)
+  }
+
+  /** True once close() has run; a cached instance in this state must be rebuilt, not reused. */
+  get isClosed(): boolean {
+    return this.closed
   }
 
   /** Full index of the project. Incremental — skips unchanged files. */
@@ -487,6 +511,9 @@ export class ProjectIndexer {
   }
 
   close(): void {
+    if (this.closed) return
+    this.closed = true
+    openIndexers.delete(this)
     this.store.close()
   }
 

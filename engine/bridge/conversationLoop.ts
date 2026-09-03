@@ -1066,6 +1066,12 @@ export class ConversationLoop {
     try {
       const { ProjectIndexer } = await import('../index/indexer.js')
       const indexer = new ProjectIndexer(this.executor['cwd'])
+      // Everything below runs inside try/finally: the close used to sit on the
+      // success path only, so a throw from query() (no embedding server, a
+      // locked store) leaked one open SQLite handle per user message -- and on
+      // Windows an open project.db is what made every test's temp-dir rmSync
+      // fail with EPERM.
+      try {
       // Probe embed health so we can surface index degradation on context.status.
       // Non-blocking: a short deadline falls back to keyword-only retrieval.
       try {
@@ -1116,7 +1122,9 @@ export class ConversationLoop {
           console.log('[index] Injected capped repo map as system context')
         }
       }
-      indexer.close()
+      } finally {
+        indexer.close()
+      }
     } catch {
       // Index not available — proceed without it
     }

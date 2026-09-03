@@ -23,9 +23,10 @@ import type { LocalCodeConfig } from '../../config.js'
 
 const dirs: string[] = []
 afterAll(() => {
-  // The loop leaves its .cynco stream log open on Windows; a cleanup EPERM
-  // must not turn a green test into a red file.
-  for (const d of dirs) { try { rmSync(d, { recursive: true, force: true, maxRetries: 5 }) } catch { /* temp dir */ } }
+  // Strict on purpose: an EPERM here means the loop left its project index
+  // store open again (the per-message injection used to close it only on the
+  // success path). The leak is a bug this file is allowed to fail on.
+  for (const d of dirs) rmSync(d, { recursive: true, force: true, maxRetries: 5 })
 })
 
 function config(): LocalCodeConfig {

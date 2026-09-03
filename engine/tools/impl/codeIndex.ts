@@ -87,6 +87,12 @@ export const codeIndexTool: ToolImpl = {
     // Try vector index first. Keyed by cwd — a single shared instance pointed
     // every project at whichever one happened to search first.
     let indexer = indexers.get(cwd)
+    // closeAllIndexers() (shutdown, test teardown) closes the cached instance
+    // underneath this map; a closed store must be reopened, not queried.
+    if (indexer?.isClosed) {
+      indexers.delete(cwd)
+      indexer = undefined
+    }
     if (!indexer) {
       try {
         indexer = new ProjectIndexer(cwd)
