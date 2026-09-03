@@ -269,6 +269,14 @@ export class ConversationLoop {
    */
   private callsSinceCommit = 0
   /**
+   * Every tool call this session, never trimmed. This is the number the
+   * dashboard's Mission panel shows against maxIterations. It used to be read
+   * off `toolHistory.length`, which is a 50-entry rolling window kept for the
+   * VSM advisors, so the gauge froze at 50 a few minutes into every mission
+   * and an 8h run read as "nothing happening" from the browser (C6 wave 12).
+   */
+  private toolCallsTotal = 0
+  /**
    * The HEAD this run last observed. Null means "not yet read": the first
    * reading seeds this field and is NOT a commit, so a mission whose baseline
    * HEAD is read at its first tool call does not start life one commit ahead.
@@ -623,7 +631,7 @@ export class ConversationLoop {
 
   /** Tool calls made this session — the dashboard's iteration-budget gauge. */
   get toolCallCount(): number {
-    return this.toolHistory.length
+    return this.toolCallsTotal
   }
 
   abort(): void {
@@ -3533,6 +3541,7 @@ export class ConversationLoop {
     // Count this call against the commit-pressure clock before any of the early
     // returns below can skip it. Read by runModelLoop's notice block.
     this.accountCommitPressure()
+    this.toolCallsTotal++
 
     // ─── P1.8 repair ladder: malformed arguments ─────────────────────
     // The transport marked this call's arguments unparseable (JSON.parse and
