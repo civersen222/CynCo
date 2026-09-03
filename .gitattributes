@@ -4,3 +4,6 @@
 benchmark/true/tasks/**/*.patch text eol=lf
 benchmark/true/tasks/**/*.py text eol=lf
 benchmark/true/tasks/**/*.json text eol=lf
+
+# C6 wave-11 in-flight patch is applied via `git apply`; CRLF would corrupt it.
+docs/civkings-redesign-briefs/*.patch text eol=lf
