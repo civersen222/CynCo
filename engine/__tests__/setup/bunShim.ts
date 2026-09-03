@@ -9,8 +9,8 @@
  */
 
 import * as http from 'http'
-import { spawn as nodeSpawn } from 'child_process'
-import { globSync } from 'fs'
+import { spawn as nodeSpawn, spawnSync as nodeSpawnSync } from 'child_process'
+import { globSync, writeFileSync } from 'fs'
 import { WebSocketServer, WebSocket as WsWebSocket } from 'ws'
 import { parse as parseYamlLib } from 'yaml'
 
@@ -262,6 +262,40 @@ class GlobShim {
 
 const bunYaml = { parse: (input: string) => parseYamlLib(input) }
 
+/**
+ * Minimal Bun.spawnSync shim: the subset the dashboard mission tests use
+ * (`Bun.spawnSync(['git', ...], { env, cwd })` then `.stdout.toString()`).
+ * Under vitest those two tests failed on every run with "Bun.spawnSync is not
+ * a function" -- a test that cannot run is a test that never fails, and these
+ * are the ones proving /api/mission counts commits from the mission repo
+ * rather than the engine's own.
+ */
+function makeBunSpawnSync(
+  cmd: string[],
+  options: { cwd?: string; env?: Record<string, string | undefined> } = {},
+) {
+  const r = nodeSpawnSync(cmd[0], cmd.slice(1), {
+    cwd: options.cwd,
+    env: options.env as NodeJS.ProcessEnv | undefined,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    shell: false,
+  })
+  const exitCode = r.status ?? 1
+  return {
+    stdout: r.stdout ?? Buffer.alloc(0),
+    stderr: r.stderr ?? Buffer.alloc(0),
+    exitCode,
+    success: exitCode === 0,
+    pid: r.pid,
+  }
+}
+
+/** Minimal Bun.write shim: string/Buffer to a path, resolving to bytes written. */
+async function makeBunWrite(dest: string, data: string | Uint8Array): Promise<number> {
+  writeFileSync(dest, data)
+  return typeof data === 'string' ? Buffer.byteLength(data) : data.byteLength
+}
+
 // Install global Bun shim if not already defined (i.e. running under vitest).
 // Each property is added defensively so a partial pre-existing Bun global
 // (e.g. another setup file) still gains the members it lacks.
@@ -269,6 +303,8 @@ const bunYaml = { parse: (input: string) => parseYamlLib(input) }
   const target: any = (globalThis as any).Bun ?? ((globalThis as any).Bun = {})
   if (typeof target.serve === 'undefined') target.serve = makeBunServe
   if (typeof target.spawn === 'undefined') target.spawn = makeBunSpawn
+  if (typeof target.spawnSync === 'undefined') target.spawnSync = makeBunSpawnSync
+  if (typeof target.write === 'undefined') target.write = makeBunWrite
   if (typeof target.Glob === 'undefined') target.Glob = GlobShim
   if (typeof target.YAML === 'undefined') target.YAML = bunYaml
 }

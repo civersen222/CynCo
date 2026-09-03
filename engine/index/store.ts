@@ -1,6 +1,11 @@
 
 import { Database } from 'bun:sqlite'
 import type { Chunk, IndexResult, Relationship } from './types.js'
+// symbolLookup.ts only `import type`s this module, so there is no runtime
+// cycle to avoid. The previous `require('./symbolLookup.js')` here resolved
+// under Bun but not under vitest (a CommonJS require cannot map the .js
+// specifier onto the .ts source), which kept 21 index tests permanently red.
+import { extractIdentifiers } from './symbolLookup.js'
 
 const BASE_SCHEMA = `
 CREATE TABLE IF NOT EXISTS chunks (
@@ -218,9 +223,6 @@ export class IndexStore {
    * because "function" matched. "No results" beats a wrong answer.
    */
   keywordSearch(query: string, topK = 5): IndexResult[] {
-    // require() rather than a top-level import: symbolLookup type-imports this
-    // module, and a runtime edge back would be a cycle.
-    const { extractIdentifiers } = require('./symbolLookup.js') as typeof import('./symbolLookup.js')
     const terms = extractIdentifiers(query).map(t => t.toLowerCase())
     if (terms.length === 0) return []
 

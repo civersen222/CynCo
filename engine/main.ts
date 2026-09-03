@@ -497,6 +497,13 @@ async function cleanShutdown(signal: string) {
   // 1.0 labels; tasks are now labeled live from observations as each one ends.
   // Export the dataset explicitly with `runTraining.ts --stage dataset`.
   AuditLogger.writeSessionOutcome(signal)
+  try {
+    const { closeAllIndexers } = await import('./index/indexer.js')
+    const n = closeAllIndexers()
+    if (n > 0) console.log(`[index] closed ${n} open project index store(s)`)
+  } catch (e) {
+    console.log(`[index] closeAllIndexers skipped at shutdown: ${e instanceof Error ? e.message : String(e)}`)
+  }
   activationsConsumer?.stop()
   jlensSidecar?.stop()
   if (config.provider === 'llama-cpp' && provider && 'processManager' in provider) {
