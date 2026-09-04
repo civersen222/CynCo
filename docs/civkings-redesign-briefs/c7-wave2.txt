@@ -1,0 +1,142 @@
+MISSION C7 WAVE 2 — THE DOCKET, THE MEMORY, AND ONE BROKEN PROMISE (wave 1
+made chains real: 17 library chains now land as beats on both seeds, 23
+defs all with 3+ steps, every act band covered — C7.1, C7.2 and C7.2a
+PASS. It also broke a C1 promise and left its best work uncommitted.
+8 hours, 2000 iterations.)
+
+Repo: C:\Users\civer\civkings
+BASE: 1f1d161  (wave-1 head. KEEP-GREEN set, run before EVERY commit:
+python -m pytest gilded/tests/test_c7_chain_beats.py gilded/tests/test_c7_bands.py gilded/tests/test_event_chains.py gilded/tests/test_saga_director.py gilded/tests/test_c6_contract.py gilded/tests/test_c6c_layout.py gilded/tests/test_ui_broadsheet.py gilded/tests/test_ui_actions.py gilded/tests/test_house_opinion_ui.py gilded/tests/test_house_tab_grievances.py gilded/tests/test_house_tab_pixel_visual.py gilded/tests/test_heir_controls.py -q)
+
+STEP 0 — COMMIT WHAT YOU LEFT ON THE FLOOR (first 15 calls, nothing else in it)
+
+  gilded/tests/test_c7_branching.py (101 lines) is UNTRACKED at BASE. It is
+  the only instrument for the C7.3 machinery you built in
+  gilded/society/event_chains.py lines 120-191 and gilded/docket.py 1101-1106;
+  the withheld mutation sweep at BASE killed 6 of 25 mutants and 19 of the
+  survivors are those exact lines — nothing committed owns them. Run it; if
+  it fails, fix the test or the code until it passes; COMMIT 0. At BASE it
+  fails exactly where the gate does:
+    FAILED gilded/tests/test_c7_branching.py::test_two_runs_ruling_the_chain_petitions_diverge
+      AssertionError: no chain petition was drawn as a rule region
+  — so COMMIT 0 may be the test alone (red is honest); step 2 turns it green.
+
+THE ONE BROKEN PROMISE (fix it in the same first hour — the sealed gate
+re-runs C1..C6 and the campaign cannot pass with this red)
+
+  Sealed C1 gate at BASE, verbatim:
+    s7.G1.3a.deflection: FAIL kinds seen: ['chain', 'gentry', 'inquiry', 'onboarding', 'season', 'signature']
+    s11.G1.3a.deflection: FAIL kinds seen: ['chain', 'gentry', 'inquiry', 'onboarding', 'season', 'signature']
+  At 2067de3 both seeds produced a kind="deflection" beat within the first 20
+  turns. Deflection beats come from gilded/beats.py:418 and :432 (the world
+  pushing back on a player order) and gilded/ambitions.py:529. Nothing in
+  beats.py changed in wave 1; what changed is the world: 23 chains now
+  apply() effects from turn 1. Find which chain effects on seeds 7 and 11
+  suppress the deflection path in the first 20 turns (a probe under C:\tmp
+  that plays 20 turns on seed 7 with chain_manager.tick disabled vs enabled
+  and diffs the beat kinds will show it in minutes), and restore the
+  deflection WITHOUT disabling chains: the fix is in the chain effects or
+  their triggers, never in the deflection emitter and never in beats.py's
+  kinds. The committed suite already pins it — verbatim from
+  `python -m pytest gilded/tests -q` at BASE (3 failed / 2061 passed):
+    FAILED gilded/tests/test_c1_visibility.py::test_all_four_kinds_in_seed7_20_turns
+      AssertionError: {'chain', 'gentry', 'inquiry', 'onboarding', 'season', 'signature'}
+      Extra items in the right set: 'deflection'
+    FAILED gilded/tests/test_agenda.py::test_r5_dominion_backed_by_industry
+      AssertionError: Fixture premise broken: industry == intrigue
+      assert 11 != 11
+  (the agenda test's fixture built a ruler whose industry stat differed from
+  intrigue; a wave-1 chain effect or a character-generation change made them
+  equal — find which chain step touches stats at generation time and stop it
+  from doing so before turn 1). COMMIT 1 when both tests are green alongside
+  KEEP-GREEN, with chains still ticking. Add seeds 7 and 11 to your own
+  test_c7_c1_deflection.py so the promise stays pinned.
+
+THE WORK (numbered commit points — commit AT each)
+
+2. THE CHOICE MUST BE DRAWN. Sealed gate at BASE, verbatim:
+     C7.3.branching: FAIL ... press_failures=["t57 chain:general_strike option 'buyoff' not drawn on the House docket", "t57 chain:general_strike option 'crackdown' not drawn on the House docket"] petitions_seen=[(57, 'chain:general_strike', 2)]
+   The petition IS filed (kind chain:general_strike, 2 options, turn 57)
+   and NEVER drawn. gilded/docket.py:1033 sorts the docket by
+   `DOMAIN_PRIORITY.get(p.domain, 9)` and your petitions carry domain
+   "chain", which is not in DOMAIN_PRIORITY (docket.py:60-63: war 0, labor
+   1, family 2, capital 3, press 4, diplomacy 5, expansion 6) — so a chain
+   asking the player sorts LAST (9) and falls off `pets[:MAX_PETITIONS]` or
+   below the band. A chain asking the player is the most urgent thing on
+   the desk: give "chain" priority 0 (or map each chain petition to its
+   real domain with priority 0), and make sure _draw_petition_cards
+   (broadsheet.py:1479) draws it with its rule regions inside the band.
+   COMMIT 2 when your test_c7_branching.py presses the drawn option (as
+   test_ui_broadsheet does) rather than calling docket.rule.
+3. THREE BRANCHING CHAINS, NOT ONE. Only general_strike files a petition.
+   Two more chains must: pick two with act-1 or act-2 triggers so a
+   70-turn seeded run reaches them (the gate rules the FIRST petition it
+   sees and compares two runs; it also needs >= 3 chains whose downstream
+   beats diverge). Each option's apply() must move the sim (treasury,
+   unrest, stress, a secret, an opinion) AND select later steps via
+   ac.ctx["choice"]. COMMIT 3 when two seed-42 runs ruling option 1 vs 2
+   diverge downstream for all three chains.
+4. CHARACTERS ACCUMULATE HISTORY. Character.history: list of entries
+   (turn, kind, text, refs) — turn = game.turn when it happened; kind in
+   {chain, ruling, scheme, marriage, court, secret, death, ambition}.
+   Append from every chain step for the characters in its ctx, from docket
+   rulings (executor + petitioner), schemes.py outcomes, marriages, court
+   appointments/dismissals, secrets revealed, kin deaths. After 70 turns on
+   seed 42: >= 60% of living player-house characters have >= 1 entry, the
+   ruler >= 5, and every entry is echoed by a beat that same turn naming
+   the character — the gate cross-checks this, so write the history entry
+   in the same code path that emits the beat. COMMIT 4 with
+   test_c7_history.py.
+5. HISTORY IS DRAWN AND REMEMBERED. House tab draws the ruler's last 3+
+   history lines inside the band (fits_band, no_text_overlap, type scale
+   all watch). endings.judge's Epilogue.text names >= 2 characters who have
+   history and quotes >= 20 characters of one entry verbatim. COMMIT 5 with
+   test_c7_epilogue.py.
+6. FULL PASS. Bash cap is 1500s. Run EXACTLY:
+     python -m pytest gilded/tests -q --tb=short > C:\tmp\c7w2_full.txt 2>&1; Get-Content C:\tmp\c7w2_full.txt -Tail 15
+   Wave 1's driver check saw test_ui_actions.py::test_dispatchability[quickload]
+   FAIL inside the set while it passes alone — a state or ordering leak
+   (a save file, a cwd, a module global) from one of your tests. Find and
+   fix the leak; do not mark or skip the test. Then the wire-check (KEEP-
+   GREEN set plus your test_c7_*.py files), passing tail in the final
+   commit message.
+
+PACING (orders; wave 1 went 197 calls without a source edit and 307
+without a commit, hit the Bash circuit breaker six times in a row, and
+ran out of its 1200 iterations with its best test uncommitted)
+- 40 tool calls without an Edit = STOP investigating. Write the
+  hypothesis into a commit message on the smallest edit that tests it.
+- 30 calls past your last commit with no instrument green = make the
+  smallest edit that moves one number and commit that.
+- When Bash fails twice in a row, the command is wrong, not the shell:
+  read the error, change the command. Six identical failures is a
+  circuit-breaker trip and a wasted quarter hour.
+- Probes live under C:\tmp, never in the repo.
+
+RULES
+- NO downloads. NO new files inside the repo except gilded/tests/test_c7_*.py
+  and content modules under gilded/society/event_content/.
+- You may change: gilded/society/event_chains.py, event_engine.py,
+  event_content/*, characters.py, schemes.py, marriages.py, court.py,
+  succession.py, gilded/chassis.py (tick/emit lines only), gilded/docket.py,
+  gilded/endings.py, gilded/ui/house_tab.py, gilded/ui/broadsheet.py. NOT
+  gilded/beats.py, gilded/ambitions.py, or any C1..C6 surface (menu, save,
+  settings, audio, ladder, atlas, war, pacts).
+- Deterministic per seed: no game.rng in chain triggers, effects or
+  history text.
+- Do not weaken, skip or mark any committed test, census number, floor,
+  or the type scale. Do not edit test_c6_contract.py, test_c6c_layout.py,
+  test_ui_broadsheet.py, test_ui_actions.py, test_event_chains.py or
+  test_saga_*.py.
+- Use the CodeIndex tool FIRST for every symbol lookup (definitions and
+  references in one call) before any Grep/Read crawl.
+
+DONE WHEN
+python -m pytest gilded/tests -q passes with ZERO failures, deflection
+beats are back on seeds 7 and 11 within 20 turns, the chain petition is
+drawn and pressable, three chains branch on the ruling, >= 60% of the
+House carries history, the ruler's history is on the House tab, the
+epilogue names two people and quotes one memory, and the tree is clean.
+Then make a final commit whose message contains exactly this marker:
+
+stage c7 complete
