@@ -1287,7 +1287,7 @@ waves 10–12; C6 wave 1–5 thin-test residuals per the F137 class.
 ## Campaign C7 — content depth (calibrated 2026-09-04)
 
 BASE: 2067de3 (C6 PASS head). Gate: `~/.cynco/heldout/civkings-redesign/c7/`
-(gate_c7.py sha256 6b17d79f05d62e6a, perturb_c7.py). Spec (local):
+(gate_c7.py sha256 043e8e9d8fa2e571 — resealed pre-dispatch-verdict from 6b17d79f05d62e6a: C7.9 now runs gate_c6 in a fresh interpreter because in-process exec left every C6.5 row FABRICATED (gate_c6's font capture must precede the gilded import); perturb_c7.py). Spec (local):
 docs/superpowers/specs/2026-09-04-civkings-c7-content-depth-design.md.
 Brief: c7-wave1.txt.
 
