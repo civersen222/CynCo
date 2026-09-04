@@ -1167,3 +1167,68 @@ the seven reds. Wave 12 dispatched at BASE c1c08f1: STEP 0 applies the
 preserved patch and fixes its one overlap, then the third rule,
 cycle_exec registration, and the census to 26/19/29; investigation cap
 tightened to 40 calls.
+
+## C6 wave 12 — c6-wave12-1788448877042 (graded 2026-09-03, BASE c1c08f1 → HEAD c226507)
+
+- 937 tool calls, exitReason **timeout** at 29170s of the 8h clock, 7
+  commits, marker not seen. Step 0 honored: the preserved two-column
+  patch landed as the first commit (88c34d0) and its one overlap was
+  fixed by narrowing seat buttons to the seat name.
+- **New campaign best, by a lot.** Full suite 7 → **3 failed / 2057
+  passed**. Every census/registration red is green: fits_band,
+  every_drawn_key_is_registered, all five ui_broadsheet tests — the
+  26/19/29 census is DONE. Sealed gate PASS exit 0 (499 PASS / 0 FAIL;
+  House rows 128 → 149 with the two-column layout, overlaps 0 on all
+  nine surfaces).
+- The 3 reds are NEW — regressions in the KEEP-GREEN instruments,
+  verbatim:
+    FAILED test_house_opinion_ui.py::test_house_tab_drawn_pixels_differ_when_reason_changes
+    FAILED test_house_opinion_ui.py::test_house_pixels_differ_when_grievance_differs
+      AssertionError: Pixels should differ when only the grievance differs
+    FAILED test_house_tab_grievances.py::test_grievance_pixel_change
+      AssertionError: Pixels should change when grievance is removed
+  Cause, from the house_tab.py diff: the dossier went from 10 rows
+  (per=9) to 7 (per=7) and the grid was capped to the 400px left column,
+  so per-cell truncation now drops the grievance/reason text — the drawn
+  surface is identical with or without a grievance. **F137 recurrence**
+  (compression by deletion).
+- Rule breaches: four scratch probes inside the repo — _probe_docket.py
+  and _probe_overlap.py COMMITTED, _probe_cycle.py and _probe_griev.py
+  untracked (**F138 recurrence**); the committed _probe_c6c.py at HEAD
+  crashes (report=None). The test_c6c_layout.py harness change was
+  reviewed and is honest: it mirrors the real two-column layout and
+  draws the guide strip the real House tab draws (broadsheet.py:1041).
+- Pacing orders ignored again (maxCallsWithoutSourceEdit 196,
+  maxCallsWithoutCommit 304). The last hour was lost to the full suite
+  run through the 600s Bash cap — timed out, retried identically
+  (**F142**; wave 13 dispatches with CYNCO_BASH_TIMEOUT_MS=1500000 and
+  the brief gives the redirect-to-file command with its reason).
+- graderProbes 8/937 flagged `bytecode`: all pygame UI probes via
+  `python -c` / C:\tmp\probe_gy.py / _probe_griev.py; none read the gate,
+  test __pycache__, ledger or driver. Not grader contact.
+- Operator-side: the dashboard went dark twice today (dispatch swap,
+  then F131 teardown at close) — **F141**; dispatch-mission.sh now boots
+  an idle engine when the driver exits. Mission gauge frozen at 50/1200
+  fixed in PR #131; index-store handle leak + 21 vitest-only red index
+  tests fixed in PR #132 (engine suite 4087/0).
+- verified null→**false** by verifyCorrection. CodeIndex 12/937 (1.3%).
+  F136: eighth wave, zero phantom paths.
+- Derived sweep **7/25 killed** vs green owners (contract, c6c_layout,
+  type-scale, pixel_visual, heir; opinion/grievance owners excluded while
+  red, census owners too slow per mutant). First attempt abandoned
+  (identity red). The 18 survivors sit on broadsheet.py:1430–1445 — the
+  agenda card-height arithmetic (`card_h = 6 + caption + 2 + wrapped
+  lines * (body_h+1) + 2 + 20 + 4`) that reserves the docket's room
+  before the ladder yields rows: layout constants owned by the census
+  instruments this sweep could not afford to run.
+
+Economics after this wave: C6 = 12 missions, 72.60h local, $6.53
+electricity vs $1121.75 measured-token API equivalent; global ratio $1
+frontier verify oversees ~$1.67 displaced generation.
+
+Verdict: MISS on timeout at a new best — the census war is over; three
+pixel instruments stand between HEAD and the marker, all three caused by
+one compression. Wave 13 dispatched at BASE c226507: hygiene step 0
+(delete the four probes, restore _probe_c6c.py), put the grievance text
+back without reopening the spill or an overlap, full pass to a file
+under a 1500s cap.

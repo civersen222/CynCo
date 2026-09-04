@@ -1,0 +1,102 @@
+MISSION C6 WAVE 13 — THREE PIXELS FROM THE MARKER (the census is done:
+26/19/29 registered, every registration test green, the sealed gate
+PASSES. Three pixel tests are red because wave 12 compressed the
+grievance text out of existence. Put the information back. 8 hours.)
+
+Repo: C:\Users\civer\civkings
+BASE: c226507  (wave-12 head. Full suite 3 failed / 2057 passed. Sealed
+gate PASS end to end, zero overlaps on all nine surfaces. KEEP-GREEN set,
+run before EVERY commit: test_c6_contract.py, test_c6c_layout.py,
+test_ui_broadsheet.py, test_ui_actions.py, the type-scale files,
+test_house_tab_pixel_visual.py, test_heir_controls.py.)
+
+STEP 0 — HYGIENE (first commit, inside your first 15 calls, nothing else in it)
+
+  Wave 12 broke the "NO new files inside the repo" rule four times.
+  Delete these; two are committed, two are untracked:
+    gilded/tests/_probe_docket.py      (committed in wave 12 — git rm)
+    gilded/tests/_probe_overlap.py     (committed in wave 12 — git rm)
+    gilded/tests/_probe_cycle.py       (untracked)
+    gilded/tests/_probe_griev.py       (untracked)
+  Then gilded/tests/_probe_c6c.py: the committed version at BASE crashes
+  (`draw_house_tab(surf, content, None, v)` ->
+  AttributeError: 'NoneType' object has no attribute 'house'). Restore it
+  to the section-report form that mirrors test_c6c_layout._measure (pass
+  the real peerage_report, two-column left/right rects, print each
+  section's bottom and the groups) so `python gilded/tests/_probe_c6c.py`
+  runs and prints. COMMIT 0. Probes you need after this go under C:\tmp.
+
+THE THREE REDS (verbatim from `python -m pytest gilded/tests -q` at BASE)
+
+  FAILED gilded/tests/test_house_opinion_ui.py::test_house_tab_drawn_pixels_differ_when_reason_changes
+  FAILED gilded/tests/test_house_opinion_ui.py::test_house_pixels_differ_when_grievance_differs
+    AssertionError: Pixels should differ when only the grievance differs
+  FAILED gilded/tests/test_house_tab_grievances.py::test_grievance_pixel_change
+    AssertionError: Pixels should change when grievance is removed
+
+  All three were GREEN at c1c08f1. What changed (gilded/ui/house_tab.py in
+  wave 12, quoted):
+    -     # Compressed dossier: 8 columns x 10 rows at the smallest NAMED scale
+    +    # Compressed dossier: 8 columns x 7 rows at the smallest NAMED scale
+    -    per = 9
+    +    per = 7
+    +    grid_w = min(content.width, 400) if view is not None else content.width
+  Ten rows became seven and the grid became 400px wide, so the per-cell
+  truncation now cuts the grievance/reason text out of every cell. The
+  drawn surface is identical whether a character holds a grievance or
+  not. That is F137 again — compression by deletion. The brief's rule was
+  and is: shrink SPACE, never tokens.
+
+THE WORK (numbered commit points — commit AT each)
+
+1. THE GRIEVANCE TEXT IS DRAWN AGAIN. Each dossier cell must show the
+   grievance token / reason so the three tests see pixels change. You
+   have these levers, in order of preference: more rows (10 was green;
+   the dossier is 153px tall today — the ladder ends at 761 in the left
+   column, so measure where the slack actually is with your probe before
+   choosing); a second line per cell at the smallest NAMED step (12, never
+   below); the reason abbreviated to its grievance token (the token is what
+   the tests look for). Measured at wave-11 grading with this layout: house
+   474, ladder_agenda 761, policies 712, intrigue 780, band end 782 — the
+   right column is FULL, so do not plan on space there. You do NOT have: dropping
+   text, un-registering anything, or moving intrigue/policies back past
+   782 (test_c6c_layout::test_house_overview_fits_band watches) or into
+   an overlap (test_c6_contract::test_no_text_overlap watches).
+   COMMIT 1: the three reds green, KEEP-GREEN green.
+2. FULL PASS. The Bash tool cap is 1500s this wave — the full suite takes
+   ~22 minutes on this machine. Run it EXACTLY like this so the output
+   survives even if the call is cut:
+     python -m pytest gilded/tests -q --tb=short > C:\tmp\w13_full.txt 2>&1; Get-Content C:\tmp\w13_full.txt -Tail 15
+   Fix what it shows. COMMIT 2 when the tail reads "0 failed" / all passed.
+3. WIRE-CHECK, this exact command, passing tail in the final commit
+   message:
+  python -m pytest gilded/tests/test_ui_broadsheet.py gilded/tests/test_ui_actions.py gilded/tests/test_c6_contract.py gilded/tests/test_c6c_layout.py gilded/tests/test_ui_type_scale.py gilded/tests/test_type_scale_source.py gilded/tests/test_house_tab_pixel_visual.py gilded/tests/test_house_opinion_ui.py gilded/tests/test_house_tab_grievances.py gilded/tests/test_heir_controls.py -q
+
+PACING (orders; wave 12 went 196 calls without a source edit and 304
+without a commit under the same orders)
+- 40 tool calls without an Edit = STOP investigating. Write the
+  hypothesis into a commit message on the smallest edit that tests it.
+- 30 calls past your last commit with no instrument green = make the
+  smallest edit that moves one number and commit that.
+- Never revert a landed layout to investigate; probe under C:\tmp.
+- If the same tool call fails twice, the premise is wrong — change the
+  premise, not the phrasing.
+
+RULES
+- NO downloads. NO new files inside the repo — probes live under C:\tmp.
+  The ONLY files you may change: gilded/ui/house_tab.py,
+  gilded/ui/broadsheet.py, gilded/ui/atlas_view.py, and gilded/tests/
+  _probe_c6c.py (step 0). The sealed gate re-runs everything else.
+- Do not weaken any committed test, census number, floor, or the type
+  scale. Do not touch test_house_opinion_ui.py or
+  test_house_tab_grievances.py — they are the instruments for this wave.
+- Use the CodeIndex tool FIRST for every symbol lookup (definitions and
+  references in one call) before any Grep/Read crawl.
+
+DONE WHEN
+python -m pytest gilded/tests -q passes with ZERO failures — the three
+reds healed, everything that is green at BASE still green, the gate
+still PASS, the tree clean (no _probe_* files in the repo). Then make a
+final commit whose message contains exactly this marker:
+
+stage c6 complete
