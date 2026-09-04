@@ -5,6 +5,8 @@ import { ServerStartError } from './errors.js'
 import { readGgufMeta } from './gguf.js'
 import { checkpointCostFromMeta, derivedCacheRamMib, MEASURED_DEFAULT_COST, type CheckpointCostModel } from './checkpointCost.js'
 import { CheckpointCalibrator } from './checkpointCalibration.js'
+import { evaluateSpawn, readGpuMemory, readHostMemory, spawnRequirementFor, topCommitConsumers, type SpawnCheck } from './hostResources.js'
+import { statSync } from 'fs'
 import { cyncoHome } from '../paths.js'
 
 export type ServerConfig = {
@@ -229,6 +231,22 @@ export function shouldRestartAfterExit(
   return recentRestarts < maxRestarts
 }
 
+/**
+ * Delay before a crash-triggered restart. F140 spent the 3-in-600s budget in
+ * 14 minutes against a memory-pressure event that lasted 14 minutes; with
+ * backoff the same three attempts span 5s + 10s + 20s of waiting plus three
+ * pre-spawn checks, each of which can refuse (see hostResources.ts) without
+ * consuming a restart.
+ */
+export function restartDelayMs(recentRestarts: number): number {
+  return Math.min(5_000 * 2 ** recentRestarts, 120_000)
+}
+
+/** How long a refused restart waits before looking again. */
+const REFUSAL_RECHECK_MS = 120_000
+/** VRAM is released a moment after a process dies; one re-read before refusing on it. */
+const GPU_RECHECK_DELAY_MS = 3_000
+
 export type ProcessManagerConfig = {
   binaryPath: string
   modelPath: string
@@ -251,6 +269,8 @@ export type ProcessManagerConfig = {
   chatTemplateKwargs?: Record<string, string | number | boolean>
   /** Per-architecture checkpoint cost; when unset the manager reads the GGUF header (or a stored calibration). */
   checkpointCost?: CheckpointCostModel
+  /** Test seam: replace the live host/GPU measurement. Production leaves it unset. */
+  preSpawnCheck?: () => Promise<SpawnCheck>
 }
 
 export class ProcessManager {
@@ -267,6 +287,13 @@ export class ProcessManager {
   /** The checkpoint cost model this manager derives --cache-ram from. Public so the launch line and tests can name its source. */
   readonly checkpointCost: CheckpointCostModel
   private calibrator: CheckpointCalibrator
+  /** Called with the reason whenever a spawn is refused or the restart budget is exhausted. main.ts wires it to a governance.alert. */
+  onFault?: (reason: string) => void
+  /** The last pre-spawn refusal, null when the last attempt was allowed to spawn. */
+  lastRefusal: string | null = null
+  private restartTimer: ReturnType<typeof setTimeout> | null = null
+  /** A spawn-level failure (ENOENT, EACCES) for the current attempt; waitForHealth surfaces it immediately. */
+  private spawnFailure: Error | null = null
 
   constructor(config: ProcessManagerConfig) {
     this.binaryPath = config.binaryPath
@@ -334,6 +361,7 @@ export class ProcessManager {
    * Stop the server process.
    */
   async stop(): Promise<void> {
+    if (this.restartTimer) { clearTimeout(this.restartTimer); this.restartTimer = null }
     if (!this.child) return
 
     const child = this.child
@@ -358,7 +386,42 @@ export class ProcessManager {
     })
   }
 
+  /**
+   * Measure what the box can give and refuse, with the reason, when it cannot
+   * give what this launch needs. Runs before EVERY spawn — first boot, adapter
+   * swaps and crash restarts alike — so a machine out of commit charge is told
+   * so once, instead of six times as exit code 9 (F140).
+   */
+  private async preSpawnCheck(): Promise<SpawnCheck> {
+    if (this.baseConfig.preSpawnCheck) return this.baseConfig.preSpawnCheck()
+    const [host, gpu0] = await Promise.all([readHostMemory(), readGpuMemory()])
+    let fileBytes = 0
+    try { fileBytes = statSync(this.baseConfig.modelPath).size } catch (e) {
+      console.log(`[llama-cpp] model size unknown (${e instanceof Error ? e.message : String(e)}); no VRAM floor for this check`)
+    }
+    const req = spawnRequirementFor({ ctxSize: this.baseConfig.ctxSize ?? DEFAULT_CTX_SIZE, modelFileBytes: fileBytes, cost: this.checkpointCost })
+    let check = evaluateSpawn(host, gpu0, req)
+    if (check.ok) return check
+    if (/VRAM/.test(check.reason)) {
+      // A server that just died releases its VRAM a beat after the process ends.
+      await new Promise(r => setTimeout(r, GPU_RECHECK_DELAY_MS))
+      check = evaluateSpawn(host, await readGpuMemory(), req)
+      if (check.ok) return check
+    }
+    // Only pay for the process listing when we are about to refuse.
+    return evaluateSpawn(host, gpu0, req, await topCommitConsumers())
+  }
+
   private async startProcess(): Promise<void> {
+    const check = await this.preSpawnCheck()
+    if (!check.ok) {
+      this.lastRefusal = check.reason
+      console.error(`[llama-cpp] REFUSING to start llama-server: ${check.reason}`)
+      this.onFault?.(check.reason)
+      throw new ServerStartError(this.port, `refused: ${check.reason}`)
+    }
+    this.lastRefusal = null
+
     const args = buildServerArgs({
       ...this.baseConfig,
       loraPath: this.currentLoraPath ?? undefined,
@@ -378,10 +441,17 @@ export class ProcessManager {
       env.PATH = `${binDir}${path.delimiter}${env.PATH}`
     }
 
+    this.spawnFailure = null
     this.child = spawn(this.binaryPath, args, {
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
       env,
+    })
+    // Without a listener a spawn error is an uncaught exception; with one it is
+    // a ServerStartError from waitForHealth, carrying the real cause.
+    this.child.on('error', (err: Error) => {
+      this.spawnFailure = err
+      console.error(`[llama-cpp] spawn failed: ${err.message}`)
     })
 
     // Log stderr for diagnostics + parse eval tok/s
@@ -413,24 +483,34 @@ export class ProcessManager {
 
       if (!shouldRestartAfterExit({ deliberate, recentRestarts, maxRestarts: MAX_RESTARTS_IN_WINDOW })) {
         if (!deliberate) {
-          console.error(
-            `[llama-cpp] NOT restarting — ${recentRestarts} restarts in the last ` +
-            `${RESTART_WINDOW_MS / 1000}s exhausts the budget of ${MAX_RESTARTS_IN_WINDOW}. ` +
-            `The server cannot stay up; treat this as a fault, not a stall.`,
-          )
+          const reason = `llama-server cannot stay up: ${recentRestarts} restarts in the last ${RESTART_WINDOW_MS / 1000}s ` +
+            `exhaust the budget of ${MAX_RESTARTS_IN_WINDOW} — a fault, not a stall`
+          console.error(`[llama-cpp] NOT restarting — ${reason}`)
+          this.onFault?.(reason)
         }
         return
       }
 
       this.restartTimes.push(now)
+      const delay = restartDelayMs(recentRestarts)
       console.log(
-        `[llama-cpp] restarting llama-server (${recentRestarts + 1}/${MAX_RESTARTS_IN_WINDOW} in window)`,
+        `[llama-cpp] restarting llama-server in ${delay / 1000}s (${recentRestarts + 1}/${MAX_RESTARTS_IN_WINDOW} in window)`,
       )
-      this.startProcess().catch(err => {
-        console.error(
-          `[llama-cpp] restart failed: ${err instanceof Error ? err.message : String(err)}`,
-        )
-      })
+      this.restartTimer = setTimeout(() => {
+        this.restartTimer = null
+        this.startProcess().catch(err => {
+          console.error(`[llama-cpp] restart failed: ${err instanceof Error ? err.message : String(err)}`)
+          // A refusal is not a crash: hand the budget entry back and look again
+          // after the longest backoff, until the window itself has expired.
+          if (this.lastRefusal) {
+            this.restartTimes.pop()
+            this.restartTimer = setTimeout(() => {
+              this.restartTimer = null
+              this.startProcess().catch(e2 => console.error(`[llama-cpp] restart failed again: ${e2 instanceof Error ? e2.message : String(e2)}`))
+            }, REFUSAL_RECHECK_MS)
+          }
+        })
+      }, delay)
     })
 
     // Wait for health check
@@ -463,7 +543,10 @@ export class ProcessManager {
         // Not ready yet
       }
 
-      // Check if process died
+      // Check if process died, or never started
+      if (this.spawnFailure) {
+        throw new ServerStartError(this.port, `spawn failed: ${this.spawnFailure.message}`)
+      }
       if (this.child && this.child.exitCode !== null) {
         throw new ServerStartError(this.port, `Process exited with code ${this.child.exitCode}`)
       }
