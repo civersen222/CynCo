@@ -16,6 +16,15 @@ import type { Provider } from './provider.js'
 import type { LocalCodeConfig } from './config.js'
 import { resolveCapabilities } from './ollama/probe.js'
 import { cyncoHome } from './paths.js'
+import { mkdirSync } from 'fs'
+import { basename, join } from 'path'
+
+/** Where llama-server may write slot KV snapshots for this model; created on first use. */
+function slotCacheDirFor(modelPath: string): string {
+  const dir = join(cyncoHome(), 'slot-cache', basename(modelPath))
+  mkdirSync(dir, { recursive: true })
+  return dir
+}
 
 export async function bootstrapProvider(
   config: LocalCodeConfig,
@@ -126,6 +135,8 @@ export async function bootstrapProvider(
         cacheTypeK: rt?.cacheTypeK,
         cacheTypeV: rt?.cacheTypeV,
         chatTemplateKwargs: rt?.chatTemplateKwargs,
+        // Slot KV snapshots: one directory per model file under ~/.cynco/slot-cache.
+        slotSavePath: slotCacheDirFor(modelPath),
       })
       // Wire eval tok/s from llama-server stderr → governance (deferred until loop is created)
       ;(globalThis as any).__llamaProcessManager = processManager
