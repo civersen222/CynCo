@@ -963,6 +963,19 @@ function handleEvent(event) {
       appendChatDiff(event.path || '', event.changeType || 'modify', event.hunks || []);
       break;
 
+    case 'governance.alert': {
+      // Critical/high alerts (a refused llama-server spawn, an exhausted restart
+      // budget) land in the tool feed as a red entry so they are seen where the
+      // work is watched, not only in the engine log (F140/F143).
+      if (event.severity === 'critical' || event.severity === 'high') {
+        state.toolFeed.unshift({ ts: new Date(), toolName: 'ALERT ' + (event.source || ''), toolId: '', status: 'error',
+          target: String(event.message || ''), latency: null, startTime: Date.now() });
+        if (state.toolFeed.length > MAX_FEED) state.toolFeed.pop();
+        renderToolFeed();
+      }
+      break;
+    }
+
     case 'tool.complete': {
       var name = event.toolName || 'unknown';
       if (!state.tools[name]) state.tools[name] = { success: 0, failure: 0 };

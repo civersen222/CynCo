@@ -7,6 +7,7 @@ import {
   DEFAULT_CTX_SIZE,
   ProcessManager,
   recentRestartCount,
+  restartDelayMs,
   shouldRestartAfterExit,
   validateChatTemplate,
 } from '../../llama/processManager.js'
@@ -617,5 +618,38 @@ describe('ProcessManager reads the model header for its checkpoint cost', () => 
     const pm = new ProcessManager({ binaryPath: 'nope', modelPath: join(tmpdir(), 'does-not-exist.gguf'), port: 1 })
     expect(pm.checkpointCost.source).toBe('measured-default')
     expect(pm.checkpointCost.detail).toMatch(/could not read/)
+  })
+})
+
+describe('restartDelayMs — a transient fault must not spend the whole budget in a minute', () => {
+  it('backs off exponentially from 5s and caps at 2 minutes', () => {
+    expect(restartDelayMs(0)).toBe(5_000)
+    expect(restartDelayMs(1)).toBe(10_000)
+    expect(restartDelayMs(2)).toBe(20_000)
+    expect(restartDelayMs(10)).toBe(120_000)
+  })
+})
+
+describe('ProcessManager pre-spawn check', () => {
+  it('refuses to spawn, reports the reason, and never touches the binary when the check fails', async () => {
+    const faults: string[] = []
+    const pm = new ProcessManager({
+      binaryPath: join(tmpdir(), 'no-such-llama-server.exe'), modelPath: 'm.gguf', port: 1,
+      preSpawnCheck: async () => ({ ok: false, reason: 'host commit charge exhausted: 1200 MiB free' }),
+    })
+    pm.onFault = r => faults.push(r)
+    await expect(pm.ensureRunning()).rejects.toThrow(/commit charge exhausted/)
+    expect(faults).toEqual(['host commit charge exhausted: 1200 MiB free'])
+    expect(pm.lastRefusal).toContain('1200')
+    expect(pm.isRunning()).toBe(false)
+  })
+
+  it('a passing check proceeds to the spawn (which fails on the fake binary, proving the order)', async () => {
+    const pm = new ProcessManager({
+      binaryPath: join(tmpdir(), 'no-such-llama-server.exe'), modelPath: 'm.gguf', port: 1,
+      preSpawnCheck: async () => ({ ok: true }),
+    })
+    await expect(pm.ensureRunning()).rejects.toThrow()   // spawn ENOENT / health failure, not a refusal
+    expect(pm.lastRefusal).toBeNull()
   })
 })

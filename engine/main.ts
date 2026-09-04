@@ -378,6 +378,14 @@ if ((globalThis as any).__llamaProcessManager) {
   pm.onEvalTokPerSec = (tps: number) => {
     loop.getGovernance()?.setTokPerSec(tps, 100) // 100 ensures it always updates
   }
+  // F140/F143: a refused or unrecoverable llama-server must be visible where the
+  // operator looks — the dashboard feed and the TUI — not only in a log nobody
+  // tails. Reuses governance.alert (protocol.ts) rather than adding an event type.
+  pm.onFault = (reason: string) => {
+    const event = { type: 'governance.alert' as const, severity: 'critical' as const, source: 'llama-cpp', message: reason }
+    dashboardServer?.broadcast(event as any)
+    try { wsServer.emit(event as any) } catch { /* bridge not bound yet: dashboard + log carry it */ }
+  }
   delete (globalThis as any).__llamaProcessManager
 }
 
