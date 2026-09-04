@@ -65,7 +65,6 @@ describe('saveSlot / restoreSlot', () => {
   })
 
   it('a server error is reported, not thrown, and does not count as a save', async () => {
-    const calls: any[] = []
     const dir = mkdtempSync(join(tmpdir(), 'slots-'))
     const pm = new ProcessManager({ binaryPath: 'x', modelPath: 'm', port: 8081, slotSavePath: dir,
       fetchImpl: (async () => new Response(JSON.stringify({ error: { message: 'slot save path not set' } }), { status: 400 })) as any })
