@@ -126,6 +126,14 @@ try {
 
 // ─── Provider Setup ──────────────────────────────────────────
 import { bootstrapProvider } from './bootstrapProvider.js'
+// Before anything is spawned: put this process in a Job Object with
+// KILL_ON_JOB_CLOSE so llama-server, the jlens sidecar and every other child die
+// with the engine however it ends (F131 — no orphan holds the port or the VRAM).
+{
+  const { installKillOnCloseJob } = await import('./security/jobObject.js')
+  const job = await installKillOnCloseJob()
+  console.log(`[process] job object: ${job.installed ? 'installed' : 'not installed'} — ${job.reason}`)
+}
 const { provider, contextLength } = await bootstrapProvider(config)
 
 console.log(`[localcode] Context budget: ${contextLength} tokens`)
