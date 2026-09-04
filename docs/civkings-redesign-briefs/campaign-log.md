@@ -1283,3 +1283,39 @@ settings, a populated House/Powers/Atlas page with zero text collisions,
 probes gilded/tests/_probe_{guide,house,sections,t0,w10}.py from earlier
 waves; census-owned layout constants that survived derived sweeps in
 waves 10–12; C6 wave 1–5 thin-test residuals per the F137 class.
+
+## Campaign C7 — content depth (calibrated 2026-09-04)
+
+BASE: 2067de3 (C6 PASS head). Gate: `~/.cynco/heldout/civkings-redesign/c7/`
+(gate_c7.py sha256 6b17d79f05d62e6a, perturb_c7.py). Spec (local):
+docs/superpowers/specs/2026-09-04-civkings-c7-content-depth-design.md.
+Brief: c7-wave1.txt.
+
+Audit at BASE (seed 42, 70 turns): 1667 beats, 9 kind="chain" — all three
+hard-coded teaser chains (beats.py _CHAIN_ACTS). The 12-def library in
+society/event_content fires 8-9 chains per seed but only as gazette prose
+(chassis.py:510); 9 of 12 defs have fewer than 3 steps. Character has no
+history field (memory = pairwise opinion_history + 42 secrets world-wide);
+grievances are 0 across the world on seed 42. The docket is the one choice
+mechanism and no chain uses it. Epilogue names no character.
+
+Calibration (Rule 11):
+- BASE = **clean MISS, 12 fails, all by absence, zero gate errors**:
+  C7.1.first-class (no library chain beats) ×2 seeds, C7.2.acts ×2,
+  C7.2a.library-size (defs=12 < 18; 9 short), C7.3.branching (no chain
+  petitions), C7.4.history (coverage 0) ×2, C7.5.drawn ×2, C7.6.epilogue ×2.
+- perturb_c7 (ghost chain beats for library facets the manager never armed,
+  defs padded to 18 with never-firing 3-step chains, a two-option chain
+  petition whose apply() is a no-op filed every turn, Character.history =
+  six fabricated turn-0 entries): **MISS, 12 fails, zero flips** — C7.1
+  names the ghosts (`ghost(beats without arming)=['heir_radicalization',
+  'revolution_ultimatum', ...]`), C7.3 rules the fake petition in both runs
+  and finds `downstream-diverged=[]` and an empty sim-fingerprint diff, C7.4
+  reports `echoed_by_a_beat=0 bad_turns=198`, C7.5 renders 0 of 6, C7.6 finds
+  no quoted memory. Even the intended lazy flip (library size) held, because
+  the stub could not make the real short chains longer.
+- Gate checks grade outcomes: chain beats must be manager-armed; the ruling
+  is pressed on the drawn House docket and must diverge downstream beats AND
+  a sim fingerprint; history entries must be echoed by a beat that turn
+  naming the character; drawn lines are render-captured; C7.9 re-runs the
+  full C1..C6 chain in-process.
