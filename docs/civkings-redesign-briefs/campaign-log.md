@@ -1287,7 +1287,7 @@ waves 10–12; C6 wave 1–5 thin-test residuals per the F137 class.
 ## Campaign C7 — content depth (calibrated 2026-09-04)
 
 BASE: 2067de3 (C6 PASS head). Gate: `~/.cynco/heldout/civkings-redesign/c7/`
-(gate_c7.py sha256 043e8e9d8fa2e571 — resealed pre-dispatch-verdict from 6b17d79f05d62e6a: C7.9 now runs gate_c6 in a fresh interpreter because in-process exec left every C6.5 row FABRICATED (gate_c6's font capture must precede the gilded import); perturb_c7.py). Spec (local):
+(gate_c7.py sha256 c478da5460ad5355 — resealed 2026-09-04 after wave 2 from 043e8e9d8fa2e571: C7.3 keys the two-run comparison by chain instead of (turn, chain), since a diverged world files later petitions on different turns; BASE recalibrated on a detached worktree via CYNCO_GATE_REPO → clean MISS 12 by absence. Earlier reseal from 6b17d79f05d62e6a: C7.9 now runs gate_c6 in a fresh interpreter because in-process exec left every C6.5 row FABRICATED (gate_c6's font capture must precede the gilded import); perturb_c7.py). Spec (local):
 docs/superpowers/specs/2026-09-04-civkings-c7-content-depth-design.md.
 Brief: c7-wave1.txt.
 
@@ -1368,4 +1368,51 @@ wave. Wave 2 dispatched at BASE 1f1d161: commit the orphaned branching test
 first, restore the deflection promise without disabling chains, give chain
 petitions docket priority so the choice is drawn, two more branching
 chains, then history + House tab + epilogue.
+
+## C7 wave 2 — c7-wave2-1788524357263 (graded 2026-09-04, BASE 1f1d161 → HEAD f94ac9a)
+
+- 1199 tool calls, 1306 turns, exitReason **timeout** (29544s of the 8h
+  clock; the 2000-iteration budget did not bind). Driver check **PASS**
+  (advisory — verified stays null on a timeout). 5 commits, tree clean,
+  step 0 honored: the orphaned branching test was the first commit.
+- **New best — four of seven C7 checks PASS** (resealed gate c478da54):
+  - C7.1 first-class ×2, C7.2 acts ×2, C7.2a library (23 defs) — held.
+  - **C7.3 branching PASS**: `chains ruled in both runs=['chain:general_strike',
+    'chain:heir_break', 'chain:war_price'] (A at {war_price: 16, heir_break:
+    53, general_strike: 57}, B at {war_price: 16, heir_break: 47,
+    general_strike: 51}) downstream-diverged=[all three]
+    sim-fingerprint-differences={stress: (237, 681), unrest: (1059.48,
+    1711.63), treasury: (14435.69, 15446.98), ...}`. The petitions are drawn
+    and pressed on the House docket; the two rulings send the world down
+    different roads.
+  - **Wave 1's deflection regression is fixed** (3254de6: `_tide_police` no
+    longer crushes unrest) — the sealed C1 gate is green again.
+  - C7.4/5/6 FAIL by absence — no Character.history yet.
+  - **C7.9 FAIL, one regression**, verbatim: `C6.5.t40.House: FAIL rows=192
+    overlaps=5 first=[('Give them a vacant seat', 'Attention: 5'), ('Grant
+    an allowance (100 gold)', 'Open')]` — the compact petition layout
+    (acbb3c6) draws over the ambition strip at turn 40.
+- Full suite **1 failed / 2063 passed**: test_agenda::
+  test_r5_dominion_backed_by_industry (`Fixture premise broken: industry ==
+  intrigue`) persists from wave 1.
+- Gate reseal (Rule 11 kept): the C7.3 comparison keyed on (turn, chain) and
+  so saw only war_price, because a diverged world files later petitions on
+  different turns; now keyed by chain. BASE recalibrated on a detached
+  worktree (`CYNCO_GATE_REPO`): clean MISS, 12 by absence.
+- Derived sweep 5/25 vs green owners (branching + chain_beats + bands +
+  event_chains + saga + c1_visibility + c6 owners); the 20 survivors are
+  DOMAIN_PRIORITY constants (docket.py:62), the turn>=1 guard
+  (chassis.py:534) and chains_pack3 thresholds — tuning dials.
+- graderProbes 0/1199. CodeIndex 14/1199 (1.2%). Pacing: maxCallsWithoutCommit
+  456. **Operator-side F144**: the dashboard's synchronous git poll froze the
+  engine 728 × 10 s during this run (fixed PR #144 for the next engine).
+
+Economics after this wave: C7 = 2 missions, 16.16h local, $1.45 electricity
+vs $312.00 measured-token API equivalent; global ratio $1 frontier verify
+oversees ~$1.54 displaced generation.
+
+Verdict: MISS on timeout at a new best — the event-chain half of C7 is done
+and graded; what remains is memory (history, its rendering, the epilogue),
+one overlap and one fixture. Wave 3 dispatched at BASE f94ac9a with the two
+reds first, then history → House tab → epilogue.
 

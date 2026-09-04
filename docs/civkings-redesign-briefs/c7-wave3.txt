@@ -1,0 +1,99 @@
+MISSION C7 WAVE 3 — THE MEMORY (four of the seven C7 checks now PASS: chains
+are first-class beats on both seeds, 23 defs across all three acts, and
+three chains ask the player through a drawn docket whose two rulings send
+the world down different roads. What is left is that nobody REMEMBERS any
+of it — and one overlap you introduced. 8 hours, 2000 iterations.)
+
+Repo: C:\Users\civer\civkings
+BASE: f94ac9a  (wave-2 head. Full suite 1 failed / 2063 passed. KEEP-GREEN
+set, run before EVERY commit:
+python -m pytest gilded/tests/test_c7_branching.py gilded/tests/test_c7_chain_beats.py gilded/tests/test_c7_bands.py gilded/tests/test_event_chains.py gilded/tests/test_saga_director.py gilded/tests/test_c1_visibility.py gilded/tests/test_c6_contract.py gilded/tests/test_c6c_layout.py gilded/tests/test_ui_broadsheet.py gilded/tests/test_ui_actions.py gilded/tests/test_house_opinion_ui.py gilded/tests/test_house_tab_grievances.py gilded/tests/test_house_tab_pixel_visual.py gilded/tests/test_heir_controls.py -q)
+
+TWO REDS YOU OWN — FIX BOTH IN THE FIRST HOUR, ONE COMMIT EACH
+
+1. The compact petition cards collide. Sealed C6 gate at BASE, verbatim:
+     C6.5.t40.House: FAIL rows=192 overlaps=5 first=[('Give them a vacant seat', 'Attention: 5'), ('Grant an allowance (100 gold)', 'Open')]
+   At t0 and t10 the House tab is clean; at turn 40 the two-pass compact
+   layout you added in acbb3c6 ("draw chain petitions in compact form when
+   the band overflows") lets petition option buttons land on the ambition
+   strip ("Attention: 5", "Open"). Zero overlaps is the law
+   (test_c6_contract::test_no_text_overlap only samples some turns — add a
+   turn-40 seed-42 case to your own test_c7_branching.py so this stays
+   pinned). Fix the layout: when the compact pass still overflows, the
+   docket yields rows (or scrolls) — it never draws over another section.
+   COMMIT 1.
+2. The agenda fixture. `python -m pytest gilded/tests -q` at BASE, verbatim:
+     FAILED gilded/tests/test_agenda.py::test_r5_dominion_backed_by_industry
+       AssertionError: Fixture premise broken: industry == intrigue
+       assert 11 != 11
+   Green at 2067de3, red since wave 1. The fixture builds a ruler whose
+   industry stat must differ from intrigue; something in wave 1's content
+   or chassis changes (the turn>=1 guard in chassis.py:534 is the prime
+   suspect — the fixture may construct a game and read stats before turn 1,
+   or a chain's ctx now touches stats at generation) makes them equal.
+   Do NOT edit test_agenda.py. COMMIT 2 when it is green.
+
+THE WORK (numbered commit points — commit AT each)
+
+3. CHARACTERS ACCUMULATE HISTORY. Character.history: a list of entries
+   (turn: int, kind: str, text: str, refs: dict) — turn = game.turn when it
+   happened; kind in {chain, ruling, scheme, marriage, court, secret,
+   death, ambition}. Append from: every chain step for the characters in
+   its ctx (the `_char`, `heir`, `subject`, `target` slots); docket rulings
+   for the executor and the petitioner; schemes.py outcomes; marriages;
+   court appointments and dismissals; secrets revealed; kin deaths.
+   The sealed gate cross-checks EVERY entry: an entry at turn T counts only
+   if some beat on game.beats.log at turn T names that character — so write
+   the history entry in the same code path that emits the beat, with the
+   character's name in the beat text. Targets on seed 42 after 70 turns:
+   >= 60% of living player-house characters have >= 1 entry; the ruler has
+   >= 5; every entry's turn is in [1, game.turn]. COMMIT 3 with
+   gilded/tests/test_c7_history.py pinning exactly those numbers.
+4. HISTORY IS DRAWN. The House tab draws the ruler's last 3 (or more)
+   history lines — inside the band (test_c6c_layout::
+   test_house_overview_fits_band), zero overlaps (test_c6_contract::
+   test_no_text_overlap and the t40 case from step 1), type scale kept
+   (smallest named step 12). The gate render-captures them: the first three
+   words of each entry must appear in a string pygame actually rendered.
+   COMMIT 4 with a pixel/render assertion in test_c7_history.py.
+5. THE EPILOGUE REMEMBERS. endings.judge(game, house).text must name at
+   least 2 characters who have history and quote at least one entry's text
+   (>= 20 characters verbatim). COMMIT 5 with test_c7_epilogue.py.
+6. FULL PASS. Bash cap is 1500s. Run EXACTLY:
+     python -m pytest gilded/tests -q --tb=short > C:\tmp\c7w3_full.txt 2>&1; Get-Content C:\tmp\c7w3_full.txt -Tail 15
+   Fix what it shows. Then the wire-check (KEEP-GREEN set plus your
+   test_c7_*.py files), passing tail in the final commit message.
+
+PACING (orders; wave 2 went 456 calls without a commit)
+- 40 tool calls without an Edit = STOP investigating. Write the hypothesis
+  into a commit message on the smallest edit that tests it.
+- 30 calls past your last commit with no instrument green = make the
+  smallest edit that moves one number and commit that.
+- When Bash fails twice in a row, the command is wrong, not the shell.
+- Probes live under C:\tmp, never in the repo.
+
+RULES
+- NO downloads. NO new files inside the repo except gilded/tests/test_c7_*.py
+  and content modules under gilded/society/event_content/.
+- You may change: gilded/society/event_chains.py, event_engine.py,
+  event_content/*, characters.py, schemes.py, marriages.py, court.py,
+  succession.py, gilded/chassis.py (tick/emit lines only), gilded/docket.py,
+  gilded/endings.py, gilded/ui/house_tab.py, gilded/ui/broadsheet.py. NOT
+  gilded/beats.py, gilded/ambitions.py, or any C1..C6 surface.
+- Deterministic per seed: no game.rng in chain triggers, effects or history
+  text.
+- Do not weaken, skip or mark any committed test, census number, floor, or
+  the type scale. Do not edit test_agenda.py, test_c6_contract.py,
+  test_c6c_layout.py, test_ui_broadsheet.py, test_ui_actions.py,
+  test_c1_visibility.py, test_event_chains.py or test_saga_*.py.
+- Use the CodeIndex tool FIRST for every symbol lookup before any Grep/Read
+  crawl.
+
+DONE WHEN
+python -m pytest gilded/tests -q passes with ZERO failures, the House tab
+at turn 40 has zero overlaps, >= 60% of the House carries history with the
+ruler at >= 5, the ruler's history is drawn on the House tab, the epilogue
+names two people and quotes one memory, and the tree is clean. Then make a
+final commit whose message contains exactly this marker:
+
+stage c7 complete
