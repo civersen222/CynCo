@@ -1319,3 +1319,53 @@ Calibration (Rule 11):
   a sim fingerprint; history entries must be echoed by a beat that turn
   naming the character; drawn lines are render-captured; C7.9 re-runs the
   full C1..C6 chain in-process.
+
+## C7 wave 1 — c7-wave1-1788493866923 (graded 2026-09-04, BASE 2067de3 → HEAD 1f1d161)
+
+- 1168 tool calls, 1200 turns — the **iteration cap and the 8h clock
+  coincided** (28619s); exitReason engine_closed_the_turn, marker not seen,
+  5 commits (C7.1, C7.2, three C7.3-wip). Driver check 1 failed / 359
+  passed on test_ui_actions::test_dispatchability[quickload], which passes
+  alone and in the full suite — an ordering leak inside the check set, not
+  a regression. No llama-server faults; the F141 idle-engine handoff fired.
+- **Real progress on the sealed gate at 1f1d161:**
+  - C7.1.first-class **PASS** both seeds — 17 library chains now land as
+    manager-armed beats (`company_paradise ... war_price`), zero ghosts.
+  - C7.2.acts **PASS** both seeds; C7.2a.library-size **PASS** (23 defs, all
+    >= 3 steps; 12 with 9 short at BASE).
+  - C7.3.branching FAIL — verbatim: `press_failures=["t57
+    chain:general_strike option 'buyoff' not drawn on the House docket", ...]`
+    The petition is filed with domain "chain", absent from DOMAIN_PRIORITY
+    (docket.py:1033 `DOMAIN_PRIORITY.get(p.domain, 9)`), so it sorts last
+    and never reaches a drawn card. Only one chain branches so far.
+  - C7.4/5/6 FAIL by absence — no Character.history yet.
+  - **C7.9 FAIL: 8 prior-campaign regressions**, root = sealed C1 gate
+    `s7.G1.3a.deflection: FAIL kinds seen: ['chain', 'gentry', 'inquiry',
+    'onboarding', 'season', 'signature']` (and s11). beats.py is untouched;
+    23 chains applying effects from turn 1 changed the world so no
+    deflection beat appears in 20 turns on seeds 7/11.
+- Full suite **3 failed / 2061 passed**: test_c1_visibility::
+  test_all_four_kinds_in_seed7_20_turns (the same deflection regression,
+  pinned), test_agenda::test_r5_dominion_backed_by_industry (`Fixture
+  premise broken: industry == intrigue; assert 11 != 11`), and the
+  UNTRACKED gilded/tests/test_c7_branching.py (`no chain petition was drawn
+  as a rule region`) — the run's best instrument left uncommitted at the cap.
+- Derived sweep 6/25 vs green owners; 19 of the survivors are
+  event_chains.py:120–191 and docket.py:1101–1106 — the branching machinery
+  nothing committed owns. graderProbes 0/1168. CodeIndex 26/1168 (**2.2%**).
+- Pacing orders ignored again (maxCallsWithoutSourceEdit 197,
+  maxCallsWithoutCommit 307); the Bash circuit breaker tripped six times in
+  a row. 1200 iterations bound exactly at the 8h clock — wave 2 dispatches
+  with LOCALCODE_MAX_ITERATIONS=2000 so the clock, not the counter, is the
+  budget (F90 lesson).
+
+Economics after this wave: C7 = 1 mission, 7.95h local, $0.72 electricity
+vs $161.79 measured-token API equivalent; global ratio $1 frontier verify
+oversees ~$1.56 displaced generation.
+
+Verdict: MISS at the iteration cap with three C7 checks turned green in one
+wave. Wave 2 dispatched at BASE 1f1d161: commit the orphaned branching test
+first, restore the deflection promise without disabling chains, give chain
+petitions docket priority so the choice is drawn, two more branching
+chains, then history + House tab + epilogue.
+
