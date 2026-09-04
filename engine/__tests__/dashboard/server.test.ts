@@ -666,3 +666,48 @@ describe('GET /api/mission', () => {
     rmSync(repo, { recursive: true, force: true })
   })
 })
+
+// ── /api/mission never blocks the engine on a slow git (F144) ─────────────────
+describe('GET /api/mission with a hung git', () => {
+  const HUNG_PORT = 19195
+  let hungServer: DashboardServer
+
+  beforeAll(async () => {
+    hungServer = new DashboardServer({
+      port: HUNG_PORT,
+      tokens: _tokens,
+      // A git that never answers: the old execFileSync path froze the whole
+      // engine for its 10 s timeout on every poll (726 times in C7 wave 2).
+      deps: { missionGit: () => new Promise<string>(() => {}) },
+    })
+    await new Promise(r => setTimeout(r, 100))
+  })
+
+  afterAll(() => {
+    hungServer.stop()
+    delete process.env.LOCALCODE_MISSION_MARKER
+    delete process.env.LOCALCODE_MISSION_CWD
+    delete process.env.LOCALCODE_MISSION_BASE
+  })
+
+  it('answers within the wait budget with cached facts and gitStale, and the loop keeps turning meanwhile', async () => {
+    const { MISSION_GIT_WAIT_MS } = await import('../../dashboard/server.js')
+    process.env.LOCALCODE_MISSION_MARKER = 'never'
+    process.env.LOCALCODE_MISSION_CWD = 'C:/nowhere'
+    process.env.LOCALCODE_MISSION_BASE = 'deadbeef'
+    let ticked = false
+    const timer = setTimeout(() => { ticked = true }, 200)   // fires only if the loop is free during the request
+    const t0 = Date.now()
+    const res = await authFetch(`http://localhost:${HUNG_PORT}/api/mission`)
+    const ms = Date.now() - t0
+    clearTimeout(timer)
+    const m = await res.json()
+    expect(res.status).toBe(200)
+    expect(ms).toBeLessThan(MISSION_GIT_WAIT_MS + 1500)
+    expect(ms).toBeGreaterThanOrEqual(MISSION_GIT_WAIT_MS - 100)  // it did wait for git, then gave up
+    expect(m.active).toBe(true)
+    expect(m.commitsSinceBase).toBe(0)
+    expect(m.gitStale).toBe(true)
+    expect(ticked).toBe(true)
+  }, 15000)
+})

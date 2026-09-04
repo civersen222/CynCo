@@ -3360,3 +3360,37 @@ engine start (the page is read once at startup). Standing rule: any
 operator-facing cap must be tested end to end at the layer where the work
 happens, not where the banner prints (the same lesson as `commandTimeoutMs`
 in Wave 9d and the dispatch "coupled, as launched" check).
+
+## F144 — The dashboard's mission poll ran git synchronously on the engine's event loop; 726 ten-second freezes in one run (C7 wave 2)
+
+**Where:** Dashboard `/api/mission`, engine_c7-wave2.log (726 lines of
+`[dashboard] mission git read failed for C:\Users\civer\civkings: spawnSync
+git ETIMEDOUT`, from log line 15060 to the end), also 1079 in C7 wave 1 and
+64 in C6 wave 13. User: "you have once again wasted hours its not working
+anymore".
+
+**How:** `getMission()` called `execFileSync('git', [... 'log' ...], {timeout:
+10_000})` twice per request, and the open dashboard tab polls it every 10 s.
+Inside the engine process those git calls timed out, so each poll froze the
+whole event loop — model calls, tool results, the websocket the page was
+reading — for 10 s. 726 × 10 s ≈ 2 h of a 4.5 h run. The model still
+advanced (747 iterations after the first timeout, 2 commits) but at half
+speed, and the page looked dead because its own poll was the freeze. From a
+shell, and from a Bun process inside the same Job Object, the identical git
+command answers in 13–30 ms; why it stalls inside the engine is not yet
+explained (candidates: Bun spawnSync under an event loop already saturated
+with streaming, or contention with the model's own git/pytest children).
+
+**Why:** A request handler did synchronous process spawning on the one
+thread everything shares. The timeout made it worse, not better: a fast
+failure would have cost milliseconds; a 10 s wait cost the whole loop.
+
+**Fix:** `getMission` is async: a single-flight `execFile` refresh feeds a
+cache keyed by (cwd, base, marker); a request waits at most 2 s for fresh
+facts and otherwise answers with the last known ones plus `gitStale`, which
+the page shows as "git slow, showing last known". Test: a git that never
+answers returns 200 within the budget while a timer proves the loop kept
+turning. Standing rule: no `*Sync` process spawn in any request handler or
+event callback of the engine — the dispatch banner's own `execSync` calls in
+processManager (`killProcessOnPort`) are start-up only and stay. Open
+question, tracked: why git is slow inside the engine at all.

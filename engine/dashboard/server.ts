@@ -14,7 +14,7 @@
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import { readFileSync, existsSync } from 'fs'
-import { execFileSync } from 'child_process'
+import { execFile } from 'child_process'
 import type { Server, ServerWebSocket } from 'bun'
 import type { EngineEvent } from '../bridge/protocol.js'
 import { validateCommand } from '../bridge/commandSchema.js'
@@ -33,6 +33,13 @@ import { cyncoHome } from '../paths.js'
 // ---------------------------------------------------------------------------
 // DashboardDeps — optional callbacks into the engine
 // ---------------------------------------------------------------------------
+
+/** How long /api/mission may wait for a fresh git read before answering from cache. */
+export const MISSION_GIT_WAIT_MS = 2_000
+/** Cached commit facts are reused for this long between git reads. */
+export const MISSION_CACHE_TTL_MS = 10_000
+/** A git that takes longer than this is abandoned (async; the loop never waits). */
+export const MISSION_GIT_TIMEOUT_MS = 8_000
 
 export interface DashboardDeps {
   getGovernanceReport?: () => any
@@ -53,6 +60,8 @@ export interface DashboardDeps {
    * and this is the only way for anything outside the engine process to ask.
    */
   getRunState?: () => { processing: boolean; toolCalls?: number }
+  /** Test seam: run one git command asynchronously and resolve its stdout. Default: child_process.execFile. */
+  missionGit?: (args: string[]) => Promise<string>
   applyEngineConfig?: (patches: Record<string, unknown>) => { applied: Record<string, unknown>; errors: { field: string; message: string }[] }
   setToolRouting?: (enabled: boolean) => void
   getToolRouting?: () => boolean
@@ -337,7 +346,7 @@ export class DashboardServer {
             case '/api/governance':
               return this.getGovernance()
             case '/api/mission':
-              return this.getMission()
+              return await this.getMission()
             case '/api/predictions':
               return this.getPredictions()
             case '/api/contracts':
@@ -656,42 +665,88 @@ window.__CYNCO_TOKEN = ${JSON.stringify(token)};
    * the mission repo itself — the same evidence the driver will grade at close
    * — rather than from anything the model reports about its own progress.
    */
-  private getMission(): Response {
+  /**
+   * The mission repo's commit facts, read WITHOUT blocking the engine.
+   *
+   * F144: this used to be two execFileSync calls with a 10 s timeout, run on
+   * the event loop for every /api/mission poll (every 10 s from an open tab).
+   * Inside the C7 wave-2 engine git timed out 726 times — 7260 s of a frozen
+   * loop in a 4.5 h run: the model advanced at half speed and the page whose
+   * poll caused the freeze read as dead. Now: an async single-flight refresh
+   * feeds a cache; a request waits at most MISSION_GIT_WAIT_MS for fresh data
+   * and otherwise answers with the last known facts plus `gitStale`.
+   */
+  private missionCache: { key: string; at: number; commits: string[]; markerSeen: boolean; error: string | null } =
+    { key: '', at: 0, commits: [], markerSeen: false, error: null }
+  private missionRefresh: Promise<void> | null = null
+
+  private runMissionGit(args: string[]): Promise<string> {
+    if (this.deps.missionGit) return this.deps.missionGit(args)
+    return new Promise((resolve, reject) => {
+      execFile('git', args, { encoding: 'utf-8', timeout: MISSION_GIT_TIMEOUT_MS, windowsHide: true },
+        (err, stdout) => (err ? reject(err) : resolve(String(stdout))))
+    })
+  }
+
+  private refreshMission(cwd: string, base: string, marker: string): Promise<void> {
+    if (this.missionRefresh) return this.missionRefresh
+    this.missionRefresh = (async () => {
+      try {
+        const out = await this.runMissionGit(['-C', cwd, 'log', '--oneline', `${base}..HEAD`])
+        const msgs = await this.runMissionGit(['-C', cwd, 'log', '--format=%B', `${base}..HEAD`])
+        this.missionCache = {
+          key: `${cwd}|${base}|${marker}`,
+          at: Date.now(),
+          commits: out.trim() ? out.trim().split('\n') : [],
+          markerSeen: msgs.includes(marker),
+          error: null,
+        }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message.split('\n')[0] : String(e)
+        this.missionCache = { ...this.missionCache, error: msg }
+        console.log(`[dashboard] mission git read failed for ${cwd}: ${msg} (serving cached facts)`)
+      } finally {
+        this.missionRefresh = null
+      }
+    })()
+    return this.missionRefresh
+  }
+
+  private async getMission(): Promise<Response> {
     const marker = process.env.LOCALCODE_MISSION_MARKER
     const cwd = process.env.LOCALCODE_MISSION_CWD
     const base = process.env.LOCALCODE_MISSION_BASE
     if (!marker || !cwd || !base) return jsonResponse({ active: false })
 
-    let commits: string[] = []
-    let markerSeen = false
-    try {
-      const out = execFileSync(
-        'git', ['-C', cwd, 'log', '--oneline', `${base}..HEAD`],
-        { encoding: 'utf-8', timeout: 10_000 },
-      )
-      commits = out.trim() ? out.trim().split('\n') : []
-      const msgs = execFileSync(
-        'git', ['-C', cwd, 'log', '--format=%B', `${base}..HEAD`],
-        { encoding: 'utf-8', timeout: 10_000 },
-      )
-      markerSeen = msgs.includes(marker)
-    } catch (e) {
-      console.log(`[dashboard] mission git read failed for ${cwd}: ${e instanceof Error ? e.message.split('\n')[0] : e}`)
+    const key = `${cwd}|${base}|${marker}`
+    if (this.missionCache.key !== key) {
+      // A different mission (or a test's different repo): never serve another mission's facts.
+      this.missionCache = { key, at: 0, commits: [], markerSeen: false, error: null }
     }
-
+    const age = Date.now() - this.missionCache.at
+    if (age > MISSION_CACHE_TTL_MS) {
+      // Wait a little for fresh facts; never for a hung git.
+      await Promise.race([
+        this.refreshMission(cwd, base, marker),
+        new Promise<void>(r => setTimeout(r, MISSION_GIT_WAIT_MS)),
+      ])
+    }
+    const c = this.missionCache
     const run = this.deps.getRunState?.() ?? null
     return jsonResponse({
       active: true,
       marker,
-      markerSeen,
+      markerSeen: c.markerSeen,
       cwd,
       base,
       checkCmd: process.env.LOCALCODE_MISSION_CHECK ?? null,
       maxIterations: Number(process.env.LOCALCODE_MAX_ITERATIONS ?? 0) || null,
       toolCalls: run?.toolCalls ?? null,
       processing: run?.processing ?? null,
-      commitsSinceBase: commits.length,
-      recentCommits: commits.slice(0, 5),
+      commitsSinceBase: c.commits.length,
+      recentCommits: c.commits.slice(0, 5),
+      gitStale: c.at === 0 ? true : (Date.now() - c.at) > MISSION_CACHE_TTL_MS * 2,
+      gitError: c.error,
     })
   }
 
