@@ -203,6 +203,8 @@ export class LlamaCppProvider implements Provider {
     }
 
     yield { type: 'message_stop' }
+    // Periodic slot KV snapshot (bounded-loss on a llama-server crash).
+    this.processManager?.noteTurnComplete()
   }
 
   // ─── Adapter methods ─────────────────────────────────────────

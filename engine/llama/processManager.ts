@@ -6,7 +6,7 @@ import { readGgufMeta } from './gguf.js'
 import { checkpointCostFromMeta, derivedCacheRamMib, MEASURED_DEFAULT_COST, type CheckpointCostModel } from './checkpointCost.js'
 import { CheckpointCalibrator } from './checkpointCalibration.js'
 import { evaluateSpawn, readGpuMemory, readHostMemory, spawnRequirementFor, topCommitConsumers, type SpawnCheck } from './hostResources.js'
-import { statSync } from 'fs'
+import { existsSync, statSync } from 'fs'
 import { cyncoHome } from '../paths.js'
 
 export type ServerConfig = {
@@ -31,6 +31,8 @@ export type ServerConfig = {
   chatTemplateKwargs?: Record<string, string | number | boolean>
   /** Per-architecture checkpoint cost; buildServerArgs derives --cache-ram from it. Default: the measured Qwen3.8 fit. */
   checkpointCost?: CheckpointCostModel
+  /** Directory llama-server may save/restore slot KV in (--slot-save-path). Unset = no snapshots. */
+  slotSavePath?: string
 }
 
 /**
@@ -118,6 +120,9 @@ export function buildServerArgs(config: ServerConfig): string[] {
 
   // Single slot — we only process one request at a time
   args.push('--parallel', '1')
+  // Slot KV snapshots (see saveSlot/restoreSlot): the directory the server may
+  // write session.bin into. A restart then restores instead of re-prefilling.
+  if (config.slotSavePath) args.push('--slot-save-path', config.slotSavePath)
   // Qwen3.6/3.8 are hybrid Gated DeltaNet + attention models. llama.cpp context
   // checkpoints snapshot recurrent state during prefill so warm turns roll
   // back to the nearest checkpoint instead of re-prefilling from token 0
@@ -244,6 +249,16 @@ export function restartDelayMs(recentRestarts: number): number {
 
 /** How long a refused restart waits before looking again. */
 const REFUSAL_RECHECK_MS = 120_000
+
+/** The one snapshot file per model directory; llama-server refuses path separators in the name. */
+export const SLOT_SNAPSHOT_FILE = 'session.bin'
+/**
+ * Minimum spacing between periodic slot saves. A save writes the whole slot
+ * state (~40 KB/token, 2.6 GB at 37k tokens on Qwen3.8) and holds the slot for
+ * seconds, so it is a bounded-loss measure, not a per-turn one: a crash loses at
+ * most one interval of prefill instead of the whole conversation.
+ */
+export const SLOT_SNAPSHOT_INTERVAL_MS = Number(process.env.LOCALCODE_SLOT_SNAPSHOT_MS) || 300_000
 /** VRAM is released a moment after a process dies; one re-read before refusing on it. */
 const GPU_RECHECK_DELAY_MS = 3_000
 
@@ -271,6 +286,10 @@ export type ProcessManagerConfig = {
   checkpointCost?: CheckpointCostModel
   /** Test seam: replace the live host/GPU measurement. Production leaves it unset. */
   preSpawnCheck?: () => Promise<SpawnCheck>
+  /** Directory for slot KV snapshots (--slot-save-path). Unset = no snapshots. */
+  slotSavePath?: string
+  /** Test seam: the fetch used for the slot save/restore API. */
+  fetchImpl?: typeof fetch
 }
 
 export class ProcessManager {
@@ -294,6 +313,10 @@ export class ProcessManager {
   private restartTimer: ReturnType<typeof setTimeout> | null = null
   /** A spawn-level failure (ENOENT, EACCES) for the current attempt; waitForHealth surfaces it immediately. */
   private spawnFailure: Error | null = null
+  private lastSlotSave = 0
+  private slotSaveInFlight: Promise<unknown> | null = null
+  private now: () => number = () => Date.now()
+  private fetchImpl: typeof fetch
 
   constructor(config: ProcessManagerConfig) {
     this.binaryPath = config.binaryPath
@@ -312,6 +335,7 @@ export class ProcessManager {
     }
     this.checkpointCost = cost
     this.baseConfig = { ...config, checkpointCost: cost }
+    this.fetchImpl = config.fetchImpl ?? fetch
     this.calibrator = new CheckpointCalibrator({ model: cost, modelKey, storeDir, warn: m => console.warn(m) })
   }
 
@@ -343,18 +367,72 @@ export class ProcessManager {
    * Restart the server with a LoRA adapter loaded.
    */
   async restartWithAdapter(loraPath: string): Promise<void> {
+    await this.saveSlot()
     this.currentLoraPath = loraPath
     await this.stop()
     await this.startProcess()
+    await this.restoreSlot()
   }
 
   /**
    * Restart the server without any LoRA adapter.
    */
   async restartWithoutAdapter(): Promise<void> {
+    await this.saveSlot()
     this.currentLoraPath = null
     await this.stop()
     await this.startProcess()
+    await this.restoreSlot()
+  }
+
+  private async slotAction(action: 'save' | 'restore'): Promise<{ ok: boolean; detail: string }> {
+    if (!this.baseConfig.slotSavePath) return { ok: false, detail: 'no slotSavePath configured' }
+    try {
+      const resp = await this.fetchImpl(`http://127.0.0.1:${this.port}/slots/0?action=${action}`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ filename: SLOT_SNAPSHOT_FILE }), signal: AbortSignal.timeout(120_000),
+      })
+      const body = await resp.json().catch(() => ({})) as any
+      if (!resp.ok) return { ok: false, detail: `HTTP ${resp.status} ${JSON.stringify(body).slice(0, 200)}` }
+      const n = body.n_saved ?? body.n_restored
+      return { ok: true, detail: `${action}d ${n ?? '?'} tokens` }
+    } catch (e) {
+      return { ok: false, detail: e instanceof Error ? e.message : String(e) }
+    }
+  }
+
+  /** Snapshot slot 0's KV to <slotSavePath>/session.bin. */
+  async saveSlot(): Promise<{ ok: boolean; detail: string }> {
+    if (!this.baseConfig.slotSavePath) return { ok: false, detail: 'no slotSavePath configured' }
+    if (!this.isRunning() && !this.baseConfig.fetchImpl) return { ok: false, detail: 'server not running' }
+    const r = await this.slotAction('save')
+    if (r.ok) this.lastSlotSave = this.now()
+    console.log(`[llama-cpp] slot save: ${r.ok ? 'ok' : 'skipped'} — ${r.detail}`)
+    return r
+  }
+
+  /**
+   * Restore slot 0 from the snapshot if one exists. Harmless when the next
+   * prompt diverges from the saved prefix: the server re-prefills as before.
+   */
+  async restoreSlot(): Promise<{ ok: boolean; detail: string }> {
+    const dir = this.baseConfig.slotSavePath
+    if (!dir || !existsSync(join(dir, SLOT_SNAPSHOT_FILE))) return { ok: false, detail: 'no snapshot on disk' }
+    const r = await this.slotAction('restore')
+    console.log(`[llama-cpp] slot restore: ${r.ok ? 'ok' : 'skipped'} — ${r.detail}`)
+    return r
+  }
+
+  /**
+   * Called by the provider after every completed stream. Saves when the last
+   * save is older than SLOT_SNAPSHOT_INTERVAL_MS, so a crash at most loses one
+   * interval of prefill instead of the whole conversation. Fire-and-forget and
+   * serialized: a save in flight is never doubled.
+   */
+  noteTurnComplete(): void {
+    if (!this.baseConfig.slotSavePath || this.slotSaveInFlight) return
+    if (this.now() - this.lastSlotSave < SLOT_SNAPSHOT_INTERVAL_MS) return
+    this.slotSaveInFlight = this.saveSlot().finally(() => { this.slotSaveInFlight = null })
   }
 
   /**
@@ -524,6 +602,10 @@ export class ProcessManager {
     } else {
       console.log(`[llama-cpp] Chat template supports native tool calls`)
     }
+
+    // A crash restart (restartTimes non-empty) gets the last snapshot back so the
+    // conversation resumes from its saved prefix instead of token 0.
+    if (this.restartTimes.length > 0) await this.restoreSlot()
   }
 
   private async waitForHealth(
