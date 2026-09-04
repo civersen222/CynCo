@@ -3269,3 +3269,60 @@ stall into a declared fault; and an exit following "prompt cache state:
 bad allocation" should log the host's free commit charge, so the next
 engine log names the cause without an event-log dig. (3) The wave-12
 brief makes landing the preserved patch step 0, graded first.
+
+## F141 — Mission end read as an outage: the F131 teardown takes the dashboard down with the engine, twice in one day (C6 waves 11–12)
+
+**Where:** Dashboard on 127.0.0.1:9161, 2026-09-03. Once at the wave-12
+dispatch (~09:40, the kill sweep replaced the engine under the user's open
+tab), once at the wave-12 close (17:44, `[driver] F131 teardown: ... engine
+and children are down (dashboard 9161 included)`).
+
+**How:** The dashboard is served by the mission engine. `dispatch-mission.sh`
+sets CYNCO_TEARDOWN_ENGINE=1 so the driver sends /quit after its ledger row
+(F131: a finished engine must not sit undead holding llama-server). That is
+right for the engine and wrong for the human: the browser tab that has been
+the user's only window on an 8h run goes dark at the exact moment there is a
+result to look at, with nothing on screen saying the run ENDED rather than
+BROKE. The user's read both times: "dashboard isn't connected to the engine".
+Compounded on the same day by the Mission gauge frozen at 50/1200 (PR #131),
+so the panel had looked dead for hours before it actually went dark.
+
+**Why:** The engine's two roles — run this mission, serve the operator's view —
+share one process lifetime, and only the mission's lifetime was designed.
+Nothing owned the question "what answers on 9161 after the driver exits?"
+
+**Fix:** `dispatch-mission.sh` now outlives the driver: when the driver pid is
+gone and nothing answers on 9161, it boots a plain idle engine (no
+LOCALCODE_MISSION_* env, so /api/mission reports active:false) and notes it
+in the driver log. The next dispatch's kill sweep removes it as before. Rule,
+also in the dashboard memory: any operator action that kills an engine tells
+the user first and boots an idle engine after.
+
+## F142 — The full-suite step cannot fit the Bash cap: 22-minute pytest vs a 600s tool timeout, so the run's last hour was two timeouts and a retry (C6 wave 12)
+
+**Where:** Mission c6-wave12-1788448877042, repo civkings, c1c08f1 → c226507.
+Engine log C:\tmp\engine_c6-wave12.log, `Tool error: Bash ... command=cd
+C:\Users\civer\civkings; python -m pytest gilded/tests -q --tb=no 2>&1 |
+Select-Object -Last 30 :: Error: command timeout after 600000ms`.
+
+**How:** Brief step 4 says run the full suite with output to
+C:\tmp\w12_full.txt. The full suite takes 22 minutes on this machine (1332s
+at grading, 1510s the day before under contention). The model ran it through
+a pipe to Select-Object instead of to a file, the Bash tool killed it at
+600s, nothing was written, and the model ran the identical command again.
+Iteration 884 → 885 in 25 minutes; the wall clock then reaped the run with
+3 reds it never saw.
+
+**Why:** Two caps disagree and neither names the other. The dispatch script
+raises CYNCO_BASH_TIMEOUT_MS to 300000/600000 with a comment about a
+135-second suite — the suite has grown 10x since that number was measured.
+The brief asks for output to a file but does not say WHY (so a killed call
+still leaves evidence), and the model's habit of piping to a tail wins over
+an unexplained instruction (F138 pattern: a rule without its reason loses to
+a habit).
+
+**Fix:** Wave 13 dispatch sets CYNCO_BASH_TIMEOUT_MS=1500000 for this
+campaign, and the brief gives the exact command (redirect to file THEN tail
+the file) with the reason stated. Standing rule for brief authoring: any
+step whose command runs longer than a minute names its expected duration
+and the cap it runs under.

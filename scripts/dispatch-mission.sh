@@ -220,4 +220,29 @@ CYNCO_TEARDOWN_ENGINE=1 \
   bun scripts/cynco-mission-driver.mjs \
     "$BRIEF" "$MARKER" "$MISSION_CWD" "$TIMEOUT_S" "${CHECK_CMD:-}" ${PROBE_CMD:+"$PROBE_CMD"} \
   > "$DRIVER_LOG" 2>&1 &
+DRIVER_PID=$!
 echo "[dispatch] dispatched — tail -f $DRIVER_LOG"
+
+# --- the dashboard outlives the mission ------------------------------------
+# The teardown above is right for the mission engine and wrong for the human:
+# the dashboard on 9161 is served BY that engine, so the moment the driver
+# finishes, the browser tab the user has been watching all day goes dark with
+# no explanation (twice on 2026-09-03: "dashboard isn't connected to the
+# engine again"). Mission end must not read as an outage. So: outlive the
+# driver here, and when it has exited and nothing answers on 9161, boot a
+# plain idle engine (no LOCALCODE_MISSION_* env -> /api/mission active:false)
+# so the same URL keeps answering. The next dispatch's kill sweep removes it.
+#
+# A subshell cannot `wait` on a sibling it did not spawn, so poll the pid.
+IDLE_LOG=${IDLE_LOG:-/c/tmp/engine_idle_after_${STAMP}.log}
+(
+  while kill -0 "$DRIVER_PID" 2>/dev/null; do sleep 20; done
+  sleep 10
+  if curl -s -o /dev/null --max-time 3 http://127.0.0.1:9161/ 2>/dev/null; then
+    exit 0   # something already answers (a hand-started engine, or the next dispatch)
+  fi
+  LOCALCODE_EMBED_MODEL="${LOCALCODE_EMBED_MODEL:-nomic-embed-text}" bun engine/main.ts > "$IDLE_LOG" 2>&1 &
+  echo "[dispatch] mission over — idle engine booted so the dashboard on 9161 keeps answering (log $IDLE_LOG)" >> "$DRIVER_LOG"
+) > /dev/null 2>&1 &
+disown 2>/dev/null || true
+echo "[dispatch] after the driver exits, an idle engine will be booted so the dashboard keeps answering (log $IDLE_LOG)"
