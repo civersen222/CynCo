@@ -1213,6 +1213,14 @@ tightened to 40 calls.
   tests fixed in PR #132 (engine suite 4087/0).
 - verified null→**false** by verifyCorrection. CodeIndex 12/937 (1.3%).
   F136: eighth wave, zero phantom paths.
+- Derived sweep **7/25 killed** vs green owners (contract, c6c_layout,
+  type-scale, pixel_visual, heir; opinion/grievance owners excluded while
+  red, census owners too slow per mutant). First attempt abandoned
+  (identity red). The 18 survivors sit on broadsheet.py:1430–1445 — the
+  agenda card-height arithmetic (`card_h = 6 + caption + 2 + wrapped
+  lines * (body_h+1) + 2 + 20 + 4`) that reserves the docket's room
+  before the ladder yields rows: layout constants owned by the census
+  instruments this sweep could not afford to run.
 
 Economics after this wave: C6 = 12 missions, 72.60h local, $6.53
 electricity vs $1121.75 measured-token API equivalent; global ratio $1
