@@ -1,0 +1,134 @@
+MISSION C7 — CONTENT DEPTH (the roadmap's line: "event-chain library
+across all acts; characters that accumulate history". You already built
+most of the machinery. C7 is making it matter to the player. 8 hours.)
+
+Repo: C:\Users\civer\civkings
+BASE: 2067de3  (C6 PASS head. Full suite 2060 passed / 0 failed. Sealed
+gate C1..C6 PASSES end to end. KEEP-GREEN set, run before EVERY commit:
+python -m pytest gilded/tests/test_event_chains.py gilded/tests/test_saga_director.py gilded/tests/test_c6_contract.py gilded/tests/test_c6c_layout.py gilded/tests/test_ui_broadsheet.py gilded/tests/test_ui_actions.py gilded/tests/test_house_opinion_ui.py gilded/tests/test_house_tab_grievances.py gilded/tests/test_house_tab_pixel_visual.py gilded/tests/test_heir_controls.py -q)
+
+WHAT IS TRUE AT BASE (measured 2026-09-04, seed 42, 70 turns)
+
+  game.beats.log has 1667 beats; 9 are kind="chain" — the three teaser
+  chains hard-coded in gilded/beats.py _CHAIN_ACTS (enterprise/labor/war
+  at fixed turns). They do not count for C7.
+
+  game.chain_manager (gilded/society/event_chains.py) holds 12 ChainDefs
+  from event_content/chains_pack1.py + chains_pack2.py. 8-9 of them FIRE
+  per seed (company_paradise, conspiracy_of_equals, coping_spiral,
+  general_strike, heir_radicalization, martyr_ballad, mine_inquiry,
+  strikebreakers, succession_vultures). Their lines go out through
+  gilded/chassis.py:510  self._emit(self.chain_manager.tick(self), "gazette")
+  as anonymous gazette prose. No chain beat. No player choice. Nine of the
+  twelve defs have fewer than 3 steps.
+
+  Character (gilded/society/characters.py:124) has no history. Its fields:
+  age, age_progress, base_stats, children_ids, dispositions, education_track,
+  focus, gender, gold_reserve, graduated, guardian, id, is_alive, is_heir,
+  name, parent_ids, persona, secrets, stress, want. Memory exists only as
+  SocietyState.opinion_history (pairwise) and secrets (42 world-wide).
+
+  The docket (gilded/docket.py: Petition, PetitionOption.apply(ctx) ->
+  List[str], drawn on the House tab as {"rule": (pid, key, exec_id)}
+  regions, ruled by docket.rule) is the game's one choice mechanism. No
+  chain uses it.
+
+  endings.judge(game, house).text names no character and cites no event.
+
+THE WORK (numbered commit points — commit AT each; the gate reads exactly these)
+
+1. CHAINS ARE FIRST-CLASS BEATS. Every step a library chain plays must
+   also land on game.beats.log as Beat(kind="chain", facet=<chain_id>,
+   face=<the actor's name when the ctx has one>). Keep the gazette line if
+   you like. Do it in ONE place (where chassis calls chain_manager.tick, or
+   inside ChainManager.tick given the game) so every present and future
+   chain gets it. COMMIT 1 when a seeded 70-turn run shows >= 6 distinct
+   library chain_ids as chain beats, each with >= 3 beats over >= 2 turns.
+   Self-check to write and commit: gilded/tests/test_c7_chain_beats.py
+   asserting exactly that on seed 42.
+
+2. EVERY CHAIN HAS >= 3 STEPS AND THE LIBRARY HAS >= 18. Extend the nine
+   short chains to three or more steps (arrive -> escalate -> resolve),
+   then add at least six new ChainDefs so the library reaches 18. Spread
+   the TRIGGERS so that in a 70-turn run at least 2 distinct chains have a
+   beat in EACH act band: turns 1-25, 26-50, 51-70. Triggers must read the
+   live world (unrest, tide, legitimacy, a strike, an heir's stress, a
+   marriage, a death, a ruling) — never `game.turn == N`. COMMIT 2 when the
+   probe shows all three bands covered on seeds 42 and 7.
+
+3. THREE CHAINS ASK THE PLAYER. For at least 3 chains, one step files a
+   Petition onto the player's docket with kind "chain:<chain_id>", >= 2
+   PetitionOptions, and apply() functions that change the sim (treasury,
+   unrest, stress, a secret, an opinion — measurable) AND select which of
+   the chain's later steps play (store the chosen key in the ActiveChain
+   ctx; later steps branch on it). The petition MUST be drawn on the House
+   docket — give it a domain whose DOMAIN_PRIORITY lets it surface (the
+   docket shows the top petition) or draw chain petitions in their own
+   slot. A choice the player cannot press is not a choice. COMMIT 3 when
+   two seed-42 runs that rule option 1 vs option 2 (by pressing the drawn
+   region, as test_ui_broadsheet does) produce different downstream chain
+   beats for each of the three chains. Self-check: test_c7_branching.py.
+
+4. CHARACTERS ACCUMULATE HISTORY. Add Character.history: a list of entries
+   with (turn: int, kind: str, text: str, refs) — turn is game.turn when it
+   happened, kind in a small named set (chain, ruling, scheme, marriage,
+   court, secret, death, ambition). Append from: every chain step for the
+   characters in its ctx; docket rulings for the executor and the
+   petitioner; schemes.py outcomes; marriages; court appointments and
+   dismissals; secrets revealed; kin deaths. After 70 turns on seed 42:
+   >= 60% of living player-house characters have >= 1 entry, the ruler has
+   >= 5, and every entry is echoed by a beat that turn naming the
+   character (the gate cross-checks this — an entry nothing on the log
+   corroborates is fabricated). COMMIT 4. Self-check: test_c7_history.py.
+
+5. HISTORY IS DRAWN AND REMEMBERED. The House tab draws the ruler's last 3
+   (or more) history lines — inside the band (test_c6c_layout::
+   test_house_overview_fits_band), no overlap (test_c6_contract::
+   test_no_text_overlap), type scale kept. endings.judge's Epilogue.text
+   names at least 2 characters who have history and quotes at least one
+   entry's text (>= 20 characters verbatim). COMMIT 5. Self-check:
+   test_c7_epilogue.py.
+
+6. FULL PASS. The Bash tool cap is 1500s this wave. Run EXACTLY:
+     python -m pytest gilded/tests -q --tb=short > C:\tmp\c7w1_full.txt 2>&1; Get-Content C:\tmp\c7w1_full.txt -Tail 15
+   Fix what it shows. Then the wire-check (KEEP-GREEN set above plus your
+   four test_c7_*.py files), passing tail in the final commit message.
+
+PACING (orders)
+- 40 tool calls without an Edit = STOP investigating. Write the hypothesis
+  into a commit message on the smallest edit that tests it.
+- 30 calls past your last commit with no instrument green = make the
+  smallest edit that moves one number and commit that.
+- Probes live under C:\tmp, never in the repo. Self-checks live in
+  gilded/tests/ and are committed.
+- If the same tool call fails twice, the premise is wrong — change the
+  premise, not the phrasing.
+
+RULES
+- NO downloads. NO new files inside the repo except gilded/tests/test_c7_*.py
+  and new content modules under gilded/society/event_content/.
+- You may change: gilded/society/event_chains.py, event_engine.py,
+  event_content/*, characters.py, schemes.py, marriages.py, court.py,
+  succession.py, gilded/chassis.py (the tick/emit lines only), gilded/beats.py,
+  gilded/docket.py, gilded/endings.py, gilded/ui/house_tab.py,
+  gilded/ui/broadsheet.py. The sealed gate re-runs C1..C6 — the menu, save,
+  settings, audio, ladder, atlas, war and pact surfaces must not move.
+- Deterministic per seed: no game.rng in chain triggers or history text;
+  the gate replays seed 42 twice and expects identical worlds up to the
+  ruling.
+- Do not weaken any committed test, census number, floor, or the type
+  scale. Do not edit test_c6_contract.py, test_c6c_layout.py,
+  test_ui_broadsheet.py, test_event_chains.py or test_saga_*.py.
+- Use the CodeIndex tool FIRST for every symbol lookup (definitions and
+  references in one call) before any Grep/Read crawl.
+
+DONE WHEN
+python -m pytest gilded/tests -q passes with ZERO failures, the six commit
+points are in the log, the tree is clean, and a seeded 70-turn run shows:
+>= 6 library chains as beats, all three act bands covered, 3 branching
+chains whose two rulings diverge, >= 60% of the House with history, the
+ruler's history on the House tab, an epilogue that names two people and
+quotes one memory. Then make a final commit whose message contains
+exactly this marker:
+
+stage c7 complete
