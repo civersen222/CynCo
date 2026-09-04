@@ -3326,3 +3326,37 @@ campaign, and the brief gives the exact command (redirect to file THEN tail
 the file) with the reason stated. Standing rule for brief authoring: any
 step whose command runs longer than a minute names its expected duration
 and the cap it runs under.
+
+## F143 — A long tool call looks like a dead engine: nothing streams during execution and the page's working indicator times out at 3 minutes (C6 wave 13)
+
+**Where:** Dashboard 127.0.0.1:9161 during c6-wave13-1788456xxx, 2026-09-03
+~19:45–20:10. Engine alive (iteration 142, 0 faults, 2 commits, the three
+reds green), user's read: "totally idle again".
+
+**How:** The model ran `python -m pytest gilded/tests -q --tb=short >
+C:\tmp\w13_full.txt` (22 minutes). While a tool executes the engine emits no
+stream.thinking / stream.token / governance frames — a 25s websocket probe
+counted 0 live frames. The tool feed showed one hollow-circle entry with no
+elapsed time, and brainViz's watchdog (`setTimeout(setActive(false),
+180000)`) declared the engine idle three minutes in. Two more things
+compounded it: the tool call was cut at 600s anyway (F142's fix had not
+taken — see below), so the model re-ran it; and the redirect worked, so the
+orphaned pytest finished and wrote "2060 passed" to the file while the
+browser showed nothing.
+
+**Why:** The dashboard's liveness model is event-driven and tool execution
+produces no events. Its idle watchdog was sized for chat turns, not for
+test suites. Separately, F142's operator cap never reached the tool:
+`bash.ts` clamped every budget to a fixed `MAX_BASH_TIMEOUT_MS = 600_000`;
+CYNCO_BASH_TIMEOUT_MS could only lower the default beneath it, so the
+dispatch banner said 1500000 and the tool still cut at 600000.
+
+**Fix:** (1) index.html: in-flight feed entries show `running Nm NNs`, a 1s
+ticker re-renders while anything is running and re-arms the working
+indicator, so a long tool call reads as work in progress, not death. (2)
+bash.ts: `bashMaxTimeoutMs()` — the env var raises the ceiling when set
+above it, hard-stopped at one hour; tests updated. Both land on the next
+engine start (the page is read once at startup). Standing rule: any
+operator-facing cap must be tested end to end at the layer where the work
+happens, not where the banner prints (the same lesson as `commandTimeoutMs`
+in Wave 9d and the dispatch "coupled, as launched" check).

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import { bashDefaultTimeoutMs, bashTool, failedOutput, formatBashFailure } from '../../tools/impl/bash.js'
+import { bashDefaultTimeoutMs, bashMaxTimeoutMs, bashTool, failedOutput, formatBashFailure } from '../../tools/impl/bash.js'
 import { getShellInfo } from '../../tools/shellInfo.js'
 import { tmpdir } from 'os'
 import { mkdtempSync, writeFileSync } from 'fs'
@@ -353,10 +353,36 @@ describe('the default timeout is the operator\'s to raise', () => {
     clear()
   })
 
-  it('does not let the environment raise the ceiling past ten minutes', () => {
+  it('lets the environment raise the ceiling above ten minutes (F142)', () => {
+    // The wave-13 dispatch exported 1500000 for a 22-minute suite and every
+    // call was still cut at 600000. An operator who raises the variable above
+    // the ceiling meant the ceiling.
+    clear()
+    process.env.CYNCO_BASH_TIMEOUT_MS = '1500000'
+    expect(bashMaxTimeoutMs()).toBe(1_500_000)
+    expect(bashDefaultTimeoutMs()).toBe(1_500_000)
+    clear()
+  })
+
+  it('the ceiling is ten minutes when the operator has said nothing', () => {
+    clear()
+    expect(bashMaxTimeoutMs()).toBe(600_000)
+    clear()
+  })
+
+  it('a value below the default ceiling lowers the default, not the ceiling', () => {
+    clear()
+    process.env.CYNCO_BASH_TIMEOUT_MS = '300000'
+    expect(bashDefaultTimeoutMs()).toBe(300_000)
+    expect(bashMaxTimeoutMs()).toBe(600_000)
+    clear()
+  })
+
+  it('does not let the environment raise the ceiling past an hour', () => {
     clear()
     process.env.CYNCO_BASH_TIMEOUT_MS = '99999999'
-    expect(bashDefaultTimeoutMs()).toBe(600_000)
+    expect(bashMaxTimeoutMs()).toBe(3_600_000)
+    expect(bashDefaultTimeoutMs()).toBe(3_600_000)
     clear()
   })
 

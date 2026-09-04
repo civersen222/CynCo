@@ -71,8 +71,32 @@ export function failedOutput(
   return parts.join('\n')
 }
 
-/** The ceiling on any Bash budget, however it arrives. */
+/** The ceiling on any Bash budget when no operator has raised it. */
 export const MAX_BASH_TIMEOUT_MS = 600_000
+
+/** Nothing an operator sets can make one command wait longer than this. */
+export const HARD_MAX_BASH_TIMEOUT_MS = 3_600_000
+
+/**
+ * The ceiling that applies right now.
+ *
+ * F142: the civkings suite takes 22 minutes. The wave-13 dispatch exported
+ * CYNCO_BASH_TIMEOUT_MS=1500000, the launch banner printed it, the brief
+ * promised the model 1500s -- and every call was still clamped to 600000 here,
+ * because the env var could only move the DEFAULT under a fixed ceiling. The
+ * operator who raises the variable above the ceiling meant the ceiling. An hour
+ * stays the hard stop: a hang with no deadline is the failure the cap exists
+ * to prevent, and no single command in this project should run that long.
+ */
+export function bashMaxTimeoutMs(): number {
+  for (const name of ['CYNCO_BASH_TIMEOUT_MS', 'CYNCO_CHECK_TIMEOUT_MS']) {
+    const raw = Number(process.env[name])
+    if (Number.isFinite(raw) && raw > 0) {
+      return Math.min(Math.max(raw, MAX_BASH_TIMEOUT_MS), HARD_MAX_BASH_TIMEOUT_MS)
+    }
+  }
+  return MAX_BASH_TIMEOUT_MS
+}
 
 /**
  * The budget a command gets when the model does not ask for one.
@@ -97,7 +121,7 @@ export const MAX_BASH_TIMEOUT_MS = 600_000
 export function bashDefaultTimeoutMs(): number {
   for (const name of ['CYNCO_BASH_TIMEOUT_MS', 'CYNCO_CHECK_TIMEOUT_MS']) {
     const raw = Number(process.env[name])
-    if (Number.isFinite(raw) && raw > 0) return Math.min(raw, MAX_BASH_TIMEOUT_MS)
+    if (Number.isFinite(raw) && raw > 0) return Math.min(raw, bashMaxTimeoutMs())
   }
   return 120_000
 }
@@ -117,7 +141,7 @@ export const bashTool: ToolImpl = {
         // Stage 11C finding, where a 3-second check described as "a few
         // minutes" was run twice in 911 tool calls.
         get description() {
-          return `Timeout in milliseconds (default: ${bashDefaultTimeoutMs()}, max: ${MAX_BASH_TIMEOUT_MS})`
+          return `Timeout in milliseconds (default: ${bashDefaultTimeoutMs()}, max: ${bashMaxTimeoutMs()})`
         },
       },
     },
@@ -127,7 +151,7 @@ export const bashTool: ToolImpl = {
   core: true,
   execute: async (input, cwd) => {
     const command = input.command as string
-    const timeout = Math.min((input.timeout as number) ?? bashDefaultTimeoutMs(), MAX_BASH_TIMEOUT_MS)
+    const timeout = Math.min((input.timeout as number) ?? bashDefaultTimeoutMs(), bashMaxTimeoutMs())
 
     const safety = checkBashSafety(command)
     if (!safety.safe) {
