@@ -2094,7 +2094,8 @@ function fetchSessionState() {
       seen.textContent = m.markerSeen ? 'YES' : 'not yet';
       seen.style.color = m.markerSeen ? 'var(--green, #4caf50)' : '';
       document.getElementById('missionCommits').textContent =
-        m.commitsSinceBase + ' (baseline ' + String(m.base).slice(0, 7) + ')';
+        m.commitsSinceBase + ' (baseline ' + String(m.base).slice(0, 7) + ')' +
+        (m.gitStale ? ' — git slow, showing last known' : '');
       document.getElementById('missionBudget').textContent =
         m.toolCalls != null && m.maxIterations
           ? m.toolCalls + ' / ' + m.maxIterations + ' (' + Math.round(100 * m.toolCalls / m.maxIterations) + '%)'
