@@ -10,6 +10,7 @@ Gates (sealed, outside repo): `~/.cynco/heldout/civkings-redesign/c<N>/`
 | C3 — the world pushes back | 9c4b773 | 9c0a6fbd4027a7c2 (hardened; was 90fa086ac43242e5) | clean MISS (hardened gate: 6 fails, independent surface prongs; exit 1, no traceback) | inert-orders stub FAILs exactly the 9 discriminators: G3.3a ×4 (no head-faced beats), G3.4a.deflection, G3.5a ×4 (seat run identical to control); 46 anatomy/fog checks PASS — re-verified post-hardening in a BASE worktree | wave 1 MISS (shape divergence: keys Church/Crown/Guilds/Treasury, no hold_seat; 8 fails, 336 PASS); wave 2 MISS (contract inversion F128 — root cause superseded by F129, IDENTICAL 8 fails, 440 turns spent improving the invented world); wave 3 run 1 VOID (engine defect F129: compaction destroyed the brief; 217 tool calls, 2-line diff, not chargeable to the wave budget); wave 3 re-run post-fix | **PASS** — wave 3 re-run (ledger c3-wave3-1787773124818, 581 turns, 88 min): driver verify PASS 58735ms; hand re-run exit 0, full C1+C2+C3 chain green incl. G3.6 "0 C1+C2 regressions"; marker exact in 4c67cae; 0/558 tool calls touched grading apparatus; 9 compactions survived with the brief pinned (F129 fix validated: same brief+model+base that produced a 2-line rename now landed the campaign); Powers frames render: 4 Orders fogged at t8, informant on Combine opens "Pursuing Purge Scabs" while others stay fogged (C4 warts: "House " prefix on Order rows, last-two-row overlap); sweeps — wave1 15/25 killed (survivors: orders.py:48-51 head-stat consts + 2 ambitions bools), wave2 8/23 (survivors: orders.py lever consts), final 5/25 (16 of 20 survivors = ambitions.py:50-65 Order-family disposition weights, ±1.0→2.0 keeps ordering; thin-tests residual, pin in C4); void-run sweep UNMEASURED and itself the finding: no test files delivered to own the change |
 | C4 — one living UI | 4c67cae | 05ea014c667311c7 | clean MISS (surface fails only, chain green) | claims-vs-pixels discriminators FAIL (TABS mutants + one-tier hedge) | wave 1 MISS (206 turns, head a731d57) · wave 2 VOID (harness failure F130) · wave 3 LANDED at the 1200-iteration budget | **PASS** — wave 3 (ledger c4-wave3-1787791284792): driver verify PASS all four sections at 3fc2de9; supervisor re-run identical; perturb MISS via G4.2a.one_tier; markerSeen:false is bookkeeping (budget landed during post-green polish); F131 filed (engine undead 7.3h post-verdict); first measured tokenStats (32:1 cached:prefill); sweep 7/25 killed (record #245, 18 UI-draw survivors, thin-UI-tests class) |
 | C5 — the world is big | 3fc2de9 | 0c4e6b30c2178a22 | clean MISS (10 fails, all C5-only: gentry ×3, provinces ×3, events ×3, mobility; houses/perf green, C1-C4 chain green) | counts-only cheat stub: s*.G5.1a.gentry/provinces PASS as designed, MISS (4 fails) via s*.G5.2a.events ×3 + G5.2a.mobility — the gate cannot be passed by counts | wave 1 MISS (ledger c5-wave1-1787844497777, 685 turns, 6h timeout, head 35050f9: whole C5 surface GREEN — 194-201 provinces, 24 gentry, 56-58 gentry beats/seed, mobility in all 3 seeds, perf 11.7ms/30.6 — but head not self-contained (F132: GENTRY_SURNAMES uncommitted, clean checkout dies on ImportError) and ONE chain regression G3.4a.deflection seed 3) · wave 2 LANDED (ledger c5-wave2-1787866792826, 112 turns, head c2ffb12: sealed chain GREEN end-to-end, G5.4a 0 regressions; deflection root cause = older order goal on the same target shadowed the fresh one; first live F131 teardown + dirtyAtVerify=0) BUT committed suite red: 152 failed/1893 passed vs 10 failed/2026 passed at BASE (F133 — wave 1 broke ~142, war layer) · wave 3 dispatched (c5-wave3.txt, BASE c2ffb12, sealed suite-gate gate_c5s.py, marker "campaign c5 suite green") | **PASS** — wave 3 (ledger c5-wave3-1787875895222, 581 turns, head fd5414d): suite 2046 passed / 0 failed (from 152 failed), 14 adapt commits + 1 real game-bug fix (under-construction enterprise charged input costs), driver verify + hand re-run identical (S.count/S.skip/S.chain all PASS, full C1-C5 chain green); visual: 194-province map + gentry rise/fall/board beats in Gazette; F131 residual (socket-closed-but-alive) found + reconnect-probe fix validated live; campaign-final sweep 4/25 killed (21 survivors = gentry-tick tuning dials, thin-tests class) |
+| C6 — the vertical slice | 36fddfd | 38c7f8595fc34874 (hardened pre-wave-2 at be130a7) | clean MISS (20 fails, all by absence: start="menu" not accepted, gilded.audio absent, text_rows absent, no menu-started game; zero gate errors; C6.9 = 0 prior-campaign regressions) | perturb (fake menu, dead press, ghost audio, diskless settings) flips ONLY C6.1a/1b; every discriminator still FAILs; hardened C6.5 FABRICATED=80 on a stuffed page | 13 waves: w1 MISS by one check (F135 grading) · w2–w5 layout war · w6 F137 compression by deletion · w7 F138 scratch litter · w8 F139 pacing · w9 two 1-row overlaps · w10 gate PASS first time · w11 F140 engine fault (Firefox ate the commit charge) · w12 census done 26/19/29, 3 pixel regressions (F137 again) · w13 marker | **PASS** — wave 13 (ledger c6-wave13-1788480944748, record #267 accepted: true; 144 tool calls, 2.24h, head 2067de3 "stage c6 complete"): driver verify PASS (369 passed, 349s) at the marker commit; supervisor re-run identical: sealed gate PASS exit 0 (499 PASS / 0 FAIL, zero overlaps on all nine C6.5 surfaces), full suite **2060 passed / 0 failed** (22m26s); authored withheld sweep 2/2 killed (grievance token back to tail → the exact three wave-12 reds; token dropped → 5 failed); tree clean, wave-12 probe litter removed; graderProbes 0/144 |
 
 ## Calibration transcripts
 
@@ -1232,3 +1233,53 @@ one compression. Wave 13 dispatched at BASE c226507: hygiene step 0
 (delete the four probes, restore _probe_c6c.py), put the grievance text
 back without reopening the spill or an overlap, full pass to a file
 under a 1500s cap.
+
+## C6 wave 13 — c6-wave13-1788480944748 (graded 2026-09-03, BASE c226507 → HEAD 2067de3) — **CAMPAIGN PASS**
+
+- 144 tool calls, 156 turns, **2.24h**, exitReason engine_closed_the_turn,
+  **markerSeen true** (2067de3 "stage c6 complete", commit body carries the
+  wire-check tail: 369 passed in 351s). Driver verify **PASS** (exit 0,
+  349s) → ledger **verified: true**; record #267 **accepted: true** — the
+  first fully accepted row of the campaign.
+- Step 0 honored first and alone (b1157ea: git rm _probe_docket/_probe_
+  overlap, delete _probe_cycle/_probe_griev; _probe_c6c.py restored to the
+  section-report form — it runs and prints again: house 474, ladder 762,
+  policies 712, intrigue 780, band end 782, TOTAL regions=18, rule 3 with
+  the guide strip).
+- The fix (5f1b1d7): the grievance token now LEADS each dossier line
+  (`f"  {grievance_str}{k.name}  loyalty ..."`) so it survives the 400px
+  column truncation — the information restored, no space reopened. The
+  brief's "shrink space, never tokens" honored this time.
+- Supervisor grading at 2067de3, tree clean:
+  - **Sealed gate PASS, exit 0** — 499 PASS / 0 FAIL, C6.9 = 0 prior-
+    campaign regressions, overlaps 0 on all nine C6.5 surfaces (House rows
+    149/179/161 vs floor 56).
+  - **Full suite 2060 passed / 0 failed** (1346s). The model's own
+    redirected run agreed (C:\tmp\w13_full.txt: 2060 passed) even though
+    the tool call that started it was cut at 600s (F142/F143 — the cap
+    clamp is fixed in PR #134, lands next engine start).
+  - Authored withheld sweep **2/2 killed** (identity green): token moved
+    back to the line tail → 3 failed (the exact wave-12 reds); token
+    dropped → 5 failed. The derived sweep had nothing to mutate (the diff
+    is string reordering only), so this is hand-authored and recorded as
+    kind=authored.
+- Discipline: no new files in the repo, no test edited, pacing
+  maxCallsWithoutSourceEdit 50 / maxCallsWithoutCommit 119 (vs 196/304 in
+  wave 12), 3 commits. graderProbes 0/144. CodeIndex 2/144 (1.4%).
+  F136: ninth wave, zero phantom paths.
+- Operator side this wave: dashboard read as idle during the 22-minute
+  suite call (F143, fixed PR #134); the F141 idle-engine handoff fired
+  live for the first time — 9161 back 37s after teardown, unattended.
+
+Economics after this wave: C6 = 13 missions, 74.84h local, $6.74
+electricity vs $1141.13 measured-token API equivalent; global ratio $1
+frontier verify oversees ~$1.64 displaced generation.
+
+Verdict: **C6 PASS.** The vertical slice — menu → play → ending, audio,
+settings, a populated House/Powers/Atlas page with zero text collisions,
+26/19/29 controls registered, every committed test green — stands at
+2067de3 under a sealed gate calibrated on 2026-08-28. Thirteen waves,
+74.8 local hours. Remaining debt carried into close-out: legacy tracked
+probes gilded/tests/_probe_{guide,house,sections,t0,w10}.py from earlier
+waves; census-owned layout constants that survived derived sweeps in
+waves 10–12; C6 wave 1–5 thin-test residuals per the F137 class.
