@@ -1,5 +1,7 @@
 // engine/__tests__/llama/processManager.test.ts
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
+import { tmpdir } from 'os'
+import { join } from 'path'
 import {
   buildServerArgs,
   DEFAULT_CTX_SIZE,
@@ -466,6 +468,21 @@ describe('context size, checkpoints and cache-ram move together (F91)', () => {
     expect(cacheRamAt({ ctxSize: 262144 })).toBe(37888)
   })
 
+  it('derives --cache-ram from a supplied checkpoint cost model', () => {
+    // A model twice as expensive per token must ask for more cache.
+    const cheap = { baseMib: 150, kibPerToken: 4, source: 'gguf' as const, detail: 't', globalLayers: 0, localLayers: 0, ssmLayers: 0 }
+    const dear = { ...cheap, kibPerToken: 8 }
+    const a = Number(argValue(buildServerArgs({ modelPath: 'm', port: 1, checkpointCost: cheap }), '--cache-ram'))
+    const b = Number(argValue(buildServerArgs({ modelPath: 'm', port: 1, checkpointCost: dear }), '--cache-ram'))
+    expect(b).toBeGreaterThan(a)
+    expect(a % 1024).toBe(0)
+  })
+
+  it('with no model supplied it derives exactly what the measured default always produced', () => {
+    // 21504 at 131072/32 is the value a real server has been proved to accept.
+    expect(argValue(buildServerArgs({ modelPath: 'm', port: 1 }), '--cache-ram')).toBe('21504')
+  })
+
   it('still lets an operator override the derivation', () => {
     expect(cacheRamAt({ cacheRam: 4096 })).toBe(4096)
     process.env.LOCALCODE_CACHE_RAM = '2048'
@@ -592,5 +609,13 @@ describe('spawn env passthrough (Brain Tier 3)', () => {
     const src = readFileSync(require.resolve('../../llama/processManager.ts'), 'utf-8')
     expect(src).toContain('const env = { ...process.env }')
     expect(src).toMatch(/spawn\(this\.binaryPath, args, \{[\s\S]*?env,[\s\S]*?\}\)/)
+  })
+})
+
+describe('ProcessManager reads the model header for its checkpoint cost', () => {
+  it('falls back to the measured default with a reason when the file is not a GGUF', () => {
+    const pm = new ProcessManager({ binaryPath: 'nope', modelPath: join(tmpdir(), 'does-not-exist.gguf'), port: 1 })
+    expect(pm.checkpointCost.source).toBe('measured-default')
+    expect(pm.checkpointCost.detail).toMatch(/could not read/)
   })
 })

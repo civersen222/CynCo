@@ -1,6 +1,11 @@
 // engine/llama/processManager.ts
 import { type ChildProcess, spawn } from 'child_process'
+import { basename, join } from 'path'
 import { ServerStartError } from './errors.js'
+import { readGgufMeta } from './gguf.js'
+import { checkpointCostFromMeta, derivedCacheRamMib, MEASURED_DEFAULT_COST, type CheckpointCostModel } from './checkpointCost.js'
+import { CheckpointCalibrator } from './checkpointCalibration.js'
+import { cyncoHome } from '../paths.js'
 
 export type ServerConfig = {
   modelPath: string
@@ -22,6 +27,8 @@ export type ServerConfig = {
   cacheTypeK?: string
   cacheTypeV?: string
   chatTemplateKwargs?: Record<string, string | number | boolean>
+  /** Per-architecture checkpoint cost; buildServerArgs derives --cache-ram from it. Default: the measured Qwen3.8 fit. */
+  checkpointCost?: CheckpointCostModel
 }
 
 /**
@@ -40,59 +47,11 @@ export const DEFAULT_CTX_SIZE = 131072
 
 /**
  * A context checkpoint's host-memory cost is AFFINE in the tokens it covers,
- * not proportional to them. Measured 2026-08-18 from llama-server's own
- * `create_check: ... created context checkpoint` lines on this build and model
- * (Qwen3.8-27B-NVFP4-MTP, --flash-attn on, --parallel 1):
- *
- *     22 tokens -> 149.713 MiB
- *  91867 tokens -> 510.234 MiB
- *  93911 tokens -> 518.257 MiB
- *
- * Those three points fit `149.64 MiB + 4.02 KiB/token` to within 0.02 MiB. The
- * fixed part is the hybrid model's recurrent (Gated DeltaNet) state, which is
- * the same size no matter where in the window the checkpoint sits; only the
- * attention KV slice grows with position.
- *
- * This matters because dividing ONE observation by its token count reads the
- * intercept as a slope. The F91 write-up did exactly that — "187.9 MiB at 9757
- * tokens" gives 19.7 KiB/token — and the affine model reproduces that same
- * observation as 187.94 MiB, so both descriptions fit the point they were taken
- * from. They disagree everywhere else: at 104858 tokens the proportional
- * reading predicts 2017 MiB against a measured ~561 MiB, a 3.6x over-estimate.
+ * not proportional to them — see checkpointCost.ts, which now derives the two
+ * terms from the GGUF header (and checkpointCalibration.ts, which measures
+ * them live). The measured constants this file used to carry (149.65 MiB +
+ * 4.02 KiB/token on Qwen3.8-27B) live there as MEASURED_DEFAULT_COST.
  */
-const CHECKPOINT_BASE_MIB = 149.65
-const CHECKPOINT_KIB_PER_TOKEN = 4.02
-
-/** Host memory one context checkpoint costs at the far end of a `ctxSize` window. */
-function worstCheckpointMib(ctxSize: number): number {
-  return CHECKPOINT_BASE_MIB + (ctxSize * CHECKPOINT_KIB_PER_TOKEN) / 1024
-}
-
-/**
- * The host prompt-cache budget (`--cache-ram`, MiB) that a given context and
- * checkpoint count require, rounded up to a whole GiB so the number is legible
- * in the `[llama-cpp] Starting:` line.
- *
- * The rule is: the cache must hold at least ONE complete slot's worth of
- * checkpoints. Below that the cache cannot keep even a single conversation
- * whole, so it evicts the state the checkpoints exist to restore and the
- * mechanism pays its memory cost for nothing.
- *
- * Deriving it from BOTH inputs is the point. F91 was `--ctx-checkpoints` being
- * doubled to 64 while `--cache-ram` sat on llama-server's fixed 8192 MiB
- * default; 753 turns later the server logged "failed to allocate memory for
- * prompt cache state: bad allocation", exited 9, and burned its restart budget.
- * With this derivation that commit would have raised the budget with the count
- * automatically, and the pair cannot be desynchronised by editing one of them.
- *
- * `--cache-ram` is a maximum, not a reservation (llama-server: "set the maximum
- * cache size in MiB"), and it is HOST memory, not VRAM — 21504 MiB at the
- * 131072 default is a ceiling on 63.5 GiB of system RAM, filled lazily.
- */
-function derivedCacheRamMib(ctxSize: number, ctxCheckpoints: number): number {
-  const totalMib = worstCheckpointMib(ctxSize) * ctxCheckpoints
-  return Math.max(1024, Math.ceil(totalMib / 1024) * 1024)
-}
 
 function envInt(name: string): number | undefined {
   const v = process.env[name]
@@ -186,7 +145,7 @@ export function buildServerArgs(config: ServerConfig): string[] {
   const cacheRam = config.cacheRam != null
     ? String(config.cacheRam)
     // string passthrough — value forwarded verbatim, no envInt
-    : process.env.LOCALCODE_CACHE_RAM || String(derivedCacheRamMib(emittedCtxSize, ctxCheckpoints))
+    : process.env.LOCALCODE_CACHE_RAM || String(derivedCacheRamMib(emittedCtxSize, ctxCheckpoints, config.checkpointCost ?? MEASURED_DEFAULT_COST))
   args.push('--cache-ram', cacheRam)
   args.push('--ctx-checkpoints', String(ctxCheckpoints))
   args.push('--checkpoint-min-step', String(config.checkpointMinStep ?? envInt('LOCALCODE_CHECKPOINT_MIN_STEP') ?? 256))
@@ -290,6 +249,8 @@ export type ProcessManagerConfig = {
   cacheTypeK?: string
   cacheTypeV?: string
   chatTemplateKwargs?: Record<string, string | number | boolean>
+  /** Per-architecture checkpoint cost; when unset the manager reads the GGUF header (or a stored calibration). */
+  checkpointCost?: CheckpointCostModel
 }
 
 export class ProcessManager {
@@ -303,11 +264,28 @@ export class ProcessManager {
   onEvalTokPerSec?: (tps: number) => void
   /** Last chat-template validation failure reason, null when OK (P1.8). */
   templateWarning: string | null = null
+  /** The checkpoint cost model this manager derives --cache-ram from. Public so the launch line and tests can name its source. */
+  readonly checkpointCost: CheckpointCostModel
+  private calibrator: CheckpointCalibrator
 
   constructor(config: ProcessManagerConfig) {
     this.binaryPath = config.binaryPath
     this.port = config.port
-    this.baseConfig = config
+    const storeDir = join(cyncoHome(), 'llama')
+    const modelKey = basename(config.modelPath)
+    // Precedence: a calibration measured on THIS machine for THIS file, then the
+    // header-derived model, then the measured default with the reason it applied.
+    let cost = config.checkpointCost ?? CheckpointCalibrator.loadStored(storeDir, modelKey)
+    if (!cost) {
+      try {
+        cost = checkpointCostFromMeta(readGgufMeta(config.modelPath))
+      } catch (e) {
+        cost = { ...MEASURED_DEFAULT_COST, detail: `could not read ${modelKey}: ${e instanceof Error ? e.message : String(e)}` }
+      }
+    }
+    this.checkpointCost = cost
+    this.baseConfig = { ...config, checkpointCost: cost }
+    this.calibrator = new CheckpointCalibrator({ model: cost, modelKey, storeDir, warn: m => console.warn(m) })
   }
 
   isRunning(): boolean {
@@ -387,6 +365,10 @@ export class ProcessManager {
     })
 
     console.log(`[llama-cpp] Starting: ${this.binaryPath} ${args.join(' ')}`)
+    console.log(
+      `[llama-cpp] checkpoint cost: ${this.checkpointCost.baseMib.toFixed(1)} MiB + ${this.checkpointCost.kibPerToken.toFixed(2)} KiB/token ` +
+      `(${this.checkpointCost.source}: ${this.checkpointCost.detail})`,
+    )
 
     // Add llama-server's directory to PATH so CUDA DLLs (cublas, cudart) are found
     const path = require('path')
@@ -411,6 +393,8 @@ export class ProcessManager {
       if (evalMatch && this.onEvalTokPerSec) {
         this.onEvalTokPerSec(parseFloat(evalMatch[1]))
       }
+      // Hold the derived checkpoint cost to what the server actually reports.
+      this.calibrator.observe(line)
     })
 
     // Handle unexpected exit. `spawned` pins the identity of *this* process:
