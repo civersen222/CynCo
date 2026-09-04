@@ -1363,7 +1363,13 @@ function renderToolFeed() {
                   f.status === 'error' ? 'feed-icon-err' : 'feed-icon-run';
     var icon = f.status === 'success' ? '\u2713' :
                f.status === 'error' ? '\u2717' : '\u25cc';
-    var latency = f.latency != null ? f.latency + 'ms' : '';
+    // An in-flight call shows how long it has been running. A 22-minute
+    // pytest under a 25-minute cap used to sit here as a bare hollow circle
+    // while the brain went idle at its 3-minute watchdog -- read from the
+    // browser as "totally idle" (F143). The ticker below re-renders this
+    // every second while anything is running.
+    var latency = f.latency != null ? f.latency + 'ms'
+      : (f.status === 'running' && f.startTime ? 'running ' + formatDuration(Date.now() - f.startTime) : '');
 
     html += '<div class="feed-entry">' +
       '<span class="feed-ts">' + ts + '</span>' +
@@ -2050,6 +2056,18 @@ function fetchSessionState() {
   }
   pollGovernance();
   setInterval(pollGovernance, 3000);
+
+  // F143: while a tool call is in flight the engine streams nothing, so
+  // without this the feed freezes and the brain's watchdog declares idle
+  // three minutes into a legitimate 20-minute test run. Tick the elapsed
+  // time and keep the working indicator armed until tool.complete lands.
+  setInterval(function() {
+    var running = false;
+    for (var i = 0; i < state.toolFeed.length; i++) {
+      if (state.toolFeed[i].status === 'running') { running = true; break; }
+    }
+    if (running) { renderToolFeed(); brainViz.setActive(true); }
+  }, 1000);
 
   // Mission mode: when dispatch launched this engine, show the Mission panel
   // and hide the panels that carry no signal during an unattended run.
