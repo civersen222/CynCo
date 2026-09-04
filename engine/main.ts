@@ -384,7 +384,9 @@ if ((globalThis as any).__llamaProcessManager) {
   pm.onFault = (reason: string) => {
     const event = { type: 'governance.alert' as const, severity: 'critical' as const, source: 'llama-cpp', message: reason }
     dashboardServer?.broadcast(event as any)
-    try { wsServer.emit(event as any) } catch { /* bridge not bound yet: dashboard + log carry it */ }
+    try { wsServer.emit(event as any) } catch (e) {
+      console.log(`[llama-cpp] fault not relayed to the TUI bridge (${e instanceof Error ? e.message : String(e)}); dashboard + log carry it`)
+    }
   }
   delete (globalThis as any).__llamaProcessManager
 }

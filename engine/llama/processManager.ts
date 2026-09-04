@@ -396,7 +396,9 @@ export class ProcessManager {
     if (this.baseConfig.preSpawnCheck) return this.baseConfig.preSpawnCheck()
     const [host, gpu0] = await Promise.all([readHostMemory(), readGpuMemory()])
     let fileBytes = 0
-    try { fileBytes = statSync(this.baseConfig.modelPath).size } catch { /* unknown size -> no VRAM floor */ }
+    try { fileBytes = statSync(this.baseConfig.modelPath).size } catch (e) {
+      console.log(`[llama-cpp] model size unknown (${e instanceof Error ? e.message : String(e)}); no VRAM floor for this check`)
+    }
     const req = spawnRequirementFor({ ctxSize: this.baseConfig.ctxSize ?? DEFAULT_CTX_SIZE, modelFileBytes: fileBytes, cost: this.checkpointCost })
     let check = evaluateSpawn(host, gpu0, req)
     if (check.ok) return check
