@@ -1,0 +1,125 @@
+MISSION C7 WAVE 4 — THE MEMORY, FIRST THIS TIME (the chain half of C7 is
+finished and clean: C7.1, C7.2, C7.2a, C7.3 PASS on both seeds and the
+sealed C1..C6 chain shows zero regressions. Wave 3 spent six hours on one
+fixture test and never touched history. This wave, history comes first and
+the fixture comes last, time-boxed, with the diagnosis handed to you.
+8 hours, 2000 iterations.)
+
+Repo: C:\Users\civer\civkings
+BASE: 6b9caef  (wave-3 head. Full suite 1 failed / 2065 passed. KEEP-GREEN
+set, run before EVERY commit:
+python -m pytest gilded/tests/test_c7_branching.py gilded/tests/test_c7_chain_beats.py gilded/tests/test_c7_bands.py gilded/tests/test_event_chains.py gilded/tests/test_saga_director.py gilded/tests/test_c1_visibility.py gilded/tests/test_c6_contract.py gilded/tests/test_c6c_layout.py gilded/tests/test_ui_broadsheet.py gilded/tests/test_ui_actions.py gilded/tests/test_house_opinion_ui.py gilded/tests/test_house_tab_grievances.py gilded/tests/test_house_tab_pixel_visual.py gilded/tests/test_heir_controls.py -q)
+
+STEP 0 — CLEAN UP WAVE 3 (first 15 calls, one commit, nothing else in it)
+
+  git rm gilded/tests/test_zz_probe.py — its own docstring says "TEMPORARY
+  probe file; deleted before the fix commit". It was committed and is being
+  collected by the suite. Probes live under C:\tmp.
+  Then look at 667299c: it removed the chassis turn>=1 guard around
+  chain_manager.tick as an "experiment (in flight)". Decide it: either the
+  guard is needed (chains must not touch state at generation time — restore
+  it and say why in the commit) or it is not (say why). Do not leave an
+  experiment in the tree. COMMIT 0.
+
+THE WORK — HISTORY (this is the campaign; do these before anything else)
+
+1. CHARACTERS ACCUMULATE HISTORY. Add Character.history: a list of entries
+   (turn: int, kind: str, text: str, refs: dict), turn = game.turn when it
+   happened, kind in {chain, ruling, scheme, marriage, court, secret, death,
+   ambition}. Append from every chain step for the characters in its ctx
+   (the `_char`, `heir`, `subject`, `target` slots); from docket rulings for
+   the executor and the petitioner; from schemes.py outcomes; marriages;
+   court appointments and dismissals; secrets revealed; kin deaths.
+   The sealed gate cross-checks EVERY entry: an entry at turn T counts only
+   if some beat on game.beats.log at turn T names that character — so write
+   the history entry in the SAME code path that emits the beat, and make
+   the beat text carry the character's name. Targets on seed 42 after 70
+   turns: >= 60% of living player-house characters have >= 1 entry; the
+   ruler has >= 5; every entry's turn is in [1, game.turn]. COMMIT 1 with
+   gilded/tests/test_c7_history.py pinning exactly those three numbers on
+   seed 42 (and run seed 7 too — the gate does).
+2. HISTORY IS DRAWN. The House tab draws the ruler's last 3 (or more)
+   history lines — inside the band (test_c6c_layout::
+   test_house_overview_fits_band), zero overlaps (test_c6_contract::
+   test_no_text_overlap and test_turn40_house_tab_zero_overlaps), type scale
+   kept (smallest named step 12). The gate render-captures them: the first
+   three words of each entry must appear in a string pygame actually
+   rendered while drawing the House tab. COMMIT 2 with a render assertion
+   added to test_c7_history.py.
+3. THE EPILOGUE REMEMBERS. endings.judge(game, house).text must name at
+   least 2 characters who have history and quote at least one entry's text
+   (>= 20 characters verbatim). COMMIT 3 with test_c7_epilogue.py.
+4. FULL PASS, TIME-BOXED. Bash cap is 1500s. Run EXACTLY:
+     python -m pytest gilded/tests -q --tb=short > C:\tmp\c7w4_full.txt 2>&1; Get-Content C:\tmp\c7w4_full.txt -Tail 15
+   Expect exactly one red: the fixture below. Everything else must be green.
+
+THE FIXTURE — LAST, AND WITH THE DIAGNOSIS (time box: 90 tool calls; if it
+is not green by then, commit what you learned in the message and STOP)
+
+  FAILED gilded/tests/test_agenda.py::test_r5_dominion_backed_by_industry
+    AssertionError: Fixture premise broken: industry == intrigue
+    assert 11 != 11
+
+  Read the test (gilded/tests/test_agenda.py, `_fixture_game` at :184):
+  `GildedGame(seed=5)` advanced to turn 13 with NO player rulings, so every
+  petition on every docket is resolved by the AI path. That path draws from
+  the SHARED stream: docket.py:1074 `game.rng.random() >= chance`,
+  docket.py:1081 and :1123 `RulingContext(..., game.rng, ...)`. Your chain
+  petitions now sit on those dockets, and your own resolver draws from the
+  same stream: event_chains.py:196 passes `game.rng` into the ruling
+  context. Every extra draw shifts every later random outcome — the court
+  that has formed at Duval-Corse by turn 13 is different, and its industry
+  stat lands on 11 instead of 12. Your wave-3 probes said the same thing:
+  "divergence traced to shared game.rng stream shift from chain petitions
+  occupying docket slots".
+  The fix is the rule the saga Director already follows ("a dedicated rng
+  (never game.rng)", gilded/saga/director.py:24): everything on the chain
+  path — chain resolution, chain-petition unattended resolution, any chance
+  roll a chain step makes — uses a chain-local `random.Random(game.seed ^
+  0xC7A1)` (or a per-chain sub-stream from `_gen_seed`), never `game.rng`.
+  Chain petitions must not enter docket.py's game.rng-consuming AI branch
+  at all (docket.py:1101 already special-cases domain "chain" — make sure
+  no draw happens on that branch). When the shared stream is untouched by
+  chains, seed 5 at turn 13 is the world the fixture describes and the
+  test is green WITHOUT editing it. Then re-run the KEEP-GREEN set and
+  test_c7_branching: the three branching chains must still diverge. COMMIT 4.
+  Do NOT edit test_agenda.py.
+
+5. WIRE-CHECK (KEEP-GREEN set plus test_c7_history.py and
+   test_c7_epilogue.py), passing tail in the final commit message.
+
+PACING (orders; wave 3 went 603 calls without a commit on one test)
+- 40 tool calls without an Edit = STOP investigating. Write the hypothesis
+  into a commit message on the smallest edit that tests it.
+- 30 calls past your last commit with no instrument green = make the
+  smallest edit that moves one number and commit that.
+- The fixture's 90-call time box is absolute. History is the campaign; the
+  fixture is a regression you caused and the diagnosis is above.
+- Probes live under C:\tmp, never in the repo. No test_zz_*.py, ever.
+
+RULES
+- NO downloads. NO new files inside the repo except gilded/tests/test_c7_*.py
+  and content modules under gilded/society/event_content/.
+- You may change: gilded/society/event_chains.py, event_engine.py,
+  event_content/*, characters.py, schemes.py, marriages.py, court.py,
+  succession.py, gilded/chassis.py (tick/emit lines only), gilded/docket.py,
+  gilded/endings.py, gilded/ui/house_tab.py, gilded/ui/broadsheet.py. NOT
+  gilded/beats.py, gilded/ambitions.py, gilded/agenda.py, or any C1..C6
+  surface.
+- Deterministic per seed: no game.rng anywhere on the chain path (see the
+  fixture section — this is now a rule, not a preference).
+- Do not weaken, skip or mark any committed test, census number, floor, or
+  the type scale. Do not edit test_agenda.py, test_c6_contract.py,
+  test_c6c_layout.py, test_ui_broadsheet.py, test_ui_actions.py,
+  test_c1_visibility.py, test_event_chains.py or test_saga_*.py.
+- Use the CodeIndex tool FIRST for every symbol lookup before any Grep/Read
+  crawl.
+
+DONE WHEN
+python -m pytest gilded/tests -q passes with ZERO failures, >= 60% of the
+House carries history with the ruler at >= 5, the ruler's history is drawn
+on the House tab, the epilogue names two people and quotes one memory, the
+three branching chains still diverge, and the tree is clean. Then make a
+final commit whose message contains exactly this marker:
+
+stage c7 complete
