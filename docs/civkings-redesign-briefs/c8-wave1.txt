@@ -1,0 +1,185 @@
+MISSION C8 WAVE 1 — PRESENTATION (the roadmap line: "Map/art pass, portraits,
+transitions, ambient music bed per act". C7 closed at 1d03308 with the sealed
+gate green through C1..C7 and 2070 tests. This wave delivers all four
+presentation pieces. 8 hours, 2000 iterations, Bash cap 1500 s.)
+
+Repo: C:\Users\civer\civkings
+BASE: 1d03308  ("stage c7 complete"). KEEP-GREEN set, run before EVERY commit:
+python -m pytest gilded/tests/test_c8_*.py gilded/tests/test_atlas*.py gilded/tests/test_ui_broadsheet.py gilded/tests/test_ui_actions.py gilded/tests/test_house_tab_pixel_visual.py gilded/tests/test_c6_contract.py gilded/tests/test_c6c_layout.py gilded/tests/test_c1_visibility.py gilded/tests/test_audio*.py gilded/tests/test_c7_history.py gilded/tests/test_c7_epilogue.py -q
+
+ASSETS ARE ALREADY STAGED — NO DOWNLOADS. The user approved and pre-staged
+every file you need under C:\Users\civer\.cynco\staged-assets\c8\ :
+  portraits\man_01.jpg .. man_24.jpg, woman_01.jpg .. woman_12.jpg  (public-
+    domain 19th-century engravings, 600–960 px wide JPEG; manifest.json has
+    title/source/licence per file) and portraits\manifest.json
+  music\act1_calm.flac (Bach, Goldberg Aria, 292 s), act2_tense.flac (Chopin
+    op.10 no.12 "Revolutionary"), act3_grand.flac (Chopin op.25 no.12
+    "Ocean") — Musopen public-domain recordings; music\manifest.json
+  LICENSES.md — the combined licence list; copy its portrait section to
+    gilded/assets/portraits/LICENSES.md and its music section into
+    gilded/assets/audio/LICENSES.md (the existing file: append, keep the
+    current entries).
+pygame here loads FLAC (SDL_mixer 2.8) and JPEG directly; there is no ffmpeg.
+Copy the files into the repo with Copy-Item; do not re-encode, do not fetch.
+
+THE MISSES (sealed gate at BASE, verbatim — the gate grades pixels, drawn
+regions pressed at their centres, files on disk, and values the game
+returns; never a claim)
+
+  C8.1a.tiers-pressable: FAIL tiers drawn+pressed=[] errors=["no drawn zoom control for 'continent'", "no drawn zoom control for 'region'", "no drawn zoom control for 'parish'"] zoom_controls=[]
+  C8.1b.tiers-differ: FAIL map pixel difference between tiers={} floor=0.05
+  C8.1c.tier-legends: FAIL parish legend has ('city', 'regiment', 'strike')? [False, False, False] continent legend has ('capital',)? [False]
+  C8.2a.portraits-drawn: FAIL portrait regions on House=0 (floor 6) smallest=0px^2
+  C8.2b.portraits-distinct-and-stable: FAIL min pairwise pixel difference=1.000 (floor 0.1) identical-on-redraw=0/0
+  C8.2c.portrait-pool-licensed: FAIL images under gilded/assets/portraits=0 (floor 24) LICENSES.md=False
+  C8.3a.transition-frames: FAIL gilded.ui.transitions.frames absent or raised: ModuleNotFoundError: No module named 'gilded.ui.transitions'
+  C8.3b.transitions-wired: FAIL after tab press view.last_transition=None err=None; after End Turn=None err=no end_turn region
+  C8.4a.act-beds-on-disk: FAIL missing=['ambient_act1', 'ambient_act2', 'ambient_act3'] files=0/3 distinct=0 lengths_s=[] (floor 60.0)
+  C8.4b.bed-follows-the-act: FAIL ambient_event_for at turns 5/30/60={'error': "AttributeError: module 'gilded.audio' has no attribute 'ambient_event_for'"}
+  C8.4d.beds-licensed: FAIL three distinct bed files=[] named in gilded/assets/audio/LICENSES.md: []
+  C8.5.palette.House: FAIL pixels within 24/channel of a pinned ink at t40 = 0.919 (floor 0.95)
+  C8.5.palette.Powers: FAIL pixels within 24/channel of a pinned ink at t40 = 0.933 (floor 0.95)
+  C8.5.palette.Atlas: FAIL pixels within 24/channel of a pinned ink at t40 = 0.640 (floor 0.9)
+
+  Already PASS at BASE and must stay so: C8.4c (audio.play returns False when
+  Settings(mute=True)), C8.5.river-reserved (zero exact-RIVER pixels on the
+  Atlas), and C8.9 = the whole C1..C7 sealed chain (every committed census,
+  overlap, fits_band, type-scale and accent test).
+
+HOW THE GATE MEASURES — build to these definitions exactly
+
+  Game = new_app_state(seed=42); tabs are shown by setting view.tab (and the
+  gate also tries active_tab/current_tab); a draw is view.regions cleared +
+  view.draw(screen); a press is view.handle_click(region.rect.center) then
+  gilded.ui.app._apply_action(state, action).
+
+  C8.1 ZOOM TIERS. On the Atlas tab the draw registers three Regions with
+  group="atlas_zoom" and action={"zoom": "continent"} / {"zoom": "region"} /
+  {"zoom": "parish"}. Pressing one sets view.atlas_tier to that string and
+  the next draw paints THAT tier. Measured: the content band
+  Rect(0,160,W,H-200) must differ between every pair of tiers on >= 5% of
+  its pixels (per-channel diff > 24). The legend must render (through
+  pygame.font.Font.render, so real text) tier words: at Parish the legend
+  rows include the words "city", "regiment" and "strike"; at Continent the
+  word "capital". This is the map law's tiered world: Continent = houses
+  and their capitals (fills + capital glyph, no province labels); Region =
+  today's map (endowments, rails, fronts, labels); Parish = the province
+  level — cities sized by population, regiments where armies stand, strike
+  marks where labour is out, plus rails and fronts. Selection, province
+  labels and every existing Atlas test keep working at the Region tier,
+  which stays the default so C1..C7 are unchanged.
+
+  C8.2 PORTRAITS. On the House tab at t0 the draw registers >= 6 Regions
+  with group="portrait" and action={"portrait": <character id>}, each rect
+  >= 48x48 px, and inside each rect a real portrait image is blitted (scaled
+  to fit, engraving intact). Measured: the crop of any two portrait rects
+  differs on >= 10% of pixels; a second draw reproduces each crop EXACTLY
+  (identical-on-redraw). gilded/assets/portraits/ holds >= 24 image files
+  plus LICENSES.md. Provide gilded/ui/portraits.py with
+  portrait_for(character) -> absolute path, deterministic from the
+  character's stable id/name (never game.rng), choosing man_* / woman_*
+  by the character's sex when the model has one; cache loaded Surfaces.
+  Put the portrait ON the existing court cards (house_tab.py court seats /
+  court_cards) — no new panel, no overlap (test_no_text_overlap and
+  test_turn40_house_tab_zero_overlaps stand).
+
+  C8.3 TRANSITIONS. New module gilded/ui/transitions.py with
+  frames(src: pygame.Surface, dst: pygame.Surface, steps: int) ->
+  list[pygame.Surface]: exactly `steps` frames, deterministic; frames[0]
+  within 5% of src, frames[-1] within 5% of dst, the middle frame differs
+  from BOTH ends on >= 5% of pixels (a cross-fade via per-frame alpha does
+  this; a wipe also works). Wiring: when a tab Region (group="tabs") is
+  pressed the view sets view.last_transition = {"kind": "tab", "steps": N}
+  with N >= 4, and when the End Turn Region (action {"end_turn": True}) is
+  pressed it sets {"kind": "end_turn", "steps": N}. The app loop
+  (gilded/ui/app.py) must actually PLAY those frames between the old and
+  new page at the frame clock (a test with a fake clock proves the frames
+  are drawn in order); headless tests need no timing.
+
+  C8.4 AMBIENT BED PER ACT. gilded/audio.py: SOUND_EVENTS gains
+  "ambient_act1" -> "act1_calm.flac", "ambient_act2" -> "act2_tense.flac",
+  "ambient_act3" -> "act3_grand.flac" (files copied into
+  gilded/assets/audio/); audio.resolve(event) returns their paths; each
+  loads in pygame.mixer.Sound with get_length() >= 60 s and the three
+  sha256 differ. New audio.ambient_event_for(game) -> str returns
+  "ambient_act1" for turns 0–25, "ambient_act2" for 26–50, "ambient_act3"
+  for 51+ (the act bands C7 fixed). The running game switches the bed when
+  the act changes (hook on end_turn), keeps looping it, and play() still
+  returns False under Settings(mute=True). gilded/assets/audio/LICENSES.md
+  names all three files with their Musopen/Commons sources.
+
+  C8.5 THE ART PASS. At t40 on seed 42, the fraction of screen pixels
+  within 24/channel of one of the 13 pinned inks in gilded/ui/palette.py
+  must be >= 0.95 on House, >= 0.95 on Powers, >= 0.90 on Atlas (today
+  0.919 / 0.933 / 0.640). The Atlas is the work: OCEAN_COLOR, BORDER_COLOR,
+  NAME_COLOR, GLYPH_COLOR, FRONT_COLOR, MINOR_COLOR, the owner fills and
+  the neutral rail slate in gilded/ui/widgets.py / atlas_view.py must
+  become pinned inks (ocean = SLATE or FIELD, fills from SAGE / WHEAT /
+  CARD / FIELD / PAPER, borders INK / INK2 / DIM, labels INK on a CARD
+  plate, glyphs INK). Houses are told apart by hatching / border weight /
+  the capital glyph, not by new hues — Banknote is an engraving, not a
+  paint box. RIVER stays reserved (zero exact-RIVER pixels anywhere on the
+  Atlas). Portraits are exempt from nothing: their pixels count, so plate
+  them on CARD and keep them <= the size the card allows. Do NOT add a hex
+  to palette.py; the 13 inks are the palette.
+
+THE WORK (numbered commit points — commit AT each; a commit is the only
+backup you have)
+
+1. ASSETS IN. Copy the 36 portraits + portrait LICENSES section to
+   gilded/assets/portraits/, the three FLACs to gilded/assets/audio/ and
+   append the music section to gilded/assets/audio/LICENSES.md. Add
+   SOUND_EVENTS entries and ambient_event_for. Test test_c8_audio.py asserts
+   the gate's definitions (3 distinct files, >= 60 s each, band picks at
+   turns 5/30/60, mute). COMMIT 1.
+2. PORTRAITS on the court cards + portraits.py + test_c8_portraits.py
+   (>= 6 portrait regions on House at t0 seed 42, pairwise crop difference
+   >= 0.10, identical on redraw, zero overlaps). COMMIT 2.
+3. TRANSITIONS: transitions.py + view.last_transition on tab / End Turn
+   presses + app loop plays frames; test_c8_transitions.py asserts the
+   frame contract and the wiring. COMMIT 3.
+4. ZOOM TIERS: atlas_zoom regions, view.atlas_tier, three draw paths,
+   tier legends; test_c8_tiers.py asserts the three pairwise pixel
+   differences >= 0.05 and the legend words. COMMIT 4.
+5. ART PASS: re-ink widgets.py / atlas_view.py to the pinned inks;
+   test_c8_palette.py asserts the three compliance floors and RIVER == 0
+   at t40 seed 42 using the gate's exact metric (min over inks of the
+   per-channel max distance <= 24). COMMIT 5.
+6. FULL PASS. Run EXACTLY:
+     python -m pytest gilded/tests -q --tb=short > C:\tmp\c8w1_full.txt 2>&1; Get-Content C:\tmp\c8w1_full.txt -Tail 15
+   Zero failures. Then the KEEP-GREEN set, passing tail in the final
+   commit message.
+
+PACING (orders)
+- 40 tool calls without an Edit = STOP investigating. Write the hypothesis
+  into a commit message on the smallest edit that tests it.
+- 30 calls past your last commit with no instrument green = make the
+  smallest edit that moves one number and commit that.
+- Probes live under C:\tmp, never in the repo. No scratch snapshots.
+
+RULES
+- NO downloads. New files inside the repo ONLY: gilded/ui/transitions.py,
+  gilded/ui/portraits.py, gilded/tests/test_c8_*.py, and the copied assets
+  under gilded/assets/portraits/ and gilded/assets/audio/.
+- You may change: gilded/ui/atlas_view.py, widgets.py, broadsheet.py,
+  house_tab.py, house.py, app.py, registry.py (legend rows only),
+  gilded/audio.py, gilded/settings.py. NOT gilded/ui/palette.py hexes, NOT
+  the sim (gilded/society/*, chassis.py, beats.py, endings.py), NOT any
+  C1..C7 test.
+- Deterministic per seed; no game.rng on any presentation path.
+- Do not weaken, skip or mark any committed test, census number, floor, or
+  the type scale. Accent law stands: VERMILLION marks consequence only
+  (<= 5 per screen), GOLD marks the player only.
+- Use the CodeIndex tool FIRST for every symbol lookup before any Grep/Read
+  crawl.
+
+DONE WHEN
+python -m pytest gilded/tests -q passes with ZERO failures; on seed 42 the
+Atlas has three pressable tiers that draw three different maps with tier
+legends, the House shows >= 6 distinct deterministic engraved portraits on
+the court cards, tab switches and End Turn record and play a >= 4-frame
+transition, three distinct minute-plus beds follow the act, House/Powers/
+Atlas sit on the pinned inks at 0.95/0.95/0.90, RIVER untouched, tree clean.
+Then make a final commit whose message contains exactly this marker:
+
+stage c8 complete
