@@ -1416,3 +1416,37 @@ and graded; what remains is memory (history, its rendering, the epilogue),
 one overlap and one fixture. Wave 3 dispatched at BASE f94ac9a with the two
 reds first, then history → House tab → epilogue.
 
+## C7 wave 3 — c7-wave3-1788556092554 (graded 2026-09-05, BASE f94ac9a → HEAD 6b9caef)
+
+- 1217 tool calls, 1339 turns, exitReason **timeout** (29201s); driver check
+  PASS (advisory). 3 commits. **Zero dashboard git-poll timeouts** — the
+  F144 fix's first live run (728 in wave 2).
+- Gate at 6b9caef: **C7.1, C7.2, C7.2a, C7.3 PASS on both seeds and C7.9
+  PASS — 0 prior-campaign regressions.** The wave-2 overlap is fixed
+  (2673bf5: the compact petition pass honours the caller's bottom limit) and
+  pinned by test_turn40_house_tab_zero_overlaps. The event-chain half of C7
+  is complete and clean.
+- Remaining fails: **C7.4/5/6 by absence, both seeds** — no
+  Character.history was attempted. After its first-hour fix the wave spent
+  ~6 hours on test_agenda::test_r5_dominion_backed_by_industry (`Fixture
+  premise broken: industry == intrigue; assert 11 != 11`, red since wave 1)
+  — maxCallsWithoutCommit **603** — and committed two probe checkpoints:
+  667299c removes the chassis turn>=1 chain-tick guard as an "experiment"
+  left in place, and gilded/tests/test_zz_probe.py ("TEMPORARY probe file;
+  deleted before the fix commit") was never deleted — F138 recurrence, and
+  a probe inside the collected suite.
+- Full suite **1 failed / 2065 passed** (r5 only).
+- Derived sweep 6/22 vs green owners; survivors are the compact petition
+  layout constants (broadsheet.py:1482–1543). graderProbes 1/1217
+  (`bytecode` on a C:	mp diff probe over the model's own checkouts; not
+  grader contact). CodeIndex 21/1217 (1.7%).
+
+Economics after this wave: C7 = 3 missions, 24.27h local, $2.18 electricity
+vs $462.04 measured-token API equivalent; global ratio $1 frontier verify
+oversees ~$1.52 displaced generation.
+
+Verdict: MISS on timeout — the chains are done; the memory was never started
+because one fixture ate the day. Wave 4 dispatched at BASE 6b9caef with the
+order inverted: history FIRST (it is the campaign), the r5 fixture LAST and
+time-boxed, with the supervisor's own diagnosis of r5 in the brief.
+
