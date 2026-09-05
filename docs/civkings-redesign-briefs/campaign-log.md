@@ -1450,3 +1450,45 @@ because one fixture ate the day. Wave 4 dispatched at BASE 6b9caef with the
 order inverted: history FIRST (it is the campaign), the r5 fixture LAST and
 time-boxed, with the supervisor's own diagnosis of r5 in the brief.
 
+## C7 wave 4 — c7-wave4-1788587509773 (graded 2026-09-05, BASE 6b9caef → HEAD 5e09faa)
+
+- 803 tool calls, 825 turns, **6.6h** — the run ended itself: marker
+  `stage c7 complete` committed at 5e09faa, driver check PASS, 10 commits,
+  tree clean. Step 0 honored (test_zz_probe.py removed; the turn>=1 guard
+  restored WITH the reason: a turn-0 chain step can mutate character state
+  at generation time). Zero git-poll timeouts.
+- **The marker was early. Sealed gate at 5e09faa: MISS (3 fails)** — the
+  model's own tests are green; the gate's definitions are stricter:
+  - C7.1, C7.2, C7.2a, C7.3 PASS ×2; **C7.5.drawn PASS ×2** (6/8 and 7/8 of
+    the ruler's history lines render-captured on the House tab);
+    **C7.4.history.s7 PASS** (coverage 1.00, 64 entries, all echoed by a beat
+    that turn); **C7.9 PASS**, 0 prior-campaign regressions.
+  - `C7.4.history.s42: FAIL coverage=0.47 (floor 0.6) ruler_entries=8
+    entries=55 echoed_by_a_beat=55` — the kin and courtiers no chain or
+    ruling touches have no history source on seed 42.
+  - `C7.6.epilogue.s42: FAIL characters-with-history named in
+    epilogue=['Bjorn Ashworth'] history-text-quoted=False`;
+    `C7.6.epilogue.s7: FAIL ... named=['Wei Ashworth'] history-text-quoted=True`
+    — one name where two are required; the "alphabetical max/min" picker
+    resolves to one person or a person without history.
+- Full suite **1 failed / 2069 passed** (test_agenda r5). **The model stopped
+  at the 90-call time box and refuted the brief's diagnosis by experiment**
+  (1a6b273: chains fully off vs on → industry 11 in both). Supervisor bisect
+  confirms: green at 2067de3, red from a665124; at 2067de3 with
+  ChainManager.tick disabled the stat is already 11 — the premise depended on
+  the original chains' side-effects. **F145** (supervisor error: a root cause
+  stated as fact without the probe). Wave 5 authorises editing the premise
+  lines of that one test to set the stats it asserts.
+- Derived sweep **12/25 killed** (campaign best); the 13 survivors are the
+  epilogue quoting thresholds (endings.py:176–186) and history dedup
+  (characters.py:310–314) — exactly where the gate's two misses live.
+  graderProbes 0/803. CodeIndex 10/803 (1.2%).
+
+Economics after this wave: C7 = 4 missions, 30.89h local, $2.78 electricity
+vs $560.27 measured-token API equivalent; global ratio $1 frontier verify
+oversees ~$1.49 displaced generation.
+
+Verdict: MISS by three lines — seed-42 coverage 47% vs 60%, and an epilogue
+that names one instead of two. Wave 5 dispatched at BASE 5e09faa with the
+gate's exact counting rules in the brief, plus the authorised fixture repair.
+
