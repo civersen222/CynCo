@@ -11,6 +11,7 @@ Gates (sealed, outside repo): `~/.cynco/heldout/civkings-redesign/c<N>/`
 | C4 — one living UI | 4c67cae | 05ea014c667311c7 | clean MISS (surface fails only, chain green) | claims-vs-pixels discriminators FAIL (TABS mutants + one-tier hedge) | wave 1 MISS (206 turns, head a731d57) · wave 2 VOID (harness failure F130) · wave 3 LANDED at the 1200-iteration budget | **PASS** — wave 3 (ledger c4-wave3-1787791284792): driver verify PASS all four sections at 3fc2de9; supervisor re-run identical; perturb MISS via G4.2a.one_tier; markerSeen:false is bookkeeping (budget landed during post-green polish); F131 filed (engine undead 7.3h post-verdict); first measured tokenStats (32:1 cached:prefill); sweep 7/25 killed (record #245, 18 UI-draw survivors, thin-UI-tests class) |
 | C5 — the world is big | 3fc2de9 | 0c4e6b30c2178a22 | clean MISS (10 fails, all C5-only: gentry ×3, provinces ×3, events ×3, mobility; houses/perf green, C1-C4 chain green) | counts-only cheat stub: s*.G5.1a.gentry/provinces PASS as designed, MISS (4 fails) via s*.G5.2a.events ×3 + G5.2a.mobility — the gate cannot be passed by counts | wave 1 MISS (ledger c5-wave1-1787844497777, 685 turns, 6h timeout, head 35050f9: whole C5 surface GREEN — 194-201 provinces, 24 gentry, 56-58 gentry beats/seed, mobility in all 3 seeds, perf 11.7ms/30.6 — but head not self-contained (F132: GENTRY_SURNAMES uncommitted, clean checkout dies on ImportError) and ONE chain regression G3.4a.deflection seed 3) · wave 2 LANDED (ledger c5-wave2-1787866792826, 112 turns, head c2ffb12: sealed chain GREEN end-to-end, G5.4a 0 regressions; deflection root cause = older order goal on the same target shadowed the fresh one; first live F131 teardown + dirtyAtVerify=0) BUT committed suite red: 152 failed/1893 passed vs 10 failed/2026 passed at BASE (F133 — wave 1 broke ~142, war layer) · wave 3 dispatched (c5-wave3.txt, BASE c2ffb12, sealed suite-gate gate_c5s.py, marker "campaign c5 suite green") | **PASS** — wave 3 (ledger c5-wave3-1787875895222, 581 turns, head fd5414d): suite 2046 passed / 0 failed (from 152 failed), 14 adapt commits + 1 real game-bug fix (under-construction enterprise charged input costs), driver verify + hand re-run identical (S.count/S.skip/S.chain all PASS, full C1-C5 chain green); visual: 194-province map + gentry rise/fall/board beats in Gazette; F131 residual (socket-closed-but-alive) found + reconnect-probe fix validated live; campaign-final sweep 4/25 killed (21 survivors = gentry-tick tuning dials, thin-tests class) |
 | C6 — the vertical slice | 36fddfd | 38c7f8595fc34874 (hardened pre-wave-2 at be130a7) | clean MISS (20 fails, all by absence: start="menu" not accepted, gilded.audio absent, text_rows absent, no menu-started game; zero gate errors; C6.9 = 0 prior-campaign regressions) | perturb (fake menu, dead press, ghost audio, diskless settings) flips ONLY C6.1a/1b; every discriminator still FAILs; hardened C6.5 FABRICATED=80 on a stuffed page | 13 waves: w1 MISS by one check (F135 grading) · w2–w5 layout war · w6 F137 compression by deletion · w7 F138 scratch litter · w8 F139 pacing · w9 two 1-row overlaps · w10 gate PASS first time · w11 F140 engine fault (Firefox ate the commit charge) · w12 census done 26/19/29, 3 pixel regressions (F137 again) · w13 marker | **PASS** — wave 13 (ledger c6-wave13-1788480944748, record #267 accepted: true; 144 tool calls, 2.24h, head 2067de3 "stage c6 complete"): driver verify PASS (369 passed, 349s) at the marker commit; supervisor re-run identical: sealed gate PASS exit 0 (499 PASS / 0 FAIL, zero overlaps on all nine C6.5 surfaces), full suite **2060 passed / 0 failed** (22m26s); authored withheld sweep 2/2 killed (grievance token back to tail → the exact three wave-12 reds; token dropped → 5 failed); tree clean, wave-12 probe litter removed; graderProbes 0/144 |
+| C7 — content depth | 2067de3 | d8d3d9458101e838 (resealed twice: C7.3 keyed by chain after w2; C7.6 all-characters + distinct names after w5) | clean MISS (12 fails, all by absence: 9 chain beats = the C6 teaser only, 12-def library as gazette prose, no Character.history, no chain petition, epilogue names nobody) | perturb (ghost chain beats, padded 18-def library, no-op two-option petition, fabricated turn-0 histories): MISS 12, zero flips — ghosts named, no divergence, echoed_by_a_beat=0 | 5 waves: w1 1200-cap, C7.1/7.2/7.2a green · w2 branching green, deflection regression fixed · w3 overlap fixed, wave lost to the r5 fixture · w4 history built, marker early (s42 coverage 0.47, epilogue 1 name), F145 · w5 marker | **PASS** — wave 5 (ledger c7-wave5-1788613255404, record #272 accepted: true; 95 tool calls, 1.47h, head 1d03308 "stage c7 complete"): sealed gate PASS with 0 FAIL lines (17–19 library chains as manager-armed beats/seed, 23 defs, all act bands, 3 branching chains diverging downstream and in the sim, history coverage 0.93/1.00 with every entry echoed by a beat, ruler history render-captured on the House tab, epilogue names 4/2 remembered characters and quotes one, C7.9 = 0 regressions); full suite **2070 passed / 0 failed**; sweep 2/7 |
 
 ## Calibration transcripts
 
@@ -1287,7 +1288,7 @@ waves 10–12; C6 wave 1–5 thin-test residuals per the F137 class.
 ## Campaign C7 — content depth (calibrated 2026-09-04)
 
 BASE: 2067de3 (C6 PASS head). Gate: `~/.cynco/heldout/civkings-redesign/c7/`
-(gate_c7.py sha256 c478da5460ad5355 — resealed 2026-09-04 after wave 2 from 043e8e9d8fa2e571: C7.3 keys the two-run comparison by chain instead of (turn, chain), since a diverged world files later petitions on different turns; BASE recalibrated on a detached worktree via CYNCO_GATE_REPO → clean MISS 12 by absence. Earlier reseal from 6b17d79f05d62e6a: C7.9 now runs gate_c6 in a fresh interpreter because in-process exec left every C6.5 row FABRICATED (gate_c6's font capture must precede the gilded import); perturb_c7.py). Spec (local):
+(gate_c7.py sha256 d8d3d9458101e838 — resealed 2026-09-05 after wave 5 from c478da5460ad5355: C7.6 counts ALL characters with history (the contract's words; the living-only filter from C7.4 had leaked in) and distinct full names; BASE recalibrated → clean MISS 12 by absence. Earlier: resealed 2026-09-04 after wave 2 from 043e8e9d8fa2e571: C7.3 keys the two-run comparison by chain instead of (turn, chain), since a diverged world files later petitions on different turns; BASE recalibrated on a detached worktree via CYNCO_GATE_REPO → clean MISS 12 by absence. Earlier reseal from 6b17d79f05d62e6a: C7.9 now runs gate_c6 in a fresh interpreter because in-process exec left every C6.5 row FABRICATED (gate_c6's font capture must precede the gilded import); perturb_c7.py). Spec (local):
 docs/superpowers/specs/2026-09-04-civkings-c7-content-depth-design.md.
 Brief: c7-wave1.txt.
 
@@ -1491,4 +1492,46 @@ oversees ~$1.49 displaced generation.
 Verdict: MISS by three lines — seed-42 coverage 47% vs 60%, and an epilogue
 that names one instead of two. Wave 5 dispatched at BASE 5e09faa with the
 gate's exact counting rules in the brief, plus the authorised fixture repair.
+
+## C7 wave 5 — c7-wave5-1788613255404 (graded 2026-09-05, BASE 5e09faa → HEAD 1d03308) — **CAMPAIGN PASS**
+
+- 95 tool calls, 104 turns, **1.47h**, 4 commits, marker at 1d03308, tree
+  clean, driver check PASS → verified true; record #272 **accepted: true**.
+  maxCallsWithoutSourceEdit 23 — the tightest wave of the campaign.
+- Commits: (1) `tick_memory` gives every living character the beat log
+  names this turn one memory quoting that beat (coverage 0.93 on seed 42,
+  1.00 on seed 7); (2) the epilogue names two distinct remembered characters
+  and quotes `entry.text[:20]` verbatim on both seeds; (3) the r5 fixture
+  pins the Duval-Corse court stats it asserts (authorised after F145); (4)
+  marker.
+- **Sealed gate at 1d03308: PASS, 0 FAIL lines.** C7.4 `coverage=0.93
+  ruler_entries=9 entries=81 echoed_by_a_beat=81` (s42) / `1.00, 72/72` (s7);
+  C7.5 6/9 and 7/9 ruler lines render-captured; C7.6 `named=['Alexios
+  Ashworth', 'Bjorn Ashworth', 'Thea Ashworth', 'Wei Vantrell']
+  history-text-quoted=True` (s42), `['Alexios Ashworth', 'Wei Ashworth']`
+  + quote (s7); C7.1/7.2/7.2a/7.3 held; **C7.9 PASS, 0 prior-campaign
+  regressions.**
+- Reseal (Rule 11 kept): the first run at 1d03308 read C7.6 as FAIL on
+  both seeds because the check inherited C7.4's living-only filter; the
+  contract says "characters that have history" and the dead are the
+  epilogue's natural subjects. Fixed to all characters with history,
+  distinct full names; BASE recalibrated on the detached worktree → clean
+  MISS, 12 by absence.
+- Full suite **2070 passed / 0 failed** (29m41s).
+- Derived sweep 2/7 (survivors = `tick_memory` internals, characters.py:
+  345–358). graderProbes 0/95. CodeIndex 9/95 (**9.5%**, campaign best).
+- Hygiene debt for close-out: `tick_memory` appends a duplicate beat with
+  kind="gentry" for each backfilled memory (the original beat already
+  echoes it) and uses kind="memory", outside the brief's kind set.
+
+Economics after this wave: C7 = 5 missions, 32.36h local, $2.91
+electricity vs $570.32 measured-token API equivalent; global ratio $1
+frontier verify oversees ~$1.43 displaced generation.
+
+Verdict: **C7 PASS.** Event chains are first-class, span all acts, and
+three of them ask the player a question whose answer changes the world;
+every character in the House carries a corroborated history that the
+House tab draws and the epilogue quotes. Five waves, 32.4 local hours,
+two supervisor errors owned in the log (F145 diagnosis; a gate filter
+stricter than its contract). Next: C8 — presentation.
 
