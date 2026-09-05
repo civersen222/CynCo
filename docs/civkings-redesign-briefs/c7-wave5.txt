@@ -1,0 +1,103 @@
+MISSION C7 WAVE 5 — THREE LINES FROM THE MARKER (wave 4 built the memory:
+history is recorded, cross-checked, drawn on the House tab, and the sealed
+gate passes C7.1, C7.2, C7.2a, C7.3, C7.5 on both seeds, C7.4 on seed 7, and
+the whole C1..C6 chain. Your own tests are green; the sealed gate's
+definitions are stricter in three places. Meet them exactly. 8 hours,
+2000 iterations.)
+
+Repo: C:\Users\civer\civkings
+BASE: 5e09faa  (wave-4 head, "stage c7 complete" committed early. KEEP-GREEN
+set, run before EVERY commit:
+python -m pytest gilded/tests/test_c7_history.py gilded/tests/test_c7_epilogue.py gilded/tests/test_c7_branching.py gilded/tests/test_c7_chain_beats.py gilded/tests/test_c7_bands.py gilded/tests/test_event_chains.py gilded/tests/test_saga_director.py gilded/tests/test_c1_visibility.py gilded/tests/test_c6_contract.py gilded/tests/test_c6c_layout.py gilded/tests/test_ui_broadsheet.py gilded/tests/test_ui_actions.py gilded/tests/test_house_opinion_ui.py gilded/tests/test_house_tab_grievances.py gilded/tests/test_house_tab_pixel_visual.py gilded/tests/test_heir_controls.py -q)
+
+THE THREE MISSES (sealed gate at BASE, verbatim — these are the exact numbers)
+
+  C7.4.history.s42: FAIL coverage=0.47 (floor 0.6) ruler_entries=8 (floor 5) entries=55 echoed_by_a_beat=55 bad_turns=0
+  C7.6.epilogue.s42: FAIL characters-with-history named in epilogue=['Bjorn Ashworth'] history-text-quoted=False ended_at=70
+  C7.6.epilogue.s7:  FAIL characters-with-history named in epilogue=['Wei Ashworth'] history-text-quoted=True ended_at=70
+
+  How the gate counts, so your test counts the same way:
+  - The game is `new_app_state(seed=42)` (and seed 7), then `game.end_turn()`
+    70 times, ruling the FIRST option of every chain petition it sees drawn
+    on the House docket.
+  - Coverage = characters with >= 1 history entry / ALL characters in
+    `game.realms[<player house>].characters` whose `is_alive` is truthy.
+    Seed 42 has 55 entries spread over 47% of the living House; seed 7
+    reaches 100%. The kin and courtiers no chain or ruling ever touches
+    need a history source that reaches them: court appointments and
+    dismissals, marriages, births, coming of age, seat-holding, an ambition
+    stance taken — anything that is ALREADY a beat naming them (the gate
+    requires a beat that turn naming the character; all 55 of yours passed
+    that check, keep doing it that way).
+  - Epilogue: `endings.judge(game, house).text` must contain the FULL
+    `character.name` of at least TWO characters that have history, and must
+    contain a verbatim substring of >= 20 characters taken from the START of
+    one history entry's text (the gate checks `entry.text[:20] in
+    epilogue_text`). On seed 42 your paragraph names one person and quotes
+    nothing the gate recognises; on seed 7 it names one and quotes one.
+    Your "alphabetical max/min" picker is choosing the same person twice or
+    a person without history — pick two DISTINCT characters that have
+    history, print their full names, and quote the first 20+ characters of
+    one entry exactly.
+
+THE WORK (numbered commit points — commit AT each)
+
+1. COVERAGE ON SEED 42 >= 0.6. Add history sources for the characters that
+   have none (probe under C:\tmp: list the living House at t70 on seed 42
+   with zero entries and what beats mention them). COMMIT 1 when your
+   test_c7_history.py asserts the gate's exact definition (living
+   `realms[house].characters`, both seeds) and passes.
+2. THE EPILOGUE NAMES TWO AND QUOTES ONE, BOTH SEEDS. COMMIT 2 when
+   test_c7_epilogue.py asserts exactly: two distinct full names of
+   characters with history appear in the text, and `entry.text[:20]` of
+   one of their entries appears verbatim, on seeds 42 and 7.
+3. THE FIXTURE — YOU WERE RIGHT. Your wave-4 experiment (1a6b273) stands
+   and the supervisor's bisect confirms it: at 2067de3 the premise
+   `industry == 12` held ONLY because the original coping_spiral and
+   strikebreakers chains fired at seed 5 and their side-effects shaped
+   Duval-Corse's court; with chains disabled at 2067de3 the stat is already
+   11. The test never tested the Dominion rule independently of chain
+   content. You are therefore AUTHORISED to edit gilded/tests/test_agenda.py
+   — the premise lines of test_r5_dominion_backed_by_industry ONLY: make the
+   fixture set the court stats it asserts (industry 12, intrigue 11) on the
+   Duval-Corse court explicitly before the premise assertions, so the test
+   pins "Dominion scores industry, not intrigue" and not the accident of
+   which chains fired. Do not touch any other test or any other line of that
+   file. COMMIT 3 when test_agenda.py is green.
+4. FULL PASS. Bash cap is 1500s. Run EXACTLY:
+     python -m pytest gilded/tests -q --tb=short > C:\tmp\c7w5_full.txt 2>&1; Get-Content C:\tmp\c7w5_full.txt -Tail 15
+   Zero failures. Then the wire-check (KEEP-GREEN set), passing tail in the
+   final commit message.
+
+PACING (orders)
+- 40 tool calls without an Edit = STOP investigating. Write the hypothesis
+  into a commit message on the smallest edit that tests it.
+- 30 calls past your last commit with no instrument green = make the
+  smallest edit that moves one number and commit that.
+- Probes live under C:\tmp, never in the repo.
+
+RULES
+- NO downloads. NO new files inside the repo except gilded/tests/test_c7_*.py
+  and content modules under gilded/society/event_content/.
+- You may change: gilded/society/event_chains.py, event_engine.py,
+  event_content/*, characters.py, schemes.py, marriages.py, court.py,
+  succession.py, gilded/chassis.py (tick/emit lines only), gilded/docket.py,
+  gilded/endings.py, gilded/ui/house_tab.py, gilded/ui/broadsheet.py, and
+  the premise lines of test_r5_dominion_backed_by_industry as authorised
+  above. NOT gilded/beats.py, gilded/ambitions.py, gilded/agenda.py, or any
+  C1..C6 surface.
+- Deterministic per seed; no game.rng on the chain path.
+- Do not weaken, skip or mark any other committed test, census number,
+  floor, or the type scale. Zero overlaps (test_no_text_overlap,
+  test_turn40_house_tab_zero_overlaps), fits_band, type scale all stand.
+- Use the CodeIndex tool FIRST for every symbol lookup before any Grep/Read
+  crawl.
+
+DONE WHEN
+python -m pytest gilded/tests -q passes with ZERO failures, seed 42 and seed
+7 both show >= 60% of the living House with history and the ruler >= 5, the
+epilogue on both seeds names two people with history in full and quotes the
+first 20+ characters of one memory verbatim, the tree is clean. Then make a
+final commit whose message contains exactly this marker:
+
+stage c7 complete

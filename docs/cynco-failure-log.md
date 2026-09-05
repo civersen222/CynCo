@@ -3394,3 +3394,42 @@ turning. Standing rule: no `*Sync` process spawn in any request handler or
 event callback of the engine — the dispatch banner's own `execSync` calls in
 processManager (`killProcessOnPort`) are start-up only and stay. Open
 question, tracked: why git is slow inside the engine at all.
+
+## F145 — The supervisor handed the model a wrong root cause in the brief; the model refuted it with an experiment and stopped on the time box (C7 wave 4)
+
+**Where:** c7-wave4.txt "THE FIXTURE" section; civkings 1a6b273 ("C7w4
+fixture STOP ... The mission diagnosis (chain shared-rng stream shift) is
+empirically refuted"); supervisor bisect 2026-09-05.
+
+**How:** test_agenda::test_r5_dominion_backed_by_industry has been red since
+wave 1 (`Fixture premise broken: industry == intrigue; assert 11 != 11`).
+After wave 3 sank 603 calls into it, the wave-4 brief asserted the cause:
+chain petitions and the chain resolver drawing from the shared `game.rng`
+shifted the seed-5 world by turn 13. The model implemented exactly that
+(df3375b, chain-local RNG), measured no change, ran chains fully off vs on
+(industry 11 in both), and stopped at the 90-call time box with the evidence
+in the commit message. Supervisor bisect afterwards: green at 2067de3, red
+from a665124 (the first wave-1 commit) on. At 2067de3 with `ChainManager.tick`
+disabled the stat is ALREADY 11 — the fixture's "premise" held only because
+the ORIGINAL chains (coping_spiral, strikebreakers) fired at seed 5 and their
+apply() side-effects shaped Duval-Corse's court. Wave 1 added steps to those
+chains (`_coping_ledger`, `_vultures_settle`, `_ultimatum_council`,
+`_strike_arbitrated`), the extra effects moved the court, and the premise
+fell. The test never tested what its docstring claims independently of chain
+content; its own docstring already admits a rebalance once moved it.
+
+**Why:** I wrote a plausible mechanism into the brief as a fact (the rng
+stream is shared and IS consumed on that path — but it was not the cause),
+without running the ten-second experiment that would have tested it. F89 in
+the supervisor's chair: never invented, always measured — the brief's
+"diagnosis" was invented.
+
+**Fix:** (1) Rule for briefs: a root cause stated in a brief must carry the
+probe that established it (command + output), or be labelled a hypothesis
+with the probe the model should run first. (2) The fixture: its premise is
+content-coupled; the honest repair is to make `_fixture_game`/the r5 test set
+the court stats it asserts explicitly (industry 12, intrigue 11) so it tests
+the Dominion rule and not the accident of which chains fired — a test edit
+the supervisor authorises with this evidence, scoped to the premise lines.
+(3) Credit where due: the time box worked exactly as designed — the model
+stopped, wrote what it knew, and went on to finish the campaign.
