@@ -681,7 +681,10 @@ if (checkCmd && !gate.run) {
   // thing, and the ledger is read by everything. Zero is the ordinary case and
   // is recorded rather than omitted — an absent field cannot tell "nothing was
   // touched" apart from "this driver could not tell".
-  verify = { command: checkCmd, exitCode: r.exitCode, timedOut: r.timedOut, spawnFailed: r.spawnFailed, durationMs: r.durationMs, outputTail: r.outputTail, gradedSha: headBefore, headAfterCheck: headAfter, heldOutRestored: tampered.length, dirtyAtVerify }
+  verify = { command: checkCmd, exitCode: r.exitCode, timedOut: r.timedOut, spawnFailed: r.spawnFailed, harnessFault: r.harnessFault, durationMs: r.durationMs, outputTail: r.outputTail, gradedSha: headBefore, headAfterCheck: headAfter, heldOutRestored: tampered.length, dirtyAtVerify }
+  if (r.harnessFault) {
+    console.log(`[verify] HARNESS FAULT — verified stays null: ${r.harnessFault}`)
+  }
   if (headBefore && headAfter && headBefore !== headAfter) {
     // Demote here as well as in gateDisposition. That call reads `quiet`, which
     // is a guess about whether the run had stopped; this is the thing itself.
