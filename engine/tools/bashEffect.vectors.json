@@ -1,0 +1,49 @@
+{
+  "read": [
+    "cd C:\\Users\\civer\\civkings; Get-Content gilded\\tests\\test_audio.py -TotalCount 40",
+    "$lines = Get-Content C:\\Users\\civer\\civkings\\gilded\\ui\\atlas_view.py; for ($l=309; $l -le 394; $l++) { \"$l`t$($lines[$l-1])\" }",
+    "Select-String -Path C:\\Users\\civer\\civkings\\gilded\\ui\\registry.py -Pattern 'atlas_legend_rows|LegendRow'",
+    "cat gilded/ui/app.py | head -n 40",
+    "sed -n 300,340p gilded/ui/app.py",
+    "type gilded\\ui\\app.py",
+    "findstr /n end_turn gilded\\ui\\app.py",
+    "cd C:\\Users\\civer\\civkings; git show 1d03308:gilded/ui/atlas_view.py | Select-String -Pattern \"def atlas_legend_rows\" -Context 0,30",
+    "git diff gilded/ui/atlas_view.py",
+    "git log --oneline -5",
+    "git status --short",
+    "Get-ChildItem gilded -Filter *.py | Select-Object Name",
+    "ls gilded/tests"
+  ],
+  "write": [
+    "python -c \"content = open('a.py').read(); open('a.py','w').write(content.replace('x','y'))\"",
+    "Set-Content -Path C:\\tmp\\probe.py -Value 'print(1)'",
+    "echo hi > C:\\tmp\\out.txt",
+    "Copy-Item C:\\Users\\civer\\.cynco\\staged-assets\\c8\\music\\act1_calm.flac gilded\\assets\\audio\\",
+    "Out-File -FilePath C:\\tmp\\x.txt -InputObject 'y'"
+  ],
+  "run": [
+    "cd C:\\Users\\civer\\civkings; python -m pytest gilded/tests/test_c8_transitions.py -q 2>&1 | Select-Object -Last 6",
+    "python C:\\tmp\\probe.py",
+    "$env:SDL_VIDEODRIVER=\"dummy\"; python -m pytest gilded/tests -q --tb=short > C:\\tmp\\c8w1_full.txt 2>&1; Get-Content C:\\tmp\\c8w1_full.txt -Tail 15"
+  ],
+  "commit": [
+    "cd C:\\Users\\civer\\civkings; git add gilded/ui/atlas_view.py; git commit -m \"C8 commit 4b: zoom tiers\"",
+    "git commit -c user.name=CynCo -m \"x\""
+  ],
+  "revert": [
+    "cd C:\\Users\\civer\\civkings; git checkout -- gilded/ui/atlas_view.py gilded/ui/app.py; git status --short",
+    "git restore gilded/ui/app.py",
+    "git restore --staged gilded/ui/app.py",
+    "git stash",
+    "git stash pop",
+    "git reset --hard HEAD~1",
+    "git clean -fd",
+    "git checkout HEAD -- gilded/ui/app.py"
+  ],
+  "other": [
+    "cd C:\\Users\\civer\\civkings",
+    "echo \"git checkout -- a.py\"",
+    "git checkout -b feature/x",
+    "Write-Output '---HEAD---'"
+  ]
+}
