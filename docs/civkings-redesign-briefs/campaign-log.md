@@ -1561,3 +1561,23 @@ Calibration at BASE (seed 42): MISS 14, all by absence, zero gate errors —
 the real shape is `{"end_turn": True}`). Perturbed: MISS 11, three
 claim-shaped lines flip, no discriminator flips.
 
+
+## C8 wave 1 — c8-wave1-1788634174399 (graded 2026-09-17, BASE 1d03308edb7684b61319a55f8a122deb9840ab5a → HEAD 1bc0f8c48754e61c5f78f77ab0911b85cb3262b7)
+
+- 931 tool calls, exitReason timeout (28824s = 8.01h), 5 commit(s). maxCallsWithoutSourceEdit 193, maxCallsWithoutCommit 320. CodeIndex 8/931. graderProbes 1/931. Invariants: none (engine without mission invariants).
+- **Sealed gate at 1bc0f8c48754e61c5f78f77ab0911b85cb3262b7: MISS (10 fails).** Prior-campaign regressions: 4.
+  - `C8.1a.tiers-pressable: FAIL tiers drawn+pressed=[] errors=['continent: no action (state=RegionState.ENABLED)', 'region: no action (state=RegionState.ENABLED)', 'parish: no action (state=RegionState.ENABLED)'] zoom_controls=['continent', 'parish', 'region']`
+  - `C8.1b.tiers-differ: FAIL map pixel difference between tiers={} floor=0.05`
+  - `C8.1c.tier-legends: FAIL parish legend has ('city', 'regiment', 'strike')? [False, False, False] continent legend has ('capital',)? [False]`
+  - `C8.5.palette.House: FAIL pixels within 24/channel of a pinned ink at t40 = 0.917 (floor 0.95)`
+  - `C8.5.palette.Powers: FAIL pixels within 24/channel of a pinned ink at t40 = 0.933 (floor 0.95)`
+  - `C8.9: FAIL 4 prior-campaign regressions`
+  - PASS: C8.2a.portraits-drawn, C8.2b.portraits-distinct-and-stable, C8.2c.portrait-pool-licensed, C8.3a.transition-frames, C8.3b.transitions-wired, C8.4a.act-beds-on-disk, C8.4b.bed-follows-the-act, C8.4c.beds-honour-mute, C8.4d.beds-licensed, C8.5.palette.Atlas, C8.5.river-reserved
+- Suite gate FAIL: REGRESSED 6 (gilded/tests/test_c6_contract.py::test_no_text_overlap, gilded/tests/test_i6i_palette.py::test_atlas_view_reexports, gilded/tests/test_i6i_palette.py::test_palette_lint_no_literal_rgb, gilded/tests/test_ui_atlas_layout.py::test_legend_colours_distinct, gilded/tests/test_ui_atlas_layout.py::test_render_does_not_mutate_game_state, gilded/tests/test_ui_atlas_layout.py::test_render_read_only), REPAIRED 1.
+- Derived sweep: UNMEASURED (no diff or the sweep refused).
+- POSIWID Consistent (divergence 0.008, dominant inspect).
+- Ledger: verified false; mutationSweep null.
+
+Economics after this wave: VERDICT: frontier spent $4122.84 SUPERVISING (development $1682.91 and unattributed $2.71 are excluded — building LocalCode is not oversight). The supervised generation would have cost ~$5158.35 on the API ($2185.52 priced from measured tokens, $2972.84 still estimated) and ran locally for ~$20.13 of power. supervision ratio: $1 of frontier verify oversees ~$1.25 of displaced generation.
+
+Verdict: **STOP (budget)** — 1 wave(s) spent; 6 line(s) still FAIL
