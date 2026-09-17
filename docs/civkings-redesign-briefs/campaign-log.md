@@ -1581,3 +1581,21 @@ claim-shaped lines flip, no discriminator flips.
 Economics after this wave: VERDICT: frontier spent $4122.84 SUPERVISING (development $1682.91 and unattributed $2.71 are excluded — building LocalCode is not oversight). The supervised generation would have cost ~$5158.35 on the API ($2185.52 priced from measured tokens, $2972.84 still estimated) and ran locally for ~$20.13 of power. supervision ratio: $1 of frontier verify oversees ~$1.25 of displaced generation.
 
 Verdict: **STOP (budget)** — 1 wave(s) spent; 6 line(s) still FAIL
+
+## C8 wave 2 — c8-wave2-1789649392765 (graded 2026-09-17, BASE 1bc0f8c48754e61c5f78f77ab0911b85cb3262b7 → HEAD 51480495c30beaa7ce76b7da6b3d54046e93192f)
+
+- 325 tool calls, exitReason engine_closed_the_turn (24147s = 6.71h), 5 commit(s). maxCallsWithoutSourceEdit 41, maxCallsWithoutCommit 87. CodeIndex 7/325. graderProbes 0/325. Invariants: engine denied 0 call(s) (edit-gap 0, commit-gap 0, revert 0), 0 revert refusal(s), 10 CodeIndex-assisted Grep(s).
+- Bash by effect: read 23, write 15, run 95, commit 3, revert 0, other 4 (sum 140 vs byName.Bash 140 — agree).
+- **Sealed gate at 51480495c30beaa7ce76b7da6b3d54046e93192f: MISS (3 fails).** Prior-campaign regressions: 0.
+  - `C8.1a.tiers-pressable: FAIL tiers drawn+pressed=['continent'] errors=['region: no action (state=RegionState.ENABLED)', 'parish: no action (state=RegionState.ENABLED)'] zoom_controls=['continent', 'parish', 'region']`
+  - `C8.1b.tiers-differ: FAIL map pixel difference between tiers={} floor=0.05`
+  - `C8.1c.tier-legends: FAIL parish legend has ('city', 'regiment', 'strike')? [False, False, False] continent legend has ('capital',)? [True]`
+  - PASS: C8.2a.portraits-drawn, C8.2b.portraits-distinct-and-stable, C8.2c.portrait-pool-licensed, C8.3a.transition-frames, C8.3b.transitions-wired, C8.4a.act-beds-on-disk, C8.4b.bed-follows-the-act, C8.4c.beds-honour-mute, C8.4d.beds-licensed, C8.5.palette.House, C8.5.palette.Powers, C8.5.palette.Atlas, C8.5.river-reserved, C8.9
+- Suite gate PASS: REGRESSED 0, REPAIRED 1.
+- Derived sweep 1/25; survivors: gilded/ui/app.py:322:cmp->NotEq, gilded/ui/atlas_view.py:451:bin->Sub, gilded/ui/atlas_view.py:459:bin->Sub#1, gilded/ui/atlas_view.py:459:bin->Sub#2, gilded/ui/atlas_view.py:459:const->3, gilded/ui/atlas_view.py:459:const->5, gilded/ui/atlas_view.py:460:bin->Sub#5, gilded/ui/atlas_view.py:460:bin->Sub#6, gilded/ui/atlas_view.py:460:const->21, gilded/ui/atlas_view.py:460:const->3, gilded/ui/atlas_view.py:460:const->4, gilded/ui/atlas_view.py:464:bin->Add, gilded/ui/atlas_view.py:464:bin->Sub#11, gilded/ui/atlas_view.py:464:bin->Sub#12, gilded/ui/atlas_view.py:464:const->15, gilded/ui/atlas_view.py:464:const->3, gilded/ui/atlas_view.py:464:const->5#15, gilded/ui/atlas_view.py:464:const->5#16, gilded/ui/atlas_view.py:465:bin->Sub#17, gilded/ui/atlas_view.py:465:bin->Sub#18, gilded/ui/atlas_view.py:465:const->2, gilded/ui/atlas_view.py:465:const->25, gilded/ui/atlas_view.py:572:cmp->NotEq, gilded/ui/atlas_view.py:586:const->10.
+- POSIWID Consistent (divergence 0.005, dominant inspect).
+- Ledger: verified false; mutationSweep recorded (derived).
+
+Economics after this wave: VERDICT: frontier spent $4179.79 SUPERVISING (development $1682.91 and unattributed $2.71 are excluded — building LocalCode is not oversight). The supervised generation would have cost ~$5200.38 on the API ($2227.54 priced from measured tokens, $2972.84 still estimated) and ran locally for ~$20.73 of power. supervision ratio: $1 of frontier verify oversees ~$1.24 of displaced generation.
+
+Verdict: **STOP (budget)** — 2 wave(s) spent; 3 line(s) still FAIL
