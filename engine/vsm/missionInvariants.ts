@@ -69,12 +69,18 @@ export interface InvariantSnapshot {
    *  observed yet is counted under `pending`, so these always sum to
    *  `denialCount`. */
   nextCallClassCounts: Record<string, number>
+  /** Variables this run has stopped denying on — see TERMINAL_RELENT_AFTER. */
+  terminalRelents: InvariantKind[]
   revertRefusals: number; codeIndexAssisted: number
 }
 
 const EDITOR_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'ApplyPatch', 'ReplaceFunction', 'NotebookEdit'])
 const INSPECT_TOOLS = new Set(['Read', 'Grep', 'Glob', 'Ls'])
 const RELENT_AFTER = 3
+// Full relent cycles (RELENT_AFTER denials each) on the SAME variable before
+// the gate gives that variable up for the rest of the run — the read-loop
+// gate's own design, one level slower. See `terminal` below.
+const TERMINAL_RELENT_AFTER = 3
 const DWELL = 3
 // Window sizes for the per-turn status frame (see InvariantSnapshot).
 const DENIAL_WINDOW = 50
@@ -95,6 +101,16 @@ export class MissionInvariants {
   private readCounts = new Map<string, number>()
   private consecutiveDenies = 0
   private relentArmed = false
+  // Completed relent cycles per variable, and the variables the gate has given
+  // up on. The commit gap is the one that can be genuinely unsatisfiable —
+  // nothing staged, a failing pre-commit hook, a cwd that is not a repo — and
+  // an unsatisfiable cap does not regulate, it just holds the run at the
+  // relent rate (one inspection in four) for hours. The read-loop gate makes
+  // the same concession one level faster and for the same reason: a gate that
+  // never yields converts "you should be committing by now" into "you may
+  // never look at anything again".
+  private readonly relentCycles = new Map<InvariantKind, number>()
+  private readonly terminal = new Set<InvariantKind>()
   private readonly denials: InvariantDenial[] = []
   private readonly stepCallIndex: number[] = []
   private revertRefusals = 0
@@ -138,18 +154,30 @@ export class MissionInvariants {
     return false
   }
 
-  private teachback(invariant: 'edit-gap' | 'commit-gap'): string {
+  /**
+   * `escalated` is the terminal relent's single announcement: the gate has
+   * denied this variable for three full relent cycles and is now standing
+   * down on it. Say so plainly — an order that has stopped being enforced but
+   * is still being repeated teaches the model that the teachbacks are noise.
+   */
+  private teachback(invariant: 'edit-gap' | 'commit-gap', escalated = false): string {
     const hot = [...this.readCounts.entries()].filter(([, n]) => n >= 3).map(([p, n]) => `${p} ${n}×`).slice(0, 3)
     const last = this.lastEdit
       ? `which was ${this.lastEdit.tool} on ${this.lastEdit.path}`
       : 'and no source edit yet in this run'
     const since = hot.length ? ` You have read ${hot.join(', ')} since.` : ''
     if (invariant === 'edit-gap') {
-      return `[invariant] DENIED (edit gap): ${this.callsSinceSourceEdit} calls since your last source edit, ${last}.${since} ` +
-        `Make the smallest edit that tests your current hypothesis, or commit what you have. Reading resumes after that edit.`
+      const tail = escalated
+        ? `This is the third time this run you have been denied through a full relent cycle on this cap. ` +
+          `If there is genuinely nothing to edit, say so in your reply and continue; inspection is no longer withheld for this cap.`
+        : `Make the smallest edit that tests your current hypothesis, or commit what you have. Reading resumes after that edit.`
+      return `[invariant] DENIED (edit gap): ${this.callsSinceSourceEdit} calls since your last source edit, ${last}.${since} ${tail}`
     }
-    return `[invariant] DENIED (commit gap): ${this.callsSinceCommit} calls since your last commit.${since} ` +
-      `Stage the files you changed by name and commit now — a commit is the only backup this run has. Reading resumes after the commit.`
+    const tail = escalated
+      ? `This is the third time this run you have been denied through a full relent cycle on this cap. ` +
+        `If there is genuinely nothing to commit, say so in your reply and continue; inspection is no longer withheld for this cap.`
+      : `Stage the files you changed by name and commit now — a commit is the only backup this run has. Reading resumes after the commit.`
+    return `[invariant] DENIED (commit gap): ${this.callsSinceCommit} calls since your last commit.${since} ${tail}`
   }
 
   private deny(invariant: InvariantKind, toolName: string, message: string): InvariantVerdict {
@@ -163,11 +191,30 @@ export class MissionInvariants {
       return this.deny('revert', toolName, REVERT_MESSAGE)
     }
     if (this.isEditOnly() && this.isInspect(toolName, input)) {
+      const which = this.callsSinceSourceEdit > this.caps.editGapCap ? 'edit-gap' : 'commit-gap'
+      // Given up on this variable. The essential variable and the homeostat go
+      // on observing it — the step trace is the governance data and must not
+      // acquire a blind spot — the gate just stops withholding inspection for
+      // it. The other variable is unaffected: the run that cannot commit can
+      // still be held to making edits.
+      if (this.terminal.has(which)) return { kind: 'allow' }
       if (this.relentArmed) { this.relentArmed = false; this.consecutiveDenies = 0; return { kind: 'allow' } }
       this.consecutiveDenies++
-      if (this.consecutiveDenies >= RELENT_AFTER) this.relentArmed = true
-      const which = this.callsSinceSourceEdit > this.caps.editGapCap ? 'edit-gap' : 'commit-gap'
-      return this.deny(which, toolName, this.teachback(which))
+      let escalated = false
+      if (this.consecutiveDenies >= RELENT_AFTER) {
+        this.relentArmed = true
+        const cycles = (this.relentCycles.get(which) ?? 0) + 1
+        this.relentCycles.set(which, cycles)
+        if (cycles >= TERMINAL_RELENT_AFTER) {
+          this.terminal.add(which)
+          escalated = true
+          // Hand the other variable a clean slate rather than a half-armed
+          // relent inherited from the one just given up on.
+          this.relentArmed = false
+          this.consecutiveDenies = 0
+        }
+      }
+      return this.deny(which, toolName, this.teachback(which, escalated))
     }
     return { kind: 'allow' }
   }
@@ -258,7 +305,7 @@ export class MissionInvariants {
       callsSinceSourceEdit: this.callsSinceSourceEdit, callsSinceCommit: this.callsSinceCommit,
       steps: steps.slice(-STEP_WINDOW), stepCount: steps.length,
       denials: this.denials.slice(-DENIAL_WINDOW), denialCount: this.denials.length,
-      denialsByInvariant, nextCallClassCounts,
+      denialsByInvariant, nextCallClassCounts, terminalRelents: [...this.terminal],
       revertRefusals: this.revertRefusals, codeIndexAssisted: this.codeIndexAssisted,
     }
   }

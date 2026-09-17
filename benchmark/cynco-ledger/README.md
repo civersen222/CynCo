@@ -168,7 +168,14 @@ decisions still recorded here).
   "invariants": { "configuration": "full",
     "denials": [], "denialCount": 0, "steps": [], "stepCount": 0,
     "denialsByInvariant": { "edit-gap": 0, "commit-gap": 0, "revert": 0 },
-    "nextCallClassCounts": {}, "revertRefusals": 0, "codeIndexAssisted": 0 },
+    "nextCallClassCounts": {}, "terminalRelents": [],
+    "revertRefusals": 0, "codeIndexAssisted": 0 },
+  // `terminalRelents` names the caps the gate GAVE UP on: three full relent
+  // cycles (nine denials) on one variable and it stops withholding inspection
+  // for that variable, because an unsatisfiable cap (nothing to commit, a
+  // failing hook, a non-repo cwd) stops regulating and just throttles the run.
+  // A row with a terminal relent was paced by one cap, not two, from that
+  // point on — it is not comparable to a row that held both.
   "ultrastable": { "trace": [], "margin": 0.4 }
 }
 ```

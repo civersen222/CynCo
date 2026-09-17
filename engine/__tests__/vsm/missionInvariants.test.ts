@@ -124,19 +124,29 @@ describe('MissionInvariants', () => {
    */
   it('windows denials and steps on the status frame and keeps full-run aggregates', () => {
     // editGapCap 5 is already over at call 6; every inspect from there on is a
-    // denial, and each denial is itself a call (observed as an error).
+    // denial, and each denial is itself a call (observed as an error). The
+    // edit gap gives up after nine (the terminal relent), so the rest of the
+    // sixty come from the revert ban, which never relents.
     for (let n = 0; n < 6; n++) inv.observeCall('Read', read(n)[1], false)
     let denies = 0
     let n = 0
     let firstDenialCallIndex = -1
-    while (denies < 60) {
+    const noteDenial = () => {
+      denies++
+      if (firstDenialCallIndex < 0) firstDenialCallIndex = inv.snapshot().denials[0].callIndex
+    }
+    while (inv.snapshot().terminalRelents.length === 0) {
       const v = inv.evaluate(...read(1000 + n))
-      if (v.kind === 'deny') {
-        denies++
-        if (firstDenialCallIndex < 0) firstDenialCallIndex = inv.snapshot().denials[0].callIndex
-      }
+      if (v.kind === 'deny') noteDenial()
       inv.observeCall('Read', read(1000 + n)[1], v.kind === 'deny')
       n++
+    }
+    expect(denies).toBe(9)
+    while (denies < 60) {
+      const v = inv.evaluate('Bash', { command: 'git checkout -- a.py' })
+      expect(v.kind).toBe('deny')
+      noteDenial()
+      inv.observeCall('Bash', { command: 'git checkout -- a.py' }, true)
     }
     const s = inv.snapshot()
     expect(s.denialCount).toBe(60)
@@ -148,9 +158,64 @@ describe('MissionInvariants', () => {
     expect(s.stepCount).toBeGreaterThanOrEqual(s.steps.length)
     const byInvariant = Object.values(s.denialsByInvariant).reduce((a, b) => a + b, 0)
     expect(byInvariant).toBe(60)
-    expect(s.denialsByInvariant['edit-gap']).toBe(60)
+    expect(s.denialsByInvariant['edit-gap']).toBe(9)
+    expect(s.denialsByInvariant.revert).toBe(51)
     const byClass = Object.values(s.nextCallClassCounts).reduce((a, b) => a + b, 0)
     expect(byClass).toBe(60)
+  })
+
+  /**
+   * A commit gap can be genuinely unsatisfiable — nothing staged, a failing
+   * pre-commit hook, a cwd that is not a repo. An unsatisfiable cap does not
+   * regulate: it holds the run at the relent rate (one inspection in four) for
+   * as long as the mission lasts. After three full relent cycles the gate says
+   * so once and stands down on THAT variable only.
+   */
+  it('gives up on a variable after three relent cycles, and keeps the other one enforced', () => {
+    // editGapCap high enough that the first ~15 calls trip only the commit gap.
+    const t = new MissionInvariants({ editGapCap: 20, commitGapCap: 3, revertBan: true, codeIndexFirst: true })
+    for (let n = 0; n < 4; n++) t.observeCall('Edit', { file_path: 'C:\\repo\\a.py' }, false)
+    expect(t.snapshot().configuration).toBe('edit-only')
+
+    let denies = 0
+    let lastMessage = ''
+    let n = 0
+    while (denies < 9) {
+      const v = t.evaluate(...read(n))
+      if (v.kind === 'deny') {
+        expect(v.invariant).toBe('commit-gap')
+        denies++
+        lastMessage = v.message
+      }
+      t.observeCall('Read', read(n)[1], v.kind === 'deny')
+      n++
+    }
+    // The ninth denial is the escalated teachback, and the last one.
+    expect(lastMessage).toContain('nothing to commit')
+    expect(lastMessage).toContain('no longer withheld')
+    expect(t.snapshot().terminalRelents).toContain('commit-gap')
+
+    // Terminal means terminal: not the one-shot relent.
+    for (let i = 0; i < 5; i++) {
+      expect(t.evaluate(...read(n)).kind).toBe('allow')
+      t.observeCall('Read', read(n)[1], false)
+      n++
+    }
+    // The commit gap is still over cap and the homeostat still sees it.
+    expect(t.snapshot().configuration).toBe('edit-only')
+    expect(t.snapshot().callsSinceCommit).toBeGreaterThan(3)
+
+    // The edit gap is a separate variable and is still enforced: keep reading
+    // until callsSinceSourceEdit passes 20.
+    let editDenied = false
+    for (let i = 0; i < 40 && !editDenied; i++) {
+      const v = t.evaluate(...read(n))
+      if (v.kind === 'deny') { expect(v.invariant).toBe('edit-gap'); editDenied = true }
+      t.observeCall('Read', read(n)[1], v.kind === 'deny')
+      n++
+    }
+    expect(editDenied).toBe(true)
+    expect(t.snapshot().terminalRelents).toEqual(['commit-gap'])
   })
 
   it('counts CodeIndex-assisted greps', () => {
