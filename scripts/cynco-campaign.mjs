@@ -122,46 +122,69 @@ export async function runWave(spec, state, io = defaultIo) {
   const s = state.state
   const ctx = waveContext(spec, s, io)
   const { wave, base, fails, prior } = ctx
-
-  // S4, occupant B (advisory) — runs only while no engine holds the GPU.
-  let ideation = null, ideationMeta = null
-  if (spec.ideation?.enabled) {
-    const busy = await (io.engineLive ?? defaultIo.engineLive)()
-    if (busy) {
-      console.log('[campaign] ideation skipped — an engine is answering on 9161 and the wave must not share the GPU')
-      ideationMeta = { taskPath: null, durationMs: 0, error: 'engine busy' }
-    } else {
-      const draft = generateBrief(spec, ctx)
-      const r = await io.ideate({ spec, fails, prior, briefText: draft, stateDir: state.dir })
-      ideation = r.ideation; ideationMeta = { taskPath: r.taskPath ?? null, durationMs: r.durationMs ?? null, error: r.error ?? null }
-    }
-  }
   const registry = authorityRegistry(s)
   const commander = registry.whoCommands('brief')?.component ?? 'generator'
 
-  // S4, occupant A (binding).
-  const text = generateBrief(spec, { ...ctx, ideation })
-  const briefFile = resolve(BRIEFS_DIR, `${spec.id}-wave${wave}.txt`)
-  io.writeBrief(briefFile, text, sidecarFor(spec))
+  let ideation = null, ideationMeta = null
+  let missionId, row, briefFile, dispatchedAt, waveFiles
 
-  // S3: dispatch with the terms.
-  const stamp = basename(briefFile).replace(/\.[^.]*$/, '')
-  const pidFile = `C:/tmp/driver_${stamp}.pid`, driverLog = `C:/tmp/driver_${stamp}.log`
-  const dispatchedAt = new Date().toISOString()
-  const dispatched = await io.dispatch({ spec, briefFile, invariants: spec.invariants, timeoutS: spec.budget.hoursPerWave * 3600, pidFile, driverLog })
-  const waited = await io.waitForDriver({ pidFile, driverLog, timeoutMs: (spec.budget.hoursPerWave * 3600 + 3600) * 1000 })
-  const missionId = waited.exited ? (dispatched?.missionId ?? io.missionIdFrom?.(driverLog) ?? null) : null
-  const row = missionId ? io.readRow(missionId) : null
-  if (!row) {
-    // Ruling 8: a wave that faulted still SPENT a wave. Counting it is what
-    // stops a broken engine from burning the whole budget in a retry loop.
-    const rec = { wave, missionId, briefFile, base, dispatchedAt, decision: { kind: 'fault', why: waited.exited ? 'driver exited without a ledger row' : 'driver did not exit within the wall clock' } }
-    rec.notified = await tryNotify(io, `${spec.id} wave ${wave}: FAULT — ${rec.decision.why}`)
-    state.appendWave(rec)
-    s.waveCount = wave
-    if (!rec.notified) s.pendingNotifications.push(rec.decision)
-    state.save()
-    return rec
+  if (s.adoptedRow) {
+    // ADOPT (scripts/cynco-campaign-adopt.mjs): this wave already RAN — it was
+    // dispatched by hand, or by an invocation that died before grading — and
+    // only its measurement is missing. Every step before GRADE is skipped on
+    // purpose: DISPATCH would burn another wall clock on work already in the
+    // repo, GENERATE would overwrite the brief the wave was actually given,
+    // and ideation only exists to advise that brief.
+    missionId = s.adoptedRow
+    row = io.readRow(missionId)
+    if (!row) throw new Error(`adopted row ${missionId} is not in the ledger — adopt a missionId that exists`)
+    briefFile = resolve(row.briefFile ?? join(BRIEFS_DIR, `${spec.id}-wave${wave}.txt`))
+    dispatchedAt = row.dispatchedAt ?? null
+    delete s.adoptedRow
+    // The brief was authored outside the runner, so its sidecar may not exist;
+    // commitVerdict hands `files` straight to `git add`, where one missing
+    // pathspec stages nothing at all.
+    waveFiles = [repoRel(briefFile), repoRel(sidecarPath(briefFile))].filter(f => existsSync(f))
+    console.log(`[campaign] ADOPT ${missionId} — grading a wave that already ran (brief ${repoRel(briefFile)}); GENERATE/DISPATCH/WAIT skipped`)
+  } else {
+    // S4, occupant B (advisory) — runs only while no engine holds the GPU.
+    if (spec.ideation?.enabled) {
+      const busy = await (io.engineLive ?? defaultIo.engineLive)()
+      if (busy) {
+        console.log('[campaign] ideation skipped — an engine is answering on 9161 and the wave must not share the GPU')
+        ideationMeta = { taskPath: null, durationMs: 0, error: 'engine busy' }
+      } else {
+        const draft = generateBrief(spec, ctx)
+        const r = await io.ideate({ spec, fails, prior, briefText: draft, stateDir: state.dir })
+        ideation = r.ideation; ideationMeta = { taskPath: r.taskPath ?? null, durationMs: r.durationMs ?? null, error: r.error ?? null }
+      }
+    }
+
+    // S4, occupant A (binding).
+    const text = generateBrief(spec, { ...ctx, ideation })
+    briefFile = resolve(BRIEFS_DIR, `${spec.id}-wave${wave}.txt`)
+    io.writeBrief(briefFile, text, sidecarFor(spec))
+    waveFiles = [repoRel(briefFile), repoRel(sidecarPath(briefFile))]
+
+    // S3: dispatch with the terms.
+    const stamp = basename(briefFile).replace(/\.[^.]*$/, '')
+    const pidFile = `C:/tmp/driver_${stamp}.pid`, driverLog = `C:/tmp/driver_${stamp}.log`
+    dispatchedAt = new Date().toISOString()
+    const dispatched = await io.dispatch({ spec, briefFile, invariants: spec.invariants, timeoutS: spec.budget.hoursPerWave * 3600, pidFile, driverLog })
+    const waited = await io.waitForDriver({ pidFile, driverLog, timeoutMs: (spec.budget.hoursPerWave * 3600 + 3600) * 1000 })
+    missionId = waited.exited ? (dispatched?.missionId ?? io.missionIdFrom?.(driverLog) ?? null) : null
+    row = missionId ? io.readRow(missionId) : null
+    if (!row) {
+      // Ruling 8: a wave that faulted still SPENT a wave. Counting it is what
+      // stops a broken engine from burning the whole budget in a retry loop.
+      const rec = { wave, missionId, briefFile, base, dispatchedAt, decision: { kind: 'fault', why: waited.exited ? 'driver exited without a ledger row' : 'driver did not exit within the wall clock' } }
+      rec.notified = await tryNotify(io, `${spec.id} wave ${wave}: FAULT — ${rec.decision.why}`)
+      state.appendWave(rec)
+      s.waveCount = wave
+      if (!rec.notified) s.pendingNotifications.push(rec.decision)
+      state.save()
+      return rec
+    }
   }
 
   // Everything past this point is measurement and bookkeeping on a run that
@@ -188,7 +211,7 @@ export async function runWave(spec, state, io = defaultIo) {
   io.appendLog(entry)
   // Ruling 5: commitVerdict matches these against `git status --porcelain`,
   // which speaks repo-relative forward slashes and nothing else.
-  const files = [LOG, repoRel(briefFile), repoRel(sidecarPath(briefFile)), ...ledgerShardsTouched()]
+  const files = [LOG, ...waveFiles, ...ledgerShardsTouched()]
   let verdictSha = null
   try { verdictSha = io.commit({ repoRoot: '.', branch: `campaign/${spec.id}`, files, message: `${spec.id.toUpperCase()} wave ${wave} verdict: ${decision.kind} — ${decision.why}` }).sha } catch (e) { console.error(`[campaign] commit skipped: ${e.message}`) }
   const notified = await tryNotify(io, `${spec.id.toUpperCase()} wave ${wave}: ${decision.kind.toUpperCase()} — ${decision.why}\n${grade.gate.fails.map(f => f.line).join('\n')}`)

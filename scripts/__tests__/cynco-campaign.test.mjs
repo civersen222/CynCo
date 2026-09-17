@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { decide, runWave, waveContext, budgetSpent } from '../cynco-campaign.mjs'
+import { adopt } from '../cynco-campaign-adopt.mjs'
 import { CampaignState } from '../cynco-campaign-state.mjs'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -278,6 +279,75 @@ describe('runWave', () => {
     expect(rec.s4.ideationMeta).toMatchObject({ taskPath: 't.json', durationMs: 5, error: null })
     expect(rec.s4.followed).toBe(true)
     expect(rec.s4.commander).toBe('generator')
+  })
+})
+
+// Task 11: adopting a wave that already ran. The adoption marks the row; the
+// wave is still counted where every other wave is counted — after it is graded.
+describe('adopt', () => {
+  it('marks the row and pins lastBase without spending a wave', () => {
+    const state = freshState()
+    state.state.waveCount = 0
+    const row = { missionId: 'c8-wave1-1788634174399', briefFile: 'docs/civkings-redesign-briefs/c8-wave1.txt', commitRange: { base: '1d03308', head: '1bc0f8c' } }
+    const r = adopt(state, row.missionId, row)
+    expect(r).toMatchObject({ missionId: row.missionId, base: '1d03308', briefFile: row.briefFile })
+    expect(state.state.adoptedRow).toBe(row.missionId)
+    expect(state.state.lastBase).toBe('1d03308')
+    expect(state.state.waveCount).toBe(0)
+    // persisted, not just held in memory — the runner is a separate process
+    const reloaded = new CampaignState(state.dir).load().state
+    expect(reloaded.adoptedRow).toBe(row.missionId)
+    expect(reloaded.lastBase).toBe('1d03308')
+    expect(reloaded.waveCount).toBe(0)
+  })
+
+  it('refuses a row with no commit range — there is nothing to grade', () => {
+    expect(() => adopt(freshState(), 'm1', { missionId: 'm1' })).toThrow(/commitRange\.base/)
+  })
+})
+
+describe('runWave with an adopted row', () => {
+  it('starts at GRADE: no dispatch, no brief written, the adopted row graded', async () => {
+    const state = freshState()
+    state.state.adoptedRow = 'c8-wave1-1788634174399'
+    const seen = { dispatched: 0, briefs: 0, ideated: 0 }
+    const rec = await runWave({ ...spec, ideation: { enabled: true } }, state, {
+      writeBrief: (p) => { seen.briefs++; return p },
+      dispatch: async () => { seen.dispatched++; return { missionId: 'nope' } },
+      waitForDriver: async () => { throw new Error('waitForDriver must not run for an adopted row') },
+      engineLive: async () => false,
+      ideate: async () => { seen.ideated++; return { ideation: null } },
+      readRow: (missionId) => ({ missionId, briefFile: 'docs/civkings-redesign-briefs/c8-wave1.txt', exitReason: 'timeout', durationS: 28824, commitRange: { base: '1d03308', head: '1bc0f8c' }, outcome: 'landed', toolStats: {} }),
+      commitsBetween: () => [{ sha: '1bc0f8c', subject: 'C8 wave 1' }],
+      grade: async () => g(),
+      salvageOf: () => null,
+      patchRow: (missionId, fields) => { seen.patched = { missionId, fields } },
+      commit: (args) => { seen.files = args.files; return { sha: 'v1' } },
+      notify: async () => true,
+      economics: () => [],
+      appendLog: (text) => { seen.log = text },
+    })
+    expect(seen.dispatched).toBe(0)
+    expect(seen.briefs).toBe(0)
+    expect(seen.ideated).toBe(0)
+    expect(rec.wave).toBe(1)
+    expect(rec.missionId).toBe('c8-wave1-1788634174399')
+    expect(seen.patched.missionId).toBe('c8-wave1-1788634174399')
+    expect(seen.log).toMatch(/^## C8 wave 1 — c8-wave1-1788634174399/)
+    expect(seen.files).toContain('docs/civkings-redesign-briefs/campaign-log.md')
+    // the sidecar of a hand-written brief does not exist; `git add` refuses the
+    // whole list when one pathspec matches nothing, so it must not be named
+    expect(seen.files).not.toContain('docs/civkings-redesign-briefs/c8-wave1.contract.json')
+    expect(state.state.adoptedRow).toBeUndefined()
+    expect(state.state.waveCount).toBe(1)
+    expect(new CampaignState(state.dir).load().state.adoptedRow).toBeUndefined()
+  })
+
+  it('refuses an adopted missionId the ledger does not have', async () => {
+    const state = freshState()
+    state.state.adoptedRow = 'ghost-1'
+    await expect(runWave(spec, state, { readRow: () => null, salvageOf: () => null })).rejects.toThrow(/not in the ledger/)
+    expect(state.state.waveCount).toBe(0)
   })
 })
 
