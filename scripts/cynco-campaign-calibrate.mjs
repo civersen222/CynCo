@@ -58,6 +58,7 @@ export async function calibrate(spec, io = defaultIo) {
     gateSha256: io.sha256(spec.gate),
     perturbSha256: io.sha256(spec.perturb),
     baseFails: base.fails,
+    basePasses: base.passes,
     perturbFails: perturbed.fails,
     suiteBaselineCreated,
     baseOutputTail: (baseRun.stdout + baseRun.stderr).slice(-4000),

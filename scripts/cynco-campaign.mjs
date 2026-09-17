@@ -529,7 +529,9 @@ export async function main(argv) {
     console.log('[campaign] CALIBRATE (Rule 11): gate/perturb changed or never calibrated')
     const r = await calibrate(spec)
     if (!r.ok) { console.error('[campaign] CALIBRATION REFUSED:\n  ' + r.problems.join('\n  ')); await notify(`${spec.id}: calibration refused — ${r.problems[0]}`); return 3 }
-    state.state.calibration = { gateSha256: r.gateSha256, perturbSha256: r.perturbSha256, baseFails: r.baseFails, basePasses: [], perturbFails: r.perturbFails, calibratedAt: new Date().toISOString() }
+    // basePasses is what wave 1's brief prints as "Already PASS at BASE and must
+    // stay so" — the only thing telling the worker which lines it may not break.
+    state.state.calibration = { gateSha256: r.gateSha256, perturbSha256: r.perturbSha256, baseFails: r.baseFails, basePasses: r.basePasses ?? [], perturbFails: r.perturbFails, calibratedAt: new Date().toISOString() }
     state.save()
     console.log(`[campaign] calibrated: BASE MISS ${r.baseFails.length}, perturb honest${r.suiteBaselineCreated ? ', suite baseline written' : ''}`)
   }

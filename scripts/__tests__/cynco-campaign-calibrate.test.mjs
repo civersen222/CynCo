@@ -32,6 +32,10 @@ describe('calibrate', () => {
     expect(r.ok).toBe(true)
     expect(r.problems).toEqual([])
     expect(r.baseFails).toHaveLength(14)
+    // The three PASS lines at BASE (C8.4c, C8.5.river-reserved, C8.9) are what
+    // wave 1's brief prints as "Already PASS at BASE and must stay so"; wave 1
+    // shipped without them because calibrate never returned them.
+    expect(r.basePasses.map(p => p.id)).toEqual(['C8.4c.beds-honour-mute', 'C8.5.river-reserved', 'C8.9'])
     expect(r.gateSha256).toBe('sha-gate_c8.py')
     expect(r.perturbSha256).toBe('sha-perturb_c8.py')
     expect(r.suiteBaselineCreated).toBe(true)
