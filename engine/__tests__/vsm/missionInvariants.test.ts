@@ -25,8 +25,12 @@ describe('MissionInvariants', () => {
       expect(v.message).toContain('targeted Edit')
     }
     expect(inv.evaluate('Git', { subcommand: 'stash', args: '' }).kind).toBe('deny')
+    // The Git tool composes `git <subcommand> <args>`, so the whole revert
+    // family is covered there too — including the bare-path forms C8 wave 1
+    // reached for once `git checkout --` was refused.
+    expect(inv.evaluate('Git', { subcommand: 'checkout', args: '.' }).kind).toBe('deny')
     expect(inv.evaluate('Bash', { command: 'git checkout -b topic' }).kind).toBe('allow')
-    expect(inv.snapshot().revertRefusals).toBe(2)
+    expect(inv.snapshot().revertRefusals).toBe(3)
   })
 
   it('steps to edit-only after the edit gap is exceeded, with dwell, and back after an edit', () => {

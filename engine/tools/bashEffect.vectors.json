@@ -12,7 +12,9 @@
     "git log --oneline -5",
     "git status --short",
     "Get-ChildItem gilded -Filter *.py | Select-Object Name",
-    "ls gilded/tests"
+    "ls gilded/tests",
+    "git stash list",
+    "git stash show -p"
   ],
   "write": [
     "python -c \"content = open('a.py').read(); open('a.py','w').write(content.replace('x','y'))\"",
@@ -38,12 +40,18 @@
     "git stash pop",
     "git reset --hard HEAD~1",
     "git clean -fd",
-    "git checkout HEAD -- gilded/ui/app.py"
+    "git checkout HEAD -- gilded/ui/app.py",
+    "git checkout gilded/ui/app.py",
+    "git checkout .",
+    "git checkout main -- a.py",
+    "git checkout -f",
+    "git reset HEAD~1 --hard"
   ],
   "other": [
     "cd C:\\Users\\civer\\civkings",
     "echo \"git checkout -- a.py\"",
     "git checkout -b feature/x",
-    "Write-Output '---HEAD---'"
+    "Write-Output '---HEAD---'",
+    "git checkout main"
   ]
 }
