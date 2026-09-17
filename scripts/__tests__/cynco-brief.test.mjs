@@ -19,6 +19,10 @@ describe('generateBrief — wave 1 golden against c8-wave1.txt', () => {
     for (const s of SECTIONS) { const i = text.indexOf(s); expect(i, s).toBeGreaterThan(pos); pos = i }
     expect(text.trimEnd().split('\n').at(-1)).toBe('stage c8 complete')
   })
+  it('opens with the same header line as the real brief', () => {
+    expect(text.split('\n')[0]).toBe('MISSION C8 WAVE 1 — PRESENTATION')
+    expect(real.split('\n')[0].startsWith('MISSION C8 WAVE 1 — PRESENTATION')).toBe(true)
+  })
   it('quotes every BASE FAIL line verbatim, and they are the same lines the real brief quoted', () => {
     for (const f of base.fails) {
       expect(text).toContain(f.line)
@@ -52,7 +56,8 @@ describe('generateBrief — wave 2 with a prior wave', () => {
     missionId: 'c8-wave1-1788634174399', exitReason: 'timeout', durationS: 28824,
     commits: [{ sha: 'f9fb07b', subject: 'C8 commit 1: act beds in' }, { sha: '1bc0f8c', subject: 'C8 commit 4b: zoom tiers' }],
     toolStats: { total: 931, maxCallsWithoutSourceEdit: 193, maxCallsWithoutCommit: 320, byName: { CodeIndex: 8 }, byClass: { sourceEdit: 86, fileWrite: 17, inspect: 828 } },
-    invariants: { denials: [{ invariant: 'edit-gap' }, { invariant: 'revert' }], revertRefusals: 1, codeIndexAssisted: 12 },
+    invariants: { denials: [{ invariant: 'edit-gap' }, { invariant: 'revert' }], revertRefusals: 1, codeIndexAssisted: 12,
+      denialCount: 137, denialsByInvariant: { 'edit-gap': 130, 'commit-gap': 6, 'revert': 1 }, terminalRelents: ['commit-gap'] },
     verify: { exitCode: 0 }, posiwid: { verdict: 'Contradicted', dominantObserved: 'inspect', divergence: 0.41 },
   }
   const remaining = base.fails.filter(f => f.id.startsWith('C8.5.palette'))
@@ -74,6 +79,10 @@ describe('generateBrief — wave 2 with a prior wave', () => {
     expect(text).toMatch(/wave 1 went 193 calls without a source edit and 320 without a commit/)
     expect(text).toMatch(/CodeIndex 8 of 931/)
     expect(text).toMatch(/POSIWID: Contradicted/)
+  })
+  it('uses the true denial count, not the windowed snapshot, and names terminal relents', () => {
+    expect(text).toMatch(/denied 137 call\(s\)/)
+    expect(text).toMatch(/stopped enforcing commit-gap after repeated relents/)
   })
   it('appends the ideation as advisory and marks it so', () => {
     expect(text).toMatch(/S4 IDEATION \(advisory — the gate lines above bind; this section may be wrong\)/)

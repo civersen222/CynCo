@@ -62,9 +62,19 @@ function pacing(spec, ctx) {
     const t = ctx.prior.toolStats ?? {}
     const d = ctx.prior.invariants
     const ci = t.byName?.CodeIndex ?? 0
+    // invariants.denials is a windowed snapshot (last 50, since plan 2's fix
+    // wave) — the true total lives in denialCount; fall back to the window's
+    // length only when a run predates that field.
+    const denyCount = d?.denialCount ?? d?.denials?.length ?? 0
+    const byInvariant = d?.denialsByInvariant
+      ? ` (${Object.entries(d.denialsByInvariant).map(([k, v]) => `${k} ${v}`).join(', ')})`
+      : ''
+    const relents = d?.terminalRelents?.length
+      ? `; the engine stopped enforcing ${d.terminalRelents.join(', ')} after repeated relents`
+      : ''
     return `\n\nTRACK RECORD (measured, wave ${ctx.wave - 1}): wave ${ctx.wave - 1} went ${t.maxCallsWithoutSourceEdit ?? '?'} calls without a source edit and ${t.maxCallsWithoutCommit ?? '?'} without a commit; ` +
       `${t.byClass?.inspect ?? '?'} inspect calls against ${t.byClass?.sourceEdit ?? '?'} source edits; CodeIndex ${ci} of ${t.total ?? '?'} calls` +
-      (d ? `; the engine denied ${d.denials?.length ?? 0} call(s) (${d.revertRefusals ?? 0} revert refusals), ${d.codeIndexAssisted ?? 0} Greps were CodeIndex-assisted` : '') +
+      (d ? `; the engine denied ${denyCount} call(s)${byInvariant} (${d.revertRefusals ?? 0} revert refusals), ${d.codeIndexAssisted ?? 0} Greps were CodeIndex-assisted${relents}` : '') +
       (ctx.prior.posiwid ? `; POSIWID: ${ctx.prior.posiwid.verdict} (dominant behaviour ${ctx.prior.posiwid.dominantObserved})` : '') + '.'
   })() : ''
   return wrap(`PACING (enforced by the engine, not advice)
