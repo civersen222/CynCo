@@ -491,3 +491,33 @@ describe('runWave — refusals that must not dispatch', () => {
   })
 })
 
+// I5: Rule 11 is not a one-off. A gate edited mid-campaign — a fix, a rebase, a
+// hand-tweak — makes every reading after it incomparable with wave 1's.
+describe('runWave — the instrument must not move under the campaign', () => {
+  const noDispatch = (seen) => ({
+    sha256: (p) => calibrateIo.sha256(p),
+    writeBrief: () => { seen.briefs++; return 'x' },
+    dispatch: async () => { seen.dispatched++; return { missionId: 'nope' } },
+    salvageOf: () => null,
+    notify: async () => true,
+  })
+
+  it('stops when the gate sha moved since calibration', async () => {
+    const state = freshState()
+    state.state.calibration.gateSha256 = 'not-the-gate-we-calibrated'
+    const seen = { briefs: 0, dispatched: 0 }
+    const rec = await runWave(spec, state, noDispatch(seen))
+    expect(rec.decision.kind).toBe('stop')
+    expect(rec.decision.why).toMatch(/gate or perturb changed since calibration/)
+    expect(seen.dispatched).toBe(0)
+    expect(state.state.waveCount).toBe(0)
+  })
+
+  it('stops when the perturb sha moved since calibration', async () => {
+    const state = freshState()
+    state.state.calibration.perturbSha256 = 'moved'
+    const rec = await runWave(spec, state, noDispatch({ briefs: 0, dispatched: 0 }))
+    expect(rec.decision.kind).toBe('stop')
+  })
+})
+

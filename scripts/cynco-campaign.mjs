@@ -172,6 +172,16 @@ export async function runWave(spec, state, io = defaultIo) {
   const s = state.state
   const ctx = waveContext(spec, s, io)
   const { wave, base, fails, prior } = ctx
+  // Rule 11 is not a one-off: the calibration is evidence about the instrument
+  // it was run against, and a gate edited mid-campaign (a fix, a rebase, a
+  // hand-tweak) makes every reading after it incomparable with wave 1's. Check
+  // the sha BEFORE anything is generated or dispatched; main's CALIBRATE will
+  // re-run on the next invocation and the campaign continues from there.
+  const sha256 = io.sha256 ?? defaultIo.sha256
+  const gateSha256 = sha256(spec.gate)
+  if (s.calibration && (gateSha256 !== s.calibration.gateSha256 || sha256(spec.perturb) !== s.calibration.perturbSha256)) {
+    return stopWave(spec, state, io, { wave, base, why: 'gate or perturb changed since calibration — re-run to recalibrate' })
+  }
   const registry = authorityRegistry(s)
   const commander = registry.whoCommands('brief')?.component ?? 'generator'
 
@@ -255,13 +265,13 @@ export async function runWave(spec, state, io = defaultIo) {
   // S3*: grade.
   const grade = await io.grade(spec, row)
   const commits = io.commitsBetween(spec.repo, row.commitRange?.base ?? base, row.commitRange?.head ?? base)
-  const followed = ideation ? measureFollowed(ideation, io.firstCommitFiles?.(spec.repo, row.commitRange?.base, row.commitRange?.head) ?? []) : null
+  const followed = ideation ? measureFollowed(ideation, io.firstCommitFiles?.(spec.repo, row.commitRange?.base, row.commitRange?.head) ?? [], fails) : null
   // decide() reads waveCount as "waves spent INCLUDING this one" — the state's
   // own counter is only advanced after the record is appended, so hand decide
   // the count this wave makes rather than the one before it.
   const decision = decide({ grade, state: { ...s, waveCount: wave }, spec, commitsLanded: commits.length, row })
   io.patchRow(missionId, { verified: grade.verified, ...(grade.sweep ? { mutationSweep: grade.sweep } : {}),
-    gate: { sha: grade.sha, terminator: grade.gate.terminator, fails: grade.gate.fails.map(f => f.line), passes: grade.gate.passes.length, priorRegressions: grade.gate.priorRegressions, suiteRegressions: grade.suite.regressions, harnessFault: grade.gate.harnessFault ?? grade.suite.harnessFault ?? null },
+    gate: { sha: grade.sha, gateSha256, terminator: grade.gate.terminator, fails: grade.gate.fails.map(f => f.line), passes: grade.gate.passes.length, priorRegressions: grade.gate.priorRegressions, suiteRegressions: grade.suite.regressions, harnessFault: grade.gate.harnessFault ?? grade.suite.harnessFault ?? null },
     posiwid: { divergence: grade.posiwid.divergence, verdict: grade.posiwid.verdict, dominantObserved: grade.posiwid.dominantObserved } })
 
   // Verdict (campaign log, economics, local commit, algedonic).
@@ -273,9 +283,9 @@ export async function runWave(spec, state, io = defaultIo) {
   const files = [LOG, ...waveFiles, ...ledgerShardsTouched()]
   let verdictSha = null
   try { verdictSha = io.commit({ repoRoot: '.', branch: `campaign/${spec.id}`, files, message: `${spec.id.toUpperCase()} wave ${wave} verdict: ${decision.kind} — ${decision.why}` }).sha } catch (e) { console.error(`[campaign] commit skipped: ${e.message}`) }
-  const notified = await tryNotify(io, `${spec.id.toUpperCase()} wave ${wave}: ${decision.kind.toUpperCase()} — ${decision.why}\n${grade.gate.fails.map(f => f.line).join('\n')}`)
+  const notified = await notifyOrQueue(io, s, `${spec.id.toUpperCase()} wave ${wave}: ${decision.kind.toUpperCase()} — ${decision.why}\n${grade.gate.fails.map(f => f.line).join('\n')}`, decision)
 
-  const rec = { wave, missionId, briefFile, base, head: grade.sha, dispatchedAt, gradedAt: new Date().toISOString(), gate: grade.gate, suite: grade.suite, sweep: grade.sweep, sweepFault: grade.sweepFault ?? null, posiwid: grade.posiwid, verified: grade.verified,
+  const rec = { wave, missionId, briefFile, base, head: grade.sha, gateSha256, dispatchedAt, gradedAt: new Date().toISOString(), gate: grade.gate, suite: grade.suite, sweep: grade.sweep, sweepFault: grade.sweepFault ?? null, posiwid: grade.posiwid, verified: grade.verified,
     outcome: { landed: row.outcome === 'landed', exitReason: row.exitReason },
     s4: { generatorInput: { failIds: fails.map(f => f.id), priorMissionId: prior?.missionId ?? null }, ideation, ideationMeta, authority: s.ideationAuthority ?? 0, commander, followed },
     decision, verdictSha, notified }
