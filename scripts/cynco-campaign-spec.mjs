@@ -1,0 +1,63 @@
+// scripts/cynco-campaign-spec.mjs
+import { readFileSync, existsSync } from 'node:fs'
+import { basename } from 'node:path'
+import { spawnSync } from 'node:child_process'
+
+const REQUIRED = ['id', 'title', 'repo', 'base', 'gate', 'perturb', 'suiteBaseline', 'marker', 'keepGreen', 'budget', 'invariants', 'posiwid', 'allow', 'deny', 'measures', 'work', 'rules']
+const NUM = (o, k, path) => { if (typeof o?.[k] !== 'number' || !(o[k] > 0)) throw new Error(`campaign spec ${path}.${k} must be a positive number`) }
+
+export function loadCampaignSpec(path) {
+  let spec
+  try { spec = JSON.parse(readFileSync(path, 'utf8')) } catch (e) { throw new Error(`campaign spec ${path} is not valid JSON — ${e.message}`) }
+  for (const k of REQUIRED) if (spec[k] === undefined || spec[k] === null || spec[k] === '') throw new Error(`campaign spec is missing "${k}"`)
+  for (const k of ['hoursPerWave', 'iterations', 'bashTimeoutMs', 'waves']) NUM(spec.budget, k, 'budget')
+  for (const k of ['editGapCap', 'commitGapCap']) NUM(spec.invariants, k, 'invariants')
+  for (const k of ['revertBan', 'codeIndexFirst']) if (typeof spec.invariants[k] !== 'boolean') throw new Error(`campaign spec invariants.${k} must be a boolean`)
+  NUM(spec.posiwid, 'sourceEditShare', 'posiwid'); NUM(spec.posiwid, 'commitEvery', 'posiwid')
+  if (/[*?]/.test(spec.keepGreen)) throw new Error('campaign spec keepGreen contains a wildcard — the check must name files (F146)')
+  if (!Array.isArray(spec.work) || spec.work.length === 0) throw new Error('campaign spec work must be a non-empty array')
+  const seen = new Set()
+  for (const w of spec.work) {
+    for (const k of ['id', 'title', 'gateIds', 'text']) if (w[k] === undefined) throw new Error(`campaign spec work item is missing "${k}"`)
+    for (const g of w.gateIds) { if (seen.has(g)) throw new Error(`campaign spec gateId ${g} appears in two work items`); seen.add(g) }
+  }
+  if (!Array.isArray(spec.allow?.newFiles) || !Array.isArray(spec.allow?.edit)) throw new Error('campaign spec allow.newFiles and allow.edit must be arrays')
+  spec.ideation = spec.ideation ?? { enabled: true }
+  return spec
+}
+
+const defaultIo = {
+  exists: (p) => existsSync(p),
+  readFile: (p) => readFileSync(p, 'utf8'),
+  gitHasCommit: (repo, sha) => spawnSync('git', ['-C', repo, 'cat-file', '-e', `${sha}^{commit}`], { encoding: 'utf8' }).status === 0,
+}
+
+/** S5 identity: the invariants no wave, proposal, or generated brief may violate.
+ * Note: spec.suiteBaseline is not required to exist here — it is CREATED by
+ * calibration (a later task). Only its location under ~/.cynco/heldout/ is
+ * an identity invariant; gate and perturb must already exist (they are
+ * authored ahead of time and sealed).
+ */
+export function checkIdentity(spec, io = defaultIo) {
+  const problems = []
+  const norm = (p) => String(p).replace(/\\/g, '/')
+  const underHeldout = (p) => {
+    const n = norm(p)
+    // Accept an absolute path containing /.cynco/heldout/ or a ~/-prefixed
+    // form (~/.cynco/heldout/...), normalising backslashes either way.
+    return /\/\.cynco\/heldout\//.test(n) || /^~\/\.cynco\/heldout\//.test(n)
+  }
+  for (const k of ['gate', 'perturb']) {
+    if (!underHeldout(spec[k])) problems.push(`${k} must live under ~/.cynco/heldout/ (sealed); got ${spec[k]}`)
+    if (!io.exists(spec[k])) problems.push(`${k} does not exist: ${spec[k]}`)
+  }
+  if (!underHeldout(spec.suiteBaseline)) problems.push(`suiteBaseline must live under ~/.cynco/heldout/ (sealed); got ${spec.suiteBaseline}`)
+  if (!io.gitHasCommit(spec.repo, spec.base)) problems.push(`base ${spec.base} is not a commit in ${spec.repo}`)
+  if (spec.keepGreen.includes(spec.marker)) problems.push('keepGreen must not contain the marker')
+  const forbidden = [basename(norm(spec.gate)), basename(norm(spec.perturb)), 'heldout']
+  const visible = [spec.measures, ...spec.work.map(w => w.text), ...spec.rules, spec.assets?.text ?? '']
+  for (const text of visible) for (const f of forbidden) {
+    if (String(text).includes(f)) problems.push(`brief-visible text names the sealed instrument "${f}" — sealedPaths would refuse the run`)
+  }
+  return { ok: problems.length === 0, problems }
+}
