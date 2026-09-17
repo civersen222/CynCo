@@ -4031,19 +4031,40 @@ export class ConversationLoop {
     // interception below included — already does. Rebinding would only put the
     // prepend at risk of being dropped by the next use of the old name.
     if (this.missionInvariants?.caps.codeIndexFirst && toolName === 'Grep' && isIdentifierPattern(String(toolInput.pattern ?? ''))) {
-      try {
+      const inv = this.missionInvariants
+      // Closed by the deadline below so a late index cannot rewrite a result
+      // the loop has already moved on from.
+      let expired = false
+      const prepend = (async () => {
         const { codeIndexTool } = await import('../tools/impl/codeIndex.js')
         const ci = await codeIndexTool.execute({ query: String(toolInput.pattern), top_k: 3 }, this.executor['cwd'])
-        if (!ci.isError && ci.output.trim()) {
-          result.output = `[CodeIndex top-3 for ${JSON.stringify(toolInput.pattern)}]\n${ci.output.trim()}\n\n${result.output}`
-          this.missionInvariants.noteCodeIndexAssisted()
-          // The index answered for this Grep, so the crawl-nudge counter in
-          // toolHints must see it too — otherwise the next Grep carries a
-          // "N calls since your last CodeIndex query" lecture for a call the
-          // index just served.
-          noteCodeIndexUse()
-        }
-      } catch (e) { console.log(`[invariant] CodeIndex-first skipped: ${e instanceof Error ? e.message : e}`) }
+        const card = (ci.output ?? '').trim()
+        // `codeIndexTool.execute` never sets isError: when the vector search
+        // comes back empty it answers with its own `[regex fallback]` grep, and
+        // when that finds nothing too it answers `No results for "x"`. Counting
+        // either as adoption would make `codeIndexAssisted` a count of
+        // identifier-shaped Greps — the number we already have — and would
+        // prepend a second copy of the Grep the model is about to read.
+        if (expired || ci.isError || !card) return
+        if (card.startsWith('[regex fallback]') || card.startsWith('No results for')) return
+        result.output = `[CodeIndex top-3 for ${JSON.stringify(toolInput.pattern)}]\n${card}\n\n${result.output}`
+        inv.noteCodeIndexAssisted()
+        // The index answered for this Grep, so the crawl-nudge counter in
+        // toolHints must see it too — otherwise the next Grep carries a
+        // "N calls since your last CodeIndex query" lecture for a call the
+        // index just served.
+        noteCodeIndexUse()
+      })()
+        .then(() => 'done' as const)
+        .catch(e => { console.log(`[invariant] CodeIndex-first skipped: ${e instanceof Error ? e.message : e}`); return 'error' as const })
+      // Bounded: the first query of a session builds or loads the vector index,
+      // and this runs on the model's critical path AFTER its Grep already
+      // succeeded. A slow index must cost the run a card, never the answer.
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const deadline = new Promise<'timeout'>(resolve => { timer = setTimeout(() => { expired = true; resolve('timeout') }, 10_000) })
+      const outcome = await Promise.race([prepend, deadline])
+      if (timer) clearTimeout(timer)
+      if (outcome === 'timeout') console.log('[invariant] CodeIndex-first skipped: timeout')
     }
     accountInvariants(result.isError)
 

@@ -76,11 +76,12 @@ function mockProvider(responses: Array<() => Generator<StreamEvent>>): Provider 
  * the adoption — and not about whether a vector index happened to build inside
  * a freshly-made temp directory.
  */
+const ciStub = vi.hoisted(() => ({ output: null as string | null }))
 vi.mock('../../tools/impl/codeIndex.js', () => ({
   codeIndexTool: {
     name: 'CodeIndex',
     execute: async (input: Record<string, unknown>) => ({
-      output: `STUB CARD for ${String(input.query)} (top_k=${String(input.top_k)})`,
+      output: ciStub.output ?? `STUB CARD for ${String(input.query)} (top_k=${String(input.top_k)})`,
       isError: false,
     }),
   },
@@ -210,6 +211,38 @@ describe('mission invariants wiring', () => {
     expect(String(complete[0].result)).toContain('STUB CARD for hold_seat_for_player (top_k=3)')
     expect(lastStatus(events).invariants.codeIndexAssisted).toBe(1)
     globalContract.clear()
+  }, 30000)
+
+  /**
+   * `codeIndexTool.execute` never sets `isError`. When the vector search comes
+   * back empty it answers with its OWN regex grep, and `codeIndexAssisted`
+   * counting that would make the adoption metric a count of identifier-shaped
+   * Greps — the number the ledger already has — while prepending a second copy
+   * of the grep the model is about to read.
+   */
+  it('does not count (or prepend) a regex-fallback answer as index adoption', async () => {
+    globalContract.clear()
+    ciStub.output = '[regex fallback]\ngilded/ui/app.py:12: def hold_seat_for_player(...)'
+    try {
+      const { loop, events } = harness('cynco-inv-fallback-', [
+        grepToolUse('hold_seat_for_player'),
+        textResponse('done'),
+      ])
+
+      await loop.handleUserMessage('find it', {
+        unattended: true,
+        invariants: { editGapCap: 40, commitGapCap: 150, revertBan: true, codeIndexFirst: true },
+      })
+
+      const complete = events.filter(e => e.type === 'tool.complete') as any[]
+      expect(complete.length).toBe(1)
+      expect(String(complete[0].result)).not.toContain('[CodeIndex top-3 for')
+      expect(String(complete[0].result)).not.toContain('[regex fallback]')
+      expect(lastStatus(events).invariants.codeIndexAssisted).toBe(0)
+    } finally {
+      ciStub.output = null
+      globalContract.clear()
+    }
   }, 30000)
 
   /**
