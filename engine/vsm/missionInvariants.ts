@@ -47,16 +47,38 @@ export type InvariantKind = 'edit-gap' | 'commit-gap' | 'revert'
 export type InvariantVerdict = { kind: 'allow' } | { kind: 'deny'; invariant: InvariantKind; message: string }
 export interface InvariantDenial { callIndex: number; invariant: InvariantKind; tool: string; nextCallClass: string | null }
 export interface InvariantStep { callIndex: number; variable: string; from: string; to: string; restoredAfter: number | null }
+/**
+ * What reaches the wire on every `governance.status` frame. The two arrays are
+ * WINDOWS, not the history: a long mission accumulates thousands of calls and
+ * this object is re-emitted per model iteration, so an uncapped `denials` would
+ * put the whole run's denial log on the socket once per turn. The counts and
+ * the aggregates carry the full-run facts the windows drop — same shape the
+ * `ultrastable` frame next to it already uses (`trace` capped, `traceLength`
+ * beside it).
+ */
 export interface InvariantSnapshot {
   caps: InvariantCaps; configuration: 'full' | 'edit-only'
   callsSinceSourceEdit: number; callsSinceCommit: number
-  steps: InvariantStep[]; denials: InvariantDenial[]; revertRefusals: number; codeIndexAssisted: number
+  /** Last 20 uniselector steps. `stepCount` is how many there have been. */
+  steps: InvariantStep[]; stepCount: number
+  /** Last 50 denials. `denialCount` is how many there have been. */
+  denials: InvariantDenial[]; denialCount: number
+  /** Over ALL denials, not the window. */
+  denialsByInvariant: Record<InvariantKind, number>
+  /** Over ALL denials, not the window. A denial whose next call has not been
+   *  observed yet is counted under `pending`, so these always sum to
+   *  `denialCount`. */
+  nextCallClassCounts: Record<string, number>
+  revertRefusals: number; codeIndexAssisted: number
 }
 
 const EDITOR_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'ApplyPatch', 'ReplaceFunction', 'NotebookEdit'])
 const INSPECT_TOOLS = new Set(['Read', 'Grep', 'Glob', 'Ls'])
 const RELENT_AFTER = 3
 const DWELL = 3
+// Window sizes for the per-turn status frame (see InvariantSnapshot).
+const DENIAL_WINDOW = 50
+const STEP_WINDOW = 20
 
 const REVERT_MESSAGE =
   '[invariant] REFUSED: that command discards work. You may not revert a file in this run, ' +
@@ -224,10 +246,20 @@ export class MissionInvariants {
       to: 'Discrete' in e.to ? e.to.Discrete : 'continuous',
       restoredAfter: e.restoredAfter,
     }))
+    const denialsByInvariant: Record<InvariantKind, number> = { 'edit-gap': 0, 'commit-gap': 0, revert: 0 }
+    const nextCallClassCounts: Record<string, number> = {}
+    for (const d of this.denials) {
+      denialsByInvariant[d.invariant] = (denialsByInvariant[d.invariant] ?? 0) + 1
+      const k = d.nextCallClass ?? 'pending'
+      nextCallClassCounts[k] = (nextCallClassCounts[k] ?? 0) + 1
+    }
     return {
       caps: this.caps, configuration: this.isEditOnly() ? 'edit-only' : 'full',
       callsSinceSourceEdit: this.callsSinceSourceEdit, callsSinceCommit: this.callsSinceCommit,
-      steps, denials: [...this.denials], revertRefusals: this.revertRefusals, codeIndexAssisted: this.codeIndexAssisted,
+      steps: steps.slice(-STEP_WINDOW), stepCount: steps.length,
+      denials: this.denials.slice(-DENIAL_WINDOW), denialCount: this.denials.length,
+      denialsByInvariant, nextCallClassCounts,
+      revertRefusals: this.revertRefusals, codeIndexAssisted: this.codeIndexAssisted,
     }
   }
 }

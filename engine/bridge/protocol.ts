@@ -266,8 +266,17 @@ export type GovernanceStatusEvent = {
     configuration: string
     callsSinceSourceEdit: number
     callsSinceCommit: number
+    /** Last 20 steps; `stepCount` is the full-run total. */
     steps: Array<{ callIndex: number; variable: string; from: string; to: string; restoredAfter: number | null }>
+    stepCount: number
+    /** Last 50 denials; `denialCount` is the full-run total. */
     denials: Array<{ callIndex: number; invariant: string; tool: string; nextCallClass: string | null }>
+    denialCount: number
+    /** Over ALL denials, not the window. Keys are the invariant ids
+     *  (`edit-gap`/`commit-gap`/`revert`); `pending` in nextCallClassCounts is a
+     *  denial whose next call has not been observed yet. */
+    denialsByInvariant: Record<string, number>
+    nextCallClassCounts: Record<string, number>
     revertRefusals: number
     codeIndexAssisted: number
   } | null

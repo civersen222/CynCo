@@ -115,6 +115,44 @@ describe('MissionInvariants', () => {
     expect(steps[1]).toMatchObject({ callIndex: 7, from: 'edit-only', to: 'full' })
   })
 
+  /**
+   * The snapshot rides every governance.status frame, once per model
+   * iteration. A long mission's denial log must not be re-serialised onto the
+   * socket in full each time — but the counts it drops are exactly what the
+   * falsification programme reads, so they move into aggregates rather than
+   * being lost.
+   */
+  it('windows denials and steps on the status frame and keeps full-run aggregates', () => {
+    // editGapCap 5 is already over at call 6; every inspect from there on is a
+    // denial, and each denial is itself a call (observed as an error).
+    for (let n = 0; n < 6; n++) inv.observeCall('Read', read(n)[1], false)
+    let denies = 0
+    let n = 0
+    let firstDenialCallIndex = -1
+    while (denies < 60) {
+      const v = inv.evaluate(...read(1000 + n))
+      if (v.kind === 'deny') {
+        denies++
+        if (firstDenialCallIndex < 0) firstDenialCallIndex = inv.snapshot().denials[0].callIndex
+      }
+      inv.observeCall('Read', read(1000 + n)[1], v.kind === 'deny')
+      n++
+    }
+    const s = inv.snapshot()
+    expect(s.denialCount).toBe(60)
+    expect(s.denials).toHaveLength(50)
+    // The window is the TAIL: the ten oldest denials are the ones dropped.
+    expect(firstDenialCallIndex).toBeGreaterThan(0)
+    expect(s.denials[0].callIndex).toBeGreaterThan(firstDenialCallIndex)
+    expect(s.steps.length).toBeLessThanOrEqual(20)
+    expect(s.stepCount).toBeGreaterThanOrEqual(s.steps.length)
+    const byInvariant = Object.values(s.denialsByInvariant).reduce((a, b) => a + b, 0)
+    expect(byInvariant).toBe(60)
+    expect(s.denialsByInvariant['edit-gap']).toBe(60)
+    const byClass = Object.values(s.nextCallClassCounts).reduce((a, b) => a + b, 0)
+    expect(byClass).toBe(60)
+  })
+
   it('counts CodeIndex-assisted greps', () => {
     inv.noteCodeIndexAssisted(); inv.noteCodeIndexAssisted()
     expect(inv.snapshot().codeIndexAssisted).toBe(2)

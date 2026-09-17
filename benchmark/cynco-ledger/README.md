@@ -159,7 +159,16 @@ decisions still recorded here).
   // above — not an average or a history). null = the engine never sent one:
   // an interactive-style run, or an engine without Plan 2's invariant/
   // ultrastable telemetry.
-  "invariants": { "configuration": "full", "denials": [] },
+  // `denials` and `steps` are WINDOWS (last 50 / last 20), not the history:
+  // the frame is re-emitted every model iteration, so the full-run facts live
+  // in the counts and the aggregates beside them. `denialsByInvariant` and
+  // `nextCallClassCounts` are over ALL denials, not the window, and each sums
+  // to `denialCount` (`pending` = a denial whose next call was never observed,
+  // i.e. the run ended on it).
+  "invariants": { "configuration": "full",
+    "denials": [], "denialCount": 0, "steps": [], "stepCount": 0,
+    "denialsByInvariant": { "edit-gap": 0, "commit-gap": 0, "revert": 0 },
+    "nextCallClassCounts": {}, "revertRefusals": 0, "codeIndexAssisted": 0 },
   "ultrastable": { "trace": [], "margin": 0.4 }
 }
 ```
