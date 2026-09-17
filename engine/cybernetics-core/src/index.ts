@@ -13,12 +13,23 @@ export * from './types';
 
 // Module namespaces
 export * as foundations from './foundations';
+export type {
+  AdaptationEvent,
+  EssentialVariable,
+  StepFunction,
+  SearchStrategy,
+  UltrastableConfig,
+  Configuration,
+  ViabilityReport,
+  Violation,
+} from './foundations';
 export * as variety from './variety';
 export * as algedonic from './algedonic';
 export * as homeostat from './homeostat';
 export * as metrics from './metrics';
 export * as autopoiesis from './autopoiesis';
 export * as constraints from './constraints';
+export type { PosiwidReport, PosiwidVerdict, ObservedBehaviour } from './constraints';
 export * as heterarchy from './heterarchy';
 export * as conversation from './conversation';
 export * as observer from './observer';

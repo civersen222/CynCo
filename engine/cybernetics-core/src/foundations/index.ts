@@ -516,6 +516,99 @@ export function isGoodRegulator(
 // ===================================================================
 
 /**
+ * An essential variable: a named quantity that must stay inside `bounds`.
+ * `hysteresis` is the fraction of the bound range a variable must re-enter by
+ * before it counts as viable again (0 = no hysteresis).
+ */
+export interface EssentialVariable {
+  name: string;
+  bounds: [number, number];
+  hysteresis: number;
+}
+
+/**
+ * Ashby's step function. `Continuous` is the legacy parameter vector;
+ * `Discrete` is the homeostat's uniselector (a finite ordered set of positions).
+ */
+export type StepFunction =
+  | { kind: 'Continuous'; values: number[]; stepSize: number }
+  | { kind: 'Discrete'; positions: string[]; index: number };
+
+/** How the slow loop searches for a new configuration. */
+export type SearchStrategy = 'Random' | 'Ordered' | 'Habituated';
+
+export interface UltrastableConfig {
+  /** Updates to wait after a step before judging it (the slow loop is slow on purpose). */
+  dwell: number;
+  strategy: SearchStrategy;
+  /** Added to the step count when seeding the LCG; 0n reproduces the legacy sequence. */
+  seed: bigint;
+}
+
+/**
+ * A snapshot of the step function's current value. Same JSON shape as
+ * serde's externally-tagged Rust enum: `{ Discrete: string }` / `{ Continuous: number[] }`.
+ */
+export type Configuration = { Continuous: number[] } | { Discrete: string };
+
+export type Bound = 'Min' | 'Max';
+
+export interface Violation {
+  index: number;
+  name: string;
+  value: number;
+  bound: Bound;
+  /**
+   * Distance outside the effective bound, in the variable's units (always > 0). With
+   * hysteresis, the effective bound is narrowed while the variable is in violation, so
+   * `excess` is measured against `bound +/- hysteresis * range`, not the raw `bounds` value.
+   */
+  excess: number;
+}
+
+export interface ViabilityReport {
+  viable: boolean;
+  violations: Violation[];
+  /** Minimum normalised distance to a bound across variables; negative when violated. */
+  margin: number;
+  stepped: boolean;
+  configuration: Configuration;
+  dwellRemaining: number;
+}
+
+/** One slow-loop step and, once known, whether it restored viability. */
+export class AdaptationEvent {
+  constructor(
+    public step: number,
+    public violations: string[],
+    public from: Configuration,
+    public to: Configuration,
+    public strategy: SearchStrategy,
+    /** Updates after the step until every variable was viable again; null while open or if a later step superseded it. */
+    public restoredAfter: number | null,
+  ) {}
+
+  /** serde field order and snake_case so JSON matches the Rust core byte for byte. */
+  toJSON() {
+    return {
+      step: this.step,
+      violations: this.violations,
+      from: this.from,
+      to: this.to,
+      strategy: this.strategy,
+      restored_after: this.restoredAfter,
+    };
+  }
+}
+
+const MASK = (1n << 64n) - 1n;
+const LCG_A = 6364136223846793005n;
+const LCG_C = 1442695040888963407n;
+const lcgNext = (seed: bigint): bigint => (seed * LCG_A + LCG_C) & MASK;
+const lcgUnit = (seed: bigint): number => Number(seed >> 33n) / (4294967295 / 2.0) - 1.0;
+const retainedKey = (names: string[]): string => [...names].sort().join('+');
+
+/**
  * An ultrastable system with two nested feedback loops.
  *
  * The fast loop (a FeedbackLoop) handles routine error correction.
@@ -526,21 +619,22 @@ export function isGoodRegulator(
  * step count, matching the Rust core.
  */
 export class UltrastableSystem {
-  /** The fast (inner) feedback loop for routine regulation. */
-  private fastLoopInner: FeedbackLoop;
-  /** Essential variables that must remain within viable bounds. */
-  private essentialVariablesInner: number[];
-  /** Viable bounds [min, max] for each essential variable. */
-  private boundsInner: [number, number][];
-  /** Parameters that the slow loop adjusts when viability is lost. */
-  private parametersInner: number[];
-  /** Step size for parameter perturbation. */
-  private stepSize: number;
-  /** Internal step counter used as seed for deterministic perturbation. */
+  private fastLoopInner!: FeedbackLoop;
+  private vars!: EssentialVariable[];
+  private values!: number[];
+  private step!: StepFunction;
+  private config!: UltrastableConfig;
   private stepCount: bigint = 0n;
+  private dwellRemaining = 0;
+  private traceInner: AdaptationEvent[] = [];
+  private retainedInner = new Map<string, Configuration>();
+  private inViolation!: boolean[];
+  private openEvent: number | null = null;
+  private updatesSinceStep = 0;
 
   /**
-   * Creates a new ultrastable system.
+   * Legacy constructor -- continuous parameters, no dwell, no hysteresis, Random
+   * search, seed 0n. Bit-identical to the original implementation.
    *
    * @param fastLoop   - The inner feedback loop for routine regulation
    * @param variables  - Initial values of essential variables
@@ -561,75 +655,72 @@ export class UltrastableSystem {
         `Variables and bounds must have equal length: ${variables.length} vs ${bounds.length}`,
       );
     }
-    this.fastLoopInner = fastLoop;
-    this.essentialVariablesInner = [...variables];
-    this.boundsInner = bounds.map((b) => [b[0], b[1]]);
-    this.parametersInner = [...parameters];
-    this.stepSize = stepSize;
+    const vars = bounds.map((b, i) => ({ name: `ev${i}`, bounds: [b[0], b[1]] as [number, number], hysteresis: 0 }));
+    const s = UltrastableSystem.withConfig(
+      fastLoop,
+      vars,
+      { kind: 'Continuous', values: [...parameters], stepSize },
+      { dwell: 0, strategy: 'Random', seed: 0n },
+    );
+    Object.assign(this, s);
+    this.values = [...variables];
   }
 
   /**
-   * Updates the system with new measurements and returns viability status.
+   * Full constructor (Ashby's homeostat). Initial values are 0 for every variable.
    *
-   * Ashby's ultrastability algorithm:
-   * 1. Update essential variables with the provided measurements.
-   * 2. Run the fast loop with the first measurement.
-   * 3. Check viability (all essential variables within bounds).
-   * 4. If not viable, perturb parameters (slow loop activation).
-   *
-   * @param measurements - Current values of essential variables
-   * @returns true if system is viable after update; false if parameters were perturbed
-   * @throws Error if measurements length differs from essential variables count
+   * @throws Error if `step` is Discrete with no positions, or with an out-of-range index.
    */
-  update(measurements: number[]): boolean {
-    if (measurements.length !== this.essentialVariablesInner.length) {
-      throw new Error(
-        `Measurements length (${measurements.length}) must match essential variables (${this.essentialVariablesInner.length})`,
-      );
+  static withConfig(
+    fastLoop: FeedbackLoop,
+    variables: EssentialVariable[],
+    step: StepFunction,
+    config: UltrastableConfig,
+  ): UltrastableSystem {
+    if (step.kind === 'Discrete') {
+      if (step.positions.length === 0) {
+        throw new Error('Discrete step function needs at least one position');
+      }
+      if (step.index >= step.positions.length) {
+        throw new Error(`Discrete index ${step.index} out of range ${step.positions.length}`);
+      }
     }
-
-    this.stepCount += 1n;
-
-    // Update essential variables
-    for (let i = 0; i < measurements.length; i++) {
-      this.essentialVariablesInner[i] = measurements[i];
-    }
-
-    // Run the fast loop on the first measurement
-    if (measurements.length > 0) {
-      this.fastLoopInner.update(measurements[0]);
-    }
-
-    // Check viability
-    if (this.isViable()) {
-      return true;
-    }
-
-    // Slow loop: perturb parameters (Ashby's step function)
-    this.perturbParameters();
-    return false;
+    const s = Object.create(UltrastableSystem.prototype) as UltrastableSystem;
+    s.fastLoopInner = fastLoop;
+    s.vars = variables.map((v) => ({ ...v, bounds: [v.bounds[0], v.bounds[1]] }));
+    s.values = variables.map(() => 0);
+    s.step = step.kind === 'Continuous' ? { ...step, values: [...step.values] } : { ...step, positions: [...step.positions] };
+    s.config = { ...config };
+    s.stepCount = 0n;
+    s.dwellRemaining = 0;
+    s.traceInner = [];
+    s.retainedInner = new Map();
+    s.inViolation = variables.map(() => false);
+    s.openEvent = null;
+    s.updatesSinceStep = 0;
+    return s;
   }
 
-  /**
-   * Checks whether all essential variables are within their viable bounds.
-   */
-  isViable(): boolean {
-    for (let i = 0; i < this.essentialVariablesInner.length; i++) {
-      const v = this.essentialVariablesInner[i];
-      const [min, max] = this.boundsInner[i];
-      if (v < min || v > max) return false;
-    }
-    return true;
+  /** Returns a snapshot of the step function's current value. */
+  configuration(): Configuration {
+    return this.step.kind === 'Continuous'
+      ? { Continuous: [...this.step.values] }
+      : { Discrete: this.step.positions[this.step.index] };
+  }
+
+  /** Returns the essential variable definitions. */
+  variables(): readonly EssentialVariable[] {
+    return this.vars;
   }
 
   /** Returns a copy of the current essential variable values. */
   essentialVariables(): number[] {
-    return [...this.essentialVariablesInner];
+    return [...this.values];
   }
 
-  /** Returns a copy of the current parameter values. */
+  /** Returns a copy of the current parameter values (empty for Discrete). */
   parameters(): number[] {
-    return [...this.parametersInner];
+    return this.step.kind === 'Continuous' ? [...this.step.values] : [];
   }
 
   /** Returns the inner fast feedback loop. */
@@ -637,33 +728,210 @@ export class UltrastableSystem {
     return this.fastLoopInner;
   }
 
+  /** Returns the adaptation trace: one entry per slow-loop step taken via observe(). */
+  trace(): readonly AdaptationEvent[] {
+    return this.traceInner;
+  }
+
   /**
-   * Perturbs parameters using a deterministic pseudo-random generator.
-   *
-   * Uses a simple linear congruential generator (LCG) seeded from the step
-   * count. Constants match the Rust core (Numerical Recipes LCG).
-   *
-   * LCG: next = (a * seed + c) mod 2^64
-   *   a = 6364136223846793005
-   *   c = 1442695040888963407
-   *
-   * Maps to [-1.0, 1.0] via (seed >> 33) / (2^31 - 0.5) - 1.0
+   * Returns the habituation memory: violated-variable key (sorted names joined with `+`)
+   * to the configuration that last restored viability for that combination.
    */
-  private perturbParameters(): void {
-    // Use BigInt for exact 64-bit wrapping arithmetic matching Rust's wrapping_mul/wrapping_add
-    const MASK = (1n << 64n) - 1n;
-    const A = 6364136223846793005n;
-    const C = 1442695040888963407n;
+  retained(): ReadonlyMap<string, Configuration> {
+    return this.retainedInner;
+  }
 
-    let seed = this.stepCount;
+  /**
+   * Checks whether all essential variables are within their viable bounds.
+   *
+   * Compares current values against bounds directly (inclusive), independent of the
+   * hysteresis-tracking `inViolation` state used by observe() -- this is what lets
+   * a freshly constructed system with out-of-bounds initial values report `false`
+   * before any observation has run.
+   */
+  isViable(): boolean {
+    return this.vars.every((v, i) => this.values[i] >= v.bounds[0] && this.values[i] <= v.bounds[1]);
+  }
 
-    for (let i = 0; i < this.parametersInner.length; i++) {
-      // LCG step with wrapping 64-bit arithmetic
-      seed = (seed * A + C) & MASK;
-      // Map to [-1.0, 1.0] -- matches Rust: ((seed >> 33) as f64) / (u32::MAX as f64 / 2.0) - 1.0
-      const shifted = Number(seed >> 33n);
-      const normalized = shifted / (4294967295 / 2.0) - 1.0;
-      this.parametersInner[i] += this.stepSize * normalized;
+  /**
+   * Minimum normalised distance to a bound across essential variables (negative when
+   * violated). Reflects the current values against the plain (non-hysteresis-narrowed)
+   * bounds -- the same rule observe() uses to compute ViabilityReport.margin, so the two
+   * never diverge for the same state.
+   */
+  margin(): number {
+    return this.computeMargin();
+  }
+
+  /**
+   * Minimum normalised distance to a bound across essential variables (negative when
+   * violated).
+   *
+   * A zero-range variable (`bounds[0] === bounds[1]`) can only ever sit exactly on its
+   * bound: it contributes `0` when its value equals that bound, and `-1` (an arbitrary
+   * but always-negative "outside" signal) otherwise. Skipping it instead would silently
+   * hide a violated variable from the margin. Shared by observe() and margin() so the
+   * two can never diverge.
+   */
+  private computeMargin(): number {
+    let margin = Infinity;
+    this.vars.forEach((v, i) => {
+      const [min, max] = v.bounds;
+      const range = Math.max(max - min, 0);
+      const value = this.values[i];
+      let dist: number;
+      if (range > 0) {
+        dist = Math.min((value - min) / range, (max - value) / range);
+      } else if (value === min) {
+        dist = 0;
+      } else {
+        dist = -1;
+      }
+      margin = Math.min(margin, dist);
+    });
+    return margin === Infinity ? 0 : margin;
+  }
+
+  /** Serialises the retained-configuration map to a JSON object. */
+  exportRetained(): string {
+    return JSON.stringify(Object.fromEntries(this.retainedInner));
+  }
+
+  /** Replaces the retained-configuration map from a JSON object produced by exportRetained(). */
+  importRetained(json: string): void {
+    const parsed = JSON.parse(json) as Record<string, Configuration>;
+    this.retainedInner = new Map(Object.entries(parsed));
+  }
+
+  /**
+   * Legacy API: `true` when viable, `false` when a step was taken (dwell 0 => every
+   * non-viable update steps).
+   */
+  update(measurements: number[]): boolean {
+    return this.observe(measurements).viable;
+  }
+
+  /**
+   * Ashby's ultrastability, one observation:
+   * 1. record the measurements and run the fast loop on the first one;
+   * 2. judge each essential variable against its bounds (with hysteresis for a variable already in violation);
+   * 3. viable -> close the open adaptation event, retain the configuration that restored viability;
+   * 4. not viable -> wait out the dwell, else step the step function and open a new event.
+   */
+  observe(measurements: number[]): ViabilityReport {
+    if (measurements.length !== this.values.length) {
+      throw new Error(
+        `Measurements length (${measurements.length}) must match essential variables (${this.values.length})`,
+      );
+    }
+    this.stepCount += 1n;
+    if (this.openEvent !== null) this.updatesSinceStep += 1;
+    this.values = [...measurements];
+    if (measurements.length > 0) this.fastLoopInner.update(measurements[0]);
+
+    const violations: Violation[] = [];
+    this.vars.forEach((v, i) => {
+      const [min, max] = v.bounds;
+      const range = Math.max(max - min, 0);
+      const band = this.inViolation[i] ? v.hysteresis * range : 0;
+      const value = this.values[i];
+      const lo = min + band;
+      const hi = max - band;
+      if (value < lo) {
+        violations.push({ index: i, name: v.name, value, bound: 'Min', excess: lo - value });
+        this.inViolation[i] = true;
+      } else if (value > hi) {
+        violations.push({ index: i, name: v.name, value, bound: 'Max', excess: value - hi });
+        this.inViolation[i] = true;
+      } else {
+        this.inViolation[i] = false;
+      }
+    });
+    const margin = this.computeMargin();
+
+    let stepped = false;
+    if (violations.length === 0) {
+      if (this.openEvent !== null) {
+        const ev = this.traceInner[this.openEvent];
+        ev.restoredAfter = this.updatesSinceStep;
+        this.retainedInner.set(retainedKey(ev.violations), this.configuration());
+        this.openEvent = null;
+      }
+      this.dwellRemaining = 0;
+      this.updatesSinceStep = 0;
+    } else if (this.dwellRemaining > 0) {
+      this.dwellRemaining -= 1;
+    } else {
+      const names = violations.map((v) => v.name);
+      const from = this.configuration();
+      const used = this.stepConfiguration(names);
+      this.traceInner.push(new AdaptationEvent(Number(this.stepCount), names, from, this.configuration(), used, null));
+      this.openEvent = this.traceInner.length - 1;
+      this.dwellRemaining = this.config.dwell;
+      this.updatesSinceStep = 0;
+      stepped = true;
+    }
+
+    return {
+      viable: violations.length === 0,
+      violations,
+      margin,
+      stepped,
+      configuration: this.configuration(),
+      dwellRemaining: this.dwellRemaining,
+    };
+  }
+
+  /**
+   * Applies one step of the step function. Returns the strategy actually used
+   * (Habituated falls back to Random when nothing is retained).
+   */
+  private stepConfiguration(names: string[]): SearchStrategy {
+    if (this.config.strategy === 'Habituated') {
+      const retained = this.retainedInner.get(retainedKey(names));
+      let applied = false;
+      if (retained && 'Discrete' in retained && this.step.kind === 'Discrete') {
+        const i = this.step.positions.indexOf(retained.Discrete);
+        if (i >= 0 && i !== this.step.index) {
+          this.step.index = i;
+          applied = true;
+        }
+      } else if (
+        retained && 'Continuous' in retained && this.step.kind === 'Continuous' &&
+        retained.Continuous.length === this.step.values.length &&
+        retained.Continuous.some((x, i) => x !== (this.step as { values: number[] }).values[i])
+      ) {
+        this.step.values = [...retained.Continuous];
+        applied = true;
+      }
+      if (applied) return 'Habituated';
+      this.stepRandom();
+      return 'Random';
+    }
+    if (this.config.strategy === 'Ordered') {
+      if (this.step.kind === 'Discrete') {
+        this.step.index = (this.step.index + 1) % this.step.positions.length;
+      } else {
+        this.step.values = this.step.values.map((v) => v + (this.step as { stepSize: number }).stepSize);
+      }
+      return 'Ordered';
+    }
+    this.stepRandom();
+    return 'Random';
+  }
+
+  /** Legacy perturbation for Continuous; for Discrete, a random position other than the current one. */
+  private stepRandom(): void {
+    let seed = (this.config.seed + this.stepCount) & MASK;
+    if (this.step.kind === 'Continuous') {
+      for (let i = 0; i < this.step.values.length; i++) {
+        seed = lcgNext(seed);
+        this.step.values[i] += this.step.stepSize * lcgUnit(seed);
+      }
+    } else if (this.step.positions.length > 1) {
+      seed = lcgNext(seed);
+      const offset = 1 + Number((seed >> 33n) % BigInt(this.step.positions.length - 1));
+      this.step.index = (this.step.index + offset) % this.step.positions.length;
     }
   }
 }
