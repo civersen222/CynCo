@@ -175,3 +175,16 @@ and applied only by `--approve-proposal`. Earned authority, never assumed.
   against what its waves actually did) is specified but no task built it.
 - **Dashboard readout of edit-only state.** The engine's edit-only state is not
   surfaced on the 9161 dashboard; recommended, not in this plan's tasks.
+- **Eigenform convergence (spec §7).** The metric for "the campaign's briefs
+  stop changing shape" — successive waves' generated briefs converging to a
+  fixed point — is specified but not measured; nothing computes it today.
+- **`codeIndexAssisted ≥ 20 %`.** The measurement plan's adoption ratio
+  (CodeIndex-assisted Greps over identifier-shaped Greps) is printed per wave in
+  the verdict entry but never compared against its 20 % target, and no decision
+  reads it.
+- **Ideation at authority 0.5 reorders `work[]`.** `ideation.order` is parsed
+  and stored on every wave record, and `commander` records which seat held
+  `brief` authority — but nothing consumes either: the brief's work items stay
+  in spec order whatever the registry says. Promotion currently changes what is
+  RECORDED, not what is generated; consuming `order` is the follow-up that makes
+  the earned authority real.

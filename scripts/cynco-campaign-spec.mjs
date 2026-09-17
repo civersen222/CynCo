@@ -22,6 +22,13 @@ export function loadCampaignSpec(path) {
     for (const g of w.gateIds) { if (seen.has(g)) throw new Error(`campaign spec gateId ${g} appears in two work items`); seen.add(g) }
   }
   if (!Array.isArray(spec.allow?.newFiles) || !Array.isArray(spec.allow?.edit)) throw new Error('campaign spec allow.newFiles and allow.edit must be arrays')
+  // Optional: the mutation sweep's mutant cap (cynco-mutation-sweep.py --max,
+  // default 25) and the branch `--sync` opens the PR against.
+  if (spec.sweep !== undefined) {
+    if (typeof spec.sweep !== 'object' || spec.sweep === null) throw new Error('campaign spec sweep must be an object')
+    if (spec.sweep.max !== undefined && (!Number.isInteger(spec.sweep.max) || spec.sweep.max <= 0)) throw new Error('campaign spec sweep.max must be a positive integer')
+  }
+  if (spec.prBase !== undefined && (typeof spec.prBase !== 'string' || !spec.prBase)) throw new Error('campaign spec prBase must be a non-empty string')
   spec.ideation = spec.ideation ?? { enabled: true }
   return spec
 }

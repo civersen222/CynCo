@@ -47,7 +47,12 @@ function runSweep(spec, row, io) {
   if (!base || !head || base === head) return { sweep: null, sweepFault: null }
   // resolve('scripts', …) assumes cwd = repo root: true for the campaign runner,
   // which is always invoked from the repo root (never from engine/ or tui/).
-  const r = io.run('python', [resolve('scripts', 'cynco-mutation-sweep.py'), '--repo', spec.repo, '--base', base, '--head', head, '--json'], { cwd: process.cwd(), env: {}, timeoutMs: SWEEP_TIMEOUT_MS })
+  // The sweep re-runs the KEEP-GREEN suite once per mutant: at 25 mutants a
+  // wave it is the most expensive instrument in the loop and has timed out
+  // where the gate did not. `spec.sweep.max` buys the campaign a reading it
+  // can afford; 25 stays the default for a spec that says nothing.
+  const max = spec.sweep?.max ?? 25
+  const r = io.run('python', [resolve('scripts', 'cynco-mutation-sweep.py'), '--repo', spec.repo, '--base', base, '--head', head, '--max', String(max), '--json'], { cwd: process.cwd(), env: {}, timeoutMs: SWEEP_TIMEOUT_MS })
   if (r.timedOut) return { sweep: null, sweepFault: `timed out after ${SWEEP_TIMEOUT_MS} ms` }
   if (r.status === 2) return { sweep: null, sweepFault: 'sweep refused (exit 2)' }
   const last = (r.stdout + '').trim().split('\n').reverse().find(l => l.startsWith('{'))

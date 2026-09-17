@@ -35,7 +35,23 @@ describe('gradeWave', () => {
     expect(g.posiwid.divergence).toBeCloseTo(0.0074686, 6)
     expect(g.posiwid.dominantObserved).toBe('inspect')
     expect(io.calls[0].opts.cwd).toBe('C:/repo')
+    expect(io.calls[0].opts.env.CYNCO_GATE_REPO).toBe('C:/repo')
     expect(io.calls[1].opts.env.CHK_SUITE_BASELINE).toBe('C:/x/suite_baseline.txt')
+    expect(io.calls[1].opts.env.CYNCO_GATE_REPO).toBe('C:/repo')
+    // default cap: 25 mutants, the sweep's own default made explicit
+    expect(io.calls[2].args.join(' ')).toMatch(/--max 25/)
+  })
+  // The sweep re-runs the KEEP-GREEN suite once per mutant — the most expensive
+  // instrument in the loop, and the one that has timed out where the gate did not.
+  it('passes the spec\'s sweep cap through to cynco-mutation-sweep.py', async () => {
+    const io = fakeIo([
+      [/gate_c8\.py/, { status: 0, stdout: 'GATE: PASS\n' }],
+      [/g_suite_no_regression\.py/, { status: 0, stdout: 'g_suite: PASS' }],
+      [/cynco-mutation-sweep\.py/, { status: 0, stdout: '{"command":"x","kind":"derived","killed":6,"total":6,"survived":[]}' }],
+    ])
+    const g = await gradeWave({ ...spec, sweep: { max: 6 } }, row, io)
+    expect(io.calls[2].args.join(' ')).toMatch(/--max 6/)
+    expect(g.sweep.total).toBe(6)
   })
   it('a gate that raises is a harness fault → verified null', async () => {
     const io = fakeIo([[/gate_c8\.py/, { status: 1, stdout: 'Traceback (most recent call last):\nKeyError: 1\n' }], [/g_suite/, { status: 0, stdout: 'g_suite: PASS' }], [/sweep/, { status: 2, stdout: '' }]])

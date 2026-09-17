@@ -32,6 +32,16 @@ describe('loadCampaignSpec', () => {
     const s = good(); s.work.push({ id: 2, title: 'X', gateIds: ['C8.4a'], text: 'y' })
     expect(() => loadCampaignSpec(write(s))).toThrow(/C8.4a/)
   })
+  it('accepts the optional sweep cap and prBase, and refuses nonsense in either', () => {
+    const s = good(); s.sweep = { max: 6 }; s.prBase = 'mission-invariants'
+    const loaded = loadCampaignSpec(write(s))
+    expect(loaded.sweep).toEqual({ max: 6 })
+    expect(loaded.prBase).toBe('mission-invariants')
+    expect(loadCampaignSpec(write(good())).sweep).toBeUndefined()
+    expect(() => loadCampaignSpec(write({ ...good(), sweep: { max: 0 } }))).toThrow(/sweep.max/)
+    expect(() => loadCampaignSpec(write({ ...good(), sweep: { max: 2.5 } }))).toThrow(/sweep.max/)
+    expect(() => loadCampaignSpec(write({ ...good(), prBase: '' }))).toThrow(/prBase/)
+  })
 })
 
 describe('checkIdentity', () => {
