@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest'
+import { readFileSync } from 'node:fs'
 import { createMissionCollector, buildMissionRecord } from '../cynco-ledger.mjs'
+import { bashEffect } from '../../engine/tools/bashEffect.js'
 
 /**
  * The verb classes exist because "delivery" measured as Edit+Write was
@@ -103,5 +105,34 @@ describe('buildMissionRecord probe block', () => {
     expect(withProbe.probe).toEqual(probe)
     const without = buildMissionRecord(createMissionCollector(), minimalMeta)
     expect(without.probe).toBeNull()
+  })
+})
+
+describe('bash effects and invariant blocks', () => {
+  it('counts Bash calls by effect using the engine classifier', () => {
+    const c = createMissionCollector()
+    c.ingest({ type: 'tool.start', toolName: 'Bash', input: { command: 'Get-Content a.py' } })
+    c.ingest({ type: 'tool.start', toolName: 'Bash', input: { command: 'git checkout -- a.py' } })
+    c.ingest({ type: 'tool.start', toolName: 'Bash', input: { command: 'python -m pytest -q' } })
+    expect(c.toolStats.bashByEffect).toEqual({ read: 1, write: 0, run: 1, commit: 0, revert: 1, other: 0 })
+    expect(c.toolStats.byClass.inspect).toBe(3)
+  })
+
+  it('agrees with the shared vectors', () => {
+    const vectors = JSON.parse(readFileSync(new URL('../../engine/tools/bashEffect.vectors.json', import.meta.url), 'utf8'))
+    for (const [cls, cmds] of Object.entries(vectors)) for (const cmd of cmds) expect(bashEffect(cmd)).toBe(cls)
+  })
+
+  it('keeps the last invariants and ultrastable snapshots on the record', () => {
+    const c = createMissionCollector()
+    c.ingest({ type: 'governance.status', health: 'healthy', invariants: { configuration: 'full', denials: [] }, ultrastable: { trace: [], margin: 0.4 } })
+    c.ingest({ type: 'governance.status', health: 'healthy', invariants: { configuration: 'edit-only', denials: [{ invariant: 'edit-gap' }] }, ultrastable: { trace: [{ step: 3 }], margin: -0.1 } })
+    const rec = buildMissionRecord(c, { missionId: 'm', briefFile: 'b', marker: 'x', cwd: '.', dispatchedAt: 't', durationS: 1, outcome: 'landed' })
+    expect(rec.invariants.configuration).toBe('edit-only')
+    expect(rec.invariants.denials).toHaveLength(1)
+    expect(rec.ultrastable.margin).toBe(-0.1)
+    const empty = buildMissionRecord(createMissionCollector(), { missionId: 'm', briefFile: 'b', marker: 'x', cwd: '.', dispatchedAt: 't', durationS: 1, outcome: 'landed' })
+    expect(empty.invariants).toBeNull()
+    expect(empty.ultrastable).toBeNull()
   })
 })

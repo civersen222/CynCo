@@ -108,8 +108,16 @@ decisions still recorded here).
     "byName": { "Read": 7, "Grep": 1, "Edit": 1, "Bash": 4 },
     "byClass": { "sourceEdit": 1, "fileWrite": 0, "inspect": 12 },
     "maxCallsWithoutSourceEdit": 9,
-    "commits": 2, "maxCallsWithoutCommit": 6
+    "commits": 2, "maxCallsWithoutCommit": 6,
+    "bashByEffect": { "read": 2, "write": 0, "run": 1, "commit": 1, "revert": 0, "other": 0 }
   },
+  // `byClass.inspect` above keeps Bash's historical bucket — it is joined
+  // against old rows and does not change. `bashByEffect` is the NEW, honest
+  // count of what each Bash call actually DID, from the same classifier the
+  // runtime regulator reads (engine/tools/bashEffect.ts) — C8 wave 1 found the
+  // regulator counting by tool name while 233 read-shaped Bash calls slipped
+  // past it uncounted. Every Bash call increments exactly one bucket; the
+  // sums must equal `byName.Bash`.
   // F57. How the drive loop resolved. "timeout" is the only value assigned by
   // fallback; "never_dispatched" means no turn ever ran.
   "exitReason": "engine_closed_the_turn",
@@ -146,7 +154,13 @@ decisions still recorded here).
   // P4.3/4(e): session-level regulator fidelity; null when the engine emitted
   // no session_fidelity event (no contract / older engine).
   "regulatorFidelity": { "hadContract": true, "resolutionRate": 1,
-    "finalTaskError": 0, "contractReplacements": 0 }
+    "finalTaskError": 0, "contractReplacements": 0 },
+  // Last `governance.status` snapshot wins (cumulative, like `tokenStats`
+  // above — not an average or a history). null = the engine never sent one:
+  // an interactive-style run, or an engine without Plan 2's invariant/
+  // ultrastable telemetry.
+  "invariants": { "configuration": "full", "denials": [] },
+  "ultrastable": { "trace": [], "margin": 0.4 }
 }
 ```
 
