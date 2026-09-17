@@ -24,6 +24,22 @@ describe('ideation', () => {
     expect(measureFollowed(idea, ['gilded/ui/app.py'])).toBe(false)
     expect(measureFollowed(null, ['gilded/ui/widgets.py'])).toBeNull()
   })
+  // Which hypothesis counts is the numerator of the promotion evidence, so it
+  // must not be a lottery over whichever one the model listed first: it is the
+  // hypothesis for the FIRST FAIL line in the wave's context.
+  it('scores the hypothesis for the first FAIL line, by prefix, not the first listed', () => {
+    const idea = { hypotheses: [
+      { gateId: 'C8.5.palette.Atlas', cause: 'x', firstEdit: 'gilded/ui/widgets.py' },
+      { gateId: 'C8.1b', cause: 'y', firstEdit: 'gilded/ui/atlas_view.py' },
+    ], order: [], trap: null }
+    const fails = [{ id: 'C8.1b.tiers-differ', line: 'C8.1b.tiers-differ: FAIL' }, { id: 'C8.5.palette.Atlas', line: 'C8.5.palette.Atlas: FAIL' }]
+    expect(measureFollowed(idea, ['gilded/ui/atlas_view.py'], fails)).toBe(true)
+    expect(measureFollowed(idea, ['gilded/ui/widgets.py'], fails)).toBe(false)
+    // no hypothesis for the first FAIL line — fall back to the first with a firstEdit
+    expect(measureFollowed(idea, ['gilded/ui/widgets.py'], [{ id: 'C8.3a', line: 'C8.3a: FAIL' }])).toBe(true)
+    // no fails handed in at all — same fallback
+    expect(measureFollowed(idea, ['gilded/ui/widgets.py'])).toBe(true)
+  })
   it('the deterministic generator commands the brief until ideation earns authority', () => {
     expect(authorityRegistry({ ideationAuthority: 0 }).whoCommands('brief')?.component).toBe('generator')
     expect(authorityRegistry({ ideationAuthority: 0.5 }).whoCommands('brief')?.component).toBe('generator')

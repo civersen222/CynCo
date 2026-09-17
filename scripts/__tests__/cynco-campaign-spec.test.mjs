@@ -63,4 +63,19 @@ describe('checkIdentity', () => {
   it('refuses a base the repo does not have', () => {
     expect(checkIdentity(good(), io({ gitHasCommit: () => false })).problems.join()).toMatch(/1d03308/)
   })
+  // Every field below reaches the worker verbatim through cynco-brief.mjs, so
+  // naming the sealed gate in any of them is the same leak as naming it in
+  // `measures` — which was the only field scanned.
+  it('scans the title, KEEP-GREEN command, allow lists and deny list too', () => {
+    for (const patch of [
+      { title: 'presentation (see gate_c8.py)' },
+      { keepGreen: 'python -m pytest gilded/tests/test_c8_audio.py ~/.cynco/heldout/x.py -q' },
+      { allow: { newFiles: ['heldout/scratch.py'], edit: ['gilded/ui/atlas_view.py'] } },
+      { allow: { newFiles: ['gilded/ui/transitions.py'], edit: ['perturb_c8.py'] } },
+      { deny: ['anything under heldout'] },
+    ]) {
+      const s = { ...good(), ...patch }
+      expect(checkIdentity(s, io()).ok).toBe(false)
+    }
+  })
 })

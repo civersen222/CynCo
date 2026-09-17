@@ -23,6 +23,19 @@ describe('CampaignState', () => {
     expect(t.state.waveCount).toBe(0)
     expect(existsSync(join(dir, 'state.json.corrupt'))).toBe(true)
   })
+  // An appendFileSync that died mid-write truncates the LAST line. Losing every
+  // earlier wave's promotion evidence over it is the worse failure.
+  it('skips an unparseable trailing line instead of losing every wave before it', () => {
+    const dir = join(mkdtempSync(join(tmpdir(), 'camp-')), 'c8')
+    const s = new CampaignState(dir); s.load()
+    s.appendWave({ wave: 1, decision: 'next' }); s.appendWave({ wave: 2, decision: 'next' })
+    writeFileSync(join(dir, 'waves.jsonl'), readFileSync(join(dir, 'waves.jsonl'), 'utf8') + '{"wave":3,"dec')
+    expect(s.waves().map(w => w.wave)).toEqual([1, 2])
+  })
+  it('does not carry a dead branch field on a fresh state', () => {
+    const dir = join(mkdtempSync(join(tmpdir(), 'camp-')), 'c8')
+    expect('branch' in new CampaignState(dir).load().state).toBe(false)
+  })
   it('appends wave records as JSONL', () => {
     const dir = join(mkdtempSync(join(tmpdir(), 'camp-')), 'c8')
     const s = new CampaignState(dir); s.load()

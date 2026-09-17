@@ -64,13 +64,20 @@ describe('calibrate', () => {
     expect(fake.writes).toHaveLength(0)
   })
 
-  it('refuses when the perturb header is missing its declarations', async () => {
+  // The header is the declaration the whole comparison is judged against, and it
+  // costs a file read; running two gates of up to two hours first to reach the
+  // same refusal is the expensive way to learn it.
+  it('refuses a perturb with no header BEFORE it runs either gate', async () => {
     const perturbLog = baseLog.replace('C8.5.palette.Atlas: FAIL', 'C8.5.palette.Atlas: PASS')
     const fake = io({ perturbLog, baselineExists: true })
+    const ran = []
+    const inner = fake.run
+    fake.run = (cmd, args, opts) => { ran.push([cmd, ...args].join(' ')); return inner(cmd, args, opts) }
     fake.readFile = () => 'import os\n'
     const r = await calibrate(spec, fake)
     expect(r.ok).toBe(false)
     expect(r.problems.join('\n')).toMatch(/EXPECT-FLIP/)
+    expect(ran.filter(k => /gate_c8\.py|perturb_c8\.py/.test(k))).toEqual([])
   })
 
   it('refuses when git archive of the BASE fails', async () => {

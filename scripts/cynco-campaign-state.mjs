@@ -3,7 +3,7 @@ import { join } from 'node:path'
 
 export function freshState(id) {
   return { id, calibration: null, waveCount: 0, lastBase: null, lastFails: null, consecutiveNoProgress: 0,
-           ideationAuthority: 0, proposals: [], pendingNotifications: [], branch: null }
+           ideationAuthority: 0, proposals: [], pendingNotifications: [] }
 }
 
 // The daemon's missionLedger pattern (engine/daemon/missionLedger.ts:27-56):
@@ -18,7 +18,10 @@ export class CampaignState {
     try { this.state = { ...freshState(this.state.id), ...JSON.parse(readFileSync(this.statePath, 'utf8')) } }
     catch (e) {
       const backup = `${this.statePath}.corrupt`
-      try { renameSync(this.statePath, backup) } catch {}
+      // If the rename fails the corrupt file is still sitting where the next
+      // save will overwrite it — the forensics are gone and nothing said so.
+      try { renameSync(this.statePath, backup) }
+      catch (re) { console.error(`[campaign] could not back up the corrupt state.json to ${backup} (${re.message}) — it will be overwritten by the next save`) }
       console.error(`[campaign] state.json corrupt — backed up to ${backup}, starting fresh: ${e.message}`)
       this.state = freshState(this.state.id)
     }
@@ -31,5 +34,20 @@ export class CampaignState {
     renameSync(tmp, this.statePath)
   }
   appendWave(record) { mkdirSync(this.dir, { recursive: true }); appendFileSync(this.wavesPath, JSON.stringify(record) + '\n') }
-  waves() { return existsSync(this.wavesPath) ? readFileSync(this.wavesPath, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)) : [] }
+  /**
+   * An appendFileSync that died mid-write leaves a truncated LAST line. Losing
+   * the promotion evidence in every earlier wave over it — with a JSON parse
+   * error as the only explanation — is the worse failure, so an unparseable
+   * line is skipped with a warning and the rest are returned.
+   */
+  waves() {
+    if (!existsSync(this.wavesPath)) return []
+    const out = []
+    const lines = readFileSync(this.wavesPath, 'utf8').split('\n').filter(Boolean)
+    lines.forEach((l, i) => {
+      try { out.push(JSON.parse(l)) }
+      catch (e) { console.error(`[campaign] waves.jsonl line ${i + 1}${i === lines.length - 1 ? ' (the last line — a write was interrupted)' : ''} is not JSON, skipping it: ${e.message}`) }
+    })
+    return out
+  }
 }

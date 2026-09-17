@@ -259,6 +259,12 @@ export async function runWave(spec, state, io = defaultIo) {
 
     // S4, occupant A (binding).
     const text = generateBrief(spec, { ...ctx, ideation })
+    // checkIdentity guards the spec's own fields, but the ideation section is
+    // written by a model that just read the repo. A brief naming the sealed
+    // gate would be refused by sealedPaths mid-run, after the wall clock has
+    // already started. Refuse to WRITE it instead.
+    const leak = /heldout|gate_c\d|perturb_/.exec(text)
+    if (leak) return stopWave(spec, state, io, { wave, base, why: `the generated brief names the sealed instrument "${leak[0]}" — refusing to write it (the S4 ideation section is the likely source)` })
     briefFile = resolve(BRIEFS_DIR, `${spec.id}-wave${wave}.txt`)
     io.writeBrief(briefFile, text, sidecarFor(spec))
     waveFiles = [repoRel(briefFile), repoRel(sidecarPath(briefFile))]
@@ -556,9 +562,16 @@ async function sync(spec, state) {
   const branch = `campaign/${spec.id}`
   const reach = spawnSync('git', ['ls-remote', '--exit-code', '--heads', 'origin', 'main'], { encoding: 'utf8', timeout: 20_000 })
   if (reach.status !== 0) { console.log('[campaign] no network — nothing synced; pending branch ' + branch); return 0 }
-  spawnSync('git', ['push', '-u', 'origin', branch], { stdio: 'inherit' })
+  // A push can be REJECTED (non-fast-forward, protected branch) and still leave
+  // --sync looking like it worked; the PR would then describe commits nobody
+  // has. Say so and change nothing else.
+  const push = spawnSync('git', ['push', '-u', 'origin', branch], { encoding: 'utf8' })
+  if (push.stdout?.trim()) console.log(push.stdout.trimEnd())
+  if (push.stderr?.trim()) console.log(push.stderr.trimEnd())
+  if (push.status !== 0) { console.error(`[campaign] git push of ${branch} was rejected (exit ${push.status}) — nothing else synced; resolve it by hand and re-run --sync`); return 1 }
+  const prBase = spec.prBase ?? 'main'
   const existing = spawnSync('gh', ['pr', 'view', branch, '--json', 'url', '-q', '.url'], { encoding: 'utf8' })
-  if (existing.status !== 0) spawnSync('gh', ['pr', 'create', '--head', branch, '--title', `${spec.id.toUpperCase()} campaign verdicts (runner)`, '--body', `Unattended wave verdicts written by scripts/cynco-campaign.mjs. Merge on GitHub.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)`], { stdio: 'inherit' })
+  if (existing.status !== 0) spawnSync('gh', ['pr', 'create', '--head', branch, '--base', prBase, '--title', `${spec.id.toUpperCase()} campaign verdicts (runner)`, '--body', `Unattended wave verdicts written by scripts/cynco-campaign.mjs. Merge on GitHub.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)`], { stdio: 'inherit' })
   else console.log(`[campaign] PR exists: ${existing.stdout.trim()}`)
   for (const n of state.state.pendingNotifications.splice(0)) await notify(`${spec.id}: (queued) ${n.kind} — ${n.why}`)
   state.save()

@@ -80,11 +80,30 @@ function runTask(repoRoot, taskPath, env, cwd) {
   })
 }
 
-export function measureFollowed(ideation, firstCommitFiles) {
+/**
+ * Did the wave's FIRST commit touch the file the advisor named?
+ *
+ * Which hypothesis counts is not arbitrary: the brief lists the FAIL lines in
+ * the gate's own order and the work items follow it, so the hypothesis the
+ * worker could plausibly have acted on first is the one for the FIRST FAIL id
+ * in the wave's context — `fails`. When the advisor said nothing about that
+ * line (or the caller has no fails to hand), the first hypothesis carrying a
+ * `firstEdit` is used instead. `hypotheses` are ordered as the model wrote
+ * them, and a gate id is matched by prefix ("C8.1b" covers
+ * "C8.1b.tiers-differ"), the same rule the calibration comparison uses.
+ *
+ * This is the numerator of the promotion evidence — see `promotionProposal` —
+ * so it must not be a lottery over whichever hypothesis happened to be listed
+ * first.
+ */
+export function measureFollowed(ideation, firstCommitFiles, fails = []) {
   if (!ideation) return null
-  const first = ideation.hypotheses.find(h => h.firstEdit)
-  if (!first) return false
-  return firstCommitFiles.map(f => f.replace(/\\/g, '/')).includes(first.firstEdit)
+  const firstFail = fails[0]?.id ?? null
+  const matches = (a, b) => a === b || a.startsWith(b + '.') || b.startsWith(a + '.')
+  const pick = (firstFail && ideation.hypotheses.find(h => h.firstEdit && matches(String(h.gateId), firstFail)))
+    || ideation.hypotheses.find(h => h.firstEdit)
+  if (!pick) return false
+  return firstCommitFiles.map(f => f.replace(/\\/g, '/')).includes(pick.firstEdit)
 }
 
 // McCulloch: authority is contextual and SCORED. The deterministic generator

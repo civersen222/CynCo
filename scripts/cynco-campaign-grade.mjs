@@ -19,7 +19,10 @@ export const defaultIo = {
 
 function runGate(spec, io) {
   const t0 = Date.now()
-  const r = io.run('python', [spec.gate], { cwd: spec.repo, env: {}, timeoutMs: GATE_TIMEOUT_MS })
+  // The gates read CYNCO_GATE_REPO for the tree they grade and fall back to
+  // cwd. Both are spec.repo here, so this changes nothing today — and keeps
+  // changing nothing the day a gate is run from anywhere else.
+  const r = io.run('python', [spec.gate], { cwd: spec.repo, env: { CYNCO_GATE_REPO: spec.repo }, timeoutMs: GATE_TIMEOUT_MS })
   const parsed = parseGateOutput(r.stdout + '\n' + r.stderr)
   let harnessFault = null
   if (r.timedOut) harnessFault = `gate timed out after ${GATE_TIMEOUT_MS} ms`
@@ -29,7 +32,7 @@ function runGate(spec, io) {
 }
 
 function runSuiteGate(spec, io) {
-  const r = io.run('python', [SUITE_GATE], { cwd: spec.repo, env: { CHK_SUITE_BASELINE: spec.suiteBaseline }, timeoutMs: SUITE_TIMEOUT_MS })
+  const r = io.run('python', [SUITE_GATE], { cwd: spec.repo, env: { CHK_SUITE_BASELINE: spec.suiteBaseline, CYNCO_GATE_REPO: spec.repo }, timeoutMs: SUITE_TIMEOUT_MS })
   const out = r.stdout + r.stderr
   const pick = (label) => { const m = new RegExp(`${label} \\d+ [^\\n]*\\n((?:\\s+[-+] \\S+\\n?)+)`).exec(out); return m ? m[1].split('\n').map(s => s.trim().replace(/^[-+] /, '')).filter(Boolean) : [] }
   let harnessFault = null

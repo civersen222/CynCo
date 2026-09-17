@@ -133,9 +133,29 @@ with the wave's mission invariants, `DRIVER_PID_FILE`, `DRIVER_LOG`,
 gate, suite no-regression gate, derived mutation sweep, per-wave POSIWID; patches
 `verified` / `mutationSweep` / `gate` / `posiwid` onto the ledger row) → VERDICT
 (campaign-log entry, supervision economics, local commit on `campaign/<id>`,
-algedonic ntfy) → DECIDE (`pass` / `next` / `budget` / `no-progress` / `fault`).
+algedonic ntfy) → DECIDE (`pass` / `pass-with-survivors` / `next` / `budget` /
+`no-progress` / `fault` / `stop`).
 A harness fault anywhere past dispatch records the fault, spends the wave, and
 stops the loop deliberately rather than by exception.
+
+`pass` needs the sealed gate PASS, the suite gate green, and no mutation-sweep
+survivor **inside a file the campaign claimed** (`allow.edit` / `allow.newFiles`
+— spec §3.2's "a survivor a work[] item claims"). A survivor anywhere else is
+reported, not punished. Claimed survivors give `pass-with-survivors`: the loop
+stops, exit 0, and the verdict reads `CAMPAIGN PASS (sweep survivors: N)`.
+`stop` is a refusal to dispatch rather than a spent wave — an empty FAIL set
+(the grade already says PASS), a gate or perturb whose sha256 moved since
+calibration (Rule 11, re-checked every wave), or a generated brief that names a
+sealed instrument. Every wave record and the ledger `gate` block carry the
+`gateSha256` the wave was graded with.
+
+**One runner, one wave.** `~/.cynco/campaigns/<id>/runner.lock` holds the
+runner's pid (a stale lock whose pid is gone is removed with a log line), and
+`state.inFlight` is written the moment `dispatch` returns and cleared when the
+wave record is appended. A later invocation that finds `inFlight` set refuses
+to start and names the driver log; `--adopt-inflight` resolves it — the ledger
+line in that log adopts the row for grading, and a dead pid with no ledger line
+records the wave as a fault.
 
 **CLI.**
 `bun scripts/cynco-campaign.mjs <id>.campaign.json [--waves N] [--resume]
@@ -149,7 +169,8 @@ resumed run reads; nothing about a campaign lives in the process.
 
 **`--sync`.** The runner is offline by design: it commits verdicts to the local
 `campaign/<id>` branch and never touches the network mid-campaign. `--sync`
-pushes that branch, opens the PR if there is none, and drains the queued ntfy
+pushes that branch (a rejected push stops there and says so), opens the PR if
+there is none against `spec.prBase ?? 'main'`, and drains the queued ntfy
 notifications. With no network it says so and changes nothing.
 
 **Adopt.** `bun scripts/cynco-campaign-adopt.mjs <id>.campaign.json <missionId>`

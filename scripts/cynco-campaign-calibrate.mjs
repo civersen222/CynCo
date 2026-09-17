@@ -27,14 +27,18 @@ export async function calibrate(spec, io = defaultIo) {
   const arch = io.run('bash', ['-c', `git -C ${JSON.stringify(spec.repo)} archive ${spec.base} | tar -x -C ${JSON.stringify(baseDir)}`], { cwd: process.cwd(), env: {}, timeoutMs: 300_000 })
   if (arch.status !== 0) return { ok: false, problems: [`git archive ${spec.base} failed: ${String(arch.stderr).trim()}`] }
 
+  // Read the perturb header FIRST: it is the declaration the whole comparison
+  // is judged against, it costs a file read, and a stub with no header can only
+  // end in a refusal — after two gate runs of up to two hours each.
+  let header
+  try { header = parsePerturbHeader(io.readFile(spec.perturb)) } catch (e) { return { ok: false, problems: [e.message] } }
+
   const env = { CYNCO_GATE_REPO: baseDir }
   const baseRun = io.run('python', [spec.gate], { cwd: baseDir, env, timeoutMs: GATE_TIMEOUT_MS })
   const base = parseGateOutput(baseRun.stdout + '\n' + baseRun.stderr)
   const pertRun = io.run('python', [spec.perturb], { cwd: baseDir, env, timeoutMs: GATE_TIMEOUT_MS })
   const perturbed = parseGateOutput(pertRun.stdout + '\n' + pertRun.stderr)
 
-  let header
-  try { header = parsePerturbHeader(io.readFile(spec.perturb)) } catch (e) { return { ok: false, problems: [e.message] } }
   const cmp = compareCalibration({ base, perturbed, header })
   const problems = [...cmp.problems]
   if (baseRun.timedOut) problems.push(`gate timed out after ${GATE_TIMEOUT_MS} ms at BASE`)

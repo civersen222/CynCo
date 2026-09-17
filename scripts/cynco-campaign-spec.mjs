@@ -62,7 +62,12 @@ export function checkIdentity(spec, io = defaultIo) {
   if (!io.gitHasCommit(spec.repo, spec.base)) problems.push(`base ${spec.base} is not a commit in ${spec.repo}`)
   if (spec.keepGreen.includes(spec.marker)) problems.push('keepGreen must not contain the marker')
   const forbidden = [basename(norm(spec.gate)), basename(norm(spec.perturb)), 'heldout']
-  const visible = [spec.measures, ...spec.work.map(w => w.text), ...spec.rules, spec.assets?.text ?? '']
+  // EVERY field the brief prints, not just the prose ones: the KEEP-GREEN
+  // command, the allow/deny lists and the title all reach the worker verbatim
+  // through cynco-brief.mjs, and naming the sealed gate in any of them is the
+  // same leak as naming it in `measures`.
+  const visible = [spec.title, spec.keepGreen, spec.measures, ...spec.work.map(w => w.text), ...spec.work.map(w => w.title),
+    ...spec.rules, ...spec.allow.newFiles, ...spec.allow.edit, ...spec.deny, spec.assets?.text ?? '']
   for (const text of visible) for (const f of forbidden) {
     if (String(text).includes(f)) problems.push(`brief-visible text names the sealed instrument "${f}" — sealedPaths would refuse the run`)
   }

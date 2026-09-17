@@ -229,9 +229,17 @@ a wave, so a mission row carries the sealed-gate reading that judged it:
 - **`posiwid`** — the purpose-versus-behaviour reading for the wave, computed by
   `posiwidForRow` from `toolStats` against the campaign spec's stated shares:
   `{ divergence, verdict, dominantObserved }`. `divergence` is the KL divergence
-  of the observed tool mix from the stated one, `verdict` is `Consistent` or
-  `Drifting` against the spec's threshold, and `dominantObserved` names the
+  of the observed tool mix from the stated one and `dominantObserved` names the
   class the run actually spent itself on (`inspect`, `sourceEdit`, `commit`).
+  `verdict` is one of four, in the order `posiwidDivergence` decides them
+  (`engine/cybernetics-core/src/constraints/index.ts:249`): **`Insufficient`**
+  — fewer than `minSupport` (50) observed calls, or none at all: no reading;
+  **`Contradicted`** — the class the run spent itself on has a stated share of
+  0 (it did something the purpose never mentions); **`Drifting`** — divergence
+  above the threshold (0.1); **`Consistent`** — everything else. A campaign's
+  stated shares are its own parameter (`posiwid.sourceEditShare` /
+  `commitEvery` in the campaign spec), so `Drifting` is a reading against THAT
+  declaration, not a universal one.
 
 ## Labeling rule
 
