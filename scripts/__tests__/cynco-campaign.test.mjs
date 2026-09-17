@@ -396,7 +396,7 @@ describe('defaultIo.waitForDriver', () => {
 
   it('does not call a live driver exited when the wall clock runs out', async () => {
     const r = await defaultIo.waitForDriver({ pidFile: pidFileWith(process.pid), driverLog: 'C:/tmp/d.log', timeoutMs: 50 })
-    expect(r).toEqual({ exited: false })
+    expect(r).toEqual({ exited: false, timedOut: true })
   })
 })
 
@@ -677,6 +677,27 @@ describe('takeLock / releaseLock', () => {
     expect(takeLock(d).ok).toBe(true)
     expect(readFileSync(join(d, 'runner.lock'), 'utf8')).toBe(String(process.pid))
     releaseLock(d)
+  })
+})
+
+// I1: the driver writes its ledger row and then tears down. The row is the
+// proof the wave is gradeable; the pid is only evidence about a process object.
+describe('defaultIo.waitForDriver — the ledger line is the authority', () => {
+  const livePidFile = () => { const p = join(mkdtempSync(join(tmpdir(), 'camp-pid-')), 'driver.pid'); writeFileSync(p, `${process.pid}\n`); return p }
+
+  it('returns the missionId as soon as the log has it, while the pid is still alive', async () => {
+    let ticks = 0
+    const r = await defaultIo.waitForDriver({
+      pidFile: livePidFile(), driverLog: 'C:/tmp/d.log', timeoutMs: 5_000, pollMs: 1,
+      missionIdFrom: () => (++ticks >= 2 ? 'c8-wave3-1789' : null),
+    })
+    expect(r).toEqual({ exited: true, missionId: 'c8-wave3-1789' })
+    expect(ticks).toBe(2)
+  })
+
+  it('returns the missionId from the first look without waiting at all', async () => {
+    const r = await defaultIo.waitForDriver({ pidFile: livePidFile(), driverLog: 'C:/tmp/d.log', timeoutMs: 5_000, missionIdFrom: () => 'already-there' })
+    expect(r).toEqual({ exited: true, missionId: 'already-there' })
   })
 })
 

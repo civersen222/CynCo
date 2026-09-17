@@ -111,25 +111,39 @@ export const defaultIo = {
     // driver has written its ledger line.
     return { driverLog }
   },
-  waitForDriver: async ({ pidFile, driverLog, timeoutMs }) => {
+  // The LEDGER LINE is the authority, not the pid. The driver writes its row
+  // and then tears down (engine shutdown, snapshots, the odd orphan); a pid
+  // probe answers "is that process object still there", which on Windows has
+  // been wrong in both directions (an MSYS pseudo-PID nobody can see, a pid
+  // that outlives the work). Once the row exists the wave is gradeable, so
+  // check for it FIRST on every tick and keep the pid only as the secondary
+  // signal for "it is gone and wrote nothing".
+  waitForDriver: async ({ pidFile, driverLog, timeoutMs, missionIdFrom = defaultIo.missionIdFrom, pollMs = 30_000 }) => {
     const t0 = Date.now()
+    const idNow = () => { try { return missionIdFrom(driverLog) } catch { return null } }
     const pid = Number(readFileSync(pidFile, 'utf8').trim())
     const alive = () => { try { process.kill(pid, 0); return true } catch { return false } }
+    const first = idNow()
+    if (first) return { exited: true, missionId: first }
     // A driver that is already gone on the FIRST probe did not run an
     // eight-hour mission in zero seconds — the PID handoff is broken, and
     // believing it faults a wave that is in fact still running and still
     // holding the GPU with nobody left to grade it. Say which of the two it is.
     if (!alive()) return { exited: false, pidUnseen: pid }
     while (Date.now() - t0 < timeoutMs) {
-      if (!alive()) return { exited: true }
+      const id = idNow()
+      if (id) return { exited: true, missionId: id }
+      if (!alive()) return { exited: true, missionId: idNow() }
       // Never sleep past the wall clock: a 30 s poll on top of an expired
       // budget is 30 s of a wave nobody is waiting on any more.
-      await new Promise(r => setTimeout(r, Math.min(30_000, Math.max(1, timeoutMs - (Date.now() - t0)))))
+      await new Promise(r => setTimeout(r, Math.min(pollMs, Math.max(1, timeoutMs - (Date.now() - t0)))))
     }
-    return { exited: false }
+    return { exited: false, timedOut: true }
   },
   // cynco-mission-driver.mjs:837 — `[ledger] <outcome> record <id> appended (…) → <shard>`
   missionIdFrom: (driverLog) => /\[ledger\] \w+ record (\S+) appended/.exec(readFileSync(driverLog, 'utf8'))?.[1] ?? null,
+  pidAlive: (pidFile) => { try { return pidIsAlive(Number(readFileSync(pidFile, 'utf8').trim())) } catch { return false } },
+  sha256: (p) => calibrateIo.sha256(p),
   readRow: (missionId) => findLedgerRow(missionId),
   commitsBetween: (repo, base, head) => gitC(repo, ['log', '--oneline', `${base}..${head}`]).split('\n').filter(Boolean).map(l => ({ sha: l.slice(0, 7), subject: l.slice(8) })),
   firstCommitFiles: (repo, base, head) => { const first = gitC(repo, ['rev-list', '--reverse', `${base}..${head}`]).split('\n').filter(Boolean)[0]; return first ? gitC(repo, ['show', '--name-only', '--format=', first]).split('\n').filter(Boolean) : [] },
