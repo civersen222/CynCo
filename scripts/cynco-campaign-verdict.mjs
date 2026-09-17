@@ -81,15 +81,21 @@ export async function notify(message, env = process.env, fetchImpl = globalThis.
   } catch { return false }
 }
 
-const defaultGit = (repoRoot) => (args) => { const r = spawnSync('git', ['-C', repoRoot, ...args], { encoding: 'utf8' }); return { status: r.status, stdout: r.stdout ?? '' } }
+const defaultGit = (repoRoot) => (args) => { const r = spawnSync('git', ['-C', repoRoot, ...args], { encoding: 'utf8' }); return { status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '' } }
 
 export function commitVerdict({ repoRoot, branch, files, message, io }) {
   const git = io?.git ?? defaultGit(repoRoot)
   const status = git(['status', '--porcelain']).stdout.split('\n').filter(Boolean).map(l => l.slice(3).trim())
   const foreign = status.filter(p => !files.includes(p) && !p.startsWith('benchmark/cynco-ledger/'))
   if (foreign.length) throw new Error(`working tree has changes outside the verdict files: ${foreign.join(', ')} — refusing to commit over someone's work`)
-  if (git(['rev-parse', '--verify', branch]).status !== 0) git(['checkout', '-b', branch])
-  else git(['checkout', branch])
+  // A failed checkout used to be silent: `git add` and `git commit` ran anyway
+  // and the verdict landed on whatever branch the tree happened to be on —
+  // main, most likely. Fail loudly instead; the runner logs "commit skipped"
+  // and the wave record keeps verdictSha null, which is the honest reading.
+  const co = git(['rev-parse', '--verify', branch]).status !== 0 ? git(['checkout', '-b', branch]) : git(['checkout', branch])
+  if (co.status !== 0) throw new Error(`commitVerdict: git checkout ${branch} failed: ${String(co.stderr ?? '').trim()}`)
+  const head = git(['rev-parse', '--abbrev-ref', 'HEAD']).stdout.trim()
+  if (head !== branch) throw new Error(`commitVerdict: git checkout ${branch} failed: HEAD is ${head || '(unknown)'}`)
   git(['add', ...files])
   git(['commit', '-m', message])
   return { sha: git(['rev-parse', 'HEAD']).stdout.trim() }

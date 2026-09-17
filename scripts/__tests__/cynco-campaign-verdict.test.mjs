@@ -75,12 +75,44 @@ describe('notify', () => {
 describe('commitVerdict', () => {
   it('creates the branch once, stages by name, refuses a dirty tree', () => {
     const calls = []
-    const io = { git: (args) => { calls.push(args.join(' ')); if (args[0] === 'rev-parse' && args[1] === '--verify') return { status: 1, stdout: '' }; if (args[0] === 'status') return { status: 0, stdout: ' M docs/x.md\n' }; if (args[0] === 'rev-parse') return { status: 0, stdout: 'abc123\n' }; return { status: 0, stdout: '' } } }
+    const io = { git: (args) => { calls.push(args.join(' ')); if (args[0] === 'rev-parse' && args[1] === '--verify') return { status: 1, stdout: '' }; if (args[0] === 'status') return { status: 0, stdout: ' M docs/x.md\n' }; if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') return { status: 0, stdout: 'campaign/c8\n' }; if (args[0] === 'rev-parse') return { status: 0, stdout: 'abc123\n' }; return { status: 0, stdout: '' } } }
     const r = commitVerdict({ repoRoot: '.', branch: 'campaign/c8', files: ['docs/x.md'], message: 'm', io })
     expect(calls).toContain('checkout -b campaign/c8')
     expect(calls).toContain('add docs/x.md')
     expect(r.sha).toBe('abc123')
     const dirty = { git: (args) => args[0] === 'status' ? { status: 0, stdout: ' M engine/other.ts\n M docs/x.md\n' } : { status: 0, stdout: '' } }
     expect(() => commitVerdict({ repoRoot: '.', branch: 'campaign/c8', files: ['docs/x.md'], message: 'm', io: dirty })).toThrow(/engine\/other\.ts/)
+  })
+
+  // A failed checkout used to be silent: add + commit ran anyway and the verdict
+  // landed on whatever branch the tree was on — main, most likely.
+  it('throws instead of committing when the checkout fails', () => {
+    const calls = []
+    const io = { git: (args) => {
+      calls.push(args.join(' '))
+      if (args[0] === 'status') return { status: 0, stdout: '' }
+      if (args[0] === 'rev-parse' && args[1] === '--verify') return { status: 0, stdout: 'abc\n' }
+      if (args[0] === 'checkout') return { status: 1, stdout: '', stderr: 'error: Your local changes would be overwritten\n' }
+      return { status: 0, stdout: 'main\n' }
+    } }
+    expect(() => commitVerdict({ repoRoot: '.', branch: 'campaign/c8', files: ['docs/x.md'], message: 'm', io }))
+      .toThrow(/commitVerdict: git checkout campaign\/c8 failed: error: Your local changes would be overwritten/)
+    expect(calls.some(c => c.startsWith('add '))).toBe(false)
+    expect(calls.some(c => c.startsWith('commit '))).toBe(false)
+  })
+
+  // A checkout that reports success but leaves HEAD elsewhere (a detached HEAD,
+  // a hook) is the same failure wearing a 0 exit code.
+  it('throws when HEAD is not the branch after a successful checkout', () => {
+    const calls = []
+    const io = { git: (args) => {
+      calls.push(args.join(' '))
+      if (args[0] === 'status') return { status: 0, stdout: '' }
+      if (args[0] === 'rev-parse' && args[1] === '--verify') return { status: 0, stdout: 'abc\n' }
+      if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') return { status: 0, stdout: 'main\n' }
+      return { status: 0, stdout: '' }
+    } }
+    expect(() => commitVerdict({ repoRoot: '.', branch: 'campaign/c8', files: ['docs/x.md'], message: 'm', io })).toThrow(/HEAD is main/)
+    expect(calls.some(c => c.startsWith('add '))).toBe(false)
   })
 })
