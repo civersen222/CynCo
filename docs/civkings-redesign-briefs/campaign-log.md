@@ -1588,6 +1588,27 @@ with a two-line suite baseline (one standing failure). Wave 1 was graded
 unattended by the runner; wave 2 was dispatched **and** graded by it (missionId
 `c8-wave2-1789649392765`).
 
+**POSIWID shares recalibrated (2026-09-17, plan-3 final review).** Both waves
+read `POSIWID Consistent` against `posiwid: { sourceEditShare: 0.15, commitEvery:
+150 }` — shares copied from the engine's pacing caps rather than chosen as a
+declaration of purpose. Wave 1 spent 828 of 931 calls inspecting, went 193 calls
+without a source edit and 320 without a commit, and still read Consistent, so at
+those shares the reading could not flag the pacing the invariants exist to
+prevent. Re-measured on wave 1's own tool mix (`c8-wave1-1788634174399`,
+`byClass` sourceEdit 86 + fileWrite 17, commits 5, inspect 828):
+
+| stated shares | divergence | verdict |
+|---|---|---|
+| 0.15 / 150 | 0.0085 | Consistent |
+| 0.25 / 60 | 0.0716 | Consistent |
+| 0.30 / 60 | 0.1139 | Drifting |
+
+`c8.campaign.json` now states `{ "sourceEditShare": 0.30, "commitEvery": 60 }` —
+the first setting that flags C8-wave-1-style pacing against the 0.1 drift
+threshold. This is a calibration of the STATED purpose, not a re-grade: the wave
+1 and wave 2 entries below stand exactly as they were measured, and the new
+shares bind from wave 3 on.
+
 
 ## C8 wave 1 — c8-wave1-1788634174399 (graded 2026-09-17, BASE 1d03308edb7684b61319a55f8a122deb9840ab5a → HEAD 1bc0f8c48754e61c5f78f77ab0911b85cb3262b7)
 

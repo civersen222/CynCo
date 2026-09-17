@@ -21,9 +21,13 @@
     "codeIndexFirst": true
   },
   "posiwid": {
-    "sourceEditShare": 0.15,
-    "commitEvery": 150
+    "sourceEditShare": 0.30,
+    "commitEvery": 60
   },
+  "sweep": {
+    "max": 6
+  },
+  "prBase": "mission-invariants",
   "allow": {
     "newFiles": [
       "gilded/ui/transitions.py",
