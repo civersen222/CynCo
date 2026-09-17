@@ -206,6 +206,33 @@ Two fields are patched in by hand and appear only on some rows:
 - **`verifyCorrection`** — a hand correction to `verified` with its evidence,
   written when an independent re-run contradicts the driver's patched value.
 
+Two further blocks are patched on by the campaign runner
+(`scripts/cynco-campaign.mjs` → `scripts/cynco-ledger-patch.mjs`) when it grades
+a wave, so a mission row carries the sealed-gate reading that judged it:
+
+- **`gate`** — the sealed campaign gate, parsed from its stdout by
+  `scripts/cynco-gate-parse.mjs`:
+  `{ sha, fails, passes, priorRegressions, suiteRegressions, harnessFault, terminator }`.
+  `sha` is the HEAD the gate was run against; `fails` is an array of the FAIL
+  LINES as strings, quoted verbatim (never paraphrased — the next wave's brief
+  is generated from these strings); `passes` is the COUNT of PASS lines;
+  `priorRegressions` is the head gate's prior-campaign-chain count (C8.9-style);
+  `suiteRegressions` is the array of pytest node ids the suite gate found newly
+  red against the campaign's standing-failure baseline; `terminator` is the
+  gate's own last word (`PASS` / `MISS` / `null` when it printed none);
+  `harnessFault` is `null` on a clean run and a short string when either the
+  campaign gate or the suite gate could not be believed (timeout, traceback, no
+  terminator, a suite gate refusing for want of a baseline). A row with
+  `gate.harnessFault` set has `verified: null` — the gate measured nothing, and
+  "not verified" would be a false claim about the work. The same patch writes
+  `verified` and, when the mutation sweep produced a reading, `mutationSweep`.
+- **`posiwid`** — the purpose-versus-behaviour reading for the wave, computed by
+  `posiwidForRow` from `toolStats` against the campaign spec's stated shares:
+  `{ divergence, verdict, dominantObserved }`. `divergence` is the KL divergence
+  of the observed tool mix from the stated one, `verdict` is `Consistent` or
+  `Drifting` against the spec's threshold, and `dominantObserved` names the
+  class the run actually spent itself on (`inspect`, `sourceEdit`, `commit`).
+
 ## Labeling rule
 
 Ground truth for signal validation (step 2, per-rule precision/recall):

@@ -1561,6 +1561,33 @@ Calibration at BASE (seed 42): MISS 14, all by absence, zero gate errors —
 the real shape is `{"end_turn": True}`). Perturbed: MISS 11, three
 claim-shaped lines flip, no discriminator flips.
 
+From wave 2 the loop is run by `scripts/cynco-campaign.mjs` (calibrate →
+generate → dispatch → wait → grade → verdict → decide, unattended). Calibration
+on 2026-09-17 back-ported `CYNCO_GATE_REPO` to gates c1–c6/6b — they had graded
+the LIVE tree while c8/c7 graded the BASE export, so the prior-campaign chain was
+mixing two trees during calibration — and gave `perturb_c8.py` a machine-readable
+`EXPECT-FLIP`/`MUST-FAIL` header (its prose header was wrong: the stub also flips
+`C8.1a` and `C8.2a`). With `CYNCO_GATE_REPO` unset — every real mission — the
+back-ported gates behave byte-identically, but their sha256 prefixes moved:
+
+| file | before | after | change |
+|---|---|---|---|
+| `c8/perturb_c8.py` | `67d0ab6b06846037` | `9d6cb7c2a0b46f79` | machine header + `CYNCO_GATE_REPO` |
+| `c6/gate_c6.py` | `38c7f8595fc34874` | `e9c942b9b610b53a` | `CYNCO_GATE_REPO` back-port |
+| `6b/gate_6b.py` | `952359256c7be42c` | `09992f65417d37df` | `CYNCO_GATE_REPO` back-port |
+| `c5/gate_c5.py` | `0c4e6b30c2178a22` | `c27e7bd63f9003be` | `CYNCO_GATE_REPO` back-port |
+| `c4/gate_c4.py` | `05ea014c667311c7` | `cb6eab6ba6df74f1` | back-port + 2 path sites |
+| `c3/gate_c3.py` | `9c0a6fbd4027a7c2` | `b7386148a77ad32c` | `CYNCO_GATE_REPO` back-port |
+| `c2/gate_c2.py` | `1f6b4bc6ca740b5b` | `a4e990a7ba2fef9d` | `CYNCO_GATE_REPO` back-port |
+| `c1/gate_c1.py` | `f2dd97feb5db182f` | `5d16f3f0e1c0507d` | `CYNCO_GATE_REPO` back-port |
+| `c7/gate_c7.py` | `d8d3d9458101e838` | `d8d3d9458101e838` | **untouched** (already correct) |
+| `c8/gate_c8.py` | `f2e8d3b4878953d1` | `f2e8d3b4878953d1` | **untouched** |
+
+The re-run calibration at BASE `1d03308` is `{"ok":true,"problems":[],"fails":14}`
+with a two-line suite baseline (one standing failure). Wave 1 was graded
+unattended by the runner; wave 2 was dispatched **and** graded by it (missionId
+`c8-wave2-1789649392765`).
+
 
 ## C8 wave 1 — c8-wave1-1788634174399 (graded 2026-09-17, BASE 1d03308edb7684b61319a55f8a122deb9840ab5a → HEAD 1bc0f8c48754e61c5f78f77ab0911b85cb3262b7)
 

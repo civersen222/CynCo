@@ -115,3 +115,63 @@ Report per-stage verdicts in the campaign-log style; CodeIndex adoption keeps ri
 - No hand-edits to civkings (all effects reach CivKings through missions, as ever).
 - No model/weight changes; no new models.
 - GVS5H's LiveCodeBench harness and their evaluator fix — not ported; our benchmark is the mission ledger.
+
+## 10. Campaign runner (shipped 2026-09-17)
+
+The self-orchestration loop above now has an unattended driver for whole
+campaigns: `scripts/cynco-campaign.mjs`, run under **bun** from the localcode
+repo root (`node` cannot load it — the grade module imports
+`engine/cybernetics-core/src/index.ts`).
+
+**States.** CALIBRATE runs once per invocation, before the wave loop, and only
+when the gate or perturb sha256 moved or the campaign was never calibrated (Rule
+11 — a refused calibration stops the run with exit 3 and an ntfy). Then, per
+wave: GENERATE (brief + sidecar from the
+previous wave's verbatim FAIL lines) → DISPATCH (`scripts/dispatch-mission.sh`
+with the wave's mission invariants, `DRIVER_PID_FILE`, `DRIVER_LOG`,
+`CYNCO_SKIP_IDLE_ENGINE=1`) → WAIT (poll the driver PID) → GRADE (sealed campaign
+gate, suite no-regression gate, derived mutation sweep, per-wave POSIWID; patches
+`verified` / `mutationSweep` / `gate` / `posiwid` onto the ledger row) → VERDICT
+(campaign-log entry, supervision economics, local commit on `campaign/<id>`,
+algedonic ntfy) → DECIDE (`pass` / `next` / `budget` / `no-progress` / `fault`).
+A harness fault anywhere past dispatch records the fault, spends the wave, and
+stops the loop deliberately rather than by exception.
+
+**CLI.**
+`bun scripts/cynco-campaign.mjs <id>.campaign.json [--waves N] [--resume]
+[--dry-run] [--sync] [--approve-proposal NAME] [--reject-proposal NAME]`.
+`--resume` is the default (the state directory IS the resume point); `--dry-run`
+prints the brief the next wave would dispatch and exits.
+
+**State dir.** `~/.cynco/campaigns/<id>/` — the campaign state, every wave
+record, pending notifications and pending proposals. It is the only thing a
+resumed run reads; nothing about a campaign lives in the process.
+
+**`--sync`.** The runner is offline by design: it commits verdicts to the local
+`campaign/<id>` branch and never touches the network mid-campaign. `--sync`
+pushes that branch, opens the PR if there is none, and drains the queued ntfy
+notifications. With no network it says so and changes nothing.
+
+**Adopt.** `bun scripts/cynco-campaign-adopt.mjs <id>.campaign.json <missionId>`
+points the next wave at an existing ledger row, so a mission dispatched by hand
+(or one whose runner died before grading) is GRADED instead of re-dispatched.
+That is how C8 wave 1 entered the loop.
+
+**Ideation seat (S4, advisory).** Before each brief the runner may run a one-shot
+ideation pass (`scripts/cynco-ideation.mjs`) whose hypotheses enter the brief
+through a `heterarchy.CommandRegistry`: the generator holds authority 1.0 on
+`brief`, ideation starts at 0 — advisory only, it cannot overrule the FAIL lines.
+Each wave measures `followed` (did the first commit touch the files the
+hypothesis named) against `outcome.landed`. **Promotion rule:** after ≥ 8 ideated
+waves, a Fisher exact test on followed × landed with p < 0.05 *and* a higher
+landed rate when followed raises a data-shaped `Parameter` proposal
+(`ideation/brief`, new value 0.5, bounds 0–0.5) — pushed to the owner over ntfy
+and applied only by `--approve-proposal`. Earned authority, never assumed.
+
+**Deferred spec items (follow-up, not built here).**
+
+- **Governance-level POSIWID.** The per-wave POSIWID reading ships; the
+  campaign-level one over `PosiwidDrift` (the whole campaign's stated purpose
+  against what its waves actually did) is specified but no task built it.
+- **Dashboard readout of edit-only state.** The engine's edit-only state is not
+  surfaced on the 9161 dashboard; recommended, not in this plan's tasks.
