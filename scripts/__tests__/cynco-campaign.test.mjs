@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest'
-import { decide, runWave, waveContext, budgetSpent } from '../cynco-campaign.mjs'
+import { decide, runWave, waveContext, budgetSpent, defaultIo } from '../cynco-campaign.mjs'
 import { adopt } from '../cynco-campaign-adopt.mjs'
 import { CampaignState } from '../cynco-campaign-state.mjs'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -121,6 +121,29 @@ describe('runWave', () => {
     expect(state.waves()).toHaveLength(1)
     // persisted, not just held in memory — the next process must see the spend
     expect(new CampaignState(state.dir).load().state.waveCount).toBe(1)
+  })
+
+  // Task 11, live proof 3: dispatch-mission.sh handed back an MSYS pseudo-PID,
+  // process.kill() could not see it, and the runner faulted a wave that was in
+  // fact running — engine up, invariants armed, nobody waiting for it. The
+  // fault is still right (the runner cannot wait on a PID it cannot see); what
+  // must never happen again is it reading as "the driver exited".
+  it('names the broken PID handoff instead of blaming the driver', async () => {
+    const state = freshState()
+    const seen = {}
+    const rec = await runWave(spec, state, {
+      writeBrief: (p) => p,
+      dispatch: async () => ({ driverLog: 'C:/tmp/d.log' }),
+      waitForDriver: async () => ({ exited: false, pidUnseen: 2544 }),
+      readRow: () => null,
+      salvageOf: () => null,
+      notify: async (t) => { seen.notified = t; return true },
+    })
+    expect(rec.decision.kind).toBe('fault')
+    expect(rec.decision.why).toMatch(/pid 2544 was already invisible/)
+    expect(rec.decision.why).toMatch(/may still be running unwatched/)
+    expect(rec.decision.why).toMatch(/driver_c8-wave1\.log/)
+    expect(seen.notified).toMatch(/FAULT/)
   })
 
   it('records a fault when the driver never exits', async () => {
@@ -348,6 +371,22 @@ describe('runWave with an adopted row', () => {
     state.state.adoptedRow = 'ghost-1'
     await expect(runWave(spec, state, { readRow: () => null, salvageOf: () => null })).rejects.toThrow(/not in the ledger/)
     expect(state.state.waveCount).toBe(0)
+  })
+})
+
+describe('defaultIo.waitForDriver', () => {
+  const pidFileWith = (pid) => { const p = join(mkdtempSync(join(tmpdir(), 'camp-pid-')), 'driver.pid'); writeFileSync(p, `${pid}\n`); return p }
+
+  it('reports pidUnseen when the pid is not visible on the first probe', async () => {
+    // 0x7ffffffe: a pid no process can hold — the same shape as an MSYS
+    // pseudo-PID handed to a non-MSYS waiter.
+    const r = await defaultIo.waitForDriver({ pidFile: pidFileWith(2147483646), driverLog: 'C:/tmp/d.log', timeoutMs: 60_000 })
+    expect(r).toEqual({ exited: false, pidUnseen: 2147483646 })
+  })
+
+  it('does not call a live driver exited when the wall clock runs out', async () => {
+    const r = await defaultIo.waitForDriver({ pidFile: pidFileWith(process.pid), driverLog: 'C:/tmp/d.log', timeoutMs: 50 })
+    expect(r).toEqual({ exited: false })
   })
 })
 

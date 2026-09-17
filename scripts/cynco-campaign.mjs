@@ -71,9 +71,17 @@ export const defaultIo = {
   waitForDriver: async ({ pidFile, driverLog, timeoutMs }) => {
     const t0 = Date.now()
     const pid = Number(readFileSync(pidFile, 'utf8').trim())
+    const alive = () => { try { process.kill(pid, 0); return true } catch { return false } }
+    // A driver that is already gone on the FIRST probe did not run an
+    // eight-hour mission in zero seconds — the PID handoff is broken, and
+    // believing it faults a wave that is in fact still running and still
+    // holding the GPU with nobody left to grade it. Say which of the two it is.
+    if (!alive()) return { exited: false, pidUnseen: pid }
     while (Date.now() - t0 < timeoutMs) {
-      try { process.kill(pid, 0) } catch { return { exited: true } }
-      await new Promise(r => setTimeout(r, 30_000))
+      if (!alive()) return { exited: true }
+      // Never sleep past the wall clock: a 30 s poll on top of an expired
+      // budget is 30 s of a wave nobody is waiting on any more.
+      await new Promise(r => setTimeout(r, Math.min(30_000, Math.max(1, timeoutMs - (Date.now() - t0)))))
     }
     return { exited: false }
   },
@@ -177,7 +185,10 @@ export async function runWave(spec, state, io = defaultIo) {
     if (!row) {
       // Ruling 8: a wave that faulted still SPENT a wave. Counting it is what
       // stops a broken engine from burning the whole budget in a retry loop.
-      const rec = { wave, missionId, briefFile, base, dispatchedAt, decision: { kind: 'fault', why: waited.exited ? 'driver exited without a ledger row' : 'driver did not exit within the wall clock' } }
+      const why = waited.exited ? 'driver exited without a ledger row'
+        : waited.pidUnseen ? `driver pid ${waited.pidUnseen} was already invisible on the first probe — the PID handoff is broken and the mission may still be running unwatched (see ${driverLog})`
+        : 'driver did not exit within the wall clock'
+      const rec = { wave, missionId, briefFile, base, dispatchedAt, decision: { kind: 'fault', why } }
       rec.notified = await tryNotify(io, `${spec.id} wave ${wave}: FAULT — ${rec.decision.why}`)
       state.appendWave(rec)
       s.waveCount = wave

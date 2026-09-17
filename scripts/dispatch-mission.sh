@@ -222,7 +222,16 @@ CYNCO_TEARDOWN_ENGINE=1 \
     "$BRIEF" "$MARKER" "$MISSION_CWD" "$TIMEOUT_S" "${CHECK_CMD:-}" ${PROBE_CMD:+"$PROBE_CMD"} \
   > "$DRIVER_LOG" 2>&1 &
 DRIVER_PID=$!
-if [ -n "${DRIVER_PID_FILE:-}" ]; then echo "$DRIVER_PID" > "$DRIVER_PID_FILE"; fi
+# $! under Git Bash is an MSYS pseudo-PID: real to this shell, invisible to any
+# process that is not itself an MSYS program. The campaign runner waits on this
+# file from bun, whose process.kill() goes straight to OpenProcess, so handing
+# it the pseudo-PID makes an 8-hour mission look like it exited in zero seconds.
+# /proc/<pid>/winpid is the Windows PID both sides can see.
+if [ -n "${DRIVER_PID_FILE:-}" ]; then
+  DRIVER_WINPID=$(cat "/proc/$DRIVER_PID/winpid" 2>/dev/null || true)
+  echo "${DRIVER_WINPID:-$DRIVER_PID}" > "$DRIVER_PID_FILE"
+  echo "[dispatch] driver pid ${DRIVER_WINPID:-$DRIVER_PID} → $DRIVER_PID_FILE"
+fi
 echo "[dispatch] dispatched — tail -f $DRIVER_LOG"
 
 # --- the dashboard outlives the mission ------------------------------------

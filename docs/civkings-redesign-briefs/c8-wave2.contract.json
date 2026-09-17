@@ -1,0 +1,9 @@
+{
+  "assertions": [
+    {
+      "text": "The KEEP-GREEN set passes (run it before every commit).",
+      "command": "python -m pytest gilded/tests/test_c8_audio.py gilded/tests/test_c8_portraits.py gilded/tests/test_c8_transitions.py gilded/tests/test_atlas_actions_m7.py gilded/tests/test_ui_broadsheet.py gilded/tests/test_ui_actions.py gilded/tests/test_house_tab_pixel_visual.py gilded/tests/test_c6_contract.py gilded/tests/test_c6c_layout.py gilded/tests/test_c1_visibility.py gilded/tests/test_c7_history.py gilded/tests/test_c7_epilogue.py -q",
+      "timeoutMs": 1800000
+    }
+  ]
+}
