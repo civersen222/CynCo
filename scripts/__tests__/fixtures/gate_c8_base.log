@@ -1,0 +1,20 @@
+pygame-ce 2.5.7 (SDL 2.32.10, Python 3.14.3)
+C8.1a.tiers-pressable: FAIL tiers drawn+pressed=[] errors=["no drawn zoom control for 'continent'", "no drawn zoom control for 'region'", "no drawn zoom control for 'parish'"] zoom_controls=[]
+C8.1b.tiers-differ: FAIL map pixel difference between tiers={} floor=0.05
+C8.1c.tier-legends: FAIL parish legend has ('city', 'regiment', 'strike')? [False, False, False] continent legend has ('capital',)? [False]
+C8.2a.portraits-drawn: FAIL portrait regions on House=0 (floor 6) smallest=0px^2
+C8.2b.portraits-distinct-and-stable: FAIL min pairwise pixel difference=1.000 (floor 0.1) identical-on-redraw=0/0
+C8.2c.portrait-pool-licensed: FAIL images under gilded/assets/portraits=0 (floor 24) LICENSES.md=False
+C8.3a.transition-frames: FAIL gilded.ui.transitions.frames absent or raised: ModuleNotFoundError: No module named 'gilded.ui.transitions'
+C8.3b.transitions-wired: FAIL after tab press view.last_transition=None err=None; after End Turn=None err=None
+C8.4a.act-beds-on-disk: FAIL missing=['ambient_act1', 'ambient_act2', 'ambient_act3'] files=0/3 distinct=0 lengths_s=[] (floor 60.0)
+C8.4b.bed-follows-the-act: FAIL ambient_event_for at turns 5/30/60={'error': "AttributeError: module 'gilded.audio' has no attribute 'ambient_event_for'"}
+C8.4c.beds-honour-mute: PASS play() must return False when muted
+C8.4d.beds-licensed: FAIL three distinct bed files=[] named in gilded/assets/audio/LICENSES.md: []
+C8.5.palette.House: FAIL pixels within 24/channel of a pinned ink at t40 = 0.919 (floor 0.95)
+C8.5.palette.Powers: FAIL pixels within 24/channel of a pinned ink at t40 = 0.933 (floor 0.95)
+C8.5.palette.Atlas: FAIL pixels within 24/channel of a pinned ink at t40 = 0.640 (floor 0.9)
+C8.5.river-reserved: PASS exact-RIVER pixels on the Atlas at t40 = 0
+  [c7] GATE: PASS
+C8.9: PASS 0 prior-campaign regressions
+GATE: MISS (14 fails)
