@@ -710,3 +710,21 @@ describe('dispatchEnv', () => {
   })
 })
 
+// I2: the runner's OWN untracked briefs must not trip its dirty-tree refusal.
+describe('dirtyOutsideCampaign', () => {
+  it('exempts the ledger and this campaign\'s untracked briefs, and nothing else', () => {
+    const lines = [
+      ' M benchmark/cynco-ledger/missions.0004.jsonl',
+      '?? docs/civkings-redesign-briefs/c8-wave3.txt',
+      '?? docs/civkings-redesign-briefs/c8-wave3.contract.json',
+      ' M docs/civkings-redesign-briefs/c8-wave2.txt',
+      '?? docs/civkings-redesign-briefs/c7-wave1.txt',
+      ' M engine/main.ts',
+    ]
+    expect(dirtyOutsideCampaign(lines, spec)).toEqual([
+      ' M docs/civkings-redesign-briefs/c8-wave2.txt',
+      '?? docs/civkings-redesign-briefs/c7-wave1.txt',
+      ' M engine/main.ts',
+    ])
+  })
+})

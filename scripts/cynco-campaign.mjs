@@ -448,6 +448,26 @@ function ledgerShardsTouched() {
   return out.split('\n').filter(Boolean).map(l => l.slice(3).trim())
 }
 
+/**
+ * The dirty-tree refusal, as a predicate over `git status --porcelain` lines.
+ *
+ * Two things are NOT someone's work in progress: the ledger shards every wave
+ * rewrites, and THIS campaign's own wave briefs. A wave that faulted before its
+ * verdict leaves its brief and sidecar untracked, and without this exemption
+ * that debris refuses every later invocation — the campaign bricks itself on
+ * files it wrote. Only untracked (`??`) briefs are exempt: an EDITED brief is a
+ * human's change to an order and must still stop the runner.
+ */
+export function dirtyOutsideCampaign(porcelainLines, spec) {
+  const brief = new RegExp(`^${BRIEFS_DIR}/${spec.id}-wave\\d+\\.(txt|contract\\.json)$`)
+  return porcelainLines.filter(l => {
+    const p = l.slice(3).trim().replace(/\\/g, '/')
+    if (p.startsWith('benchmark/cynco-ledger/')) return false
+    if (l.startsWith('??') && brief.test(p)) return false
+    return true
+  })
+}
+
 /** Has the campaign already spent every wave it was budgeted? */
 export function budgetSpent(state, spec) {
   return (state.state.waveCount ?? 0) >= spec.budget.waves
@@ -498,8 +518,8 @@ export async function main(argv) {
   // and refusing there would make the brief unreadable exactly when it is
   // being reviewed mid-edit.
   if (!dryRun) {
-    const dirty = (spawnSync('git', ['status', '--porcelain'], { encoding: 'utf8' }).stdout ?? '').split('\n').filter(Boolean).filter(l => !l.includes('benchmark/cynco-ledger/'))
-    if (dirty.length) { console.error(`[campaign] working tree is dirty outside the ledger (${dirty.length} path(s)) — commit or stash first; the runner will not commit over your work`); return 2 }
+    const dirty = dirtyOutsideCampaign((spawnSync('git', ['status', '--porcelain'], { encoding: 'utf8' }).stdout ?? '').split('\n').filter(Boolean), spec)
+    if (dirty.length) { console.error(`[campaign] working tree is dirty outside the ledger (${dirty.length} path(s)) — commit or stash first; the runner will not commit over your work:\n  ${dirty.join('\n  ')}`); return 2 }
   }
 
   // CALIBRATE whenever the instruments changed (or never ran).
