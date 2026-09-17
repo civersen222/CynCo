@@ -118,6 +118,7 @@ LOCALCODE_EMBED_MODEL="${LOCALCODE_EMBED_MODEL:-nomic-embed-text}" \
 # same evidence the driver grades at close, visible while the run is live.
 MISSION_BASE=$(git -C "$MISSION_CWD" rev-parse HEAD)
 echo "[dispatch] mission baseline $MISSION_BASE"
+[ -n "${CYNCO_MISSION_INVARIANTS:-}" ] && echo "[dispatch] invariants: $CYNCO_MISSION_INVARIANTS"
 LOCALCODE_APPROVE_ALL=true \
 LOCALCODE_S5_ENFORCE=false \
 LOCALCODE_MAX_ITERATIONS="$LOCALCODE_MAX_ITERATIONS" \

@@ -56,6 +56,7 @@ import { runCheck } from './cynco-verify.mjs'
 import { probeConfigError, shouldProbe, overrideDecision, probeMessage } from './cynco-probe.mjs'
 import { purgeBytecodeCaches, purgeStaleAgentState } from './cynco-workspace.mjs'
 import { loadMissionAssertions, sidecarPath, sealedDispatchRefusal, s5DispatchRefusal, workspaceError } from './cynco-contract.mjs'
+import { invariantsFromEnv } from './cynco-invariants.mjs'
 import { engineEndpoints } from './cynco-endpoints.mjs'
 import { snapshotHeldOut, restoreHeldOut } from './cynco-held-out.mjs'
 import { snapshotUncommittedWork } from './cynco-work-snapshot.mjs'
@@ -151,6 +152,18 @@ const MAX_PROBE_OVERRIDES = parseInt(process.env.CYNCO_MAX_PROBE_OVERRIDES ?? '3
 const probeState = probeCmd
   ? { command: probeCmd, runs: 0, fails: 0, overrides: 0, lastExit: null, lastVerified: null, exhausted: false, blockedBySocket: 0 }
   : null
+
+// CYNCO_MISSION_INVARIANTS: the campaign runner's S3 terms for this wave,
+// forwarded to the engine in the dispatch frame below. Malformed => refuse
+// the dispatch (exit 2), matching the sidecar policy: see cynco-invariants.mjs.
+let invariants
+try {
+  invariants = invariantsFromEnv(process.env)
+} catch (e) {
+  console.error(`[driver] ${e.message}`)
+  process.exit(2)
+}
+if (invariants) console.log(`[driver] invariants: edit gap ${invariants.editGapCap}, commit gap ${invariants.commitGapCap}`)
 
 let missionAssertions
 try {
@@ -316,6 +329,7 @@ function dispatchMission() {
     // measured on Gilded UI Wave 6, five minutes spent learning nothing.
     unattended: true,
     ...(contract ? { contract } : {}),
+    ...(invariants ? { invariants } : {}),
   }))
 }
 
