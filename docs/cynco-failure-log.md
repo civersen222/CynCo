@@ -3433,3 +3433,10 @@ the Dominion rule and not the accident of which chains fired — a test edit
 the supervisor authorises with this evidence, scoped to the premise lines.
 (3) Credit where due: the time box worked exactly as designed — the model
 stopped, wrote what it knew, and went on to finish the campaign.
+
+## F146 — Two orders with nothing behind them: the verify step ran in the wrong shell, and the run's last call was a revert (C8 wave 1)
+
+**Where:** `scripts/cynco-verify.mjs` `runCheck` (`shell: true` → cmd.exe); brief `c8-wave1.txt` (no revert ban); transcript `session-1788634167159` call 1075.
+**How:** the KEEP-GREEN check named `gilded/tests/test_c8_*.py`; cmd.exe passed the literal glob, pytest exited 4 (`file or directory not found`), and the ledger recorded `verified: false` for a check that never ran. Separately, at 8.00h the run executed `git checkout -- gilded/ui/atlas_view.py gilded/ui/app.py`, discarding ~50 minutes of uncommitted edits seconds before the wall clock; nothing in the engine refuses that command and the brief did not carry brief-authoring rule 11.
+**Why:** the verify runner and the engine's contract runner disagreed about the shell (the env-prefix half of this was already noted in the file header); and "never revert" existed only as a sentence in other briefs.
+**Fix:** `runCheck` uses `getShellInfo()` like `contractVerify.ts`, and pytest exit 4/5 is a `harnessFault` with `verified: null`. Mission invariants (engine/vsm/missionInvariants.ts) refuse the revert family in unattended runs. The C8 wave 1 row must be re-graded by the campaign runner with the corrected check.

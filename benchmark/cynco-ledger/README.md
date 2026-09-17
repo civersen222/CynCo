@@ -108,8 +108,16 @@ decisions still recorded here).
     "byName": { "Read": 7, "Grep": 1, "Edit": 1, "Bash": 4 },
     "byClass": { "sourceEdit": 1, "fileWrite": 0, "inspect": 12 },
     "maxCallsWithoutSourceEdit": 9,
-    "commits": 2, "maxCallsWithoutCommit": 6
+    "commits": 2, "maxCallsWithoutCommit": 6,
+    "bashByEffect": { "read": 2, "write": 0, "run": 1, "commit": 1, "revert": 0, "other": 0 }
   },
+  // `byClass.inspect` above keeps Bash's historical bucket — it is joined
+  // against old rows and does not change. `bashByEffect` is the NEW, honest
+  // count of what each Bash call actually DID, from the same classifier the
+  // runtime regulator reads (engine/tools/bashEffect.ts) — C8 wave 1 found the
+  // regulator counting by tool name while 233 read-shaped Bash calls slipped
+  // past it uncounted. Every Bash call increments exactly one bucket; the
+  // sums must equal `byName.Bash`.
   // F57. How the drive loop resolved. "timeout" is the only value assigned by
   // fallback; "never_dispatched" means no turn ever ran.
   "exitReason": "engine_closed_the_turn",
@@ -146,7 +154,47 @@ decisions still recorded here).
   // P4.3/4(e): session-level regulator fidelity; null when the engine emitted
   // no session_fidelity event (no contract / older engine).
   "regulatorFidelity": { "hadContract": true, "resolutionRate": 1,
-    "finalTaskError": 0, "contractReplacements": 0 }
+    "finalTaskError": 0, "contractReplacements": 0 },
+  // Last `governance.status` snapshot wins (cumulative, like `tokenStats`
+  // above — not an average or a history). null = the engine never sent one:
+  // an interactive-style run, or an engine without Plan 2's invariant/
+  // ultrastable telemetry.
+  // `configuration` is the GATING state (derived from the caps: over either
+  // cap = "edit-only"). `steps[].to` is the Ashby uniselector trace and is a
+  // different thing: it oscillates full -> edit-only -> full while a violation
+  // holds, because a 2-position Discrete step function re-steps every time a
+  // dwell expires with the variable still out of bounds. Read `to` as "the
+  // regulator tried another configuration here", never as "inspection was open
+  // at this point" — the gate does not key on it. `restoredAfter` fills only
+  // for the LAST step of an episode: it is how many observations later the
+  // variable came back inside bounds, and it stays null on every step the
+  // search passed through on the way.
+  //
+  // `denials` and `steps` are WINDOWS (last 50 / last 20), not the history:
+  // the frame is re-emitted every model iteration, so the full-run facts live
+  // in the counts and the aggregates beside them. `denialsByInvariant` and
+  // `nextCallClassCounts` are over ALL denials, not the window, and each sums
+  // to `denialCount` (`pending` = a denial whose next call was never observed,
+  // i.e. the run ended on it).
+  "invariants": { "configuration": "full",
+    "denials": [], "denialCount": 0, "steps": [], "stepCount": 0,
+    "denialsByInvariant": { "edit-gap": 0, "commit-gap": 0, "revert": 0 },
+    "nextCallClassCounts": {}, "terminalRelents": [],
+    "revertRefusals": 0, "codeIndexAssisted": 0 },
+  // `terminalRelents` names the caps the gate GAVE UP on: three full relent
+  // cycles (nine denials) on one variable and it stops withholding inspection
+  // for that variable, because an unsatisfiable cap (nothing to commit, a
+  // failing hook, a non-repo cwd) stops regulating and just throttles the run.
+  // A row with a terminal relent was paced by one cap, not two, from that
+  // point on — it is not comparable to a row that held both.
+  //
+  // `invariantsRejected: true` means caps WERE declared for this mission and
+  // the engine threw them away as malformed. `invariants: null` alone cannot
+  // say that — a mission dispatched without caps and a mission whose caps were
+  // rejected are the same null — and only the second is a dispatch bug. Never
+  // null: an engine that cannot say simply did not reject one.
+  "invariantsRejected": false,
+  "ultrastable": { "trace": [], "margin": 0.4 }
 }
 ```
 

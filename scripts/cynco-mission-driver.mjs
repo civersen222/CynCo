@@ -56,6 +56,7 @@ import { runCheck } from './cynco-verify.mjs'
 import { probeConfigError, shouldProbe, overrideDecision, probeMessage } from './cynco-probe.mjs'
 import { purgeBytecodeCaches, purgeStaleAgentState } from './cynco-workspace.mjs'
 import { loadMissionAssertions, sidecarPath, sealedDispatchRefusal, s5DispatchRefusal, workspaceError } from './cynco-contract.mjs'
+import { invariantsFromEnv } from './cynco-invariants.mjs'
 import { engineEndpoints } from './cynco-endpoints.mjs'
 import { snapshotHeldOut, restoreHeldOut } from './cynco-held-out.mjs'
 import { snapshotUncommittedWork } from './cynco-work-snapshot.mjs'
@@ -151,6 +152,18 @@ const MAX_PROBE_OVERRIDES = parseInt(process.env.CYNCO_MAX_PROBE_OVERRIDES ?? '3
 const probeState = probeCmd
   ? { command: probeCmd, runs: 0, fails: 0, overrides: 0, lastExit: null, lastVerified: null, exhausted: false, blockedBySocket: 0 }
   : null
+
+// CYNCO_MISSION_INVARIANTS: the campaign runner's S3 terms for this wave,
+// forwarded to the engine in the dispatch frame below. Malformed => refuse
+// the dispatch (exit 2), matching the sidecar policy: see cynco-invariants.mjs.
+let invariants
+try {
+  invariants = invariantsFromEnv(process.env)
+} catch (e) {
+  console.error(`[driver] ${e.message}`)
+  process.exit(2)
+}
+if (invariants) console.log(`[driver] invariants: edit gap ${invariants.editGapCap}, commit gap ${invariants.commitGapCap}`)
 
 let missionAssertions
 try {
@@ -316,6 +329,7 @@ function dispatchMission() {
     // measured on Gilded UI Wave 6, five minutes spent learning nothing.
     unattended: true,
     ...(contract ? { contract } : {}),
+    ...(invariants ? { invariants } : {}),
   }))
 }
 
@@ -667,7 +681,10 @@ if (checkCmd && !gate.run) {
   // thing, and the ledger is read by everything. Zero is the ordinary case and
   // is recorded rather than omitted — an absent field cannot tell "nothing was
   // touched" apart from "this driver could not tell".
-  verify = { command: checkCmd, exitCode: r.exitCode, timedOut: r.timedOut, spawnFailed: r.spawnFailed, durationMs: r.durationMs, outputTail: r.outputTail, gradedSha: headBefore, headAfterCheck: headAfter, heldOutRestored: tampered.length, dirtyAtVerify }
+  verify = { command: checkCmd, exitCode: r.exitCode, timedOut: r.timedOut, spawnFailed: r.spawnFailed, harnessFault: r.harnessFault, durationMs: r.durationMs, outputTail: r.outputTail, gradedSha: headBefore, headAfterCheck: headAfter, heldOutRestored: tampered.length, dirtyAtVerify }
+  if (r.harnessFault) {
+    console.log(`[verify] HARNESS FAULT — verified stays null: ${r.harnessFault}`)
+  }
   if (headBefore && headAfter && headBefore !== headAfter) {
     // Demote here as well as in gateDisposition. That call reads `quiet`, which
     // is a guess about whether the run had stopped; this is the thing itself.

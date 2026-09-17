@@ -7,6 +7,9 @@
 //   nonzero exit  → verified: false   the check ran and answered "no"
 //   timeout       → verified: null    the check NEVER ANSWERED
 //   spawn failure → verified: null    the check never started
+//   harness fault → verified: null    the check ran, but the failure is
+//                                     about the HARNESS, not the delivery
+//                                     (F146: wrong shell, pytest usage error)
 //
 // The null cases used to be recorded as `false`, on the reasoning that erring
 // toward failure is safe. It is not. `verified` is a claim about the DELIVERY;
@@ -16,72 +19,85 @@
 // Measured, or absent — never a plausible default. A null is loud: the driver
 // prints UNMEASURED and the 1-in-5 spot-audit sees an unlabeled record.
 //
-// Plain .mjs on node:child_process so it runs under Bun (driver) AND under
-// vitest/node (tests) unchanged.
+// F146: `spawnSync(..., { shell: true })` is cmd.exe on Windows — not the
+// shell the model runs commands in (PowerShell/bash, engine/tools/shellInfo.ts)
+// and not the shell the engine's own contract runner uses
+// (engine/tools/contractVerify.ts:323-343). cmd.exe does not expand a glob
+// like `test_c8_*.py`, so a check written the way every other command in the
+// session is written failed on shell dialect, not on the work — and the
+// ledger recorded `verified: false` for a check that never ran. runCheck now
+// uses getShellInfo()/shellPreamble()/translateEnvPrefix() exactly like
+// contractVerify.ts, so the check runs in the SAME shell as everything else
+// measuring the mission. A pytest usage error (exit 4, "file or directory not
+// found") or "no tests collected" (exit 5) is the same class of problem one
+// layer up: the check command itself is wrong, not the delivery, so it is a
+// harnessFault with verified:null rather than a false failure.
+//
+// Plain .mjs on node:child_process: it runs under Bun (the driver) and under
+// vitest (the tests), and it imports the engine's own shellInfo rather than
+// carrying a second copy of the shell-dialect rules.
 
 import { spawnSync } from 'node:child_process'
+import { getShellInfo, shellPreamble, translateEnvPrefix } from '../engine/tools/shellInfo.js'
 
 const OUTPUT_TAIL_CHARS = 2000
 
-// `NAME=value ` repeated at the head of the command, value optionally quoted.
-const ENV_PREFIX = /^([A-Za-z_][A-Za-z0-9_]*)=("[^"]*"|'[^']*'|\S*)\s+/
+const PYTEST_USAGE_ERROR = 4
+const PYTEST_NO_TESTS = 5
 
 /**
- * Lift a leading POSIX env prefix out of the command and into the child's env.
- *
- * `spawnSync(..., { shell: true })` uses cmd.exe on Windows, which does not
- * understand `FOO=1 prog` and answers `'FOO' is not recognized as an internal
- * or external command` in ~20ms. The engine's own contract runner accepts that
- * prefix (translateEnvPrefix, engine/tools/shellInfo.ts) — so the SAME command
- * ran as an assertion and refused as a check, and the ledger recorded
- * `verified: false` for a gate that never executed. A harness disagreeing with
- * itself about what is runnable writes false failures into the training corpus.
- *
- * Returns { command, env } with the prefix removed and applied.
- */
-export function liftEnvPrefix(command, baseEnv) {
-  let rest = String(command ?? '')
-  let env = null
-  let m
-  while ((m = ENV_PREFIX.exec(rest)) !== null) {
-    const [, name, rawValue] = m
-    const quoted = /^(".*"|'.*')$/s.test(rawValue)
-    env = env ?? { ...baseEnv }
-    env[name] = quoted ? rawValue.slice(1, -1) : rawValue
-    rest = rest.slice(m[0].length)
-  }
-  return { command: rest, env }
-}
-
-/**
- * Run a shell check command in `cwd` with a hard timeout.
- * Returns { verified, exitCode, timedOut, spawnFailed, durationMs, outputTail }.
- * `verified` is true | false | null; null means the check never answered.
+ * Run a shell check command in `cwd` with a hard timeout, in the SAME shell
+ * the model and the engine's contract runner use.
+ * Returns { verified, exitCode, timedOut, spawnFailed, harnessFault, durationMs, outputTail }.
+ * `verified` is true | false | null; null means the check never answered
+ * about the DELIVERY — because it never finished, never started, or answered
+ * about the HARNESS instead (`harnessFault` is set whenever `verified` is
+ * null for one of those reasons).
  */
 export function runCheck(command, cwd, timeoutMs) {
   const start = Date.now()
-  const lifted = liftEnvPrefix(command, process.env)
-  const result = spawnSync(lifted.command, {
-    shell: true, // cmd.exe on Windows, /bin/sh elsewhere
+  const info = getShellInfo()
+  // PowerShell (5.1 and 7) does not make an external program's exit code its
+  // OWN process exit code — `-Command "pytest ..."` returns 1 for ANY nonzero
+  // exit, collapsing 3 and 4 alike, and only $LASTEXITCODE carries the real
+  // number. That is invisible to a zero/nonzero check (contractVerify.ts's
+  // runCommand only asks "did it fail"), but this function must tell a real
+  // pytest failure (exit 1-3) apart from a pytest usage error (exit 4/5), so
+  // it has to recover the real code. `exit N` (a PowerShell statement, not an
+  // external command) already terminates before this suffix runs, so it never
+  // overrides one; $LASTEXITCODE is $null when nothing external ran, so the
+  // guard leaves that case alone too.
+  const exitPropagation = info.isPowerShell ? '; if ($LASTEXITCODE -ne $null) { exit $LASTEXITCODE }' : ''
+  const runnable = shellPreamble(info) + translateEnvPrefix(String(command ?? ''), info) + exitPropagation
+  const result = spawnSync(runnable, {
+    shell: info.shell,
     cwd,
     timeout: timeoutMs,
     encoding: 'utf8',
     windowsHide: true,
-    ...(lifted.env ? { env: lifted.env } : {}),
   })
   const durationMs = Date.now() - start
   const timedOut = result.error?.code === 'ETIMEDOUT'
   const spawnFailed = Boolean(result.error) && !timedOut
   const exitCode = typeof result.status === 'number' ? result.status : null
+  const mentionsPytest = /\bpytest\b/.test(String(command ?? ''))
+  let harnessFault = null
+  if (timedOut) harnessFault = `timed out after ${timeoutMs}ms`
+  else if (spawnFailed) harnessFault = `spawn failed: ${result.error.message}`
+  else if (mentionsPytest && exitCode === PYTEST_USAGE_ERROR) {
+    harnessFault = 'pytest usage error (exit 4): the check command itself is wrong — a path did not resolve'
+  } else if (mentionsPytest && exitCode === PYTEST_NO_TESTS) {
+    harnessFault = 'pytest collected no tests (exit 5): the check measured nothing'
+  }
   const output = `${result.stdout ?? ''}${result.stderr ?? ''}` +
-    (timedOut ? `\n[check] TIMED OUT after ${timeoutMs}ms` : '') +
-    (spawnFailed ? `\n[check] SPAWN FAILED: ${result.error.message}` : '')
+    (harnessFault ? `\n[check] HARNESS FAULT: ${harnessFault}` : '')
   return {
     // null, not false: the check never produced an answer about the delivery.
-    verified: (timedOut || spawnFailed) ? null : exitCode === 0,
+    verified: harnessFault ? null : exitCode === 0,
     exitCode,
     timedOut,
     spawnFailed,
+    harnessFault,
     durationMs,
     outputTail: output.slice(-OUTPUT_TAIL_CHARS),
   }
