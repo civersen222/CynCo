@@ -159,6 +159,17 @@ decisions still recorded here).
   // above — not an average or a history). null = the engine never sent one:
   // an interactive-style run, or an engine without Plan 2's invariant/
   // ultrastable telemetry.
+  // `configuration` is the GATING state (derived from the caps: over either
+  // cap = "edit-only"). `steps[].to` is the Ashby uniselector trace and is a
+  // different thing: it oscillates full -> edit-only -> full while a violation
+  // holds, because a 2-position Discrete step function re-steps every time a
+  // dwell expires with the variable still out of bounds. Read `to` as "the
+  // regulator tried another configuration here", never as "inspection was open
+  // at this point" — the gate does not key on it. `restoredAfter` fills only
+  // for the LAST step of an episode: it is how many observations later the
+  // variable came back inside bounds, and it stays null on every step the
+  // search passed through on the way.
+  //
   // `denials` and `steps` are WINDOWS (last 50 / last 20), not the history:
   // the frame is re-emitted every model iteration, so the full-run facts live
   // in the counts and the aggregates beside them. `denialsByInvariant` and

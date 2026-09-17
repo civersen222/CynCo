@@ -33,8 +33,9 @@
 // layer up: the check command itself is wrong, not the delivery, so it is a
 // harnessFault with verified:null rather than a false failure.
 //
-// Plain .mjs on node:child_process so it runs under Bun (driver) AND under
-// vitest/node (tests) unchanged.
+// Plain .mjs on node:child_process: it runs under Bun (the driver) and under
+// vitest (the tests), and it imports the engine's own shellInfo rather than
+// carrying a second copy of the shell-dialect rules.
 
 import { spawnSync } from 'node:child_process'
 import { getShellInfo, shellPreamble, translateEnvPrefix } from '../engine/tools/shellInfo.js'

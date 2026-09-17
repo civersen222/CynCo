@@ -171,13 +171,13 @@ export class MissionInvariants {
         ? `This is the third time this run you have been denied through a full relent cycle on this cap. ` +
           `If there is genuinely nothing to edit, say so in your reply and continue; inspection is no longer withheld for this cap.`
         : `Make the smallest edit that tests your current hypothesis, or commit what you have. Reading resumes after that edit.`
-      return `[invariant] DENIED (edit gap): ${this.callsSinceSourceEdit} calls since your last source edit, ${last}.${since} ${tail}`
+      return `[invariant] DENIED (edit-gap): ${this.callsSinceSourceEdit} calls since your last source edit, ${last}.${since} ${tail}`
     }
     const tail = escalated
       ? `This is the third time this run you have been denied through a full relent cycle on this cap. ` +
         `If there is genuinely nothing to commit, say so in your reply and continue; inspection is no longer withheld for this cap.`
       : `Stage the files you changed by name and commit now — a commit is the only backup this run has. Reading resumes after the commit.`
-    return `[invariant] DENIED (commit gap): ${this.callsSinceCommit} calls since your last commit.${since} ${tail}`
+    return `[invariant] DENIED (commit-gap): ${this.callsSinceCommit} calls since your last commit.${since} ${tail}`
   }
 
   private deny(invariant: InvariantKind, toolName: string, message: string): InvariantVerdict {
