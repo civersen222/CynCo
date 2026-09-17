@@ -204,6 +204,11 @@ export function looksSemantic(pattern: string): boolean {
   return pattern.trim().split(/\s+/).length >= 3
 }
 
+/** A Grep pattern that is one bare identifier — the question CodeIndex answers best. */
+export function isIdentifierPattern(pattern: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]{2,}$/.test(pattern.trim())
+}
+
 /**
  * The one-line nudge for this call, or null. Also the counter's bookkeeping:
  * call it for EVERY tool call so a CodeIndex use resets the crawl count.

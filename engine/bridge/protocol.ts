@@ -257,6 +257,30 @@ export type GovernanceStatusEvent = {
   progressRate?: number | null
   /** P4.3/4(d): thrashing/exploration/floundering regime — widened to string. */
   explorationState?: string | null
+  /** Mission-mode invariant state (null in interactive sessions). Mirrors
+   *  InvariantSnapshot in vsm/missionInvariants.ts — keep in sync (this file
+   *  stays import-free). `configuration` and `invariant` are widened to string
+   *  on the wire; do not copy the unions here. */
+  invariants?: {
+    caps: { editGapCap: number; commitGapCap: number; revertBan: boolean; codeIndexFirst: boolean }
+    configuration: string
+    callsSinceSourceEdit: number
+    callsSinceCommit: number
+    steps: Array<{ callIndex: number; variable: string; from: string; to: string; restoredAfter: number | null }>
+    denials: Array<{ callIndex: number; invariant: string; tool: string; nextCallClass: string | null }>
+    revertRefusals: number
+    codeIndexAssisted: number
+  } | null
+  /** The legacy ultrastable instance's adaptation trace and viability margin
+   *  (Plan 1). Capped at the last 20 steps and mapped to camelCase: the live
+   *  array grows unbounded for the life of the session and its own `toJSON` is
+   *  snake_case (it mirrors the Rust core byte for byte), neither of which
+   *  belongs on a per-turn frame. */
+  ultrastable?: {
+    traceLength: number
+    trace: Array<{ step: number; violations: string[]; from: unknown; to: unknown; strategy: string; restoredAfter: number | null }>
+    margin: number
+  } | null
   suggestion: string | null
 }
 
@@ -559,6 +583,11 @@ export type UserMessageCommand = {
    *  run stalls for the full AskBroker timeout to learn what the dispatcher
    *  already knew. Scoped to one message. */
   unattended?: boolean
+  /** Campaign-level S3 terms for THIS task, honoured only with `unattended: true`.
+   *  Pacing caps become essential variables of a delivery homeostat; the revert
+   *  family is refused; identifier Greps get CodeIndex prepended. Inlined type:
+   *  this file stays import-free. See engine/vsm/missionInvariants.ts. */
+  invariants?: { editGapCap: number; commitGapCap: number; revertBan: boolean; codeIndexFirst: boolean }
 }
 
 export type ApprovalResponseCommand = {
