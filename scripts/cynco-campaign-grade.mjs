@@ -38,16 +38,21 @@ function runSuiteGate(spec, io) {
   return { exit: r.status, regressions: pick('REGRESSED'), repairs: pick('REPAIRED'), harnessFault, outputTail: out.slice(-3000) }
 }
 
+// Returns { sweep, sweepFault }: sweepFault is null when the sweep succeeded or
+// was legitimately skipped (no diff), and a short human string when the sweep
+// was attempted and produced nothing usable. A silent null would otherwise read
+// in the verdict as "no diff" when in fact the sweep timed out or refused.
 function runSweep(spec, row, io) {
   const { base, head } = row.commitRange ?? {}
-  if (!base || !head || base === head) return null
+  if (!base || !head || base === head) return { sweep: null, sweepFault: null }
   // resolve('scripts', …) assumes cwd = repo root: true for the campaign runner,
   // which is always invoked from the repo root (never from engine/ or tui/).
   const r = io.run('python', [resolve('scripts', 'cynco-mutation-sweep.py'), '--repo', spec.repo, '--base', base, '--head', head, '--json'], { cwd: process.cwd(), env: {}, timeoutMs: SWEEP_TIMEOUT_MS })
-  if (r.timedOut || r.status === 2) return null
+  if (r.timedOut) return { sweep: null, sweepFault: `timed out after ${SWEEP_TIMEOUT_MS} ms` }
+  if (r.status === 2) return { sweep: null, sweepFault: 'sweep refused (exit 2)' }
   const last = (r.stdout + '').trim().split('\n').reverse().find(l => l.startsWith('{'))
-  if (!last) return null
-  try { const j = JSON.parse(last); return { kind: 'derived', command: j.command, killed: j.killed, total: j.total, survived: j.survived ?? [] } } catch { return null }
+  if (!last) return { sweep: null, sweepFault: 'unparseable sweep output' }
+  try { const j = JSON.parse(last); return { sweep: { kind: 'derived', command: j.command, killed: j.killed, total: j.total, survived: j.survived ?? [] }, sweepFault: null } } catch { return { sweep: null, sweepFault: 'unparseable sweep output' } }
 }
 
 export function posiwidForRow(spec, row) {
@@ -68,8 +73,8 @@ export function posiwidForRow(spec, row) {
 export async function gradeWave(spec, row, io = defaultIo) {
   const gate = runGate(spec, io)
   const suite = runSuiteGate(spec, io)
-  const sweep = gate.harnessFault ? null : runSweep(spec, row, io)
+  const { sweep, sweepFault } = gate.harnessFault ? { sweep: null, sweepFault: null } : runSweep(spec, row, io)
   const posiwid = posiwidForRow(spec, row)
   const verified = (gate.harnessFault || suite.harnessFault) ? null : (gate.exit === 0 && suite.exit === 0)
-  return { sha: row.commitRange?.head ?? null, gate, suite, sweep, posiwid, verified }
+  return { sha: row.commitRange?.head ?? null, gate, suite, sweep, sweepFault, posiwid, verified }
 }

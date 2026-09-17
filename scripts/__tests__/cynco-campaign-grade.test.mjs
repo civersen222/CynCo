@@ -24,6 +24,7 @@ describe('gradeWave', () => {
     expect(g.gate.failCount).toBe(14); expect(g.gate.exit).toBe(1); expect(g.gate.harnessFault).toBeNull()
     expect(g.suite.exit).toBe(0); expect(g.suite.regressions).toEqual([])
     expect(g.sweep).toMatchObject({ kind: 'derived', killed: 6, total: 25, survived: ['gilded/x.py:12'] })
+    expect(g.sweepFault).toBeNull()
     expect(g.verified).toBe(false)
     // Hand-computed (ruling 2): stated {sourceEdit:0.15, commit:1/150≈0.006667, inspect:0.843333},
     // observed counts {sourceEdit:103, commit:5, inspect:828, other(revert):1}, support=937, ε=1e-3, n=4.
@@ -48,6 +49,20 @@ describe('gradeWave', () => {
     const g = await gradeWave(spec, row, io)
     expect(g.suite.harnessFault).toMatch(/REFUSING/)
     expect(g.verified).toBeNull()
+  })
+  it('records why the sweep produced nothing: timeout, refusal, unparseable output, no diff', async () => {
+    const green = [[/gate_c8\.py/, { status: 0, stdout: 'GATE: PASS\n' }], [/g_suite/, { status: 0, stdout: 'g_suite: PASS' }]]
+    const timedOut = await gradeWave(spec, row, fakeIo([...green, [/sweep/, { status: null, stdout: '', timedOut: true }]]))
+    expect(timedOut.sweep).toBeNull(); expect(timedOut.sweepFault).toBe('timed out after 3600000 ms')
+    const refused = await gradeWave(spec, row, fakeIo([...green, [/sweep/, { status: 2, stdout: '' }]]))
+    expect(refused.sweepFault).toBe('sweep refused (exit 2)')
+    const garbage = await gradeWave(spec, row, fakeIo([...green, [/sweep/, { status: 0, stdout: 'no json here\n' }]]))
+    expect(garbage.sweepFault).toBe('unparseable sweep output')
+    const broken = await gradeWave(spec, row, fakeIo([...green, [/sweep/, { status: 0, stdout: '{"killed":' }]]))
+    expect(broken.sweepFault).toBe('unparseable sweep output')
+    // No diff is not a fault: the sweep was never attempted.
+    const noDiff = await gradeWave(spec, { ...row, commitRange: { base: '1d03308', head: '1d03308' } }, fakeIo(green))
+    expect(noDiff.sweep).toBeNull(); expect(noDiff.sweepFault).toBeNull()
   })
   it('parses regressions by node id from the suite gate output', async () => {
     const io = fakeIo([[/gate_c8\.py/, { status: 0, stdout: 'GATE: PASS\n' }], [/g_suite/, { status: 1, stdout: '  REGRESSED 2 test(s) that pass on the baseline:\n      - gilded/tests/a.py::test_x\n      - gilded/tests/b.py::test_y\ng_suite: FAIL' }], [/sweep/, { status: 0, stdout: '{"command":"x","kind":"derived","killed":1,"total":1,"survived":[]}' }]])

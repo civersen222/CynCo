@@ -49,7 +49,11 @@ export function verdictEntry({ spec, wave, row, grade, decision, ideationRecord,
   for (const f of grade.gate.fails) lines.push(`  - \`${f.line}\``)
   if (grade.gate.passes.length) lines.push(`  - PASS: ${grade.gate.passes.map(p => p.id).join(', ')}`)
   lines.push(`- Suite gate ${grade.suite.harnessFault ? `REFUSED (${grade.suite.harnessFault})` : grade.suite.exit === 0 ? 'PASS' : 'FAIL'}: REGRESSED ${grade.suite.regressions.length}${grade.suite.regressions.length ? ` (${grade.suite.regressions.join(', ')})` : ''}, REPAIRED ${grade.suite.repairs.length}.`)
-  lines.push(grade.sweep ? `- Derived sweep ${grade.sweep.killed}/${grade.sweep.total}; survivors: ${grade.sweep.survived.length ? grade.sweep.survived.join(', ') : 'none'}.` : '- Derived sweep: UNMEASURED (no diff or the sweep refused).')
+  lines.push(grade.sweep
+    ? `- Derived sweep ${grade.sweep.killed}/${grade.sweep.total}; survivors: ${grade.sweep.survived.length ? grade.sweep.survived.join(', ') : 'none'}.`
+    : grade.sweepFault
+      ? `- Derived sweep: UNMEASURED — ${grade.sweepFault}.`
+      : '- Derived sweep: UNMEASURED (no diff or the sweep refused).')
   lines.push(`- POSIWID ${grade.posiwid.verdict} (divergence ${grade.posiwid.divergence.toFixed(3)}, dominant ${grade.posiwid.dominantObserved}).`)
   if (ideationRecord) lines.push(`- S4 ideation (authority ${ideationRecord.authority}): ${ideationRecord.hypotheses.length} hypothesis/es; followed=${ideationRecord.followed}.`)
   lines.push(`- Ledger: verified ${grade.verified === null ? 'null (harness fault)' : grade.verified}; mutationSweep ${grade.sweep ? 'recorded (derived)' : 'null'}.`)

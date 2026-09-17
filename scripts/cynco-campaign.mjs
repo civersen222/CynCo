@@ -63,6 +63,12 @@ export const defaultIo = {
       CYNCO_MISSION_INVARIANTS: JSON.stringify(invariants), DRIVER_PID_FILE: pidFile, DRIVER_LOG: driverLog, CYNCO_SKIP_IDLE_ENGINE: '1' }
     const r = spawnSync('bash', ['scripts/dispatch-mission.sh', briefFile, spec.marker, spec.repo, String(timeoutS), spec.keepGreen], { env, encoding: 'utf8', timeout: 900_000 })
     if (r.status !== 0) throw new Error(`dispatch failed (exit ${r.status}): ${(r.stdout + r.stderr).slice(-2000)}`)
+    // dispatch-mission.sh prints the invariants it accepted and the driver log
+    // and PID it started; captured output is invisible unless we re-emit it, and
+    // those three lines are the only unattended evidence that the wave was given
+    // its orders and that the PID we are about to wait on is the driver's.
+    if (r.stdout) console.log(r.stdout.trimEnd())
+    if (r.stderr?.trim()) console.log(r.stderr.trimEnd())
     // dispatch-mission.sh backgrounds the driver, so the missionId does not
     // exist yet: it is read out of the driver log by missionIdFrom once the
     // driver has written its ledger line.
@@ -227,7 +233,7 @@ export async function runWave(spec, state, io = defaultIo) {
   try { verdictSha = io.commit({ repoRoot: '.', branch: `campaign/${spec.id}`, files, message: `${spec.id.toUpperCase()} wave ${wave} verdict: ${decision.kind} — ${decision.why}` }).sha } catch (e) { console.error(`[campaign] commit skipped: ${e.message}`) }
   const notified = await tryNotify(io, `${spec.id.toUpperCase()} wave ${wave}: ${decision.kind.toUpperCase()} — ${decision.why}\n${grade.gate.fails.map(f => f.line).join('\n')}`)
 
-  const rec = { wave, missionId, briefFile, base, head: grade.sha, dispatchedAt, gradedAt: new Date().toISOString(), gate: grade.gate, suite: grade.suite, sweep: grade.sweep, posiwid: grade.posiwid, verified: grade.verified,
+  const rec = { wave, missionId, briefFile, base, head: grade.sha, dispatchedAt, gradedAt: new Date().toISOString(), gate: grade.gate, suite: grade.suite, sweep: grade.sweep, sweepFault: grade.sweepFault ?? null, posiwid: grade.posiwid, verified: grade.verified,
     outcome: { landed: row.outcome === 'landed', exitReason: row.exitReason },
     s4: { generatorInput: { failIds: fails.map(f => f.id), priorMissionId: prior?.missionId ?? null }, ideation, ideationMeta, authority: s.ideationAuthority ?? 0, commander, followed },
     decision, verdictSha, notified }

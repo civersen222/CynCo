@@ -41,6 +41,17 @@ describe('verdictEntry', () => {
     const beText = verdictEntry({ spec: { id: 'c8' }, wave: 1, row: beRow, grade, decision: { kind: 'next', why: 'x' }, ideationRecord: null, economicsLines: [] })
     expect(beText).toMatch(/sum 265 vs byName\.Bash 999 — DISAGREE/)
   })
+  it('names the sweep fault instead of the generic UNMEASURED line', () => {
+    const faultGrade = { ...grade, sweep: null, sweepFault: 'timed out after 3600000 ms' }
+    const faultText = verdictEntry({ spec: { id: 'c8' }, wave: 1, row, grade: faultGrade, decision: { kind: 'next', why: 'x' }, ideationRecord: null, economicsLines: [] })
+    expect(faultText).toMatch(/- Derived sweep: UNMEASURED — timed out after 3600000 ms\./)
+    expect(faultText).not.toMatch(/no diff or the sweep refused/)
+  })
+  it('keeps the generic UNMEASURED line when there was simply no diff', () => {
+    const noDiffGrade = { ...grade, sweep: null, sweepFault: null }
+    const noDiffText = verdictEntry({ spec: { id: 'c8' }, wave: 1, row, grade: noDiffGrade, decision: { kind: 'next', why: 'x' }, ideationRecord: null, economicsLines: [] })
+    expect(noDiffText).toMatch(/- Derived sweep: UNMEASURED \(no diff or the sweep refused\)\./)
+  })
   it('renders INVARIANTS REJECTED loudly and forces STOP (fault) regardless of decision.kind', () => {
     const rejectedRow = { ...row, invariantsRejected: true }
     const rejectedText = verdictEntry({ spec: { id: 'c8' }, wave: 1, row: rejectedRow, grade, decision: { kind: 'next', why: 'invariants were rejected' }, ideationRecord: null, economicsLines: [] })
