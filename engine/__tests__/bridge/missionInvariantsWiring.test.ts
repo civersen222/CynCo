@@ -15,11 +15,12 @@
  * events the real `executeOneTool` and the real status emit produce.
  */
 import { describe, expect, it, afterAll, vi } from 'vitest'
-import { mkdtempSync, rmSync } from 'fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { ConversationLoop } from '../../bridge/conversationLoop.js'
 import { globalContract } from '../../tools/contract.js'
+import { codeIndexAdoptionHint, resetCodeIndexNudgeState } from '../../tools/toolHints.js'
 import type { Provider, ModelCapabilities, CompletionRequest } from '../../provider.js'
 import type { StreamEvent } from '../../types.js'
 import type { EngineEvent } from '../../bridge/protocol.js'
@@ -97,12 +98,39 @@ function grepToolUse(pattern: string): () => Generator<StreamEvent> {
   }
 }
 
+/**
+ * One assistant message carrying a single Read call. The path is resolved when
+ * the generator runs, so a test can name a file inside the harness's own cwd.
+ */
+function readToolUse(filePath: () => string): () => Generator<StreamEvent> {
+  return function* (): Generator<StreamEvent> {
+    yield { type: 'message_start', message: { id: 'm1', model: 'test-model', usage: { input_tokens: 10, output_tokens: 0 } } } as any
+    yield { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'tu1', name: 'Read', input: {} } } as any
+    yield { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: JSON.stringify({ file_path: filePath() }) } } as any
+    yield { type: 'content_block_stop', index: 0 } as any
+    yield { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 5 } } as any
+    yield { type: 'message_stop' } as any
+  }
+}
+
 /** One assistant message carrying a single Bash call. */
 function bashToolUse(command: string): () => Generator<StreamEvent> {
   return function* (): Generator<StreamEvent> {
     yield { type: 'message_start', message: { id: 'm1', model: 'test-model', usage: { input_tokens: 10, output_tokens: 0 } } } as any
     yield { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'tu0', name: 'Bash', input: {} } } as any
     yield { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: JSON.stringify({ command }) } } as any
+    yield { type: 'content_block_stop', index: 0 } as any
+    yield { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 5 } } as any
+    yield { type: 'message_stop' } as any
+  }
+}
+
+/** One assistant message whose tool arguments are not JSON and cannot be repaired. */
+function malformedToolUse(name: string): () => Generator<StreamEvent> {
+  return function* (): Generator<StreamEvent> {
+    yield { type: 'message_start', message: { id: 'm1', model: 'test-model', usage: { input_tokens: 10, output_tokens: 0 } } } as any
+    yield { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'tu2', name, input: {} } } as any
+    yield { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: 'this is not json at all <<<' } } as any
     yield { type: 'content_block_stop', index: 0 } as any
     yield { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 5 } } as any
     yield { type: 'message_stop' } as any
@@ -181,6 +209,74 @@ describe('mission invariants wiring', () => {
     expect(String(complete[0].result)).toContain('[CodeIndex top-3 for "hold_seat_for_player"]')
     expect(String(complete[0].result)).toContain('STUB CARD for hold_seat_for_player (top_k=3)')
     expect(lastStatus(events).invariants.codeIndexAssisted).toBe(1)
+    globalContract.clear()
+  }, 30000)
+
+  /**
+   * The two adoption counters must agree. `codeIndexAdoptionHint` nudges every
+   * 15th retrieval call with "N calls since your last CodeIndex query"; the
+   * CodeIndex-first prepend queries the index ON the model's behalf during a
+   * Grep. Without `noteCodeIndexUse` the model gets lectured for skipping an
+   * index that just answered its Grep — while `invariants.codeIndexAssisted`
+   * says it used it.
+   */
+  it('a CodeIndex-first prepend clears the crawl nudge counter', async () => {
+    globalContract.clear()
+    resetCodeIndexNudgeState()
+    // 13 crawl calls. The Grep below is #14, and the Read after it would be the
+    // #15 that trips the crawl nudge — unless the prepend reset the counter.
+    for (let i = 0; i < 13; i++) codeIndexAdoptionHint('Read', {}, 'contents', false)
+
+    // The generators are not run until handleUserMessage below, so the path can
+    // be filled in after the harness has made the temp directory.
+    const notePath = { value: '' }
+    const { cwd, loop, events } = harness('cynco-inv-crawlreset-', [
+      grepToolUse('hold_seat_for_player'),
+      readToolUse(() => notePath.value),
+      textResponse('done'),
+    ])
+    notePath.value = join(cwd, 'note.txt')
+    writeFileSync(notePath.value, 'a note\n')
+
+    await loop.handleUserMessage('find it, then read the note', {
+      unattended: true,
+      invariants: { editGapCap: 40, commitGapCap: 150, revertBan: true, codeIndexFirst: true },
+    })
+
+    const complete = events.filter(e => e.type === 'tool.complete') as any[]
+    expect(complete.length).toBe(2)
+    expect(String(complete[0].result)).toContain('[CodeIndex top-3 for "hold_seat_for_player"]')
+    expect(String(complete[1].result)).not.toContain('calls since your last CodeIndex query')
+    expect(lastStatus(events).invariants.codeIndexAssisted).toBe(1)
+    globalContract.clear()
+    resetCodeIndexNudgeState()
+  }, 30000)
+
+  /**
+   * The malformed-arguments repair ladder returns before the tool runs. It
+   * still counts against the commit-pressure clock, so it must count against
+   * the invariants' clocks too — two clocks measuring the same run must not
+   * drift apart because one of them skipped an early return.
+   */
+  it('counts a malformed tool call against the invariant clocks', async () => {
+    globalContract.clear()
+    const { loop, events } = harness('cynco-inv-malformed-', [
+      malformedToolUse('Bash'),
+      textResponse('done'),
+    ])
+
+    await loop.handleUserMessage('do the thing', {
+      unattended: true,
+      invariants: { editGapCap: 40, commitGapCap: 150, revertBan: true, codeIndexFirst: true },
+    })
+
+    const complete = events.filter(e => e.type === 'tool.complete') as any[]
+    expect(complete.length).toBe(1)
+    expect(complete[0].isError).toBe(true)
+    expect(String(complete[0].result)).toContain('not valid JSON')
+    const status = lastStatus(events)
+    expect(status.invariants.callsSinceSourceEdit).toBeGreaterThanOrEqual(1)
+    expect(status.invariants.callsSinceCommit).toBeGreaterThanOrEqual(1)
     globalContract.clear()
   }, 30000)
 

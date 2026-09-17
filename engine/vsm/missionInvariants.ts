@@ -32,7 +32,6 @@ import { bashEffect } from '../tools/bashEffect.js'
 import { isSourceRewrite } from '../tools/toolHints.js'
 
 export interface InvariantCaps { editGapCap: number; commitGapCap: number; revertBan: boolean; codeIndexFirst: boolean }
-export const DEFAULT_INVARIANT_CAPS: InvariantCaps = { editGapCap: 40, commitGapCap: 150, revertBan: true, codeIndexFirst: true }
 
 export function parseInvariantCaps(raw: unknown): InvariantCaps | null {
   if (!raw || typeof raw !== 'object') return null

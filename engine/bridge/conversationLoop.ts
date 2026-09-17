@@ -59,7 +59,7 @@ import { makeJournalEntry } from '../training/types.js'
 import { buildConceptTableForCwd } from '../vsm/conceptTable.js'
 import { evaluateGrounding, extractAddedText, extractTargetPaths } from '../vsm/groundingTrigger.js'
 import { MissionInvariants, parseInvariantCaps } from '../vsm/missionInvariants.js'
-import { isIdentifierPattern } from '../tools/toolHints.js'
+import { isIdentifierPattern, noteCodeIndexUse } from '../tools/toolHints.js'
 import { ReadLoopGate, rearmsGate, signature as readSignature } from '../vsm/readLoopGate.js'
 import { ToolDivergenceDetector } from '../brain/toolDivergence.js'
 import { BrainRecorder } from '../brain/brainRecorder.js'
@@ -2672,7 +2672,7 @@ export class ConversationLoop {
                 // mirrors the Rust core byte for byte). A per-turn frame gets
                 // the tail and the length, not the array.
                 ultrastable: (() => {
-                  const fa = this.governance.getFeedbackActions?.()
+                  const fa = this.governance.getFeedbackActions()
                   if (!fa) return null
                   const trace = fa.adaptationTrace
                   return {
@@ -3646,6 +3646,12 @@ export class ConversationLoop {
       toolsUsedThisTurn.push(toolName)
       this.recordToolOutcome(toolName, 'failure', toolResultsThisTurn)
       toolsUsedInSession.push(toolName)
+      // The commit-pressure clock above already counted this call; the mission
+      // invariants must count it too or the two clocks drift apart on a run that
+      // emits malformed arguments. `accountInvariants` is declared further down
+      // (after the early returns), so observe directly — same call, same
+      // arguments, isError=true because nothing was executed.
+      this.missionInvariants?.observeCall(toolName, toolInput, true)
       return
     }
     // Healthy parse: reset the bounded-retry counter.
@@ -4031,6 +4037,11 @@ export class ConversationLoop {
         if (!ci.isError && ci.output.trim()) {
           result.output = `[CodeIndex top-3 for ${JSON.stringify(toolInput.pattern)}]\n${ci.output.trim()}\n\n${result.output}`
           this.missionInvariants.noteCodeIndexAssisted()
+          // The index answered for this Grep, so the crawl-nudge counter in
+          // toolHints must see it too — otherwise the next Grep carries a
+          // "N calls since your last CodeIndex query" lecture for a call the
+          // index just served.
+          noteCodeIndexUse()
         }
       } catch (e) { console.log(`[invariant] CodeIndex-first skipped: ${e instanceof Error ? e.message : e}`) }
     }

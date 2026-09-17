@@ -1,12 +1,12 @@
 import { describe, it, expect, beforeEach } from 'bun:test'
-import { MissionInvariants, DEFAULT_INVARIANT_CAPS, parseInvariantCaps } from '../../vsm/missionInvariants.js'
+import { MissionInvariants, parseInvariantCaps } from '../../vsm/missionInvariants.js'
 
 const read = (n: number) => ['Read', { file_path: `C:\\repo\\f${n}.py` }] as const
 const bashRead = (n: number) => ['Bash', { command: `Get-Content C:\\repo\\f${n}.py` }] as const
 
 describe('MissionInvariants', () => {
   let inv: MissionInvariants
-  beforeEach(() => { inv = new MissionInvariants({ ...DEFAULT_INVARIANT_CAPS, editGapCap: 5, commitGapCap: 8 }) })
+  beforeEach(() => { inv = new MissionInvariants({ editGapCap: 5, commitGapCap: 8, revertBan: true, codeIndexFirst: true }) })
 
   it('parses caps and rejects malformed ones', () => {
     expect(parseInvariantCaps({ editGapCap: 40, commitGapCap: 150, revertBan: true, codeIndexFirst: false }))
@@ -87,7 +87,7 @@ describe('MissionInvariants', () => {
   })
 
   it('steps stay aligned with the homeostat trace when a commit lands on a re-step boundary', () => {
-    const gapInv = new MissionInvariants({ ...DEFAULT_INVARIANT_CAPS, editGapCap: 3, commitGapCap: 50 })
+    const gapInv = new MissionInvariants({ editGapCap: 3, commitGapCap: 50, revertBan: true, codeIndexFirst: true })
     // Hand-computed trace (dwell = 3, Ordered, 2-position uniselector):
     // calls 1-3: callsSinceSourceEdit 1..3, all <= cap 3 -> no violation, no step.
     // call 4: callsSinceSourceEdit = 4 > 3 -> dwellRemaining was 0 -> STEP 1

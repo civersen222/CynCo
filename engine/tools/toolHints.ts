@@ -189,6 +189,19 @@ const CRAWL_NUDGE_EVERY = 15
 
 let retrievalSinceCodeIndex = 0
 
+/**
+ * The index was consulted for this call — zero the crawl counter.
+ *
+ * `codeIndexAdoptionHint` does this itself when the model calls `CodeIndex`
+ * directly, but the CodeIndex-first prepend in conversationLoop.ts queries the
+ * index on the model's behalf during a Grep. Without this the crawl counter
+ * keeps climbing and the model gets lectured for not using an index it just
+ * used, while the invariants' `codeIndexAssisted` counter says the opposite.
+ */
+export function noteCodeIndexUse(): void {
+  retrievalSinceCodeIndex = 0
+}
+
 /** Test seam: the counter is process state, and tests must not share it. */
 export function resetCodeIndexNudgeState(): void {
   retrievalSinceCodeIndex = 0
