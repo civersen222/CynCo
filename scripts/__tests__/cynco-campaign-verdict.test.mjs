@@ -116,3 +116,15 @@ describe('commitVerdict', () => {
     expect(calls.some(c => c.startsWith('add '))).toBe(false)
   })
 })
+
+// C1: a green gate with survivors only in files the campaign never claimed is
+// still a campaign PASS — the label has to say both things.
+describe('verdictEntry — pass-with-survivors', () => {
+  it('labels a green gate with claimed survivors as a PASS that names them', () => {
+    const greenGrade = { ...grade, gate: { ...grade.gate, terminator: 'PASS', fails: [], failCount: 0, exit: 0 }, verified: true }
+    const text = verdictEntry({ spec: { id: 'c8' }, wave: 3, row, grade: greenGrade,
+      decision: { kind: 'pass-with-survivors', survivors: ['gilded/ui/x.py:3'], why: 'sealed gate PASS, suite gate PASS, sweep 6/25, 1 survivor(s) — 1 inside a claimed file: gilded/ui/x.py:3' },
+      ideationRecord: null, economicsLines: [] })
+    expect(text).toMatch(/^Verdict: \*\*CAMPAIGN PASS \(sweep survivors: 1\)\*\* — sealed gate PASS/m)
+  })
+})
