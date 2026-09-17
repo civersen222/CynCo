@@ -1009,9 +1009,14 @@ export class ConversationLoop {
         // mission dispatched without invariants at all.
         console.log('[invariant] invariants block malformed — ignored (message still runs)')
         this.invariantsRejected = true
+        // `warn`, the value the read-loop gate uses, not `critical`: the
+        // daemon's one-shot path halts on `critical`
+        // (engine/daemon/oneShot.ts), and a rejected invariants block must not
+        // halt an ideation run. The load-bearing signal is
+        // `invariantsRejected` on the status frame and in the ledger row.
         this.emit({
           type: 'governance.alert',
-          severity: 'error',
+          severity: 'warn',
           message: '[invariant] invariants block malformed — this unattended run has NO mission invariants',
           source: 'mission-invariants',
         } as any)

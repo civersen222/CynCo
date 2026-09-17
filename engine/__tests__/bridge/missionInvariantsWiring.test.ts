@@ -333,7 +333,10 @@ describe('mission invariants wiring', () => {
     const alerts = events.filter(e => e.type === 'governance.alert') as any[]
     expect(alerts.some(a =>
       String(a.message) === '[invariant] invariants block malformed — this unattended run has NO mission invariants'
-      && a.source === 'mission-invariants',
+      && a.source === 'mission-invariants'
+      // `warn`, not `critical`: the daemon's one-shot path halts on `critical`
+      // and a rejected invariants block must not halt an ideation run.
+      && a.severity === 'warn',
     ), `no malformed-invariants alert; saw ${JSON.stringify(alerts.map(a => a.message))}`).toBe(true)
 
     const status = lastStatus(events)
