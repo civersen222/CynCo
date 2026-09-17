@@ -6,7 +6,7 @@
 //
 // S2: salvage + no-progress stop.   S3: budgets + invariants handed to the wave.
 // S3*: sealed gate, suite gate, sweep.   S4: brief (generator binds; ideation advises).
-// S5: the campaign spec (identity, checked before every dispatch).   Algedonic: ntfy.
+// S5: the campaign spec (identity, checked once per invocation).   Algedonic: ntfy.
 //
 // Runs under bun (it reaches into engine/*.ts through .js specifiers).
 import { resolve, join, basename, relative } from 'node:path'
@@ -105,8 +105,12 @@ export const defaultIo = {
 export function waveContext(spec, s, io = defaultIo) {
   const wave = s.waveCount + 1
   const base = s.lastBase ?? spec.base
-  const fails = wave === 1 ? (s.calibration?.baseFails ?? []) : s.lastGrade.gate.fails
-  const passes = wave === 1 ? (s.calibration?.basePasses ?? []) : s.lastGrade.gate.passes
+  // NOT `wave === 1 ? calibration : lastGrade`: a faulted wave advances
+  // waveCount without ever producing a grade, so wave 2 can legitimately have
+  // no lastGrade. Falling back to the calibration keeps the campaign resumable
+  // instead of bricking it with a TypeError on the next invocation.
+  const fails = s.lastGrade?.gate.fails ?? s.calibration?.baseFails ?? []
+  const passes = s.lastGrade?.gate.passes ?? s.calibration?.basePasses ?? []
   const prior = s.lastRow
     ? { missionId: s.lastRow.missionId, exitReason: s.lastRow.exitReason, durationS: s.lastRow.durationS, commits: s.lastCommits ?? [], toolStats: s.lastRow.toolStats, invariants: s.lastRow.invariants ?? null, verify: s.lastRow.verify, posiwid: s.lastGrade?.posiwid ?? null }
     : null
@@ -152,14 +156,20 @@ export async function runWave(spec, state, io = defaultIo) {
     // Ruling 8: a wave that faulted still SPENT a wave. Counting it is what
     // stops a broken engine from burning the whole budget in a retry loop.
     const rec = { wave, missionId, briefFile, base, dispatchedAt, decision: { kind: 'fault', why: waited.exited ? 'driver exited without a ledger row' : 'driver did not exit within the wall clock' } }
+    rec.notified = await tryNotify(io, `${spec.id} wave ${wave}: FAULT — ${rec.decision.why}`)
     state.appendWave(rec)
     s.waveCount = wave
-    rec.notified = await io.notify(`${spec.id} wave ${wave}: FAULT — ${rec.decision.why}`)
     if (!rec.notified) s.pendingNotifications.push(rec.decision)
     state.save()
     return rec
   }
 
+  // Everything past this point is measurement and bookkeeping on a run that
+  // already happened. A throw here (a gate that dies, a ledger shard that will
+  // not rewrite, ntfy blowing up) must not lose the wave: record the fault,
+  // spend the wave, and hand the decision back so the loop stops deliberately
+  // rather than by exception.
+  try {
   // S3*: grade.
   const grade = await io.grade(spec, row)
   const commits = io.commitsBetween(spec.repo, row.commitRange?.base ?? base, row.commitRange?.head ?? base)
@@ -181,7 +191,7 @@ export async function runWave(spec, state, io = defaultIo) {
   const files = [LOG, repoRel(briefFile), repoRel(sidecarPath(briefFile)), ...ledgerShardsTouched()]
   let verdictSha = null
   try { verdictSha = io.commit({ repoRoot: '.', branch: `campaign/${spec.id}`, files, message: `${spec.id.toUpperCase()} wave ${wave} verdict: ${decision.kind} — ${decision.why}` }).sha } catch (e) { console.error(`[campaign] commit skipped: ${e.message}`) }
-  const notified = await io.notify(`${spec.id.toUpperCase()} wave ${wave}: ${decision.kind.toUpperCase()} — ${decision.why}\n${grade.gate.fails.map(f => f.line).join('\n')}`)
+  const notified = await tryNotify(io, `${spec.id.toUpperCase()} wave ${wave}: ${decision.kind.toUpperCase()} — ${decision.why}\n${grade.gate.fails.map(f => f.line).join('\n')}`)
 
   const rec = { wave, missionId, briefFile, base, head: grade.sha, dispatchedAt, gradedAt: new Date().toISOString(), gate: grade.gate, suite: grade.suite, sweep: grade.sweep, posiwid: grade.posiwid, verified: grade.verified,
     outcome: { landed: row.outcome === 'landed', exitReason: row.exitReason },
@@ -193,9 +203,26 @@ export async function runWave(spec, state, io = defaultIo) {
   s.waveCount = wave; s.lastBase = grade.sha ?? base; s.lastFails = grade.gate.fails.map(f => f.id); s.lastGrade = grade; s.lastRow = row; s.lastCommits = commits
   if (!notified) s.pendingNotifications.push(rec.decision)
   const proposal = promotionProposal(state.waves(), s.ideationAuthority ?? 0)
-  if (proposal && !s.proposals.some(p => p.status === 'pending')) { s.proposals.push({ ...proposal, proposedAt: new Date().toISOString() }); await io.notify(`${spec.id}: PROPOSAL ideation/brief 0 → 0.5 (p=${proposal.evidence.p.toFixed(3)}). Approve with --approve-proposal ideation/brief`) }
+  if (proposal && !s.proposals.some(p => p.status === 'pending')) { s.proposals.push({ ...proposal, proposedAt: new Date().toISOString() }); await tryNotify(io, `${spec.id}: PROPOSAL ${proposal.name} ${s.ideationAuthority ?? 0} → ${proposal.newValue} (max ${proposal.bounds.max}, p=${proposal.evidence.p.toFixed(3)}). Approve with --approve-proposal ${proposal.name}`) }
   state.save()
   return rec
+  } catch (e) {
+    console.error(`[campaign] wave ${wave} post-run step failed: ${e?.stack ?? e}`)
+    const why = `post-run step failed: ${e?.message ?? e}`
+    const notified = await tryNotify(io, `${spec.id} wave ${wave}: FAULT — ${why}`)
+    const rec = { wave, missionId, briefFile, base, dispatchedAt, decision: { kind: 'fault', why }, notified }
+    state.appendWave(rec)
+    s.waveCount = wave
+    if (!notified) s.pendingNotifications.push(rec.decision)
+    state.save()
+    return rec
+  }
+}
+
+// notify is the last thing standing between a fault and silence; a throw from
+// it must never be the reason the wave record goes unwritten.
+const tryNotify = async (io, message) => {
+  try { return Boolean(await io.notify(message)) } catch (e) { console.error(`[campaign] notify failed: ${e?.message ?? e}`); return false }
 }
 
 function ledgerShardsTouched() {
@@ -203,7 +230,16 @@ function ledgerShardsTouched() {
   return out.split('\n').filter(Boolean).map(l => l.slice(3).trim())
 }
 
+/** Has the campaign already spent every wave it was budgeted? */
+export function budgetSpent(state, spec) {
+  return (state.state.waveCount ?? 0) >= spec.budget.waves
+}
+
 export async function main(argv) {
+  // Every path below reaches for a repo-relative path (scripts/, docs/,
+  // benchmark/cynco-ledger/). Run from anywhere else and the first symptom is
+  // a brief written into the wrong tree, not an error.
+  if (!existsSync('scripts/dispatch-mission.sh')) { console.error('[campaign] run from the localcode repo root'); return 2 }
   const specPath = argv.find(a => a.endsWith('.campaign.json'))
   if (!specPath) { console.error('usage: bun scripts/cynco-campaign.mjs <id>.campaign.json [--waves N] [--resume] [--dry-run] [--sync] [--approve-proposal NAME] [--reject-proposal NAME]'); return 2 }
   const spec = loadCampaignSpec(specPath)
@@ -250,6 +286,12 @@ export async function main(argv) {
   if (dryRun) {
     console.log(generateBrief(spec, waveContext(spec, state.state)))
     return 0
+  }
+  // decide() can only say `budget` about a wave it just graded; a campaign
+  // resumed after its last wave would otherwise dispatch one more.
+  if (budgetSpent(state, spec)) {
+    console.log(`[campaign] budget already spent (${state.state.waveCount}/${spec.budget.waves} waves) — nothing to dispatch`)
+    return 1
   }
   while (true) {
     const rec = await runWave(spec, state)

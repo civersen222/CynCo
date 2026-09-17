@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { decide, runWave } from '../cynco-campaign.mjs'
+import { decide, runWave, waveContext, budgetSpent } from '../cynco-campaign.mjs'
 import { CampaignState } from '../cynco-campaign-state.mjs'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -167,6 +167,108 @@ describe('runWave', () => {
     expect(rec.s4.ideationMeta.error).toBe('engine busy')
   })
 
+  // Review round 1: a wave-1 fault advances waveCount without ever writing a
+  // lastGrade. The next invocation must fall back to the calibration instead of
+  // dereferencing it.
+  it('generates wave 2 from the calibration after a wave-1 fault left no grade', async () => {
+    const state = freshState()
+    await runWave(spec, state, {
+      writeBrief: (p) => p,
+      dispatch: async () => ({ driverLog: 'C:/tmp/d.log' }),
+      waitForDriver: async () => ({ exited: true }),
+      missionIdFrom: () => null,
+      readRow: () => null,
+      salvageOf: () => null,
+      notify: async () => true,
+    })
+    expect(state.state.waveCount).toBe(1)
+    expect(state.state.lastGrade).toBeUndefined()
+    // --dry-run's context helper must survive the same state
+    const ctx = waveContext(spec, state.state, { salvageOf: () => null })
+    expect(ctx.wave).toBe(2)
+    expect(ctx.fails.map(f => f.id)).toEqual(['C8.1a'])
+
+    let brief = null
+    const rec = await runWave(spec, state, {
+      writeBrief: (p, text) => { brief = text; return p },
+      dispatch: async () => ({ missionId: 'c8-wave2-1' }),
+      waitForDriver: async () => ({ exited: true }),
+      readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', toolStats: {} }),
+      commitsBetween: () => [],
+      grade: async () => g(),
+      salvageOf: () => null,
+      patchRow: () => {},
+      commit: () => ({ sha: 'v2' }),
+      notify: async () => true,
+      economics: () => [],
+      appendLog: () => {},
+    })
+    expect(brief).toMatch(/MISSION C8 WAVE 2/)
+    expect(brief).toMatch(/C8\.1a: FAIL x/)
+    expect(rec.decision.kind).toBe('next')
+  })
+
+  // Review round 1: pins the `waveCount: wave` fix — decide must see the wave
+  // this run makes, not the count before it.
+  it('spends the budget on the wave that reaches it, not one wave later', async () => {
+    const gradedIo = {
+      writeBrief: (p) => p,
+      dispatch: async () => ({ missionId: 'c8-wave1-1' }),
+      waitForDriver: async () => ({ exited: true }),
+      readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', toolStats: {} }),
+      commitsBetween: () => [{ sha: 'h', subject: 'c' }],
+      grade: async () => g(),
+      salvageOf: () => null,
+      patchRow: () => {},
+      commit: () => ({ sha: 'v1' }),
+      notify: async () => true,
+      economics: () => [],
+      appendLog: () => {},
+    }
+    const one = await runWave({ ...spec, budget: { ...spec.budget, waves: 1 } }, freshState(), gradedIo)
+    expect(one.decision.kind).toBe('budget')
+    const two = await runWave({ ...spec, budget: { ...spec.budget, waves: 2 } }, freshState(), gradedIo)
+    expect(two.decision.kind).toBe('next')
+  })
+
+  // Review round 1: a throw in grade/patch/verdict must not lose the wave.
+  it('records a fault and advances the wave when a post-run step throws', async () => {
+    const state = freshState()
+    const seen = {}
+    const rec = await runWave(spec, state, {
+      writeBrief: (p) => p,
+      dispatch: async () => ({ missionId: 'c8-wave1-1' }),
+      waitForDriver: async () => ({ exited: true }),
+      readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', toolStats: {} }),
+      grade: async () => { throw new Error('gate exploded') },
+      salvageOf: () => null,
+      notify: async (t) => { seen.notified = t; return true },
+    })
+    expect(rec.decision.kind).toBe('fault')
+    expect(rec.decision.why).toMatch(/post-run step failed: gate exploded/)
+    expect(seen.notified).toMatch(/gate exploded/)
+    expect(state.state.waveCount).toBe(1)
+    expect(state.waves()).toHaveLength(1)
+    expect(new CampaignState(state.dir).load().state.waveCount).toBe(1)
+  })
+
+  it('never lets a throwing notify cost the wave record', async () => {
+    const state = freshState()
+    const rec = await runWave(spec, state, {
+      writeBrief: (p) => p,
+      dispatch: async () => ({ driverLog: 'C:/tmp/d.log' }),
+      waitForDriver: async () => ({ exited: true }),
+      missionIdFrom: () => null,
+      readRow: () => null,
+      salvageOf: () => null,
+      notify: async () => { throw new Error('ntfy down') },
+    })
+    expect(rec.decision.kind).toBe('fault')
+    expect(rec.notified).toBe(false)
+    expect(state.waves()).toHaveLength(1)
+    expect(state.state.pendingNotifications).toHaveLength(1)
+  })
+
   it('runs ideation when no engine is live and records what was followed', async () => {
     const rec = await runWave(ideationSpec, freshState(), ideationIo({
       engineLive: async () => false,
@@ -176,5 +278,17 @@ describe('runWave', () => {
     expect(rec.s4.ideationMeta).toMatchObject({ taskPath: 't.json', durationMs: 5, error: null })
     expect(rec.s4.followed).toBe(true)
     expect(rec.s4.commander).toBe('generator')
+  })
+})
+
+describe('budgetSpent', () => {
+  it('is false while waves remain and true once they are gone', () => {
+    expect(budgetSpent({ state: { waveCount: 0 } }, spec)).toBe(false)
+    expect(budgetSpent({ state: { waveCount: 2 } }, spec)).toBe(false)
+    expect(budgetSpent({ state: { waveCount: 3 } }, spec)).toBe(true)
+    expect(budgetSpent({ state: { waveCount: 9 } }, spec)).toBe(true)
+  })
+  it('treats a fresh state with no counter as unspent', () => {
+    expect(budgetSpent({ state: {} }, spec)).toBe(false)
   })
 })
