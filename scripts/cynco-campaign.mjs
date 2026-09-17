@@ -90,14 +90,30 @@ export function decide({ grade, state, spec, commitsLanded, row }) {
   return { kind: 'next', why: `${ids.length} line(s) still FAIL` }
 }
 
+/**
+ * The environment a wave is dispatched with. The worker is an unattended model
+ * with a Bash tool: anything in this env it can read, print, or post. The ntfy
+ * credentials are the campaign's OWN alert channel (it could page the owner as
+ * the runner) and GH_TOKEN/GITHUB_TOKEN would let a mission push and merge.
+ * None of the three is needed to do the work, so none of them is handed over.
+ */
+export function dispatchEnv(base, extra) {
+  const out = {}
+  for (const [k, v] of Object.entries(base)) {
+    if (k.startsWith('CYNCO_NTFY_') || k === 'GH_TOKEN' || k === 'GITHUB_TOKEN') continue
+    out[k] = v
+  }
+  return { ...out, ...extra }
+}
+
 const gitC = (repo, args) => spawnSync('git', ['-C', repo, ...args], { encoding: 'utf8' }).stdout ?? ''
 const repoRel = (abs) => relative(process.cwd(), abs).replace(/\\/g, '/')
 
 export const defaultIo = {
   writeBrief: (path, text, sidecar) => { writeFileSync(path, text, 'utf8'); writeFileSync(sidecarPath(path), JSON.stringify(sidecar, null, 2) + '\n'); return path },
   dispatch: async ({ spec, briefFile, invariants, timeoutS, pidFile, driverLog }) => {
-    const env = { ...process.env, LOCALCODE_MAX_ITERATIONS: String(spec.budget.iterations), CYNCO_BASH_TIMEOUT_MS: String(spec.budget.bashTimeoutMs),
-      CYNCO_MISSION_INVARIANTS: JSON.stringify(invariants), DRIVER_PID_FILE: pidFile, DRIVER_LOG: driverLog, CYNCO_SKIP_IDLE_ENGINE: '1' }
+    const env = dispatchEnv(process.env, { LOCALCODE_MAX_ITERATIONS: String(spec.budget.iterations), CYNCO_BASH_TIMEOUT_MS: String(spec.budget.bashTimeoutMs),
+      CYNCO_MISSION_INVARIANTS: JSON.stringify(invariants), DRIVER_PID_FILE: pidFile, DRIVER_LOG: driverLog, CYNCO_SKIP_IDLE_ENGINE: '1' })
     const r = spawnSync('bash', ['scripts/dispatch-mission.sh', briefFile, spec.marker, spec.repo, String(timeoutS), spec.keepGreen], { env, encoding: 'utf8', timeout: 900_000 })
     if (r.status !== 0) throw new Error(`dispatch failed (exit ${r.status}): ${(r.stdout + r.stderr).slice(-2000)}`)
     // dispatch-mission.sh prints the invariants it accepted and the driver log

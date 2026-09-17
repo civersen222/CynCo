@@ -701,3 +701,12 @@ describe('defaultIo.waitForDriver — the ledger line is the authority', () => {
   })
 })
 
+// I6: the worker is an unattended model with a Bash tool. Anything in its env
+// it can read, print, or post.
+describe('dispatchEnv', () => {
+  it('strips the ntfy credentials and the GitHub tokens, keeps everything else', () => {
+    const env = dispatchEnv({ PATH: '/usr/bin', CYNCO_NTFY_URL: 'http://n', CYNCO_NTFY_TOKEN: 'tk', CYNCO_NTFY_ALERT_TOPIC: 'cynco-alerts', GH_TOKEN: 'gh', GITHUB_TOKEN: 'gh2', CYNCO_GATE_REPO: 'C:/repo' }, { DRIVER_LOG: 'C:/tmp/d.log' })
+    expect(env).toEqual({ PATH: '/usr/bin', CYNCO_GATE_REPO: 'C:/repo', DRIVER_LOG: 'C:/tmp/d.log' })
+  })
+})
+
