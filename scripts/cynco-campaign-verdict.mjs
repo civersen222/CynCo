@@ -62,7 +62,10 @@ export function verdictEntry({ spec, wave, row, grade, decision, ideationRecord,
   // invariantsRejected overrides decision.kind loudly — the runner is expected
   // to pass decision.kind === 'fault' in that case anyway, but the verdict
   // label must never depend on that being wired correctly upstream.
-  const label = rejected ? '**STOP (fault)**' : decision.kind === 'pass' ? '**CAMPAIGN PASS**' : decision.kind === 'next' ? '**MISS**' : `**STOP (${decision.kind})**`
+  const label = rejected ? '**STOP (fault)**'
+    : decision.kind === 'pass' ? '**CAMPAIGN PASS**'
+      : decision.kind === 'pass-with-survivors' ? `**CAMPAIGN PASS (sweep survivors: ${decision.survivors?.length ?? 0})**`
+        : decision.kind === 'next' ? '**MISS**' : `**STOP (${decision.kind})**`
   lines.push(`Verdict: ${label} — ${decision.why}`)
   return lines.join('\n') + '\n'
 }

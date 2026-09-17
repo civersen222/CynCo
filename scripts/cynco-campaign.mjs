@@ -30,6 +30,28 @@ const ENGINE_URL = 'http://127.0.0.1:9161/'
 const ENGINE_PROBE_TIMEOUT_MS = 3_000
 
 /**
+ * Which sweep survivors sit inside a file the campaign CLAIMED — spec §3.2's
+ * "a survivor a work[] item claims", read off `spec.allow.edit` /
+ * `spec.allow.newFiles` because that is the set the work items are allowed to
+ * touch. An allow entry can carry a parenthetical note or a glob
+ * (`gilded/tests/test_c8_*.py (new test files …)`), so it is cut at its first
+ * space and at its first `*`, leaving a path prefix. Survivors are `path:line`.
+ *
+ * A survivor OUTSIDE every claimed prefix is reported, never punished: the
+ * campaign did not promise to cover code it was forbidden to edit, exactly as
+ * the suite gate reports repairs it did not ask for.
+ */
+export function claimedSurvivors(survived, spec) {
+  const prefixes = [...(spec.allow?.edit ?? []), ...(spec.allow?.newFiles ?? [])]
+    .map(e => String(e).trim().split(/\s+/)[0].replace(/\\/g, '/').split('*')[0])
+    .filter(Boolean)
+  return (survived ?? []).filter(s => {
+    const p = String(s).replace(/\\/g, '/').replace(/:\d+$/, '')
+    return prefixes.some(pre => p === pre || p.startsWith(pre))
+  })
+}
+
+/**
  * The stop rule, pure so it can be argued with in a test rather than in a log.
  *
  * Order matters and is not arbitrary:
@@ -39,13 +61,27 @@ const ENGINE_PROBE_TIMEOUT_MS = 3_000
  *      experiment. It outranks `pass` deliberately.
  *   2. harness fault — `verified === null` means an instrument broke; the grade
  *      is not evidence either way.
- *   3. pass / no-progress / budget / next.
+ *   3. pass / pass-with-survivors / no-progress / budget / next.
+ *
+ * `pass` must stay REACHABLE: a sweep survivor in a file the campaign never
+ * claimed is not a reason to deny a green gate, so only claimed survivors
+ * downgrade the verdict — and they downgrade it to `pass-with-survivors`,
+ * which stops the loop with exit 0. Neither is a `next`: looping on a gate
+ * that is already green can only burn the budget.
  */
 export function decide({ grade, state, spec, commitsLanded, row }) {
   if (row?.invariantsRejected === true) return { kind: 'fault', why: 'the wave ran without its invariants (block rejected by the engine)' }
   if (grade.verified === null) return { kind: 'fault', why: grade.gate.harnessFault ?? grade.suite.harnessFault ?? 'harness fault' }
-  const passed = grade.gate.terminator === 'PASS' && grade.suite.exit === 0 && (grade.sweep === null || grade.sweep.survived.length === 0)
-  if (passed) return { kind: 'pass', why: `sealed gate PASS, suite gate PASS, ${grade.sweep ? `sweep ${grade.sweep.killed}/${grade.sweep.total} no survivors` : 'sweep unmeasured'}` }
+  const green = grade.gate.terminator === 'PASS' && grade.suite.exit === 0
+  if (green) {
+    const survived = grade.sweep?.survived ?? []
+    const claimed = claimedSurvivors(survived, spec)
+    const sweepSaid = grade.sweep
+      ? `sweep ${grade.sweep.killed}/${grade.sweep.total}${survived.length ? `, ${survived.length} survivor(s)` : ' no survivors'}`
+      : 'sweep unmeasured'
+    if (claimed.length) return { kind: 'pass-with-survivors', survivors: claimed, why: `sealed gate PASS, suite gate PASS, ${sweepSaid} — ${claimed.length} inside a claimed file: ${claimed.join(', ')}` }
+    return { kind: 'pass', why: `sealed gate PASS, suite gate PASS, ${sweepSaid}${survived.length ? ' (none inside a claimed file)' : ''}` }
+  }
   const ids = grade.gate.fails.map(f => f.id)
   const same = Array.isArray(state.lastFails) && ids.length === state.lastFails.length && ids.every((x, i) => x === state.lastFails[i])
   if (same && commitsLanded === 0 && (state.consecutiveNoProgress ?? 0) >= 1) return { kind: 'no-progress', why: `two consecutive waves with the same ${ids.length} FAIL line(s) and no commits` }
@@ -161,6 +197,12 @@ export async function runWave(spec, state, io = defaultIo) {
     waveFiles = [repoRel(briefFile), repoRel(sidecarPath(briefFile))].filter(f => existsSync(f))
     console.log(`[campaign] ADOPT ${missionId} — grading a wave that already ran (brief ${repoRel(briefFile)}); GENERATE/DISPATCH/WAIT skipped`)
   } else {
+    // An empty FAIL set means the last grade said PASS. The brief generator
+    // would happily write THE MISSES with no lines under it and THE WORK with
+    // no items in it, and the wave would spend eight hours on a blank order.
+    // Stop instead — a green gate is not a reason to dispatch.
+    if (fails.length === 0) return stopWave(spec, state, io, { wave, base, why: 'no failing gate lines to work — grade says PASS' })
+
     // S4, occupant B (advisory) — runs only while no engine holds the GPU.
     if (spec.ideation?.enabled) {
       const busy = await (io.engineLive ?? defaultIo.engineLive)()
@@ -265,6 +307,29 @@ const tryNotify = async (io, message) => {
   try { return Boolean(await io.notify(message)) } catch (e) { console.error(`[campaign] notify failed: ${e?.message ?? e}`); return false }
 }
 
+/** Queue what the algedonic channel could not deliver, and drain it when it can (spec §6). */
+async function notifyOrQueue(io, s, message, decision) {
+  const notified = await tryNotify(io, message)
+  if (!notified) { s.pendingNotifications.push(decision); return false }
+  for (const n of s.pendingNotifications.splice(0)) await tryNotify(io, `(queued) ${n.kind} — ${n.why}`)
+  return true
+}
+
+/**
+ * A refusal to dispatch. It is NOT a spent wave — nothing ran — so waveCount
+ * stays where it is; the record exists so the reason is in waves.jsonl and not
+ * only in a console nobody was watching.
+ */
+async function stopWave(spec, state, io, { wave, base, why }) {
+  const rec = { wave, missionId: null, briefFile: null, base, dispatchedAt: null, decision: { kind: 'stop', why } }
+  rec.notified = await notifyOrQueue(io, state.state, `${spec.id.toUpperCase()} wave ${wave}: STOP — ${why}`, rec.decision)
+  state.appendWave(rec)
+  delete state.state.inFlight
+  state.save()
+  console.error(`[campaign] wave ${wave} STOP — ${why}`)
+  return rec
+}
+
 function ledgerShardsTouched() {
   const out = spawnSync('git', ['status', '--porcelain', 'benchmark/cynco-ledger'], { encoding: 'utf8' }).stdout ?? ''
   return out.split('\n').filter(Boolean).map(l => l.slice(3).trim())
@@ -336,7 +401,7 @@ export async function main(argv) {
   while (true) {
     const rec = await runWave(spec, state)
     console.log(`[campaign] wave ${rec.wave}: ${rec.decision.kind} — ${rec.decision.why}`)
-    if (rec.decision.kind !== 'next') { await notify(`${spec.id.toUpperCase()} STOPPED: ${rec.decision.kind} — ${rec.decision.why}`); return rec.decision.kind === 'pass' ? 0 : 1 }
+    if (rec.decision.kind !== 'next') { await notify(`${spec.id.toUpperCase()} STOPPED: ${rec.decision.kind} — ${rec.decision.why}`); return rec.decision.kind === 'pass' || rec.decision.kind === 'pass-with-survivors' ? 0 : 1 }
   }
 }
 

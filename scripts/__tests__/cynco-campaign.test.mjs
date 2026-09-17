@@ -1,14 +1,24 @@
 import { describe, it, expect } from 'vitest'
-import { decide, runWave, waveContext, budgetSpent, defaultIo } from '../cynco-campaign.mjs'
+import { decide, runWave, waveContext, budgetSpent, defaultIo, claimedSurvivors, dispatchEnv, dirtyOutsideCampaign, inFlightRefusal, adoptInFlight, takeLock, releaseLock } from '../cynco-campaign.mjs'
 import { adopt } from '../cynco-campaign-adopt.mjs'
 import { CampaignState } from '../cynco-campaign-state.mjs'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { defaultIo as calibrateIo } from '../cynco-campaign-calibrate.mjs'
+import { mkdtempSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+// runWave only ever sha256s spec.gate / spec.perturb (the Rule-11 re-check), so
+// two real files stand in for the sealed instruments here and the shas below are
+// computed exactly the way the runner computes them.
+const GATE = fileURLToPath(new URL('../cynco-campaign-grade.mjs', import.meta.url))
+const PERTURB = fileURLToPath(new URL('../cynco-campaign-spec.mjs', import.meta.url))
 
 const spec = { id: 'c8', title: 't', repo: 'C:/repo', base: '1d03308', marker: 'stage c8 complete', keepGreen: 'python -m pytest a.py -q',
+  gate: GATE, perturb: PERTURB,
   budget: { hoursPerWave: 1, iterations: 100, bashTimeoutMs: 1000, waves: 3 }, invariants: { editGapCap: 40, commitGapCap: 150, revertBan: true, codeIndexFirst: true },
-  posiwid: { sourceEditShare: 0.15, commitEvery: 150 }, allow: { newFiles: [], edit: [] }, deny: [], measures: 'M', work: [{ id: 1, title: 'W', gateIds: ['C8.1a'], text: 't' }], rules: [], ideation: { enabled: false } }
+  posiwid: { sourceEditShare: 0.15, commitEvery: 150 }, allow: { newFiles: ['gilded/ui/portraits.py', 'gilded/assets/portraits/**'], edit: ['gilded/ui/atlas_view.py', 'gilded/ui/registry.py (legend rows only)'] },
+  deny: [], measures: 'M', work: [{ id: 1, title: 'W', gateIds: ['C8.1a'], text: 't' }], rules: [], ideation: { enabled: false } }
 const g = (over = {}) => ({ sha: 'h', verified: false, gate: { terminator: 'MISS', fails: [{ id: 'C8.1a', line: 'C8.1a: FAIL x' }], passes: [], failCount: 1, errors: [], harnessFault: null, exit: 1, priorRegressions: 0 }, suite: { exit: 0, regressions: [], repairs: [], harnessFault: null }, sweep: { kind: 'derived', killed: 1, total: 1, survived: [] }, posiwid: { verdict: 'Consistent', divergence: 0, dominantObserved: 'inspect' }, ...over })
 
 describe('decide', () => {
@@ -38,7 +48,7 @@ describe('decide', () => {
 const freshState = () => {
   const dir = join(mkdtempSync(join(tmpdir(), 'camp-')), 'c8')
   const state = new CampaignState(dir).load()
-  state.state.calibration = { gateSha256: 'g', perturbSha256: 'p', baseFails: [{ id: 'C8.1a', line: 'C8.1a: FAIL x' }] }
+  state.state.calibration = { gateSha256: calibrateIo.sha256(GATE), perturbSha256: calibrateIo.sha256(PERTURB), baseFails: [{ id: 'C8.1a', line: 'C8.1a: FAIL x' }], basePasses: [] }
   state.state.lastBase = '1d03308'; state.state.lastFails = ['C8.1a']
   return state
 }
@@ -401,3 +411,83 @@ describe('budgetSpent', () => {
     expect(budgetSpent({ state: {} }, spec)).toBe(false)
   })
 })
+
+// C1: `pass` was unreachable — ANY sweep survivor denied it, and the sweep
+// mutates the whole diff, including files the campaign was forbidden to edit.
+// Spec §3.2 only ever claimed "a survivor a work[] item claims".
+describe('decide — a green gate must be able to PASS', () => {
+  const green = (survived) => g({ verified: true, gate: { ...g().gate, terminator: 'PASS', fails: [], exit: 0 }, sweep: { kind: 'derived', killed: 4, total: 6, survived } })
+  const st = { waveCount: 1, consecutiveNoProgress: 0, lastFails: null }
+
+  it('passes when every survivor is outside the files the campaign claimed', () => {
+    const d = decide({ grade: green(['gilded/tests/test_atlas_actions_m7.py:12', 'gilded/society/beats.py:88']), state: st, spec, commitsLanded: 2 })
+    expect(d.kind).toBe('pass')
+    expect(d.why).toMatch(/2 survivor\(s\).*none inside a claimed file/)
+  })
+
+  it('reports pass-with-survivors when a survivor sits in a claimed file', () => {
+    const d = decide({ grade: green(['gilded/tests/test_atlas_actions_m7.py:12', 'gilded/ui/atlas_view.py:214']), state: st, spec, commitsLanded: 2 })
+    expect(d.kind).toBe('pass-with-survivors')
+    expect(d.survivors).toEqual(['gilded/ui/atlas_view.py:214'])
+  })
+
+  it('still passes with no survivors and with no sweep at all', () => {
+    expect(decide({ grade: green([]), state: st, spec, commitsLanded: 2 }).kind).toBe('pass')
+    expect(decide({ grade: g({ verified: true, gate: { ...g().gate, terminator: 'PASS', fails: [], exit: 0 }, sweep: null }), state: st, spec, commitsLanded: 2 }).kind).toBe('pass')
+  })
+})
+
+describe('claimedSurvivors', () => {
+  it('matches allow entries through their globs, notes and backslashes', () => {
+    expect(claimedSurvivors(['gilded/ui/atlas_view.py:1'], spec)).toEqual(['gilded/ui/atlas_view.py:1'])
+    // "gilded/ui/registry.py (legend rows only)" — the note is not part of the path
+    expect(claimedSurvivors(['gilded\\ui\\registry.py:9'], spec)).toEqual(['gilded\\ui\\registry.py:9'])
+    // "gilded/assets/portraits/**" — the glob is a prefix
+    expect(claimedSurvivors(['gilded/assets/portraits/man_01.jpg:0'], spec)).toHaveLength(1)
+    expect(claimedSurvivors(['gilded/society/chassis.py:4', 'gilded/tests/test_c7_history.py:2'], spec)).toEqual([])
+    expect(claimedSurvivors([], spec)).toEqual([])
+  })
+})
+
+describe('runWave — refusals that must not dispatch', () => {
+  const noDispatch = (seen) => ({
+    sha256: (p) => calibrateIo.sha256(p),
+    writeBrief: () => { seen.briefs++; return 'x' },
+    dispatch: async () => { seen.dispatched++; return { missionId: 'nope' } },
+    salvageOf: () => null,
+    notify: async () => true,
+  })
+
+  // C1: a PASS grade leaves no FAIL lines, so THE MISSES and THE WORK would both
+  // be empty — eight hours of GPU on a blank order.
+  it('stops instead of dispatching a brief with no failing gate lines', async () => {
+    const state = freshState()
+    state.state.lastGrade = { gate: { fails: [], passes: [{ id: 'C8.1a', line: 'C8.1a: PASS' }] } }
+    const seen = { briefs: 0, dispatched: 0 }
+    const rec = await runWave(spec, state, noDispatch(seen))
+    expect(rec.decision).toEqual({ kind: 'stop', why: 'no failing gate lines to work — grade says PASS' })
+    expect(seen.dispatched).toBe(0)
+    expect(seen.briefs).toBe(0)
+    // nothing ran, so nothing was spent
+    expect(state.state.waveCount).toBe(0)
+    expect(state.waves()).toHaveLength(1)
+  })
+
+  // The ideation section is written by a model that just read the repo; a brief
+  // naming the sealed gate is refused by sealedPaths AFTER the clock started.
+  it('refuses to write a brief that names a sealed instrument', async () => {
+    const state = freshState()
+    const seen = { briefs: 0, dispatched: 0 }
+    const leaky = { ...spec, ideation: { enabled: true } }
+    const rec = await runWave(leaky, state, {
+      ...noDispatch(seen),
+      engineLive: async () => false,
+      ideate: async () => ({ ideation: { hypotheses: [{ gateId: 'C8.1a', cause: 'read gate_c8.py to see the floor', firstEdit: 'gilded/ui/atlas_view.py' }], order: ['C8.1a'], trap: null } }),
+    })
+    expect(rec.decision.kind).toBe('stop')
+    expect(rec.decision.why).toMatch(/names the sealed instrument "gate_c8"/)
+    expect(seen.briefs).toBe(0)
+    expect(seen.dispatched).toBe(0)
+  })
+})
+
