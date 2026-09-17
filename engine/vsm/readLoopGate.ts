@@ -1,5 +1,6 @@
 import { resolve, sep } from 'node:path'
 import { isSourceRewrite } from '../tools/toolHints.js'
+import { bashEffect } from '../tools/bashEffect.js'
 
 /** Tools whose whole job is to change a file. */
 const EDITOR_TOOLS = ['Edit', 'Write', 'MultiEdit', 'ApplyPatch', 'ReplaceFunction']
@@ -31,7 +32,6 @@ export type ReadLoopVerdict =
   | { kind: 'deny'; message: string }
   | { kind: 'escalate'; message: string; signatures: string[] }
 
-const READ_TOOLS = new Set(['Read', 'Grep', 'Glob', 'Ls'])
 const STALL_CAP = 20
 
 function norm(p: string): string {
@@ -114,6 +114,13 @@ export class ReadLoopGate {
   }
 
   evaluate(toolName: string, input: any): ReadLoopVerdict {
+    // A read is a read whatever tool performed it. Bash reads have no stable
+    // signature (a loop over line numbers reads differently every call), so they
+    // only feed the stall branch, never the redundancy branch.
+    if (toolName === 'Bash' && bashEffect(String(input?.command ?? '')) === 'read') {
+      this.readsSinceWrite += 1
+      return this.stallVerdict(`Bash ${String(input.command).slice(0, 60)}`)
+    }
     const sig = signature(toolName, input)
     if (sig === null) return { kind: 'allow' }
     this.readsSinceWrite += 1
@@ -131,27 +138,29 @@ export class ReadLoopGate {
       return this.denyOrEscalate(sig, `[read-loop] DENIED: you are re-reading sources you've already seen without making any change. You must now either (a) call Write/Edit/MultiEdit to act on what you've learned, or (b) end your turn if the task is genuinely complete. Reading is disabled until you make an edit.`)
     }
     this.seen.set(sig, scopeOf(toolName, input) ?? '')
-    if (this.readsSinceWrite >= STALL_CAP && !this.stallRelented) {
-      if (!this.warnedStall) {
-        this.warnedStall = true
-        return { kind: 'warn', message: `[read-loop] ${this.readsSinceWrite} reads since your last edit. Consider whether you have enough to start implementing — use Write or Edit.` }
-      }
-      this.redundantSigs.add(sig)
-      this.stallDenies += 1
-      const message = `[read-loop] DENIED: ${this.readsSinceWrite} reads since your last edit with no change made. Make an edit now, or end your turn if complete.`
-      // Unlike a redundant read, the gate does not know this content is already in
-      // context — it is refusing on a *count*, which is a guess about whether the
-      // model has enough. Hold that guess for a few turns, then give way: the model
-      // has to quote an exact `old_string` to edit at all, so a stall gate that
-      // never yields converts "you should be editing by now" into "you may never
-      // edit again".
-      if (this.stallDenies >= ReadLoopGate.ESCALATE_AFTER) {
-        this.stallRelented = true
-        return { kind: 'escalate', message, signatures: [...this.redundantSigs] }
-      }
-      return { kind: 'deny', message }
+    return this.stallVerdict(sig)
+  }
+
+  private stallVerdict(sigForRelent: string): ReadLoopVerdict {
+    if (this.readsSinceWrite < STALL_CAP || this.stallRelented) return { kind: 'allow' }
+    if (!this.warnedStall) {
+      this.warnedStall = true
+      return { kind: 'warn', message: `[read-loop] ${this.readsSinceWrite} reads since your last edit. Consider whether you have enough to start implementing — use Write or Edit.` }
     }
-    return { kind: 'allow' }
+    this.redundantSigs.add(sigForRelent)
+    this.stallDenies += 1
+    const message = `[read-loop] DENIED: ${this.readsSinceWrite} reads since your last edit with no change made. Make an edit now, or end your turn if complete.`
+    // Unlike a redundant read, the gate does not know this content is already in
+    // context — it is refusing on a *count*, which is a guess about whether the
+    // model has enough. Hold that guess for a few turns, then give way: the model
+    // has to quote an exact `old_string` to edit at all, so a stall gate that
+    // never yields converts "you should be editing by now" into "you may never
+    // edit again".
+    if (this.stallDenies >= ReadLoopGate.ESCALATE_AFTER) {
+      this.stallRelented = true
+      return { kind: 'escalate', message, signatures: [...this.redundantSigs] }
+    }
+    return { kind: 'deny', message }
   }
 
   isDisabled(toolName: string, input: any): boolean {
