@@ -1,3 +1,11 @@
+import { constraints } from '../cybernetics-core/src/index.js'
+
+const SESSION_PURPOSE = new constraints.PurposeModel([
+  ['tool_success', 0.85],
+  ['tool_error', 0.1],
+  ['idle', 0.05],
+])
+
 export interface SessionRecord {
   toolsUsed: string[]
   toolErrors: number
@@ -32,9 +40,21 @@ export class IdentityGuard {
   }
 
   private posiwidCheck(record: SessionRecord): boolean {
-    if (record.toolsUsed.length === 0 && record.userMessagesHandled > 1) return false
-    const total = record.toolErrors + record.toolSuccesses
-    if (total > 5 && record.toolErrors / total > 0.8) return false
-    return true
+    const idle = record.toolsUsed.length === 0 ? Math.max(record.userMessagesHandled - 1, 0) * 10 : 0
+    const report = constraints.posiwidDivergence(
+      SESSION_PURPOSE,
+      { counts: [['tool_success', record.toolSuccesses], ['tool_error', record.toolErrors], ['idle', idle]] },
+      0.5, 6,
+    )
+    if (report.verdict === 'Insufficient') return true
+    // An error-dominant session is `Drifting` under a 0.1 stated share, not `Contradicted`
+    // (its stated share is above the 0.01 contradiction floor), so the dominant check is
+    // explicit rather than relying on the verdict alone — this preserves the old "80% errors"
+    // behaviour. The same reasoning applies to an idle-dominant session (no tools used across
+    // multiple messages): its 0.05 stated share also keeps the verdict at `Drifting`, so the
+    // dominant check is extended to `idle` too, preserving the old "no tools, multi-message"
+    // failure this guard is meant to catch.
+    if (report.verdict === 'Contradicted') return false
+    return report.dominantObserved !== 'tool_error' && report.dominantObserved !== 'idle'
   }
 }
