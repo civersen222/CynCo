@@ -560,8 +560,9 @@ export interface Violation {
   bound: Bound;
   /**
    * Distance outside the effective bound, in the variable's units (always > 0). With
-   * hysteresis, the effective bound is narrowed while the variable is in violation, so
-   * `excess` is measured against `bound +/- hysteresis * range`, not the raw `bounds` value.
+   * hysteresis, the bound the variable is already outside of is narrowed while it stays in
+   * violation, so `excess` is measured against `bound -/+ hysteresis * range` on that side
+   * only, not the raw `bounds` value. The opposite bound is never narrowed.
    */
   excess: number;
 }
@@ -569,7 +570,10 @@ export interface Violation {
 export interface ViabilityReport {
   viable: boolean;
   violations: Violation[];
-  /** Minimum normalised distance to a bound across variables; negative when violated. */
+  /**
+   * Minimum normalised distance to an effective (hysteresis-aware) bound across variables;
+   * negative whenever `viable` is false, and never negative when it is true.
+   */
   margin: number;
   stepped: boolean;
   configuration: Configuration;
@@ -609,6 +613,42 @@ const lcgUnit = (seed: bigint): number => Number(seed >> 33n) / (4294967295 / 2.
 const retainedKey = (names: string[]): string => [...names].sort().join('+');
 
 /**
+ * The bounds a variable is actually judged against, given which bound (if any) it is
+ * currently outside of. Hysteresis narrows ONLY the violated side: a variable that broke
+ * its max must fall back to `max - hysteresis * range` to count as viable again, but its
+ * min is untouched, so returning all the way to `min` restores viability.
+ */
+const effectiveBounds = (v: EssentialVariable, outside: Bound | null): [number, number] => {
+  const [min, max] = v.bounds;
+  const band = v.hysteresis * Math.max(max - min, 0);
+  if (outside === 'Min') return [min + band, max];
+  if (outside === 'Max') return [min, max - band];
+  return [min, max];
+};
+
+/**
+ * Parses one retained-configuration entry, rejecting anything Rust's serde would reject
+ * when deserialising a `Configuration` (an externally-tagged enum): exactly one key,
+ * either `Discrete` with a string or `Continuous` with an array of finite numbers.
+ */
+const parseConfiguration = (key: string, value: unknown): Configuration => {
+  const bad = (): Error => new Error(`retained configuration for '${key}' has an unknown shape`);
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) throw bad();
+  const entries = Object.entries(value as Record<string, unknown>);
+  if (entries.length !== 1) throw bad();
+  const [tag, payload] = entries[0];
+  if (tag === 'Discrete') {
+    if (typeof payload !== 'string') throw bad();
+    return { Discrete: payload };
+  }
+  if (tag === 'Continuous') {
+    if (!Array.isArray(payload) || payload.some((x) => typeof x !== 'number' || !Number.isFinite(x))) throw bad();
+    return { Continuous: [...(payload as number[])] };
+  }
+  throw bad();
+};
+
+/**
  * An ultrastable system with two nested feedback loops.
  *
  * The fast loop (a FeedbackLoop) handles routine error correction.
@@ -628,7 +668,12 @@ export class UltrastableSystem {
   private dwellRemaining = 0;
   private traceInner: AdaptationEvent[] = [];
   private retainedInner = new Map<string, Configuration>();
-  private inViolation!: boolean[];
+  /**
+   * Per-variable hysteresis memory: which bound a variable is currently outside of, or
+   * `null` when it is viable. Only that bound is narrowed on re-entry, so a variable that
+   * violated its max and returns to its min does not read as a `Min` violation.
+   */
+  private inViolation!: (Bound | null)[];
   private openEvent: number | null = null;
   private updatesSinceStep = 0;
 
@@ -695,7 +740,7 @@ export class UltrastableSystem {
     s.dwellRemaining = 0;
     s.traceInner = [];
     s.retainedInner = new Map();
-    s.inViolation = variables.map(() => false);
+    s.inViolation = variables.map(() => null);
     s.openEvent = null;
     s.updatesSinceStep = 0;
     return s;
@@ -748,6 +793,9 @@ export class UltrastableSystem {
    * hysteresis-tracking `inViolation` state used by observe() -- this is what lets
    * a freshly constructed system with out-of-bounds initial values report `false`
    * before any observation has run.
+   *
+   * isViable() ignores hysteresis; observe().viable honours it -- they can differ while
+   * a variable is re-entering. margin() follows observe(), not this method.
    */
   isViable(): boolean {
     return this.vars.every((v, i) => this.values[i] >= v.bounds[0] && this.values[i] <= v.bounds[1]);
@@ -755,9 +803,11 @@ export class UltrastableSystem {
 
   /**
    * Minimum normalised distance to a bound across essential variables (negative when
-   * violated). Reflects the current values against the plain (non-hysteresis-narrowed)
-   * bounds -- the same rule observe() uses to compute ViabilityReport.margin, so the two
-   * never diverge for the same state.
+   * violated). Reflects the current values against the hysteresis-effective bounds --
+   * the same rule observe() uses to compute ViabilityReport.margin, so the two never
+   * diverge for the same state. This is NOT the predicate isViable() uses: isViable()
+   * ignores hysteresis, so `isViable() === true` with `margin() < 0` is the legitimate
+   * "inside the raw bounds, still re-entering the band" state.
    */
   margin(): number {
     return this.computeMargin();
@@ -766,6 +816,11 @@ export class UltrastableSystem {
   /**
    * Minimum normalised distance to a bound across essential variables (negative when
    * violated).
+   *
+   * Measured against the EFFECTIVE bounds -- the same lo/hi the violation check uses,
+   * given each variable's remembered violated side -- so the sign of the margin always
+   * agrees with ViabilityReport.viable. Distances are still normalised by the RAW range,
+   * so `-margin` equals the binding Violation.excess divided by that range.
    *
    * A zero-range variable (`bounds[0] === bounds[1]`) can only ever sit exactly on its
    * bound: it contributes `0` when its value equals that bound, and `-1` (an arbitrary
@@ -778,10 +833,11 @@ export class UltrastableSystem {
     this.vars.forEach((v, i) => {
       const [min, max] = v.bounds;
       const range = Math.max(max - min, 0);
+      const [lo, hi] = effectiveBounds(v, this.inViolation[i]);
       const value = this.values[i];
       let dist: number;
       if (range > 0) {
-        dist = Math.min((value - min) / range, (max - value) / range);
+        dist = Math.min((value - lo) / range, (hi - value) / range);
       } else if (value === min) {
         dist = 0;
       } else {
@@ -792,15 +848,42 @@ export class UltrastableSystem {
     return margin === Infinity ? 0 : margin;
   }
 
-  /** Serialises the retained-configuration map to a JSON object. */
+  /**
+   * Serialises the retained-configuration map to a JSON object.
+   *
+   * Keys are emitted in sorted order so the output matches Rust's `BTreeMap` byte for
+   * byte (JS sorts by UTF-16 code unit and Rust by UTF-8 byte; retained keys are
+   * essential-variable names joined with `+`, so the two orders coincide in practice).
+   */
   exportRetained(): string {
-    return JSON.stringify(Object.fromEntries(this.retainedInner));
+    const sorted: Record<string, Configuration> = {};
+    for (const key of [...this.retainedInner.keys()].sort()) {
+      sorted[key] = this.retainedInner.get(key)!;
+    }
+    return JSON.stringify(sorted);
   }
 
-  /** Replaces the retained-configuration map from a JSON object produced by exportRetained(). */
+  /**
+   * Replaces the retained-configuration map from a JSON object produced by
+   * exportRetained().
+   *
+   * Validates the shape the way Rust's `serde` does when deserialising into
+   * `BTreeMap<String, Configuration>`: a plain object whose every value is exactly
+   * `{ Discrete: string }` or `{ Continuous: number[] }`. The map is only replaced once
+   * every entry has parsed, so a bad payload leaves the existing memory untouched.
+   *
+   * @throws Error if the JSON is malformed or any entry has an unknown shape.
+   */
   importRetained(json: string): void {
-    const parsed = JSON.parse(json) as Record<string, Configuration>;
-    this.retainedInner = new Map(Object.entries(parsed));
+    const parsed: unknown = JSON.parse(json);
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('retained configuration must be a JSON object');
+    }
+    const next = new Map<string, Configuration>();
+    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+      next.set(key, parseConfiguration(key, value));
+    }
+    this.retainedInner = next;
   }
 
   /**
@@ -831,20 +914,16 @@ export class UltrastableSystem {
 
     const violations: Violation[] = [];
     this.vars.forEach((v, i) => {
-      const [min, max] = v.bounds;
-      const range = Math.max(max - min, 0);
-      const band = this.inViolation[i] ? v.hysteresis * range : 0;
+      const [lo, hi] = effectiveBounds(v, this.inViolation[i]);
       const value = this.values[i];
-      const lo = min + band;
-      const hi = max - band;
       if (value < lo) {
         violations.push({ index: i, name: v.name, value, bound: 'Min', excess: lo - value });
-        this.inViolation[i] = true;
+        this.inViolation[i] = 'Min';
       } else if (value > hi) {
         violations.push({ index: i, name: v.name, value, bound: 'Max', excess: value - hi });
-        this.inViolation[i] = true;
+        this.inViolation[i] = 'Max';
       } else {
-        this.inViolation[i] = false;
+        this.inViolation[i] = null;
       }
     });
     const margin = this.computeMargin();

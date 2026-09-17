@@ -10,7 +10,7 @@ the upstream repo first and then be re-synced.
 |------------------|---------------------------------------------------|
 | Upstream repo    | `C:\Users\civer\cybernetics`                      |
 | Upstream src dir | `C:\Users\civer\cybernetics\cybernetics-ts\src`   |
-| Commit at vendor | `d69e8baf299c5fd54ce82ab509bf8f9e6b0dbf25`        |
+| Commit at vendor | `7eb06725f138457343ab904ed0c7711cd86cfaad`        |
 | Vendor date      | 2026-09-16                                        |
 
 ## Sync policy

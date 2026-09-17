@@ -119,15 +119,24 @@ const OTHER = 'other';
 export class PurposeModel {
   readonly categories: readonly (readonly [string, number])[];
 
+  /**
+   * Validates that the categories are a distribution: non-empty, non-negative shares
+   * summing to 1, and each name appearing exactly once. Duplicates are rejected because
+   * posiwidDivergence counts observed mass per stated name -- a repeated name would count
+   * its observations twice, driving the implicit `other` bucket negative.
+   */
   constructor(categories: [string, number][]) {
     if (categories.length === 0) {
       throw new Error('purpose model needs at least one category');
     }
-    for (const [name, share] of categories) {
+    categories.forEach(([name, share], i) => {
       if (share < 0) {
         throw new Error(`share for '${name}' is negative`);
       }
-    }
+      if (categories.slice(0, i).some(([n]) => n === name)) {
+        throw new Error(`category '${name}' appears more than once`);
+      }
+    });
     const sum = categories.reduce((a, [, s]) => a + s, 0);
     if (Math.abs(sum - 1) > 1e-6) {
       throw new Error(`shares sum to ${sum}, not 1`);
@@ -173,6 +182,28 @@ export function posiwidDivergence(
   const n = stated.categories.length + 1; // + other
   const support = observed.counts.reduce((a, [, c]) => a + c, 0);
 
+  let dominantStated = '';
+  let bestStated = Number.NEGATIVE_INFINITY;
+  for (const [name, s] of stated.categories) {
+    if (s > bestStated) {
+      bestStated = s;
+      dominantStated = name;
+    }
+  }
+
+  // Nothing observed: there is no behaviour to compare and none to name. Short-circuit
+  // before the dominant-observed search, which would otherwise call the empty `other`
+  // bucket dominant and -- with `minSupport` 0 -- report Contradicted from no evidence.
+  if (support === 0) {
+    return {
+      divergence: 0,
+      dominantStated,
+      dominantObserved: OTHER,
+      verdict: 'Insufficient',
+      support: 0,
+    };
+  }
+
   // observed distribution in stated order, then `other`
   const obs = stated.categories.map(([name]) =>
     observed.counts.filter(([m]) => m === name).reduce((a, [, c]) => a + c, 0),
@@ -188,15 +219,6 @@ export function posiwidDivergence(
   const q = st.map((s) => (s + POSIWID_EPS) / denomS);
 
   const divergence = klDivergence(p, q);
-
-  let dominantStated = '';
-  let bestStated = Number.NEGATIVE_INFINITY;
-  for (const [name, s] of stated.categories) {
-    if (s > bestStated) {
-      bestStated = s;
-      dominantStated = name;
-    }
-  }
 
   const names = [...stated.categories.map(([name]) => name), OTHER];
   let dominantObserved = OTHER;
@@ -240,11 +262,12 @@ export function posiwidDivergence(
 
 /**
  * Windowed POSIWID: feeds each window's divergence (minus the expected level)
- * into a CUSUM detector and reports the window index at which drift is called.
+ * into a CUSUM detector and latches the window index at which drift was first called.
  */
 export class PosiwidDrift {
   private detector: CusumDetector;
   private windows = 0;
+  private onsetWindow: number | null = null;
 
   constructor(
     private readonly stated: PurposeModel,
@@ -257,18 +280,43 @@ export class PosiwidDrift {
     this.detector = new CusumDetector(cusumThreshold, cusumSlack);
   }
 
-  /** Returns the window index on every window at which the CUSUM is over threshold, else null. */
+  /**
+   * Feeds one window into the CUSUM and returns the LATCHED onset: null until the first
+   * window whose cumulative sum crosses the threshold, then that window's index on every
+   * later call.
+   *
+   * The CUSUM does not self-reset, so every window past the threshold stays past it.
+   * Returning the *current* index instead made a caller that records the last non-null
+   * value report "onset = final window"; the onset is a fact about when drift started,
+   * and only reset() forgets it.
+   *
+   * A window with too little support is skipped entirely -- it neither advances the CUSUM
+   * nor sets an onset -- but it still consumes a window index.
+   */
   observe(window: ObservedBehaviour): number | null {
     const idx = this.windows++;
     const r = posiwidDivergence(this.stated, window, this.driftThreshold, this.minSupport);
     if (r.verdict === 'Insufficient') {
-      return null;
+      return this.onsetWindow;
     }
-    return this.detector.update(r.divergence - this.expectedDivergence) ? idx : null;
+    if (this.detector.update(r.divergence - this.expectedDivergence) && this.onsetWindow === null) {
+      this.onsetWindow = idx;
+    }
+    return this.onsetWindow;
   }
 
+  /**
+   * The latched drift onset: the window index at which drift was first called, or null if
+   * it has not been called since construction or the last reset().
+   */
+  onset(): number | null {
+    return this.onsetWindow;
+  }
+
+  /** Clears both the CUSUM state and the latched onset. Window indices keep counting. */
   reset(): void {
     this.detector.reset();
+    this.onsetWindow = null;
   }
 }
 
