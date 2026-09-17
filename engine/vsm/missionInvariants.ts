@@ -154,6 +154,11 @@ export class MissionInvariants {
   observeCall(toolName: string, input: any, isError: boolean): void {
     this.callIndex++
     const cls = this.classify(toolName, input, isError)
+    // At most one denial is ever open under normal evaluate() -> observeCall()
+    // pairing: a deny opens one, and the very next observeCall (the attempted
+    // call being recorded) closes it. .find() picks the oldest open denial so
+    // that if a caller ever left more than one open, the earliest still gets
+    // attributed first rather than the newest silently winning.
     const open = this.denials.find(d => d.nextCallClass === null && d.callIndex < this.callIndex)
     if (open) open.nextCallClass = cls
     if (cls === 'sourceEdit') {
@@ -169,14 +174,35 @@ export class MissionInvariants {
       }
     }
     this.callsSinceCommit++
-    const before = this.homeostat.trace().length
-    this.homeostat.observe([this.callsSinceSourceEdit, this.callsSinceCommit])
-    if (this.homeostat.trace().length > before) this.stepCallIndex.push(this.callIndex)
+    this.observeHomeostat(this.callIndex)
   }
 
+  /**
+   * A commit is observed out of band — it has no call index of its own. If it
+   * lands on a re-step boundary (the essential variable is still over cap and
+   * a prior step's dwell has just run out), the homeostat steps here rather
+   * than inside `observeCall`. Attribute that step to the last accounted call
+   * (`this.callIndex`, left unchanged by this method): it is the most honest
+   * index available for a step nothing in the call sequence itself triggered.
+   */
   observeCommit(): void {
     this.callsSinceCommit = 0
+    this.observeHomeostat(this.callIndex)
+  }
+
+  /**
+   * Runs one homeostat observation and keeps `stepCallIndex` in lockstep with
+   * `homeostat.trace()`. Both `observeCall` and `observeCommit` can trigger a
+   * step (the vendored `observe()` steps on ANY sustained violation once dwell
+   * is exhausted, regardless of what caused this particular observation), so
+   * both must route through here — a step taken only inside `observeCommit`
+   * used to grow `trace()` without growing `stepCallIndex`, desyncing the two
+   * arrays `snapshot()` zips together positionally.
+   */
+  private observeHomeostat(callIndexForNewStep: number): void {
+    const before = this.homeostat.trace().length
     this.homeostat.observe([this.callsSinceSourceEdit, this.callsSinceCommit])
+    if (this.homeostat.trace().length > before) this.stepCallIndex.push(callIndexForNewStep)
   }
 
   noteCodeIndexAssisted(): void { this.codeIndexAssisted++ }

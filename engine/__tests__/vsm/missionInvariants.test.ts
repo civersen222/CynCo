@@ -86,6 +86,31 @@ describe('MissionInvariants', () => {
     expect(inv.snapshot().configuration).toBe('full')
   })
 
+  it('steps stay aligned with the homeostat trace when a commit lands on a re-step boundary', () => {
+    const gapInv = new MissionInvariants({ ...DEFAULT_INVARIANT_CAPS, editGapCap: 3, commitGapCap: 50 })
+    // Hand-computed trace (dwell = 3, Ordered, 2-position uniselector):
+    // calls 1-3: callsSinceSourceEdit 1..3, all <= cap 3 -> no violation, no step.
+    // call 4: callsSinceSourceEdit = 4 > 3 -> dwellRemaining was 0 -> STEP 1
+    //   (full -> edit-only) at callIndex 4, dwellRemaining reset to 3.
+    // calls 5-7: still violated (5,6,7 > 3), dwellRemaining decrements 3->2->1->0,
+    //   no new step yet.
+    // observeCommit(): callsSinceCommit resets to 0 but callsSinceSourceEdit is
+    //   untouched (still 7 > 3) -> still violated, and dwellRemaining is now 0
+    //   (exhausted by call 7) -> STEP 2 (edit-only -> full) fires INSIDE
+    //   observeCommit, out of band, attributed to the last accounted call (7).
+    // call 8: one more read; still violated, dwell freshly reset to 3 by step 2
+    //   -> decrements, no further step.
+    // So homeostat.trace() has exactly 2 entries, and stepCallIndex must too.
+    for (let n = 0; n < 7; n++) gapInv.observeCall('Read', read(n)[1], false)
+    gapInv.observeCommit()
+    gapInv.observeCall('Read', read(7)[1], false)
+    const steps = gapInv.snapshot().steps
+    expect(steps).toHaveLength(2)
+    expect(steps.every(s => s.callIndex >= 0)).toBe(true)
+    expect(steps[0]).toMatchObject({ callIndex: 4, from: 'full', to: 'edit-only' })
+    expect(steps[1]).toMatchObject({ callIndex: 7, from: 'edit-only', to: 'full' })
+  })
+
   it('counts CodeIndex-assisted greps', () => {
     inv.noteCodeIndexAssisted(); inv.noteCodeIndexAssisted()
     expect(inv.snapshot().codeIndexAssisted).toBe(2)
