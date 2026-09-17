@@ -20,7 +20,6 @@ import { events } from '../cybernetics-core/src/index.js'
 
 export class ConstraintChecksIntegration {
   private nodeId: InstanceType<typeof NodeId>
-  private toolNames: string[] = []
   private purposeModel = new constraints.PurposeModel([
     ['sourceEdit', 0.15],
     ['commit', 0.05],
@@ -83,12 +82,6 @@ export class ConstraintChecksIntegration {
   /** Replace the stated purpose model (e.g. from profile configuration). */
   setPurposeModel(categories: [string, number][]): void {
     this.purposeModel = new constraints.PurposeModel(categories)
-  }
-
-  /** Record a tool name for POSIWID tracking. */
-  recordToolUse(toolName: string): void {
-    this.toolNames.push(toolName)
-    if (this.toolNames.length > 50) this.toolNames = this.toolNames.slice(-50)
   }
 
   /**
