@@ -283,6 +283,10 @@ export type GovernanceStatusEvent = {
     revertRefusals: number
     codeIndexAssisted: number
   } | null
+  /** True when an `invariants` block WAS declared for this unattended task and
+   *  was rejected as malformed. Without it, `invariants: null` cannot tell a
+   *  mission dispatched without caps from one whose caps were thrown away. */
+  invariantsRejected?: boolean
   /** The legacy ultrastable instance's adaptation trace and viability margin
    *  (Plan 1). Capped at the last 20 steps and mapped to camelCase: the live
    *  array grows unbounded for the life of the session and its own `toJSON` is

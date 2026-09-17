@@ -313,6 +313,36 @@ describe('mission invariants wiring', () => {
     globalContract.clear()
   }, 30000)
 
+  /**
+   * A typo in CYNCO_MISSION_INVARIANTS used to buy an ungoverned mission whose
+   * only report was a console line — in the one run mode defined by nobody
+   * watching the console. The ledger row was indistinguishable from a mission
+   * dispatched without caps at all.
+   */
+  it('a rejected invariants block raises a governance alert and marks the status frame', async () => {
+    globalContract.clear()
+    const { loop, events } = harness('cynco-inv-rejected-', [
+      textResponse('done'),
+    ])
+
+    await loop.handleUserMessage('do the thing', {
+      unattended: true,
+      invariants: { editGapCap: 'x' } as any,
+    })
+
+    const alerts = events.filter(e => e.type === 'governance.alert') as any[]
+    expect(alerts.some(a =>
+      String(a.message) === '[invariant] invariants block malformed — this unattended run has NO mission invariants'
+      && a.source === 'mission-invariants',
+    ), `no malformed-invariants alert; saw ${JSON.stringify(alerts.map(a => a.message))}`).toBe(true)
+
+    const status = lastStatus(events)
+    expect(status, 'no governance.status frame was emitted').toBeTruthy()
+    expect(status.invariants ?? null).toBeNull()
+    expect(status.invariantsRejected).toBe(true)
+    globalContract.clear()
+  }, 30000)
+
   it('an interactive message never constructs invariants', async () => {
     globalContract.clear()
     const { loop, events } = harness('cynco-inv-interactive-', [

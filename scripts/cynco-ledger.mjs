@@ -106,6 +106,11 @@ export function createMissionCollector(now = () => Date.now()) {
     // Last snapshot wins (cumulative, like tokenStats). null = the engine
     // never sent one: an interactive-style run or an engine without Plan 2.
     invariants: null,
+    // Set when the engine says an `invariants` block was declared for this
+    // mission and REJECTED. `invariants: null` alone cannot tell a mission
+    // dispatched without caps from one whose caps were thrown away — and only
+    // the second is a bug in the dispatch. Last frame wins, like the snapshot.
+    invariantsRejected: false,
     ultrastable: null,
     // F33: the join key between this ledger and ~/.cynco/rewards/*.reward.json.
     // Both datasets describe the same run and neither could name the other.
@@ -140,6 +145,7 @@ export function createMissionCollector(now = () => Date.now()) {
             snapshot: null,
           })
           if (m.invariants !== undefined) this.invariants = m.invariants ?? null
+          if (m.invariantsRejected !== undefined) this.invariantsRejected = m.invariantsRejected === true
           if (m.ultrastable !== undefined) this.ultrastable = m.ultrastable ?? null
           break
         case 'session.tokenStats':
@@ -762,6 +768,8 @@ export function buildMissionRecord(collector, meta) {
     // Last snapshot wins (cumulative, like tokenStats). null = the engine
     // never sent one: an interactive-style run or an engine without Plan 2.
     invariants: collector.invariants ?? null,
+    // Never null: an older engine that cannot say simply did not reject one.
+    invariantsRejected: collector.invariantsRejected ?? false,
     ultrastable: collector.ultrastable ?? null,
     // F33: every trajectory task this mission started, in order. This is the
     // ONLY key that joins a ledger row to the reward the model was trained on.

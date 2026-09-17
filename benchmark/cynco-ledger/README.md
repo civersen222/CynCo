@@ -176,6 +176,13 @@ decisions still recorded here).
   // failing hook, a non-repo cwd) stops regulating and just throttles the run.
   // A row with a terminal relent was paced by one cap, not two, from that
   // point on — it is not comparable to a row that held both.
+  //
+  // `invariantsRejected: true` means caps WERE declared for this mission and
+  // the engine threw them away as malformed. `invariants: null` alone cannot
+  // say that — a mission dispatched without caps and a mission whose caps were
+  // rejected are the same null — and only the second is a dispatch bug. Never
+  // null: an engine that cannot say simply did not reject one.
+  "invariantsRejected": false,
   "ultrastable": { "trace": [], "margin": 0.4 }
 }
 ```

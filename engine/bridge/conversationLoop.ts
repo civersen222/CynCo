@@ -261,6 +261,13 @@ export class ConversationLoop {
    * task in `runUserMessage` and never carried into an interactive message.
    */
   private missionInvariants: MissionInvariants | null = null
+  /**
+   * An `invariants` block was declared for this unattended task and rejected as
+   * malformed. `invariants: null` on the wire is otherwise ambiguous — a
+   * mission dispatched without caps and a mission whose caps were thrown away
+   * look identical, and only one of them is a bug in the dispatch.
+   */
+  private invariantsRejected = false
   private abortController: AbortController | null = null
   private processing = false
   // Per-task observation buffers for the reward labeler. Reset at task start,
@@ -987,13 +994,27 @@ export class ConversationLoop {
     // pacing clock to zero — which is the one thing the caps exist to measure.
     if (opts?.unattended !== true) {
       this.missionInvariants = null
+      this.invariantsRejected = false
     } else if (opts.invariants !== undefined) {
       const caps = parseInvariantCaps(opts.invariants)
       if (caps) {
         this.missionInvariants = new MissionInvariants(caps)
+        this.invariantsRejected = false
         console.log(`[invariant] mission invariants armed: edit gap ${caps.editGapCap}, commit gap ${caps.commitGapCap}, revert ban ${caps.revertBan}, CodeIndex-first ${caps.codeIndexFirst}`)
       } else {
+        // A supervisor declared caps and got none. The only report of that used
+        // to be a console line, in a run whose defining property is that nobody
+        // is reading the console — so a typo in CYNCO_MISSION_INVARIANTS bought
+        // an ungoverned mission that looked, in the ledger, exactly like a
+        // mission dispatched without invariants at all.
         console.log('[invariant] invariants block malformed — ignored (message still runs)')
+        this.invariantsRejected = true
+        this.emit({
+          type: 'governance.alert',
+          severity: 'error',
+          message: '[invariant] invariants block malformed — this unattended run has NO mission invariants',
+          source: 'mission-invariants',
+        } as any)
       }
     }
 
@@ -2667,6 +2688,9 @@ export class ConversationLoop {
                 s4: turnReport.s4,
                 heterarchy: turnReport.heterarchy,
                 invariants: this.missionInvariants?.snapshot() ?? null,
+                // Distinguishes "no caps were declared" from "caps were
+                // declared and thrown away" — see `invariantsRejected`.
+                invariantsRejected: this.invariantsRejected,
                 // Capped and camelCased on purpose: the live trace grows for
                 // the whole session and its own toJSON is snake_case (it
                 // mirrors the Rust core byte for byte). A per-turn frame gets
