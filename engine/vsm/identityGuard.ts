@@ -47,14 +47,21 @@ export class IdentityGuard {
       0.5, 6,
     )
     if (report.verdict === 'Insufficient') return true
-    // An error-dominant session is `Drifting` under a 0.1 stated share, not `Contradicted`
-    // (its stated share is above the 0.01 contradiction floor), so the dominant check is
-    // explicit rather than relying on the verdict alone — this preserves the old "80% errors"
-    // behaviour. The same reasoning applies to an idle-dominant session (no tools used across
-    // multiple messages): its 0.05 stated share also keeps the verdict at `Drifting`, so the
-    // dominant check is extended to `idle` too, preserving the old "no tools, multi-message"
-    // failure this guard is meant to catch.
+    // A `Contradicted` verdict always fails. Beyond that, two checks are explicit
+    // because the divergence verdict alone does not catch them:
+    //
+    //  - Idle dominance (no tools used across multiple messages): idle's 0.05 stated
+    //    share is above the 0.01 contradiction floor, so such a session only reads as
+    //    `Drifting`. Dominance (>50% of observed mass) is the right test here — any
+    //    idle-dominant session is the failure this guard exists to catch.
+    //  - The legacy "80% errors" rule. Error dominance is NOT that rule: dominance is
+    //    >50%, so a 4-error/2-success session (67% errors) would newly fail where it
+    //    passed before. The old threshold is therefore written out literally below
+    //    rather than approximated by `dominantObserved === 'tool_error'`.
     if (report.verdict === 'Contradicted') return false
-    return report.dominantObserved !== 'tool_error' && report.dominantObserved !== 'idle'
+    if (report.dominantObserved === 'idle') return false
+    const toolCalls = record.toolErrors + record.toolSuccesses
+    if (toolCalls > 5 && record.toolErrors / toolCalls > 0.8) return false
+    return true
   }
 }
