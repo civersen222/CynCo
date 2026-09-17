@@ -521,3 +521,162 @@ describe('runWave — the instrument must not move under the campaign', () => {
   })
 })
 
+// C2: a runner that dies in the wait leaves a mission on the GPU. The next
+// invocation must not dispatch a second one on top of it.
+describe('runWave — in-flight state', () => {
+  const gradedIo = (over = {}) => ({
+    writeBrief: (p) => p,
+    dispatch: async () => ({ missionId: 'c8-wave1-1' }),
+    waitForDriver: async () => ({ exited: true }),
+    readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', toolStats: {} }),
+    commitsBetween: () => [],
+    grade: async () => g(),
+    salvageOf: () => null,
+    patchRow: () => {},
+    commit: () => ({ sha: 'v1' }),
+    notify: async () => true,
+    economics: () => [],
+    appendLog: () => {},
+    ...over,
+  })
+
+  it('persists inFlight the moment dispatch returns and clears it after the grade', async () => {
+    const state = freshState()
+    let duringWait = null
+    await runWave(spec, state, gradedIo({
+      waitForDriver: async () => { duringWait = new CampaignState(state.dir).load().state.inFlight; return { exited: true } },
+    }))
+    expect(duringWait).toMatchObject({ wave: 1, missionId: null, pidFile: 'C:/tmp/driver_c8-wave1.pid', driverLog: 'C:/tmp/driver_c8-wave1.log' })
+    expect(duringWait.dispatchedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
+    expect(state.state.inFlight).toBeUndefined()
+    expect(new CampaignState(state.dir).load().state.inFlight).toBeUndefined()
+  })
+
+  it('clears inFlight on the fault path too', async () => {
+    const state = freshState()
+    const rec = await runWave(spec, state, gradedIo({ readRow: () => null, missionIdFrom: () => null }))
+    expect(rec.decision.kind).toBe('fault')
+    expect(new CampaignState(state.dir).load().state.inFlight).toBeUndefined()
+  })
+
+  // A throw out of dispatch or wait used to escape runWave entirely: no wave
+  // record, no spend, no notification — and main's catch printing a stack.
+  it('records a fault when io.dispatch throws instead of letting it escape', async () => {
+    const state = freshState()
+    const seen = {}
+    const rec = await runWave(spec, state, gradedIo({
+      dispatch: async () => { throw new Error('dispatch-mission.sh exit 127') },
+      notify: async (t) => { seen.notified = t; return true },
+    }))
+    expect(rec.decision.kind).toBe('fault')
+    expect(rec.decision.why).toMatch(/dispatch or wait failed: dispatch-mission\.sh exit 127/)
+    expect(seen.notified).toMatch(/FAULT/)
+    expect(state.state.waveCount).toBe(1)
+    expect(new CampaignState(state.dir).load().state.waveCount).toBe(1)
+  })
+
+  it('records a fault when io.waitForDriver throws (a missing pid file)', async () => {
+    const state = freshState()
+    const rec = await runWave(spec, state, gradedIo({ waitForDriver: async () => { throw new Error('ENOENT: driver.pid') } }))
+    expect(rec.decision.kind).toBe('fault')
+    expect(rec.decision.why).toMatch(/ENOENT: driver\.pid/)
+    expect(new CampaignState(state.dir).load().state.inFlight).toBeUndefined()
+  })
+
+  // I2: the brief and sidecar are untracked after a fault. Left uncommitted they
+  // trip the dirty-tree refusal at the NEXT invocation — the campaign bricks
+  // itself on files it wrote.
+  it('commits the brief and sidecar on the fault path', async () => {
+    const state = freshState()
+    let committed = null
+    await runWave(spec, state, gradedIo({ readRow: () => null, missionIdFrom: () => null, commit: (args) => { committed = args; return { sha: 'f1' } } }))
+    expect(committed.branch).toBe('campaign/c8')
+    expect(committed.files).toEqual(['docs/civkings-redesign-briefs/c8-wave1.txt', 'docs/civkings-redesign-briefs/c8-wave1.contract.json'])
+    expect(committed.message).toBe('C8 wave 1 dispatched, faulted: driver exited without a ledger row')
+  })
+
+  it('does not lose the wave when the fault-path commit itself throws', async () => {
+    const state = freshState()
+    const rec = await runWave(spec, state, gradedIo({ readRow: () => null, missionIdFrom: () => null, commit: () => { throw new Error('tree is dirty') } }))
+    expect(rec.decision.kind).toBe('fault')
+    expect(state.waves()).toHaveLength(1)
+    expect(state.state.waveCount).toBe(1)
+  })
+
+  it('uses the missionId the wait read out of the driver log', async () => {
+    const state = freshState()
+    const rec = await runWave(spec, state, gradedIo({
+      dispatch: async () => ({ driverLog: 'C:/tmp/d.log' }),
+      waitForDriver: async () => ({ exited: true, missionId: 'c8-wave1-from-the-log' }),
+    }))
+    expect(rec.missionId).toBe('c8-wave1-from-the-log')
+  })
+})
+
+describe('inFlightRefusal / adoptInFlight', () => {
+  const inFlight = (state, over = {}) => {
+    state.state.inFlight = { wave: 2, missionId: null, briefFile: 'docs/civkings-redesign-briefs/c8-wave2.txt', pidFile: 'C:/tmp/driver_c8-wave2.pid', driverLog: 'C:/tmp/driver_c8-wave2.log', dispatchedAt: '2026-09-17T01:02:03.000Z', ...over }
+    state.save()
+    return state
+  }
+
+  it('says nothing when no wave is in flight, and refuses by name when one is', () => {
+    expect(inFlightRefusal(freshState())).toBeNull()
+    const msg = inFlightRefusal(inFlight(freshState()))
+    expect(msg).toMatch(/wave 2 is in flight since 2026-09-17T01:02:03\.000Z/)
+    expect(msg).toMatch(/driver log C:\/tmp\/driver_c8-wave2\.log/)
+    expect(msg).toMatch(/--adopt-inflight/)
+  })
+
+  it('adopts the ledger row the driver log names', async () => {
+    const state = inFlight(freshState())
+    const r = await adoptInFlight(spec, state, { missionIdFrom: () => 'c8-wave2-1789649392765', pidAlive: () => false })
+    expect(r).toEqual({ kind: 'adopted', missionId: 'c8-wave2-1789649392765' })
+    const reloaded = new CampaignState(state.dir).load().state
+    expect(reloaded.adoptedRow).toBe('c8-wave2-1789649392765')
+    expect(reloaded.inFlight).toBeUndefined()
+    expect(reloaded.waveCount).toBe(0)
+  })
+
+  it('refuses while the driver is still alive and wrote no row', async () => {
+    const state = inFlight(freshState())
+    const r = await adoptInFlight(spec, state, { missionIdFrom: () => null, pidAlive: () => true })
+    expect(r.kind).toBe('alive')
+    expect(new CampaignState(state.dir).load().state.inFlight).toBeTruthy()
+  })
+
+  it('records a fault when the driver is gone and wrote no row', async () => {
+    const state = inFlight(freshState())
+    const r = await adoptInFlight(spec, state, { missionIdFrom: () => { throw new Error('ENOENT') }, pidAlive: () => false, notify: async () => true })
+    expect(r.kind).toBe('fault')
+    expect(r.record.decision.why).toMatch(/gone and wrote no ledger row/)
+    const reloaded = new CampaignState(state.dir).load().state
+    expect(reloaded.inFlight).toBeUndefined()
+    expect(reloaded.waveCount).toBe(2)
+  })
+})
+
+describe('takeLock / releaseLock', () => {
+  const lockDir = () => mkdtempSync(join(tmpdir(), 'camp-lock-'))
+
+  it('takes a lock, refuses a live one, and releases it', () => {
+    const d = lockDir()
+    const a = takeLock(d)
+    expect(a.ok).toBe(true)
+    expect(readFileSync(join(d, 'runner.lock'), 'utf8')).toBe(String(process.pid))
+    const b = takeLock(d)
+    expect(b.ok).toBe(false)
+    expect(b.pid).toBe(process.pid)
+    releaseLock(d)
+    expect(existsSync(join(d, 'runner.lock'))).toBe(false)
+  })
+
+  it('removes a stale lock whose pid is gone', () => {
+    const d = lockDir()
+    writeFileSync(join(d, 'runner.lock'), '2147483646')
+    expect(takeLock(d).ok).toBe(true)
+    expect(readFileSync(join(d, 'runner.lock'), 'utf8')).toBe(String(process.pid))
+    releaseLock(d)
+  })
+})
+

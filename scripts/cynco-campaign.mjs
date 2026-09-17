@@ -3,6 +3,7 @@
 //
 //   bun scripts/cynco-campaign.mjs docs/civkings-redesign-briefs/c8.campaign.json [--waves N] [--resume] [--dry-run] [--sync]
 //                                  [--approve-proposal ideation/brief] [--reject-proposal ideation/brief]
+//                                  [--adopt-inflight]
 //
 // S2: salvage + no-progress stop.   S3: budgets + invariants handed to the wave.
 // S3*: sealed gate, suite gate, sweep.   S4: brief (generator binds; ideation advises).
@@ -11,7 +12,7 @@
 // Runs under bun (it reaches into engine/*.ts through .js specifiers).
 import { resolve, join, basename, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { writeFileSync, readFileSync, existsSync, appendFileSync } from 'node:fs'
+import { writeFileSync, readFileSync, existsSync, appendFileSync, unlinkSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { cyncoHome } from '../engine/paths.js'
 import { loadCampaignSpec, checkIdentity } from './cynco-campaign-spec.mjs'
@@ -236,23 +237,27 @@ export async function runWave(spec, state, io = defaultIo) {
     const stamp = basename(briefFile).replace(/\.[^.]*$/, '')
     const pidFile = `C:/tmp/driver_${stamp}.pid`, driverLog = `C:/tmp/driver_${stamp}.log`
     dispatchedAt = new Date().toISOString()
-    const dispatched = await io.dispatch({ spec, briefFile, invariants: spec.invariants, timeoutS: spec.budget.hoursPerWave * 3600, pidFile, driverLog })
-    const waited = await io.waitForDriver({ pidFile, driverLog, timeoutMs: (spec.budget.hoursPerWave * 3600 + 3600) * 1000 })
-    missionId = waited.exited ? (dispatched?.missionId ?? io.missionIdFrom?.(driverLog) ?? null) : null
-    row = missionId ? io.readRow(missionId) : null
+    let waited
+    try {
+      const dispatched = await io.dispatch({ spec, briefFile, invariants: spec.invariants, timeoutS: spec.budget.hoursPerWave * 3600, pidFile, driverLog })
+      // Persist BEFORE waiting, the daemon's missionLedger discipline: from here
+      // on a mission is out there on the GPU, and a runner that dies in the wait
+      // must not let the NEXT invocation dispatch a second one on top of it.
+      s.inFlight = { wave, missionId: null, briefFile, pidFile, driverLog, dispatchedAt }
+      state.save()
+      waited = await io.waitForDriver({ pidFile, driverLog, timeoutMs: (spec.budget.hoursPerWave * 3600 + 3600) * 1000 })
+      missionId = waited.exited ? (waited.missionId ?? dispatched?.missionId ?? io.missionIdFrom?.(driverLog) ?? null) : null
+      row = missionId ? io.readRow(missionId) : null
+    } catch (e) {
+      console.error(`[campaign] wave ${wave} dispatch/wait failed: ${e?.stack ?? e}`)
+      return faultWave(spec, state, io, { wave, missionId: null, briefFile, base, dispatchedAt, files: waveFiles,
+        why: `dispatch or wait failed: ${e?.message ?? e}` })
+    }
     if (!row) {
-      // Ruling 8: a wave that faulted still SPENT a wave. Counting it is what
-      // stops a broken engine from burning the whole budget in a retry loop.
       const why = waited.exited ? 'driver exited without a ledger row'
         : waited.pidUnseen ? `driver pid ${waited.pidUnseen} was already invisible on the first probe — the PID handoff is broken and the mission may still be running unwatched (see ${driverLog})`
-        : 'driver did not exit within the wall clock'
-      const rec = { wave, missionId, briefFile, base, dispatchedAt, decision: { kind: 'fault', why } }
-      rec.notified = await tryNotify(io, `${spec.id} wave ${wave}: FAULT — ${rec.decision.why}`)
-      state.appendWave(rec)
-      s.waveCount = wave
-      if (!rec.notified) s.pendingNotifications.push(rec.decision)
-      state.save()
-      return rec
+          : 'driver did not exit within the wall clock'
+      return faultWave(spec, state, io, { wave, missionId, briefFile, base, dispatchedAt, files: waveFiles, why })
     }
   }
 
@@ -293,21 +298,14 @@ export async function runWave(spec, state, io = defaultIo) {
   const sameFails = Array.isArray(s.lastFails) && grade.gate.fails.map(f => f.id).join() === s.lastFails.join()
   s.consecutiveNoProgress = sameFails && commits.length === 0 ? (s.consecutiveNoProgress ?? 0) + 1 : 0
   s.waveCount = wave; s.lastBase = grade.sha ?? base; s.lastFails = grade.gate.fails.map(f => f.id); s.lastGrade = grade; s.lastRow = row; s.lastCommits = commits
-  if (!notified) s.pendingNotifications.push(rec.decision)
+  delete s.inFlight
   const proposal = promotionProposal(state.waves(), s.ideationAuthority ?? 0)
   if (proposal && !s.proposals.some(p => p.status === 'pending')) { s.proposals.push({ ...proposal, proposedAt: new Date().toISOString() }); await tryNotify(io, `${spec.id}: PROPOSAL ${proposal.name} ${s.ideationAuthority ?? 0} → ${proposal.newValue} (max ${proposal.bounds.max}, p=${proposal.evidence.p.toFixed(3)}). Approve with --approve-proposal ${proposal.name}`) }
   state.save()
   return rec
   } catch (e) {
     console.error(`[campaign] wave ${wave} post-run step failed: ${e?.stack ?? e}`)
-    const why = `post-run step failed: ${e?.message ?? e}`
-    const notified = await tryNotify(io, `${spec.id} wave ${wave}: FAULT — ${why}`)
-    const rec = { wave, missionId, briefFile, base, dispatchedAt, decision: { kind: 'fault', why }, notified }
-    state.appendWave(rec)
-    s.waveCount = wave
-    if (!notified) s.pendingNotifications.push(rec.decision)
-    state.save()
-    return rec
+    return faultWave(spec, state, io, { wave, missionId, briefFile, base, dispatchedAt, files: waveFiles, why: `post-run step failed: ${e?.message ?? e}` })
   }
 }
 
@@ -340,6 +338,81 @@ async function stopWave(spec, state, io, { wave, base, why }) {
   return rec
 }
 
+/**
+ * Ruling 8: a wave that faulted still SPENT a wave — counting it is what stops
+ * a broken engine from burning the whole budget in a retry loop. The brief and
+ * its sidecar are committed here too: they are untracked files the dirty-tree
+ * guard would otherwise refuse on at the NEXT invocation, bricking the campaign
+ * with work that never ran.
+ */
+async function faultWave(spec, state, io, { wave, missionId, briefFile, base, dispatchedAt, why, files }) {
+  const s = state.state
+  const rec = { wave, missionId: missionId ?? null, briefFile, base, dispatchedAt, decision: { kind: 'fault', why } }
+  if (files?.length) {
+    try { io.commit?.({ repoRoot: '.', branch: `campaign/${spec.id}`, files, message: `${spec.id.toUpperCase()} wave ${wave} dispatched, faulted: ${why}` }) }
+    catch (e) { console.error(`[campaign] fault-path commit skipped: ${e.message}`) }
+  }
+  rec.notified = await notifyOrQueue(io, s, `${spec.id} wave ${wave}: FAULT — ${why}`, rec.decision)
+  state.appendWave(rec)
+  s.waveCount = wave
+  delete s.inFlight
+  state.save()
+  return rec
+}
+
+/** The startup refusal: a wave the last invocation dispatched is still out there. */
+export function inFlightRefusal(state) {
+  const f = state.state?.inFlight
+  if (!f) return null
+  return `[campaign] wave ${f.wave} is in flight since ${f.dispatchedAt} (driver log ${f.driverLog}) — wait for it, then run --adopt-inflight`
+}
+
+/**
+ * `--adopt-inflight`: the operator says the in-flight wave is over. The ledger
+ * line in the driver log is the proof it produced a mission; without it, a dead
+ * pid is proof it produced nothing. A live pid is neither, so the refusal stands.
+ */
+export async function adoptInFlight(spec, state, io = defaultIo) {
+  const f = state.state.inFlight
+  if (!f) return { kind: 'none' }
+  let missionId = null
+  try { missionId = io.missionIdFrom(f.driverLog) } catch { missionId = null }
+  if (missionId) {
+    state.state.adoptedRow = missionId
+    delete state.state.inFlight
+    state.save()
+    console.log(`[campaign] --adopt-inflight: wave ${f.wave} wrote ledger row ${missionId} — grading it`)
+    return { kind: 'adopted', missionId }
+  }
+  if (io.pidAlive(f.pidFile)) return { kind: 'alive' }
+  const rec = await faultWave(spec, state, io, { wave: f.wave, missionId: null, briefFile: f.briefFile, base: state.state.lastBase ?? spec.base, dispatchedAt: f.dispatchedAt,
+    why: `driver is gone and wrote no ledger row (see ${f.driverLog})` })
+  return { kind: 'fault', record: rec }
+}
+
+/**
+ * One runner per campaign state dir. Two runners sharing it would dispatch two
+ * waves onto one GPU and interleave their writes to state.json.
+ */
+export function takeLock(dir) {
+  const path = join(dir, 'runner.lock')
+  if (existsSync(path)) {
+    const pid = Number(readFileSync(path, 'utf8').trim())
+    if (pidIsAlive(pid)) return { ok: false, path, pid }
+    console.log(`[campaign] removing a stale runner.lock (pid ${pid} is gone)`)
+    try { unlinkSync(path) } catch {}
+  }
+  writeFileSync(path, String(process.pid), 'utf8')
+  return { ok: true, path, pid: process.pid }
+}
+
+export function releaseLock(dir) {
+  const path = join(dir, 'runner.lock')
+  try { if (existsSync(path) && Number(readFileSync(path, 'utf8').trim()) === process.pid) unlinkSync(path) } catch {}
+}
+
+const pidIsAlive = (pid) => { if (!Number.isInteger(pid) || pid <= 0) return false; try { process.kill(pid, 0); return true } catch { return false } }
+
 function ledgerShardsTouched() {
   const out = spawnSync('git', ['status', '--porcelain', 'benchmark/cynco-ledger'], { encoding: 'utf8' }).stdout ?? ''
   return out.split('\n').filter(Boolean).map(l => l.slice(3).trim())
@@ -356,11 +429,14 @@ export async function main(argv) {
   // a brief written into the wrong tree, not an error.
   if (!existsSync('scripts/dispatch-mission.sh')) { console.error('[campaign] run from the localcode repo root'); return 2 }
   const specPath = argv.find(a => a.endsWith('.campaign.json'))
-  if (!specPath) { console.error('usage: bun scripts/cynco-campaign.mjs <id>.campaign.json [--waves N] [--resume] [--dry-run] [--sync] [--approve-proposal NAME] [--reject-proposal NAME]'); return 2 }
+  if (!specPath) { console.error('usage: bun scripts/cynco-campaign.mjs <id>.campaign.json [--waves N] [--resume] [--dry-run] [--sync] [--adopt-inflight] [--approve-proposal NAME] [--reject-proposal NAME]'); return 2 }
   const spec = loadCampaignSpec(specPath)
   const identity = checkIdentity(spec)
   if (!identity.ok) { console.error('[campaign] IDENTITY VIOLATION:\n  ' + identity.problems.join('\n  ')); return 2 }
   const state = new CampaignState(join(cyncoHome(), 'campaigns', spec.id)).load()
+  const lock = takeLock(state.dir)
+  if (!lock.ok) { console.error(`[campaign] another runner holds ${lock.path} (pid ${lock.pid}) — one runner per campaign`); return 2 }
+  process.on('exit', () => releaseLock(state.dir))
   const flag = (n) => argv.indexOf(n)
   // --resume is the default and always has been: the state directory IS the
   // resume point. The flag is accepted so an operator can say so out loud.
@@ -372,6 +448,15 @@ export async function main(argv) {
     state.save(); console.log(`[campaign] proposal ${name} ${p.status}`); return 0
   }
   if (flag('--sync') !== -1) return sync(spec, state)
+  // A wave this runner dispatched and never graded is still on the GPU as far
+  // as anything here knows. Dispatching another one would put two missions on
+  // one card; the operator says when it is over, and --adopt-inflight is how.
+  if (state.state.inFlight) {
+    if (flag('--adopt-inflight') === -1) { console.error(inFlightRefusal(state)); return 2 }
+    const r = await adoptInFlight(spec, state)
+    if (r.kind === 'alive') { console.error(`[campaign] --adopt-inflight refused: the driver (pid file ${state.state.inFlight.pidFile}) is still alive and wrote no ledger row`); return 2 }
+    if (r.kind === 'fault') { console.error(`[campaign] wave ${r.record.wave} recorded as a fault: ${r.record.decision.why}`); return 1 }
+  }
   if (flag('--waves') !== -1) {
     const n = Number(argv[flag('--waves') + 1])
     if (!Number.isInteger(n) || n <= 0) { console.error('[campaign] --waves needs a positive integer'); return 2 }
