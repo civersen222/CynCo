@@ -11,8 +11,8 @@ export type BashEffect = 'read' | 'write' | 'run' | 'commit' | 'revert' | 'other
 
 // Strip quoted spans so text INSIDE quotes (e.g. an echoed string that
 // happens to contain "git checkout --") can never masquerade as the command
-// itself. Used for REVERT/COMMIT/RUN/redirect/READ — every check except
-// WRITE_DIRECT (see below).
+// itself. Used for every check but the narrow `python -c` write idiom, which
+// has to be read off raw text (see PYTHON_INLINE below).
 const stripQuoted = (c: string) => c.replace(/'[^']*'/g, "''").replace(/"[^"]*"/g, '""')
 
 // Split into segments on the shell operators that chain independent commands.
@@ -73,18 +73,26 @@ const isRevertSegment = (seg: string): boolean => {
 }
 
 // A segment that commits work.
-const COMMIT = /\bgit\s+commit\b/
+const COMMIT = /\bgit\s+commit\b/i
 
-// Unambiguous file mutation: a cmdlet/verb whose entire purpose is writing,
-// or Python's `open(path, 'w'|'a')` / `.write(` idiom. This is checked
-// against the RAW (unstripped) command, not the quote-stripped one:
-// `python -c "…open('a.py','w').write(…)…"` carries its write signal inside
-// a double-quoted code string that itself contains single quotes, so
-// stripQuoted's two-pass strip (single, then double) collapses the whole
-// quoted span to `""` and would erase the very thing we're looking for.
-// None of the read/other vectors contain these tokens as decoy text inside
-// quotes, so scanning raw text here is safe.
-const WRITE_DIRECT = /\b(?:Set-Content|Out-File|Add-Content|Copy-Item|Move-Item|New-Item|Remove-Item|cp|mv|rm|mkdir|touch|tee)\b|\bopen\([^)]*,\s*['"]?[wa]|\.write\(/
+// Unambiguous file mutation: a cmdlet/verb whose entire purpose is writing.
+// Checked against the STRIPPED segments like every other rule — the earlier
+// version scanned raw text and so classified `grep -rn "touch" gilded/` and
+// `Get-Content app.py | Select-String "np.write("` as writes, which hid two
+// ordinary reads from BOTH the read-loop gate and edit-only denial: a call
+// classed `write` is neither denied as inspection nor counted as one.
+const WRITE_DIRECT = /\b(?:Set-Content|Out-File|Add-Content|Copy-Item|Move-Item|New-Item|Remove-Item|cp|mv|rm|mkdir|touch|tee)\b/i
+
+// The one signal that must still be read off RAW text: Python's inline
+// `open(path,'w')` / `.write(` idiom. `python -c "…open('a.py','w')…"` carries
+// its write inside a double-quoted program that itself contains single quotes,
+// and stripQuoted's two-pass strip (single, then double) collapses the whole
+// span to `""`, erasing the thing we are looking for. Splitting raw text into
+// segments is no help either: the inline program has its own `;` separators.
+// So the scan is narrowed by position instead — only the raw text from the
+// first `python -c` / `python3 -c` onward, which is the program itself.
+const PYTHON_INLINE = /\bpython3?\s+-c\b/i
+const PYTHON_WRITE = /\bopen\([^)]*,\s*['"]?[wa]|\.write\(/
 
 // A bare `>`/`>>` redirect — ambiguous on its own (see hasRun below). `2>&1`
 // (stderr merged into stdout, no file) is excluded by the `(?!&)` lookahead;
@@ -92,7 +100,7 @@ const WRITE_DIRECT = /\b(?:Set-Content|Out-File|Add-Content|Copy-Item|Move-Item|
 const WRITE_REDIRECT = /(?:^|\s)>{1,2}(?!&)\s*\S/
 
 // A segment that executes code/tests.
-const RUN = /\b(?:python3?|pytest|bun|node|npm|cargo)\b/
+const RUN = /\b(?:python3?|pytest|bun|node|npm|cargo)\b/i
 
 // A segment that only reads/inspects — never mutates anything. The optional
 // `$var = ` prefix covers PowerShell assignment (`$lines = Get-Content …`).
@@ -107,7 +115,9 @@ export function bashEffect(command: string): BashEffect {
   // Whole-command precedence: revert > commit > write > run > all-read → read > other.
   if (segments.some(isRevertSegment)) return 'revert'
   if (segments.some(seg => COMMIT.test(seg))) return 'commit'
-  if (WRITE_DIRECT.test(raw)) return 'write'
+  if (segments.some(seg => WRITE_DIRECT.test(seg))) return 'write'
+  const pyInline = raw.match(PYTHON_INLINE)
+  if (pyInline && PYTHON_WRITE.test(raw.slice(pyInline.index))) return 'write'
   const hasRun = segments.some(seg => RUN.test(seg))
   if (hasRun) return 'run'
   // A redirect counts as `write` only when no segment is a `run`: a pytest
@@ -118,5 +128,3 @@ export function bashEffect(command: string): BashEffect {
   if (segments.some(seg => READ.test(seg))) return 'read'
   return 'other'
 }
-
-export const isRevert = (command: string): boolean => bashEffect(command) === 'revert'
