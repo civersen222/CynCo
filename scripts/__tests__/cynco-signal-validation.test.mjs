@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   fisherExact, wilson, labelOf, rulesFired, readLedger, analyse,
+  analyseDenials, invariantsFired, denialVerdict, DENIAL_MIN,
 } from '../cynco-signal-validation.mjs'
 
 // A tool whose output decides whether a governance rule gets enforcement
@@ -194,5 +195,68 @@ describe('readLedger', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
+  })
+})
+
+describe('invariantsFired', () => {
+  it('names the invariants that denied at least once', () => {
+    expect([...invariantsFired({ invariants: { denialsByInvariant: { 'edit-gap': 3, 'commit-gap': 0, revert: 1 } } })].sort()).toEqual(['edit-gap', 'revert'])
+    expect(invariantsFired({ invariants: null }).size).toBe(0)
+    expect(invariantsFired({}).size).toBe(0)
+  })
+})
+
+describe('analyseDenials', () => {
+  const summary = (denials, quiet) => ({ denials, quiet })
+  const base = { 'commit-gap': { denials: 0, complied: 0, changed: 0 }, revert: { denials: 5, complied: 5, changed: 0 } }
+  const quietBase = { 'commit-gap': { calls: 1000, complied: 10 }, revert: { calls: 1000, complied: 1000 } }
+
+  it('is TOO FEW under the 30-denial floor and never invents a p-value there', () => {
+    const r = analyseDenials(summary({ ...base, 'edit-gap': { denials: 12, complied: 10, changed: 11 } }, { ...quietBase, 'edit-gap': { calls: 1000, complied: 200 } }))
+    const e = r.invariants.find(x => x.invariant === 'edit-gap')
+    expect(e.verdict).toBe('TOO FEW'); expect(e.p).toBeNull(); expect(e.compliedRate).toBeCloseTo(10 / 12, 6)
+    expect(DENIAL_MIN).toBe(30)
+  })
+  it('is EFFECTIVE when denials are followed by compliance far above the quiet rate', () => {
+    const r = analyseDenials(summary({ ...base, 'edit-gap': { denials: 60, complied: 50, changed: 55 } }, { ...quietBase, 'edit-gap': { calls: 1000, complied: 200 } }))
+    const e = r.invariants.find(x => x.invariant === 'edit-gap')
+    expect(e.verdict).toBe('EFFECTIVE'); expect(e.baseRate).toBeCloseTo(0.2, 6); expect(e.pAdjusted).toBeLessThan(0.05); expect(e.ci[0]).toBeGreaterThan(0.2)
+  })
+  it('is INERT when denials are followed by compliance far below the quiet rate', () => {
+    const r = analyseDenials(summary({ ...base, 'edit-gap': { denials: 80, complied: 2, changed: 3 } }, { ...quietBase, 'edit-gap': { calls: 1000, complied: 300 } }))
+    const e = r.invariants.find(x => x.invariant === 'edit-gap')
+    expect(e.verdict).toBe('INERT'); expect(e.ci[1]).toBeLessThan(0.3)
+  })
+  it('is NO EVIDENCE when the rates are indistinguishable', () => {
+    const r = analyseDenials(summary({ ...base, 'edit-gap': { denials: 40, complied: 9, changed: 12 } }, { ...quietBase, 'edit-gap': { calls: 1000, complied: 220 } }))
+    expect(r.invariants.find(x => x.invariant === 'edit-gap').verdict).toBe('NO EVIDENCE')
+  })
+  it('reports revert as IDENTITY regardless of numbers, and Holm-corrects across the caps only', () => {
+    const r = analyseDenials(summary({ 'edit-gap': { denials: 80, complied: 2, changed: 3 }, 'commit-gap': { denials: 80, complied: 1, changed: 2 }, revert: { denials: 50, complied: 50, changed: 0 } },
+      { 'edit-gap': { calls: 1000, complied: 300 }, 'commit-gap': { calls: 1000, complied: 100 }, revert: { calls: 1000, complied: 1000 } }))
+    const rev = r.invariants.find(x => x.invariant === 'revert')
+    expect(rev.verdict).toBe('IDENTITY'); expect(rev.p).toBeNull()
+    const caps = r.invariants.filter(x => x.invariant !== 'revert')
+    expect(caps.every(x => x.pAdjusted >= x.p)).toBe(true)
+  })
+  it('a missing summary block reads as zero denials', () => {
+    const r = analyseDenials({ denials: {}, quiet: {} })
+    expect(r.invariants.map(x => [x.invariant, x.denials, x.verdict])).toEqual([['edit-gap', 0, 'TOO FEW'], ['commit-gap', 0, 'TOO FEW'], ['revert', 0, 'IDENTITY']])
+  })
+})
+
+describe('analyse with a custom firedOf', () => {
+  it('treats invariants as rules at the mission level', () => {
+    const labeled = (invariants, verified) => ({ outcome: 'landed', verified, mutationSweep: { kind: 'derived', survived: [] }, invariants, s5Decisions: [] })
+    const rows = [
+      labeled({ denialsByInvariant: { 'edit-gap': 2, 'commit-gap': 0, revert: 0 } }, false),
+      labeled({ denialsByInvariant: { 'edit-gap': 0, 'commit-gap': 0, revert: 0 } }, true),
+      labeled(null, true),
+    ]
+    const res = analyse(rows, { firedOf: invariantsFired })
+    expect(res.rules.map(r => r.id)).toEqual(['edit-gap'])
+    expect(res.rules[0]).toMatchObject({ firedTotal: 1, labeled: 1, failures: 1 })
+    // default path unchanged: no S5 rules fired anywhere → no rules
+    expect(analyse(rows).rules).toEqual([])
   })
 })
