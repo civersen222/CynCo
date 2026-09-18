@@ -39,6 +39,12 @@ decisions still recorded here).
   },
   "mutationSweep": null,    // BEHAVIOURAL: null = UNMEASURED, never "clean"
   // { "command": "...", "killed": 1, "total": 7, "survived": ["W1","W5"], "note": "..." }
+  // Written by the campaign runner's GRADE alongside `mutationSweep`: why a
+  // derived sweep produced no reading ("timed out after 3600000 ms", "sweep
+  // refused (exit 2)", "unparseable sweep output"). null = the sweep ran, or
+  // there was no diff to sweep. Distinguishes "unmeasured because the
+  // instrument broke" from "unmeasured because nothing was measured".
+  "sweepFault": null,
   // The commits this mission made. `base` is HEAD at dispatch, `head` is HEAD
   // after the check script ran, so `base..head` is exactly the mission's diff —
   // which is what a DERIVED sweep mutates. null when either end was unreadable;
@@ -194,7 +200,17 @@ decisions still recorded here).
   // rejected are the same null — and only the second is a dispatch bug. Never
   // null: an engine that cannot say simply did not reject one.
   "invariantsRejected": false,
-  "ultrastable": { "trace": [], "margin": 0.4 }
+  "ultrastable": { "trace": [], "margin": 0.4 },
+  // The ENGINE's live POSIWID reading (last governance.status frame): its
+  // default purpose model against the session's executed tool classes
+  // (vsm/constraintChecks.ts). Distinct from the runner-patched `posiwid`
+  // block, which grades a wave against the campaign spec's own shares. Data
+  // for the falsification programme; nothing branches on it.
+  "posiwidLive": { "divergence": 0.31, "verdict": "Drifting", "dominantStated": "inspect", "dominantObserved": "inspect", "support": 931 },
+  // IdentityGuard verdict at the last user-message end (vsm/identityGuard.ts).
+  // `passed` is what decides the session outcome; `posiwidPass` is recorded so
+  // its precision can be measured here before it is allowed to count.
+  "identityGuard": { "passed": true, "posiwidPass": false, "violations": [], "details": ["..."] }
 }
 ```
 

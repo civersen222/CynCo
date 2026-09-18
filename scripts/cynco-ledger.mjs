@@ -112,6 +112,12 @@ export function createMissionCollector(now = () => Date.now()) {
     // the second is a bug in the dispatch. Last frame wins, like the snapshot.
     invariantsRejected: false,
     ultrastable: null,
+    // The engine's live POSIWID reading (governance.status.posiwidLive) and the
+    // IdentityGuard verdict (governance.session_fidelity.identityGuard). Both
+    // are last-frame-wins and both are DATA: the falsification programme
+    // validates them here before either gains authority anywhere.
+    posiwidLive: null,
+    identityGuard: null,
     // F33: the join key between this ledger and ~/.cynco/rewards/*.reward.json.
     // Both datasets describe the same run and neither could name the other.
     taskIds: [],
@@ -147,6 +153,7 @@ export function createMissionCollector(now = () => Date.now()) {
           if (m.invariants !== undefined) this.invariants = m.invariants ?? null
           if (m.invariantsRejected !== undefined) this.invariantsRejected = m.invariantsRejected === true
           if (m.ultrastable !== undefined) this.ultrastable = m.ultrastable ?? null
+          if (m.posiwidLive !== undefined) this.posiwidLive = m.posiwidLive ?? null
           break
         case 'session.tokenStats':
           // Cumulative frame: overwrite, don't add. The engine sums; the
@@ -203,6 +210,7 @@ export function createMissionCollector(now = () => Date.now()) {
           break
         case 'governance.session_fidelity':
           this.regulatorFidelity = m.fidelity ?? null
+          if (m.identityGuard !== undefined) this.identityGuard = m.identityGuard ?? null
           break
         case 'trajectory.task_started':
           // A blank id is not a joinable task. Pushing null would mint a key
@@ -771,6 +779,10 @@ export function buildMissionRecord(collector, meta) {
     // Never null: an older engine that cannot say simply did not reject one.
     invariantsRejected: collector.invariantsRejected ?? false,
     ultrastable: collector.ultrastable ?? null,
+    // Engine-side POSIWID (last status frame) and IdentityGuard verdict (last
+    // session_fidelity frame); null from an older engine. Data, not authority.
+    posiwidLive: collector.posiwidLive ?? null,
+    identityGuard: collector.identityGuard ?? null,
     // F33: every trajectory task this mission started, in order. This is the
     // ONLY key that joins a ledger row to the reward the model was trained on.
     // Without it, UI Wave 8's reward of 0.983 and UI Wave 8's real verdict —

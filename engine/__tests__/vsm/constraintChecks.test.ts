@@ -72,4 +72,29 @@ describe('ConstraintChecksIntegration', () => {
       cc.validateS4Trend('tools', TrendDirection.Rising, 0.5, 'We should use fewer tools')
     }).toThrow(BeerViolationError)
   })
+
+  // The live reading conversationLoop emits on governance.status: raw
+  // `classifyCall` classes folded into the default purpose model.
+  it('checkToolClassAlignment folds read-shaped Bash and CodeIndex into inspect', () => {
+    const r = cc.checkToolClassAlignment(new Map([['inspect', 30], ['read', 20], ['codeIndex', 5], ['sourceEdit', 15], ['run', 20], ['commit', 5], ['write', 5]]))
+    expect(r.dominantObserved).toBe('inspect')
+    expect(r.verdict).toBe('Consistent')
+    expect(r.support).toBe(100)
+  })
+
+  it('checkToolClassAlignment reads Contradicted when reverts dominate (a class the model gives no weight)', () => {
+    const r = cc.checkToolClassAlignment({ revert: 60, inspect: 30, sourceEdit: 10 })
+    expect(r.verdict).toBe('Contradicted')
+    expect(r.dominantObserved).toBe('revert')
+  })
+
+  it('checkToolClassAlignment reads Drifting for the C8 wave-1 shape (828 of 931 inspect)', () => {
+    const r = cc.checkToolClassAlignment({ inspect: 828, sourceEdit: 86, write: 17 })
+    expect(r.verdict).toBe('Drifting')
+    expect(r.dominantObserved).toBe('inspect')
+  })
+
+  it('checkToolClassAlignment is Insufficient under the 50-call support floor', () => {
+    expect(cc.checkToolClassAlignment({ inspect: 10 }).verdict).toBe('Insufficient')
+  })
 })
