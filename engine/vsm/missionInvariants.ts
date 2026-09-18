@@ -69,6 +69,11 @@ export interface InvariantSnapshot {
    *  observed yet is counted under `pending`, so these always sum to
    *  `denialCount`. */
   nextCallClassCounts: Record<string, number>
+  /** `nextCallClassCounts` split by the invariant that denied. Over ALL denials,
+   *  like `denialsByInvariant`, whose per-kind totals these sum to. The window
+   *  (`denials`) drops after 50; the falsification programme's per-invariant
+   *  "did the denial change the next call" needs the whole run. */
+  nextCallClassByInvariant: Record<InvariantKind, Record<string, number>>
   /** Variables this run has stopped denying on — see TERMINAL_RELENT_AFTER. */
   terminalRelents: InvariantKind[]
   revertRefusals: number; codeIndexAssisted: number
@@ -306,17 +311,20 @@ export class MissionInvariants {
     }))
     const denialsByInvariant: Record<InvariantKind, number> = { 'edit-gap': 0, 'commit-gap': 0, revert: 0 }
     const nextCallClassCounts: Record<string, number> = {}
+    const nextCallClassByInvariant: Record<InvariantKind, Record<string, number>> = { 'edit-gap': {}, 'commit-gap': {}, revert: {} }
     for (const d of this.denials) {
       denialsByInvariant[d.invariant] = (denialsByInvariant[d.invariant] ?? 0) + 1
       const k = d.nextCallClass ?? 'pending'
       nextCallClassCounts[k] = (nextCallClassCounts[k] ?? 0) + 1
+      const per = nextCallClassByInvariant[d.invariant]
+      per[k] = (per[k] ?? 0) + 1
     }
     return {
       caps: this.caps, configuration: this.isEditOnly() ? 'edit-only' : 'full',
       callsSinceSourceEdit: this.callsSinceSourceEdit, callsSinceCommit: this.callsSinceCommit,
       steps: steps.slice(-STEP_WINDOW), stepCount: steps.length,
       denials: this.denials.slice(-DENIAL_WINDOW), denialCount: this.denials.length,
-      denialsByInvariant, nextCallClassCounts, terminalRelents: [...this.terminal],
+      denialsByInvariant, nextCallClassCounts, nextCallClassByInvariant, terminalRelents: [...this.terminal],
       revertRefusals: this.revertRefusals, codeIndexAssisted: this.codeIndexAssisted,
     }
   }

@@ -77,6 +77,27 @@ describe('MissionInvariants', () => {
     expect(d[0]).toMatchObject({ invariant: 'edit-gap', tool: 'Read', nextCallClass: 'sourceEdit' })
   })
 
+  it('splits next-call classes per invariant over ALL denials, not the window', () => {
+    const inv = new MissionInvariants({ editGapCap: 2, commitGapCap: 1000, revertBan: true, codeIndexFirst: false })
+    // three inspections exceed the edit gap of 2 → the fourth is denied
+    for (let i = 0; i < 3; i++) { inv.evaluate('Read', { file_path: `f${i}` }); inv.observeCall('Read', { file_path: `f${i}` }, false) }
+    expect(inv.evaluate('Read', { file_path: 'f3' }).kind).toBe('deny')
+    inv.observeCall('Read', { file_path: 'f3' }, true)            // the denied call itself
+    inv.observeCall('Edit', { file_path: 'f3' }, false)            // next call: sourceEdit → complied
+    // a revert refusal whose next call is a read
+    expect(inv.evaluate('Bash', { command: 'git checkout -- a.py' }).kind).toBe('deny')
+    inv.observeCall('Bash', { command: 'git checkout -- a.py' }, true)
+    inv.observeCall('Read', { file_path: 'a.py' }, false)
+    const s = inv.snapshot()
+    expect(s.nextCallClassByInvariant['edit-gap']).toEqual({ sourceEdit: 1 })
+    expect(s.nextCallClassByInvariant.revert).toEqual({ inspect: 1 })
+    expect(s.nextCallClassByInvariant['commit-gap']).toEqual({})
+    for (const k of ['edit-gap', 'commit-gap', 'revert']) {
+      const sum = Object.values(s.nextCallClassByInvariant[k]).reduce((a, b) => a + b, 0)
+      expect(sum).toBe(s.denialsByInvariant[k])
+    }
+  })
+
   it('commit gap steps to edit-only and a commit restores it', () => {
     for (let n = 0; n < 9; n++) { inv.observeCall('Edit', { file_path: 'C:\\repo\\a.py' }, false) }
     // 9 edits: callsSinceSourceEdit stays 0, callsSinceCommit = 9 > 8

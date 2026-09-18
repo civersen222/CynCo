@@ -182,10 +182,17 @@ decisions still recorded here).
   // `nextCallClassCounts` are over ALL denials, not the window, and each sums
   // to `denialCount` (`pending` = a denial whose next call was never observed,
   // i.e. the run ended on it).
+  // `nextCallClassByInvariant` splits `nextCallClassCounts` by the invariant
+  // that denied (edit-gap / commit-gap / revert), over ALL denials. This is
+  // the per-invariant "did the denial change the next call" input for
+  // scripts/cynco-signal-validation.mjs --denials; the `denials` window is
+  // only the last 50 and cannot answer it for a long run.
   "invariants": { "configuration": "full",
     "denials": [], "denialCount": 0, "steps": [], "stepCount": 0,
     "denialsByInvariant": { "edit-gap": 0, "commit-gap": 0, "revert": 0 },
-    "nextCallClassCounts": {}, "terminalRelents": [],
+    "nextCallClassCounts": {},
+    "nextCallClassByInvariant": { "edit-gap": {}, "commit-gap": {}, "revert": {} },
+    "terminalRelents": [],
     "revertRefusals": 0, "codeIndexAssisted": 0 },
   // `terminalRelents` names the caps the gate GAVE UP on: three full relent
   // cycles (nine denials) on one variable and it stops withholding inspection
