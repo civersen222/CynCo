@@ -128,3 +128,21 @@ describe('verdictEntry — pass-with-survivors', () => {
     expect(text).toMatch(/^Verdict: \*\*CAMPAIGN PASS \(sweep survivors: 1\)\*\* — sealed gate PASS/m)
   })
 })
+
+describe('verdictEntry — denial table and cap proposal', () => {
+  const spec = { id: 'c8', invariants: { editGapCap: 40, commitGapCap: 150, revertBan: true, codeIndexFirst: true } }
+  it('prints one Denials line per invariant and the proposal when raised', () => {
+    const denialAnalysis = { invariants: [
+      { invariant: 'edit-gap', denials: 80, complied: 2, changed: 3, compliedRate: 0.025, ci: [0.01, 0.09], baseRate: 0.3, p: 0.0001, pAdjusted: 0.0002, verdict: 'INERT' },
+      { invariant: 'commit-gap', denials: 0, complied: 0, changed: 0, compliedRate: null, ci: [0, 1], baseRate: 0.05, p: null, pAdjusted: null, verdict: 'TOO FEW' },
+      { invariant: 'revert', denials: 1, complied: 1, changed: 0, compliedRate: 1, ci: [0.2, 1], baseRate: 1, p: null, pAdjusted: null, verdict: 'IDENTITY' } ] }
+    const capProposal = { type: 'Parameter', name: 'invariants/editGapCap', newValue: 60, bounds: { min: 40, max: 80 }, status: 'pending', evidence: denialAnalysis.invariants[0] }
+    const text = verdictEntry({ spec, wave: 3, row, grade, decision: { kind: 'next', why: 'x' }, ideationRecord: null, economicsLines: [], denialAnalysis, capProposal })
+    expect(text).toMatch(/Denials \(campaign to date\): edit-gap 2\/80 complied \(quiet rate 30\.0%, INERT\); commit-gap 0\/0 \(TOO FEW\); revert 1\/1 \(IDENTITY\)\./)
+    expect(text).toMatch(/PROPOSAL invariants\/editGapCap 40 → 60 \(max 80\) — approve with --approve-proposal invariants\/editGapCap/)
+  })
+  it('omits both lines when no analysis is available', () => {
+    const text = verdictEntry({ spec, wave: 3, row, grade, decision: { kind: 'next', why: 'x' }, ideationRecord: null, economicsLines: [] })
+    expect(text).not.toMatch(/Denials \(campaign/); expect(text).not.toMatch(/PROPOSAL/)
+  })
+})

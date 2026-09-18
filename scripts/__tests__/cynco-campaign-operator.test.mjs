@@ -6,8 +6,8 @@ import { describe, it, expect } from 'vitest'
 import { mkdtempSync, readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { takeLock, releaseLock, drainQueued, defaultIo } from '../cynco-campaign.mjs'
-import { CampaignState } from '../cynco-campaign-state.mjs'
+import { takeLock, releaseLock, drainQueued, defaultIo, applyProposalDecision } from '../cynco-campaign.mjs'
+import { CampaignState, freshState } from '../cynco-campaign-state.mjs'
 import { loadCampaignSpec } from '../cynco-campaign-spec.mjs'
 
 const dir = (p) => mkdtempSync(join(tmpdir(), p))
@@ -145,5 +145,29 @@ describe('defaultIo.waitForDriver reads the ledger line before the pid file', ()
       pidFile: join(dir('camp-pid-'), 'never-written.pid'), driverLog: 'C:/tmp/d.log', timeoutMs: 5_000,
       missionIdFrom: () => null,
     })).rejects.toThrow(/ENOENT/)
+  })
+})
+
+describe('approving an invariants/* proposal sets an override', () => {
+  it('fresh state carries an empty override map', () => { expect(freshState('c8').invariantOverrides).toEqual({}) })
+  it('applyProposalDecision writes the bounded override; ideation/brief still sets authority', () => {
+    const s = { ...freshState('c8'), proposals: [
+      { name: 'invariants/editGapCap', status: 'pending', newValue: 60, bounds: { min: 40, max: 80 } },
+      { name: 'ideation/brief', status: 'pending', newValue: 0.5, bounds: { min: 0, max: 0.5 } } ] }
+    expect(applyProposalDecision(s, 'invariants/editGapCap', true)).toEqual({ ok: true, status: 'approved' })
+    expect(s.invariantOverrides).toEqual({ editGapCap: 60 })
+    expect(applyProposalDecision(s, 'ideation/brief', true).ok).toBe(true)
+    expect(s.ideationAuthority).toBe(0.5)
+    expect(applyProposalDecision(s, 'nope', true)).toEqual({ ok: false, why: 'no pending proposal nope' })
+  })
+  it('rejecting leaves the overrides alone', () => {
+    const s = { ...freshState('c8'), proposals: [{ name: 'invariants/commitGapCap', status: 'pending', newValue: 225, bounds: { min: 150, max: 300 } }] }
+    expect(applyProposalDecision(s, 'invariants/commitGapCap', false).status).toBe('rejected')
+    expect(s.invariantOverrides).toEqual({})
+  })
+  it('an approval above the bound is clamped to it', () => {
+    const s = { ...freshState('c8'), proposals: [{ name: 'invariants/editGapCap', status: 'pending', newValue: 999, bounds: { min: 40, max: 80 } }] }
+    applyProposalDecision(s, 'invariants/editGapCap', true)
+    expect(s.invariantOverrides.editGapCap).toBe(80)
   })
 })

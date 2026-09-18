@@ -21,7 +21,7 @@ import { calibrate, defaultIo as calibrateIo } from './cynco-campaign-calibrate.
 import { generateBrief, sidecarFor } from './cynco-brief.mjs'
 import { gradeWave } from './cynco-campaign-grade.mjs'
 import { verdictEntry, notify, commitVerdict, economicsLines } from './cynco-campaign-verdict.mjs'
-import { runIdeation, measureFollowed, authorityRegistry, promotionProposal } from './cynco-ideation.mjs'
+import { runIdeation, measureFollowed, authorityRegistry, promotionProposal, capProposal, effectiveInvariants } from './cynco-ideation.mjs'
 import { patchLedgerRow, findLedgerRow } from './cynco-ledger-patch.mjs'
 import { sidecarPath } from './cynco-contract.mjs'
 
@@ -278,7 +278,7 @@ export async function runWave(spec, state, io = defaultIo) {
     dispatchedAt = new Date().toISOString()
     let waited
     try {
-      const dispatched = await io.dispatch({ spec, briefFile, invariants: spec.invariants, timeoutS: spec.budget.hoursPerWave * 3600, pidFile, driverLog })
+      const dispatched = await io.dispatch({ spec, briefFile, invariants: effectiveInvariants(spec, s), timeoutS: spec.budget.hoursPerWave * 3600, pidFile, driverLog })
       // Persist BEFORE waiting, the daemon's missionLedger discipline: from here
       // on a mission is out there on the GPU, and a runner that dies in the wait
       // must not let the NEXT invocation dispatch a second one on top of it.
@@ -423,6 +423,21 @@ export function inFlightRefusal(state) {
   return `[campaign] wave ${f.wave} is in flight since ${f.dispatchedAt} (driver log ${f.driverLog}) — wait for it, then run --adopt-inflight`
 }
 
+/** The operator's decision on a pending proposal, applied to state. Pure over
+ *  the state object so the merge-on-save rule (CampaignState.save) and the
+ *  CLI branch share one definition of what "approved" does. */
+export function applyProposalDecision(s, name, approve) {
+  const p = (s.proposals ?? []).find(x => x.name === name && x.status === 'pending')
+  if (!p) return { ok: false, why: `no pending proposal ${name}` }
+  p.status = approve ? 'approved' : 'rejected'; p.decidedAt = new Date().toISOString()
+  if (approve && p.name === 'ideation/brief') s.ideationAuthority = Math.min(p.newValue, p.bounds.max)
+  if (approve && p.name.startsWith('invariants/')) {
+    const cap = p.name.slice('invariants/'.length)
+    s.invariantOverrides = { ...(s.invariantOverrides ?? {}), [cap]: Math.min(p.newValue, p.bounds.max) }
+  }
+  return { ok: true, status: p.status }
+}
+
 /**
  * `--adopt-inflight`: the operator says the in-flight wave is over. The ledger
  * line in the driver log is the proof it produced a mission; without it, a dead
@@ -530,10 +545,9 @@ export async function main(argv) {
   // queue only when no runner is live.
   if (flag('--approve-proposal') !== -1 || flag('--reject-proposal') !== -1) {
     const approve = flag('--approve-proposal') !== -1; const name = argv[(approve ? flag('--approve-proposal') : flag('--reject-proposal')) + 1]
-    const p = state.state.proposals.find(x => x.name === name && x.status === 'pending'); if (!p) { console.error(`no pending proposal ${name}`); return 2 }
-    p.status = approve ? 'approved' : 'rejected'; p.decidedAt = new Date().toISOString()
-    if (approve && p.name === 'ideation/brief') state.state.ideationAuthority = Math.min(p.newValue, p.bounds.max)
-    state.save(); console.log(`[campaign] proposal ${name} ${p.status}`); return 0
+    const r = applyProposalDecision(state.state, name, approve)
+    if (!r.ok) { console.error(r.why); return 2 }
+    state.save(); console.log(`[campaign] proposal ${name} ${r.status}`); return 0
   }
   if (flag('--sync') !== -1) {
     const held = takeLock(state.dir)

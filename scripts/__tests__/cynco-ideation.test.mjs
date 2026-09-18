@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { parseIdeation, measureFollowed, authorityRegistry, promotionProposal, ideationPrompt, runIdeation } from '../cynco-ideation.mjs'
+import { parseIdeation, measureFollowed, authorityRegistry, promotionProposal, ideationPrompt, runIdeation, capProposal, effectiveInvariants, CAP_PROPOSAL_FACTOR } from '../cynco-ideation.mjs'
 
 describe('ideation', () => {
   it('parses the daemon outcome contract into hypotheses and a trap', () => {
@@ -74,5 +74,34 @@ describe('ideation', () => {
     expect(result.ideation).toEqual({ hypotheses: [{ gateId: 'C8.1a', cause: 'owner fill missing', firstEdit: 'gilded/ui/widgets.py' }], order: ['C8.1a'], trap: 'do not touch palette.py' })
     expect(result.taskPath).toContain('ideation')
     expect(result.outcomePath).toContain('ideation')
+  })
+})
+
+describe('cap proposals and effective invariants', () => {
+  const spec = { invariants: { editGapCap: 40, commitGapCap: 150, revertBan: true, codeIndexFirst: true } }
+  const inert = (invariant) => ({ invariant, denials: 80, complied: 2, changed: 3, compliedRate: 0.025, ci: [0.01, 0.09], baseRate: 0.3, p: 0.0001, pAdjusted: 0.0002, verdict: 'INERT' })
+  const quiet = (invariant) => ({ invariant, denials: 3, complied: 1, changed: 1, compliedRate: 0.33, ci: [0.06, 0.79], baseRate: 0.3, p: null, pAdjusted: null, verdict: 'TOO FEW' })
+
+  it('effectiveInvariants overlays approved overrides on the spec caps and nothing else', () => {
+    expect(effectiveInvariants(spec, { invariantOverrides: {} })).toEqual(spec.invariants)
+    expect(effectiveInvariants(spec, {})).toEqual(spec.invariants)
+    expect(effectiveInvariants(spec, { invariantOverrides: { editGapCap: 60, revertBan: false } })).toEqual({ ...spec.invariants, editGapCap: 60 })
+  })
+  it('proposes raising an INERT cap by 50% within [spec, 2×spec]', () => {
+    const p = capProposal({ invariants: [inert('edit-gap'), quiet('commit-gap')] }, spec, { invariantOverrides: {}, proposals: [] })
+    expect(CAP_PROPOSAL_FACTOR).toBe(1.5)
+    expect(p).toMatchObject({ type: 'Parameter', name: 'invariants/editGapCap', newValue: 60, bounds: { min: 40, max: 80 }, status: 'pending' })
+    expect(p.evidence.verdict).toBe('INERT')
+  })
+  it('raises from the current effective cap and never past the bound', () => {
+    const p = capProposal({ invariants: [inert('edit-gap')] }, spec, { invariantOverrides: { editGapCap: 60 }, proposals: [] })
+    expect(p.newValue).toBe(80)
+    expect(capProposal({ invariants: [inert('edit-gap')] }, spec, { invariantOverrides: { editGapCap: 80 }, proposals: [] })).toBeNull()
+  })
+  it('never proposes for revert, for a non-INERT verdict, or while a proposal is pending', () => {
+    expect(capProposal({ invariants: [{ ...inert('revert'), verdict: 'IDENTITY' }] }, spec, { invariantOverrides: {}, proposals: [] })).toBeNull()
+    expect(capProposal({ invariants: [quiet('edit-gap')] }, spec, { invariantOverrides: {}, proposals: [] })).toBeNull()
+    expect(capProposal({ invariants: [inert('edit-gap')] }, spec, { invariantOverrides: {}, proposals: [{ name: 'ideation/brief', status: 'pending' }] })).toBeNull()
+    expect(capProposal(null, spec, { invariantOverrides: {}, proposals: [] })).toBeNull()
   })
 })

@@ -3,7 +3,7 @@ import { join } from 'node:path'
 
 export function freshState(id) {
   return { id, calibration: null, waveCount: 0, lastBase: null, lastFails: null, consecutiveNoProgress: 0,
-           ideationAuthority: 0, proposals: [], pendingNotifications: [] }
+           ideationAuthority: 0, proposals: [], invariantOverrides: {}, pendingNotifications: [] }
 }
 
 // The daemon's missionLedger pattern (engine/daemon/missionLedger.ts:27-56):
@@ -53,6 +53,9 @@ export class CampaignState {
       mine.status = d.status; mine.decidedAt = d.decidedAt ?? null
       if (d.status === 'approved' && typeof disk.ideationAuthority === 'number') {
         this.state.ideationAuthority = Math.max(this.state.ideationAuthority ?? 0, disk.ideationAuthority)
+      }
+      if (d.status === 'approved' && d.name.startsWith('invariants/') && disk.invariantOverrides) {
+        this.state.invariantOverrides = { ...(this.state.invariantOverrides ?? {}), ...disk.invariantOverrides }
       }
     }
   }
