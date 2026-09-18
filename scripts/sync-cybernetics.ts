@@ -11,9 +11,10 @@
  * Exit 1 = drift detected (per-file list printed) or misconfiguration
  */
 
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
-import { join, relative } from "node:path";
+import { join, relative, resolve } from "node:path";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -22,6 +23,8 @@ import { join, relative } from "node:path";
 const VENDORED_MD = join(import.meta.dir, "../engine/cybernetics-core/VENDORED.md");
 const VENDORED_SRC = join(import.meta.dir, "../engine/cybernetics-core/src");
 const UPSTREAM_SRC = "C:/Users/civer/cybernetics/cybernetics-ts/src";
+/** Repo root of the upstream library: the parent of its `cybernetics-ts` package dir. */
+const UPSTREAM_REPO = resolve(UPSTREAM_SRC, "..", "..");
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -70,6 +73,54 @@ if (!existsSync(UPSTREAM_SRC)) {
   console.error(`ERROR: upstream src not found at ${UPSTREAM_SRC}`);
   console.error("Is the cybernetics repo present on this machine?");
   process.exit(1);
+}
+
+// ---------------------------------------------------------------------------
+// Guard: VENDORED.md's recorded commit must be upstream HEAD
+//
+// The per-file hashes below only prove the two trees match right now; they say
+// nothing about whether the sha written in VENDORED.md is the commit those
+// bytes actually came from.  A stale recorded sha makes the provenance record
+// lie, so compare it against the upstream repo's HEAD.
+// ---------------------------------------------------------------------------
+
+/** Run a git command in the upstream repo; returns trimmed stdout, or null on failure. */
+function gitUpstream(args: string[]): string | null {
+  const r = spawnSync("git", ["-C", UPSTREAM_REPO, ...args], { encoding: "utf8" });
+  if (r.error || r.status !== 0) return null;
+  return (r.stdout ?? "").trim();
+}
+
+const upstreamHead = gitUpstream(["rev-parse", "HEAD"]);
+
+if (upstreamHead === null) {
+  console.log(
+    `WARNING: could not read upstream HEAD via git in ${UPSTREAM_REPO} — ` +
+    "recorded-commit check skipped."
+  );
+} else {
+  console.log(`Upstream HEAD            : ${upstreamHead}`);
+  if (upstreamHead !== recordedHash) {
+    console.log(
+      `RECORDED COMMIT MISMATCH: VENDORED.md says ${recordedHash}, upstream HEAD is ${upstreamHead}`
+    );
+    console.log();
+    console.log(
+      "To resolve: re-vendor from upstream HEAD and set the 'Commit at vendor'\n" +
+      "row in engine/cybernetics-core/VENDORED.md to that sha."
+    );
+    process.exit(1);
+  }
+
+  const dirty = gitUpstream(["status", "--porcelain", "--", "cybernetics-ts/src"]);
+  if (dirty) {
+    console.log(
+      "WARNING: upstream cybernetics-ts/src has uncommitted changes — the sha above\n" +
+      "         does not describe the bytes being compared:"
+    );
+    for (const line of dirty.split(/\r?\n/)) console.log(`         ${line}`);
+  }
+  console.log();
 }
 
 // ---------------------------------------------------------------------------

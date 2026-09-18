@@ -29,14 +29,20 @@ describe('ConstraintChecksIntegration', () => {
     expect(events.length).toBe(2) // two violations
   })
 
-  it('POSIWID check passes when outputs match purpose', () => {
-    const outputs = ['I helped fix the coding bug', 'Refactored the function']
-    expect(cc.checkPurposeAlignment(outputs)).toBe(true)
+  it('POSIWID report is Consistent when tool-class shares match the purpose model', () => {
+    cc.setPurposeModel([['sourceEdit', 0.15], ['commit', 0.05], ['inspect', 0.8]])
+    const r = cc.checkPurposeAlignment({ counts: [['sourceEdit', 150], ['commit', 50], ['inspect', 800]] })
+    expect(r.verdict).toBe('Consistent')
+    expect(r.dominantObserved).toBe('inspect')
   })
 
-  it('POSIWID check fails when outputs diverge from purpose', () => {
-    const outputs = ['recipe for chocolate cake', 'weather forecast for tokyo']
-    expect(cc.checkPurposeAlignment(outputs)).toBe(false)
+  it('POSIWID report is Contradicted and emits a drift event when the dominant behaviour has no stated share', () => {
+    cc.setPurposeModel([['sourceEdit', 0.15], ['commit', 0.05], ['inspect', 0.8]])
+    const r = cc.checkPurposeAlignment({ counts: [['revert', 600], ['inspect', 300], ['sourceEdit', 100]] })
+    expect(r.verdict).toBe('Contradicted')
+    const bus = getEventBus()
+    const drifts = bus.replayFiltered(e => e.payload.kind === 'DriftDetected' && e.payload.metricName === 'posiwid')
+    expect(drifts.length).toBeGreaterThan(0)
   })
 
   it('freedom is viable in normal range', () => {

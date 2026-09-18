@@ -50,6 +50,24 @@ describe('IdentityGuard', () => {
     expect(result.posiwidPass).toBe(false)
   })
 
+  it('POSIWID passes at 4 errors / 2 successes (error-dominant but under the 80% rule)', () => {
+    const guard = new IdentityGuard()
+    const result = guard.evaluate(makeRecord({ toolErrors: 4, toolSuccesses: 2 }))
+    expect(result.posiwidPass).toBe(true)
+  })
+
+  it('POSIWID passes at 5 errors / 5 successes', () => {
+    const guard = new IdentityGuard()
+    const result = guard.evaluate(makeRecord({ toolErrors: 5, toolSuccesses: 5 }))
+    expect(result.posiwidPass).toBe(true)
+  })
+
+  it('POSIWID fails at 17 errors / 3 successes (85% > the 80% rule)', () => {
+    const guard = new IdentityGuard()
+    const result = guard.evaluate(makeRecord({ toolErrors: 17, toolSuccesses: 3 }))
+    expect(result.posiwidPass).toBe(false)
+  })
+
   it('returns all violations at once', () => {
     const guard = new IdentityGuard()
     const result = guard.evaluate(makeRecord({ metaBoundsWidened: true, toolSuccesses: 0, toolErrors: 20, toolsUsed: [] }))

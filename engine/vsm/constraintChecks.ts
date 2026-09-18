@@ -14,14 +14,17 @@ import {
   AutonomyConstraint,
   TrendDirection,
 } from '../cybernetics-core/src/index.js'
+import type { PosiwidReport } from '../cybernetics-core/src/index.js'
 import { getEventBus } from './eventBus.js'
 import { events } from '../cybernetics-core/src/index.js'
 
 export class ConstraintChecksIntegration {
   private nodeId: InstanceType<typeof NodeId>
-  private toolNames: string[] = []
-  private recentOutputs: string[] = []
-  private statedPurpose: string = 'coding assistant that helps with software engineering tasks'
+  private purposeModel = new constraints.PurposeModel([
+    ['sourceEdit', 0.15],
+    ['commit', 0.05],
+    ['inspect', 0.8],
+  ])
 
   constructor(nodeId: InstanceType<typeof NodeId>) {
     this.nodeId = nodeId
@@ -59,25 +62,26 @@ export class ConstraintChecksIntegration {
   }
 
   /**
-   * POSIWID check: compare stated purpose vs actual behavior.
-   *
-   * BEHAVIORAL EFFECT: returns false when system purpose has drifted.
-   * Triggers governance alert.
+   * POSIWID: the purpose of a system is what it does. Compares the distribution of
+   * observed tool classes with the stated purpose model.
+   * BEHAVIORAL EFFECT: a `Contradicted` verdict emits a governance drift alert.
    */
-  checkPurposeAlignment(observedOutputs: string[]): boolean {
-    this.recentOutputs = observedOutputs.slice(-20)
-    return constraints.posiwidCheck(this.statedPurpose, this.recentOutputs)
+  checkPurposeAlignment(observed: { counts: [string, number][] }): PosiwidReport {
+    const report = constraints.posiwidDivergence(this.purposeModel, observed, 0.1, 50)
+    if (report.verdict === 'Contradicted') {
+      getEventBus().emit(events.DomainEvent.driftDetected(
+        this.nodeId,
+        'posiwid',
+        report.divergence,
+        TrendDirection.Rising,
+      ))
+    }
+    return report
   }
 
-  /** Update stated purpose (e.g. from profile system_prompt_append). */
-  setStatedPurpose(purpose: string): void {
-    this.statedPurpose = purpose
-  }
-
-  /** Record a tool name for POSIWID tracking. */
-  recordToolUse(toolName: string): void {
-    this.toolNames.push(toolName)
-    if (this.toolNames.length > 50) this.toolNames = this.toolNames.slice(-50)
+  /** Replace the stated purpose model (e.g. from profile configuration). */
+  setPurposeModel(categories: [string, number][]): void {
+    this.purposeModel = new constraints.PurposeModel(categories)
   }
 
   /**

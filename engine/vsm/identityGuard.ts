@@ -1,3 +1,11 @@
+import { constraints } from '../cybernetics-core/src/index.js'
+
+const SESSION_PURPOSE = new constraints.PurposeModel([
+  ['tool_success', 0.85],
+  ['tool_error', 0.1],
+  ['idle', 0.05],
+])
+
 export interface SessionRecord {
   toolsUsed: string[]
   toolErrors: number
@@ -32,9 +40,28 @@ export class IdentityGuard {
   }
 
   private posiwidCheck(record: SessionRecord): boolean {
-    if (record.toolsUsed.length === 0 && record.userMessagesHandled > 1) return false
-    const total = record.toolErrors + record.toolSuccesses
-    if (total > 5 && record.toolErrors / total > 0.8) return false
+    const idle = record.toolsUsed.length === 0 ? Math.max(record.userMessagesHandled - 1, 0) * 10 : 0
+    const report = constraints.posiwidDivergence(
+      SESSION_PURPOSE,
+      { counts: [['tool_success', record.toolSuccesses], ['tool_error', record.toolErrors], ['idle', idle]] },
+      0.5, 6,
+    )
+    if (report.verdict === 'Insufficient') return true
+    // A `Contradicted` verdict always fails. Beyond that, two checks are explicit
+    // because the divergence verdict alone does not catch them:
+    //
+    //  - Idle dominance (no tools used across multiple messages): idle's 0.05 stated
+    //    share is above the 0.01 contradiction floor, so such a session only reads as
+    //    `Drifting`. Dominance (>50% of observed mass) is the right test here — any
+    //    idle-dominant session is the failure this guard exists to catch.
+    //  - The legacy "80% errors" rule. Error dominance is NOT that rule: dominance is
+    //    >50%, so a 4-error/2-success session (67% errors) would newly fail where it
+    //    passed before. The old threshold is therefore written out literally below
+    //    rather than approximated by `dominantObserved === 'tool_error'`.
+    if (report.verdict === 'Contradicted') return false
+    if (report.dominantObserved === 'idle') return false
+    const toolCalls = record.toolErrors + record.toolSuccesses
+    if (toolCalls > 5 && record.toolErrors / toolCalls > 0.8) return false
     return true
   }
 }
