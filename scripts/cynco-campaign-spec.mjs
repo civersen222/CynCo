@@ -22,6 +22,15 @@ export function loadCampaignSpec(path) {
     for (const g of w.gateIds) { if (seen.has(g)) throw new Error(`campaign spec gateId ${g} appears in two work items`); seen.add(g) }
   }
   if (!Array.isArray(spec.allow?.newFiles) || !Array.isArray(spec.allow?.edit)) throw new Error('campaign spec allow.newFiles and allow.edit must be arrays')
+  // claimedSurvivors (cynco-campaign.mjs) matches a sweep survivor by the
+  // prefix before the first `*`. An entry that STARTS with a glob has an empty
+  // prefix and claims nothing, so a survivor inside it reads as unclaimed and
+  // the campaign PASSes clean over it. Refuse the entry instead.
+  for (const [k, entries] of [['newFiles', spec.allow.newFiles], ['edit', spec.allow.edit]]) {
+    for (const e of entries) {
+      if (/^\*/.test(String(e).trim().split(/\s+/)[0] ?? '')) throw new Error(`campaign spec allow.${k} entry "${e}" starts with a glob — name the directory it lives in (a survivor is claimed by path prefix)`)
+    }
+  }
   // Optional: the mutation sweep's mutant cap (cynco-mutation-sweep.py --max,
   // default 25) and the branch `--sync` opens the PR against.
   if (spec.sweep !== undefined) {

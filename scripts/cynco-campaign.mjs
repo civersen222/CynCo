@@ -12,7 +12,7 @@
 // Runs under bun (it reaches into engine/*.ts through .js specifiers).
 import { resolve, join, basename, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { writeFileSync, readFileSync, existsSync, appendFileSync, unlinkSync } from 'node:fs'
+import { writeFileSync, readFileSync, existsSync, appendFileSync, unlinkSync, openSync, writeSync, closeSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { cyncoHome } from '../engine/paths.js'
 import { loadCampaignSpec, checkIdentity } from './cynco-campaign-spec.mjs'
@@ -137,10 +137,13 @@ export const defaultIo = {
   waitForDriver: async ({ pidFile, driverLog, timeoutMs, missionIdFrom = defaultIo.missionIdFrom, pollMs = 30_000 }) => {
     const t0 = Date.now()
     const idNow = () => { try { return missionIdFrom(driverLog) } catch { return null } }
-    const pid = Number(readFileSync(pidFile, 'utf8').trim())
-    const alive = () => { try { process.kill(pid, 0); return true } catch { return false } }
+    // The ledger line before the pid file: a driver that already wrote its
+    // row is gradeable whether or not its pid file survived, and a missing
+    // pid file is only a fault once the row is known to be absent.
     const first = idNow()
     if (first) return { exited: true, missionId: first }
+    const pid = Number(readFileSync(pidFile, 'utf8').trim())
+    const alive = () => { try { process.kill(pid, 0); return true } catch { return false } }
     // A driver that is already gone on the FIRST probe did not run an
     // eight-hour mission in zero seconds — the PID handoff is broken, and
     // believing it faults a wave that is in fact still running and still
@@ -311,7 +314,7 @@ export async function runWave(spec, state, io = defaultIo) {
   // own counter is only advanced after the record is appended, so hand decide
   // the count this wave makes rather than the one before it.
   const decision = decide({ grade, state: { ...s, waveCount: wave }, spec, commitsLanded: commits.length, row })
-  io.patchRow(missionId, { verified: grade.verified, ...(grade.sweep ? { mutationSweep: grade.sweep } : {}),
+  io.patchRow(missionId, { verified: grade.verified, ...(grade.sweep ? { mutationSweep: grade.sweep } : {}), sweepFault: grade.sweepFault ?? null,
     gate: { sha: grade.sha, gateSha256, terminator: grade.gate.terminator, fails: grade.gate.fails.map(f => f.line), passes: grade.gate.passes.length, priorRegressions: grade.gate.priorRegressions, suiteRegressions: grade.suite.regressions, harnessFault: grade.gate.harnessFault ?? grade.suite.harnessFault ?? null },
     posiwid: { divergence: grade.posiwid.divergence, verdict: grade.posiwid.verdict, dominantObserved: grade.posiwid.dominantObserved } })
 
@@ -355,8 +358,25 @@ const tryNotify = async (io, message) => {
 async function notifyOrQueue(io, s, message, decision) {
   const notified = await tryNotify(io, message)
   if (!notified) { s.pendingNotifications.push(decision); return false }
-  for (const n of s.pendingNotifications.splice(0)) await tryNotify(io, `(queued) ${n.kind} — ${n.why}`)
+  s.pendingNotifications = await drainQueued(s.pendingNotifications, (n) => tryNotify(io, `(queued) ${n.kind} — ${n.why}`))
   return true
+}
+
+/**
+ * Drain a notification queue into a local array and hand back what could not
+ * be sent. `splice(0)` used to empty the queue BEFORE the re-send, so a channel
+ * that came back for one message and dropped the next lost the queued verdicts
+ * for good — nothing recorded that they were never delivered.
+ */
+export async function drainQueued(queue, send) {
+  const pending = queue.splice(0)
+  const failed = []
+  for (const n of pending) {
+    let ok = false
+    try { ok = Boolean(await send(n)) } catch { ok = false }
+    if (!ok) failed.push(n)
+  }
+  return failed
 }
 
 /**
@@ -432,14 +452,24 @@ export async function adoptInFlight(spec, state, io = defaultIo) {
  */
 export function takeLock(dir) {
   const path = join(dir, 'runner.lock')
-  if (existsSync(path)) {
-    const pid = Number(readFileSync(path, 'utf8').trim())
+  // `wx` is the atomic claim: the open fails when the file exists, so two
+  // runners racing for one campaign cannot both write their pid and each read
+  // the other's as "mine". Two passes: the first may find a stale lock and
+  // remove it, the second claims — and if a third party claimed in between,
+  // the second pass reads THEIR live pid and refuses.
+  let pid = NaN
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const fd = openSync(path, 'wx')
+      try { writeSync(fd, String(process.pid)) } finally { closeSync(fd) }
+      return { ok: true, path, pid: process.pid }
+    } catch (e) { if (e?.code !== 'EEXIST') throw e }
+    try { pid = Number(readFileSync(path, 'utf8').trim()) } catch { pid = NaN }
     if (pidIsAlive(pid)) return { ok: false, path, pid }
-    console.log(`[campaign] removing a stale runner.lock (pid ${pid} is gone)`)
+    console.log(`[campaign] removing a stale runner.lock (pid ${Number.isNaN(pid) ? 'unreadable' : pid} is gone)`)
     try { unlinkSync(path) } catch {}
   }
-  writeFileSync(path, String(process.pid), 'utf8')
-  return { ok: true, path, pid: process.pid }
+  return { ok: false, path, pid }
 }
 
 export function releaseLock(dir) {
@@ -490,12 +520,14 @@ export async function main(argv) {
   const identity = checkIdentity(spec)
   if (!identity.ok) { console.error('[campaign] IDENTITY VIOLATION:\n  ' + identity.problems.join('\n  ')); return 2 }
   const state = new CampaignState(join(cyncoHome(), 'campaigns', spec.id)).load()
-  const lock = takeLock(state.dir)
-  if (!lock.ok) { console.error(`[campaign] another runner holds ${lock.path} (pid ${lock.pid}) — one runner per campaign`); return 2 }
-  process.on('exit', () => releaseLock(state.dir))
   const flag = (n) => argv.indexOf(n)
-  // --resume is the default and always has been: the state directory IS the
-  // resume point. The flag is accepted so an operator can say so out loud.
+  // The operator's verbs come BEFORE the lock. A campaign runs for days and
+  // its runner holds runner.lock the whole time; a proposal decision that had
+  // to wait for the wave to end would arrive after the wave that needed it.
+  // Neither verb dispatches, so neither needs the one-runner rule: a decision
+  // is merged into state.json by CampaignState.save (the decision on disk
+  // wins over the runner's in-memory `pending`), and --sync drains the ntfy
+  // queue only when no runner is live.
   if (flag('--approve-proposal') !== -1 || flag('--reject-proposal') !== -1) {
     const approve = flag('--approve-proposal') !== -1; const name = argv[(approve ? flag('--approve-proposal') : flag('--reject-proposal')) + 1]
     const p = state.state.proposals.find(x => x.name === name && x.status === 'pending'); if (!p) { console.error(`no pending proposal ${name}`); return 2 }
@@ -503,7 +535,16 @@ export async function main(argv) {
     if (approve && p.name === 'ideation/brief') state.state.ideationAuthority = Math.min(p.newValue, p.bounds.max)
     state.save(); console.log(`[campaign] proposal ${name} ${p.status}`); return 0
   }
-  if (flag('--sync') !== -1) return sync(spec, state)
+  if (flag('--sync') !== -1) {
+    const held = takeLock(state.dir)
+    if (held.ok) process.on('exit', () => releaseLock(state.dir))
+    return sync(spec, state, { drain: held.ok, holder: held.pid })
+  }
+  const lock = takeLock(state.dir)
+  if (!lock.ok) { console.error(`[campaign] another runner holds ${lock.path} (pid ${lock.pid}) — one runner per campaign`); return 2 }
+  process.on('exit', () => releaseLock(state.dir))
+  // --resume is the default and always has been: the state directory IS the
+  // resume point. The flag is accepted so an operator can say so out loud.
   // A wave this runner dispatched and never graded is still on the GPU as far
   // as anything here knows. Dispatching another one would put two missions on
   // one card; the operator says when it is over, and --adopt-inflight is how.
@@ -558,7 +599,7 @@ export async function main(argv) {
   }
 }
 
-async function sync(spec, state) {
+async function sync(spec, state, { drain = true, holder = null } = {}) {
   const branch = `campaign/${spec.id}`
   const reach = spawnSync('git', ['ls-remote', '--exit-code', '--heads', 'origin', 'main'], { encoding: 'utf8', timeout: 20_000 })
   if (reach.status !== 0) { console.log('[campaign] no network — nothing synced; pending branch ' + branch); return 0 }
@@ -573,7 +614,11 @@ async function sync(spec, state) {
   const existing = spawnSync('gh', ['pr', 'view', branch, '--json', 'url', '-q', '.url'], { encoding: 'utf8' })
   if (existing.status !== 0) spawnSync('gh', ['pr', 'create', '--head', branch, '--base', prBase, '--title', `${spec.id.toUpperCase()} campaign verdicts (runner)`, '--body', `Unattended wave verdicts written by scripts/cynco-campaign.mjs. Merge on GitHub.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)`], { stdio: 'inherit' })
   else console.log(`[campaign] PR exists: ${existing.stdout.trim()}`)
-  for (const n of state.state.pendingNotifications.splice(0)) await notify(`${spec.id}: (queued) ${n.kind} — ${n.why}`)
+  if (!drain) { console.log(`[campaign] a runner (pid ${holder}) is live — its queued notifications drain at its next verdict, not here`); return 0 }
+  const before = state.state.pendingNotifications.length
+  state.state.pendingNotifications = await drainQueued(state.state.pendingNotifications, (n) => notify(`${spec.id}: (queued) ${n.kind} — ${n.why}`))
+  const left = state.state.pendingNotifications.length
+  if (before) console.log(`[campaign] queued notifications: ${before - left} sent, ${left} still queued`)
   state.save()
   return 0
 }

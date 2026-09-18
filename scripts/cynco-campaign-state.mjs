@@ -29,9 +29,32 @@ export class CampaignState {
   }
   save() {
     mkdirSync(this.dir, { recursive: true })
+    this.adoptExternalDecisions()
     const tmp = `${this.statePath}.tmp`
     writeFileSync(tmp, JSON.stringify(this.state, null, 2), 'utf8')
     renameSync(tmp, this.statePath)
+  }
+  /**
+   * `--approve-proposal` / `--reject-proposal` run as a SECOND process while the
+   * runner holds this object in memory for days. The runner's next save would
+   * write its stale `pending` over the operator's decision — so before every
+   * write, a decision on disk wins over a pending proposal in memory, and an
+   * approval carries its authority with it. Nothing else is merged: the runner
+   * is the only writer of every other field.
+   */
+  adoptExternalDecisions() {
+    if (!existsSync(this.statePath)) return
+    let disk
+    try { disk = JSON.parse(readFileSync(this.statePath, 'utf8')) } catch { return }
+    for (const d of disk?.proposals ?? []) {
+      if (d.status === 'pending') continue
+      const mine = (this.state.proposals ?? []).find(p => p.name === d.name && p.proposedAt === d.proposedAt)
+      if (!mine || mine.status !== 'pending') continue
+      mine.status = d.status; mine.decidedAt = d.decidedAt ?? null
+      if (d.status === 'approved' && typeof disk.ideationAuthority === 'number') {
+        this.state.ideationAuthority = Math.max(this.state.ideationAuthority ?? 0, disk.ideationAuthority)
+      }
+    }
   }
   appendWave(record) { mkdirSync(this.dir, { recursive: true }); appendFileSync(this.wavesPath, JSON.stringify(record) + '\n') }
   /**

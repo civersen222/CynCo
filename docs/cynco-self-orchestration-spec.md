@@ -150,7 +150,15 @@ sealed instrument. Every wave record and the ledger `gate` block carry the
 `gateSha256` the wave was graded with.
 
 **One runner, one wave.** `~/.cynco/campaigns/<id>/runner.lock` holds the
-runner's pid (a stale lock whose pid is gone is removed with a log line), and
+runner's pid, claimed atomically (`open` with `wx`; a stale lock whose pid is
+gone is removed with a log line, an unreadable one likewise). The operator's
+verbs run WITHOUT the lock, because a campaign holds it for days:
+`--approve-proposal` / `--reject-proposal` write their decision and
+`CampaignState.save` merges it into the runner's next save (the decision on
+disk wins over the runner's in-memory `pending`, and an approval carries its
+authority); `--sync` pushes and opens the PR regardless, and drains the queued
+ntfy notifications only when no runner is live (otherwise they drain at the
+next verdict). A queued notification that still cannot be sent stays queued.
 `state.inFlight` is written the moment `dispatch` returns and cleared when the
 wave record is appended. A later invocation that finds `inFlight` set refuses
 to start and names the driver log; `--adopt-inflight` resolves it — the ledger
