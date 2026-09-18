@@ -72,7 +72,8 @@ export function buildTriples({ rows, campaigns }) {
   const seen = new Set()
 
   const addDenials = (row, ctx) => {
-    for (const d of denialRecords(row, ctx)) {
+    const denials = denialRecords(row, ctx)
+    for (const d of denials) {
       records.push(d)
       summary.counts.denial += 1
       const s = summary.denials[d.invariant] ?? (summary.denials[d.invariant] = { denials: 0, complied: 0, changed: 0 })
@@ -84,7 +85,7 @@ export function buildTriples({ rows, campaigns }) {
     const total = row.toolStats?.total ?? 0
     const denialCount = inv.denialCount ?? inv.denials?.length ?? 0
     const calls = Math.max(0, total - denialCount)
-    const compliedOf = (k) => denialRecords(row, ctx).filter(d => d.invariant === k && d.complied).reduce((a, d) => a + d.count, 0)
+    const compliedOf = (k) => denials.filter(d => d.invariant === k && d.complied).reduce((a, d) => a + d.count, 0)
     const edits = row.toolStats?.byClass?.sourceEdit ?? 0, commits = row.toolStats?.commits ?? 0
     summary.quiet['edit-gap'].calls += calls; summary.quiet['edit-gap'].complied += Math.max(0, edits + commits - compliedOf('edit-gap'))
     summary.quiet['commit-gap'].calls += calls; summary.quiet['commit-gap'].complied += Math.max(0, commits - compliedOf('commit-gap'))
@@ -136,9 +137,14 @@ export function readCampaigns(dir = join(cyncoHome(), 'campaigns')) {
   for (const id of readdirSync(dir)) {
     const statePath = join(dir, id, 'state.json'), wavesPath = join(dir, id, 'waves.jsonl')
     if (!existsSync(statePath)) continue
-    let state; try { state = JSON.parse(readFileSync(statePath, 'utf8')) } catch { continue }
+    let state
+    try { state = JSON.parse(readFileSync(statePath, 'utf8')) }
+    catch (e) { console.error(`[triples] skipping campaign ${id}: state.json unreadable — ${e.message}`); continue }
     const waves = existsSync(wavesPath)
-      ? readFileSync(wavesPath, 'utf8').split('\n').filter(Boolean).flatMap(l => { try { return [JSON.parse(l)] } catch { return [] } })
+      ? readFileSync(wavesPath, 'utf8').split('\n').filter(Boolean).flatMap((l, i) => {
+          try { return [JSON.parse(l)] }
+          catch (e) { console.error(`[triples] ${id}/waves.jsonl line ${i + 1} is not JSON, skipped — ${e.message}`); return [] }
+        })
       : []
     out.push({ id, state, waves })
   }

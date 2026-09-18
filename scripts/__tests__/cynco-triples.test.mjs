@@ -1,8 +1,8 @@
-import { describe, it, expect } from 'vitest'
-import { mkdtempSync, readFileSync, existsSync } from 'node:fs'
+import { describe, it, expect, vi } from 'vitest'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { DESIRED, complied, changed, denialRecords, buildTriples, exportTriples } from '../cynco-triples.mjs'
+import { DESIRED, complied, changed, denialRecords, buildTriples, exportTriples, readCampaigns } from '../cynco-triples.mjs'
 
 const row = (over = {}) => ({
   missionId: 'c8-wave2-1', outcome: 'landed', verified: true, exitReason: 'engine_closed_the_turn', durationS: 7200,
@@ -115,6 +115,26 @@ describe('buildTriples', () => {
     const { records } = buildTriples({ rows: [row({ missionId: 'c8-wave1-1' }), row({ missionId: 'c8-wave3-1' })], campaigns: [campaign([w1, fault, w3])] })
     const r3 = records.find(r => r.kind === 'wave' && r.wave === 3)
     expect(r3.failsBefore).toEqual(['B', 'C']); expect(r3.linesFixed).toBe(1)
+  })
+})
+
+describe('readCampaigns', () => {
+  it('logs and skips a corrupt state.json or a malformed waves.jsonl line, never swallowing silently', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'campaigns-'))
+    mkdirSync(join(dir, 'bad'), { recursive: true })
+    writeFileSync(join(dir, 'bad', 'state.json'), '{truncated', 'utf8')
+    mkdirSync(join(dir, 'good'), { recursive: true })
+    writeFileSync(join(dir, 'good', 'state.json'), '{}', 'utf8')
+    writeFileSync(join(dir, 'good', 'waves.jsonl'), '{"wave":1}\nnot json\n', 'utf8')
+
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const campaigns = readCampaigns(dir)
+    expect(campaigns.map(c => c.id)).toEqual(['good'])
+    expect(campaigns[0].waves).toEqual([{ wave: 1 }])
+    expect(spy).toHaveBeenCalledTimes(2)
+    expect(spy.mock.calls.some(([msg]) => msg.includes('bad'))).toBe(true)
+    expect(spy.mock.calls.some(([msg]) => msg.includes('waves.jsonl line 2'))).toBe(true)
+    spy.mockRestore()
   })
 })
 
