@@ -297,7 +297,24 @@ export type GovernanceStatusEvent = {
     trace: Array<{ step: number; violations: string[]; from: unknown; to: unknown; strategy: string; restoredAfter: number | null }>
     margin: number
   } | null
+  /** POSIWID, live (vsm/constraintChecks.ts checkToolClassAlignment): the
+   *  session's stated purpose model against the distribution of what its
+   *  executed tool calls actually were. Data, not authority — it lands on the
+   *  ledger row as `posiwidLive` and is validated there before anything
+   *  branches on it. null until the first call executes. */
+  posiwidLive?: { divergence: number; verdict: string; dominantStated: string; dominantObserved: string; support: number } | null
   suggestion: string | null
+}
+
+/** Variety-driven control signals (vsm/controlSignals.ts), one frame per
+ *  iteration. Consumed by the 9161 dashboard and the ledger collector
+ *  (scripts/cynco-ledger.mjs `controlSignals`); the TUI does not render it. */
+export type ControlSignalsEvent = {
+  type: 'control.signals'
+  temperatureAdjust: number
+  temperature: number
+  bestOfNBudget: number
+  widenToolSet: boolean
 }
 
 /** P4.3 (STATE doc Phase 4(e)): session-level regulator fidelity, emitted once
@@ -311,6 +328,10 @@ export type GovernanceSessionFidelityEvent = {
     finalTaskError: number | null
     contractReplacements: number
   } | null
+  /** IdentityGuard verdict at the same instant (vsm/identityGuard.ts).
+   *  `passed` decides the session outcome; `posiwidPass` is recorded only —
+   *  it earns authority through the ledger, not by assertion. */
+  identityGuard?: { passed: boolean; posiwidPass: boolean; violations: string[]; details: string[] } | null
 }
 
 /** F33: the trajectory recorder has started a task, and this is the id it will
@@ -341,7 +362,10 @@ export type GovernanceRecommendationEvent = {
  *  user-visible; lower severities are log-only on the TUI side. */
 export type GovernanceAlertEvent = {
   type: 'governance.alert'
-  severity: 'low' | 'medium' | 'high' | 'critical'
+  /** `warn`: a log-only advisory (mission invariants, read-loop hygiene,
+   *  POSIWID). Deliberately below `critical`, which halts the daemon's
+   *  one-shot path (engine/daemon/oneShot.ts). */
+  severity: 'low' | 'medium' | 'high' | 'critical' | 'warn'
   message: string
   source: string
 }
@@ -544,6 +568,7 @@ export type EngineEvent =
   | MemoryWrittenEvent
   | WorkflowStatusEvent
   | GovernanceStatusEvent
+  | ControlSignalsEvent
   | SessionTokenStatsEvent
   | GovernanceSessionFidelityEvent
   | TrajectoryTaskStartedEvent

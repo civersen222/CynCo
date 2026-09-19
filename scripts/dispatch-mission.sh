@@ -222,6 +222,16 @@ CYNCO_TEARDOWN_ENGINE=1 \
     "$BRIEF" "$MARKER" "$MISSION_CWD" "$TIMEOUT_S" "${CHECK_CMD:-}" ${PROBE_CMD:+"$PROBE_CMD"} \
   > "$DRIVER_LOG" 2>&1 &
 DRIVER_PID=$!
+# $! under Git Bash is an MSYS pseudo-PID: real to this shell, invisible to any
+# process that is not itself an MSYS program. The campaign runner waits on this
+# file from bun, whose process.kill() goes straight to OpenProcess, so handing
+# it the pseudo-PID makes an 8-hour mission look like it exited in zero seconds.
+# /proc/<pid>/winpid is the Windows PID both sides can see.
+if [ -n "${DRIVER_PID_FILE:-}" ]; then
+  DRIVER_WINPID=$(cat "/proc/$DRIVER_PID/winpid" 2>/dev/null || true)
+  echo "${DRIVER_WINPID:-$DRIVER_PID}" > "$DRIVER_PID_FILE"
+  echo "[dispatch] driver pid ${DRIVER_WINPID:-$DRIVER_PID} → $DRIVER_PID_FILE"
+fi
 echo "[dispatch] dispatched — tail -f $DRIVER_LOG"
 
 # --- the dashboard outlives the mission ------------------------------------
@@ -235,15 +245,19 @@ echo "[dispatch] dispatched — tail -f $DRIVER_LOG"
 # so the same URL keeps answering. The next dispatch's kill sweep removes it.
 #
 # A subshell cannot `wait` on a sibling it did not spawn, so poll the pid.
-IDLE_LOG=${IDLE_LOG:-/c/tmp/engine_idle_after_${STAMP}.log}
-(
-  while kill -0 "$DRIVER_PID" 2>/dev/null; do sleep 20; done
-  sleep 10
-  if curl -s -o /dev/null --max-time 3 http://127.0.0.1:9161/ 2>/dev/null; then
-    exit 0   # something already answers (a hand-started engine, or the next dispatch)
-  fi
-  LOCALCODE_EMBED_MODEL="${LOCALCODE_EMBED_MODEL:-nomic-embed-text}" bun engine/main.ts > "$IDLE_LOG" 2>&1 &
-  echo "[dispatch] mission over — idle engine booted so the dashboard on 9161 keeps answering (log $IDLE_LOG)" >> "$DRIVER_LOG"
-) > /dev/null 2>&1 &
-disown 2>/dev/null || true
-echo "[dispatch] after the driver exits, an idle engine will be booted so the dashboard keeps answering (log $IDLE_LOG)"
+if [ -z "${CYNCO_SKIP_IDLE_ENGINE:-}" ]; then
+  IDLE_LOG=${IDLE_LOG:-/c/tmp/engine_idle_after_${STAMP}.log}
+  (
+    while kill -0 "$DRIVER_PID" 2>/dev/null; do sleep 20; done
+    sleep 10
+    if curl -s -o /dev/null --max-time 3 http://127.0.0.1:9161/ 2>/dev/null; then
+      exit 0   # something already answers (a hand-started engine, or the next dispatch)
+    fi
+    LOCALCODE_EMBED_MODEL="${LOCALCODE_EMBED_MODEL:-nomic-embed-text}" bun engine/main.ts > "$IDLE_LOG" 2>&1 &
+    echo "[dispatch] mission over — idle engine booted so the dashboard on 9161 keeps answering (log $IDLE_LOG)" >> "$DRIVER_LOG"
+  ) > /dev/null 2>&1 &
+  disown 2>/dev/null || true
+  echo "[dispatch] after the driver exits, an idle engine will be booted so the dashboard keeps answering (log $IDLE_LOG)"
+else
+  echo "[dispatch] CYNCO_SKIP_IDLE_ENGINE set — the caller owns the dashboard engine after this run"
+fi

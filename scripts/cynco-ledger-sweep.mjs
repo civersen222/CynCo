@@ -37,10 +37,10 @@
 // unmet claim. Both count as MEASURED — that is the point, since 151 rows sat
 // unlabeled waiting for a sweep nobody was going to hand-author.
 
-import { writeFileSync, renameSync } from 'fs'
 import { resolve } from 'path'
 import { fileURLToPath } from 'url'
 import { readLedger } from './cynco-ledger-shards.mjs'
+import { patchLedgerRow } from './cynco-ledger-patch.mjs'
 // The predicate that actually labels the ledger. Imported, not reimplemented,
 // so the line this script prints cannot drift from the line the scorer reads.
 import { labelOf } from './cynco-signal-validation.mjs'
@@ -186,12 +186,7 @@ export function main(argv, dir = undefined) {
   // Rewrite only the shard the edited record lives in. Rewriting all of them
   // would rewrite ~60 MB to change one field, and every byte rewritten is a
   // byte that can come back different.
-  const shard = rec.__shard
-  const out = rows.filter((r) => r.__shard === shard)
-    .map((r) => JSON.stringify(r)).join('\n') + '\n'
-  const tmp = shard + '.tmp'
-  writeFileSync(tmp, out)
-  renameSync(tmp, shard)
+  const { shard } = patchLedgerRow(rec.missionId, { mutationSweep: rec.mutationSweep }, dir)
   console.log(`written → ${shard}`)
   return 0
 }

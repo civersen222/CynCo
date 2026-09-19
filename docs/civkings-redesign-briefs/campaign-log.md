@@ -1561,3 +1561,105 @@ Calibration at BASE (seed 42): MISS 14, all by absence, zero gate errors —
 the real shape is `{"end_turn": True}`). Perturbed: MISS 11, three
 claim-shaped lines flip, no discriminator flips.
 
+From wave 2 the loop is run by `scripts/cynco-campaign.mjs` (calibrate →
+generate → dispatch → wait → grade → verdict → decide, unattended). Calibration
+on 2026-09-17 back-ported `CYNCO_GATE_REPO` to gates c1–c6/6b — they had graded
+the LIVE tree while c8/c7 graded the BASE export, so the prior-campaign chain was
+mixing two trees during calibration — and gave `perturb_c8.py` a machine-readable
+`EXPECT-FLIP`/`MUST-FAIL` header (its prose header was wrong: the stub also flips
+`C8.1a` and `C8.2a`). With `CYNCO_GATE_REPO` unset — every real mission — the
+back-ported gates behave byte-identically, but their sha256 prefixes moved:
+
+| file | before | after | change |
+|---|---|---|---|
+| `c8/perturb_c8.py` | `67d0ab6b06846037` | `9d6cb7c2a0b46f79` | machine header + `CYNCO_GATE_REPO` |
+| `c6/gate_c6.py` | `38c7f8595fc34874` | `e9c942b9b610b53a` | `CYNCO_GATE_REPO` back-port |
+| `6b/gate_6b.py` | `952359256c7be42c` | `09992f65417d37df` | `CYNCO_GATE_REPO` back-port |
+| `c5/gate_c5.py` | `0c4e6b30c2178a22` | `c27e7bd63f9003be` | `CYNCO_GATE_REPO` back-port |
+| `c4/gate_c4.py` | `05ea014c667311c7` | `cb6eab6ba6df74f1` | back-port + 2 path sites |
+| `c3/gate_c3.py` | `9c0a6fbd4027a7c2` | `b7386148a77ad32c` | `CYNCO_GATE_REPO` back-port |
+| `c2/gate_c2.py` | `1f6b4bc6ca740b5b` | `a4e990a7ba2fef9d` | `CYNCO_GATE_REPO` back-port |
+| `c1/gate_c1.py` | `f2dd97feb5db182f` | `5d16f3f0e1c0507d` | `CYNCO_GATE_REPO` back-port |
+| `c7/gate_c7.py` | `d8d3d9458101e838` | `d8d3d9458101e838` | **untouched** (already correct) |
+| `c8/gate_c8.py` | `f2e8d3b4878953d1` | `f2e8d3b4878953d1` | **untouched** |
+
+The re-run calibration at BASE `1d03308` is `{"ok":true,"problems":[],"fails":14}`
+with a two-line suite baseline (one standing failure). Wave 1 was graded
+unattended by the runner; wave 2 was dispatched **and** graded by it (missionId
+`c8-wave2-1789649392765`).
+
+**POSIWID shares recalibrated (2026-09-17, plan-3 final review).** Both waves
+read `POSIWID Consistent` against `posiwid: { sourceEditShare: 0.15, commitEvery:
+150 }` — shares copied from the engine's pacing caps rather than chosen as a
+declaration of purpose. Wave 1 spent 828 of 931 calls inspecting, went 193 calls
+without a source edit and 320 without a commit, and still read Consistent, so at
+those shares the reading could not flag the pacing the invariants exist to
+prevent. Re-measured on wave 1's own tool mix (`c8-wave1-1788634174399`,
+`byClass` sourceEdit 86 + fileWrite 17, commits 5, inspect 828):
+
+| stated shares | divergence | verdict |
+|---|---|---|
+| 0.15 / 150 | 0.0085 | Consistent |
+| 0.25 / 60 | 0.0716 | Consistent |
+| 0.30 / 60 | 0.1139 | Drifting |
+
+`c8.campaign.json` now states `{ "sourceEditShare": 0.30, "commitEvery": 60 }` —
+the first setting that flags C8-wave-1-style pacing against the 0.1 drift
+threshold. This is a calibration of the STATED purpose, not a re-grade: the wave
+1 and wave 2 entries below stand exactly as they were measured, and the new
+shares bind from wave 3 on.
+
+
+## C8 wave 1 — c8-wave1-1788634174399 (graded 2026-09-17, BASE 1d03308edb7684b61319a55f8a122deb9840ab5a → HEAD 1bc0f8c48754e61c5f78f77ab0911b85cb3262b7)
+
+- 931 tool calls, exitReason timeout (28824s = 8.01h), 5 commit(s). maxCallsWithoutSourceEdit 193, maxCallsWithoutCommit 320. CodeIndex 8/931. graderProbes 1/931. Invariants: none (engine without mission invariants).
+- **Sealed gate at 1bc0f8c48754e61c5f78f77ab0911b85cb3262b7: MISS (10 fails).** Prior-campaign regressions: 4.
+  - `C8.1a.tiers-pressable: FAIL tiers drawn+pressed=[] errors=['continent: no action (state=RegionState.ENABLED)', 'region: no action (state=RegionState.ENABLED)', 'parish: no action (state=RegionState.ENABLED)'] zoom_controls=['continent', 'parish', 'region']`
+  - `C8.1b.tiers-differ: FAIL map pixel difference between tiers={} floor=0.05`
+  - `C8.1c.tier-legends: FAIL parish legend has ('city', 'regiment', 'strike')? [False, False, False] continent legend has ('capital',)? [False]`
+  - `C8.5.palette.House: FAIL pixels within 24/channel of a pinned ink at t40 = 0.917 (floor 0.95)`
+  - `C8.5.palette.Powers: FAIL pixels within 24/channel of a pinned ink at t40 = 0.933 (floor 0.95)`
+  - `C8.9: FAIL 4 prior-campaign regressions`
+  - PASS: C8.2a.portraits-drawn, C8.2b.portraits-distinct-and-stable, C8.2c.portrait-pool-licensed, C8.3a.transition-frames, C8.3b.transitions-wired, C8.4a.act-beds-on-disk, C8.4b.bed-follows-the-act, C8.4c.beds-honour-mute, C8.4d.beds-licensed, C8.5.palette.Atlas, C8.5.river-reserved
+- Suite gate FAIL: REGRESSED 6 (gilded/tests/test_c6_contract.py::test_no_text_overlap, gilded/tests/test_i6i_palette.py::test_atlas_view_reexports, gilded/tests/test_i6i_palette.py::test_palette_lint_no_literal_rgb, gilded/tests/test_ui_atlas_layout.py::test_legend_colours_distinct, gilded/tests/test_ui_atlas_layout.py::test_render_does_not_mutate_game_state, gilded/tests/test_ui_atlas_layout.py::test_render_read_only), REPAIRED 1.
+- Derived sweep: UNMEASURED (no diff or the sweep refused).
+- POSIWID Consistent (divergence 0.008, dominant inspect).
+- Ledger: verified false; mutationSweep null.
+
+Economics after this wave: VERDICT: frontier spent $4122.84 SUPERVISING (development $1682.91 and unattributed $2.71 are excluded — building LocalCode is not oversight). The supervised generation would have cost ~$5158.35 on the API ($2185.52 priced from measured tokens, $2972.84 still estimated) and ran locally for ~$20.13 of power. supervision ratio: $1 of frontier verify oversees ~$1.25 of displaced generation.
+
+Verdict: **STOP (budget)** — 1 wave(s) spent; 6 line(s) still FAIL
+
+## C8 wave 2 — c8-wave2-1789649392765 (graded 2026-09-17, BASE 1bc0f8c48754e61c5f78f77ab0911b85cb3262b7 → HEAD 51480495c30beaa7ce76b7da6b3d54046e93192f)
+
+- 325 tool calls, exitReason engine_closed_the_turn (24147s = 6.71h), 5 commit(s). maxCallsWithoutSourceEdit 41, maxCallsWithoutCommit 87. CodeIndex 7/325. graderProbes 0/325. Invariants: engine denied 0 call(s) (edit-gap 0, commit-gap 0, revert 0), 0 revert refusal(s), 10 CodeIndex-assisted Grep(s).
+- Bash by effect: read 23, write 15, run 95, commit 3, revert 0, other 4 (sum 140 vs byName.Bash 140 — agree).
+- **Sealed gate at 51480495c30beaa7ce76b7da6b3d54046e93192f: MISS (3 fails).** Prior-campaign regressions: 0.
+  - `C8.1a.tiers-pressable: FAIL tiers drawn+pressed=['continent'] errors=['region: no action (state=RegionState.ENABLED)', 'parish: no action (state=RegionState.ENABLED)'] zoom_controls=['continent', 'parish', 'region']`
+  - `C8.1b.tiers-differ: FAIL map pixel difference between tiers={} floor=0.05`
+  - `C8.1c.tier-legends: FAIL parish legend has ('city', 'regiment', 'strike')? [False, False, False] continent legend has ('capital',)? [True]`
+  - PASS: C8.2a.portraits-drawn, C8.2b.portraits-distinct-and-stable, C8.2c.portrait-pool-licensed, C8.3a.transition-frames, C8.3b.transitions-wired, C8.4a.act-beds-on-disk, C8.4b.bed-follows-the-act, C8.4c.beds-honour-mute, C8.4d.beds-licensed, C8.5.palette.House, C8.5.palette.Powers, C8.5.palette.Atlas, C8.5.river-reserved, C8.9
+- Suite gate PASS: REGRESSED 0, REPAIRED 1.
+- Derived sweep 1/25; survivors: gilded/ui/app.py:322:cmp->NotEq, gilded/ui/atlas_view.py:451:bin->Sub, gilded/ui/atlas_view.py:459:bin->Sub#1, gilded/ui/atlas_view.py:459:bin->Sub#2, gilded/ui/atlas_view.py:459:const->3, gilded/ui/atlas_view.py:459:const->5, gilded/ui/atlas_view.py:460:bin->Sub#5, gilded/ui/atlas_view.py:460:bin->Sub#6, gilded/ui/atlas_view.py:460:const->21, gilded/ui/atlas_view.py:460:const->3, gilded/ui/atlas_view.py:460:const->4, gilded/ui/atlas_view.py:464:bin->Add, gilded/ui/atlas_view.py:464:bin->Sub#11, gilded/ui/atlas_view.py:464:bin->Sub#12, gilded/ui/atlas_view.py:464:const->15, gilded/ui/atlas_view.py:464:const->3, gilded/ui/atlas_view.py:464:const->5#15, gilded/ui/atlas_view.py:464:const->5#16, gilded/ui/atlas_view.py:465:bin->Sub#17, gilded/ui/atlas_view.py:465:bin->Sub#18, gilded/ui/atlas_view.py:465:const->2, gilded/ui/atlas_view.py:465:const->25, gilded/ui/atlas_view.py:572:cmp->NotEq, gilded/ui/atlas_view.py:586:const->10.
+- POSIWID Consistent (divergence 0.005, dominant inspect).
+- Ledger: verified false; mutationSweep recorded (derived).
+
+Economics after this wave: VERDICT: frontier spent $4179.79 SUPERVISING (development $1682.91 and unattributed $2.71 are excluded — building LocalCode is not oversight). The supervised generation would have cost ~$5200.38 on the API ($2227.54 priced from measured tokens, $2972.84 still estimated) and ran locally for ~$20.73 of power. supervision ratio: $1 of frontier verify oversees ~$1.24 of displaced generation.
+
+Verdict: **STOP (budget)** — 2 wave(s) spent; 3 line(s) still FAIL
+
+## C8 wave 3 — c8-wave3-1789772986804 (graded 2026-09-19, BASE 51480495c30beaa7ce76b7da6b3d54046e93192f → HEAD e9366f37e6f9f0d71e2b0e6584a936d458ec25d3)
+
+- 35 tool calls, exitReason engine_closed_the_turn (2345s = 0.65h), 2 commit(s). maxCallsWithoutSourceEdit 19, maxCallsWithoutCommit 28. CodeIndex 5/35. graderProbes 0/35. Invariants: engine denied 0 call(s) (edit-gap 0, commit-gap 0, revert 0), 0 revert refusal(s), 0 CodeIndex-assisted Grep(s).
+- Bash by effect: read 2, write 0, run 9, commit 0, revert 0, other 2 (sum 13 vs byName.Bash 13 — agree).
+- **Sealed gate at e9366f37e6f9f0d71e2b0e6584a936d458ec25d3: PASS (0 fails).** Prior-campaign regressions: 0.
+  - PASS: C8.1a.tiers-pressable, C8.1b.tiers-differ, C8.1c.tier-legends, C8.2a.portraits-drawn, C8.2b.portraits-distinct-and-stable, C8.2c.portrait-pool-licensed, C8.3a.transition-frames, C8.3b.transitions-wired, C8.4a.act-beds-on-disk, C8.4b.bed-follows-the-act, C8.4c.beds-honour-mute, C8.4d.beds-licensed, C8.5.palette.House, C8.5.palette.Powers, C8.5.palette.Atlas, C8.5.river-reserved, C8.9
+- Suite gate PASS: REGRESSED 0, REPAIRED 1.
+- Derived sweep: UNMEASURED — sweep refused (exit 2).
+- POSIWID Insufficient (divergence 0.208, dominant inspect).
+- S4 ideation (authority 0): 3 hypothesis/es; followed=true.
+- Ledger: verified true; mutationSweep null.
+
+Economics after this wave: VERDICT: frontier spent $4295.55 SUPERVISING (development $1692.01 and unattributed $2.71 are excluded — building LocalCode is not oversight). The supervised generation would have cost ~$5203.58 on the API ($2230.74 priced from measured tokens, $2972.84 still estimated) and ran locally for ~$20.79 of power. supervision ratio: $1 of frontier verify oversees ~$1.21 of displaced generation.
+
+Verdict: **CAMPAIGN PASS** — sealed gate PASS, suite gate PASS, sweep unmeasured

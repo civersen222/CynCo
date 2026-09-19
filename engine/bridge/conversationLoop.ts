@@ -58,7 +58,8 @@ import { getJournal } from '../training/decisionJournal.js'
 import { makeJournalEntry } from '../training/types.js'
 import { buildConceptTableForCwd } from '../vsm/conceptTable.js'
 import { evaluateGrounding, extractAddedText, extractTargetPaths } from '../vsm/groundingTrigger.js'
-import { MissionInvariants, parseInvariantCaps } from '../vsm/missionInvariants.js'
+import { MissionInvariants, parseInvariantCaps, classifyCall } from '../vsm/missionInvariants.js'
+import type { GuardResult } from '../vsm/identityGuard.js'
 import { isIdentifierPattern, noteCodeIndexUse } from '../tools/toolHints.js'
 import { ReadLoopGate, rearmsGate, signature as readSignature } from '../vsm/readLoopGate.js'
 import { ToolDivergenceDetector } from '../brain/toolDivergence.js'
@@ -392,6 +393,17 @@ export class ConversationLoop {
    */
   private recentToolOutcomes: { tool: string; success: boolean }[] = []
   private toolFailureCounts: Map<string, number> = new Map()
+  /**
+   * Session-long tool accounting for the live POSIWID reading and the
+   * IdentityGuard: every call by class (`classifyCall`) and how many counted
+   * as failures, kept at the same sites `accountInvariants` uses (every
+   * denial path and the executed path). The total is `toolCallsTotal`, the
+   * dashboard gauge's own counter. `toolHistory` cannot serve any of this —
+   * it is a 50-entry window. Session-long like the gauge; never reset.
+   */
+  private toolClassCounts: Map<string, number> = new Map()
+  private toolErrorsTotal = 0
+  private lastPosiwidVerdict: string | null = null
   private consecutiveNudges = 0
   /**
    * Nudges issued since the model last called a tool. The behavioural half of
@@ -1019,7 +1031,7 @@ export class ConversationLoop {
           severity: 'warn',
           message: '[invariant] invariants block malformed — this unattended run has NO mission invariants',
           source: 'mission-invariants',
-        } as any)
+        })
       }
     }
 
@@ -1691,7 +1703,6 @@ export class ConversationLoop {
     try {
         const pop = this.governance.getPopulation()
         const sh = this.governance.getSessionHomeostat()
-        const guard = this.governance.getIdentityGuard()
         const verifier = this.governance.getAutopoiesisVerifier()
 
         if (pop && sh) {
@@ -1743,16 +1754,7 @@ export class ConversationLoop {
             console.log(`[vsm] S4 override: composite=${lastComposite.toFixed(1)} < bound=${s4Bound!.bounds[0]} → non-viable`)
           }
 
-          const guardResult = guard.evaluate({
-            toolsUsed: [...new Set(this.toolHistory)],
-            toolErrors: this.toolHistory.length - this.toolHistory.filter(() => true).length,
-            toolSuccesses: this.toolHistory.length,
-            userMessagesHandled: this.messages.filter(m => m.role === 'user').length,
-            governanceSignalsInjected: 0,
-            killSwitchTriggered: false,
-            parametersModified: [],
-            metaBoundsWidened: false,
-          })
+          const guardResult = this.evaluateIdentityGuard()
 
           const finalOutcome = guardResult.passed ? outcome : 'non-viable'
 
@@ -1858,6 +1860,58 @@ export class ConversationLoop {
 
     this.processing = false
     this.abortController = null
+  }
+
+  /**
+   * The IdentityGuard's session record, from the session-long counters.
+   * `toolErrors` used to be `length - filter(() => true).length` — 0 by
+   * construction — and `toolSuccesses` read the 50-entry toolHistory window,
+   * so the guard's POSIWID check never saw an error and never more than 50
+   * calls. Evaluated at every user-message end (onto session_fidelity, for
+   * the ledger) and once more at session end (for the outcome).
+   */
+  private evaluateIdentityGuard(): GuardResult {
+    return this.governance.getIdentityGuard().evaluate({
+      toolsUsed: [...new Set(this.toolHistory)],
+      toolErrors: this.toolErrorsTotal,
+      toolSuccesses: this.toolCallsTotal - this.toolErrorsTotal,
+      userMessagesHandled: this.messages.filter(m => m.role === 'user').length,
+      governanceSignalsInjected: 0,
+      killSwitchTriggered: false,
+      parametersModified: [],
+      metaBoundsWidened: false,
+    })
+  }
+
+  private accountToolClass(toolName: string, toolInput: any, isError: boolean): void {
+    if (isError) this.toolErrorsTotal++
+    const cls = classifyCall(toolName, toolInput, isError)
+    this.toolClassCounts.set(cls, (this.toolClassCounts.get(cls) ?? 0) + 1)
+  }
+
+  /**
+   * POSIWID, live: the session's stated purpose model against what its tool
+   * calls have actually been (constraintChecks.checkToolClassAlignment).
+   * Emitted as data on every status frame; the transition INTO `Contradicted`
+   * raises one `warn` alert. Nothing branches on it — the ledger is where it
+   * earns, or fails to earn, authority.
+   */
+  private posiwidLive(): { divergence: number; verdict: string; dominantStated: string; dominantObserved: string; support: number } | null {
+    if (this.toolClassCounts.size === 0) return null
+    try {
+      const report = this.governance.getConstraintChecks().checkToolClassAlignment(this.toolClassCounts)
+      if (report.verdict === 'Contradicted' && this.lastPosiwidVerdict !== 'Contradicted') {
+        this.emit({
+          type: 'governance.alert', severity: 'warn', source: 'posiwid',
+          message: `[posiwid] Contradicted: this session mostly does "${report.dominantObserved}" (${report.support} calls) — a class its purpose model gives no weight`,
+        })
+      }
+      this.lastPosiwidVerdict = report.verdict
+      return { divergence: report.divergence, verdict: report.verdict, dominantStated: report.dominantStated, dominantObserved: report.dominantObserved, support: report.support }
+    } catch (e) {
+      console.log(`[vsm] posiwid live reading failed: ${e}`)
+      return null
+    }
   }
 
   buildHandoff(): Record<string, unknown> {
@@ -2696,6 +2750,7 @@ export class ConversationLoop {
                 // Distinguishes "no caps were declared" from "caps were
                 // declared and thrown away" — see `invariantsRejected`.
                 invariantsRejected: this.invariantsRejected,
+                posiwidLive: this.posiwidLive(),
                 // Capped and camelCased on purpose: the live trace grows for
                 // the whole session and its own toJSON is snake_case (it
                 // mirrors the Rust core byte for byte). A per-turn frame gets
@@ -3091,6 +3146,7 @@ export class ConversationLoop {
         this.emit({
           type: 'governance.session_fidelity',
           fidelity: this.governance.getSessionFidelity(),
+          identityGuard: this.evaluateIdentityGuard(),
         })
 
         // Decision logging
@@ -3681,6 +3737,7 @@ export class ConversationLoop {
       // (after the early returns), so observe directly — same call, same
       // arguments, isError=true because nothing was executed.
       this.missionInvariants?.observeCall(toolName, toolInput, true)
+      this.accountToolClass(toolName, toolInput, true)
       return
     }
     // Healthy parse: reset the bounded-retry counter.
@@ -3729,6 +3786,11 @@ export class ConversationLoop {
      * is the whole outcome record, is only filled in by the NEXT observeCall.
      */
     const accountInvariants = (isError: boolean) => this.missionInvariants?.observeCall(toolName, toolInput, isError)
+    // A call that never executed (denied, blocked, refused) is one call for
+    // the invariants AND one `denied-or-error` for the POSIWID/identity
+    // counters. The executed path accounts for itself further down, where
+    // `countsAsFailure` has already excluded a red test run.
+    const accountDenied = () => { accountInvariants(true); this.accountToolClass(toolName, toolInput, true) }
 
     // Hard tool pin (one-shot/unattended runs): enforce allowedTools at
     // execution time too — simulated-mode models can hallucinate tools that
@@ -3745,7 +3807,7 @@ export class ConversationLoop {
         is_error: true,
       })
       toolsUsedThisTurn.push(toolName)
-      accountInvariants(true)
+      accountDenied()
       recordDenial()
       this.recordToolOutcome(toolName, 'denied', toolResultsThisTurn)
       toolsUsedInSession.push(toolName)
@@ -3784,7 +3846,7 @@ export class ConversationLoop {
         is_error: true,
       })
       toolsUsedThisTurn.push(toolName)
-      accountInvariants(true)
+      accountDenied()
       recordDenial()
       this.recordToolOutcome(toolName, 'denied', toolResultsThisTurn)
       toolsUsedInSession.push(toolName)
@@ -3806,7 +3868,7 @@ export class ConversationLoop {
         is_error: true,
       })
       toolsUsedThisTurn.push(toolName)
-      accountInvariants(true)
+      accountDenied()
       recordDenial()
       this.recordToolOutcome(toolName, 'denied', toolResultsThisTurn)
       toolsUsedInSession.push(toolName)
@@ -3831,7 +3893,7 @@ export class ConversationLoop {
           is_error: true,
         })
         toolsUsedThisTurn.push(toolName)
-        accountInvariants(true)
+        accountDenied()
         recordDenial()
         this.recordToolOutcome(toolName, 'denied', toolResultsThisTurn)
         toolsUsedInSession.push(toolName)
@@ -3871,7 +3933,7 @@ export class ConversationLoop {
       if (divTask?.taskId) {
         this.brainRecorder.recordDivergence(divTask.taskId, divTask.turnIdx, { ...verdict, prunedMessages })
       }
-      this.emit({ type: 'governance.alert', severity: 'warn', message: `[context-hygiene] Broke a ${toolName} attractor: pruned ${prunedMessages} redundant re-read messages.`, source: 'read-loop' } as any)
+      this.emit({ type: 'governance.alert', severity: 'warn', message: `[context-hygiene] Broke a ${toolName} attractor: pruned ${prunedMessages} redundant re-read messages.`, source: 'read-loop' })
       console.log(`[context-hygiene] pruned ${prunedMessages} messages to break ${toolName} attractor`)
       // ...and then SERVE the read. Pruning alone made this worse: it deletes the
       // Read+DENIED pairs, which are the model's only evidence that reading is
@@ -3894,7 +3956,7 @@ export class ConversationLoop {
         is_error: true,
       })
       toolsUsedThisTurn.push(toolName)
-      accountInvariants(true)
+      accountDenied()
       recordDenial()
       this.recordToolOutcome(toolName, 'denied', toolResultsThisTurn)
       toolsUsedInSession.push(toolName)
@@ -3921,7 +3983,7 @@ export class ConversationLoop {
         is_error: true,
       })
       toolsUsedThisTurn.push(toolName)
-      accountInvariants(true)
+      accountDenied()
       recordDenial()
       this.recordToolOutcome(toolName, 'denied', toolResultsThisTurn)
       toolsUsedInSession.push(toolName)
@@ -4025,7 +4087,7 @@ export class ConversationLoop {
               is_error: true,
             })
             toolsUsedThisTurn.push(toolName)
-            accountInvariants(true)
+            accountDenied()
             recordDenial()
             this.recordToolOutcome(toolName, 'denied', toolResultsThisTurn)
             toolsUsedInSession.push(toolName)
@@ -4270,6 +4332,11 @@ export class ConversationLoop {
               : 'counted',
       ))
     }
+
+    // The executed call's share of the POSIWID/identity accounting (see
+    // `accountDenied` above): here `countsAsFailure` has already excluded a
+    // red test run from being called a tool error.
+    this.accountToolClass(toolName, toolInput, countsAsFailure)
 
     // Circuit breaker: track consecutive failures per tool
     if (countsAsFailure) {
