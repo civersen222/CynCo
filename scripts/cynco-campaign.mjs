@@ -429,6 +429,14 @@ export function inFlightRefusal(state) {
 export function applyProposalDecision(s, name, approve) {
   const p = (s.proposals ?? []).find(x => x.name === name && x.status === 'pending')
   if (!p) return { ok: false, why: `no pending proposal ${name}` }
+  // Only editGapCap and commitGapCap are tunable (revertBan/codeIndexFirst are
+  // identity invariants — capProposal never proposes them, but a hand-edited
+  // or otherwise malformed proposal must be refused here too, before any
+  // state is touched).
+  if (p.name.startsWith('invariants/')) {
+    const cap = p.name.slice('invariants/'.length)
+    if (cap !== 'editGapCap' && cap !== 'commitGapCap') return { ok: false, why: `proposal ${name} names a cap that is not tunable` }
+  }
   p.status = approve ? 'approved' : 'rejected'; p.decidedAt = new Date().toISOString()
   if (approve && p.name === 'ideation/brief') s.ideationAuthority = Math.min(p.newValue, p.bounds.max)
   if (approve && p.name.startsWith('invariants/')) {

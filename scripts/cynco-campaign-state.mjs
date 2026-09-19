@@ -39,8 +39,11 @@ export class CampaignState {
    * runner holds this object in memory for days. The runner's next save would
    * write its stale `pending` over the operator's decision — so before every
    * write, a decision on disk wins over a pending proposal in memory, and an
-   * approval carries its authority with it. Nothing else is merged: the runner
-   * is the only writer of every other field.
+   * approval carries its authority with it. Two other fields are merged the
+   * same way: `ideationAuthority` and `invariantOverrides` (per-key, the max of
+   * the in-memory and disk values — both only ever rise, so the higher one is
+   * always the more-approved one). Nothing else is merged: the runner is the
+   * only writer of every other field.
    */
   adoptExternalDecisions() {
     if (!existsSync(this.statePath)) return
@@ -55,7 +58,14 @@ export class CampaignState {
         this.state.ideationAuthority = Math.max(this.state.ideationAuthority ?? 0, disk.ideationAuthority)
       }
       if (d.status === 'approved' && d.name.startsWith('invariants/') && disk.invariantOverrides) {
-        this.state.invariantOverrides = { ...(this.state.invariantOverrides ?? {}), ...disk.invariantOverrides }
+        // A blind spread would let a stale disk value clobber a higher one the
+        // runner already holds in memory. Caps only ever rise (capProposal /
+        // applyProposalDecision), so the merge is monotonic per key: the max
+        // wins. 0 is a safe floor — an override is always >= the spec value,
+        // and this class does not know the spec to floor it any tighter.
+        for (const [cap, v] of Object.entries(disk.invariantOverrides)) {
+          this.state.invariantOverrides = { ...(this.state.invariantOverrides ?? {}), [cap]: Math.max(this.state.invariantOverrides?.[cap] ?? 0, v) }
+        }
       }
     }
   }

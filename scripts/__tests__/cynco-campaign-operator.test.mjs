@@ -101,6 +101,36 @@ describe('CampaignState.save merges an external proposal decision', () => {
     const disk = JSON.parse(readFileSync(join(d, 'state.json'), 'utf8'))
     expect(disk.proposals.map(p => p.status)).toEqual(['pending', 'pending'])
   })
+
+  it('invariantOverrides merges monotonically: the higher of memory and disk wins, in either direction', () => {
+    const capProposal = { name: 'invariants/editGapCap', proposedAt: '2026-09-18T00:00:00.000Z', status: 'pending', newValue: 60, bounds: { min: 40, max: 80 } }
+
+    // Memory (80) higher than the disk decision's overrides (60) — max keeps 80.
+    const d1 = join(dir('camp-'), 'c8')
+    const runner1 = new CampaignState(d1).load()
+    runner1.state.invariantOverrides = { editGapCap: 80 }
+    runner1.state.proposals.push({ ...capProposal })
+    runner1.save()
+    const operator1 = new CampaignState(d1).load()
+    operator1.state.proposals[0].status = 'approved'; operator1.state.proposals[0].decidedAt = '2026-09-18T01:00:00.000Z'
+    operator1.state.invariantOverrides = { editGapCap: 60 }
+    operator1.save()
+    runner1.save()
+    expect(JSON.parse(readFileSync(join(d1, 'state.json'), 'utf8')).invariantOverrides).toEqual({ editGapCap: 80 })
+
+    // Reverse — memory (60) lower than the disk decision's overrides (80) — max takes 80.
+    const d2 = join(dir('camp-'), 'c8')
+    const runner2 = new CampaignState(d2).load()
+    runner2.state.invariantOverrides = { editGapCap: 60 }
+    runner2.state.proposals.push({ ...capProposal })
+    runner2.save()
+    const operator2 = new CampaignState(d2).load()
+    operator2.state.proposals[0].status = 'approved'; operator2.state.proposals[0].decidedAt = '2026-09-18T01:00:00.000Z'
+    operator2.state.invariantOverrides = { editGapCap: 80 }
+    operator2.save()
+    runner2.save()
+    expect(JSON.parse(readFileSync(join(d2, 'state.json'), 'utf8')).invariantOverrides).toEqual({ editGapCap: 80 })
+  })
 })
 
 describe('loadCampaignSpec refuses a leading-glob allow entry', () => {
@@ -164,6 +194,12 @@ describe('approving an invariants/* proposal sets an override', () => {
     const s = { ...freshState('c8'), proposals: [{ name: 'invariants/commitGapCap', status: 'pending', newValue: 225, bounds: { min: 150, max: 300 } }] }
     expect(applyProposalDecision(s, 'invariants/commitGapCap', false).status).toBe('rejected')
     expect(s.invariantOverrides).toEqual({})
+  })
+  it('refuses a proposal naming a non-tunable cap and leaves state untouched', () => {
+    const s = { ...freshState('c8'), proposals: [{ name: 'invariants/revertBan', status: 'pending', newValue: false, bounds: { min: false, max: false } }] }
+    expect(applyProposalDecision(s, 'invariants/revertBan', true)).toEqual({ ok: false, why: 'proposal invariants/revertBan names a cap that is not tunable' })
+    expect(s.invariantOverrides).toEqual({})
+    expect(s.proposals[0].status).toBe('pending')
   })
   it('an approval above the bound is clamped to it', () => {
     const s = { ...freshState('c8'), proposals: [{ name: 'invariants/editGapCap', status: 'pending', newValue: 999, bounds: { min: 40, max: 80 } }] }
