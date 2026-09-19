@@ -18,12 +18,14 @@ import { cyncoHome } from '../engine/paths.js'
 import { loadCampaignSpec, checkIdentity } from './cynco-campaign-spec.mjs'
 import { CampaignState } from './cynco-campaign-state.mjs'
 import { calibrate, defaultIo as calibrateIo } from './cynco-campaign-calibrate.mjs'
-import { generateBrief, sidecarFor } from './cynco-brief.mjs'
+import { generateBrief, sidecarFor, workOrderFor } from './cynco-brief.mjs'
 import { gradeWave } from './cynco-campaign-grade.mjs'
 import { verdictEntry, notify, commitVerdict, economicsLines } from './cynco-campaign-verdict.mjs'
-import { runIdeation, measureFollowed, authorityRegistry, promotionProposal } from './cynco-ideation.mjs'
+import { runIdeation, measureFollowed, authorityRegistry, promotionProposal, capProposal, effectiveInvariants } from './cynco-ideation.mjs'
 import { patchLedgerRow, findLedgerRow } from './cynco-ledger-patch.mjs'
 import { sidecarPath } from './cynco-contract.mjs'
+import { exportTriples } from './cynco-triples.mjs'
+import { analyseDenials } from './cynco-signal-validation.mjs'
 
 const BRIEFS_DIR = 'docs/civkings-redesign-briefs'
 const LOG = `${BRIEFS_DIR}/campaign-log.md`
@@ -179,6 +181,8 @@ export const defaultIo = {
   notify: (t) => notify(t),
   economics: () => economicsLines(),
   appendLog: (text) => appendFileSync(LOG, '\n' + text),
+  exportTriples: () => exportTriples(),
+  analyseDenials: (summary) => analyseDenials(summary),
 }
 
 /**
@@ -199,11 +203,18 @@ export function waveContext(spec, s, io = defaultIo) {
     ? { missionId: s.lastRow.missionId, exitReason: s.lastRow.exitReason, durationS: s.lastRow.durationS, commits: s.lastCommits ?? [], toolStats: s.lastRow.toolStats, invariants: s.lastRow.invariants ?? null, verify: s.lastRow.verify, posiwid: s.lastGrade?.posiwid ?? null }
     : null
   const salvage = s.lastRow ? io.salvageOf(s.lastRow.missionId) : null
-  return { wave, base, fails, passes, prior, salvage, ideation: null }
+  return { wave, base, fails, passes, prior, salvage, ideation: null,
+           ideationAuthority: s.ideationAuthority ?? 0, invariants: effectiveInvariants(spec, s), denialDigest: s.denialAnalysis?.invariants ?? null }
 }
 
 export async function runWave(spec, state, io = defaultIo) {
   const s = state.state
+  // M4: `--approve-proposal` runs as a SECOND process while this one sleeps
+  // out a wall clock. Its decision only reaches this object on the next save
+  // — which is AFTER the dispatch that was supposed to carry the approved cap.
+  // Read it in before the terms are computed, so an approval granted between
+  // two waves is honoured by the very next one.
+  state.adoptExternalDecisions()
   const ctx = waveContext(spec, s, io)
   const { wave, base, fails, prior } = ctx
   // Rule 11 is not a one-off: the calibration is evidence about the instrument
@@ -220,7 +231,7 @@ export async function runWave(spec, state, io = defaultIo) {
   const commander = registry.whoCommands('brief')?.component ?? 'generator'
 
   let ideation = null, ideationMeta = null
-  let missionId, row, briefFile, dispatchedAt, waveFiles
+  let missionId, row, briefFile, dispatchedAt, waveFiles, workOrder
 
   if (s.adoptedRow) {
     // ADOPT (scripts/cynco-campaign-adopt.mjs): this wave already RAN — it was
@@ -239,6 +250,7 @@ export async function runWave(spec, state, io = defaultIo) {
     // commitVerdict hands `files` straight to `git add`, where one missing
     // pathspec stages nothing at all.
     waveFiles = [repoRel(briefFile), repoRel(sidecarPath(briefFile))].filter(f => existsSync(f))
+    workOrder = null
     console.log(`[campaign] ADOPT ${missionId} — grading a wave that already ran (brief ${repoRel(briefFile)}); GENERATE/DISPATCH/WAIT skipped`)
   } else {
     // An empty FAIL set means the last grade said PASS. The brief generator
@@ -260,8 +272,12 @@ export async function runWave(spec, state, io = defaultIo) {
       }
     }
 
-    // S4, occupant A (binding).
-    const text = generateBrief(spec, { ...ctx, ideation })
+    // S4, occupant A (binding). One context object feeds both the brief text
+    // and the work order it recorded — what is recorded must be what was
+    // printed, never a second, independently-computed guess at it.
+    const briefCtx = { ...ctx, ideation }
+    const text = generateBrief(spec, briefCtx)
+    workOrder = workOrderFor(spec, briefCtx)
     // checkIdentity guards the spec's own fields, but the ideation section is
     // written by a model that just read the repo. A brief naming the sealed
     // gate would be refused by sealedPaths mid-run, after the wall clock has
@@ -278,7 +294,7 @@ export async function runWave(spec, state, io = defaultIo) {
     dispatchedAt = new Date().toISOString()
     let waited
     try {
-      const dispatched = await io.dispatch({ spec, briefFile, invariants: spec.invariants, timeoutS: spec.budget.hoursPerWave * 3600, pidFile, driverLog })
+      const dispatched = await io.dispatch({ spec, briefFile, invariants: effectiveInvariants(spec, s), timeoutS: spec.budget.hoursPerWave * 3600, pidFile, driverLog })
       // Persist BEFORE waiting, the daemon's missionLedger discipline: from here
       // on a mission is out there on the GPU, and a runner that dies in the wait
       // must not let the NEXT invocation dispatch a second one on top of it.
@@ -305,6 +321,7 @@ export async function runWave(spec, state, io = defaultIo) {
   // not rewrite, ntfy blowing up) must not lose the wave: record the fault,
   // spend the wave, and hand the decision back so the loop stops deliberately
   // rather than by exception.
+  let appended = false
   try {
   // S3*: grade.
   const grade = await io.grade(spec, row)
@@ -318,33 +335,72 @@ export async function runWave(spec, state, io = defaultIo) {
     gate: { sha: grade.sha, gateSha256, terminator: grade.gate.terminator, fails: grade.gate.fails.map(f => f.line), passes: grade.gate.passes.length, priorRegressions: grade.gate.priorRegressions, suiteRegressions: grade.suite.regressions, harnessFault: grade.gate.harnessFault ?? grade.suite.harnessFault ?? null },
     posiwid: { divergence: grade.posiwid.divergence, verdict: grade.posiwid.verdict, dominantObserved: grade.posiwid.dominantObserved } })
 
-  // Verdict (campaign log, economics, local commit, algedonic).
-  const ideationRecord = ideation ? { authority: s.ideationAuthority ?? 0, hypotheses: ideation.hypotheses, followed } : null
-  const entry = verdictEntry({ spec, wave, row, grade, decision, ideationRecord, economicsLines: io.economics() })
-  io.appendLog(entry)
-  // Ruling 5: commitVerdict matches these against `git status --porcelain`,
-  // which speaks repo-relative forward slashes and nothing else.
-  const files = [LOG, ...waveFiles, ...ledgerShardsTouched()]
-  let verdictSha = null
-  try { verdictSha = io.commit({ repoRoot: '.', branch: `campaign/${spec.id}`, files, message: `${spec.id.toUpperCase()} wave ${wave} verdict: ${decision.kind} — ${decision.why}` }).sha } catch (e) { console.error(`[campaign] commit skipped: ${e.message}`) }
-  const notified = await notifyOrQueue(io, s, `${spec.id.toUpperCase()} wave ${wave}: ${decision.kind.toUpperCase()} — ${decision.why}\n${grade.gate.fails.map(f => f.line).join('\n')}`, decision)
-
+  // I2: the wave record goes on the record FIRST, before anything that reads
+  // the record set. The export must include the wave it is the verdict for —
+  // a dataset regenerated one wave behind is a dataset that never sees the
+  // latest evidence — and `promotionProposal` must be able to raise the
+  // proposal in the very wave whose followed × landed made the case. Only
+  // `verdictSha` and `notified` cannot be known yet; they are patched onto
+  // this same record below, once the verdict is committed and sent.
   const rec = { wave, missionId, briefFile, base, head: grade.sha, gateSha256, dispatchedAt, gradedAt: new Date().toISOString(), gate: grade.gate, suite: grade.suite, sweep: grade.sweep, sweepFault: grade.sweepFault ?? null, posiwid: grade.posiwid, verified: grade.verified,
     outcome: { landed: row.outcome === 'landed', exitReason: row.exitReason },
-    s4: { generatorInput: { failIds: fails.map(f => f.id), priorMissionId: prior?.missionId ?? null }, ideation, ideationMeta, authority: s.ideationAuthority ?? 0, commander, followed },
-    decision, verdictSha, notified }
+    s4: { generatorInput: { failIds: fails.map(f => f.id), priorMissionId: prior?.missionId ?? null }, ideation, ideationMeta, authority: s.ideationAuthority ?? 0, commander, followed, workOrder },
+    decision, verdictSha: null, notified: false }
   state.appendWave(rec)
+  appended = true
+
+  // The Level 4 spine: every verdict regenerates the dataset and re-asks
+  // whether the denials change anything. A failure here is logged, never a
+  // fault — the dataset is rebuilt in full next time, so nothing is lost.
+  //
+  // I1: "campaign to date" is a claim about THIS campaign. The exporter's
+  // pooled block is every run in the whole ledger — hand runs and other
+  // campaigns included — so the campaign's own block is what a c8 verdict and
+  // a c8 cap proposal must be built from. A summary with no block for this
+  // campaign (nothing graded under it yet) falls back to the pool, and the
+  // verdict line then says which of the two it is reading.
+  let denialAnalysis = null, denialScope = 'campaign'
+  try {
+    const summary = io.exportTriples().summary
+    const camp = summary?.campaigns?.[spec.id]
+    const scoped = camp?.denials ? { denials: camp.denials, quiet: camp.quiet ?? {} } : null
+    denialScope = scoped ? 'campaign' : 'all runs'
+    denialAnalysis = (io.analyseDenials ?? defaultIo.analyseDenials)(scoped ?? { denials: summary?.denials, quiet: summary?.quiet })
+    s.denialAnalysis = denialAnalysis
+  } catch (e) { console.error(`[campaign] triples export/analysis skipped: ${e?.message ?? e}`) }
+  // §E: two proposals must not go pending in the same wave. promotionProposal
+  // is computed FIRST; when it is about to be raised, capProposal is skipped
+  // entirely (set to null) rather than called — calling it here would see
+  // `s.proposals` before the promotion proposal below is pushed onto it, so
+  // its own pending check could not see the truth.
+  const proposal = promotionProposal(state.waves(), s.ideationAuthority ?? 0)
+  const cap = proposal ? null : capProposal(denialAnalysis, spec, s)
+
   const sameFails = Array.isArray(s.lastFails) && grade.gate.fails.map(f => f.id).join() === s.lastFails.join()
   s.consecutiveNoProgress = sameFails && commits.length === 0 ? (s.consecutiveNoProgress ?? 0) + 1 : 0
   s.waveCount = wave; s.lastBase = grade.sha ?? base; s.lastFails = grade.gate.fails.map(f => f.id); s.lastGrade = grade; s.lastRow = row; s.lastCommits = commits
   delete s.inFlight
-  const proposal = promotionProposal(state.waves(), s.ideationAuthority ?? 0)
   if (proposal && !s.proposals.some(p => p.status === 'pending')) { s.proposals.push({ ...proposal, proposedAt: new Date().toISOString() }); await tryNotify(io, `${spec.id}: PROPOSAL ${proposal.name} ${s.ideationAuthority ?? 0} → ${proposal.newValue} (max ${proposal.bounds.max}, p=${proposal.evidence.p.toFixed(3)}). Approve with --approve-proposal ${proposal.name}`) }
+  if (cap) { s.proposals.push({ ...cap, proposedAt: new Date().toISOString() }); await tryNotify(io, `${spec.id}: PROPOSAL ${cap.name} ${cap.currentValue} → ${cap.newValue} (max ${cap.bounds.max}, p=${cap.evidence.pAdjusted.toFixed(3)}). Approve with --approve-proposal ${cap.name}`) }
+
+  // Verdict (campaign log, economics, local commit, algedonic).
+  const ideationRecord = ideation ? { authority: s.ideationAuthority ?? 0, hypotheses: ideation.hypotheses, followed } : null
+  const entry = verdictEntry({ spec, wave, row, grade, decision, ideationRecord, economicsLines: io.economics(), denialAnalysis, denialScope, capProposal: cap })
+  io.appendLog(entry)
+  // Ruling 5: commitVerdict matches these against `git status --porcelain`,
+  // which speaks repo-relative forward slashes and nothing else.
+  const files = [LOG, ...waveFiles, ...ledgerShardsTouched()]
+  try { rec.verdictSha = io.commit({ repoRoot: '.', branch: `campaign/${spec.id}`, files, message: `${spec.id.toUpperCase()} wave ${wave} verdict: ${decision.kind} — ${decision.why}` }).sha } catch (e) { console.error(`[campaign] commit skipped: ${e.message}`) }
+  rec.notified = await notifyOrQueue(io, s, `${spec.id.toUpperCase()} wave ${wave}: ${decision.kind.toUpperCase()} — ${decision.why}\n${grade.gate.fails.map(f => f.line).join('\n')}`, decision)
+  state.rewriteLastWave(rec)
   state.save()
   return rec
   } catch (e) {
     console.error(`[campaign] wave ${wave} post-run step failed: ${e?.stack ?? e}`)
-    return faultWave(spec, state, io, { wave, missionId, briefFile, base, dispatchedAt, files: waveFiles, why: `post-run step failed: ${e?.message ?? e}` })
+    // The wave is already on the record when the throw came from the verdict
+    // half; a second append would put the same wave in waves.jsonl twice and
+    // double-count it in every promotion reading afterwards. Overwrite it.
+    return faultWave(spec, state, io, { wave, missionId, briefFile, base, dispatchedAt, files: waveFiles, appended, why: `post-run step failed: ${e?.message ?? e}` })
   }
 }
 
@@ -401,7 +457,7 @@ async function stopWave(spec, state, io, { wave, base, why }) {
  * guard would otherwise refuse on at the NEXT invocation, bricking the campaign
  * with work that never ran.
  */
-async function faultWave(spec, state, io, { wave, missionId, briefFile, base, dispatchedAt, why, files }) {
+async function faultWave(spec, state, io, { wave, missionId, briefFile, base, dispatchedAt, why, files, appended = false }) {
   const s = state.state
   const rec = { wave, missionId: missionId ?? null, briefFile, base, dispatchedAt, decision: { kind: 'fault', why } }
   if (files?.length) {
@@ -409,7 +465,10 @@ async function faultWave(spec, state, io, { wave, missionId, briefFile, base, di
     catch (e) { console.error(`[campaign] fault-path commit skipped: ${e.message}`) }
   }
   rec.notified = await notifyOrQueue(io, s, `${spec.id} wave ${wave}: FAULT — ${why}`, rec.decision)
-  state.appendWave(rec)
+  // I2: runWave appends the wave record before the verdict half runs, so a
+  // throw from there arrives here with the wave ALREADY on the record. The
+  // fault replaces it; appending would record the same wave twice.
+  if (appended) state.rewriteLastWave(rec); else state.appendWave(rec)
   s.waveCount = wave
   delete s.inFlight
   state.save()
@@ -421,6 +480,29 @@ export function inFlightRefusal(state) {
   const f = state.state?.inFlight
   if (!f) return null
   return `[campaign] wave ${f.wave} is in flight since ${f.dispatchedAt} (driver log ${f.driverLog}) — wait for it, then run --adopt-inflight`
+}
+
+/** The operator's decision on a pending proposal, applied to state. Pure over
+ *  the state object so the merge-on-save rule (CampaignState.save) and the
+ *  CLI branch share one definition of what "approved" does. */
+export function applyProposalDecision(s, name, approve) {
+  const p = (s.proposals ?? []).find(x => x.name === name && x.status === 'pending')
+  if (!p) return { ok: false, why: `no pending proposal ${name}` }
+  // Only editGapCap and commitGapCap are tunable (revertBan/codeIndexFirst are
+  // identity invariants — capProposal never proposes them, but a hand-edited
+  // or otherwise malformed proposal must be refused here too, before any
+  // state is touched).
+  if (p.name.startsWith('invariants/')) {
+    const cap = p.name.slice('invariants/'.length)
+    if (cap !== 'editGapCap' && cap !== 'commitGapCap') return { ok: false, why: `proposal ${name} names a cap that is not tunable` }
+  }
+  p.status = approve ? 'approved' : 'rejected'; p.decidedAt = new Date().toISOString()
+  if (approve && p.name === 'ideation/brief') s.ideationAuthority = Math.min(p.newValue, p.bounds.max)
+  if (approve && p.name.startsWith('invariants/')) {
+    const cap = p.name.slice('invariants/'.length)
+    s.invariantOverrides = { ...(s.invariantOverrides ?? {}), [cap]: Math.min(p.newValue, p.bounds.max) }
+  }
+  return { ok: true, status: p.status }
 }
 
 /**
@@ -530,10 +612,9 @@ export async function main(argv) {
   // queue only when no runner is live.
   if (flag('--approve-proposal') !== -1 || flag('--reject-proposal') !== -1) {
     const approve = flag('--approve-proposal') !== -1; const name = argv[(approve ? flag('--approve-proposal') : flag('--reject-proposal')) + 1]
-    const p = state.state.proposals.find(x => x.name === name && x.status === 'pending'); if (!p) { console.error(`no pending proposal ${name}`); return 2 }
-    p.status = approve ? 'approved' : 'rejected'; p.decidedAt = new Date().toISOString()
-    if (approve && p.name === 'ideation/brief') state.state.ideationAuthority = Math.min(p.newValue, p.bounds.max)
-    state.save(); console.log(`[campaign] proposal ${name} ${p.status}`); return 0
+    const r = applyProposalDecision(state.state, name, approve)
+    if (!r.ok) { console.error(r.why); return 2 }
+    state.save(); console.log(`[campaign] proposal ${name} ${r.status}`); return 0
   }
   if (flag('--sync') !== -1) {
     const held = takeLock(state.dir)

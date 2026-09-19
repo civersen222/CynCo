@@ -154,24 +154,33 @@ export function rulesFired(row) {
   return out
 }
 
-export function analyse(rows) {
+/** The invariants that denied at least once in a mission — the "rule fired"
+ *  reading of a denial, so the S5 machinery above can ask the mission-level
+ *  question of an invariant unchanged. */
+export function invariantsFired(row) {
+  const out = new Set()
+  for (const [k, n] of Object.entries(row?.invariants?.denialsByInvariant ?? {})) if (n > 0) out.add(k)
+  return out
+}
+
+export function analyse(rows, { firedOf = rulesFired } = {}) {
   const labeled = rows.map(r => ({ row: r, label: labelOf(r) })).filter(x => x.label !== null)
   const nFail = labeled.filter(x => x.label === false).length
   const base = labeled.length ? nFail / labeled.length : 0
 
   const ids = new Set()
-  for (const r of rows) for (const id of rulesFired(r)) ids.add(id)
+  for (const r of rows) for (const id of firedOf(r)) ids.add(id)
 
   const rules = [...ids].map(id => {
     let a = 0, b = 0, c = 0, d = 0     // a=fired&failed b=fired&ok c=quiet&failed d=quiet&ok
     for (const { row, label } of labeled) {
-      const fired = rulesFired(row).has(id)
+      const fired = firedOf(row).has(id)
       if (fired && label === false) a++
       else if (fired) b++
       else if (label === false) c++
       else d++
     }
-    const firedTotal = rows.filter(r => rulesFired(r).has(id)).length
+    const firedTotal = rows.filter(r => firedOf(r).has(id)).length
     const nOnLabeled = a + b
     const precision = nOnLabeled ? a / nOnLabeled : null
     return {
@@ -205,6 +214,58 @@ export function analyse(rows) {
   }
 }
 
+// ── Denials: did the denial change the next call? ─────────────────
+//
+// The unit here is the DENIAL, not the mission. For each invariant the 2×2
+// table is (denials followed by the call the denial asked for) against
+// (quiet calls followed by that class) — where the quiet rate is the
+// session's own class share (ruling 4 of the Phase 1 spec): the ledger has
+// no per-call sequence, so `byClass.sourceEdit / total` stands in for "how
+// often does an edit follow any call". The table is printed so the
+// approximation stays visible; it is conservative (the quiet rate includes
+// the denial-driven edits), so it cannot manufacture significance.
+export const DENIAL_MIN = 30
+const CAP_INVARIANTS = ['edit-gap', 'commit-gap']
+
+export function denialVerdict(r) {
+  if (r.invariant === 'revert') return 'IDENTITY'
+  if (r.denials < DENIAL_MIN) return 'TOO FEW'
+  if (r.pAdjusted !== null && r.pAdjusted < 0.05 && r.ci[1] < r.baseRate) return 'INERT'
+  if (r.pAdjusted !== null && r.pAdjusted < 0.05 && r.ci[0] > r.baseRate) return 'EFFECTIVE'
+  return 'NO EVIDENCE'
+}
+
+export function analyseDenials(summary) {
+  const kinds = ['edit-gap', 'commit-gap', 'revert']
+  const invariants = kinds.map(invariant => {
+    const d = summary.denials?.[invariant] ?? { denials: 0, complied: 0, changed: 0 }
+    const q = summary.quiet?.[invariant] ?? { calls: 0, complied: 0 }
+    const a = d.complied, b = d.denials - d.complied, c = q.complied, dd = Math.max(0, q.calls - q.complied)
+    const testable = CAP_INVARIANTS.includes(invariant) && d.denials >= DENIAL_MIN && q.calls > 0
+    return {
+      invariant, denials: d.denials, complied: d.complied, changed: d.changed,
+      compliedRate: d.denials ? d.complied / d.denials : null, ci: wilson(d.complied, d.denials),
+      quietCalls: q.calls, quietComplied: q.complied, baseRate: q.calls ? q.complied / q.calls : null,
+      p: testable ? fisherExact(a, b, c, dd) : null, pAdjusted: null, verdict: null,
+    }
+  })
+  const tested = invariants.filter(r => r.p !== null).sort((x, y) => x.p - y.p)
+  let running = 0
+  tested.forEach((r, i) => { running = Math.max(running, Math.min(1, r.p * (tested.length - i))); r.pAdjusted = running })
+  for (const r of invariants) r.verdict = denialVerdict(r)
+  return { invariants }
+}
+
+export function denialTable(res) {
+  const pct = v => (v === null ? '  —  ' : (v * 100).toFixed(1).padStart(5) + '%')
+  const lines = ['invariant   denials  complied  rate     95% CI        quiet rate     p    p(Holm)  verdict']
+  for (const r of res.invariants) {
+    const [lo, hi] = r.ci
+    lines.push(`${r.invariant.padEnd(11)} ${String(r.denials).padStart(7)} ${String(r.complied).padStart(9)}  ${pct(r.compliedRate)}  [${(lo * 100).toFixed(0).padStart(3)}%,${(hi * 100).toFixed(0).padStart(4)}%]  ${pct(r.baseRate)}  ${r.p === null ? '  —  ' : r.p.toFixed(3)}   ${r.pAdjusted === null ? '  —  ' : r.pAdjusted.toFixed(3)}   ${r.verdict}`)
+  }
+  return lines
+}
+
 // ── Report ───────────────────────────────────────────────────────
 
 function verdict(r) {
@@ -217,10 +278,28 @@ function verdict(r) {
   return 'NO EVIDENCE'
 }
 
-function main() {
+async function main() {
   const argv = process.argv.slice(2)
   const dirIdx = argv.indexOf('--ledger-dir')
   const dir = dirIdx >= 0 ? argv[dirIdx + 1] : DEFAULT_DIR
+
+  if (argv.includes('--denials')) {
+    const tIdx = argv.indexOf('--triples')
+    const { exportTriples } = await import('./cynco-triples.mjs')
+    const summaryPath = tIdx >= 0 ? argv[tIdx + 1] : null
+    const summary = summaryPath ? JSON.parse(readFileSync(summaryPath, 'utf-8')) : exportTriples().summary
+    const res = analyseDenials(summary)
+    const mission = analyse(readLedger(dir), { firedOf: invariantsFired })
+    if (argv.includes('--json')) { console.log(JSON.stringify({ denials: res, missions: mission }, null, 2)); return }
+    console.log('DENIALS — did the denial change the next call? (unit: the denial)')
+    for (const l of denialTable(res)) console.log(l)
+    console.log()
+    console.log(`INVARIANTS AS RULES — does a mission with ≥ 1 denial fail more often? (unit: the mission; ${mission.labeled} labeled of ${mission.total})`)
+    for (const r of mission.rules) console.log(`  ${r.id.padEnd(11)} fired ${String(r.firedTotal).padStart(3)}  labeled ${String(r.labeled).padStart(3)}  fails ${String(r.failures).padStart(3)}  p ${r.p === null ? '  —  ' : r.p.toFixed(3)}  p(Holm) ${r.pAdjusted === null ? '  —  ' : r.pAdjusted.toFixed(3)}`)
+    if (mission.rules.length === 0) console.log('  (no mission with an invariants block has a denial yet)')
+    return
+  }
+
   const rows = readLedger(dir)
   const res = analyse(rows)
 
@@ -260,4 +339,7 @@ function main() {
 // pathToFileURL, not string surgery: on Windows argv[1] is `C:\...` and the URL
 // is `file:///C:/...` — a hand-built `file://` prefix is one slash short, the
 // comparison silently fails and the script exits printing nothing.
-if (import.meta.url === pathToFileURL(process.argv[1]).href) main()
+// M5: `main` is async and `--denials` awaits real I/O inside it. An un-awaited
+// call turns a thrown read error into an unhandled rejection — a stack trace on
+// stderr and exit 0, which a caller reads as a clean run that printed nothing.
+if (import.meta.url === pathToFileURL(process.argv[1]).href) main().catch(e => { console.error(e.message); process.exit(1) })
