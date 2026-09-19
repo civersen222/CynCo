@@ -15,6 +15,23 @@ export const defaultIo = {
     const r = spawnSync(cmd, args, { cwd, env: { ...process.env, ...(env ?? {}) }, encoding: 'utf8', timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024, windowsHide: true })
     return { status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '', timedOut: r.error?.code === 'ETIMEDOUT' }
   },
+  changedFiles(repo, base, head) {
+    const r = spawnSync('git', ['-C', repo, 'diff', '--name-only', `${base}..${head}`], { encoding: 'utf8', windowsHide: true })
+    return (r.stdout ?? '').split('\n').map(s => s.trim()).filter(Boolean)
+  },
+}
+
+// F147: the sweep's own `--tests` default is "the test files the diff itself
+// touched"; a fix-only wave delivers none, so the sweep refuses (exit 2) and
+// the row goes unlabeled even though the sealed gate and suite gate both
+// PASSed. `spec.keepGreen` already names the tests that own the area — hand
+// those over whenever the diff shipped no test file of its own. Pure so the
+// rule can be tested without a child process.
+export function sweepTestsFor(spec, changedFiles) {
+  const hasTestFile = (changedFiles ?? []).some(f => /(^|\/)test_[^/]*\.py$/.test(String(f).replace(/\\/g, '/')))
+  if (hasTestFile) return null
+  const tokens = String(spec.keepGreen ?? '').split(/\s+/).filter(t => t.endsWith('.py'))
+  return tokens.length ? tokens.join(' ') : null
 }
 
 function runGate(spec, io) {
@@ -55,7 +72,11 @@ function runSweep(spec, row, io) {
   // where the gate did not. `spec.sweep.max` buys the campaign a reading it
   // can afford; 25 stays the default for a spec that says nothing.
   const max = spec.sweep?.max ?? 25
-  const r = io.run('python', [resolve('scripts', 'cynco-mutation-sweep.py'), '--repo', spec.repo, '--base', base, '--head', head, '--max', String(max), '--json'], { cwd: process.cwd(), env: {}, timeoutMs: SWEEP_TIMEOUT_MS })
+  const changed = (io.changedFiles ?? defaultIo.changedFiles)(spec.repo, base, head)
+  const testsArg = sweepTestsFor(spec, changed)
+  const args = [resolve('scripts', 'cynco-mutation-sweep.py'), '--repo', spec.repo, '--base', base, '--head', head, '--max', String(max), '--json']
+  if (testsArg) args.push('--tests', testsArg)
+  const r = io.run('python', args, { cwd: process.cwd(), env: {}, timeoutMs: SWEEP_TIMEOUT_MS })
   if (r.timedOut) return { sweep: null, sweepFault: `timed out after ${SWEEP_TIMEOUT_MS} ms` }
   if (r.status === 2) return { sweep: null, sweepFault: 'sweep refused (exit 2)' }
   const last = (r.stdout + '').trim().split('\n').reverse().find(l => l.startsWith('{'))

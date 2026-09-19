@@ -130,7 +130,8 @@ wave: GENERATE (brief + sidecar from the
 previous wave's verbatim FAIL lines) → DISPATCH (`scripts/dispatch-mission.sh`
 with the wave's mission invariants, `DRIVER_PID_FILE`, `DRIVER_LOG`,
 `CYNCO_SKIP_IDLE_ENGINE=1`) → WAIT (poll the driver PID) → GRADE (sealed campaign
-gate, suite no-regression gate, derived mutation sweep, per-wave POSIWID; patches
+gate, suite no-regression gate, derived mutation sweep — handed the KEEP-GREEN
+test files when the diff delivered none — F147 — per-wave POSIWID; patches
 `verified` / `mutationSweep` / `gate` / `posiwid` onto the ledger row) → VERDICT
 (campaign-log entry, supervision economics, local commit on `campaign/<id>`,
 algedonic ntfy) → DECIDE (`pass` / `pass-with-survivors` / `next` / `budget` /
@@ -228,9 +229,5 @@ never touched.
   (CodeIndex-assisted Greps over identifier-shaped Greps) is printed per wave in
   the verdict entry but never compared against its 20 % target, and no decision
   reads it.
-- **Ideation at authority 0.5 reorders `work[]`.** `ideation.order` is parsed
-  and stored on every wave record, and `commander` records which seat held
-  `brief` authority — but nothing consumes either: the brief's work items stay
-  in spec order whatever the registry says. Promotion currently changes what is
-  RECORDED, not what is generated; consuming `order` is the follow-up that makes
-  the earned authority real.
+- **Ideation at authority 0.5 reorders `work[]`** — shipped 2026-09-18 (Phase 1):
+  `workOrderFor` in `scripts/cynco-brief.mjs`; `s4.workOrder` on the wave record.

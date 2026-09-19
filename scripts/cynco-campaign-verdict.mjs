@@ -66,7 +66,7 @@ export function verdictEntry({ spec, wave, row, grade, decision, ideationRecord,
   }
   if (capProposal) {
     const cap = capProposal.name.slice('invariants/'.length)
-    lines.push(`- **PROPOSAL ${capProposal.name} ${spec.invariants[cap]} → ${capProposal.newValue} (max ${capProposal.bounds.max}) — approve with --approve-proposal ${capProposal.name}.**`)
+    lines.push(`- **PROPOSAL ${capProposal.name} ${capProposal.currentValue ?? spec.invariants[cap]} → ${capProposal.newValue} (max ${capProposal.bounds.max}) — approve with --approve-proposal ${capProposal.name}.**`)
   }
   lines.push('')
   if (economicsLines?.length) { lines.push(`Economics after this wave: ${economicsLines.join(' ')}`); lines.push('') }

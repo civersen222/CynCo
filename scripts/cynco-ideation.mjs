@@ -157,7 +157,7 @@ export function capProposal(denialAnalysis, spec, state) {
     const min = spec.invariants[cap], max = spec.invariants[cap] * 2
     const newValue = Math.min(max, Math.round(current[cap] * CAP_PROPOSAL_FACTOR))
     if (newValue <= current[cap]) continue
-    return { type: 'Parameter', name: `invariants/${cap}`, newValue, bounds: { min, max }, status: 'pending', evidence: r }
+    return { type: 'Parameter', name: `invariants/${cap}`, newValue, currentValue: current[cap], bounds: { min, max }, status: 'pending', evidence: r }
   }
   return null
 }

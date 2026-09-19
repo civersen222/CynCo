@@ -785,4 +785,29 @@ describe('runWave — the Level 4 spine at VERDICT', () => {
     expect(rec.decision.kind).not.toBe('fault')
     expect(state.state.denialAnalysis ?? null).toBeNull()
   })
+
+  // §E: two proposals must not go pending in the same wave. A promotion
+  // proposal is computed BEFORE the cap proposal so it can suppress the cap
+  // one — otherwise a wave with both an earned-authority signal AND an INERT
+  // cap would push two pending proposals at once.
+  it('does not also raise a cap proposal in the wave a promotion proposal is raised', async () => {
+    const state = freshState()
+    // promotionProposal needs >= 8 ideated waves with a significant
+    // followed x landed association: 8 followed+landed, 4 not-followed+not-landed.
+    for (let i = 0; i < 8; i++) state.appendWave({ wave: i + 1, s4: { ideation: {}, followed: true }, outcome: { landed: true } })
+    for (let i = 0; i < 4; i++) state.appendWave({ wave: 8 + i + 1, s4: { ideation: {}, followed: false }, outcome: { landed: false } })
+    const inert = { invariant: 'edit-gap', denials: 80, complied: 2, changed: 3, compliedRate: 0.025, ci: [0.01, 0.09], baseRate: 0.3, p: 0.0001, pAdjusted: 0.0002, verdict: 'INERT' }
+    const seen = { notified: [] }
+    const io = gradedIo({
+      exportTriples: () => ({ summary: { denials: { 'edit-gap': { denials: 80, complied: 2, changed: 3 } }, quiet: { 'edit-gap': { calls: 1000, complied: 300 } } } }),
+      analyseDenials: () => ({ invariants: [inert] }),
+      notify: async (t) => { seen.notified.push(t); return true },
+    })
+    await runWave(spec, state, io)
+    const pending = state.state.proposals.filter(p => p.status === 'pending')
+    expect(pending).toHaveLength(1)
+    expect(pending[0].name).toBe('ideation/brief')
+    expect(seen.notified.some(t => /PROPOSAL ideation\/brief/.test(t))).toBe(true)
+    expect(seen.notified.some(t => /PROPOSAL invariants\//.test(t))).toBe(false)
+  })
 })

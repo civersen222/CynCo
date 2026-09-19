@@ -334,7 +334,13 @@ export async function runWave(spec, state, io = defaultIo) {
   let denialAnalysis = null
   try { denialAnalysis = (io.analyseDenials ?? defaultIo.analyseDenials)(io.exportTriples().summary); s.denialAnalysis = denialAnalysis }
   catch (e) { console.error(`[campaign] triples export/analysis skipped: ${e?.message ?? e}`) }
-  const cap = capProposal(denialAnalysis, spec, s)
+  // §E: two proposals must not go pending in the same wave. promotionProposal
+  // is computed FIRST; when it is about to be raised, capProposal is skipped
+  // entirely (set to null) rather than called — calling it here would see
+  // `s.proposals` before the promotion proposal below is pushed onto it, so
+  // its own pending check could not see the truth.
+  const proposal = promotionProposal(state.waves(), s.ideationAuthority ?? 0)
+  const cap = proposal ? null : capProposal(denialAnalysis, spec, s)
 
   // Verdict (campaign log, economics, local commit, algedonic).
   const ideationRecord = ideation ? { authority: s.ideationAuthority ?? 0, hypotheses: ideation.hypotheses, followed } : null
@@ -356,9 +362,8 @@ export async function runWave(spec, state, io = defaultIo) {
   s.consecutiveNoProgress = sameFails && commits.length === 0 ? (s.consecutiveNoProgress ?? 0) + 1 : 0
   s.waveCount = wave; s.lastBase = grade.sha ?? base; s.lastFails = grade.gate.fails.map(f => f.id); s.lastGrade = grade; s.lastRow = row; s.lastCommits = commits
   delete s.inFlight
-  const proposal = promotionProposal(state.waves(), s.ideationAuthority ?? 0)
   if (proposal && !s.proposals.some(p => p.status === 'pending')) { s.proposals.push({ ...proposal, proposedAt: new Date().toISOString() }); await tryNotify(io, `${spec.id}: PROPOSAL ${proposal.name} ${s.ideationAuthority ?? 0} → ${proposal.newValue} (max ${proposal.bounds.max}, p=${proposal.evidence.p.toFixed(3)}). Approve with --approve-proposal ${proposal.name}`) }
-  if (cap) { s.proposals.push({ ...cap, proposedAt: new Date().toISOString() }); await tryNotify(io, `${spec.id}: PROPOSAL ${cap.name} ${effectiveInvariants(spec, s)[cap.name.slice('invariants/'.length)]} → ${cap.newValue} (max ${cap.bounds.max}, p=${cap.evidence.pAdjusted.toFixed(3)}). Approve with --approve-proposal ${cap.name}`) }
+  if (cap) { s.proposals.push({ ...cap, proposedAt: new Date().toISOString() }); await tryNotify(io, `${spec.id}: PROPOSAL ${cap.name} ${cap.currentValue} → ${cap.newValue} (max ${cap.bounds.max}, p=${cap.evidence.pAdjusted.toFixed(3)}). Approve with --approve-proposal ${cap.name}`) }
   state.save()
   return rec
   } catch (e) {

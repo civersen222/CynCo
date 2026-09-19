@@ -90,12 +90,13 @@ describe('cap proposals and effective invariants', () => {
   it('proposes raising an INERT cap by 50% within [spec, 2×spec]', () => {
     const p = capProposal({ invariants: [inert('edit-gap'), quiet('commit-gap')] }, spec, { invariantOverrides: {}, proposals: [] })
     expect(CAP_PROPOSAL_FACTOR).toBe(1.5)
-    expect(p).toMatchObject({ type: 'Parameter', name: 'invariants/editGapCap', newValue: 60, bounds: { min: 40, max: 80 }, status: 'pending' })
+    expect(p).toMatchObject({ type: 'Parameter', name: 'invariants/editGapCap', newValue: 60, currentValue: 40, bounds: { min: 40, max: 80 }, status: 'pending' })
     expect(p.evidence.verdict).toBe('INERT')
   })
   it('raises from the current effective cap and never past the bound', () => {
     const p = capProposal({ invariants: [inert('edit-gap')] }, spec, { invariantOverrides: { editGapCap: 60 }, proposals: [] })
     expect(p.newValue).toBe(80)
+    expect(p.currentValue).toBe(60)
     expect(capProposal({ invariants: [inert('edit-gap')] }, spec, { invariantOverrides: { editGapCap: 80 }, proposals: [] })).toBeNull()
   })
   it('never proposes for revert, for a non-INERT verdict, or while a proposal is pending', () => {
