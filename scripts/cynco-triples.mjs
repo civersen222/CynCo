@@ -61,7 +61,7 @@ function invariantsSummary(inv) {
   }
 }
 
-const KINDS = ['edit-gap', 'commit-gap', 'revert']
+export const KINDS = ['edit-gap', 'commit-gap', 'revert']
 const emptyDenials = () => Object.fromEntries(KINDS.map(k => [k, { denials: 0, complied: 0, changed: 0 }]))
 const emptyQuiet = () => Object.fromEntries(KINDS.map(k => [k, { calls: 0, complied: 0 }]))
 

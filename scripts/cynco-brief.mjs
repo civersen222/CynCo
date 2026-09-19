@@ -4,6 +4,7 @@
 // file enforces structurally is 15: a gate line is COPIED, never restated —
 // there is no code path here that paraphrases one.
 import { IDEATION_MAX_AUTHORITY } from './cynco-ideation.mjs'
+import { complied, KINDS } from './cynco-triples.mjs'
 
 const wrap = (s) => String(s).replace(/\s+$/, '')
 
@@ -71,21 +72,22 @@ export function workOrderFor(spec, ctx) {
 }
 
 /** What the call after each denial was, per invariant — from the run-long
- *  aggregate when the engine wrote one, else from the 50-denial window. */
+ *  aggregate when the engine wrote one, else from the 50-denial window.
+ *  Compliance is the exporter's definition (scripts/cynco-triples.mjs
+ *  `complied`) — one rule, never re-derived, so PACING and the Level-4
+ *  dataset can't silently disagree on what "complied" means. */
 export function denialFollowUp(inv) {
   if (!inv) return null
-  const desired = { 'edit-gap': ['sourceEdit', 'commit'], 'commit-gap': ['commit'] }
-  const ok = (k, c) => k === 'revert' ? (c !== null && c !== undefined && c !== 'pending' && c !== 'revert') : (desired[k] ?? []).includes(c)
-  const byInvariant = { 'edit-gap': { denials: 0, complied: 0 }, 'commit-gap': { denials: 0, complied: 0 }, revert: { denials: 0, complied: 0 } }
+  const byInvariant = Object.fromEntries(KINDS.map(k => [k, { denials: 0, complied: 0 }]))
   if (inv.nextCallClassByInvariant) {
     for (const [k, classes] of Object.entries(inv.nextCallClassByInvariant)) for (const [c, n] of Object.entries(classes)) {
-      const b = byInvariant[k] ?? (byInvariant[k] = { denials: 0, complied: 0 }); b.denials += n; if (ok(k, c)) b.complied += n
+      const b = byInvariant[k] ?? (byInvariant[k] = { denials: 0, complied: 0 }); b.denials += n; if (complied(k, c)) b.complied += n
     }
   } else {
-    for (const d of inv.denials ?? []) { const b = byInvariant[d.invariant] ?? (byInvariant[d.invariant] = { denials: 0, complied: 0 }); b.denials += 1; if (ok(d.invariant, d.nextCallClass)) b.complied += 1 }
+    for (const d of inv.denials ?? []) { const b = byInvariant[d.invariant] ?? (byInvariant[d.invariant] = { denials: 0, complied: 0 }); b.denials += 1; if (complied(d.invariant, d.nextCallClass)) b.complied += 1 }
   }
-  const total = Object.values(byInvariant).reduce((a, b) => a + b.denials, 0), complied = Object.values(byInvariant).reduce((a, b) => a + b.complied, 0)
-  return { total, complied, byInvariant }
+  const total = Object.values(byInvariant).reduce((a, b) => a + b.denials, 0), compliedTotal = Object.values(byInvariant).reduce((a, b) => a + b.complied, 0)
+  return { total, complied: compliedTotal, byInvariant }
 }
 
 function ideation(ctx) {
@@ -118,7 +120,7 @@ function pacing(spec, ctx) {
       + (() => {
         const f = denialFollowUp(d)
         if (!f || f.total === 0) return ''
-        const per = ['edit-gap', 'commit-gap', 'revert'].map(k => `${k} ${f.byInvariant[k]?.complied ?? 0}/${f.byInvariant[k]?.denials ?? 0}`).join(', ')
+        const per = KINDS.map(k => `${k} ${f.byInvariant[k]?.complied ?? 0}/${f.byInvariant[k]?.denials ?? 0}`).join(', ')
         const camp = Array.isArray(ctx.denialDigest)
           ? `; campaign to date ${ctx.denialDigest.filter(r => r.invariant !== 'revert').map(r => `${r.invariant} ${r.complied}/${r.denials}`).join(', ')}`
           : ''
