@@ -31,7 +31,7 @@ function bashByEffectLine(ts) {
   return `- Bash by effect: read ${be.read ?? 0}, write ${be.write ?? 0}, run ${be.run ?? 0}, commit ${be.commit ?? 0}, revert ${be.revert ?? 0}, other ${be.other ?? 0} (sum ${sum} vs byName.Bash ${bashByName} — ${sum === bashByName ? 'agree' : 'DISAGREE'}).`
 }
 
-export function verdictEntry({ spec, wave, row, grade, decision, ideationRecord, economicsLines, denialAnalysis = null, capProposal = null }) {
+export function verdictEntry({ spec, wave, row, grade, decision, ideationRecord, economicsLines, denialAnalysis = null, denialScope = 'campaign', capProposal = null }) {
   const ts = row.toolStats ?? {}
   const inv = row.invariants
   const rejected = row.invariantsRejected === true
@@ -59,7 +59,11 @@ export function verdictEntry({ spec, wave, row, grade, decision, ideationRecord,
   lines.push(`- Ledger: verified ${grade.verified === null ? 'null (harness fault)' : grade.verified}; mutationSweep ${grade.sweep ? 'recorded (derived)' : 'null'}.`)
   if (denialAnalysis?.invariants) {
     const pct = v => v === null ? '—' : (v * 100).toFixed(1) + '%'
-    lines.push(`- Denials (campaign to date): ${denialAnalysis.invariants.map(r =>
+    // The scope is part of the claim: a pooled reading is every run in the
+    // ledger, not this campaign, and a verdict must not label it "campaign to
+    // date" just because that reads better.
+    const scope = denialScope === 'campaign' ? 'campaign to date' : 'all runs — no campaign block yet'
+    lines.push(`- Denials (${scope}): ${denialAnalysis.invariants.map(r =>
       r.invariant === 'revert' || r.verdict === 'TOO FEW'
         ? `${r.invariant} ${r.complied}/${r.denials} (${r.verdict})`
         : `${r.invariant} ${r.complied}/${r.denials} complied (quiet rate ${pct(r.baseRate)}, ${r.verdict})`).join('; ')}.`)

@@ -71,13 +71,28 @@ export function buildTriples({ rows, campaigns }) {
   const summary = { generatedAt: new Date().toISOString(), counts: { denial: 0, ideation: 0, wave: 0 }, campaigns: {}, denials: emptyDenials(), quiet: emptyQuiet() }
   const seen = new Set()
 
+  /**
+   * One pass over a mission's denials feeds every block that owns them: the
+   * POOLED block (every row in the ledger — what `--denials` reports) and,
+   * when the row belongs to a campaign, that campaign's own block. A verdict
+   * that says "campaign to date" must be reading the campaign's block; a row
+   * with no campaign (a hand run) lands in the pooled block only.
+   *
+   * `denialRecords` is computed ONCE and reused for the quiet base rate below:
+   * a second call would be a second, independently-derived answer to the same
+   * question.
+   */
   const addDenials = (row, ctx) => {
     const denials = denialRecords(row, ctx)
+    const campaignBlock = ctx.campaign ? summary.campaigns[ctx.campaign] ?? null : null
+    const blocks = campaignBlock ? [summary, campaignBlock] : [summary]
     for (const d of denials) {
       records.push(d)
       summary.counts.denial += 1
-      const s = summary.denials[d.invariant] ?? (summary.denials[d.invariant] = { denials: 0, complied: 0, changed: 0 })
-      s.denials += d.count; if (d.complied) s.complied += d.count; if (d.changed) s.changed += d.count
+      for (const block of blocks) {
+        const s = block.denials[d.invariant] ?? (block.denials[d.invariant] = { denials: 0, complied: 0, changed: 0 })
+        s.denials += d.count; if (d.complied) s.complied += d.count; if (d.changed) s.changed += d.count
+      }
     }
     // Ruling 4: the quiet-call base rate, per mission.
     const inv = row.invariants
@@ -87,13 +102,15 @@ export function buildTriples({ rows, campaigns }) {
     const calls = Math.max(0, total - denialCount)
     const compliedOf = (k) => denials.filter(d => d.invariant === k && d.complied).reduce((a, d) => a + d.count, 0)
     const edits = row.toolStats?.byClass?.sourceEdit ?? 0, commits = row.toolStats?.commits ?? 0
-    summary.quiet['edit-gap'].calls += calls; summary.quiet['edit-gap'].complied += Math.max(0, edits + commits - compliedOf('edit-gap'))
-    summary.quiet['commit-gap'].calls += calls; summary.quiet['commit-gap'].complied += Math.max(0, commits - compliedOf('commit-gap'))
-    summary.quiet.revert.calls += calls; summary.quiet.revert.complied += calls
+    for (const block of blocks) {
+      block.quiet['edit-gap'].calls += calls; block.quiet['edit-gap'].complied += Math.max(0, edits + commits - compliedOf('edit-gap'))
+      block.quiet['commit-gap'].calls += calls; block.quiet['commit-gap'].complied += Math.max(0, commits - compliedOf('commit-gap'))
+      block.quiet.revert.calls += calls; block.quiet.revert.complied += calls
+    }
   }
 
   for (const c of campaigns ?? []) {
-    const cs = { waves: 0, ideated: 0, followedLanded: { a: 0, b: 0, c: 0, d: 0 } }
+    const cs = { waves: 0, ideated: 0, followedLanded: { a: 0, b: 0, c: 0, d: 0 }, denials: emptyDenials(), quiet: emptyQuiet() }
     summary.campaigns[c.id] = cs
     let before = (c.state?.calibration?.baseFails ?? []).map(f => f.id)
     for (const w of c.waves ?? []) {
@@ -121,7 +138,11 @@ export function buildTriples({ rows, campaigns }) {
           const key = w.s4.followed ? (landed ? 'a' : 'b') : (landed ? 'c' : 'd'); cs.followedLanded[key] += 1
         }
       }
-      if (row) { addDenials(row, { campaign: c.id, wave: w.wave }); seen.add(row.missionId) }
+      // I3: an ADOPT re-grade appends a SECOND wave record for the same
+      // missionId. Both records are real gradings and both are kept — but the
+      // row's denials are one mission's worth of evidence, so they are counted
+      // against the first wave record that claims the mission and no other.
+      if (row && !seen.has(row.missionId)) { addDenials(row, { campaign: c.id, wave: w.wave }); seen.add(row.missionId) }
       if (failsAfter) before = failsAfter
     }
   }

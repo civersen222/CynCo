@@ -95,7 +95,7 @@ describe('buildTriples', () => {
     const i = records.find(r => r.kind === 'ideation')
     expect(i).toMatchObject({ campaign: 'c8', wave: 2, missionId: 'c8-wave2-1', authority: 0, commander: 'generator', hypotheses: 1, followed: true, landed: true, verified: true, decision: 'next', order: ['C'], workOrderApplied: false })
     expect(summary.counts).toEqual({ denial: 3, ideation: 1, wave: 2 })
-    expect(summary.campaigns.c8).toEqual({ waves: 2, ideated: 1, followedLanded: { a: 1, b: 0, c: 0, d: 0 } })
+    expect(summary.campaigns.c8).toMatchObject({ waves: 2, ideated: 1, followedLanded: { a: 1, b: 0, c: 0, d: 0 } })
     expect(summary.denials['edit-gap']).toEqual({ denials: 2, complied: 1, changed: 1 })
     expect(summary.denials.revert).toEqual({ denials: 1, complied: 1, changed: 0 })
     // quiet base-rate inputs (ruling 4): 100 − 3 = 97 quiet calls; edit-gap quiet compliance = 20 + 4 − 1
@@ -103,6 +103,48 @@ describe('buildTriples', () => {
     expect(summary.quiet['commit-gap']).toEqual({ calls: 97, complied: 4 })
     expect(summary.quiet.revert).toEqual({ calls: 97, complied: 97 })
   })
+  // I1: "campaign to date" is a claim about ONE campaign. The pooled block is
+  // still the whole ledger (it is what `--denials` reports), but a per-campaign
+  // block has to exist beside it or a verdict for c8 quotes c9's denials too.
+  it('accumulates a per-campaign denial block beside the pooled one', () => {
+    const c8 = { id: 'c8', state: { calibration: { baseFails: [] } }, waves: [wave({ wave: 1, missionId: 'c8-wave1-1' })] }
+    const c9 = { id: 'c9', state: { calibration: { baseFails: [] } }, waves: [wave({ wave: 1, missionId: 'c9-wave1-1' })] }
+    const { summary } = buildTriples({
+      rows: [row({ missionId: 'c8-wave1-1' }), row({ missionId: 'c9-wave1-1' }), row({ missionId: 'hand-run-1' })],
+      campaigns: [c8, c9],
+    })
+    // Pooled = all three rows.
+    expect(summary.denials['edit-gap']).toEqual({ denials: 6, complied: 3, changed: 3 })
+    expect(summary.denials.revert).toEqual({ denials: 3, complied: 3, changed: 0 })
+    expect(summary.quiet['edit-gap']).toEqual({ calls: 291, complied: 69 })
+    // Per campaign = that campaign's rows only.
+    expect(summary.campaigns.c8.denials['edit-gap']).toEqual({ denials: 2, complied: 1, changed: 1 })
+    expect(summary.campaigns.c9.denials['edit-gap']).toEqual({ denials: 2, complied: 1, changed: 1 })
+    expect(summary.campaigns.c8.quiet['edit-gap']).toEqual({ calls: 97, complied: 23 })
+    expect(summary.campaigns.c8.quiet.revert).toEqual({ calls: 97, complied: 97 })
+    // The hand run has no campaign, so it is in neither campaign block — the
+    // pooled totals above are the only place it shows up.
+    const c8Total = Object.values(summary.campaigns.c8.denials).reduce((a, b) => a + b.denials, 0)
+    const c9Total = Object.values(summary.campaigns.c9.denials).reduce((a, b) => a + b.denials, 0)
+    const pooled = Object.values(summary.denials).reduce((a, b) => a + b.denials, 0)
+    expect(c8Total).toBe(3); expect(c9Total).toBe(3); expect(pooled).toBe(9)
+  })
+
+  // I3: an ADOPT re-grade writes a SECOND wave record for the same missionId.
+  // Both records are real gradings and both are kept — but the row's denials
+  // are one mission's worth of evidence and must be counted once.
+  it('counts the denials of a re-graded mission once while keeping both wave records', () => {
+    const w1 = wave({ wave: 2, missionId: 'c8-wave2-1' })
+    const w2 = wave({ wave: 3, missionId: 'c8-wave2-1' })
+    const { records, summary } = buildTriples({ rows: [row()], campaigns: [campaign([w1, w2])] })
+    expect(records.filter(r => r.kind === 'wave')).toHaveLength(2)
+    expect(records.filter(r => r.kind === 'denial')).toHaveLength(3)
+    expect(summary.counts.denial).toBe(3)
+    expect(summary.denials['edit-gap']).toEqual({ denials: 2, complied: 1, changed: 1 })
+    expect(summary.campaigns.c8.denials['edit-gap']).toEqual({ denials: 2, complied: 1, changed: 1 })
+    expect(summary.quiet['edit-gap']).toEqual({ calls: 97, complied: 23 })
+  })
+
   it('a row with invariants but no wave record still yields denial records with campaign null', () => {
     const { records } = buildTriples({ rows: [row({ missionId: 'hand-run-1' })], campaigns: [] })
     expect(records.filter(r => r.kind === 'denial').every(r => r.campaign === null && r.wave === null)).toBe(true)

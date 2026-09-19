@@ -811,3 +811,58 @@ describe('runWave — the Level 4 spine at VERDICT', () => {
     expect(seen.notified.some(t => /PROPOSAL invariants\//.test(t))).toBe(false)
   })
 })
+
+// I1: "campaign to date" is a claim about THIS campaign. The exporter's pooled
+// block is every run in the ledger; a c8 verdict that quotes it is quoting c9
+// and every hand run too. These two tests use the REAL analyseDenials so the
+// verdict is decided by the numbers the runner actually picked up, not by a
+// fake that would agree with either block.
+describe('runWave — the denial analysis reads THIS campaign, and says so', () => {
+  const gradedIo = (over = {}) => ({
+    writeBrief: (p) => p,
+    dispatch: async () => ({ missionId: 'c8-wave1-1' }),
+    waitForDriver: async () => ({ exited: true }),
+    readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', toolStats: {} }),
+    commitsBetween: () => [],
+    grade: async () => g(),
+    salvageOf: () => null,
+    patchRow: () => {},
+    commit: () => ({ sha: 'v1' }),
+    notify: async () => true,
+    economics: () => [],
+    appendLog: () => {},
+    ...over,
+  })
+  // The pooled block reads EFFECTIVE; c8's own block reads INERT. Only a runner
+  // reading the campaign block raises the cap proposal.
+  const POOLED_EFFECTIVE = { 'edit-gap': { denials: 60, complied: 50, changed: 55 }, 'commit-gap': { denials: 0, complied: 0, changed: 0 }, revert: { denials: 5, complied: 5, changed: 0 } }
+  const POOLED_QUIET = { 'edit-gap': { calls: 1000, complied: 200 }, 'commit-gap': { calls: 1000, complied: 10 }, revert: { calls: 1000, complied: 1000 } }
+  const C8_INERT = { 'edit-gap': { denials: 80, complied: 2, changed: 3 }, 'commit-gap': { denials: 0, complied: 0, changed: 0 }, revert: { denials: 5, complied: 5, changed: 0 } }
+  const C8_QUIET = { 'edit-gap': { calls: 1000, complied: 300 }, 'commit-gap': { calls: 1000, complied: 10 }, revert: { calls: 1000, complied: 1000 } }
+
+  it('analyses the campaign block, not the pool, and labels the verdict line "campaign to date"', async () => {
+    const state = freshState()
+    const logged = []
+    const io = gradedIo({
+      exportTriples: () => ({ summary: { denials: POOLED_EFFECTIVE, quiet: POOLED_QUIET, campaigns: { c8: { denials: C8_INERT, quiet: C8_QUIET } } } }),
+      appendLog: (t) => logged.push(t),
+    })
+    await runWave(spec, state, io)
+    const e = state.state.denialAnalysis.invariants.find(x => x.invariant === 'edit-gap')
+    expect(e.denials).toBe(80); expect(e.verdict).toBe('INERT')
+    expect(state.state.proposals[0]).toMatchObject({ name: 'invariants/editGapCap', status: 'pending' })
+    expect(logged.join('\n')).toMatch(/- Denials \(campaign to date\):/)
+  })
+
+  it('falls back to the pool when the campaign has no block yet, and says which it read', async () => {
+    const state = freshState()
+    const logged = []
+    const io = gradedIo({
+      exportTriples: () => ({ summary: { denials: C8_INERT, quiet: C8_QUIET, campaigns: {} } }),
+      appendLog: (t) => logged.push(t),
+    })
+    await runWave(spec, state, io)
+    expect(state.state.denialAnalysis.invariants.find(x => x.invariant === 'edit-gap').denials).toBe(80)
+    expect(logged.join('\n')).toMatch(/- Denials \(all runs — no campaign block yet\):/)
+  })
+})

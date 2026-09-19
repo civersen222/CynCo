@@ -331,9 +331,22 @@ export async function runWave(spec, state, io = defaultIo) {
   // The Level 4 spine: every verdict regenerates the dataset and re-asks
   // whether the denials change anything. A failure here is logged, never a
   // fault — the dataset is rebuilt in full next time, so nothing is lost.
-  let denialAnalysis = null
-  try { denialAnalysis = (io.analyseDenials ?? defaultIo.analyseDenials)(io.exportTriples().summary); s.denialAnalysis = denialAnalysis }
-  catch (e) { console.error(`[campaign] triples export/analysis skipped: ${e?.message ?? e}`) }
+  //
+  // I1: "campaign to date" is a claim about THIS campaign. The exporter's
+  // pooled block is every run in the whole ledger — hand runs and other
+  // campaigns included — so the campaign's own block is what a c8 verdict and
+  // a c8 cap proposal must be built from. A summary with no block for this
+  // campaign (nothing graded under it yet) falls back to the pool, and the
+  // verdict line then says which of the two it is reading.
+  let denialAnalysis = null, denialScope = 'campaign'
+  try {
+    const summary = io.exportTriples().summary
+    const camp = summary?.campaigns?.[spec.id]
+    const scoped = camp?.denials ? { denials: camp.denials, quiet: camp.quiet ?? {} } : null
+    denialScope = scoped ? 'campaign' : 'all runs'
+    denialAnalysis = (io.analyseDenials ?? defaultIo.analyseDenials)(scoped ?? { denials: summary?.denials, quiet: summary?.quiet })
+    s.denialAnalysis = denialAnalysis
+  } catch (e) { console.error(`[campaign] triples export/analysis skipped: ${e?.message ?? e}`) }
   // §E: two proposals must not go pending in the same wave. promotionProposal
   // is computed FIRST; when it is about to be raised, capProposal is skipped
   // entirely (set to null) rather than called — calling it here would see
@@ -344,7 +357,7 @@ export async function runWave(spec, state, io = defaultIo) {
 
   // Verdict (campaign log, economics, local commit, algedonic).
   const ideationRecord = ideation ? { authority: s.ideationAuthority ?? 0, hypotheses: ideation.hypotheses, followed } : null
-  const entry = verdictEntry({ spec, wave, row, grade, decision, ideationRecord, economicsLines: io.economics(), denialAnalysis, capProposal: cap })
+  const entry = verdictEntry({ spec, wave, row, grade, decision, ideationRecord, economicsLines: io.economics(), denialAnalysis, denialScope, capProposal: cap })
   io.appendLog(entry)
   // Ruling 5: commitVerdict matches these against `git status --porcelain`,
   // which speaks repo-relative forward slashes and nothing else.
