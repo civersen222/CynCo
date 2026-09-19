@@ -75,7 +75,12 @@ export function workOrderFor(spec, ctx) {
  *  aggregate when the engine wrote one, else from the 50-denial window.
  *  Compliance is the exporter's definition (scripts/cynco-triples.mjs
  *  `complied`) — one rule, never re-derived, so PACING and the Level-4
- *  dataset can't silently disagree on what "complied" means. */
+ *  dataset can't silently disagree on what "complied" means.
+ *
+ *  M6: `windowed` says the count below is the tail, not the run. A row that
+ *  predates `nextCallClassByInvariant` only carries the last 50 denials, so a
+ *  run with 80 of them reads "50" — and PACING must not tell the model those
+ *  were all of them. */
 export function denialFollowUp(inv) {
   if (!inv) return null
   const byInvariant = Object.fromEntries(KINDS.map(k => [k, { denials: 0, complied: 0 }]))
@@ -87,7 +92,8 @@ export function denialFollowUp(inv) {
     for (const d of inv.denials ?? []) { const b = byInvariant[d.invariant] ?? (byInvariant[d.invariant] = { denials: 0, complied: 0 }); b.denials += 1; if (complied(d.invariant, d.nextCallClass)) b.complied += 1 }
   }
   const total = Object.values(byInvariant).reduce((a, b) => a + b.denials, 0), compliedTotal = Object.values(byInvariant).reduce((a, b) => a + b.complied, 0)
-  return { total, complied: compliedTotal, byInvariant }
+  const windowed = !inv.nextCallClassByInvariant && (inv.denials?.length ?? 0) < (inv.denialCount ?? 0)
+  return { total, complied: compliedTotal, byInvariant, windowed }
 }
 
 function ideation(ctx) {
@@ -124,7 +130,10 @@ function pacing(spec, ctx) {
         const camp = Array.isArray(ctx.denialDigest)
           ? `; campaign to date ${ctx.denialDigest.filter(r => r.invariant !== 'revert').map(r => `${r.invariant} ${r.complied}/${r.denials}`).join(', ')}`
           : ''
-        return ` Of those ${f.total} denials, ${f.complied} were followed by the call they asked for (${per})${camp}.`
+        // M6: "those N" refers back to the denial count printed above it. When
+        // the follow-up could only be read off the 50-denial window, N is not
+        // that number and saying "those" would misreport the run.
+        return ` Of ${f.windowed ? 'the last' : 'those'} ${f.total} denials, ${f.complied} were followed by the call they asked for (${per})${camp}.`
       })()
   })() : ''
   return wrap(`PACING (enforced by the engine, not advice)

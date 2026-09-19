@@ -15,8 +15,18 @@ export const defaultIo = {
     const r = spawnSync(cmd, args, { cwd, env: { ...process.env, ...(env ?? {}) }, encoding: 'utf8', timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024, windowsHide: true })
     return { status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '', timedOut: r.error?.code === 'ETIMEDOUT' }
   },
+  // I4: a failed `git diff` used to come back as an empty list, and an empty
+  // list is the exact signal sweepTestsFor reads as "the diff shipped no test
+  // file" — so a broken git silently widened the sweep to the whole keep-green
+  // suite and the reading looked normal. `null` means "I do not know what
+  // changed", and runSweep then leaves `--tests` off so the sweep's own
+  // refusal is the visible finding.
   changedFiles(repo, base, head) {
     const r = spawnSync('git', ['-C', repo, 'diff', '--name-only', `${base}..${head}`], { encoding: 'utf8', windowsHide: true })
+    if (r.error || r.status !== 0) {
+      console.error(`[grade] git diff --name-only ${base}..${head} failed: ${r.error?.message ?? r.stderr ?? `exit ${r.status}`}`)
+      return null
+    }
     return (r.stdout ?? '').split('\n').map(s => s.trim()).filter(Boolean)
   },
 }
@@ -73,7 +83,11 @@ function runSweep(spec, row, io) {
   // can afford; 25 stays the default for a spec that says nothing.
   const max = spec.sweep?.max ?? 25
   const changed = (io.changedFiles ?? defaultIo.changedFiles)(spec.repo, base, head)
-  const testsArg = sweepTestsFor(spec, changed)
+  // I4: `null` is "the diff could not be read" — not "the diff shipped no test
+  // file". Substituting the keep-green suite here would change what the sweep
+  // measures on the strength of a guess; leaving `--tests` off lets the sweep
+  // refuse, and the refusal is recorded as the sweepFault it is.
+  const testsArg = changed === null ? null : sweepTestsFor(spec, changed)
   const args = [resolve('scripts', 'cynco-mutation-sweep.py'), '--repo', spec.repo, '--base', base, '--head', head, '--max', String(max), '--json']
   if (testsArg) args.push('--tests', testsArg)
   const r = io.run('python', args, { cwd: process.cwd(), env: {}, timeoutMs: SWEEP_TIMEOUT_MS })

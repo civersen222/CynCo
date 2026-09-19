@@ -1,6 +1,8 @@
-import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
-import { gradeWave, sweepTestsFor } from '../cynco-campaign-grade.mjs'
+import { describe, it, expect, vi } from 'vitest'
+import { readFileSync, mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { gradeWave, sweepTestsFor, defaultIo } from '../cynco-campaign-grade.mjs'
 
 const baseLog = readFileSync(new URL('./fixtures/gate_c8_base.log', import.meta.url), 'utf8')
 const spec = { repo: 'C:/repo', gate: 'C:/Users/civer/.cynco/heldout/civkings-redesign/c8/gate_c8.py', suiteBaseline: 'C:/x/suite_baseline.txt',
@@ -117,6 +119,38 @@ describe('gradeWave', () => {
     ], () => ['gilded/ui/broadsheet.py', 'gilded/tests/test_c8_tiers.py'])
     const g = await gradeWave({ ...spec, keepGreen: c8KeepGreen }, row, io)
     expect(io.calls[2].args).not.toContain('--tests')
+  })
+
+  // I4: an unreadable diff is not "the diff shipped no test file". Widening
+  // the sweep to the whole keep-green suite on the strength of a failed git
+  // call changes what the instrument measures and says nothing about it.
+  it('does not widen the sweep when the diff could not be read at all', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const io = fakeIo([
+      [/gate_c8\.py/, { status: 0, stdout: 'GATE: PASS\n' }],
+      [/g_suite_no_regression\.py/, { status: 0, stdout: 'g_suite: PASS' }],
+      [/cynco-mutation-sweep\.py/, { status: 2, stdout: '' }],
+    ], () => null)
+    const g = await gradeWave({ ...spec, keepGreen: c8KeepGreen }, row, io)
+    expect(io.calls[2].args).not.toContain('--tests')
+    // the sweep's own refusal is the visible finding, not a quiet substitution
+    expect(g.sweepFault).toBe('sweep refused (exit 2)')
+    // the io fake owns the logging here; runSweep must not add its own
+    expect(err).not.toHaveBeenCalled()
+    err.mockRestore()
+  })
+})
+
+// I4 at the defaultIo level: the real `git diff` against a path that is not a
+// repository must come back as null and say why, not as an empty diff.
+describe('defaultIo.changedFiles', () => {
+  it('returns null and names the failure when git cannot read the range', () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const bogus = join(mkdtempSync(join(tmpdir(), 'not-a-repo-')), 'nope')
+    expect(defaultIo.changedFiles(bogus, '1d03308', '1bc0f8c')).toBeNull()
+    expect(err).toHaveBeenCalledTimes(1)
+    expect(err.mock.calls[0][0]).toMatch(/^\[grade\] git diff --name-only 1d03308\.\.1bc0f8c failed: /)
+    err.mockRestore()
   })
 })
 

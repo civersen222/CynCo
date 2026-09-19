@@ -260,3 +260,38 @@ describe('analyse with a custom firedOf', () => {
     expect(analyse(rows).rules).toEqual([])
   })
 })
+
+// M8: the S5 path had no golden. Every other test here pins one number at a
+// time, so a change to the table's SHAPE — a renamed field, a dropped
+// pAdjusted, a reordered rules array — passes them all. This pins the whole
+// object, byte for byte, and pins the default `firedOf` to `rulesFired` at the
+// same time: the two calls must be the same call.
+describe('analyse — the S5 golden table', () => {
+  const m = (ruleIds, verified) => ({ outcome: 'landed', verified, mutationSweep: { kind: 'derived', survived: [] }, s5Decisions: ruleIds.length ? [{ ruleIds }] : [] })
+  // Six labeled missions, two rules. `no-test-no-land` fires on 3 (2 failed),
+  // `commit-before-edit` on 2 (0 failed), and one failed mission fires neither.
+  const rows = [
+    m(['no-test-no-land'], false),
+    m(['no-test-no-land'], false),
+    m(['no-test-no-land'], true),
+    m(['commit-before-edit'], true),
+    m(['commit-before-edit'], true),
+    m([], false),
+  ]
+  const EXPECTED = {
+    total: 6, labeled: 6, failures: 3, base: 0.5, rulesTested: 2,
+    rules: [
+      { id: 'no-test-no-land', firedTotal: 3, labeled: 3, failures: 2, precision: 0.6666666666666666,
+        ci: [0.20765495512648788, 0.9385096847238393], lift: 0.16666666666666663,
+        p: 0.9999999999999961, coverage: 0.5, pAdjusted: 0.9999999999999961 },
+      { id: 'commit-before-edit', firedTotal: 2, labeled: 2, failures: 0, precision: 0,
+        ci: [0, 0.6576280471103807], lift: -0.5,
+        p: 0.39999999999999836, coverage: 0.3333333333333333, pAdjusted: 0.7999999999999967 },
+    ],
+  }
+
+  it('produces the checked-in table, and the default firedOf IS rulesFired', () => {
+    expect(JSON.stringify(analyse(rows))).toBe(JSON.stringify(analyse(rows, { firedOf: rulesFired })))
+    expect(JSON.stringify(analyse(rows))).toBe(JSON.stringify(EXPECTED))
+  })
+})

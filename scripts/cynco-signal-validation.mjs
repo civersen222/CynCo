@@ -339,4 +339,7 @@ async function main() {
 // pathToFileURL, not string surgery: on Windows argv[1] is `C:\...` and the URL
 // is `file:///C:/...` — a hand-built `file://` prefix is one slash short, the
 // comparison silently fails and the script exits printing nothing.
-if (import.meta.url === pathToFileURL(process.argv[1]).href) main()
+// M5: `main` is async and `--denials` awaits real I/O inside it. An un-awaited
+// call turns a thrown read error into an unhandled rejection — a stack trace on
+// stderr and exit 0, which a caller reads as a clean run that printed nothing.
+if (import.meta.url === pathToFileURL(process.argv[1]).href) main().catch(e => { console.error(e.message); process.exit(1) })
