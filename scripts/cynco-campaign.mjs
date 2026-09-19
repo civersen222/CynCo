@@ -199,7 +199,8 @@ export function waveContext(spec, s, io = defaultIo) {
     ? { missionId: s.lastRow.missionId, exitReason: s.lastRow.exitReason, durationS: s.lastRow.durationS, commits: s.lastCommits ?? [], toolStats: s.lastRow.toolStats, invariants: s.lastRow.invariants ?? null, verify: s.lastRow.verify, posiwid: s.lastGrade?.posiwid ?? null }
     : null
   const salvage = s.lastRow ? io.salvageOf(s.lastRow.missionId) : null
-  return { wave, base, fails, passes, prior, salvage, ideation: null }
+  return { wave, base, fails, passes, prior, salvage, ideation: null,
+           ideationAuthority: s.ideationAuthority ?? 0, invariants: effectiveInvariants(spec, s), denialDigest: s.denialAnalysis?.invariants ?? null }
 }
 
 export async function runWave(spec, state, io = defaultIo) {

@@ -728,3 +728,15 @@ describe('dirtyOutsideCampaign', () => {
     ])
   })
 })
+
+describe('waveContext — Phase 1 fields', () => {
+  it('carries the ideation authority, the effective invariants, and the denial digest', () => {
+    const s = { waveCount: 1, lastBase: 'abc', lastGrade: null, lastRow: null, ideationAuthority: 0.5, invariantOverrides: { editGapCap: 60 }, denialAnalysis: { invariants: [{ invariant: 'edit-gap', denials: 1, complied: 0, verdict: 'TOO FEW' }] }, calibration: { baseFails: [], basePasses: [] } }
+    const ctx = waveContext(spec, s, { salvageOf: () => null })
+    expect(ctx.ideationAuthority).toBe(0.5)
+    expect(ctx.invariants).toEqual({ ...spec.invariants, editGapCap: 60 })
+    expect(ctx.denialDigest).toEqual(s.denialAnalysis.invariants)
+    const bare = waveContext(spec, { waveCount: 0, calibration: { baseFails: [], basePasses: [] } }, { salvageOf: () => null })
+    expect(bare.ideationAuthority).toBe(0); expect(bare.invariants).toEqual(spec.invariants); expect(bare.denialDigest).toBeNull()
+  })
+})
