@@ -18,12 +18,14 @@ import { cyncoHome } from '../engine/paths.js'
 import { loadCampaignSpec, checkIdentity } from './cynco-campaign-spec.mjs'
 import { CampaignState } from './cynco-campaign-state.mjs'
 import { calibrate, defaultIo as calibrateIo } from './cynco-campaign-calibrate.mjs'
-import { generateBrief, sidecarFor } from './cynco-brief.mjs'
+import { generateBrief, sidecarFor, workOrderFor } from './cynco-brief.mjs'
 import { gradeWave } from './cynco-campaign-grade.mjs'
 import { verdictEntry, notify, commitVerdict, economicsLines } from './cynco-campaign-verdict.mjs'
 import { runIdeation, measureFollowed, authorityRegistry, promotionProposal, capProposal, effectiveInvariants } from './cynco-ideation.mjs'
 import { patchLedgerRow, findLedgerRow } from './cynco-ledger-patch.mjs'
 import { sidecarPath } from './cynco-contract.mjs'
+import { exportTriples } from './cynco-triples.mjs'
+import { analyseDenials } from './cynco-signal-validation.mjs'
 
 const BRIEFS_DIR = 'docs/civkings-redesign-briefs'
 const LOG = `${BRIEFS_DIR}/campaign-log.md`
@@ -179,6 +181,8 @@ export const defaultIo = {
   notify: (t) => notify(t),
   economics: () => economicsLines(),
   appendLog: (text) => appendFileSync(LOG, '\n' + text),
+  exportTriples: () => exportTriples(),
+  analyseDenials: (summary) => analyseDenials(summary),
 }
 
 /**
@@ -221,7 +225,7 @@ export async function runWave(spec, state, io = defaultIo) {
   const commander = registry.whoCommands('brief')?.component ?? 'generator'
 
   let ideation = null, ideationMeta = null
-  let missionId, row, briefFile, dispatchedAt, waveFiles
+  let missionId, row, briefFile, dispatchedAt, waveFiles, workOrder
 
   if (s.adoptedRow) {
     // ADOPT (scripts/cynco-campaign-adopt.mjs): this wave already RAN — it was
@@ -240,6 +244,7 @@ export async function runWave(spec, state, io = defaultIo) {
     // commitVerdict hands `files` straight to `git add`, where one missing
     // pathspec stages nothing at all.
     waveFiles = [repoRel(briefFile), repoRel(sidecarPath(briefFile))].filter(f => existsSync(f))
+    workOrder = null
     console.log(`[campaign] ADOPT ${missionId} — grading a wave that already ran (brief ${repoRel(briefFile)}); GENERATE/DISPATCH/WAIT skipped`)
   } else {
     // An empty FAIL set means the last grade said PASS. The brief generator
@@ -261,8 +266,12 @@ export async function runWave(spec, state, io = defaultIo) {
       }
     }
 
-    // S4, occupant A (binding).
-    const text = generateBrief(spec, { ...ctx, ideation })
+    // S4, occupant A (binding). One context object feeds both the brief text
+    // and the work order it recorded — what is recorded must be what was
+    // printed, never a second, independently-computed guess at it.
+    const briefCtx = { ...ctx, ideation }
+    const text = generateBrief(spec, briefCtx)
+    workOrder = workOrderFor(spec, briefCtx)
     // checkIdentity guards the spec's own fields, but the ideation section is
     // written by a model that just read the repo. A brief naming the sealed
     // gate would be refused by sealedPaths mid-run, after the wall clock has
@@ -319,9 +328,17 @@ export async function runWave(spec, state, io = defaultIo) {
     gate: { sha: grade.sha, gateSha256, terminator: grade.gate.terminator, fails: grade.gate.fails.map(f => f.line), passes: grade.gate.passes.length, priorRegressions: grade.gate.priorRegressions, suiteRegressions: grade.suite.regressions, harnessFault: grade.gate.harnessFault ?? grade.suite.harnessFault ?? null },
     posiwid: { divergence: grade.posiwid.divergence, verdict: grade.posiwid.verdict, dominantObserved: grade.posiwid.dominantObserved } })
 
+  // The Level 4 spine: every verdict regenerates the dataset and re-asks
+  // whether the denials change anything. A failure here is logged, never a
+  // fault — the dataset is rebuilt in full next time, so nothing is lost.
+  let denialAnalysis = null
+  try { denialAnalysis = (io.analyseDenials ?? defaultIo.analyseDenials)(io.exportTriples().summary); s.denialAnalysis = denialAnalysis }
+  catch (e) { console.error(`[campaign] triples export/analysis skipped: ${e?.message ?? e}`) }
+  const cap = capProposal(denialAnalysis, spec, s)
+
   // Verdict (campaign log, economics, local commit, algedonic).
   const ideationRecord = ideation ? { authority: s.ideationAuthority ?? 0, hypotheses: ideation.hypotheses, followed } : null
-  const entry = verdictEntry({ spec, wave, row, grade, decision, ideationRecord, economicsLines: io.economics() })
+  const entry = verdictEntry({ spec, wave, row, grade, decision, ideationRecord, economicsLines: io.economics(), denialAnalysis, capProposal: cap })
   io.appendLog(entry)
   // Ruling 5: commitVerdict matches these against `git status --porcelain`,
   // which speaks repo-relative forward slashes and nothing else.
@@ -332,7 +349,7 @@ export async function runWave(spec, state, io = defaultIo) {
 
   const rec = { wave, missionId, briefFile, base, head: grade.sha, gateSha256, dispatchedAt, gradedAt: new Date().toISOString(), gate: grade.gate, suite: grade.suite, sweep: grade.sweep, sweepFault: grade.sweepFault ?? null, posiwid: grade.posiwid, verified: grade.verified,
     outcome: { landed: row.outcome === 'landed', exitReason: row.exitReason },
-    s4: { generatorInput: { failIds: fails.map(f => f.id), priorMissionId: prior?.missionId ?? null }, ideation, ideationMeta, authority: s.ideationAuthority ?? 0, commander, followed },
+    s4: { generatorInput: { failIds: fails.map(f => f.id), priorMissionId: prior?.missionId ?? null }, ideation, ideationMeta, authority: s.ideationAuthority ?? 0, commander, followed, workOrder },
     decision, verdictSha, notified }
   state.appendWave(rec)
   const sameFails = Array.isArray(s.lastFails) && grade.gate.fails.map(f => f.id).join() === s.lastFails.join()
@@ -341,6 +358,7 @@ export async function runWave(spec, state, io = defaultIo) {
   delete s.inFlight
   const proposal = promotionProposal(state.waves(), s.ideationAuthority ?? 0)
   if (proposal && !s.proposals.some(p => p.status === 'pending')) { s.proposals.push({ ...proposal, proposedAt: new Date().toISOString() }); await tryNotify(io, `${spec.id}: PROPOSAL ${proposal.name} ${s.ideationAuthority ?? 0} → ${proposal.newValue} (max ${proposal.bounds.max}, p=${proposal.evidence.p.toFixed(3)}). Approve with --approve-proposal ${proposal.name}`) }
+  if (cap) { s.proposals.push({ ...cap, proposedAt: new Date().toISOString() }); await tryNotify(io, `${spec.id}: PROPOSAL ${cap.name} ${effectiveInvariants(spec, s)[cap.name.slice('invariants/'.length)]} → ${cap.newValue} (max ${cap.bounds.max}, p=${cap.evidence.pAdjusted.toFixed(3)}). Approve with --approve-proposal ${cap.name}`) }
   state.save()
   return rec
   } catch (e) {

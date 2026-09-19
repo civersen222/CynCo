@@ -740,3 +740,49 @@ describe('waveContext — Phase 1 fields', () => {
     expect(bare.ideationAuthority).toBe(0); expect(bare.invariants).toEqual(spec.invariants); expect(bare.denialDigest).toBeNull()
   })
 })
+
+// Task 6: the Level 4 spine at VERDICT — every wave regenerates the triples
+// dataset, re-asks whether the denials changed anything, records the work
+// order it handed to the brief, and raises a cap proposal when a cap is INERT.
+describe('runWave — the Level 4 spine at VERDICT', () => {
+  const gradedIo = (over = {}) => ({
+    writeBrief: (p) => p,
+    dispatch: async () => ({ missionId: 'c8-wave1-1' }),
+    waitForDriver: async () => ({ exited: true }),
+    readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', toolStats: {} }),
+    commitsBetween: () => [],
+    grade: async () => g(),
+    salvageOf: () => null,
+    patchRow: () => {},
+    commit: () => ({ sha: 'v1' }),
+    notify: async () => true,
+    economics: () => [],
+    appendLog: () => {},
+    ...over,
+  })
+
+  it('exports the triples, stores the denial analysis, records the work order, and raises a cap proposal when INERT', async () => {
+    const state = freshState()
+    const seen = { exported: 0, notified: [] }
+    const inert = { invariant: 'edit-gap', denials: 80, complied: 2, changed: 3, compliedRate: 0.025, ci: [0.01, 0.09], baseRate: 0.3, p: 0.0001, pAdjusted: 0.0002, verdict: 'INERT' }
+    const io = gradedIo({
+      exportTriples: () => { seen.exported++; return { summary: { denials: { 'edit-gap': { denials: 80, complied: 2, changed: 3 } }, quiet: { 'edit-gap': { calls: 1000, complied: 300 } } } } },
+      analyseDenials: () => ({ invariants: [inert] }),
+      notify: async (t) => { seen.notified.push(t); return true },
+    })
+    const rec = await runWave(spec, state, io)
+    expect(seen.exported).toBe(1)
+    expect(state.state.denialAnalysis.invariants[0].verdict).toBe('INERT')
+    expect(rec.s4.workOrder).toEqual({ applied: false, order: expect.any(Array) })
+    expect(state.state.proposals[0]).toMatchObject({ name: 'invariants/editGapCap', newValue: 60, status: 'pending' })
+    expect(seen.notified.some(t => /PROPOSAL invariants\/editGapCap/.test(t))).toBe(true)
+  })
+
+  it('a failing export never faults the wave', async () => {
+    const state = freshState()
+    const io = gradedIo({ exportTriples: () => { throw new Error('disk full') } })
+    const rec = await runWave(spec, state, io)
+    expect(rec.decision.kind).not.toBe('fault')
+    expect(state.state.denialAnalysis ?? null).toBeNull()
+  })
+})
