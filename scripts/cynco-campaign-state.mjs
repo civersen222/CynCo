@@ -48,7 +48,12 @@ export class CampaignState {
   adoptExternalDecisions() {
     if (!existsSync(this.statePath)) return
     let disk
-    try { disk = JSON.parse(readFileSync(this.statePath, 'utf8')) } catch { return }
+    // M9: this is the ONLY place an operator's `--approve-proposal` reaches the
+    // running runner. A corrupt state.json here means the approval is silently
+    // dropped and the runner writes its stale `pending` back over it — so the
+    // reason has to be on the record even though the save must still proceed.
+    try { disk = JSON.parse(readFileSync(this.statePath, 'utf8')) }
+    catch (e) { console.error(`[campaign] state.json on disk is unreadable during save — external decisions not merged: ${e.message}`); return }
     for (const d of disk?.proposals ?? []) {
       if (d.status === 'pending') continue
       const mine = (this.state.proposals ?? []).find(p => p.name === d.name && p.proposedAt === d.proposedAt)
@@ -70,6 +75,27 @@ export class CampaignState {
     }
   }
   appendWave(record) { mkdirSync(this.dir, { recursive: true }); appendFileSync(this.wavesPath, JSON.stringify(record) + '\n') }
+  /**
+   * I2: the wave record is appended BEFORE the verdict is written, so the
+   * verdict's own export and the promotion proposal can see the wave they are
+   * about. Two of its fields — `verdictSha` and `notified` — are only known
+   * once that verdict has been committed and sent, so they are patched back
+   * onto the last line here.
+   *
+   * Rewritten tmp + rename, like `save()`: a crash mid-rewrite leaves the
+   * previous waves.jsonl whole rather than a half-written one. If the file is
+   * missing or empty there is no last line to rewrite — append instead, so the
+   * record is never lost (the whole point of appending it first).
+   */
+  rewriteLastWave(record) {
+    mkdirSync(this.dir, { recursive: true })
+    const lines = existsSync(this.wavesPath) ? readFileSync(this.wavesPath, 'utf8').split('\n').filter(Boolean) : []
+    if (lines.length === 0) return this.appendWave(record)
+    lines[lines.length - 1] = JSON.stringify(record)
+    const tmp = `${this.wavesPath}.tmp`
+    writeFileSync(tmp, lines.join('\n') + '\n', 'utf8')
+    renameSync(tmp, this.wavesPath)
+  }
   /**
    * An appendFileSync that died mid-write leaves a truncated LAST line. Losing
    * the promotion evidence in every earlier wave over it — with a JSON parse

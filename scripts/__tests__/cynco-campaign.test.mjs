@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { decide, runWave, waveContext, budgetSpent, defaultIo, claimedSurvivors, dispatchEnv, dirtyOutsideCampaign, inFlightRefusal, adoptInFlight, takeLock, releaseLock } from '../cynco-campaign.mjs'
 import { adopt } from '../cynco-campaign-adopt.mjs'
 import { CampaignState } from '../cynco-campaign-state.mjs'
+import { promotionProposal } from '../cynco-ideation.mjs'
 import { defaultIo as calibrateIo } from '../cynco-campaign-calibrate.mjs'
 import { mkdtempSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -53,6 +54,17 @@ const freshState = () => {
   return state
 }
 
+// M1: runWave calls io.exportTriples on EVERY wave (the Level 4 spine). The io
+// fakes below predate that call, and every one of them used to print
+// "[campaign] triples export/analysis skipped: io.exportTriples is not a
+// function" — noise loud enough to hide the day a real export breaks. An inert
+// export keeps them quiet; defaulting io.exportTriples to the real exporter
+// would instead drag the real ledger into a unit test.
+const inertTriples = {
+  exportTriples: () => ({ summary: { denials: {}, quiet: {}, campaigns: {} } }),
+  analyseDenials: () => null,
+}
+
 describe('runWave', () => {
   it('drives one wave through the injected io and records it', async () => {
     const state = freshState()
@@ -71,6 +83,7 @@ describe('runWave', () => {
       notify: async (t) => { seen.notified = t; return true },
       economics: () => ['VERDICT: x'],
       appendLog: (text) => { seen.log = text },
+      ...inertTriples,
     }
     const rec = await runWave(spec, state, io)
     expect(seen.brief).toMatch(/MISSION C8 WAVE 1/)
@@ -103,6 +116,7 @@ describe('runWave', () => {
       notify: async () => true,
       economics: () => [],
       appendLog: () => {},
+      ...inertTriples,
     })
     expect(rec.verdictSha).toBe('v1')
     expect(files).toContain('docs/civkings-redesign-briefs/campaign-log.md')
@@ -187,6 +201,7 @@ describe('runWave', () => {
     notify: async () => true,
     economics: () => [],
     appendLog: () => {},
+    ...inertTriples,
     ...over,
   })
 
@@ -236,6 +251,7 @@ describe('runWave', () => {
       notify: async () => true,
       economics: () => [],
       appendLog: () => {},
+      ...inertTriples,
     })
     expect(brief).toMatch(/MISSION C8 WAVE 2/)
     expect(brief).toMatch(/C8\.1a: FAIL x/)
@@ -258,6 +274,7 @@ describe('runWave', () => {
       notify: async () => true,
       economics: () => [],
       appendLog: () => {},
+      ...inertTriples,
     }
     const one = await runWave({ ...spec, budget: { ...spec.budget, waves: 1 } }, freshState(), gradedIo)
     expect(one.decision.kind).toBe('budget')
@@ -359,6 +376,7 @@ describe('runWave with an adopted row', () => {
       notify: async () => true,
       economics: () => [],
       appendLog: (text) => { seen.log = text },
+      ...inertTriples,
     })
     expect(seen.dispatched).toBe(0)
     expect(seen.briefs).toBe(0)
@@ -537,6 +555,7 @@ describe('runWave — in-flight state', () => {
     notify: async () => true,
     economics: () => [],
     appendLog: () => {},
+    ...inertTriples,
     ...over,
   })
 
@@ -864,5 +883,91 @@ describe('runWave — the denial analysis reads THIS campaign, and says so', () 
     await runWave(spec, state, io)
     expect(state.state.denialAnalysis.invariants.find(x => x.invariant === 'edit-gap').denials).toBe(80)
     expect(logged.join('\n')).toMatch(/- Denials \(all runs — no campaign block yet\):/)
+  })
+})
+
+// I2: a verdict that exports a dataset without its own wave in it, and a
+// promotion rule that cannot see the wave whose evidence made the case, are
+// both one wave behind. The record goes on the record first.
+describe('runWave — the wave is on the record before the verdict reads the record set', () => {
+  const emptySummary = { summary: { denials: {}, quiet: {}, campaigns: {} } }
+  const ideaSpec = { ...spec, ideation: { enabled: true } }
+  const gradedIo = (over = {}) => ({
+    writeBrief: (p) => p,
+    dispatch: async () => ({ missionId: 'c8-wave1-1' }),
+    waitForDriver: async () => ({ exited: true }),
+    readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', toolStats: {} }),
+    commitsBetween: () => [],
+    firstCommitFiles: () => ['gilded/ui/atlas_view.py'],
+    engineLive: async () => false,
+    ideate: async () => ({ ideation: { hypotheses: [{ gateId: 'C8.1a', cause: 'c', firstEdit: 'gilded/ui/atlas_view.py' }], order: ['C8.1a'], trap: null }, taskPath: 't.json', durationMs: 5 }),
+    grade: async () => g(),
+    salvageOf: () => null,
+    patchRow: () => {},
+    commit: () => ({ sha: 'v1' }),
+    notify: async () => true,
+    economics: () => [],
+    appendLog: () => {},
+    exportTriples: () => emptySummary,
+    ...over,
+  })
+
+  it('exports the triples with the current wave already in waves.jsonl', async () => {
+    const state = freshState()
+    state.appendWave({ wave: -2 }); state.appendWave({ wave: -1 })
+    const before = state.waves().length
+    let seenAtExport = null
+    await runWave(spec, state, gradedIo({ exportTriples: () => { seenAtExport = state.waves().length; return emptySummary } }))
+    expect(before).toBe(2)
+    expect(seenAtExport).toBe(before + 1)
+    // and the record is still one line, patched — not appended twice.
+    expect(state.waves()).toHaveLength(before + 1)
+    expect(state.waves().at(-1)).toMatchObject({ wave: 1, verdictSha: 'v1', notified: true })
+  })
+
+  it('raises the promotion proposal in the very wave that completes the evidence', async () => {
+    const state = freshState()
+    // SEVEN prior ideated waves — one short of IDEATION_MIN_WAVES, so the
+    // prior set alone raises nothing. The current wave is the eighth, and the
+    // proposal may only appear if runWave counted it.
+    for (let i = 0; i < 4; i++) state.appendWave({ wave: i + 1, s4: { ideation: {}, followed: true }, outcome: { landed: true } })
+    for (let i = 0; i < 3; i++) state.appendWave({ wave: 4 + i + 1, s4: { ideation: {}, followed: false }, outcome: { landed: false } })
+    expect(promotionProposal(state.waves(), 0)).toBeNull()
+    const seen = []
+    const rec = await runWave(ideaSpec, state, gradedIo({ notify: async (t) => { seen.push(t); return true } }))
+    expect(rec.s4.followed).toBe(true); expect(rec.outcome.landed).toBe(true)
+    const pending = state.state.proposals.filter(p => p.status === 'pending')
+    expect(pending).toHaveLength(1)
+    expect(pending[0].name).toBe('ideation/brief')
+    expect(pending[0].evidence).toMatchObject({ followedLanded: 5, followedMissed: 0, notFollowedLanded: 0, notFollowedMissed: 3 })
+    expect(seen.some(t => /PROPOSAL ideation\/brief/.test(t))).toBe(true)
+  })
+
+  it('does not record the wave twice when the verdict half throws', async () => {
+    const state = freshState()
+    const rec = await runWave(spec, state, gradedIo({ appendLog: () => { throw new Error('campaign-log is read-only') } }))
+    expect(rec.decision.kind).toBe('fault')
+    expect(rec.decision.why).toMatch(/post-run step failed: campaign-log is read-only/)
+    expect(state.waves()).toHaveLength(1)
+    expect(state.waves()[0].decision.kind).toBe('fault')
+  })
+
+  // M4: the operator approves a cap between two waves, from a second process.
+  // The runner holds this state object for days; without a read-in at the top
+  // of the wave, the approval first reaches the dispatch one whole wave late.
+  it('picks up an approval granted between waves before it dispatches', async () => {
+    const state = freshState()
+    state.state.proposals = [{ type: 'Parameter', name: 'invariants/editGapCap', proposedAt: 't1', status: 'pending', newValue: 60, currentValue: 40, bounds: { min: 40, max: 80 } }]
+    state.save()
+    // The `--approve-proposal` process, writing the decision under this one.
+    const disk = JSON.parse(readFileSync(join(state.dir, 'state.json'), 'utf8'))
+    disk.proposals[0].status = 'approved'; disk.proposals[0].decidedAt = '2026-09-18T00:00:00.000Z'
+    disk.invariantOverrides = { editGapCap: 60 }
+    writeFileSync(join(state.dir, 'state.json'), JSON.stringify(disk, null, 2))
+
+    let dispatched = null
+    await runWave(spec, state, gradedIo({ dispatch: async ({ invariants }) => { dispatched = invariants; return { missionId: 'c8-wave1-1' } } }))
+    expect(dispatched.editGapCap).toBe(60)
+    expect(state.state.proposals[0].status).toBe('approved')
   })
 })

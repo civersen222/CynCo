@@ -209,6 +209,12 @@ export function waveContext(spec, s, io = defaultIo) {
 
 export async function runWave(spec, state, io = defaultIo) {
   const s = state.state
+  // M4: `--approve-proposal` runs as a SECOND process while this one sleeps
+  // out a wall clock. Its decision only reaches this object on the next save
+  // — which is AFTER the dispatch that was supposed to carry the approved cap.
+  // Read it in before the terms are computed, so an approval granted between
+  // two waves is honoured by the very next one.
+  state.adoptExternalDecisions()
   const ctx = waveContext(spec, s, io)
   const { wave, base, fails, prior } = ctx
   // Rule 11 is not a one-off: the calibration is evidence about the instrument
@@ -315,6 +321,7 @@ export async function runWave(spec, state, io = defaultIo) {
   // not rewrite, ntfy blowing up) must not lose the wave: record the fault,
   // spend the wave, and hand the decision back so the loop stops deliberately
   // rather than by exception.
+  let appended = false
   try {
   // S3*: grade.
   const grade = await io.grade(spec, row)
@@ -327,6 +334,20 @@ export async function runWave(spec, state, io = defaultIo) {
   io.patchRow(missionId, { verified: grade.verified, ...(grade.sweep ? { mutationSweep: grade.sweep } : {}), sweepFault: grade.sweepFault ?? null,
     gate: { sha: grade.sha, gateSha256, terminator: grade.gate.terminator, fails: grade.gate.fails.map(f => f.line), passes: grade.gate.passes.length, priorRegressions: grade.gate.priorRegressions, suiteRegressions: grade.suite.regressions, harnessFault: grade.gate.harnessFault ?? grade.suite.harnessFault ?? null },
     posiwid: { divergence: grade.posiwid.divergence, verdict: grade.posiwid.verdict, dominantObserved: grade.posiwid.dominantObserved } })
+
+  // I2: the wave record goes on the record FIRST, before anything that reads
+  // the record set. The export must include the wave it is the verdict for —
+  // a dataset regenerated one wave behind is a dataset that never sees the
+  // latest evidence — and `promotionProposal` must be able to raise the
+  // proposal in the very wave whose followed × landed made the case. Only
+  // `verdictSha` and `notified` cannot be known yet; they are patched onto
+  // this same record below, once the verdict is committed and sent.
+  const rec = { wave, missionId, briefFile, base, head: grade.sha, gateSha256, dispatchedAt, gradedAt: new Date().toISOString(), gate: grade.gate, suite: grade.suite, sweep: grade.sweep, sweepFault: grade.sweepFault ?? null, posiwid: grade.posiwid, verified: grade.verified,
+    outcome: { landed: row.outcome === 'landed', exitReason: row.exitReason },
+    s4: { generatorInput: { failIds: fails.map(f => f.id), priorMissionId: prior?.missionId ?? null }, ideation, ideationMeta, authority: s.ideationAuthority ?? 0, commander, followed, workOrder },
+    decision, verdictSha: null, notified: false }
+  state.appendWave(rec)
+  appended = true
 
   // The Level 4 spine: every verdict regenerates the dataset and re-asks
   // whether the denials change anything. A failure here is logged, never a
@@ -355,6 +376,13 @@ export async function runWave(spec, state, io = defaultIo) {
   const proposal = promotionProposal(state.waves(), s.ideationAuthority ?? 0)
   const cap = proposal ? null : capProposal(denialAnalysis, spec, s)
 
+  const sameFails = Array.isArray(s.lastFails) && grade.gate.fails.map(f => f.id).join() === s.lastFails.join()
+  s.consecutiveNoProgress = sameFails && commits.length === 0 ? (s.consecutiveNoProgress ?? 0) + 1 : 0
+  s.waveCount = wave; s.lastBase = grade.sha ?? base; s.lastFails = grade.gate.fails.map(f => f.id); s.lastGrade = grade; s.lastRow = row; s.lastCommits = commits
+  delete s.inFlight
+  if (proposal && !s.proposals.some(p => p.status === 'pending')) { s.proposals.push({ ...proposal, proposedAt: new Date().toISOString() }); await tryNotify(io, `${spec.id}: PROPOSAL ${proposal.name} ${s.ideationAuthority ?? 0} → ${proposal.newValue} (max ${proposal.bounds.max}, p=${proposal.evidence.p.toFixed(3)}). Approve with --approve-proposal ${proposal.name}`) }
+  if (cap) { s.proposals.push({ ...cap, proposedAt: new Date().toISOString() }); await tryNotify(io, `${spec.id}: PROPOSAL ${cap.name} ${cap.currentValue} → ${cap.newValue} (max ${cap.bounds.max}, p=${cap.evidence.pAdjusted.toFixed(3)}). Approve with --approve-proposal ${cap.name}`) }
+
   // Verdict (campaign log, economics, local commit, algedonic).
   const ideationRecord = ideation ? { authority: s.ideationAuthority ?? 0, hypotheses: ideation.hypotheses, followed } : null
   const entry = verdictEntry({ spec, wave, row, grade, decision, ideationRecord, economicsLines: io.economics(), denialAnalysis, denialScope, capProposal: cap })
@@ -362,26 +390,17 @@ export async function runWave(spec, state, io = defaultIo) {
   // Ruling 5: commitVerdict matches these against `git status --porcelain`,
   // which speaks repo-relative forward slashes and nothing else.
   const files = [LOG, ...waveFiles, ...ledgerShardsTouched()]
-  let verdictSha = null
-  try { verdictSha = io.commit({ repoRoot: '.', branch: `campaign/${spec.id}`, files, message: `${spec.id.toUpperCase()} wave ${wave} verdict: ${decision.kind} — ${decision.why}` }).sha } catch (e) { console.error(`[campaign] commit skipped: ${e.message}`) }
-  const notified = await notifyOrQueue(io, s, `${spec.id.toUpperCase()} wave ${wave}: ${decision.kind.toUpperCase()} — ${decision.why}\n${grade.gate.fails.map(f => f.line).join('\n')}`, decision)
-
-  const rec = { wave, missionId, briefFile, base, head: grade.sha, gateSha256, dispatchedAt, gradedAt: new Date().toISOString(), gate: grade.gate, suite: grade.suite, sweep: grade.sweep, sweepFault: grade.sweepFault ?? null, posiwid: grade.posiwid, verified: grade.verified,
-    outcome: { landed: row.outcome === 'landed', exitReason: row.exitReason },
-    s4: { generatorInput: { failIds: fails.map(f => f.id), priorMissionId: prior?.missionId ?? null }, ideation, ideationMeta, authority: s.ideationAuthority ?? 0, commander, followed, workOrder },
-    decision, verdictSha, notified }
-  state.appendWave(rec)
-  const sameFails = Array.isArray(s.lastFails) && grade.gate.fails.map(f => f.id).join() === s.lastFails.join()
-  s.consecutiveNoProgress = sameFails && commits.length === 0 ? (s.consecutiveNoProgress ?? 0) + 1 : 0
-  s.waveCount = wave; s.lastBase = grade.sha ?? base; s.lastFails = grade.gate.fails.map(f => f.id); s.lastGrade = grade; s.lastRow = row; s.lastCommits = commits
-  delete s.inFlight
-  if (proposal && !s.proposals.some(p => p.status === 'pending')) { s.proposals.push({ ...proposal, proposedAt: new Date().toISOString() }); await tryNotify(io, `${spec.id}: PROPOSAL ${proposal.name} ${s.ideationAuthority ?? 0} → ${proposal.newValue} (max ${proposal.bounds.max}, p=${proposal.evidence.p.toFixed(3)}). Approve with --approve-proposal ${proposal.name}`) }
-  if (cap) { s.proposals.push({ ...cap, proposedAt: new Date().toISOString() }); await tryNotify(io, `${spec.id}: PROPOSAL ${cap.name} ${cap.currentValue} → ${cap.newValue} (max ${cap.bounds.max}, p=${cap.evidence.pAdjusted.toFixed(3)}). Approve with --approve-proposal ${cap.name}`) }
+  try { rec.verdictSha = io.commit({ repoRoot: '.', branch: `campaign/${spec.id}`, files, message: `${spec.id.toUpperCase()} wave ${wave} verdict: ${decision.kind} — ${decision.why}` }).sha } catch (e) { console.error(`[campaign] commit skipped: ${e.message}`) }
+  rec.notified = await notifyOrQueue(io, s, `${spec.id.toUpperCase()} wave ${wave}: ${decision.kind.toUpperCase()} — ${decision.why}\n${grade.gate.fails.map(f => f.line).join('\n')}`, decision)
+  state.rewriteLastWave(rec)
   state.save()
   return rec
   } catch (e) {
     console.error(`[campaign] wave ${wave} post-run step failed: ${e?.stack ?? e}`)
-    return faultWave(spec, state, io, { wave, missionId, briefFile, base, dispatchedAt, files: waveFiles, why: `post-run step failed: ${e?.message ?? e}` })
+    // The wave is already on the record when the throw came from the verdict
+    // half; a second append would put the same wave in waves.jsonl twice and
+    // double-count it in every promotion reading afterwards. Overwrite it.
+    return faultWave(spec, state, io, { wave, missionId, briefFile, base, dispatchedAt, files: waveFiles, appended, why: `post-run step failed: ${e?.message ?? e}` })
   }
 }
 
@@ -438,7 +457,7 @@ async function stopWave(spec, state, io, { wave, base, why }) {
  * guard would otherwise refuse on at the NEXT invocation, bricking the campaign
  * with work that never ran.
  */
-async function faultWave(spec, state, io, { wave, missionId, briefFile, base, dispatchedAt, why, files }) {
+async function faultWave(spec, state, io, { wave, missionId, briefFile, base, dispatchedAt, why, files, appended = false }) {
   const s = state.state
   const rec = { wave, missionId: missionId ?? null, briefFile, base, dispatchedAt, decision: { kind: 'fault', why } }
   if (files?.length) {
@@ -446,7 +465,10 @@ async function faultWave(spec, state, io, { wave, missionId, briefFile, base, di
     catch (e) { console.error(`[campaign] fault-path commit skipped: ${e.message}`) }
   }
   rec.notified = await notifyOrQueue(io, s, `${spec.id} wave ${wave}: FAULT — ${why}`, rec.decision)
-  state.appendWave(rec)
+  // I2: runWave appends the wave record before the verdict half runs, so a
+  // throw from there arrives here with the wave ALREADY on the record. The
+  // fault replaces it; appending would record the same wave twice.
+  if (appended) state.rewriteLastWave(rec); else state.appendWave(rec)
   s.waveCount = wave
   delete s.inFlight
   state.save()
