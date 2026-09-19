@@ -1647,3 +1647,19 @@ Verdict: **STOP (budget)** — 1 wave(s) spent; 6 line(s) still FAIL
 Economics after this wave: VERDICT: frontier spent $4179.79 SUPERVISING (development $1682.91 and unattributed $2.71 are excluded — building LocalCode is not oversight). The supervised generation would have cost ~$5200.38 on the API ($2227.54 priced from measured tokens, $2972.84 still estimated) and ran locally for ~$20.73 of power. supervision ratio: $1 of frontier verify oversees ~$1.24 of displaced generation.
 
 Verdict: **STOP (budget)** — 2 wave(s) spent; 3 line(s) still FAIL
+
+## C8 wave 3 — c8-wave3-1789772986804 (graded 2026-09-19, BASE 51480495c30beaa7ce76b7da6b3d54046e93192f → HEAD e9366f37e6f9f0d71e2b0e6584a936d458ec25d3)
+
+- 35 tool calls, exitReason engine_closed_the_turn (2345s = 0.65h), 2 commit(s). maxCallsWithoutSourceEdit 19, maxCallsWithoutCommit 28. CodeIndex 5/35. graderProbes 0/35. Invariants: engine denied 0 call(s) (edit-gap 0, commit-gap 0, revert 0), 0 revert refusal(s), 0 CodeIndex-assisted Grep(s).
+- Bash by effect: read 2, write 0, run 9, commit 0, revert 0, other 2 (sum 13 vs byName.Bash 13 — agree).
+- **Sealed gate at e9366f37e6f9f0d71e2b0e6584a936d458ec25d3: PASS (0 fails).** Prior-campaign regressions: 0.
+  - PASS: C8.1a.tiers-pressable, C8.1b.tiers-differ, C8.1c.tier-legends, C8.2a.portraits-drawn, C8.2b.portraits-distinct-and-stable, C8.2c.portrait-pool-licensed, C8.3a.transition-frames, C8.3b.transitions-wired, C8.4a.act-beds-on-disk, C8.4b.bed-follows-the-act, C8.4c.beds-honour-mute, C8.4d.beds-licensed, C8.5.palette.House, C8.5.palette.Powers, C8.5.palette.Atlas, C8.5.river-reserved, C8.9
+- Suite gate PASS: REGRESSED 0, REPAIRED 1.
+- Derived sweep: UNMEASURED — sweep refused (exit 2).
+- POSIWID Insufficient (divergence 0.208, dominant inspect).
+- S4 ideation (authority 0): 3 hypothesis/es; followed=true.
+- Ledger: verified true; mutationSweep null.
+
+Economics after this wave: VERDICT: frontier spent $4295.55 SUPERVISING (development $1692.01 and unattributed $2.71 are excluded — building LocalCode is not oversight). The supervised generation would have cost ~$5203.58 on the API ($2230.74 priced from measured tokens, $2972.84 still estimated) and ran locally for ~$20.79 of power. supervision ratio: $1 of frontier verify oversees ~$1.21 of displaced generation.
+
+Verdict: **CAMPAIGN PASS** — sealed gate PASS, suite gate PASS, sweep unmeasured
