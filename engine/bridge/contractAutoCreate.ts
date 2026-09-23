@@ -12,7 +12,7 @@
 // auto-assertions on pinned-tool runs, not harness-authored ones, and
 // enforcement caps at 5 rounds.
 
-import { existsSync } from 'node:fs'
+import { existsSync, statSync } from 'node:fs'
 import { isAbsolute, resolve } from 'node:path'
 import { ContractState, globalContract, type HarnessAssertion } from '../tools/contract.js'
 import {
@@ -282,10 +282,25 @@ function assertionCommand(a: HarnessAssertion): string | null {
  * is not silent — it is a tracked file, so commitScope and the dirty-path
  * machinery both see it move — but it is not prevented.
  */
+/**
+ * Is this path an instrument at all?
+ *
+ * F152: a regular FILE, and nothing else. An instrument is something the driver
+ * can snapshot at dispatch and put back before the check (`snapshotHeldOut` /
+ * `restoreHeldOut`), and something the seal can withhold without withholding
+ * the run's subject matter. A directory is neither — `copyFileSync` on one is
+ * an EPERM on Windows, and the live C9 authoring run died on exactly that
+ * before its first iteration, because its check command names the read-only
+ * archive of the game the mission was sent to audit.
+ */
+export function isInstrumentPath(p: string): boolean {
+  try { return statSync(p).isFile() } catch { return false }
+}
+
 export function harnessGatePaths(
   assertions: HarnessAssertion[],
   cwd: string,
-  exists: (p: string) => boolean = (p) => existsSync(p),
+  exists: (p: string) => boolean = isInstrumentPath,
 ): string[] {
   const root = cwd.replace(/\\/g, '/').replace(/\/+$/, '')
   const inWorkspace = (p: string) => {
@@ -329,7 +344,7 @@ export function harnessGatePaths(
 export function withheldGatePaths(
   assertions: HarnessAssertion[],
   cwd: string,
-  exists: (p: string) => boolean = (p) => existsSync(p),
+  exists: (p: string) => boolean = isInstrumentPath,
 ): string[] {
   const withheld = assertions.filter(a => typeof a !== 'string' && Boolean(a.command))
   return harnessGatePaths(withheld, cwd, exists)

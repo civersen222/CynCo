@@ -8,9 +8,11 @@
  * ago.
  */
 import { describe, expect, it, beforeAll, afterAll, afterEach } from 'bun:test'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
+// @ts-expect-error — .mjs script, no types; the roadmap's own status vocabulary.
+import { STATUSES } from '../../../scripts/cynco-roadmap.mjs'
 import { DashboardServer } from '../../dashboard/server.js'
 import { loadOrCreateTokens } from '../../security/localToken.js'
 
@@ -174,8 +176,20 @@ describe('GET /api/campaign', () => {
 
     // The real checked-in roadmap.json (c6..c9) — read cwd-relative, same as
     // budgetWaves reads the real c8.campaign.json above.
-    expect(data.roadmap).toHaveLength(4)
-    expect(data.roadmap.find((r: any) => r.id === 'c9')).toEqual({ id: 'c9', name: 'Ship shell', status: 'open' })
+    //
+    // The STATUS is read from that file rather than written here. A roadmap
+    // line's status is exactly what the runner advances (`open → authoring →
+    // proposed → sealed → running → done`), so pinning today's value would
+    // make the first real `--author` run fail this test — it did, on the live
+    // C9 run, which left c9 at `authoring`. What the endpoint owes the panel is
+    // a faithful projection of the file to {id, name, status}, and that is what
+    // is asserted.
+    const onDisk = JSON.parse(readFileSync(join(process.cwd(), 'docs', 'civkings-redesign-briefs', 'roadmap.json'), 'utf-8'))
+    expect(data.roadmap).toHaveLength(onDisk.lines.length)
+    expect(data.roadmap).toEqual(onDisk.lines.map((l: any) => ({ id: l.id, name: l.name, status: l.status })))
+    const c9Line = data.roadmap.find((r: any) => r.id === 'c9')
+    expect(c9Line.name).toBe('Ship shell')
+    expect(STATUSES).toContain(c9Line.status)
   })
 
   it('authoring state and a gate/<id> proposal carry the shape the panel needs', async () => {

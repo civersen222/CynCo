@@ -438,6 +438,39 @@ describe('harnessGatePaths: the instruments a contract names', () => {
     )).toEqual([])
   })
 
+  /**
+   * F152, found by the live C9 authoring run. The gate-authoring check command
+   * names two DIRECTORIES — the staging dir and the read-only archive of the
+   * game at BASE:
+   *
+   *   bun scripts/cynco-gate-author.mjs --check "<staging>" "C:/tmp/c9_author_base"
+   *
+   * The archive is outside the workspace and it exists, so it was collected as
+   * a held-out instrument. Two things then went wrong at once: the driver's
+   * `snapshotHeldOut` tried to `copyFileSync` a directory and died EPERM before
+   * the model ran a single iteration, and had it survived that, the archive
+   * would have been SEALED from a mission whose brief orders it to audit the
+   * game at BASE.
+   *
+   * An instrument is a file you can snapshot and put back. A directory is not
+   * one, whatever a command names it for.
+   */
+  it('never protects a directory the command names', () => {
+    const d = mkdtempSync(join(tmpdir(), 'cynco-base-'))
+    dirs.push(d)
+    const base = d.replace(/\\/g, '/')
+    const { file } = gate('gate_c9.py')
+    expect(harnessGatePaths(
+      [`Verification command exits 0: bun check.mjs "${base}"`],
+      workspace('a.ts'),
+    )).toEqual([])
+    // The file beside it is still found — this narrows directories, nothing else.
+    expect(harnessGatePaths(
+      [`Verification command exits 0: bun check.mjs "${base}" "${file}"`],
+      workspace('a.ts'),
+    )).toEqual([file])
+  })
+
   it('ignores flags, bare program names, and non-command assertions', () => {
     const { file } = gate('g.py')
     const found = harnessGatePaths([
