@@ -253,6 +253,15 @@ export type ConversationLoopOptions = {
   allowedTools?: string[]
   /** Direct dashboard broadcast for brain.* messages (NOT the engine→TUI protocol). Optional. */
   dashboardBroadcast?: (msg: Record<string, unknown>) => void
+  /** Brain telemetry for the governance.status frame (engine/brain
+   *  ActivationsConsumer). Read per frame, never branched on; `reset()` clears
+   *  the convergence window so a frame describes its own model call. Absent for
+   *  Ollama and for any run whose consumer never started. */
+  getBrain?: () => {
+    tier: string
+    layerConvergence: { n: number; meanAgree: number | null; meanDepth: number | null; byLayer: Record<string, number | null> } | null
+    reset: () => void
+  } | null
 }
 
 export class ConversationLoop {
@@ -452,6 +461,9 @@ export class ConversationLoop {
   private toolGating = new ToolGating()
   private tddGov = new TestDrivenGovernor()
   private allowedTools?: string[]
+  /** Brain telemetry dep (engine/brain ActivationsConsumer). Optional: absent
+   *  for Ollama, and for a llama-cpp run whose consumer never started. */
+  private getBrain?: ConversationLoopOptions['getBrain']
   // Per-session, append-only set of tools surfaced to the model. Seeded with
   // the core tools; grows when the model calls load_tools (Phase 1) / run_skill
   // (Phase 2) / S5 proactive surfacing (Phase 3). Never shrinks.
@@ -480,6 +492,11 @@ export class ConversationLoop {
   private uncertainty = new UncertaintyTracker()
   /** Direct dashboard broadcast (NOT protocol) — brain.* messages only. Optional. */
   private dashboardBroadcast: ((msg: Record<string, unknown>) => void) | null = null
+  /** This model call's tool-token entropy digest, captured before the per-call
+   *  `uncertainty.reset()` so the governance.status frame emitted after it can
+   *  still carry the number. Null until the call ends, and for a call that
+   *  emitted no tool tokens. */
+  private turnToolEntropy: { mean: number; max: number; spikeCount: number } | null = null
   private uncertaintyBatch: { i: number; h: number; kind: 'thinking' | 'output' | 'tool'; top: { token: string; logprob: number }[] }[] = []
   private uncertaintyIndex = 0
 
@@ -539,6 +556,7 @@ export class ConversationLoop {
     })
     this.s5 = opts.s5
     this.allowedTools = opts.allowedTools
+    this.getBrain = opts.getBrain
     this.agentRunner = new SubAgentRunner(async (task) => {
       // Simplified sub-agent execution — full execution comes later
       return `[SubAgent completed] ${task.task}`
@@ -598,6 +616,35 @@ export class ConversationLoop {
     this.uncertaintyIndex = 0
     this.brainRecorder.reset()
     this.thinkingRecorder?.discardBuffer()
+    this.turnToolEntropy = null
+    // The convergence window is per model call for the same reason the entropy
+    // series is: a session-long mean says nothing about the turn it rides on.
+    this.getBrain?.()?.reset()
+  }
+
+  /**
+   * Brain telemetry for one governance.status frame. Data only (Phase 2 ruling
+   * 1): it lands on the ledger row and is validated there (`--signals`) before
+   * anything reads it — nothing in this loop branches on it.
+   *
+   * An empty convergence window (`n === 0`) becomes null rather than riding out
+   * as zeroes: "no sample" and "the layers never agreed" are different facts and
+   * an averaged frame cannot tell them apart afterwards.
+   */
+  private brainFrame(): {
+    tier: string
+    layerConvergence: { n: number; meanAgree: number | null; meanDepth: number | null; byLayer: Record<string, number | null> } | null
+    toolEntropy: { mean: number; max: number; spikeCount: number } | null
+  } | null {
+    const b = this.getBrain?.()
+    if (!b) return null
+    // digest() returns null with no samples — a turn that emitted no tool tokens.
+    const d = this.turnToolEntropy
+    return {
+      tier: b.tier,
+      layerConvergence: b.layerConvergence && b.layerConvergence.n > 0 ? b.layerConvergence : null,
+      toolEntropy: d ? { mean: d.mean, max: d.max, spikeCount: d.spikeCount } : null,
+    }
   }
 
   /** Track entropy + batch brain.uncertainty messages to the dashboard. */
@@ -2669,6 +2716,10 @@ export class ConversationLoop {
                   tool: this.uncertainty.digest('tool'),
                 },
               })
+              // Held for the governance.status frame below, which is emitted
+              // AFTER this reset: read there, digest('tool') would be null on
+              // every frame by construction — dead data on the ledger row.
+              this.turnToolEntropy = this.uncertainty.digest('tool')
               this.uncertainty.reset()
               this.uncertaintyIndex = 0
               // Debug: write conversation state to file for diagnosis
@@ -2751,6 +2802,9 @@ export class ConversationLoop {
                 // declared and thrown away" — see `invariantsRejected`.
                 invariantsRejected: this.invariantsRejected,
                 posiwidLive: this.posiwidLive(),
+                // Data only; validated on the ledger (`--signals`) before
+                // anything reads it. See `brainFrame`.
+                brain: this.brainFrame(),
                 // Capped and camelCased on purpose: the live trace grows for
                 // the whole session and its own toJSON is snake_case (it
                 // mirrors the Rust core byte for byte). A per-turn frame gets

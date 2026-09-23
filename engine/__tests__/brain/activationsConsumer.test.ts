@@ -153,3 +153,143 @@ describe('ActivationsConsumer', () => {
     expect(tiers).toHaveLength(1)
   })
 })
+
+/**
+ * Layer convergence (Phase 2, 2a-ii): the tap serves every probed layer, so a
+ * position that arrives complete can be read out across all five and scored for
+ * how early in depth the answer settled. Data only — nothing branches on it.
+ *
+ * The fake tap encodes the token the fake readout will report in h[0], so a
+ * test can dictate per-(pos, layer) agreement without a tokenizer.
+ */
+const LAYERS = [24, 32, 40, 48, 56]
+
+const coded = (cursor: number, layer: number, pos: number, code: number) => ({
+  cursor, layer, pos, token: 42,
+  values_b64: Buffer.from(new Float32Array([code, 0, 0, 0]).buffer).toString('base64'),
+})
+
+/** pos 0 agrees with layer 56 on 3 of its 4 shallower layers; pos 4 on none. */
+function twoPositions(layers = LAYERS) {
+  const codes: Record<number, Record<number, number>> = {
+    0: { 24: 1, 32: 1, 40: 1, 48: 2, 56: 1 },
+    4: { 24: 2, 32: 2, 40: 2, 48: 2, 56: 1 },
+  }
+  const entries: ReturnType<typeof coded>[] = []
+  let cursor = 0
+  for (const pos of [0, 4]) for (const l of layers) entries.push(coded(++cursor, l, pos, codes[pos][l]))
+  return { cursor, n_embd: 4, entries }
+}
+
+const codedLens = () => ({
+  readout: vi.fn(async (_layer: number, h: Float32Array) => [{ token: `t${h[0]}`, p: 0.9 }]),
+  health: async () => ({ ok: true, layers: LAYERS }),
+})
+
+/** A consumer promoted to `live` by start(), with its timers already cleared. */
+async function liveConsumer(jlens: any, broadcast: any, box: { batch: any }) {
+  const c = new ActivationsConsumer({
+    activationsUrl: 'http://x',
+    fetchFn: (async () => new Response(JSON.stringify(box.batch), { status: 200 })) as any,
+    jlens, broadcast, layer: 40, stride: 4,
+  })
+  expect(await c.start()).toBe('live')
+  c.stop()
+  return c
+}
+
+describe('ActivationsConsumer layer convergence', () => {
+  it('reads out all five probed layers per complete position and accumulates convergence while live', async () => {
+    const box = { batch: { cursor: 0, n_embd: 4, entries: [] as any[] } }
+    const lens = codedLens()
+    const broadcast = vi.fn()
+    const c = await liveConsumer(lens, broadcast, box)
+    expect(c.tier()).toBe('live')
+
+    box.batch = twoPositions()
+    await c.pollOnce()
+
+    expect(c.convergence()).toEqual({
+      n: 2, meanAgree: 0.375, meanDepth: 40,
+      byLayer: { '24': 0.5, '32': 0.5, '40': 0.5, '48': 0 },
+    })
+    // Five layers x two positions, and the selected layer is not read twice.
+    expect(lens.readout).toHaveBeenCalledTimes(10)
+    // The single-layer workspace broadcast is unchanged: one per selected-layer position.
+    const ws = broadcast.mock.calls.map(([m]: any[]) => m).filter((m: any) => m.type === 'brain.workspace')
+    expect(ws).toHaveLength(2)
+    expect(ws[0]).toMatchObject({ layer: 40, pos: 0, token: 42, top: [{ token: 't1', p: 0.9 }] })
+    expect(ws[1]).toMatchObject({ layer: 40, pos: 4, top: [{ token: 't2', p: 0.9 }] })
+  })
+
+  it('skips a position that is missing a probed layer, and still broadcasts its workspace', async () => {
+    const box = { batch: { cursor: 0, n_embd: 4, entries: [] as any[] } }
+    const lens = codedLens()
+    const broadcast = vi.fn()
+    const c = await liveConsumer(lens, broadcast, box)
+
+    box.batch = twoPositions([24, 32, 40, 48])   // layer 56 never arrives
+    await c.pollOnce()
+
+    expect(c.convergence().n).toBe(0)
+    expect(c.convergence().meanAgree).toBeNull()
+    const ws = broadcast.mock.calls.map(([m]: any[]) => m).filter((m: any) => m.type === 'brain.workspace')
+    expect(ws).toHaveLength(2)
+  })
+
+  it('skips a position whose readout comes back null for one layer', async () => {
+    const box = { batch: { cursor: 0, n_embd: 4, entries: [] as any[] } }
+    const lens = {
+      readout: vi.fn(async (layer: number, h: Float32Array) => (layer === 32 ? null : [{ token: `t${h[0]}`, p: 0.9 }])),
+      health: async () => ({ ok: true, layers: LAYERS }),
+    }
+    const c = await liveConsumer(lens, vi.fn(), box)
+
+    box.batch = twoPositions()
+    await c.pollOnce()
+
+    expect(c.convergence().n).toBe(0)
+  })
+
+  it('does not accumulate below the live tier', async () => {
+    // Never started: the tier is the constructed default, entropy-only.
+    const lens = codedLens()
+    const broadcast = vi.fn()
+    const c = new ActivationsConsumer({
+      activationsUrl: 'http://x',
+      fetchFn: (async () => new Response(JSON.stringify(twoPositions()), { status: 200 })) as any,
+      jlens: lens as any, broadcast, layer: 40, stride: 4,
+    })
+    expect(c.tier()).toBe('entropy-only')
+    await c.pollOnce()
+    expect(c.convergence().n).toBe(0)
+    const ws = broadcast.mock.calls.map(([m]: any[]) => m).filter((m: any) => m.type === 'brain.workspace')
+    expect(ws).toHaveLength(2)
+  })
+
+  it('resetConvergence empties the window', async () => {
+    const box = { batch: { cursor: 0, n_embd: 4, entries: [] as any[] } }
+    const c = await liveConsumer(codedLens(), vi.fn(), box)
+    box.batch = twoPositions()
+    await c.pollOnce()
+    expect(c.convergence().n).toBe(2)
+
+    c.resetConvergence()
+    expect(c.convergence()).toEqual({
+      n: 0, meanAgree: null, meanDepth: null,
+      byLayer: { '24': null, '32': null, '40': null, '48': null },
+    })
+  })
+
+  it('honours a stride: positions off the stride are neither read out nor accumulated', async () => {
+    const box = { batch: { cursor: 0, n_embd: 4, entries: [] as any[] } }
+    const lens = codedLens()
+    const c = await liveConsumer(lens, vi.fn(), box)
+    const batch = twoPositions()
+    // pos 4 -> pos 5, off a stride of 4.
+    box.batch = { ...batch, entries: batch.entries.map(e => (e.pos === 4 ? { ...e, pos: 5 } : e)) }
+    await c.pollOnce()
+    expect(c.convergence().n).toBe(1)
+    expect(lens.readout).toHaveBeenCalledTimes(5)
+  })
+})

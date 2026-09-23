@@ -305,6 +305,17 @@ export type GovernanceStatusEvent = {
    *  ledger row as `posiwidLive` and is validated there before anything
    *  branches on it. null until the first call executes. */
   posiwidLive?: { divergence: number; verdict: string; dominantStated: string; dominantObserved: string; support: number } | null
+  /** Brain telemetry for this model call (engine/brain): the achieved tier, how
+   *  early in depth the probed layers agreed with the deepest one, and the
+   *  turn's tool-token entropy digest. Data only; validated on the ledger
+   *  (`--signals`) before anything reads it. null when no brain dep is wired
+   *  (Ollama, or a consumer that never started); the inner fields are null
+   *  until there is a sample. */
+  brain?: {
+    tier: string
+    layerConvergence: { n: number; meanAgree: number | null; meanDepth: number | null; byLayer: Record<string, number | null> } | null
+    toolEntropy: { mean: number; max: number; spikeCount: number } | null
+  } | null
   suggestion: string | null
 }
 

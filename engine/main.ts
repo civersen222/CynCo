@@ -344,6 +344,12 @@ const AUDIT_EVENT_PREFIXES = ['governance.', 'context.', 's2.', 's5.', 'algedoni
 // The emit closure captures dashboardServer by reference, so broadcasts
 // work once the server is initialised below.
 let dashboardServer: DashboardServer | null = null
+// Same late-binding shape, and for the same reason: the Brain consumer needs
+// the dashboard server (its broadcast sink), which needs the loop. Declared
+// here so the loop's getBrain dep can read it at call time — by then it is
+// either the consumer or, on Ollama and on any run where Tier 3 never came up,
+// still null.
+let activationsConsumer: ActivationsConsumer | null = null
 
 const loop = new ConversationLoop({
   config,
@@ -370,6 +376,13 @@ const loop = new ConversationLoop({
   s5: s5Orchestrator,
   // Late-binding closure: dashboardServer is assigned after loop construction
   dashboardBroadcast: (msg) => dashboardServer?.broadcast(msg as any),
+  // Brain telemetry on the governance.status frame. Data only (Phase 2 ruling
+  // 1): the ledger validates it before anything reads it.
+  getBrain: () => activationsConsumer ? {
+    tier: activationsConsumer.tier(),
+    layerConvergence: activationsConsumer.convergence(),
+    reset: () => activationsConsumer?.resetConvergence(),
+  } : null,
 })
 
 // Wire llama-server eval tok/s → governance for accurate dashboard display
@@ -392,9 +405,9 @@ if ((globalThis as any).__llamaProcessManager) {
 }
 
 // ─── Dashboard Server (Governance UI) ─────────────────────────
-// Declared before the dashboard server so its setBrainLayer dep can late-bind
-// to the consumer created below (Brain Tier 3).
-let activationsConsumer: ActivationsConsumer | null = null
+// `activationsConsumer` is declared above the loop so both the dashboard's
+// setBrainLayer dep and the loop's getBrain dep late-bind to the consumer
+// created below (Brain Tier 3).
 let jlensSidecar: JlensSidecarHandle | null = null
 try {
   dashboardServer = new DashboardServer({
