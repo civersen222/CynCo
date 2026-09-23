@@ -5,7 +5,23 @@
  */
 import type { TokenLogprob } from '../types.js'
 
-export type EntropyDigest = { mean: number; max: number; spikeCount: number }
+/**
+ * `n` and `sd` are the digest's own sample count and population σ.
+ *
+ * They were derived and discarded: `spikeCount` is defined as `H > mean + 2σ`
+ * and the σ that produced it lived only inside `digest()`. Any consumer asking
+ * the SAME question about one particular token — "was this call's tool token a
+ * spike for the turn it came from" (vsm/verifyFirst.ts) — had to re-derive σ
+ * from `max` and `mean`, which is a guess where the tracker held a measurement.
+ *
+ * `sd` is optional because an AGGREGATED digest (ThinkingRecorder.aggregateSession,
+ * which folds many turns) genuinely cannot recover one without the raw series,
+ * and stating a σ nobody measured is the one thing this pipeline never does.
+ * `n` is optional for the same class of reason one level back: turn records
+ * written to disk before this field existed carry no count, and absent must
+ * stay distinguishable from zero. `digest()` below always sets both.
+ */
+export type EntropyDigest = { mean: number; max: number; spikeCount: number; n?: number; sd?: number }
 export type StreamKind = 'thinking' | 'output' | 'tool'
 
 export class UncertaintyTracker {
@@ -40,7 +56,7 @@ export class UncertaintyTracker {
     const max = Math.max(...xs)
     const sd = Math.sqrt(xs.reduce((a, x) => a + (x - mean) ** 2, 0) / xs.length)
     const spikeCount = xs.filter(x => x > mean + 2 * sd).length
-    return { mean, max, spikeCount }
+    return { mean, max, spikeCount, n: xs.length, sd }
   }
 
   /** Raw series for dashboard sparkline batches. */

@@ -136,6 +136,30 @@ describe('bash effects and invariant blocks', () => {
     expect(empty.ultrastable).toBeNull()
   })
 
+  // Phase 2b-ii: verify-first routing. Lifted onto the row for the same reason
+  // the denial ledger is — `entries[].nextCallClass` is the only record of
+  // whether an informed refusal or a measured edit changed what the model did
+  // next, and the analysis that asks needs the whole run, not a live frame.
+  it('keeps the last verify-first routing snapshot on the record', () => {
+    const c = createMissionCollector()
+    c.ingest({ type: 'governance.status', health: 'healthy', routing: { budget: 6, used: 1, count: 1, byKind: { revert: 1, 'low-confidence-edit': 0 }, byOutcome: { passed: 1 }, entries: [{ callIndex: 4, kind: 'revert', entropy: null, outcome: 'passed', ms: 900, tail: 'ok', nextCallClass: null }] } })
+    c.ingest({ type: 'governance.status', health: 'healthy', routing: { budget: 6, used: 2, count: 3, byKind: { revert: 1, 'low-confidence-edit': 2 }, byOutcome: { passed: 1, 'cached-passed': 1, failed: 1 }, entries: [{ callIndex: 4, kind: 'revert', entropy: null, outcome: 'passed', ms: 900, tail: 'ok', nextCallClass: 'sourceEdit' }] } })
+    const rec = buildMissionRecord(c, { missionId: 'm', briefFile: 'b', marker: 'x', cwd: '.', dispatchedAt: 't', durationS: 1, outcome: 'landed' })
+    expect(rec.routing.count).toBe(3)
+    expect(rec.routing.used).toBe(2)
+    expect(rec.routing.byKind['low-confidence-edit']).toBe(2)
+    expect(rec.routing.entries[0].nextCallClass).toBe('sourceEdit')
+  })
+
+  it('routing is null when the session never routed, and an explicit null stays null', () => {
+    const empty = buildMissionRecord(createMissionCollector(), { missionId: 'm', briefFile: 'b', marker: 'x', cwd: '.', dispatchedAt: 't', durationS: 1, outcome: 'landed' })
+    expect(empty.routing).toBeNull()
+    const c = createMissionCollector()
+    c.ingest({ type: 'governance.status', health: 'healthy', routing: null })
+    const rec = buildMissionRecord(c, { missionId: 'm', briefFile: 'b', marker: 'x', cwd: '.', dispatchedAt: 't', durationS: 1, outcome: 'landed' })
+    expect(rec.routing).toBeNull()
+  })
+
   it('keeps the last live POSIWID reading and IdentityGuard verdict on the record', () => {
     const c = createMissionCollector()
     c.ingest({ type: 'governance.status', health: 'healthy', posiwidLive: { divergence: 0.02, verdict: 'Consistent', dominantStated: 'inspect', dominantObserved: 'inspect', support: 60 } })

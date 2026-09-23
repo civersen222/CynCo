@@ -289,6 +289,22 @@ export type GovernanceStatusEvent = {
    *  was rejected as malformed. Without it, `invariants: null` cannot tell a
    *  mission dispatched without caps from one whose caps were thrown away. */
   invariantsRejected?: boolean
+  /** Verify-first routing (Phase 2b-ii). Mirrors `VerifyFirstSnapshot` in
+   *  vsm/verifyFirst.ts — keep in sync (this file stays import-free); `kind`
+   *  and `outcome` are widened to string on the wire, do not copy the unions
+   *  here. null whenever the session cannot route: interactive, no mission
+   *  invariants, or no KEEP-GREEN assertion to run. `entries` is the last 20;
+   *  `count` is the full-run total and `byKind`/`byOutcome` are over all of
+   *  them. `used` counts KEEP-GREEN runs actually spent out of `budget` —
+   *  cached and refused routes cost nothing and are still counted in `count`. */
+  routing?: {
+    budget: number
+    used: number
+    entries: Array<{ callIndex: number; kind: string; entropy: number | null; outcome: string; ms: number; tail: string; nextCallClass: string | null }>
+    count: number
+    byKind: Record<string, number>
+    byOutcome: Record<string, number>
+  } | null
   /** The legacy ultrastable instance's adaptation trace and viability margin
    *  (Plan 1). Capped at the last 20 steps and mapped to camelCase: the live
    *  array grows unbounded for the life of the session and its own `toJSON` is

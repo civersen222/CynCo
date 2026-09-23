@@ -215,6 +215,35 @@ decisions still recorded here).
   // rejected are the same null — and only the second is a dispatch bug. Never
   // null: an engine that cannot say simply did not reject one.
   "invariantsRejected": false,
+  // Phase 2b-ii verify-first routing (governance.status.routing, last frame
+  // wins). The gate ladder's SECOND verb: a revert is still refused, but the
+  // refusal first runs the mission's KEEP-GREEN command so it can say whether
+  // there is anything to undo; and a source edit the model was uncertain about
+  // (tool-token entropy) is executed and THEN measured, with the verdict
+  // appended to the result it reads next.
+  //
+  // `count` is every route; `used` is how many KEEP-GREEN runs were actually
+  // paid for out of `budget` (6 per mission) — cached verdicts and refused
+  // routes cost nothing, so `used < count` is normal and `used == budget` is
+  // how you see the budget bind. `entries` is the last 20; `byKind` and
+  // `byOutcome` are over ALL routes, and every outcome key is present so a
+  // mission that never timed out says zero rather than saying nothing.
+  //
+  // `entries[].nextCallClass` is the outcome record, exactly as it is for a
+  // denial: what the model's NEXT call was (`classifyCall`) after it was told
+  // the tree was green, or red, or unmeasurable. That is the only evidence
+  // that an informed refusal changes behaviour where a bare refusal does not.
+  //
+  // null = the mission could NOT route: interactive, no invariants, or no
+  // KEEP-GREEN assertion in the contract. A mission that could route and never
+  // needed to arrives as a block with `count: 0` — a different fact.
+  "routing": { "budget": 6, "used": 3, "count": 5,
+    "byKind": { "revert": 2, "low-confidence-edit": 3 },
+    "byOutcome": { "passed": 2, "failed": 1, "timeout": 0, "unrunnable": 0,
+      "cached-passed": 1, "cached-failed": 0, "budget-exhausted": 1 },
+    "entries": [ { "callIndex": 412, "kind": "revert", "entropy": 0.41,
+      "outcome": "passed", "ms": 41200, "tail": "12 passed",
+      "nextCallClass": "commit" } ] },
   "ultrastable": { "trace": [], "margin": 0.4 },
   // The ENGINE's live POSIWID reading (last governance.status frame): its
   // default purpose model against the session's executed tool classes

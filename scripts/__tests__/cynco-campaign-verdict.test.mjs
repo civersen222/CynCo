@@ -41,6 +41,19 @@ describe('verdictEntry', () => {
     const beText = verdictEntry({ spec: { id: 'c8' }, wave: 1, row: beRow, grade, decision: { kind: 'next', why: 'x' }, ideationRecord: null, economicsLines: [] })
     expect(beText).toMatch(/sum 265 vs byName\.Bash 999 — DISAGREE/)
   })
+  // Phase 2b-ii: verify-first routing. Omitted entirely when the wave could
+  // not route — a row of zeroes reads as "the router ran and did nothing",
+  // which is a different claim from "there was no router".
+  it('reports verify-first routing when the row carries it', () => {
+    const rtRow = { ...row, routing: { budget: 6, used: 4, count: 6,
+      byKind: { revert: 2, 'low-confidence-edit': 4 },
+      byOutcome: { passed: 2, failed: 2, 'cached-passed': 1, 'cached-failed': 0, timeout: 1, unrunnable: 0, 'budget-exhausted': 0 }, entries: [] } }
+    const rtText = verdictEntry({ spec: { id: 'c8' }, wave: 1, row: rtRow, grade, decision: { kind: 'next', why: 'x' }, ideationRecord: null, economicsLines: [] })
+    expect(rtText).toMatch(/- Routing: 6 verify-first \(revert 2, low-confidence edit 4\): passed 2, failed 2, cached 1, could not run 1 \(4\/6 KEEP-GREEN runs spent\)\./)
+  })
+  it('omits the routing line when the wave could not route', () => {
+    expect(text).not.toMatch(/- Routing:/)
+  })
   it('names the sweep fault instead of the generic UNMEASURED line', () => {
     const faultGrade = { ...grade, sweep: null, sweepFault: 'timed out after 3600000 ms' }
     const faultText = verdictEntry({ spec: { id: 'c8' }, wave: 1, row, grade: faultGrade, decision: { kind: 'next', why: 'x' }, ideationRecord: null, economicsLines: [] })

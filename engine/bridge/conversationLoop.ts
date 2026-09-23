@@ -59,6 +59,7 @@ import { makeJournalEntry } from '../training/types.js'
 import { buildConceptTableForCwd } from '../vsm/conceptTable.js'
 import { evaluateGrounding, extractAddedText, extractTargetPaths } from '../vsm/groundingTrigger.js'
 import { MissionInvariants, parseInvariantCaps, classifyCall } from '../vsm/missionInvariants.js'
+import { VerifyFirstRouter, verifySentence, verifyEditNote } from '../vsm/verifyFirst.js'
 import type { GuardResult } from '../vsm/identityGuard.js'
 import { isIdentifierPattern, noteCodeIndexUse } from '../tools/toolHints.js'
 import { ReadLoopGate, rearmsGate, signature as readSignature } from '../vsm/readLoopGate.js'
@@ -76,7 +77,7 @@ import { loadInterventionRates, saveInterventionRates } from '../vsm/interventio
 import { applyNudgeTemperature } from '../vsm/controlSignals.js'
 import { globalContract } from '../tools/contract.js'
 import { applyHarnessContract, harnessGatePaths, withheldGatePaths, maybeAutoCreateContract, type HarnessContractSpec } from './contractAutoCreate.js'
-import { gitProbe } from '../tools/contractVerify.js'
+import { gitProbe, runCommandDetailed } from '../tools/contractVerify.js'
 import { globalAskBroker } from '../tools/askBroker.js'
 import { estimateTokensAsync } from '../engine/contextBudget.js'
 import { checkCommitScope } from './commitScope.js'
@@ -90,7 +91,7 @@ import { buildSideQueryBody, readSideQueryContent } from './sideQuery.js'
 import { isMalformedInput } from '../engine/toolCallRepair.js'
 import { extractSimulatedToolCalls } from '../ollama/simulated.js'
 import { ThinkingRecorder } from '../memory/thinkingRecorder.js'
-import { UncertaintyTracker } from '../memory/uncertaintyTracker.js'
+import { UncertaintyTracker, type EntropyDigest } from '../memory/uncertaintyTracker.js'
 // Trajectory recording and Best-of-N were reached through lazy require('*.js').
 // Nothing in either package imports back here, so there was no cycle to break —
 // and under vitest those requires threw, so every test that exercised a tool
@@ -278,6 +279,14 @@ export class ConversationLoop {
    * look identical, and only one of them is a bug in the dispatch.
    */
   private invariantsRejected = false
+  /**
+   * Verify-first routing (Phase 2b-ii), or null when this message must not
+   * route. Scoped exactly like `missionInvariants`: rebuilt per user message,
+   * and built at all only for an unattended message whose mission both armed
+   * invariants AND carries a KEEP-GREEN assertion to run. An interactive
+   * session never routes — there is a person present who can look.
+   */
+  private verifyFirst: VerifyFirstRouter | null = null
   private abortController: AbortController | null = null
   private processing = false
   // Per-task observation buffers for the reward labeler. Reset at task start,
@@ -496,7 +505,7 @@ export class ConversationLoop {
    *  `uncertainty.reset()` so the governance.status frame emitted after it can
    *  still carry the number. Null until the call ends, and for a call that
    *  emitted no tool tokens. */
-  private turnToolEntropy: { mean: number; max: number; spikeCount: number } | null = null
+  private turnToolEntropy: EntropyDigest | null = null
   private uncertaintyBatch: { i: number; h: number; kind: 'thinking' | 'output' | 'tool'; top: { token: string; logprob: number }[] }[] = []
   private uncertaintyIndex = 0
 
@@ -1080,6 +1089,26 @@ export class ConversationLoop {
           source: 'mission-invariants',
         })
       }
+    }
+
+    // ── Verify-first routing (Phase 2b-ii) ──────────────────────────
+    // Built here, beside the invariants, because it needs all three of their
+    // preconditions at once and has no meaning without any of them: an
+    // unattended run (nobody is present to look at the tree), an armed
+    // regulator (the gate ladder this adds a verb to), and a KEEP-GREEN
+    // assertion (the command that answers). Rebuilt on every message so the
+    // budget is per mission and an interactive message clears whatever a
+    // previous mission armed — same scoping rule, same reason.
+    this.verifyFirst = null
+    const keepGreen = globalContract.byRole('keep-green')
+    if (opts?.unattended === true && this.missionInvariants && keepGreen?.command) {
+      // Bound here rather than read off the assertion inside the closure: the
+      // contract can be replaced by a later message, and this router must go on
+      // running the command THIS mission was armed with.
+      const command = keepGreen.command
+      const timeoutMs = keepGreen.timeoutMs
+      this.verifyFirst = new VerifyFirstRouter({ run: (cwd: string) => runCommandDetailed(cwd, command, timeoutMs) })
+      console.log(`[verify-first] armed: budget ${this.verifyFirst.snapshot().budget} KEEP-GREEN run(s) this mission`)
     }
 
     const declared = (opts?.readOnlyPaths ?? []).map(p => p.replace(/\\/g, '/'))
@@ -2801,6 +2830,11 @@ export class ConversationLoop {
                 // Distinguishes "no caps were declared" from "caps were
                 // declared and thrown away" — see `invariantsRejected`.
                 invariantsRejected: this.invariantsRejected,
+                // Verify-first routing (Phase 2b-ii). null in every session
+                // that cannot route — interactive, no invariants, or no
+                // KEEP-GREEN assertion to run — which is the same three-way
+                // absence `invariants: null` already reports beside it.
+                routing: this.verifyFirst?.snapshot() ?? null,
                 posiwidLive: this.posiwidLive(),
                 // Data only; validated on the ledger (`--signals`) before
                 // anything reads it. See `brainFrame`.
@@ -3791,6 +3825,10 @@ export class ConversationLoop {
       // (after the early returns), so observe directly — same call, same
       // arguments, isError=true because nothing was executed.
       this.missionInvariants?.observeCall(toolName, toolInput, true)
+      // ...and so must the verify-first router, for the same reason: an open
+      // routing entry's outcome is "what the next call was", and a call that
+      // never parsed is still what the model did next.
+      this.verifyFirst?.observeCall(classifyCall(toolName, toolInput, true), this.toolCallsTotal)
       this.accountToolClass(toolName, toolInput, true)
       return
     }
@@ -3839,7 +3877,15 @@ export class ConversationLoop {
      * denial quotes never moved — and the denial ledger's `nextCallClass`, which
      * is the whole outcome record, is only filled in by the NEXT observeCall.
      */
-    const accountInvariants = (isError: boolean) => this.missionInvariants?.observeCall(toolName, toolInput, isError)
+    const accountInvariants = (isError: boolean) => {
+      this.missionInvariants?.observeCall(toolName, toolInput, isError)
+      // Same call, same classifier, same outcome question: a routing entry's
+      // `nextCallClass` is filled by the NEXT call, exactly as a denial's is.
+      // The call index is passed so the routed call's own accounting cannot
+      // close its own entry — the revert branch verifies before this runs and
+      // the executed-edit branch after it, so ordering alone cannot say.
+      this.verifyFirst?.observeCall(classifyCall(toolName, toolInput, isError), this.toolCallsTotal)
+    }
     // A call that never executed (denied, blocked, refused) is one call for
     // the invariants AND one `denied-or-error` for the POSIWID/identity
     // counters. The executed path accounts for itself further down, where
@@ -3938,12 +3984,26 @@ export class ConversationLoop {
       const inv = this.missionInvariants.evaluate(toolName, toolInput)
       if (inv.kind === 'deny') {
         console.log(`[invariant] DENIED ${toolName} (${inv.invariant})`)
+        // Verify-first (Phase 2b-ii): a refused revert is still refused — the
+        // identity is not negotiable and this branch returns exactly as it did
+        // — but the refusal now carries the one fact that decides what to do
+        // instead. Green: there is nothing to undo, commit. Red: fix forward,
+        // and here are the failing lines. Only `revert` routes; the pacing
+        // denials already quote the counter they are about.
+        let message = inv.message
+        if (inv.invariant === 'revert' && this.verifyFirst) {
+          const v = await this.verifyFirst.verify(
+            this.executor['cwd'], this.toolCallsTotal, 'revert', this.lastToolEntropy)
+          const sentence = verifySentence(v)
+          console.log(`[verify-first] revert refusal informed by KEEP-GREEN: ${v.outcome} (${v.ms} ms)`)
+          if (sentence) message = `${inv.message}\n${sentence}`
+        }
         this.emit({ type: 'tool.start', toolId, toolName, input: toolInput })
-        this.emit({ type: 'tool.complete', toolId, toolName, result: inv.message, isError: true })
+        this.emit({ type: 'tool.complete', toolId, toolName, result: message, isError: true })
         toolResults.push({
           type: 'tool_result',
           tool_use_id: toolId,
-          content: [{ type: 'text', text: inv.message }],
+          content: [{ type: 'text', text: message }],
           is_error: true,
         })
         toolsUsedThisTurn.push(toolName)
@@ -4212,6 +4272,34 @@ export class ConversationLoop {
       if (outcome === 'timeout') console.log('[invariant] CodeIndex-first skipped: timeout')
     }
     accountInvariants(result.isError)
+
+    // ─── Verify-first: measure a low-confidence source edit ────────
+    // The second half of Phase 2b-ii, and the opposite shape to the revert
+    // branch above: this call is EXECUTED and then measured. The model was
+    // uncertain at the moment it emitted the call (its tool tokens spiked), so
+    // the edit it just made is the one most worth checking, and the verdict is
+    // appended to the result it reads next — before it builds another edit on
+    // top of a tree it has broken.
+    //
+    // Nothing here gates the call: the edit has already happened, and the only
+    // effect is on the text the model reads. That is the whole of "nothing else
+    // in the loop branches on entropy".
+    //
+    // `digest('tool')` is reset at `message_stop`, which happens before any
+    // tool in that message executes, so the live digest is null by the time we
+    // are here. `turnToolEntropy` is that same digest, captured before the
+    // reset for exactly this kind of reader — it describes the model call this
+    // tool token came from, which is the turn the rule is relative to. Without
+    // the fallback the n >= 8 arm of the rule could never fire at all.
+    let verifyNote: string | null = null
+    if (this.verifyFirst && classifyCall(toolName, toolInput, result.isError) === 'sourceEdit'
+      && this.verifyFirst.isLowConfidence(this.lastToolEntropy, this.uncertainty.digest('tool') ?? this.turnToolEntropy)) {
+      const v = await this.verifyFirst.verify(
+        this.executor['cwd'], this.toolCallsTotal, 'low-confidence-edit', this.lastToolEntropy)
+      verifyNote = verifyEditNote(v)
+      console.log(`[verify-first] low-confidence ${toolName} measured by KEEP-GREEN: ${v.outcome} (${v.ms} ms)`)
+      if (verifyNote) result.output = `${result.output}\n\n${verifyNote}`
+    }
 
     // ─── SubAgent interception ─────────────────────────────────────
     // spawnAgent.ts returns { _subagent: true, config, blocking } as JSON.
@@ -4648,8 +4736,19 @@ export class ConversationLoop {
     }
 
     const fullOutput = result.output + lspContext + createdWarn
-    const truncatedOutput = truncateToolOutput(toolName, fullOutput)
-    if (truncatedOutput.length < fullOutput.length) {
+    let truncatedOutput = truncateToolOutput(toolName, fullOutput)
+    // Decided BEFORE the note is put back, or re-appending it could make a
+    // truncated output measure longer than the original and silence the log
+    // line (and, for Bash, the full-output dump) that says work was dropped.
+    const wasTruncated = truncatedOutput.length < fullOutput.length
+    // The verify-first note is appended to the END of the output, and
+    // truncation keeps the FIRST N lines: a source-rewriting Bash call that
+    // prints more than its cap would lose the KEEP-GREEN verdict entirely —
+    // the one line the measurement exists to deliver. Put it back. (Edit /
+    // Write / MultiEdit are in NO_TRUNCATE_TOOLS, so this only ever fires for
+    // a Bash `sourceEdit`.)
+    if (verifyNote && !truncatedOutput.endsWith(verifyNote)) truncatedOutput = `${truncatedOutput}\n\n${verifyNote}`
+    if (wasTruncated) {
       console.log(`[s3] Truncated ${toolName} output: ${fullOutput.length} → ${truncatedOutput.length} bytes`)
       // For Bash, write full output to disk so user can inspect
       if (toolName === 'Bash') {

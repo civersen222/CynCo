@@ -111,6 +111,14 @@ export function createMissionCollector(now = () => Date.now()) {
     // dispatched without caps from one whose caps were thrown away — and only
     // the second is a bug in the dispatch. Last frame wins, like the snapshot.
     invariantsRejected: false,
+    // Phase 2b-ii: the verify-first router's snapshot (governance.status
+    // .routing) — how many reverts and low-confidence edits were routed through
+    // KEEP-GREEN, what the command said, and what the model did next. Last
+    // frame wins, like `invariants`. null = the session could not route at all
+    // (interactive, no invariants, or no KEEP-GREEN assertion), which is not
+    // the same fact as a mission that could route and never needed to — that
+    // one arrives as a block with `count: 0`.
+    routing: null,
     ultrastable: null,
     // The engine's live POSIWID reading (governance.status.posiwidLive) and the
     // IdentityGuard verdict (governance.session_fidelity.identityGuard). Both
@@ -163,6 +171,7 @@ export function createMissionCollector(now = () => Date.now()) {
           this.brainTurns.push(m.brain ?? null)
           if (m.invariants !== undefined) this.invariants = m.invariants ?? null
           if (m.invariantsRejected !== undefined) this.invariantsRejected = m.invariantsRejected === true
+          if (m.routing !== undefined) this.routing = m.routing ?? null
           if (m.ultrastable !== undefined) this.ultrastable = m.ultrastable ?? null
           if (m.posiwidLive !== undefined) this.posiwidLive = m.posiwidLive ?? null
           break
@@ -835,6 +844,9 @@ export function buildMissionRecord(collector, meta) {
     invariants: collector.invariants ?? null,
     // Never null: an older engine that cannot say simply did not reject one.
     invariantsRejected: collector.invariantsRejected ?? false,
+    // Phase 2b-ii verify-first routing (last frame wins) — see the collector.
+    // null when the session could not route or the engine predates the field.
+    routing: collector.routing ?? null,
     ultrastable: collector.ultrastable ?? null,
     // Engine-side POSIWID (last status frame) and IdentityGuard verdict (last
     // session_fidelity frame); null from an older engine. Data, not authority.

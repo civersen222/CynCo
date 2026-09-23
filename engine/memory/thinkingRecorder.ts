@@ -115,6 +115,11 @@ export class ThinkingRecorder {
         mean: ds.reduce((a, d) => a + d.mean, 0) / ds.length,
         max: Math.max(...ds.map(d => d.max)),
         spikeCount: ds.reduce((a, d) => a + d.spikeCount, 0),
+        // Summed, because it IS the sample count of the union. `?? 0` covers a
+        // turn recorded before digests carried one. No `sd`: σ over the pooled
+        // series cannot be recovered from per-turn σs without the series, and a
+        // plausible substitute is not a measurement.
+        n: ds.reduce((a, d) => a + (d.n ?? 0), 0),
       }
     }
     return { thinking: agg('thinking'), output: agg('output'), tool: agg('tool') }
