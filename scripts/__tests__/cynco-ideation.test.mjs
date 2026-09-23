@@ -44,6 +44,18 @@ describe('ideation', () => {
     expect(authorityRegistry({ ideationAuthority: 0 }).whoCommands('brief')?.component).toBe('generator')
     expect(authorityRegistry({ ideationAuthority: 0.5 }).whoCommands('brief')?.component).toBe('generator')
   })
+  // Phase 3: the same shape, one context over. 0.5 is the most the gate-author
+  // seat is ever granted, so the supervisor never stops commanding `gate`.
+  it('the supervisor commands the gate at every authority the gate-author can earn', () => {
+    expect(authorityRegistry({ gateAuthorAuthority: 0 }).whoCommands('gate')?.component).toBe('supervisor')
+    expect(authorityRegistry({ gateAuthorAuthority: 0.5 }).whoCommands('gate')?.component).toBe('supervisor')
+    expect(authorityRegistry({}).whoCommands('gate')?.component).toBe('supervisor')
+  })
+  it('keeps the two contexts separate — a gate authority never commands the brief', () => {
+    const reg = authorityRegistry({ ideationAuthority: 0, gateAuthorAuthority: 0.5 })
+    expect(reg.whoCommands('brief')?.component).toBe('generator')
+    expect(reg.whoCommands('gate')?.score).toBe(1.0)
+  })
   it('proposes promotion only with ≥8 ideated waves and a significant association', () => {
     const w = (followed, landed) => ({ s4: { ideation: {}, followed }, outcome: { landed } })
     expect(promotionProposal([w(true, true), w(true, true)], 0)).toBeNull()

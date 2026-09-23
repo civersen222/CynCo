@@ -17,6 +17,22 @@ export const defaultIo = {
   freshDir: (p) => { rmSync(p, { recursive: true, force: true }); mkdirSync(p, { recursive: true }) },
 }
 
+/**
+ * A fresh `git archive` of `base` from `repo`, extracted into `dest`.
+ *
+ * Extracted from calibrate() because the authoring verb needs the same archive
+ * for a different reason (the game at BASE that a gate author reads), and two
+ * spellings of "the BASE the gate was calibrated against" is exactly the kind
+ * of drift Rule 11 exists to prevent. Outside the repo, always — a worktree
+ * inside it would put the BASE on the same disk the mission is editing.
+ */
+export function archiveBase(repo, base, dest, io = defaultIo) {
+  io.freshDir?.(dest)
+  const arch = io.run('bash', ['-c', `git -C ${JSON.stringify(repo)} archive ${base} | tar -x -C ${JSON.stringify(dest)}`], { cwd: process.cwd(), env: {}, timeoutMs: 300_000 })
+  if (arch.status !== 0) return { ok: false, problems: [`git archive ${base} failed: ${String(arch.stderr).trim()}`] }
+  return { ok: true, problems: [] }
+}
+
 // Rule 11 (feedback_gate_authoring): run the bar against the BASE and against a
 // perturbed base BEFORE dispatch. Four stages were lost to skipping this by
 // hand, so the runner cannot skip it: calibrate() is the only way in.
@@ -31,10 +47,8 @@ export async function calibrate(spec, io = defaultIo, { baseDir: providedBaseDir
   // and measured nothing.
   if (providedBaseDir && !io.exists(providedBaseDir)) return { ok: false, problems: [`provided baseDir does not exist: ${providedBaseDir}`] }
   if (!providedBaseDir) {
-    io.freshDir?.(baseDir)
-    // git archive outside the repo — brief-authoring rule 14: never a worktree inside it
-    const arch = io.run('bash', ['-c', `git -C ${JSON.stringify(spec.repo)} archive ${spec.base} | tar -x -C ${JSON.stringify(baseDir)}`], { cwd: process.cwd(), env: {}, timeoutMs: 300_000 })
-    if (arch.status !== 0) return { ok: false, problems: [`git archive ${spec.base} failed: ${String(arch.stderr).trim()}`] }
+    const arch = archiveBase(spec.repo, spec.base, baseDir, io)
+    if (!arch.ok) return arch
   }
 
   // Read the perturb header FIRST: it is the declaration the whole comparison

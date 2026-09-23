@@ -122,6 +122,19 @@ LOCALCODE_EMBED_MODEL="${LOCALCODE_EMBED_MODEL:-nomic-embed-text}" \
 # must reach `bun engine/main.ts` explicitly rather than relying on shell
 # inheritance, or the 9161 dashboard's /api/campaign has no `active` campaign to
 # report between waves (nothing is inFlight once a wave's driver has exited).
+# LOCALCODE_LEARNINGS_DB (Phase 3 ruling 12): the gate-authoring mission runs
+# with its own learnings database, so the AWM promotion that fires when its
+# contract passes lands somewhere the campaign's WORKER never opens — the
+# author of a bar must not be able to whisper to the subject.
+#
+# Exported rather than written into the env-prefix block below, and only when
+# it is set: engine/tools/impl/saveLearning.ts reads
+# `process.env.LOCALCODE_LEARNINGS_DB ?? defaultLearningsDbPath()`, and `??`
+# does not catch the empty string — a `LOCALCODE_LEARNINGS_DB="${VAR:-}"` line
+# beside CYNCO_CAMPAIGN_ID would point EVERY other mission's learnings at a
+# path of ''.
+if [ -n "${LOCALCODE_LEARNINGS_DB:-}" ]; then export LOCALCODE_LEARNINGS_DB; echo "[dispatch] learnings db $LOCALCODE_LEARNINGS_DB"; fi
+
 MISSION_BASE=$(git -C "$MISSION_CWD" rev-parse HEAD)
 echo "[dispatch] mission baseline $MISSION_BASE"
 if [ -n "${CYNCO_MISSION_INVARIANTS:-}" ]; then echo "[dispatch] invariants: $CYNCO_MISSION_INVARIANTS"; fi

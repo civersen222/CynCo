@@ -84,4 +84,72 @@ describe('CampaignState', () => {
       expect(err.mock.calls[0][0]).toMatch(/state\.json on disk is unreadable during save — external decisions not merged:/)
     })
   })
+
+  // ── Phase 3: the gate-author seat's state ────────────────────────────────
+
+  describe('the gate-authoring fields', () => {
+    it('a fresh state carries the three of them, empty', () => {
+      const dir = join(mkdtempSync(join(tmpdir(), 'camp-')), 'c9')
+      const s = new CampaignState(dir).load()
+      expect(s.state.gateAuthorAuthority).toBe(0)
+      expect(s.state.authoring).toEqual({})
+      expect(s.state.reseals).toEqual([])
+    })
+
+    it('an approved gate-author/gate on disk raises the in-memory authority', () => {
+      const dir = join(mkdtempSync(join(tmpdir(), 'camp-')), 'c9')
+      const s = new CampaignState(dir).load()
+      s.state.proposals = [{ name: 'gate-author/gate', proposedAt: 't1', status: 'pending', newValue: 0.5, bounds: { min: 0, max: 0.5 } }]
+      s.save()
+      const disk = JSON.parse(readFileSync(join(dir, 'state.json'), 'utf8'))
+      disk.proposals[0].status = 'approved'; disk.proposals[0].decidedAt = '2026-09-23T00:00:00.000Z'
+      disk.gateAuthorAuthority = 0.5
+      writeFileSync(join(dir, 'state.json'), JSON.stringify(disk, null, 2))
+      s.adoptExternalDecisions()
+      expect(s.state.gateAuthorAuthority).toBe(0.5)
+      expect(s.state.proposals[0].status).toBe('approved')
+    })
+
+    it('never lowers an authority the runner already holds', () => {
+      const dir = join(mkdtempSync(join(tmpdir(), 'camp-')), 'c9')
+      const s = new CampaignState(dir).load()
+      s.state.proposals = [{ name: 'gate-author/gate', proposedAt: 't1', status: 'pending', newValue: 0.5, bounds: { min: 0, max: 0.5 } }]
+      s.save()
+      const disk = JSON.parse(readFileSync(join(dir, 'state.json'), 'utf8'))
+      disk.proposals[0].status = 'approved'; disk.gateAuthorAuthority = 0
+      writeFileSync(join(dir, 'state.json'), JSON.stringify(disk, null, 2))
+      s.state.gateAuthorAuthority = 0.5
+      s.adoptExternalDecisions()
+      expect(s.state.gateAuthorAuthority).toBe(0.5)
+    })
+
+    // The seal is not a proposal decision: `--approve-proposal gate/c9` runs
+    // the decision and THEN copies the triple. A runner holding this object
+    // must not write its pre-seal entry back over that.
+    it('a seal recorded on disk wins over the in-flight authoring entry', () => {
+      const dir = join(mkdtempSync(join(tmpdir(), 'camp-')), 'c9')
+      const s = new CampaignState(dir).load()
+      s.state.authoring = { c9: { stagingDir: 'C:/staging/c9', missionId: 'm1' } }
+      s.save()
+      const disk = JSON.parse(readFileSync(join(dir, 'state.json'), 'utf8'))
+      disk.authoring.c9 = { ...disk.authoring.c9, sealedAt: '2026-09-23T10:00:00.000Z', gateSha256: 'abc0123456789def' }
+      writeFileSync(join(dir, 'state.json'), JSON.stringify(disk, null, 2))
+      s.adoptExternalDecisions()
+      expect(s.state.authoring.c9.sealedAt).toBe('2026-09-23T10:00:00.000Z')
+      expect(s.state.authoring.c9.gateSha256).toBe('abc0123456789def')
+      expect(s.state.authoring.c9.missionId).toBe('m1')
+    })
+
+    it('an unsealed entry on disk never overwrites the runner\'s own', () => {
+      const dir = join(mkdtempSync(join(tmpdir(), 'camp-')), 'c9')
+      const s = new CampaignState(dir).load()
+      s.state.authoring = { c9: { stagingDir: 'C:/staging/c9', attempts: 1 } }
+      s.save()
+      const disk = JSON.parse(readFileSync(join(dir, 'state.json'), 'utf8'))
+      disk.authoring.c9 = { stagingDir: 'C:/staging/c9', attempts: 99 }
+      writeFileSync(join(dir, 'state.json'), JSON.stringify(disk, null, 2))
+      s.adoptExternalDecisions()
+      expect(s.state.authoring.c9.attempts).toBe(1)
+    })
+  })
 })

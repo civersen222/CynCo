@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { decide, runWave, waveContext, budgetSpent, defaultIo, claimedSurvivors, dispatchEnv, dirtyOutsideCampaign, inFlightRefusal, adoptInFlight, takeLock, releaseLock } from '../cynco-campaign.mjs'
+import { decide, runWave, waveContext, budgetSpent, defaultIo, claimedSurvivors, dispatchEnv, dirtyOutsideCampaign, inFlightRefusal, adoptInFlight, takeLock, releaseLock, applyProposalDecision, main } from '../cynco-campaign.mjs'
 import { adopt } from '../cynco-campaign-adopt.mjs'
 import { CampaignState } from '../cynco-campaign-state.mjs'
 import { promotionProposal } from '../cynco-ideation.mjs'
@@ -1045,5 +1045,134 @@ describe('runWave — the wave is on the record before the verdict reads the rec
     await runWave(spec, state, gradedIo({ dispatch: async ({ invariants }) => { dispatched = invariants; return { missionId: 'c8-wave1-1' } } }))
     expect(dispatched.editGapCap).toBe(60)
     expect(state.state.proposals[0].status).toBe('approved')
+  })
+})
+
+// ── Phase 3: the gate-author seat ───────────────────────────────────────────
+
+describe('applyProposalDecision on the gate-authoring proposals', () => {
+  const pending = (over) => ({ type: 'Parameter', name: 'gate-author/gate', proposedAt: 't1', status: 'pending', newValue: 0.5, bounds: { min: 0, max: 0.5 }, ...over })
+
+  it('gate-author/gate raises the authority, capped at its own bound', () => {
+    const s = { proposals: [pending()], gateAuthorAuthority: 0 }
+    expect(applyProposalDecision(s, 'gate-author/gate', true)).toEqual({ ok: true, status: 'approved' })
+    expect(s.gateAuthorAuthority).toBe(0.5)
+    const greedy = { proposals: [pending({ newValue: 1.0 })], gateAuthorAuthority: 0 }
+    applyProposalDecision(greedy, 'gate-author/gate', true)
+    expect(greedy.gateAuthorAuthority).toBe(0.5)
+  })
+
+  it('a rejected gate-author/gate changes no authority', () => {
+    const s = { proposals: [pending()], gateAuthorAuthority: 0 }
+    expect(applyProposalDecision(s, 'gate-author/gate', false).status).toBe('rejected')
+    expect(s.gateAuthorAuthority).toBe(0)
+  })
+
+  // gate/<id> is a decision about CODE. It records who decided and nothing
+  // else: the seal (the copy into the sealed tree, the campaign json, the
+  // campaign-log entry) is the CLI's, because this function is called on every
+  // CampaignState.save and must stay pure.
+  it('gate/<id> records status and decidedBy and touches nothing else', () => {
+    const s = { proposals: [{ type: 'Code', name: 'gate/c9', proposedAt: 't1', status: 'pending', evidence: { lineCount: 12 } }], gateAuthorAuthority: 0, ideationAuthority: 0 }
+    expect(applyProposalDecision(s, 'gate/c9', true)).toEqual({ ok: true, status: 'approved' })
+    expect(s.proposals[0].status).toBe('approved')
+    expect(s.proposals[0].decidedBy).toBe('supervisor')
+    expect(s.proposals[0].decidedAt).toBeTruthy()
+    expect(s.gateAuthorAuthority).toBe(0)
+    expect(s.invariantOverrides).toBeUndefined()
+    const rejected = { proposals: [{ type: 'Code', name: 'gate/c9', proposedAt: 't1', status: 'pending' }] }
+    expect(applyProposalDecision(rejected, 'gate/c9', false).status).toBe('rejected')
+    expect(rejected.proposals[0].decidedBy).toBe('supervisor')
+  })
+})
+
+describe('main routes the authoring verbs before it loads a campaign spec', () => {
+  // The whole point of the routing: `<id>.campaign.json` is what --author
+  // PRODUCES, so requiring it here would make the verb that writes a spec
+  // depend on the spec already existing.
+  const stub = () => {
+    const calls = []
+    return { calls, authorModule: {
+      defaultAuthorIo: (helpers) => ({ helpers }),
+      authorMain: async (argv, io) => { calls.push({ verb: argv[0], argv, io }); return 0 },
+      sealGate: async (args) => { calls.push({ verb: 'seal', args }); return { ok: true, problems: [], specPath: 'docs/civkings-redesign-briefs/c9.campaign.json' } },
+    } }
+  }
+
+  it('--author c9 reaches the author module with no c9.campaign.json anywhere', async () => {
+    expect(existsSync('docs/civkings-redesign-briefs/c9.campaign.json')).toBe(false)
+    const s = stub()
+    expect(await main(['--author', 'c9'], { authorModule: s.authorModule })).toBe(0)
+    expect(s.calls).toHaveLength(1)
+    expect(s.calls[0].argv).toEqual(['--author', 'c9'])
+    // the runner's own helpers are what travel over, not an import back
+    expect(Object.keys(s.calls[0].io.helpers).sort()).toEqual(['appendLog', 'dispatchEnv', 'dispatchRaw', 'missionIdFrom', 'readRow', 'releaseLock', 'takeLock', 'waitForDriver'])
+  })
+
+  it('--author takes the id from the argv path when none is named', async () => {
+    const s = stub()
+    expect(await main(['docs/civkings-redesign-briefs/c9.campaign.json', '--author'], { authorModule: s.authorModule })).toBe(0)
+    expect(s.calls[0].argv).toEqual(['--author', 'c9'])
+  })
+
+  it('--author refuses to name two campaigns at once', async () => {
+    const s = stub()
+    expect(await main(['docs/civkings-redesign-briefs/c8.campaign.json', '--author', 'c9'], { authorModule: s.authorModule })).toBe(2)
+    expect(s.calls).toEqual([])
+  })
+
+  it('--check is routed straight through, spec or no spec', async () => {
+    const s = stub()
+    expect(await main(['--check', 'C:/staging/c9', 'C:/tmp/c9_author_base'], { authorModule: s.authorModule })).toBe(0)
+    expect(s.calls[0].verb).toBe('--check')
+  })
+
+  it('--approve-proposal gate/<id> decides, then seals', async () => {
+    const dir = join(mkdtempSync(join(tmpdir(), 'home-')), '.cynco')
+    const prev = process.env.CYNCO_HOME
+    process.env.CYNCO_HOME = dir
+    try {
+      const state = new CampaignState(join(dir, 'campaigns', 'c9')).load()
+      state.state.proposals = [{ type: 'Code', name: 'gate/c9', proposedAt: 't1', status: 'pending' }]
+      state.save()
+      const s = stub()
+      expect(await main(['--approve-proposal', 'gate/c9'], { authorModule: s.authorModule })).toBe(0)
+      const saved = JSON.parse(readFileSync(join(dir, 'campaigns', 'c9', 'state.json'), 'utf8'))
+      expect(saved.proposals[0]).toMatchObject({ status: 'approved', decidedBy: 'supervisor' })
+      expect(s.calls.map(c => c.verb)).toEqual(['seal'])
+      expect(s.calls[0].args.id).toBe('c9')
+      expect(s.calls[0].args.roadmap.lines.some(l => l.id === 'c9')).toBe(true)
+    } finally {
+      if (prev === undefined) delete process.env.CYNCO_HOME; else process.env.CYNCO_HOME = prev
+    }
+  })
+
+  it('--reject-proposal gate/<id> decides and seals nothing', async () => {
+    const dir = join(mkdtempSync(join(tmpdir(), 'home-')), '.cynco')
+    const prev = process.env.CYNCO_HOME
+    process.env.CYNCO_HOME = dir
+    try {
+      const state = new CampaignState(join(dir, 'campaigns', 'c9')).load()
+      state.state.proposals = [{ type: 'Code', name: 'gate/c9', proposedAt: 't1', status: 'pending' }]
+      state.save()
+      const s = stub()
+      expect(await main(['--reject-proposal', 'gate/c9'], { authorModule: s.authorModule })).toBe(0)
+      expect(s.calls).toEqual([])
+    } finally {
+      if (prev === undefined) delete process.env.CYNCO_HOME; else process.env.CYNCO_HOME = prev
+    }
+  })
+
+  it('a gate/<id> decision with no pending proposal refuses without sealing', async () => {
+    const dir = join(mkdtempSync(join(tmpdir(), 'home-')), '.cynco')
+    const prev = process.env.CYNCO_HOME
+    process.env.CYNCO_HOME = dir
+    try {
+      const s = stub()
+      expect(await main(['--approve-proposal', 'gate/c9'], { authorModule: s.authorModule })).toBe(2)
+      expect(s.calls).toEqual([])
+    } finally {
+      if (prev === undefined) delete process.env.CYNCO_HOME; else process.env.CYNCO_HOME = prev
+    }
   })
 })

@@ -3,6 +3,9 @@
 //   bun scripts/cynco-campaign.mjs docs/civkings-redesign-briefs/c8.campaign.json [--waves N] [--resume] [--dry-run] [--sync]
 //                                  [--approve-proposal ideation/brief] [--reject-proposal ideation/brief]
 //                                  [--adopt-inflight]
+//   bun scripts/cynco-campaign.mjs --author c9            # write the next campaign's sealed gate (Phase 3)
+//   bun scripts/cynco-campaign.mjs --check <staging> <base>
+//   bun scripts/cynco-campaign.mjs --approve-proposal gate/c9   # seal what --author staged
 //
 // S2: salvage + no-progress stop.   S3: budgets + invariants handed to the wave.
 // S3*: sealed gate, suite gate, sweep.   S4: brief (generator binds; ideation advises).
@@ -26,6 +29,7 @@ import { sidecarPath } from './cynco-contract.mjs'
 import { exportTriples } from './cynco-triples.mjs'
 import { analyseDenials } from './cynco-signal-validation.mjs'
 import { governanceCounts, governancePosiwid } from './cynco-governance-posiwid.mjs'
+import { loadRoadmap, ROADMAP_PATH } from './cynco-roadmap.mjs'
 
 const BRIEFS_DIR = 'docs/civkings-redesign-briefs'
 const LOG = `${BRIEFS_DIR}/campaign-log.md`
@@ -132,6 +136,19 @@ export const defaultIo = {
     // exist yet: it is read out of the driver log by missionIdFrom once the
     // driver has written its ledger line.
     return { driverLog }
+  },
+  // The same launcher, called with the pieces spelled out rather than read off
+  // a campaign spec. The AUTHORING mission (scripts/cynco-gate-author.mjs) has
+  // no spec — writing one is the thing it is for — so it names its own marker,
+  // cwd, wall clock and check command, and hands over an env it built itself.
+  // `dispatch` above is left exactly as it was: the wave path is the measured
+  // one and must not change behaviour to make room for this.
+  dispatchRaw: async ({ briefFile, marker, cwd, timeoutS, checkCmd, env }) => {
+    const r = spawnSync('bash', ['scripts/dispatch-mission.sh', briefFile, marker, cwd, String(timeoutS), checkCmd ?? ''], { env, encoding: 'utf8', timeout: 900_000 })
+    if (r.status !== 0) throw new Error(`dispatch failed (exit ${r.status}): ${(r.stdout + r.stderr).slice(-2000)}`)
+    if (r.stdout) console.log(r.stdout.trimEnd())
+    if (r.stderr?.trim()) console.log(r.stderr.trimEnd())
+    return { driverLog: env?.DRIVER_LOG ?? null }
   },
   // The LEDGER LINE is the authority, not the pid. The driver writes its row
   // and then tears down (engine shutdown, snapshots, the odd orphan); a pid
@@ -524,7 +541,14 @@ export function applyProposalDecision(s, name, approve) {
     if (cap !== 'editGapCap' && cap !== 'commitGapCap') return { ok: false, why: `proposal ${name} names a cap that is not tunable` }
   }
   p.status = approve ? 'approved' : 'rejected'; p.decidedAt = new Date().toISOString()
+  // A `gate/<id>` decision is a decision about CODE, not a parameter: the only
+  // thing it changes in state is who said so. The seal itself — the copy into
+  // the sealed tree, the campaign json, the identity check, the campaign-log
+  // entry — is done by the CLI afterwards, because this function must stay
+  // pure over the state object (CampaignState.save calls it on every write).
+  if (p.name.startsWith('gate/')) { p.decidedBy = 'supervisor'; return { ok: true, status: p.status } }
   if (approve && p.name === 'ideation/brief') s.ideationAuthority = Math.min(p.newValue, p.bounds.max)
+  if (approve && p.name === 'gate-author/gate') s.gateAuthorAuthority = Math.min(p.newValue, p.bounds.max)
   if (approve && p.name.startsWith('invariants/')) {
     const cap = p.name.slice('invariants/'.length)
     s.invariantOverrides = { ...(s.invariantOverrides ?? {}), [cap]: Math.min(p.newValue, p.bounds.max) }
@@ -618,18 +642,74 @@ export function budgetSpent(state, spec) {
   return (state.state.waveCount ?? 0) >= spec.budget.waves
 }
 
-export async function main(argv) {
+/**
+ * The authoring io, built here and handed over: `cynco-gate-author.mjs` never
+ * imports this module (that would be an ESM cycle — the verb branches below
+ * import IT), so the runner's dispatcher, driver wait, ledger reader, env
+ * scrubber, lock and campaign-log append travel as data.
+ */
+function authorIo(author) {
+  return author.defaultAuthorIo({ dispatchRaw: defaultIo.dispatchRaw, waitForDriver: defaultIo.waitForDriver, missionIdFrom: defaultIo.missionIdFrom,
+    readRow: defaultIo.readRow, appendLog: defaultIo.appendLog, dispatchEnv, takeLock, releaseLock })
+}
+
+export async function main(argv, deps = {}) {
   // Every path below reaches for a repo-relative path (scripts/, docs/,
   // benchmark/cynco-ledger/). Run from anywhere else and the first symptom is
   // a brief written into the wrong tree, not an error.
   if (!existsSync('scripts/dispatch-mission.sh')) { console.error('[campaign] run from the localcode repo root'); return 2 }
+  const flag = (n) => argv.indexOf(n)
+  const loadAuthor = deps.authorModule ? async () => deps.authorModule : () => import('./cynco-gate-author.mjs')
+
+  // ── the gate-authoring verbs ───────────────────────────────────────────
+  //
+  // These run BEFORE loadCampaignSpec, and that ordering is the whole point:
+  // `<id>.campaign.json` is what the authoring run PRODUCES. Requiring it here
+  // would make the verb that writes a campaign spec depend on the campaign
+  // spec already existing. The id comes from `--author <id>` / the proposal
+  // name, falling back to the argv path's basename, and the state is loaded by
+  // id (created with freshState when this campaign has no state dir yet).
   const specPath = argv.find(a => a.endsWith('.campaign.json'))
-  if (!specPath) { console.error('usage: bun scripts/cynco-campaign.mjs <id>.campaign.json [--waves N] [--resume] [--dry-run] [--sync] [--adopt-inflight] [--approve-proposal NAME] [--reject-proposal NAME]'); return 2 }
+  const pathId = specPath ? basename(specPath).replace(/\.campaign\.json$/, '') : null
+  if (flag('--check') !== -1) {
+    const author = await loadAuthor()
+    return await author.authorMain(argv, authorIo(author))
+  }
+  if (flag('--author') !== -1) {
+    const named = argv[flag('--author') + 1]
+    const id = named && !named.startsWith('--') ? named : pathId
+    if (!id) { console.error('usage: bun scripts/cynco-campaign.mjs --author <id>'); return 2 }
+    if (pathId && named && !named.startsWith('--') && pathId !== named) {
+      console.error(`[campaign] --author ${named} was given alongside ${specPath} — name one campaign, not two`); return 2
+    }
+    const author = await loadAuthor()
+    return await author.authorMain(['--author', id], authorIo(author))
+  }
+  const decisionIdx = flag('--approve-proposal') !== -1 ? flag('--approve-proposal') : flag('--reject-proposal')
+  const decisionName = decisionIdx !== -1 ? argv[decisionIdx + 1] : null
+  if (decisionName?.startsWith('gate/')) {
+    const approve = flag('--approve-proposal') !== -1
+    const id = decisionName.slice('gate/'.length)
+    if (!id) { console.error('[campaign] --approve-proposal gate/<id> needs a campaign id'); return 2 }
+    const state = new CampaignState(join(cyncoHome(), 'campaigns', id)).load()
+    const r = applyProposalDecision(state.state, decisionName, approve)
+    if (!r.ok) { console.error(r.why); return 2 }
+    state.save()
+    console.log(`[campaign] proposal ${decisionName} ${r.status}`)
+    if (!approve) return 0
+    const author = await loadAuthor()
+    const roadmap = loadRoadmap(ROADMAP_PATH)
+    const sealed = await author.sealGate({ id, state, roadmap, io: authorIo(author) })
+    if (!sealed.ok) { console.error(`[campaign] SEAL REFUSED for ${id}:\n  ${sealed.problems.join('\n  ')}`); return 2 }
+    console.log(`[campaign] ${id} sealed: ${sealed.specPath} written, triple copied, roadmap line sealed`)
+    return 0
+  }
+
+  if (!specPath) { console.error('usage: bun scripts/cynco-campaign.mjs <id>.campaign.json [--waves N] [--resume] [--dry-run] [--sync] [--adopt-inflight] [--approve-proposal NAME] [--reject-proposal NAME] | --author <id> | --check <stagingDir> <baseDir>'); return 2 }
   const spec = loadCampaignSpec(specPath)
   const identity = checkIdentity(spec)
   if (!identity.ok) { console.error('[campaign] IDENTITY VIOLATION:\n  ' + identity.problems.join('\n  ')); return 2 }
   const state = new CampaignState(join(cyncoHome(), 'campaigns', spec.id)).load()
-  const flag = (n) => argv.indexOf(n)
   // The operator's verbs come BEFORE the lock. A campaign runs for days and
   // its runner holds runner.lock the whole time; a proposal decision that had
   // to wait for the wave to end would arrive after the wave that needed it.

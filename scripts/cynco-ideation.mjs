@@ -112,6 +112,12 @@ export function authorityRegistry(state) {
   const reg = new heterarchy.CommandRegistry()
   reg.register('generator', 'brief', 1.0)
   reg.register('ideation', 'brief', state.ideationAuthority ?? 0)
+  // Phase 3: the same shape one context over. The supervisor (the human, in
+  // practice the frontier session) holds `gate` at 1.0 and keeps it — spec
+  // ruling 2 grants the gate-author at most 0.5, which buys sealing without
+  // waiting for an approval and never the binding seat.
+  reg.register('supervisor', 'gate', 1.0)
+  reg.register('gate-author', 'gate', state.gateAuthorAuthority ?? 0)
   return reg
 }
 
