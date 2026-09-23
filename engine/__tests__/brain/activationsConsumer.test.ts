@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { ActivationsConsumer, decodeB64Floats } from '../../brain/activationsConsumer.js'
+import { ActivationsConsumer, decodeB64Floats, MAX_POSITIONS_PER_POLL } from '../../brain/activationsConsumer.js'
 
 const entry = (cursor: number, layer: number, pos: number) => ({
   cursor, layer, pos, token: 42,
@@ -291,5 +291,75 @@ describe('ActivationsConsumer layer convergence', () => {
     await c.pollOnce()
     expect(c.convergence().n).toBe(1)
     expect(lens.readout).toHaveBeenCalledTimes(5)
+  })
+})
+
+describe('ActivationsConsumer readout budget', () => {
+  it('does not fan out across five layers below the live tier', async () => {
+    // record-only is the startup tier of every brain session, until the sidecar
+    // has loaded its artifacts. Five readouts per position there are five calls
+    // that could never be scored — each waiting out its own timeout.
+    const lens = {
+      readout: vi.fn(async (_layer: number, h: Float32Array) => [{ token: `t${h[0]}`, p: 0.9 }]),
+      health: vi.fn(async () => null as { ok: boolean; layers: number[] } | null),
+    }
+    const box = { batch: { cursor: 0, n_embd: 4, entries: [] as any[] } }
+    const c = new ActivationsConsumer({
+      activationsUrl: 'http://x',
+      fetchFn: (async () => new Response(JSON.stringify(box.batch), { status: 200 })) as any,
+      jlens: lens as any, broadcast: vi.fn(), layer: 40, stride: 4,
+    })
+    expect(await c.start()).toBe('record-only')
+    c.stop()
+
+    box.batch = twoPositions()          // complete: every probed layer present
+    lens.readout.mockClear()
+    await c.pollOnce()
+
+    expect(lens.readout).toHaveBeenCalledTimes(2)     // one per selected-layer position, not ten
+    expect(lens.readout.mock.calls.every(([l]: any[]) => l === 40)).toBe(true)
+    expect(c.convergence().n).toBe(0)
+  })
+
+  it('warns once when the lens does not carry every probed layer', async () => {
+    // Three independent sources set the layer list; a disagreement leaves
+    // layerConvergence null all session, and the re-probe timer would repeat
+    // the warning every 10s.
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    try {
+      const c = new ActivationsConsumer({
+        activationsUrl: 'http://x',
+        fetchFn: (async () => new Response(JSON.stringify({ cursor: 0, n_embd: 4, entries: [] }), { status: 200 })) as any,
+        jlens: { readout: vi.fn(), health: async () => ({ ok: true, layers: [24, 32] }) } as any,
+        broadcast: vi.fn(), layer: 40, stride: 4, layers: LAYERS,
+      })
+      await c.start()                    // evaluate() #1
+      await (c as any).evaluate()        // evaluate() #2
+      c.stop()
+      const warnings = log.mock.calls
+        .map(a => String(a[0]))
+        .filter(m => m.includes('do not cover probed layers'))
+      expect(warnings).toHaveLength(1)
+      expect(warnings[0]).toBe('[brain] lens layers 24,32 do not cover probed layers 24,32,40,48,56 — layer convergence will stay null')
+    } finally {
+      log.mockRestore()
+    }
+  })
+
+  it('caps the positions one drain reads out', async () => {
+    const box = { batch: { cursor: 0, n_embd: 4, entries: [] as any[] } }
+    const lens = codedLens()
+    const c = await liveConsumer(lens, vi.fn(), box)
+
+    // 20 complete positions, all on the stride.
+    const entries: ReturnType<typeof coded>[] = []
+    let cursor = 0
+    for (let p = 0; p < 20; p++) for (const l of LAYERS) entries.push(coded(++cursor, l, p * 4, 1))
+    box.batch = { cursor, n_embd: 4, entries }
+    await c.pollOnce()
+
+    expect(lens.readout).toHaveBeenCalledTimes(MAX_POSITIONS_PER_POLL * LAYERS.length)
+    expect(c.convergence().n).toBe(MAX_POSITIONS_PER_POLL)
+    expect(c.cursor).toBe(cursor)        // the dropped positions still advanced it
   })
 })

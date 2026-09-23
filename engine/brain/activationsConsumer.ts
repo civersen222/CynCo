@@ -18,6 +18,10 @@ export function decodeB64Floats(b64: string): Float32Array {
  *  cannot read out would make every position incomplete and the window empty. */
 export const DEFAULT_LAYERS = [24, 32, 40, 48, 56]
 
+/** Readout positions one drain may spend, so a backlog behind a slow sidecar
+ *  cannot cascade into a proportionally larger burst of readouts. */
+export const MAX_POSITIONS_PER_POLL = 16
+
 type Entry = { cursor: number; layer: number; pos: number; token: number; values_b64: string }
 
 export type ConsumerOpts = {
@@ -56,6 +60,12 @@ export class ActivationsConsumer {
   private announced = false
   private readonly probedLayers: number[]
   private readonly acc: ConvergenceAccumulator
+  /** The layer-set mismatch has been reported. The three sources of the layer
+   *  list (this consumer, `LLAMA_ACTIVATIONS_LAYERS` for the tap, `JLENS_LAYERS`
+   *  for the sidecar) are set independently, and a disagreement makes every
+   *  position unscoreable for the whole session — silently, without it. Logged
+   *  once: the re-probe timer would otherwise repeat it every 10s. */
+  private mismatchWarned = false
 
   constructor(private opts: ConsumerOpts) {
     this.layer = opts.layer
@@ -105,6 +115,18 @@ export class ActivationsConsumer {
     const lens = await this.opts.jlens.health()
     const lensUp = lens !== null
     const tier: BrainTier = tapUp && lensUp ? 'live' : tapUp ? 'record-only' : 'entropy-only'
+
+    // The sidecar can only read out the layers it exported. A probed layer it
+    // does not carry makes every position unscoreable, and `layerConvergence`
+    // reads null all session with nothing in the log to say why.
+    const lensLayers = lens?.layers
+    if (!this.mismatchWarned && lensLayers?.length) {
+      const uncovered = this.probedLayers.filter(l => !lensLayers.includes(l))
+      if (uncovered.length) {
+        this.mismatchWarned = true
+        console.log(`[brain] lens layers ${lensLayers.join(',')} do not cover probed layers ${this.probedLayers.join(',')} — layer convergence will stay null`)
+      }
+    }
 
     if (!this.announced || tier !== this.currentTier) {
       this.announced = true
@@ -189,14 +211,24 @@ export class ActivationsConsumer {
         if (e.layer === this.layer) selected.set(e.pos, e)
       }
 
-      for (const pos of order) {
+      // A batch that piled up behind a slow sidecar must not be answered with a
+      // proportionally larger burst of readouts — that is how one hiccup turns
+      // into a cascade. Positions past the cap are dropped; their cursor has
+      // already advanced, so the next poll starts after them rather than
+      // re-serving the same backlog.
+      for (const pos of order.slice(0, MAX_POSITIONS_PER_POLL)) {
         const layers = byPos.get(pos)!
         const sel = selected.get(pos)
         let selTop: JlensTop[] | null = null
         let selRead = false
 
-        // Convergence needs every probed layer of this position.
-        if (this.probedLayers.every(l => layers.has(l))) {
+        // Convergence needs every probed layer of this position — and is only
+        // scored while live, so the fan-out is gated on the tier too. Below it
+        // the five readouts could never be accumulated: in `record-only` (the
+        // startup tier of every brain session, until the sidecar has loaded)
+        // they would be five doomed calls per position, each waiting out its
+        // own timeout and logging a failure.
+        if (this.currentTier === 'live' && this.probedLayers.every(l => layers.has(l))) {
           const tops = await Promise.all(this.probedLayers.map(l => this.readout(l, layers.get(l)!)))
           const readouts = new Map<number, LayerTop>()
           for (const [i, l] of this.probedLayers.entries()) {
@@ -206,7 +238,7 @@ export class ActivationsConsumer {
           // A null readout on any layer makes the position unscoreable: the
           // deepest layer is the target and a missing shallower one would
           // silently shrink the denominator.
-          if (readouts.size === this.probedLayers.length && this.currentTier === 'live') this.acc.add(pos, readouts)
+          if (readouts.size === this.probedLayers.length) this.acc.add(pos, readouts)
           const i = this.probedLayers.indexOf(this.layer)
           if (i >= 0) { selTop = tops[i]; selRead = true }
         }
