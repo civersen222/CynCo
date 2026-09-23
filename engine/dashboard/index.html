@@ -2161,10 +2161,15 @@ function fetchSessionState() {
     })
     .catch(function() {});
 
-  // Hydrate + poll governance every 3 seconds (tok/s, stuck, health)
+  // Hydrate + poll governance every 3 seconds (tok/s, stuck, health).
+  // MERGE, never replace: /api/governance serves CyberneticsGovernance.getReport(),
+  // which carries none of `invariants`, `routing`, `brain`, `posiwidLive` or
+  // `ultrastable` — those ride only the per-model-call `governance.status` frame.
+  // Replacing blanked all five Governance rows from the first poll after each
+  // frame until the next one, i.e. for the whole of any tool call over 3s.
   function pollGovernance() {
     fetch('/api/governance').then(function(r) { return r.json(); }).then(function(data) {
-      if (data && data.status) { state.governance = data; render(); }
+      if (data && data.status) { state.governance = Object.assign({}, state.governance || {}, data); render(); }
     }).catch(function() {});
   }
   pollGovernance();
