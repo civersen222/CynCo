@@ -52,6 +52,18 @@ describe('governancePosiwid', () => {
     expect(r.onsetWave).toBeGreaterThanOrEqual(3)
     expect(governancePosiwid(windows).onsetWave).toBe(r.onsetWave)   // replay is deterministic
   })
+  it('reports the onset as the stored window wave, not its index — campaigns graded before Task 1 start at wave 4', () => {
+    const r = governancePosiwid([{ wave: 4, ...w(2, 1, 30) }])
+    expect(r.onsetWave).toBe(4)
+  })
+  it('reports the onset wave across a gap in the windows', () => {
+    const r = governancePosiwid([{ wave: 1, ...w(12, 10, 3) }, { wave: 3, ...w(2, 1, 30) }])
+    expect(r.onsetWave).toBe(3)
+  })
+  it('falls back to the 1-based index when a window carries no wave', () => {
+    const r = governancePosiwid([w(12, 10, 3), w(2, 1, 30)])
+    expect(r.onsetWave).toBe(2)
+  })
   it('exposes the stated purpose with no weight on logging', () => {
     expect(GOVERNANCE_PURPOSE.shareOf('signalsLogged')).toBe(0)
     expect(GOVERNANCE_PURPOSE.shareOf('denialsChanged')).toBe(0.5)

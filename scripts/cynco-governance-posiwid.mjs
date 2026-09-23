@@ -53,6 +53,11 @@ export function governancePosiwid(windows) {
   for (const w of windows ?? []) { const o = drift.observe(toObserved(w)); if (o !== null && o !== undefined) onset = o }
   const last = windows?.length ? constraints.posiwidDivergence(GOVERNANCE_PURPOSE, toObserved(windows[windows.length - 1]), d.driftThreshold, d.minSupport)
     : { verdict: 'Insufficient', divergence: 0, dominantObserved: 'other', support: 0 }
-  // PosiwidDrift numbers windows from 0 (constraints/index.ts:262 `idx = this.windows++`); waves are 1-based.
-  return { verdict: last.verdict, divergence: last.divergence, dominantObserved: last.dominantObserved, support: last.support, onsetWave: onset === null ? null : onset + 1, windows: windows?.length ?? 0 }
+  // PosiwidDrift numbers windows from 0 (constraints/index.ts:262 `idx = this.windows++`).
+  // Windows are NOT guaranteed to start at wave 1 or to be contiguous (a campaign
+  // graded before Task 1 has no windows for its early waves; a throwing wave skips
+  // the push at cynco-campaign.mjs:391), so read the wave off the stored window and
+  // only fall back to the 1-based index when a window carries no `wave`.
+  const onsetWave = onset === null || onset === undefined ? null : (windows[onset]?.wave ?? onset + 1)
+  return { verdict: last.verdict, divergence: last.divergence, dominantObserved: last.dominantObserved, support: last.support, onsetWave, windows: windows?.length ?? 0 }
 }
