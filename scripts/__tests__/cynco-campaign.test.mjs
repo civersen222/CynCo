@@ -14,6 +14,7 @@ import { fileURLToPath } from 'node:url'
 // computed exactly the way the runner computes them.
 const GATE = fileURLToPath(new URL('../cynco-campaign-grade.mjs', import.meta.url))
 const PERTURB = fileURLToPath(new URL('../cynco-campaign-spec.mjs', import.meta.url))
+const POSITIVE = fileURLToPath(new URL('../cynco-gate-lint.mjs', import.meta.url))
 
 const spec = { id: 'c8', title: 't', repo: 'C:/repo', base: '1d03308', marker: 'stage c8 complete', keepGreen: 'python -m pytest a.py -q',
   gate: GATE, perturb: PERTURB,
@@ -536,6 +537,40 @@ describe('runWave — the instrument must not move under the campaign', () => {
     state.state.calibration.perturbSha256 = 'moved'
     const rec = await runWave(spec, state, noDispatch({ briefs: 0, dispatched: 0 }))
     expect(rec.decision.kind).toBe('stop')
+  })
+
+  // The positive shim is part of the instrument (Rule 14): it is what decided
+  // the gate was reachable at all, so moving it invalidates the calibration
+  // exactly as moving the gate does.
+  it('stops when the positive shim sha moved since calibration', async () => {
+    const state = freshState()
+    state.state.calibration.positiveSha256 = 'moved'
+    const seen = { briefs: 0, dispatched: 0 }
+    const rec = await runWave({ ...spec, positive: POSITIVE }, state, noDispatch(seen))
+    expect(rec.decision.kind).toBe('stop')
+    expect(rec.decision.why).toMatch(/gate or perturb changed since calibration/)
+    expect(seen.dispatched).toBe(0)
+  })
+
+  it('runs the wave when the positive shim is declared and its sha still matches', async () => {
+    const state = freshState()
+    state.state.calibration.positiveSha256 = calibrateIo.sha256(POSITIVE)
+    const rec = await runWave({ ...spec, positive: POSITIVE }, state, {
+      writeBrief: (p) => p,
+      dispatch: async () => ({ missionId: 'c8-wave1-1' }),
+      waitForDriver: async () => ({ exited: true }),
+      readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', toolStats: {} }),
+      commitsBetween: () => [],
+      grade: async () => g(),
+      salvageOf: () => null,
+      patchRow: () => {},
+      commit: () => ({ sha: 'v1' }),
+      notify: async () => true,
+      economics: () => [],
+      appendLog: () => {},
+      ...inertTriples,
+    })
+    expect(rec.decision.kind).toBe('next')
   })
 })
 

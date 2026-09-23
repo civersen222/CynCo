@@ -228,7 +228,10 @@ export async function runWave(spec, state, io = defaultIo) {
   // re-run on the next invocation and the campaign continues from there.
   const sha256 = io.sha256 ?? defaultIo.sha256
   const gateSha256 = sha256(spec.gate)
-  if (s.calibration && (gateSha256 !== s.calibration.gateSha256 || sha256(spec.perturb) !== s.calibration.perturbSha256)) {
+  // The positive shim is part of the instrument (Rule 14): it decides whether
+  // the gate was ever reachable, so moving it invalidates the calibration too.
+  const positiveMoved = Boolean(s.calibration && spec.positive) && sha256(spec.positive) !== s.calibration.positiveSha256
+  if (s.calibration && (gateSha256 !== s.calibration.gateSha256 || sha256(spec.perturb) !== s.calibration.perturbSha256 || positiveMoved)) {
     return stopWave(spec, state, io, { wave, base, why: 'gate or perturb changed since calibration — re-run to recalibrate' })
   }
   const registry = authorityRegistry(s)
@@ -670,13 +673,13 @@ export async function main(argv) {
   // CALIBRATE whenever the instruments changed (or never ran).
   const sha = (p) => calibrateIo.sha256(p)
   const cal = state.state.calibration
-  if (!cal || cal.gateSha256 !== sha(spec.gate) || cal.perturbSha256 !== sha(spec.perturb)) {
-    console.log('[campaign] CALIBRATE (Rule 11): gate/perturb changed or never calibrated')
+  if (!cal || cal.gateSha256 !== sha(spec.gate) || cal.perturbSha256 !== sha(spec.perturb) || (spec.positive && cal.positiveSha256 !== sha(spec.positive))) {
+    console.log('[campaign] CALIBRATE (Rule 11): gate/perturb/positive changed or never calibrated')
     const r = await calibrate(spec)
     if (!r.ok) { console.error('[campaign] CALIBRATION REFUSED:\n  ' + r.problems.join('\n  ')); await notify(`${spec.id}: calibration refused — ${r.problems[0]}`); return 3 }
     // basePasses is what wave 1's brief prints as "Already PASS at BASE and must
     // stay so" — the only thing telling the worker which lines it may not break.
-    state.state.calibration = { gateSha256: r.gateSha256, perturbSha256: r.perturbSha256, baseFails: r.baseFails, basePasses: r.basePasses ?? [], perturbFails: r.perturbFails, calibratedAt: new Date().toISOString() }
+    state.state.calibration = { gateSha256: r.gateSha256, perturbSha256: r.perturbSha256, positiveSha256: r.positiveSha256 ?? null, baseFails: r.baseFails, basePasses: r.basePasses ?? [], perturbFails: r.perturbFails, calibratedAt: new Date().toISOString() }
     state.save()
     console.log(`[campaign] calibrated: BASE MISS ${r.baseFails.length}, perturb honest${r.suiteBaselineCreated ? ', suite baseline written' : ''}`)
   }

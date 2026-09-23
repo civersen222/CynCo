@@ -38,6 +38,15 @@ export function loadCampaignSpec(path) {
     if (spec.sweep.max !== undefined && (!Number.isInteger(spec.sweep.max) || spec.sweep.max <= 0)) throw new Error('campaign spec sweep.max must be a positive integer')
   }
   if (spec.prBase !== undefined && (typeof spec.prBase !== 'string' || !spec.prBase)) throw new Error('campaign spec prBase must be a non-empty string')
+  // Optional: the positive shim (Rule 14 — calibrate runs it and requires
+  // `GATE: PASS`), and the provenance of the gate itself. `positive` stays
+  // optional because the hand-authored c8 spec has none and must keep loading;
+  // the seal verb requires one for every gate CynCo writes.
+  if (spec.positive !== undefined && (typeof spec.positive !== 'string' || !spec.positive)) throw new Error('campaign spec positive must be a non-empty string')
+  if (spec.author !== undefined && spec.author !== 'cynco' && spec.author !== 'human') throw new Error(`campaign spec author must be "cynco" or "human"; got ${JSON.stringify(spec.author)}`)
+  spec.author = spec.author ?? 'human'
+  if (spec.authorMissionId !== undefined && spec.authorMissionId !== null && typeof spec.authorMissionId !== 'string') throw new Error('campaign spec authorMissionId must be a string or null')
+  spec.authorMissionId = spec.authorMissionId ?? null
   spec.ideation = spec.ideation ?? { enabled: true }
   return spec
 }
@@ -63,14 +72,17 @@ export function checkIdentity(spec, io = defaultIo) {
     // form (~/.cynco/heldout/...), normalising backslashes either way.
     return /\/\.cynco\/heldout\//.test(n) || /^~\/\.cynco\/heldout\//.test(n)
   }
-  for (const k of ['gate', 'perturb']) {
+  // The positive shim is an instrument too: it names every graded fact and how
+  // to make it true, which is the answer key. Sealed on the same terms as the
+  // gate whenever the spec declares one.
+  for (const k of ['gate', 'perturb', ...(spec.positive ? ['positive'] : [])]) {
     if (!underHeldout(spec[k])) problems.push(`${k} must live under ~/.cynco/heldout/ (sealed); got ${spec[k]}`)
     if (!io.exists(spec[k])) problems.push(`${k} does not exist: ${spec[k]}`)
   }
   if (!underHeldout(spec.suiteBaseline)) problems.push(`suiteBaseline must live under ~/.cynco/heldout/ (sealed); got ${spec.suiteBaseline}`)
   if (!io.gitHasCommit(spec.repo, spec.base)) problems.push(`base ${spec.base} is not a commit in ${spec.repo}`)
   if (spec.keepGreen.includes(spec.marker)) problems.push('keepGreen must not contain the marker')
-  const forbidden = [basename(norm(spec.gate)), basename(norm(spec.perturb)), 'heldout']
+  const forbidden = [basename(norm(spec.gate)), basename(norm(spec.perturb)), ...(spec.positive ? [basename(norm(spec.positive))] : []), 'heldout']
   // EVERY field the brief prints, not just the prose ones: the KEEP-GREEN
   // command, the allow/deny lists and the title all reach the worker verbatim
   // through cynco-brief.mjs, and naming the sealed gate in any of them is the

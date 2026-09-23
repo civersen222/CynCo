@@ -6,23 +6,34 @@ const baseLog = readFileSync(new URL('./fixtures/gate_c8_base.log', import.meta.
 const spec = { id: 'c8', repo: 'C:/repo', base: '1d03308', gate: 'C:/h/gate_c8.py', perturb: 'C:/h/perturb_c8.py', suiteBaseline: 'C:/h/suite_baseline_1d03308.txt' }
 const header = '# EXPECT-FLIP: C8.5.palette.Atlas C8.5.river-reserved\n# MUST-FAIL: C8.1b C8.1c C8.2b\nimport os\n'
 
-function io({ perturbLog, baselineExists }) {
-  const writes = []
-  return { writes,
+// A header that classifies EVERY line the c8 BASE log fails, which is what
+// compareCalibration demands once a positive shim is in play.
+const fullHeader = ['# EXPECT-FLIP: C8.5.palette.Atlas',
+  '# MUST-FAIL: C8.1a C8.1b C8.1c C8.2a C8.2b C8.2c C8.3a C8.3b C8.4a C8.4b C8.4d C8.5.palette.House C8.5.palette.Powers',
+  'import os', ''].join('\n')
+const positiveLog = baseLog.replace(/: FAIL /g, ': PASS ').replace('GATE: MISS (14 fails)', 'GATE: PASS')
+
+function io({ perturbLog, baselineExists, headerText = header, positiveOut = positiveLog, expectRepo = 'C:/tmp/c8_base' }) {
+  const writes = [], ran = []
+  return { writes, ran,
     run: (cmd, args, opts) => {
       const k = [cmd, ...args].join(' ')
+      ran.push(k)
       if (/git -C "?C:\/repo"? archive/.test(k) || /tar/.test(k)) return { status: 0, stdout: '', stderr: '' }
-      if (/gate_c8\.py/.test(k)) { expect(opts.env.CYNCO_GATE_REPO).toBe('C:/tmp/c8_base'); return { status: 1, stdout: baseLog, stderr: '' } }
+      if (/gate_c8\.py/.test(k)) { expect(opts.env.CYNCO_GATE_REPO).toBe(expectRepo); return { status: 1, stdout: baseLog, stderr: '' } }
       if (/perturb_c8\.py/.test(k)) return { status: 1, stdout: perturbLog, stderr: '' }
+      if (/positive_c8\.py/.test(k)) { expect(opts.env.CYNCO_GATE_REPO).toBe(expectRepo); return { status: 0, stdout: positiveOut, stderr: '' } }
       if (/pytest/.test(k)) return { status: 1, stdout: 'FAILED gilded/tests/a.py::t1 - AssertionError\nFAILED gilded/tests/b.py::t2 - x\n2 failed, 100 passed\n', stderr: '' }
       throw new Error('unscripted ' + k)
     },
     exists: (p) => p === spec.suiteBaseline ? baselineExists : true,
-    readFile: (p) => p === spec.perturb ? header : '',
+    readFile: (p) => p === spec.perturb ? headerText : '',
     writeFile: (p, s) => writes.push({ p, s }),
     sha256: (p) => `sha-${p.split('/').pop()}`,
   }
 }
+const withPositive = { ...spec, positive: 'C:/h/positive_c8.py' }
+const pythonRuns = (ran) => ran.filter(k => k.startsWith('python ') && !k.includes('pytest'))
 
 describe('calibrate', () => {
   it('passes a clean BASE + honest perturb and writes the suite baseline when missing', async () => {
@@ -78,6 +89,56 @@ describe('calibrate', () => {
     expect(r.ok).toBe(false)
     expect(r.problems.join('\n')).toMatch(/EXPECT-FLIP/)
     expect(ran.filter(k => /gate_c8\.py|perturb_c8\.py/.test(k))).toEqual([])
+  })
+
+  // Rule 14 becomes mechanical: the shim that makes every graded fact true must
+  // reach GATE: PASS, or the gate was never winnable and a campaign against it
+  // would spend its whole budget learning that.
+  it('runs the positive shim when the spec declares one, and reports its sha and verdict', async () => {
+    const perturbLog = baseLog.replace('C8.5.palette.Atlas: FAIL', 'C8.5.palette.Atlas: PASS')
+    const fake = io({ perturbLog, baselineExists: true, headerText: fullHeader })
+    const r = await calibrate(withPositive, fake)
+    expect(r.problems).toEqual([])
+    expect(r.ok).toBe(true)
+    expect(pythonRuns(fake.ran)).toEqual(['python C:/h/gate_c8.py', 'python C:/h/perturb_c8.py', 'python C:/h/positive_c8.py'])
+    expect(r.positiveSha256).toBe('sha-positive_c8.py')
+    expect(r.positive.terminator).toBe('PASS')
+    expect(r.positiveOutputTail).toMatch(/GATE: PASS/)
+  })
+
+  it('runs two commands and reports a null positive when the spec declares none', async () => {
+    const perturbLog = baseLog.replace('C8.5.palette.Atlas: FAIL', 'C8.5.palette.Atlas: PASS')
+    const fake = io({ perturbLog, baselineExists: true })
+    const r = await calibrate(spec, fake)
+    expect(r.ok).toBe(true)
+    expect(pythonRuns(fake.ran)).toEqual(['python C:/h/gate_c8.py', 'python C:/h/perturb_c8.py'])
+    expect(r.positiveSha256).toBeNull()
+    expect(r.positive).toBeNull()
+    expect(r.positiveOutputTail).toBeNull()
+  })
+
+  it('refuses when the positive shim cannot make the gate PASS', async () => {
+    const perturbLog = baseLog.replace('C8.5.palette.Atlas: FAIL', 'C8.5.palette.Atlas: PASS')
+    const fake = io({ perturbLog, baselineExists: true, headerText: fullHeader, positiveOut: baseLog })
+    const r = await calibrate(withPositive, fake)
+    expect(r.ok).toBe(false)
+    expect(r.problems).toEqual(['positive shim did not PASS (terminator MISS)'])
+    expect(fake.writes).toHaveLength(0)
+  })
+
+  // The authoring verb's --check has already archived the BASE to run the lint
+  // against it; archiving the same commit a second time is minutes of IO for a
+  // byte-identical tree.
+  it('uses a caller-supplied baseDir and skips the archive entirely', async () => {
+    const perturbLog = baseLog.replace('C8.5.palette.Atlas: FAIL', 'C8.5.palette.Atlas: PASS')
+    const fake = io({ perturbLog, baselineExists: true, headerText: fullHeader, expectRepo: 'C:/tmp/c8_author_base' })
+    const r = await calibrate(withPositive, fake, { baseDir: 'C:/tmp/c8_author_base' })
+    expect(r.ok).toBe(true)
+    expect(fake.ran.filter(k => /archive/.test(k))).toHaveLength(0)
+
+    const archiving = io({ perturbLog, baselineExists: true, headerText: fullHeader })
+    await calibrate(withPositive, archiving)
+    expect(archiving.ran.filter(k => /archive/.test(k))).toHaveLength(1)
   })
 
   it('refuses when git archive of the BASE fails', async () => {
