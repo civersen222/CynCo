@@ -156,7 +156,12 @@ describe('GET /api/campaign', () => {
       newValue: 60,
       max: 80,
       approveCommand: 'bun scripts/cynco-campaign.mjs docs/civkings-redesign-briefs/c8.campaign.json --approve-proposal invariants/editGapCap',
+      type: 'Parameter',
+      decidedBy: null,
     })
+    // Neither fixture ran the gate-authoring verb.
+    expect(c8.authoring).toBeNull()
+    expect(c8.gateAuthorAuthority).toBe(0)
 
     // c9: no spec file on disk for this id -> budgetWaves null; inFlight passed through.
     expect(c9.waveCount).toBe(0)
@@ -166,6 +171,86 @@ describe('GET /api/campaign', () => {
     expect(c9.waves).toEqual([])
     expect(c9.pendingProposals).toEqual([])
     expect(c9.inFlight).toEqual({ wave: 1, missionId: null, briefFile: 'docs/civkings-redesign-briefs/c9-wave1.txt', pidFile: 'C:/tmp/c9.pid', driverLog: 'C:/tmp/c9.log', dispatchedAt: '2026-09-21T00:00:00.000Z' })
+
+    // The real checked-in roadmap.json (c6..c9) — read cwd-relative, same as
+    // budgetWaves reads the real c8.campaign.json above.
+    expect(data.roadmap).toHaveLength(4)
+    expect(data.roadmap.find((r: any) => r.id === 'c9')).toEqual({ id: 'c9', name: 'Ship shell', status: 'open' })
+  })
+
+  it('authoring state and a gate/<id> proposal carry the shape the panel needs', async () => {
+    CYNCO_HOME = mkdtempSync(join(tmpdir(), 'cynco-campaign-authoring-'))
+    process.env.CYNCO_HOME = CYNCO_HOME
+
+    // c9 has no docs/civkings-redesign-briefs/c9.campaign.json in this repo,
+    // so the gate/c9 proposal's approve command is built from the roadmap id
+    // (== the campaign directory id) alone — no spec file needed (Task 4).
+    writeCampaign(CYNCO_HOME, 'c9', {
+      waveCount: 0,
+      gateAuthorAuthority: 0.2,
+      authoring: {
+        c9: {
+          missionId: 'mission-c9-author-1',
+          verified: true,
+          sealedAt: '2026-09-22T00:00:00.000Z',
+          lastCheck: { at: '2026-09-22T00:00:00.000Z', ok: false, problems: ['C9.1a.saves-list-restores: no BASE MISS'], lineCount: 3 },
+        },
+      },
+      proposals: [
+        {
+          type: 'Code', name: 'gate/c9', description: 'Seal the CynCo-authored gate triple for c9',
+          status: 'pending', proposedAt: '2026-09-22T00:00:00.000Z',
+          evidence: { lineCount: 3, problems: [], missionId: 'mission-c9-author-1', verified: true },
+        },
+      ],
+    })
+
+    const res = await authFetch(`${BASE}/api/campaign`)
+    expect(res.status).toBe(200)
+    const data = await res.json() as any
+    const c9 = data.campaigns.find((c: any) => c.id === 'c9')
+
+    expect(c9.gateAuthorAuthority).toBe(0.2)
+    expect(c9.authoring).toEqual({
+      missionId: 'mission-c9-author-1',
+      verified: true,
+      sealedAt: '2026-09-22T00:00:00.000Z',
+      lastCheck: { ok: false, problems: ['C9.1a.saves-list-restores: no BASE MISS'] },
+    })
+
+    expect(c9.pendingProposals).toHaveLength(1)
+    expect(c9.pendingProposals[0]).toEqual({
+      name: 'gate/c9',
+      currentValue: null,
+      newValue: undefined,
+      max: null,
+      approveCommand: 'bun scripts/cynco-campaign.mjs docs/civkings-redesign-briefs/c9.campaign.json --approve-proposal gate/c9',
+      type: 'Code',
+      decidedBy: null,
+    })
+  })
+
+  it('roadmap is null when docs/civkings-redesign-briefs/roadmap.json cannot be read', async () => {
+    CYNCO_HOME = mkdtempSync(join(tmpdir(), 'cynco-campaign-noroadmap-'))
+    process.env.CYNCO_HOME = CYNCO_HOME
+    writeCampaign(CYNCO_HOME, 'c8', { waveCount: 1 })
+
+    // readRoadmap reads cwd-relative, same as readCampaignBudget — chdir
+    // somewhere with no docs/civkings-redesign-briefs/roadmap.json, same
+    // technique engine/__tests__/config.test.ts uses to isolate cwd-relative
+    // reads, then restore cwd so later tests still see the real repo files.
+    const noRoadmapDir = mkdtempSync(join(tmpdir(), 'cynco-campaign-noroadmap-cwd-'))
+    const savedCwd = process.cwd()
+    process.chdir(noRoadmapDir)
+    try {
+      const res = await authFetch(`${BASE}/api/campaign`)
+      expect(res.status).toBe(200)
+      const data = await res.json() as any
+      expect(data.roadmap).toBeNull()
+    } finally {
+      process.chdir(savedCwd)
+      rmSync(noRoadmapDir, { recursive: true, force: true })
+    }
   })
 
   it('falls back to state.lastFails ids when the last wave record carries no gate.fails', async () => {

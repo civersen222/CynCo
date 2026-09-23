@@ -262,7 +262,7 @@ interface CampaignSummary {
   budgetWaves: number | null
   lastDecision: { kind: string; why: string } | null
   lastFails: string[]
-  pendingProposals: Array<{ name: string; currentValue: unknown; newValue: unknown; max: unknown; approveCommand: string }>
+  pendingProposals: Array<{ name: string; currentValue: unknown; newValue: unknown; max: unknown; approveCommand: string; type: string | null; decidedBy: string | null }>
   ideationAuthority: number
   invariantOverrides: Record<string, number>
   waves: Array<{
@@ -274,6 +274,18 @@ interface CampaignSummary {
   }>
   governancePosiwid: Record<string, unknown> | null
   inFlight: Record<string, unknown> | null
+  /** state.authoring[id] reduced to what the panel shows, or null when this
+   *  campaign has never run the gate-authoring verb. */
+  authoring: {
+    missionId: string | null
+    verified: boolean | null
+    sealedAt: string | null
+    lastCheck: { ok: boolean; problems: string[] } | null
+  } | null
+  /** state.gateAuthorAuthority — the campaign's local copy of the seat's
+   *  authority, not the cross-campaign seat value (that lives on the roadmap
+   *  proposal itself, not per campaign). */
+  gateAuthorAuthority: number
 }
 
 // ---------------------------------------------------------------------------
@@ -822,7 +834,7 @@ window.__CYNCO_TOKEN = ${JSON.stringify(token)};
       // names which campaign this engine belongs to even between waves.
       const inFlight = campaigns.find(c => c.inFlight !== null)
       const active = inFlight ? inFlight.id : (process.env.CYNCO_CAMPAIGN_ID || null)
-      return jsonResponse({ active, campaigns })
+      return jsonResponse({ active, campaigns, roadmap: this.readRoadmap() })
     } catch (e) {
       return jsonResponse({ active: null, campaigns: [], error: e instanceof Error ? e.message : String(e) })
     }
@@ -889,7 +901,14 @@ window.__CYNCO_TOKEN = ${JSON.stringify(token)};
         max: p.bounds?.max ?? null,
         // The exact command an operator runs to approve it — cynco-campaign.mjs's
         // own usage line, spelled out rather than left for someone to reconstruct.
+        // A `gate/<id>` proposal's `id` here IS the roadmap/campaign id (the
+        // gate-author verb names its proposal `gate/<campaign id>`), so this
+        // template needs no special-casing for it — main routes
+        // `--approve-proposal gate/<id>` to the state by that basename even
+        // when `<id>.campaign.json` does not exist yet (Task 4).
         approveCommand: `bun scripts/cynco-campaign.mjs docs/civkings-redesign-briefs/${id}.campaign.json --approve-proposal ${p.name}`,
+        type: p.type ?? null,
+        decidedBy: p.decidedBy ?? null,
       }))
 
     return {
@@ -904,6 +923,39 @@ window.__CYNCO_TOKEN = ${JSON.stringify(token)};
       waves,
       governancePosiwid: lastWave?.governancePosiwid ?? null,
       inFlight: state.inFlight ?? null,
+      authoring: this.reduceAuthoring(state.authoring?.[id]),
+      gateAuthorAuthority: state.gateAuthorAuthority ?? 0,
+    }
+  }
+
+  /** state.authoring[id] (cynco-gate-author.mjs) reduced to the panel's shape.
+   *  null when this campaign has never dispatched an authoring run — a
+   *  missing entry must not render as a run whose fields all came back null. */
+  private reduceAuthoring(a: any): CampaignSummary['authoring'] {
+    if (!a) return null
+    return {
+      missionId: a.missionId ?? null,
+      verified: a.verified ?? null,
+      sealedAt: a.sealedAt ?? null,
+      lastCheck: a.lastCheck
+        ? { ok: Boolean(a.lastCheck.ok), problems: Array.isArray(a.lastCheck.problems) ? a.lastCheck.problems : [] }
+        : null,
+    }
+  }
+
+  /** `docs/civkings-redesign-briefs/roadmap.json`'s lines, reduced to
+   *  `{ id, name, status }` — or null when it cannot be read. Same
+   *  cwd-relative, never-throws pattern as `readCampaignBudget`. */
+  private readRoadmap(): Array<{ id: string; name: string; status: string }> | null {
+    try {
+      const roadmapPath = join('docs', 'civkings-redesign-briefs', 'roadmap.json')
+      if (!existsSync(roadmapPath)) return null
+      const roadmap = JSON.parse(readFileSync(roadmapPath, 'utf-8'))
+      if (!Array.isArray(roadmap?.lines)) return null
+      return roadmap.lines.map((l: any) => ({ id: l.id, name: l.name, status: l.status }))
+    } catch (e) {
+      console.warn(`[dashboard] roadmap unreadable from docs/civkings-redesign-briefs/roadmap.json, showing none (${e instanceof Error ? e.message : String(e)})`)
+      return null
     }
   }
 
