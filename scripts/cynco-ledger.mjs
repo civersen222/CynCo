@@ -140,11 +140,15 @@ export function createMissionCollector(now = () => Date.now()) {
     taskIds: [],
     // Task 7 (2c-i): every operator note sent to this mission while it was
     // running, in the order it was sent. ONE entry per note, not one per
-    // frame: the engine emits the note twice — queued, then delivered — and
-    // the delivery frame UPDATES the queued entry it names through `queuedAt`.
-    // A note whose `deliveredAtIteration` is still null at the end of the run
-    // is a real finding (the mission ended before the queue drained), which is
-    // why undelivered notes stay on the row rather than being filtered out.
+    // frame: the engine emits a note twice — queued, then its outcome — and
+    // the second frame UPDATES the entry the first opened (see the ingest
+    // case for why the match is by frame kind and not by `queuedAt` alone).
+    //
+    // The outcome is exactly one of: `deliveredAtIteration` set (the model got
+    // it), `dropped: 'queue full'` (a newer note pushed it out), or
+    // `dropped: 'mission ended'` (the unattended message finished with it
+    // still queued). An entry with all three still null is a note the collector
+    // saw queued and never saw resolved — a run that died mid-mission.
     operatorNotes: [],
 
     ingest(m) {
@@ -229,26 +233,42 @@ export function createMissionCollector(now = () => Date.now()) {
           })
           break
         case 'mission.operator_note': {
-          // `queuedAt` is the note's identity, not its text — two notes can
-          // carry the same words, and matching on text would write the
-          // second one's delivery onto the first one's row.
+          // Keyed by frame KIND first, `queuedAt` second.
+          //
+          // `queuedAt` alone is not an identity: it is an ISO string with
+          // millisecond resolution, and two notes sent from the dashboard in
+          // the same millisecond share it. Matching on it alone made the
+          // SECOND queued frame look like a no-op delivery of the first, and
+          // one of the two notes vanished from the row entirely. Text is no
+          // better — two notes can say the same words.
+          //
+          // So: a queued frame ALWAYS starts a new entry (the engine emits
+          // exactly one per note it accepted), and a delivery or drop frame
+          // fills in the first entry that is still open under that `queuedAt`.
           const queuedAt = typeof m.queuedAt === 'string' ? m.queuedAt : null
-          const existing = queuedAt === null ? undefined : this.operatorNotes.find(n => n.queuedAt === queuedAt)
-          if (existing) {
-            // A delivery frame. Only ever fills the field in — a later frame
-            // must not blank an iteration index already recorded.
-            if (typeof m.deliveredAtIteration === 'number') existing.deliveredAtIteration = m.deliveredAtIteration
-          } else {
-            // Either the queued frame, or a delivery whose queued frame this
-            // collector never saw (attached mid-mission). Both are the note
-            // happening; dropping the second would under-count the run.
-            this.operatorNotes.push({
-              t,
-              text: typeof m.text === 'string' ? m.text : '',
-              queuedAt,
-              deliveredAtIteration: typeof m.deliveredAtIteration === 'number' ? m.deliveredAtIteration : null,
-            })
+          const text = typeof m.text === 'string' ? m.text : ''
+          const delivered = typeof m.deliveredAtIteration === 'number' ? m.deliveredAtIteration : null
+          const dropped = typeof m.dropped === 'string' ? m.dropped : null
+          if (delivered === null && dropped === null) {
+            this.operatorNotes.push({ t, text, queuedAt, deliveredAtIteration: null, dropped: null })
+            break
           }
+          // "Still open" = neither delivered nor dropped. Two same-millisecond
+          // notes are therefore filled in the order their outcome frames
+          // arrive, which is the order the engine emitted them.
+          const open = queuedAt === null ? undefined : this.operatorNotes.find(
+            n => n.queuedAt === queuedAt && n.deliveredAtIteration === null && n.dropped === null)
+          if (!open) {
+            // An outcome whose queued frame this collector never saw — it
+            // attached mid-mission. The note still happened; dropping it here
+            // would under-count the run.
+            this.operatorNotes.push({ t, text, queuedAt, deliveredAtIteration: delivered, dropped })
+            break
+          }
+          // Only ever fills a field in. A later frame must not blank an
+          // outcome already recorded.
+          if (delivered !== null) open.deliveredAtIteration = delivered
+          if (dropped !== null) open.dropped = dropped
           break
         }
         case 'toolcall.transport':

@@ -235,6 +235,101 @@ describe('operator notes — a busy unattended mission', () => {
     const delivered = notes(events).filter(f => f.deliveredAtIteration !== null)
     expect(delivered.map(f => f.text)).toEqual(['note 2', 'note 3', 'note 4', 'note 5', 'note 6'])
     expect(operatorMessages(requests[1])).toEqual(['[operator]\nnote 2\nnote 3\nnote 4\nnote 5\nnote 6'])
+
+    // The alert is for a person; the ledger needs the note itself, and needs to
+    // tell "pushed out by a newer note" from "the mission ended under it".
+    const droppedFrames = notes(events).filter(f => f.dropped)
+    expect(droppedFrames).toHaveLength(1)
+    expect(droppedFrames[0].text).toBe('note 1')
+    expect(droppedFrames[0].dropped).toBe('queue full')
+    expect(droppedFrames[0].deliveredAtIteration).toBeNull()
+    globalContract.clear()
+  }, 30000)
+})
+
+/**
+ * The note that arrives during the LAST model call.
+ *
+ * There is no next iteration to drain into, and the first cut let the queue
+ * survive the mission — which meant a stale `[operator]` line was spliced into
+ * whatever ran next, including an interactive session that never asked for it,
+ * while the ledger showed the note as queued with nothing to say it had not
+ * been delivered. The mission end is a boundary, and it has to report.
+ */
+describe('operator notes — the mission ends before the queue drains', () => {
+  it('reports every undelivered note as dropped and leaks nothing into the next session', async () => {
+    const { loop, events, script, requests } = harness('cynco-op-missionend-')
+    script.responses = [
+      // The FINAL model call of this message: nothing follows it, so there is
+      // no iteration boundary left for the note to reach.
+      sendingNote(() => { void loop.handleUserMessage('stop editing app.py') }, textResponse('done')),
+    ]
+    await loop.handleUserMessage('do the thing', { unattended: true })
+
+    const stranded = notes(events).filter(f => f.dropped)
+    expect(stranded, 'the stranded note was not reported').toHaveLength(1)
+    expect(stranded[0].text).toBe('stop editing app.py')
+    expect(stranded[0].dropped).toBe('mission ended')
+    expect(stranded[0].deliveredAtIteration).toBeNull()
+    expect(notes(events).some(f => f.deliveredAtIteration !== null), 'nothing was delivered').toBe(false)
+
+    const endAlert = operatorAlerts(events).find(a => /undelivered/i.test(a.message))
+    expect(endAlert, 'no alert named the undelivered notes').toBeTruthy()
+    expect(endAlert.severity).toBe('low')
+    expect(endAlert.message).toContain('1')
+
+    // The queue is empty, and the next session — an INTERACTIVE one — is clean.
+    expect((loop as any).operatorQueue).toHaveLength(0)
+    const before = requests.length
+    script.responses = [textResponse('second')]
+    script.idx = 0
+    await loop.handleUserMessage('a person types something', {})
+    for (const r of requests.slice(before)) expect(operatorMessages(r)).toEqual([])
+    globalContract.clear()
+  }, 30000)
+})
+
+/**
+ * Best-of-N runs `runModelLoop` once per candidate with `this.messages` saved
+ * and restored around it and `emit` rebound to swallow stream tokens. A note
+ * drained inside a candidate would be spliced out of the queue, reported
+ * delivered, and then wiped with the candidate's messages — delivered to
+ * nobody, and unrepeatable, because the queue no longer holds it.
+ *
+ * Rather than stand up worktrees and a test runner, this drives the seam
+ * itself: the REAL arguments the real loop built for `runModelLoop`, captured
+ * from a real message, replayed once as a candidate and once as the real loop.
+ */
+describe('operator notes — a best-of-N candidate never drains the queue', () => {
+  it('leaves the note queued through a candidate run and delivers it once in the real loop', async () => {
+    const { loop, events, script } = harness('cynco-op-candidate-')
+    const captured: any[] = []
+    const real = (loop as any).runModelLoop.bind(loop)
+    ;(loop as any).runModelLoop = (...args: any[]) => { captured.push(args); return real(...args) }
+
+    script.responses = [textResponse('warmup')]
+    await loop.handleUserMessage('do the thing', { unattended: true })
+    expect(captured.length, 'runModelLoop was never called').toBeGreaterThanOrEqual(1)
+    const [systemPrompt, thinkingConfig, toolDefs, deps] = captured[0]
+
+    ;(loop as any).operatorQueue.push({ text: 'stop editing app.py', queuedAt: '2026-09-22T10:00:00.000Z' })
+    const before = notes(events).length
+
+    // The candidate sweep: same loop, same arguments, `candidate: true`.
+    script.responses = [textResponse('candidate')]
+    script.idx = 0
+    await real(systemPrompt, thinkingConfig, toolDefs, deps, 2, { candidate: true })
+    expect((loop as any).operatorQueue, 'a candidate run drained the queue').toHaveLength(1)
+    expect(notes(events).slice(before), 'a candidate run reported a delivery').toEqual([])
+
+    // The real loop, immediately after, delivers it — exactly once.
+    script.responses = [textResponse('real')]
+    script.idx = 0
+    await real(systemPrompt, thinkingConfig, toolDefs, deps, 2)
+    expect((loop as any).operatorQueue).toHaveLength(0)
+    const delivered = notes(events).slice(before).filter(f => f.deliveredAtIteration !== null)
+    expect(delivered).toHaveLength(1)
+    expect(delivered[0].text).toBe('stop editing app.py')
     globalContract.clear()
   }, 30000)
 })

@@ -421,6 +421,19 @@ export type MissionOperatorNoteEvent = {
   queuedAt: string
   /** null on the queued frame; the `runModelLoop` iteration index on delivery. */
   deliveredAtIteration: number | null
+  /**
+   * Why this note was thrown away without ever reaching the model: `'queue
+   * full'` (a newer note pushed it out) or `'mission ended'` (the unattended
+   * message finished with it still queued). Absent on the queued and delivered
+   * frames.
+   *
+   * A third frame kind rather than silence, because the alternative was worse
+   * in both directions: holding the note over would splice a stale `[operator]`
+   * instruction into whatever ran next — including an interactive session that
+   * never asked for it — and simply dropping it would leave the ledger showing
+   * a note queued and, as far as anyone could tell, delivered.
+   */
+  dropped?: string
 }
 
 export type SummaryInjectedEvent = {

@@ -319,11 +319,14 @@ export class ConversationLoop {
    * fed by a dashboard chat box is a way to hand the model a wall of stale
    * instructions twenty minutes after they stopped being true.
    *
-   * Deliberately NOT cleared when the mission ends. A note sent a second
-   * before the last iteration would otherwise be thrown away at the one moment
-   * it is most likely to matter; it survives instead, and goes in at the top of
-   * whatever model loop runs next. The ledger sees it as queued-but-undelivered
-   * until then, which is the honest reading.
+   * EMPTIED when the unattended message ends, and every stranded note is
+   * reported with `dropped: 'mission ended'` first. Letting the queue survive
+   * was tried and is wrong in both halves: a note sent during the last model
+   * call would be spliced into whatever ran NEXT — including an interactive
+   * session that never asked for it — and the ledger would show the note
+   * queued against a mission that had already finished, with nothing to say it
+   * was never delivered. A reported drop is a fact; a silent carry-over is a
+   * stale instruction with a misleading record attached.
    */
   private operatorQueue: Array<{ text: string; queuedAt: string }> = []
   // Per-task observation buffers for the reward labeler. Reset at task start,
@@ -1049,12 +1052,45 @@ export class ConversationLoop {
       )
     } finally {
       this.processing = false
+      // BEFORE `unattendedActive` is cleared: this is the last instant at which
+      // the queue belongs to a mission at all, and anything still in it never
+      // reached the model.
+      this.dropOperatorQueueAtMissionEnd()
       // Cleared beside `processing`, and for the same reason: left `true` it
       // would queue a note into a loop that is no longer running, and nothing
       // would ever drain it.
       this.unattendedActive = false
       this.abortController = null
     }
+  }
+
+  /**
+   * Report and clear whatever the mission ended on top of.
+   *
+   * Runs on EVERY exit of `handleUserMessage` — the happy path, a thrown error,
+   * an aborted run — because a note is equally undelivered in all three. The
+   * frames go out before the queue is forgotten so the ledger's last word on
+   * each note is `dropped: 'mission ended'` rather than an open `queued`.
+   */
+  private dropOperatorQueueAtMissionEnd(): void {
+    if (this.operatorQueue.length === 0) return
+    const stranded = this.operatorQueue.splice(0, this.operatorQueue.length)
+    for (const n of stranded) {
+      this.emit({
+        type: 'mission.operator_note',
+        text: n.text,
+        queuedAt: n.queuedAt,
+        deliveredAtIteration: null,
+        dropped: 'mission ended',
+      })
+    }
+    console.log(`[operator] mission ended with ${stranded.length} note(s) undelivered — cleared`)
+    this.emit({
+      type: 'governance.alert',
+      severity: 'low',
+      source: 'operator',
+      message: `[operator] the mission ended with ${stranded.length} note(s) undelivered — they never reached the model and have been cleared, not carried into the next session`,
+    })
   }
 
   /**
@@ -1084,6 +1120,18 @@ export class ConversationLoop {
         source: 'operator',
         message: `[operator] queue full (${OPERATOR_NOTE_QUEUE_CAP} notes) — dropped the oldest note unread: "${shown}"`,
       })
+      // The alert is for a person. The LEDGER needs the note itself, and needs
+      // to tell this from a mission that ended under its queue — the two are
+      // different operational facts (too many notes vs. too little runway).
+      if (dropped) {
+        this.emit({
+          type: 'mission.operator_note',
+          text: dropped.text,
+          queuedAt: dropped.queuedAt,
+          deliveredAtIteration: null,
+          dropped: 'queue full',
+        })
+      }
     }
     this.operatorQueue.push({ text, queuedAt })
     console.log(`[operator] note queued for the next iteration: "${text.slice(0, 120)}"`)
@@ -1841,7 +1889,7 @@ export class ConversationLoop {
               console.log(`[bestOfN] Candidate ${i + 1}/${bonCount} in ${wtPath}`)
 
               try {
-                await this.runModelLoop(systemPrompt, thinkingConfig, toolDefs, deps, bonTurnCap)
+                await this.runModelLoop(systemPrompt, thinkingConfig, toolDefs, deps, bonTurnCap, { candidate: true })
               } catch (e) {
                 console.log(`[bestOfN] Candidate ${i + 1} loop error: ${e}`)
               }
@@ -2304,6 +2352,14 @@ export class ConversationLoop {
     toolDefs: { name: string; description: string; inputJSONSchema: { type: 'object'; properties: Record<string, unknown>; required?: string[] } }[],
     deps: CallModelDeps,
     maxIterations = Number(process.env.LOCALCODE_MAX_ITERATIONS) || 500,
+    /**
+     * `candidate: true` marks a best-of-N sampling run (see the orchestration
+     * block in `runUserMessage`), whose `this.messages` is saved before and
+     * restored after and whose `emit` is rebound to swallow stream tokens.
+     * Nothing a candidate does to the conversation survives it, so a candidate
+     * must not consume anything the real loop still owes the operator.
+     */
+    loopOpts?: { candidate?: boolean },
   ): Promise<void> {
     // Session-scoped accumulators (survive across iterations within a single runModelLoop invocation)
     const toolsUsedInSession: string[] = []
@@ -2320,7 +2376,11 @@ export class ConversationLoop {
       // next one has not been built. A note queued by the dashboard while the
       // last model call ran is handed over here, exactly once, and the queue
       // is empty afterwards.
-      this.deliverOperatorNotes(i)
+      //
+      // Never in a best-of-N candidate: that run's `this.messages` is thrown
+      // away when the candidate ends, so delivering there would empty the
+      // queue, report the note delivered, and then discard the only copy of it.
+      if (!loopOpts?.candidate) this.deliverOperatorNotes(i)
 
       // ── Stuck loop escape: escalating intervention ──
       const stuckCount = this.governance.getStuckCount()

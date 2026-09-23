@@ -258,6 +258,59 @@ describe('operator notes', () => {
     expect(rec.operatorNotes[1].deliveredAtIteration).toBe(7)
   })
 
+  // `queuedAt` is an ISO string with millisecond resolution, and two dashboard
+  // sends can land in the same millisecond — so it is NOT unique, and matching
+  // on it alone made the second queued frame look like a no-op delivery of the
+  // first. What separates the frames is their KIND: a queued frame always
+  // starts a new entry, a delivery or a drop fills one in.
+  it('keeps two notes queued in the same millisecond apart', () => {
+    const c = createMissionCollector()
+    const same = '2026-09-22T10:00:00.000Z'
+    c.ingest({ type: 'mission.operator_note', text: 'first', queuedAt: same, deliveredAtIteration: null })
+    c.ingest({ type: 'mission.operator_note', text: 'second', queuedAt: same, deliveredAtIteration: null })
+
+    const rec = buildMissionRecord(c, meta)
+    expect(rec.operatorNotes.map(n => n.text)).toEqual(['first', 'second'])
+  })
+
+  it('fills same-millisecond entries in the order the delivery frames arrive', () => {
+    const c = createMissionCollector()
+    const same = '2026-09-22T10:00:00.000Z'
+    c.ingest({ type: 'mission.operator_note', text: 'first', queuedAt: same, deliveredAtIteration: null })
+    c.ingest({ type: 'mission.operator_note', text: 'second', queuedAt: same, deliveredAtIteration: null })
+    c.ingest({ type: 'mission.operator_note', text: 'first', queuedAt: same, deliveredAtIteration: 4 })
+    c.ingest({ type: 'mission.operator_note', text: 'second', queuedAt: same, deliveredAtIteration: 4 })
+
+    const rec = buildMissionRecord(c, meta)
+    expect(rec.operatorNotes).toHaveLength(2)
+    expect(rec.operatorNotes[0].deliveredAtIteration).toBe(4)
+    expect(rec.operatorNotes[1].deliveredAtIteration).toBe(4)
+  })
+
+  // The two drop reasons are different operational facts: too many notes, or
+  // too little runway left in the mission.
+  it('records why a note was dropped, on the entry it was queued as', () => {
+    const c = createMissionCollector()
+    c.ingest({ type: 'mission.operator_note', text: 'pushed out', queuedAt: '2026-09-22T10:00:00.000Z', deliveredAtIteration: null })
+    c.ingest({ type: 'mission.operator_note', text: 'stranded', queuedAt: '2026-09-22T10:00:01.000Z', deliveredAtIteration: null })
+    c.ingest({ type: 'mission.operator_note', text: 'pushed out', queuedAt: '2026-09-22T10:00:00.000Z', deliveredAtIteration: null, dropped: 'queue full' })
+    c.ingest({ type: 'mission.operator_note', text: 'stranded', queuedAt: '2026-09-22T10:00:01.000Z', deliveredAtIteration: null, dropped: 'mission ended' })
+
+    const rec = buildMissionRecord(c, meta)
+    expect(rec.operatorNotes).toHaveLength(2)
+    expect(rec.operatorNotes[0].dropped).toBe('queue full')
+    expect(rec.operatorNotes[1].dropped).toBe('mission ended')
+    expect(rec.operatorNotes[0].deliveredAtIteration).toBeNull()
+  })
+
+  it('records a drop frame whose queued frame it never saw', () => {
+    const c = createMissionCollector()
+    c.ingest({ type: 'mission.operator_note', text: 'late join', queuedAt: '2026-09-22T10:00:00.000Z', deliveredAtIteration: null, dropped: 'mission ended' })
+    const rec = buildMissionRecord(c, meta)
+    expect(rec.operatorNotes).toHaveLength(1)
+    expect(rec.operatorNotes[0].dropped).toBe('mission ended')
+  })
+
   // Two notes can carry the same words. `queuedAt` is the key precisely so the
   // second one's delivery cannot be written onto the first one's row.
   it('does not collapse two notes with identical text', () => {
@@ -279,7 +332,7 @@ describe('operator notes', () => {
     c.ingest({ type: 'mission.operator_note', text: 'too late', queuedAt: '2026-09-22T10:00:00.000Z', deliveredAtIteration: null })
     const rec = buildMissionRecord(c, meta)
     expect(rec.operatorNotes).toEqual([
-      { t: expect.any(Number), text: 'too late', queuedAt: '2026-09-22T10:00:00.000Z', deliveredAtIteration: null },
+      { t: expect.any(Number), text: 'too late', queuedAt: '2026-09-22T10:00:00.000Z', deliveredAtIteration: null, dropped: null },
     ])
   })
 
