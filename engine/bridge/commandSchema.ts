@@ -135,6 +135,11 @@ export const COMMAND_SCHEMA: Record<TUICommand['type'], Check[]> = {
     f => (f.contract === undefined ? null : contractProblem(f.contract)),
     opt('readOnlyPaths', isStringArray, 'an array of strings'),
     opt('unattended', isBoolean, 'a boolean'),
+    // Shallow on purpose: the deep shape is `parseInvariantCaps`, and a
+    // malformed block is dropped there with a console line rather than
+    // refusing the whole message. A mission that mis-typed one cap should
+    // still run — ungoverned and saying so — not fail at the socket.
+    opt('invariants', (v: unknown) => typeof v === 'object' && v !== null && !Array.isArray(v), 'an object'),
   ],
   'approval.response': [
     req('requestId', isString, 'a string'),

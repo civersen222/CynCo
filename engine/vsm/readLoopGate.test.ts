@@ -173,3 +173,31 @@ describe('ReadLoopGate — stall backstop', () => {
     expect(gate.evaluate('Read', { file_path: '/a/s17.ts' }).kind).toBe('warn')  // stall warn
   })
 })
+
+describe('ReadLoopGate — read-shaped Bash', () => {
+  let gate: ReadLoopGate
+  beforeEach(() => { gate = new ReadLoopGate() })
+
+  test('Get-Content through Bash advances the stall count and is denied past the cap', () => {
+    const kinds: string[] = []
+    for (let n = 0; n < 22; n++) {
+      kinds.push(gate.evaluate('Bash', { command: `Get-Content C:\\repo\\f${n}.py -TotalCount 40` }).kind)
+    }
+    expect(kinds.slice(0, 19).every(k => k === 'allow')).toBe(true)
+    expect(kinds[19]).toBe('warn')   // 20th read: STALL_CAP reached → warn
+    expect(kinds[20]).toBe('deny')
+    expect(kinds[21]).toBe('deny')
+  })
+
+  test('a test run through Bash does not count as a read', () => {
+    for (let n = 0; n < 30; n++) {
+      expect(gate.evaluate('Bash', { command: 'python -m pytest gilded/tests -q' }).kind).toBe('allow')
+    }
+  })
+
+  test('an edit re-arms the gate for Bash reads too', () => {
+    for (let n = 0; n < 21; n++) gate.evaluate('Bash', { command: `cat f${n}.py` })
+    gate.onWrite('C:\\repo\\a.py')
+    expect(gate.evaluate('Bash', { command: 'cat g.py' }).kind).toBe('allow')
+  })
+})

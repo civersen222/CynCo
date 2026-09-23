@@ -571,6 +571,7 @@ async function handleCommand(command: TUICommand): Promise<void> {
         contract: command.contract,
         readOnlyPaths: command.readOnlyPaths,
         unattended: command.unattended,
+        invariants: command.invariants,
       })
       break
 

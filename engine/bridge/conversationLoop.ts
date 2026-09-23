@@ -58,6 +58,8 @@ import { getJournal } from '../training/decisionJournal.js'
 import { makeJournalEntry } from '../training/types.js'
 import { buildConceptTableForCwd } from '../vsm/conceptTable.js'
 import { evaluateGrounding, extractAddedText, extractTargetPaths } from '../vsm/groundingTrigger.js'
+import { MissionInvariants, parseInvariantCaps } from '../vsm/missionInvariants.js'
+import { isIdentifierPattern, noteCodeIndexUse } from '../tools/toolHints.js'
 import { ReadLoopGate, rearmsGate, signature as readSignature } from '../vsm/readLoopGate.js'
 import { ToolDivergenceDetector } from '../brain/toolDivergence.js'
 import { BrainRecorder } from '../brain/brainRecorder.js'
@@ -228,6 +230,14 @@ export type TaskOpts = {
    * person who has not typed yet.
    */
   unattended?: boolean
+  /**
+   * Campaign-level S3 terms for this task: pacing caps that become essential
+   * variables of a delivery homeostat, the revert ban, and CodeIndex-first.
+   * Honoured only alongside `unattended: true` — only a supervisor dispatching
+   * a wave has standing to declare them, and an interactive session's caps
+   * would be the engine regulating the person sitting in front of it.
+   */
+  invariants?: { editGapCap: number; commitGapCap: number; revertBan: boolean; codeIndexFirst: boolean }
 }
 
 export type ConversationLoopOptions = {
@@ -246,6 +256,18 @@ export type ConversationLoopOptions = {
 
 export class ConversationLoop {
   private messages: Message[] = []
+  /**
+   * The armed mission invariants, or null when nobody declared any. Rebuilt per
+   * task in `runUserMessage` and never carried into an interactive message.
+   */
+  private missionInvariants: MissionInvariants | null = null
+  /**
+   * An `invariants` block was declared for this unattended task and rejected as
+   * malformed. `invariants: null` on the wire is otherwise ambiguous — a
+   * mission dispatched without caps and a mission whose caps were thrown away
+   * look identical, and only one of them is a bug in the dispatch.
+   */
+  private invariantsRejected = false
   private abortController: AbortController | null = null
   private processing = false
   // Per-task observation buffers for the reward labeler. Reset at task start,
@@ -959,6 +981,46 @@ export class ConversationLoop {
     globalAskBroker.setUnattended(opts?.unattended === true)
     if (opts?.unattended === true) {
       console.log('[contract] Unattended task: AskUser resolves immediately, nobody can answer')
+    }
+
+    // Campaign-level S3 terms (mission invariants). Only an unattended run has a
+    // supervisor to declare them; an interactive session never sees this object,
+    // and an interactive message therefore always disarms whatever a previous
+    // mission armed — the caps are scoped to one campaign, not to the process.
+    //
+    // An unattended message that carries NO `invariants` block keeps the armed
+    // regulator. The driver re-injects probes and continuation prompts over the
+    // same socket mid-mission, and each of those would otherwise reset the
+    // pacing clock to zero — which is the one thing the caps exist to measure.
+    if (opts?.unattended !== true) {
+      this.missionInvariants = null
+      this.invariantsRejected = false
+    } else if (opts.invariants !== undefined) {
+      const caps = parseInvariantCaps(opts.invariants)
+      if (caps) {
+        this.missionInvariants = new MissionInvariants(caps)
+        this.invariantsRejected = false
+        console.log(`[invariant] mission invariants armed: edit gap ${caps.editGapCap}, commit gap ${caps.commitGapCap}, revert ban ${caps.revertBan}, CodeIndex-first ${caps.codeIndexFirst}`)
+      } else {
+        // A supervisor declared caps and got none. The only report of that used
+        // to be a console line, in a run whose defining property is that nobody
+        // is reading the console — so a typo in CYNCO_MISSION_INVARIANTS bought
+        // an ungoverned mission that looked, in the ledger, exactly like a
+        // mission dispatched without invariants at all.
+        console.log('[invariant] invariants block malformed — ignored (message still runs)')
+        this.invariantsRejected = true
+        // `warn`, the value the read-loop gate uses, not `critical`: the
+        // daemon's one-shot path halts on `critical`
+        // (engine/daemon/oneShot.ts), and a rejected invariants block must not
+        // halt an ideation run. The load-bearing signal is
+        // `invariantsRejected` on the status frame and in the ledger row.
+        this.emit({
+          type: 'governance.alert',
+          severity: 'warn',
+          message: '[invariant] invariants block malformed — this unattended run has NO mission invariants',
+          source: 'mission-invariants',
+        } as any)
+      }
     }
 
     const declared = (opts?.readOnlyPaths ?? []).map(p => p.replace(/\\/g, '/'))
@@ -2630,6 +2692,31 @@ export class ConversationLoop {
                 predictions: turnReport.predictions,
                 s4: turnReport.s4,
                 heterarchy: turnReport.heterarchy,
+                invariants: this.missionInvariants?.snapshot() ?? null,
+                // Distinguishes "no caps were declared" from "caps were
+                // declared and thrown away" — see `invariantsRejected`.
+                invariantsRejected: this.invariantsRejected,
+                // Capped and camelCased on purpose: the live trace grows for
+                // the whole session and its own toJSON is snake_case (it
+                // mirrors the Rust core byte for byte). A per-turn frame gets
+                // the tail and the length, not the array.
+                ultrastable: (() => {
+                  const fa = this.governance.getFeedbackActions()
+                  if (!fa) return null
+                  const trace = fa.adaptationTrace
+                  return {
+                    traceLength: trace.length,
+                    trace: trace.slice(-20).map(e => ({
+                      step: e.step,
+                      violations: e.violations,
+                      from: e.from,
+                      to: e.to,
+                      strategy: e.strategy,
+                      restoredAfter: e.restoredAfter,
+                    })),
+                    margin: fa.viabilityMargin,
+                  }
+                })(),
                 suggestion: turnReport.stuckTurns > 0 ? 'Model may be stuck — consider changing approach' : null,
               })
 
@@ -3325,6 +3412,9 @@ export class ConversationLoop {
       // from the base; novelty alone still accepts a checkout to an older
       // commit this run happens not to have visited yet.
       if (previous !== null && firstSeen && this.isAncestor(previous, head)) {
+        // Same fact, two clocks: the commit-pressure notice's and the mission
+        // homeostat's `callsSinceCommit` essential variable.
+        this.missionInvariants?.observeCommit()
         this.observeCommit()
         return
       }
@@ -3585,6 +3675,12 @@ export class ConversationLoop {
       toolsUsedThisTurn.push(toolName)
       this.recordToolOutcome(toolName, 'failure', toolResultsThisTurn)
       toolsUsedInSession.push(toolName)
+      // The commit-pressure clock above already counted this call; the mission
+      // invariants must count it too or the two clocks drift apart on a run that
+      // emits malformed arguments. `accountInvariants` is declared further down
+      // (after the early returns), so observe directly — same call, same
+      // arguments, isError=true because nothing was executed.
+      this.missionInvariants?.observeCall(toolName, toolInput, true)
       return
     }
     // Healthy parse: reset the bounded-retry counter.
@@ -3622,6 +3718,18 @@ export class ConversationLoop {
     const recordDenial = () => this.governance.onToolResult(
       toolName, false, 0, undefined, toolInput, { governanceDenial: true })
 
+    /**
+     * A refused call is still a call the run spent, so it advances the pacing
+     * clocks exactly like an executed one. Called immediately before every
+     * `recordDenial()` below — before, because denialVisibility.test.ts pins
+     * `recordDenial()` and `recordToolOutcome('denied')` as adjacent lines —
+     * and once with the real outcome after execution. Without it a run
+     * could sit at the edit-gap cap being denied forever while the counter the
+     * denial quotes never moved — and the denial ledger's `nextCallClass`, which
+     * is the whole outcome record, is only filled in by the NEXT observeCall.
+     */
+    const accountInvariants = (isError: boolean) => this.missionInvariants?.observeCall(toolName, toolInput, isError)
+
     // Hard tool pin (one-shot/unattended runs): enforce allowedTools at
     // execution time too — simulated-mode models can hallucinate tools that
     // were never offered in the prompt, and approveAll would run them.
@@ -3637,6 +3745,7 @@ export class ConversationLoop {
         is_error: true,
       })
       toolsUsedThisTurn.push(toolName)
+      accountInvariants(true)
       recordDenial()
       this.recordToolOutcome(toolName, 'denied', toolResultsThisTurn)
       toolsUsedInSession.push(toolName)
@@ -3675,6 +3784,7 @@ export class ConversationLoop {
         is_error: true,
       })
       toolsUsedThisTurn.push(toolName)
+      accountInvariants(true)
       recordDenial()
       this.recordToolOutcome(toolName, 'denied', toolResultsThisTurn)
       toolsUsedInSession.push(toolName)
@@ -3696,10 +3806,37 @@ export class ConversationLoop {
         is_error: true,
       })
       toolsUsedThisTurn.push(toolName)
+      accountInvariants(true)
       recordDenial()
       this.recordToolOutcome(toolName, 'denied', toolResultsThisTurn)
       toolsUsedInSession.push(toolName)
       return
+    }
+
+    // ─── Mission invariants (S3 terms) ─────────────────────────────
+    // Placed after the commit-scope guard and before the read-loop gate: the
+    // two above it are about what the call IS, this one is about what the run
+    // has SPENT, and the read-loop gate below it regulates the same inspection
+    // traffic on a much shorter horizon. Null in every interactive session.
+    if (this.missionInvariants) {
+      const inv = this.missionInvariants.evaluate(toolName, toolInput)
+      if (inv.kind === 'deny') {
+        console.log(`[invariant] DENIED ${toolName} (${inv.invariant})`)
+        this.emit({ type: 'tool.start', toolId, toolName, input: toolInput })
+        this.emit({ type: 'tool.complete', toolId, toolName, result: inv.message, isError: true })
+        toolResults.push({
+          type: 'tool_result',
+          tool_use_id: toolId,
+          content: [{ type: 'text', text: inv.message }],
+          is_error: true,
+        })
+        toolsUsedThisTurn.push(toolName)
+        accountInvariants(true)
+        recordDenial()
+        this.recordToolOutcome(toolName, 'denied', toolResultsThisTurn)
+        toolsUsedInSession.push(toolName)
+        return
+      }
     }
 
     // ─── Read-loop gate ────────────────────────────────────────────
@@ -3757,6 +3894,7 @@ export class ConversationLoop {
         is_error: true,
       })
       toolsUsedThisTurn.push(toolName)
+      accountInvariants(true)
       recordDenial()
       this.recordToolOutcome(toolName, 'denied', toolResultsThisTurn)
       toolsUsedInSession.push(toolName)
@@ -3783,6 +3921,7 @@ export class ConversationLoop {
         is_error: true,
       })
       toolsUsedThisTurn.push(toolName)
+      accountInvariants(true)
       recordDenial()
       this.recordToolOutcome(toolName, 'denied', toolResultsThisTurn)
       toolsUsedInSession.push(toolName)
@@ -3886,6 +4025,7 @@ export class ConversationLoop {
               is_error: true,
             })
             toolsUsedThisTurn.push(toolName)
+            accountInvariants(true)
             recordDenial()
             this.recordToolOutcome(toolName, 'denied', toolResultsThisTurn)
             toolsUsedInSession.push(toolName)
@@ -3908,6 +4048,54 @@ export class ConversationLoop {
       ? collectPathSignatures(this.executor['cwd'])
       : null
     const result = await this.executor.execute(toolName, toolInput)
+
+    // CodeIndex-first: an identifier-shaped Grep gets the symbol card prepended.
+    // Never denied — symbol top-3 ≈ Grep quality (PR #104), so refusing the Grep
+    // would cost the run a fact it is entitled to; the index is ADDED, and the
+    // model still sees everything Grep found. Counted as adoption (F: the code
+    // index is used by ~2.7% of calls when only advertised).
+    //
+    // `result` stays `const` and its `output` is rewritten in place, which is
+    // what every later reader of `result` in this method — the SubAgent
+    // interception below included — already does. Rebinding would only put the
+    // prepend at risk of being dropped by the next use of the old name.
+    if (this.missionInvariants?.caps.codeIndexFirst && toolName === 'Grep' && isIdentifierPattern(String(toolInput.pattern ?? ''))) {
+      const inv = this.missionInvariants
+      // Closed by the deadline below so a late index cannot rewrite a result
+      // the loop has already moved on from.
+      let expired = false
+      const prepend = (async () => {
+        const { codeIndexTool } = await import('../tools/impl/codeIndex.js')
+        const ci = await codeIndexTool.execute({ query: String(toolInput.pattern), top_k: 3 }, this.executor['cwd'])
+        const card = (ci.output ?? '').trim()
+        // `codeIndexTool.execute` never sets isError: when the vector search
+        // comes back empty it answers with its own `[regex fallback]` grep, and
+        // when that finds nothing too it answers `No results for "x"`. Counting
+        // either as adoption would make `codeIndexAssisted` a count of
+        // identifier-shaped Greps — the number we already have — and would
+        // prepend a second copy of the Grep the model is about to read.
+        if (expired || ci.isError || !card) return
+        if (card.startsWith('[regex fallback]') || card.startsWith('No results for')) return
+        result.output = `[CodeIndex top-3 for ${JSON.stringify(toolInput.pattern)}]\n${card}\n\n${result.output}`
+        inv.noteCodeIndexAssisted()
+        // The index answered for this Grep, so the crawl-nudge counter in
+        // toolHints must see it too — otherwise the next Grep carries a
+        // "N calls since your last CodeIndex query" lecture for a call the
+        // index just served.
+        noteCodeIndexUse()
+      })()
+        .then(() => 'done' as const)
+        .catch(e => { console.log(`[invariant] CodeIndex-first skipped: ${e instanceof Error ? e.message : e}`); return 'error' as const })
+      // Bounded: the first query of a session builds or loads the vector index,
+      // and this runs on the model's critical path AFTER its Grep already
+      // succeeded. A slow index must cost the run a card, never the answer.
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const deadline = new Promise<'timeout'>(resolve => { timer = setTimeout(() => { expired = true; resolve('timeout') }, 10_000) })
+      const outcome = await Promise.race([prepend, deadline])
+      if (timer) clearTimeout(timer)
+      if (outcome === 'timeout') console.log('[invariant] CodeIndex-first skipped: timeout')
+    }
+    accountInvariants(result.isError)
 
     // ─── SubAgent interception ─────────────────────────────────────
     // spawnAgent.ts returns { _subagent: true, config, blocking } as JSON.

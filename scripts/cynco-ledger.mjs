@@ -1,3 +1,5 @@
+import { bashEffect } from '../engine/tools/bashEffect.js'
+
 // Mission outcome ledger (governance falsification program, step 1).
 //
 // Pure collector: the mission driver feeds it every WS event; on mission end
@@ -77,6 +79,11 @@ export function createMissionCollector(now = () => Date.now()) {
       maxCallsWithoutSourceEdit: 0,
       commits: 0,
       maxCallsWithoutCommit: 0,
+      // Bash stays `inspect` in byClass above (the ledger's historical
+      // definition), because that count is joined against old rows. This is
+      // the NEW, honest count: what a Bash call actually DID, per the same
+      // classifier the runtime regulator now reads (engine/tools/bashEffect.ts).
+      bashByEffect: { read: 0, write: 0, run: 0, commit: 0, revert: 0, other: 0 },
     },
     // Real token counts from the server's own timings (session.tokenStats,
     // cumulative — each frame supersedes the last, so keeping the newest IS
@@ -96,6 +103,15 @@ export function createMissionCollector(now = () => Date.now()) {
     _lastHead: null,
     enforcedSeen: false,
     regulatorFidelity: null,
+    // Last snapshot wins (cumulative, like tokenStats). null = the engine
+    // never sent one: an interactive-style run or an engine without Plan 2.
+    invariants: null,
+    // Set when the engine says an `invariants` block was declared for this
+    // mission and REJECTED. `invariants: null` alone cannot tell a mission
+    // dispatched without caps from one whose caps were thrown away — and only
+    // the second is a bug in the dispatch. Last frame wins, like the snapshot.
+    invariantsRejected: false,
+    ultrastable: null,
     // F33: the join key between this ledger and ~/.cynco/rewards/*.reward.json.
     // Both datasets describe the same run and neither could name the other.
     taskIds: [],
@@ -128,6 +144,9 @@ export function createMissionCollector(now = () => Date.now()) {
             heterarchy: m.heterarchy ?? null,
             snapshot: null,
           })
+          if (m.invariants !== undefined) this.invariants = m.invariants ?? null
+          if (m.invariantsRejected !== undefined) this.invariantsRejected = m.invariantsRejected === true
+          if (m.ultrastable !== undefined) this.ultrastable = m.ultrastable ?? null
           break
         case 'session.tokenStats':
           // Cumulative frame: overwrite, don't add. The engine sums; the
@@ -197,7 +216,10 @@ export function createMissionCollector(now = () => Date.now()) {
           // tool.complete frame below, so passing m.isError through would
           // either read undefined forever or, if the frame ever grew the field,
           // count the same failure twice.
-          this.observeToolCall({ name: m.toolName ?? 'unknown' })
+          //
+          // `input` IS carried through: it is how observeToolCall tells what a
+          // Bash call actually DID (bashByEffect below), not just that it ran.
+          this.observeToolCall({ name: m.toolName ?? 'unknown', input: m.input })
           break
         }
         case 'tool.complete':
@@ -229,6 +251,10 @@ export function createMissionCollector(now = () => Date.now()) {
       // does not equal the sum of its classes is a total nobody can check.
       const cls = classifyTool(name)
       this.toolStats.byClass[cls]++
+      if (name === 'Bash') {
+        const effect = bashEffect(String(m.input?.command ?? ''))
+        this.toolStats.bashByEffect[effect]++
+      }
       if (cls === 'sourceEdit') {
         this._sinceSourceEdit = 0
       } else {
@@ -739,6 +765,12 @@ export function buildMissionRecord(collector, meta) {
     // P4.3/4(e): session-level regulator fidelity (not per-turn); null when the
     // engine emitted no session_fidelity event (no contract / older engine).
     regulatorFidelity: collector.regulatorFidelity ?? null,
+    // Last snapshot wins (cumulative, like tokenStats). null = the engine
+    // never sent one: an interactive-style run or an engine without Plan 2.
+    invariants: collector.invariants ?? null,
+    // Never null: an older engine that cannot say simply did not reject one.
+    invariantsRejected: collector.invariantsRejected ?? false,
+    ultrastable: collector.ultrastable ?? null,
     // F33: every trajectory task this mission started, in order. This is the
     // ONLY key that joins a ledger row to the reward the model was trained on.
     // Without it, UI Wave 8's reward of 0.983 and UI Wave 8's real verdict —
