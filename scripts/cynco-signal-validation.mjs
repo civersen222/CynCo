@@ -265,6 +265,73 @@ export function denialTable(res) {
   return lines
 }
 
+// ── Brain candidate signals (Task 4, 2a-iii) ───────────────────────
+//
+// scripts/cynco-ledger.mjs lifts the engine's per-turn `brain` telemetry
+// (layer-convergence agreement/depth, tool-token entropy) onto each row as
+// `brainStats`. That is data, not a rule: it earns nothing until it clears
+// the same bar every S5 rule has to clear in `analyse` above. These two
+// functions turn the two continuous readings into three candidate boolean
+// signals by quartile cut, so `analyse` can ask its one question of them —
+// "does this fire more often on missions that failed?" — same as any rule id.
+//
+// Thresholds live HERE ONLY (spec ruling 3). Nothing in the engine or the
+// ledger collector applies one; a `brainStats` row is just a measurement
+// until this file cuts it.
+
+/** Nearest-rank percentile: rank = ceil(p * n), 1-indexed into the ascending
+ *  sort. Stated explicitly because "the 25th/75th percentile" is ambiguous
+ *  between several interpolation schemes and this tool's numbers must be
+ *  reproducible by hand against a small ledger, not just by re-running it. */
+function nearestRankPercentile(sortedAsc, p) {
+  const n = sortedAsc.length
+  if (n === 0) return null
+  const rank = Math.min(n, Math.max(1, Math.ceil(p * n)))
+  return sortedAsc[rank - 1]
+}
+
+/** { agree: [q1, q3], entropy: [q1, q3] } over LABELED rows (labelOf !== null)
+ *  that carry `brainStats` — an unmeasured or brain-less row must not pull
+ *  the cut points toward its own missing reading. */
+export function signalQuartiles(rows) {
+  const agreeVals = []
+  const entropyVals = []
+  for (const row of rows) {
+    if (labelOf(row) === null) continue
+    const bs = row.brainStats
+    if (!bs) continue
+    if (bs.meanAgree != null) agreeVals.push(bs.meanAgree)
+    if (bs.meanToolEntropy != null) entropyVals.push(bs.meanToolEntropy)
+  }
+  agreeVals.sort((a, b) => a - b)
+  entropyVals.sort((a, b) => a - b)
+  return {
+    agree: [nearestRankPercentile(agreeVals, 0.25), nearestRankPercentile(agreeVals, 0.75)],
+    entropy: [nearestRankPercentile(entropyVals, 0.25), nearestRankPercentile(entropyVals, 0.75)],
+  }
+}
+
+/** The candidate signals a single row fires, against pre-computed quartiles:
+ *    LC-low  — layer convergence agreement at/below the 25th percentile
+ *              (the probed layers disagreed with the deepest one)
+ *    LC-high — agreement at/above the 75th percentile (they agreed a lot)
+ *    TE-high — tool-token entropy at/above the 75th percentile (the model was
+ *              uncertain which tool to call)
+ *  A row with no `brainStats` fires nothing — absence is not a reading. */
+export function signalsFired(row, quartiles) {
+  const out = new Set()
+  const bs = row?.brainStats
+  if (!bs) return out
+  if (bs.meanAgree != null) {
+    if (quartiles.agree[0] != null && bs.meanAgree <= quartiles.agree[0]) out.add('LC-low')
+    if (quartiles.agree[1] != null && bs.meanAgree >= quartiles.agree[1]) out.add('LC-high')
+  }
+  if (bs.meanToolEntropy != null && quartiles.entropy[1] != null && bs.meanToolEntropy >= quartiles.entropy[1]) {
+    out.add('TE-high')
+  }
+  return out
+}
+
 // ── Report ───────────────────────────────────────────────────────
 
 function verdict(r) {
@@ -275,6 +342,36 @@ function verdict(r) {
   if (p !== null && p < 0.05 && r.lift < 0) return 'INVERTED — fires more on successes'
   if (r.p !== null && r.p < 0.05) return 'NOT AFTER CORRECTION — chance across this many rules'
   return 'NO EVIDENCE'
+}
+
+/** The rule-table body shared by the default S5 report and `--signals`: the
+ *  per-id precision/CI/lift/p row, the Holm footnote, and the closing
+ *  verdict line. Factored out (M8-style: one table, one printer) so a second
+ *  candidate-signal family does not grow its own copy that quietly drifts
+ *  from this one's column meanings. */
+export function printRuleTable(res) {
+  const pct = v => (v === null ? '   —  ' : (v * 100).toFixed(1).padStart(5) + '%')
+  console.log('rule    fired  labeled  fails  precision   95% CI         lift       p    p(Holm)  verdict')
+  for (const r of res.rules) {
+    const [lo, hi] = r.ci
+    console.log(
+      `${r.id.padEnd(6)} ${String(r.firedTotal).padStart(6)} ${String(r.labeled).padStart(8)}` +
+      ` ${String(r.failures).padStart(6)}   ${pct(r.precision)}   ` +
+      `[${(lo * 100).toFixed(0).padStart(3)}%,${(hi * 100).toFixed(0).padStart(4)}%] ` +
+      `${r.lift === null ? '    —  ' : ((r.lift >= 0 ? '+' : '') + (r.lift * 100).toFixed(1) + 'pp').padStart(7)}` +
+      `  ${r.p === null ? '  —  ' : r.p.toFixed(3)}` +
+      `   ${r.pAdjusted === null ? '  —  ' : r.pAdjusted.toFixed(3)}   ${verdict(r)}`,
+    )
+  }
+  console.log()
+  console.log(`${res.rulesTested} rules tested; p(Holm) corrects for that. A rule is only`)
+  console.log('called predictive on the corrected value.')
+  console.log()
+  const usable = res.rules.filter(r => verdict(r) === 'PREDICTIVE')
+  console.log(usable.length === 0
+    ? 'No rule clears the bar. Enforcement authority stays withheld, and there is\n' +
+      'nothing here worth training a decision model to imitate yet.'
+    : `Predictive: ${usable.map(r => r.id).join(', ')}`)
 }
 
 async function main() {
@@ -309,6 +406,22 @@ async function main() {
     return
   }
 
+  if (argv.includes('--signals')) {
+    const rows = readLedger(dir)
+    const quartiles = signalQuartiles(rows)
+    const res = analyse(rows, { firedOf: r => signalsFired(r, quartiles) })
+    if (argv.includes('--json')) { console.log(JSON.stringify({ quartiles, signals: res }, null, 2)); return }
+    const labeledRows = rows.filter(r => labelOf(r) !== null)
+    const withBrainStats = labeledRows.filter(r => r.brainStats != null).length
+    console.log(`signals: ${withBrainStats} of ${labeledRows.length} labeled rows carry brainStats`)
+    const fmt = v => (v === null || v === undefined ? '—' : v.toFixed(3))
+    console.log(`quartiles — agree [q1 ${fmt(quartiles.agree[0])}, q3 ${fmt(quartiles.agree[1])}]  ` +
+                `entropy [q1 ${fmt(quartiles.entropy[0])}, q3 ${fmt(quartiles.entropy[1])}]`)
+    console.log()
+    printRuleTable(res)
+    return
+  }
+
   const rows = readLedger(dir)
   const res = analyse(rows)
 
@@ -317,32 +430,11 @@ async function main() {
     return
   }
 
-  const pct = v => (v === null ? '   —  ' : (v * 100).toFixed(1).padStart(5) + '%')
   console.log(`ledger: ${res.total} missions, ${res.labeled} labeled ` +
               `(${res.failures} failures, base rate ${(res.base * 100).toFixed(1)}%)`)
   console.log(`unlabeled ${res.total - res.labeled} — verified or mutationSweep unmeasured; excluded, not defaulted`)
   console.log()
-  console.log('rule    fired  labeled  fails  precision   95% CI         lift       p    p(Holm)  verdict')
-  for (const r of res.rules) {
-    const [lo, hi] = r.ci
-    console.log(
-      `${r.id.padEnd(6)} ${String(r.firedTotal).padStart(6)} ${String(r.labeled).padStart(8)}` +
-      ` ${String(r.failures).padStart(6)}   ${pct(r.precision)}   ` +
-      `[${(lo * 100).toFixed(0).padStart(3)}%,${(hi * 100).toFixed(0).padStart(4)}%] ` +
-      `${r.lift === null ? '    —  ' : ((r.lift >= 0 ? '+' : '') + (r.lift * 100).toFixed(1) + 'pp').padStart(7)}` +
-      `  ${r.p === null ? '  —  ' : r.p.toFixed(3)}` +
-      `   ${r.pAdjusted === null ? '  —  ' : r.pAdjusted.toFixed(3)}   ${verdict(r)}`,
-    )
-  }
-  console.log()
-  console.log(`${res.rulesTested} rules tested; p(Holm) corrects for that. A rule is only`)
-  console.log('called predictive on the corrected value.')
-  console.log()
-  const usable = res.rules.filter(r => verdict(r) === 'PREDICTIVE')
-  console.log(usable.length === 0
-    ? 'No rule clears the bar. Enforcement authority stays withheld, and there is\n' +
-      'nothing here worth training a decision model to imitate yet.'
-    : `Predictive: ${usable.map(r => r.id).join(', ')}`)
+  printRuleTable(res)
 }
 
 // pathToFileURL, not string surgery: on Windows argv[1] is `C:\...` and the URL

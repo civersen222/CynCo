@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import {
   fisherExact, wilson, labelOf, rulesFired, readLedger, analyse,
   analyseDenials, invariantsFired, denialVerdict, DENIAL_MIN,
+  signalQuartiles, signalsFired,
 } from '../cynco-signal-validation.mjs'
 
 // A tool whose output decides whether a governance rule gets enforcement
@@ -293,5 +294,83 @@ describe('analyse — the S5 golden table', () => {
   it('produces the checked-in table, and the default firedOf IS rulesFired', () => {
     expect(JSON.stringify(analyse(rows))).toBe(JSON.stringify(analyse(rows, { firedOf: rulesFired })))
     expect(JSON.stringify(analyse(rows))).toBe(JSON.stringify(EXPECTED))
+  })
+})
+
+// Task 4 (2a-iii): the Brain's telemetry (turns[].brain / row.brainStats,
+// scripts/cynco-ledger.mjs) is a CANDIDATE signal, not yet a rule. This is
+// step 2's own question — does it predict failure? — asked of two quartile
+// cuts on the two continuous readings the brain produces: layer-convergence
+// agreement (low = the probed layers disagreed; high = they agreed a lot) and
+// tool-token entropy (high = the model was uncertain about which tool to
+// call). Thresholds live ONLY here, never in the engine or the ledger.
+describe('signalQuartiles', () => {
+  const bs = (meanAgree, meanToolEntropy) => ({
+    tier: 'live', turnsWithLens: 3, meanAgree, meanDepth: 0.5, meanToolEntropy,
+  })
+  const row = (id, meanAgree, meanToolEntropy, verified = true) => ({
+    missionId: id, outcome: 'landed', verified, mutationSweep: { kind: 'derived', survived: [] },
+    s5Decisions: [], brainStats: bs(meanAgree, meanToolEntropy),
+  })
+
+  // 8 labeled rows, agree spread 0.1..0.8 in steps of 0.1, entropy 0.2..0.9 in
+  // steps of 0.1 — both already sorted, so the nearest-rank picks are easy to
+  // hand-check: rank = ceil(p * n), 1-indexed into the sorted array.
+  // agree:   [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8] -> q1 rank ceil(2)=2 -> 0.2, q3 rank ceil(6)=6 -> 0.6
+  // entropy: [0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9] -> q1 -> 0.3, q3 -> 0.7
+  const rows = [
+    row('a', 0.1, 0.2), row('b', 0.2, 0.3), row('c', 0.3, 0.4), row('d', 0.4, 0.5),
+    row('e', 0.5, 0.6), row('f', 0.6, 0.7), row('g', 0.7, 0.8), row('h', 0.8, 0.9),
+  ]
+
+  it('returns the nearest-rank 25th/75th percentile over labeled rows with brainStats', () => {
+    expect(signalQuartiles(rows)).toEqual({ agree: [0.2, 0.6], entropy: [0.3, 0.7] })
+  })
+
+  it('excludes unlabeled rows and rows with no brainStats from the quartile computation', () => {
+    const withNoise = [
+      ...rows,
+      { ...row('unlabeled', 0.01, 0.01), verified: null },       // unlabeled: must not pull the quartiles down
+      { missionId: 'no-brain', outcome: 'landed', verified: true, mutationSweep: { kind: 'derived', survived: [] }, s5Decisions: [] }, // labeled, no brainStats
+    ]
+    expect(signalQuartiles(withNoise)).toEqual({ agree: [0.2, 0.6], entropy: [0.3, 0.7] })
+  })
+})
+
+describe('signalsFired', () => {
+  const q = { agree: [0.2, 0.6], entropy: [0.3, 0.7] }
+
+  it('fires LC-low at/below q1 of agreement', () => {
+    expect([...signalsFired({ brainStats: { meanAgree: 0.2, meanToolEntropy: 0.5 } }, q)]).toContain('LC-low')
+    expect([...signalsFired({ brainStats: { meanAgree: 0.1, meanToolEntropy: 0.5 } }, q)]).toContain('LC-low')
+    expect([...signalsFired({ brainStats: { meanAgree: 0.3, meanToolEntropy: 0.5 } }, q)]).not.toContain('LC-low')
+  })
+
+  it('fires LC-high at/above q3 of agreement', () => {
+    expect([...signalsFired({ brainStats: { meanAgree: 0.6, meanToolEntropy: 0.5 } }, q)]).toContain('LC-high')
+    expect([...signalsFired({ brainStats: { meanAgree: 0.9, meanToolEntropy: 0.5 } }, q)]).toContain('LC-high')
+    expect([...signalsFired({ brainStats: { meanAgree: 0.5, meanToolEntropy: 0.5 } }, q)]).not.toContain('LC-high')
+  })
+
+  it('fires TE-high at/above q3 of entropy', () => {
+    expect([...signalsFired({ brainStats: { meanAgree: 0.5, meanToolEntropy: 0.7 } }, q)]).toContain('TE-high')
+    expect([...signalsFired({ brainStats: { meanAgree: 0.5, meanToolEntropy: 0.2 } }, q)]).not.toContain('TE-high')
+  })
+
+  it('a row with no brainStats fires nothing', () => {
+    expect(signalsFired({}, q).size).toBe(0)
+    expect(signalsFired({ brainStats: null }, q).size).toBe(0)
+  })
+
+  it('analyse wired to signalsFired lists exactly the three candidate ids', () => {
+    const bs = (meanAgree, meanToolEntropy) => ({ meanAgree, meanDepth: 0.5, meanToolEntropy, tier: 'live', turnsWithLens: 1 })
+    const rows = [
+      { missionId: 'a', outcome: 'landed', verified: true, mutationSweep: { kind: 'derived', survived: [] }, s5Decisions: [], brainStats: bs(0.1, 0.2) },
+      { missionId: 'b', outcome: 'landed', verified: false, mutationSweep: { kind: 'derived', survived: [] }, s5Decisions: [], brainStats: bs(0.9, 0.9) },
+      { missionId: 'c', outcome: 'landed', verified: true, mutationSweep: { kind: 'derived', survived: [] }, s5Decisions: [], brainStats: bs(0.5, 0.5) },
+    ]
+    const quartiles = signalQuartiles(rows)
+    const res = analyse(rows, { firedOf: r => signalsFired(r, quartiles) })
+    expect(res.rules.map(r => r.id).sort()).toEqual(['LC-high', 'LC-low', 'TE-high'])
   })
 })

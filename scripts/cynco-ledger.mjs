@@ -118,6 +118,15 @@ export function createMissionCollector(now = () => Date.now()) {
     // validates them here before either gains authority anywhere.
     posiwidLive: null,
     identityGuard: null,
+    // Task 4 (2a-iii): the Brain's per-turn telemetry (protocol.ts
+    // GovernanceStatusEvent.brain) — the achieved tier, layer-convergence
+    // agreement/depth, and tool-token entropy for that turn. Kept as its own
+    // running array (rather than re-derived from `turns` at build time) so the
+    // aggregate in buildMissionRecord has exactly the frames that carried a
+    // brain block, in order, without re-scanning the published turns array.
+    // `turns[].brain` (below) is the same value, published per-turn; this is
+    // the private feed that produces `brainStats`.
+    brainTurns: [],
     // F33: the join key between this ledger and ~/.cynco/rewards/*.reward.json.
     // Both datasets describe the same run and neither could name the other.
     taskIds: [],
@@ -148,8 +157,10 @@ export function createMissionCollector(now = () => Date.now()) {
             predictions: m.predictions ?? null,
             s4: m.s4 ?? null,
             heterarchy: m.heterarchy ?? null,
+            brain: m.brain ?? null,
             snapshot: null,
           })
+          this.brainTurns.push(m.brain ?? null)
           if (m.invariants !== undefined) this.invariants = m.invariants ?? null
           if (m.invariantsRejected !== undefined) this.invariantsRejected = m.invariantsRejected === true
           if (m.ultrastable !== undefined) this.ultrastable = m.ultrastable ?? null
@@ -659,6 +670,52 @@ export function gradedHeadSuspect({ history, gradedSha, baselineSha }) {
 //         mutationSweep?: { command, killed, total, survived: string[] },
 //         baselineSha?: string|null, finalSha?: string|null,  // -> commitRange
 //         graderProbes?: { total, probes, uninspectable, byPattern, samples } }
+/**
+ * Task 4 (2a-iii): fold a mission's per-turn `brain` frames into one summary
+ * row so the ledger can carry a candidate signal instead of a per-turn array
+ * nobody aggregates. Thresholds are NOT applied here — that decision lives
+ * only in cynco-signal-validation.mjs (spec ruling 3); this is data, not a
+ * verdict.
+ *
+ * `turnsWithLens` and the agree/depth means are over frames whose
+ * `layerConvergence` is non-null — a lens sample actually landed. The
+ * tool-entropy mean is over frames whose `toolEntropy` is non-null,
+ * independently, because a turn can carry one without the other (the tap can
+ * degrade mid-run). `tier` is the last non-null tier seen on ANY frame that
+ * carried a brain block, since tier is reported even before the first sample.
+ *
+ * Returns null when no frame ever carried a `brain` block at all — an older
+ * engine, Ollama, or a session where the brain dep never started. That null
+ * must not collapse into "measured zero"; see the interface note on the row.
+ */
+export function computeBrainStats(brainTurns) {
+  let tier = null
+  let hasBrain = false
+  let turnsWithLens = 0
+  let agreeSum = 0, agreeN = 0
+  let depthSum = 0, depthN = 0
+  let entropySum = 0, entropyN = 0
+  for (const b of brainTurns ?? []) {
+    if (b == null) continue
+    hasBrain = true
+    if (b.tier != null) tier = b.tier
+    if (b.layerConvergence) {
+      turnsWithLens++
+      if (b.layerConvergence.meanAgree != null) { agreeSum += b.layerConvergence.meanAgree; agreeN++ }
+      if (b.layerConvergence.meanDepth != null) { depthSum += b.layerConvergence.meanDepth; depthN++ }
+    }
+    if (b.toolEntropy?.mean != null) { entropySum += b.toolEntropy.mean; entropyN++ }
+  }
+  if (!hasBrain) return null
+  return {
+    tier,
+    turnsWithLens,
+    meanAgree: agreeN ? agreeSum / agreeN : null,
+    meanDepth: depthN ? depthSum / depthN : null,
+    meanToolEntropy: entropyN ? entropySum / entropyN : null,
+  }
+}
+
 export function buildMissionRecord(collector, meta) {
   return {
     schema: 1,
@@ -783,6 +840,12 @@ export function buildMissionRecord(collector, meta) {
     // session_fidelity frame); null from an older engine. Data, not authority.
     posiwidLive: collector.posiwidLive ?? null,
     identityGuard: collector.identityGuard ?? null,
+    // Task 4 (2a-iii): the Brain's per-turn telemetry, folded to one summary —
+    // see computeBrainStats above. null when no frame ever carried `brain`
+    // (an older engine, Ollama, or a brain dep that never started); the raw
+    // per-turn frames are also on `turns[].brain` for anyone who needs the
+    // trajectory rather than the summary.
+    brainStats: computeBrainStats(collector.brainTurns),
     // F33: every trajectory task this mission started, in order. This is the
     // ONLY key that joins a ledger row to the reward the model was trained on.
     // Without it, UI Wave 8's reward of 0.983 and UI Wave 8's real verdict —

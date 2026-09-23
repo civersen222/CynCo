@@ -151,3 +151,63 @@ describe('bash effects and invariant blocks', () => {
     expect(empty.identityGuard).toBeNull()
   })
 })
+
+// Task 4 (2a-iii): the Brain's per-turn telemetry (engine/bridge/protocol.ts
+// GovernanceStatusEvent.brain), lifted onto the ledger so it can be tested as
+// a candidate signal before anything grants it authority.
+describe('brain telemetry', () => {
+  const meta = { missionId: 'm', briefFile: 'b', marker: 'x', cwd: '.', dispatchedAt: 't', durationS: 1, outcome: 'landed' }
+
+  it('carries the frame\'s brain object onto each turn, and null when the frame had none', () => {
+    const c = createMissionCollector()
+    c.ingest({
+      type: 'governance.status', health: 'healthy',
+      brain: { tier: 'live', layerConvergence: { n: 5, meanAgree: 0.4, meanDepth: 0.3, byLayer: {} }, toolEntropy: { mean: 0.5, max: 0.9, spikeCount: 1 } },
+    })
+    c.ingest({
+      type: 'governance.status', health: 'healthy',
+      brain: { tier: 'live', layerConvergence: { n: 5, meanAgree: 0.6, meanDepth: 0.5, byLayer: {} }, toolEntropy: { mean: 0.7, max: 0.95, spikeCount: 2 } },
+    })
+    c.ingest({ type: 'governance.status', health: 'healthy' })
+
+    const rec = buildMissionRecord(c, meta)
+    expect(rec.turns).toHaveLength(3)
+    expect(rec.turns[0].brain).toEqual({ tier: 'live', layerConvergence: { n: 5, meanAgree: 0.4, meanDepth: 0.3, byLayer: {} }, toolEntropy: { mean: 0.5, max: 0.9, spikeCount: 1 } })
+    expect(rec.turns[1].brain.layerConvergence.meanAgree).toBe(0.6)
+    expect(rec.turns[2].brain).toBeNull()
+  })
+
+  it('aggregates brainStats equal-weight per turn, tier = last non-null tier', () => {
+    const c = createMissionCollector()
+    c.ingest({
+      type: 'governance.status', health: 'healthy',
+      brain: { tier: 'live', layerConvergence: { n: 5, meanAgree: 0.4, meanDepth: 0.3, byLayer: {} }, toolEntropy: { mean: 0.5, max: 0.9, spikeCount: 1 } },
+    })
+    c.ingest({
+      type: 'governance.status', health: 'healthy',
+      brain: { tier: 'live', layerConvergence: { n: 5, meanAgree: 0.6, meanDepth: 0.5, byLayer: {} }, toolEntropy: { mean: 0.7, max: 0.95, spikeCount: 2 } },
+    })
+    c.ingest({ type: 'governance.status', health: 'healthy' })
+
+    const rec = buildMissionRecord(c, meta)
+    expect(rec.brainStats).toEqual({
+      tier: 'live', turnsWithLens: 2, meanAgree: 0.5, meanDepth: 0.4, meanToolEntropy: 0.6,
+    })
+  })
+
+  it('brainStats is null when no frame ever carried a brain block', () => {
+    const c = createMissionCollector()
+    c.ingest({ type: 'governance.status', health: 'healthy' })
+    c.ingest({ type: 'governance.status', health: 'healthy' })
+    const rec = buildMissionRecord(c, meta)
+    expect(rec.brainStats).toBeNull()
+  })
+
+  it('an explicit brain: null frame is treated the same as an absent one', () => {
+    const c = createMissionCollector()
+    c.ingest({ type: 'governance.status', health: 'healthy', brain: null })
+    const rec = buildMissionRecord(c, meta)
+    expect(rec.turns[0].brain).toBeNull()
+    expect(rec.brainStats).toBeNull()
+  })
+})

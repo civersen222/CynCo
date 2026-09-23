@@ -60,7 +60,15 @@ decisions still recorded here).
     { "t": 1783550000000, "health": "healthy", "s3s4Balance": "critical",
       "toolSuccessRate": 0.9, "stuckTurns": 0, "varietyRatio": 9,
       "varietyBalance": "overload", "algedonicAlerts": 0, "axiomHealth": "red",
-      "consecutiveUnstable": 3, "agreementRatio": 0.0 }
+      "consecutiveUnstable": 3, "agreementRatio": 0.0,
+      // Task 4 (2a-iii): the Brain's telemetry for this turn (engine/bridge/
+      // protocol.ts GovernanceStatusEvent.brain), verbatim. null when the
+      // frame carried none — an older engine, Ollama, or a brain dep that
+      // never started. `layerConvergence`/`toolEntropy` are independently
+      // nullable inside a non-null `brain`: the tap can degrade mid-run.
+      "brain": { "tier": "live",
+        "layerConvergence": { "n": 5, "meanAgree": 0.62, "meanDepth": 0.4, "byLayer": {} },
+        "toolEntropy": { "mean": 0.31, "max": 0.9, "spikeCount": 1 } } }
   ],
   "s5Decisions": [          // one per s5.decision event
     { "t": 1783550000000, "ruleIds": ["C7"], "reasoning": "...",
@@ -217,7 +225,24 @@ decisions still recorded here).
   // IdentityGuard verdict at the last user-message end (vsm/identityGuard.ts).
   // `passed` is what decides the session outcome; `posiwidPass` is recorded so
   // its precision can be measured here before it is allowed to count.
-  "identityGuard": { "passed": true, "posiwidPass": false, "violations": [], "details": ["..."] }
+  "identityGuard": { "passed": true, "posiwidPass": false, "violations": [], "details": ["..."] },
+  // Task 4 (2a-iii): the Brain's per-turn `brain` frames (above), folded to one
+  // row-level summary — computeBrainStats() in scripts/cynco-ledger.mjs. null
+  // when NO frame ever carried a `brain` block (an older engine, Ollama, or a
+  // brain dep that never started); never collapsed into a measured zero.
+  // `turnsWithLens` and `meanAgree`/`meanDepth` are over turns whose
+  // `layerConvergence` was non-null; `meanToolEntropy` is over turns whose
+  // `toolEntropy` was non-null, independently — the two can differ because the
+  // tap can degrade mid-run. `tier` is the LAST non-null tier seen on any
+  // frame that carried a `brain` block. This is a MEASUREMENT, not a rule:
+  // `scripts/cynco-signal-validation.mjs --signals` is what asks whether it
+  // predicts anything, by cutting `meanAgree`/`meanToolEntropy` at quartiles
+  // computed over labeled rows (`signalQuartiles`) into three candidate
+  // signals (`signalsFired`: `LC-low`, `LC-high`, `TE-high`) and running the
+  // same `analyse()` every S5 rule id goes through — thresholds live only in
+  // that file, never here or in the engine.
+  "brainStats": { "tier": "live", "turnsWithLens": 41, "meanAgree": 0.58,
+    "meanDepth": 0.37, "meanToolEntropy": 0.29 }
 }
 ```
 
