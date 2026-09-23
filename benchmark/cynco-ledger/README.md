@@ -421,19 +421,20 @@ own numbers, not an illustration:
 ```
 
 `verdict`, `divergence`, `dominantObserved` and `support` are the LAST window's
-reading (`counts`, here 33 observations of which 30 were logging — past
-`minSupport` 20, and `signalsLogged` holds a stated share of 0, so
-`Contradicted`); `onsetWave` and `windows` are properties of the whole replayed
-history. `engine/__tests__/guards/ledgerGovernancePosiwidBlock.test.ts` re-runs the module on this
-block's `counts` and fails if the reading moves (F149: a documented number no
-code produces).
+reading — here 33 observations of which 30 were logging, so: past `minSupport`
+20, and `signalsLogged` holds a stated share of 0, hence `Contradicted`. The
+ladder is exactly the per-wave `posiwid` block's (`Insufficient` below
+`minSupport` 20, then `Contradicted`, `Drifting`, `Consistent`). `onsetWave`
+and `windows` are properties of the whole replayed history rather than of that
+last window.
 
-with `verdict` decided exactly as the per-wave `posiwid` block's is
-(`Insufficient` below `minSupport` 20, `Contradicted`, `Drifting`,
-`Consistent`). The campaign state keeps the raw windows under
+The campaign state keeps the raw windows under
 `state.governancePosiwid.windows`; the verdict entry prints the reading as its
 "Governance POSIWID" line, and `GET /api/campaign` hands the dashboard the last
 wave's `verdict` and `onsetWave`.
+`engine/__tests__/guards/ledgerGovernancePosiwidBlock.test.ts` re-runs the
+module on this block's `counts` and fails if the reading moves (F149: a
+documented number no code produces).
 
 ## Labeling rule
 

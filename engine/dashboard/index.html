@@ -2249,8 +2249,7 @@ function fetchSessionState() {
           ['Campaign', c.id + (c.id === data.active ? ' (ACTIVE)' : '')],
           ['Wave', c.waveCount + (c.budgetWaves != null ? ' / ' + c.budgetWaves : '')],
           ['Last decision', c.lastDecision ? (c.lastDecision.kind + ' — ' + c.lastDecision.why) : '—'],
-          ['Last fails', failText, fails.join('
-')],
+          ['Last fails', failText, fails.join('\n')],
           ['Ideation authority', Number(c.ideationAuthority || 0).toFixed(2)],
           ['Invariant overrides', Object.keys(c.invariantOverrides || {}).length
             ? Object.keys(c.invariantOverrides).map(function(k) { return k + ' ' + c.invariantOverrides[k]; }).join(', ')
