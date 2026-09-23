@@ -14,7 +14,7 @@
  * `node` script the test writes — exiting 0 or 3 as the case requires. Nothing
  * about the verdict is faked; the only stub is the model.
  */
-import { describe, expect, it, afterAll } from 'vitest'
+import { describe, expect, it, afterAll, beforeEach, vi } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -24,6 +24,28 @@ import type { Provider, ModelCapabilities, CompletionRequest } from '../../provi
 import type { StreamEvent, TokenLogprob } from '../../types.js'
 import type { EngineEvent } from '../../bridge/protocol.js'
 import type { LocalCodeConfig } from '../../config.js'
+
+/**
+ * Every KEEP-GREEN run the loop asks for, with the timeout it asked for.
+ *
+ * A pass-through spy, not a stub: the real `runCommandDetailed` still runs the
+ * real `node` script, so every other assertion in this file is unaffected. The
+ * only thing this buys is visibility of an argument that has no observable
+ * effect in a test — the timeout — which is exactly the argument that must be
+ * capped.
+ */
+const runCalls = vi.hoisted(() => [] as Array<{ command: string; timeoutMs: number | undefined }>)
+vi.mock('../../tools/contractVerify.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../tools/contractVerify.js')>()
+  return {
+    ...actual,
+    runCommandDetailed: (cwd: string, command: string, timeoutMs?: number) => {
+      runCalls.push({ command, timeoutMs })
+      return actual.runCommandDetailed(cwd, command, timeoutMs)
+    },
+  }
+})
+beforeEach(() => { runCalls.length = 0 })
 
 const dirs: string[] = []
 function tempDir(prefix: string): string {
@@ -54,8 +76,19 @@ function config(): LocalCodeConfig {
   }
 }
 
-function mockProvider(responses: Array<() => Generator<StreamEvent>>): Provider {
-  let idx = 0
+/**
+ * The scripted model, as MUTABLE state.
+ *
+ * The loop holds one provider for the life of the session, and it re-enters
+ * the model after a stop attempt (the unproductive-turn nudge), so a single
+ * user message can consume more responses than it has tool calls. A test that
+ * sends TWO messages must therefore be able to re-script between them, or the
+ * first message silently eats the second's responses — which is exactly what
+ * it did, and which made a passing mission-scoping test impossible to write.
+ */
+type Script = { responses: Array<() => Generator<StreamEvent>>; idx: number }
+
+function mockProvider(script: Script): Provider {
   return {
     name: 'mock',
     async healthCheck() { return true },
@@ -65,7 +98,7 @@ function mockProvider(responses: Array<() => Generator<StreamEvent>>): Provider 
     },
     async complete() { throw new Error('not implemented') },
     async *stream(_r: CompletionRequest): AsyncGenerator<StreamEvent> {
-      const gen = responses[idx++]
+      const gen = script.responses[script.idx++]
       if (gen) yield* gen()
     },
   }
@@ -132,27 +165,28 @@ const RED_SCRIPT = "console.log('FAILED tests/test_seat.py::test_hold')\nprocess
  * off for the same reason — an incomplete contract would otherwise spend five
  * extra model iterations nudging a mock provider that has nothing left to say.
  */
-function harness(prefix: string, script: string, responses: Array<() => Generator<StreamEvent>>) {
+function harness(prefix: string, keepGreenScript: string, responses: Array<() => Generator<StreamEvent>>, timeoutMs?: number) {
   const cwd = tempDir(prefix)
-  writeFileSync(join(cwd, 'keep-green.js'), script)
+  writeFileSync(join(cwd, 'keep-green.js'), keepGreenScript)
   writeFileSync(join(cwd, 'seat.py'), 'VERSION = "v0"\n')
   globalContract.clear()
   globalContract.create(
     'mission',
     '',
-    [{ text: 'KEEP-GREEN: the suite that was green stays green', command: 'node keep-green.js', role: 'keep-green' }],
+    [{ text: 'KEEP-GREEN: the suite that was green stays green', command: 'node keep-green.js', role: 'keep-green', ...(timeoutMs === undefined ? {} : { timeoutMs }) }],
     'harness',
   )
   globalContract.setEnforcementEnabled(false)
   const events: EngineEvent[] = []
+  const script: Script = { responses, idx: 0 }
   const loop = new ConversationLoop({
     cwd,
     config: config(),
-    provider: mockProvider(responses),
+    provider: mockProvider(script),
     emit: (e: EngineEvent) => { events.push(e) },
     allowedTools: ['Bash', 'Read', 'Edit'],
   })
-  return { cwd, loop, events }
+  return { cwd, loop, events, script }
 }
 
 function lastStatus(events: EngineEvent[]): any {
@@ -291,6 +325,141 @@ describe('verify-first wiring — measured low-confidence edit', () => {
     expect(done).toHaveLength(1)
     expect(String(done[0].result)).not.toContain('[verify-first]')
     expect(lastStatus(events).routing.count).toBe(0)
+    globalContract.clear()
+  }, 30000)
+})
+
+/**
+ * A mission is not one message. The driver re-injects probes and continuation
+ * prompts over the same socket as further `unattended` messages carrying no
+ * `invariants` block — the exact case `missionInvariants` is already scoped
+ * for. A router rebuilt on each of those would hand every injection a fresh
+ * budget of six, and because the ledger keeps the LAST `governance.status`
+ * frame, every route before the final injection would vanish from the row.
+ */
+describe('verify-first wiring — the router is scoped to the mission, not the message', () => {
+  it('a continuation message with no invariants block keeps the running router and its budget', async () => {
+    const { loop, events, script } = harness('cynco-vf-continue-', GREEN_SCRIPT, [
+      toolUse(revert(1)), textResponse('a'),
+    ])
+    await loop.handleUserMessage('do the thing', { unattended: true, invariants: INVARIANTS })
+    const armed = (loop as any).verifyFirst
+    expect(armed).toBeTruthy()
+    expect(lastStatus(events).routing.count).toBe(1)
+
+    // The driver's continuation: unattended, no invariants block.
+    script.responses = [toolUse(revert(2)), textResponse('b')]
+    script.idx = 0
+    await loop.handleUserMessage('carry on', { unattended: true })
+
+    expect((loop as any).verifyFirst, 'the router was rebuilt mid-mission').toBe(armed)
+    const afterSecond = lastStatus(events).routing
+    expect(afterSecond.count).toBe(2)
+    // The second revert is inside the cooldown of the first, so it costs no
+    // budget — but the point is that the SPEND carried over at all.
+    expect(afterSecond.used).toBe(1)
+    expect(afterSecond.byKind.revert).toBe(2)
+    globalContract.clear()
+  }, 30000)
+
+  it('a message that re-declares invariants re-arms with a fresh budget', async () => {
+    const { loop, events, script } = harness('cynco-vf-rearm-', GREEN_SCRIPT, [
+      toolUse(revert(1)), textResponse('a'),
+    ])
+    await loop.handleUserMessage('mission one', { unattended: true, invariants: INVARIANTS })
+    const first = (loop as any).verifyFirst
+    script.responses = [toolUse(revert(2)), textResponse('b')]
+    script.idx = 0
+    await loop.handleUserMessage('mission two', { unattended: true, invariants: INVARIANTS })
+
+    expect((loop as any).verifyFirst).not.toBe(first)
+    expect(lastStatus(events).routing.count).toBe(1)
+    globalContract.clear()
+  }, 30000)
+
+  it('caps a routed run at five minutes however long the assertion asks for', async () => {
+    const { loop } = harness('cynco-vf-timeout-', GREEN_SCRIPT, [
+      toolUse(revert(1)),
+      textResponse('done'),
+    ], 1_800_000)
+    await loop.handleUserMessage('do the thing', { unattended: true, invariants: INVARIANTS })
+
+    const routed = runCalls.filter(c => c.command === 'node keep-green.js')
+    expect(routed.length).toBeGreaterThan(0)
+    for (const c of routed) expect(c.timeoutMs).toBeLessThanOrEqual(300_000)
+    expect(routed[0].timeoutMs).toBe(300_000)
+    globalContract.clear()
+  }, 30000)
+})
+
+describe('verify-first wiring — one route per model call', () => {
+  it('routes at most one low-confidence edit per assistant message', async () => {
+    const { loop, events } = harness('cynco-vf-oneperturn-', GREEN_SCRIPT, [
+      toolUse(
+        edit('v0', 'v1', [...calmTokens(9), spikeToken()]),
+        edit('v1', 'v2', [...calmTokens(9), spikeToken()]),
+      ),
+      textResponse('done'),
+    ])
+    await loop.handleUserMessage('do the thing', { unattended: true, invariants: INVARIANTS })
+
+    const done = completions(events)
+    expect(done).toHaveLength(2)
+    expect(String(done[0].result)).toContain('[verify-first] KEEP-GREEN after this edit')
+    expect(String(done[1].result)).not.toContain('[verify-first]')
+    expect(lastStatus(events).routing.count).toBe(1)
+    globalContract.clear()
+  }, 30000)
+
+  /**
+   * `lastToolEntropy` is the last tool token of the model call that is
+   * running. Carried across iterations it would route a calm edit on a spike
+   * from a turn ago — and on a backend that simply stopped sending logprobs,
+   * it would route forever on the last number it ever saw.
+   */
+  it('does not carry one iteration\'s entropy into the next', async () => {
+    const { loop, events } = harness('cynco-vf-entropyreset-', GREEN_SCRIPT, [
+      toolUse(edit('v0', 'v1', [...calmTokens(9), spikeToken()])),
+      // Second iteration, no logprobs at all.
+      toolUse(edit('v1', 'v2')),
+      textResponse('done'),
+    ])
+    await loop.handleUserMessage('do the thing', { unattended: true, invariants: INVARIANTS })
+
+    const done = completions(events)
+    expect(done).toHaveLength(2)
+    expect(String(done[0].result)).toContain('[verify-first] KEEP-GREEN after this edit')
+    expect(String(done[1].result)).not.toContain('[verify-first]')
+    expect(lastStatus(events).routing.count).toBe(1)
+    globalContract.clear()
+  }, 30000)
+
+  /**
+   * `fullOutput` is `result.output` + `lspContext` + `createdWarn`. The note
+   * lives at the end of `result.output`, so on an untruncated result carrying
+   * LSP diagnostics it is no longer the last thing in the string — an
+   * `endsWith` test alone appended a second copy.
+   */
+  it('appends the verdict exactly once when the result also carries LSP context', async () => {
+    const { loop, events } = harness('cynco-vf-lsponce-', GREEN_SCRIPT, [
+      toolUse(edit('v0', 'v1', [...calmTokens(9), spikeToken()])),
+      textResponse('done'),
+    ])
+    ;(loop as any).lspManager = {
+      getDiagnostics: async () => [{ severity: 'error', message: 'undefined name VERSION' }],
+      formatForModel: () => '[lsp] 1 diagnostic: undefined name VERSION',
+    }
+    await loop.handleUserMessage('do the thing', { unattended: true, invariants: INVARIANTS })
+
+    const toolResult = (loop as any).messages
+      .flatMap((m: any) => m.content ?? [])
+      .filter((b: any) => b.type === 'tool_result')
+      .map((b: any) => String(b.content?.[0]?.text ?? ''))
+      .find((t: string) => t.includes('[verify-first]'))
+    expect(toolResult, 'no tool_result carried the verdict').toBeTruthy()
+    expect(toolResult).toContain('[lsp] 1 diagnostic')
+    expect((toolResult.match(/\[verify-first\]/g) ?? []).length).toBe(1)
+    expect(String(completions(events)[0].result)).toContain('[verify-first]')
     globalContract.clear()
   }, 30000)
 })

@@ -124,6 +124,35 @@ export const DEFAULT_VERIFY_BUDGET = 6
 /** A verdict describes a tree. Five tool calls later it is still plausibly the
  *  same tree — unless a source edit landed, which invalidates it outright. */
 export const DEFAULT_COOLDOWN_CALLS = 5
+/**
+ * The ceiling on ONE routed KEEP-GREEN run, whatever the assertion says.
+ *
+ * A routed run happens in the middle of the model's turn: the model is waiting
+ * on a tool result it has already earned, and every second of the check is a
+ * second of the mission's wall clock. The assertion's own `timeoutMs` is sized
+ * for a different job — the end-of-run contract check, which may legitimately
+ * be a thirty-minute mutation sweep (Gilded Wave 9d) and which keeps its own
+ * budget untouched. Six routed runs at that cap would be three hours of a
+ * mission spent inside a gate nobody asked to run.
+ *
+ * Five minutes is the engine's own default check timeout
+ * (`commandTimeoutMs`), so a KEEP-GREEN command that fits the default fits
+ * here unchanged; anything slower is bounded rather than obeyed.
+ */
+export const ROUTING_TIMEOUT_MS = 300_000
+
+/**
+ * The timeout ONE routed run may use, given whatever the assertion asked for.
+ *
+ * A helper rather than an inline `Math.min` at the construction site so the
+ * clamp is testable on its own and cannot drift if a second caller ever routes.
+ * An absent, zero, negative or non-finite value falls back to the cap — the
+ * same rule `commandTimeoutMs` applies to a bad value: ignored, not obeyed.
+ */
+export function routingTimeoutMs(assertionTimeoutMs?: number): number {
+  const wanted = Number(assertionTimeoutMs)
+  return Number.isFinite(wanted) && wanted > 0 ? Math.min(wanted, ROUTING_TIMEOUT_MS) : ROUTING_TIMEOUT_MS
+}
 /** Low-confidence floor (nats) when there is no usable digest to be relative to. */
 export const ENTROPY_FLOOR = 1.0
 /** Below this many samples a digest's σ is noise, so the flat floor is used. */

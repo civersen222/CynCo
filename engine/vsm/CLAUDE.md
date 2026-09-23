@@ -31,6 +31,7 @@ This is LocalCode's VSM (Viable System Model) governance layer: it wraps the ven
 | `identityGuard.ts` | Session-end invariant + POSIWID check against a fixed `SessionRecord`. |
 | `interventionPersistence.ts` | Load/save `InterventionTracker` success counts to `training/intervention-rates.json`. |
 | `interventionTracker.ts` | Within-session PID-style learning of which interventions preceded success. |
+| `missionInvariants.ts` | Campaign-level S3 terms for an unattended wave: edit/commit pacing caps, revert ban, CodeIndex-first; denies with a teachback and logs what the next call did. |
 | `observerEffects.ts` | Second-order cybernetics: per-observer measurement log, divergence, eigenforms. |
 | `performanceMetrics.ts` | Beer's Achievement metric + CUSUM drift detection on failure rate. |
 | `population.ts` | Evolving population of 10 parameter/strategy configs selected per session. |
@@ -48,6 +49,7 @@ This is LocalCode's VSM (Viable System Model) governance layer: it wraps the ven
 | `toolGating.ts` | Deterministic tool removal (not suggestion) when a tool is overused or stuck. |
 | `turnNovelty.ts` | Per-turn fraction of touched file paths never seen before this session. |
 | `types.ts` | Import-free shared types: `GovernanceReport`, `GovernanceAlert`, snapshot shapes. |
+| `verifyFirst.ts` | The gate ladder's second verb: runs the mission's KEEP-GREEN command before a revert refusal and after a low-confidence source edit, under a per-mission budget and a cache. |
 | `windowedVariety.ts` | Rolling-window distinguishable-state (Ashby variety) counter; shares fingerprint format with stuck detection. |
 
 ## Important types & functions

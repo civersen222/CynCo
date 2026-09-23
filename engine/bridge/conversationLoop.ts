@@ -59,7 +59,7 @@ import { makeJournalEntry } from '../training/types.js'
 import { buildConceptTableForCwd } from '../vsm/conceptTable.js'
 import { evaluateGrounding, extractAddedText, extractTargetPaths } from '../vsm/groundingTrigger.js'
 import { MissionInvariants, parseInvariantCaps, classifyCall } from '../vsm/missionInvariants.js'
-import { VerifyFirstRouter, verifySentence, verifyEditNote } from '../vsm/verifyFirst.js'
+import { VerifyFirstRouter, verifySentence, verifyEditNote, routingTimeoutMs } from '../vsm/verifyFirst.js'
 import type { GuardResult } from '../vsm/identityGuard.js'
 import { isIdentifierPattern, noteCodeIndexUse } from '../tools/toolHints.js'
 import { ReadLoopGate, rearmsGate, signature as readSignature } from '../vsm/readLoopGate.js'
@@ -287,6 +287,9 @@ export class ConversationLoop {
    * session never routes — there is a person present who can look.
    */
   private verifyFirst: VerifyFirstRouter | null = null
+  /** Low-confidence edits routed during THIS model call — capped at one; reset
+   *  in `resetBrainTurnState`. See the reset site for why. */
+  private routedEditsThisCall = 0
   private abortController: AbortController | null = null
   private processing = false
   // Per-task observation buffers for the reward labeler. Reset at task start,
@@ -626,6 +629,18 @@ export class ConversationLoop {
     this.brainRecorder.reset()
     this.thinkingRecorder?.discardBuffer()
     this.turnToolEntropy = null
+    // Per model call, like everything else here. `lastToolEntropy` is the last
+    // tool token of the call that is starting; carrying the PREVIOUS call's
+    // value into it lets verify-first's flat-floor arm fire on a calm call
+    // because the model was uncertain a turn ago — and lets it fire on a
+    // backend that stopped sending logprobs entirely. The divergence detector
+    // already reads it as `?? 0`, so null is safe there.
+    this.lastToolEntropy = null
+    // One low-confidence edit route per model call. The budget is six for the
+    // whole mission; a single spiky assistant message carrying five edits
+    // would otherwise spend most of it in one turn, and the second edit of a
+    // turn is measured by the KEEP-GREEN run the first one already paid for.
+    this.routedEditsThisCall = 0
     // The convergence window is per model call for the same reason the entropy
     // series is: a session-long mean says nothing about the turn it rides on.
     this.getBrain?.()?.reset()
@@ -1096,19 +1111,37 @@ export class ConversationLoop {
     // preconditions at once and has no meaning without any of them: an
     // unattended run (nobody is present to look at the tree), an armed
     // regulator (the gate ladder this adds a verb to), and a KEEP-GREEN
-    // assertion (the command that answers). Rebuilt on every message so the
-    // budget is per mission and an interactive message clears whatever a
-    // previous mission armed — same scoping rule, same reason.
-    this.verifyFirst = null
-    const keepGreen = globalContract.byRole('keep-green')
-    if (opts?.unattended === true && this.missionInvariants && keepGreen?.command) {
-      // Bound here rather than read off the assertion inside the closure: the
-      // contract can be replaced by a later message, and this router must go on
-      // running the command THIS mission was armed with.
-      const command = keepGreen.command
-      const timeoutMs = keepGreen.timeoutMs
-      this.verifyFirst = new VerifyFirstRouter({ run: (cwd: string) => runCommandDetailed(cwd, command, timeoutMs) })
-      console.log(`[verify-first] armed: budget ${this.verifyFirst.snapshot().budget} KEEP-GREEN run(s) this mission`)
+    // assertion (the command that answers).
+    //
+    // Scoped EXACTLY like `missionInvariants` above, and for the same reason
+    // one level up: the budget is per MISSION, and the mission is not one
+    // message. The driver re-injects probes and continuation prompts over the
+    // same socket as further `unattended` messages carrying no `invariants`
+    // block (scripts/cynco-mission-driver.mjs). Rebuilding here on every such
+    // message would hand each injection a fresh budget of six — and because
+    // the ledger takes the LAST `governance.status` frame, every route before
+    // the final injection would vanish from the row entirely. So: an
+    // interactive message disarms; an unattended message that (re)declares
+    // invariants re-arms; an unattended message that declares none leaves the
+    // running router alone.
+    if (opts?.unattended !== true) {
+      this.verifyFirst = null
+    } else if (opts.invariants !== undefined) {
+      this.verifyFirst = null
+      const keepGreen = globalContract.byRole('keep-green')
+      if (this.missionInvariants && keepGreen?.command) {
+        // Bound here rather than read off the assertion inside the closure: the
+        // contract can be replaced by a later message, and this router must go on
+        // running the command THIS mission was armed with.
+        const command = keepGreen.command
+        // ROUTING_TIMEOUT_MS caps it: see the constant. A routed run happens in
+        // the middle of the model's turn, and the assertion's own timeout is
+        // sized for the end-of-run contract check, which can legitimately be
+        // half an hour.
+        const timeoutMs = routingTimeoutMs(keepGreen.timeoutMs)
+        this.verifyFirst = new VerifyFirstRouter({ run: (cwd: string) => runCommandDetailed(cwd, command, timeoutMs) })
+        console.log(`[verify-first] armed: budget ${this.verifyFirst.snapshot().budget} KEEP-GREEN run(s) this mission, ${timeoutMs / 1000}s cap per run`)
+      }
     }
 
     const declared = (opts?.readOnlyPaths ?? []).map(p => p.replace(/\\/g, '/'))
@@ -3990,6 +4023,13 @@ export class ConversationLoop {
         // instead. Green: there is nothing to undo, commit. Red: fix forward,
         // and here are the failing lines. Only `revert` routes; the pacing
         // denials already quote the counter they are about.
+        //
+        // `tool.start` is emitted FIRST, before the routed run: KEEP-GREEN is a
+        // real test command and the refusal can now take minutes to compose. A
+        // dashboard or TUI that had not yet been told the call began would show
+        // nothing at all for that whole span — the engine looks hung exactly
+        // when it is doing the most work.
+        this.emit({ type: 'tool.start', toolId, toolName, input: toolInput })
         let message = inv.message
         if (inv.invariant === 'revert' && this.verifyFirst) {
           const v = await this.verifyFirst.verify(
@@ -3998,7 +4038,6 @@ export class ConversationLoop {
           console.log(`[verify-first] revert refusal informed by KEEP-GREEN: ${v.outcome} (${v.ms} ms)`)
           if (sentence) message = `${inv.message}\n${sentence}`
         }
-        this.emit({ type: 'tool.start', toolId, toolName, input: toolInput })
         this.emit({ type: 'tool.complete', toolId, toolName, result: message, isError: true })
         toolResults.push({
           type: 'tool_result',
@@ -4291,9 +4330,16 @@ export class ConversationLoop {
     // reset for exactly this kind of reader — it describes the model call this
     // tool token came from, which is the turn the rule is relative to. Without
     // the fallback the n >= 8 arm of the rule could never fire at all.
+    //
+    // At most ONE such route per model call (`routedEditsThisCall`): the whole
+    // mission gets six KEEP-GREEN runs, and one uncertain assistant message
+    // carrying five edits must not spend most of them — the later edits of a
+    // turn are covered by the run the first one already paid for.
     let verifyNote: string | null = null
-    if (this.verifyFirst && classifyCall(toolName, toolInput, result.isError) === 'sourceEdit'
+    if (this.verifyFirst && this.routedEditsThisCall === 0
+      && classifyCall(toolName, toolInput, result.isError) === 'sourceEdit'
       && this.verifyFirst.isLowConfidence(this.lastToolEntropy, this.uncertainty.digest('tool') ?? this.turnToolEntropy)) {
+      this.routedEditsThisCall++
       const v = await this.verifyFirst.verify(
         this.executor['cwd'], this.toolCallsTotal, 'low-confidence-edit', this.lastToolEntropy)
       verifyNote = verifyEditNote(v)
@@ -4741,13 +4787,19 @@ export class ConversationLoop {
     // truncated output measure longer than the original and silence the log
     // line (and, for Bash, the full-output dump) that says work was dropped.
     const wasTruncated = truncatedOutput.length < fullOutput.length
-    // The verify-first note is appended to the END of the output, and
+    // The verify-first note is appended to the END of `result.output`, and
     // truncation keeps the FIRST N lines: a source-rewriting Bash call that
     // prints more than its cap would lose the KEEP-GREEN verdict entirely —
-    // the one line the measurement exists to deliver. Put it back. (Edit /
-    // Write / MultiEdit are in NO_TRUNCATE_TOOLS, so this only ever fires for
-    // a Bash `sourceEdit`.)
-    if (verifyNote && !truncatedOutput.endsWith(verifyNote)) truncatedOutput = `${truncatedOutput}\n\n${verifyNote}`
+    // the one line the measurement exists to deliver. Put it back, but ONLY
+    // when something was actually dropped. `fullOutput` is `result.output`
+    // plus `lspContext` plus `createdWarn`, so on an untruncated result that
+    // carries either of those the note is no longer the last thing in the
+    // string and an `endsWith` test alone would append a second copy.
+    // (Edit / Write / MultiEdit are in NO_TRUNCATE_TOOLS, so this can only
+    // ever fire for a Bash `sourceEdit`.)
+    if (verifyNote && wasTruncated && !truncatedOutput.endsWith(verifyNote)) {
+      truncatedOutput = `${truncatedOutput}\n\n${verifyNote}`
+    }
     if (wasTruncated) {
       console.log(`[s3] Truncated ${toolName} output: ${fullOutput.length} → ${truncatedOutput.length} bytes`)
       // For Bash, write full output to disk so user can inspect

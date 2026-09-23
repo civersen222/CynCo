@@ -20,6 +20,8 @@ import {
   ENTROPY_FLOOR,
   DIGEST_MIN_SAMPLES,
   ENTRY_WINDOW,
+  ROUTING_TIMEOUT_MS,
+  routingTimeoutMs,
   type VerifyRun,
 } from '../../vsm/verifyFirst.js'
 
@@ -68,6 +70,32 @@ describe('VerifyFirstRouter — budget', () => {
     const again = await r.verify('/w', 2, 'revert', null)
     expect(again.outcome).toBe('timeout')
     expect(run).toHaveBeenCalledTimes(2)
+  })
+})
+
+/**
+ * A routed run interrupts the model's turn, so it is capped independently of
+ * the assertion's own timeout — which is sized for the end-of-run contract
+ * check and can legitimately be half an hour (Gilded Wave 9d's mutation
+ * sweep). Six routed runs at that cap would be three hours of a mission spent
+ * inside a gate nobody asked to run.
+ */
+describe('routingTimeoutMs', () => {
+  it('caps a 30-minute assertion timeout at five minutes', () => {
+    expect(ROUTING_TIMEOUT_MS).toBe(300_000)
+    expect(routingTimeoutMs(1_800_000)).toBe(300_000)
+    expect(routingTimeoutMs(1_800_000)).toBeLessThanOrEqual(ROUTING_TIMEOUT_MS)
+  })
+
+  it('leaves a shorter assertion timeout alone', () => {
+    expect(routingTimeoutMs(60_000)).toBe(60_000)
+  })
+
+  it('falls back to the cap for absent, zero, negative and non-finite values', () => {
+    expect(routingTimeoutMs()).toBe(ROUTING_TIMEOUT_MS)
+    expect(routingTimeoutMs(0)).toBe(ROUTING_TIMEOUT_MS)
+    expect(routingTimeoutMs(-5)).toBe(ROUTING_TIMEOUT_MS)
+    expect(routingTimeoutMs(Number.NaN)).toBe(ROUTING_TIMEOUT_MS)
   })
 })
 
