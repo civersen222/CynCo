@@ -31,7 +31,7 @@ export class ConvergenceAccumulator {
   private byLayerHits: Record<string, number> = {}
 
   constructor(layers: number[]) {
-    const sorted = [...layers].sort((a, b) => a - b)
+    const sorted = [...new Set(layers)].sort((a, b) => a - b)
     this.deepest = sorted[sorted.length - 1]
     this.shallower = sorted.slice(0, -1)
     this.reset()

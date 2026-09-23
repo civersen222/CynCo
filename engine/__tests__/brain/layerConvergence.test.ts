@@ -41,4 +41,14 @@ describe('ConvergenceAccumulator', () => {
     acc.reset()
     expect(acc.snapshot().n).toBe(0)
   })
+  it('deduplicates its layer list so a repeated maximum or repeated shallower layer cannot inflate rates', () => {
+    const dupMax = new ConvergenceAccumulator([24, 56, 56])
+    expect(Object.keys(dupMax.snapshot().byLayer)).toEqual(['24'])
+
+    const dupShallow = new ConvergenceAccumulator([24, 24, 40, 56])
+    dupShallow.add(1, new Map([[24, top('a')], [40, top('b')], [56, top('a')]]))
+    const s = dupShallow.snapshot()
+    expect(s.n).toBe(1)
+    expect(s.byLayer).toEqual({ '24': 1, '40': 0 })
+  })
 })
