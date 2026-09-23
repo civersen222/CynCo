@@ -229,8 +229,10 @@ number except the one router named below.
   proposalsDecided })` reads those three counts off the graded ledger row and
   the wave record (denials whose next call complied; enforced S5 decisions,
   followed ideation, an applied work order, decided proposals and routed calls
-  the model then complied with; every other S5 decision, control signal and
-  turn). Every wave's window is replayed through a fresh `PosiwidDrift`, so the
+  the model then complied with; every other S5 decision and control signal).
+  Turns are not a signal (Phase 3 ruling 13): a status frame is not the
+  governance layer logging anything about itself, so `signalsLogged` excludes
+  `turns[]`. Every wave's window is replayed through a fresh `PosiwidDrift`, so the
   onset wave is a function of the stored windows and a runner restart cannot
   move it. `driftThreshold` is **0.5**, not the naive 0.1: the zero-share
   `signalsLogged` bucket gives the implicit `other` mass a near-zero

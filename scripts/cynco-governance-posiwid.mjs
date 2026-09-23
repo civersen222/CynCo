@@ -10,6 +10,9 @@ import { constraints } from '../engine/cybernetics-core/src/index.js'
 import { denialRecords, complied } from './cynco-triples.mjs'
 
 export const GOVERNANCE_PURPOSE = new constraints.PurposeModel([['denialsChanged', 0.5], ['recommendationsConsumed', 0.5]])
+// signalsLogged = S5 decisions not enforced + control-signal frames. Turns are
+// not a signal — a status frame is not the governance layer logging anything
+// about itself — so they are excluded from this count (Phase 3 ruling 13).
 // driftThreshold 0.5, not the naive 0.1: `signalsLogged` carries a stated
 // share of exactly 0 (it is not in GOVERNANCE_PURPOSE), so posiwidDivergence's
 // implicit `other` bucket sees near-zero expected mass. KL(p||q) blows up on
@@ -56,8 +59,7 @@ export function governanceCounts({ row, wave, proposalsDecided = 0 }) {
     routed.filter(r => r.nextCallClass && complied(r.kind === 'revert' ? 'revert' : 'edit-gap', r.nextCallClass)).length
   const signalsLogged =
     s5.filter(d => d.enforced !== true).length +
-    (row?.controlSignals?.length ?? 0) +
-    (row?.turns?.length ?? 0)
+    (row?.controlSignals?.length ?? 0)
   return { denialsChanged, recommendationsConsumed, signalsLogged }
 }
 

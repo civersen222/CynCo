@@ -390,7 +390,9 @@ gives three counts for the wave, and only these three names are ever used:
   `s4.workOrder`, plus proposals the operator decided this wave, plus
   `routing.entries[]` whose `nextCallClass` complied with what the route said.
 - **`signalsLogged`** — everything the layer merely recorded: unenforced S5
-  decisions, `controlSignals[]`, and `turns[]`.
+  decisions and `controlSignals[]`. `turns[]` (status frames) are NOT a
+  signal and are excluded (Phase 3 ruling 13) — a wave with many turns but no
+  unenforced decisions or control signals logs zero.
 
 `GOVERNANCE_PURPOSE` states `denialsChanged` 0.5 and `recommendationsConsumed`
 0.5 and gives `signalsLogged` **no share at all**, so a wave the layer spent
