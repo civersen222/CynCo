@@ -66,9 +66,18 @@ decisions still recorded here).
       // frame carried none — an older engine, Ollama, or a brain dep that
       // never started. `layerConvergence`/`toolEntropy` are independently
       // nullable inside a non-null `brain`: the tap can degrade mid-run.
+      // `meanDepth` is a LAYER INDEX, not a fraction: `convergenceOf`
+      // (engine/brain/layerConvergence.ts) reports the SHALLOWEST probed layer
+      // that already agrees with the deepest one, and falls back to the deepest
+      // layer itself when none does. With the default probe list
+      // (LLAMA_ACTIVATIONS_LAYERS = 24,32,40,48,56) it reads somewhere in
+      // [24, 56], and a value near 56 means the answer settled late. Only
+      // `meanAgree` and `byLayer` are fractions. The numbers below are a real
+      // turn from the 2026-09-22 smoke, not invented ones.
       "brain": { "tier": "live",
-        "layerConvergence": { "n": 5, "meanAgree": 0.62, "meanDepth": 0.4, "byLayer": {} },
-        "toolEntropy": { "mean": 0.31, "max": 0.9, "spikeCount": 1 } } }
+        "layerConvergence": { "n": 8, "meanAgree": 0.125, "meanDepth": 52,
+          "byLayer": { "24": 0, "32": 0, "40": 0.125, "48": 0.375 } },
+        "toolEntropy": { "mean": 0.0114, "max": 0.2125, "spikeCount": 2 } } }
   ],
   "s5Decisions": [          // one per s5.decision event
     { "t": 1783550000000, "ruleIds": ["C7"], "reasoning": "...",
@@ -302,8 +311,10 @@ decisions still recorded here).
   // signals (`signalsFired`: `LC-low`, `LC-high`, `TE-high`) and running the
   // same `analyse()` every S5 rule id goes through — thresholds live only in
   // that file, never here or in the engine.
-  "brainStats": { "tier": "live", "turnsWithLens": 41, "meanAgree": 0.58,
-    "meanDepth": 0.37, "meanToolEntropy": 0.29 }
+  // `meanDepth` carries the same LAYER-INDEX unit as `turns[].brain` above —
+  // never a fraction. These are the 2026-09-22 smoke's real numbers.
+  "brainStats": { "tier": "live", "turnsWithLens": 28, "meanAgree": 0.0646,
+    "meanDepth": 53.55, "meanToolEntropy": 0.0873 }
 }
 ```
 
@@ -349,6 +360,52 @@ a wave, so a mission row carries the sealed-gate reading that judged it:
   stated shares are its own parameter (`posiwid.sourceEditShare` /
   `commitEvery` in the campaign spec), so `Drifting` is a reading against THAT
   declaration, not a universal one.
+
+### The wave record's `governancePosiwid`
+
+Not a ledger field — it lives on the campaign wave record
+(`~/.cynco/campaigns/<id>/waves.jsonl`), computed from the graded ledger row —
+but it is documented here because it is read off the same row and nothing else
+describes it. `scripts/cynco-governance-posiwid.mjs` turns POSIWID on the
+governance layer itself. `governanceCounts({ row, wave, proposalsDecided })`
+gives three counts for the wave, and only these three names are ever used:
+
+- **`denialsChanged`** — denials whose next call was the one they asked for
+  (`denialRecords`/`complied` in `scripts/cynco-triples.mjs`, summed over the
+  records marked `changed`).
+- **`recommendationsConsumed`** — enforced S5 decisions (`s5Decisions[].enforced
+  === true`), plus a followed ideation hypothesis, plus an applied
+  `s4.workOrder`, plus proposals the operator decided this wave, plus
+  `routing.entries[]` whose `nextCallClass` complied with what the route said.
+- **`signalsLogged`** — everything the layer merely recorded: unenforced S5
+  decisions, `controlSignals[]`, and `turns[]`.
+
+`GOVERNANCE_PURPOSE` states `denialsChanged` 0.5 and `recommendationsConsumed`
+0.5 and gives `signalsLogged` **no share at all**, so a wave the layer spent
+logging reads `Contradicted` by construction — that is the point of the
+measurement, not a bug in it. `GOVERNANCE_DRIFT.driftThreshold` is **0.5**
+(the spec's naive 0.1 is amended): the zero-share bucket leaves the implicit
+`other` mass a near-zero expectation and KL blows up on any logging at all, so
+0.1 would call every real wave `Drifting` the moment it logged anything.
+
+Every wave's counts are replayed through a fresh `PosiwidDrift` on each
+verdict, so `onsetWave` is a function of the stored windows and a runner
+restart cannot move it (windows are 0-based inside `PosiwidDrift`; `onsetWave`
+is reported 1-based, as waves are numbered). The stored shape is
+
+```jsonc
+"governancePosiwid": { "verdict": "Drifting", "divergence": 0.47,
+  "dominantObserved": "signalsLogged", "support": 25, "onsetWave": 3,
+  "windows": 4,
+  "counts": { "denialsChanged": 12, "recommendationsConsumed": 10, "signalsLogged": 3 } }
+```
+
+with `verdict` decided exactly as the per-wave `posiwid` block's is
+(`Insufficient` below `minSupport` 20, `Contradicted`, `Drifting`,
+`Consistent`). The campaign state keeps the raw windows under
+`state.governancePosiwid.windows`; the verdict entry prints the reading as its
+"Governance POSIWID" line, and `GET /api/campaign` hands the dashboard the last
+wave's `verdict` and `onsetWave`.
 
 ## Labeling rule
 

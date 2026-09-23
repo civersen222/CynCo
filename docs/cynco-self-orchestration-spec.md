@@ -215,13 +215,98 @@ ideation authority (0.5) the advisor's `order` reorders THE WORK's failing items
 (`s4.workOrder` on the wave record says whether it did); gate lines and rules are
 never touched.
 
+**Phase 2 — the viable wave (2026-09-22).** Six changes make a wave observable
+and make the regulator informative instead of merely prohibitive. Every one of
+them is data or a refusal: nothing in the loop branches on a model-internal
+number except the one router named below.
+
+- **Governance-level POSIWID** (`scripts/cynco-governance-posiwid.mjs`) —
+  retires the deferred item of the same name. Each VERDICT turns POSIWID on the
+  governance layer itself: `GOVERNANCE_PURPOSE` states "regulate" as
+  `denialsChanged` 0.5 + `recommendationsConsumed` 0.5, and gives
+  `signalsLogged` no share at all, so a wave the layer spent logging reads
+  `Contradicted` by construction. `governanceCounts({ row, wave,
+  proposalsDecided })` reads those three counts off the graded ledger row and
+  the wave record (denials whose next call complied; enforced S5 decisions,
+  followed ideation, an applied work order, decided proposals and routed calls
+  the model then complied with; every other S5 decision, control signal and
+  turn). Every wave's window is replayed through a fresh `PosiwidDrift`, so the
+  onset wave is a function of the stored windows and a runner restart cannot
+  move it. `driftThreshold` is **0.5**, not the naive 0.1: the zero-share
+  `signalsLogged` bucket gives the implicit `other` mass a near-zero
+  expectation, and KL blows up on any logging at all — the module states the
+  reference arithmetic. The reading lands on the wave record as
+  `governancePosiwid` (`{ verdict, divergence, dominantObserved, support,
+  onsetWave, windows, counts }`) and prints as the verdict entry's "Governance
+  POSIWID" line.
+- **The brain lens** (`engine/brain/layerConvergence.ts`,
+  `engine/brain/activationsConsumer.ts`). `convergenceOf` scores each probed
+  layer's top token against the deepest probed layer's; `ConvergenceAccumulator`
+  folds that per position and per turn. The consumer is tier-gated — `live`
+  reads out all five probed layers (`LLAMA_ACTIVATIONS_LAYERS`, default
+  24,32,40,48,56, served by the J-lens sidecar on 9163), `record-only` records
+  without the readout — and warns once if the tap's layer list disagrees with
+  the requested one. Layer convergence and tool-token entropy ride
+  `governance.status.brain` as **data only**.
+- **The brain on the ledger** (`scripts/cynco-ledger.mjs`). Every turn keeps its
+  `brain` frame verbatim (`turns[].brain`) and the row carries the fold,
+  `brainStats` (`tier`, `turnsWithLens`, `meanAgree`, `meanDepth`,
+  `meanToolEntropy`). `scripts/cynco-signal-validation.mjs --signals` is what
+  asks whether any of it predicts an outcome: `signalQuartiles` cuts
+  `meanAgree`/`meanToolEntropy` at quartiles over the labeled rows,
+  `signalsFired` turns a row into the candidate signals `LC-low`, `LC-high`,
+  `TE-high`, and they go through the same `analyse()` every S5 rule id does.
+  The thresholds live in that one file — never in the engine, never in the
+  ledger. `scripts/dispatch-mission.sh` waits up to 60 s for the lens's health
+  endpoint so a mission does not silently grade itself `record-only`.
+- **KEEP-GREEN as a contract role** (`engine/tools/contract.ts`,
+  `engine/tools/contractVerify.ts`). The sidecar assertion the dispatcher
+  derives from the mission's check-cmd now carries `role: 'keep-green'`
+  (`scripts/cynco-brief.mjs` `sidecarFor` sets it; `scripts/cynco-contract.mjs`
+  `toAssertion` refuses any other role), `ContractState.byRole` finds it, and
+  `runCommandDetailed` keeps the output tail so a verdict can quote the
+  measurement rather than assert it.
+- **Verify-first routing** (`engine/vsm/verifyFirst.ts`). The gate ladder's
+  second verb. Two call shapes route through KEEP-GREEN: a `revert` is still
+  refused — the revert ban is identity and is never lifted — but the refusal
+  first runs the mission's own check command, so the sentence the model reads
+  says whether there is anything to undo; a `low-confidence-edit` (the model was
+  uncertain at the moment it emitted the call) is executed and THEN measured,
+  with the verdict appended to the result it reads next. `VerifyFirstRouter`
+  exists only while `missionInvariants` are armed, spends at most 6 KEEP-GREEN
+  runs per mission, serves a verdict younger than 5 tool calls from cache, caps
+  a routed run at 300 s, and routes at most one low-confidence edit per model
+  iteration. `shouldRoute` is the only place in the loop that reads convergence
+  or entropy. Past the budget it answers `budget-exhausted` — recorded, never
+  silent. The ledger keeps `routing.{budget,used,count,byKind,byOutcome,entries}`,
+  and each entry's `nextCallClass` is the outcome record: the evidence for
+  whether an informed refusal changes behaviour where a bare refusal does not.
+- **Operator notes** (`engine/bridge/conversationLoop.ts`) — the unattended
+  mission gains an ear. A `user.message` frame arriving on the dashboard socket
+  while an unattended mission runs is queued (cap 5 in flight) instead of
+  dropped, and delivered at the top of the next model iteration. The engine
+  emits `mission.operator_note` twice — `queued`, then the outcome — plus a
+  `governance.alert` with `source: 'operator'`; the ledger's `operatorNotes[]`
+  keys by frame kind and ends every note in exactly one of
+  `deliveredAtIteration`, `dropped: "queue full"`, or `dropped: "mission ended"`.
+  A note still queued when the mission ends is reported and cleared, never
+  carried into the next session.
+- **The dashboard readout** (`engine/dashboard/server.ts`,
+  `engine/dashboard/index.html`) — retires the "Dashboard readout of edit-only
+  state" deferred item. The Governance panel on 9161 now shows the mission
+  invariants (configuration, calls since the last source edit and commit against
+  their caps, and denials split by invariant — the engine's edit-only state,
+  live), the engine's own POSIWID verdict, the ultrastable margin, brain-tier
+  layer convergence, and verify-first routing. A Campaign panel appears whenever
+  `~/.cynco/campaigns` holds a campaign, fed by `GET /api/campaign` (inference
+  scope, rebuilt per poll, isolated per campaign so one bad state file cannot
+  wipe the others) with each campaign's wave count, pending proposals and last
+  wave's `governancePosiwid`. `CYNCO_CAMPAIGN_ID` reaches the engine through
+  `scripts/dispatch-mission.sh` and the runner's `dispatchEnv`, so the panel can
+  say which campaign the running mission belongs to.
+
 **Deferred spec items (follow-up, not built here).**
 
-- **Governance-level POSIWID.** The per-wave POSIWID reading ships; the
-  campaign-level one over `PosiwidDrift` (the whole campaign's stated purpose
-  against what its waves actually did) is specified but no task built it.
-- **Dashboard readout of edit-only state.** The engine's edit-only state is not
-  surfaced on the 9161 dashboard; recommended, not in this plan's tasks.
 - **Eigenform convergence (spec §7).** The metric for "the campaign's briefs
   stop changing shape" — successive waves' generated briefs converging to a
   fixed point — is specified but not measured; nothing computes it today.
