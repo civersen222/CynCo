@@ -296,6 +296,16 @@ async function main() {
     console.log(`INVARIANTS AS RULES — does a mission with ≥ 1 denial fail more often? (unit: the mission; ${mission.labeled} labeled of ${mission.total})`)
     for (const r of mission.rules) console.log(`  ${r.id.padEnd(11)} fired ${String(r.firedTotal).padStart(3)}  labeled ${String(r.labeled).padStart(3)}  fails ${String(r.failures).padStart(3)}  p ${r.p === null ? '  —  ' : r.p.toFixed(3)}  p(Holm) ${r.pAdjusted === null ? '  —  ' : r.pAdjusted.toFixed(3)}`)
     if (mission.rules.length === 0) console.log('  (no mission with an invariants block has a denial yet)')
+    console.log()
+    console.log('GOVERNANCE POSIWID — per campaign, the latest wave\'s reading (stated purpose: regulate)')
+    const campaignIds = Object.keys(summary.campaigns ?? {})
+    for (const id of campaignIds) {
+      const g = summary.campaigns[id]?.governancePosiwid
+      console.log(g
+        ? `  ${id}: ${g.verdict} (divergence ${g.divergence.toFixed(3)}, dominant ${g.dominantObserved}, support ${g.support}${g.onsetWave ? `; drift onset wave ${g.onsetWave}` : ''})`
+        : `  ${id}: no reading yet`)
+    }
+    if (campaignIds.length === 0) console.log('  (no campaign yet)')
     return
   }
 

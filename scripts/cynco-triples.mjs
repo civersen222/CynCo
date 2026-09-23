@@ -110,7 +110,7 @@ export function buildTriples({ rows, campaigns }) {
   }
 
   for (const c of campaigns ?? []) {
-    const cs = { waves: 0, ideated: 0, followedLanded: { a: 0, b: 0, c: 0, d: 0 }, denials: emptyDenials(), quiet: emptyQuiet() }
+    const cs = { waves: 0, ideated: 0, followedLanded: { a: 0, b: 0, c: 0, d: 0 }, denials: emptyDenials(), quiet: emptyQuiet(), governancePosiwid: null }
     summary.campaigns[c.id] = cs
     let before = (c.state?.calibration?.baseFails ?? []).map(f => f.id)
     for (const w of c.waves ?? []) {
@@ -125,8 +125,14 @@ export function buildTriples({ rows, campaigns }) {
         landed, verified,
         sweep: w.sweep ? { killed: w.sweep.killed, total: w.sweep.total, survived: w.sweep.survived ?? [] } : null, sweepFault: w.sweepFault ?? null,
         posiwid: w.posiwid ?? null, invariants: invariantsSummary(row?.invariants), posiwidLive: row?.posiwidLive ?? null, identityGuard: row?.identityGuard ?? null,
+        governancePosiwid: w.governancePosiwid ?? null,
       })
       summary.counts.wave += 1; cs.waves += 1
+      // 2d: the campaign block carries only the LATEST governance reading — a
+      // wave record with none (a fault before the governance step ran, or
+      // data from before this field existed) must not blank out an earlier
+      // wave's real reading.
+      if (w.governancePosiwid) cs.governancePosiwid = w.governancePosiwid
       if (w.s4?.ideation) {
         records.push({
           kind: 'ideation', campaign: c.id, wave: w.wave, missionId: w.missionId ?? null, authority: w.s4.authority ?? 0, commander: w.s4.commander ?? 'generator',

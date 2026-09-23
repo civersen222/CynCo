@@ -805,6 +805,24 @@ describe('runWave — the Level 4 spine at VERDICT', () => {
     expect(state.state.denialAnalysis ?? null).toBeNull()
   })
 
+  // 2d: governance-level POSIWID — one window per wave, replayed fresh every
+  // verdict so a runner restart cannot move the onset.
+  it('records a governance POSIWID reading and grows the window one wave at a time', async () => {
+    const state = freshState()
+    const io = gradedIo({
+      exportTriples: () => ({ summary: { denials: {}, quiet: {}, campaigns: {} } }),
+      analyseDenials: () => null,
+    })
+    const rec = await runWave(spec, state, io)
+    expect(typeof rec.governancePosiwid.verdict).toBe('string')
+    expect(state.state.governancePosiwid.windows).toHaveLength(1)
+    expect(state.state.governancePosiwid.windows[0].wave).toBe(1)
+
+    await runWave(spec, state, io)
+    expect(state.state.governancePosiwid.windows).toHaveLength(2)
+    expect(state.state.governancePosiwid.windows[1].wave).toBe(2)
+  })
+
   // §E: two proposals must not go pending in the same wave. A promotion
   // proposal is computed BEFORE the cap proposal so it can suppress the cap
   // one — otherwise a wave with both an earned-authority signal AND an INERT

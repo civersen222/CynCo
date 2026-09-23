@@ -25,6 +25,7 @@ import { patchLedgerRow, findLedgerRow } from './cynco-ledger-patch.mjs'
 import { sidecarPath } from './cynco-contract.mjs'
 import { exportTriples } from './cynco-triples.mjs'
 import { analyseDenials } from './cynco-signal-validation.mjs'
+import { governanceCounts, governancePosiwid } from './cynco-governance-posiwid.mjs'
 
 const BRIEFS_DIR = 'docs/civkings-redesign-briefs'
 const LOG = `${BRIEFS_DIR}/campaign-log.md`
@@ -367,6 +368,18 @@ export async function runWave(spec, state, io = defaultIo) {
     denialAnalysis = (io.analyseDenials ?? defaultIo.analyseDenials)(scoped ?? { denials: summary?.denials, quiet: summary?.quiet })
     s.denialAnalysis = denialAnalysis
   } catch (e) { console.error(`[campaign] triples export/analysis skipped: ${e?.message ?? e}`) }
+
+  // 2d: POSIWID on the governance layer itself, one window per wave.
+  let governance = null
+  try {
+    const proposalsDecided = (s.proposals ?? []).filter(p => p.decidedAt && p.decidedAt > (s.lastVerdictAt ?? '')).length
+    const counts = governanceCounts({ row, wave: rec, proposalsDecided })
+    s.governancePosiwid = s.governancePosiwid ?? { windows: [] }
+    s.governancePosiwid.windows.push({ wave, ...counts })
+    governance = governancePosiwid(s.governancePosiwid.windows)
+    rec.governancePosiwid = { ...governance, counts }
+  } catch (e) { console.error(`[campaign] governance POSIWID skipped: ${e?.message ?? e}`) }
+
   // §E: two proposals must not go pending in the same wave. promotionProposal
   // is computed FIRST; when it is about to be raised, capProposal is skipped
   // entirely (set to null) rather than called — calling it here would see
@@ -378,13 +391,14 @@ export async function runWave(spec, state, io = defaultIo) {
   const sameFails = Array.isArray(s.lastFails) && grade.gate.fails.map(f => f.id).join() === s.lastFails.join()
   s.consecutiveNoProgress = sameFails && commits.length === 0 ? (s.consecutiveNoProgress ?? 0) + 1 : 0
   s.waveCount = wave; s.lastBase = grade.sha ?? base; s.lastFails = grade.gate.fails.map(f => f.id); s.lastGrade = grade; s.lastRow = row; s.lastCommits = commits
+  s.lastVerdictAt = new Date().toISOString()
   delete s.inFlight
   if (proposal && !s.proposals.some(p => p.status === 'pending')) { s.proposals.push({ ...proposal, proposedAt: new Date().toISOString() }); await tryNotify(io, `${spec.id}: PROPOSAL ${proposal.name} ${s.ideationAuthority ?? 0} → ${proposal.newValue} (max ${proposal.bounds.max}, p=${proposal.evidence.p.toFixed(3)}). Approve with --approve-proposal ${proposal.name}`) }
   if (cap) { s.proposals.push({ ...cap, proposedAt: new Date().toISOString() }); await tryNotify(io, `${spec.id}: PROPOSAL ${cap.name} ${cap.currentValue} → ${cap.newValue} (max ${cap.bounds.max}, p=${cap.evidence.pAdjusted.toFixed(3)}). Approve with --approve-proposal ${cap.name}`) }
 
   // Verdict (campaign log, economics, local commit, algedonic).
   const ideationRecord = ideation ? { authority: s.ideationAuthority ?? 0, hypotheses: ideation.hypotheses, followed } : null
-  const entry = verdictEntry({ spec, wave, row, grade, decision, ideationRecord, economicsLines: io.economics(), denialAnalysis, denialScope, capProposal: cap })
+  const entry = verdictEntry({ spec, wave, row, grade, decision, ideationRecord, economicsLines: io.economics(), denialAnalysis, denialScope, capProposal: cap, governancePosiwid: governance })
   io.appendLog(entry)
   // Ruling 5: commitVerdict matches these against `git status --porcelain`,
   // which speaks repo-relative forward slashes and nothing else.

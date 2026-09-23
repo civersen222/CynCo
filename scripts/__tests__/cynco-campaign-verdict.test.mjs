@@ -58,6 +58,19 @@ describe('verdictEntry', () => {
     expect(rejectedText).toMatch(/\*\*INVARIANTS REJECTED — the wave ran without its orders\.\*\*/)
     expect(rejectedText).toMatch(/^Verdict: \*\*STOP \(fault\)\*\* — invariants were rejected/m)
   })
+  // 2d: the governance-level POSIWID line — printed only when the runner hands
+  // one in, right after the wave's own POSIWID line.
+  it('prints the governance POSIWID line with an onset when given, and omits it when not', () => {
+    const withOnset = verdictEntry({ spec: { id: 'c8' }, wave: 3, row, grade, decision: { kind: 'next', why: 'x' }, ideationRecord: null, economicsLines: [],
+      governancePosiwid: { verdict: 'Contradicted', divergence: 5.797, dominantObserved: 'signalsLogged', support: 45, onsetWave: 3, windows: 3 } })
+    expect(withOnset).toMatch(/- Governance POSIWID Contradicted \(divergence 5\.797, dominant signalsLogged, support 45; drift onset wave 3\)\.\n/)
+    const noOnset = verdictEntry({ spec: { id: 'c8' }, wave: 1, row, grade, decision: { kind: 'next', why: 'x' }, ideationRecord: null, economicsLines: [],
+      governancePosiwid: { verdict: 'Consistent', divergence: 0.2, dominantObserved: 'denialsChanged', support: 25, onsetWave: null, windows: 1 } })
+    expect(noOnset).toMatch(/- Governance POSIWID Consistent \(divergence 0\.200, dominant denialsChanged, support 25\)\.\n/)
+    expect(noOnset).not.toMatch(/drift onset/)
+    const text = verdictEntry({ spec: { id: 'c8' }, wave: 1, row, grade, decision: { kind: 'next', why: 'x' }, ideationRecord: null, economicsLines: [] })
+    expect(text).not.toMatch(/Governance POSIWID/)
+  })
 })
 
 describe('notify', () => {

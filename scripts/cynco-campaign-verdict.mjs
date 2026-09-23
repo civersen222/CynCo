@@ -31,7 +31,7 @@ function bashByEffectLine(ts) {
   return `- Bash by effect: read ${be.read ?? 0}, write ${be.write ?? 0}, run ${be.run ?? 0}, commit ${be.commit ?? 0}, revert ${be.revert ?? 0}, other ${be.other ?? 0} (sum ${sum} vs byName.Bash ${bashByName} — ${sum === bashByName ? 'agree' : 'DISAGREE'}).`
 }
 
-export function verdictEntry({ spec, wave, row, grade, decision, ideationRecord, economicsLines, denialAnalysis = null, denialScope = 'campaign', capProposal = null }) {
+export function verdictEntry({ spec, wave, row, grade, decision, ideationRecord, economicsLines, denialAnalysis = null, denialScope = 'campaign', capProposal = null, governancePosiwid = null }) {
   const ts = row.toolStats ?? {}
   const inv = row.invariants
   const rejected = row.invariantsRejected === true
@@ -55,6 +55,10 @@ export function verdictEntry({ spec, wave, row, grade, decision, ideationRecord,
       ? `- Derived sweep: UNMEASURED — ${grade.sweepFault}.`
       : '- Derived sweep: UNMEASURED (no diff or the sweep refused).')
   lines.push(`- POSIWID ${grade.posiwid.verdict} (divergence ${grade.posiwid.divergence.toFixed(3)}, dominant ${grade.posiwid.dominantObserved}).`)
+  if (governancePosiwid) {
+    const { verdict, divergence, dominantObserved, support, onsetWave } = governancePosiwid
+    lines.push(`- Governance POSIWID ${verdict} (divergence ${divergence.toFixed(3)}, dominant ${dominantObserved}, support ${support}${onsetWave ? `; drift onset wave ${onsetWave}` : ''}).`)
+  }
   if (ideationRecord) lines.push(`- S4 ideation (authority ${ideationRecord.authority}): ${ideationRecord.hypotheses.length} hypothesis/es; followed=${ideationRecord.followed}.`)
   lines.push(`- Ledger: verified ${grade.verified === null ? 'null (harness fault)' : grade.verified}; mutationSweep ${grade.sweep ? 'recorded (derived)' : 'null'}.`)
   if (denialAnalysis?.invariants) {
