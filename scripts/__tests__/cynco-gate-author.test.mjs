@@ -78,8 +78,13 @@ const DRAFT = () => ({
   ],
 })
 
-const gateLog = (statuses, terminator) => IDS.map(i => `${i}: ${statuses[i] ?? 'FAIL'} detail`).join('\n') + `\n${terminator}\n`
-const BASE_LOG = gateLog({}, 'GATE: MISS (9 fails)')
+const gateLog = (statuses, terminator, echo = []) =>
+  IDS.map(i => `${i}: ${statuses[i] ?? 'FAIL'} detail`).join('\n') + '\n' + echo.map(l => `  ${l}\n`).join('') + `${terminator}\n`
+// A real BASE run echoes the prior chain before printing its own terminator —
+// the C9.9 block prints `  [c8] …` lines. Everything that reads this output has
+// to tell the two apart.
+const PRIOR_ECHO = ['[c8] C8.1a.tiers-pressable: FAIL tiers drawn+pressed=[]', '[c8] GATE: MISS (4 fails)']
+const BASE_LOG = gateLog({}, 'GATE: MISS (9 fails)', PRIOR_ECHO)
 const PERTURB_LOG = gateLog({ 'C9.1a.modes-listed': 'PASS' }, 'GATE: MISS (8 fails)')
 const POSITIVE_LOG = gateLog(Object.fromEntries(IDS.map(i => [i, 'PASS'])), 'GATE: PASS')
 
@@ -130,6 +135,7 @@ function makeIo({ home, files = {}, baseLog = BASE_LOG, perturbLog = PERTURB_LOG
       const pre = norm(p).replace(/\/$/, '')
       for (const k of Object.keys(disk)) if (k === pre || k.startsWith(pre + '/')) delete disk[k]
     },
+    remove: (p) => { delete disk[norm(p)] },
     sha256: (p) => createHash('sha256').update(io.readFile(p)).digest('hex').slice(0, 16),
     freshDir: (p) => { disk[norm(p) + '/'] = ''; disk[norm(p)] = '' },
     appendLog: (t) => logs.push(t),
@@ -277,6 +283,17 @@ describe('prepareStaging', () => {
   it('mirrors nothing, and does not throw, when the sealed tree is empty', () => {
     const { io } = makeIo({ home })
     expect(prepareStaging({ id: ID, base: LINE.base, repo: 'C:/r', io }).mirrored).toEqual([])
+  })
+
+  // A machine that died between the seal's copy and its rename leaves a
+  // `<x>.sealing-<ts>` behind. It is a half-written seal, not a campaign.
+  it('never mirrors a half-written seal', () => {
+    const files = { ...SEALED_TREE(home), [`${home}/heldout/civkings-redesign/c8.sealing-20260923100000000/gate_c8.py`]: '# half-written\n' }
+    const { io, disk } = makeIo({ home, files })
+    const r = prepareStaging({ id: ID, base: LINE.base, repo: 'C:/r', io })
+    expect(r.mirrored.some(m => m.includes('.sealing-'))).toBe(false)
+    expect(Object.keys(disk).some(k => k.startsWith(`${home}/authoring/`) && k.includes('.sealing-'))).toBe(false)
+    expect(disk[`${home}/authoring/c8/gate_c8.py`]).toBe('# gate_c8\n')
   })
 })
 
@@ -467,8 +484,11 @@ describe('authorCampaign', () => {
     // --check is three gate runs plus, once, the whole suite. The model's own
     // Bash cap (120 s) and the driver's check cap (600 s) would both kill the
     // command the mission is graded on.
-    expect(d.env.CYNCO_BASH_TIMEOUT_MS).toBe('1500000')
+    // and they are ONE number: the model runs the check itself and the driver
+    // runs the same command to grade it.
+    expect(d.env.CYNCO_BASH_TIMEOUT_MS).toBe('7200000')
     expect(d.env.CYNCO_CHECK_TIMEOUT_MS).toBe('7200000')
+    expect(d.env.CYNCO_BASH_TIMEOUT_MS).toBe(d.env.CYNCO_CHECK_TIMEOUT_MS)
     expect(r.ok).toBe(true)
     expect(r.proposal).toMatchObject({ type: 'Code', name: 'gate/c9', status: 'pending' })
     expect(r.proposal.evidence).toMatchObject({ lineCount: IDS.length, problems: [], missionId: 'c9-author-1', verified: true })
@@ -602,6 +622,17 @@ describe('sealGate', () => {
     expect(logs[0]).toMatch(/positive shim printed GATE: PASS/)
   })
 
+  // The BASE tail carries the PRIOR campaign's terminator too, echoed by the
+  // C9.9 block and printed BEFORE the gate's own. A first-match read of that
+  // tail put "MISS (4 fails)" — C8's verdict — in C9's campaign-log entry.
+  it('prints the gate\'s own terminator, not the prior chain\'s echo', async () => {
+    const { logs } = await setup()
+    expect(BASE_LOG).toContain('  [c8] GATE: MISS (4 fails)')
+    expect(BASE_LOG.indexOf('[c8] GATE: MISS')).toBeLessThan(BASE_LOG.indexOf('GATE: MISS (9 fails)'))
+    expect(logs[0]).toContain('BASE printed GATE: MISS (9 fails)')
+    expect(logs[0]).not.toContain('4 fails')
+  })
+
   it('refuses a draft whose brief-visible text names the sealed gate, writing nothing at all', async () => {
     const { r, disk, renamed } = await setup({}, { measures: 'every fact gate_c9.py grades is drawn' })
     expect(r.ok).toBe(false)
@@ -682,6 +713,30 @@ describe('sealGate', () => {
     const r = await sealGate({ id: ID, state, roadmap: ROADMAP(), io })
     expect(r.ok).toBe(false)
     expect(r.problems.join('\n')).toMatch(/nothing staged/)
+  })
+
+  // The trial spec is scaffolding. Left beside the BASE archive it is a file
+  // that looks like a campaign spec and is not one.
+  it('removes the trial spec on success and on a refusal', async () => {
+    const ok = await setup()
+    expect(ok.r.ok).toBe(true)
+    expect('C:/tmp/c9_seal_check.campaign.json' in ok.disk).toBe(false)
+    const refused = await setup({ over: { loadSpec: () => { throw new Error('keepGreen contains a wildcard') } } })
+    expect(refused.r.ok).toBe(false)
+    expect(refused.r.problems.join('\n')).toMatch(/would not load: keepGreen contains a wildcard/)
+    expect('C:/tmp/c9_seal_check.campaign.json' in refused.disk).toBe(false)
+  })
+
+  it('cleans the sealing temp dir when the copy dies halfway', async () => {
+    const { stagingDir, files } = staged(home)
+    const { io, disk } = makeIo({ home, files })
+    const realCopy = io.copy
+    io.copy = (src, dst) => { if (/positive_c9\.py$/.test(norm(dst))) throw new Error('ENOSPC'); return realCopy(src, dst) }
+    const state = new CampaignState(join(mkdtempSync(join(tmpdir(), 'camp-')), ID)).load()
+    state.state.authoring = { c9: { stagingDir, baseDir: 'C:/tmp/c9_author_base', missionId: 'c9-author-1', verified: true } }
+    await expect(sealGate({ id: ID, state, roadmap: ROADMAP(), io })).rejects.toThrow(/ENOSPC/)
+    expect(Object.keys(disk).some(k => /\.sealing-/.test(k))).toBe(false)
+    expect(Object.keys(disk).some(k => k.startsWith(`${home}/heldout/civkings-redesign/c9/`))).toBe(false)
   })
 })
 

@@ -26,6 +26,7 @@ import { spawnSync } from 'node:child_process'
 import { cyncoHome } from '../engine/paths.js'
 import { calibrate, archiveBase, defaultIo as calibrateDefaultIo } from './cynco-campaign-calibrate.mjs'
 import { lintGate } from './cynco-gate-lint.mjs'
+import { parseGateOutput } from './cynco-gate-parse.mjs'
 import { loadCampaignSpec, checkIdentity } from './cynco-campaign-spec.mjs'
 import { sidecarPath } from './cynco-contract.mjs'
 import { loadRoadmap, lineFor, setLineStatus, saveRoadmap, ROADMAP_PATH } from './cynco-roadmap.mjs'
@@ -114,7 +115,10 @@ export function mirrorPriorCampaigns({ id, io }) {
   const family = `${home}/heldout/${HELDOUT_FAMILY}`
   const mirrored = []
   for (const dir of io.listDir(family)) {
-    if (dir === id) continue
+    // `<x>.sealing-<ts>` is a half-written seal, not a campaign — a machine
+    // that died between the copy and the rename leaves one, and mirroring it
+    // would hand the author a directory of instruments nobody sealed.
+    if (dir === id || dir.includes('.sealing-')) continue
     const src = `${family}/${dir}`
     for (const f of io.listDir(src)) {
       if (!INSTRUMENT_FILE.test(f)) continue
@@ -482,9 +486,14 @@ export async function authorCampaign({ id, roadmap, state, io }) {
     // check, the whole civkings suite for the baseline. The model's OWN Bash
     // tool caps at 120 s by default (Stage 11I lost five suite runs to that)
     // and the driver's check cap at 600 s; both would kill the very command
-    // the mission is graded on. The sidecar allows 7,200,000 ms — these say
-    // the same thing to the two processes that can cut it short.
-    CYNCO_BASH_TIMEOUT_MS: '1500000',
+    // the mission is graded on.
+    //
+    // The two numbers are ONE number on purpose. The model is told to run the
+    // check itself and the driver runs the same command to grade it; a Bash
+    // cap below the check cap means the model's run dies where the driver's
+    // survives, and the mission spends its budget chasing a timeout the grader
+    // never sees. 7,200,000 ms is what the sidecar assertion allows.
+    CYNCO_BASH_TIMEOUT_MS: '7200000',
     CYNCO_CHECK_TIMEOUT_MS: '7200000',
     CYNCO_SKIP_IDLE_ENGINE: '1',
     DRIVER_PID_FILE: pidFile,
@@ -673,8 +682,12 @@ export async function sealGate({ id, state, roadmap, io }) {
   const specText = JSON.stringify(spec, null, 2) + '\n'
   const trialPath = `C:/tmp/${id}_seal_check.campaign.json`
   io.writeFile(trialPath, specText)
+  // `finally` on both paths: the trial is scaffolding, and a stale
+  // `c9_seal_check.campaign.json` left beside the BASE archive is a file that
+  // looks like a campaign spec and is not one.
   try { (io.loadSpec ?? loadCampaignSpec)(trialPath) }
   catch (e) { return { ok: false, problems: [`the spec ${id}.campaign.json would not load: ${e.message}`], check } }
+  finally { io.remove(trialPath) }
 
   // ── nothing above wrote anything visible; from here it is all commit ────
   //
@@ -687,12 +700,21 @@ export async function sealGate({ id, state, roadmap, io }) {
   const sealedAt = io.now()
   const tmpDir = `${homeOf(io)}/heldout/${HELDOUT_FAMILY}/${id}.sealing-${sealedAt.replace(/[^0-9]/g, '')}`
   io.mkdir(tmpDir)
-  for (const k of ['gate', 'perturb', 'positive']) io.copy(staged[k], `${tmpDir}/${basename(paths[k])}`)
-  if (io.exists(heldout)) {
-    for (const k of ['gate', 'perturb', 'positive']) io.copy(`${tmpDir}/${basename(paths[k])}`, paths[k])
-    io.removeDir(tmpDir)
-  } else {
-    io.rename(tmpDir, heldout)
+  let moved = false
+  try {
+    for (const k of ['gate', 'perturb', 'positive']) io.copy(staged[k], `${tmpDir}/${basename(paths[k])}`)
+    if (io.exists(heldout)) {
+      for (const k of ['gate', 'perturb', 'positive']) io.copy(`${tmpDir}/${basename(paths[k])}`, paths[k])
+    } else {
+      io.rename(tmpDir, heldout)
+      moved = true
+    }
+  } finally {
+    // The reseal branch leaves it behind on purpose; a copy that died halfway
+    // leaves it behind by accident. Neither may survive: the sealed tree is
+    // enumerated by directory name (mirrorPriorCampaigns, and a human reading
+    // it), and `c9.sealing-20260923…` beside `c9` reads as a second campaign.
+    if (!moved) io.removeDir(tmpDir)
   }
 
   io.writeFile(specPath, specText)
@@ -707,8 +729,22 @@ export async function sealGate({ id, state, roadmap, io }) {
   return { ok: true, problems: [], specPath, heldout, check, sealedAt, ...shas }
 }
 
-/** The terminator a run actually printed, read back out of its captured tail. */
-const terminatorOf = (tail, fallback) => /GATE: (?:PASS|MISS(?: \(\d+ fails?\))?)/.exec(String(tail ?? ''))?.[0] ?? fallback
+/**
+ * The terminator a run actually printed, read back out of its captured tail.
+ *
+ * Through the real parser, not a regex over the tail. A gate's output carries
+ * the prior campaign's terminator too, echoed by the `C<N>.9` block and
+ * indented (`  [c8] GATE: MISS (4 fails)`) — which comes FIRST, so a first-match
+ * regex printed the previous campaign's verdict in this campaign's log entry.
+ * parseGateOutput is anchored, skips the `  [` echoes, and keeps the last
+ * terminator it sees, which is the gate's own.
+ */
+function printedTerminator(tail, fallback) {
+  const parsed = parseGateOutput(tail)
+  if (!parsed.terminator) return fallback
+  if (parsed.terminator === 'PASS') return 'GATE: PASS'
+  return parsed.failCount === null ? 'GATE: MISS' : `GATE: MISS (${parsed.failCount} fails)`
+}
 
 /**
  * The campaign-log entry: the heading, then five paragraphs of fact and no
@@ -724,8 +760,8 @@ export function sealEntry({ id, line, spec, check, sealedAt, shas, missionId, ve
   const baseFails = cal.baseFails ?? [], perturbFails = cal.perturbFails ?? []
   const pertIds = new Set(perturbFails.map(f => f.id))
   const flipped = baseFails.map(f => f.id).filter(x => !pertIds.has(x))
-  const baseTerm = terminatorOf(cal.baseOutputTail, `GATE: MISS (${baseFails.length} fails)`)
-  const positiveTerm = terminatorOf(cal.positiveOutputTail, `GATE: ${cal.positive?.terminator ?? 'PASS'}`)
+  const baseTerm = printedTerminator(cal.baseOutputTail, `GATE: MISS (${baseFails.length} fails)`)
+  const positiveTerm = printedTerminator(cal.positiveOutputTail, `GATE: ${cal.positive?.terminator ?? 'PASS'}`)
   return [
     `## Campaign ${id.toUpperCase()} — ${line.name} (authored by CynCo, sealed ${sealedAt.slice(0, 10)}, BASE ${String(spec.base).slice(0, 7)}, gate_${id}.py sha256 ${shas.gateSha256})`,
     ``,
@@ -762,7 +798,10 @@ export function defaultAuthorIo(helpers = {}) {
     // campaigns on a fresh machine, and that is not an error to mirror from.
     listDir: (p) => { try { return readdirSync(p) } catch { return [] } },
     rename: (src, dst) => { mkdirSync(dirname(dst), { recursive: true }); renameSync(src, dst) },
+    // `force` on both: removing what is already gone is the success case here,
+    // and every caller is a cleanup path that must not throw over it.
     removeDir: (p) => rmSync(p, { recursive: true, force: true }),
+    remove: (p) => rmSync(p, { force: true }),
     sha256: (p) => createHash('sha256').update(readFileSync(p)).digest('hex').slice(0, 16),
     freshDir: calibrateDefaultIo.freshDir,
     now: () => new Date().toISOString(),
