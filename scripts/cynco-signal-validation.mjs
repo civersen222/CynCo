@@ -30,6 +30,8 @@
  *
  * Usage:
  *   node scripts/cynco-signal-validation.mjs [--json] [--ledger-dir DIR]
+ *   bun  scripts/cynco-signal-validation.mjs --denials [--triples PATH] [--json]
+ *   bun  scripts/cynco-signal-validation.mjs --gate-lines [--json]
  */
 
 import { readFileSync, readdirSync } from 'node:fs'
@@ -265,6 +267,69 @@ export function denialTable(res) {
   return lines
 }
 
+// ── Gate lines: does a CynCo-authored gate line hold? ─────────────
+//
+// The unit is the GRADED GATE LINE (scripts/cynco-gate-lines.mjs builds the
+// rows). Two bars, and the seat has to clear both before it earns the right to
+// seal its own gates:
+//
+//   1. VOLUME — at least GATE_AUTHOR_MIN_LINES terminal CynCo lines. One
+//      campaign ships nine to seventeen, so this is two campaigns' worth of
+//      evidence and not a lucky one.
+//   2. FLOOR — the Wilson lower bound on the held rate is at or above
+//      GATE_AUTHOR_HELD_FLOOR. The point estimate is not enough: 4/4 held is a
+//      100 % rate with a lower bound of 0.40.
+//
+// ...and it must not be significantly WORSE than the human seat it is asking
+// to replace, which is the Fisher test on held × author.
+//
+// Both thresholds live HERE, beside DENIAL_MIN, for the same reason (spec
+// ruling 3): a threshold with two homes is a threshold that drifts.
+// `scripts/cynco-gate-author.mjs` re-exports them so the promotion reads the
+// same two numbers this table prints — it cannot import them the other way,
+// because that module reaches the bun-only grade chain and this one is run
+// under plain node.
+export const GATE_AUTHOR_MIN_LINES = 30
+export const GATE_AUTHOR_HELD_FLOOR = 0.8
+
+/**
+ * `TOO FEW` (not enough lines to tell) | `PARITY` (clears the floor and is not
+ * significantly worse than the human) | `BELOW FLOOR`.
+ *
+ * `BELOW FLOOR` is also what a seat that clears the floor but reads
+ * significantly worse than the human gets: there are three verdicts and only
+ * one of them is "this seat has earned it", so the shortfall — whichever of the
+ * two it is — lands in the same bucket. The table prints both numbers beside
+ * it, so which one fired is never a guess.
+ */
+export function gateLineVerdict(summary) {
+  const c = summary?.byAuthor?.cynco
+  if (!c || c.n < GATE_AUTHOR_MIN_LINES) return 'TOO FEW'
+  if (c.ci[0] < GATE_AUTHOR_HELD_FLOOR) return 'BELOW FLOOR'
+  const human = summary?.byAuthor?.human
+  const worse = summary?.fisher?.p !== null && summary?.fisher?.p < 0.05 && human?.rate !== null && human?.rate !== undefined && c.rate < human.rate
+  return worse ? 'BELOW FLOOR' : 'PARITY'
+}
+
+/** The gate-line table, as lines. Mirrors `denialTable`: the printer prints. */
+export function gateLineTable(summary) {
+  const pct = v => (v === null || v === undefined ? '  —  ' : (v * 100).toFixed(1).padStart(5) + '%')
+  const lines = ['author  lines   held  rate     95% CI']
+  for (const author of ['cynco', 'human']) {
+    const b = summary?.byAuthor?.[author] ?? { n: 0, held: 0, rate: null, ci: [0, 1] }
+    lines.push(`${author.padEnd(6)} ${String(b.n).padStart(6)} ${String(b.held).padStart(6)}  ${pct(b.rate)}  [${(b.ci[0] * 100).toFixed(0).padStart(3)}%,${(b.ci[1] * 100).toFixed(0).padStart(4)}%]`)
+  }
+  const f = summary?.fisher ?? { p: null, table: [[0, 0], [0, 0]] }
+  lines.push('')
+  lines.push(`Fisher p ${f.p === null ? '—' : f.p.toFixed(3)} on ${JSON.stringify(f.table)} (held vs resealed, cynco row first).`)
+  lines.push(`Verdict: ${gateLineVerdict(summary)} — the seat needs ${GATE_AUTHOR_MIN_LINES} terminal CynCo lines and a Wilson lower bound at or above ${GATE_AUTHOR_HELD_FLOOR}.`)
+  return lines
+}
+
+export function printGateLineTable(summary) {
+  for (const l of gateLineTable(summary)) console.log(l)
+}
+
 // ── Brain candidate signals (Task 4, 2a-iii) ───────────────────────
 //
 // scripts/cynco-ledger.mjs lifts the engine's per-turn `brain` telemetry
@@ -403,6 +468,19 @@ async function main() {
         : `  ${id}: no reading yet`)
     }
     if (campaignIds.length === 0) console.log('  (no campaign yet)')
+    return
+  }
+
+  // Imported lazily, exactly as `--denials` imports the triples exporter: both
+  // reach `engine/paths.js`, which is TypeScript behind a `.js` specifier and
+  // only loads under bun. The default report and `--signals` must keep running
+  // under plain node, so neither module may be a static import here.
+  if (argv.includes('--gate-lines')) {
+    const { exportGateLines } = await import('./cynco-gate-lines.mjs')
+    const r = exportGateLines()
+    if (argv.includes('--json')) { console.log(JSON.stringify(r.summary, null, 2)); return }
+    console.log(`GATE LINES — did the sealed line hold? (unit: the graded line; ${r.rows.length} row(s) → ${r.outPath})`)
+    printGateLineTable(r.summary)
     return
   }
 

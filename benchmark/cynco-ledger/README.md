@@ -438,6 +438,78 @@ wave's `verdict` and `onsetWave`.
 module on this block's `counts` and fails if the reading moves (F149: a
 documented number no code produces).
 
+### The wave record's `gate.author`
+
+Also not a ledger field: the wave record's `gate` block is the grader's reading
+(`terminator`, `fails`, `passes`, `failCount`, `errors`, `priorRegressions`,
+`harnessFault`, `exit`) plus one field the runner adds beside it —
+
+- **`gate.author`** — `"cynco"` or `"human"`: who WROTE the bar this wave was
+  judged against, copied from the campaign spec's `author` (`loadCampaignSpec`
+  defaults it to `"human"`, which is what every campaign up to c8 was). Nothing
+  in the grading reads it. It exists because a held gate line has to be
+  attributable to the seat that sealed it — without the author on the record,
+  the gate-lines dataset below has a numerator and no denominator.
+
+### Gate lines dataset
+
+`~/.cynco/datasets/gate-lines.jsonl`, written by `scripts/cynco-gate-lines.mjs`
+at every wave verdict and readable as a table with
+`bun scripts/cynco-signal-validation.mjs --gate-lines`.
+
+**The evidence unit is the graded gate LINE, not the campaign.** A campaign is
+one draw, and at one campaign every few weeks a gate-authoring seat would earn
+its authority somewhere around 2030. A gate line is one falsifiable claim, and
+one campaign ships 9–17 of them.
+
+One row per (campaign, graded line):
+
+```jsonc
+{ "campaign": "c9", "author": "cynco", "lineId": "C9.2a.keybind-rebinds",
+  "outcome": "resealed", "resealedAtWave": 2, "firstPassWave": null,
+  "decided": true, "source": "runner" }
+```
+
+- **`outcome`** is one of three:
+  - **`held`** — the campaign reached a decision and nothing rewrote the line.
+    The bar the author sealed is the bar the campaign was judged against.
+  - **`resealed`** — the line's printed text changed, or it appeared, or it
+    vanished, after the calibration that sealed it. A `resealed` line is the
+    failure this dataset exists to catch: a "pass" against a line somebody
+    rewrote mid-campaign proves nothing about the line that was sealed.
+  - **`open`** — the campaign has not reached a decision yet. Not evidence
+    either way, and excluded from every rate below.
+- **`decided`** — the campaign's last wave record carries a decision it does
+  not come back from: `pass`, `pass-with-survivors`, `budget` or `no-progress`.
+  `fault` and `stop` are refusals to measure rather than readings, and `next`
+  is a campaign still running.
+- **`resealedAtWave`** — the wave count when the FIRST reseal that touched this
+  line was recorded (a line reworded twice moved at the first rewrite);
+  `firstPassWave` — the first wave whose `gate.passes` carried the id.
+- **`source`** — `runner` (read from `~/.cynco/campaigns/<id>/`) or `history`
+  (`docs/civkings-redesign-briefs/gate-lines.history.json`, the hand
+  transcription for campaigns that ran before the runner did). A campaign in
+  both is taken from the runner and skipped in the history; counting it twice
+  would double its lines in the denominator.
+
+Reseals are recorded by the runner at CALIBRATE time, from the calibration it
+is about to overwrite (`recordReseal` in `scripts/cynco-campaign.mjs`,
+`resealRecord` in `scripts/cynco-gate-lines.mjs`), and they live on the campaign
+state as `state.reseals`. The comparison is over the printed line TEXT, not the
+id set, because the id is a label and the text is the claim. That OVER-MARKS: a
+FAIL line's detail is printed from the run, so a line whose detail quotes a
+count reads as changed when the assertion behind it did not move. The error is
+deliberately in that direction — an over-marked line counts against the author,
+never for them.
+
+`summarize` folds the terminal rows into a held rate per author with a Wilson
+interval and a Fisher 2×2 (held × author, CynCo row first). The verdict entry
+prints it as its "Gate lines" line, and `gateAuthorPromotion`
+(`scripts/cynco-gate-author.mjs`) reads the same summary: ≥ 30 terminal CynCo
+lines, a Wilson lower bound ≥ 0.8, and not significantly worse than the human
+seat, raises the `gate-author/gate` proposal. Both thresholds are stated once,
+in `scripts/cynco-signal-validation.mjs` beside `DENIAL_MIN`.
+
 ## Labeling rule
 
 Ground truth for signal validation (step 2, per-rule precision/recall):

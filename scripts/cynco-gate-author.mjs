@@ -31,6 +31,7 @@ import { loadCampaignSpec, checkIdentity } from './cynco-campaign-spec.mjs'
 import { sidecarPath } from './cynco-contract.mjs'
 import { loadRoadmap, lineFor, setLineStatus, saveRoadmap, ROADMAP_PATH } from './cynco-roadmap.mjs'
 import { CampaignState } from './cynco-campaign-state.mjs'
+import { GATE_AUTHOR_MIN_LINES, GATE_AUTHOR_HELD_FLOOR } from './cynco-signal-validation.mjs'
 
 // 4 h and 1200 iterations: the authoring mission writes four files and runs a
 // check that costs two gate runs, so it is sized well below a wave's 8 h/2000.
@@ -40,6 +41,15 @@ export const AUTHOR_ITERATIONS = 1200
 // approval. 1.0 is never granted — the human keeps the binding seat.
 export const GATE_AUTHOR_MAX_AUTHORITY = 0.5
 export const AUTHOR_INVARIANTS = { editGapCap: 40, commitGapCap: 150, revertBan: true, codeIndexFirst: true }
+
+// The bar the seat has to clear to earn that 0.5. Defined in
+// `scripts/cynco-signal-validation.mjs` beside `DENIAL_MIN` — every threshold
+// this project decides on lives in that one file (spec ruling 3) — and
+// re-exported here so `gateAuthorPromotion` below and the `--gate-lines` table
+// are reading one number each and not two. The dependency only runs this way:
+// signal-validation must stay loadable under plain node, and this module
+// reaches the bun-only grade chain through `calibrate`.
+export { GATE_AUTHOR_MIN_LINES, GATE_AUTHOR_HELD_FLOOR }
 
 const CIVKINGS_REPO = 'C:/Users/civer/civkings'
 const HELDOUT_FAMILY = 'civkings-redesign'
@@ -432,6 +442,47 @@ export function gateProposal({ id, check, missionId, verified }) {
   }
 }
 
+/**
+ * Ruling 11: the promotion the gate-line evidence earns, or null.
+ *
+ * Same shape and the same discipline as the ideation promotion
+ * (`promotionProposal` in scripts/cynco-ideation.mjs): a data-shaped Parameter
+ * proposal the owner approves, never an authority the seat grants itself. What
+ * it buys is `authorCampaign`'s auto-approve branch below — sealing without
+ * waiting for the supervisor — and it is bounded at 0.5 forever.
+ *
+ * Three bars, all of them over TERMINAL gate lines (scripts/cynco-gate-lines.mjs):
+ *
+ *   1. at least `GATE_AUTHOR_MIN_LINES` CynCo lines have finished a campaign,
+ *   2. the Wilson lower bound on their held rate is at or above
+ *      `GATE_AUTHOR_HELD_FLOOR` — the interval, not the point estimate, and
+ *   3. it is not significantly worse than the human seat (Fisher two-sided at
+ *      `alpha`, and only in that direction: a seat that is significantly
+ *      BETTER must not be refused by its own evidence).
+ *
+ * `{ explain: true }` returns `{ proposal, why }` instead — the reason the bar
+ * was not cleared, for a verdict line or an operator asking why nothing came.
+ * The plain call keeps the proposal-or-null contract every other proposal has.
+ */
+export function gateAuthorPromotion(summary, currentAuthority, alpha = 0.05, { explain = false } = {}) {
+  const out = (proposal, why) => (explain ? { proposal, why } : proposal)
+  if ((currentAuthority ?? 0) >= GATE_AUTHOR_MAX_AUTHORITY) return out(null, `authority is already ${currentAuthority} — 0.5 is the ceiling and the human keeps the binding seat`)
+  const c = summary?.byAuthor?.cynco
+  if (!c) return out(null, 'no gate-line summary — nothing has been exported yet')
+  if (c.n < GATE_AUTHOR_MIN_LINES) return out(null, `only ${c.n} terminal CynCo gate line(s); ${GATE_AUTHOR_MIN_LINES} are needed`)
+  if (c.ci[0] < GATE_AUTHOR_HELD_FLOOR) return out(null, `held rate ${c.held}/${c.n} has a Wilson lower bound of ${c.ci[0].toFixed(3)}, below the ${GATE_AUTHOR_HELD_FLOOR} floor`)
+  const p = summary?.fisher?.p ?? null
+  const humanRate = summary?.byAuthor?.human?.rate ?? null
+  if (p !== null && p < alpha && humanRate !== null && c.rate < humanRate) {
+    return out(null, `CynCo holds ${(c.rate * 100).toFixed(1)}% against the human's ${(humanRate * 100).toFixed(1)}% at p=${p.toFixed(4)} — significantly worse than the human seat`)
+  }
+  return out({
+    type: 'Parameter', name: 'gate-author/gate', newValue: GATE_AUTHOR_MAX_AUTHORITY,
+    bounds: { min: 0, max: GATE_AUTHOR_MAX_AUTHORITY }, status: 'pending',
+    evidence: { n: c.n, held: c.held, rate: c.rate, ci: c.ci, p, humanRate, table: summary?.fisher?.table ?? null },
+  }, null)
+}
+
 function commitStaging(stagingDir, message, io) {
   const r = io.run('git', ['-C', norm(stagingDir), 'add', '-A'], { timeoutMs: 60_000 })
   if (r.status !== 0) { console.error(`[author] git add in ${norm(stagingDir)} failed: ${String(r.stderr).trim()}`); return }
@@ -538,9 +589,43 @@ export async function authorCampaign({ id, roadmap, state, io }) {
     setLineStatus(roadmap, id, 'proposed')
     ;(io.saveRoadmap ?? saveRoadmap)(ROADMAP_PATH, roadmap)
   }
+
+  // AUTO-APPROVE (spec ruling 2). What earned authority BUYS is this branch and
+  // nothing else: at `gate-author/gate` 0.5 the seat seals its own gate instead
+  // of waiting for `--approve-proposal gate/<id>`.
+  //
+  // Everything else is unchanged, deliberately. `sealGate` runs every one of
+  // its refusals before a single visible byte is written, so a triple that does
+  // not survive the seal-time re-check leaves the proposal PENDING and the
+  // roadmap line `proposed` — exactly where a supervisor's refused approval
+  // leaves them. Earned authority buys the seat the right to press the button,
+  // never the right to skip the checks behind it.
+  let sealed = null
+  if (proposal && (s.gateAuthorAuthority ?? 0) >= GATE_AUTHOR_MAX_AUTHORITY) {
+    try {
+      sealed = await sealGate({ id, state, roadmap, io })
+      if (sealed.ok) {
+        // The decision is recorded through the runner's own
+        // `applyProposalDecision`, handed over in the io (this module never
+        // imports the runner — that would close the ESM cycle it lives on the
+        // other side of). `decidedBy: 'auto'` is what tells a later reader that
+        // no human looked at this seal.
+        const decided = io.applyProposalDecision(s, proposal.name, true, { decidedBy: 'auto' })
+        if (!decided?.ok) console.error(`[author] ${id}: sealed, but the decision was not recorded — ${decided?.why ?? 'no reason given'}`)
+        if (io.notify) await io.notify(`${id.toUpperCase()}: gate SEALED by the gate-author seat at authority ${s.gateAuthorAuthority} — proposal ${proposal.name} approved automatically (${check.lineIds.length} graded lines, ${sealed.specPath}). No supervisor approved this.`)
+      } else {
+        console.error(`[author] ${id}: auto-seal REFUSED — the proposal stays pending for --approve-proposal ${proposal.name}:\n  ${sealed.problems.join('\n  ')}`)
+      }
+    } catch (e) {
+      // A throw here must not lose the authoring run: the proposal is already
+      // raised and the supervisor can still approve it by hand.
+      console.error(`[author] ${id}: auto-seal failed — ${e?.stack ?? e}`)
+      sealed = { ok: false, problems: [`auto-seal failed: ${e?.message ?? e}`] }
+    }
+  }
   state.save()
   const why = proposal ? null : fault ?? (check.ok ? `the mission produced no verified check result` : `--check refused the staged triple (${check.problems.length} problem(s))`)
-  return { ok: Boolean(proposal), why, proposal, missionId, verified, check }
+  return { ok: Boolean(proposal), why, proposal, missionId, verified, check, sealed }
 }
 
 /**
@@ -817,6 +902,11 @@ export function defaultAuthorIo(helpers = {}) {
     dispatchEnv: helpers.dispatchEnv ?? ((base, extra) => ({ ...base, ...extra })),
     takeLock: helpers.takeLock ?? (() => ({ ok: true, path: null, pid: process.pid })),
     releaseLock: helpers.releaseLock ?? (() => {}),
+    // The auto-approve branch's one reach back into the runner. Absent, the
+    // branch refuses loudly rather than sealing a gate and recording nothing:
+    // a seal nobody decided is a seal nobody can audit.
+    applyProposalDecision: helpers.applyProposalDecision ?? (() => { throw new Error('io.applyProposalDecision was not supplied by the runner — run --author through scripts/cynco-campaign.mjs') }),
+    notify: helpers.notify ?? null,
   }
 }
 
@@ -853,6 +943,7 @@ export async function authorMain(argv, io = defaultAuthorIo()) {
     if (!lock.ok) { console.error(`[author] another runner holds ${lock.path} (pid ${lock.pid}) — one runner per campaign`); return 2 }
     try {
       const r = await authorCampaign({ id, roadmap, state, io })
+      if (r.ok && r.sealed?.ok) { console.log(`[author] ${id}: SEALED at earned authority — ${r.sealed.specPath} written, triple copied, proposal ${r.proposal.name} approved automatically (${r.check.lineIds.length} graded lines)`); return 0 }
       if (r.ok) { console.log(`[author] ${id}: proposal ${r.proposal.name} raised (${r.check.lineIds.length} graded lines) — review the triple, then --approve-proposal ${r.proposal.name}`); return 0 }
       console.error(`[author] ${id}: no proposal — ${r.why}`)
       for (const p of r.check?.problems ?? []) console.error(`  ${p}`)

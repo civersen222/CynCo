@@ -6,10 +6,14 @@ import { createHash } from 'node:crypto'
 import { loadCampaignSpec } from '../cynco-campaign-spec.mjs'
 import {
   AUTHOR_TIMEOUT_S, AUTHOR_ITERATIONS, AUTHOR_INVARIANTS, GATE_AUTHOR_MAX_AUTHORITY,
+  GATE_AUTHOR_MIN_LINES, GATE_AUTHOR_HELD_FLOOR, gateAuthorPromotion,
   stagingDirFor, heldoutDirFor, prepareStaging, authoringBrief, authoringSidecar, checkCommand,
   checkStaged, authorCampaign, gateProposal, sealGate, draftToSpec, authorMain, previousLineId,
 } from '../cynco-gate-author.mjs'
 import { CampaignState } from '../cynco-campaign-state.mjs'
+import { summarize } from '../cynco-gate-lines.mjs'
+import { applyProposalDecision } from '../cynco-campaign.mjs'
+import { GATE_AUTHOR_MIN_LINES as SV_MIN_LINES, GATE_AUTHOR_HELD_FLOOR as SV_HELD_FLOOR } from '../cynco-signal-validation.mjs'
 
 // ── the world the fake io stands in for ─────────────────────────────────────
 //
@@ -778,5 +782,141 @@ describe('constants', () => {
     expect(AUTHOR_ITERATIONS).toBe(1200)
     expect(GATE_AUTHOR_MAX_AUTHORITY).toBe(0.5)
     expect(AUTHOR_INVARIANTS).toEqual({ editGapCap: 40, commitGapCap: 150, revertBan: true, codeIndexFirst: true })
+  })
+
+  it('the promotion bar is the one the gate-line table prints', () => {
+    expect(GATE_AUTHOR_MIN_LINES).toBe(30)
+    expect(GATE_AUTHOR_HELD_FLOOR).toBe(0.8)
+    // One definition, two readers: the table and the promotion must never be
+    // able to disagree about what the bar is.
+    expect(GATE_AUTHOR_MIN_LINES).toBe(SV_MIN_LINES)
+    expect(GATE_AUTHOR_HELD_FLOOR).toBe(SV_HELD_FLOOR)
+  })
+})
+
+// ── Ruling 11: the promotion the evidence earns ─────────────────────────────
+
+describe('gateAuthorPromotion', () => {
+  const rowsFor = (author, held, n) => [
+    ...Array.from({ length: held }, (_, i) => ({ author, outcome: 'held', lineId: `${author}-h${i}` })),
+    ...Array.from({ length: n - held }, (_, i) => ({ author, outcome: 'resealed', lineId: `${author}-r${i}` })),
+  ]
+  const summaryOf = (cynco, human) => summarize([...rowsFor('cynco', ...cynco), ...rowsFor('human', ...human)])
+
+  it('refuses below the minimum line count, however clean', () => {
+    expect(gateAuthorPromotion(summaryOf([29, 29], [17, 17]), 0)).toBeNull()
+  })
+
+  it('proposes gate-author/gate at 0.5 with the evidence attached', () => {
+    const summary = summaryOf([30, 30], [17, 17])
+    const p = gateAuthorPromotion(summary, 0)
+    expect(p).toMatchObject({ type: 'Parameter', name: 'gate-author/gate', newValue: 0.5, bounds: { min: 0, max: 0.5 }, status: 'pending' })
+    expect(p.evidence).toEqual({ n: 30, held: 30, rate: 1, ci: summary.byAuthor.cynco.ci, p: summary.fisher.p, humanRate: 1, table: [[30, 0], [17, 0]] })
+  })
+
+  it('refuses when the Wilson lower bound is under the floor', () => {
+    // 22/30 is a 73 % point estimate with a lower bound of 0.56 — a rate that
+    // reads fine and an interval that does not clear the bar.
+    expect(gateAuthorPromotion(summaryOf([22, 30], [17, 17]), 0)).toBeNull()
+    // The brief's own case: 24/30 against a human 50/50.
+    expect(gateAuthorPromotion(summaryOf([24, 30], [50, 50]), 0)).toBeNull()
+  })
+
+  it('refuses a seat that clears the floor but reads significantly worse than the human', () => {
+    // 92/100 clears both bars on its own (lower bound 0.85) — and is still
+    // worse than 200/200 at p < 0.05, so it has not earned the human's seat.
+    const summary = summaryOf([92, 100], [200, 200])
+    expect(summary.byAuthor.cynco.ci[0]).toBeGreaterThanOrEqual(0.8)
+    expect(summary.fisher.p).toBeLessThan(0.05)
+    expect(gateAuthorPromotion(summary, 0)).toBeNull()
+    expect(gateAuthorPromotion(summary, 0, 0.05, { explain: true }).why).toMatch(/worse than the human/)
+  })
+
+  it('refuses once the authority is already at its ceiling', () => {
+    expect(gateAuthorPromotion(summaryOf([30, 30], [17, 17]), GATE_AUTHOR_MAX_AUTHORITY)).toBeNull()
+  })
+
+  it('a better-than-human seat at p < 0.05 is promoted, not refused', () => {
+    // The Fisher clause is one-directional on purpose: significance alone must
+    // not refuse the seat it is meant to measure.
+    const summary = summaryOf([100, 100], [30, 40])
+    expect(summary.fisher.p).toBeLessThan(0.05)
+    expect(gateAuthorPromotion(summary, 0)).not.toBeNull()
+  })
+
+  it('explain hands back the proposal and the reason, keeping the plain call proposal-or-null', () => {
+    const ok = gateAuthorPromotion(summaryOf([30, 30], [17, 17]), 0, 0.05, { explain: true })
+    expect(ok.proposal.name).toBe('gate-author/gate')
+    expect(ok.why).toBeNull()
+    const no = gateAuthorPromotion(summaryOf([29, 29], [17, 17]), 0, 0.05, { explain: true })
+    expect(no.proposal).toBeNull()
+    expect(no.why).toMatch(/29/)
+  })
+
+  it('a summary that never arrived is no promotion, not a throw', () => {
+    expect(gateAuthorPromotion(null, 0)).toBeNull()
+  })
+})
+
+// ── The auto-approve branch: what earned authority actually buys ────────────
+
+describe('authorCampaign at earned authority', () => {
+  const runAt = async (authority, over = {}) => {
+    const { files } = staged(home)
+    const notified = []
+    const { io, disk, logs } = makeIo({ home, files, over: { notify: async (m) => { notified.push(m); return true }, applyProposalDecision, ...over } })
+    const roadmap = ROADMAP()
+    const state = new CampaignState(join(mkdtempSync(join(tmpdir(), 'camp-')), ID)).load()
+    state.state.gateAuthorAuthority = authority
+    const r = await authorCampaign({ id: ID, roadmap, state, io })
+    return { r, roadmap, state, disk, logs, notified }
+  }
+
+  it('at 0.5 the seat seals its own gate and records the decision as auto', async () => {
+    const { r, roadmap, state, disk, notified } = await runAt(GATE_AUTHOR_MAX_AUTHORITY)
+    expect(r.ok).toBe(true)
+    expect(r.sealed.ok).toBe(true)
+    expect(disk[`${home}/heldout/civkings-redesign/c9/gate_c9.py`]).toBe(GATE_SRC)
+    expect(disk['docs/civkings-redesign-briefs/c9.campaign.json']).toBeTruthy()
+    expect(roadmap.lines.find(l => l.id === 'c9').status).toBe('sealed')
+    const p = state.state.proposals.find(x => x.name === 'gate/c9')
+    expect(p.status).toBe('approved')
+    expect(p.decidedBy).toBe('auto')
+    expect(p.decidedAt).toBeTruthy()
+    expect(notified.join('\n')).toMatch(/gate\/c9/)
+  })
+
+  it('at 0 the proposal stays pending and nothing is sealed', async () => {
+    const { r, roadmap, state, disk } = await runAt(0)
+    expect(r.ok).toBe(true)
+    expect(r.sealed).toBeNull()
+    expect(disk[`${home}/heldout/civkings-redesign/c9/gate_c9.py`]).toBeUndefined()
+    expect(roadmap.lines.find(l => l.id === 'c9').status).toBe('proposed')
+    expect(state.state.proposals.find(x => x.name === 'gate/c9').status).toBe('pending')
+  })
+
+  // A seal that refuses is not a decision. The proposal has to stay pending or
+  // the operator has nothing left to approve once the draft is fixed — the
+  // dead end `--approve-proposal gate/<id>` was rebuilt to avoid.
+  it('a refused seal at 0.5 leaves the proposal pending and says why', async () => {
+    const { r, roadmap, state } = await runAt(GATE_AUTHOR_MAX_AUTHORITY, {
+      loadSpec: () => { throw new Error('budget.waves must be a positive integer') },
+    })
+    expect(r.sealed.ok).toBe(false)
+    expect(r.sealed.problems.length).toBeGreaterThan(0)
+    expect(state.state.proposals.find(x => x.name === 'gate/c9').status).toBe('pending')
+    expect(roadmap.lines.find(l => l.id === 'c9').status).toBe('proposed')
+  })
+
+  it('seals nothing when there was no proposal to seal', async () => {
+    const { files } = staged(home)
+    const { io, disk } = makeIo({ home, files, baseLog: POSITIVE_LOG, over: { applyProposalDecision } })
+    const roadmap = ROADMAP()
+    const state = new CampaignState(join(mkdtempSync(join(tmpdir(), 'camp-')), ID)).load()
+    state.state.gateAuthorAuthority = GATE_AUTHOR_MAX_AUTHORITY
+    const r = await authorCampaign({ id: ID, roadmap, state, io })
+    expect(r.proposal).toBeNull()
+    expect(r.sealed).toBeNull()
+    expect(disk[`${home}/heldout/civkings-redesign/c9/gate_c9.py`]).toBeUndefined()
   })
 })

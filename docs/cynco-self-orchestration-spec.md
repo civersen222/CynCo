@@ -310,6 +310,31 @@ number except the one router named below.
   `scripts/dispatch-mission.sh` and the runner's `dispatchEnv`, so the panel can
   say which campaign the running mission belongs to.
 
+**Phase 3 evidence — the graded gate LINE (2026-09-23).** The gate-author seat
+cannot earn authority one campaign at a time: a campaign is a single draw, and
+at that rate the seat would be measurable around 2030. The unit is the graded
+gate line — one falsifiable claim, 9–17 per campaign — and the question asked of
+it is whether the line the author sealed survived the campaign it was written
+for. `scripts/cynco-gate-lines.mjs` builds one row per (campaign, line) into
+`~/.cynco/datasets/gate-lines.jsonl` at every verdict, with the outcome `held`
+(the campaign reached a decision and nothing rewrote the line), `resealed` (the
+line's printed text changed after the calibration that sealed it) or `open` (no
+decision yet — not evidence). `resealed` is the falsifier the whole claim rests
+on, so the runner records it where it is the only moment it is observable: at
+CALIBRATE, from the calibration it is about to overwrite (`recordReseal`,
+`state.reseals`), whether or not anyone wanted it recorded. `gate.author` on the
+wave record is the join key. `bun scripts/cynco-signal-validation.mjs
+--gate-lines` prints the table, the verdict entry prints its own line, and
+ruling 11's promotion (`gateAuthorPromotion`) reads exactly that summary: ≥ 30
+terminal CynCo lines, a Wilson lower bound on the held rate ≥ 0.8, and not
+significantly worse than the human seat (Fisher, one direction only — a seat
+significantly BETTER must not be refused by its own evidence). It raises
+`gate-author/gate` (0 → 0.5, bounded), which the owner approves like any other.
+What that 0.5 buys is one branch: `authorCampaign` seals its own gate instead of
+waiting for `--approve-proposal gate/<id>`, and records the decision as
+`decidedBy: 'auto'`. Every check inside `sealGate` still runs — a refused seal
+leaves the proposal pending exactly as a refused human approval does.
+
 **Deferred spec items (follow-up, not built here).**
 
 - **Eigenform convergence (spec §7).** The metric for "the campaign's briefs

@@ -6,6 +6,7 @@ import {
   fisherExact, wilson, labelOf, rulesFired, readLedger, analyse,
   analyseDenials, invariantsFired, denialVerdict, DENIAL_MIN,
   signalQuartiles, signalsFired,
+  gateLineVerdict, gateLineTable, printGateLineTable, GATE_AUTHOR_MIN_LINES, GATE_AUTHOR_HELD_FLOOR,
 } from '../cynco-signal-validation.mjs'
 
 // A tool whose output decides whether a governance rule gets enforcement
@@ -372,5 +373,77 @@ describe('signalsFired', () => {
     const quartiles = signalQuartiles(rows)
     const res = analyse(rows, { firedOf: r => signalsFired(r, quartiles) })
     expect(res.rules.map(r => r.id).sort()).toEqual(['LC-high', 'LC-low', 'TE-high'])
+  })
+})
+
+// ── --gate-lines: has the CynCo-authored gate line held? ────────────────────
+
+describe('gate-line thresholds', () => {
+  it('are stated here, where every threshold this tool decides on lives', () => {
+    expect(GATE_AUTHOR_MIN_LINES).toBe(30)
+    expect(GATE_AUTHOR_HELD_FLOOR).toBe(0.8)
+  })
+})
+
+describe('gateLineVerdict', () => {
+  const summary = (cynco, human, p = 1) => ({
+    byAuthor: {
+      cynco: { n: cynco[1], held: cynco[0], rate: cynco[1] ? cynco[0] / cynco[1] : null, ci: wilson(cynco[0], cynco[1]) },
+      human: { n: human[1], held: human[0], rate: human[1] ? human[0] / human[1] : null, ci: wilson(human[0], human[1]) },
+    },
+    fisher: { p, table: [[cynco[0], cynco[1] - cynco[0]], [human[0], human[1] - human[0]]] },
+  })
+
+  it('TOO FEW below the minimum, whatever the rate looks like', () => {
+    expect(gateLineVerdict(summary([29, 29], [17, 17]))).toBe('TOO FEW')
+    expect(gateLineVerdict(summary([0, 0], [17, 17]))).toBe('TOO FEW')
+    expect(gateLineVerdict(null)).toBe('TOO FEW')
+  })
+
+  it('PARITY when the interval clears the floor and nothing says it is worse', () => {
+    expect(gateLineVerdict(summary([30, 30], [17, 17]))).toBe('PARITY')
+  })
+
+  it('BELOW FLOOR on the Wilson lower bound, not on the point estimate', () => {
+    // 28/30 is a 93 % rate — and a lower bound of 0.787, just under the floor.
+    expect(summary([28, 30], [17, 17]).byAuthor.cynco.rate).toBeGreaterThan(0.9)
+    expect(gateLineVerdict(summary([28, 30], [17, 17]))).toBe('BELOW FLOOR')
+  })
+
+  it('BELOW FLOOR when the seat is significantly worse than the human it would replace', () => {
+    expect(gateLineVerdict(summary([92, 100], [200, 200], fisherExact(92, 8, 200, 0)))).toBe('BELOW FLOOR')
+  })
+
+  it('significance in the seat\'s FAVOUR is not a refusal', () => {
+    expect(gateLineVerdict(summary([100, 100], [30, 40], fisherExact(100, 0, 30, 10)))).toBe('PARITY')
+  })
+})
+
+describe('gateLineTable', () => {
+  const summary = {
+    byAuthor: { cynco: { n: 30, held: 30, rate: 1, ci: wilson(30, 30) }, human: { n: 17, held: 17, rate: 1, ci: wilson(17, 17) } },
+    fisher: { p: fisherExact(30, 0, 17, 0), table: [[30, 0], [17, 0]] },
+  }
+
+  it('prints the pinned header, one row per seat, and the verdict', () => {
+    const lines = gateLineTable(summary)
+    expect(lines[0]).toBe('author  lines   held  rate     95% CI')
+    expect(lines[1]).toBe('cynco      30     30  100.0%  [ 89%, 100%]')
+    expect(lines[2]).toBe('human      17     17  100.0%  [ 82%, 100%]')
+    expect(lines.join('\n')).toMatch(/Fisher p 1\.000 on \[\[30,0\],\[17,0\]\]/)
+    expect(lines.join('\n')).toMatch(/Verdict: PARITY — the seat needs 30 terminal CynCo lines and a Wilson lower bound at or above 0\.8\./)
+  })
+
+  it('an empty summary prints a dash rate rather than a fabricated zero', () => {
+    const lines = gateLineTable({ byAuthor: { cynco: { n: 0, held: 0, rate: null, ci: [0, 1] }, human: { n: 0, held: 0, rate: null, ci: [0, 1] } }, fisher: { p: 1, table: [[0, 0], [0, 0]] } })
+    expect(lines[1]).toBe('cynco       0      0    —    [  0%, 100%]')
+  })
+
+  it('the printer prints exactly the table', () => {
+    const out = []
+    const log = console.log
+    console.log = (l) => out.push(l)
+    try { printGateLineTable(summary) } finally { console.log = log }
+    expect(out).toEqual(gateLineTable(summary))
   })
 })

@@ -1,5 +1,6 @@
 // scripts/cynco-campaign-verdict.mjs
 import { spawnSync } from 'node:child_process'
+import { gateLineVerdict } from './cynco-signal-validation.mjs'
 
 const today = () => new Date().toISOString().slice(0, 10)
 const h = (s) => (s / 3600).toFixed(2)
@@ -52,7 +53,20 @@ function bashByEffectLine(ts) {
   return `- Bash by effect: read ${be.read ?? 0}, write ${be.write ?? 0}, run ${be.run ?? 0}, commit ${be.commit ?? 0}, revert ${be.revert ?? 0}, other ${be.other ?? 0} (sum ${sum} vs byName.Bash ${bashByName} — ${sum === bashByName ? 'agree' : 'DISAGREE'}).`
 }
 
-export function verdictEntry({ spec, wave, row, grade, decision, ideationRecord, economicsLines, denialAnalysis = null, denialScope = 'campaign', capProposal = null, governancePosiwid = null }) {
+// Phase 3: the gate-line reading, from scripts/cynco-gate-lines.mjs's summary.
+// Both seats print, because the CynCo number means nothing on its own — the
+// question is whether a CynCo-authored line holds as well as a human's, and a
+// held rate with no comparison is a number looking for a story. `rate` is a
+// dash rather than 0 when an author has no terminal line at all: no evidence
+// is not a rate of zero.
+function gateLinesLine(summary) {
+  if (!summary?.byAuthor) return null
+  const { cynco, human } = summary.byAuthor
+  const rate = cynco.rate === null || cynco.rate === undefined ? '—' : cynco.rate.toFixed(3)
+  return `- Gate lines: cynco ${cynco.n}/${cynco.held} (rate ${rate}, ci [${cynco.ci[0].toFixed(2)}, ${cynco.ci[1].toFixed(2)}]) vs human ${human.n}/${human.held}; ${gateLineVerdict(summary)}`
+}
+
+export function verdictEntry({ spec, wave, row, grade, decision, ideationRecord, economicsLines, denialAnalysis = null, denialScope = 'campaign', capProposal = null, governancePosiwid = null, gateLines = null }) {
   const ts = row.toolStats ?? {}
   const inv = row.invariants
   const rejected = row.invariantsRejected === true
@@ -95,6 +109,8 @@ export function verdictEntry({ spec, wave, row, grade, decision, ideationRecord,
         ? `${r.invariant} ${r.complied}/${r.denials} (${r.verdict})`
         : `${r.invariant} ${r.complied}/${r.denials} complied (quiet rate ${pct(r.baseRate)}, ${r.verdict})`).join('; ')}.`)
   }
+  const glLine = gateLinesLine(gateLines)
+  if (glLine) lines.push(glLine)
   if (capProposal) {
     const cap = capProposal.name.slice('invariants/'.length)
     lines.push(`- **PROPOSAL ${capProposal.name} ${capProposal.currentValue ?? spec.invariants[cap]} → ${capProposal.newValue} (max ${capProposal.bounds.max}) — approve with --approve-proposal ${capProposal.name}.**`)

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { decide, runWave, waveContext, budgetSpent, defaultIo, claimedSurvivors, dispatchEnv, dirtyOutsideCampaign, inFlightRefusal, adoptInFlight, takeLock, releaseLock, applyProposalDecision, main } from '../cynco-campaign.mjs'
+import { decide, runWave, waveContext, budgetSpent, defaultIo, claimedSurvivors, dispatchEnv, dirtyOutsideCampaign, inFlightRefusal, adoptInFlight, takeLock, releaseLock, applyProposalDecision, recordReseal, main } from '../cynco-campaign.mjs'
+import { summarize as summarizeGateLines } from '../cynco-gate-lines.mjs'
 import { adopt } from '../cynco-campaign-adopt.mjs'
 import { CampaignState } from '../cynco-campaign-state.mjs'
 import { promotionProposal } from '../cynco-ideation.mjs'
@@ -64,7 +65,20 @@ const freshState = () => {
 const inertTriples = {
   exportTriples: () => ({ summary: { denials: {}, quiet: {}, campaigns: {} } }),
   analyseDenials: () => null,
+  // Same reasoning for the gate-lines export the VERDICT now regenerates: the
+  // real exporter reads ~/.cynco/campaigns, and a unit test must never drag the
+  // live campaign dir in. `null` is what a campaign with no evidence yet looks
+  // like, so the promotion and the verdict line both stay quiet.
+  exportGateLines: () => ({ rows: [], summary: null }),
 }
+
+/** A gate-lines summary with `held` of `n` CynCo lines and `hHeld` of `hN` human ones. */
+const gateLineSummary = (held, n, hHeld, hN) => summarizeGateLines([
+  ...Array.from({ length: held }, (_, i) => ({ author: 'cynco', outcome: 'held', lineId: `c${i}` })),
+  ...Array.from({ length: n - held }, (_, i) => ({ author: 'cynco', outcome: 'resealed', lineId: `cr${i}` })),
+  ...Array.from({ length: hHeld }, (_, i) => ({ author: 'human', outcome: 'held', lineId: `h${i}` })),
+  ...Array.from({ length: hN - hHeld }, (_, i) => ({ author: 'human', outcome: 'resealed', lineId: `hr${i}` })),
+])
 
 describe('runWave', () => {
   it('drives one wave through the injected io and records it', async () => {
@@ -1048,6 +1062,147 @@ describe('runWave — the wave is on the record before the verdict reads the rec
   })
 })
 
+// ── Phase 3: the evidence layer ─────────────────────────────────────────────
+
+describe('recordReseal', () => {
+  const cal = (ids, sha) => ({ gateSha256: sha, baseFails: ids.map(id => ({ id, line: `${id}: FAIL x` })), basePasses: [] })
+
+  it('records the reseal with the lines that are not the same claim any more', () => {
+    const s = { reseals: [] }
+    const prev = cal(['C8.1a', 'C8.2a'], 'aaaa')
+    const next = { gateSha256: 'bbbb', baseFails: [{ id: 'C8.1a', line: 'C8.1a: FAIL x' }, { id: 'C8.2a', line: 'C8.2a: FAIL x, and y' }], basePasses: [] }
+    const r = recordReseal(s, prev, next, { at: '2026-09-23T00:00:00.000Z', wave: 2 })
+    expect(r).toEqual({ at: '2026-09-23T00:00:00.000Z', wave: 2, from: { gateSha256: 'aaaa' }, to: { gateSha256: 'bbbb' }, changedLineIds: ['C8.2a'] })
+    expect(s.reseals).toEqual([r])
+  })
+
+  it('a FIRST calibration is not a reseal', () => {
+    const s = { reseals: [] }
+    expect(recordReseal(s, null, cal(['C8.1a'], 'aaaa'), { at: 't', wave: 0 })).toBeNull()
+    expect(s.reseals).toEqual([])
+  })
+
+  it('appends rather than replacing, and survives a state that has no reseals array', () => {
+    const s = {}
+    recordReseal(s, cal(['a'], '1'), cal(['a'], '2'), { at: 't1', wave: 1 })
+    recordReseal(s, cal(['a'], '2'), cal(['b'], '3'), { at: 't2', wave: 2 })
+    expect(s.reseals.map(r => r.changedLineIds)).toEqual([[], ['a', 'b']])
+  })
+
+  // The whole point of the record is that it is taken from the calibration the
+  // runner is ABOUT to overwrite; taken afterwards it would compare the new
+  // calibration with itself and every reseal would read as "nothing changed".
+  it('the CALIBRATE block records the reseal before it overwrites the calibration', () => {
+    const src = readFileSync(fileURLToPath(new URL('../cynco-campaign.mjs', import.meta.url)), 'utf8')
+    const call = src.indexOf('recordReseal(state.state, cal,')
+    const assign = src.indexOf('state.state.calibration = next')
+    expect(call, 'the CALIBRATE block never calls recordReseal').toBeGreaterThan(-1)
+    expect(assign, 'the CALIBRATE block no longer assigns the new calibration').toBeGreaterThan(call)
+  })
+})
+
+describe('the wave record names who wrote the gate', () => {
+  const io = () => ({
+    writeBrief: (p) => p,
+    dispatch: async () => ({ missionId: 'c8-wave1-1' }),
+    waitForDriver: async () => ({ exited: true }),
+    readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', toolStats: {} }),
+    commitsBetween: () => [],
+    grade: async () => g(),
+    salvageOf: () => null,
+    patchRow: () => {},
+    commit: () => ({ sha: 'v1' }),
+    notify: async () => true,
+    economics: () => [],
+    appendLog: () => {},
+    ...inertTriples,
+  })
+
+  it('carries spec.author onto gate.author without losing a single graded field', async () => {
+    const rec = await runWave({ ...spec, author: 'cynco' }, freshState(), io())
+    expect(rec.gate.author).toBe('cynco')
+    // Every field the grade produced is still there — `author` is added, not
+    // substituted for the reading the wave is judged on.
+    expect(rec.gate).toMatchObject({ terminator: 'MISS', failCount: 1, priorRegressions: 0 })
+    expect(rec.gate.fails).toEqual(g().gate.fails)
+  })
+
+  it('a spec with no author is the human seat, which is what every campaign before c9 was', async () => {
+    const rec = await runWave(spec, freshState(), io())
+    expect(rec.gate.author).toBe('human')
+  })
+})
+
+describe('the gate-author promotion at VERDICT', () => {
+  const io = (over = {}) => ({
+    writeBrief: (p) => p,
+    dispatch: async () => ({ missionId: 'c8-wave1-1' }),
+    waitForDriver: async () => ({ exited: true }),
+    readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', toolStats: {} }),
+    commitsBetween: () => [],
+    grade: async () => g(),
+    salvageOf: () => null,
+    patchRow: () => {},
+    commit: () => ({ sha: 'v1' }),
+    notify: async () => true,
+    economics: () => [],
+    appendLog: () => {},
+    ...inertTriples,
+    exportGateLines: () => ({ rows: [], summary: gateLineSummary(30, 30, 17, 17) }),
+    ...over,
+  })
+
+  it('raises gate-author/gate with the evidence when the bar is cleared', async () => {
+    const state = freshState()
+    const notified = []
+    const rec = await runWave(spec, state, io({ notify: async (m) => { notified.push(m); return true } }))
+    const p = state.state.proposals.find(x => x.name === 'gate-author/gate')
+    expect(p).toMatchObject({ type: 'Parameter', newValue: 0.5, status: 'pending', bounds: { min: 0, max: 0.5 } })
+    expect(p.evidence).toMatchObject({ n: 30, held: 30, rate: 1 })
+    expect(p.proposedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
+    expect(notified.join('\n')).toMatch(/PROPOSAL gate-author\/gate/)
+    expect(rec.decision.kind).toBe('next')
+  })
+
+  // §E: two proposals must not go pending in the same wave, and that rule does
+  // not care which of the three raised the first one.
+  it('computes nothing while another proposal is already pending', async () => {
+    const state = freshState()
+    state.state.proposals = [{ type: 'Code', name: 'gate/c9', status: 'pending', proposedAt: 't' }]
+    await runWave(spec, state, io())
+    expect(state.state.proposals.map(p => p.name)).toEqual(['gate/c9'])
+  })
+
+  it('raises nothing once the authority is already earned', async () => {
+    const state = freshState()
+    state.state.gateAuthorAuthority = 0.5
+    await runWave(spec, state, io())
+    expect(state.state.proposals).toEqual([])
+  })
+
+  it('raises nothing when the exporter hands back no evidence, and does not fault the wave', async () => {
+    const state = freshState()
+    const rec = await runWave(spec, state, io({ exportGateLines: () => ({ rows: [], summary: gateLineSummary(0, 0, 0, 0) }) }))
+    expect(state.state.proposals).toEqual([])
+    expect(rec.decision.kind).toBe('next')
+  })
+
+  // The Level 4 spine's rule: a dataset that will not rebuild is logged, never
+  // a fault. The wave already happened.
+  it('an exporter that throws costs the wave nothing', async () => {
+    const state = freshState()
+    const rec = await runWave(spec, state, io({ exportGateLines: () => { throw new Error('datasets dir is read-only') } }))
+    expect(rec.decision.kind).toBe('next')
+    expect(state.state.proposals).toEqual([])
+  })
+
+  it('prints the gate-lines reading in the verdict entry', async () => {
+    let entry = null
+    await runWave(spec, freshState(), io({ appendLog: (t) => { entry = t } }))
+    expect(entry).toMatch(/- Gate lines: cynco 30\/30 \(rate 1\.000, ci \[0\.89, 1\.00\]\) vs human 17\/17; PARITY/)
+  })
+})
+
 // ── Phase 3: the gate-author seat ───────────────────────────────────────────
 
 describe('applyProposalDecision on the gate-authoring proposals', () => {
@@ -1106,7 +1261,7 @@ describe('main routes the authoring verbs before it loads a campaign spec', () =
     expect(s.calls).toHaveLength(1)
     expect(s.calls[0].argv).toEqual(['--author', 'c9'])
     // the runner's own helpers are what travel over, not an import back
-    expect(Object.keys(s.calls[0].io.helpers).sort()).toEqual(['appendLog', 'dispatchEnv', 'dispatchRaw', 'missionIdFrom', 'readRow', 'releaseLock', 'takeLock', 'waitForDriver'])
+    expect(Object.keys(s.calls[0].io.helpers).sort()).toEqual(['appendLog', 'applyProposalDecision', 'dispatchEnv', 'dispatchRaw', 'missionIdFrom', 'notify', 'readRow', 'releaseLock', 'takeLock', 'waitForDriver'])
   })
 
   it('--author takes the id from the argv path when none is named', async () => {
