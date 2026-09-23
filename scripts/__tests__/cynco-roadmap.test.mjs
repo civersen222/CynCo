@@ -61,32 +61,46 @@ describe('setLineStatus', () => {
 })
 
 describe('loadRoadmap shape validation', () => {
-  it('throws /id/ on a line missing status/bar/base ({ id: "x9" })', () => {
+  it('throws on an id that does not match c<number>[letter], even with every other field valid', () => {
     const dir = mkdtempSync(join(tmpdir(), 'roadmap-'))
     const p = join(dir, 'roadmap.json')
-    writeFileSync(p, JSON.stringify({ lines: [{ id: 'x9' }] }))
-    expect(() => loadRoadmap(p)).toThrow(/id/)
+    writeFileSync(p, JSON.stringify({ lines: [{ id: 'x9', name: 'n', bar: 'b', base: 'abcdef1', status: 'open' }] }))
+    expect(() => loadRoadmap(p)).toThrow(/invalid id/)
   })
 
-  it('throws /status/ on a line with an invalid status', () => {
+  it('accepts a trailing-letter id like c6b', () => {
     const dir = mkdtempSync(join(tmpdir(), 'roadmap-'))
     const p = join(dir, 'roadmap.json')
-    writeFileSync(p, JSON.stringify({ lines: [{ id: 'x9', status: 'nope', bar: 'b', base: '1234567' }] }))
-    expect(() => loadRoadmap(p)).toThrow(/status/)
+    writeFileSync(p, JSON.stringify({ lines: [{ id: 'c6b', name: 'n', bar: 'b', base: 'abcdef1', status: 'open' }] }))
+    expect(loadRoadmap(p).lines[0].id).toBe('c6b')
   })
 
-  it('throws /bar/ on a line missing bar', () => {
+  it('throws /missing status/ on a valid id with no status field', () => {
     const dir = mkdtempSync(join(tmpdir(), 'roadmap-'))
     const p = join(dir, 'roadmap.json')
-    writeFileSync(p, JSON.stringify({ lines: [{ id: 'x9', status: 'open', base: '1234567' }] }))
-    expect(() => loadRoadmap(p)).toThrow(/bar/)
+    writeFileSync(p, JSON.stringify({ lines: [{ id: 'c9', name: 'n', bar: 'b', base: 'abcdef1' }] }))
+    expect(() => loadRoadmap(p)).toThrow(/missing status/)
   })
 
-  it('throws /base/ on a line with an invalid base', () => {
+  it('throws /unknown status/ on a valid id with an out-of-enum status', () => {
     const dir = mkdtempSync(join(tmpdir(), 'roadmap-'))
     const p = join(dir, 'roadmap.json')
-    writeFileSync(p, JSON.stringify({ lines: [{ id: 'x9', status: 'open', bar: 'b', base: 'zzz' }] }))
-    expect(() => loadRoadmap(p)).toThrow(/base/)
+    writeFileSync(p, JSON.stringify({ lines: [{ id: 'c9', status: 'nope', bar: 'b', base: '1234567' }] }))
+    expect(() => loadRoadmap(p)).toThrow(/unknown status/)
+  })
+
+  it('throws /missing bar/ on a line missing bar', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'roadmap-'))
+    const p = join(dir, 'roadmap.json')
+    writeFileSync(p, JSON.stringify({ lines: [{ id: 'c9', status: 'open', base: '1234567' }] }))
+    expect(() => loadRoadmap(p)).toThrow(/missing bar/)
+  })
+
+  it('throws /bad base/ on a line with an invalid base', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'roadmap-'))
+    const p = join(dir, 'roadmap.json')
+    writeFileSync(p, JSON.stringify({ lines: [{ id: 'c9', status: 'open', bar: 'b', base: 'zzz' }] }))
+    expect(() => loadRoadmap(p)).toThrow(/bad base/)
   })
 })
 
@@ -94,7 +108,7 @@ describe('saveRoadmap', () => {
   it('round-trips with LF line endings', () => {
     const dir = mkdtempSync(join(tmpdir(), 'roadmap-'))
     const p = join(dir, 'roadmap.json')
-    const roadmap = { lines: [{ id: 'z1', name: 'Z', bar: 'zbar', base: '1234567', status: 'open' }] }
+    const roadmap = { lines: [{ id: 'c1', name: 'Z', bar: 'zbar', base: '1234567', status: 'open' }] }
     saveRoadmap(p, roadmap)
     const raw = readFileSync(p, 'utf8')
     expect(raw.includes('\r')).toBe(false)

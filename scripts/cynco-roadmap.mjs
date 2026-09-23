@@ -4,14 +4,12 @@ export const ROADMAP_PATH = 'docs/civkings-redesign-briefs/roadmap.json'
 export const STATUSES = ['open', 'authoring', 'proposed', 'sealed', 'running', 'done']
 
 const BASE_RE = /^[0-9a-f]{7,40}$/
+const ID_RE = /^c\d+[a-z]?$/
 
 /**
- * Loads and shape-validates the roadmap. Every thrown message names the
- * failing field ("id", "status", "bar" or "base") so callers (and tests)
- * can match on the cause; every message also says "invalid", which is
- * enough on its own to satisfy a loose /id/ check (the word "invalid"
- * contains "id"), so a missing-status/bar/base line whose id IS present
- * still reads as an id-flavoured shape error.
+ * Loads and shape-validates the roadmap. Each shape error names its field
+ * plainly, for the reason actually at fault — not because a stray word
+ * happens to contain the field name.
  */
 export function loadRoadmap(path = ROADMAP_PATH) {
   let parsed
@@ -24,16 +22,22 @@ export function loadRoadmap(path = ROADMAP_PATH) {
 
   parsed.lines.forEach((line, i) => {
     if (typeof line?.id !== 'string' || line.id.length === 0) {
-      throw new Error(`roadmap ${path}: line ${i} has a missing or invalid "id"`)
+      throw new Error(`roadmap ${path}: line ${i} missing id`)
+    }
+    if (!ID_RE.test(line.id)) {
+      throw new Error(`roadmap ${path}: line has an invalid id "${line.id}" (expected c<number>[letter])`)
+    }
+    if (line.status === undefined) {
+      throw new Error(`roadmap ${path}: line "${line.id}" missing status`)
     }
     if (!STATUSES.includes(line.status)) {
-      throw new Error(`roadmap ${path}: line "${line.id}" has a missing or invalid "status" (must be one of ${STATUSES.join(', ')})`)
+      throw new Error(`roadmap ${path}: line "${line.id}" has an unknown status "${line.status}" (must be one of ${STATUSES.join(', ')})`)
     }
     if (typeof line.bar !== 'string' || line.bar.length === 0) {
-      throw new Error(`roadmap ${path}: line "${line.id}" has a missing or invalid "bar"`)
+      throw new Error(`roadmap ${path}: line "${line.id}" missing bar`)
     }
     if (typeof line.base !== 'string' || !BASE_RE.test(line.base)) {
-      throw new Error(`roadmap ${path}: line "${line.id}" has a missing or invalid "base" (must match ${BASE_RE})`)
+      throw new Error(`roadmap ${path}: line "${line.id}" has a bad base "${line.base}" (must match ${BASE_RE})`)
     }
   })
 
