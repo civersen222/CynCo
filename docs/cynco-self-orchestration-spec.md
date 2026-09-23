@@ -310,6 +310,72 @@ number except the one router named below.
   `scripts/dispatch-mission.sh` and the runner's `dispatchEnv`, so the panel can
   say which campaign the running mission belongs to.
 
+**Phase 3 — gate authoring (shipped 2026-09-23).** Every campaign so far was
+measured against a bar a human wrote. Phase 3 gives the loop the other half:
+CynCo writes the next campaign's gate itself, and the runner refuses to believe
+it without an acceptance test. The bar is still sealed by a decision — what
+changed is who drafts it, and what evidence that seat has to produce before its
+draft counts.
+
+- **The seat.** `gate` is a `heterarchy.CommandRegistry` context like `brief`
+  is (`scripts/cynco-ideation.mjs`): `supervisor` holds 1.0, `gate-author`
+  starts at **0** and is bounded at **0.5** (ruling 2 — the gate-author never
+  holds the binding seat). At 0 the seat drafts and a human approves. The only
+  thing 0.5 buys is the auto-seal branch described below; it never buys a bar
+  nobody can refuse.
+- **The verbs.**
+  `bun scripts/cynco-campaign.mjs <id>.campaign.json --author <id>` runs one
+  authoring mission start to verdict. It is routed by the campaign id BEFORE
+  the spec is loaded, because the spec is what the mission is being asked to
+  write — the `.campaign.json` does not exist yet. It refuses a line that is
+  not `open`/`authoring`, and refuses a line that jumps ahead of an earlier
+  line still in flight (`nextOpenLine`): the roadmap is authored in order,
+  because each gate is drafted against the previous campaign's as exemplar.
+  `bun scripts/cynco-gate-author.mjs --check <stagingDir> <baseDir>` is the
+  acceptance test on its own (exit 0/1, every problem printed); the mission is
+  told to run it and the driver runs the same string as the mission's
+  KEEP-GREEN assertion. `--approve-proposal gate/<id>` seals the triple into
+  the sealed tree and writes the campaign spec. At earned authority 0.5
+  `authorCampaign` takes that same branch itself and records
+  `decidedBy: 'auto'` — every check inside `sealGate` still runs, and a refused
+  seal leaves the proposal pending exactly as a refused human approval does.
+- **The staging tree.** `~/.cynco/authoring/<id>/` is a git repo with a local
+  identity pinned (a repo with no identity refuses every commit, and the
+  mission is ORDERED to commit after each cut — that commit is its only
+  backup). Beside it, `~/.cynco/authoring/<x>/` mirrors every finished
+  campaign's gate/perturb/positive out of the sealed heldout tree, so the
+  author reads real exemplars without being handed the heldout directory
+  itself. The game at the line's pinned BASE is archived read-only to
+  `C:/tmp/<id>_author_base`; the gate under test reads it through
+  `CYNCO_GATE_REPO` and never its own directory.
+- **The acceptance test** (`checkStaged`) is Rule 11 and Rule 14 run
+  mechanically, plus lint. Lint: ids shaped `C<N>.<k>[a-z].<slug>`, unique, at
+  least `GATE_AUTHOR_MIN_LINES` of them, the gate reads `CYNCO_GATE_REPO`, a
+  `C<N>.9` prior-campaign regression line that honours `CYNCO_GATE_SKIP_PRIOR`,
+  both shims `runpy.run_path` the real gate and set skip-prior, the perturb
+  header names only real line ids and declares a non-empty MUST-FAIL set, no
+  network import anywhere, and a `GATE: PASS` / `GATE: MISS (n fails)`
+  terminator. Calibration: the gate must MISS on the BASE **by absence** with
+  zero errors, every base fail classified, the perturb's flips a subset of
+  EXPECT-FLIP with every MUST-FAIL still failing, and the positive shim must
+  reach `GATE: PASS` — a bar nothing can pass is not a bar. The runner re-runs
+  all of it from its own side after the mission returns: the driver ran the
+  check too, but it ran it in a process the mission could have reached, so only
+  the runner's reading raises the proposal.
+- **Learnings-db isolation (ruling 12).** AWM promotion fires when a contract
+  passes, and an authoring mission's contract will pass. Its learnings go to
+  `<stagingDir>/learnings.db`, a database the campaign worker never opens —
+  otherwise the author of the bar would be whispering to the subject.
+- **The roadmap.** `docs/civkings-redesign-briefs/roadmap.json` is the line of
+  campaigns and the only place a line's status lives: `open → authoring →
+  proposed → sealed → running → done`, forward only (`setLineStatus` throws on
+  a backward move). Each line carries the `base` commit its gate is calibrated
+  against. A failed check leaves the line at `authoring` with the problems on
+  `state.authoring.<id>.lastCheck`, and the next `--author <id>` resumes into
+  the same staging dir with a PREVIOUS CHECK OUTPUT section in the brief.
+- **The readout.** `GET /api/campaign` carries `roadmap`, `authoring` and any
+  `gate/<id>` proposal with the command that approves it.
+
 **Phase 3 evidence — the graded gate LINE (2026-09-23).** The gate-author seat
 cannot earn authority one campaign at a time: a campaign is a single draw, and
 at that rate the seat would be measurable around 2030. The unit is the graded

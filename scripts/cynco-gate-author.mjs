@@ -29,7 +29,7 @@ import { lintGate } from './cynco-gate-lint.mjs'
 import { parseGateOutput } from './cynco-gate-parse.mjs'
 import { loadCampaignSpec, checkIdentity } from './cynco-campaign-spec.mjs'
 import { sidecarPath } from './cynco-contract.mjs'
-import { loadRoadmap, lineFor, setLineStatus, saveRoadmap, ROADMAP_PATH } from './cynco-roadmap.mjs'
+import { loadRoadmap, lineFor, nextOpenLine, setLineStatus, saveRoadmap, ROADMAP_PATH } from './cynco-roadmap.mjs'
 import { CampaignState } from './cynco-campaign-state.mjs'
 import { GATE_AUTHOR_MIN_LINES, GATE_AUTHOR_HELD_FLOOR } from './cynco-signal-validation.mjs'
 import { readCampaigns } from './cynco-triples.mjs'
@@ -536,6 +536,14 @@ export async function authorCampaign({ id, roadmap, state, io }) {
   if (!line) return refusal(`the roadmap has no line "${id}"`)
   if (line.status !== 'open' && line.status !== 'authoring') {
     return refusal(`roadmap line ${id} is "${line.status}" — --author only opens a line that is "open" or "authoring"`)
+  }
+  // The roadmap is ordered, and each line's gate is authored against the line
+  // before it (`prevId` below is the exemplar). Authoring out of order would
+  // hand the model an exemplar for a campaign that has not been written yet,
+  // so the only line `--author` will open is the first one still in flight.
+  const next = nextOpenLine(roadmap)
+  if (next && next.id !== id) {
+    return refusal(`roadmap line ${next.id} is still "${next.status}" — author the roadmap in order, ${next.id} before ${id}`)
   }
   const s = state.state
   s.authoring = s.authoring ?? {}

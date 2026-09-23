@@ -530,6 +530,27 @@ describe('authorCampaign', () => {
     expect(state.state.authoring.c9.attempts).toBe(2)
   })
 
+  // The roadmap is authored in order: an earlier line still in flight means
+  // this line's exemplar does not exist yet, so the jump is refused.
+  it('refuses a line that jumps ahead of an earlier line still in flight', async () => {
+    const { files } = staged(home)
+    const { io, dispatched } = makeIo({ home, files })
+    const roadmap = ROADMAP(); roadmap.lines.find(l => l.id === 'c8').status = 'open'
+    const state = new CampaignState(join(mkdtempSync(join(tmpdir(), 'camp-')), ID)).load()
+    const r = await authorCampaign({ id: ID, roadmap, state, io })
+    expect(r.ok).toBe(false)
+    expect(r.why).toMatch(/c8 is still "open" — author the roadmap in order, c8 before c9/)
+    expect(dispatched).toEqual([])
+    // The refusal is total: no staging, and the line it refused stays open.
+    expect(roadmap.lines.find(l => l.id === 'c9').status).toBe('open')
+  })
+
+  it('authors the first line still in flight without complaint', async () => {
+    const { r, roadmap } = await runIt()
+    expect(r.ok).toBe(true)
+    expect(roadmap.lines.find(l => l.id === 'c9').status).toBe('proposed')
+  })
+
   it('refuses a line that is already sealed', async () => {
     const { files } = staged(home)
     const { io, dispatched } = makeIo({ home, files })
