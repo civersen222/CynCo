@@ -93,7 +93,7 @@ describe('gateLineRows', () => {
 
   it('a campaign with a calibration and no waves at all is open', () => {
     const rows = gateLineRows({ states: [{ id: 'c9', author: 'cynco', decided: false, calibration: cal(['C9.1a']), reseals: [], waves: [] }], history: null })
-    expect(rows).toEqual([{ campaign: 'c9', author: 'cynco', lineId: 'C9.1a', outcome: 'open', resealedAtWave: null, firstPassWave: null, decided: false, source: 'runner' }])
+    expect(rows).toEqual([{ campaign: 'c9', author: 'cynco', sealedAt: null, lineId: 'C9.1a', outcome: 'open', resealedAtWave: null, firstPassWave: null, decided: false, source: 'runner' }])
   })
 
   it('history campaigns arrive as their own rows, with the reseals the log recorded', () => {
@@ -101,10 +101,35 @@ describe('gateLineRows', () => {
       { id: 'c7', author: 'human', lineIds: ['C7.1', 'C7.3', 'C7.9'], resealed: ['C7.3'], decided: true },
     ] } })
     expect(rows).toEqual([
-      { campaign: 'c7', author: 'human', lineId: 'C7.1', outcome: 'held', resealedAtWave: null, firstPassWave: null, decided: true, source: 'history' },
-      { campaign: 'c7', author: 'human', lineId: 'C7.3', outcome: 'resealed', resealedAtWave: null, firstPassWave: null, decided: true, source: 'history' },
-      { campaign: 'c7', author: 'human', lineId: 'C7.9', outcome: 'held', resealedAtWave: null, firstPassWave: null, decided: true, source: 'history' },
+      { campaign: 'c7', author: 'human', sealedAt: null, lineId: 'C7.1', outcome: 'held', resealedAtWave: null, firstPassWave: null, decided: true, source: 'history' },
+      { campaign: 'c7', author: 'human', sealedAt: null, lineId: 'C7.3', outcome: 'resealed', resealedAtWave: null, firstPassWave: null, decided: true, source: 'history' },
+      { campaign: 'c7', author: 'human', sealedAt: null, lineId: 'C7.9', outcome: 'held', resealedAtWave: null, firstPassWave: null, decided: true, source: 'history' },
     ])
+  })
+
+  it('a history entry that states its seal date carries it', () => {
+    const rows = gateLineRows({ states: [], history: { campaigns: [
+      { id: 'c7', author: 'human', sealedAt: '2026-08-14T00:00:00.000Z', lineIds: ['C7.1'], resealed: [], decided: true },
+    ] } })
+    expect(rows[0].sealedAt).toBe('2026-08-14T00:00:00.000Z')
+  })
+
+  it('carries the campaign seal date onto every one of its rows', () => {
+    const rows = gateLineRows({ states: [{
+      id: 'c9', author: 'cynco', sealedAt: '2026-09-23T10:00:00.000Z', decided: true,
+      calibration: cal(['C9.1a', 'C9.2a']), reseals: [], waves: waves(['pass']),
+    }] })
+    expect(rows.map(r => r.sealedAt)).toEqual(['2026-09-23T10:00:00.000Z', '2026-09-23T10:00:00.000Z'])
+  })
+
+  // A record with no wave number is not wave 0: a faulted or hand-written
+  // record can reach here without one, and 0 is an index nothing ever had.
+  it('a passing wave record with no wave number reads as no firstPassWave', () => {
+    const rows = gateLineRows({ states: [{
+      id: 'c9', author: 'cynco', decided: true, calibration: cal([], ['C9.9']), reseals: [],
+      waves: [{ gate: { passes: [{ id: 'C9.9', line: 'C9.9: PASS' }], fails: [] }, decision: { kind: 'pass' } }],
+    }] })
+    expect(rows[0].firstPassWave).toBeNull()
   })
 
   // The runner's own state is the authority: the history file is the record for
@@ -125,7 +150,7 @@ describe('gateLineRows', () => {
 })
 
 describe('summarize', () => {
-  const row = (author, outcome, i) => ({ campaign: 'x', author, lineId: `L${author}${i}`, outcome, resealedAtWave: null, firstPassWave: null, decided: true, source: 'runner' })
+  const row = (author, outcome, i) => ({ campaign: 'x', author, sealedAt: null, lineId: `L${author}${i}`, outcome, resealedAtWave: null, firstPassWave: null, decided: true, source: 'runner' })
   const many = (author, outcome, n, from = 0) => Array.from({ length: n }, (_, i) => row(author, outcome, from + i))
 
   it('counts terminal outcomes only — an open line is not evidence either way', () => {
@@ -201,9 +226,33 @@ describe('exportGateLines', () => {
     ])
     expect(r.summary.byAuthor.cynco).toMatchObject({ n: 3, held: 2 })
     expect(r.summary.byAuthor.human).toMatchObject({ n: 2, held: 1 })
+    // Every field of the row shape, spelled out once so a field that quietly
+    // stops being written cannot pass on the projections above.
+    expect(r.rows[1]).toEqual({
+      campaign: 'c9', author: 'cynco', sealedAt: '2026-09-20T00:00:00.000Z', lineId: 'C9.2a',
+      outcome: 'resealed', resealedAtWave: 1, firstPassWave: null, decided: true, source: 'runner',
+    })
     const written = readFileSync(w.outPath, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l))
     expect(written).toEqual(r.rows)
     expect(existsSync(w.outPath + '.tmp')).toBe(false)
+  })
+
+  it('dates the seal from the authoring record, and from the calibration when a human sealed by hand', () => {
+    const w = world()
+    expect(exportGateLines(w).rows.find(r => r.campaign === 'c9').sealedAt).toBe('2026-09-20T00:00:00.000Z')
+
+    // A human seals by writing the triple into the sealed tree by hand, so
+    // there is no authoring record: the campaign's own first calibration is the
+    // only stamp there has ever been.
+    const s = JSON.parse(readFileSync(join(w.campaignsDir, 'c9', 'state.json'), 'utf8'))
+    delete s.authoring
+    writeFileSync(join(w.campaignsDir, 'c9', 'state.json'), JSON.stringify(s, null, 2))
+    expect(exportGateLines(w).rows.find(r => r.campaign === 'c9').sealedAt).toBe('2026-09-01T00:00:00.000Z')
+
+    // And a campaign that has never calibrated has no seal date to claim.
+    s.calibration = null
+    writeFileSync(join(w.campaignsDir, 'c9', 'state.json'), JSON.stringify(s, null, 2))
+    expect(exportGateLines(w).rows.every(r => r.campaign !== 'c9')).toBe(true)
   })
 
   it('takes the author from the wave record, falling back to the authoring record', () => {

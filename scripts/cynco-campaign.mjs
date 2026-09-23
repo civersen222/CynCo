@@ -705,8 +705,12 @@ function authorIo(author) {
     readRow: defaultIo.readRow, appendLog: defaultIo.appendLog, dispatchEnv, takeLock, releaseLock,
     // Phase 3: the auto-approve branch records its own decision, and the
     // algedonic channel says so — a seal no human approved must still page the
-    // owner the moment it happens.
-    applyProposalDecision, notify: defaultIo.notify })
+    // owner the moment it happens. `seatAuthority` is what makes the branch
+    // reachable at all: the promotion is approved into the state of the
+    // campaign that gathered the evidence, never into the fresh one being
+    // authored, so the seat's authority has to be read across all of them.
+    applyProposalDecision, notify: defaultIo.notify,
+    seatAuthority: () => author.gateAuthorAuthorityAcrossCampaigns(join(cyncoHome(), 'campaigns')) })
 }
 
 export async function main(argv, deps = {}) {

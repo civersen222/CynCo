@@ -187,17 +187,24 @@ describe('verdictEntry — the gate-lines reading', () => {
 
   it('prints both seats, the CynCo interval and the verdict', () => {
     const gateLines = { byAuthor: { cynco: { n: 30, held: 30, rate: 1, ci: [0.886482908609522, 1] }, human: { n: 17, held: 17, rate: 1, ci: [0.8156, 1] } }, fisher: { p: 1, table: [[30, 0], [17, 0]] } }
-    expect(entry(gateLines)).toMatch(/- Gate lines: cynco 30\/30 \(rate 1\.000, ci \[0\.89, 1\.00\]\) vs human 17\/17; PARITY/)
+    expect(entry(gateLines)).toMatch(/- Gate lines: cynco 30\/30 held \(rate 1\.000, ci \[0\.89, 1\.00\]\) vs human 17\/17; PARITY/)
+  })
+
+  // Numerator first. `30/26` would be read as "26 of 30" by everyone who saw
+  // it, and every other ratio in this entry already reads that way.
+  it('prints held over lines, not lines over held', () => {
+    const gateLines = { byAuthor: { cynco: { n: 30, held: 26, rate: 26 / 30, ci: [0.7031831605558306, 0.9469043057578189] }, human: { n: 13, held: 9, rate: 9 / 13, ci: [0.42, 0.87] } }, fisher: { p: 1, table: [[26, 4], [9, 4]] } }
+    expect(entry(gateLines)).toMatch(/- Gate lines: cynco 26\/30 held \(rate 0\.867, ci \[0\.70, 0\.95\]\) vs human 9\/13; BELOW FLOOR/)
   })
 
   it('says TOO FEW rather than a rate nobody should read, below the minimum', () => {
     const gateLines = { byAuthor: { cynco: { n: 4, held: 4, rate: 1, ci: [0.51, 1] }, human: { n: 17, held: 17, rate: 1, ci: [0.81, 1] } }, fisher: { p: 1, table: [[4, 0], [17, 0]] } }
-    expect(entry(gateLines)).toMatch(/- Gate lines: cynco 4\/4 \(rate 1\.000, ci \[0\.51, 1\.00\]\) vs human 17\/17; TOO FEW/)
+    expect(entry(gateLines)).toMatch(/- Gate lines: cynco 4\/4 held \(rate 1\.000, ci \[0\.51, 1\.00\]\) vs human 17\/17; TOO FEW/)
   })
 
   it('an author with no terminal line at all prints a dash, not a rate of zero', () => {
     const gateLines = { byAuthor: { cynco: { n: 0, held: 0, rate: null, ci: [0, 1] }, human: { n: 17, held: 17, rate: 1, ci: [0.81, 1] } }, fisher: { p: 1, table: [[0, 0], [17, 0]] } }
-    expect(entry(gateLines)).toMatch(/- Gate lines: cynco 0\/0 \(rate —, ci \[0\.00, 1\.00\]\) vs human 17\/17; TOO FEW/)
+    expect(entry(gateLines)).toMatch(/- Gate lines: cynco 0\/0 held \(rate —, ci \[0\.00, 1\.00\]\) vs human 17\/17; TOO FEW/)
   })
 
   it('omits the line entirely when the export never ran', () => {

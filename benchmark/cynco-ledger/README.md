@@ -462,12 +462,17 @@ one draw, and at one campaign every few weeks a gate-authoring seat would earn
 its authority somewhere around 2030. A gate line is one falsifiable claim, and
 one campaign ships 9–17 of them.
 
-One row per (campaign, graded line):
+One row per (campaign, graded line). Both of these are real rows, copied out of
+an export run against `~/.cynco/campaigns` — the first from c8's state dir, the
+second from the history file:
 
 ```jsonc
-{ "campaign": "c9", "author": "cynco", "lineId": "C9.2a.keybind-rebinds",
-  "outcome": "resealed", "resealedAtWave": 2, "firstPassWave": null,
-  "decided": true, "source": "runner" }
+{ "campaign": "c8", "author": "human", "sealedAt": "2026-09-17T10:55:46.162Z",
+  "lineId": "C8.1a.tiers-pressable", "outcome": "held", "resealedAtWave": null,
+  "firstPassWave": 3, "decided": true, "source": "runner" }
+{ "campaign": "c7", "author": "human", "sealedAt": null,
+  "lineId": "C7.3.branching", "outcome": "resealed", "resealedAtWave": null,
+  "firstPassWave": null, "decided": true, "source": "history" }
 ```
 
 - **`outcome`** is one of three:
@@ -479,6 +484,13 @@ One row per (campaign, graded line):
     rewrote mid-campaign proves nothing about the line that was sealed.
   - **`open`** — the campaign has not reached a decision yet. Not evidence
     either way, and excluded from every rate below.
+- **`sealedAt`** — when this campaign's gate was sealed: the authoring record's
+  own stamp (`state.authoring[<id>].sealedAt`) for a CynCo-authored campaign,
+  and the campaign's first calibration (`state.calibration.calibratedAt`) for a
+  human-sealed one, which has no authoring record because a human seals by
+  writing the triple into the sealed tree by hand and nothing records the
+  moment. `null` for a history row that does not state one, and for a campaign
+  that has never calibrated.
 - **`decided`** — the campaign's last wave record carries a decision it does
   not come back from: `pass`, `pass-with-survivors`, `budget` or `no-progress`.
   `fault` and `stop` are refusals to measure rather than readings, and `next`

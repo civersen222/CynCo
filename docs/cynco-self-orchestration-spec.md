@@ -333,7 +333,11 @@ significantly BETTER must not be refused by its own evidence). It raises
 What that 0.5 buys is one branch: `authorCampaign` seals its own gate instead of
 waiting for `--approve-proposal gate/<id>`, and records the decision as
 `decidedBy: 'auto'`. Every check inside `sealGate` still runs — a refused seal
-leaves the proposal pending exactly as a refused human approval does.
+leaves the proposal pending exactly as a refused human approval does. The
+promotion is approved into the state of the campaign that gathered the evidence
+while the seal happens inside the campaign being authored, which is always
+fresh, so the seat's authority is the highest approved in any campaign's state;
+a per-seat retained-configuration store is Phase 4.
 
 **Deferred spec items (follow-up, not built here).**
 

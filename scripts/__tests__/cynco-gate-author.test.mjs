@@ -1,12 +1,12 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, basename } from 'node:path'
 import { createHash } from 'node:crypto'
 import { loadCampaignSpec } from '../cynco-campaign-spec.mjs'
 import {
   AUTHOR_TIMEOUT_S, AUTHOR_ITERATIONS, AUTHOR_INVARIANTS, GATE_AUTHOR_MAX_AUTHORITY,
-  GATE_AUTHOR_MIN_LINES, GATE_AUTHOR_HELD_FLOOR, gateAuthorPromotion,
+  GATE_AUTHOR_MIN_LINES, GATE_AUTHOR_HELD_FLOOR, gateAuthorPromotion, gateAuthorAuthorityAcrossCampaigns,
   stagingDirFor, heldoutDirFor, prepareStaging, authoringBrief, authoringSidecar, checkCommand,
   checkStaged, authorCampaign, gateProposal, sealGate, draftToSpec, authorMain, previousLineId,
 } from '../cynco-gate-author.mjs'
@@ -776,6 +776,70 @@ describe('authorMain', () => {
   })
 })
 
+// ── The seat's authority is read across every campaign, not one state file ──
+
+describe('gateAuthorAuthorityAcrossCampaigns', () => {
+  const campaigns = (byId) => {
+    const dir = mkdtempSync(join(tmpdir(), 'seat-'))
+    for (const [id, state] of Object.entries(byId)) {
+      mkdirSync(join(dir, id), { recursive: true })
+      writeFileSync(join(dir, id, 'state.json'), JSON.stringify({ id, ...state }, null, 2))
+    }
+    return dir
+  }
+
+  it('is the highest value approved in any campaign', () => {
+    expect(gateAuthorAuthorityAcrossCampaigns(campaigns({ c7: { gateAuthorAuthority: 0 }, c8: { gateAuthorAuthority: 0.5 }, c9: {} }))).toBe(0.5)
+  })
+
+  it('is 0 when no campaign has earned anything', () => {
+    expect(gateAuthorAuthorityAcrossCampaigns(campaigns({ c8: { gateAuthorAuthority: 0 }, c9: {} }))).toBe(0)
+  })
+
+  it('is 0 for a campaigns dir that does not exist', () => {
+    expect(gateAuthorAuthorityAcrossCampaigns(join(tmpdir(), 'no-such-campaigns-dir-' + Date.now()))).toBe(0)
+  })
+
+  it('ignores a state file whose authority is not a finite number', () => {
+    expect(gateAuthorAuthorityAcrossCampaigns(campaigns({ c8: { gateAuthorAuthority: 'lots' }, c9: { gateAuthorAuthority: null } }))).toBe(0)
+  })
+})
+
+describe('--author at earned authority, end to end', () => {
+  const runAuthor = async (seatState) => {
+    const campaignsDir = mkdtempSync(join(tmpdir(), 'seat-e2e-'))
+    for (const [id, state] of Object.entries(seatState)) {
+      mkdirSync(join(campaignsDir, id), { recursive: true })
+      writeFileSync(join(campaignsDir, id, 'state.json'), JSON.stringify({ id, ...state }, null, 2))
+    }
+    const { files } = staged(home)
+    const state = new CampaignState(join(mkdtempSync(join(tmpdir(), 'camp-')), ID)).load()
+    const { io, disk } = makeIo({ home, files, over: {
+      loadRoadmap: () => ROADMAP(),
+      stateFor: () => state,
+      applyProposalDecision,
+      // Exactly what the runner's authorIo hands over.
+      seatAuthority: () => gateAuthorAuthorityAcrossCampaigns(campaignsDir),
+    } })
+    const code = await authorMain(['--author', ID], io)
+    return { code, state, disk }
+  }
+
+  it('c8 approved at 0.5 and c9 fresh: --author c9 seals c9', async () => {
+    const { code, state, disk } = await runAuthor({ c8: { gateAuthorAuthority: 0.5 }, c9: {} })
+    expect(code).toBe(0)
+    expect(disk[`${home}/heldout/civkings-redesign/c9/gate_c9.py`]).toBe(GATE_SRC)
+    expect(state.state.proposals.find(p => p.name === 'gate/c9')).toMatchObject({ status: 'approved', decidedBy: 'auto' })
+  })
+
+  it('nothing approved anywhere: --author c9 raises the proposal and seals nothing', async () => {
+    const { code, state, disk } = await runAuthor({ c8: { gateAuthorAuthority: 0 }, c9: {} })
+    expect(code).toBe(0)
+    expect(disk[`${home}/heldout/civkings-redesign/c9/gate_c9.py`]).toBeUndefined()
+    expect(state.state.proposals.find(p => p.name === 'gate/c9').status).toBe('pending')
+  })
+})
+
 describe('constants', () => {
   it('are the budget the spec set', () => {
     expect(AUTHOR_TIMEOUT_S).toBe(14400)
@@ -904,6 +968,43 @@ describe('authorCampaign at earned authority', () => {
     })
     expect(r.sealed.ok).toBe(false)
     expect(r.sealed.problems.length).toBeGreaterThan(0)
+    expect(state.state.proposals.find(x => x.name === 'gate/c9').status).toBe('pending')
+    expect(roadmap.lines.find(l => l.id === 'c9').status).toBe('proposed')
+  })
+
+  // The two ends of the ladder live in different state files: the promotion is
+  // approved into the state of the campaign that GATHERED the evidence, and the
+  // auto-approve branch runs inside the campaign being AUTHORED, which is
+  // always fresh. Reading only the local state, an earned 0.5 never arrives.
+  it('seals on the SEAT\'s authority even when this campaign\'s own state says 0', async () => {
+    const { r, state, disk } = await runAt(0, { seatAuthority: () => GATE_AUTHOR_MAX_AUTHORITY })
+    expect(state.state.gateAuthorAuthority).toBe(0)
+    expect(r.sealed.ok).toBe(true)
+    expect(disk[`${home}/heldout/civkings-redesign/c9/gate_c9.py`]).toBe(GATE_SRC)
+    expect(state.state.proposals.find(x => x.name === 'gate/c9').decidedBy).toBe('auto')
+  })
+
+  it('a seat that has earned nothing anywhere leaves the proposal pending', async () => {
+    const { r, state } = await runAt(0, { seatAuthority: () => 0 })
+    expect(r.sealed).toBeNull()
+    expect(state.state.proposals.find(x => x.name === 'gate/c9').status).toBe('pending')
+  })
+
+  // A direct `bun scripts/cynco-gate-author.mjs --author` has no runner behind
+  // it and so no decision writer. Sealing first and discovering that second
+  // would leave a gate in the sealed tree against a proposal still marked
+  // pending — a seal nobody can audit and nobody can re-approve.
+  it('refuses BEFORE sealing when the runner supplied no decision writer', async () => {
+    const { files } = staged(home)
+    const { io, disk } = makeIo({ home, files, over: { seatAuthority: () => GATE_AUTHOR_MAX_AUTHORITY, applyProposalDecision: undefined } })
+    delete io.applyProposalDecision
+    const roadmap = ROADMAP()
+    const state = new CampaignState(join(mkdtempSync(join(tmpdir(), 'camp-')), ID)).load()
+    const r = await authorCampaign({ id: ID, roadmap, state, io })
+    expect(r.sealed.ok).toBe(false)
+    expect(r.sealed.problems[0]).toMatch(/applyProposalDecision was not supplied/)
+    expect(disk[`${home}/heldout/civkings-redesign/c9/gate_c9.py`]).toBeUndefined()
+    expect(disk['docs/civkings-redesign-briefs/c9.campaign.json']).toBeUndefined()
     expect(state.state.proposals.find(x => x.name === 'gate/c9').status).toBe('pending')
     expect(roadmap.lines.find(l => l.id === 'c9').status).toBe('proposed')
   })

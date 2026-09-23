@@ -32,6 +32,7 @@ import { sidecarPath } from './cynco-contract.mjs'
 import { loadRoadmap, lineFor, setLineStatus, saveRoadmap, ROADMAP_PATH } from './cynco-roadmap.mjs'
 import { CampaignState } from './cynco-campaign-state.mjs'
 import { GATE_AUTHOR_MIN_LINES, GATE_AUTHOR_HELD_FLOOR } from './cynco-signal-validation.mjs'
+import { readCampaigns } from './cynco-triples.mjs'
 
 // 4 h and 1200 iterations: the authoring mission writes four files and runs a
 // check that costs two gate runs, so it is sized well below a wave's 8 h/2000.
@@ -443,6 +444,34 @@ export function gateProposal({ id, check, missionId, verified }) {
 }
 
 /**
+ * The SEAT's authority, not one campaign's.
+ *
+ * The two ends of the ladder live in different state files, and that is not an
+ * accident of layout: the promotion is approved into the RUNNING campaign's
+ * state (`~/.cynco/campaigns/c8/state.json`, where the evidence was gathered),
+ * while the auto-approve branch below runs inside the campaign being AUTHORED
+ * (`.../c9/state.json`, which is fresh). Reading only the local state, an
+ * earned 0.5 would never reach a single seal.
+ *
+ * Controller ruling: the gate-author seat is one seat across every campaign, so
+ * its authority is the HIGHEST approved anywhere. A per-seat retained-
+ * configuration store — one home for what the seat has earned, independent of
+ * the campaigns it earned it on — is Phase 4.
+ *
+ * The cost is stated rather than hidden: a `gate-author/gate` REJECTED in one
+ * campaign does not pull down a higher value approved in another. The owner's
+ * lever for that is to lower the approved value where it was approved.
+ */
+export function gateAuthorAuthorityAcrossCampaigns(campaignsDir = join(cyncoHome(), 'campaigns')) {
+  let max = 0
+  for (const { state } of readCampaigns(campaignsDir)) {
+    const v = state?.gateAuthorAuthority
+    if (typeof v === 'number' && Number.isFinite(v) && v > max) max = v
+  }
+  return max
+}
+
+/**
  * Ruling 11: the promotion the gate-line evidence earns, or null.
  *
  * Same shape and the same discipline as the ideation promotion
@@ -600,27 +629,40 @@ export async function authorCampaign({ id, roadmap, state, io }) {
   // roadmap line `proposed` — exactly where a supervisor's refused approval
   // leaves them. Earned authority buys the seat the right to press the button,
   // never the right to skip the checks behind it.
+  // The seat's authority, not this fresh campaign's: the promotion was approved
+  // into the state of whichever campaign gathered the evidence, so the local
+  // value is 0 on every campaign that has just been created.
+  const authority = Math.max(s.gateAuthorAuthority ?? 0, io.seatAuthority?.() ?? 0)
   let sealed = null
-  if (proposal && (s.gateAuthorAuthority ?? 0) >= GATE_AUTHOR_MAX_AUTHORITY) {
-    try {
-      sealed = await sealGate({ id, state, roadmap, io })
-      if (sealed.ok) {
-        // The decision is recorded through the runner's own
-        // `applyProposalDecision`, handed over in the io (this module never
-        // imports the runner — that would close the ESM cycle it lives on the
-        // other side of). `decidedBy: 'auto'` is what tells a later reader that
-        // no human looked at this seal.
-        const decided = io.applyProposalDecision(s, proposal.name, true, { decidedBy: 'auto' })
-        if (!decided?.ok) console.error(`[author] ${id}: sealed, but the decision was not recorded — ${decided?.why ?? 'no reason given'}`)
-        if (io.notify) await io.notify(`${id.toUpperCase()}: gate SEALED by the gate-author seat at authority ${s.gateAuthorAuthority} — proposal ${proposal.name} approved automatically (${check.lineIds.length} graded lines, ${sealed.specPath}). No supervisor approved this.`)
-      } else {
-        console.error(`[author] ${id}: auto-seal REFUSED — the proposal stays pending for --approve-proposal ${proposal.name}:\n  ${sealed.problems.join('\n  ')}`)
+  if (proposal && authority >= GATE_AUTHOR_MAX_AUTHORITY) {
+    // BEFORE the seal, not after: without the runner's decision writer there is
+    // no way to record that this gate was approved, and a gate copied into the
+    // sealed tree against a proposal that is still `pending` is a seal nobody
+    // can audit and nobody can re-approve. Refuse while nothing has moved.
+    if (typeof io.applyProposalDecision !== 'function') {
+      sealed = { ok: false, problems: ['io.applyProposalDecision was not supplied by the runner — run --author through scripts/cynco-campaign.mjs; nothing was sealed'] }
+      console.error(`[author] ${id}: earned authority ${authority}, but ${sealed.problems[0]}`)
+    } else {
+      try {
+        sealed = await sealGate({ id, state, roadmap, io })
+        if (sealed.ok) {
+          // The decision is recorded through the runner's own
+          // `applyProposalDecision`, handed over in the io (this module never
+          // imports the runner — that would close the ESM cycle it lives on the
+          // other side of). `decidedBy: 'auto'` is what tells a later reader
+          // that no human looked at this seal.
+          const decided = io.applyProposalDecision(s, proposal.name, true, { decidedBy: 'auto' })
+          if (!decided?.ok) console.error(`[author] ${id}: sealed, but the decision was not recorded — ${decided?.why ?? 'no reason given'}`)
+          if (io.notify) await io.notify(`${id.toUpperCase()}: gate SEALED by the gate-author seat at authority ${authority} — proposal ${proposal.name} approved automatically (${check.lineIds.length} graded lines, ${sealed.specPath}). No supervisor approved this.`)
+        } else {
+          console.error(`[author] ${id}: auto-seal REFUSED — the proposal stays pending for --approve-proposal ${proposal.name}:\n  ${sealed.problems.join('\n  ')}`)
+        }
+      } catch (e) {
+        // A throw here must not lose the authoring run: the proposal is already
+        // raised and the supervisor can still approve it by hand.
+        console.error(`[author] ${id}: auto-seal failed — ${e?.stack ?? e}`)
+        sealed = { ok: false, problems: [`auto-seal failed: ${e?.message ?? e}`] }
       }
-    } catch (e) {
-      // A throw here must not lose the authoring run: the proposal is already
-      // raised and the supervisor can still approve it by hand.
-      console.error(`[author] ${id}: auto-seal failed — ${e?.stack ?? e}`)
-      sealed = { ok: false, problems: [`auto-seal failed: ${e?.message ?? e}`] }
     }
   }
   state.save()
@@ -907,6 +949,10 @@ export function defaultAuthorIo(helpers = {}) {
     // a seal nobody decided is a seal nobody can audit.
     applyProposalDecision: helpers.applyProposalDecision ?? (() => { throw new Error('io.applyProposalDecision was not supplied by the runner — run --author through scripts/cynco-campaign.mjs') }),
     notify: helpers.notify ?? null,
+    // What the SEAT has earned, read across every campaign — see
+    // `gateAuthorAuthorityAcrossCampaigns`. A seam because the campaigns dir is
+    // a real directory and the auto-approve tests must point it somewhere else.
+    seatAuthority: helpers.seatAuthority ?? (() => gateAuthorAuthorityAcrossCampaigns()),
   }
 }
 

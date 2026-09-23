@@ -63,7 +63,10 @@ function gateLinesLine(summary) {
   if (!summary?.byAuthor) return null
   const { cynco, human } = summary.byAuthor
   const rate = cynco.rate === null || cynco.rate === undefined ? '—' : cynco.rate.toFixed(3)
-  return `- Gate lines: cynco ${cynco.n}/${cynco.held} (rate ${rate}, ci [${cynco.ci[0].toFixed(2)}, ${cynco.ci[1].toFixed(2)}]) vs human ${human.n}/${human.held}; ${gateLineVerdict(summary)}`
+  // Numerator first — `26/30 held`, the way every other ratio in this entry
+  // reads (`edit-gap 2/80 complied`, `Derived sweep 6/25`). n/held would print
+  // `30/26` and be read as 26 of 30 by everyone who ever sees it.
+  return `- Gate lines: cynco ${cynco.held}/${cynco.n} held (rate ${rate}, ci [${cynco.ci[0].toFixed(2)}, ${cynco.ci[1].toFixed(2)}]) vs human ${human.held}/${human.n}; ${gateLineVerdict(summary)}`
 }
 
 export function verdictEntry({ spec, wave, row, grade, decision, ideationRecord, economicsLines, denialAnalysis = null, denialScope = 'campaign', capProposal = null, governancePosiwid = null, gateLines = null }) {

@@ -93,10 +93,17 @@ export function resealRecord({ at, wave, from, to }) {
   return { at, wave, from: { gateSha256: from?.gateSha256 ?? null }, to: { gateSha256: to?.gateSha256 ?? null }, changedLineIds }
 }
 
-/** The first wave whose `gate.passes` carried the id, or null. */
+/**
+ * The first wave whose `gate.passes` carried the id, or null.
+ *
+ * A wave record with no `wave` number answers `null` rather than a falsy 0:
+ * a faulted or hand-written record can reach here without one, and 0 is a wave
+ * index nothing ever had — "the line passed at wave 0" would be a fact this
+ * dataset invented.
+ */
 function firstPassWave(waves, id) {
   for (const w of waves ?? []) {
-    if ((w?.gate?.passes ?? []).some(p => (p?.id ?? p) === id)) return w.wave ?? null
+    if ((w?.gate?.passes ?? []).some(p => (p?.id ?? p) === id)) return typeof w.wave === 'number' ? w.wave : null
   }
   return null
 }
@@ -110,8 +117,8 @@ export function decidedOf(waves) {
 /**
  * One row per (campaign, graded line).
  *
- * `states` are runner campaigns (`{ id, author, decided, calibration, reseals,
- * waves }`); `history` is the hand-transcribed record of the campaigns that ran
+ * `states` are runner campaigns (`{ id, author, sealedAt, decided, calibration,
+ * reseals, waves }`); `history` is the hand-transcribed record of the campaigns that ran
  * before the runner did. A campaign present in both is taken from the runner
  * state and skipped in the history — counting it twice would double its lines
  * in the denominator the promotion is decided on.
@@ -133,7 +140,7 @@ export function gateLineRows({ states = [], history = null } = {}) {
     for (const id of ids) {
       const resealed = resealedAt.has(id)
       rows.push({
-        campaign: st.id, author: st.author ?? 'human', lineId: id,
+        campaign: st.id, author: st.author ?? 'human', sealedAt: st.sealedAt ?? null, lineId: id,
         outcome: resealed ? 'resealed' : st.decided ? 'held' : 'open',
         resealedAtWave: resealed ? resealedAt.get(id) : null,
         firstPassWave: firstPassWave(st.waves, id),
@@ -146,7 +153,7 @@ export function gateLineRows({ states = [], history = null } = {}) {
     const resealed = new Set(c?.resealed ?? [])
     for (const id of c?.lineIds ?? []) {
       rows.push({
-        campaign: c.id, author: c.author ?? 'human', lineId: id,
+        campaign: c.id, author: c.author ?? 'human', sealedAt: c.sealedAt ?? null, lineId: id,
         outcome: resealed.has(id) ? 'resealed' : c.decided ? 'held' : 'open',
         resealedAtWave: null, firstPassWave: null, decided: Boolean(c.decided), source: 'history',
       })
@@ -195,12 +202,27 @@ function authorOf(state, waves, id) {
 }
 
 /**
+ * When this campaign's gate was sealed.
+ *
+ * The authoring record's `sealedAt` is the exact stamp, and only a
+ * CynCo-authored campaign has one: a human seals by writing the triple into
+ * `~/.cynco/heldout/<family>/<id>` by hand, and nothing records the moment. For
+ * those, the campaign's own first calibration IS the seal date — the calibration
+ * is the first thing that ever ran against the sealed triple, so it dates the
+ * seal to within one invocation. Both are ISO strings; a campaign with neither
+ * (nothing calibrated yet) is null.
+ */
+function sealedAtOf(state, id) {
+  return state?.authoring?.[id]?.sealedAt ?? state?.calibration?.calibratedAt ?? null
+}
+
+/**
  * Regenerate the dataset: every campaign state dir plus the history file.
  * Returns the rows and the summary the verdict entry and the promotion read.
  */
 export function exportGateLines({ campaignsDir = join(cyncoHome(), 'campaigns'), historyPath = HISTORY_PATH, outPath = GATE_LINES_PATH() } = {}) {
   const states = readCampaigns(campaignsDir).map(({ id, state, waves }) => ({
-    id, author: authorOf(state, waves, id), decided: decidedOf(waves),
+    id, author: authorOf(state, waves, id), sealedAt: sealedAtOf(state, id), decided: decidedOf(waves),
     calibration: state?.calibration ?? null, reseals: state?.reseals ?? [], waves,
   }))
   const rows = gateLineRows({ states, history: readHistory(historyPath) })

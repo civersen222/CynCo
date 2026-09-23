@@ -1199,7 +1199,7 @@ describe('the gate-author promotion at VERDICT', () => {
   it('prints the gate-lines reading in the verdict entry', async () => {
     let entry = null
     await runWave(spec, freshState(), io({ appendLog: (t) => { entry = t } }))
-    expect(entry).toMatch(/- Gate lines: cynco 30\/30 \(rate 1\.000, ci \[0\.89, 1\.00\]\) vs human 17\/17; PARITY/)
+    expect(entry).toMatch(/- Gate lines: cynco 30\/30 held \(rate 1\.000, ci \[0\.89, 1\.00\]\) vs human 17\/17; PARITY/)
   })
 })
 
@@ -1261,7 +1261,7 @@ describe('main routes the authoring verbs before it loads a campaign spec', () =
     expect(s.calls).toHaveLength(1)
     expect(s.calls[0].argv).toEqual(['--author', 'c9'])
     // the runner's own helpers are what travel over, not an import back
-    expect(Object.keys(s.calls[0].io.helpers).sort()).toEqual(['appendLog', 'applyProposalDecision', 'dispatchEnv', 'dispatchRaw', 'missionIdFrom', 'notify', 'readRow', 'releaseLock', 'takeLock', 'waitForDriver'])
+    expect(Object.keys(s.calls[0].io.helpers).sort()).toEqual(['appendLog', 'applyProposalDecision', 'dispatchEnv', 'dispatchRaw', 'missionIdFrom', 'notify', 'readRow', 'releaseLock', 'seatAuthority', 'takeLock', 'waitForDriver'])
   })
 
   it('--author takes the id from the argv path when none is named', async () => {
