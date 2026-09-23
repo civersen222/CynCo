@@ -20,6 +20,27 @@ function invariantsLine(inv) {
   return `Invariants: engine denied ${denyCount} call(s)${byInvariant}, ${inv.revertRefusals ?? 0} revert refusal(s), ${inv.codeIndexAssisted ?? 0} CodeIndex-assisted Grep(s).${relents}`
 }
 
+// Phase 2b-ii verify-first routing (row.routing, from governance.status). null
+// means the wave could not route at all — interactive, no invariants, or no
+// KEEP-GREEN assertion — and the line is omitted rather than printing a row of
+// zeroes that reads as "the router ran and did nothing".
+//
+// `count` is every route; `used` is how many KEEP-GREEN runs it actually paid
+// for, which is the number that answers "did the budget bind". Cached and
+// could-not-run routes are reported separately because they are different
+// facts: a cached verdict IS an answer, a timeout is not.
+function routingLine(routing) {
+  if (!routing) return null
+  const k = routing.byKind ?? {}
+  const o = routing.byOutcome ?? {}
+  const n = (v) => v ?? 0
+  const cached = n(o['cached-passed']) + n(o['cached-failed'])
+  const couldNotRun = n(o.timeout) + n(o.unrunnable) + n(o['budget-exhausted'])
+  return `- Routing: ${n(routing.count)} verify-first (revert ${n(k.revert)}, low-confidence edit ${n(k['low-confidence-edit'])}): `
+    + `passed ${n(o.passed)}, failed ${n(o.failed)}, cached ${cached}, could not run ${couldNotRun}`
+    + ` (${n(routing.used)}/${n(routing.budget)} KEEP-GREEN runs spent).`
+}
+
 // Classifier/regulator agreement check: toolStats.bashByEffect (what each Bash
 // call actually DID) must sum to toolStats.byName.Bash (how many Bash calls the
 // classifier counted). A mismatch means the two disagree on what happened.
@@ -31,7 +52,7 @@ function bashByEffectLine(ts) {
   return `- Bash by effect: read ${be.read ?? 0}, write ${be.write ?? 0}, run ${be.run ?? 0}, commit ${be.commit ?? 0}, revert ${be.revert ?? 0}, other ${be.other ?? 0} (sum ${sum} vs byName.Bash ${bashByName} — ${sum === bashByName ? 'agree' : 'DISAGREE'}).`
 }
 
-export function verdictEntry({ spec, wave, row, grade, decision, ideationRecord, economicsLines, denialAnalysis = null, denialScope = 'campaign', capProposal = null }) {
+export function verdictEntry({ spec, wave, row, grade, decision, ideationRecord, economicsLines, denialAnalysis = null, denialScope = 'campaign', capProposal = null, governancePosiwid = null }) {
   const ts = row.toolStats ?? {}
   const inv = row.invariants
   const rejected = row.invariantsRejected === true
@@ -45,6 +66,8 @@ export function verdictEntry({ spec, wave, row, grade, decision, ideationRecord,
     (rejected ? ' **INVARIANTS REJECTED — the wave ran without its orders.**' : ''))
   const beLine = bashByEffectLine(ts)
   if (beLine) lines.push(beLine)
+  const rtLine = routingLine(row.routing)
+  if (rtLine) lines.push(rtLine)
   lines.push(`- **Sealed gate at ${grade.sha}: ${grade.gate.terminator ?? 'NO TERMINATOR'}${grade.gate.failCount != null ? ` (${grade.gate.failCount} fails)` : ''}${grade.gate.harnessFault ? ` — HARNESS FAULT: ${grade.gate.harnessFault}` : ''}.** ${grade.gate.priorRegressions != null ? `Prior-campaign regressions: ${grade.gate.priorRegressions}.` : ''}`)
   for (const f of grade.gate.fails) lines.push(`  - \`${f.line}\``)
   if (grade.gate.passes.length) lines.push(`  - PASS: ${grade.gate.passes.map(p => p.id).join(', ')}`)
@@ -55,6 +78,10 @@ export function verdictEntry({ spec, wave, row, grade, decision, ideationRecord,
       ? `- Derived sweep: UNMEASURED — ${grade.sweepFault}.`
       : '- Derived sweep: UNMEASURED (no diff or the sweep refused).')
   lines.push(`- POSIWID ${grade.posiwid.verdict} (divergence ${grade.posiwid.divergence.toFixed(3)}, dominant ${grade.posiwid.dominantObserved}).`)
+  if (governancePosiwid) {
+    const { verdict, divergence, dominantObserved, support, onsetWave } = governancePosiwid
+    lines.push(`- Governance POSIWID ${verdict} (divergence ${divergence.toFixed(3)}, dominant ${dominantObserved}, support ${support}${onsetWave ? `; drift onset wave ${onsetWave}` : ''}).`)
+  }
   if (ideationRecord) lines.push(`- S4 ideation (authority ${ideationRecord.authority}): ${ideationRecord.hypotheses.length} hypothesis/es; followed=${ideationRecord.followed}.`)
   lines.push(`- Ledger: verified ${grade.verified === null ? 'null (harness fault)' : grade.verified}; mutationSweep ${grade.sweep ? 'recorded (derived)' : 'null'}.`)
   if (denialAnalysis?.invariants) {

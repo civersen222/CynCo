@@ -116,6 +116,12 @@ LOCALCODE_EMBED_MODEL="${LOCALCODE_EMBED_MODEL:-nomic-embed-text}" \
 # LOCALCODE_MISSION_*: the dashboard's Mission panel (/api/mission) reads these
 # to show commits since baseline, marker sighting and budget consumption — the
 # same evidence the driver grades at close, visible while the run is live.
+#
+# CYNCO_CAMPAIGN_ID: passed through the same way — scripts/cynco-campaign.mjs's
+# defaultIo.dispatch sets it in the env this script is launched with, and it
+# must reach `bun engine/main.ts` explicitly rather than relying on shell
+# inheritance, or the 9161 dashboard's /api/campaign has no `active` campaign to
+# report between waves (nothing is inFlight once a wave's driver has exited).
 MISSION_BASE=$(git -C "$MISSION_CWD" rev-parse HEAD)
 echo "[dispatch] mission baseline $MISSION_BASE"
 if [ -n "${CYNCO_MISSION_INVARIANTS:-}" ]; then echo "[dispatch] invariants: $CYNCO_MISSION_INVARIANTS"; fi
@@ -128,6 +134,7 @@ LOCALCODE_MISSION_CWD="$MISSION_CWD" \
 LOCALCODE_MISSION_BASE="$MISSION_BASE" \
 LOCALCODE_MISSION_CHECK="${CHECK_CMD:-}" \
 CYNCO_BASH_TIMEOUT_MS="$CYNCO_BASH_TIMEOUT_MS" \
+CYNCO_CAMPAIGN_ID="${CYNCO_CAMPAIGN_ID:-}" \
   bun engine/main.ts > "$ENGINE_LOG" 2>&1 &
 
 echo "[dispatch] waiting for the model to load"
@@ -195,6 +202,52 @@ if [ -z "$CTX" ] || [ -z "$CRAM" ]; then
   exit 1
 fi
 echo "[dispatch] ctx=$CTX cache-ram=${CRAM} MiB — coupled, as launched"
+
+# Task 4 (2a-iii): give the jlens sidecar (port 9163, engine/brain/jlensSidecar.ts)
+# up to 60s to come up before the driver starts sending turns. Not a hard
+# dependency — the Brain auto-detects tier per turn (live / record-only /
+# entropy-only) and degrades silently when the sidecar is absent — but a
+# mission whose first turns ran before the sidecar bound would read `live`
+# for the whole session except a hole at the start, which is a confusing
+# thing to explain from the ledger alone. This wait is purely diagnostic and
+# MUST NOT fail the dispatch either way.
+#
+# Review minor #11: the wait used to be unconditional, so a dispatch with no
+# lens at all paid the full 60s for an answer that could not change. There is
+# no single env var that turns the lens on: engine/main.ts:481 starts the
+# sidecar for EVERY llama-cpp session, and bootstrapProvider.ts:95 defaults
+# LLAMA_ACTIVATIONS_LAYERS *inside the engine process* when the brain build is
+# selected, so this shell's own env cannot answer either question. The engine
+# log can, and it is already complete here (both lines are printed before
+# "[localcode] Ready", which we waited for above):
+#   * `[jlens] sidecar not started: <reason>` — nothing will ever bind 9163.
+#   * `[jlens] sidecar starting (pid ...)`    — something will, worth waiting for.
+# and the tap, without which the consumer can never reach the `live` tier and
+# the sidecar's readiness cannot affect the mission, is visible as either this
+# shell's LLAMA_ACTIVATIONS_LAYERS or the engine's brain-build default line.
+JLENS_SKIP=
+if grep -q "^\[jlens\] sidecar not started:" "$ENGINE_LOG" 2>/dev/null; then
+  JLENS_SKIP="$(grep -m1 "^\[jlens\] sidecar not started:" "$ENGINE_LOG" | sed 's/^\[jlens\] sidecar not started: //' | tr -d '\r')"
+elif ! grep -q "^\[jlens\] sidecar starting" "$ENGINE_LOG" 2>/dev/null; then
+  JLENS_SKIP="engine log has no [jlens] line — no sidecar this session"
+elif [ -z "${LLAMA_ACTIVATIONS_LAYERS:-}" ] && ! grep -q "LLAMA_ACTIVATIONS_LAYERS defaulted to" "$ENGINE_LOG" 2>/dev/null; then
+  JLENS_SKIP="activation tap not configured (LLAMA_ACTIVATIONS_LAYERS unset, not a brain build) — the brain cannot reach the live tier"
+fi
+
+if [ -n "$JLENS_SKIP" ]; then
+  echo "[dispatch] jlens health: not waited for — $JLENS_SKIP"
+else
+  JLENS_HEALTH=absent
+  for _ in $(seq 1 30); do
+    if curl -sf http://127.0.0.1:9163/health >/dev/null 2>&1; then JLENS_HEALTH=ok; break; fi
+    sleep 2
+  done
+  if [ "$JLENS_HEALTH" = "ok" ]; then
+    echo "[dispatch] jlens health: ok"
+  else
+    echo "[dispatch] jlens health: absent after 60s"
+  fi
+fi
 
 # --- visibility ------------------------------------------------------------
 # The bridge port (LOCALCODE_WS_PORT, default 9160) rejects browsers by design:

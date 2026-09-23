@@ -112,6 +112,19 @@ const usableCap = (v) => typeof v === 'number' && Number.isFinite(v) && v > 0
 const capOf = (v) => (usableCap(v) ? { timeoutMs: v } : {})
 
 /**
+ * The role as a spreadable field, so an assertion carrying none stays without
+ * the key at all — matching `capOf`'s reasoning: `{ role: undefined }` would
+ * still be a key present in the object, and "somebody set this to nothing" is
+ * a different fact than "nobody set this".
+ *
+ * `'keep-green'` is the only value ever produced here — `sidecarFor`
+ * (`scripts/cynco-brief.mjs`) is the sole author of a sidecar entry carrying
+ * one — but the check is on the VALUE, not on who is calling, because a
+ * sidecar is a JSON file a person can hand-edit.
+ */
+const roleOf = (v) => (v === 'keep-green' ? { role: v } : {})
+
+/**
  * One sidecar entry → the assertion the engine will carry.
  *
  * Every branch ends in a text `assertionCheck` recognises or a withheld command,
@@ -120,7 +133,7 @@ const capOf = (v) => (usableCap(v) ? { timeoutMs: v } : {})
  * exists to prevent, so it is checked rather than assumed — a path containing a
  * newline, for one, escapes an anchored template silently.
  */
-function toAssertion(entry, file) {
+export function toAssertion(entry, file) {
   if (nonBlank(entry)) {
     if (!assertionCheck(entry)) {
       refuse(file, `assertion "${entry}" parses into no repository check, so nothing would ` +
@@ -171,7 +184,15 @@ function toAssertion(entry, file) {
       refuse(file, `withheld assertion "${entry.text}" has timeoutMs ` +
         `${JSON.stringify(entry.timeoutMs)} — a cap must be a positive number of MILLISECONDS`)
     }
-    return { text: entry.text, command: entry.command.trim(), ...capOf(entry.timeoutMs) }
+    // Refused here, same reasoning as the timeoutMs check above: a role that
+    // fails this check silently drops (roleOf returns {}), so an unrecognised
+    // one is worse than none — it looks set and is not, and Task 6 would never
+    // find the assertion it is looking for.
+    if ('role' in entry && entry.role !== 'keep-green') {
+      refuse(file, `withheld assertion "${entry.text}" has role ` +
+        `${JSON.stringify(entry.role)} — the only recognised role is 'keep-green'`)
+    }
+    return { text: entry.text, command: entry.command.trim(), ...capOf(entry.timeoutMs), ...roleOf(entry.role) }
   }
 
   refuse(file, `assertion ${JSON.stringify(entry)} names no known kind ` +

@@ -43,7 +43,7 @@ import { TemplateLoader } from './prompts/templateLoader.js'
 import { initJournal } from './training/decisionJournal.js'
 import { loadOrCreateTokens, TOKEN_FILENAME } from './security/localToken.js'
 import { DashboardServer } from './dashboard/server.js'
-import { ActivationsConsumer } from './brain/activationsConsumer.js'
+import { ActivationsConsumer, DEFAULT_LAYERS } from './brain/activationsConsumer.js'
 import { JlensClient } from './brain/jlensClient.js'
 import { startJlensSidecar, type JlensSidecarHandle } from './brain/jlensSidecar.js'
 import { cyncoHome } from './paths.js'
@@ -344,6 +344,12 @@ const AUDIT_EVENT_PREFIXES = ['governance.', 'context.', 's2.', 's5.', 'algedoni
 // The emit closure captures dashboardServer by reference, so broadcasts
 // work once the server is initialised below.
 let dashboardServer: DashboardServer | null = null
+// Same late-binding shape, and for the same reason: the Brain consumer needs
+// the dashboard server (its broadcast sink), which needs the loop. Declared
+// here so the loop's getBrain dep can read it at call time — by then it is
+// either the consumer or, on Ollama and on any run where Tier 3 never came up,
+// still null.
+let activationsConsumer: ActivationsConsumer | null = null
 
 const loop = new ConversationLoop({
   config,
@@ -370,6 +376,13 @@ const loop = new ConversationLoop({
   s5: s5Orchestrator,
   // Late-binding closure: dashboardServer is assigned after loop construction
   dashboardBroadcast: (msg) => dashboardServer?.broadcast(msg as any),
+  // Brain telemetry on the governance.status frame. Data only (Phase 2 ruling
+  // 1): the ledger validates it before anything reads it.
+  getBrain: () => activationsConsumer ? {
+    tier: activationsConsumer.tier(),
+    layerConvergence: activationsConsumer.convergence(),
+    reset: () => activationsConsumer?.resetConvergence(),
+  } : null,
 })
 
 // Wire llama-server eval tok/s → governance for accurate dashboard display
@@ -392,9 +405,9 @@ if ((globalThis as any).__llamaProcessManager) {
 }
 
 // ─── Dashboard Server (Governance UI) ─────────────────────────
-// Declared before the dashboard server so its setBrainLayer dep can late-bind
-// to the consumer created below (Brain Tier 3).
-let activationsConsumer: ActivationsConsumer | null = null
+// `activationsConsumer` is declared above the loop so both the dashboard's
+// setBrainLayer dep and the loop's getBrain dep late-bind to the consumer
+// created below (Brain Tier 3).
 let jlensSidecar: JlensSidecarHandle | null = null
 try {
   dashboardServer = new DashboardServer({
@@ -470,11 +483,27 @@ if (config.provider === 'llama-cpp' && dashboardServer) {
   // without the four-step README ritual nobody performed; the consumer below
   // re-probes, so the tier upgrades on its own once the artifacts load.
   jlensSidecar = startJlensSidecar({ log: console.log })
+  // The layer set has three independent sources: this consumer, the tap's
+  // LLAMA_ACTIVATIONS_LAYERS (defaulted in bootstrapProvider for the brain
+  // build, but operator-set per README step 4), and the sidecar's JLENS_LAYERS.
+  // A position is only scored when every probed layer arrived, so a consumer
+  // probing a layer the tap never emits would leave layerConvergence null for
+  // the whole session. Take the tap's list as the truth — it is the one that
+  // decides what actually arrives — and fall back to the default when it is
+  // unset or unparseable.
+  const tapLayers = (process.env.LLAMA_ACTIVATIONS_LAYERS ?? '')
+    .split(',').map(s => Number(s.trim())).filter(n => Number.isInteger(n) && n >= 0)
+  if (process.env.LLAMA_ACTIVATIONS_LAYERS && tapLayers.length < 2) {
+    console.log(`[brain] LLAMA_ACTIVATIONS_LAYERS="${process.env.LLAMA_ACTIVATIONS_LAYERS}" parsed to ${tapLayers.length} layer(s) — falling back to ${DEFAULT_LAYERS.join(',')}`)
+  }
   activationsConsumer = new ActivationsConsumer({
     activationsUrl: `${providerUrl}/activations`,
     jlens: new JlensClient(),
     broadcast: (msg) => dashboardServer?.broadcast(msg as any),
     layer: Number(process.env.LOCALCODE_BRAIN_LAYER ?? 40),
+    // Convergence needs at least a deepest layer and one shallower one, so a
+    // one-layer tap list is not a layer set — it is a misconfiguration.
+    layers: tapLayers.length >= 2 ? tapLayers : DEFAULT_LAYERS,
     // We spawn llama-server with our env: no LLAMA_ACTIVATIONS_LAYERS means
     // the tap can never produce entries even though the route answers 200.
     tapConfigured: !!process.env.LLAMA_ACTIVATIONS_LAYERS,

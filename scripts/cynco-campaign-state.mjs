@@ -3,7 +3,8 @@ import { join } from 'node:path'
 
 export function freshState(id) {
   return { id, calibration: null, waveCount: 0, lastBase: null, lastFails: null, consecutiveNoProgress: 0,
-           ideationAuthority: 0, proposals: [], invariantOverrides: {}, pendingNotifications: [] }
+           ideationAuthority: 0, proposals: [], invariantOverrides: {}, pendingNotifications: [],
+           governancePosiwid: { windows: [] }, lastVerdictAt: null }
 }
 
 // The daemon's missionLedger pattern (engine/daemon/missionLedger.ts:27-56):

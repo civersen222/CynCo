@@ -60,7 +60,24 @@ decisions still recorded here).
     { "t": 1783550000000, "health": "healthy", "s3s4Balance": "critical",
       "toolSuccessRate": 0.9, "stuckTurns": 0, "varietyRatio": 9,
       "varietyBalance": "overload", "algedonicAlerts": 0, "axiomHealth": "red",
-      "consecutiveUnstable": 3, "agreementRatio": 0.0 }
+      "consecutiveUnstable": 3, "agreementRatio": 0.0,
+      // Task 4 (2a-iii): the Brain's telemetry for this turn (engine/bridge/
+      // protocol.ts GovernanceStatusEvent.brain), verbatim. null when the
+      // frame carried none — an older engine, Ollama, or a brain dep that
+      // never started. `layerConvergence`/`toolEntropy` are independently
+      // nullable inside a non-null `brain`: the tap can degrade mid-run.
+      // `meanDepth` is a LAYER INDEX, not a fraction: `convergenceOf`
+      // (engine/brain/layerConvergence.ts) reports the SHALLOWEST probed layer
+      // that already agrees with the deepest one, and falls back to the deepest
+      // layer itself when none does. With the default probe list
+      // (LLAMA_ACTIVATIONS_LAYERS = 24,32,40,48,56) it reads somewhere in
+      // [24, 56], and a value near 56 means the answer settled late. Only
+      // `meanAgree` and `byLayer` are fractions. The numbers below are a real
+      // turn from the 2026-09-22 smoke, not invented ones.
+      "brain": { "tier": "live",
+        "layerConvergence": { "n": 8, "meanAgree": 0.125, "meanDepth": 52,
+          "byLayer": { "24": 0, "32": 0, "40": 0.125, "48": 0.375 } },
+        "toolEntropy": { "mean": 0.0114, "max": 0.2125, "spikeCount": 2 } } }
   ],
   "s5Decisions": [          // one per s5.decision event
     { "t": 1783550000000, "ruleIds": ["C7"], "reasoning": "...",
@@ -70,6 +87,48 @@ decisions still recorded here).
   "controlSignals": [
     { "t": 1783550000000, "temperatureAdjust": 0, "temperature": 0.7,
       "bestOfNBudget": 1, "widenToolSet": false }
+  ],
+  // Task 7 (2c-i): the notes an operator typed at the 9161 dashboard WHILE the
+  // mission was running. One entry per note, not one per frame: the engine
+  // emits `mission.operator_note` twice — queued, then its outcome — and the
+  // second frame fills in the entry the first opened. The match is by frame
+  // KIND, not by `queuedAt` alone: `queuedAt` is millisecond-resolution and two
+  // sends can share it, so a queued frame always opens a new entry and an
+  // outcome frame fills the first entry still open under that key.
+  //
+  // Every note ends in exactly one of three states:
+  //   deliveredAtIteration: <n>      the model got it, at that runModelLoop
+  //                                  iteration. `t` is when it was queued, so
+  //                                  the gap is the operator's latency behind
+  //                                  the model call already in flight.
+  //   dropped: "queue full"          a newer note pushed it out (cap is 5 in
+  //                                  flight); also on a low/operator alert.
+  //   dropped: "mission ended"       the unattended message finished with it
+  //                                  still queued. It was NOT carried into the
+  //                                  next session — holding it over spliced a
+  //                                  stale [operator] line into whatever ran
+  //                                  next, including interactive sessions.
+  // All three null = the collector saw it queued and never saw it resolved: a
+  // run that died mid-mission. That is a finding, and is kept, not filtered.
+  //
+  // Only an UNATTENDED run can produce these. An interactive session keeps the
+  // old drop-and-log — there is a person at the terminal who can resend — so
+  // `[]` there is correct, not a gap.
+  //
+  // `source` says WHO sent it: "operator" — a person typing into the 9161 chat
+  // box mid-mission — or "driver" — cynco-mission-driver.mjs re-injecting a
+  // verbatim gate FAIL after its silence heuristic declared exit while the loop
+  // was still working. Both arrive on the same busy guard, and before this
+  // field the driver's probe was indistinguishable from something a human
+  // typed. The engine decides it from the frame: the driver declares
+  // `unattended: true` on everything it sends, the chat box never does. `null`
+  // means the frame carried no `source` (a record from an engine older than
+  // this field) — read it as unknown, never as "operator".
+  "operatorNotes": [
+    { "t": 1783550000000, "text": "stop editing app.py", "queuedAt": "2026-09-22T10:00:00.000Z",
+      "source": "operator", "deliveredAtIteration": 41, "dropped": null },
+    { "t": 1783550300000, "text": "PROBE FAIL C8.1a.tiers-pressable ...", "queuedAt": "2026-09-22T10:05:00.000Z",
+      "source": "driver", "deliveredAtIteration": null, "dropped": "mission ended" }
   ],
   "toolTransport": [        // one per toolcall.transport event (P1.8 repair ladder); absent in pre-P1.8 records
     { "t": 1783550000000, "stage": "repaired", "toolName": "Read", "detail": "..." }
@@ -207,6 +266,35 @@ decisions still recorded here).
   // rejected are the same null — and only the second is a dispatch bug. Never
   // null: an engine that cannot say simply did not reject one.
   "invariantsRejected": false,
+  // Phase 2b-ii verify-first routing (governance.status.routing, last frame
+  // wins). The gate ladder's SECOND verb: a revert is still refused, but the
+  // refusal first runs the mission's KEEP-GREEN command so it can say whether
+  // there is anything to undo; and a source edit the model was uncertain about
+  // (tool-token entropy) is executed and THEN measured, with the verdict
+  // appended to the result it reads next.
+  //
+  // `count` is every route; `used` is how many KEEP-GREEN runs were actually
+  // paid for out of `budget` (6 per mission) — cached verdicts and refused
+  // routes cost nothing, so `used < count` is normal and `used == budget` is
+  // how you see the budget bind. `entries` is the last 20; `byKind` and
+  // `byOutcome` are over ALL routes, and every outcome key is present so a
+  // mission that never timed out says zero rather than saying nothing.
+  //
+  // `entries[].nextCallClass` is the outcome record, exactly as it is for a
+  // denial: what the model's NEXT call was (`classifyCall`) after it was told
+  // the tree was green, or red, or unmeasurable. That is the only evidence
+  // that an informed refusal changes behaviour where a bare refusal does not.
+  //
+  // null = the mission could NOT route: interactive, no invariants, or no
+  // KEEP-GREEN assertion in the contract. A mission that could route and never
+  // needed to arrives as a block with `count: 0` — a different fact.
+  "routing": { "budget": 6, "used": 3, "count": 5,
+    "byKind": { "revert": 2, "low-confidence-edit": 3 },
+    "byOutcome": { "passed": 2, "failed": 1, "timeout": 0, "unrunnable": 0,
+      "cached-passed": 1, "cached-failed": 0, "budget-exhausted": 1 },
+    "entries": [ { "callIndex": 412, "kind": "revert", "entropy": 0.41,
+      "outcome": "passed", "ms": 41200, "tail": "12 passed",
+      "nextCallClass": "commit" } ] },
   "ultrastable": { "trace": [], "margin": 0.4 },
   // The ENGINE's live POSIWID reading (last governance.status frame): its
   // default purpose model against the session's executed tool classes
@@ -217,7 +305,26 @@ decisions still recorded here).
   // IdentityGuard verdict at the last user-message end (vsm/identityGuard.ts).
   // `passed` is what decides the session outcome; `posiwidPass` is recorded so
   // its precision can be measured here before it is allowed to count.
-  "identityGuard": { "passed": true, "posiwidPass": false, "violations": [], "details": ["..."] }
+  "identityGuard": { "passed": true, "posiwidPass": false, "violations": [], "details": ["..."] },
+  // Task 4 (2a-iii): the Brain's per-turn `brain` frames (above), folded to one
+  // row-level summary — computeBrainStats() in scripts/cynco-ledger.mjs. null
+  // when NO frame ever carried a `brain` block (an older engine, Ollama, or a
+  // brain dep that never started); never collapsed into a measured zero.
+  // `turnsWithLens` and `meanAgree`/`meanDepth` are over turns whose
+  // `layerConvergence` was non-null; `meanToolEntropy` is over turns whose
+  // `toolEntropy` was non-null, independently — the two can differ because the
+  // tap can degrade mid-run. `tier` is the LAST non-null tier seen on any
+  // frame that carried a `brain` block. This is a MEASUREMENT, not a rule:
+  // `scripts/cynco-signal-validation.mjs --signals` is what asks whether it
+  // predicts anything, by cutting `meanAgree`/`meanToolEntropy` at quartiles
+  // computed over labeled rows (`signalQuartiles`) into three candidate
+  // signals (`signalsFired`: `LC-low`, `LC-high`, `TE-high`) and running the
+  // same `analyse()` every S5 rule id goes through — thresholds live only in
+  // that file, never here or in the engine.
+  // `meanDepth` carries the same LAYER-INDEX unit as `turns[].brain` above —
+  // never a fraction. These are the 2026-09-22 smoke's real numbers.
+  "brainStats": { "tier": "live", "turnsWithLens": 28, "meanAgree": 0.0646,
+    "meanDepth": 53.55, "meanToolEntropy": 0.0873 }
 }
 ```
 
@@ -263,6 +370,71 @@ a wave, so a mission row carries the sealed-gate reading that judged it:
   stated shares are its own parameter (`posiwid.sourceEditShare` /
   `commitEvery` in the campaign spec), so `Drifting` is a reading against THAT
   declaration, not a universal one.
+
+### The wave record's `governancePosiwid`
+
+Not a ledger field — it lives on the campaign wave record
+(`~/.cynco/campaigns/<id>/waves.jsonl`), computed from the graded ledger row —
+but it is documented here because it is read off the same row and nothing else
+describes it. `scripts/cynco-governance-posiwid.mjs` turns POSIWID on the
+governance layer itself. `governanceCounts({ row, wave, proposalsDecided })`
+gives three counts for the wave, and only these three names are ever used:
+
+- **`denialsChanged`** — denials whose next call was NOT another look, i.e.
+  the denial changed what the model did next (`denialRecords` in
+  `scripts/cynco-triples.mjs`, summed over the records marked `changed`). Per
+  spec ruling 10 this is deliberately weaker than "did the exact thing the
+  denial asked for" — that is `complied`, which this count does not use.
+- **`recommendationsConsumed`** — enforced S5 decisions (`s5Decisions[].enforced
+  === true`), plus a followed ideation hypothesis, plus an applied
+  `s4.workOrder`, plus proposals the operator decided this wave, plus
+  `routing.entries[]` whose `nextCallClass` complied with what the route said.
+- **`signalsLogged`** — everything the layer merely recorded: unenforced S5
+  decisions, `controlSignals[]`, and `turns[]`.
+
+`GOVERNANCE_PURPOSE` states `denialsChanged` 0.5 and `recommendationsConsumed`
+0.5 and gives `signalsLogged` **no share at all**, so a wave the layer spent
+logging reads `Contradicted` by construction — that is the point of the
+measurement, not a bug in it. `GOVERNANCE_DRIFT.driftThreshold` is **0.5**
+(the spec's naive 0.1 is amended): the zero-share bucket leaves the implicit
+`other` mass a near-zero expectation and KL blows up on any logging at all, so
+0.1 would call every real wave `Drifting` the moment it logged anything.
+
+Every wave's counts are replayed through a fresh `PosiwidDrift` on each
+verdict, so `onsetWave` is a function of the stored windows and a runner
+restart cannot move it. `onsetWave` is the `wave` field of the window the drift
+fired on, NOT its index: a campaign whose early waves were graded before this
+measurement existed has no windows for them, so its first window can be wave 4,
+and a wave that threw is never pushed at all. (Windows are 0-based inside
+`PosiwidDrift`; the index is used only as a fallback, 1-based, when a stored
+window carries no `wave`.)
+
+The stored shape, below, is the synthetic smoke's second wave — counts
+`2 / 1 / 30` after a first wave of `12 / 10 / 3` — and these are the module's
+own numbers, not an illustration:
+
+```jsonc
+"governancePosiwid": { "verdict": "Contradicted", "divergence": 5.98,
+  "dominantObserved": "signalsLogged", "support": 33, "onsetWave": 2,
+  "windows": 2,
+  "counts": { "denialsChanged": 2, "recommendationsConsumed": 1, "signalsLogged": 30 } }
+```
+
+`verdict`, `divergence`, `dominantObserved` and `support` are the LAST window's
+reading — here 33 observations of which 30 were logging, so: past `minSupport`
+20, and `signalsLogged` holds a stated share of 0, hence `Contradicted`. The
+ladder is exactly the per-wave `posiwid` block's (`Insufficient` below
+`minSupport` 20, then `Contradicted`, `Drifting`, `Consistent`). `onsetWave`
+and `windows` are properties of the whole replayed history rather than of that
+last window.
+
+The campaign state keeps the raw windows under
+`state.governancePosiwid.windows`; the verdict entry prints the reading as its
+"Governance POSIWID" line, and `GET /api/campaign` hands the dashboard the last
+wave's `verdict` and `onsetWave`.
+`engine/__tests__/guards/ledgerGovernancePosiwidBlock.test.ts` re-runs the
+module on this block's `counts` and fails if the reading moves (F149: a
+documented number no code produces).
 
 ## Labeling rule
 

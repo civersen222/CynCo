@@ -136,6 +136,30 @@ describe('bash effects and invariant blocks', () => {
     expect(empty.ultrastable).toBeNull()
   })
 
+  // Phase 2b-ii: verify-first routing. Lifted onto the row for the same reason
+  // the denial ledger is — `entries[].nextCallClass` is the only record of
+  // whether an informed refusal or a measured edit changed what the model did
+  // next, and the analysis that asks needs the whole run, not a live frame.
+  it('keeps the last verify-first routing snapshot on the record', () => {
+    const c = createMissionCollector()
+    c.ingest({ type: 'governance.status', health: 'healthy', routing: { budget: 6, used: 1, count: 1, byKind: { revert: 1, 'low-confidence-edit': 0 }, byOutcome: { passed: 1 }, entries: [{ callIndex: 4, kind: 'revert', entropy: null, outcome: 'passed', ms: 900, tail: 'ok', nextCallClass: null }] } })
+    c.ingest({ type: 'governance.status', health: 'healthy', routing: { budget: 6, used: 2, count: 3, byKind: { revert: 1, 'low-confidence-edit': 2 }, byOutcome: { passed: 1, 'cached-passed': 1, failed: 1 }, entries: [{ callIndex: 4, kind: 'revert', entropy: null, outcome: 'passed', ms: 900, tail: 'ok', nextCallClass: 'sourceEdit' }] } })
+    const rec = buildMissionRecord(c, { missionId: 'm', briefFile: 'b', marker: 'x', cwd: '.', dispatchedAt: 't', durationS: 1, outcome: 'landed' })
+    expect(rec.routing.count).toBe(3)
+    expect(rec.routing.used).toBe(2)
+    expect(rec.routing.byKind['low-confidence-edit']).toBe(2)
+    expect(rec.routing.entries[0].nextCallClass).toBe('sourceEdit')
+  })
+
+  it('routing is null when the session never routed, and an explicit null stays null', () => {
+    const empty = buildMissionRecord(createMissionCollector(), { missionId: 'm', briefFile: 'b', marker: 'x', cwd: '.', dispatchedAt: 't', durationS: 1, outcome: 'landed' })
+    expect(empty.routing).toBeNull()
+    const c = createMissionCollector()
+    c.ingest({ type: 'governance.status', health: 'healthy', routing: null })
+    const rec = buildMissionRecord(c, { missionId: 'm', briefFile: 'b', marker: 'x', cwd: '.', dispatchedAt: 't', durationS: 1, outcome: 'landed' })
+    expect(rec.routing).toBeNull()
+  })
+
   it('keeps the last live POSIWID reading and IdentityGuard verdict on the record', () => {
     const c = createMissionCollector()
     c.ingest({ type: 'governance.status', health: 'healthy', posiwidLive: { divergence: 0.02, verdict: 'Consistent', dominantStated: 'inspect', dominantObserved: 'inspect', support: 60 } })
@@ -149,5 +173,221 @@ describe('bash effects and invariant blocks', () => {
     const empty = buildMissionRecord(createMissionCollector(), { missionId: 'm', briefFile: 'b', marker: 'x', cwd: '.', dispatchedAt: 't', durationS: 1, outcome: 'landed' })
     expect(empty.posiwidLive).toBeNull()
     expect(empty.identityGuard).toBeNull()
+  })
+})
+
+// Task 4 (2a-iii): the Brain's per-turn telemetry (engine/bridge/protocol.ts
+// GovernanceStatusEvent.brain), lifted onto the ledger so it can be tested as
+// a candidate signal before anything grants it authority.
+describe('brain telemetry', () => {
+  const meta = { missionId: 'm', briefFile: 'b', marker: 'x', cwd: '.', dispatchedAt: 't', durationS: 1, outcome: 'landed' }
+
+  it('carries the frame\'s brain object onto each turn, and null when the frame had none', () => {
+    const c = createMissionCollector()
+    c.ingest({
+      type: 'governance.status', health: 'healthy',
+      brain: { tier: 'live', layerConvergence: { n: 5, meanAgree: 0.4, meanDepth: 0.3, byLayer: {} }, toolEntropy: { mean: 0.5, max: 0.9, spikeCount: 1 } },
+    })
+    c.ingest({
+      type: 'governance.status', health: 'healthy',
+      brain: { tier: 'live', layerConvergence: { n: 5, meanAgree: 0.6, meanDepth: 0.5, byLayer: {} }, toolEntropy: { mean: 0.7, max: 0.95, spikeCount: 2 } },
+    })
+    c.ingest({ type: 'governance.status', health: 'healthy' })
+
+    const rec = buildMissionRecord(c, meta)
+    expect(rec.turns).toHaveLength(3)
+    expect(rec.turns[0].brain).toEqual({ tier: 'live', layerConvergence: { n: 5, meanAgree: 0.4, meanDepth: 0.3, byLayer: {} }, toolEntropy: { mean: 0.5, max: 0.9, spikeCount: 1 } })
+    expect(rec.turns[1].brain.layerConvergence.meanAgree).toBe(0.6)
+    expect(rec.turns[2].brain).toBeNull()
+  })
+
+  it('aggregates brainStats equal-weight per turn, tier = last non-null tier', () => {
+    const c = createMissionCollector()
+    c.ingest({
+      type: 'governance.status', health: 'healthy',
+      brain: { tier: 'live', layerConvergence: { n: 5, meanAgree: 0.4, meanDepth: 0.3, byLayer: {} }, toolEntropy: { mean: 0.5, max: 0.9, spikeCount: 1 } },
+    })
+    c.ingest({
+      type: 'governance.status', health: 'healthy',
+      brain: { tier: 'live', layerConvergence: { n: 5, meanAgree: 0.6, meanDepth: 0.5, byLayer: {} }, toolEntropy: { mean: 0.7, max: 0.95, spikeCount: 2 } },
+    })
+    c.ingest({ type: 'governance.status', health: 'healthy' })
+
+    const rec = buildMissionRecord(c, meta)
+    expect(rec.brainStats).toEqual({
+      tier: 'live', turnsWithLens: 2, meanAgree: 0.5, meanDepth: 0.4, meanToolEntropy: 0.6,
+    })
+  })
+
+  it('brainStats is null when no frame ever carried a brain block', () => {
+    const c = createMissionCollector()
+    c.ingest({ type: 'governance.status', health: 'healthy' })
+    c.ingest({ type: 'governance.status', health: 'healthy' })
+    const rec = buildMissionRecord(c, meta)
+    expect(rec.brainStats).toBeNull()
+  })
+
+  it('an explicit brain: null frame is treated the same as an absent one', () => {
+    const c = createMissionCollector()
+    c.ingest({ type: 'governance.status', health: 'healthy', brain: null })
+    const rec = buildMissionRecord(c, meta)
+    expect(rec.turns[0].brain).toBeNull()
+    expect(rec.brainStats).toBeNull()
+  })
+})
+
+// Task 7 (2c-i): operator notes sent to a RUNNING unattended mission
+// (engine/bridge/protocol.ts MissionOperatorNoteEvent). Two frames arrive per
+// note — queued, then delivered — and the row must carry ONE entry showing
+// both, or the queue latency the pair exists to measure is unreadable.
+describe('operator notes', () => {
+  const meta = { missionId: 'm', briefFile: 'b', marker: 'x', cwd: '.', dispatchedAt: 't', durationS: 1, outcome: 'landed' }
+
+  it('pairs the delivery frame with its queued entry by queuedAt', () => {
+    const c = createMissionCollector()
+    c.ingest({ type: 'mission.operator_note', text: 'stop editing app.py', queuedAt: '2026-09-22T10:00:00.000Z', deliveredAtIteration: null })
+    c.ingest({ type: 'mission.operator_note', text: 'and run the suite', queuedAt: '2026-09-22T10:00:01.000Z', deliveredAtIteration: null })
+    c.ingest({ type: 'mission.operator_note', text: 'stop editing app.py', queuedAt: '2026-09-22T10:00:00.000Z', deliveredAtIteration: 7 })
+    c.ingest({ type: 'mission.operator_note', text: 'and run the suite', queuedAt: '2026-09-22T10:00:01.000Z', deliveredAtIteration: 7 })
+
+    const rec = buildMissionRecord(c, meta)
+    expect(rec.operatorNotes).toHaveLength(2)
+    expect(rec.operatorNotes[0].text).toBe('stop editing app.py')
+    expect(rec.operatorNotes[0].queuedAt).toBe('2026-09-22T10:00:00.000Z')
+    expect(rec.operatorNotes[0].deliveredAtIteration).toBe(7)
+    expect(rec.operatorNotes[1].deliveredAtIteration).toBe(7)
+  })
+
+  // `queuedAt` is an ISO string with millisecond resolution, and two dashboard
+  // sends can land in the same millisecond — so it is NOT unique, and matching
+  // on it alone made the second queued frame look like a no-op delivery of the
+  // first. What separates the frames is their KIND: a queued frame always
+  // starts a new entry, a delivery or a drop fills one in.
+  it('keeps two notes queued in the same millisecond apart', () => {
+    const c = createMissionCollector()
+    const same = '2026-09-22T10:00:00.000Z'
+    c.ingest({ type: 'mission.operator_note', text: 'first', queuedAt: same, deliveredAtIteration: null })
+    c.ingest({ type: 'mission.operator_note', text: 'second', queuedAt: same, deliveredAtIteration: null })
+
+    const rec = buildMissionRecord(c, meta)
+    expect(rec.operatorNotes.map(n => n.text)).toEqual(['first', 'second'])
+  })
+
+  it('fills same-millisecond entries in the order the delivery frames arrive', () => {
+    const c = createMissionCollector()
+    const same = '2026-09-22T10:00:00.000Z'
+    c.ingest({ type: 'mission.operator_note', text: 'first', queuedAt: same, deliveredAtIteration: null })
+    c.ingest({ type: 'mission.operator_note', text: 'second', queuedAt: same, deliveredAtIteration: null })
+    c.ingest({ type: 'mission.operator_note', text: 'first', queuedAt: same, deliveredAtIteration: 4 })
+    c.ingest({ type: 'mission.operator_note', text: 'second', queuedAt: same, deliveredAtIteration: 4 })
+
+    const rec = buildMissionRecord(c, meta)
+    expect(rec.operatorNotes).toHaveLength(2)
+    expect(rec.operatorNotes[0].deliveredAtIteration).toBe(4)
+    expect(rec.operatorNotes[1].deliveredAtIteration).toBe(4)
+  })
+
+  // The two drop reasons are different operational facts: too many notes, or
+  // too little runway left in the mission.
+  it('records why a note was dropped, on the entry it was queued as', () => {
+    const c = createMissionCollector()
+    c.ingest({ type: 'mission.operator_note', text: 'pushed out', queuedAt: '2026-09-22T10:00:00.000Z', deliveredAtIteration: null })
+    c.ingest({ type: 'mission.operator_note', text: 'stranded', queuedAt: '2026-09-22T10:00:01.000Z', deliveredAtIteration: null })
+    c.ingest({ type: 'mission.operator_note', text: 'pushed out', queuedAt: '2026-09-22T10:00:00.000Z', deliveredAtIteration: null, dropped: 'queue full' })
+    c.ingest({ type: 'mission.operator_note', text: 'stranded', queuedAt: '2026-09-22T10:00:01.000Z', deliveredAtIteration: null, dropped: 'mission ended' })
+
+    const rec = buildMissionRecord(c, meta)
+    expect(rec.operatorNotes).toHaveLength(2)
+    expect(rec.operatorNotes[0].dropped).toBe('queue full')
+    expect(rec.operatorNotes[1].dropped).toBe('mission ended')
+    expect(rec.operatorNotes[0].deliveredAtIteration).toBeNull()
+  })
+
+  // Review minor #12: the driver re-injects gate FAILs through the same queue
+  // the operator's chat box uses. Without `source` the ledger showed a
+  // machine's probe as a human instruction.
+  it('keeps the driver probe and the operator note apart by source', () => {
+    const c = createMissionCollector()
+    c.ingest({ type: 'mission.operator_note', text: 'a person leaning in', queuedAt: '2026-09-22T10:00:00.000Z', source: 'operator', deliveredAtIteration: null })
+    c.ingest({ type: 'mission.operator_note', text: 'PROBE FAIL C8.1a', queuedAt: '2026-09-22T10:00:01.000Z', source: 'driver', deliveredAtIteration: null })
+    c.ingest({ type: 'mission.operator_note', text: 'PROBE FAIL C8.1a', queuedAt: '2026-09-22T10:00:01.000Z', source: 'driver', deliveredAtIteration: 9 })
+
+    const rec = buildMissionRecord(c, meta)
+    expect(rec.operatorNotes.map(n => n.source)).toEqual(['operator', 'driver'])
+    expect(rec.operatorNotes[1].deliveredAtIteration).toBe(9)
+  })
+
+  // A record written by an engine older than the field says nothing about who
+  // sent it. Unknown is null — calling it 'operator' would invent evidence.
+  it('leaves source null when the frame does not carry one, and never guesses', () => {
+    const c = createMissionCollector()
+    c.ingest({ type: 'mission.operator_note', text: 'old engine', queuedAt: '2026-09-22T10:00:00.000Z', deliveredAtIteration: null })
+    c.ingest({ type: 'mission.operator_note', text: 'bogus', queuedAt: '2026-09-22T10:00:02.000Z', source: 'somebody else', deliveredAtIteration: null })
+
+    const rec = buildMissionRecord(c, meta)
+    expect(rec.operatorNotes.map(n => n.source)).toEqual([null, null])
+  })
+
+  // A delivery frame may be the first one carrying the source (a collector
+  // that attached between the queue and the delivery). Fill it in, never blank
+  // a source already recorded.
+  it('fills source in from a later frame but never overwrites one', () => {
+    const c = createMissionCollector()
+    c.ingest({ type: 'mission.operator_note', text: 'n', queuedAt: '2026-09-22T10:00:00.000Z', deliveredAtIteration: null })
+    c.ingest({ type: 'mission.operator_note', text: 'n', queuedAt: '2026-09-22T10:00:00.000Z', source: 'driver', deliveredAtIteration: 3 })
+    const c2 = createMissionCollector()
+    c2.ingest({ type: 'mission.operator_note', text: 'n', queuedAt: '2026-09-22T10:00:00.000Z', source: 'operator', deliveredAtIteration: null })
+    c2.ingest({ type: 'mission.operator_note', text: 'n', queuedAt: '2026-09-22T10:00:00.000Z', deliveredAtIteration: 3 })
+
+    expect(buildMissionRecord(c, meta).operatorNotes[0].source).toBe('driver')
+    expect(buildMissionRecord(c2, meta).operatorNotes[0].source).toBe('operator')
+  })
+
+  it('records a drop frame whose queued frame it never saw', () => {
+    const c = createMissionCollector()
+    c.ingest({ type: 'mission.operator_note', text: 'late join', queuedAt: '2026-09-22T10:00:00.000Z', deliveredAtIteration: null, dropped: 'mission ended' })
+    const rec = buildMissionRecord(c, meta)
+    expect(rec.operatorNotes).toHaveLength(1)
+    expect(rec.operatorNotes[0].dropped).toBe('mission ended')
+  })
+
+  // Two notes can carry the same words. `queuedAt` is the key precisely so the
+  // second one's delivery cannot be written onto the first one's row.
+  it('does not collapse two notes with identical text', () => {
+    const c = createMissionCollector()
+    c.ingest({ type: 'mission.operator_note', text: 'stop', queuedAt: '2026-09-22T10:00:00.000Z', deliveredAtIteration: null })
+    c.ingest({ type: 'mission.operator_note', text: 'stop', queuedAt: '2026-09-22T10:00:05.000Z', deliveredAtIteration: null })
+    c.ingest({ type: 'mission.operator_note', text: 'stop', queuedAt: '2026-09-22T10:00:05.000Z', deliveredAtIteration: 3 })
+
+    const rec = buildMissionRecord(c, meta)
+    expect(rec.operatorNotes).toHaveLength(2)
+    expect(rec.operatorNotes[0].deliveredAtIteration).toBeNull()
+    expect(rec.operatorNotes[1].deliveredAtIteration).toBe(3)
+  })
+
+  // A note still in the queue when the mission ended is the interesting case:
+  // it must stay on the row as undelivered rather than disappearing.
+  it('keeps a queued-but-never-delivered note with deliveredAtIteration null', () => {
+    const c = createMissionCollector()
+    c.ingest({ type: 'mission.operator_note', text: 'too late', queuedAt: '2026-09-22T10:00:00.000Z', deliveredAtIteration: null })
+    const rec = buildMissionRecord(c, meta)
+    expect(rec.operatorNotes).toEqual([
+      { t: expect.any(Number), text: 'too late', queuedAt: '2026-09-22T10:00:00.000Z', source: null, deliveredAtIteration: null, dropped: null },
+    ])
+  })
+
+  // A collector attached mid-mission sees the delivery and never saw the
+  // queueing. The note still happened; recording nothing would under-count it.
+  it('records a delivery frame whose queued frame it never saw', () => {
+    const c = createMissionCollector()
+    c.ingest({ type: 'mission.operator_note', text: 'late join', queuedAt: '2026-09-22T10:00:00.000Z', deliveredAtIteration: 12 })
+    const rec = buildMissionRecord(c, meta)
+    expect(rec.operatorNotes).toHaveLength(1)
+    expect(rec.operatorNotes[0].deliveredAtIteration).toBe(12)
+  })
+
+  it('is an empty array when nobody sent one — never null', () => {
+    const rec = buildMissionRecord(createMissionCollector(), meta)
+    expect(rec.operatorNotes).toEqual([])
   })
 })

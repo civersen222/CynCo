@@ -6,6 +6,48 @@ import { join } from 'node:path'
 import { globalContract, contractCreateTool, contractAssertPassTool } from './contract.js'
 import { COMMITTED_ASSERTION, fileModifiedAssertion, commandAssertion } from './contractVerify.js'
 
+/**
+ * Task 6 needs to find the KEEP-GREEN assertion by ROLE rather than by index —
+ * index depends on dispatch order (the held-out gate is always assertion 0 when
+ * present, the sidecar's keep-green assertion is not always assertion 1). A
+ * round trip through `ContractState.create` is what a real harness contract
+ * goes through, so this drives the same path rather than poking `assertions`
+ * directly.
+ */
+describe('ContractState.byRole', () => {
+  afterEach(() => globalContract.clear())
+
+  test('finds the assertion carrying the role', () => {
+    globalContract.create(
+      'wave',
+      '',
+      [
+        'plain text assertion',
+        { text: 'The KEEP-GREEN set passes.', command: 'echo ok', role: 'keep-green' },
+      ],
+      'harness',
+    )
+    const found = globalContract.byRole('keep-green')
+    expect(found).not.toBeNull()
+    expect(found?.text).toBe('The KEEP-GREEN set passes.')
+    expect(found?.command).toBe('echo ok')
+  })
+
+  test('null when no assertion carries the role', () => {
+    globalContract.create('wave', '', ['plain text assertion'], 'harness')
+    expect(globalContract.byRole('keep-green')).toBeNull()
+  })
+
+  test('null with no active contract at all', () => {
+    expect(globalContract.byRole('keep-green')).toBeNull()
+  })
+
+  test('a plain-string assertion never matches a role lookup', () => {
+    globalContract.create('wave', '', [{ text: 'no role here', command: 'echo hi' }], 'harness')
+    expect(globalContract.byRole('keep-green')).toBeNull()
+  })
+})
+
 describe('contract enforcer budget', () => {
   beforeEach(async () => {
     await contractCreateTool.execute({

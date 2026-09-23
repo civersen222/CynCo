@@ -289,6 +289,22 @@ export type GovernanceStatusEvent = {
    *  was rejected as malformed. Without it, `invariants: null` cannot tell a
    *  mission dispatched without caps from one whose caps were thrown away. */
   invariantsRejected?: boolean
+  /** Verify-first routing (Phase 2b-ii). Mirrors `VerifyFirstSnapshot` in
+   *  vsm/verifyFirst.ts — keep in sync (this file stays import-free); `kind`
+   *  and `outcome` are widened to string on the wire, do not copy the unions
+   *  here. null whenever the session cannot route: interactive, no mission
+   *  invariants, or no KEEP-GREEN assertion to run. `entries` is the last 20;
+   *  `count` is the full-run total and `byKind`/`byOutcome` are over all of
+   *  them. `used` counts KEEP-GREEN runs actually spent out of `budget` —
+   *  cached and refused routes cost nothing and are still counted in `count`. */
+  routing?: {
+    budget: number
+    used: number
+    entries: Array<{ callIndex: number; kind: string; entropy: number | null; outcome: string; ms: number; tail: string; nextCallClass: string | null }>
+    count: number
+    byKind: Record<string, number>
+    byOutcome: Record<string, number>
+  } | null
   /** The legacy ultrastable instance's adaptation trace and viability margin
    *  (Plan 1). Capped at the last 20 steps and mapped to camelCase: the live
    *  array grows unbounded for the life of the session and its own `toJSON` is
@@ -305,6 +321,17 @@ export type GovernanceStatusEvent = {
    *  ledger row as `posiwidLive` and is validated there before anything
    *  branches on it. null until the first call executes. */
   posiwidLive?: { divergence: number; verdict: string; dominantStated: string; dominantObserved: string; support: number } | null
+  /** Brain telemetry for this model call (engine/brain): the achieved tier, how
+   *  early in depth the probed layers agreed with the deepest one, and the
+   *  turn's tool-token entropy digest. Data only; validated on the ledger
+   *  (`--signals`) before anything reads it. null when no brain dep is wired
+   *  (Ollama, or a consumer that never started); the inner fields are null
+   *  until there is a sample. */
+  brain?: {
+    tier: string
+    layerConvergence: { n: number; meanAgree: number | null; meanDepth: number | null; byLayer: Record<string, number | null> } | null
+    toolEntropy: { mean: number; max: number; spikeCount: number } | null
+  } | null
   suggestion: string | null
 }
 
@@ -370,6 +397,61 @@ export type GovernanceAlertEvent = {
   severity: 'low' | 'medium' | 'high' | 'critical' | 'warn'
   message: string
   source: string
+}
+
+/**
+ * Phase 2c-i: one operator note sent to a RUNNING unattended mission.
+ *
+ * Emitted twice for the same note, and the pair is the point. Once when it is
+ * queued (`deliveredAtIteration: null`) — the acknowledgement that the busy
+ * loop heard it at all — and once when it is actually handed to the model at
+ * the top of a `runModelLoop` iteration, carrying that iteration's index. The
+ * gap between the two frames is the operator's latency: how long their note
+ * waited behind the model call that was already in flight.
+ *
+ * `queuedAt` is the note's identity. It is what lets the delivery frame name
+ * the queued entry it belongs to (scripts/cynco-ledger.mjs `operatorNotes`)
+ * rather than the ledger having to match on text — two notes with the same
+ * words are two notes.
+ */
+/**
+ * Who sent the note. `'operator'` is a person typing into the 9161 dashboard's
+ * chat box mid-mission; `'driver'` is scripts/cynco-mission-driver.mjs
+ * re-injecting a verbatim gate FAIL after its silence heuristic declared exit
+ * while the loop was in fact still working.
+ *
+ * Both arrive as a `user.message` frame on the same busy guard, so the ledger
+ * had no way to tell a machine's probe from a human's instruction and counted
+ * both as `operatorNotes`. The frame itself carries the difference: the driver
+ * declares `unattended: true` on everything it sends, the chat box never does.
+ * That is the whole of the test — a third party that declared `unattended`
+ * would read as `'driver'`, which is the honest reading of "a programmatic
+ * sender that knows it is driving an unattended mission".
+ */
+export type OperatorNoteSource = 'operator' | 'driver'
+
+export type MissionOperatorNoteEvent = {
+  type: 'mission.operator_note'
+  text: string
+  /** ISO timestamp, and the note's key. */
+  queuedAt: string
+  /** Who sent it — see `OperatorNoteSource`. */
+  source: OperatorNoteSource
+  /** null on the queued frame; the `runModelLoop` iteration index on delivery. */
+  deliveredAtIteration: number | null
+  /**
+   * Why this note was thrown away without ever reaching the model: `'queue
+   * full'` (a newer note pushed it out) or `'mission ended'` (the unattended
+   * message finished with it still queued). Absent on the queued and delivered
+   * frames.
+   *
+   * A third frame kind rather than silence, because the alternative was worse
+   * in both directions: holding the note over would splice a stale `[operator]`
+   * instruction into whatever ran next — including an interactive session that
+   * never asked for it — and simply dropping it would leave the ledger showing
+   * a note queued and, as far as anyone could tell, delivered.
+   */
+  dropped?: string
 }
 
 export type SummaryInjectedEvent = {
@@ -576,6 +658,7 @@ export type EngineEvent =
   | TrajectoryTaskStartedEvent
   | GovernanceRecommendationEvent
   | GovernanceAlertEvent
+  | MissionOperatorNoteEvent
   | SummaryInjectedEvent
   | SubAgentSpawnedEvent
   | SubAgentToolEvent
@@ -611,7 +694,11 @@ export type UserMessageCommand = {
   cwd?: string  // Optional: change working directory for this message
   /** P4.2: optional harness-supplied DoD contract (mission mode — the brief's
    *  check script is the contract). Applied before intent auto-create.
-   *  Inlined type: this file stays import-free. */
+   *  Inlined type: this file stays import-free. `assertions` is loosely typed
+   *  here as `string[]` — in practice an entry can also arrive as the withheld
+   *  `{ text, command, timeoutMs?, role? }` object form (`HarnessAssertion` in
+   *  engine/tools/contract.ts; `role: 'keep-green'` marks the sidecar's
+   *  keep-green assertion so Task 6 can find it without depending on index). */
   contract?: { title: string; brief?: string; assertions: string[] }
   /** Finding (ag): instrument files for THIS task — read-only, not workspace.
    *  The harness names them because only the harness knows them: the brief it

@@ -41,6 +41,19 @@ describe('verdictEntry', () => {
     const beText = verdictEntry({ spec: { id: 'c8' }, wave: 1, row: beRow, grade, decision: { kind: 'next', why: 'x' }, ideationRecord: null, economicsLines: [] })
     expect(beText).toMatch(/sum 265 vs byName\.Bash 999 — DISAGREE/)
   })
+  // Phase 2b-ii: verify-first routing. Omitted entirely when the wave could
+  // not route — a row of zeroes reads as "the router ran and did nothing",
+  // which is a different claim from "there was no router".
+  it('reports verify-first routing when the row carries it', () => {
+    const rtRow = { ...row, routing: { budget: 6, used: 4, count: 6,
+      byKind: { revert: 2, 'low-confidence-edit': 4 },
+      byOutcome: { passed: 2, failed: 2, 'cached-passed': 1, 'cached-failed': 0, timeout: 1, unrunnable: 0, 'budget-exhausted': 0 }, entries: [] } }
+    const rtText = verdictEntry({ spec: { id: 'c8' }, wave: 1, row: rtRow, grade, decision: { kind: 'next', why: 'x' }, ideationRecord: null, economicsLines: [] })
+    expect(rtText).toMatch(/- Routing: 6 verify-first \(revert 2, low-confidence edit 4\): passed 2, failed 2, cached 1, could not run 1 \(4\/6 KEEP-GREEN runs spent\)\./)
+  })
+  it('omits the routing line when the wave could not route', () => {
+    expect(text).not.toMatch(/- Routing:/)
+  })
   it('names the sweep fault instead of the generic UNMEASURED line', () => {
     const faultGrade = { ...grade, sweep: null, sweepFault: 'timed out after 3600000 ms' }
     const faultText = verdictEntry({ spec: { id: 'c8' }, wave: 1, row, grade: faultGrade, decision: { kind: 'next', why: 'x' }, ideationRecord: null, economicsLines: [] })
@@ -57,6 +70,19 @@ describe('verdictEntry', () => {
     const rejectedText = verdictEntry({ spec: { id: 'c8' }, wave: 1, row: rejectedRow, grade, decision: { kind: 'next', why: 'invariants were rejected' }, ideationRecord: null, economicsLines: [] })
     expect(rejectedText).toMatch(/\*\*INVARIANTS REJECTED — the wave ran without its orders\.\*\*/)
     expect(rejectedText).toMatch(/^Verdict: \*\*STOP \(fault\)\*\* — invariants were rejected/m)
+  })
+  // 2d: the governance-level POSIWID line — printed only when the runner hands
+  // one in, right after the wave's own POSIWID line.
+  it('prints the governance POSIWID line with an onset when given, and omits it when not', () => {
+    const withOnset = verdictEntry({ spec: { id: 'c8' }, wave: 3, row, grade, decision: { kind: 'next', why: 'x' }, ideationRecord: null, economicsLines: [],
+      governancePosiwid: { verdict: 'Contradicted', divergence: 5.797, dominantObserved: 'signalsLogged', support: 45, onsetWave: 3, windows: 3 } })
+    expect(withOnset).toMatch(/- Governance POSIWID Contradicted \(divergence 5\.797, dominant signalsLogged, support 45; drift onset wave 3\)\.\n/)
+    const noOnset = verdictEntry({ spec: { id: 'c8' }, wave: 1, row, grade, decision: { kind: 'next', why: 'x' }, ideationRecord: null, economicsLines: [],
+      governancePosiwid: { verdict: 'Consistent', divergence: 0.2, dominantObserved: 'denialsChanged', support: 25, onsetWave: null, windows: 1 } })
+    expect(noOnset).toMatch(/- Governance POSIWID Consistent \(divergence 0\.200, dominant denialsChanged, support 25\)\.\n/)
+    expect(noOnset).not.toMatch(/drift onset/)
+    const text = verdictEntry({ spec: { id: 'c8' }, wave: 1, row, grade, decision: { kind: 'next', why: 'x' }, ideationRecord: null, economicsLines: [] })
+    expect(text).not.toMatch(/Governance POSIWID/)
   })
 })
 

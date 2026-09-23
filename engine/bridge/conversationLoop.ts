@@ -5,7 +5,7 @@
  */
 
 import { randomUUID } from 'crypto'
-import type { EngineEvent, TUICommand, DiffHunk, DiffLine } from './protocol.js'
+import type { EngineEvent, TUICommand, DiffHunk, DiffLine, OperatorNoteSource } from './protocol.js'
 import type { ThinkingConfig, TurnCost } from '../types.js'
 import { asSystemPrompt } from '../types.js'
 import type { LocalCodeConfig } from '../config.js'
@@ -59,6 +59,7 @@ import { makeJournalEntry } from '../training/types.js'
 import { buildConceptTableForCwd } from '../vsm/conceptTable.js'
 import { evaluateGrounding, extractAddedText, extractTargetPaths } from '../vsm/groundingTrigger.js'
 import { MissionInvariants, parseInvariantCaps, classifyCall } from '../vsm/missionInvariants.js'
+import { VerifyFirstRouter, verifySentence, verifyEditNote, routingTimeoutMs } from '../vsm/verifyFirst.js'
 import type { GuardResult } from '../vsm/identityGuard.js'
 import { isIdentifierPattern, noteCodeIndexUse } from '../tools/toolHints.js'
 import { ReadLoopGate, rearmsGate, signature as readSignature } from '../vsm/readLoopGate.js'
@@ -76,7 +77,7 @@ import { loadInterventionRates, saveInterventionRates } from '../vsm/interventio
 import { applyNudgeTemperature } from '../vsm/controlSignals.js'
 import { globalContract } from '../tools/contract.js'
 import { applyHarnessContract, harnessGatePaths, withheldGatePaths, maybeAutoCreateContract, type HarnessContractSpec } from './contractAutoCreate.js'
-import { gitProbe } from '../tools/contractVerify.js'
+import { gitProbe, runCommandDetailed } from '../tools/contractVerify.js'
 import { globalAskBroker } from '../tools/askBroker.js'
 import { estimateTokensAsync } from '../engine/contextBudget.js'
 import { checkCommitScope } from './commitScope.js'
@@ -90,7 +91,7 @@ import { buildSideQueryBody, readSideQueryContent } from './sideQuery.js'
 import { isMalformedInput } from '../engine/toolCallRepair.js'
 import { extractSimulatedToolCalls } from '../ollama/simulated.js'
 import { ThinkingRecorder } from '../memory/thinkingRecorder.js'
-import { UncertaintyTracker } from '../memory/uncertaintyTracker.js'
+import { UncertaintyTracker, type EntropyDigest } from '../memory/uncertaintyTracker.js'
 // Trajectory recording and Best-of-N were reached through lazy require('*.js').
 // Nothing in either package imports back here, so there was no cycle to break —
 // and under vitest those requires threw, so every test that exercised a tool
@@ -158,6 +159,17 @@ type Message = {
  * enough that a tool the model has since fixed stops being held against it.
  */
 const RECENT_TOOL_WINDOW = 20
+
+/**
+ * How many operator notes a busy unattended mission will hold (Phase 2c-i).
+ *
+ * Five, not unbounded: the queue drains at an iteration boundary, and an
+ * operator who typed twenty lines while the model worked wants the last thing
+ * they said acted on, not the first. On overflow the OLDEST goes — and it goes
+ * loudly, on a `governance.alert`, because a note that vanishes without a word
+ * is the exact failure this whole path exists to end.
+ */
+const OPERATOR_NOTE_QUEUE_CAP = 5
 
 const READ_ONLY_TOOLS = ['Read', 'Grep', 'Glob', 'Ls', 'Git', 'ImageView']
 const SAFE_MODE_TOOLS = [...READ_ONLY_TOOLS, 'Bash']
@@ -253,6 +265,15 @@ export type ConversationLoopOptions = {
   allowedTools?: string[]
   /** Direct dashboard broadcast for brain.* messages (NOT the engine→TUI protocol). Optional. */
   dashboardBroadcast?: (msg: Record<string, unknown>) => void
+  /** Brain telemetry for the governance.status frame (engine/brain
+   *  ActivationsConsumer). Read per frame, never branched on; `reset()` clears
+   *  the convergence window so a frame describes its own model call. Absent for
+   *  Ollama and for any run whose consumer never started. */
+  getBrain?: () => {
+    tier: string
+    layerConvergence: { n: number; meanAgree: number | null; meanDepth: number | null; byLayer: Record<string, number | null> } | null
+    reset: () => void
+  } | null
 }
 
 export class ConversationLoop {
@@ -269,8 +290,45 @@ export class ConversationLoop {
    * look identical, and only one of them is a bug in the dispatch.
    */
   private invariantsRejected = false
+  /**
+   * Verify-first routing (Phase 2b-ii), or null when this message must not
+   * route. Scoped exactly like `missionInvariants`: rebuilt per user message,
+   * and built at all only for an unattended message whose mission both armed
+   * invariants AND carries a KEEP-GREEN assertion to run. An interactive
+   * session never routes — there is a person present who can look.
+   */
+  private verifyFirst: VerifyFirstRouter | null = null
+  /** Low-confidence edits routed during THIS model call — capped at one; reset
+   *  in `resetBrainTurnState`. See the reset site for why. */
+  private routedEditsThisCall = 0
   private abortController: AbortController | null = null
   private processing = false
+  /**
+   * The `unattended` flag of the message currently being processed.
+   *
+   * Read by the busy guard in `handleUserMessage`, which runs BEFORE
+   * `runUserMessage` has seen the new message's own opts — so this is
+   * deliberately the RUNNING message's flag, not the arriving one's. "Is
+   * anybody there to be told their message was dropped?" is a fact about the
+   * session that is busy, not about the note knocking on its door.
+   */
+  private unattendedActive = false
+  /**
+   * Operator notes sent to a busy unattended mission, awaiting the next
+   * iteration boundary. Bounded by OPERATOR_NOTE_QUEUE_CAP: an unbounded queue
+   * fed by a dashboard chat box is a way to hand the model a wall of stale
+   * instructions twenty minutes after they stopped being true.
+   *
+   * EMPTIED when the unattended message ends, and every stranded note is
+   * reported with `dropped: 'mission ended'` first. Letting the queue survive
+   * was tried and is wrong in both halves: a note sent during the last model
+   * call would be spliced into whatever ran NEXT — including an interactive
+   * session that never asked for it — and the ledger would show the note
+   * queued against a mission that had already finished, with nothing to say it
+   * was never delivered. A reported drop is a fact; a silent carry-over is a
+   * stale instruction with a misleading record attached.
+   */
+  private operatorQueue: Array<{ text: string; queuedAt: string; source: OperatorNoteSource }> = []
   // Per-task observation buffers for the reward labeler. Reset at task start,
   // consumed by finalizeTrajectory at task end.
   private taskTestObservations: TestObservation[] = []
@@ -452,6 +510,9 @@ export class ConversationLoop {
   private toolGating = new ToolGating()
   private tddGov = new TestDrivenGovernor()
   private allowedTools?: string[]
+  /** Brain telemetry dep (engine/brain ActivationsConsumer). Optional: absent
+   *  for Ollama, and for a llama-cpp run whose consumer never started. */
+  private getBrain?: ConversationLoopOptions['getBrain']
   // Per-session, append-only set of tools surfaced to the model. Seeded with
   // the core tools; grows when the model calls load_tools (Phase 1) / run_skill
   // (Phase 2) / S5 proactive surfacing (Phase 3). Never shrinks.
@@ -480,6 +541,11 @@ export class ConversationLoop {
   private uncertainty = new UncertaintyTracker()
   /** Direct dashboard broadcast (NOT protocol) — brain.* messages only. Optional. */
   private dashboardBroadcast: ((msg: Record<string, unknown>) => void) | null = null
+  /** This model call's tool-token entropy digest, captured before the per-call
+   *  `uncertainty.reset()` so the governance.status frame emitted after it can
+   *  still carry the number. Null until the call ends, and for a call that
+   *  emitted no tool tokens. */
+  private turnToolEntropy: EntropyDigest | null = null
   private uncertaintyBatch: { i: number; h: number; kind: 'thinking' | 'output' | 'tool'; top: { token: string; logprob: number }[] }[] = []
   private uncertaintyIndex = 0
 
@@ -539,6 +605,7 @@ export class ConversationLoop {
     })
     this.s5 = opts.s5
     this.allowedTools = opts.allowedTools
+    this.getBrain = opts.getBrain
     this.agentRunner = new SubAgentRunner(async (task) => {
       // Simplified sub-agent execution — full execution comes later
       return `[SubAgent completed] ${task.task}`
@@ -598,6 +665,47 @@ export class ConversationLoop {
     this.uncertaintyIndex = 0
     this.brainRecorder.reset()
     this.thinkingRecorder?.discardBuffer()
+    this.turnToolEntropy = null
+    // Per model call, like everything else here. `lastToolEntropy` is the last
+    // tool token of the call that is starting; carrying the PREVIOUS call's
+    // value into it lets verify-first's flat-floor arm fire on a calm call
+    // because the model was uncertain a turn ago — and lets it fire on a
+    // backend that stopped sending logprobs entirely. The divergence detector
+    // already reads it as `?? 0`, so null is safe there.
+    this.lastToolEntropy = null
+    // One low-confidence edit route per model call. The budget is six for the
+    // whole mission; a single spiky assistant message carrying five edits
+    // would otherwise spend most of it in one turn, and the second edit of a
+    // turn is measured by the KEEP-GREEN run the first one already paid for.
+    this.routedEditsThisCall = 0
+    // The convergence window is per model call for the same reason the entropy
+    // series is: a session-long mean says nothing about the turn it rides on.
+    this.getBrain?.()?.reset()
+  }
+
+  /**
+   * Brain telemetry for one governance.status frame. Data only (Phase 2 ruling
+   * 1): it lands on the ledger row and is validated there (`--signals`) before
+   * anything reads it — nothing in this loop branches on it.
+   *
+   * An empty convergence window (`n === 0`) becomes null rather than riding out
+   * as zeroes: "no sample" and "the layers never agreed" are different facts and
+   * an averaged frame cannot tell them apart afterwards.
+   */
+  private brainFrame(): {
+    tier: string
+    layerConvergence: { n: number; meanAgree: number | null; meanDepth: number | null; byLayer: Record<string, number | null> } | null
+    toolEntropy: { mean: number; max: number; spikeCount: number } | null
+  } | null {
+    const b = this.getBrain?.()
+    if (!b) return null
+    // digest() returns null with no samples — a turn that emitted no tool tokens.
+    const d = this.turnToolEntropy
+    return {
+      tier: b.tier,
+      layerConvergence: b.layerConvergence && b.layerConvergence.n > 0 ? b.layerConvergence : null,
+      toolEntropy: d ? { mean: d.mean, max: d.max, spikeCount: d.spikeCount } : null,
+    }
   }
 
   /** Track entropy + batch brain.uncertainty messages to the dashboard. */
@@ -912,6 +1020,35 @@ export class ConversationLoop {
    */
   async handleUserMessage(text: string, opts?: TaskOpts): Promise<void> {
     if (this.processing) {
+      // Phase 2c-i. The busy guard is the ONE place both callers meet: the
+      // mission driver on the bridge socket and the 9161 dashboard's chat box
+      // (main.ts routes `user.message` from both into this same loop). During
+      // an unattended mission the loop is busy for the entire run, so this
+      // return used to consume every note the operator typed — silently, with
+      // the dashboard showing their message as sent.
+      //
+      // An interactive session keeps the drop: there is a person at the
+      // terminal who can see the log line and send it again. Nobody is
+      // watching an unattended one, so its notes are queued for the next
+      // iteration boundary instead.
+      if (this.unattendedActive) {
+        // Review minor #12. Two senders reach this guard, and the ledger could
+        // not tell them apart: the operator typing in the 9161 chat box, and
+        // the mission driver re-injecting a verbatim gate FAIL after its exit
+        // heuristic fired while the loop was still working
+        // (scripts/cynco-mission-driver.mjs, the `d.inject` branch). Both send
+        // a `user.message` frame that main.ts:587 hands to this method, so the
+        // driver's probe landed in `operatorNotes` looking like something a
+        // person typed.
+        //
+        // The discriminator is on the frame: the driver declares
+        // `unattended: true` on every message it sends, the dashboard chat box
+        // sends only `{ text, cwd }` (index.html's sendChat). So a queued
+        // message that re-declares the mission is a programmatic driver; one
+        // that does not is a human leaning in mid-run.
+        this.queueOperatorNote(text, opts?.unattended === true ? 'driver' : 'operator')
+        return
+      }
       console.log('[loop] Already processing, ignoring message')
       return
     }
@@ -929,12 +1066,150 @@ export class ConversationLoop {
       )
     } finally {
       this.processing = false
+      // BEFORE `unattendedActive` is cleared: this is the last instant at which
+      // the queue belongs to a mission at all, and anything still in it never
+      // reached the model.
+      //
+      // Wrapped: `emit` can throw (a dashboard socket send, a listener that
+      // faults) and this call happens inside a `finally` that still has two
+      // more clears to run below it. An uncaught throw here would skip both
+      // — `unattendedActive` stuck `true` would queue a later note into a
+      // loop that is no longer running, and nothing would ever drain it — and
+      // would replace whatever error `runUserMessage` was already unwinding
+      // with this one. Logged, never swallowed silently.
+      try { this.dropOperatorQueueAtMissionEnd() } catch (e) { console.error('[loop] operator-queue drain failed: ' + (e as Error).message) }
+      // Cleared beside `processing`, and for the same reason: left `true` it
+      // would queue a note into a loop that is no longer running, and nothing
+      // would ever drain it.
+      this.unattendedActive = false
       this.abortController = null
     }
   }
 
+  /**
+   * Report and clear whatever the mission ended on top of.
+   *
+   * Runs on EVERY exit of `handleUserMessage` — the happy path, a thrown error,
+   * an aborted run — because a note is equally undelivered in all three. The
+   * frames go out before the queue is forgotten so the ledger's last word on
+   * each note is `dropped: 'mission ended'` rather than an open `queued`.
+   */
+  private dropOperatorQueueAtMissionEnd(): void {
+    if (this.operatorQueue.length === 0) return
+    const stranded = this.operatorQueue.splice(0, this.operatorQueue.length)
+    for (const n of stranded) {
+      this.emit({
+        type: 'mission.operator_note',
+        text: n.text,
+        queuedAt: n.queuedAt,
+        source: n.source,
+        deliveredAtIteration: null,
+        dropped: 'mission ended',
+      })
+    }
+    console.log(`[operator] mission ended with ${stranded.length} note(s) undelivered — cleared`)
+    this.emit({
+      type: 'governance.alert',
+      severity: 'low',
+      source: 'operator',
+      message: `[operator] the mission ended with ${stranded.length} note(s) undelivered — they never reached the model and have been cleared, not carried into the next session`,
+    })
+  }
+
+  /**
+   * Hold one operator note until the next iteration boundary, and say so.
+   *
+   * Two frames, both required. The `governance.alert` is the ACKNOWLEDGEMENT
+   * on the wire — the note landed somewhere rather than nowhere — and
+   * `mission.operator_note` is the record, keyed by `queuedAt` so the ledger
+   * can pair it with the delivery frame that follows. `low`, per ruling 8, so
+   * it cannot halt the daemon's one-shot path; note that the 9161 dashboard
+   * currently renders only `critical`/`high` alerts in its feed, so what the
+   * operator SEES is the `[operator note delivered]` token at the boundary.
+   *
+   * Never injected here. The model call in flight has already been built and
+   * sent; splicing a message into `this.messages` underneath it would either be
+   * ignored or corrupt the turn. The boundary is the only safe seam.
+   */
+  private queueOperatorNote(text: string, source: OperatorNoteSource): void {
+    const queuedAt = new Date().toISOString()
+    if (this.operatorQueue.length >= OPERATOR_NOTE_QUEUE_CAP) {
+      const dropped = this.operatorQueue.shift()
+      const shown = (dropped?.text ?? '').slice(0, 120)
+      console.log(`[operator] queue full (${OPERATOR_NOTE_QUEUE_CAP}) — dropped the oldest note: "${shown}"`)
+      this.emit({
+        type: 'governance.alert',
+        severity: 'low',
+        source: 'operator',
+        message: `[operator] queue full (${OPERATOR_NOTE_QUEUE_CAP} notes) — dropped the oldest note unread: "${shown}"`,
+      })
+      // The alert is for a person. The LEDGER needs the note itself, and needs
+      // to tell this from a mission that ended under its queue — the two are
+      // different operational facts (too many notes vs. too little runway).
+      if (dropped) {
+        this.emit({
+          type: 'mission.operator_note',
+          text: dropped.text,
+          queuedAt: dropped.queuedAt,
+          source: dropped.source,
+          deliveredAtIteration: null,
+          dropped: 'queue full',
+        })
+      }
+    }
+    this.operatorQueue.push({ text, queuedAt, source })
+    console.log(`[operator] ${source} note queued for the next iteration: "${text.slice(0, 120)}"`)
+    this.emit({
+      type: 'governance.alert',
+      severity: 'low',
+      source: 'operator',
+      message: '[operator] note received while the mission is working — queued for the next iteration',
+    })
+    this.emit({ type: 'mission.operator_note', text, queuedAt, source, deliveredAtIteration: null })
+  }
+
+  /**
+   * Hand every queued operator note to the model, as ONE user message.
+   *
+   * Called at the top of a `runModelLoop` iteration, before the model call —
+   * the only point at which `this.messages` is not being read by a request in
+   * flight. One message rather than one per note so a burst of five does not
+   * cost five turns of context framing, and in the order they were sent.
+   *
+   * The queue is emptied BEFORE anything is emitted, so there is no path on
+   * which a note is delivered twice.
+   *
+   * TWO CONSECUTIVE `user` MESSAGES, deliberately. At an iteration boundary
+   * the last message on the stack is the tool_result `user` message, and
+   * `addMessage` only pushes (`:811`) — it never merges into the message
+   * below it — so the note lands as a second `user` turn in a row. Qwen via
+   * llama-cpp accepts that shape and did so live (Task 7 smoke); it is not
+   * universal. A provider that rejects consecutive same-role turns would need
+   * the note folded into the tool_result message's content array instead of
+   * pushed after it. Left as a push because merging would rewrite a message
+   * the model has, in a sense, already been shown — and the failure mode of
+   * the alternative (a silently mutated tool_result) is much harder to see
+   * than a provider error saying exactly what it refused.
+   */
+  private deliverOperatorNotes(iteration: number): void {
+    if (this.operatorQueue.length === 0) return
+    const batch = this.operatorQueue.splice(0, this.operatorQueue.length)
+    const body = batch.map(n => n.text).join('\n')
+    this.addMessage({ role: 'user', content: [{ type: 'text', text: `[operator]\n${body}` }] })
+    console.log(`[operator] delivered ${batch.length} note(s) at iteration ${iteration}`)
+    for (const n of batch) {
+      this.emit({ type: 'mission.operator_note', text: n.text, queuedAt: n.queuedAt, source: n.source, deliveredAtIteration: iteration })
+    }
+    // The transcript, not just the log: an operator watching the dashboard
+    // stream needs to see the moment their note went in.
+    this.emit({ type: 'stream.token', text: '\n[operator note delivered]\n', messageId: '' })
+  }
+
   private async runUserMessage(text: string, opts?: TaskOpts): Promise<void> {
     this.processing = true
+    // Set with `processing`, and only ever read by the busy guard above. See
+    // the field for why it is the RUNNING message's flag.
+    this.unattendedActive = opts?.unattended === true
     console.log(`[loop] Handling message: "${text.slice(0, 80)}..."`)
 
     await this.ensureSkillsLoaded()
@@ -1032,6 +1307,44 @@ export class ConversationLoop {
           message: '[invariant] invariants block malformed — this unattended run has NO mission invariants',
           source: 'mission-invariants',
         })
+      }
+    }
+
+    // ── Verify-first routing (Phase 2b-ii) ──────────────────────────
+    // Built here, beside the invariants, because it needs all three of their
+    // preconditions at once and has no meaning without any of them: an
+    // unattended run (nobody is present to look at the tree), an armed
+    // regulator (the gate ladder this adds a verb to), and a KEEP-GREEN
+    // assertion (the command that answers).
+    //
+    // Scoped EXACTLY like `missionInvariants` above, and for the same reason
+    // one level up: the budget is per MISSION, and the mission is not one
+    // message. The driver re-injects probes and continuation prompts over the
+    // same socket as further `unattended` messages carrying no `invariants`
+    // block (scripts/cynco-mission-driver.mjs). Rebuilding here on every such
+    // message would hand each injection a fresh budget of six — and because
+    // the ledger takes the LAST `governance.status` frame, every route before
+    // the final injection would vanish from the row entirely. So: an
+    // interactive message disarms; an unattended message that (re)declares
+    // invariants re-arms; an unattended message that declares none leaves the
+    // running router alone.
+    if (opts?.unattended !== true) {
+      this.verifyFirst = null
+    } else if (opts.invariants !== undefined) {
+      this.verifyFirst = null
+      const keepGreen = globalContract.byRole('keep-green')
+      if (this.missionInvariants && keepGreen?.command) {
+        // Bound here rather than read off the assertion inside the closure: the
+        // contract can be replaced by a later message, and this router must go on
+        // running the command THIS mission was armed with.
+        const command = keepGreen.command
+        // ROUTING_TIMEOUT_MS caps it: see the constant. A routed run happens in
+        // the middle of the model's turn, and the assertion's own timeout is
+        // sized for the end-of-run contract check, which can legitimately be
+        // half an hour.
+        const timeoutMs = routingTimeoutMs(keepGreen.timeoutMs)
+        this.verifyFirst = new VerifyFirstRouter({ run: (cwd: string) => runCommandDetailed(cwd, command, timeoutMs) })
+        console.log(`[verify-first] armed: budget ${this.verifyFirst.snapshot().budget} KEEP-GREEN run(s) this mission, ${timeoutMs / 1000}s cap per run`)
       }
     }
 
@@ -1612,7 +1925,7 @@ export class ConversationLoop {
               console.log(`[bestOfN] Candidate ${i + 1}/${bonCount} in ${wtPath}`)
 
               try {
-                await this.runModelLoop(systemPrompt, thinkingConfig, toolDefs, deps, bonTurnCap)
+                await this.runModelLoop(systemPrompt, thinkingConfig, toolDefs, deps, bonTurnCap, { candidate: true })
               } catch (e) {
                 console.log(`[bestOfN] Candidate ${i + 1} loop error: ${e}`)
               }
@@ -2075,6 +2388,14 @@ export class ConversationLoop {
     toolDefs: { name: string; description: string; inputJSONSchema: { type: 'object'; properties: Record<string, unknown>; required?: string[] } }[],
     deps: CallModelDeps,
     maxIterations = Number(process.env.LOCALCODE_MAX_ITERATIONS) || 500,
+    /**
+     * `candidate: true` marks a best-of-N sampling run (see the orchestration
+     * block in `runUserMessage`), whose `this.messages` is saved before and
+     * restored after and whose `emit` is rebound to swallow stream tokens.
+     * Nothing a candidate does to the conversation survives it, so a candidate
+     * must not consume anything the real loop still owes the operator.
+     */
+    loopOpts?: { candidate?: boolean },
   ): Promise<void> {
     // Session-scoped accumulators (survive across iterations within a single runModelLoop invocation)
     const toolsUsedInSession: string[] = []
@@ -2084,6 +2405,19 @@ export class ConversationLoop {
     let evasionNudges = 0
 
     for (let i = 0; i < maxIterations; i++) {
+      // ── Operator notes (Phase 2c-i) ──
+      // FIRST statement of the iteration, before the stuck-loop tiers and
+      // before the model call, because this is the only instant at which
+      // `this.messages` is safe to splice: no request is in flight, and the
+      // next one has not been built. A note queued by the dashboard while the
+      // last model call ran is handed over here, exactly once, and the queue
+      // is empty afterwards.
+      //
+      // Never in a best-of-N candidate: that run's `this.messages` is thrown
+      // away when the candidate ends, so delivering there would empty the
+      // queue, report the note delivered, and then discard the only copy of it.
+      if (!loopOpts?.candidate) this.deliverOperatorNotes(i)
+
       // ── Stuck loop escape: escalating intervention ──
       const stuckCount = this.governance.getStuckCount()
 
@@ -2669,6 +3003,10 @@ export class ConversationLoop {
                   tool: this.uncertainty.digest('tool'),
                 },
               })
+              // Held for the governance.status frame below, which is emitted
+              // AFTER this reset: read there, digest('tool') would be null on
+              // every frame by construction — dead data on the ledger row.
+              this.turnToolEntropy = this.uncertainty.digest('tool')
               this.uncertainty.reset()
               this.uncertaintyIndex = 0
               // Debug: write conversation state to file for diagnosis
@@ -2750,7 +3088,15 @@ export class ConversationLoop {
                 // Distinguishes "no caps were declared" from "caps were
                 // declared and thrown away" — see `invariantsRejected`.
                 invariantsRejected: this.invariantsRejected,
+                // Verify-first routing (Phase 2b-ii). null in every session
+                // that cannot route — interactive, no invariants, or no
+                // KEEP-GREEN assertion to run — which is the same three-way
+                // absence `invariants: null` already reports beside it.
+                routing: this.verifyFirst?.snapshot() ?? null,
                 posiwidLive: this.posiwidLive(),
+                // Data only; validated on the ledger (`--signals`) before
+                // anything reads it. See `brainFrame`.
+                brain: this.brainFrame(),
                 // Capped and camelCased on purpose: the live trace grows for
                 // the whole session and its own toJSON is snake_case (it
                 // mirrors the Rust core byte for byte). A per-turn frame gets
@@ -3737,6 +4083,10 @@ export class ConversationLoop {
       // (after the early returns), so observe directly — same call, same
       // arguments, isError=true because nothing was executed.
       this.missionInvariants?.observeCall(toolName, toolInput, true)
+      // ...and so must the verify-first router, for the same reason: an open
+      // routing entry's outcome is "what the next call was", and a call that
+      // never parsed is still what the model did next.
+      this.verifyFirst?.observeCall(classifyCall(toolName, toolInput, true), this.toolCallsTotal)
       this.accountToolClass(toolName, toolInput, true)
       return
     }
@@ -3785,7 +4135,15 @@ export class ConversationLoop {
      * denial quotes never moved — and the denial ledger's `nextCallClass`, which
      * is the whole outcome record, is only filled in by the NEXT observeCall.
      */
-    const accountInvariants = (isError: boolean) => this.missionInvariants?.observeCall(toolName, toolInput, isError)
+    const accountInvariants = (isError: boolean) => {
+      this.missionInvariants?.observeCall(toolName, toolInput, isError)
+      // Same call, same classifier, same outcome question: a routing entry's
+      // `nextCallClass` is filled by the NEXT call, exactly as a denial's is.
+      // The call index is passed so the routed call's own accounting cannot
+      // close its own entry — the revert branch verifies before this runs and
+      // the executed-edit branch after it, so ordering alone cannot say.
+      this.verifyFirst?.observeCall(classifyCall(toolName, toolInput, isError), this.toolCallsTotal)
+    }
     // A call that never executed (denied, blocked, refused) is one call for
     // the invariants AND one `denied-or-error` for the POSIWID/identity
     // counters. The executed path accounts for itself further down, where
@@ -3884,12 +4242,32 @@ export class ConversationLoop {
       const inv = this.missionInvariants.evaluate(toolName, toolInput)
       if (inv.kind === 'deny') {
         console.log(`[invariant] DENIED ${toolName} (${inv.invariant})`)
+        // Verify-first (Phase 2b-ii): a refused revert is still refused — the
+        // identity is not negotiable and this branch returns exactly as it did
+        // — but the refusal now carries the one fact that decides what to do
+        // instead. Green: there is nothing to undo, commit. Red: fix forward,
+        // and here are the failing lines. Only `revert` routes; the pacing
+        // denials already quote the counter they are about.
+        //
+        // `tool.start` is emitted FIRST, before the routed run: KEEP-GREEN is a
+        // real test command and the refusal can now take minutes to compose. A
+        // dashboard or TUI that had not yet been told the call began would show
+        // nothing at all for that whole span — the engine looks hung exactly
+        // when it is doing the most work.
         this.emit({ type: 'tool.start', toolId, toolName, input: toolInput })
-        this.emit({ type: 'tool.complete', toolId, toolName, result: inv.message, isError: true })
+        let message = inv.message
+        if (inv.invariant === 'revert' && this.verifyFirst) {
+          const v = await this.verifyFirst.verify(
+            this.executor['cwd'], this.toolCallsTotal, 'revert', this.lastToolEntropy)
+          const sentence = verifySentence(v)
+          console.log(`[verify-first] revert refusal informed by KEEP-GREEN: ${v.outcome} (${v.ms} ms)`)
+          if (sentence) message = `${inv.message}\n${sentence}`
+        }
+        this.emit({ type: 'tool.complete', toolId, toolName, result: message, isError: true })
         toolResults.push({
           type: 'tool_result',
           tool_use_id: toolId,
-          content: [{ type: 'text', text: inv.message }],
+          content: [{ type: 'text', text: message }],
           is_error: true,
         })
         toolsUsedThisTurn.push(toolName)
@@ -4158,6 +4536,41 @@ export class ConversationLoop {
       if (outcome === 'timeout') console.log('[invariant] CodeIndex-first skipped: timeout')
     }
     accountInvariants(result.isError)
+
+    // ─── Verify-first: measure a low-confidence source edit ────────
+    // The second half of Phase 2b-ii, and the opposite shape to the revert
+    // branch above: this call is EXECUTED and then measured. The model was
+    // uncertain at the moment it emitted the call (its tool tokens spiked), so
+    // the edit it just made is the one most worth checking, and the verdict is
+    // appended to the result it reads next — before it builds another edit on
+    // top of a tree it has broken.
+    //
+    // Nothing here gates the call: the edit has already happened, and the only
+    // effect is on the text the model reads. That is the whole of "nothing else
+    // in the loop branches on entropy".
+    //
+    // `digest('tool')` is reset at `message_stop`, which happens before any
+    // tool in that message executes, so the live digest is null by the time we
+    // are here. `turnToolEntropy` is that same digest, captured before the
+    // reset for exactly this kind of reader — it describes the model call this
+    // tool token came from, which is the turn the rule is relative to. Without
+    // the fallback the n >= 8 arm of the rule could never fire at all.
+    //
+    // At most ONE such route per model call (`routedEditsThisCall`): the whole
+    // mission gets six KEEP-GREEN runs, and one uncertain assistant message
+    // carrying five edits must not spend most of them — the later edits of a
+    // turn are covered by the run the first one already paid for.
+    let verifyNote: string | null = null
+    if (this.verifyFirst && this.routedEditsThisCall === 0
+      && classifyCall(toolName, toolInput, result.isError) === 'sourceEdit'
+      && this.verifyFirst.isLowConfidence(this.lastToolEntropy, this.uncertainty.digest('tool') ?? this.turnToolEntropy)) {
+      this.routedEditsThisCall++
+      const v = await this.verifyFirst.verify(
+        this.executor['cwd'], this.toolCallsTotal, 'low-confidence-edit', this.lastToolEntropy)
+      verifyNote = verifyEditNote(v)
+      console.log(`[verify-first] low-confidence ${toolName} measured by KEEP-GREEN: ${v.outcome} (${v.ms} ms)`)
+      if (verifyNote) result.output = `${result.output}\n\n${verifyNote}`
+    }
 
     // ─── SubAgent interception ─────────────────────────────────────
     // spawnAgent.ts returns { _subagent: true, config, blocking } as JSON.
@@ -4594,8 +5007,25 @@ export class ConversationLoop {
     }
 
     const fullOutput = result.output + lspContext + createdWarn
-    const truncatedOutput = truncateToolOutput(toolName, fullOutput)
-    if (truncatedOutput.length < fullOutput.length) {
+    let truncatedOutput = truncateToolOutput(toolName, fullOutput)
+    // Decided BEFORE the note is put back, or re-appending it could make a
+    // truncated output measure longer than the original and silence the log
+    // line (and, for Bash, the full-output dump) that says work was dropped.
+    const wasTruncated = truncatedOutput.length < fullOutput.length
+    // The verify-first note is appended to the END of `result.output`, and
+    // truncation keeps the FIRST N lines: a source-rewriting Bash call that
+    // prints more than its cap would lose the KEEP-GREEN verdict entirely —
+    // the one line the measurement exists to deliver. Put it back, but ONLY
+    // when something was actually dropped. `fullOutput` is `result.output`
+    // plus `lspContext` plus `createdWarn`, so on an untruncated result that
+    // carries either of those the note is no longer the last thing in the
+    // string and an `endsWith` test alone would append a second copy.
+    // (Edit / Write / MultiEdit are in NO_TRUNCATE_TOOLS, so this can only
+    // ever fire for a Bash `sourceEdit`.)
+    if (verifyNote && wasTruncated && !truncatedOutput.endsWith(verifyNote)) {
+      truncatedOutput = `${truncatedOutput}\n\n${verifyNote}`
+    }
+    if (wasTruncated) {
       console.log(`[s3] Truncated ${toolName} output: ${fullOutput.length} → ${truncatedOutput.length} bytes`)
       // For Bash, write full output to disk so user can inspect
       if (toolName === 'Bash') {

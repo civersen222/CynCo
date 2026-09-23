@@ -727,6 +727,17 @@ describe('dispatchEnv', () => {
     const env = dispatchEnv({ PATH: '/usr/bin', CYNCO_NTFY_URL: 'http://n', CYNCO_NTFY_TOKEN: 'tk', CYNCO_NTFY_ALERT_TOPIC: 'cynco-alerts', GH_TOKEN: 'gh', GITHUB_TOKEN: 'gh2', CYNCO_GATE_REPO: 'C:/repo' }, { DRIVER_LOG: 'C:/tmp/d.log' })
     expect(env).toEqual({ PATH: '/usr/bin', CYNCO_GATE_REPO: 'C:/repo', DRIVER_LOG: 'C:/tmp/d.log' })
   })
+
+  // Phase 2c-ii: the 9161 dashboard's /api/campaign reads process.env.CYNCO_CAMPAIGN_ID
+  // as its fallback `active` campaign when nothing is inFlight — but only if the
+  // dispatched engine actually has that var. `defaultIo.dispatch` sets it in the
+  // `extra` it hands to dispatchEnv (extra always wins, so it cannot be stripped
+  // by the ntfy/GitHub filter above even if a caller's own env happened to carry
+  // an unrelated CYNCO_CAMPAIGN_ID already).
+  it('carries CYNCO_CAMPAIGN_ID through to the dispatched engine, extra winning over the base env', () => {
+    const env = dispatchEnv({ PATH: '/usr/bin', CYNCO_CAMPAIGN_ID: 'stale' }, { CYNCO_CAMPAIGN_ID: 'c8', DRIVER_LOG: 'C:/tmp/d.log' })
+    expect(env.CYNCO_CAMPAIGN_ID).toBe('c8')
+  })
 })
 
 // I2: the runner's OWN untracked briefs must not trip its dirty-tree refusal.
@@ -803,6 +814,24 @@ describe('runWave — the Level 4 spine at VERDICT', () => {
     const rec = await runWave(spec, state, io)
     expect(rec.decision.kind).not.toBe('fault')
     expect(state.state.denialAnalysis ?? null).toBeNull()
+  })
+
+  // 2d: governance-level POSIWID — one window per wave, replayed fresh every
+  // verdict so a runner restart cannot move the onset.
+  it('records a governance POSIWID reading and grows the window one wave at a time', async () => {
+    const state = freshState()
+    const io = gradedIo({
+      exportTriples: () => ({ summary: { denials: {}, quiet: {}, campaigns: {} } }),
+      analyseDenials: () => null,
+    })
+    const rec = await runWave(spec, state, io)
+    expect(typeof rec.governancePosiwid.verdict).toBe('string')
+    expect(state.state.governancePosiwid.windows).toHaveLength(1)
+    expect(state.state.governancePosiwid.windows[0].wave).toBe(1)
+
+    await runWave(spec, state, io)
+    expect(state.state.governancePosiwid.windows).toHaveLength(2)
+    expect(state.state.governancePosiwid.windows[1].wave).toBe(2)
   })
 
   // §E: two proposals must not go pending in the same wave. A promotion

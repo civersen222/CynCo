@@ -150,6 +150,26 @@ describe('buildTriples', () => {
     expect(records.filter(r => r.kind === 'denial').every(r => r.campaign === null && r.wave === null)).toBe(true)
     expect(records.filter(r => r.kind === 'wave')).toHaveLength(0)
   })
+  // 2d: the runner's governance POSIWID reading rides along on the wave
+  // record, and the campaign block always carries the latest one.
+  it('carries the governance POSIWID reading on the wave record and the campaign summary', () => {
+    const g1 = { verdict: 'Consistent', divergence: 0.2, dominantObserved: 'denialsChanged', support: 25, onsetWave: null, windows: 1 }
+    const g2 = { verdict: 'Contradicted', divergence: 5.8, dominantObserved: 'signalsLogged', support: 45, onsetWave: 2, windows: 2 }
+    const w1 = wave({ wave: 1, missionId: 'c8-wave1-1', governancePosiwid: g1 })
+    const w2 = wave({ wave: 2, missionId: 'c8-wave2-1', governancePosiwid: g2 })
+    const { records, summary } = buildTriples({ rows: [row({ missionId: 'c8-wave1-1' }), row({ missionId: 'c8-wave2-1' })], campaigns: [campaign([w1, w2])] })
+    expect(records.find(r => r.kind === 'wave' && r.wave === 1).governancePosiwid).toEqual(g1)
+    expect(records.find(r => r.kind === 'wave' && r.wave === 2).governancePosiwid).toEqual(g2)
+    expect(summary.campaigns.c8.governancePosiwid).toEqual(g2)
+  })
+  it('a wave record with no governance reading yet reads null, and does not blank out an earlier one', () => {
+    const g1 = { verdict: 'Consistent', divergence: 0.2, dominantObserved: 'denialsChanged', support: 25, onsetWave: null, windows: 1 }
+    const w1 = wave({ wave: 1, missionId: 'c8-wave1-1', governancePosiwid: g1 })
+    const w2 = wave({ wave: 2, missionId: 'c8-wave2-1' })
+    const { records, summary } = buildTriples({ rows: [row({ missionId: 'c8-wave1-1' }), row({ missionId: 'c8-wave2-1' })], campaigns: [campaign([w1, w2])] })
+    expect(records.find(r => r.kind === 'wave' && r.wave === 2).governancePosiwid).toBeNull()
+    expect(summary.campaigns.c8.governancePosiwid).toEqual(g1)
+  })
   it('failsBefore for a wave comes from the previous graded wave, not the faulted one between', () => {
     const w1 = wave({ wave: 1, missionId: 'c8-wave1-1', gate: { fails: [{ id: 'B' }, { id: 'C' }], passes: [] } })
     const fault = { wave: 2, missionId: null, decision: { kind: 'fault', why: 'x' } }

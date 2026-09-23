@@ -13,7 +13,7 @@
 
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
-import { readFileSync, existsSync } from 'fs'
+import { readFileSync, existsSync, readdirSync } from 'fs'
 import { execFile } from 'child_process'
 import type { Server, ServerWebSocket } from 'bun'
 import type { EngineEvent } from '../bridge/protocol.js'
@@ -251,6 +251,32 @@ function validateInteger(value: unknown, min: number, max: number, field: string
 }
 
 // ---------------------------------------------------------------------------
+// Campaign-recursion readout (Phase 2c-ii)
+// ---------------------------------------------------------------------------
+
+/** One row of GET /api/campaign's `campaigns` array. Shape is the brief's
+ *  Interfaces block, verbatim. */
+interface CampaignSummary {
+  id: string
+  waveCount: number
+  budgetWaves: number | null
+  lastDecision: { kind: string; why: string } | null
+  lastFails: string[]
+  pendingProposals: Array<{ name: string; currentValue: unknown; newValue: unknown; max: unknown; approveCommand: string }>
+  ideationAuthority: number
+  invariantOverrides: Record<string, number>
+  waves: Array<{
+    wave: number
+    decision: { kind: string; why: string } | null
+    posiwid: { verdict: string; divergence: number } | null
+    governancePosiwid: { verdict: string; onsetWave: number | null } | null
+    verified: boolean | null
+  }>
+  governancePosiwid: Record<string, unknown> | null
+  inFlight: Record<string, unknown> | null
+}
+
+// ---------------------------------------------------------------------------
 // DashboardServer
 // ---------------------------------------------------------------------------
 
@@ -347,6 +373,8 @@ export class DashboardServer {
               return this.getGovernance()
             case '/api/mission':
               return await this.getMission()
+            case '/api/campaign':
+              return this.getCampaign()
             case '/api/predictions':
               return this.getPredictions()
             case '/api/contracts':
@@ -748,6 +776,151 @@ window.__CYNCO_TOKEN = ${JSON.stringify(token)};
       gitStale: c.at === 0 ? true : (Date.now() - c.at) > MISSION_CACHE_TTL_MS * 2,
       gitError: c.error,
     })
+  }
+
+  /**
+   * Campaign-recursion readout (Phase 2c-ii): every campaign under
+   * ~/.cynco/campaigns/, read straight off disk.
+   *
+   * Deliberately NOT `scripts/cynco-campaign-state.mjs`'s `CampaignState`
+   * class — that class's `save()` runs `adoptExternalDecisions()` as a side
+   * effect on every write, and a GET route must never carry any write path,
+   * even one gated behind a call this route never makes. Reading the two files
+   * by hand keeps this route inert: it can only observe what the runner (or an
+   * operator's `--approve-proposal`) already wrote.
+   *
+   * No caching beyond the request — `getMission`'s single-flight cache exists
+   * to keep a slow git off the event loop; `readFileSync` on a small JSON file
+   * and a `.jsonl` has no equivalent cost, and an operator who just approved a
+   * proposal must see it on the very next poll, not after a TTL.
+   */
+  private getCampaign(): Response {
+    try {
+      const campaignsDir = join(cyncoHome(), 'campaigns')
+      if (!existsSync(campaignsDir)) return jsonResponse({ active: null, campaigns: [] })
+      const ids = readdirSync(campaignsDir, { withFileTypes: true })
+        .filter(d => d.isDirectory())
+        .map(d => d.name)
+      const campaigns: CampaignSummary[] = []
+      for (const id of ids) {
+        // Isolated per campaign: `readCampaignSummary` already catches a bad
+        // state.json parse and a bad waves.jsonl line, but anything else it
+        // throws (proposals present but not an array from a partial write,
+        // waves.jsonl being a directory, a permissions error on readFileSync)
+        // must not escape to the outer catch below and wipe every OTHER
+        // healthy campaign out of the response along with it.
+        try {
+          const c = this.readCampaignSummary(id)
+          if (c) campaigns.push(c)
+        } catch (e) {
+          console.error(`[dashboard] campaign ${id}: unreadable, skipping (${e instanceof Error ? e.message : String(e)})`)
+        }
+      }
+      // The campaign with a driver dispatched and running wins outright — it is
+      // the one thing happening right now. Absent that, the env var the runner
+      // itself is invoked with (set by dispatchEnv/dispatch-mission.sh, Phase 2c-ii)
+      // names which campaign this engine belongs to even between waves.
+      const inFlight = campaigns.find(c => c.inFlight !== null)
+      const active = inFlight ? inFlight.id : (process.env.CYNCO_CAMPAIGN_ID || null)
+      return jsonResponse({ active, campaigns })
+    } catch (e) {
+      return jsonResponse({ active: null, campaigns: [], error: e instanceof Error ? e.message : String(e) })
+    }
+  }
+
+  /** One campaign's row, or null when its state.json is missing or corrupt —
+   *  a bad campaign directory must not take the whole endpoint down with it. */
+  private readCampaignSummary(id: string): CampaignSummary | null {
+    const dir = join(cyncoHome(), 'campaigns', id)
+    const statePath = join(dir, 'state.json')
+    if (!existsSync(statePath)) return null
+    let state: any
+    try {
+      state = JSON.parse(readFileSync(statePath, 'utf-8'))
+    } catch (e) {
+      console.log(`[dashboard] campaign ${id}: state.json unreadable, skipping (${e instanceof Error ? e.message : String(e)})`)
+      return null
+    }
+
+    const wavesPath = join(dir, 'waves.jsonl')
+    const rawWaves: any[] = existsSync(wavesPath)
+      ? readFileSync(wavesPath, 'utf-8').split('\n').filter(l => l.length > 0)
+          .map(line => {
+            try { return JSON.parse(line) } catch (e) {
+              // Skipping is right — one truncated append must not blank the
+              // whole campaign — but skipping in silence is how a half-written
+              // waves.jsonl looks identical to a campaign that never ran.
+              console.warn(`[dashboard] campaign ${id}: skipping unparseable waves.jsonl line (${e instanceof Error ? e.message : String(e)})`)
+              return null
+            }
+          })
+          .filter((w): w is any => w !== null)
+      : []
+
+    const waves = rawWaves.map(w => ({
+      wave: w.wave,
+      decision: w.decision ?? null,
+      posiwid: w.posiwid ? { verdict: w.posiwid.verdict, divergence: w.posiwid.divergence } : null,
+      governancePosiwid: w.governancePosiwid ? { verdict: w.governancePosiwid.verdict, onsetWave: w.governancePosiwid.onsetWave ?? null } : null,
+      verified: w.verified ?? null,
+    }))
+    // The last WRITTEN wave, not the highest `wave` number — rewriteLastWave
+    // (cynco-campaign-state.mjs) always rewrites the final line in place, so
+    // array order already is chronological order.
+    const lastWave = rawWaves.length ? rawWaves[rawWaves.length - 1] : null
+
+    // Spec r9 / 2c asks for the last FAIL lines VERBATIM — "C8.1a.tiers-pressable:
+    // FAIL no tier button responds to a click", not the bare id. The gate's own
+    // lines are on the wave record (`gate.fails[].line`, cynco-gate-parse.mjs:18);
+    // `state.lastFails` keeps only ids (cynco-campaign.mjs:397), so it is the
+    // fallback for a campaign whose last wave predates the wave record carrying
+    // the gate, never the first choice.
+    const lastFailLines: string[] = Array.isArray(lastWave?.gate?.fails)
+      ? lastWave.gate.fails.map((f: any) => (typeof f === 'string' ? f : f?.line ?? f?.id)).filter((l: any): l is string => typeof l === 'string')
+      : []
+    const lastFails: string[] = lastFailLines.length > 0 ? lastFailLines : (state.lastFails ?? [])
+
+    const pendingProposals = (state.proposals ?? [])
+      .filter((p: any) => p?.status === 'pending')
+      .map((p: any) => ({
+        name: p.name,
+        currentValue: p.currentValue ?? null,
+        newValue: p.newValue,
+        max: p.bounds?.max ?? null,
+        // The exact command an operator runs to approve it — cynco-campaign.mjs's
+        // own usage line, spelled out rather than left for someone to reconstruct.
+        approveCommand: `bun scripts/cynco-campaign.mjs docs/civkings-redesign-briefs/${id}.campaign.json --approve-proposal ${p.name}`,
+      }))
+
+    return {
+      id,
+      waveCount: state.waveCount ?? 0,
+      budgetWaves: this.readCampaignBudget(id),
+      lastDecision: lastWave?.decision ?? null,
+      lastFails,
+      pendingProposals,
+      ideationAuthority: state.ideationAuthority ?? 0,
+      invariantOverrides: state.invariantOverrides ?? {},
+      waves,
+      governancePosiwid: lastWave?.governancePosiwid ?? null,
+      inFlight: state.inFlight ?? null,
+    }
+  }
+
+  /** `budget.waves` from docs/civkings-redesign-briefs/<id>.campaign.json — the
+   *  spec this campaign was dispatched from — or null when it cannot be read.
+   *  A campaign row must not render a made-up budget for a spec file that has
+   *  moved, been renamed, or never existed under this id. */
+  private readCampaignBudget(id: string): number | null {
+    try {
+      const specPath = join('docs', 'civkings-redesign-briefs', `${id}.campaign.json`)
+      if (!existsSync(specPath)) return null
+      const spec = JSON.parse(readFileSync(specPath, 'utf-8'))
+      return typeof spec?.budget?.waves === 'number' ? spec.budget.waves : null
+    } catch (e) {
+      console.warn(`[dashboard] campaign ${id}: budget unreadable from docs/civkings-redesign-briefs/${id}.campaign.json, showing no budget (${e instanceof Error ? e.message : String(e)})`)
+      return null
+    }
   }
 
   private getPredictions(): Response {

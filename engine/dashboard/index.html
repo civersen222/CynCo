@@ -536,6 +536,18 @@ body.mission-mode #historyPanel { display: none; }
     <div class="decision-list" id="missionCommitList"></div>
   </div>
 
+  <!-- Campaign panel: the campaign-recursion readout (Phase 2c-ii). Visible
+       whenever ~/.cynco/campaigns holds at least one campaign, independent of
+       Mission mode — an operator watching the dashboard between waves (driver
+       exited, next wave not yet dispatched) still needs to see where the
+       campaign stands. Rebuilt in full on every poll rather than patched in
+       place: the campaign set, proposal list and wave count can all change
+       between polls and there is no stable per-row id to patch against. -->
+  <div class="panel full-width" id="panelCampaign" style="display:none">
+    <div class="panel-title">Campaign</div>
+    <div id="campaignList"></div>
+  </div>
+
   <!-- Row 2: Governance Health -->
   <div class="panel" id="panelGovernance">
     <div class="panel-title">Governance Health</div>
@@ -547,6 +559,15 @@ body.mission-mode #historyPanel { display: none; }
       <div><span class="label">Stuck Turns: </span><span class="value" id="govStuck">0</span></div>
       <div><span class="label">Algedonic Alerts: </span><span class="value" id="govAlgedonic">0</span></div>
       <div><span class="label">Axiom Health: </span><span class="value" id="govAxioms">&mdash;</span></div>
+      <!-- Phase 2b/2c readouts: mission invariants, live POSIWID, the legacy
+           ultrastable instance's viability margin, brain-tier layer
+           convergence, and verify-first routing. All null in an interactive
+           (non-mission) session; renderGovernance() shows the dash then. -->
+      <div><span class="label">Invariants: </span><span class="value" id="govInvariants">&mdash;</span></div>
+      <div><span class="label">POSIWID live: </span><span class="value" id="govPosiwidLive">&mdash;</span></div>
+      <div><span class="label">Ultrastable margin: </span><span class="value" id="govUltrastable">&mdash;</span></div>
+      <div><span class="label">Layer convergence: </span><span class="value" id="govLayerConvergence">&mdash;</span></div>
+      <div><span class="label">Routing: </span><span class="value" id="govRouting">&mdash;</span></div>
     </div>
     <div class="sub-badges" id="govSubBadges">
       <span class="sub-badge" id="badgeS3">S3</span>
@@ -973,6 +994,31 @@ function handleEvent(event) {
         if (state.toolFeed.length > MAX_FEED) state.toolFeed.pop();
         renderToolFeed();
       }
+      // Task 7 review: an operator's own note to a running mission is
+      // acknowledged over THIS event (source 'operator', severity 'low' — see
+      // conversationLoop.ts queueOperatorNote/dropOperatorQueueAtMissionEnd).
+      // It must reach the chat panel regardless of severity, or the operator
+      // who just typed a note has no way to tell it was heard at all.
+      if (event.source === 'operator') {
+        appendChatMsg('system', 'operator: ' + (event.message || ''));
+      }
+      break;
+    }
+
+    case 'mission.operator_note': {
+      // Phase 2c-ii §X1: the acknowledgement above says the note landed
+      // somewhere; this frame says what became of it — queued, delivered at a
+      // specific iteration, or dropped and why. All three must be
+      // distinguishable in the chat panel, or "queued" silently standing in
+      // for "dropped" is the F32 mistake with a new coat of paint.
+      var noteStatus;
+      if (event.dropped) noteStatus = 'dropped (' + event.dropped + ')';
+      else if (typeof event.deliveredAtIteration === 'number') noteStatus = 'delivered at iteration ' + event.deliveredAtIteration;
+      else noteStatus = 'queued → …';
+      // Review minor #12: say whose note it was. A driver probe re-injected
+      // mid-mission used to render exactly like something the operator typed.
+      var noteWho = event.source === 'driver' ? '[driver]' : '[operator]';
+      appendChatMsg('system', noteWho + ' note "' + (event.text || '') + '": ' + noteStatus);
       break;
     }
 
@@ -1288,6 +1334,63 @@ function renderGovernance() {
   } else {
     axEl.textContent = 'awaiting data (turn 5+)';
     axEl.style.color = '#555';
+  }
+
+  // Invariants (vsm/missionInvariants.ts InvariantSnapshot; null outside
+  // mission mode). denialsByInvariant keys are the invariant ids themselves
+  // ('edit-gap'/'commit-gap'/'revert'), not camelCase — read as written.
+  var invEl = document.getElementById('govInvariants');
+  var inv = gov.invariants;
+  if (inv) {
+    var caps = inv.caps || {};
+    var byInv = inv.denialsByInvariant || {};
+    invEl.textContent = inv.configuration +
+      ' · since edit ' + inv.callsSinceSourceEdit + '/' + caps.editGapCap +
+      ' · since commit ' + inv.callsSinceCommit + '/' + caps.commitGapCap +
+      ' · denials ' + (inv.denialCount || 0) +
+      ' (edit-gap ' + (byInv['edit-gap'] || 0) + ', commit-gap ' + (byInv['commit-gap'] || 0) + ', revert ' + (byInv.revert || 0) + ')';
+  } else {
+    invEl.textContent = '—';
+  }
+
+  // POSIWID, live — vsm/constraintChecks.ts checkToolClassAlignment, one
+  // reading per turn against the session's stated purpose model.
+  var posEl = document.getElementById('govPosiwidLive');
+  posEl.textContent = gov.posiwidLive ? gov.posiwidLive.verdict : '—';
+
+  // The legacy ultrastable instance's viability margin (Plan 1).
+  var ultraEl = document.getElementById('govUltrastable');
+  ultraEl.textContent = (gov.ultrastable && gov.ultrastable.margin != null) ? gov.ultrastable.margin.toFixed(3) : '—';
+
+  // Brain-tier layer convergence + tool-token entropy digest (engine/brain).
+  // null whenever no brain consumer is wired (Ollama, or one that never
+  // started); layerConvergence is null until the first sample lands.
+  var brainEl = document.getElementById('govLayerConvergence');
+  var brain = gov.brain;
+  if (brain && brain.layerConvergence) {
+    var lc = brain.layerConvergence;
+    brainEl.textContent = 'agree ' + (lc.meanAgree != null ? lc.meanAgree.toFixed(2) : '—') +
+      ' · depth ' + (lc.meanDepth != null ? lc.meanDepth.toFixed(1) : '—') + ' (' + lc.n + ' positions)' +
+      ' · ' + brain.tier;
+  } else if (brain) {
+    brainEl.textContent = brain.tier + ' — no convergence samples yet';
+  } else {
+    brainEl.textContent = '—';
+  }
+
+  // Verify-first routing (Phase 2b-ii). null whenever the session cannot
+  // route at all — interactive, no mission invariants, or no KEEP-GREEN
+  // assertion to run.
+  var routeEl = document.getElementById('govRouting');
+  var routing = gov.routing;
+  if (routing) {
+    var byKind = routing.byKind || {};
+    var byOutcome = routing.byOutcome || {};
+    routeEl.textContent = (routing.count || 0) +
+      ' (revert ' + (byKind.revert || 0) + ' / low-confidence ' + (byKind['low-confidence-edit'] || 0) + ')' +
+      ' · pass ' + (byOutcome.passed || 0) + ' / fail ' + (byOutcome.failed || 0);
+  } else {
+    routeEl.textContent = '—';
   }
 }
 
@@ -2061,10 +2164,15 @@ function fetchSessionState() {
     })
     .catch(function() {});
 
-  // Hydrate + poll governance every 3 seconds (tok/s, stuck, health)
+  // Hydrate + poll governance every 3 seconds (tok/s, stuck, health).
+  // MERGE, never replace: /api/governance serves CyberneticsGovernance.getReport(),
+  // which carries none of `invariants`, `routing`, `brain`, `posiwidLive` or
+  // `ultrastable` — those ride only the per-model-call `governance.status` frame.
+  // Replacing blanked all five Governance rows from the first poll after each
+  // frame until the next one, i.e. for the whole of any tool call over 3s.
   function pollGovernance() {
     fetch('/api/governance').then(function(r) { return r.json(); }).then(function(data) {
-      if (data && data.status) { state.governance = data; render(); }
+      if (data && data.status) { state.governance = Object.assign({}, state.governance || {}, data); render(); }
     }).catch(function() {});
   }
   pollGovernance();
@@ -2113,6 +2221,78 @@ function fetchSessionState() {
   }
   pollMission();
   setInterval(pollMission, 10000);
+
+  // Campaign panel (Phase 2c-ii): every campaign under ~/.cynco/campaigns,
+  // independent of Mission mode — the panel is useful between waves too, when
+  // no engine session is a mission at all. Rebuilt from scratch each poll: the
+  // set of campaigns, their proposals and their wave counts can all change
+  // between polls and there is no stable id to patch a single row against.
+  function pollCampaign() {
+    fetch('/api/campaign').then(function(r) { return r.json(); }).then(function(data) {
+      var panel = document.getElementById('panelCampaign');
+      var list = document.getElementById('campaignList');
+      if (!data || !data.campaigns || !data.campaigns.length) { panel.style.display = 'none'; return; }
+      panel.style.display = '';
+      list.innerHTML = '';
+      data.campaigns.forEach(function(c) {
+        var block = document.createElement('div');
+        block.className = 'gov-stats';
+        block.style.marginTop = '4px';
+        // Spec r9: the last FAIL lines verbatim, not a count. One fail prints
+        // its whole line; several print the count and the first, with all of
+        // them on the row's tooltip — a dozen gate lines would otherwise push
+        // every other row off the panel.
+        var fails = c.lastFails || [];
+        var failText = fails.length === 0 ? 'none'
+          : (fails.length === 1 ? fails[0] : fails.length + ' — ' + fails[0]);
+        var rows = [
+          ['Campaign', c.id + (c.id === data.active ? ' (ACTIVE)' : '')],
+          ['Wave', c.waveCount + (c.budgetWaves != null ? ' / ' + c.budgetWaves : '')],
+          ['Last decision', c.lastDecision ? (c.lastDecision.kind + ' — ' + c.lastDecision.why) : '—'],
+          ['Last fails', failText, fails.join('\n')],
+          ['Ideation authority', Number(c.ideationAuthority || 0).toFixed(2)],
+          ['Invariant overrides', Object.keys(c.invariantOverrides || {}).length
+            ? Object.keys(c.invariantOverrides).map(function(k) { return k + ' ' + c.invariantOverrides[k]; }).join(', ')
+            : 'none'],
+          ['Governance POSIWID', c.governancePosiwid
+            ? (c.governancePosiwid.verdict + (c.governancePosiwid.onsetWave ? ' (drift onset wave ' + c.governancePosiwid.onsetWave + ')' : ''))
+            : '—'],
+          ['In flight', c.inFlight ? ('wave ' + c.inFlight.wave + ' dispatched ' + (c.inFlight.dispatchedAt || '')) : 'no'],
+        ];
+        rows.forEach(function(pair) {
+          var row = document.createElement('div');
+          row.innerHTML = '<span class="label">' + escHtml(pair[0]) + ': </span><span class="value">' + escHtml(String(pair[1])) + '</span>';
+          if (pair[2]) row.title = pair[2];
+          block.appendChild(row);
+        });
+        list.appendChild(block);
+
+        var entries = document.createElement('div');
+        entries.className = 'decision-list';
+        (c.pendingProposals || []).forEach(function(p) {
+          var d = document.createElement('div');
+          d.textContent = 'PROPOSAL ' + p.name + ' ' + p.currentValue + ' → ' + p.newValue + ' (max ' + p.max + ') — approve: ' + p.approveCommand;
+          entries.appendChild(d);
+        });
+        (c.waves || []).slice(-5).forEach(function(w) {
+          var d = document.createElement('div');
+          var verifiedLabel = w.verified === null ? '—' : (w.verified ? 'yes' : 'no');
+          d.textContent = 'wave ' + w.wave + ': ' + (w.decision ? w.decision.kind + ' — ' + w.decision.why : '?') +
+            ' (verified ' + verifiedLabel + (w.posiwid ? ', POSIWID ' + w.posiwid.verdict : '') + ')';
+          entries.appendChild(d);
+        });
+        if (!entries.children.length) {
+          var empty = document.createElement('div');
+          empty.className = 'empty-text';
+          empty.textContent = 'No proposals or graded waves yet';
+          entries.appendChild(empty);
+        }
+        list.appendChild(entries);
+      });
+    }).catch(function(e) { console.warn('campaign poll failed', e); });
+  }
+  pollCampaign();
+  setInterval(pollCampaign, 10000);
 
   fetchPredictions();
   fetchContracts();
