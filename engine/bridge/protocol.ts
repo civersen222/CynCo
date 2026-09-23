@@ -277,6 +277,8 @@ export type GovernanceStatusEvent = {
      *  denial whose next call has not been observed yet. */
     denialsByInvariant: Record<string, number>
     nextCallClassCounts: Record<string, number>
+    /** `nextCallClassCounts` split by the invariant that denied, over ALL denials. */
+    nextCallClassByInvariant: Record<string, Record<string, number>>
     /** Variables the gate has stopped denying on after three full relent
      *  cycles (the invariant ids, widened to string on the wire). */
     terminalRelents: string[]

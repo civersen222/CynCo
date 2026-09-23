@@ -131,3 +131,33 @@ export function promotionProposal(waves, currentAuthority, alpha = 0.05) {
   return { type: 'Parameter', name: 'ideation/brief', newValue: IDEATION_MAX_AUTHORITY, bounds: { min: 0, max: IDEATION_MAX_AUTHORITY },
            status: 'pending', evidence: { followedLanded: a, followedMissed: b, notFollowedLanded: c, notFollowedMissed: d, p } }
 }
+
+// ── The cap loop: a denial that never changes the next call is noise ──
+//
+// Same shape and same bar as the ideation promotion: a data-shaped Parameter
+// proposal the owner approves (`--approve-proposal invariants/<cap>`). Only the
+// two caps are tunable; the revert ban is an identity invariant the campaign
+// recursion spec places beyond any proposal.
+export const CAP_PROPOSAL_FACTOR = 1.5
+export const CAP_BY_INVARIANT = { 'edit-gap': 'editGapCap', 'commit-gap': 'commitGapCap' }
+
+export function effectiveInvariants(spec, state) {
+  const out = { ...spec.invariants }
+  for (const [k, v] of Object.entries(state?.invariantOverrides ?? {})) if (k === 'editGapCap' || k === 'commitGapCap') out[k] = v
+  return out
+}
+
+export function capProposal(denialAnalysis, spec, state) {
+  if (!denialAnalysis?.invariants) return null
+  if ((state?.proposals ?? []).some(p => p.status === 'pending')) return null
+  const current = effectiveInvariants(spec, state)
+  for (const r of denialAnalysis.invariants) {
+    const cap = CAP_BY_INVARIANT[r.invariant]
+    if (!cap || r.verdict !== 'INERT') continue
+    const min = spec.invariants[cap], max = spec.invariants[cap] * 2
+    const newValue = Math.min(max, Math.round(current[cap] * CAP_PROPOSAL_FACTOR))
+    if (newValue <= current[cap]) continue
+    return { type: 'Parameter', name: `invariants/${cap}`, newValue, currentValue: current[cap], bounds: { min, max }, status: 'pending', evidence: r }
+  }
+  return null
+}

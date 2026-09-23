@@ -3,7 +3,7 @@ import { join } from 'node:path'
 
 export function freshState(id) {
   return { id, calibration: null, waveCount: 0, lastBase: null, lastFails: null, consecutiveNoProgress: 0,
-           ideationAuthority: 0, proposals: [], pendingNotifications: [] }
+           ideationAuthority: 0, proposals: [], invariantOverrides: {}, pendingNotifications: [] }
 }
 
 // The daemon's missionLedger pattern (engine/daemon/missionLedger.ts:27-56):
@@ -39,13 +39,21 @@ export class CampaignState {
    * runner holds this object in memory for days. The runner's next save would
    * write its stale `pending` over the operator's decision — so before every
    * write, a decision on disk wins over a pending proposal in memory, and an
-   * approval carries its authority with it. Nothing else is merged: the runner
-   * is the only writer of every other field.
+   * approval carries its authority with it. Two other fields are merged the
+   * same way: `ideationAuthority` and `invariantOverrides` (per-key, the max of
+   * the in-memory and disk values — both only ever rise, so the higher one is
+   * always the more-approved one). Nothing else is merged: the runner is the
+   * only writer of every other field.
    */
   adoptExternalDecisions() {
     if (!existsSync(this.statePath)) return
     let disk
-    try { disk = JSON.parse(readFileSync(this.statePath, 'utf8')) } catch { return }
+    // M9: this is the ONLY place an operator's `--approve-proposal` reaches the
+    // running runner. A corrupt state.json here means the approval is silently
+    // dropped and the runner writes its stale `pending` back over it — so the
+    // reason has to be on the record even though the save must still proceed.
+    try { disk = JSON.parse(readFileSync(this.statePath, 'utf8')) }
+    catch (e) { console.error(`[campaign] state.json on disk is unreadable during save — external decisions not merged: ${e.message}`); return }
     for (const d of disk?.proposals ?? []) {
       if (d.status === 'pending') continue
       const mine = (this.state.proposals ?? []).find(p => p.name === d.name && p.proposedAt === d.proposedAt)
@@ -54,9 +62,40 @@ export class CampaignState {
       if (d.status === 'approved' && typeof disk.ideationAuthority === 'number') {
         this.state.ideationAuthority = Math.max(this.state.ideationAuthority ?? 0, disk.ideationAuthority)
       }
+      if (d.status === 'approved' && d.name.startsWith('invariants/') && disk.invariantOverrides) {
+        // A blind spread would let a stale disk value clobber a higher one the
+        // runner already holds in memory. Caps only ever rise (capProposal /
+        // applyProposalDecision), so the merge is monotonic per key: the max
+        // wins. 0 is a safe floor — an override is always >= the spec value,
+        // and this class does not know the spec to floor it any tighter.
+        for (const [cap, v] of Object.entries(disk.invariantOverrides)) {
+          this.state.invariantOverrides = { ...(this.state.invariantOverrides ?? {}), [cap]: Math.max(this.state.invariantOverrides?.[cap] ?? 0, v) }
+        }
+      }
     }
   }
   appendWave(record) { mkdirSync(this.dir, { recursive: true }); appendFileSync(this.wavesPath, JSON.stringify(record) + '\n') }
+  /**
+   * I2: the wave record is appended BEFORE the verdict is written, so the
+   * verdict's own export and the promotion proposal can see the wave they are
+   * about. Two of its fields — `verdictSha` and `notified` — are only known
+   * once that verdict has been committed and sent, so they are patched back
+   * onto the last line here.
+   *
+   * Rewritten tmp + rename, like `save()`: a crash mid-rewrite leaves the
+   * previous waves.jsonl whole rather than a half-written one. If the file is
+   * missing or empty there is no last line to rewrite — append instead, so the
+   * record is never lost (the whole point of appending it first).
+   */
+  rewriteLastWave(record) {
+    mkdirSync(this.dir, { recursive: true })
+    const lines = existsSync(this.wavesPath) ? readFileSync(this.wavesPath, 'utf8').split('\n').filter(Boolean) : []
+    if (lines.length === 0) return this.appendWave(record)
+    lines[lines.length - 1] = JSON.stringify(record)
+    const tmp = `${this.wavesPath}.tmp`
+    writeFileSync(tmp, lines.join('\n') + '\n', 'utf8')
+    renameSync(tmp, this.wavesPath)
+  }
   /**
    * An appendFileSync that died mid-write leaves a truncated LAST line. Losing
    * the promotion evidence in every earlier wave over it — with a JSON parse

@@ -3,6 +3,9 @@
 // rule (feedback_brief_authoring) or a gate-authoring rule; the one rule this
 // file enforces structurally is 15: a gate line is COPIED, never restated —
 // there is no code path here that paraphrases one.
+import { IDEATION_MAX_AUTHORITY } from './cynco-ideation.mjs'
+import { complied, KINDS } from './cynco-triples.mjs'
+
 const wrap = (s) => String(s).replace(/\s+$/, '')
 
 export function sidecarFor(spec) {
@@ -42,11 +45,55 @@ regions pressed at their centres, files on disk, and values the game returns; ne
 }
 
 function work(spec, ctx) {
-  const failing = new Set(ctx.fails.map(f => f.id))
-  const items = spec.work.filter(w => w.gateIds.some(g => failing.has(g)))
+  const { order } = workOrderFor(spec, ctx)
+  const byId = new Map(spec.work.map(w => [w.id, w]))
+  const items = order.map(id => byId.get(id))
   const body = items.map(w => `${w.id}. ${w.title}. ${w.text} COMMIT ${w.id}.`).join('\n\n')
   return wrap(`THE WORK (numbered commit points — commit AT each; a commit is the only
 backup you have; the full suite is graded after the run, not by you)\n\n${body}`)
+}
+
+/** Advised items first, in the advisor's order; everything else in spec order. */
+export function orderWork(items, order) {
+  const pos = (w) => { const idx = (w.gateIds ?? []).map(g => (order ?? []).indexOf(g)).filter(i => i >= 0); return idx.length ? Math.min(...idx) : Infinity }
+  const sorted = items.map((w, i) => ({ w, i, p: pos(w) })).sort((a, b) => a.p - b.p || a.i - b.i).map(x => x.w)
+  return { items: sorted, applied: sorted.some((w, i) => w !== items[i]) }
+}
+
+/** The failing work items in the order the brief prints them. Reordering is
+ *  the one thing the ideation seat may do at earned authority (spec §3.4):
+ *  never a gate line, never a rule. */
+export function workOrderFor(spec, ctx) {
+  const failing = new Set(ctx.fails.map(f => f.id))
+  const items = spec.work.filter(w => w.gateIds.some(g => failing.has(g)))
+  const earned = (ctx.ideationAuthority ?? 0) >= IDEATION_MAX_AUTHORITY && (ctx.ideation?.order?.length ?? 0) > 0
+  const { items: ordered, applied } = earned ? orderWork(items, ctx.ideation.order) : { items, applied: false }
+  return { applied, order: ordered.map(w => w.id) }
+}
+
+/** What the call after each denial was, per invariant — from the run-long
+ *  aggregate when the engine wrote one, else from the 50-denial window.
+ *  Compliance is the exporter's definition (scripts/cynco-triples.mjs
+ *  `complied`) — one rule, never re-derived, so PACING and the Level-4
+ *  dataset can't silently disagree on what "complied" means.
+ *
+ *  M6: `windowed` says the count below is the tail, not the run. A row that
+ *  predates `nextCallClassByInvariant` only carries the last 50 denials, so a
+ *  run with 80 of them reads "50" — and PACING must not tell the model those
+ *  were all of them. */
+export function denialFollowUp(inv) {
+  if (!inv) return null
+  const byInvariant = Object.fromEntries(KINDS.map(k => [k, { denials: 0, complied: 0 }]))
+  if (inv.nextCallClassByInvariant) {
+    for (const [k, classes] of Object.entries(inv.nextCallClassByInvariant)) for (const [c, n] of Object.entries(classes)) {
+      const b = byInvariant[k] ?? (byInvariant[k] = { denials: 0, complied: 0 }); b.denials += n; if (complied(k, c)) b.complied += n
+    }
+  } else {
+    for (const d of inv.denials ?? []) { const b = byInvariant[d.invariant] ?? (byInvariant[d.invariant] = { denials: 0, complied: 0 }); b.denials += 1; if (complied(d.invariant, d.nextCallClass)) b.complied += 1 }
+  }
+  const total = Object.values(byInvariant).reduce((a, b) => a + b.denials, 0), compliedTotal = Object.values(byInvariant).reduce((a, b) => a + b.complied, 0)
+  const windowed = !inv.nextCallClassByInvariant && (inv.denials?.length ?? 0) < (inv.denialCount ?? 0)
+  return { total, complied: compliedTotal, byInvariant, windowed }
 }
 
 function ideation(ctx) {
@@ -57,7 +104,7 @@ function ideation(ctx) {
 }
 
 function pacing(spec, ctx) {
-  const inv = spec.invariants
+  const inv = ctx.invariants ?? spec.invariants
   const digest = ctx.prior ? (() => {
     const t = ctx.prior.toolStats ?? {}
     const d = ctx.prior.invariants
@@ -76,6 +123,18 @@ function pacing(spec, ctx) {
       `${t.byClass?.inspect ?? '?'} inspect calls against ${t.byClass?.sourceEdit ?? '?'} source edits; CodeIndex ${ci} of ${t.total ?? '?'} calls` +
       (d ? `; the engine denied ${denyCount} call(s)${byInvariant} (${d.revertRefusals ?? 0} revert refusals), ${d.codeIndexAssisted ?? 0} Greps were CodeIndex-assisted${relents}` : '') +
       (ctx.prior.posiwid ? `; POSIWID: ${ctx.prior.posiwid.verdict} (dominant behaviour ${ctx.prior.posiwid.dominantObserved})` : '') + '.'
+      + (() => {
+        const f = denialFollowUp(d)
+        if (!f || f.total === 0) return ''
+        const per = KINDS.map(k => `${k} ${f.byInvariant[k]?.complied ?? 0}/${f.byInvariant[k]?.denials ?? 0}`).join(', ')
+        const camp = Array.isArray(ctx.denialDigest)
+          ? `; campaign to date ${ctx.denialDigest.filter(r => r.invariant !== 'revert').map(r => `${r.invariant} ${r.complied}/${r.denials}`).join(', ')}`
+          : ''
+        // M6: "those N" refers back to the denial count printed above it. When
+        // the follow-up could only be read off the 50-denial window, N is not
+        // that number and saying "those" would misreport the run.
+        return ` Of ${f.windowed ? 'the last' : 'those'} ${f.total} denials, ${f.complied} were followed by the call they asked for (${per})${camp}.`
+      })()
   })() : ''
   return wrap(`PACING (enforced by the engine, not advice)
 - ${inv.editGapCap} tool calls without a source edit and the engine narrows you to edit-only tools

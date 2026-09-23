@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { decide, runWave, waveContext, budgetSpent, defaultIo, claimedSurvivors, dispatchEnv, dirtyOutsideCampaign, inFlightRefusal, adoptInFlight, takeLock, releaseLock } from '../cynco-campaign.mjs'
 import { adopt } from '../cynco-campaign-adopt.mjs'
 import { CampaignState } from '../cynco-campaign-state.mjs'
+import { promotionProposal } from '../cynco-ideation.mjs'
 import { defaultIo as calibrateIo } from '../cynco-campaign-calibrate.mjs'
 import { mkdtempSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -53,6 +54,17 @@ const freshState = () => {
   return state
 }
 
+// M1: runWave calls io.exportTriples on EVERY wave (the Level 4 spine). The io
+// fakes below predate that call, and every one of them used to print
+// "[campaign] triples export/analysis skipped: io.exportTriples is not a
+// function" — noise loud enough to hide the day a real export breaks. An inert
+// export keeps them quiet; defaulting io.exportTriples to the real exporter
+// would instead drag the real ledger into a unit test.
+const inertTriples = {
+  exportTriples: () => ({ summary: { denials: {}, quiet: {}, campaigns: {} } }),
+  analyseDenials: () => null,
+}
+
 describe('runWave', () => {
   it('drives one wave through the injected io and records it', async () => {
     const state = freshState()
@@ -71,6 +83,7 @@ describe('runWave', () => {
       notify: async (t) => { seen.notified = t; return true },
       economics: () => ['VERDICT: x'],
       appendLog: (text) => { seen.log = text },
+      ...inertTriples,
     }
     const rec = await runWave(spec, state, io)
     expect(seen.brief).toMatch(/MISSION C8 WAVE 1/)
@@ -103,6 +116,7 @@ describe('runWave', () => {
       notify: async () => true,
       economics: () => [],
       appendLog: () => {},
+      ...inertTriples,
     })
     expect(rec.verdictSha).toBe('v1')
     expect(files).toContain('docs/civkings-redesign-briefs/campaign-log.md')
@@ -187,6 +201,7 @@ describe('runWave', () => {
     notify: async () => true,
     economics: () => [],
     appendLog: () => {},
+    ...inertTriples,
     ...over,
   })
 
@@ -236,6 +251,7 @@ describe('runWave', () => {
       notify: async () => true,
       economics: () => [],
       appendLog: () => {},
+      ...inertTriples,
     })
     expect(brief).toMatch(/MISSION C8 WAVE 2/)
     expect(brief).toMatch(/C8\.1a: FAIL x/)
@@ -258,6 +274,7 @@ describe('runWave', () => {
       notify: async () => true,
       economics: () => [],
       appendLog: () => {},
+      ...inertTriples,
     }
     const one = await runWave({ ...spec, budget: { ...spec.budget, waves: 1 } }, freshState(), gradedIo)
     expect(one.decision.kind).toBe('budget')
@@ -359,6 +376,7 @@ describe('runWave with an adopted row', () => {
       notify: async () => true,
       economics: () => [],
       appendLog: (text) => { seen.log = text },
+      ...inertTriples,
     })
     expect(seen.dispatched).toBe(0)
     expect(seen.briefs).toBe(0)
@@ -537,6 +555,7 @@ describe('runWave — in-flight state', () => {
     notify: async () => true,
     economics: () => [],
     appendLog: () => {},
+    ...inertTriples,
     ...over,
   })
 
@@ -726,5 +745,229 @@ describe('dirtyOutsideCampaign', () => {
       '?? docs/civkings-redesign-briefs/c7-wave1.txt',
       ' M engine/main.ts',
     ])
+  })
+})
+
+describe('waveContext — Phase 1 fields', () => {
+  it('carries the ideation authority, the effective invariants, and the denial digest', () => {
+    const s = { waveCount: 1, lastBase: 'abc', lastGrade: null, lastRow: null, ideationAuthority: 0.5, invariantOverrides: { editGapCap: 60 }, denialAnalysis: { invariants: [{ invariant: 'edit-gap', denials: 1, complied: 0, verdict: 'TOO FEW' }] }, calibration: { baseFails: [], basePasses: [] } }
+    const ctx = waveContext(spec, s, { salvageOf: () => null })
+    expect(ctx.ideationAuthority).toBe(0.5)
+    expect(ctx.invariants).toEqual({ ...spec.invariants, editGapCap: 60 })
+    expect(ctx.denialDigest).toEqual(s.denialAnalysis.invariants)
+    const bare = waveContext(spec, { waveCount: 0, calibration: { baseFails: [], basePasses: [] } }, { salvageOf: () => null })
+    expect(bare.ideationAuthority).toBe(0); expect(bare.invariants).toEqual(spec.invariants); expect(bare.denialDigest).toBeNull()
+  })
+})
+
+// Task 6: the Level 4 spine at VERDICT — every wave regenerates the triples
+// dataset, re-asks whether the denials changed anything, records the work
+// order it handed to the brief, and raises a cap proposal when a cap is INERT.
+describe('runWave — the Level 4 spine at VERDICT', () => {
+  const gradedIo = (over = {}) => ({
+    writeBrief: (p) => p,
+    dispatch: async () => ({ missionId: 'c8-wave1-1' }),
+    waitForDriver: async () => ({ exited: true }),
+    readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', toolStats: {} }),
+    commitsBetween: () => [],
+    grade: async () => g(),
+    salvageOf: () => null,
+    patchRow: () => {},
+    commit: () => ({ sha: 'v1' }),
+    notify: async () => true,
+    economics: () => [],
+    appendLog: () => {},
+    ...over,
+  })
+
+  it('exports the triples, stores the denial analysis, records the work order, and raises a cap proposal when INERT', async () => {
+    const state = freshState()
+    const seen = { exported: 0, notified: [] }
+    const inert = { invariant: 'edit-gap', denials: 80, complied: 2, changed: 3, compliedRate: 0.025, ci: [0.01, 0.09], baseRate: 0.3, p: 0.0001, pAdjusted: 0.0002, verdict: 'INERT' }
+    const io = gradedIo({
+      exportTriples: () => { seen.exported++; return { summary: { denials: { 'edit-gap': { denials: 80, complied: 2, changed: 3 } }, quiet: { 'edit-gap': { calls: 1000, complied: 300 } } } } },
+      analyseDenials: () => ({ invariants: [inert] }),
+      notify: async (t) => { seen.notified.push(t); return true },
+    })
+    const rec = await runWave(spec, state, io)
+    expect(seen.exported).toBe(1)
+    expect(state.state.denialAnalysis.invariants[0].verdict).toBe('INERT')
+    expect(rec.s4.workOrder).toEqual({ applied: false, order: expect.any(Array) })
+    expect(state.state.proposals[0]).toMatchObject({ name: 'invariants/editGapCap', newValue: 60, status: 'pending' })
+    expect(seen.notified.some(t => /PROPOSAL invariants\/editGapCap/.test(t))).toBe(true)
+  })
+
+  it('a failing export never faults the wave', async () => {
+    const state = freshState()
+    const io = gradedIo({ exportTriples: () => { throw new Error('disk full') } })
+    const rec = await runWave(spec, state, io)
+    expect(rec.decision.kind).not.toBe('fault')
+    expect(state.state.denialAnalysis ?? null).toBeNull()
+  })
+
+  // §E: two proposals must not go pending in the same wave. A promotion
+  // proposal is computed BEFORE the cap proposal so it can suppress the cap
+  // one — otherwise a wave with both an earned-authority signal AND an INERT
+  // cap would push two pending proposals at once.
+  it('does not also raise a cap proposal in the wave a promotion proposal is raised', async () => {
+    const state = freshState()
+    // promotionProposal needs >= 8 ideated waves with a significant
+    // followed x landed association: 8 followed+landed, 4 not-followed+not-landed.
+    for (let i = 0; i < 8; i++) state.appendWave({ wave: i + 1, s4: { ideation: {}, followed: true }, outcome: { landed: true } })
+    for (let i = 0; i < 4; i++) state.appendWave({ wave: 8 + i + 1, s4: { ideation: {}, followed: false }, outcome: { landed: false } })
+    const inert = { invariant: 'edit-gap', denials: 80, complied: 2, changed: 3, compliedRate: 0.025, ci: [0.01, 0.09], baseRate: 0.3, p: 0.0001, pAdjusted: 0.0002, verdict: 'INERT' }
+    const seen = { notified: [] }
+    const io = gradedIo({
+      exportTriples: () => ({ summary: { denials: { 'edit-gap': { denials: 80, complied: 2, changed: 3 } }, quiet: { 'edit-gap': { calls: 1000, complied: 300 } } } }),
+      analyseDenials: () => ({ invariants: [inert] }),
+      notify: async (t) => { seen.notified.push(t); return true },
+    })
+    await runWave(spec, state, io)
+    const pending = state.state.proposals.filter(p => p.status === 'pending')
+    expect(pending).toHaveLength(1)
+    expect(pending[0].name).toBe('ideation/brief')
+    expect(seen.notified.some(t => /PROPOSAL ideation\/brief/.test(t))).toBe(true)
+    expect(seen.notified.some(t => /PROPOSAL invariants\//.test(t))).toBe(false)
+  })
+})
+
+// I1: "campaign to date" is a claim about THIS campaign. The exporter's pooled
+// block is every run in the ledger; a c8 verdict that quotes it is quoting c9
+// and every hand run too. These two tests use the REAL analyseDenials so the
+// verdict is decided by the numbers the runner actually picked up, not by a
+// fake that would agree with either block.
+describe('runWave — the denial analysis reads THIS campaign, and says so', () => {
+  const gradedIo = (over = {}) => ({
+    writeBrief: (p) => p,
+    dispatch: async () => ({ missionId: 'c8-wave1-1' }),
+    waitForDriver: async () => ({ exited: true }),
+    readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', toolStats: {} }),
+    commitsBetween: () => [],
+    grade: async () => g(),
+    salvageOf: () => null,
+    patchRow: () => {},
+    commit: () => ({ sha: 'v1' }),
+    notify: async () => true,
+    economics: () => [],
+    appendLog: () => {},
+    ...over,
+  })
+  // The pooled block reads EFFECTIVE; c8's own block reads INERT. Only a runner
+  // reading the campaign block raises the cap proposal.
+  const POOLED_EFFECTIVE = { 'edit-gap': { denials: 60, complied: 50, changed: 55 }, 'commit-gap': { denials: 0, complied: 0, changed: 0 }, revert: { denials: 5, complied: 5, changed: 0 } }
+  const POOLED_QUIET = { 'edit-gap': { calls: 1000, complied: 200 }, 'commit-gap': { calls: 1000, complied: 10 }, revert: { calls: 1000, complied: 1000 } }
+  const C8_INERT = { 'edit-gap': { denials: 80, complied: 2, changed: 3 }, 'commit-gap': { denials: 0, complied: 0, changed: 0 }, revert: { denials: 5, complied: 5, changed: 0 } }
+  const C8_QUIET = { 'edit-gap': { calls: 1000, complied: 300 }, 'commit-gap': { calls: 1000, complied: 10 }, revert: { calls: 1000, complied: 1000 } }
+
+  it('analyses the campaign block, not the pool, and labels the verdict line "campaign to date"', async () => {
+    const state = freshState()
+    const logged = []
+    const io = gradedIo({
+      exportTriples: () => ({ summary: { denials: POOLED_EFFECTIVE, quiet: POOLED_QUIET, campaigns: { c8: { denials: C8_INERT, quiet: C8_QUIET } } } }),
+      appendLog: (t) => logged.push(t),
+    })
+    await runWave(spec, state, io)
+    const e = state.state.denialAnalysis.invariants.find(x => x.invariant === 'edit-gap')
+    expect(e.denials).toBe(80); expect(e.verdict).toBe('INERT')
+    expect(state.state.proposals[0]).toMatchObject({ name: 'invariants/editGapCap', status: 'pending' })
+    expect(logged.join('\n')).toMatch(/- Denials \(campaign to date\):/)
+  })
+
+  it('falls back to the pool when the campaign has no block yet, and says which it read', async () => {
+    const state = freshState()
+    const logged = []
+    const io = gradedIo({
+      exportTriples: () => ({ summary: { denials: C8_INERT, quiet: C8_QUIET, campaigns: {} } }),
+      appendLog: (t) => logged.push(t),
+    })
+    await runWave(spec, state, io)
+    expect(state.state.denialAnalysis.invariants.find(x => x.invariant === 'edit-gap').denials).toBe(80)
+    expect(logged.join('\n')).toMatch(/- Denials \(all runs — no campaign block yet\):/)
+  })
+})
+
+// I2: a verdict that exports a dataset without its own wave in it, and a
+// promotion rule that cannot see the wave whose evidence made the case, are
+// both one wave behind. The record goes on the record first.
+describe('runWave — the wave is on the record before the verdict reads the record set', () => {
+  const emptySummary = { summary: { denials: {}, quiet: {}, campaigns: {} } }
+  const ideaSpec = { ...spec, ideation: { enabled: true } }
+  const gradedIo = (over = {}) => ({
+    writeBrief: (p) => p,
+    dispatch: async () => ({ missionId: 'c8-wave1-1' }),
+    waitForDriver: async () => ({ exited: true }),
+    readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', toolStats: {} }),
+    commitsBetween: () => [],
+    firstCommitFiles: () => ['gilded/ui/atlas_view.py'],
+    engineLive: async () => false,
+    ideate: async () => ({ ideation: { hypotheses: [{ gateId: 'C8.1a', cause: 'c', firstEdit: 'gilded/ui/atlas_view.py' }], order: ['C8.1a'], trap: null }, taskPath: 't.json', durationMs: 5 }),
+    grade: async () => g(),
+    salvageOf: () => null,
+    patchRow: () => {},
+    commit: () => ({ sha: 'v1' }),
+    notify: async () => true,
+    economics: () => [],
+    appendLog: () => {},
+    exportTriples: () => emptySummary,
+    ...over,
+  })
+
+  it('exports the triples with the current wave already in waves.jsonl', async () => {
+    const state = freshState()
+    state.appendWave({ wave: -2 }); state.appendWave({ wave: -1 })
+    const before = state.waves().length
+    let seenAtExport = null
+    await runWave(spec, state, gradedIo({ exportTriples: () => { seenAtExport = state.waves().length; return emptySummary } }))
+    expect(before).toBe(2)
+    expect(seenAtExport).toBe(before + 1)
+    // and the record is still one line, patched — not appended twice.
+    expect(state.waves()).toHaveLength(before + 1)
+    expect(state.waves().at(-1)).toMatchObject({ wave: 1, verdictSha: 'v1', notified: true })
+  })
+
+  it('raises the promotion proposal in the very wave that completes the evidence', async () => {
+    const state = freshState()
+    // SEVEN prior ideated waves — one short of IDEATION_MIN_WAVES, so the
+    // prior set alone raises nothing. The current wave is the eighth, and the
+    // proposal may only appear if runWave counted it.
+    for (let i = 0; i < 4; i++) state.appendWave({ wave: i + 1, s4: { ideation: {}, followed: true }, outcome: { landed: true } })
+    for (let i = 0; i < 3; i++) state.appendWave({ wave: 4 + i + 1, s4: { ideation: {}, followed: false }, outcome: { landed: false } })
+    expect(promotionProposal(state.waves(), 0)).toBeNull()
+    const seen = []
+    const rec = await runWave(ideaSpec, state, gradedIo({ notify: async (t) => { seen.push(t); return true } }))
+    expect(rec.s4.followed).toBe(true); expect(rec.outcome.landed).toBe(true)
+    const pending = state.state.proposals.filter(p => p.status === 'pending')
+    expect(pending).toHaveLength(1)
+    expect(pending[0].name).toBe('ideation/brief')
+    expect(pending[0].evidence).toMatchObject({ followedLanded: 5, followedMissed: 0, notFollowedLanded: 0, notFollowedMissed: 3 })
+    expect(seen.some(t => /PROPOSAL ideation\/brief/.test(t))).toBe(true)
+  })
+
+  it('does not record the wave twice when the verdict half throws', async () => {
+    const state = freshState()
+    const rec = await runWave(spec, state, gradedIo({ appendLog: () => { throw new Error('campaign-log is read-only') } }))
+    expect(rec.decision.kind).toBe('fault')
+    expect(rec.decision.why).toMatch(/post-run step failed: campaign-log is read-only/)
+    expect(state.waves()).toHaveLength(1)
+    expect(state.waves()[0].decision.kind).toBe('fault')
+  })
+
+  // M4: the operator approves a cap between two waves, from a second process.
+  // The runner holds this state object for days; without a read-in at the top
+  // of the wave, the approval first reaches the dispatch one whole wave late.
+  it('picks up an approval granted between waves before it dispatches', async () => {
+    const state = freshState()
+    state.state.proposals = [{ type: 'Parameter', name: 'invariants/editGapCap', proposedAt: 't1', status: 'pending', newValue: 60, currentValue: 40, bounds: { min: 40, max: 80 } }]
+    state.save()
+    // The `--approve-proposal` process, writing the decision under this one.
+    const disk = JSON.parse(readFileSync(join(state.dir, 'state.json'), 'utf8'))
+    disk.proposals[0].status = 'approved'; disk.proposals[0].decidedAt = '2026-09-18T00:00:00.000Z'
+    disk.invariantOverrides = { editGapCap: 60 }
+    writeFileSync(join(state.dir, 'state.json'), JSON.stringify(disk, null, 2))
+
+    let dispatched = null
+    await runWave(spec, state, gradedIo({ dispatch: async ({ invariants }) => { dispatched = invariants; return { missionId: 'c8-wave1-1' } } }))
+    expect(dispatched.editGapCap).toBe(60)
+    expect(state.state.proposals[0].status).toBe('approved')
   })
 })

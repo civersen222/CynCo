@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { generateBrief, sidecarFor } from '../cynco-brief.mjs'
+import { generateBrief, sidecarFor, orderWork, workOrderFor, denialFollowUp } from '../cynco-brief.mjs'
 import { parseGateOutput } from '../cynco-gate-parse.mjs'
 import { loadCampaignSpec } from '../cynco-campaign-spec.mjs'
 
@@ -96,5 +96,66 @@ describe('sidecarFor', () => {
     expect(s.assertions[0].command).toBe(spec.keepGreen)
     expect(s.assertions[0].text).not.toContain('pytest')
     expect(s.assertions[0].timeoutMs).toBe(1800000)
+  })
+})
+
+describe('THE WORK — earned reordering', () => {
+  const items = [{ id: 1, title: 'A', gateIds: ['C8.1a'], text: 'a' }, { id: 2, title: 'B', gateIds: ['C8.2a'], text: 'b' }, { id: 3, title: 'C', gateIds: ['C8.3a', 'C8.3b'], text: 'c' }]
+  it('orderWork puts advised items first in advised order and keeps the rest in spec order', () => {
+    expect(orderWork(items, ['C8.3b', 'C8.1a'])).toEqual({ items: [items[2], items[0], items[1]], applied: true })
+    expect(orderWork(items, [])).toEqual({ items, applied: false })
+    expect(orderWork(items, ['C8.1a', 'C8.2a', 'C8.3a'])).toEqual({ items, applied: false })
+    expect(orderWork(items, ['C9.zzz'])).toEqual({ items, applied: false })
+  })
+  const ctxAt = (authority) => ({ wave: 2, base: 'x', fails: [{ id: 'C8.1a', line: 'C8.1a: FAIL' }, { id: 'C8.3a', line: 'C8.3a: FAIL' }], passes: [], prior: null, salvage: null,
+    ideation: { hypotheses: [{ gateId: 'C8.3a', cause: 'c', firstEdit: 'x.py' }], order: ['C8.3a'], trap: null }, ideationAuthority: authority })
+  const miniSpec = { ...spec, work: items }
+  it('at authority 0 the brief keeps spec order and records applied=false', () => {
+    expect(workOrderFor(miniSpec, ctxAt(0))).toEqual({ applied: false, order: [1, 3] })
+    const text = generateBrief(miniSpec, ctxAt(0))
+    expect(text.indexOf('1. A.')).toBeLessThan(text.indexOf('3. C.'))
+  })
+  it('at authority 0.5 the advised item leads and the record says so', () => {
+    expect(workOrderFor(miniSpec, ctxAt(0.5))).toEqual({ applied: true, order: [3, 1] })
+    const text = generateBrief(miniSpec, ctxAt(0.5))
+    expect(text.indexOf('3. C.')).toBeLessThan(text.indexOf('1. A.'))
+    // gate lines and rules are untouched by the reorder
+    expect(text).toContain('C8.1a: FAIL'); expect(text).toContain('C8.3a: FAIL')
+  })
+})
+
+describe('PACING — the denial digest', () => {
+  it('denialFollowUp reads the per-invariant aggregate, with the window as fallback', () => {
+    const inv = { denialCount: 3, nextCallClassByInvariant: { 'edit-gap': { sourceEdit: 1, inspect: 1 }, 'commit-gap': {}, revert: { read: 1 } } }
+    expect(denialFollowUp(inv)).toEqual({ total: 3, complied: 2, windowed: false, byInvariant: { 'edit-gap': { denials: 2, complied: 1 }, 'commit-gap': { denials: 0, complied: 0 }, revert: { denials: 1, complied: 1 } } })
+    const win = { denialCount: 2, denials: [{ invariant: 'edit-gap', nextCallClass: 'commit' }, { invariant: 'edit-gap', nextCallClass: 'read' }] }
+    expect(denialFollowUp(win).byInvariant['edit-gap']).toEqual({ denials: 2, complied: 1 })
+    // the window held every denial the run made, so it is not a tail
+    expect(denialFollowUp(win).windowed).toBe(false)
+    expect(denialFollowUp(null)).toBeNull()
+  })
+  // M6: a pre-aggregate row carries only the last 50 denials. Reporting those
+  // 50 as "those N denials" tells the model the run made 50 when it made 80.
+  it('denialFollowUp flags a window that is only the tail of the run', () => {
+    const inv = { denialCount: 80, denials: Array.from({ length: 50 }, () => ({ invariant: 'edit-gap', nextCallClass: 'sourceEdit' })) }
+    const f = denialFollowUp(inv)
+    expect(f).toMatchObject({ total: 50, complied: 50, windowed: true })
+  })
+  it('prints last wave\'s follow-up, the campaign digest, and the EFFECTIVE caps', () => {
+    const prior = { missionId: 'c8-wave2-1', exitReason: 'timeout', durationS: 3600, commits: [], toolStats: { total: 100, byClass: { inspect: 70, sourceEdit: 20 }, byName: { CodeIndex: 3 }, maxCallsWithoutSourceEdit: 41, maxCallsWithoutCommit: 87 },
+      invariants: { denialCount: 3, denialsByInvariant: { 'edit-gap': 2, 'commit-gap': 0, revert: 1 }, revertRefusals: 1, codeIndexAssisted: 2, terminalRelents: [], nextCallClassByInvariant: { 'edit-gap': { sourceEdit: 1, inspect: 1 }, 'commit-gap': {}, revert: { read: 1 } } }, posiwid: null }
+    const denialDigest = [{ invariant: 'edit-gap', denials: 12, complied: 5, verdict: 'TOO FEW' }, { invariant: 'commit-gap', denials: 0, complied: 0, verdict: 'TOO FEW' }, { invariant: 'revert', denials: 2, complied: 2, verdict: 'IDENTITY' }]
+    const text = generateBrief(spec, { wave: 3, base: 'x', fails: base.fails, passes: [], prior, salvage: null, ideation: null, ideationAuthority: 0, invariants: { ...spec.invariants, editGapCap: 60 }, denialDigest })
+    expect(text).toMatch(/Of those 3 denials, 2 were followed by the call they asked for \(edit-gap 1\/2, commit-gap 0\/0, revert 1\/1\); campaign to date edit-gap 5\/12, commit-gap 0\/0\./)
+    expect(text).toMatch(/- 60 tool calls without a source edit/)
+  })
+  // M6 in the brief itself: a pre-aggregate prior must say "the last 50".
+  it('says "the last N" when the follow-up could only be read off the window', () => {
+    const prior = { missionId: 'c8-wave2-1', exitReason: 'timeout', durationS: 3600, commits: [], toolStats: { total: 400, byClass: { inspect: 300, sourceEdit: 50 }, byName: { CodeIndex: 3 }, maxCallsWithoutSourceEdit: 41, maxCallsWithoutCommit: 87 },
+      invariants: { denialCount: 80, denialsByInvariant: { 'edit-gap': 80, 'commit-gap': 0, revert: 0 }, revertRefusals: 0, codeIndexAssisted: 2, terminalRelents: [],
+        denials: Array.from({ length: 50 }, () => ({ invariant: 'edit-gap', nextCallClass: 'sourceEdit' })) }, posiwid: null }
+    const text = generateBrief(spec, { wave: 3, base: 'x', fails: base.fails, passes: [], prior, salvage: null, ideation: null, ideationAuthority: 0, invariants: spec.invariants, denialDigest: null })
+    expect(text).toMatch(/Of the last 50 denials, 50 were followed by the call they asked for/)
+    expect(text).not.toMatch(/Of those 50 denials/)
   })
 })

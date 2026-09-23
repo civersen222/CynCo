@@ -130,7 +130,8 @@ wave: GENERATE (brief + sidecar from the
 previous wave's verbatim FAIL lines) → DISPATCH (`scripts/dispatch-mission.sh`
 with the wave's mission invariants, `DRIVER_PID_FILE`, `DRIVER_LOG`,
 `CYNCO_SKIP_IDLE_ENGINE=1`) → WAIT (poll the driver PID) → GRADE (sealed campaign
-gate, suite no-regression gate, derived mutation sweep, per-wave POSIWID; patches
+gate, suite no-regression gate, derived mutation sweep — handed the KEEP-GREEN
+test files when the diff delivered none — F147 — per-wave POSIWID; patches
 `verified` / `mutationSweep` / `gate` / `posiwid` onto the ledger row) → VERDICT
 (campaign-log entry, supervision economics, local commit on `campaign/<id>`,
 algedonic ntfy) → DECIDE (`pass` / `pass-with-survivors` / `next` / `budget` /
@@ -197,6 +198,23 @@ landed rate when followed raises a data-shaped `Parameter` proposal
 (`ideation/brief`, new value 0.5, bounds 0–0.5) — pushed to the owner over ntfy
 and applied only by `--approve-proposal`. Earned authority, never assumed.
 
+**Triples and the cap loop (Phase 1, 2026-09-18).** Every VERDICT regenerates
+`~/.cynco/datasets/triples.jsonl` (`scripts/cynco-triples.mjs`: `denial`,
+`ideation` and `wave` records joined by missionId and wave, with a
+`triples.summary.json` beside it) and runs
+`scripts/cynco-signal-validation.mjs --denials` over it: per invariant, were the
+denials followed by the call they asked for more often than the session's own
+quiet rate (Fisher, Wilson, Holm across the two caps)? The verdict entry prints
+the table; the next brief's PACING quotes last wave's follow-up and the campaign
+digest. An INERT cap (≥ 30 denials, compliance below the quiet rate at p < 0.05
+corrected) raises a data-shaped Parameter proposal `invariants/<cap>` (× 1.5,
+bounded by [spec, 2 × spec]); `--approve-proposal invariants/<cap>` records an
+override and `effectiveInvariants(spec, state)` is what DISPATCH hands the driver
+from then on. The revert ban is identity and is only ever reported. At earned
+ideation authority (0.5) the advisor's `order` reorders THE WORK's failing items
+(`s4.workOrder` on the wave record says whether it did); gate lines and rules are
+never touched.
+
 **Deferred spec items (follow-up, not built here).**
 
 - **Governance-level POSIWID.** The per-wave POSIWID reading ships; the
@@ -211,9 +229,5 @@ and applied only by `--approve-proposal`. Earned authority, never assumed.
   (CodeIndex-assisted Greps over identifier-shaped Greps) is printed per wave in
   the verdict entry but never compared against its 20 % target, and no decision
   reads it.
-- **Ideation at authority 0.5 reorders `work[]`.** `ideation.order` is parsed
-  and stored on every wave record, and `commander` records which seat held
-  `brief` authority — but nothing consumes either: the brief's work items stay
-  in spec order whatever the registry says. Promotion currently changes what is
-  RECORDED, not what is generated; consuming `order` is the follow-up that makes
-  the earned authority real.
+- **Ideation at authority 0.5 reorders `work[]`** — shipped 2026-09-18 (Phase 1):
+  `workOrderFor` in `scripts/cynco-brief.mjs`; `s4.workOrder` on the wave record.

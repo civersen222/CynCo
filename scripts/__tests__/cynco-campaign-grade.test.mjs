@@ -1,15 +1,22 @@
-import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
-import { gradeWave } from '../cynco-campaign-grade.mjs'
+import { describe, it, expect, vi } from 'vitest'
+import { readFileSync, mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { gradeWave, sweepTestsFor, defaultIo } from '../cynco-campaign-grade.mjs'
 
 const baseLog = readFileSync(new URL('./fixtures/gate_c8_base.log', import.meta.url), 'utf8')
 const spec = { repo: 'C:/repo', gate: 'C:/Users/civer/.cynco/heldout/civkings-redesign/c8/gate_c8.py', suiteBaseline: 'C:/x/suite_baseline.txt',
   posiwid: { sourceEditShare: 0.15, commitEvery: 150 }, work: [] }
 const row = { commitRange: { base: '1d03308', head: '1bc0f8c' }, toolStats: { total: 931, commits: 5, byClass: { sourceEdit: 86, fileWrite: 17, inspect: 828 }, bashByEffect: { revert: 1 } } }
 
-function fakeIo(script) {
+// F147 fixture: a c8-like keepGreen command naming the twelve KEEP-GREEN test files.
+const c8KeepGreenFiles = ['agenda', 'bonds', 'council', 'dominion', 'events', 'factions', 'gilded', 'ledger', 'market', 'petitions', 'tiers', 'ui']
+  .map(n => `gilded/tests/test_c8_${n}.py`)
+const c8KeepGreen = `python -m pytest ${c8KeepGreenFiles.join(' ')} -q`
+
+function fakeIo(script, changedFiles = () => []) {
   const calls = []
-  return { calls, run: (cmd, args, opts) => { calls.push({ cmd, args, opts }); const key = [cmd, ...args].join(' '); for (const [re, r] of script) if (re.test(key)) return { status: 0, stdout: '', stderr: '', timedOut: false, ...r }; throw new Error(`unscripted: ${key}`) } }
+  return { calls, changedFiles, run: (cmd, args, opts) => { calls.push({ cmd, args, opts }); const key = [cmd, ...args].join(' '); for (const [re, r] of script) if (re.test(key)) return { status: 0, stdout: '', stderr: '', timedOut: false, ...r }; throw new Error(`unscripted: ${key}`) } }
 }
 
 describe('gradeWave', () => {
@@ -85,5 +92,77 @@ describe('gradeWave', () => {
     const g = await gradeWave(spec, row, io)
     expect(g.suite.regressions).toEqual(['gilded/tests/a.py::test_x', 'gilded/tests/b.py::test_y'])
     expect(g.verified).toBe(false)
+  })
+
+  // F147: a fix-only wave (no test file in the diff) must hand the sweep the
+  // KEEP-GREEN test files, or the sweep refuses (exit 2) and the row goes
+  // unlabeled even though the sealed gate and suite gate both PASSed.
+  it('hands the sweep --tests <keepGreen .py files> when the diff delivered no test file', async () => {
+    const io = fakeIo([
+      [/gate_c8\.py/, { status: 0, stdout: 'GATE: PASS\n' }],
+      [/g_suite_no_regression\.py/, { status: 0, stdout: 'g_suite: PASS' }],
+      [/cynco-mutation-sweep\.py/, { status: 0, stdout: '{"command":"x","kind":"derived","killed":1,"total":1,"survived":[]}' }],
+    ], () => ['gilded/ui/broadsheet.py'])
+    const g = await gradeWave({ ...spec, keepGreen: c8KeepGreen }, row, io)
+    const sweepArgs = io.calls[2].args
+    const i = sweepArgs.indexOf('--tests')
+    expect(i).toBeGreaterThan(-1)
+    expect(sweepArgs[i + 1]).toBe(c8KeepGreenFiles.join(' '))
+    expect(g.sweepFault).toBeNull()
+  })
+
+  it('leaves the sweep\'s own default alone when the diff already ships a test file', async () => {
+    const io = fakeIo([
+      [/gate_c8\.py/, { status: 0, stdout: 'GATE: PASS\n' }],
+      [/g_suite_no_regression\.py/, { status: 0, stdout: 'g_suite: PASS' }],
+      [/cynco-mutation-sweep\.py/, { status: 0, stdout: '{"command":"x","kind":"derived","killed":1,"total":1,"survived":[]}' }],
+    ], () => ['gilded/ui/broadsheet.py', 'gilded/tests/test_c8_tiers.py'])
+    const g = await gradeWave({ ...spec, keepGreen: c8KeepGreen }, row, io)
+    expect(io.calls[2].args).not.toContain('--tests')
+  })
+
+  // I4: an unreadable diff is not "the diff shipped no test file". Widening
+  // the sweep to the whole keep-green suite on the strength of a failed git
+  // call changes what the instrument measures and says nothing about it.
+  it('does not widen the sweep when the diff could not be read at all', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const io = fakeIo([
+      [/gate_c8\.py/, { status: 0, stdout: 'GATE: PASS\n' }],
+      [/g_suite_no_regression\.py/, { status: 0, stdout: 'g_suite: PASS' }],
+      [/cynco-mutation-sweep\.py/, { status: 2, stdout: '' }],
+    ], () => null)
+    const g = await gradeWave({ ...spec, keepGreen: c8KeepGreen }, row, io)
+    expect(io.calls[2].args).not.toContain('--tests')
+    // the sweep's own refusal is the visible finding, not a quiet substitution
+    expect(g.sweepFault).toBe('sweep refused (exit 2)')
+    // the io fake owns the logging here; runSweep must not add its own
+    expect(err).not.toHaveBeenCalled()
+    err.mockRestore()
+  })
+})
+
+// I4 at the defaultIo level: the real `git diff` against a path that is not a
+// repository must come back as null and say why, not as an empty diff.
+describe('defaultIo.changedFiles', () => {
+  it('returns null and names the failure when git cannot read the range', () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const bogus = join(mkdtempSync(join(tmpdir(), 'not-a-repo-')), 'nope')
+    expect(defaultIo.changedFiles(bogus, '1d03308', '1bc0f8c')).toBeNull()
+    expect(err).toHaveBeenCalledTimes(1)
+    expect(err.mock.calls[0][0]).toMatch(/^\[grade\] git diff --name-only 1d03308\.\.1bc0f8c failed: /)
+    err.mockRestore()
+  })
+})
+
+describe('sweepTestsFor', () => {
+  const spec = { keepGreen: c8KeepGreen }
+  it('hands over the keepGreen .py files when the diff has no test file', () => {
+    expect(sweepTestsFor(spec, ['gilded/ui/broadsheet.py'])).toBe(c8KeepGreenFiles.join(' '))
+  })
+  it('returns null when the diff already delivers a test file', () => {
+    expect(sweepTestsFor(spec, ['gilded/ui/x.py', 'gilded/tests/test_c8_tiers.py'])).toBeNull()
+  })
+  it('returns null when keepGreen has no .py token', () => {
+    expect(sweepTestsFor({ keepGreen: 'echo nothing to run' }, ['gilded/ui/broadsheet.py'])).toBeNull()
   })
 })
