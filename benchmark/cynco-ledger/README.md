@@ -370,9 +370,11 @@ describes it. `scripts/cynco-governance-posiwid.mjs` turns POSIWID on the
 governance layer itself. `governanceCounts({ row, wave, proposalsDecided })`
 gives three counts for the wave, and only these three names are ever used:
 
-- **`denialsChanged`** — denials whose next call was the one they asked for
-  (`denialRecords`/`complied` in `scripts/cynco-triples.mjs`, summed over the
-  records marked `changed`).
+- **`denialsChanged`** — denials whose next call was NOT another look, i.e.
+  the denial changed what the model did next (`denialRecords` in
+  `scripts/cynco-triples.mjs`, summed over the records marked `changed`). Per
+  spec ruling 10 this is deliberately weaker than "did the exact thing the
+  denial asked for" — that is `complied`, which this count does not use.
 - **`recommendationsConsumed`** — enforced S5 decisions (`s5Decisions[].enforced
   === true`), plus a followed ideation hypothesis, plus an applied
   `s4.workOrder`, plus proposals the operator decided this wave, plus
@@ -390,15 +392,31 @@ measurement, not a bug in it. `GOVERNANCE_DRIFT.driftThreshold` is **0.5**
 
 Every wave's counts are replayed through a fresh `PosiwidDrift` on each
 verdict, so `onsetWave` is a function of the stored windows and a runner
-restart cannot move it (windows are 0-based inside `PosiwidDrift`; `onsetWave`
-is reported 1-based, as waves are numbered). The stored shape is
+restart cannot move it. `onsetWave` is the `wave` field of the window the drift
+fired on, NOT its index: a campaign whose early waves were graded before this
+measurement existed has no windows for them, so its first window can be wave 4,
+and a wave that threw is never pushed at all. (Windows are 0-based inside
+`PosiwidDrift`; the index is used only as a fallback, 1-based, when a stored
+window carries no `wave`.)
+
+The stored shape, below, is the synthetic smoke's second wave — counts
+`2 / 1 / 30` after a first wave of `12 / 10 / 3` — and these are the module's
+own numbers, not an illustration:
 
 ```jsonc
-"governancePosiwid": { "verdict": "Drifting", "divergence": 0.47,
-  "dominantObserved": "signalsLogged", "support": 25, "onsetWave": 3,
-  "windows": 4,
-  "counts": { "denialsChanged": 12, "recommendationsConsumed": 10, "signalsLogged": 3 } }
+"governancePosiwid": { "verdict": "Contradicted", "divergence": 5.98,
+  "dominantObserved": "signalsLogged", "support": 33, "onsetWave": 2,
+  "windows": 2,
+  "counts": { "denialsChanged": 2, "recommendationsConsumed": 1, "signalsLogged": 30 } }
 ```
+
+`verdict`, `divergence`, `dominantObserved` and `support` are the LAST window's
+reading (`counts`, here 33 observations of which 30 were logging — past
+`minSupport` 20, and `signalsLogged` holds a stated share of 0, so
+`Contradicted`); `onsetWave` and `windows` are properties of the whole replayed
+history. `engine/__tests__/guards/ledgerGovernancePosiwidBlock.test.ts` re-runs the module on this
+block's `counts` and fails if the reading moves (F149: a documented number no
+code produces).
 
 with `verdict` decided exactly as the per-wave `posiwid` block's is
 (`Insufficient` below `minSupport` 20, `Contradicted`, `Drifting`,
