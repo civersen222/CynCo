@@ -1,4 +1,3 @@
-#!/usr/bin/env bun
 // scripts/cynco-campaign.mjs — the campaign-level metasystem.
 //
 //   bun scripts/cynco-campaign.mjs docs/civkings-redesign-briefs/c8.campaign.json [--waves N] [--resume] [--dry-run] [--sync]

@@ -1,4 +1,3 @@
-#!/usr/bin/env bun
 /**
  * Write the full LOCALCODE_* inventory into README.md, between the markers.
  *

@@ -1,4 +1,3 @@
-#!/usr/bin/env bun
 // scripts/cynco-campaign-adopt.mjs — hand the campaign runner a wave that
 // already ran.
 //
