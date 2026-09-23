@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 /**
  * Step 2 of the governance falsification program: do the S5 rules predict
  * anything?
