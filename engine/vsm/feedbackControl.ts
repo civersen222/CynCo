@@ -11,6 +11,7 @@
 
 import {
   foundations,
+  type AdaptationEvent,
 } from '../cybernetics-core/src/index.js'
 
 export class FeedbackControlIntegration {
@@ -87,20 +88,18 @@ export class FeedbackControlIntegration {
     const approvalError = 0.8 - approvalRate
     this._lastPidOutput = this.approvalPid.update(approvalError)
 
-    // 3. Ultrastable system
-    this._perturbedThisTurn = !this.ultrastable.update([
-      contextUtilization,
-      failureRate,
-      varietyRatio,
-    ])
-
+    // 3. Ultrastable system (legacy continuous instance; its trace is now observable)
+    const report = this.ultrastable.observe([contextUtilization, failureRate, varietyRatio])
+    this._perturbedThisTurn = report.stepped
     return {
       shouldCompress: contextError < -0.1, // utilization > 80%
       compressionUrgency: Math.abs(Math.min(contextError, 0)), // how urgent
       approvalAdjustment: this._lastPidOutput, // positive = ease, negative = tighten
       parametersPerturbed: this._perturbedThisTurn,
-      isViable: this.ultrastable.isViable(),
+      isViable: report.viable,
       perturbedParameters: this._perturbedThisTurn ? this.ultrastable.parameters() : null,
+      adaptationTrace: this.ultrastable.trace(),
+      viabilityMargin: report.margin,
     }
   }
 
@@ -152,4 +151,8 @@ export interface FeedbackActions {
   isViable: boolean
   /** If perturbed, the new parameter values */
   perturbedParameters: number[] | null
+  /** Full adaptation trace of the ultrastable system (one entry per slow-loop step) */
+  adaptationTrace: readonly AdaptationEvent[]
+  /** Minimum normalised distance to a viability bound; negative when violated */
+  viabilityMargin: number
 }

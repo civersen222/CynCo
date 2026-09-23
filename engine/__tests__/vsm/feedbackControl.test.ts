@@ -67,4 +67,16 @@ describe('FeedbackControlIntegration', () => {
     fc.update(0.95, 0.5, 0.1, 0.3) // everything out of bounds
     expect(fc.wasPerturbed()).toBe(true)
   })
+
+  it('exposes the ultrastable adaptation trace and margin', () => {
+    const before = fc.update(0.5, 0.1, 1.0, 0.9)
+    expect(before.adaptationTrace.length).toBe(0)
+    expect(before.viabilityMargin).toBeGreaterThan(0)
+    const after = fc.update(0.95, 0.1, 1.0, 0.9) // context above the 0.85 bound
+    expect(after.parametersPerturbed).toBe(true)
+    expect(after.adaptationTrace.length).toBe(1)
+    expect(after.adaptationTrace[0].violations).toEqual(['ev0'])
+    expect(after.adaptationTrace[0].restoredAfter).toBeNull()
+    expect(after.viabilityMargin).toBeLessThan(0)
+  })
 })
