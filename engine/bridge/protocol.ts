@@ -414,11 +414,29 @@ export type GovernanceAlertEvent = {
  * rather than the ledger having to match on text — two notes with the same
  * words are two notes.
  */
+/**
+ * Who sent the note. `'operator'` is a person typing into the 9161 dashboard's
+ * chat box mid-mission; `'driver'` is scripts/cynco-mission-driver.mjs
+ * re-injecting a verbatim gate FAIL after its silence heuristic declared exit
+ * while the loop was in fact still working.
+ *
+ * Both arrive as a `user.message` frame on the same busy guard, so the ledger
+ * had no way to tell a machine's probe from a human's instruction and counted
+ * both as `operatorNotes`. The frame itself carries the difference: the driver
+ * declares `unattended: true` on everything it sends, the chat box never does.
+ * That is the whole of the test — a third party that declared `unattended`
+ * would read as `'driver'`, which is the honest reading of "a programmatic
+ * sender that knows it is driving an unattended mission".
+ */
+export type OperatorNoteSource = 'operator' | 'driver'
+
 export type MissionOperatorNoteEvent = {
   type: 'mission.operator_note'
   text: string
   /** ISO timestamp, and the note's key. */
   queuedAt: string
+  /** Who sent it — see `OperatorNoteSource`. */
+  source: OperatorNoteSource
   /** null on the queued frame; the `runModelLoop` iteration index on delivery. */
   deliveredAtIteration: number | null
   /**

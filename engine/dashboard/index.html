@@ -1015,7 +1015,10 @@ function handleEvent(event) {
       if (event.dropped) noteStatus = 'dropped (' + event.dropped + ')';
       else if (typeof event.deliveredAtIteration === 'number') noteStatus = 'delivered at iteration ' + event.deliveredAtIteration;
       else noteStatus = 'queued → …';
-      appendChatMsg('system', 'operator note "' + (event.text || '') + '": ' + noteStatus);
+      // Review minor #12: say whose note it was. A driver probe re-injected
+      // mid-mission used to render exactly like something the operator typed.
+      var noteWho = event.source === 'driver' ? '[driver]' : '[operator]';
+      appendChatMsg('system', noteWho + ' note "' + (event.text || '') + '": ' + noteStatus);
       break;
     }
 
@@ -2235,11 +2238,19 @@ function fetchSessionState() {
         var block = document.createElement('div');
         block.className = 'gov-stats';
         block.style.marginTop = '4px';
+        // Spec r9: the last FAIL lines verbatim, not a count. One fail prints
+        // its whole line; several print the count and the first, with all of
+        // them on the row's tooltip — a dozen gate lines would otherwise push
+        // every other row off the panel.
+        var fails = c.lastFails || [];
+        var failText = fails.length === 0 ? 'none'
+          : (fails.length === 1 ? fails[0] : fails.length + ' — ' + fails[0]);
         var rows = [
           ['Campaign', c.id + (c.id === data.active ? ' (ACTIVE)' : '')],
           ['Wave', c.waveCount + (c.budgetWaves != null ? ' / ' + c.budgetWaves : '')],
           ['Last decision', c.lastDecision ? (c.lastDecision.kind + ' — ' + c.lastDecision.why) : '—'],
-          ['Last fails', String((c.lastFails || []).length)],
+          ['Last fails', failText, fails.join('
+')],
           ['Ideation authority', Number(c.ideationAuthority || 0).toFixed(2)],
           ['Invariant overrides', Object.keys(c.invariantOverrides || {}).length
             ? Object.keys(c.invariantOverrides).map(function(k) { return k + ' ' + c.invariantOverrides[k]; }).join(', ')
@@ -2252,6 +2263,7 @@ function fetchSessionState() {
         rows.forEach(function(pair) {
           var row = document.createElement('div');
           row.innerHTML = '<span class="label">' + escHtml(pair[0]) + ': </span><span class="value">' + escHtml(String(pair[1])) + '</span>';
+          if (pair[2]) row.title = pair[2];
           block.appendChild(row);
         });
         list.appendChild(block);
@@ -2278,7 +2290,7 @@ function fetchSessionState() {
         }
         list.appendChild(entries);
       });
-    }).catch(function() {});
+    }).catch(function(e) { console.warn('campaign poll failed', e); });
   }
   pollCampaign();
   setInterval(pollCampaign, 10000);

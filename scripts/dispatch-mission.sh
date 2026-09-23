@@ -211,15 +211,42 @@ echo "[dispatch] ctx=$CTX cache-ram=${CRAM} MiB — coupled, as launched"
 # for the whole session except a hole at the start, which is a confusing
 # thing to explain from the ledger alone. This wait is purely diagnostic and
 # MUST NOT fail the dispatch either way.
-JLENS_HEALTH=absent
-for _ in $(seq 1 30); do
-  if curl -sf http://127.0.0.1:9163/health >/dev/null 2>&1; then JLENS_HEALTH=ok; break; fi
-  sleep 2
-done
-if [ "$JLENS_HEALTH" = "ok" ]; then
-  echo "[dispatch] jlens health: ok"
+#
+# Review minor #11: the wait used to be unconditional, so a dispatch with no
+# lens at all paid the full 60s for an answer that could not change. There is
+# no single env var that turns the lens on: engine/main.ts:481 starts the
+# sidecar for EVERY llama-cpp session, and bootstrapProvider.ts:95 defaults
+# LLAMA_ACTIVATIONS_LAYERS *inside the engine process* when the brain build is
+# selected, so this shell's own env cannot answer either question. The engine
+# log can, and it is already complete here (both lines are printed before
+# "[localcode] Ready", which we waited for above):
+#   * `[jlens] sidecar not started: <reason>` — nothing will ever bind 9163.
+#   * `[jlens] sidecar starting (pid ...)`    — something will, worth waiting for.
+# and the tap, without which the consumer can never reach the `live` tier and
+# the sidecar's readiness cannot affect the mission, is visible as either this
+# shell's LLAMA_ACTIVATIONS_LAYERS or the engine's brain-build default line.
+JLENS_SKIP=
+if grep -q "^\[jlens\] sidecar not started:" "$ENGINE_LOG" 2>/dev/null; then
+  JLENS_SKIP="$(grep -m1 "^\[jlens\] sidecar not started:" "$ENGINE_LOG" | sed 's/^\[jlens\] sidecar not started: //' | tr -d '\r')"
+elif ! grep -q "^\[jlens\] sidecar starting" "$ENGINE_LOG" 2>/dev/null; then
+  JLENS_SKIP="engine log has no [jlens] line — no sidecar this session"
+elif [ -z "${LLAMA_ACTIVATIONS_LAYERS:-}" ] && ! grep -q "LLAMA_ACTIVATIONS_LAYERS defaulted to" "$ENGINE_LOG" 2>/dev/null; then
+  JLENS_SKIP="activation tap not configured (LLAMA_ACTIVATIONS_LAYERS unset, not a brain build) — the brain cannot reach the live tier"
+fi
+
+if [ -n "$JLENS_SKIP" ]; then
+  echo "[dispatch] jlens health: not waited for — $JLENS_SKIP"
 else
-  echo "[dispatch] jlens health: absent after 60s"
+  JLENS_HEALTH=absent
+  for _ in $(seq 1 30); do
+    if curl -sf http://127.0.0.1:9163/health >/dev/null 2>&1; then JLENS_HEALTH=ok; break; fi
+    sleep 2
+  done
+  if [ "$JLENS_HEALTH" = "ok" ]; then
+    echo "[dispatch] jlens health: ok"
+  else
+    echo "[dispatch] jlens health: absent after 60s"
+  fi
 fi
 
 # --- visibility ------------------------------------------------------------

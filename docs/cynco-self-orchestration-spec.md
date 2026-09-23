@@ -276,8 +276,11 @@ number except the one router named below.
   exists only while `missionInvariants` are armed, spends at most 6 KEEP-GREEN
   runs per mission, serves a verdict younger than 5 tool calls from cache, caps
   a routed run at 300 s, and routes at most one low-confidence edit per model
-  iteration. `shouldRoute` is the only place in the loop that reads convergence
-  or entropy. Past the budget it answers `budget-exhausted` — recorded, never
+  iteration. `VerifyFirstRouter.isLowConfidence` (`engine/vsm/verifyFirst.ts`)
+  and the inline `inv.invariant === 'revert' && this.verifyFirst` branch in
+  `conversationLoop.ts` are the only places in the loop that read convergence or
+  entropy. (Earlier drafts of this section named a single `shouldRoute`; the
+  shipped shape is those two call sites. Ruling 5 holds in substance.) Past the budget it answers `budget-exhausted` — recorded, never
   silent. The ledger keeps `routing.{budget,used,count,byKind,byOutcome,entries}`,
   and each entry's `nextCallClass` is the outcome record: the evidence for
   whether an informed refusal changes behaviour where a bare refusal does not.

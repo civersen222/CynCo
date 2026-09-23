@@ -5,7 +5,7 @@
  */
 
 import { randomUUID } from 'crypto'
-import type { EngineEvent, TUICommand, DiffHunk, DiffLine } from './protocol.js'
+import type { EngineEvent, TUICommand, DiffHunk, DiffLine, OperatorNoteSource } from './protocol.js'
 import type { ThinkingConfig, TurnCost } from '../types.js'
 import { asSystemPrompt } from '../types.js'
 import type { LocalCodeConfig } from '../config.js'
@@ -328,7 +328,7 @@ export class ConversationLoop {
    * was never delivered. A reported drop is a fact; a silent carry-over is a
    * stale instruction with a misleading record attached.
    */
-  private operatorQueue: Array<{ text: string; queuedAt: string }> = []
+  private operatorQueue: Array<{ text: string; queuedAt: string; source: OperatorNoteSource }> = []
   // Per-task observation buffers for the reward labeler. Reset at task start,
   // consumed by finalizeTrajectory at task end.
   private taskTestObservations: TestObservation[] = []
@@ -1032,7 +1032,21 @@ export class ConversationLoop {
       // watching an unattended one, so its notes are queued for the next
       // iteration boundary instead.
       if (this.unattendedActive) {
-        this.queueOperatorNote(text)
+        // Review minor #12. Two senders reach this guard, and the ledger could
+        // not tell them apart: the operator typing in the 9161 chat box, and
+        // the mission driver re-injecting a verbatim gate FAIL after its exit
+        // heuristic fired while the loop was still working
+        // (scripts/cynco-mission-driver.mjs, the `d.inject` branch). Both send
+        // a `user.message` frame that main.ts:587 hands to this method, so the
+        // driver's probe landed in `operatorNotes` looking like something a
+        // person typed.
+        //
+        // The discriminator is on the frame: the driver declares
+        // `unattended: true` on every message it sends, the dashboard chat box
+        // sends only `{ text, cwd }` (index.html's sendChat). So a queued
+        // message that re-declares the mission is a programmatic driver; one
+        // that does not is a human leaning in mid-run.
+        this.queueOperatorNote(text, opts?.unattended === true ? 'driver' : 'operator')
         return
       }
       console.log('[loop] Already processing, ignoring message')
@@ -1088,6 +1102,7 @@ export class ConversationLoop {
         type: 'mission.operator_note',
         text: n.text,
         queuedAt: n.queuedAt,
+        source: n.source,
         deliveredAtIteration: null,
         dropped: 'mission ended',
       })
@@ -1116,7 +1131,7 @@ export class ConversationLoop {
    * sent; splicing a message into `this.messages` underneath it would either be
    * ignored or corrupt the turn. The boundary is the only safe seam.
    */
-  private queueOperatorNote(text: string): void {
+  private queueOperatorNote(text: string, source: OperatorNoteSource): void {
     const queuedAt = new Date().toISOString()
     if (this.operatorQueue.length >= OPERATOR_NOTE_QUEUE_CAP) {
       const dropped = this.operatorQueue.shift()
@@ -1136,20 +1151,21 @@ export class ConversationLoop {
           type: 'mission.operator_note',
           text: dropped.text,
           queuedAt: dropped.queuedAt,
+          source: dropped.source,
           deliveredAtIteration: null,
           dropped: 'queue full',
         })
       }
     }
-    this.operatorQueue.push({ text, queuedAt })
-    console.log(`[operator] note queued for the next iteration: "${text.slice(0, 120)}"`)
+    this.operatorQueue.push({ text, queuedAt, source })
+    console.log(`[operator] ${source} note queued for the next iteration: "${text.slice(0, 120)}"`)
     this.emit({
       type: 'governance.alert',
       severity: 'low',
       source: 'operator',
       message: '[operator] note received while the mission is working — queued for the next iteration',
     })
-    this.emit({ type: 'mission.operator_note', text, queuedAt, deliveredAtIteration: null })
+    this.emit({ type: 'mission.operator_note', text, queuedAt, source, deliveredAtIteration: null })
   }
 
   /**
@@ -1162,6 +1178,18 @@ export class ConversationLoop {
    *
    * The queue is emptied BEFORE anything is emitted, so there is no path on
    * which a note is delivered twice.
+   *
+   * TWO CONSECUTIVE `user` MESSAGES, deliberately. At an iteration boundary
+   * the last message on the stack is the tool_result `user` message, and
+   * `addMessage` only pushes (`:811`) — it never merges into the message
+   * below it — so the note lands as a second `user` turn in a row. Qwen via
+   * llama-cpp accepts that shape and did so live (Task 7 smoke); it is not
+   * universal. A provider that rejects consecutive same-role turns would need
+   * the note folded into the tool_result message's content array instead of
+   * pushed after it. Left as a push because merging would rewrite a message
+   * the model has, in a sense, already been shown — and the failure mode of
+   * the alternative (a silently mutated tool_result) is much harder to see
+   * than a provider error saying exactly what it refused.
    */
   private deliverOperatorNotes(iteration: number): void {
     if (this.operatorQueue.length === 0) return
@@ -1170,7 +1198,7 @@ export class ConversationLoop {
     this.addMessage({ role: 'user', content: [{ type: 'text', text: `[operator]\n${body}` }] })
     console.log(`[operator] delivered ${batch.length} note(s) at iteration ${iteration}`)
     for (const n of batch) {
-      this.emit({ type: 'mission.operator_note', text: n.text, queuedAt: n.queuedAt, deliveredAtIteration: iteration })
+      this.emit({ type: 'mission.operator_note', text: n.text, queuedAt: n.queuedAt, source: n.source, deliveredAtIteration: iteration })
     }
     // The transcript, not just the log: an operator watching the dashboard
     // stream needs to see the moment their note went in.

@@ -23,7 +23,26 @@ export const GOVERNANCE_PURPOSE = new constraints.PurposeModel([['denialsChanged
 // Consistent for waves that are not already Contradicted.
 export const GOVERNANCE_DRIFT = { expectedDivergence: 0.1, driftThreshold: 0.5, minSupport: 20, cusumThreshold: 1.0, cusumSlack: 0.05 }
 
-/** One wave's observed behaviour of the governance layer. */
+/** One wave's observed behaviour of the governance layer.
+ *
+ *  Two known limits of the routed-then-complied term, stated rather than hidden:
+ *
+ *  1. It reads `routing.entries`, which VerifyFirstRouter caps at the last 20
+ *     routes. `routing.count` is uncapped, so in a long wave more routes happened
+ *     than this can score. It therefore UNDERCOUNTS consumed recommendations on a
+ *     heavily-routed wave — the conservative direction for a measurement whose
+ *     whole point is to catch the layer merely logging. Denials have an aggregate
+ *     fallback for exactly this (`nextCallClassByInvariant`); routing has none
+ *     yet, and adding a `nextCallClassByKind` aggregate to the router snapshot is
+ *     the fix if the cap ever bites.
+ *  2. A `low-confidence-edit` route is scored with `edit-gap`'s DESIRED classes
+ *     (`sourceEdit`/`commit`) because that route has no desired class of its own:
+ *     it does not ask the model to do anything, it measures an edit that already
+ *     happened. So "complied" here means "kept working on the code afterwards",
+ *     NOT "obeyed the verify verdict" — the verify outcome (`passed`/`failed`)
+ *     deliberately does not enter this count. Reading it as obedience would
+ *     overstate what the routing evidence supports.
+ */
 export function governanceCounts({ row, wave, proposalsDecided = 0 }) {
   const denials = denialRecords(row ?? {}, { campaign: null, wave: null })
   const denialsChanged = denials.filter(d => d.changed).reduce((a, d) => a + d.count, 0)

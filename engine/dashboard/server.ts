@@ -845,7 +845,15 @@ window.__CYNCO_TOKEN = ${JSON.stringify(token)};
     const wavesPath = join(dir, 'waves.jsonl')
     const rawWaves: any[] = existsSync(wavesPath)
       ? readFileSync(wavesPath, 'utf-8').split('\n').filter(l => l.length > 0)
-          .map(line => { try { return JSON.parse(line) } catch { return null } })
+          .map(line => {
+            try { return JSON.parse(line) } catch (e) {
+              // Skipping is right — one truncated append must not blank the
+              // whole campaign — but skipping in silence is how a half-written
+              // waves.jsonl looks identical to a campaign that never ran.
+              console.warn(`[dashboard] campaign ${id}: skipping unparseable waves.jsonl line (${e instanceof Error ? e.message : String(e)})`)
+              return null
+            }
+          })
           .filter((w): w is any => w !== null)
       : []
 
@@ -860,6 +868,17 @@ window.__CYNCO_TOKEN = ${JSON.stringify(token)};
     // (cynco-campaign-state.mjs) always rewrites the final line in place, so
     // array order already is chronological order.
     const lastWave = rawWaves.length ? rawWaves[rawWaves.length - 1] : null
+
+    // Spec r9 / 2c asks for the last FAIL lines VERBATIM — "C8.1a.tiers-pressable:
+    // FAIL no tier button responds to a click", not the bare id. The gate's own
+    // lines are on the wave record (`gate.fails[].line`, cynco-gate-parse.mjs:18);
+    // `state.lastFails` keeps only ids (cynco-campaign.mjs:397), so it is the
+    // fallback for a campaign whose last wave predates the wave record carrying
+    // the gate, never the first choice.
+    const lastFailLines: string[] = Array.isArray(lastWave?.gate?.fails)
+      ? lastWave.gate.fails.map((f: any) => (typeof f === 'string' ? f : f?.line ?? f?.id)).filter((l: any): l is string => typeof l === 'string')
+      : []
+    const lastFails: string[] = lastFailLines.length > 0 ? lastFailLines : (state.lastFails ?? [])
 
     const pendingProposals = (state.proposals ?? [])
       .filter((p: any) => p?.status === 'pending')
@@ -878,7 +897,7 @@ window.__CYNCO_TOKEN = ${JSON.stringify(token)};
       waveCount: state.waveCount ?? 0,
       budgetWaves: this.readCampaignBudget(id),
       lastDecision: lastWave?.decision ?? null,
-      lastFails: state.lastFails ?? [],
+      lastFails,
       pendingProposals,
       ideationAuthority: state.ideationAuthority ?? 0,
       invariantOverrides: state.invariantOverrides ?? {},
@@ -898,7 +917,8 @@ window.__CYNCO_TOKEN = ${JSON.stringify(token)};
       if (!existsSync(specPath)) return null
       const spec = JSON.parse(readFileSync(specPath, 'utf-8'))
       return typeof spec?.budget?.waves === 'number' ? spec.budget.waves : null
-    } catch {
+    } catch (e) {
+      console.warn(`[dashboard] campaign ${id}: budget unreadable from docs/civkings-redesign-briefs/${id}.campaign.json, showing no budget (${e instanceof Error ? e.message : String(e)})`)
       return null
     }
   }

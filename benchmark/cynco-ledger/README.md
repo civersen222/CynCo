@@ -114,11 +114,21 @@ decisions still recorded here).
   // Only an UNATTENDED run can produce these. An interactive session keeps the
   // old drop-and-log — there is a person at the terminal who can resend — so
   // `[]` there is correct, not a gap.
+  //
+  // `source` says WHO sent it: "operator" — a person typing into the 9161 chat
+  // box mid-mission — or "driver" — cynco-mission-driver.mjs re-injecting a
+  // verbatim gate FAIL after its silence heuristic declared exit while the loop
+  // was still working. Both arrive on the same busy guard, and before this
+  // field the driver's probe was indistinguishable from something a human
+  // typed. The engine decides it from the frame: the driver declares
+  // `unattended: true` on everything it sends, the chat box never does. `null`
+  // means the frame carried no `source` (a record from an engine older than
+  // this field) — read it as unknown, never as "operator".
   "operatorNotes": [
     { "t": 1783550000000, "text": "stop editing app.py", "queuedAt": "2026-09-22T10:00:00.000Z",
-      "deliveredAtIteration": 41, "dropped": null },
-    { "t": 1783550300000, "text": "and push when green", "queuedAt": "2026-09-22T10:05:00.000Z",
-      "deliveredAtIteration": null, "dropped": "mission ended" }
+      "source": "operator", "deliveredAtIteration": 41, "dropped": null },
+    { "t": 1783550300000, "text": "PROBE FAIL C8.1a.tiers-pressable ...", "queuedAt": "2026-09-22T10:05:00.000Z",
+      "source": "driver", "deliveredAtIteration": null, "dropped": "mission ended" }
   ],
   "toolTransport": [        // one per toolcall.transport event (P1.8 repair ladder); absent in pre-P1.8 records
     { "t": 1783550000000, "stage": "repaired", "toolName": "Read", "detail": "..." }

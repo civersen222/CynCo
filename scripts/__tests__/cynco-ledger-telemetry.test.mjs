@@ -303,6 +303,46 @@ describe('operator notes', () => {
     expect(rec.operatorNotes[0].deliveredAtIteration).toBeNull()
   })
 
+  // Review minor #12: the driver re-injects gate FAILs through the same queue
+  // the operator's chat box uses. Without `source` the ledger showed a
+  // machine's probe as a human instruction.
+  it('keeps the driver probe and the operator note apart by source', () => {
+    const c = createMissionCollector()
+    c.ingest({ type: 'mission.operator_note', text: 'a person leaning in', queuedAt: '2026-09-22T10:00:00.000Z', source: 'operator', deliveredAtIteration: null })
+    c.ingest({ type: 'mission.operator_note', text: 'PROBE FAIL C8.1a', queuedAt: '2026-09-22T10:00:01.000Z', source: 'driver', deliveredAtIteration: null })
+    c.ingest({ type: 'mission.operator_note', text: 'PROBE FAIL C8.1a', queuedAt: '2026-09-22T10:00:01.000Z', source: 'driver', deliveredAtIteration: 9 })
+
+    const rec = buildMissionRecord(c, meta)
+    expect(rec.operatorNotes.map(n => n.source)).toEqual(['operator', 'driver'])
+    expect(rec.operatorNotes[1].deliveredAtIteration).toBe(9)
+  })
+
+  // A record written by an engine older than the field says nothing about who
+  // sent it. Unknown is null — calling it 'operator' would invent evidence.
+  it('leaves source null when the frame does not carry one, and never guesses', () => {
+    const c = createMissionCollector()
+    c.ingest({ type: 'mission.operator_note', text: 'old engine', queuedAt: '2026-09-22T10:00:00.000Z', deliveredAtIteration: null })
+    c.ingest({ type: 'mission.operator_note', text: 'bogus', queuedAt: '2026-09-22T10:00:02.000Z', source: 'somebody else', deliveredAtIteration: null })
+
+    const rec = buildMissionRecord(c, meta)
+    expect(rec.operatorNotes.map(n => n.source)).toEqual([null, null])
+  })
+
+  // A delivery frame may be the first one carrying the source (a collector
+  // that attached between the queue and the delivery). Fill it in, never blank
+  // a source already recorded.
+  it('fills source in from a later frame but never overwrites one', () => {
+    const c = createMissionCollector()
+    c.ingest({ type: 'mission.operator_note', text: 'n', queuedAt: '2026-09-22T10:00:00.000Z', deliveredAtIteration: null })
+    c.ingest({ type: 'mission.operator_note', text: 'n', queuedAt: '2026-09-22T10:00:00.000Z', source: 'driver', deliveredAtIteration: 3 })
+    const c2 = createMissionCollector()
+    c2.ingest({ type: 'mission.operator_note', text: 'n', queuedAt: '2026-09-22T10:00:00.000Z', source: 'operator', deliveredAtIteration: null })
+    c2.ingest({ type: 'mission.operator_note', text: 'n', queuedAt: '2026-09-22T10:00:00.000Z', deliveredAtIteration: 3 })
+
+    expect(buildMissionRecord(c, meta).operatorNotes[0].source).toBe('driver')
+    expect(buildMissionRecord(c2, meta).operatorNotes[0].source).toBe('operator')
+  })
+
   it('records a drop frame whose queued frame it never saw', () => {
     const c = createMissionCollector()
     c.ingest({ type: 'mission.operator_note', text: 'late join', queuedAt: '2026-09-22T10:00:00.000Z', deliveredAtIteration: null, dropped: 'mission ended' })
@@ -332,7 +372,7 @@ describe('operator notes', () => {
     c.ingest({ type: 'mission.operator_note', text: 'too late', queuedAt: '2026-09-22T10:00:00.000Z', deliveredAtIteration: null })
     const rec = buildMissionRecord(c, meta)
     expect(rec.operatorNotes).toEqual([
-      { t: expect.any(Number), text: 'too late', queuedAt: '2026-09-22T10:00:00.000Z', deliveredAtIteration: null, dropped: null },
+      { t: expect.any(Number), text: 'too late', queuedAt: '2026-09-22T10:00:00.000Z', source: null, deliveredAtIteration: null, dropped: null },
     ])
   })
 

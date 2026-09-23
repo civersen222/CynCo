@@ -245,6 +245,53 @@ describe('operator notes — a busy unattended mission', () => {
     expect(droppedFrames[0].deliveredAtIteration).toBeNull()
     globalContract.clear()
   }, 30000)
+
+  /**
+   * Review minor #12. The mission driver re-injects a verbatim gate FAIL over
+   * the same `user.message` frame the operator's chat box uses
+   * (scripts/cynco-mission-driver.mjs, the `d.inject` branch), so before
+   * `source` the ledger counted a machine's probe as something a human typed.
+   * The frame itself carries the difference: the driver declares
+   * `unattended: true` on everything it sends, the chat box sends only
+   * `{ text, cwd }`.
+   */
+  it('tells a driver probe from an operator note, on every frame the note produces', async () => {
+    const { loop, events, script } = harness('cynco-op-source-')
+    script.responses = [
+      sendingNote(() => {
+        void loop.handleUserMessage('a person leaning in')                       // dashboard chat box
+        void loop.handleUserMessage('PROBE FAIL C8.1a', { unattended: true })    // driver re-injection
+      }, toolUse(READ())),
+      textResponse('done'),
+    ]
+    await loop.handleUserMessage('do the thing', { unattended: true })
+
+    const byText = (t: string) => notes(events).filter(f => f.text === t)
+    const person = byText('a person leaning in')
+    const probe = byText('PROBE FAIL C8.1a')
+    // Two frames each: queued, then delivered.
+    expect(person).toHaveLength(2)
+    expect(probe).toHaveLength(2)
+    // Every frame carries it, not just the queued one — the ledger fills the
+    // delivery frame in against the queued entry and must agree with it.
+    for (const f of person) expect(f.source).toBe('operator')
+    for (const f of probe) expect(f.source).toBe('driver')
+    globalContract.clear()
+  }, 30000)
+
+  it('tags a note dropped at mission end with the source that sent it', async () => {
+    const { loop, events, script } = harness('cynco-op-source-dropped-')
+    script.responses = [
+      sendingNote(() => { void loop.handleUserMessage('PROBE FAIL C8.2b', { unattended: true }) },
+        textResponse('done')),
+    ]
+    await loop.handleUserMessage('do the thing', { unattended: true })
+
+    const stranded = notes(events).filter(f => f.dropped === 'mission ended')
+    expect(stranded).toHaveLength(1)
+    expect(stranded[0].source).toBe('driver')
+    globalContract.clear()
+  }, 30000)
 })
 
 /**

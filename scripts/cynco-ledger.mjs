@@ -249,8 +249,13 @@ export function createMissionCollector(now = () => Date.now()) {
           const text = typeof m.text === 'string' ? m.text : ''
           const delivered = typeof m.deliveredAtIteration === 'number' ? m.deliveredAtIteration : null
           const dropped = typeof m.dropped === 'string' ? m.dropped : null
+          // 'operator' (a person in the 9161 chat box) vs 'driver' (the mission
+          // driver re-injecting a gate FAIL). Defaulted, not assumed: a frame
+          // from an engine older than this field says nothing about who sent
+          // it, and calling that 'operator' would be inventing evidence.
+          const source = m.source === 'operator' || m.source === 'driver' ? m.source : null
           if (delivered === null && dropped === null) {
-            this.operatorNotes.push({ t, text, queuedAt, deliveredAtIteration: null, dropped: null })
+            this.operatorNotes.push({ t, text, queuedAt, source, deliveredAtIteration: null, dropped: null })
             break
           }
           // "Still open" = neither delivered nor dropped. Two same-millisecond
@@ -262,13 +267,14 @@ export function createMissionCollector(now = () => Date.now()) {
             // An outcome whose queued frame this collector never saw — it
             // attached mid-mission. The note still happened; dropping it here
             // would under-count the run.
-            this.operatorNotes.push({ t, text, queuedAt, deliveredAtIteration: delivered, dropped })
+            this.operatorNotes.push({ t, text, queuedAt, source, deliveredAtIteration: delivered, dropped })
             break
           }
           // Only ever fills a field in. A later frame must not blank an
           // outcome already recorded.
           if (delivered !== null) open.deliveredAtIteration = delivered
           if (dropped !== null) open.dropped = dropped
+          if (open.source === null && source !== null) open.source = source
           break
         }
         case 'toolcall.transport':

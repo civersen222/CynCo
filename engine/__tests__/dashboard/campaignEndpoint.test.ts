@@ -110,7 +110,8 @@ describe('GET /api/campaign', () => {
     }, [
       { wave: 1, decision: { kind: 'next', why: '2 line(s) still FAIL' }, gate: { terminator: 'MISS' },
         posiwid: { verdict: 'Consistent', divergence: 0.05 }, verified: true },
-      { wave: 2, decision: { kind: 'next', why: '1 line(s) still FAIL' }, gate: { terminator: 'MISS' },
+      { wave: 2, decision: { kind: 'next', why: '1 line(s) still FAIL' },
+        gate: { terminator: 'MISS', fails: [{ id: 'C8.2b.portraits-distinct-and-stable', line: 'C8.2b.portraits-distinct-and-stable: FAIL two houses share a portrait hash' }] },
         posiwid: { verdict: 'Consistent', divergence: 0.02 }, verified: true,
         governancePosiwid: { verdict: 'Consistent', divergence: 0.01, dominantObserved: 'inspect', support: 5, onsetWave: null, counts: { wave: 2 } } },
     ])
@@ -135,7 +136,8 @@ describe('GET /api/campaign', () => {
 
     // c8: waves, proposals, invariant overrides, ideation authority verbatim.
     expect(c8.waveCount).toBe(2)
-    expect(c8.lastFails).toEqual(['C8.1a.tiers-pressable', 'C8.2b.portraits-distinct-and-stable'])
+    // Spec r9: verbatim gate lines off the last wave record, NOT state.lastFails' ids.
+    expect(c8.lastFails).toEqual(['C8.2b.portraits-distinct-and-stable: FAIL two houses share a portrait hash'])
     expect(c8.ideationAuthority).toBe(0.3)
     expect(c8.invariantOverrides).toEqual({ editGapCap: 60 })
     expect(c8.lastDecision).toEqual({ kind: 'next', why: '1 line(s) still FAIL' })
@@ -164,6 +166,21 @@ describe('GET /api/campaign', () => {
     expect(c9.waves).toEqual([])
     expect(c9.pendingProposals).toEqual([])
     expect(c9.inFlight).toEqual({ wave: 1, missionId: null, briefFile: 'docs/civkings-redesign-briefs/c9-wave1.txt', pidFile: 'C:/tmp/c9.pid', driverLog: 'C:/tmp/c9.log', dispatchedAt: '2026-09-21T00:00:00.000Z' })
+  })
+
+  it('falls back to state.lastFails ids when the last wave record carries no gate.fails', async () => {
+    // A wave recorded before the gate lines were kept (or a harness fault that
+    // wrote no fails) must still show something. Ids are worse than lines, but
+    // they are what that campaign has.
+    CYNCO_HOME = mkdtempSync(join(tmpdir(), 'cynco-campaign-failsfallback-'))
+    process.env.CYNCO_HOME = CYNCO_HOME
+    writeCampaign(CYNCO_HOME, 'c8', { waveCount: 1, lastFails: ['C8.1a.tiers-pressable'] }, [
+      { wave: 1, decision: { kind: 'next', why: '1 line(s) still FAIL' }, gate: { terminator: 'MISS' }, verified: true },
+    ])
+
+    const res = await authFetch(`${BASE}/api/campaign`)
+    const c8 = (await res.json() as any).campaigns.find((c: any) => c.id === 'c8')
+    expect(c8.lastFails).toEqual(['C8.1a.tiers-pressable'])
   })
 
   it('falls back to CYNCO_CAMPAIGN_ID when no campaign is inFlight', async () => {
