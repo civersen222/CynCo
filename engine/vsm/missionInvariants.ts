@@ -86,6 +86,23 @@ const DWELL = 3
 const DENIAL_WINDOW = 50
 const STEP_WINDOW = 20
 
+/**
+ * One classifier for "what did this call do", shared by the invariants
+ * (edit-gap / commit-gap accounting) and the live POSIWID reading in
+ * conversationLoop. Classes: `sourceEdit`, `inspect`, `codeIndex`, the Bash
+ * effects (`read` `write` `run` `commit` `revert` `other`), `denied-or-error`,
+ * and `other` for every remaining tool.
+ */
+export function classifyCall(toolName: string, input: any, isError: boolean): string {
+  if (isError) return 'denied-or-error'
+  if (EDITOR_TOOLS.has(toolName)) return 'sourceEdit'
+  if (toolName === 'Bash' && typeof input?.command === 'string' && isSourceRewrite(input.command)) return 'sourceEdit'
+  if (toolName === 'Bash') return bashEffect(String(input?.command ?? ''))
+  if (INSPECT_TOOLS.has(toolName)) return 'inspect'
+  if (toolName === 'CodeIndex') return 'codeIndex'
+  return 'other'
+}
+
 const REVERT_MESSAGE =
   '[invariant] REFUSED: that command discards work. You may not revert a file in this run, ' +
   'for any reason — not git checkout --, git restore, git stash, git reset --hard, or git clean. ' +
@@ -276,13 +293,7 @@ export class MissionInvariants {
   noteCodeIndexAssisted(): void { this.codeIndexAssisted++ }
 
   private classify(toolName: string, input: any, isError: boolean): string {
-    if (isError) return 'denied-or-error'
-    if (EDITOR_TOOLS.has(toolName)) return 'sourceEdit'
-    if (toolName === 'Bash' && typeof input?.command === 'string' && isSourceRewrite(input.command)) return 'sourceEdit'
-    if (toolName === 'Bash') return bashEffect(String(input.command ?? ''))
-    if (INSPECT_TOOLS.has(toolName)) return 'inspect'
-    if (toolName === 'CodeIndex') return 'codeIndex'
-    return 'other'
+    return classifyCall(toolName, input, isError)
   }
 
   snapshot(): InvariantSnapshot {

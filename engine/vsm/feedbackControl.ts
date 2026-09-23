@@ -4,8 +4,10 @@
  * Behavioral effects:
  * - FeedbackLoop error drives context compression timing
  * - PidController output DIRECTLY adjusts tool approval sensitivity
- * - UltrastableSystem perturbs agent parameters when essential variables
- *   leave viable range (context %, failure rate, variety balance)
+ * - UltrastableSystem reports viability, margin and the adaptation trace of
+ *   the essential variables (context %, failure rate, variety balance). Its
+ *   step-function values are NOT applied anywhere: `perturbedParameters` was
+ *   removed 2026-09-18 (no reader; the trace already carries every from/to).
  * - isGoodRegulator checks model fidelity periodically
  */
 
@@ -23,9 +25,6 @@ export class FeedbackControlIntegration {
 
   /** Ultrastable system wrapping essential variables */
   readonly ultrastable: InstanceType<typeof foundations.UltrastableSystem>
-
-  /** Track whether parameters were perturbed this turn */
-  private _perturbedThisTurn = false
 
   /** Track the PID output for external consumption */
   private _lastPidOutput = 0
@@ -88,16 +87,13 @@ export class FeedbackControlIntegration {
     const approvalError = 0.8 - approvalRate
     this._lastPidOutput = this.approvalPid.update(approvalError)
 
-    // 3. Ultrastable system (legacy continuous instance; its trace is now observable)
+    // 3. Ultrastable system (legacy continuous instance; its trace is observable)
     const report = this.ultrastable.observe([contextUtilization, failureRate, varietyRatio])
-    this._perturbedThisTurn = report.stepped
     return {
       shouldCompress: contextError < -0.1, // utilization > 80%
       compressionUrgency: Math.abs(Math.min(contextError, 0)), // how urgent
       approvalAdjustment: this._lastPidOutput, // positive = ease, negative = tighten
-      parametersPerturbed: this._perturbedThisTurn,
       isViable: report.viable,
-      perturbedParameters: this._perturbedThisTurn ? this.ultrastable.parameters() : null,
       adaptationTrace: this.ultrastable.trace(),
       viabilityMargin: report.margin,
     }
@@ -126,11 +122,6 @@ export class FeedbackControlIntegration {
     return foundations.isGoodRegulator(systemDist, modelDist, threshold)
   }
 
-  /** Was the system perturbed this turn (ultrastability activated)? */
-  wasPerturbed(): boolean {
-    return this._perturbedThisTurn
-  }
-
   /** Get the last PID output value. */
   getApprovalAdjustment(): number {
     return this._lastPidOutput
@@ -145,12 +136,8 @@ export interface FeedbackActions {
   compressionUrgency: number
   /** PID adjustment for tool approval: positive = ease, negative = tighten */
   approvalAdjustment: number
-  /** Were parameters perturbed by ultrastability? */
-  parametersPerturbed: boolean
   /** Are all essential variables within viable bounds? */
   isViable: boolean
-  /** If perturbed, the new parameter values */
-  perturbedParameters: number[] | null
   /** Full adaptation trace of the ultrastable system (one entry per slow-loop step) */
   adaptationTrace: readonly AdaptationEvent[]
   /** Minimum normalised distance to a viability bound; negative when violated */

@@ -18,12 +18,34 @@ import type { PosiwidReport } from '../cybernetics-core/src/index.js'
 import { getEventBus } from './eventBus.js'
 import { events } from '../cybernetics-core/src/index.js'
 
+/**
+ * Folds `classifyCall` classes (vsm/missionInvariants.ts) into the purpose
+ * model's categories. A read-shaped Bash call and a CodeIndex query are
+ * inspection. Everything the model does not name — `revert`,
+ * `denied-or-error`, `other` — falls into posiwidDivergence's implicit `other`
+ * bucket (stated share 0), so a session DOMINATED by one of them reads
+ * `Contradicted`: that is the verdict this check exists to produce.
+ */
+export function toolClassToPurpose(cls: string): string {
+  return cls === 'read' || cls === 'codeIndex' ? 'inspect' : cls
+}
+
 export class ConstraintChecksIntegration {
   private nodeId: InstanceType<typeof NodeId>
+  /**
+   * The stated purpose of a coding session, as shares over the classifier's
+   * classes. These are the supervisor's priors, not measurements: a session
+   * that mostly inspects is `Drifting` (C8 wave 1: 828 of 931 calls), one
+   * that mostly reverts or errors is `Contradicted`. Missions with a campaign
+   * spec are graded post hoc against the spec's own `posiwid` block by the
+   * runner; this default is what the ENGINE reads live, for every session.
+   */
   private purposeModel = new constraints.PurposeModel([
     ['sourceEdit', 0.15],
     ['commit', 0.05],
-    ['inspect', 0.8],
+    ['inspect', 0.55],
+    ['run', 0.20],
+    ['write', 0.05],
   ])
 
   constructor(nodeId: InstanceType<typeof NodeId>) {
@@ -77,6 +99,20 @@ export class ConstraintChecksIntegration {
       ))
     }
     return report
+  }
+
+  /**
+   * POSIWID over raw tool classes as `classifyCall` produces them: fold into
+   * the purpose categories, then `checkPurposeAlignment`.
+   */
+  checkToolClassAlignment(counts: ReadonlyMap<string, number> | Record<string, number>): PosiwidReport {
+    const folded = new Map<string, number>()
+    const entries = counts instanceof Map ? [...counts.entries()] : Object.entries(counts)
+    for (const [cls, n] of entries) {
+      const cat = toolClassToPurpose(cls)
+      folded.set(cat, (folded.get(cat) ?? 0) + n)
+    }
+    return this.checkPurposeAlignment({ counts: [...folded.entries()] })
   }
 
   /** Replace the stated purpose model (e.g. from profile configuration). */

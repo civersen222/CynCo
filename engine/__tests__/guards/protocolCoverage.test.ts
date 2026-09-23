@@ -18,6 +18,11 @@ const NON_TUI_CONSUMERS: Record<string, string> = {
     '(scripts/cynco-ledger.mjs) so supervision-economics prices missions from real ' +
     'counts instead of per-turn estimates. The TUI already shows live token flow ' +
     'from its own stream; a second cumulative frame would render nothing new.',
+  'control.signals':
+    'Variety-driven control signals (vsm/controlSignals.ts), consumed by the 9161 ' +
+    'dashboard (engine/dashboard/index.html) and the ledger collector ' +
+    '(scripts/cynco-ledger.mjs controlSignals). Per-iteration temperature/best-of-N ' +
+    'numbers; the TUI has no surface for them and rendering them would only add noise.',
 }
 
 /** TUI event types handled bespoke in the receiver (app.py), not via the dispatch table. */

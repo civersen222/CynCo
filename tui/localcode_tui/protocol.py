@@ -97,7 +97,7 @@ class ToolcallTransportEvent:
 @dataclass
 class GovernanceAlertEvent:
     """Algedonic governance alert (P1.1). Critical/high are user-visible."""
-    severity: str = "low"    # low | medium | high | critical
+    severity: str = "low"    # low | medium | high | critical | warn (log-only)
     message: str = ""
     source: str = ""
     type: str = "governance.alert"
