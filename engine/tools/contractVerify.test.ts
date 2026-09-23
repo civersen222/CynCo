@@ -14,6 +14,7 @@ import {
   testCensusAssertion,
   commandTimeoutMs,
   MAX_COMMAND_TIMEOUT_MS,
+  runCommandDetailed,
   type RepoProbe,
 } from './contractVerify.js'
 import { getShellInfo } from './shellInfo.js'
@@ -737,5 +738,62 @@ describe('gitProbe.run — an explicit cap really governs a real process', () =>
     const p = gitProbe(process.cwd())
     const sleep = getShellInfo().isPowerShell ? 'Start-Sleep -Seconds 30' : 'sleep 30'
     expect(await p.run(sleep, 750)).toBe('timeout')
+  }, 20_000)
+})
+
+/**
+ * Task 6 needs to run the held-out KEEP-GREEN gate and show the model what it
+ * printed. `runCommand` (via `gitProbe.run`) discards `stdout`/`stderr` — this
+ * is the same execution path with the output kept, so Task 6 does not need a
+ * second way to run a command that could disagree with the first.
+ */
+describe('runCommandDetailed — the same run, with the output tail kept', () => {
+  test('a passing command reports passed and carries its output', async () => {
+    const r = await runCommandDetailed(process.cwd(), 'node -e "console.log(\'hello\')"')
+    expect(r.outcome).toBe('passed')
+    expect(r.tail).toContain('hello')
+    expect(r.ms).toBeGreaterThanOrEqual(0)
+  })
+
+  test('a failing command reports failed and carries stdout and stderr', async () => {
+    const r = await runCommandDetailed(
+      process.cwd(),
+      'node -e "console.log(\'a\');console.error(\'b\');process.exit(3)"',
+    )
+    expect(r.outcome).toBe('failed')
+    expect(r.tail).toMatch(/a[\s\S]*b/)
+  })
+
+  test('a command that outlives its cap answers timeout', async () => {
+    const r = await runCommandDetailed(process.cwd(), 'node -e "setTimeout(()=>{},2000)"', 50)
+    expect(r.outcome).toBe('timeout')
+  }, 20_000)
+
+  test('the tail keeps only the last 40 lines, capped at 4 KB', async () => {
+    const r = await runCommandDetailed(
+      process.cwd(),
+      'node -e "for (let i = 0; i < 200; i++) console.log(\'line \' + i)"',
+    )
+    expect(r.outcome).toBe('passed')
+    const lines = r.tail.split(/\r?\n/).filter(l => l.length > 0)
+    expect(lines.length).toBeLessThanOrEqual(40)
+    expect(Buffer.byteLength(r.tail, 'utf-8')).toBeLessThanOrEqual(4096)
+    // The END of the output, not the start.
+    expect(r.tail).toContain('line 199')
+    expect(r.tail).not.toContain('line 0\n')
+  })
+})
+
+/**
+ * `runCommand` (used internally by `gitProbe.run`) must stay byte-identical
+ * for its existing callers: `runCommandDetailed` only adds a tail and a
+ * timing measurement alongside the same outcome.
+ */
+describe('runCommand still returns exactly the outcome, unchanged (delegates to runCommandDetailed)', () => {
+  test('passed / failed / timeout all still work through gitProbe.run', async () => {
+    const p = gitProbe(process.cwd())
+    expect(await p.run('node -e "process.exit(0)"')).toBe('passed')
+    expect(await p.run('node -e "process.exit(1)"')).toBe('failed')
+    expect(await p.run('node -e "setTimeout(()=>{},2000)"', 50)).toBe('timeout')
   }, 20_000)
 })

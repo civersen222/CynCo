@@ -320,7 +320,41 @@ export function commandTimeoutMs(explicitMs?: number): number {
  */
 export const MAX_COMMAND_TIMEOUT_MS = 7_200_000
 
-function runCommand(cwd: string, command: string, timeoutMs?: number): Promise<CommandOutcome> {
+/** What `runCommandDetailed` hands back, on top of the outcome `runCommand` always returned. */
+export interface CommandRunDetail {
+  outcome: CommandOutcome
+  /** Wall-clock time the command actually took, per `Date.now()`. */
+  ms: number
+  /**
+   * The last 40 lines of `stdout` + `stderr` (in that order), capped at 4 KB.
+   *
+   * `runCommand` read this same output out of the same `exec` callback and
+   * discarded it — Task 6 needs to show the model what a command it ran
+   * actually printed, and the cap exists because a gate's own log can dwarf
+   * the turn budget it is supposed to fit inside.
+   */
+  tail: string
+}
+
+/** Last `maxLines` lines of `text`, then trimmed from the front to `maxBytes`. */
+function capTail(text: string, maxLines: number, maxBytes: number): string {
+  const lines = text.split(/\r\n|\r|\n/)
+  const tail = lines.slice(-maxLines).join('\n')
+  const buf = Buffer.from(tail, 'utf-8')
+  return buf.length <= maxBytes ? tail : buf.subarray(buf.length - maxBytes).toString('utf-8')
+}
+
+/**
+ * Runs `command` in the workspace and reports the outcome, timing, and a
+ * bounded tail of what it printed.
+ *
+ * `runCommand` below delegates here and returns only `outcome` — same `exec`
+ * call, same options, same shell preamble, same timeout semantics, so its
+ * existing callers see byte-identical behaviour. This is the one place that
+ * actually reads `stdout`/`stderr` out of the callback; before this they were
+ * received and thrown away.
+ */
+export function runCommandDetailed(cwd: string, command: string, timeoutMs?: number): Promise<CommandRunDetail> {
   // The same shell the Bash tool uses. `exec` would otherwise default to
   // cmd.exe on Windows, so a check script written in the dialect the brief and
   // every other command in the session use — PowerShell here — would fail on
@@ -339,18 +373,29 @@ function runCommand(cwd: string, command: string, timeoutMs?: number): Promise<C
   // shell must be configured alike or the engine is verifying under conditions
   // the work was never done in.
   const runnable = shellPreamble(info) + translateEnvPrefix(command, info)
+  const startedAt = Date.now()
   return new Promise(resolvePromise => {
-    exec(runnable, { cwd, shell, encoding: 'utf-8', timeout: commandTimeoutMs(timeoutMs), maxBuffer: 8 * 1024 * 1024 }, err => {
-      if (!err) return resolvePromise('passed')
-      const e = err as Error & { code?: number | string; killed?: boolean }
-      if (e.killed) return resolvePromise('timeout')
-      // A shell that ran the command reports its status as a number — including
-      // 127 for "not found", which is a real failing answer. Anything else
-      // (the shell would not start, output overran the buffer) is no answer.
-      if (typeof e.code === 'number') return resolvePromise('failed')
-      return resolvePromise('unrunnable')
-    })
+    exec(
+      runnable,
+      { cwd, shell, encoding: 'utf-8', timeout: commandTimeoutMs(timeoutMs), maxBuffer: 8 * 1024 * 1024 },
+      (err, stdout, stderr) => {
+        const ms = Date.now() - startedAt
+        const tail = capTail((stdout ?? '') + (stderr ?? ''), 40, 4096)
+        if (!err) return resolvePromise({ outcome: 'passed', ms, tail })
+        const e = err as Error & { code?: number | string; killed?: boolean }
+        if (e.killed) return resolvePromise({ outcome: 'timeout', ms, tail })
+        // A shell that ran the command reports its status as a number — including
+        // 127 for "not found", which is a real failing answer. Anything else
+        // (the shell would not start, output overran the buffer) is no answer.
+        if (typeof e.code === 'number') return resolvePromise({ outcome: 'failed', ms, tail })
+        return resolvePromise({ outcome: 'unrunnable', ms, tail })
+      },
+    )
   })
+}
+
+function runCommand(cwd: string, command: string, timeoutMs?: number): Promise<CommandOutcome> {
+  return runCommandDetailed(cwd, command, timeoutMs).then(r => r.outcome)
 }
 
 export function gitProbe(cwd: string): RepoProbe {

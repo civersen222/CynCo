@@ -622,7 +622,11 @@ export type UserMessageCommand = {
   cwd?: string  // Optional: change working directory for this message
   /** P4.2: optional harness-supplied DoD contract (mission mode — the brief's
    *  check script is the contract). Applied before intent auto-create.
-   *  Inlined type: this file stays import-free. */
+   *  Inlined type: this file stays import-free. `assertions` is loosely typed
+   *  here as `string[]` — in practice an entry can also arrive as the withheld
+   *  `{ text, command, timeoutMs?, role? }` object form (`HarnessAssertion` in
+   *  engine/tools/contract.ts; `role: 'keep-green'` marks the sidecar's
+   *  keep-green assertion so Task 6 can find it without depending on index). */
   contract?: { title: string; brief?: string; assertions: string[] }
   /** Finding (ag): instrument files for THIS task — read-only, not workspace.
    *  The harness names them because only the harness knows them: the brief it

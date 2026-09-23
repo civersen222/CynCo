@@ -9,7 +9,10 @@ import { complied, KINDS } from './cynco-triples.mjs'
 const wrap = (s) => String(s).replace(/\s+$/, '')
 
 export function sidecarFor(spec) {
-  return { assertions: [{ text: 'The KEEP-GREEN set passes (run it before every commit).', command: spec.keepGreen, timeoutMs: 1_800_000 }] }
+  // role: 'keep-green' — Task 6 finds this assertion by role, not by index:
+  // the held-out gate occupies index 0 only when the driver also dispatched
+  // one, so this assertion's own index moves contract to contract.
+  return { assertions: [{ text: 'The KEEP-GREEN set passes (run it before every commit).', command: spec.keepGreen, timeoutMs: 1_800_000, role: 'keep-green' }] }
 }
 
 function header(spec, ctx) {

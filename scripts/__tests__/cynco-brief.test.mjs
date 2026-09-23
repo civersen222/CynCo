@@ -97,6 +97,13 @@ describe('sidecarFor', () => {
     expect(s.assertions[0].text).not.toContain('pytest')
     expect(s.assertions[0].timeoutMs).toBe(1800000)
   })
+
+  // Task 6 finds this assertion by role, not by index — the held-out gate
+  // occupies index 0 only when the driver also dispatched one.
+  it('marks its one assertion role: keep-green', () => {
+    const s = sidecarFor(spec)
+    expect(s.assertions[0].role).toBe('keep-green')
+  })
 })
 
 describe('THE WORK — earned reordering', () => {

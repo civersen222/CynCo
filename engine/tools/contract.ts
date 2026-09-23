@@ -51,6 +51,19 @@ export interface Assertion {
    * ceiling on a hung `pytest` somewhere else in the same run.
    */
   timeoutMs?: number
+  /**
+   * What this assertion IS, for a caller that needs to find one specific
+   * assertion without depending on its position in the list.
+   *
+   * `'keep-green'` names the sidecar's one always-present assertion (the
+   * mission's KEEP-GREEN command, `scripts/cynco-brief.mjs`'s `sidecarFor`) —
+   * an index cannot do this because the held-out gate occupies index 0 only
+   * when the driver dispatched one, so the keep-green assertion's own index
+   * shifts contract to contract. The only party who knows what an assertion
+   * IS is whoever wrote it, so the role travels with the assertion, the same
+   * way `command` and `timeoutMs` do.
+   */
+  role?: 'keep-green'
 }
 
 /**
@@ -58,7 +71,7 @@ export interface Assertion {
  * the text itself, or a redacted text paired with the command that actually
  * decides it.
  */
-export type HarnessAssertion = string | { text: string; command: string; timeoutMs?: number }
+export type HarnessAssertion = string | { text: string; command: string; timeoutMs?: number; role?: 'keep-green' }
 
 /**
  * Who wrote this contract. 'harness' means a person authored it — a mission
@@ -126,7 +139,7 @@ export class ContractState {
     this.assertions = assertionTexts.map(a =>
       typeof a === 'string'
         ? { text: a, status: 'pending' as AssertionStatus }
-        : { text: a.text, command: a.command, timeoutMs: a.timeoutMs, status: 'pending' as AssertionStatus })
+        : { text: a.text, command: a.command, timeoutMs: a.timeoutMs, role: a.role, status: 'pending' as AssertionStatus })
     this.origin = origin
     this.active = true
     this.baseline = null
@@ -156,6 +169,17 @@ export class ContractState {
    */
   assertionAt(index: number): Assertion | null {
     return this.assertions[index] ?? null
+  }
+
+  /**
+   * The first assertion carrying `role`, or null when none does.
+   *
+   * By role rather than by index, for the reason `Assertion.role`'s doc gives:
+   * the keep-green assertion's index moves depending on whether the driver
+   * also dispatched a held-out gate at index 0.
+   */
+  byRole(role: string): Assertion | null {
+    return this.assertions.find(a => a.role === role) ?? null
   }
 
   /** Mark assertion at `index` as passed, optionally recording evidence. */
