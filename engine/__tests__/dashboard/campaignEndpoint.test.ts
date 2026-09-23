@@ -200,6 +200,42 @@ describe('GET /api/campaign', () => {
     expect(data.campaigns.map((c: any) => c.id)).toEqual(['c8'])
   })
 
+  // Review finding (fix round 1): readCampaignSummary's own try/catch only
+  // covers the state.json JSON.parse and each waves.jsonl line parse. Anything
+  // ELSE it throws — proposals present but not an array from a partial write,
+  // readFileSync(wavesPath) itself failing — used to escape to getCampaign's
+  // outer catch and wipe the ENTIRE response (every healthy campaign along
+  // with the broken one) down to { active: null, campaigns: [], error }.
+  it('a campaign whose proposals is not an array is skipped, not fatal to the whole response', async () => {
+    CYNCO_HOME = mkdtempSync(join(tmpdir(), 'cynco-campaign-badprops-'))
+    process.env.CYNCO_HOME = CYNCO_HOME
+    // proposals: {} — valid JSON, invalid shape. (state.proposals ?? []).filter(...)
+    // throws TypeError: state.proposals.filter is not a function.
+    writeCampaign(CYNCO_HOME, 'broken', { waveCount: 1, proposals: {} })
+    writeCampaign(CYNCO_HOME, 'c8', { waveCount: 1 })
+
+    const res = await authFetch(`${BASE}/api/campaign`)
+    expect(res.status).toBe(200)
+    const data = await res.json() as any
+    expect(data.error).toBeUndefined()
+    expect(data.campaigns.map((c: any) => c.id)).toEqual(['c8'])
+  })
+
+  it('a campaign whose waves.jsonl is a directory (not a file) is skipped, not fatal to the whole response', async () => {
+    CYNCO_HOME = mkdtempSync(join(tmpdir(), 'cynco-campaign-wavesdir-'))
+    process.env.CYNCO_HOME = CYNCO_HOME
+    writeCampaign(CYNCO_HOME, 'broken', { waveCount: 1 })
+    // readFileSync(wavesPath) throws EISDIR — a directory where waves.jsonl belongs.
+    mkdirSync(join(CYNCO_HOME, 'campaigns', 'broken', 'waves.jsonl'), { recursive: true })
+    writeCampaign(CYNCO_HOME, 'c8', { waveCount: 1 })
+
+    const res = await authFetch(`${BASE}/api/campaign`)
+    expect(res.status).toBe(200)
+    const data = await res.json() as any
+    expect(data.error).toBeUndefined()
+    expect(data.campaigns.map((c: any) => c.id)).toEqual(['c8'])
+  })
+
   it('requires a token like every other read route', async () => {
     CYNCO_HOME = mkdtempSync(join(tmpdir(), 'cynco-campaign-auth-'))
     process.env.CYNCO_HOME = CYNCO_HOME

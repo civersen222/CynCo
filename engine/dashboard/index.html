@@ -2260,8 +2260,9 @@ function fetchSessionState() {
         });
         (c.waves || []).slice(-5).forEach(function(w) {
           var d = document.createElement('div');
+          var verifiedLabel = w.verified === null ? '—' : (w.verified ? 'yes' : 'no');
           d.textContent = 'wave ' + w.wave + ': ' + (w.decision ? w.decision.kind + ' — ' + w.decision.why : '?') +
-            ' (verified ' + (w.verified === null ? 'null' : w.verified) + (w.posiwid ? ', POSIWID ' + w.posiwid.verdict : '') + ')';
+            ' (verified ' + verifiedLabel + (w.posiwid ? ', POSIWID ' + w.posiwid.verdict : '') + ')';
           entries.appendChild(d);
         });
         if (!entries.children.length) {

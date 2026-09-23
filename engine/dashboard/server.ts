@@ -803,8 +803,18 @@ window.__CYNCO_TOKEN = ${JSON.stringify(token)};
         .map(d => d.name)
       const campaigns: CampaignSummary[] = []
       for (const id of ids) {
-        const c = this.readCampaignSummary(id)
-        if (c) campaigns.push(c)
+        // Isolated per campaign: `readCampaignSummary` already catches a bad
+        // state.json parse and a bad waves.jsonl line, but anything else it
+        // throws (proposals present but not an array from a partial write,
+        // waves.jsonl being a directory, a permissions error on readFileSync)
+        // must not escape to the outer catch below and wipe every OTHER
+        // healthy campaign out of the response along with it.
+        try {
+          const c = this.readCampaignSummary(id)
+          if (c) campaigns.push(c)
+        } catch (e) {
+          console.error(`[dashboard] campaign ${id}: unreadable, skipping (${e instanceof Error ? e.message : String(e)})`)
+        }
       }
       // The campaign with a driver dispatched and running wins outright — it is
       // the one thing happening right now. Absent that, the env var the runner
