@@ -141,6 +141,17 @@ describe('calibrate', () => {
     expect(archiving.ran.filter(k => /archive/.test(k))).toHaveLength(1)
   })
 
+  // A supplied baseDir replaces the archive, so nothing else notices it is
+  // missing: the gate would run against an empty cwd and report a BASE that
+  // misses every line by absence — a perfect-looking calibration of nothing.
+  it('refuses a caller-supplied baseDir that does not exist, before running anything', async () => {
+    const fake = io({ perturbLog: baseLog, baselineExists: true, headerText: fullHeader })
+    fake.exists = (p) => p !== 'C:/tmp/gone'
+    const r = await calibrate(withPositive, fake, { baseDir: 'C:/tmp/gone' })
+    expect(r).toEqual({ ok: false, problems: ['provided baseDir does not exist: C:/tmp/gone'] })
+    expect(fake.ran).toEqual([])
+  })
+
   it('refuses when git archive of the BASE fails', async () => {
     const fake = io({ perturbLog: baseLog, baselineExists: true })
     fake.run = (cmd, args) => {

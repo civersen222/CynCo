@@ -25,6 +25,11 @@ export const defaultIo = {
 // does exactly that). Omit it and calibrate archives for itself, as the runner does.
 export async function calibrate(spec, io = defaultIo, { baseDir: providedBaseDir } = {}) {
   const baseDir = providedBaseDir ?? `C:/tmp/${spec.id}_base`
+  // A caller-supplied baseDir replaces the archive, so nothing else would
+  // notice it is missing: the gate would run against an empty cwd and report a
+  // BASE that misses every line by absence — a calibration that looks perfect
+  // and measured nothing.
+  if (providedBaseDir && !io.exists(providedBaseDir)) return { ok: false, problems: [`provided baseDir does not exist: ${providedBaseDir}`] }
   if (!providedBaseDir) {
     io.freshDir?.(baseDir)
     // git archive outside the repo — brief-authoring rule 14: never a worktree inside it

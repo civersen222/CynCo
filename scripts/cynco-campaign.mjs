@@ -230,9 +230,16 @@ export async function runWave(spec, state, io = defaultIo) {
   const gateSha256 = sha256(spec.gate)
   // The positive shim is part of the instrument (Rule 14): it decides whether
   // the gate was ever reachable, so moving it invalidates the calibration too.
-  const positiveMoved = Boolean(s.calibration && spec.positive) && sha256(spec.positive) !== s.calibration.positiveSha256
-  if (s.calibration && (gateSha256 !== s.calibration.gateSha256 || sha256(spec.perturb) !== s.calibration.perturbSha256 || positiveMoved)) {
-    return stopWave(spec, state, io, { wave, base, why: 'gate or perturb changed since calibration — re-run to recalibrate' })
+  // The refusal NAMES which of the three moved — the operator's next move is to
+  // look at that file, and "gate or perturb" sends them to the wrong one.
+  const moved = s.calibration
+    ? [['gate', gateSha256 !== s.calibration.gateSha256],
+       ['perturb', sha256(spec.perturb) !== s.calibration.perturbSha256],
+       ['positive shim', Boolean(spec.positive) && sha256(spec.positive) !== s.calibration.positiveSha256]]
+      .filter(([, changed]) => changed).map(([name]) => name)
+    : []
+  if (moved.length) {
+    return stopWave(spec, state, io, { wave, base, why: `${moved.join(' and ')} changed since calibration — re-run to recalibrate` })
   }
   const registry = authorityRegistry(s)
   const commander = registry.whoCommands('brief')?.component ?? 'generator'

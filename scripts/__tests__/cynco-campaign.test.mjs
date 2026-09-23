@@ -521,22 +521,34 @@ describe('runWave — the instrument must not move under the campaign', () => {
     notify: async () => true,
   })
 
-  it('stops when the gate sha moved since calibration', async () => {
+  // The refusal names the file the operator has to go and look at. "gate or
+  // perturb" sends them to the wrong one two times in three.
+  it('stops when the gate sha moved since calibration, and says it was the gate', async () => {
     const state = freshState()
     state.state.calibration.gateSha256 = 'not-the-gate-we-calibrated'
     const seen = { briefs: 0, dispatched: 0 }
     const rec = await runWave(spec, state, noDispatch(seen))
     expect(rec.decision.kind).toBe('stop')
-    expect(rec.decision.why).toMatch(/gate or perturb changed since calibration/)
+    expect(rec.decision.why).toBe('gate changed since calibration — re-run to recalibrate')
     expect(seen.dispatched).toBe(0)
     expect(state.state.waveCount).toBe(0)
   })
 
-  it('stops when the perturb sha moved since calibration', async () => {
+  it('stops when the perturb sha moved since calibration, and says it was the perturb', async () => {
     const state = freshState()
     state.state.calibration.perturbSha256 = 'moved'
     const rec = await runWave(spec, state, noDispatch({ briefs: 0, dispatched: 0 }))
     expect(rec.decision.kind).toBe('stop')
+    expect(rec.decision.why).toBe('perturb changed since calibration — re-run to recalibrate')
+  })
+
+  it('names every instrument that moved when more than one did', async () => {
+    const state = freshState()
+    state.state.calibration.gateSha256 = 'moved'
+    state.state.calibration.perturbSha256 = 'moved'
+    state.state.calibration.positiveSha256 = 'moved'
+    const rec = await runWave({ ...spec, positive: POSITIVE }, state, noDispatch({ briefs: 0, dispatched: 0 }))
+    expect(rec.decision.why).toBe('gate and perturb and positive shim changed since calibration — re-run to recalibrate')
   })
 
   // The positive shim is part of the instrument (Rule 14): it is what decided
@@ -548,7 +560,7 @@ describe('runWave — the instrument must not move under the campaign', () => {
     const seen = { briefs: 0, dispatched: 0 }
     const rec = await runWave({ ...spec, positive: POSITIVE }, state, noDispatch(seen))
     expect(rec.decision.kind).toBe('stop')
-    expect(rec.decision.why).toMatch(/gate or perturb changed since calibration/)
+    expect(rec.decision.why).toBe('positive shim changed since calibration — re-run to recalibrate')
     expect(seen.dispatched).toBe(0)
   })
 

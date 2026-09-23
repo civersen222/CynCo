@@ -107,6 +107,28 @@ describe('lintGate — rules with no fixture of their own', () => {
   it('refuses a network import in a shim, not only in the gate', () => {
     expect(lint({ positive: 'import requests\n' + src().positive }).problems[0]).toMatch(/the positive imports requests/)
   })
+  // A banned name reached through a LIST is the same import. `import os,
+  // socket` was invisible to the first regex, which only looked at the first
+  // name on the line.
+  it('refuses a banned module that arrives after a comma', () => {
+    expect(lint({ gate: 'import os, socket\n' + src().gate }).problems[0]).toMatch(/the gate imports socket/)
+    expect(lint({ gate: 'import json, urllib.request as u\n' + src().gate }).problems[0]).toMatch(/the gate imports urllib/)
+    expect(lint({ gate: 'import os, sys, json\n' + src().gate }).problems).toEqual([])
+  })
+  // A campaign id may carry a letter suffix (LINE_ID_RE allows `C\d+[a-z]?`).
+  // Uppercasing the whole id turned `c10b` into `C10B`, which no gate line can
+  // start with, so every line of a lettered campaign was refused.
+  it('accepts a lettered campaign id and names it in the gate form', () => {
+    const files = {
+      gate: 'CYNCO_GATE_REPO CYNCO_GATE_SKIP_PRIOR\ncheck("C10b.1.x", ok, d)\ncheck("C10b.9", ok, d)\nprint("GATE: PASS")\n',
+      perturb: '# EXPECT-FLIP: C10b.1\n# MUST-FAIL: C10b.9\nimport runpy\nos.environ["CYNCO_GATE_SKIP_PRIOR"] = "1"\nrunpy.run_path(GATE)\n',
+      positive: src().positive,
+    }
+    const at = (id) => lintGate({ campaignId: id, gatePath: 'g', perturbPath: 'p', positivePath: 'q', io: { readFile: (k) => files[{ g: 'gate', p: 'perturb', q: 'positive' }[k]] } })
+    expect(at('c10b').problems).toEqual([])
+    expect(at('C10b').problems).toEqual([])
+    expect(at('c11').problems[0]).toMatch(/line id "C10b\.1\.x" is not a C11\.<n> id/)
+  })
   it('reports a perturb with no header as a lint problem rather than throwing', () => {
     expect(lint({ perturb: 'import runpy\nos.environ["CYNCO_GATE_SKIP_PRIOR"]\nrunpy.run_path(GATE)\n' }).problems[0]).toMatch(/^lint: perturb header is missing a "# EXPECT-FLIP:" line/)
   })

@@ -17,8 +17,10 @@ import { parsePerturbHeader } from './cynco-gate-parse.mjs'
 export const LINE_ID_RE = /^C\d+[a-z]?\.\d+[a-z]?(\.[A-Za-z0-9_-]+)*$/
 
 // A gate must not reach the network: a bar that depends on a remote is not a
-// measurement of the repo, and it turns a refusal into a flake.
-const NETWORK_IMPORT = /^[ \t]*(?:import[ \t]+|from[ \t]+)(urllib|requests|socket|http\.client)\b/m
+// measurement of the repo, and it turns a refusal into a flake. The leading
+// `[\w., \t]*,[ \t]*` is what catches the banned name in a LIST — `import os,
+// socket` and `import json, urllib.request as u` are the same import.
+const NETWORK_IMPORT = /^[ \t]*(?:import|from)[ \t]+(?:[\w.]+(?:[ \t]+as[ \t]+\w+)?[ \t]*,[ \t]*)*(urllib|requests|socket|http\.client)\b/m
 
 const defaultIo = { readFile: (p) => readFileSync(p, 'utf8') }
 
@@ -26,6 +28,12 @@ const defaultIo = { readFile: (p) => readFileSync(p, 'utf8') }
  * Every rule below asks "does this file DO x", and a comment saying it does is
  * not doing it — a gate whose header explains that it reads CYNCO_GATE_REPO
  * while the path is hardcoded two lines down must still be refused.
+ *
+ * Quote tracking is LINE-SCOPED: each line starts outside any string, so a `#`
+ * inside a multi-line `"""docstring"""` truncates the rest of that one line.
+ * The only consequence is a false negative — a name that appears ONLY inside a
+ * docstring after a `#` goes unseen — which is not where a gate reads its
+ * environment or imports a module.
  */
 function stripComments(source) {
   return String(source ?? '').split(/\r?\n/).map(line => {
@@ -69,7 +77,13 @@ export function gateLineIds(gateSource) {
  */
 export function lintGate({ campaignId, gatePath, perturbPath, positivePath, io = defaultIo }) {
   const problems = []
-  const prefix = String(campaignId ?? '').toUpperCase()
+  // Only the leading `c` is uppercased, and the comparison is case-insensitive:
+  // a campaign id may carry a letter suffix (`c10b`, allowed by LINE_ID_RE's
+  // `C\d+[a-z]?`), and `toUpperCase()` turned that into `C10B`, which no gate
+  // line can ever start with.
+  const prefix = String(campaignId ?? '').replace(/^c/i, 'C')
+  const lower = prefix.toLowerCase()
+  const hasPrefix = (id) => id.toLowerCase().startsWith(lower + '.')
   const gateRaw = io.readFile(gatePath)
   const gate = stripComments(gateRaw)
   const lineIds = gateLineIds(gateRaw)
@@ -77,7 +91,7 @@ export function lintGate({ campaignId, gatePath, perturbPath, positivePath, io =
   // 1. Ids parse, carry this campaign's prefix, and are unique.
   if (lineIds.length === 0) problems.push('lint: no graded lines — the gate calls check("<id>", ...) for every fact it measures')
   for (const id of lineIds) {
-    if (!LINE_ID_RE.test(id) || !id.startsWith(prefix + '.')) problems.push(`lint: line id "${id}" is not a ${prefix}.<n> id`)
+    if (!LINE_ID_RE.test(id) || !hasPrefix(id)) problems.push(`lint: line id "${id}" is not a ${prefix}.<n> id`)
   }
   const seen = new Set()
   for (const id of lineIds) {
@@ -95,7 +109,8 @@ export function lintGate({ campaignId, gatePath, perturbPath, positivePath, io =
   // FRESH interpreter is a run-time property; it is not statically checkable
   // here, so calibrate() and the c<N>.9 line itself carry it.)
   const regressionId = `${prefix}.9`
-  if (!lineIds.some(id => id === regressionId || id.startsWith(regressionId + '.'))) {
+  const regressionLower = regressionId.toLowerCase()
+  if (!lineIds.some(id => id.toLowerCase() === regressionLower || id.toLowerCase().startsWith(regressionLower + '.'))) {
     problems.push(`lint: no prior-campaign regression line ${regressionId} — nothing would notice this campaign breaking the last one`)
   } else if (!gate.includes('CYNCO_GATE_SKIP_PRIOR')) {
     problems.push(`lint: the ${regressionId} regression line does not honour CYNCO_GATE_SKIP_PRIOR — the shims could not skip it and would recurse`)
