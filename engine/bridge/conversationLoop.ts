@@ -1055,7 +1055,15 @@ export class ConversationLoop {
       // BEFORE `unattendedActive` is cleared: this is the last instant at which
       // the queue belongs to a mission at all, and anything still in it never
       // reached the model.
-      this.dropOperatorQueueAtMissionEnd()
+      //
+      // Wrapped: `emit` can throw (a dashboard socket send, a listener that
+      // faults) and this call happens inside a `finally` that still has two
+      // more clears to run below it. An uncaught throw here would skip both
+      // — `unattendedActive` stuck `true` would queue a later note into a
+      // loop that is no longer running, and nothing would ever drain it — and
+      // would replace whatever error `runUserMessage` was already unwinding
+      // with this one. Logged, never swallowed silently.
+      try { this.dropOperatorQueueAtMissionEnd() } catch (e) { console.error('[loop] operator-queue drain failed: ' + (e as Error).message) }
       // Cleared beside `processing`, and for the same reason: left `true` it
       // would queue a note into a loop that is no longer running, and nothing
       // would ever drain it.

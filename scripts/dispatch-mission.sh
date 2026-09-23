@@ -116,6 +116,12 @@ LOCALCODE_EMBED_MODEL="${LOCALCODE_EMBED_MODEL:-nomic-embed-text}" \
 # LOCALCODE_MISSION_*: the dashboard's Mission panel (/api/mission) reads these
 # to show commits since baseline, marker sighting and budget consumption — the
 # same evidence the driver grades at close, visible while the run is live.
+#
+# CYNCO_CAMPAIGN_ID: passed through the same way — scripts/cynco-campaign.mjs's
+# defaultIo.dispatch sets it in the env this script is launched with, and it
+# must reach `bun engine/main.ts` explicitly rather than relying on shell
+# inheritance, or the 9161 dashboard's /api/campaign has no `active` campaign to
+# report between waves (nothing is inFlight once a wave's driver has exited).
 MISSION_BASE=$(git -C "$MISSION_CWD" rev-parse HEAD)
 echo "[dispatch] mission baseline $MISSION_BASE"
 if [ -n "${CYNCO_MISSION_INVARIANTS:-}" ]; then echo "[dispatch] invariants: $CYNCO_MISSION_INVARIANTS"; fi
@@ -128,6 +134,7 @@ LOCALCODE_MISSION_CWD="$MISSION_CWD" \
 LOCALCODE_MISSION_BASE="$MISSION_BASE" \
 LOCALCODE_MISSION_CHECK="${CHECK_CMD:-}" \
 CYNCO_BASH_TIMEOUT_MS="$CYNCO_BASH_TIMEOUT_MS" \
+CYNCO_CAMPAIGN_ID="${CYNCO_CAMPAIGN_ID:-}" \
   bun engine/main.ts > "$ENGINE_LOG" 2>&1 &
 
 echo "[dispatch] waiting for the model to load"

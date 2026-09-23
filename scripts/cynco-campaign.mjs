@@ -114,8 +114,12 @@ const repoRel = (abs) => relative(process.cwd(), abs).replace(/\\/g, '/')
 export const defaultIo = {
   writeBrief: (path, text, sidecar) => { writeFileSync(path, text, 'utf8'); writeFileSync(sidecarPath(path), JSON.stringify(sidecar, null, 2) + '\n'); return path },
   dispatch: async ({ spec, briefFile, invariants, timeoutS, pidFile, driverLog }) => {
+    // CYNCO_CAMPAIGN_ID: the only way the dispatched engine's own 9161 dashboard
+    // can name its campaign as `active` in /api/campaign between waves, when no
+    // campaign has a driver in flight (Phase 2c-ii). dispatch-mission.sh passes
+    // it through to `bun engine/main.ts` the same way it passes LOCALCODE_MISSION_*.
     const env = dispatchEnv(process.env, { LOCALCODE_MAX_ITERATIONS: String(spec.budget.iterations), CYNCO_BASH_TIMEOUT_MS: String(spec.budget.bashTimeoutMs),
-      CYNCO_MISSION_INVARIANTS: JSON.stringify(invariants), DRIVER_PID_FILE: pidFile, DRIVER_LOG: driverLog, CYNCO_SKIP_IDLE_ENGINE: '1' })
+      CYNCO_MISSION_INVARIANTS: JSON.stringify(invariants), DRIVER_PID_FILE: pidFile, DRIVER_LOG: driverLog, CYNCO_SKIP_IDLE_ENGINE: '1', CYNCO_CAMPAIGN_ID: spec.id })
     const r = spawnSync('bash', ['scripts/dispatch-mission.sh', briefFile, spec.marker, spec.repo, String(timeoutS), spec.keepGreen], { env, encoding: 'utf8', timeout: 900_000 })
     if (r.status !== 0) throw new Error(`dispatch failed (exit ${r.status}): ${(r.stdout + r.stderr).slice(-2000)}`)
     // dispatch-mission.sh prints the invariants it accepted and the driver log

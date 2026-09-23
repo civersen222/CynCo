@@ -727,6 +727,17 @@ describe('dispatchEnv', () => {
     const env = dispatchEnv({ PATH: '/usr/bin', CYNCO_NTFY_URL: 'http://n', CYNCO_NTFY_TOKEN: 'tk', CYNCO_NTFY_ALERT_TOPIC: 'cynco-alerts', GH_TOKEN: 'gh', GITHUB_TOKEN: 'gh2', CYNCO_GATE_REPO: 'C:/repo' }, { DRIVER_LOG: 'C:/tmp/d.log' })
     expect(env).toEqual({ PATH: '/usr/bin', CYNCO_GATE_REPO: 'C:/repo', DRIVER_LOG: 'C:/tmp/d.log' })
   })
+
+  // Phase 2c-ii: the 9161 dashboard's /api/campaign reads process.env.CYNCO_CAMPAIGN_ID
+  // as its fallback `active` campaign when nothing is inFlight — but only if the
+  // dispatched engine actually has that var. `defaultIo.dispatch` sets it in the
+  // `extra` it hands to dispatchEnv (extra always wins, so it cannot be stripped
+  // by the ntfy/GitHub filter above even if a caller's own env happened to carry
+  // an unrelated CYNCO_CAMPAIGN_ID already).
+  it('carries CYNCO_CAMPAIGN_ID through to the dispatched engine, extra winning over the base env', () => {
+    const env = dispatchEnv({ PATH: '/usr/bin', CYNCO_CAMPAIGN_ID: 'stale' }, { CYNCO_CAMPAIGN_ID: 'c8', DRIVER_LOG: 'C:/tmp/d.log' })
+    expect(env.CYNCO_CAMPAIGN_ID).toBe('c8')
+  })
 })
 
 // I2: the runner's OWN untracked briefs must not trip its dirty-tree refusal.
