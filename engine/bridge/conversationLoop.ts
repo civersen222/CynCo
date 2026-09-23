@@ -160,6 +160,17 @@ type Message = {
  */
 const RECENT_TOOL_WINDOW = 20
 
+/**
+ * How many operator notes a busy unattended mission will hold (Phase 2c-i).
+ *
+ * Five, not unbounded: the queue drains at an iteration boundary, and an
+ * operator who typed twenty lines while the model worked wants the last thing
+ * they said acted on, not the first. On overflow the OLDEST goes — and it goes
+ * loudly, on a `governance.alert`, because a note that vanishes without a word
+ * is the exact failure this whole path exists to end.
+ */
+const OPERATOR_NOTE_QUEUE_CAP = 5
+
 const READ_ONLY_TOOLS = ['Read', 'Grep', 'Glob', 'Ls', 'Git', 'ImageView']
 const SAFE_MODE_TOOLS = [...READ_ONLY_TOOLS, 'Bash']
 
@@ -292,6 +303,29 @@ export class ConversationLoop {
   private routedEditsThisCall = 0
   private abortController: AbortController | null = null
   private processing = false
+  /**
+   * The `unattended` flag of the message currently being processed.
+   *
+   * Read by the busy guard in `handleUserMessage`, which runs BEFORE
+   * `runUserMessage` has seen the new message's own opts — so this is
+   * deliberately the RUNNING message's flag, not the arriving one's. "Is
+   * anybody there to be told their message was dropped?" is a fact about the
+   * session that is busy, not about the note knocking on its door.
+   */
+  private unattendedActive = false
+  /**
+   * Operator notes sent to a busy unattended mission, awaiting the next
+   * iteration boundary. Bounded by OPERATOR_NOTE_QUEUE_CAP: an unbounded queue
+   * fed by a dashboard chat box is a way to hand the model a wall of stale
+   * instructions twenty minutes after they stopped being true.
+   *
+   * Deliberately NOT cleared when the mission ends. A note sent a second
+   * before the last iteration would otherwise be thrown away at the one moment
+   * it is most likely to matter; it survives instead, and goes in at the top of
+   * whatever model loop runs next. The ledger sees it as queued-but-undelivered
+   * until then, which is the honest reading.
+   */
+  private operatorQueue: Array<{ text: string; queuedAt: string }> = []
   // Per-task observation buffers for the reward labeler. Reset at task start,
   // consumed by finalizeTrajectory at task end.
   private taskTestObservations: TestObservation[] = []
@@ -983,6 +1017,21 @@ export class ConversationLoop {
    */
   async handleUserMessage(text: string, opts?: TaskOpts): Promise<void> {
     if (this.processing) {
+      // Phase 2c-i. The busy guard is the ONE place both callers meet: the
+      // mission driver on the bridge socket and the 9161 dashboard's chat box
+      // (main.ts routes `user.message` from both into this same loop). During
+      // an unattended mission the loop is busy for the entire run, so this
+      // return used to consume every note the operator typed — silently, with
+      // the dashboard showing their message as sent.
+      //
+      // An interactive session keeps the drop: there is a person at the
+      // terminal who can see the log line and send it again. Nobody is
+      // watching an unattended one, so its notes are queued for the next
+      // iteration boundary instead.
+      if (this.unattendedActive) {
+        this.queueOperatorNote(text)
+        return
+      }
       console.log('[loop] Already processing, ignoring message')
       return
     }
@@ -1000,12 +1049,83 @@ export class ConversationLoop {
       )
     } finally {
       this.processing = false
+      // Cleared beside `processing`, and for the same reason: left `true` it
+      // would queue a note into a loop that is no longer running, and nothing
+      // would ever drain it.
+      this.unattendedActive = false
       this.abortController = null
     }
   }
 
+  /**
+   * Hold one operator note until the next iteration boundary, and say so.
+   *
+   * Two frames, both required. The `governance.alert` is the ACKNOWLEDGEMENT
+   * on the wire — the note landed somewhere rather than nowhere — and
+   * `mission.operator_note` is the record, keyed by `queuedAt` so the ledger
+   * can pair it with the delivery frame that follows. `low`, per ruling 8, so
+   * it cannot halt the daemon's one-shot path; note that the 9161 dashboard
+   * currently renders only `critical`/`high` alerts in its feed, so what the
+   * operator SEES is the `[operator note delivered]` token at the boundary.
+   *
+   * Never injected here. The model call in flight has already been built and
+   * sent; splicing a message into `this.messages` underneath it would either be
+   * ignored or corrupt the turn. The boundary is the only safe seam.
+   */
+  private queueOperatorNote(text: string): void {
+    const queuedAt = new Date().toISOString()
+    if (this.operatorQueue.length >= OPERATOR_NOTE_QUEUE_CAP) {
+      const dropped = this.operatorQueue.shift()
+      const shown = (dropped?.text ?? '').slice(0, 120)
+      console.log(`[operator] queue full (${OPERATOR_NOTE_QUEUE_CAP}) — dropped the oldest note: "${shown}"`)
+      this.emit({
+        type: 'governance.alert',
+        severity: 'low',
+        source: 'operator',
+        message: `[operator] queue full (${OPERATOR_NOTE_QUEUE_CAP} notes) — dropped the oldest note unread: "${shown}"`,
+      })
+    }
+    this.operatorQueue.push({ text, queuedAt })
+    console.log(`[operator] note queued for the next iteration: "${text.slice(0, 120)}"`)
+    this.emit({
+      type: 'governance.alert',
+      severity: 'low',
+      source: 'operator',
+      message: '[operator] note received while the mission is working — queued for the next iteration',
+    })
+    this.emit({ type: 'mission.operator_note', text, queuedAt, deliveredAtIteration: null })
+  }
+
+  /**
+   * Hand every queued operator note to the model, as ONE user message.
+   *
+   * Called at the top of a `runModelLoop` iteration, before the model call —
+   * the only point at which `this.messages` is not being read by a request in
+   * flight. One message rather than one per note so a burst of five does not
+   * cost five turns of context framing, and in the order they were sent.
+   *
+   * The queue is emptied BEFORE anything is emitted, so there is no path on
+   * which a note is delivered twice.
+   */
+  private deliverOperatorNotes(iteration: number): void {
+    if (this.operatorQueue.length === 0) return
+    const batch = this.operatorQueue.splice(0, this.operatorQueue.length)
+    const body = batch.map(n => n.text).join('\n')
+    this.addMessage({ role: 'user', content: [{ type: 'text', text: `[operator]\n${body}` }] })
+    console.log(`[operator] delivered ${batch.length} note(s) at iteration ${iteration}`)
+    for (const n of batch) {
+      this.emit({ type: 'mission.operator_note', text: n.text, queuedAt: n.queuedAt, deliveredAtIteration: iteration })
+    }
+    // The transcript, not just the log: an operator watching the dashboard
+    // stream needs to see the moment their note went in.
+    this.emit({ type: 'stream.token', text: '\n[operator note delivered]\n', messageId: '' })
+  }
+
   private async runUserMessage(text: string, opts?: TaskOpts): Promise<void> {
     this.processing = true
+    // Set with `processing`, and only ever read by the busy guard above. See
+    // the field for why it is the RUNNING message's flag.
+    this.unattendedActive = opts?.unattended === true
     console.log(`[loop] Handling message: "${text.slice(0, 80)}..."`)
 
     await this.ensureSkillsLoaded()
@@ -2193,6 +2313,15 @@ export class ConversationLoop {
     let evasionNudges = 0
 
     for (let i = 0; i < maxIterations; i++) {
+      // ── Operator notes (Phase 2c-i) ──
+      // FIRST statement of the iteration, before the stuck-loop tiers and
+      // before the model call, because this is the only instant at which
+      // `this.messages` is safe to splice: no request is in flight, and the
+      // next one has not been built. A note queued by the dashboard while the
+      // last model call ran is handed over here, exactly once, and the queue
+      // is empty afterwards.
+      this.deliverOperatorNotes(i)
+
       // ── Stuck loop escape: escalating intervention ──
       const stuckCount = this.governance.getStuckCount()
 

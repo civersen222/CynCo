@@ -138,6 +138,14 @@ export function createMissionCollector(now = () => Date.now()) {
     // F33: the join key between this ledger and ~/.cynco/rewards/*.reward.json.
     // Both datasets describe the same run and neither could name the other.
     taskIds: [],
+    // Task 7 (2c-i): every operator note sent to this mission while it was
+    // running, in the order it was sent. ONE entry per note, not one per
+    // frame: the engine emits the note twice — queued, then delivered — and
+    // the delivery frame UPDATES the queued entry it names through `queuedAt`.
+    // A note whose `deliveredAtIteration` is still null at the end of the run
+    // is a real finding (the mission ended before the queue drained), which is
+    // why undelivered notes stay on the row rather than being filtered out.
+    operatorNotes: [],
 
     ingest(m) {
       const t = now()
@@ -220,6 +228,29 @@ export function createMissionCollector(now = () => Date.now()) {
             widenToolSet: m.widenToolSet ?? null,
           })
           break
+        case 'mission.operator_note': {
+          // `queuedAt` is the note's identity, not its text — two notes can
+          // carry the same words, and matching on text would write the
+          // second one's delivery onto the first one's row.
+          const queuedAt = typeof m.queuedAt === 'string' ? m.queuedAt : null
+          const existing = queuedAt === null ? undefined : this.operatorNotes.find(n => n.queuedAt === queuedAt)
+          if (existing) {
+            // A delivery frame. Only ever fills the field in — a later frame
+            // must not blank an iteration index already recorded.
+            if (typeof m.deliveredAtIteration === 'number') existing.deliveredAtIteration = m.deliveredAtIteration
+          } else {
+            // Either the queued frame, or a delivery whose queued frame this
+            // collector never saw (attached mid-mission). Both are the note
+            // happening; dropping the second would under-count the run.
+            this.operatorNotes.push({
+              t,
+              text: typeof m.text === 'string' ? m.text : '',
+              queuedAt,
+              deliveredAtIteration: typeof m.deliveredAtIteration === 'number' ? m.deliveredAtIteration : null,
+            })
+          }
+          break
+        }
         case 'toolcall.transport':
           this.toolTransport.push({
             t,
@@ -832,6 +863,10 @@ export function buildMissionRecord(collector, meta) {
     turns: collector.turns,
     s5Decisions: collector.s5Decisions,
     controlSignals: collector.controlSignals,
+    // Task 7 (2c-i): operator notes sent to the running mission — see the
+    // collector. `[]` and "the engine never emitted one" are the same fact
+    // here (nobody typed anything), so this is never null.
+    operatorNotes: collector.operatorNotes ?? [],
     toolTransport: collector.toolTransport,
     toolStats: collector.toolStats,
     // Measured token totals (session.tokenStats) or null — see the collector.

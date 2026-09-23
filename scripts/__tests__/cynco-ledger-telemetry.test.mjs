@@ -235,3 +235,66 @@ describe('brain telemetry', () => {
     expect(rec.brainStats).toBeNull()
   })
 })
+
+// Task 7 (2c-i): operator notes sent to a RUNNING unattended mission
+// (engine/bridge/protocol.ts MissionOperatorNoteEvent). Two frames arrive per
+// note — queued, then delivered — and the row must carry ONE entry showing
+// both, or the queue latency the pair exists to measure is unreadable.
+describe('operator notes', () => {
+  const meta = { missionId: 'm', briefFile: 'b', marker: 'x', cwd: '.', dispatchedAt: 't', durationS: 1, outcome: 'landed' }
+
+  it('pairs the delivery frame with its queued entry by queuedAt', () => {
+    const c = createMissionCollector()
+    c.ingest({ type: 'mission.operator_note', text: 'stop editing app.py', queuedAt: '2026-09-22T10:00:00.000Z', deliveredAtIteration: null })
+    c.ingest({ type: 'mission.operator_note', text: 'and run the suite', queuedAt: '2026-09-22T10:00:01.000Z', deliveredAtIteration: null })
+    c.ingest({ type: 'mission.operator_note', text: 'stop editing app.py', queuedAt: '2026-09-22T10:00:00.000Z', deliveredAtIteration: 7 })
+    c.ingest({ type: 'mission.operator_note', text: 'and run the suite', queuedAt: '2026-09-22T10:00:01.000Z', deliveredAtIteration: 7 })
+
+    const rec = buildMissionRecord(c, meta)
+    expect(rec.operatorNotes).toHaveLength(2)
+    expect(rec.operatorNotes[0].text).toBe('stop editing app.py')
+    expect(rec.operatorNotes[0].queuedAt).toBe('2026-09-22T10:00:00.000Z')
+    expect(rec.operatorNotes[0].deliveredAtIteration).toBe(7)
+    expect(rec.operatorNotes[1].deliveredAtIteration).toBe(7)
+  })
+
+  // Two notes can carry the same words. `queuedAt` is the key precisely so the
+  // second one's delivery cannot be written onto the first one's row.
+  it('does not collapse two notes with identical text', () => {
+    const c = createMissionCollector()
+    c.ingest({ type: 'mission.operator_note', text: 'stop', queuedAt: '2026-09-22T10:00:00.000Z', deliveredAtIteration: null })
+    c.ingest({ type: 'mission.operator_note', text: 'stop', queuedAt: '2026-09-22T10:00:05.000Z', deliveredAtIteration: null })
+    c.ingest({ type: 'mission.operator_note', text: 'stop', queuedAt: '2026-09-22T10:00:05.000Z', deliveredAtIteration: 3 })
+
+    const rec = buildMissionRecord(c, meta)
+    expect(rec.operatorNotes).toHaveLength(2)
+    expect(rec.operatorNotes[0].deliveredAtIteration).toBeNull()
+    expect(rec.operatorNotes[1].deliveredAtIteration).toBe(3)
+  })
+
+  // A note still in the queue when the mission ended is the interesting case:
+  // it must stay on the row as undelivered rather than disappearing.
+  it('keeps a queued-but-never-delivered note with deliveredAtIteration null', () => {
+    const c = createMissionCollector()
+    c.ingest({ type: 'mission.operator_note', text: 'too late', queuedAt: '2026-09-22T10:00:00.000Z', deliveredAtIteration: null })
+    const rec = buildMissionRecord(c, meta)
+    expect(rec.operatorNotes).toEqual([
+      { t: expect.any(Number), text: 'too late', queuedAt: '2026-09-22T10:00:00.000Z', deliveredAtIteration: null },
+    ])
+  })
+
+  // A collector attached mid-mission sees the delivery and never saw the
+  // queueing. The note still happened; recording nothing would under-count it.
+  it('records a delivery frame whose queued frame it never saw', () => {
+    const c = createMissionCollector()
+    c.ingest({ type: 'mission.operator_note', text: 'late join', queuedAt: '2026-09-22T10:00:00.000Z', deliveredAtIteration: 12 })
+    const rec = buildMissionRecord(c, meta)
+    expect(rec.operatorNotes).toHaveLength(1)
+    expect(rec.operatorNotes[0].deliveredAtIteration).toBe(12)
+  })
+
+  it('is an empty array when nobody sent one — never null', () => {
+    const rec = buildMissionRecord(createMissionCollector(), meta)
+    expect(rec.operatorNotes).toEqual([])
+  })
+})

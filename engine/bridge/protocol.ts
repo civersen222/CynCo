@@ -399,6 +399,30 @@ export type GovernanceAlertEvent = {
   source: string
 }
 
+/**
+ * Phase 2c-i: one operator note sent to a RUNNING unattended mission.
+ *
+ * Emitted twice for the same note, and the pair is the point. Once when it is
+ * queued (`deliveredAtIteration: null`) — the acknowledgement that the busy
+ * loop heard it at all — and once when it is actually handed to the model at
+ * the top of a `runModelLoop` iteration, carrying that iteration's index. The
+ * gap between the two frames is the operator's latency: how long their note
+ * waited behind the model call that was already in flight.
+ *
+ * `queuedAt` is the note's identity. It is what lets the delivery frame name
+ * the queued entry it belongs to (scripts/cynco-ledger.mjs `operatorNotes`)
+ * rather than the ledger having to match on text — two notes with the same
+ * words are two notes.
+ */
+export type MissionOperatorNoteEvent = {
+  type: 'mission.operator_note'
+  text: string
+  /** ISO timestamp, and the note's key. */
+  queuedAt: string
+  /** null on the queued frame; the `runModelLoop` iteration index on delivery. */
+  deliveredAtIteration: number | null
+}
+
 export type SummaryInjectedEvent = {
   type: 'summary.injected'
   toolsUsed: string[]
@@ -603,6 +627,7 @@ export type EngineEvent =
   | TrajectoryTaskStartedEvent
   | GovernanceRecommendationEvent
   | GovernanceAlertEvent
+  | MissionOperatorNoteEvent
   | SummaryInjectedEvent
   | SubAgentSpawnedEvent
   | SubAgentToolEvent

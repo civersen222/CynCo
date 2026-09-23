@@ -79,6 +79,26 @@ decisions still recorded here).
     { "t": 1783550000000, "temperatureAdjust": 0, "temperature": 0.7,
       "bestOfNBudget": 1, "widenToolSet": false }
   ],
+  // Task 7 (2c-i): the notes an operator typed at the 9161 dashboard WHILE the
+  // mission was running. One entry per note, not one per frame: the engine
+  // emits `mission.operator_note` twice — queued, then delivered — and the
+  // delivery frame updates the entry it names through `queuedAt` (the note's
+  // key; two notes can carry identical text).
+  //
+  // `deliveredAtIteration` is the `runModelLoop` iteration at which the note
+  // was actually handed to the model, and `t` is when it was queued: the gap
+  // between them is the operator's latency behind the model call that was
+  // already in flight. Still null at the end of the run = the mission finished
+  // before the queue drained, which is a finding and is kept, not filtered.
+  //
+  // Only an UNATTENDED run can produce these. An interactive session keeps the
+  // old drop-and-log — there is a person at the terminal who can resend — so
+  // `[]` there is correct, not a gap. Cap is 5 notes in flight; an overflow
+  // drops the OLDEST and says so on a `governance.alert` (source `operator`).
+  "operatorNotes": [
+    { "t": 1783550000000, "text": "stop editing app.py", "queuedAt": "2026-09-22T10:00:00.000Z",
+      "deliveredAtIteration": 41 }
+  ],
   "toolTransport": [        // one per toolcall.transport event (P1.8 repair ladder); absent in pre-P1.8 records
     { "t": 1783550000000, "stage": "repaired", "toolName": "Read", "detail": "..." }
   ],

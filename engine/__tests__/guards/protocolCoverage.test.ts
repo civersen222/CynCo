@@ -23,6 +23,16 @@ const NON_TUI_CONSUMERS: Record<string, string> = {
     'dashboard (engine/dashboard/index.html) and the ledger collector ' +
     '(scripts/cynco-ledger.mjs controlSignals). Per-iteration temperature/best-of-N ' +
     'numbers; the TUI has no surface for them and rendering them would only add noise.',
+  'mission.operator_note':
+    'Phase 2c-i operator notes, consumed by the ledger collector ' +
+    '(scripts/cynco-ledger.mjs operatorNotes) — it is the queued/delivered ' +
+    'TIMESTAMP pair, i.e. how long a note waited behind the model call already ' +
+    'in flight, which only the ledger reads. A TUI user is never in the queued ' +
+    'case at all: their session is interactive, so a message to a busy loop is ' +
+    'still dropped and logged, exactly as before. And when a note IS delivered, ' +
+    'the loop emits a `stream.token` carrying "[operator note delivered]", so ' +
+    'both the TUI and the 9161 dashboard already show the moment in the ' +
+    'transcript without parsing this frame.',
 }
 
 /** TUI event types handled bespoke in the receiver (app.py), not via the dispatch table. */
