@@ -253,6 +253,55 @@ describe('GET /api/campaign', () => {
     }
   })
 
+  it('reduces a dispatched-but-not-yet-checked authoring record (no lastCheck key) to lastCheck: null', async () => {
+    // scripts/cynco-gate-author.mjs writes exactly this shape at dispatch
+    // time (authorCampaign, before checkStaged has run): missionId null (not
+    // yet known), verified null, fault null, and no `lastCheck` key at all —
+    // the key is only added once the check runs. reduceAuthoring must not
+    // synthesize a lastCheck out of nothing for this in-flight state.
+    CYNCO_HOME = mkdtempSync(join(tmpdir(), 'cynco-campaign-authoring-inflight-'))
+    process.env.CYNCO_HOME = CYNCO_HOME
+    writeCampaign(CYNCO_HOME, 'c9', {
+      waveCount: 0,
+      authoring: {
+        c9: {
+          stagingDir: 'C:/tmp/c9-author-staging', baseDir: 'C:/civkings',
+          briefFile: 'C:/tmp/c9-author-brief.txt', attempts: 1,
+          dispatchedAt: '2026-09-22T00:00:00.000Z', missionId: null, verified: null, fault: null,
+        },
+      },
+    })
+
+    const res = await authFetch(`${BASE}/api/campaign`)
+    expect(res.status).toBe(200)
+    const c9 = (await res.json() as any).campaigns.find((c: any) => c.id === 'c9')
+    expect(c9.authoring).toEqual({ missionId: null, verified: null, sealedAt: null, lastCheck: null })
+  })
+
+  it('a malformed lastCheck.problems (not an array) reduces to problems: []', async () => {
+    CYNCO_HOME = mkdtempSync(join(tmpdir(), 'cynco-campaign-authoring-badproblems-'))
+    process.env.CYNCO_HOME = CYNCO_HOME
+    writeCampaign(CYNCO_HOME, 'c9', {
+      waveCount: 0,
+      authoring: {
+        c9: {
+          missionId: 'mission-c9-author-1', verified: false, sealedAt: null,
+          lastCheck: { at: '2026-09-22T00:00:00.000Z', ok: false, problems: 'not an array', lineCount: 0 },
+        },
+      },
+    })
+
+    const res = await authFetch(`${BASE}/api/campaign`)
+    expect(res.status).toBe(200)
+    const c9 = (await res.json() as any).campaigns.find((c: any) => c.id === 'c9')
+    expect(c9.authoring).toEqual({
+      missionId: 'mission-c9-author-1',
+      verified: false,
+      sealedAt: null,
+      lastCheck: { ok: false, problems: [] },
+    })
+  })
+
   it('falls back to state.lastFails ids when the last wave record carries no gate.fails', async () => {
     // A wave recorded before the gate lines were kept (or a harness fault that
     // wrote no fails) must still show something. Ids are worse than lines, but

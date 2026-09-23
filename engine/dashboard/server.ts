@@ -282,9 +282,11 @@ interface CampaignSummary {
     sealedAt: string | null
     lastCheck: { ok: boolean; problems: string[] } | null
   } | null
-  /** state.gateAuthorAuthority — the campaign's local copy of the seat's
-   *  authority, not the cross-campaign seat value (that lives on the roadmap
-   *  proposal itself, not per campaign). */
+  /** This campaign's own `state.gateAuthorAuthority` — not the cross-campaign
+   *  seat value. That value is `gateAuthorAuthorityAcrossCampaigns`
+   *  (scripts/cynco-gate-author.mjs): the max of every campaign's own
+   *  `gateAuthorAuthority`, computed fresh from every campaign's state.json
+   *  rather than stored on any one of them. */
   gateAuthorAuthority: number
 }
 
