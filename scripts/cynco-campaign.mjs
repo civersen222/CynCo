@@ -692,16 +692,31 @@ export async function main(argv, deps = {}) {
     const id = decisionName.slice('gate/'.length)
     if (!id) { console.error('[campaign] --approve-proposal gate/<id> needs a campaign id'); return 2 }
     const state = new CampaignState(join(cyncoHome(), 'campaigns', id)).load()
-    const r = applyProposalDecision(state.state, decisionName, approve)
-    if (!r.ok) { console.error(r.why); return 2 }
-    state.save()
-    console.log(`[campaign] proposal ${decisionName} ${r.status}`)
-    if (!approve) return 0
+    if (!approve) {
+      const r = applyProposalDecision(state.state, decisionName, false)
+      if (!r.ok) { console.error(r.why); return 2 }
+      state.save(); console.log(`[campaign] proposal ${decisionName} ${r.status}`); return 0
+    }
+    // SEAL FIRST, decide after. Recording the approval up front made a refused
+    // seal a dead end: the proposal was no longer `pending`, so there was
+    // nothing left for the operator to approve once the draft was fixed, and
+    // the roadmap said `sealed` for a campaign that had not been. Nothing
+    // about the decision is lost by taking it second — sealGate writes nothing
+    // visible until every check has passed.
+    if (!(state.state.proposals ?? []).some(p => p.name === decisionName && p.status === 'pending')) {
+      console.error(`no pending proposal ${decisionName}`); return 2
+    }
     const author = await loadAuthor()
     const roadmap = loadRoadmap(ROADMAP_PATH)
     const sealed = await author.sealGate({ id, state, roadmap, io: authorIo(author) })
-    if (!sealed.ok) { console.error(`[campaign] SEAL REFUSED for ${id}:\n  ${sealed.problems.join('\n  ')}`); return 2 }
-    console.log(`[campaign] ${id} sealed: ${sealed.specPath} written, triple copied, roadmap line sealed`)
+    if (!sealed.ok) {
+      console.error(`[campaign] SEAL REFUSED for ${id} — the proposal stays pending and the roadmap line stays proposed:\n  ${sealed.problems.join('\n  ')}`)
+      return 2
+    }
+    const r = applyProposalDecision(state.state, decisionName, true)
+    if (!r.ok) { console.error(r.why); return 2 }
+    state.save()
+    console.log(`[campaign] ${id} sealed: ${sealed.specPath} written, triple copied, roadmap line sealed; proposal ${decisionName} ${r.status}`)
     return 0
   }
 

@@ -1090,12 +1090,12 @@ describe('main routes the authoring verbs before it loads a campaign spec', () =
   // The whole point of the routing: `<id>.campaign.json` is what --author
   // PRODUCES, so requiring it here would make the verb that writes a spec
   // depend on the spec already existing.
-  const stub = () => {
+  const stub = (seal = { ok: true, problems: [], specPath: 'docs/civkings-redesign-briefs/c9.campaign.json' }) => {
     const calls = []
     return { calls, authorModule: {
       defaultAuthorIo: (helpers) => ({ helpers }),
       authorMain: async (argv, io) => { calls.push({ verb: argv[0], argv, io }); return 0 },
-      sealGate: async (args) => { calls.push({ verb: 'seal', args }); return { ok: true, problems: [], specPath: 'docs/civkings-redesign-briefs/c9.campaign.json' } },
+      sealGate: async (args) => { calls.push({ verb: 'seal', args }); return seal },
     } }
   }
 
@@ -1127,7 +1127,29 @@ describe('main routes the authoring verbs before it loads a campaign spec', () =
     expect(s.calls[0].verb).toBe('--check')
   })
 
-  it('--approve-proposal gate/<id> decides, then seals', async () => {
+  // A refused seal used to be a dead end: the approval was already recorded, so
+  // there was nothing left to approve once the draft was fixed.
+  it('a refused seal leaves the proposal pending and records no decision', async () => {
+    const dir = join(mkdtempSync(join(tmpdir(), 'home-')), '.cynco')
+    const prev = process.env.CYNCO_HOME
+    process.env.CYNCO_HOME = dir
+    try {
+      const state = new CampaignState(join(dir, 'campaigns', 'c9')).load()
+      state.state.proposals = [{ type: 'Code', name: 'gate/c9', proposedAt: 't1', status: 'pending' }]
+      state.save()
+      const s = stub({ ok: false, problems: ['brief-visible text names the sealed instrument "gate_c9.py"'] })
+      expect(await main(['--approve-proposal', 'gate/c9'], { authorModule: s.authorModule })).toBe(2)
+      const saved = JSON.parse(readFileSync(join(dir, 'campaigns', 'c9', 'state.json'), 'utf8'))
+      expect(saved.proposals[0].status).toBe('pending')
+      expect(saved.proposals[0].decidedBy).toBeUndefined()
+      expect(saved.proposals[0].decidedAt).toBeUndefined()
+      expect(s.calls.map(c => c.verb)).toEqual(['seal'])
+    } finally {
+      if (prev === undefined) delete process.env.CYNCO_HOME; else process.env.CYNCO_HOME = prev
+    }
+  })
+
+  it('--approve-proposal gate/<id> seals, then decides', async () => {
     const dir = join(mkdtempSync(join(tmpdir(), 'home-')), '.cynco')
     const prev = process.env.CYNCO_HOME
     process.env.CYNCO_HOME = dir

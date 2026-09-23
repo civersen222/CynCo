@@ -37,7 +37,11 @@ const GATE_SRC = [
   '    print(f"{name}: {\'PASS\' if cond else \'FAIL\'} {detail}")',
   ...IDS.filter(i => i !== 'C9.9').map(i => `check(${JSON.stringify(i)}, False, "x")`),
   'if not os.environ.get("CYNCO_GATE_SKIP_PRIOR"):',
-  '    r = subprocess.run([sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "gate_c8.py")])',
+  // the SIBLING form the sealed gates use — gate_c8.py resolves gate_c7.py the
+  // same way, which is why the staging tree has to mirror the sealed one
+  '    prior = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "c8", "gate_c8.py")',
+  '    env = {k: v for k, v in os.environ.items() if k != "CYNCO_GATE_SKIP_PRIOR"}',
+  '    r = subprocess.run([sys.executable, prior], cwd=REPO, env=env, capture_output=True, text=True, timeout=3600)',
   '    check("C9.9", r.returncode == 0, "0 prior-campaign regressions")',
   'print("GATE: PASS" if not FAILS else f"GATE: MISS ({len(FAILS)} fails)")',
 ].join('\n')
@@ -83,7 +87,7 @@ const norm = (p) => String(p).replace(/\\/g, '/')
 
 function makeIo({ home, files = {}, baseLog = BASE_LOG, perturbLog = PERTURB_LOG, positiveLog = POSITIVE_LOG, row = { missionId: 'c9-author-1', verified: true }, over = {} } = {}) {
   const disk = { ...files }
-  const dispatched = [], logs = [], ran = [], copied = []
+  const dispatched = [], logs = [], ran = [], copied = [], renamed = []
   const io = {
     mkdir: (p) => { disk[norm(p) + '/'] = '' },
     run: (cmd, args, opts) => {
@@ -95,10 +99,37 @@ function makeIo({ home, files = {}, baseLog = BASE_LOG, perturbLog = PERTURB_LOG
       if (/pytest/.test(k)) return { status: 1, stdout: 'FAILED gilded/tests/a.py::t1 - x\n', stderr: '' }
       return { status: 0, stdout: '', stderr: '' }
     },
-    exists: (p) => norm(p) in disk,
+    // existsSync answers for directories too, and sealGate's reseal branch
+    // turns on exactly that question.
+    exists: (p) => { const k = norm(p); return k in disk || Object.keys(disk).some(x => x.startsWith(k + '/')) },
     readFile: (p) => { const k = norm(p); if (k in disk) return disk[k]; throw new Error(`ENOENT ${p}`) },
     writeFile: (p, s) => { disk[norm(p)] = s },
     copy: (src, dst) => { copied.push([norm(src), norm(dst)]); disk[norm(dst)] = io.readFile(src) },
+    // One level of children, derived from the fake disk's keys, the way
+    // readdirSync answers: names only, directories included, absent → [].
+    listDir: (p) => {
+      const pre = norm(p).replace(/\/$/, '') + '/'
+      const names = new Set()
+      for (const k of Object.keys(disk)) {
+        if (!k.startsWith(pre) || k === pre) continue
+        const rest = k.slice(pre.length).replace(/\/$/, '')
+        if (rest) names.add(rest.split('/')[0])
+      }
+      return [...names]
+    },
+    rename: (src, dst) => {
+      const pre = norm(src).replace(/\/$/, '')
+      for (const k of Object.keys(disk)) {
+        if (k !== pre && !k.startsWith(pre + '/')) continue
+        disk[norm(dst) + k.slice(pre.length)] = disk[k]
+        delete disk[k]
+      }
+      renamed.push([pre, norm(dst)])
+    },
+    removeDir: (p) => {
+      const pre = norm(p).replace(/\/$/, '')
+      for (const k of Object.keys(disk)) if (k === pre || k.startsWith(pre + '/')) delete disk[k]
+    },
     sha256: (p) => createHash('sha256').update(io.readFile(p)).digest('hex').slice(0, 16),
     freshDir: (p) => { disk[norm(p) + '/'] = ''; disk[norm(p)] = '' },
     appendLog: (t) => logs.push(t),
@@ -123,7 +154,7 @@ function makeIo({ home, files = {}, baseLog = BASE_LOG, perturbLog = PERTURB_LOG
     home,
     ...over,
   }
-  return { io, disk, dispatched, logs, ran, copied }
+  return { io, disk, dispatched, logs, ran, copied, renamed }
 }
 
 /** A staging dir whose four files are already on the fake disk. */
@@ -167,22 +198,85 @@ describe('staging paths', () => {
   })
 })
 
+/** A sealed tree with three finished campaigns and the debris a real one has. */
+const SEALED_TREE = (home) => ({
+  [`${home}/heldout/civkings-redesign/c6/gate_c6.py`]: '# gate_c6\n',
+  [`${home}/heldout/civkings-redesign/c6/perturb_c6.py`]: '# perturb_c6\n',
+  [`${home}/heldout/civkings-redesign/c6/positive_c6.py`]: '# positive_c6\n',
+  [`${home}/heldout/civkings-redesign/c6/suite_baseline_36fddfd.txt`]: 'FAILED a\n',
+  [`${home}/heldout/civkings-redesign/c7/gate_c7.py`]: '# gate_c7\n',
+  [`${home}/heldout/civkings-redesign/c7/perturb_c7.py`]: '# perturb_c7\n',
+  [`${home}/heldout/civkings-redesign/c8/gate_c8.py`]: '# gate_c8\n',
+  [`${home}/heldout/civkings-redesign/c8/perturb_c8.py`]: '# perturb_c8\n',
+  [`${home}/heldout/civkings-redesign/c8/suite_baseline_1d03308.txt`]: 'FAILED b\n',
+  [`${home}/heldout/civkings-redesign/c8/__pycache__/gate_c8.cpython-312.pyc`]: 'binary',
+})
+
 describe('prepareStaging', () => {
-  it('git-inits an absent staging dir, archives the BASE, and copies the previous gate in beside it', () => {
-    const { io, ran, disk } = makeIo({ home, files: { [`${home}/heldout/civkings-redesign/c8/gate_c8.py`]: '# gate_c8\n' } })
-    const r = prepareStaging({ id: ID, base: LINE.base, repo: 'C:/Users/civer/civkings', prevId: 'c8', io })
+  it('git-inits an absent staging dir, pins an identity, and archives the BASE', () => {
+    const { io, ran } = makeIo({ home })
+    const r = prepareStaging({ id: ID, base: LINE.base, repo: 'C:/Users/civer/civkings', io })
     expect(norm(r.stagingDir)).toBe(`${home}/authoring/c9`)
     expect(norm(r.baseDir)).toBe('C:/tmp/c9_author_base')
     expect(ran.some(k => k.startsWith('git init'))).toBe(true)
     expect(ran.some(k => /archive/.test(k) && k.includes(LINE.base))).toBe(true)
-    expect(disk[`${home}/authoring/c9/gate_c8.py`]).toBe('# gate_c8\n')
   })
+
+  // A repo with no identity refuses every commit, and the mission is ORDERED
+  // to commit after each cut. dispatch-mission.sh runs git in the same tree
+  // under `set -e`, so this is fatal, not cosmetic.
+  it('pins user.name and user.email on the staging repo', () => {
+    const { io, ran } = makeIo({ home })
+    prepareStaging({ id: ID, base: LINE.base, repo: 'C:/r', io })
+    expect(ran).toContain(`git -C ${home}/authoring/c9 config user.name cynco-author`)
+    expect(ran).toContain(`git -C ${home}/authoring/c9 config user.email cynco@localhost`)
+  })
+
   it('does not re-init a staging dir that already has a .git', () => {
     const { stagingDir, files } = staged(home)
     const { io, ran } = makeIo({ home, files })
-    prepareStaging({ id: ID, base: LINE.base, repo: 'C:/r', prevId: null, io })
+    prepareStaging({ id: ID, base: LINE.base, repo: 'C:/r', io })
     expect(norm(stagingDir)).toBe(`${home}/authoring/c9`)
     expect(ran.some(k => k.startsWith('git init'))).toBe(false)
+  })
+
+  // CRITICAL: a sealed gate resolves its prior gate as `../<prevId>/gate_*.py`.
+  // Unless the staging tree has the same shape as the sealed tree, C<N>.9 is
+  // red at BASE for a reason that has nothing to do with the game and green
+  // the moment the triple moves — a calibration that measured the layout.
+  it('mirrors every finished campaign as a sibling of the staging dir', () => {
+    const { io, disk } = makeIo({ home, files: SEALED_TREE(home) })
+    prepareStaging({ id: ID, base: LINE.base, repo: 'C:/r', io })
+    expect(disk[`${home}/authoring/c6/gate_c6.py`]).toBe('# gate_c6\n')
+    expect(disk[`${home}/authoring/c6/perturb_c6.py`]).toBe('# perturb_c6\n')
+    expect(disk[`${home}/authoring/c6/positive_c6.py`]).toBe('# positive_c6\n')
+    expect(disk[`${home}/authoring/c7/gate_c7.py`]).toBe('# gate_c7\n')
+    expect(disk[`${home}/authoring/c8/gate_c8.py`]).toBe('# gate_c8\n')
+    expect(disk[`${home}/authoring/c8/perturb_c8.py`]).toBe('# perturb_c8\n')
+  })
+
+  it('mirrors instruments only — no suite baselines, no __pycache__', () => {
+    const { io, disk } = makeIo({ home, files: SEALED_TREE(home) })
+    const r = prepareStaging({ id: ID, base: LINE.base, repo: 'C:/r', io })
+    expect(r.mirrored.sort()).toEqual(['c6/gate_c6.py', 'c6/perturb_c6.py', 'c6/positive_c6.py',
+      'c7/gate_c7.py', 'c7/perturb_c7.py', 'c8/gate_c8.py', 'c8/perturb_c8.py'])
+    expect(Object.keys(disk).some(k => k.startsWith(`${home}/authoring/`) && /suite_baseline/.test(k))).toBe(false)
+    expect(Object.keys(disk).some(k => k.startsWith(`${home}/authoring/`) && /__pycache__|\.pyc$/.test(k))).toBe(false)
+  })
+
+  // The author's own directory is the one thing the mirror must not touch: it
+  // holds the work in progress, and heldout/<id> may already hold last round's
+  // seal of the same campaign.
+  it('never mirrors over the campaign being authored', () => {
+    const { stagingDir, files } = staged(home)
+    const { io, disk } = makeIo({ home, files: { ...files, ...SEALED_TREE(home), [`${home}/heldout/civkings-redesign/c9/gate_c9.py`]: '# an older seal\n' } })
+    prepareStaging({ id: ID, base: LINE.base, repo: 'C:/r', io })
+    expect(disk[`${norm(stagingDir)}/gate_c9.py`]).toBe(GATE_SRC)
+  })
+
+  it('mirrors nothing, and does not throw, when the sealed tree is empty', () => {
+    const { io } = makeIo({ home })
+    expect(prepareStaging({ id: ID, base: LINE.base, repo: 'C:/r', io }).mirrored).toEqual([])
   })
 })
 
@@ -229,6 +323,24 @@ describe('authoringBrief', () => {
     expect(t).toMatch(/Rule 11/)
     expect(t).toMatch(/Rule 14/)
     expect(t).toMatch(/Rule 15/)
+  })
+
+  // The regression line must be written the way the SEALED gates write it,
+  // because the staging tree is mirrored to have the same shape. Anything
+  // "beside my own file" calibrates one layout and runs in another.
+  it('mandates the sibling form for the prior-gate path, with the chain re-armed', () => {
+    const t = build()
+    expect(t).toContain('os.path.join(os.path.dirname(os.path.abspath(__file__)),')
+    expect(t).toContain('"..", "c8", "gate_c8.py")')
+    expect(t).not.toMatch(/beside yours|falling back/)
+    expect(t).toContain('{k: v for k, v in os.environ.items() if k != "CYNCO_GATE_SKIP_PRIOR"}')
+    expect(t).toMatch(/layout is identical in the sealed tree/)
+  })
+
+  it('strips a sealed path out of the previous check output too', () => {
+    const t = build({ previousCheck: `lint: no graded lines\nread ${home}/heldout/civkings-redesign/c8/gate_c8.py` })
+    expect(t).not.toContain('heldout')
+    expect(t).toContain('lint: no graded lines')
   })
 
   it('carries PREVIOUS CHECK OUTPUT only on a resume', () => {
@@ -310,6 +422,18 @@ describe('draftToSpec', () => {
     const d = DRAFT(); d.work = d.work.slice(0, 2)
     expect(() => draftToSpec({ id: ID, draft: d, line: LINE, paths: paths(home), authorMissionId: null, lineIds: IDS })).toThrow(/C9\.3a\.save-slots-drawn/)
   })
+  // A key the author does not own is either a runner-owned field it tried to
+  // set or a typo of one it meant to; both are silent in a plain spread.
+  it('refuses draft fields the author does not own, naming them', () => {
+    const d = { ...DRAFT(), budget: { waves: 99 }, marker: 'stage c9 complete' }
+    expect(() => draftToSpec({ id: ID, draft: d, line: LINE, paths: paths(home), authorMissionId: null, lineIds: IDS }))
+      .toThrow(/does not own: budget, marker/)
+  })
+  it('refuses a gateId the gate does not grade', () => {
+    const d = DRAFT(); d.work[0].gateIds = [...d.work[0].gateIds, 'C9.7.does-not-exist']
+    expect(() => draftToSpec({ id: ID, draft: d, line: LINE, paths: paths(home), authorMissionId: null, lineIds: IDS }))
+      .toThrow(/does not grade: C9\.7\.does-not-exist/)
+  })
   it('does not demand a work item for the regression line', () => {
     const spec = draftToSpec({ id: ID, draft: DRAFT(), line: LINE, paths: paths(home), authorMissionId: null, lineIds: IDS })
     expect(spec.work.flatMap(w => w.gateIds)).not.toContain('C9.9')
@@ -340,6 +464,11 @@ describe('authorCampaign', () => {
     expect(JSON.parse(d.env.CYNCO_MISSION_INVARIANTS)).toEqual(AUTHOR_INVARIANTS)
     expect(d.env.CYNCO_SKIP_IDLE_ENGINE).toBe('1')
     expect(d.env.DRIVER_PID_FILE).toBeTruthy()
+    // --check is three gate runs plus, once, the whole suite. The model's own
+    // Bash cap (120 s) and the driver's check cap (600 s) would both kill the
+    // command the mission is graded on.
+    expect(d.env.CYNCO_BASH_TIMEOUT_MS).toBe('1500000')
+    expect(d.env.CYNCO_CHECK_TIMEOUT_MS).toBe('7200000')
     expect(r.ok).toBe(true)
     expect(r.proposal).toMatchObject({ type: 'Code', name: 'gate/c9', status: 'pending' })
     expect(r.proposal.evidence).toMatchObject({ lineCount: IDS.length, problems: [], missionId: 'c9-author-1', verified: true })
@@ -414,22 +543,21 @@ describe('sealGate', () => {
   const setup = async (over = {}, draftOver = {}, extraFiles = {}) => {
     const { stagingDir, files } = staged(home, extraFiles)
     if (Object.keys(draftOver).length) files[`${norm(stagingDir)}/${ID}.campaign.draft.json`] = JSON.stringify({ ...DRAFT(), ...draftOver }, null, 2)
-    const { io, disk, logs, copied } = makeIo({ home, files, ...over })
+    const { io, disk, logs, copied, renamed } = makeIo({ home, files, ...over })
     const roadmap = ROADMAP(); roadmap.lines.find(l => l.id === 'c9').status = 'proposed'
     const state = new CampaignState(join(mkdtempSync(join(tmpdir(), 'camp-')), ID)).load()
     state.state.authoring = { c9: { stagingDir, baseDir: 'C:/tmp/c9_author_base', missionId: 'c9-author-1', verified: true } }
     const r = await sealGate({ id: ID, state, roadmap, io })
-    return { r, roadmap, state, disk, logs, copied }
+    return { r, roadmap, state, disk, logs, copied, renamed, io }
   }
 
   it('copies the triple to heldout, writes a spec that loads, and marks the line sealed', async () => {
-    const { r, roadmap, state, disk, copied } = await setup()
+    const { r, roadmap, state, disk } = await setup()
     expect(r.ok).toBe(true)
-    expect(copied.map(c => c[1])).toEqual([
-      `${home}/heldout/civkings-redesign/c9/gate_c9.py`,
-      `${home}/heldout/civkings-redesign/c9/perturb_c9.py`,
-      `${home}/heldout/civkings-redesign/c9/positive_c9.py`,
-    ])
+    for (const f of ['gate_c9.py', 'perturb_c9.py', 'positive_c9.py']) {
+      expect(disk[`${home}/heldout/civkings-redesign/c9/${f}`]).toBeTruthy()
+    }
+    expect(disk[`${home}/heldout/civkings-redesign/c9/gate_c9.py`]).toBe(GATE_SRC)
     const spec = JSON.parse(disk['docs/civkings-redesign-briefs/c9.campaign.json'])
     for (const k of ['gate', 'perturb', 'positive', 'suiteBaseline']) expect(norm(spec[k]).startsWith(`${home}/heldout/civkings-redesign/c9/`)).toBe(true)
     expect(spec.author).toBe('cynco')
@@ -448,22 +576,65 @@ describe('sealGate', () => {
     expect(() => loadCampaignSpec(specPath)).not.toThrow()
   })
 
-  it('writes the campaign-log entry', async () => {
-    const { logs } = await setup()
+  // The triple lands in a sibling temp directory and is RENAMED into place, so
+  // a copy that dies halfway leaves heldout/<id> absent rather than partial.
+  it('stages the copy under <id>.sealing-<ts> and renames it into place', async () => {
+    const { copied, renamed, disk } = await setup()
+    expect(copied.every(([, dst]) => /\/c9\.sealing-\d+\//.test(dst))).toBe(true)
+    expect(renamed).toHaveLength(1)
+    expect(renamed[0][0]).toMatch(/\/c9\.sealing-\d+$/)
+    expect(renamed[0][1]).toBe(`${home}/heldout/civkings-redesign/c9`)
+    expect(Object.keys(disk).some(k => /\.sealing-/.test(k))).toBe(false)
+  })
+
+  it('writes the campaign-log entry with all three sha256s and the calibration tails', async () => {
+    const { logs, r } = await setup()
     expect(logs).toHaveLength(1)
     expect(logs[0]).toMatch(/^## Campaign C9 — Ship shell \(authored by CynCo, sealed \d{4}-\d{2}-\d{2}, BASE e9366f3, gate_c9\.py sha256 [0-9a-f]{16}\)$/m)
     expect(logs[0]).toContain(LINE.bar)
     expect(logs[0]).toContain('c9-author-1')
     expect(logs[0]).toContain('C9.9')
-    expect(logs[0]).toMatch(/MISS/)
-    expect(logs[0]).toMatch(/GATE: PASS/)
+    expect(logs[0]).toMatch(/gate_c9\.py [0-9a-f]{16}, perturb_c9\.py [0-9a-f]{16}, positive_c9\.py [0-9a-f]{16}/)
+    for (const k of ['gateSha256', 'perturbSha256', 'positiveSha256']) expect(logs[0]).toContain(r[k])
+    // the three calibration tails, each as the run actually printed it
+    expect(logs[0]).toMatch(/BASE printed GATE: MISS \(9 fails\)/)
+    expect(logs[0]).toMatch(/flips C9\.1a\.modes-listed/)
+    expect(logs[0]).toMatch(/positive shim printed GATE: PASS/)
   })
 
-  it('refuses a draft whose brief-visible text names the sealed gate', async () => {
-    const { r, disk } = await setup({}, { measures: 'every fact gate_c9.py grades is drawn' })
+  it('refuses a draft whose brief-visible text names the sealed gate, writing nothing at all', async () => {
+    const { r, disk, renamed } = await setup({}, { measures: 'every fact gate_c9.py grades is drawn' })
     expect(r.ok).toBe(false)
     expect(r.problems.join('\n')).toMatch(/gate_c9\.py/)
     expect('docs/civkings-redesign-briefs/c9.campaign.json' in disk).toBe(false)
+    expect(Object.keys(disk).some(k => k.startsWith(`${home}/heldout/civkings-redesign/c9`))).toBe(false)
+    expect(renamed).toEqual([])
+  })
+
+  // The fix that matters: a refused seal must leave the operator somewhere to
+  // stand. Nothing under heldout, and the same triple seals on the next try
+  // once the draft is corrected.
+  it('a refusal leaves heldout absent and the next attempt succeeds', async () => {
+    const { stagingDir, files } = staged(home)
+    files[`${norm(stagingDir)}/${ID}.campaign.draft.json`] = JSON.stringify({ ...DRAFT(), measures: 'gate_c9.py grades it' }, null, 2)
+    const { io, disk } = makeIo({ home, files })
+    const roadmap = ROADMAP(); roadmap.lines.find(l => l.id === 'c9').status = 'proposed'
+    const state = new CampaignState(join(mkdtempSync(join(tmpdir(), 'camp-')), ID)).load()
+    state.state.authoring = { c9: { stagingDir, baseDir: 'C:/tmp/c9_author_base', missionId: 'c9-author-1', verified: true } }
+
+    const first = await sealGate({ id: ID, state, roadmap, io })
+    expect(first.ok).toBe(false)
+    expect(Object.keys(disk).some(k => k.startsWith(`${home}/heldout/civkings-redesign/c9`))).toBe(false)
+    expect(roadmap.lines.find(l => l.id === 'c9').status).toBe('proposed')
+    expect(state.state.authoring.c9.sealedAt).toBeUndefined()
+
+    // the author fixes the draft; nothing else changes
+    io.writeFile(`${norm(stagingDir)}/${ID}.campaign.draft.json`, JSON.stringify(DRAFT(), null, 2))
+    const second = await sealGate({ id: ID, state, roadmap, io })
+    expect(second.problems).toEqual([])
+    expect(second.ok).toBe(true)
+    expect(disk[`${home}/heldout/civkings-redesign/c9/gate_c9.py`]).toBe(GATE_SRC)
+    expect(roadmap.lines.find(l => l.id === 'c9').status).toBe('sealed')
   })
 
   it('never overwrites a sealed gate with a different sha', async () => {
@@ -473,15 +644,36 @@ describe('sealGate', () => {
     expect(disk[`${home}/heldout/civkings-redesign/c9/gate_c9.py`]).toBe('# a human wrote this one\n')
   })
 
-  it('reseals the identical gate (the same sha is not an overwrite)', async () => {
-    const { r } = await setup({}, {}, { [`${home}/heldout/civkings-redesign/c9/gate_c9.py`]: GATE_SRC })
+  // A reseal copies in place instead of renaming: the directory holds a suite
+  // baseline the campaign measured, and a rename would carry it off.
+  it('reseals the identical gate in place, keeping the suite baseline', async () => {
+    const { r, disk, renamed } = await setup({}, {}, {
+      [`${home}/heldout/civkings-redesign/c9/gate_c9.py`]: GATE_SRC,
+      [`${home}/heldout/civkings-redesign/c9/suite_baseline_e9366f3.txt`]: 'FAILED standing\n',
+    })
     expect(r.ok).toBe(true)
+    expect(renamed).toEqual([])
+    expect(disk[`${home}/heldout/civkings-redesign/c9/suite_baseline_e9366f3.txt`]).toBe('FAILED standing\n')
+    expect(disk[`${home}/heldout/civkings-redesign/c9/positive_c9.py`]).toBe(POSITIVE_SRC)
   })
 
   it('refuses when the staged triple no longer passes the check', async () => {
-    const { r } = await setup({ baseLog: POSITIVE_LOG })
+    const { r, disk } = await setup({ baseLog: POSITIVE_LOG })
     expect(r.ok).toBe(false)
     expect(r.problems.join('\n')).toMatch(/BASE must MISS/)
+    expect(Object.keys(disk).some(k => k.startsWith(`${home}/heldout/civkings-redesign/c9`))).toBe(false)
+  })
+
+  it('refuses a staged triple with a file missing', async () => {
+    const { stagingDir, files } = staged(home)
+    delete files[`${norm(stagingDir)}/perturb_c9.py`]
+    const { io, disk } = makeIo({ home, files })
+    const state = new CampaignState(join(mkdtempSync(join(tmpdir(), 'camp-')), ID)).load()
+    state.state.authoring = { c9: { stagingDir, baseDir: 'C:/tmp/c9_author_base', missionId: 'c9-author-1', verified: true } }
+    const r = await sealGate({ id: ID, state, roadmap: ROADMAP(), io })
+    expect(r.ok).toBe(false)
+    expect(r.problems.join('\n')).toMatch(/missing: perturb_c9\.py is not in the staging dir/)
+    expect(Object.keys(disk).some(k => k.startsWith(`${home}/heldout/civkings-redesign/c9`))).toBe(false)
   })
 
   it('refuses when nothing was authored for the id', async () => {

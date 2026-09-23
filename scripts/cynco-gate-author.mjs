@@ -19,7 +19,7 @@
 // scrubber, the campaign-log append — arrives through the `io` argument, and
 // `defaultAuthorIo` builds that io from helpers the runner hands over.
 import { basename, join, dirname, resolve } from 'node:path'
-import { existsSync, mkdirSync, readFileSync, writeFileSync, copyFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync, copyFileSync, readdirSync, renameSync, rmSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
@@ -86,16 +86,51 @@ function calibrationIo(io) {
   return out
 }
 
+/** Instrument files, and nothing else: no suite baselines, no `__pycache__`. */
+const INSTRUMENT_FILE = /^(?:gate|perturb|positive)_[A-Za-z0-9_-]+\.py$/
+
+/**
+ * The staging tree MIRRORS the sealed tree, one campaign directory per line,
+ * and that is not a convenience.
+ *
+ * A sealed gate resolves the prior campaign's gate as a SIBLING:
+ *   os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "c7", "gate_c7.py")
+ * so gate_c8.py run from anywhere looks one directory up and across. Copying
+ * the previous gate BESIDE the author's own file (what this used to do) put
+ * gate_c8.py in `authoring/c9/`, where its own C8.9 line then searched
+ * `authoring/c7/gate_c7.py`, found nothing, and failed — making the author's
+ * C9.9 red at BASE for a reason that has nothing to do with the game, and
+ * green again the moment the triple moved into the sealed tree. A gate whose
+ * calibration and whose campaign disagree is the one thing Rule 11 exists to
+ * catch, and it would have caught it in the wrong direction.
+ *
+ * So: every FINISHED campaign's instruments are mirrored as siblings of the
+ * staging dir, overwritten on every run. They are sealed-by-location copies of
+ * campaigns that are over; `<id>` itself is skipped, because that directory is
+ * the author's own workspace and must never be overwritten from heldout.
+ */
+export function mirrorPriorCampaigns({ id, io }) {
+  const home = homeOf(io)
+  const family = `${home}/heldout/${HELDOUT_FAMILY}`
+  const mirrored = []
+  for (const dir of io.listDir(family)) {
+    if (dir === id) continue
+    const src = `${family}/${dir}`
+    for (const f of io.listDir(src)) {
+      if (!INSTRUMENT_FILE.test(f)) continue
+      io.copy(`${src}/${f}`, `${home}/authoring/${dir}/${f}`)
+      mirrored.push(`${dir}/${f}`)
+    }
+  }
+  return mirrored
+}
+
 /**
  * The staging dir (a git repo — the mission commits after each cut, and that
- * is its only backup) plus the read-only archive of the game at BASE.
- *
- * `prevId` is copied in as `gate_<prevId>.py` so the `C<N>.9` regression line
- * can run the previous campaign's gate WITHOUT the brief ever naming the
- * sealed directory. That campaign is over, so sealing it by location is the
- * whole protection it still needs.
+ * is its only backup), the read-only archive of the game at BASE, and the
+ * mirrored sibling directories of every finished campaign.
  */
-export function prepareStaging({ id, base, repo = CIVKINGS_REPO, prevId = null, io }) {
+export function prepareStaging({ id, base, repo = CIVKINGS_REPO, io }) {
   const stagingDir = stagingDirFor(id, homeOf(io))
   const baseDir = baseDirFor(id)
   io.mkdir(stagingDir)
@@ -103,13 +138,16 @@ export function prepareStaging({ id, base, repo = CIVKINGS_REPO, prevId = null, 
     const init = io.run('git', ['init', stagingDir], { timeoutMs: 60_000 })
     if (init.status !== 0) throw new Error(`git init ${stagingDir} failed: ${String(init.stderr).trim()}`)
   }
+  // A repo with no identity is FATAL, not cosmetic: the mission is ordered to
+  // commit after each cut, `git commit` refuses without a user, and
+  // dispatch-mission.sh runs `git rev-parse` under `set -e` in the same tree.
+  // Pin a local one so the author's only backup cannot fail on configuration.
+  io.run('git', ['-C', stagingDir, 'config', 'user.name', 'cynco-author'], { timeoutMs: 60_000 })
+  io.run('git', ['-C', stagingDir, 'config', 'user.email', 'cynco@localhost'], { timeoutMs: 60_000 })
   const arch = archiveBase(repo, base, baseDir, calibrationIo(io))
   if (!arch.ok) throw new Error(arch.problems.join('; '))
-  if (prevId) {
-    const prevGate = `${heldoutDirFor(prevId, homeOf(io))}/gate_${prevId}.py`
-    if (io.exists(prevGate)) io.copy(prevGate, `${stagingDir}/gate_${prevId}.py`)
-  }
-  return { stagingDir, baseDir }
+  const mirrored = mirrorPriorCampaigns({ id, io })
+  return { stagingDir, baseDir, mirrored }
 }
 
 /**
@@ -161,8 +199,13 @@ export function authoringBrief({ line, id, prevId, baseDir, stagingDir, exemplar
   const ID = id.toUpperCase()
   const N = String(id).replace(/^c/i, '')
   const P = `C${N}`
+  const prev = prevId ?? 'cPREV'
   const staging = norm(stagingDir)
   const base = norm(baseDir)
+  // Nothing written here may name the directory the sealed tree lives in —
+  // not the exemplar, and not the previous run's check output, which is
+  // machine-generated text that has already been through `--check`.
+  const noSealedPath = (s) => String(s ?? '').split(/\r?\n/).filter(l => !l.includes('heldout')).join('\n')
   const out = []
 
   out.push(section(`MISSION ${ID}-AUTHOR — WRITE THE SEALED GATE FOR ${String(line.name).toUpperCase()}`,
@@ -225,15 +268,20 @@ gate_${id}.py:
   * The last line printed is the terminator the runner parses:
       GATE: PASS            when nothing failed
       GATE: MISS (<n> fails)  otherwise
-  * ${P}.9 is the regression line. It runs the previous campaign's gate file,
-    which the runner places beside yours as gate_${prevId ?? 'cPREV'}.py, in a FRESH
-    interpreter:
-      subprocess.run([sys.executable, prior], cwd=REPO, env=env, ...)
-    where prior resolves beside your own gate file
-    (os.path.dirname(os.path.abspath(__file__))), falling back to
-    os.path.join(..., "..", "${prevId ?? 'cPREV'}", "gate_${prevId ?? 'cPREV'}.py") when it is not there —
-    the runner seals the two campaigns into sibling directories. Strip
-    CYNCO_GATE_SKIP_PRIOR out of the child env, count its FAIL lines, and
+  * ${P}.9 is the regression line. It runs the previous campaign's gate in a
+    FRESH interpreter, and it resolves it as a SIBLING — this exact form, no
+    other:
+      prior = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "..", "${prev}", "gate_${prev}.py")
+      env = {k: v for k, v in os.environ.items() if k != "CYNCO_GATE_SKIP_PRIOR"}
+      r = subprocess.run([sys.executable, prior], cwd=REPO, env=env,
+                         capture_output=True, text=True, timeout=3600)
+    The child env has CYNCO_GATE_SKIP_PRIOR STRIPPED, so the whole C1..${prev.toUpperCase()}
+    chain runs behind it. The layout is identical in the sealed tree: your gate
+    is sealed into its own directory beside ${prev}'s, exactly as it sits here,
+    so a path that works now works after sealing and a path that works only now
+    is a gate whose calibration and whose campaign disagree.
+    Count the child's FAIL lines, echo them prefixed with "  [${prev}] ", and
       check("${P}.9", not prior_fails, f"{len(prior_fails)} prior-campaign regressions")
     Wrap the whole block in
       if not os.environ.get("CYNCO_GATE_SKIP_PRIOR"):
@@ -313,8 +361,7 @@ the marker, budget, invariants, posiwid, sweep, prBase, ideation, author).
 
   // Belt and braces with exemplarFor: whatever route an exemplar arrives by,
   // the word the sealed tree is named for does not reach a model's brief.
-  const quote = (s) => String(s ?? '').split(/\r?\n/).filter(l => !l.includes('heldout')).join('\n')
-  const gateHead = quote(exemplar?.gateHead), perturbHead = quote(exemplar?.perturbHead)
+  const gateHead = noSealedPath(exemplar?.gateHead), perturbHead = noSealedPath(exemplar?.perturbHead)
   const ex = gateHead || perturbHead
     ? `The previous campaign's gate, the first 40 lines — the house style, the
 header a sealed gate carries, and the way it reaches the repository:
@@ -333,7 +380,7 @@ ${perturbHead}`
 `The last authoring run left the triple in ${staging} and the check REFUSED it.
 These are its words. Fix these before anything else; do not start over.
 
-${previousCheck}`))
+${noSealedPath(previousCheck)}`))
   }
 
   out.push(section('DONE WHEN',
@@ -409,7 +456,7 @@ export async function authorCampaign({ id, roadmap, state, io }) {
   const s = state.state
   s.authoring = s.authoring ?? {}
   const prevId = previousLineId(roadmap, id)
-  const { stagingDir, baseDir } = prepareStaging({ id, base: line.base, repo: CIVKINGS_REPO, prevId, io })
+  const { stagingDir, baseDir } = prepareStaging({ id, base: line.base, repo: CIVKINGS_REPO, io })
   setLineStatus(roadmap, id, 'authoring')
   ;(io.saveRoadmap ?? saveRoadmap)(ROADMAP_PATH, roadmap)
 
@@ -430,6 +477,15 @@ export async function authorCampaign({ id, roadmap, state, io }) {
     // will. Its learnings must land in a database the campaign worker never
     // opens, or the bar's author would be whispering to the subject.
     LOCALCODE_LEARNINGS_DB: `${stagingDir}/learnings.db`,
+    // The acceptance test is not a pytest run of seconds: `--check` is three
+    // gate invocations against the archived BASE plus, on the first green
+    // check, the whole civkings suite for the baseline. The model's OWN Bash
+    // tool caps at 120 s by default (Stage 11I lost five suite runs to that)
+    // and the driver's check cap at 600 s; both would kill the very command
+    // the mission is graded on. The sidecar allows 7,200,000 ms — these say
+    // the same thing to the two processes that can cut it short.
+    CYNCO_BASH_TIMEOUT_MS: '1500000',
+    CYNCO_CHECK_TIMEOUT_MS: '7200000',
     CYNCO_SKIP_IDLE_ENGINE: '1',
     DRIVER_PID_FILE: pidFile,
     DRIVER_LOG: driverLog,
@@ -484,7 +540,16 @@ export async function authorCampaign({ id, roadmap, state, io }) {
  * Throws on anything the author got wrong, BEFORE a single byte reaches
  * `docs/` or the sealed tree: a half-seal is worse than a refusal.
  */
+export const DRAFT_KEYS = ['title', 'keepGreen', 'measures', 'work', 'allow', 'deny', 'rules', 'assets']
+
 export function draftToSpec({ id, draft, line, paths, authorMissionId = null, lineIds = [] }) {
+  // An unknown key is either a runner-owned field the author tried to set
+  // (its own budget, its own invariants, its own `base`) or a typo of one of
+  // these eight. Both are silent today — the spread below simply ignores it —
+  // and both are exactly the kind of thing whose absence is only noticed a
+  // campaign later. Name them and refuse.
+  const unknown = Object.keys(draft ?? {}).filter(k => !DRAFT_KEYS.includes(k))
+  if (unknown.length) throw new Error(`draft has ${unknown.length} field(s) the author does not own: ${unknown.join(', ')} — the draft carries only ${DRAFT_KEYS.join(', ')}`)
   const need = (k) => { const v = draft?.[k]; if (v === undefined || v === null || v === '') throw new Error(`draft is missing "${k}"`); return v }
   const title = need('title'), keepGreen = need('keepGreen'), measures = need('measures')
   if (/[*?]/.test(String(keepGreen))) throw new Error('draft keepGreen contains a wildcard — the check must name files (F146)')
@@ -502,6 +567,14 @@ export function draftToSpec({ id, draft, line, paths, authorMissionId = null, li
   const claimed = new Set(work.flatMap(w => w.gateIds))
   const uncovered = lineIds.filter(x => x.toLowerCase() !== regression && !x.toLowerCase().startsWith(regression + '.') && !claimed.has(x))
   if (uncovered.length) throw new Error(`draft work[] gateIds do not cover ${uncovered.length} graded line(s): ${uncovered.join(' ')}`)
+  // And the other direction. A work item claiming an id the gate never prints
+  // reads, in the wave brief, as an order to fix a line that cannot fail — and
+  // `loadCampaignSpec` would accept it, because nothing there has ever seen
+  // the gate. The lint ids are the only list that has.
+  if (lineIds.length) {
+    const phantom = [...claimed].filter(g => !lineIds.includes(g))
+    if (phantom.length) throw new Error(`draft work[] gateIds name ${phantom.length} line(s) the gate does not grade: ${phantom.join(' ')}`)
+  }
 
   return {
     id,
@@ -532,13 +605,16 @@ export function draftToSpec({ id, draft, line, paths, authorMissionId = null, li
 }
 
 /**
- * `--approve-proposal gate/<id>` after the state decision: the copy into the
- * sealed tree, the campaign json, the identity check, the campaign-log entry
- * and the roadmap move.
+ * The seal: the copy into the sealed tree, the campaign json, the identity
+ * check, the campaign-log entry and the roadmap move.
  *
- * Every refusal happens BEFORE anything outside the sealed directory is
- * written, and a sealed gate with a different sha is never overwritten — a
- * human-authored gate is not this verb's to replace.
+ * EVERY check runs before ANY write. A refused seal used to be a dead end: the
+ * proposal decision had already been recorded (so there was nothing left to
+ * approve), and the triple had already been copied into `heldout/<id>` (so the
+ * retry hit the different-sha guard against a directory this verb had written
+ * itself). Now the order is: prove it, stage the copy in a temp directory
+ * beside the real one, and only then make it visible under its real name. The
+ * decision is recorded by the CALLER, after this returns ok.
  */
 export async function sealGate({ id, state, roadmap, io }) {
   const a = state.state.authoring?.[id]
@@ -548,6 +624,7 @@ export async function sealGate({ id, state, roadmap, io }) {
   const staged = { gate: `${stagingDir}/gate_${id}.py`, perturb: `${stagingDir}/perturb_${id}.py`, positive: `${stagingDir}/positive_${id}.py` }
   const draftPath = `${stagingDir}/${id}.campaign.draft.json`
 
+  // ── every refusal, before a single byte is written ──────────────────────
   const missing = [...Object.values(staged), draftPath].filter(p => !io.exists(p)).map(p => basename(p))
   if (missing.length) return { ok: false, problems: missing.map(f => `missing: ${f} is not in the staging dir`) }
 
@@ -559,69 +636,108 @@ export async function sealGate({ id, state, roadmap, io }) {
 
   const sealedGate = `${heldout}/gate_${id}.py`
   if (io.exists(sealedGate) && io.sha256(sealedGate) !== io.sha256(staged.gate)) {
-    return { ok: false, problems: [`${heldout} already holds a gate_${id}.py with a different sha256 — a sealed gate is never overwritten; delete it by hand if that is really what you mean`] }
+    return { ok: false, problems: [`${heldout} already holds a gate_${id}.py with a different sha256 — a sealed gate is never overwritten; delete it by hand if that is really what you mean`], check }
   }
 
   let draft
   try { draft = JSON.parse(io.readFile(draftPath)) }
-  catch (e) { return { ok: false, problems: [`${id}.campaign.draft.json is not valid JSON — ${e.message}`] } }
+  catch (e) { return { ok: false, problems: [`${id}.campaign.draft.json is not valid JSON — ${e.message}`], check } }
 
-  const base7 = String(roadmapBase(roadmap, id)).slice(0, 7)
+  const line = lineFor(roadmap, id)
+  if (!line) return { ok: false, problems: [`the roadmap has no line "${id}"`], check }
+  const base7 = String(line.base).slice(0, 7)
   const paths = { gate: sealedGate, perturb: `${heldout}/perturb_${id}.py`, positive: `${heldout}/positive_${id}.py`,
     suiteBaseline: `${heldout}/suite_baseline_${base7}.txt` }
-  const line = lineFor(roadmap, id)
-  if (!line) return { ok: false, problems: [`the roadmap has no line "${id}"`] }
   let spec
   try { spec = draftToSpec({ id, draft, line, paths, authorMissionId: a.missionId ?? null, lineIds: check.lineIds }) }
-  catch (e) { return { ok: false, problems: [e.message] } }
+  catch (e) { return { ok: false, problems: [e.message], check } }
 
-  // The copy has to happen before checkIdentity — it asserts the three
-  // instruments EXIST where the spec says they are. A failed identity check
-  // after the copy costs nothing: the same triple reseals on the same sha.
-  io.mkdir(heldout)
-  for (const k of ['gate', 'perturb', 'positive']) io.copy(staged[k], paths[k])
-
-  const identity = checkIdentity(spec, { exists: io.exists, readFile: io.readFile, gitHasCommit: io.gitHasCommit ?? ((repo, sha) => spawnSync('git', ['-C', repo, 'cat-file', '-e', `${sha}^{commit}`], { encoding: 'utf8' }).status === 0) })
+  // S5 identity on the spec that WOULD be written. The spec must carry the
+  // sealed paths (`underHeldout` is half of what identity means), but those
+  // files do not exist yet — so the existence question is answered against the
+  // STAGED copies, which are byte-identical to what the copy below will put
+  // there. Substituting in the io rather than in the spec keeps both halves
+  // honest.
+  const stagedFor = { [paths.gate]: staged.gate, [paths.perturb]: staged.perturb, [paths.positive]: staged.positive }
+  const identity = checkIdentity(spec, {
+    exists: (p) => io.exists(stagedFor[norm(p)] ?? p),
+    readFile: (p) => io.readFile(stagedFor[norm(p)] ?? p),
+    gitHasCommit: io.gitHasCommit ?? ((repo, sha) => spawnSync('git', ['-C', repo, 'cat-file', '-e', `${sha}^{commit}`], { encoding: 'utf8' }).status === 0),
+  })
   if (!identity.ok) return { ok: false, problems: identity.problems, check }
 
+  // The loader is the runner's own door, and it only opens for a file. Try it
+  // on a throwaway beside the BASE archive — nothing under docs/ or heldout/
+  // exists yet, and a spec that trips it must not be the reason one does.
   const specPath = `${BRIEFS_DIR}/${id}.campaign.json`
-  io.writeFile(specPath, JSON.stringify(spec, null, 2) + '\n')
-  // The loader is the runner's own door. A spec that passes checkIdentity but
-  // trips loadCampaignSpec would refuse on the first `bun cynco-campaign.mjs`
-  // — days later, with the sealed tree already written.
-  try { (io.loadSpec ?? loadCampaignSpec)(specPath) }
-  catch (e) { return { ok: false, problems: [`the sealed spec ${specPath} does not load: ${e.message}`], check } }
+  const specText = JSON.stringify(spec, null, 2) + '\n'
+  const trialPath = `C:/tmp/${id}_seal_check.campaign.json`
+  io.writeFile(trialPath, specText)
+  try { (io.loadSpec ?? loadCampaignSpec)(trialPath) }
+  catch (e) { return { ok: false, problems: [`the spec ${id}.campaign.json would not load: ${e.message}`], check } }
 
+  // ── nothing above wrote anything visible; from here it is all commit ────
+  //
+  // The triple lands in a sibling temp directory first and is RENAMED into
+  // place, so a copy that dies halfway leaves `heldout/<id>` either absent or
+  // whole — never three files where one is truncated. A reseal (the sha guard
+  // above already proved the gate is identical) copies in place instead: the
+  // directory holds a suite baseline the campaign measured, and a rename would
+  // take it with it.
   const sealedAt = io.now()
-  state.state.authoring[id] = { ...a, sealedAt, specPath,
-    gateSha256: io.sha256(paths.gate), perturbSha256: io.sha256(paths.perturb), positiveSha256: io.sha256(paths.positive) }
+  const tmpDir = `${homeOf(io)}/heldout/${HELDOUT_FAMILY}/${id}.sealing-${sealedAt.replace(/[^0-9]/g, '')}`
+  io.mkdir(tmpDir)
+  for (const k of ['gate', 'perturb', 'positive']) io.copy(staged[k], `${tmpDir}/${basename(paths[k])}`)
+  if (io.exists(heldout)) {
+    for (const k of ['gate', 'perturb', 'positive']) io.copy(`${tmpDir}/${basename(paths[k])}`, paths[k])
+    io.removeDir(tmpDir)
+  } else {
+    io.rename(tmpDir, heldout)
+  }
+
+  io.writeFile(specPath, specText)
+
+  const shas = { gateSha256: io.sha256(paths.gate), perturbSha256: io.sha256(paths.perturb), positiveSha256: io.sha256(paths.positive) }
+  state.state.authoring[id] = { ...a, sealedAt, specPath, ...shas }
   setLineStatus(roadmap, id, 'sealed')
   ;(io.saveRoadmap ?? saveRoadmap)(ROADMAP_PATH, roadmap)
   state.save()
 
-  io.appendLog(sealEntry({ id, line, spec, check, sealedAt, gateSha256: state.state.authoring[id].gateSha256, missionId: a.missionId ?? null, verified: a.verified ?? null }))
-  return { ok: true, problems: [], specPath, heldout, check, sealedAt }
+  io.appendLog(sealEntry({ id, line, spec, check, sealedAt, shas, missionId: a.missionId ?? null, verified: a.verified ?? null }))
+  return { ok: true, problems: [], specPath, heldout, check, sealedAt, ...shas }
 }
 
-const roadmapBase = (roadmap, id) => lineFor(roadmap, id)?.base ?? ''
+/** The terminator a run actually printed, read back out of its captured tail. */
+const terminatorOf = (tail, fallback) => /GATE: (?:PASS|MISS(?: \(\d+ fails?\))?)/.exec(String(tail ?? ''))?.[0] ?? fallback
 
-/** The campaign-log entry: the heading, then four paragraphs of fact. */
-export function sealEntry({ id, line, spec, check, sealedAt, gateSha256, missionId, verified }) {
+/**
+ * The campaign-log entry: the heading, then five paragraphs of fact and no
+ * prose beyond them.
+ *
+ * All THREE sha256s, not just the gate's. The perturb is what makes the
+ * calibration a judgement and the positive shim is what makes it reachable;
+ * a reseal that moved either of them changes what every later reading means,
+ * and the log is the only place a human goes looking for what was sealed.
+ */
+export function sealEntry({ id, line, spec, check, sealedAt, shas, missionId, verified }) {
   const cal = check.calibration ?? {}
   const baseFails = cal.baseFails ?? [], perturbFails = cal.perturbFails ?? []
   const pertIds = new Set(perturbFails.map(f => f.id))
   const flipped = baseFails.map(f => f.id).filter(x => !pertIds.has(x))
-  const lineCount = check.lineIds.length
+  const baseTerm = terminatorOf(cal.baseOutputTail, `GATE: MISS (${baseFails.length} fails)`)
+  const positiveTerm = terminatorOf(cal.positiveOutputTail, `GATE: ${cal.positive?.terminator ?? 'PASS'}`)
   return [
-    `## Campaign ${id.toUpperCase()} — ${line.name} (authored by CynCo, sealed ${sealedAt.slice(0, 10)}, BASE ${String(spec.base).slice(0, 7)}, gate_${id}.py sha256 ${gateSha256})`,
+    `## Campaign ${id.toUpperCase()} — ${line.name} (authored by CynCo, sealed ${sealedAt.slice(0, 10)}, BASE ${String(spec.base).slice(0, 7)}, gate_${id}.py sha256 ${shas.gateSha256})`,
     ``,
     `Roadmap line: ${line.bar}`,
     ``,
-    `The gate grades ${lineCount} line(s): ${check.lineIds.join(', ')}.`,
+    `The gate grades ${check.lineIds.length} line(s): ${check.lineIds.join(', ')}.`,
     ``,
     `Authoring mission: ${missionId ?? 'none'} (verified ${verified === null || verified === undefined ? 'null' : verified}).`,
     ``,
-    `Calibration: BASE MISS, ${baseFails.length} fail(s) by absence, zero error lines; the cheat stub flips ${flipped.length ? flipped.join(', ') : 'nothing'} and leaves ${perturbFails.length} discriminator(s) red; the positive shim prints GATE: ${cal.positive?.terminator ?? 'PASS'}.`,
+    `Sealed sha256: gate_${id}.py ${shas.gateSha256}, perturb_${id}.py ${shas.perturbSha256}, positive_${id}.py ${shas.positiveSha256}.`,
+    ``,
+    `Calibration: BASE printed ${baseTerm} — ${baseFails.length} fail(s) by absence, zero error lines; the cheat stub flips ${flipped.length ? flipped.join(', ') : 'nothing'} and leaves ${perturbFails.length} discriminator(s) red; the positive shim printed ${positiveTerm}.`,
     ``,
   ].join('\n')
 }
@@ -642,6 +758,11 @@ export function defaultAuthorIo(helpers = {}) {
     readFile: (p) => readFileSync(p, 'utf8'),
     writeFile: (p, s) => { mkdirSync(dirname(p), { recursive: true }); writeFileSync(p, s, 'utf8') },
     copy: (src, dst) => { mkdirSync(dirname(dst), { recursive: true }); copyFileSync(src, dst) },
+    // An absent directory is an empty one here: the sealed tree has no prior
+    // campaigns on a fresh machine, and that is not an error to mirror from.
+    listDir: (p) => { try { return readdirSync(p) } catch { return [] } },
+    rename: (src, dst) => { mkdirSync(dirname(dst), { recursive: true }); renameSync(src, dst) },
+    removeDir: (p) => rmSync(p, { recursive: true, force: true }),
     sha256: (p) => createHash('sha256').update(readFileSync(p)).digest('hex').slice(0, 16),
     freshDir: calibrateDefaultIo.freshDir,
     now: () => new Date().toISOString(),
@@ -649,7 +770,7 @@ export function defaultAuthorIo(helpers = {}) {
     saveRoadmap: (p, r) => saveRoadmap(p, r),
     loadSpec: (p) => loadCampaignSpec(p),
     stateFor: (id) => new CampaignState(join(cyncoHome(), 'campaigns', id)).load(),
-    appendLog: helpers.appendLog ?? ((text) => { throw new Error('io.appendLog was not supplied by the runner') }),
+    appendLog: helpers.appendLog ?? (() => { throw new Error('io.appendLog was not supplied by the runner') }),
     dispatch: helpers.dispatchRaw ?? (async () => { throw new Error('io.dispatch was not supplied by the runner — run --author through scripts/cynco-campaign.mjs') }),
     waitForDriver: helpers.waitForDriver ?? (async () => { throw new Error('io.waitForDriver was not supplied by the runner') }),
     missionIdFrom: helpers.missionIdFrom ?? (() => null),
