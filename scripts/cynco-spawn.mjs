@@ -46,7 +46,28 @@ export const TIMEOUT_ELAPSED_FRACTION = 0.9
  * spending the time; `spawn` likewise, so a test can produce the early
  * ETIMEDOUT this module exists for without needing bun's bug to be present.
  */
-export function runSync(cmd, args, { cwd, env, timeoutMs, shell } = {}, { spawn = spawnSync, now = () => Date.now() } = {}) {
+export function runSync(cmd, args, opts = {}, hooks = {}) {
+  const first = attempt(cmd, args, opts, hooks)
+  // The stale deadline is not a condition of the machine, it is a condition of
+  // the PREVIOUS call: in the reproduction the spawns right behind the killed one
+  // run normally. So an ETIMEDOUT that provably did not spend its cap is retried
+  // exactly once, immediately, and the retry is the reading. Retrying is safe
+  // here and only here — a REAL timeout never reaches this branch, because it is
+  // separated by elapsed time, and every other spawn error is reported unretried.
+  //
+  // Without this the fix only moved the victim. Live C9 attempt 5 refused
+  // correctly instead of inventing nine problems — `harness fault: the re-check
+  // subprocess did not run (code ETIMEDOUT, status null, signal SIGTERM, after
+  // 15 ms)` — but the runner's first spawn after four idle hours was the spawn OF
+  // the subprocess, so the triple still went ungraded.
+  if (first.fault?.code === 'ETIMEDOUT') {
+    const second = attempt(cmd, args, opts, hooks)
+    return second.fault?.code === 'ETIMEDOUT' ? second : { ...second, staleDeadlineRetried: true }
+  }
+  return first
+}
+
+function attempt(cmd, args, { cwd, env, timeoutMs, shell } = {}, { spawn = spawnSync, now = () => Date.now() } = {}) {
   const t0 = now()
   const r = spawn(cmd, args, {
     cwd,

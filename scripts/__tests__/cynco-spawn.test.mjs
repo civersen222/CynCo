@@ -15,17 +15,74 @@ const fakeSpawn = (result, ms, clock) => (...args) => { clock.t += ms; return { 
 
 const clockOf = () => ({ t: 1_000_000 })
 
+const ETIMEDOUT = { status: null, stdout: '', stderr: '', error: Object.assign(new Error('timed out'), { code: 'ETIMEDOUT' }) }
+
 describe('runSync: a timeout is an elapsed measurement', () => {
-  it('calls an early ETIMEDOUT a harness fault, not a timeout', () => {
+  it('calls an early ETIMEDOUT a harness fault, not a timeout, when the retry dies the same way', () => {
     const clock = clockOf()
     const r = runSync('python', ['gate.py'], { timeoutMs: 7_200_000 }, {
-      spawn: fakeSpawn({ status: null, stdout: '', stderr: '', error: Object.assign(new Error('timed out'), { code: 'ETIMEDOUT' }) }, 7, clock),
+      spawn: fakeSpawn(ETIMEDOUT, 7, clock),
       now: () => clock.t,
     })
     expect(r.timedOut).toBe(false)
     expect(r.elapsedMs).toBe(7)
     expect(r.fault).toEqual({ code: 'ETIMEDOUT', status: null, signal: null, elapsedMs: 7 })
     expect(faultSummary(r.fault)).toBe('code ETIMEDOUT, status null, after 7 ms')
+  })
+
+  /**
+   * The stale deadline belongs to the PREVIOUS call, so the spawn behind the
+   * killed one runs normally — the reproduction's B and C. Live C9 attempt 5
+   * proved that naming the fault is not enough on its own: it refused correctly
+   * ("the re-check subprocess did not run … after 15 ms") and the triple still
+   * went ungraded, because the runner's first spawn after four idle hours was
+   * the spawn of the subprocess itself.
+   */
+  it('retries an impossible ETIMEDOUT exactly once and returns the retry as the reading', () => {
+    const clock = clockOf()
+    const calls = []
+    const spawn = (...a) => {
+      calls.push(a[0])
+      if (calls.length === 1) { clock.t += 15; return ETIMEDOUT }
+      clock.t += 240_000
+      return { status: 1, stdout: '[check] c9: REFUSED — 2 problem(s)\n', stderr: '' }
+    }
+    const r = runSync('bun', ['x.mjs', '--check'], { timeoutMs: 7_200_000 }, { spawn, now: () => clock.t })
+    expect(calls).toHaveLength(2)
+    expect(r.fault).toBeNull()
+    expect(r.timedOut).toBe(false)
+    expect(r.status).toBe(1)
+    expect(r.stdout).toMatch(/REFUSED/)
+    expect(r.staleDeadlineRetried).toBe(true)
+  })
+
+  it('retries at most once, and the second failure is the fault it reports', () => {
+    const clock = clockOf()
+    let n = 0
+    const spawn = () => { n += 1; clock.t += 9; return ETIMEDOUT }
+    const r = runSync('bun', ['x.mjs'], { timeoutMs: 7_200_000 }, { spawn, now: () => clock.t })
+    expect(n).toBe(2)
+    expect(r.fault?.code).toBe('ETIMEDOUT')
+    expect(r.staleDeadlineRetried).toBeUndefined()
+  })
+
+  it('never retries an error that is not an impossible timeout', () => {
+    const clock = clockOf()
+    let n = 0
+    const spawn = () => { n += 1; clock.t += 3; return { status: null, stdout: '', stderr: '', error: Object.assign(new Error('nope'), { code: 'ENOENT' }) } }
+    const r = runSync('nope', [], { timeoutMs: 1000 }, { spawn, now: () => clock.t })
+    expect(n).toBe(1)
+    expect(r.fault?.code).toBe('ENOENT')
+  })
+
+  it('never retries a REAL timeout — it is a reading, not a fault', () => {
+    const clock = clockOf()
+    let n = 0
+    const spawn = () => { n += 1; clock.t += 7_200_000; return ETIMEDOUT }
+    const r = runSync('python', ['slow.py'], { timeoutMs: 7_200_000 }, { spawn, now: () => clock.t })
+    expect(n).toBe(1)
+    expect(r.timedOut).toBe(true)
+    expect(r.fault).toBeNull()
   })
 
   it('calls a real timeout a timeout once the elapsed time reaches the fraction', () => {
