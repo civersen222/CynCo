@@ -10,7 +10,7 @@ import {
   GATE_AUTHOR_MIN_LINES, GATE_AUTHOR_HELD_FLOOR, gateAuthorPromotion, gateAuthorAuthorityAcrossCampaigns,
   stagingDirFor, heldoutDirFor, prepareStaging, authoringBrief, authoringSidecar, checkCommand,
   checkStaged, authorCampaign, gateProposal, sealGate, draftToSpec, authorMain, previousLineId,
-  livePreviousCheck, positiveLeavesFailing, checkStagedViaSubprocess, restoreUncommittedWork,
+  livePreviousCheck, positiveLeavesFailing, checkStagedViaSubprocess, restoreUncommittedWork, refreshedLastCheck,
   CHECK_JSON_MARKER, SELF_SCRIPT, CHECK_SUBPROCESS_TIMEOUT_MS,
 } from '../cynco-gate-author.mjs'
 import { CampaignState } from '../cynco-campaign-state.mjs'
@@ -702,6 +702,47 @@ describe('authorCampaign', () => {
     const { r, state } = await runIt({ row: { missionId: 'c9-author-1', verified: null } })
     expect(r.proposal).toBeNull()
     expect(state.state.authoring.c9.verified).toBeNull()
+  })
+})
+
+/**
+ * The resume brief is built from a reading taken NOW. Attempt 5's brief was built
+ * from attempt 4's stored verdict — eleven problems, nine of them F155's
+ * inventions — under the order "Fix these before anything else".
+ */
+describe('refreshedLastCheck', () => {
+  const STALE = { at: 'then', ok: false, problems: ['too few gate lines: 0 < 8', 'gate timed out after 7200000 ms at BASE'], lineCount: 0, output: 'stale' }
+  const fake = ({ present = true, result = null } = {}) => ({
+    exists: () => present,
+    now: () => 'now',
+    run: () => result ?? { status: 1, stdout: CHECK_JSON_MARKER + JSON.stringify({ ok: false, problems: ['positive shim did not PASS (terminator null)'], lineIds: IDS, tails: { base: 'b', perturb: 'p', positive: POSITIVE_LOG } }), stderr: '', fault: null, timedOut: false },
+  })
+
+  it('keeps the stored reading on a first attempt — there is nothing staged to read', async () => {
+    const r = await refreshedLastCheck({ id: ID, stagingDir: 'C:/s/c9', baseDir: 'C:/b', prev: { attempts: 0, lastCheck: STALE }, io: fake() })
+    expect(r).toBe(STALE)
+  })
+
+  it('keeps the stored reading when the four files are not all staged yet', async () => {
+    const r = await refreshedLastCheck({ id: ID, stagingDir: 'C:/s/c9', baseDir: 'C:/b', prev: { attempts: 1, lastCheck: STALE }, io: fake({ present: false }) })
+    expect(r).toBe(STALE)
+  })
+
+  it('replaces a stale verdict with a fresh one, tails and failing ids included', async () => {
+    const r = await refreshedLastCheck({ id: ID, stagingDir: 'C:/s/c9', baseDir: 'C:/b', prev: { attempts: 1, lastCheck: STALE }, io: fake() })
+    expect(r.at).toBe('now')
+    expect(r.problems).toEqual(['positive shim did not PASS (terminator null)'])
+    expect(r.problems.join('\n')).not.toMatch(/too few gate lines|timed out/)
+    expect(r.lineCount).toBe(IDS.length)
+    expect(r.tails.positive).toBe(POSITIVE_LOG)
+    expect(r.positiveLeavesFailing).toEqual([])
+  })
+
+  // A harness fault is not a reason to tell the model nothing at all.
+  it('falls back to the stored reading when the refresh itself could not run', async () => {
+    const r = await refreshedLastCheck({ id: ID, stagingDir: 'C:/s/c9', baseDir: 'C:/b', prev: { attempts: 1, lastCheck: STALE },
+      io: fake({ result: { status: null, stdout: '', stderr: '', timedOut: false, fault: { code: 'ETIMEDOUT', status: null, signal: null, elapsedMs: 6 } } }) })
+    expect(r).toBe(STALE)
   })
 })
 

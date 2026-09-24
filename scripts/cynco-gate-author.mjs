@@ -504,7 +504,7 @@ check is green, print, as the last thing you say:
  */
 export async function checkStaged({ id, stagingDir, baseDir, io }) {
   const dir = norm(stagingDir)
-  const paths = { gate: `${dir}/gate_${id}.py`, perturb: `${dir}/perturb_${id}.py`, positive: `${dir}/positive_${id}.py`, draft: `${dir}/${id}.campaign.draft.json` }
+  const paths = stagedPaths(id, dir)
   const missing = Object.entries(paths).filter(([, p]) => !io.exists(p)).map(([, p]) => basename(p))
   if (missing.length) return { ok: false, problems: missing.map(f => `missing: ${f} was never written into the staging dir`), lineIds: [], calibration: null }
   if (!io.exists(baseDir)) return { ok: false, problems: [`missing: the BASE archive ${norm(baseDir)} does not exist — re-run --author to rebuild it`], lineIds: [], calibration: null }
@@ -668,6 +668,50 @@ export function livePreviousCheck({ id, stagingDir, lastCheck, io }) {
 /** Where the driver leaves a stopped mission's uncommitted tree. */
 export const WORK_SNAPSHOT_DIR = 'C:/tmp'
 
+/** The four files an authoring mission owes, in the staging dir. */
+export const stagedPaths = (id, stagingDir) => {
+  const dir = norm(stagingDir)
+  return { gate: `${dir}/gate_${id}.py`, perturb: `${dir}/perturb_${id}.py`,
+    positive: `${dir}/positive_${id}.py`, draft: `${dir}/${id}.campaign.draft.json` }
+}
+
+/**
+ * The reading the resume brief is built from — measured now, not remembered.
+ *
+ * The stored `lastCheck` is as old as the run that wrote it, and can be worse
+ * than old. Attempt 5's brief was built from attempt 4's verdict: eleven
+ * problems, of which nine were F155's inventions ("too few gate lines: 0 < 8"
+ * against a gate that grades 12, six MUST-FAIL complaints against an empty BASE
+ * failure set, and a two-hour timeout inside a 32-second check). A brief is a
+ * contract, and "Fix these before anything else" over nine phantoms buys nothing
+ * but budget spent disproving them. It also cannot carry the shim's output tail,
+ * because a verdict written before the tails existed has none.
+ *
+ * So on a resume — and only when all four files are actually staged, which the
+ * first attempt never has — run the subprocess check once and use that. Four
+ * minutes of a four-hour budget for a brief that is true. Falls back to the
+ * stored reading if the check itself could not run: a harness fault is not a
+ * reason to tell the model nothing.
+ */
+export async function refreshedLastCheck({ id, stagingDir, baseDir, prev, io }) {
+  const stored = prev?.lastCheck ?? null
+  if (!prev?.attempts) return stored
+  const paths = stagedPaths(id, stagingDir)
+  if (!Object.values(paths).every(p => io.exists(p))) return stored
+  const check = await checkStagedViaSubprocess({ id, stagingDir, baseDir, io })
+  if (check.fault) {
+    console.error(`[author] ${id}: could not refresh the previous check (${faultSummary(check.fault)}) — the brief carries the stored reading`)
+    return stored
+  }
+  console.log(`[author] ${id}: refreshed the previous check — ${check.ok ? 'PASS' : `${check.problems.length} problem(s)`}, ${check.lineIds.length} graded line(s)`)
+  return {
+    at: io.now(), ok: check.ok, problems: check.problems, lineCount: check.lineIds.length,
+    output: check.ok ? `PASS — ${check.lineIds.length} graded lines` : check.problems.join('\n'),
+    tails: check.tails ?? null,
+    positiveLeavesFailing: positiveLeavesFailing(check.tails?.positive ?? null),
+  }
+}
+
 /**
  * Put the last attempt's uncommitted work back before the next one starts.
  *
@@ -742,8 +786,23 @@ export async function authorCampaign({ id, roadmap, state, io }) {
   // Before the brief is written, so the brief can say what it found.
   const restoreNote = restoreUncommittedWork({ id, stagingDir, missionId: prev.missionId ?? null, io })
   if (restoreNote) console.log(`[author] ${restoreNote}`)
+
+  // A RESUME's brief must carry a CURRENT reading, so the check runs once here,
+  // against the tree the mission is about to open. The stored `lastCheck` is as
+  // old as the run that wrote it and can be worse than old: attempt 5's brief
+  // was built from attempt 4's verdict, eleven problems of which nine were F155
+  // inventions — "too few gate lines: 0 < 8" against a gate with 12, and a
+  // two-hour timeout that never happened. A brief is a contract; handing a model
+  // nine false problems under "fix these" spends its budget on phantoms.
+  //
+  // Only on a resume, and only once the triple is actually there: the first
+  // attempt has nothing to read, and four minutes of a four-hour budget buys a
+  // brief that is true.
+  const resumeCheck = await refreshedLastCheck({ id, stagingDir, baseDir, prev, io })
+  if (resumeCheck !== prev.lastCheck) s.authoring[id] = { ...prev, lastCheck: resumeCheck }
+
   const text = authoringBrief({ line, id, prevId, baseDir, stagingDir, exemplar: exemplarFor({ prevId, io }),
-    previousCheck: livePreviousCheck({ id, stagingDir, lastCheck: prev.lastCheck, io }), restoreNote })
+    previousCheck: livePreviousCheck({ id, stagingDir, lastCheck: resumeCheck, io }), restoreNote })
   io.writeFile(briefFile, text)
   io.writeFile(sidecarPath(briefFile), JSON.stringify(authoringSidecar({ stagingDir, baseDir }), null, 2) + '\n')
   commitStaging(stagingDir, `${id}-author: brief ${attempt}`, io)
