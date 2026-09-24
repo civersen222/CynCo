@@ -1324,17 +1324,55 @@ describe('main routes the authoring verbs before it loads a campaign spec', () =
     }
   })
 
-  it('--reject-proposal gate/<id> decides and seals nothing', async () => {
+  /**
+   * A refusal REOPENS the line, or the campaign is stuck: `--author` refuses a
+   * `proposed` line and `nextOpenLine` does not count one as in flight, so a
+   * DO-NOT-SEAL verdict would leave the gate neither sealable nor re-authorable.
+   *
+   * `roadmapPath` is injected because this path WRITES the roadmap. Redirecting
+   * CYNCO_HOME is not enough — the roadmap is repo-relative and shared with the
+   * live campaign — and the first cut of this branch rewound the checked-in c9
+   * line from `proposed` to `authoring` on every suite run.
+   */
+  it('--reject-proposal gate/<id> decides, reopens the line, and seals nothing', async () => {
     const dir = join(mkdtempSync(join(tmpdir(), 'home-')), '.cynco')
+    const roadmapPath = join(mkdtempSync(join(tmpdir(), 'roadmap-')), 'roadmap.json')
+    writeFileSync(roadmapPath, JSON.stringify({ lines: [{ id: 'c9', name: 'Ship shell', bar: 'b', base: 'abcdef1', status: 'proposed' }] }, null, 2) + '\n')
+    const prev = process.env.CYNCO_HOME
+    process.env.CYNCO_HOME = dir
+    try {
+      const state = new CampaignState(join(dir, 'campaigns', 'c9')).load()
+      state.state.authoring = { c9: { stagingDir: 'C:/s/c9' } }
+      state.state.proposals = [{ type: 'Code', name: 'gate/c9', proposedAt: 't1', status: 'pending' }]
+      state.save()
+      const s = stub()
+      const notePath = join(mkdtempSync(join(tmpdir(), 'note-')), 'note.txt')
+      writeFileSync(notePath, 'gate C9.1b: _press must draw first.\n')
+      expect(await main(['--reject-proposal', 'gate/c9', '--note', notePath], { authorModule: s.authorModule, roadmapPath })).toBe(0)
+      expect(s.calls).toEqual([])
+      expect(JSON.parse(readFileSync(roadmapPath, 'utf8')).lines[0].status).toBe('authoring')
+      const after = new CampaignState(join(dir, 'campaigns', 'c9')).load().state
+      expect(after.proposals[0].status).toBe('rejected')
+      expect(after.authoring.c9.refusals).toEqual([expect.objectContaining({ by: 'supervisor', notePath })])
+    } finally {
+      if (prev === undefined) delete process.env.CYNCO_HOME; else process.env.CYNCO_HOME = prev
+    }
+  })
+
+  // And it never touches the checked-in roadmap unless asked to.
+  it('--reject-proposal leaves the live roadmap alone when given its own path', async () => {
+    const before = readFileSync('docs/civkings-redesign-briefs/roadmap.json', 'utf8')
+    const dir = join(mkdtempSync(join(tmpdir(), 'home-')), '.cynco')
+    const roadmapPath = join(mkdtempSync(join(tmpdir(), 'roadmap-')), 'roadmap.json')
+    writeFileSync(roadmapPath, JSON.stringify({ lines: [{ id: 'c9', name: 'n', bar: 'b', base: 'abcdef1', status: 'proposed' }] }, null, 2) + '\n')
     const prev = process.env.CYNCO_HOME
     process.env.CYNCO_HOME = dir
     try {
       const state = new CampaignState(join(dir, 'campaigns', 'c9')).load()
       state.state.proposals = [{ type: 'Code', name: 'gate/c9', proposedAt: 't1', status: 'pending' }]
       state.save()
-      const s = stub()
-      expect(await main(['--reject-proposal', 'gate/c9'], { authorModule: s.authorModule })).toBe(0)
-      expect(s.calls).toEqual([])
+      await main(['--reject-proposal', 'gate/c9'], { authorModule: stub().authorModule, roadmapPath })
+      expect(readFileSync('docs/civkings-redesign-briefs/roadmap.json', 'utf8')).toBe(before)
     } finally {
       if (prev === undefined) delete process.env.CYNCO_HOME; else process.env.CYNCO_HOME = prev
     }

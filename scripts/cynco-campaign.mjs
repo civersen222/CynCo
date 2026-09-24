@@ -720,6 +720,11 @@ export async function main(argv, deps = {}) {
   if (!existsSync('scripts/dispatch-mission.sh')) { console.error('[campaign] run from the localcode repo root'); return 2 }
   const flag = (n) => argv.indexOf(n)
   const loadAuthor = deps.authorModule ? async () => deps.authorModule : () => import('./cynco-gate-author.mjs')
+  // Injectable because the reject path WRITES it, and a test that redirects
+  // CYNCO_HOME still shares this repo-relative file with the live campaign: the
+  // first cut of `--reject-proposal` rewound the checked-in c9 line from
+  // `proposed` to `authoring` every time the suite ran.
+  const roadmapPath = deps.roadmapPath ?? ROADMAP_PATH
 
   // ── the gate-authoring verbs ───────────────────────────────────────────
   //
@@ -763,9 +768,9 @@ export async function main(argv, deps = {}) {
       // refuses a `proposed` line and `nextOpenLine` does not count one as in
       // flight, so a DO-NOT-SEAL verdict would leave the gate neither sealable nor
       // re-authorable. `rejectLine` is the one backward move the ladder permits.
-      const roadmap = loadRoadmap(ROADMAP_PATH)
+      const roadmap = loadRoadmap(roadmapPath)
       let reopened = false
-      try { rejectLine(roadmap, id); saveRoadmap(ROADMAP_PATH, roadmap); reopened = true }
+      try { rejectLine(roadmap, id); saveRoadmap(roadmapPath, roadmap); reopened = true }
       catch (e) { console.error(`[campaign] proposal rejected, but the roadmap line was not reopened: ${e.message}`) }
       // The note is the refusal's CONTENT, and the next resume's brief is the only
       // place it can do any work. Recorded by path, not copied: the reviewer's file
