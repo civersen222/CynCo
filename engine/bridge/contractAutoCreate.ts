@@ -323,9 +323,16 @@ export const HARNESS_ROOT = resolve(fileURLToPath(new URL('../../', import.meta.
  * under `~/.cynco/heldout/`, and the note above `harnessGatePaths` already
  * records that a gate stored inside the repository is out of this mechanism's
  * scope. So exempting the harness's own tree withholds nothing that was being
- * withheld before. Only the SEAL is lifted — `harnessGatePaths` still returns
- * the path, so the script stays read-only, which is what it should have been
- * all along: machinery the mission may read and run and must not edit.
+ * withheld before — and, belt and braces, a path under a `heldout` directory is
+ * never exempt whatever tree it sits in.
+ *
+ * The exemption is applied at the SEAL and nowhere else (`sealedGatePaths`).
+ * `harnessGatePaths` still returns the path, so the script stays read-only —
+ * machinery the mission may read and run and must not edit — and
+ * `withheldGatePaths` still returns it, so the driver's F45 snapshot/restore
+ * write barrier keeps covering it. The first cut of this fix filtered
+ * `withheldGatePaths` itself and silently took that barrier off the one file
+ * whose rewriting would change every score in the run.
  */
 export function isHarnessOwnFile(p: string, harnessRoot: string = HARNESS_ROOT): boolean {
   const norm = (s: string) => {
@@ -333,6 +340,7 @@ export function isHarnessOwnFile(p: string, harnessRoot: string = HARNESS_ROOT):
     return process.platform === 'win32' ? t.toLowerCase() : t
   }
   const root = norm(harnessRoot), abs = norm(p)
+  if (abs.includes('/.cynco/heldout/') || abs.includes('/heldout/')) return false
   return root.length > 0 && (abs === root || abs.startsWith(root + '/'))
 }
 
@@ -380,17 +388,40 @@ export function harnessGatePaths(
  * `immutableTargetOf`'s refusal tells the model, correctly for a brief, that it
  * may read the file as often as it likes.
  *
- * F154: minus the harness's own tree — see `isHarnessOwnFile`. The runner that
- * executes a gate is not the gate.
+ * This is the full withheld-instrument set, harness-own files included. The
+ * driver's F45 write barrier (`snapshotHeldOut` / `restoreHeldOut`) reads it,
+ * and that barrier must cover the checker too: a mission that rewrites the file
+ * that scores it is scored by its own edit. What must NOT cover the checker is
+ * the READ seal — see `sealedGatePaths`.
  */
 export function withheldGatePaths(
   assertions: HarnessAssertion[],
   cwd: string,
   exists: (p: string) => boolean = isInstrumentPath,
-  harnessRoot: string = HARNESS_ROOT,
 ): string[] {
   const withheld = assertions.filter(a => typeof a !== 'string' && Boolean(a.command))
-  return harnessGatePaths(withheld, cwd, exists).filter(p => !isHarnessOwnFile(p, harnessRoot))
+  return harnessGatePaths(withheld, cwd, exists)
+}
+
+/**
+ * The subset of the withheld set that the READ seal applies to (F154).
+ *
+ * `withheldGatePaths` minus this installation's own source tree. The seal makes
+ * a path unreadable, unlistable and UNRUNNABLE, and a mission ordered to run its
+ * acceptance command cannot be refused the command — the Phase 3 authoring run
+ * was, and set out to author a graded instrument with no way to test it.
+ *
+ * Only `setTaskSealedPaths` and the driver's count of what will be sealed read
+ * this. Everything else — read-only marking, the snapshot barrier — keeps the
+ * full set.
+ */
+export function sealedGatePaths(
+  assertions: HarnessAssertion[],
+  cwd: string,
+  exists: (p: string) => boolean = isInstrumentPath,
+  harnessRoot: string = HARNESS_ROOT,
+): string[] {
+  return withheldGatePaths(assertions, cwd, exists).filter(p => !isHarnessOwnFile(p, harnessRoot))
 }
 
 /** Apply a harness-supplied contract spec. Returns true when applied. */

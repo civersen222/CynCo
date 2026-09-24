@@ -11,6 +11,7 @@ import {
   harnessContractCommandError,
   harnessGatePaths,
   withheldGatePaths,
+  sealedGatePaths,
   maybeAutoCreateContract,
   isHarnessOwnFile,
   HARNESS_ROOT,
@@ -573,7 +574,7 @@ describe('harnessGatePaths: the instruments a contract names', () => {
       // Still an instrument for read-only purposes — the model may read it and
       // run it, and must not edit it.
       expect(harnessGatePaths(assertions, staging)).toContain(runnerPath)
-      expect(withheldGatePaths(assertions, staging, undefined, harnessRoot)).toEqual([])
+      expect(sealedGatePaths(assertions, staging, undefined, harnessRoot)).toEqual([])
 
       // And the exemption is the harness tree, not "anything a check runs": a
       // real held-out gate elsewhere is still sealed by the same command.
@@ -581,7 +582,35 @@ describe('harnessGatePaths: the instruments a contract names', () => {
         text: 'A held-out check, not yours to run, exits 0.',
         command: `bun "${runnerPath}" --check "${staging}" && python ${held.file}`,
       }]
-      expect(withheldGatePaths(both, staging, undefined, harnessRoot)).toEqual([held.file])
+      expect(sealedGatePaths(both, staging, undefined, harnessRoot)).toEqual([held.file])
+    })
+
+    /**
+     * The F154 overreach, caught in review. `withheldGatePaths` has a second
+     * consumer — `snapshotHeldOut` in the driver (F45's WRITE barrier) — so
+     * filtering it took the snapshot/restore off the very file whose rewriting
+     * would change every score in the run, in a mission whose brief hands it
+     * that file's absolute path. The seal is lifted; the barrier is not.
+     */
+    it('keeps the harness in the WITHHELD set, so the F45 snapshot barrier still covers it', () => {
+      const harnessRoot = mkdtempSync(join(tmpdir(), 'cynco-harness2-'))
+      dirs.push(harnessRoot)
+      const runner = join(harnessRoot, 'scripts', 'cynco-gate-author.mjs')
+      mkdirSync(dirname(runner), { recursive: true })
+      writeFileSync(runner, '// the verb\n', 'utf-8')
+      const runnerPath = runner.split('\\').join('/')
+      const staging = workspace('gate_c9.py')
+      const assertions = [{ text: 'The staged gate triple passes lint and calibration.', command: `bun "${runnerPath}" --check "${staging}"` }]
+
+      expect(withheldGatePaths(assertions, staging)).toEqual([runnerPath])
+      expect(sealedGatePaths(assertions, staging, undefined, harnessRoot)).toEqual([])
+      // withheldGatePaths takes no harnessRoot at all — there is no way to ask
+      // it for the narrowed set, which is the point. (`Function.length` counts
+      // the params before the first default, so `sealedGatePaths` scores the
+      // same 2; what matters is the arity of the full signature.)
+      expect(withheldGatePaths).toHaveLength(2)
+      expect(String(withheldGatePaths)).not.toContain('harnessRoot')
+      expect(String(sealedGatePaths)).toContain('harnessRoot')
     })
 
     it('defaults its harness root to the tree this module lives in', () => {
@@ -591,6 +620,14 @@ describe('harnessGatePaths: the instruments a contract names', () => {
       expect(isHarnessOwnFile('C:/Users/civer/.cynco/heldout/civkings-redesign/c8/gate_c8.py')).toBe(false)
       // The module that computes it is this repository's own file.
       expect(existsSync(join(HARNESS_ROOT, 'engine', 'bridge', 'contractAutoCreate.ts'))).toBe(true)
+    })
+
+    // Belt and braces: a checker someone parks beside the gates one day must not
+    // be able to smuggle itself out of the seal by sitting in the harness tree.
+    it('never exempts a path under a heldout directory, whatever tree it is in', () => {
+      expect(isHarnessOwnFile(HARNESS_ROOT + '/.cynco/heldout/civkings-redesign/c8/gate_c8.py')).toBe(false)
+      expect(isHarnessOwnFile(HARNESS_ROOT + '/scripts/heldout/runner.mjs')).toBe(false)
+      expect(isHarnessOwnFile(HARNESS_ROOT + '/scripts/cynco-gate-author.mjs')).toBe(true)
     })
   })
 })

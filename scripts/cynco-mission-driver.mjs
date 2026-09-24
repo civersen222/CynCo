@@ -62,7 +62,7 @@ import { snapshotHeldOut, restoreHeldOut } from './cynco-held-out.mjs'
 import { snapshotUncommittedWork } from './cynco-work-snapshot.mjs'
 import { activeShardPath, ledgerCount, ensureLedgerDir } from './cynco-ledger-shards.mjs'
 import { cyncoHome } from '../engine/paths.js'
-import { withheldGatePaths } from '../engine/bridge/contractAutoCreate.js'
+import { withheldGatePaths, sealedGatePaths } from '../engine/bridge/contractAutoCreate.js'
 import { loadOrCreateTokens } from '../engine/security/localToken.js'
 
 const [taskFile, marker, cwdArg, timeoutArg, checkCmd, probeCmd] = process.argv.slice(2)
@@ -183,8 +183,12 @@ if (missionAssertions && missionAssertions.length > (checkCmd ? 1 : 0)) {
 // driver knows whether this mission depends on a guarantee before it decides
 // whether the engine on the other end of the socket has one. The count is all
 // that leaves this scope: the paths themselves are the withheld thing.
+// F154: `sealedGatePaths`, so this count is what the engine will ACTUALLY seal.
+// It also decides whether this mission needs an engine that can seal at all, and
+// a mission whose only outside instrument is the harness's own checker needs no
+// such guarantee. The snapshot barrier below takes the full set, not this one.
 const SEALED_COUNT = missionAssertions
-  ? withheldGatePaths(missionAssertions, CWD).length
+  ? sealedGatePaths(missionAssertions, CWD).length
   : 0
 if (SEALED_COUNT > 0) console.log(`[driver] this mission seals ${SEALED_COUNT} held-out instrument(s)`)
 
