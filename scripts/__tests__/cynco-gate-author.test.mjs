@@ -706,16 +706,98 @@ describe('authorCampaign', () => {
     expect(dispatched).toEqual([])
   })
 
-  // §4: a mission whose instrument never ran is not evidence either way.
-  it('proposes nothing when the ledger row is missing', async () => {
-    const { r, roadmap } = await runIt({ row: null })
+  /**
+   * CONTROLLER RULING: the verdict is the runner's own check, never `verified`.
+   *
+   * `verified` is the driver's advisory reading and it is STRUCTURALLY null for
+   * every authoring mission that runs to its budget — the run cannot go quiet, so
+   * the driver records null and warns that its gate and the mission are racing for
+   * the same tree. Gating on it made a green bar unproposable by construction:
+   * live attempt 7 passed the driver's own check (exit 0, 277 s, `GATE: PASS`) AND
+   * the runner's re-check (ok, 11 graded lines), and printed "no proposal — the
+   * mission produced no verified check result".
+   */
+  it('proposes on a passing triple even when verified is null', async () => {
+    const { r, roadmap, state } = await runIt({ row: { missionId: 'c9-author-1', verified: null } })
+    expect(state.state.authoring.c9.verified).toBeNull()
+    expect(r.proposal).toMatchObject({ name: 'gate/c9', status: 'pending' })
+    expect(r.proposal.evidence.verified).toBeNull()
+    expect(roadmap.lines.find(l => l.id === 'c9').status).toBe('proposed')
+  })
+
+  // A missing row is worth saying and not worth refusing over: the triple on disk
+  // is what is being graded, and the runner's check reads it directly.
+  it('proposes on a passing triple with no ledger row, and says the row was missing', async () => {
+    const { r, roadmap, state } = await runIt({ row: null })
+    expect(r.proposal).toMatchObject({ name: 'gate/c9' })
+    expect(r.proposal.evidence.missionId).toBeNull()
+    expect(state.state.authoring.c9.fault).toMatch(/driver exited without a ledger row — the triple was graded from disk/)
+    expect(roadmap.lines.find(l => l.id === 'c9').status).toBe('proposed')
+  })
+
+  it('proposes nothing when the triple is refused, and calls it a refusal', async () => {
+    const { r, roadmap, state } = await runIt({ check: { ok: false, problems: ['positive shim did not PASS (terminator null)'] } })
     expect(r.proposal).toBeNull()
+    expect(r.kind).toBe('refused')
+    expect(r.why).toMatch(/--check refused the staged triple \(1 problem\(s\)\)/)
+    expect(state.state.authoring.c9.lastCheck.kind).toBe('refused')
     expect(roadmap.lines.find(l => l.id === 'c9').status).toBe('authoring')
   })
-  it('proposes nothing when the mission verified is null', async () => {
-    const { r, state } = await runIt({ row: { missionId: 'c9-author-1', verified: null } })
+
+  // A fault means the instrument did not run, so the triple is UNGRADED — a
+  // different thing from a triple that is not a bar, and a different next move.
+  it('proposes nothing on a harness fault, and calls it a fault', async () => {
+    const { files } = staged(home)
+    const { io } = makeIo({ home, files })
+    const inner = io.run
+    io.run = (cmd, args, opts) => cmd === 'bun' && args.includes('--check')
+      ? { status: null, stdout: '', stderr: '', elapsedMs: 6, timedOut: false, fault: { code: 'ETIMEDOUT', status: null, signal: null, elapsedMs: 6 } }
+      : inner(cmd, args, opts)
+    const roadmap = ROADMAP()
+    const state = new CampaignState(join(mkdtempSync(join(tmpdir(), 'camp-')), ID)).load()
+    const r = await authorCampaign({ id: ID, roadmap, state, io })
     expect(r.proposal).toBeNull()
-    expect(state.state.authoring.c9.verified).toBeNull()
+    expect(r.kind).toBe('fault')
+    expect(r.why).toMatch(/^NOT GRADED — harness fault: the re-check subprocess did not run/)
+    expect(state.state.authoring.c9.lastCheck.kind).toBe('fault')
+    expect(roadmap.lines.find(l => l.id === 'c9').status).toBe('authoring')
+  })
+
+  /**
+   * A resume whose staged triple already passes has nothing for a mission to do,
+   * and four hours of GPU to prove it. The reading is the same subprocess check
+   * `authorCampaign` takes after a dispatch, so the evidence is identical.
+   */
+  it('proposes straight from a passing staged triple, without dispatching', async () => {
+    const { files } = staged(home)
+    const { io, dispatched, disk } = makeIo({ home, files })
+    const roadmap = ROADMAP()
+    const state = new CampaignState(join(mkdtempSync(join(tmpdir(), 'camp-')), ID)).load()
+    // Attempt 1 dispatches and proposes; the line is then `proposed`, so put it
+    // back to `authoring` to stand for "a resume the operator runs again".
+    await authorCampaign({ id: ID, roadmap, state, io })
+    expect(dispatched).toHaveLength(1)
+    roadmap.lines.find(l => l.id === 'c9').status = 'authoring'
+
+    const r = await authorCampaign({ id: ID, roadmap, state, io })
+    expect(r.ok).toBe(true)
+    expect(r.dispatched).toBe(false)
+    expect(dispatched).toHaveLength(1)                        // no second mission
+    expect(disk[`${home}/authoring/c9/brief-2.txt`]).toBeUndefined()   // and no second brief
+    expect(r.proposal).toMatchObject({ name: 'gate/c9', status: 'pending' })
+    expect(r.proposal.evidence.lineCount).toBe(IDS.length)
+    expect(roadmap.lines.find(l => l.id === 'c9').status).toBe('proposed')
+    expect(state.state.proposals.filter(p => p.name === 'gate/c9' && p.status === 'pending')).toHaveLength(1)
+  })
+
+  it('still dispatches a resume whose staged triple is refused', async () => {
+    const { files } = staged(home)
+    const { io, dispatched } = makeIo({ home, files, check: { ok: false, problems: ['positive shim did not PASS (terminator null)'] } })
+    const roadmap = ROADMAP()
+    const state = new CampaignState(join(mkdtempSync(join(tmpdir(), 'camp-')), ID)).load()
+    await authorCampaign({ id: ID, roadmap, state, io })
+    await authorCampaign({ id: ID, roadmap, state, io })
+    expect(dispatched).toHaveLength(2)
   })
 })
 

@@ -365,7 +365,22 @@ draft counts.
   reach `GATE: PASS` — a bar nothing can pass is not a bar. The runner re-runs
   all of it from its own side after the mission returns: the driver ran the
   check too, but it ran it in a process the mission could have reached, so only
-  the runner's reading raises the proposal. That re-run is a SUBPROCESS —
+  the runner's reading raises the proposal. **That reading IS the verdict, and
+  `verified` is not** (controller ruling, amending §4). `verified` is the driver's
+  advisory check, and for an authoring mission it is structurally `null`: the run
+  cannot go quiet, so the driver warns that its gate and the mission are racing
+  for the same tree and records nothing. Gating the proposal on it made a green
+  bar unproposable by construction — live attempt 7 passed the driver's check
+  (exit 0, 277 s, `GATE: PASS`) and the runner's re-check (ok, 11 graded lines)
+  and was refused with "the mission produced no verified check result".
+  `verified` is recorded on the row and printed; nothing hangs off it. A missing
+  ledger row is likewise reported, not refused over — the triple on disk is the
+  thing being graded — and `lastCheck.kind` separates a `fault` (the instrument
+  did not run; the triple is UNGRADED) from a `refused` (it ran; the triple is
+  not a bar), because those are different next moves. A resume whose staged
+  triple already passes raises the proposal WITHOUT dispatching a mission: the
+  reading is the same subprocess check, so the evidence is identical and the
+  four hours are not spent. That re-run is a SUBPROCESS —
   `bun <abs path>/cynco-gate-author.mjs --check <staging> <base>`, its verdict
   read from the exit code and the `[check-json]` line — never an in-process
   `calibrate`. F155: the runner's first spawn comes four hours after its last

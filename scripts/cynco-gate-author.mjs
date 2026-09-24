@@ -740,6 +740,33 @@ export const stagedPaths = (id, stagingDir) => {
 }
 
 /**
+ * One check reading, in the shape the state stores and the brief reads.
+ *
+ * `kind` is the distinction `harnessFault` was carrying with no consumer: a
+ * `fault` means the instrument did not run and the triple is UNGRADED, while
+ * `refused` means it ran and the triple is not a bar. The verdict line and the
+ * dashboard both print that word, and conflating them is how nine invented
+ * problems got recorded against a sound gate in the first place.
+ */
+export function checkRecord(check, io) {
+  const kind = check.fault ? 'fault' : check.ok ? 'ok' : 'refused'
+  return {
+    at: io.now(), kind, ok: check.ok, problems: check.problems, lineCount: check.lineIds.length,
+    // Kept, not just counted: a resume that proposes straight from the staged
+    // triple builds its proposal out of this record and has no other source for
+    // the ids, and `draftToSpec` needs the ids themselves at seal time.
+    lineIds: check.lineIds,
+    output: check.ok ? `PASS — ${check.lineIds.length} graded lines` : check.problems.join('\n'),
+    // The resume brief's raw material. A problem list says the positive shim
+    // "did not PASS"; the tail says it died on `import gilded.ui.views` at line
+    // 124, and the failing ids say which facts it never made true. Attempt 4
+    // spent its budget rediscovering both by hand.
+    tails: check.tails ?? null,
+    positiveLeavesFailing: positiveLeavesFailing(check.tails?.positive ?? null),
+  }
+}
+
+/**
  * The reading the resume brief is built from — measured now, not remembered.
  *
  * The stored `lastCheck` is as old as the run that wrote it, and can be worse
@@ -768,12 +795,7 @@ export async function refreshedLastCheck({ id, stagingDir, baseDir, prev, io }) 
     return stored
   }
   console.log(`[author] ${id}: refreshed the previous check — ${check.ok ? 'PASS' : `${check.problems.length} problem(s)`}, ${check.lineIds.length} graded line(s)`)
-  return {
-    at: io.now(), ok: check.ok, problems: check.problems, lineCount: check.lineIds.length,
-    output: check.ok ? `PASS — ${check.lineIds.length} graded lines` : check.problems.join('\n'),
-    tails: check.tails ?? null,
-    positiveLeavesFailing: positiveLeavesFailing(check.tails?.positive ?? null),
-  }
+  return checkRecord(check, io)
 }
 
 /**
@@ -866,6 +888,23 @@ export async function authorCampaign({ id, roadmap, state, io }) {
   const resumeCheck = await refreshedLastCheck({ id, stagingDir, baseDir, prev, io })
   if (resumeCheck !== prev.lastCheck) s.authoring[id] = { ...prev, lastCheck: resumeCheck }
 
+  // The staged triple already passes: there is nothing for a mission to do, and
+  // four hours of GPU to prove it. Propose from what is on disk. This is the same
+  // reading `authorCampaign` would take after a dispatch — the subprocess check —
+  // so the evidence behind the proposal is identical either way.
+  if (resumeCheck?.ok) {
+    const check = { ok: true, problems: [], lineIds: resumeCheck.lineIds ?? [], tails: resumeCheck.tails ?? null }
+    const proposal = gateProposal({ id, check, missionId: prev.missionId ?? null, verified: prev.verified ?? null })
+    s.proposals = s.proposals ?? []
+    if (!s.proposals.some(p => p.name === proposal.name && p.status === 'pending')) s.proposals.push({ ...proposal, proposedAt: io.now() })
+    setLineStatus(roadmap, id, 'proposed')
+    ;(io.saveRoadmap ?? saveRoadmap)(ROADMAP_PATH, roadmap)
+    state.save()
+    console.log(`[author] ${id}: proposal ${proposal.name} raised from the staged triple — no mission needed`)
+    return { ok: true, why: null, proposal, missionId: prev.missionId ?? null, verified: prev.verified ?? null,
+      check, sealed: null, dispatched: false }
+  }
+
   const text = authoringBrief({ line, id, prevId, baseDir, stagingDir, exemplar: exemplarFor({ prevId, io }),
     previousCheck: livePreviousCheck({ id, stagingDir, lastCheck: resumeCheck, io }), restoreNote,
     packageMap: readPackageMap({ baseDir, io }), timeoutS })
@@ -906,15 +945,22 @@ export async function authorCampaign({ id, roadmap, state, io }) {
   s.authoring[id] = { ...prev, stagingDir, baseDir, briefFile, attempts: attempt, dispatchedAt: io.now(), missionId: null, verified: null, fault: null }
   state.save()
 
-  let missionId = null, verified = null, fault = null
+  let missionId = null, verified = null, fault = null, driverExited = false
   try {
     await io.dispatch({ briefFile, marker: `gate ${id} authored`, cwd: stagingDir, timeoutS, checkCmd: checkCommand(stagingDir, baseDir), env })
     const waited = await io.waitForDriver({ pidFile, driverLog, timeoutMs: (timeoutS + 3600) * 1000 })
     missionId = waited.exited ? (waited.missionId ?? io.missionIdFrom?.(driverLog) ?? null) : null
+    driverExited = Boolean(waited.exited)
     const row = missionId ? io.readRow(missionId) : null
     verified = row ? (row.verified ?? null) : null
+    // A missing row is worth SAYING and is no longer worth refusing over: the
+    // triple on disk is the thing being graded and the runner's check reads it
+    // directly. Only a driver that never came back leaves nothing to grade.
     if (!row) {
-      fault = waited.exited ? 'driver exited without a ledger row'
+      // A mission id with no row behind it points at nothing anyone can read, so
+      // it is not recorded as evidence — the fault line says what happened.
+      missionId = null
+      fault = waited.exited ? 'driver exited without a ledger row — the triple was graded from disk'
         : waited.pidUnseen ? `driver pid ${waited.pidUnseen} was already invisible on the first probe — the PID handoff is broken and the mission may still be running unwatched (see ${driverLog})`
           : 'driver did not exit within the wall clock'
     }
@@ -923,24 +969,26 @@ export async function authorCampaign({ id, roadmap, state, io }) {
     console.error(`[author] ${id}: ${e?.stack ?? e}`)
   }
 
-  const check = await checkStagedViaSubprocess({ id, stagingDir, baseDir, io })
-  const lastCheck = {
-    at: io.now(), ok: check.ok, problems: check.problems, lineCount: check.lineIds.length,
-    output: check.ok ? `PASS — ${check.lineIds.length} graded lines` : check.problems.join('\n'),
-    // The resume brief's raw material. A problem list says the positive shim
-    // "did not PASS"; the tail says it died on `import gilded.ui.views` at line
-    // 124, and the failing ids say which facts it never made true. Attempt 4
-    // spent its budget rediscovering both by hand.
-    tails: check.tails ?? null,
-    positiveLeavesFailing: positiveLeavesFailing(check.tails?.positive ?? null),
-  }
+  // Whenever the driver came back at all, the triple on disk gets graded — a
+  // missing ledger row is a thing to report, not a reason to leave a green bar
+  // ungraded. Only a driver still running, or never seen, has nothing to grade.
+  const check = driverExited
+    ? await checkStagedViaSubprocess({ id, stagingDir, baseDir, io })
+    : { ok: false, problems: [`not graded: ${fault ?? 'the driver never returned'}`], lineIds: [], tails: null, fault: null }
+  const lastCheck = checkRecord(check, io)
   s.authoring[id] = { ...s.authoring[id], missionId, verified, lastCheck, fault }
 
   let proposal = null
-  // §4: a dispatch fault, or a mission whose own check never produced a
-  // verdict, is not evidence either way. The triple may well be green — but
-  // nothing here knows whether it was the mission that wrote it.
-  if (check.ok && !fault && verified !== null) {
+  // CONTROLLER RULING, amending the spec: the authoring verdict is THIS check and
+  // never `verified`. `verified` is the driver's advisory reading, and for an
+  // authoring mission it is structurally null — the run cannot go quiet, so the
+  // driver warns that its gate and the mission are racing for the same tree and
+  // records null. Gating on it made a green bar unproposable by construction:
+  // live attempt 7 passed the driver's own check (exit 0, 277 s, `GATE: PASS`)
+  // AND the runner's re-check (ok, 11 graded lines) and still printed "no
+  // proposal — the mission produced no verified check result". `verified` is
+  // recorded on the state and printed in the verdict line; nothing hangs off it.
+  if (check.ok) {
     proposal = gateProposal({ id, check, missionId, verified })
     s.proposals = s.proposals ?? []
     if (!s.proposals.some(p => p.name === proposal.name && p.status === 'pending')) s.proposals.push({ ...proposal, proposedAt: io.now() })
@@ -995,8 +1043,14 @@ export async function authorCampaign({ id, roadmap, state, io }) {
     }
   }
   state.save()
-  const why = proposal ? null : fault ?? (check.ok ? `the mission produced no verified check result` : `--check refused the staged triple (${check.problems.length} problem(s))`)
-  return { ok: Boolean(proposal), why, proposal, missionId, verified, check, sealed }
+  // `kind` decides the wording, because "the instrument did not run" and "the
+  // triple is not a bar" are different things to a person reading one line.
+  // `fault` (the dispatch/wait fault) is reported alongside rather than instead:
+  // the check still ran and still has something to say.
+  const why = proposal ? null
+    : lastCheck.kind === 'fault' ? `NOT GRADED — ${check.problems.join('; ')}${fault ? ` (and: ${fault})` : ''}`
+      : `--check refused the staged triple (${check.problems.length} problem(s))${fault ? ` (and: ${fault})` : ''}`
+  return { ok: Boolean(proposal), why, proposal, missionId, verified, check, sealed, kind: lastCheck.kind }
 }
 
 /**
@@ -1333,7 +1387,9 @@ export async function authorMain(argv, io = defaultAuthorIo()) {
       const r = await authorCampaign({ id, roadmap, state, io })
       if (r.ok && r.sealed?.ok) { console.log(`[author] ${id}: SEALED at earned authority — ${r.sealed.specPath} written, triple copied, proposal ${r.proposal.name} approved automatically (${r.check.lineIds.length} graded lines)`); return 0 }
       if (r.ok) { console.log(`[author] ${id}: proposal ${r.proposal.name} raised (${r.check.lineIds.length} graded lines) — review the triple, then --approve-proposal ${r.proposal.name}`); return 0 }
-      console.error(`[author] ${id}: no proposal — ${r.why}`)
+      // A FAULT is not a refusal: nothing was measured, so nothing was judged,
+      // and the operator's next move is to fix the harness rather than the gate.
+      console.error(`[author] ${id}: ${r.kind === 'fault' ? 'fault' : 'no proposal'} — ${r.why}`)
       for (const p of r.check?.problems ?? []) console.error(`  ${p}`)
       return 1
     } finally { io.releaseLock(state.dir) }

@@ -36,7 +36,11 @@ decisions still recorded here).
   "dispatchedAt": "2026-07-11T22:00:00.000Z",
   "durationS": 412,
   "outcome": "landed",      // "landed" | "timeout" | "zero_tool_fail"
-  "verified": null,         // STRUCTURAL: the check-cmd's exit code. null = UNMEASURED
+  // STRUCTURAL: the check-cmd's exit code. null = UNMEASURED. For a gate-AUTHORING
+  // mission it is null by construction — the run cannot go quiet, so the driver
+  // records the advisory and no verdict — and nothing may gate on it there: the
+  // authoring verdict is the runner's own subprocess check (spec §10).
+  "verified": null,
   "verify": {               // what produced `verified`; null when no check-cmd was given
     "command": "python3 -m pytest -q", "exitCode": 0,
     "timedOut": false, "spawnFailed": false, "durationMs": 70303, "outputTail": "..."
