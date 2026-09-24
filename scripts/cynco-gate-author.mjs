@@ -410,7 +410,9 @@ ${perturbHead}`
   if (previousCheck) {
     out.push(section('PREVIOUS CHECK OUTPUT',
 `The last authoring run left the triple in ${staging} and the check REFUSED it.
-These are its words. Fix these before anything else; do not start over.
+These are its words, from the PREVIOUS run — run the check yourself (DONE WHEN,
+below; it works from any directory) to see where the triple stands now. Fix what
+it reports; do not start over.
 
 ${noSealedPath(previousCheck)}`))
   }
@@ -547,6 +549,34 @@ function commitStaging(stagingDir, message, io) {
 }
 
 /**
+ * The stored check output, minus the problems the staging dir has since fixed.
+ *
+ * A stored check is as old as the run that produced it, and a run that CRASHED
+ * or was stopped leaves the previous run's reading in state. Attempt 3 of the
+ * live C9 authoring was handed attempt 1's verdict — four `missing:` lines,
+ * including `gate_c9.py`, which by then existed and was 17 KB — under the order
+ * "Fix these before anything else; do not start over". A brief that asserts a
+ * file is absent when it is present is worse than a brief that says nothing:
+ * the model's cheapest reading of it is to write the file again.
+ *
+ * Only the presence claims are re-derived, because presence is the one thing
+ * this function can answer for free and for certain. Anything else (a lint
+ * problem, a calibration problem) is about a file that still exists and is
+ * still worth reporting; the brief now tells the model the list is the PREVIOUS
+ * run's and to re-run the check, which it can, from anywhere.
+ */
+export function livePreviousCheck({ id, stagingDir, lastCheck, io }) {
+  const output = lastCheck?.output
+  if (typeof output !== 'string' || output.trim() === '') return null
+  const dir = norm(stagingDir)
+  const kept = output.split(/\r?\n/).filter(l => {
+    const m = /^missing: (\S+) was never written into the staging dir$/.exec(l.trim())
+    return !m || !io.exists(`${dir}/${m[1]}`)
+  })
+  return kept.some(l => l.trim() !== '') ? kept.join('\n') : null
+}
+
+/**
  * `--author <id>`: one authoring mission, start to verdict.
  *
  * The model's own check is NOT trusted — the driver ran it, but the driver ran
@@ -578,7 +608,8 @@ export async function authorCampaign({ id, roadmap, state, io }) {
   const prev = s.authoring[id] ?? {}
   const attempt = (prev.attempts ?? 0) + 1
   const briefFile = `${stagingDir}/brief-${attempt}.txt`
-  const text = authoringBrief({ line, id, prevId, baseDir, stagingDir, exemplar: exemplarFor({ prevId, io }), previousCheck: prev.lastCheck?.output ?? null })
+  const text = authoringBrief({ line, id, prevId, baseDir, stagingDir, exemplar: exemplarFor({ prevId, io }),
+    previousCheck: livePreviousCheck({ id, stagingDir, lastCheck: prev.lastCheck, io }) })
   io.writeFile(briefFile, text)
   io.writeFile(sidecarPath(briefFile), JSON.stringify(authoringSidecar({ stagingDir, baseDir }), null, 2) + '\n')
   commitStaging(stagingDir, `${id}-author: brief ${attempt}`, io)

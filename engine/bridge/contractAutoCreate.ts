@@ -14,6 +14,7 @@
 
 import { existsSync, statSync } from 'node:fs'
 import { isAbsolute, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { ContractState, globalContract, type HarnessAssertion } from '../tools/contract.js'
 import {
   COMMITTED_ASSERTION,
@@ -297,6 +298,44 @@ export function isInstrumentPath(p: string): boolean {
   try { return statSync(p).isFile() } catch { return false }
 }
 
+/**
+ * This installation's own source tree — the directory holding the engine and
+ * the scripts that dispatch missions, derived from this module's own location.
+ */
+export const HARNESS_ROOT = resolve(fileURLToPath(new URL('../../', import.meta.url)))
+  .replace(/\\/g, '/').replace(/\/+$/, '')
+
+/**
+ * Is this path part of the harness itself rather than an instrument (F154)?
+ *
+ * The seal exists to hide the file that SCORES a mission. The checker that RUNS
+ * that file is a different thing, and Phase 3's authoring verb is the first
+ * mission whose check command has to name it: the mission's workspace is a
+ * fresh staging directory, so `scripts/cynco-gate-author.mjs` — the verb that
+ * wrote the brief, the sidecar and the mission itself — lies outside the
+ * workspace, exists, and is a file. It therefore qualified as a held-out
+ * instrument and got SEALED: unreadable, unlistable, UNRUNNABLE. The model was
+ * ordered to run the command in DONE WHEN and refused when it did, concluding
+ * in its own words that "the sealed check is not for me to run — the dispatcher
+ * runs it", and set out to author four files with no way to test them.
+ *
+ * A gate is never kept here: every held-out instrument in this project lives
+ * under `~/.cynco/heldout/`, and the note above `harnessGatePaths` already
+ * records that a gate stored inside the repository is out of this mechanism's
+ * scope. So exempting the harness's own tree withholds nothing that was being
+ * withheld before. Only the SEAL is lifted — `harnessGatePaths` still returns
+ * the path, so the script stays read-only, which is what it should have been
+ * all along: machinery the mission may read and run and must not edit.
+ */
+export function isHarnessOwnFile(p: string, harnessRoot: string = HARNESS_ROOT): boolean {
+  const norm = (s: string) => {
+    const t = s.replace(/\\/g, '/').replace(/\/+$/, '')
+    return process.platform === 'win32' ? t.toLowerCase() : t
+  }
+  const root = norm(harnessRoot), abs = norm(p)
+  return root.length > 0 && (abs === root || abs.startsWith(root + '/'))
+}
+
 export function harnessGatePaths(
   assertions: HarnessAssertion[],
   cwd: string,
@@ -340,14 +379,18 @@ export function harnessGatePaths(
  * commit message. Read-only was the wrong permission for a held-out instrument:
  * `immutableTargetOf`'s refusal tells the model, correctly for a brief, that it
  * may read the file as often as it likes.
+ *
+ * F154: minus the harness's own tree — see `isHarnessOwnFile`. The runner that
+ * executes a gate is not the gate.
  */
 export function withheldGatePaths(
   assertions: HarnessAssertion[],
   cwd: string,
   exists: (p: string) => boolean = isInstrumentPath,
+  harnessRoot: string = HARNESS_ROOT,
 ): string[] {
   const withheld = assertions.filter(a => typeof a !== 'string' && Boolean(a.command))
-  return harnessGatePaths(withheld, cwd, exists)
+  return harnessGatePaths(withheld, cwd, exists).filter(p => !isHarnessOwnFile(p, harnessRoot))
 }
 
 /** Apply a harness-supplied contract spec. Returns true when applied. */

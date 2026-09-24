@@ -10,6 +10,7 @@ import {
   GATE_AUTHOR_MIN_LINES, GATE_AUTHOR_HELD_FLOOR, gateAuthorPromotion, gateAuthorAuthorityAcrossCampaigns,
   stagingDirFor, heldoutDirFor, prepareStaging, authoringBrief, authoringSidecar, checkCommand,
   checkStaged, authorCampaign, gateProposal, sealGate, draftToSpec, authorMain, previousLineId,
+  livePreviousCheck,
 } from '../cynco-gate-author.mjs'
 import { CampaignState } from '../cynco-campaign-state.mjs'
 import { summarize } from '../cynco-gate-lines.mjs'
@@ -383,6 +384,47 @@ describe('authoringBrief', () => {
 
   it('says the archive is read-only', () => {
     expect(build()).toMatch(/read-only/)
+  })
+
+  it('tells a resume the list is the PREVIOUS run\'s and to re-run the check', () => {
+    const resumed = build({ previousCheck: 'lint: no graded lines' })
+    expect(resumed).toContain('from the PREVIOUS run')
+    expect(resumed).toContain('it works from any directory')
+  })
+})
+
+/**
+ * F154's second half. A stored check is as old as the run that produced it, and
+ * a stopped run leaves the run-before-last's reading in state: attempt 3 of the
+ * live C9 authoring was handed attempt 1's four `missing:` lines, one of them
+ * naming a gate_c9.py that by then existed and was 17 KB, under the order "Fix
+ * these before anything else".
+ */
+describe('livePreviousCheck', () => {
+  const io = (present) => ({ exists: (p) => present.includes(basename(String(p).replace(/\\/g, '/'))) })
+  const MISSING = (f) => `missing: ${f} was never written into the staging dir`
+
+  it('drops a missing-file problem for a file that is now on disk', () => {
+    const output = [MISSING('gate_c9.py'), MISSING('perturb_c9.py')].join('\n')
+    expect(livePreviousCheck({ id: ID, stagingDir: 'C:/s/c9', lastCheck: { output }, io: io(['gate_c9.py']) }))
+      .toBe(MISSING('perturb_c9.py'))
+  })
+
+  it('carries no previous check at all once every missing file exists', () => {
+    const output = [MISSING('gate_c9.py'), MISSING('perturb_c9.py')].join('\n')
+    expect(livePreviousCheck({ id: ID, stagingDir: 'C:/s/c9', lastCheck: { output },
+      io: io(['gate_c9.py', 'perturb_c9.py']) })).toBeNull()
+  })
+
+  it('keeps every problem that is not a presence claim', () => {
+    const output = ['lint: C9.4 has no detail', MISSING('positive_c9.py'), 'base: GATE: PASS at BASE'].join('\n')
+    expect(livePreviousCheck({ id: ID, stagingDir: 'C:/s/c9', lastCheck: { output }, io: io(['positive_c9.py']) }))
+      .toBe('lint: C9.4 has no detail\nbase: GATE: PASS at BASE')
+  })
+
+  it('is null for no stored check and for an empty one', () => {
+    expect(livePreviousCheck({ id: ID, stagingDir: 'C:/s/c9', lastCheck: undefined, io: io([]) })).toBeNull()
+    expect(livePreviousCheck({ id: ID, stagingDir: 'C:/s/c9', lastCheck: { output: '  \n ' }, io: io([]) })).toBeNull()
   })
 })
 
