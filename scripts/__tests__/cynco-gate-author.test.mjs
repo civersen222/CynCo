@@ -433,6 +433,20 @@ describe('livePreviousCheck', () => {
       io: io(['gate_c9.py', 'perturb_c9.py']) })).toBeNull()
   })
 
+  // A gate that dies at import writes its traceback to stderr, and a resume told
+  // "BASE run printed 1 error line(s)" with no traceback is being asked to guess.
+  it('shows the BASE and cheat-stub tails when they carry an error line', () => {
+    const boom = 'Traceback (most recent call last):\nNameError: name _press is not defined\n'
+    const t = livePreviousCheck({ id: ID, stagingDir: 'C:/s/c9', io: io([]), lastCheck: {
+      output: 'BASE run printed 2 error line(s): Traceback (most recent call last):',
+      tails: { base: boom, perturb: `${gateLog({}, 'GATE: MISS (9 fails)')}`, positive: null },
+    } })
+    expect(t).toContain('gate-at-BASE output (tail):')
+    expect(t).toContain('NameError: name _press is not defined')
+    // The cheat stub ran cleanly, so its tail is noise here and is left out.
+    expect(t).not.toContain('cheat stub output (tail):')
+  })
+
   it('keeps every problem that is not a presence claim', () => {
     const output = ['lint: C9.4 has no detail', MISSING('positive_c9.py'), 'base: GATE: PASS at BASE'].join('\n')
     expect(livePreviousCheck({ id: ID, stagingDir: 'C:/s/c9', lastCheck: { output }, io: io(['positive_c9.py']) }))
@@ -597,7 +611,7 @@ describe('authorCampaign', () => {
     await authorCampaign({ id: ID, roadmap, state, io })
     const call = spawned.find(s => s.cmd === 'bun' && s.args.includes('--check'))
     expect(call).toBeTruthy()
-    expect(call.args).toEqual([SELF_SCRIPT, '--check', `${home}/authoring/c9`, 'C:/tmp/c9_author_base'])
+    expect(call.args).toEqual([SELF_SCRIPT, '--check', `${home}/authoring/c9`, 'C:/tmp/c9_author_base', '--json'])
     expect(call.opts.timeoutMs).toBe(CHECK_SUBPROCESS_TIMEOUT_MS)
     // And it is the check the RUNNER believes: the proposal's line count is the
     // subprocess's, not anything computed in this process.
@@ -931,6 +945,17 @@ describe('positiveLeavesFailing', () => {
 
 describe('checkStagedViaSubprocess', () => {
   const runner = (r) => ({ run: (cmd, args, opts) => ({ ...r, _call: { cmd, args, opts } }) })
+
+  // The tails run to ~12 KB and the MODEL runs `--check` too: every one of its
+  // runs would otherwise end in a wall of its own output, re-read into its
+  // context for nothing. The runner asks for them; the brief's command does not.
+  it('asks for the tails with --json, which the brief\'s DONE WHEN command omits', async () => {
+    const calls = []
+    await checkStagedViaSubprocess({ id: ID, stagingDir: 'C:/s/c9', baseDir: 'C:/b',
+      io: { run: (cmd, args, opts) => { calls.push({ cmd, args }); return { status: 0, stdout: CHECK_JSON_MARKER + JSON.stringify({ ok: true, problems: [], lineIds: IDS }), stderr: '', fault: null, timedOut: false } } } })
+    expect(calls[0].args).toEqual([SELF_SCRIPT, '--check', 'C:/s/c9', 'C:/b', '--json'])
+    expect(checkCommand('C:/s/c9', 'C:/b')).not.toContain('--json')
+  })
 
   it('reads the verdict from the [check-json] line', async () => {
     const payload = { ok: true, problems: [], lineIds: IDS, tails: { base: 'b', perturb: 'p', positive: 'x' } }

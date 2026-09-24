@@ -8,6 +8,7 @@
 // four hours earlier, so its gate at BASE died in milliseconds and eleven
 // problems were recorded against a triple that had two.
 import { describe, it, expect } from 'vitest'
+import { readFileSync } from 'node:fs'
 import { runSync, faultSummary, TIMEOUT_ELAPSED_FRACTION } from '../cynco-spawn.mjs'
 
 /** A spawnSync stand-in: returns `result`, and advances the injected clock by `ms`. */
@@ -18,7 +19,7 @@ const clockOf = () => ({ t: 1_000_000 })
 const ETIMEDOUT = { status: null, stdout: '', stderr: '', error: Object.assign(new Error('timed out'), { code: 'ETIMEDOUT' }) }
 
 describe('runSync: a timeout is an elapsed measurement', () => {
-  it('calls an early ETIMEDOUT a harness fault, not a timeout, when the retry dies the same way', () => {
+  it('calls an early ETIMEDOUT a harness fault, not a timeout', () => {
     const clock = clockOf()
     const r = runSync('python', ['gate.py'], { timeoutMs: 7_200_000 }, {
       spawn: fakeSpawn(ETIMEDOUT, 7, clock),
@@ -47,7 +48,7 @@ describe('runSync: a timeout is an elapsed measurement', () => {
       clock.t += 240_000
       return { status: 1, stdout: '[check] c9: REFUSED — 2 problem(s)\n', stderr: '' }
     }
-    const r = runSync('bun', ['x.mjs', '--check'], { timeoutMs: 7_200_000 }, { spawn, now: () => clock.t })
+    const r = runSync('bun', ['x.mjs', '--check'], { timeoutMs: 7_200_000, retryImpossibleTimeout: true }, { spawn, now: () => clock.t })
     expect(calls).toHaveLength(2)
     expect(r.fault).toBeNull()
     expect(r.timedOut).toBe(false)
@@ -56,11 +57,41 @@ describe('runSync: a timeout is an elapsed measurement', () => {
     expect(r.staleDeadlineRetried).toBe(true)
   })
 
+  /**
+   * Opt-in, per call. Running a command twice is only safe when running it twice
+   * is the same as running it once — a gate, a stub, a shim and a `--check` are
+   * reads of a tree. A `git commit` or a `git apply` is not, and a harness that
+   * silently double-applied a patch to recover from a timeout it invented would be
+   * a worse bug than the one being fixed.
+   */
+  it('never retries a command the caller did not mark idempotent', () => {
+    const clock = clockOf()
+    let n = 0
+    const spawn = () => { n += 1; clock.t += 11; return ETIMEDOUT }
+    const r = runSync('git', ['apply', 'p.patch'], { timeoutMs: 60_000 }, { spawn, now: () => clock.t })
+    expect(n).toBe(1)
+    expect(r.fault?.code).toBe('ETIMEDOUT')
+    expect(r.staleDeadlineRetried).toBeUndefined()
+  })
+
+  it('the three gate spawns and the check subprocess opt in; git writes do not', () => {
+    const src = readFileSync(new URL('../cynco-campaign-calibrate.mjs', import.meta.url), 'utf8')
+    // The gate, the perturb, the positive shim and the suite baseline: all reads.
+    expect(src.match(/retryImpossibleTimeout: true/g) ?? []).toHaveLength(4)
+    // archiveBase shells out to `git archive | tar -x`, which writes a tree.
+    expect(/archive [\s\S]{0,400}retryImpossibleTimeout/.test(src)).toBe(false)
+    const author = readFileSync(new URL('../cynco-gate-author.mjs', import.meta.url), 'utf8')
+    expect(/io\.run\('bun', args, \{ timeoutMs, retryImpossibleTimeout: true \}\)/.test(author)).toBe(true)
+    // commitStaging / restoreUncommittedWork run git writes and must not retry.
+    expect(/'apply'[\s\S]{0,200}retryImpossibleTimeout/.test(author)).toBe(false)
+    expect(/'commit'[\s\S]{0,200}retryImpossibleTimeout/.test(author)).toBe(false)
+  })
+
   it('retries at most once, and the second failure is the fault it reports', () => {
     const clock = clockOf()
     let n = 0
     const spawn = () => { n += 1; clock.t += 9; return ETIMEDOUT }
-    const r = runSync('bun', ['x.mjs'], { timeoutMs: 7_200_000 }, { spawn, now: () => clock.t })
+    const r = runSync('bun', ['x.mjs'], { timeoutMs: 7_200_000, retryImpossibleTimeout: true }, { spawn, now: () => clock.t })
     expect(n).toBe(2)
     expect(r.fault?.code).toBe('ETIMEDOUT')
     expect(r.staleDeadlineRetried).toBeUndefined()

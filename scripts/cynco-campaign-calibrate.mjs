@@ -57,9 +57,9 @@ export async function calibrate(spec, io = defaultIo, { baseDir: providedBaseDir
   try { header = parsePerturbHeader(io.readFile(spec.perturb)) } catch (e) { return { ok: false, problems: [e.message] } }
 
   const env = { CYNCO_GATE_REPO: baseDir }
-  const baseRun = io.run('python', [spec.gate], { cwd: baseDir, env, timeoutMs: GATE_TIMEOUT_MS })
+  const baseRun = io.run('python', [spec.gate], { cwd: baseDir, env, timeoutMs: GATE_TIMEOUT_MS, retryImpossibleTimeout: true })
   const base = parseGateOutput(baseRun.stdout + '\n' + baseRun.stderr)
-  const pertRun = io.run('python', [spec.perturb], { cwd: baseDir, env, timeoutMs: GATE_TIMEOUT_MS })
+  const pertRun = io.run('python', [spec.perturb], { cwd: baseDir, env, timeoutMs: GATE_TIMEOUT_MS, retryImpossibleTimeout: true })
   const perturbed = parseGateOutput(pertRun.stdout + '\n' + pertRun.stderr)
 
   // Rule 14, mechanical: the positive shim makes every graded fact true, so a
@@ -67,7 +67,7 @@ export async function calibrate(spec, io = defaultIo, { baseDir: providedBaseDir
   // can never hold) is caught here rather than after a wave of GPU hours.
   let positiveRun = null, positive = null
   if (spec.positive) {
-    positiveRun = io.run('python', [spec.positive], { cwd: baseDir, env, timeoutMs: GATE_TIMEOUT_MS })
+    positiveRun = io.run('python', [spec.positive], { cwd: baseDir, env, timeoutMs: GATE_TIMEOUT_MS, retryImpossibleTimeout: true })
     positive = parseGateOutput(positiveRun.stdout + '\n' + positiveRun.stderr)
   }
 
@@ -85,7 +85,12 @@ export async function calibrate(spec, io = defaultIo, { baseDir: providedBaseDir
     ...(positiveRun ? [['positive shim run', positiveRun, positive]] : []),
   ]) {
     if (run.fault) faults.push(`harness fault: ${what} did not run (${faultSummary(run.fault)}) — nothing was graded`)
-    else if (!run.timedOut && String(run.stdout ?? '').trim() === '' && parsed?.terminator == null) {
+    // "Produced no output" means NO output, on either stream. A child that dies at
+    // import writes a traceback to stderr and nothing to stdout, and that is the
+    // CHILD's failure — a model defect. Reading stdout alone called it a harness
+    // fault, which blames the harness for the model's bug and, worse, drops the
+    // traceback: `livePreviousCheck` would then show the resume nothing to fix.
+    else if (!run.timedOut && `${run.stdout ?? ''}${run.stderr ?? ''}`.trim() === '' && parsed?.terminator == null) {
       faults.push(`harness fault: ${what} produced no output (status ${run.status ?? 'null'}`
         + `${typeof run.elapsedMs === 'number' ? `, after ${run.elapsedMs} ms` : ''}) — nothing was graded`)
     }
@@ -118,7 +123,7 @@ export async function calibrate(spec, io = defaultIo, { baseDir: providedBaseDir
   // written (a later measurement would launder regressions into "standing").
   let suiteBaselineCreated = false
   if (ok && !io.exists(spec.suiteBaseline)) {
-    const py = io.run('python', ['-m', 'pytest', 'gilded/tests', '-q', '--tb=no'], { cwd: baseDir, env: { SDL_VIDEODRIVER: 'dummy', SDL_AUDIODRIVER: 'dummy' }, timeoutMs: SUITE_TIMEOUT_MS })
+    const py = io.run('python', ['-m', 'pytest', 'gilded/tests', '-q', '--tb=no'], { cwd: baseDir, env: { SDL_VIDEODRIVER: 'dummy', SDL_AUDIODRIVER: 'dummy' }, timeoutMs: SUITE_TIMEOUT_MS, retryImpossibleTimeout: true })
     const ids = (py.stdout + py.stderr).split('\n').filter(l => l.startsWith('FAILED ')).map(l => l.slice(7).split(/\s+-\s+/)[0].trim())
     io.writeFile(spec.suiteBaseline, `# standing failures of gilded/tests at ${spec.base}, measured ${new Date().toISOString().slice(0, 10)} by cynco-campaign calibrate\n${ids.join('\n')}\n`)
     suiteBaselineCreated = true

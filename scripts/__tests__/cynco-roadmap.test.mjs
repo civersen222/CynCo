@@ -14,11 +14,21 @@ describe('cynco-roadmap: checked-in roadmap.json', () => {
     expect(roadmap.lines.map(l => l.id)).toEqual(['c6', 'c7', 'c8', 'c9'])
   })
 
-  it('nextOpenLine on the checked-in roadmap is c9', () => {
+  // The checked-in file's STATUSES move as the campaign ladder advances — c9 went
+  // open → authoring → proposed during Phase 3's live runs — so the invariant to
+  // assert here is the ORDER (`nextOpenLine` answers the earliest line still in
+  // flight, or null once none is), never one particular line's current value.
+  // `setLineStatus`'s own behaviour is tested against fixtures below, for the same
+  // reason: a test pinned to live data fails on the day the data is correct.
+  it('nextOpenLine answers the earliest line still open or authoring, or null', () => {
     const roadmap = loadRoadmap()
     const next = nextOpenLine(roadmap)
-    expect(next).not.toBeNull()
-    expect(next.id).toBe('c9')
+    // Its own predicate: a `proposed` line is past authoring and is NOT in flight
+    // for this purpose — that is what lets `--author` refuse it until a rejection
+    // moves it back.
+    const inFlight = roadmap.lines.filter(l => l.status === 'open' || l.status === 'authoring')
+    if (inFlight.length === 0) expect(next).toBeNull()
+    else expect(next.id).toBe(inFlight[0].id)
   })
 
   it('ROADMAP_PATH points at the checked-in file', () => {
@@ -33,15 +43,18 @@ describe('cynco-roadmap: checked-in roadmap.json', () => {
 })
 
 describe('setLineStatus', () => {
+  // A fixture, not the checked-in file: the ladder's job is to move, so a test of
+  // the LADDER cannot depend on where the live roadmap happens to stand today.
+  const FIXTURE = (status = 'open') => ({ lines: [{ id: 'c9', name: 'Ship shell', bar: 'b', base: 'abcdef1', status }] })
+
   it('allows a forward move: open -> authoring', () => {
-    const roadmap = loadRoadmap()
+    const roadmap = FIXTURE()
     setLineStatus(roadmap, 'c9', 'authoring')
     expect(lineFor(roadmap, 'c9').status).toBe('authoring')
   })
 
   it('throws /backward/ on authoring -> open', () => {
-    const roadmap = loadRoadmap()
-    setLineStatus(roadmap, 'c9', 'authoring')
+    const roadmap = FIXTURE('authoring')
     expect(() => setLineStatus(roadmap, 'c9', 'open')).toThrow(/backward/)
   })
 

@@ -205,6 +205,45 @@ describe('calibrate', () => {
       expect(r.problems.join('\n')).not.toMatch(/did not PASS/)
     })
 
+    /**
+     * "Produced no output" means no output on EITHER stream. A child that dies at
+     * import writes a traceback to stderr and nothing to stdout, and that is the
+     * child's failure — a model defect. Reading stdout alone blamed the harness
+     * for it and, worse, dropped the traceback, so the resume brief had nothing
+     * to show.
+     */
+    it('a shim that dies at import with a traceback on stderr is the SHIM failing, not the harness', async () => {
+      const traceback = 'Traceback (most recent call last):\n  File "positive_c8.py", line 9\nModuleNotFoundError: No module named \'gilded.ui.views\'\n'
+      const fake = io({ perturbLog: baseLog, baselineExists: true, headerText: fullHeader })
+      const inner = fake.run
+      fake.run = (cmd, args, opts) => {
+        const k = [cmd, ...args].join(' ')
+        if (/positive_c8\.py/.test(k)) return { status: 1, stdout: '', stderr: traceback, elapsedMs: 900, timedOut: false, fault: null }
+        return inner(cmd, args, opts)
+      }
+      const r = await calibrate(withPositive, fake)
+      expect(r.ok).toBe(false)
+      expect(r.harnessFault).toBe(false)
+      expect(r.problems.join('\n')).not.toMatch(/harness fault/)
+      // Graded as it always was: a null terminator is a shim that did not PASS.
+      expect(r.problems.join('\n')).toMatch(/positive shim did not PASS/)
+      // And the traceback survives into the tail, which is what the resume reads.
+      expect(r.positiveOutputTail).toContain("No module named 'gilded.ui.views'")
+    })
+
+    it('still calls a run with NOTHING on either stream a harness fault', async () => {
+      const fake = io({ perturbLog: baseLog, baselineExists: true, headerText: fullHeader })
+      const inner = fake.run
+      fake.run = (cmd, args, opts) => {
+        const k = [cmd, ...args].join(' ')
+        if (/positive_c8\.py/.test(k)) return { status: 1, stdout: '', stderr: '   \n', elapsedMs: 4, timedOut: false, fault: null }
+        return inner(cmd, args, opts)
+      }
+      const r = await calibrate(withPositive, fake)
+      expect(r.harnessFault).toBe(true)
+      expect(r.problems).toEqual(['harness fault: positive shim run produced no output (status 1, after 4 ms) — nothing was graded'])
+    })
+
     it('a REAL timeout is still a timeout, not a fault', async () => {
       const fake = io({ perturbLog: baseLog, baselineExists: true, headerText: fullHeader })
       const inner = fake.run

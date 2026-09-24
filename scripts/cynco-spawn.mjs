@@ -48,6 +48,13 @@ export const TIMEOUT_ELAPSED_FRACTION = 0.9
  */
 export function runSync(cmd, args, opts = {}, hooks = {}) {
   const first = attempt(cmd, args, opts, hooks)
+  // Opt-IN, per call. Running a command twice is only safe when running it twice
+  // is the same as running it once: a gate, a cheat stub, a positive shim and a
+  // `--check` are all reads of a tree and may be repeated freely. A `git commit`,
+  // a `git apply` or a `git archive` may not, and the default must be the
+  // conservative one — a harness that silently double-applies a patch to recover
+  // from a timeout it invented would be a worse bug than the one being fixed.
+  if (!opts.retryImpossibleTimeout) return first
   // The stale deadline is not a condition of the machine, it is a condition of
   // the PREVIOUS call: in the reproduction the spawns right behind the killed one
   // run normally. So an ETIMEDOUT that provably did not spend its cap is retried
@@ -62,7 +69,13 @@ export function runSync(cmd, args, opts = {}, hooks = {}) {
   // the subprocess, so the triple still went ungraded.
   if (first.fault?.code === 'ETIMEDOUT') {
     const second = attempt(cmd, args, opts, hooks)
-    return second.fault?.code === 'ETIMEDOUT' ? second : { ...second, staleDeadlineRetried: true }
+    if (second.fault?.code === 'ETIMEDOUT') return second
+    // Said out loud, because otherwise the retry is invisible: nothing could tell
+    // from a log whether it had fired, which made "did the fix work?" unanswerable
+    // on the one live run that exercised it.
+    console.error(`[spawn] ${cmd}: an impossible ETIMEDOUT after ${first.fault.elapsedMs} ms `
+      + `(cap ${opts.timeoutMs} ms) — bun's stale deadline; retried once and the retry ran (F155)`)
+    return { ...second, staleDeadlineRetried: true }
   }
   return first
 }

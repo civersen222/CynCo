@@ -241,8 +241,10 @@ export const CHECK_JSON_MARKER = '[check-json] '
  * the captured output is carried as the problem text so nothing is silently lost.
  */
 export async function checkStagedViaSubprocess({ id, stagingDir, baseDir, io, timeoutMs = CHECK_SUBPROCESS_TIMEOUT_MS }) {
-  const args = [SELF_SCRIPT, '--check', norm(stagingDir), norm(baseDir)]
-  const r = io.run('bun', args, { timeoutMs })
+  // `--json` asks for the tails; the brief's DONE WHEN command deliberately does
+  // not, so the model's own runs stay short.
+  const args = [SELF_SCRIPT, '--check', norm(stagingDir), norm(baseDir), '--json']
+  const r = io.run('bun', args, { timeoutMs, retryImpossibleTimeout: true })
   const out = `${r.stdout ?? ''}${r.stderr ?? ''}`
   if (r.fault) {
     return { ok: false, problems: [`harness fault: the re-check subprocess did not run (${faultSummary(r.fault)}) — the triple was not graded`],
@@ -718,9 +720,21 @@ export function livePreviousCheck({ id, stagingDir, lastCheck, io }) {
   // positive shim "did not PASS" and spent iterations 340-475 working out why by
   // reading the harness; the tail says it outright, and the failing ids say
   // which graded facts the shim never made true.
-  const tail = lastCheck?.tails?.positive
-  if (typeof tail === 'string' && tail.trim() !== '') {
-    parts.push(`positive shim output (tail):\n\n${tail.split(/\r?\n/).filter(l => l.trim() !== '').slice(-20).join('\n')}`)
+  // The positive shim's tail always, because reaching GATE: PASS is its whole job
+  // and why it did not is the resume's entire task. The BASE and cheat-stub tails
+  // only when they carry an error line: a gate that dies at import writes its
+  // traceback to stderr, and a resume told "BASE run printed 1 error line(s)" with
+  // no traceback is being asked to guess.
+  const errorish = (s) => /Traceback|Error:|FABRICATED/.test(String(s ?? ''))
+  const tailOf = (s) => String(s).split(/\r?\n/).filter(l => l.trim() !== '').slice(-20).join('\n')
+  for (const [what, tail, always] of [
+    ['positive shim', lastCheck?.tails?.positive, true],
+    ['gate-at-BASE', lastCheck?.tails?.base, false],
+    ['cheat stub', lastCheck?.tails?.perturb, false],
+  ]) {
+    if (typeof tail !== 'string' || tail.trim() === '') continue
+    if (!always && !errorish(tail)) continue
+    parts.push(`${what} output (tail):\n\n${tailOf(tail)}`)
   }
   const failing = Array.isArray(lastCheck?.positiveLeavesFailing) ? lastCheck.positiveLeavesFailing : []
   if (failing.length) {
@@ -1349,27 +1363,30 @@ export async function authorMain(argv, io = defaultAuthorIo()) {
     const i = flag('--check')
     const stagingDir = argv[i + 1], baseDir = argv[i + 2]
     if (!stagingDir || !baseDir || stagingDir.startsWith('--') || baseDir.startsWith('--')) {
-      console.error('usage: bun scripts/cynco-gate-author.mjs --check <stagingDir> <baseDir>')
+      console.error('usage: bun scripts/cynco-gate-author.mjs --check <stagingDir> <baseDir> [--json]')
       return 2
     }
     const id = basename(norm(stagingDir))
     const check = await checkStaged({ id, stagingDir, baseDir, io })
-    // The machine-readable verdict, for the runner's subprocess re-check
-    // (F155). Printed on stdout in both directions and always last, so a reader
-    // takes the final marker line and nothing else has to be parsed.
+    // The machine-readable verdict, for the runner's subprocess re-check (F155).
+    // Behind `--json`, because the tails run to ~12 KB and the MODEL runs this
+    // command too: every one of its checks would otherwise end in a wall of its
+    // own output, re-read into its context for nothing. Printed on stdout in both
+    // directions and always last, so a reader takes the final marker line.
+    const wantJson = flag('--json') !== -1
     const cal = check.calibration ?? {}
-    const jsonLine = JSON.stringify({
+    const jsonLine = CHECK_JSON_MARKER + JSON.stringify({
       ok: check.ok, problems: check.problems, lineIds: check.lineIds,
       tails: { base: cal.baseOutputTail ?? null, perturb: cal.perturbOutputTail ?? null, positive: cal.positiveOutputTail ?? null },
     })
     if (check.ok) {
       console.log(`[check] ${id}: PASS — ${check.lineIds.length} graded lines, BASE MISS, cheat stub honest, positive shim PASS`)
-      console.log(CHECK_JSON_MARKER + jsonLine)
+      if (wantJson) console.log(jsonLine)
       return 0
     }
     console.error(`[check] ${id}: REFUSED — ${check.problems.length} problem(s)`)
     for (const p of check.problems) console.error(`  ${p}`)
-    console.log(CHECK_JSON_MARKER + jsonLine)
+    if (wantJson) console.log(jsonLine)
     return 1
   }
   if (flag('--author') !== -1) {
