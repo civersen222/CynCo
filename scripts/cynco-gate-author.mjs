@@ -187,9 +187,17 @@ export function exemplarFor({ prevId, io }) {
   return { gateHead: gateHead ?? '', perturbHead: perturbHead ?? '' }
 }
 
-/** The one command that decides whether the authored triple is a bar. */
+/**
+ * The one command that decides whether the authored triple is a bar.
+ *
+ * The script is named by ABSOLUTE path (F153). The brief tells the author to
+ * run this from the staging dir, and the driver runs it in the mission cwd —
+ * neither has a `scripts/` beside it, so a relative path made the acceptance
+ * test unrunnable and the contract unfulfillable.
+ */
 export function checkCommand(stagingDir, baseDir) {
-  return `bun scripts/cynco-gate-author.mjs --check ${JSON.stringify(norm(stagingDir))} ${JSON.stringify(norm(baseDir))}`
+  const self = norm(fileURLToPath(new URL('./cynco-gate-author.mjs', import.meta.url)))
+  return `bun ${JSON.stringify(self)} --check ${JSON.stringify(norm(stagingDir))} ${JSON.stringify(norm(baseDir))}`
 }
 
 /**
@@ -240,8 +248,10 @@ at
 
   ${base}
 
-Run it from that directory. It is READ-ONLY: nothing you write there is graded,
-nothing you change there survives, and the campaign worker will never see it.
+Your files never move there: you hand that path to your gate through the
+CYNCO_GATE_REPO variable described below. It is READ-ONLY: nothing you write
+there is graded, nothing you change there survives, and the campaign worker
+will never see it.
 Your own four files go in ${staging}.
 
 Headless conventions (the gate runs with no display and no sound card):
@@ -269,7 +279,14 @@ gate_${id}.py:
   * Read the repository under test from the environment:
       REPO = os.environ.get("CYNCO_GATE_REPO") or r"C:\\Users\\civer\\civkings"
     A gate that hardcodes a path measures whatever directory it was started
-    in, not the tree it was handed.
+    in, not the tree it was handed. Import the game through that variable —
+    \`sys.path.insert(0, REPO)\` immediately after the REPO line, exactly as the
+    example gate quoted at the end of this brief does. Run your own gate from
+    the staging dir with that variable set, never by cd-ing into the BASE
+    archive:
+      CYNCO_GATE_REPO=${base} python gate_${id}.py
+    Your Bash tool runs under powershell.exe, so in practice that is
+      $env:CYNCO_GATE_REPO='${base}'; python gate_${id}.py
   * One helper, used for every graded fact:
       check(name, cond, detail)
     printing exactly
@@ -401,7 +418,13 @@ ${noSealedPath(previousCheck)}`))
   out.push(section('DONE WHEN',
 `  ${checkCommand(staging, base)}
 
-exits 0, run from ${staging}.
+Run this exact command from anywhere — it names its script by absolute path, so
+it does not matter which directory you are in. It exits 0 only when the lint
+finds no problems AND Rule 11 holds at BASE (terminator MISS, every line failing
+by absence, zero error lines) AND Rule 14 holds (positive_${id}.py prints
+GATE: PASS with zero error lines) AND the perturb's EXPECT-FLIP / MUST-FAIL
+header matches what the stub actually does. Any other exit code prints the
+problems; fix those and run it again.
 
 Commit in ${staging} after each cut — it is the only backup you have. When the
 check is green, print, as the last thing you say:

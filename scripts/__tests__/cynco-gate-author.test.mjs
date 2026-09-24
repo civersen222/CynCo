@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, basename } from 'node:path'
+import { join, basename, isAbsolute } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
 import { loadCampaignSpec } from '../cynco-campaign-spec.mjs'
 import {
@@ -193,9 +194,14 @@ describe('staging paths', () => {
     expect(norm(stagingDirFor('c9', home))).toBe(`${home}/authoring/c9`)
     expect(norm(heldoutDirFor('c9', home))).toBe(`${home}/heldout/civkings-redesign/c9`)
   })
-  it('quotes both paths in the check command', () => {
+  it('names its script by absolute path and quotes both paths in the check command', () => {
+    // F153: the brief tells the author to run this from the staging dir and the
+    // driver runs it in the mission cwd — neither has a scripts/ beside it, so a
+    // relative script path made the acceptance test unrunnable.
+    const self = fileURLToPath(new URL('../cynco-gate-author.mjs', import.meta.url)).replace(/\\/g, '/')
+    expect(isAbsolute(self)).toBe(true)
     expect(checkCommand('C:/a b/c9', 'C:/tmp/c9_author_base'))
-      .toBe('bun scripts/cynco-gate-author.mjs --check "C:/a b/c9" "C:/tmp/c9_author_base"')
+      .toBe(`bun ${JSON.stringify(self)} --check "C:/a b/c9" "C:/tmp/c9_author_base"`)
   })
   it('the sidecar is one keep-green assertion carrying the check command', () => {
     const s = authoringSidecar({ stagingDir: 'C:/s', baseDir: 'C:/b' })
