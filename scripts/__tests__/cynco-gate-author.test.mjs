@@ -10,7 +10,8 @@ import {
   GATE_AUTHOR_MIN_LINES, GATE_AUTHOR_HELD_FLOOR, gateAuthorPromotion, gateAuthorAuthorityAcrossCampaigns,
   stagingDirFor, heldoutDirFor, prepareStaging, authoringBrief, authoringSidecar, checkCommand,
   checkStaged, authorCampaign, gateProposal, sealGate, draftToSpec, authorMain, previousLineId,
-  livePreviousCheck,
+  livePreviousCheck, positiveLeavesFailing, checkStagedViaSubprocess, restoreUncommittedWork,
+  CHECK_JSON_MARKER, SELF_SCRIPT, CHECK_SUBPROCESS_TIMEOUT_MS,
 } from '../cynco-gate-author.mjs'
 import { CampaignState } from '../cynco-campaign-state.mjs'
 import { summarize } from '../cynco-gate-lines.mjs'
@@ -96,7 +97,17 @@ const POSITIVE_LOG = gateLog(Object.fromEntries(IDS.map(i => [i, 'PASS'])), 'GAT
 
 const norm = (p) => String(p).replace(/\\/g, '/')
 
-function makeIo({ home, files = {}, baseLog = BASE_LOG, perturbLog = PERTURB_LOG, positiveLog = POSITIVE_LOG, row = { missionId: 'c9-author-1', verified: true }, over = {} } = {}) {
+// F155: the runner's authoritative re-check is a SUBPROCESS now, so the fake io
+// has to answer `bun <script> --check <staging> <base>`. `check` is what that
+// subprocess reports; `checkStaged` itself is still driven directly, against
+// `baseLog`/`perturbLog`/`positiveLog`, in its own describe block above.
+const checkJson = (over = {}) => CHECK_JSON_MARKER + JSON.stringify({
+  ok: true, problems: [], lineIds: IDS,
+  tails: { base: BASE_LOG, perturb: PERTURB_LOG, positive: POSITIVE_LOG },
+  ...over,
+})
+
+function makeIo({ home, files = {}, baseLog = BASE_LOG, perturbLog = PERTURB_LOG, positiveLog = POSITIVE_LOG, row = { missionId: 'c9-author-1', verified: true }, check = {}, checkOut = null, over = {} } = {}) {
   const disk = { ...files }
   const dispatched = [], logs = [], ran = [], copied = [], renamed = []
   const io = {
@@ -104,6 +115,11 @@ function makeIo({ home, files = {}, baseLog = BASE_LOG, perturbLog = PERTURB_LOG
     run: (cmd, args, opts) => {
       const k = [cmd, ...args].join(' ')
       ran.push(k)
+      if (cmd === 'bun' && args.includes('--check')) {
+        const out = checkOut ?? checkJson(check)
+        const ok = checkOut ? !/REFUSED/.test(out) : (check.ok ?? true)
+        return { status: ok ? 0 : 1, stdout: out, stderr: '', elapsedMs: 1, timedOut: false, fault: null }
+      }
       if (/gate_c9\.py/.test(k) && cmd === 'python') return { status: 1, stdout: baseLog, stderr: '' }
       if (/perturb_c9\.py/.test(k)) return { status: 1, stdout: perturbLog, stderr: '' }
       if (/positive_c9\.py/.test(k)) return { status: 0, stdout: positiveLog, stderr: '' }
@@ -473,7 +489,7 @@ describe('draftToSpec', () => {
     expect(spec).toMatchObject({ id: 'c9', repo: 'C:/Users/civer/civkings', base: LINE.base, marker: 'stage c9 complete',
       author: 'cynco', authorMissionId: 'c9-author-1', prBase: 'main',
       budget: { hoursPerWave: 8, iterations: 2000, bashTimeoutMs: 1500000, waves: 8 },
-      invariants: { editGapCap: 40, commitGapCap: 150, revertBan: true, codeIndexFirst: true },
+      invariants: { editGapCap: 120, commitGapCap: 150, revertBan: true, codeIndexFirst: true },
       posiwid: { sourceEditShare: 0.3, commitEvery: 60 }, sweep: { max: 6 }, ideation: { enabled: true } })
     expect(spec.gate).toBe(paths(home).gate)
     expect(spec.suiteBaseline).toBe(paths(home).suiteBaseline)
@@ -558,7 +574,8 @@ describe('authorCampaign', () => {
   })
 
   it('leaves the line in authoring with the problems recorded when the check fails', async () => {
-    const { r, roadmap, state } = await runIt({ baseLog: POSITIVE_LOG })
+    const FAILED = { ok: false, problems: ['BASE must MISS the gate; terminator was PASS'] }
+    const { r, roadmap, state } = await runIt({ check: FAILED })
     expect(r.ok).toBe(false)
     expect(r.proposal).toBeNull()
     expect(roadmap.lines.find(l => l.id === 'c9').status).toBe('authoring')
@@ -566,9 +583,52 @@ describe('authorCampaign', () => {
     expect(state.state.proposals.some(p => p.name === 'gate/c9')).toBe(false)
   })
 
+  // F155: the re-check is a fresh `bun … --check` process, because the runner's
+  // own process has been idle for four hours and bun's spawnSync would carry a
+  // stale deadline into its first gate run.
+  it('re-checks as a subprocess, naming the script by absolute path, and reads the verdict from exit code + stdout', async () => {
+    const { io, disk } = makeIo({ home, files: staged(home).files })
+    const roadmap = ROADMAP()
+    const state = new CampaignState(join(mkdtempSync(join(tmpdir(), 'camp-')), ID)).load()
+    const spawned = []
+    const inner = io.run
+    io.run = (cmd, args, opts) => { spawned.push({ cmd, args, opts }); return inner(cmd, args, opts) }
+    await authorCampaign({ id: ID, roadmap, state, io })
+    const call = spawned.find(s => s.cmd === 'bun' && s.args.includes('--check'))
+    expect(call).toBeTruthy()
+    expect(call.args).toEqual([SELF_SCRIPT, '--check', `${home}/authoring/c9`, 'C:/tmp/c9_author_base'])
+    expect(call.opts.timeoutMs).toBe(CHECK_SUBPROCESS_TIMEOUT_MS)
+    // And it is the check the RUNNER believes: the proposal's line count is the
+    // subprocess's, not anything computed in this process.
+    expect(state.state.authoring.c9.lastCheck.lineCount).toBe(IDS.length)
+    expect(disk[`${home}/authoring/c9/brief-1.txt`]).toBeTruthy()
+  })
+
+  it('treats a subprocess that printed no verdict as a refusal, carrying its output', async () => {
+    const { r, state } = await runIt({ checkOut: '[check] c9: REFUSED — the world ended\n' })
+    expect(r.ok).toBe(false)
+    expect(state.state.authoring.c9.lastCheck.problems.join('\n')).toMatch(/without a \[check-json\] verdict/)
+    expect(state.state.authoring.c9.lastCheck.problems.join('\n')).toMatch(/the world ended/)
+  })
+
+  it('names a re-check subprocess that could not run a harness fault, not a bad triple', async () => {
+    const { files } = staged(home)
+    const { io } = makeIo({ home, files })
+    const inner = io.run
+    io.run = (cmd, args, opts) => cmd === 'bun' && args.includes('--check')
+      ? { status: null, stdout: '', stderr: '', elapsedMs: 6, timedOut: false, fault: { code: 'ETIMEDOUT', status: null, signal: null, elapsedMs: 6 } }
+      : inner(cmd, args, opts)
+    const roadmap = ROADMAP()
+    const state = new CampaignState(join(mkdtempSync(join(tmpdir(), 'camp-')), ID)).load()
+    const r = await authorCampaign({ id: ID, roadmap, state, io })
+    expect(r.ok).toBe(false)
+    expect(r.check.problems.join('\n')).toMatch(/harness fault: the re-check subprocess did not run \(code ETIMEDOUT/)
+    expect(roadmap.lines.find(l => l.id === 'c9').status).toBe('authoring')
+  })
+
   it('resumes into the same staging dir with the previous check output in the brief', async () => {
     const { files } = staged(home)
-    const { io, disk } = makeIo({ home, files, baseLog: POSITIVE_LOG })
+    const { io, disk } = makeIo({ home, files, check: { ok: false, problems: ['BASE must MISS the gate; terminator was PASS'] } })
     const roadmap = ROADMAP()
     const state = new CampaignState(join(mkdtempSync(join(tmpdir(), 'camp-')), ID)).load()
     await authorCampaign({ id: ID, roadmap, state, io })
@@ -576,6 +636,28 @@ describe('authorCampaign', () => {
     expect(disk[`${home}/authoring/c9/brief-2.txt`]).toContain('PREVIOUS CHECK OUTPUT')
     expect(disk[`${home}/authoring/c9/brief-2.txt`]).toMatch(/BASE must MISS/)
     expect(state.state.authoring.c9.attempts).toBe(2)
+  })
+
+  // E: the resume brief must carry the EVIDENCE, not only the verdict. Attempt 4
+  // was told the positive shim "did not PASS" and spent 130 iterations working
+  // out why by reading the harness.
+  it('resumes with the positive shim tail and the ids it leaves failing', async () => {
+    const { files } = staged(home)
+    const shimTail = ['Traceback (most recent call last):', "ModuleNotFoundError: No module named 'gilded.ui.views'"].join('\n')
+    const { io, disk } = makeIo({ home, files, check: {
+      ok: false, problems: ['positive shim did not PASS (terminator null)'],
+      tails: { base: BASE_LOG, perturb: PERTURB_LOG, positive: `${gateLog({}, 'GATE: MISS (9 fails)')}\n${shimTail}` },
+    } })
+    const roadmap = ROADMAP()
+    const state = new CampaignState(join(mkdtempSync(join(tmpdir(), 'camp-')), ID)).load()
+    await authorCampaign({ id: ID, roadmap, state, io })
+    expect(state.state.authoring.c9.positiveLeavesFailing).toBeUndefined()
+    expect(state.state.authoring.c9.lastCheck.positiveLeavesFailing).toEqual(IDS)
+    await authorCampaign({ id: ID, roadmap, state, io })
+    const brief = disk[`${home}/authoring/c9/brief-2.txt`]
+    expect(brief).toContain('positive shim output (tail):')
+    expect(brief).toContain("ModuleNotFoundError: No module named 'gilded.ui.views'")
+    expect(brief).toContain(`the positive shim leaves these lines FAIL: ${IDS.join(' ')}`)
   })
 
   // The roadmap is authored in order: an earlier line still in flight means
@@ -620,6 +702,103 @@ describe('authorCampaign', () => {
     const { r, state } = await runIt({ row: { missionId: 'c9-author-1', verified: null } })
     expect(r.proposal).toBeNull()
     expect(state.state.authoring.c9.verified).toBeNull()
+  })
+})
+
+describe('positiveLeavesFailing', () => {
+  it('is the failing ids in the shim tail', () => {
+    expect(positiveLeavesFailing(gateLog({ [IDS[0]]: 'PASS' }, 'GATE: MISS (8 fails)'))).toEqual(IDS.slice(1))
+  })
+  it('is empty for a tail with nothing in it', () => {
+    expect(positiveLeavesFailing(null)).toEqual([])
+    expect(positiveLeavesFailing('   ')).toEqual([])
+  })
+})
+
+describe('checkStagedViaSubprocess', () => {
+  const runner = (r) => ({ run: (cmd, args, opts) => ({ ...r, _call: { cmd, args, opts } }) })
+
+  it('reads the verdict from the [check-json] line', async () => {
+    const payload = { ok: true, problems: [], lineIds: IDS, tails: { base: 'b', perturb: 'p', positive: 'x' } }
+    const r = await checkStagedViaSubprocess({ id: ID, stagingDir: 'C:/s/c9', baseDir: 'C:/b',
+      io: runner({ status: 0, stdout: `[check] c9: PASS\n${CHECK_JSON_MARKER}${JSON.stringify(payload)}\n`, stderr: '', fault: null, timedOut: false }) })
+    expect(r.ok).toBe(true)
+    expect(r.lineIds).toEqual(IDS)
+    expect(r.tails.positive).toBe('x')
+  })
+
+  it('takes the LAST marker line, so a tail that quotes one cannot win', async () => {
+    const decoy = CHECK_JSON_MARKER + JSON.stringify({ ok: true, problems: [], lineIds: [] })
+    const real = CHECK_JSON_MARKER + JSON.stringify({ ok: false, problems: ['positive shim did not PASS'], lineIds: IDS })
+    const r = await checkStagedViaSubprocess({ id: ID, stagingDir: 'C:/s/c9', baseDir: 'C:/b',
+      io: runner({ status: 1, stdout: `${decoy}\nnoise\n${real}\n`, stderr: '', fault: null, timedOut: false }) })
+    expect(r.ok).toBe(false)
+    expect(r.problems).toEqual(['positive shim did not PASS'])
+  })
+
+  it('never calls a refusal a pass, even if the JSON says ok', async () => {
+    const r = await checkStagedViaSubprocess({ id: ID, stagingDir: 'C:/s/c9', baseDir: 'C:/b',
+      io: runner({ status: 1, stdout: CHECK_JSON_MARKER + JSON.stringify({ ok: true, problems: [], lineIds: IDS }), stderr: '', fault: null, timedOut: false }) })
+    expect(r.ok).toBe(false)
+  })
+
+  it('reports a spawn fault as a harness fault and grades nothing', async () => {
+    const r = await checkStagedViaSubprocess({ id: ID, stagingDir: 'C:/s/c9', baseDir: 'C:/b',
+      io: runner({ status: null, stdout: '', stderr: '', timedOut: false, fault: { code: 'ETIMEDOUT', status: null, signal: null, elapsedMs: 6 } }) })
+    expect(r.ok).toBe(false)
+    expect(r.lineIds).toEqual([])
+    expect(r.problems[0]).toMatch(/harness fault: the re-check subprocess did not run \(code ETIMEDOUT, status null, after 6 ms\)/)
+  })
+
+  it('reports a real timeout as a timeout', async () => {
+    const r = await checkStagedViaSubprocess({ id: ID, stagingDir: 'C:/s/c9', baseDir: 'C:/b', timeoutMs: 1000,
+      io: runner({ status: null, stdout: '', stderr: '', timedOut: true, fault: null }) })
+    expect(r.problems[0]).toMatch(/timed out after 1000 ms/)
+  })
+})
+
+describe('restoreUncommittedWork', () => {
+  const io = ({ exists = true, checkStatus = 0, applyStatus = 0, checkFault = null } = {}) => {
+    const ran = []
+    return { ran, exists: () => exists,
+      run: (cmd, args) => {
+        ran.push([cmd, ...args].join(' '))
+        if (args.includes('--check')) return { status: checkStatus, stdout: '', stderr: 'error: patch does not apply\n', fault: checkFault }
+        if (args.includes('apply')) return { status: applyStatus, stdout: '', stderr: 'boom\n', fault: null }
+        return { status: 0, stdout: '', stderr: '', fault: null }
+      } }
+  }
+
+  it('says nothing when there is no mission or no patch', () => {
+    expect(restoreUncommittedWork({ id: ID, stagingDir: 'C:/s/c9', missionId: null, io: io() })).toBeNull()
+    expect(restoreUncommittedWork({ id: ID, stagingDir: 'C:/s/c9', missionId: 'm1', io: io({ exists: false }) })).toBeNull()
+  })
+
+  it('checks before it applies, applies, commits, and says so', () => {
+    const fake = io()
+    const note = restoreUncommittedWork({ id: ID, stagingDir: 'C:/s/c9', missionId: 'm1', io: fake, snapshotDir: 'C:/tmp' })
+    expect(fake.ran[0]).toBe('git -C C:/s/c9 apply --check C:/tmp/m1.uncommitted.patch')
+    expect(fake.ran[1]).toBe('git -C C:/s/c9 apply C:/tmp/m1.uncommitted.patch')
+    expect(fake.ran.join('\n')).toMatch(/commit -m restore uncommitted work from m1/)
+    expect(note).toMatch(/WAS restored/)
+    expect(note).toMatch(/restore uncommitted work from m1/)
+  })
+
+  // A half-applied patch is worse than none: the model would read a tree that
+  // neither it nor the check has ever seen.
+  it('leaves the tree alone and NAMES the reason when the patch does not apply', () => {
+    const fake = io({ checkStatus: 1 })
+    const note = restoreUncommittedWork({ id: ID, stagingDir: 'C:/s/c9', missionId: 'm1', io: fake, snapshotDir: 'C:/tmp' })
+    expect(fake.ran).toEqual(['git -C C:/s/c9 apply --check C:/tmp/m1.uncommitted.patch'])
+    expect(note).toMatch(/was NOT restored/)
+    expect(note).toMatch(/patch does not apply/)
+    expect(note).toMatch(/nothing is half-applied/)
+  })
+
+  it('names a git that could not run at all', () => {
+    const note = restoreUncommittedWork({ id: ID, stagingDir: 'C:/s/c9', missionId: 'm1',
+      io: io({ checkFault: { code: 'ENOENT', status: null, signal: null, elapsedMs: 2 } }), snapshotDir: 'C:/tmp' })
+    expect(note).toMatch(/was NOT restored: git apply --check could not run \(code ENOENT/)
   })
 })
 
@@ -914,7 +1093,7 @@ describe('constants', () => {
     expect(AUTHOR_TIMEOUT_S).toBe(14400)
     expect(AUTHOR_ITERATIONS).toBe(1200)
     expect(GATE_AUTHOR_MAX_AUTHORITY).toBe(0.5)
-    expect(AUTHOR_INVARIANTS).toEqual({ editGapCap: 40, commitGapCap: 150, revertBan: true, codeIndexFirst: true })
+    expect(AUTHOR_INVARIANTS).toEqual({ editGapCap: 120, commitGapCap: 150, revertBan: true, codeIndexFirst: true })
   })
 
   it('the promotion bar is the one the gate-line table prints', () => {
@@ -1080,7 +1259,8 @@ describe('authorCampaign at earned authority', () => {
 
   it('seals nothing when there was no proposal to seal', async () => {
     const { files } = staged(home)
-    const { io, disk } = makeIo({ home, files, baseLog: POSITIVE_LOG, over: { applyProposalDecision } })
+    const { io, disk } = makeIo({ home, files, check: { ok: false, problems: ['BASE must MISS the gate; terminator was PASS'] },
+      over: { applyProposalDecision } })
     const roadmap = ROADMAP()
     const state = new CampaignState(join(mkdtempSync(join(tmpdir(), 'camp-')), ID)).load()
     state.state.gateAuthorAuthority = GATE_AUTHOR_MAX_AUTHORITY

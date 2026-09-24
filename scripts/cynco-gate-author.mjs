@@ -25,6 +25,7 @@ import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
 import { cyncoHome } from '../engine/paths.js'
 import { calibrate, archiveBase, defaultIo as calibrateDefaultIo } from './cynco-campaign-calibrate.mjs'
+import { runSync, faultSummary } from './cynco-spawn.mjs'
 import { lintGate } from './cynco-gate-lint.mjs'
 import { parseGateOutput } from './cynco-gate-parse.mjs'
 import { loadCampaignSpec, checkIdentity } from './cynco-campaign-spec.mjs'
@@ -38,10 +39,20 @@ import { readCampaigns } from './cynco-triples.mjs'
 // check that costs two gate runs, so it is sized well below a wave's 8 h/2000.
 export const AUTHOR_TIMEOUT_S = 14400
 export const AUTHOR_ITERATIONS = 1200
+// The same 7,200,000 ms the sidecar assertion and the model's Bash tool get:
+// the re-check is the identical command, so it gets the identical cap.
+export const CHECK_SUBPROCESS_TIMEOUT_MS = 7_200_000
 // Spec ruling 2: what 0.5 buys is sealing without waiting for the supervisor's
 // approval. 1.0 is never granted — the human keeps the binding seat.
 export const GATE_AUTHOR_MAX_AUTHORITY = 0.5
-export const AUTHOR_INVARIANTS = { editGapCap: 40, commitGapCap: 150, revertBan: true, codeIndexFirst: true }
+// `editGapCap` is three times a wave's 40, and the reason is the shape of the
+// work: the authoring mission is three parts audit to one part writing, because
+// it may not touch the game and cannot write a line until it knows what is
+// absent. At 40 the live C9 run spent iterations arguing with the cap —
+// `maxCallsWithoutSourceEdit 194`, 67 tool errors in 474 calls, and the model
+// resorting to Grep because "Read is gated behind an edit". The commit gap is
+// unchanged: committing after each cut is an order, not a side effect of editing.
+export const AUTHOR_INVARIANTS = { editGapCap: 120, commitGapCap: 150, revertBan: true, codeIndexFirst: true }
 
 // The bar the seat has to clear to earn that 0.5. Defined in
 // `scripts/cynco-signal-validation.mjs` beside `DENIAL_MIN` — every threshold
@@ -195,9 +206,54 @@ export function exemplarFor({ prevId, io }) {
  * neither has a `scripts/` beside it, so a relative path made the acceptance
  * test unrunnable and the contract unfulfillable.
  */
+export const SELF_SCRIPT = norm(fileURLToPath(new URL('./cynco-gate-author.mjs', import.meta.url)))
+
 export function checkCommand(stagingDir, baseDir) {
-  const self = norm(fileURLToPath(new URL('./cynco-gate-author.mjs', import.meta.url)))
-  return `bun ${JSON.stringify(self)} --check ${JSON.stringify(norm(stagingDir))} ${JSON.stringify(norm(baseDir))}`
+  return `bun ${JSON.stringify(SELF_SCRIPT)} --check ${JSON.stringify(norm(stagingDir))} ${JSON.stringify(norm(baseDir))}`
+}
+
+/** The marker the `--check` CLI prints its machine-readable verdict behind. */
+export const CHECK_JSON_MARKER = '[check-json] '
+
+/**
+ * The AUTHORITATIVE re-check, run as a SUBPROCESS (F155).
+ *
+ * `authorCampaign` used to call `checkStaged` in-process after
+ * `io.waitForDriver` returned, and that is where the live C9 authoring run got
+ * eleven problems out of a triple with two: the runner's previous spawn was four
+ * hours earlier, and bun's stale `spawnSync` deadline killed the first gate run
+ * in milliseconds. A fresh process cannot carry a stale deadline into its first
+ * spawn, and the `--check` CLI path is the one that read this triple correctly
+ * four times in a row — from the driver, and by hand from two different cwds.
+ *
+ * The verdict comes from the exit code; the detail comes from the JSON line the
+ * CLI prints. A missing JSON line is not fatal: the exit code still decides, and
+ * the captured output is carried as the problem text so nothing is silently lost.
+ */
+export async function checkStagedViaSubprocess({ id, stagingDir, baseDir, io, timeoutMs = CHECK_SUBPROCESS_TIMEOUT_MS }) {
+  const args = [SELF_SCRIPT, '--check', norm(stagingDir), norm(baseDir)]
+  const r = io.run('bun', args, { timeoutMs })
+  const out = `${r.stdout ?? ''}${r.stderr ?? ''}`
+  if (r.fault) {
+    return { ok: false, problems: [`harness fault: the re-check subprocess did not run (${faultSummary(r.fault)}) — the triple was not graded`],
+      lineIds: [], tails: null, calibration: null, fault: r.fault }
+  }
+  if (r.timedOut) {
+    return { ok: false, problems: [`the re-check subprocess timed out after ${timeoutMs} ms — the triple was not graded`],
+      lineIds: [], tails: null, calibration: null, fault: null }
+  }
+  const line = out.split(/\r?\n/).reverse().find(l => l.includes(CHECK_JSON_MARKER))
+  let parsed = null
+  if (line) {
+    try { parsed = JSON.parse(line.slice(line.indexOf(CHECK_JSON_MARKER) + CHECK_JSON_MARKER.length)) } catch { parsed = null }
+  }
+  if (parsed) {
+    return { ok: r.status === 0 && parsed.ok === true, problems: Array.isArray(parsed.problems) ? parsed.problems : [],
+      lineIds: Array.isArray(parsed.lineIds) ? parsed.lineIds : [], tails: parsed.tails ?? null, calibration: null, fault: null }
+  }
+  const ok = r.status === 0
+  return { ok, problems: ok ? [] : [`the re-check subprocess exited ${r.status ?? 'null'} without a ${CHECK_JSON_MARKER.trim()} verdict; its output was:\n${out.trim().slice(-4000)}`],
+    lineIds: [], tails: null, calibration: null, fault: null }
 }
 
 /**
@@ -218,7 +274,7 @@ const section = (heading, body) => `${heading}\n\n${body.replace(/\s+$/, '')}\n`
  * resume, where it is the single most useful thing in the file — the last run
  * already discovered which of these rules it broke.
  */
-export function authoringBrief({ line, id, prevId, baseDir, stagingDir, exemplar, previousCheck = null }) {
+export function authoringBrief({ line, id, prevId, baseDir, stagingDir, exemplar, previousCheck = null, restoreNote = null }) {
   const ID = id.toUpperCase()
   const N = String(id).replace(/^c/i, '')
   const P = `C${N}`
@@ -407,14 +463,19 @@ ${perturbHead}`
     : 'No previous campaign gate is available; follow WHAT TO WRITE exactly.'
   out.push(section('EXEMPLAR', ex))
 
-  if (previousCheck) {
-    out.push(section('PREVIOUS CHECK OUTPUT',
+  if (previousCheck || restoreNote) {
+    const body = []
+    if (restoreNote) body.push(noSealedPath(restoreNote))
+    if (previousCheck) {
+      body.push(
 `The last authoring run left the triple in ${staging} and the check REFUSED it.
 These are its words, from the PREVIOUS run — run the check yourself (DONE WHEN,
 below; it works from any directory) to see where the triple stands now. Fix what
 it reports; do not start over.
 
-${noSealedPath(previousCheck)}`))
+${noSealedPath(previousCheck)}`)
+    }
+    out.push(section('PREVIOUS CHECK OUTPUT', body.join('\n\n')))
   }
 
   out.push(section('DONE WHEN',
@@ -549,6 +610,19 @@ function commitStaging(stagingDir, message, io) {
 }
 
 /**
+ * The graded ids the positive shim leaves FAILing, from its output tail.
+ *
+ * Rule 14's failure is never "the shim did not PASS" in any useful sense — it is
+ * a list of facts the shim never made true, and that list is the resume brief's
+ * whole content. `[]` for a tail that produced nothing (a crash before the first
+ * check line), which is itself the finding the tail then shows.
+ */
+export function positiveLeavesFailing(positiveTail) {
+  if (typeof positiveTail !== 'string' || positiveTail.trim() === '') return []
+  return parseGateOutput(positiveTail).fails.map(f => f.id)
+}
+
+/**
  * The stored check output, minus the problems the staging dir has since fixed.
  *
  * A stored check is as old as the run that produced it, and a run that CRASHED
@@ -573,15 +647,72 @@ export function livePreviousCheck({ id, stagingDir, lastCheck, io }) {
     const m = /^missing: (\S+) was never written into the staging dir$/.exec(l.trim())
     return !m || !io.exists(`${dir}/${m[1]}`)
   })
-  return kept.some(l => l.trim() !== '') ? kept.join('\n') : null
+  if (!kept.some(l => l.trim() !== '')) return null
+  const parts = [kept.join('\n')]
+
+  // The evidence behind the problem list. Attempt 4 was told only that the
+  // positive shim "did not PASS" and spent iterations 340-475 working out why by
+  // reading the harness; the tail says it outright, and the failing ids say
+  // which graded facts the shim never made true.
+  const tail = lastCheck?.tails?.positive
+  if (typeof tail === 'string' && tail.trim() !== '') {
+    parts.push(`positive shim output (tail):\n\n${tail.split(/\r?\n/).filter(l => l.trim() !== '').slice(-20).join('\n')}`)
+  }
+  const failing = Array.isArray(lastCheck?.positiveLeavesFailing) ? lastCheck.positiveLeavesFailing : []
+  if (failing.length) {
+    parts.push(`the positive shim leaves these lines FAIL: ${failing.join(' ')}`)
+  }
+  return parts.join('\n\n')
+}
+
+/** Where the driver leaves a stopped mission's uncommitted tree. */
+export const WORK_SNAPSHOT_DIR = 'C:/tmp'
+
+/**
+ * Put the last attempt's uncommitted work back before the next one starts.
+ *
+ * The driver preserves what the tree was holding when it stopped
+ * (`snapshotUncommittedWork`) and then resets, so the gate grades the commit.
+ * Nothing put it back. On a resume that is the difference between the model
+ * finding the file it was halfway through and finding the version from before
+ * its last hour of work.
+ *
+ * `git apply --check` first, always: a patch that does not apply cleanly is left
+ * alone and NAMED, because a half-applied patch is worse than none — the model
+ * would be reading a tree neither it nor the check has ever seen. It is committed
+ * rather than left dirty, so the staging dir's history says where the work came
+ * from and the driver's own dirty-tree handling has nothing to preserve twice.
+ *
+ * Returns the sentence the brief prints. `null` when there is nothing to say.
+ */
+export function restoreUncommittedWork({ id, stagingDir, missionId, io, snapshotDir = WORK_SNAPSHOT_DIR }) {
+  if (!missionId) return null
+  const patch = `${norm(snapshotDir)}/${missionId}.uncommitted.patch`
+  if (!io.exists(patch)) return null
+  const dir = norm(stagingDir)
+  const check = io.run('git', ['-C', dir, 'apply', '--check', patch], { timeoutMs: 60_000 })
+  if (check.fault) {
+    return `The previous run's uncommitted work (${patch}) was NOT restored: git apply --check could not run (${faultSummary(check.fault)}). The tree is at its last commit.`
+  }
+  if (check.status !== 0) {
+    const why = String(check.stderr ?? '').trim().split(/\r?\n/)[0] || `exit ${check.status}`
+    return `The previous run's uncommitted work (${patch}) was NOT restored: it does not apply cleanly to the current tree (${why}). The tree is at its last commit — nothing is half-applied.`
+  }
+  const applied = io.run('git', ['-C', dir, 'apply', patch], { timeoutMs: 60_000 })
+  if (applied.fault || applied.status !== 0) {
+    const why = applied.fault ? faultSummary(applied.fault) : (String(applied.stderr ?? '').trim().split(/\r?\n/)[0] || `exit ${applied.status}`)
+    return `The previous run's uncommitted work (${patch}) was NOT restored: git apply failed after passing --check (${why}). The tree may be partly changed — run the check before you trust it.`
+  }
+  commitStaging(stagingDir, `restore uncommitted work from ${missionId}`, io)
+  return `The previous run's uncommitted work WAS restored into ${dir} and committed as "restore uncommitted work from ${missionId}". The tree already holds whatever that run was part-way through.`
 }
 
 /**
  * `--author <id>`: one authoring mission, start to verdict.
  *
  * The model's own check is NOT trusted — the driver ran it, but the driver ran
- * it in a process the mission could have reached. The runner re-runs
- * `checkStaged` from here, and only that reading raises the proposal.
+ * it in a process the mission could have reached. The runner re-runs the check
+ * from here, as a SUBPROCESS (F155), and only that reading raises the proposal.
  */
 export async function authorCampaign({ id, roadmap, state, io }) {
   const refusal = (why) => ({ ok: false, why, proposal: null, missionId: null, verified: null, check: null })
@@ -608,8 +739,11 @@ export async function authorCampaign({ id, roadmap, state, io }) {
   const prev = s.authoring[id] ?? {}
   const attempt = (prev.attempts ?? 0) + 1
   const briefFile = `${stagingDir}/brief-${attempt}.txt`
+  // Before the brief is written, so the brief can say what it found.
+  const restoreNote = restoreUncommittedWork({ id, stagingDir, missionId: prev.missionId ?? null, io })
+  if (restoreNote) console.log(`[author] ${restoreNote}`)
   const text = authoringBrief({ line, id, prevId, baseDir, stagingDir, exemplar: exemplarFor({ prevId, io }),
-    previousCheck: livePreviousCheck({ id, stagingDir, lastCheck: prev.lastCheck, io }) })
+    previousCheck: livePreviousCheck({ id, stagingDir, lastCheck: prev.lastCheck, io }), restoreNote })
   io.writeFile(briefFile, text)
   io.writeFile(sidecarPath(briefFile), JSON.stringify(authoringSidecar({ stagingDir, baseDir }), null, 2) + '\n')
   commitStaging(stagingDir, `${id}-author: brief ${attempt}`, io)
@@ -664,9 +798,17 @@ export async function authorCampaign({ id, roadmap, state, io }) {
     console.error(`[author] ${id}: ${e?.stack ?? e}`)
   }
 
-  const check = await checkStaged({ id, stagingDir, baseDir, io })
-  const lastCheck = { at: io.now(), ok: check.ok, problems: check.problems, lineCount: check.lineIds.length,
-    output: check.ok ? `PASS — ${check.lineIds.length} graded lines` : check.problems.join('\n') }
+  const check = await checkStagedViaSubprocess({ id, stagingDir, baseDir, io })
+  const lastCheck = {
+    at: io.now(), ok: check.ok, problems: check.problems, lineCount: check.lineIds.length,
+    output: check.ok ? `PASS — ${check.lineIds.length} graded lines` : check.problems.join('\n'),
+    // The resume brief's raw material. A problem list says the positive shim
+    // "did not PASS"; the tail says it died on `import gilded.ui.views` at line
+    // 124, and the failing ids say which facts it never made true. Attempt 4
+    // spent its budget rediscovering both by hand.
+    tails: check.tails ?? null,
+    positiveLeavesFailing: positiveLeavesFailing(check.tails?.positive ?? null),
+  }
   s.authoring[id] = { ...s.authoring[id], missionId, verified, lastCheck, fault }
 
   let proposal = null
@@ -975,10 +1117,10 @@ export function sealEntry({ id, line, spec, check, sealedAt, shas, missionId, ve
 export function defaultAuthorIo(helpers = {}) {
   return {
     mkdir: (p) => mkdirSync(p, { recursive: true }),
-    run: (cmd, args, { cwd, env, timeoutMs, shell } = {}) => {
-      const r = spawnSync(cmd, args, { cwd, env: { ...process.env, ...(env ?? {}) }, encoding: 'utf8', timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024, windowsHide: true, shell })
-      return { status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '', timedOut: r.error?.code === 'ETIMEDOUT' }
-    },
+    // F155: `runSync`, never a bare spawnSync. The authoring runner's first
+    // spawn after `waitForDriver` follows a FOUR-HOUR gap, which is the exact
+    // shape that made bun report a stale deadline as a two-hour timeout.
+    run: (cmd, args, opts = {}) => runSync(cmd, args, opts),
     exists: existsSync,
     readFile: (p) => readFileSync(p, 'utf8'),
     writeFile: (p, s) => { mkdirSync(dirname(p), { recursive: true }); writeFileSync(p, s, 'utf8') },
@@ -1033,9 +1175,22 @@ export async function authorMain(argv, io = defaultAuthorIo()) {
     }
     const id = basename(norm(stagingDir))
     const check = await checkStaged({ id, stagingDir, baseDir, io })
-    if (check.ok) { console.log(`[check] ${id}: PASS — ${check.lineIds.length} graded lines, BASE MISS, cheat stub honest, positive shim PASS`); return 0 }
+    // The machine-readable verdict, for the runner's subprocess re-check
+    // (F155). Printed on stdout in both directions and always last, so a reader
+    // takes the final marker line and nothing else has to be parsed.
+    const cal = check.calibration ?? {}
+    const jsonLine = JSON.stringify({
+      ok: check.ok, problems: check.problems, lineIds: check.lineIds,
+      tails: { base: cal.baseOutputTail ?? null, perturb: cal.perturbOutputTail ?? null, positive: cal.positiveOutputTail ?? null },
+    })
+    if (check.ok) {
+      console.log(`[check] ${id}: PASS — ${check.lineIds.length} graded lines, BASE MISS, cheat stub honest, positive shim PASS`)
+      console.log(CHECK_JSON_MARKER + jsonLine)
+      return 0
+    }
     console.error(`[check] ${id}: REFUSED — ${check.problems.length} problem(s)`)
     for (const p of check.problems) console.error(`  ${p}`)
+    console.log(CHECK_JSON_MARKER + jsonLine)
     return 1
   }
   if (flag('--author') !== -1) {

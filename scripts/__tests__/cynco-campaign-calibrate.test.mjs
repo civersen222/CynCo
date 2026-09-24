@@ -152,6 +152,74 @@ describe('calibrate', () => {
     expect(fake.ran).toEqual([])
   })
 
+  // F155. A run that produced nothing measured nothing, and `compareCalibration`
+  // cannot tell that from a gate whose every line passed at BASE: fed the empty
+  // run bun's stale spawnSync deadline produced, it reported a null terminator,
+  // "too few gate lines: 0 < 8" and one MUST-FAIL complaint per discriminator —
+  // nine inventions about a triple that had two real problems.
+  describe('a run that produced nothing is a HARNESS FAULT, not a reading', () => {
+    it('reports a `fault` on the BASE run as a fault and never compares', async () => {
+      const fake = io({ perturbLog: baseLog, baselineExists: true, headerText: fullHeader })
+      const inner = fake.run
+      fake.run = (cmd, args, opts) => {
+        const k = [cmd, ...args].join(' ')
+        if (/gate_c8\.py/.test(k)) return { status: null, stdout: '', stderr: '', elapsedMs: 7, timedOut: false, fault: { code: 'ETIMEDOUT', status: null, signal: null, elapsedMs: 7 } }
+        return inner(cmd, args, opts)
+      }
+      const r = await calibrate(withPositive, fake)
+      expect(r.ok).toBe(false)
+      expect(r.harnessFault).toBe(true)
+      expect(r.problems).toEqual(['harness fault: gate run at BASE did not run (code ETIMEDOUT, status null, after 7 ms) — nothing was graded'])
+      // Not one invented finding about the gate itself.
+      expect(r.problems.join('\n')).not.toMatch(/MUST-FAIL|too few gate lines|must MISS/)
+      expect(r.baseFails).toEqual([])
+      expect(r.suiteBaselineCreated).toBe(false)
+    })
+
+    it('reports an empty BASE run with no terminator as a fault even without an error', async () => {
+      const fake = io({ perturbLog: baseLog, baselineExists: true, headerText: fullHeader })
+      const inner = fake.run
+      fake.run = (cmd, args, opts) => {
+        const k = [cmd, ...args].join(' ')
+        if (/gate_c8\.py/.test(k)) return { status: 1, stdout: '', stderr: '', elapsedMs: 4, timedOut: false, fault: null }
+        return inner(cmd, args, opts)
+      }
+      const r = await calibrate(withPositive, fake)
+      expect(r.ok).toBe(false)
+      expect(r.harnessFault).toBe(true)
+      expect(r.problems).toEqual(['harness fault: gate run at BASE produced no output (status 1, after 4 ms) — nothing was graded'])
+    })
+
+    it('names the positive shim as a fault rather than a shim that "did not PASS"', async () => {
+      const fake = io({ perturbLog: baseLog, baselineExists: true, headerText: fullHeader })
+      const inner = fake.run
+      fake.run = (cmd, args, opts) => {
+        const k = [cmd, ...args].join(' ')
+        if (/positive_c8\.py/.test(k)) return { status: null, stdout: '', stderr: '', elapsedMs: 5, timedOut: false, fault: { code: 'ETIMEDOUT', status: null, signal: null, elapsedMs: 5 } }
+        return inner(cmd, args, opts)
+      }
+      const r = await calibrate(withPositive, fake)
+      expect(r.ok).toBe(false)
+      expect(r.harnessFault).toBe(true)
+      expect(r.problems).toEqual(['harness fault: positive shim run did not run (code ETIMEDOUT, status null, after 5 ms) — nothing was graded'])
+      expect(r.problems.join('\n')).not.toMatch(/did not PASS/)
+    })
+
+    it('a REAL timeout is still a timeout, not a fault', async () => {
+      const fake = io({ perturbLog: baseLog, baselineExists: true, headerText: fullHeader })
+      const inner = fake.run
+      fake.run = (cmd, args, opts) => {
+        const k = [cmd, ...args].join(' ')
+        if (/gate_c8\.py/.test(k)) return { status: null, stdout: '', stderr: '', elapsedMs: 7_200_000, timedOut: true, fault: null }
+        return inner(cmd, args, opts)
+      }
+      const r = await calibrate(withPositive, fake)
+      expect(r.ok).toBe(false)
+      expect(r.harnessFault).toBeFalsy()
+      expect(r.problems.join('\n')).toMatch(/gate timed out after 7200000 ms at BASE/)
+    })
+  })
+
   it('refuses when git archive of the BASE fails', async () => {
     const fake = io({ perturbLog: baseLog, baselineExists: true })
     fake.run = (cmd, args) => {

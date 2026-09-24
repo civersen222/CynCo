@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process'
 import { resolve } from 'node:path'
 import { homedir } from 'node:os'
 import { parseGateOutput } from './cynco-gate-parse.mjs'
+import { runSync } from './cynco-spawn.mjs'
 import { constraints } from '../engine/cybernetics-core/src/index.js'
 
 export const GATE_TIMEOUT_MS = 7_200_000
@@ -11,9 +12,11 @@ export const SWEEP_TIMEOUT_MS = 3_600_000
 const SUITE_GATE = resolve(homedir(), '.cynco', 'heldout', 'common', 'g_suite_no_regression.py')
 
 export const defaultIo = {
-  run(cmd, args, { cwd, env, timeoutMs }) {
-    const r = spawnSync(cmd, args, { cwd, env: { ...process.env, ...(env ?? {}) }, encoding: 'utf8', timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024, windowsHide: true })
-    return { status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '', timedOut: r.error?.code === 'ETIMEDOUT' }
+  // F155: the grader has exactly the same exposure as calibrate — its first
+  // gate run of a wave follows a long idle gap, and a bare spawnSync would
+  // report that stale deadline as a two-hour timeout. `runSync` measures.
+  run(cmd, args, opts = {}) {
+    return runSync(cmd, args, opts)
   },
   // I4: a failed `git diff` used to come back as an empty list, and an empty
   // list is the exact signal sweepTestsFor reads as "the diff shipped no test

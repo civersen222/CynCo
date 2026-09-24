@@ -1,15 +1,14 @@
 // scripts/cynco-campaign-calibrate.mjs
-import { spawnSync } from 'node:child_process'
 import { existsSync, readFileSync, writeFileSync, rmSync, mkdirSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { parseGateOutput, parsePerturbHeader, compareCalibration } from './cynco-gate-parse.mjs'
 import { GATE_TIMEOUT_MS, SUITE_TIMEOUT_MS } from './cynco-campaign-grade.mjs'
+import { runSync, faultSummary } from './cynco-spawn.mjs'
 
 export const defaultIo = {
-  run: (cmd, args, { cwd, env, timeoutMs, shell } = {}) => {
-    const r = spawnSync(cmd, args, { cwd, env: { ...process.env, ...(env ?? {}) }, encoding: 'utf8', timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024, windowsHide: true, shell })
-    return { status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '', timedOut: r.error?.code === 'ETIMEDOUT' }
-  },
+  // F155: `runSync`, never a bare spawnSync — a timeout must be an elapsed
+  // measurement and anything else spawnSync reports is a named harness fault.
+  run: (cmd, args, opts = {}) => runSync(cmd, args, opts),
   exists: existsSync,
   readFile: (p) => readFileSync(p, 'utf8'),
   writeFile: (p, s) => writeFileSync(p, s, 'utf8'),
@@ -72,6 +71,41 @@ export async function calibrate(spec, io = defaultIo, { baseDir: providedBaseDir
     positive = parseGateOutput(positiveRun.stdout + '\n' + positiveRun.stderr)
   }
 
+  // F155, before any comparison: a run that produced NOTHING measured nothing,
+  // and a comparison over nothing is not a reading — it is six inventions. The
+  // live C9 authoring runner's gate at BASE came back empty in 7 ms (bun's stale
+  // spawnSync deadline), and `compareCalibration` dutifully reported a null
+  // terminator, zero graded lines and a MUST-FAIL complaint per discriminator
+  // against an empty BASE failure set. Every one of those blamed the gate for
+  // the harness. A fault is reported as a fault, and nothing else is reported.
+  const faults = []
+  for (const [what, run, parsed] of [
+    ['gate run at BASE', baseRun, base],
+    ['perturb run', pertRun, perturbed],
+    ...(positiveRun ? [['positive shim run', positiveRun, positive]] : []),
+  ]) {
+    if (run.fault) faults.push(`harness fault: ${what} did not run (${faultSummary(run.fault)}) — nothing was graded`)
+    else if (!run.timedOut && String(run.stdout ?? '').trim() === '' && parsed?.terminator == null) {
+      faults.push(`harness fault: ${what} produced no output (status ${run.status ?? 'null'}`
+        + `${typeof run.elapsedMs === 'number' ? `, after ${run.elapsedMs} ms` : ''}) — nothing was graded`)
+    }
+  }
+  if (faults.length) {
+    return {
+      ok: false,
+      problems: faults,
+      gateSha256: io.sha256(spec.gate),
+      perturbSha256: io.sha256(spec.perturb),
+      positiveSha256: spec.positive ? io.sha256(spec.positive) : null,
+      baseFails: [], basePasses: [], perturbFails: [], positive: null,
+      suiteBaselineCreated: false,
+      baseOutputTail: (baseRun.stdout + baseRun.stderr).slice(-4000),
+      perturbOutputTail: (pertRun.stdout + pertRun.stderr).slice(-4000),
+      positiveOutputTail: positiveRun ? (positiveRun.stdout + positiveRun.stderr).slice(-4000) : null,
+      harnessFault: true,
+    }
+  }
+
   const cmp = compareCalibration({ base, perturbed, positive, header })
   const problems = [...cmp.problems]
   if (baseRun.timedOut) problems.push(`gate timed out after ${GATE_TIMEOUT_MS} ms at BASE`)
@@ -104,5 +138,6 @@ export async function calibrate(spec, io = defaultIo, { baseDir: providedBaseDir
     baseOutputTail: (baseRun.stdout + baseRun.stderr).slice(-4000),
     perturbOutputTail: (pertRun.stdout + pertRun.stderr).slice(-4000),
     positiveOutputTail: positiveRun ? (positiveRun.stdout + positiveRun.stderr).slice(-4000) : null,
+    harnessFault: false,
   }
 }
