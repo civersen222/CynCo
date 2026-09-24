@@ -72,6 +72,31 @@ export function setLineStatus(roadmap, id, status) {
   return roadmap
 }
 
+/**
+ * The ONE backward move the ladder permits: `proposed` → `authoring`, when the
+ * supervisor refuses a seal.
+ *
+ * Forward-only is right for everything else — a sealed gate does not un-seal, a
+ * done campaign does not re-run — but a refused proposal has to reopen the line
+ * it came from or the only route back is editing the JSON by hand. `--author`
+ * refuses a `proposed` line (and `nextOpenLine` does not count one as in flight),
+ * so without this a DO-NOT-SEAL verdict leaves the campaign stuck: the gate cannot
+ * be re-authored and cannot be sealed.
+ *
+ * Deliberately its own function rather than a flag on `setLineStatus`: there is
+ * exactly one legal backward transition, it is named here, and every other one
+ * still throws.
+ */
+export function rejectLine(roadmap, id) {
+  const line = lineFor(roadmap, id)
+  if (!line) throw new Error(`rejectLine: unknown line id "${id}"`)
+  if (line.status !== 'proposed') {
+    throw new Error(`rejectLine: line "${id}" is "${line.status}" — only a "proposed" line can be rejected back to "authoring"`)
+  }
+  line.status = 'authoring'
+  return roadmap
+}
+
 /** Writes the roadmap as 2-space JSON with a trailing LF. */
 export function saveRoadmap(path, roadmap) {
   writeFileSync(path, JSON.stringify(roadmap, null, 2) + '\n')

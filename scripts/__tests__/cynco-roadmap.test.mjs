@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   ROADMAP_PATH, STATUSES,
-  loadRoadmap, nextOpenLine, setLineStatus, saveRoadmap, lineFor,
+  loadRoadmap, nextOpenLine, setLineStatus, saveRoadmap, lineFor, rejectLine,
 } from '../cynco-roadmap.mjs'
 
 describe('cynco-roadmap: checked-in roadmap.json', () => {
@@ -70,6 +70,40 @@ describe('setLineStatus', () => {
 
   it('STATUSES carries the full monotone sequence', () => {
     expect(STATUSES).toEqual(['open', 'authoring', 'proposed', 'sealed', 'running', 'done'])
+  })
+})
+
+/**
+ * The ONE backward move the ladder permits. Without it a DO-NOT-SEAL verdict left
+ * the campaign stuck: `--author` refuses a `proposed` line and `nextOpenLine` does
+ * not count one as in flight, so the gate could neither be sealed nor re-authored,
+ * and the only way back was editing the JSON by hand.
+ */
+describe('rejectLine', () => {
+  const FIXTURE = (status) => ({ lines: [{ id: 'c9', name: 'Ship shell', bar: 'b', base: 'abcdef1', status }] })
+
+  it('moves a proposed line back to authoring', () => {
+    const roadmap = FIXTURE('proposed')
+    rejectLine(roadmap, 'c9')
+    expect(lineFor(roadmap, 'c9').status).toBe('authoring')
+  })
+
+  it('refuses a line that is not proposed, naming where it actually is', () => {
+    for (const status of ['open', 'authoring', 'sealed', 'running', 'done']) {
+      expect(() => rejectLine(FIXTURE(status), 'c9')).toThrow(new RegExp(`is "${status}"`))
+    }
+  })
+
+  it('throws on an unknown id', () => {
+    expect(() => rejectLine(FIXTURE('proposed'), 'nope')).toThrow(/unknown line id/)
+  })
+
+  // The exemption is this one transition and nothing else: every other backward
+  // move still goes through setLineStatus and still throws.
+  it('does not loosen setLineStatus — other backward moves still throw', () => {
+    expect(() => setLineStatus(FIXTURE('sealed'), 'c9', 'authoring')).toThrow(/backward/)
+    expect(() => setLineStatus(FIXTURE('proposed'), 'c9', 'authoring')).toThrow(/backward/)
+    expect(() => setLineStatus(FIXTURE('done'), 'c9', 'running')).toThrow(/backward/)
   })
 })
 

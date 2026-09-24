@@ -338,7 +338,7 @@ export function packageMapText(map) {
  * resume, where it is the single most useful thing in the file — the last run
  * already discovered which of these rules it broke.
  */
-export function authoringBrief({ line, id, prevId, baseDir, stagingDir, exemplar, previousCheck = null, restoreNote = null, packageMap = null, timeoutS = AUTHOR_TIMEOUT_S }) {
+export function authoringBrief({ line, id, prevId, baseDir, stagingDir, exemplar, previousCheck = null, restoreNote = null, packageMap = null, timeoutS = AUTHOR_TIMEOUT_S, supervisorNote = null }) {
   const ID = id.toUpperCase()
   const N = String(id).replace(/^c/i, '')
   const P = `C${N}`
@@ -544,6 +544,23 @@ ${noSealedPath(previousCheck)}`)
     out.push(section('PREVIOUS CHECK OUTPUT', body.join('\n\n')))
   }
 
+  // Right after the check output, and deliberately so: the check says the triple
+  // is a bar, and this says a person read it and disagreed. A green check is not
+  // an answer to any line below.
+  if (supervisorNote) {
+    out.push(section('SUPERVISOR REVIEW — the seal was refused; every line below must be fixed before the check can count',
+`A supervisor read the staged triple and REFUSED to seal it. The mechanical check
+may already pass — it did when this was written — and that is not the question.
+The question is whether the gate MEASURES the roadmap line. These are the
+supervisor's words, one problem per line; treat each as an order.
+
+${noSealedPath(supervisorNote)}
+
+When you are done, the check must still exit 0 AND every line above must be
+addressed. Re-read THE ROADMAP LINE before you start: this is a re-authoring of
+what the gate means, not a repair of the shim.`))
+  }
+
   out.push(section('DONE WHEN',
 `  ${checkCommand(staging, base)}
 
@@ -746,6 +763,22 @@ export function livePreviousCheck({ id, stagingDir, lastCheck, io }) {
 /** Where the driver leaves a stopped mission's uncommitted tree. */
 export const WORK_SNAPSHOT_DIR = 'C:/tmp'
 
+/**
+ * The supervisor's refusal, read off disk, or null.
+ *
+ * By path rather than copied into state: the reviewer's file stays the one source,
+ * and a note that has been edited since the refusal is read as it now stands. An
+ * unreadable path is null and SAID — silently dropping the content of a refusal
+ * would leave the next attempt re-authoring blind against a bar it cannot see.
+ */
+export function readNote(notePath, io) {
+  if (!notePath) return null
+  try {
+    const text = io.readFile(notePath)
+    return typeof text === 'string' && text.trim() !== '' ? text.trim() : null
+  } catch { return null }
+}
+
 /** The four files an authoring mission owes, in the staging dir. */
 export const stagedPaths = (id, stagingDir) => {
   const dir = norm(stagingDir)
@@ -858,7 +891,7 @@ export function restoreUncommittedWork({ id, stagingDir, missionId, io, snapshot
  * it in a process the mission could have reached. The runner re-runs the check
  * from here, as a SUBPROCESS (F155), and only that reading raises the proposal.
  */
-export async function authorCampaign({ id, roadmap, state, io }) {
+export async function authorCampaign({ id, roadmap, state, io, notePath = null }) {
   const refusal = (why) => ({ ok: false, why, proposal: null, missionId: null, verified: null, check: null })
   const line = lineFor(roadmap, id)
   if (!line) return refusal(`the roadmap has no line "${id}"`)
@@ -882,7 +915,22 @@ export async function authorCampaign({ id, roadmap, state, io }) {
 
   const prev = s.authoring[id] ?? {}
   const attempt = (prev.attempts ?? 0) + 1
-  const timeoutS = authorTimeoutFor(attempt)
+  // A supervisor refusal changes what the next attempt IS. The note path sticks to
+  // the state so a later `--author` without `--note` still carries it — the
+  // refusal does not expire because the operator typed a shorter command.
+  const refusals = Array.isArray(prev.refusals) ? prev.refusals : []
+  const activeNotePath = notePath ?? refusals.at(-1)?.notePath ?? null
+  if (notePath && notePath !== refusals.at(-1)?.notePath) {
+    s.authoring[id] = { ...prev, refusals: [...refusals, { at: io.now(), by: 'supervisor', notePath }] }
+  }
+  const supervisorNote = readNote(activeNotePath, io)
+  if (activeNotePath && !supervisorNote) {
+    console.error(`[author] ${id}: --note ${activeNotePath} could not be read — the refusal's content will NOT reach the brief`)
+  }
+  // The resume budget is for a shim fix. A refused seal is a re-authoring of what
+  // the gate MEANS — new lines, new outcomes, a rewritten draft — so it gets the
+  // full four hours.
+  const timeoutS = supervisorNote ? AUTHOR_TIMEOUT_S : authorTimeoutFor(attempt)
   const briefFile = `${stagingDir}/brief-${attempt}.txt`
   // Before the brief is written, so the brief can say what it found.
   const restoreNote = restoreUncommittedWork({ id, stagingDir, missionId: prev.missionId ?? null, io })
@@ -900,13 +948,19 @@ export async function authorCampaign({ id, roadmap, state, io }) {
   // attempt has nothing to read, and four minutes of a four-hour budget buys a
   // brief that is true.
   const resumeCheck = await refreshedLastCheck({ id, stagingDir, baseDir, prev, io })
-  if (resumeCheck !== prev.lastCheck) s.authoring[id] = { ...prev, lastCheck: resumeCheck }
+  if (resumeCheck !== prev.lastCheck) s.authoring[id] = { ...s.authoring[id], lastCheck: resumeCheck }
 
   // The staged triple already passes: there is nothing for a mission to do, and
   // four hours of GPU to prove it. Propose from what is on disk. This is the same
   // reading `authorCampaign` would take after a dispatch — the subprocess check —
   // so the evidence behind the proposal is identical either way.
-  if (resumeCheck?.ok) {
+  // ...UNLESS a supervisor has refused this triple. A refused triple is
+  // KNOWN-INSUFFICIENT, and its passing the mechanical check is exactly the thing
+  // the refusal disputes: the C9 triple that drew this note was mechanically clean
+  // — BASE missed by absence, the stub's header was exact, the shim reached
+  // GATE: PASS — and still did not measure the roadmap line. Proposing it again
+  // because the check is green would be the harness overruling the supervisor.
+  if (resumeCheck?.ok && !supervisorNote) {
     const check = { ok: true, problems: [], lineIds: resumeCheck.lineIds ?? [], tails: resumeCheck.tails ?? null }
     const proposal = gateProposal({ id, check, missionId: prev.missionId ?? null, verified: prev.verified ?? null })
     s.proposals = s.proposals ?? []
@@ -921,7 +975,7 @@ export async function authorCampaign({ id, roadmap, state, io }) {
 
   const text = authoringBrief({ line, id, prevId, baseDir, stagingDir, exemplar: exemplarFor({ prevId, io }),
     previousCheck: livePreviousCheck({ id, stagingDir, lastCheck: resumeCheck, io }), restoreNote,
-    packageMap: readPackageMap({ baseDir, io }), timeoutS })
+    packageMap: readPackageMap({ baseDir, io }), timeoutS, supervisorNote })
   io.writeFile(briefFile, text)
   io.writeFile(sidecarPath(briefFile), JSON.stringify(authoringSidecar({ stagingDir, baseDir }), null, 2) + '\n')
   commitStaging(stagingDir, `${id}-author: brief ${attempt}`, io)
@@ -956,7 +1010,11 @@ export async function authorCampaign({ id, roadmap, state, io }) {
   // Persist BEFORE the wall clock starts, the same discipline runWave keeps: a
   // runner that dies in the wait must not let the next invocation dispatch a
   // second authoring mission on top of the first.
-  s.authoring[id] = { ...prev, stagingDir, baseDir, briefFile, attempts: attempt, dispatchedAt: io.now(), missionId: null, verified: null, fault: null }
+  // `...s.authoring[id]`, NOT `...prev`: this runs after the refusal above may
+  // have added `refusals`, and spreading the stale snapshot silently dropped it —
+  // the note path then vanished and the next resume without `--note` forgot the
+  // refusal entirely.
+  s.authoring[id] = { ...s.authoring[id], stagingDir, baseDir, briefFile, attempts: attempt, dispatchedAt: io.now(), missionId: null, verified: null, fault: null }
   state.save()
 
   let missionId = null, verified = null, fault = null, driverExited = false
@@ -1097,15 +1155,25 @@ export function draftToSpec({ id, draft, line, paths, authorMissionId = null, li
   // Coverage: every graded line but the regression line belongs to exactly one
   // cut. A line no work item claims is a line the brief never asks for.
   const regression = `C${String(id).replace(/^c/i, '')}.9`.toLowerCase()
-  const claimed = new Set(work.flatMap(w => w.gateIds))
-  const uncovered = lineIds.filter(x => x.toLowerCase() !== regression && !x.toLowerCase().startsWith(regression + '.') && !claimed.has(x))
+  const claimed = [...new Set(work.flatMap(w => w.gateIds))]
+  // A draft's gateId is the SHORT id — `C9.1a` — and a lint id is the full one —
+  // `C9.1a.resolution-list`. Matched exactly, as this did, every draft any author
+  // could write would throw at seal time, and nothing caught it because the seal
+  // had never been reached. The prefix rule is the one `parsePerturbHeader`
+  // already uses for the EXPECT-FLIP / MUST-FAIL lists, so a draft, a stub header
+  // and a gate now all name lines the same way.
+  const matches = (short, full) => full === short || full.startsWith(short + '.')
+  const covers = (full) => claimed.some(short => matches(short, full))
+  const uncovered = lineIds.filter(x => x.toLowerCase() !== regression && !x.toLowerCase().startsWith(regression + '.') && !covers(x))
   if (uncovered.length) throw new Error(`draft work[] gateIds do not cover ${uncovered.length} graded line(s): ${uncovered.join(' ')}`)
   // And the other direction. A work item claiming an id the gate never prints
   // reads, in the wave brief, as an order to fix a line that cannot fail — and
   // `loadCampaignSpec` would accept it, because nothing there has ever seen
-  // the gate. The lint ids are the only list that has.
+  // the gate. The lint ids are the only list that has. (`C9.4b` in the first
+  // authored draft was exactly this: a phantom left behind when the author merged
+  // two lines into one.)
   if (lineIds.length) {
-    const phantom = [...claimed].filter(g => !lineIds.includes(g))
+    const phantom = claimed.filter(short => !lineIds.some(full => matches(short, full)))
     if (phantom.length) throw new Error(`draft work[] gateIds name ${phantom.length} line(s) the gate does not grade: ${phantom.join(' ')}`)
   }
 
@@ -1400,8 +1468,9 @@ export async function authorMain(argv, io = defaultAuthorIo()) {
     // on one GPU is the same collision as two waves.
     const lock = io.takeLock(state.dir)
     if (!lock.ok) { console.error(`[author] another runner holds ${lock.path} (pid ${lock.pid}) — one runner per campaign`); return 2 }
+    const notePath = flag('--note') !== -1 ? argv[flag('--note') + 1] : null
     try {
-      const r = await authorCampaign({ id, roadmap, state, io })
+      const r = await authorCampaign({ id, roadmap, state, io, notePath })
       if (r.ok && r.sealed?.ok) { console.log(`[author] ${id}: SEALED at earned authority — ${r.sealed.specPath} written, triple copied, proposal ${r.proposal.name} approved automatically (${r.check.lineIds.length} graded lines)`); return 0 }
       if (r.ok) { console.log(`[author] ${id}: proposal ${r.proposal.name} raised (${r.check.lineIds.length} graded lines) — review the triple, then --approve-proposal ${r.proposal.name}`); return 0 }
       // A FAULT is not a refusal: nothing was measured, so nothing was judged,

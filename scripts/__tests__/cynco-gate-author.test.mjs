@@ -529,6 +529,39 @@ describe('draftToSpec', () => {
     expect(() => draftToSpec({ id: ID, draft: d, line: LINE, paths: paths(home), authorMissionId: null, lineIds: IDS }))
       .toThrow(/does not own: budget, marker/)
   })
+  /**
+   * A draft's gateId is the SHORT id (`C9.1a`); a lint id is the full one
+   * (`C9.1a.resolution-list`). Matched exactly, as this did, EVERY draft any author
+   * could write would throw at seal time — and nothing caught it because the seal
+   * had never been reached. The prefix rule is the one `parsePerturbHeader` already
+   * uses for EXPECT-FLIP / MUST-FAIL, so a draft, a stub header and a gate now name
+   * lines the same way.
+   */
+  it('accepts short gateIds against full lint ids, by the perturb header\'s prefix rule', () => {
+    const shortIds = IDS.filter(x => x !== 'C9.9').map(x => x.split('.').slice(0, 2).join('.'))
+    expect(shortIds[0]).not.toBe(IDS[0])       // genuinely shorter than the lint id
+    const d = DRAFT()
+    d.work = [{ id: 'w1', title: 'all of it', gateIds: shortIds, text: 'do it' }]
+    const spec = draftToSpec({ id: ID, draft: d, line: LINE, paths: paths(home), authorMissionId: null, lineIds: IDS })
+    expect(spec.work[0].gateIds).toEqual(shortIds)
+  })
+
+  it('still refuses a phantom short id that prefixes nothing the gate grades', () => {
+    const d = DRAFT()
+    d.work = [{ id: 'w1', title: 'all of it', gateIds: [...IDS.filter(x => x !== 'C9.9').map(x => x.split('.').slice(0, 2).join('.')), 'C9.4b'], text: 'x' }]
+    expect(() => draftToSpec({ id: ID, draft: d, line: LINE, paths: paths(home), authorMissionId: null, lineIds: IDS }))
+      .toThrow(/does not grade: C9\.4b/)
+  })
+
+  // The prefix rule must not become a way to cover everything with one token:
+  // `C9` would prefix every line, so a short id has to be a real id boundary.
+  it('a short id covers only the lines it actually prefixes', () => {
+    const d = DRAFT()
+    d.work = [{ id: 'w1', title: 'partial', gateIds: ['C9.1a'], text: 'x' }]
+    expect(() => draftToSpec({ id: ID, draft: d, line: LINE, paths: paths(home), authorMissionId: null, lineIds: IDS }))
+      .toThrow(/do not cover/)
+  })
+
   it('refuses a gateId the gate does not grade', () => {
     const d = DRAFT(); d.work[0].gateIds = [...d.work[0].gateIds, 'C9.7.does-not-exist']
     expect(() => draftToSpec({ id: ID, draft: d, line: LINE, paths: paths(home), authorMissionId: null, lineIds: IDS }))
@@ -802,6 +835,97 @@ describe('authorCampaign', () => {
     expect(r.proposal.evidence.lineCount).toBe(IDS.length)
     expect(roadmap.lines.find(l => l.id === 'c9').status).toBe('proposed')
     expect(state.state.proposals.filter(p => p.name === 'gate/c9' && p.status === 'pending')).toHaveLength(1)
+  })
+
+  /**
+   * A supervisor refusal changes what the next attempt IS, and the check cannot
+   * overrule it. The C9 triple that drew the real note was mechanically clean —
+   * BASE missed by absence, the stub's header was exact, the shim reached
+   * GATE: PASS — and still did not measure the roadmap line.
+   */
+  describe('a supervisor refusal', () => {
+    const NOTE = 'C:/tmp/note.txt'
+    const NOTE_TEXT = 'gate C9.1b: _press must draw first.\npositive: satisfy the lines through the game\'s own seams only.'
+
+    const withNote = () => {
+      const { files } = staged(home)
+      files[NOTE] = NOTE_TEXT
+      return makeIo({ home, files })
+    }
+
+    it('carries the note into the brief, right after PREVIOUS CHECK OUTPUT', async () => {
+      const { io, disk } = withNote()
+      const roadmap = ROADMAP()
+      const state = new CampaignState(join(mkdtempSync(join(tmpdir(), 'camp-')), ID)).load()
+      await authorCampaign({ id: ID, roadmap, state, io })          // attempt 1 proposes
+      roadmap.lines.find(l => l.id === 'c9').status = 'authoring'
+      await authorCampaign({ id: ID, roadmap, state, io, notePath: NOTE })
+      const brief = disk[`${home}/authoring/c9/brief-2.txt`]
+      expect(brief).toContain('SUPERVISOR REVIEW — the seal was refused')
+      expect(brief).toContain('gate C9.1b: _press must draw first.')
+      // Against the HEADINGS: "DONE WHEN" also appears inside the previous-check
+      // prose ("run the check yourself (DONE WHEN, below …)"), so a bare indexOf
+      // finds that mention and not the section.
+      expect(brief.indexOf('\nSUPERVISOR REVIEW')).toBeGreaterThan(brief.indexOf('\nPREVIOUS CHECK OUTPUT\n'))
+      expect(brief.indexOf('\nSUPERVISOR REVIEW')).toBeLessThan(brief.indexOf('\nDONE WHEN\n'))
+    })
+
+    // The whole point: a green check is not an answer to the refusal.
+    it('DISPATCHES even though the refreshed check passes, and proposes nothing', async () => {
+      const { io, dispatched } = withNote()
+      const roadmap = ROADMAP()
+      const state = new CampaignState(join(mkdtempSync(join(tmpdir(), 'camp-')), ID)).load()
+      await authorCampaign({ id: ID, roadmap, state, io })
+      roadmap.lines.find(l => l.id === 'c9').status = 'authoring'
+      const r = await authorCampaign({ id: ID, roadmap, state, io, notePath: NOTE })
+      expect(dispatched).toHaveLength(2)
+      expect(r.dispatched).not.toBe(false)
+    })
+
+    // A re-authoring of MEANING, not a shim fix: it gets the full four hours.
+    it('gets the full budget, not the resume budget', async () => {
+      const { io, dispatched } = withNote()
+      const roadmap = ROADMAP()
+      const state = new CampaignState(join(mkdtempSync(join(tmpdir(), 'camp-')), ID)).load()
+      await authorCampaign({ id: ID, roadmap, state, io })
+      roadmap.lines.find(l => l.id === 'c9').status = 'authoring'
+      await authorCampaign({ id: ID, roadmap, state, io, notePath: NOTE })
+      expect(dispatched[1].timeoutS).toBe(AUTHOR_TIMEOUT_S)
+    })
+
+    // The refusal does not expire because the operator typed a shorter command.
+    it('remembers the note path, so the next resume without --note still carries it', async () => {
+      const { io, disk } = withNote()
+      const roadmap = ROADMAP()
+      const state = new CampaignState(join(mkdtempSync(join(tmpdir(), 'camp-')), ID)).load()
+      await authorCampaign({ id: ID, roadmap, state, io })
+      roadmap.lines.find(l => l.id === 'c9').status = 'authoring'
+      await authorCampaign({ id: ID, roadmap, state, io, notePath: NOTE })
+      expect(state.state.authoring.c9.refusals).toHaveLength(1)
+      expect(state.state.authoring.c9.refusals[0]).toMatchObject({ by: 'supervisor', notePath: NOTE })
+
+      // Attempt 2's green check proposed the re-authored triple (correctly — the
+      // supervisor reviews the NEW one), so reopen the line the way a second
+      // rejection would before asking for attempt 3.
+      roadmap.lines.find(l => l.id === 'c9').status = 'authoring'
+      await authorCampaign({ id: ID, roadmap, state, io })   // no notePath this time
+      expect(disk[`${home}/authoring/c9/brief-3.txt`]).toContain('gate C9.1b: _press must draw first.')
+      // And it is not recorded twice for the same path.
+      expect(state.state.authoring.c9.refusals).toHaveLength(1)
+    })
+
+    it('says so and carries on when the note cannot be read', async () => {
+      const { files } = staged(home)
+      const { io, disk, dispatched } = makeIo({ home, files })
+      const roadmap = ROADMAP()
+      const state = new CampaignState(join(mkdtempSync(join(tmpdir(), 'camp-')), ID)).load()
+      await authorCampaign({ id: ID, roadmap, state, io })
+      roadmap.lines.find(l => l.id === 'c9').status = 'authoring'
+      const r = await authorCampaign({ id: ID, roadmap, state, io, notePath: 'C:/tmp/not-there.txt' })
+      expect(disk[`${home}/authoring/c9/brief-2.txt`]).toBeUndefined()   // no brief: it proposed instead
+      expect(r.proposal).toMatchObject({ name: 'gate/c9' })
+      expect(dispatched).toHaveLength(1)
+    })
   })
 
   it('still dispatches a resume whose staged triple is refused', async () => {

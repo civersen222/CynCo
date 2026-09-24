@@ -31,7 +31,7 @@ import { sidecarPath } from './cynco-contract.mjs'
 import { exportTriples } from './cynco-triples.mjs'
 import { analyseDenials } from './cynco-signal-validation.mjs'
 import { governanceCounts, governancePosiwid } from './cynco-governance-posiwid.mjs'
-import { loadRoadmap, ROADMAP_PATH } from './cynco-roadmap.mjs'
+import { loadRoadmap, saveRoadmap, rejectLine, ROADMAP_PATH } from './cynco-roadmap.mjs'
 
 const BRIEFS_DIR = 'docs/civkings-redesign-briefs'
 const LOG = `${BRIEFS_DIR}/campaign-log.md`
@@ -743,7 +743,11 @@ export async function main(argv, deps = {}) {
       console.error(`[campaign] --author ${named} was given alongside ${specPath} — name one campaign, not two`); return 2
     }
     const author = await loadAuthor()
-    return await author.authorMain(['--author', id], authorIo(author))
+    // `--note <file>` rides through: a supervisor refusal's CONTENT belongs in the
+    // next resume's brief, and this is the only path that writes one.
+    const noteIdx = flag('--note')
+    const forward = noteIdx !== -1 && argv[noteIdx + 1] ? ['--author', id, '--note', argv[noteIdx + 1]] : ['--author', id]
+    return await author.authorMain(forward, authorIo(author))
   }
   const decisionIdx = flag('--approve-proposal') !== -1 ? flag('--approve-proposal') : flag('--reject-proposal')
   const decisionName = decisionIdx !== -1 ? argv[decisionIdx + 1] : null
@@ -755,7 +759,31 @@ export async function main(argv, deps = {}) {
     if (!approve) {
       const r = applyProposalDecision(state.state, decisionName, false)
       if (!r.ok) { console.error(r.why); return 2 }
-      state.save(); console.log(`[campaign] proposal ${decisionName} ${r.status}`); return 0
+      // A refusal has to REOPEN the line, or the campaign is stuck: `--author`
+      // refuses a `proposed` line and `nextOpenLine` does not count one as in
+      // flight, so a DO-NOT-SEAL verdict would leave the gate neither sealable nor
+      // re-authorable. `rejectLine` is the one backward move the ladder permits.
+      const roadmap = loadRoadmap(ROADMAP_PATH)
+      let reopened = false
+      try { rejectLine(roadmap, id); saveRoadmap(ROADMAP_PATH, roadmap); reopened = true }
+      catch (e) { console.error(`[campaign] proposal rejected, but the roadmap line was not reopened: ${e.message}`) }
+      // The note is the refusal's CONTENT, and the next resume's brief is the only
+      // place it can do any work. Recorded by path, not copied: the reviewer's file
+      // stays the one source, and a resume with no `--note` reuses the last one.
+      const notePath = flag('--note') !== -1 ? argv[flag('--note') + 1] : null
+      if (notePath) {
+        const a = state.state.authoring?.[id]
+        if (a) {
+          a.refusals = a.refusals ?? []
+          a.refusals.push({ at: new Date().toISOString(), by: 'supervisor', notePath })
+        } else {
+          console.error(`[campaign] --note given but state has no authoring.${id} to record it against`)
+        }
+      }
+      state.save()
+      console.log(`[campaign] proposal ${decisionName} ${r.status}${reopened ? '; roadmap line reopened to authoring' : ''}`
+        + `${notePath ? `; supervisor note recorded (${notePath})` : ''}`)
+      return 0
     }
     // SEAL FIRST, decide after. Recording the approval up front made a refused
     // seal a dead end: the proposal was no longer `pending`, so there was
