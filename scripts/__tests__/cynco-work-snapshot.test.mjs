@@ -32,6 +32,32 @@ describe('snapshotUncommittedWork', () => {
     expect(readFileSync(r.patchPath, 'utf-8')).toContain('-x = 1')
   })
 
+  // The live C9 authoring run's only preserved change was a SQLite code-index
+  // db, and without `--binary` the patch was 169 bytes of "Binary files … differ"
+  // — which `git apply` refuses. A patch that cannot be replayed is not a
+  // backup, it is a note saying work was lost.
+  it('records a binary change as a patch git apply will take', () => {
+    const bin = join(repo, 'index.db')
+    writeFileSync(bin, Buffer.from([0, 1, 2, 3, 250, 251]))
+    spawnSync('git', ['add', 'index.db'], { cwd: repo })
+    spawnSync('git', ['commit', '-m', 'add binary'], { cwd: repo })
+    writeFileSync(bin, Buffer.from([9, 8, 7, 6, 5, 4, 3]))
+
+    const r = snapshotUncommittedWork(repo, out, 'mission_bin')
+    expect(r.written).toBe(true)
+    const patch = readFileSync(r.patchPath, 'utf-8')
+    expect(patch).toContain('GIT binary patch')
+    expect(patch).not.toMatch(/^Binary files .* differ$/m)
+
+    // And it really replays: reset the tree, apply, and the new bytes are back.
+    spawnSync('git', ['checkout', '--', '.'], { cwd: repo })
+    expect(readFileSync(bin)).toEqual(Buffer.from([0, 1, 2, 3, 250, 251]))
+    const check = spawnSync('git', ['apply', '--check', r.patchPath], { cwd: repo, encoding: 'utf-8' })
+    expect(check.status).toBe(0)
+    expect(spawnSync('git', ['apply', r.patchPath], { cwd: repo }).status).toBe(0)
+    expect(readFileSync(bin)).toEqual(Buffer.from([9, 8, 7, 6, 5, 4, 3]))
+  })
+
   it('reports nothing to save on a clean tree', () => {
     const r = snapshotUncommittedWork(repo, out, 'mission_test')
     expect(r.written).toBe(false)

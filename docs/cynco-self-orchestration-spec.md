@@ -349,8 +349,12 @@ draft counts.
   `C:/tmp/<id>_author_base`; the gate under test reads it through
   `CYNCO_GATE_REPO` and never its own directory.
 - **The acceptance test** (`checkStaged`) is Rule 11 and Rule 14 run
-  mechanically, plus lint. Lint: ids shaped `C<N>.<k>[a-z].<slug>`, unique, at
-  least `GATE_AUTHOR_MIN_LINES` of them, the gate reads `CYNCO_GATE_REPO`, a
+  mechanically, plus lint. Lint: ids shaped `C<N>.<k>[a-z].<slug>`, unique, and
+  at least one of them (the lint has no count minimum — it refuses a gate that
+  grades nothing; the count floor is calibration's `GATE_MIN_LINES = 8`, and the
+  unrelated `GATE_AUTHOR_MIN_LINES = 30` is the seat's promotion floor over
+  terminal gate LINES, not a property of any one gate). Also: the gate reads
+  `CYNCO_GATE_REPO`, a
   `C<N>.9` prior-campaign regression line that honours `CYNCO_GATE_SKIP_PRIOR`,
   both shims `runpy.run_path` the real gate and set skip-prior, the perturb
   header names only real line ids and declares a non-empty MUST-FAIL set, no
@@ -361,7 +365,19 @@ draft counts.
   reach `GATE: PASS` — a bar nothing can pass is not a bar. The runner re-runs
   all of it from its own side after the mission returns: the driver ran the
   check too, but it ran it in a process the mission could have reached, so only
-  the runner's reading raises the proposal.
+  the runner's reading raises the proposal. That re-run is a SUBPROCESS —
+  `bun <abs path>/cynco-gate-author.mjs --check <staging> <base>`, its verdict
+  read from the exit code and the `[check-json]` line — never an in-process
+  `calibrate`. F155: the runner's first spawn comes four hours after its last
+  one, and under bun on Windows a `spawnSync` after an idle gap inherits the
+  previous call's deadline and is killed in milliseconds, which turned a triple
+  with two problems into a verdict of eleven.
+- **The authoring mission's invariants.** `editGapCap 120`, `commitGapCap 150`,
+  `revertBan`, `codeIndexFirst`. The edit gap is three times a wave's because the
+  work is three parts audit to one part writing: the mission's job is to read a
+  game it may not touch until it knows what is absent, and at 40 the live C9 run
+  spent iterations arguing with `[invariant] DENIED (edit-gap)`
+  (`maxCallsWithoutSourceEdit 194`, 67 tool errors in 474 calls).
 - **Learnings-db isolation (ruling 12).** AWM promotion fires when a contract
   passes, and an authoring mission's contract will pass. Its learnings go to
   `<stagingDir>/learnings.db`, a database the campaign worker never opens —
@@ -372,7 +388,11 @@ draft counts.
   a backward move). Each line carries the `base` commit its gate is calibrated
   against. A failed check leaves the line at `authoring` with the problems on
   `state.authoring.<id>.lastCheck`, and the next `--author <id>` resumes into
-  the same staging dir with a PREVIOUS CHECK OUTPUT section in the brief.
+  the same staging dir with a PREVIOUS CHECK OUTPUT section in the brief. That
+  section carries the live problems (presence claims re-derived against the dir,
+  so a resume is never told a file it has is missing), the positive shim's output
+  tail, the graded ids the shim leaves FAILing, and whether the last run's
+  preserved uncommitted patch was re-applied — or why it was not.
 - **The readout.** `GET /api/campaign` carries `roadmap`, `authoring` and any
   `gate/<id>` proposal with the command that approves it.
 

@@ -27,7 +27,12 @@ import { join } from 'node:path'
 export function snapshotUncommittedWork(cwd, outDir, missionId) {
   const result = { written: false, patchPath: '', untracked: [], error: null }
   try {
-    const diff = spawnSync('git', ['diff', 'HEAD'], { cwd, encoding: 'utf-8', maxBuffer: 64 * 1024 * 1024 })
+    // `--binary`: without it a change to any non-text file is recorded as the
+    // useless line "Binary files a/x and b/x differ", which `git apply` refuses.
+    // The live C9 authoring run's only preserved change was the code-index
+    // SQLite db, so the patch it left could not be replayed at all — and a patch
+    // that cannot be applied is not a backup, it is a note saying work was lost.
+    const diff = spawnSync('git', ['diff', '--binary', 'HEAD'], { cwd, encoding: 'utf-8', maxBuffer: 64 * 1024 * 1024 })
     const untracked = spawnSync('git', ['ls-files', '--others', '--exclude-standard'], { cwd, encoding: 'utf-8' })
     result.untracked = (untracked.stdout ?? '').split('\n').map(s => s.trim()).filter(Boolean)
 

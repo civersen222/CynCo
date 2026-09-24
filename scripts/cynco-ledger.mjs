@@ -786,6 +786,12 @@ export function buildMissionRecord(collector, meta) {
   return {
     schema: 1,
     missionId: meta.missionId,
+    // Which campaign dispatched this mission, from `CYNCO_CAMPAIGN_ID` — `c8`
+    // for a wave, `c9-author` for an authoring mission, `null` for a mission
+    // dispatched outside a campaign. The mission id alone does not say: it is
+    // built from the brief's filename, and `brief-4-1790216986923` names no
+    // campaign at all. Reading the ledger by campaign was a grep over briefFile.
+    campaignId: meta.campaignId ?? process.env.CYNCO_CAMPAIGN_ID ?? null,
     briefFile: meta.briefFile,
     marker: meta.marker,
     // Whether the marker actually appeared in the commit subject. It is NOT what

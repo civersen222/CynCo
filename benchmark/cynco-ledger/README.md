@@ -26,6 +26,10 @@ decisions still recorded here).
 {
   "schema": 1,
   "missionId": "cynco-mission6-brief-1783550000000",  // brief basename + epoch
+  // Which campaign dispatched it, from CYNCO_CAMPAIGN_ID: "c8" for a wave,
+  // "c9-author" for a gate-authoring mission, null outside a campaign. The
+  // missionId cannot answer this — it is the brief's filename plus an epoch.
+  "campaignId": "c8",
   "briefFile": "C:/tmp/cynco-mission6-brief.txt",
   "marker": "commit-marker substring",
   "cwd": "C:\\Users\\civer\\civkings",
