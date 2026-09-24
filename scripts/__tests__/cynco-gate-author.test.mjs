@@ -11,6 +11,7 @@ import {
   stagingDirFor, heldoutDirFor, prepareStaging, authoringBrief, authoringSidecar, checkCommand,
   checkStaged, authorCampaign, gateProposal, sealGate, draftToSpec, authorMain, previousLineId,
   livePreviousCheck, positiveLeavesFailing, checkStagedViaSubprocess, restoreUncommittedWork, refreshedLastCheck,
+  readPackageMap, packageMapText, AUTHOR_RESUME_TIMEOUT_S, authorTimeoutFor,
   CHECK_JSON_MARKER, SELF_SCRIPT, CHECK_SUBPROCESS_TIMEOUT_MS,
 } from '../cynco-gate-author.mjs'
 import { CampaignState } from '../cynco-campaign-state.mjs'
@@ -626,6 +627,19 @@ describe('authorCampaign', () => {
     expect(roadmap.lines.find(l => l.id === 'c9').status).toBe('authoring')
   })
 
+  it('dispatches a resume on the two-hour budget, and says so in the brief', async () => {
+    const { files } = staged(home)
+    const { io, dispatched, disk } = makeIo({ home, files, check: { ok: false, problems: ['positive shim did not PASS (terminator null)'] } })
+    const roadmap = ROADMAP()
+    const state = new CampaignState(join(mkdtempSync(join(tmpdir(), 'camp-')), ID)).load()
+    await authorCampaign({ id: ID, roadmap, state, io })
+    await authorCampaign({ id: ID, roadmap, state, io })
+    expect(dispatched[0].timeoutS).toBe(AUTHOR_TIMEOUT_S)
+    expect(dispatched[1].timeoutS).toBe(AUTHOR_RESUME_TIMEOUT_S)
+    expect(disk[`${home}/authoring/c9/brief-1.txt`]).toContain('(4 hours, 1200 iterations.)')
+    expect(disk[`${home}/authoring/c9/brief-2.txt`]).toContain('(2 hours, 1200 iterations.)')
+  })
+
   it('resumes into the same staging dir with the previous check output in the brief', async () => {
     const { files } = staged(home)
     const { io, disk } = makeIo({ home, files, check: { ok: false, problems: ['BASE must MISS the gate; terminator was PASS'] } })
@@ -743,6 +757,83 @@ describe('refreshedLastCheck', () => {
     const r = await refreshedLastCheck({ id: ID, stagingDir: 'C:/s/c9', baseDir: 'C:/b', prev: { attempts: 1, lastCheck: STALE },
       io: fake({ result: { status: null, stdout: '', stderr: '', timedOut: false, fault: { code: 'ETIMEDOUT', status: null, signal: null, elapsedMs: 6 } } }) })
     expect(r).toBe(STALE)
+  })
+})
+
+/**
+ * The live run's one unfixed defect, four attempts running: the positive shim
+ * imports `gilded.ui.views`, which does not exist. The model named the problem
+ * correctly at least four times — once from a brief that showed it the traceback —
+ * and wrote the import again. Telling it what is absent does not stick; a LISTING
+ * of what is present is a different instrument, and it is free.
+ *
+ * Every name in the map comes from `listDir`. Nothing is authored, so the map
+ * cannot claim a module the tree does not have.
+ */
+describe('readPackageMap / packageMapText', () => {
+  const TREE = {
+    'C:/b/gilded': ['__init__.py', 'world.py', 'save.py', 'settings.py', 'assets', '__pycache__', 'ui', 'society', 'tests'],
+    'C:/b/gilded/ui': ['__init__.py', 'app.py', 'registry.py', 'widgets.py'],
+    'C:/b/gilded/society': ['__init__.py', 'schemes.py'],
+    'C:/b/gilded/tests': ['test_world.py'],
+    'C:/b/gilded/assets': ['map.png', 'theme.ogg'],
+    'C:/b/gilded/__pycache__': ['world.cpython-314.pyc'],
+  }
+  const io = (tree = TREE) => ({ listDir: (p) => tree[norm(p)] ?? [] })
+
+  it('lists the .py modules of gilded/ and gilded/ui/, sorted', () => {
+    const m = readPackageMap({ baseDir: 'C:/b', io: io() })
+    expect(m.root).toEqual(['__init__.py', 'save.py', 'settings.py', 'world.py'])
+    expect(m.ui).toEqual(['__init__.py', 'app.py', 'registry.py', 'widgets.py'])
+  })
+
+  // A subpackage is something a shim could import. `assets/` is data and
+  // `__pycache__/` is noise; neither is importable, so neither is listed.
+  it('lists only subpackage directories that hold python', () => {
+    expect(readPackageMap({ baseDir: 'C:/b', io: io() }).subpackages).toEqual(['society', 'tests', 'ui'])
+  })
+
+  it('is null when the BASE archive has no gilded package to read', () => {
+    expect(readPackageMap({ baseDir: 'C:/b', io: io({}) })).toBeNull()
+    expect(packageMapText(null)).toBe('')
+  })
+
+  it('renders the heading, the names, and the sentence that names the absent module', () => {
+    const t = packageMapText(readPackageMap({ baseDir: 'C:/b', io: io() }))
+    expect(t).toContain('PACKAGE MAP (listed from the BASE archive — these modules exist; nothing else under gilded/ui does)')
+    for (const n of ['world.py', 'save.py', 'settings.py', 'app.py', 'registry.py', 'widgets.py', 'society/', 'tests/']) {
+      expect(t).toContain(n)
+    }
+    expect(t).toContain('There is no `gilded.ui.views`. Import only modules named here; a shim that')
+    expect(t).toContain('imports a module absent from this map cannot pass.')
+  })
+
+  // The whole point: the map is a listing, so it can never name a module the
+  // tree lacks — including the one the model keeps importing.
+  it('lists nothing the fake tree does not have', () => {
+    const t = packageMapText(readPackageMap({ baseDir: 'C:/b', io: io() }))
+    const listed = t.split(/\n/).filter(l => /^ {4}\S/.test(l)).join(' ').trim().split(/\s+/)
+    const real = new Set([...TREE['C:/b/gilded'], ...TREE['C:/b/gilded/ui'], 'society/', 'tests/', 'ui/'])
+    for (const n of listed) expect(real.has(n)).toBe(true)
+    // views.py is in neither the tree nor the listing — only in the warning line.
+    expect(listed).not.toContain('views.py')
+    expect(listed).not.toContain('map.png')
+    expect(listed).not.toContain('world.cpython-314.pyc')
+  })
+
+  it('reaches the brief inside THE GAME AT BASE, before WHAT TO WRITE', () => {
+    const t = authoringBrief({ line: LINE, id: ID, prevId: 'c8', baseDir: 'C:/b', stagingDir: `${home}/authoring/c9`,
+      exemplar: null, packageMap: readPackageMap({ baseDir: 'C:/b', io: io() }) })
+    expect(t).toContain('PACKAGE MAP (listed from the BASE archive')
+    expect(t).toContain('There is no `gilded.ui.views`.')
+    expect(t.indexOf('PACKAGE MAP')).toBeGreaterThan(t.indexOf('THE GAME AT BASE'))
+    expect(t.indexOf('PACKAGE MAP')).toBeLessThan(t.indexOf('WHAT TO WRITE'))
+  })
+
+  it('omits the subsection entirely when the tree cannot be read', () => {
+    const t = authoringBrief({ line: LINE, id: ID, prevId: 'c8', baseDir: 'C:/b', stagingDir: `${home}/authoring/c9`, exemplar: null, packageMap: null })
+    expect(t).not.toContain('PACKAGE MAP')
+    expect(t).toContain('THE GAME AT BASE')
   })
 })
 
@@ -1135,6 +1226,17 @@ describe('constants', () => {
     expect(AUTHOR_ITERATIONS).toBe(1200)
     expect(GATE_AUTHOR_MAX_AUTHORITY).toBe(0.5)
     expect(AUTHOR_INVARIANTS).toEqual({ editGapCap: 120, commitGapCap: 150, revertBan: true, codeIndexFirst: true })
+  })
+
+  // A resume is a smaller job than an authoring, and the evidence says so:
+  // attempts 4 and 5 each burned four hours with three of the four files already
+  // finished, attempt 5 spending 436 of 449 tool calls inspecting.
+  it('a resume gets two hours, a fresh authoring four', () => {
+    expect(AUTHOR_RESUME_TIMEOUT_S).toBe(7200)
+    expect(authorTimeoutFor(1)).toBe(AUTHOR_TIMEOUT_S)
+    expect(authorTimeoutFor(2)).toBe(AUTHOR_RESUME_TIMEOUT_S)
+    expect(authorTimeoutFor(7)).toBe(AUTHOR_RESUME_TIMEOUT_S)
+    expect(authorTimeoutFor(undefined)).toBe(AUTHOR_TIMEOUT_S)
   })
 
   it('the promotion bar is the one the gate-line table prints', () => {

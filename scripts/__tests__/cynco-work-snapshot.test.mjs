@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
@@ -56,6 +56,38 @@ describe('snapshotUncommittedWork', () => {
     expect(check.status).toBe(0)
     expect(spawnSync('git', ['apply', r.patchPath], { cwd: repo }).status).toBe(0)
     expect(readFileSync(bin)).toEqual(Buffer.from([9, 8, 7, 6, 5, 4, 3]))
+  })
+
+  /**
+   * `--binary` alone was not enough. `.cynco/` is the harness's own tree and its
+   * code-index db is rewritten on every dispatch, so by resume time the blob has
+   * moved on and the whole patch is refused — `git apply` is all-or-nothing, so
+   * one churning file the model never authored holds the model's real work
+   * hostage. Live C9 attempt 5 lost nothing only because it had committed.
+   */
+  it('excludes .cynco/ so harness churn cannot hold real work hostage', () => {
+    mkdirSync(join(repo, '.cynco', 'index'), { recursive: true })
+    writeFileSync(join(repo, '.cynco', 'index', 'project.db'), Buffer.from([1, 2, 3]))
+    spawnSync('git', ['add', '-A'], { cwd: repo })
+    spawnSync('git', ['commit', '-m', 'add harness tree'], { cwd: repo })
+
+    // Both change: one is the model's work, one is harness churn.
+    writeFileSync(join(repo, 'a.py'), 'x = 99\n')
+    writeFileSync(join(repo, '.cynco', 'index', 'project.db'), Buffer.from([9, 9, 9, 9]))
+
+    const r = snapshotUncommittedWork(repo, out, 'mission_excl')
+    expect(r.written).toBe(true)
+    const patch = readFileSync(r.patchPath, 'utf-8')
+    expect(patch).toContain('a.py')
+    expect(patch).not.toContain('.cynco')
+
+    // And what is left applies, which is the only thing a backup has to do.
+    spawnSync('git', ['checkout', '--', '.'], { cwd: repo })
+    expect(spawnSync('git', ['apply', '--check', r.patchPath], { cwd: repo }).status).toBe(0)
+    expect(spawnSync('git', ['apply', r.patchPath], { cwd: repo }).status).toBe(0)
+    // Line endings normalised: this box has core.autocrlf=true, so `git apply`
+    // writes CRLF and the content, not the encoding, is what is being asserted.
+    expect(readFileSync(join(repo, 'a.py'), 'utf-8').replace(/\r\n/g, '\n')).toBe('x = 99\n')
   })
 
   it('reports nothing to save on a clean tree', () => {

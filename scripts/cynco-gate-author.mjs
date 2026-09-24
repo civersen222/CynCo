@@ -38,7 +38,17 @@ import { readCampaigns } from './cynco-triples.mjs'
 // 4 h and 1200 iterations: the authoring mission writes four files and runs a
 // check that costs two gate runs, so it is sized well below a wave's 8 h/2000.
 export const AUTHOR_TIMEOUT_S = 14400
+// A RESUME is a smaller job than an authoring, and the evidence says so: attempts
+// 4 and 5 each burned four hours with three of the four files already finished,
+// and attempt 5 spent 436 of 449 tool calls inspecting. A resume opens a staged
+// triple, a brief naming exactly what the check refuses, and now a listing of the
+// modules that exist; two hours is the bound on how long that is worth. Reached
+// from attempt 2 onward.
+export const AUTHOR_RESUME_TIMEOUT_S = 7200
 export const AUTHOR_ITERATIONS = 1200
+
+/** The wall clock this attempt gets: a fresh authoring's, or a resume's. */
+export const authorTimeoutFor = (attempts) => (Number(attempts) >= 2 ? AUTHOR_RESUME_TIMEOUT_S : AUTHOR_TIMEOUT_S)
 // The same 7,200,000 ms the sidecar assertion and the model's Bash tool get:
 // the re-check is the identical command, so it gets the identical cap.
 export const CHECK_SUBPROCESS_TIMEOUT_MS = 7_200_000
@@ -268,13 +278,65 @@ export function authoringSidecar({ stagingDir, baseDir }) {
 const section = (heading, body) => `${heading}\n\n${body.replace(/\s+$/, '')}\n`
 
 /**
+ * What the BASE archive actually contains, LISTED — never named from memory.
+ *
+ * The live C9 authoring run failed four times in a row on one thing: the positive
+ * shim imported `gilded.ui.views`, a module that does not exist. The model's own
+ * audit named the problem correctly at least four times and it wrote the import
+ * again each time, including on the attempt whose brief showed it the traceback.
+ * Telling it the module is absent evidently does not stick; showing it the set of
+ * modules that are present is a different instrument, and it is free — the tree
+ * is on disk and `io.listDir` can read it.
+ *
+ * Nothing here is authored. Every name comes from `listDir`, so the map cannot
+ * be wrong about the tree in the way a hand-written list would eventually be, and
+ * a module the tree does not have can never appear in it.
+ */
+export function readPackageMap({ baseDir, io }) {
+  const base = norm(baseDir)
+  const pys = (dir) => (io.listDir(dir) ?? []).filter(n => n.endsWith('.py')).sort()
+  const root = `${base}/gilded`
+  const rootPys = pys(root)
+  if (rootPys.length === 0) return null
+  // A subpackage is a directory holding at least one .py — `assets/` is data and
+  // `__pycache__/` is noise, and neither is something a shim can import.
+  const subpackages = (io.listDir(root) ?? [])
+    .filter(n => !n.endsWith('.py') && n !== '__pycache__')
+    .filter(n => pys(`${root}/${n}`).length > 0)
+    .sort()
+  return { root: rootPys, ui: pys(`${root}/ui`), subpackages }
+}
+
+/** The PACKAGE MAP subsection, or an empty string when the tree could not be read. */
+export function packageMapText(map) {
+  if (!map || !map.root?.length) return ''
+  const wrap = (names) => {
+    const lines = []
+    let cur = '   '
+    for (const n of names) {
+      if (cur.length + n.length + 1 > 76) { lines.push(cur); cur = '   ' }
+      cur += ` ${n}`
+    }
+    if (cur.trim()) lines.push(cur)
+    return lines.join('\n')
+  }
+  const out = ['PACKAGE MAP (listed from the BASE archive — these modules exist; nothing else under gilded/ui does)', '',
+    '  gilded/', wrap(map.root)]
+  if (map.subpackages?.length) out.push('', '  gilded/ subpackages:', wrap(map.subpackages.map(s => `${s}/`)))
+  if (map.ui?.length) out.push('', '  gilded/ui/', wrap(map.ui))
+  out.push('', 'There is no `gilded.ui.views`. Import only modules named here; a shim that',
+    'imports a module absent from this map cannot pass.')
+  return out.join('\n')
+}
+
+/**
  * The authoring order, deterministic and golden-tested.
  *
  * Nine sections in a fixed order; PREVIOUS CHECK OUTPUT appears only on a
  * resume, where it is the single most useful thing in the file — the last run
  * already discovered which of these rules it broke.
  */
-export function authoringBrief({ line, id, prevId, baseDir, stagingDir, exemplar, previousCheck = null, restoreNote = null }) {
+export function authoringBrief({ line, id, prevId, baseDir, stagingDir, exemplar, previousCheck = null, restoreNote = null, packageMap = null, timeoutS = AUTHOR_TIMEOUT_S }) {
   const ID = id.toUpperCase()
   const N = String(id).replace(/^c/i, '')
   const P = `C${N}`
@@ -291,7 +353,7 @@ export function authoringBrief({ line, id, prevId, baseDir, stagingDir, exemplar
 `You are the supervisor seat, writing the BAR a later campaign will be graded
 against. You do not write the game and you do not fix the game. You write four
 files in ${staging} and you stop when the check command below exits 0.
-(${Math.round(AUTHOR_TIMEOUT_S / 3600)} hours, ${AUTHOR_ITERATIONS} iterations.)`))
+(${Math.round(timeoutS / 3600)} hours, ${AUTHOR_ITERATIONS} iterations.)`))
 
   out.push(section('THE ROADMAP LINE',
 `  ${line.id} — ${line.name}
@@ -320,7 +382,9 @@ Headless conventions (the gate runs with no display and no sound card):
 
 Audit the game at BASE before you write a single check. Every line you write
 must FAIL there, and it must fail because the feature is ABSENT — not because
-your check crashed.`))
+your check crashed.
+
+${packageMapText(packageMap)}`))
 
   out.push(section('WHAT TO WRITE',
 `Four files, these exact names, in ${staging}:
@@ -782,6 +846,7 @@ export async function authorCampaign({ id, roadmap, state, io }) {
 
   const prev = s.authoring[id] ?? {}
   const attempt = (prev.attempts ?? 0) + 1
+  const timeoutS = authorTimeoutFor(attempt)
   const briefFile = `${stagingDir}/brief-${attempt}.txt`
   // Before the brief is written, so the brief can say what it found.
   const restoreNote = restoreUncommittedWork({ id, stagingDir, missionId: prev.missionId ?? null, io })
@@ -802,7 +867,8 @@ export async function authorCampaign({ id, roadmap, state, io }) {
   if (resumeCheck !== prev.lastCheck) s.authoring[id] = { ...prev, lastCheck: resumeCheck }
 
   const text = authoringBrief({ line, id, prevId, baseDir, stagingDir, exemplar: exemplarFor({ prevId, io }),
-    previousCheck: livePreviousCheck({ id, stagingDir, lastCheck: resumeCheck, io }), restoreNote })
+    previousCheck: livePreviousCheck({ id, stagingDir, lastCheck: resumeCheck, io }), restoreNote,
+    packageMap: readPackageMap({ baseDir, io }), timeoutS })
   io.writeFile(briefFile, text)
   io.writeFile(sidecarPath(briefFile), JSON.stringify(authoringSidecar({ stagingDir, baseDir }), null, 2) + '\n')
   commitStaging(stagingDir, `${id}-author: brief ${attempt}`, io)
@@ -842,8 +908,8 @@ export async function authorCampaign({ id, roadmap, state, io }) {
 
   let missionId = null, verified = null, fault = null
   try {
-    await io.dispatch({ briefFile, marker: `gate ${id} authored`, cwd: stagingDir, timeoutS: AUTHOR_TIMEOUT_S, checkCmd: checkCommand(stagingDir, baseDir), env })
-    const waited = await io.waitForDriver({ pidFile, driverLog, timeoutMs: (AUTHOR_TIMEOUT_S + 3600) * 1000 })
+    await io.dispatch({ briefFile, marker: `gate ${id} authored`, cwd: stagingDir, timeoutS, checkCmd: checkCommand(stagingDir, baseDir), env })
+    const waited = await io.waitForDriver({ pidFile, driverLog, timeoutMs: (timeoutS + 3600) * 1000 })
     missionId = waited.exited ? (waited.missionId ?? io.missionIdFrom?.(driverLog) ?? null) : null
     const row = missionId ? io.readRow(missionId) : null
     verified = row ? (row.verified ?? null) : null

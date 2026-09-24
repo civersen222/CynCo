@@ -372,6 +372,20 @@ draft counts.
   one, and under bun on Windows a `spawnSync` after an idle gap inherits the
   previous call's deadline and is killed in milliseconds, which turned a triple
   with two problems into a verdict of eleven.
+- **The budget.** 1200 iterations, and four hours for a fresh authoring but
+  **two** for a resume (`AUTHOR_RESUME_TIMEOUT_S`, from attempt 2 on). A resume
+  opens a staged triple, a brief naming exactly what the check refuses, and the
+  package map below; attempts 4 and 5 each spent four hours with three of the four
+  files already finished, attempt 5 spending 436 of its 449 tool calls inspecting.
+  The brief states whichever budget it was given.
+- **The package map.** THE GAME AT BASE carries a generated `PACKAGE MAP` — the
+  sorted `.py` names of `gilded/` and `gilded/ui/` plus the importable
+  subpackages, read off the BASE archive with `io.listDir`, never authored — and
+  the sentence "There is no `gilded.ui.views`. Import only modules named here."
+  Four live attempts died on a positive shim importing that module; the model
+  named the problem correctly each time, was shown the traceback, and wrote the
+  import again. A listing of what exists is a different instrument from a
+  statement about what does not.
 - **The authoring mission's invariants.** `editGapCap 120`, `commitGapCap 150`,
   `revertBan`, `codeIndexFirst`. The edit gap is three times a wave's because the
   work is three parts audit to one part writing: the mission's job is to read a

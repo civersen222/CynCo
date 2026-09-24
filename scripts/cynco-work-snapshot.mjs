@@ -32,7 +32,16 @@ export function snapshotUncommittedWork(cwd, outDir, missionId) {
     // The live C9 authoring run's only preserved change was the code-index
     // SQLite db, so the patch it left could not be replayed at all — and a patch
     // that cannot be applied is not a backup, it is a note saying work was lost.
-    const diff = spawnSync('git', ['diff', '--binary', 'HEAD'], { cwd, encoding: 'utf-8', maxBuffer: 64 * 1024 * 1024 })
+    //
+    // `:(exclude).cynco` because `--binary` alone was not enough. `.cynco/` is the
+    // harness's own tree — the code index, the stream log, the snapshots — and the
+    // index db is rewritten on every dispatch, so by resume time its blob has
+    // moved on and the patch is refused: "the patch applies to
+    // '.cynco/index/project.db' (7b0149e…), which does not match the current
+    // contents". `git apply` is all-or-nothing, so one churning harness file the
+    // model never authored can hold the model's real work hostage.
+    const diff = spawnSync('git', ['diff', '--binary', 'HEAD', '--', '.', ':(exclude).cynco'],
+      { cwd, encoding: 'utf-8', maxBuffer: 64 * 1024 * 1024 })
     const untracked = spawnSync('git', ['ls-files', '--others', '--exclude-standard'], { cwd, encoding: 'utf-8' })
     result.untracked = (untracked.stdout ?? '').split('\n').map(s => s.trim()).filter(Boolean)
 
