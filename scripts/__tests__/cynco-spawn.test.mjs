@@ -85,6 +85,13 @@ describe('runSync: a timeout is an elapsed measurement', () => {
     // commitStaging / restoreUncommittedWork run git writes and must not retry.
     expect(/'apply'[\s\S]{0,200}retryImpossibleTimeout/.test(author)).toBe(false)
     expect(/'commit'[\s\S]{0,200}retryImpossibleTimeout/.test(author)).toBe(false)
+    // Review I2: the wave grader's gate and suite-gate runs are reads and opt
+    // in; the mutation sweep rewrites the tree per mutant and must not.
+    const grade = readFileSync(new URL('../cynco-campaign-grade.mjs', import.meta.url), 'utf8')
+    expect(grade.match(/retryImpossibleTimeout: true/g) ?? []).toHaveLength(2)
+    expect(/\[spec\.gate\][\s\S]{0,200}retryImpossibleTimeout: true/.test(grade)).toBe(true)
+    expect(/\[SUITE_GATE\][\s\S]{0,300}retryImpossibleTimeout: true/.test(grade)).toBe(true)
+    expect(/cynco-mutation-sweep[\s\S]{0,600}retryImpossibleTimeout/.test(grade)).toBe(false)
   })
 
   it('retries at most once, and the second failure is the fault it reports', () => {

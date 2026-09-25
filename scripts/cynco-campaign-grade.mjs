@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process'
 import { resolve } from 'node:path'
 import { homedir } from 'node:os'
 import { parseGateOutput } from './cynco-gate-parse.mjs'
-import { runSync } from './cynco-spawn.mjs'
+import { runSync, faultSummary } from './cynco-spawn.mjs'
 import { constraints } from '../engine/cybernetics-core/src/index.js'
 
 export const GATE_TIMEOUT_MS = 7_200_000
@@ -52,23 +52,33 @@ function runGate(spec, io) {
   // The gates read CYNCO_GATE_REPO for the tree they grade and fall back to
   // cwd. Both are spec.repo here, so this changes nothing today — and keeps
   // changing nothing the day a gate is run from anywhere else.
-  const r = io.run('python', [spec.gate], { cwd: spec.repo, env: { CYNCO_GATE_REPO: spec.repo }, timeoutMs: GATE_TIMEOUT_MS })
-  const parsed = parseGateOutput(r.stdout + '\n' + r.stderr)
+  //
+  // Review I2: this is the first spawn after a wave that may have run for
+  // hours, i.e. exactly the call bun's stale deadline kills (F155). The gate is
+  // a read of the tree, so it is retried once on an impossible ETIMEDOUT like
+  // calibrate's reads are; and a spawn that still did not run is named as the
+  // fault it is — never parsed as an empty gate, which would read as 0 lines.
+  const r = io.run('python', [spec.gate], { cwd: spec.repo, env: { CYNCO_GATE_REPO: spec.repo }, timeoutMs: GATE_TIMEOUT_MS, retryImpossibleTimeout: true })
+  const parsed = parseGateOutput((r.stdout ?? '') + '\n' + (r.stderr ?? ''))
   let harnessFault = null
-  if (r.timedOut) harnessFault = `gate timed out after ${GATE_TIMEOUT_MS} ms`
+  if (r.fault) harnessFault = `gate did not run (${faultSummary(r.fault)})`
+  else if (r.timedOut) harnessFault = `gate timed out after ${GATE_TIMEOUT_MS} ms`
   else if (parsed.errors.length) harnessFault = `gate printed an error: ${parsed.errors[0]}`
   else if (parsed.terminator === null) harnessFault = 'gate printed no GATE: terminator'
-  return { ...parsed, exit: r.status, durationMs: Date.now() - t0, harnessFault, outputTail: (r.stdout + r.stderr).slice(-4000) }
+  return { ...parsed, exit: r.status, durationMs: Date.now() - t0, harnessFault, fault: r.fault ?? null, outputTail: ((r.stdout ?? '') + (r.stderr ?? '')).slice(-4000) }
 }
 
 function runSuiteGate(spec, io) {
-  const r = io.run('python', [SUITE_GATE], { cwd: spec.repo, env: { CHK_SUITE_BASELINE: spec.suiteBaseline, CYNCO_GATE_REPO: spec.repo }, timeoutMs: SUITE_TIMEOUT_MS })
-  const out = r.stdout + r.stderr
+  // Review I2: a read, like the gate — retried once on an impossible timeout,
+  // and a spawn that did not run is a fault, not a suite reading.
+  const r = io.run('python', [SUITE_GATE], { cwd: spec.repo, env: { CHK_SUITE_BASELINE: spec.suiteBaseline, CYNCO_GATE_REPO: spec.repo }, timeoutMs: SUITE_TIMEOUT_MS, retryImpossibleTimeout: true })
+  const out = (r.stdout ?? '') + (r.stderr ?? '')
   const pick = (label) => { const m = new RegExp(`${label} \\d+ [^\\n]*\\n((?:\\s+[-+] \\S+\\n?)+)`).exec(out); return m ? m[1].split('\n').map(s => s.trim().replace(/^[-+] /, '')).filter(Boolean) : [] }
   let harnessFault = null
-  if (r.timedOut) harnessFault = `suite gate timed out after ${SUITE_TIMEOUT_MS} ms`
+  if (r.fault) harnessFault = `suite gate did not run (${faultSummary(r.fault)})`
+  else if (r.timedOut) harnessFault = `suite gate timed out after ${SUITE_TIMEOUT_MS} ms`
   else if (r.status === 2) harnessFault = out.trim().split('\n').find(l => /REFUSING|printed no FAILED/.test(l)) ?? 'suite gate refused (exit 2)'
-  return { exit: r.status, regressions: pick('REGRESSED'), repairs: pick('REPAIRED'), harnessFault, outputTail: out.slice(-3000) }
+  return { exit: r.status, regressions: pick('REGRESSED'), repairs: pick('REPAIRED'), harnessFault, fault: r.fault ?? null, outputTail: out.slice(-3000) }
 }
 
 // Returns { sweep, sweepFault }: sweepFault is null when the sweep succeeded or
@@ -122,5 +132,11 @@ export async function gradeWave(spec, row, io = defaultIo) {
   const { sweep, sweepFault } = gate.harnessFault ? { sweep: null, sweepFault: null } : runSweep(spec, row, io)
   const posiwid = posiwidForRow(spec, row)
   const verified = (gate.harnessFault || suite.harnessFault) ? null : (gate.exit === 0 && suite.exit === 0)
-  return { sha: row.commitRange?.head ?? null, gate, suite, sweep, sweepFault, posiwid, verified }
+  // Review I2: a spawn that never ran is carried whole on the grade, so the
+  // record says which instrument did not run and how — `verified: null` and
+  // decide()'s `fault` follow from the harnessFault it also set.
+  const fault = gate.fault || suite.fault
+    ? { ...(gate.fault ? { gate: gate.fault } : {}), ...(suite.fault ? { suite: suite.fault } : {}) }
+    : null
+  return { sha: row.commitRange?.head ?? null, gate, suite, sweep, sweepFault, posiwid, verified, fault }
 }
