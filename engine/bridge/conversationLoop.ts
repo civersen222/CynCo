@@ -385,6 +385,15 @@ export class ConversationLoop {
    */
   private taskEndedInEngineError = false
   /**
+   * F158: whether this user message's `governance.session_fidelity` frame has
+   * gone out. The natural no-tool-calls branch of runModelLoop emits it; abort,
+   * max_iterations, halt, a thrown engine error and an applied best-of-N patch
+   * all leave the loop without passing there, and every timed-out mission's
+   * ledger row read `identityGuard: null` / `regulatorFidelity: null`.
+   * runUserMessage emits it after the loop when this is still false.
+   */
+  private sessionFidelityEmitted = false
+  /**
    * The prompt size the server reported for the most recent request, in tokens
    * it actually evaluated — or null when no request has been measured since the
    * conversation last changed shape.
@@ -1218,6 +1227,7 @@ export class ConversationLoop {
 
   private async runUserMessage(text: string, opts?: TaskOpts): Promise<void> {
     this.processing = true
+    this.sessionFidelityEmitted = false
     // Set with `processing`, and only ever read by the busy guard above. See
     // the field for why it is the RUNNING message's flag.
     this.unattendedActive = opts?.unattended === true
@@ -2025,6 +2035,9 @@ export class ConversationLoop {
       console.log(`[bestOfN] Orchestration failed, falling back to single-pass: ${e}`)
     }
 
+    // F158: best-of-N candidates run runModelLoop with `emit` redirected, so a
+    // candidate's frame never reached the driver. Only what follows counts.
+    this.sessionFidelityEmitted = false
     // Normal single-pass if best-of-N didn't run (or failed)
     if (!bestOfNRan) {
       try {
@@ -2036,6 +2049,12 @@ export class ConversationLoop {
         this.emit({ type: 'session.error', error: msg })
       }
     }
+    // F158: every exit path gets the session-level fidelity + IdentityGuard
+    // frame, not only the natural turn end — the mission driver reads the
+    // ledger's `identityGuard` / `regulatorFidelity` from it, and a mission that
+    // hit its wall clock (abort), its iteration cap, a halt or an engine error
+    // is exactly the one whose reading matters.
+    if (!this.sessionFidelityEmitted) this.emitSessionFidelity()
 
     // ─── Session End: Autopoietic evaluation + cleanup ──────────
     try {
@@ -2208,6 +2227,17 @@ export class ConversationLoop {
    * calls. Evaluated at every user-message end (onto session_fidelity, for
    * the ledger) and once more at session end (for the outcome).
    */
+  /** The one `governance.session_fidelity` emit site (F158): marks the frame
+   *  sent so runUserMessage does not send a second one. */
+  private emitSessionFidelity(): void {
+    this.sessionFidelityEmitted = true
+    this.emit({
+      type: 'governance.session_fidelity',
+      fidelity: this.governance.getSessionFidelity(),
+      identityGuard: this.evaluateIdentityGuard(),
+    })
+  }
+
   private evaluateIdentityGuard(): GuardResult {
     return this.governance.getIdentityGuard().evaluate({
       toolsUsed: [...new Set(this.toolHistory)],
@@ -3533,12 +3563,9 @@ export class ConversationLoop {
 
         // P4.3/4(e): session-level regulator fidelity — the mission driver
         // ingests this into the outcome ledger; the TUI/vibe surfaces consume
-        // the event directly. Emitted once per completed user message.
-        this.emit({
-          type: 'governance.session_fidelity',
-          fidelity: this.governance.getSessionFidelity(),
-          identityGuard: this.evaluateIdentityGuard(),
-        })
+        // the event directly. Emitted once per user message: here on the
+        // natural end, by runUserMessage on every other exit path (F158).
+        this.emitSessionFidelity()
 
         // Decision logging
         try {
