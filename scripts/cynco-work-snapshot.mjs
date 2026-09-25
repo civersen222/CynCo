@@ -40,7 +40,13 @@ export function snapshotUncommittedWork(cwd, outDir, missionId) {
     // '.cynco/index/project.db' (7b0149e…), which does not match the current
     // contents". `git apply` is all-or-nothing, so one churning harness file the
     // model never authored can hold the model's real work hostage.
-    const diff = spawnSync('git', ['diff', '--binary', 'HEAD', '--', '.', ':(exclude).cynco'],
+    //
+    // `.cynco-*` and `.cynco-snapshots` (review I3) for the same reason, one
+    // level up: `.cynco` excludes only that directory, and live C9 attempt 8's
+    // restore was refused on the ROOT-level `.cynco-debug.json`. The snapshots
+    // dir is harness churn too. Both are named, so neither depends on the other.
+    const diff = spawnSync('git', ['diff', '--binary', 'HEAD', '--', '.',
+      ':(exclude).cynco', ':(exclude).cynco-*', ':(exclude).cynco-snapshots'],
       { cwd, encoding: 'utf-8', maxBuffer: 64 * 1024 * 1024 })
     const untracked = spawnSync('git', ['ls-files', '--others', '--exclude-standard'], { cwd, encoding: 'utf-8' })
     result.untracked = (untracked.stdout ?? '').split('\n').map(s => s.trim()).filter(Boolean)

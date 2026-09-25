@@ -392,7 +392,18 @@ in `docs/civkings-redesign-briefs/campaign-log.md` and F156 in
   `calibrate`. F155: the runner's first spawn comes four hours after its last
   one, and under bun on Windows a `spawnSync` after an idle gap inherits the
   previous call's deadline and is killed in milliseconds, which turned a triple
-  with two problems into a verdict of eleven.
+  with two problems into a verdict of eleven. The subprocess runs the harness's
+  OWN code, and that code is not sealed: `cynco-gate-author.mjs` and its static
+  `scripts/` imports (lint, parse, calibrate, grade, spawn, … — `harnessClosure`
+  derives the list from the source) are writable by any mission with Bash. So
+  `authorCampaign` fingerprints that closure at dispatch
+  (`state.authoring.<id>.harnessSha256` + `harnessFiles`) and the re-check
+  re-takes it before running: a closure that moved is `harness dirty: <files>`,
+  `lastCheck.kind: 'fault'` with `harnessDirty: true`, nothing is run and no
+  proposal is raised. A resume whose staged triple passes does not propose from
+  disk if the closure moved since the dispatch that produced it — it dispatches
+  under a fingerprint of its own. The driver's own run of the check has no such
+  hook (it runs a command string); it stays advisory.
 - **The budget.** 1200 iterations, and four hours for a fresh authoring but
   **two** for a resume (`AUTHOR_RESUME_TIMEOUT_S`, from attempt 2 on). A resume
   opens a staged triple, a brief naming exactly what the check refuses, and the

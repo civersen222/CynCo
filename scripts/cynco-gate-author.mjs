@@ -229,6 +229,65 @@ export function checkCommand(stagingDir, baseDir) {
   return `bun ${JSON.stringify(SELF_SCRIPT)} --check ${JSON.stringify(norm(stagingDir))} ${JSON.stringify(norm(baseDir))}`
 }
 
+/**
+ * The relative specifiers a module's STATIC imports and re-exports name —
+ * `import … from './x.mjs'`, `export … from './x.mjs'`, `import './x.mjs'`.
+ * Dynamic `import()` is deliberately not followed: it is not what `--check`
+ * loads on the path the acceptance test runs.
+ */
+export function staticRelativeImports(src) {
+  const out = new Set()
+  const re = /(?:^|[\n;])\s*(?:import|export)\s+(?:[^'";]*?\sfrom\s+)?['"](\.{1,2}\/[^'"]+)['"]/g
+  for (const m of String(src).matchAll(re)) out.add(m[1])
+  return [...out]
+}
+
+/**
+ * Review I4: the acceptance test's own code — `cynco-gate-author.mjs` and every
+ * module it statically imports from `scripts/`, transitively (lint, parse,
+ * calibrate, grade, spawn, …). Derived from the source, never listed by hand,
+ * so a new import joins the closure without anyone remembering to add it.
+ *
+ * Only the harness's own `scripts/` directory is followed: the modules that
+ * decide what `--check` prints all live there, and an import that leaves it
+ * (`../engine/paths.js`) is engine code the check does not grade with.
+ */
+export function harnessClosure(entry = SELF_SCRIPT, readFile = (p) => readFileSync(p, 'utf8'), exists = existsSync) {
+  const root = norm(dirname(entry))
+  const seen = new Set()
+  const queue = [norm(entry)]
+  while (queue.length) {
+    const file = queue.shift()
+    if (seen.has(file)) continue
+    seen.add(file)
+    for (const spec of staticRelativeImports(readFile(file))) {
+      const target = norm(resolve(dirname(file), spec))
+      if (dirname(target) !== root || !exists(target)) continue
+      queue.push(target)
+    }
+  }
+  return [...seen].sort()
+}
+
+/**
+ * One fingerprint of the harness closure: a sha256 per file (keyed by its name
+ * inside `scripts/`) and one over the lot. Taken at dispatch and stored on
+ * `state.authoring[id]`; re-taken before the runner believes the check.
+ */
+export function harnessFingerprint(entry = SELF_SCRIPT, readBytes = (p) => readFileSync(p)) {
+  const files = {}
+  for (const f of harnessClosure(entry)) files[basename(f)] = createHash('sha256').update(readBytes(f)).digest('hex')
+  const sha256 = createHash('sha256').update(Object.keys(files).sort().map(k => `${k} ${files[k]}\n`).join('')).digest('hex')
+  return { sha256, files }
+}
+
+/** The closure files that differ between two fingerprints — changed, added or removed. */
+export function harnessDirtyFiles(recorded, current) {
+  if (!recorded || !current || recorded.sha256 === current.sha256) return []
+  const a = recorded.files ?? {}, b = current.files ?? {}
+  return [...new Set([...Object.keys(a), ...Object.keys(b)])].filter(k => a[k] !== b[k]).sort()
+}
+
 /** The marker the `--check` CLI prints its machine-readable verdict behind. */
 export const CHECK_JSON_MARKER = '[check-json] '
 
@@ -247,7 +306,21 @@ export const CHECK_JSON_MARKER = '[check-json] '
  * CLI prints. A missing JSON line is not fatal: the exit code still decides, and
  * the captured output is carried as the problem text so nothing is silently lost.
  */
-export async function checkStagedViaSubprocess({ id, stagingDir, baseDir, io, timeoutMs = CHECK_SUBPROCESS_TIMEOUT_MS }) {
+export async function checkStagedViaSubprocess({ id, stagingDir, baseDir, io, timeoutMs = CHECK_SUBPROCESS_TIMEOUT_MS, harness = null }) {
+  // Review I4: the subprocess runs the harness's OWN code — this file and its
+  // `scripts/` imports — and none of that is sealed. A mission with Bash could
+  // rewrite `compareCalibration` so this very check prints PASS. `harness` is
+  // the fingerprint taken at dispatch; if the closure has changed since, the
+  // instrument is not the one the mission was dispatched under and its reading
+  // is not evidence. Nothing is run: the triple is UNGRADED (`kind: 'fault'`),
+  // and the files that moved are named so the operator can see who moved them.
+  if (harness) {
+    const dirty = harnessDirtyFiles(harness, (io.harnessHash ?? harnessFingerprint)())
+    if (dirty.length) {
+      return { ok: false, problems: [`harness dirty: ${dirty.join(', ')} — the acceptance test's own code changed since dispatch; the triple was not graded`],
+        lineIds: [], tails: null, calibration: null, fault: null, harnessDirty: true, harnessDirtyFiles: dirty }
+    }
+  }
   // `--json` asks for the tails; the brief's DONE WHEN command deliberately does
   // not, so the model's own runs stay short.
   const args = [SELF_SCRIPT, '--check', norm(stagingDir), norm(baseDir), '--json']
@@ -803,9 +876,12 @@ export const stagedPaths = (id, stagingDir) => {
  * problems got recorded against a sound gate in the first place.
  */
 export function checkRecord(check, io) {
-  const kind = check.fault ? 'fault' : check.ok ? 'ok' : 'refused'
+  // A dirty harness (review I4) is a fault, not a refusal: the instrument that
+  // would have judged the triple is not the one it was dispatched under.
+  const kind = check.fault || check.harnessDirty ? 'fault' : check.ok ? 'ok' : 'refused'
   return {
     at: io.now(), kind, ok: check.ok, problems: check.problems, lineCount: check.lineIds.length,
+    ...(check.harnessDirty ? { harnessDirty: true, harnessDirtyFiles: check.harnessDirtyFiles ?? [] } : {}),
     // Kept, not just counted: a resume that proposes straight from the staged
     // triple builds its proposal out of this record and has no other source for
     // the ids, and `draftToSpec` needs the ids themselves at seal time.
@@ -967,7 +1043,20 @@ export async function authorCampaign({ id, roadmap, state, io, notePath = null }
   // — BASE missed by absence, the stub's header was exact, the shim reached
   // GATE: PASS — and still did not measure the roadmap line. Proposing it again
   // because the check is green would be the harness overruling the supervisor.
-  if (resumeCheck?.ok && !supervisorNote) {
+  //
+  // ...AND unless the harness closure moved since the dispatch that produced the
+  // triple (review I4). This shortcut raises a proposal without the end-of-run
+  // check that would have compared fingerprints, so it compares here: a check
+  // that passes only because the acceptance test's own code changed is not the
+  // evidence the shortcut claims to reuse. It dispatches instead — loudly — and
+  // that run's check is taken under a fingerprint of its own.
+  const shortcutDirty = resumeCheck?.ok && prev.harnessSha256
+    ? harnessDirtyFiles({ sha256: prev.harnessSha256, files: prev.harnessFiles ?? {} }, (io.harnessHash ?? harnessFingerprint)())
+    : []
+  if (shortcutDirty.length) {
+    console.error(`[author] ${id}: the staged triple passes, but the harness closure changed since attempt ${prev.attempts} was dispatched (${shortcutDirty.join(', ')}) — not proposing from it; dispatching instead`)
+  }
+  if (resumeCheck?.ok && !supervisorNote && !shortcutDirty.length) {
     const check = { ok: true, problems: [], lineIds: resumeCheck.lineIds ?? [], tails: resumeCheck.tails ?? null }
     const proposal = gateProposal({ id, check, missionId: prev.missionId ?? null, verified: prev.verified ?? null })
     s.proposals = s.proposals ?? []
@@ -1021,7 +1110,11 @@ export async function authorCampaign({ id, roadmap, state, io, notePath = null }
   // have added `refusals`, and spreading the stale snapshot silently dropped it —
   // the note path then vanished and the next resume without `--note` forgot the
   // refusal entirely.
-  s.authoring[id] = { ...s.authoring[id], stagingDir, baseDir, briefFile, attempts: attempt, dispatchedAt: io.now(), missionId: null, verified: null, fault: null }
+  // Review I4: the acceptance test's own code, fingerprinted at dispatch. The
+  // end-of-run check refuses to believe a subprocess run under any other.
+  const harness = (io.harnessHash ?? harnessFingerprint)()
+  s.authoring[id] = { ...s.authoring[id], stagingDir, baseDir, briefFile, attempts: attempt, dispatchedAt: io.now(), missionId: null, verified: null, fault: null,
+    harnessSha256: harness.sha256, harnessFiles: harness.files }
   state.save()
 
   let missionId = null, verified = null, fault = null, driverExited = false
@@ -1052,7 +1145,7 @@ export async function authorCampaign({ id, roadmap, state, io, notePath = null }
   // missing ledger row is a thing to report, not a reason to leave a green bar
   // ungraded. Only a driver still running, or never seen, has nothing to grade.
   const check = driverExited
-    ? await checkStagedViaSubprocess({ id, stagingDir, baseDir, io })
+    ? await checkStagedViaSubprocess({ id, stagingDir, baseDir, io, harness })
     : { ok: false, problems: [`not graded: ${fault ?? 'the driver never returned'}`], lineIds: [], tails: null, fault: null }
   const lastCheck = checkRecord(check, io)
   s.authoring[id] = { ...s.authoring[id], missionId, verified, lastCheck, fault }
@@ -1425,6 +1518,9 @@ export function defaultAuthorIo(helpers = {}) {
     // `gateAuthorAuthorityAcrossCampaigns`. A seam because the campaigns dir is
     // a real directory and the auto-approve tests must point it somewhere else.
     seatAuthority: helpers.seatAuthority ?? (() => gateAuthorAuthorityAcrossCampaigns()),
+    // Review I4: the acceptance test's import closure, fingerprinted. A seam so
+    // the dirty-harness tests can move it without editing a real script.
+    harnessHash: () => harnessFingerprint(),
   }
 }
 

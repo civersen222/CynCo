@@ -90,6 +90,33 @@ describe('snapshotUncommittedWork', () => {
     expect(readFileSync(join(repo, 'a.py'), 'utf-8').replace(/\r\n/g, '\n')).toBe('x = 99\n')
   })
 
+  // Review I3: live C9 attempt 8's restore was refused on the root-level
+  // `.cynco-debug.json` — `.cynco` excludes only the directory of that name.
+  it('excludes root .cynco-* files and .cynco-snapshots/ too', () => {
+    mkdirSync(join(repo, '.cynco-snapshots'), { recursive: true })
+    writeFileSync(join(repo, '.cynco-debug.json'), '{"n":1}\n')
+    writeFileSync(join(repo, '.cynco-snapshots', 'x'), 'one\n')
+    spawnSync('git', ['add', '-A'], { cwd: repo })
+    spawnSync('git', ['commit', '-m', 'add harness files'], { cwd: repo })
+
+    writeFileSync(join(repo, 'a.py'), 'x = 7\n')
+    writeFileSync(join(repo, '.cynco-debug.json'), '{"n":2}\n')
+    writeFileSync(join(repo, '.cynco-snapshots', 'x'), 'two\n')
+
+    const r = snapshotUncommittedWork(repo, out, 'mission_excl_root')
+    expect(r.written).toBe(true)
+    const patch = readFileSync(r.patchPath, 'utf-8')
+    expect(patch).toContain('a.py')
+    expect(patch).not.toContain('.cynco-debug.json')
+    expect(patch).not.toContain('.cynco-snapshots')
+
+    // The harness files move on again before the resume — the patch still applies.
+    spawnSync('git', ['checkout', '--', 'a.py'], { cwd: repo })
+    writeFileSync(join(repo, '.cynco-debug.json'), '{"n":3}\n')
+    expect(spawnSync('git', ['apply', r.patchPath], { cwd: repo }).status).toBe(0)
+    expect(readFileSync(join(repo, 'a.py'), 'utf-8').replace(/\r\n/g, '\n')).toBe('x = 7\n')
+  })
+
   it('reports nothing to save on a clean tree', () => {
     const r = snapshotUncommittedWork(repo, out, 'mission_test')
     expect(r.written).toBe(false)

@@ -1,7 +1,7 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, basename, isAbsolute } from 'node:path'
+import { join, basename, dirname, isAbsolute } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
 import { loadCampaignSpec } from '../cynco-campaign-spec.mjs'
@@ -13,6 +13,7 @@ import {
   livePreviousCheck, positiveLeavesFailing, checkStagedViaSubprocess, restoreUncommittedWork, refreshedLastCheck,
   readPackageMap, packageMapText, AUTHOR_RESUME_TIMEOUT_S, authorTimeoutFor,
   CHECK_JSON_MARKER, SELF_SCRIPT, CHECK_SUBPROCESS_TIMEOUT_MS,
+  checkRecord, staticRelativeImports, harnessClosure, harnessFingerprint, harnessDirtyFiles,
 } from '../cynco-gate-author.mjs'
 import { CampaignState } from '../cynco-campaign-state.mjs'
 import { summarize } from '../cynco-gate-lines.mjs'
@@ -685,6 +686,52 @@ describe('authorCampaign', () => {
     expect(roadmap.lines.find(l => l.id === 'c9').status).toBe('authoring')
   })
 
+  // Review I4: the fingerprint is taken at dispatch and stored; a closure that
+  // moves during the mission refuses the proposal as a fault.
+  it('fingerprints the harness at dispatch and refuses the proposal when it moved during the mission', async () => {
+    const A = { sha256: 'aaa', files: { 'cynco-gate-author.mjs': '1', 'cynco-campaign-calibrate.mjs': '2' } }
+    const B = { sha256: 'bbb', files: { 'cynco-gate-author.mjs': '1', 'cynco-campaign-calibrate.mjs': 'EDITED BY THE MISSION' } }
+    let current = A
+    const { io, dispatched } = makeIo({ home, files: staged(home).files, over: {
+      harnessHash: () => current,
+      dispatch: async (a) => { dispatched.push(a); current = B; return { driverLog: a.env.DRIVER_LOG } },
+    } })
+    const roadmap = ROADMAP()
+    const state = new CampaignState(join(mkdtempSync(join(tmpdir(), 'camp-')), ID)).load()
+    const r = await authorCampaign({ id: ID, roadmap, state, io })
+    expect(dispatched).toHaveLength(1)
+    const a = state.state.authoring.c9
+    expect(a.harnessSha256).toBe('aaa')
+    expect(a.harnessFiles).toEqual(A.files)
+    expect(r.ok).toBe(false)
+    expect(r.proposal).toBeNull()
+    expect(r.kind).toBe('fault')
+    expect(r.why).toMatch(/NOT GRADED — harness dirty: cynco-campaign-calibrate\.mjs/)
+    expect(a.lastCheck).toMatchObject({ kind: 'fault', ok: false, harnessDirty: true, harnessDirtyFiles: ['cynco-campaign-calibrate.mjs'] })
+    expect(roadmap.lines.find(l => l.id === 'c9').status).toBe('authoring')
+    expect(state.state.proposals?.some(p => p.name === 'gate/c9') ?? false).toBe(false)
+  })
+
+  it('does not take the propose-from-staged shortcut when the harness moved since the last dispatch', async () => {
+    const A = { sha256: 'aaa', files: { 'cynco-gate-lint.mjs': '1' } }
+    const B = { sha256: 'bbb', files: { 'cynco-gate-lint.mjs': '2' } }
+    let current = A
+    const { io, dispatched } = makeIo({ home, files: staged(home).files, over: { harnessHash: () => current } })
+    const roadmap = ROADMAP()
+    const state = new CampaignState(join(mkdtempSync(join(tmpdir(), 'camp-')), ID)).load()
+    await authorCampaign({ id: ID, roadmap, state, io })       // attempt 1: dispatched under A, proposes
+    expect(dispatched).toHaveLength(1)
+    roadmap.lines.find(l => l.id === 'c9').status = 'authoring'
+    current = B                                                  // the closure moves between attempts
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const r = await authorCampaign({ id: ID, roadmap, state, io })
+    expect(err.mock.calls.some(c => /harness closure changed since attempt 1 was dispatched \(cynco-gate-lint\.mjs\)/.test(String(c[0])))).toBe(true)
+    err.mockRestore()
+    expect(r.dispatched).not.toBe(false)
+    expect(dispatched).toHaveLength(2)                           // it dispatched instead of proposing from disk
+    expect(state.state.authoring.c9.harnessSha256).toBe('bbb')   // under a fingerprint of its own
+  })
+
   it('dispatches a resume on the two-hour budget, and says so in the brief', async () => {
     const { files } = staged(home)
     const { io, dispatched, disk } = makeIo({ home, files, check: { ok: false, problems: ['positive shim did not PASS (terminator null)'] } })
@@ -1128,6 +1175,71 @@ describe('checkStagedViaSubprocess', () => {
     const r = await checkStagedViaSubprocess({ id: ID, stagingDir: 'C:/s/c9', baseDir: 'C:/b', timeoutMs: 1000,
       io: runner({ status: null, stdout: '', stderr: '', timedOut: true, fault: null }) })
     expect(r.problems[0]).toMatch(/timed out after 1000 ms/)
+  })
+
+  // Review I4: the check subprocess runs the harness's own, unsealed code.
+  it('refuses to run under a harness closure that changed since dispatch, naming the files', async () => {
+    const calls = []
+    const atDispatch = { sha256: 'a', files: { 'cynco-gate-author.mjs': '1', 'cynco-campaign-calibrate.mjs': '2' } }
+    const now = { sha256: 'b', files: { 'cynco-gate-author.mjs': '1', 'cynco-campaign-calibrate.mjs': 'EDITED' } }
+    const r = await checkStagedViaSubprocess({ id: ID, stagingDir: 'C:/s/c9', baseDir: 'C:/b', harness: atDispatch,
+      io: { harnessHash: () => now, run: (cmd, args) => { calls.push({ cmd, args }); return { status: 0, stdout: CHECK_JSON_MARKER + JSON.stringify({ ok: true, problems: [], lineIds: IDS }), stderr: '', fault: null, timedOut: false } } } })
+    expect(calls).toHaveLength(0)                                  // a dirty instrument is not run at all
+    expect(r.ok).toBe(false)
+    expect(r.harnessDirty).toBe(true)
+    expect(r.harnessDirtyFiles).toEqual(['cynco-campaign-calibrate.mjs'])
+    expect(r.problems[0]).toMatch(/^harness dirty: cynco-campaign-calibrate\.mjs/)
+    const rec = checkRecord(r, { now: () => 'T' })
+    expect(rec.kind).toBe('fault')
+    expect(rec.harnessDirty).toBe(true)
+    expect(rec.harnessDirtyFiles).toEqual(['cynco-campaign-calibrate.mjs'])
+  })
+
+  it('runs normally when the closure is the one it was dispatched under', async () => {
+    const same = { sha256: 'a', files: { 'x.mjs': '1' } }
+    const r = await checkStagedViaSubprocess({ id: ID, stagingDir: 'C:/s/c9', baseDir: 'C:/b', harness: same,
+      io: { harnessHash: () => ({ ...same }), ...runner({ status: 0, stdout: CHECK_JSON_MARKER + JSON.stringify({ ok: true, problems: [], lineIds: IDS }), stderr: '', fault: null, timedOut: false }) } })
+    expect(r.ok).toBe(true)
+    expect(r.harnessDirty).toBeUndefined()
+    expect(checkRecord(r, { now: () => 'T' })).not.toHaveProperty('harnessDirty')
+  })
+})
+
+describe('harness closure (review I4)', () => {
+  it('reads static relative imports, multi-line and re-exports included, and skips bare specifiers and comments', () => {
+    const src = [
+      "import { a } from './one.mjs'",
+      'import {',
+      '  b,',
+      '  c,',
+      "} from './two.mjs'",
+      "import { spawnSync } from 'node:child_process'",
+      "export { d } from './three.mjs'",
+      "import './four.mjs'",
+      "// import { e } from './commented.mjs'",
+      " * import { f } from './doc-comment.mjs'",
+      "const g = await import('./dynamic.mjs')",
+    ].join('\n')
+    expect(staticRelativeImports(src).sort()).toEqual(['./four.mjs', './one.mjs', './three.mjs', './two.mjs'])
+  })
+
+  it('derives the acceptance test\'s closure from the real imports — the six named modules are in it', () => {
+    const names = harnessClosure().map(f => basename(f))
+    for (const n of ['cynco-gate-author.mjs', 'cynco-gate-lint.mjs', 'cynco-gate-parse.mjs', 'cynco-campaign-calibrate.mjs', 'cynco-campaign-grade.mjs', 'cynco-spawn.mjs']) {
+      expect(names).toContain(n)
+    }
+    // scripts/ only: engine code the check does not grade with is not followed
+    expect(harnessClosure().every(f => norm(f).startsWith(norm(dirname(SELF_SCRIPT)) + '/'))).toBe(true)
+  })
+
+  it('fingerprints the closure per file, and names exactly the files that differ', () => {
+    const fp = harnessFingerprint()
+    expect(fp.sha256).toMatch(/^[0-9a-f]{64}$/)
+    expect(Object.keys(fp.files)).toEqual(harnessClosure().map(f => basename(f)))
+    expect(harnessDirtyFiles(fp, harnessFingerprint())).toEqual([])
+    const moved = { sha256: 'x', files: { ...fp.files, 'cynco-gate-lint.mjs': 'edited', 'cynco-new.mjs': 'added' } }
+    delete moved.files['cynco-spawn.mjs']
+    expect(harnessDirtyFiles(fp, moved)).toEqual(['cynco-gate-lint.mjs', 'cynco-new.mjs', 'cynco-spawn.mjs'])
   })
 })
 
