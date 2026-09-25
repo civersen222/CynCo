@@ -44,9 +44,18 @@ export function loadRoadmap(path = ROADMAP_PATH) {
   return parsed
 }
 
-/** First line still in flight (status 'open' or 'authoring'), in array order, or null. */
+/**
+ * First line still in flight (status 'open', 'authoring' or 'proposed'), in
+ * array order, or null.
+ *
+ * `proposed` counts (review #6): a proposed gate is not sealed, so it is not in
+ * the heldout tree `mirrorPriorCampaigns` copies exemplars from. Authoring the
+ * next line then would stage its `C<N>.9` prior-campaign line against a sibling
+ * gate that is absent, and the check would refuse after a four-hour run. The
+ * next line waits until this one is sealed — or rejected back to `authoring`.
+ */
 export function nextOpenLine(roadmap) {
-  return roadmap.lines.find(l => l.status === 'open' || l.status === 'authoring') ?? null
+  return roadmap.lines.find(l => l.status === 'open' || l.status === 'authoring' || l.status === 'proposed') ?? null
 }
 
 /** Looks up a line by id, or null if no line carries that id. */
@@ -79,9 +88,9 @@ export function setLineStatus(roadmap, id, status) {
  * Forward-only is right for everything else — a sealed gate does not un-seal, a
  * done campaign does not re-run — but a refused proposal has to reopen the line
  * it came from or the only route back is editing the JSON by hand. `--author`
- * refuses a `proposed` line (and `nextOpenLine` does not count one as in flight),
- * so without this a DO-NOT-SEAL verdict leaves the campaign stuck: the gate cannot
- * be re-authored and cannot be sealed.
+ * refuses a `proposed` line (and `nextOpenLine` holds every later line behind
+ * it), so without this a DO-NOT-SEAL verdict leaves the campaign stuck: the gate
+ * cannot be re-authored, cannot be sealed, and blocks the rest of the roadmap.
  *
  * Deliberately its own function rather than a flag on `setLineStatus`: there is
  * exactly one legal backward transition, it is named here, and every other one

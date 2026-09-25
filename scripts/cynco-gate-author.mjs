@@ -1576,8 +1576,14 @@ export async function authorMain(argv, io = defaultAuthorIo()) {
       const r = await authorCampaign({ id, roadmap, state, io, notePath })
       if (r.ok && r.sealed?.ok) { console.log(`[author] ${id}: SEALED at earned authority — ${r.sealed.specPath} written, triple copied, proposal ${r.proposal.name} approved automatically (${r.check.lineIds.length} graded lines)`); return 0 }
       if (r.ok) { console.log(`[author] ${id}: proposal ${r.proposal.name} raised (${r.check.lineIds.length} graded lines) — review the triple, then --approve-proposal ${r.proposal.name}`); return 0 }
+      // Spec §4 (review #7): a refusal BEFORE dispatch — the line is not
+      // open/authoring, or an earlier line is still in flight — is the operator
+      // asking for something the ladder does not allow, exit 2 like every other
+      // usage-shaped refusal. `check: null` is exactly that shape: nothing ran.
+      if (!r.ok && r.check === null) { console.error(`[author] ${id}: refused — ${r.why}`); return 2 }
       // A FAULT is not a refusal: nothing was measured, so nothing was judged,
       // and the operator's next move is to fix the harness rather than the gate.
+      // Both are exit 1: a check that ran (or tried to) and raised no proposal.
       console.error(`[author] ${id}: ${r.kind === 'fault' ? 'fault' : 'no proposal'} — ${r.why}`)
       for (const p of r.check?.problems ?? []) console.error(`  ${p}`)
       return 1

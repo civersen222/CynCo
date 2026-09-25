@@ -700,7 +700,16 @@ export function budgetSpent(state, spec) {
  * import IT), so the runner's dispatcher, driver wait, ledger reader, env
  * scrubber, lock and campaign-log append travel as data.
  */
-function authorIo(author) {
+function authorIo(author, roadmapPath = ROADMAP_PATH) {
+  // Review #8: the roadmap seam, whole. `main`'s injectable `roadmapPath` was
+  // read by the reject branch only; the approve branch and the author verbs
+  // loaded and saved the checked-in file regardless. Every roadmap read and
+  // write the author module makes now goes through the one path main was given
+  // (the module passes ROADMAP_PATH as the save target; it is overridden here).
+  return { ...authorIoBase(author), loadRoadmap: () => loadRoadmap(roadmapPath), saveRoadmap: (_p, r) => saveRoadmap(roadmapPath, r) }
+}
+
+function authorIoBase(author) {
   return author.defaultAuthorIo({ dispatchRaw: defaultIo.dispatchRaw, waitForDriver: defaultIo.waitForDriver, missionIdFrom: defaultIo.missionIdFrom,
     readRow: defaultIo.readRow, appendLog: defaultIo.appendLog, dispatchEnv, takeLock, releaseLock,
     // Phase 3: the auto-approve branch records its own decision, and the
@@ -738,7 +747,7 @@ export async function main(argv, deps = {}) {
   const pathId = specPath ? basename(specPath).replace(/\.campaign\.json$/, '') : null
   if (flag('--check') !== -1) {
     const author = await loadAuthor()
-    return await author.authorMain(argv, authorIo(author))
+    return await author.authorMain(argv, authorIo(author, roadmapPath))
   }
   if (flag('--author') !== -1) {
     const named = argv[flag('--author') + 1]
@@ -752,7 +761,7 @@ export async function main(argv, deps = {}) {
     // next resume's brief, and this is the only path that writes one.
     const noteIdx = flag('--note')
     const forward = noteIdx !== -1 && argv[noteIdx + 1] ? ['--author', id, '--note', argv[noteIdx + 1]] : ['--author', id]
-    return await author.authorMain(forward, authorIo(author))
+    return await author.authorMain(forward, authorIo(author, roadmapPath))
   }
   const decisionIdx = flag('--approve-proposal') !== -1 ? flag('--approve-proposal') : flag('--reject-proposal')
   const decisionName = decisionIdx !== -1 ? argv[decisionIdx + 1] : null
@@ -765,8 +774,8 @@ export async function main(argv, deps = {}) {
       const r = applyProposalDecision(state.state, decisionName, false)
       if (!r.ok) { console.error(r.why); return 2 }
       // A refusal has to REOPEN the line, or the campaign is stuck: `--author`
-      // refuses a `proposed` line and `nextOpenLine` does not count one as in
-      // flight, so a DO-NOT-SEAL verdict would leave the gate neither sealable nor
+      // refuses a `proposed` line and `nextOpenLine` holds every later line behind
+      // it, so a DO-NOT-SEAL verdict would leave the gate neither sealable nor
       // re-authorable. `rejectLine` is the one backward move the ladder permits.
       const roadmap = loadRoadmap(roadmapPath)
       let reopened = false
@@ -800,8 +809,8 @@ export async function main(argv, deps = {}) {
       console.error(`no pending proposal ${decisionName}`); return 2
     }
     const author = await loadAuthor()
-    const roadmap = loadRoadmap(ROADMAP_PATH)
-    const sealed = await author.sealGate({ id, state, roadmap, io: authorIo(author) })
+    const roadmap = loadRoadmap(roadmapPath)
+    const sealed = await author.sealGate({ id, state, roadmap, io: authorIo(author, roadmapPath) })
     if (!sealed.ok) {
       console.error(`[campaign] SEAL REFUSED for ${id} — the proposal stays pending and the roadmap line stays proposed:\n  ${sealed.problems.join('\n  ')}`)
       return 2

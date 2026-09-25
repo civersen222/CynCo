@@ -1324,9 +1324,42 @@ describe('main routes the authoring verbs before it loads a campaign spec', () =
     }
   })
 
+  // Review #8: the approve branch and the author verbs read and write the
+  // roadmap through the same injectable path the reject branch always used.
+  it('--approve-proposal gate/<id> loads and saves the roadmap at the injected path, never the live one', async () => {
+    const before = readFileSync('docs/civkings-redesign-briefs/roadmap.json', 'utf8')
+    const dir = join(mkdtempSync(join(tmpdir(), 'home-')), '.cynco')
+    const roadmapPath = join(mkdtempSync(join(tmpdir(), 'roadmap-')), 'roadmap.json')
+    writeFileSync(roadmapPath, JSON.stringify({ lines: [{ id: 'c9', name: 'INJECTED', bar: 'b', base: 'abcdef1', status: 'proposed' }] }, null, 2) + '\n')
+    const prev = process.env.CYNCO_HOME
+    process.env.CYNCO_HOME = dir
+    try {
+      const state = new CampaignState(join(dir, 'campaigns', 'c9')).load()
+      state.state.proposals = [{ type: 'Code', name: 'gate/c9', proposedAt: 't1', status: 'pending' }]
+      state.save()
+      const s = stub()
+      // A sealGate that does what the real one does with the roadmap: advance the line and save it through io.
+      s.authorModule.sealGate = async (args) => {
+        s.calls.push({ verb: 'seal', args })
+        args.roadmap.lines.find(l => l.id === 'c9').status = 'sealed'
+        args.io.saveRoadmap('docs/civkings-redesign-briefs/roadmap.json', args.roadmap)
+        return { ok: true, problems: [], specPath: 'x' }
+      }
+      expect(await main(['--approve-proposal', 'gate/c9'], { authorModule: s.authorModule, roadmapPath })).toBe(0)
+      expect(s.calls[0].args.roadmap.lines[0].name).toBe('INJECTED')
+      expect(JSON.parse(readFileSync(roadmapPath, 'utf8')).lines[0].status).toBe('sealed')
+      expect(readFileSync('docs/civkings-redesign-briefs/roadmap.json', 'utf8')).toBe(before)
+      // and the author route's io reads the same path
+      expect(await main(['--author', 'c9'], { authorModule: s.authorModule, roadmapPath })).toBe(0)
+      expect(s.calls.at(-1).io.loadRoadmap().lines[0].name).toBe('INJECTED')
+    } finally {
+      if (prev === undefined) delete process.env.CYNCO_HOME; else process.env.CYNCO_HOME = prev
+    }
+  })
+
   /**
    * A refusal REOPENS the line, or the campaign is stuck: `--author` refuses a
-   * `proposed` line and `nextOpenLine` does not count one as in flight, so a
+   * `proposed` line and `nextOpenLine` holds every later line behind it, so a
    * DO-NOT-SEAL verdict would leave the gate neither sealable nor re-authorable.
    *
    * `roadmapPath` is injected because this path WRITES the roadmap. Redirecting

@@ -20,13 +20,12 @@ describe('cynco-roadmap: checked-in roadmap.json', () => {
   // flight, or null once none is), never one particular line's current value.
   // `setLineStatus`'s own behaviour is tested against fixtures below, for the same
   // reason: a test pinned to live data fails on the day the data is correct.
-  it('nextOpenLine answers the earliest line still open or authoring, or null', () => {
+  it('nextOpenLine answers the earliest line still open, authoring or proposed, or null', () => {
     const roadmap = loadRoadmap()
     const next = nextOpenLine(roadmap)
-    // Its own predicate: a `proposed` line is past authoring and is NOT in flight
-    // for this purpose — that is what lets `--author` refuse it until a rejection
-    // moves it back.
-    const inFlight = roadmap.lines.filter(l => l.status === 'open' || l.status === 'authoring')
+    // Its own predicate: a `proposed` line is not sealed, so it is still in flight
+    // (review #6) — the next line waits until it is sealed or rejected back.
+    const inFlight = roadmap.lines.filter(l => ['open', 'authoring', 'proposed'].includes(l.status))
     if (inFlight.length === 0) expect(next).toBeNull()
     else expect(next.id).toBe(inFlight[0].id)
   })
@@ -39,6 +38,22 @@ describe('cynco-roadmap: checked-in roadmap.json', () => {
     const roadmap = loadRoadmap()
     expect(lineFor(roadmap, 'c7').name).toBe('Content depth')
     expect(lineFor(roadmap, 'nope')).toBeNull()
+  })
+})
+
+// Review #6: a proposed gate is not in the heldout tree yet, so the next line
+// cannot be authored against it as its prior-campaign sibling.
+describe('nextOpenLine (fixtures)', () => {
+  const road = (...statuses) => ({ lines: statuses.map((status, i) => ({ id: `c${9 + i}`, name: 'n', bar: 'b', base: 'abcdef1', status })) })
+  it('holds the roadmap at a proposed line', () => {
+    expect(nextOpenLine(road('proposed', 'open')).id).toBe('c9')
+  })
+  it('moves on once the line is sealed', () => {
+    expect(nextOpenLine(road('sealed', 'open')).id).toBe('c10')
+    expect(nextOpenLine(road('done', 'running'))).toBeNull()
+  })
+  it('still answers open and authoring lines', () => {
+    expect(nextOpenLine(road('done', 'authoring', 'open')).id).toBe('c10')
   })
 })
 
@@ -75,8 +90,8 @@ describe('setLineStatus', () => {
 
 /**
  * The ONE backward move the ladder permits. Without it a DO-NOT-SEAL verdict left
- * the campaign stuck: `--author` refuses a `proposed` line and `nextOpenLine` does
- * not count one as in flight, so the gate could neither be sealed nor re-authored,
+ * the campaign stuck: `--author` refuses a `proposed` line and `nextOpenLine` holds
+ * every later line behind it, so the gate could neither be sealed nor re-authored,
  * and the only way back was editing the JSON by hand.
  */
 describe('rejectLine', () => {

@@ -335,8 +335,12 @@ in `docs/civkings-redesign-briefs/campaign-log.md` and F156 in
   the spec is loaded, because the spec is what the mission is being asked to
   write — the `.campaign.json` does not exist yet. It refuses a line that is
   not `open`/`authoring`, and refuses a line that jumps ahead of an earlier
-  line still in flight (`nextOpenLine`): the roadmap is authored in order,
+  line still in flight (`nextOpenLine`: `open`, `authoring` or `proposed` — a
+  proposed gate is not sealed, so it is not in the heldout tree the next line's
+  `C<N>.9` sibling is mirrored from): the roadmap is authored in order,
   because each gate is drafted against the previous campaign's as exemplar.
+  Both refusals happen before anything is dispatched and exit **2**; a check
+  that ran and raised no proposal (refused, or a fault) exits **1**.
   `bun scripts/cynco-gate-author.mjs --check <stagingDir> <baseDir>` is the
   acceptance test on its own (exit 0/1, every problem printed); the mission is
   told to run it and the driver runs the same string as the mission's
@@ -436,7 +440,24 @@ in `docs/civkings-redesign-briefs/campaign-log.md` and F156 in
 - **The roadmap.** `docs/civkings-redesign-briefs/roadmap.json` is the line of
   campaigns and the only place a line's status lives: `open → authoring →
   proposed → sealed → running → done`, forward only (`setLineStatus` throws on
-  a backward move). Each line carries the `base` commit its gate is calibrated
+  a backward move) with exactly ONE permitted exception: `rejectLine`, which
+  moves a `proposed` line back to `authoring` when the supervisor refuses the
+  seal. `bun scripts/cynco-campaign.mjs --reject-proposal gate/<id> --note
+  <file>` records the decision (`rejected`, `decidedBy: 'supervisor'`), calls
+  `rejectLine` and saves the roadmap — without it a DO-NOT-SEAL verdict would
+  leave the gate neither sealable nor re-authorable, and every later line held
+  behind it — and, when `--note` is given, appends `{ at, by: 'supervisor',
+  notePath }` to `state.authoring.<id>.refusals`. The note is recorded by path,
+  not copied. The next `--author <id>` (with or without its own `--note`; the
+  last recorded note stays active) is a POST-REFUSAL RESUME — provided the note
+  file can be read; an unreadable one is printed as an error and the resume
+  runs as an ordinary one: the note's text
+  goes into the brief as the supervisor's refusal, the resume gets the full
+  four-hour budget (`AUTHOR_TIMEOUT_S`, not `AUTHOR_RESUME_TIMEOUT_S` — a refused
+  seal is a re-authoring of what the gate means, not a shim fix), and it always
+  DISPATCHES: a staged triple that still passes the check is not proposed from
+  disk, because passing the mechanical check is exactly what the refusal
+  disputes. Each line carries the `base` commit its gate is calibrated
   against. A failed check leaves the line at `authoring` with the problems on
   `state.authoring.<id>.lastCheck`, and the next `--author <id>` resumes into
   the same staging dir with a PREVIOUS CHECK OUTPUT section in the brief. That
@@ -467,6 +488,10 @@ terminal CynCo lines, a Wilson lower bound on the held rate ≥ 0.8, and not
 significantly worse than the human seat (Fisher, one direction only — a seat
 significantly BETTER must not be refused by its own evidence). It raises
 `gate-author/gate` (0 → 0.5, bounded), which the owner approves like any other.
+The dataset holds sealed lines only, and that is an evidence gap recorded here
+rather than closed: a supervisor refusal never reaches `gate-lines.jsonl`;
+gate-level outcomes are Phase 4. A refused `gate/<id>` lives on the proposal
+record and in `state.authoring.<id>.refusals`, where no promotion reads it (F156).
 What that 0.5 buys is one branch: `authorCampaign` seals its own gate instead of
 waiting for `--approve-proposal gate/<id>`, and records the decision as
 `decidedBy: 'auto'`. Every check inside `sealGate` still runs — a refused seal

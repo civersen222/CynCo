@@ -794,6 +794,23 @@ describe('authorCampaign', () => {
     expect(roadmap.lines.find(l => l.id === 'c9').status).toBe('open')
   })
 
+  // Review #6: a PROPOSED line is not sealed, so it is not in the heldout tree
+  // the next line's C<N>.9 sibling would be mirrored from.
+  it('refuses the next line while the one before it is only proposed', async () => {
+    const { files } = staged(home)
+    const { io, dispatched } = makeIo({ home, files })
+    const roadmap = ROADMAP()
+    roadmap.lines.find(l => l.id === 'c9').status = 'proposed'
+    roadmap.lines.push({ id: 'c10', name: 'Next', bar: 'b', base: 'abcdef1', status: 'open' })
+    const state = new CampaignState(join(mkdtempSync(join(tmpdir(), 'camp-')), 'c10')).load()
+    const r = await authorCampaign({ id: 'c10', roadmap, state, io })
+    expect(r.ok).toBe(false)
+    expect(r.check).toBeNull()
+    expect(r.why).toMatch(/c9 is still "proposed" — author the roadmap in order, c9 before c10/)
+    expect(dispatched).toEqual([])
+    expect(roadmap.lines.find(l => l.id === 'c10').status).toBe('open')
+  })
+
   it('authors the first line still in flight without complaint', async () => {
     const { r, roadmap } = await runIt()
     expect(r.ok).toBe(true)
@@ -1490,23 +1507,62 @@ describe('authorMain', () => {
     const { io } = makeIo({ home })
     expect(await authorMain(['--check'], io)).toBe(2)
   })
+  // Review #11: every `--author` test hands over its own temp-dir state, so this
+  // file never depends on the global CYNCO_HOME setup to stay off the live state.
+  const tempState = (id = ID) => { const st = new CampaignState(join(mkdtempSync(join(tmpdir(), 'camp-')), id)).load(); return () => st }
+
   it('--author refuses an id the roadmap does not carry', async () => {
     const { files } = staged(home)
-    const { io } = makeIo({ home, files, over: { loadRoadmap: () => ROADMAP() } })
+    const { io } = makeIo({ home, files, over: { loadRoadmap: () => ROADMAP(), stateFor: tempState() } })
     expect(await authorMain(['--author', 'c99'], io)).toBe(2)
   })
   it('--author takes and releases the campaign lock', async () => {
     const { files } = staged(home)
     let released = 0
-    const { io } = makeIo({ home, files, over: { loadRoadmap: () => ROADMAP(), releaseLock: () => { released++ } } })
+    const { io } = makeIo({ home, files, over: { loadRoadmap: () => ROADMAP(), stateFor: tempState(), releaseLock: () => { released++ } } })
     expect(await authorMain(['--author', ID], io)).toBe(0)
     expect(released).toBe(1)
   })
   it('--author refuses when another runner holds the lock', async () => {
     const { files } = staged(home)
-    const { io, dispatched } = makeIo({ home, files, over: { loadRoadmap: () => ROADMAP(), takeLock: () => ({ ok: false, path: 'p', pid: 7 }) } })
+    const { io, dispatched } = makeIo({ home, files, over: { loadRoadmap: () => ROADMAP(), stateFor: tempState(), takeLock: () => ({ ok: false, path: 'p', pid: 7 }) } })
     expect(await authorMain(['--author', ID], io)).toBe(2)
     expect(dispatched).toEqual([])
+  })
+
+  // Review #7 (spec §4): a refusal before dispatch is exit 2; a check that ran
+  // and raised no proposal — refused or faulted — is exit 1.
+  it('--author exits 2 for a line that is not open/authoring, and releases the lock', async () => {
+    const { files } = staged(home)
+    let released = 0
+    const road = () => { const r = ROADMAP(); r.lines.find(l => l.id === 'c9').status = 'proposed'; return r }
+    const { io, dispatched } = makeIo({ home, files, over: { loadRoadmap: road, stateFor: tempState(), releaseLock: () => { released++ } } })
+    expect(await authorMain(['--author', ID], io)).toBe(2)
+    expect(dispatched).toEqual([])
+    expect(released).toBe(1)
+  })
+  it('--author exits 2 when an earlier line is still in flight', async () => {
+    const { files } = staged(home)
+    const road = () => { const r = ROADMAP(); r.lines.find(l => l.id === 'c8').status = 'authoring'; return r }
+    const { io, dispatched } = makeIo({ home, files, over: { loadRoadmap: road, stateFor: tempState() } })
+    expect(await authorMain(['--author', ID], io)).toBe(2)
+    expect(dispatched).toEqual([])
+  })
+  it('--author exits 1 when the check refuses the triple', async () => {
+    const { files } = staged(home)
+    const { io, dispatched } = makeIo({ home, files, check: { ok: false, problems: ['BASE must MISS the gate; terminator was PASS'] },
+      over: { loadRoadmap: () => ROADMAP(), stateFor: tempState() } })
+    expect(await authorMain(['--author', ID], io)).toBe(1)
+    expect(dispatched).toHaveLength(1)
+  })
+  it('--author exits 1 when the check could not run (a fault)', async () => {
+    const { files } = staged(home)
+    const { io } = makeIo({ home, files, over: { loadRoadmap: () => ROADMAP(), stateFor: tempState() } })
+    const inner = io.run
+    io.run = (cmd, args, opts) => cmd === 'bun' && args.includes('--check')
+      ? { status: null, stdout: '', stderr: '', elapsedMs: 6, timedOut: false, fault: { code: 'ETIMEDOUT', status: null, signal: null, elapsedMs: 6 } }
+      : inner(cmd, args, opts)
+    expect(await authorMain(['--author', ID], io)).toBe(1)
   })
 })
 
