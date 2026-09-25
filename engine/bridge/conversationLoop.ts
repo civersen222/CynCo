@@ -1098,6 +1098,17 @@ export class ConversationLoop {
       // would replace whatever error `runUserMessage` was already unwinding
       // with this one. Logged, never swallowed silently.
       try { this.dropOperatorQueueAtMissionEnd() } catch (e) { console.error('[loop] operator-queue drain failed: ' + (e as Error).message) }
+      // Mission end: persist the invariants homeostat's retained table
+      // (vsm/retainedConfigStore.ts, `mission-invariants`). Same wrapping as
+      // the drain above — a store failure is logged, never thrown into this
+      // finally past the clears below.
+      if (this.missionInvariants) {
+        try {
+          this.missionInvariants.saveRetained(this.governance.getRetainedStore(), this.sessionId || null)
+        } catch (e) {
+          console.error('[retained] mission-invariants export failed: ' + (e as Error).message)
+        }
+      }
       // Cleared beside `processing`, and for the same reason: left `true` it
       // would queue a note into a loop that is no longer running, and nothing
       // would ever drain it.
@@ -1306,7 +1317,10 @@ export class ConversationLoop {
     } else if (opts.invariants !== undefined) {
       const caps = parseInvariantCaps(opts.invariants)
       if (caps) {
-        this.missionInvariants = new MissionInvariants(caps)
+        // Seeded from the retained-configuration store (`mission-invariants`):
+        // what earlier missions' homeostats found restored viability. Memory
+        // only — the gate keys on the caps and nothing applies a retained step.
+        this.missionInvariants = new MissionInvariants(caps, { retainedStore: this.governance.getRetainedStore() })
         this.invariantsRejected = false
         console.log(`[invariant] mission invariants armed: edit gap ${caps.editGapCap}, commit gap ${caps.commitGapCap}, revert ban ${caps.revertBan}, CodeIndex-first ${caps.codeIndexFirst}`)
       } else {
@@ -2214,6 +2228,16 @@ export class ConversationLoop {
 
     // Persist tool trust scores so demotion signal survives across sessions
     this.toolScorer.save(this.toolScorerPath)
+
+    // Session end: persist the session-feedback ultrastable instance's retained
+    // table (vsm/retainedConfigStore.ts). Beside the tool scores rather than
+    // inside the population block above: that block runs only when a population
+    // exists on disk, and the retained memory must not depend on one.
+    try {
+      this.governance.saveRetained(this.sessionId || null)
+    } catch (e) {
+      console.error('[retained] session-feedback export failed: ' + (e as Error).message)
+    }
 
     this.processing = false
     this.abortController = null
@@ -3180,7 +3204,13 @@ export class ConversationLoop {
                   const fa = this.governance.getFeedbackActions()
                   if (!fa) return null
                   const trace = fa.adaptationTrace
+                  // The instance's retained table (a handful of keys, one per
+                  // violation pattern — bounded, unlike the trace) and the
+                  // stored version it matches; null = nothing stored yet.
+                  const kept = this.governance.getRetainedSnapshot()
                   return {
+                    retained: kept.retained,
+                    retainedVersion: kept.version,
                     traceLength: trace.length,
                     trace: trace.slice(-20).map(e => ({
                       step: e.step,

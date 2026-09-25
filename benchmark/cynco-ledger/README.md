@@ -314,7 +314,17 @@ decisions still recorded here).
     "entries": [ { "callIndex": 412, "kind": "revert", "entropy": 0.41,
       "outcome": "passed", "ms": 41200, "tail": "12 passed",
       "nextCallClass": "commit" } ] },
-  "ultrastable": { "trace": [], "margin": 0.4 },
+  // The legacy (session-feedback) ultrastable instance, last status frame
+  // wins: `trace` is the last 20 adaptation steps (`traceLength` the total),
+  // `margin` the viability margin. `retained` is the instance's retained-
+  // configuration table (violation pattern -> configuration that restored
+  // viability) and `retainedVersion` the version of it stored under
+  // ~/.cynco/retained/session-feedback.json (engine/vsm/retainedConfigStore.ts;
+  // the version moves only when the table changes). `retainedVersion` null =
+  // nothing stored yet; both null on a row from an engine that predates the
+  // store. Memory only: nothing applies a retained configuration yet.
+  "ultrastable": { "traceLength": 0, "trace": [], "margin": 0.4,
+    "retained": { "ev0": { "Continuous": [0.75, 8192, 0.3] } }, "retainedVersion": 2 },
   // The ENGINE's live POSIWID reading (last governance.status frame): its
   // default purpose model against the session's executed tool classes
   // (vsm/constraintChecks.ts). Distinct from the runner-patched `posiwid`

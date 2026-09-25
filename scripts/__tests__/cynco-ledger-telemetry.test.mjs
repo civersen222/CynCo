@@ -136,6 +136,27 @@ describe('bash effects and invariant blocks', () => {
     expect(empty.ultrastable).toBeNull()
   })
 
+  // Phase 4 task 4: the session-feedback instance's retained-configuration
+  // table and its stored version ride the ultrastable block, last frame wins.
+  it('carries ultrastable.retained and ultrastable.retainedVersion from the last frame', () => {
+    const c = createMissionCollector()
+    c.ingest({ type: 'governance.status', health: 'healthy', ultrastable: { traceLength: 0, trace: [], margin: 0.4, retained: {}, retainedVersion: null } })
+    c.ingest({ type: 'governance.status', health: 'healthy', ultrastable: { traceLength: 1, trace: [{ step: 1 }], margin: 0.2, retained: { ev0: { Continuous: [0.75, 8192, 0.3] } }, retainedVersion: 3 } })
+    const rec = buildMissionRecord(c, { missionId: 'm', briefFile: 'b', marker: 'x', cwd: '.', dispatchedAt: 't', durationS: 1, outcome: 'landed' })
+    expect(rec.ultrastable.retained).toEqual({ ev0: { Continuous: [0.75, 8192, 0.3] } })
+    expect(rec.ultrastable.retainedVersion).toBe(3)
+    expect(rec.ultrastable.traceLength).toBe(1)
+  })
+
+  it('an older engine frame without the retained fields records them as null, not absent', () => {
+    const c = createMissionCollector()
+    c.ingest({ type: 'governance.status', health: 'healthy', ultrastable: { trace: [], margin: 0.4 } })
+    const rec = buildMissionRecord(c, { missionId: 'm', briefFile: 'b', marker: 'x', cwd: '.', dispatchedAt: 't', durationS: 1, outcome: 'landed' })
+    expect(rec.ultrastable.margin).toBe(0.4)
+    expect(rec.ultrastable.retained).toBeNull()
+    expect(rec.ultrastable.retainedVersion).toBeNull()
+  })
+
   // Phase 2b-ii: verify-first routing. Lifted onto the row for the same reason
   // the denial ledger is — `entries[].nextCallClass` is the only record of
   // whether an informed refusal or a measured edit changed what the model did

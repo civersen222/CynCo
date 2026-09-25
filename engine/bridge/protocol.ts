@@ -314,6 +314,13 @@ export type GovernanceStatusEvent = {
     traceLength: number
     trace: Array<{ step: number; violations: string[]; from: unknown; to: unknown; strategy: string; restoredAfter: number | null }>
     margin: number
+    /** The instance's retained-configuration table (violation pattern ->
+     *  configuration that restored viability), persisted across sessions as
+     *  `session-feedback` by vsm/retainedConfigStore.ts. Memory only — nothing
+     *  applies it. */
+    retained?: Record<string, unknown>
+    /** The stored table version it matches; null = nothing stored yet. */
+    retainedVersion?: number | null
   } | null
   /** POSIWID, live (vsm/constraintChecks.ts checkToolClassAlignment): the
    *  session's stated purpose model against the distribution of what its
