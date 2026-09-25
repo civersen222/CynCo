@@ -115,7 +115,9 @@ describe('GET /api/campaign', () => {
       { wave: 2, decision: { kind: 'next', why: '1 line(s) still FAIL' },
         gate: { terminator: 'MISS', fails: [{ id: 'C8.2b.portraits-distinct-and-stable', line: 'C8.2b.portraits-distinct-and-stable: FAIL two houses share a portrait hash' }] },
         posiwid: { verdict: 'Consistent', divergence: 0.02 }, verified: true,
-        governancePosiwid: { verdict: 'Consistent', divergence: 0.01, dominantObserved: 'inspect', support: 5, onsetWave: null, counts: { wave: 2 } } },
+        governancePosiwid: { verdict: 'Consistent', divergence: 0.01, dominantObserved: 'inspect', support: 5, onsetWave: null, counts: { wave: 2 } },
+        autopoiesis: { criteria: { hasBoundary: true, boundarySelfProduced: false, internalProduction: true, circularProduction: true, organizationallyClosed: false, organizationMaintained: true },
+          isAutopoietic: false, missing: ['boundarySelfProduced', 'organizationallyClosed'], network: { unproduced: ['gate'], productions: [] }, facts: {} } },
     ])
 
     // c9: no waves yet, inFlight set — this is the active campaign.
@@ -147,8 +149,10 @@ describe('GET /api/campaign', () => {
     expect(c8.budgetWaves).toBe(8)
 
     expect(c8.waves).toHaveLength(2)
-    expect(c8.waves[0]).toEqual({ wave: 1, decision: { kind: 'next', why: '2 line(s) still FAIL' }, posiwid: { verdict: 'Consistent', divergence: 0.05 }, governancePosiwid: null, verified: true })
+    expect(c8.waves[0]).toEqual({ wave: 1, decision: { kind: 'next', why: '2 line(s) still FAIL' }, posiwid: { verdict: 'Consistent', divergence: 0.05 }, governancePosiwid: null, autopoiesis: null, verified: true })
     expect(c8.waves[1].governancePosiwid).toEqual({ verdict: 'Consistent', onsetWave: null })
+    // Phase 4 ruling 4: the checklist reduced to what the panel prints.
+    expect(c8.waves[1].autopoiesis).toEqual({ isAutopoietic: false, missing: ['boundarySelfProduced', 'organizationallyClosed'] })
     expect(c8.governancePosiwid).toEqual({ verdict: 'Consistent', divergence: 0.01, dominantObserved: 'inspect', support: 5, onsetWave: null, counts: { wave: 2 } })
 
     expect(c8.pendingProposals).toHaveLength(1)
@@ -190,6 +194,20 @@ describe('GET /api/campaign', () => {
     const c9Line = data.roadmap.find((r: any) => r.id === 'c9')
     expect(c9Line.name).toBe('Ship shell')
     expect(STATUSES).toContain(c9Line.status)
+  })
+
+  it('a wave whose autopoiesis assessment threw hands the panel the error, not a blank', async () => {
+    CYNCO_HOME = mkdtempSync(join(tmpdir(), 'cynco-campaign-autopoiesis-'))
+    process.env.CYNCO_HOME = CYNCO_HOME
+    writeCampaign(CYNCO_HOME, 'c7', { waveCount: 2 }, [
+      { wave: 1, decision: { kind: 'next', why: 'x' }, verified: false,
+        autopoiesis: { criteria: {}, isAutopoietic: false, missing: ['hasBoundary'] } },
+      { wave: 2, decision: { kind: 'next', why: 'y' }, verified: false, autopoiesis: { assessError: 'boom' } },
+    ])
+    const res = await authFetch(`${BASE}/api/campaign`)
+    const c7 = ((await res.json()) as any).campaigns.find((c: any) => c.id === 'c7')
+    expect(c7.waves[0].autopoiesis).toEqual({ isAutopoietic: false, missing: ['hasBoundary'] })
+    expect(c7.waves[1].autopoiesis).toEqual({ isAutopoietic: false, missing: [], assessError: 'boom' })
   })
 
   it('authoring state and a gate/<id> proposal carry the shape the panel needs', async () => {

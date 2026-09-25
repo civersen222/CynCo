@@ -457,6 +457,71 @@ wave's `verdict` and `onsetWave`.
 module on this block's `counts` and fails if the reading moves (F149: a
 documented number no code produces).
 
+### The wave record's `autopoiesis`
+
+Also not a ledger field — it lives on the campaign wave record and reads the
+graded row beside everything else the VERDICT already holds. Phase 4 ruling 4:
+`scripts/cynco-autopoiesis.mjs` `campaignAssessment` maps Maturana/Varela's six
+criteria (the vendored core's `AutopoiesisAssessment`; `isAutopoietic` and
+`missingCriteria` come from `engine/cybernetics-core` unchanged) to facts, never
+to claims:
+
+- **`hasBoundary`** — this wave's identity reading (`identity.intact`, the
+  wave record's `identity`, `scripts/cynco-identity.mjs`).
+- **`boundarySelfProduced`** — `spec.author === "cynco"`: the campaign's own
+  gate-author seat wrote the bar. Every campaign up to c8 is `human`.
+- **`internalProduction`** — this wave landed ≥ 1 commit.
+- **`circularProduction`** — ledger → validation → proposal closed at least once
+  in this campaign: a denial analysis ran (this wave or an earlier one) AND a
+  proposal was ever raised, OR a brief carried the PACING "campaign to date"
+  denial digest (`facts.pacingDigest` on this wave or any earlier one).
+- **`organizationallyClosed`** — the campaign's `ProductionNetwork` over
+  `gate, brief, wave, ledger, validation, proposal, configuration, seat` is
+  closed, given which productions occurred: seat→gate (CynCo-authored gate),
+  brief→wave (≥ 1 graded wave), wave→ledger (≥ 1 campaign row),
+  ledger→validation (a denial analysis), validation→proposal (any proposal
+  raised), proposal→configuration (any approved), configuration→brief (an
+  `invariantOverrides` entry, or an ideation `s4.workOrder.applied`),
+  ledger→seat (gate-line or ideation evidence), configuration→seat (a seat's
+  authority > 0, the retained seats store included).
+- **`organizationMaintained`** — identity intact this wave AND on every
+  earlier GRADED wave AND `identityGuard.passed === true` on every campaign
+  row. Strict: a graded wave that predates the identity assertion, or a row
+  whose engine never emitted the guard, is unread, and unread is not evidence
+  of maintenance. Stop and fault records were never graded and are not
+  readings.
+
+The stored shape is the module's own output for a two-wave human-gated campaign
+whose first row predates the guard (the facts below, re-run by
+`scripts/__tests__/cynco-autopoiesis.test.mjs`):
+
+```jsonc
+"autopoiesis": {
+  "criteria": { "hasBoundary": true, "boundarySelfProduced": false, "internalProduction": true,
+                "circularProduction": true, "organizationallyClosed": false, "organizationMaintained": false },
+  "isAutopoietic": false,
+  "missing": ["boundarySelfProduced", "organizationallyClosed", "organizationMaintained"],
+  "network": { "unproduced": ["gate", "brief", "configuration"],
+               "productions": [["brief", "wave"], ["wave", "ledger"], ["ledger", "validation"],
+                               ["validation", "proposal"], ["ledger", "seat"]] },
+  "facts": { "gateAuthor": "human", "waves": 2, "rows": 2, "denialAnalysis": true, "proposalRaised": true,
+             "proposalApproved": false, "configurationApplied": false, "seatEvidence": true, "seatAuthority": 0,
+             "commitsLanded": 3, "pacingDigest": true,
+             "identityHistory": { "waves": 1, "intact": 1, "rows": 2, "passed": 1 } } }
+```
+
+`missing` names the criteria by field, in the core's order; `facts` is
+everything the reading was computed from, so a wrong mapping is fixed by
+re-running the module over the stored facts, not by re-measuring. An
+assessment that throws is stored as `{ "assessError": "<message>" }` and never
+faults the wave. The verdict entry prints `- Autopoiesis: 3/6 — missing …`
+(`6/6` when nothing is missing, `UNASSESSED — <message>` on a throw) into the
+campaign log; `GET /api/campaign` hands the dashboard each wave's
+`{ isAutopoietic, missing }` and the Campaign panel prints the last wave's;
+`bun scripts/cynco-campaign.mjs <id>.campaign.json --autopoiesis` prints the
+same checklist over a campaign that already ran, from its stored records, and
+dispatches and writes nothing.
+
 ### The wave record's `gate.author`
 
 Also not a ledger field: the wave record's `gate` block is the grader's reading

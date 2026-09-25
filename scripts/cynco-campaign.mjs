@@ -2,7 +2,7 @@
 //
 //   bun scripts/cynco-campaign.mjs docs/civkings-redesign-briefs/c8.campaign.json [--waves N] [--resume] [--dry-run] [--sync]
 //                                  [--approve-proposal ideation/brief] [--reject-proposal ideation/brief]
-//                                  [--adopt-inflight]
+//                                  [--adopt-inflight] [--autopoiesis]
 //   bun scripts/cynco-campaign.mjs --author c9            # write the next campaign's sealed gate (Phase 3)
 //   bun scripts/cynco-campaign.mjs --check <staging> <base>
 //   bun scripts/cynco-campaign.mjs --approve-proposal gate/c9   # seal what --author staged
@@ -36,6 +36,8 @@ import { assertIdentityIntact } from './cynco-identity.mjs'
 import { applyProposalDecision, seatAuthority } from './cynco-proposals.mjs'
 import { writeRuleVerdicts, RULE_VERDICTS_PATH } from './cynco-rule-verdicts.mjs'
 import { readLedger } from './cynco-ledger-shards.mjs'
+import { campaignAssessment, campaignRows, autopoiesisLine, storedAssessment } from './cynco-autopoiesis.mjs'
+import { summarize as summarizeGateLines, GATE_LINES_PATH } from './cynco-gate-lines.mjs'
 
 // Phase 4: the operator's decision on a pending proposal lives in the one
 // proposal registry (scripts/cynco-proposals.mjs). Re-exported so every caller
@@ -229,6 +231,9 @@ export const defaultIo = {
   readLedgerRows: () => readLedger(),
   datasetsHome: () => cyncoHome(),
   writeRuleVerdicts: (args) => writeRuleVerdicts(args),
+  // Phase 4 ruling 4: the checklist is pure over facts the VERDICT already
+  // holds; a seam only so a test can prove a throw never faults the wave.
+  assessAutopoiesis: (args) => campaignAssessment(args),
 }
 
 /**
@@ -292,6 +297,10 @@ export async function runWave(spec, state, io = defaultIo) {
 
   let ideation = null, ideationMeta = null
   let missionId, row, briefFile, dispatchedAt, waveFiles, workOrder
+  // Phase 4 ruling 4: did the campaign-to-date denial digest (ledger →
+  // validation) reach THIS wave's brief? Read off the text actually written,
+  // not re-derived; an adopted wave's brief was not written here, so false.
+  let pacingDigest = false
 
   if (s.adoptedRow) {
     // ADOPT (scripts/cynco-campaign-adopt.mjs): this wave already RAN — it was
@@ -338,6 +347,9 @@ export async function runWave(spec, state, io = defaultIo) {
     const briefCtx = { ...ctx, ideation }
     const text = generateBrief(spec, briefCtx)
     workOrder = workOrderFor(spec, briefCtx)
+    // The PACING section prints "; campaign to date …" exactly when the digest
+    // from s.denialAnalysis was folded in (scripts/cynco-brief.mjs pacing()).
+    pacingDigest = text.includes('; campaign to date ')
     // checkIdentity guards the spec's own fields, but the ideation section is
     // written by a model that just read the repo. A brief naming the sealed
     // gate would be refused by sealedPaths mid-run, after the wall clock has
@@ -516,9 +528,27 @@ export async function runWave(spec, state, io = defaultIo) {
   if (gatePromotion) { s.proposals.push({ ...gatePromotion, proposedAt: new Date().toISOString() }); await tryNotify(io, `${spec.id}: PROPOSAL ${gatePromotion.name} ${s.gateAuthorAuthority ?? 0} → ${gatePromotion.newValue} (max ${gatePromotion.bounds.max}) — ${gatePromotion.evidence.held}/${gatePromotion.evidence.n} CynCo gate lines held, ci lo ${gatePromotion.evidence.ci[0].toFixed(3)}. Approve with --approve-proposal ${gatePromotion.name}`) }
   if (cap) { s.proposals.push({ ...cap, proposedAt: new Date().toISOString() }); await tryNotify(io, `${spec.id}: PROPOSAL ${cap.name} ${cap.currentValue} → ${cap.newValue} (max ${cap.bounds.max}, p=${cap.evidence.pAdjusted.toFixed(3)}). Approve with --approve-proposal ${cap.name}`) }
 
+  // Phase 4 ruling 4: the campaign autopoiesis checklist. It reads the identity
+  // reading above (hasBoundary, organizationMaintained), and it is taken AFTER
+  // §E so a proposal raised in this very wave counts as raised — the verdict
+  // entry below prints that PROPOSAL line, and the checklist beside it must not
+  // contradict it. Derived and re-runnable over the stored facts, so a throw is
+  // recorded as `assessError` and never faults the wave.
+  try {
+    const waves = state.waves()
+    const home = io.seatsHome?.() ?? null
+    const seat = Math.max(s.ideationAuthority ?? 0, s.gateAuthorAuthority ?? 0,
+      home ? seatAuthority(home, 'ideation') : 0, home ? seatAuthority(home, 'gate-author') : 0)
+    rec.autopoiesis = (io.assessAutopoiesis ?? defaultIo.assessAutopoiesis)({ spec, state: s, waves, row, rows: campaignRows({ waves, ledgerRows, row }),
+      gateLines, denialAnalysis, identity, commitsLanded: commits.length, pacingDigest, seatAuthority: seat })
+  } catch (e) {
+    rec.autopoiesis = { assessError: String(e?.message ?? e) }
+    console.error(`[campaign] autopoiesis checklist not assessed: ${e?.message ?? e}`)
+  }
+
   // Verdict (campaign log, economics, local commit, algedonic).
   const ideationRecord = ideation ? { authority: s.ideationAuthority ?? 0, hypotheses: ideation.hypotheses, followed } : null
-  const entry = verdictEntry({ spec, wave, row, grade, decision, ideationRecord, economicsLines: io.economics(), denialAnalysis, denialScope, capProposal: cap, governancePosiwid: governance, gateLines, identity })
+  const entry = verdictEntry({ spec, wave, row, grade, decision, ideationRecord, economicsLines: io.economics(), denialAnalysis, denialScope, capProposal: cap, governancePosiwid: governance, gateLines, identity, autopoiesis: rec.autopoiesis })
   io.appendLog(entry)
   // Ruling 5: commitVerdict matches these against `git status --porcelain`,
   // which speaks repo-relative forward slashes and nothing else.
@@ -851,8 +881,33 @@ export async function main(argv, deps = {}) {
     return 0
   }
 
-  if (!specPath) { console.error('usage: bun scripts/cynco-campaign.mjs <id>.campaign.json [--waves N] [--resume] [--dry-run] [--sync] [--adopt-inflight] [--approve-proposal NAME] [--reject-proposal NAME] | --author <id> | --check <stagingDir> <baseDir>'); return 2 }
+  if (!specPath) { console.error('usage: bun scripts/cynco-campaign.mjs <id>.campaign.json [--waves N] [--resume] [--dry-run] [--sync] [--adopt-inflight] [--autopoiesis] [--approve-proposal NAME] [--reject-proposal NAME] | --author <id> | --check <stagingDir> <baseDir>'); return 2 }
   const spec = loadCampaignSpec(specPath)
+  // Phase 4 ruling 4: `--autopoiesis` is a dry report over what the campaign
+  // already stored — the last graded wave's identity reading, the ledger rows
+  // the runner reads, the last regenerated gate-lines dataset. It runs before
+  // the spec's identity check on purpose: a campaign whose identity broke is
+  // exactly one whose checklist an operator wants to read (hasBoundary false).
+  // It dispatches nothing, takes no lock and writes nothing.
+  if (flag('--autopoiesis') !== -1) {
+    // Not CampaignState.load(): it creates the directory and renames a corrupt
+    // state.json aside, and a report must leave the campaign exactly as it was.
+    const state = new CampaignState(join(cyncoHome(), 'campaigns', spec.id))
+    if (!existsSync(state.statePath)) { console.error(`[campaign] --autopoiesis: no campaign state at ${state.statePath} — nothing has run to assess`); return 2 }
+    try { state.state = JSON.parse(readFileSync(state.statePath, 'utf8')) }
+    catch (e) { console.error(`[campaign] --autopoiesis: ${state.statePath} is not JSON (${e.message}) — refusing to assess it`); return 2 }
+    const ledgerRows = (deps.readLedgerRows ?? defaultIo.readLedgerRows)()
+    const gateLinesPath = GATE_LINES_PATH()
+    let gateLines = null
+    if (existsSync(gateLinesPath)) {
+      try { gateLines = summarizeGateLines(readFileSync(gateLinesPath, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l))) }
+      catch (e) { console.error(`[campaign] ${gateLinesPath} unreadable, no gate-line evidence counted: ${e.message}`) }
+    }
+    const a = storedAssessment({ spec, state: state.state, waves: state.waves(), ledgerRows, gateLines })
+    console.log(JSON.stringify(a, null, 2))
+    console.log(autopoiesisLine(a))
+    return 0
+  }
   const identity = checkIdentity(spec)
   if (!identity.ok) { console.error('[campaign] IDENTITY VIOLATION:\n  ' + identity.problems.join('\n  ')); return 2 }
   const state = new CampaignState(join(cyncoHome(), 'campaigns', spec.id)).load()

@@ -1641,3 +1641,145 @@ describe('the rule verdicts at VERDICT', () => {
     expect(defaultIo.datasetsHome()).toBe(process.env.CYNCO_HOME)
   })
 })
+
+// ── Phase 4 ruling 4: the campaign autopoiesis checklist at VERDICT ─────────
+
+describe('the autopoiesis checklist at VERDICT', () => {
+  const io = (over = {}) => ({
+    writeBrief: (p) => p,
+    dispatch: async () => ({ missionId: 'c8-wave1-1' }),
+    waitForDriver: async () => ({ exited: true }),
+    readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', markerSeen: true, identityGuard: { passed: true }, toolStats: {} }),
+    commitsBetween: () => [{ sha: 'h', subject: 'C8 commit 1' }],
+    grade: async () => g(), checkIdentity: okIdentity,
+    salvageOf: () => null,
+    patchRow: () => {},
+    commit: () => ({ sha: 'v1' }),
+    notify: async () => true,
+    economics: () => [],
+    appendLog: () => {},
+    ...inertTriples,
+    ...over,
+  })
+
+  it('records rec.autopoiesis on the wave record and prints the line in the verdict entry', async () => {
+    const state = freshState()
+    let entry = null
+    const rec = await runWave(spec, state, io({ appendLog: (t) => { entry = t } }))
+    // c8 is human-authored and has no approved proposal: gate is unproduced.
+    expect(rec.autopoiesis).toMatchObject({
+      criteria: { hasBoundary: true, boundarySelfProduced: false, internalProduction: true, organizationMaintained: true },
+      isAutopoietic: false,
+    })
+    expect(rec.autopoiesis.missing).toContain('boundarySelfProduced')
+    expect(rec.autopoiesis.missing).toContain('organizationallyClosed')
+    expect(rec.autopoiesis.network.unproduced).toContain('gate')
+    expect(rec.autopoiesis.facts).toMatchObject({ gateAuthor: 'human', waves: 1, rows: 1, commitsLanded: 1 })
+    expect(state.waves().at(-1).autopoiesis).toEqual(rec.autopoiesis)
+    const met = 6 - rec.autopoiesis.missing.length
+    expect(entry).toMatch(new RegExp(`^- Autopoiesis: ${met}/6 — missing ${rec.autopoiesis.missing.join(', ')}$`, 'm'))
+  })
+
+  it('reads the prior waves\' identity and the campaign\'s rows off the ledger the triples export read', async () => {
+    const state = freshState()
+    state.appendWave({ wave: 0, missionId: 'c8-old', gradedAt: 't0', identity: { intact: true } })
+    const rec = await runWave(spec, state, io({
+      exportTriples: () => ({ summary: { denials: {}, quiet: {}, campaigns: {} }, rows: [{ missionId: 'c8-old', identityGuard: { passed: false } }, { missionId: 'other' }] }),
+    }))
+    expect(rec.autopoiesis.facts.identityHistory).toEqual({ waves: 1, intact: 1, rows: 2, passed: 1 })
+    expect(rec.autopoiesis.criteria.organizationMaintained).toBe(false)
+  })
+
+  it('a violated identity reads hasBoundary false', async () => {
+    const rec = await runWave(spec, freshState(), io({ checkIdentity: () => ({ ok: false, problems: ['gate does not exist'] }) }))
+    expect(rec.decision.kind).toBe('fault')
+    expect(rec.autopoiesis.criteria.hasBoundary).toBe(false)
+    expect(rec.autopoiesis.criteria.organizationMaintained).toBe(false)
+  })
+
+  it('an approved proposal on state and the retained seat store feed the network', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'seats-'))
+    writeSeats(home, readSeats(home), { seat: 'gate-author', authority: 0.5, decidedAt: 't', campaign: 'c7' })
+    const state = freshState()
+    state.state.proposals = [{ name: 'invariants/editGapCap', status: 'approved', decidedAt: 't' }]
+    const rec = await runWave(spec, state, io({ seatsHome: () => home }))
+    expect(rec.autopoiesis.facts).toMatchObject({ proposalRaised: true, proposalApproved: true, seatAuthority: 0.5 })
+    expect(rec.autopoiesis.network.productions).toContainEqual(['configuration', 'seat'])
+  })
+
+  it('records whether this wave\'s brief carried the campaign-to-date PACING digest', async () => {
+    const state = freshState()
+    state.state.lastRow = { missionId: 'c8-w0', exitReason: 'marker', durationS: 1, toolStats: {}, invariants: { denialCount: 2, nextCallClassByInvariant: { 'edit-gap': { sourceEdit: 2 } } } }
+    state.state.denialAnalysis = { invariants: [{ invariant: 'edit-gap', complied: 2, denials: 2 }] }
+    let brief = null
+    const rec = await runWave(spec, state, io({ writeBrief: (p, text) => { brief = text; return p } }))
+    expect(brief).toMatch(/; campaign to date edit-gap 2\/2/)
+    expect(rec.autopoiesis.facts.pacingDigest).toBe(true)
+    expect(rec.autopoiesis.criteria.circularProduction).toBe(true)
+    // Control: no prior denials, no digest.
+    const control = await runWave(spec, freshState(), io())
+    expect(control.autopoiesis.facts.pacingDigest).toBe(false)
+  })
+
+  it('an assessment that throws is recorded as assessError and costs the wave nothing', async () => {
+    let entry = null
+    const rec = await runWave(spec, freshState(), io({ assessAutopoiesis: () => { throw new Error('boom') }, appendLog: (t) => { entry = t } }))
+    expect(rec.decision.kind).toBe('next')
+    expect(rec.autopoiesis).toEqual({ assessError: 'boom' })
+    expect(entry).toMatch(/^- Autopoiesis: UNASSESSED — boom$/m)
+  })
+})
+
+describe('main --autopoiesis', () => {
+  const BASE_SHA = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim()
+  const withHome = async (home, fn) => {
+    const prev = process.env.CYNCO_HOME
+    process.env.CYNCO_HOME = home
+    try { return await fn() } finally { if (prev === undefined) delete process.env.CYNCO_HOME; else process.env.CYNCO_HOME = prev }
+  }
+  const capture = async (fn) => {
+    const out = []
+    const orig = console.log
+    console.log = (...a) => { out.push(a.join(' ')) }
+    try { return { code: await fn(), out: out.join('\n') } } finally { console.log = orig }
+  }
+
+  it('prints the assessment over an existing campaign, dispatches nothing, writes nothing, exits 0', async () => {
+    const home = join(mkdtempSync(join(tmpdir(), 'home-')), '.cynco')
+    const heldout = join(home, 'heldout', 'civkings-redesign', 'c8')
+    mkdirSync(heldout, { recursive: true })
+    for (const n of ['gate_c8.py', 'perturb_c8.py']) writeFileSync(join(heldout, n), '# instrument\n')
+    const specPath = join(mkdtempSync(join(tmpdir(), 'spec-')), 'c8.campaign.json')
+    writeFileSync(specPath, JSON.stringify({ ...spec, repo: '.', base: BASE_SHA, gate: join(heldout, 'gate_c8.py'), perturb: join(heldout, 'perturb_c8.py'),
+      suiteBaseline: join(heldout, 'suite-baseline.json'), ideation: { enabled: false } }))
+    const state = new CampaignState(join(home, 'campaigns', 'c8')).load()
+    state.state.waveCount = 1; state.state.lastCommits = [{ sha: 'h', subject: 's' }]
+    state.save()
+    state.appendWave({ wave: 1, missionId: 'c8-wave1-1', gradedAt: 't1', identity: { intact: true, violated: [] }, s4: {} })
+    const before = readFileSync(join(state.dir, 'state.json'), 'utf8')
+    const dispatch = () => { throw new Error('--autopoiesis must not dispatch') }
+    const { code, out } = await withHome(home, () => capture(() => main([specPath, '--autopoiesis'], {
+      readLedgerRows: () => [{ missionId: 'c8-wave1-1', identityGuard: { passed: true } }], dispatch })))
+    expect(code).toBe(0)
+    const json = JSON.parse(out.slice(out.indexOf('{'), out.lastIndexOf('}') + 1))
+    expect(json).toMatchObject({ isAutopoietic: false, criteria: { hasBoundary: true, boundarySelfProduced: false, internalProduction: true, organizationMaintained: true } })
+    expect(json.network.unproduced).toContain('gate')
+    expect(out).toMatch(/^- Autopoiesis: \d\/6 — missing boundarySelfProduced/m)
+    expect(readFileSync(join(state.dir, 'state.json'), 'utf8')).toBe(before)
+    expect(state.waves()).toHaveLength(1)
+    expect(existsSync(join(state.dir, 'runner.lock'))).toBe(false)
+  })
+
+  it('refuses a campaign that has no state, and creates nothing', async () => {
+    const home = join(mkdtempSync(join(tmpdir(), 'home-')), '.cynco')
+    const heldout = join(home, 'heldout', 'civkings-redesign', 'c8')
+    mkdirSync(heldout, { recursive: true })
+    for (const n of ['gate_c8.py', 'perturb_c8.py']) writeFileSync(join(heldout, n), '# instrument\n')
+    const specPath = join(mkdtempSync(join(tmpdir(), 'spec-')), 'c8.campaign.json')
+    writeFileSync(specPath, JSON.stringify({ ...spec, repo: '.', base: BASE_SHA, gate: join(heldout, 'gate_c8.py'), perturb: join(heldout, 'perturb_c8.py'),
+      suiteBaseline: join(heldout, 'suite-baseline.json'), ideation: { enabled: false } }))
+    const code = await withHome(home, () => main([specPath, '--autopoiesis'], { readLedgerRows: () => [] }))
+    expect(code).toBe(2)
+    expect(existsSync(join(home, 'campaigns'))).toBe(false)
+  })
+})

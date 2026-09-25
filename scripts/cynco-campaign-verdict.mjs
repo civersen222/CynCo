@@ -1,6 +1,7 @@
 // scripts/cynco-campaign-verdict.mjs
 import { spawnSync } from 'node:child_process'
 import { gateLineVerdict } from './cynco-signal-validation.mjs'
+import { autopoiesisLine } from './cynco-autopoiesis.mjs'
 
 const today = () => new Date().toISOString().slice(0, 10)
 const h = (s) => (s / 3600).toFixed(2)
@@ -76,7 +77,7 @@ function identityLine(identity) {
   return identity.intact ? '- Identity: intact' : `- Identity: VIOLATED ${identity.violated.join(' ')}`
 }
 
-export function verdictEntry({ spec, wave, row, grade, decision, ideationRecord, economicsLines, denialAnalysis = null, denialScope = 'campaign', capProposal = null, governancePosiwid = null, gateLines = null, identity = null }) {
+export function verdictEntry({ spec, wave, row, grade, decision, ideationRecord, economicsLines, denialAnalysis = null, denialScope = 'campaign', capProposal = null, governancePosiwid = null, gateLines = null, identity = null, autopoiesis = null }) {
   const ts = row.toolStats ?? {}
   const inv = row.invariants
   const rejected = row.invariantsRejected === true
@@ -110,6 +111,10 @@ export function verdictEntry({ spec, wave, row, grade, decision, ideationRecord,
   lines.push(`- Ledger: verified ${grade.verified === null ? 'null (harness fault)' : grade.verified}; mutationSweep ${grade.sweep ? 'recorded (derived)' : 'null'}.`)
   const idLine = identityLine(identity)
   if (idLine) lines.push(idLine)
+  // Phase 4 ruling 4: the campaign checklist (scripts/cynco-autopoiesis.mjs),
+  // beside the identity reading its first criterion is.
+  const apLine = autopoiesisLine(autopoiesis)
+  if (apLine) lines.push(apLine)
   if (denialAnalysis?.invariants) {
     const pct = v => v === null ? '—' : (v * 100).toFixed(1) + '%'
     // The scope is part of the claim: a pooled reading is every run in the
