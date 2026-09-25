@@ -212,3 +212,17 @@ describe('verdictEntry — the gate-lines reading', () => {
     expect(entry(undefined)).not.toMatch(/Gate lines:/)
   })
 })
+
+describe('verdictEntry — the identity line (Phase 4)', () => {
+  const entry = (identity) => verdictEntry({ spec: { id: 'c8' }, wave: 1, row, grade, decision: { kind: 'next', why: 'x' }, ideationRecord: null, economicsLines: [], identity })
+  it('prints intact when every invariant held', () => {
+    expect(entry({ intact: true, violated: [], evidence: {} })).toMatch(/^- Identity: intact$/m)
+  })
+  it('names every violated invariant', () => {
+    expect(entry({ intact: false, violated: ['rule-11', 'marker-recorded'], evidence: {} })).toMatch(/^- Identity: VIOLATED rule-11 marker-recorded$/m)
+  })
+  it('omits the line when no identity reading was taken', () => {
+    expect(entry(null)).not.toMatch(/Identity:/)
+    expect(entry(undefined)).not.toMatch(/Identity:/)
+  })
+})

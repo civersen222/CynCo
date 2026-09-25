@@ -32,6 +32,13 @@ import { exportTriples } from './cynco-triples.mjs'
 import { analyseDenials } from './cynco-signal-validation.mjs'
 import { governanceCounts, governancePosiwid } from './cynco-governance-posiwid.mjs'
 import { loadRoadmap, saveRoadmap, rejectLine, ROADMAP_PATH } from './cynco-roadmap.mjs'
+import { assertIdentityIntact } from './cynco-identity.mjs'
+import { applyProposalDecision } from './cynco-proposals.mjs'
+
+// Phase 4: the operator's decision on a pending proposal lives in the one
+// proposal registry (scripts/cynco-proposals.mjs). Re-exported so every caller
+// that imported it from the runner keeps working against the same function.
+export { applyProposalDecision } from './cynco-proposals.mjs'
 
 const BRIEFS_DIR = 'docs/civkings-redesign-briefs'
 const LOG = `${BRIEFS_DIR}/campaign-log.md`
@@ -207,6 +214,12 @@ export const defaultIo = {
   exportTriples: () => exportTriples(),
   analyseDenials: (summary) => analyseDenials(summary),
   exportGateLines: () => exportGateLines(),
+  // Phase 4: the per-wave identity assertion re-runs the spec loader's own
+  // check (sealed paths exist, base is a commit, nothing brief-visible names
+  // the instrument), and the authority registry reads the retained seats store
+  // under this home. Both are seams so a unit test never touches git or ~/.cynco.
+  checkIdentity: (spec) => checkIdentity(spec),
+  seatsHome: () => cyncoHome(),
 }
 
 /**
@@ -261,7 +274,11 @@ export async function runWave(spec, state, io = defaultIo) {
   if (moved.length) {
     return stopWave(spec, state, io, { wave, base, why: `${moved.join(' and ')} changed since calibration — re-run to recalibrate` })
   }
-  const registry = authorityRegistry(s)
+  // The identity assertion at VERDICT asks whether THIS wave's re-check ran,
+  // not whether some earlier one did: a wave that skipped it is ungraded
+  // against its own instrument, whatever the calibration on record says.
+  s.rule11CheckedWave = wave
+  const registry = authorityRegistry(s, { seatsHome: io.seatsHome?.() ?? null })
   const commander = registry.whoCommands('brief')?.component ?? 'generator'
 
   let ideation = null, ideationMeta = null
@@ -364,7 +381,7 @@ export async function runWave(spec, state, io = defaultIo) {
   // decide() reads waveCount as "waves spent INCLUDING this one" — the state's
   // own counter is only advanced after the record is appended, so hand decide
   // the count this wave makes rather than the one before it.
-  const decision = decide({ grade, state: { ...s, waveCount: wave }, spec, commitsLanded: commits.length, row })
+  let decision = decide({ grade, state: { ...s, waveCount: wave }, spec, commitsLanded: commits.length, row })
   io.patchRow(missionId, { verified: grade.verified, ...(grade.sweep ? { mutationSweep: grade.sweep } : {}), sweepFault: grade.sweepFault ?? null,
     gate: { sha: grade.sha, gateSha256, terminator: grade.gate.terminator, fails: grade.gate.fails.map(f => f.line), passes: grade.gate.passes.length, priorRegressions: grade.gate.priorRegressions, suiteRegressions: grade.suite.regressions, harnessFault: grade.gate.harnessFault ?? grade.suite.harnessFault ?? null },
     posiwid: { divergence: grade.posiwid.divergence, verdict: grade.posiwid.verdict, dominantObserved: grade.posiwid.dominantObserved } })
@@ -429,21 +446,36 @@ export async function runWave(spec, state, io = defaultIo) {
   try { gateLines = (io.exportGateLines ?? defaultIo.exportGateLines)().summary ?? null }
   catch (e) { console.error(`[campaign] gate-lines export skipped: ${e?.message ?? e}`) }
 
+  // Phase 4: is the campaign still the campaign? Asserted AFTER the datasets
+  // are regenerated (they are evidence either way) and BEFORE any proposal is
+  // computed — a campaign whose identity broke this wave has no standing to ask
+  // for more authority or a wider cap. A violation outranks every grade the
+  // way invariantsRejected does in decide(): the wave is a fault, and the
+  // record, the verdict line, the commit message and the notification all say
+  // which invariant broke.
+  const identity = assertIdentityIntact({ spec, state: s, wave, row, io })
+  rec.identity = identity
+  if (!identity.intact) {
+    decision = { kind: 'fault', why: `identity violated: ${identity.violated.join(' ')}` }
+    rec.decision = decision
+    console.error(`[campaign] wave ${wave} IDENTITY VIOLATED: ${identity.violated.map(n => `${n} (${identity.evidence[n].detail})`).join('; ')}`)
+  }
+
   // §E: two proposals must not go pending in the same wave. promotionProposal
   // is computed FIRST; when it is about to be raised, capProposal is skipped
   // entirely (set to null) rather than called — calling it here would see
   // `s.proposals` before the promotion proposal below is pushed onto it, so
   // its own pending check could not see the truth.
-  const proposal = promotionProposal(state.waves(), s.ideationAuthority ?? 0)
+  const proposal = identity.intact ? promotionProposal(state.waves(), s.ideationAuthority ?? 0) : null
   // The gate-author promotion (spec ruling 11) is the THIRD proposal that could
   // go pending in one wave, and §E does not care which of them got there first:
   // it is computed only when the ideation promotion is not about to be raised
   // AND nothing is already pending — including a `gate/<id>` the operator has
   // not decided yet, which is exactly the wrong moment to ask for more authority.
-  const gatePromotion = !proposal && !(s.proposals ?? []).some(p => p.status === 'pending')
+  const gatePromotion = identity.intact && !proposal && !(s.proposals ?? []).some(p => p.status === 'pending')
     ? gateAuthorPromotion(gateLines, s.gateAuthorAuthority ?? 0)
     : null
-  const cap = proposal || gatePromotion ? null : capProposal(denialAnalysis, spec, s)
+  const cap = !identity.intact || proposal || gatePromotion ? null : capProposal(denialAnalysis, spec, s)
 
   const sameFails = Array.isArray(s.lastFails) && grade.gate.fails.map(f => f.id).join() === s.lastFails.join()
   s.consecutiveNoProgress = sameFails && commits.length === 0 ? (s.consecutiveNoProgress ?? 0) + 1 : 0
@@ -456,7 +488,7 @@ export async function runWave(spec, state, io = defaultIo) {
 
   // Verdict (campaign log, economics, local commit, algedonic).
   const ideationRecord = ideation ? { authority: s.ideationAuthority ?? 0, hypotheses: ideation.hypotheses, followed } : null
-  const entry = verdictEntry({ spec, wave, row, grade, decision, ideationRecord, economicsLines: io.economics(), denialAnalysis, denialScope, capProposal: cap, governancePosiwid: governance, gateLines })
+  const entry = verdictEntry({ spec, wave, row, grade, decision, ideationRecord, economicsLines: io.economics(), denialAnalysis, denialScope, capProposal: cap, governancePosiwid: governance, gateLines, identity })
   io.appendLog(entry)
   // Ruling 5: commitVerdict matches these against `git status --porcelain`,
   // which speaks repo-relative forward slashes and nothing else.
@@ -551,39 +583,6 @@ export function inFlightRefusal(state) {
   const f = state.state?.inFlight
   if (!f) return null
   return `[campaign] wave ${f.wave} is in flight since ${f.dispatchedAt} (driver log ${f.driverLog}) — wait for it, then run --adopt-inflight`
-}
-
-/** The operator's decision on a pending proposal, applied to state. Pure over
- *  the state object so the merge-on-save rule (CampaignState.save) and the
- *  CLI branch share one definition of what "approved" does. */
-export function applyProposalDecision(s, name, approve, { decidedBy = 'supervisor' } = {}) {
-  const p = (s.proposals ?? []).find(x => x.name === name && x.status === 'pending')
-  if (!p) return { ok: false, why: `no pending proposal ${name}` }
-  // Only editGapCap and commitGapCap are tunable (revertBan/codeIndexFirst are
-  // identity invariants — capProposal never proposes them, but a hand-edited
-  // or otherwise malformed proposal must be refused here too, before any
-  // state is touched).
-  if (p.name.startsWith('invariants/')) {
-    const cap = p.name.slice('invariants/'.length)
-    if (cap !== 'editGapCap' && cap !== 'commitGapCap') return { ok: false, why: `proposal ${name} names a cap that is not tunable` }
-  }
-  p.status = approve ? 'approved' : 'rejected'; p.decidedAt = new Date().toISOString()
-  // A `gate/<id>` decision is a decision about CODE, not a parameter: the only
-  // thing it changes in state is who said so. The seal itself — the copy into
-  // the sealed tree, the campaign json, the identity check, the campaign-log
-  // entry — is done by the CLI afterwards, because this function must stay
-  // pure over the state object (CampaignState.save calls it on every write).
-  // `decidedBy` is 'supervisor' for every operator verb and 'auto' only when
-  // the gate-author seat sealed at earned authority (spec ruling 2). It is the
-  // one field that says whether a human ever looked at this seal.
-  if (p.name.startsWith('gate/')) { p.decidedBy = decidedBy; return { ok: true, status: p.status } }
-  if (approve && p.name === 'ideation/brief') s.ideationAuthority = Math.min(p.newValue, p.bounds.max)
-  if (approve && p.name === 'gate-author/gate') s.gateAuthorAuthority = Math.min(p.newValue, p.bounds.max)
-  if (approve && p.name.startsWith('invariants/')) {
-    const cap = p.name.slice('invariants/'.length)
-    s.invariantOverrides = { ...(s.invariantOverrides ?? {}), [cap]: Math.min(p.newValue, p.bounds.max) }
-  }
-  return { ok: true, status: p.status }
 }
 
 /**
@@ -836,7 +835,13 @@ export async function main(argv, deps = {}) {
   // queue only when no runner is live.
   if (flag('--approve-proposal') !== -1 || flag('--reject-proposal') !== -1) {
     const approve = flag('--approve-proposal') !== -1; const name = argv[(approve ? flag('--approve-proposal') : flag('--reject-proposal')) + 1]
-    const r = applyProposalDecision(state.state, name, approve)
+    // Phase 4: the whole identity set, not only the spec check above — an
+    // uncalibrated campaign or one whose revert ban is off may not approve
+    // anything. No wave and no row: this is not a verdict, so the wave-bound
+    // halves (this wave's Rule 11 re-check, the row's markerSeen) are not asked.
+    // An approved seat promotion is also written to the retained seats store.
+    const intact = assertIdentityIntact({ spec, state: state.state, io: defaultIo })
+    const r = applyProposalDecision(state.state, name, approve, { identity: intact, seatsHome: cyncoHome() })
     if (!r.ok) { console.error(r.why); return 2 }
     state.save(); console.log(`[campaign] proposal ${name} ${r.status}`); return 0
   }

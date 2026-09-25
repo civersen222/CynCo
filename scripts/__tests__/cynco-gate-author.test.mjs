@@ -18,6 +18,7 @@ import {
 import { CampaignState } from '../cynco-campaign-state.mjs'
 import { summarize } from '../cynco-gate-lines.mjs'
 import { applyProposalDecision } from '../cynco-campaign.mjs'
+import { readSeats, writeSeats } from '../cynco-proposals.mjs'
 import { GATE_AUTHOR_MIN_LINES as SV_MIN_LINES, GATE_AUTHOR_HELD_FLOOR as SV_HELD_FLOOR } from '../cynco-signal-validation.mjs'
 
 // ── the world the fake io stands in for ─────────────────────────────────────
@@ -1592,6 +1593,30 @@ describe('gateAuthorAuthorityAcrossCampaigns', () => {
 
   it('ignores a state file whose authority is not a finite number', () => {
     expect(gateAuthorAuthorityAcrossCampaigns(campaigns({ c8: { gateAuthorAuthority: 'lots' }, c9: { gateAuthorAuthority: null } }))).toBe(0)
+  })
+
+  // Phase 4: the per-seat retained store is the seat's own home. The reading is
+  // the higher of the store and every campaign's state — the store is where an
+  // approval lands now, the campaign states are where every earlier one did.
+  it('reads the retained seats store beside the campaigns dir, and takes the max', () => {
+    const home = mkdtempSync(join(tmpdir(), 'seat-home-'))
+    const dir = join(home, 'campaigns')
+    mkdirSync(join(dir, 'c9'), { recursive: true })
+    writeFileSync(join(dir, 'c9', 'state.json'), JSON.stringify({ id: 'c9', gateAuthorAuthority: 0 }))
+    expect(gateAuthorAuthorityAcrossCampaigns(dir)).toBe(0)
+    writeSeats(home, readSeats(home), { seat: 'gate-author', authority: 0.5, decidedAt: 't', campaign: 'c8' })
+    expect(gateAuthorAuthorityAcrossCampaigns(dir)).toBe(0.5)
+    // An explicit store home wins over the one beside the campaigns dir.
+    expect(gateAuthorAuthorityAcrossCampaigns(dir, { seatsHome: mkdtempSync(join(tmpdir(), 'empty-')) })).toBe(0)
+  })
+
+  it('a campaign value above the store still wins', () => {
+    const home = mkdtempSync(join(tmpdir(), 'seat-home-'))
+    const dir = join(home, 'campaigns')
+    mkdirSync(join(dir, 'c8'), { recursive: true })
+    writeFileSync(join(dir, 'c8', 'state.json'), JSON.stringify({ id: 'c8', gateAuthorAuthority: 0.5 }))
+    writeSeats(home, readSeats(home), { seat: 'gate-author', authority: 0.25, decidedAt: 't', campaign: 'c7' })
+    expect(gateAuthorAuthorityAcrossCampaigns(dir)).toBe(0.5)
   })
 })
 

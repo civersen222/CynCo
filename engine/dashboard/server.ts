@@ -285,8 +285,8 @@ interface CampaignSummary {
   /** This campaign's own `state.gateAuthorAuthority` — not the cross-campaign
    *  seat value. That value is `gateAuthorAuthorityAcrossCampaigns`
    *  (scripts/cynco-gate-author.mjs): the max of every campaign's own
-   *  `gateAuthorAuthority`, computed fresh from every campaign's state.json
-   *  rather than stored on any one of them. */
+   *  `gateAuthorAuthority` and the retained seats store
+   *  (`~/.cynco/retained/seats.json`, Phase 4), computed fresh on every read. */
   gateAuthorAuthority: number
 }
 

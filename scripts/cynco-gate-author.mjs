@@ -34,6 +34,7 @@ import { loadRoadmap, lineFor, nextOpenLine, setLineStatus, saveRoadmap, ROADMAP
 import { CampaignState } from './cynco-campaign-state.mjs'
 import { GATE_AUTHOR_MIN_LINES, GATE_AUTHOR_HELD_FLOOR } from './cynco-signal-validation.mjs'
 import { readCampaigns } from './cynco-triples.mjs'
+import { seatAuthority } from './cynco-proposals.mjs'
 
 // 4 h and 1200 iterations: the authoring mission writes four files and runs a
 // check that costs two gate runs, so it is sized well below a wave's 8 h/2000.
@@ -709,16 +710,22 @@ export function gateProposal({ id, check, missionId, verified }) {
  * earned 0.5 would never reach a single seal.
  *
  * Controller ruling: the gate-author seat is one seat across every campaign, so
- * its authority is the HIGHEST approved anywhere. A per-seat retained-
- * configuration store — one home for what the seat has earned, independent of
- * the campaigns it earned it on — is Phase 4.
+ * its authority is the HIGHEST approved anywhere.
+ *
+ * Phase 4: the per-seat retained-configuration store
+ * (`<home>/retained/seats.json`, scripts/cynco-proposals.mjs) is now where an
+ * approval lands, so the reading is the max of the store and every campaign's
+ * state — the campaign states still hold every approval made before the store
+ * existed. The store's home defaults to the directory the campaigns dir sits
+ * in (`~/.cynco/campaigns` → `~/.cynco`); `seatsHome` overrides it.
  *
  * The cost is stated rather than hidden: a `gate-author/gate` REJECTED in one
- * campaign does not pull down a higher value approved in another. The owner's
- * lever for that is to lower the approved value where it was approved.
+ * campaign does not pull down a higher value approved in another, nor the
+ * store's. The owner's lever for that is to lower the approved value where it
+ * was approved (and in the store).
  */
-export function gateAuthorAuthorityAcrossCampaigns(campaignsDir = join(cyncoHome(), 'campaigns')) {
-  let max = 0
+export function gateAuthorAuthorityAcrossCampaigns(campaignsDir = join(cyncoHome(), 'campaigns'), { seatsHome = dirname(campaignsDir) } = {}) {
+  let max = seatAuthority(seatsHome, 'gate-author')
   for (const { state } of readCampaigns(campaignsDir)) {
     const v = state?.gateAuthorAuthority
     if (typeof v === 'number' && Number.isFinite(v) && v > max) max = v

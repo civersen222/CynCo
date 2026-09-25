@@ -12,6 +12,7 @@ import { join, resolve } from 'node:path'
 import { writeTaskFile } from '../engine/daemon/taskFile.js'
 import { heterarchy } from '../engine/cybernetics-core/src/index.js'
 import { fisherExact } from './cynco-signal-validation.mjs'
+import { seatAuthority } from './cynco-proposals.mjs'
 
 export const IDEATION_TIMEOUT_MS = 1_200_000
 export const IDEATION_MIN_WAVES = 8
@@ -108,16 +109,23 @@ export function measureFollowed(ideation, firstCommitFiles, fails = []) {
 
 // McCulloch: authority is contextual and SCORED. The deterministic generator
 // holds the brief at 1.0; the model occupant starts at 0 and earns it (below).
-export function authorityRegistry(state) {
+//
+// Phase 4: a seat's earned authority is retained per SEAT
+// (`~/.cynco/retained/seats.json`, scripts/cynco-proposals.mjs), not only in
+// the state of the campaign that earned it. Given a `seatsHome`, each seat
+// reads the higher of the campaign's value and the retained one; without one
+// (unit tests, the pre-Phase-4 callers) only the campaign's value is read.
+export function authorityRegistry(state, { seatsHome } = {}) {
+  const seat = (local, name) => seatsHome ? Math.max(local ?? 0, seatAuthority(seatsHome, name)) : (local ?? 0)
   const reg = new heterarchy.CommandRegistry()
   reg.register('generator', 'brief', 1.0)
-  reg.register('ideation', 'brief', state.ideationAuthority ?? 0)
+  reg.register('ideation', 'brief', seat(state.ideationAuthority, 'ideation'))
   // Phase 3: the same shape one context over. The supervisor (the human, in
   // practice the frontier session) holds `gate` at 1.0 and keeps it — spec
   // ruling 2 grants the gate-author at most 0.5, which buys sealing without
   // waiting for an approval and never the binding seat.
   reg.register('supervisor', 'gate', 1.0)
-  reg.register('gate-author', 'gate', state.gateAuthorAuthority ?? 0)
+  reg.register('gate-author', 'gate', seat(state.gateAuthorAuthority, 'gate-author'))
   return reg
 }
 

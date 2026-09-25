@@ -69,7 +69,14 @@ function gateLinesLine(summary) {
   return `- Gate lines: cynco ${cynco.held}/${cynco.n} held (rate ${rate}, ci [${cynco.ci[0].toFixed(2)}, ${cynco.ci[1].toFixed(2)}]) vs human ${human.held}/${human.n}; ${gateLineVerdict(summary)}`
 }
 
-export function verdictEntry({ spec, wave, row, grade, decision, ideationRecord, economicsLines, denialAnalysis = null, denialScope = 'campaign', capProposal = null, governancePosiwid = null, gateLines = null }) {
+// Phase 4: the identity reading (scripts/cynco-identity.mjs). null means no
+// reading was taken and the line is omitted — never printed as "intact".
+function identityLine(identity) {
+  if (!identity) return null
+  return identity.intact ? '- Identity: intact' : `- Identity: VIOLATED ${identity.violated.join(' ')}`
+}
+
+export function verdictEntry({ spec, wave, row, grade, decision, ideationRecord, economicsLines, denialAnalysis = null, denialScope = 'campaign', capProposal = null, governancePosiwid = null, gateLines = null, identity = null }) {
   const ts = row.toolStats ?? {}
   const inv = row.invariants
   const rejected = row.invariantsRejected === true
@@ -101,6 +108,8 @@ export function verdictEntry({ spec, wave, row, grade, decision, ideationRecord,
   }
   if (ideationRecord) lines.push(`- S4 ideation (authority ${ideationRecord.authority}): ${ideationRecord.hypotheses.length} hypothesis/es; followed=${ideationRecord.followed}.`)
   lines.push(`- Ledger: verified ${grade.verified === null ? 'null (harness fault)' : grade.verified}; mutationSweep ${grade.sweep ? 'recorded (derived)' : 'null'}.`)
+  const idLine = identityLine(identity)
+  if (idLine) lines.push(idLine)
   if (denialAnalysis?.invariants) {
     const pct = v => v === null ? '—' : (v * 100).toFixed(1) + '%'
     // The scope is part of the claim: a pooled reading is every run in the

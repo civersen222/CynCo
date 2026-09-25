@@ -5,17 +5,28 @@ import { adopt } from '../cynco-campaign-adopt.mjs'
 import { CampaignState } from '../cynco-campaign-state.mjs'
 import { promotionProposal } from '../cynco-ideation.mjs'
 import { defaultIo as calibrateIo } from '../cynco-campaign-calibrate.mjs'
-import { mkdtempSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, copyFileSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { spawnSync } from 'node:child_process'
 
 // runWave only ever sha256s spec.gate / spec.perturb (the Rule-11 re-check), so
-// two real files stand in for the sealed instruments here and the shas below are
-// computed exactly the way the runner computes them.
-const GATE = fileURLToPath(new URL('../cynco-campaign-grade.mjs', import.meta.url))
-const PERTURB = fileURLToPath(new URL('../cynco-campaign-spec.mjs', import.meta.url))
-const POSITIVE = fileURLToPath(new URL('../cynco-gate-lint.mjs', import.meta.url))
+// three real files stand in for the sealed instruments here and the shas below
+// are computed exactly the way the runner computes them. Phase 4: the identity
+// assertion at VERDICT refuses an instrument that is not under
+// `.cynco/heldout/`, so the stand-ins are copied into a temp heldout tree
+// rather than read from scripts/ where no sealed gate would ever live.
+const HELDOUT = join(mkdtempSync(join(tmpdir(), 'inst-')), '.cynco', 'heldout', 'c8')
+mkdirSync(HELDOUT, { recursive: true })
+const standIn = (src, name) => { const p = join(HELDOUT, name); copyFileSync(fileURLToPath(new URL(src, import.meta.url)), p); return p }
+const GATE = standIn('../cynco-campaign-grade.mjs', 'gate_c8.py')
+const PERTURB = standIn('../cynco-campaign-spec.mjs', 'perturb_c8.py')
+const POSITIVE = standIn('../cynco-gate-lint.mjs', 'positive_c8.py')
+// The per-wave identity check calls checkIdentity, which asks git whether
+// spec.base is a commit in spec.repo — 'C:/repo' is not a repo, so every io
+// that reaches VERDICT hands over a passing check. The failing case is below.
+const okIdentity = () => ({ ok: true, problems: [] })
 
 const spec = { id: 'c8', title: 't', repo: 'C:/repo', base: '1d03308', marker: 'stage c8 complete', keepGreen: 'python -m pytest a.py -q',
   gate: GATE, perturb: PERTURB,
@@ -88,9 +99,9 @@ describe('runWave', () => {
       writeBrief: (path, text, sidecar) => { seen.brief = text; seen.sidecar = sidecar; return path },
       dispatch: async ({ briefFile, invariants }) => { seen.invariants = invariants; return { missionId: 'c8-wave1-1', driverLog: 'C:/tmp/d.log' } },
       waitForDriver: async () => ({ exited: true }),
-      readRow: (missionId) => ({ missionId, exitReason: 'timeout', durationS: 100, commitRange: { base: '1d03308', head: 'h' }, outcome: 'landed', toolStats: { total: 10, commits: 1, byClass: { sourceEdit: 2, fileWrite: 0, inspect: 8 }, byName: {} } }),
+      readRow: (missionId) => ({ missionId, exitReason: 'timeout', durationS: 100, commitRange: { base: '1d03308', head: 'h' }, outcome: 'landed', markerSeen: true, toolStats: { total: 10, commits: 1, byClass: { sourceEdit: 2, fileWrite: 0, inspect: 8 }, byName: {} } }),
       commitsBetween: () => [{ sha: 'h', subject: 'C8 commit 1' }],
-      grade: async () => g(),
+      grade: async () => g(), checkIdentity: okIdentity,
       salvageOf: () => null,
       ideate: async () => ({ ideation: null }),
       patchRow: (missionId, fields) => { seen.patched = fields },
@@ -122,9 +133,9 @@ describe('runWave', () => {
       writeBrief: (p) => p,
       dispatch: async () => ({ missionId: 'c8-wave1-1' }),
       waitForDriver: async () => ({ exited: true }),
-      readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', toolStats: {} }),
+      readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', markerSeen: false, toolStats: {} }),
       commitsBetween: () => [],
-      grade: async () => g(),
+      grade: async () => g(), checkIdentity: okIdentity,
       salvageOf: () => null,
       patchRow: () => {},
       commit: (args) => { files = args.files; return { sha: 'v1' } },
@@ -206,10 +217,10 @@ describe('runWave', () => {
     writeBrief: (p) => p,
     dispatch: async () => ({ missionId: 'c8-wave1-1' }),
     waitForDriver: async () => ({ exited: true }),
-    readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', toolStats: {} }),
+    readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', markerSeen: false, toolStats: {} }),
     commitsBetween: () => [],
     firstCommitFiles: () => ['gilded/ui/atlas_view.py'],
-    grade: async () => g(),
+    grade: async () => g(), checkIdentity: okIdentity,
     salvageOf: () => null,
     patchRow: () => {},
     commit: () => ({ sha: 'v1' }),
@@ -257,9 +268,9 @@ describe('runWave', () => {
       writeBrief: (p, text) => { brief = text; return p },
       dispatch: async () => ({ missionId: 'c8-wave2-1' }),
       waitForDriver: async () => ({ exited: true }),
-      readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', toolStats: {} }),
+      readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', markerSeen: false, toolStats: {} }),
       commitsBetween: () => [],
-      grade: async () => g(),
+      grade: async () => g(), checkIdentity: okIdentity,
       salvageOf: () => null,
       patchRow: () => {},
       commit: () => ({ sha: 'v2' }),
@@ -280,9 +291,9 @@ describe('runWave', () => {
       writeBrief: (p) => p,
       dispatch: async () => ({ missionId: 'c8-wave1-1' }),
       waitForDriver: async () => ({ exited: true }),
-      readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', toolStats: {} }),
+      readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', markerSeen: false, toolStats: {} }),
       commitsBetween: () => [{ sha: 'h', subject: 'c' }],
-      grade: async () => g(),
+      grade: async () => g(), checkIdentity: okIdentity,
       salvageOf: () => null,
       patchRow: () => {},
       commit: () => ({ sha: 'v1' }),
@@ -305,7 +316,7 @@ describe('runWave', () => {
       writeBrief: (p) => p,
       dispatch: async () => ({ missionId: 'c8-wave1-1' }),
       waitForDriver: async () => ({ exited: true }),
-      readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', toolStats: {} }),
+      readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', markerSeen: false, toolStats: {} }),
       grade: async () => { throw new Error('gate exploded') },
       salvageOf: () => null,
       notify: async (t) => { seen.notified = t; return true },
@@ -382,9 +393,9 @@ describe('runWave with an adopted row', () => {
       waitForDriver: async () => { throw new Error('waitForDriver must not run for an adopted row') },
       engineLive: async () => false,
       ideate: async () => { seen.ideated++; return { ideation: null } },
-      readRow: (missionId) => ({ missionId, briefFile: 'docs/civkings-redesign-briefs/c8-wave1.txt', exitReason: 'timeout', durationS: 28824, commitRange: { base: '1d03308', head: '1bc0f8c' }, outcome: 'landed', toolStats: {} }),
+      readRow: (missionId) => ({ missionId, briefFile: 'docs/civkings-redesign-briefs/c8-wave1.txt', exitReason: 'timeout', durationS: 28824, commitRange: { base: '1d03308', head: '1bc0f8c' }, outcome: 'landed', markerSeen: false, toolStats: {} }),
       commitsBetween: () => [{ sha: '1bc0f8c', subject: 'C8 wave 1' }],
-      grade: async () => g(),
+      grade: async () => g(), checkIdentity: okIdentity,
       salvageOf: () => null,
       patchRow: (missionId, fields) => { seen.patched = { missionId, fields } },
       commit: (args) => { seen.files = args.files; return { sha: 'v1' } },
@@ -585,9 +596,9 @@ describe('runWave — the instrument must not move under the campaign', () => {
       writeBrief: (p) => p,
       dispatch: async () => ({ missionId: 'c8-wave1-1' }),
       waitForDriver: async () => ({ exited: true }),
-      readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', toolStats: {} }),
+      readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', markerSeen: false, toolStats: {} }),
       commitsBetween: () => [],
-      grade: async () => g(),
+      grade: async () => g(), checkIdentity: okIdentity,
       salvageOf: () => null,
       patchRow: () => {},
       commit: () => ({ sha: 'v1' }),
@@ -607,9 +618,9 @@ describe('runWave — in-flight state', () => {
     writeBrief: (p) => p,
     dispatch: async () => ({ missionId: 'c8-wave1-1' }),
     waitForDriver: async () => ({ exited: true }),
-    readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', toolStats: {} }),
+    readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', markerSeen: false, toolStats: {} }),
     commitsBetween: () => [],
-    grade: async () => g(),
+    grade: async () => g(), checkIdentity: okIdentity,
     salvageOf: () => null,
     patchRow: () => {},
     commit: () => ({ sha: 'v1' }),
@@ -840,9 +851,9 @@ describe('runWave — the Level 4 spine at VERDICT', () => {
     writeBrief: (p) => p,
     dispatch: async () => ({ missionId: 'c8-wave1-1' }),
     waitForDriver: async () => ({ exited: true }),
-    readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', toolStats: {} }),
+    readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', markerSeen: false, toolStats: {} }),
     commitsBetween: () => [],
-    grade: async () => g(),
+    grade: async () => g(), checkIdentity: okIdentity,
     salvageOf: () => null,
     patchRow: () => {},
     commit: () => ({ sha: 'v1' }),
@@ -931,9 +942,9 @@ describe('runWave — the denial analysis reads THIS campaign, and says so', () 
     writeBrief: (p) => p,
     dispatch: async () => ({ missionId: 'c8-wave1-1' }),
     waitForDriver: async () => ({ exited: true }),
-    readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', toolStats: {} }),
+    readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', markerSeen: false, toolStats: {} }),
     commitsBetween: () => [],
-    grade: async () => g(),
+    grade: async () => g(), checkIdentity: okIdentity,
     salvageOf: () => null,
     patchRow: () => {},
     commit: () => ({ sha: 'v1' }),
@@ -986,12 +997,12 @@ describe('runWave — the wave is on the record before the verdict reads the rec
     writeBrief: (p) => p,
     dispatch: async () => ({ missionId: 'c8-wave1-1' }),
     waitForDriver: async () => ({ exited: true }),
-    readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', toolStats: {} }),
+    readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', markerSeen: false, toolStats: {} }),
     commitsBetween: () => [],
     firstCommitFiles: () => ['gilded/ui/atlas_view.py'],
     engineLive: async () => false,
     ideate: async () => ({ ideation: { hypotheses: [{ gateId: 'C8.1a', cause: 'c', firstEdit: 'gilded/ui/atlas_view.py' }], order: ['C8.1a'], trap: null }, taskPath: 't.json', durationMs: 5 }),
-    grade: async () => g(),
+    grade: async () => g(), checkIdentity: okIdentity,
     salvageOf: () => null,
     patchRow: () => {},
     commit: () => ({ sha: 'v1' }),
@@ -1106,9 +1117,9 @@ describe('the wave record names who wrote the gate', () => {
     writeBrief: (p) => p,
     dispatch: async () => ({ missionId: 'c8-wave1-1' }),
     waitForDriver: async () => ({ exited: true }),
-    readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', toolStats: {} }),
+    readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', markerSeen: false, toolStats: {} }),
     commitsBetween: () => [],
-    grade: async () => g(),
+    grade: async () => g(), checkIdentity: okIdentity,
     salvageOf: () => null,
     patchRow: () => {},
     commit: () => ({ sha: 'v1' }),
@@ -1138,9 +1149,9 @@ describe('the gate-author promotion at VERDICT', () => {
     writeBrief: (p) => p,
     dispatch: async () => ({ missionId: 'c8-wave1-1' }),
     waitForDriver: async () => ({ exited: true }),
-    readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', toolStats: {} }),
+    readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', markerSeen: false, toolStats: {} }),
     commitsBetween: () => [],
-    grade: async () => g(),
+    grade: async () => g(), checkIdentity: okIdentity,
     salvageOf: () => null,
     patchRow: () => {},
     commit: () => ({ sha: 'v1' }),
@@ -1422,5 +1433,117 @@ describe('main routes the authoring verbs before it loads a campaign spec', () =
     } finally {
       if (prev === undefined) delete process.env.CYNCO_HOME; else process.env.CYNCO_HOME = prev
     }
+  })
+})
+
+// ── Phase 4: identity is asserted at every verdict and before every approval ──
+
+describe('the identity assertion at VERDICT', () => {
+  const io = (over = {}) => ({
+    writeBrief: (p) => p,
+    dispatch: async () => ({ missionId: 'c8-wave1-1' }),
+    waitForDriver: async () => ({ exited: true }),
+    readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', markerSeen: true, toolStats: {} }),
+    commitsBetween: () => [],
+    grade: async () => g(),
+    checkIdentity: okIdentity,
+    salvageOf: () => null,
+    patchRow: () => {},
+    commit: () => ({ sha: 'v1' }),
+    notify: async () => true,
+    economics: () => [],
+    appendLog: () => {},
+    ...inertTriples,
+    // Evidence that clears the gate-author bar, so a proposal WOULD be raised
+    // on an intact wave — the violated case must be seen to suppress it.
+    exportGateLines: () => ({ rows: [], summary: gateLineSummary(30, 30, 17, 17) }),
+    ...over,
+  })
+
+  it('records the identity reading on the wave record and marks the Rule 11 re-check for this wave', async () => {
+    const state = freshState()
+    let entry = null
+    const rec = await runWave(spec, state, io({ appendLog: (t) => { entry = t } }))
+    expect(state.state.rule11CheckedWave).toBe(1)
+    expect(rec.identity).toMatchObject({ intact: true, violated: [] })
+    expect(Object.keys(rec.identity.evidence)).toEqual(['gate-sealed', 'rule-11', 'revert-refused', 'marker-recorded'])
+    expect(state.waves().at(-1).identity.intact).toBe(true)
+    expect(entry).toMatch(/^- Identity: intact$/m)
+    expect(rec.decision.kind).toBe('next')
+    expect(state.state.proposals.map(p => p.name)).toEqual(['gate-author/gate'])
+  })
+
+  it('a violated identity faults the wave, names what broke, and raises no proposal', async () => {
+    const state = freshState()
+    let entry = null, notified = []
+    const rec = await runWave(spec, state, io({
+      checkIdentity: () => ({ ok: false, problems: ['gate does not exist'] }),
+      appendLog: (t) => { entry = t },
+      notify: async (m) => { notified.push(m); return true },
+    }))
+    expect(rec.decision).toEqual({ kind: 'fault', why: 'identity violated: gate-sealed' })
+    expect(rec.identity).toMatchObject({ intact: false, violated: ['gate-sealed'] })
+    expect(state.state.proposals).toEqual([])
+    expect(notified.some(m => /PROPOSAL/.test(m))).toBe(false)
+    expect(notified.some(m => /FAULT — identity violated: gate-sealed/.test(m))).toBe(true)
+    expect(entry).toMatch(/^- Identity: VIOLATED gate-sealed$/m)
+    expect(entry).toMatch(/^Verdict: \*\*STOP \(fault\)\*\* — identity violated: gate-sealed/m)
+    // The record on disk carries the fault, not the decision made before the check.
+    expect(state.waves().at(-1).decision.kind).toBe('fault')
+    expect(state.state.waveCount).toBe(1)
+  })
+
+  it('a ledger row that does not record markerSeen violates marker-recorded', async () => {
+    const state = freshState()
+    const rec = await runWave(spec, state, io({ readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', toolStats: {} }) }))
+    expect(rec.decision).toEqual({ kind: 'fault', why: 'identity violated: marker-recorded' })
+  })
+
+  it('a spec that turns the revert ban off faults the wave', async () => {
+    const state = freshState()
+    const rec = await runWave({ ...spec, invariants: { ...spec.invariants, revertBan: false } }, state, io())
+    expect(rec.identity.violated).toEqual(['revert-refused'])
+    expect(rec.decision.kind).toBe('fault')
+  })
+})
+
+describe('main asserts identity before it applies an operator decision', () => {
+  const BASE_SHA = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim()
+  const setup = ({ calibrated = true } = {}) => {
+    const home = join(mkdtempSync(join(tmpdir(), 'home-')), '.cynco')
+    const heldout = join(home, 'heldout', 'civkings-redesign', 'c8')
+    mkdirSync(heldout, { recursive: true })
+    for (const n of ['gate_c8.py', 'perturb_c8.py']) writeFileSync(join(heldout, n), '# instrument\n')
+    const specPath = join(mkdtempSync(join(tmpdir(), 'spec-')), 'c8.campaign.json')
+    writeFileSync(specPath, JSON.stringify({ ...spec, repo: '.', base: BASE_SHA, gate: join(heldout, 'gate_c8.py'), perturb: join(heldout, 'perturb_c8.py'),
+      suiteBaseline: join(heldout, 'suite-baseline.json'), ideation: { enabled: false } }))
+    const state = new CampaignState(join(home, 'campaigns', 'c8')).load()
+    if (calibrated) state.state.calibration = { gateSha256: 'g', perturbSha256: 'p', baseFails: [], basePasses: [] }
+    state.state.proposals = [{ type: 'Parameter', name: 'ideation/brief', proposedAt: 't1', status: 'pending', newValue: 0.5, bounds: { min: 0, max: 0.5 } }]
+    state.save()
+    return { home, specPath, stateDir: state.dir }
+  }
+  const withHome = async (home, fn) => {
+    const prev = process.env.CYNCO_HOME
+    process.env.CYNCO_HOME = home
+    try { return await fn() } finally { if (prev === undefined) delete process.env.CYNCO_HOME; else process.env.CYNCO_HOME = prev }
+  }
+
+  it('--approve-proposal ideation/brief approves and writes the seat into the retained store', async () => {
+    const { home, specPath, stateDir } = setup()
+    expect(await withHome(home, () => main([specPath, '--approve-proposal', 'ideation/brief']))).toBe(0)
+    const disk = JSON.parse(readFileSync(join(stateDir, 'state.json'), 'utf8'))
+    expect(disk.proposals[0].status).toBe('approved')
+    expect(disk.ideationAuthority).toBe(0.5)
+    const seats = JSON.parse(readFileSync(join(home, 'retained', 'seats.json'), 'utf8'))
+    expect(seats).toMatchObject({ schema: 1, version: 1, seats: { ideation: { authority: 0.5, campaign: 'c8' } } })
+  })
+
+  it('an uncalibrated campaign (rule-11 not intact) cannot approve; the proposal stays pending', async () => {
+    const { home, specPath, stateDir } = setup({ calibrated: false })
+    expect(await withHome(home, () => main([specPath, '--approve-proposal', 'ideation/brief']))).toBe(2)
+    const disk = JSON.parse(readFileSync(join(stateDir, 'state.json'), 'utf8'))
+    expect(disk.proposals[0].status).toBe('pending')
+    expect(existsSync(join(home, 'retained', 'seats.json'))).toBe(false)
   })
 })

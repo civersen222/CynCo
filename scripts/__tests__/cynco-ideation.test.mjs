@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { parseIdeation, measureFollowed, authorityRegistry, promotionProposal, ideationPrompt, runIdeation, capProposal, effectiveInvariants, CAP_PROPOSAL_FACTOR } from '../cynco-ideation.mjs'
+import { readSeats, writeSeats } from '../cynco-proposals.mjs'
 
 describe('ideation', () => {
   it('parses the daemon outcome contract into hypotheses and a trap', () => {
@@ -50,6 +51,23 @@ describe('ideation', () => {
     expect(authorityRegistry({ gateAuthorAuthority: 0 }).whoCommands('gate')?.component).toBe('supervisor')
     expect(authorityRegistry({ gateAuthorAuthority: 0.5 }).whoCommands('gate')?.component).toBe('supervisor')
     expect(authorityRegistry({}).whoCommands('gate')?.component).toBe('supervisor')
+  })
+  // Phase 4: a seat's authority lives in the retained store, not only in the
+  // state of the campaign that earned it. Given a home, the registry reads the
+  // higher of the two; without one, only the state (the pre-Phase-4 reading).
+  it('reads each seat as the max of the campaign state and the retained store', () => {
+    const home = mkdtempSync(join(tmpdir(), 'seats-'))
+    let seats = readSeats(home)
+    seats = writeSeats(home, seats, { seat: 'ideation', authority: 0.5, decidedAt: 't1', campaign: 'c8' })
+    writeSeats(home, seats, { seat: 'gate-author', authority: 0.25, decidedAt: 't2', campaign: 'c8' })
+    const score = (reg, ctx, who) => reg.potentialCommanders(ctx).find(c => c.component === who)?.score
+    const fromStore = authorityRegistry({ ideationAuthority: 0, gateAuthorAuthority: 0 }, { seatsHome: home })
+    expect(score(fromStore, 'brief', 'ideation')).toBe(0.5)
+    expect(score(fromStore, 'gate', 'gate-author')).toBe(0.25)
+    const stateHigher = authorityRegistry({ ideationAuthority: 0, gateAuthorAuthority: 0.5 }, { seatsHome: home })
+    expect(score(stateHigher, 'gate', 'gate-author')).toBe(0.5)
+    expect(score(authorityRegistry({ ideationAuthority: 0 }), 'brief', 'ideation')).toBe(0)
+    expect(fromStore.whoCommands('brief')?.component).toBe('generator')
   })
   it('keeps the two contexts separate — a gate authority never commands the brief', () => {
     const reg = authorityRegistry({ ideationAuthority: 0, gateAuthorAuthority: 0.5 })
