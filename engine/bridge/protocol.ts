@@ -319,7 +319,7 @@ export type GovernanceStatusEvent = {
      *  `session-feedback` by vsm/retainedConfigStore.ts. Memory only — nothing
      *  applies it. */
     retained?: Record<string, unknown>
-    /** The stored table version it matches; null = nothing stored yet. */
+    /** The last stored version of this instance's table (the live `retained` may have moved since); null = nothing stored yet. */
     retainedVersion?: number | null
   } | null
   /** POSIWID, live (vsm/constraintChecks.ts checkToolClassAlignment): the

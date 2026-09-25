@@ -318,9 +318,10 @@ decisions still recorded here).
   // wins: `trace` is the last 20 adaptation steps (`traceLength` the total),
   // `margin` the viability margin. `retained` is the instance's retained-
   // configuration table (violation pattern -> configuration that restored
-  // viability) and `retainedVersion` the version of it stored under
-  // ~/.cynco/retained/session-feedback.json (engine/vsm/retainedConfigStore.ts;
-  // the version moves only when the table changes). `retainedVersion` null =
+  // viability) and `retainedVersion` the last stored version of this
+  // instance's table, in ~/.cynco/retained/session-feedback.json (the live
+  // `retained` may have moved since; engine/vsm/retainedConfigStore.ts — the
+  // version moves only when the table changes). `retainedVersion` null =
   // nothing stored yet; both null on a row from an engine that predates the
   // store. Memory only: nothing applies a retained configuration yet.
   "ultrastable": { "traceLength": 0, "trace": [], "margin": 0.4,
