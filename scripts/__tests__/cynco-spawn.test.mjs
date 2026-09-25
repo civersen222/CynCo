@@ -90,7 +90,7 @@ describe('runSync: a timeout is an elapsed measurement', () => {
     const grade = readFileSync(new URL('../cynco-campaign-grade.mjs', import.meta.url), 'utf8')
     expect(grade.match(/retryImpossibleTimeout: true/g) ?? []).toHaveLength(2)
     expect(/\[spec\.gate\][\s\S]{0,200}retryImpossibleTimeout: true/.test(grade)).toBe(true)
-    expect(/\[SUITE_GATE\][\s\S]{0,300}retryImpossibleTimeout: true/.test(grade)).toBe(true)
+    expect(/\[SUITE_GATE\(\)\][\s\S]{0,300}retryImpossibleTimeout: true/.test(grade)).toBe(true)
     expect(/cynco-mutation-sweep[\s\S]{0,600}retryImpossibleTimeout/.test(grade)).toBe(false)
   })
 

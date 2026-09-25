@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { readFileSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { gradeWave, sweepTestsFor, defaultIo } from '../cynco-campaign-grade.mjs'
+import { gradeWave, sweepTestsFor, defaultIo, SUITE_GATE } from '../cynco-campaign-grade.mjs'
 import { decide } from '../cynco-campaign.mjs'
 
 const baseLog = readFileSync(new URL('./fixtures/gate_c8_base.log', import.meta.url), 'utf8')
@@ -147,6 +147,28 @@ describe('gradeWave', () => {
   // F147: a fix-only wave (no test file in the diff) must hand the sweep the
   // KEEP-GREEN test files, or the sweep refuses (exit 2) and the row goes
   // unlabeled even though the sealed gate and suite gate both PASSed.
+  // A campaign under a temp CYNCO_HOME must grade its suite with that home's
+  // held-out script, never the operator's real ~/.cynco (home-isolation leak).
+  it('runs the suite gate from under CYNCO_HOME, read at call time', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'suite-home-'))
+    const prev = process.env.CYNCO_HOME
+    process.env.CYNCO_HOME = home
+    try {
+      const expected = join(home, 'heldout', 'common', 'g_suite_no_regression.py')
+      expect(SUITE_GATE()).toBe(expected)
+      const io = fakeIo([
+        [/gate_c8\.py/, { status: 0, stdout: 'GATE: PASS\n' }],
+        [/g_suite_no_regression\.py/, { status: 0, stdout: 'g_suite: PASS' }],
+        [/cynco-mutation-sweep\.py/, { status: 0, stdout: '{"command":"x","kind":"derived","killed":1,"total":1,"survived":[]}' }],
+      ])
+      await gradeWave(spec, row, io)
+      expect(io.calls[1].args).toEqual([expected])
+    } finally {
+      if (prev === undefined) delete process.env.CYNCO_HOME; else process.env.CYNCO_HOME = prev
+    }
+    expect(SUITE_GATE()).not.toBe(join(home, 'heldout', 'common', 'g_suite_no_regression.py'))
+  })
+
   it('hands the sweep --tests <keepGreen .py files> when the diff delivered no test file', async () => {
     const io = fakeIo([
       [/gate_c8\.py/, { status: 0, stdout: 'GATE: PASS\n' }],

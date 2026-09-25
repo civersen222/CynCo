@@ -1,7 +1,7 @@
 // scripts/cynco-campaign-grade.mjs
 import { spawnSync } from 'node:child_process'
-import { resolve } from 'node:path'
-import { homedir } from 'node:os'
+import { join, resolve } from 'node:path'
+import { cyncoHome } from '../engine/paths.js'
 import { parseGateOutput } from './cynco-gate-parse.mjs'
 import { runSync, faultSummary } from './cynco-spawn.mjs'
 import { constraints } from '../engine/cybernetics-core/src/index.js'
@@ -9,7 +9,13 @@ import { constraints } from '../engine/cybernetics-core/src/index.js'
 export const GATE_TIMEOUT_MS = 7_200_000
 export const SUITE_TIMEOUT_MS = 3_600_000
 export const SWEEP_TIMEOUT_MS = 3_600_000
-const SUITE_GATE = resolve(homedir(), '.cynco', 'heldout', 'common', 'g_suite_no_regression.py')
+/**
+ * `<cyncoHome>/heldout/common/g_suite_no_regression.py`. A function for the
+ * reason `GATE_LINES_PATH` is one: a constant built from `homedir()` at import
+ * ignored `CYNCO_HOME`, so a campaign run under a temp home graded its suite
+ * against the operator's real held-out tree — a home-isolation leak.
+ */
+export const SUITE_GATE = (home = cyncoHome()) => join(home, 'heldout', 'common', 'g_suite_no_regression.py')
 
 export const defaultIo = {
   // F155: the grader has exactly the same exposure as calibrate — its first
@@ -71,7 +77,7 @@ function runGate(spec, io) {
 function runSuiteGate(spec, io) {
   // Review I2: a read, like the gate — retried once on an impossible timeout,
   // and a spawn that did not run is a fault, not a suite reading.
-  const r = io.run('python', [SUITE_GATE], { cwd: spec.repo, env: { CHK_SUITE_BASELINE: spec.suiteBaseline, CYNCO_GATE_REPO: spec.repo }, timeoutMs: SUITE_TIMEOUT_MS, retryImpossibleTimeout: true })
+  const r = io.run('python', [SUITE_GATE()], { cwd: spec.repo, env: { CHK_SUITE_BASELINE: spec.suiteBaseline, CYNCO_GATE_REPO: spec.repo }, timeoutMs: SUITE_TIMEOUT_MS, retryImpossibleTimeout: true })
   const out = (r.stdout ?? '') + (r.stderr ?? '')
   const pick = (label) => { const m = new RegExp(`${label} \\d+ [^\\n]*\\n((?:\\s+[-+] \\S+\\n?)+)`).exec(out); return m ? m[1].split('\n').map(s => s.trim().replace(/^[-+] /, '')).filter(Boolean) : [] }
   let harnessFault = null
