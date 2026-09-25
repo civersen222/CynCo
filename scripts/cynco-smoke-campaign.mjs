@@ -6,14 +6,21 @@
 // spec path. It does NOT archive the BASE: the runner does that at CALIBRATE.
 //
 //   CYNCO_HOME=C:/tmp/cynco-home-s1/.cynco \
-//     bun scripts/cynco-smoke-campaign.mjs --write --repo C:/tmp/phase2-smoke [--home <dir>]
+//     bun scripts/cynco-smoke-campaign.mjs --write --repo C:/tmp/phase2-smoke [--home <dir>] \
+//       [--common-from ~/.cynco/heldout/common]
+//
+// The wave grader runs `<CYNCO_HOME>/heldout/common/g_suite_no_regression.py`
+// (SUITE_GATE in cynco-campaign-grade.mjs). A fresh temp home has none, so the
+// grade would fault. `--common-from <dir>` copies that one script from `<dir>`
+// (normally the real ~/.cynco/heldout/common — READ only) into the temp home;
+// without it, stage the copy by hand before the run.
 //
 // The home MUST end in `/.cynco`: checkIdentity seals instruments by the path
 // shape `/.cynco/heldout/`, and `heldoutDirFor` puts them at
 // `<home>/heldout/...`. So the caller passes `C:/tmp/cynco-home-s1/.cynco` as
 // CYNCO_HOME (not `C:/tmp/cynco-home-s1`), and the runner, the engine and this
 // generator then all agree on one directory.
-import { copyFileSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -105,7 +112,9 @@ function headOf(repo) {
  * `base` defaults to the repo's HEAD. Writes ONLY under `home`, and refuses the
  * real `~/.cynco` — the smoke run must never share state with a live campaign.
  */
-export function writeSmokeCampaign({ home, repo, base } = {}) {
+export const SUITE_GATE_FILE = 'g_suite_no_regression.py'
+
+export function writeSmokeCampaign({ home, repo, base, commonFrom } = {}) {
   if (!home) throw new Error('writeSmokeCampaign: no home — pass --home or set CYNCO_HOME')
   if (!repo) throw new Error('writeSmokeCampaign: no repo — pass --repo')
   const h = norm(resolve(home))
@@ -122,6 +131,13 @@ export function writeSmokeCampaign({ home, repo, base } = {}) {
   mkdirSync(heldout, { recursive: true })
   for (const f of [`gate_${SMOKE_ID}.py`, `perturb_${SMOKE_ID}.py`, `positive_${SMOKE_ID}.py`]) copyFileSync(`${FIXTURES}${f}`, `${heldout}/${f}`)
 
+  if (commonFrom) {
+    const src = `${norm(resolve(commonFrom))}/${SUITE_GATE_FILE}`
+    if (!existsSync(src)) throw new Error(`--common-from: ${src} does not exist — the wave grader needs the suite gate`)
+    mkdirSync(`${h}/heldout/common`, { recursive: true })
+    copyFileSync(src, `${h}/heldout/common/${SUITE_GATE_FILE}`)
+  }
+
   const campaignDir = `${h}/campaigns/${SMOKE_ID}`
   rmSync(campaignDir, { recursive: true, force: true })
   mkdirSync(campaignDir, { recursive: true })
@@ -133,10 +149,11 @@ export function writeSmokeCampaign({ home, repo, base } = {}) {
 }
 
 function parseArgs(argv) {
-  const out = { write: false, repo: null, home: process.env.CYNCO_HOME || null }
+  const out = { write: false, repo: null, home: process.env.CYNCO_HOME || null, commonFrom: null }
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
     if (a === '--write') out.write = true
+    else if (a === '--common-from') out.commonFrom = argv[++i]
     else if (a === '--repo') out.repo = argv[++i]
     else if (a === '--home') out.home = argv[++i]
     else throw new Error(`unknown argument ${a}`)
@@ -148,8 +165,8 @@ const isMain = import.meta.main ?? (process.argv[1] ? resolve(process.argv[1]) =
 if (isMain) {
   try {
     const args = parseArgs(process.argv.slice(2))
-    if (!args.write) throw new Error('usage: bun scripts/cynco-smoke-campaign.mjs --write --repo <path> [--home <dir ending in /.cynco>]')
-    console.log(writeSmokeCampaign({ home: args.home, repo: args.repo }))
+    if (!args.write) throw new Error('usage: bun scripts/cynco-smoke-campaign.mjs --write --repo <path> [--home <dir ending in /.cynco>] [--common-from <dir holding g_suite_no_regression.py>]')
+    console.log(writeSmokeCampaign({ home: args.home, repo: args.repo, commonFrom: args.commonFrom }))
   } catch (e) {
     console.error(`[smoke] ${e.message}`)
     process.exit(1)

@@ -127,3 +127,27 @@ describe.skipIf(!HAS_SMOKE)(`smoke campaign s1 (needs ${SMOKE_REPO})`, () => {
     expect(existsSync(r.stdout.trim())).toBe(true)
   }, 60_000)
 })
+
+// The wave grader reads the suite gate from <CYNCO_HOME>/heldout/common; a
+// fresh temp home has none. `--common-from` stages that one file. No smoke
+// repo needed: an explicit base skips the rev-parse.
+describe('smoke campaign --common-from', () => {
+  const base = 'a'.repeat(40)
+  it('copies g_suite_no_regression.py into <home>/heldout/common, and only that file', () => {
+    const src = mkdtempSync(join(tmpdir(), 's1-common-')).replace(/\\/g, '/')
+    writeFileSync(join(src, 'g_suite_no_regression.py'), 'print("suite")\n')
+    writeFileSync(join(src, 'suite_baseline.txt'), 'not copied\n')
+    const h = tempHome()
+    writeSmokeCampaign({ home: h, repo: 'C:/tmp/any-repo', base, commonFrom: src })
+    expect(readdirSync(join(h, 'heldout', 'common'))).toEqual(['g_suite_no_regression.py'])
+    expect(readFileSync(join(h, 'heldout', 'common', 'g_suite_no_regression.py'), 'utf8')).toBe('print("suite")\n')
+  })
+
+  it('refuses a --common-from dir without the suite gate, and stages nothing without the flag', () => {
+    const empty = mkdtempSync(join(tmpdir(), 's1-common-empty-'))
+    expect(() => writeSmokeCampaign({ home: tempHome(), repo: 'C:/tmp/any-repo', base, commonFrom: empty })).toThrow(/does not exist/)
+    const h = tempHome()
+    writeSmokeCampaign({ home: h, repo: 'C:/tmp/any-repo', base })
+    expect(existsSync(join(h, 'heldout', 'common'))).toBe(false)
+  })
+})
