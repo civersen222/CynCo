@@ -1714,10 +1714,14 @@ describe('the autopoiesis checklist at VERDICT', () => {
     let brief = null
     const rec = await runWave(spec, state, io({ writeBrief: (p, text) => { brief = text; return p } }))
     expect(brief).toMatch(/; campaign to date edit-gap 2\/2/)
+    // The runner records the generator's own predicate; the checklist reads the flag.
+    expect(rec.s4.pacingFromDenials).toBe(true)
+    expect(state.waves().at(-1).s4.pacingFromDenials).toBe(true)
     expect(rec.autopoiesis.facts.pacingDigest).toBe(true)
     expect(rec.autopoiesis.criteria.circularProduction).toBe(true)
     // Control: no prior denials, no digest.
     const control = await runWave(spec, freshState(), io())
+    expect(control.s4.pacingFromDenials).toBe(false)
     expect(control.autopoiesis.facts.pacingDigest).toBe(false)
   })
 
@@ -1768,6 +1772,30 @@ describe('main --autopoiesis', () => {
     expect(readFileSync(join(state.dir, 'state.json'), 'utf8')).toBe(before)
     expect(state.waves()).toHaveLength(1)
     expect(existsSync(join(state.dir, 'runner.lock'))).toBe(false)
+  })
+
+  it('the verb and the runner agree — configuration → seat from the retained store included', async () => {
+    const home = join(mkdtempSync(join(tmpdir(), 'home-')), '.cynco')
+    writeSeats(home, readSeats(home), { seat: 'gate-author', authority: 0.5, decidedAt: 't', campaign: 'c7' })
+    const state = new CampaignState(join(home, 'campaigns', 'c8')).load()
+    state.state.calibration = { gateSha256: calibrateIo.sha256(GATE), perturbSha256: calibrateIo.sha256(PERTURB), baseFails: [{ id: 'C8.1a', line: 'C8.1a: FAIL x' }], basePasses: [] }
+    state.state.lastBase = '1d03308'; state.state.lastFails = ['C8.1a']
+    const row = (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', markerSeen: true, identityGuard: { passed: true }, toolStats: {} })
+    const rec = await runWave(spec, state, {
+      writeBrief: (p) => p, dispatch: async () => ({ missionId: 'c8-wave1-1' }), waitForDriver: async () => ({ exited: true }),
+      readRow: row, commitsBetween: () => [{ sha: 'h', subject: 'C8 commit 1' }], grade: async () => g(), checkIdentity: okIdentity,
+      salvageOf: () => null, patchRow: () => {}, commit: () => ({ sha: 'v1' }), notify: async () => true, economics: () => [], appendLog: () => {},
+      ...inertTriples, seatsHome: () => home,
+    })
+    expect(rec.autopoiesis.network.productions).toContainEqual(['configuration', 'seat'])
+    const specPath = join(mkdtempSync(join(tmpdir(), 'spec-')), 'c8.campaign.json')
+    writeFileSync(specPath, JSON.stringify({ ...spec, repo: '.', base: BASE_SHA, suiteBaseline: join(HELDOUT, 'suite-baseline.json') }))
+    const { code, out } = await withHome(home, () => capture(() => main([specPath, '--autopoiesis'], { readLedgerRows: () => [row('c8-wave1-1')] })))
+    expect(code).toBe(0)
+    const json = JSON.parse(out.slice(out.indexOf('{'), out.lastIndexOf('}') + 1))
+    expect(json.facts.seatAuthority).toBe(0.5)
+    expect(json.network).toEqual(rec.autopoiesis.network)
+    expect(json.criteria).toEqual(rec.autopoiesis.criteria)
   })
 
   it('refuses a campaign that has no state, and creates nothing', async () => {

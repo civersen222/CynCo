@@ -2227,12 +2227,15 @@ function fetchSessionState() {
   // no engine session is a mission at all. Rebuilt from scratch each poll: the
   // set of campaigns, their proposals and their wave counts can all change
   // between polls and there is no stable id to patch a single row against.
-  // Phase 4 ruling 4: the campaign checklist off the LAST wave only — the
-  // reading is campaign-to-date already, so an older wave's is stale, and a
-  // last wave with no reading prints a dash rather than a stale number.
+  // Phase 4 ruling 4: the campaign checklist off the last GRADED wave — the
+  // reading is campaign-to-date already. A stop or fault record written after
+  // it carries no reading and is skipped (the --autopoiesis verb reads the same
+  // wave); no wave with a reading at all prints a dash.
   function campaignAutopoiesisText(waves) {
-    var last = (waves && waves.length) ? waves[waves.length - 1] : null;
-    var a = last ? last.autopoiesis : null;
+    var a = null;
+    for (var i = (waves ? waves.length : 0) - 1; i >= 0; i--) {
+      if (waves[i] && waves[i].autopoiesis) { a = waves[i].autopoiesis; break; }
+    }
     if (!a) return '—';
     if (a.assessError) return 'unassessed — ' + a.assessError;
     var missing = a.missing || [];

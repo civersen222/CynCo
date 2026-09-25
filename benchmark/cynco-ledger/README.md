@@ -473,13 +473,18 @@ to claims:
 - **`internalProduction`** — this wave landed ≥ 1 commit.
 - **`circularProduction`** — ledger → validation → proposal closed at least once
   in this campaign: a denial analysis ran (this wave or an earlier one) AND a
-  proposal was ever raised, OR a brief carried the PACING "campaign to date"
-  denial digest (`facts.pacingDigest` on this wave or any earlier one).
+  cap proposal was ever raised from it (`facts.proposalFromDenials`: any
+  proposal named `invariants/<cap>` — the one family the denial analysis itself
+  raises; an `ideation/brief` or `gate-author/gate` promotion does not count),
+  OR a brief carried the PACING "campaign to date" denial digest
+  (`facts.pacingDigest`: any wave record's `s4.pacingFromDenials`, which the
+  runner records from the brief generator's own `pacingDigestIncluded`
+  predicate — never read off the brief's text).
 - **`organizationallyClosed`** — the campaign's `ProductionNetwork` over
   `gate, brief, wave, ledger, validation, proposal, configuration, seat` is
   closed, given which productions occurred: seat→gate (CynCo-authored gate),
   brief→wave (≥ 1 graded wave), wave→ledger (≥ 1 campaign row),
-  ledger→validation (a denial analysis), validation→proposal (any proposal
+  ledger→validation (a denial analysis), validation→proposal (a cap proposal
   raised), proposal→configuration (any approved), configuration→brief (an
   `invariantOverrides` entry, or an ideation `s4.workOrder.applied`),
   ledger→seat (gate-line or ideation evidence), configuration→seat (a seat's
@@ -505,19 +510,21 @@ whose first row predates the guard (the facts below, re-run by
                "productions": [["brief", "wave"], ["wave", "ledger"], ["ledger", "validation"],
                                ["validation", "proposal"], ["ledger", "seat"]] },
   "facts": { "gateAuthor": "human", "waves": 2, "rows": 2, "denialAnalysis": true, "proposalRaised": true,
-             "proposalApproved": false, "configurationApplied": false, "seatEvidence": true, "seatAuthority": 0,
+             "proposalFromDenials": true, "proposalApproved": false, "configurationApplied": false, "seatEvidence": true, "seatAuthority": 0,
              "commitsLanded": 3, "pacingDigest": true,
              "identityHistory": { "waves": 1, "intact": 1, "rows": 2, "passed": 1 } } }
 ```
 
 `missing` names the criteria by field, in the core's order; `facts` is
 everything the reading was computed from, so a wrong mapping is fixed by
-re-running the module over the stored facts, not by re-measuring. An
+re-running `criteriaFromFacts(facts, identity)` over the stored facts and the
+wave's stored `identity`, not by re-measuring. An
 assessment that throws is stored as `{ "assessError": "<message>" }` and never
 faults the wave. The verdict entry prints `- Autopoiesis: 3/6 — missing …`
 (`6/6` when nothing is missing, `UNASSESSED — <message>` on a throw) into the
 campaign log; `GET /api/campaign` hands the dashboard each wave's
-`{ isAutopoietic, missing }` and the Campaign panel prints the last wave's;
+`{ isAutopoietic, missing }` and the Campaign panel prints the last wave that
+carries a reading (a later stop or fault record has none and is skipped);
 `bun scripts/cynco-campaign.mjs <id>.campaign.json --autopoiesis` prints the
 same checklist over a campaign that already ran, from its stored records, and
 dispatches and writes nothing.

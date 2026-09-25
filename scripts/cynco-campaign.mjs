@@ -20,7 +20,7 @@ import { cyncoHome } from '../engine/paths.js'
 import { loadCampaignSpec, checkIdentity } from './cynco-campaign-spec.mjs'
 import { CampaignState } from './cynco-campaign-state.mjs'
 import { calibrate, defaultIo as calibrateIo } from './cynco-campaign-calibrate.mjs'
-import { generateBrief, sidecarFor, workOrderFor } from './cynco-brief.mjs'
+import { generateBrief, sidecarFor, workOrderFor, pacingDigestIncluded } from './cynco-brief.mjs'
 import { gradeWave } from './cynco-campaign-grade.mjs'
 import { verdictEntry, notify, commitVerdict, economicsLines } from './cynco-campaign-verdict.mjs'
 import { runIdeation, measureFollowed, authorityRegistry, promotionProposal, capProposal, effectiveInvariants } from './cynco-ideation.mjs'
@@ -36,7 +36,7 @@ import { assertIdentityIntact } from './cynco-identity.mjs'
 import { applyProposalDecision, seatAuthority } from './cynco-proposals.mjs'
 import { writeRuleVerdicts, RULE_VERDICTS_PATH } from './cynco-rule-verdicts.mjs'
 import { readLedger } from './cynco-ledger-shards.mjs'
-import { campaignAssessment, campaignRows, autopoiesisLine, storedAssessment } from './cynco-autopoiesis.mjs'
+import { campaignAssessment, campaignRows, autopoiesisLine, storedAssessment, effectiveSeatAuthority } from './cynco-autopoiesis.mjs'
 import { summarize as summarizeGateLines, GATE_LINES_PATH } from './cynco-gate-lines.mjs'
 
 // Phase 4: the operator's decision on a pending proposal lives in the one
@@ -298,9 +298,10 @@ export async function runWave(spec, state, io = defaultIo) {
   let ideation = null, ideationMeta = null
   let missionId, row, briefFile, dispatchedAt, waveFiles, workOrder
   // Phase 4 ruling 4: did the campaign-to-date denial digest (ledger →
-  // validation) reach THIS wave's brief? Read off the text actually written,
-  // not re-derived; an adopted wave's brief was not written here, so false.
-  let pacingDigest = false
+  // validation) reach THIS wave's brief? The same predicate pacing() used to
+  // print it (pacingDigestIncluded), recorded as `s4.pacingFromDenials`; an
+  // adopted wave's brief was not written here, so false.
+  let pacingFromDenials = false
 
   if (s.adoptedRow) {
     // ADOPT (scripts/cynco-campaign-adopt.mjs): this wave already RAN — it was
@@ -347,9 +348,7 @@ export async function runWave(spec, state, io = defaultIo) {
     const briefCtx = { ...ctx, ideation }
     const text = generateBrief(spec, briefCtx)
     workOrder = workOrderFor(spec, briefCtx)
-    // The PACING section prints "; campaign to date …" exactly when the digest
-    // from s.denialAnalysis was folded in (scripts/cynco-brief.mjs pacing()).
-    pacingDigest = text.includes('; campaign to date ')
+    pacingFromDenials = pacingDigestIncluded(briefCtx)
     // checkIdentity guards the spec's own fields, but the ideation section is
     // written by a model that just read the repo. A brief naming the sealed
     // gate would be refused by sealedPaths mid-run, after the wall clock has
@@ -423,7 +422,7 @@ export async function runWave(spec, state, io = defaultIo) {
   // fallback here is for an adopted or hand-built spec that never went through it.
   const rec = { wave, missionId, briefFile, base, head: grade.sha, gateSha256, dispatchedAt, gradedAt: new Date().toISOString(), gate: { ...grade.gate, author: spec.author ?? 'human' }, suite: grade.suite, sweep: grade.sweep, sweepFault: grade.sweepFault ?? null, posiwid: grade.posiwid, verified: grade.verified,
     outcome: { landed: row.outcome === 'landed', exitReason: row.exitReason },
-    s4: { generatorInput: { failIds: fails.map(f => f.id), priorMissionId: prior?.missionId ?? null }, ideation, ideationMeta, authority: s.ideationAuthority ?? 0, commander, followed, workOrder },
+    s4: { generatorInput: { failIds: fails.map(f => f.id), priorMissionId: prior?.missionId ?? null }, ideation, ideationMeta, authority: s.ideationAuthority ?? 0, commander, followed, workOrder, pacingFromDenials },
     decision, verdictSha: null, notified: false }
   state.appendWave(rec)
   appended = true
@@ -536,11 +535,8 @@ export async function runWave(spec, state, io = defaultIo) {
   // recorded as `assessError` and never faults the wave.
   try {
     const waves = state.waves()
-    const home = io.seatsHome?.() ?? null
-    const seat = Math.max(s.ideationAuthority ?? 0, s.gateAuthorAuthority ?? 0,
-      home ? seatAuthority(home, 'ideation') : 0, home ? seatAuthority(home, 'gate-author') : 0)
     rec.autopoiesis = (io.assessAutopoiesis ?? defaultIo.assessAutopoiesis)({ spec, state: s, waves, row, rows: campaignRows({ waves, ledgerRows, row }),
-      gateLines, denialAnalysis, identity, commitsLanded: commits.length, pacingDigest, seatAuthority: seat })
+      gateLines, denialAnalysis, identity, commitsLanded: commits.length, seatAuthority: effectiveSeatAuthority(s, io.seatsHome?.() ?? null) })
   } catch (e) {
     rec.autopoiesis = { assessError: String(e?.message ?? e) }
     console.error(`[campaign] autopoiesis checklist not assessed: ${e?.message ?? e}`)
@@ -903,7 +899,11 @@ export async function main(argv, deps = {}) {
       try { gateLines = summarizeGateLines(readFileSync(gateLinesPath, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l))) }
       catch (e) { console.error(`[campaign] ${gateLinesPath} unreadable, no gate-line evidence counted: ${e.message}`) }
     }
-    const a = storedAssessment({ spec, state: state.state, waves: state.waves(), ledgerRows, gateLines })
+    // The seat authority the runner's VERDICT reads (state values and the
+    // retained seats store under this home), so verb and runner cannot disagree
+    // on configuration → seat.
+    const a = storedAssessment({ spec, state: state.state, waves: state.waves(), ledgerRows, gateLines,
+      seatAuthority: effectiveSeatAuthority(state.state, defaultIo.seatsHome()) })
     console.log(JSON.stringify(a, null, 2))
     console.log(autopoiesisLine(a))
     return 0

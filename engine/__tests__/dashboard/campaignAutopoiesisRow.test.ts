@@ -44,8 +44,17 @@ describe('dashboard campaign panel: the Autopoiesis row', () => {
     expect(text([{ wave: 1, autopoiesis: { isAutopoietic: false, missing: [], assessError: 'boom' } }])).toBe('unassessed — boom')
   })
 
-  it('a dash when the last wave carries no reading (or there are no waves)', () => {
-    expect(text([{ wave: 1, autopoiesis: { isAutopoietic: true, missing: [] } }, { wave: 2, autopoiesis: null }])).toBe('—')
+  it('skips a later stop/fault record with no reading and prints the last graded wave\'s', () => {
+    expect(text([
+      { wave: 1, autopoiesis: { isAutopoietic: false, missing: ['hasBoundary'] } },
+      { wave: 2, autopoiesis: { isAutopoietic: false, missing: ['boundarySelfProduced'] } },
+      { wave: 3, decision: { kind: 'stop' }, autopoiesis: null },
+      { wave: 3, decision: { kind: 'fault' }, autopoiesis: null },
+    ])).toBe('5/6 — missing boundarySelfProduced')
+  })
+
+  it('a dash when no wave carries a reading (or there are no waves)', () => {
+    expect(text([{ wave: 1, autopoiesis: null }, { wave: 2, autopoiesis: null }])).toBe('—')
     expect(text([])).toBe('—')
     expect(text(undefined)).toBe('—')
   })
