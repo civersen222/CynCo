@@ -82,6 +82,9 @@ const inertTriples = {
   // live campaign dir in. `null` is what a campaign with no evidence yet looks
   // like, so the promotion and the verdict line both stay quiet.
   exportGateLines: () => ({ rows: [], summary: null }),
+  // Phase 4: the rule verdicts are recomputed from the ledger at every VERDICT.
+  // The real reader walks ~160 MB of shards; a unit test hands over none.
+  readLedgerRows: () => [],
 }
 
 /** A gate-lines summary with `held` of `n` CynCo lines and `hHeld` of `hN` human ones. */
@@ -861,6 +864,7 @@ describe('runWave — the Level 4 spine at VERDICT', () => {
     notify: async () => true,
     economics: () => [],
     appendLog: () => {},
+    readLedgerRows: () => [],
     ...over,
   })
 
@@ -952,6 +956,7 @@ describe('runWave — the denial analysis reads THIS campaign, and says so', () 
     notify: async () => true,
     economics: () => [],
     appendLog: () => {},
+    readLedgerRows: () => [],
     ...over,
   })
   // The pooled block reads EFFECTIVE; c8's own block reads INERT. Only a runner
@@ -1010,6 +1015,7 @@ describe('runWave — the wave is on the record before the verdict reads the rec
     notify: async () => true,
     economics: () => [],
     appendLog: () => {},
+    readLedgerRows: () => [],
     exportTriples: () => emptySummary,
     ...over,
   })
@@ -1574,5 +1580,64 @@ describe('main asserts identity before it applies an operator decision', () => {
     const disk = JSON.parse(readFileSync(join(stateDir, 'state.json'), 'utf8'))
     expect(disk.proposals[0].status).toBe('pending')
     expect(existsSync(join(home, 'retained', 'seats.json'))).toBe(false)
+  })
+})
+
+// ── Phase 4: the rule verdicts the engine's S5 authority is read from ────────
+
+describe('the rule verdicts at VERDICT', () => {
+  const sweep = { kind: 'withheld', killed: 1, total: 1, survived: [] }
+  const ledger = () => [
+    ...Array.from({ length: 12 }, () => ({ outcome: 'failed', verified: false, mutationSweep: sweep, s5Decisions: [{ ruleIds: ['X', 'Y'] }] })),
+    ...Array.from({ length: 12 }, () => ({ outcome: 'landed', verified: true, mutationSweep: sweep, s5Decisions: [{ ruleIds: ['Y'] }] })),
+  ]
+  const io = (over = {}) => ({
+    writeBrief: (p) => p,
+    dispatch: async () => ({ missionId: 'c8-wave1-1' }),
+    waitForDriver: async () => ({ exited: true }),
+    readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', markerSeen: true, toolStats: {} }),
+    commitsBetween: () => [],
+    grade: async () => g(), checkIdentity: okIdentity,
+    salvageOf: () => null,
+    patchRow: () => {},
+    commit: () => ({ sha: 'v1' }),
+    notify: async () => true,
+    economics: () => [],
+    appendLog: () => {},
+    ...inertTriples,
+    ...over,
+  })
+
+  it('writes <home>/datasets/rule-verdicts.json from the ledger and records the reading on the wave', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'rv-home-'))
+    const state = freshState()
+    const rec = await runWave(spec, state, io({ readLedgerRows: ledger, datasetsHome: () => home }))
+    expect(rec.ruleVerdicts).toEqual({ version: 1, predictive: ['X'], total: 2 })
+    const f = JSON.parse(readFileSync(join(home, 'datasets', 'rule-verdicts.json'), 'utf8'))
+    expect(f).toMatchObject({ schema: 1, version: 1, campaign: 'c8', predictive: ['X'] })
+    expect(f.rules.X.verdict).toBe('PREDICTIVE')
+    // The persisted record carries it too, not only the returned one.
+    expect(state.waves().at(-1).ruleVerdicts).toEqual({ version: 1, predictive: ['X'], total: 2 })
+  })
+
+  it('reuses the rows the triples export already read instead of reading the ledger twice', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'rv-home-'))
+    const rec = await runWave(spec, freshState(), io({
+      exportTriples: () => ({ summary: { denials: {}, quiet: {}, campaigns: {} }, rows: ledger() }),
+      readLedgerRows: () => { throw new Error('the ledger must not be read a second time') },
+      datasetsHome: () => home,
+    }))
+    expect(rec.ruleVerdicts).toEqual({ version: 1, predictive: ['X'], total: 2 })
+  })
+
+  it('a verdict file that will not write costs the wave nothing', async () => {
+    const rec = await runWave(spec, freshState(), io({ datasetsHome: () => { throw new Error('datasets dir is read-only') } }))
+    expect(rec.decision.kind).toBe('next')
+    expect(rec.ruleVerdicts).toBeNull()
+  })
+
+  it('the default io reads the datasets home from cyncoHome and the rows from the ledger shards', () => {
+    expect(typeof defaultIo.readLedgerRows).toBe('function')
+    expect(defaultIo.datasetsHome()).toBe(process.env.CYNCO_HOME)
   })
 })

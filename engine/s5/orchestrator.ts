@@ -5,6 +5,7 @@ import { getJournal } from '../training/decisionJournal.js'
 import { makeJournalEntry } from '../training/types.js'
 import { RuleWeightManager } from './ruleWeights.js'
 import { cyncoHome } from '../paths.js'
+import { RuleAuthority } from './ruleAuthority.js'
 
 const MAX_HISTORY = 100
 
@@ -42,6 +43,9 @@ export class S5Orchestrator {
   private s5: S5Interface
   private history: DecisionLogEntry[] = []
   private ruleWeights: RuleWeightManager | null = null
+  // Phase 4: legacy until the loop hands over the session's verdict reading —
+  // an orchestrator nobody configured behaves exactly as before.
+  private ruleAuthority: RuleAuthority = RuleAuthority.legacy()
   private lastDecision: {
     decisionId: string
     ruleIds: string[]
@@ -99,7 +103,12 @@ export class S5Orchestrator {
       governance: input.governance as Record<string, unknown>,
     }
 
-    const decision = await this.s5.decide(s5Input)
+    const decided = await this.s5.decide(s5Input)
+    // Per-rule earned authority rides on the decision itself, so every reader
+    // (the loop's apply sites, the s5.decision frame, the audit log) sees the
+    // same reading. Attached here, after decide(), so both RuleBasedS5 and
+    // ModelS5 are governed by it.
+    const decision: S5Decision = { ...decided, authority: this.ruleAuthority.authorityOf(decided.ruleIds ?? []) }
 
     if (decision.decisionId && (decision.ruleIds?.length ?? 0) > 0) {
       const gov = input.governance as Record<string, unknown> | undefined
@@ -181,6 +190,11 @@ export class S5Orchestrator {
 
   setS5(s5: S5Interface): void {
     this.s5 = s5
+  }
+
+  /** The session's rule-verdict reading (ConversationLoop loads it once at construction). */
+  setRuleAuthority(ruleAuthority: RuleAuthority): void {
+    this.ruleAuthority = ruleAuthority
   }
 
   get currentS5Name(): string {

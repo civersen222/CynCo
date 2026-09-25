@@ -221,6 +221,9 @@ export function createMissionCollector(now = () => Date.now()) {
             toolRestriction: m.toolRestriction ?? null,
             modelSwitch: m.modelSwitch ?? null,
             enforced: m.enforced ?? null,
+            // Phase 4: 'earned' | 'advisory' | 'legacy' (engine/s5/ruleAuthority.ts);
+            // null on an engine too old to say.
+            authority: m.authority ?? null,
           })
           break
         case 'control.signals':

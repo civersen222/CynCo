@@ -87,10 +87,16 @@ decisions still recorded here).
           "byLayer": { "24": 0, "32": 0, "40": 0.125, "48": 0.375 } },
         "toolEntropy": { "mean": 0.0114, "max": 0.2125, "spikeCount": 2 } } }
   ],
+  // `authority` (Phase 4): "earned" (every rule in ruleIds is PREDICTIVE in
+  // ~/.cynco/datasets/rule-verdicts.json — see "Rule verdicts file" below),
+  // "advisory" (one is not, or ruleIds is empty; never applied, so `enforced`
+  // is false whatever LOCALCODE_S5_ENFORCE says), "legacy" (no verdict file;
+  // LOCALCODE_S5_ENFORCE alone decides, as before), or null on a record from
+  // an engine older than Phase 4.
   "s5Decisions": [          // one per s5.decision event
     { "t": 1783550000000, "ruleIds": ["C7"], "reasoning": "...",
       "contextAction": null, "toolRestriction": "read-only",
-      "modelSwitch": null, "enforced": false }
+      "modelSwitch": null, "enforced": false, "authority": "advisory" }
   ],
   "controlSignals": [
     { "t": 1783550000000, "temperatureAdjust": 0, "temperature": 0.7,
@@ -529,6 +535,60 @@ prints it as its "Gate lines" line, and `gateAuthorPromotion`
 lines, a Wilson lower bound ≥ 0.8, and not significantly worse than the human
 seat, raises the `gate-author/gate` proposal. Both thresholds are stated once,
 in `scripts/cynco-signal-validation.mjs` beside `DENIAL_MIN`.
+
+### Rule verdicts file
+
+`~/.cynco/datasets/rule-verdicts.json`, written by
+`scripts/cynco-rule-verdicts.mjs` (`writeRuleVerdicts`) at every wave VERDICT
+from the WHOLE ledger — not the campaign's slice, because a rule's predictive
+power is a claim about every mission it fired on. `bun
+scripts/cynco-rule-verdicts.mjs [--ledger-dir DIR] [--out PATH]` rebuilds it by
+hand. It is Step 2's per-rule table (`analyse` + `ruleVerdictOf` in
+`scripts/cynco-signal-validation.mjs`) turned into a file the engine reads:
+
+- **`engine/s5/ruleAuthority.ts`** loads it once per session and logs one line,
+  `[s5] rule authority: earned (<n> predictive of <m>)` or
+  `[s5] rule authority: legacy (no verdict file at <path>)`. A decision is
+  `earned` only when every rule in its `ruleIds` reads exactly `PREDICTIVE`;
+  otherwise it is `advisory` and is never applied. No file = `legacy`, and
+  `LOCALCODE_S5_ENFORCE` alone decides, exactly as before. The reading is
+  carried on the ledger as `s5Decisions[].authority`.
+- **`engine/s5/exportTrainingData.ts`** keeps only `earned` decisions in the S5
+  training corpus when the file exists, and reports what it dropped per rule.
+
+Schema 1. The numbers below are the head of a real rebuild against this
+ledger on 2026-09-25 (280 records, 107 labeled; two of its eight rules are
+shown — C2, C4, W6 read `TOO FEW`, I1, I3, W7, W8 `NO EVIDENCE`, I4 `CONSTANT`):
+
+```jsonc
+{ "schema": 1, "version": 1, "writtenAt": "2026-09-25T18:35:33.166Z", "campaign": null,
+  "ledger": { "total": 280, "labeled": 107, "failures": 61, "base": 0.5700934579439252, "rulesTested": 7 },
+  "rules": {
+    "C2": { "verdict": "TOO FEW — cannot tell", "firedTotal": 17, "labeled": 5, "failures": 1,
+            "precision": 0.2, "lift": -0.3700934579439252, "p": 0.16249100754494467, "pAdjusted": 1 },
+    "I1": { "verdict": "NO EVIDENCE", "firedTotal": 106, "labeled": 51, "failures": 28,
+            "precision": 0.5490196078431373, "lift": -0.021073850100787883, "p": 0.6999222665344511, "pAdjusted": 1 }
+  },
+  "predictive": [],
+  "history": [ { "version": 1, "at": "2026-09-25T18:35:33.166Z", "campaign": null, "predictive": [],
+                 "changed": [ { "id": "C2", "from": null, "to": "TOO FEW — cannot tell" } /* + the other seven rules */ ] } ] }
+```
+
+- **`rules[<id>].verdict`** — exactly `ruleVerdictOf`'s string: `PREDICTIVE`,
+  `TOO FEW — cannot tell`, `CONSTANT — fires on everything, predicts nothing`,
+  `INVERTED — fires more on successes`, `NOT AFTER CORRECTION — chance across
+  this many rules`, or `NO EVIDENCE`. Only `PREDICTIVE` earns authority. A rule
+  the file does not list has never fired in the ledger and has earned nothing.
+- **`version`** rises only when the verdict SET changed — a rule's verdict
+  moved, or a rule appeared or vanished. The numbers are refreshed on every
+  write; the version counts changes in what S5 may enforce.
+- **`history`** — the last 20 version changes, each naming the rules that moved
+  (`from`/`to`, `null` for appeared/vanished).
+- **`campaign`** — the campaign whose VERDICT wrote it (`null` from the CLI).
+
+The wave record carries `ruleVerdicts: { version, predictive, total }` (`null`
+when the write failed — logged, never a fault). On this ledger no rule is
+`PREDICTIVE`, so once the file exists every S5 decision reads `advisory`.
 
 ## Labeling rule
 

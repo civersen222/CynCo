@@ -40,6 +40,7 @@ import { runAdvisors, type SystemState as AdvisorState } from '../agents/advisor
 import { DecisionLogger } from '../decisions/logger.js'
 import { ContextCompressor, FileOperationTracker } from '../context/compressor.js'
 import type { S5Orchestrator } from '../s5/orchestrator.js'
+import { RuleAuthority, ruleVerdictsPath, isEnforced } from '../s5/ruleAuthority.js'
 import { SubAgentRunner } from '../agents/runner.js'
 import { S2Coordinator } from '../agents/s2Coordinator.js'
 import { SubAgent } from '../agents/subAgent.js'
@@ -435,6 +436,9 @@ export class ConversationLoop {
   private compressor = new ContextCompressor({ threshold: 0.75, targetRatio: 0.5 })
   private fileTracker = new FileOperationTracker()
   private s5?: S5Orchestrator
+  // Phase 4: per-rule earned S5 authority, read once per session from the
+  // campaign runner's rule-verdict file (legacy when there is none).
+  private ruleAuthority: RuleAuthority = RuleAuthority.legacy()
   private agentRunner: SubAgentRunner
   private s2: S2Coordinator
   private runningAgents = new Map<string, SubAgent>()
@@ -604,6 +608,13 @@ export class ConversationLoop {
       this.emit({ type: 'governance.alert', severity: alert.severity, message: alert.message, source: alert.source })
     })
     this.s5 = opts.s5
+    if (this.s5) {
+      this.ruleAuthority = RuleAuthority.load(ruleVerdictsPath(cyncoHome()))
+      // Optional call: test doubles stand in for the orchestrator; the emit
+      // site below falls back to this.ruleAuthority when a decision carries none.
+      this.s5.setRuleAuthority?.(this.ruleAuthority)
+      console.log(this.ruleAuthority.logLine())
+    }
     this.allowedTools = opts.allowedTools
     this.getBrain = opts.getBrain
     this.agentRunner = new SubAgentRunner(async (task) => {
@@ -1760,6 +1771,13 @@ export class ConversationLoop {
         // are computed and emitted (the outcome ledger needs them) but never
         // applied. See docs/cynco-failure-log.md F7.
         const s5Enforce = isS5EnforcementEnabled()
+        // Phase 4: per-rule earned authority. An `advisory` decision (a rule
+        // behind it is not PREDICTIVE in the verdict file) is never applied,
+        // whatever the global switch says; `legacy` (no verdict file) leaves
+        // the global switch in sole charge, exactly as before.
+        const authority = decision.authority ?? this.ruleAuthority.authorityOf(decision.ruleIds ?? [])
+        const enforced = isEnforced(s5Enforce, authority)
+        const capWhy = s5Enforce ? 'advisory — rule authority not earned' : 'capped at recommend'
 
         // Emit S5 decision to dashboard (ruleIds/enforced feed the mission
         // outcome ledger — step 2 needs per-rule attribution)
@@ -1770,14 +1788,15 @@ export class ConversationLoop {
           toolRestriction: decision.toolRestriction,
           modelSwitch: decision.modelSwitch,
           ruleIds: decision.ruleIds ?? [],
-          enforced: s5Enforce,
+          enforced,
+          authority,
           timestamp: Date.now(),
         })
         console.log(`[s5] Decision: context=${decision.contextAction} tools=${decision.toolRestriction ?? 'none'} (${decision.reasoning})`)
 
         // L3: APPLY S5 decisions — hard enforcement, not advisory
-        if (decision.contextAction === 'compact' && !s5Enforce) {
-          console.log(`[s5] WOULD-ENFORCE (capped at recommend): compact context (${decision.reasoning})`)
+        if (decision.contextAction === 'compact' && !enforced) {
+          console.log(`[s5] WOULD-ENFORCE (${capWhy}): compact context (${decision.reasoning})`)
         } else if (decision.contextAction === 'compact') {
           console.log(`[s5] Decision: compact context (${decision.reasoning})`)
           // Trigger compaction via the S5 decision path
@@ -1797,8 +1816,8 @@ export class ConversationLoop {
         // whole task runs on, and a pre-task reading has no standing over turns
         // that have not happened yet. See finding (j) in bridge/s5Restriction.ts.
         this.preLoopRestriction = null
-        if (decision.tools && !s5Enforce) {
-          console.log(`[s5] WOULD-ENFORCE (capped at recommend): tool restriction to [${decision.tools.join(', ')}]`)
+        if (decision.tools && !enforced) {
+          console.log(`[s5] WOULD-ENFORCE (${capWhy}): tool restriction to [${decision.tools.join(', ')}]`)
         } else if (decision.tools) {
           this.preLoopRestriction = { tools: decision.tools, reasoning: decision.reasoning }
         }
@@ -1817,8 +1836,8 @@ export class ConversationLoop {
         }
 
         // Model switch enforcement
-        if (decision.model && decision.model !== this.config.model && !s5Enforce) {
-          console.log(`[s5] WOULD-ENFORCE (capped at recommend): model switch to ${decision.model}`)
+        if (decision.model && decision.model !== this.config.model && !enforced) {
+          console.log(`[s5] WOULD-ENFORCE (${capWhy}): model switch to ${decision.model}`)
         } else if (decision.model && decision.model !== this.config.model) {
           console.log(`[s5] ENFORCE: model switch to ${decision.model}`)
           this.updateModel(decision.model)
@@ -2800,7 +2819,15 @@ export class ConversationLoop {
               demotedTools: [],
               promptDifficulty: this.difficultyClassifier.getLevel(),
             })
-            if (decision.tools) {
+            // Phase 4: an advisory decision (a rule behind it has not earned
+            // authority) is never applied. NOTE: this site has never consulted
+            // LOCALCODE_S5_ENFORCE (it restricts even when the global switch is
+            // capped); that pre-existing gap is left as it was — only the
+            // per-rule gate is added here.
+            const reevalAuthority = decision.authority ?? this.ruleAuthority.authorityOf(decision.ruleIds ?? [])
+            if (decision.tools && reevalAuthority === 'advisory') {
+              console.log(`[s5] LIVE RE-EVAL not applied (advisory — rule authority not earned): restriction to [${decision.tools.join(', ')}] (stuck ${currentStuck})`)
+            } else if (decision.tools) {
               const allowed = new Set(decision.tools)
               const filtered = iterationTools.filter(t => allowed.has(t.name))
               if (filtered.length > 0) {

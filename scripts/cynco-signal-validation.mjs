@@ -399,7 +399,15 @@ export function signalsFired(row, quartiles) {
 
 // ── Report ───────────────────────────────────────────────────────
 
-function verdict(r) {
+/**
+ * The S5 verdict for one `analyse` rule row. Exported (Phase 4) because the
+ * table is no longer its only reader: `scripts/cynco-rule-verdicts.mjs` stores
+ * these exact strings in `~/.cynco/datasets/rule-verdicts.json`, and the
+ * engine's per-rule S5 authority (`engine/s5/ruleAuthority.ts`) grants
+ * enforcement only to a rule whose stored string is `'PREDICTIVE'`. One
+ * function, so the table and the authority can never disagree.
+ */
+export function ruleVerdictOf(r) {
   if (r.labeled < 10) return 'TOO FEW — cannot tell'
   if (r.coverage > 0.95) return 'CONSTANT — fires on everything, predicts nothing'
   const p = r.pAdjusted
@@ -425,14 +433,14 @@ export function printRuleTable(res) {
       `[${(lo * 100).toFixed(0).padStart(3)}%,${(hi * 100).toFixed(0).padStart(4)}%] ` +
       `${r.lift === null ? '    —  ' : ((r.lift >= 0 ? '+' : '') + (r.lift * 100).toFixed(1) + 'pp').padStart(7)}` +
       `  ${r.p === null ? '  —  ' : r.p.toFixed(3)}` +
-      `   ${r.pAdjusted === null ? '  —  ' : r.pAdjusted.toFixed(3)}   ${verdict(r)}`,
+      `   ${r.pAdjusted === null ? '  —  ' : r.pAdjusted.toFixed(3)}   ${ruleVerdictOf(r)}`,
     )
   }
   console.log()
   console.log(`${res.rulesTested} rules tested; p(Holm) corrects for that. A rule is only`)
   console.log('called predictive on the corrected value.')
   console.log()
-  const usable = res.rules.filter(r => verdict(r) === 'PREDICTIVE')
+  const usable = res.rules.filter(r => ruleVerdictOf(r) === 'PREDICTIVE')
   console.log(usable.length === 0
     ? 'No rule clears the bar. Enforcement authority stays withheld, and there is\n' +
       'nothing here worth training a decision model to imitate yet.'

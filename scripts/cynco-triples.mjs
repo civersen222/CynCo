@@ -185,7 +185,9 @@ export function exportTriples({ rows = readLedger(), campaigns = readCampaigns()
   const write = (p, text) => { writeFileSync(p + '.tmp', text, 'utf8'); renameSync(p + '.tmp', p) }
   write(outPath, records.map(r => JSON.stringify(r)).join('\n') + (records.length ? '\n' : ''))
   write(summaryPath, JSON.stringify(summary, null, 2))
-  return { outPath, summaryPath, summary, records }
+  // `rows` rides back so the campaign runner's VERDICT can recompute the rule
+  // verdicts (scripts/cynco-rule-verdicts.mjs) without reading the ledger twice.
+  return { outPath, summaryPath, summary, records, rows }
 }
 
 function main(argv) {

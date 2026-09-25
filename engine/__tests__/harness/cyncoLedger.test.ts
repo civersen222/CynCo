@@ -14,7 +14,7 @@ describe('cynco mission outcome ledger', () => {
     { type: 'tool.complete', toolName: 'Read', isError: false },
     { type: 'governance.status', health: 'healthy', s3s4Balance: 'critical', toolSuccessRate: 1.0, stuckTurns: 0, varietyRatio: 9, varietyBalance: 'overload', algedonicAlerts: 0, axiomHealth: 'red', consecutiveUnstable: 3, agreementRatio: 0.0, suggestion: null },
     { type: 'control.signals', temperatureAdjust: -0.1, temperature: 0.6, bestOfNBudget: 1, widenToolSet: false },
-    { type: 's5.decision', reasoning: 'homeostat unstable', contextAction: null, toolRestriction: 'read-only', modelSwitch: null, ruleIds: ['C7'], enforced: false, timestamp: 1 },
+    { type: 's5.decision', reasoning: 'homeostat unstable', contextAction: null, toolRestriction: 'read-only', modelSwitch: null, ruleIds: ['C7'], enforced: false, authority: 'advisory', timestamp: 1 },
     { type: 'tool.start', toolName: 'Edit' },
     { type: 'tool.complete', toolName: 'Edit', isError: true, result: 'anchor not found' },
     { type: 'tool.start', toolName: 'Edit' },
@@ -44,6 +44,9 @@ describe('cynco mission outcome ledger', () => {
     expect(c.s5Decisions.length).toBe(1)
     expect(c.s5Decisions[0].ruleIds).toEqual(['C7'])
     expect(c.s5Decisions[0].enforced).toBe(false)
+    // Phase 4: per-rule earned authority rides beside `enforced`, so the ledger
+    // can tell "capped globally" from "this rule has not earned it".
+    expect(c.s5Decisions[0].authority).toBe('advisory')
     expect(c.enforcedSeen).toBe(false)
   })
 
@@ -117,6 +120,7 @@ describe('cynco mission outcome ledger', () => {
     expect(c.turns[0].agreementRatio).toBeNull()
     expect(c.s5Decisions[0].ruleIds).toEqual([])
     expect(c.s5Decisions[0].enforced).toBeNull()
+    expect(c.s5Decisions[0].authority).toBeNull()
   })
 
   it('collects toolcall.transport events into the mission record (P1.8)', () => {

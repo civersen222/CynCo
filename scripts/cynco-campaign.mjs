@@ -34,6 +34,8 @@ import { governanceCounts, governancePosiwid } from './cynco-governance-posiwid.
 import { loadRoadmap, saveRoadmap, rejectLine, ROADMAP_PATH } from './cynco-roadmap.mjs'
 import { assertIdentityIntact } from './cynco-identity.mjs'
 import { applyProposalDecision, seatAuthority } from './cynco-proposals.mjs'
+import { writeRuleVerdicts, RULE_VERDICTS_PATH } from './cynco-rule-verdicts.mjs'
+import { readLedger } from './cynco-ledger-shards.mjs'
 
 // Phase 4: the operator's decision on a pending proposal lives in the one
 // proposal registry (scripts/cynco-proposals.mjs). Re-exported so every caller
@@ -220,6 +222,13 @@ export const defaultIo = {
   // under this home. Both are seams so a unit test never touches git or ~/.cynco.
   checkIdentity: (spec) => checkIdentity(spec),
   seatsHome: () => cyncoHome(),
+  // Phase 4: the per-rule S5 verdicts are recomputed from the whole ledger at
+  // every VERDICT and written under <datasetsHome>/datasets/ for the engine.
+  // Seams for the same reason as seatsHome: a unit test must never read the
+  // real ledger shards or write into ~/.cynco.
+  readLedgerRows: () => readLedger(),
+  datasetsHome: () => cyncoHome(),
+  writeRuleVerdicts: (args) => writeRuleVerdicts(args),
 }
 
 /**
@@ -417,15 +426,30 @@ export async function runWave(spec, state, io = defaultIo) {
   // a c8 cap proposal must be built from. A summary with no block for this
   // campaign (nothing graded under it yet) falls back to the pool, and the
   // verdict line then says which of the two it is reading.
-  let denialAnalysis = null, denialScope = 'campaign'
+  let denialAnalysis = null, denialScope = 'campaign', ledgerRows = null
   try {
-    const summary = io.exportTriples().summary
+    const exported = io.exportTriples()
+    ledgerRows = Array.isArray(exported?.rows) ? exported.rows : null
+    const summary = exported.summary
     const camp = summary?.campaigns?.[spec.id]
     const scoped = camp?.denials ? { denials: camp.denials, quiet: camp.quiet ?? {} } : null
     denialScope = scoped ? 'campaign' : 'all runs'
     denialAnalysis = (io.analyseDenials ?? defaultIo.analyseDenials)(scoped ?? { denials: summary?.denials, quiet: summary?.quiet })
     s.denialAnalysis = denialAnalysis
   } catch (e) { console.error(`[campaign] triples export/analysis skipped: ${e?.message ?? e}`) }
+
+  // Phase 4: the per-rule S5 verdicts, rewritten for the engine from the whole
+  // ledger (not this campaign's slice — a rule's predictive power is a claim
+  // about every mission it fired on). The rows the triples export already read
+  // are reused; the ledger is read again only when that export did not hand
+  // them back. Same discipline as the datasets above: derived, rebuilt in full
+  // next time, so a failure is logged and never faults the wave.
+  rec.ruleVerdicts = null
+  try {
+    const rows = ledgerRows ?? (io.readLedgerRows ?? defaultIo.readLedgerRows)()
+    const outPath = RULE_VERDICTS_PATH((io.datasetsHome ?? defaultIo.datasetsHome)())
+    rec.ruleVerdicts = (io.writeRuleVerdicts ?? defaultIo.writeRuleVerdicts)({ rows, campaign: spec.id, outPath })
+  } catch (e) { console.error(`[campaign] rule verdicts skipped: ${e?.message ?? e}`) }
 
   // 2d: POSIWID on the governance layer itself, one window per wave.
   let governance = null
