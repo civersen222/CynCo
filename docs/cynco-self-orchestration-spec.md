@@ -412,7 +412,12 @@ in `docs/civkings-redesign-briefs/campaign-log.md` and F156 in
   work is three parts audit to one part writing: the mission's job is to read a
   game it may not touch until it knows what is absent, and at 40 the live C9 run
   spent iterations arguing with `[invariant] DENIED (edit-gap)`
-  (`maxCallsWithoutSourceEdit 194`, 67 tool errors in 474 calls).
+  (`maxCallsWithoutSourceEdit 194`, 67 tool errors in 474 calls). That 120 is
+  the authoring mission's envelope only: the campaign spec `draftToSpec` seals
+  carries `WORKER_INVARIANTS` (`editGapCap 40`, `commitGapCap 150`, `revertBan`,
+  `codeIndexFirst` — c8's measured values), because a worker wave inheriting
+  the author's tripled edit gap would be the runner loosening the campaign the
+  gate is grading.
 - **Learnings-db isolation (ruling 12).** AWM promotion fires when a contract
   passes, and an authoring mission's contract will pass. Its learnings go to
   `<stagingDir>/learnings.db`, a database the campaign worker never opens —

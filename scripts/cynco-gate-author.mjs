@@ -63,6 +63,13 @@ export const GATE_AUTHOR_MAX_AUTHORITY = 0.5
 // resorting to Grep because "Read is gated behind an edit". The commit gap is
 // unchanged: committing after each cut is an order, not a side effect of editing.
 export const AUTHOR_INVARIANTS = { editGapCap: 120, commitGapCap: 150, revertBan: true, codeIndexFirst: true }
+// The invariants a WORKER wave of the sealed campaign runs under — c8's values,
+// the measured ones. `AUTHOR_INVARIANTS` above is the authoring mission's own
+// envelope and nothing else: its edit gap is tripled for an audit-shaped job,
+// and a sealed spec that inherited it would let every wave of the campaign
+// being graded push three times as long without an edit as the measured cap
+// allows (review I1). `draftToSpec` writes these; the author never picks them.
+export const WORKER_INVARIANTS = { editGapCap: 40, commitGapCap: 150, revertBan: true, codeIndexFirst: true }
 
 // The bar the seat has to clear to earn that 0.5. Defined in
 // `scripts/cynco-signal-validation.mjs` beside `DENIAL_MIN` — every threshold
@@ -1189,7 +1196,7 @@ export function draftToSpec({ id, draft, line, paths, authorMissionId = null, li
     marker: `stage ${id} complete`,
     keepGreen,
     budget: { ...RUNNER_BUDGET },
-    invariants: { ...AUTHOR_INVARIANTS },
+    invariants: { ...WORKER_INVARIANTS },
     posiwid: { ...RUNNER_POSIWID },
     sweep: { ...RUNNER_SWEEP },
     prBase: 'main',

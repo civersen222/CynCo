@@ -1,12 +1,12 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, basename, isAbsolute } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
 import { loadCampaignSpec } from '../cynco-campaign-spec.mjs'
 import {
-  AUTHOR_TIMEOUT_S, AUTHOR_ITERATIONS, AUTHOR_INVARIANTS, GATE_AUTHOR_MAX_AUTHORITY,
+  AUTHOR_TIMEOUT_S, AUTHOR_ITERATIONS, AUTHOR_INVARIANTS, WORKER_INVARIANTS, GATE_AUTHOR_MAX_AUTHORITY,
   GATE_AUTHOR_MIN_LINES, GATE_AUTHOR_HELD_FLOOR, gateAuthorPromotion, gateAuthorAuthorityAcrossCampaigns,
   stagingDirFor, heldoutDirFor, prepareStaging, authoringBrief, authoringSidecar, checkCommand,
   checkStaged, authorCampaign, gateProposal, sealGate, draftToSpec, authorMain, previousLineId,
@@ -504,11 +504,22 @@ describe('draftToSpec', () => {
     expect(spec).toMatchObject({ id: 'c9', repo: 'C:/Users/civer/civkings', base: LINE.base, marker: 'stage c9 complete',
       author: 'cynco', authorMissionId: 'c9-author-1', prBase: 'main',
       budget: { hoursPerWave: 8, iterations: 2000, bashTimeoutMs: 1500000, waves: 8 },
-      invariants: { editGapCap: 120, commitGapCap: 150, revertBan: true, codeIndexFirst: true },
+      invariants: { editGapCap: 40, commitGapCap: 150, revertBan: true, codeIndexFirst: true },
       posiwid: { sourceEditShare: 0.3, commitEvery: 60 }, sweep: { max: 6 }, ideation: { enabled: true } })
     expect(spec.gate).toBe(paths(home).gate)
     expect(spec.suiteBaseline).toBe(paths(home).suiteBaseline)
     expect(spec.title).toBe('ship shell')
+  })
+  // Review I1: the sealed spec is the WORKER campaign's; the authoring
+  // mission's tripled edit gap must never leak into it.
+  it('writes the worker invariants (c8\'s measured values), never the authoring mission\'s cap', () => {
+    const spec = draftToSpec({ id: ID, draft: DRAFT(), line: LINE, paths: paths(home), authorMissionId: null, lineIds: IDS })
+    expect(spec.invariants).toEqual(WORKER_INVARIANTS)
+    expect(spec.invariants.editGapCap).not.toBe(AUTHOR_INVARIANTS.editGapCap)
+    const c8 = JSON.parse(readFileSync(fileURLToPath(new URL('../../docs/civkings-redesign-briefs/c8.campaign.json', import.meta.url)), 'utf8'))
+    expect(WORKER_INVARIANTS).toEqual(c8.invariants)
+    // a copy, not the constant itself: a later edit of the spec object must not rewrite the runner's value
+    expect(spec.invariants).not.toBe(WORKER_INVARIANTS)
   })
   it('refuses a draft with no work items', () => {
     const d = DRAFT(); delete d.work
