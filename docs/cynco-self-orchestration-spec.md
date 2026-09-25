@@ -315,7 +315,13 @@ measured against a bar a human wrote. Phase 3 gives the loop the other half:
 CynCo writes the next campaign's gate itself, and the runner refuses to believe
 it without an acceptance test. The bar is still sealed by a decision — what
 changed is who drafts it, and what evidence that seat has to produce before its
-draft counts.
+draft counts. The live proof of this seat on the C9 line ended without a seal
+after nine attempts — the seat produced a mechanically clean but non-measuring
+triple, and then a supervisor-refused resume that never made the one-line
+perturb-header edit named across four operator notes — with the roadmap line
+c9 staying `authoring` and no C9 campaign started (see the "Campaign C9" entry
+in `docs/civkings-redesign-briefs/campaign-log.md` and F156 in
+`docs/cynco-failure-log.md`).
 
 - **The seat.** `gate` is a `heterarchy.CommandRegistry` context like `brief`
   is (`scripts/cynco-ideation.mjs`): `supervisor` holds 1.0, `gate-author`

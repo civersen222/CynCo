@@ -26,7 +26,8 @@
       "name": "Ship shell",
       "bar": "Resolutions, keybinds, saves UI, performance guard, packaging",
       "base": "e9366f37e6f9f0d71e2b0e6584a936d458ec25d3",
-      "status": "authoring"
+      "status": "authoring",
+      "note": "2026-09-24: CynCo authoring, nine attempts, supervisor refused the seal (see campaign-log); human occupant authors the gate"
     }
   ]
 }
