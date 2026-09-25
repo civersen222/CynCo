@@ -29,7 +29,7 @@
  * and the fact that it had to be put back is reported rather than swallowed.
  */
 
-import { mkdirSync, copyFileSync, readFileSync, writeFileSync, existsSync } from 'node:fs'
+import { mkdirSync, copyFileSync, readFileSync, writeFileSync, existsSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 
@@ -44,11 +44,24 @@ import { createHash } from 'node:crypto'
  * A path that does not exist at dispatch is recorded as missing rather than
  * skipped. It is a real condition — a check command naming a file nobody
  * created — and the record has to be able to say so later without guessing.
+ *
+ * So is a path that is not a regular file. F152: the live C9 authoring run was
+ * handed `C:/tmp/c9_author_base`, a DIRECTORY, because its check command names
+ * one; `copyFileSync` raised EPERM and took the whole driver down before the
+ * model ran a single iteration — four hours of budget spent on a stack trace.
+ * `withheldGatePaths` no longer offers a directory (that is the fix), and this
+ * records one as unsnapshottable rather than dying on it (that is the reason
+ * the fix gets a second chance to be wrong safely). Either way it is in the
+ * record, never swallowed.
  */
 export function snapshotHeldOut(paths, vault) {
   mkdirSync(vault, { recursive: true })
   return paths.map(path => {
     if (!existsSync(path)) return { path, snapshot: null, missing: true }
+    if (!statSync(path).isFile()) {
+      console.error(`[held-out] ${path} is not a regular file — it cannot be snapshotted or put back, and is not treated as an instrument`)
+      return { path, snapshot: null, missing: true }
+    }
     const key = createHash('sha256').update(path).digest('hex').slice(0, 16)
     const snapshot = join(vault, `${key}.heldout`)
     copyFileSync(path, snapshot)

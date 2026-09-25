@@ -2234,6 +2234,19 @@ function fetchSessionState() {
       if (!data || !data.campaigns || !data.campaigns.length) { panel.style.display = 'none'; return; }
       panel.style.display = '';
       list.innerHTML = '';
+      // Roadmap is a single top-level line, not per campaign — skip it
+      // entirely when the roadmap file could not be read (null), rather than
+      // rendering a line that claims every campaign is in some unknown state.
+      if (data.roadmap) {
+        var roadmapBlock = document.createElement('div');
+        roadmapBlock.className = 'gov-stats';
+        roadmapBlock.style.marginTop = '4px';
+        var roadmapText = data.roadmap.map(function(r) { return r.id + ' ' + r.status; }).join(' · ');
+        var roadmapRow = document.createElement('div');
+        roadmapRow.innerHTML = '<span class="label">Roadmap: </span><span class="value">' + escHtml(roadmapText) + '</span>';
+        roadmapBlock.appendChild(roadmapRow);
+        list.appendChild(roadmapBlock);
+      }
       data.campaigns.forEach(function(c) {
         var block = document.createElement('div');
         block.className = 'gov-stats';
@@ -2245,6 +2258,15 @@ function fetchSessionState() {
         var fails = c.lastFails || [];
         var failText = fails.length === 0 ? 'none'
           : (fails.length === 1 ? fails[0] : fails.length + ' — ' + fails[0]);
+        // Authoring: same "verbatim on the row, detail in the title" split as
+        // Last fails above — the problems list can run to several lines and
+        // must not push every other row off the panel.
+        var authoring = c.authoring;
+        var authoringText = (authoring && authoring.missionId ? authoring.missionId : '—') +
+          ' · verified ' + (authoring && authoring.verified != null ? (authoring.verified ? 'yes' : 'no') : '—') +
+          ' · check ' + (authoring && authoring.lastCheck ? (authoring.lastCheck.ok ? 'ok' : 'failing') : '—') +
+          ' · sealed ' + (authoring && authoring.sealedAt ? authoring.sealedAt : '—');
+        var authoringProblems = (authoring && authoring.lastCheck && authoring.lastCheck.problems) ? authoring.lastCheck.problems : [];
         var rows = [
           ['Campaign', c.id + (c.id === data.active ? ' (ACTIVE)' : '')],
           ['Wave', c.waveCount + (c.budgetWaves != null ? ' / ' + c.budgetWaves : '')],
@@ -2258,6 +2280,8 @@ function fetchSessionState() {
             ? (c.governancePosiwid.verdict + (c.governancePosiwid.onsetWave ? ' (drift onset wave ' + c.governancePosiwid.onsetWave + ')' : ''))
             : '—'],
           ['In flight', c.inFlight ? ('wave ' + c.inFlight.wave + ' dispatched ' + (c.inFlight.dispatchedAt || '')) : 'no'],
+          ['Seat authority', Number(c.gateAuthorAuthority || 0).toFixed(2)],
+          ['Authoring', authoringText, authoringProblems.join('\n')],
         ];
         rows.forEach(function(pair) {
           var row = document.createElement('div');
@@ -2271,7 +2295,8 @@ function fetchSessionState() {
         entries.className = 'decision-list';
         (c.pendingProposals || []).forEach(function(p) {
           var d = document.createElement('div');
-          d.textContent = 'PROPOSAL ' + p.name + ' ' + p.currentValue + ' → ' + p.newValue + ' (max ' + p.max + ') — approve: ' + p.approveCommand;
+          var label = (p.type ? p.type + ' ' : '') + p.name;
+          d.textContent = 'PROPOSAL ' + label + ' ' + p.currentValue + ' → ' + p.newValue + ' (max ' + p.max + ') — approve: ' + p.approveCommand;
           entries.appendChild(d);
         });
         (c.waves || []).slice(-5).forEach(function(w) {

@@ -1,0 +1,33 @@
+{
+  "lines": [
+    {
+      "id": "c6",
+      "name": "Vertical slice",
+      "bar": "One complete demo-grade run: menu → play → ending → epilogue, with sound, readable UI, cold-open onboarding",
+      "base": "36fddfd",
+      "status": "done"
+    },
+    {
+      "id": "c7",
+      "name": "Content depth",
+      "bar": "Event-chain library across all acts; characters that accumulate history",
+      "base": "2067de3",
+      "status": "done"
+    },
+    {
+      "id": "c8",
+      "name": "Presentation",
+      "bar": "Map/art pass, portraits, transitions, ambient music bed per act",
+      "base": "1d03308",
+      "status": "done"
+    },
+    {
+      "id": "c9",
+      "name": "Ship shell",
+      "bar": "Resolutions, keybinds, saves UI, performance guard, packaging",
+      "base": "e9366f37e6f9f0d71e2b0e6584a936d458ec25d3",
+      "status": "authoring",
+      "note": "2026-09-24: CynCo authoring, nine attempts, supervisor refused the seal (see campaign-log); human occupant authors the gate"
+    }
+  ]
+}

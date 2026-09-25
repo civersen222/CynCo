@@ -76,7 +76,7 @@ import { probeEdit } from '../vsm/groundingProbe.js'
 import { loadInterventionRates, saveInterventionRates } from '../vsm/interventionPersistence.js'
 import { applyNudgeTemperature } from '../vsm/controlSignals.js'
 import { globalContract } from '../tools/contract.js'
-import { applyHarnessContract, harnessGatePaths, withheldGatePaths, maybeAutoCreateContract, type HarnessContractSpec } from './contractAutoCreate.js'
+import { applyHarnessContract, harnessGatePaths, sealedGatePaths, maybeAutoCreateContract, type HarnessContractSpec } from './contractAutoCreate.js'
 import { gitProbe, runCommandDetailed } from '../tools/contractVerify.js'
 import { globalAskBroker } from '../tools/askBroker.js'
 import { estimateTokensAsync } from '../engine/contextBudget.js'
@@ -1359,8 +1359,11 @@ export class ConversationLoop {
     // a task that carries no withheld gate clears the last one's seal — a seal
     // that outlived its task would refuse a later run a file nothing is
     // measuring, with a refusal that by design cannot say which file.
+    // F154: `sealedGatePaths`, not `withheldGatePaths` — the seal is the one
+    // place the harness's own checker is exempt, because the seal is what makes
+    // a path unrunnable. The driver's write barrier still takes the full set.
     const sealed = opts?.contract
-      ? withheldGatePaths(opts.contract.assertions, this.executor['cwd'])
+      ? sealedGatePaths(opts.contract.assertions, this.executor['cwd'])
       : []
     setTaskSealedPaths(sealed)
     const readable = gates.filter(g => !sealed.includes(g))

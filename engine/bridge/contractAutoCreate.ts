@@ -12,8 +12,9 @@
 // auto-assertions on pinned-tool runs, not harness-authored ones, and
 // enforcement caps at 5 rounds.
 
-import { existsSync } from 'node:fs'
+import { existsSync, statSync } from 'node:fs'
 import { isAbsolute, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { ContractState, globalContract, type HarnessAssertion } from '../tools/contract.js'
 import {
   COMMITTED_ASSERTION,
@@ -282,10 +283,71 @@ function assertionCommand(a: HarnessAssertion): string | null {
  * is not silent — it is a tracked file, so commitScope and the dirty-path
  * machinery both see it move — but it is not prevented.
  */
+/**
+ * Is this path an instrument at all?
+ *
+ * F152: a regular FILE, and nothing else. An instrument is something the driver
+ * can snapshot at dispatch and put back before the check (`snapshotHeldOut` /
+ * `restoreHeldOut`), and something the seal can withhold without withholding
+ * the run's subject matter. A directory is neither — `copyFileSync` on one is
+ * an EPERM on Windows, and the live C9 authoring run died on exactly that
+ * before its first iteration, because its check command names the read-only
+ * archive of the game the mission was sent to audit.
+ */
+export function isInstrumentPath(p: string): boolean {
+  try { return statSync(p).isFile() } catch { return false }
+}
+
+/**
+ * This installation's own source tree — the directory holding the engine and
+ * the scripts that dispatch missions, derived from this module's own location.
+ */
+export const HARNESS_ROOT = resolve(fileURLToPath(new URL('../../', import.meta.url)))
+  .replace(/\\/g, '/').replace(/\/+$/, '')
+
+/**
+ * Is this path part of the harness itself rather than an instrument (F154)?
+ *
+ * The seal exists to hide the file that SCORES a mission. The checker that RUNS
+ * that file is a different thing, and Phase 3's authoring verb is the first
+ * mission whose check command has to name it: the mission's workspace is a
+ * fresh staging directory, so `scripts/cynco-gate-author.mjs` — the verb that
+ * wrote the brief, the sidecar and the mission itself — lies outside the
+ * workspace, exists, and is a file. It therefore qualified as a held-out
+ * instrument and got SEALED: unreadable, unlistable, UNRUNNABLE. The model was
+ * ordered to run the command in DONE WHEN and refused when it did, concluding
+ * in its own words that "the sealed check is not for me to run — the dispatcher
+ * runs it", and set out to author four files with no way to test them.
+ *
+ * A gate is never kept here: every held-out instrument in this project lives
+ * under `~/.cynco/heldout/`, and the note above `harnessGatePaths` already
+ * records that a gate stored inside the repository is out of this mechanism's
+ * scope. So exempting the harness's own tree withholds nothing that was being
+ * withheld before — and, belt and braces, a path under a `heldout` directory is
+ * never exempt whatever tree it sits in.
+ *
+ * The exemption is applied at the SEAL and nowhere else (`sealedGatePaths`).
+ * `harnessGatePaths` still returns the path, so the script stays read-only —
+ * machinery the mission may read and run and must not edit — and
+ * `withheldGatePaths` still returns it, so the driver's F45 snapshot/restore
+ * write barrier keeps covering it. The first cut of this fix filtered
+ * `withheldGatePaths` itself and silently took that barrier off the one file
+ * whose rewriting would change every score in the run.
+ */
+export function isHarnessOwnFile(p: string, harnessRoot: string = HARNESS_ROOT): boolean {
+  const norm = (s: string) => {
+    const t = s.replace(/\\/g, '/').replace(/\/+$/, '')
+    return process.platform === 'win32' ? t.toLowerCase() : t
+  }
+  const root = norm(harnessRoot), abs = norm(p)
+  if (abs.includes('/.cynco/heldout/') || abs.includes('/heldout/')) return false
+  return root.length > 0 && (abs === root || abs.startsWith(root + '/'))
+}
+
 export function harnessGatePaths(
   assertions: HarnessAssertion[],
   cwd: string,
-  exists: (p: string) => boolean = (p) => existsSync(p),
+  exists: (p: string) => boolean = isInstrumentPath,
 ): string[] {
   const root = cwd.replace(/\\/g, '/').replace(/\/+$/, '')
   const inWorkspace = (p: string) => {
@@ -325,14 +387,41 @@ export function harnessGatePaths(
  * commit message. Read-only was the wrong permission for a held-out instrument:
  * `immutableTargetOf`'s refusal tells the model, correctly for a brief, that it
  * may read the file as often as it likes.
+ *
+ * This is the full withheld-instrument set, harness-own files included. The
+ * driver's F45 write barrier (`snapshotHeldOut` / `restoreHeldOut`) reads it,
+ * and that barrier must cover the checker too: a mission that rewrites the file
+ * that scores it is scored by its own edit. What must NOT cover the checker is
+ * the READ seal — see `sealedGatePaths`.
  */
 export function withheldGatePaths(
   assertions: HarnessAssertion[],
   cwd: string,
-  exists: (p: string) => boolean = (p) => existsSync(p),
+  exists: (p: string) => boolean = isInstrumentPath,
 ): string[] {
   const withheld = assertions.filter(a => typeof a !== 'string' && Boolean(a.command))
   return harnessGatePaths(withheld, cwd, exists)
+}
+
+/**
+ * The subset of the withheld set that the READ seal applies to (F154).
+ *
+ * `withheldGatePaths` minus this installation's own source tree. The seal makes
+ * a path unreadable, unlistable and UNRUNNABLE, and a mission ordered to run its
+ * acceptance command cannot be refused the command — the Phase 3 authoring run
+ * was, and set out to author a graded instrument with no way to test it.
+ *
+ * Only `setTaskSealedPaths` and the driver's count of what will be sealed read
+ * this. Everything else — read-only marking, the snapshot barrier — keeps the
+ * full set.
+ */
+export function sealedGatePaths(
+  assertions: HarnessAssertion[],
+  cwd: string,
+  exists: (p: string) => boolean = isInstrumentPath,
+  harnessRoot: string = HARNESS_ROOT,
+): string[] {
+  return withheldGatePaths(assertions, cwd, exists).filter(p => !isHarnessOwnFile(p, harnessRoot))
 }
 
 /** Apply a harness-supplied contract spec. Returns true when applied. */

@@ -23,11 +23,28 @@ describe('governanceCounts', () => {
     expect(c.denialsChanged).toBe(2)
     // consumed: 1 enforced S5 + followed 1 + workOrder 0 + proposals 1 + routed-then-complied 1 (the revert route whose next call was sourceEdit)
     expect(c.recommendationsConsumed).toBe(4)
-    // logged: 2 S5 not enforced + 3 control signals + 10 status frames
-    expect(c.signalsLogged).toBe(15)
+    // logged: 2 S5 not enforced + 3 control signals (turns are not a signal — ruling 13)
+    expect(c.signalsLogged).toBe(5)
   })
   it('is all zeros for a row without governance data', () => {
     expect(governanceCounts({ row: { toolStats: { total: 0 } }, wave: {}, proposalsDecided: 0 })).toEqual({ denialsChanged: 0, recommendationsConsumed: 0, signalsLogged: 0 })
+  })
+  it('does not count status frames (turns) as a signal — Phase 3 ruling 13', () => {
+    const c = governanceCounts({ row: { toolStats: { total: 0 }, turns: new Array(40).fill({}) }, wave: {}, proposalsDecided: 0 })
+    expect(c.signalsLogged).toBe(0)
+  })
+  it('counts only S5-not-enforced and control-signal frames as logged, ignoring turns', () => {
+    const c = governanceCounts({
+      row: {
+        toolStats: { total: 0 },
+        s5Decisions: [{ enforced: false }, { enforced: false }, { enforced: false }],
+        controlSignals: [{}, {}],
+        turns: new Array(40).fill({}),
+      },
+      wave: {},
+      proposalsDecided: 0,
+    })
+    expect(c.signalsLogged).toBe(5)
   })
 })
 

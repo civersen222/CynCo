@@ -1663,3 +1663,63 @@ Verdict: **STOP (budget)** — 2 wave(s) spent; 3 line(s) still FAIL
 Economics after this wave: VERDICT: frontier spent $4295.55 SUPERVISING (development $1692.01 and unattributed $2.71 are excluded — building LocalCode is not oversight). The supervised generation would have cost ~$5203.58 on the API ($2230.74 priced from measured tokens, $2972.84 still estimated) and ran locally for ~$20.79 of power. supervision ratio: $1 of frontier verify oversees ~$1.21 of displaced generation.
 
 Verdict: **CAMPAIGN PASS** — sealed gate PASS, suite gate PASS, sweep unmeasured
+
+## Campaign C9 — gate authoring by CynCo (2026-09-23/24): nine attempts, no seal
+
+Roadmap line c9 ("Ship shell"): `"bar": "Resolutions, keybinds, saves UI, performance guard, packaging"`. Phase 3 gave the gate-author seat (authority 0, bounded 0.5) nine live `--author c9` dispatches between 2026-09-23 17:23 MDT and 2026-09-24 ~21:30 MDT to draft and pass its own acceptance test for that line. The live proof ended without a seal.
+
+### Attempts
+
+| # | Brief | Mission id | Turns | Tool calls / errors | exitReason | Check result |
+|---|---|---|---|---|---|---|
+| 1 | — | (faulted within a minute) | — | — | — | harness fault F152 — the check command named a directory, treated as an instrument |
+| 2 | brief-2.txt | (stopped by the controller, no ledger row graded) | 273 iterations | — | stopped (taskkill) | harness fault F153 discovered live — "hit 12 consecutive Bash failures on a contract it could not fulfil"; the run was stopped rather than burn GPU on an unfulfillable contract |
+| 3 | brief-3 | (stopped by the controller, no ledger row graded) | 306 iterations | — | stopped (~11 min) | harness fault F154 — Task 7 report: "the model was **refused the check command itself** at iteration 6 — **F154**. Stopped at 306 iterations, ~11 min." The runner that executes a gate is not the gate; the harness's own check script was treated as a sealed instrument |
+| 4 | brief-4 | brief-4-1790216986923 | 497 | 474 / 67 | timeout | `verified` null; gate + perturb SOUND (12 lines, clean BASE MISS, 6 MUST-FAIL red, C9.9 = 0 regressions); only `positive_c9.py` failed (stale, crashed on `import gilded.ui.views`) |
+| 5/6 | brief-5 / brief-6 | brief-6-1790236283395 | 450 | 449 / 47 | timeout | check FAIL, 2 problems, 11–12 lines, BASE clean MISS, C9.9 = 0 regressions, all six MUST-FAIL red; only `positive_c9.py` failed — the model rewrote `import gilded.ui.views` four times after being told it does not exist |
+| 7 | brief-7 | brief-7-1790253047710 | 158 | 156 / 7 | timeout | driver's advisory check PASSED, exit 0, 277046 ms — the staged triple passed lint + calibration for the first time (11–12 graded lines) |
+| 8 | brief-8 | brief-8-1790264050857 | 530 | 521 / 49 | timeout | runner's subprocess check REFUSED, 3 problems — positive shim null terminator + 2 errors, perturb header unclassified for the 8 new supervisor-required ids (4 × seeds 7/11); F155 retry fired live for the first time |
+| 9 | brief-9 | brief-9-1790281667802 | 689 | 637 / 54 | timeout | runner's subprocess check REFUSED with the same 3 problems as attempt 8 — the positive shim was edited three times, the perturb header never touched |
+
+Attempt 7's triple was sent to supervisor review in parallel with the implementer raising the `gate/c9` proposal; the proposal was rejected by the supervisor (`decidedBy: supervisor`), one refusal recorded in state, and the roadmap line reopened `proposed → authoring`.
+
+### Supervisor ruling (quoted verbatim, `c9-gate-supervisor-review.md`, "### Ruling: DO NOT SEAL")
+
+> The triple is mechanically clean — BASE misses by absence, the stub's header is exact, the shim
+> passes — but it does not measure the roadmap line. Three of the five ship-shell items (keybinds,
+> saves UI, performance guard) are graded only as values placed on `AppState` plus function calls
+> whose discriminators a 30-line stub defeats, and the two items that do have an outcome line
+> (resolutions, packaging) are either honest-unreachable (C1–C3: the gate cannot enumerate a populated
+> `RegionSet`, never draws, never visits the Settings screen, and reads a settings file the game does
+> not write) or trivially satisfied (a 3-line toml). The positive shim confirms this from the other
+> side: it patches the gate's probes (`SETTINGS_PATH`, `_LiveScreen`, `_apply_action`, `RegionSet.__iter__`,
+> seed-only `load_slot`) rather than the game's behaviour. Sealing it would produce a campaign that
+> either crashes the gate on the first honest commit or PASSes with none of the five features shipped.
+> The draft would additionally fail `draftToSpec` at seal time (I3). A re-authoring attempt must make
+> these changes; each is written as a problem line the model can act on:
+
+The supervisor's ruling (from the ledger, after the review) also set the terms for what followed: "(3) attempt 8 with the full 4 h budget; (4) if the supervisor refuses again, Phase 3 ships the machinery with this evidence and no seal — a campaign graded by a gate that measures nothing is worse than no campaign." Attempts 8 and 9 rewrote the gate to 14 lines carrying every id the supervisor required, and rewrote the positive shim three times, but never made the one-line perturb-header edit named verbatim in two of the four operator notes — the runner's check refused both with the same three problems.
+
+### Harness defects found and fixed by the live run
+
+- **F152** — a check command that names a directory is treated as an instrument; would have sealed the mission's own subject matter (attempt 1, faulted within a minute).
+- **F153** — the acceptance command named its script by a relative path, so the one command the mission is graded on could not run anywhere it was told to run (attempt 2).
+- **F154** — making the acceptance command absolute made its own script a sealed instrument, so the runner that executes a gate is not the gate had to be exempted at the seal site only (attempt 3).
+- **F155** — bun's `spawnSync` timeout deadline is measured from the previous spawn in the same process, so the runner's first gate run after an idle gap (hours between checks) died in milliseconds and was graded as a multi-problem failure instead of a harness fault; fixed with elapsed-based timeout detection and a bounded retry-once. Proven live in attempts 8 and 9: "`[spawn] bun: an impossible ETIMEDOUT after 25 ms (cap 7200000 ms) — retried once and the retry ran`."
+
+### Operator notes (Phase 2c channel)
+
+Four operator notes were sent over the course of attempts 4, 8 and 9, each delivered within seconds to a minute of being queued:
+
+1. Attempt 4, 21:57 MDT (1 h in) — named the two missing files, the header contract and the check command; "queued then delivered at the next iteration in 19 s (first live use of the channel on a real mission)."
+2. Attempt 8, 10:30 MDT (1 h in) — ordered the supervisor's problem list top to bottom with an Edit after each line, then the positive shim through the game's seams; "queued, delivered at the next iteration in 75 s."
+3. Attempt 9, dispatch time — the third note was "queued at dispatch naming the two mechanical remainders (header ids → MUST-FAIL; the shim through the game's seams)."
+4. Attempt 9, 15:25 MDT (1 h in) — gave the exact MUST-FAIL line the check output dictates and the shim procedure; "delivered in 9 s."
+
+A planned fifth note (attempt 9, 16:25 MDT) was withheld by ruling: "no fifth note; the seat's behaviour is the finding."
+
+### Closing ruling (quoted verbatim, ledger)
+
+> RULING (per the pre-ruling): the live proof ENDS WITHOUT A SEAL. Phase 3 ships the seat, the verbs, the mechanical acceptance test, the evidence ladder and the four harness defects it found; the roadmap line c9 stays 'authoring' with the staged triple preserved in ~/.cynco/authoring/c9 and its refusal recorded; the C9 gate falls back to the human occupant; no C9 campaign is started. Outcome for the ladder: authority stays 0 (n = 0 sealed CynCo lines; the supervisor refusal is a gate-level negative that Phase 4 must add to the evidence).
+
+See `docs/cynco-failure-log.md` F156 for the seat's failure mode (analysis without action) and `docs/cynco-self-orchestration-spec.md` §10 for the pointer into Phase 3.

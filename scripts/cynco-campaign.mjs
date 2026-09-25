@@ -3,6 +3,9 @@
 //   bun scripts/cynco-campaign.mjs docs/civkings-redesign-briefs/c8.campaign.json [--waves N] [--resume] [--dry-run] [--sync]
 //                                  [--approve-proposal ideation/brief] [--reject-proposal ideation/brief]
 //                                  [--adopt-inflight]
+//   bun scripts/cynco-campaign.mjs --author c9            # write the next campaign's sealed gate (Phase 3)
+//   bun scripts/cynco-campaign.mjs --check <staging> <base>
+//   bun scripts/cynco-campaign.mjs --approve-proposal gate/c9   # seal what --author staged
 //
 // S2: salvage + no-progress stop.   S3: budgets + invariants handed to the wave.
 // S3*: sealed gate, suite gate, sweep.   S4: brief (generator binds; ideation advises).
@@ -22,10 +25,13 @@ import { gradeWave } from './cynco-campaign-grade.mjs'
 import { verdictEntry, notify, commitVerdict, economicsLines } from './cynco-campaign-verdict.mjs'
 import { runIdeation, measureFollowed, authorityRegistry, promotionProposal, capProposal, effectiveInvariants } from './cynco-ideation.mjs'
 import { patchLedgerRow, findLedgerRow } from './cynco-ledger-patch.mjs'
+import { exportGateLines, resealRecord, linesOf } from './cynco-gate-lines.mjs'
+import { gateAuthorPromotion } from './cynco-gate-author.mjs'
 import { sidecarPath } from './cynco-contract.mjs'
 import { exportTriples } from './cynco-triples.mjs'
 import { analyseDenials } from './cynco-signal-validation.mjs'
 import { governanceCounts, governancePosiwid } from './cynco-governance-posiwid.mjs'
+import { loadRoadmap, saveRoadmap, rejectLine, ROADMAP_PATH } from './cynco-roadmap.mjs'
 
 const BRIEFS_DIR = 'docs/civkings-redesign-briefs'
 const LOG = `${BRIEFS_DIR}/campaign-log.md`
@@ -133,6 +139,19 @@ export const defaultIo = {
     // driver has written its ledger line.
     return { driverLog }
   },
+  // The same launcher, called with the pieces spelled out rather than read off
+  // a campaign spec. The AUTHORING mission (scripts/cynco-gate-author.mjs) has
+  // no spec — writing one is the thing it is for — so it names its own marker,
+  // cwd, wall clock and check command, and hands over an env it built itself.
+  // `dispatch` above is left exactly as it was: the wave path is the measured
+  // one and must not change behaviour to make room for this.
+  dispatchRaw: async ({ briefFile, marker, cwd, timeoutS, checkCmd, env }) => {
+    const r = spawnSync('bash', ['scripts/dispatch-mission.sh', briefFile, marker, cwd, String(timeoutS), checkCmd ?? ''], { env, encoding: 'utf8', timeout: 900_000 })
+    if (r.status !== 0) throw new Error(`dispatch failed (exit ${r.status}): ${(r.stdout + r.stderr).slice(-2000)}`)
+    if (r.stdout) console.log(r.stdout.trimEnd())
+    if (r.stderr?.trim()) console.log(r.stderr.trimEnd())
+    return { driverLog: env?.DRIVER_LOG ?? null }
+  },
   // The LEDGER LINE is the authority, not the pid. The driver writes its row
   // and then tears down (engine shutdown, snapshots, the odd orphan); a pid
   // probe answers "is that process object still there", which on Windows has
@@ -187,6 +206,7 @@ export const defaultIo = {
   appendLog: (text) => appendFileSync(LOG, '\n' + text),
   exportTriples: () => exportTriples(),
   analyseDenials: (summary) => analyseDenials(summary),
+  exportGateLines: () => exportGateLines(),
 }
 
 /**
@@ -228,8 +248,18 @@ export async function runWave(spec, state, io = defaultIo) {
   // re-run on the next invocation and the campaign continues from there.
   const sha256 = io.sha256 ?? defaultIo.sha256
   const gateSha256 = sha256(spec.gate)
-  if (s.calibration && (gateSha256 !== s.calibration.gateSha256 || sha256(spec.perturb) !== s.calibration.perturbSha256)) {
-    return stopWave(spec, state, io, { wave, base, why: 'gate or perturb changed since calibration — re-run to recalibrate' })
+  // The positive shim is part of the instrument (Rule 14): it decides whether
+  // the gate was ever reachable, so moving it invalidates the calibration too.
+  // The refusal NAMES which of the three moved — the operator's next move is to
+  // look at that file, and "gate or perturb" sends them to the wrong one.
+  const moved = s.calibration
+    ? [['gate', gateSha256 !== s.calibration.gateSha256],
+       ['perturb', sha256(spec.perturb) !== s.calibration.perturbSha256],
+       ['positive shim', Boolean(spec.positive) && sha256(spec.positive) !== s.calibration.positiveSha256]]
+      .filter(([, changed]) => changed).map(([name]) => name)
+    : []
+  if (moved.length) {
+    return stopWave(spec, state, io, { wave, base, why: `${moved.join(' and ')} changed since calibration — re-run to recalibrate` })
   }
   const registry = authorityRegistry(s)
   const commander = registry.whoCommands('brief')?.component ?? 'generator'
@@ -346,7 +376,14 @@ export async function runWave(spec, state, io = defaultIo) {
   // proposal in the very wave whose followed × landed made the case. Only
   // `verdictSha` and `notified` cannot be known yet; they are patched onto
   // this same record below, once the verdict is committed and sent.
-  const rec = { wave, missionId, briefFile, base, head: grade.sha, gateSha256, dispatchedAt, gradedAt: new Date().toISOString(), gate: grade.gate, suite: grade.suite, sweep: grade.sweep, sweepFault: grade.sweepFault ?? null, posiwid: grade.posiwid, verified: grade.verified,
+  // `gate.author` (Phase 3): who WROTE the bar this wave was judged against.
+  // Every graded field of `grade.gate` is kept exactly as the grader produced
+  // it — the author is added beside them, never substituted for one. It is the
+  // join key the gate-line dataset needs: without it, a held line cannot be
+  // attributed to the seat that sealed it, and the promotion has no denominator.
+  // `spec.author` is already defaulted to 'human' by loadCampaignSpec; the
+  // fallback here is for an adopted or hand-built spec that never went through it.
+  const rec = { wave, missionId, briefFile, base, head: grade.sha, gateSha256, dispatchedAt, gradedAt: new Date().toISOString(), gate: { ...grade.gate, author: spec.author ?? 'human' }, suite: grade.suite, sweep: grade.sweep, sweepFault: grade.sweepFault ?? null, posiwid: grade.posiwid, verified: grade.verified,
     outcome: { landed: row.outcome === 'landed', exitReason: row.exitReason },
     s4: { generatorInput: { failIds: fails.map(f => f.id), priorMissionId: prior?.missionId ?? null }, ideation, ideationMeta, authority: s.ideationAuthority ?? 0, commander, followed, workOrder },
     decision, verdictSha: null, notified: false }
@@ -384,13 +421,29 @@ export async function runWave(spec, state, io = defaultIo) {
     rec.governancePosiwid = { ...governance, counts }
   } catch (e) { console.error(`[campaign] governance POSIWID skipped: ${e?.message ?? e}`) }
 
+  // Phase 3: the gate-line dataset, regenerated with the same discipline as
+  // the triples above — after the wave record is on disk (so the export sees
+  // the wave it is the verdict for), and a failure is logged rather than
+  // faulted, because the dataset is derived and rebuilt in full next time.
+  let gateLines = null
+  try { gateLines = (io.exportGateLines ?? defaultIo.exportGateLines)().summary ?? null }
+  catch (e) { console.error(`[campaign] gate-lines export skipped: ${e?.message ?? e}`) }
+
   // §E: two proposals must not go pending in the same wave. promotionProposal
   // is computed FIRST; when it is about to be raised, capProposal is skipped
   // entirely (set to null) rather than called — calling it here would see
   // `s.proposals` before the promotion proposal below is pushed onto it, so
   // its own pending check could not see the truth.
   const proposal = promotionProposal(state.waves(), s.ideationAuthority ?? 0)
-  const cap = proposal ? null : capProposal(denialAnalysis, spec, s)
+  // The gate-author promotion (spec ruling 11) is the THIRD proposal that could
+  // go pending in one wave, and §E does not care which of them got there first:
+  // it is computed only when the ideation promotion is not about to be raised
+  // AND nothing is already pending — including a `gate/<id>` the operator has
+  // not decided yet, which is exactly the wrong moment to ask for more authority.
+  const gatePromotion = !proposal && !(s.proposals ?? []).some(p => p.status === 'pending')
+    ? gateAuthorPromotion(gateLines, s.gateAuthorAuthority ?? 0)
+    : null
+  const cap = proposal || gatePromotion ? null : capProposal(denialAnalysis, spec, s)
 
   const sameFails = Array.isArray(s.lastFails) && grade.gate.fails.map(f => f.id).join() === s.lastFails.join()
   s.consecutiveNoProgress = sameFails && commits.length === 0 ? (s.consecutiveNoProgress ?? 0) + 1 : 0
@@ -398,11 +451,12 @@ export async function runWave(spec, state, io = defaultIo) {
   s.lastVerdictAt = new Date().toISOString()
   delete s.inFlight
   if (proposal && !s.proposals.some(p => p.status === 'pending')) { s.proposals.push({ ...proposal, proposedAt: new Date().toISOString() }); await tryNotify(io, `${spec.id}: PROPOSAL ${proposal.name} ${s.ideationAuthority ?? 0} → ${proposal.newValue} (max ${proposal.bounds.max}, p=${proposal.evidence.p.toFixed(3)}). Approve with --approve-proposal ${proposal.name}`) }
+  if (gatePromotion) { s.proposals.push({ ...gatePromotion, proposedAt: new Date().toISOString() }); await tryNotify(io, `${spec.id}: PROPOSAL ${gatePromotion.name} ${s.gateAuthorAuthority ?? 0} → ${gatePromotion.newValue} (max ${gatePromotion.bounds.max}) — ${gatePromotion.evidence.held}/${gatePromotion.evidence.n} CynCo gate lines held, ci lo ${gatePromotion.evidence.ci[0].toFixed(3)}. Approve with --approve-proposal ${gatePromotion.name}`) }
   if (cap) { s.proposals.push({ ...cap, proposedAt: new Date().toISOString() }); await tryNotify(io, `${spec.id}: PROPOSAL ${cap.name} ${cap.currentValue} → ${cap.newValue} (max ${cap.bounds.max}, p=${cap.evidence.pAdjusted.toFixed(3)}). Approve with --approve-proposal ${cap.name}`) }
 
   // Verdict (campaign log, economics, local commit, algedonic).
   const ideationRecord = ideation ? { authority: s.ideationAuthority ?? 0, hypotheses: ideation.hypotheses, followed } : null
-  const entry = verdictEntry({ spec, wave, row, grade, decision, ideationRecord, economicsLines: io.economics(), denialAnalysis, denialScope, capProposal: cap, governancePosiwid: governance })
+  const entry = verdictEntry({ spec, wave, row, grade, decision, ideationRecord, economicsLines: io.economics(), denialAnalysis, denialScope, capProposal: cap, governancePosiwid: governance, gateLines })
   io.appendLog(entry)
   // Ruling 5: commitVerdict matches these against `git status --porcelain`,
   // which speaks repo-relative forward slashes and nothing else.
@@ -502,7 +556,7 @@ export function inFlightRefusal(state) {
 /** The operator's decision on a pending proposal, applied to state. Pure over
  *  the state object so the merge-on-save rule (CampaignState.save) and the
  *  CLI branch share one definition of what "approved" does. */
-export function applyProposalDecision(s, name, approve) {
+export function applyProposalDecision(s, name, approve, { decidedBy = 'supervisor' } = {}) {
   const p = (s.proposals ?? []).find(x => x.name === name && x.status === 'pending')
   if (!p) return { ok: false, why: `no pending proposal ${name}` }
   // Only editGapCap and commitGapCap are tunable (revertBan/codeIndexFirst are
@@ -514,12 +568,44 @@ export function applyProposalDecision(s, name, approve) {
     if (cap !== 'editGapCap' && cap !== 'commitGapCap') return { ok: false, why: `proposal ${name} names a cap that is not tunable` }
   }
   p.status = approve ? 'approved' : 'rejected'; p.decidedAt = new Date().toISOString()
+  // A `gate/<id>` decision is a decision about CODE, not a parameter: the only
+  // thing it changes in state is who said so. The seal itself — the copy into
+  // the sealed tree, the campaign json, the identity check, the campaign-log
+  // entry — is done by the CLI afterwards, because this function must stay
+  // pure over the state object (CampaignState.save calls it on every write).
+  // `decidedBy` is 'supervisor' for every operator verb and 'auto' only when
+  // the gate-author seat sealed at earned authority (spec ruling 2). It is the
+  // one field that says whether a human ever looked at this seal.
+  if (p.name.startsWith('gate/')) { p.decidedBy = decidedBy; return { ok: true, status: p.status } }
   if (approve && p.name === 'ideation/brief') s.ideationAuthority = Math.min(p.newValue, p.bounds.max)
+  if (approve && p.name === 'gate-author/gate') s.gateAuthorAuthority = Math.min(p.newValue, p.bounds.max)
   if (approve && p.name.startsWith('invariants/')) {
     const cap = p.name.slice('invariants/'.length)
     s.invariantOverrides = { ...(s.invariantOverrides ?? {}), [cap]: Math.min(p.newValue, p.bounds.max) }
   }
   return { ok: true, status: p.status }
+}
+
+/**
+ * A RESEAL: a campaign that was already calibrated is being calibrated again,
+ * so the bar moved under a run in progress.
+ *
+ * This is the falsifier for the whole gate-author claim. "CynCo's gate held"
+ * means nothing if CynCo (or anyone) could quietly reword the gate mid-campaign
+ * and then pass it — and the only moment that is observable is HERE, while the
+ * runner still holds the calibration it is about to overwrite. Taken any later
+ * the old line text is gone and every reseal reads as "nothing changed".
+ *
+ * Pure over the state object, and it records whether or not anyone wanted it
+ * recorded: a first calibration is not a reseal and returns null.
+ */
+export function recordReseal(s, prev, next, { at, wave }) {
+  if (!prev) return null
+  const rec = resealRecord({ at, wave,
+    from: { gateSha256: prev.gateSha256, lines: linesOf(prev) },
+    to: { gateSha256: next.gateSha256, lines: linesOf(next) } })
+  s.reseals = [...(s.reseals ?? []), rec]
+  return rec
 }
 
 /**
@@ -608,18 +694,139 @@ export function budgetSpent(state, spec) {
   return (state.state.waveCount ?? 0) >= spec.budget.waves
 }
 
-export async function main(argv) {
+/**
+ * The authoring io, built here and handed over: `cynco-gate-author.mjs` never
+ * imports this module (that would be an ESM cycle — the verb branches below
+ * import IT), so the runner's dispatcher, driver wait, ledger reader, env
+ * scrubber, lock and campaign-log append travel as data.
+ */
+function authorIo(author, roadmapPath = ROADMAP_PATH) {
+  // Review #8: the roadmap seam, whole. `main`'s injectable `roadmapPath` was
+  // read by the reject branch only; the approve branch and the author verbs
+  // loaded and saved the checked-in file regardless. Every roadmap read and
+  // write the author module makes now goes through the one path main was given
+  // (the module passes ROADMAP_PATH as the save target; it is overridden here).
+  return { ...authorIoBase(author), loadRoadmap: () => loadRoadmap(roadmapPath), saveRoadmap: (_p, r) => saveRoadmap(roadmapPath, r) }
+}
+
+function authorIoBase(author) {
+  return author.defaultAuthorIo({ dispatchRaw: defaultIo.dispatchRaw, waitForDriver: defaultIo.waitForDriver, missionIdFrom: defaultIo.missionIdFrom,
+    readRow: defaultIo.readRow, appendLog: defaultIo.appendLog, dispatchEnv, takeLock, releaseLock,
+    // Phase 3: the auto-approve branch records its own decision, and the
+    // algedonic channel says so — a seal no human approved must still page the
+    // owner the moment it happens. `seatAuthority` is what makes the branch
+    // reachable at all: the promotion is approved into the state of the
+    // campaign that gathered the evidence, never into the fresh one being
+    // authored, so the seat's authority has to be read across all of them.
+    applyProposalDecision, notify: defaultIo.notify,
+    seatAuthority: () => author.gateAuthorAuthorityAcrossCampaigns(join(cyncoHome(), 'campaigns')) })
+}
+
+export async function main(argv, deps = {}) {
   // Every path below reaches for a repo-relative path (scripts/, docs/,
   // benchmark/cynco-ledger/). Run from anywhere else and the first symptom is
   // a brief written into the wrong tree, not an error.
   if (!existsSync('scripts/dispatch-mission.sh')) { console.error('[campaign] run from the localcode repo root'); return 2 }
+  const flag = (n) => argv.indexOf(n)
+  const loadAuthor = deps.authorModule ? async () => deps.authorModule : () => import('./cynco-gate-author.mjs')
+  // Injectable because the reject path WRITES it, and a test that redirects
+  // CYNCO_HOME still shares this repo-relative file with the live campaign: the
+  // first cut of `--reject-proposal` rewound the checked-in c9 line from
+  // `proposed` to `authoring` every time the suite ran.
+  const roadmapPath = deps.roadmapPath ?? ROADMAP_PATH
+
+  // ── the gate-authoring verbs ───────────────────────────────────────────
+  //
+  // These run BEFORE loadCampaignSpec, and that ordering is the whole point:
+  // `<id>.campaign.json` is what the authoring run PRODUCES. Requiring it here
+  // would make the verb that writes a campaign spec depend on the campaign
+  // spec already existing. The id comes from `--author <id>` / the proposal
+  // name, falling back to the argv path's basename, and the state is loaded by
+  // id (created with freshState when this campaign has no state dir yet).
   const specPath = argv.find(a => a.endsWith('.campaign.json'))
-  if (!specPath) { console.error('usage: bun scripts/cynco-campaign.mjs <id>.campaign.json [--waves N] [--resume] [--dry-run] [--sync] [--adopt-inflight] [--approve-proposal NAME] [--reject-proposal NAME]'); return 2 }
+  const pathId = specPath ? basename(specPath).replace(/\.campaign\.json$/, '') : null
+  if (flag('--check') !== -1) {
+    const author = await loadAuthor()
+    return await author.authorMain(argv, authorIo(author, roadmapPath))
+  }
+  if (flag('--author') !== -1) {
+    const named = argv[flag('--author') + 1]
+    const id = named && !named.startsWith('--') ? named : pathId
+    if (!id) { console.error('usage: bun scripts/cynco-campaign.mjs --author <id>'); return 2 }
+    if (pathId && named && !named.startsWith('--') && pathId !== named) {
+      console.error(`[campaign] --author ${named} was given alongside ${specPath} — name one campaign, not two`); return 2
+    }
+    const author = await loadAuthor()
+    // `--note <file>` rides through: a supervisor refusal's CONTENT belongs in the
+    // next resume's brief, and this is the only path that writes one.
+    const noteIdx = flag('--note')
+    const forward = noteIdx !== -1 && argv[noteIdx + 1] ? ['--author', id, '--note', argv[noteIdx + 1]] : ['--author', id]
+    return await author.authorMain(forward, authorIo(author, roadmapPath))
+  }
+  const decisionIdx = flag('--approve-proposal') !== -1 ? flag('--approve-proposal') : flag('--reject-proposal')
+  const decisionName = decisionIdx !== -1 ? argv[decisionIdx + 1] : null
+  if (decisionName?.startsWith('gate/')) {
+    const approve = flag('--approve-proposal') !== -1
+    const id = decisionName.slice('gate/'.length)
+    if (!id) { console.error('[campaign] --approve-proposal gate/<id> needs a campaign id'); return 2 }
+    const state = new CampaignState(join(cyncoHome(), 'campaigns', id)).load()
+    if (!approve) {
+      const r = applyProposalDecision(state.state, decisionName, false)
+      if (!r.ok) { console.error(r.why); return 2 }
+      // A refusal has to REOPEN the line, or the campaign is stuck: `--author`
+      // refuses a `proposed` line and `nextOpenLine` holds every later line behind
+      // it, so a DO-NOT-SEAL verdict would leave the gate neither sealable nor
+      // re-authorable. `rejectLine` is the one backward move the ladder permits.
+      const roadmap = loadRoadmap(roadmapPath)
+      let reopened = false
+      try { rejectLine(roadmap, id); saveRoadmap(roadmapPath, roadmap); reopened = true }
+      catch (e) { console.error(`[campaign] proposal rejected, but the roadmap line was not reopened: ${e.message}`) }
+      // The note is the refusal's CONTENT, and the next resume's brief is the only
+      // place it can do any work. Recorded by path, not copied: the reviewer's file
+      // stays the one source, and a resume with no `--note` reuses the last one.
+      const notePath = flag('--note') !== -1 ? argv[flag('--note') + 1] : null
+      if (notePath) {
+        const a = state.state.authoring?.[id]
+        if (a) {
+          a.refusals = a.refusals ?? []
+          a.refusals.push({ at: new Date().toISOString(), by: 'supervisor', notePath })
+        } else {
+          console.error(`[campaign] --note given but state has no authoring.${id} to record it against`)
+        }
+      }
+      state.save()
+      console.log(`[campaign] proposal ${decisionName} ${r.status}${reopened ? '; roadmap line reopened to authoring' : ''}`
+        + `${notePath ? `; supervisor note recorded (${notePath})` : ''}`)
+      return 0
+    }
+    // SEAL FIRST, decide after. Recording the approval up front made a refused
+    // seal a dead end: the proposal was no longer `pending`, so there was
+    // nothing left for the operator to approve once the draft was fixed, and
+    // the roadmap said `sealed` for a campaign that had not been. Nothing
+    // about the decision is lost by taking it second — sealGate writes nothing
+    // visible until every check has passed.
+    if (!(state.state.proposals ?? []).some(p => p.name === decisionName && p.status === 'pending')) {
+      console.error(`no pending proposal ${decisionName}`); return 2
+    }
+    const author = await loadAuthor()
+    const roadmap = loadRoadmap(roadmapPath)
+    const sealed = await author.sealGate({ id, state, roadmap, io: authorIo(author, roadmapPath) })
+    if (!sealed.ok) {
+      console.error(`[campaign] SEAL REFUSED for ${id} — the proposal stays pending and the roadmap line stays proposed:\n  ${sealed.problems.join('\n  ')}`)
+      return 2
+    }
+    const r = applyProposalDecision(state.state, decisionName, true)
+    if (!r.ok) { console.error(r.why); return 2 }
+    state.save()
+    console.log(`[campaign] ${id} sealed: ${sealed.specPath} written, triple copied, roadmap line sealed; proposal ${decisionName} ${r.status}`)
+    return 0
+  }
+
+  if (!specPath) { console.error('usage: bun scripts/cynco-campaign.mjs <id>.campaign.json [--waves N] [--resume] [--dry-run] [--sync] [--adopt-inflight] [--approve-proposal NAME] [--reject-proposal NAME] | --author <id> | --check <stagingDir> <baseDir>'); return 2 }
   const spec = loadCampaignSpec(specPath)
   const identity = checkIdentity(spec)
   if (!identity.ok) { console.error('[campaign] IDENTITY VIOLATION:\n  ' + identity.problems.join('\n  ')); return 2 }
   const state = new CampaignState(join(cyncoHome(), 'campaigns', spec.id)).load()
-  const flag = (n) => argv.indexOf(n)
   // The operator's verbs come BEFORE the lock. A campaign runs for days and
   // its runner holds runner.lock the whole time; a proposal decision that had
   // to wait for the wave to end would arrive after the wave that needed it.
@@ -670,14 +877,21 @@ export async function main(argv) {
   // CALIBRATE whenever the instruments changed (or never ran).
   const sha = (p) => calibrateIo.sha256(p)
   const cal = state.state.calibration
-  if (!cal || cal.gateSha256 !== sha(spec.gate) || cal.perturbSha256 !== sha(spec.perturb)) {
-    console.log('[campaign] CALIBRATE (Rule 11): gate/perturb changed or never calibrated')
+  if (!cal || cal.gateSha256 !== sha(spec.gate) || cal.perturbSha256 !== sha(spec.perturb) || (spec.positive && cal.positiveSha256 !== sha(spec.positive))) {
+    console.log('[campaign] CALIBRATE (Rule 11): gate/perturb/positive changed or never calibrated')
     const r = await calibrate(spec)
     if (!r.ok) { console.error('[campaign] CALIBRATION REFUSED:\n  ' + r.problems.join('\n  ')); await notify(`${spec.id}: calibration refused — ${r.problems[0]}`); return 3 }
     // basePasses is what wave 1's brief prints as "Already PASS at BASE and must
     // stay so" — the only thing telling the worker which lines it may not break.
-    state.state.calibration = { gateSha256: r.gateSha256, perturbSha256: r.perturbSha256, baseFails: r.baseFails, basePasses: r.basePasses ?? [], perturbFails: r.perturbFails, calibratedAt: new Date().toISOString() }
+    const next = { gateSha256: r.gateSha256, perturbSha256: r.perturbSha256, positiveSha256: r.positiveSha256 ?? null, baseFails: r.baseFails, basePasses: r.basePasses ?? [], perturbFails: r.perturbFails, calibratedAt: new Date().toISOString() }
+    // BEFORE the overwrite: `cal` is the calibration this campaign has been
+    // measured against so far, and once the line below runs it is gone. `wave`
+    // is the number of waves already spent — the reseal lands between that wave
+    // and the next one.
+    const reseal = recordReseal(state.state, cal, next, { at: next.calibratedAt, wave: state.state.waveCount ?? 0 })
+    state.state.calibration = next
     state.save()
+    if (reseal) console.log(`[campaign] RESEAL recorded after wave ${reseal.wave}: gate ${reseal.from.gateSha256} → ${reseal.to.gateSha256}, ${reseal.changedLineIds.length} graded line(s) changed${reseal.changedLineIds.length ? `: ${reseal.changedLineIds.join(', ')}` : ''}`)
     console.log(`[campaign] calibrated: BASE MISS ${r.baseFails.length}, perturb honest${r.suiteBaselineCreated ? ', suite baseline written' : ''}`)
   }
   if (dryRun) {

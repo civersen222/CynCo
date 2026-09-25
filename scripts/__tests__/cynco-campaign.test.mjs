@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { decide, runWave, waveContext, budgetSpent, defaultIo, claimedSurvivors, dispatchEnv, dirtyOutsideCampaign, inFlightRefusal, adoptInFlight, takeLock, releaseLock } from '../cynco-campaign.mjs'
+import { decide, runWave, waveContext, budgetSpent, defaultIo, claimedSurvivors, dispatchEnv, dirtyOutsideCampaign, inFlightRefusal, adoptInFlight, takeLock, releaseLock, applyProposalDecision, recordReseal, main } from '../cynco-campaign.mjs'
+import { summarize as summarizeGateLines } from '../cynco-gate-lines.mjs'
 import { adopt } from '../cynco-campaign-adopt.mjs'
 import { CampaignState } from '../cynco-campaign-state.mjs'
 import { promotionProposal } from '../cynco-ideation.mjs'
@@ -14,6 +15,7 @@ import { fileURLToPath } from 'node:url'
 // computed exactly the way the runner computes them.
 const GATE = fileURLToPath(new URL('../cynco-campaign-grade.mjs', import.meta.url))
 const PERTURB = fileURLToPath(new URL('../cynco-campaign-spec.mjs', import.meta.url))
+const POSITIVE = fileURLToPath(new URL('../cynco-gate-lint.mjs', import.meta.url))
 
 const spec = { id: 'c8', title: 't', repo: 'C:/repo', base: '1d03308', marker: 'stage c8 complete', keepGreen: 'python -m pytest a.py -q',
   gate: GATE, perturb: PERTURB,
@@ -63,7 +65,20 @@ const freshState = () => {
 const inertTriples = {
   exportTriples: () => ({ summary: { denials: {}, quiet: {}, campaigns: {} } }),
   analyseDenials: () => null,
+  // Same reasoning for the gate-lines export the VERDICT now regenerates: the
+  // real exporter reads ~/.cynco/campaigns, and a unit test must never drag the
+  // live campaign dir in. `null` is what a campaign with no evidence yet looks
+  // like, so the promotion and the verdict line both stay quiet.
+  exportGateLines: () => ({ rows: [], summary: null }),
 }
+
+/** A gate-lines summary with `held` of `n` CynCo lines and `hHeld` of `hN` human ones. */
+const gateLineSummary = (held, n, hHeld, hN) => summarizeGateLines([
+  ...Array.from({ length: held }, (_, i) => ({ author: 'cynco', outcome: 'held', lineId: `c${i}` })),
+  ...Array.from({ length: n - held }, (_, i) => ({ author: 'cynco', outcome: 'resealed', lineId: `cr${i}` })),
+  ...Array.from({ length: hHeld }, (_, i) => ({ author: 'human', outcome: 'held', lineId: `h${i}` })),
+  ...Array.from({ length: hN - hHeld }, (_, i) => ({ author: 'human', outcome: 'resealed', lineId: `hr${i}` })),
+])
 
 describe('runWave', () => {
   it('drives one wave through the injected io and records it', async () => {
@@ -520,22 +535,68 @@ describe('runWave — the instrument must not move under the campaign', () => {
     notify: async () => true,
   })
 
-  it('stops when the gate sha moved since calibration', async () => {
+  // The refusal names the file the operator has to go and look at. "gate or
+  // perturb" sends them to the wrong one two times in three.
+  it('stops when the gate sha moved since calibration, and says it was the gate', async () => {
     const state = freshState()
     state.state.calibration.gateSha256 = 'not-the-gate-we-calibrated'
     const seen = { briefs: 0, dispatched: 0 }
     const rec = await runWave(spec, state, noDispatch(seen))
     expect(rec.decision.kind).toBe('stop')
-    expect(rec.decision.why).toMatch(/gate or perturb changed since calibration/)
+    expect(rec.decision.why).toBe('gate changed since calibration — re-run to recalibrate')
     expect(seen.dispatched).toBe(0)
     expect(state.state.waveCount).toBe(0)
   })
 
-  it('stops when the perturb sha moved since calibration', async () => {
+  it('stops when the perturb sha moved since calibration, and says it was the perturb', async () => {
     const state = freshState()
     state.state.calibration.perturbSha256 = 'moved'
     const rec = await runWave(spec, state, noDispatch({ briefs: 0, dispatched: 0 }))
     expect(rec.decision.kind).toBe('stop')
+    expect(rec.decision.why).toBe('perturb changed since calibration — re-run to recalibrate')
+  })
+
+  it('names every instrument that moved when more than one did', async () => {
+    const state = freshState()
+    state.state.calibration.gateSha256 = 'moved'
+    state.state.calibration.perturbSha256 = 'moved'
+    state.state.calibration.positiveSha256 = 'moved'
+    const rec = await runWave({ ...spec, positive: POSITIVE }, state, noDispatch({ briefs: 0, dispatched: 0 }))
+    expect(rec.decision.why).toBe('gate and perturb and positive shim changed since calibration — re-run to recalibrate')
+  })
+
+  // The positive shim is part of the instrument (Rule 14): it is what decided
+  // the gate was reachable at all, so moving it invalidates the calibration
+  // exactly as moving the gate does.
+  it('stops when the positive shim sha moved since calibration', async () => {
+    const state = freshState()
+    state.state.calibration.positiveSha256 = 'moved'
+    const seen = { briefs: 0, dispatched: 0 }
+    const rec = await runWave({ ...spec, positive: POSITIVE }, state, noDispatch(seen))
+    expect(rec.decision.kind).toBe('stop')
+    expect(rec.decision.why).toBe('positive shim changed since calibration — re-run to recalibrate')
+    expect(seen.dispatched).toBe(0)
+  })
+
+  it('runs the wave when the positive shim is declared and its sha still matches', async () => {
+    const state = freshState()
+    state.state.calibration.positiveSha256 = calibrateIo.sha256(POSITIVE)
+    const rec = await runWave({ ...spec, positive: POSITIVE }, state, {
+      writeBrief: (p) => p,
+      dispatch: async () => ({ missionId: 'c8-wave1-1' }),
+      waitForDriver: async () => ({ exited: true }),
+      readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', toolStats: {} }),
+      commitsBetween: () => [],
+      grade: async () => g(),
+      salvageOf: () => null,
+      patchRow: () => {},
+      commit: () => ({ sha: 'v1' }),
+      notify: async () => true,
+      economics: () => [],
+      appendLog: () => {},
+      ...inertTriples,
+    })
+    expect(rec.decision.kind).toBe('next')
   })
 })
 
@@ -998,5 +1059,368 @@ describe('runWave — the wave is on the record before the verdict reads the rec
     await runWave(spec, state, gradedIo({ dispatch: async ({ invariants }) => { dispatched = invariants; return { missionId: 'c8-wave1-1' } } }))
     expect(dispatched.editGapCap).toBe(60)
     expect(state.state.proposals[0].status).toBe('approved')
+  })
+})
+
+// ── Phase 3: the evidence layer ─────────────────────────────────────────────
+
+describe('recordReseal', () => {
+  const cal = (ids, sha) => ({ gateSha256: sha, baseFails: ids.map(id => ({ id, line: `${id}: FAIL x` })), basePasses: [] })
+
+  it('records the reseal with the lines that are not the same claim any more', () => {
+    const s = { reseals: [] }
+    const prev = cal(['C8.1a', 'C8.2a'], 'aaaa')
+    const next = { gateSha256: 'bbbb', baseFails: [{ id: 'C8.1a', line: 'C8.1a: FAIL x' }, { id: 'C8.2a', line: 'C8.2a: FAIL x, and y' }], basePasses: [] }
+    const r = recordReseal(s, prev, next, { at: '2026-09-23T00:00:00.000Z', wave: 2 })
+    expect(r).toEqual({ at: '2026-09-23T00:00:00.000Z', wave: 2, from: { gateSha256: 'aaaa' }, to: { gateSha256: 'bbbb' }, changedLineIds: ['C8.2a'] })
+    expect(s.reseals).toEqual([r])
+  })
+
+  it('a FIRST calibration is not a reseal', () => {
+    const s = { reseals: [] }
+    expect(recordReseal(s, null, cal(['C8.1a'], 'aaaa'), { at: 't', wave: 0 })).toBeNull()
+    expect(s.reseals).toEqual([])
+  })
+
+  it('appends rather than replacing, and survives a state that has no reseals array', () => {
+    const s = {}
+    recordReseal(s, cal(['a'], '1'), cal(['a'], '2'), { at: 't1', wave: 1 })
+    recordReseal(s, cal(['a'], '2'), cal(['b'], '3'), { at: 't2', wave: 2 })
+    expect(s.reseals.map(r => r.changedLineIds)).toEqual([[], ['a', 'b']])
+  })
+
+  // The whole point of the record is that it is taken from the calibration the
+  // runner is ABOUT to overwrite; taken afterwards it would compare the new
+  // calibration with itself and every reseal would read as "nothing changed".
+  it('the CALIBRATE block records the reseal before it overwrites the calibration', () => {
+    const src = readFileSync(fileURLToPath(new URL('../cynco-campaign.mjs', import.meta.url)), 'utf8')
+    const call = src.indexOf('recordReseal(state.state, cal,')
+    const assign = src.indexOf('state.state.calibration = next')
+    expect(call, 'the CALIBRATE block never calls recordReseal').toBeGreaterThan(-1)
+    expect(assign, 'the CALIBRATE block no longer assigns the new calibration').toBeGreaterThan(call)
+  })
+})
+
+describe('the wave record names who wrote the gate', () => {
+  const io = () => ({
+    writeBrief: (p) => p,
+    dispatch: async () => ({ missionId: 'c8-wave1-1' }),
+    waitForDriver: async () => ({ exited: true }),
+    readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', toolStats: {} }),
+    commitsBetween: () => [],
+    grade: async () => g(),
+    salvageOf: () => null,
+    patchRow: () => {},
+    commit: () => ({ sha: 'v1' }),
+    notify: async () => true,
+    economics: () => [],
+    appendLog: () => {},
+    ...inertTriples,
+  })
+
+  it('carries spec.author onto gate.author without losing a single graded field', async () => {
+    const rec = await runWave({ ...spec, author: 'cynco' }, freshState(), io())
+    expect(rec.gate.author).toBe('cynco')
+    // Every field the grade produced is still there — `author` is added, not
+    // substituted for the reading the wave is judged on.
+    expect(rec.gate).toMatchObject({ terminator: 'MISS', failCount: 1, priorRegressions: 0 })
+    expect(rec.gate.fails).toEqual(g().gate.fails)
+  })
+
+  it('a spec with no author is the human seat, which is what every campaign before c9 was', async () => {
+    const rec = await runWave(spec, freshState(), io())
+    expect(rec.gate.author).toBe('human')
+  })
+})
+
+describe('the gate-author promotion at VERDICT', () => {
+  const io = (over = {}) => ({
+    writeBrief: (p) => p,
+    dispatch: async () => ({ missionId: 'c8-wave1-1' }),
+    waitForDriver: async () => ({ exited: true }),
+    readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', toolStats: {} }),
+    commitsBetween: () => [],
+    grade: async () => g(),
+    salvageOf: () => null,
+    patchRow: () => {},
+    commit: () => ({ sha: 'v1' }),
+    notify: async () => true,
+    economics: () => [],
+    appendLog: () => {},
+    ...inertTriples,
+    exportGateLines: () => ({ rows: [], summary: gateLineSummary(30, 30, 17, 17) }),
+    ...over,
+  })
+
+  it('raises gate-author/gate with the evidence when the bar is cleared', async () => {
+    const state = freshState()
+    const notified = []
+    const rec = await runWave(spec, state, io({ notify: async (m) => { notified.push(m); return true } }))
+    const p = state.state.proposals.find(x => x.name === 'gate-author/gate')
+    expect(p).toMatchObject({ type: 'Parameter', newValue: 0.5, status: 'pending', bounds: { min: 0, max: 0.5 } })
+    expect(p.evidence).toMatchObject({ n: 30, held: 30, rate: 1 })
+    expect(p.proposedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
+    expect(notified.join('\n')).toMatch(/PROPOSAL gate-author\/gate/)
+    expect(rec.decision.kind).toBe('next')
+  })
+
+  // §E: two proposals must not go pending in the same wave, and that rule does
+  // not care which of the three raised the first one.
+  it('computes nothing while another proposal is already pending', async () => {
+    const state = freshState()
+    state.state.proposals = [{ type: 'Code', name: 'gate/c9', status: 'pending', proposedAt: 't' }]
+    await runWave(spec, state, io())
+    expect(state.state.proposals.map(p => p.name)).toEqual(['gate/c9'])
+  })
+
+  it('raises nothing once the authority is already earned', async () => {
+    const state = freshState()
+    state.state.gateAuthorAuthority = 0.5
+    await runWave(spec, state, io())
+    expect(state.state.proposals).toEqual([])
+  })
+
+  it('raises nothing when the exporter hands back no evidence, and does not fault the wave', async () => {
+    const state = freshState()
+    const rec = await runWave(spec, state, io({ exportGateLines: () => ({ rows: [], summary: gateLineSummary(0, 0, 0, 0) }) }))
+    expect(state.state.proposals).toEqual([])
+    expect(rec.decision.kind).toBe('next')
+  })
+
+  // The Level 4 spine's rule: a dataset that will not rebuild is logged, never
+  // a fault. The wave already happened.
+  it('an exporter that throws costs the wave nothing', async () => {
+    const state = freshState()
+    const rec = await runWave(spec, state, io({ exportGateLines: () => { throw new Error('datasets dir is read-only') } }))
+    expect(rec.decision.kind).toBe('next')
+    expect(state.state.proposals).toEqual([])
+  })
+
+  it('prints the gate-lines reading in the verdict entry', async () => {
+    let entry = null
+    await runWave(spec, freshState(), io({ appendLog: (t) => { entry = t } }))
+    expect(entry).toMatch(/- Gate lines: cynco 30\/30 held \(rate 1\.000, ci \[0\.89, 1\.00\]\) vs human 17\/17; PARITY/)
+  })
+})
+
+// ── Phase 3: the gate-author seat ───────────────────────────────────────────
+
+describe('applyProposalDecision on the gate-authoring proposals', () => {
+  const pending = (over) => ({ type: 'Parameter', name: 'gate-author/gate', proposedAt: 't1', status: 'pending', newValue: 0.5, bounds: { min: 0, max: 0.5 }, ...over })
+
+  it('gate-author/gate raises the authority, capped at its own bound', () => {
+    const s = { proposals: [pending()], gateAuthorAuthority: 0 }
+    expect(applyProposalDecision(s, 'gate-author/gate', true)).toEqual({ ok: true, status: 'approved' })
+    expect(s.gateAuthorAuthority).toBe(0.5)
+    const greedy = { proposals: [pending({ newValue: 1.0 })], gateAuthorAuthority: 0 }
+    applyProposalDecision(greedy, 'gate-author/gate', true)
+    expect(greedy.gateAuthorAuthority).toBe(0.5)
+  })
+
+  it('a rejected gate-author/gate changes no authority', () => {
+    const s = { proposals: [pending()], gateAuthorAuthority: 0 }
+    expect(applyProposalDecision(s, 'gate-author/gate', false).status).toBe('rejected')
+    expect(s.gateAuthorAuthority).toBe(0)
+  })
+
+  // gate/<id> is a decision about CODE. It records who decided and nothing
+  // else: the seal (the copy into the sealed tree, the campaign json, the
+  // campaign-log entry) is the CLI's, because this function is called on every
+  // CampaignState.save and must stay pure.
+  it('gate/<id> records status and decidedBy and touches nothing else', () => {
+    const s = { proposals: [{ type: 'Code', name: 'gate/c9', proposedAt: 't1', status: 'pending', evidence: { lineCount: 12 } }], gateAuthorAuthority: 0, ideationAuthority: 0 }
+    expect(applyProposalDecision(s, 'gate/c9', true)).toEqual({ ok: true, status: 'approved' })
+    expect(s.proposals[0].status).toBe('approved')
+    expect(s.proposals[0].decidedBy).toBe('supervisor')
+    expect(s.proposals[0].decidedAt).toBeTruthy()
+    expect(s.gateAuthorAuthority).toBe(0)
+    expect(s.invariantOverrides).toBeUndefined()
+    const rejected = { proposals: [{ type: 'Code', name: 'gate/c9', proposedAt: 't1', status: 'pending' }] }
+    expect(applyProposalDecision(rejected, 'gate/c9', false).status).toBe('rejected')
+    expect(rejected.proposals[0].decidedBy).toBe('supervisor')
+  })
+})
+
+describe('main routes the authoring verbs before it loads a campaign spec', () => {
+  // The whole point of the routing: `<id>.campaign.json` is what --author
+  // PRODUCES, so requiring it here would make the verb that writes a spec
+  // depend on the spec already existing.
+  const stub = (seal = { ok: true, problems: [], specPath: 'docs/civkings-redesign-briefs/c9.campaign.json' }) => {
+    const calls = []
+    return { calls, authorModule: {
+      defaultAuthorIo: (helpers) => ({ helpers }),
+      authorMain: async (argv, io) => { calls.push({ verb: argv[0], argv, io }); return 0 },
+      sealGate: async (args) => { calls.push({ verb: 'seal', args }); return seal },
+    } }
+  }
+
+  it('--author c9 reaches the author module with no c9.campaign.json anywhere', async () => {
+    expect(existsSync('docs/civkings-redesign-briefs/c9.campaign.json')).toBe(false)
+    const s = stub()
+    expect(await main(['--author', 'c9'], { authorModule: s.authorModule })).toBe(0)
+    expect(s.calls).toHaveLength(1)
+    expect(s.calls[0].argv).toEqual(['--author', 'c9'])
+    // the runner's own helpers are what travel over, not an import back
+    expect(Object.keys(s.calls[0].io.helpers).sort()).toEqual(['appendLog', 'applyProposalDecision', 'dispatchEnv', 'dispatchRaw', 'missionIdFrom', 'notify', 'readRow', 'releaseLock', 'seatAuthority', 'takeLock', 'waitForDriver'])
+  })
+
+  it('--author takes the id from the argv path when none is named', async () => {
+    const s = stub()
+    expect(await main(['docs/civkings-redesign-briefs/c9.campaign.json', '--author'], { authorModule: s.authorModule })).toBe(0)
+    expect(s.calls[0].argv).toEqual(['--author', 'c9'])
+  })
+
+  it('--author refuses to name two campaigns at once', async () => {
+    const s = stub()
+    expect(await main(['docs/civkings-redesign-briefs/c8.campaign.json', '--author', 'c9'], { authorModule: s.authorModule })).toBe(2)
+    expect(s.calls).toEqual([])
+  })
+
+  it('--check is routed straight through, spec or no spec', async () => {
+    const s = stub()
+    expect(await main(['--check', 'C:/staging/c9', 'C:/tmp/c9_author_base'], { authorModule: s.authorModule })).toBe(0)
+    expect(s.calls[0].verb).toBe('--check')
+  })
+
+  // A refused seal used to be a dead end: the approval was already recorded, so
+  // there was nothing left to approve once the draft was fixed.
+  it('a refused seal leaves the proposal pending and records no decision', async () => {
+    const dir = join(mkdtempSync(join(tmpdir(), 'home-')), '.cynco')
+    const prev = process.env.CYNCO_HOME
+    process.env.CYNCO_HOME = dir
+    try {
+      const state = new CampaignState(join(dir, 'campaigns', 'c9')).load()
+      state.state.proposals = [{ type: 'Code', name: 'gate/c9', proposedAt: 't1', status: 'pending' }]
+      state.save()
+      const s = stub({ ok: false, problems: ['brief-visible text names the sealed instrument "gate_c9.py"'] })
+      expect(await main(['--approve-proposal', 'gate/c9'], { authorModule: s.authorModule })).toBe(2)
+      const saved = JSON.parse(readFileSync(join(dir, 'campaigns', 'c9', 'state.json'), 'utf8'))
+      expect(saved.proposals[0].status).toBe('pending')
+      expect(saved.proposals[0].decidedBy).toBeUndefined()
+      expect(saved.proposals[0].decidedAt).toBeUndefined()
+      expect(s.calls.map(c => c.verb)).toEqual(['seal'])
+    } finally {
+      if (prev === undefined) delete process.env.CYNCO_HOME; else process.env.CYNCO_HOME = prev
+    }
+  })
+
+  it('--approve-proposal gate/<id> seals, then decides', async () => {
+    const dir = join(mkdtempSync(join(tmpdir(), 'home-')), '.cynco')
+    const prev = process.env.CYNCO_HOME
+    process.env.CYNCO_HOME = dir
+    try {
+      const state = new CampaignState(join(dir, 'campaigns', 'c9')).load()
+      state.state.proposals = [{ type: 'Code', name: 'gate/c9', proposedAt: 't1', status: 'pending' }]
+      state.save()
+      const s = stub()
+      expect(await main(['--approve-proposal', 'gate/c9'], { authorModule: s.authorModule })).toBe(0)
+      const saved = JSON.parse(readFileSync(join(dir, 'campaigns', 'c9', 'state.json'), 'utf8'))
+      expect(saved.proposals[0]).toMatchObject({ status: 'approved', decidedBy: 'supervisor' })
+      expect(s.calls.map(c => c.verb)).toEqual(['seal'])
+      expect(s.calls[0].args.id).toBe('c9')
+      expect(s.calls[0].args.roadmap.lines.some(l => l.id === 'c9')).toBe(true)
+    } finally {
+      if (prev === undefined) delete process.env.CYNCO_HOME; else process.env.CYNCO_HOME = prev
+    }
+  })
+
+  // Review #8: the approve branch and the author verbs read and write the
+  // roadmap through the same injectable path the reject branch always used.
+  it('--approve-proposal gate/<id> loads and saves the roadmap at the injected path, never the live one', async () => {
+    const before = readFileSync('docs/civkings-redesign-briefs/roadmap.json', 'utf8')
+    const dir = join(mkdtempSync(join(tmpdir(), 'home-')), '.cynco')
+    const roadmapPath = join(mkdtempSync(join(tmpdir(), 'roadmap-')), 'roadmap.json')
+    writeFileSync(roadmapPath, JSON.stringify({ lines: [{ id: 'c9', name: 'INJECTED', bar: 'b', base: 'abcdef1', status: 'proposed' }] }, null, 2) + '\n')
+    const prev = process.env.CYNCO_HOME
+    process.env.CYNCO_HOME = dir
+    try {
+      const state = new CampaignState(join(dir, 'campaigns', 'c9')).load()
+      state.state.proposals = [{ type: 'Code', name: 'gate/c9', proposedAt: 't1', status: 'pending' }]
+      state.save()
+      const s = stub()
+      // A sealGate that does what the real one does with the roadmap: advance the line and save it through io.
+      s.authorModule.sealGate = async (args) => {
+        s.calls.push({ verb: 'seal', args })
+        args.roadmap.lines.find(l => l.id === 'c9').status = 'sealed'
+        args.io.saveRoadmap('docs/civkings-redesign-briefs/roadmap.json', args.roadmap)
+        return { ok: true, problems: [], specPath: 'x' }
+      }
+      expect(await main(['--approve-proposal', 'gate/c9'], { authorModule: s.authorModule, roadmapPath })).toBe(0)
+      expect(s.calls[0].args.roadmap.lines[0].name).toBe('INJECTED')
+      expect(JSON.parse(readFileSync(roadmapPath, 'utf8')).lines[0].status).toBe('sealed')
+      expect(readFileSync('docs/civkings-redesign-briefs/roadmap.json', 'utf8')).toBe(before)
+      // and the author route's io reads the same path
+      expect(await main(['--author', 'c9'], { authorModule: s.authorModule, roadmapPath })).toBe(0)
+      expect(s.calls.at(-1).io.loadRoadmap().lines[0].name).toBe('INJECTED')
+    } finally {
+      if (prev === undefined) delete process.env.CYNCO_HOME; else process.env.CYNCO_HOME = prev
+    }
+  })
+
+  /**
+   * A refusal REOPENS the line, or the campaign is stuck: `--author` refuses a
+   * `proposed` line and `nextOpenLine` holds every later line behind it, so a
+   * DO-NOT-SEAL verdict would leave the gate neither sealable nor re-authorable.
+   *
+   * `roadmapPath` is injected because this path WRITES the roadmap. Redirecting
+   * CYNCO_HOME is not enough — the roadmap is repo-relative and shared with the
+   * live campaign — and the first cut of this branch rewound the checked-in c9
+   * line from `proposed` to `authoring` on every suite run.
+   */
+  it('--reject-proposal gate/<id> decides, reopens the line, and seals nothing', async () => {
+    const dir = join(mkdtempSync(join(tmpdir(), 'home-')), '.cynco')
+    const roadmapPath = join(mkdtempSync(join(tmpdir(), 'roadmap-')), 'roadmap.json')
+    writeFileSync(roadmapPath, JSON.stringify({ lines: [{ id: 'c9', name: 'Ship shell', bar: 'b', base: 'abcdef1', status: 'proposed' }] }, null, 2) + '\n')
+    const prev = process.env.CYNCO_HOME
+    process.env.CYNCO_HOME = dir
+    try {
+      const state = new CampaignState(join(dir, 'campaigns', 'c9')).load()
+      state.state.authoring = { c9: { stagingDir: 'C:/s/c9' } }
+      state.state.proposals = [{ type: 'Code', name: 'gate/c9', proposedAt: 't1', status: 'pending' }]
+      state.save()
+      const s = stub()
+      const notePath = join(mkdtempSync(join(tmpdir(), 'note-')), 'note.txt')
+      writeFileSync(notePath, 'gate C9.1b: _press must draw first.\n')
+      expect(await main(['--reject-proposal', 'gate/c9', '--note', notePath], { authorModule: s.authorModule, roadmapPath })).toBe(0)
+      expect(s.calls).toEqual([])
+      expect(JSON.parse(readFileSync(roadmapPath, 'utf8')).lines[0].status).toBe('authoring')
+      const after = new CampaignState(join(dir, 'campaigns', 'c9')).load().state
+      expect(after.proposals[0].status).toBe('rejected')
+      expect(after.authoring.c9.refusals).toEqual([expect.objectContaining({ by: 'supervisor', notePath })])
+    } finally {
+      if (prev === undefined) delete process.env.CYNCO_HOME; else process.env.CYNCO_HOME = prev
+    }
+  })
+
+  // And it never touches the checked-in roadmap unless asked to.
+  it('--reject-proposal leaves the live roadmap alone when given its own path', async () => {
+    const before = readFileSync('docs/civkings-redesign-briefs/roadmap.json', 'utf8')
+    const dir = join(mkdtempSync(join(tmpdir(), 'home-')), '.cynco')
+    const roadmapPath = join(mkdtempSync(join(tmpdir(), 'roadmap-')), 'roadmap.json')
+    writeFileSync(roadmapPath, JSON.stringify({ lines: [{ id: 'c9', name: 'n', bar: 'b', base: 'abcdef1', status: 'proposed' }] }, null, 2) + '\n')
+    const prev = process.env.CYNCO_HOME
+    process.env.CYNCO_HOME = dir
+    try {
+      const state = new CampaignState(join(dir, 'campaigns', 'c9')).load()
+      state.state.proposals = [{ type: 'Code', name: 'gate/c9', proposedAt: 't1', status: 'pending' }]
+      state.save()
+      await main(['--reject-proposal', 'gate/c9'], { authorModule: stub().authorModule, roadmapPath })
+      expect(readFileSync('docs/civkings-redesign-briefs/roadmap.json', 'utf8')).toBe(before)
+    } finally {
+      if (prev === undefined) delete process.env.CYNCO_HOME; else process.env.CYNCO_HOME = prev
+    }
+  })
+
+  it('a gate/<id> decision with no pending proposal refuses without sealing', async () => {
+    const dir = join(mkdtempSync(join(tmpdir(), 'home-')), '.cynco')
+    const prev = process.env.CYNCO_HOME
+    process.env.CYNCO_HOME = dir
+    try {
+      const s = stub()
+      expect(await main(['--approve-proposal', 'gate/c9'], { authorModule: s.authorModule })).toBe(2)
+      expect(s.calls).toEqual([])
+    } finally {
+      if (prev === undefined) delete process.env.CYNCO_HOME; else process.env.CYNCO_HOME = prev
+    }
   })
 })

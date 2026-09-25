@@ -27,6 +27,26 @@ describe('held-out instrument snapshots', () => {
     expect(readFileSync(gate, 'utf-8')).toBe('print("the real gate")\n')
   })
 
+  /**
+   * F152. The live C9 authoring run's check command names the read-only
+   * archive of the game at BASE — a directory — and `copyFileSync` on a
+   * directory is EPERM on Windows. It killed the driver before iteration 1.
+   * `withheldGatePaths` is the fix; this is the floor under it.
+   */
+  it('records a directory as unsnapshottable instead of dying on it', () => {
+    const dir = join(root, 'base_archive')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'app.py'), 'print("the game")\n')
+    const snaps = snapshotHeldOut([dir, gate], vault)
+    expect(snaps[0]).toMatchObject({ path: dir, snapshot: null, missing: true })
+    // The real instrument beside it is still taken.
+    expect(snaps[1].missing).toBe(false)
+    expect(readFileSync(snaps[1].snapshot, 'utf-8')).toBe('print("the real gate")\n')
+    // And restore steps over it without touching the directory.
+    expect(restoreHeldOut(snaps)).toEqual([])
+    expect(readFileSync(join(dir, 'app.py'), 'utf-8')).toBe('print("the game")\n')
+  })
+
   it('says nothing changed when nothing changed', () => {
     expect(restoreHeldOut(snapshotHeldOut([gate], vault))).toEqual([])
   })

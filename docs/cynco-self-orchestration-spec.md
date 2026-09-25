@@ -229,8 +229,10 @@ number except the one router named below.
   proposalsDecided })` reads those three counts off the graded ledger row and
   the wave record (denials whose next call complied; enforced S5 decisions,
   followed ideation, an applied work order, decided proposals and routed calls
-  the model then complied with; every other S5 decision, control signal and
-  turn). Every wave's window is replayed through a fresh `PosiwidDrift`, so the
+  the model then complied with; every other S5 decision and control signal).
+  Turns are not a signal (Phase 3 ruling 13): a status frame is not the
+  governance layer logging anything about itself, so `signalsLogged` excludes
+  `turns[]`. Every wave's window is replayed through a fresh `PosiwidDrift`, so the
   onset wave is a function of the stored windows and a runner restart cannot
   move it. `driftThreshold` is **0.5**, not the naive 0.1: the zero-share
   `signalsLogged` bucket gives the implicit `other` mass a near-zero
@@ -307,6 +309,203 @@ number except the one router named below.
   wave's `governancePosiwid`. `CYNCO_CAMPAIGN_ID` reaches the engine through
   `scripts/dispatch-mission.sh` and the runner's `dispatchEnv`, so the panel can
   say which campaign the running mission belongs to.
+
+**Phase 3 — gate authoring (shipped 2026-09-23).** Every campaign so far was
+measured against a bar a human wrote. Phase 3 gives the loop the other half:
+CynCo writes the next campaign's gate itself, and the runner refuses to believe
+it without an acceptance test. The bar is still sealed by a decision — what
+changed is who drafts it, and what evidence that seat has to produce before its
+draft counts. The live proof of this seat on the C9 line ended without a seal
+after nine attempts — the seat produced a mechanically clean but non-measuring
+triple, and then a supervisor-refused resume that never made the one-line
+perturb-header edit named across four operator notes — with the roadmap line
+c9 staying `authoring` and no C9 campaign started (see the "Campaign C9" entry
+in `docs/civkings-redesign-briefs/campaign-log.md` and F156 in
+`docs/cynco-failure-log.md`).
+
+- **The seat.** `gate` is a `heterarchy.CommandRegistry` context like `brief`
+  is (`scripts/cynco-ideation.mjs`): `supervisor` holds 1.0, `gate-author`
+  starts at **0** and is bounded at **0.5** (ruling 2 — the gate-author never
+  holds the binding seat). At 0 the seat drafts and a human approves. The only
+  thing 0.5 buys is the auto-seal branch described below; it never buys a bar
+  nobody can refuse.
+- **The verbs.**
+  `bun scripts/cynco-campaign.mjs <id>.campaign.json --author <id>` runs one
+  authoring mission start to verdict. It is routed by the campaign id BEFORE
+  the spec is loaded, because the spec is what the mission is being asked to
+  write — the `.campaign.json` does not exist yet. It refuses a line that is
+  not `open`/`authoring`, and refuses a line that jumps ahead of an earlier
+  line still in flight (`nextOpenLine`: `open`, `authoring` or `proposed` — a
+  proposed gate is not sealed, so it is not in the heldout tree the next line's
+  `C<N>.9` sibling is mirrored from): the roadmap is authored in order,
+  because each gate is drafted against the previous campaign's as exemplar.
+  Both refusals happen before anything is dispatched and exit **2**; a check
+  that ran and raised no proposal (refused, or a fault) exits **1**.
+  `bun scripts/cynco-gate-author.mjs --check <stagingDir> <baseDir>` is the
+  acceptance test on its own (exit 0/1, every problem printed); the mission is
+  told to run it and the driver runs the same string as the mission's
+  KEEP-GREEN assertion. `--approve-proposal gate/<id>` seals the triple into
+  the sealed tree and writes the campaign spec. At earned authority 0.5
+  `authorCampaign` takes that same branch itself and records
+  `decidedBy: 'auto'` — every check inside `sealGate` still runs, and a refused
+  seal leaves the proposal pending exactly as a refused human approval does.
+- **The staging tree.** `~/.cynco/authoring/<id>/` is a git repo with a local
+  identity pinned (a repo with no identity refuses every commit, and the
+  mission is ORDERED to commit after each cut — that commit is its only
+  backup). Beside it, `~/.cynco/authoring/<x>/` mirrors every finished
+  campaign's gate/perturb/positive out of the sealed heldout tree, so the
+  author reads real exemplars without being handed the heldout directory
+  itself. The game at the line's pinned BASE is archived read-only to
+  `C:/tmp/<id>_author_base`; the gate under test reads it through
+  `CYNCO_GATE_REPO` and never its own directory.
+- **The acceptance test** (`checkStaged`) is Rule 11 and Rule 14 run
+  mechanically, plus lint. Lint: ids shaped `C<N>.<k>[a-z].<slug>`, unique, and
+  at least one of them (the lint has no count minimum — it refuses a gate that
+  grades nothing; the count floor is calibration's `GATE_MIN_LINES = 8`, and the
+  unrelated `GATE_AUTHOR_MIN_LINES = 30` is the seat's promotion floor over
+  terminal gate LINES, not a property of any one gate). Also: the gate reads
+  `CYNCO_GATE_REPO`, a
+  `C<N>.9` prior-campaign regression line that honours `CYNCO_GATE_SKIP_PRIOR`,
+  both shims `runpy.run_path` the real gate and set skip-prior, the perturb
+  header names only real line ids and declares a non-empty MUST-FAIL set, no
+  network import anywhere, and a `GATE: PASS` / `GATE: MISS (n fails)`
+  terminator. Calibration: the gate must MISS on the BASE **by absence** with
+  zero errors, every base fail classified, the perturb's flips a subset of
+  EXPECT-FLIP with every MUST-FAIL still failing, and the positive shim must
+  reach `GATE: PASS` — a bar nothing can pass is not a bar. The runner re-runs
+  all of it from its own side after the mission returns: the driver ran the
+  check too, but it ran it in a process the mission could have reached, so only
+  the runner's reading raises the proposal. **That reading IS the verdict, and
+  `verified` is not** (controller ruling, amending §4). `verified` is the driver's
+  advisory check, and for an authoring mission it is structurally `null`: the run
+  cannot go quiet, so the driver warns that its gate and the mission are racing
+  for the same tree and records nothing. Gating the proposal on it made a green
+  bar unproposable by construction — live attempt 7 passed the driver's check
+  (exit 0, 277 s, `GATE: PASS`) and the runner's re-check (ok, 11 graded lines)
+  and was refused with "the mission produced no verified check result".
+  `verified` is recorded on the row and printed; nothing hangs off it. A missing
+  ledger row is likewise reported, not refused over — the triple on disk is the
+  thing being graded — and `lastCheck.kind` separates a `fault` (the instrument
+  did not run; the triple is UNGRADED) from a `refused` (it ran; the triple is
+  not a bar), because those are different next moves. A resume whose staged
+  triple already passes raises the proposal WITHOUT dispatching a mission: the
+  reading is the same subprocess check, so the evidence is identical and the
+  four hours are not spent. That re-run is a SUBPROCESS —
+  `bun <abs path>/cynco-gate-author.mjs --check <staging> <base>`, its verdict
+  read from the exit code and the `[check-json]` line — never an in-process
+  `calibrate`. F155: the runner's first spawn comes four hours after its last
+  one, and under bun on Windows a `spawnSync` after an idle gap inherits the
+  previous call's deadline and is killed in milliseconds, which turned a triple
+  with two problems into a verdict of eleven. The subprocess runs the harness's
+  OWN code, and that code is not sealed: `cynco-gate-author.mjs` and its static
+  `scripts/` imports (lint, parse, calibrate, grade, spawn, … — `harnessClosure`
+  derives the list from the source) are writable by any mission with Bash. So
+  `authorCampaign` fingerprints that closure at dispatch
+  (`state.authoring.<id>.harnessSha256` + `harnessFiles`) and the re-check
+  re-takes it before running: a closure that moved is `harness dirty: <files>`,
+  `lastCheck.kind: 'fault'` with `harnessDirty: true`, nothing is run and no
+  proposal is raised. Residuals (final re-review, Phase 4 work): the fingerprint
+  stops at `scripts/` — the engine modules `--check` also loads (`engine/paths`,
+  `engine/bridge/contractAutoCreate`, `engine/tools/contractVerify` and what they
+  import, `engine/cybernetics-core`) run their top-level code in the subprocess
+  and are not hashed; and a harness edit that the operator does not restore
+  before the next `--author` becomes that dispatch's baseline (the fault names
+  the files first). A resume whose staged triple passes does not propose from
+  disk if the closure moved since the dispatch that produced it — it dispatches
+  under a fingerprint of its own. The driver's own run of the check has no such
+  hook (it runs a command string); it stays advisory.
+- **The budget.** 1200 iterations, and four hours for a fresh authoring but
+  **two** for a resume (`AUTHOR_RESUME_TIMEOUT_S`, from attempt 2 on). A resume
+  opens a staged triple, a brief naming exactly what the check refuses, and the
+  package map below; attempts 4 and 5 each spent four hours with three of the four
+  files already finished, attempt 5 spending 436 of its 449 tool calls inspecting.
+  The brief states whichever budget it was given.
+- **The package map.** THE GAME AT BASE carries a generated `PACKAGE MAP` — the
+  sorted `.py` names of `gilded/` and `gilded/ui/` plus the importable
+  subpackages, read off the BASE archive with `io.listDir`, never authored — and
+  the sentence "There is no `gilded.ui.views`. Import only modules named here."
+  Four live attempts died on a positive shim importing that module; the model
+  named the problem correctly each time, was shown the traceback, and wrote the
+  import again. A listing of what exists is a different instrument from a
+  statement about what does not.
+- **The authoring mission's invariants.** `editGapCap 120`, `commitGapCap 150`,
+  `revertBan`, `codeIndexFirst`. The edit gap is three times a wave's because the
+  work is three parts audit to one part writing: the mission's job is to read a
+  game it may not touch until it knows what is absent, and at 40 the live C9 run
+  spent iterations arguing with `[invariant] DENIED (edit-gap)`
+  (`maxCallsWithoutSourceEdit 194`, 67 tool errors in 474 calls). That 120 is
+  the authoring mission's envelope only: the campaign spec `draftToSpec` seals
+  carries `WORKER_INVARIANTS` (`editGapCap 40`, `commitGapCap 150`, `revertBan`,
+  `codeIndexFirst` — c8's measured values), because a worker wave inheriting
+  the author's tripled edit gap would be the runner loosening the campaign the
+  gate is grading.
+- **Learnings-db isolation (ruling 12).** AWM promotion fires when a contract
+  passes, and an authoring mission's contract will pass. Its learnings go to
+  `<stagingDir>/learnings.db`, a database the campaign worker never opens —
+  otherwise the author of the bar would be whispering to the subject.
+- **The roadmap.** `docs/civkings-redesign-briefs/roadmap.json` is the line of
+  campaigns and the only place a line's status lives: `open → authoring →
+  proposed → sealed → running → done`, forward only (`setLineStatus` throws on
+  a backward move) with exactly ONE permitted exception: `rejectLine`, which
+  moves a `proposed` line back to `authoring` when the supervisor refuses the
+  seal. `bun scripts/cynco-campaign.mjs --reject-proposal gate/<id> --note
+  <file>` records the decision (`rejected`, `decidedBy: 'supervisor'`), calls
+  `rejectLine` and saves the roadmap — without it a DO-NOT-SEAL verdict would
+  leave the gate neither sealable nor re-authorable, and every later line held
+  behind it — and, when `--note` is given, appends `{ at, by: 'supervisor',
+  notePath }` to `state.authoring.<id>.refusals`. The note is recorded by path,
+  not copied. The next `--author <id>` (with or without its own `--note`; the
+  last recorded note stays active) is a POST-REFUSAL RESUME — provided the note
+  file can be read; an unreadable one is printed as an error and the resume
+  runs as an ordinary one: the note's text
+  goes into the brief as the supervisor's refusal, the resume gets the full
+  four-hour budget (`AUTHOR_TIMEOUT_S`, not `AUTHOR_RESUME_TIMEOUT_S` — a refused
+  seal is a re-authoring of what the gate means, not a shim fix), and it always
+  DISPATCHES: a staged triple that still passes the check is not proposed from
+  disk, because passing the mechanical check is exactly what the refusal
+  disputes. Each line carries the `base` commit its gate is calibrated
+  against. A failed check leaves the line at `authoring` with the problems on
+  `state.authoring.<id>.lastCheck`, and the next `--author <id>` resumes into
+  the same staging dir with a PREVIOUS CHECK OUTPUT section in the brief. That
+  section carries the live problems (presence claims re-derived against the dir,
+  so a resume is never told a file it has is missing), the positive shim's output
+  tail, the graded ids the shim leaves FAILing, and whether the last run's
+  preserved uncommitted patch was re-applied — or why it was not.
+- **The readout.** `GET /api/campaign` carries `roadmap`, `authoring` and any
+  `gate/<id>` proposal with the command that approves it.
+
+**Phase 3 evidence — the graded gate LINE (2026-09-23).** The gate-author seat
+cannot earn authority one campaign at a time: a campaign is a single draw, and
+at that rate the seat would be measurable around 2030. The unit is the graded
+gate line — one falsifiable claim, 9–17 per campaign — and the question asked of
+it is whether the line the author sealed survived the campaign it was written
+for. `scripts/cynco-gate-lines.mjs` builds one row per (campaign, line) into
+`~/.cynco/datasets/gate-lines.jsonl` at every verdict, with the outcome `held`
+(the campaign reached a decision and nothing rewrote the line), `resealed` (the
+line's printed text changed after the calibration that sealed it) or `open` (no
+decision yet — not evidence). `resealed` is the falsifier the whole claim rests
+on, so the runner records it where it is the only moment it is observable: at
+CALIBRATE, from the calibration it is about to overwrite (`recordReseal`,
+`state.reseals`), whether or not anyone wanted it recorded. `gate.author` on the
+wave record is the join key. `bun scripts/cynco-signal-validation.mjs
+--gate-lines` prints the table, the verdict entry prints its own line, and
+ruling 11's promotion (`gateAuthorPromotion`) reads exactly that summary: ≥ 30
+terminal CynCo lines, a Wilson lower bound on the held rate ≥ 0.8, and not
+significantly worse than the human seat (Fisher, one direction only — a seat
+significantly BETTER must not be refused by its own evidence). It raises
+`gate-author/gate` (0 → 0.5, bounded), which the owner approves like any other.
+The dataset holds sealed lines only, and that is an evidence gap recorded here
+rather than closed: a supervisor refusal never reaches `gate-lines.jsonl`;
+gate-level outcomes are Phase 4. A refused `gate/<id>` lives on the proposal
+record and in `state.authoring.<id>.refusals`, where no promotion reads it (F156).
+What that 0.5 buys is one branch: `authorCampaign` seals its own gate instead of
+waiting for `--approve-proposal gate/<id>`, and records the decision as
+`decidedBy: 'auto'`. Every check inside `sealGate` still runs — a refused seal
+leaves the proposal pending exactly as a refused human approval does. The
+promotion is approved into the state of the campaign that gathered the evidence
+while the seal happens inside the campaign being authored, which is always
+fresh, so the seat's authority is the highest approved in any campaign's state;
+a per-seat retained-configuration store is Phase 4.
 
 **Deferred spec items (follow-up, not built here).**
 

@@ -89,6 +89,27 @@ describe('cynco mission outcome ledger', () => {
     expect(JSON.parse(line)).toEqual(rec)
   })
 
+  // The missionId is the brief's filename plus an epoch — `brief-4-1790216986923`
+  // names no campaign at all — so reading the ledger by campaign was a grep over
+  // briefFile. `CYNCO_CAMPAIGN_ID` is what the dispatcher already sets.
+  it('records campaignId from meta, falling back to CYNCO_CAMPAIGN_ID and then null', () => {
+    const base = { missionId: 'm1', briefFile: 'b', marker: 'm', cwd: 'c', dispatchedAt: 'd', durationS: 1, outcome: 'landed' }
+    const prior = process.env.CYNCO_CAMPAIGN_ID
+    try {
+      delete process.env.CYNCO_CAMPAIGN_ID
+      expect(buildMissionRecord(collectAll(), base).campaignId).toBeNull()
+
+      process.env.CYNCO_CAMPAIGN_ID = 'c9-author'
+      expect(buildMissionRecord(collectAll(), base).campaignId).toBe('c9-author')
+
+      // An explicit meta value wins over the ambient one.
+      expect(buildMissionRecord(collectAll(), { ...base, campaignId: 'c8' }).campaignId).toBe('c8')
+    } finally {
+      if (prior === undefined) delete process.env.CYNCO_CAMPAIGN_ID
+      else process.env.CYNCO_CAMPAIGN_ID = prior
+    }
+  })
+
   it('handles legacy events missing the new fields (nulls, not crashes)', () => {
     const c = createMissionCollector()
     c.ingest({ type: 'governance.status', health: 'healthy', s3s4Balance: 'balanced', toolSuccessRate: 1, stuckTurns: 0, suggestion: null })

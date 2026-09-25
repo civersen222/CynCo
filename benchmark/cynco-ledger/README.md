@@ -26,13 +26,21 @@ decisions still recorded here).
 {
   "schema": 1,
   "missionId": "cynco-mission6-brief-1783550000000",  // brief basename + epoch
+  // Which campaign dispatched it, from CYNCO_CAMPAIGN_ID: "c8" for a wave,
+  // "c9-author" for a gate-authoring mission, null outside a campaign. The
+  // missionId cannot answer this — it is the brief's filename plus an epoch.
+  "campaignId": "c8",
   "briefFile": "C:/tmp/cynco-mission6-brief.txt",
   "marker": "commit-marker substring",
   "cwd": "C:\\Users\\civer\\civkings",
   "dispatchedAt": "2026-07-11T22:00:00.000Z",
   "durationS": 412,
   "outcome": "landed",      // "landed" | "timeout" | "zero_tool_fail"
-  "verified": null,         // STRUCTURAL: the check-cmd's exit code. null = UNMEASURED
+  // STRUCTURAL: the check-cmd's exit code. null = UNMEASURED. For a gate-AUTHORING
+  // mission it is null by construction — the run cannot go quiet, so the driver
+  // records the advisory and no verdict — and nothing may gate on it there: the
+  // authoring verdict is the runner's own subprocess check (spec §10).
+  "verified": null,
   "verify": {               // what produced `verified`; null when no check-cmd was given
     "command": "python3 -m pytest -q", "exitCode": 0,
     "timedOut": false, "spawnFailed": false, "durationMs": 70303, "outputTail": "..."
@@ -390,7 +398,9 @@ gives three counts for the wave, and only these three names are ever used:
   `s4.workOrder`, plus proposals the operator decided this wave, plus
   `routing.entries[]` whose `nextCallClass` complied with what the route said.
 - **`signalsLogged`** — everything the layer merely recorded: unenforced S5
-  decisions, `controlSignals[]`, and `turns[]`.
+  decisions and `controlSignals[]`. `turns[]` (status frames) are NOT a
+  signal and are excluded (Phase 3 ruling 13) — a wave with many turns but no
+  unenforced decisions or control signals logs zero.
 
 `GOVERNANCE_PURPOSE` states `denialsChanged` 0.5 and `recommendationsConsumed`
 0.5 and gives `signalsLogged` **no share at all**, so a wave the layer spent
@@ -435,6 +445,90 @@ wave's `verdict` and `onsetWave`.
 `engine/__tests__/guards/ledgerGovernancePosiwidBlock.test.ts` re-runs the
 module on this block's `counts` and fails if the reading moves (F149: a
 documented number no code produces).
+
+### The wave record's `gate.author`
+
+Also not a ledger field: the wave record's `gate` block is the grader's reading
+(`terminator`, `fails`, `passes`, `failCount`, `errors`, `priorRegressions`,
+`harnessFault`, `exit`) plus one field the runner adds beside it —
+
+- **`gate.author`** — `"cynco"` or `"human"`: who WROTE the bar this wave was
+  judged against, copied from the campaign spec's `author` (`loadCampaignSpec`
+  defaults it to `"human"`, which is what every campaign up to c8 was). Nothing
+  in the grading reads it. It exists because a held gate line has to be
+  attributable to the seat that sealed it — without the author on the record,
+  the gate-lines dataset below has a numerator and no denominator.
+
+### Gate lines dataset
+
+`~/.cynco/datasets/gate-lines.jsonl`, written by `scripts/cynco-gate-lines.mjs`
+at every wave verdict and readable as a table with
+`bun scripts/cynco-signal-validation.mjs --gate-lines`.
+
+**The evidence unit is the graded gate LINE, not the campaign.** A campaign is
+one draw, and at one campaign every few weeks a gate-authoring seat would earn
+its authority somewhere around 2030. A gate line is one falsifiable claim, and
+one campaign ships 9–17 of them.
+
+One row per (campaign, graded line). Both of these are real rows, copied out of
+an export run against `~/.cynco/campaigns` — the first from c8's state dir, the
+second from the history file:
+
+```jsonc
+{ "campaign": "c8", "author": "human", "sealedAt": "2026-09-17T10:55:46.162Z",
+  "lineId": "C8.1a.tiers-pressable", "outcome": "held", "resealedAtWave": null,
+  "firstPassWave": 3, "decided": true, "source": "runner" }
+{ "campaign": "c7", "author": "human", "sealedAt": null,
+  "lineId": "C7.3.branching", "outcome": "resealed", "resealedAtWave": null,
+  "firstPassWave": null, "decided": true, "source": "history" }
+```
+
+- **`outcome`** is one of three:
+  - **`held`** — the campaign reached a decision and nothing rewrote the line.
+    The bar the author sealed is the bar the campaign was judged against.
+  - **`resealed`** — the line's printed text changed, or it appeared, or it
+    vanished, after the calibration that sealed it. A `resealed` line is the
+    failure this dataset exists to catch: a "pass" against a line somebody
+    rewrote mid-campaign proves nothing about the line that was sealed.
+  - **`open`** — the campaign has not reached a decision yet. Not evidence
+    either way, and excluded from every rate below.
+- **`sealedAt`** — when this campaign's gate was sealed: the authoring record's
+  own stamp (`state.authoring[<id>].sealedAt`) for a CynCo-authored campaign,
+  and the campaign's first calibration (`state.calibration.calibratedAt`) for a
+  human-sealed one, which has no authoring record because a human seals by
+  writing the triple into the sealed tree by hand and nothing records the
+  moment. `null` for a history row that does not state one, and for a campaign
+  that has never calibrated.
+- **`decided`** — the campaign's last wave record carries a decision it does
+  not come back from: `pass`, `pass-with-survivors`, `budget` or `no-progress`.
+  `fault` and `stop` are refusals to measure rather than readings, and `next`
+  is a campaign still running.
+- **`resealedAtWave`** — the wave count when the FIRST reseal that touched this
+  line was recorded (a line reworded twice moved at the first rewrite);
+  `firstPassWave` — the first wave whose `gate.passes` carried the id.
+- **`source`** — `runner` (read from `~/.cynco/campaigns/<id>/`) or `history`
+  (`docs/civkings-redesign-briefs/gate-lines.history.json`, the hand
+  transcription for campaigns that ran before the runner did). A campaign in
+  both is taken from the runner and skipped in the history; counting it twice
+  would double its lines in the denominator.
+
+Reseals are recorded by the runner at CALIBRATE time, from the calibration it
+is about to overwrite (`recordReseal` in `scripts/cynco-campaign.mjs`,
+`resealRecord` in `scripts/cynco-gate-lines.mjs`), and they live on the campaign
+state as `state.reseals`. The comparison is over the printed line TEXT, not the
+id set, because the id is a label and the text is the claim. That OVER-MARKS: a
+FAIL line's detail is printed from the run, so a line whose detail quotes a
+count reads as changed when the assertion behind it did not move. The error is
+deliberately in that direction — an over-marked line counts against the author,
+never for them.
+
+`summarize` folds the terminal rows into a held rate per author with a Wilson
+interval and a Fisher 2×2 (held × author, CynCo row first). The verdict entry
+prints it as its "Gate lines" line, and `gateAuthorPromotion`
+(`scripts/cynco-gate-author.mjs`) reads the same summary: ≥ 30 terminal CynCo
+lines, a Wilson lower bound ≥ 0.8, and not significantly worse than the human
+seat, raises the `gate-author/gate` proposal. Both thresholds are stated once,
+in `scripts/cynco-signal-validation.mjs` beside `DENIAL_MIN`.
 
 ## Labeling rule
 

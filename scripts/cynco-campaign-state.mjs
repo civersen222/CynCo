@@ -4,7 +4,11 @@ import { join } from 'node:path'
 export function freshState(id) {
   return { id, calibration: null, waveCount: 0, lastBase: null, lastFails: null, consecutiveNoProgress: 0,
            ideationAuthority: 0, proposals: [], invariantOverrides: {}, pendingNotifications: [],
-           governancePosiwid: { windows: [] }, lastVerdictAt: null }
+           governancePosiwid: { windows: [] }, lastVerdictAt: null,
+           // Phase 3, the gate-author seat: the second occupant's earned
+           // authority, one record per authoring run, and the reseal history
+           // that makes a sealed line's "held" claim falsifiable.
+           gateAuthorAuthority: 0, authoring: {}, reseals: [] }
 }
 
 // The daemon's missionLedger pattern (engine/daemon/missionLedger.ts:27-56):
@@ -63,6 +67,12 @@ export class CampaignState {
       if (d.status === 'approved' && typeof disk.ideationAuthority === 'number') {
         this.state.ideationAuthority = Math.max(this.state.ideationAuthority ?? 0, disk.ideationAuthority)
       }
+      // The gate-author seat's authority rises exactly like ideation's, and by
+      // exactly the same route: a `gate-author/gate` approval decided by a
+      // SECOND process while this one holds the object in memory.
+      if (d.status === 'approved' && typeof disk.gateAuthorAuthority === 'number') {
+        this.state.gateAuthorAuthority = Math.max(this.state.gateAuthorAuthority ?? 0, disk.gateAuthorAuthority)
+      }
       if (d.status === 'approved' && d.name.startsWith('invariants/') && disk.invariantOverrides) {
         // A blind spread would let a stale disk value clobber a higher one the
         // runner already holds in memory. Caps only ever rise (capProposal /
@@ -73,6 +83,18 @@ export class CampaignState {
           this.state.invariantOverrides = { ...(this.state.invariantOverrides ?? {}), [cap]: Math.max(this.state.invariantOverrides?.[cap] ?? 0, v) }
         }
       }
+    }
+    // A SEAL is not a proposal decision — `--approve-proposal gate/<id>` runs
+    // the decision and then copies the triple, records the shas and stamps
+    // `sealedAt` — so it must be merged outside the loop above or a runner
+    // holding this object would write its pre-seal `authoring` entry back over
+    // the seal that just happened. A seal on disk always wins: it is the one
+    // fact here that cannot be re-derived (the triple has already moved).
+    for (const [id, a] of Object.entries(disk?.authoring ?? {})) {
+      if (!a?.sealedAt) continue
+      const mine = this.state.authoring?.[id]
+      if (mine?.sealedAt) continue
+      this.state.authoring = { ...(this.state.authoring ?? {}), [id]: { ...(mine ?? {}), ...a } }
     }
   }
   appendWave(record) { mkdirSync(this.dir, { recursive: true }); appendFileSync(this.wavesPath, JSON.stringify(record) + '\n') }

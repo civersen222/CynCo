@@ -42,6 +42,33 @@ describe('loadCampaignSpec', () => {
     expect(() => loadCampaignSpec(write({ ...good(), sweep: { max: 2.5 } }))).toThrow(/sweep.max/)
     expect(() => loadCampaignSpec(write({ ...good(), prBase: '' }))).toThrow(/prBase/)
   })
+  // The positive shim (Rule 14) and the provenance of the gate. `positive` is
+  // OPTIONAL because the hand-authored c8 spec has none and must keep loading;
+  // `author` defaults to 'human' so every spec written before CynCo could
+  // author a gate reads as human-authored rather than as unknown.
+  it('accepts the optional positive shim and the authorship fields', () => {
+    const s = good()
+    s.positive = 'C:/Users/civer/.cynco/heldout/civkings-redesign/c8/positive_c8.py'
+    s.author = 'cynco'
+    s.authorMissionId = 'c8-author-wave1-1'
+    const loaded = loadCampaignSpec(write(s))
+    expect(loaded.positive).toBe(s.positive)
+    expect(loaded.author).toBe('cynco')
+    expect(loaded.authorMissionId).toBe('c8-author-wave1-1')
+  })
+  it('defaults author to human and authorMissionId to null, and leaves positive unset', () => {
+    const loaded = loadCampaignSpec(write(good()))
+    expect(loaded.author).toBe('human')
+    expect(loaded.authorMissionId).toBeNull()
+    expect(loaded.positive).toBeUndefined()
+  })
+  it('refuses an author that is neither cynco nor human, and nonsense in the other two', () => {
+    expect(() => loadCampaignSpec(write({ ...good(), author: 'robot' }))).toThrow(/author must be "cynco" or "human"/)
+    expect(() => loadCampaignSpec(write({ ...good(), author: '' }))).toThrow(/author must be/)
+    expect(() => loadCampaignSpec(write({ ...good(), positive: '' }))).toThrow(/positive must be a non-empty string/)
+    expect(() => loadCampaignSpec(write({ ...good(), positive: 3 }))).toThrow(/positive must be a non-empty string/)
+    expect(() => loadCampaignSpec(write({ ...good(), authorMissionId: 7 }))).toThrow(/authorMissionId must be a string or null/)
+  })
 })
 
 describe('checkIdentity', () => {
@@ -59,6 +86,18 @@ describe('checkIdentity', () => {
   it('refuses brief text that names the gate', () => {
     const s = good(); s.measures = 'run gate_c8.py to check'
     expect(checkIdentity(s, io()).problems.join()).toMatch(/gate_c8.py/)
+  })
+  // The positive shim names every graded fact AND how to make it true: it is
+  // the answer key, and it is sealed on the same terms as the gate.
+  it('holds the positive shim to the same seal as the gate when the spec has one', () => {
+    const sealed = { ...good(), positive: 'C:/Users/civer/.cynco/heldout/civkings-redesign/c8/positive_c8.py' }
+    expect(checkIdentity(sealed, io())).toEqual({ ok: true, problems: [] })
+    expect(checkIdentity({ ...sealed, positive: 'C:/tmp/positive_c8.py' }, io()).problems.join()).toMatch(/positive must live under/)
+    expect(checkIdentity(sealed, io({ exists: (p) => !p.includes('positive') })).problems.join()).toMatch(/positive does not exist/)
+    expect(checkIdentity({ ...sealed, measures: 'run positive_c8.py' }, io()).problems.join()).toMatch(/positive_c8\.py/)
+  })
+  it('says nothing about a positive shim the spec does not declare', () => {
+    expect(checkIdentity(good(), io({ exists: (p) => !p.includes('positive') }))).toEqual({ ok: true, problems: [] })
   })
   it('refuses a base the repo does not have', () => {
     expect(checkIdentity(good(), io({ gitHasCommit: () => false })).problems.join()).toMatch(/1d03308/)

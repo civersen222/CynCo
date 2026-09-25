@@ -3,6 +3,7 @@ import { readFileSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { gradeWave, sweepTestsFor, defaultIo } from '../cynco-campaign-grade.mjs'
+import { decide } from '../cynco-campaign.mjs'
 
 const baseLog = readFileSync(new URL('./fixtures/gate_c8_base.log', import.meta.url), 'utf8')
 const spec = { repo: 'C:/repo', gate: 'C:/Users/civer/.cynco/heldout/civkings-redesign/c8/gate_c8.py', suiteBaseline: 'C:/x/suite_baseline.txt',
@@ -86,6 +87,55 @@ describe('gradeWave', () => {
     // No diff is not a fault: the sweep was never attempted.
     const noDiff = await gradeWave(spec, { ...row, commitRange: { base: '1d03308', head: '1d03308' } }, fakeIo(green))
     expect(noDiff.sweep).toBeNull(); expect(noDiff.sweepFault).toBeNull()
+  })
+  // Review I2: the gate is the first spawn after a long wave — the one bun's
+  // stale deadline kills (F155). A spawn that did not run printed nothing, and
+  // nothing parsed as a gate is 0 fails / 0 passes; it must be the fault it is.
+  it('a gate spawn that did not run is a harness fault on the grade, never 0 lines', async () => {
+    const fault = { code: 'ETIMEDOUT', status: null, signal: 'SIGTERM', elapsedMs: 15 }
+    const io = fakeIo([
+      [/gate_c8\.py/, { status: null, stdout: '', stderr: '', fault }],
+      [/g_suite/, { status: 0, stdout: 'g_suite: PASS' }],
+      [/sweep/, { status: 0, stdout: '{"command":"x","kind":"derived","killed":1,"total":1,"survived":[]}' }],
+    ])
+    const g = await gradeWave(spec, row, io)
+    expect(g.gate.harnessFault).toBe('gate did not run (code ETIMEDOUT, status null, signal SIGTERM, after 15 ms)')
+    expect(g.fault).toEqual({ gate: fault })
+    expect(g.verified).toBeNull()
+    // the sweep is skipped on a faulted gate, as for any other gate harness fault
+    expect(io.calls.some(c => /sweep/.test(c.args.join(' ')))).toBe(false)
+    const d = decide({ grade: g, state: { waveCount: 1, lastFails: null }, spec: { ...spec, budget: { waves: 8 } }, commitsLanded: 1, row })
+    expect(d.kind).toBe('fault')
+    expect(d.why).toMatch(/gate did not run/)
+  })
+  it('a suite-gate spawn that did not run is a fault too, and a clean grade carries fault: null', async () => {
+    const fault = { code: 'EPERM', status: null, signal: null, elapsedMs: 3 }
+    const g = await gradeWave(spec, row, fakeIo([
+      [/gate_c8\.py/, { status: 0, stdout: 'GATE: PASS\n' }],
+      [/g_suite/, { status: null, stdout: '', fault }],
+      [/sweep/, { status: 0, stdout: '{"command":"x","kind":"derived","killed":1,"total":1,"survived":[]}' }],
+    ]))
+    expect(g.suite.harnessFault).toBe('suite gate did not run (code EPERM, status null, after 3 ms)')
+    expect(g.fault).toEqual({ suite: fault })
+    expect(g.verified).toBeNull()
+    const clean = await gradeWave(spec, row, fakeIo([
+      [/gate_c8\.py/, { status: 0, stdout: 'GATE: PASS\n' }],
+      [/g_suite/, { status: 0, stdout: 'g_suite: PASS' }],
+      [/sweep/, { status: 0, stdout: '{"command":"x","kind":"derived","killed":1,"total":1,"survived":[]}' }],
+    ]))
+    expect(clean.fault).toBeNull()
+  })
+  it('asks for the one-shot retry on the gate and suite reads, never on the sweep', async () => {
+    const io = fakeIo([
+      [/gate_c8\.py/, { status: 0, stdout: 'GATE: PASS\n' }],
+      [/g_suite/, { status: 0, stdout: 'g_suite: PASS' }],
+      [/sweep/, { status: 0, stdout: '{"command":"x","kind":"derived","killed":1,"total":1,"survived":[]}' }],
+    ])
+    await gradeWave(spec, row, io)
+    expect(io.calls[0].opts.retryImpossibleTimeout).toBe(true)
+    expect(io.calls[1].opts.retryImpossibleTimeout).toBe(true)
+    // the sweep mutates the tree: running it twice is not running it once
+    expect(io.calls[2].opts.retryImpossibleTimeout).toBeUndefined()
   })
   it('parses regressions by node id from the suite gate output', async () => {
     const io = fakeIo([[/gate_c8\.py/, { status: 0, stdout: 'GATE: PASS\n' }], [/g_suite/, { status: 1, stdout: '  REGRESSED 2 test(s) that pass on the baseline:\n      - gilded/tests/a.py::test_x\n      - gilded/tests/b.py::test_y\ng_suite: FAIL' }], [/sweep/, { status: 0, stdout: '{"command":"x","kind":"derived","killed":1,"total":1,"survived":[]}' }]])

@@ -123,9 +123,14 @@ describe('gate immutability wiring guard', () => {
  * file whose command the model was told out loud.
  */
 describe('sealed instrument wiring guard', () => {
-  it('conversationLoop derives the withheld gates and seals them on every task', () => {
+  it('conversationLoop derives the sealable gates and seals them on every task', () => {
     const src = read('engine/bridge/conversationLoop.ts')
-    expect(src).toMatch(/withheldGatePaths\(opts\.contract\.assertions, this\.executor\['cwd'\]\)/)
+    // F154: `sealedGatePaths` — the withheld set minus this installation's own
+    // source tree, because the seal makes a path UNRUNNABLE and a mission cannot
+    // be refused the acceptance command its own brief orders it to run. The
+    // driver's F45 snapshot barrier still takes the full `withheldGatePaths` set.
+    expect(src).toMatch(/sealedGatePaths\(opts\.contract\.assertions, this\.executor\['cwd'\]\)/)
+    expect(src).not.toMatch(/withheldGatePaths\(opts\.contract\.assertions/)
     expect(src).toMatch(/setTaskSealedPaths\(sealed\)/)
     // Unconditional, like the immutable set: a task carrying no withheld gate
     // must CLEAR the last one's seal, and a refusal that by design cannot name
@@ -140,10 +145,29 @@ describe('sealed instrument wiring guard', () => {
   it('seals only the withheld form, never a command the model was told', () => {
     const src = read('engine/bridge/contractAutoCreate.ts')
     expect(src).toContain('export function withheldGatePaths')
+    expect(src).toContain('export function sealedGatePaths')
     // A plain-string assertion states its command in its own text. Filtering to
     // the object form carrying a `command` is what makes this the withheld set;
     // dropping the filter would seal every gate, including visible ones.
     expect(src).toMatch(/typeof a !== 'string' && Boolean\(a\.command\)/)
+    // F154's scope, pinned: the harness-own exemption lives in `sealedGatePaths`
+    // and nowhere else. Inside `withheldGatePaths` it would silently take the
+    // driver's F45 snapshot/restore off the file that scores the run.
+    expect(src).toMatch(/export function sealedGatePaths[\s\S]{0,400}isHarnessOwnFile/)
+    const withheld = src.slice(src.indexOf('export function withheldGatePaths'), src.indexOf('export function sealedGatePaths'))
+    expect(withheld).not.toContain('isHarnessOwnFile')
+  })
+
+  /**
+   * F45's write barrier and F154's read exemption are different sets, and the
+   * first cut of F154 conflated them. The driver must snapshot EVERY withheld
+   * instrument — the checker included, in a mission whose brief hands it that
+   * file's absolute path — while the engine seals only the narrowed set.
+   */
+  it('the driver snapshots the full withheld set and counts only the sealable one', () => {
+    const src = read('scripts/cynco-mission-driver.mjs')
+    expect(src).toMatch(/snapshotHeldOut\(withheldGatePaths\(missionAssertions, CWD\)/)
+    expect(src).toMatch(/sealedGatePaths\(missionAssertions, CWD\)\.length/)
   })
 
   it('the executor reaches both enforcement layers of the seal', () => {
