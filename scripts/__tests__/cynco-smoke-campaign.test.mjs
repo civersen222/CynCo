@@ -3,12 +3,12 @@
 // smoke repo — the triple has to be genuinely runnable, not a stand-in — and
 // never touch C:/tmp/phase2-smoke itself or the live ~/.cynco.
 import { describe, it, expect, beforeAll } from 'vitest'
-import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir, homedir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { writeSmokeCampaign, SMOKE_ID } from '../cynco-smoke-campaign.mjs'
+import { writeSmokeCampaign, runtimeEnvFrom, SMOKE_ID } from '../cynco-smoke-campaign.mjs'
 import { loadCampaignSpec, checkIdentity } from '../cynco-campaign-spec.mjs'
 import { calibrate, archiveBase } from '../cynco-campaign-calibrate.mjs'
 import { parseGateOutput } from '../cynco-gate-parse.mjs'
@@ -149,5 +149,59 @@ describe('smoke campaign --common-from', () => {
     const h = tempHome()
     writeSmokeCampaign({ home: h, repo: 'C:/tmp/any-repo', base })
     expect(existsSync(join(h, 'heldout', 'common'))).toBe(false)
+  })
+})
+
+// F161: an engine under a temp CYNCO_HOME has no llama-server, no GGUF and no
+// profile — it reached for GitHub and the live proof's dispatch died. The
+// generator points the temp home at the real assets BY PATH (the two engine
+// overrides, carried on the spec as `env`) and copies the small profiles.
+// Never a junction: the real models dir must never sit under a tree that
+// gets removed.
+describe('smoke campaign --runtime-from (F161)', () => {
+  const base = 'a'.repeat(40)
+  const fakeRuntime = ({ brain = true, model = 'qwen3.8-27b-nvfp4', file = 'Q.gguf', profile = null } = {}) => {
+    const r = mkdtempSync(join(tmpdir(), 's1-runtime-')).replace(/\\/g, '/')
+    mkdirSync(join(r, brain ? 'bin-brain' : 'bin'), { recursive: true })
+    writeFileSync(join(r, brain ? 'bin-brain' : 'bin', 'llama-server.exe'), 'MZ')
+    mkdirSync(join(r, 'models', model), { recursive: true })
+    writeFileSync(join(r, 'models', model, file), 'GGUF')
+    mkdirSync(join(r, 'profiles'), { recursive: true })
+    writeFileSync(join(r, 'profiles', 'default.yaml'), profile ?? `name: default\nmodel: ${model}\nmodel_file: ${file} # the file\ncontext_length: 131072\n`)
+    writeFileSync(join(r, 'profiles', 'other.yaml'), 'name: other\nmodel: x\n')
+    writeFileSync(join(r, 'profiles', 'notes.txt'), 'not a profile\n')
+    return r
+  }
+
+  it('names the brain build over the stock one and the profile\'s GGUF, as the engine\'s two explicit-path overrides', () => {
+    const r = fakeRuntime()
+    expect(runtimeEnvFrom(r)).toEqual({ LOCALCODE_LLAMA_SERVER: `${r}/bin-brain/llama-server.exe`, LOCALCODE_MODEL_PATH: `${r}/models/qwen3.8-27b-nvfp4/Q.gguf` })
+    const stock = fakeRuntime({ brain: false })
+    expect(runtimeEnvFrom(stock).LOCALCODE_LLAMA_SERVER).toBe(`${stock}/bin/llama-server.exe`)
+  })
+
+  it('strips an Ollama-style tag from model: and refuses a runtime without a binary, a profile, the model keys, or the GGUF', () => {
+    const tagged = fakeRuntime({ model: 'qwen3.8', profile: 'model: qwen3.8:latest\nmodel_file: Q.gguf\n' })
+    expect(runtimeEnvFrom(tagged).LOCALCODE_MODEL_PATH).toBe(`${tagged}/models/qwen3.8/Q.gguf`)
+    const noBin = mkdtempSync(join(tmpdir(), 's1-runtime-nobin-'))
+    expect(() => runtimeEnvFrom(noBin)).toThrow(/no llama-server/)
+    const noProfile = fakeRuntime(); rmSync(join(noProfile, 'profiles'), { recursive: true })
+    expect(() => runtimeEnvFrom(noProfile)).toThrow(/default\.yaml does not exist/)
+    expect(() => runtimeEnvFrom(fakeRuntime({ profile: 'name: default\n' }))).toThrow(/lacks model/)
+    expect(() => runtimeEnvFrom(fakeRuntime({ profile: 'model: qwen3.8-27b-nvfp4\nmodel_file: missing.gguf\n' }))).toThrow(/missing\.gguf does not exist/)
+  })
+
+  it('writes the env onto the spec, copies only the yaml profiles, and the spec still loads', () => {
+    const r = fakeRuntime()
+    const h = tempHome()
+    const specPath = writeSmokeCampaign({ home: h, repo: 'C:/tmp/any-repo', base, runtimeFrom: r })
+    const spec = JSON.parse(readFileSync(specPath, 'utf8'))
+    expect(spec.env).toEqual({ LOCALCODE_LLAMA_SERVER: `${r}/bin-brain/llama-server.exe`, LOCALCODE_MODEL_PATH: `${r}/models/qwen3.8-27b-nvfp4/Q.gguf` })
+    expect(readdirSync(join(h, 'profiles')).sort()).toEqual(['default.yaml', 'other.yaml'])
+    expect(loadCampaignSpec(specPath).env).toEqual(spec.env)
+    expect(existsSync(join(h, 'models'))).toBe(false)
+    expect(existsSync(join(h, 'bin'))).toBe(false)
+    const plain = JSON.parse(readFileSync(writeSmokeCampaign({ home: tempHome(), repo: 'C:/tmp/any-repo', base }), 'utf8'))
+    expect(plain.env).toBeUndefined()
   })
 })

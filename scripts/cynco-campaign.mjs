@@ -117,6 +117,11 @@ export function decide({ grade, state, spec, commitsLanded, row }) {
  * the runner) and GH_TOKEN/GITHUB_TOKEN would let a mission push and merge.
  * None of the three is needed to do the work, so none of them is handed over.
  */
+/** The runner's environment with the spec's `env` laid over it (F161); `dispatchEnv` strips it like any other base. */
+export function waveEnvBase(spec, base = process.env) {
+  return { ...base, ...(spec?.env ?? {}) }
+}
+
 export function dispatchEnv(base, extra) {
   const out = {}
   for (const [k, v] of Object.entries(base)) {
@@ -136,7 +141,10 @@ export const defaultIo = {
     // can name its campaign as `active` in /api/campaign between waves, when no
     // campaign has a driver in flight (Phase 2c-ii). dispatch-mission.sh passes
     // it through to `bun engine/main.ts` the same way it passes LOCALCODE_MISSION_*.
-    const env = dispatchEnv(process.env, { LOCALCODE_MAX_ITERATIONS: String(spec.budget.iterations), CYNCO_BASH_TIMEOUT_MS: String(spec.budget.bashTimeoutMs),
+    // F161: spec.env (the engine's explicit llama-server / GGUF paths for a
+    // campaign under a temp home) goes in through the BASE, so the same
+    // stripping applies to it as to the runner's own environment.
+    const env = dispatchEnv(waveEnvBase(spec), { LOCALCODE_MAX_ITERATIONS: String(spec.budget.iterations), CYNCO_BASH_TIMEOUT_MS: String(spec.budget.bashTimeoutMs),
       CYNCO_MISSION_INVARIANTS: JSON.stringify(invariants), DRIVER_PID_FILE: pidFile, DRIVER_LOG: driverLog, CYNCO_SKIP_IDLE_ENGINE: '1', CYNCO_CAMPAIGN_ID: spec.id })
     // F160: Git Bash by path, not whatever `bash` the launching shell's PATH holds.
     const r = spawnSync(bashExe(), ['scripts/dispatch-mission.sh', briefFile, spec.marker, spec.repo, String(timeoutS), spec.keepGreen], { env, encoding: 'utf8', timeout: 900_000 })

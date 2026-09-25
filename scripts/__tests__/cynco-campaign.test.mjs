@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { decide, runWave, waveContext, budgetSpent, defaultIo, claimedSurvivors, dispatchEnv, dirtyOutsideCampaign, inFlightRefusal, adoptInFlight, takeLock, releaseLock, applyProposalDecision, recordReseal, main } from '../cynco-campaign.mjs'
+import { decide, runWave, waveContext, budgetSpent, defaultIo, claimedSurvivors, dispatchEnv, waveEnvBase, dirtyOutsideCampaign, inFlightRefusal, adoptInFlight, takeLock, releaseLock, applyProposalDecision, recordReseal, main } from '../cynco-campaign.mjs'
 import { summarize as summarizeGateLines } from '../cynco-gate-lines.mjs'
 import { adopt } from '../cynco-campaign-adopt.mjs'
 import { CampaignState } from '../cynco-campaign-state.mjs'
@@ -801,6 +801,16 @@ describe('defaultIo.waitForDriver — the ledger line is the authority', () => {
 // I6: the worker is an unattended model with a Bash tool. Anything in its env
 // it can read, print, or post.
 describe('dispatchEnv', () => {
+  // F161: the spec's env (the engine's explicit llama-server / GGUF paths for a
+  // temp home) is laid over the runner's own env BEFORE the stripping, so a
+  // spec cannot smuggle a channel the runner strips from itself.
+  it('waveEnvBase lays spec.env over the base env, and dispatchEnv still strips it', () => {
+    const spec = { env: { LOCALCODE_LLAMA_SERVER: 'C:/x/llama-server.exe', LOCALCODE_MODEL_PATH: 'C:/x/m.gguf' } }
+    expect(waveEnvBase(spec, { PATH: '/usr/bin', LOCALCODE_MODEL_PATH: 'stale' })).toEqual({ PATH: '/usr/bin', LOCALCODE_LLAMA_SERVER: 'C:/x/llama-server.exe', LOCALCODE_MODEL_PATH: 'C:/x/m.gguf' })
+    expect(waveEnvBase({}, { PATH: '/usr/bin' })).toEqual({ PATH: '/usr/bin' })
+    expect(dispatchEnv(waveEnvBase({ env: { CYNCO_NTFY_URL: 'http://n' } }, { PATH: '/usr/bin' }), {})).toEqual({ PATH: '/usr/bin' })
+  })
+
   it('strips the ntfy credentials and the GitHub tokens, keeps everything else', () => {
     const env = dispatchEnv({ PATH: '/usr/bin', CYNCO_NTFY_URL: 'http://n', CYNCO_NTFY_TOKEN: 'tk', CYNCO_NTFY_ALERT_TOPIC: 'cynco-alerts', GH_TOKEN: 'gh', GITHUB_TOKEN: 'gh2', CYNCO_GATE_REPO: 'C:/repo' }, { DRIVER_LOG: 'C:/tmp/d.log' })
     expect(env).toEqual({ PATH: '/usr/bin', CYNCO_GATE_REPO: 'C:/repo', DRIVER_LOG: 'C:/tmp/d.log' })

@@ -56,6 +56,21 @@ describe('loadCampaignSpec', () => {
     expect(loaded.author).toBe('cynco')
     expect(loaded.authorMissionId).toBe('c8-author-wave1-1')
   })
+  // F161: `env` carries the engine's explicit llama-server / GGUF paths for a
+  // campaign under a temp CYNCO_HOME. Harness knobs only.
+  it('accepts env as LOCALCODE_* / CYNCO_* strings and refuses anything else', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'spec-env-'))
+    const write = (env) => { const p = join(dir, `${Math.random().toString(36).slice(2)}.campaign.json`); writeFileSync(p, JSON.stringify({ ...good(), env })); return p }
+    expect(loadCampaignSpec(write({ LOCALCODE_LLAMA_SERVER: 'C:/x/llama-server.exe', LOCALCODE_MODEL_PATH: 'C:/x/m.gguf' })).env)
+      .toEqual({ LOCALCODE_LLAMA_SERVER: 'C:/x/llama-server.exe', LOCALCODE_MODEL_PATH: 'C:/x/m.gguf' })
+    expect(loadCampaignSpec(write(undefined)).env).toBeUndefined()
+    expect(() => loadCampaignSpec(write(['LOCALCODE_X=1']))).toThrow(/env must be an object/)
+    expect(() => loadCampaignSpec(write({ PATH: 'C:/evil' }))).toThrow(/env\.PATH: only LOCALCODE_/)
+    expect(() => loadCampaignSpec(write({ CYNCO_NTFY_URL: 'http://n' }))).toThrow(/env\.CYNCO_NTFY_URL/)
+    expect(() => loadCampaignSpec(write({ LOCALCODE_MODEL_PATH: '' }))).toThrow(/must be a non-empty string/)
+    expect(() => loadCampaignSpec(write({ LOCALCODE_MODEL_PATH: 3 }))).toThrow(/must be a non-empty string/)
+  })
+
   it('defaults author to human and authorMissionId to null, and leaves positive unset', () => {
     const loaded = loadCampaignSpec(write(good()))
     expect(loaded.author).toBe('human')

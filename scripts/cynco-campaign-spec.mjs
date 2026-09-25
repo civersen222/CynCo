@@ -43,6 +43,17 @@ export function loadCampaignSpec(path) {
   // optional because the hand-authored c8 spec has none and must keep loading;
   // the seal verb requires one for every gate CynCo writes.
   if (spec.positive !== undefined && (typeof spec.positive !== 'string' || !spec.positive)) throw new Error('campaign spec positive must be a non-empty string')
+  // F161: `env` is what a campaign under a temp CYNCO_HOME hands the engine so
+  // it finds the real llama-server and GGUF (LOCALCODE_LLAMA_SERVER,
+  // LOCALCODE_MODEL_PATH). Engine/harness knobs only — never a credential or a
+  // notification channel, which dispatchEnv strips from the runner's own env.
+  if (spec.env !== undefined) {
+    if (typeof spec.env !== 'object' || spec.env === null || Array.isArray(spec.env)) throw new Error('campaign spec env must be an object of string values')
+    for (const [k, v] of Object.entries(spec.env)) {
+      if (!/^(LOCALCODE|CYNCO)_[A-Z0-9_]+$/.test(k) || k.startsWith('CYNCO_NTFY_')) throw new Error(`campaign spec env.${k}: only LOCALCODE_* / CYNCO_* keys (not CYNCO_NTFY_*) may be set by a spec`)
+      if (typeof v !== 'string' || !v) throw new Error(`campaign spec env.${k} must be a non-empty string`)
+    }
+  }
   if (spec.author !== undefined && spec.author !== 'cynco' && spec.author !== 'human') throw new Error(`campaign spec author must be "cynco" or "human"; got ${JSON.stringify(spec.author)}`)
   spec.author = spec.author ?? 'human'
   if (spec.authorMissionId !== undefined && spec.authorMissionId !== null && typeof spec.authorMissionId !== 'string') throw new Error('campaign spec authorMissionId must be a string or null')

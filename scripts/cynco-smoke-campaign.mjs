@@ -20,7 +20,7 @@
 // `<home>/heldout/...`. So the caller passes `C:/tmp/cynco-home-s1/.cynco` as
 // CYNCO_HOME (not `C:/tmp/cynco-home-s1`), and the runner, the engine and this
 // generator then all agree on one directory.
-import { copyFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -114,7 +114,37 @@ function headOf(repo) {
  */
 export const SUITE_GATE_FILE = 'g_suite_no_regression.py'
 
-export function writeSmokeCampaign({ home, repo, base, commonFrom } = {}) {
+/**
+ * F161. The engine resolves its llama-server (`<home>/bin-brain`, `<home>/bin`),
+ * its GGUF (`<home>/models/<model>/<model_file>`) and its profiles under
+ * `cyncoHome()`, so an engine dispatched under a temp home finds none of them
+ * and reaches for GitHub — the live proof's first dispatch died there. The
+ * assets are not state: the temp home must point at the real ones, by path,
+ * never by junction (a junction under a tree someone later `rm -rf`s deletes
+ * the real models). The two env keys below are the engine's explicit-path
+ * overrides (`engine/config.ts`), and the campaign spec carries them as `env`
+ * so the runner's dispatch hands them to the engine.
+ *
+ * The model is read off `<runtimeFrom>/profiles/default.yaml` — the profile
+ * the engine boots with — from its `model:` and `model_file:` keys.
+ */
+export function runtimeEnvFrom(runtimeFrom, { exists = existsSync, read = (p) => readFileSync(p, 'utf8') } = {}) {
+  const r = norm(resolve(runtimeFrom))
+  const binary = ['bin-brain/llama-server.exe', 'bin/llama-server.exe', 'bin-brain/llama-server', 'bin/llama-server'].map(p => `${r}/${p}`).find(exists)
+  if (!binary) throw new Error(`--runtime-from: no llama-server under ${r}/bin-brain or ${r}/bin`)
+  const profile = `${r}/profiles/default.yaml`
+  if (!exists(profile)) throw new Error(`--runtime-from: ${profile} does not exist — the model is read off its model:/model_file: keys`)
+  const yaml = read(profile)
+  const key = (k) => { const m = new RegExp(`^${k}:[ \\t]*([^\\n#]+)`, 'm').exec(yaml); return m ? m[1].trim().replace(/^["']|["']$/g, '') : null }
+  const model = key('model')
+  const modelFile = key('model_file')
+  if (!model || !modelFile) throw new Error(`--runtime-from: ${profile} lacks model: or model_file:`)
+  const modelPath = `${r}/models/${model.split(':')[0]}/${modelFile}`
+  if (!exists(modelPath)) throw new Error(`--runtime-from: ${modelPath} does not exist`)
+  return { LOCALCODE_LLAMA_SERVER: binary, LOCALCODE_MODEL_PATH: modelPath }
+}
+
+export function writeSmokeCampaign({ home, repo, base, commonFrom, runtimeFrom } = {}) {
   if (!home) throw new Error('writeSmokeCampaign: no home — pass --home or set CYNCO_HOME')
   if (!repo) throw new Error('writeSmokeCampaign: no repo — pass --repo')
   const h = norm(resolve(home))
@@ -138,22 +168,36 @@ export function writeSmokeCampaign({ home, repo, base, commonFrom } = {}) {
     copyFileSync(src, `${h}/heldout/common/${SUITE_GATE_FILE}`)
   }
 
+  let env = null
+  if (runtimeFrom) {
+    env = runtimeEnvFrom(runtimeFrom)
+    // The profiles are small yaml and the engine boots from `default.yaml`
+    // (context length, sampler, template): copied, so the smoke engine runs
+    // the operator's profile and not the bundled fallback.
+    const profiles = `${norm(resolve(runtimeFrom))}/profiles`
+    mkdirSync(`${h}/profiles`, { recursive: true })
+    for (const f of readdirSync(profiles).filter(n => n.endsWith('.yaml'))) copyFileSync(`${profiles}/${f}`, `${h}/profiles/${f}`)
+  }
+
   const campaignDir = `${h}/campaigns/${SMOKE_ID}`
   rmSync(campaignDir, { recursive: true, force: true })
   mkdirSync(campaignDir, { recursive: true })
 
   mkdirSync(`${h}/smoke`, { recursive: true })
   const specPath = `${h}/smoke/${SMOKE_ID}.campaign.json`
-  writeFileSync(specPath, JSON.stringify(smokeSpec({ repo: r, base: sha, heldout }), null, 2) + '\n', 'utf8')
+  const spec = smokeSpec({ repo: r, base: sha, heldout })
+  if (env) spec.env = env
+  writeFileSync(specPath, JSON.stringify(spec, null, 2) + '\n', 'utf8')
   return specPath
 }
 
 function parseArgs(argv) {
-  const out = { write: false, repo: null, home: process.env.CYNCO_HOME || null, commonFrom: null }
+  const out = { write: false, repo: null, home: process.env.CYNCO_HOME || null, commonFrom: null, runtimeFrom: null }
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
     if (a === '--write') out.write = true
     else if (a === '--common-from') out.commonFrom = argv[++i]
+    else if (a === '--runtime-from') out.runtimeFrom = argv[++i]
     else if (a === '--repo') out.repo = argv[++i]
     else if (a === '--home') out.home = argv[++i]
     else throw new Error(`unknown argument ${a}`)
@@ -165,8 +209,8 @@ const isMain = import.meta.main ?? (process.argv[1] ? resolve(process.argv[1]) =
 if (isMain) {
   try {
     const args = parseArgs(process.argv.slice(2))
-    if (!args.write) throw new Error('usage: bun scripts/cynco-smoke-campaign.mjs --write --repo <path> [--home <dir ending in /.cynco>] [--common-from <dir holding g_suite_no_regression.py>]')
-    console.log(writeSmokeCampaign({ home: args.home, repo: args.repo, commonFrom: args.commonFrom }))
+    if (!args.write) throw new Error('usage: bun scripts/cynco-smoke-campaign.mjs --write --repo <path> [--home <dir ending in /.cynco>] [--common-from <dir holding g_suite_no_regression.py>] [--runtime-from <real ~/.cynco: llama-server, models, profiles>]')
+    console.log(writeSmokeCampaign({ home: args.home, repo: args.repo, commonFrom: args.commonFrom, runtimeFrom: args.runtimeFrom }))
   } catch (e) {
     console.error(`[smoke] ${e.message}`)
     process.exit(1)
