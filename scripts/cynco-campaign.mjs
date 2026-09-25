@@ -33,7 +33,7 @@ import { analyseDenials } from './cynco-signal-validation.mjs'
 import { governanceCounts, governancePosiwid } from './cynco-governance-posiwid.mjs'
 import { loadRoadmap, saveRoadmap, rejectLine, ROADMAP_PATH } from './cynco-roadmap.mjs'
 import { assertIdentityIntact } from './cynco-identity.mjs'
-import { applyProposalDecision } from './cynco-proposals.mjs'
+import { applyProposalDecision, seatAuthority } from './cynco-proposals.mjs'
 
 // Phase 4: the operator's decision on a pending proposal lives in the one
 // proposal registry (scripts/cynco-proposals.mjs). Re-exported so every caller
@@ -466,14 +466,20 @@ export async function runWave(spec, state, io = defaultIo) {
   // entirely (set to null) rather than called — calling it here would see
   // `s.proposals` before the promotion proposal below is pushed onto it, so
   // its own pending check could not see the truth.
-  const proposal = identity.intact ? promotionProposal(state.waves(), s.ideationAuthority ?? 0) : null
+  //
+  // Both promotions are asked about the seat's EFFECTIVE authority — the
+  // higher of this campaign's value and the retained seats store — so a fresh
+  // campaign does not re-propose a promotion the seat already earned elsewhere.
+  const seatsHome = io.seatsHome?.() ?? null
+  const effective = (local, seat) => seatsHome ? Math.max(local ?? 0, seatAuthority(seatsHome, seat)) : (local ?? 0)
+  const proposal = identity.intact ? promotionProposal(state.waves(), effective(s.ideationAuthority, 'ideation')) : null
   // The gate-author promotion (spec ruling 11) is the THIRD proposal that could
   // go pending in one wave, and §E does not care which of them got there first:
   // it is computed only when the ideation promotion is not about to be raised
   // AND nothing is already pending — including a `gate/<id>` the operator has
   // not decided yet, which is exactly the wrong moment to ask for more authority.
   const gatePromotion = identity.intact && !proposal && !(s.proposals ?? []).some(p => p.status === 'pending')
-    ? gateAuthorPromotion(gateLines, s.gateAuthorAuthority ?? 0)
+    ? gateAuthorPromotion(gateLines, effective(s.gateAuthorAuthority, 'gate-author'))
     : null
   const cap = !identity.intact || proposal || gatePromotion ? null : capProposal(denialAnalysis, spec, s)
 

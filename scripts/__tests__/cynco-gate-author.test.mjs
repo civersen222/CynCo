@@ -1570,8 +1570,11 @@ describe('authorMain', () => {
 // ── The seat's authority is read across every campaign, not one state file ──
 
 describe('gateAuthorAuthorityAcrossCampaigns', () => {
+  // `campaigns/` under its own temp home: the seats store is read from the
+  // campaigns dir's parent, which must never be the shared os.tmpdir().
   const campaigns = (byId) => {
-    const dir = mkdtempSync(join(tmpdir(), 'seat-'))
+    const dir = join(mkdtempSync(join(tmpdir(), 'seat-')), 'campaigns')
+    mkdirSync(dir, { recursive: true })
     for (const [id, state] of Object.entries(byId)) {
       mkdirSync(join(dir, id), { recursive: true })
       writeFileSync(join(dir, id, 'state.json'), JSON.stringify({ id, ...state }, null, 2))
@@ -1588,7 +1591,7 @@ describe('gateAuthorAuthorityAcrossCampaigns', () => {
   })
 
   it('is 0 for a campaigns dir that does not exist', () => {
-    expect(gateAuthorAuthorityAcrossCampaigns(join(tmpdir(), 'no-such-campaigns-dir-' + Date.now()))).toBe(0)
+    expect(gateAuthorAuthorityAcrossCampaigns(join(tmpdir(), 'no-such-campaigns-dir-' + Date.now()), { seatsHome: mkdtempSync(join(tmpdir(), 'empty-')) })).toBe(0)
   })
 
   it('ignores a state file whose authority is not a finite number', () => {
@@ -1622,7 +1625,9 @@ describe('gateAuthorAuthorityAcrossCampaigns', () => {
 
 describe('--author at earned authority, end to end', () => {
   const runAuthor = async (seatState) => {
-    const campaignsDir = mkdtempSync(join(tmpdir(), 'seat-e2e-'))
+    // Under its own temp home, so the seats store read beside it is empty.
+    const campaignsDir = join(mkdtempSync(join(tmpdir(), 'seat-e2e-')), 'campaigns')
+    mkdirSync(campaignsDir, { recursive: true })
     for (const [id, state] of Object.entries(seatState)) {
       mkdirSync(join(campaignsDir, id), { recursive: true })
       writeFileSync(join(campaignsDir, id, 'state.json'), JSON.stringify({ id, ...state }, null, 2))

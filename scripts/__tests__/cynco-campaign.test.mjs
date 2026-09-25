@@ -4,6 +4,7 @@ import { summarize as summarizeGateLines } from '../cynco-gate-lines.mjs'
 import { adopt } from '../cynco-campaign-adopt.mjs'
 import { CampaignState } from '../cynco-campaign-state.mjs'
 import { promotionProposal } from '../cynco-ideation.mjs'
+import { readSeats, writeSeats } from '../cynco-proposals.mjs'
 import { defaultIo as calibrateIo } from '../cynco-campaign-calibrate.mjs'
 import { mkdtempSync, mkdirSync, copyFileSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -1497,6 +1498,34 @@ describe('the identity assertion at VERDICT', () => {
     const state = freshState()
     const rec = await runWave(spec, state, io({ readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', toolStats: {} }) }))
     expect(rec.decision).toEqual({ kind: 'fault', why: 'identity violated: marker-recorded' })
+  })
+
+  // Review fix 5: the promotions read the seat's EFFECTIVE authority. A fresh
+  // campaign (state value 0) whose seat already holds 0.5 in the retained
+  // store must not re-propose the promotion the seat earned elsewhere.
+  it('a fresh campaign whose seat is at 0.5 in the store raises no gate-author promotion', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'seats-'))
+    writeSeats(home, readSeats(home), { seat: 'gate-author', authority: 0.5, decidedAt: 't', campaign: 'c8' })
+    const state = freshState()
+    expect(state.state.gateAuthorAuthority).toBe(0)
+    const rec = await runWave(spec, state, io({ seatsHome: () => home }))
+    expect(rec.decision.kind).toBe('next')
+    expect(state.state.proposals).toEqual([])
+    // Control: the same wave with an empty store does raise it.
+    const control = freshState()
+    await runWave(spec, control, io({ seatsHome: () => mkdtempSync(join(tmpdir(), 'seats-empty-')) }))
+    expect(control.state.proposals.map(p => p.name)).toEqual(['gate-author/gate'])
+  })
+
+  it('a fresh campaign whose ideation seat is at 0.5 in the store raises no ideation promotion', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'seats-'))
+    writeSeats(home, readSeats(home), { seat: 'ideation', authority: 0.5, decidedAt: 't', campaign: 'c8' })
+    const state = freshState()
+    for (let i = 0; i < 8; i++) state.appendWave({ wave: i + 1, s4: { ideation: {}, followed: true }, outcome: { landed: true } })
+    for (let i = 0; i < 4; i++) state.appendWave({ wave: 8 + i + 1, s4: { ideation: {}, followed: false }, outcome: { landed: false } })
+    expect(promotionProposal(state.waves(), 0)).not.toBeNull()
+    await runWave(spec, state, io({ seatsHome: () => home, exportGateLines: () => ({ rows: [], summary: null }) }))
+    expect(state.state.proposals.filter(p => p.name === 'ideation/brief')).toEqual([])
   })
 
   it('a spec that turns the revert ban off faults the wave', async () => {

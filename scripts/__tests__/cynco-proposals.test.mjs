@@ -30,6 +30,16 @@ describe('applyProposalDecision refuses identity', () => {
     expect(s.invariantOverrides).toEqual({})
   })
 
+  // A rejection changes nothing, and a proposal left pending blocks every later
+  // one under §E — so an identity-named proposal can always be said no to.
+  it.each(['invariants/revertBan', 'invariants/codeIndexFirst', 'identity/gate-sealed', 'spec/marker'])('%s may be rejected, which clears it and changes nothing else', (name) => {
+    const s = { proposals: [pending({ name })], invariantOverrides: {}, ideationAuthority: 0 }
+    expect(applyProposalDecision(s, name, false)).toEqual({ ok: true, status: 'rejected' })
+    expect(s.proposals[0].status).toBe('rejected')
+    expect(s.invariantOverrides).toEqual({})
+    expect(s.ideationAuthority).toBe(0)
+  })
+
   it('refuses an approval while identity is violated, naming what broke', () => {
     const h = home()
     const s = { id: 'c8', proposals: [pending()], ideationAuthority: 0 }
@@ -37,6 +47,13 @@ describe('applyProposalDecision refuses identity', () => {
     expect(s.proposals[0].status).toBe('pending')
     expect(s.ideationAuthority).toBe(0)
     expect(existsSync(SEATS_PATH(h))).toBe(false)
+  })
+
+  it('a non-tunable cap cannot be approved but can be rejected', () => {
+    const s = { proposals: [pending({ name: 'invariants/somethingElse' })], invariantOverrides: {} }
+    expect(applyProposalDecision(s, 'invariants/somethingElse', true)).toEqual({ ok: false, why: 'proposal invariants/somethingElse names a cap that is not tunable' })
+    expect(applyProposalDecision(s, 'invariants/somethingElse', false)).toEqual({ ok: true, status: 'rejected' })
+    expect(s.invariantOverrides).toEqual({})
   })
 
   it('a rejection still goes through while identity is violated — saying no never changes identity', () => {
@@ -61,6 +78,17 @@ describe('applyProposalDecision writes the seats store', () => {
     expect(second.version).toBe(1)
     expect(second.history).toHaveLength(1)
     expect(seatAuthority(h, 'ideation')).toBe(0.5)
+  })
+
+  it('the store only rises: approving 0.3 after a stored 0.5 leaves 0.5 at the same version', () => {
+    const h = home()
+    writeSeats(h, readSeats(h), { seat: 'ideation', authority: 0.5, decidedAt: 't0', campaign: 'c7' })
+    const s = { id: 'c8', proposals: [pending({ newValue: 0.3 })], ideationAuthority: 0 }
+    expect(applyProposalDecision(s, 'ideation/brief', true, { identity: intact, seatsHome: h }).ok).toBe(true)
+    expect(s.ideationAuthority).toBe(0.3)
+    const disk = JSON.parse(readFileSync(SEATS_PATH(h), 'utf8'))
+    expect(disk.seats.ideation).toMatchObject({ authority: 0.5, campaign: 'c7' })
+    expect(disk.version).toBe(1)
   })
 
   it('an approved gate-author/gate writes the gate-author seat', () => {

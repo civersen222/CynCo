@@ -24,6 +24,13 @@ import { refusesIdentity } from './cynco-identity.mjs'
 
 export const PROPOSAL_FAMILIES = ['ideation/brief', 'gate-author/gate', 'invariants/', 'gate/']
 
+// The only code allowed to assign a seat's authority or a cap override, or to
+// write the seats store — file → the method it is confined to (null: the whole
+// file). CampaignState's merge adopts a decision this registry already made in
+// another process, and nothing else in that file may. Read by
+// engine/__tests__/guards/proposalWriters.test.ts.
+export const PROPOSAL_WRITERS = { 'cynco-proposals.mjs': null, 'cynco-campaign-state.mjs': 'adoptExternalDecisions' }
+
 export const SEATS_PATH = (home) => join(home, 'retained', 'seats.json')
 
 const SEATS_SCHEMA = 1
@@ -84,23 +91,25 @@ export function seatAuthority(home, seat) {
  * written to the retained store when `seatsHome` is given (the CLI passes
  * cyncoHome(); tests pass a temp dir; the merge-on-save path passes nothing).
  *
- * Refusals, in order, and none of them touches state:
- *   1. the name targets identity — no evidence buys that, approve or reject;
- *   2. no pending proposal of that name;
+ * Refusals, in order, and none of them touches state. Every one of them
+ * refuses an APPROVAL only: a rejection changes nothing about the campaign,
+ * and refusing it would leave the proposal pending forever — which, under §E,
+ * blocks every later proposal behind it.
+ *   1. the name targets identity — no evidence buys that;
+ *   2. no pending proposal of that name (this one refuses a rejection too:
+ *      there is nothing to reject);
  *   3. an `invariants/<cap>` that is not one of the two tunable caps;
- *   4. an APPROVAL while `identity` says the campaign is not intact. A
- *      rejection still goes through: saying no changes nothing about identity,
- *      and refusing it would leave the proposal pending forever.
+ *   4. `identity` says the campaign is not intact.
  */
 export function applyProposalDecision(s, name, approve, { decidedBy = 'supervisor', identity = null, seatsHome = null } = {}) {
-  if (refusesIdentity(name)) return { ok: false, why: `proposal ${name} targets an identity invariant` }
+  if (approve && refusesIdentity(name)) return { ok: false, why: `proposal ${name} targets an identity invariant` }
   const p = (s.proposals ?? []).find(x => x.name === name && x.status === 'pending')
   if (!p) return { ok: false, why: `no pending proposal ${name}` }
   // Only editGapCap and commitGapCap are tunable (revertBan/codeIndexFirst are
   // identity invariants and refused above — capProposal never proposes them,
   // but a hand-edited or otherwise malformed proposal must be refused here
   // too, before any state is touched).
-  if (p.name.startsWith('invariants/')) {
+  if (approve && p.name.startsWith('invariants/')) {
     const cap = p.name.slice('invariants/'.length)
     if (cap !== 'editGapCap' && cap !== 'commitGapCap') return { ok: false, why: `proposal ${name} names a cap that is not tunable` }
   }
@@ -122,7 +131,11 @@ export function applyProposalDecision(s, name, approve, { decidedBy = 'superviso
   }
   const seat = SEAT_OF[p.name]
   if (approve && seat && seatsHome) {
-    const authority = seat === 'ideation' ? s.ideationAuthority : s.gateAuthorAuthority
+    // The store only ever rises: a seat's authority is what it has earned
+    // ANYWHERE, so an approval on one campaign of less than the seat already
+    // holds is not a demotion (and, being no change, bumps no version).
+    const approved = seat === 'ideation' ? s.ideationAuthority : s.gateAuthorAuthority
+    const authority = Math.max(seatAuthority(seatsHome, seat), approved)
     writeSeats(seatsHome, readSeats(seatsHome), { seat, authority, decidedAt: p.decidedAt, campaign: s.id ?? null })
   }
   return { ok: true, status: p.status }
