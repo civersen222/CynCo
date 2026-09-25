@@ -248,9 +248,15 @@ export function staticRelativeImports(src) {
  * calibrate, grade, spawn, …). Derived from the source, never listed by hand,
  * so a new import joins the closure without anyone remembering to add it.
  *
- * Only the harness's own `scripts/` directory is followed: the modules that
- * decide what `--check` prints all live there, and an import that leaves it
- * (`../engine/paths.js`) is engine code the check does not grade with.
+ * Only the harness's own `scripts/` directory is followed. RESIDUAL (final
+ * re-review): `--check` also statically loads engine modules whose top-level
+ * code runs in the subprocess — `engine/paths.ts`, `engine/bridge/
+ * contractAutoCreate.ts`, `engine/tools/contractVerify.ts` (and through it
+ * `tools/contract`, `tools/shellInfo`, `training/gitFacts`), and
+ * `engine/cybernetics-core` — and those are NOT fingerprinted. A mission that
+ * edits one of them could forge the check's verdict without tripping this
+ * hash. Following `../engine/` imports (resolving `.js` → `.ts`) closes it;
+ * recorded in the self-orchestration spec §10 as Phase 4 work.
  */
 export function harnessClosure(entry = SELF_SCRIPT, readFile = (p) => readFileSync(p, 'utf8'), exists = existsSync) {
   const root = norm(dirname(entry))
