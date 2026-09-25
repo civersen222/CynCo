@@ -8,8 +8,8 @@
 // four hours earlier, so its gate at BASE died in milliseconds and eleven
 // problems were recorded against a triple that had two.
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
-import { runSync, faultSummary, TIMEOUT_ELAPSED_FRACTION } from '../cynco-spawn.mjs'
+import { readFileSync, existsSync } from 'node:fs'
+import { runSync, faultSummary, TIMEOUT_ELAPSED_FRACTION, bashBin, gitExeOnPath, bashExe } from '../cynco-spawn.mjs'
 
 /** A spawnSync stand-in: returns `result`, and advances the injected clock by `ms`. */
 const fakeSpawn = (result, ms, clock) => (...args) => { clock.t += ms; return { ...result, _args: args } }
@@ -174,5 +174,42 @@ describe('runSync: a timeout is an elapsed measurement', () => {
     expect(r.timedOut).toBe(false)
     expect(r.fault).toBeNull()
     expect(r.elapsedMs).toBeGreaterThanOrEqual(0)
+  })
+})
+
+// F160. A bare `bash` on a Windows PATH is the WSL launcher unless Git's bin
+// dir is ahead of System32 — true in a Git Bash terminal, false from
+// PowerShell, cmd, Start-Process or Task Scheduler. The Phase 4 live proof's
+// first wave, launched from PowerShell, faulted at `set -o pipefail`.
+describe('bashBin (F160): Git Bash by path, never whatever `bash` PATH holds', () => {
+  const only = (...ok) => (p) => ok.includes(p)
+
+  it('resolves <root>\\bin\\bash.exe from Git for Windows\' PATH entry <root>\\cmd\\git.exe', () => {
+    const got = bashBin({ platform: 'win32', gitPath: 'C:\\Program Files\\Git\\cmd\\git.exe', exists: only('C:\\Program Files\\Git\\bin\\bash.exe') })
+    expect(got).toBe('C:\\Program Files\\Git\\bin\\bash.exe')
+  })
+
+  it('resolves the same bash from <root>\\mingw64\\bin\\git.exe', () => {
+    const got = bashBin({ platform: 'win32', gitPath: 'C:\\Program Files\\Git\\mingw64\\bin\\git.exe', exists: only('C:\\Program Files\\Git\\bin\\bash.exe') })
+    expect(got).toBe('C:\\Program Files\\Git\\bin\\bash.exe')
+  })
+
+  it('falls back to bare `bash` when no bash sits beside git, when there is no git, or off win32', () => {
+    expect(bashBin({ platform: 'win32', gitPath: 'C:\\Program Files\\Git\\cmd\\git.exe', exists: () => false })).toBe('bash')
+    expect(bashBin({ platform: 'win32', gitPath: null, exists: () => true })).toBe('bash')
+    expect(bashBin({ platform: 'linux', gitPath: '/usr/bin/git', exists: () => true })).toBe('bash')
+  })
+
+  it('gitExeOnPath takes the first line `where` prints, and null when it prints nothing', () => {
+    expect(gitExeOnPath(() => ({ stdout: 'C:\\Program Files\\Git\\cmd\\git.exe\r\nC:\\Program Files\\Git\\mingw64\\bin\\git.exe\r\n' }))).toBe('C:\\Program Files\\Git\\cmd\\git.exe')
+    expect(gitExeOnPath(() => ({ stdout: '' }))).toBeNull()
+    expect(gitExeOnPath(() => ({ stdout: undefined, error: new Error('ENOENT') }))).toBeNull()
+  })
+
+  it('on this machine bashExe() names an existing file when win32, and that file is not System32\'s launcher', () => {
+    const b = bashExe()
+    if (process.platform !== 'win32') { expect(b).toBe('bash'); return }
+    expect(b.toLowerCase()).not.toContain('system32')
+    expect(b === 'bash' || existsSync(b)).toBe(true)
   })
 })

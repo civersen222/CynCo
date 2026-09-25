@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto'
 import { basename } from 'node:path'
 import { parseGateOutput, parsePerturbHeader, compareCalibration } from './cynco-gate-parse.mjs'
 import { GATE_TIMEOUT_MS, SUITE_TIMEOUT_MS } from './cynco-campaign-grade.mjs'
-import { runSync, faultSummary } from './cynco-spawn.mjs'
+import { runSync, faultSummary, bashExe } from './cynco-spawn.mjs'
 
 export const defaultIo = {
   // F155: `runSync`, never a bare spawnSync — a timeout must be an elapsed
@@ -28,7 +28,7 @@ export const defaultIo = {
  */
 export function archiveBase(repo, base, dest, io = defaultIo) {
   io.freshDir?.(dest)
-  const arch = io.run('bash', ['-c', `git -C ${JSON.stringify(repo)} archive ${base} | tar -x -C ${JSON.stringify(dest)}`], { cwd: process.cwd(), env: {}, timeoutMs: 300_000 })
+  const arch = io.run(bashExe(), ['-c', `git -C ${JSON.stringify(repo)} archive ${base} | tar -x -C ${JSON.stringify(dest)}`], { cwd: process.cwd(), env: {}, timeoutMs: 300_000 })
   if (arch.status !== 0) return { ok: false, problems: [`git archive ${base} failed: ${String(arch.stderr).trim()}`] }
   return { ok: true, problems: [] }
 }

@@ -3597,3 +3597,23 @@ Rule: a timeout is a duration, so measure it. And a grader that produced no outp
 
 - **`runStillOpen` correctly stays unread** when the engine declined the abort and still had the turn open at the moment the driver wrote the row. The frame goes out when the loop actually exits, which is after the record was filed. That is the F57 case, and a null guard there is the truth: nothing measured the finished session because it had not finished.
 - **Rows before this fix** cannot be back-filled. For the autopoiesis checklist they count as unread, so `organizationMaintained` stays false for every campaign with a pre-F158 row (C8 included) unless the reading is relaxed to "no recorded violation".
+
+## F159 — The wave grader's suite gate was built from `homedir()` at import, so a campaign under a temp `CYNCO_HOME` graded its suite with the operator's real held-out script (Phase 4 task 6 review, 2026-09-25)
+
+**Where:** `scripts/cynco-campaign-grade.mjs`. `SUITE_GATE` was a module constant, `resolve(homedir(), '.cynco', 'heldout', 'common', 'g_suite_no_regression.py')`, read by `runSuiteGate` on every graded wave.
+
+**How:** every other path the runner touches (`GATE_LINES_PATH`, the campaign state dir, the authoring staging dir, the datasets) goes through `cyncoHome()`, which honours `CYNCO_HOME`. The suite gate did not. A campaign run under `CYNCO_HOME=C:/tmp/cynco-home-s1/.cynco` — the Phase 4 live proof, and every test that redirects the home — would have run the real `~/.cynco/heldout/common/g_suite_no_regression.py` against the smoke repo. Found by the Task 6 reviewer reading the grade module for the live proof's home isolation; it had not fired because every campaign so far ran under the real home.
+
+**Why:** the constant predates `cyncoHome()`; when the home became configurable the grade module's one absolute path was not moved with the others. A path computed once at import is invisible to the test that sets `CYNCO_HOME` afterwards, so no test could have caught it without a subprocess.
+
+**Fix:** `SUITE_GATE` is a function, `(home = cyncoHome()) => join(home, 'heldout', 'common', 'g_suite_no_regression.py')`, resolved at each grade; `scripts/__tests__/cynco-campaign-grade.test.mjs` pins that a temp `CYNCO_HOME` changes the path the grader runs. `scripts/cynco-smoke-campaign.mjs --common-from <dir>` stages the one script into a temp home so a smoke campaign's grade has a suite gate to run.
+
+## F160 — A bare `bash` spawn is the WSL launcher when the runner is started from PowerShell, so the Phase 4 live proof's first wave faulted at `set -o pipefail` (live s1 wave 1, 2026-09-25)
+
+**Where:** `scripts/cynco-campaign.mjs` (`defaultIo.dispatch` and the `--adopt-inflight` re-dispatch), `scripts/cynco-campaign-calibrate.mjs` (`archiveBase`'s `git archive | tar` pipe). All three spawned the literal `'bash'`.
+
+**How:** the runner was started detached from PowerShell (`Start-Process cmd /c bun scripts/cynco-campaign.mjs … --waves 1`) so it would outlive the tool session. On that PATH `bash` resolves to `C:\Windows\System32\bash.exe`, the WSL launcher, not Git Bash. Within a second of dispatch the runner logged `dispatch failed (exit 2): scripts/dispatch-mission.sh: line 12: set: pipefail: invalid option name`, recorded wave 1 as a fault, and committed `S1 wave 1 dispatched, faulted: …` on `campaign/s1`. Every earlier campaign was launched from a Git Bash terminal, whose PATH puts Git's `bin` ahead of System32, so the same spawn found the right bash by luck of the launching shell.
+
+**Why:** the harness is written for Git Bash (Windows paths, the Windows python and bun, `dispatch-mission.sh`) but named the interpreter by the bare word, delegating the choice to whichever shell started the runner. Unattended operation — Task Scheduler, a service, a PowerShell operator — is exactly where that delegation fails, and it fails as a wave fault rather than a refusal.
+
+**Fix:** `scripts/cynco-spawn.mjs` gains `bashBin({ platform, gitPath, exists })` (pure: from `where git.exe`'s first hit, `<root>\cmd\git.exe` or `<root>\mingw64\bin\git.exe`, name `<root>\bin\bash.exe` when it exists, else bare `bash`), `gitExeOnPath()` and the once-per-process `bashExe()`; all three spawn sites use `bashExe()`. Pinned by `scripts/__tests__/cynco-spawn.test.mjs` (both Git layouts, the three fall-backs, `where` parsing, and on this machine: the resolved file exists and is not under System32). Proven from PowerShell: `bashExe()` → `C:\Program Files\Git\bin\bash.exe`, which accepts `set -euo pipefail`; the relaunched live proof dispatched from PowerShell.

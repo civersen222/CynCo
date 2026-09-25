@@ -28,12 +28,53 @@
 //      caller cannot mistake "the harness did not run this" for "the thing I was
 //      measuring failed".
 import { spawnSync } from 'node:child_process'
+import { existsSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 
 /**
  * The fraction of the cap a run must have actually spent before an ETIMEDOUT is
  * believed. Exported so the tests pin the same number the code uses.
  */
 export const TIMEOUT_ELAPSED_FRACTION = 0.9
+
+/**
+ * F160. The bash these spawns need is GIT BASH: `dispatch-mission.sh` and the
+ * `git archive | tar` pipe are written for it, over Windows paths, with the
+ * Windows python and bun. A bare `bash` on a Windows PATH resolves to
+ * `C:\Windows\System32\bash.exe` — the WSL launcher — unless Git's `bin` dir
+ * sits ahead of System32, which is true inside a Git Bash terminal and false
+ * from PowerShell, cmd, `Start-Process` or Task Scheduler. The Phase 4 live
+ * proof's first wave, launched from PowerShell, faulted in under a second:
+ * `dispatch-mission.sh: line 12: set: pipefail: invalid option name`.
+ *
+ * Pure: given the platform and where `git.exe` is, name the bash to spawn.
+ * Git for Windows puts `git.exe` at `<root>\cmd\git.exe` (its PATH entry) or
+ * `<root>\mingw64\bin\git.exe`; its bash is `<root>\bin\bash.exe`. Anything
+ * else — another platform, no git, no bash beside it — is the bare `bash`
+ * the caller always used.
+ */
+export function bashBin({ platform = process.platform, gitPath = null, exists = existsSync } = {}) {
+  if (platform !== 'win32' || !gitPath) return 'bash'
+  const cmdRoot = dirname(dirname(gitPath))
+  for (const root of [cmdRoot, dirname(cmdRoot)]) {
+    const candidate = join(root, 'bin', 'bash.exe')
+    if (exists(candidate)) return candidate
+  }
+  return 'bash'
+}
+
+/** The first `git.exe` on PATH as `where` reports it; null when there is none. */
+export function gitExeOnPath(spawn = spawnSync) {
+  const r = spawn('where', ['git.exe'], { encoding: 'utf8' })
+  return String(r?.stdout ?? '').split(/\r?\n/).map(s => s.trim()).find(Boolean) || null
+}
+
+let cachedBash = null
+/** The bash every spawn under `scripts/` uses, resolved once per process (F160). */
+export function bashExe() {
+  if (cachedBash === null) cachedBash = bashBin({ gitPath: process.platform === 'win32' ? gitExeOnPath() : null })
+  return cachedBash
+}
 
 /**
  * `spawnSync`, with an elapsed-time check over its timeout claim.

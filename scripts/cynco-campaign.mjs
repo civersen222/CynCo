@@ -17,6 +17,7 @@ import { fileURLToPath } from 'node:url'
 import { writeFileSync, readFileSync, existsSync, appendFileSync, unlinkSync, openSync, writeSync, closeSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { cyncoHome } from '../engine/paths.js'
+import { bashExe } from './cynco-spawn.mjs'
 import { loadCampaignSpec, checkIdentity } from './cynco-campaign-spec.mjs'
 import { CampaignState } from './cynco-campaign-state.mjs'
 import { calibrate, defaultIo as calibrateIo } from './cynco-campaign-calibrate.mjs'
@@ -137,7 +138,8 @@ export const defaultIo = {
     // it through to `bun engine/main.ts` the same way it passes LOCALCODE_MISSION_*.
     const env = dispatchEnv(process.env, { LOCALCODE_MAX_ITERATIONS: String(spec.budget.iterations), CYNCO_BASH_TIMEOUT_MS: String(spec.budget.bashTimeoutMs),
       CYNCO_MISSION_INVARIANTS: JSON.stringify(invariants), DRIVER_PID_FILE: pidFile, DRIVER_LOG: driverLog, CYNCO_SKIP_IDLE_ENGINE: '1', CYNCO_CAMPAIGN_ID: spec.id })
-    const r = spawnSync('bash', ['scripts/dispatch-mission.sh', briefFile, spec.marker, spec.repo, String(timeoutS), spec.keepGreen], { env, encoding: 'utf8', timeout: 900_000 })
+    // F160: Git Bash by path, not whatever `bash` the launching shell's PATH holds.
+    const r = spawnSync(bashExe(), ['scripts/dispatch-mission.sh', briefFile, spec.marker, spec.repo, String(timeoutS), spec.keepGreen], { env, encoding: 'utf8', timeout: 900_000 })
     if (r.status !== 0) throw new Error(`dispatch failed (exit ${r.status}): ${(r.stdout + r.stderr).slice(-2000)}`)
     // dispatch-mission.sh prints the invariants it accepted and the driver log
     // and PID it started; captured output is invisible unless we re-emit it, and
@@ -157,7 +159,7 @@ export const defaultIo = {
   // `dispatch` above is left exactly as it was: the wave path is the measured
   // one and must not change behaviour to make room for this.
   dispatchRaw: async ({ briefFile, marker, cwd, timeoutS, checkCmd, env }) => {
-    const r = spawnSync('bash', ['scripts/dispatch-mission.sh', briefFile, marker, cwd, String(timeoutS), checkCmd ?? ''], { env, encoding: 'utf8', timeout: 900_000 })
+    const r = spawnSync(bashExe(), ['scripts/dispatch-mission.sh', briefFile, marker, cwd, String(timeoutS), checkCmd ?? ''], { env, encoding: 'utf8', timeout: 900_000 })
     if (r.status !== 0) throw new Error(`dispatch failed (exit ${r.status}): ${(r.stdout + r.stderr).slice(-2000)}`)
     if (r.stdout) console.log(r.stdout.trimEnd())
     if (r.stderr?.trim()) console.log(r.stderr.trimEnd())
