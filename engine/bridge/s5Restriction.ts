@@ -41,3 +41,31 @@ export function applyPreLoopRestriction<T extends { name: string }>(
   if (filtered.length === offered.length) return { tools: offered, applied: false }
   return { tools: filtered, applied: true }
 }
+
+/**
+ * The stuck-loop live re-evaluation's restriction (stuck ≥ 5), and whether it
+ * may be applied at all.
+ *
+ * F157: this site used to narrow the offered tools on any `decision.tools`
+ * without consulting `LOCALCODE_S5_ENFORCE`, so a capped headless mission (F7)
+ * still had C7 narrow its tools — and, emitting no `s5.decision` frame, the
+ * ledger recorded nothing. `enforced` is `isEnforced(isS5EnforcementEnabled(),
+ * authority)`, the same predicate every other S5 apply site uses.
+ *
+ *   - `none`     — the decision restricts nothing;
+ *   - `withheld` — it would restrict, but is not enforced (capped or advisory);
+ *   - `empty`    — enforced, but the restriction would remove every tool;
+ *   - `applied`  — enforced and narrowed.
+ */
+export function applyStuckReevalRestriction<T extends { name: string }>(
+  offered: T[],
+  restriction: string[] | null | undefined,
+  enforced: boolean,
+): { tools: T[]; outcome: 'none' | 'withheld' | 'empty' | 'applied' } {
+  if (!restriction) return { tools: offered, outcome: 'none' }
+  if (!enforced) return { tools: offered, outcome: 'withheld' }
+  const allowed = new Set(restriction)
+  const filtered = offered.filter(t => allowed.has(t.name))
+  if (filtered.length === 0) return { tools: offered, outcome: 'empty' }
+  return { tools: filtered, outcome: 'applied' }
+}

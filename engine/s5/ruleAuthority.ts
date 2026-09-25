@@ -38,6 +38,15 @@ export function isEnforced(s5Enforce: boolean, authority: Authority): boolean {
   return s5Enforce && authority !== 'advisory'
 }
 
+/** The auto-apply timer on a warning-tier `governance.recommendation`:
+ *  none for a revert (always a human's call) and none for an `advisory`
+ *  decision (its rules have not earned the right to act, so it must not act
+ *  on a timer either); 60 s otherwise, as before Phase 4. */
+export function recommendationAutoApplyMs(authority: Authority, revert: boolean | undefined): number | undefined {
+  if (revert || authority === 'advisory') return undefined
+  return 60000
+}
+
 export class RuleAuthority {
   readonly mode: 'earned' | 'legacy'
   private readonly verdicts: ReadonlyMap<string, string>

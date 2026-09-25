@@ -40,7 +40,7 @@ import { runAdvisors, type SystemState as AdvisorState } from '../agents/advisor
 import { DecisionLogger } from '../decisions/logger.js'
 import { ContextCompressor, FileOperationTracker } from '../context/compressor.js'
 import type { S5Orchestrator } from '../s5/orchestrator.js'
-import { RuleAuthority, ruleVerdictsPath, isEnforced } from '../s5/ruleAuthority.js'
+import { RuleAuthority, ruleVerdictsPath, isEnforced, recommendationAutoApplyMs } from '../s5/ruleAuthority.js'
 import { SubAgentRunner } from '../agents/runner.js'
 import { S2Coordinator } from '../agents/s2Coordinator.js'
 import { SubAgent } from '../agents/subAgent.js'
@@ -68,7 +68,7 @@ import { ToolDivergenceDetector } from '../brain/toolDivergence.js'
 import { BrainRecorder } from '../brain/brainRecorder.js'
 import { pruneRedundantReads } from './contextHygiene.js'
 import { promptTokensWithFloor } from './contextFloor.js'
-import { applyPreLoopRestriction, type PreLoopRestriction } from './s5Restriction.js'
+import { applyPreLoopRestriction, applyStuckReevalRestriction, type PreLoopRestriction } from './s5Restriction.js'
 import { isBenignTestFailure, isDeclaredVerificationCheck } from './benignToolResult.js'
 import { formatToolError } from './toolErrorLog.js'
 import { runWithFinalize } from './finalizeGuard.js'
@@ -1861,7 +1861,10 @@ export class ConversationLoop {
               revert: decision.revert,
               priority: decision.priority,
             },
-            autoApplyAfterMs: decision.revert ? undefined : 60000,
+            // Phase 4: an advisory recommendation must never apply itself —
+            // no auto-apply timer, and the frame says why.
+            autoApplyAfterMs: recommendationAutoApplyMs(authority, decision.revert),
+            authority,
           } as any)
           console.log(`[s5] RECOMMEND: ${warningRuleIds.join(',')} — ${decision.reasoning.slice(0, 80)}`)
         }
@@ -2819,23 +2822,35 @@ export class ConversationLoop {
               demotedTools: [],
               promptDifficulty: this.difficultyClassifier.getLevel(),
             })
-            // Phase 4: an advisory decision (a rule behind it has not earned
-            // authority) is never applied. NOTE: this site has never consulted
-            // LOCALCODE_S5_ENFORCE (it restricts even when the global switch is
-            // capped); that pre-existing gap is left as it was — only the
-            // per-rule gate is added here.
+            // F157: the same predicate as every other S5 apply site — the
+            // global cap AND the per-rule authority. This site used to apply
+            // `decision.tools` on the per-rule check alone (and before Phase 4
+            // on nothing), so a capped headless mission still had C7 narrow its
+            // tools, with no s5.decision frame to record it.
+            const reevalEnforce = isS5EnforcementEnabled()
             const reevalAuthority = decision.authority ?? this.ruleAuthority.authorityOf(decision.ruleIds ?? [])
-            if (decision.tools && reevalAuthority === 'advisory') {
-              console.log(`[s5] LIVE RE-EVAL not applied (advisory — rule authority not earned): restriction to [${decision.tools.join(', ')}] (stuck ${currentStuck})`)
-            } else if (decision.tools) {
-              const allowed = new Set(decision.tools)
-              const filtered = iterationTools.filter(t => allowed.has(t.name))
-              if (filtered.length > 0) {
-                iterationTools = filtered
-                console.log(`[s5] LIVE RE-EVAL: tool restriction to [${decision.tools.join(', ')}] (stuck ${currentStuck})`)
-              } else {
-                console.log(`[s5] LIVE RE-EVAL skipped: restriction [${decision.tools.join(', ')}] would remove every available tool (stuck ${currentStuck})`)
-              }
+            const reevalEnforced = isEnforced(reevalEnforce, reevalAuthority)
+            this.emit({
+              type: 's5.decision' as any,
+              reasoning: decision.reasoning,
+              contextAction: decision.contextAction,
+              toolRestriction: (decision as any).toolRestriction,
+              modelSwitch: (decision as any).modelSwitch,
+              ruleIds: decision.ruleIds ?? [],
+              enforced: reevalEnforced,
+              authority: reevalAuthority,
+              source: 'stuck-reeval',
+              timestamp: Date.now(),
+            })
+            const reeval = applyStuckReevalRestriction(iterationTools, decision.tools, reevalEnforced)
+            if (reeval.outcome === 'withheld') {
+              const why = reevalEnforce ? 'advisory — rule authority not earned' : 'capped at recommend'
+              console.log(`[s5] WOULD-ENFORCE stuck re-eval (${why}): tool restriction to [${decision.tools!.join(', ')}] (stuck ${currentStuck})`)
+            } else if (reeval.outcome === 'applied') {
+              iterationTools = reeval.tools
+              console.log(`[s5] LIVE RE-EVAL: tool restriction to [${decision.tools!.join(', ')}] (stuck ${currentStuck})`)
+            } else if (reeval.outcome === 'empty') {
+              console.log(`[s5] LIVE RE-EVAL skipped: restriction [${decision.tools!.join(', ')}] would remove every available tool (stuck ${currentStuck})`)
             }
           } catch (e) {
             console.log(`[s5] Live re-eval failed: ${e}`)

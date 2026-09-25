@@ -384,7 +384,10 @@ export type GovernanceRecommendationEvent = {
   title: string
   description: string
   action: Record<string, unknown>
+  /** Omitted for a revert and for an `advisory` decision (Phase 4). */
   autoApplyAfterMs?: number
+  /** Per-rule earned authority of the decision behind it (engine/s5/ruleAuthority.ts). */
+  authority?: 'earned' | 'advisory' | 'legacy'
 }
 
 /** Governance organ alert surfaced to the client (P1.1). Critical/high are

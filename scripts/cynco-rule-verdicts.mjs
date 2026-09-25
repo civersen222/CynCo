@@ -68,9 +68,12 @@ export function writeRuleVerdicts({ rows, campaign, outPath, analyse = analyseFn
   const rules = {}
   for (const r of [...res.rules].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))) {
     rules[r.id] = {
+      // Spec schema: { verdict, precision, ci, p, n } — `n` is the labeled
+      // missions the rule fired on (analyse's `labeled`), `ci` its Wilson
+      // interval. The rest ride along for the reader who wants the table.
       verdict: ruleVerdictOf(r),
-      firedTotal: r.firedTotal ?? null, labeled: r.labeled ?? null, failures: r.failures ?? null,
-      precision: r.precision ?? null, lift: r.lift ?? null, p: r.p ?? null, pAdjusted: r.pAdjusted ?? null,
+      precision: r.precision ?? null, ci: r.ci ?? null, p: r.p ?? null, n: r.labeled ?? null,
+      pAdjusted: r.pAdjusted ?? null, lift: r.lift ?? null, firedTotal: r.firedTotal ?? null, failures: r.failures ?? null,
     }
   }
   const predictive = Object.keys(rules).filter(id => rules[id].verdict === 'PREDICTIVE')
@@ -85,7 +88,7 @@ export function writeRuleVerdicts({ rows, campaign, outPath, analyse = analyseFn
     history = history.slice(-RULE_VERDICTS_HISTORY_CAP)
   }
   const file = {
-    schema: RULE_VERDICTS_SCHEMA, version, writtenAt: at, campaign: campaign ?? null,
+    schema: RULE_VERDICTS_SCHEMA, version, at, campaign: campaign ?? null,
     ledger: { total: res.total, labeled: res.labeled, failures: res.failures, base: res.base, rulesTested: res.rulesTested },
     rules, predictive, history,
   }

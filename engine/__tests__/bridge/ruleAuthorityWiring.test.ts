@@ -59,6 +59,12 @@ describe('per-rule S5 authority in the conversation loop', () => {
     if (prior.enforce === undefined) delete process.env.LOCALCODE_S5_ENFORCE
     else process.env.LOCALCODE_S5_ENFORCE = prior.enforce
     fs.rmSync(cwd, { recursive: true, force: true, maxRetries: 5 })
+    // The loop keeps handles open under CYNCO_HOME (governance db, journals)
+    // for the life of the process, and ConversationLoop has no close(); on
+    // Windows that makes the directory EPERM until exit. Removed when it can
+    // be, and said so when it cannot — the OS temp dir reclaims it.
+    try { fs.rmSync(home, { recursive: true, force: true, maxRetries: 5 }) }
+    catch (e) { console.warn(`[test] could not remove ${home} while the loop holds it open: ${(e as Error).message}`) }
     vi.restoreAllMocks()
   })
 
@@ -90,6 +96,15 @@ describe('per-rule S5 authority in the conversation loop', () => {
     expect(r.model).toBe('test')
     expect(r.logs.filter(l => l.startsWith('[s5] rule authority:'))).toEqual(['[s5] rule authority: earned (1 predictive of 2)'])
     expect(r.logs.some(l => /WOULD-ENFORCE \(advisory — rule authority not earned\): model switch to switched-model/.test(l))).toBe(true)
+    // The warning-tier recommendation carries the authority and no auto-apply timer.
+    const rec = r.frames.find(f => f.type === 'governance.recommendation')
+    expect(rec).toMatchObject({ signal: 'W1', authority: 'advisory' })
+    expect(rec.autoApplyAfterMs).toBeUndefined()
+  })
+
+  it('a legacy warning-tier recommendation keeps its 60 s auto-apply timer', async () => {
+    const r = await run(['W1'])
+    expect(r.frames.find(f => f.type === 'governance.recommendation')).toMatchObject({ authority: 'legacy', autoApplyAfterMs: 60000 })
   })
 
   it('an earned decision is enforced and applied', async () => {

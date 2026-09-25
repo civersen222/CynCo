@@ -2,7 +2,7 @@ import { describe, expect, it, beforeEach, afterEach } from 'bun:test'
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
-import { formatJournalInput, joinViableExamples, exportViableExamples } from '../../s5/exportTrainingData.js'
+import { formatJournalInput, joinViableExamples, exportViableExamples, exportSummaryLines } from '../../s5/exportTrainingData.js'
 import type { JournalEntry } from '../../training/types.js'
 
 function entry(sessionId: string): JournalEntry {
@@ -157,6 +157,25 @@ describe('exportTrainingData', () => {
       expect(present.seats).toEqual({ ideation: 0.5, 'gate-author': 0 })
       // The S5 journal carries no seat rows, so nothing is excluded by seat.
       expect(present.excluded.bySeat).toEqual({})
+    })
+
+    it('exportSummaryLines prints the table the CLIs show', () => {
+      expect(exportSummaryLines({ written: 3, excluded: { byRule: { W1: 2, '(none)': 5, C2: 2 }, bySeat: {}, legacy: false }, seats: { ideation: 0.5, 'gate-author': 0 } }, 'out.jsonl')).toEqual([
+        '[export] wrote 3 example(s) to out.jsonl',
+        '[export] rule filter: earned-only — kept decisions whose every rule is PREDICTIVE',
+        '  excluded by rule   decisions',
+        '  (none)                    5',
+        '  C2                        2',
+        '  W1                        2',
+        '  excluded by seat: none (the S5 journal carries no seat rows)',
+        '  seats: ideation 0.5, gate-author 0',
+      ])
+      expect(exportSummaryLines({ written: 1, excluded: { byRule: {}, bySeat: {}, legacy: true }, seats: { ideation: 0, 'gate-author': 0 } }, 'o')).toEqual([
+        '[export] wrote 1 example(s) to o',
+        '[export] rule filter: legacy — no rule-verdict file, nothing excluded by rule',
+        '  excluded by seat: none (the S5 journal carries no seat rows)',
+        '  seats: ideation 0, gate-author 0',
+      ])
     })
 
     it('a missing journal still reports a full summary', () => {

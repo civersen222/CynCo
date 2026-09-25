@@ -121,6 +121,13 @@ describe('cynco mission outcome ledger', () => {
     expect(c.s5Decisions[0].ruleIds).toEqual([])
     expect(c.s5Decisions[0].enforced).toBeNull()
     expect(c.s5Decisions[0].authority).toBeNull()
+    expect(c.s5Decisions[0].source).toBeNull()
+  })
+
+  it('records the stuck re-evaluation\'s decision with its source (F157)', () => {
+    const c = createMissionCollector()
+    c.ingest({ type: 's5.decision', reasoning: 'stuck', ruleIds: ['C7'], enforced: false, authority: 'legacy', source: 'stuck-reeval' })
+    expect(c.s5Decisions[0]).toMatchObject({ ruleIds: ['C7'], enforced: false, authority: 'legacy', source: 'stuck-reeval' })
   })
 
   it('collects toolcall.transport events into the mission record (P1.8)', () => {

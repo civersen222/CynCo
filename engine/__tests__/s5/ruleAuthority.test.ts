@@ -2,7 +2,7 @@ import { describe, expect, it, vi, afterEach } from 'vitest'
 import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { tmpdir } from 'node:os'
-import { RuleAuthority, isEnforced, ruleVerdictsPath } from '../../s5/ruleAuthority.js'
+import { RuleAuthority, isEnforced, ruleVerdictsPath, recommendationAutoApplyMs } from '../../s5/ruleAuthority.js'
 import { S5Orchestrator } from '../../s5/orchestrator.js'
 import type { S5Decision, S5Interface } from '../../s5/types.js'
 import type { GovernanceReport } from '../../vsm/types.js'
@@ -98,6 +98,15 @@ describe('isEnforced', () => {
     expect(isEnforced(false, 'earned')).toBe(false)
     expect(isEnforced(false, 'legacy')).toBe(false)
     expect(isEnforced(false, 'advisory')).toBe(false)
+  })
+})
+
+describe('recommendationAutoApplyMs', () => {
+  it('no timer for an advisory decision or a revert; 60 s otherwise', () => {
+    expect(recommendationAutoApplyMs('advisory', false)).toBeUndefined()
+    expect(recommendationAutoApplyMs('earned', true)).toBeUndefined()
+    expect(recommendationAutoApplyMs('earned', false)).toBe(60000)
+    expect(recommendationAutoApplyMs('legacy', undefined)).toBe(60000)
   })
 })
 

@@ -93,10 +93,15 @@ decisions still recorded here).
   // is false whatever LOCALCODE_S5_ENFORCE says), "legacy" (no verdict file;
   // LOCALCODE_S5_ENFORCE alone decides, as before), or null on a record from
   // an engine older than Phase 4.
+  // `source` (F157): "stuck-reeval" for the stuck-loop live re-evaluation's
+  // decision (stuck ≥ 5), null for the per-message decision. Rows written
+  // before F157 carry no re-eval decisions at all, and their `enforced: false`
+  // does not rule out a stuck re-eval tool restriction having been applied.
   "s5Decisions": [          // one per s5.decision event
     { "t": 1783550000000, "ruleIds": ["C7"], "reasoning": "...",
       "contextAction": null, "toolRestriction": "read-only",
-      "modelSwitch": null, "enforced": false, "authority": "advisory" }
+      "modelSwitch": null, "enforced": false, "authority": "advisory",
+      "source": null }
   ],
   "controlSignals": [
     { "t": 1783550000000, "temperatureAdjust": 0, "temperature": 0.7,
@@ -561,19 +566,26 @@ ledger on 2026-09-25 (280 records, 107 labeled; two of its eight rules are
 shown — C2, C4, W6 read `TOO FEW`, I1, I3, W7, W8 `NO EVIDENCE`, I4 `CONSTANT`):
 
 ```jsonc
-{ "schema": 1, "version": 1, "writtenAt": "2026-09-25T18:35:33.166Z", "campaign": null,
+{ "schema": 1, "version": 1, "at": "2026-09-25T18:47:26.981Z", "campaign": null,
   "ledger": { "total": 280, "labeled": 107, "failures": 61, "base": 0.5700934579439252, "rulesTested": 7 },
   "rules": {
-    "C2": { "verdict": "TOO FEW — cannot tell", "firedTotal": 17, "labeled": 5, "failures": 1,
-            "precision": 0.2, "lift": -0.3700934579439252, "p": 0.16249100754494467, "pAdjusted": 1 },
-    "I1": { "verdict": "NO EVIDENCE", "firedTotal": 106, "labeled": 51, "failures": 28,
-            "precision": 0.5490196078431373, "lift": -0.021073850100787883, "p": 0.6999222665344511, "pAdjusted": 1 }
+    "C2": { "verdict": "TOO FEW — cannot tell", "precision": 0.2,
+            "ci": [0.036223160969787456, 0.6244717358814612], "p": 0.16249100754494467, "n": 5,
+            "pAdjusted": 1, "lift": -0.3700934579439252, "firedTotal": 17, "failures": 1 },
+    "I1": { "verdict": "NO EVIDENCE", "precision": 0.5490196078431373,
+            "ci": [0.4138447154164923, 0.6773269498886776], "p": 0.6999222665344511, "n": 51,
+            "pAdjusted": 1, "lift": -0.021073850100787883, "firedTotal": 106, "failures": 28 }
   },
   "predictive": [],
-  "history": [ { "version": 1, "at": "2026-09-25T18:35:33.166Z", "campaign": null, "predictive": [],
+  "history": [ { "version": 1, "at": "2026-09-25T18:47:26.981Z", "campaign": null, "predictive": [],
                  "changed": [ { "id": "C2", "from": null, "to": "TOO FEW — cannot tell" } /* + the other seven rules */ ] } ] }
 ```
 
+- **`rules[<id>]`** — `{ verdict, precision, ci, p, n }` plus `pAdjusted`
+  (Holm), `lift`, `firedTotal`, `failures`: `n` is the labeled missions the rule
+  fired on, `precision` the failure share among them, `ci` its Wilson 95 %
+  interval. The engine reads only `verdict`.
+- **`at`** — when this write happened (every write, not only a version bump).
 - **`rules[<id>].verdict`** — exactly `ruleVerdictOf`'s string: `PREDICTIVE`,
   `TOO FEW — cannot tell`, `CONSTANT — fires on everything, predicts nothing`,
   `INVERTED — fires more on successes`, `NOT AFTER CORRECTION — chance across

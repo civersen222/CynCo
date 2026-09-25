@@ -224,6 +224,9 @@ export function createMissionCollector(now = () => Date.now()) {
             // Phase 4: 'earned' | 'advisory' | 'legacy' (engine/s5/ruleAuthority.ts);
             // null on an engine too old to say.
             authority: m.authority ?? null,
+            // F157: 'stuck-reeval' for the stuck-loop live re-evaluation's
+            // decision; null for the per-message decision (and older engines).
+            source: m.source ?? null,
           })
           break
         case 'control.signals':
