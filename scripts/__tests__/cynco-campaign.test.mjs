@@ -82,6 +82,8 @@ const inertTriples = {
   // live campaign dir in. `null` is what a campaign with no evidence yet looks
   // like, so the promotion and the verdict line both stay quiet.
   exportGateLines: () => ({ rows: [], summary: null }),
+  // …and the campaign-level gate-outcomes export beside it (Phase 4).
+  exportGateOutcomes: () => ({ rows: [], outPath: null }),
   // Phase 4: the rule verdicts are recomputed from the ledger at every VERDICT.
   // The real reader walks ~160 MB of shards; a unit test hands over none.
   readLedgerRows: () => [],
@@ -1212,6 +1214,24 @@ describe('the gate-author promotion at VERDICT', () => {
     const rec = await runWave(spec, state, io({ exportGateLines: () => { throw new Error('datasets dir is read-only') } }))
     expect(rec.decision.kind).toBe('next')
     expect(state.state.proposals).toEqual([])
+  })
+
+  // Phase 4 residual: the campaign-level outcome dataset is regenerated at the
+  // same VERDICT, right after the line dataset, with the same never-a-fault rule.
+  it('exports the gate outcomes at every VERDICT, after the gate lines', async () => {
+    const calls = []
+    const rec = await runWave(spec, freshState(), io({
+      exportGateLines: () => { calls.push('lines'); return { rows: [], summary: null } },
+      exportGateOutcomes: () => { calls.push('outcomes'); return { rows: [], outPath: 'x' } },
+    }))
+    expect(calls).toEqual(['lines', 'outcomes'])
+    expect(rec.decision.kind).toBe('next')
+  })
+
+  it('an outcomes exporter that throws costs the wave nothing', async () => {
+    const state = freshState()
+    const rec = await runWave(spec, state, io({ exportGateOutcomes: () => { throw new Error('datasets dir is read-only') } }))
+    expect(rec.decision.kind).toBe('next')
   })
 
   it('prints the gate-lines reading in the verdict entry', async () => {

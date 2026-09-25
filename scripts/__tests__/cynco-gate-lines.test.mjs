@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   resealRecord, linesOf, gateLineRows, summarize, exportGateLines, GATE_LINES_PATH,
+  gateOutcomeRows, exportGateOutcomes, GATE_OUTCOMES_PATH,
 } from '../cynco-gate-lines.mjs'
 import { wilson, fisherExact, gateLineVerdict, gateLineTable } from '../cynco-signal-validation.mjs'
 
@@ -149,6 +150,55 @@ describe('gateLineRows', () => {
   })
 })
 
+// Phase 4 residual: the line is the evidence unit for "did the bar hold", but
+// the SEAL is a campaign-level event — a gate the supervisor refused has no
+// graded lines at all, so the line dataset cannot see it. One row per campaign.
+describe('gateOutcomeRows', () => {
+  const st = (over) => ({ id: 'c9', author: 'cynco', sealedAt: null, decided: false, refusals: [], attempts: null, reseals: [], ...over })
+  const refusal = { at: 't', by: 'supervisor', notePath: 'C:/notes/c9-refusal.md' }
+
+  it('refused: a CynCo gate with one refusal and no seal', () => {
+    expect(gateOutcomeRows({ states: [st({ refusals: [refusal], attempts: 2 })] })).toEqual([
+      { campaign: 'c9', author: 'cynco', outcome: 'refused', refusals: 1, attempts: 2, sealedAt: null },
+    ])
+  })
+
+  it('held: sealed, decided, never resealed', () => {
+    expect(gateOutcomeRows({ states: [st({ id: 'c8', author: 'human', sealedAt: '2026-09-05T00:00:00.000Z', decided: true })] })).toEqual([
+      { campaign: 'c8', author: 'human', outcome: 'held', refusals: 0, attempts: null, sealedAt: '2026-09-05T00:00:00.000Z' },
+    ])
+  })
+
+  it('resealed: sealed with at least one reseal, decided or not', () => {
+    const reseal = { at: 't', wave: 2, from: { gateSha256: 'a' }, to: { gateSha256: 'b' }, changedLineIds: ['C9.2a'] }
+    expect(gateOutcomeRows({ states: [st({ sealedAt: 'S', decided: true, reseals: [reseal] })] })[0].outcome).toBe('resealed')
+    expect(gateOutcomeRows({ states: [st({ sealedAt: 'S', decided: false, reseals: [reseal] })] })[0].outcome).toBe('resealed')
+  })
+
+  it('sealed: sealed, the campaign still undecided, nothing resealed', () => {
+    expect(gateOutcomeRows({ states: [st({ sealedAt: 'S', refusals: [refusal], attempts: 3 })] })).toEqual([
+      { campaign: 'c9', author: 'cynco', outcome: 'sealed', refusals: 1, attempts: 3, sealedAt: 'S' },
+    ])
+  })
+
+  it('a gate neither sealed nor refused is not an outcome yet', () => {
+    expect(gateOutcomeRows({ states: [st({ attempts: 1 })] })).toEqual([])
+  })
+
+  it('history campaigns arrive with their author; the runner state wins a collision', () => {
+    const history = { campaigns: [
+      { id: 'c7', author: 'human', lineIds: ['C7.1'], resealed: ['C7.1'], decided: true },
+      { id: 'c6', author: 'human', sealedAt: 'H', lineIds: ['C6.1'], resealed: [], decided: true },
+      { id: 'c9', author: 'human', lineIds: ['C9.1'], resealed: [], decided: true },
+    ] }
+    expect(gateOutcomeRows({ states: [st({ sealedAt: 'S' })], history })).toEqual([
+      { campaign: 'c9', author: 'cynco', outcome: 'sealed', refusals: 0, attempts: null, sealedAt: 'S' },
+      { campaign: 'c7', author: 'human', outcome: 'resealed', refusals: 0, attempts: null, sealedAt: null },
+      { campaign: 'c6', author: 'human', outcome: 'held', refusals: 0, attempts: null, sealedAt: 'H' },
+    ])
+  })
+})
+
 describe('summarize', () => {
   const row = (author, outcome, i) => ({ campaign: 'x', author, sealedAt: null, lineId: `L${author}${i}`, outcome, resealedAtWave: null, firstPassWave: null, decided: true, source: 'runner' })
   const many = (author, outcome, n, from = 0) => Array.from({ length: n }, (_, i) => row(author, outcome, from + i))
@@ -279,6 +329,33 @@ describe('exportGateLines', () => {
     const w = world()
     const r = exportGateLines({ ...w, campaignsDir: join(w.root, 'nope') })
     expect(r.rows.map(x => x.campaign)).toEqual(['c7', 'c7'])
+  })
+
+  it('exportGateOutcomes writes one row per campaign — a refused gate included, which has no lines to count', () => {
+    const w = world()
+    // c10: the seat staged a triple twice and the supervisor refused the seal once.
+    mkdirSync(join(w.campaignsDir, 'c10'), { recursive: true })
+    writeFileSync(join(w.campaignsDir, 'c10', 'state.json'), JSON.stringify({
+      id: 'c10', authoring: { c10: { attempts: 2, refusals: [{ at: 't', by: 'supervisor', notePath: 'C:/n.md' }] } },
+    }, null, 2))
+    const outPath = join(w.root, 'datasets', 'gate-outcomes.jsonl')
+    const r = exportGateOutcomes({ campaignsDir: w.campaignsDir, historyPath: w.historyPath, outPath })
+    expect(r.rows).toEqual([
+      { campaign: 'c10', author: 'cynco', outcome: 'refused', refusals: 1, attempts: 2, sealedAt: null },
+      { campaign: 'c9', author: 'cynco', outcome: 'resealed', refusals: 0, attempts: null, sealedAt: '2026-09-20T00:00:00.000Z' },
+      { campaign: 'c7', author: 'human', outcome: 'resealed', refusals: 0, attempts: null, sealedAt: null },
+    ])
+    expect(readFileSync(outPath, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l))).toEqual(r.rows)
+    expect(existsSync(outPath + '.tmp')).toBe(false)
+    // The line dataset still cannot see c10: it has no calibration, so no lines.
+    expect(exportGateLines(w).rows.some(x => x.campaign === 'c10')).toBe(false)
+  })
+
+  it('the default outcomes path sits under the CynCo home of the moment', () => {
+    const prev = process.env.CYNCO_HOME
+    process.env.CYNCO_HOME = 'C:/tmp/some-home'
+    try { expect(GATE_OUTCOMES_PATH().replace(/\\/g, '/')).toBe('C:/tmp/some-home/datasets/gate-outcomes.jsonl') }
+    finally { if (prev === undefined) delete process.env.CYNCO_HOME; else process.env.CYNCO_HOME = prev }
   })
 
   it('the default dataset path sits under the CynCo home of the moment', () => {

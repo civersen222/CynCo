@@ -404,11 +404,14 @@ in `docs/civkings-redesign-briefs/campaign-log.md` and F156 in
   (`state.authoring.<id>.harnessSha256` + `harnessFiles`) and the re-check
   re-takes it before running: a closure that moved is `harness dirty: <files>`,
   `lastCheck.kind: 'fault'` with `harnessDirty: true`, nothing is run and no
-  proposal is raised. Residuals (final re-review, Phase 4 work): the fingerprint
-  stops at `scripts/` — the engine modules `--check` also loads (`engine/paths`,
+  proposal is raised. The closure also follows `../engine/` imports (`.js`
+  resolved to `.ts`/`.tsx`, bounded to the repo root, `node_modules` skipped):
+  the engine modules `--check` loads (`engine/paths`,
   `engine/bridge/contractAutoCreate`, `engine/tools/contractVerify` and what they
-  import, `engine/cybernetics-core`) run their top-level code in the subprocess
-  and are not hashed; and a harness edit that the operator does not restore
+  import, `engine/cybernetics-core`) run their top-level code in the subprocess,
+  so since Phase 4 they are hashed under their repo-relative paths — the Phase 3
+  residual that stopped the walk at `scripts/` is closed. Residual (final
+  re-review): a harness edit that the operator does not restore
   before the next `--author` becomes that dispatch's baseline (the fault names
   the files first). A resume whose staged triple passes does not propose from
   disk if the closure moved since the dispatch that produced it — it dispatches

@@ -25,7 +25,7 @@ import { gradeWave } from './cynco-campaign-grade.mjs'
 import { verdictEntry, notify, commitVerdict, economicsLines } from './cynco-campaign-verdict.mjs'
 import { runIdeation, measureFollowed, authorityRegistry, promotionProposal, capProposal, effectiveInvariants } from './cynco-ideation.mjs'
 import { patchLedgerRow, findLedgerRow } from './cynco-ledger-patch.mjs'
-import { exportGateLines, resealRecord, linesOf } from './cynco-gate-lines.mjs'
+import { exportGateLines, exportGateOutcomes, resealRecord, linesOf } from './cynco-gate-lines.mjs'
 import { gateAuthorPromotion } from './cynco-gate-author.mjs'
 import { sidecarPath } from './cynco-contract.mjs'
 import { exportTriples } from './cynco-triples.mjs'
@@ -218,6 +218,7 @@ export const defaultIo = {
   exportTriples: () => exportTriples(),
   analyseDenials: (summary) => analyseDenials(summary),
   exportGateLines: () => exportGateLines(),
+  exportGateOutcomes: () => exportGateOutcomes(),
   // Phase 4: the per-wave identity assertion re-runs the spec loader's own
   // check (sealed paths exist, base is a commit, nothing brief-visible names
   // the instrument), and the authority registry reads the retained seats store
@@ -480,6 +481,11 @@ export async function runWave(spec, state, io = defaultIo) {
   let gateLines = null
   try { gateLines = (io.exportGateLines ?? defaultIo.exportGateLines)().summary ?? null }
   catch (e) { console.error(`[campaign] gate-lines export skipped: ${e?.message ?? e}`) }
+  // Phase 4: the campaign-level outcome of every seal (refused / sealed / held /
+  // resealed) — the evidence the line dataset cannot carry, because a refused
+  // gate has no lines. Same discipline: derived, rebuilt in full, never a fault.
+  try { (io.exportGateOutcomes ?? defaultIo.exportGateOutcomes)() }
+  catch (e) { console.error(`[campaign] gate-outcomes export skipped: ${e?.message ?? e}`) }
 
   // Phase 4: is the campaign still the campaign? Asserted AFTER the datasets
   // are regenerated (they are evidence either way) and BEFORE any proposal is

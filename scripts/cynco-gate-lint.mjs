@@ -10,6 +10,7 @@
 // this says nothing about whether the gate MEASURES anything, only that it has
 // the shape the runner and the parser expect.
 import { readFileSync } from 'node:fs'
+import { basename } from 'node:path'
 import { parsePerturbHeader } from './cynco-gate-parse.mjs'
 
 // `C8.1a.tiers-differ`, `C8.5.palette.Atlas`, `C8.9` — the id grammar the
@@ -59,24 +60,51 @@ function stripComments(source) {
  * reaches the output is only known at run time and this pass never runs.
  */
 export function gateLineIds(gateSource) {
-  const ids = []
+  return gateLineCalls(gateSource).map(c => c.id)
+}
+
+/** The 1-based line of a character offset. `stripComments` keeps every line
+ * (it truncates, never joins), so an offset into the stripped text lands on the
+ * same line number it has in the file. */
+const lineAt = (text, index) => text.slice(0, index).split('\n').length
+
+/** `gateLineIds` with the 1-based source line of each `check(` call. */
+function gateLineCalls(gateSource) {
+  const calls = []
+  const src = stripComments(gateSource)
   const re = /(?<![A-Za-z0-9_.])check\(\s*(?:f|rf|fr)?(['"])((?:[^'"\\]|\\.)*)\1/g
   let m
-  while ((m = re.exec(stripComments(gateSource)))) {
+  while ((m = re.exec(src))) {
     const raw = m[2]
     const brace = raw.indexOf('{')
-    ids.push(brace === -1 ? raw : raw.slice(0, brace).replace(/\.$/, ''))
+    calls.push({ id: brace === -1 ? raw : raw.slice(0, brace).replace(/\.$/, ''), line: lineAt(src, m.index) })
   }
-  return ids
+  return calls
 }
 
 /** Static lint of an authored triple.
- * @returns {{ ok: boolean, problems: string[], lineIds: string[] }}
+ * @returns {{ ok: boolean, problems: string[], at: { file: string, line: number, problem: string }[], lineIds: string[] }}
  * Every problem is one rule and is prefixed `lint:` so the authoring mission's
  * --check output reads as a list of orders rather than a stack trace.
+ *
+ * Where a rule reads a specific line — the offending `check(` call, the header
+ * line, the network import, the `runpy.run_path` of a shim that never set
+ * CYNCO_GATE_SKIP_PRIOR — the problem ends ` (<file basename>:<line>)` and
+ * `at` carries the same `{ file, line, problem }`. `problems` stays a list of
+ * strings so every consumer that prints or joins it keeps working; a rule about
+ * something ABSENT from the whole file (no CYNCO_GATE_REPO, no terminator)
+ * names no line, because there is none.
  */
 export function lintGate({ campaignId, gatePath, perturbPath, positivePath, io = defaultIo }) {
   const problems = []
+  const at = []
+  const push = (text, path, line) => {
+    if (path == null || !line) { problems.push(text); return }
+    const file = basename(String(path))
+    const problem = `${text} (${file}:${line})`
+    problems.push(problem)
+    at.push({ file, line, problem })
+  }
   // Only the leading `c` is uppercased, and the comparison is case-insensitive:
   // a campaign id may carry a letter suffix (`c10b`, allowed by LINE_ID_RE's
   // `C\d+[a-z]?`), and `toUpperCase()` turned that into `C10B`, which no gate
@@ -86,16 +114,17 @@ export function lintGate({ campaignId, gatePath, perturbPath, positivePath, io =
   const hasPrefix = (id) => id.toLowerCase().startsWith(lower + '.')
   const gateRaw = io.readFile(gatePath)
   const gate = stripComments(gateRaw)
-  const lineIds = gateLineIds(gateRaw)
+  const calls = gateLineCalls(gateRaw)
+  const lineIds = calls.map(c => c.id)
 
   // 1. Ids parse, carry this campaign's prefix, and are unique.
   if (lineIds.length === 0) problems.push('lint: no graded lines — the gate calls check("<id>", ...) for every fact it measures')
-  for (const id of lineIds) {
-    if (!LINE_ID_RE.test(id) || !hasPrefix(id)) problems.push(`lint: line id "${id}" is not a ${prefix}.<n> id`)
+  for (const { id, line } of calls) {
+    if (!LINE_ID_RE.test(id) || !hasPrefix(id)) push(`lint: line id "${id}" is not a ${prefix}.<n> id`, gatePath, line)
   }
   const seen = new Set()
-  for (const id of lineIds) {
-    if (seen.has(id)) problems.push(`lint: duplicate gate line id ${id} — two facts graded under one id hide one of them`)
+  for (const { id, line } of calls) {
+    if (seen.has(id)) push(`lint: duplicate gate line id ${id} — two facts graded under one id hide one of them`, gatePath, line)
     seen.add(id)
   }
 
@@ -110,10 +139,11 @@ export function lintGate({ campaignId, gatePath, perturbPath, positivePath, io =
   // here, so calibrate() and the c<N>.9 line itself carry it.)
   const regressionId = `${prefix}.9`
   const regressionLower = regressionId.toLowerCase()
-  if (!lineIds.some(id => id.toLowerCase() === regressionLower || id.toLowerCase().startsWith(regressionLower + '.'))) {
+  const regressionCall = calls.find(({ id }) => id.toLowerCase() === regressionLower || id.toLowerCase().startsWith(regressionLower + '.'))
+  if (!regressionCall) {
     problems.push(`lint: no prior-campaign regression line ${regressionId} — nothing would notice this campaign breaking the last one`)
   } else if (!gate.includes('CYNCO_GATE_SKIP_PRIOR')) {
-    problems.push(`lint: the ${regressionId} regression line does not honour CYNCO_GATE_SKIP_PRIOR — the shims could not skip it and would recurse`)
+    push(`lint: the ${regressionId} regression line does not honour CYNCO_GATE_SKIP_PRIOR — the shims could not skip it and would recurse`, gatePath, regressionCall.line)
   }
 
   // 4. The gate prints the terminator the parser reads (cynco-gate-parse.mjs).
@@ -122,20 +152,26 @@ export function lintGate({ campaignId, gatePath, perturbPath, positivePath, io =
   // 5. The shims run THIS gate in-process and turn the prior chain off.
   const shims = [['perturb', perturbPath], ['positive', positivePath]].filter(([, p]) => p)
   const sources = { gate }
+  const paths = { gate: gatePath }
   const headerSource = {}
   for (const [name, path] of shims) {
     const raw = io.readFile(path)
     headerSource[name] = raw
     const src = stripComments(raw)
     sources[name] = src
-    if (!/runpy\.run_path\s*\(/.test(src)) problems.push(`lint: the ${name} shim does not runpy.run_path the gate — it must run the real gate, not a copy of it`)
-    if (!src.includes('CYNCO_GATE_SKIP_PRIOR')) problems.push(`lint: the ${name} shim does not set CYNCO_GATE_SKIP_PRIOR — it would re-run the prior campaign's gate on every calibration`)
+    paths[name] = path
+    const run = /runpy\.run_path\s*\(/.exec(src)
+    if (!run) problems.push(`lint: the ${name} shim does not runpy.run_path the gate — it must run the real gate, not a copy of it`)
+    // The line named is the run_path call: that is where the gate starts with
+    // the prior chain still on, and where the setting belongs before it.
+    if (!src.includes('CYNCO_GATE_SKIP_PRIOR')) push(`lint: the ${name} shim does not set CYNCO_GATE_SKIP_PRIOR — it would re-run the prior campaign's gate on every calibration`, path, run ? lineAt(src, run.index) : null)
   }
 
   // 6. No network in any of the three.
   for (const [name, src] of Object.entries(sources)) {
     const net = NETWORK_IMPORT.exec(src)
-    if (net) problems.push(`lint: the ${name} imports ${net[1]} — a gate that reaches the network is not measuring the repo`)
+    // NETWORK_IMPORT's `^[ \t]*` may start on the line itself, never before it.
+    if (net) push(`lint: the ${name} imports ${net[1]} — a gate that reaches the network is not measuring the repo`, paths[name], lineAt(src, net.index))
   }
 
   // 7. The header declares a non-empty MUST-FAIL and names only real ids.
@@ -145,13 +181,18 @@ export function lintGate({ campaignId, gatePath, perturbPath, positivePath, io =
     let header = null
     try { header = parsePerturbHeader(headerSource.perturb) } catch (e) { problems.push(`lint: ${e.message}`) }
     if (header) {
-      if (header.mustFail.length === 0) problems.push('lint: the perturb declares no MUST-FAIL discriminator — a stub that nothing must survive proves nothing')
+      const rawLines = String(headerSource.perturb).split(/\r?\n/)
+      // The header line a key lives on — the same shape parsePerturbHeader reads.
+      const headerLine = (key) => rawLines.findIndex(l => new RegExp(`^#[^\\S\\r\\n]*${key}:`).test(l)) + 1 || null
+      if (header.mustFail.length === 0) push('lint: the perturb declares no MUST-FAIL discriminator — a stub that nothing must survive proves nothing', perturbPath, headerLine('MUST-FAIL'))
       const known = (short) => lineIds.some(id => id === short || id.startsWith(short + '.'))
-      for (const short of [...header.expectFlip, ...header.mustFail]) {
-        if (!known(short)) problems.push(`lint: the perturb header names ${short}, which is not a gate line id`)
+      for (const [key, shorts] of [['EXPECT-FLIP', header.expectFlip], ['MUST-FAIL', header.mustFail]]) {
+        for (const short of shorts) {
+          if (!known(short)) push(`lint: the perturb header names ${short}, which is not a gate line id`, perturbPath, headerLine(key))
+        }
       }
     }
   }
 
-  return { ok: problems.length === 0, problems, lineIds }
+  return { ok: problems.length === 0, problems, at, lineIds }
 }

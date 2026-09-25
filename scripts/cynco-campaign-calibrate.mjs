@@ -1,6 +1,7 @@
 // scripts/cynco-campaign-calibrate.mjs
 import { existsSync, readFileSync, writeFileSync, rmSync, mkdirSync } from 'node:fs'
 import { createHash } from 'node:crypto'
+import { basename } from 'node:path'
 import { parseGateOutput, parsePerturbHeader, compareCalibration } from './cynco-gate-parse.mjs'
 import { GATE_TIMEOUT_MS, SUITE_TIMEOUT_MS } from './cynco-campaign-grade.mjs'
 import { runSync, faultSummary } from './cynco-spawn.mjs'
@@ -32,6 +33,20 @@ export function archiveBase(repo, base, dest, io = defaultIo) {
   return { ok: true, problems: [] }
 }
 
+/**
+ * Which instrument a `compareCalibration` problem is about — the file the fix
+ * belongs in. The positive shim's own reading is the positive shim's; the cheat
+ * stub's run and everything its header declares (MUST-FAIL, EXPECT-FLIP, the
+ * classification of every BASE failure) is the perturb's; what the gate prints
+ * at BASE (the terminator, its errors, its line count) is the gate's.
+ */
+export function instrumentOf(problem) {
+  const p = String(problem)
+  if (/^positive shim/.test(p)) return 'positive'
+  if (/^perturbed run|^MUST-FAIL|^discriminator |^unclassified base fails|under the cheat stub/.test(p)) return 'perturb'
+  return 'gate'
+}
+
 // Rule 11 (feedback_gate_authoring): run the bar against the BASE and against a
 // perturbed base BEFORE dispatch. Four stages were lost to skipping this by
 // hand, so the runner cannot skip it: calibrate() is the only way in.
@@ -53,8 +68,15 @@ export async function calibrate(spec, io = defaultIo, { baseDir: providedBaseDir
   // Read the perturb header FIRST: it is the declaration the whole comparison
   // is judged against, it costs a file read, and a stub with no header can only
   // end in a refusal — after two gate runs of up to two hours each.
+  // Every problem below names the instrument it is about (Phase 4 residual): a
+  // resume told "BASE must MISS" had to work out that the fix lives in
+  // gate_c9.py and not in the stub. `named` appends ` (<file>)` unless the text
+  // already carries the name.
+  const files = { gate: basename(String(spec.gate)), perturb: basename(String(spec.perturb)), positive: spec.positive ? basename(String(spec.positive)) : null }
+  const named = (text, which) => (files[which] && !text.includes(files[which]) ? `${text} (${files[which]})` : text)
+
   let header
-  try { header = parsePerturbHeader(io.readFile(spec.perturb)) } catch (e) { return { ok: false, problems: [e.message] } }
+  try { header = parsePerturbHeader(io.readFile(spec.perturb)) } catch (e) { return { ok: false, problems: [named(e.message, 'perturb')] } }
 
   const env = { CYNCO_GATE_REPO: baseDir }
   const baseRun = io.run('python', [spec.gate], { cwd: baseDir, env, timeoutMs: GATE_TIMEOUT_MS, retryImpossibleTimeout: true })
@@ -79,20 +101,20 @@ export async function calibrate(spec, io = defaultIo, { baseDir: providedBaseDir
   // against an empty BASE failure set. Every one of those blamed the gate for
   // the harness. A fault is reported as a fault, and nothing else is reported.
   const faults = []
-  for (const [what, run, parsed] of [
-    ['gate run at BASE', baseRun, base],
-    ['perturb run', pertRun, perturbed],
-    ...(positiveRun ? [['positive shim run', positiveRun, positive]] : []),
+  for (const [what, run, parsed, which] of [
+    ['gate run at BASE', baseRun, base, 'gate'],
+    ['perturb run', pertRun, perturbed, 'perturb'],
+    ...(positiveRun ? [['positive shim run', positiveRun, positive, 'positive']] : []),
   ]) {
-    if (run.fault) faults.push(`harness fault: ${what} did not run (${faultSummary(run.fault)}) — nothing was graded`)
+    if (run.fault) faults.push(named(`harness fault: ${what} did not run (${faultSummary(run.fault)}) — nothing was graded`, which))
     // "Produced no output" means NO output, on either stream. A child that dies at
     // import writes a traceback to stderr and nothing to stdout, and that is the
     // CHILD's failure — a model defect. Reading stdout alone called it a harness
     // fault, which blames the harness for the model's bug and, worse, drops the
     // traceback: `livePreviousCheck` would then show the resume nothing to fix.
     else if (!run.timedOut && `${run.stdout ?? ''}${run.stderr ?? ''}`.trim() === '' && parsed?.terminator == null) {
-      faults.push(`harness fault: ${what} produced no output (status ${run.status ?? 'null'}`
-        + `${typeof run.elapsedMs === 'number' ? `, after ${run.elapsedMs} ms` : ''}) — nothing was graded`)
+      faults.push(named(`harness fault: ${what} produced no output (status ${run.status ?? 'null'}`
+        + `${typeof run.elapsedMs === 'number' ? `, after ${run.elapsedMs} ms` : ''}) — nothing was graded`, which))
     }
   }
   if (faults.length) {
@@ -112,10 +134,10 @@ export async function calibrate(spec, io = defaultIo, { baseDir: providedBaseDir
   }
 
   const cmp = compareCalibration({ base, perturbed, positive, header })
-  const problems = [...cmp.problems]
-  if (baseRun.timedOut) problems.push(`gate timed out after ${GATE_TIMEOUT_MS} ms at BASE`)
-  if (pertRun.timedOut) problems.push(`perturb timed out after ${GATE_TIMEOUT_MS} ms`)
-  if (positiveRun?.timedOut) problems.push(`positive shim timed out after ${GATE_TIMEOUT_MS} ms`)
+  const problems = cmp.problems.map(p => named(p, instrumentOf(p)))
+  if (baseRun.timedOut) problems.push(named(`gate timed out after ${GATE_TIMEOUT_MS} ms at BASE`, 'gate'))
+  if (pertRun.timedOut) problems.push(named(`perturb timed out after ${GATE_TIMEOUT_MS} ms`, 'perturb'))
+  if (positiveRun?.timedOut) problems.push(named(`positive shim timed out after ${GATE_TIMEOUT_MS} ms`, 'positive'))
   const ok = problems.length === 0
 
   // The suite baseline is the standing-failure set measured AT THE BASE: it is

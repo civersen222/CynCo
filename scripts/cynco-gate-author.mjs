@@ -249,41 +249,77 @@ export function staticRelativeImports(src) {
  * calibrate, grade, spawn, …). Derived from the source, never listed by hand,
  * so a new import joins the closure without anyone remembering to add it.
  *
- * Only the harness's own `scripts/` directory is followed. RESIDUAL (final
- * re-review): `--check` also statically loads engine modules whose top-level
- * code runs in the subprocess — `engine/paths.ts`, `engine/bridge/
- * contractAutoCreate.ts`, `engine/tools/contractVerify.ts` (and through it
- * `tools/contract`, `tools/shellInfo`, `training/gitFacts`), and
- * `engine/cybernetics-core` — and those are NOT fingerprinted. A mission that
- * edits one of them could forge the check's verdict without tripping this
- * hash. Following `../engine/` imports (resolving `.js` → `.ts`) closes it;
- * recorded in the self-orchestration spec §10 as Phase 4 work.
+ * From a `scripts/` module two kinds of import are followed: same-directory
+ * ones (`./x.mjs`) and `../engine/…` ones. `--check` statically loads engine
+ * modules whose top-level code runs in the subprocess — `engine/paths.ts`,
+ * `engine/bridge/contractAutoCreate.ts`, `engine/tools/contractVerify.ts` (and
+ * through them `tools/contract`, `tools/shellInfo`, `training/gitFacts`), and
+ * `engine/cybernetics-core` — and a mission that edited one of them could
+ * forge the check's verdict. So they are in the closure (Phase 4 closed the
+ * Phase 3 residual that stopped the walk at `scripts/`). An engine module's own
+ * relative imports are followed anywhere under the repo root. A `.js`
+ * specifier whose file does not exist resolves to the `.ts`, then the `.tsx`,
+ * beside it (the engine is TypeScript imported by its emitted name); any path
+ * through `node_modules` is skipped — third-party code is pinned by the
+ * lockfile, not by this hash.
  */
 export function harnessClosure(entry = SELF_SCRIPT, readFile = (p) => readFileSync(p, 'utf8'), exists = existsSync) {
-  const root = norm(dirname(entry))
+  const scriptsDir = norm(dirname(entry))
+  const repoRoot = norm(dirname(scriptsDir))
   const seen = new Set()
   const queue = [norm(entry)]
   while (queue.length) {
     const file = queue.shift()
     if (seen.has(file)) continue
     seen.add(file)
+    const fromScripts = dirname(file) === scriptsDir
     for (const spec of staticRelativeImports(readFile(file))) {
-      const target = norm(resolve(dirname(file), spec))
-      if (dirname(target) !== root || !exists(target)) continue
-      queue.push(target)
+      const raw = norm(resolve(dirname(file), spec))
+      if (raw.split('/').includes('node_modules')) continue
+      if (fromScripts ? (dirname(raw) !== scriptsDir && !spec.startsWith('../engine/')) : !raw.startsWith(repoRoot + '/')) continue
+      const target = resolveModuleFile(raw, exists)
+      if (target) queue.push(target)
     }
   }
   return [...seen].sort()
 }
 
 /**
- * One fingerprint of the harness closure: a sha256 per file (keyed by its name
- * inside `scripts/`) and one over the lot. Taken at dispatch and stored on
+ * The file a specifier names, or null when none exists: the path itself when
+ * it carries a module extension (for `.js`, else the `.ts` then `.tsx` beside
+ * it); an extensionless specifier (`'../types'`, which `engine/cybernetics-core`
+ * uses throughout) resolves the way bun does — `.ts`, `.tsx`, `.js`, `.mjs`,
+ * then the directory's `index.ts` / `index.tsx` / `index.js`. A bare directory
+ * path is never returned: it is not a module and cannot be read.
+ */
+function resolveModuleFile(target, exists) {
+  const candidates = /\.(?:[cm]?js|[cm]?ts|tsx|json)$/.test(target)
+    ? [target, ...(target.endsWith('.js') ? [target.slice(0, -3) + '.ts', target.slice(0, -3) + '.tsx'] : [])]
+    : ['.ts', '.tsx', '.js', '.mjs', '/index.ts', '/index.tsx', '/index.js'].map(ext => target + ext)
+  return candidates.find(c => exists(c)) ?? null
+}
+
+/**
+ * The key a closure file is fingerprinted under: its bare name inside
+ * `scripts/` (the names every stored fingerprint already uses), its
+ * repo-relative path anywhere else — `engine/tools/contract.ts` and a
+ * `scripts/contract.mjs` must never collide on a basename.
+ */
+export function harnessFileKey(file, entry = SELF_SCRIPT) {
+  const scriptsDir = norm(dirname(entry))
+  const f = norm(file)
+  if (dirname(f) === scriptsDir) return basename(f)
+  return f.slice(norm(dirname(scriptsDir)).length + 1)
+}
+
+/**
+ * One fingerprint of the harness closure: a sha256 per file (keyed by
+ * `harnessFileKey`) and one over the lot. Taken at dispatch and stored on
  * `state.authoring[id]`; re-taken before the runner believes the check.
  */
 export function harnessFingerprint(entry = SELF_SCRIPT, readBytes = (p) => readFileSync(p)) {
   const files = {}
-  for (const f of harnessClosure(entry)) files[basename(f)] = createHash('sha256').update(readBytes(f)).digest('hex')
+  for (const f of harnessClosure(entry)) files[harnessFileKey(f, entry)] = createHash('sha256').update(readBytes(f)).digest('hex')
   const sha256 = createHash('sha256').update(Object.keys(files).sort().map(k => `${k} ${files[k]}\n`).join('')).digest('hex')
   return { sha256, files }
 }
@@ -293,6 +329,17 @@ export function harnessDirtyFiles(recorded, current) {
   if (!recorded || !current || recorded.sha256 === current.sha256) return []
   const a = recorded.files ?? {}, b = current.files ?? {}
   return [...new Set([...Object.keys(a), ...Object.keys(b)])].filter(k => a[k] !== b[k]).sort()
+}
+
+/**
+ * The well-formed `{ file, line, problem }` entries of a check's `at` list —
+ * it crosses a process boundary as JSON, so anything else is dropped rather
+ * than printed as `at undefined:NaN` in a brief.
+ */
+export function atEntries(at) {
+  if (!Array.isArray(at)) return []
+  return at.filter(a => a && typeof a.file === 'string' && Number.isInteger(a.line) && a.line > 0 && typeof a.problem === 'string')
+    .map(({ file, line, problem }) => ({ file, line, problem }))
 }
 
 /** The marker the `--check` CLI prints its machine-readable verdict behind. */
@@ -348,6 +395,7 @@ export async function checkStagedViaSubprocess({ id, stagingDir, baseDir, io, ti
   }
   if (parsed) {
     return { ok: r.status === 0 && parsed.ok === true, problems: Array.isArray(parsed.problems) ? parsed.problems : [],
+      at: atEntries(parsed.at),
       lineIds: Array.isArray(parsed.lineIds) ? parsed.lineIds : [], tails: parsed.tails ?? null, calibration: null, fault: null }
   }
   const ok = r.status === 0
@@ -684,7 +732,10 @@ export async function checkStaged({ id, stagingDir, baseDir, io }) {
     suiteBaseline: `${dir}/suite_baseline_${id}.txt` }
   const calibration = await calibrate(spec, calibrationIo(io), { baseDir: norm(baseDir) })
   const problems = [...lint.problems, ...calibration.problems]
-  return { ok: problems.length === 0, problems, lineIds: lint.lineIds, calibration }
+  // `at`: the lint problems that name a line (Phase 4 residual) — the resume
+  // brief prints a FILE:LINE under each. Calibration problems name their file
+  // but read no single line, so they carry none.
+  return { ok: problems.length === 0, problems, at: lint.at ?? [], lineIds: lint.lineIds, calibration }
 }
 
 /** The proposal a passing check raises. `evidence.problems` is empty by
@@ -824,7 +875,15 @@ export function livePreviousCheck({ id, stagingDir, lastCheck, io }) {
     return !m || !io.exists(`${dir}/${m[1]}`)
   })
   if (!kept.some(l => l.trim() !== '')) return null
-  const parts = [kept.join('\n')]
+  // A problem the check located (Phase 4 residual) gets its FILE:LINE on the
+  // line below it, so the resume opens the file at the line instead of
+  // grepping for the id: `  at gate_c9.py:42`.
+  const located = new Map()
+  for (const a of atEntries(lastCheck?.problemAt)) if (!located.has(a.problem)) located.set(a.problem, a)
+  const parts = [kept.map(l => {
+    const a = located.get(l.trim())
+    return a ? `${l}\n  at ${a.file}:${a.line}` : l
+  }).join('\n')]
 
   // The evidence behind the problem list. Attempt 4 was told only that the
   // positive shim "did not PASS" and spent iterations 340-475 working out why by
@@ -894,6 +953,11 @@ export function checkRecord(check, io) {
   const kind = check.fault || check.harnessDirty ? 'fault' : check.ok ? 'ok' : 'refused'
   return {
     at: io.now(), kind, ok: check.ok, problems: check.problems, lineCount: check.lineIds.length,
+    // The check result's `at` list — where each located problem lives, printed
+    // by the resume brief as `  at gate_c9.py:42` under its problem. Stored as
+    // `problemAt` because the record's own `at` has always been its timestamp
+    // (the time this reading was taken), and one field cannot be both.
+    problemAt: atEntries(check.at),
     ...(check.harnessDirty ? { harnessDirty: true, harnessDirtyFiles: check.harnessDirtyFiles ?? [] } : {}),
     // Kept, not just counted: a resume that proposes straight from the staged
     // triple builds its proposal out of this record and has no other source for
@@ -1560,7 +1624,7 @@ export async function authorMain(argv, io = defaultAuthorIo()) {
     const wantJson = flag('--json') !== -1
     const cal = check.calibration ?? {}
     const jsonLine = CHECK_JSON_MARKER + JSON.stringify({
-      ok: check.ok, problems: check.problems, lineIds: check.lineIds,
+      ok: check.ok, problems: check.problems, at: check.at ?? [], lineIds: check.lineIds,
       tails: { base: cal.baseOutputTail ?? null, perturb: cal.perturbOutputTail ?? null, positive: cal.positiveOutputTail ?? null },
     })
     if (check.ok) {

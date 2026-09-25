@@ -624,6 +624,58 @@ lines, a Wilson lower bound ≥ 0.8, and not significantly worse than the human
 seat, raises the `gate-author/gate` proposal. Both thresholds are stated once,
 in `scripts/cynco-signal-validation.mjs` beside `DENIAL_MIN`.
 
+### Gate outcomes dataset
+
+`~/.cynco/datasets/gate-outcomes.jsonl`, written by `exportGateOutcomes` in
+`scripts/cynco-gate-lines.mjs` at every wave verdict (right after the gate-lines
+export, with the same rule: derived, rebuilt in full, a failure is logged and
+never faults the wave), and printed as the GATES table after the lines table by
+`bun scripts/cynco-signal-validation.mjs --gate-lines`.
+
+**The unit is the campaign, because the seal is a campaign-level event.** The
+gate-lines dataset cannot see a gate that never sealed: a triple the supervisor
+refused has no calibration on the campaign, so it has no graded lines and no
+rows, and "the seat's lines held 30/30" reads the same whether zero or five of
+its gates were refused on the way. This dataset is the denominator the lines
+leave out.
+
+One row per campaign. All three are real rows, copied out of an export run
+against `~/.cynco/campaigns` plus the history file on 2026-09-25:
+
+```jsonc
+{ "campaign": "c8", "author": "human", "outcome": "held", "refusals": 0, "attempts": null, "sealedAt": "2026-09-17T10:55:46.162Z" }
+{ "campaign": "c9", "author": "cynco", "outcome": "refused", "refusals": 1, "attempts": 9, "sealedAt": null }
+{ "campaign": "c7", "author": "human", "outcome": "resealed", "refusals": 0, "attempts": null, "sealedAt": null }
+```
+
+- **`outcome`** is one of four:
+  - **`refused`** — at least one supervisor refusal
+    (`state.authoring[<id>].refusals[]`, `{ at, by: 'supervisor', notePath }`)
+    and no seal.
+  - **`sealed`** — sealed; the campaign has not reached a decision yet.
+  - **`held`** — sealed, decided (the same `decided` as the gate-lines rows),
+    and never resealed.
+  - **`resealed`** — sealed, with at least one record in `state.reseals`
+    (decided or not). Any reseal record counts, including one whose
+    `changedLineIds` is empty: the gate was rewritten under a running campaign,
+    which is the event. For a history row, a non-empty `resealed` list.
+
+  A gate neither sealed nor refused (staged, still being authored) is not an
+  outcome yet and has no row.
+- **`author`** — the wave record's `gate.author` when a wave carries one;
+  otherwise `cynco` when the state holds an authoring record for the campaign
+  and `human` when it does not. (Presence, not `sealedAt`: a refused gate never
+  sealed, and the gate-lines rule would call the seat's refusal a human's.)
+  History rows carry their own `author`.
+- **`refusals`** — the count of supervisor refusals; `0` for a human-sealed or
+  history campaign. **`attempts`** — `state.authoring[<id>].attempts`, the
+  authoring dispatches; `null` where there is no authoring record.
+- **`sealedAt`** — as in the gate-lines rows: the authoring record's stamp, else
+  the first calibration, else `null`.
+
+A campaign in both the state dir and the history file is the runner's, exactly
+as for the gate lines.
+
 ### Rule verdicts file
 
 `~/.cynco/datasets/rule-verdicts.json`, written by

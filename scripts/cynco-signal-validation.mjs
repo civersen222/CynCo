@@ -32,6 +32,8 @@
  *   node scripts/cynco-signal-validation.mjs [--json] [--ledger-dir DIR]
  *   bun  scripts/cynco-signal-validation.mjs --denials [--triples PATH] [--json]
  *   bun  scripts/cynco-signal-validation.mjs --gate-lines [--json]
+ *        (the lines table, then the per-campaign GATES table; --json prints
+ *        only the line summary)
  */
 
 import { readFileSync, readdirSync } from 'node:fs'
@@ -326,6 +328,20 @@ export function gateLineTable(summary) {
   return lines
 }
 
+/**
+ * The GATES table: one row per campaign from the gate-outcomes dataset
+ * (scripts/cynco-gate-lines.mjs `gateOutcomeRows`) — how each seal ended,
+ * including the refused ones the line table above cannot see.
+ */
+export function gateOutcomeTable(rows) {
+  const lines = ['campaign  author  outcome    refusals  attempts']
+  for (const r of rows ?? []) {
+    lines.push(`${String(r.campaign).padEnd(8)}  ${String(r.author).padEnd(6)}  ${String(r.outcome).padEnd(9)}  ${String(r.refusals ?? 0).padStart(8)}  ${String(r.attempts ?? '—').padStart(8)}`)
+  }
+  if (!(rows ?? []).length) lines.push('(no campaign has sealed or been refused yet)')
+  return lines
+}
+
 export function printGateLineTable(summary) {
   for (const l of gateLineTable(summary)) console.log(l)
 }
@@ -484,11 +500,15 @@ async function main() {
   // only loads under bun. The default report and `--signals` must keep running
   // under plain node, so neither module may be a static import here.
   if (argv.includes('--gate-lines')) {
-    const { exportGateLines } = await import('./cynco-gate-lines.mjs')
+    const { exportGateLines, exportGateOutcomes } = await import('./cynco-gate-lines.mjs')
     const r = exportGateLines()
     if (argv.includes('--json')) { console.log(JSON.stringify(r.summary, null, 2)); return }
     console.log(`GATE LINES — did the sealed line hold? (unit: the graded line; ${r.rows.length} row(s) → ${r.outPath})`)
     printGateLineTable(r.summary)
+    const o = exportGateOutcomes()
+    console.log()
+    console.log(`GATES — how did each seal end? (unit: the campaign; ${o.rows.length} row(s) → ${o.outPath})`)
+    for (const l of gateOutcomeTable(o.rows)) console.log(l)
     return
   }
 

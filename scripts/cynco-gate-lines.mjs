@@ -235,6 +235,86 @@ export function exportGateLines({ campaignsDir = join(cyncoHome(), 'campaigns'),
   return { rows, summary, outPath }
 }
 
+// ── Gate outcomes: the campaign-level record of the seal ─────────────────────
+//
+// The line dataset above cannot see a gate that never sealed: a triple the
+// supervisor refused has no calibration on the campaign, so it has no graded
+// lines, so it contributes no row — and "the seat's gates held 30/30" reads the
+// same whether zero or five gates were refused on the way. The SEAL is a
+// campaign-level event, so this is one row per campaign:
+//
+//   refused   — at least one supervisor refusal and no seal (yet).
+//   sealed    — sealed; the campaign has not reached a decision.
+//   held      — sealed; decided; never resealed.
+//   resealed  — sealed; at least one reseal record, decided or not. Any record
+//               counts, even one whose `changedLineIds` is empty: the gate file
+//               was rewritten under a running campaign, which is the event.
+//
+// A gate neither sealed nor refused (staged, still being authored) is not an
+// outcome yet and has no row.
+
+/** `<cyncoHome>/datasets/gate-outcomes.jsonl` — a function for the reason `GATE_LINES_PATH` is. */
+export const GATE_OUTCOMES_PATH = (home = cyncoHome()) => join(home, 'datasets', 'gate-outcomes.jsonl')
+
+/**
+ * One row per campaign: `{ campaign, author, outcome, refusals, attempts, sealedAt }`.
+ *
+ * `states` are `{ id, author, sealedAt, decided, refusals: [], attempts, reseals: [] }`
+ * (exportGateOutcomes builds them from the state dirs); `history` is the same
+ * hand-transcribed file the line rows read, where an entry is sealed by
+ * definition (it ran) and resealed when its `resealed` list is non-empty. A
+ * campaign in both is the runner's — the collision is already logged by
+ * `gateLineRows`, which reads the same two sources at the same verdict.
+ */
+export function gateOutcomeRows({ states = [], history = null } = {}) {
+  const rows = []
+  const fromState = new Set()
+  for (const st of states) {
+    if (!st?.id) continue
+    fromState.add(st.id)
+    const refusals = Array.isArray(st.refusals) ? st.refusals.length : 0
+    const sealed = Boolean(st.sealedAt)
+    let outcome
+    if (!sealed) outcome = refusals > 0 ? 'refused' : null
+    else outcome = (st.reseals ?? []).length > 0 ? 'resealed' : st.decided ? 'held' : 'sealed'
+    if (!outcome) continue
+    rows.push({ campaign: st.id, author: st.author ?? 'human', outcome, refusals, attempts: st.attempts ?? null, sealedAt: st.sealedAt ?? null })
+  }
+  for (const c of history?.campaigns ?? []) {
+    if (!c?.id || fromState.has(c.id)) continue
+    const outcome = (c.resealed ?? []).length > 0 ? 'resealed' : c.decided ? 'held' : 'sealed'
+    rows.push({ campaign: c.id, author: c.author ?? 'human', outcome, refusals: 0, attempts: null, sealedAt: c.sealedAt ?? null })
+  }
+  return rows
+}
+
+/**
+ * Who authored this campaign's gate, for the outcome row. The wave record wins
+ * when there is one; otherwise the PRESENCE of an authoring record is the
+ * answer — a refused gate never sealed, so `authorOf`'s `sealedAt` test would
+ * call the seat's refusal a human's.
+ */
+function outcomeAuthorOf(state, waves, id) {
+  for (const w of [...(waves ?? [])].reverse()) if (w?.gate?.author) return w.gate.author
+  return state?.authoring?.[id] ? 'cynco' : 'human'
+}
+
+/** Regenerate the gate-outcomes dataset from every campaign state dir plus the history file. */
+export function exportGateOutcomes({ campaignsDir = join(cyncoHome(), 'campaigns'), historyPath = HISTORY_PATH, outPath = GATE_OUTCOMES_PATH() } = {}) {
+  const states = readCampaigns(campaignsDir).map(({ id, state, waves }) => {
+    const a = state?.authoring?.[id]
+    return {
+      id, author: outcomeAuthorOf(state, waves, id), sealedAt: sealedAtOf(state, id), decided: decidedOf(waves),
+      refusals: Array.isArray(a?.refusals) ? a.refusals : [], attempts: a?.attempts ?? null, reseals: state?.reseals ?? [],
+    }
+  })
+  const rows = gateOutcomeRows({ states, history: readHistory(historyPath) })
+  mkdirSync(resolve(outPath, '..'), { recursive: true })
+  writeFileSync(outPath + '.tmp', rows.map(r => JSON.stringify(r)).join('\n') + (rows.length ? '\n' : ''), 'utf8')
+  renameSync(outPath + '.tmp', outPath)
+  return { rows, outPath }
+}
+
 function main(argv) {
   const outIdx = argv.indexOf('--out')
   const r = exportGateLines(outIdx === -1 ? {} : { outPath: resolve(argv[outIdx + 1]) })
