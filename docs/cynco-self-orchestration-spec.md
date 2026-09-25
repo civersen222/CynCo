@@ -410,7 +410,11 @@ in `docs/civkings-redesign-briefs/campaign-log.md` and F156 in
   `engine/bridge/contractAutoCreate`, `engine/tools/contractVerify` and what they
   import, `engine/cybernetics-core`) run their top-level code in the subprocess,
   so since Phase 4 they are hashed under their repo-relative paths — the Phase 3
-  residual that stopped the walk at `scripts/` is closed. Residual (final
+  residual that stopped the walk at `scripts/` is closed. The walk follows
+  static relative `import` / `export … from` only: dynamic `import()`,
+  `require()` and bare/package specifiers are not followed (none occur in the
+  engine files it reaches today), and every followed path must stay under the
+  repo root on both branches. Residual (final
   re-review): a harness edit that the operator does not restore
   before the next `--author` becomes that dispatch's baseline (the fault names
   the files first). A resume whose staged triple passes does not propose from

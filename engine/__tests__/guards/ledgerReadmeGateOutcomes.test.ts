@@ -63,11 +63,9 @@ describe('ledger README: the gate-outcomes example rows match the real row', () 
     }
   })
 
-  it('documents the six fields of the row shape, whatever else rides along', () => {
-    const want = producedFields()
-    for (const f of ['campaign', 'author', 'outcome', 'refusals', 'attempts', 'sealedAt']) {
-      expect(want, `gateOutcomeRows no longer writes "${f}"`).toContain(f)
-    }
+  it('the row shape is exactly the six documented fields', () => {
+    expect(producedFields(), 'gateOutcomeRows no longer writes exactly the six documented fields')
+      .toEqual(['attempts', 'author', 'campaign', 'outcome', 'refusals', 'sealedAt'])
   })
 
   it('every example row\'s outcome is one the dataset defines, and the README defines all four', () => {

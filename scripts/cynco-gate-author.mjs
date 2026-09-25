@@ -261,7 +261,14 @@ export function staticRelativeImports(src) {
  * specifier whose file does not exist resolves to the `.ts`, then the `.tsx`,
  * beside it (the engine is TypeScript imported by its emitted name); any path
  * through `node_modules` is skipped — third-party code is pinned by the
- * lockfile, not by this hash.
+ * lockfile, not by this hash. Every followed path, from either branch, must
+ * stay under the repo root.
+ *
+ * LIMIT: only static relative `import …` / `export … from` / `import '…'` are
+ * followed (`staticRelativeImports`). Dynamic `import()`, `require()`, and
+ * bare or package specifiers are not; none occur in the engine files the
+ * closure reaches today (checked when the engine walk landed), so a new one
+ * would sit outside the hash until this walk learns it.
  */
 export function harnessClosure(entry = SELF_SCRIPT, readFile = (p) => readFileSync(p, 'utf8'), exists = existsSync) {
   const scriptsDir = norm(dirname(entry))
@@ -276,7 +283,10 @@ export function harnessClosure(entry = SELF_SCRIPT, readFile = (p) => readFileSy
     for (const spec of staticRelativeImports(readFile(file))) {
       const raw = norm(resolve(dirname(file), spec))
       if (raw.split('/').includes('node_modules')) continue
-      if (fromScripts ? (dirname(raw) !== scriptsDir && !spec.startsWith('../engine/')) : !raw.startsWith(repoRoot + '/')) continue
+      // Both branches are bounded to the repo root: `../engine/../../x.mjs`
+      // starts with `../engine/` and still lands outside it.
+      if (!raw.startsWith(repoRoot + '/')) continue
+      if (fromScripts && dirname(raw) !== scriptsDir && !spec.startsWith('../engine/')) continue
       const target = resolveModuleFile(raw, exists)
       if (target) queue.push(target)
     }

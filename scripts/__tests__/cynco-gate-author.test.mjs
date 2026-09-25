@@ -1316,7 +1316,7 @@ describe('harness closure (review I4)', () => {
 
   it('walks an injected tree: .js→.ts then .tsx, extensionless → index.ts, node_modules and out-of-repo skipped', () => {
     const tree = {
-      'R:/repo/scripts/entry.mjs': "import { a } from './sib.mjs'\nimport { p } from '../engine/paths.js'\nimport { v } from '../engine/view.js'\nimport { d } from '../docs/not-followed.mjs'",
+      'R:/repo/scripts/entry.mjs': "import { a } from './sib.mjs'\nimport { p } from '../engine/paths.js'\nimport { v } from '../engine/view.js'\nimport { d } from '../docs/not-followed.mjs'\nimport a from '../engine/../../outside.mjs'",
       'R:/repo/scripts/sib.mjs': "export const a = 1",
       'R:/repo/engine/paths.ts': "import { t } from './types'\nimport { x } from '../node_modules/pkg/index.js'\nimport { o } from '../../outside/evil.js'",
       'R:/repo/engine/view.tsx': "export const v = 1",
@@ -1324,6 +1324,7 @@ describe('harness closure (review I4)', () => {
       'R:/repo/docs/not-followed.mjs': "",
       'R:/repo/node_modules/pkg/index.js': "",
       'R:/outside/evil.js': "",
+      'R:/outside.mjs': "",
     }
     const got = harnessClosure('R:/repo/scripts/entry.mjs', (p) => tree[p], (p) => p in tree)
     expect(got).toEqual(['R:/repo/engine/paths.ts', 'R:/repo/engine/types/index.ts', 'R:/repo/engine/view.tsx', 'R:/repo/scripts/entry.mjs', 'R:/repo/scripts/sib.mjs'])

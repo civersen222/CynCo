@@ -661,7 +661,8 @@ against `~/.cynco/campaigns` plus the history file on 2026-09-25:
     which is the event. For a history row, a non-empty `resealed` list.
 
   A gate neither sealed nor refused (staged, still being authored) is not an
-  outcome yet and has no row.
+  outcome yet and has no row. A refusal followed by a seal reads by its seal
+  (`sealed` / `held` / `resealed`), with the `refusals` count kept.
 - **`author`** — the wave record's `gate.author` when a wave carries one;
   otherwise `cynco` when the state holds an authoring record for the campaign
   and `human` when it does not. (Presence, not `sealedAt`: a refused gate never
