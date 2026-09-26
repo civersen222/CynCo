@@ -13,6 +13,8 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 // @ts-expect-error — .mjs script, no types; the roadmap's own status vocabulary.
 import { STATUSES } from '../../../scripts/cynco-roadmap.mjs'
+// @ts-expect-error — .mjs script, no types; Task 2's one spelling of the pool.
+import { pooledScoreboard } from '../../../scripts/cynco-scoreboard.mjs'
 import { DashboardServer } from '../../dashboard/server.js'
 import { loadOrCreateTokens } from '../../security/localToken.js'
 
@@ -120,23 +122,25 @@ describe('GET /api/campaign', () => {
           isAutopoietic: false, missing: ['boundarySelfProduced', 'organizationallyClosed'], network: { unproduced: ['gate'], productions: [] }, facts: {} } },
     ])
 
-    // c9: no waves yet, inFlight set — this is the active campaign.
-    writeCampaign(CYNCO_HOME, 'c9', {
+    // c10: no waves yet, inFlight set — this is the active campaign. (c10, not
+    // c9: C9's spec is sealed and checked in now (449670f), and this fixture
+    // needs an id with NO spec on disk.)
+    writeCampaign(CYNCO_HOME, 'c10', {
       waveCount: 0,
-      inFlight: { wave: 1, missionId: null, briefFile: 'docs/civkings-redesign-briefs/c9-wave1.txt', pidFile: 'C:/tmp/c9.pid', driverLog: 'C:/tmp/c9.log', dispatchedAt: '2026-09-21T00:00:00.000Z' },
+      inFlight: { wave: 1, missionId: null, briefFile: 'docs/civkings-redesign-briefs/c10-wave1.txt', pidFile: 'C:/tmp/c10.pid', driverLog: 'C:/tmp/c10.log', dispatchedAt: '2026-09-21T00:00:00.000Z' },
     })
 
     const res = await authFetch(`${BASE}/api/campaign`)
     expect(res.status).toBe(200)
     const data = await res.json() as any
 
-    expect(data.active).toBe('c9')
+    expect(data.active).toBe('c10')
     expect(data.campaigns).toHaveLength(2)
 
     const c8 = data.campaigns.find((c: any) => c.id === 'c8')
-    const c9 = data.campaigns.find((c: any) => c.id === 'c9')
+    const c10 = data.campaigns.find((c: any) => c.id === 'c10')
     expect(c8).toBeTruthy()
-    expect(c9).toBeTruthy()
+    expect(c10).toBeTruthy()
 
     // c8: waves, proposals, invariant overrides, ideation authority verbatim.
     expect(c8.waveCount).toBe(2)
@@ -169,14 +173,14 @@ describe('GET /api/campaign', () => {
     expect(c8.authoring).toBeNull()
     expect(c8.gateAuthorAuthority).toBe(0)
 
-    // c9: no spec file on disk for this id -> budgetWaves null; inFlight passed through.
-    expect(c9.waveCount).toBe(0)
-    expect(c9.budgetWaves).toBeNull()
-    expect(c9.lastFails).toEqual([])
-    expect(c9.lastDecision).toBeNull()
-    expect(c9.waves).toEqual([])
-    expect(c9.pendingProposals).toEqual([])
-    expect(c9.inFlight).toEqual({ wave: 1, missionId: null, briefFile: 'docs/civkings-redesign-briefs/c9-wave1.txt', pidFile: 'C:/tmp/c9.pid', driverLog: 'C:/tmp/c9.log', dispatchedAt: '2026-09-21T00:00:00.000Z' })
+    // c10: no spec file on disk for this id -> budgetWaves null; inFlight passed through.
+    expect(c10.waveCount).toBe(0)
+    expect(c10.budgetWaves).toBeNull()
+    expect(c10.lastFails).toEqual([])
+    expect(c10.lastDecision).toBeNull()
+    expect(c10.waves).toEqual([])
+    expect(c10.pendingProposals).toEqual([])
+    expect(c10.inFlight).toEqual({ wave: 1, missionId: null, briefFile: 'docs/civkings-redesign-briefs/c10-wave1.txt', pidFile: 'C:/tmp/c10.pid', driverLog: 'C:/tmp/c10.log', dispatchedAt: '2026-09-21T00:00:00.000Z' })
 
     // The real checked-in roadmap.json (c6..c9) — read cwd-relative, same as
     // budgetWaves reads the real c8.campaign.json above.
@@ -417,6 +421,108 @@ describe('GET /api/campaign', () => {
     const data = await res.json() as any
     expect(data.error).toBeUndefined()
     expect(data.campaigns.map((c: any) => c.id)).toEqual(['c8'])
+  })
+
+  // Phase 5 ruling 2 (Task 3): each campaign's scoreboard off its last wave
+  // record that carries one, and the pooled board over those — computed by
+  // scripts/cynco-scoreboard.mjs's own pooledScoreboard (one spelling).
+  it('carries each campaign\'s scoreboard off its last scored wave, and the pooled board', async () => {
+    CYNCO_HOME = mkdtempSync(join(tmpdir(), 'cynco-campaign-scoreboard-'))
+    process.env.CYNCO_HOME = CYNCO_HOME
+
+    const c8Wave1Board = {
+      id: 'c8', decided: false, decision: 'next', waves: 1, gpuHours: 2, gpuHoursMissing: [],
+      passRatePerGpuHour: null, wavesPerCampaign: null,
+      gateLinesFixedPerLandedWave: { value: 1, landedWaves: 1, fixed: 1, graded: 1, known: 1, unknown: 0, reason: null },
+      humanInterventionsPerWave: { value: 0, notes: 0, humanDecisions: 0, refusals: 0, reseals: 0, adopted: 0, reason: null },
+      perRulePrecision: null, supervisionDollars: 10, supervisionDollarsPerWave: 10,
+      unmeasured: ['passRatePerGpuHour: open — undecided after 1 wave(s)', 'wavesPerCampaign: 1 so far (open)', 'perRulePrecision: no rule-verdicts.json — missing or unreadable'],
+    }
+    const c8Board = {
+      id: 'c8', decided: true, decision: 'pass', waves: 2, gpuHours: 4, gpuHoursMissing: [],
+      passRatePerGpuHour: 0.25, wavesPerCampaign: 2,
+      gateLinesFixedPerLandedWave: { value: 1.5, landedWaves: 2, fixed: 3, graded: 2, known: 2, unknown: 0, reason: null },
+      humanInterventionsPerWave: { value: 0.5, notes: 1, humanDecisions: 0, refusals: 0, reseals: 0, adopted: 0, reason: null },
+      perRulePrecision: { predictive: 1, total: 8, best: { id: 'I3', precision: 0.58, ci: [0.4, 0.7], verdict: 'NO EVIDENCE' } },
+      supervisionDollars: 10, supervisionDollarsPerWave: 5, unmeasured: [],
+    }
+    const c6Board = {
+      id: 'c6', decided: false, decision: 'next', waves: 1, gpuHours: 2, gpuHoursMissing: [],
+      passRatePerGpuHour: null, wavesPerCampaign: null,
+      gateLinesFixedPerLandedWave: { value: null, landedWaves: 0, fixed: 0, graded: 1, known: 1, unknown: 0, reason: 'no wave landed a commit' },
+      humanInterventionsPerWave: { value: 0, notes: 0, humanDecisions: 0, refusals: 0, reseals: 0, adopted: 0, reason: null },
+      perRulePrecision: null, supervisionDollars: 10, supervisionDollarsPerWave: 10,
+      unmeasured: ['passRatePerGpuHour: open — undecided after 1 wave(s)', 'wavesPerCampaign: 1 so far (open)', 'gateLinesFixedPerLandedWave: no wave landed a commit', 'perRulePrecision: no rule-verdicts.json — missing or unreadable'],
+    }
+
+    // c8: two scored waves, then a stop record (stopWave writes no board) —
+    // the board is wave 2's, not blanked by the stop.
+    writeCampaign(CYNCO_HOME, 'c8', { waveCount: 2 }, [
+      { wave: 1, decision: { kind: 'next', why: '1 line(s) still FAIL' }, scoreboard: c8Wave1Board },
+      { wave: 2, decision: { kind: 'pass', why: 'all lines PASS' }, scoreboard: c8Board },
+      { wave: 3, decision: { kind: 'stop', why: 'budget' } },
+    ])
+    writeCampaign(CYNCO_HOME, 'c6', { waveCount: 1 }, [
+      { wave: 1, decision: { kind: 'next', why: '1 line(s) still FAIL' }, scoreboard: c6Board },
+    ])
+    // c7: the board threw — it reaches the row as unmeasured, and the pool
+    // excludes it by name.
+    writeCampaign(CYNCO_HOME, 'c7', { waveCount: 1 }, [
+      { wave: 1, decision: { kind: 'next', why: 'x' }, scoreboard: { error: 'boom' } },
+    ])
+    // c5: waves predate the scoreboard — null, and not in the pool.
+    writeCampaign(CYNCO_HOME, 'c5', { waveCount: 1 }, [
+      { wave: 1, decision: { kind: 'next', why: 'x' } },
+    ])
+
+    const res = await authFetch(`${BASE}/api/campaign`)
+    expect(res.status).toBe(200)
+    const data = await res.json() as any
+    const byId = (id: string) => data.campaigns.find((c: any) => c.id === id)
+
+    expect(byId('c8').scoreboard).toEqual({
+      wave: 2,
+      passRatePerGpuHour: 0.25,
+      wavesPerCampaign: 2,
+      gateLinesFixedPerLandedWave: c8Board.gateLinesFixedPerLandedWave,
+      humanInterventionsPerWave: c8Board.humanInterventionsPerWave,
+      perRulePrecision: c8Board.perRulePrecision,
+      unmeasured: [],
+    })
+    expect(byId('c6').scoreboard.gateLinesFixedPerLandedWave.value).toBeNull()
+    expect(byId('c6').scoreboard.unmeasured).toEqual(c6Board.unmeasured)
+    expect(byId('c7').scoreboard).toEqual({
+      wave: 1, passRatePerGpuHour: null, wavesPerCampaign: null, gateLinesFixedPerLandedWave: null,
+      humanInterventionsPerWave: null, perRulePrecision: null, unmeasured: ['scoreboard: boom'],
+    })
+    expect(byId('c5').scoreboard).toBeNull()
+
+    // The pool is Task 2's own function over the raw boards, not a copy of it.
+    const order = data.campaigns.map((c: any) => c.id)
+    // c7's stored board is a bare { error } — the server names it by its dir.
+    const raw: Record<string, unknown> = { c8: c8Board, c6: c6Board, c7: { id: 'c7', error: 'boom' } }
+    expect(data.pooled).toEqual(pooledScoreboard(order.filter((id: string) => raw[id]).map((id: string) => raw[id])))
+    // And the numbers, spelled out: 1 PASS over 6 GPU-h; 3 lines over 2 landed
+    // waves; 1 human act over 3 spent waves; c7 named in the exclusions.
+    expect(data.pooled.campaigns).toBe(2)
+    expect(data.pooled.decided).toBe(1)
+    expect(data.pooled.waves).toBe(3)
+    expect(data.pooled.passRatePerGpuHour).toBeCloseTo(1 / 6)
+    expect(data.pooled.wavesPerCampaign).toBe(2)
+    expect(data.pooled.gateLinesFixedPerLandedWave.value).toBe(1.5)
+    expect(data.pooled.humanInterventionsPerWave.value).toBeCloseTo(1 / 3)
+    expect(data.pooled.excluded).toEqual(['c7: boom'])
+  })
+
+  it('pooled is null-valued, not missing, when no campaign carries a scoreboard', async () => {
+    CYNCO_HOME = mkdtempSync(join(tmpdir(), 'cynco-campaign-noboard-'))
+    process.env.CYNCO_HOME = CYNCO_HOME
+    writeCampaign(CYNCO_HOME, 'c8', { waveCount: 0 })
+    const res = await authFetch(`${BASE}/api/campaign`)
+    const data = await res.json() as any
+    expect(data.campaigns[0].scoreboard).toBeNull()
+    expect(data.pooled).toEqual(pooledScoreboard([]))
+    expect(data.pooled.passRatePerGpuHour).toBeNull()
   })
 
   it('requires a token like every other read route', async () => {
