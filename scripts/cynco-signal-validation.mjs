@@ -32,6 +32,8 @@
  *   node scripts/cynco-signal-validation.mjs [--json] [--ledger-dir DIR]
  *   bun  scripts/cynco-signal-validation.mjs --denials [--triples PATH] [--json]
  *   bun  scripts/cynco-signal-validation.mjs --gate-lines [--json]
+ *        (the lines table, then the per-campaign GATES table; --json prints
+ *        only the line summary)
  */
 
 import { readFileSync, readdirSync } from 'node:fs'
@@ -326,6 +328,20 @@ export function gateLineTable(summary) {
   return lines
 }
 
+/**
+ * The GATES table: one row per campaign from the gate-outcomes dataset
+ * (scripts/cynco-gate-lines.mjs `gateOutcomeRows`) — how each seal ended,
+ * including the refused ones the line table above cannot see.
+ */
+export function gateOutcomeTable(rows) {
+  const lines = ['campaign  author  outcome    refusals  attempts']
+  for (const r of rows ?? []) {
+    lines.push(`${String(r.campaign).padEnd(8)}  ${String(r.author).padEnd(6)}  ${String(r.outcome).padEnd(9)}  ${String(r.refusals ?? '—').padStart(8)}  ${String(r.attempts ?? '—').padStart(8)}`)
+  }
+  if (!(rows ?? []).length) lines.push('(no campaign has sealed or been refused yet)')
+  return lines
+}
+
 export function printGateLineTable(summary) {
   for (const l of gateLineTable(summary)) console.log(l)
 }
@@ -399,7 +415,15 @@ export function signalsFired(row, quartiles) {
 
 // ── Report ───────────────────────────────────────────────────────
 
-function verdict(r) {
+/**
+ * The S5 verdict for one `analyse` rule row. Exported (Phase 4) because the
+ * table is no longer its only reader: `scripts/cynco-rule-verdicts.mjs` stores
+ * these exact strings in `~/.cynco/datasets/rule-verdicts.json`, and the
+ * engine's per-rule S5 authority (`engine/s5/ruleAuthority.ts`) grants
+ * enforcement only to a rule whose stored string is `'PREDICTIVE'`. One
+ * function, so the table and the authority can never disagree.
+ */
+export function ruleVerdictOf(r) {
   if (r.labeled < 10) return 'TOO FEW — cannot tell'
   if (r.coverage > 0.95) return 'CONSTANT — fires on everything, predicts nothing'
   const p = r.pAdjusted
@@ -425,14 +449,14 @@ export function printRuleTable(res) {
       `[${(lo * 100).toFixed(0).padStart(3)}%,${(hi * 100).toFixed(0).padStart(4)}%] ` +
       `${r.lift === null ? '    —  ' : ((r.lift >= 0 ? '+' : '') + (r.lift * 100).toFixed(1) + 'pp').padStart(7)}` +
       `  ${r.p === null ? '  —  ' : r.p.toFixed(3)}` +
-      `   ${r.pAdjusted === null ? '  —  ' : r.pAdjusted.toFixed(3)}   ${verdict(r)}`,
+      `   ${r.pAdjusted === null ? '  —  ' : r.pAdjusted.toFixed(3)}   ${ruleVerdictOf(r)}`,
     )
   }
   console.log()
   console.log(`${res.rulesTested} rules tested; p(Holm) corrects for that. A rule is only`)
   console.log('called predictive on the corrected value.')
   console.log()
-  const usable = res.rules.filter(r => verdict(r) === 'PREDICTIVE')
+  const usable = res.rules.filter(r => ruleVerdictOf(r) === 'PREDICTIVE')
   console.log(usable.length === 0
     ? 'No rule clears the bar. Enforcement authority stays withheld, and there is\n' +
       'nothing here worth training a decision model to imitate yet.'
@@ -476,11 +500,15 @@ async function main() {
   // only loads under bun. The default report and `--signals` must keep running
   // under plain node, so neither module may be a static import here.
   if (argv.includes('--gate-lines')) {
-    const { exportGateLines } = await import('./cynco-gate-lines.mjs')
+    const { exportGateLines, exportGateOutcomes } = await import('./cynco-gate-lines.mjs')
     const r = exportGateLines()
     if (argv.includes('--json')) { console.log(JSON.stringify(r.summary, null, 2)); return }
     console.log(`GATE LINES — did the sealed line hold? (unit: the graded line; ${r.rows.length} row(s) → ${r.outPath})`)
     printGateLineTable(r.summary)
+    const o = exportGateOutcomes()
+    console.log()
+    console.log(`GATES — how did each seal end? (unit: the campaign; ${o.rows.length} row(s) → ${o.outPath})`)
+    for (const l of gateOutcomeTable(o.rows)) console.log(l)
     return
   }
 

@@ -221,6 +221,12 @@ export function createMissionCollector(now = () => Date.now()) {
             toolRestriction: m.toolRestriction ?? null,
             modelSwitch: m.modelSwitch ?? null,
             enforced: m.enforced ?? null,
+            // Phase 4: 'earned' | 'advisory' | 'legacy' (engine/s5/ruleAuthority.ts);
+            // null on an engine too old to say.
+            authority: m.authority ?? null,
+            // F157: 'stuck-reeval' for the stuck-loop live re-evaluation's
+            // decision; null for the per-message decision (and older engines).
+            source: m.source ?? null,
           })
           break
         case 'control.signals':
@@ -914,7 +920,17 @@ export function buildMissionRecord(collector, meta) {
     // Phase 2b-ii verify-first routing (last frame wins) — see the collector.
     // null when the session could not route or the engine predates the field.
     routing: collector.routing ?? null,
-    ultrastable: collector.ultrastable ?? null,
+    // Last frame wins. `retained` (the session-feedback instance's retained-
+    // configuration table) and `retainedVersion` (its stored version) are
+    // always present on a non-null block: null from an engine that predates
+    // the retained store, so absence never reads as "empty table".
+    ultrastable: collector.ultrastable
+      ? {
+          ...collector.ultrastable,
+          retained: collector.ultrastable.retained ?? null,
+          retainedVersion: collector.ultrastable.retainedVersion ?? null,
+        }
+      : null,
     // Engine-side POSIWID (last status frame) and IdentityGuard verdict (last
     // session_fidelity frame); null from an older engine. Data, not authority.
     posiwidLive: collector.posiwidLive ?? null,

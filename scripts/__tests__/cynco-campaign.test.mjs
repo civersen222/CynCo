@@ -1,21 +1,33 @@
 import { describe, it, expect } from 'vitest'
-import { decide, runWave, waveContext, budgetSpent, defaultIo, claimedSurvivors, dispatchEnv, dirtyOutsideCampaign, inFlightRefusal, adoptInFlight, takeLock, releaseLock, applyProposalDecision, recordReseal, main } from '../cynco-campaign.mjs'
+import { decide, runWave, waveContext, budgetSpent, defaultIo, claimedSurvivors, dispatchEnv, waveEnvBase, dirtyOutsideCampaign, inFlightRefusal, adoptInFlight, takeLock, releaseLock, applyProposalDecision, recordReseal, main } from '../cynco-campaign.mjs'
 import { summarize as summarizeGateLines } from '../cynco-gate-lines.mjs'
 import { adopt } from '../cynco-campaign-adopt.mjs'
 import { CampaignState } from '../cynco-campaign-state.mjs'
 import { promotionProposal } from '../cynco-ideation.mjs'
+import { readSeats, writeSeats } from '../cynco-proposals.mjs'
 import { defaultIo as calibrateIo } from '../cynco-campaign-calibrate.mjs'
-import { mkdtempSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, copyFileSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { spawnSync } from 'node:child_process'
 
 // runWave only ever sha256s spec.gate / spec.perturb (the Rule-11 re-check), so
-// two real files stand in for the sealed instruments here and the shas below are
-// computed exactly the way the runner computes them.
-const GATE = fileURLToPath(new URL('../cynco-campaign-grade.mjs', import.meta.url))
-const PERTURB = fileURLToPath(new URL('../cynco-campaign-spec.mjs', import.meta.url))
-const POSITIVE = fileURLToPath(new URL('../cynco-gate-lint.mjs', import.meta.url))
+// three real files stand in for the sealed instruments here and the shas below
+// are computed exactly the way the runner computes them. Phase 4: the identity
+// assertion at VERDICT refuses an instrument that is not under
+// `.cynco/heldout/`, so the stand-ins are copied into a temp heldout tree
+// rather than read from scripts/ where no sealed gate would ever live.
+const HELDOUT = join(mkdtempSync(join(tmpdir(), 'inst-')), '.cynco', 'heldout', 'c8')
+mkdirSync(HELDOUT, { recursive: true })
+const standIn = (src, name) => { const p = join(HELDOUT, name); copyFileSync(fileURLToPath(new URL(src, import.meta.url)), p); return p }
+const GATE = standIn('../cynco-campaign-grade.mjs', 'gate_c8.py')
+const PERTURB = standIn('../cynco-campaign-spec.mjs', 'perturb_c8.py')
+const POSITIVE = standIn('../cynco-gate-lint.mjs', 'positive_c8.py')
+// The per-wave identity check calls checkIdentity, which asks git whether
+// spec.base is a commit in spec.repo — 'C:/repo' is not a repo, so every io
+// that reaches VERDICT hands over a passing check. The failing case is below.
+const okIdentity = () => ({ ok: true, problems: [] })
 
 const spec = { id: 'c8', title: 't', repo: 'C:/repo', base: '1d03308', marker: 'stage c8 complete', keepGreen: 'python -m pytest a.py -q',
   gate: GATE, perturb: PERTURB,
@@ -70,6 +82,11 @@ const inertTriples = {
   // live campaign dir in. `null` is what a campaign with no evidence yet looks
   // like, so the promotion and the verdict line both stay quiet.
   exportGateLines: () => ({ rows: [], summary: null }),
+  // …and the campaign-level gate-outcomes export beside it (Phase 4).
+  exportGateOutcomes: () => ({ rows: [], outPath: null }),
+  // Phase 4: the rule verdicts are recomputed from the ledger at every VERDICT.
+  // The real reader walks ~160 MB of shards; a unit test hands over none.
+  readLedgerRows: () => [],
 }
 
 /** A gate-lines summary with `held` of `n` CynCo lines and `hHeld` of `hN` human ones. */
@@ -88,9 +105,9 @@ describe('runWave', () => {
       writeBrief: (path, text, sidecar) => { seen.brief = text; seen.sidecar = sidecar; return path },
       dispatch: async ({ briefFile, invariants }) => { seen.invariants = invariants; return { missionId: 'c8-wave1-1', driverLog: 'C:/tmp/d.log' } },
       waitForDriver: async () => ({ exited: true }),
-      readRow: (missionId) => ({ missionId, exitReason: 'timeout', durationS: 100, commitRange: { base: '1d03308', head: 'h' }, outcome: 'landed', toolStats: { total: 10, commits: 1, byClass: { sourceEdit: 2, fileWrite: 0, inspect: 8 }, byName: {} } }),
+      readRow: (missionId) => ({ missionId, exitReason: 'timeout', durationS: 100, commitRange: { base: '1d03308', head: 'h' }, outcome: 'landed', markerSeen: true, toolStats: { total: 10, commits: 1, byClass: { sourceEdit: 2, fileWrite: 0, inspect: 8 }, byName: {} } }),
       commitsBetween: () => [{ sha: 'h', subject: 'C8 commit 1' }],
-      grade: async () => g(),
+      grade: async () => g(), checkIdentity: okIdentity,
       salvageOf: () => null,
       ideate: async () => ({ ideation: null }),
       patchRow: (missionId, fields) => { seen.patched = fields },
@@ -122,9 +139,9 @@ describe('runWave', () => {
       writeBrief: (p) => p,
       dispatch: async () => ({ missionId: 'c8-wave1-1' }),
       waitForDriver: async () => ({ exited: true }),
-      readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', toolStats: {} }),
+      readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', markerSeen: false, toolStats: {} }),
       commitsBetween: () => [],
-      grade: async () => g(),
+      grade: async () => g(), checkIdentity: okIdentity,
       salvageOf: () => null,
       patchRow: () => {},
       commit: (args) => { files = args.files; return { sha: 'v1' } },
@@ -206,10 +223,10 @@ describe('runWave', () => {
     writeBrief: (p) => p,
     dispatch: async () => ({ missionId: 'c8-wave1-1' }),
     waitForDriver: async () => ({ exited: true }),
-    readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', toolStats: {} }),
+    readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', markerSeen: false, toolStats: {} }),
     commitsBetween: () => [],
     firstCommitFiles: () => ['gilded/ui/atlas_view.py'],
-    grade: async () => g(),
+    grade: async () => g(), checkIdentity: okIdentity,
     salvageOf: () => null,
     patchRow: () => {},
     commit: () => ({ sha: 'v1' }),
@@ -257,9 +274,9 @@ describe('runWave', () => {
       writeBrief: (p, text) => { brief = text; return p },
       dispatch: async () => ({ missionId: 'c8-wave2-1' }),
       waitForDriver: async () => ({ exited: true }),
-      readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', toolStats: {} }),
+      readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', markerSeen: false, toolStats: {} }),
       commitsBetween: () => [],
-      grade: async () => g(),
+      grade: async () => g(), checkIdentity: okIdentity,
       salvageOf: () => null,
       patchRow: () => {},
       commit: () => ({ sha: 'v2' }),
@@ -280,9 +297,9 @@ describe('runWave', () => {
       writeBrief: (p) => p,
       dispatch: async () => ({ missionId: 'c8-wave1-1' }),
       waitForDriver: async () => ({ exited: true }),
-      readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', toolStats: {} }),
+      readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', markerSeen: false, toolStats: {} }),
       commitsBetween: () => [{ sha: 'h', subject: 'c' }],
-      grade: async () => g(),
+      grade: async () => g(), checkIdentity: okIdentity,
       salvageOf: () => null,
       patchRow: () => {},
       commit: () => ({ sha: 'v1' }),
@@ -305,7 +322,7 @@ describe('runWave', () => {
       writeBrief: (p) => p,
       dispatch: async () => ({ missionId: 'c8-wave1-1' }),
       waitForDriver: async () => ({ exited: true }),
-      readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', toolStats: {} }),
+      readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', markerSeen: false, toolStats: {} }),
       grade: async () => { throw new Error('gate exploded') },
       salvageOf: () => null,
       notify: async (t) => { seen.notified = t; return true },
@@ -382,9 +399,9 @@ describe('runWave with an adopted row', () => {
       waitForDriver: async () => { throw new Error('waitForDriver must not run for an adopted row') },
       engineLive: async () => false,
       ideate: async () => { seen.ideated++; return { ideation: null } },
-      readRow: (missionId) => ({ missionId, briefFile: 'docs/civkings-redesign-briefs/c8-wave1.txt', exitReason: 'timeout', durationS: 28824, commitRange: { base: '1d03308', head: '1bc0f8c' }, outcome: 'landed', toolStats: {} }),
+      readRow: (missionId) => ({ missionId, briefFile: 'docs/civkings-redesign-briefs/c8-wave1.txt', exitReason: 'timeout', durationS: 28824, commitRange: { base: '1d03308', head: '1bc0f8c' }, outcome: 'landed', markerSeen: false, toolStats: {} }),
       commitsBetween: () => [{ sha: '1bc0f8c', subject: 'C8 wave 1' }],
-      grade: async () => g(),
+      grade: async () => g(), checkIdentity: okIdentity,
       salvageOf: () => null,
       patchRow: (missionId, fields) => { seen.patched = { missionId, fields } },
       commit: (args) => { seen.files = args.files; return { sha: 'v1' } },
@@ -585,9 +602,9 @@ describe('runWave — the instrument must not move under the campaign', () => {
       writeBrief: (p) => p,
       dispatch: async () => ({ missionId: 'c8-wave1-1' }),
       waitForDriver: async () => ({ exited: true }),
-      readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', toolStats: {} }),
+      readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', markerSeen: false, toolStats: {} }),
       commitsBetween: () => [],
-      grade: async () => g(),
+      grade: async () => g(), checkIdentity: okIdentity,
       salvageOf: () => null,
       patchRow: () => {},
       commit: () => ({ sha: 'v1' }),
@@ -607,9 +624,9 @@ describe('runWave — in-flight state', () => {
     writeBrief: (p) => p,
     dispatch: async () => ({ missionId: 'c8-wave1-1' }),
     waitForDriver: async () => ({ exited: true }),
-    readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', toolStats: {} }),
+    readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', markerSeen: false, toolStats: {} }),
     commitsBetween: () => [],
-    grade: async () => g(),
+    grade: async () => g(), checkIdentity: okIdentity,
     salvageOf: () => null,
     patchRow: () => {},
     commit: () => ({ sha: 'v1' }),
@@ -783,7 +800,87 @@ describe('defaultIo.waitForDriver — the ledger line is the authority', () => {
 
 // I6: the worker is an unattended model with a Bash tool. Anything in its env
 // it can read, print, or post.
+// F160 (re-review N-2): a missing Git Bash used to surface as a spent, faulted
+// wave, because dispatch was the first spawn. main() checks first and exits 2.
+describe('main refuses before touching state when no Git Bash resolves', () => {
+  it('returns 2 with the F160 message and never reaches the spec', async () => {
+    const errors = []
+    const orig = console.error
+    console.error = (m) => errors.push(String(m))
+    try {
+      const code = await main(['C:/nowhere/x.campaign.json', '--waves', '1'], { bashExe: () => { throw new Error('F160: no Git Bash found (no git.exe on PATH) — install Git for Windows or put its bin dir on PATH') } })
+      expect(code).toBe(2)
+      expect(errors.join('\n')).toMatch(/\[campaign\] F160: no Git Bash found/)
+    } finally { console.error = orig }
+  })
+
+  // M4 (final review): only the paths that spawn bash refuse. The read-only and
+  // decision verbs run without Git Bash.
+  const noBash = () => { throw new Error('F160: no Git Bash found (no git.exe on PATH) — install Git for Windows or put its bin dir on PATH') }
+  const authorStub = () => {
+    const calls = []
+    return { calls, authorModule: { defaultAuthorIo: (helpers) => ({ helpers }), authorMain: async (argv) => { calls.push(argv); return 0 }, sealGate: async () => ({ ok: false, problems: ['stub'] }) } }
+  }
+  const withErrors = async (fn) => {
+    const errors = []
+    const orig = console.error
+    console.error = (m) => errors.push(String(m))
+    try { return { code: await fn(), errors: errors.join('\n') } } finally { console.error = orig }
+  }
+
+  it('--author still refuses without Git Bash, before the author module runs', async () => {
+    const s = authorStub()
+    const { code, errors } = await withErrors(() => main(['--author', 'c9'], { authorModule: s.authorModule, bashExe: noBash }))
+    expect(code).toBe(2)
+    expect(errors).toMatch(/\[campaign\] F160: no Git Bash found/)
+    expect(s.calls).toEqual([])
+  })
+
+  it('--check runs without Git Bash', async () => {
+    const s = authorStub()
+    const { code, errors } = await withErrors(() => main(['--check', 'C:/staging/c9', 'C:/tmp/c9_author_base'], { authorModule: s.authorModule, bashExe: noBash }))
+    expect(code).toBe(0)
+    expect(errors).not.toMatch(/F160/)
+    expect(s.calls).toHaveLength(1)
+  })
+
+  it('--autopoiesis and --reject-proposal run without Git Bash (their own answers, not F160)', async () => {
+    const home = join(mkdtempSync(join(tmpdir(), 'home-')), '.cynco')
+    const heldout = join(home, 'heldout', 'civkings-redesign', 'c8')
+    mkdirSync(heldout, { recursive: true })
+    for (const n of ['gate_c8.py', 'perturb_c8.py']) writeFileSync(join(heldout, n), '# instrument\n')
+    const specPath = join(mkdtempSync(join(tmpdir(), 'spec-')), 'c8.campaign.json')
+    writeFileSync(specPath, JSON.stringify({ ...spec, repo: '.', gate: join(heldout, 'gate_c8.py'), perturb: join(heldout, 'perturb_c8.py'),
+      suiteBaseline: join(heldout, 'suite-baseline.json'), ideation: { enabled: false } }))
+    const prev = process.env.CYNCO_HOME
+    process.env.CYNCO_HOME = home
+    try {
+      const a = await withErrors(() => main([specPath, '--autopoiesis'], { readLedgerRows: () => [], bashExe: noBash }))
+      expect(a.code).toBe(2)
+      expect(a.errors).toMatch(/--autopoiesis: no campaign state/)
+      expect(a.errors).not.toMatch(/F160/)
+      const r = await withErrors(() => main(['--reject-proposal', 'gate/c9'], { authorModule: authorStub().authorModule, bashExe: noBash,
+        roadmapPath: join(mkdtempSync(join(tmpdir(), 'roadmap-')), 'roadmap.json') }))
+      expect(r.errors).not.toMatch(/F160/)
+      expect(r.code).toBe(2)
+      expect(r.errors).toMatch(/no pending proposal gate\/c9/)
+    } finally {
+      if (prev === undefined) delete process.env.CYNCO_HOME; else process.env.CYNCO_HOME = prev
+    }
+  })
+})
+
 describe('dispatchEnv', () => {
+  // F161: the spec's env (the engine's explicit llama-server / GGUF paths for a
+  // temp home) is laid over the runner's own env BEFORE the stripping, so a
+  // spec cannot smuggle a channel the runner strips from itself.
+  it('waveEnvBase lays spec.env over the base env, and dispatchEnv still strips it', () => {
+    const spec = { env: { LOCALCODE_LLAMA_SERVER: 'C:/x/llama-server.exe', LOCALCODE_MODEL_PATH: 'C:/x/m.gguf' } }
+    expect(waveEnvBase(spec, { PATH: '/usr/bin', LOCALCODE_MODEL_PATH: 'stale' })).toEqual({ PATH: '/usr/bin', LOCALCODE_LLAMA_SERVER: 'C:/x/llama-server.exe', LOCALCODE_MODEL_PATH: 'C:/x/m.gguf' })
+    expect(waveEnvBase({}, { PATH: '/usr/bin' })).toEqual({ PATH: '/usr/bin' })
+    expect(dispatchEnv(waveEnvBase({ env: { CYNCO_NTFY_URL: 'http://n' } }, { PATH: '/usr/bin' }), {})).toEqual({ PATH: '/usr/bin' })
+  })
+
   it('strips the ntfy credentials and the GitHub tokens, keeps everything else', () => {
     const env = dispatchEnv({ PATH: '/usr/bin', CYNCO_NTFY_URL: 'http://n', CYNCO_NTFY_TOKEN: 'tk', CYNCO_NTFY_ALERT_TOPIC: 'cynco-alerts', GH_TOKEN: 'gh', GITHUB_TOKEN: 'gh2', CYNCO_GATE_REPO: 'C:/repo' }, { DRIVER_LOG: 'C:/tmp/d.log' })
     expect(env).toEqual({ PATH: '/usr/bin', CYNCO_GATE_REPO: 'C:/repo', DRIVER_LOG: 'C:/tmp/d.log' })
@@ -840,15 +937,16 @@ describe('runWave — the Level 4 spine at VERDICT', () => {
     writeBrief: (p) => p,
     dispatch: async () => ({ missionId: 'c8-wave1-1' }),
     waitForDriver: async () => ({ exited: true }),
-    readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', toolStats: {} }),
+    readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', markerSeen: false, toolStats: {} }),
     commitsBetween: () => [],
-    grade: async () => g(),
+    grade: async () => g(), checkIdentity: okIdentity,
     salvageOf: () => null,
     patchRow: () => {},
     commit: () => ({ sha: 'v1' }),
     notify: async () => true,
     economics: () => [],
     appendLog: () => {},
+    readLedgerRows: () => [],
     ...over,
   })
 
@@ -931,15 +1029,16 @@ describe('runWave — the denial analysis reads THIS campaign, and says so', () 
     writeBrief: (p) => p,
     dispatch: async () => ({ missionId: 'c8-wave1-1' }),
     waitForDriver: async () => ({ exited: true }),
-    readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', toolStats: {} }),
+    readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', markerSeen: false, toolStats: {} }),
     commitsBetween: () => [],
-    grade: async () => g(),
+    grade: async () => g(), checkIdentity: okIdentity,
     salvageOf: () => null,
     patchRow: () => {},
     commit: () => ({ sha: 'v1' }),
     notify: async () => true,
     economics: () => [],
     appendLog: () => {},
+    readLedgerRows: () => [],
     ...over,
   })
   // The pooled block reads EFFECTIVE; c8's own block reads INERT. Only a runner
@@ -986,18 +1085,19 @@ describe('runWave — the wave is on the record before the verdict reads the rec
     writeBrief: (p) => p,
     dispatch: async () => ({ missionId: 'c8-wave1-1' }),
     waitForDriver: async () => ({ exited: true }),
-    readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', toolStats: {} }),
+    readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', markerSeen: false, toolStats: {} }),
     commitsBetween: () => [],
     firstCommitFiles: () => ['gilded/ui/atlas_view.py'],
     engineLive: async () => false,
     ideate: async () => ({ ideation: { hypotheses: [{ gateId: 'C8.1a', cause: 'c', firstEdit: 'gilded/ui/atlas_view.py' }], order: ['C8.1a'], trap: null }, taskPath: 't.json', durationMs: 5 }),
-    grade: async () => g(),
+    grade: async () => g(), checkIdentity: okIdentity,
     salvageOf: () => null,
     patchRow: () => {},
     commit: () => ({ sha: 'v1' }),
     notify: async () => true,
     economics: () => [],
     appendLog: () => {},
+    readLedgerRows: () => [],
     exportTriples: () => emptySummary,
     ...over,
   })
@@ -1106,9 +1206,9 @@ describe('the wave record names who wrote the gate', () => {
     writeBrief: (p) => p,
     dispatch: async () => ({ missionId: 'c8-wave1-1' }),
     waitForDriver: async () => ({ exited: true }),
-    readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', toolStats: {} }),
+    readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', markerSeen: false, toolStats: {} }),
     commitsBetween: () => [],
-    grade: async () => g(),
+    grade: async () => g(), checkIdentity: okIdentity,
     salvageOf: () => null,
     patchRow: () => {},
     commit: () => ({ sha: 'v1' }),
@@ -1138,9 +1238,9 @@ describe('the gate-author promotion at VERDICT', () => {
     writeBrief: (p) => p,
     dispatch: async () => ({ missionId: 'c8-wave1-1' }),
     waitForDriver: async () => ({ exited: true }),
-    readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', toolStats: {} }),
+    readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', markerSeen: false, toolStats: {} }),
     commitsBetween: () => [],
-    grade: async () => g(),
+    grade: async () => g(), checkIdentity: okIdentity,
     salvageOf: () => null,
     patchRow: () => {},
     commit: () => ({ sha: 'v1' }),
@@ -1194,6 +1294,24 @@ describe('the gate-author promotion at VERDICT', () => {
     const rec = await runWave(spec, state, io({ exportGateLines: () => { throw new Error('datasets dir is read-only') } }))
     expect(rec.decision.kind).toBe('next')
     expect(state.state.proposals).toEqual([])
+  })
+
+  // Phase 4 residual: the campaign-level outcome dataset is regenerated at the
+  // same VERDICT, right after the line dataset, with the same never-a-fault rule.
+  it('exports the gate outcomes at every VERDICT, after the gate lines', async () => {
+    const calls = []
+    const rec = await runWave(spec, freshState(), io({
+      exportGateLines: () => { calls.push('lines'); return { rows: [], summary: null } },
+      exportGateOutcomes: () => { calls.push('outcomes'); return { rows: [], outPath: 'x' } },
+    }))
+    expect(calls).toEqual(['lines', 'outcomes'])
+    expect(rec.decision.kind).toBe('next')
+  })
+
+  it('an outcomes exporter that throws costs the wave nothing', async () => {
+    const state = freshState()
+    const rec = await runWave(spec, state, io({ exportGateOutcomes: () => { throw new Error('datasets dir is read-only') } }))
+    expect(rec.decision.kind).toBe('next')
   })
 
   it('prints the gate-lines reading in the verdict entry', async () => {
@@ -1422,5 +1540,374 @@ describe('main routes the authoring verbs before it loads a campaign spec', () =
     } finally {
       if (prev === undefined) delete process.env.CYNCO_HOME; else process.env.CYNCO_HOME = prev
     }
+  })
+})
+
+// ── Phase 4: identity is asserted at every verdict and before every approval ──
+
+describe('the identity assertion at VERDICT', () => {
+  const io = (over = {}) => ({
+    writeBrief: (p) => p,
+    dispatch: async () => ({ missionId: 'c8-wave1-1' }),
+    waitForDriver: async () => ({ exited: true }),
+    readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', markerSeen: true, toolStats: {} }),
+    commitsBetween: () => [],
+    grade: async () => g(),
+    checkIdentity: okIdentity,
+    salvageOf: () => null,
+    patchRow: () => {},
+    commit: () => ({ sha: 'v1' }),
+    notify: async () => true,
+    economics: () => [],
+    appendLog: () => {},
+    ...inertTriples,
+    // Evidence that clears the gate-author bar, so a proposal WOULD be raised
+    // on an intact wave — the violated case must be seen to suppress it.
+    exportGateLines: () => ({ rows: [], summary: gateLineSummary(30, 30, 17, 17) }),
+    ...over,
+  })
+
+  it('records the identity reading on the wave record and marks the Rule 11 re-check for this wave', async () => {
+    const state = freshState()
+    let entry = null
+    const rec = await runWave(spec, state, io({ appendLog: (t) => { entry = t } }))
+    expect(state.state.rule11CheckedWave).toBe(1)
+    expect(rec.identity).toMatchObject({ intact: true, violated: [] })
+    expect(Object.keys(rec.identity.evidence)).toEqual(['gate-sealed', 'rule-11', 'revert-refused', 'marker-recorded'])
+    expect(state.waves().at(-1).identity.intact).toBe(true)
+    expect(entry).toMatch(/^- Identity: intact$/m)
+    expect(rec.decision.kind).toBe('next')
+    expect(state.state.proposals.map(p => p.name)).toEqual(['gate-author/gate'])
+  })
+
+  it('a violated identity faults the wave, names what broke, and raises no proposal', async () => {
+    const state = freshState()
+    let entry = null, notified = []
+    const rec = await runWave(spec, state, io({
+      checkIdentity: () => ({ ok: false, problems: ['gate does not exist'] }),
+      appendLog: (t) => { entry = t },
+      notify: async (m) => { notified.push(m); return true },
+    }))
+    expect(rec.decision).toEqual({ kind: 'fault', why: 'identity violated: gate-sealed' })
+    expect(rec.identity).toMatchObject({ intact: false, violated: ['gate-sealed'] })
+    expect(state.state.proposals).toEqual([])
+    expect(notified.some(m => /PROPOSAL/.test(m))).toBe(false)
+    expect(notified.some(m => /FAULT — identity violated: gate-sealed/.test(m))).toBe(true)
+    expect(entry).toMatch(/^- Identity: VIOLATED gate-sealed$/m)
+    expect(entry).toMatch(/^Verdict: \*\*STOP \(fault\)\*\* — identity violated: gate-sealed/m)
+    // The record on disk carries the fault, not the decision made before the check.
+    expect(state.waves().at(-1).decision.kind).toBe('fault')
+    expect(state.state.waveCount).toBe(1)
+  })
+
+  it('a ledger row that does not record markerSeen violates marker-recorded', async () => {
+    const state = freshState()
+    const rec = await runWave(spec, state, io({ readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', toolStats: {} }) }))
+    expect(rec.decision).toEqual({ kind: 'fault', why: 'identity violated: marker-recorded' })
+  })
+
+  // Review fix 5: the promotions read the seat's EFFECTIVE authority. A fresh
+  // campaign (state value 0) whose seat already holds 0.5 in the retained
+  // store must not re-propose the promotion the seat earned elsewhere.
+  it('a fresh campaign whose seat is at 0.5 in the store raises no gate-author promotion', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'seats-'))
+    writeSeats(home, readSeats(home), { seat: 'gate-author', authority: 0.5, decidedAt: 't', campaign: 'c8' })
+    const state = freshState()
+    expect(state.state.gateAuthorAuthority).toBe(0)
+    const rec = await runWave(spec, state, io({ seatsHome: () => home }))
+    expect(rec.decision.kind).toBe('next')
+    expect(state.state.proposals).toEqual([])
+    // Control: the same wave with an empty store does raise it.
+    const control = freshState()
+    await runWave(spec, control, io({ seatsHome: () => mkdtempSync(join(tmpdir(), 'seats-empty-')) }))
+    expect(control.state.proposals.map(p => p.name)).toEqual(['gate-author/gate'])
+  })
+
+  it('a fresh campaign whose ideation seat is at 0.5 in the store raises no ideation promotion', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'seats-'))
+    writeSeats(home, readSeats(home), { seat: 'ideation', authority: 0.5, decidedAt: 't', campaign: 'c8' })
+    const state = freshState()
+    for (let i = 0; i < 8; i++) state.appendWave({ wave: i + 1, s4: { ideation: {}, followed: true }, outcome: { landed: true } })
+    for (let i = 0; i < 4; i++) state.appendWave({ wave: 8 + i + 1, s4: { ideation: {}, followed: false }, outcome: { landed: false } })
+    expect(promotionProposal(state.waves(), 0)).not.toBeNull()
+    await runWave(spec, state, io({ seatsHome: () => home, exportGateLines: () => ({ rows: [], summary: null }) }))
+    expect(state.state.proposals.filter(p => p.name === 'ideation/brief')).toEqual([])
+  })
+
+  it('a spec that turns the revert ban off faults the wave', async () => {
+    const state = freshState()
+    const rec = await runWave({ ...spec, invariants: { ...spec.invariants, revertBan: false } }, state, io())
+    expect(rec.identity.violated).toEqual(['revert-refused'])
+    expect(rec.decision.kind).toBe('fault')
+  })
+})
+
+describe('main asserts identity before it applies an operator decision', () => {
+  const BASE_SHA = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim()
+  const setup = ({ calibrated = true } = {}) => {
+    const home = join(mkdtempSync(join(tmpdir(), 'home-')), '.cynco')
+    const heldout = join(home, 'heldout', 'civkings-redesign', 'c8')
+    mkdirSync(heldout, { recursive: true })
+    for (const n of ['gate_c8.py', 'perturb_c8.py']) writeFileSync(join(heldout, n), '# instrument\n')
+    const specPath = join(mkdtempSync(join(tmpdir(), 'spec-')), 'c8.campaign.json')
+    writeFileSync(specPath, JSON.stringify({ ...spec, repo: '.', base: BASE_SHA, gate: join(heldout, 'gate_c8.py'), perturb: join(heldout, 'perturb_c8.py'),
+      suiteBaseline: join(heldout, 'suite-baseline.json'), ideation: { enabled: false } }))
+    const state = new CampaignState(join(home, 'campaigns', 'c8')).load()
+    if (calibrated) state.state.calibration = { gateSha256: 'g', perturbSha256: 'p', baseFails: [], basePasses: [] }
+    state.state.proposals = [{ type: 'Parameter', name: 'ideation/brief', proposedAt: 't1', status: 'pending', newValue: 0.5, bounds: { min: 0, max: 0.5 } }]
+    state.save()
+    return { home, specPath, stateDir: state.dir }
+  }
+  const withHome = async (home, fn) => {
+    const prev = process.env.CYNCO_HOME
+    process.env.CYNCO_HOME = home
+    try { return await fn() } finally { if (prev === undefined) delete process.env.CYNCO_HOME; else process.env.CYNCO_HOME = prev }
+  }
+
+  it('--approve-proposal ideation/brief approves and writes the seat into the retained store', async () => {
+    const { home, specPath, stateDir } = setup()
+    expect(await withHome(home, () => main([specPath, '--approve-proposal', 'ideation/brief']))).toBe(0)
+    const disk = JSON.parse(readFileSync(join(stateDir, 'state.json'), 'utf8'))
+    expect(disk.proposals[0].status).toBe('approved')
+    expect(disk.ideationAuthority).toBe(0.5)
+    const seats = JSON.parse(readFileSync(join(home, 'retained', 'seats.json'), 'utf8'))
+    expect(seats).toMatchObject({ schema: 1, version: 1, seats: { ideation: { authority: 0.5, campaign: 'c8' } } })
+  })
+
+  it('an uncalibrated campaign (rule-11 not intact) cannot approve; the proposal stays pending', async () => {
+    const { home, specPath, stateDir } = setup({ calibrated: false })
+    expect(await withHome(home, () => main([specPath, '--approve-proposal', 'ideation/brief']))).toBe(2)
+    const disk = JSON.parse(readFileSync(join(stateDir, 'state.json'), 'utf8'))
+    expect(disk.proposals[0].status).toBe('pending')
+    expect(existsSync(join(home, 'retained', 'seats.json'))).toBe(false)
+  })
+})
+
+// ── Phase 4: the rule verdicts the engine's S5 authority is read from ────────
+
+describe('the rule verdicts at VERDICT', () => {
+  const sweep = { kind: 'withheld', killed: 1, total: 1, survived: [] }
+  const ledger = () => [
+    ...Array.from({ length: 12 }, () => ({ outcome: 'failed', verified: false, mutationSweep: sweep, s5Decisions: [{ ruleIds: ['X', 'Y'] }] })),
+    ...Array.from({ length: 12 }, () => ({ outcome: 'landed', verified: true, mutationSweep: sweep, s5Decisions: [{ ruleIds: ['Y'] }] })),
+  ]
+  const io = (over = {}) => ({
+    writeBrief: (p) => p,
+    dispatch: async () => ({ missionId: 'c8-wave1-1' }),
+    waitForDriver: async () => ({ exited: true }),
+    readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', markerSeen: true, toolStats: {} }),
+    commitsBetween: () => [],
+    grade: async () => g(), checkIdentity: okIdentity,
+    salvageOf: () => null,
+    patchRow: () => {},
+    commit: () => ({ sha: 'v1' }),
+    notify: async () => true,
+    economics: () => [],
+    appendLog: () => {},
+    ...inertTriples,
+    ...over,
+  })
+
+  it('writes <home>/datasets/rule-verdicts.json from the ledger and records the reading on the wave', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'rv-home-'))
+    const state = freshState()
+    const rec = await runWave(spec, state, io({ readLedgerRows: ledger, datasetsHome: () => home }))
+    expect(rec.ruleVerdicts).toEqual({ version: 1, predictive: ['X'], total: 2 })
+    const f = JSON.parse(readFileSync(join(home, 'datasets', 'rule-verdicts.json'), 'utf8'))
+    expect(f).toMatchObject({ schema: 1, version: 1, campaign: 'c8', predictive: ['X'] })
+    expect(f.rules.X.verdict).toBe('PREDICTIVE')
+    // The persisted record carries it too, not only the returned one.
+    expect(state.waves().at(-1).ruleVerdicts).toEqual({ version: 1, predictive: ['X'], total: 2 })
+  })
+
+  it('reuses the rows the triples export already read instead of reading the ledger twice', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'rv-home-'))
+    const rec = await runWave(spec, freshState(), io({
+      exportTriples: () => ({ summary: { denials: {}, quiet: {}, campaigns: {} }, rows: ledger() }),
+      readLedgerRows: () => { throw new Error('the ledger must not be read a second time') },
+      datasetsHome: () => home,
+    }))
+    expect(rec.ruleVerdicts).toEqual({ version: 1, predictive: ['X'], total: 2 })
+  })
+
+  it('a verdict file that will not write costs the wave nothing', async () => {
+    const rec = await runWave(spec, freshState(), io({ datasetsHome: () => { throw new Error('datasets dir is read-only') } }))
+    expect(rec.decision.kind).toBe('next')
+    expect(rec.ruleVerdicts).toBeNull()
+  })
+
+  it('the default io reads the datasets home from cyncoHome and the rows from the ledger shards', () => {
+    expect(typeof defaultIo.readLedgerRows).toBe('function')
+    expect(defaultIo.datasetsHome()).toBe(process.env.CYNCO_HOME)
+  })
+})
+
+// ── Phase 4 ruling 4: the campaign autopoiesis checklist at VERDICT ─────────
+
+describe('the autopoiesis checklist at VERDICT', () => {
+  const io = (over = {}) => ({
+    writeBrief: (p) => p,
+    dispatch: async () => ({ missionId: 'c8-wave1-1' }),
+    waitForDriver: async () => ({ exited: true }),
+    readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', markerSeen: true, identityGuard: { passed: true }, toolStats: {} }),
+    commitsBetween: () => [{ sha: 'h', subject: 'C8 commit 1' }],
+    grade: async () => g(), checkIdentity: okIdentity,
+    salvageOf: () => null,
+    patchRow: () => {},
+    commit: () => ({ sha: 'v1' }),
+    notify: async () => true,
+    economics: () => [],
+    appendLog: () => {},
+    ...inertTriples,
+    ...over,
+  })
+
+  it('records rec.autopoiesis on the wave record and prints the line in the verdict entry', async () => {
+    const state = freshState()
+    let entry = null
+    const rec = await runWave(spec, state, io({ appendLog: (t) => { entry = t } }))
+    // c8 is human-authored and has no approved proposal: gate is unproduced.
+    expect(rec.autopoiesis).toMatchObject({
+      criteria: { hasBoundary: true, boundarySelfProduced: false, internalProduction: true, organizationMaintained: true },
+      isAutopoietic: false,
+    })
+    expect(rec.autopoiesis.missing).toContain('boundarySelfProduced')
+    expect(rec.autopoiesis.missing).toContain('organizationallyClosed')
+    expect(rec.autopoiesis.network.unproduced).toContain('gate')
+    expect(rec.autopoiesis.facts).toMatchObject({ gateAuthor: 'human', waves: 1, rows: 1, commitsLanded: 1 })
+    expect(state.waves().at(-1).autopoiesis).toEqual(rec.autopoiesis)
+    const met = 6 - rec.autopoiesis.missing.length
+    expect(entry).toMatch(new RegExp(`^- Autopoiesis: ${met}/6 — missing ${rec.autopoiesis.missing.join(', ')}$`, 'm'))
+  })
+
+  it('reads the prior waves\' identity and the campaign\'s rows off the ledger the triples export read', async () => {
+    const state = freshState()
+    state.appendWave({ wave: 0, missionId: 'c8-old', gradedAt: 't0', identity: { intact: true } })
+    const rec = await runWave(spec, state, io({
+      exportTriples: () => ({ summary: { denials: {}, quiet: {}, campaigns: {} }, rows: [{ missionId: 'c8-old', identityGuard: { passed: false } }, { missionId: 'other' }] }),
+    }))
+    expect(rec.autopoiesis.facts.identityHistory).toEqual({ waves: 1, intact: 1, rows: 2, passed: 1 })
+    expect(rec.autopoiesis.criteria.organizationMaintained).toBe(false)
+  })
+
+  it('a violated identity reads hasBoundary false', async () => {
+    const rec = await runWave(spec, freshState(), io({ checkIdentity: () => ({ ok: false, problems: ['gate does not exist'] }) }))
+    expect(rec.decision.kind).toBe('fault')
+    expect(rec.autopoiesis.criteria.hasBoundary).toBe(false)
+    expect(rec.autopoiesis.criteria.organizationMaintained).toBe(false)
+  })
+
+  it('an approved proposal on state and the retained seat store feed the network', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'seats-'))
+    writeSeats(home, readSeats(home), { seat: 'gate-author', authority: 0.5, decidedAt: 't', campaign: 'c7' })
+    const state = freshState()
+    state.state.proposals = [{ name: 'invariants/editGapCap', status: 'approved', decidedAt: 't' }]
+    const rec = await runWave(spec, state, io({ seatsHome: () => home }))
+    expect(rec.autopoiesis.facts).toMatchObject({ proposalRaised: true, proposalApproved: true, seatAuthority: 0.5 })
+    expect(rec.autopoiesis.network.productions).toContainEqual(['configuration', 'seat'])
+  })
+
+  it('records whether this wave\'s brief carried the campaign-to-date PACING digest', async () => {
+    const state = freshState()
+    state.state.lastRow = { missionId: 'c8-w0', exitReason: 'marker', durationS: 1, toolStats: {}, invariants: { denialCount: 2, nextCallClassByInvariant: { 'edit-gap': { sourceEdit: 2 } } } }
+    state.state.denialAnalysis = { invariants: [{ invariant: 'edit-gap', complied: 2, denials: 2 }] }
+    let brief = null
+    const rec = await runWave(spec, state, io({ writeBrief: (p, text) => { brief = text; return p } }))
+    expect(brief).toMatch(/; campaign to date edit-gap 2\/2/)
+    // The runner records the generator's own predicate; the checklist reads the flag.
+    expect(rec.s4.pacingFromDenials).toBe(true)
+    expect(state.waves().at(-1).s4.pacingFromDenials).toBe(true)
+    expect(rec.autopoiesis.facts.pacingDigest).toBe(true)
+    expect(rec.autopoiesis.criteria.circularProduction).toBe(true)
+    // Control: no prior denials, no digest.
+    const control = await runWave(spec, freshState(), io())
+    expect(control.s4.pacingFromDenials).toBe(false)
+    expect(control.autopoiesis.facts.pacingDigest).toBe(false)
+  })
+
+  it('an assessment that throws is recorded as assessError and costs the wave nothing', async () => {
+    let entry = null
+    const rec = await runWave(spec, freshState(), io({ assessAutopoiesis: () => { throw new Error('boom') }, appendLog: (t) => { entry = t } }))
+    expect(rec.decision.kind).toBe('next')
+    expect(rec.autopoiesis).toEqual({ assessError: 'boom' })
+    expect(entry).toMatch(/^- Autopoiesis: UNASSESSED — boom$/m)
+  })
+})
+
+describe('main --autopoiesis', () => {
+  const BASE_SHA = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim()
+  const withHome = async (home, fn) => {
+    const prev = process.env.CYNCO_HOME
+    process.env.CYNCO_HOME = home
+    try { return await fn() } finally { if (prev === undefined) delete process.env.CYNCO_HOME; else process.env.CYNCO_HOME = prev }
+  }
+  const capture = async (fn) => {
+    const out = []
+    const orig = console.log
+    console.log = (...a) => { out.push(a.join(' ')) }
+    try { return { code: await fn(), out: out.join('\n') } } finally { console.log = orig }
+  }
+
+  it('prints the assessment over an existing campaign, dispatches nothing, writes nothing, exits 0', async () => {
+    const home = join(mkdtempSync(join(tmpdir(), 'home-')), '.cynco')
+    const heldout = join(home, 'heldout', 'civkings-redesign', 'c8')
+    mkdirSync(heldout, { recursive: true })
+    for (const n of ['gate_c8.py', 'perturb_c8.py']) writeFileSync(join(heldout, n), '# instrument\n')
+    const specPath = join(mkdtempSync(join(tmpdir(), 'spec-')), 'c8.campaign.json')
+    writeFileSync(specPath, JSON.stringify({ ...spec, repo: '.', base: BASE_SHA, gate: join(heldout, 'gate_c8.py'), perturb: join(heldout, 'perturb_c8.py'),
+      suiteBaseline: join(heldout, 'suite-baseline.json'), ideation: { enabled: false } }))
+    const state = new CampaignState(join(home, 'campaigns', 'c8')).load()
+    state.state.waveCount = 1; state.state.lastCommits = [{ sha: 'h', subject: 's' }]
+    state.save()
+    state.appendWave({ wave: 1, missionId: 'c8-wave1-1', gradedAt: 't1', identity: { intact: true, violated: [] }, s4: {} })
+    const before = readFileSync(join(state.dir, 'state.json'), 'utf8')
+    const dispatch = () => { throw new Error('--autopoiesis must not dispatch') }
+    const { code, out } = await withHome(home, () => capture(() => main([specPath, '--autopoiesis'], {
+      readLedgerRows: () => [{ missionId: 'c8-wave1-1', identityGuard: { passed: true } }], dispatch })))
+    expect(code).toBe(0)
+    const json = JSON.parse(out.slice(out.indexOf('{'), out.lastIndexOf('}') + 1))
+    expect(json).toMatchObject({ isAutopoietic: false, criteria: { hasBoundary: true, boundarySelfProduced: false, internalProduction: true, organizationMaintained: true } })
+    expect(json.network.unproduced).toContain('gate')
+    expect(out).toMatch(/^- Autopoiesis: \d\/6 — missing boundarySelfProduced/m)
+    expect(readFileSync(join(state.dir, 'state.json'), 'utf8')).toBe(before)
+    expect(state.waves()).toHaveLength(1)
+    expect(existsSync(join(state.dir, 'runner.lock'))).toBe(false)
+  })
+
+  it('the verb and the runner agree — configuration → seat from the retained store included', async () => {
+    const home = join(mkdtempSync(join(tmpdir(), 'home-')), '.cynco')
+    writeSeats(home, readSeats(home), { seat: 'gate-author', authority: 0.5, decidedAt: 't', campaign: 'c7' })
+    const state = new CampaignState(join(home, 'campaigns', 'c8')).load()
+    state.state.calibration = { gateSha256: calibrateIo.sha256(GATE), perturbSha256: calibrateIo.sha256(PERTURB), baseFails: [{ id: 'C8.1a', line: 'C8.1a: FAIL x' }], basePasses: [] }
+    state.state.lastBase = '1d03308'; state.state.lastFails = ['C8.1a']
+    const row = (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', markerSeen: true, identityGuard: { passed: true }, toolStats: {} })
+    const rec = await runWave(spec, state, {
+      writeBrief: (p) => p, dispatch: async () => ({ missionId: 'c8-wave1-1' }), waitForDriver: async () => ({ exited: true }),
+      readRow: row, commitsBetween: () => [{ sha: 'h', subject: 'C8 commit 1' }], grade: async () => g(), checkIdentity: okIdentity,
+      salvageOf: () => null, patchRow: () => {}, commit: () => ({ sha: 'v1' }), notify: async () => true, economics: () => [], appendLog: () => {},
+      ...inertTriples, seatsHome: () => home,
+    })
+    expect(rec.autopoiesis.network.productions).toContainEqual(['configuration', 'seat'])
+    const specPath = join(mkdtempSync(join(tmpdir(), 'spec-')), 'c8.campaign.json')
+    writeFileSync(specPath, JSON.stringify({ ...spec, repo: '.', base: BASE_SHA, suiteBaseline: join(HELDOUT, 'suite-baseline.json') }))
+    const { code, out } = await withHome(home, () => capture(() => main([specPath, '--autopoiesis'], { readLedgerRows: () => [row('c8-wave1-1')] })))
+    expect(code).toBe(0)
+    const json = JSON.parse(out.slice(out.indexOf('{'), out.lastIndexOf('}') + 1))
+    expect(json.facts.seatAuthority).toBe(0.5)
+    expect(json.network).toEqual(rec.autopoiesis.network)
+    expect(json.criteria).toEqual(rec.autopoiesis.criteria)
+  })
+
+  it('refuses a campaign that has no state, and creates nothing', async () => {
+    const home = join(mkdtempSync(join(tmpdir(), 'home-')), '.cynco')
+    const heldout = join(home, 'heldout', 'civkings-redesign', 'c8')
+    mkdirSync(heldout, { recursive: true })
+    for (const n of ['gate_c8.py', 'perturb_c8.py']) writeFileSync(join(heldout, n), '# instrument\n')
+    const specPath = join(mkdtempSync(join(tmpdir(), 'spec-')), 'c8.campaign.json')
+    writeFileSync(specPath, JSON.stringify({ ...spec, repo: '.', base: BASE_SHA, gate: join(heldout, 'gate_c8.py'), perturb: join(heldout, 'perturb_c8.py'),
+      suiteBaseline: join(heldout, 'suite-baseline.json'), ideation: { enabled: false } }))
+    const code = await withHome(home, () => main([specPath, '--autopoiesis'], { readLedgerRows: () => [] }))
+    expect(code).toBe(2)
+    expect(existsSync(join(home, 'campaigns'))).toBe(false)
   })
 })

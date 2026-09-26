@@ -1,12 +1,14 @@
 import { describe, it, expect } from 'vitest'
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   fisherExact, wilson, labelOf, rulesFired, readLedger, analyse,
   analyseDenials, invariantsFired, denialVerdict, DENIAL_MIN,
   signalQuartiles, signalsFired,
-  gateLineVerdict, gateLineTable, printGateLineTable, GATE_AUTHOR_MIN_LINES, GATE_AUTHOR_HELD_FLOOR,
+  gateLineVerdict, gateLineTable, printGateLineTable, gateOutcomeTable, GATE_AUTHOR_MIN_LINES, GATE_AUTHOR_HELD_FLOOR,
 } from '../cynco-signal-validation.mjs'
 
 // A tool whose output decides whether a governance rule gets enforcement
@@ -445,5 +447,44 @@ describe('gateLineTable', () => {
     console.log = (l) => out.push(l)
     try { printGateLineTable(summary) } finally { console.log = log }
     expect(out).toEqual(gateLineTable(summary))
+  })
+})
+
+// Phase 4 residual: one row per campaign, so a refused gate — which has no
+// graded lines — is visible beside the lines table.
+describe('gateOutcomeTable (GATES)', () => {
+  it('prints the pinned header and one aligned row per campaign', () => {
+    const lines = gateOutcomeTable([
+      { campaign: 'c9', author: 'cynco', outcome: 'refused', refusals: 1, attempts: 5, sealedAt: null },
+      { campaign: 'c8', author: 'human', outcome: 'held', refusals: 0, attempts: null, sealedAt: 'S' },
+      { campaign: 'c7', author: 'human', outcome: 'resealed', refusals: null, attempts: null, sealedAt: null },
+    ])
+    expect(lines[0]).toBe('campaign  author  outcome    refusals  attempts')
+    expect(lines[1]).toBe('c9        cynco   refused           1         5')
+    expect(lines[2]).toBe('c8        human   held              0         —')
+    // M8: an unmeasured refusal count prints as unmeasured, not as 0.
+    expect(lines[3]).toBe('c7        human   resealed          —         —')
+  })
+
+  it('says so when there is nothing to show', () => {
+    expect(gateOutcomeTable([])).toEqual(['campaign  author  outcome    refusals  attempts', '(no campaign has sealed or been refused yet)'])
+  })
+
+  // The CLI end to end, under a temp CYNCO_HOME: the GATES block follows the
+  // lines table, and its header line is the pinned one.
+  it('--gate-lines prints the GATES table after the lines table', () => {
+    const home = mkdtempSync(join(tmpdir(), 'sv-gates-'))
+    try {
+      mkdirSync(join(home, 'campaigns', 'c9'), { recursive: true })
+      writeFileSync(join(home, 'campaigns', 'c9', 'state.json'), JSON.stringify({ id: 'c9', authoring: { c9: { attempts: 5, refusals: [{ at: 't', by: 'supervisor', notePath: 'n' }] } } }))
+      const script = fileURLToPath(new URL('../cynco-signal-validation.mjs', import.meta.url))
+      const r = spawnSync('bun', [script, '--gate-lines'], { encoding: 'utf8', env: { ...process.env, CYNCO_HOME: home }, cwd: fileURLToPath(new URL('../..', import.meta.url)), timeout: 60_000 })
+      expect(r.status).toBe(0)
+      const out = r.stdout.split(/\r?\n/)
+      const gates = out.findIndex(l => l.startsWith('GATES — how did each seal end?'))
+      expect(gates).toBeGreaterThan(out.findIndex(l => l.startsWith('GATE LINES —')))
+      expect(out[gates + 1]).toBe('campaign  author  outcome    refusals  attempts')
+      expect(out.slice(gates + 2)).toContain('c9        cynco   refused           1         5')
+    } finally { rmSync(home, { recursive: true, force: true }) }
   })
 })

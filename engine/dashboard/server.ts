@@ -270,6 +270,10 @@ interface CampaignSummary {
     decision: { kind: string; why: string } | null
     posiwid: { verdict: string; divergence: number } | null
     governancePosiwid: { verdict: string; onsetWave: number | null } | null
+    /** Phase 4 ruling 4: the wave record's campaign checklist, reduced to what
+     *  the panel prints (scripts/cynco-autopoiesis.mjs); `assessError` when the
+     *  assessment threw, null when the wave predates it. */
+    autopoiesis: { isAutopoietic: boolean; missing: string[]; assessError?: string } | null
     verified: boolean | null
   }>
   governancePosiwid: Record<string, unknown> | null
@@ -285,8 +289,8 @@ interface CampaignSummary {
   /** This campaign's own `state.gateAuthorAuthority` — not the cross-campaign
    *  seat value. That value is `gateAuthorAuthorityAcrossCampaigns`
    *  (scripts/cynco-gate-author.mjs): the max of every campaign's own
-   *  `gateAuthorAuthority`, computed fresh from every campaign's state.json
-   *  rather than stored on any one of them. */
+   *  `gateAuthorAuthority` and the retained seats store
+   *  (`~/.cynco/retained/seats.json`, Phase 4), computed fresh on every read. */
   gateAuthorAuthority: number
 }
 
@@ -876,6 +880,10 @@ window.__CYNCO_TOKEN = ${JSON.stringify(token)};
       decision: w.decision ?? null,
       posiwid: w.posiwid ? { verdict: w.posiwid.verdict, divergence: w.posiwid.divergence } : null,
       governancePosiwid: w.governancePosiwid ? { verdict: w.governancePosiwid.verdict, onsetWave: w.governancePosiwid.onsetWave ?? null } : null,
+      autopoiesis: !w.autopoiesis ? null
+        : typeof w.autopoiesis.assessError === 'string' ? { isAutopoietic: false, missing: [], assessError: w.autopoiesis.assessError }
+          : Array.isArray(w.autopoiesis.missing) ? { isAutopoietic: w.autopoiesis.isAutopoietic === true, missing: w.autopoiesis.missing }
+            : null,
       verified: w.verified ?? null,
     }))
     // The last WRITTEN wave, not the highest `wave` number — rewriteLastWave

@@ -99,6 +99,18 @@ export function denialFollowUp(inv) {
   return { total, complied: compliedTotal, byInvariant, windowed }
 }
 
+/** Phase 4 ruling 4: whether PACING folds in the campaign-to-date denial
+ *  digest (ledger → validation → brief). The ONE predicate — pacing() prints
+ *  the digest exactly when this is true, and the runner records it on the wave
+ *  (`s4.pacingFromDenials`) for the autopoiesis checklist, so the checklist
+ *  never has to read the brief's wording. The digest rides the prior wave's
+ *  track record, so a first wave (no prior) never carries it. */
+export function pacingDigestIncluded(ctx) {
+  if (!ctx?.prior) return false
+  const f = denialFollowUp(ctx.prior.invariants)
+  return Boolean(f && f.total > 0 && Array.isArray(ctx.denialDigest))
+}
+
 function ideation(ctx) {
   if (!ctx.ideation) return null
   const h = ctx.ideation.hypotheses.map(x => `  ${x.gateId}: ${x.cause} — first edit ${x.firstEdit}`).join('\n')
@@ -130,7 +142,7 @@ function pacing(spec, ctx) {
         const f = denialFollowUp(d)
         if (!f || f.total === 0) return ''
         const per = KINDS.map(k => `${k} ${f.byInvariant[k]?.complied ?? 0}/${f.byInvariant[k]?.denials ?? 0}`).join(', ')
-        const camp = Array.isArray(ctx.denialDigest)
+        const camp = pacingDigestIncluded(ctx)
           ? `; campaign to date ${ctx.denialDigest.filter(r => r.invariant !== 'revert').map(r => `${r.invariant} ${r.complied}/${r.denials}`).join(', ')}`
           : ''
         // M6: "those N" refers back to the denial count printed above it. When

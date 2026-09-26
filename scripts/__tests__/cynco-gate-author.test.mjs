@@ -13,11 +13,12 @@ import {
   livePreviousCheck, positiveLeavesFailing, checkStagedViaSubprocess, restoreUncommittedWork, refreshedLastCheck,
   readPackageMap, packageMapText, AUTHOR_RESUME_TIMEOUT_S, authorTimeoutFor,
   CHECK_JSON_MARKER, SELF_SCRIPT, CHECK_SUBPROCESS_TIMEOUT_MS,
-  checkRecord, staticRelativeImports, harnessClosure, harnessFingerprint, harnessDirtyFiles,
+  checkRecord, staticRelativeImports, harnessClosure, harnessFileKey, harnessFingerprint, harnessDirtyFiles,
 } from '../cynco-gate-author.mjs'
 import { CampaignState } from '../cynco-campaign-state.mjs'
 import { summarize } from '../cynco-gate-lines.mjs'
 import { applyProposalDecision } from '../cynco-campaign.mjs'
+import { readSeats, writeSeats } from '../cynco-proposals.mjs'
 import { GATE_AUTHOR_MIN_LINES as SV_MIN_LINES, GATE_AUTHOR_HELD_FLOOR as SV_HELD_FLOOR } from '../cynco-signal-validation.mjs'
 
 // ── the world the fake io stands in for ─────────────────────────────────────
@@ -424,13 +425,13 @@ describe('livePreviousCheck', () => {
 
   it('drops a missing-file problem for a file that is now on disk', () => {
     const output = [MISSING('gate_c9.py'), MISSING('perturb_c9.py')].join('\n')
-    expect(livePreviousCheck({ id: ID, stagingDir: 'C:/s/c9', lastCheck: { output }, io: io(['gate_c9.py']) }))
+    expect(livePreviousCheck({ stagingDir: 'C:/s/c9', lastCheck: { output }, io: io(['gate_c9.py']) }))
       .toBe(MISSING('perturb_c9.py'))
   })
 
   it('carries no previous check at all once every missing file exists', () => {
     const output = [MISSING('gate_c9.py'), MISSING('perturb_c9.py')].join('\n')
-    expect(livePreviousCheck({ id: ID, stagingDir: 'C:/s/c9', lastCheck: { output },
+    expect(livePreviousCheck({ stagingDir: 'C:/s/c9', lastCheck: { output },
       io: io(['gate_c9.py', 'perturb_c9.py']) })).toBeNull()
   })
 
@@ -438,7 +439,7 @@ describe('livePreviousCheck', () => {
   // "BASE run printed 1 error line(s)" with no traceback is being asked to guess.
   it('shows the BASE and cheat-stub tails when they carry an error line', () => {
     const boom = 'Traceback (most recent call last):\nNameError: name _press is not defined\n'
-    const t = livePreviousCheck({ id: ID, stagingDir: 'C:/s/c9', io: io([]), lastCheck: {
+    const t = livePreviousCheck({ stagingDir: 'C:/s/c9', io: io([]), lastCheck: {
       output: 'BASE run printed 2 error line(s): Traceback (most recent call last):',
       tails: { base: boom, perturb: `${gateLog({}, 'GATE: MISS (9 fails)')}`, positive: null },
     } })
@@ -450,13 +451,31 @@ describe('livePreviousCheck', () => {
 
   it('keeps every problem that is not a presence claim', () => {
     const output = ['lint: C9.4 has no detail', MISSING('positive_c9.py'), 'base: GATE: PASS at BASE'].join('\n')
-    expect(livePreviousCheck({ id: ID, stagingDir: 'C:/s/c9', lastCheck: { output }, io: io(['positive_c9.py']) }))
+    expect(livePreviousCheck({ stagingDir: 'C:/s/c9', lastCheck: { output }, io: io(['positive_c9.py']) }))
       .toBe('lint: C9.4 has no detail\nbase: GATE: PASS at BASE')
   })
 
+  // Phase 4 residual: a located problem carries its FILE:LINE into the brief.
+  it('prints `  at FILE:LINE` under each problem the check located, and nothing under the rest', () => {
+    const located = 'lint: duplicate gate line id C9.2 — two facts graded under one id hide one of them (gate_c9.py:42)'
+    const output = [located, 'BASE must MISS the gate; terminator was PASS (gate_c9.py)'].join('\n')
+    const t = livePreviousCheck({ stagingDir: 'C:/s/c9', io: io([]), lastCheck: {
+      output, problemAt: [{ file: 'gate_c9.py', line: 42, problem: located }, { file: 'x.py', line: 'NaN', problem: 'junk' }],
+    } })
+    expect(t).toBe(`${located}\n  at gate_c9.py:42\nBASE must MISS the gate; terminator was PASS (gate_c9.py)`)
+  })
+
+  it('checkRecord keeps the located problems as `problemAt`, beside its timestamp', () => {
+    const problem = 'lint: line id "C8.1" is not a C9.<n> id (gate_c9.py:7)'
+    const rec = checkRecord({ ok: false, problems: [problem], at: [{ file: 'gate_c9.py', line: 7, problem }], lineIds: ['C8.1'] }, { now: () => 'T' })
+    expect(rec.at).toBe('T')
+    expect(rec.problemAt).toEqual([{ file: 'gate_c9.py', line: 7, problem }])
+    expect(checkRecord({ ok: true, problems: [], lineIds: [] }, { now: () => 'T' }).problemAt).toEqual([])
+  })
+
   it('is null for no stored check and for an empty one', () => {
-    expect(livePreviousCheck({ id: ID, stagingDir: 'C:/s/c9', lastCheck: undefined, io: io([]) })).toBeNull()
-    expect(livePreviousCheck({ id: ID, stagingDir: 'C:/s/c9', lastCheck: { output: '  \n ' }, io: io([]) })).toBeNull()
+    expect(livePreviousCheck({ stagingDir: 'C:/s/c9', lastCheck: undefined, io: io([]) })).toBeNull()
+    expect(livePreviousCheck({ stagingDir: 'C:/s/c9', lastCheck: { output: '  \n ' }, io: io([]) })).toBeNull()
   })
 })
 
@@ -493,6 +512,16 @@ describe('checkStaged', () => {
     const r = await checkStaged({ id: ID, stagingDir, baseDir: 'C:/tmp/c9_author_base', io })
     expect(r.problems.some(p => /CYNCO_GATE_REPO/.test(p))).toBe(true)
     expect(r.problems.some(p => /BASE must MISS/.test(p))).toBe(true)
+  })
+  it('carries the lint\'s located problems as `at`, and the calibration problem names its file', async () => {
+    const { stagingDir, files } = staged(home)
+    files[`${norm(stagingDir)}/gate_c9.py`] = GATE_SRC.replace('import os, sys, subprocess, runpy', 'import os, sys, subprocess, runpy, socket')
+    const { io } = makeIo({ home, files, baseLog: POSITIVE_LOG })
+    const r = await checkStaged({ id: ID, stagingDir, baseDir: 'C:/tmp/c9_author_base', io })
+    const net = r.problems.find(p => /imports socket/.test(p))
+    expect(net.endsWith(' (gate_c9.py:2)')).toBe(true)
+    expect(r.at).toEqual([{ file: 'gate_c9.py', line: 2, problem: net }])
+    expect(r.problems.find(p => /BASE must MISS/.test(p))).toMatch(/ \(gate_c9\.py\)$/)
   })
 })
 
@@ -755,6 +784,19 @@ describe('authorCampaign', () => {
     expect(disk[`${home}/authoring/c9/brief-2.txt`]).toContain('PREVIOUS CHECK OUTPUT')
     expect(disk[`${home}/authoring/c9/brief-2.txt`]).toMatch(/BASE must MISS/)
     expect(state.state.authoring.c9.attempts).toBe(2)
+  })
+
+  // Phase 4 residual, end to end: the check subprocess's `at` → lastCheck.problemAt
+  // → the resume brief's `  at FILE:LINE` under the problem.
+  it('the resume brief prints FILE:LINE under a problem the check located', async () => {
+    const { files } = staged(home)
+    const problem = 'lint: duplicate gate line id C9.2a — two facts graded under one id hide one of them (gate_c9.py:12)'
+    const { io, disk } = makeIo({ home, files, check: { ok: false, problems: [problem], at: [{ file: 'gate_c9.py', line: 12, problem }] } })
+    const state = new CampaignState(join(mkdtempSync(join(tmpdir(), 'camp-')), ID)).load()
+    await authorCampaign({ id: ID, roadmap: ROADMAP(), state, io })
+    expect(state.state.authoring.c9.lastCheck.problemAt).toEqual([{ file: 'gate_c9.py', line: 12, problem }])
+    await authorCampaign({ id: ID, roadmap: ROADMAP(), state, io })
+    expect(disk[`${home}/authoring/c9/brief-2.txt`]).toContain(`${problem}\n  at gate_c9.py:12`)
   })
 
   // E: the resume brief must carry the EVIDENCE, not only the verdict. Attempt 4
@@ -1165,6 +1207,17 @@ describe('checkStagedViaSubprocess', () => {
     expect(r.tails.positive).toBe('x')
   })
 
+  it('carries the located problems across the process boundary, dropping malformed entries', async () => {
+    const problem = 'lint: the gate imports socket — a gate that reaches the network is not measuring the repo (gate_c9.py:3)'
+    const payload = { ok: false, problems: [problem], at: [{ file: 'gate_c9.py', line: 3, problem }, { file: 1 }, null], lineIds: IDS }
+    const r = await checkStagedViaSubprocess({ id: ID, stagingDir: 'C:/s/c9', baseDir: 'C:/b',
+      io: runner({ status: 1, stdout: CHECK_JSON_MARKER + JSON.stringify(payload), stderr: '', fault: null, timedOut: false }) })
+    expect(r.at).toEqual([{ file: 'gate_c9.py', line: 3, problem }])
+    const old = await checkStagedViaSubprocess({ id: ID, stagingDir: 'C:/s/c9', baseDir: 'C:/b',
+      io: runner({ status: 1, stdout: CHECK_JSON_MARKER + JSON.stringify({ ok: false, problems: ['x'], lineIds: IDS }), stderr: '', fault: null, timedOut: false }) })
+    expect(old.at).toEqual([])
+  })
+
   it('takes the LAST marker line, so a tail that quotes one cannot win', async () => {
     const decoy = CHECK_JSON_MARKER + JSON.stringify({ ok: true, problems: [], lineIds: [] })
     const real = CHECK_JSON_MARKER + JSON.stringify({ ok: false, problems: ['positive shim did not PASS'], lineIds: IDS })
@@ -1245,14 +1298,44 @@ describe('harness closure (review I4)', () => {
     for (const n of ['cynco-gate-author.mjs', 'cynco-gate-lint.mjs', 'cynco-gate-parse.mjs', 'cynco-campaign-calibrate.mjs', 'cynco-campaign-grade.mjs', 'cynco-spawn.mjs']) {
       expect(names).toContain(n)
     }
-    // scripts/ only: engine code the check does not grade with is not followed
-    expect(harnessClosure().every(f => norm(f).startsWith(norm(dirname(SELF_SCRIPT)) + '/'))).toBe(true)
+  })
+
+  // Phase 4 closed the Phase 3 residual: the engine modules `--check` loads run
+  // their top-level code in the subprocess, so they are part of the instrument.
+  it('follows ../engine/ imports into the engine, resolving .js to .ts, bounded to the repo and clear of node_modules', () => {
+    const repoRoot = norm(dirname(dirname(SELF_SCRIPT)))
+    const rel = harnessClosure().map(f => norm(f).slice(repoRoot.length + 1))
+    for (const f of ['engine/paths.ts', 'engine/bridge/contractAutoCreate.ts', 'engine/tools/contractVerify.ts', 'engine/tools/contract.ts', 'engine/tools/shellInfo.ts', 'engine/training/gitFacts.ts', 'engine/cybernetics-core/src/index.ts']) {
+      expect(rel).toContain(f)
+    }
+    expect(rel.some(f => f.split('/').includes('node_modules'))).toBe(false)
+    expect(harnessClosure().every(f => norm(f).startsWith(repoRoot + '/'))).toBe(true)
+    // Only scripts/ and engine/ — a scripts module's other ../ imports are not followed.
+    expect(rel.every(f => f.startsWith('scripts/') || f.startsWith('engine/'))).toBe(true)
+  })
+
+  it('walks an injected tree: .js→.ts then .tsx, extensionless → index.ts, node_modules and out-of-repo skipped', () => {
+    const tree = {
+      'R:/repo/scripts/entry.mjs': "import { a } from './sib.mjs'\nimport { p } from '../engine/paths.js'\nimport { v } from '../engine/view.js'\nimport { d } from '../docs/not-followed.mjs'\nimport a from '../engine/../../outside.mjs'",
+      'R:/repo/scripts/sib.mjs': "export const a = 1",
+      'R:/repo/engine/paths.ts': "import { t } from './types'\nimport { x } from '../node_modules/pkg/index.js'\nimport { o } from '../../outside/evil.js'",
+      'R:/repo/engine/view.tsx': "export const v = 1",
+      'R:/repo/engine/types/index.ts': "export type T = 1",
+      'R:/repo/docs/not-followed.mjs': "",
+      'R:/repo/node_modules/pkg/index.js': "",
+      'R:/outside/evil.js': "",
+      'R:/outside.mjs': "",
+    }
+    const got = harnessClosure('R:/repo/scripts/entry.mjs', (p) => tree[p], (p) => p in tree)
+    expect(got).toEqual(['R:/repo/engine/paths.ts', 'R:/repo/engine/types/index.ts', 'R:/repo/engine/view.tsx', 'R:/repo/scripts/entry.mjs', 'R:/repo/scripts/sib.mjs'])
+    expect(got.map(f => harnessFileKey(f, 'R:/repo/scripts/entry.mjs'))).toEqual(['engine/paths.ts', 'engine/types/index.ts', 'engine/view.tsx', 'entry.mjs', 'sib.mjs'])
   })
 
   it('fingerprints the closure per file, and names exactly the files that differ', () => {
     const fp = harnessFingerprint()
     expect(fp.sha256).toMatch(/^[0-9a-f]{64}$/)
-    expect(Object.keys(fp.files)).toEqual(harnessClosure().map(f => basename(f)))
+    expect(Object.keys(fp.files)).toEqual(harnessClosure().map(f => harnessFileKey(f)))
+    expect(fp.files['engine/tools/contractVerify.ts']).toMatch(/^[0-9a-f]{64}$/)
     expect(harnessDirtyFiles(fp, harnessFingerprint())).toEqual([])
     const moved = { sha256: 'x', files: { ...fp.files, 'cynco-gate-lint.mjs': 'edited', 'cynco-new.mjs': 'added' } }
     delete moved.files['cynco-spawn.mjs']
@@ -1273,13 +1356,13 @@ describe('restoreUncommittedWork', () => {
   }
 
   it('says nothing when there is no mission or no patch', () => {
-    expect(restoreUncommittedWork({ id: ID, stagingDir: 'C:/s/c9', missionId: null, io: io() })).toBeNull()
-    expect(restoreUncommittedWork({ id: ID, stagingDir: 'C:/s/c9', missionId: 'm1', io: io({ exists: false }) })).toBeNull()
+    expect(restoreUncommittedWork({ stagingDir: 'C:/s/c9', missionId: null, io: io() })).toBeNull()
+    expect(restoreUncommittedWork({ stagingDir: 'C:/s/c9', missionId: 'm1', io: io({ exists: false }) })).toBeNull()
   })
 
   it('checks before it applies, applies, commits, and says so', () => {
     const fake = io()
-    const note = restoreUncommittedWork({ id: ID, stagingDir: 'C:/s/c9', missionId: 'm1', io: fake, snapshotDir: 'C:/tmp' })
+    const note = restoreUncommittedWork({ stagingDir: 'C:/s/c9', missionId: 'm1', io: fake, snapshotDir: 'C:/tmp' })
     expect(fake.ran[0]).toBe('git -C C:/s/c9 apply --check C:/tmp/m1.uncommitted.patch')
     expect(fake.ran[1]).toBe('git -C C:/s/c9 apply C:/tmp/m1.uncommitted.patch')
     expect(fake.ran.join('\n')).toMatch(/commit -m restore uncommitted work from m1/)
@@ -1291,7 +1374,7 @@ describe('restoreUncommittedWork', () => {
   // neither it nor the check has ever seen.
   it('leaves the tree alone and NAMES the reason when the patch does not apply', () => {
     const fake = io({ checkStatus: 1 })
-    const note = restoreUncommittedWork({ id: ID, stagingDir: 'C:/s/c9', missionId: 'm1', io: fake, snapshotDir: 'C:/tmp' })
+    const note = restoreUncommittedWork({ stagingDir: 'C:/s/c9', missionId: 'm1', io: fake, snapshotDir: 'C:/tmp' })
     expect(fake.ran).toEqual(['git -C C:/s/c9 apply --check C:/tmp/m1.uncommitted.patch'])
     expect(note).toMatch(/was NOT restored/)
     expect(note).toMatch(/patch does not apply/)
@@ -1299,7 +1382,7 @@ describe('restoreUncommittedWork', () => {
   })
 
   it('names a git that could not run at all', () => {
-    const note = restoreUncommittedWork({ id: ID, stagingDir: 'C:/s/c9', missionId: 'm1',
+    const note = restoreUncommittedWork({ stagingDir: 'C:/s/c9', missionId: 'm1',
       io: io({ checkFault: { code: 'ENOENT', status: null, signal: null, elapsedMs: 2 } }), snapshotDir: 'C:/tmp' })
     expect(note).toMatch(/was NOT restored: git apply --check could not run \(code ENOENT/)
   })
@@ -1569,8 +1652,11 @@ describe('authorMain', () => {
 // ── The seat's authority is read across every campaign, not one state file ──
 
 describe('gateAuthorAuthorityAcrossCampaigns', () => {
+  // `campaigns/` under its own temp home: the seats store is read from the
+  // campaigns dir's parent, which must never be the shared os.tmpdir().
   const campaigns = (byId) => {
-    const dir = mkdtempSync(join(tmpdir(), 'seat-'))
+    const dir = join(mkdtempSync(join(tmpdir(), 'seat-')), 'campaigns')
+    mkdirSync(dir, { recursive: true })
     for (const [id, state] of Object.entries(byId)) {
       mkdirSync(join(dir, id), { recursive: true })
       writeFileSync(join(dir, id, 'state.json'), JSON.stringify({ id, ...state }, null, 2))
@@ -1587,17 +1673,43 @@ describe('gateAuthorAuthorityAcrossCampaigns', () => {
   })
 
   it('is 0 for a campaigns dir that does not exist', () => {
-    expect(gateAuthorAuthorityAcrossCampaigns(join(tmpdir(), 'no-such-campaigns-dir-' + Date.now()))).toBe(0)
+    expect(gateAuthorAuthorityAcrossCampaigns(join(tmpdir(), 'no-such-campaigns-dir-' + Date.now()), { seatsHome: mkdtempSync(join(tmpdir(), 'empty-')) })).toBe(0)
   })
 
   it('ignores a state file whose authority is not a finite number', () => {
     expect(gateAuthorAuthorityAcrossCampaigns(campaigns({ c8: { gateAuthorAuthority: 'lots' }, c9: { gateAuthorAuthority: null } }))).toBe(0)
   })
+
+  // Phase 4: the per-seat retained store is the seat's own home. The reading is
+  // the higher of the store and every campaign's state — the store is where an
+  // approval lands now, the campaign states are where every earlier one did.
+  it('reads the retained seats store beside the campaigns dir, and takes the max', () => {
+    const home = mkdtempSync(join(tmpdir(), 'seat-home-'))
+    const dir = join(home, 'campaigns')
+    mkdirSync(join(dir, 'c9'), { recursive: true })
+    writeFileSync(join(dir, 'c9', 'state.json'), JSON.stringify({ id: 'c9', gateAuthorAuthority: 0 }))
+    expect(gateAuthorAuthorityAcrossCampaigns(dir)).toBe(0)
+    writeSeats(home, readSeats(home), { seat: 'gate-author', authority: 0.5, decidedAt: 't', campaign: 'c8' })
+    expect(gateAuthorAuthorityAcrossCampaigns(dir)).toBe(0.5)
+    // An explicit store home wins over the one beside the campaigns dir.
+    expect(gateAuthorAuthorityAcrossCampaigns(dir, { seatsHome: mkdtempSync(join(tmpdir(), 'empty-')) })).toBe(0)
+  })
+
+  it('a campaign value above the store still wins', () => {
+    const home = mkdtempSync(join(tmpdir(), 'seat-home-'))
+    const dir = join(home, 'campaigns')
+    mkdirSync(join(dir, 'c8'), { recursive: true })
+    writeFileSync(join(dir, 'c8', 'state.json'), JSON.stringify({ id: 'c8', gateAuthorAuthority: 0.5 }))
+    writeSeats(home, readSeats(home), { seat: 'gate-author', authority: 0.25, decidedAt: 't', campaign: 'c7' })
+    expect(gateAuthorAuthorityAcrossCampaigns(dir)).toBe(0.5)
+  })
 })
 
 describe('--author at earned authority, end to end', () => {
   const runAuthor = async (seatState) => {
-    const campaignsDir = mkdtempSync(join(tmpdir(), 'seat-e2e-'))
+    // Under its own temp home, so the seats store read beside it is empty.
+    const campaignsDir = join(mkdtempSync(join(tmpdir(), 'seat-e2e-')), 'campaigns')
+    mkdirSync(campaignsDir, { recursive: true })
     for (const [id, state] of Object.entries(seatState)) {
       mkdirSync(join(campaignsDir, id), { recursive: true })
       writeFileSync(join(campaignsDir, id, 'state.json'), JSON.stringify({ id, ...state }, null, 2))

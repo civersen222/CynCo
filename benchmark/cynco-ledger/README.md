@@ -87,10 +87,21 @@ decisions still recorded here).
           "byLayer": { "24": 0, "32": 0, "40": 0.125, "48": 0.375 } },
         "toolEntropy": { "mean": 0.0114, "max": 0.2125, "spikeCount": 2 } } }
   ],
+  // `authority` (Phase 4): "earned" (every rule in ruleIds is PREDICTIVE in
+  // ~/.cynco/datasets/rule-verdicts.json — see "Rule verdicts file" below),
+  // "advisory" (one is not, or ruleIds is empty; never applied, so `enforced`
+  // is false whatever LOCALCODE_S5_ENFORCE says), "legacy" (no verdict file;
+  // LOCALCODE_S5_ENFORCE alone decides, as before), or null on a record from
+  // an engine older than Phase 4.
+  // `source` (F157): "stuck-reeval" for the stuck-loop live re-evaluation's
+  // decision (stuck ≥ 5), null for the per-message decision. Rows written
+  // before F157 carry no re-eval decisions at all, and their `enforced: false`
+  // does not rule out a stuck re-eval tool restriction having been applied.
   "s5Decisions": [          // one per s5.decision event
     { "t": 1783550000000, "ruleIds": ["C7"], "reasoning": "...",
       "contextAction": null, "toolRestriction": "read-only",
-      "modelSwitch": null, "enforced": false }
+      "modelSwitch": null, "enforced": false, "authority": "advisory",
+      "source": null }
   ],
   "controlSignals": [
     { "t": 1783550000000, "temperatureAdjust": 0, "temperature": 0.7,
@@ -303,7 +314,18 @@ decisions still recorded here).
     "entries": [ { "callIndex": 412, "kind": "revert", "entropy": 0.41,
       "outcome": "passed", "ms": 41200, "tail": "12 passed",
       "nextCallClass": "commit" } ] },
-  "ultrastable": { "trace": [], "margin": 0.4 },
+  // The legacy (session-feedback) ultrastable instance, last status frame
+  // wins: `trace` is the last 20 adaptation steps (`traceLength` the total),
+  // `margin` the viability margin. `retained` is the instance's retained-
+  // configuration table (violation pattern -> configuration that restored
+  // viability) and `retainedVersion` the last stored version of this
+  // instance's table, in ~/.cynco/retained/session-feedback.json (the live
+  // `retained` may have moved since; engine/vsm/retainedConfigStore.ts — the
+  // version moves only when the table changes). `retainedVersion` null =
+  // nothing stored yet; both null on a row from an engine that predates the
+  // store. Memory only: nothing applies a retained configuration yet.
+  "ultrastable": { "traceLength": 0, "trace": [], "margin": 0.4,
+    "retained": { "ev0": { "Continuous": [0.75, 8192, 0.3] } }, "retainedVersion": 2 },
   // The ENGINE's live POSIWID reading (last governance.status frame): its
   // default purpose model against the session's executed tool classes
   // (vsm/constraintChecks.ts). Distinct from the runner-patched `posiwid`
@@ -446,6 +468,89 @@ wave's `verdict` and `onsetWave`.
 module on this block's `counts` and fails if the reading moves (F149: a
 documented number no code produces).
 
+### The wave record's `autopoiesis`
+
+Also not a ledger field — it lives on the campaign wave record and reads the
+graded row beside everything else the VERDICT already holds. Phase 4 ruling 4:
+`scripts/cynco-autopoiesis.mjs` `campaignAssessment` maps Maturana/Varela's six
+criteria (the vendored core's `AutopoiesisAssessment`; `isAutopoietic` and
+`missingCriteria` come from `engine/cybernetics-core` unchanged) to facts, never
+to claims:
+
+- **`hasBoundary`** — this wave's identity reading (`identity.intact`, the
+  wave record's `identity`, `scripts/cynco-identity.mjs`).
+- **`boundarySelfProduced`** — `spec.author === "cynco"`: the campaign's own
+  gate-author seat wrote the bar. Every campaign up to c8 is `human`.
+- **`internalProduction`** — this wave landed ≥ 1 commit.
+- **`circularProduction`** — ledger → validation → proposal closed at least once
+  in this campaign: a denial analysis ran (this wave or an earlier one) AND a
+  cap proposal was ever raised from it (`facts.proposalFromDenials`: any
+  proposal named `invariants/<cap>` — the one family the denial analysis itself
+  raises; an `ideation/brief` or `gate-author/gate` promotion does not count),
+  OR a brief carried the PACING "campaign to date" denial digest
+  (`facts.pacingDigest`: any wave record's `s4.pacingFromDenials`, which the
+  runner records from the brief generator's own `pacingDigestIncluded`
+  predicate — never read off the brief's text).
+- **`organizationallyClosed`** — the campaign's `ProductionNetwork` over
+  `gate, brief, wave, ledger, validation, proposal, configuration, seat` is
+  closed, given which productions occurred: seat→gate (CynCo-authored gate),
+  brief→wave (≥ 1 graded wave), wave→ledger (≥ 1 campaign row),
+  ledger→validation (a denial analysis), validation→proposal (a cap proposal
+  raised), proposal→configuration (any approved), configuration→brief (an
+  `invariantOverrides` entry — the predicate also reads a wave's
+  `s4.workOrder.applied`, but NOTHING writes that field today (`workOrderFor`
+  never sets it), so in practice only an override closes this edge),
+  ledger→seat (gate-line or ideation evidence — the gate-lines summary is read
+  ACROSS campaigns, not this campaign's lines only: the seat is one seat, so
+  any campaign's graded gate lines close this edge; `facts.seatEvidence` can be
+  true on a campaign with no lines of its own), configuration→seat (a seat's
+  authority > 0, the retained seats store included).
+- **`facts.commitsLanded`** — the runner's `commitsBetween`: `git log
+  <base>..<head>` over the ledger row's `commitRange` (the dispatch BASE to the
+  graded head), every commit in that range. It is NOT the driver's
+  "N commit(s)" line, which counts `toolStats.commits` (the mission's
+  commit-class Bash calls); the two are different instruments and may differ
+  (3 vs 2 on the Phase 4 live s1 wave — the row counts from BASE).
+- **`organizationMaintained`** — identity intact this wave AND on every
+  earlier GRADED wave AND `identityGuard.passed === true` on every campaign
+  row. Strict: a graded wave that predates the identity assertion, or a row
+  whose engine never emitted the guard, is unread, and unread is not evidence
+  of maintenance. Stop and fault records were never graded and are not
+  readings.
+
+The stored shape is the module's own output for a two-wave human-gated campaign
+whose first row predates the guard (the facts below, re-run by
+`scripts/__tests__/cynco-autopoiesis.test.mjs`):
+
+```jsonc
+"autopoiesis": {
+  "criteria": { "hasBoundary": true, "boundarySelfProduced": false, "internalProduction": true,
+                "circularProduction": true, "organizationallyClosed": false, "organizationMaintained": false },
+  "isAutopoietic": false,
+  "missing": ["boundarySelfProduced", "organizationallyClosed", "organizationMaintained"],
+  "network": { "unproduced": ["gate", "brief", "configuration"],
+               "productions": [["brief", "wave"], ["wave", "ledger"], ["ledger", "validation"],
+                               ["validation", "proposal"], ["ledger", "seat"]] },
+  "facts": { "gateAuthor": "human", "waves": 2, "rows": 2, "denialAnalysis": true, "proposalRaised": true,
+             "proposalFromDenials": true, "proposalApproved": false, "configurationApplied": false, "seatEvidence": true, "seatAuthority": 0,
+             "commitsLanded": 3, "pacingDigest": true,
+             "identityHistory": { "waves": 1, "intact": 1, "rows": 2, "passed": 1 } } }
+```
+
+`missing` names the criteria by field, in the core's order; `facts` is
+everything the reading was computed from, so a wrong mapping is fixed by
+re-running `criteriaFromFacts(facts, identity)` over the stored facts and the
+wave's stored `identity`, not by re-measuring. An
+assessment that throws is stored as `{ "assessError": "<message>" }` and never
+faults the wave. The verdict entry prints `- Autopoiesis: 3/6 — missing …`
+(`6/6` when nothing is missing, `UNASSESSED — <message>` on a throw) into the
+campaign log; `GET /api/campaign` hands the dashboard each wave's
+`{ isAutopoietic, missing }` and the Campaign panel prints the last wave that
+carries a reading (a later stop or fault record has none and is skipped);
+`bun scripts/cynco-campaign.mjs <id>.campaign.json --autopoiesis` prints the
+same checklist over a campaign that already ran, from its stored records, and
+dispatches and writes nothing.
+
 ### The wave record's `gate.author`
 
 Also not a ledger field: the wave record's `gate` block is the grader's reading
@@ -529,6 +634,125 @@ prints it as its "Gate lines" line, and `gateAuthorPromotion`
 lines, a Wilson lower bound ≥ 0.8, and not significantly worse than the human
 seat, raises the `gate-author/gate` proposal. Both thresholds are stated once,
 in `scripts/cynco-signal-validation.mjs` beside `DENIAL_MIN`.
+
+### Gate outcomes dataset
+
+`~/.cynco/datasets/gate-outcomes.jsonl`, written by `exportGateOutcomes` in
+`scripts/cynco-gate-lines.mjs` at every wave verdict (right after the gate-lines
+export, with the same rule: derived, rebuilt in full, a failure is logged and
+never faults the wave), and printed as the GATES table after the lines table by
+`bun scripts/cynco-signal-validation.mjs --gate-lines`.
+
+**The unit is the campaign, because the seal is a campaign-level event.** The
+gate-lines dataset cannot see a gate that never sealed: a triple the supervisor
+refused has no calibration on the campaign, so it has no graded lines and no
+rows, and "the seat's lines held 30/30" reads the same whether zero or five of
+its gates were refused on the way. This dataset is the denominator the lines
+leave out.
+
+One row per campaign. All three are real rows, copied out of an export run
+against `~/.cynco/campaigns` plus the history file on 2026-09-25 (c8's and c7's
+`refusals` read `0` in that run and are shown as the exporter writes them since
+the final fix wave: `null`, unmeasured — neither has an authoring record):
+
+```jsonc
+{ "campaign": "c8", "author": "human", "outcome": "held", "refusals": null, "attempts": null, "sealedAt": "2026-09-17T10:55:46.162Z" }
+{ "campaign": "c9", "author": "cynco", "outcome": "refused", "refusals": 1, "attempts": 9, "sealedAt": null }
+{ "campaign": "c7", "author": "human", "outcome": "resealed", "refusals": null, "attempts": null, "sealedAt": null }
+```
+
+- **`outcome`** is one of four:
+  - **`refused`** — at least one supervisor refusal
+    (`state.authoring[<id>].refusals[]`, `{ at, by: 'supervisor', notePath }`)
+    and no seal.
+  - **`sealed`** — sealed; the campaign has not reached a decision yet.
+  - **`held`** — sealed, decided (the same `decided` as the gate-lines rows),
+    and never resealed.
+  - **`resealed`** — sealed, with at least one record in `state.reseals`
+    (decided or not). Any reseal record counts, including one whose
+    `changedLineIds` is empty: the gate was rewritten under a running campaign,
+    which is the event. For a history row, a non-empty `resealed` list.
+
+  A gate neither sealed nor refused (staged, still being authored) is not an
+  outcome yet and has no row. A refusal followed by a seal reads by its seal
+  (`sealed` / `held` / `resealed`), with the `refusals` count kept.
+- **`author`** — the wave record's `gate.author` when a wave carries one;
+  otherwise `cynco` when the state holds an authoring record for the campaign
+  and `human` when it does not. (Presence, not `sealedAt`: a refused gate never
+  sealed, and the gate-lines rule would call the seat's refusal a human's.)
+  History rows carry their own `author`.
+- **`refusals`** — the count of supervisor refusals in
+  `state.authoring[<id>].refusals[]`; `0` only when an authoring record exists
+  and holds none; `null` — unmeasured, never a zero — for a campaign with no
+  authoring record (a human-sealed state) and for every history row (a
+  hand-transcribed campaign has no refusal record). The GATES table prints `—`. **`attempts`** — `state.authoring[<id>].attempts`, the
+  authoring dispatches; `null` where there is no authoring record.
+- **`sealedAt`** — as in the gate-lines rows: the authoring record's stamp, else
+  the first calibration, else `null`.
+
+A campaign in both the state dir and the history file is the runner's, exactly
+as for the gate lines.
+
+### Rule verdicts file
+
+`~/.cynco/datasets/rule-verdicts.json`, written by
+`scripts/cynco-rule-verdicts.mjs` (`writeRuleVerdicts`) at every wave VERDICT
+from the WHOLE ledger — not the campaign's slice, because a rule's predictive
+power is a claim about every mission it fired on. `bun
+scripts/cynco-rule-verdicts.mjs [--ledger-dir DIR] [--out PATH]` rebuilds it by
+hand. It is Step 2's per-rule table (`analyse` + `ruleVerdictOf` in
+`scripts/cynco-signal-validation.mjs`) turned into a file the engine reads:
+
+- **`engine/s5/ruleAuthority.ts`** loads it once per session and logs one line,
+  `[s5] rule authority: earned (<n> predictive of <m>)` or
+  `[s5] rule authority: legacy (no verdict file at <path>)`. A decision is
+  `earned` only when every rule in its `ruleIds` reads exactly `PREDICTIVE`;
+  otherwise it is `advisory` and is never applied. No file = `legacy`, and
+  `LOCALCODE_S5_ENFORCE` alone decides, exactly as before. The reading is
+  carried on the ledger as `s5Decisions[].authority`.
+- **`engine/s5/exportTrainingData.ts`** keeps only `earned` decisions in the S5
+  training corpus when the file exists, and reports what it dropped per rule.
+
+Schema 1. The numbers below are the head of a real rebuild against this
+ledger on 2026-09-25 (280 records, 107 labeled; two of its eight rules are
+shown — C2, C4, W6 read `TOO FEW`, I1, I3, W7, W8 `NO EVIDENCE`, I4 `CONSTANT`):
+
+```jsonc
+{ "schema": 1, "version": 1, "at": "2026-09-25T18:47:26.981Z", "campaign": null,
+  "ledger": { "total": 280, "labeled": 107, "failures": 61, "base": 0.5700934579439252, "rulesTested": 7 },
+  "rules": {
+    "C2": { "verdict": "TOO FEW — cannot tell", "precision": 0.2,
+            "ci": [0.036223160969787456, 0.6244717358814612], "p": 0.16249100754494467, "n": 5,
+            "pAdjusted": 1, "lift": -0.3700934579439252, "firedTotal": 17, "failures": 1 },
+    "I1": { "verdict": "NO EVIDENCE", "precision": 0.5490196078431373,
+            "ci": [0.4138447154164923, 0.6773269498886776], "p": 0.6999222665344511, "n": 51,
+            "pAdjusted": 1, "lift": -0.021073850100787883, "firedTotal": 106, "failures": 28 }
+  },
+  "predictive": [],
+  "history": [ { "version": 1, "at": "2026-09-25T18:47:26.981Z", "campaign": null, "predictive": [],
+                 "changed": [ { "id": "C2", "from": null, "to": "TOO FEW — cannot tell" } /* + the other seven rules */ ] } ] }
+```
+
+- **`rules[<id>]`** — `{ verdict, precision, ci, p, n }` plus `pAdjusted`
+  (Holm), `lift`, `firedTotal`, `failures`: `n` is the labeled missions the rule
+  fired on, `precision` the failure share among them, `ci` its Wilson 95 %
+  interval. The engine reads only `verdict`.
+- **`at`** — when this write happened (every write, not only a version bump).
+- **`rules[<id>].verdict`** — exactly `ruleVerdictOf`'s string: `PREDICTIVE`,
+  `TOO FEW — cannot tell`, `CONSTANT — fires on everything, predicts nothing`,
+  `INVERTED — fires more on successes`, `NOT AFTER CORRECTION — chance across
+  this many rules`, or `NO EVIDENCE`. Only `PREDICTIVE` earns authority. A rule
+  the file does not list has never fired in the ledger and has earned nothing.
+- **`version`** rises only when the verdict SET changed — a rule's verdict
+  moved, or a rule appeared or vanished. The numbers are refreshed on every
+  write; the version counts changes in what S5 may enforce.
+- **`history`** — the last 20 version changes, each naming the rules that moved
+  (`from`/`to`, `null` for appeared/vanished).
+- **`campaign`** — the campaign whose VERDICT wrote it (`null` from the CLI).
+
+The wave record carries `ruleVerdicts: { version, predictive, total }` (`null`
+when the write failed — logged, never a fault). On this ledger no rule is
+`PREDICTIVE`, so once the file exists every S5 decision reads `advisory`.
 
 ## Labeling rule
 

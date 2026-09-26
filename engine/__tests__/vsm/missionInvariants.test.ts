@@ -1,5 +1,6 @@
-import { describe, it, expect, beforeEach } from 'bun:test'
-import { MissionInvariants, parseInvariantCaps } from '../../vsm/missionInvariants.js'
+import { describe, it, expect, beforeEach, vi } from 'bun:test'
+import { MissionInvariants, parseInvariantCaps, MISSION_INVARIANTS_INSTANCE } from '../../vsm/missionInvariants.js'
+import type { RetainedFile, RetainedStoreLike } from '../../vsm/retainedConfigStore.js'
 
 const read = (n: number) => ['Read', { file_path: `C:\\repo\\f${n}.py` }] as const
 const bashRead = (n: number) => ['Bash', { command: `Get-Content C:\\repo\\f${n}.py` }] as const
@@ -242,5 +243,75 @@ describe('MissionInvariants', () => {
   it('counts CodeIndex-assisted greps', () => {
     inv.noteCodeIndexAssisted(); inv.noteCodeIndexAssisted()
     expect(inv.snapshot().codeIndexAssisted).toBe(2)
+  })
+})
+
+describe('MissionInvariants — retained configurations (mission-invariants)', () => {
+  const caps = { editGapCap: 5, commitGapCap: 8, revertBan: true, codeIndexFirst: true }
+
+  function fakeStore(stored: RetainedFile | null) {
+    const loads: string[] = []
+    const saves: Array<{ instance: string; json: string; sessionId: string | null }> = []
+    const store: RetainedStoreLike = {
+      load(instance) { loads.push(instance); return stored },
+      save(instance, json, sessionId) { saves.push({ instance, json, sessionId }); return { version: (stored?.version ?? 0) + 1, changed: true } },
+    }
+    return { store, loads, saves }
+  }
+
+  /** Six reads (over the edit cap of 5) then an edit: one step, then restored → retained. */
+  function stepAndRestore(t: MissionInvariants): void {
+    for (let n = 0; n < 6; n++) t.observeCall('Read', read(n)[1], false)
+    t.observeCall('Edit', { file_path: 'C:\\repo\\a.py' }, false)
+  }
+
+  it('without a store the constructor is unchanged and the table starts empty', () => {
+    const t = new MissionInvariants(caps)
+    expect(t.retainedTable()).toEqual({})
+  })
+
+  it('imports the stored table when armed', () => {
+    const table = { callsSinceSourceEdit: { Discrete: 'edit-only' } }
+    const { store, loads } = fakeStore({ schema: 1, instance: MISSION_INVARIANTS_INSTANCE, version: 4, updatedAt: 't', retained: table, history: [] })
+    const t = new MissionInvariants(caps, { retainedStore: store })
+    expect(MISSION_INVARIANTS_INSTANCE).toBe('mission-invariants')
+    expect(loads).toEqual(['mission-invariants'])
+    expect(t.retainedTable()).toEqual(table)
+  })
+
+  it('an invalid stored table is logged and the regulator still arms empty', () => {
+    const { store } = fakeStore({ schema: 1, instance: MISSION_INVARIANTS_INSTANCE, version: 1, updatedAt: 't', retained: { x: 'nope' }, history: [] })
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    try {
+      const t = new MissionInvariants(caps, { retainedStore: store })
+      expect(t.retainedTable()).toEqual({})
+      expect(log.mock.calls.some(c => String(c[0]).includes('[retained]'))).toBe(true)
+    } finally {
+      log.mockRestore()
+    }
+  })
+
+  it('exports the live table at mission end', () => {
+    const { store, saves } = fakeStore(null)
+    const t = new MissionInvariants(caps, { retainedStore: store })
+    stepAndRestore(t)
+    expect(t.saveRetained(store, 'session-7')).toEqual({ version: 1, changed: true })
+    expect(saves).toHaveLength(1)
+    expect(saves[0]).toMatchObject({ instance: 'mission-invariants', sessionId: 'session-7' })
+    expect(JSON.parse(saves[0].json)).toEqual(t.retainedTable())
+    expect(Object.keys(t.retainedTable()).length).toBeGreaterThan(0)
+  })
+
+  it('retaining a table changes nothing about the gate (strategies unchanged, no step value applied)', () => {
+    const { store } = fakeStore(null)
+    const plain = new MissionInvariants(caps)
+    const seeded = new MissionInvariants(caps, { retainedStore: store })
+    stepAndRestore(plain)
+    const saved = JSON.stringify(plain.retainedTable())
+    const { store: s2 } = fakeStore({ schema: 1, instance: MISSION_INVARIANTS_INSTANCE, version: 1, updatedAt: 't', retained: JSON.parse(saved), history: [] })
+    const warm = new MissionInvariants(caps, { retainedStore: s2 })
+    for (const t of [seeded, warm]) stepAndRestore(t)
+    expect(warm.snapshot().steps).toEqual(seeded.snapshot().steps)
+    expect(warm.snapshot().configuration).toBe(seeded.snapshot().configuration)
   })
 })

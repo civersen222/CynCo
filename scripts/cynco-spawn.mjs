@@ -28,6 +28,8 @@
 //      caller cannot mistake "the harness did not run this" for "the thing I was
 //      measuring failed".
 import { spawnSync } from 'node:child_process'
+import { existsSync } from 'node:fs'
+import { win32 } from 'node:path'
 
 /**
  * The fraction of the cap a run must have actually spent before an ETIMEDOUT is
@@ -36,7 +38,62 @@ import { spawnSync } from 'node:child_process'
 export const TIMEOUT_ELAPSED_FRACTION = 0.9
 
 /**
+ * F160. The bash these spawns need is GIT BASH: `dispatch-mission.sh` and the
+ * `git archive | tar` pipe are written for it, over Windows paths, with the
+ * Windows python and bun. A bare `bash` on a Windows PATH resolves to
+ * `C:\Windows\System32\bash.exe` — the WSL launcher — unless Git's `bin` dir
+ * sits ahead of System32, which is true inside a Git Bash terminal and false
+ * from PowerShell, cmd, `Start-Process` or Task Scheduler. The Phase 4 live
+ * proof's first wave, launched from PowerShell, faulted in under a second:
+ * `dispatch-mission.sh: line 12: set: pipefail: invalid option name`.
+ *
+ * Pure: given the platform and where `git.exe` is, name the bash to spawn.
+ * Git for Windows puts `git.exe` at `<root>\cmd\git.exe` (its PATH entry) or
+ * `<root>\mingw64\bin\git.exe`; its bash is `<root>\bin\bash.exe`. Anything
+ * else — another platform, no git, no bash beside it — is the bare `bash`
+ * the caller always used.
+ */
+export function bashBin({ platform = process.platform, gitPath = null, exists = existsSync } = {}) {
+  if (platform !== 'win32') return 'bash'
+  // Windows paths whatever the host: the tests pin the Windows layout from any OS.
+  const p = win32
+  const found = gitPath && (() => {
+    const dir = p.dirname(gitPath)                 // <root>\cmd | <root>\mingw64\bin | <root>\bin
+    const up = p.dirname(dir)                      // <root>     | <root>\mingw64     | <root>
+    const roots = /^mingw(32|64)$/i.test(p.basename(up)) ? [p.dirname(up)] : [up]
+    return roots.map(r => p.join(r, 'bin', 'bash.exe')).find(exists) ?? null
+  })()
+  if (found) return found
+  // Refuse, don't fall back (F160): bare `bash` on a Windows PATH is the WSL
+  // launcher, and a fault an hour into a wave is worse than a refusal now.
+  throw new Error(`F160: no Git Bash found${gitPath ? ` beside ${gitPath}` : ' (no git.exe on PATH)'} — install Git for Windows or put its bin dir on PATH`)
+}
+
+/**
+ * The first `git.exe` on PATH as `where.exe` reports it; null when none.
+ * `$PATH:git.exe` restricts the search to PATH — a bare `where git.exe` looks
+ * in the current directory first, which a mission's repo could plant.
+ */
+export function gitExeOnPath(spawn = spawnSync, systemRoot = process.env.SystemRoot) {
+  // where.exe by full path too: a bare name is itself looked up cwd-first.
+  const where = systemRoot ? win32.join(systemRoot, 'System32', 'where.exe') : 'where.exe'
+  const r = spawn(where, ['$PATH:git.exe'], { encoding: 'utf8' })
+  return String(r?.stdout ?? '').split(/\r?\n/).map(s => s.trim()).find(Boolean) || null
+}
+
+let cachedBash = null
+/** The bash every spawn under `scripts/` uses, resolved once per process (F160); a refusal is not cached. */
+export function bashExe() {
+  if (cachedBash === null) cachedBash = bashBin({ gitPath: process.platform === 'win32' ? gitExeOnPath() : null })
+  return cachedBash
+}
+
+/**
  * `spawnSync`, with an elapsed-time check over its timeout claim.
+ *
+ * Options: `cwd`, `env` (merged over process.env unless `envExact`, which
+ * passes `env` as the whole environment), `timeoutMs`, `shell`,
+ * `retryImpossibleTimeout` (see below).
  *
  * Returns `{ status, stdout, stderr, elapsedMs, timedOut, fault }`.
  * `timedOut` and `fault` are mutually exclusive, and both are absent-or-false
@@ -80,11 +137,14 @@ export function runSync(cmd, args, opts = {}, hooks = {}) {
   return first
 }
 
-function attempt(cmd, args, { cwd, env, timeoutMs, shell } = {}, { spawn = spawnSync, now = () => Date.now() } = {}) {
+function attempt(cmd, args, { cwd, env, envExact, timeoutMs, shell } = {}, { spawn = spawnSync, now = () => Date.now() } = {}) {
   const t0 = now()
   const r = spawn(cmd, args, {
     cwd,
-    env: { ...process.env, ...(env ?? {}) },
+    // `envExact`: the caller built the WHOLE environment and stripped keys out
+    // of it on purpose (the mission dispatch drops CYNCO_NTFY_* and GitHub
+    // tokens) — merging process.env back underneath would put them straight back.
+    env: envExact ? (env ?? process.env) : { ...process.env, ...(env ?? {}) },
     encoding: 'utf8',
     timeout: timeoutMs,
     maxBuffer: 64 * 1024 * 1024,

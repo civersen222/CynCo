@@ -171,10 +171,13 @@ if (exportTrainingIdx !== -1) {
     ?? path.join(cyncoHome(), 'training', 's5_training_data.jsonl')
   const journalPath = path.join(cyncoHome(), 'training', 's5-decisions.jsonl')
   const dbPath = path.join(cyncoHome(), 'governance', 'governance.db')
-  const { loadOutcomesFromDb, exportViableExamples } = await import('./s5/exportTrainingData.js')
+  const { loadOutcomesFromDb, exportViableExamples, exportSummaryLines } = await import('./s5/exportTrainingData.js')
+  const { ruleVerdictsPath } = await import('./s5/ruleAuthority.js')
   const outcomeBySession = loadOutcomesFromDb(dbPath)
-  const { written } = exportViableExamples({ journalPath, outPath, outcomeBySession })
-  console.log(`[export-training] wrote ${written} viable-session example(s) to ${outPath}`)
+  // Phase 4: earned-only — the same rule-verdict file the loop's S5 authority reads.
+  const result = exportViableExamples({ journalPath, outPath, outcomeBySession,
+    verdictsPath: ruleVerdictsPath(cyncoHome()), seatsPath: path.join(cyncoHome(), 'retained', 'seats.json') })
+  for (const line of exportSummaryLines(result, outPath)) console.log(line.replace(/^\[export\]/, '[export-training]'))
   process.exit(0)
 }
 

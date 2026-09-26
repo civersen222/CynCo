@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
-import { calibrate } from '../cynco-campaign-calibrate.mjs'
+import { calibrate, instrumentOf } from '../cynco-campaign-calibrate.mjs'
 
 const baseLog = readFileSync(new URL('./fixtures/gate_c8_base.log', import.meta.url), 'utf8')
 const spec = { id: 'c8', repo: 'C:/repo', base: '1d03308', gate: 'C:/h/gate_c8.py', perturb: 'C:/h/perturb_c8.py', suiteBaseline: 'C:/h/suite_baseline_1d03308.txt' }
@@ -122,7 +122,7 @@ describe('calibrate', () => {
     const fake = io({ perturbLog, baselineExists: true, headerText: fullHeader, positiveOut: baseLog })
     const r = await calibrate(withPositive, fake)
     expect(r.ok).toBe(false)
-    expect(r.problems).toEqual(['positive shim did not PASS (terminator MISS)'])
+    expect(r.problems).toEqual(['positive shim did not PASS (terminator MISS) (positive_c8.py)'])
     expect(fake.writes).toHaveLength(0)
   })
 
@@ -157,6 +157,21 @@ describe('calibrate', () => {
   // run bun's stale spawnSync deadline produced, it reported a null terminator,
   // "too few gate lines: 0 < 8" and one MUST-FAIL complaint per discriminator —
   // nine inventions about a triple that had two real problems.
+  // Phase 4 residual: a problem names the instrument the fix belongs in.
+  it('names the instrument file on every problem — the stub for a flipped discriminator, the header for a missing key', async () => {
+    const perturbLog = baseLog.replace('C8.1b.tiers-differ: FAIL', 'C8.1b.tiers-differ: PASS').replace('C8.5.palette.Atlas: FAIL', 'C8.5.palette.Atlas: PASS')
+    const r = await calibrate(spec, io({ perturbLog, baselineExists: true }))
+    expect(r.problems.length).toBeGreaterThan(0)
+    expect(r.problems.every(p => p.endsWith(' (perturb_c8.py)'))).toBe(true)
+    const noHeader = await calibrate(spec, io({ perturbLog, baselineExists: true, headerText: 'import os\n' }))
+    expect(noHeader.problems).toEqual(['perturb header is missing a "# EXPECT-FLIP:" line — the runner cannot calibrate what the stub did not declare (perturb_c8.py)'])
+    expect(instrumentOf('BASE must MISS the gate; terminator was PASS')).toBe('gate')
+    expect(instrumentOf('too few gate lines: 3 < 8')).toBe('gate')
+    expect(instrumentOf('unclassified base fails: C8.1a')).toBe('perturb')
+    expect(instrumentOf('C8.1a flipped to PASS under the cheat stub but was not declared in EXPECT-FLIP')).toBe('perturb')
+    expect(instrumentOf('positive shim printed errors: 2')).toBe('positive')
+  })
+
   describe('a run that produced nothing is a HARNESS FAULT, not a reading', () => {
     it('reports a `fault` on the BASE run as a fault and never compares', async () => {
       const fake = io({ perturbLog: baseLog, baselineExists: true, headerText: fullHeader })
@@ -169,7 +184,7 @@ describe('calibrate', () => {
       const r = await calibrate(withPositive, fake)
       expect(r.ok).toBe(false)
       expect(r.harnessFault).toBe(true)
-      expect(r.problems).toEqual(['harness fault: gate run at BASE did not run (code ETIMEDOUT, status null, after 7 ms) — nothing was graded'])
+      expect(r.problems).toEqual(['harness fault: gate run at BASE did not run (code ETIMEDOUT, status null, after 7 ms) — nothing was graded (gate_c8.py)'])
       // Not one invented finding about the gate itself.
       expect(r.problems.join('\n')).not.toMatch(/MUST-FAIL|too few gate lines|must MISS/)
       expect(r.baseFails).toEqual([])
@@ -187,7 +202,7 @@ describe('calibrate', () => {
       const r = await calibrate(withPositive, fake)
       expect(r.ok).toBe(false)
       expect(r.harnessFault).toBe(true)
-      expect(r.problems).toEqual(['harness fault: gate run at BASE produced no output (status 1, after 4 ms) — nothing was graded'])
+      expect(r.problems).toEqual(['harness fault: gate run at BASE produced no output (status 1, after 4 ms) — nothing was graded (gate_c8.py)'])
     })
 
     it('names the positive shim as a fault rather than a shim that "did not PASS"', async () => {
@@ -201,7 +216,7 @@ describe('calibrate', () => {
       const r = await calibrate(withPositive, fake)
       expect(r.ok).toBe(false)
       expect(r.harnessFault).toBe(true)
-      expect(r.problems).toEqual(['harness fault: positive shim run did not run (code ETIMEDOUT, status null, after 5 ms) — nothing was graded'])
+      expect(r.problems).toEqual(['harness fault: positive shim run did not run (code ETIMEDOUT, status null, after 5 ms) — nothing was graded (positive_c8.py)'])
       expect(r.problems.join('\n')).not.toMatch(/did not PASS/)
     })
 
@@ -241,7 +256,7 @@ describe('calibrate', () => {
       }
       const r = await calibrate(withPositive, fake)
       expect(r.harnessFault).toBe(true)
-      expect(r.problems).toEqual(['harness fault: positive shim run produced no output (status 1, after 4 ms) — nothing was graded'])
+      expect(r.problems).toEqual(['harness fault: positive shim run produced no output (status 1, after 4 ms) — nothing was graded (positive_c8.py)'])
     })
 
     it('a REAL timeout is still a timeout, not a fault', async () => {

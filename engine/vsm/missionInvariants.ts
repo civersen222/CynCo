@@ -30,6 +30,10 @@
 import { foundations } from '../cybernetics-core/src/index.js'
 import { bashEffect } from '../tools/bashEffect.js'
 import { isSourceRewrite } from '../tools/toolHints.js'
+import { importRetainedFrom, type RetainedStoreLike } from './retainedConfigStore.js'
+
+/** This instance's id in the retained-configuration store. */
+export const MISSION_INVARIANTS_INSTANCE = 'mission-invariants'
 
 export interface InvariantCaps { editGapCap: number; commitGapCap: number; revertBan: boolean; codeIndexFirst: boolean }
 
@@ -138,7 +142,14 @@ export class MissionInvariants {
   private revertRefusals = 0
   private codeIndexAssisted = 0
 
-  constructor(readonly caps: InvariantCaps) {
+  /**
+   * `retainedStore`: when given, the homeostat is seeded from the
+   * `mission-invariants` table it holds (vsm/retainedConfigStore.ts) — the
+   * configurations earlier missions found restored viability. Memory only: the
+   * gate keys on the caps (see the header), the search stays `Ordered`, and no
+   * retained position is applied.
+   */
+  constructor(readonly caps: InvariantCaps, opts: { retainedStore?: RetainedStoreLike } = {}) {
     // No-op sink: withConfig requires a FeedbackLoop and feeds measurements[0]
     // into it on every observe(), but this homeostat's regulation happens via
     // the essential-variable bounds/uniselector below, not the fast loop's
@@ -154,6 +165,17 @@ export class MissionInvariants {
       { kind: 'Discrete', positions: ['full', 'edit-only'], index: 0 },
       { dwell: DWELL, strategy: 'Ordered', seed: 0n },
     )
+    if (opts.retainedStore) importRetainedFrom(this.homeostat, opts.retainedStore, MISSION_INVARIANTS_INSTANCE)
+  }
+
+  /** Write the homeostat's retained table to `store` (mission end). Throws on a store failure — the caller logs. */
+  saveRetained(store: RetainedStoreLike, sessionId: string | null): { version: number; changed: boolean } {
+    return store.save(MISSION_INVARIANTS_INSTANCE, this.homeostat.exportRetained(), sessionId)
+  }
+
+  /** The homeostat's live retained table, parsed. */
+  retainedTable(): Record<string, unknown> {
+    return JSON.parse(this.homeostat.exportRetained())
   }
 
   /**

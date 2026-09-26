@@ -4,6 +4,8 @@ import { basename } from 'node:path'
 import { spawnSync } from 'node:child_process'
 
 const REQUIRED = ['id', 'title', 'repo', 'base', 'gate', 'perturb', 'suiteBaseline', 'marker', 'keepGreen', 'budget', 'invariants', 'posiwid', 'allow', 'deny', 'measures', 'work', 'rules']
+/** The only env keys a campaign spec may hand the dispatched engine (F161): the explicit-path overrides for the runtime assets. */
+export const SPEC_ENV_KEYS = ['LOCALCODE_LLAMA_SERVER', 'LOCALCODE_MODEL_PATH']
 const NUM = (o, k, path) => { if (typeof o?.[k] !== 'number' || !(o[k] > 0)) throw new Error(`campaign spec ${path}.${k} must be a positive number`) }
 
 export function loadCampaignSpec(path) {
@@ -43,6 +45,19 @@ export function loadCampaignSpec(path) {
   // optional because the hand-authored c8 spec has none and must keep loading;
   // the seal verb requires one for every gate CynCo writes.
   if (spec.positive !== undefined && (typeof spec.positive !== 'string' || !spec.positive)) throw new Error('campaign spec positive must be a non-empty string')
+  // F161: `env` is what a campaign under a temp CYNCO_HOME hands the engine so
+  // it finds the real llama-server and GGUF. EXACTLY those two keys: the
+  // spec's values override the runner's own environment, and a wider
+  // allowlist would let a spec move CYNCO_HOME under the engine alone, hand-set
+  // LOCALCODE_CACHE_RAM (F91), rebind the bridge, swap the provider or replace
+  // the operator's immutable paths (Task 7 review B-I1).
+  if (spec.env !== undefined) {
+    if (typeof spec.env !== 'object' || spec.env === null || Array.isArray(spec.env)) throw new Error('campaign spec env must be an object of string values')
+    for (const [k, v] of Object.entries(spec.env)) {
+      if (!SPEC_ENV_KEYS.includes(k)) throw new Error(`campaign spec env.${k}: a spec may set only ${SPEC_ENV_KEYS.join(' and ')}`)
+      if (typeof v !== 'string' || !v) throw new Error(`campaign spec env.${k} must be a non-empty string`)
+    }
+  }
   if (spec.author !== undefined && spec.author !== 'cynco' && spec.author !== 'human') throw new Error(`campaign spec author must be "cynco" or "human"; got ${JSON.stringify(spec.author)}`)
   spec.author = spec.author ?? 'human'
   if (spec.authorMissionId !== undefined && spec.authorMissionId !== null && typeof spec.authorMissionId !== 'string') throw new Error('campaign spec authorMissionId must be a string or null')

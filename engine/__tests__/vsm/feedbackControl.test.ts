@@ -1,5 +1,9 @@
-import { describe, expect, it, beforeEach } from 'bun:test'
-import { FeedbackControlIntegration } from '../../vsm/feedbackControl.js'
+import { describe, expect, it, beforeEach, vi } from 'bun:test'
+import { mkdtempSync, rmSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
+import { FeedbackControlIntegration, SESSION_FEEDBACK_INSTANCE } from '../../vsm/feedbackControl.js'
+import { RetainedConfigStore, type RetainedFile, type RetainedStoreLike } from '../../vsm/retainedConfigStore.js'
 
 describe('FeedbackControlIntegration', () => {
   let fc: FeedbackControlIntegration
@@ -72,5 +76,83 @@ describe('FeedbackControlIntegration', () => {
     expect(after.adaptationTrace[0].violations).toEqual(['ev0'])
     expect(after.adaptationTrace[0].restoredAfter).toBeNull()
     expect(after.viabilityMargin).toBeLessThan(0)
+  })
+})
+
+/** Records what the instance asked of it; hands back `stored` on load. */
+function fakeStore(stored: RetainedFile | null) {
+  const loads: string[] = []
+  const saves: Array<{ instance: string; json: string; sessionId: string | null }> = []
+  let version = stored?.version ?? 0
+  const store: RetainedStoreLike = {
+    load(instance) { loads.push(instance); return stored },
+    save(instance, json, sessionId) { saves.push({ instance, json, sessionId }); version++; return { version, changed: true } },
+  }
+  return { store, loads, saves }
+}
+
+function retainedFile(instance: string, retained: Record<string, unknown>, version = 3): RetainedFile {
+  return { schema: 1, instance, version, updatedAt: 't', retained, history: [] }
+}
+
+describe('FeedbackControlIntegration — retained configurations (session-feedback)', () => {
+  it('is backward compatible: no store, empty table, version null', () => {
+    const fc = new FeedbackControlIntegration()
+    expect(fc.retainedSnapshot()).toEqual({ retained: {}, version: null })
+  })
+
+  it('imports the stored table at construction', () => {
+    const table = { ev0: { Continuous: [0.75, 8192, 0.3] } }
+    const { store, loads } = fakeStore(retainedFile(SESSION_FEEDBACK_INSTANCE, table))
+    const fc = new FeedbackControlIntegration({ retainedStore: store })
+    expect(SESSION_FEEDBACK_INSTANCE).toBe('session-feedback')
+    expect(loads).toEqual(['session-feedback'])
+    expect(JSON.parse(fc.ultrastable.exportRetained())).toEqual(table)
+    expect(fc.retainedSnapshot()).toEqual({ retained: table, version: 3 })
+  })
+
+  it('an invalid stored table is logged and leaves the instance empty (never throws)', () => {
+    const { store } = fakeStore(retainedFile(SESSION_FEEDBACK_INSTANCE, { ev0: { Bogus: 1 } }))
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    try {
+      const fc = new FeedbackControlIntegration({ retainedStore: store })
+      expect(fc.retainedSnapshot().retained).toEqual({})
+      expect(log.mock.calls.some(c => String(c[0]).includes('[retained]'))).toBe(true)
+    } finally {
+      log.mockRestore()
+    }
+  })
+
+  it('exports the live table at session end and tracks the version it got back', () => {
+    const { store, saves } = fakeStore(null)
+    const fc = new FeedbackControlIntegration({ retainedStore: store })
+    fc.update(0.95, 0.1, 1.0, 0.9) // violation → step
+    fc.update(0.3, 0.1, 1.0, 0.9)  // restored → retained
+    const r = fc.saveRetained(store, 'session-42')
+    expect(r).toEqual({ version: 1, changed: true })
+    expect(saves).toHaveLength(1)
+    expect(saves[0].instance).toBe('session-feedback')
+    expect(saves[0].sessionId).toBe('session-42')
+    expect(saves[0].json).toBe(fc.ultrastable.exportRetained())
+    expect(Object.keys(JSON.parse(saves[0].json))).toEqual(['ev0'])
+    expect(fc.retainedSnapshot().version).toBe(1)
+  })
+
+  it('round-trips through the real store across two instances (two sessions)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cynco-retained-fc-'))
+    try {
+      const store = new RetainedConfigStore(dir)
+      const first = new FeedbackControlIntegration({ retainedStore: store })
+      first.update(0.95, 0.1, 1.0, 0.9)
+      first.update(0.3, 0.1, 1.0, 0.9)
+      expect(first.saveRetained(store, 's1')).toEqual({ version: 1, changed: true })
+      const second = new FeedbackControlIntegration({ retainedStore: store })
+      expect(second.ultrastable.exportRetained()).toBe(first.ultrastable.exportRetained())
+      expect(second.retainedSnapshot().version).toBe(1)
+      // Nothing new retained in session two → unchanged, version stays.
+      expect(second.saveRetained(store, 's2')).toEqual({ version: 1, changed: false })
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 })
+    }
   })
 })

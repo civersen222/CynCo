@@ -8,6 +8,9 @@
  *   the essential variables (context %, failure rate, variety balance). Its
  *   step-function values are NOT applied anywhere: `perturbedParameters` was
  *   removed 2026-09-18 (no reader; the trace already carries every from/to).
+ *   Its retained-configuration table persists across sessions as the
+ *   `session-feedback` instance of vsm/retainedConfigStore.ts — imported at
+ *   construction, exported at session end; still memory only, applied nowhere.
  * - isGoodRegulator checks model fidelity periodically
  */
 
@@ -15,6 +18,10 @@ import {
   foundations,
   type AdaptationEvent,
 } from '../cybernetics-core/src/index.js'
+import { importRetainedFrom, type RetainedStoreLike } from './retainedConfigStore.js'
+
+/** This instance's id in the retained-configuration store. */
+export const SESSION_FEEDBACK_INSTANCE = 'session-feedback'
 
 export class FeedbackControlIntegration {
   /** Negative feedback loop for context budget: setpoint = 70% utilization */
@@ -29,7 +36,16 @@ export class FeedbackControlIntegration {
   /** Track the PID output for external consumption */
   private _lastPidOutput = 0
 
-  constructor() {
+  /** Version of the stored retained table this instance last loaded or wrote; null = none stored. */
+  private _retainedVersion: number | null = null
+
+  /**
+   * `retainedStore`: when given, the ultrastable system is seeded from the
+   * `session-feedback` table it holds (vsm/retainedConfigStore.ts). The table is
+   * memory only — nothing applies a retained step value and the search strategy
+   * is unchanged.
+   */
+  constructor(opts: { retainedStore?: RetainedStoreLike } = {}) {
     // Context budget feedback loop: target 70% utilization
     // Negative feedback: if utilization > 70%, error is negative → compress
     // If utilization < 70%, error is positive → don't compress
@@ -62,6 +78,21 @@ export class FeedbackControlIntegration {
       [0.7, 8192, 0.3], // parameters: [temperature, max_tokens, approval_threshold]
       0.05, // step size for perturbation
     )
+    if (opts.retainedStore) {
+      this._retainedVersion = importRetainedFrom(this.ultrastable, opts.retainedStore, SESSION_FEEDBACK_INSTANCE)
+    }
+  }
+
+  /** Write the live retained table to `store` (session end). Throws on a store failure — the caller logs. */
+  saveRetained(store: RetainedStoreLike, sessionId: string | null): { version: number; changed: boolean } {
+    const r = store.save(SESSION_FEEDBACK_INSTANCE, this.ultrastable.exportRetained(), sessionId)
+    if (r.version > 0) this._retainedVersion = r.version
+    return r
+  }
+
+  /** The live retained table (parsed) and the stored version it corresponds to. */
+  retainedSnapshot(): { retained: Record<string, unknown>; version: number | null } {
+    return { retained: JSON.parse(this.ultrastable.exportRetained()), version: this._retainedVersion }
   }
 
   /**

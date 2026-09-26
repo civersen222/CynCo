@@ -404,11 +404,18 @@ in `docs/civkings-redesign-briefs/campaign-log.md` and F156 in
   (`state.authoring.<id>.harnessSha256` + `harnessFiles`) and the re-check
   re-takes it before running: a closure that moved is `harness dirty: <files>`,
   `lastCheck.kind: 'fault'` with `harnessDirty: true`, nothing is run and no
-  proposal is raised. Residuals (final re-review, Phase 4 work): the fingerprint
-  stops at `scripts/` — the engine modules `--check` also loads (`engine/paths`,
+  proposal is raised. The closure also follows `../engine/` imports (`.js`
+  resolved to `.ts`/`.tsx`, bounded to the repo root, `node_modules` skipped):
+  the engine modules `--check` loads (`engine/paths`,
   `engine/bridge/contractAutoCreate`, `engine/tools/contractVerify` and what they
-  import, `engine/cybernetics-core`) run their top-level code in the subprocess
-  and are not hashed; and a harness edit that the operator does not restore
+  import, `engine/cybernetics-core`) run their top-level code in the subprocess,
+  so since Phase 4 they are hashed under their repo-relative paths — the Phase 3
+  residual that stopped the walk at `scripts/` is closed. The walk follows
+  static relative `import` / `export … from` only: dynamic `import()`,
+  `require()` and bare/package specifiers are not followed (none occur in the
+  engine files it reaches today), and every followed path must stay under the
+  repo root on both branches. Residual (final
+  re-review): a harness edit that the operator does not restore
   before the next `--author` becomes that dispatch's baseline (the fault names
   the files first). A resume whose staged triple passes does not propose from
   disk if the closure moved since the dispatch that produced it — it dispatches
@@ -506,6 +513,174 @@ promotion is approved into the state of the campaign that gathered the evidence
 while the seal happens inside the campaign being authored, which is always
 fresh, so the seat's authority is the highest approved in any campaign's state;
 a per-seat retained-configuration store is Phase 4.
+
+**Phase 4 — autopoiesis (shipped 2026-09-25).** Phases 1–3 gave the loop its
+instruments: a sealed gate, a graded line, an authoring seat measured at the
+line. Phase 4 asks the question those instruments exist for — does the campaign
+loop produce and maintain itself — and answers it the only way this project
+accepts: as measured facts on the wave record, with nothing gaining authority
+by assertion. (Numbering: this is the mission prompt's Phase 4;
+`docs/STATE-AND-VISION-2026-07-12.md` calls the same programme Phase 8.)
+
+- **One identity set.** `scripts/cynco-identity.mjs` names the four invariants
+  that make a campaign a campaign, and checks exactly this for each (the
+  `evidence[name].detail` string says which half held or broke):
+  `gate-sealed` — the spec's `gate` and `perturb` paths (and `positive` when
+  it names one) lie under `~/.cynco/heldout/`, the spec loader's
+  `checkIdentity(spec)` passes, and a row that reports a sealed count reports
+  ≥ 1 (no row carries one today, so the detail reads "no sealed count on
+  row"); it does NOT re-hash the instruments — that is the runner's
+  pre-dispatch Rule 11 step, which `rule-11` records. `rule-11` — a
+  calibration is on record (`state.calibration.gateSha256`) and
+  `state.rule11CheckedWave` equals this wave, i.e. the runner's pre-dispatch
+  re-check of the gate/perturb/positive shas against that calibration ran for
+  THIS wave (a moved instrument stops the wave before dispatch). `revert-refused`
+  — `spec.invariants.revertBan` is `true` AND the effective invariants the wave
+  was handed (spec plus approved overrides) still carry it; it reads the
+  configuration, not the worker's refusals. `marker-recorded` — the spec names
+  a non-empty marker and the ledger row HAS a `markerSeen` field; `false` or
+  `null` pass ("not seen" is a recorded reading), only an absent field fails.
+  Outside a verdict (no wave, no row) the wave-bound halves are not asked.
+  `assertIdentityIntact` runs at every VERDICT — `rec.identity` on the wave
+  record, an `Identity:` line in the entry — and a violation is a decision
+  fault: the wave records `fault` and no proposal is raised.
+  (`rule11CheckedWave` is set BEFORE dispatch, once the sha re-check passes,
+  and nothing unsets it — a violation does not rewind it.) It runs again, with
+  no wave and no row, before every operator `--approve-proposal` /
+  `--reject-proposal` decision — except `--approve-proposal gate/<id>` and the
+  gate-author seat's auto-seal, the recorded exception: no campaign spec
+  exists yet to assert against, and `sealGate` runs `checkIdentity` on the
+  staged triple itself. `refusesIdentity(name)` refuses any proposal whose
+  family names an identity invariant — the loop may change its caps, its
+  briefs and its gates, never what makes it itself.
+- **Every configuration change is a proposal.** `scripts/cynco-proposals.mjs`
+  owns `applyProposalDecision` and the families (`ideation/brief`,
+  `gate-author/gate`, `invariants/<cap>`, `gate/<id>`); the guard
+  `engine/__tests__/guards/proposalWriters.test.ts` fails when any other
+  module under `scripts/` writes `invariantOverrides`, `ideationAuthority`,
+  `gateAuthorAuthority` or the seats store. Seat authorities now live in
+  `~/.cynco/retained/seats.json` (`{ schema, version, seats: { ideation,
+  'gate-author' }, history }`), written on every approved promotion and read
+  as the max of the store and the campaign states (`effectiveSeatAuthority`) —
+  the Phase 3 residual where a seat's authority was the highest approved in
+  any campaign's state is closed by a store that only rises. The engine's
+  session-level `AutopoiesisIntegration` proposal log is NOT on the ledger row
+  (ruling 7, amended at the wire check): `proposeParameterChange` has no
+  production caller, so the field would read zero on every row; it is wired
+  the day a parameter change is routed through it.
+- **Earned per-rule S5 authority.** The VERDICT writes
+  `~/.cynco/datasets/rule-verdicts.json` (`scripts/cynco-rule-verdicts.mjs`:
+  per rule, the Fisher/Holm verdict, precision, CI, p, n; a version that moves
+  only when a verdict changes). `engine/s5/ruleAuthority.ts` loads it once at
+  engine construction: a rule whose verdict is `PREDICTIVE` is `earned` and its
+  decision is enforced; any other rule is `advisory` and its decision is
+  emitted but not applied; no file at all is `legacy` — the pre-Phase-4
+  behaviour, named in one log line, `[s5] rule authority: …`.
+  `LOCALCODE_S5_ENFORCE=false` caps everything at advisory. Every
+  `s5.decision` frame and every ledger `s5Decisions[]` entry carries
+  `authority` and `source` (`stuck-reeval` for the live re-evaluation, null
+  for the per-message decision), and `governance.recommendation` omits
+  `autoApplyAfterMs` for an advisory rule, so the TUI cannot auto-apply what
+  the evidence has not earned. The training export (`exportViableExamples`)
+  consumes only decisions by earned rules and prints what it excluded. Two
+  leaks closed on the way: the stuck-loop live re-evaluation narrowed tools in
+  capped missions without the enforcement flag and without a frame (F157,
+  `engine/bridge/s5Restriction.ts`); and `governance.session_fidelity` rode
+  only the natural turn end, so 279 of 280 ledger rows carried
+  `identityGuard: null` (F158; one emit per user message on every exit path).
+  Read plainly: the first VERDICT after this ships writes the verdict file,
+  and from then on every S5 decision under that home is advisory until a rule
+  earns PREDICTIVE — 0 of 8 do today. Deleting the file restores legacy
+  behaviour. Headless missions no longer get the silent C7 narrowing. A
+  long-lived interactive engine keeps the reading it loaded at construction;
+  missions get fresh engines and read the latest. And one more, because it
+  bounds the whole ladder: `scripts/dispatch-mission.sh` pins
+  `LOCALCODE_S5_ENFORCE=false` for every mission, so inside a campaign wave
+  an earned rule is still advisory — earned authority reaches the interactive
+  engine today, and reaches missions only when that pin is lifted, which is a
+  decision for the evidence, not for this phase.
+- **The campaign checklist.** `scripts/cynco-autopoiesis.mjs`
+  `campaignAssessment` maps Maturana/Varela's six criteria to facts the
+  runner already has: `hasBoundary` (identity intact this wave),
+  `boundarySelfProduced` (`spec.author === 'cynco'`), `internalProduction`
+  (≥ 1 commit landed this wave), `circularProduction` (the denial analysis ran
+  AND raised an `invariants/<cap>` proposal, or a pacing digest reached a
+  brief), `organizationallyClosed` (the campaign's `ProductionNetwork` — the
+  vendored core's, never edited — reports closure over
+  wave→ledger→validation→proposal→configuration→brief→wave) and
+  `organizationMaintained` (identity intact on every wave AND
+  `identityGuard.passed` on every ledger row of the campaign — STRICT: a wave
+  or row without a reading is not maintained, so every pre-Phase-4 campaign
+  reads false, honestly). The result is `rec.autopoiesis = { criteria,
+  isAutopoietic, missing, network, facts }` on the wave record, an
+  `Autopoiesis:` line in the verdict entry, a dashboard row, and
+  `bun scripts/cynco-campaign.mjs <id>.campaign.json --autopoiesis` as a dry
+  report; `criteriaFromFacts` re-derives a reading from the stored facts. It
+  runs after the proposal step (a proposal raised this wave counts) and never
+  faults a wave — `assessError` is recorded instead.
+- **Retained configurations persist.** `engine/vsm/retainedConfigStore.ts`
+  writes `~/.cynco/retained/<instance>.json` (`{ schema: 1, instance, version,
+  updatedAt, retained, history }`, history capped at 20) for the two
+  ultrastable instances, `session-feedback` (the retained table of
+  `FeedbackControlIntegration`'s ultrastable system,
+  `engine/vsm/feedbackControl.ts` — only its save SITE, at session end in
+  `conversationLoop.ts`, sits beside `toolScorer.save`) and `mission-invariants`
+  (saved at the end of every message while a mission is armed). The version
+  moves only when the table changes, and an empty table writes nothing —
+  `retainedVersion: null` on the row means nothing has ever been retained,
+  not that the store failed. A fresh engine imports both
+  (`importRetainedFrom`) silently — a `[retained]` log line is always a
+  FAILED import, named — the ledger row carries `ultrastable.retained` and
+  `retainedVersion`, and the dashboard shows the versions. Nothing acts on them yet: the homeostat strategies are unchanged,
+  no `Habituated` step, no value applied — persistence is the prerequisite,
+  application is the next phase's measured decision.
+- **Phase 3 residuals closed.** (a) `~/.cynco/datasets/gate-outcomes.jsonl`,
+  one row per authored or sealed gate (`{ campaign, author, outcome: refused |
+  sealed | held | resealed, refusals, attempts, sealedAt }`), written by
+  `exportGateOutcomes` at every VERDICT and printed as a GATES table by
+  `--gate-lines` — a supervisor refusal is now evidence a promotion can read
+  (F156's gap). (b) `harnessClosure` follows `../engine/` imports (above).
+  (c) lint and calibration problems carry `file:line` and the seat's resume
+  brief prints them.
+- **The live proof, and what it cost.** The one-wave smoke campaign `s1`
+  (`scripts/cynco-smoke-campaign.mjs`: an 8-line sealed gate over files a
+  mission can honestly create in the Phase 2 smoke repo, an honest positive
+  shim, a cheat perturb) ran under `CYNCO_HOME=C:/tmp/cynco-home-s1/.cynco` —
+  the first campaign ever run outside the real home — and found three harness
+  defects before the model wrote a line: the grader's suite gate resolved
+  under `homedir()` (F159), the runner's bare `bash` was the WSL launcher when
+  the runner was started from PowerShell (F160), and the engine's runtime
+  assets — binary and GGUF — resolve under the home too, so the engine
+  reached for GitHub, while its profiles followed `HOME` instead and so came
+  from the operator's real home (F161; the binary and GGUF are now named by
+  path on the spec as `env` — exactly those two keys — the profiles dir
+  follows `CYNCO_HOME`, never a junction anywhere). The third launch: CALIBRATE `BASE MISS 8, perturb
+  honest`; the mission landed two commits in 16 tool calls and 91 s; the
+  sealed gate PASSed all 9 lines at HEAD, the suite gate PASSed, the derived
+  sweep left 2 survivors (`calc.py:13:cmp->NotEq`, `calc.py:14:const->2`), so
+  the decision was `pass-with-survivors`. The wave record read `identity:
+  { intact: true }` with all four invariants' evidence, `autopoiesis:
+  { isAutopoietic: false, missing: [boundarySelfProduced, circularProduction,
+  organizationallyClosed] }` (a human-authored gate, no denial-driven
+  proposal, a network with `gate`, `brief`, `proposal`, `configuration`
+  unproduced — 3 of 6, honestly), and `ruleVerdicts: { version: 1,
+  predictive: [], total: 8 }`; `rule-verdicts.json` v1 holds 8 rules, none
+  PREDICTIVE (I4 CONSTANT, I1/I3/W7/W8 NO EVIDENCE, C2/C4/W6 TOO FEW);
+  `gate-outcomes.jsonl` gained `{ campaign: s1, author: human, outcome: held }`;
+  no seats store was written (no promotion); no retained store was written
+  (both tables empty after a 91 s mission — `retained: {}`,
+  `retainedVersion: null` on the row). The mission's engine logged
+  `[s5] rule authority: legacy (no verdict file at
+  C:\tmp\cynco-home-s1\.cynco\datasets\rule-verdicts.json)` and its one S5
+  decision landed with `authority: legacy`. A second five-minute session under
+  the same home logged `[s5] rule authority: earned (0 predictive of 8)`, the
+  driver saw the engine declare `s5-advisory`, and its S5 decision landed
+  with `authority: advisory`, `enforced: false`. Both rows carry
+  `identityGuard: { passed: true }` (F158). The synthetic rows and the
+  `campaign/s1` verdict commit were removed afterwards; the temp home is kept
+  as evidence, and the smoke repo's `master` was left where the two sessions
+  put it (four commits past the fixture's pinned BASE `1b00179`, which is why
+  the fixture names its BASE instead of reading HEAD).
 
 **Deferred spec items (follow-up, not built here).**
 

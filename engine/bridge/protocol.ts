@@ -314,6 +314,13 @@ export type GovernanceStatusEvent = {
     traceLength: number
     trace: Array<{ step: number; violations: string[]; from: unknown; to: unknown; strategy: string; restoredAfter: number | null }>
     margin: number
+    /** The instance's retained-configuration table (violation pattern ->
+     *  configuration that restored viability), persisted across sessions as
+     *  `session-feedback` by vsm/retainedConfigStore.ts. Memory only — nothing
+     *  applies it. */
+    retained?: Record<string, unknown>
+    /** The last stored version of this instance's table (the live `retained` may have moved since); null = nothing stored yet. */
+    retainedVersion?: number | null
   } | null
   /** POSIWID, live (vsm/constraintChecks.ts checkToolClassAlignment): the
    *  session's stated purpose model against the distribution of what its
@@ -384,7 +391,10 @@ export type GovernanceRecommendationEvent = {
   title: string
   description: string
   action: Record<string, unknown>
+  /** Omitted for a revert and for an `advisory` decision (Phase 4). */
   autoApplyAfterMs?: number
+  /** Per-rule earned authority of the decision behind it (engine/s5/ruleAuthority.ts). */
+  authority?: 'earned' | 'advisory' | 'legacy'
 }
 
 /** Governance organ alert surfaced to the client (P1.1). Critical/high are

@@ -26,6 +26,44 @@ function slotCacheDirFor(modelPath: string): string {
   return dir
 }
 
+/**
+ * The `LOCALCODE_MISSION_*` keys `scripts/dispatch-mission.sh` launches a mission
+ * engine with (the same four the dashboard's /api/mission reads). Named, not
+ * matched by prefix, so the README env inventory lists each one.
+ */
+const MISSION_ENV_KEYS = ['LOCALCODE_MISSION_MARKER', 'LOCALCODE_MISSION_CWD', 'LOCALCODE_MISSION_BASE', 'LOCALCODE_MISSION_CHECK'] as const
+
+/**
+ * True when this engine runs an unattended mission: any of MISSION_ENV_KEYS is
+ * set. An empty value does not count — the check command may legitimately be `''`.
+ */
+export function isUnattendedMission(env: Record<string, string | undefined> = process.env): boolean {
+  return MISSION_ENV_KEYS.some(k => typeof env[k] === 'string' && env[k]!.length > 0)
+}
+
+/**
+ * F161 residual: what to do about the llama-server binary once `resolveBinary`
+ * has looked. A resolved path is used. With none, an interactive engine
+ * downloads it (as it always has); an unattended mission REFUSES with a named
+ * error instead — nobody is there to approve a download (downloads are the
+ * operator's call, pre-staged for unattended runs), and the Phase 4 live proof's
+ * second launch reached GitHub and then sat out the dispatch's ten-minute wait.
+ * Refuse, don't crash (F140). Pure: no disk, no network.
+ */
+export function binaryAction(opts: {
+  binaryPath: string | null
+  unattended: boolean
+  binDir: string
+  brainBinDir: string
+}): { kind: 'use'; path: string } | { kind: 'download' } | { kind: 'refuse'; message: string } {
+  if (opts.binaryPath) return { kind: 'use', path: opts.binaryPath }
+  if (!opts.unattended) return { kind: 'download' }
+  return {
+    kind: 'refuse',
+    message: `F161: no llama-server under ${opts.binDir} or ${opts.brainBinDir}; an unattended engine does not download — stage the binary or set LOCALCODE_LLAMA_SERVER`,
+  }
+}
+
 export async function bootstrapProvider(
   config: LocalCodeConfig,
 ): Promise<{ provider: Provider; contextLength: number }> {
@@ -86,13 +124,27 @@ export async function bootstrapProvider(
       // weeks while every launch silently served the unpatched binary.
       const { resolveBinary, downloadBinary } = await import('./llama/binaryManager.js')
       const brainBinDir = path.join(cyncoDir, 'bin-brain')
-      let binaryPath = resolveBinary(config.llamaServer, binDir, brainBinDir)
-      if (!binaryPath) {
+      const action = binaryAction({
+        binaryPath: resolveBinary(config.llamaServer, binDir, brainBinDir),
+        unattended: isUnattendedMission(),
+        binDir,
+        brainBinDir,
+      })
+      // A refusal throws into the FATAL catch below, which names it.
+      if (action.kind === 'refuse') throw new Error(action.message)
+      let binaryPath: string
+      if (action.kind === 'use') {
+        binaryPath = action.path
+      } else {
         console.log('[llama-cpp] llama-server not found — downloading...')
         binaryPath = await downloadBinary(binDir, (msg) => console.log(msg))
       }
       console.log(`[llama-cpp] Binary: ${binaryPath}`)
-      if (binaryPath.startsWith(brainBinDir) && !process.env.LLAMA_ACTIVATIONS_LAYERS) {
+      // By directory NAME, not by `startsWith(brainBinDir)`: an explicit
+      // LOCALCODE_LLAMA_SERVER (F161 — a campaign under a temp home naming the
+      // real home's brain build) is the same patched binary and gets the tap.
+      const isBrainBuild = binaryPath.replace(/\\/g, '/').includes('/bin-brain/')
+      if (isBrainBuild && !process.env.LLAMA_ACTIVATIONS_LAYERS) {
         // The tap layers ship with the brain build's default readout config
         // (jlens artifacts are exported for exactly these five layers). The
         // patched server without this env serves /props but no activations —

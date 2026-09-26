@@ -560,12 +560,14 @@ body.mission-mode #historyPanel { display: none; }
       <div><span class="label">Algedonic Alerts: </span><span class="value" id="govAlgedonic">0</span></div>
       <div><span class="label">Axiom Health: </span><span class="value" id="govAxioms">&mdash;</span></div>
       <!-- Phase 2b/2c readouts: mission invariants, live POSIWID, the legacy
-           ultrastable instance's viability margin, brain-tier layer
+           ultrastable instance's viability margin and retained-configuration
+           table, brain-tier layer
            convergence, and verify-first routing. All null in an interactive
            (non-mission) session; renderGovernance() shows the dash then. -->
       <div><span class="label">Invariants: </span><span class="value" id="govInvariants">&mdash;</span></div>
       <div><span class="label">POSIWID live: </span><span class="value" id="govPosiwidLive">&mdash;</span></div>
       <div><span class="label">Ultrastable margin: </span><span class="value" id="govUltrastable">&mdash;</span></div>
+      <div><span class="label">Retained configs: </span><span class="value" id="govRetained">&mdash;</span></div>
       <div><span class="label">Layer convergence: </span><span class="value" id="govLayerConvergence">&mdash;</span></div>
       <div><span class="label">Routing: </span><span class="value" id="govRouting">&mdash;</span></div>
     </div>
@@ -1263,6 +1265,17 @@ function renderContext() {
   badge.className = 'action-badge ' + action;
 }
 
+// "Retained configs" row: the session-feedback ultrastable instance's retained
+// table (`ultrastable.retained`, one key per violation pattern) and the stored
+// version it matches (`ultrastable.retainedVersion`, null = nothing stored yet).
+// A dash when there is no block, or the block predates the retained store.
+function retainedConfigsText(u) {
+  if (!u || u.retained == null || typeof u.retained !== 'object') return '—';
+  var n = Object.keys(u.retained).length;
+  var keys = n + (n === 1 ? ' key' : ' keys');
+  return u.retainedVersion != null ? keys + ', v' + u.retainedVersion : keys + ', not stored yet';
+}
+
 function renderGovernance() {
   var gov = state.governance;
   var badgeEl = document.getElementById('govHealthBadge');
@@ -1361,6 +1374,10 @@ function renderGovernance() {
   // The legacy ultrastable instance's viability margin (Plan 1).
   var ultraEl = document.getElementById('govUltrastable');
   ultraEl.textContent = (gov.ultrastable && gov.ultrastable.margin != null) ? gov.ultrastable.margin.toFixed(3) : '—';
+
+  // Its retained-configuration table and stored version (vsm/retainedConfigStore.ts,
+  // `session-feedback`). textContent: nothing here is parsed as markup.
+  document.getElementById('govRetained').textContent = retainedConfigsText(gov.ultrastable);
 
   // Brain-tier layer convergence + tool-token entropy digest (engine/brain).
   // null whenever no brain consumer is wired (Ollama, or one that never
@@ -2227,6 +2244,21 @@ function fetchSessionState() {
   // no engine session is a mission at all. Rebuilt from scratch each poll: the
   // set of campaigns, their proposals and their wave counts can all change
   // between polls and there is no stable id to patch a single row against.
+  // Phase 4 ruling 4: the campaign checklist off the last GRADED wave — the
+  // reading is campaign-to-date already. A stop or fault record written after
+  // it carries no reading and is skipped (the --autopoiesis verb reads the same
+  // wave); no wave with a reading at all prints a dash.
+  function campaignAutopoiesisText(waves) {
+    var a = null;
+    for (var i = (waves ? waves.length : 0) - 1; i >= 0; i--) {
+      if (waves[i] && waves[i].autopoiesis) { a = waves[i].autopoiesis; break; }
+    }
+    if (!a) return '—';
+    if (a.assessError) return 'unassessed — ' + a.assessError;
+    var missing = a.missing || [];
+    return (6 - missing.length) + '/6' + (missing.length ? ' — missing ' + missing.join(', ') : '');
+  }
+
   function pollCampaign() {
     fetch('/api/campaign').then(function(r) { return r.json(); }).then(function(data) {
       var panel = document.getElementById('panelCampaign');
@@ -2279,6 +2311,7 @@ function fetchSessionState() {
           ['Governance POSIWID', c.governancePosiwid
             ? (c.governancePosiwid.verdict + (c.governancePosiwid.onsetWave ? ' (drift onset wave ' + c.governancePosiwid.onsetWave + ')' : ''))
             : '—'],
+          ['Autopoiesis', campaignAutopoiesisText(c.waves)],
           ['In flight', c.inFlight ? ('wave ' + c.inFlight.wave + ' dispatched ' + (c.inFlight.dispatchedAt || '')) : 'no'],
           ['Seat authority', Number(c.gateAuthorAuthority || 0).toFixed(2)],
           ['Authoring', authoringText, authoringProblems.join('\n')],

@@ -2,7 +2,7 @@
 //
 //   bun scripts/cynco-campaign.mjs docs/civkings-redesign-briefs/c8.campaign.json [--waves N] [--resume] [--dry-run] [--sync]
 //                                  [--approve-proposal ideation/brief] [--reject-proposal ideation/brief]
-//                                  [--adopt-inflight]
+//                                  [--adopt-inflight] [--autopoiesis]
 //   bun scripts/cynco-campaign.mjs --author c9            # write the next campaign's sealed gate (Phase 3)
 //   bun scripts/cynco-campaign.mjs --check <staging> <base>
 //   bun scripts/cynco-campaign.mjs --approve-proposal gate/c9   # seal what --author staged
@@ -17,21 +17,33 @@ import { fileURLToPath } from 'node:url'
 import { writeFileSync, readFileSync, existsSync, appendFileSync, unlinkSync, openSync, writeSync, closeSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { cyncoHome } from '../engine/paths.js'
+import { bashExe, runSync, faultSummary } from './cynco-spawn.mjs'
 import { loadCampaignSpec, checkIdentity } from './cynco-campaign-spec.mjs'
 import { CampaignState } from './cynco-campaign-state.mjs'
 import { calibrate, defaultIo as calibrateIo } from './cynco-campaign-calibrate.mjs'
-import { generateBrief, sidecarFor, workOrderFor } from './cynco-brief.mjs'
+import { generateBrief, sidecarFor, workOrderFor, pacingDigestIncluded } from './cynco-brief.mjs'
 import { gradeWave } from './cynco-campaign-grade.mjs'
 import { verdictEntry, notify, commitVerdict, economicsLines } from './cynco-campaign-verdict.mjs'
 import { runIdeation, measureFollowed, authorityRegistry, promotionProposal, capProposal, effectiveInvariants } from './cynco-ideation.mjs'
 import { patchLedgerRow, findLedgerRow } from './cynco-ledger-patch.mjs'
-import { exportGateLines, resealRecord, linesOf } from './cynco-gate-lines.mjs'
+import { exportGateLines, exportGateOutcomes, resealRecord, linesOf } from './cynco-gate-lines.mjs'
 import { gateAuthorPromotion } from './cynco-gate-author.mjs'
 import { sidecarPath } from './cynco-contract.mjs'
 import { exportTriples } from './cynco-triples.mjs'
 import { analyseDenials } from './cynco-signal-validation.mjs'
 import { governanceCounts, governancePosiwid } from './cynco-governance-posiwid.mjs'
 import { loadRoadmap, saveRoadmap, rejectLine, ROADMAP_PATH } from './cynco-roadmap.mjs'
+import { assertIdentityIntact } from './cynco-identity.mjs'
+import { applyProposalDecision, seatAuthority } from './cynco-proposals.mjs'
+import { writeRuleVerdicts, RULE_VERDICTS_PATH } from './cynco-rule-verdicts.mjs'
+import { readLedger } from './cynco-ledger-shards.mjs'
+import { campaignAssessment, campaignRows, autopoiesisLine, storedAssessment, effectiveSeatAuthority } from './cynco-autopoiesis.mjs'
+import { summarize as summarizeGateLines, GATE_LINES_PATH } from './cynco-gate-lines.mjs'
+
+// Phase 4: the operator's decision on a pending proposal lives in the one
+// proposal registry (scripts/cynco-proposals.mjs). Re-exported so every caller
+// that imported it from the runner keeps working against the same function.
+export { applyProposalDecision } from './cynco-proposals.mjs'
 
 const BRIEFS_DIR = 'docs/civkings-redesign-briefs'
 const LOG = `${BRIEFS_DIR}/campaign-log.md`
@@ -105,6 +117,11 @@ export function decide({ grade, state, spec, commitsLanded, row }) {
  * the runner) and GH_TOKEN/GITHUB_TOKEN would let a mission push and merge.
  * None of the three is needed to do the work, so none of them is handed over.
  */
+/** The runner's environment with the spec's `env` laid over it (F161); `dispatchEnv` strips it like any other base. */
+export function waveEnvBase(spec, base = process.env) {
+  return { ...base, ...(spec?.env ?? {}) }
+}
+
 export function dispatchEnv(base, extra) {
   const out = {}
   for (const [k, v] of Object.entries(base)) {
@@ -112,6 +129,41 @@ export function dispatchEnv(base, extra) {
     out[k] = v
   }
   return { ...out, ...extra }
+}
+
+/** The cap on the dispatch-mission.sh launch itself (it backgrounds the driver and returns). */
+export const DISPATCH_TIMEOUT_MS = 900_000
+
+/**
+ * The one spawn of `scripts/dispatch-mission.sh`, for the wave (`dispatch`) and
+ * the authoring mission (`dispatchRaw`). In a multi-wave campaign it is the
+ * FIRST spawn after `waitForDriver`'s hours-long idle in the same bun process —
+ * exactly F155's trigger (a stale deadline kills the spawn with ETIMEDOUT in
+ * milliseconds). So it goes through runSync, which tells an elapsed timeout
+ * from a harness fault, and each of the three readings is named: a fault, a
+ * real timeout, a non-zero exit. It is deliberately NOT given
+ * `retryImpossibleTimeout`: the killed attempt may already have backgrounded a
+ * driver, and a blind re-dispatch could start a second one on the same GPU.
+ *
+ * `env` is the complete environment (dispatchEnv already stripped the ntfy and
+ * GitHub keys), so it is passed `envExact`; an undefined env inherits the
+ * runner's, as spawnSync did. `hooks` is runSync's test seam (`spawn`, `now`)
+ * plus `bash` in place of bashExe().
+ */
+export function runDispatch(args, env, hooks = {}) {
+  const { bash, ...spawnHooks } = hooks
+  const r = runSync(bash ?? bashExe(), ['scripts/dispatch-mission.sh', ...args], { env, envExact: true, timeoutMs: DISPATCH_TIMEOUT_MS }, spawnHooks)
+  const tail = () => `${r.stdout}${r.stderr}`.slice(-2000)
+  if (r.fault) {
+    throw new Error(`dispatch harness fault: dispatch-mission.sh did not run (${faultSummary(r.fault)}) — `
+      + `an ETIMEDOUT far under the ${DISPATCH_TIMEOUT_MS} ms cap is bun's stale spawn deadline (F155); `
+      + `not retried, because a re-dispatch could start a second driver${tail() ? `: ${tail()}` : ''}`)
+  }
+  if (r.timedOut) throw new Error(`dispatch timed out after ${r.elapsedMs} ms (cap ${DISPATCH_TIMEOUT_MS} ms): ${tail()}`)
+  if (r.status !== 0) throw new Error(`dispatch failed (exit ${r.status}): ${tail()}`)
+  if (r.stdout) console.log(r.stdout.trimEnd())
+  if (r.stderr?.trim()) console.log(r.stderr.trimEnd())
+  return r
 }
 
 const gitC = (repo, args) => spawnSync('git', ['-C', repo, ...args], { encoding: 'utf8' }).stdout ?? ''
@@ -124,16 +176,16 @@ export const defaultIo = {
     // can name its campaign as `active` in /api/campaign between waves, when no
     // campaign has a driver in flight (Phase 2c-ii). dispatch-mission.sh passes
     // it through to `bun engine/main.ts` the same way it passes LOCALCODE_MISSION_*.
-    const env = dispatchEnv(process.env, { LOCALCODE_MAX_ITERATIONS: String(spec.budget.iterations), CYNCO_BASH_TIMEOUT_MS: String(spec.budget.bashTimeoutMs),
+    // F161: spec.env (the engine's explicit llama-server / GGUF paths for a
+    // campaign under a temp home) goes in through the BASE, so the same
+    // stripping applies to it as to the runner's own environment.
+    const env = dispatchEnv(waveEnvBase(spec), { LOCALCODE_MAX_ITERATIONS: String(spec.budget.iterations), CYNCO_BASH_TIMEOUT_MS: String(spec.budget.bashTimeoutMs),
       CYNCO_MISSION_INVARIANTS: JSON.stringify(invariants), DRIVER_PID_FILE: pidFile, DRIVER_LOG: driverLog, CYNCO_SKIP_IDLE_ENGINE: '1', CYNCO_CAMPAIGN_ID: spec.id })
-    const r = spawnSync('bash', ['scripts/dispatch-mission.sh', briefFile, spec.marker, spec.repo, String(timeoutS), spec.keepGreen], { env, encoding: 'utf8', timeout: 900_000 })
-    if (r.status !== 0) throw new Error(`dispatch failed (exit ${r.status}): ${(r.stdout + r.stderr).slice(-2000)}`)
     // dispatch-mission.sh prints the invariants it accepted and the driver log
-    // and PID it started; captured output is invisible unless we re-emit it, and
-    // those three lines are the only unattended evidence that the wave was given
-    // its orders and that the PID we are about to wait on is the driver's.
-    if (r.stdout) console.log(r.stdout.trimEnd())
-    if (r.stderr?.trim()) console.log(r.stderr.trimEnd())
+    // and PID it started; runDispatch re-emits them — those three lines are the
+    // only unattended evidence that the wave was given its orders and that the
+    // PID we are about to wait on is the driver's.
+    runDispatch([briefFile, spec.marker, spec.repo, String(timeoutS), spec.keepGreen], env)
     // dispatch-mission.sh backgrounds the driver, so the missionId does not
     // exist yet: it is read out of the driver log by missionIdFrom once the
     // driver has written its ledger line.
@@ -146,10 +198,7 @@ export const defaultIo = {
   // `dispatch` above is left exactly as it was: the wave path is the measured
   // one and must not change behaviour to make room for this.
   dispatchRaw: async ({ briefFile, marker, cwd, timeoutS, checkCmd, env }) => {
-    const r = spawnSync('bash', ['scripts/dispatch-mission.sh', briefFile, marker, cwd, String(timeoutS), checkCmd ?? ''], { env, encoding: 'utf8', timeout: 900_000 })
-    if (r.status !== 0) throw new Error(`dispatch failed (exit ${r.status}): ${(r.stdout + r.stderr).slice(-2000)}`)
-    if (r.stdout) console.log(r.stdout.trimEnd())
-    if (r.stderr?.trim()) console.log(r.stderr.trimEnd())
+    runDispatch([briefFile, marker, cwd, String(timeoutS), checkCmd ?? ''], env)
     return { driverLog: env?.DRIVER_LOG ?? null }
   },
   // The LEDGER LINE is the authority, not the pid. The driver writes its row
@@ -207,6 +256,23 @@ export const defaultIo = {
   exportTriples: () => exportTriples(),
   analyseDenials: (summary) => analyseDenials(summary),
   exportGateLines: () => exportGateLines(),
+  exportGateOutcomes: () => exportGateOutcomes(),
+  // Phase 4: the per-wave identity assertion re-runs the spec loader's own
+  // check (sealed paths exist, base is a commit, nothing brief-visible names
+  // the instrument), and the authority registry reads the retained seats store
+  // under this home. Both are seams so a unit test never touches git or ~/.cynco.
+  checkIdentity: (spec) => checkIdentity(spec),
+  seatsHome: () => cyncoHome(),
+  // Phase 4: the per-rule S5 verdicts are recomputed from the whole ledger at
+  // every VERDICT and written under <datasetsHome>/datasets/ for the engine.
+  // Seams for the same reason as seatsHome: a unit test must never read the
+  // real ledger shards or write into ~/.cynco.
+  readLedgerRows: () => readLedger(),
+  datasetsHome: () => cyncoHome(),
+  writeRuleVerdicts: (args) => writeRuleVerdicts(args),
+  // Phase 4 ruling 4: the checklist is pure over facts the VERDICT already
+  // holds; a seam only so a test can prove a throw never faults the wave.
+  assessAutopoiesis: (args) => campaignAssessment(args),
 }
 
 /**
@@ -261,11 +327,20 @@ export async function runWave(spec, state, io = defaultIo) {
   if (moved.length) {
     return stopWave(spec, state, io, { wave, base, why: `${moved.join(' and ')} changed since calibration — re-run to recalibrate` })
   }
-  const registry = authorityRegistry(s)
+  // The identity assertion at VERDICT asks whether THIS wave's re-check ran,
+  // not whether some earlier one did: a wave that skipped it is ungraded
+  // against its own instrument, whatever the calibration on record says.
+  s.rule11CheckedWave = wave
+  const registry = authorityRegistry(s, { seatsHome: io.seatsHome?.() ?? null })
   const commander = registry.whoCommands('brief')?.component ?? 'generator'
 
   let ideation = null, ideationMeta = null
   let missionId, row, briefFile, dispatchedAt, waveFiles, workOrder
+  // Phase 4 ruling 4: did the campaign-to-date denial digest (ledger →
+  // validation) reach THIS wave's brief? The same predicate pacing() used to
+  // print it (pacingDigestIncluded), recorded as `s4.pacingFromDenials`; an
+  // adopted wave's brief was not written here, so false.
+  let pacingFromDenials = false
 
   if (s.adoptedRow) {
     // ADOPT (scripts/cynco-campaign-adopt.mjs): this wave already RAN — it was
@@ -312,6 +387,7 @@ export async function runWave(spec, state, io = defaultIo) {
     const briefCtx = { ...ctx, ideation }
     const text = generateBrief(spec, briefCtx)
     workOrder = workOrderFor(spec, briefCtx)
+    pacingFromDenials = pacingDigestIncluded(briefCtx)
     // checkIdentity guards the spec's own fields, but the ideation section is
     // written by a model that just read the repo. A brief naming the sealed
     // gate would be refused by sealedPaths mid-run, after the wall clock has
@@ -364,7 +440,7 @@ export async function runWave(spec, state, io = defaultIo) {
   // decide() reads waveCount as "waves spent INCLUDING this one" — the state's
   // own counter is only advanced after the record is appended, so hand decide
   // the count this wave makes rather than the one before it.
-  const decision = decide({ grade, state: { ...s, waveCount: wave }, spec, commitsLanded: commits.length, row })
+  let decision = decide({ grade, state: { ...s, waveCount: wave }, spec, commitsLanded: commits.length, row })
   io.patchRow(missionId, { verified: grade.verified, ...(grade.sweep ? { mutationSweep: grade.sweep } : {}), sweepFault: grade.sweepFault ?? null,
     gate: { sha: grade.sha, gateSha256, terminator: grade.gate.terminator, fails: grade.gate.fails.map(f => f.line), passes: grade.gate.passes.length, priorRegressions: grade.gate.priorRegressions, suiteRegressions: grade.suite.regressions, harnessFault: grade.gate.harnessFault ?? grade.suite.harnessFault ?? null },
     posiwid: { divergence: grade.posiwid.divergence, verdict: grade.posiwid.verdict, dominantObserved: grade.posiwid.dominantObserved } })
@@ -385,7 +461,7 @@ export async function runWave(spec, state, io = defaultIo) {
   // fallback here is for an adopted or hand-built spec that never went through it.
   const rec = { wave, missionId, briefFile, base, head: grade.sha, gateSha256, dispatchedAt, gradedAt: new Date().toISOString(), gate: { ...grade.gate, author: spec.author ?? 'human' }, suite: grade.suite, sweep: grade.sweep, sweepFault: grade.sweepFault ?? null, posiwid: grade.posiwid, verified: grade.verified,
     outcome: { landed: row.outcome === 'landed', exitReason: row.exitReason },
-    s4: { generatorInput: { failIds: fails.map(f => f.id), priorMissionId: prior?.missionId ?? null }, ideation, ideationMeta, authority: s.ideationAuthority ?? 0, commander, followed, workOrder },
+    s4: { generatorInput: { failIds: fails.map(f => f.id), priorMissionId: prior?.missionId ?? null }, ideation, ideationMeta, authority: s.ideationAuthority ?? 0, commander, followed, workOrder, pacingFromDenials },
     decision, verdictSha: null, notified: false }
   state.appendWave(rec)
   appended = true
@@ -400,15 +476,30 @@ export async function runWave(spec, state, io = defaultIo) {
   // a c8 cap proposal must be built from. A summary with no block for this
   // campaign (nothing graded under it yet) falls back to the pool, and the
   // verdict line then says which of the two it is reading.
-  let denialAnalysis = null, denialScope = 'campaign'
+  let denialAnalysis = null, denialScope = 'campaign', ledgerRows = null
   try {
-    const summary = io.exportTriples().summary
+    const exported = io.exportTriples()
+    ledgerRows = Array.isArray(exported?.rows) ? exported.rows : null
+    const summary = exported.summary
     const camp = summary?.campaigns?.[spec.id]
     const scoped = camp?.denials ? { denials: camp.denials, quiet: camp.quiet ?? {} } : null
     denialScope = scoped ? 'campaign' : 'all runs'
     denialAnalysis = (io.analyseDenials ?? defaultIo.analyseDenials)(scoped ?? { denials: summary?.denials, quiet: summary?.quiet })
     s.denialAnalysis = denialAnalysis
   } catch (e) { console.error(`[campaign] triples export/analysis skipped: ${e?.message ?? e}`) }
+
+  // Phase 4: the per-rule S5 verdicts, rewritten for the engine from the whole
+  // ledger (not this campaign's slice — a rule's predictive power is a claim
+  // about every mission it fired on). The rows the triples export already read
+  // are reused; the ledger is read again only when that export did not hand
+  // them back. Same discipline as the datasets above: derived, rebuilt in full
+  // next time, so a failure is logged and never faults the wave.
+  rec.ruleVerdicts = null
+  try {
+    const rows = ledgerRows ?? (io.readLedgerRows ?? defaultIo.readLedgerRows)()
+    const outPath = RULE_VERDICTS_PATH((io.datasetsHome ?? defaultIo.datasetsHome)())
+    rec.ruleVerdicts = (io.writeRuleVerdicts ?? defaultIo.writeRuleVerdicts)({ rows, campaign: spec.id, outPath })
+  } catch (e) { console.error(`[campaign] rule verdicts skipped: ${e?.message ?? e}`) }
 
   // 2d: POSIWID on the governance layer itself, one window per wave.
   let governance = null
@@ -428,22 +519,48 @@ export async function runWave(spec, state, io = defaultIo) {
   let gateLines = null
   try { gateLines = (io.exportGateLines ?? defaultIo.exportGateLines)().summary ?? null }
   catch (e) { console.error(`[campaign] gate-lines export skipped: ${e?.message ?? e}`) }
+  // Phase 4: the campaign-level outcome of every seal (refused / sealed / held /
+  // resealed) — the evidence the line dataset cannot carry, because a refused
+  // gate has no lines. Same discipline: derived, rebuilt in full, never a fault.
+  try { (io.exportGateOutcomes ?? defaultIo.exportGateOutcomes)() }
+  catch (e) { console.error(`[campaign] gate-outcomes export skipped: ${e?.message ?? e}`) }
+
+  // Phase 4: is the campaign still the campaign? Asserted AFTER the datasets
+  // are regenerated (they are evidence either way) and BEFORE any proposal is
+  // computed — a campaign whose identity broke this wave has no standing to ask
+  // for more authority or a wider cap. A violation outranks every grade the
+  // way invariantsRejected does in decide(): the wave is a fault, and the
+  // record, the verdict line, the commit message and the notification all say
+  // which invariant broke.
+  const identity = assertIdentityIntact({ spec, state: s, wave, row, io })
+  rec.identity = identity
+  if (!identity.intact) {
+    decision = { kind: 'fault', why: `identity violated: ${identity.violated.join(' ')}` }
+    rec.decision = decision
+    console.error(`[campaign] wave ${wave} IDENTITY VIOLATED: ${identity.violated.map(n => `${n} (${identity.evidence[n].detail})`).join('; ')}`)
+  }
 
   // §E: two proposals must not go pending in the same wave. promotionProposal
   // is computed FIRST; when it is about to be raised, capProposal is skipped
   // entirely (set to null) rather than called — calling it here would see
   // `s.proposals` before the promotion proposal below is pushed onto it, so
   // its own pending check could not see the truth.
-  const proposal = promotionProposal(state.waves(), s.ideationAuthority ?? 0)
+  //
+  // Both promotions are asked about the seat's EFFECTIVE authority — the
+  // higher of this campaign's value and the retained seats store — so a fresh
+  // campaign does not re-propose a promotion the seat already earned elsewhere.
+  const seatsHome = io.seatsHome?.() ?? null
+  const effective = (local, seat) => seatsHome ? Math.max(local ?? 0, seatAuthority(seatsHome, seat)) : (local ?? 0)
+  const proposal = identity.intact ? promotionProposal(state.waves(), effective(s.ideationAuthority, 'ideation')) : null
   // The gate-author promotion (spec ruling 11) is the THIRD proposal that could
   // go pending in one wave, and §E does not care which of them got there first:
   // it is computed only when the ideation promotion is not about to be raised
   // AND nothing is already pending — including a `gate/<id>` the operator has
   // not decided yet, which is exactly the wrong moment to ask for more authority.
-  const gatePromotion = !proposal && !(s.proposals ?? []).some(p => p.status === 'pending')
-    ? gateAuthorPromotion(gateLines, s.gateAuthorAuthority ?? 0)
+  const gatePromotion = identity.intact && !proposal && !(s.proposals ?? []).some(p => p.status === 'pending')
+    ? gateAuthorPromotion(gateLines, effective(s.gateAuthorAuthority, 'gate-author'))
     : null
-  const cap = proposal || gatePromotion ? null : capProposal(denialAnalysis, spec, s)
+  const cap = !identity.intact || proposal || gatePromotion ? null : capProposal(denialAnalysis, spec, s)
 
   const sameFails = Array.isArray(s.lastFails) && grade.gate.fails.map(f => f.id).join() === s.lastFails.join()
   s.consecutiveNoProgress = sameFails && commits.length === 0 ? (s.consecutiveNoProgress ?? 0) + 1 : 0
@@ -454,9 +571,24 @@ export async function runWave(spec, state, io = defaultIo) {
   if (gatePromotion) { s.proposals.push({ ...gatePromotion, proposedAt: new Date().toISOString() }); await tryNotify(io, `${spec.id}: PROPOSAL ${gatePromotion.name} ${s.gateAuthorAuthority ?? 0} → ${gatePromotion.newValue} (max ${gatePromotion.bounds.max}) — ${gatePromotion.evidence.held}/${gatePromotion.evidence.n} CynCo gate lines held, ci lo ${gatePromotion.evidence.ci[0].toFixed(3)}. Approve with --approve-proposal ${gatePromotion.name}`) }
   if (cap) { s.proposals.push({ ...cap, proposedAt: new Date().toISOString() }); await tryNotify(io, `${spec.id}: PROPOSAL ${cap.name} ${cap.currentValue} → ${cap.newValue} (max ${cap.bounds.max}, p=${cap.evidence.pAdjusted.toFixed(3)}). Approve with --approve-proposal ${cap.name}`) }
 
+  // Phase 4 ruling 4: the campaign autopoiesis checklist. It reads the identity
+  // reading above (hasBoundary, organizationMaintained), and it is taken AFTER
+  // §E so a proposal raised in this very wave counts as raised — the verdict
+  // entry below prints that PROPOSAL line, and the checklist beside it must not
+  // contradict it. Derived and re-runnable over the stored facts, so a throw is
+  // recorded as `assessError` and never faults the wave.
+  try {
+    const waves = state.waves()
+    rec.autopoiesis = (io.assessAutopoiesis ?? defaultIo.assessAutopoiesis)({ spec, state: s, waves, row, rows: campaignRows({ waves, ledgerRows, row }),
+      gateLines, denialAnalysis, identity, commitsLanded: commits.length, seatAuthority: effectiveSeatAuthority(s, io.seatsHome?.() ?? null) })
+  } catch (e) {
+    rec.autopoiesis = { assessError: String(e?.message ?? e) }
+    console.error(`[campaign] autopoiesis checklist not assessed: ${e?.message ?? e}`)
+  }
+
   // Verdict (campaign log, economics, local commit, algedonic).
   const ideationRecord = ideation ? { authority: s.ideationAuthority ?? 0, hypotheses: ideation.hypotheses, followed } : null
-  const entry = verdictEntry({ spec, wave, row, grade, decision, ideationRecord, economicsLines: io.economics(), denialAnalysis, denialScope, capProposal: cap, governancePosiwid: governance, gateLines })
+  const entry = verdictEntry({ spec, wave, row, grade, decision, ideationRecord, economicsLines: io.economics(), denialAnalysis, denialScope, capProposal: cap, governancePosiwid: governance, gateLines, identity, autopoiesis: rec.autopoiesis })
   io.appendLog(entry)
   // Ruling 5: commitVerdict matches these against `git status --porcelain`,
   // which speaks repo-relative forward slashes and nothing else.
@@ -551,39 +683,6 @@ export function inFlightRefusal(state) {
   const f = state.state?.inFlight
   if (!f) return null
   return `[campaign] wave ${f.wave} is in flight since ${f.dispatchedAt} (driver log ${f.driverLog}) — wait for it, then run --adopt-inflight`
-}
-
-/** The operator's decision on a pending proposal, applied to state. Pure over
- *  the state object so the merge-on-save rule (CampaignState.save) and the
- *  CLI branch share one definition of what "approved" does. */
-export function applyProposalDecision(s, name, approve, { decidedBy = 'supervisor' } = {}) {
-  const p = (s.proposals ?? []).find(x => x.name === name && x.status === 'pending')
-  if (!p) return { ok: false, why: `no pending proposal ${name}` }
-  // Only editGapCap and commitGapCap are tunable (revertBan/codeIndexFirst are
-  // identity invariants — capProposal never proposes them, but a hand-edited
-  // or otherwise malformed proposal must be refused here too, before any
-  // state is touched).
-  if (p.name.startsWith('invariants/')) {
-    const cap = p.name.slice('invariants/'.length)
-    if (cap !== 'editGapCap' && cap !== 'commitGapCap') return { ok: false, why: `proposal ${name} names a cap that is not tunable` }
-  }
-  p.status = approve ? 'approved' : 'rejected'; p.decidedAt = new Date().toISOString()
-  // A `gate/<id>` decision is a decision about CODE, not a parameter: the only
-  // thing it changes in state is who said so. The seal itself — the copy into
-  // the sealed tree, the campaign json, the identity check, the campaign-log
-  // entry — is done by the CLI afterwards, because this function must stay
-  // pure over the state object (CampaignState.save calls it on every write).
-  // `decidedBy` is 'supervisor' for every operator verb and 'auto' only when
-  // the gate-author seat sealed at earned authority (spec ruling 2). It is the
-  // one field that says whether a human ever looked at this seal.
-  if (p.name.startsWith('gate/')) { p.decidedBy = decidedBy; return { ok: true, status: p.status } }
-  if (approve && p.name === 'ideation/brief') s.ideationAuthority = Math.min(p.newValue, p.bounds.max)
-  if (approve && p.name === 'gate-author/gate') s.gateAuthorAuthority = Math.min(p.newValue, p.bounds.max)
-  if (approve && p.name.startsWith('invariants/')) {
-    const cap = p.name.slice('invariants/'.length)
-    s.invariantOverrides = { ...(s.invariantOverrides ?? {}), [cap]: Math.min(p.newValue, p.bounds.max) }
-  }
-  return { ok: true, status: p.status }
 }
 
 /**
@@ -727,6 +826,17 @@ export async function main(argv, deps = {}) {
   // benchmark/cynco-ledger/). Run from anywhere else and the first symptom is
   // a brief written into the wrong tree, not an error.
   if (!existsSync('scripts/dispatch-mission.sh')) { console.error('[campaign] run from the localcode repo root'); return 2 }
+  // F160: a missing Git Bash is a refusal up front, not a spent, faulted wave
+  // an hour from now (dispatch is the first spawn). Asked only on the paths
+  // that WILL spawn bash — `--author` (the BASE archive, the dispatch) and the
+  // runner (CALIBRATE's archive, the wave dispatch, `--adopt-inflight`'s
+  // grade), each before it touches state. The read-only and decision verbs
+  // (`--autopoiesis`, `--check`, `--approve-proposal` / `--reject-proposal`
+  // incl. `gate/<id>`, whose seal re-checks against the staged BASE dir,
+  // `--sync`) spawn no bash and must not be refused for its absence.
+  const needGitBash = () => {
+    try { (deps.bashExe ?? bashExe)(); return true } catch (e) { console.error(`[campaign] ${e.message}`); return false }
+  }
   const flag = (n) => argv.indexOf(n)
   const loadAuthor = deps.authorModule ? async () => deps.authorModule : () => import('./cynco-gate-author.mjs')
   // Injectable because the reject path WRITES it, and a test that redirects
@@ -756,6 +866,7 @@ export async function main(argv, deps = {}) {
     if (pathId && named && !named.startsWith('--') && pathId !== named) {
       console.error(`[campaign] --author ${named} was given alongside ${specPath} — name one campaign, not two`); return 2
     }
+    if (!needGitBash()) return 2
     const author = await loadAuthor()
     // `--note <file>` rides through: a supervisor refusal's CONTENT belongs in the
     // next resume's brief, and this is the only path that writes one.
@@ -822,8 +933,42 @@ export async function main(argv, deps = {}) {
     return 0
   }
 
-  if (!specPath) { console.error('usage: bun scripts/cynco-campaign.mjs <id>.campaign.json [--waves N] [--resume] [--dry-run] [--sync] [--adopt-inflight] [--approve-proposal NAME] [--reject-proposal NAME] | --author <id> | --check <stagingDir> <baseDir>'); return 2 }
+  if (!specPath) { console.error('usage: bun scripts/cynco-campaign.mjs <id>.campaign.json [--waves N] [--resume] [--dry-run] [--sync] [--adopt-inflight] [--autopoiesis] [--approve-proposal NAME] [--reject-proposal NAME] | --author <id> | --check <stagingDir> <baseDir>'); return 2 }
+  // The runner (waves, --dry-run, --adopt-inflight) spawns bash; the verbs
+  // below that return before the lock do not. Asked before the spec is read
+  // and before CampaignState.load() creates anything.
+  const verbOnly = ['--autopoiesis', '--approve-proposal', '--reject-proposal', '--sync'].some(f => flag(f) !== -1)
+  if (!verbOnly && !needGitBash()) return 2
   const spec = loadCampaignSpec(specPath)
+  // Phase 4 ruling 4: `--autopoiesis` is a dry report over what the campaign
+  // already stored — the last graded wave's identity reading, the ledger rows
+  // the runner reads, the last regenerated gate-lines dataset. It runs before
+  // the spec's identity check on purpose: a campaign whose identity broke is
+  // exactly one whose checklist an operator wants to read (hasBoundary false).
+  // It dispatches nothing, takes no lock and writes nothing.
+  if (flag('--autopoiesis') !== -1) {
+    // Not CampaignState.load(): it creates the directory and renames a corrupt
+    // state.json aside, and a report must leave the campaign exactly as it was.
+    const state = new CampaignState(join(cyncoHome(), 'campaigns', spec.id))
+    if (!existsSync(state.statePath)) { console.error(`[campaign] --autopoiesis: no campaign state at ${state.statePath} — nothing has run to assess`); return 2 }
+    try { state.state = JSON.parse(readFileSync(state.statePath, 'utf8')) }
+    catch (e) { console.error(`[campaign] --autopoiesis: ${state.statePath} is not JSON (${e.message}) — refusing to assess it`); return 2 }
+    const ledgerRows = (deps.readLedgerRows ?? defaultIo.readLedgerRows)()
+    const gateLinesPath = GATE_LINES_PATH()
+    let gateLines = null
+    if (existsSync(gateLinesPath)) {
+      try { gateLines = summarizeGateLines(readFileSync(gateLinesPath, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l))) }
+      catch (e) { console.error(`[campaign] ${gateLinesPath} unreadable, no gate-line evidence counted: ${e.message}`) }
+    }
+    // The seat authority the runner's VERDICT reads (state values and the
+    // retained seats store under this home), so verb and runner cannot disagree
+    // on configuration → seat.
+    const a = storedAssessment({ spec, state: state.state, waves: state.waves(), ledgerRows, gateLines,
+      seatAuthority: effectiveSeatAuthority(state.state, defaultIo.seatsHome()) })
+    console.log(JSON.stringify(a, null, 2))
+    console.log(autopoiesisLine(a))
+    return 0
+  }
   const identity = checkIdentity(spec)
   if (!identity.ok) { console.error('[campaign] IDENTITY VIOLATION:\n  ' + identity.problems.join('\n  ')); return 2 }
   const state = new CampaignState(join(cyncoHome(), 'campaigns', spec.id)).load()
@@ -836,7 +981,13 @@ export async function main(argv, deps = {}) {
   // queue only when no runner is live.
   if (flag('--approve-proposal') !== -1 || flag('--reject-proposal') !== -1) {
     const approve = flag('--approve-proposal') !== -1; const name = argv[(approve ? flag('--approve-proposal') : flag('--reject-proposal')) + 1]
-    const r = applyProposalDecision(state.state, name, approve)
+    // Phase 4: the whole identity set, not only the spec check above — an
+    // uncalibrated campaign or one whose revert ban is off may not approve
+    // anything. No wave and no row: this is not a verdict, so the wave-bound
+    // halves (this wave's Rule 11 re-check, the row's markerSeen) are not asked.
+    // An approved seat promotion is also written to the retained seats store.
+    const intact = assertIdentityIntact({ spec, state: state.state, io: defaultIo })
+    const r = applyProposalDecision(state.state, name, approve, { identity: intact, seatsHome: cyncoHome() })
     if (!r.ok) { console.error(r.why); return 2 }
     state.save(); console.log(`[campaign] proposal ${name} ${r.status}`); return 0
   }

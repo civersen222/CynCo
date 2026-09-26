@@ -101,8 +101,41 @@ describe('lintGate — rules with no fixture of their own', () => {
   })
   it('refuses a shim that leaves the prior chain on, and names which shim', () => {
     expect(lint({ positive: 'import runpy\nrunpy.run_path(GATE)\n' }).problems).toEqual([
-      'lint: the positive shim does not set CYNCO_GATE_SKIP_PRIOR — it would re-run the prior campaign\'s gate on every calibration',
+      'lint: the positive shim does not set CYNCO_GATE_SKIP_PRIOR — it would re-run the prior campaign\'s gate on every calibration (q:2)',
     ])
+  })
+  // Phase 4 residual: a problem the rule found ON a line names that line, so
+  // the resume brief can say where to look instead of what to grep for.
+  it('names the file and line of the offending check() call, in the string and in `at`', () => {
+    const r = lint({ gate: src().gate.replace('"C99.1.a"', '"C8.1.a"') })
+    expect(r.problems[0]).toBe('lint: line id "C8.1.a" is not a C99.<n> id (g:2)')
+    expect(r.at[0]).toEqual({ file: 'g', line: 2, problem: r.problems[0] })
+    // …and the header naming C99.1, which the renamed id orphaned, names its own line.
+    expect(r.at[1]).toEqual({ file: 'p', line: 1, problem: 'lint: the perturb header names C99.1, which is not a gate line id (p:1)' })
+    expect(r.at.map(a => a.problem)).toEqual(r.problems)
+  })
+  it('names the second occurrence of a duplicate id, the network import, and the regression line with no skip', () => {
+    const dup = lint({ gate: src().gate.replace('check("C99.9", x, d)', 'check("C99.1.a", x, d)\ncheck("C99.9", x, d)') })
+    expect(dup.at).toEqual([{ file: 'g', line: 3, problem: 'lint: duplicate gate line id C99.1.a — two facts graded under one id hide one of them (g:3)' }])
+    const net = lint({ positive: 'import os\nimport requests\n' + src().positive })
+    expect(net.at).toEqual([{ file: 'q', line: 2, problem: net.problems[0] }])
+    expect(net.problems[0]).toMatch(/the positive imports requests .* \(q:2\)$/)
+    const skip = lint({ gate: src().gate.replace('CYNCO_GATE_SKIP_PRIOR', '') })
+    expect(skip.at).toEqual([{ file: 'g', line: 3, problem: skip.problems[0] }])
+  })
+  it('names the header line that declares an unknown id, and uses the basename of a real path', () => {
+    const r = lintGate(triple('bad-header-unknown-id'))
+    expect(r.at).toHaveLength(1)
+    expect(r.at[0].file).toBe('perturb_c99.py')
+    expect(r.at[0].line).toBeGreaterThan(0)
+    expect(r.problems[0].endsWith(` (perturb_c99.py:${r.at[0].line})`)).toBe(true)
+    expect(readFileSync(triple('bad-header-unknown-id').perturbPath, 'utf8').split(/\r?\n/)[r.at[0].line - 1]).toMatch(/C99\.42/)
+  })
+  it('a rule about something absent names no line, and `at` stays empty for a clean triple', () => {
+    expect(lint().at).toEqual([])
+    const r = lint({ gate: src().gate.replace('CYNCO_GATE_REPO ', '') })
+    expect(r.problems).toEqual(['lint: the gate never reads CYNCO_GATE_REPO — it would measure its own directory, not the BASE'])
+    expect(r.at).toEqual([])
   })
   it('refuses a network import in a shim, not only in the gate', () => {
     expect(lint({ positive: 'import requests\n' + src().positive }).problems[0]).toMatch(/the positive imports requests/)

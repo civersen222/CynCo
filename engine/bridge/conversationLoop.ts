@@ -40,6 +40,7 @@ import { runAdvisors, type SystemState as AdvisorState } from '../agents/advisor
 import { DecisionLogger } from '../decisions/logger.js'
 import { ContextCompressor, FileOperationTracker } from '../context/compressor.js'
 import type { S5Orchestrator } from '../s5/orchestrator.js'
+import { RuleAuthority, ruleVerdictsPath, isEnforced, recommendationAutoApplyMs } from '../s5/ruleAuthority.js'
 import { SubAgentRunner } from '../agents/runner.js'
 import { S2Coordinator } from '../agents/s2Coordinator.js'
 import { SubAgent } from '../agents/subAgent.js'
@@ -67,7 +68,7 @@ import { ToolDivergenceDetector } from '../brain/toolDivergence.js'
 import { BrainRecorder } from '../brain/brainRecorder.js'
 import { pruneRedundantReads } from './contextHygiene.js'
 import { promptTokensWithFloor } from './contextFloor.js'
-import { applyPreLoopRestriction, type PreLoopRestriction } from './s5Restriction.js'
+import { applyPreLoopRestriction, applyStuckReevalRestriction, type PreLoopRestriction } from './s5Restriction.js'
 import { isBenignTestFailure, isDeclaredVerificationCheck } from './benignToolResult.js'
 import { formatToolError } from './toolErrorLog.js'
 import { runWithFinalize } from './finalizeGuard.js'
@@ -276,6 +277,22 @@ export type ConversationLoopOptions = {
   } | null
 }
 
+/**
+ * The `emit` a best-of-N candidate runs under. A candidate is a throwaway
+ * sample, so two of its frames must not reach the driver or the TUI: its model
+ * text (`stream.token`) and its session-level `governance.session_fidelity`
+ * reading (F158 — each candidate's natural end emits one; the ledger collector
+ * keeps the last frame, but the TUI/vibe surfaces consume every frame). Tool
+ * events, progress markers and other governance events pass through. The one
+ * frame per user message is emitted after the candidates, under the real emit.
+ */
+export function candidateEmit(emit: (event: any) => void): (event: any) => void {
+  return (event: any) => {
+    if (event?.type === 'stream.token' || event?.type === 'governance.session_fidelity') return
+    emit(event)
+  }
+}
+
 export class ConversationLoop {
   private messages: Message[] = []
   /**
@@ -384,6 +401,15 @@ export class ConversationLoop {
    */
   private taskEndedInEngineError = false
   /**
+   * F158: whether this user message's `governance.session_fidelity` frame has
+   * gone out. The natural no-tool-calls branch of runModelLoop emits it; abort,
+   * max_iterations, halt, a thrown engine error and an applied best-of-N patch
+   * all leave the loop without passing there, and every timed-out mission's
+   * ledger row read `identityGuard: null` / `regulatorFidelity: null`.
+   * runUserMessage emits it after the loop when this is still false.
+   */
+  private sessionFidelityEmitted = false
+  /**
    * The prompt size the server reported for the most recent request, in tokens
    * it actually evaluated — or null when no request has been measured since the
    * conversation last changed shape.
@@ -435,6 +461,9 @@ export class ConversationLoop {
   private compressor = new ContextCompressor({ threshold: 0.75, targetRatio: 0.5 })
   private fileTracker = new FileOperationTracker()
   private s5?: S5Orchestrator
+  // Phase 4: per-rule earned S5 authority, read once per session from the
+  // campaign runner's rule-verdict file (legacy when there is none).
+  private ruleAuthority: RuleAuthority = RuleAuthority.legacy()
   private agentRunner: SubAgentRunner
   private s2: S2Coordinator
   private runningAgents = new Map<string, SubAgent>()
@@ -604,6 +633,13 @@ export class ConversationLoop {
       this.emit({ type: 'governance.alert', severity: alert.severity, message: alert.message, source: alert.source })
     })
     this.s5 = opts.s5
+    if (this.s5) {
+      this.ruleAuthority = RuleAuthority.load(ruleVerdictsPath(cyncoHome()))
+      // Optional call: test doubles stand in for the orchestrator; the emit
+      // site below falls back to this.ruleAuthority when a decision carries none.
+      this.s5.setRuleAuthority?.(this.ruleAuthority)
+      console.log(this.ruleAuthority.logLine())
+    }
     this.allowedTools = opts.allowedTools
     this.getBrain = opts.getBrain
     this.agentRunner = new SubAgentRunner(async (task) => {
@@ -1078,6 +1114,17 @@ export class ConversationLoop {
       // would replace whatever error `runUserMessage` was already unwinding
       // with this one. Logged, never swallowed silently.
       try { this.dropOperatorQueueAtMissionEnd() } catch (e) { console.error('[loop] operator-queue drain failed: ' + (e as Error).message) }
+      // Mission end: persist the invariants homeostat's retained table
+      // (vsm/retainedConfigStore.ts, `mission-invariants`). Same wrapping as
+      // the drain above — a store failure is logged, never thrown into this
+      // finally past the clears below.
+      if (this.missionInvariants) {
+        try {
+          this.missionInvariants.saveRetained(this.governance.getRetainedStore(), this.sessionId || null)
+        } catch (e) {
+          console.error('[retained] mission-invariants export failed: ' + (e as Error).message)
+        }
+      }
       // Cleared beside `processing`, and for the same reason: left `true` it
       // would queue a note into a loop that is no longer running, and nothing
       // would ever drain it.
@@ -1207,6 +1254,7 @@ export class ConversationLoop {
 
   private async runUserMessage(text: string, opts?: TaskOpts): Promise<void> {
     this.processing = true
+    this.sessionFidelityEmitted = false
     // Set with `processing`, and only ever read by the busy guard above. See
     // the field for why it is the RUNNING message's flag.
     this.unattendedActive = opts?.unattended === true
@@ -1285,7 +1333,10 @@ export class ConversationLoop {
     } else if (opts.invariants !== undefined) {
       const caps = parseInvariantCaps(opts.invariants)
       if (caps) {
-        this.missionInvariants = new MissionInvariants(caps)
+        // Seeded from the retained-configuration store (`mission-invariants`):
+        // what earlier missions' homeostats found restored viability. Memory
+        // only — the gate keys on the caps and nothing applies a retained step.
+        this.missionInvariants = new MissionInvariants(caps, { retainedStore: this.governance.getRetainedStore() })
         this.invariantsRejected = false
         console.log(`[invariant] mission invariants armed: edit gap ${caps.editGapCap}, commit gap ${caps.commitGapCap}, revert ban ${caps.revertBan}, CodeIndex-first ${caps.codeIndexFirst}`)
       } else {
@@ -1760,6 +1811,13 @@ export class ConversationLoop {
         // are computed and emitted (the outcome ledger needs them) but never
         // applied. See docs/cynco-failure-log.md F7.
         const s5Enforce = isS5EnforcementEnabled()
+        // Phase 4: per-rule earned authority. An `advisory` decision (a rule
+        // behind it is not PREDICTIVE in the verdict file) is never applied,
+        // whatever the global switch says; `legacy` (no verdict file) leaves
+        // the global switch in sole charge, exactly as before.
+        const authority = decision.authority ?? this.ruleAuthority.authorityOf(decision.ruleIds ?? [])
+        const enforced = isEnforced(s5Enforce, authority)
+        const capWhy = s5Enforce ? 'advisory — rule authority not earned' : 'capped at recommend'
 
         // Emit S5 decision to dashboard (ruleIds/enforced feed the mission
         // outcome ledger — step 2 needs per-rule attribution)
@@ -1770,14 +1828,15 @@ export class ConversationLoop {
           toolRestriction: decision.toolRestriction,
           modelSwitch: decision.modelSwitch,
           ruleIds: decision.ruleIds ?? [],
-          enforced: s5Enforce,
+          enforced,
+          authority,
           timestamp: Date.now(),
         })
         console.log(`[s5] Decision: context=${decision.contextAction} tools=${decision.toolRestriction ?? 'none'} (${decision.reasoning})`)
 
         // L3: APPLY S5 decisions — hard enforcement, not advisory
-        if (decision.contextAction === 'compact' && !s5Enforce) {
-          console.log(`[s5] WOULD-ENFORCE (capped at recommend): compact context (${decision.reasoning})`)
+        if (decision.contextAction === 'compact' && !enforced) {
+          console.log(`[s5] WOULD-ENFORCE (${capWhy}): compact context (${decision.reasoning})`)
         } else if (decision.contextAction === 'compact') {
           console.log(`[s5] Decision: compact context (${decision.reasoning})`)
           // Trigger compaction via the S5 decision path
@@ -1797,8 +1856,8 @@ export class ConversationLoop {
         // whole task runs on, and a pre-task reading has no standing over turns
         // that have not happened yet. See finding (j) in bridge/s5Restriction.ts.
         this.preLoopRestriction = null
-        if (decision.tools && !s5Enforce) {
-          console.log(`[s5] WOULD-ENFORCE (capped at recommend): tool restriction to [${decision.tools.join(', ')}]`)
+        if (decision.tools && !enforced) {
+          console.log(`[s5] WOULD-ENFORCE (${capWhy}): tool restriction to [${decision.tools.join(', ')}]`)
         } else if (decision.tools) {
           this.preLoopRestriction = { tools: decision.tools, reasoning: decision.reasoning }
         }
@@ -1817,8 +1876,8 @@ export class ConversationLoop {
         }
 
         // Model switch enforcement
-        if (decision.model && decision.model !== this.config.model && !s5Enforce) {
-          console.log(`[s5] WOULD-ENFORCE (capped at recommend): model switch to ${decision.model}`)
+        if (decision.model && decision.model !== this.config.model && !enforced) {
+          console.log(`[s5] WOULD-ENFORCE (${capWhy}): model switch to ${decision.model}`)
         } else if (decision.model && decision.model !== this.config.model) {
           console.log(`[s5] ENFORCE: model switch to ${decision.model}`)
           this.updateModel(decision.model)
@@ -1842,7 +1901,10 @@ export class ConversationLoop {
               revert: decision.revert,
               priority: decision.priority,
             },
-            autoApplyAfterMs: decision.revert ? undefined : 60000,
+            // Phase 4: an advisory recommendation must never apply itself —
+            // no auto-apply timer, and the frame says why.
+            autoApplyAfterMs: recommendationAutoApplyMs(authority, decision.revert),
+            authority,
           } as any)
           console.log(`[s5] RECOMMEND: ${warningRuleIds.join(',')} — ${decision.reasoning.slice(0, 80)}`)
         }
@@ -1898,12 +1960,9 @@ export class ConversationLoop {
           const savedTemp = this.config.temperature
           const originalEmit = this.emit
 
-          // Mute stream.token events during candidate runs — only pass through
-          // progress markers, tool events, and governance events
-          this.emit = (event: any) => {
-            if (event.type === 'stream.token') return // mute model text
-            originalEmit(event)
-          }
+          // Mute each candidate's model text and its session_fidelity frame
+          // (F158) — see candidateEmit.
+          this.emit = candidateEmit(originalEmit)
 
           const candidates: any[] = []
           const wtManager = new WorktreeManager(mainCwd)
@@ -2003,6 +2062,12 @@ export class ConversationLoop {
       console.log(`[bestOfN] Orchestration failed, falling back to single-pass: ${e}`)
     }
 
+    // F158: best-of-N candidates run runModelLoop under candidateEmit, which
+    // mutes their governance.session_fidelity frames — but each candidate's
+    // natural end still set the flag. Reset it: only the frame for the run
+    // that follows (or the post-loop emit below, when best-of-N applied a
+    // winner) reaches the driver, so exactly one frame per user message.
+    this.sessionFidelityEmitted = false
     // Normal single-pass if best-of-N didn't run (or failed)
     if (!bestOfNRan) {
       try {
@@ -2014,6 +2079,12 @@ export class ConversationLoop {
         this.emit({ type: 'session.error', error: msg })
       }
     }
+    // F158: every exit path gets the session-level fidelity + IdentityGuard
+    // frame, not only the natural turn end — the mission driver reads the
+    // ledger's `identityGuard` / `regulatorFidelity` from it, and a mission that
+    // hit its wall clock (abort), its iteration cap, a halt or an engine error
+    // is exactly the one whose reading matters.
+    if (!this.sessionFidelityEmitted) this.emitSessionFidelity()
 
     // ─── Session End: Autopoietic evaluation + cleanup ──────────
     try {
@@ -2174,8 +2245,29 @@ export class ConversationLoop {
     // Persist tool trust scores so demotion signal survives across sessions
     this.toolScorer.save(this.toolScorerPath)
 
+    // Session end: persist the session-feedback ultrastable instance's retained
+    // table (vsm/retainedConfigStore.ts). Beside the tool scores rather than
+    // inside the population block above: that block runs only when a population
+    // exists on disk, and the retained memory must not depend on one.
+    try {
+      this.governance.saveRetained(this.sessionId || null)
+    } catch (e) {
+      console.error('[retained] session-feedback export failed: ' + (e as Error).message)
+    }
+
     this.processing = false
     this.abortController = null
+  }
+
+  /** The one `governance.session_fidelity` emit site (F158): marks the frame
+   *  sent so runUserMessage does not send a second one. */
+  private emitSessionFidelity(): void {
+    this.sessionFidelityEmitted = true
+    this.emit({
+      type: 'governance.session_fidelity',
+      fidelity: this.governance.getSessionFidelity(),
+      identityGuard: this.evaluateIdentityGuard(),
+    })
   }
 
   /**
@@ -2800,15 +2892,35 @@ export class ConversationLoop {
               demotedTools: [],
               promptDifficulty: this.difficultyClassifier.getLevel(),
             })
-            if (decision.tools) {
-              const allowed = new Set(decision.tools)
-              const filtered = iterationTools.filter(t => allowed.has(t.name))
-              if (filtered.length > 0) {
-                iterationTools = filtered
-                console.log(`[s5] LIVE RE-EVAL: tool restriction to [${decision.tools.join(', ')}] (stuck ${currentStuck})`)
-              } else {
-                console.log(`[s5] LIVE RE-EVAL skipped: restriction [${decision.tools.join(', ')}] would remove every available tool (stuck ${currentStuck})`)
-              }
+            // F157: the same predicate as every other S5 apply site — the
+            // global cap AND the per-rule authority. This site used to apply
+            // `decision.tools` on the per-rule check alone (and before Phase 4
+            // on nothing), so a capped headless mission still had C7 narrow its
+            // tools, with no s5.decision frame to record it.
+            const reevalEnforce = isS5EnforcementEnabled()
+            const reevalAuthority = decision.authority ?? this.ruleAuthority.authorityOf(decision.ruleIds ?? [])
+            const reevalEnforced = isEnforced(reevalEnforce, reevalAuthority)
+            this.emit({
+              type: 's5.decision' as any,
+              reasoning: decision.reasoning,
+              contextAction: decision.contextAction,
+              toolRestriction: (decision as any).toolRestriction,
+              modelSwitch: (decision as any).modelSwitch,
+              ruleIds: decision.ruleIds ?? [],
+              enforced: reevalEnforced,
+              authority: reevalAuthority,
+              source: 'stuck-reeval',
+              timestamp: Date.now(),
+            })
+            const reeval = applyStuckReevalRestriction(iterationTools, decision.tools, reevalEnforced)
+            if (reeval.outcome === 'withheld') {
+              const why = reevalEnforce ? 'advisory — rule authority not earned' : 'capped at recommend'
+              console.log(`[s5] WOULD-ENFORCE stuck re-eval (${why}): tool restriction to [${decision.tools!.join(', ')}] (stuck ${currentStuck})`)
+            } else if (reeval.outcome === 'applied') {
+              iterationTools = reeval.tools
+              console.log(`[s5] LIVE RE-EVAL: tool restriction to [${decision.tools!.join(', ')}] (stuck ${currentStuck})`)
+            } else if (reeval.outcome === 'empty') {
+              console.log(`[s5] LIVE RE-EVAL skipped: restriction [${decision.tools!.join(', ')}] would remove every available tool (stuck ${currentStuck})`)
             }
           } catch (e) {
             console.log(`[s5] Live re-eval failed: ${e}`)
@@ -3108,7 +3220,13 @@ export class ConversationLoop {
                   const fa = this.governance.getFeedbackActions()
                   if (!fa) return null
                   const trace = fa.adaptationTrace
+                  // The instance's retained table (a handful of keys, one per
+                  // violation pattern — bounded, unlike the trace) and the
+                  // stored version it matches; null = nothing stored yet.
+                  const kept = this.governance.getRetainedSnapshot()
                   return {
+                    retained: kept.retained,
+                    retainedVersion: kept.version,
                     traceLength: trace.length,
                     trace: trace.slice(-20).map(e => ({
                       step: e.step,
@@ -3491,12 +3609,9 @@ export class ConversationLoop {
 
         // P4.3/4(e): session-level regulator fidelity — the mission driver
         // ingests this into the outcome ledger; the TUI/vibe surfaces consume
-        // the event directly. Emitted once per completed user message.
-        this.emit({
-          type: 'governance.session_fidelity',
-          fidelity: this.governance.getSessionFidelity(),
-          identityGuard: this.evaluateIdentityGuard(),
-        })
+        // the event directly. Emitted once per user message: here on the
+        // natural end, by runUserMessage on every other exit path (F158).
+        this.emitSessionFidelity()
 
         // Decision logging
         try {

@@ -75,6 +75,10 @@ export type S5Decision = {
   // negative example the rule engine ever generates. Optional (additive) so
   // existing S5Decision literals stay valid.
   rejected?: RejectedProposal[]
+  // Phase 4: per-rule earned authority, attached by S5Orchestrator from the
+  // campaign's rule-verdict file (ruleAuthority.ts). `advisory` is never
+  // applied; `earned`/`legacy` follow LOCALCODE_S5_ENFORCE. Optional (additive).
+  authority?: 'earned' | 'advisory' | 'legacy'
 }
 
 // One fired-and-overridden proposal, recorded per (rule, field) rather than per

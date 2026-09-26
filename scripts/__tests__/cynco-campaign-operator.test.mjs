@@ -197,7 +197,9 @@ describe('approving an invariants/* proposal sets an override', () => {
   })
   it('refuses a proposal naming a non-tunable cap and leaves state untouched', () => {
     const s = { ...freshState('c8'), proposals: [{ name: 'invariants/revertBan', status: 'pending', newValue: false, bounds: { min: false, max: false } }] }
-    expect(applyProposalDecision(s, 'invariants/revertBan', true)).toEqual({ ok: false, why: 'proposal invariants/revertBan names a cap that is not tunable' })
+    // Phase 4: revertBan is an identity invariant, and the registry says so
+    // before it asks whether the cap is tunable.
+    expect(applyProposalDecision(s, 'invariants/revertBan', true)).toEqual({ ok: false, why: 'proposal invariants/revertBan targets an identity invariant' })
     expect(s.invariantOverrides).toEqual({})
     expect(s.proposals[0].status).toBe('pending')
   })

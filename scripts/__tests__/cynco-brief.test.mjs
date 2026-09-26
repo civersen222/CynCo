@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { generateBrief, sidecarFor, orderWork, workOrderFor, denialFollowUp } from '../cynco-brief.mjs'
+import { generateBrief, sidecarFor, orderWork, workOrderFor, denialFollowUp, pacingDigestIncluded } from '../cynco-brief.mjs'
 import { parseGateOutput } from '../cynco-gate-parse.mjs'
 import { loadCampaignSpec } from '../cynco-campaign-spec.mjs'
 
@@ -155,6 +155,14 @@ describe('PACING — the denial digest', () => {
     const text = generateBrief(spec, { wave: 3, base: 'x', fails: base.fails, passes: [], prior, salvage: null, ideation: null, ideationAuthority: 0, invariants: { ...spec.invariants, editGapCap: 60 }, denialDigest })
     expect(text).toMatch(/Of those 3 denials, 2 were followed by the call they asked for \(edit-gap 1\/2, commit-gap 0\/0, revert 1\/1\); campaign to date edit-gap 5\/12, commit-gap 0\/0\./)
     expect(text).toMatch(/- 60 tool calls without a source edit/)
+    // Phase 4 ruling 4: the predicate the runner records is the one that printed it.
+    const ctx = { prior, denialDigest }
+    expect(pacingDigestIncluded(ctx)).toBe(true)
+    expect(pacingDigestIncluded({ prior, denialDigest: null })).toBe(false)
+    expect(pacingDigestIncluded({ prior: null, denialDigest })).toBe(false)
+    expect(pacingDigestIncluded({ prior: { ...prior, invariants: null }, denialDigest })).toBe(false)
+    const quiet = generateBrief(spec, { wave: 3, base: 'x', fails: base.fails, passes: [], prior, salvage: null, ideation: null, ideationAuthority: 0, invariants: spec.invariants, denialDigest: null })
+    expect(quiet).not.toMatch(/campaign to date/)
   })
   // M6 in the brief itself: a pre-aggregate prior must say "the last 50".
   it('says "the last N" when the follow-up could only be read off the window', () => {

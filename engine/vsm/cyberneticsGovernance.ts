@@ -62,6 +62,8 @@ import { GovernanceDB } from './governanceDb.js'
 import { getJournal } from '../training/decisionJournal.js'
 import { makeJournalEntry } from '../training/types.js'
 import { cyncoHome } from '../paths.js'
+import { join } from 'path'
+import { RetainedConfigStore } from './retainedConfigStore.js'
 
 // ─── Task Complexity Estimator (S4: environment scanning) ─────
 
@@ -115,6 +117,8 @@ export class CyberneticsGovernance {
   // Feedback control — PID, context loop, ultrastable system
   private feedbackControl: FeedbackControlIntegration
   private lastFeedbackActions: FeedbackActions | null = null
+  // Retained-configuration store shared by every ultrastable instance
+  private retainedStore: RetainedConfigStore
   // Performance metrics — Achievement + CUSUM drift detection
   private performanceMetrics: PerformanceMetricsIntegration
   // Autopoiesis — self-modification governance
@@ -213,7 +217,11 @@ export class CyberneticsGovernance {
     }
     this.algedonicIntegration = new AlgedonicIntegration(this.nodeId)
     this.homeostatIntegration = new HomeostatIntegration(this.nodeId)
-    this.feedbackControl = new FeedbackControlIntegration()
+    // Cross-session memory of every ultrastable instance (vsm/retainedConfigStore.ts).
+    // Constructing the store touches nothing on disk; the session-feedback
+    // instance reads its table here and conversationLoop writes it at session end.
+    this.retainedStore = new RetainedConfigStore(join(cyncoHome(), 'retained'))
+    this.feedbackControl = new FeedbackControlIntegration({ retainedStore: this.retainedStore })
     this.performanceMetrics = new PerformanceMetricsIntegration(this.nodeId)
     this.autopoiesisIntegration = new AutopoiesisIntegration(this.nodeId)
     this.constraintChecks = new ConstraintChecksIntegration(this.nodeId)
@@ -932,6 +940,21 @@ export class CyberneticsGovernance {
   /** Get feedback control actions (compression, approval adjustment, perturbation). */
   getFeedbackActions(): FeedbackActions | null {
     return this.lastFeedbackActions
+  }
+
+  /** The retained-configuration store every ultrastable instance reads and writes. */
+  getRetainedStore(): RetainedConfigStore {
+    return this.retainedStore
+  }
+
+  /** The session-feedback instance's live retained table and its stored version. */
+  getRetainedSnapshot(): { retained: Record<string, unknown>; version: number | null } {
+    return this.feedbackControl.retainedSnapshot()
+  }
+
+  /** Session end: persist the session-feedback instance's retained table. Throws on a store failure. */
+  saveRetained(sessionId: string | null): { version: number; changed: boolean } {
+    return this.feedbackControl.saveRetained(this.retainedStore, sessionId)
   }
 
   /** Should context be compressed based on feedback loop? */

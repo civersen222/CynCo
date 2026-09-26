@@ -212,3 +212,36 @@ describe('verdictEntry — the gate-lines reading', () => {
     expect(entry(undefined)).not.toMatch(/Gate lines:/)
   })
 })
+
+describe('verdictEntry — the identity line (Phase 4)', () => {
+  const entry = (identity) => verdictEntry({ spec: { id: 'c8' }, wave: 1, row, grade, decision: { kind: 'next', why: 'x' }, ideationRecord: null, economicsLines: [], identity })
+  it('prints intact when every invariant held', () => {
+    expect(entry({ intact: true, violated: [], evidence: {} })).toMatch(/^- Identity: intact$/m)
+  })
+  it('names every violated invariant', () => {
+    expect(entry({ intact: false, violated: ['rule-11', 'marker-recorded'], evidence: {} })).toMatch(/^- Identity: VIOLATED rule-11 marker-recorded$/m)
+  })
+  it('omits the line when no identity reading was taken', () => {
+    expect(entry(null)).not.toMatch(/Identity:/)
+    expect(entry(undefined)).not.toMatch(/Identity:/)
+  })
+})
+
+describe('verdictEntry — the autopoiesis line (Phase 4)', () => {
+  const entry = (autopoiesis) => verdictEntry({ spec: { id: 'c8' }, wave: 1, row, grade, decision: { kind: 'next', why: 'x' }, ideationRecord: null, economicsLines: [], identity: { intact: true, violated: [] }, autopoiesis })
+  const crit = (off) => Object.fromEntries(['hasBoundary', 'boundarySelfProduced', 'internalProduction', 'circularProduction', 'organizationallyClosed', 'organizationMaintained'].map(k => [k, !off.includes(k)]))
+  it('prints met/6 and names what is missing, right after the identity line', () => {
+    const e = entry({ criteria: crit(['boundarySelfProduced', 'organizationallyClosed']), isAutopoietic: false, missing: ['boundarySelfProduced', 'organizationallyClosed'] })
+    expect(e).toMatch(/^- Identity: intact\n- Autopoiesis: 4\/6 — missing boundarySelfProduced, organizationallyClosed$/m)
+  })
+  it('prints 6/6 when nothing is missing', () => {
+    expect(entry({ criteria: crit([]), isAutopoietic: true, missing: [] })).toMatch(/^- Autopoiesis: 6\/6$/m)
+  })
+  it('names an assessment that threw', () => {
+    expect(entry({ assessError: 'boom' })).toMatch(/^- Autopoiesis: UNASSESSED — boom$/m)
+  })
+  it('omits the line when no reading was taken', () => {
+    expect(entry(null)).not.toMatch(/Autopoiesis:/)
+    expect(entry(undefined)).not.toMatch(/Autopoiesis:/)
+  })
+})
