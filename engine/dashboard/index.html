@@ -2279,7 +2279,10 @@ function fetchSessionState() {
       rules = rp.predictive + '/' + rp.total;
       if (rp.best && typeof rp.best.precision === 'number') rules += ' (best ' + rp.best.id + ' ' + Math.round(rp.best.precision * 100) + '%)';
     }
-    var text = 'PASS/GPU-h ' + scoreboardNum(sb.passRatePerGpuHour, 3) +
+    // Which wave record the numbers were read off: a stop or fault written
+    // after it carries no board, so the row says how current it is.
+    var text = (typeof sb.wave === 'number' ? 'wave ' + sb.wave + ': ' : '') +
+      'PASS/GPU-h ' + scoreboardNum(sb.passRatePerGpuHour, 3) +
       ' · waves/campaign ' + scoreboardNum(sb.wavesPerCampaign) +
       ' · lines fixed/landed wave ' + scoreboardNum(gl ? gl.value : null, 2) +
       ' · human acts/wave ' + scoreboardNum(hi ? hi.value : null, 2) +
@@ -2299,7 +2302,11 @@ function fetchSessionState() {
       ' · lines fixed/landed wave ' + scoreboardNum(gl ? gl.value : null, 2) +
       ' · human acts/wave ' + scoreboardNum(hi ? hi.value : null, 2) +
       ' · supervision $/wave ' + scoreboardNum(p.supervisionDollarsPerWave, 2);
-    var notes = (p.unmeasured || []).concat((p.excluded || []).map(function(e) { return 'excluded: ' + e; }));
+    // A campaign left out of the pool is named on the line itself (its id),
+    // with the reason on the tooltip — never silently missing (F16).
+    var excluded = p.excluded || [];
+    if (excluded.length) text += ' · excluded ' + excluded.map(function(e) { return String(e).split(':')[0]; }).join(', ');
+    var notes = (p.unmeasured || []).concat(excluded.map(function(e) { return 'excluded: ' + e; }));
     return { text: text, title: notes.join('\n') };
   }
 

@@ -29,10 +29,16 @@ import {
 } from '../training/datasetBuilder.js'
 import type { TokenSet, TokenScope } from '../security/localToken.js'
 import { cyncoHome } from '../paths.js'
-// Phase 5 ruling 2: the pooled board is Task 2's one spelling, imported — never
-// re-derived here. Pure module (no imports, no I/O).
-// @ts-expect-error — .mjs script, no types.
-import { pooledScoreboard } from '../../scripts/cynco-scoreboard.mjs'
+
+/** Phase 5 ruling 2: the pooled board is Task 2's one spelling
+ *  (scripts/cynco-scoreboard.mjs), never re-derived here. Loaded LAZILY by
+ *  GET /api/campaign — engine start must not depend on a script that CynCo
+ *  missions edit; a load failure is `{ error }` on the payload.
+ *  engine/__tests__/guards/scoreboardModulePure.test.ts pins the module pure. */
+export type ScoreboardModule = { pooledScoreboard: (boards: unknown[], opts?: { excluded?: string[] }) => Record<string, unknown> }
+const loadScoreboardModule = (): Promise<ScoreboardModule> =>
+  // @ts-expect-error — .mjs script, no types.
+  import('../../scripts/cynco-scoreboard.mjs') as Promise<ScoreboardModule>
 
 // ---------------------------------------------------------------------------
 // DashboardDeps — optional callbacks into the engine
@@ -74,6 +80,8 @@ export interface DashboardDeps {
   sessionsDir?: string
   /** Brain Tier 3: switch the activations consumer's readout layer */
   setBrainLayer?: (layer: number) => void
+  /** Test seam: load scripts/cynco-scoreboard.mjs. Default: a lazy dynamic import. */
+  loadScoreboard?: () => Promise<ScoreboardModule>
 }
 
 // ---------------------------------------------------------------------------
@@ -410,7 +418,7 @@ export class DashboardServer {
             case '/api/mission':
               return await this.getMission()
             case '/api/campaign':
-              return this.getCampaign()
+              return await this.getCampaign()
             case '/api/predictions':
               return this.getPredictions()
             case '/api/contracts':
@@ -830,18 +838,30 @@ window.__CYNCO_TOKEN = ${JSON.stringify(token)};
    * and a `.jsonl` has no equivalent cost, and an operator who just approved a
    * proposal must see it on the very next poll, not after a TTL.
    */
-  private getCampaign(): Response {
+  private async getCampaign(): Promise<Response> {
     try {
       const campaignsDir = join(cyncoHome(), 'campaigns')
       if (!existsSync(campaignsDir)) return jsonResponse({ active: null, campaigns: [] })
+      // Sorted, like the --scoreboard verb's runnerDrivenBoards — the payload
+      // must not depend on readdir order.
       const ids = readdirSync(campaignsDir, { withFileTypes: true })
         .filter(d => d.isDirectory())
         .map(d => d.name)
+        .sort()
       const campaigns: CampaignSummary[] = []
       // Each campaign's RAW last board, for pooledScoreboard — it needs the
-      // fields the row does not carry (decided, waves, gpuHours, error, …).
-      const boards: unknown[] = []
+      // fields the row does not carry (decided, waves, gpuHours, error, …) —
+      // with the time of the record it was read off (M3, see poolScoreboards).
+      const boards: Array<{ board: unknown; at: string }> = []
+      // The pool is every RUNNER-DRIVEN campaign (a dir with a waves.jsonl),
+      // the same pool the --scoreboard verb and the README define. A campaign
+      // the panel cannot contribute a board for is NAMED here, never silently
+      // left out (F16).
+      const excluded: string[] = []
       for (const id of ids) {
+        if (!existsSync(join(campaignsDir, id, 'waves.jsonl'))) {
+          excluded.push(`${id}: no waves.jsonl (not runner-driven)`)
+        }
         // Isolated per campaign: `readCampaignSummary` already catches a bad
         // state.json parse and a bad waves.jsonl line, but anything else it
         // throws (proposals present but not an array from a partial write,
@@ -850,12 +870,20 @@ window.__CYNCO_TOKEN = ${JSON.stringify(token)};
         // healthy campaign out of the response along with it.
         try {
           const c = this.readCampaignSummary(id)
-          if (c) {
-            campaigns.push(c.summary)
-            if (c.board) boards.push(c.board)
+          if (!c) {
+            if (existsSync(join(campaignsDir, id, 'waves.jsonl'))) excluded.push(`${id}: state.json missing or not JSON`)
+            continue
+          }
+          campaigns.push(c.summary)
+          if (c.board) boards.push({ board: c.board, at: c.boardAt })
+          else if (c.runnerDriven) {
+            excluded.push(c.waveRecords === 0 ? `${id}: no waves spent`
+              : `${id}: no verdict since the scoreboard shipped — no wave record carries a scoreboard`)
           }
         } catch (e) {
-          console.error(`[dashboard] campaign ${id}: unreadable, skipping (${e instanceof Error ? e.message : String(e)})`)
+          const message = e instanceof Error ? e.message : String(e)
+          console.error(`[dashboard] campaign ${id}: unreadable, skipping (${message})`)
+          excluded.push(`${id}: unreadable (${message})`)
         }
       }
       // The campaign with a driver dispatched and running wins outright — it is
@@ -864,7 +892,7 @@ window.__CYNCO_TOKEN = ${JSON.stringify(token)};
       // names which campaign this engine belongs to even between waves.
       const inFlight = campaigns.find(c => c.inFlight !== null)
       const active = inFlight ? inFlight.id : (process.env.CYNCO_CAMPAIGN_ID || null)
-      return jsonResponse({ active, campaigns, roadmap: this.readRoadmap(), pooled: this.poolScoreboards(boards) })
+      return jsonResponse({ active, campaigns, roadmap: this.readRoadmap(), pooled: await this.poolScoreboards(boards, excluded) })
     } catch (e) {
       return jsonResponse({ active: null, campaigns: [], error: e instanceof Error ? e.message : String(e) })
     }
@@ -872,7 +900,7 @@ window.__CYNCO_TOKEN = ${JSON.stringify(token)};
 
   /** One campaign's row, or null when its state.json is missing or corrupt —
    *  a bad campaign directory must not take the whole endpoint down with it. */
-  private readCampaignSummary(id: string): { summary: CampaignSummary; board: unknown } | null {
+  private readCampaignSummary(id: string): { summary: CampaignSummary; board: unknown; boardAt: string; runnerDriven: boolean; waveRecords: number } | null {
     const dir = join(cyncoHome(), 'campaigns', id)
     const statePath = join(dir, 'state.json')
     if (!existsSync(statePath)) return null
@@ -973,7 +1001,17 @@ window.__CYNCO_TOKEN = ${JSON.stringify(token)};
     }
     // A board that threw is stored as a bare `{ error }` (cynco-campaign.mjs),
     // with no id — the pool would name it `?`. The directory name is its id.
-    return { summary, board: board ? { ...board, id: board.id ?? id } : null }
+    // `boardAt`: when the board's record was graded (`gradedAt`, written with
+    // every verdict record), else dispatched — '' when neither is recorded.
+    const boardAt = typeof boardWave?.gradedAt === 'string' ? boardWave.gradedAt
+      : typeof boardWave?.dispatchedAt === 'string' ? boardWave.dispatchedAt : ''
+    return {
+      summary,
+      board: board ? { ...board, id: board.id ?? id } : null,
+      boardAt,
+      runnerDriven: existsSync(wavesPath),
+      waveRecords: rawWaves.length,
+    }
   }
 
   /** A wave record's `scoreboard` reduced to the row's five numbers plus its
@@ -997,12 +1035,38 @@ window.__CYNCO_TOKEN = ${JSON.stringify(token)};
   }
 
   /** The pooled board over the campaigns' raw last boards — Task 2's
-   *  pooledScoreboard, the one spelling. A throw (a board malformed past what
-   *  the pool guards against) comes back as `{ error }` for the panel to name,
-   *  never as a 500 that blanks every campaign row with it. */
-  private poolScoreboards(boards: unknown[]): Record<string, unknown> {
+   *  pooledScoreboard, the one spelling — with `excluded` naming every
+   *  runner-driven campaign that contributed no board.
+   *
+   *  Order (M3): pooledScoreboard takes the FIRST measured board's
+   *  whole-history `supervisionDollars`. Stored boards each carry the figure
+   *  as of their own verdict, so the boards go in newest-first by their
+   *  record's `gradedAt` (ties and undated boards by id) — the pooled $ is the
+   *  latest figure, never whichever directory readdir listed first.
+   *
+   *  The module loads lazily, once (see `loadScoreboardModule`); a load
+   *  failure and a throw inside the pool both come back as `{ error }` for the
+   *  panel to name, never as a 500 that blanks every campaign row with it. */
+  private scoreboardModule: Promise<ScoreboardModule> | null = null
+  private async poolScoreboards(entries: Array<{ board: unknown; at: string }>, excluded: string[]): Promise<Record<string, unknown>> {
+    if (!this.scoreboardModule) {
+      this.scoreboardModule = (this.deps.loadScoreboard ?? loadScoreboardModule)()
+      this.scoreboardModule.catch((e: unknown) => {
+        console.error(`[dashboard] scripts/cynco-scoreboard.mjs failed to load — pooled scoreboard unmeasured (${e instanceof Error ? e.message : String(e)})`)
+      })
+    }
+    let mod: ScoreboardModule
     try {
-      return pooledScoreboard(boards)
+      mod = await this.scoreboardModule
+    } catch (e) {
+      return { error: `scripts/cynco-scoreboard.mjs failed to load (${e instanceof Error ? e.message : String(e)})` }
+    }
+    const idOf = (b: unknown) => String((b as { id?: unknown })?.id ?? '')
+    const boards = [...entries]
+      .sort((a, b) => (a.at === b.at ? idOf(a.board).localeCompare(idOf(b.board)) : a.at < b.at ? 1 : -1))
+      .map(e => e.board)
+    try {
+      return mod.pooledScoreboard(boards, { excluded })
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e)
       console.warn(`[dashboard] pooled scoreboard not computed (${message})`)

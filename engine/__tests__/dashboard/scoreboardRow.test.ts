@@ -41,8 +41,14 @@ describe('dashboard campaign panel: the Scoreboard row', () => {
       perRulePrecision: { predictive: 1, total: 8, best: { id: 'I3', precision: 0.58, ci: [0.4, 0.7], verdict: 'NO EVIDENCE' } },
       unmeasured: [],
     })
-    expect(r.text).toBe('PASS/GPU-h 0.250 · waves/campaign 2 · lines fixed/landed wave 1.50 · human acts/wave 0.50 · rules predictive 1/8 (best I3 58%)')
+    expect(r.text).toBe('wave 2: PASS/GPU-h 0.250 · waves/campaign 2 · lines fixed/landed wave 1.50 · human acts/wave 0.50 · rules predictive 1/8 (best I3 58%)')
     expect(r.title).toBe('')
+  })
+
+  it('without a wave number the prefix is left off (review M4)', () => {
+    const r = row({ wave: null, passRatePerGpuHour: 1, wavesPerCampaign: 1, gateLinesFixedPerLandedWave: null,
+      humanInterventionsPerWave: null, perRulePrecision: null, unmeasured: [] })
+    expect(r.text.startsWith('PASS/GPU-h 1.000')).toBe(true)
   })
 
   it('prints — for every null, with the unmeasured reasons on the title', () => {
@@ -53,14 +59,14 @@ describe('dashboard campaign panel: the Scoreboard row', () => {
       perRulePrecision: null,
       unmeasured: ['passRatePerGpuHour: open — undecided after 1 wave(s)', 'perRulePrecision: no rule-verdicts.json — missing or unreadable'],
     })
-    expect(r.text).toBe('PASS/GPU-h — · waves/campaign — · lines fixed/landed wave — · human acts/wave 0.00 · rules predictive —')
+    expect(r.text).toBe('wave 1: PASS/GPU-h — · waves/campaign — · lines fixed/landed wave — · human acts/wave 0.00 · rules predictive —')
     expect(r.title).toBe('passRatePerGpuHour: open — undecided after 1 wave(s)\nperRulePrecision: no rule-verdicts.json — missing or unreadable')
   })
 
   it('a board that threw (all null) and a missing board both print dashes', () => {
     const r = row({ wave: 1, passRatePerGpuHour: null, wavesPerCampaign: null, gateLinesFixedPerLandedWave: null,
       humanInterventionsPerWave: null, perRulePrecision: null, unmeasured: ['scoreboard: boom'] })
-    expect(r.text).toBe('PASS/GPU-h — · waves/campaign — · lines fixed/landed wave — · human acts/wave — · rules predictive —')
+    expect(r.text).toBe('wave 1: PASS/GPU-h — · waves/campaign — · lines fixed/landed wave — · human acts/wave — · rules predictive —')
     expect(r.title).toBe('scoreboard: boom')
     expect(row(null)).toEqual({ text: '—', title: 'no wave record carries a scoreboard yet' })
     expect(row(undefined).text).toBe('—')
@@ -78,8 +84,20 @@ describe('dashboard campaign panel: the pooled line', () => {
       supervisionDollars: 10, supervisionDollarsPerWave: 10 / 3,
       excluded: ['c7: boom'], unmeasured: ['gateLinesFixedPerLandedWave: c6 wave 1 x'],
     })
-    expect(r.text).toBe('2 campaigns, 1 decided, 3 waves — PASS/GPU-h 0.167 · waves/campaign 2 · lines fixed/landed wave 1.50 · human acts/wave 0.33 · supervision $/wave 3.33')
+    expect(r.text).toBe('2 campaigns, 1 decided, 3 waves — PASS/GPU-h 0.167 · waves/campaign 2 · lines fixed/landed wave 1.50 · human acts/wave 0.33 · supervision $/wave 3.33 · excluded c7')
     expect(r.title).toBe('gateLinesFixedPerLandedWave: c6 wave 1 x\nexcluded: c7: boom')
+  })
+
+  it('a runner-driven campaign with no board is named on the line, its reason on the title (review I1)', () => {
+    const r = pooled({
+      campaigns: 0, decided: 0, waves: 0, gpuHours: null, passRatePerGpuHour: null, wavesPerCampaign: null,
+      gateLinesFixedPerLandedWave: { value: null }, humanInterventionsPerWave: { value: null },
+      supervisionDollars: null, supervisionDollarsPerWave: null,
+      excluded: ['c8: no verdict since the scoreboard shipped — no wave record carries a scoreboard', 'c1: no waves.jsonl (not runner-driven)'],
+      unmeasured: [],
+    })
+    expect(r.text.endsWith(' · excluded c8, c1')).toBe(true)
+    expect(r.title).toBe('excluded: c8: no verdict since the scoreboard shipped — no wave record carries a scoreboard\nexcluded: c1: no waves.jsonl (not runner-driven)')
   })
 
   it('an empty pool prints dashes, not zeros', () => {
