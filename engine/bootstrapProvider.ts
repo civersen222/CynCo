@@ -26,6 +26,38 @@ function slotCacheDirFor(modelPath: string): string {
   return dir
 }
 
+/**
+ * True when this engine runs an unattended mission: `scripts/dispatch-mission.sh`
+ * launches it with `LOCALCODE_MISSION_*` set (marker, cwd, base, check). An empty
+ * value does not count — the check command may legitimately be `''`.
+ */
+export function isUnattendedMission(env: Record<string, string | undefined> = process.env): boolean {
+  return Object.entries(env).some(([k, v]) => k.startsWith('LOCALCODE_MISSION_') && typeof v === 'string' && v.length > 0)
+}
+
+/**
+ * F161 residual: what to do about the llama-server binary once `resolveBinary`
+ * has looked. A resolved path is used. With none, an interactive engine
+ * downloads it (as it always has); an unattended mission REFUSES with a named
+ * error instead — nobody is there to approve a download (downloads are the
+ * operator's call, pre-staged for unattended runs), and the Phase 4 live proof's
+ * second launch reached GitHub and then sat out the dispatch's ten-minute wait.
+ * Refuse, don't crash (F140). Pure: no disk, no network.
+ */
+export function binaryAction(opts: {
+  binaryPath: string | null
+  unattended: boolean
+  binDir: string
+  brainBinDir: string
+}): { kind: 'use'; path: string } | { kind: 'download' } | { kind: 'refuse'; message: string } {
+  if (opts.binaryPath) return { kind: 'use', path: opts.binaryPath }
+  if (!opts.unattended) return { kind: 'download' }
+  return {
+    kind: 'refuse',
+    message: `F161: no llama-server under ${opts.binDir} or ${opts.brainBinDir}; an unattended engine does not download — stage the binary or set LOCALCODE_LLAMA_SERVER`,
+  }
+}
+
 export async function bootstrapProvider(
   config: LocalCodeConfig,
 ): Promise<{ provider: Provider; contextLength: number }> {
@@ -86,8 +118,18 @@ export async function bootstrapProvider(
       // weeks while every launch silently served the unpatched binary.
       const { resolveBinary, downloadBinary } = await import('./llama/binaryManager.js')
       const brainBinDir = path.join(cyncoDir, 'bin-brain')
-      let binaryPath = resolveBinary(config.llamaServer, binDir, brainBinDir)
-      if (!binaryPath) {
+      const action = binaryAction({
+        binaryPath: resolveBinary(config.llamaServer, binDir, brainBinDir),
+        unattended: isUnattendedMission(),
+        binDir,
+        brainBinDir,
+      })
+      // A refusal throws into the FATAL catch below, which names it.
+      if (action.kind === 'refuse') throw new Error(action.message)
+      let binaryPath: string
+      if (action.kind === 'use') {
+        binaryPath = action.path
+      } else {
         console.log('[llama-cpp] llama-server not found — downloading...')
         binaryPath = await downloadBinary(binDir, (msg) => console.log(msg))
       }
