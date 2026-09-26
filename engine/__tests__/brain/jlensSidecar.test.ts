@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 import { join } from 'path'
-import { homedir } from 'os'
+import { cyncoHome } from '../../paths.js'
 import { sidecarDecision, jlensArtifactsDir } from '../../brain/jlensSidecar.js'
 
 describe('sidecarDecision', () => {
@@ -40,11 +40,11 @@ describe('sidecarDecision', () => {
 })
 
 describe('jlensArtifactsDir', () => {
-  it('defaults to ~/.cynco/jlens and honours JLENS_DIR', () => {
+  it('defaults to <cyncoHome()>/jlens and honours JLENS_DIR', () => {
     const prev = process.env.JLENS_DIR
     try {
       delete process.env.JLENS_DIR
-      expect(jlensArtifactsDir()).toBe(join(homedir(), '.cynco', 'jlens'))
+      expect(jlensArtifactsDir()).toBe(join(cyncoHome(), 'jlens'))
       process.env.JLENS_DIR = 'C:\\elsewhere\\lens'
       expect(jlensArtifactsDir()).toBe('C:\\elsewhere\\lens')
     } finally {

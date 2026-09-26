@@ -17,7 +17,7 @@
 import { spawn, execSync, type ChildProcess } from 'child_process'
 import { existsSync } from 'fs'
 import { join } from 'path'
-import { homedir } from 'os'
+import { cyncoHome } from '../paths.js'
 
 const SIDECAR_MODULE = 'jlens_service.server'
 
@@ -56,7 +56,7 @@ export function sidecarDecision(env: {
 }
 
 export function jlensArtifactsDir(): string {
-  return process.env.JLENS_DIR ?? join(homedir(), '.cynco', 'jlens')
+  return process.env.JLENS_DIR || join(cyncoHome(), 'jlens') // empty JLENS_DIR = unset, as cyncoHome() treats CYNCO_HOME
 }
 
 function killStaleSidecars(log: (msg: string) => void): void {

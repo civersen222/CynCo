@@ -381,7 +381,7 @@ Structured multi-phase workflows with tool restrictions and advancement gates:
 - `/critique` — critical analysis
 
 ### Skills
-Shareable, self-contained capability packs — a directory with a `SKILL.md` (YAML frontmatter + prose instructions) that declares the tools it needs. Skills are discovered from two locations: bundled builtins (`engine/skills/builtins/`) and your workspace (`~/.cynco/skills/`, which overrides builtins by name). A name-sorted index of available skills is surfaced in the prompt; the model calls `run_skill` to load a skill's full instructions and its declared tools on demand, or `list_skills` to enumerate them.
+Shareable, self-contained capability packs — a directory with a `SKILL.md` (YAML frontmatter + prose instructions) that declares the tools it needs. Skills are discovered from two locations: bundled builtins (`engine/skills/builtins/`) and your workspace (`~/.cynco/skills/` — `$CYNCO_HOME/skills/` when `CYNCO_HOME` is set — which overrides builtins by name). A name-sorted index of available skills is surfaced in the prompt; the model calls `run_skill` to load a skill's full instructions and its declared tools on demand, or `list_skills` to enumerate them.
 
 The seven guided workflows above (`tdd`, `debug`, `review`, `plan`, `brainstorm`, `critique`, `research`) ship as builtin skills. `run_skill("tdd")` and the `/tdd` slash command are aliases: both drive the same phase-gated workflow engine, so the workflow keeps its state machine (per-phase instructions, gates, allowed tools) rather than collapsing into flat prose.
 
