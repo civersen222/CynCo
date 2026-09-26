@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  featuresOf, datasetRows, frozenSplit, freezeManifest, FEATURE_KEYS, MIN_TURNS, main,
+  featuresOf, datasetRows, frozenSplit, freezeManifest, FEATURE_KEYS, PREFIX_TURNS, DEFAULT_TURNS, main,
 } from '../cynco-outcome-dataset.mjs'
 import { labelOf } from '../cynco-signal-validation.mjs'
 
@@ -14,7 +14,7 @@ const sweep = { kind: 'withheld', killed: 1, total: 1, survived: [] }
 // carrying the turn index so "which turns went in" is readable off the value.
 const turn = (i, over = {}) => ({
   t: 1000 + i, health: 'healthy', s3s4Balance: 'balanced',
-  toolSuccessRate: i / 10, stuckTurns: i, varietyRatio: i, varietyWindowed: i,
+  toolSuccessRate: i / 100, stuckTurns: i, varietyRatio: i, varietyWindowed: i,
   taskError: i, errorTrend: 'flat', fingerprintAlarm: null, infoGain: i,
   progressRate: i, explorationState: 'healthy_exploration', varietyBalance: 'balanced',
   algedonicAlerts: i, axiomHealth: { holding: 1, total: 3, violations: Array.from({ length: i }, (_, k) => `v${k}`) },
@@ -24,7 +24,7 @@ const turn = (i, over = {}) => ({
   snapshot: null, ...over,
 })
 
-const row = (id, { label = 'fail', turns = 8, turnFn = turn, ...over } = {}) => ({
+const row = (id, { label = 'fail', turns = 40, turnFn = turn, ...over } = {}) => ({
   missionId: id,
   outcome: label === 'success' ? 'landed' : 'failed',
   verified: label === 'unlabeled' ? null : label === 'success',
@@ -35,12 +35,15 @@ const row = (id, { label = 'fail', turns = 8, turnFn = turn, ...over } = {}) => 
 })
 
 // The documented feature list (benchmark/cynco-ledger/README.md, "Outcome
-// dataset"). Written out here, not derived, so adding a feature is a deliberate
-// change to the doc and this list together.
-const NUMERIC = ['toolSuccessRate', 'stuckTurns', 'varietyRatio', 'varietyWindowed', 'taskError', 'infoGain',
-  'progressRate', 'algedonicAlerts', 'consecutiveUnstable', 'axiomViolations', 'toolEntropyMean', 'toolEntropyMax']
+// dataset and the frozen holdout"). Written out here, not derived, so adding a
+// feature is a deliberate change to the doc and this list together.
+const LEVELS = ['toolSuccessRate', 'varietyRatio', 'varietyWindowed', 'taskError', 'infoGain', 'progressRate',
+  'axiomViolations', 'toolEntropyMean', 'toolEntropyMax']
 const DOCUMENTED = [
-  ...NUMERIC.flatMap(n => [`${n}.mean`, `${n}.last`, `${n}.max`]),
+  ...LEVELS.flatMap(n => [`${n}.mean`, `${n}.last`, `${n}.max`]),
+  'stuckTurns.rate', 'stuckTurns.last', 'stuckTurns.max',
+  'algedonicAlerts.rate', 'algedonicAlerts.last', 'algedonicAlerts.max',
+  'consecutiveUnstable.last', 'consecutiveUnstable.max',
   'brainPresent',
   'errorTrend.rising', 'errorTrend.flat', 'errorTrend.falling',
   'explorationState.healthy_exploration', 'explorationState.thrashing', 'explorationState.floundering',
@@ -52,23 +55,30 @@ const DOCUMENTED = [
 const FORBIDDEN = ['verified', 'outcome', 'mutationSweep', 'toolStats', 'durationS', 'exitReason', 'commits',
   'identityGuard', 'regulatorFidelity', 'posiwidLive', 's5Decisions', 'invariants', 'routing', 'brainStats', 'ultrastable']
 
-describe('featuresOf — prefix only', () => {
-  it('fraction 0.5 of 8 turns reads turns 0–3 and nothing after', () => {
-    const f = featuresOf(row('m1'), 0.5)
-    expect(f).toMatchObject({ missionId: 'm1', fraction: 0.5, turnsInPrefix: 4, label: false, leakGuard: true })
-    expect(f.features['stuckTurns.last']).toBe(3)
-    expect(f.features['stuckTurns.max']).toBe(3)
-    expect(f.features['stuckTurns.mean']).toBe(1.5)
-    expect(f.features['axiomViolations.max']).toBe(3)
-    expect(f.features['toolEntropyMax.max']).toBe(6)
-    expect(f.features['toolEntropyMean.last']).toBe(3)
-    expect(f.features.brainPresent).toBe(1)
+describe('featuresOf — the first K turns only', () => {
+  it('the prefix points are K = 16 (primary) and K = 32', () => {
+    expect(PREFIX_TURNS).toEqual([16, 32])
+    expect(DEFAULT_TURNS).toBe(16)
   })
 
-  it('one-hots come from the LAST prefix turn, never a later one', () => {
-    const r = row('m2', { turnFn: (i) => turn(i, i === 3 ? { health: 'warning', heterarchy: { commander: 'S4' } }
-      : i >= 4 ? { health: 'critical', errorTrend: 'rising', heterarchy: { commander: 'S5' } } : {}) })
-    const f = featuresOf(r, 0.5).features
+  it('K = 16 of 40 turns reads turns 0–15 and nothing after', () => {
+    const f = featuresOf(row('m1'), 16)
+    expect(f).toEqual({ missionId: 'm1', prefixTurns: 16, label: false, features: expect.any(Object), leakGuard: true })
+    expect(f.features['varietyRatio.last']).toBe(15)
+    expect(f.features['varietyRatio.max']).toBe(15)
+    expect(f.features['varietyRatio.mean']).toBe(7.5)
+    expect(f.features['stuckTurns.last']).toBe(15)
+    expect(f.features['axiomViolations.max']).toBe(15)
+    expect(f.features['toolEntropyMax.max']).toBe(30)
+    expect(f.features['consecutiveUnstable.max']).toBe(15)
+    expect(f.features.brainPresent).toBe(1)
+    expect('turnsInPrefix' in f.features).toBe(false)
+  })
+
+  it('one-hots come from turn K−1, never a later one', () => {
+    const r = row('m2', { turnFn: (i) => turn(i, i === 15 ? { health: 'warning', heterarchy: { commander: 'S4' } }
+      : i >= 16 ? { health: 'critical', errorTrend: 'rising', heterarchy: { commander: 'S5' } } : {}) })
+    const f = featuresOf(r, 16).features
     expect(f['health.warning']).toBe(1)
     expect(f['health.critical']).toBe(0)
     expect(f['commander.S4']).toBe(1)
@@ -80,58 +90,92 @@ describe('featuresOf — prefix only', () => {
   it('LEAK: no whole-mission field is a feature key or a prefix of one, and the key set is the documented list', () => {
     const r = row('m3', { verified: true, outcome: 'landed', toolStats: { total: 5 }, mutationSweep: sweep,
       identityGuard: {}, regulatorFidelity: {}, posiwidLive: {}, s5Decisions: [], invariants: [], routing: {}, brainStats: {}, ultrastable: {} })
-    const keys = Object.keys(featuresOf(r, 0.5).features)
-    const hits = keys.filter(k => FORBIDDEN.some(n => k === n || k.startsWith(`${n}.`) || k.startsWith(n)))
-    expect(hits).toEqual([])
-    expect(keys.includes('toolStats.total')).toBe(false)
+    const keys = Object.keys(featuresOf(r, 16).features)
+    expect(keys.filter(k => FORBIDDEN.some(n => k.startsWith(n)))).toEqual([])
     expect([...keys].sort()).toEqual([...DOCUMENTED].sort())
     expect([...FEATURE_KEYS].sort()).toEqual([...DOCUMENTED].sort())
+    expect(FEATURE_KEYS).toHaveLength(58)
+  })
+
+  it('LEAK: no feature is a function of the turn index — a constant row reads identically at K = 16 and K = 32', () => {
+    const constant = row('c', { turnFn: () => ({
+      health: 'warning', s3s4Balance: 's3_dominant', toolSuccessRate: 0.7, stuckTurns: 2, varietyRatio: 3,
+      varietyWindowed: 4, taskError: 0.5, errorTrend: 'rising', infoGain: 0.2, progressRate: 0.1,
+      explorationState: 'thrashing', varietyBalance: 'overload', algedonicAlerts: 5,
+      axiomHealth: { holding: 1, total: 3, violations: ['a', 'b'] }, consecutiveUnstable: 3,
+      heterarchy: { commander: 'S4' }, brain: { toolEntropy: { mean: 0.4, max: 1.2 } },
+    }) })
+    const a = featuresOf(constant, 16).features
+    const b = featuresOf(constant, 32).features
+    const nonNull = Object.keys(a).filter(k => a[k] !== null)
+    expect(nonNull).toHaveLength(58)
+    // identical up to float summation order (a mean of sixteen 0.7s is not
+    // bit-equal to a mean of thirty-two)
+    for (const k of nonNull) expect(b[k], k).toBeCloseTo(a[k], 12)
+  })
+
+  it('the counters are per-turn rates: new alerts per turn, share of turns stuck', () => {
+    // alerts climb one per turn; stuck on every other turn
+    const r = row('r', { turnFn: (i) => turn(i, { algedonicAlerts: 10 + i, stuckTurns: i % 2 }) })
+    for (const K of PREFIX_TURNS) {
+      const f = featuresOf(r, K).features
+      expect(f['algedonicAlerts.rate']).toBe(1)
+      expect(f['stuckTurns.rate']).toBe(0.5)
+    }
   })
 
   it('a prefix whose signal is null throughout reads null, not 0; no entropy → brainPresent 0', () => {
-    const r = row('m4', { turnFn: (i) => turn(i, { stuckTurns: null, brain: { tier: 'off', toolEntropy: null },
+    const r = row('m4', { turnFn: (i) => turn(i, { stuckTurns: null, algedonicAlerts: null, brain: { tier: 'off', toolEntropy: null },
       axiomHealth: null, errorTrend: null, heterarchy: null }) })
-    const f = featuresOf(r, 0.5).features
-    for (const k of ['stuckTurns', 'toolEntropyMean', 'toolEntropyMax', 'axiomViolations']) {
-      expect(f[`${k}.mean`]).toBeNull()
-      expect(f[`${k}.last`]).toBeNull()
-      expect(f[`${k}.max`]).toBeNull()
-    }
+    const f = featuresOf(r, 16).features
+    for (const k of ['toolEntropyMean.mean', 'toolEntropyMax.max', 'axiomViolations.last', 'stuckTurns.rate',
+      'stuckTurns.last', 'algedonicAlerts.rate', 'algedonicAlerts.max']) expect([k, f[k]]).toEqual([k, null])
     expect(f.brainPresent).toBe(0)
     expect(f['errorTrend.flat'] + f['errorTrend.rising'] + f['errorTrend.falling']).toBe(0)
     expect(f['commander.S3']).toBe(0)
   })
 
   it('.last is the last non-null value in the prefix; nulls are skipped by mean', () => {
-    const r = row('m5', { turnFn: (i) => turn(i, { taskError: i === 3 ? null : i }) })
-    const f = featuresOf(r, 0.5).features
-    expect(f['taskError.last']).toBe(2)
-    expect(f['taskError.mean']).toBe(1)
+    const r = row('m5', { turnFn: (i) => turn(i, { taskError: i === 15 ? null : i }) })
+    const f = featuresOf(r, 16).features
+    expect(f['taskError.last']).toBe(14)
+    expect(f['taskError.mean']).toBe(7)
   })
 
   it('label is labelOf(row), for every branch', () => {
     for (const r of [row('a', { label: 'success' }), row('b', { label: 'fail' }), row('c', { label: 'unlabeled' }),
       row('d', { label: 'success', mutationSweep: null })]) {
-      expect(featuresOf(r, 0.5).label).toBe(labelOf(r))
+      expect(featuresOf(r, 16).label).toBe(labelOf(r))
     }
-    expect(featuresOf(row('a', { label: 'success' }), 0.5).label).toBe(true)
+    expect(featuresOf(row('a', { label: 'success' }), 16).label).toBe(true)
   })
 
-  it('the prefix is at least one turn, and a bad fraction throws', () => {
-    expect(featuresOf(row('m6', { turns: 4 }), 0.1).turnsInPrefix).toBe(1)
-    expect(() => featuresOf(row('m6'), 0)).toThrow(/fraction/)
-    expect(() => featuresOf(row('m6'), 1.5)).toThrow(/fraction/)
+  it('a mission shorter than K is refused, never truncated; a bad K throws', () => {
+    expect(() => featuresOf(row('m6', { turns: 15 }), 16)).toThrow(/fewer than K = 16/)
+    expect(() => featuresOf(row('m6'), 0)).toThrow(/turns/)
+    expect(() => featuresOf(row('m6'), 0.5)).toThrow(/turns/)
   })
 })
 
 describe('datasetRows', () => {
-  it('keeps labeled rows with at least MIN_TURNS turns and counts what it excluded', () => {
-    expect(MIN_TURNS).toBe(4)
-    const out = datasetRows([row('ok1'), row('ok2', { label: 'success', turns: 4 }), row('short', { turns: 3 }),
-      row('unl', { label: 'unlabeled' }), row('unl-short', { label: 'unlabeled', turns: 1 })], 0.5)
-    expect(out.rows.map(r => r.missionId)).toEqual(['ok1', 'ok2'])
-    expect(out.excluded).toEqual({ unlabeled: 2, short: 1 })
-    expect(out.rows[1].turnsInPrefix).toBe(2)
+  it('keeps labeled rows with ≥ K turns and counts exclusions per K', () => {
+    const rows = [row('ok1'), row('mid', { label: 'success', turns: 20 }), row('short', { turns: 10 }),
+      row('unl', { label: 'unlabeled' }), row('unl-short', { label: 'unlabeled', turns: 1 })]
+    const at16 = datasetRows(rows, 16)
+    expect(at16.rows.map(r => r.missionId)).toEqual(['ok1', 'mid'])
+    expect(at16.excluded).toEqual({ unlabeled: 2, short: 1 })
+    expect(at16.rows.every(r => r.prefixTurns === 16)).toBe(true)
+    const at32 = datasetRows(rows, 32)
+    expect(at32.rows.map(r => r.missionId)).toEqual(['ok1'])
+    expect(at32.excluded).toEqual({ unlabeled: 2, short: 2 })
+  })
+
+  it('counts out-of-vocabulary categorical values on turn K−1 (and not absent ones)', () => {
+    const odd = row('odd', { turnFn: (i) => turn(i, i === 15 ? { health: 'meltdown', heterarchy: { commander: 'S9' } } : {}) })
+    const out = datasetRows([odd, row('odd2', { turnFn: (i) => turn(i, { health: 'meltdown', errorTrend: null }) }), row('fine')], 16)
+    expect(out.unknownValues).toEqual({ 'health.meltdown': 2, 'commander.S9': 1 })
+    expect(out.rows[0].features['health.healthy'] + out.rows[0].features['health.warning'] + out.rows[0].features['health.critical']).toBe(0)
+    expect(datasetRows([row('fine')], 16).unknownValues).toEqual({})
   })
 })
 
@@ -150,15 +194,24 @@ describe('freezeManifest', () => {
     expect(m.missionIds.some(id => id.startsWith('f'))).toBe(true)
     expect(m.missionIds.some(id => id.startsWith('s'))).toBe(true)
     expect(freezeManifest(twenty(), { seed: 7, now }).missionIds).toEqual(m.missionIds)
-    // input order does not matter, only the seed does
     expect(freezeManifest(twenty().reverse(), { seed: 7, now }).missionIds).toEqual(m.missionIds)
     const others = [1, 2, 3, 4, 5].map(seed => freezeManifest(twenty(), { seed, now }).missionIds.join())
     expect(others.some(ids => ids !== m.missionIds.join())).toBe(true)
   })
 
-  it('unlabeled and short rows are never held out', () => {
-    const m = freezeManifest([...twenty(), ...Array.from({ length: 10 }, (_, i) => row(`u${i}`, { label: 'unlabeled' })),
-      ...Array.from({ length: 10 }, (_, i) => row(`t${i}`, { turns: 2 }))], { seed: 7, now })
+  it('each label draws from its own stream: one more failure does not move the successes drawn', () => {
+    const successes = (m) => m.missionIds.filter(id => id.startsWith('s'))
+    for (const seed of [1, 2, 3, 7, 20260926]) {
+      const base = freezeManifest(twenty(), { seed, now })
+      const grown = freezeManifest([...twenty(), row('f99')], { seed, now })
+      expect(successes(grown)).toEqual(successes(base))
+    }
+  })
+
+  it('unlabeled rows and rows shorter than K are never held out', () => {
+    const extra = [...Array.from({ length: 10 }, (_, i) => row(`u${i}`, { label: 'unlabeled' })),
+      ...Array.from({ length: 10 }, (_, i) => row(`t${i}`, { turns: 20 }))]
+    const m = freezeManifest([...twenty(), ...extra], { seed: 7, turns: 32, now })
     expect(m.missionIds).toHaveLength(4)
     expect(m.missionIds.every(id => /^[fs]/.test(id))).toBe(true)
   })
@@ -179,7 +232,6 @@ describe('freezeManifest', () => {
     expect(v2.version).toBe(2)
     for (const id of withGhost.missionIds) expect(v2.missionIds).toContain(id)
     expect(v2.missionIds.length).toBeGreaterThanOrEqual(8)
-    // a refreeze over rows that shrank never drops an id either
     expect(freezeManifest(twenty().slice(0, 5), { seed: 3, previous: v1, now }).missionIds).toEqual(expect.arrayContaining(v1.missionIds))
   })
 
@@ -190,41 +242,65 @@ describe('freezeManifest', () => {
 
 describe('frozenSplit', () => {
   it('splits by manifest and reports manifest ids missing from the rows', () => {
-    const rows = twenty()
-    const split = frozenSplit(rows, { missionIds: ['f00', 's01', 'gone'] })
+    const split = frozenSplit(twenty(), { missionIds: ['f00', 's01', 'gone'] })
     expect(split.holdout.map(r => r.missionId)).toEqual(['f00', 's01'])
     expect(split.train).toHaveLength(18)
     expect(split.missing).toEqual(['gone'])
+    expect(split.ineligible).toEqual([])
     expect(split.train.some(r => r.missionId === 'f00')).toBe(false)
+  })
+
+  it('with turns: K, held ids not eligible at K are reported as ineligible and leave both splits', () => {
+    const rows = [...twenty(), row('short-held', { turns: 20 }), row('short-train', { turns: 20 }), row('unl-held', { label: 'unlabeled' })]
+    const split = frozenSplit(rows, { missionIds: ['f00', 'short-held', 'unl-held', 'gone'] }, { turns: 32 })
+    expect(split.holdout.map(r => r.missionId)).toEqual(['f00'])
+    expect(split.ineligible).toEqual(['short-held', 'unl-held'])
+    expect(split.missing).toEqual(['gone'])
+    expect(split.train).toHaveLength(19)
+    expect(frozenSplit(rows, { missionIds: ['short-held'] }, { turns: 16 }).ineligible).toEqual([])
   })
 })
 
 describe('CLI', () => {
-  const ledger = () => {
+  const ledger = (rows = twenty()) => {
     const dir = mkdtempSync(join(tmpdir(), 'outcome-ledger-'))
-    writeFileSync(join(dir, 'missions.jsonl'), twenty().map(r => JSON.stringify(r)).join('\n') + '\n', 'utf8')
+    writeFileSync(join(dir, 'missions.jsonl'), rows.map(r => JSON.stringify(r)).join('\n') + '\n', 'utf8')
     return dir
   }
-  const quiet = { log: () => {}, error: () => {} }
+  const capture = () => { const lines = []; return { lines, log: (s) => lines.push(s), error: (s) => lines.push(s) } }
 
-  it('--export writes one JSONL row per labeled mission at the fraction', async () => {
-    const dir = ledger()
+  it('--export --turns K writes one JSONL row per eligible mission, each carrying prefixTurns', async () => {
+    const dir = ledger([...twenty(), row('mid', { turns: 20 })])
     const out = join(mkdtempSync(join(tmpdir(), 'outcome-out-')), 'sub', 'ds.jsonl')
-    expect(await main(['--export', '--ledger-dir', dir, '--fraction', '0.25', '--out', out], quiet)).toBe(0)
+    const io = capture()
+    expect(await main(['--export', '--ledger-dir', dir, '--turns', '32', '--out', out], io)).toBe(0)
     const lines = readFileSync(out, 'utf8').trim().split('\n').map(l => JSON.parse(l))
     expect(lines).toHaveLength(20)
-    expect(lines[0]).toMatchObject({ fraction: 0.25, turnsInPrefix: 2, leakGuard: true })
+    expect(lines[0]).toMatchObject({ prefixTurns: 32, leakGuard: true })
+    expect(io.lines[0]).toMatch(/20 rows at K = 32 turns \(excluded 0 unlabeled, 1 short\)/)
+    expect(await main(['--export', '--ledger-dir', dir, '--out', out], capture())).toBe(0)
+    expect(readFileSync(out, 'utf8').trim().split('\n')).toHaveLength(21)
+  })
+
+  it('--export prints unknown categorical values; --fraction and a bad --turns are refused', async () => {
+    const dir = ledger([row('odd', { turnFn: (i) => turn(i, { health: 'meltdown' }) })])
+    const out = join(mkdtempSync(join(tmpdir(), 'outcome-out-')), 'ds.jsonl')
+    const io = capture()
+    expect(await main(['--export', '--ledger-dir', dir, '--out', out], io)).toBe(0)
+    expect(io.lines[0]).toMatch(/unknown categorical values: health\.meltdown ×1/)
+    expect(await main(['--export', '--ledger-dir', dir, '--fraction', '0.5', '--out', out], capture())).toBe(2)
+    expect(await main(['--export', '--ledger-dir', dir, '--turns', 'x', '--out', out], capture())).toBe(2)
   })
 
   it('--freeze writes the manifest and refuses when it exists; --refreeze adds', async () => {
     const dir = ledger()
     const manifest = join(mkdtempSync(join(tmpdir(), 'outcome-man-')), 'frozen-eval.json')
-    expect(await main(['--freeze', '--seed', '5', '--ledger-dir', dir, '--manifest', manifest], quiet)).toBe(0)
+    expect(await main(['--freeze', '--seed', '5', '--ledger-dir', dir, '--manifest', manifest], capture())).toBe(0)
     const v1 = JSON.parse(readFileSync(manifest, 'utf8'))
     expect(v1.missionIds).toHaveLength(4)
-    expect(await main(['--freeze', '--seed', '5', '--ledger-dir', dir, '--manifest', manifest], quiet)).toBe(2)
+    expect(await main(['--freeze', '--seed', '5', '--ledger-dir', dir, '--manifest', manifest], capture())).toBe(2)
     expect(JSON.parse(readFileSync(manifest, 'utf8'))).toEqual(v1)
-    expect(await main(['--refreeze', '--seed', '6', '--ledger-dir', dir, '--manifest', manifest], quiet)).toBe(0)
+    expect(await main(['--refreeze', '--seed', '6', '--ledger-dir', dir, '--manifest', manifest], capture())).toBe(0)
     const v2 = JSON.parse(readFileSync(manifest, 'utf8'))
     expect(v2.version).toBe(2)
     expect(v2.missionIds).toEqual(expect.arrayContaining(v1.missionIds))
@@ -233,15 +309,16 @@ describe('CLI', () => {
   it('--refreeze without a manifest, and --freeze without a seed, refuse with exit 2', async () => {
     const dir = ledger()
     const manifest = join(mkdtempSync(join(tmpdir(), 'outcome-man-')), 'frozen-eval.json')
-    expect(await main(['--refreeze', '--seed', '6', '--ledger-dir', dir, '--manifest', manifest], quiet)).toBe(2)
-    expect(await main(['--freeze', '--ledger-dir', dir, '--manifest', manifest], quiet)).toBe(2)
+    expect(await main(['--refreeze', '--seed', '6', '--ledger-dir', dir, '--manifest', manifest], capture())).toBe(2)
+    expect(await main(['--freeze', '--ledger-dir', dir, '--manifest', manifest], capture())).toBe(2)
     expect(existsSync(manifest)).toBe(false)
   })
 
-  it('the committed manifest has the frozen shape: schema 1, version 1, the recorded seed, unique ids', async () => {
+  it('the committed manifest has the frozen shape: schema 1, version 1, the recorded seed, 21 unique ids', async () => {
     const committed = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'benchmark', 'cynco-ledger', 'frozen-eval.json'), 'utf8'))
     expect(Object.keys(committed).sort()).toEqual(['frozenAt', 'missionIds', 'schema', 'seed', 'version'])
-    expect(committed).toMatchObject({ schema: 1, version: 1, seed: 20260926 })
-    expect(new Set(committed.missionIds).size).toBe(committed.missionIds.length)
+    expect(committed).toMatchObject({ schema: 1, version: 1, seed: 20260926, frozenAt: '2026-09-26T18:59:02.676Z' })
+    expect(committed.missionIds).toHaveLength(21)
+    expect(new Set(committed.missionIds).size).toBe(21)
   })
 })

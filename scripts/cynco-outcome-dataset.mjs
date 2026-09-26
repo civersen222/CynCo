@@ -1,32 +1,41 @@
 /**
  * The outcome dataset and the frozen holdout (Phase 5, ruling 5).
  *
- * One row per LABELED mission, built from a PREFIX of its `turns[]` — the first
- * 50 % by index by default, 25 % as a second, earlier point. The question every
- * later learner answers is "could we have seen this coming?", and only what was
- * observable at the time of the prefix may enter the answer. Whole-mission
- * fields (`verified`, `outcome`, `mutationSweep`, `toolStats`, `durationS`, …)
- * are written after the run ends; a feature built from one of them describes
- * the outcome after the fact and would make any learner look prescient. So
- * `featuresOf` reads `row.turns` and nothing else except `missionId` and the
- * label, and the feature key set is a fixed, documented list
- * (`FEATURE_KEYS`, benchmark/cynco-ledger/README.md "Outcome dataset and the
- * frozen holdout") that the leak test pins exactly.
+ * One row per LABELED mission, built from a PREFIX of its `turns[]`: the first
+ * K turns by index, at two fixed points — K = 16 (primary) and K = 32
+ * (secondary). The question every later learner answers is "could we have seen
+ * this coming by turn K?", and only what was observable by turn K may enter the
+ * answer.
+ *
+ * Why a FIXED K and not a fraction (Task 4 review I1): a prefix of `floor(n/2)`
+ * turns has a length set by the finished run, so every signal that grows with
+ * elapsed turns encoded `n` — `consecutiveUnstable.max` correlated 1.000 with
+ * the prefix length, and failures run longer than successes. With a fixed K the
+ * prefix is the same length for every mission; a mission with fewer than K
+ * turns is EXCLUDED (and counted), never truncated, because a short prefix
+ * would carry the length back in.
+ *
+ * Whole-mission fields (`verified`, `outcome`, `mutationSweep`, `toolStats`,
+ * `durationS`, …) are written after the run ends; a feature built from one of
+ * them describes the outcome after the fact. So `featuresOf` reads `row.turns`
+ * and nothing else except `missionId` and the label, and the feature key set is
+ * a fixed, documented list (`FEATURE_KEYS`, benchmark/cynco-ledger/README.md
+ * "Outcome dataset and the frozen holdout") that the leak test pins exactly.
  *
  * The label is `labelOf` from scripts/cynco-signal-validation.mjs — the ledger's
  * one labeling rule, imported, never restated.
  *
- * Unmeasured is `null`, never 0 (F16): a signal that is null on every turn of
- * the prefix yields null mean/last/max. One-hots are all zeros when the last
- * prefix turn carries no value for that field.
+ * Unmeasured is `null`, never 0 (F16). One-hots are all zeros when the K-th
+ * turn carries no value for that field; a value outside the vocabulary is also
+ * all zeros and is COUNTED in `unknownValues` so a new engine enum is visible.
  *
  * The frozen holdout `benchmark/cynco-ledger/frozen-eval.json` is 20 % of the
- * dataset-eligible missions (labeled, ≥ MIN_TURNS turns), stratified by label,
- * drawn by a seeded shuffle. It is written ONCE (`--freeze`); a later version
- * comes only from `--refreeze`, which only ever ADDS ids.
+ * eligible missions, stratified by label, drawn by a seeded shuffle. It is
+ * written ONCE (`--freeze`); a later version comes only from `--refreeze`,
+ * which only ever ADDS ids.
  *
  * Usage:
- *   bun scripts/cynco-outcome-dataset.mjs --export [--fraction 0.5] [--out PATH] [--ledger-dir DIR]
+ *   bun scripts/cynco-outcome-dataset.mjs --export [--turns 16] [--out PATH] [--ledger-dir DIR]
  *   bun scripts/cynco-outcome-dataset.mjs --freeze   --seed N [--manifest PATH] [--ledger-dir DIR]
  *   bun scripts/cynco-outcome-dataset.mjs --refreeze --seed N [--manifest PATH] [--ledger-dir DIR]
  */
@@ -41,29 +50,59 @@ const REPO_LEDGER_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'ben
 export const MANIFEST_PATH = join(REPO_LEDGER_DIR, 'frozen-eval.json')
 export const DATASET_PATH = (home) => join(home, 'datasets', 'outcome-dataset.jsonl')
 export const MANIFEST_SCHEMA = 1
-export const MIN_TURNS = 4
+/** The two fixed prefix points: primary and secondary. */
+export const PREFIX_TURNS = Object.freeze([16, 32])
+export const DEFAULT_TURNS = PREFIX_TURNS[0]
 export const HOLDOUT_SHARE = 0.2
 
 // ── Features ─────────────────────────────────────────────────────
 
-/** Numeric per-turn signals: name → how to read it off one turn. */
+const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null)
+const mean = (vals) => (vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null)
+const lastOf = (vals) => (vals.length ? vals[vals.length - 1] : null)
+const maxOf = (vals) => (vals.length ? Math.max(...vals) : null)
+
+/**
+ * Numeric per-turn signals: [name, how to read it off one turn, aggregates].
+ *
+ * Every aggregate is a level or a per-turn rate, never a sum or a count of
+ * turns — on a row whose signals are constant, every feature is the same at
+ * K = 16 and K = 32 (the leak test pins it). The three counters:
+ * - `consecutiveUnstable` increments on every unstable turn, so its mean over
+ *   the prefix tracks the turn index; only `.last`/`.max` (bounded by K) stay.
+ * - `algedonicAlerts` is a running count of alerts fired so far; `.rate` is new
+ *   alerts per turn across the prefix, (last − first) ÷ (turns between them).
+ * - `stuckTurns` is the current stuck streak (it resets); `.rate` is the share
+ *   of prefix turns spent stuck (streak > 0).
+ */
 const NUMERIC = [
-  ['toolSuccessRate', t => t.toolSuccessRate],
-  ['stuckTurns', t => t.stuckTurns],
-  ['varietyRatio', t => t.varietyRatio],
-  ['varietyWindowed', t => t.varietyWindowed],
-  ['taskError', t => t.taskError],
-  ['infoGain', t => t.infoGain],
-  ['progressRate', t => t.progressRate],
-  ['algedonicAlerts', t => t.algedonicAlerts],
-  ['consecutiveUnstable', t => t.consecutiveUnstable],
-  ['axiomViolations', t => (Array.isArray(t.axiomHealth?.violations) ? t.axiomHealth.violations.length : null)],
-  ['toolEntropyMean', t => t.brain?.toolEntropy?.mean],
-  ['toolEntropyMax', t => t.brain?.toolEntropy?.max],
+  ['toolSuccessRate', t => t.toolSuccessRate, ['mean', 'last', 'max']],
+  ['stuckTurns', t => t.stuckTurns, ['rate', 'last', 'max']],
+  ['varietyRatio', t => t.varietyRatio, ['mean', 'last', 'max']],
+  ['varietyWindowed', t => t.varietyWindowed, ['mean', 'last', 'max']],
+  ['taskError', t => t.taskError, ['mean', 'last', 'max']],
+  ['infoGain', t => t.infoGain, ['mean', 'last', 'max']],
+  ['progressRate', t => t.progressRate, ['mean', 'last', 'max']],
+  ['algedonicAlerts', t => t.algedonicAlerts, ['rate', 'last', 'max']],
+  ['consecutiveUnstable', t => t.consecutiveUnstable, ['last', 'max']],
+  ['axiomViolations', t => (Array.isArray(t.axiomHealth?.violations) ? t.axiomHealth.violations.length : null), ['mean', 'last', 'max']],
+  ['toolEntropyMean', t => t.brain?.toolEntropy?.mean, ['mean', 'last', 'max']],
+  ['toolEntropyMax', t => t.brain?.toolEntropy?.max, ['mean', 'last', 'max']],
 ]
 
-/** Categorical signals read off the LAST prefix turn, one-hot over a fixed
- *  vocabulary (the engine's enums; a value outside it reads as all zeros). */
+/** `.rate` per counter: see the NUMERIC comment. `points` are [turnIndex, value]. */
+const RATE = {
+  algedonicAlerts: (points) => {
+    if (points.length < 2) return null
+    const [i0, v0] = points[0]
+    const [i1, v1] = points[points.length - 1]
+    return (v1 - v0) / (i1 - i0)
+  },
+  stuckTurns: (points) => (points.length ? points.filter(([, v]) => v > 0).length / points.length : null),
+}
+
+/** Categorical signals read off the K-th (last prefix) turn, one-hot over a
+ *  fixed vocabulary (the engine's enums). */
 const CATEGORICAL = [
   ['errorTrend', t => t.errorTrend, ['rising', 'flat', 'falling']],
   ['explorationState', t => t.explorationState, ['healthy_exploration', 'thrashing', 'floundering']],
@@ -74,74 +113,109 @@ const CATEGORICAL = [
 ]
 
 export const FEATURE_KEYS = Object.freeze([
-  ...NUMERIC.flatMap(([n]) => [`${n}.mean`, `${n}.last`, `${n}.max`]),
+  ...NUMERIC.flatMap(([n, , aggs]) => aggs.map(a => `${n}.${a}`)),
   'brainPresent',
   ...CATEGORICAL.flatMap(([n, , vocab]) => vocab.map(v => `${n}.${v}`)),
 ])
 
-const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null)
-
-/** How many turns a fraction keeps: floor, at least one. */
-function prefixLength(n, fraction) {
-  return Math.max(1, Math.floor(n * fraction))
+function checkTurns(K) {
+  if (!Number.isInteger(K) || K < 1) throw new Error(`turns must be a positive integer, got ${K}`)
 }
 
+const turnsOf = (row) => (Array.isArray(row.turns) ? row.turns : [])
+
 /**
- * The feature vector of one mission's prefix. Reads `row.turns`, `row.missionId`
- * and the label — nothing else on the row.
+ * The feature vector of one mission's first K turns. Reads `row.turns`,
+ * `row.missionId` and the label — nothing else on the row. Throws on a mission
+ * with fewer than K turns: a truncated prefix would leak the length.
  */
-export function featuresOf(row, fraction = 0.5) {
-  if (!(typeof fraction === 'number' && fraction > 0 && fraction <= 1)) {
-    throw new Error(`fraction must be in (0, 1], got ${fraction}`)
-  }
-  const all = Array.isArray(row.turns) ? row.turns : []
-  const prefix = all.length ? all.slice(0, prefixLength(all.length, fraction)) : []
+export function featuresOf(row, K = DEFAULT_TURNS) {
+  checkTurns(K)
+  const all = turnsOf(row)
+  if (all.length < K) throw new Error(`${row.missionId}: ${all.length} turns, fewer than K = ${K}`)
+  const prefix = all.slice(0, K)
   const features = {}
-  for (const [name, read] of NUMERIC) {
-    const vals = prefix.map(t => num(read(t ?? {}))).filter(v => v !== null)
-    features[`${name}.mean`] = vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null
-    features[`${name}.last`] = vals.length ? vals[vals.length - 1] : null
-    features[`${name}.max`] = vals.length ? Math.max(...vals) : null
+  for (const [name, read, aggs] of NUMERIC) {
+    const points = []
+    prefix.forEach((t, i) => { const v = num(read(t ?? {})); if (v !== null) points.push([i, v]) })
+    const vals = points.map(([, v]) => v)
+    for (const a of aggs) {
+      features[`${name}.${a}`] = a === 'mean' ? mean(vals) : a === 'last' ? lastOf(vals) : a === 'max' ? maxOf(vals) : RATE[name](points)
+    }
   }
   features.brainPresent = prefix.some(t => num(t?.brain?.toolEntropy?.mean) !== null || num(t?.brain?.toolEntropy?.max) !== null) ? 1 : 0
-  const last = prefix.length ? (prefix[prefix.length - 1] ?? {}) : {}
+  const last = prefix[prefix.length - 1] ?? {}
   for (const [name, read, vocab] of CATEGORICAL) {
     const v = read(last)
     for (const option of vocab) features[`${name}.${option}`] = v === option ? 1 : 0
   }
-  return { missionId: row.missionId, fraction, turnsInPrefix: prefix.length, label: labelOf(row), features, leakGuard: true }
+  return { missionId: row.missionId, prefixTurns: K, label: labelOf(row), features, leakGuard: true }
 }
 
-/** Why a ledger row is not in the dataset, or null when it is. */
-function exclusionOf(row) {
+/** Categorical values on the K-th turn that fall outside the vocabulary, as
+ *  `<field>.<value>` strings (a null/absent value is not unknown, it is absent). */
+function unknownCategoricals(row, K) {
+  const last = turnsOf(row)[K - 1] ?? {}
+  const out = []
+  for (const [name, read, vocab] of CATEGORICAL) {
+    const v = read(last)
+    if (v !== null && v !== undefined && !vocab.includes(v)) out.push(`${name}.${v}`)
+  }
+  return out
+}
+
+/** Why a ledger row is not eligible at K, or null when it is. */
+function exclusionOf(row, K) {
   if (labelOf(row) === null) return 'unlabeled'
-  if ((Array.isArray(row.turns) ? row.turns.length : 0) < MIN_TURNS) return 'short'
+  if (turnsOf(row).length < K) return 'short'
   return null
 }
 
-/** One `featuresOf` row per labeled mission with ≥ MIN_TURNS turns; the rest counted. */
-export function datasetRows(rows, fraction = 0.5) {
+/**
+ * One `featuresOf` row per labeled mission with ≥ K turns; the rest counted
+ * (`excluded.unlabeled`, `excluded.short` — short at THIS K). `unknownValues`
+ * counts out-of-vocabulary categorical values, `{ '<field>.<value>': n }`.
+ */
+export function datasetRows(rows, K = DEFAULT_TURNS) {
+  checkTurns(K)
   const out = []
   const excluded = { unlabeled: 0, short: 0 }
+  const unknownValues = {}
   for (const row of rows) {
-    const why = exclusionOf(row)
-    if (why) excluded[why]++
-    else out.push(featuresOf(row, fraction))
+    const why = exclusionOf(row, K)
+    if (why) { excluded[why]++; continue }
+    out.push(featuresOf(row, K))
+    for (const key of unknownCategoricals(row, K)) unknownValues[key] = (unknownValues[key] ?? 0) + 1
   }
-  return { rows: out, excluded }
+  return { rows: out, excluded, unknownValues }
 }
 
 // ── The frozen holdout ───────────────────────────────────────────
 
-/** Split rows (ledger or dataset rows — anything with `missionId`) by the
- *  manifest. Manifest ids that match no row are reported, never dropped. */
-export function frozenSplit(rows, manifest) {
+/**
+ * Split rows by the manifest. Manifest ids that match no row are reported in
+ * `missing`, never dropped. With `turns: K` the rows are LEDGER rows: those not
+ * eligible at K (unlabeled, or fewer than K turns) leave both splits, and held
+ * ids among them are reported in `ineligible`.
+ */
+export function frozenSplit(rows, manifest, { turns = null } = {}) {
   const held = new Set(manifest?.missionIds ?? [])
   const seen = new Set(rows.map(r => r.missionId))
+  const ineligible = []
+  let usable = rows
+  if (turns !== null) {
+    checkTurns(turns)
+    usable = rows.filter(r => {
+      const ok = exclusionOf(r, turns) === null
+      if (!ok && held.has(r.missionId)) ineligible.push(r.missionId)
+      return ok
+    })
+  }
   return {
-    train: rows.filter(r => !held.has(r.missionId)),
-    holdout: rows.filter(r => held.has(r.missionId)),
+    train: usable.filter(r => !held.has(r.missionId)),
+    holdout: usable.filter(r => held.has(r.missionId)),
     missing: [...held].filter(id => !seen.has(id)),
+    ineligible,
   }
 }
 
@@ -157,6 +231,10 @@ function mulberry32(seed) {
   }
 }
 
+/** One stream per label (review M4), so a new failure mission does not move
+ *  which successes a draw picks. v1 was drawn from a single shared stream. */
+const LABEL_STREAM = { false: 0x1B873593, true: 0x5BD1E995 }
+
 /** Sorted by id first, so the draw depends on the seed and not the input order. */
 function seededShuffle(ids, rand) {
   const a = [...ids].sort()
@@ -168,14 +246,16 @@ function seededShuffle(ids, rand) {
 }
 
 /**
- * The holdout manifest: HOLDOUT_SHARE of the dataset-eligible rows (rounded to
- * nearest), split across labels in proportion, at least one of each label when
- * both exist. With `previous`, every previous id is kept (refreeze only adds)
- * and each label's share is topped up from the rows not yet held.
+ * The holdout manifest: HOLDOUT_SHARE of the rows eligible at `turns` (labeled,
+ * ≥ K turns; default the primary K) rounded to nearest, split across labels in
+ * proportion, at least one of each label when both exist. With `previous`,
+ * every previous id is kept (refreeze only adds) and each label's share is
+ * topped up from the rows not yet held.
  */
-export function freezeManifest(rows, { seed, version, previous = null, now = () => new Date().toISOString() } = {}) {
+export function freezeManifest(rows, { seed, version, previous = null, turns = DEFAULT_TURNS, now = () => new Date().toISOString() } = {}) {
   if (!Number.isInteger(seed)) throw new Error(`seed must be an integer, got ${seed}`)
-  const eligible = rows.filter(r => exclusionOf(r) === null)
+  checkTurns(turns)
+  const eligible = rows.filter(r => exclusionOf(r, turns) === null)
   const byLabel = { false: [], true: [] }
   for (const r of eligible) byLabel[String(labelOf(r))].push(r.missionId)
   const bothLabels = byLabel.false.length > 0 && byLabel.true.length > 0
@@ -190,10 +270,9 @@ export function freezeManifest(rows, { seed, version, previous = null, now = () 
       if (target.true === 0) { target.true = 1; target.false = total - 1 }
     }
   }
-  const kept = [...new Set(previous?.missionIds ?? [])]
-  const held = new Set(kept)
-  const rand = mulberry32(seed)
+  const held = new Set(previous?.missionIds ?? [])
   for (const label of ['false', 'true']) {
+    const rand = mulberry32((seed ^ LABEL_STREAM[label]) >>> 0)
     let have = byLabel[label].filter(id => held.has(id)).length
     for (const id of seededShuffle(byLabel[label].filter(id => !held.has(id)), rand)) {
       if (have >= target[label]) break
@@ -224,8 +303,8 @@ function argOf(argv, flag) {
   return i >= 0 ? argv[i + 1] : undefined
 }
 
-function counts(rows, manifest) {
-  const eligible = rows.filter(r => exclusionOf(r) === null)
+function counts(rows, manifest, K) {
+  const eligible = rows.filter(r => exclusionOf(r, K) === null)
   const held = new Set(manifest.missionIds)
   const holdout = eligible.filter(r => held.has(r.missionId))
   return {
@@ -240,15 +319,26 @@ function counts(rows, manifest) {
 // `engine/paths.js` is TypeScript behind a `.js` specifier and loads only under
 // bun, so it is imported lazily and only when --out is not given.
 export async function main(argv, io = console) {
+  if (argv.includes('--fraction')) {
+    io.error('refused: --fraction was removed (a fractional prefix leaks the mission length); use --turns K')
+    return 2
+  }
+  const turnsArg = argOf(argv, '--turns')
+  const K = turnsArg === undefined ? DEFAULT_TURNS : Number(turnsArg)
+  if (!Number.isInteger(K) || K < 1) {
+    io.error(`refused: --turns must be a positive integer, got ${turnsArg}`)
+    return 2
+  }
   const rows = readLedger(argOf(argv, '--ledger-dir') ?? REPO_LEDGER_DIR)
   if (argv.includes('--export')) {
-    const fraction = argOf(argv, '--fraction') === undefined ? 0.5 : Number(argOf(argv, '--fraction'))
     const out = argOf(argv, '--out') !== undefined
       ? resolve(argOf(argv, '--out'))
       : DATASET_PATH((await import('../engine/paths.js')).cyncoHome())
-    const { rows: ds, excluded } = datasetRows(rows, fraction)
+    const { rows: ds, excluded, unknownValues } = datasetRows(rows, K)
     writeAtomic(out, ds.map(r => JSON.stringify(r)).join('\n') + (ds.length ? '\n' : ''))
-    io.log(`outcome dataset: ${ds.length} rows at fraction ${fraction} (excluded ${excluded.unlabeled} unlabeled, ${excluded.short} short) → ${out}`)
+    const unknown = Object.entries(unknownValues).map(([k, n]) => `${k} ×${n}`)
+    io.log(`outcome dataset: ${ds.length} rows at K = ${K} turns (excluded ${excluded.unlabeled} unlabeled, ${excluded.short} short)` +
+      `${unknown.length ? `; unknown categorical values: ${unknown.join(', ')}` : ''} → ${out}`)
     return 0
   }
   const freeze = argv.includes('--freeze')
@@ -272,16 +362,17 @@ export async function main(argv, io = console) {
       }
       previous = JSON.parse(readFileSync(path, 'utf8'))
     }
-    const manifest = freezeManifest(rows, { seed, previous })
+    const manifest = freezeManifest(rows, { seed, previous, turns: K })
     writeAtomic(path, JSON.stringify(manifest, null, 2) + '\n')
-    const c = counts(rows, manifest)
-    const missing = frozenSplit(rows, manifest).missing
-    io.log(`frozen holdout v${manifest.version} (seed ${seed}): ${c.holdout} of ${c.eligible} eligible missions ` +
+    const c = counts(rows, manifest, K)
+    const { missing, ineligible } = frozenSplit(rows, manifest, { turns: K })
+    io.log(`frozen holdout v${manifest.version} (seed ${seed}, K = ${K}): ${c.holdout} of ${c.eligible} eligible missions ` +
       `(${c.holdoutFailures} failures, ${c.holdoutSuccesses} successes; eligible ${c.eligibleFailures} failures)` +
-      `${missing.length ? `; ${missing.length} previous ids not in the ledger: ${missing.join(', ')}` : ''} → ${path}`)
+      `${missing.length ? `; ${missing.length} held ids not in the ledger: ${missing.join(', ')}` : ''}` +
+      `${ineligible.length ? `; ${ineligible.length} held ids ineligible at K = ${K}: ${ineligible.join(', ')}` : ''} → ${path}`)
     return 0
   }
-  io.error('usage: --export [--fraction F] [--out PATH] | --freeze --seed N | --refreeze --seed N  [--ledger-dir DIR] [--manifest PATH]')
+  io.error('usage: --export [--turns K] [--out PATH] | --freeze --seed N | --refreeze --seed N  [--turns K] [--ledger-dir DIR] [--manifest PATH]')
   return 2
 }
 

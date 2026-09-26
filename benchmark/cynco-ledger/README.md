@@ -889,38 +889,51 @@ Phase 5 ruling 5: the prerequisites for the first learner. Built by
 `scripts/cynco-outcome-dataset.mjs` (pinned by
 `scripts/__tests__/cynco-outcome-dataset.test.mjs`).
 
-**Dataset.** `bun scripts/cynco-outcome-dataset.mjs --export [--fraction 0.5]
+**Dataset.** `bun scripts/cynco-outcome-dataset.mjs --export [--turns 16]
 [--out PATH] [--ledger-dir DIR]` writes JSONL to
 `~/.cynco/datasets/outcome-dataset.jsonl` (via `cyncoHome()`), one row per
 mission that is LABELED (`labelOf` from `scripts/cynco-signal-validation.mjs`,
-the "Labeling rule" below, imported — never restated) and has at least 4
-turns. Unlabeled and short missions are counted and printed, not written. Row
-shape (`featuresOf(row, fraction)`; the values are c8 wave 2's real row,
-features elided):
+the "Labeling rule" below, imported — never restated) and has at least K
+turns. Unlabeled and short missions are counted and printed, not written, and
+so is every categorical value outside the vocabulary
+(`unknown categorical values: health.<v> ×n`, from `datasetRows(...).unknownValues`).
+`--fraction` is refused (see the leak rule). Row shape (`featuresOf(row, K)`;
+the values are c7 wave 5's real row at K = 16 — a TRAINING mission, since
+holdout rows are not quoted — features elided):
 
 ```jsonc
-{ "missionId": "c8-wave2-1789649392765", "fraction": 0.5, "turnsInPrefix": 173,
-  "label": false,            // labelOf: true = success, false = failure
-  "features": { "stuckTurns.mean": 0.06936416184971098, "stuckTurns.last": 0, "stuckTurns.max": 2, "…": "…" },
+{ "missionId": "c7-wave5-1788613255404", "prefixTurns": 16,
+  "label": true,             // labelOf: true = success, false = failure
+  "features": { "toolSuccessRate.mean": 0.996875, "algedonicAlerts.rate": 0.06666666666666667,
+                "consecutiveUnstable.max": 16, "…": "…" },
   "leakGuard": true }
 ```
 
-The prefix is the first `max(1, floor(turns.length × fraction))` entries of
-`turns[]` by index — 50 % by default, 25 % as the earlier point. The feature
-keys are EXACTLY these 59 (the test asserts the set, so adding one is a change
-to this list and the test together):
+The prefix is the first K entries of `turns[]` by index, at two fixed points:
+**K = 16** (primary, the default) and **K = 32** (secondary). A mission with
+fewer than K turns is EXCLUDED at that K, never truncated. `prefixTurns` is row
+metadata (it is the constant K), not a feature. The feature keys are EXACTLY
+these 58 (the test asserts the set, so adding one is a change to this list and
+the test together):
 
-- For each of `toolSuccessRate`, `stuckTurns`, `varietyRatio`,
+- For each LEVEL signal — `toolSuccessRate`, `varietyRatio`,
   `varietyWindowed`, `taskError`, `infoGain`, `progressRate`,
-  `algedonicAlerts`, `consecutiveUnstable`, `axiomViolations`
-  (= `axiomHealth.violations.length`), `toolEntropyMean`, `toolEntropyMax`
-  (= `brain.toolEntropy.mean`/`.max`): `<name>.mean`, `<name>.last`,
-  `<name>.max` over the prefix's non-null values. `.last` is the last non-null
-  value in the prefix. All three are `null` when every value in the prefix is
-  null — unmeasured is never 0 (F16).
+  `axiomViolations` (= `axiomHealth.violations.length`), `toolEntropyMean`,
+  `toolEntropyMax` (= `brain.toolEntropy.mean`/`.max`): `<name>.mean`,
+  `<name>.last`, `<name>.max` over the prefix's non-null values (27 keys).
+- The three COUNTERS, as per-turn rates so nothing sums over turns:
+  - `stuckTurns` (the current stuck streak; it resets): `.rate` = the share of
+    prefix turns with a streak > 0, `.last`, `.max`.
+  - `algedonicAlerts` (alerts fired so far, a running count): `.rate` = new
+    alerts per turn, (last − first) ÷ (turns between them; null with fewer
+    than two values), `.last`, `.max`.
+  - `consecutiveUnstable` (increments on every unstable turn): `.last`, `.max`
+    only — its mean tracks the turn index, so it is not a feature.
+- `.last` is the last non-null value in the prefix. Every numeric feature is
+  `null` when every value in the prefix is null — unmeasured is never 0 (F16).
 - `brainPresent` — 1 when any prefix turn carries a numeric tool entropy, else 0.
-- One-hots from the LAST prefix turn, all zeros when that turn has no value (or
-  one outside the vocabulary): `errorTrend.{rising,flat,falling}`,
+- One-hots from turn K−1 (the last prefix turn), all zeros when that turn has
+  no value or one outside the vocabulary (counted, above): `errorTrend.{rising,flat,falling}`,
   `explorationState.{healthy_exploration,thrashing,floundering}`,
   `health.{healthy,warning,critical}`,
   `s3s4Balance.{balanced,s3_dominant,s4_dominant,critical}`,
@@ -936,6 +949,16 @@ run and describe the outcome after the fact; none of them is, or prefixes, a
 feature key. `featuresOf` reads `turns[]`, `missionId` and the label and
 nothing else; the leak test plants those fields on a row and checks the keys.
 
+The mission's LENGTH is the second leak, and the reason the prefix is a fixed
+K. The first cut took the first 50 % of the turns; a prefix of `floor(n/2)`
+turns is as long as the finished run says, failures run longer (a median of
+169 turns against 95.5), and `consecutiveUnstable.max` correlated 1.000 with
+the prefix length (AUC 0.649 for failure from length alone) — Task 4 review I1.
+So: a fixed K, no truncated prefixes, no feature that sums over turns, and a
+second leak test that feeds a row whose every signal is constant and requires
+every non-null feature to be identical at K = 16 and K = 32 — no feature is a
+function of the turn index.
+
 **The frozen holdout.** `benchmark/cynco-ledger/frozen-eval.json` —
 `{ schema: 1, version, seed, frozenAt, missionIds }` — names the missions no
 learner trains on. Invariants:
@@ -946,18 +969,35 @@ learner trains on. Invariants:
   to its share of the grown ledger. Later-labeled missions otherwise join the
   training split.
 - **20 %, stratified, whole missions.** 20 % of the eligible missions (labeled,
-  ≥ 4 turns) rounded to nearest, split across failure/success in proportion,
-  at least one of each when both exist; drawn by a mulberry32 shuffle of the
-  id-sorted candidates, so the same ledger and seed give the same ids.
-- **Never silently shrinks.** `frozenSplit(rows, manifest)` returns
-  `{ train, holdout, missing }`; a manifest id that matches no row is reported
-  in `missing`, never dropped.
+  ≥ K turns, K = 16 unless `--turns` says otherwise) rounded to nearest, split
+  across failure/success in proportion, at least one of each when both exist;
+  drawn by a mulberry32 shuffle of the id-sorted candidates.
+- **Never silently shrinks.** `frozenSplit(rows, manifest, { turns: K })`
+  returns `{ train, holdout, missing, ineligible }`; a manifest id that matches
+  no row is reported in `missing`, and a held id whose mission is not eligible
+  at K (unlabeled, or fewer than K turns) leaves both splits and is reported in
+  `ineligible` — never dropped silently, never moved into training.
 
-v1 was frozen on 2026-09-26 with seed 20260926 over the 280-row ledger: 107
-labeled (61 failures), 1 labeled mission under 4 turns, so 106 eligible (60
-failures, 46 successes); the holdout holds **21** missions — 12 failures, 9
-successes. None of the 106 eligible missions carries brain tool entropy
-(`brainPresent` is 0 on every row at this snapshot).
+**v1 and the draw streams (review M4).** v1 was frozen on 2026-09-26 with seed
+20260926 by the first cut of the module (commit f49b00f): eligibility was
+labeled and ≥ 4 turns, and both labels were drawn from ONE shared mulberry32
+stream. It is NOT regenerated — its 21 ids are the frozen holdout, and
+reproducing it from its seed requires that commit's code. From v2 on, each
+label draws from its own stream (`seed ^ <per-label constant>`), so adding a
+mission of one label never changes which missions of the other label a draw
+picks (pinned by a test), and eligibility is ≥ K turns.
+
+v1 over the 280-row ledger: 107 labeled (61 failures); the holdout holds
+**21** missions — 12 failures, 9 successes. Per prefix point:
+
+| K | eligible (fail / success) | excluded short | holdout (fail / success) | ineligible held ids | train (fail / success) |
+|---|---|---|---|---|---|
+| 16 | 104 (60 / 44) | 3 | 21 (12 / 9) | none | 83 (48 / 35) |
+| 32 | 95 (57 / 38) | 12 | 19 (11 / 8) | `ui2b_brief-1785392075491`, `mission_s14-1785723842757` | 76 (46 / 30) |
+
+(173 unlabeled at both.) No unknown categorical value appears at either K.
+None of the eligible missions carries brain tool entropy — `brainPresent` is 0
+on every row at this snapshot, and the six entropy features are null.
 
 ## Labeling rule
 
