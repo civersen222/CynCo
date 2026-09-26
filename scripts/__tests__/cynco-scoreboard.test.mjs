@@ -6,9 +6,9 @@ import { fileURLToPath } from 'node:url'
 import {
   campaignScoreboard, pooledScoreboard, scoreboardLines, campaignDecision, gpuHours,
   passRatePerGpuHour, wavesPerCampaign, gateLinesFixedPerLandedWave, humanInterventionsPerWave,
-  perRulePrecision, supervisionDollarsPerWave, parseSupervisionDollars,
+  perRulePrecision, supervisionDollarsPerWave, parseSupervisionDollars, ENTRY_LINE_MAX,
 } from '../cynco-scoreboard.mjs'
-import { main } from '../cynco-campaign.mjs'
+import { main, scoreboardEconomics, ECONOMICS_TIMEOUT_MS, defaultIo } from '../cynco-campaign.mjs'
 
 // C8, reproduced from docs/civkings-redesign-briefs/campaign-log.md "## C8 wave
 // 1/2/3": calibration BASE MISS 14 (the real base log's ids,
@@ -108,7 +108,15 @@ describe('gateLinesFixedPerLandedWave — Σ max(0, before − after) over waves
     const ws = c8Waves().map(w => ({ ...w, outcome: { ...w.outcome, commitsLanded: 0 } }))
     const r = gateLinesFixedPerLandedWave({ state: c8State(), waves: ws })
     expect(r.value).toBeNull()
-    expect(r.reason).toMatch(/no wave landed a commit/)
+    expect(r.reason).toBe('no wave landed a commit')
+  })
+  it('commit counts unknown is not "no wave landed a commit" (review M3)', () => {
+    const ws = c8Waves().map(w => { const o = { ...w.outcome }; delete o.commitsLanded; return { ...w, outcome: o } })
+    expect(gateLinesFixedPerLandedWave({ state: c8State(), waves: ws }).reason).toBe('commit counts unknown (see unmeasured)')
+    const mixed = c8Waves().map((w, i) => i === 0 ? { ...w, outcome: { ...w.outcome, commitsLanded: 0 } } : { ...w, outcome: { exitReason: 'x' } })
+    expect(gateLinesFixedPerLandedWave({ state: c8State(), waves: mixed }).reason).toBe('no known-count wave landed; 2 unknown (see unmeasured)')
+    const faults = [{ wave: 1, missionId: null, decision: { kind: 'fault', why: 'x' } }]
+    expect(gateLinesFixedPerLandedWave({ state: c8State(), waves: faults }).reason).toBe('every wave excluded — none graded a gate (see unmeasured)')
   })
 })
 
@@ -213,6 +221,11 @@ describe('campaignScoreboard', () => {
     expect(b.unmeasured).toContainEqual(expect.stringMatching(/^gateLinesFixedPerLandedWave: wave 3 graded no gate \(fault\)/))
     // it spent a wave, but no ledger row says for how long: the hours are a floor and say so
     expect(b.unmeasured).toContainEqual(expect.stringMatching(/^gpuHours: wave 3 has no durationS/))
+    // …and a floor is no denominator: the PASS rate is null with the reason, not an overstated number (review M1)
+    expect(b.decided).toBe(true)
+    expect(b.passRatePerGpuHour).toBeNull()
+    expect(b.unmeasured).toContainEqual(expect.stringMatching(/^passRatePerGpuHour: hours unmeasured for wave 3 — an unmeasured hour cannot make a denominator$/))
+    expect(scoreboardLines(b)[0]).toMatch(/^- Scoreboard: PASS\/GPU-h null \(hours unmeasured for wave 3\) \| waves 4 \| /)
   })
 
   it('no waves at all: every per-wave number is null with a reason', () => {
@@ -255,13 +268,55 @@ describe('pooledScoreboard — over runner-driven campaigns', () => {
     expect(p.wavesPerCampaign).toBeNull()
     expect(p.unmeasured).toContainEqual(expect.stringMatching(/^passRatePerGpuHour: no runner-driven campaign has decided/))
   })
+
+  it('an unmeasured hour in ANY campaign makes the pooled rate null, named by campaign (review M1)', () => {
+    const open = campaignScoreboard({ spec: { id: 'c9' }, state: {}, rows: [],
+      waves: [{ wave: 1, missionId: null, decision: { kind: 'fault', why: 'driver is gone' } }] })
+    const p = pooledScoreboard([board(), open])
+    expect(p.decided).toBe(1)
+    expect(p.passRatePerGpuHour).toBeNull()
+    expect(p.unmeasured).toContainEqual('passRatePerGpuHour: hours unmeasured for c9 wave 1 — an unmeasured hour cannot make a denominator')
+  })
+
+  it('every campaign\'s excluded waves reach the pooled board, prefixed by campaign (review M4)', () => {
+    const ws = c8Waves(); delete ws[0].outcome.commitsLanded
+    const rs = rows(); rs[2].operatorNotes = [{ source: null, deliveredAtIteration: 3 }]
+    const p = pooledScoreboard([board({ waves: ws, rows: rs }), c9()])
+    expect(p.unmeasured).toContainEqual(expect.stringMatching(/^gateLinesFixedPerLandedWave: c8 wave 1 has no commitsLanded/))
+    expect(p.unmeasured).toContainEqual(expect.stringMatching(/^humanInterventionsPerWave: c8 1 delivered note\(s\) carry no source/))
+    expect(p.gateLinesFixedPerLandedWave).toMatchObject({ landedWaves: 4, known: 4, unknown: 1 })
+  })
+
+  it('one spelling: the pooled board of one campaign reads that campaign\'s own numbers (review M2)', () => {
+    const b = board({ ruleVerdicts, economics: ECONOMICS })
+    const p = pooledScoreboard([b])
+    expect(p.passRatePerGpuHour).toBe(b.passRatePerGpuHour)
+    expect(p.gateLinesFixedPerLandedWave.value).toBe(b.gateLinesFixedPerLandedWave.value)
+    expect(p.humanInterventionsPerWave.value).toBe(b.humanInterventionsPerWave.value)
+    expect(p.supervisionDollarsPerWave).toBe(b.supervisionDollarsPerWave)
+    // and an unmeasured supervision figure carries the campaign's own reason
+    expect(pooledScoreboard([board()]).unmeasured).toContainEqual('supervisionDollarsPerWave: no economics line (the economics script did not run)')
+  })
 })
 
 describe('scoreboardLines', () => {
   it('the verdict entry\'s one line', () => {
     expect(scoreboardLines(board({ ruleVerdicts, economics: ECONOMICS }))).toEqual([
-      '- Scoreboard: PASS/GPU-h 0.065 | waves 3 | lines fixed per landed wave 4.67 | human interventions per wave 0.33 | rules predictive 0/8 (best I3 58% [45,70] NO EVIDENCE)',
+      '- Scoreboard: PASS/GPU-h 0.065 | waves 3 | lines fixed per landed wave 4.67 | human interventions per wave 0.33 | rules predictive 0/8 (best I3 58% NO EVIDENCE)',
     ])
+  })
+  it(`the entry line never exceeds ${200} characters; the verdict prints its head only (review M5)`, () => {
+    // the worst board a VERDICT can produce: decided with an unmeasured hour, commit counts unknown, a long best-rule verdict
+    const ws = c8Waves().map(w => { const o = { ...w.outcome }; delete o.commitsLanded; return { ...w, outcome: o, durationS: undefined } })
+    const worst = board({ waves: [...ws, { wave: 4, missionId: null, decision: { kind: 'fault', why: 'x' } }, { ...ws[2], wave: 5 }], rows: [],
+      ruleVerdicts: { rules: { W7: rule('NOT AFTER CORRECTION — chance across this many rules', 0.61, [0.5, 0.7], 40) } } })
+    const line = scoreboardLines(worst)[0]
+    expect(line.length).toBeLessThanOrEqual(ENTRY_LINE_MAX)
+    expect(ENTRY_LINE_MAX).toBe(200)
+    expect(line).toContain('(best W7 61% NOT AFTER CORRECTION)')
+    // no verdicts, open, nothing measured: still under the cap
+    const bare = scoreboardLines(campaignScoreboard({ spec: { id: 'c12345' }, state: {}, rows: [], waves: [{ wave: 1, decision: { kind: 'fault', why: 'x' } }] }))[0]
+    expect(bare.length).toBeLessThanOrEqual(ENTRY_LINE_MAX)
   })
   it('an open campaign prints `open` and `N so far (open)`', () => {
     expect(scoreboardLines(board({ waves: c8Waves().slice(0, 2), ruleVerdicts }))[0])
@@ -283,6 +338,8 @@ describe('scoreboardLines', () => {
     expect(lines.join('\n')).toMatch(/gpuHours 15\.37 over 3 wave\(s\)/)
     expect(lines.join('\n')).toMatch(/humanInterventionsPerWave 0\.33 = \(notes 1 \+ human decisions 0 \+ refusals 0 \+ reseals 0 \+ adoptions 0\) ÷ 3/)
     expect(lines.join('\n')).toMatch(/supervisionDollarsPerWave null \(/)
+    // the full best-rule detail (CI and whole verdict) lives here, not on the entry line
+    expect(lines).toContain('  perRulePrecision 0/8 predictive; best I3 58% [45,70] NO EVIDENCE')
   })
   it('the pooled board', () => {
     const lines = scoreboardLines(pooledScoreboard([board()], { excluded: ['c7: no waves.jsonl (not runner-driven)'] }))
@@ -334,7 +391,8 @@ describe('main --scoreboard', () => {
     const { code, out } = await withHome(home, () => capture(() => main([specFile(home), '--scoreboard'],
       { readLedgerRows: () => ledger, economics: () => ECONOMICS, bashExe: noBash, dispatch: () => { throw new Error('must not dispatch') } })))
     expect(code).toBe(0)
-    expect(out).toContain('- Scoreboard: PASS/GPU-h 0.065 | waves 3 | lines fixed per landed wave 4.67 | human interventions per wave 0.33 | rules predictive 0/8 (best I3 58% [45,70] NO EVIDENCE)')
+    expect(out).toContain('- Scoreboard: PASS/GPU-h 0.065 | waves 3 | lines fixed per landed wave 4.67 | human interventions per wave 0.33 | rules predictive 0/8 (best I3 58% NO EVIDENCE)')
+    expect(out).toContain('  perRulePrecision 0/8 predictive; best I3 58% [45,70] NO EVIDENCE')
     expect(out).toMatch(/supervisionDollarsPerWave 1431\.85 /)
     expect(out).toMatch(/^Pooled over 1 runner-driven campaign\(s\), 1 decided: PASS\/GPU-h 0\.065/m)
     expect(out).toMatch(/Excluded: c7: no waves\.jsonl \(not runner-driven\)/)
@@ -349,5 +407,62 @@ describe('main --scoreboard', () => {
     expect(code).toBe(2)
     expect(err).toMatch(/--scoreboard: no campaign state at .*state\.json/)
     expect(existsSync(join(home, 'campaigns'))).toBe(false)
+  })
+})
+
+// Review I1 / M6 (F142): the economics spawn's cap is tested where the spawn
+// happens — runSync's own seam, stubbed. Both readers use this function: the
+// `--scoreboard` verb and every VERDICT (`defaultIo.economics`).
+describe('scoreboardEconomics — the capped economics spawn', () => {
+  const OUT = ['some table', 'VERDICT: frontier spent $4295.55 SUPERVISING (development $1692.01 and', 'unattributed $2.71 are excluded.'].join('\n')
+  const hooks = (result, elapsedMs = 5) => {
+    const seen = { calls: [] }
+    let t = 0
+    return {
+      seen,
+      spawn: (cmd, args, opts) => { seen.calls.push({ cmd, args, timeout: opts.timeout }); t += elapsedMs; return result },
+      now: () => t,
+    }
+  }
+  const quiet = async (fn) => { const e = console.error; const err = []; console.error = (...a) => { err.push(a.join(' ')) }; try { return { r: await fn(), err: err.join('\n') } } finally { console.error = e } }
+
+  it('a clean run returns the VERDICT lines, and the spawn carried the cap', async () => {
+    const h = hooks({ status: 0, stdout: OUT, stderr: '' })
+    const lines = scoreboardEconomics(h)
+    expect(lines).toEqual(['VERDICT: frontier spent $4295.55 SUPERVISING (development $1692.01 and', 'unattributed $2.71 are excluded.'])
+    expect(parseSupervisionDollars(lines)).toBe(4295.55)
+    expect(h.seen.calls).toEqual([{ cmd: 'node', args: ['scripts/supervision-economics.mjs'], timeout: ECONOMICS_TIMEOUT_MS }])
+    expect(ECONOMICS_TIMEOUT_MS).toBe(120_000)
+  })
+
+  it('a timeout that spent the cap is null — "did not run", not an empty reading', async () => {
+    const h = hooks({ status: null, stdout: '', stderr: '', error: Object.assign(new Error('spawnSync node ETIMEDOUT'), { code: 'ETIMEDOUT' }) }, ECONOMICS_TIMEOUT_MS)
+    const { r, err } = await quiet(() => scoreboardEconomics(h))
+    expect(r).toBeNull()
+    expect(err).toMatch(/timed out after 120000 ms/)
+    expect(h.seen.calls[0].timeout).toBe(ECONOMICS_TIMEOUT_MS)
+    // the board then names the right reason
+    expect(board({ economics: r }).unmeasured).toContainEqual('supervisionDollarsPerWave: no economics line (the economics script did not run)')
+  })
+
+  it('a non-zero exit is null', async () => {
+    const { r, err } = await quiet(() => scoreboardEconomics(hooks({ status: 1, stdout: OUT, stderr: 'boom' })))
+    expect(r).toBeNull()
+    expect(err).toMatch(/exit 1/)
+  })
+
+  it('a harness fault (spawn error, not a spent timeout) is null and named', async () => {
+    const { r, err } = await quiet(() => scoreboardEconomics(hooks({ status: null, stdout: '', stderr: '', error: Object.assign(new Error('spawn node ENOENT'), { code: 'ENOENT' }) })))
+    expect(r).toBeNull()
+    expect(err).toMatch(/code ENOENT/)
+  })
+
+  it('the VERDICT reader (defaultIo.economics) is the same capped spawn (review M6)', async () => {
+    const h = hooks({ status: 0, stdout: OUT, stderr: '' })
+    expect(defaultIo.economics(h)).toEqual(scoreboardEconomics(hooks({ status: 0, stdout: OUT, stderr: '' })))
+    expect(h.seen.calls[0].timeout).toBe(ECONOMICS_TIMEOUT_MS)
+    const t = hooks({ status: null, stdout: '', stderr: '', error: Object.assign(new Error('x'), { code: 'ETIMEDOUT' }) }, ECONOMICS_TIMEOUT_MS)
+    const { r } = await quiet(() => defaultIo.economics(t))
+    expect(r).toBeNull()
   })
 })

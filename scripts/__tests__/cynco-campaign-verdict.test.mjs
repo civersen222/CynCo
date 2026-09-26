@@ -266,7 +266,7 @@ describe('verdictEntry — the scoreboard line (Phase 5)', () => {
     identity: { intact: true, violated: [] }, autopoiesis: { criteria: {}, missing: ['boundarySelfProduced'] }, scoreboard: sb })
 
   it('prints the four numbers and the rule precision right after the autopoiesis line', () => {
-    expect(entry(scoreboard)).toMatch(/^- Autopoiesis: 0\/6 — missing boundarySelfProduced\n- Scoreboard: PASS\/GPU-h 0\.065 \| waves 3 \| lines fixed per landed wave 4\.67 \| human interventions per wave 0\.33 \| rules predictive 0\/8 \(best I3 58% \[45,70\] NO EVIDENCE\)$/m)
+    expect(entry(scoreboard)).toMatch(/^- Autopoiesis: 0\/6 — missing boundarySelfProduced\n- Scoreboard: PASS\/GPU-h 0\.065 \| waves 3 \| lines fixed per landed wave 4\.67 \| human interventions per wave 0\.33 \| rules predictive 0\/8 \(best I3 58% NO EVIDENCE\)$/m)
   })
   it('names a board that threw, and omits the line when there is no board', () => {
     expect(entry({ error: 'boom' })).toMatch(/^- Scoreboard: UNMEASURED — boom$/m)

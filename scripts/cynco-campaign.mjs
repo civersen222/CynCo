@@ -252,7 +252,9 @@ export const defaultIo = {
   patchRow: (missionId, fields) => patchLedgerRow(missionId, fields),
   commit: (args) => commitVerdict(args),
   notify: (t) => notify(t),
-  economics: () => economicsLines(),
+  // Capped (ECONOMICS_TIMEOUT_MS) and null when the script did not run — the
+  // same reader `--scoreboard` uses; it was an uncapped spawnSync before Phase 5.
+  economics: (hooks) => scoreboardEconomics(hooks),
   appendLog: (text) => appendFileSync(LOG, '\n' + text),
   exportTriples: () => exportTriples(),
   analyseDenials: (summary) => analyseDenials(summary),
@@ -894,22 +896,25 @@ export function budgetSpent(state, spec) {
 export const ECONOMICS_TIMEOUT_MS = 120_000
 
 /**
- * `--scoreboard`'s economics lines: the same VERDICT section the runner prints
- * (economicsLines), but spawned through runSync with a cap. A run that timed
- * out, faulted or exited non-zero is null — "the script did not run", which
- * the board names — never an empty reading.
+ * The economics lines — the VERDICT section of scripts/supervision-economics.mjs
+ * (economicsLines) — spawned through runSync with ECONOMICS_TIMEOUT_MS. Both
+ * readers use it: every wave VERDICT (`defaultIo.economics`) and
+ * `--scoreboard`. A run that timed out, faulted or exited non-zero is null —
+ * "the script did not run", which the board names — never an empty reading
+ * that would pass for "no SUPERVISING figure". `hooks` is runSync's seam
+ * (`spawn`, `now`), so the cap is tested where the spawn happens (F142).
  */
-function scoreboardEconomics() {
+export function scoreboardEconomics(hooks = {}) {
   let failed = null
   const lines = economicsLines({ run: (cmd, args) => {
-    const r = runSync(cmd, args, { timeoutMs: ECONOMICS_TIMEOUT_MS, retryImpossibleTimeout: true })
+    const r = runSync(cmd, args, { timeoutMs: ECONOMICS_TIMEOUT_MS, retryImpossibleTimeout: true }, hooks)
     if (r.timedOut || r.fault || r.status !== 0) {
       failed = r.timedOut ? `timed out after ${ECONOMICS_TIMEOUT_MS} ms` : r.fault ? faultSummary(r.fault) : `exit ${r.status}`
       return ''
     }
     return r.stdout ?? ''
   } })
-  if (failed) { console.error(`[campaign] --scoreboard: the economics script did not answer (${failed}) — supervision dollars unmeasured`); return null }
+  if (failed) { console.error(`[campaign] economics: the economics script did not answer (${failed}) — supervision dollars unmeasured`); return null }
   return lines
 }
 

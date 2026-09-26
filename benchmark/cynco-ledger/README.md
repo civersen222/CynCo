@@ -591,14 +591,20 @@ same, next to the code):
 - **`durationS`** — the wave record's own (the runner writes `durationS` from
   the row from Phase 5 on), else the joined ledger row's. A spent wave with
   neither (a fault whose driver wrote no row) is named in `unmeasured` as
-  `gpuHours: wave N has no durationS …` — the hours are then a floor.
+  `gpuHours: wave N has no durationS …` — the hours are then a floor, and a
+  floor cannot be a denominator: `passRatePerGpuHour` is then null with
+  `hours unmeasured for wave N` (pooled: `for <id> wave N`), never an
+  overstated rate.
 - **Landed commits** — the wave record's `outcome.commitsLanded`: the
   runner's `commitsBetween` count over the row's commit range (written from
   Phase 5 on; the same instrument as `facts.commitsLanded` above, NOT
   `toolStats.commits`). An older record reads `state.lastCommits.length` only
   when it is the wave the state last graded (the `--autopoiesis` reading);
   otherwise its commit count is unknown and the wave is excluded and named —
-  never read as 0 commits.
+  never read as 0 commits. A null `gateLinesFixedPerLandedWave` says which it
+  is: `no wave landed a commit` only when every graded wave has a known count
+  of 0; otherwise `commit counts unknown`, `no known-count wave landed; N
+  unknown`, or `every wave excluded — none graded a gate`.
 - **Previous wave** for failsBefore is the previous GRADED wave: a fault in
   between graded nothing and does not reset it. A regression counts 0.
 - **Operator notes delivered** — this campaign's rows' `operatorNotes[]` with
@@ -620,18 +626,28 @@ same, next to the code):
   when the driver wrote no row. Earlier records carry no mark, so adoptions
   before Phase 5 are not counted.
 - **Best rule** — a `PREDICTIVE` rule first; then a rule with enough evidence
-  to be read (not `TOO FEW`); then the highest precision; ties by id. The line
-  prints its precision and Wilson CI as whole percents.
+  to be read (not `TOO FEW`); then the highest precision; ties by id. The
+  verdict line prints `best I3 58% NO EVIDENCE` (precision as a whole percent,
+  the verdict's head before any ` — `); the verb prints the Wilson CI and the
+  whole verdict.
 - **Supervision dollars per wave** — the `$N SUPERVISING` figure of the
   economics script's `VERDICT:` line ÷ waves. The script prices the WHOLE
   supervision history, not one campaign, and the verb prints that scope beside
-  the number. It is not on the verdict line.
+  the number. It is not on the verdict line. Both readers (every VERDICT and
+  `--scoreboard`) spawn the script through `scoreboardEconomics`
+  (`scripts/cynco-campaign.mjs`): `runSync` capped at `ECONOMICS_TIMEOUT_MS`
+  (120 s); a timeout, fault or non-zero exit is null — `no economics line (the
+  economics script did not run)` — never an empty reading.
 - **Pooled** ratios are Σ numerator ÷ Σ denominator over the included
-  campaigns' waves (not a mean of per-campaign ratios); `wavesPerCampaign` is
-  the mean over decided campaigns; `passRatePerGpuHour` is null until one
-  campaign has decided. A board that threw or spent no wave is excluded and
-  named, as is every campaign dir without a `waves.jsonl` and the count of
-  ledger missions no runner-driven wave record names.
+  campaigns' waves (not a mean of per-campaign ratios), through the SAME
+  functions the campaign board uses (`ratePerGpuHour`, `perWave`,
+  `linesFixedReason`); `wavesPerCampaign` is the mean over decided campaigns;
+  `passRatePerGpuHour` is null until one campaign has decided, and null while
+  any included wave's hours are unmeasured. Every campaign's per-wave
+  exclusions (hours, lines fixed, unknown-source notes) reach the pooled
+  `unmeasured`, prefixed with the campaign id. A board that threw or spent no
+  wave is excluded and named, as is every campaign dir without a `waves.jsonl`
+  and the count of ledger missions no runner-driven wave record names.
 
 The stored shape (unrounded on the record; rounded here), for C8 reproduced from the campaign log (the fixture
 `scripts/__tests__/fixtures/scoreboard/`, pinned by
@@ -639,9 +655,10 @@ The stored shape (unrounded on the record; rounded here), for C8 reproduced from
 
 ```jsonc
 "scoreboard": {
-  "id": "c8", "decided": true, "decision": "pass", "waves": 3, "gpuHours": 15.3656,
+  "id": "c8", "decided": true, "decision": "pass", "waves": 3, "gpuHours": 15.3656, "gpuHoursMissing": [],
   "passRatePerGpuHour": 0.06508, "wavesPerCampaign": 3,
-  "gateLinesFixedPerLandedWave": { "value": 4.667, "landedWaves": 3, "fixed": 14, "reason": null },
+  "gateLinesFixedPerLandedWave": { "value": 4.667, "landedWaves": 3, "fixed": 14,
+                                   "graded": 3, "known": 3, "unknown": 0, "reason": null },
   "humanInterventionsPerWave": { "value": 0.333, "notes": 1, "humanDecisions": 0, "refusals": 0,
                                  "reseals": 0, "adopted": 0, "reason": null },
   "perRulePrecision": { "predictive": 0, "total": 8,
@@ -651,9 +668,12 @@ The stored shape (unrounded on the record; rounded here), for C8 reproduced from
 ```
 
 and the entry line
-`- Scoreboard: PASS/GPU-h 0.065 | waves 3 | lines fixed per landed wave 4.67 | human interventions per wave 0.33 | rules predictive 0/8 (best I3 58% [45,70] NO EVIDENCE)`
+`- Scoreboard: PASS/GPU-h 0.065 | waves 3 | lines fixed per landed wave 4.67 | human interventions per wave 0.33 | rules predictive 0/8 (best I3 58% NO EVIDENCE)`
 (`PASS/GPU-h open | waves 2 so far (open)` while a campaign is undecided;
-`null (<reason>)` for anything unmeasured). A board that throws is stored as
+`null (<reason head>)` for anything unmeasured — the reason cut before its
+first ` — ` or ` (`, at most 32 characters; the full reason is in
+`unmeasured`). The line is capped at 200 characters (`ENTRY_LINE_MAX`): past
+it the reasons are dropped and a bare `null` stays. A board that throws is stored as
 `{ "error": "<message>" }`, prints `- Scoreboard: UNMEASURED — <message>`, and
 never faults the wave. `--scoreboard` prints the campaign's line, one line per
 definition with its parts and every `unmeasured` reason, then the pooled board

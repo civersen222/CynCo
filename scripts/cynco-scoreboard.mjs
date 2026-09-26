@@ -51,7 +51,8 @@ const isNum = (v) => typeof v === 'number' && Number.isFinite(v)
 /**
  * Σ durationS/3600 over the spent waves: the wave record's own `durationS`,
  * else its ledger row's. A wave with neither (a fault whose driver wrote no
- * row) is named in `missing` — the hours are then a floor, not a total.
+ * row) is named in `missing` — the hours are then a floor, not a total, and no
+ * rate is computed over them (ratePerGpuHour).
  */
 export function gpuHours({ waves, rows }) {
   const byId = rowsByMission(waves, rows)
@@ -65,6 +66,18 @@ export function gpuHours({ waves, rows }) {
 }
 
 /**
+ * The one spelling of "PASSes ÷ GPU-hours", shared by the campaign and the
+ * pooled board. `missing` names the waves whose hours are unmeasured: with any
+ * of them the Σ is only a floor, and a floor in the denominator overstates the
+ * rate — so the rate is null with the reason, never a number (F16).
+ */
+export function ratePerGpuHour(passes, hours, missing = []) {
+  if (missing.length) return { value: null, reason: `hours unmeasured for ${missing.join(', ')} — an unmeasured hour cannot make a denominator` }
+  if (!hours) return { value: null, reason: 'no spent wave carries a durationS' }
+  return { value: passes / hours, reason: null }
+}
+
+/**
  * passRatePerGpuHour = decided-PASS campaigns ÷ Σ durationS/3600 over every
  * wave. Per campaign: 1 ÷ its GPU-hours when it decided PASS; an undecided
  * campaign is `open`.
@@ -72,9 +85,8 @@ export function gpuHours({ waves, rows }) {
 export function passRatePerGpuHour({ waves, rows }) {
   const d = campaignDecision(waves)
   if (!d.decided) return { value: null, reason: `open — undecided after ${d.spent} wave(s)` }
-  const { hours } = gpuHours({ waves, rows })
-  if (!hours) return { value: null, reason: 'no spent wave carries a durationS' }
-  return { value: 1 / hours, reason: null }
+  const { hours, missing } = gpuHours({ waves, rows })
+  return ratePerGpuHour(1, hours, missing.map(n => `wave ${n}`))
 }
 
 /** wavesPerCampaign = waves to the decision; an undecided campaign is `N so far (open)`. */
@@ -113,22 +125,38 @@ export function commitsLandedOf(w, state) {
 export function gateLinesFixedPerLandedWave({ state, waves }) {
   const base = state?.calibration?.baseFails
   let before = Array.isArray(base) ? base.length : null
-  let fixed = 0, landedWaves = 0
+  // graded: waves with a graded gate; known: of those, with a readable commit
+  // count and failsBefore; unknown: the rest. They decide which reason a null
+  // carries (linesFixedReason) — "no wave landed a commit" is a claim the
+  // records must actually make.
+  let fixed = 0, landedWaves = 0, graded = 0, known = 0, unknown = 0
   const excluded = []
   const spent = spentWaves(waves)
   for (const w of spent) {
     if (!gradedGate(w)) { excluded.push(`wave ${w.wave} graded no gate (${w.decision?.kind ?? 'no decision'}) — excluded`); continue }
+    graded++
     const after = w.gate.fails.length
     const commits = commitsLandedOf(w, state)
-    if (commits === null) excluded.push(`wave ${w.wave} has no commitsLanded on its record — excluded, not read as 0`)
-    else if (commits >= 1) {
-      if (before === null) excluded.push(`wave ${w.wave} has no failsBefore (no calibration.baseFails) — excluded`)
-      else { fixed += Math.max(0, before - after); landedWaves++ }
+    if (commits === null) { unknown++; excluded.push(`wave ${w.wave} has no commitsLanded on its record — excluded, not read as 0`) }
+    else if (commits >= 1 && before === null) { unknown++; excluded.push(`wave ${w.wave} has no failsBefore (no calibration.baseFails) — excluded`) }
+    else {
+      known++
+      if (commits >= 1) { fixed += Math.max(0, before - after); landedWaves++ }
     }
     before = after
   }
-  const reason = landedWaves ? null : spent.length === 0 ? 'no waves spent' : 'no wave landed a commit'
-  return { value: landedWaves ? fixed / landedWaves : null, landedWaves, fixed, reason, excluded }
+  const reason = linesFixedReason({ spent: spent.length, graded, known, unknown, landedWaves })
+  return { value: landedWaves ? fixed / landedWaves : null, landedWaves, fixed, graded, known, unknown, reason, excluded }
+}
+
+/** Why gateLinesFixedPerLandedWave is null — shared by the campaign and the pooled board. */
+export function linesFixedReason({ spent, graded, known, unknown, landedWaves }) {
+  if (landedWaves) return null
+  if (!spent) return 'no waves spent'
+  if (!graded) return 'every wave excluded — none graded a gate (see unmeasured)'
+  if (unknown && !known) return 'commit counts unknown (see unmeasured)'
+  if (unknown) return `no known-count wave landed; ${unknown} unknown (see unmeasured)`
+  return 'no wave landed a commit'
 }
 
 /**
@@ -166,11 +194,8 @@ export function humanInterventionsPerWave({ state, waves, rows }) {
   const refusals = Object.values(s.authoring ?? {}).reduce((n, a) => n + (Array.isArray(a?.refusals) ? a.refusals.length : 0), 0)
   const reseals = Array.isArray(s.reseals) ? s.reseals.length : 0
   const adopted = spent.filter(w => w.adopted === true).length
-  const total = notes + humanDecisions + refusals + reseals + adopted
-  return {
-    value: spent.length ? total / spent.length : null, notes, humanDecisions, refusals, reseals, adopted,
-    unknownSourceNotes, reason: spent.length ? null : 'no waves spent',
-  }
+  const { value, reason } = perWave(notes + humanDecisions + refusals + reseals + adopted, spent.length)
+  return { value, notes, humanDecisions, refusals, reseals, adopted, unknownSourceNotes, reason }
 }
 
 /**
@@ -213,8 +238,15 @@ export function supervisionDollarsPerWave({ economics, waves }) {
   if (economics === null || economics === undefined) return { value: null, dollars: null, reason: 'no economics line (the economics script did not run)' }
   const dollars = parseSupervisionDollars(economics)
   if (dollars === null) return { value: null, dollars: null, reason: 'the economics line carries no SUPERVISING figure' }
-  if (!waves) return { value: null, dollars, reason: 'no waves spent' }
-  return { value: dollars / waves, dollars, reason: null }
+  return { ...perWave(dollars, waves), dollars }
+}
+
+/**
+ * The one spelling of "a count ÷ waves" — humanInterventionsPerWave and
+ * supervisionDollarsPerWave, per campaign and pooled.
+ */
+export function perWave(n, waves) {
+  return waves ? { value: n / waves, reason: null } : { value: null, reason: 'no waves spent' }
 }
 
 /** One campaign's board. `spec` supplies the id; `rows` may be the whole ledger (joined by missionId). */
@@ -239,15 +271,18 @@ export function campaignScoreboard({ spec, state, waves, rows, ruleVerdicts = nu
   if (rp === null) unmeasured.push('perRulePrecision: no rule-verdicts.json — missing or unreadable')
   if (sup.value === null) unmeasured.push(`supervisionDollarsPerWave: ${sup.reason}`)
   return {
-    id: spec?.id ?? null, decided: d.decided, decision: d.decision, waves: d.spent, gpuHours: gpu.hours,
+    id: spec?.id ?? null, decided: d.decided, decision: d.decision, waves: d.spent, gpuHours: gpu.hours, gpuHoursMissing: gpu.missing,
     passRatePerGpuHour: rate.value, wavesPerCampaign: wpc.value,
-    gateLinesFixedPerLandedWave: { value: gl.value, landedWaves: gl.landedWaves, fixed: gl.fixed, reason: gl.reason },
+    gateLinesFixedPerLandedWave: { value: gl.value, landedWaves: gl.landedWaves, fixed: gl.fixed, graded: gl.graded, known: gl.known, unknown: gl.unknown, reason: gl.reason },
     humanInterventionsPerWave: { value: hi.value, notes: hi.notes, humanDecisions: hi.humanDecisions, refusals: hi.refusals, reseals: hi.reseals, adopted: hi.adopted, reason: hi.reason },
     perRulePrecision: rp, supervisionDollars: sup.dollars, supervisionDollarsPerWave: sup.value, unmeasured,
   }
 }
 
 const sum = (xs) => xs.reduce((a, b) => a + b, 0)
+// The per-campaign `unmeasured` notes that name a single wave (or a note)
+// dropping out of a denominator; the pooled board carries them per campaign.
+const POOLED_WAVE_NOTES = ['gpuHours', 'gateLinesFixedPerLandedWave', 'humanInterventionsPerWave']
 
 /**
  * The pooled board over campaign boards. A board that could not be computed
@@ -269,36 +304,49 @@ export function pooledScoreboard(campaignScoreboards, opts = {}) {
   const waves = sum(included.map(b => b.waves))
   const hours = sum(included.map(b => b.gpuHours ?? 0))
   const unmeasured = []
-  for (const b of included) for (const u of b.unmeasured ?? []) if (u.startsWith('gpuHours: ')) unmeasured.push(`gpuHours: ${b.id} ${u.slice('gpuHours: '.length)}`)
+  // Every campaign's per-wave exclusions reach the pooled board, named by
+  // campaign: a wave that dropped out of a denominator anywhere is counted
+  // here too, not only on its own campaign's board.
+  for (const b of included) {
+    for (const u of b.unmeasured ?? []) {
+      const field = POOLED_WAVE_NOTES.find(f => u.startsWith(`${f}: wave `) || (f === 'humanInterventionsPerWave' && u.startsWith(`${f}: `) && u.includes('delivered note')))
+      if (field) unmeasured.push(`${field}: ${b.id} ${u.slice(field.length + 2)}`)
+    }
+  }
 
-  let passRate = null
-  if (!decided.length) unmeasured.push('passRatePerGpuHour: no runner-driven campaign has decided yet')
-  else if (!hours) unmeasured.push('passRatePerGpuHour: no spent wave carries a durationS')
-  else passRate = decided.length / hours
+  // passRatePerGpuHour: the same ratePerGpuHour the campaign board uses, over
+  // every included campaign's hours — open campaigns' included.
+  const rate = decided.length
+    ? ratePerGpuHour(decided.length, hours, included.flatMap(b => (b.gpuHoursMissing ?? []).map(n => `${b.id} wave ${n}`)))
+    : { value: null, reason: 'no runner-driven campaign has decided yet' }
+  if (rate.value === null) unmeasured.push(`passRatePerGpuHour: ${rate.reason}`)
   const wpc = decided.length ? sum(decided.map(b => b.wavesPerCampaign)) / decided.length : null
   if (wpc === null) unmeasured.push('wavesPerCampaign: no runner-driven campaign has decided yet')
 
-  const landedWaves = sum(included.map(b => b.gateLinesFixedPerLandedWave?.landedWaves ?? 0))
-  const fixed = sum(included.map(b => b.gateLinesFixedPerLandedWave?.fixed ?? 0))
-  const glReason = landedWaves ? null : included.length ? 'no wave landed a commit' : 'no runner-driven campaign spent a wave'
+  const g = (k) => sum(included.map(b => b.gateLinesFixedPerLandedWave?.[k] ?? 0))
+  const lines = { landedWaves: g('landedWaves'), fixed: g('fixed'), graded: g('graded'), known: g('known'), unknown: g('unknown') }
+  const glReason = linesFixedReason({ spent: waves, ...lines })
   if (glReason) unmeasured.push(`gateLinesFixedPerLandedWave: ${glReason}`)
 
   const h = (k) => sum(included.map(b => b.humanInterventionsPerWave?.[k] ?? 0))
   const human = { notes: h('notes'), humanDecisions: h('humanDecisions'), refusals: h('refusals'), reseals: h('reseals'), adopted: h('adopted') }
-  const humanTotal = sum(Object.values(human))
-  const hiReason = waves ? null : 'no runner-driven campaign spent a wave'
-  if (hiReason) unmeasured.push(`humanInterventionsPerWave: ${hiReason}`)
+  const hi = perWave(sum(Object.values(human)), waves)
+  if (hi.reason) unmeasured.push(`humanInterventionsPerWave: ${hi.reason}`)
 
+  // The economics total is one whole-history figure; every board carries the
+  // same one, so the first measured board's is it.
   const dollars = included.map(b => b.supervisionDollars).find(isNum) ?? null
-  const supPerWave = dollars !== null && waves ? dollars / waves : null
-  if (supPerWave === null) unmeasured.push(`supervisionDollarsPerWave: ${dollars === null ? 'no economics line' : 'no waves spent'}`)
+  const sup = dollars === null
+    ? { value: null, reason: included.length ? reasonOf(included[0], 'supervisionDollarsPerWave') : 'no waves spent' }
+    : perWave(dollars, waves)
+  if (sup.value === null) unmeasured.push(`supervisionDollarsPerWave: ${sup.reason}`)
 
   return {
     campaigns: included.length, decided: decided.length, waves, gpuHours: included.length ? hours : null,
-    passRatePerGpuHour: passRate, wavesPerCampaign: wpc,
-    gateLinesFixedPerLandedWave: { value: landedWaves ? fixed / landedWaves : null, landedWaves, fixed, reason: glReason },
-    humanInterventionsPerWave: { value: waves ? humanTotal / waves : null, ...human, reason: hiReason },
-    supervisionDollars: dollars, supervisionDollarsPerWave: supPerWave, excluded, unmeasured,
+    passRatePerGpuHour: rate.value, wavesPerCampaign: wpc,
+    gateLinesFixedPerLandedWave: { value: lines.landedWaves ? lines.fixed / lines.landedWaves : null, ...lines, reason: glReason },
+    humanInterventionsPerWave: { value: hi.value, ...human, reason: hi.reason },
+    supervisionDollars: dollars, supervisionDollarsPerWave: sup.value, excluded, unmeasured,
   }
 }
 
@@ -312,9 +360,35 @@ function bestText(best) {
   return ` (best ${best.id} ${pct(best.precision)}%${ci} ${best.verdict})`
 }
 
-function rateText(b) {
-  if (isNum(b.passRatePerGpuHour)) return `PASS/GPU-h ${b.passRatePerGpuHour.toFixed(3)}`
-  return b.decided ? `PASS/GPU-h null (${reasonOf(b, 'passRatePerGpuHour')})` : 'PASS/GPU-h open'
+/** The verdict entry's line is capped; the verb's detail lines carry everything. */
+export const ENTRY_LINE_MAX = 200
+
+// A reason cut to its head for the entry line: before the first " — " or " (",
+// at most 32 characters. The full reason stays in `unmeasured`.
+const short = (reason) => {
+  const r = String(reason ?? 'unmeasured').split(' — ')[0].split(' (')[0]
+  return r.length > 32 ? `${r.slice(0, 31)}…` : r
+}
+
+/**
+ * The `- Scoreboard:` line: short reasons, and the best rule as
+ * `best I3 58% NO EVIDENCE` (no CI; the verdict's head only). If it is still
+ * over ENTRY_LINE_MAX, the reasons go and a bare `null` stays.
+ */
+function entryLine(sb) {
+  const gl = sb.gateLinesFixedPerLandedWave ?? {}, hi = sb.humanInterventionsPerWave ?? {}, rp = sb.perRulePrecision
+  const build = (terse) => {
+    const nul = (reason) => (terse ? 'null' : `null (${short(reason)})`)
+    const val = (v, reason) => (isNum(v) ? v.toFixed(2) : nul(reason))
+    const rate = isNum(sb.passRatePerGpuHour) ? sb.passRatePerGpuHour.toFixed(3) : sb.decided ? nul(reasonOf(sb, 'passRatePerGpuHour')) : 'open'
+    const waves = isNum(sb.wavesPerCampaign) ? `waves ${sb.wavesPerCampaign}` : `waves ${sb.waves} so far (open)`
+    const best = rp?.best ? ` (best ${rp.best.id} ${pct(rp.best.precision)}% ${short(rp.best.verdict)})` : ''
+    const rules = rp ? `${rp.predictive}/${rp.total}${best}` : nul(reasonOf(sb, 'perRulePrecision'))
+    return `- Scoreboard: PASS/GPU-h ${rate} | ${waves} | lines fixed per landed wave ${val(gl.value, gl.reason)}`
+      + ` | human interventions per wave ${val(hi.value, hi.reason)} | rules predictive ${rules}`
+  }
+  const line = build(false)
+  return line.length <= ENTRY_LINE_MAX ? line : build(true)
 }
 
 function pooledLines(p) {
@@ -345,10 +419,7 @@ export function scoreboardLines(sb, { detail = false } = {}) {
   if (sb.error) return [`- Scoreboard: UNMEASURED — ${sb.error}`]
   if (Array.isArray(sb.excluded) && typeof sb.campaigns === 'number') return pooledLines(sb)
   const gl = sb.gateLinesFixedPerLandedWave ?? {}, hi = sb.humanInterventionsPerWave ?? {}, rp = sb.perRulePrecision
-  const wavesText = isNum(sb.wavesPerCampaign) ? `waves ${sb.wavesPerCampaign}` : `waves ${sb.waves} so far (open)`
-  const rulesText = rp ? `rules predictive ${rp.predictive}/${rp.total}${bestText(rp.best)}` : `rules predictive null (${reasonOf(sb, 'perRulePrecision')})`
-  const line = `- Scoreboard: ${rateText(sb)} | ${wavesText} | lines fixed per landed wave ${num(gl.value, 2, gl.reason)}`
-    + ` | human interventions per wave ${num(hi.value, 2, hi.reason)} | ${rulesText}`
+  const line = entryLine(sb)
   if (!detail) return [line]
   const lines = [line]
   lines.push(`  ${sb.id}: decision ${sb.decision ?? 'none'} (${sb.decided ? 'decided' : 'open'}); gpuHours ${num(sb.gpuHours, 2, 'no durations')} over ${sb.waves} wave(s)`)

@@ -1857,7 +1857,8 @@ describe('the scoreboard at VERDICT', () => {
     notify: async () => true,
     economics: () => ['VERDICT: frontier spent $10.00 SUPERVISING (development $1.00 and'],
     appendLog: () => {},
-    datasetsHome: () => mkdtempSync(join(tmpdir(), 'ds-sb-')),
+    // one temp datasets dir per io: the verdicts the VERDICT writes are the ones it reads
+    datasetsHome: ((d) => () => d)(mkdtempSync(join(tmpdir(), 'ds-sb-'))),
     ...inertTriples,
     ...over,
   })
@@ -1865,7 +1866,8 @@ describe('the scoreboard at VERDICT', () => {
   it('records rec.scoreboard with this wave in it and prints the line right after the autopoiesis line', async () => {
     const state = freshState()
     let entry = null
-    const rec = await runWave(spec, state, io({ appendLog: (t) => { entry = t } }))
+    // no verdict file for this one, on purpose: the null path of perRulePrecision
+    const rec = await runWave(spec, state, io({ appendLog: (t) => { entry = t }, readRuleVerdicts: () => null }))
     // the per-wave inputs are on the record itself
     expect(rec.durationS).toBe(7200)
     expect(rec.outcome.commitsLanded).toBe(2)
@@ -1899,6 +1901,15 @@ describe('the scoreboard at VERDICT', () => {
     const rec = await runWave(spec, freshState(), io({ grade: async () => pass, checkIdentity: () => ({ ok: false, problems: ['gate does not exist'] }) }))
     expect(rec.decision.kind).toBe('fault')
     expect(rec.scoreboard).toMatchObject({ decided: false, decision: 'fault' })
+  })
+
+  it('an economics script that did not run (null from the capped reader) is named on the board and prints no economics', async () => {
+    let entry = null
+    const rec = await runWave(spec, freshState(), io({ economics: () => null, appendLog: (t) => { entry = t } }))
+    expect(rec.decision.kind).toBe('next')
+    expect(rec.scoreboard.supervisionDollarsPerWave).toBeNull()
+    expect(rec.scoreboard.unmeasured).toContain('supervisionDollarsPerWave: no economics line (the economics script did not run)')
+    expect(entry).not.toMatch(/Economics after this wave/)
   })
 
   it('a scoreboard that throws is recorded as { error } and costs the wave nothing', async () => {
