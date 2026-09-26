@@ -813,6 +813,61 @@ describe('main refuses before touching state when no Git Bash resolves', () => {
       expect(errors.join('\n')).toMatch(/\[campaign\] F160: no Git Bash found/)
     } finally { console.error = orig }
   })
+
+  // M4 (final review): only the paths that spawn bash refuse. The read-only and
+  // decision verbs run without Git Bash.
+  const noBash = () => { throw new Error('F160: no Git Bash found (no git.exe on PATH) — install Git for Windows or put its bin dir on PATH') }
+  const authorStub = () => {
+    const calls = []
+    return { calls, authorModule: { defaultAuthorIo: (helpers) => ({ helpers }), authorMain: async (argv) => { calls.push(argv); return 0 }, sealGate: async () => ({ ok: false, problems: ['stub'] }) } }
+  }
+  const withErrors = async (fn) => {
+    const errors = []
+    const orig = console.error
+    console.error = (m) => errors.push(String(m))
+    try { return { code: await fn(), errors: errors.join('\n') } } finally { console.error = orig }
+  }
+
+  it('--author still refuses without Git Bash, before the author module runs', async () => {
+    const s = authorStub()
+    const { code, errors } = await withErrors(() => main(['--author', 'c9'], { authorModule: s.authorModule, bashExe: noBash }))
+    expect(code).toBe(2)
+    expect(errors).toMatch(/\[campaign\] F160: no Git Bash found/)
+    expect(s.calls).toEqual([])
+  })
+
+  it('--check runs without Git Bash', async () => {
+    const s = authorStub()
+    const { code, errors } = await withErrors(() => main(['--check', 'C:/staging/c9', 'C:/tmp/c9_author_base'], { authorModule: s.authorModule, bashExe: noBash }))
+    expect(code).toBe(0)
+    expect(errors).not.toMatch(/F160/)
+    expect(s.calls).toHaveLength(1)
+  })
+
+  it('--autopoiesis and --reject-proposal run without Git Bash (their own answers, not F160)', async () => {
+    const home = join(mkdtempSync(join(tmpdir(), 'home-')), '.cynco')
+    const heldout = join(home, 'heldout', 'civkings-redesign', 'c8')
+    mkdirSync(heldout, { recursive: true })
+    for (const n of ['gate_c8.py', 'perturb_c8.py']) writeFileSync(join(heldout, n), '# instrument\n')
+    const specPath = join(mkdtempSync(join(tmpdir(), 'spec-')), 'c8.campaign.json')
+    writeFileSync(specPath, JSON.stringify({ ...spec, repo: '.', gate: join(heldout, 'gate_c8.py'), perturb: join(heldout, 'perturb_c8.py'),
+      suiteBaseline: join(heldout, 'suite-baseline.json'), ideation: { enabled: false } }))
+    const prev = process.env.CYNCO_HOME
+    process.env.CYNCO_HOME = home
+    try {
+      const a = await withErrors(() => main([specPath, '--autopoiesis'], { readLedgerRows: () => [], bashExe: noBash }))
+      expect(a.code).toBe(2)
+      expect(a.errors).toMatch(/--autopoiesis: no campaign state/)
+      expect(a.errors).not.toMatch(/F160/)
+      const r = await withErrors(() => main(['--reject-proposal', 'gate/c9'], { authorModule: authorStub().authorModule, bashExe: noBash,
+        roadmapPath: join(mkdtempSync(join(tmpdir(), 'roadmap-')), 'roadmap.json') }))
+      expect(r.errors).not.toMatch(/F160/)
+      expect(r.code).toBe(2)
+      expect(r.errors).toMatch(/no pending proposal gate\/c9/)
+    } finally {
+      if (prev === undefined) delete process.env.CYNCO_HOME; else process.env.CYNCO_HOME = prev
+    }
+  })
 })
 
 describe('dispatchEnv', () => {

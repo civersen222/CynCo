@@ -826,9 +826,17 @@ export async function main(argv, deps = {}) {
   // benchmark/cynco-ledger/). Run from anywhere else and the first symptom is
   // a brief written into the wrong tree, not an error.
   if (!existsSync('scripts/dispatch-mission.sh')) { console.error('[campaign] run from the localcode repo root'); return 2 }
-  // F160, before any state is touched: a missing Git Bash is a refusal now,
-  // not a spent, faulted wave an hour from now (dispatch is the first spawn).
-  try { (deps.bashExe ?? bashExe)() } catch (e) { console.error(`[campaign] ${e.message}`); return 2 }
+  // F160: a missing Git Bash is a refusal up front, not a spent, faulted wave
+  // an hour from now (dispatch is the first spawn). Asked only on the paths
+  // that WILL spawn bash — `--author` (the BASE archive, the dispatch) and the
+  // runner (CALIBRATE's archive, the wave dispatch, `--adopt-inflight`'s
+  // grade), each before it touches state. The read-only and decision verbs
+  // (`--autopoiesis`, `--check`, `--approve-proposal` / `--reject-proposal`
+  // incl. `gate/<id>`, whose seal re-checks against the staged BASE dir,
+  // `--sync`) spawn no bash and must not be refused for its absence.
+  const needGitBash = () => {
+    try { (deps.bashExe ?? bashExe)(); return true } catch (e) { console.error(`[campaign] ${e.message}`); return false }
+  }
   const flag = (n) => argv.indexOf(n)
   const loadAuthor = deps.authorModule ? async () => deps.authorModule : () => import('./cynco-gate-author.mjs')
   // Injectable because the reject path WRITES it, and a test that redirects
@@ -858,6 +866,7 @@ export async function main(argv, deps = {}) {
     if (pathId && named && !named.startsWith('--') && pathId !== named) {
       console.error(`[campaign] --author ${named} was given alongside ${specPath} — name one campaign, not two`); return 2
     }
+    if (!needGitBash()) return 2
     const author = await loadAuthor()
     // `--note <file>` rides through: a supervisor refusal's CONTENT belongs in the
     // next resume's brief, and this is the only path that writes one.
@@ -925,6 +934,11 @@ export async function main(argv, deps = {}) {
   }
 
   if (!specPath) { console.error('usage: bun scripts/cynco-campaign.mjs <id>.campaign.json [--waves N] [--resume] [--dry-run] [--sync] [--adopt-inflight] [--autopoiesis] [--approve-proposal NAME] [--reject-proposal NAME] | --author <id> | --check <stagingDir> <baseDir>'); return 2 }
+  // The runner (waves, --dry-run, --adopt-inflight) spawns bash; the verbs
+  // below that return before the lock do not. Asked before the spec is read
+  // and before CampaignState.load() creates anything.
+  const verbOnly = ['--autopoiesis', '--approve-proposal', '--reject-proposal', '--sync'].some(f => flag(f) !== -1)
+  if (!verbOnly && !needGitBash()) return 2
   const spec = loadCampaignSpec(specPath)
   // Phase 4 ruling 4: `--autopoiesis` is a dry report over what the campaign
   // already stored — the last graded wave's identity reading, the ledger rows
