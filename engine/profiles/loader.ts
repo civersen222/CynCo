@@ -57,6 +57,15 @@ function homeDir(): string {
  * engine under a temp `CYNCO_HOME` booted with the operator's real profile.
  * Without `CYNCO_HOME` the `HOME`-reactive form stays (Bun caches
  * `os.homedir()`, and the tests move `HOME`).
+ *
+ * Why the override check is inline rather than a call to `cyncoHome()`
+ * (`engine/paths.ts`, final review M7): `cyncoHome()`'s fallback is
+ * `join(os.homedir(), '.cynco')`, which Bun caches at startup and which on
+ * Windows reads USERPROFILE, not HOME — so it cannot serve the HOME-reactive
+ * fallback, and calling it only for the override branch would still need this
+ * same `CYNCO_HOME` test to choose the branch. The rule here MUST stay
+ * `cyncoHome()`'s rule (set and non-empty; empty is unset): the
+ * `CYNCO_HOME` cases in `engine/__tests__/profiles/loader.test.ts` pin both.
  */
 function globalProfilesDir(): string {
   const override = process.env.CYNCO_HOME

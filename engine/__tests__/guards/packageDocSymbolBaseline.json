@@ -10,8 +10,6 @@
   "memory/CLAUDE.md: onSessionEnd @ lifecycle.ts:14",
   "memory/CLAUDE.md: promoteSessionLearnings @ learningStore.ts:232",
   "ollama/CLAUDE.md: toOpenAITools @ format.ts:24",
-  "profiles/CLAUDE.md: listProfiles() @ loader.ts:135",
-  "profiles/CLAUDE.md: loadProfile(name) @ loader.ts:114",
   "profiles/CLAUDE.md: ollama @ types.ts:64",
   "skills/CLAUDE.md: getSkillIndex @ store.ts:19",
   "tools/CLAUDE.md: ContractState @ contract.ts:90",

@@ -7,7 +7,6 @@ describe('config', () => {
   const os = require('node:os') as typeof import('node:os')
   let tmpDir: string
   let origHome: string | undefined
-  let origCyncoHome: string | undefined
   let origCwd: string
 
   beforeEach(() => {
