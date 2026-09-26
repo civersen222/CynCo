@@ -1,0 +1,20 @@
+[
+  "agents/CLAUDE.md: formatVocabularyPrompt @ vocabulary.ts:296",
+  "bridge/CLAUDE.md: applyHarnessContract @ contractAutoCreate.ts:339",
+  "daemon/CLAUDE.md: FAILURE_ALERT_THRESHOLD @ missionRunner.ts:178",
+  "daemon/CLAUDE.md: TaskOutcome @ types.ts:7",
+  "daemon/CLAUDE.md: drainOnDemand @ missionRunner.ts:235",
+  "engine/CLAUDE.md: checkBudgetAsync @ contextBudget.ts:138",
+  "index/CLAUDE.md: insertRelationship @ store.ts:141",
+  "memory/CLAUDE.md: UncertaintyTracker @ uncertaintyTracker.ts:11",
+  "memory/CLAUDE.md: onSessionEnd @ lifecycle.ts:14",
+  "memory/CLAUDE.md: promoteSessionLearnings @ learningStore.ts:232",
+  "ollama/CLAUDE.md: toOpenAITools @ format.ts:24",
+  "profiles/CLAUDE.md: listProfiles() @ loader.ts:135",
+  "profiles/CLAUDE.md: loadProfile(name) @ loader.ts:114",
+  "profiles/CLAUDE.md: ollama @ types.ts:64",
+  "skills/CLAUDE.md: getSkillIndex @ store.ts:19",
+  "tools/CLAUDE.md: ContractState @ contract.ts:90",
+  "vsm/CLAUDE.md: CyberneticsGovernance @ cyberneticsGovernance.ts:199",
+  "workflows/CLAUDE.md: advance() @ engine.ts:65"
+]

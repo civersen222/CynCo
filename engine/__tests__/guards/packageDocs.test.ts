@@ -9,6 +9,7 @@
 import { describe, it, expect } from 'vitest'
 import { existsSync, readdirSync, readFileSync, statSync } from 'fs'
 import { join } from 'path'
+import { misplacedRefs, identifierOf, onLine, LINE_SLACK, BASELINE_PATH } from './packageDocSymbolScan.mjs'
 
 const ENGINE = join(process.cwd(), 'engine')
 const MIN_SOURCE_FILES = 3
@@ -45,6 +46,31 @@ describe('per-package CLAUDE.md', () => {
       for (const section of ['## Purpose', '## Key files', '## Gotchas']) expect(text).toContain(section)
     })
   }
+
+  // M1 (Phase 4 final review): the length check above passes a ref that points
+  // at the wrong line. For the doc's own `Sym` (`file.ts:N`) form, the symbol
+  // must be on (or within LINE_SLACK of) line N. Pre-existing misplaced refs
+  // are a ratchet baseline, like the empty-catch one: none may be added, and a
+  // fixed one must leave the baseline.
+  it('symbol refs: the named symbol is on the named line (ratchet)', () => {
+    const baseline: string[] = JSON.parse(readFileSync(BASELINE_PATH, 'utf-8'))
+    const now = misplacedRefs()
+    const added = now.filter(r => !baseline.includes(r))
+    expect(added, `symbol not on its line (±${LINE_SLACK}) — fix the line number:\n${added.join('\n')}`).toEqual([])
+    const fixed = baseline.filter(r => !now.includes(r))
+    expect(fixed, `ratchet down — regenerate with \`bun engine/__tests__/guards/packageDocSymbolScan.mjs --write\`:\n${fixed.join('\n')}`).toEqual([])
+  })
+
+  it('symbol-ref scan: identifier extraction and line slack', () => {
+    expect(identifierOf('ConversationLoop.handleUserMessage')).toBe('handleUserMessage')
+    expect(identifierOf('enforced = isEnforced(isS5EnforcementEnabled(), authority)')).toBe('isEnforced')
+    expect(identifierOf('listProfiles()')).toBe('listProfiles')
+    const lines = ['a', 'b', 'export function foo() {', 'c', 'd', 'e', 'f']
+    expect(onLine(lines, 3, 'foo')).toBe(true)
+    expect(onLine(lines, 5, 'foo')).toBe(true)
+    expect(onLine(lines, 6, 'foo')).toBe(false)
+    expect(onLine(['const foobar = 1'], 1, 'foo')).toBe(false)
+  })
 
   it('root AGENTS.md links every package doc', () => {
     const root = join(process.cwd(), 'AGENTS.md')
