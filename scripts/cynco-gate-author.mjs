@@ -876,7 +876,7 @@ export function positiveLeavesFailing(positiveTail) {
  * still worth reporting; the brief now tells the model the list is the PREVIOUS
  * run's and to re-run the check, which it can, from anywhere.
  */
-export function livePreviousCheck({ id, stagingDir, lastCheck, io }) {
+export function livePreviousCheck({ stagingDir, lastCheck, io }) {
   const output = lastCheck?.output
   if (typeof output !== 'string' || output.trim() === '') return null
   const dir = norm(stagingDir)
@@ -1032,7 +1032,7 @@ export async function refreshedLastCheck({ id, stagingDir, baseDir, prev, io }) 
  *
  * Returns the sentence the brief prints. `null` when there is nothing to say.
  */
-export function restoreUncommittedWork({ id, stagingDir, missionId, io, snapshotDir = WORK_SNAPSHOT_DIR }) {
+export function restoreUncommittedWork({ stagingDir, missionId, io, snapshotDir = WORK_SNAPSHOT_DIR }) {
   if (!missionId) return null
   const patch = `${norm(snapshotDir)}/${missionId}.uncommitted.patch`
   if (!io.exists(patch)) return null
@@ -1103,7 +1103,7 @@ export async function authorCampaign({ id, roadmap, state, io, notePath = null }
   const timeoutS = supervisorNote ? AUTHOR_TIMEOUT_S : authorTimeoutFor(attempt)
   const briefFile = `${stagingDir}/brief-${attempt}.txt`
   // Before the brief is written, so the brief can say what it found.
-  const restoreNote = restoreUncommittedWork({ id, stagingDir, missionId: prev.missionId ?? null, io })
+  const restoreNote = restoreUncommittedWork({ stagingDir, missionId: prev.missionId ?? null, io })
   if (restoreNote) console.log(`[author] ${restoreNote}`)
 
   // A RESUME's brief must carry a CURRENT reading, so the check runs once here,
@@ -1157,7 +1157,7 @@ export async function authorCampaign({ id, roadmap, state, io, notePath = null }
   }
 
   const text = authoringBrief({ line, id, prevId, baseDir, stagingDir, exemplar: exemplarFor({ prevId, io }),
-    previousCheck: livePreviousCheck({ id, stagingDir, lastCheck: resumeCheck, io }), restoreNote,
+    previousCheck: livePreviousCheck({ stagingDir, lastCheck: resumeCheck, io }), restoreNote,
     packageMap: readPackageMap({ baseDir, io }), timeoutS, supervisorNote })
   io.writeFile(briefFile, text)
   io.writeFile(sidecarPath(briefFile), JSON.stringify(authoringSidecar({ stagingDir, baseDir }), null, 2) + '\n')

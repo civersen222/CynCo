@@ -425,13 +425,13 @@ describe('livePreviousCheck', () => {
 
   it('drops a missing-file problem for a file that is now on disk', () => {
     const output = [MISSING('gate_c9.py'), MISSING('perturb_c9.py')].join('\n')
-    expect(livePreviousCheck({ id: ID, stagingDir: 'C:/s/c9', lastCheck: { output }, io: io(['gate_c9.py']) }))
+    expect(livePreviousCheck({ stagingDir: 'C:/s/c9', lastCheck: { output }, io: io(['gate_c9.py']) }))
       .toBe(MISSING('perturb_c9.py'))
   })
 
   it('carries no previous check at all once every missing file exists', () => {
     const output = [MISSING('gate_c9.py'), MISSING('perturb_c9.py')].join('\n')
-    expect(livePreviousCheck({ id: ID, stagingDir: 'C:/s/c9', lastCheck: { output },
+    expect(livePreviousCheck({ stagingDir: 'C:/s/c9', lastCheck: { output },
       io: io(['gate_c9.py', 'perturb_c9.py']) })).toBeNull()
   })
 
@@ -439,7 +439,7 @@ describe('livePreviousCheck', () => {
   // "BASE run printed 1 error line(s)" with no traceback is being asked to guess.
   it('shows the BASE and cheat-stub tails when they carry an error line', () => {
     const boom = 'Traceback (most recent call last):\nNameError: name _press is not defined\n'
-    const t = livePreviousCheck({ id: ID, stagingDir: 'C:/s/c9', io: io([]), lastCheck: {
+    const t = livePreviousCheck({ stagingDir: 'C:/s/c9', io: io([]), lastCheck: {
       output: 'BASE run printed 2 error line(s): Traceback (most recent call last):',
       tails: { base: boom, perturb: `${gateLog({}, 'GATE: MISS (9 fails)')}`, positive: null },
     } })
@@ -451,7 +451,7 @@ describe('livePreviousCheck', () => {
 
   it('keeps every problem that is not a presence claim', () => {
     const output = ['lint: C9.4 has no detail', MISSING('positive_c9.py'), 'base: GATE: PASS at BASE'].join('\n')
-    expect(livePreviousCheck({ id: ID, stagingDir: 'C:/s/c9', lastCheck: { output }, io: io(['positive_c9.py']) }))
+    expect(livePreviousCheck({ stagingDir: 'C:/s/c9', lastCheck: { output }, io: io(['positive_c9.py']) }))
       .toBe('lint: C9.4 has no detail\nbase: GATE: PASS at BASE')
   })
 
@@ -459,7 +459,7 @@ describe('livePreviousCheck', () => {
   it('prints `  at FILE:LINE` under each problem the check located, and nothing under the rest', () => {
     const located = 'lint: duplicate gate line id C9.2 — two facts graded under one id hide one of them (gate_c9.py:42)'
     const output = [located, 'BASE must MISS the gate; terminator was PASS (gate_c9.py)'].join('\n')
-    const t = livePreviousCheck({ id: ID, stagingDir: 'C:/s/c9', io: io([]), lastCheck: {
+    const t = livePreviousCheck({ stagingDir: 'C:/s/c9', io: io([]), lastCheck: {
       output, problemAt: [{ file: 'gate_c9.py', line: 42, problem: located }, { file: 'x.py', line: 'NaN', problem: 'junk' }],
     } })
     expect(t).toBe(`${located}\n  at gate_c9.py:42\nBASE must MISS the gate; terminator was PASS (gate_c9.py)`)
@@ -474,8 +474,8 @@ describe('livePreviousCheck', () => {
   })
 
   it('is null for no stored check and for an empty one', () => {
-    expect(livePreviousCheck({ id: ID, stagingDir: 'C:/s/c9', lastCheck: undefined, io: io([]) })).toBeNull()
-    expect(livePreviousCheck({ id: ID, stagingDir: 'C:/s/c9', lastCheck: { output: '  \n ' }, io: io([]) })).toBeNull()
+    expect(livePreviousCheck({ stagingDir: 'C:/s/c9', lastCheck: undefined, io: io([]) })).toBeNull()
+    expect(livePreviousCheck({ stagingDir: 'C:/s/c9', lastCheck: { output: '  \n ' }, io: io([]) })).toBeNull()
   })
 })
 
@@ -1356,13 +1356,13 @@ describe('restoreUncommittedWork', () => {
   }
 
   it('says nothing when there is no mission or no patch', () => {
-    expect(restoreUncommittedWork({ id: ID, stagingDir: 'C:/s/c9', missionId: null, io: io() })).toBeNull()
-    expect(restoreUncommittedWork({ id: ID, stagingDir: 'C:/s/c9', missionId: 'm1', io: io({ exists: false }) })).toBeNull()
+    expect(restoreUncommittedWork({ stagingDir: 'C:/s/c9', missionId: null, io: io() })).toBeNull()
+    expect(restoreUncommittedWork({ stagingDir: 'C:/s/c9', missionId: 'm1', io: io({ exists: false }) })).toBeNull()
   })
 
   it('checks before it applies, applies, commits, and says so', () => {
     const fake = io()
-    const note = restoreUncommittedWork({ id: ID, stagingDir: 'C:/s/c9', missionId: 'm1', io: fake, snapshotDir: 'C:/tmp' })
+    const note = restoreUncommittedWork({ stagingDir: 'C:/s/c9', missionId: 'm1', io: fake, snapshotDir: 'C:/tmp' })
     expect(fake.ran[0]).toBe('git -C C:/s/c9 apply --check C:/tmp/m1.uncommitted.patch')
     expect(fake.ran[1]).toBe('git -C C:/s/c9 apply C:/tmp/m1.uncommitted.patch')
     expect(fake.ran.join('\n')).toMatch(/commit -m restore uncommitted work from m1/)
@@ -1374,7 +1374,7 @@ describe('restoreUncommittedWork', () => {
   // neither it nor the check has ever seen.
   it('leaves the tree alone and NAMES the reason when the patch does not apply', () => {
     const fake = io({ checkStatus: 1 })
-    const note = restoreUncommittedWork({ id: ID, stagingDir: 'C:/s/c9', missionId: 'm1', io: fake, snapshotDir: 'C:/tmp' })
+    const note = restoreUncommittedWork({ stagingDir: 'C:/s/c9', missionId: 'm1', io: fake, snapshotDir: 'C:/tmp' })
     expect(fake.ran).toEqual(['git -C C:/s/c9 apply --check C:/tmp/m1.uncommitted.patch'])
     expect(note).toMatch(/was NOT restored/)
     expect(note).toMatch(/patch does not apply/)
@@ -1382,7 +1382,7 @@ describe('restoreUncommittedWork', () => {
   })
 
   it('names a git that could not run at all', () => {
-    const note = restoreUncommittedWork({ id: ID, stagingDir: 'C:/s/c9', missionId: 'm1',
+    const note = restoreUncommittedWork({ stagingDir: 'C:/s/c9', missionId: 'm1',
       io: io({ checkFault: { code: 'ENOENT', status: null, signal: null, elapsedMs: 2 } }), snapshotDir: 'C:/tmp' })
     expect(note).toMatch(/was NOT restored: git apply --check could not run \(code ENOENT/)
   })
