@@ -523,17 +523,36 @@ by assertion. (Numbering: this is the mission prompt's Phase 4;
 `docs/STATE-AND-VISION-2026-07-12.md` calls the same programme Phase 8.)
 
 - **One identity set.** `scripts/cynco-identity.mjs` names the four invariants
-  that make a campaign a campaign: `gate-sealed` (the calibrated instruments
-  under `heldout/` still hash to what CALIBRATE sealed), `rule-11` (this wave
-  was calibrated against the base it graded), `revert-refused` (the worker's
-  `revertBan` invariant held) and `marker-recorded` (the mission wrote the
-  marker the ledger keys on). `assertIdentityIntact` runs at every VERDICT —
-  `rec.identity` on the wave record, an `Identity:` line in the entry — and a
-  violation is a decision fault: the wave records `fault`, no proposal is
-  raised or approved, and `rule11CheckedWave` is not advanced. It runs again
-  before every proposal approval, and `refusesIdentity(name)` refuses any
-  proposal whose family names an identity invariant — the loop may change
-  its caps, its briefs and its gates, never what makes it itself.
+  that make a campaign a campaign, and checks exactly this for each (the
+  `evidence[name].detail` string says which half held or broke):
+  `gate-sealed` — the spec's `gate` and `perturb` paths (and `positive` when
+  it names one) lie under `~/.cynco/heldout/`, the spec loader's
+  `checkIdentity(spec)` passes, and a row that reports a sealed count reports
+  ≥ 1 (no row carries one today, so the detail reads "no sealed count on
+  row"); it does NOT re-hash the instruments — that is the runner's
+  pre-dispatch Rule 11 step, which `rule-11` records. `rule-11` — a
+  calibration is on record (`state.calibration.gateSha256`) and
+  `state.rule11CheckedWave` equals this wave, i.e. the runner's pre-dispatch
+  re-check of the gate/perturb/positive shas against that calibration ran for
+  THIS wave (a moved instrument stops the wave before dispatch). `revert-refused`
+  — `spec.invariants.revertBan` is `true` AND the effective invariants the wave
+  was handed (spec plus approved overrides) still carry it; it reads the
+  configuration, not the worker's refusals. `marker-recorded` — the spec names
+  a non-empty marker and the ledger row HAS a `markerSeen` field; `false` or
+  `null` pass ("not seen" is a recorded reading), only an absent field fails.
+  Outside a verdict (no wave, no row) the wave-bound halves are not asked.
+  `assertIdentityIntact` runs at every VERDICT — `rec.identity` on the wave
+  record, an `Identity:` line in the entry — and a violation is a decision
+  fault: the wave records `fault` and no proposal is raised.
+  (`rule11CheckedWave` is set BEFORE dispatch, once the sha re-check passes,
+  and nothing unsets it — a violation does not rewind it.) It runs again, with
+  no wave and no row, before every operator `--approve-proposal` /
+  `--reject-proposal` decision — except `--approve-proposal gate/<id>` and the
+  gate-author seat's auto-seal, the recorded exception: no campaign spec
+  exists yet to assert against, and `sealGate` runs `checkIdentity` on the
+  staged triple itself. `refusesIdentity(name)` refuses any proposal whose
+  family names an identity invariant — the loop may change its caps, its
+  briefs and its gates, never what makes it itself.
 - **Every configuration change is a proposal.** `scripts/cynco-proposals.mjs`
   owns `applyProposalDecision` and the families (`ideation/brief`,
   `gate-author/gate`, `invariants/<cap>`, `gate/<id>`); the guard
@@ -602,8 +621,10 @@ by assertion. (Numbering: this is the mission prompt's Phase 4;
 - **Retained configurations persist.** `engine/vsm/retainedConfigStore.ts`
   writes `~/.cynco/retained/<instance>.json` (`{ schema: 1, instance, version,
   updatedAt, retained, history }`, history capped at 20) for the two
-  ultrastable instances, `session-feedback` (the tool-score population's
-  retained table, saved beside `toolScorer.save`) and `mission-invariants`
+  ultrastable instances, `session-feedback` (the retained table of
+  `FeedbackControlIntegration`'s ultrastable system,
+  `engine/vsm/feedbackControl.ts` — only its save SITE, at session end in
+  `conversationLoop.ts`, sits beside `toolScorer.save`) and `mission-invariants`
   (saved at the end of every message while a mission is armed). The version
   moves only when the table changes, and an empty table writes nothing —
   `retainedVersion: null` on the row means nothing has ever been retained,
