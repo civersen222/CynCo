@@ -22,9 +22,50 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from 'node:fs'
 import { join, dirname, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { analyse as analyseFn, ruleVerdictOf, readLedger } from './cynco-signal-validation.mjs'
+import { analyse as analyseFn, ruleVerdictOf, readLedger, holm, wilson } from './cynco-signal-validation.mjs'
 
 export const RULE_VERDICTS_PATH = (home) => join(home, 'datasets', 'rule-verdicts.json')
+/** Where `scripts/cynco-outcome-model.py` writes the hindcast the runner reads. */
+export const OUTCOME_MODEL_PATH = (home) => join(home, 'datasets', 'outcome-model.json')
+/** The pFail at or above which a model "fires" on a held-out mission. */
+export const MODEL_FIRE_THRESHOLD = 0.5
+
+/**
+ * Phase 5 ruling 5: the outcome model's held-out predictions as synthetic
+ * rules, one per model (`M1.lr`, `M1.gbt`). `fired` = the held-out missions
+ * with `pFail ≥ 0.5`; `scope` = the held-out missions the ledger `rows` still
+ * carry — the model is judged on the frozen holdout and nowhere else, so its
+ * 2×2 table is built over `scope` alone (never the training missions it has
+ * seen). No model file, or no models in it, is no rows.
+ */
+export function modelRowsFrom(outcomeModel, rows) {
+  const models = outcomeModel?.models
+  if (!models || typeof models !== 'object') return []
+  const inLedger = new Set((rows ?? []).map(r => r?.missionId))
+  return Object.keys(models).sort().map(k => {
+    const preds = (models[k]?.predictions ?? []).filter(p => inLedger.has(p?.missionId))
+    return {
+      id: `M1.${k}`, source: 'model',
+      fired: new Set(preds.filter(p => typeof p.pFail === 'number' && p.pFail >= MODEL_FIRE_THRESHOLD).map(p => p.missionId)),
+      scope: new Set(preds.map(p => p.missionId)),
+    }
+  })
+}
+
+/**
+ * One model row through the SAME arithmetic as an S5 rule: `analyse` over the
+ * rows in the row's scope, with "fired" read off the model's fired set. A
+ * model that fired on no held-out mission has no table at all — its numbers
+ * are null (F16), exactly as `analyse` writes a rule that never fired on a
+ * labeled mission. `pAdjusted` is set by the caller's Holm pass.
+ */
+function modelRuleOf(m, rows, analyse) {
+  const scoped = rows.filter(r => m.scope.has(r?.missionId))
+  const res = analyse(scoped, { firedOf: (r) => (m.fired.has(r?.missionId) ? new Set([m.id]) : new Set()) })
+  const r = res.rules.find(x => x.id === m.id)
+    ?? { id: m.id, firedTotal: 0, labeled: 0, failures: 0, precision: null, ci: wilson(0, 0), lift: null, p: null, coverage: 0 }
+  return { ...r, base: res.labeled ? res.base : null, scopeN: res.labeled }
+}
 export const RULE_VERDICTS_SCHEMA = 1
 export const RULE_VERDICTS_HISTORY_CAP = 20
 
@@ -62,9 +103,23 @@ function verdictChanges(before, after) {
  * changes. Written tmp + rename.
  *
  * Returns `{ version, predictive, total }` — what the wave record carries.
+ *
+ * Phase 5: `modelRows` (from `modelRowsFrom`) are evaluated beside the rules
+ * with the same Fisher/Wilson arithmetic over their held-out scope, and Holm
+ * is re-run over the WHOLE family — rules and model rows together — because a
+ * model row is one more chance to land under 0.05. Each is written as
+ * `rules['M1.<k>'] = { verdict, precision, ci, p, n, …, source: 'model',
+ * scope: 'holdout' }`. The engine never grants an `M1.*` id authority
+ * (`engine/s5/ruleAuthority.ts` skips `source: 'model'`); an M1 that earns
+ * PREDICTIVE is the next phase's advisory input, nothing more. With no model
+ * rows the file is exactly what it was before Phase 5.
  */
-export function writeRuleVerdicts({ rows, campaign, outPath, analyse = analyseFn, now = () => new Date().toISOString() }) {
+export function writeRuleVerdicts({ rows, campaign, outPath, analyse = analyseFn, now = () => new Date().toISOString(), modelRows = [] }) {
   const res = analyse(rows)
+  const models = (modelRows ?? []).map(m => modelRuleOf(m, rows, analyse))
+  // Rules first, then models, as one Holm family. Only when there are model
+  // rows: without them the rules keep `analyse`'s own correction untouched.
+  const holmFamily = models.length ? holm([...res.rules, ...models]) : null
   const rules = {}
   for (const r of [...res.rules].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))) {
     rules[r.id] = {
@@ -74,6 +129,16 @@ export function writeRuleVerdicts({ rows, campaign, outPath, analyse = analyseFn
       verdict: ruleVerdictOf(r),
       precision: r.precision ?? null, ci: r.ci ?? null, p: r.p ?? null, n: r.labeled ?? null,
       pAdjusted: r.pAdjusted ?? null, lift: r.lift ?? null, firedTotal: r.firedTotal ?? null, failures: r.failures ?? null,
+    }
+  }
+  for (const r of [...models].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))) {
+    rules[r.id] = {
+      verdict: ruleVerdictOf(r),
+      precision: r.precision ?? null, ci: r.ci ?? null, p: r.p ?? null, n: r.labeled ?? null,
+      pAdjusted: r.pAdjusted ?? null, lift: r.lift ?? null, firedTotal: r.firedTotal ?? null, failures: r.failures ?? null,
+      // `base` is the HOLDOUT failure rate the lift is measured against;
+      // `scopeN` the labeled held-out missions the table was built over.
+      source: 'model', scope: 'holdout', base: r.base, scopeN: r.scopeN,
     }
   }
   const predictive = Object.keys(rules).filter(id => rules[id].verdict === 'PREDICTIVE')
@@ -89,14 +154,18 @@ export function writeRuleVerdicts({ rows, campaign, outPath, analyse = analyseFn
   }
   const file = {
     schema: RULE_VERDICTS_SCHEMA, version, at, campaign: campaign ?? null,
-    ledger: { total: res.total, labeled: res.labeled, failures: res.failures, base: res.base, rulesTested: res.rulesTested },
+    ledger: { total: res.total, labeled: res.labeled, failures: res.failures, base: res.base, rulesTested: res.rulesTested,
+      ...(holmFamily === null ? {} : { holmFamily }) },
     rules, predictive, history,
   }
   mkdirSync(dirname(outPath), { recursive: true })
   const tmp = `${outPath}.tmp`
   writeFileSync(tmp, JSON.stringify(file, null, 2) + '\n', 'utf8')
   renameSync(tmp, outPath)
-  return { version, predictive, total: Object.keys(rules).length }
+  // With model rows, their entries ride back too: the verdict entry prints
+  // them (`Outcome hindcast:`) without reading the file a second time.
+  return { version, predictive, total: Object.keys(rules).length,
+    ...(models.length ? { models: Object.fromEntries(models.map(r => [r.id, rules[r.id]])) } : {}) }
 }
 
 // CLI: rebuild the file by hand (the runner does it at every VERDICT).

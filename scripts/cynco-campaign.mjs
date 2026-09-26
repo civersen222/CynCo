@@ -35,7 +35,8 @@ import { governanceCounts, governancePosiwid } from './cynco-governance-posiwid.
 import { loadRoadmap, saveRoadmap, rejectLine, setLineStatus, ROADMAP_PATH } from './cynco-roadmap.mjs'
 import { assertIdentityIntact } from './cynco-identity.mjs'
 import { applyProposalDecision, seatAuthority } from './cynco-proposals.mjs'
-import { writeRuleVerdicts, readRuleVerdicts, RULE_VERDICTS_PATH } from './cynco-rule-verdicts.mjs'
+import { writeRuleVerdicts, readRuleVerdicts, RULE_VERDICTS_PATH, modelRowsFrom } from './cynco-rule-verdicts.mjs'
+import { exportOutcomeDatasets, runHindcast, hindcastOf, PRIMARY_TURNS } from './cynco-hindcast.mjs'
 import { campaignScoreboard, pooledScoreboard, scoreboardLines } from './cynco-scoreboard.mjs'
 import { readLedger } from './cynco-ledger-shards.mjs'
 import { campaignAssessment, campaignRows, autopoiesisLine, storedAssessment, effectiveSeatAuthority } from './cynco-autopoiesis.mjs'
@@ -273,6 +274,10 @@ export const defaultIo = {
   readLedgerRows: () => readLedger(),
   datasetsHome: () => cyncoHome(),
   writeRuleVerdicts: (args) => writeRuleVerdicts(args),
+  // Phase 5 ruling 5: the outcome hindcast. Seams so a unit test never reads
+  // the live ledger into ~/.cynco or spawns python (scripts/cynco-hindcast.mjs).
+  exportOutcomeDataset: (args) => exportOutcomeDatasets(args),
+  runHindcast: (args) => runHindcast(args),
   // Phase 4 ruling 4: the checklist is pure over facts the VERDICT already
   // holds; a seam only so a test can prove a throw never faults the wave.
   assessAutopoiesis: (args) => campaignAssessment(args),
@@ -564,15 +569,43 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
   // them back. Same discipline as the datasets above: derived, rebuilt in full
   // next time, so a failure is logged and never faults the wave.
   rec.ruleVerdicts = null
+  rec.hindcast = null
   // The rows read here are kept for the scoreboard below, so the ledger is
   // never walked twice in one VERDICT.
   let verdictRows = null
   try {
     verdictRows = ledgerRows ?? (io.readLedgerRows ?? defaultIo.readLedgerRows)()
     const rows = verdictRows
-    const outPath = RULE_VERDICTS_PATH((io.datasetsHome ?? defaultIo.datasetsHome)())
-    rec.ruleVerdicts = (io.writeRuleVerdicts ?? defaultIo.writeRuleVerdicts)({ rows, campaign: spec.id, outPath })
-  } catch (e) { console.error(`[campaign] rule verdicts skipped: ${e?.message ?? e}`) }
+    const home = (io.datasetsHome ?? defaultIo.datasetsHome)()
+    const outPath = RULE_VERDICTS_PATH(home)
+    // Phase 5 ruling 5: the outcome hindcast — export the prefix-only
+    // datasets, retrain the two models in python, and hand their held-out
+    // predictions to the ladder as `M1.*` rows. A measurement, never a gate:
+    // any fault (python or sklearn missing, TOO FEW, a crash, a timeout) is
+    // `rec.hindcast = { fault }` and the rule verdicts are written without
+    // model rows. A stale outcome-model.json from an earlier wave is never read.
+    let modelRows = []
+    try {
+      const exported = (io.exportOutcomeDataset ?? defaultIo.exportOutcomeDataset)({ rows, home })
+      // The holdout as the manifest sees it per K (ineligible / missing ids named).
+      const split = exported?.split ? { split: exported.split } : {}
+      if (!exported?.n) {
+        rec.hindcast = { fault: `no eligible labeled mission at K = ${PRIMARY_TURNS} turns — nothing to train on`, ...split }
+      } else {
+        const h = hindcastOf((io.runHindcast ?? defaultIo.runHindcast)({ paths: exported.paths }), exported.paths.out)
+        if (h.fault) rec.hindcast = { fault: h.fault, ...split }
+        else { rec.hindcast = { ...h.summary, ...split }; modelRows = modelRowsFrom(h.model, rows) }
+      }
+    } catch (e) { rec.hindcast = { fault: String(e?.message ?? e) } }
+    if (rec.hindcast?.fault) console.error(`[campaign] outcome hindcast not measured: ${rec.hindcast.fault}`)
+    rec.ruleVerdicts = (io.writeRuleVerdicts ?? defaultIo.writeRuleVerdicts)({ rows, campaign: spec.id, outPath, modelRows })
+    // The ladder's reading of each model row (verdict, precision, CI, p(Holm)),
+    // kept on the hindcast beside the model's own holdout metrics.
+    if (rec.hindcast && !rec.hindcast.fault) rec.hindcast.ladder = rec.ruleVerdicts?.models ?? null
+  } catch (e) {
+    console.error(`[campaign] rule verdicts skipped: ${e?.message ?? e}`)
+    if (!rec.hindcast) rec.hindcast = { fault: `not run: ${e?.message ?? e}` }
+  }
 
   // 2d: POSIWID on the governance layer itself, one window per wave.
   let governance = null
@@ -683,7 +716,7 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
 
   // Verdict (campaign log, economics, local commit, algedonic).
   const ideationRecord = ideation ? { authority: s.ideationAuthority ?? 0, hypotheses: ideation.hypotheses, followed } : null
-  const entry = verdictEntry({ spec, wave, row, grade, decision, ideationRecord, economicsLines: economicsText, denialAnalysis, denialScope, capProposal: cap, governancePosiwid: governance, gateLines, identity, autopoiesis: rec.autopoiesis, scoreboard: rec.scoreboard })
+  const entry = verdictEntry({ spec, wave, row, grade, decision, ideationRecord, economicsLines: economicsText, denialAnalysis, denialScope, capProposal: cap, governancePosiwid: governance, gateLines, identity, autopoiesis: rec.autopoiesis, scoreboard: rec.scoreboard, hindcast: rec.hindcast })
   io.appendLog(entry)
   // Ruling 5: commitVerdict matches these against `git status --porcelain`,
   // which speaks repo-relative forward slashes and nothing else.

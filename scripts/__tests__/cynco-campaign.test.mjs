@@ -1923,6 +1923,108 @@ describe('the scoreboard at VERDICT', () => {
   })
 })
 
+// ── Phase 5 ruling 5: the outcome hindcast at VERDICT ───────────────────────
+
+describe('the outcome hindcast at VERDICT', () => {
+  const sweep = { kind: 'withheld', killed: 1, total: 1, survived: [] }
+  // 12 held-out failures and 8 held-out successes, plus training rows the model never scored.
+  const ledger = () => [
+    ...Array.from({ length: 12 }, (_, i) => ({ missionId: `hf${i}`, outcome: 'failed', verified: false, mutationSweep: sweep })),
+    ...Array.from({ length: 8 }, (_, i) => ({ missionId: `hs${i}`, outcome: 'landed', verified: true, mutationSweep: sweep })),
+    ...Array.from({ length: 6 }, (_, i) => ({ missionId: `t${i}`, outcome: 'landed', verified: true, mutationSweep: sweep })),
+  ]
+  const exported = (home) => () => ({ n: 26, n32: 20, nHindsight: 26, paths: { dataset: 'd16', dataset32: 'd32', hindsight: 'dh', out: join(home, 'datasets', 'outcome-model.json') } })
+  const io = (home, over = {}) => ({
+    writeBrief: (p) => p,
+    dispatch: async () => ({ missionId: 'c8-wave1-1' }),
+    waitForDriver: async () => ({ exited: true }),
+    readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 3600, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', markerSeen: true, identityGuard: { passed: true }, toolStats: {} }),
+    commitsBetween: () => [],
+    grade: async () => g(), checkIdentity: okIdentity,
+    salvageOf: () => null,
+    patchRow: () => {},
+    commit: () => ({ sha: 'v1' }),
+    notify: async () => true,
+    economics: () => [],
+    appendLog: () => {},
+    ...inertTriples,
+    readLedgerRows: ledger,
+    datasetsHome: () => home,
+    exportOutcomeDataset: exported(home),
+    ...over,
+  })
+  const verdictsIn = (home) => JSON.parse(readFileSync(join(home, 'datasets', 'rule-verdicts.json'), 'utf8'))
+  // A model file as scripts/cynco-outcome-model.py writes it: gbt fires on 8
+  // held-out failures and 2 held-out successes; lr on nothing.
+  const writeModel = (path) => {
+    mkdirSync(join(path, '..'), { recursive: true })
+    const ids = [...Array.from({ length: 12 }, (_, i) => `hf${i}`), ...Array.from({ length: 8 }, (_, i) => `hs${i}`)]
+    const gbtFired = new Set(['hf0', 'hf1', 'hf2', 'hf3', 'hf4', 'hf5', 'hf6', 'hf7', 'hs0', 'hs1'])
+    const preds = (fired) => ids.map(missionId => ({ missionId, pFail: fired.has(missionId) ? 0.8 : 0.2 }))
+    const m = (fired, auc) => ({ precision: null, recall: null, brier: 0.2, auc, predictions: preds(fired) })
+    writeFileSync(path, JSON.stringify({ schema: 1, version: 3, trainedAt: 't', prefixTurns: 16, nTrain: 6, nHoldout: 20, baseRate: 0.6, features: ['a', 'b'], droppedFeatures: [],
+      lengthFeature: null, models: { lr: m(new Set(), 0.5), gbt: m(gbtFired, 0.71) }, leakCheck: { lr: { aucPrefix: 0.5, aucHindsight: 0.6 }, gbt: { aucPrefix: 0.71, aucHindsight: 0.93 } },
+      secondary: { refusal: 'TOO FEW: train 5 < 30 or holdout 19 < 8' } }))
+  }
+
+  it('a python that fails is a fault on the record and one UNMEASURED line — the verdict goes on without model rows', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'hc-'))
+    // A stale model from an earlier wave must NOT be read when this retrain failed.
+    writeModel(join(home, 'datasets', 'outcome-model.json'))
+    let entry = null
+    const rec = await runWave(spec, freshState(), io(home, {
+      runHindcast: () => ({ status: 1, stdout: '', stderr: "Traceback (most recent call last):\nModuleNotFoundError: No module named 'sklearn'\n", elapsedMs: 40, timedOut: false, fault: null }),
+      appendLog: (t) => { entry = t },
+    }))
+    expect(rec.decision.kind).toBe('next')
+    expect(rec.hindcast).toEqual({ fault: "exit 1: Traceback (most recent call last): | ModuleNotFoundError: No module named 'sklearn'" })
+    expect(rec.ruleVerdicts).toEqual({ version: 1, predictive: [], total: 0 })
+    expect(Object.keys(verdictsIn(home).rules)).toEqual([])
+    expect(entry).toMatch(/^- Scoreboard: .*\n- Outcome hindcast: UNMEASURED — exit 1: .*No module named 'sklearn'$/m)
+  })
+
+  it('TOO FEW (exit 2) and a spawn fault read the same way; a throw from the seam too', async () => {
+    const tooFew = await runWave(spec, freshState(), io(mkdtempSync(join(tmpdir(), 'hc-')), { runHindcast: () => ({ status: 2, stdout: 'TOO FEW: train 12 < 30 or holdout 4 < 8\n', stderr: '', fault: null }) }))
+    expect(tooFew.hindcast).toEqual({ fault: 'exit 2: TOO FEW: train 12 < 30 or holdout 4 < 8' })
+    const faulted = await runWave(spec, freshState(), io(mkdtempSync(join(tmpdir(), 'hc-')), { runHindcast: () => ({ status: null, stdout: '', stderr: '', fault: { code: 'ENOENT', status: null, signal: null, elapsedMs: 3 } }) }))
+    expect(faulted.hindcast).toEqual({ fault: 'the hindcast did not run (code ENOENT, status null, after 3 ms)' })
+    const thrown = await runWave(spec, freshState(), io(mkdtempSync(join(tmpdir(), 'hc-')), { exportOutcomeDataset: () => { throw new Error('disk full') } }))
+    expect(thrown.decision.kind).toBe('next')
+    expect(thrown.hindcast).toEqual({ fault: 'disk full' })
+    expect(thrown.ruleVerdicts).not.toBeNull()
+  })
+
+  it('no eligible mission: python is never spawned', async () => {
+    const rec = await runWave(spec, freshState(), io(mkdtempSync(join(tmpdir(), 'hc-')), {
+      exportOutcomeDataset: () => ({ n: 0, paths: {} }),
+      runHindcast: () => { throw new Error('python must not be spawned for an empty dataset') },
+    }))
+    expect(rec.hindcast).toEqual({ fault: 'no eligible labeled mission at K = 16 turns — nothing to train on' })
+  })
+
+  it('a clean retrain puts M1.* into rule-verdicts.json through the rules\' test, and prints the line after the board', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'hc-'))
+    const seen = {}
+    let entry = null
+    const rec = await runWave(spec, freshState(), io(home, {
+      exportOutcomeDataset: (args) => { seen.export = args; return exported(home)() },
+      runHindcast: ({ paths }) => { seen.paths = paths; writeModel(paths.out); return { status: 0, stdout: 'ok', stderr: '', fault: null } },
+      appendLog: (t) => { entry = t },
+    }))
+    expect(seen.export.home).toBe(home)
+    expect(seen.export.rows).toHaveLength(26)
+    expect(seen.paths.out).toBe(join(home, 'datasets', 'outcome-model.json'))
+    const f = verdictsIn(home)
+    expect(f.rules['M1.gbt']).toMatchObject({ source: 'model', scope: 'holdout', n: 10, failures: 8, precision: 0.8 })
+    expect(f.rules['M1.lr']).toMatchObject({ source: 'model', n: 0, precision: null, verdict: 'TOO FEW — cannot tell' })
+    expect(rec.hindcast).toMatchObject({ version: 3, prefixTurns: 16, nHoldout: 20, baseRate: 0.6, features: 2, lengthFeature: null,
+      models: { gbt: { auc: 0.71 } }, secondary: { refusal: 'TOO FEW: train 5 < 30 or holdout 19 < 8' } })
+    expect(rec.hindcast.ladder['M1.gbt']).toEqual(f.rules['M1.gbt'])
+    expect(rec.ruleVerdicts.total).toBe(2)
+    expect(entry).toMatch(/^- Scoreboard: .*\n- Outcome hindcast: v3 at K = 16 turns on 20 held-out missions \(base 60%\): M1\.gbt precision 80% \[\d+, \d+\] on 10 fired p\(Holm\) \d\.\d{3} [A-Z][A-Z ]+; M1\.lr precision null on 0 fired p\(Holm\) null TOO FEW; leak check gbt AUC prefix 0\.71 \/ hindsight 0\.93, lr AUC prefix 0\.50 \/ hindsight 0\.60; K = 32 TOO FEW: train 5 < 30 or holdout 19 < 8$/m)
+  })
+})
+
 describe('main --autopoiesis', () => {
   const BASE_SHA = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim()
   const withHome = async (home, fn) => {

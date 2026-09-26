@@ -999,6 +999,104 @@ v1 over the 280-row ledger: 107 labeled (61 failures); the holdout holds
 None of the eligible missions carries brain tool entropy — `brainPresent` is 0
 on every row at this snapshot, and the six entropy features are null.
 
+### Outcome hindcast and the `M1.*` rows
+
+Phase 5 ruling 5: the first learner enters the authority ladder exactly as a
+rule would, judged on the frozen holdout and nowhere else. Nothing runs in the
+engine this phase — an `M1` that earns `PREDICTIVE` is the next phase's
+advisory S5 input, nothing more.
+
+**At every VERDICT** (`scripts/cynco-campaign.mjs`, seams `exportOutcomeDataset`
+/ `runHindcast`; the helpers are `scripts/cynco-hindcast.mjs`):
+
+1. `exportOutcomeDatasets` writes three files under `~/.cynco/datasets/`:
+   `outcome-dataset.jsonl` (K = 16, the ladder's rows),
+   `outcome-dataset-k32.jsonl` (K = 32, reported only) and
+   `outcome-dataset-hindsight.jsonl` (the K = 16-eligible missions built from
+   ALL their turns, for the leak check). It also reads the manifest through
+   `frozenSplit(rows, manifest, { turns: K })` at both K, so a held-out mission
+   too short at K is named (`split[K].ineligible`) rather than silently absent.
+2. `runHindcast` runs `python scripts/cynco-outcome-model.py --dataset …
+   --dataset32 … --hindsight … --manifest benchmark/cynco-ledger/frozen-eval.json
+   --out ~/.cynco/datasets/outcome-model.json` through `runSync` with a 300 s
+   cap (F155). numpy + scikit-learn only; TabPFN and XGBoost are absent and
+   PARKED (a download needs the operator).
+3. Exit 0 → the model's held-out predictions become model rows
+   (`modelRowsFrom` in `scripts/cynco-rule-verdicts.mjs`) and go into
+   `writeRuleVerdicts` beside the rules. Anything else — python or sklearn
+   missing, `TOO FEW` (exit 2), a crash, a timeout, a throw — is
+   `rec.hindcast = { fault }`, one `UNMEASURED` line in the entry, and the rule
+   verdicts are written WITHOUT model rows. A stale `outcome-model.json` from an
+   earlier wave is never read. The hindcast is a measurement, never a gate.
+
+**The model** (`scripts/cynco-outcome-model.py`, pinned by
+`scripts/__tests__/cynco-outcome-model.test.mjs` on the committed fixtures in
+`scripts/__tests__/fixtures/outcome/`): feature keys are read from the rows;
+a null is imputed with the TRAINING mean and nothing else is added; a column
+null on every training row, or holding one value on every measured training
+row, is dropped and named (`droppedFeatures`, `droppedReasons`: `all null` |
+`constant`). Features are standardised; `lr` = `LogisticRegression(max_iter=1000,
+class_weight='balanced')`, `gbt` = `HistGradientBoostingClassifier(max_depth=3,
+max_iter=200)`. The positive class is FAILURE (`pFail`). Refuses with exit 2
+and `TOO FEW: train N < 30 or holdout M < 8` (or `ONE CLASS: …`), writing
+nothing.
+
+`outcome-model.json` (schema 1): `{ version, trainedAt, prefixTurns, nTrain,
+nHoldout, baseRate, features, droppedFeatures, droppedReasons, models: { lr, gbt },
+lengthFeature, leakCheck, secondary }` — per model the holdout `precision`,
+`recall` (at `pFail ≥ 0.5`; null when nothing fired / no failure held out),
+`brier`, `auc` (null on a one-class holdout) and `predictions: [{ missionId,
+pFail }]`. `baseRate` is the HOLDOUT failure rate. `version` rises only when a
+held-out prediction changed (compared at 6 decimals).
+
+- **The leak check** — `leakCheck.<model> = { aucPrefix, aucHindsight }`: the
+  same models refitted on the all-turns rows and scored on the same holdout. If
+  hindsight separates and the prefix does not, the vector describes outcomes
+  after the fact, which is itself the finding. `lengthFeature` names any kept
+  feature that would carry the mission's length (`turnsInPrefix`,
+  `prefixTurns`, `turns`, `totalTurns`); it is `null` — the fixed-K prefix is
+  what makes the comparison meaningful.
+- **`secondary`** — the same pipeline at K = 32 (`{ refusal }` when it refused).
+  Reported, never laddered.
+
+**The `M1.*` rows in `rule-verdicts.json`.** `modelRowsFrom(outcomeModel, rows)`
+gives one synthetic rule per model: `M1.lr`, `M1.gbt`; *fired* = held-out
+missions with `pFail ≥ 0.5`, *scope* = the held-out ids the ledger still
+carries. `writeRuleVerdicts({ …, modelRows })` runs each through `analyse` over
+its scope rows only — the identical Fisher exact / Wilson arithmetic a rule
+faces, so the lift is against the HOLDOUT base — and re-runs Holm (`holm`,
+exported from `scripts/cynco-signal-validation.mjs`) over the whole family,
+rules and model rows together (`ledger.holmFamily`). Each lands as
+`rules['M1.<k>'] = { verdict, precision, ci, p, n, pAdjusted, lift, firedTotal,
+failures, source: 'model', scope: 'holdout', base, scopeN }`, and counts in
+`predictive` / `total` like any rule. `engine/s5/ruleAuthority.ts` skips every
+`source: 'model'` row, so an `M1.*` id never earns an S5 decision enforcement or
+a place in the earned-only training corpus (pinned in `ruleAuthority.test.ts`
+and `exportTrainingData.test.ts`). With no model rows the file is byte-identical
+to Phase 4's.
+
+The wave record carries `hindcast` (the model's metrics without its
+predictions, `split`, and `ladder` — the two `M1.*` entries as written), or
+`{ fault, split? }`; the entry prints it right after the scoreboard.
+
+**First real run, 2026-09-26** (104 eligible at K = 16: train 83, holdout 21 —
+12 failures / 9 successes; K = 32: train 76, holdout 19; a temp home):
+
+```
+- Outcome hindcast: v1 at K = 16 turns on 21 held-out missions (base 57%): M1.gbt precision 55% [28, 79] on 11 fired p(Holm) 1.000 NO EVIDENCE; M1.lr precision 56% [27, 81] on 9 fired p(Holm) 1.000 TOO FEW; leak check gbt AUC prefix 0.41 / hindsight 0.53, lr AUC prefix 0.47 / hindsight 0.61; K = 32 gbt AUC 0.55, lr AUC 0.42; dropped 28 dead column(s): …
+```
+
+Holdout at K = 16: `lr` precision 0.556, recall 0.417, Brier 0.363, AUC 0.472;
+`gbt` precision 0.545, recall 0.500, Brier 0.361, AUC 0.407. For scale (the
+Task 4 review, over all the real rows): the finished length alone separates the
+outcome at AUC 0.633, the best single remaining prefix feature at ~0.58 — both
+models sit below chance on the holdout, so on this ledger the learner adds
+nothing to either. 28 of 58 columns were dead on the training split (the six
+entropy features all null; `stuckTurns.*`, `taskError.*`, `progressRate.*`,
+`consecutiveUnstable.last/max`, `brainPresent` and ten one-hots constant).
+Both `M1` rows are the honest verdict the spec predicted: no evidence on 21
+missions.
+
 ## Labeling rule
 
 Ground truth for signal validation (step 2, per-rule precision/recall):

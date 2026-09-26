@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
-import { RULE_VERDICTS_PATH, writeRuleVerdicts, readRuleVerdicts, RULE_VERDICTS_SCHEMA, RULE_VERDICTS_HISTORY_CAP } from '../cynco-rule-verdicts.mjs'
+import { RULE_VERDICTS_PATH, writeRuleVerdicts, readRuleVerdicts, RULE_VERDICTS_SCHEMA, RULE_VERDICTS_HISTORY_CAP, OUTCOME_MODEL_PATH, modelRowsFrom } from '../cynco-rule-verdicts.mjs'
 import { analyse, ruleVerdictOf } from '../cynco-signal-validation.mjs'
 
 afterEach(() => { vi.restoreAllMocks() })
@@ -125,6 +125,97 @@ describe('writeRuleVerdicts', () => {
     const r = writeRuleVerdicts({ rows: predictiveRows(), campaign: 'c8', outPath })
     expect(r.version).toBe(1)
     expect(warn).toHaveBeenCalled()
+  })
+})
+
+// ── Phase 5 ruling 5: the outcome model enters the ladder as a rule would ────
+
+describe('modelRowsFrom', () => {
+  const model = { models: {
+    lr: { predictions: [{ missionId: 'a', pFail: 0.5 }, { missionId: 'b', pFail: 0.49 }, { missionId: 'gone', pFail: 0.9 }] },
+    gbt: { predictions: [{ missionId: 'a', pFail: 0.1 }, { missionId: 'b', pFail: 0.95 }] },
+  } }
+  const rows = [{ missionId: 'a' }, { missionId: 'b' }, { missionId: 'train-only' }]
+
+  it('one synthetic rule per model: fired = pFail ≥ 0.5, scope = the held-out ids the ledger still has', () => {
+    const out = modelRowsFrom(model, rows)
+    expect(out.map(m => m.id)).toEqual(['M1.gbt', 'M1.lr'])
+    const lr = out.find(m => m.id === 'M1.lr')
+    expect(lr.source).toBe('model')
+    expect([...lr.scope].sort()).toEqual(['a', 'b'])
+    expect([...lr.fired]).toEqual(['a'])
+    expect([...out.find(m => m.id === 'M1.gbt').fired]).toEqual(['b'])
+  })
+
+  it('no model file, or no models in it, is no rows', () => {
+    expect(modelRowsFrom(null, rows)).toEqual([])
+    expect(modelRowsFrom({}, rows)).toEqual([])
+  })
+
+  it('lives at <home>/datasets/outcome-model.json', () => {
+    expect(OUTCOME_MODEL_PATH('H').replace(/\\/g, '/')).toBe('H/datasets/outcome-model.json')
+  })
+})
+
+describe('writeRuleVerdicts with model rows', () => {
+  // 20 held-out missions (12 failures, 8 successes) and 10 training missions
+  // the model never scored. The model fires on 10 held-out missions: 8
+  // failures and 2 successes.
+  const withId = (row, missionId) => ({ ...row, missionId })
+  const holdoutRows = () => [
+    ...Array.from({ length: 12 }, (_, i) => withId(failed([]), `hf${i}`)),
+    ...Array.from({ length: 8 }, (_, i) => withId(landed([]), `hs${i}`)),
+  ]
+  const trainRows = () => Array.from({ length: 10 }, (_, i) => withId(i % 2 ? landed([]) : failed([]), `t${i}`))
+  const firedIds = ['hf0', 'hf1', 'hf2', 'hf3', 'hf4', 'hf5', 'hf6', 'hf7', 'hs0', 'hs1']
+  const modelRow = () => ({ id: 'M1.gbt', source: 'model', fired: new Set(firedIds), scope: new Set(holdoutRows().map(r => r.missionId)) })
+
+  it('gets exactly the numbers `analyse` gives a rule firing on the same missions, over the holdout only', () => {
+    const outPath = RULE_VERDICTS_PATH(home())
+    writeRuleVerdicts({ rows: [...holdoutRows(), ...trainRows()], campaign: 'c9', outPath, modelRows: [modelRow()] })
+    const f = JSON.parse(readFileSync(outPath, 'utf8'))
+    // The same missions as an ordinary rule 'R', over the 20 held-out rows alone.
+    const asRule = analyse(holdoutRows().map(r => firedIds.includes(r.missionId) ? { ...r, s5Decisions: [{ ruleIds: ['R'] }] } : r)).rules.find(r => r.id === 'R')
+    expect(asRule).toMatchObject({ labeled: 10, failures: 8, precision: 0.8 })
+    expect(f.rules['M1.gbt']).toMatchObject({
+      verdict: ruleVerdictOf(asRule), precision: asRule.precision, ci: asRule.ci, p: asRule.p, n: 10,
+      pAdjusted: asRule.pAdjusted, lift: asRule.lift, failures: 8, source: 'model', scope: 'holdout',
+    })
+    // lift is against the HOLDOUT base (12/20), not the whole ledger's (17/30).
+    expect(f.rules['M1.gbt'].lift).toBeCloseTo(0.8 - 12 / 20, 10)
+    expect(f.rules['M1.gbt'].base).toBeCloseTo(12 / 20, 10)
+    expect(f.rules['M1.gbt'].scopeN).toBe(20)
+  })
+
+  it('the Holm family is the S5 rules and the model rows together', () => {
+    const outPath = RULE_VERDICTS_PATH(home())
+    // X is the PREDICTIVE rule from above; Y fires everywhere (p null, untested).
+    const rows = predictiveRows().map((r, i) => withId(r, `p${i}`))
+    const alone = analyse(rows).rules.find(r => r.id === 'X')
+    const scope = new Set(rows.map(r => r.missionId))
+    const m = { id: 'M1.lr', source: 'model', fired: new Set(rows.slice(0, 12).map(r => r.missionId)), scope }
+    writeRuleVerdicts({ rows, campaign: 'c9', outPath, modelRows: [m] })
+    const f = JSON.parse(readFileSync(outPath, 'utf8'))
+    // Two tested members (X and M1.lr, same p): each is corrected by 2 at the first step.
+    expect(f.rules.X.pAdjusted).toBeCloseTo(Math.min(1, alone.p * 2), 12)
+    expect(f.rules['M1.lr'].pAdjusted).toBeCloseTo(Math.min(1, alone.p * 2), 12)
+    expect(f.ledger.holmFamily).toBe(2)
+    expect(f.rules.X.source).toBeUndefined()
+  })
+
+  it('a model row that fired on nothing is written with no numbers, not zeros (F16)', () => {
+    const outPath = RULE_VERDICTS_PATH(home())
+    const quiet = { ...modelRow(), fired: new Set() }
+    writeRuleVerdicts({ rows: holdoutRows(), campaign: 'c9', outPath, modelRows: [quiet] })
+    const f = JSON.parse(readFileSync(outPath, 'utf8'))
+    expect(f.rules['M1.gbt']).toMatchObject({ verdict: 'TOO FEW — cannot tell', precision: null, p: null, pAdjusted: null, n: 0, source: 'model', scope: 'holdout' })
+  })
+
+  it('no model rows leaves the file exactly as before (no holmFamily recomputation of the rules)', () => {
+    const a = RULE_VERDICTS_PATH(home()), b = RULE_VERDICTS_PATH(home())
+    writeRuleVerdicts({ rows: predictiveRows(), campaign: 'c8', outPath: a, now: () => 't' })
+    writeRuleVerdicts({ rows: predictiveRows(), campaign: 'c8', outPath: b, now: () => 't', modelRows: [] })
+    expect(readFileSync(b, 'utf8')).toBe(readFileSync(a, 'utf8'))
   })
 })
 
