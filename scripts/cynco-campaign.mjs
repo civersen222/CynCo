@@ -731,7 +731,7 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
     // The wave is already on the record when the throw came from the verdict
     // half; a second append would put the same wave in waves.jsonl twice and
     // double-count it in every promotion reading afterwards. Overwrite it.
-    return faultWave(spec, state, io, { wave, missionId, briefFile, base, dispatchedAt, files: waveFiles, appended, adopted, why: `post-run step failed: ${e?.message ?? e}` })
+    return faultWave(spec, state, io, { wave, missionId, briefFile, base, dispatchedAt, files: waveFiles, appended, adopted, rowDurationS: row?.durationS ?? null, why: `post-run step failed: ${e?.message ?? e}` })
   }
 }
 
@@ -788,17 +788,41 @@ async function stopWave(spec, state, io, { wave, base, why }) {
  * guard would otherwise refuse on at the NEXT invocation, bricking the campaign
  * with work that never ran.
  */
-async function faultWave(spec, state, io, { wave, missionId, briefFile, base, dispatchedAt, why, files, appended = false, adopted = false }) {
+async function faultWave(spec, state, io, { wave, missionId, briefFile, base, dispatchedAt, why, files, appended = false, adopted = false, rowDurationS = null }) {
   const s = state.state
   const rec = { wave, missionId: missionId ?? null, briefFile, base, dispatchedAt, decision: { kind: 'fault', why } }
   // A fault on a wave the operator handed over (`--adopt-inflight`, the adopt
   // script) is still that hand-off; the scoreboard counts it (Phase 5 ruling 2).
   if (adopted) rec.adopted = true
+  // Task 2 review N1: a fault spent GPU time too. With no ledger row, a record
+  // without `durationS` nulls the pooled PASS/GPU-h for good (an unmeasured
+  // hour cannot make a denominator), so the fault carries its wall clock since
+  // dispatch — `durationFrom: 'wall-clock'`, an upper bound (it includes the
+  // wait for a driver that may have died early). The row's own duration wins
+  // when there is one (a post-run step that threw). Never dispatched: null.
+  const since = dispatchedAt ? Date.parse(dispatchedAt) : NaN
+  if (Number.isFinite(rowDurationS)) { rec.durationS = rowDurationS; rec.durationFrom = 'row' }
+  else if (Number.isFinite(since)) { rec.durationS = Math.max(0, Math.round(((io.now ?? Date.now)() - since) / 1000)); rec.durationFrom = 'wall-clock' }
+  else rec.durationS = null
   if (files?.length) {
     try { io.commit?.({ repoRoot: '.', branch: `campaign/${spec.id}`, files, message: `${spec.id.toUpperCase()} wave ${wave} dispatched, faulted: ${why}` }) }
     catch (e) { console.error(`[campaign] fault-path commit skipped: ${e.message}`) }
   }
   rec.notified = await notifyOrQueue(io, s, `${spec.id} wave ${wave}: FAULT — ${why}`, rec.decision)
+  // Task 3 review M2: the board on the fault record too — the dashboard reads
+  // the LAST record carrying one, so a trailing fault without it undercounts
+  // the campaign's waves until the next verdict. Same discipline as the
+  // VERDICT's: derived, a throw is `{ error }`, never a second fault.
+  try {
+    const stored = state.waves()
+    const boardWaves = appended && stored.at(-1)?.wave === wave ? [...stored.slice(0, -1), rec] : [...stored, rec]
+    const ruleVerdictsFile = (io.readRuleVerdicts ?? defaultIo.readRuleVerdicts)(RULE_VERDICTS_PATH((io.datasetsHome ?? defaultIo.datasetsHome)()))
+    const rows = (io.readLedgerRows ?? defaultIo.readLedgerRows)()
+    rec.scoreboard = (io.scoreboard ?? defaultIo.scoreboard)({ spec, state: s, waves: boardWaves, rows, ruleVerdicts: ruleVerdictsFile, economics: io.economics ? io.economics() : null })
+  } catch (e) {
+    rec.scoreboard = { error: String(e?.message ?? e) }
+    console.error(`[campaign] scoreboard not computed on the fault path: ${e?.message ?? e}`)
+  }
   // I2: runWave appends the wave record before the verdict half runs, so a
   // throw from there arrives here with the wave ALREADY on the record. The
   // fault replaces it; appending would record the same wave twice.

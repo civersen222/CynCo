@@ -217,6 +217,47 @@ describe('runWave', () => {
     expect(state.state.waveCount).toBe(1)
   })
 
+  // Task 2 review N1 + Task 3 review M2: a no-row fault spent GPU time and a
+  // wave. Its record carries the wall clock since dispatch as durationS (else
+  // the pooled PASS/GPU-h is null for good) and a board reading (else the
+  // dashboard's last board undercounts the campaign's waves).
+  it('a no-row fault carries durationS = wall clock since dispatch, and a board that counts it', async () => {
+    const state = freshState()
+    const home = mkdtempSync(join(tmpdir(), 'ds-fault-'))
+    let dispatchedMs = null
+    const rec = await runWave(spec, state, {
+      writeBrief: (p) => p,
+      dispatch: async () => { dispatchedMs = Date.now(); return { driverLog: 'C:/tmp/d.log' } },
+      waitForDriver: async () => ({ exited: false }),
+      readRow: () => null,
+      salvageOf: () => null,
+      notify: async () => true,
+      // 2 h 30 s after the dispatch stamp
+      now: () => Date.parse(state.state.inFlight?.dispatchedAt ?? new Date(dispatchedMs).toISOString()) + 7230_000,
+      datasetsHome: () => home, readLedgerRows: () => [], economics: () => null,
+    })
+    expect(rec.decision.kind).toBe('fault')
+    expect(rec.durationS).toBe(7230)
+    expect(rec.durationFrom).toBe('wall-clock')
+    expect(rec.scoreboard).toMatchObject({ id: 'c8', decided: false, decision: 'fault', waves: 1, gpuHours: 7230 / 3600, gpuHoursMissing: [] })
+    expect(state.waves().at(-1).scoreboard).toEqual(rec.scoreboard)
+  })
+
+  it('a board that throws on the fault path is { error } and the fault is still recorded', async () => {
+    const state = freshState()
+    const rec = await runWave(spec, state, {
+      writeBrief: (p) => p,
+      dispatch: async () => ({ driverLog: 'C:/tmp/d.log' }),
+      waitForDriver: async () => ({ exited: false }),
+      readRow: () => null, salvageOf: () => null, notify: async () => true,
+      readLedgerRows: () => [], scoreboard: () => { throw new Error('boom') },
+    })
+    expect(rec.decision.kind).toBe('fault')
+    expect(rec.scoreboard).toEqual({ error: 'boom' })
+    expect(state.state.waveCount).toBe(1)
+    expect(state.waves()).toHaveLength(1)
+  })
+
   // Ruling 7: the advisory occupant may not share the GPU with the wave.
   const ideationSpec = { ...spec, ideation: { enabled: true } }
   const ideationIo = (over) => ({
@@ -333,6 +374,9 @@ describe('runWave', () => {
     expect(state.state.waveCount).toBe(1)
     expect(state.waves()).toHaveLength(1)
     expect(new CampaignState(state.dir).load().state.waveCount).toBe(1)
+    // the row's own duration wins over the wall clock (Task 2 review N1)
+    expect(rec.durationS).toBe(10)
+    expect(rec.durationFrom).toBe('row')
   })
 
   it('never lets a throwing notify cost the wave record', async () => {

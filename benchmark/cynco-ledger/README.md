@@ -589,8 +589,14 @@ same, next to the code):
   a budget stop is resumed with `--waves N` (C8's waves 1 and 2 both read
   `STOP (budget)`; wave 3 passed).
 - **`durationS`** — the wave record's own (the runner writes `durationS` from
-  the row from Phase 5 on), else the joined ledger row's. A spent wave with
-  neither (a fault whose driver wrote no row) is named in `unmeasured` as
+  the row from Phase 5 on), else the joined ledger row's. A FAULT record
+  carries one too: the row's when the fault came after a row was read
+  (`durationFrom: "row"`), else the wall clock since `dispatchedAt`
+  (`durationFrom: "wall-clock"` — an upper bound: it includes waiting on a
+  driver that may have died early); `null` only for a fault with no
+  `dispatchedAt`. Fault records also carry a `scoreboard` reading, so the
+  last board on the record never undercounts a trailing fault. A spent wave with
+  neither (an older fault whose driver wrote no row) is named in `unmeasured` as
   `gpuHours: wave N has no durationS …` — the hours are then a floor, and a
   floor cannot be a denominator: `passRatePerGpuHour` is then null with
   `hours unmeasured for wave N` (pooled: `for <id> wave N`), never an
