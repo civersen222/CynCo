@@ -138,8 +138,14 @@ if [ -n "${LOCALCODE_LEARNINGS_DB:-}" ]; then export LOCALCODE_LEARNINGS_DB; ech
 MISSION_BASE=$(git -C "$MISSION_CWD" rev-parse HEAD)
 echo "[dispatch] mission baseline $MISSION_BASE"
 if [ -n "${CYNCO_MISSION_INVARIANTS:-}" ]; then echo "[dispatch] invariants: $CYNCO_MISSION_INVARIANTS"; fi
+# LOCALCODE_S5_ENFORCE: earned rules only. Phase 4 gave each S5 rule its own
+# authority from the outcome ledger (~/.cynco/datasets/rule-verdicts.json), and
+# Phase 5 Task 1 made legacy (no verdict file) advisory in a mission, so with
+# enforcement on a mission is governed only by rules that EARNED it (the engine
+# advertises `s5-earned-only`). Set LOCALCODE_S5_ENFORCE=false to cap everything
+# advisory (`s5-advisory`), as every mission before Phase 5 ran.
 LOCALCODE_APPROVE_ALL=true \
-LOCALCODE_S5_ENFORCE=false \
+LOCALCODE_S5_ENFORCE="${LOCALCODE_S5_ENFORCE:-true}" \
 LOCALCODE_MAX_ITERATIONS="$LOCALCODE_MAX_ITERATIONS" \
 LOCALCODE_EMBED_MODEL="${LOCALCODE_EMBED_MODEL:-nomic-embed-text}" \
 LOCALCODE_MISSION_MARKER="$MARKER" \

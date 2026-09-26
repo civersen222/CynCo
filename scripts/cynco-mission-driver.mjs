@@ -37,8 +37,10 @@
 // scripts/cynco-contract.mjs.
 //
 // Requires the engine running headless with LOCALCODE_APPROVE_ALL=true (F2)
-// and LOCALCODE_S5_ENFORCE=false (F7 — S5 capped at recommend so enforcement
-// can neither kill the mission nor confound the outcome-ledger labels).
+// and S5 governed (F7/F59): the engine must advertise `s5-advisory`
+// (LOCALCODE_S5_ENFORCE=false, everything capped at recommend) or
+// `s5-earned-only` (enforcement on in a mission: only a rule with EARNED
+// authority acts, Phase 5 Task 1). Enforcement of an earned rule is expected.
 // Mission briefs should follow the F3 pattern: one focused task, single-line
 // unique Edit anchor (grep-verified), full replacement block verbatim.
 //
@@ -358,12 +360,13 @@ ws.onmessage = (ev) => {
       dispatchMission()
     }
     if (WORK_BEGUN.has(m.type)) workBegun = true
-    if (m.type === 's5.decision' && m.enforced === true && !enforcedWarned) {
+    if (m.type === 's5.decision' && m.enforced === true && m.authority !== 'earned' && !enforcedWarned) {
       // Kept as a second, independent detector. F59 moved the decision to
       // dispatch time, where it reads the engine's own declaration; this reads
-      // the thing itself. If they ever disagree, the declaration is wrong, and
-      // that is worth a line in the log even though it is now too late to act.
-      console.log('[driver] WARNING: S5 ENFORCEMENT ACTIVE despite the capability check — restart engine with LOCALCODE_S5_ENFORCE=false (F7 risk, ledger labels confounded)')
+      // the thing itself. An EARNED rule enforcing is the Phase 5 design; any
+      // other enforced decision means the declaration is wrong, and that is
+      // worth a line in the log even though it is now too late to act.
+      console.log(`[driver] WARNING: S5 enforced a decision whose authority is ${m.authority ?? 'unstated'}, not earned, despite the capability check — restart engine with LOCALCODE_S5_ENFORCE=false (F7 risk, ledger labels confounded)`)
       enforcedWarned = true
     }
     if (m.type === 'tool.start') {

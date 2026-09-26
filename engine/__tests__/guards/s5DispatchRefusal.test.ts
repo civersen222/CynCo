@@ -25,9 +25,9 @@
 import { describe, expect, it, afterEach } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { CAP_S5_ADVISORY, governanceCapabilities } from '../../bridge/capabilities.js'
+import { CAP_S5_ADVISORY, CAP_S5_EARNED_ONLY, governanceCapabilities } from '../../bridge/capabilities.js'
 // @ts-ignore — untyped harness module
-import { s5DispatchRefusal, CAP_S5_ADVISORY as CONTRACT_WORD } from '../../../scripts/cynco-contract.mjs'
+import { s5DispatchRefusal, CAP_S5_ADVISORY as CONTRACT_WORD, CAP_S5_EARNED_ONLY as CONTRACT_EARNED_ONLY } from '../../../scripts/cynco-contract.mjs'
 
 const root = join(import.meta.dirname, '..', '..', '..')
 const read = (p: string) => readFileSync(join(root, p), 'utf-8')
@@ -71,6 +71,34 @@ describe('the engine says whether S5 can restrict this mission', () => {
     expect(read('engine/bridge/conversationLoop.ts')).toContain('isS5EnforcementEnabled')
   })
 
+  it('Phase 5: enforcing in an unattended mission advertises s5-earned-only (legacy is advisory there)', () => {
+    const enforcing = { seal: () => {}, probe: () => true, unseal: () => {}, s5Enforcing: () => true }
+    expect(governanceCapabilities({ ...enforcing, unattended: () => true })).toContain(CAP_S5_EARNED_ONLY)
+    expect(governanceCapabilities({ ...enforcing, unattended: () => true })).not.toContain(CAP_S5_ADVISORY)
+    // Interactive: legacy still follows the switch, so neither safe word.
+    expect(governanceCapabilities({ ...enforcing, unattended: () => false })).not.toContain(CAP_S5_EARNED_ONLY)
+    // A wiring that cannot say whether it is a mission never claims it.
+    expect(governanceCapabilities(enforcing)).not.toContain(CAP_S5_EARNED_ONLY)
+    // Capped: the stronger word, not both.
+    expect(governanceCapabilities({ ...enforcing, s5Enforcing: () => false, unattended: () => true })).toEqual(expect.arrayContaining([CAP_S5_ADVISORY]))
+    expect(governanceCapabilities({ ...enforcing, s5Enforcing: () => false, unattended: () => true })).not.toContain(CAP_S5_EARNED_ONLY)
+  })
+
+  it('Phase 5: the live wiring reads the mission env for s5-earned-only', () => {
+    const prevMarker = process.env.LOCALCODE_MISSION_MARKER
+    try {
+      process.env.LOCALCODE_S5_ENFORCE = 'true'
+      process.env.LOCALCODE_MISSION_MARKER = 'M_DONE'
+      expect(governanceCapabilities()).toContain(CAP_S5_EARNED_ONLY)
+      delete process.env.LOCALCODE_MISSION_MARKER
+      if (!['LOCALCODE_MISSION_CWD', 'LOCALCODE_MISSION_BASE', 'LOCALCODE_MISSION_CHECK'].some(k => process.env[k])) {
+        expect(governanceCapabilities()).not.toContain(CAP_S5_EARNED_ONLY)
+      }
+    } finally {
+      if (prevMarker === undefined) delete process.env.LOCALCODE_MISSION_MARKER; else process.env.LOCALCODE_MISSION_MARKER = prevMarker
+    }
+  })
+
   it('the two capabilities are independent — one hazard does not mask the other', () => {
     const caps = governanceCapabilities({
       seal: () => {}, probe: () => false, unseal: () => {}, s5Enforcing: () => false,
@@ -102,6 +130,11 @@ describe('the driver refuses to dispatch into a governor that can restrict it', 
 
   it('dispatches when the engine advertises the cap', () => {
     expect(s5DispatchRefusal({ capabilities: [CAP_S5_ADVISORY] })).toBeNull()
+  })
+
+  it('Phase 5: dispatches when the engine advertises earned-only, spelled identically on both sides', () => {
+    expect(CONTRACT_EARNED_ONLY).toBe(CAP_S5_EARNED_ONLY)
+    expect(s5DispatchRefusal({ capabilities: ['sealed-gates', CAP_S5_EARNED_ONLY] })).toBeNull()
   })
 
   it('applies to every mission, not only the ones that seal something', () => {

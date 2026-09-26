@@ -16,6 +16,7 @@ import type { Provider } from './provider.js'
 import type { LocalCodeConfig } from './config.js'
 import { resolveCapabilities } from './ollama/probe.js'
 import { cyncoHome } from './paths.js'
+import { isUnattendedMission } from './missionEnv.js'
 import { mkdirSync } from 'fs'
 import { basename, join } from 'path'
 
@@ -26,20 +27,9 @@ function slotCacheDirFor(modelPath: string): string {
   return dir
 }
 
-/**
- * The `LOCALCODE_MISSION_*` keys `scripts/dispatch-mission.sh` launches a mission
- * engine with (the same four the dashboard's /api/mission reads). Named, not
- * matched by prefix, so the README env inventory lists each one.
- */
-const MISSION_ENV_KEYS = ['LOCALCODE_MISSION_MARKER', 'LOCALCODE_MISSION_CWD', 'LOCALCODE_MISSION_BASE', 'LOCALCODE_MISSION_CHECK'] as const
-
-/**
- * True when this engine runs an unattended mission: any of MISSION_ENV_KEYS is
- * set. An empty value does not count — the check command may legitimately be `''`.
- */
-export function isUnattendedMission(env: Record<string, string | undefined> = process.env): boolean {
-  return MISSION_ENV_KEYS.some(k => typeof env[k] === 'string' && env[k]!.length > 0)
-}
+// The unattended-mission predicate lives in ./missionEnv.ts (shared with S5
+// rule authority); re-exported so existing importers keep working.
+export { isUnattendedMission }
 
 /**
  * F161 residual: what to do about the llama-server binary once `resolveBinary`

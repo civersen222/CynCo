@@ -15,13 +15,16 @@
  *                  (nothing earned it). Never applied, whatever the env says;
  *   - `legacy`   — there is no (readable) verdict file, so nothing has been
  *                  measured and the decision is governed by
- *                  `LOCALCODE_S5_ENFORCE` exactly as before Phase 4.
+ *                  `LOCALCODE_S5_ENFORCE` exactly as before Phase 4 —
+ *                  except in an unattended mission, where it reads
+ *                  `advisory` (Phase 5 Task 1, `engine/missionEnv.ts`).
  *
  * Earned authority never overrides the global cap: `isEnforced(false, 'earned')`
  * is false. The cap is the operator's; the verdict can only withhold more.
  */
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { isUnattendedMission } from '../missionEnv.js'
 
 export type Authority = 'earned' | 'advisory' | 'legacy'
 
@@ -91,8 +94,15 @@ export class RuleAuthority {
     return new RuleAuthority('earned', verdicts, path, null)
   }
 
-  authorityOf(ruleIds: string[]): Authority {
-    if (this.mode === 'legacy') return 'legacy'
+  /**
+   * Legacy mode is `LOCALCODE_S5_ENFORCE` deciding alone — an operator's
+   * switch for an operator who is present. In an unattended mission nobody
+   * is, so an unmeasured rule is `advisory` there (Phase 5 Task 1): only an
+   * EARNED rule acts in a mission, which is what lets dispatch stop pinning
+   * `LOCALCODE_S5_ENFORCE=false`.
+   */
+  authorityOf(ruleIds: string[], { unattended = isUnattendedMission() }: { unattended?: boolean } = {}): Authority {
+    if (this.mode === 'legacy') return unattended ? 'advisory' : 'legacy'
     if (ruleIds.length === 0) return 'advisory'
     return ruleIds.every(id => this.verdicts.get(id) === 'PREDICTIVE') ? 'earned' : 'advisory'
   }
@@ -113,9 +123,10 @@ export class RuleAuthority {
   }
 
   /** The one line the loop logs at session start. */
-  logLine(): string {
+  logLine({ unattended = isUnattendedMission() }: { unattended?: boolean } = {}): string {
     if (this.mode === 'earned') return `[s5] rule authority: earned (${this.predictiveCount()} predictive of ${this.total()})`
-    if (this.why === 'unreadable') return `[s5] rule authority: legacy (unreadable verdict file at ${this.path})`
-    return this.path ? `[s5] rule authority: legacy (no verdict file at ${this.path})` : '[s5] rule authority: legacy (no verdict file)'
+    const mission = unattended ? ' (advisory in this unattended mission)' : ''
+    if (this.why === 'unreadable') return `[s5] rule authority: legacy (unreadable verdict file at ${this.path})${mission}`
+    return (this.path ? `[s5] rule authority: legacy (no verdict file at ${this.path})` : '[s5] rule authority: legacy (no verdict file)') + mission
   }
 }
