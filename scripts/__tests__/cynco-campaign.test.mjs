@@ -415,6 +415,9 @@ describe('runWave with an adopted row', () => {
     expect(seen.ideated).toBe(0)
     expect(rec.wave).toBe(1)
     expect(rec.missionId).toBe('c8-wave1-1788634174399')
+    // Phase 5 ruling 2: a hand-off is a human intervention, and the record says so
+    expect(rec.adopted).toBe(true)
+    expect(rec.scoreboard.humanInterventionsPerWave).toMatchObject({ adopted: 1, value: 1 })
     expect(seen.patched.missionId).toBe('c8-wave1-1788634174399')
     expect(seen.log).toMatch(/^## C8 wave 1 — c8-wave1-1788634174399/)
     expect(seen.files).toContain('docs/civkings-redesign-briefs/campaign-log.md')
@@ -747,6 +750,9 @@ describe('inFlightRefusal / adoptInFlight', () => {
     const r = await adoptInFlight(spec, state, { missionIdFrom: () => { throw new Error('ENOENT') }, pidAlive: () => false, notify: async () => true })
     expect(r.kind).toBe('fault')
     expect(r.record.decision.why).toMatch(/gone and wrote no ledger row/)
+    // the operator's --adopt-inflight is on the record even when it found nothing to grade
+    expect(r.record.adopted).toBe(true)
+    expect(new CampaignState(state.dir).waves().at(-1).adopted).toBe(true)
     const reloaded = new CampaignState(state.dir).load().state
     expect(reloaded.inFlight).toBeUndefined()
     expect(reloaded.waveCount).toBe(2)
@@ -1831,6 +1837,76 @@ describe('the autopoiesis checklist at VERDICT', () => {
     expect(rec.decision.kind).toBe('next')
     expect(rec.autopoiesis).toEqual({ assessError: 'boom' })
     expect(entry).toMatch(/^- Autopoiesis: UNASSESSED — boom$/m)
+  })
+})
+
+// ── Phase 5 ruling 2: the scoreboard at VERDICT ─────────────────────────────
+
+describe('the scoreboard at VERDICT', () => {
+  const io = (over = {}) => ({
+    writeBrief: (p) => p,
+    dispatch: async () => ({ missionId: 'c8-wave1-1' }),
+    waitForDriver: async () => ({ exited: true }),
+    readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 7200, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', markerSeen: true, identityGuard: { passed: true }, toolStats: {},
+      operatorNotes: [{ source: 'operator', deliveredAtIteration: 4, dropped: null }] }),
+    commitsBetween: () => [{ sha: 'h', subject: 'C8 commit 1' }, { sha: 'i', subject: 'C8 commit 2' }],
+    grade: async () => g(), checkIdentity: okIdentity,
+    salvageOf: () => null,
+    patchRow: () => {},
+    commit: () => ({ sha: 'v1' }),
+    notify: async () => true,
+    economics: () => ['VERDICT: frontier spent $10.00 SUPERVISING (development $1.00 and'],
+    appendLog: () => {},
+    datasetsHome: () => mkdtempSync(join(tmpdir(), 'ds-sb-')),
+    ...inertTriples,
+    ...over,
+  })
+
+  it('records rec.scoreboard with this wave in it and prints the line right after the autopoiesis line', async () => {
+    const state = freshState()
+    let entry = null
+    const rec = await runWave(spec, state, io({ appendLog: (t) => { entry = t } }))
+    // the per-wave inputs are on the record itself
+    expect(rec.durationS).toBe(7200)
+    expect(rec.outcome.commitsLanded).toBe(2)
+    expect(rec.adopted).toBe(false)
+    expect(rec.scoreboard).toMatchObject({ id: 'c8', decided: false, decision: 'next', waves: 1, gpuHours: 2, passRatePerGpuHour: null, wavesPerCampaign: null,
+      // calibration 1 fail → this wave's 1 fail, 2 commits landed
+      gateLinesFixedPerLandedWave: { value: 0, landedWaves: 1, fixed: 0 },
+      humanInterventionsPerWave: { value: 1, notes: 1 }, perRulePrecision: null, supervisionDollarsPerWave: 10 })
+    expect(entry).toMatch(/^- Autopoiesis: .*\n- Scoreboard: PASS\/GPU-h open \| waves 1 so far \(open\) \| lines fixed per landed wave 0\.00 \| human interventions per wave 1\.00 \| rules predictive null \(no rule-verdicts\.json/m)
+    // stored on the record the dashboard reads
+    expect(state.waves().at(-1).scoreboard).toEqual(rec.scoreboard)
+  })
+
+  it('reads the rule verdicts the VERDICT just wrote', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'ds-sb-'))
+    const rec = await runWave(spec, freshState(), io({ datasetsHome: () => home, readLedgerRows: () => [] }))
+    expect(rec.ruleVerdicts).not.toBeNull()
+    expect(rec.scoreboard.perRulePrecision).toMatchObject({ predictive: 0, total: rec.ruleVerdicts.total })
+  })
+
+  it('a PASS wave decides the campaign on the board', async () => {
+    const pass = g({ verified: true, gate: { ...g().gate, terminator: 'PASS', fails: [], failCount: 0, exit: 0 } })
+    const rec = await runWave(spec, freshState(), io({ grade: async () => pass }))
+    expect(rec.decision.kind).toBe('pass')
+    expect(rec.scoreboard).toMatchObject({ decided: true, decision: 'pass', wavesPerCampaign: 1, gateLinesFixedPerLandedWave: { fixed: 1, landedWaves: 1 } })
+    expect(rec.scoreboard.passRatePerGpuHour).toBeCloseTo(0.5, 10)
+  })
+
+  it('the board reads the FINAL decision: an identity fault after the append is not a pass', async () => {
+    const pass = g({ verified: true, gate: { ...g().gate, terminator: 'PASS', fails: [], failCount: 0, exit: 0 } })
+    const rec = await runWave(spec, freshState(), io({ grade: async () => pass, checkIdentity: () => ({ ok: false, problems: ['gate does not exist'] }) }))
+    expect(rec.decision.kind).toBe('fault')
+    expect(rec.scoreboard).toMatchObject({ decided: false, decision: 'fault' })
+  })
+
+  it('a scoreboard that throws is recorded as { error } and costs the wave nothing', async () => {
+    let entry = null
+    const rec = await runWave(spec, freshState(), io({ scoreboard: () => { throw new Error('boom') }, appendLog: (t) => { entry = t } }))
+    expect(rec.decision.kind).toBe('next')
+    expect(rec.scoreboard).toEqual({ error: 'boom' })
+    expect(entry).toMatch(/^- Scoreboard: UNMEASURED — boom$/m)
   })
 })
 

@@ -557,6 +557,109 @@ carries a reading (a later stop or fault record has none and is skipped);
 same checklist over a campaign that already ran, from its stored records, and
 dispatches and writes nothing.
 
+### Scoreboard
+
+Not a ledger field either: the harness scoreboard (Phase 5 ruling 2) is
+computed by `scripts/cynco-scoreboard.mjs` — one pure module, one spelling of
+each definition, one exported function per definition — at every wave VERDICT
+(stored on the wave record as `scoreboard`, printed as the entry's
+`- Scoreboard:` line right after `- Autopoiesis:`) and by
+`bun scripts/cynco-campaign.mjs <id>.campaign.json --scoreboard`. Per campaign
+and pooled over RUNNER-DRIVEN campaigns (those with a
+`~/.cynco/campaigns/<id>/waves.jsonl`; earlier hand-driven missions are
+excluded and the exclusion is printed). The definitions, verbatim from the
+spec (`docs/superpowers/specs/2026-09-26-evidence-engine-phase5-design.md`,
+ruling 2):
+
+- `passRatePerGpuHour` = decided-PASS campaigns (`pass` or `pass-with-survivors`) ÷ Σ `durationS`/3600 over every wave of every runner-driven campaign. Per campaign: `decision === PASS ? 1 : 0` ÷ that campaign's GPU-hours; an undecided campaign prints `open`.
+- `wavesPerCampaign` = waves to the decision; undecided campaigns print `N so far (open)` and are excluded from the pooled mean.
+- `gateLinesFixedPerLandedWave` = Σ over waves with ≥ 1 landed commit of max(0, failsBefore − failsAfter) ÷ the number of such waves, where failsBefore is the previous wave's `gate.fails.length` (wave 1: `calibration.baseFails.length`) and failsAfter is this wave's. A wave that graded no gate (fault) is excluded and counted.
+- `humanInterventionsPerWave` = (operator notes delivered + proposals with `decidedBy` ≠ `auto` + supervisor refusals + reseals + `--adopt-inflight` records) ÷ waves. This is the stated PROXY for "supervisor minutes per wave": minutes are not recorded anywhere, so the count of human acts is what can be measured; the economics script's supervision dollars per wave print beside it.
+- `perRulePrecision` = from `rule-verdicts.json`: predictive count ÷ total, and the single best rule with its precision, CI and verdict.
+
+Unmeasured → `null` with the reason, never 0 (F16).
+
+How each term is read off the records (the module's doc comments say the
+same, next to the code):
+
+- **Waves** are the SPENT wave records: every record in `waves.jsonl` except a
+  `stop` (a refusal to dispatch spends nothing); a `fault` spent its wave and
+  counts. **Decided** means the last spent wave's decision is `pass` or
+  `pass-with-survivors`; `next`, `fault`, `budget` and `no-progress` are open —
+  a budget stop is resumed with `--waves N` (C8's waves 1 and 2 both read
+  `STOP (budget)`; wave 3 passed).
+- **`durationS`** — the wave record's own (the runner writes `durationS` from
+  the row from Phase 5 on), else the joined ledger row's. A spent wave with
+  neither (a fault whose driver wrote no row) is named in `unmeasured` as
+  `gpuHours: wave N has no durationS …` — the hours are then a floor.
+- **Landed commits** — the wave record's `outcome.commitsLanded`: the
+  runner's `commitsBetween` count over the row's commit range (written from
+  Phase 5 on; the same instrument as `facts.commitsLanded` above, NOT
+  `toolStats.commits`). An older record reads `state.lastCommits.length` only
+  when it is the wave the state last graded (the `--autopoiesis` reading);
+  otherwise its commit count is unknown and the wave is excluded and named —
+  never read as 0 commits.
+- **Previous wave** for failsBefore is the previous GRADED wave: a fault in
+  between graded nothing and does not reset it. A regression counts 0.
+- **Operator notes delivered** — this campaign's rows' `operatorNotes[]` with
+  `deliveredAtIteration` set AND `source === "operator"`. The driver's
+  re-injected probe (`source: "driver"`) is not a human act; a delivered note
+  with `source: null` is unknown (see `operatorNotes` above: "never as
+  operator"), is not counted, and is named in `unmeasured`.
+- **Proposals with `decidedBy` ≠ `auto`** — `approved`/`rejected` proposals
+  only (a pending one was decided by nobody). Only a `gate/<id>` seal at earned
+  authority writes `decidedBy: "auto"`; the operator's `--approve-proposal` /
+  `--reject-proposal` on an `ideation/`, `gate-author/` or `invariants/`
+  proposal writes no `decidedBy` at all and IS a human decision.
+- **Supervisor refusals** — every `state.authoring.<id>.refusals[]` entry.
+  **Reseals** — `state.reseals[]`.
+- **`--adopt-inflight` records** — wave records with `adopted: true`. The
+  runner writes it from Phase 5 on for every wave it graded from an adopted row
+  (`--adopt-inflight`, or `scripts/cynco-campaign-adopt.mjs` — both are the
+  operator handing a wave over) and for the fault `--adopt-inflight` records
+  when the driver wrote no row. Earlier records carry no mark, so adoptions
+  before Phase 5 are not counted.
+- **Best rule** — a `PREDICTIVE` rule first; then a rule with enough evidence
+  to be read (not `TOO FEW`); then the highest precision; ties by id. The line
+  prints its precision and Wilson CI as whole percents.
+- **Supervision dollars per wave** — the `$N SUPERVISING` figure of the
+  economics script's `VERDICT:` line ÷ waves. The script prices the WHOLE
+  supervision history, not one campaign, and the verb prints that scope beside
+  the number. It is not on the verdict line.
+- **Pooled** ratios are Σ numerator ÷ Σ denominator over the included
+  campaigns' waves (not a mean of per-campaign ratios); `wavesPerCampaign` is
+  the mean over decided campaigns; `passRatePerGpuHour` is null until one
+  campaign has decided. A board that threw or spent no wave is excluded and
+  named, as is every campaign dir without a `waves.jsonl` and the count of
+  ledger missions no runner-driven wave record names.
+
+The stored shape (unrounded on the record; rounded here), for C8 reproduced from the campaign log (the fixture
+`scripts/__tests__/fixtures/scoreboard/`, pinned by
+`scripts/__tests__/cynco-scoreboard.test.mjs`):
+
+```jsonc
+"scoreboard": {
+  "id": "c8", "decided": true, "decision": "pass", "waves": 3, "gpuHours": 15.3656,
+  "passRatePerGpuHour": 0.06508, "wavesPerCampaign": 3,
+  "gateLinesFixedPerLandedWave": { "value": 4.667, "landedWaves": 3, "fixed": 14, "reason": null },
+  "humanInterventionsPerWave": { "value": 0.333, "notes": 1, "humanDecisions": 0, "refusals": 0,
+                                 "reseals": 0, "adopted": 0, "reason": null },
+  "perRulePrecision": { "predictive": 0, "total": 8,
+                        "best": { "id": "I3", "precision": 0.58, "ci": [0.45, 0.70], "verdict": "NO EVIDENCE" } },
+  "supervisionDollars": 4295.55, "supervisionDollarsPerWave": 1431.85,
+  "unmeasured": [] }
+```
+
+and the entry line
+`- Scoreboard: PASS/GPU-h 0.065 | waves 3 | lines fixed per landed wave 4.67 | human interventions per wave 0.33 | rules predictive 0/8 (best I3 58% [45,70] NO EVIDENCE)`
+(`PASS/GPU-h open | waves 2 so far (open)` while a campaign is undecided;
+`null (<reason>)` for anything unmeasured). A board that throws is stored as
+`{ "error": "<message>" }`, prints `- Scoreboard: UNMEASURED — <message>`, and
+never faults the wave. `--scoreboard` prints the campaign's line, one line per
+definition with its parts and every `unmeasured` reason, then the pooled board
+and its exclusions; it dispatches nothing, takes no lock and writes nothing
+(exit 2 with the reason when the campaign has no state).
+
 ### The wave record's `gate.author`
 
 Also not a ledger field: the wave record's `gate` block is the grader's reading
