@@ -163,14 +163,14 @@ describe('F158: best-of-N candidates do not leak their session_fidelity frame', 
     let loop: ConversationLoop | null = null
     // The candidate writes a new file inside its worktree (the executor's cwd
     // while it runs), so the winner's patch is non-empty and applies. The file
-    // has NO trailing newline on purpose: extractPatch trims the diff, which
-    // strips the final newline `git apply` needs — a diff ending in the
-    // "\ No newline at end of file" marker is the one shape that survives it.
+    // ends in a newline: extractPatch used to trim the diff and strip the final
+    // newline `git apply` needs, so only a no-trailing-newline file applied
+    // (F162, pinned by bestOfN/patchExtractorApplies.test.ts).
     const write = function* (): Generator<StreamEvent> {
       const wt = (loop as any).executor.cwd as string
       yield { type: 'message_start', message: { id: 'm1', model: 'test-model', usage: { input_tokens: 10, output_tokens: 0 } } } as any
       yield { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'tu0', name: 'Write', input: {} } } as any
-      yield { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: JSON.stringify({ file_path: join(wt, 'g.txt'), content: 'y' }) } } as any
+      yield { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: JSON.stringify({ file_path: join(wt, 'g.txt'), content: 'y\n' }) } } as any
       yield { type: 'content_block_stop', index: 0 } as any
       yield { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 5 } } as any
       yield { type: 'message_stop' } as any

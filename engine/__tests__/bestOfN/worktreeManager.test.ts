@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test'
 import { execSync } from 'child_process'
 import { mkdtempSync, writeFileSync, rmSync, existsSync } from 'fs'
-import { join } from 'path'
+import { join, basename } from 'path'
 import { tmpdir } from 'os'
-import { WorktreeManager } from '../../bestOfN/worktreeManager.js'
+import { WorktreeManager, isStaleBestOfNWorktree, parseWorktreeList } from '../../bestOfN/worktreeManager.js'
 
 // Track temp repos created across tests for guaranteed cleanup
 const tempRepos: string[] = []
@@ -78,5 +78,88 @@ describe('WorktreeManager', () => {
       .toString()
     // Only the main worktree (repoDir) should remain; the temp ones should be gone
     expect(list).not.toContain('cynco-bestofn-')
+    expect(existsSync(wt1)).toBe(false)
+    expect(existsSync(wt2)).toBe(false)
+  })
+
+  it('creates each worktree locked with this process pid', async () => {
+    const wt = await manager.create()
+    const mine = manager.registered().find(r => basename(r.path) === basename(wt))
+    expect(mine?.locked).toBe(`cynco-bestofn pid=${process.pid}`)
+  })
+})
+
+describe('F162: construction prunes stale cynco-bestofn-* worktrees', () => {
+  const plant = (name: string, lockReason?: string): string => {
+    const p = join(tmpdir(), `${name}${Math.random().toString(36).slice(2, 8)}`)
+    const lock = lockReason ? `--lock --reason "${lockReason}" ` : ''
+    execSync(`git worktree add --detach ${lock}"${p}"`, { cwd: repoDir, stdio: 'pipe' })
+    tempRepos.push(p)
+    return p
+  }
+  const names = () => new WorktreeManager(repoDir, { isAlive: () => false }).registered().map(r => basename(r.path))
+
+  it('an unlocked cynco-bestofn-* worktree (the pre-lock leak) is removed from git and disk', () => {
+    const stale = plant('cynco-bestofn-')
+    expect(names()).not.toContain(basename(stale))
+    expect(existsSync(stale)).toBe(false)
+  })
+
+  it('a worktree locked by a pid that is not running is removed', () => {
+    const stale = plant('cynco-bestofn-', 'cynco-bestofn pid=999999')
+    new WorktreeManager(repoDir, { isAlive: pid => pid !== 999999 })
+    const list = execSync('git worktree list --porcelain', { cwd: repoDir, stdio: 'pipe' }).toString()
+    expect(list).not.toContain(basename(stale))
+    expect(existsSync(stale)).toBe(false)
+  })
+
+  it('a live manager\'s in-flight worktree survives a second manager (concurrent engines)', async () => {
+    const inflight = await manager.create()
+    const second = new WorktreeManager(repoDir)
+    expect(second.registered().map(r => basename(r.path))).toContain(basename(inflight))
+    expect(existsSync(join(inflight, 'hello.txt'))).toBe(true)
+  })
+
+  it('never touches a worktree whose name is not cynco-bestofn-*, or one locked for another reason', () => {
+    const foreign = plant('cynco-other-')
+    const lockedByUser = plant('cynco-bestofn-', 'operator hold')
+    const after = names()
+    expect(after).toContain(basename(foreign))
+    expect(after).toContain(basename(lockedByUser))
+    execSync(`git worktree remove --force --force "${foreign}"`, { cwd: repoDir, stdio: 'pipe' })
+    execSync(`git worktree remove --force --force "${lockedByUser}"`, { cwd: repoDir, stdio: 'pipe' })
+  })
+
+  it('never touches a cynco-bestofn-* worktree outside the tmp root', () => {
+    const outside = join(repoDir, 'cynco-bestofn-nested')
+    execSync(`git worktree add --detach "${outside}"`, { cwd: repoDir, stdio: 'pipe' })
+    expect(names()).toContain('cynco-bestofn-nested')
+    execSync(`git worktree remove --force "${outside}"`, { cwd: repoDir, stdio: 'pipe' })
+  })
+})
+
+describe('isStaleBestOfNWorktree / parseWorktreeList', () => {
+  it('parses paths and lock reasons from porcelain output', () => {
+    const porcelain = [
+      'worktree C:/repo', 'HEAD abc', 'branch refs/heads/main', '',
+      'worktree C:/tmp/cynco-bestofn-a', 'HEAD abc', 'detached', 'locked cynco-bestofn pid=12', '',
+      'worktree C:/tmp/cynco-bestofn-b', 'HEAD abc', 'detached', 'locked', '',
+    ].join('\n')
+    expect(parseWorktreeList(porcelain)).toEqual([
+      { path: 'C:/repo', locked: null },
+      { path: 'C:/tmp/cynco-bestofn-a', locked: 'cynco-bestofn pid=12' },
+      { path: 'C:/tmp/cynco-bestofn-b', locked: '' },
+    ])
+  })
+
+  it('stale = ours, under the tmp root, and unlocked or owned by a dead pid', () => {
+    const root = tmpdir()
+    const at = (n: string) => join(root, n)
+    expect(isStaleBestOfNWorktree({ path: at('cynco-bestofn-x'), locked: null }, root)).toBe(true)
+    expect(isStaleBestOfNWorktree({ path: at('cynco-bestofn-x'), locked: 'cynco-bestofn pid=5' }, root, () => false)).toBe(true)
+    expect(isStaleBestOfNWorktree({ path: at('cynco-bestofn-x'), locked: 'cynco-bestofn pid=5' }, root, () => true)).toBe(false)
+    expect(isStaleBestOfNWorktree({ path: at('cynco-bestofn-x'), locked: '' }, root)).toBe(false)
+    expect(isStaleBestOfNWorktree({ path: at('phase5-evidence-engine'), locked: null }, root)).toBe(false)
+    expect(isStaleBestOfNWorktree({ path: join(root, 'sub', 'cynco-bestofn-x'), locked: null }, root)).toBe(false)
   })
 })
