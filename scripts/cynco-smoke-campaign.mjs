@@ -192,12 +192,16 @@ export function writeSmokeCampaign({ home, repo, base, commonFrom, runtimeFrom }
 }
 
 function parseArgs(argv) {
-  const out = { write: false, repo: null, home: process.env.CYNCO_HOME || null, commonFrom: null, runtimeFrom: null }
+  const out = { write: false, repo: null, home: process.env.CYNCO_HOME || null, commonFrom: null, runtimeFrom: null, base: undefined }
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
     if (a === '--write') out.write = true
     else if (a === '--common-from') out.commonFrom = argv[++i]
     else if (a === '--runtime-from') out.runtimeFrom = argv[++i]
+    // The BASE the fixture was calibrated against. HEAD is the default, but a
+    // repo that has already shipped one wave passes every line at HEAD, and
+    // CALIBRATE would refuse it; name the pre-ship commit instead.
+    else if (a === '--base') out.base = argv[++i]
     else if (a === '--repo') out.repo = argv[++i]
     else if (a === '--home') out.home = argv[++i]
     else throw new Error(`unknown argument ${a}`)
@@ -209,8 +213,8 @@ const isMain = import.meta.main ?? (process.argv[1] ? resolve(process.argv[1]) =
 if (isMain) {
   try {
     const args = parseArgs(process.argv.slice(2))
-    if (!args.write) throw new Error('usage: bun scripts/cynco-smoke-campaign.mjs --write --repo <path> [--home <dir ending in /.cynco>] [--common-from <dir holding g_suite_no_regression.py>] [--runtime-from <real ~/.cynco: llama-server, models, profiles>]')
-    console.log(writeSmokeCampaign({ home: args.home, repo: args.repo, commonFrom: args.commonFrom, runtimeFrom: args.runtimeFrom }))
+    if (!args.write) throw new Error('usage: bun scripts/cynco-smoke-campaign.mjs --write --repo <path> [--base <sha, default HEAD>] [--home <dir ending in /.cynco>] [--common-from <dir holding g_suite_no_regression.py>] [--runtime-from <real ~/.cynco: llama-server, models, profiles>]')
+    console.log(writeSmokeCampaign({ home: args.home, repo: args.repo, base: args.base, commonFrom: args.commonFrom, runtimeFrom: args.runtimeFrom }))
   } catch (e) {
     console.error(`[smoke] ${e.message}`)
     process.exit(1)

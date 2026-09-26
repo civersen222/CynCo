@@ -33,12 +33,19 @@ function cloneSmoke() {
 }
 const tempHome = () => join(mkdtempSync(join(tmpdir(), 's1-home-')), '.cynco').replace(/\\/g, '/')
 
+// The fixture's BASE is a pinned commit, not the smoke repo's HEAD: the live
+// proof's mission ships the very files the gate grades, so after one real wave
+// HEAD passes every line and "BASE misses all 8" would be false of HEAD while
+// still true of the commit the fixture was calibrated against.
+const SMOKE_BASE = '1b00179cdd81fe95ccb0ea0c09ecc85be1f8080f'
+
 describe.skipIf(!HAS_SMOKE)(`smoke campaign s1 (needs ${SMOKE_REPO})`, () => {
   let repo, home, specPath, spec
   beforeAll(() => {
     repo = cloneSmoke()
+    if (git(['cat-file', '-e', `${SMOKE_BASE}^{commit}`], repo).status !== 0) throw new Error(`${SMOKE_REPO} lacks the fixture BASE ${SMOKE_BASE}`)
     home = tempHome()
-    specPath = writeSmokeCampaign({ home, repo })
+    specPath = writeSmokeCampaign({ home, repo, base: SMOKE_BASE })
     spec = loadCampaignSpec(specPath)
   })
 
@@ -47,7 +54,7 @@ describe.skipIf(!HAS_SMOKE)(`smoke campaign s1 (needs ${SMOKE_REPO})`, () => {
     for (const f of ['gate_s1.py', 'perturb_s1.py', 'positive_s1.py']) expect(existsSync(join(heldout, f)), f).toBe(true)
     expect(readdirSync(join(home, 'campaigns', SMOKE_ID))).toEqual([])
     expect(specPath.replace(/\\/g, '/')).toBe(`${home}/smoke/s1.campaign.json`)
-    const head = git(['rev-parse', 'HEAD'], repo).stdout.trim()
+    const head = SMOKE_BASE
     expect(spec).toMatchObject({
       id: 's1', repo, base: head, author: 'human', marker: 'smoke s1 complete',
       keepGreen: 'python -m pytest -q test_calc.py',
