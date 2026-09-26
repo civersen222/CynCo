@@ -555,10 +555,10 @@ values separated by `/` mean two read sites disagree.
 | `LOCALCODE_LLAMA_SERVER` | *not derived* | — | `engine/config.ts` |
 | `LOCALCODE_MAX_ITERATIONS` | `0` | — | `engine/bridge/conversationLoop.ts`, `engine/dashboard/server.ts` |
 | `LOCALCODE_MAX_OUTPUT_TOKENS` | `16384` | `max_output_tokens` | `engine/config.ts` |
-| `LOCALCODE_MISSION_BASE` | *not derived* | — | `engine/dashboard/server.ts` |
-| `LOCALCODE_MISSION_CHECK` | *not derived* | — | `engine/dashboard/server.ts` |
-| `LOCALCODE_MISSION_CWD` | *not derived* | — | `engine/dashboard/server.ts` |
-| `LOCALCODE_MISSION_MARKER` | *not derived* | — | `engine/dashboard/server.ts` |
+| `LOCALCODE_MISSION_BASE` | *not derived* | — | `engine/bootstrapProvider.ts`, `engine/dashboard/server.ts` |
+| `LOCALCODE_MISSION_CHECK` | *not derived* | — | `engine/bootstrapProvider.ts`, `engine/dashboard/server.ts` |
+| `LOCALCODE_MISSION_CWD` | *not derived* | — | `engine/bootstrapProvider.ts`, `engine/dashboard/server.ts` |
+| `LOCALCODE_MISSION_MARKER` | *not derived* | — | `engine/bootstrapProvider.ts`, `engine/dashboard/server.ts` |
 | `LOCALCODE_MODEL` | *not derived* | `model` | `engine/config.ts` |
 | `LOCALCODE_MODEL_PATH` | *not derived* | — | `engine/config.ts` |
 | `LOCALCODE_NATIVE_TOOLS` | `false` | — | `engine/engine/callModel.ts` |

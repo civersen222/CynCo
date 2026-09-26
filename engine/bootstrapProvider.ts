@@ -27,12 +27,18 @@ function slotCacheDirFor(modelPath: string): string {
 }
 
 /**
- * True when this engine runs an unattended mission: `scripts/dispatch-mission.sh`
- * launches it with `LOCALCODE_MISSION_*` set (marker, cwd, base, check). An empty
- * value does not count — the check command may legitimately be `''`.
+ * The `LOCALCODE_MISSION_*` keys `scripts/dispatch-mission.sh` launches a mission
+ * engine with (the same four the dashboard's /api/mission reads). Named, not
+ * matched by prefix, so the README env inventory lists each one.
+ */
+const MISSION_ENV_KEYS = ['LOCALCODE_MISSION_MARKER', 'LOCALCODE_MISSION_CWD', 'LOCALCODE_MISSION_BASE', 'LOCALCODE_MISSION_CHECK'] as const
+
+/**
+ * True when this engine runs an unattended mission: any of MISSION_ENV_KEYS is
+ * set. An empty value does not count — the check command may legitimately be `''`.
  */
 export function isUnattendedMission(env: Record<string, string | undefined> = process.env): boolean {
-  return Object.entries(env).some(([k, v]) => k.startsWith('LOCALCODE_MISSION_') && typeof v === 'string' && v.length > 0)
+  return MISSION_ENV_KEYS.some(k => typeof env[k] === 'string' && env[k]!.length > 0)
 }
 
 /**
