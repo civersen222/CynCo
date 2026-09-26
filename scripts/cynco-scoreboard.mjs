@@ -198,23 +198,33 @@ export function humanInterventionsPerWave({ state, waves, rows }) {
   return { value, notes, humanDecisions, refusals, reseals, adopted, unknownSourceNotes, reason }
 }
 
-/**
- * perRulePrecision = from rule-verdicts.json: predictive count ÷ total, and the
- * single best rule with its precision, CI and verdict. "Best": a PREDICTIVE
- * rule first; then a rule with enough evidence to be read at all (not
- * `TOO FEW`); then the highest precision; ties by id. null when there is no
- * verdict file.
- */
-export function perRulePrecision(ruleVerdicts) {
-  const rules = ruleVerdicts?.rules
-  if (!rules || typeof rules !== 'object' || Array.isArray(rules)) return null
-  const entries = Object.entries(rules)
-  const predictive = entries.filter(([, r]) => r?.verdict === 'PREDICTIVE').length
+// "Best" over verdict-file entries: a PREDICTIVE entry first; then one with
+// enough evidence to be read at all (not `TOO FEW`); then the highest
+// precision; ties by id. An entry with no numeric precision never wins.
+function bestOf(entries) {
   const rank = ([id, r]) => [r.verdict === 'PREDICTIVE' ? 0 : 1, String(r.verdict ?? '').startsWith('TOO FEW') ? 1 : 0, -r.precision, id]
   const cmp = (a, b) => { for (let i = 0; i < a.length; i++) { if (a[i] < b[i]) return -1; if (a[i] > b[i]) return 1 } return 0 }
   const ranked = entries.filter(([, r]) => isNum(r?.precision)).sort((a, b) => cmp(rank(a), rank(b)))
-  const best = ranked[0] ? { id: ranked[0][0], precision: ranked[0][1].precision, ci: ranked[0][1].ci ?? null, verdict: ranked[0][1].verdict ?? null } : null
-  return { predictive, total: entries.length, best }
+  return ranked[0] ? { id: ranked[0][0], precision: ranked[0][1].precision, ci: ranked[0][1].ci ?? null, verdict: ranked[0][1].verdict ?? null } : null
+}
+
+/**
+ * perRulePrecision = from rule-verdicts.json: predictive count ÷ total over
+ * the S5 RULES, and the single best rule with its precision, CI and verdict
+ * (bestOf). The learner's `M1.*` rows (`source: 'model'`, Phase 5 ruling 5)
+ * share the file and the Holm family but are not rules — the engine never
+ * grants them authority — so they are neither counted nor ranked here; the
+ * best of them is the sibling `learner` field, null when the file has none.
+ * null when there is no verdict file.
+ */
+export function perRulePrecision(ruleVerdicts) {
+  const all = ruleVerdicts?.rules
+  if (!all || typeof all !== 'object' || Array.isArray(all)) return null
+  const entries = Object.entries(all)
+  const rules = entries.filter(([, r]) => r?.source !== 'model')
+  const models = entries.filter(([, r]) => r?.source === 'model')
+  const predictive = rules.filter(([, r]) => r?.verdict === 'PREDICTIVE').length
+  return { predictive, total: rules.length, best: bestOf(rules), learner: bestOf(models) }
 }
 
 /**
@@ -372,23 +382,30 @@ const short = (reason) => {
 
 /**
  * The `- Scoreboard:` line: short reasons, and the best rule as
- * `best I3 58% NO EVIDENCE` (no CI; the verdict's head only). If it is still
- * over ENTRY_LINE_MAX, the reasons go and a bare `null` stays.
+ * `best I3 58% NO EVIDENCE` (no CI; the verdict's head only), then the
+ * learner's best `M1.*` row the same way. If it is still over ENTRY_LINE_MAX,
+ * the reasons go and a bare `null` stays; if even that is over, the learner's
+ * verdict goes too (the verb's detail line keeps it).
  */
 function entryLine(sb) {
   const gl = sb.gateLinesFixedPerLandedWave ?? {}, hi = sb.humanInterventionsPerWave ?? {}, rp = sb.perRulePrecision
-  const build = (terse) => {
+  const build = (level) => {
+    const terse = level >= 1
     const nul = (reason) => (terse ? 'null' : `null (${short(reason)})`)
     const val = (v, reason) => (isNum(v) ? v.toFixed(2) : nul(reason))
     const rate = isNum(sb.passRatePerGpuHour) ? sb.passRatePerGpuHour.toFixed(3) : sb.decided ? nul(reasonOf(sb, 'passRatePerGpuHour')) : 'open'
     const waves = isNum(sb.wavesPerCampaign) ? `waves ${sb.wavesPerCampaign}` : `waves ${sb.waves} so far (open)`
     const best = rp?.best ? ` (best ${rp.best.id} ${pct(rp.best.precision)}% ${short(rp.best.verdict)})` : ''
     const rules = rp ? `${rp.predictive}/${rp.total}${best}` : nul(reasonOf(sb, 'perRulePrecision'))
+    const learner = rp?.learner ? ` | learner ${rp.learner.id} ${pct(rp.learner.precision)}%${level >= 2 ? '' : ` ${short(rp.learner.verdict)}`}` : ''
     return `- Scoreboard: PASS/GPU-h ${rate} | ${waves} | lines fixed per landed wave ${val(gl.value, gl.reason)}`
-      + ` | human interventions per wave ${val(hi.value, hi.reason)} | rules predictive ${rules}`
+      + ` | human interventions per wave ${val(hi.value, hi.reason)} | rules predictive ${rules}${learner}`
   }
-  const line = build(false)
-  return line.length <= ENTRY_LINE_MAX ? line : build(true)
+  for (const level of [0, 1]) {
+    const line = build(level)
+    if (line.length <= ENTRY_LINE_MAX) return line
+  }
+  return build(2)
 }
 
 function pooledLines(p) {
@@ -428,6 +445,8 @@ export function scoreboardLines(sb, { detail = false } = {}) {
   lines.push(`  gateLinesFixedPerLandedWave ${isNum(gl.value) ? `${gl.value.toFixed(2)} = ${gl.fixed} line(s) fixed ÷ ${gl.landedWaves} landed wave(s)` : `null (${gl.reason})`}`)
   lines.push(`  humanInterventionsPerWave ${num(hi.value, 2, hi.reason)} = (notes ${hi.notes} + human decisions ${hi.humanDecisions} + refusals ${hi.refusals} + reseals ${hi.reseals} + adoptions ${hi.adopted}) ÷ ${sb.waves}`)
   lines.push(`  perRulePrecision ${rp ? `${rp.predictive}/${rp.total} predictive${rp.best ? `; best${bestText(rp.best).replace(/^ \(best/, '').replace(/\)$/, '')}` : ''}` : `null (${reasonOf(sb, 'perRulePrecision')})`}`)
+  // The learner's best M1.* row on the frozen holdout — not a rule, not counted above.
+  if (rp) lines.push(`  learner ${rp.learner ? bestText(rp.learner).replace(/^ \(best /, '').replace(/\)$/, '') : 'none (no M1.* row in rule-verdicts.json)'}`)
   lines.push(isNum(sb.supervisionDollarsPerWave)
     ? `  supervisionDollarsPerWave ${sb.supervisionDollarsPerWave.toFixed(2)} ($${sb.supervisionDollars.toFixed(2)} whole-history SUPERVISING ÷ ${sb.waves} wave(s) — the economics script does not split by campaign)`
     : `  supervisionDollarsPerWave null (${reasonOf(sb, 'supervisionDollarsPerWave')})`)

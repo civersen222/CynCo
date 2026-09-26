@@ -45,6 +45,15 @@ describe('dashboard campaign panel: the Scoreboard row', () => {
     expect(r.title).toBe('')
   })
 
+  it('the learner\'s best M1.* row rides beside the rules, outside their count', () => {
+    const r = row({
+      wave: 1, passRatePerGpuHour: null, wavesPerCampaign: null, gateLinesFixedPerLandedWave: null, humanInterventionsPerWave: null,
+      perRulePrecision: { predictive: 0, total: 8, best: { id: 'I3', precision: 0.58 }, learner: { id: 'M1.gbt', precision: 0.55, ci: [0.3, 0.8], verdict: 'NO EVIDENCE' } },
+      unmeasured: [],
+    })
+    expect(r.text.endsWith('rules predictive 0/8 (best I3 58%) · learner M1.gbt 55%')).toBe(true)
+  })
+
   it('without a wave number the prefix is left off (review M4)', () => {
     const r = row({ wave: null, passRatePerGpuHour: 1, wavesPerCampaign: 1, gateLinesFixedPerLandedWave: null,
       humanInterventionsPerWave: null, perRulePrecision: null, unmeasured: [] })

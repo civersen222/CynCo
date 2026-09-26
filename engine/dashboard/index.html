@@ -2278,6 +2278,8 @@ function fetchSessionState() {
     if (rp && typeof rp.predictive === 'number' && typeof rp.total === 'number') {
       rules = rp.predictive + '/' + rp.total;
       if (rp.best && typeof rp.best.precision === 'number') rules += ' (best ' + rp.best.id + ' ' + Math.round(rp.best.precision * 100) + '%)';
+      // The learner's best M1.* row (not a rule; not in the count).
+      if (rp.learner && typeof rp.learner.precision === 'number') rules += ' · learner ' + rp.learner.id + ' ' + Math.round(rp.learner.precision * 100) + '%';
     }
     // Which wave record the numbers were read off: a stop or fault written
     // after it carries no board, so the row says how current it is.

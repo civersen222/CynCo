@@ -156,7 +156,24 @@ describe('humanInterventionsPerWave — (notes + human decisions + refusals + re
 
 describe('perRulePrecision — predictive ÷ total, and the best rule', () => {
   it('0 of 8 predictive; the best is the most precise rule with enough evidence (a TOO FEW rule never wins)', () => {
-    expect(perRulePrecision(ruleVerdicts)).toEqual({ predictive: 0, total: 8, best: { id: 'I3', precision: 0.58, ci: [0.45, 0.70], verdict: 'NO EVIDENCE' } })
+    expect(perRulePrecision(ruleVerdicts)).toEqual({ predictive: 0, total: 8, best: { id: 'I3', precision: 0.58, ci: [0.45, 0.70], verdict: 'NO EVIDENCE' }, learner: null })
+  })
+  it('the learner\'s M1.* rows are not rules: neither counted nor ranked; the best of them is the `learner` field', () => {
+    // A PREDICTIVE and more precise model row would win `best` and move the count if it were read as a rule.
+    const rv = { rules: { ...ruleVerdicts.rules,
+      'M1.gbt': { ...rule('PREDICTIVE', 0.9, [0.6, 0.98], 10), source: 'model', scope: 'holdout' },
+      'M1.lr': { ...rule('NO EVIDENCE', 0.5, [0.2, 0.8], 8), source: 'model', scope: 'holdout' } } }
+    expect(perRulePrecision(rv)).toEqual({ predictive: 0, total: 8, best: { id: 'I3', precision: 0.58, ci: [0.45, 0.70], verdict: 'NO EVIDENCE' },
+      learner: { id: 'M1.gbt', precision: 0.9, ci: [0.6, 0.98], verdict: 'PREDICTIVE' } })
+    const line = scoreboardLines(board({ ruleVerdicts: rv, economics: ECONOMICS }))[0]
+    expect(line).toBe('- Scoreboard: PASS/GPU-h 0.065 | waves 3 | lines fixed per landed wave 4.67 | human interventions per wave 0.33 | rules predictive 0/8 (best I3 58% NO EVIDENCE) | learner M1.gbt 90% PREDICTIVE')
+    const detail = scoreboardLines(board({ ruleVerdicts: rv }), { detail: true })
+    expect(detail).toContain('  perRulePrecision 0/8 predictive; best I3 58% [45,70] NO EVIDENCE')
+    expect(detail).toContain('  learner M1.gbt 90% [60,98] PREDICTIVE')
+  })
+  it('model rows only: 0/0 rules, no best rule, the learner still read', () => {
+    const rv = { rules: { 'M1.lr': { ...rule('TOO FEW — cannot tell', 0.5, [0.2, 0.8], 4), source: 'model' } } }
+    expect(perRulePrecision(rv)).toEqual({ predictive: 0, total: 0, best: null, learner: { id: 'M1.lr', precision: 0.5, ci: [0.2, 0.8], verdict: 'TOO FEW — cannot tell' } })
   })
   it('a PREDICTIVE rule outranks a more precise one', () => {
     const rv = { rules: { ...ruleVerdicts.rules, W7: rule('PREDICTIVE', 0.55, [0.5, 0.6], 40) } }
@@ -309,11 +326,14 @@ describe('scoreboardLines', () => {
     // the worst board a VERDICT can produce: decided with an unmeasured hour, commit counts unknown, a long best-rule verdict
     const ws = c8Waves().map(w => { const o = { ...w.outcome }; delete o.commitsLanded; return { ...w, outcome: o, durationS: undefined } })
     const worst = board({ waves: [...ws, { wave: 4, missionId: null, decision: { kind: 'fault', why: 'x' } }, { ...ws[2], wave: 5 }], rows: [],
-      ruleVerdicts: { rules: { W7: rule('NOT AFTER CORRECTION — chance across this many rules', 0.61, [0.5, 0.7], 40) } } })
+      ruleVerdicts: { rules: { W7: rule('NOT AFTER CORRECTION — chance across this many rules', 0.61, [0.5, 0.7], 40),
+        'M1.gbt': { ...rule('NOT AFTER CORRECTION — chance across this many rules', 0.62, [0.5, 0.7], 40), source: 'model' } } } })
     const line = scoreboardLines(worst)[0]
     expect(line.length).toBeLessThanOrEqual(ENTRY_LINE_MAX)
     expect(ENTRY_LINE_MAX).toBe(200)
     expect(line).toContain('(best W7 61% NOT AFTER CORRECTION)')
+    // the last tier: bare nulls AND the learner's verdict gone (the verb's detail keeps it)
+    expect(line.endsWith('| learner M1.gbt 62%')).toBe(true)
     // no verdicts, open, nothing measured: still under the cap
     const bare = scoreboardLines(campaignScoreboard({ spec: { id: 'c12345' }, state: {}, rows: [], waves: [{ wave: 1, decision: { kind: 'fault', why: 'x' } }] }))[0]
     expect(bare.length).toBeLessThanOrEqual(ENTRY_LINE_MAX)
@@ -340,6 +360,7 @@ describe('scoreboardLines', () => {
     expect(lines.join('\n')).toMatch(/supervisionDollarsPerWave null \(/)
     // the full best-rule detail (CI and whole verdict) lives here, not on the entry line
     expect(lines).toContain('  perRulePrecision 0/8 predictive; best I3 58% [45,70] NO EVIDENCE')
+    expect(lines).toContain('  learner none (no M1.* row in rule-verdicts.json)')
   })
   it('the pooled board', () => {
     const lines = scoreboardLines(pooledScoreboard([board()], { excluded: ['c7: no waves.jsonl (not runner-driven)'] }))
@@ -407,6 +428,18 @@ describe('main --scoreboard', () => {
     expect(code).toBe(2)
     expect(err).toMatch(/--scoreboard: no campaign state at .*state\.json/)
     expect(existsSync(join(home, 'campaigns'))).toBe(false)
+  })
+  it('prints the latest hindcast on the record in full — the dropped dead columns named', async () => {
+    const home = join(mkdtempSync(join(tmpdir(), 'home-')), '.cynco')
+    const c8 = join(home, 'campaigns', 'c8'); mkdirSync(c8, { recursive: true })
+    copyFileSync(join(FIX, 'c8', 'state.json'), join(c8, 'state.json'))
+    const hc = { version: 2, prefixTurns: 16, nHoldout: 21, baseRate: 0.5, lengthFeature: null, ladder: {}, leakCheck: null, secondary: null, droppedFeatures: ['stuckTurns.mean', 'zero.max'] }
+    const ws = c8Waves(); ws[1] = { ...ws[1], hindcast: { ...hc, droppedFeatures: ['older.one'] } }; ws[2] = { ...ws[2], hindcast: hc }
+    writeFileSync(join(c8, 'waves.jsonl'), ws.map(w => JSON.stringify(w)).join('\n') + '\n')
+    const { code, out } = await withHome(home, () => capture(() => main([specFile(home), '--scoreboard'], { readLedgerRows: () => rows(), economics: () => ECONOMICS, bashExe: noBash })))
+    expect(code).toBe(0)
+    expect(out).toContain('- Outcome hindcast: v2 at K = 16 turns on 21 held-out missions (base 50%): no ladder reading; leak check not run; dropped 2 dead column(s): stuckTurns.mean, zero.max')
+    expect(out).not.toContain('older.one')
   })
 })
 

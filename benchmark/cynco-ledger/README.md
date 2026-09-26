@@ -625,6 +625,15 @@ same, next to the code):
   operator handing a wave over) and for the fault `--adopt-inflight` records
   when the driver wrote no row. Earlier records carry no mark, so adoptions
   before Phase 5 are not counted.
+- **Rules** — the S5 rules only: entries of `rule-verdicts.json` whose
+  `source` is not `"model"`. The learner's `M1.*` rows (see "Outcome hindcast
+  and the `M1.*` rows" below) share the file and the Holm family but are not
+  rules — the engine never grants them authority — so they are neither in
+  `predictive`/`total` nor ranked for `best`. The best of them, ranked the same
+  way, is the sibling field `perRulePrecision.learner`
+  (`{ id, precision, ci, verdict }`, null when the file has no `M1.*` row); the
+  verdict line appends `| learner M1.gbt 55% NO EVIDENCE` and the verb prints a
+  `learner …` line with its CI.
 - **Best rule** — a `PREDICTIVE` rule first; then a rule with enough evidence
   to be read (not `TOO FEW`); then the highest precision; ties by id. The
   verdict line prints `best I3 58% NO EVIDENCE` (precision as a whole percent,
@@ -662,7 +671,8 @@ The stored shape (unrounded on the record; rounded here), for C8 reproduced from
   "humanInterventionsPerWave": { "value": 0.333, "notes": 1, "humanDecisions": 0, "refusals": 0,
                                  "reseals": 0, "adopted": 0, "reason": null },
   "perRulePrecision": { "predictive": 0, "total": 8,
-                        "best": { "id": "I3", "precision": 0.58, "ci": [0.45, 0.70], "verdict": "NO EVIDENCE" } },
+                        "best": { "id": "I3", "precision": 0.58, "ci": [0.45, 0.70], "verdict": "NO EVIDENCE" },
+                        "learner": null },
   "supervisionDollars": 4295.55, "supervisionDollarsPerWave": 1431.85,
   "unmeasured": [] }
 ```
@@ -673,7 +683,8 @@ and the entry line
 `null (<reason head>)` for anything unmeasured — the reason cut before its
 first ` — ` or ` (`, at most 32 characters; the full reason is in
 `unmeasured`). The line is capped at 200 characters (`ENTRY_LINE_MAX`): past
-it the reasons are dropped and a bare `null` stays. A board that throws is stored as
+it the reasons are dropped and a bare `null` stays; if even that is over, the
+learner's verdict is dropped too. A board that throws is stored as
 `{ "error": "<message>" }`, prints `- Scoreboard: UNMEASURED — <message>`, and
 never faults the wave. `--scoreboard` prints the campaign's line, one line per
 definition with its parts and every `unmeasured` reason, then the pooled board
@@ -1069,7 +1080,9 @@ exported from `scripts/cynco-signal-validation.mjs`) over the whole family,
 rules and model rows together (`ledger.holmFamily`). Each lands as
 `rules['M1.<k>'] = { verdict, precision, ci, p, n, pAdjusted, lift, firedTotal,
 failures, source: 'model', scope: 'holdout', base, scopeN }`, and counts in
-`predictive` / `total` like any rule. `engine/s5/ruleAuthority.ts` skips every
+the FILE's `predictive` list and the writer's `total` like any rule (the
+scoreboard's `perRulePrecision` does not: it counts S5 rules only and reads
+the best `M1.*` row as its `learner` field — see "Scoreboard"). `engine/s5/ruleAuthority.ts` skips every
 `source: 'model'` row, so an `M1.*` id never earns an S5 decision enforcement or
 a place in the earned-only training corpus (pinned in `ruleAuthority.test.ts`
 and `exportTrainingData.test.ts`). With no model rows the file is byte-identical
@@ -1077,13 +1090,16 @@ to Phase 4's.
 
 The wave record carries `hindcast` (the model's metrics without its
 predictions, `split`, and `ladder` — the two `M1.*` entries as written), or
-`{ fault, split? }`; the entry prints it right after the scoreboard.
+`{ fault, split? }`; the entry prints it right after the scoreboard. The
+entry line carries the dropped dead columns as a COUNT (`dropped 28 dead
+column(s)`); `--scoreboard` prints the latest record's hindcast in full, the
+column names included (`hindcastLine(h, { detail: true })`).
 
 **First real run, 2026-09-26** (104 eligible at K = 16: train 83, holdout 21 —
 12 failures / 9 successes; K = 32: train 76, holdout 19; a temp home):
 
 ```
-- Outcome hindcast: v1 at K = 16 turns on 21 held-out missions (base 57%): M1.gbt precision 55% [28, 79] on 11 fired p(Holm) 1.000 NO EVIDENCE; M1.lr precision 56% [27, 81] on 9 fired p(Holm) 1.000 TOO FEW; leak check gbt AUC prefix 0.41 / hindsight 0.53, lr AUC prefix 0.47 / hindsight 0.61; K = 32 gbt AUC 0.55, lr AUC 0.42; dropped 28 dead column(s): …
+- Outcome hindcast: v1 at K = 16 turns on 21 held-out missions (base 57%): M1.gbt precision 55% [28, 79] on 11 fired p(Holm) 1.000 NO EVIDENCE; M1.lr precision 56% [27, 81] on 9 fired p(Holm) 1.000 TOO FEW; leak check gbt AUC prefix 0.41 / hindsight 0.53, lr AUC prefix 0.47 / hindsight 0.61; K = 32 gbt AUC 0.55, lr AUC 0.42; dropped 28 dead column(s)
 ```
 
 Holdout at K = 16: `lr` precision 0.556, recall 0.417, Brier 0.363, AUC 0.472;

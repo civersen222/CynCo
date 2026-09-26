@@ -110,9 +110,12 @@ describe('hindcastLine', () => {
       + 'M1.lr precision 50% [20, 80] on 8 fired p(Holm) 1.000 NO EVIDENCE; leak check gbt AUC prefix 0.55 / hindsight 0.91, lr AUC prefix 0.50 / hindsight 0.60; K = 32 gbt AUC 0.60, lr AUC null')
   })
 
-  it('names the dead columns the model dropped', () => {
-    expect(hindcastLine({ version: 1, prefixTurns: 16, nHoldout: 21, baseRate: 0.5, lengthFeature: null, ladder: {}, leakCheck: null, secondary: null,
-      droppedFeatures: ['stuckTurns.mean', 'consecutiveUnstable.last'] }))
+  it('counts the dead columns on the entry line; the detail (the verb) names them', () => {
+    const h = { version: 1, prefixTurns: 16, nHoldout: 21, baseRate: 0.5, lengthFeature: null, ladder: {}, leakCheck: null, secondary: null,
+      droppedFeatures: ['stuckTurns.mean', 'consecutiveUnstable.last'] }
+    expect(hindcastLine(h))
+      .toBe('- Outcome hindcast: v1 at K = 16 turns on 21 held-out missions (base 50%): no ladder reading; leak check not run; dropped 2 dead column(s)')
+    expect(hindcastLine(h, { detail: true }))
       .toBe('- Outcome hindcast: v1 at K = 16 turns on 21 held-out missions (base 50%): no ladder reading; leak check not run; dropped 2 dead column(s): stuckTurns.mean, consecutiveUnstable.last')
   })
 

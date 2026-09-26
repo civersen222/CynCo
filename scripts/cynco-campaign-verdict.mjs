@@ -82,8 +82,10 @@ function identityLine(identity) {
 // ladder's reading of each model row. The verdict is `ruleVerdictOf`'s string
 // cut at its dash (`TOO FEW`, `NO EVIDENCE`, `PREDICTIVE`, …). Unmeasured
 // reads null, never 0 (F16); a fault prints UNMEASURED with its reason, the
-// way the scoreboard's does. null (no reading taken) is no line.
-export function hindcastLine(h) {
+// way the scoreboard's does. null (no reading taken) is no line. The entry
+// line carries the dropped-column COUNT only (28 names made it unreadable);
+// `{ detail: true }` — the `--scoreboard` verb — names them.
+export function hindcastLine(h, { detail = false } = {}) {
   if (!h) return null
   if (h.fault) return `- Outcome hindcast: UNMEASURED — ${h.fault}`
   const pct = (v) => (typeof v === 'number' ? `${Math.round(v * 100)}%` : 'null')
@@ -97,7 +99,7 @@ export function hindcastLine(h) {
     ? `leak check ${['gbt', 'lr'].filter(k => h.leakCheck[k]).map(k => `${k} AUC prefix ${num(h.leakCheck[k].aucPrefix, 2)} / hindsight ${num(h.leakCheck[k].aucHindsight, 2)}`).join(', ')}`
     : 'leak check not run'
   const length = h.lengthFeature ? `; LENGTH FEATURE ${h.lengthFeature} in the prefix` : ''
-  const dropped = h.droppedFeatures?.length ? `; dropped ${h.droppedFeatures.length} dead column(s): ${h.droppedFeatures.join(', ')}` : ''
+  const dropped = h.droppedFeatures?.length ? `; dropped ${h.droppedFeatures.length} dead column(s)${detail ? `: ${h.droppedFeatures.join(', ')}` : ''}` : ''
   const s = h.secondary
   const secondary = !s ? '' : s.refusal ? `; K = 32 ${s.refusal}`
     : `; K = ${s.prefixTurns ?? 32} gbt AUC ${num(s.models?.gbt?.auc, 2)}, lr AUC ${num(s.models?.lr?.auc, 2)}`

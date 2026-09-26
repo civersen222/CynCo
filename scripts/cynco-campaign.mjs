@@ -23,7 +23,7 @@ import { CampaignState } from './cynco-campaign-state.mjs'
 import { calibrate, defaultIo as calibrateIo } from './cynco-campaign-calibrate.mjs'
 import { generateBrief, sidecarFor, workOrderFor, pacingDigestIncluded } from './cynco-brief.mjs'
 import { gradeWave } from './cynco-campaign-grade.mjs'
-import { verdictEntry, notify, commitVerdict, economicsLines } from './cynco-campaign-verdict.mjs'
+import { verdictEntry, notify, commitVerdict, economicsLines, hindcastLine } from './cynco-campaign-verdict.mjs'
 import { runIdeation, measureFollowed, authorityRegistry, promotionProposal, capProposal, effectiveInvariants } from './cynco-ideation.mjs'
 import { patchLedgerRow, findLedgerRow } from './cynco-ledger-patch.mjs'
 import { exportGateLines, exportGateOutcomes, resealRecord, linesOf } from './cynco-gate-lines.mjs'
@@ -1173,8 +1173,14 @@ export async function main(argv, deps = {}) {
     const ledgerRows = (deps.readLedgerRows ?? defaultIo.readLedgerRows)()
     const ruleVerdicts = readRuleVerdicts(RULE_VERDICTS_PATH(home))
     const economics = (deps.economics ?? scoreboardEconomics)()
-    const board = campaignScoreboard({ spec, state: st, waves: state.waves(), rows: ledgerRows, ruleVerdicts, economics })
+    const waves = state.waves()
+    const board = campaignScoreboard({ spec, state: st, waves, rows: ledgerRows, ruleVerdicts, economics })
     for (const l of scoreboardLines(board, { detail: true })) console.log(l)
+    // The latest hindcast on the record, in full: the entry line counts the
+    // dropped dead columns, this names them.
+    const hc = [...waves].reverse().find(w => w?.hindcast)?.hindcast
+    const hcLine = hindcastLine(hc, { detail: true })
+    if (hcLine) console.log(hcLine)
     const pool = runnerDrivenBoards(join(home, 'campaigns'), { current: board, rows: ledgerRows, ruleVerdicts, economics })
     console.log('')
     for (const l of scoreboardLines(pooledScoreboard(pool.boards, { excluded: pool.excluded }))) console.log(l)
