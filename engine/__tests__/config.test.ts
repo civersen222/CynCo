@@ -7,6 +7,7 @@ describe('config', () => {
   const os = require('node:os') as typeof import('node:os')
   let tmpDir: string
   let origHome: string | undefined
+  let origCyncoHome: string | undefined
   let origCwd: string
 
   beforeEach(() => {
@@ -103,6 +104,7 @@ describe('config with LOCALCODE_PROFILE', () => {
 
   let tmpDir: string
   let origHome: string | undefined
+  let origCyncoHome: string | undefined
   let origCwd: string
 
   beforeEach(() => {
@@ -110,13 +112,19 @@ describe('config with LOCALCODE_PROFILE', () => {
     fs.mkdirSync(path.join(tmpDir, 'home'), { recursive: true })
     fs.mkdirSync(path.join(tmpDir, 'project'), { recursive: true })
     origHome = process.env.HOME
+    origCyncoHome = process.env.CYNCO_HOME
     origCwd = process.cwd()
     process.env.HOME = path.join(tmpDir, 'home')
+    // F161: the global profiles dir follows CYNCO_HOME (the suite sets a shared
+    // one in setup/cyncoHome.ts); these tests plant profiles under HOME.
+    process.env.CYNCO_HOME = path.join(tmpDir, 'home', '.cynco')
     process.chdir(path.join(tmpDir, 'project'))
   })
 
   afterEach(() => {
     process.env.HOME = origHome
+    if (origCyncoHome === undefined) delete process.env.CYNCO_HOME
+    else process.env.CYNCO_HOME = origCyncoHome
     process.chdir(origCwd)
     fs.rmSync(tmpDir, { recursive: true, force: true })
     for (const key of Object.keys(process.env)) {
@@ -231,6 +239,7 @@ describe('config runtime + auto-default', () => {
   const os = require('node:os') as typeof import('node:os')
   let tmpDir: string
   let origHome: string | undefined
+  let origCyncoHome: string | undefined
   let origCwd: string
 
   beforeEach(() => {
@@ -238,13 +247,18 @@ describe('config runtime + auto-default', () => {
     fs.mkdirSync(path.join(tmpDir, 'home'), { recursive: true })
     fs.mkdirSync(path.join(tmpDir, 'project'), { recursive: true })
     origHome = process.env.HOME
+    origCyncoHome = process.env.CYNCO_HOME
     origCwd = process.cwd()
     process.env.HOME = path.join(tmpDir, 'home')
+    // F161: see the LOCALCODE_PROFILE block above.
+    process.env.CYNCO_HOME = path.join(tmpDir, 'home', '.cynco')
     process.chdir(path.join(tmpDir, 'project'))
   })
 
   afterEach(() => {
     process.env.HOME = origHome
+    if (origCyncoHome === undefined) delete process.env.CYNCO_HOME
+    else process.env.CYNCO_HOME = origCyncoHome
     process.chdir(origCwd)
     fs.rmSync(tmpDir, { recursive: true, force: true })
     for (const key of Object.keys(process.env)) {

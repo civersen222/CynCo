@@ -74,8 +74,10 @@ export function bashBin({ platform = process.platform, gitPath = null, exists = 
  * `$PATH:git.exe` restricts the search to PATH — a bare `where git.exe` looks
  * in the current directory first, which a mission's repo could plant.
  */
-export function gitExeOnPath(spawn = spawnSync) {
-  const r = spawn('where.exe', ['$PATH:git.exe'], { encoding: 'utf8' })
+export function gitExeOnPath(spawn = spawnSync, systemRoot = process.env.SystemRoot) {
+  // where.exe by full path too: a bare name is itself looked up cwd-first.
+  const where = systemRoot ? win32.join(systemRoot, 'System32', 'where.exe') : 'where.exe'
+  const r = spawn(where, ['$PATH:git.exe'], { encoding: 'utf8' })
   return String(r?.stdout ?? '').split(/\r?\n/).map(s => s.trim()).find(Boolean) || null
 }
 

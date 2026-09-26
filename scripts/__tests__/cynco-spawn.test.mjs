@@ -211,13 +211,14 @@ describe('bashBin (F160): Git Bash by path, never whatever `bash` PATH holds', (
     expect(bashBin({ platform: 'darwin', gitPath: null, exists: () => false })).toBe('bash')
   })
 
-  it('gitExeOnPath asks where.exe for $PATH:git.exe (PATH only, never the cwd), takes its first line, and null when it prints nothing', () => {
+  it('gitExeOnPath runs System32\\where.exe by full path for $PATH:git.exe (PATH only, never the cwd), takes its first line, and null when it prints nothing', () => {
     const calls = []
     const spawn = (out) => (cmd, args) => { calls.push([cmd, args]); return out }
-    expect(gitExeOnPath(spawn({ stdout: 'C:\\Program Files\\Git\\cmd\\git.exe\r\nC:\\Program Files\\Git\\mingw64\\bin\\git.exe\r\n' }))).toBe('C:\\Program Files\\Git\\cmd\\git.exe')
-    expect(calls[0]).toEqual(['where.exe', ['$PATH:git.exe']])
-    expect(gitExeOnPath(spawn({ stdout: '' }))).toBeNull()
-    expect(gitExeOnPath(spawn({ stdout: undefined, error: new Error('ENOENT') }))).toBeNull()
+    expect(gitExeOnPath(spawn({ stdout: 'C:\\Program Files\\Git\\cmd\\git.exe\r\nC:\\Program Files\\Git\\mingw64\\bin\\git.exe\r\n' }), 'C:\\Windows')).toBe('C:\\Program Files\\Git\\cmd\\git.exe')
+    expect(calls[0]).toEqual(['C:\\Windows\\System32\\where.exe', ['$PATH:git.exe']])
+    expect(gitExeOnPath(spawn({ stdout: '' }), null)).toBeNull()   // no SystemRoot: bare name is all there is
+    expect(calls[1][0]).toBe('where.exe')
+    expect(gitExeOnPath(spawn({ stdout: undefined, error: new Error('ENOENT') }), 'C:\\Windows')).toBeNull()
   })
 
   it('on this machine, win32: bashExe() is an existing file under a Git install, never System32; elsewhere: bash', () => {
@@ -237,7 +238,11 @@ describe('bashBin (F160): Git Bash by path, never whatever `bash` PATH holds', (
     for (const f of readdirSync(dir).filter(n => n.endsWith('.mjs'))) {
       const src = readFileSync(join(dir, f), 'utf8')
       for (const [i, line] of src.split('\n').entries()) {
-        if (/\b(spawnSync|spawn|run|io\.run|execFileSync)\(\s*'bash'/.test(line)) bare.push(`${f}:${i + 1}`)
+        // Any quoting, any of the spawn family, `shell: 'bash'`, and the
+        // command-string forms (`execSync('bash …')`, `exec("bash -c …")`).
+        const bare1 = /\b(spawnSync|spawn|run|execFileSync|execFile|execSync|exec)\(\s*(['"`])bash(?:\s|\2)/.test(line)
+        const bare2 = /\bshell:\s*(['"`])bash\1/.test(line)
+        if (bare1 || bare2) bare.push(`${f}:${i + 1}`)
       }
     }
     expect(bare).toEqual([])

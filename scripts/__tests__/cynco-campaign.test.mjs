@@ -800,6 +800,21 @@ describe('defaultIo.waitForDriver — the ledger line is the authority', () => {
 
 // I6: the worker is an unattended model with a Bash tool. Anything in its env
 // it can read, print, or post.
+// F160 (re-review N-2): a missing Git Bash used to surface as a spent, faulted
+// wave, because dispatch was the first spawn. main() checks first and exits 2.
+describe('main refuses before touching state when no Git Bash resolves', () => {
+  it('returns 2 with the F160 message and never reaches the spec', async () => {
+    const errors = []
+    const orig = console.error
+    console.error = (m) => errors.push(String(m))
+    try {
+      const code = await main(['C:/nowhere/x.campaign.json', '--waves', '1'], { bashExe: () => { throw new Error('F160: no Git Bash found (no git.exe on PATH) — install Git for Windows or put its bin dir on PATH') } })
+      expect(code).toBe(2)
+      expect(errors.join('\n')).toMatch(/\[campaign\] F160: no Git Bash found/)
+    } finally { console.error = orig }
+  })
+})
+
 describe('dispatchEnv', () => {
   // F161: the spec's env (the engine's explicit llama-server / GGUF paths for a
   // temp home) is laid over the runner's own env BEFORE the stripping, so a

@@ -798,6 +798,9 @@ export async function main(argv, deps = {}) {
   // benchmark/cynco-ledger/). Run from anywhere else and the first symptom is
   // a brief written into the wrong tree, not an error.
   if (!existsSync('scripts/dispatch-mission.sh')) { console.error('[campaign] run from the localcode repo root'); return 2 }
+  // F160, before any state is touched: a missing Git Bash is a refusal now,
+  // not a spent, faulted wave an hour from now (dispatch is the first spawn).
+  try { (deps.bashExe ?? bashExe)() } catch (e) { console.error(`[campaign] ${e.message}`); return 2 }
   const flag = (n) => argv.indexOf(n)
   const loadAuthor = deps.authorModule ? async () => deps.authorModule : () => import('./cynco-gate-author.mjs')
   // Injectable because the reject path WRITES it, and a test that redirects
