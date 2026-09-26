@@ -17,7 +17,7 @@ import { fileURLToPath } from 'node:url'
 import { writeFileSync, readFileSync, existsSync, appendFileSync, unlinkSync, openSync, writeSync, closeSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { cyncoHome } from '../engine/paths.js'
-import { bashExe } from './cynco-spawn.mjs'
+import { bashExe, runSync, faultSummary } from './cynco-spawn.mjs'
 import { loadCampaignSpec, checkIdentity } from './cynco-campaign-spec.mjs'
 import { CampaignState } from './cynco-campaign-state.mjs'
 import { calibrate, defaultIo as calibrateIo } from './cynco-campaign-calibrate.mjs'
@@ -131,6 +131,41 @@ export function dispatchEnv(base, extra) {
   return { ...out, ...extra }
 }
 
+/** The cap on the dispatch-mission.sh launch itself (it backgrounds the driver and returns). */
+export const DISPATCH_TIMEOUT_MS = 900_000
+
+/**
+ * The one spawn of `scripts/dispatch-mission.sh`, for the wave (`dispatch`) and
+ * the authoring mission (`dispatchRaw`). In a multi-wave campaign it is the
+ * FIRST spawn after `waitForDriver`'s hours-long idle in the same bun process —
+ * exactly F155's trigger (a stale deadline kills the spawn with ETIMEDOUT in
+ * milliseconds). So it goes through runSync, which tells an elapsed timeout
+ * from a harness fault, and each of the three readings is named: a fault, a
+ * real timeout, a non-zero exit. It is deliberately NOT given
+ * `retryImpossibleTimeout`: the killed attempt may already have backgrounded a
+ * driver, and a blind re-dispatch could start a second one on the same GPU.
+ *
+ * `env` is the complete environment (dispatchEnv already stripped the ntfy and
+ * GitHub keys), so it is passed `envExact`; an undefined env inherits the
+ * runner's, as spawnSync did. `hooks` is runSync's test seam (`spawn`, `now`)
+ * plus `bash` in place of bashExe().
+ */
+export function runDispatch(args, env, hooks = {}) {
+  const { bash, ...spawnHooks } = hooks
+  const r = runSync(bash ?? bashExe(), ['scripts/dispatch-mission.sh', ...args], { env, envExact: true, timeoutMs: DISPATCH_TIMEOUT_MS }, spawnHooks)
+  const tail = () => `${r.stdout}${r.stderr}`.slice(-2000)
+  if (r.fault) {
+    throw new Error(`dispatch harness fault: dispatch-mission.sh did not run (${faultSummary(r.fault)}) — `
+      + `an ETIMEDOUT far under the ${DISPATCH_TIMEOUT_MS} ms cap is bun's stale spawn deadline (F155); `
+      + `not retried, because a re-dispatch could start a second driver${tail() ? `: ${tail()}` : ''}`)
+  }
+  if (r.timedOut) throw new Error(`dispatch timed out after ${r.elapsedMs} ms (cap ${DISPATCH_TIMEOUT_MS} ms): ${tail()}`)
+  if (r.status !== 0) throw new Error(`dispatch failed (exit ${r.status}): ${tail()}`)
+  if (r.stdout) console.log(r.stdout.trimEnd())
+  if (r.stderr?.trim()) console.log(r.stderr.trimEnd())
+  return r
+}
+
 const gitC = (repo, args) => spawnSync('git', ['-C', repo, ...args], { encoding: 'utf8' }).stdout ?? ''
 const repoRel = (abs) => relative(process.cwd(), abs).replace(/\\/g, '/')
 
@@ -146,15 +181,11 @@ export const defaultIo = {
     // stripping applies to it as to the runner's own environment.
     const env = dispatchEnv(waveEnvBase(spec), { LOCALCODE_MAX_ITERATIONS: String(spec.budget.iterations), CYNCO_BASH_TIMEOUT_MS: String(spec.budget.bashTimeoutMs),
       CYNCO_MISSION_INVARIANTS: JSON.stringify(invariants), DRIVER_PID_FILE: pidFile, DRIVER_LOG: driverLog, CYNCO_SKIP_IDLE_ENGINE: '1', CYNCO_CAMPAIGN_ID: spec.id })
-    // F160: Git Bash by path, not whatever `bash` the launching shell's PATH holds.
-    const r = spawnSync(bashExe(), ['scripts/dispatch-mission.sh', briefFile, spec.marker, spec.repo, String(timeoutS), spec.keepGreen], { env, encoding: 'utf8', timeout: 900_000 })
-    if (r.status !== 0) throw new Error(`dispatch failed (exit ${r.status}): ${(r.stdout + r.stderr).slice(-2000)}`)
     // dispatch-mission.sh prints the invariants it accepted and the driver log
-    // and PID it started; captured output is invisible unless we re-emit it, and
-    // those three lines are the only unattended evidence that the wave was given
-    // its orders and that the PID we are about to wait on is the driver's.
-    if (r.stdout) console.log(r.stdout.trimEnd())
-    if (r.stderr?.trim()) console.log(r.stderr.trimEnd())
+    // and PID it started; runDispatch re-emits them — those three lines are the
+    // only unattended evidence that the wave was given its orders and that the
+    // PID we are about to wait on is the driver's.
+    runDispatch([briefFile, spec.marker, spec.repo, String(timeoutS), spec.keepGreen], env)
     // dispatch-mission.sh backgrounds the driver, so the missionId does not
     // exist yet: it is read out of the driver log by missionIdFrom once the
     // driver has written its ledger line.
@@ -167,10 +198,7 @@ export const defaultIo = {
   // `dispatch` above is left exactly as it was: the wave path is the measured
   // one and must not change behaviour to make room for this.
   dispatchRaw: async ({ briefFile, marker, cwd, timeoutS, checkCmd, env }) => {
-    const r = spawnSync(bashExe(), ['scripts/dispatch-mission.sh', briefFile, marker, cwd, String(timeoutS), checkCmd ?? ''], { env, encoding: 'utf8', timeout: 900_000 })
-    if (r.status !== 0) throw new Error(`dispatch failed (exit ${r.status}): ${(r.stdout + r.stderr).slice(-2000)}`)
-    if (r.stdout) console.log(r.stdout.trimEnd())
-    if (r.stderr?.trim()) console.log(r.stderr.trimEnd())
+    runDispatch([briefFile, marker, cwd, String(timeoutS), checkCmd ?? ''], env)
     return { driverLog: env?.DRIVER_LOG ?? null }
   },
   // The LEDGER LINE is the authority, not the pid. The driver writes its row

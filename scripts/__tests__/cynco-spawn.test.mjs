@@ -248,7 +248,78 @@ describe('bashBin (F160): Git Bash by path, never whatever `bash` PATH holds', (
     expect(bare).toEqual([])
     const campaign = readFileSync(join(dir, 'cynco-campaign.mjs'), 'utf8')
     expect(campaign).toMatch(/dispatchEnv\(waveEnvBase\(spec\)/)
-    expect(campaign.match(/spawnSync\(bashExe\(\), \['scripts\/dispatch-mission\.sh'/g)?.length).toBe(2)
+    // I3: both dispatches (wave and authoring) go through the one runDispatch,
+    // whose spawn is runSync WITHOUT retryImpossibleTimeout.
+    expect(campaign.match(/\['scripts\/dispatch-mission\.sh'/g)?.length).toBe(1)
+    const dispatchCall = campaign.split('\n').find(l => l.includes("['scripts/dispatch-mission.sh'"))
+    expect(dispatchCall).toMatch(/runSync\(bash \?\? bashExe\(\), \['scripts\/dispatch-mission\.sh'/)
+    expect(dispatchCall).not.toMatch(/retryImpossibleTimeout/)
+    expect(campaign.match(/\brunDispatch\(\[/g)?.length).toBe(2)
     expect(readFileSync(join(dir, 'cynco-campaign-calibrate.mjs'), 'utf8')).toMatch(/io\.run\(bashExe\(\), \['-c'/)
+  })
+})
+
+describe('runSync envExact: a stripped environment stays stripped', () => {
+  it('merges over process.env by default, and passes env as the whole environment with envExact', () => {
+    const seen = []
+    const spawn = (_c, _a, o) => { seen.push(o.env); return { status: 0, stdout: '', stderr: '' } }
+    const prev = process.env.CYNCO_NTFY_URL
+    process.env.CYNCO_NTFY_URL = 'https://example.invalid/topic'
+    try {
+      runSync('x', [], { env: { A: '1' } }, { spawn })
+      runSync('x', [], { env: { A: '1' }, envExact: true }, { spawn })
+    } finally {
+      if (prev === undefined) delete process.env.CYNCO_NTFY_URL; else process.env.CYNCO_NTFY_URL = prev
+    }
+    expect(seen[0].CYNCO_NTFY_URL).toBe('https://example.invalid/topic')
+    expect(seen[1]).toEqual({ A: '1' })
+  })
+})
+
+// I3: the wave dispatch is the first spawn after waitForDriver's multi-hour
+// idle — F155's exact trigger. It must name a stale-deadline kill as a harness
+// fault, keep a real timeout a timeout, and never re-dispatch on its own.
+describe('runDispatch: the mission launch names a stale ETIMEDOUT and never retries it', () => {
+  const quiet = () => { const log = console.log; console.log = () => {}; return () => { console.log = log } }
+
+  it('an ETIMEDOUT in milliseconds is a named harness fault, spawned exactly once', async () => {
+    const { runDispatch, DISPATCH_TIMEOUT_MS } = await import('../cynco-campaign.mjs')
+    const clock = clockOf()
+    const calls = []
+    const spawn = (...a) => { calls.push(a); clock.t += 7; return ETIMEDOUT }
+    let err
+    try { runDispatch(['b.md', 'M', 'repo', '60', ''], { DRIVER_LOG: 'd.log' }, { bash: 'bash.exe', spawn, now: () => clock.t }) }
+    catch (e) { err = e }
+    expect(calls).toHaveLength(1)
+    expect(calls[0][0]).toBe('bash.exe')
+    expect(calls[0][1]).toEqual(['scripts/dispatch-mission.sh', 'b.md', 'M', 'repo', '60', ''])
+    expect(calls[0][2].timeout).toBe(DISPATCH_TIMEOUT_MS)
+    // envExact: the dispatch env is the whole environment, nothing merged back.
+    expect(calls[0][2].env).toEqual({ DRIVER_LOG: 'd.log' })
+    expect(err?.message).toMatch(/^dispatch harness fault: dispatch-mission\.sh did not run \(code ETIMEDOUT, status null, after 7 ms\)/)
+    expect(err?.message).toMatch(/F155/)
+    expect(err?.message).not.toMatch(/exit null/)
+  })
+
+  it('an ETIMEDOUT that spent the cap stays a timeout', async () => {
+    const { runDispatch, DISPATCH_TIMEOUT_MS } = await import('../cynco-campaign.mjs')
+    const clock = clockOf()
+    const spawn = () => { clock.t += DISPATCH_TIMEOUT_MS; return ETIMEDOUT }
+    expect(() => runDispatch(['b.md'], {}, { bash: 'bash.exe', spawn, now: () => clock.t }))
+      .toThrow(new RegExp(`^dispatch timed out after ${DISPATCH_TIMEOUT_MS} ms`))
+  })
+
+  it('a non-zero exit is a failed dispatch; a clean one re-emits the launcher output', async () => {
+    const { runDispatch } = await import('../cynco-campaign.mjs')
+    const clock = clockOf()
+    const failing = () => { clock.t += 50; return { status: 3, stdout: 'no engine\n', stderr: '' } }
+    expect(() => runDispatch(['b.md'], {}, { bash: 'bash.exe', spawn: failing, now: () => clock.t }))
+      .toThrow(/^dispatch failed \(exit 3\): no engine/)
+    const ok = () => { clock.t += 50; return { status: 0, stdout: '[dispatch] driver pid 42\n', stderr: '' } }
+    const restore = quiet()
+    let r
+    try { r = runDispatch(['b.md'], {}, { bash: 'bash.exe', spawn: ok, now: () => clock.t }) } finally { restore() }
+    expect(r.status).toBe(0)
+    expect(r.fault).toBeNull()
   })
 })

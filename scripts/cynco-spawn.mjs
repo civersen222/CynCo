@@ -91,6 +91,10 @@ export function bashExe() {
 /**
  * `spawnSync`, with an elapsed-time check over its timeout claim.
  *
+ * Options: `cwd`, `env` (merged over process.env unless `envExact`, which
+ * passes `env` as the whole environment), `timeoutMs`, `shell`,
+ * `retryImpossibleTimeout` (see below).
+ *
  * Returns `{ status, stdout, stderr, elapsedMs, timedOut, fault }`.
  * `timedOut` and `fault` are mutually exclusive, and both are absent-or-false
  * on a clean run, so `if (r.fault)` and `if (r.timedOut)` are both safe reads.
@@ -133,11 +137,14 @@ export function runSync(cmd, args, opts = {}, hooks = {}) {
   return first
 }
 
-function attempt(cmd, args, { cwd, env, timeoutMs, shell } = {}, { spawn = spawnSync, now = () => Date.now() } = {}) {
+function attempt(cmd, args, { cwd, env, envExact, timeoutMs, shell } = {}, { spawn = spawnSync, now = () => Date.now() } = {}) {
   const t0 = now()
   const r = spawn(cmd, args, {
     cwd,
-    env: { ...process.env, ...(env ?? {}) },
+    // `envExact`: the caller built the WHOLE environment and stripped keys out
+    // of it on purpose (the mission dispatch drops CYNCO_NTFY_* and GitHub
+    // tokens) — merging process.env back underneath would put them straight back.
+    env: envExact ? (env ?? process.env) : { ...process.env, ...(env ?? {}) },
     encoding: 'utf8',
     timeout: timeoutMs,
     maxBuffer: 64 * 1024 * 1024,
