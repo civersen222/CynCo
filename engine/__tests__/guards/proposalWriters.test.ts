@@ -18,6 +18,14 @@ import { PROPOSAL_FAMILIES, PROPOSAL_WRITERS } from '../../../scripts/cynco-prop
 //                                  monotonic merge of a decision a SECOND
 //                                  process already made through the registry.
 //                                  Anywhere else in that class is a stray.
+//
+// KNOWN BLIND SPOTS (Phase 4 final review M10, parked for the next widening):
+//   1. an object-literal key — `{ ...s, ideationAuthority: 1 }` or a whole-state
+//      replace — is not an assignment and does not match ASSIGN/BRACKET;
+//   2. WRITE matches only writeFileSync/renameSync near a seats path, so a
+//      seats-store write through `writeFile`, `appendFileSync` or `Bun.write`
+//      is not seen. (Files under scripts/ subdirectories are not scanned either;
+//      none exist today.)
 
 const here = dirname(fileURLToPath(import.meta.url))
 const repoRoot = resolve(here, '..', '..', '..')
