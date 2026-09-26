@@ -23,6 +23,8 @@ export default defineConfig({
     // writing 117 session journals into the directory the live engine resumes
     // from, so nothing that touches state may load before the redirect.
     // bunShim provides Bun.serve for tests that use it.
-    setupFiles: ['engine/__tests__/setup/cyncoHome.ts', 'engine/__tests__/setup/bunShim.ts'],
+    // missionEnv clears LOCALCODE_MISSION_* so the suite reads as interactive
+    // even when a mission engine's child runs it (Phase 5 Task 1, review I1).
+    setupFiles: ['engine/__tests__/setup/cyncoHome.ts', 'engine/__tests__/setup/missionEnv.ts', 'engine/__tests__/setup/bunShim.ts'],
   },
 })

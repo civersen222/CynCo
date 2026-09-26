@@ -2,7 +2,15 @@ import { describe, expect, it } from 'bun:test'
 import { MISSION_ENV_KEYS, isUnattendedMission } from '../missionEnv.js'
 import { isUnattendedMission as reexported } from '../bootstrapProvider.js'
 
+// Read at file load, before any test sets a key: the suite setup
+// (setup/missionEnv.ts) must have cleared an inherited mission env (review I1).
+const unattendedAtLoad = isUnattendedMission()
+
 describe('missionEnv', () => {
+  it('the suite runs as interactive even when launched inside a mission', () => {
+    expect(unattendedAtLoad).toBe(false)
+  })
+
   it('names exactly the four keys dispatch-mission.sh sets', () => {
     expect([...MISSION_ENV_KEYS]).toEqual([
       'LOCALCODE_MISSION_MARKER', 'LOCALCODE_MISSION_CWD', 'LOCALCODE_MISSION_BASE', 'LOCALCODE_MISSION_CHECK',
