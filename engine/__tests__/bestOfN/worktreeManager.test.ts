@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test'
 import { execSync } from 'child_process'
-import { mkdtempSync, writeFileSync, rmSync, existsSync } from 'fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'fs'
 import { join, basename } from 'path'
 import { tmpdir } from 'os'
 import { WorktreeManager, isStaleBestOfNWorktree, parseWorktreeList } from '../../bestOfN/worktreeManager.js'
@@ -80,6 +80,29 @@ describe('WorktreeManager', () => {
     expect(list).not.toContain('cynco-bestofn-')
     expect(existsSync(wt1)).toBe(false)
     expect(existsSync(wt2)).toBe(false)
+  })
+
+  it('fallback path (review M2): git worktree remove fails, unlock + prune still drop the locked entry', async () => {
+    const wt = await manager.create()
+    // Replace the tree with an empty directory: `git worktree remove` refuses
+    // (validation fails — no `.git` in it). The fallback's rmSync then deletes
+    // the directory, and because the entry is LOCKED a plain prune alone would
+    // keep it — only the unlock step lets prune drop it.
+    rmSync(wt, { recursive: true, force: true })
+    mkdirSync(wt)
+    const lines: string[] = []
+    const orig = console.log
+    console.log = (...a: unknown[]) => { lines.push(a.join(' ')) }
+    try { manager.cleanup(wt) } finally { console.log = orig }
+    expect(lines.some(l => l.includes('git worktree remove failed'))).toBe(true)
+    expect(manager.registered().map(r => basename(r.path))).not.toContain(basename(wt))
+    expect(manager.getActive()).not.toContain(wt)
+  })
+
+  it('construction never throws: outside a repo the stale scan is logged and skipped (review M5)', () => {
+    const notRepo = mkdtempSync(join(tmpdir(), 'cynco-wt-norepo-'))
+    tempRepos.push(notRepo)
+    expect(() => new WorktreeManager(notRepo)).not.toThrow()
   })
 
   it('creates each worktree locked with this process pid', async () => {

@@ -7,6 +7,8 @@ import { tmpdir } from 'os'
 export const WORKTREE_PREFIX = 'cynco-bestofn-'
 /** Lock reason carried by a worktree this manager created: names the owning pid. */
 const LOCK_TAG = 'cynco-bestofn pid='
+/** Cap on one git call; worktree add of a large repo is the slowest (seconds). */
+export const GIT_TIMEOUT_MS = 60_000
 
 export interface RegisteredWorktree {
   path: string
@@ -153,6 +155,11 @@ export class WorktreeManager {
   private pruneStale(isAlive: (pid: number) => boolean): void {
     let stale: RegisteredWorktree[]
     try {
+      // Bare `git worktree prune`: drops the admin entry (.git/worktrees/<name>)
+      // of every UNLOCKED worktree in this repo whose directory is missing, of
+      // any name — metadata only; it never deletes a directory. A worktree on a
+      // drive that is briefly unreachable loses its registration and needs
+      // `git worktree repair` (review M1).
       this.git('worktree prune')
       stale = this.registered().filter(wt => isStaleBestOfNWorktree(wt, this.tmpRoot, isAlive))
     } catch (e) {
@@ -194,12 +201,27 @@ export class WorktreeManager {
     }
   }
 
+  /**
+   * Every git call is bounded (review M5): a hung git reports as an error the
+   * callers catch and log, never a hung best-of-N turn. An ETIMEDOUT that did
+   * not spend its cap is bun's stale deadline (F155) — retried once.
+   */
   private git(args: string): string {
-    return execSync(`git ${args}`, {
+    const run = () => execSync(`git ${args}`, {
       cwd: this.repoRoot,
       stdio: 'pipe',
+      timeout: GIT_TIMEOUT_MS,
     })
       .toString()
       .trim()
+    const started = Date.now()
+    try {
+      return run()
+    } catch (e) {
+      const elapsed = Date.now() - started
+      if ((e as NodeJS.ErrnoException).code !== 'ETIMEDOUT' || elapsed >= GIT_TIMEOUT_MS / 2) throw e
+      console.log(`[bestOfN] git ${args.split(' ')[0]}…: impossible ETIMEDOUT after ${elapsed} ms (cap ${GIT_TIMEOUT_MS} ms) — retrying once (F155)`)
+      return run()
+    }
   }
 }
