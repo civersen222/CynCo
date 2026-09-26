@@ -149,6 +149,18 @@ decisions still recorded here).
     { "t": 1783550300000, "text": "PROBE FAIL C8.1a.tiers-pressable ...", "queuedAt": "2026-09-22T10:05:00.000Z",
       "source": "driver", "deliveredAtIteration": null, "dropped": "mission ended" }
   ],
+  // Phase 5 ruling 8 (F162): one entry per `bestOfN.selected` frame — the
+  // engine picked a winner among N candidates. `applied: false` is a winner
+  // whose patch `git apply` refused; the turn then ran single-pass. Before
+  // F162's fix every winner came back false (the diff's final newline was
+  // trimmed), and nothing on the row said so. `winner` is the candidate's
+  // 0-based index, `passRate` its test pass rate; a field the frame lacked is
+  // null. `[]` = best-of-N selected nothing this mission (it runs only with
+  // `LOCALCODE_BEST_OF_N=true` and a detected test framework); rows before
+  // Phase 5 have no field.
+  "bestOfN": [
+    { "t": 1783550000000, "winner": 1, "passRate": 0.75, "applied": true }
+  ],
   "toolTransport": [        // one per toolcall.transport event (P1.8 repair ladder); absent in pre-P1.8 records
     { "t": 1783550000000, "stage": "repaired", "toolName": "Read", "detail": "..." }
   ],

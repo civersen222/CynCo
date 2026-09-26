@@ -802,6 +802,33 @@ authority ladder honestly, and C9 sealed and ready for the runner.
   (449670f). It is dispatched from `main` after the merge:
   `bun scripts/cynco-campaign.mjs docs/civkings-redesign-briefs/c9.campaign.json --waves 8`;
   its first verdict prints the first real scoreboard.
+- **The live proof (s2, 2026-09-26).** The Phase 4 smoke campaign `s1`
+  regenerated under a fresh `CYNCO_HOME=C:/tmp/cynco-home-s2/.cynco`
+  (`--base 1b00179…`, `--runtime-from ~/.cynco`), no smoke roadmap (the path
+  is repo-relative, above), runner launched detached from PowerShell.
+  CALIBRATE `BASE MISS 8, perturb honest`; the engine logged `[s5] rule
+  authority: legacy (no verdict file at
+  C:\tmp\cynco-home-s2\.cynco\datasets\rule-verdicts.json) (advisory in this
+  unattended mission)`, the driver `engine declares [sealed-gates,
+  s5-earned-only] — dispatching mission`, and the row's one S5 decision
+  landed `enforced: false, authority: advisory` — guard (a) live. 13 tool
+  calls, 121 s; sealed gate PASS (0 fails), suite gate PASS, sweep refused →
+  `pass`. The entry read `- Scoreboard: PASS/GPU-h 29.752 | waves 1 | lines
+  fixed per landed wave 8.00 | human interventions per wave 0.00 | rules
+  predictive 0/8 (best I3 58% NO EVIDENCE) | learner M1.gbt 55% NO EVIDENCE`
+  and `- Outcome hindcast: v1 at K = 16 turns on 21 held-out missions (base
+  57%): M1.gbt precision 55% [28, 79] on 11 fired p(Holm) 1.000 NO EVIDENCE;
+  M1.lr precision 56% [27, 81] on 9 fired p(Holm) 1.000 TOO FEW; leak check …;
+  K = 32 gbt AUC 0.55, lr AUC 0.42; dropped 28 dead column(s)` — the same
+  numbers the offline run gave. One honest caveat: the smoke repo's `master`
+  already carried s1's work from Phase 4 (the mission baseline was its HEAD
+  `17cd9a6`, not BASE), so the mission's one commit was an empty marker
+  commit and "8 lines fixed" is the calibration-at-BASE bar against a HEAD
+  that already passed — a harness proof, not a model result (F163). Afterwards the
+  REAL home's verdict file was written before any mission (guard (b)):
+  `rule verdicts v1: 0 predictive of 10 (none)`, `M1.gbt` NO EVIDENCE,
+  `M1.lr` TOO FEW. The synthetic row and the `campaign/s1` verdict commit
+  were removed.
 - **What is parked, with reasons.** TabPFN and XGBoost (absent; a download
   needs the operator). Applying retained tables (no non-empty table observed
   yet; the row's `retainedVersion` per C9 wave decides). The latest-release
@@ -815,6 +842,11 @@ authority ladder honestly, and C9 sealed and ready for the runner.
   — measure from the first prefix value (Task 4 N2). A throw on the model rows
   should still write the rules' verdict file, and `M1.*` rows appearing or
   vanishing should not bump the verdict-file version (Task 5 M1, M2).
+  `bun scripts/cynco-rule-verdicts.mjs` rebuilds the rules only; a
+  `--with-hindcast` flag (export → model → verdicts, the runner's own
+  sequence) belongs in that CLI — the real-home file above was written by
+  that sequence from a scratch script while the file was under review. F163's
+  wave-1 HEAD-vs-BASE refusal.
 
 **Deferred spec items (follow-up, not built here).**
 
