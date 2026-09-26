@@ -32,7 +32,7 @@ import { sidecarPath } from './cynco-contract.mjs'
 import { exportTriples } from './cynco-triples.mjs'
 import { analyseDenials } from './cynco-signal-validation.mjs'
 import { governanceCounts, governancePosiwid } from './cynco-governance-posiwid.mjs'
-import { loadRoadmap, saveRoadmap, rejectLine, ROADMAP_PATH } from './cynco-roadmap.mjs'
+import { loadRoadmap, saveRoadmap, rejectLine, setLineStatus, ROADMAP_PATH } from './cynco-roadmap.mjs'
 import { assertIdentityIntact } from './cynco-identity.mjs'
 import { applyProposalDecision, seatAuthority } from './cynco-proposals.mjs'
 import { writeRuleVerdicts, RULE_VERDICTS_PATH } from './cynco-rule-verdicts.mjs'
@@ -297,7 +297,56 @@ export function waveContext(spec, s, io = defaultIo) {
            ideationAuthority: s.ideationAuthority ?? 0, invariants: effectiveInvariants(spec, s), denialDigest: s.denialAnalysis?.invariants ?? null }
 }
 
-export async function runWave(spec, state, io = defaultIo) {
+/**
+ * Phase 5 Task 1: the roadmap follows the campaign. `sealed → running` when the
+ * runner first dispatches a wave, `running`/`sealed → done` when a wave passes.
+ * Only a line whose status is in `from` moves; a spec that is not on the
+ * roadmap (the s1 smoke campaign) is skipped silently; any other status (a
+ * `done` line a resumed campaign passes again) is left as it is and logged.
+ * Forward-only is `setLineStatus`'s rule — its refusal is caught and logged,
+ * never a wave fault: the roadmap is a view of the campaign, not its state.
+ * Returns true when the file was rewritten.
+ */
+export function moveRoadmapLine(roadmapPath, id, to, from) {
+  if (!roadmapPath) return false
+  let roadmap
+  try { roadmap = loadRoadmap(roadmapPath) } catch (e) {
+    console.error(`[campaign] roadmap not read, ${id} not moved to ${to}: ${e?.message ?? e}`)
+    return false
+  }
+  const line = roadmap.lines.find(l => l.id === id)
+  if (!line) return false
+  if (line.status === to) return false
+  if (!from.includes(line.status)) {
+    console.log(`[campaign] roadmap ${id} is ${line.status}, not ${from.join('/')} — left as is`)
+    return false
+  }
+  const was = line.status
+  try {
+    setLineStatus(roadmap, id, to)
+    saveRoadmap(roadmapPath, roadmap)
+  } catch (e) {
+    console.error(`[campaign] roadmap ${id} stays ${was}: ${e?.message ?? e}`)
+    return false
+  }
+  console.log(`[campaign] roadmap ${id}: ${was} → ${to}`)
+  return true
+}
+
+/** The roadmap file as a commit pathspec — only when it lives inside the repo. */
+export const roadmapFileIn = (roadmapPath) => {
+  const rel = repoRel(resolve(roadmapPath))
+  return rel.startsWith('..') || /^[A-Za-z]:/.test(rel) || rel.startsWith('/') ? [] : [rel]
+}
+
+/**
+ * `opts.roadmapPath`: where the roadmap moves above are written. `main` passes
+ * its `deps.roadmapPath`; the default io defaults to the checked-in
+ * ROADMAP_PATH, and an injected io without one moves nothing — a test's fake
+ * wave must never rewrite the live roadmap.
+ */
+export async function runWave(spec, state, io = defaultIo, opts = {}) {
+  const roadmapPath = opts.roadmapPath ?? io.roadmapPath ?? (io === defaultIo ? ROADMAP_PATH : null)
   const s = state.state
   // M4: `--approve-proposal` runs as a SECOND process while this one sleeps
   // out a wall clock. Its decision only reaches this object on the next save
@@ -402,6 +451,9 @@ export async function runWave(spec, state, io = defaultIo) {
     const stamp = basename(briefFile).replace(/\.[^.]*$/, '')
     const pidFile = `C:/tmp/driver_${stamp}.pid`, driverLog = `C:/tmp/driver_${stamp}.log`
     dispatchedAt = new Date().toISOString()
+    // The first dispatch of a sealed line starts it running; the file joins
+    // the wave's commit so the dirty-tree guard never sees it as foreign work.
+    if (moveRoadmapLine(roadmapPath, spec.id, 'running', ['sealed'])) waveFiles.push(...roadmapFileIn(roadmapPath))
     let waited
     try {
       const dispatched = await io.dispatch({ spec, briefFile, invariants: effectiveInvariants(spec, s), timeoutS: spec.budget.hoursPerWave * 3600, pidFile, driverLog })
@@ -540,6 +592,11 @@ export async function runWave(spec, state, io = defaultIo) {
     console.error(`[campaign] wave ${wave} IDENTITY VIOLATED: ${identity.violated.map(n => `${n} (${identity.evidence[n].detail})`).join('; ')}`)
   }
 
+  // Phase 5 Task 1: a pass finishes the roadmap line — read off the FINAL
+  // decision, after the identity check could still turn it into a fault.
+  const roadmapDone = (decision.kind === 'pass' || decision.kind === 'pass-with-survivors')
+    && moveRoadmapLine(roadmapPath, spec.id, 'done', ['running', 'sealed'])
+
   // §E: two proposals must not go pending in the same wave. promotionProposal
   // is computed FIRST; when it is about to be raised, capProposal is skipped
   // entirely (set to null) rather than called — calling it here would see
@@ -592,7 +649,7 @@ export async function runWave(spec, state, io = defaultIo) {
   io.appendLog(entry)
   // Ruling 5: commitVerdict matches these against `git status --porcelain`,
   // which speaks repo-relative forward slashes and nothing else.
-  const files = [LOG, ...waveFiles, ...ledgerShardsTouched()]
+  const files = [...new Set([LOG, ...waveFiles, ...(roadmapDone ? roadmapFileIn(roadmapPath) : []), ...ledgerShardsTouched()])]
   try { rec.verdictSha = io.commit({ repoRoot: '.', branch: `campaign/${spec.id}`, files, message: `${spec.id.toUpperCase()} wave ${wave} verdict: ${decision.kind} — ${decision.why}` }).sha } catch (e) { console.error(`[campaign] commit skipped: ${e.message}`) }
   rec.notified = await notifyOrQueue(io, s, `${spec.id.toUpperCase()} wave ${wave}: ${decision.kind.toUpperCase()} — ${decision.why}\n${grade.gate.fails.map(f => f.line).join('\n')}`, decision)
   state.rewriteLastWave(rec)
@@ -1056,7 +1113,7 @@ export async function main(argv, deps = {}) {
     return 1
   }
   while (true) {
-    const rec = await runWave(spec, state)
+    const rec = await runWave(spec, state, defaultIo, { roadmapPath })
     console.log(`[campaign] wave ${rec.wave}: ${rec.decision.kind} — ${rec.decision.why}`)
     if (rec.decision.kind !== 'next') { await notify(`${spec.id.toUpperCase()} STOPPED: ${rec.decision.kind} — ${rec.decision.why}`); return rec.decision.kind === 'pass' || rec.decision.kind === 'pass-with-survivors' ? 0 : 1 }
   }
