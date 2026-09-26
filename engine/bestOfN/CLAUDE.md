@@ -27,7 +27,7 @@ Implements best-of-N candidate sampling for `engine/bridge/conversationLoop.ts`:
 2. For each of `bonCount` candidates, `WorktreeManager.create()` makes a fresh detached worktree from HEAD and `conversationLoop` points `this.executor` at it, then runs the model loop with a turn cap and elevated temperature.
 3. After the loop, `extractPatch(wtPath)` captures the diff and `runTests(wtPath, testInfo)` scores it; the result is pushed into a `candidates` array (shape matching `CandidateResult`).
 4. Once all candidates have run, `selectWinner(candidates)` picks the best one.
-5. If a winner exists, `applyPatch(mainCwd, winner.patch)` applies its diff to the real working directory; if apply fails, the caller falls through to a normal single-pass turn.
+5. If a winner exists, `applyPatch(mainCwd, winner.patch)` applies its diff to the real working directory; if apply fails, the caller falls through to a normal single-pass turn. Either way the loop emits `bestOfN.selected` (`winner`, `passRate`, `applied`), which the mission driver's collector (`scripts/cynco-ledger.mjs`) records on the ledger row as `bestOfN[]` — so an unapplied winner is readable per mission (F162).
 6. `WorktreeManager.cleanupAll()` runs in a `finally` block so every worktree created in step 2 is removed regardless of outcome.
 
 ## Gotchas

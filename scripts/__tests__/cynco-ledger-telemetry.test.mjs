@@ -412,3 +412,26 @@ describe('operator notes', () => {
     expect(rec.operatorNotes).toEqual([])
   })
 })
+
+// Phase 5 ruling 8 (F162): `bestOfN.applied` readable on the ledger.
+describe('best-of-N selections', () => {
+  const meta = { missionId: 'm', briefFile: 'b', marker: 'x', cwd: '.', dispatchedAt: 't', durationS: 1, outcome: 'landed' }
+
+  it('records every bestOfN.selected frame with its applied flag', () => {
+    const c = createMissionCollector(() => 5)
+    c.ingest({ type: 'bestOfN.selected', winner: 1, passRate: 0.75, applied: true })
+    c.ingest({ type: 'bestOfN.selected', winner: 0, passRate: 1, applied: false })
+    const rec = buildMissionRecord(c, meta)
+    expect(rec.bestOfN).toEqual([{ t: 5, winner: 1, passRate: 0.75, applied: true }, { t: 5, winner: 0, passRate: 1, applied: false }])
+  })
+  it('an empty array when best-of-N selected nothing; a frame missing a field reads null, never a guess', () => {
+    expect(buildMissionRecord(createMissionCollector(), meta).bestOfN).toEqual([])
+    const c = createMissionCollector(() => 1)
+    c.ingest({ type: 'bestOfN.selected' })
+    expect(buildMissionRecord(c, meta).bestOfN).toEqual([{ t: 1, winner: null, passRate: null, applied: null }])
+  })
+  it('the engine emits the frame with exactly the fields the collector reads', () => {
+    const src = readFileSync(new URL('../../engine/bridge/conversationLoop.ts', import.meta.url), 'utf8')
+    expect(src).toMatch(/type: 'bestOfN\.selected' as any, winner: winner\.index, passRate: winner\.passRate, applied \}/)
+  })
+})
