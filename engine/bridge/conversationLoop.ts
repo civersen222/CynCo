@@ -277,6 +277,22 @@ export type ConversationLoopOptions = {
   } | null
 }
 
+/**
+ * The `emit` a best-of-N candidate runs under. A candidate is a throwaway
+ * sample, so two of its frames must not reach the driver or the TUI: its model
+ * text (`stream.token`) and its session-level `governance.session_fidelity`
+ * reading (F158 — each candidate's natural end emits one; the ledger collector
+ * keeps the last frame, but the TUI/vibe surfaces consume every frame). Tool
+ * events, progress markers and other governance events pass through. The one
+ * frame per user message is emitted after the candidates, under the real emit.
+ */
+export function candidateEmit(emit: (event: any) => void): (event: any) => void {
+  return (event: any) => {
+    if (event?.type === 'stream.token' || event?.type === 'governance.session_fidelity') return
+    emit(event)
+  }
+}
+
 export class ConversationLoop {
   private messages: Message[] = []
   /**
@@ -1944,12 +1960,9 @@ export class ConversationLoop {
           const savedTemp = this.config.temperature
           const originalEmit = this.emit
 
-          // Mute stream.token events during candidate runs — only pass through
-          // progress markers, tool events, and governance events
-          this.emit = (event: any) => {
-            if (event.type === 'stream.token') return // mute model text
-            originalEmit(event)
-          }
+          // Mute each candidate's model text and its session_fidelity frame
+          // (F158) — see candidateEmit.
+          this.emit = candidateEmit(originalEmit)
 
           const candidates: any[] = []
           const wtManager = new WorktreeManager(mainCwd)
@@ -2049,8 +2062,11 @@ export class ConversationLoop {
       console.log(`[bestOfN] Orchestration failed, falling back to single-pass: ${e}`)
     }
 
-    // F158: best-of-N candidates run runModelLoop with `emit` redirected, so a
-    // candidate's frame never reached the driver. Only what follows counts.
+    // F158: best-of-N candidates run runModelLoop under candidateEmit, which
+    // mutes their governance.session_fidelity frames — but each candidate's
+    // natural end still set the flag. Reset it: only the frame for the run
+    // that follows (or the post-loop emit below, when best-of-N applied a
+    // winner) reaches the driver, so exactly one frame per user message.
     this.sessionFidelityEmitted = false
     // Normal single-pass if best-of-N didn't run (or failed)
     if (!bestOfNRan) {
@@ -2243,14 +2259,6 @@ export class ConversationLoop {
     this.abortController = null
   }
 
-  /**
-   * The IdentityGuard's session record, from the session-long counters.
-   * `toolErrors` used to be `length - filter(() => true).length` — 0 by
-   * construction — and `toolSuccesses` read the 50-entry toolHistory window,
-   * so the guard's POSIWID check never saw an error and never more than 50
-   * calls. Evaluated at every user-message end (onto session_fidelity, for
-   * the ledger) and once more at session end (for the outcome).
-   */
   /** The one `governance.session_fidelity` emit site (F158): marks the frame
    *  sent so runUserMessage does not send a second one. */
   private emitSessionFidelity(): void {
@@ -2262,6 +2270,14 @@ export class ConversationLoop {
     })
   }
 
+  /**
+   * The IdentityGuard's session record, from the session-long counters.
+   * `toolErrors` used to be `length - filter(() => true).length` — 0 by
+   * construction — and `toolSuccesses` read the 50-entry toolHistory window,
+   * so the guard's POSIWID check never saw an error and never more than 50
+   * calls. Evaluated at every user-message end (onto session_fidelity, for
+   * the ledger) and once more at session end (for the outcome).
+   */
   private evaluateIdentityGuard(): GuardResult {
     return this.governance.getIdentityGuard().evaluate({
       toolsUsed: [...new Set(this.toolHistory)],
