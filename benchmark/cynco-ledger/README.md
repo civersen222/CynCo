@@ -863,6 +863,82 @@ The wave record carries `ruleVerdicts: { version, predictive, total }` (`null`
 when the write failed — logged, never a fault). On this ledger no rule is
 `PREDICTIVE`, so once the file exists every S5 decision reads `advisory`.
 
+### Outcome dataset and the frozen holdout
+
+Phase 5 ruling 5: the prerequisites for the first learner. Built by
+`scripts/cynco-outcome-dataset.mjs` (pinned by
+`scripts/__tests__/cynco-outcome-dataset.test.mjs`).
+
+**Dataset.** `bun scripts/cynco-outcome-dataset.mjs --export [--fraction 0.5]
+[--out PATH] [--ledger-dir DIR]` writes JSONL to
+`~/.cynco/datasets/outcome-dataset.jsonl` (via `cyncoHome()`), one row per
+mission that is LABELED (`labelOf` from `scripts/cynco-signal-validation.mjs`,
+the "Labeling rule" below, imported — never restated) and has at least 4
+turns. Unlabeled and short missions are counted and printed, not written. Row
+shape (`featuresOf(row, fraction)`; the values are c8 wave 2's real row,
+features elided):
+
+```jsonc
+{ "missionId": "c8-wave2-1789649392765", "fraction": 0.5, "turnsInPrefix": 173,
+  "label": false,            // labelOf: true = success, false = failure
+  "features": { "stuckTurns.mean": 0.06936416184971098, "stuckTurns.last": 0, "stuckTurns.max": 2, "…": "…" },
+  "leakGuard": true }
+```
+
+The prefix is the first `max(1, floor(turns.length × fraction))` entries of
+`turns[]` by index — 50 % by default, 25 % as the earlier point. The feature
+keys are EXACTLY these 59 (the test asserts the set, so adding one is a change
+to this list and the test together):
+
+- For each of `toolSuccessRate`, `stuckTurns`, `varietyRatio`,
+  `varietyWindowed`, `taskError`, `infoGain`, `progressRate`,
+  `algedonicAlerts`, `consecutiveUnstable`, `axiomViolations`
+  (= `axiomHealth.violations.length`), `toolEntropyMean`, `toolEntropyMax`
+  (= `brain.toolEntropy.mean`/`.max`): `<name>.mean`, `<name>.last`,
+  `<name>.max` over the prefix's non-null values. `.last` is the last non-null
+  value in the prefix. All three are `null` when every value in the prefix is
+  null — unmeasured is never 0 (F16).
+- `brainPresent` — 1 when any prefix turn carries a numeric tool entropy, else 0.
+- One-hots from the LAST prefix turn, all zeros when that turn has no value (or
+  one outside the vocabulary): `errorTrend.{rising,flat,falling}`,
+  `explorationState.{healthy_exploration,thrashing,floundering}`,
+  `health.{healthy,warning,critical}`,
+  `s3s4Balance.{balanced,s3_dominant,s4_dominant,critical}`,
+  `varietyBalance.{balanced,underload,overload,critical}`,
+  `commander.{S1,S2,S3,S4,S5}` (from `heterarchy.commander`).
+
+**The leak rule.** A feature may be built only from what was observable at
+the end of the prefix. Whole-mission fields — `verified`, `outcome`,
+`mutationSweep`, `toolStats`, `durationS`, `exitReason`, `commits`,
+`identityGuard`, `regulatorFidelity`, `posiwidLive`, `s5Decisions`,
+`invariants`, `routing`, `brainStats`, `ultrastable` — are written after the
+run and describe the outcome after the fact; none of them is, or prefixes, a
+feature key. `featuresOf` reads `turns[]`, `missionId` and the label and
+nothing else; the leak test plants those fields on a row and checks the keys.
+
+**The frozen holdout.** `benchmark/cynco-ledger/frozen-eval.json` —
+`{ schema: 1, version, seed, frozenAt, missionIds }` — names the missions no
+learner trains on. Invariants:
+
+- **Frozen once.** `--freeze --seed N` writes it and refuses when the file
+  exists. Only `--refreeze --seed N` writes another version (`version + 1`),
+  and it keeps EVERY previous id — a refreeze only adds, topping each label up
+  to its share of the grown ledger. Later-labeled missions otherwise join the
+  training split.
+- **20 %, stratified, whole missions.** 20 % of the eligible missions (labeled,
+  ≥ 4 turns) rounded to nearest, split across failure/success in proportion,
+  at least one of each when both exist; drawn by a mulberry32 shuffle of the
+  id-sorted candidates, so the same ledger and seed give the same ids.
+- **Never silently shrinks.** `frozenSplit(rows, manifest)` returns
+  `{ train, holdout, missing }`; a manifest id that matches no row is reported
+  in `missing`, never dropped.
+
+v1 was frozen on 2026-09-26 with seed 20260926 over the 280-row ledger: 107
+labeled (61 failures), 1 labeled mission under 4 turns, so 106 eligible (60
+failures, 46 successes); the holdout holds **21** missions — 12 failures, 9
+successes. None of the 106 eligible missions carries brain tool entropy
+(`brainPresent` is 0 on every row at this snapshot).
+
 ## Labeling rule
 
 Ground truth for signal validation (step 2, per-rule precision/recall):
