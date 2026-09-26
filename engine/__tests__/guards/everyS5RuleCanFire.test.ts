@@ -251,6 +251,12 @@ function testLoop(gens: Array<() => Generator<StreamEvent>>): ConversationLoop {
   })
 }
 
+// Each test below spins up a real ConversationLoop (governance, index, tools).
+// Alone it takes well under a second; under the full suite's load it lost the
+// 5 s default more than once (Phase 5 Task 1: 33/34 audit, 32/32 alone). The
+// cap is for a hung loop, not a slow machine.
+const REAL_LOOP_TIMEOUT_MS = 30_000
+
 describe('a doom loop in a real session reaches the rules that name it', () => {
   it('three refused Bash calls become three failures S5 can read', async () => {
     const loop = testLoop([callsBash(1), callsBash(2), callsBash(3), silence])
@@ -264,7 +270,7 @@ describe('a doom loop in a real session reaches the rules that name it', () => {
     expect(decision.ruleIds).toContain('C2')
     expect(decision.ruleIds).toContain('C4')
     expect(decision.tools, 'the tool that failed three times must be excluded').not.toContain('Bash')
-  })
+  }, REAL_LOOP_TIMEOUT_MS)
 
   it('a call that worked is recorded as one, so success is evidence too', async () => {
     // Without this, `success: false` for every outcome is indistinguishable from
@@ -279,7 +285,7 @@ describe('a doom loop in a real session reaches the rules that name it', () => {
     const reads = loop.getRecentToolResults().filter(r => r.tool === 'Read')
     expect(reads, 'the Read call never reached the window at all').toHaveLength(1)
     expect(reads[0].success, 'a call that succeeded was recorded as a failure').toBe(true)
-  })
+  }, REAL_LOOP_TIMEOUT_MS)
 
   it('the window is bounded by the size it declares', async () => {
     // The field is read every turn for the life of the process. Unbounded, it
@@ -292,7 +298,7 @@ describe('a doom loop in a real session reaches the rules that name it', () => {
     await loop.handleUserMessage('run ls a lot')
 
     expect(loop.getRecentToolResults()).toHaveLength(declared)
-  })
+  }, REAL_LOOP_TIMEOUT_MS)
 
   it('the window is a copy, so a rule cannot rewrite the loop\'s history', () => {
     const loop = new ConversationLoop({
