@@ -497,9 +497,20 @@ to claims:
   brief→wave (≥ 1 graded wave), wave→ledger (≥ 1 campaign row),
   ledger→validation (a denial analysis), validation→proposal (a cap proposal
   raised), proposal→configuration (any approved), configuration→brief (an
-  `invariantOverrides` entry, or an ideation `s4.workOrder.applied`),
-  ledger→seat (gate-line or ideation evidence), configuration→seat (a seat's
+  `invariantOverrides` entry — the predicate also reads a wave's
+  `s4.workOrder.applied`, but NOTHING writes that field today (`workOrderFor`
+  never sets it), so in practice only an override closes this edge),
+  ledger→seat (gate-line or ideation evidence — the gate-lines summary is read
+  ACROSS campaigns, not this campaign's lines only: the seat is one seat, so
+  any campaign's graded gate lines close this edge; `facts.seatEvidence` can be
+  true on a campaign with no lines of its own), configuration→seat (a seat's
   authority > 0, the retained seats store included).
+- **`facts.commitsLanded`** — the runner's `commitsBetween`: `git log
+  <base>..<head>` over the ledger row's `commitRange` (the dispatch BASE to the
+  graded head), every commit in that range. It is NOT the driver's
+  "N commit(s)" line, which counts `toolStats.commits` (the mission's
+  commit-class Bash calls); the two are different instruments and may differ
+  (3 vs 2 on the Phase 4 live s1 wave — the row counts from BASE).
 - **`organizationMaintained`** — identity intact this wave AND on every
   earlier GRADED wave AND `identityGuard.passed === true` on every campaign
   row. Strict: a graded wave that predates the identity assertion, or a row
@@ -640,12 +651,14 @@ its gates were refused on the way. This dataset is the denominator the lines
 leave out.
 
 One row per campaign. All three are real rows, copied out of an export run
-against `~/.cynco/campaigns` plus the history file on 2026-09-25:
+against `~/.cynco/campaigns` plus the history file on 2026-09-25 (c8's and c7's
+`refusals` read `0` in that run and are shown as the exporter writes them since
+the final fix wave: `null`, unmeasured — neither has an authoring record):
 
 ```jsonc
-{ "campaign": "c8", "author": "human", "outcome": "held", "refusals": 0, "attempts": null, "sealedAt": "2026-09-17T10:55:46.162Z" }
+{ "campaign": "c8", "author": "human", "outcome": "held", "refusals": null, "attempts": null, "sealedAt": "2026-09-17T10:55:46.162Z" }
 { "campaign": "c9", "author": "cynco", "outcome": "refused", "refusals": 1, "attempts": 9, "sealedAt": null }
-{ "campaign": "c7", "author": "human", "outcome": "resealed", "refusals": 0, "attempts": null, "sealedAt": null }
+{ "campaign": "c7", "author": "human", "outcome": "resealed", "refusals": null, "attempts": null, "sealedAt": null }
 ```
 
 - **`outcome`** is one of four:
@@ -668,8 +681,11 @@ against `~/.cynco/campaigns` plus the history file on 2026-09-25:
   and `human` when it does not. (Presence, not `sealedAt`: a refused gate never
   sealed, and the gate-lines rule would call the seat's refusal a human's.)
   History rows carry their own `author`.
-- **`refusals`** — the count of supervisor refusals; `0` for a human-sealed or
-  history campaign. **`attempts`** — `state.authoring[<id>].attempts`, the
+- **`refusals`** — the count of supervisor refusals in
+  `state.authoring[<id>].refusals[]`; `0` only when an authoring record exists
+  and holds none; `null` — unmeasured, never a zero — for a campaign with no
+  authoring record (a human-sealed state) and for every history row (a
+  hand-transcribed campaign has no refusal record). The GATES table prints `—`. **`attempts`** — `state.authoring[<id>].attempts`, the
   authoring dispatches; `null` where there is no authoring record.
 - **`sealedAt`** — as in the gate-lines rows: the authoring record's stamp, else
   the first calibration, else `null`.

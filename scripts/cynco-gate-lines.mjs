@@ -259,7 +259,8 @@ export const GATE_OUTCOMES_PATH = (home = cyncoHome()) => join(home, 'datasets',
 /**
  * One row per campaign: `{ campaign, author, outcome, refusals, attempts, sealedAt }`.
  *
- * `states` are `{ id, author, sealedAt, decided, refusals: [], attempts, reseals: [] }`
+ * `states` are `{ id, author, sealedAt, decided, refusals: [] | null, attempts, reseals: [] }`
+ * (`refusals: null` when the state holds no authoring record for the campaign)
  * (exportGateOutcomes builds them from the state dirs); `history` is the same
  * hand-transcribed file the line rows read, where an entry is sealed by
  * definition (it ran) and resealed when its `resealed` list is non-empty. A
@@ -272,7 +273,9 @@ export function gateOutcomeRows({ states = [], history = null } = {}) {
   for (const st of states) {
     if (!st?.id) continue
     fromState.add(st.id)
-    const refusals = Array.isArray(st.refusals) ? st.refusals.length : 0
+    // null = no authoring record, so no refusal record to count (a human seal);
+    // 0 is a MEASURED zero — an authoring record whose supervisor never refused.
+    const refusals = Array.isArray(st.refusals) ? st.refusals.length : null
     const sealed = Boolean(st.sealedAt)
     let outcome
     if (!sealed) outcome = refusals > 0 ? 'refused' : null
@@ -283,7 +286,8 @@ export function gateOutcomeRows({ states = [], history = null } = {}) {
   for (const c of history?.campaigns ?? []) {
     if (!c?.id || fromState.has(c.id)) continue
     const outcome = (c.resealed ?? []).length > 0 ? 'resealed' : c.decided ? 'held' : 'sealed'
-    rows.push({ campaign: c.id, author: c.author ?? 'human', outcome, refusals: 0, attempts: null, sealedAt: c.sealedAt ?? null })
+    // A hand-transcribed history campaign carries no refusal record: unmeasured, null.
+    rows.push({ campaign: c.id, author: c.author ?? 'human', outcome, refusals: null, attempts: null, sealedAt: c.sealedAt ?? null })
   }
   return rows
 }
@@ -305,7 +309,7 @@ export function exportGateOutcomes({ campaignsDir = join(cyncoHome(), 'campaigns
     const a = state?.authoring?.[id]
     return {
       id, author: outcomeAuthorOf(state, waves, id), sealedAt: sealedAtOf(state, id), decided: decidedOf(waves),
-      refusals: Array.isArray(a?.refusals) ? a.refusals : [], attempts: a?.attempts ?? null, reseals: state?.reseals ?? [],
+      refusals: a ? (Array.isArray(a.refusals) ? a.refusals : []) : null, attempts: a?.attempts ?? null, reseals: state?.reseals ?? [],
     }
   })
   const rows = gateOutcomeRows({ states, history: readHistory(historyPath) })

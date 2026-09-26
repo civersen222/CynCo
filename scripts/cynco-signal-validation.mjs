@@ -336,7 +336,7 @@ export function gateLineTable(summary) {
 export function gateOutcomeTable(rows) {
   const lines = ['campaign  author  outcome    refusals  attempts']
   for (const r of rows ?? []) {
-    lines.push(`${String(r.campaign).padEnd(8)}  ${String(r.author).padEnd(6)}  ${String(r.outcome).padEnd(9)}  ${String(r.refusals ?? 0).padStart(8)}  ${String(r.attempts ?? '—').padStart(8)}`)
+    lines.push(`${String(r.campaign).padEnd(8)}  ${String(r.author).padEnd(6)}  ${String(r.outcome).padEnd(9)}  ${String(r.refusals ?? '—').padStart(8)}  ${String(r.attempts ?? '—').padStart(8)}`)
   }
   if (!(rows ?? []).length) lines.push('(no campaign has sealed or been refused yet)')
   return lines

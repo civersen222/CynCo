@@ -457,10 +457,13 @@ describe('gateOutcomeTable (GATES)', () => {
     const lines = gateOutcomeTable([
       { campaign: 'c9', author: 'cynco', outcome: 'refused', refusals: 1, attempts: 5, sealedAt: null },
       { campaign: 'c8', author: 'human', outcome: 'held', refusals: 0, attempts: null, sealedAt: 'S' },
+      { campaign: 'c7', author: 'human', outcome: 'resealed', refusals: null, attempts: null, sealedAt: null },
     ])
     expect(lines[0]).toBe('campaign  author  outcome    refusals  attempts')
     expect(lines[1]).toBe('c9        cynco   refused           1         5')
     expect(lines[2]).toBe('c8        human   held              0         —')
+    // M8: an unmeasured refusal count prints as unmeasured, not as 0.
+    expect(lines[3]).toBe('c7        human   resealed          —         —')
   })
 
   it('says so when there is nothing to show', () => {

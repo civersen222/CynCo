@@ -181,6 +181,23 @@ describe('gateOutcomeRows', () => {
     ])
   })
 
+  // M8 (final review): a count nobody could have recorded is not a measured zero.
+  it('refusals is null without an authoring record, 0 only when one exists and holds none', () => {
+    expect(gateOutcomeRows({ states: [st({ id: 'c8', author: 'human', sealedAt: 'S', refusals: null })] })[0].refusals).toBeNull()
+    expect(gateOutcomeRows({ states: [st({ sealedAt: 'S', refusals: [] })] })[0].refusals).toBe(0)
+    expect(gateOutcomeRows({ history: { campaigns: [{ id: 'c6', author: 'human', resealed: [], decided: true }] } })[0].refusals).toBeNull()
+  })
+
+  it('exportGateOutcomes reads a state with no authoring record as refusals null', () => {
+    const root = mkdtempSync(join(tmpdir(), 'outcomes-null-'))
+    const campaignsDir = join(root, 'campaigns')
+    mkdirSync(join(campaignsDir, 'c8'), { recursive: true })
+    writeFileSync(join(campaignsDir, 'c8', 'state.json'), JSON.stringify({ id: 'c8', calibration: { calibratedAt: '2026-09-05T00:00:00.000Z' } }))
+    const r = exportGateOutcomes({ campaignsDir, historyPath: join(root, 'none.json'), outPath: join(root, 'o.jsonl') })
+    expect(r.rows).toHaveLength(1)
+    expect(r.rows[0]).toMatchObject({ campaign: 'c8', author: 'human', outcome: 'sealed', refusals: null })
+  })
+
   it('a gate neither sealed nor refused is not an outcome yet', () => {
     expect(gateOutcomeRows({ states: [st({ attempts: 1 })] })).toEqual([])
   })
@@ -193,8 +210,8 @@ describe('gateOutcomeRows', () => {
     ] }
     expect(gateOutcomeRows({ states: [st({ sealedAt: 'S' })], history })).toEqual([
       { campaign: 'c9', author: 'cynco', outcome: 'sealed', refusals: 0, attempts: null, sealedAt: 'S' },
-      { campaign: 'c7', author: 'human', outcome: 'resealed', refusals: 0, attempts: null, sealedAt: null },
-      { campaign: 'c6', author: 'human', outcome: 'held', refusals: 0, attempts: null, sealedAt: 'H' },
+      { campaign: 'c7', author: 'human', outcome: 'resealed', refusals: null, attempts: null, sealedAt: null },
+      { campaign: 'c6', author: 'human', outcome: 'held', refusals: null, attempts: null, sealedAt: 'H' },
     ])
   })
 })
@@ -343,7 +360,7 @@ describe('exportGateLines', () => {
     expect(r.rows).toEqual([
       { campaign: 'c10', author: 'cynco', outcome: 'refused', refusals: 1, attempts: 2, sealedAt: null },
       { campaign: 'c9', author: 'cynco', outcome: 'resealed', refusals: 0, attempts: null, sealedAt: '2026-09-20T00:00:00.000Z' },
-      { campaign: 'c7', author: 'human', outcome: 'resealed', refusals: 0, attempts: null, sealedAt: null },
+      { campaign: 'c7', author: 'human', outcome: 'resealed', refusals: null, attempts: null, sealedAt: null },
     ])
     expect(readFileSync(outPath, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l))).toEqual(r.rows)
     expect(existsSync(outPath + '.tmp')).toBe(false)
