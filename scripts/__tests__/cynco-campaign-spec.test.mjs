@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { loadCampaignSpec, checkIdentity } from '../cynco-campaign-spec.mjs'
+import { loadCampaignSpec, checkIdentity, SPEC_ENV_KEYS } from '../cynco-campaign-spec.mjs'
 import { writeFileSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -58,15 +58,19 @@ describe('loadCampaignSpec', () => {
   })
   // F161: `env` carries the engine's explicit llama-server / GGUF paths for a
   // campaign under a temp CYNCO_HOME. Harness knobs only.
-  it('accepts env as LOCALCODE_* / CYNCO_* strings and refuses anything else', () => {
+  it('accepts env with exactly the two runtime-asset keys and refuses every other key (review B-I1)', () => {
     const dir = mkdtempSync(join(tmpdir(), 'spec-env-'))
     const write = (env) => { const p = join(dir, `${Math.random().toString(36).slice(2)}.campaign.json`); writeFileSync(p, JSON.stringify({ ...good(), env })); return p }
+    expect(SPEC_ENV_KEYS).toEqual(['LOCALCODE_LLAMA_SERVER', 'LOCALCODE_MODEL_PATH'])
     expect(loadCampaignSpec(write({ LOCALCODE_LLAMA_SERVER: 'C:/x/llama-server.exe', LOCALCODE_MODEL_PATH: 'C:/x/m.gguf' })).env)
       .toEqual({ LOCALCODE_LLAMA_SERVER: 'C:/x/llama-server.exe', LOCALCODE_MODEL_PATH: 'C:/x/m.gguf' })
+    expect(loadCampaignSpec(write({ LOCALCODE_MODEL_PATH: 'C:/x/m.gguf' })).env).toEqual({ LOCALCODE_MODEL_PATH: 'C:/x/m.gguf' })
     expect(loadCampaignSpec(write(undefined)).env).toBeUndefined()
     expect(() => loadCampaignSpec(write(['LOCALCODE_X=1']))).toThrow(/env must be an object/)
-    expect(() => loadCampaignSpec(write({ PATH: 'C:/evil' }))).toThrow(/env\.PATH: only LOCALCODE_/)
-    expect(() => loadCampaignSpec(write({ CYNCO_NTFY_URL: 'http://n' }))).toThrow(/env\.CYNCO_NTFY_URL/)
+    // The keys a wider allowlist would have let through, each named by the review.
+    for (const k of ['PATH', 'CYNCO_HOME', 'LOCALCODE_CACHE_RAM', 'LOCALCODE_API_KEY', 'LOCALCODE_PROVIDER', 'LOCALCODE_IMMUTABLE_PATHS', 'CYNCO_NTFY_URL', 'GH_TOKEN']) {
+      expect(() => loadCampaignSpec(write({ [k]: 'x' })), k).toThrow(new RegExp(`env\\.${k}: a spec may set only LOCALCODE_LLAMA_SERVER and LOCALCODE_MODEL_PATH`))
+    }
     expect(() => loadCampaignSpec(write({ LOCALCODE_MODEL_PATH: '' }))).toThrow(/must be a non-empty string/)
     expect(() => loadCampaignSpec(write({ LOCALCODE_MODEL_PATH: 3 }))).toThrow(/must be a non-empty string/)
   })

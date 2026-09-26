@@ -574,7 +574,12 @@ by assertion. (Numbering: this is the mission prompt's Phase 4;
   earns PREDICTIVE — 0 of 8 do today. Deleting the file restores legacy
   behaviour. Headless missions no longer get the silent C7 narrowing. A
   long-lived interactive engine keeps the reading it loaded at construction;
-  missions get fresh engines and read the latest.
+  missions get fresh engines and read the latest. And one more, because it
+  bounds the whole ladder: `scripts/dispatch-mission.sh` pins
+  `LOCALCODE_S5_ENFORCE=false` for every mission, so inside a campaign wave
+  an earned rule is still advisory — earned authority reaches the interactive
+  engine today, and reaches missions only when that pin is lifted, which is a
+  decision for the evidence, not for this phase.
 - **The campaign checklist.** `scripts/cynco-autopoiesis.mjs`
   `campaignAssessment` maps Maturana/Varela's six criteria to facts the
   runner already has: `hasBoundary` (identity intact this wave),
@@ -603,9 +608,9 @@ by assertion. (Numbering: this is the mission prompt's Phase 4;
   moves only when the table changes, and an empty table writes nothing —
   `retainedVersion: null` on the row means nothing has ever been retained,
   not that the store failed. A fresh engine imports both
-  (`importRetainedFrom`, `[retained]` log lines), the ledger row carries
-  `ultrastable.retained` and `retainedVersion`, and the dashboard shows the
-  versions. Nothing acts on them yet: the homeostat strategies are unchanged,
+  (`importRetainedFrom`) silently — a `[retained]` log line is always a
+  FAILED import, named — the ledger row carries `ultrastable.retained` and
+  `retainedVersion`, and the dashboard shows the versions. Nothing acts on them yet: the homeostat strategies are unchanged,
   no `Habituated` step, no value applied — persistence is the prerequisite,
   application is the next phase's measured decision.
 - **Phase 3 residuals closed.** (a) `~/.cynco/datasets/gate-outcomes.jsonl`,
@@ -624,9 +629,11 @@ by assertion. (Numbering: this is the mission prompt's Phase 4;
   defects before the model wrote a line: the grader's suite gate resolved
   under `homedir()` (F159), the runner's bare `bash` was the WSL launcher when
   the runner was started from PowerShell (F160), and the engine's runtime
-  assets — binary, GGUF, profiles — resolve under the home too, so the engine
-  reached for GitHub (F161; the assets are now named by path on the spec as
-  `env`, never by junction). The third launch: CALIBRATE `BASE MISS 8, perturb
+  assets — binary and GGUF — resolve under the home too, so the engine
+  reached for GitHub, while its profiles followed `HOME` instead and so came
+  from the operator's real home (F161; the binary and GGUF are now named by
+  path on the spec as `env` — exactly those two keys — the profiles dir
+  follows `CYNCO_HOME`, never a junction anywhere). The third launch: CALIBRATE `BASE MISS 8, perturb
   honest`; the mission landed two commits in 16 tool calls and 91 s; the
   sealed gate PASSed all 9 lines at HEAD, the suite gate PASSed, the derived
   sweep left 2 survivors (`calc.py:13:cmp->NotEq`, `calc.py:14:const->2`), so
@@ -650,7 +657,9 @@ by assertion. (Numbering: this is the mission prompt's Phase 4;
   with `authority: advisory`, `enforced: false`. Both rows carry
   `identityGuard: { passed: true }` (F158). The synthetic rows and the
   `campaign/s1` verdict commit were removed afterwards; the temp home is kept
-  as evidence.
+  as evidence, and the smoke repo's `master` was left where the two sessions
+  put it (four commits past the fixture's pinned BASE `1b00179`, which is why
+  the fixture names its BASE instead of reading HEAD).
 
 **Deferred spec items (follow-up, not built here).**
 

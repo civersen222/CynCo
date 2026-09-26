@@ -92,7 +92,11 @@ export async function bootstrapProvider(
         binaryPath = await downloadBinary(binDir, (msg) => console.log(msg))
       }
       console.log(`[llama-cpp] Binary: ${binaryPath}`)
-      if (binaryPath.startsWith(brainBinDir) && !process.env.LLAMA_ACTIVATIONS_LAYERS) {
+      // By directory NAME, not by `startsWith(brainBinDir)`: an explicit
+      // LOCALCODE_LLAMA_SERVER (F161 — a campaign under a temp home naming the
+      // real home's brain build) is the same patched binary and gets the tap.
+      const isBrainBuild = binaryPath.replace(/\\/g, '/').includes('/bin-brain/')
+      if (isBrainBuild && !process.env.LLAMA_ACTIVATIONS_LAYERS) {
         // The tap layers ship with the brain build's default readout config
         // (jlens artifacts are exported for exactly these five layers). The
         // patched server without this env serves /props but no activations —

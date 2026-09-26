@@ -29,7 +29,7 @@
 //      measuring failed".
 import { spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { win32 } from 'node:path'
 
 /**
  * The fraction of the cap a run must have actually spent before an ETIMEDOUT is
@@ -54,23 +54,33 @@ export const TIMEOUT_ELAPSED_FRACTION = 0.9
  * the caller always used.
  */
 export function bashBin({ platform = process.platform, gitPath = null, exists = existsSync } = {}) {
-  if (platform !== 'win32' || !gitPath) return 'bash'
-  const cmdRoot = dirname(dirname(gitPath))
-  for (const root of [cmdRoot, dirname(cmdRoot)]) {
-    const candidate = join(root, 'bin', 'bash.exe')
-    if (exists(candidate)) return candidate
-  }
-  return 'bash'
+  if (platform !== 'win32') return 'bash'
+  // Windows paths whatever the host: the tests pin the Windows layout from any OS.
+  const p = win32
+  const found = gitPath && (() => {
+    const dir = p.dirname(gitPath)                 // <root>\cmd | <root>\mingw64\bin | <root>\bin
+    const up = p.dirname(dir)                      // <root>     | <root>\mingw64     | <root>
+    const roots = /^mingw(32|64)$/i.test(p.basename(up)) ? [p.dirname(up)] : [up]
+    return roots.map(r => p.join(r, 'bin', 'bash.exe')).find(exists) ?? null
+  })()
+  if (found) return found
+  // Refuse, don't fall back (F160): bare `bash` on a Windows PATH is the WSL
+  // launcher, and a fault an hour into a wave is worse than a refusal now.
+  throw new Error(`F160: no Git Bash found${gitPath ? ` beside ${gitPath}` : ' (no git.exe on PATH)'} — install Git for Windows or put its bin dir on PATH`)
 }
 
-/** The first `git.exe` on PATH as `where` reports it; null when there is none. */
+/**
+ * The first `git.exe` on PATH as `where.exe` reports it; null when none.
+ * `$PATH:git.exe` restricts the search to PATH — a bare `where git.exe` looks
+ * in the current directory first, which a mission's repo could plant.
+ */
 export function gitExeOnPath(spawn = spawnSync) {
-  const r = spawn('where', ['git.exe'], { encoding: 'utf8' })
+  const r = spawn('where.exe', ['$PATH:git.exe'], { encoding: 'utf8' })
   return String(r?.stdout ?? '').split(/\r?\n/).map(s => s.trim()).find(Boolean) || null
 }
 
 let cachedBash = null
-/** The bash every spawn under `scripts/` uses, resolved once per process (F160). */
+/** The bash every spawn under `scripts/` uses, resolved once per process (F160); a refusal is not cached. */
 export function bashExe() {
   if (cachedBash === null) cachedBash = bashBin({ gitPath: process.platform === 'win32' ? gitExeOnPath() : null })
   return cachedBash

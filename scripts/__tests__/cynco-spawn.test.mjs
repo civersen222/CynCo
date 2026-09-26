@@ -8,7 +8,9 @@
 // four hours earlier, so its gate at BASE died in milliseconds and eleven
 // problems were recorded against a triple that had two.
 import { describe, it, expect } from 'vitest'
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync, existsSync, readdirSync } from 'node:fs'
+import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { runSync, faultSummary, TIMEOUT_ELAPSED_FRACTION, bashBin, gitExeOnPath, bashExe } from '../cynco-spawn.mjs'
 
 /** A spawnSync stand-in: returns `result`, and advances the injected clock by `ms`. */
@@ -194,22 +196,54 @@ describe('bashBin (F160): Git Bash by path, never whatever `bash` PATH holds', (
     expect(got).toBe('C:\\Program Files\\Git\\bin\\bash.exe')
   })
 
-  it('falls back to bare `bash` when no bash sits beside git, when there is no git, or off win32', () => {
-    expect(bashBin({ platform: 'win32', gitPath: 'C:\\Program Files\\Git\\cmd\\git.exe', exists: () => false })).toBe('bash')
-    expect(bashBin({ platform: 'win32', gitPath: null, exists: () => true })).toBe('bash')
+  it('never probes outside the Git root: <root>\\bin only, for both layouts', () => {
+    const probed = []
+    const exists = (p) => { probed.push(p); return false }
+    expect(() => bashBin({ platform: 'win32', gitPath: 'C:\\Program Files\\Git\\cmd\\git.exe', exists })).toThrow(/F160/)
+    expect(() => bashBin({ platform: 'win32', gitPath: 'C:\\Program Files\\Git\\mingw64\\bin\\git.exe', exists })).toThrow(/F160/)
+    expect(probed).toEqual(['C:\\Program Files\\Git\\bin\\bash.exe', 'C:\\Program Files\\Git\\bin\\bash.exe'])
+  })
+
+  it('on win32 REFUSES with a named error when no Git Bash is found (no git, or no bash beside it); off win32 it is bare `bash`', () => {
+    expect(() => bashBin({ platform: 'win32', gitPath: 'C:\\Program Files\\Git\\cmd\\git.exe', exists: () => false })).toThrow(/F160: no Git Bash found beside C:\\Program Files\\Git\\cmd\\git.exe/)
+    expect(() => bashBin({ platform: 'win32', gitPath: null, exists: () => true })).toThrow(/F160: no Git Bash found \(no git.exe on PATH\)/)
     expect(bashBin({ platform: 'linux', gitPath: '/usr/bin/git', exists: () => true })).toBe('bash')
+    expect(bashBin({ platform: 'darwin', gitPath: null, exists: () => false })).toBe('bash')
   })
 
-  it('gitExeOnPath takes the first line `where` prints, and null when it prints nothing', () => {
-    expect(gitExeOnPath(() => ({ stdout: 'C:\\Program Files\\Git\\cmd\\git.exe\r\nC:\\Program Files\\Git\\mingw64\\bin\\git.exe\r\n' }))).toBe('C:\\Program Files\\Git\\cmd\\git.exe')
-    expect(gitExeOnPath(() => ({ stdout: '' }))).toBeNull()
-    expect(gitExeOnPath(() => ({ stdout: undefined, error: new Error('ENOENT') }))).toBeNull()
+  it('gitExeOnPath asks where.exe for $PATH:git.exe (PATH only, never the cwd), takes its first line, and null when it prints nothing', () => {
+    const calls = []
+    const spawn = (out) => (cmd, args) => { calls.push([cmd, args]); return out }
+    expect(gitExeOnPath(spawn({ stdout: 'C:\\Program Files\\Git\\cmd\\git.exe\r\nC:\\Program Files\\Git\\mingw64\\bin\\git.exe\r\n' }))).toBe('C:\\Program Files\\Git\\cmd\\git.exe')
+    expect(calls[0]).toEqual(['where.exe', ['$PATH:git.exe']])
+    expect(gitExeOnPath(spawn({ stdout: '' }))).toBeNull()
+    expect(gitExeOnPath(spawn({ stdout: undefined, error: new Error('ENOENT') }))).toBeNull()
   })
 
-  it('on this machine bashExe() names an existing file when win32, and that file is not System32\'s launcher', () => {
+  it('on this machine, win32: bashExe() is an existing file under a Git install, never System32; elsewhere: bash', () => {
     const b = bashExe()
     if (process.platform !== 'win32') { expect(b).toBe('bash'); return }
+    expect(b).not.toBe('bash')
     expect(b.toLowerCase()).not.toContain('system32')
-    expect(b === 'bash' || existsSync(b)).toBe(true)
+    expect(b.toLowerCase()).toMatch(/\\bin\\bash\.exe$/)
+    expect(existsSync(b)).toBe(true)
+  })
+
+  // The guard: no spawn under scripts/ names bare 'bash' again, and the wave
+  // dispatch reads the spec's env through waveEnvBase (F161).
+  it('source guard: every bash spawn in scripts/ goes through bashExe(), and dispatch uses waveEnvBase(spec)', () => {
+    const dir = fileURLToPath(new URL('../', import.meta.url))
+    const bare = []
+    for (const f of readdirSync(dir).filter(n => n.endsWith('.mjs'))) {
+      const src = readFileSync(join(dir, f), 'utf8')
+      for (const [i, line] of src.split('\n').entries()) {
+        if (/\b(spawnSync|spawn|run|io\.run|execFileSync)\(\s*'bash'/.test(line)) bare.push(`${f}:${i + 1}`)
+      }
+    }
+    expect(bare).toEqual([])
+    const campaign = readFileSync(join(dir, 'cynco-campaign.mjs'), 'utf8')
+    expect(campaign).toMatch(/dispatchEnv\(waveEnvBase\(spec\)/)
+    expect(campaign.match(/spawnSync\(bashExe\(\), \['scripts\/dispatch-mission\.sh'/g)?.length).toBe(2)
+    expect(readFileSync(join(dir, 'cynco-campaign-calibrate.mjs'), 'utf8')).toMatch(/io\.run\(bashExe\(\), \['-c'/)
   })
 })

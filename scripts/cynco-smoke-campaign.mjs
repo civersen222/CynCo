@@ -24,6 +24,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync,
 import { homedir } from 'node:os'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { SUITE_GATE_FILE } from './cynco-campaign-grade.mjs'
 import { runSync, faultSummary } from './cynco-spawn.mjs'
 import { WORKER_INVARIANTS, heldoutDirFor } from './cynco-gate-author.mjs'
 
@@ -112,7 +113,8 @@ function headOf(repo) {
  * `base` defaults to the repo's HEAD. Writes ONLY under `home`, and refuses the
  * real `~/.cynco` — the smoke run must never share state with a live campaign.
  */
-export const SUITE_GATE_FILE = 'g_suite_no_regression.py'
+// One spelling of the suite gate's filename: the grader's (cynco-campaign-grade.mjs).
+export { SUITE_GATE_FILE }
 
 /**
  * F161. The engine resolves its llama-server (`<home>/bin-brain`, `<home>/bin`),
@@ -201,7 +203,7 @@ function parseArgs(argv) {
     // The BASE the fixture was calibrated against. HEAD is the default, but a
     // repo that has already shipped one wave passes every line at HEAD, and
     // CALIBRATE would refuse it; name the pre-ship commit instead.
-    else if (a === '--base') out.base = argv[++i]
+    else if (a === '--base') { out.base = argv[++i]; if (!out.base || out.base.startsWith('--')) throw new Error('--base needs a commit sha') }
     else if (a === '--repo') out.repo = argv[++i]
     else if (a === '--home') out.home = argv[++i]
     else throw new Error(`unknown argument ${a}`)

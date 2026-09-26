@@ -15,7 +15,8 @@ export const SWEEP_TIMEOUT_MS = 3_600_000
  * ignored `CYNCO_HOME`, so a campaign run under a temp home graded its suite
  * against the operator's real held-out tree — a home-isolation leak.
  */
-export const SUITE_GATE = (home = cyncoHome()) => join(home, 'heldout', 'common', 'g_suite_no_regression.py')
+export const SUITE_GATE_FILE = 'g_suite_no_regression.py'
+export const SUITE_GATE = (home = cyncoHome()) => join(home, 'heldout', 'common', SUITE_GATE_FILE)
 
 export const defaultIo = {
   // F155: the grader has exactly the same exposure as calibrate — its first

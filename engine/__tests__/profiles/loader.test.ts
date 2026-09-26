@@ -26,6 +26,7 @@ import { loadProfile, listProfiles } from '../../profiles/loader.js'
 let tmpDir: string
 let origHome: string | undefined
 let origCwd: string
+let origSuiteCyncoHome: string | undefined
 
 function globalDir() {
   return path.join(tmpDir, 'home', '.cynco', 'profiles')
@@ -52,12 +53,18 @@ beforeEach(() => {
 
   origHome = process.env.HOME
   origCwd = process.cwd()
+  origSuiteCyncoHome = process.env.CYNCO_HOME
   process.env.HOME = path.join(tmpDir, 'home')
+  // The suite sets CYNCO_HOME to a shared temp home (setup/cyncoHome.ts); the
+  // global profiles dir follows it (F161), so point it at this test's home.
+  process.env.CYNCO_HOME = path.join(tmpDir, 'home', '.cynco')
   process.chdir(path.join(tmpDir, 'project'))
 })
 
 afterEach(() => {
   process.env.HOME = origHome
+  if (origSuiteCyncoHome === undefined) delete process.env.CYNCO_HOME
+  else process.env.CYNCO_HOME = origSuiteCyncoHome
   process.chdir(origCwd)
   fs.rmSync(tmpDir, { recursive: true, force: true })
 })
@@ -266,5 +273,35 @@ describe('listProfiles', () => {
     fs.writeFileSync(path.join(globalDir(), 'two.yaml'), 'name: two\n')
     const names = listProfiles()
     expect(names.sort()).toEqual(['default', 'one', 'two'])
+  })
+})
+
+// F161: the global profiles dir followed HOME while every other home-relative
+// path followed cyncoHome(), so an engine under a temp CYNCO_HOME booted with
+// the operator's real profile. CYNCO_HOME wins when set; HOME otherwise.
+describe('globalProfilesDir under CYNCO_HOME (F161)', () => {
+  let origCyncoHome: string | undefined
+  beforeEach(() => { origCyncoHome = process.env.CYNCO_HOME })
+  afterEach(() => {
+    if (origCyncoHome === undefined) delete process.env.CYNCO_HOME
+    else process.env.CYNCO_HOME = origCyncoHome
+  })
+
+  it('reads <CYNCO_HOME>/profiles when CYNCO_HOME is set, not <HOME>/.cynco/profiles', () => {
+    writeGlobal('mine', 'name: mine\nmodel: from-home\n')
+    const cyncoHome = path.join(tmpDir, 'cynco-home', '.cynco')
+    fs.mkdirSync(path.join(cyncoHome, 'profiles'), { recursive: true })
+    fs.writeFileSync(path.join(cyncoHome, 'profiles', 'mine.yml'), 'name: mine\nmodel: from-cynco-home\n')
+    process.env.CYNCO_HOME = cyncoHome
+    expect(loadProfile('mine')?.model).toBe('from-cynco-home')
+    expect(listProfiles()).not.toContain('nowhere')
+    delete process.env.CYNCO_HOME
+    expect(loadProfile('mine')?.model).toBe('from-home')
+  })
+
+  it('treats an empty CYNCO_HOME as unset', () => {
+    writeGlobal('mine', 'name: mine\nmodel: from-home\n')
+    process.env.CYNCO_HOME = ''
+    expect(loadProfile('mine')?.model).toBe('from-home')
   })
 })

@@ -50,9 +50,17 @@ function homeDir(): string {
 }
 
 /**
- * Get the global profiles directory (~/.cynco/profiles/).
+ * Get the global profiles directory (`<cyncoHome>/profiles/`).
+ *
+ * F161: `CYNCO_HOME` wins when set — every other home-relative path in the
+ * engine goes through `cyncoHome()`, and this one read `HOME` instead, so an
+ * engine under a temp `CYNCO_HOME` booted with the operator's real profile.
+ * Without `CYNCO_HOME` the `HOME`-reactive form stays (Bun caches
+ * `os.homedir()`, and the tests move `HOME`).
  */
 function globalProfilesDir(): string {
+  const override = process.env.CYNCO_HOME
+  if (override !== undefined && override !== '') return path.join(override, 'profiles')
   return path.join(homeDir(), '.cynco', 'profiles')
 }
 
