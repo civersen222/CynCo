@@ -1723,3 +1723,18 @@ A planned fifth note (attempt 9, 16:25 MDT) was withheld by ruling: "no fifth no
 > RULING (per the pre-ruling): the live proof ENDS WITHOUT A SEAL. Phase 3 ships the seat, the verbs, the mechanical acceptance test, the evidence ladder and the four harness defects it found; the roadmap line c9 stays 'authoring' with the staged triple preserved in ~/.cynco/authoring/c9 and its refusal recorded; the C9 gate falls back to the human occupant; no C9 campaign is started. Outcome for the ladder: authority stays 0 (n = 0 sealed CynCo lines; the supervisor refusal is a gate-level negative that Phase 4 must add to the evidence).
 
 See `docs/cynco-failure-log.md` F156 for the seat's failure mode (analysis without action) and `docs/cynco-self-orchestration-spec.md` §10 for the pointer into Phase 3.
+
+## Campaign C9 — Ship shell (authored by the frontier occupant of the supervisor seat, sealed by hand 2026-09-26, BASE e9366f3, gate_c9.py sha256 1cdf7c4e075023cd)
+
+Who wrote it: after nine CynCo attempts (2026-09-23/24, above) the human path took the gate — an opus implementer authored the triple from the supervisor review that refused attempt 7, the attempt-9 draft's `work[]` texts and `gate_c8.py`'s form; the supervisor review (`c9-gate-supervisor-review-2.md`: round 0 DO NOT SEAL — a 230-line stub greened 5 of 6 MUST-FAIL lines; round 1 SEAL 14/14 after nine tightenings, a delete guard and a new C9.5c wheel build) accepted it; the seal ran through `sealGate` (re-check, identity, atomic copy) and the spec carries `author: 'human'` — the seat that sealed it — so the gate-lines ledger credits the human seat, not the CynCo seat. Authoring mission: none (the `brief-9` mission below produced the earlier draft, not this triple).
+
+Roadmap line: Resolutions, keybinds, saves UI, performance guard, packaging
+
+The gate grades 14 line(s): C9.1a.resolution-presets, C9.1b.resolution-applies, C9.1c.resolution-persists, C9.2a.keybinds-table, C9.2b.keybind-drives-game, C9.2c.rebind-persists, C9.3a.saves-screen, C9.3b.save-round-trips-state, C9.4a.fps-guard, C9.4b.fps-follows-settings, C9.5a.packaging-declares, C9.5b.packaging-launches, C9.5c.packaging-builds, C9.9.
+
+Authoring mission: brief-9-1790281667802 (verified null).
+
+Sealed sha256: gate_c9.py 1cdf7c4e075023cd, perturb_c9.py be492499bb8abcc8, positive_c9.py 5ee3569547491641.
+
+Calibration: BASE printed GATE: MISS (14 fails) — 14 fail(s) by absence, zero error lines; the cheat stub flips C9.1a.resolution-presets, C9.1b.resolution-applies, C9.2a.keybinds-table, C9.2b.keybind-drives-game, C9.3a.saves-screen, C9.4a.fps-guard and leaves 8 discriminator(s) red; the positive shim printed GATE: PASS.
+
