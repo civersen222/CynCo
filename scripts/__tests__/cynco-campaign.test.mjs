@@ -1378,12 +1378,14 @@ describe('main routes the authoring verbs before it loads a campaign spec', () =
     } }
   }
 
-  it('--author c9 reaches the author module with no c9.campaign.json anywhere', async () => {
-    expect(existsSync('docs/civkings-redesign-briefs/c9.campaign.json')).toBe(false)
+  // c10: C9's spec was sealed on 2026-09-26 (Phase 5), so the "no spec anywhere"
+  // precondition now uses the next unauthored line.
+  it('--author c10 reaches the author module with no c10.campaign.json anywhere', async () => {
+    expect(existsSync('docs/civkings-redesign-briefs/c10.campaign.json')).toBe(false)
     const s = stub()
-    expect(await main(['--author', 'c9'], { authorModule: s.authorModule })).toBe(0)
+    expect(await main(['--author', 'c10'], { authorModule: s.authorModule })).toBe(0)
     expect(s.calls).toHaveLength(1)
-    expect(s.calls[0].argv).toEqual(['--author', 'c9'])
+    expect(s.calls[0].argv).toEqual(['--author', 'c10'])
     // the runner's own helpers are what travel over, not an import back
     expect(Object.keys(s.calls[0].io.helpers).sort()).toEqual(['appendLog', 'applyProposalDecision', 'dispatchEnv', 'dispatchRaw', 'missionIdFrom', 'notify', 'readRow', 'releaseLock', 'seatAuthority', 'takeLock', 'waitForDriver'])
   })
