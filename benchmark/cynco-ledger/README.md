@@ -497,9 +497,15 @@ to claims:
   brief→wave (≥ 1 graded wave), wave→ledger (≥ 1 campaign row),
   ledger→validation (a denial analysis), validation→proposal (a cap proposal
   raised), proposal→configuration (any approved), configuration→brief (an
-  `invariantOverrides` entry — the predicate also reads a wave's
-  `s4.workOrder.applied`, but NOTHING writes that field today (`workOrderFor`
-  never sets it), so in practice only an override closes this edge),
+  `invariantOverrides` entry, or a wave's `s4.workOrder.applied` — the runner
+  writes `s4.workOrder` on every dispatched wave record from `workOrderFor`
+  (`scripts/cynco-brief.mjs`), `{ applied, order }`, and `applied` is true only
+  when the ideation seat is at its maximum authority AND its order actually
+  moved a work item; an adopted wave records `workOrder: null`. Pinned by
+  `scripts/__tests__/cynco-campaign.test.mjs` (the runWave record carries
+  `rec.s4.workOrder`) and `cynco-brief.test.mjs` (`workOrderFor`). Phase 4's fix
+  wave said nothing wrote the field; that was wrong, corrected in Phase 5
+  Task 1),
   ledger→seat (gate-line or ideation evidence — the gate-lines summary is read
   ACROSS campaigns, not this campaign's lines only: the seat is one seat, so
   any campaign's graded gate lines close this edge; `facts.seatEvidence` can be
