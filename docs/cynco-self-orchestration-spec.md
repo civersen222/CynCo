@@ -710,7 +710,10 @@ authority ladder honestly, and C9 sealed and ready for the runner.
   field `perRulePrecision.learner`; and a fault record carries `durationS`
   (the row's when one was read, else the wall clock since `dispatchedAt`,
   marked `durationFrom: 'wall-clock'`), because one no-row fault without it
-  would null the pooled PASS/GPU-h for good. The wave record gained the
+  would null the pooled PASS/GPU-h for good. A wall-clock hour is an upper
+  bound, so a rate over one is a floor: the board carries
+  `gpuHoursUpperBound` and `passRatePerGpuHourIsLowerBound`, names the wave in
+  `unmeasured`, and every reader prints `PASS/GPU-h ≥ …` (final review I2). The wave record gained the
   per-wave inputs: `durationS`, `outcome.commitsLanded` (the runner's
   `commitsBetween` count, NOT `toolStats.commits`) and `adopted`. For C8,
   reproduced from the campaign log: `PASS/GPU-h 0.065 | waves 3 | lines fixed
