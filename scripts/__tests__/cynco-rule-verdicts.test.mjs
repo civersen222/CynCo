@@ -211,6 +211,46 @@ describe('writeRuleVerdicts with model rows', () => {
     expect(f.rules['M1.gbt']).toMatchObject({ verdict: 'TOO FEW — cannot tell', precision: null, p: null, pAdjusted: null, n: 0, source: 'model', scope: 'holdout' })
   })
 
+  // Final review M2 (T5-M2): the version counts changes in what S5 may
+  // enforce. An M1 row appearing, vanishing or moving is on the record in
+  // `modelChanged`, never a version bump.
+  it('M1.* rows appearing or vanishing do not bump the version; the move is kept as modelChanged', () => {
+    const outPath = RULE_VERDICTS_PATH(home())
+    const rows = [...holdoutRows(), ...trainRows()]
+    const v1 = writeRuleVerdicts({ rows, campaign: 'c9', outPath, now: () => 't1' })
+    // wave N: the hindcast ran — M1.gbt appears.
+    const v2 = writeRuleVerdicts({ rows, campaign: 'c9', outPath, now: () => 't2', modelRows: [modelRow()] })
+    // wave N+1: the hindcast faulted — it vanishes.
+    const v3 = writeRuleVerdicts({ rows, campaign: 'c9', outPath, now: () => 't3' })
+    expect([v1.version, v2.version, v3.version]).toEqual([1, 1, 1])
+    const f = JSON.parse(readFileSync(outPath, 'utf8'))
+    expect(f.version).toBe(1)
+    expect(f.history.map(h => ({ version: h.version, at: h.at, changed: h.changed, modelChanged: h.modelChanged }))).toEqual([
+      { version: 1, at: 't1', changed: [], modelChanged: undefined },
+      { version: 1, at: 't2', changed: [], modelChanged: [{ id: 'M1.gbt', from: null, to: f.history[1].modelChanged[0].to }] },
+      { version: 1, at: 't3', changed: [], modelChanged: [{ id: 'M1.gbt', from: f.history[1].modelChanged[0].to, to: null }] },
+    ])
+    expect(f.history[1].modelChanged[0].to).toEqual(expect.any(String))
+    // Unchanged model rows add nothing.
+    writeRuleVerdicts({ rows, campaign: 'c9', outPath, now: () => 't4' })
+    expect(JSON.parse(readFileSync(outPath, 'utf8')).history).toHaveLength(3)
+  })
+
+  it('a rule move still bumps the version, and a model move in the same write rides on that entry', () => {
+    const outPath = RULE_VERDICTS_PATH(home())
+    const thin = thinRows().map((r, i) => withId(r, `hf${i}`))
+    writeRuleVerdicts({ rows: thin, campaign: 'c9', outPath, now: () => 't1' })
+    const rows = predictiveRows().map((r, i) => withId(r, `hf${i}`))
+    const m = { id: 'M1.lr', source: 'model', fired: new Set(rows.slice(0, 12).map(r => r.missionId)), scope: new Set(rows.map(r => r.missionId)) }
+    const r = writeRuleVerdicts({ rows, campaign: 'c9', outPath, now: () => 't2', modelRows: [m] })
+    expect(r.version).toBe(2)
+    const last = JSON.parse(readFileSync(outPath, 'utf8')).history.at(-1)
+    expect(last.version).toBe(2)
+    expect(last.changed.map(c => c.id)).toContain('X')
+    expect(last.changed.map(c => c.id)).not.toContain('M1.lr')
+    expect(last.modelChanged).toEqual([{ id: 'M1.lr', from: null, to: expect.any(String) }])
+  })
+
   it('no model rows leaves the file exactly as before (no holmFamily recomputation of the rules)', () => {
     const a = RULE_VERDICTS_PATH(home()), b = RULE_VERDICTS_PATH(home())
     writeRuleVerdicts({ rows: predictiveRows(), campaign: 'c8', outPath: a, now: () => 't' })

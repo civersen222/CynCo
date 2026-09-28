@@ -910,9 +910,14 @@ shown — C2, C4, W6 read `TOO FEW`, I1, I3, W7, W8 `NO EVIDENCE`, I4 `CONSTANT`
   the file does not list has never fired in the ledger and has earned nothing.
 - **`version`** rises only when the verdict SET changed — a rule's verdict
   moved, or a rule appeared or vanished. The numbers are refreshed on every
-  write; the version counts changes in what S5 may enforce.
-- **`history`** — the last 20 version changes, each naming the rules that moved
-  (`from`/`to`, `null` for appeared/vanished).
+  write; the version counts changes in what S5 may enforce. The learner's
+  `M1.*` rows (`source: "model"`) are outside that set: one appearing,
+  vanishing (a hindcast that faulted this wave) or moving never bumps it.
+- **`history`** — the last 20 entries, each naming the rules that moved
+  (`changed`: `from`/`to`, `null` for appeared/vanished). A model row that moved
+  is named in the entry's `modelChanged` (same shape) — on the version-bump
+  entry when a rule moved in the same write, else on an entry of its own at the
+  UNCHANGED version — so an `M1` reaching `PREDICTIVE` is on the record.
 - **`campaign`** — the campaign whose VERDICT wrote it (`null` from the CLI).
 
 The wave record carries `ruleVerdicts: { version, predictive, total }` (`null`

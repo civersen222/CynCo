@@ -84,8 +84,13 @@ export function readRuleVerdicts(path) {
   return raw
 }
 
-/** id → verdict string, from a file (or {} for none). */
-const verdictMap = (file) => Object.fromEntries(Object.entries(file?.rules ?? {}).map(([id, r]) => [id, r?.verdict ?? null]))
+/** id → verdict string, from a file (or {} for none) — the S5 RULES only. The
+ *  learner's `M1.*` rows (`source: 'model'`) are not in the version's meaning:
+ *  nothing S5 may enforce changes when one appears, vanishes or moves (final
+ *  review M2, T5-M2); they are compared by `modelVerdictMap` instead. */
+const verdictMap = (file) => Object.fromEntries(Object.entries(file?.rules ?? {}).filter(([, r]) => r?.source !== 'model').map(([id, r]) => [id, r?.verdict ?? null]))
+/** id → verdict string for the `M1.*` model rows only. */
+const modelVerdictMap = (file) => Object.fromEntries(Object.entries(file?.rules ?? {}).filter(([, r]) => r?.source === 'model').map(([id, r]) => [id, r?.verdict ?? null]))
 
 /** Every rule whose verdict differs between two id → verdict maps, sorted by id.
  *  A rule that appears or disappears is a change (`from`/`to` null). */
@@ -98,9 +103,12 @@ function verdictChanges(before, after) {
  * Recompute every rule's verdict from `rows` (ledger records) and write the
  * file. The version rises only when the verdict SET changed — a rule's verdict
  * moved, or a rule appeared or vanished — so the version counts real changes
- * in what S5 is allowed to enforce, not verdicts. The numbers (p, lift,
- * counts) are refreshed on every write regardless. History keeps the last 20
- * changes. Written tmp + rename.
+ * in what S5 is allowed to enforce, not verdicts. The `M1.*` model rows are
+ * outside that set: a model row that appears, vanishes or moves is written to
+ * the history entry's `modelChanged` (a new entry at the SAME version when no
+ * rule moved), never a version bump. The numbers (p, lift, counts) are
+ * refreshed on every write regardless. History keeps the last 20 entries.
+ * Written tmp + rename.
  *
  * Returns `{ version, predictive, total }` — what the wave record carries.
  *
@@ -144,14 +152,20 @@ export function writeRuleVerdicts({ rows, campaign, outPath, analyse = analyseFn
   const predictive = Object.keys(rules).filter(id => rules[id].verdict === 'PREDICTIVE')
   const prev = readRuleVerdicts(outPath)
   const changed = verdictChanges(verdictMap(prev), verdictMap({ rules }))
+  // A model row that appeared, vanished or moved stays on the record — an M1
+  // reaching PREDICTIVE must be findable — but it never bumps the version.
+  const modelChanged = verdictChanges(modelVerdictMap(prev), modelVerdictMap({ rules }))
   const at = now()
   let version = Number.isInteger(prev?.version) ? prev.version : 0
   let history = Array.isArray(prev?.history) ? [...prev.history] : []
+  const modelNote = modelChanged.length ? { modelChanged } : {}
   if (!prev || changed.length > 0) {
     version += 1
-    history.push({ version, at, campaign: campaign ?? null, predictive, changed })
-    history = history.slice(-RULE_VERDICTS_HISTORY_CAP)
+    history.push({ version, at, campaign: campaign ?? null, predictive, changed, ...modelNote })
+  } else if (modelChanged.length > 0) {
+    history.push({ version, at, campaign: campaign ?? null, predictive, changed: [], modelChanged })
   }
+  history = history.slice(-RULE_VERDICTS_HISTORY_CAP)
   const file = {
     schema: RULE_VERDICTS_SCHEMA, version, at, campaign: campaign ?? null,
     ledger: { total: res.total, labeled: res.labeled, failures: res.failures, base: res.base, rulesTested: res.rulesTested,
