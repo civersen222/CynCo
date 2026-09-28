@@ -774,16 +774,22 @@ authority ladder honestly, and C9 sealed and ready for the runner.
   `pFail ≥ 0.5` on held-out missions), judged by the identical Fisher/Wilson
   arithmetic against the holdout base and Holm-corrected together with the
   rules. `engine/s5/ruleAuthority.ts` never grants an `M1.*` id authority.
-  On the real ledger at K = 16: 83 train / 21 holdout, base 0.571, 28 of 58
-  columns dead on the training split (the six entropy features all null;
-  `stuckTurns.*`, `taskError.*`, `progressRate.*`,
-  `consecutiveUnstable.last/max`, `brainPresent` and ten one-hots constant).
-  Holdout AUC: `lr` 0.472, `gbt` 0.407 — below chance; with all turns
-  (hindsight) 0.611 / 0.528; the finished length alone 0.633; the best single
-  prefix feature ~0.58. `M1.gbt` precision 0.545 on 11 fired — NO EVIDENCE;
-  `M1.lr` 0.556 on 9 — TOO FEW. Holm family 9 (7 rules + 2 models; adding
-  the two changes no rule's verdict — every adjusted p is 1.000), predictive:
-  none. Read plainly: **the per-turn signal vector at 16 turns does not
+  `algedonicAlerts` enters as `.rate` only: the counter runs over the engine
+  SESSION, so its `.last`/`.max` carried alerts from before the mission began
+  (an era confound, final review T4-N2) — 56 feature keys.
+  On the real ledger at K = 16 (the 56-key vector, requoted 2026-09-28): 83
+  train / 21 holdout, base 0.571, 28 of 56 columns dead on the training split
+  (the six entropy features all null; `stuckTurns.*`, `taskError.*`,
+  `progressRate.*`, `consecutiveUnstable.last/max`, `brainPresent` and ten
+  one-hots constant). Holdout AUC: `lr` 0.472 — below chance, `gbt` 0.500 —
+  at it; with all turns (hindsight) 0.611 / 0.546; K = 32 `gbt` 0.625, `lr`
+  0.409; the finished length alone 0.633; the best single prefix feature
+  ~0.58–0.60. `M1.gbt` precision 0.500 [0.254, 0.746] on 12 fired — NO
+  EVIDENCE; `M1.lr` 0.556 [0.267, 0.811] on 9 — TOO FEW. Holm family 9 (7
+  rules + 2 models; adding the two changes no rule's verdict — every adjusted
+  p is 1.000), predictive: none. (The 58-key first run read `gbt` 0.407 /
+  hindsight 0.528, `M1.gbt` 0.545 on 11 fired; `lr` did not move.) Read
+  plainly: **the per-turn signal vector at 16 turns does not
   predict outcomes today; the vector describes them weakly after the fact;
   better signals, not more training, is what the ledger asks for.** The
   dataset, the manifest and the ladder hook ship regardless — every later
@@ -820,7 +826,8 @@ authority ladder honestly, and C9 sealed and ready for the runner.
   57%): M1.gbt precision 55% [28, 79] on 11 fired p(Holm) 1.000 NO EVIDENCE;
   M1.lr precision 56% [27, 81] on 9 fired p(Holm) 1.000 TOO FEW; leak check …;
   K = 32 gbt AUC 0.55, lr AUC 0.42; dropped 28 dead column(s)` — the same
-  numbers the offline run gave. One honest caveat: the smoke repo's `master`
+  numbers the offline run gave, on the 58-key vector (quoted as printed; the
+  56-key requote is above). One honest caveat: the smoke repo's `master`
   already carried s1's work from Phase 4 (the mission baseline was its HEAD
   `17cd9a6`, not BASE), so the mission's one commit — `2ff000c ship-files:
   refresh VERSION, SHIP.md, CHANGELOG.md, LICENSE for 0.1.0` (parent
@@ -829,9 +836,13 @@ authority ladder honestly, and C9 sealed and ready for the runner.
   bar against a HEAD that already passed — a harness proof, not a model
   result (F163). Afterwards the
   REAL home's verdict file was written before any mission (guard (b)):
-  `rule verdicts v1: 0 predictive of 10 (none)`, `M1.gbt` NO EVIDENCE,
-  `M1.lr` TOO FEW. The synthetic row and the `campaign/s1` verdict commit
-  were removed.
+  `rule verdicts v1: 0 predictive of 10 (none)` (the old CLI wording — model
+  rows in the total; it now reads `0 predictive of 8 rules (+2 model rows)`),
+  `M1.gbt` NO EVIDENCE, `M1.lr` TOO FEW. That file describes the 58-key
+  vector; after the final fix wave it is rebuilt on the 56-key vector with
+  `bun scripts/cynco-rule-verdicts.mjs --with-hindcast` (the runner's own
+  sequence behind one flag; the controller's live step). The synthetic row and
+  the `campaign/s1` verdict commit were removed.
 - **What is parked, with reasons.** TabPFN and XGBoost (absent; a download
   needs the operator). Applying retained tables (no non-empty table observed
   yet; the row's `retainedVersion` per C9 wave decides). The latest-release

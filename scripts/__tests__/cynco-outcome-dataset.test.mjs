@@ -42,7 +42,10 @@ const LEVELS = ['toolSuccessRate', 'varietyRatio', 'varietyWindowed', 'taskError
 const DOCUMENTED = [
   ...LEVELS.flatMap(n => [`${n}.mean`, `${n}.last`, `${n}.max`]),
   'stuckTurns.rate', 'stuckTurns.last', 'stuckTurns.max',
-  'algedonicAlerts.rate', 'algedonicAlerts.last', 'algedonicAlerts.max',
+  // `.last`/`.max` dropped (final review T4-N2): the session-era alert count
+  // before the mission began is an era confound; `.rate` measures from the
+  // prefix's own first value.
+  'algedonicAlerts.rate',
   'consecutiveUnstable.last', 'consecutiveUnstable.max',
   'brainPresent',
   'errorTrend.rising', 'errorTrend.flat', 'errorTrend.falling',
@@ -94,7 +97,8 @@ describe('featuresOf — the first K turns only', () => {
     expect(keys.filter(k => FORBIDDEN.some(n => k.startsWith(n)))).toEqual([])
     expect([...keys].sort()).toEqual([...DOCUMENTED].sort())
     expect([...FEATURE_KEYS].sort()).toEqual([...DOCUMENTED].sort())
-    expect(FEATURE_KEYS).toHaveLength(58)
+    expect(FEATURE_KEYS).toHaveLength(56)
+    expect(FEATURE_KEYS.filter(k => k.startsWith('algedonicAlerts.'))).toEqual(['algedonicAlerts.rate'])
   })
 
   it('LEAK: no feature is a function of the turn index — a constant row reads identically at K = 16 and K = 32', () => {
@@ -108,7 +112,7 @@ describe('featuresOf — the first K turns only', () => {
     const a = featuresOf(constant, 16).features
     const b = featuresOf(constant, 32).features
     const nonNull = Object.keys(a).filter(k => a[k] !== null)
-    expect(nonNull).toHaveLength(58)
+    expect(nonNull).toHaveLength(56)
     // identical up to float summation order (a mean of sixteen 0.7s is not
     // bit-equal to a mean of thirty-two)
     for (const k of nonNull) expect(b[k], k).toBeCloseTo(a[k], 12)
@@ -129,7 +133,7 @@ describe('featuresOf — the first K turns only', () => {
       axiomHealth: null, errorTrend: null, heterarchy: null }) })
     const f = featuresOf(r, 16).features
     for (const k of ['toolEntropyMean.mean', 'toolEntropyMax.max', 'axiomViolations.last', 'stuckTurns.rate',
-      'stuckTurns.last', 'algedonicAlerts.rate', 'algedonicAlerts.max']) expect([k, f[k]]).toEqual([k, null])
+      'stuckTurns.last', 'algedonicAlerts.rate']) expect([k, f[k]]).toEqual([k, null])
     expect(f.brainPresent).toBe(0)
     expect(f['errorTrend.flat'] + f['errorTrend.rising'] + f['errorTrend.falling']).toBe(0)
     expect(f['commander.S3']).toBe(0)

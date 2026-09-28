@@ -656,7 +656,7 @@ same, next to the code):
   `predictive`/`total` nor ranked for `best`. The best of them, ranked the same
   way, is the sibling field `perRulePrecision.learner`
   (`{ id, precision, ci, verdict }`, null when the file has no `M1.*` row); the
-  verdict line appends `| learner M1.gbt 55% NO EVIDENCE` and the verb prints a
+  verdict line appends `| learner M1.gbt 50% NO EVIDENCE` and the verb prints a
   `learner …` line with its CI.
 - **Best rule** — a `PREDICTIVE` rule first; then a rule with enough evidence
   to be read (not `TOO FEW`); then the highest precision; ties by id. The
@@ -963,7 +963,7 @@ The prefix is the first K entries of `turns[]` by index, at two fixed points:
 **K = 16** (primary, the default) and **K = 32** (secondary). A mission with
 fewer than K turns is EXCLUDED at that K, never truncated. `prefixTurns` is row
 metadata (it is the constant K), not a feature. The feature keys are EXACTLY
-these 58 (the test asserts the set, so adding one is a change to this list and
+these 56 (the test asserts the set, so adding one is a change to this list and
 the test together):
 
 - For each LEVEL signal — `toolSuccessRate`, `varietyRatio`,
@@ -974,9 +974,13 @@ the test together):
 - The three COUNTERS, as per-turn rates so nothing sums over turns:
   - `stuckTurns` (the current stuck streak; it resets): `.rate` = the share of
     prefix turns with a streak > 0, `.last`, `.max`.
-  - `algedonicAlerts` (alerts fired so far, a running count): `.rate` = new
-    alerts per turn, (last − first) ÷ (turns between them; null with fewer
-    than two values), `.last`, `.max`.
+  - `algedonicAlerts` (alerts fired so far IN THE ENGINE SESSION, a running
+    count): `.rate` only = new alerts per turn, (last − first) ÷ (turns between
+    them; null with fewer than two values). Its level carries alerts from
+    before the mission began (turn-0 values 0–57, r −0.38 with total turns — an
+    era confound), so `.last`/`.max` were dropped (final review T4-N2): measured
+    from the prefix's first value they collapse onto `.rate` at a fixed K, and
+    unmeasured from it they are the confound.
   - `consecutiveUnstable` (increments on every unstable turn): `.last`, `.max`
     only — its mean tracks the turn index, so it is not a feature.
 - `.last` is the last non-null value in the prefix. Every numeric feature is
@@ -1139,23 +1143,36 @@ entry line carries the dropped dead columns as a COUNT (`dropped 28 dead
 column(s)`); `--scoreboard` prints the latest record's hindcast in full, the
 column names included (`hindcastLine(h, { detail: true })`).
 
-**First real run, 2026-09-26** (104 eligible at K = 16: train 83, holdout 21 —
-12 failures / 9 successes; K = 32: train 76, holdout 19; a temp home):
+**Real run on the 56-key vector, 2026-09-28** (after `algedonicAlerts.last/.max`
+were dropped; 104 eligible at K = 16: train 83, holdout 21 — 12 failures / 9
+successes; K = 32: train 76, holdout 19; `bun scripts/cynco-rule-verdicts.mjs
+--with-hindcast --datasets-dir C:/tmp/p5fix-k56`, deterministic — a second
+run wrote the same model, `trainedAt` aside):
 
 ```
-- Outcome hindcast: v1 at K = 16 turns on 21 held-out missions (base 57%): M1.gbt precision 55% [28, 79] on 11 fired p(Holm) 1.000 NO EVIDENCE; M1.lr precision 56% [27, 81] on 9 fired p(Holm) 1.000 TOO FEW; leak check gbt AUC prefix 0.41 / hindsight 0.53, lr AUC prefix 0.47 / hindsight 0.61; K = 32 gbt AUC 0.55, lr AUC 0.42; dropped 28 dead column(s)
+- Outcome hindcast: v1 at K = 16 turns on 21 held-out missions (base 57%): M1.gbt precision 50% [25, 75] on 12 fired p(Holm) 1.000 NO EVIDENCE; M1.lr precision 56% [27, 81] on 9 fired p(Holm) 1.000 TOO FEW; leak check gbt AUC prefix 0.50 / hindsight 0.55, lr AUC prefix 0.47 / hindsight 0.61; K = 32 gbt AUC 0.63, lr AUC 0.41; dropped 28 dead column(s)
+rule verdicts v1: 0 predictive of 8 rules (+2 model rows) (none) → C:\tmp\p5fix-k56\rule-verdicts.json
 ```
 
 Holdout at K = 16: `lr` precision 0.556, recall 0.417, Brier 0.363, AUC 0.472;
-`gbt` precision 0.545, recall 0.500, Brier 0.361, AUC 0.407. For scale (the
-Task 4 review, over all the real rows): the finished length alone separates the
-outcome at AUC 0.633, the best single remaining prefix feature at ~0.58 — both
-models sit below chance on the holdout, so on this ledger the learner adds
-nothing to either. 28 of 58 columns were dead on the training split (the six
-entropy features all null; `stuckTurns.*`, `taskError.*`, `progressRate.*`,
-`consecutiveUnstable.last/max`, `brainPresent` and ten one-hots constant).
-Both `M1` rows are the honest verdict the spec predicted: no evidence on 21
-missions.
+`gbt` precision 0.500, recall 0.500, Brier 0.340, AUC 0.500. `M1.gbt` 6 of 12
+fired missions failed, Wilson [0.254, 0.746], p 0.660, p(Holm) 1.000;
+`M1.lr` 5 of 9, [0.267, 0.811], TOO FEW. Holm family 9 (7 tested rules + 2
+models); no rule's verdict moved. For scale (the Task 4 review, over all the
+real rows): the finished length alone separates the outcome at AUC 0.633, the
+best single remaining prefix feature at ~0.58–0.60 (`s3s4Balance.balanced`
+0.600 over all 104 K = 16 rows; neither dropped key was near the top) — `lr`
+sits below chance and `gbt` at it, so on this ledger the learner adds nothing
+to either. 28 of 56 columns were dead on the training split (the six entropy
+features all null; `stuckTurns.*`, `taskError.*`, `progressRate.*`,
+`consecutiveUnstable.last/max`, `brainPresent` and ten one-hots constant); 28
+kept. Both `M1` rows are the honest verdict the spec predicted: no evidence on
+21 missions.
+
+The first run (2026-09-26, the 58-key vector with `algedonicAlerts.last/.max`)
+read `gbt` precision 0.545 on 11 fired, AUC 0.407, hindsight 0.528, K = 32
+`gbt` 0.55 / `lr` 0.42, 28 of 58 dead; `lr` did not move. Those numbers
+describe a vector the code no longer builds.
 
 ## Labeling rule
 

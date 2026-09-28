@@ -70,8 +70,13 @@ const maxOf = (vals) => (vals.length ? Math.max(...vals) : null)
  * K = 16 and K = 32 (the leak test pins it). The three counters:
  * - `consecutiveUnstable` increments on every unstable turn, so its mean over
  *   the prefix tracks the turn index; only `.last`/`.max` (bounded by K) stay.
- * - `algedonicAlerts` is a running count of alerts fired so far; `.rate` is new
- *   alerts per turn across the prefix, (last − first) ÷ (turns between them).
+ * - `algedonicAlerts` is a running count of alerts fired so far IN THE ENGINE
+ *   SESSION, so its level carries alerts from before the mission began (turn-0
+ *   values 0–57, r −0.38 with total turns: an era confound). Only `.rate` —
+ *   new alerts per turn across the prefix, (last − first) ÷ (turns between
+ *   them) — is measured from the prefix's own first value; `.last`/`.max` were
+ *   dropped (final review T4-N2: at fixed K they collapse onto `.rate` once the
+ *   pre-mission count is subtracted, and without it they are the leak).
  * - `stuckTurns` is the current stuck streak (it resets); `.rate` is the share
  *   of prefix turns spent stuck (streak > 0).
  */
@@ -83,7 +88,7 @@ const NUMERIC = [
   ['taskError', t => t.taskError, ['mean', 'last', 'max']],
   ['infoGain', t => t.infoGain, ['mean', 'last', 'max']],
   ['progressRate', t => t.progressRate, ['mean', 'last', 'max']],
-  ['algedonicAlerts', t => t.algedonicAlerts, ['rate', 'last', 'max']],
+  ['algedonicAlerts', t => t.algedonicAlerts, ['rate']],
   ['consecutiveUnstable', t => t.consecutiveUnstable, ['last', 'max']],
   ['axiomViolations', t => (Array.isArray(t.axiomHealth?.violations) ? t.axiomHealth.violations.length : null), ['mean', 'last', 'max']],
   ['toolEntropyMean', t => t.brain?.toolEntropy?.mean, ['mean', 'last', 'max']],
