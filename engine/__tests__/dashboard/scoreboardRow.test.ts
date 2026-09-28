@@ -27,7 +27,7 @@ function extractFunction(html: string, name: string): string {
 
 const html = readFileSync(INDEX_HTML, 'utf-8')
 const lift = (name: string) => new Function(
-  extractFunction(html, 'scoreboardNum') + '\n' + extractFunction(html, name) + '\nreturn ' + name,
+  extractFunction(html, 'scoreboardNum') + '\n' + extractFunction(html, 'scoreboardFloor') + '\n' + extractFunction(html, name) + '\nreturn ' + name,
 )() as (x: unknown) => { text: string; title: string }
 
 describe('dashboard campaign panel: the Scoreboard row', () => {
@@ -52,6 +52,18 @@ describe('dashboard campaign panel: the Scoreboard row', () => {
       unmeasured: [],
     })
     expect(r.text.endsWith('rules predictive 0/8 (best I3 58%) · learner M1.gbt 55%')).toBe(true)
+  })
+
+  it('a rate over a fault\'s wall-clock hours prints ≥ — it is a floor (final review I2)', () => {
+    const r = row({
+      wave: 2, passRatePerGpuHour: 0.065, passRatePerGpuHourIsLowerBound: true, wavesPerCampaign: 2,
+      gateLinesFixedPerLandedWave: null, humanInterventionsPerWave: null, perRulePrecision: null,
+      unmeasured: ['gpuHours: wave 1 hours are a wall-clock upper bound (fault) — the rate is a floor'],
+    })
+    expect(r.text.startsWith('wave 2: PASS/GPU-h ≥ 0.065 · ')).toBe(true)
+    expect(r.title).toBe('gpuHours: wave 1 hours are a wall-clock upper bound (fault) — the rate is a floor')
+    // A null rate never carries the mark, whatever the flag says.
+    expect(row({ wave: 1, passRatePerGpuHour: null, passRatePerGpuHourIsLowerBound: true, unmeasured: [] }).text.startsWith('wave 1: PASS/GPU-h — ·')).toBe(true)
   })
 
   it('without a wave number the prefix is left off (review M4)', () => {
@@ -95,6 +107,15 @@ describe('dashboard campaign panel: the pooled line', () => {
     })
     expect(r.text).toBe('2 campaigns, 1 decided, 3 waves — PASS/GPU-h 0.167 · waves/campaign 2 · lines fixed/landed wave 1.50 · human acts/wave 0.33 · supervision $/wave 3.33 · excluded c7')
     expect(r.title).toBe('gateLinesFixedPerLandedWave: c6 wave 1 x\nexcluded: c7: boom')
+  })
+
+  it('a pooled rate over a wall-clock upper bound prints ≥ (final review I2)', () => {
+    const r = pooled({
+      campaigns: 1, decided: 1, waves: 2, gpuHours: 15.39, passRatePerGpuHour: 0.065, passRatePerGpuHourIsLowerBound: true,
+      wavesPerCampaign: 2, gateLinesFixedPerLandedWave: { value: null }, humanInterventionsPerWave: { value: 0 },
+      supervisionDollars: null, supervisionDollarsPerWave: null, excluded: [], unmeasured: [],
+    })
+    expect(r.text).toContain('PASS/GPU-h ≥ 0.065 · ')
   })
 
   it('a runner-driven campaign with no board is named on the line, its reason on the title (review I1)', () => {

@@ -53,17 +53,26 @@ const isNum = (v) => typeof v === 'number' && Number.isFinite(v)
  * else its ledger row's. A wave with neither (a fault whose driver wrote no
  * row) is named in `missing` — the hours are then a floor, not a total, and no
  * rate is computed over them (ratePerGpuHour).
+ *
+ * `upperBound` names the waves whose record hours are a fault's wall clock
+ * since dispatch (`durationFrom: 'wall-clock'`, faultWave) — counted, but an
+ * UPPER bound (it includes the wait on a driver that may have died in minute
+ * one), so any rate over them is a floor and prints `≥` (final review I2).
  */
 export function gpuHours({ waves, rows }) {
   const byId = rowsByMission(waves, rows)
   let seconds = 0, counted = 0
-  const missing = []
+  const missing = [], upperBound = []
   for (const w of spentWaves(waves)) {
-    const d = isNum(w.durationS) ? w.durationS : byId.get(w.missionId)?.durationS
-    if (isNum(d)) { seconds += d; counted++ } else missing.push(w.wave)
+    const own = isNum(w.durationS)
+    const d = own ? w.durationS : byId.get(w.missionId)?.durationS
+    if (isNum(d)) { seconds += d; counted++; if (own && w.durationFrom === 'wall-clock') upperBound.push(w.wave) } else missing.push(w.wave)
   }
-  return { hours: counted ? seconds / 3600 : null, missing }
+  return { hours: counted ? seconds / 3600 : null, missing, upperBound }
 }
+
+/** The `unmeasured` note for a wave whose hours are a wall-clock upper bound. */
+export const upperBoundNote = (n) => `gpuHours: wave ${n} hours are a wall-clock upper bound (fault) — the rate is a floor`
 
 /**
  * The one spelling of "PASSes ÷ GPU-hours", shared by the campaign and the
@@ -274,6 +283,7 @@ export function campaignScoreboard({ spec, state, waves, rows, ruleVerdicts = nu
   if (rate.value === null) unmeasured.push(`passRatePerGpuHour: ${rate.reason}`)
   if (wpc.value === null) unmeasured.push(`wavesPerCampaign: ${wpc.reason}`)
   for (const n of gpu.missing) unmeasured.push(`gpuHours: wave ${n} has no durationS on its record or ledger row — the hours are a floor`)
+  for (const n of gpu.upperBound) unmeasured.push(upperBoundNote(n))
   for (const e of gl.excluded) unmeasured.push(`gateLinesFixedPerLandedWave: ${e}`)
   if (gl.value === null) unmeasured.push(`gateLinesFixedPerLandedWave: ${gl.reason}`)
   if (hi.value === null) unmeasured.push(`humanInterventionsPerWave: ${hi.reason}`)
@@ -282,7 +292,8 @@ export function campaignScoreboard({ spec, state, waves, rows, ruleVerdicts = nu
   if (sup.value === null) unmeasured.push(`supervisionDollarsPerWave: ${sup.reason}`)
   return {
     id: spec?.id ?? null, decided: d.decided, decision: d.decision, waves: d.spent, gpuHours: gpu.hours, gpuHoursMissing: gpu.missing,
-    passRatePerGpuHour: rate.value, wavesPerCampaign: wpc.value,
+    gpuHoursUpperBound: gpu.upperBound,
+    passRatePerGpuHour: rate.value, passRatePerGpuHourIsLowerBound: isNum(rate.value) && gpu.upperBound.length > 0, wavesPerCampaign: wpc.value,
     gateLinesFixedPerLandedWave: { value: gl.value, landedWaves: gl.landedWaves, fixed: gl.fixed, graded: gl.graded, known: gl.known, unknown: gl.unknown, reason: gl.reason },
     humanInterventionsPerWave: { value: hi.value, notes: hi.notes, humanDecisions: hi.humanDecisions, refusals: hi.refusals, reseals: hi.reseals, adopted: hi.adopted, reason: hi.reason },
     perRulePrecision: rp, supervisionDollars: sup.dollars, supervisionDollarsPerWave: sup.value, unmeasured,
@@ -330,6 +341,9 @@ export function pooledScoreboard(campaignScoreboards, opts = {}) {
     ? ratePerGpuHour(decided.length, hours, included.flatMap(b => (b.gpuHoursMissing ?? []).map(n => `${b.id} wave ${n}`)))
     : { value: null, reason: 'no runner-driven campaign has decided yet' }
   if (rate.value === null) unmeasured.push(`passRatePerGpuHour: ${rate.reason}`)
+  // Any included wave's hours a wall-clock upper bound → the pooled Σ is too,
+  // and the rate over it a floor (I2). The per-wave notes arrived above.
+  const upperBound = included.flatMap(b => (b.gpuHoursUpperBound ?? []).map(n => `${b.id} wave ${n}`))
   const wpc = decided.length ? sum(decided.map(b => b.wavesPerCampaign)) / decided.length : null
   if (wpc === null) unmeasured.push('wavesPerCampaign: no runner-driven campaign has decided yet')
 
@@ -352,8 +366,8 @@ export function pooledScoreboard(campaignScoreboards, opts = {}) {
   if (sup.value === null) unmeasured.push(`supervisionDollarsPerWave: ${sup.reason}`)
 
   return {
-    campaigns: included.length, decided: decided.length, waves, gpuHours: included.length ? hours : null,
-    passRatePerGpuHour: rate.value, wavesPerCampaign: wpc,
+    campaigns: included.length, decided: decided.length, waves, gpuHours: included.length ? hours : null, gpuHoursUpperBound: upperBound,
+    passRatePerGpuHour: rate.value, passRatePerGpuHourIsLowerBound: isNum(rate.value) && upperBound.length > 0, wavesPerCampaign: wpc,
     gateLinesFixedPerLandedWave: { value: lines.landedWaves ? lines.fixed / lines.landedWaves : null, ...lines, reason: glReason },
     humanInterventionsPerWave: { value: hi.value, ...human, reason: hi.reason },
     supervisionDollars: dollars, supervisionDollarsPerWave: sup.value, excluded, unmeasured,
@@ -362,6 +376,8 @@ export function pooledScoreboard(campaignScoreboards, opts = {}) {
 
 const reasonOf = (b, field) => (b.unmeasured ?? []).find(u => u.startsWith(`${field}: `))?.slice(field.length + 2) ?? 'unmeasured'
 const num = (v, d, reason) => (isNum(v) ? v.toFixed(d) : `null (${reason})`)
+/** `≥ ` before a PASS/GPU-h whose hours include a wall-clock upper bound (I2). */
+const floorMark = (b) => (b?.passRatePerGpuHourIsLowerBound === true ? '≥ ' : '')
 const pct = (v) => (isNum(v) ? String(Math.round(v * 100)) : '?')
 
 function bestText(best) {
@@ -393,7 +409,7 @@ function entryLine(sb) {
     const terse = level >= 1
     const nul = (reason) => (terse ? 'null' : `null (${short(reason)})`)
     const val = (v, reason) => (isNum(v) ? v.toFixed(2) : nul(reason))
-    const rate = isNum(sb.passRatePerGpuHour) ? sb.passRatePerGpuHour.toFixed(3) : sb.decided ? nul(reasonOf(sb, 'passRatePerGpuHour')) : 'open'
+    const rate = isNum(sb.passRatePerGpuHour) ? `${floorMark(sb)}${sb.passRatePerGpuHour.toFixed(3)}` : sb.decided ? nul(reasonOf(sb, 'passRatePerGpuHour')) : 'open'
     const waves = isNum(sb.wavesPerCampaign) ? `waves ${sb.wavesPerCampaign}` : `waves ${sb.waves} so far (open)`
     const best = rp?.best ? ` (best ${rp.best.id} ${pct(rp.best.precision)}% ${short(rp.best.verdict)})` : ''
     const rules = rp ? `${rp.predictive}/${rp.total}${best}` : nul(reasonOf(sb, 'perRulePrecision'))
@@ -411,7 +427,7 @@ function entryLine(sb) {
 function pooledLines(p) {
   const gl = p.gateLinesFixedPerLandedWave, hi = p.humanInterventionsPerWave
   const lines = [`Pooled over ${p.campaigns} runner-driven campaign(s), ${p.decided} decided: `
-    + `PASS/GPU-h ${num(p.passRatePerGpuHour, 3, reasonOf(p, 'passRatePerGpuHour'))}`
+    + `PASS/GPU-h ${isNum(p.passRatePerGpuHour) ? floorMark(p) : ''}${num(p.passRatePerGpuHour, 3, reasonOf(p, 'passRatePerGpuHour'))}`
     + ` | waves per campaign ${num(p.wavesPerCampaign, 2, reasonOf(p, 'wavesPerCampaign'))}`
     + ` | lines fixed per landed wave ${num(gl.value, 2, gl.reason)}`
     + ` | human interventions per wave ${num(hi.value, 2, hi.reason)}`]
@@ -440,7 +456,8 @@ export function scoreboardLines(sb, { detail = false } = {}) {
   if (!detail) return [line]
   const lines = [line]
   lines.push(`  ${sb.id}: decision ${sb.decision ?? 'none'} (${sb.decided ? 'decided' : 'open'}); gpuHours ${num(sb.gpuHours, 2, 'no durations')} over ${sb.waves} wave(s)`)
-  lines.push(`  passRatePerGpuHour ${isNum(sb.passRatePerGpuHour) ? `${sb.passRatePerGpuHour.toFixed(3)} = 1 PASS ÷ ${sb.gpuHours.toFixed(2)} GPU-h` : sb.decided ? `null (${reasonOf(sb, 'passRatePerGpuHour')})` : 'open'}`)
+  const bound = sb.passRatePerGpuHourIsLowerBound === true ? `, an upper bound (wave ${(sb.gpuHoursUpperBound ?? []).join(', ')} hours are a fault's wall clock)` : ''
+  lines.push(`  passRatePerGpuHour ${isNum(sb.passRatePerGpuHour) ? `${floorMark(sb)}${sb.passRatePerGpuHour.toFixed(3)} = 1 PASS ÷ ${sb.gpuHours.toFixed(2)} GPU-h${bound}` : sb.decided ? `null (${reasonOf(sb, 'passRatePerGpuHour')})` : 'open'}`)
   lines.push(`  wavesPerCampaign ${isNum(sb.wavesPerCampaign) ? sb.wavesPerCampaign : `${sb.waves} so far (open)`}`)
   lines.push(`  gateLinesFixedPerLandedWave ${isNum(gl.value) ? `${gl.value.toFixed(2)} = ${gl.fixed} line(s) fixed ÷ ${gl.landedWaves} landed wave(s)` : `null (${gl.reason})`}`)
   lines.push(`  humanInterventionsPerWave ${num(hi.value, 2, hi.reason)} = (notes ${hi.notes} + human decisions ${hi.humanDecisions} + refusals ${hi.refusals} + reseals ${hi.reseals} + adoptions ${hi.adopted}) ÷ ${sb.waves}`)

@@ -2269,6 +2269,12 @@ function fetchSessionState() {
     return v.toFixed(digits);
   }
 
+  // A PASS/GPU-h whose hours include a fault's wall-clock upper bound is a
+  // floor: printed with '≥ ', the per-wave reason on the tooltip (review I2).
+  function scoreboardFloor(b) {
+    return b && b.passRatePerGpuHourIsLowerBound === true && typeof b.passRatePerGpuHour === 'number' && isFinite(b.passRatePerGpuHour) ? '≥ ' : '';
+  }
+
   // One campaign's row, off /api/campaign's campaigns[].scoreboard: the five
   // headline numbers; { text, title } so the reasons ride the tooltip.
   function campaignScoreboardText(sb) {
@@ -2284,7 +2290,7 @@ function fetchSessionState() {
     // Which wave record the numbers were read off: a stop or fault written
     // after it carries no board, so the row says how current it is.
     var text = (typeof sb.wave === 'number' ? 'wave ' + sb.wave + ': ' : '') +
-      'PASS/GPU-h ' + scoreboardNum(sb.passRatePerGpuHour, 3) +
+      'PASS/GPU-h ' + scoreboardFloor(sb) + scoreboardNum(sb.passRatePerGpuHour, 3) +
       ' · waves/campaign ' + scoreboardNum(sb.wavesPerCampaign) +
       ' · lines fixed/landed wave ' + scoreboardNum(gl ? gl.value : null, 2) +
       ' · human acts/wave ' + scoreboardNum(hi ? hi.value : null, 2) +
@@ -2299,7 +2305,7 @@ function fetchSessionState() {
     if (p.error) return { text: 'unmeasured — ' + p.error, title: '' };
     var gl = p.gateLinesFixedPerLandedWave, hi = p.humanInterventionsPerWave;
     var text = p.campaigns + ' campaigns, ' + p.decided + ' decided, ' + p.waves + ' waves — ' +
-      'PASS/GPU-h ' + scoreboardNum(p.passRatePerGpuHour, 3) +
+      'PASS/GPU-h ' + scoreboardFloor(p) + scoreboardNum(p.passRatePerGpuHour, 3) +
       ' · waves/campaign ' + scoreboardNum(p.wavesPerCampaign) +
       ' · lines fixed/landed wave ' + scoreboardNum(gl ? gl.value : null, 2) +
       ' · human acts/wave ' + scoreboardNum(hi ? hi.value : null, 2) +

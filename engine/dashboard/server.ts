@@ -312,6 +312,9 @@ interface CampaignSummary {
   scoreboard: {
     wave: number | null
     passRatePerGpuHour: number | null
+    /** True when the rate's hours include a fault's wall-clock upper bound —
+     *  the rate is then a floor and the row prints `≥` (final review I2). */
+    passRatePerGpuHourIsLowerBound: boolean
     wavesPerCampaign: number | null
     gateLinesFixedPerLandedWave: Record<string, unknown> | null
     humanInterventionsPerWave: Record<string, unknown> | null
@@ -1020,12 +1023,14 @@ window.__CYNCO_TOKEN = ${JSON.stringify(token)};
     if (!b) return null
     const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null)
     if (typeof b.error === 'string') {
-      return { wave, passRatePerGpuHour: null, wavesPerCampaign: null, gateLinesFixedPerLandedWave: null,
+      return { wave, passRatePerGpuHour: null, passRatePerGpuHourIsLowerBound: false, wavesPerCampaign: null, gateLinesFixedPerLandedWave: null,
         humanInterventionsPerWave: null, perRulePrecision: null, unmeasured: [`scoreboard: ${b.error}`] }
     }
+    const rate = num(b.passRatePerGpuHour)
     return {
       wave,
-      passRatePerGpuHour: num(b.passRatePerGpuHour),
+      passRatePerGpuHour: rate,
+      passRatePerGpuHourIsLowerBound: rate !== null && b.passRatePerGpuHourIsLowerBound === true,
       wavesPerCampaign: num(b.wavesPerCampaign),
       gateLinesFixedPerLandedWave: b.gateLinesFixedPerLandedWave ?? null,
       humanInterventionsPerWave: b.humanInterventionsPerWave ?? null,

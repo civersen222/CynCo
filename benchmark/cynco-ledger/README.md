@@ -606,7 +606,13 @@ same, next to the code):
   (`durationFrom: "row"`), else the wall clock since `dispatchedAt`
   (`durationFrom: "wall-clock"` — an upper bound: it includes waiting on a
   driver that may have died early); `null` only for a fault with no
-  `dispatchedAt`. Fault records also carry a `scoreboard` reading, so the
+  `dispatchedAt`. A wall-clock hour is counted, but it is a bound, not a
+  measurement: the board names the wave in `gpuHoursUpperBound`, adds
+  `gpuHours: wave N hours are a wall-clock upper bound (fault) — the rate is a
+  floor` to `unmeasured`, keeps `passRatePerGpuHour` numeric with
+  `passRatePerGpuHourIsLowerBound: true`, and every reader prints it as a floor
+  — the entry line and the verb `PASS/GPU-h ≥ 0.065`, the dashboard row and the
+  pooled line `≥` (pooled: the waves named `<id> wave N`). Fault records also carry a `scoreboard` reading, so the
   last board on the record never undercounts a trailing fault. A spent wave with
   neither (an older fault whose driver wrote no row) is named in `unmeasured` as
   `gpuHours: wave N has no durationS …` — the hours are then a floor, and a
@@ -683,7 +689,8 @@ The stored shape (unrounded on the record; rounded here), for C8 reproduced from
 ```jsonc
 "scoreboard": {
   "id": "c8", "decided": true, "decision": "pass", "waves": 3, "gpuHours": 15.3656, "gpuHoursMissing": [],
-  "passRatePerGpuHour": 0.06508, "wavesPerCampaign": 3,
+  "gpuHoursUpperBound": [],
+  "passRatePerGpuHour": 0.06508, "passRatePerGpuHourIsLowerBound": false, "wavesPerCampaign": 3,
   "gateLinesFixedPerLandedWave": { "value": 4.667, "landedWaves": 3, "fixed": 14,
                                    "graded": 3, "known": 3, "unknown": 0, "reason": null },
   "humanInterventionsPerWave": { "value": 0.333, "notes": 1, "humanDecisions": 0, "refusals": 0,

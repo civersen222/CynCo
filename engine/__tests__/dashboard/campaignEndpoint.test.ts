@@ -488,6 +488,7 @@ describe('GET /api/campaign', () => {
     expect(byId('c8').scoreboard).toEqual({
       wave: 2,
       passRatePerGpuHour: 0.25,
+      passRatePerGpuHourIsLowerBound: false,
       wavesPerCampaign: 2,
       gateLinesFixedPerLandedWave: c8Board.gateLinesFixedPerLandedWave,
       humanInterventionsPerWave: c8Board.humanInterventionsPerWave,
@@ -497,7 +498,7 @@ describe('GET /api/campaign', () => {
     expect(byId('c6').scoreboard.gateLinesFixedPerLandedWave.value).toBeNull()
     expect(byId('c6').scoreboard.unmeasured).toEqual(c6Board.unmeasured)
     expect(byId('c7').scoreboard).toEqual({
-      wave: 1, passRatePerGpuHour: null, wavesPerCampaign: null, gateLinesFixedPerLandedWave: null,
+      wave: 1, passRatePerGpuHour: null, passRatePerGpuHourIsLowerBound: false, wavesPerCampaign: null, gateLinesFixedPerLandedWave: null,
       humanInterventionsPerWave: null, perRulePrecision: null, unmeasured: ['scoreboard: boom'],
     })
     expect(byId('c5').scoreboard).toBeNull()
@@ -517,6 +518,31 @@ describe('GET /api/campaign', () => {
     expect(data.pooled.gateLinesFixedPerLandedWave.value).toBe(1.5)
     expect(data.pooled.humanInterventionsPerWave.value).toBeCloseTo(1 / 3)
     expect(data.pooled.excluded).toEqual(['c7: boom', c5Reason])
+  })
+
+  // Final review I2: a board whose hours include a fault's wall clock carries
+  // the floor flag to the row and to the pool — the page prints `≥`.
+  it('a rate over a wall-clock upper bound reaches the row and the pool flagged as a floor', async () => {
+    CYNCO_HOME = mkdtempSync(join(tmpdir(), 'cynco-campaign-floor-'))
+    process.env.CYNCO_HOME = CYNCO_HOME
+    const note = 'gpuHours: wave 1 hours are a wall-clock upper bound (fault) — the rate is a floor'
+    const board = {
+      id: 'c8', decided: true, decision: 'pass', waves: 2, gpuHours: 4, gpuHoursMissing: [], gpuHoursUpperBound: [1],
+      passRatePerGpuHour: 0.25, passRatePerGpuHourIsLowerBound: true, wavesPerCampaign: 2,
+      gateLinesFixedPerLandedWave: { value: null, landedWaves: 0, fixed: 0, graded: 1, known: 1, unknown: 0, reason: 'no wave landed a commit' },
+      humanInterventionsPerWave: { value: 0, notes: 0, humanDecisions: 0, refusals: 0, reseals: 0, adopted: 0, reason: null },
+      perRulePrecision: null, supervisionDollars: null, supervisionDollarsPerWave: null, unmeasured: [note],
+    }
+    writeCampaign(CYNCO_HOME, 'c8', { waveCount: 2 }, [
+      { wave: 1, decision: { kind: 'fault', why: 'driver did not exit' }, durationS: 3600, durationFrom: 'wall-clock' },
+      { wave: 2, decision: { kind: 'pass', why: 'green' }, scoreboard: board },
+    ])
+    const data = await (await authFetch(`${BASE}/api/campaign`)).json() as any
+    expect(data.campaigns[0].scoreboard.passRatePerGpuHour).toBe(0.25)
+    expect(data.campaigns[0].scoreboard.passRatePerGpuHourIsLowerBound).toBe(true)
+    expect(data.campaigns[0].scoreboard.unmeasured).toEqual([note])
+    expect(data.pooled.passRatePerGpuHourIsLowerBound).toBe(true)
+    expect(data.pooled.gpuHoursUpperBound).toEqual(['c8 wave 1'])
   })
 
   it('pooled is null-valued, not missing, when no campaign carries a scoreboard — and says why', async () => {

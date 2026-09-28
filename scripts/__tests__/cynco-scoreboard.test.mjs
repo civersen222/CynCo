@@ -59,6 +59,51 @@ describe('passRatePerGpuHour — decided-PASS campaigns ÷ Σ durationS/3600', (
   })
 })
 
+// Final review I2: a fault's wall-clock `durationS` (faultWave's
+// `durationFrom: 'wall-clock'`) is an UPPER bound on the hours. It is counted,
+// but the rate over it is a floor: flagged, named in `unmeasured`, printed `≥`.
+describe('a wall-clock upper bound in the hours makes the rate a floor', () => {
+  const walled = () => { const ws = c8Waves(); ws[0].durationS = 28824; ws[0].durationFrom = 'wall-clock'; return ws }
+
+  it('module: gpuHours names the wave; the board flags the rate and says why', () => {
+    expect(gpuHours({ waves: walled(), rows: rows() }).upperBound).toEqual([1])
+    // A row-measured duration, or the ledger row's own, is never an upper bound.
+    const rowFrom = c8Waves(); rowFrom[0].durationS = 28824; rowFrom[0].durationFrom = 'row'
+    expect(gpuHours({ waves: rowFrom, rows: rows() }).upperBound).toEqual([])
+    const b = board({ waves: walled() })
+    expect(b.passRatePerGpuHour).toBeCloseTo(1 / HOURS, 10)
+    expect(b.passRatePerGpuHourIsLowerBound).toBe(true)
+    expect(b.gpuHoursUpperBound).toEqual([1])
+    expect(b.unmeasured).toContain('gpuHours: wave 1 hours are a wall-clock upper bound (fault) — the rate is a floor')
+    // Without one, the flag is false and nothing is added.
+    expect(board().passRatePerGpuHourIsLowerBound).toBe(false)
+    expect(board().gpuHoursUpperBound).toEqual([])
+  })
+
+  it('an open campaign is never flagged — it has no rate to bound', () => {
+    const b = board({ waves: walled().slice(0, 2) })
+    expect(b.passRatePerGpuHour).toBeNull()
+    expect(b.passRatePerGpuHourIsLowerBound).toBe(false)
+  })
+
+  it('verdict line and detail print ≥', () => {
+    const b = board({ waves: walled(), ruleVerdicts })
+    expect(scoreboardLines(b)[0]).toMatch(/^- Scoreboard: PASS\/GPU-h ≥ 0\.065 \| waves 3 \| /)
+    const detail = scoreboardLines(b, { detail: true }).join('\n')
+    expect(detail).toContain('passRatePerGpuHour ≥ 0.065 = 1 PASS ÷ 15.37 GPU-h, an upper bound (wave 1 hours are a fault\'s wall clock)')
+    expect(detail).toContain('unmeasured: gpuHours: wave 1 hours are a wall-clock upper bound (fault) — the rate is a floor')
+  })
+
+  it('pooled: the bound is named by campaign, the rate flagged and printed ≥', () => {
+    const p = pooledScoreboard([board({ waves: walled() })])
+    expect(p.gpuHoursUpperBound).toEqual(['c8 wave 1'])
+    expect(p.passRatePerGpuHourIsLowerBound).toBe(true)
+    expect(p.unmeasured).toContain('gpuHours: c8 wave 1 hours are a wall-clock upper bound (fault) — the rate is a floor')
+    expect(scoreboardLines(p)[0]).toMatch(/PASS\/GPU-h ≥ 0\.065 \| /)
+    expect(pooledScoreboard([board()]).passRatePerGpuHourIsLowerBound).toBe(false)
+  })
+})
+
 describe('wavesPerCampaign — waves to the decision', () => {
   it('C8 decided at wave 3', () => {
     expect(wavesPerCampaign({ waves: c8Waves() })).toEqual({ value: 3, reason: null })
