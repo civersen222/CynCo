@@ -717,13 +717,17 @@ authority ladder honestly, and C9 sealed and ready for the runner.
   per landed wave 4.67 | human interventions per wave 0.33 | rules predictive
   0/8 (best I3 58% NO EVIDENCE)`. Unmeasured is `null` with its reason (F16).
 - **The roadmap moves itself.** The runner's first dispatch of a `sealed`
-  line moves it to `running`; a PASS decision moves it to `done`
-  (`moveRoadmapLine`, forward-only, `scripts/cynco-campaign.mjs`), and the
-  moved `roadmap.json` joins that wave's commit so the dirty-tree guard never
-  sees it as foreign work. The roadmap path is repo-relative
-  (`docs/civkings-redesign-briefs/roadmap.json`, injectable only as a test
-  dependency), so the live smoke below does not exercise it — the unit tests
-  in `scripts/__tests__/cynco-campaign.test.mjs` prove both moves.
+  line moves it to `running`; a PASS decision moves it to `done` just before
+  the verdict commit, after every step that can throw (`moveRoadmapLine`,
+  forward-only, `scripts/cynco-campaign.mjs`; final review I1 — a `done`
+  written earlier could outlive a fault), and the moved `roadmap.json` joins
+  that wave's commit — the verdict's, or the fault path's when a later step
+  throws — so the dirty-tree guard never sees it as foreign work. The roadmap
+  path is repo-relative (`docs/civkings-redesign-briefs/roadmap.json`,
+  injectable only as a test dependency), so the live smoke below does not
+  exercise it — the unit tests in
+  `scripts/__tests__/cynco-campaign-roadmap.test.mjs` prove both moves and the
+  throw cases.
 - **The S5 enforce pin is lifted, with two guards.** `dispatch-mission.sh`
   no longer pins `LOCALCODE_S5_ENFORCE=false` (it defaults to `true`; setting
   it `false` still caps everything at advisory). The engine's per-rule
@@ -843,24 +847,31 @@ authority ladder honestly, and C9 sealed and ready for the runner.
   `bun scripts/cynco-rule-verdicts.mjs --with-hindcast` (the runner's own
   sequence behind one flag; the controller's live step). The synthetic row and
   the `campaign/s1` verdict commit were removed.
-- **What is parked, with reasons.** TabPFN and XGBoost (absent; a download
-  needs the operator). Applying retained tables (no non-empty table observed
-  yet; the row's `retainedVersion` per C9 wave decides). The latest-release
-  resolver (network-facing; needs a release-stream decision). Skills and jlens
-  under `cyncoHome()` are DONE. `worktreeManager`'s F155 retry wraps every
-  git call including the non-idempotent `worktree add --lock` — narrow it to
-  list/prune/unlock (final fix wave). The dashboard's lazy scoreboard load
-  caches a failure until restart, and its purity guard misses `Bun.write` /
-  `process.*` / `globalThis` and runs its own regex copy (Task 3 M5–M7).
-  `algedonicAlerts.last/.max` carry alerts from earlier in the engine session
-  — measure from the first prefix value (Task 4 N2). A throw on the model rows
-  should still write the rules' verdict file, and `M1.*` rows appearing or
-  vanishing should not bump the verdict-file version (Task 5 M1, M2).
-  `bun scripts/cynco-rule-verdicts.mjs` rebuilds the rules only; a
-  `--with-hindcast` flag (export → model → verdicts, the runner's own
-  sequence) belongs in that CLI — the real-home file above was written by
-  that sequence from a scratch script while the file was under review. F163's
-  wave-1 HEAD-vs-BASE refusal.
+- **What is parked, with reasons (ruling 8).** TabPFN and XGBoost (absent; a
+  download needs the operator). The latest-release resolver (network-facing;
+  needs a release-stream decision). `s5.decision` typing (ruling 10:
+  `protocol.ts` gains no import and no event this phase, so the frame stays
+  untyped as it was). The writer guard's blind spots (re-parked by ruling 8:
+  no Phase 5 measurement exercised the Write shrink guard of F112, so there is
+  no evidence yet to size a change by).
+- **Not in scope, rather than parked (ruling 9).** Applying retained tables
+  (no non-empty table observed yet; the row's `retainedVersion` per C9 wave
+  is the measurement that decides the next phase); LoRA/KTO training; new
+  roadmap lines beyond C9; live model-S5 in the engine; the dashboard chat.
+- **Closed.** Skills and jlens under `cyncoHome()`; `s4.workOrder.applied` is
+  written (`workOrderFor`, on the wave record). The final fix wave closed the
+  rest of what the Task reviews deferred: `worktreeManager`'s F155 retry is
+  opt-in for list/prune/unlock and `worktree add --lock` runs once; the
+  dashboard retries a rejected scoreboard load on the next poll and its purity
+  guard is one `violations()` check with `Bun.write`/`Bun.spawn`/`process.`/
+  `globalThis`/`XMLHttpRequest`/`WebSocket` in its tokens;
+  `algedonicAlerts.last/.max` are dropped (the requote above); a throw on the
+  model rows rewrites the rules alone (`ladderFault`), and `M1.*` rows never
+  bump the verdict-file version (`modelChanged`); `bun
+  scripts/cynco-rule-verdicts.mjs --with-hindcast` is the runner's own export
+  → model → verdicts sequence; the roadmap's `done` move sits just before the
+  commit; a fault's wall-clock hours print the rate as a floor (`≥`); and
+  F163's HEAD-vs-base refusal guards every dispatched wave.
 
 **Deferred spec items (follow-up, not built here).**
 
