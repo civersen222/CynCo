@@ -1738,3 +1738,29 @@ Sealed sha256: gate_c9.py 1cdf7c4e075023cd, perturb_c9.py be492499bb8abcc8, posi
 
 Calibration: BASE printed GATE: MISS (14 fails) — 14 fail(s) by absence, zero error lines; the cheat stub flips C9.1a.resolution-presets, C9.1b.resolution-applies, C9.2a.keybinds-table, C9.2b.keybind-drives-game, C9.3a.saves-screen, C9.4a.fps-guard and leaves 8 discriminator(s) red; the positive shim printed GATE: PASS.
 
+
+## C9 wave 1 — c9-wave1-1790614271885 (graded 2026-09-28, BASE e9366f37e6f9f0d71e2b0e6584a936d458ec25d3 → HEAD fd96edad6d27db7d6c41571db54a19adcee7f269)
+
+- 367 tool calls, exitReason engine_closed_the_turn (13684s = 3.80h), 6 commit(s). maxCallsWithoutSourceEdit 65, maxCallsWithoutCommit 150. CodeIndex 0/367. graderProbes 6/367. Invariants: engine denied 0 call(s) (edit-gap 0, commit-gap 0, revert 0), 0 revert refusal(s), 6 CodeIndex-assisted Grep(s).
+- Bash by effect: read 18, write 2, run 58, commit 7, revert 0, other 1 (sum 86 vs byName.Bash 86 — agree).
+- Routing: 0 verify-first (revert 0, low-confidence edit 0): passed 0, failed 0, cached 0, could not run 0 (0/6 KEEP-GREEN runs spent).
+- **Sealed gate at fd96edad6d27db7d6c41571db54a19adcee7f269: MISS (3 fails).** Prior-campaign regressions: 0.
+  - `C9.3a.saves-screen: FAIL C9.3a raised ImportError: cannot import name 'FADED' from 'gilded.ui.palette' (C:\Users/civer/civkings\gilded\ui\palette.py)`
+  - `C9.3b.save-round-trips-state.s7: FAIL C9.3b raised ImportError: cannot import name 'FADED' from 'gilded.ui.palette' (C:\Users/civer/civkings\gilded\ui\palette.py)`
+  - `C9.3b.save-round-trips-state.s11: FAIL C9.3b raised ImportError: cannot import name 'FADED' from 'gilded.ui.palette' (C:\Users/civer/civkings\gilded\ui\palette.py)`
+  - PASS: C9.1a.resolution-presets, C9.1b.resolution-applies, C9.1c.resolution-persists, C9.2a.keybinds-table, C9.2b.keybind-drives-game, C9.2c.rebind-persists, C9.4a.fps-guard, C9.4b.fps-follows-settings, C9.5a.packaging-declares, C9.5b.packaging-launches, C9.5c.packaging-builds, C9.9
+- Suite gate PASS: REGRESSED 0, REPAIRED 1.
+- Derived sweep 0/6; survivors: gilded/settings.py:25:const->1025, gilded/settings.py:25:const->1281, gilded/settings.py:25:const->1441, gilded/settings.py:25:const->601, gilded/settings.py:25:const->769, gilded/settings.py:25:const->801.
+- POSIWID Consistent (divergence 0.018, dominant inspect).
+- Governance POSIWID Contradicted (divergence 6.877, dominant signalsLogged, support 396; drift onset wave 1).
+- Ledger: verified false; mutationSweep recorded (derived).
+- Identity: intact
+- Autopoiesis: 3/6 — missing boundarySelfProduced, circularProduction, organizationallyClosed
+- Scoreboard: PASS/GPU-h open | waves 1 so far (open) | lines fixed per landed wave 11.00 | human interventions per wave 2.00 | rules predictive 0/8 (best I3 59% NO EVIDENCE) | learner M1.gbt 54%
+- Outcome hindcast: v3 at K = 16 turns on 21 held-out missions (base 57%): M1.gbt precision 54% [29, 77] on 13 fired p(Holm) 1.000 NO EVIDENCE; M1.lr precision 56% [27, 81] on 9 fired p(Holm) 1.000 TOO FEW; leak check gbt AUC prefix 0.46 / hindsight 0.56, lr AUC prefix 0.47 / hindsight 0.60; K = 32 gbt AUC 0.56, lr AUC 0.41; dropped 27 dead column(s)
+- Denials (campaign to date): edit-gap 0/0 (TOO FEW); commit-gap 0/0 (TOO FEW); revert 0/0 (IDENTITY).
+- Gate lines: cynco 0/0 held (rate —, ci [0.00, 1.00]) vs human 26/30; TOO FEW
+
+Economics after this wave: VERDICT: frontier spent $2995.57 SUPERVISING (development $1270.88 and unattributed $1.86 are excluded — building LocalCode is not oversight). The supervised generation would have cost ~$5547.89 on the API ($2575.06 priced from measured tokens, $2972.84 still estimated) and ran locally for ~$22.79 of power. supervision ratio: $1 of frontier verify oversees ~$1.85 of displaced generation.
+
+Verdict: **MISS** — 3 line(s) still FAIL
