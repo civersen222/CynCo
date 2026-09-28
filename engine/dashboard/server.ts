@@ -1049,15 +1049,20 @@ window.__CYNCO_TOKEN = ${JSON.stringify(token)};
    *  record's `gradedAt` (ties and undated boards by id) — the pooled $ is the
    *  latest figure, never whichever directory readdir listed first.
    *
-   *  The module loads lazily, once (see `loadScoreboardModule`); a load
+   *  The module loads lazily, once (see `loadScoreboardModule`); a load that
+   *  rejects is dropped so the next poll retries it. A load
    *  failure and a throw inside the pool both come back as `{ error }` for the
    *  panel to name, never as a 500 that blanks every campaign row with it. */
   private scoreboardModule: Promise<ScoreboardModule> | null = null
   private async poolScoreboards(entries: Array<{ board: unknown; at: string }>, excluded: string[]): Promise<Record<string, unknown>> {
     if (!this.scoreboardModule) {
-      this.scoreboardModule = (this.deps.loadScoreboard ?? loadScoreboardModule)()
-      this.scoreboardModule.catch((e: unknown) => {
-        console.error(`[dashboard] scripts/cynco-scoreboard.mjs failed to load — pooled scoreboard unmeasured (${e instanceof Error ? e.message : String(e)})`)
+      const loading = (this.deps.loadScoreboard ?? loadScoreboardModule)()
+      this.scoreboardModule = loading
+      loading.catch((e: unknown) => {
+        console.error(`[dashboard] scripts/cynco-scoreboard.mjs failed to load — pooled scoreboard unmeasured, retried on the next poll (${e instanceof Error ? e.message : String(e)})`)
+        // Final review M4 (T3-M5): a rejected load is not cached until
+        // restart — the next poll tries again (a fixed file, a finished write).
+        if (this.scoreboardModule === loading) this.scoreboardModule = null
       })
     }
     let mod: ScoreboardModule

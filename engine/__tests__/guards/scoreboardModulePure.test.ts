@@ -10,7 +10,13 @@ import { fileURLToPath } from 'url'
  * is why it reads state.json by hand instead of using CampaignState. The rule
  * was a comment; this makes it a test. CynCo missions edit scripts/, so the
  * module must stay pure: it imports nothing outside the allowed list below
- * (today: nothing at all) and names no write, spawn or network call.
+ * (today: nothing at all) and names no write, spawn, network or ambient-global
+ * call.
+ *
+ * Final review M4 (T3-M6/M7): the token list covers Bun's own write/spawn,
+ * `process.*`, `globalThis`, XMLHttpRequest and WebSocket; and the check is ONE
+ * function, `violations(src)`, which both the real test and the bite test call
+ * — so a regression in the check fails the bite test instead of passing it.
  */
 const __dir = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(__dir, '../../..')
@@ -21,36 +27,59 @@ const SERVER = join(ROOT, 'engine', 'dashboard', 'server.ts')
  *  reviewed decision, made here, with the reason beside it. */
 const ALLOWED_IMPORTS: string[] = []
 
+/** Substrings a pure module never names: writes, spawns, network, ambient globals. */
+const FORBIDDEN_TOKENS = [
+  'writeFileSync', 'appendFileSync', 'mkdirSync', 'spawn', 'fetch',
+  'Bun.write', 'Bun.spawn', 'process.', 'globalThis', 'XMLHttpRequest', 'WebSocket',
+]
+
+/** Every purity violation in `src`, as readable strings; [] when pure. */
+function violations(src: string): string[] {
+  const out: string[] = []
+  const specifiers = [
+    ...[...src.matchAll(/^\s*import\s[^;]*?from\s*['"]([^'"]+)['"]/gm)].map(m => m[1]),
+    ...[...src.matchAll(/^\s*import\s*['"]([^'"]+)['"]/gm)].map(m => m[1]),
+    ...[...src.matchAll(/\bimport\s*\(\s*['"]([^'"]+)['"]/g)].map(m => m[1]),
+    ...[...src.matchAll(/\brequire\s*\(\s*['"]([^'"]+)['"]/g)].map(m => m[1]),
+  ]
+  for (const s of specifiers) if (!ALLOWED_IMPORTS.includes(s)) out.push(`import ${s}`)
+  // No computed dynamic import or require either.
+  if (/\bimport\s*\(\s*[^'"\s]/.test(src)) out.push('computed import()')
+  if (/\brequire\s*\(/.test(src)) out.push('require(')
+  for (const token of FORBIDDEN_TOKENS) if (src.includes(token)) out.push(`token ${token}`)
+  // `exec` as a call, not RegExp.prototype.exec (`/…/.exec(text)` is pure
+  // and the module parses the economics text that way).
+  if (/(?<![.\w])exec(Sync|File|FileSync)?\s*\(/.test(src)) out.push('exec call')
+  return out
+}
+
 const src = readFileSync(MODULE, 'utf-8')
 
 describe('scripts/cynco-scoreboard.mjs stays pure (the dashboard route loads it)', () => {
-  it('imports only the allowed pure modules', () => {
-    const specifiers = [
-      ...[...src.matchAll(/^\s*import\s[^;]*?from\s*['"]([^'"]+)['"]/gm)].map(m => m[1]),
-      ...[...src.matchAll(/^\s*import\s*['"]([^'"]+)['"]/gm)].map(m => m[1]),
-      ...[...src.matchAll(/\bimport\s*\(\s*['"]([^'"]+)['"]/g)].map(m => m[1]),
-      ...[...src.matchAll(/\brequire\s*\(\s*['"]([^'"]+)['"]/g)].map(m => m[1]),
+  it('imports only the allowed pure modules and names no write, spawn, network or ambient-global call', () => {
+    expect(violations(src)).toEqual([])
+  })
+
+  it('the guard itself bites: every planted violation is caught by the same check', () => {
+    const planted: Array<[string, string]> = [
+      ["import { writeFileSync } from 'fs'", 'import fs'],
+      ["const m = await import('node:child_process')", 'import node:child_process'],
+      ['const p = "x"; await import(p)', 'computed import()'],
+      ["const fs = require('fs')", 'require('],
+      ['writeFileSync("x", "y")', 'token writeFileSync'],
+      ['await Bun.write("x", "y")', 'token Bun.write'],
+      ['Bun.spawn(["git"])', 'token Bun.spawn'],
+      ['const home = process.env.HOME', 'token process.'],
+      ['globalThis.fetchLater = 1', 'token globalThis'],
+      ['new XMLHttpRequest()', 'token XMLHttpRequest'],
+      ['new WebSocket("ws://x")', 'token WebSocket'],
+      ['exec("rm -rf /")', 'exec call'],
     ]
-    expect(specifiers.filter(s => !ALLOWED_IMPORTS.includes(s))).toEqual([])
-    // No computed dynamic import or require either.
-    expect(src).not.toMatch(/\bimport\s*\(\s*[^'"\s]/)
-    expect(src).not.toMatch(/\brequire\s*\(/)
-  })
-
-  it('names no write, spawn, exec or network call', () => {
-    for (const token of ['writeFileSync', 'appendFileSync', 'mkdirSync', 'spawn', 'fetch']) {
-      expect({ token, found: src.includes(token) }).toEqual({ token, found: false })
+    for (const [line, expected] of planted) {
+      expect({ line, found: violations(`${src}\n${line}\n`) }).toEqual({ line, found: expect.arrayContaining([expected]) })
     }
-    // `exec` as a call, not RegExp.prototype.exec (`/…/.exec(text)` is pure
-    // and the module parses the economics text that way).
-    expect(src).not.toMatch(/(?<![.\w])exec(Sync|File|FileSync)?\s*\(/)
-  })
-
-  it('the guard itself bites: a planted write is caught', () => {
-    const planted = src + "\nimport { writeFileSync } from 'fs'\n"
-    const specs = [...planted.matchAll(/^\s*import\s[^;]*?from\s*['"]([^'"]+)['"]/gm)].map(m => m[1])
-    expect(specs).toContain('fs')
-    expect(planted.includes('writeFileSync')).toBe(true)
+    // …and RegExp.prototype.exec stays legal.
+    expect(violations(`${src}\n/x/.exec('y')\n`)).toEqual([])
   })
 
   it('the server loads it lazily inside the route, never at module load', () => {

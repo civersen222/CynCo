@@ -589,7 +589,9 @@ describe('GET /api/campaign', () => {
   // Review I2: the scoreboard module loads lazily inside the route, once; a
   // load failure is `{ error }` on the payload, the rows still arrive, and
   // engine start never depended on it.
-  it('a scoreboard module that fails to load is { error } on pooled, loaded once, rows intact', async () => {
+  // Final review M4 (T3-M5): a rejected load is not cached until restart —
+  // every poll that finds no module tries again; a resolved one is kept.
+  it('a scoreboard module that fails to load is { error } on pooled, retried on the next poll, rows intact', async () => {
     CYNCO_HOME = mkdtempSync(join(tmpdir(), 'cynco-campaign-noload-'))
     process.env.CYNCO_HOME = CYNCO_HOME
     writeCampaign(CYNCO_HOME, 'c8', { waveCount: 1 }, [{ wave: 1, decision: { kind: 'next', why: 'x' } }])
@@ -609,9 +611,33 @@ describe('GET /api/campaign', () => {
         expect(data.campaigns.map((c: any) => c.id)).toEqual(['c8'])
         expect(data.pooled).toEqual({ error: 'scripts/cynco-scoreboard.mjs failed to load (SyntaxError: nope)' })
       }
-      expect(loads).toBe(1)
+      expect(loads).toBe(2)
     } finally {
       broken.stop()
+    }
+  })
+
+  it('a first load that rejects and a second that resolves → the pooled board is there, and the module is kept', async () => {
+    CYNCO_HOME = mkdtempSync(join(tmpdir(), 'cynco-campaign-reload-'))
+    process.env.CYNCO_HOME = CYNCO_HOME
+    writeCampaign(CYNCO_HOME, 'c8', { waveCount: 1 }, [{ wave: 1, decision: { kind: 'next', why: 'x' } }])
+    let loads = 0
+    const flaky = new DashboardServer({
+      port: 0, tokens: _tokens,
+      deps: { loadScoreboard: () => { loads++; return loads === 1 ? Promise.reject(new Error('EBUSY: mid-write')) : Promise.resolve({ pooledScoreboard }) } },
+    })
+    try {
+      const deadline = Date.now() + 2000
+      while (flaky.getPort() === 0 && Date.now() < deadline) await new Promise(r => setTimeout(r, 10))
+      const url = `http://localhost:${flaky.getPort()}/api/campaign`
+      const first = await (await authFetch(url)).json() as any
+      expect(first.pooled).toEqual({ error: 'scripts/cynco-scoreboard.mjs failed to load (EBUSY: mid-write)' })
+      const second = await (await authFetch(url)).json() as any
+      expect(second.pooled).toEqual(pooledScoreboard([], { excluded: ['c8: no verdict since the scoreboard shipped — no wave record carries a scoreboard'] }))
+      await authFetch(url)
+      expect(loads).toBe(2)
+    } finally {
+      flaky.stop()
     }
   })
 
