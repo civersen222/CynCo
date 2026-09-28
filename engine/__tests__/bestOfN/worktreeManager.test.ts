@@ -112,6 +112,50 @@ describe('WorktreeManager', () => {
   })
 })
 
+// Final review M3 (T1-N1): the F155 retry on an early ETIMEDOUT is opt-in —
+// list/prune/unlock only. `worktree add --lock` is attempted once: a retry
+// after a real partial create would only fail "already exists".
+describe('the early-ETIMEDOUT retry is for idempotent git calls only', () => {
+  const earlyTimeout = () => Object.assign(new Error('spawnSync git ETIMEDOUT'), { code: 'ETIMEDOUT' })
+
+  it('worktree add is attempted once on a fake early ETIMEDOUT', async () => {
+    const tmpRoot = mkdtempSync(join(tmpdir(), 'cynco-wt-retry-'))
+    tempRepos.push(tmpRoot)
+    const calls: string[] = []
+    const m = new WorktreeManager('C:/nowhere', { tmpRoot, exec: (cmd) => {
+      calls.push(cmd)
+      if (cmd.startsWith('git worktree add')) throw earlyTimeout()
+      return ''
+    } })
+    await expect(m.create()).rejects.toThrow('ETIMEDOUT')
+    expect(calls.filter(c => c.startsWith('git worktree add'))).toHaveLength(1)
+    expect(m.getActive()).toHaveLength(0)
+  })
+
+  it('list and prune are retried once on a fake early ETIMEDOUT', () => {
+    const tmpRoot = mkdtempSync(join(tmpdir(), 'cynco-wt-retry-'))
+    tempRepos.push(tmpRoot)
+    const calls: string[] = []
+    const failedOnce = new Set<string>()
+    const m = new WorktreeManager('C:/nowhere', { tmpRoot, exec: (cmd) => {
+      calls.push(cmd)
+      if (!failedOnce.has(cmd)) { failedOnce.add(cmd); throw earlyTimeout() }
+      return ''
+    } })
+    // The constructor's prune + list each failed once and succeeded on the retry.
+    expect(calls).toEqual(['git worktree prune', 'git worktree prune', 'git worktree list --porcelain', 'git worktree list --porcelain'])
+    expect(m.registered()).toEqual([])
+  })
+
+  it('a non-ETIMEDOUT failure is never retried, even on an opted-in call', () => {
+    const tmpRoot = mkdtempSync(join(tmpdir(), 'cynco-wt-retry-'))
+    tempRepos.push(tmpRoot)
+    const calls: string[] = []
+    new WorktreeManager('C:/nowhere', { tmpRoot, exec: (cmd) => { calls.push(cmd); throw new Error('not a git repository') } })
+    expect(calls).toEqual(['git worktree prune'])
+  })
+})
+
 describe('F162: construction prunes stale cynco-bestofn-* worktrees', () => {
   const plant = (name: string, lockReason?: string): string => {
     const p = join(tmpdir(), `${name}${Math.random().toString(36).slice(2, 8)}`)

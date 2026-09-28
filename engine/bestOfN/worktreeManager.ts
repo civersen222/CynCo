@@ -74,6 +74,8 @@ export interface WorktreeManagerOptions {
   tmpRoot?: string
   /** Liveness probe for a lock's pid; default `process.kill(pid, 0)`. */
   isAlive?: (pid: number) => boolean
+  /** Test seam: runs one git command line; default `child_process.execSync`. */
+  exec?: (command: string, options: { cwd: string; stdio: 'pipe'; timeout: number }) => Buffer | string
 }
 
 /**
@@ -92,10 +94,12 @@ export class WorktreeManager {
   private readonly repoRoot: string
   private readonly tmpRoot: string
   private readonly active: string[] = []
+  private readonly exec: NonNullable<WorktreeManagerOptions['exec']>
 
   constructor(repoRoot: string, opts: WorktreeManagerOptions = {}) {
     this.repoRoot = repoRoot
     this.tmpRoot = opts.tmpRoot ?? tmpdir()
+    this.exec = opts.exec ?? execSync
     this.pruneStale(opts.isAlive ?? pidAlive)
   }
 
@@ -147,7 +151,7 @@ export class WorktreeManager {
 
   /** Worktrees git currently has registered for this repo. */
   registered(): RegisteredWorktree[] {
-    return parseWorktreeList(this.git('worktree list --porcelain'))
+    return parseWorktreeList(this.git('worktree list --porcelain', { retry: true }))
   }
 
   // ── private ────────────────────────────────────────────────────────────
@@ -160,7 +164,7 @@ export class WorktreeManager {
       // any name — metadata only; it never deletes a directory. A worktree on a
       // drive that is briefly unreachable loses its registration and needs
       // `git worktree repair` (review M1).
-      this.git('worktree prune')
+      this.git('worktree prune', { retry: true })
       stale = this.registered().filter(wt => isStaleBestOfNWorktree(wt, this.tmpRoot, isAlive))
     } catch (e) {
       // Not a repo / git missing: create() will fail loudly; nothing to prune.
@@ -187,12 +191,12 @@ export class WorktreeManager {
     }
     try {
       // A locked entry survives a plain prune even with its directory gone.
-      this.git(`worktree unlock "${wtPath}"`)
+      this.git(`worktree unlock "${wtPath}"`, { retry: true })
     } catch (e) {
       console.log(`[bestOfN] worktree unlock ${wtPath}: ${(e as Error).message.split('\n')[0]}`)
     }
     try {
-      this.git('worktree prune')
+      this.git('worktree prune', { retry: true })
     } catch (e) {
       console.log(`[bestOfN] git worktree prune failed: ${(e as Error).message}`)
     }
@@ -204,10 +208,13 @@ export class WorktreeManager {
   /**
    * Every git call is bounded (review M5): a hung git reports as an error the
    * callers catch and log, never a hung best-of-N turn. An ETIMEDOUT that did
-   * not spend its cap is bun's stale deadline (F155) — retried once.
+   * not spend its cap is bun's stale deadline (F155) — retried once, but ONLY
+   * for the idempotent calls that opt in (`retry: true`: list, prune, unlock).
+   * `worktree add --lock` is attempted once: a retry after a real partial
+   * create would fail "already exists" (final review M3, T1-N1).
    */
-  private git(args: string): string {
-    const run = () => execSync(`git ${args}`, {
+  private git(args: string, { retry = false }: { retry?: boolean } = {}): string {
+    const run = () => this.exec(`git ${args}`, {
       cwd: this.repoRoot,
       stdio: 'pipe',
       timeout: GIT_TIMEOUT_MS,
@@ -219,7 +226,7 @@ export class WorktreeManager {
       return run()
     } catch (e) {
       const elapsed = Date.now() - started
-      if ((e as NodeJS.ErrnoException).code !== 'ETIMEDOUT' || elapsed >= GIT_TIMEOUT_MS / 2) throw e
+      if (!retry || (e as NodeJS.ErrnoException).code !== 'ETIMEDOUT' || elapsed >= GIT_TIMEOUT_MS / 2) throw e
       console.log(`[bestOfN] git ${args.split(' ')[0]}…: impossible ETIMEDOUT after ${elapsed} ms (cap ${GIT_TIMEOUT_MS} ms) — retrying once (F155)`)
       return run()
     }
