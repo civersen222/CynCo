@@ -1,0 +1,96 @@
+MISSION C9 WAVE 1 — SHIP SHELL
+(Campaign opened at BASE e9366f37e6f9f0d71e2b0e6584a936d458ec25d3; the sealed gate MISSes 14 line(s), all by absence. 8 hours, 2000 iterations, Bash cap 1500 s.)
+
+Repo: C:\Users\civer\civkings
+
+BASE: e9366f37e6f9f0d71e2b0e6584a936d458ec25d3. KEEP-GREEN set, run before EVERY commit:
+python -m pytest gilded/tests/test_c9_shell.py gilded/tests/test_c8_audio.py gilded/tests/test_c8_portraits.py gilded/tests/test_c8_transitions.py gilded/tests/test_atlas_actions_m7.py gilded/tests/test_ui_broadsheet.py gilded/tests/test_ui_actions.py gilded/tests/test_house_tab_pixel_visual.py gilded/tests/test_c6_contract.py gilded/tests/test_c6c_layout.py gilded/tests/test_c1_visibility.py gilded/tests/test_c7_history.py gilded/tests/test_c7_epilogue.py -q
+
+THE MISSES (sealed gate at BASE e9366f37e6f9f0d71e2b0e6584a936d458ec25d3, verbatim — the gate grades pixels, drawn
+regions pressed at their centres, files on disk, and values the game returns; never a claim)
+
+  C9.1a.resolution-presets: FAIL state.settings.resolutions distinct sizes=[] (need >=3); Settings-screen resolution regions=[] settings-screen actions=[{'setting': 'mute'}, {'setting': 'narrate'}, {'setting': 'back'}] press_err=None
+  C9.1b.resolution-applies: FAIL no resolution region drawn on the Settings screen to press
+  C9.1c.resolution-persists: FAIL no resolution press, nothing to persist
+  C9.2a.keybinds-table: FAIL state.settings.keybinds=NoneType resolved keycodes=0/0 (need >=4 distinct, 'save' bound)
+  C9.2b.keybind-drives-game: FAIL no 'save' binding to press
+  C9.2c.rebind-persists: FAIL no 'save' binding to rebind
+  C9.3a.saves-screen: FAIL no drawn region opens the saves screen (action keys seen: ["['menu']"])
+  C9.3b.save-round-trips-state.s7: FAIL in play: no drawn region opens the saves screen (action keys seen: ["['clear_heir']", "['cycle_exec']", "['dismiss_seat']", "['end_turn']", "['open_ambition_picker']", "['open_heir_picker']"])
+  C9.3b.save-round-trips-state.s11: FAIL in play: no drawn region opens the saves screen (action keys seen: ["['clear_heir']", "['cycle_exec']", "['dismiss_seat']", "['end_turn']", "['open_ambition_picker']", "['open_heir_picker']"])
+  C9.4a.fps-guard: FAIL state.target_fps=absent (menu absent); recorded tick args: play [30, 30, 30] menu [30, 30]
+  C9.4b.fps-follows-settings: FAIL Settings.target_fps=48 via save_settings (first launch None); parsed file=ok target_fps=None; fresh launch state.target_fps=absent ticks=[30, 30, 30]; file deleted: state.target_fps=None ticks=[30, 30, 30] (must be a value other than 48); gate-written target_fps=50: state.target_fps=None ticks=[30, 30, 30]
+  C9.5a.packaging-declares: FAIL pyproject.toml at the repo root: absent
+  C9.5b.packaging-launches: FAIL no [project.scripts] module:callable entry to launch
+  C9.5c.packaging-builds: FAIL pyproject.toml at the repo root: absent, nothing to build
+
+  Already PASS at BASE and must stay so: C9.9.
+
+HOW THE GATE MEASURES — build to these definitions exactly
+
+  Every run is headless (SDL_VIDEODRIVER=dummy, SDL_AUDIODRIVER=dummy) and happens in a FRESH EMPTY working directory: the gate calls gilded.settings.settings_path() and gilded.save.quicksave_path() there and deletes both files before it starts. It deletes or writes a game-named file (settings_path(), quicksave_path(), state.save_path) ONLY if that file's directory is the block's temp working directory; otherwise every line of the block FAILS with "... escapes the working directory: <path>". So all three stay relative to the current working directory as they are today. A launch is pygame.display.quit() then gilded.ui.app.new_app_state(seed=7, start=...) — a fresh launch in the same process, so nothing may live in a module-level variable instead of the file. A draw is widgets.take_text_rows(), view.regions.clear(), view.draw(<the live display surface>); the drawn regions are view.regions._regions and the drawn text is widgets._text_rows (blit_text records a row; so does appending (rect, text) as MenuView does). A press is view.handle_click(region.rect.center), which must return the region's own action (not None, not a different action), then gilded.ui.app._apply_action(state, action). A key is a KEYDOWN event (key=<keycode>) posted onto an empty queue followed by exactly one gilded.ui.app.step_once(state). Key names are pygame.key.name() strings ("f5", "return", "escape"); pygame.key.key_code(name) must resolve them. The settings file is JSON (a dict): window_size, keybinds (a dict action -> key name) and target_fps are keys of that one dict.
+
+  C9.1a.resolution-presets: launch start="menu"; state.settings.resolutions must hold >= 3 distinct (width, height) integer pairs; press the menu region whose action is {"menu": "settings"}, draw again, and the Settings screen must draw at least one region whose action names a resolution: a key "resolution" or "window_size", or a string value "resolution" or "window_size" (e.g. {"setting": "resolution"}).
+
+  C9.1b.resolution-applies: press that resolution region (drawing again before each press; if the live size does not change the gate presses the next resolution region, up to one more press than there are regions); pygame.display.get_surface().get_size() after the press must differ from the size before it and be one of state.settings.resolutions. Keep state.screen pointing at the live surface.
+
+  C9.1c.resolution-persists: the settings_path() file must now exist, parse as JSON, and its "window_size" must equal the chosen size. The gate then deletes that file and launches fresh (start="menu"): the live display size must NOT be the chosen size; it writes the file's bytes back and launches fresh again: the live display size AND state.settings.window_size must both equal the chosen size.
+
+  C9.2a.keybinds-table: launch start="menu"; state.settings.keybinds must be a dict of >= 4 action names to key names, every key name resolving to a keycode, no two actions on one key, and an action named "save".
+
+  C9.2b.keybind-drives-game: launch start="game"; delete state.save_path; press the key named by state.settings.keybinds["save"]; the file at state.save_path must exist and start with b"GILDEDSAVE ".
+
+  C9.2c.rebind-persists: launch start="menu", press {"menu": "settings"}, draw, and press the Settings-screen region that rebinds "save": an action with a key whose name contains "bind" and whose value is "save" (e.g. {"setting": "rebind", "bind": "save"} or {"rebind": "save"}). Then press a NEW key (the first of F9, F10, F11, F12, F8, F7, F6 not already bound) through step_once while the menu is showing: that KEYDOWN is the new binding. The settings_path() file must then PARSE as JSON with keybinds["save"] resolving to the new key AND still hold "window_size" (an unparseable file, or one the rebind stripped of the other settings, FAILS). The gate deletes the file and launches fresh: keybinds["save"] must be the OLD key again (the binding comes from the file, not from memory); it writes the bytes back and launches fresh (start="game"): keybinds["save"] must be the new key, the new key must write state.save_path, and after that file is deleted the OLD key must not write it. Last leg: the gate writes its OWN JSON — the parsed file with keybinds["save"] set to the next unbound key of that list (a key the game never captured) — and launches fresh (start="game"): keybinds["save"] must be that third key and its KEYDOWN must write state.save_path.
+
+  C9.3a.saves-screen: launch start="menu" (no save anywhere); draw and press the region whose action opens the saves screen: a key "saves" or a string value "saves" (e.g. {"menu": "saves"}); draw again. The screen must draw >= 2 regions carrying distinct slot ids — an action {"load_slot": id} / {"save_slot": id}, or {<any key>: "load_slot" | "save_slot", "slot": id} — and every such slot id must have a non-empty text row overlapping one of its regions (the first such row is its label), with >= 2 distinct label texts. Empty slots may be DISABLED (with a reason); they still count here. Keep the menu's Continue as it is (test_c6_contract).
+
+  C9.3b.save-round-trips-state: launch start="game" at seed 7 (and identically at one undisclosed seed); note (game.turn, game.houses[state.house].treasury); call game.end_turn() three times and add 777.25 to that house's treasury (an entry no replay of the seed can reproduce); draw the play view and press its saves opener (same rule as C9.3a — the saves screen must be reachable IN PLAY), draw, press the first save-slot region; a file starting with b"GILDEDSAVE " must now exist anywhere under <cwd>/saves/, and gilded.save.load_game(<that file>) must return a gilded.chassis.GildedGame whose turn and that house's treasury (rounded to 4 places) equal the saved pair — the slot file IS a save of the game (save_game), not a record of numbers. Launch FRESH start="menu", open the saves screen, press the load-slot region with the same slot id (enabled now); state.game's turn and that house's treasury must equal the saved pair, which differs from the fresh same-seed game's.
+
+  C9.4a.fps-guard: launch start="game" and start="menu"; state.target_fps must be a positive int (the same on both); the gate swaps state.clock for a clock that records every tick()/tick_busy_loop() argument and runs 3 step_once frames in play and 2 on the menu: every recorded argument must equal state.target_fps.
+
+  C9.4b.fps-follows-settings: in a fresh directory st = gilded.settings.load_settings(); st.target_fps = <second> (48, or 72 if the first value was 48); gilded.settings.save_settings(st); the settings_path() file must parse as JSON with "target_fps" == second. Launch fresh start="game": state.target_fps must be second and all 3 recorded tick arguments must equal it. The gate deletes the file and launches fresh: state.target_fps and every recorded tick must be back at the first value (the C9.4a value). The gate then writes its OWN JSON — the parsed file with "target_fps" set to a third value (50, or 55/45 if taken) — and launches fresh: state.target_fps and every recorded tick must equal the third value. So target_fps is a Settings field that save_settings writes into the file and load_settings reads from it, new_app_state copies it onto the state, and the loop ticks state.target_fps.
+
+  C9.5a.packaging-declares: <repo>/pyproject.toml parsed with tomllib must have [build-system] with a non-empty requires and build-backend = "setuptools.build_meta"; [project] with a name containing "gild" and a non-empty version string; [project.scripts] whose first entry (sorted by script name) is "module:callable" with the module "gilded" or "gilded.<...>" (the launcher lives INSIDE the game package); and [tool.setuptools.packages.find] include = ["gilded*"] (or an explicit [tool.setuptools] packages list naming gilded and not legacy) — without it setuptools refuses the flat layout (gilded/ beside legacy/).
+
+  C9.5b.packaging-launches: that first [project.scripts] entry (module inside gilded) is imported with importlib and its callable called with no arguments (sys.argv = [<script name>]) under the dummy driver in a fresh directory with CIVKINGS_HEADLESS_FRAMES=3 in the environment: it must return 0 or None (or raise SystemExit(0)) without raising, flip the display at least once and stop by itself (300 flips means it ignored the variable), the last flipped frame must not be blank (no single colour covers more than 99.5% of it), and the run must have drawn the menu (a region with action {"menu": "new_game"}). The launcher runs the real game: python -m gilded's main() -> run_app -> the menu, stopping after N frames when CIVKINGS_HEADLESS_FRAMES=N is set.
+
+  C9.5c.packaging-builds: the gate copies the repo (minus .git, __pycache__, build, dist, *.egg-info, saves, *.gsave and local-tool directories) into a temp directory — never building inside the repo — and runs setuptools.build_meta.build_wheel(<outdir>) there in a fresh interpreter (the local setuptools, no pip, no network, 600 s cap). A wheel must come out, and it must contain gilded/__main__.py and gilded/ui/app.py, an entry_points.txt whose [console_scripts] holds exactly the C9.5a entry (script = module:callable), >= 50 files under gilded/assets/ (the tree has 53: fonts, audio, portraits — so declare them, e.g. [tool.setuptools.package-data] gilded = ["assets/**/*"]), and nothing under legacy/.
+
+  C9.9: the C8 gate (and through it C1..C7) still passes, run in a fresh interpreter.
+
+THE WORK (numbered commit points — commit AT each; a commit is the only
+backup you have; the full suite is graded after the run, not by you)
+
+c9-settings-shell. Settings shell: resolution presets on the Settings screen, a frame clock that follows target_fps. gilded/settings.py: Settings gains a resolutions preset list (>= 3 distinct (w, h), the current 1280x900 among them) and a target_fps int field (default 60) that save_settings writes into the JSON settings file and load_settings reads back from it (a missing file = the default); settings_path() stays cwd-relative. gilded/ui/app.py: MenuView's Settings screen draws a Resolution row ({"setting": "resolution"}) whose press moves to the next preset with pygame.display.set_mode, updates state.screen and the view's size, sets settings.window_size and calls save_settings; new_app_state copies settings.target_fps onto state.target_fps, and both step_once and _step_menu tick state.clock with state.target_fps instead of the FPS constant (no module-level stash, no rewriting FPS). gilded/tests/test_c9_shell.py asserts the C9.1 and C9.4 measurements exactly as written in measures, including the delete-the-file and gate-written-JSON legs of C9.4b. COMMIT c9-settings-shell.
+
+c9-keybinds. Keybinds: a table in the settings file, a rebind on the Settings screen, a loop that obeys it. Settings gains keybinds: a dict of >= 4 actions to pygame key names (save, load, end_turn, quit — save defaults to f5 so today's behaviour stands), written into and read from the JSON settings file alongside window_size (a rebind rewrites the whole settings dict with save_settings; it never replaces the file with anything else). The Settings screen draws one row per action ({"setting": "rebind", "bind": <action>}); pressing it arms a capture and the next KEYDOWN _step_menu sees becomes that action's key and is saved with save_settings. step_once dispatches KEYDOWN through the table: the hardcoded K_F5 goes, the save action quicksaves to state.save_path, quit quits. test_c9_shell.py asserts the C9.2 measurements, including that a fresh launch with the settings file deleted is back on the old key and that a key written into the file by hand is obeyed. COMMIT c9-keybinds.
+
+c9-saves-ui. Saves UI: a slot screen reachable from the menu and in play that saves and loads the whole game. A saves screen (gilded/ui/saves_view.py or in app.py) opened by a {"menu": "saves"} region drawn on the main menu AND in play (a chrome button on the broadsheet; the existing Save/Open quicksave buttons and the menu's Continue stay). It draws >= 2 labelled slots: a Save region per slot in play ({"menu": "save_slot", "slot": n}) that calls gilded.save.save_game(state.game, <cwd>/saves/slot<n>.gsave) — so gilded.save.load_game on that file returns the GildedGame — and a Load region per slot ({"menu": "load_slot", "slot": n}, DISABLED with a reason while the slot is empty) that load_game()s it into state.game and returns to the play view. The seed, or a record of turn and treasury, is not a save. test_c9_shell.py asserts the C9.3 measurements. COMMIT c9-saves-ui.
+
+c9-packaging. Packaging: pyproject.toml that builds a wheel of the game, with a launcher that starts it headless on request. A root pyproject.toml: [build-system] requires = ["setuptools>=68"], build-backend = "setuptools.build_meta"; [project] name containing gild (e.g. gilded-machine), version, requires-python, dependencies (pygame-ce, numpy); [project.scripts] gilded = "gilded.__main__:main"; [tool.setuptools] include-package-data = true; [tool.setuptools.packages.find] include = ["gilded*"]; [tool.setuptools.package-data] gilded = ["assets/**/*"]. run_app (or main) honours CIVKINGS_HEADLESS_FRAMES=N: run N step_once frames, pygame.quit(), return; main() returns 0. C9.5c builds the wheel from a copy of the repo with the local setuptools and requires gilded/__main__.py, gilded/ui/app.py, the console_scripts line equal to the [project.scripts] entry, >= 50 gilded/assets/ files and no legacy/ in it — never run a build inside the repo (build/ and *.egg-info/ would land there). test_c9_shell.py asserts the C9.5 measurements with the same env seam. COMMIT c9-packaging.
+
+PACING (enforced by the engine, not advice)
+- 40 tool calls without a source edit and the engine narrows you to edit-only tools
+  until you make one. Write the hypothesis into a commit message on the smallest edit that tests it.
+- 150 calls without a commit and the same narrowing applies until you commit.
+- Reverting is refused: git checkout --, git restore, git stash, git reset --hard, git clean. A
+  targeted Edit on top of the last commit is the only way back. Salvage lives under C:\tmp.
+- An identifier-shaped Grep returns CodeIndex's definition card first; use it.
+- Probes live under C:\tmp, never in the repo. No scratch snapshots.
+
+RULES
+- NO downloads. New files inside the repo ONLY: pyproject.toml, gilded/ui/saves_view.py, gilded/tests/test_c9_shell.py.
+- You may change: gilded/settings.py, gilded/save.py, gilded/ui/app.py, gilded/ui/broadsheet.py (the Saves opener in play only), gilded/__main__.py. NOT the sim: gilded/chassis.py, gilded/world.py, gilded/fronts.py, gilded/market.py, gilded/society/, gilded/saga/, NOT gilded/ui/palette.py hexes, NOT gilded/ui/widgets.py (RegionSet, Region and the text-row ledger stay as they are), NOT any C1..C8 test.
+- Headless runs only: SDL_VIDEODRIVER=dummy and SDL_AUDIODRIVER=dummy before importing pygame.
+- Every graded change is produced by pressing a DRAWN region's centre or by a KEYDOWN through step_once, and every persisted value lives in the JSON file settings_path() names (cwd-relative) or under <cwd>/saves/ — a fresh launch must read it from there, never from a module-level variable.
+- Keep today's behaviour where the gate does not ask for a change: Continue and the quicksave/quickload buttons, F5 as the default save key, 1280x900 as the default size.
+- Do not special-case the disclosed seed; the save round-trip is repeated at an undisclosed seed.
+- Never build a wheel or sdist inside the repo; build from a copy in a temp directory.
+- Do not weaken, skip or mark any committed test.
+- Use the CodeIndex tool FIRST for every symbol lookup before any Grep/Read crawl.
+
+DONE WHEN
+The KEEP-GREEN set passes, every miss above is fixed by the definitions in HOW THE GATE
+MEASURES, and the tree is clean. Then make a final commit whose message contains exactly this marker:
+
+stage c9 complete
