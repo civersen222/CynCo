@@ -1,0 +1,41 @@
+{
+  "id": "c8",
+  "waveCount": 3,
+  "lastBase": "e9366f37e6f9f0d71e2b0e6584a936d458ec25d3",
+  "lastFails": [],
+  "lastCommits": [
+    { "sha": "e9366f3", "subject": "C8.1b/C8.1c: tier legends and per-tier map rendering" },
+    { "sha": "b27c4a1", "subject": "C8.1a: region and parish zoom controls pressable" }
+  ],
+  "consecutiveNoProgress": 0,
+  "proposals": [],
+  "authoring": {},
+  "reseals": [],
+  "calibration": {
+    "gateSha256": "f2e8d3b4878953d1",
+    "perturbSha256": "9d6cb7c2a0b46f79",
+    "calibratedAt": "2026-09-17T02:11:00.000Z",
+    "baseFails": [
+      { "id": "C8.1a.tiers-pressable", "line": "C8.1a.tiers-pressable: FAIL tiers drawn+pressed=[] errors=[\"no drawn zoom control for 'continent'\", \"no drawn zoom control for 'region'\", \"no drawn zoom control for 'parish'\"] zoom_controls=[]" },
+      { "id": "C8.1b.tiers-differ", "line": "C8.1b.tiers-differ: FAIL map pixel difference between tiers={} floor=0.05" },
+      { "id": "C8.1c.tier-legends", "line": "C8.1c.tier-legends: FAIL parish legend has ('city', 'regiment', 'strike')? [False, False, False] continent legend has ('capital',)? [False]" },
+      { "id": "C8.2a.portraits-drawn", "line": "C8.2a.portraits-drawn: FAIL portrait regions on House=0 (floor 6) smallest=0px^2" },
+      { "id": "C8.2b.portraits-distinct-and-stable", "line": "C8.2b.portraits-distinct-and-stable: FAIL min pairwise pixel difference=1.000 (floor 0.1) identical-on-redraw=0/0" },
+      { "id": "C8.2c.portrait-pool-licensed", "line": "C8.2c.portrait-pool-licensed: FAIL images under gilded/assets/portraits=0 (floor 24) LICENSES.md=False" },
+      { "id": "C8.3a.transition-frames", "line": "C8.3a.transition-frames: FAIL gilded.ui.transitions.frames absent or raised: ModuleNotFoundError: No module named 'gilded.ui.transitions'" },
+      { "id": "C8.3b.transitions-wired", "line": "C8.3b.transitions-wired: FAIL after tab press view.last_transition=None err=None; after End Turn=None err=None" },
+      { "id": "C8.4a.act-beds-on-disk", "line": "C8.4a.act-beds-on-disk: FAIL missing=['ambient_act1', 'ambient_act2', 'ambient_act3'] files=0/3 distinct=0 lengths_s=[] (floor 60.0)" },
+      { "id": "C8.4b.bed-follows-the-act", "line": "C8.4b.bed-follows-the-act: FAIL ambient_event_for at turns 5/30/60={'error': \"AttributeError: module 'gilded.audio' has no attribute 'ambient_event_for'\"}" },
+      { "id": "C8.4d.beds-licensed", "line": "C8.4d.beds-licensed: FAIL three distinct bed files=[] named in gilded/assets/audio/LICENSES.md: []" },
+      { "id": "C8.5.palette.House", "line": "C8.5.palette.House: FAIL pixels within 24/channel of a pinned ink at t40 = 0.919 (floor 0.95)" },
+      { "id": "C8.5.palette.Powers", "line": "C8.5.palette.Powers: FAIL pixels within 24/channel of a pinned ink at t40 = 0.933 (floor 0.95)" },
+      { "id": "C8.5.palette.Atlas", "line": "C8.5.palette.Atlas: FAIL pixels within 24/channel of a pinned ink at t40 = 0.640 (floor 0.9)" }
+    ],
+    "basePasses": [
+      { "id": "C8.4c.beds-honour-mute", "line": "C8.4c.beds-honour-mute: PASS play() must return False when muted" },
+      { "id": "C8.5.river-reserved", "line": "C8.5.river-reserved: PASS exact-RIVER pixels on the Atlas at t40 = 0" },
+      { "id": "C8.9", "line": "C8.9: PASS 0 prior-campaign regressions" }
+    ],
+    "perturbFails": []
+  }
+}

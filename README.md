@@ -381,7 +381,7 @@ Structured multi-phase workflows with tool restrictions and advancement gates:
 - `/critique` — critical analysis
 
 ### Skills
-Shareable, self-contained capability packs — a directory with a `SKILL.md` (YAML frontmatter + prose instructions) that declares the tools it needs. Skills are discovered from two locations: bundled builtins (`engine/skills/builtins/`) and your workspace (`~/.cynco/skills/`, which overrides builtins by name). A name-sorted index of available skills is surfaced in the prompt; the model calls `run_skill` to load a skill's full instructions and its declared tools on demand, or `list_skills` to enumerate them.
+Shareable, self-contained capability packs — a directory with a `SKILL.md` (YAML frontmatter + prose instructions) that declares the tools it needs. Skills are discovered from two locations: bundled builtins (`engine/skills/builtins/`) and your workspace (`~/.cynco/skills/` — `$CYNCO_HOME/skills/` when `CYNCO_HOME` is set — which overrides builtins by name). A name-sorted index of available skills is surfaced in the prompt; the model calls `run_skill` to load a skill's full instructions and its declared tools on demand, or `list_skills` to enumerate them.
 
 The seven guided workflows above (`tdd`, `debug`, `review`, `plan`, `brainstorm`, `critique`, `research`) ship as builtin skills. `run_skill("tdd")` and the `/tdd` slash command are aliases: both drive the same phase-gated workflow engine, so the workflow keeps its state machine (per-phase instructions, gates, allowed tools) rather than collapsing into flat prose.
 
@@ -555,10 +555,10 @@ values separated by `/` mean two read sites disagree.
 | `LOCALCODE_LLAMA_SERVER` | *not derived* | — | `engine/config.ts` |
 | `LOCALCODE_MAX_ITERATIONS` | `0` | — | `engine/bridge/conversationLoop.ts`, `engine/dashboard/server.ts` |
 | `LOCALCODE_MAX_OUTPUT_TOKENS` | `16384` | `max_output_tokens` | `engine/config.ts` |
-| `LOCALCODE_MISSION_BASE` | *not derived* | — | `engine/bootstrapProvider.ts`, `engine/dashboard/server.ts` |
-| `LOCALCODE_MISSION_CHECK` | *not derived* | — | `engine/bootstrapProvider.ts`, `engine/dashboard/server.ts` |
-| `LOCALCODE_MISSION_CWD` | *not derived* | — | `engine/bootstrapProvider.ts`, `engine/dashboard/server.ts` |
-| `LOCALCODE_MISSION_MARKER` | *not derived* | — | `engine/bootstrapProvider.ts`, `engine/dashboard/server.ts` |
+| `LOCALCODE_MISSION_BASE` | *not derived* | — | `engine/dashboard/server.ts`, `engine/missionEnv.ts` |
+| `LOCALCODE_MISSION_CHECK` | *not derived* | — | `engine/dashboard/server.ts`, `engine/missionEnv.ts` |
+| `LOCALCODE_MISSION_CWD` | *not derived* | — | `engine/dashboard/server.ts`, `engine/missionEnv.ts` |
+| `LOCALCODE_MISSION_MARKER` | *not derived* | — | `engine/dashboard/server.ts`, `engine/missionEnv.ts` |
 | `LOCALCODE_MODEL` | *not derived* | `model` | `engine/config.ts` |
 | `LOCALCODE_MODEL_PATH` | *not derived* | — | `engine/config.ts` |
 | `LOCALCODE_NATIVE_TOOLS` | `false` | — | `engine/engine/callModel.ts` |

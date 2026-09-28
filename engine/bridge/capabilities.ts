@@ -26,6 +26,7 @@
  */
 import { callTouchesSealed, setTaskSealedPaths } from '../tools/sealedPaths.js'
 import { isS5EnforcementEnabled } from '../config.js'
+import { isUnattendedMission } from '../missionEnv.js'
 
 /** The engine can hide a held-out gate from the mission it is grading (F37). */
 export const CAP_SEALED_GATES = 'sealed-gates'
@@ -44,6 +45,17 @@ export const CAP_SEALED_GATES = 'sealed-gates'
 export const CAP_S5_ADVISORY = 's5-advisory'
 
 /**
+ * Phase 5 Task 1: S5 enforcement is on, but this process is an unattended
+ * mission, where a decision acts only when every rule behind it has EARNED
+ * authority (`engine/s5/ruleAuthority.ts`: legacy reads `advisory` in a
+ * mission). Again a word for the safe state: an engine that predates the
+ * per-rule gate cannot say it, so the driver still refuses it. The ledger
+ * records each decision's `authority`/`enforced`, so an earned act is visible
+ * in the labels rather than confounding them silently.
+ */
+export const CAP_S5_EARNED_ONLY = 's5-earned-only'
+
+/**
  * A path that cannot collide with a real instrument, and says what it is to
  * anyone who finds it in a log. The probe must never seal a file that exists:
  * `setTaskSealedPaths` reads the parent directory to decide whether to seal it
@@ -57,6 +69,8 @@ type Wiring = {
   probe: (command: string) => boolean
   unseal: () => void
   s5Enforcing: () => boolean
+  /** Same predicate `RuleAuthority.authorityOf` reads; optional so a wiring without it never claims earned-only. */
+  unattended?: () => boolean
 }
 
 const LIVE: Wiring = {
@@ -67,6 +81,7 @@ const LIVE: Wiring = {
   // decision. F42: a limit read in one place and enforced in another is two
   // limits, and the one the operator sets is whichever is not the enforcing one.
   s5Enforcing: () => isS5EnforcementEnabled(),
+  unattended: () => isUnattendedMission(),
 }
 
 /**
@@ -100,8 +115,9 @@ export function governanceCapabilities(wiring: Wiring = LIVE): string[] {
   // one: two guarantees sharing a failure path is one guarantee.
   try {
     if (!wiring.s5Enforcing()) caps.push(CAP_S5_ADVISORY)
+    else if (wiring.unattended?.() === true) caps.push(CAP_S5_EARNED_ONLY)
   } catch (e) {
-    console.log(`[capability] ${CAP_S5_ADVISORY} probe threw, not advertised: ${(e as Error)?.message ?? e}`)
+    console.log(`[capability] ${CAP_S5_ADVISORY}/${CAP_S5_EARNED_ONLY} probe threw, not advertised: ${(e as Error)?.message ?? e}`)
   }
   return caps
 }

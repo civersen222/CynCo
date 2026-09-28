@@ -295,6 +295,15 @@ export function sealedDispatchRefusal({ sealedCount, capabilities }) {
 export const CAP_S5_ADVISORY = 's5-advisory'
 
 /**
+ * Phase 5 Task 1: the other safe word. S5 enforcement is on, but the engine is
+ * an unattended mission, where only a rule with EARNED authority may act (legacy
+ * reads advisory in a mission — engine/s5/ruleAuthority.ts). Spelled like
+ * CAP_S5_EARNED_ONLY in engine/bridge/capabilities.ts (pinned by
+ * s5DispatchRefusal.test.ts).
+ */
+export const CAP_S5_EARNED_ONLY = 's5-earned-only'
+
+/**
  * F59: may this mission be measured on THIS engine? Null to dispatch, a sentence
  * to print and refuse on.
  *
@@ -314,17 +323,23 @@ export const CAP_S5_ADVISORY = 's5-advisory'
  *
  * Unlike the seal guard, this applies to every mission. A mission with nothing
  * withheld has its labels confounded just as thoroughly.
+ *
+ * Phase 5 Task 1: `s5-earned-only` also dispatches. Only a rule that has earned
+ * authority on the outcome ledger can act under it, and each decision's
+ * `authority`/`enforced` reaches the ledger row, so an act is measured, not a
+ * hidden confound. An engine that can say neither word is still refused.
  */
 export function s5DispatchRefusal({ capabilities }) {
-  if (Array.isArray(capabilities) && capabilities.includes(CAP_S5_ADVISORY)) return null
+  if (Array.isArray(capabilities)
+    && (capabilities.includes(CAP_S5_ADVISORY) || capabilities.includes(CAP_S5_EARNED_ONLY))) return null
 
   const said = capabilities == null
     ? 'the engine advertised no capabilities at all (a build older than this check cannot say the word)'
     : `the engine advertised [${capabilities.join(', ')}]`
-  return `S5 enforcement may be live in this engine: ${said}, and the word for a capped `
-    + 'governor is absent. S5 can restrict the mission\'s tools mid-run (F7) and every '
+  return `S5 enforcement may be live in this engine: ${said}, and neither word for a governed `
+    + `governor (${CAP_S5_ADVISORY}, ${CAP_S5_EARNED_ONLY}) is present. S5 can restrict the mission's tools mid-run (F7) and every `
     + 'outcome label it produces would partly measure the governor rather than the work. '
-    + 'Restart the engine with LOCALCODE_S5_ENFORCE=false and re-dispatch.'
+    + 'Restart the engine under dispatch-mission.sh (earned rules only) or with LOCALCODE_S5_ENFORCE=false (everything advisory) and re-dispatch.'
 }
 
 /** `commandAssertion` is re-exported so the visible form has one definition. */

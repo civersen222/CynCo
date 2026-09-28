@@ -1,0 +1,5 @@
+{"missionId":"s00","prefixTurns":16,"turnsInPrefix":16,"label":false,"features":{"signal.mean":0.05,"noise.mean":0},"leakGuard":true}
+{"missionId":"s01","prefixTurns":16,"turnsInPrefix":16,"label":true,"features":{"signal.mean":0.6,"noise.mean":0.37},"leakGuard":true}
+{"missionId":"s02","prefixTurns":16,"turnsInPrefix":16,"label":false,"features":{"signal.mean":0.075,"noise.mean":0.74},"leakGuard":true}
+{"missionId":"s03","prefixTurns":16,"turnsInPrefix":16,"label":true,"features":{"signal.mean":0.625,"noise.mean":0.11},"leakGuard":true}
+{"missionId":"s04","prefixTurns":16,"turnsInPrefix":16,"label":false,"features":{"signal.mean":0.1,"noise.mean":0.48},"leakGuard":true}

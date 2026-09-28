@@ -68,6 +68,21 @@ describe('RuleAuthority', () => {
     expect(a.logLine()).toBe('[s5] rule authority: earned (2 predictive of 4)')
   })
 
+  it('an outcome-model row (M1.*, source "model") is never read as an S5 rule, even when PREDICTIVE', () => {
+    const path = ruleVerdictsPath(home())
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, JSON.stringify({ schema: 1, version: 1, predictive: ['C7', 'M1.gbt'], history: [], rules: {
+      C7: { verdict: 'PREDICTIVE' },
+      'M1.gbt': { verdict: 'PREDICTIVE', source: 'model', scope: 'holdout' },
+    } }))
+    const a = RuleAuthority.load(path)
+    expect(a.authorityOf(['C7'])).toBe('earned')
+    expect(a.authorityOf(['M1.gbt'])).toBe('advisory')
+    expect(a.verdictOf('M1.gbt')).toBeNull()
+    expect(a.predictiveCount()).toBe(1)
+    expect(a.total()).toBe(1)
+  })
+
   it('a corrupt file is legacy WITH a warning, never a crash', () => {
     const path = ruleVerdictsPath(home())
     mkdirSync(dirname(path), { recursive: true })

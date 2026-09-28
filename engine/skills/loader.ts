@@ -5,8 +5,8 @@
 // the prose body is read lazily from `bodyPath` when a skill actually runs.
 
 import * as fs from 'fs'
-import * as os from 'os'
 import * as path from 'path'
+import { cyncoHome } from '../paths.js'
 import { SKILL_NAME_RE, validateFrontmatter, type Skill, type SkillIndexEntry } from './types.js'
 
 /** Parse YAML using Bun's built-in parser, with npm `yaml` fallback. */
@@ -23,10 +23,10 @@ export function builtinSkillsDir(): string {
   return path.join(import.meta.dirname, 'builtins')
 }
 
-/** The per-user workspace skills directory (`~/.cynco/skills`). */
+/** The per-user workspace skills directory, `<cyncoHome()>/skills` (`~/.cynco/skills` by default). */
 export function workspaceSkillsDir(): string {
-  const home = process.env.HOME || os.homedir()
-  return path.join(home, '.cynco', 'skills')
+  // Under cyncoHome(), not HOME: a temp CYNCO_HOME must own its skills too (F161 residual, Phase 5).
+  return path.join(cyncoHome(), 'skills')
 }
 
 /**

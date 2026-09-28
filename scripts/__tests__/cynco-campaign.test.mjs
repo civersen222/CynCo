@@ -6,6 +6,7 @@ import { CampaignState } from '../cynco-campaign-state.mjs'
 import { promotionProposal } from '../cynco-ideation.mjs'
 import { readSeats, writeSeats } from '../cynco-proposals.mjs'
 import { defaultIo as calibrateIo } from '../cynco-campaign-calibrate.mjs'
+import { writeRuleVerdicts as realWriteRuleVerdicts } from '../cynco-rule-verdicts.mjs'
 import { mkdtempSync, mkdirSync, copyFileSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -89,6 +90,11 @@ const inertTriples = {
   readLedgerRows: () => [],
 }
 
+// Final review M5 (T7-M3): the fault path computes a board too, and without
+// these seams it falls through to defaultIo — the ~160 MB shard walk and the
+// REAL home's rule-verdicts.json. A literal fault io spreads this in.
+const faultIo = () => ({ readLedgerRows: () => [], datasetsHome: () => mkdtempSync(join(tmpdir(), 'ds-faultio-')), economics: () => null })
+
 /** A gate-lines summary with `held` of `n` CynCo lines and `hHeld` of `hN` human ones. */
 const gateLineSummary = (held, n, hHeld, hN) => summarizeGateLines([
   ...Array.from({ length: held }, (_, i) => ({ author: 'cynco', outcome: 'held', lineId: `c${i}` })),
@@ -169,6 +175,7 @@ describe('runWave', () => {
       readRow: () => null,
       salvageOf: () => null,
       notify: async (t) => { seen.notified = t; return true },
+      ...faultIo(),
     })
     expect(rec.decision.kind).toBe('fault')
     expect(rec.decision.why).toMatch(/without a ledger row/)
@@ -194,6 +201,7 @@ describe('runWave', () => {
       readRow: () => null,
       salvageOf: () => null,
       notify: async (t) => { seen.notified = t; return true },
+      ...faultIo(),
     })
     expect(rec.decision.kind).toBe('fault')
     expect(rec.decision.why).toMatch(/pid 2544 was already invisible/)
@@ -211,10 +219,52 @@ describe('runWave', () => {
       readRow: () => null,
       salvageOf: () => null,
       notify: async () => true,
+      ...faultIo(),
     })
     expect(rec.decision.kind).toBe('fault')
     expect(rec.decision.why).toMatch(/wall clock/)
     expect(state.state.waveCount).toBe(1)
+  })
+
+  // Task 2 review N1 + Task 3 review M2: a no-row fault spent GPU time and a
+  // wave. Its record carries the wall clock since dispatch as durationS (else
+  // the pooled PASS/GPU-h is null for good) and a board reading (else the
+  // dashboard's last board undercounts the campaign's waves).
+  it('a no-row fault carries durationS = wall clock since dispatch, and a board that counts it', async () => {
+    const state = freshState()
+    const home = mkdtempSync(join(tmpdir(), 'ds-fault-'))
+    let dispatchedMs = null
+    const rec = await runWave(spec, state, {
+      writeBrief: (p) => p,
+      dispatch: async () => { dispatchedMs = Date.now(); return { driverLog: 'C:/tmp/d.log' } },
+      waitForDriver: async () => ({ exited: false }),
+      readRow: () => null,
+      salvageOf: () => null,
+      notify: async () => true,
+      // 2 h 30 s after the dispatch stamp
+      now: () => Date.parse(state.state.inFlight?.dispatchedAt ?? new Date(dispatchedMs).toISOString()) + 7230_000,
+      datasetsHome: () => home, readLedgerRows: () => [], economics: () => null,
+    })
+    expect(rec.decision.kind).toBe('fault')
+    expect(rec.durationS).toBe(7230)
+    expect(rec.durationFrom).toBe('wall-clock')
+    expect(rec.scoreboard).toMatchObject({ id: 'c8', decided: false, decision: 'fault', waves: 1, gpuHours: 7230 / 3600, gpuHoursMissing: [] })
+    expect(state.waves().at(-1).scoreboard).toEqual(rec.scoreboard)
+  })
+
+  it('a board that throws on the fault path is { error } and the fault is still recorded', async () => {
+    const state = freshState()
+    const rec = await runWave(spec, state, {
+      writeBrief: (p) => p,
+      dispatch: async () => ({ driverLog: 'C:/tmp/d.log' }),
+      waitForDriver: async () => ({ exited: false }),
+      readRow: () => null, salvageOf: () => null, notify: async () => true,
+      readLedgerRows: () => [], scoreboard: () => { throw new Error('boom') },
+    })
+    expect(rec.decision.kind).toBe('fault')
+    expect(rec.scoreboard).toEqual({ error: 'boom' })
+    expect(state.state.waveCount).toBe(1)
+    expect(state.waves()).toHaveLength(1)
   })
 
   // Ruling 7: the advisory occupant may not share the GPU with the wave.
@@ -333,6 +383,9 @@ describe('runWave', () => {
     expect(state.state.waveCount).toBe(1)
     expect(state.waves()).toHaveLength(1)
     expect(new CampaignState(state.dir).load().state.waveCount).toBe(1)
+    // the row's own duration wins over the wall clock (Task 2 review N1)
+    expect(rec.durationS).toBe(10)
+    expect(rec.durationFrom).toBe('row')
   })
 
   it('never lets a throwing notify cost the wave record', async () => {
@@ -397,6 +450,8 @@ describe('runWave with an adopted row', () => {
       writeBrief: (p) => { seen.briefs++; return p },
       dispatch: async () => { seen.dispatched++; return { missionId: 'nope' } },
       waitForDriver: async () => { throw new Error('waitForDriver must not run for an adopted row') },
+      // T7-M1: the HEAD-vs-base check guards a DISPATCH; an adopted wave already ran.
+      repoHead: () => { throw new Error('repoHead must not run for an adopted row') },
       engineLive: async () => false,
       ideate: async () => { seen.ideated++; return { ideation: null } },
       readRow: (missionId) => ({ missionId, briefFile: 'docs/civkings-redesign-briefs/c8-wave1.txt', exitReason: 'timeout', durationS: 28824, commitRange: { base: '1d03308', head: '1bc0f8c' }, outcome: 'landed', markerSeen: false, toolStats: {} }),
@@ -415,6 +470,9 @@ describe('runWave with an adopted row', () => {
     expect(seen.ideated).toBe(0)
     expect(rec.wave).toBe(1)
     expect(rec.missionId).toBe('c8-wave1-1788634174399')
+    // Phase 5 ruling 2: a hand-off is a human intervention, and the record says so
+    expect(rec.adopted).toBe(true)
+    expect(rec.scoreboard.humanInterventionsPerWave).toMatchObject({ adopted: 1, value: 1 })
     expect(seen.patched.missionId).toBe('c8-wave1-1788634174399')
     expect(seen.log).toMatch(/^## C8 wave 1 — c8-wave1-1788634174399/)
     expect(seen.files).toContain('docs/civkings-redesign-briefs/campaign-log.md')
@@ -747,6 +805,9 @@ describe('inFlightRefusal / adoptInFlight', () => {
     const r = await adoptInFlight(spec, state, { missionIdFrom: () => { throw new Error('ENOENT') }, pidAlive: () => false, notify: async () => true })
     expect(r.kind).toBe('fault')
     expect(r.record.decision.why).toMatch(/gone and wrote no ledger row/)
+    // the operator's --adopt-inflight is on the record even when it found nothing to grade
+    expect(r.record.adopted).toBe(true)
+    expect(new CampaignState(state.dir).waves().at(-1).adopted).toBe(true)
     const reloaded = new CampaignState(state.dir).load().state
     expect(reloaded.inFlight).toBeUndefined()
     expect(reloaded.waveCount).toBe(2)
@@ -1372,12 +1433,14 @@ describe('main routes the authoring verbs before it loads a campaign spec', () =
     } }
   }
 
-  it('--author c9 reaches the author module with no c9.campaign.json anywhere', async () => {
-    expect(existsSync('docs/civkings-redesign-briefs/c9.campaign.json')).toBe(false)
+  // c10: C9's spec was sealed on 2026-09-26 (Phase 5), so the "no spec anywhere"
+  // precondition now uses the next unauthored line.
+  it('--author c10 reaches the author module with no c10.campaign.json anywhere', async () => {
+    expect(existsSync('docs/civkings-redesign-briefs/c10.campaign.json')).toBe(false)
     const s = stub()
-    expect(await main(['--author', 'c9'], { authorModule: s.authorModule })).toBe(0)
+    expect(await main(['--author', 'c10'], { authorModule: s.authorModule })).toBe(0)
     expect(s.calls).toHaveLength(1)
-    expect(s.calls[0].argv).toEqual(['--author', 'c9'])
+    expect(s.calls[0].argv).toEqual(['--author', 'c10'])
     // the runner's own helpers are what travel over, not an import back
     expect(Object.keys(s.calls[0].io.helpers).sort()).toEqual(['appendLog', 'applyProposalDecision', 'dispatchEnv', 'dispatchRaw', 'missionIdFrom', 'notify', 'readRow', 'releaseLock', 'seatAuthority', 'takeLock', 'waitForDriver'])
   })
@@ -1712,12 +1775,12 @@ describe('the rule verdicts at VERDICT', () => {
     const home = mkdtempSync(join(tmpdir(), 'rv-home-'))
     const state = freshState()
     const rec = await runWave(spec, state, io({ readLedgerRows: ledger, datasetsHome: () => home }))
-    expect(rec.ruleVerdicts).toEqual({ version: 1, predictive: ['X'], total: 2 })
+    expect(rec.ruleVerdicts).toEqual({ version: 1, predictive: ['X'], total: 2, rules: 2, modelRows: 0 })
     const f = JSON.parse(readFileSync(join(home, 'datasets', 'rule-verdicts.json'), 'utf8'))
     expect(f).toMatchObject({ schema: 1, version: 1, campaign: 'c8', predictive: ['X'] })
     expect(f.rules.X.verdict).toBe('PREDICTIVE')
     // The persisted record carries it too, not only the returned one.
-    expect(state.waves().at(-1).ruleVerdicts).toEqual({ version: 1, predictive: ['X'], total: 2 })
+    expect(state.waves().at(-1).ruleVerdicts).toEqual({ version: 1, predictive: ['X'], total: 2, rules: 2, modelRows: 0 })
   })
 
   it('reuses the rows the triples export already read instead of reading the ledger twice', async () => {
@@ -1727,7 +1790,7 @@ describe('the rule verdicts at VERDICT', () => {
       readLedgerRows: () => { throw new Error('the ledger must not be read a second time') },
       datasetsHome: () => home,
     }))
-    expect(rec.ruleVerdicts).toEqual({ version: 1, predictive: ['X'], total: 2 })
+    expect(rec.ruleVerdicts).toEqual({ version: 1, predictive: ['X'], total: 2, rules: 2, modelRows: 0 })
   })
 
   it('a verdict file that will not write costs the wave nothing', async () => {
@@ -1831,6 +1894,232 @@ describe('the autopoiesis checklist at VERDICT', () => {
     expect(rec.decision.kind).toBe('next')
     expect(rec.autopoiesis).toEqual({ assessError: 'boom' })
     expect(entry).toMatch(/^- Autopoiesis: UNASSESSED — boom$/m)
+  })
+})
+
+// ── Phase 5 ruling 2: the scoreboard at VERDICT ─────────────────────────────
+
+describe('the scoreboard at VERDICT', () => {
+  const io = (over = {}) => ({
+    writeBrief: (p) => p,
+    dispatch: async () => ({ missionId: 'c8-wave1-1' }),
+    waitForDriver: async () => ({ exited: true }),
+    readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 7200, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', markerSeen: true, identityGuard: { passed: true }, toolStats: {},
+      operatorNotes: [{ source: 'operator', deliveredAtIteration: 4, dropped: null }] }),
+    commitsBetween: () => [{ sha: 'h', subject: 'C8 commit 1' }, { sha: 'i', subject: 'C8 commit 2' }],
+    grade: async () => g(), checkIdentity: okIdentity,
+    salvageOf: () => null,
+    patchRow: () => {},
+    commit: () => ({ sha: 'v1' }),
+    notify: async () => true,
+    economics: () => ['VERDICT: frontier spent $10.00 SUPERVISING (development $1.00 and'],
+    appendLog: () => {},
+    // one temp datasets dir per io: the verdicts the VERDICT writes are the ones it reads
+    datasetsHome: ((d) => () => d)(mkdtempSync(join(tmpdir(), 'ds-sb-'))),
+    ...inertTriples,
+    ...over,
+  })
+
+  it('records rec.scoreboard with this wave in it and prints the line right after the autopoiesis line', async () => {
+    const state = freshState()
+    let entry = null
+    // no verdict file for this one, on purpose: the null path of perRulePrecision
+    const rec = await runWave(spec, state, io({ appendLog: (t) => { entry = t }, readRuleVerdicts: () => null }))
+    // the per-wave inputs are on the record itself
+    expect(rec.durationS).toBe(7200)
+    expect(rec.outcome.commitsLanded).toBe(2)
+    expect(rec.adopted).toBe(false)
+    expect(rec.scoreboard).toMatchObject({ id: 'c8', decided: false, decision: 'next', waves: 1, gpuHours: 2, passRatePerGpuHour: null, wavesPerCampaign: null,
+      // calibration 1 fail → this wave's 1 fail, 2 commits landed
+      gateLinesFixedPerLandedWave: { value: 0, landedWaves: 1, fixed: 0 },
+      humanInterventionsPerWave: { value: 1, notes: 1 }, perRulePrecision: null, supervisionDollarsPerWave: 10 })
+    expect(entry).toMatch(/^- Autopoiesis: .*\n- Scoreboard: PASS\/GPU-h open \| waves 1 so far \(open\) \| lines fixed per landed wave 0\.00 \| human interventions per wave 1\.00 \| rules predictive null \(no rule-verdicts\.json/m)
+    // stored on the record the dashboard reads
+    expect(state.waves().at(-1).scoreboard).toEqual(rec.scoreboard)
+  })
+
+  it('reads the rule verdicts the VERDICT just wrote', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'ds-sb-'))
+    const rec = await runWave(spec, freshState(), io({ datasetsHome: () => home, readLedgerRows: () => [] }))
+    expect(rec.ruleVerdicts).not.toBeNull()
+    expect(rec.scoreboard.perRulePrecision).toMatchObject({ predictive: 0, total: rec.ruleVerdicts.total })
+  })
+
+  it('a PASS wave decides the campaign on the board', async () => {
+    const pass = g({ verified: true, gate: { ...g().gate, terminator: 'PASS', fails: [], failCount: 0, exit: 0 } })
+    const rec = await runWave(spec, freshState(), io({ grade: async () => pass }))
+    expect(rec.decision.kind).toBe('pass')
+    expect(rec.scoreboard).toMatchObject({ decided: true, decision: 'pass', wavesPerCampaign: 1, gateLinesFixedPerLandedWave: { fixed: 1, landedWaves: 1 } })
+    expect(rec.scoreboard.passRatePerGpuHour).toBeCloseTo(0.5, 10)
+  })
+
+  it('the board reads the FINAL decision: an identity fault after the append is not a pass', async () => {
+    const pass = g({ verified: true, gate: { ...g().gate, terminator: 'PASS', fails: [], failCount: 0, exit: 0 } })
+    const rec = await runWave(spec, freshState(), io({ grade: async () => pass, checkIdentity: () => ({ ok: false, problems: ['gate does not exist'] }) }))
+    expect(rec.decision.kind).toBe('fault')
+    expect(rec.scoreboard).toMatchObject({ decided: false, decision: 'fault' })
+  })
+
+  it('an economics script that did not run (null from the capped reader) is named on the board and prints no economics', async () => {
+    let entry = null
+    const rec = await runWave(spec, freshState(), io({ economics: () => null, appendLog: (t) => { entry = t } }))
+    expect(rec.decision.kind).toBe('next')
+    expect(rec.scoreboard.supervisionDollarsPerWave).toBeNull()
+    expect(rec.scoreboard.unmeasured).toContain('supervisionDollarsPerWave: no economics line (the economics script did not run)')
+    expect(entry).not.toMatch(/Economics after this wave/)
+  })
+
+  it('a scoreboard that throws is recorded as { error } and costs the wave nothing', async () => {
+    let entry = null
+    const rec = await runWave(spec, freshState(), io({ scoreboard: () => { throw new Error('boom') }, appendLog: (t) => { entry = t } }))
+    expect(rec.decision.kind).toBe('next')
+    expect(rec.scoreboard).toEqual({ error: 'boom' })
+    expect(entry).toMatch(/^- Scoreboard: UNMEASURED — boom$/m)
+  })
+})
+
+// ── Phase 5 ruling 5: the outcome hindcast at VERDICT ───────────────────────
+
+describe('the outcome hindcast at VERDICT', () => {
+  const sweep = { kind: 'withheld', killed: 1, total: 1, survived: [] }
+  // 12 held-out failures and 8 held-out successes, plus training rows the model never scored.
+  const ledger = () => [
+    ...Array.from({ length: 12 }, (_, i) => ({ missionId: `hf${i}`, outcome: 'failed', verified: false, mutationSweep: sweep })),
+    ...Array.from({ length: 8 }, (_, i) => ({ missionId: `hs${i}`, outcome: 'landed', verified: true, mutationSweep: sweep })),
+    ...Array.from({ length: 6 }, (_, i) => ({ missionId: `t${i}`, outcome: 'landed', verified: true, mutationSweep: sweep })),
+  ]
+  const exported = (home) => () => ({ n: 26, n32: 20, nHindsight: 26, paths: { dataset: 'd16', dataset32: 'd32', hindsight: 'dh', out: join(home, 'datasets', 'outcome-model.json') } })
+  const io = (home, over = {}) => ({
+    writeBrief: (p) => p,
+    dispatch: async () => ({ missionId: 'c8-wave1-1' }),
+    waitForDriver: async () => ({ exited: true }),
+    readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 3600, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', markerSeen: true, identityGuard: { passed: true }, toolStats: {} }),
+    commitsBetween: () => [],
+    grade: async () => g(), checkIdentity: okIdentity,
+    salvageOf: () => null,
+    patchRow: () => {},
+    commit: () => ({ sha: 'v1' }),
+    notify: async () => true,
+    economics: () => [],
+    appendLog: () => {},
+    ...inertTriples,
+    readLedgerRows: ledger,
+    datasetsHome: () => home,
+    exportOutcomeDataset: exported(home),
+    ...over,
+  })
+  const verdictsIn = (home) => JSON.parse(readFileSync(join(home, 'datasets', 'rule-verdicts.json'), 'utf8'))
+  // A model file as scripts/cynco-outcome-model.py writes it: gbt fires on 8
+  // held-out failures and 2 held-out successes; lr on nothing.
+  const writeModel = (path) => {
+    mkdirSync(join(path, '..'), { recursive: true })
+    const ids = [...Array.from({ length: 12 }, (_, i) => `hf${i}`), ...Array.from({ length: 8 }, (_, i) => `hs${i}`)]
+    const gbtFired = new Set(['hf0', 'hf1', 'hf2', 'hf3', 'hf4', 'hf5', 'hf6', 'hf7', 'hs0', 'hs1'])
+    const preds = (fired) => ids.map(missionId => ({ missionId, pFail: fired.has(missionId) ? 0.8 : 0.2 }))
+    const m = (fired, auc) => ({ precision: null, recall: null, brier: 0.2, auc, predictions: preds(fired) })
+    writeFileSync(path, JSON.stringify({ schema: 1, version: 3, trainedAt: 't', prefixTurns: 16, nTrain: 6, nHoldout: 20, baseRate: 0.6, features: ['a', 'b'], droppedFeatures: [],
+      lengthFeature: null, models: { lr: m(new Set(), 0.5), gbt: m(gbtFired, 0.71) }, leakCheck: { lr: { aucPrefix: 0.5, aucHindsight: 0.6 }, gbt: { aucPrefix: 0.71, aucHindsight: 0.93 } },
+      secondary: { refusal: 'TOO FEW: train 5 < 30 or holdout 19 < 8' } }))
+  }
+
+  it('a python that fails is a fault on the record and one UNMEASURED line — the verdict goes on without model rows', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'hc-'))
+    // A stale model from an earlier wave must NOT be read when this retrain failed.
+    writeModel(join(home, 'datasets', 'outcome-model.json'))
+    let entry = null
+    const rec = await runWave(spec, freshState(), io(home, {
+      runHindcast: () => ({ status: 1, stdout: '', stderr: "Traceback (most recent call last):\nModuleNotFoundError: No module named 'sklearn'\n", elapsedMs: 40, timedOut: false, fault: null }),
+      appendLog: (t) => { entry = t },
+    }))
+    expect(rec.decision.kind).toBe('next')
+    expect(rec.hindcast).toEqual({ fault: "exit 1: Traceback (most recent call last): | ModuleNotFoundError: No module named 'sklearn'" })
+    expect(rec.ruleVerdicts).toEqual({ version: 1, predictive: [], total: 0, rules: 0, modelRows: 0 })
+    expect(Object.keys(verdictsIn(home).rules)).toEqual([])
+    expect(entry).toMatch(/^- Scoreboard: .*\n- Outcome hindcast: UNMEASURED — exit 1: .*No module named 'sklearn'$/m)
+  })
+
+  it('TOO FEW (exit 2) and a spawn fault read the same way; a throw from the seam too', async () => {
+    const tooFew = await runWave(spec, freshState(), io(mkdtempSync(join(tmpdir(), 'hc-')), { runHindcast: () => ({ status: 2, stdout: 'TOO FEW: train 12 < 30 or holdout 4 < 8\n', stderr: '', fault: null }) }))
+    expect(tooFew.hindcast).toEqual({ fault: 'exit 2: TOO FEW: train 12 < 30 or holdout 4 < 8' })
+    const faulted = await runWave(spec, freshState(), io(mkdtempSync(join(tmpdir(), 'hc-')), { runHindcast: () => ({ status: null, stdout: '', stderr: '', fault: { code: 'ENOENT', status: null, signal: null, elapsedMs: 3 } }) }))
+    expect(faulted.hindcast).toEqual({ fault: 'the hindcast did not run (code ENOENT, status null, after 3 ms)' })
+    const thrown = await runWave(spec, freshState(), io(mkdtempSync(join(tmpdir(), 'hc-')), { exportOutcomeDataset: () => { throw new Error('disk full') } }))
+    expect(thrown.decision.kind).toBe('next')
+    expect(thrown.hindcast).toEqual({ fault: 'disk full' })
+    expect(thrown.ruleVerdicts).not.toBeNull()
+  })
+
+  it('no eligible mission: python is never spawned', async () => {
+    const rec = await runWave(spec, freshState(), io(mkdtempSync(join(tmpdir(), 'hc-')), {
+      exportOutcomeDataset: () => ({ n: 0, paths: {} }),
+      runHindcast: () => { throw new Error('python must not be spawned for an empty dataset') },
+    }))
+    expect(rec.hindcast).toEqual({ fault: 'no eligible labeled mission at K = 16 turns — nothing to train on' })
+  })
+
+  it('a clean retrain puts M1.* into rule-verdicts.json through the rules\' test, and prints the line after the board', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'hc-'))
+    const seen = {}
+    let entry = null
+    const rec = await runWave(spec, freshState(), io(home, {
+      exportOutcomeDataset: (args) => { seen.export = args; return exported(home)() },
+      runHindcast: ({ paths }) => { seen.paths = paths; writeModel(paths.out); return { status: 0, stdout: 'ok', stderr: '', fault: null } },
+      appendLog: (t) => { entry = t },
+    }))
+    expect(seen.export.home).toBe(home)
+    expect(seen.export.rows).toHaveLength(26)
+    expect(seen.paths.out).toBe(join(home, 'datasets', 'outcome-model.json'))
+    const f = verdictsIn(home)
+    expect(f.rules['M1.gbt']).toMatchObject({ source: 'model', scope: 'holdout', n: 10, failures: 8, precision: 0.8 })
+    expect(f.rules['M1.lr']).toMatchObject({ source: 'model', n: 0, precision: null, verdict: 'TOO FEW — cannot tell' })
+    expect(rec.hindcast).toMatchObject({ version: 3, prefixTurns: 16, nHoldout: 20, baseRate: 0.6, features: 2, lengthFeature: null,
+      models: { gbt: { auc: 0.71 } }, secondary: { refusal: 'TOO FEW: train 5 < 30 or holdout 19 < 8' } })
+    expect(rec.hindcast.ladder['M1.gbt']).toEqual(f.rules['M1.gbt'])
+    expect(rec.ruleVerdicts.total).toBe(2)
+    expect(entry).toMatch(/^- Scoreboard: .*\n- Outcome hindcast: v3 at K = 16 turns on 20 held-out missions \(base 60%\): M1\.gbt precision 80% \[\d+, \d+\] on 10 fired p\(Holm\) \d\.\d{3} [A-Z][A-Z ]+; M1\.lr precision null on 0 fired p\(Holm\) null TOO FEW; leak check gbt AUC prefix 0\.71 \/ hindsight 0\.93, lr AUC prefix 0\.50 \/ hindsight 0\.60; K = 32 TOO FEW: train 5 < 30 or holdout 19 < 8$/m)
+  })
+
+  // Final review M1 (T5-M1): a writeRuleVerdicts that throws on the MODEL rows
+  // must not leave last wave's file for the engine — the rules are rewritten
+  // alone, and the hindcast says its ladder faulted.
+  it('a verdict write that throws only on the model rows → the rules are written alone, ladderFault on the hindcast', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'hc-'))
+    // Last wave's file, holding a verdict this wave must replace.
+    mkdirSync(join(home, 'datasets'), { recursive: true })
+    writeFileSync(join(home, 'datasets', 'rule-verdicts.json'), JSON.stringify({ schema: 1, version: 7, at: 'stale', rules: { I3: { verdict: 'PREDICTIVE' } }, predictive: ['I3'], history: [] }))
+    const calls = []
+    let entry = null
+    const rec = await runWave(spec, freshState(), io(home, {
+      runHindcast: ({ paths }) => { writeModel(paths.out); return { status: 0, stdout: 'ok', stderr: '', fault: null } },
+      writeRuleVerdicts: (args) => {
+        calls.push(args.modelRows.length)
+        if (args.modelRows.length) throw new Error('Holm over a NaN p')
+        return realWriteRuleVerdicts(args)
+      },
+      appendLog: (t) => { entry = t },
+    }))
+    expect(rec.decision.kind).toBe('next')
+    expect(calls).toEqual([2, 0])
+    const f = verdictsIn(home)
+    expect(f.at).not.toBe('stale')
+    expect(Object.keys(f.rules).filter(id => id.startsWith('M1.'))).toEqual([])
+    expect(f.predictive).toEqual([])
+    expect(rec.ruleVerdicts).toMatchObject({ modelRowsSkipped: true, predictive: [] })
+    expect(rec.hindcast.ladderFault).toBe('Holm over a NaN p')
+    expect(rec.hindcast.ladder).toBeNull()
+    expect(rec.hindcast.version).toBe(3)
+    expect(entry).toMatch(/- Outcome hindcast: v3 at K = 16 turns .*LADDER NOT WRITTEN \(Holm over a NaN p\) — rules rewritten alone; leak check/)
+  })
+
+  it('a throw with no model rows is the rules\' own: the outer catch logs it, the wave is not faulted', async () => {
+    const calls = []
+    const rec = await runWave(spec, freshState(), io(mkdtempSync(join(tmpdir(), 'hc-')), {
+      runHindcast: () => ({ status: 1, stdout: '', stderr: 'boom', fault: null }),
+      writeRuleVerdicts: (args) => { calls.push(args.modelRows.length); throw new Error('disk full') },
+    }))
+    expect(calls).toEqual([0])
+    expect(rec.decision.kind).toBe('next')
+    expect(rec.ruleVerdicts).toBeNull()
   })
 })
 

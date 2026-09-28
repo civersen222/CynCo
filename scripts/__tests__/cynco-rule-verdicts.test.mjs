@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
-import { RULE_VERDICTS_PATH, writeRuleVerdicts, readRuleVerdicts, RULE_VERDICTS_SCHEMA, RULE_VERDICTS_HISTORY_CAP } from '../cynco-rule-verdicts.mjs'
+import { RULE_VERDICTS_PATH, writeRuleVerdicts, readRuleVerdicts, RULE_VERDICTS_SCHEMA, RULE_VERDICTS_HISTORY_CAP, OUTCOME_MODEL_PATH, modelRowsFrom, main, verdictsLine } from '../cynco-rule-verdicts.mjs'
 import { analyse, ruleVerdictOf } from '../cynco-signal-validation.mjs'
 
 afterEach(() => { vi.restoreAllMocks() })
@@ -42,7 +42,7 @@ describe('writeRuleVerdicts', () => {
   it('writes the schema: one verdict per rule, the predictive ids, the ledger totals, a history entry', () => {
     const outPath = RULE_VERDICTS_PATH(home())
     const r = writeRuleVerdicts({ rows: predictiveRows(), campaign: 'c8', outPath, now: () => '2026-09-25T00:00:00.000Z' })
-    expect(r).toEqual({ version: 1, predictive: ['X'], total: 2 })
+    expect(r).toEqual({ version: 1, predictive: ['X'], total: 2, rules: 2, modelRows: 0 })
     const f = JSON.parse(readFileSync(outPath, 'utf8'))
     expect(f.schema).toBe(RULE_VERDICTS_SCHEMA)
     expect(f).toMatchObject({ version: 1, at: '2026-09-25T00:00:00.000Z', campaign: 'c8', predictive: ['X'] })
@@ -85,7 +85,7 @@ describe('writeRuleVerdicts', () => {
     const outPath = RULE_VERDICTS_PATH(home())
     writeRuleVerdicts({ rows: predictiveRows(), campaign: 'c8', outPath, now: () => 't1' })
     const r = writeRuleVerdicts({ rows: thinRows(), campaign: 'c8', outPath, now: () => 't2' })
-    expect(r).toEqual({ version: 2, predictive: [], total: 2 })
+    expect(r).toEqual({ version: 2, predictive: [], total: 2, rules: 2, modelRows: 0 })
     const f = JSON.parse(readFileSync(outPath, 'utf8'))
     expect(f.history).toHaveLength(2)
     expect(f.history[1]).toEqual({ version: 2, at: 't2', campaign: 'c8', predictive: [],
@@ -113,7 +113,7 @@ describe('writeRuleVerdicts', () => {
 
   it('an empty ledger writes a file with no rules — the engine reads that as "nothing earned"', () => {
     const outPath = RULE_VERDICTS_PATH(home())
-    expect(writeRuleVerdicts({ rows: [], campaign: 'c8', outPath })).toEqual({ version: 1, predictive: [], total: 0 })
+    expect(writeRuleVerdicts({ rows: [], campaign: 'c8', outPath })).toEqual({ version: 1, predictive: [], total: 0, rules: 0, modelRows: 0 })
     expect(JSON.parse(readFileSync(outPath, 'utf8')).rules).toEqual({})
   })
 
@@ -125,6 +125,137 @@ describe('writeRuleVerdicts', () => {
     const r = writeRuleVerdicts({ rows: predictiveRows(), campaign: 'c8', outPath })
     expect(r.version).toBe(1)
     expect(warn).toHaveBeenCalled()
+  })
+})
+
+// ── Phase 5 ruling 5: the outcome model enters the ladder as a rule would ────
+
+describe('modelRowsFrom', () => {
+  const model = { models: {
+    lr: { predictions: [{ missionId: 'a', pFail: 0.5 }, { missionId: 'b', pFail: 0.49 }, { missionId: 'gone', pFail: 0.9 }] },
+    gbt: { predictions: [{ missionId: 'a', pFail: 0.1 }, { missionId: 'b', pFail: 0.95 }] },
+  } }
+  const rows = [{ missionId: 'a' }, { missionId: 'b' }, { missionId: 'train-only' }]
+
+  it('one synthetic rule per model: fired = pFail ≥ 0.5, scope = the held-out ids the ledger still has', () => {
+    const out = modelRowsFrom(model, rows)
+    expect(out.map(m => m.id)).toEqual(['M1.gbt', 'M1.lr'])
+    const lr = out.find(m => m.id === 'M1.lr')
+    expect(lr.source).toBe('model')
+    expect([...lr.scope].sort()).toEqual(['a', 'b'])
+    expect([...lr.fired]).toEqual(['a'])
+    expect([...out.find(m => m.id === 'M1.gbt').fired]).toEqual(['b'])
+  })
+
+  it('no model file, or no models in it, is no rows', () => {
+    expect(modelRowsFrom(null, rows)).toEqual([])
+    expect(modelRowsFrom({}, rows)).toEqual([])
+  })
+
+  it('lives at <home>/datasets/outcome-model.json', () => {
+    expect(OUTCOME_MODEL_PATH('H').replace(/\\/g, '/')).toBe('H/datasets/outcome-model.json')
+  })
+})
+
+describe('writeRuleVerdicts with model rows', () => {
+  // 20 held-out missions (12 failures, 8 successes) and 10 training missions
+  // the model never scored. The model fires on 10 held-out missions: 8
+  // failures and 2 successes.
+  const withId = (row, missionId) => ({ ...row, missionId })
+  const holdoutRows = () => [
+    ...Array.from({ length: 12 }, (_, i) => withId(failed([]), `hf${i}`)),
+    ...Array.from({ length: 8 }, (_, i) => withId(landed([]), `hs${i}`)),
+  ]
+  const trainRows = () => Array.from({ length: 10 }, (_, i) => withId(i % 2 ? landed([]) : failed([]), `t${i}`))
+  const firedIds = ['hf0', 'hf1', 'hf2', 'hf3', 'hf4', 'hf5', 'hf6', 'hf7', 'hs0', 'hs1']
+  const modelRow = () => ({ id: 'M1.gbt', source: 'model', fired: new Set(firedIds), scope: new Set(holdoutRows().map(r => r.missionId)) })
+
+  it('gets exactly the numbers `analyse` gives a rule firing on the same missions, over the holdout only', () => {
+    const outPath = RULE_VERDICTS_PATH(home())
+    writeRuleVerdicts({ rows: [...holdoutRows(), ...trainRows()], campaign: 'c9', outPath, modelRows: [modelRow()] })
+    const f = JSON.parse(readFileSync(outPath, 'utf8'))
+    // The same missions as an ordinary rule 'R', over the 20 held-out rows alone.
+    const asRule = analyse(holdoutRows().map(r => firedIds.includes(r.missionId) ? { ...r, s5Decisions: [{ ruleIds: ['R'] }] } : r)).rules.find(r => r.id === 'R')
+    expect(asRule).toMatchObject({ labeled: 10, failures: 8, precision: 0.8 })
+    expect(f.rules['M1.gbt']).toMatchObject({
+      verdict: ruleVerdictOf(asRule), precision: asRule.precision, ci: asRule.ci, p: asRule.p, n: 10,
+      pAdjusted: asRule.pAdjusted, lift: asRule.lift, failures: 8, source: 'model', scope: 'holdout',
+    })
+    // lift is against the HOLDOUT base (12/20), not the whole ledger's (17/30).
+    expect(f.rules['M1.gbt'].lift).toBeCloseTo(0.8 - 12 / 20, 10)
+    expect(f.rules['M1.gbt'].base).toBeCloseTo(12 / 20, 10)
+    expect(f.rules['M1.gbt'].scopeN).toBe(20)
+  })
+
+  it('the Holm family is the S5 rules and the model rows together', () => {
+    const outPath = RULE_VERDICTS_PATH(home())
+    // X is the PREDICTIVE rule from above; Y fires everywhere (p null, untested).
+    const rows = predictiveRows().map((r, i) => withId(r, `p${i}`))
+    const alone = analyse(rows).rules.find(r => r.id === 'X')
+    const scope = new Set(rows.map(r => r.missionId))
+    const m = { id: 'M1.lr', source: 'model', fired: new Set(rows.slice(0, 12).map(r => r.missionId)), scope }
+    writeRuleVerdicts({ rows, campaign: 'c9', outPath, modelRows: [m] })
+    const f = JSON.parse(readFileSync(outPath, 'utf8'))
+    // Two tested members (X and M1.lr, same p): each is corrected by 2 at the first step.
+    expect(f.rules.X.pAdjusted).toBeCloseTo(Math.min(1, alone.p * 2), 12)
+    expect(f.rules['M1.lr'].pAdjusted).toBeCloseTo(Math.min(1, alone.p * 2), 12)
+    expect(f.ledger.holmFamily).toBe(2)
+    expect(f.rules.X.source).toBeUndefined()
+  })
+
+  it('a model row that fired on nothing is written with no numbers, not zeros (F16)', () => {
+    const outPath = RULE_VERDICTS_PATH(home())
+    const quiet = { ...modelRow(), fired: new Set() }
+    writeRuleVerdicts({ rows: holdoutRows(), campaign: 'c9', outPath, modelRows: [quiet] })
+    const f = JSON.parse(readFileSync(outPath, 'utf8'))
+    expect(f.rules['M1.gbt']).toMatchObject({ verdict: 'TOO FEW — cannot tell', precision: null, p: null, pAdjusted: null, n: 0, source: 'model', scope: 'holdout' })
+  })
+
+  // Final review M2 (T5-M2): the version counts changes in what S5 may
+  // enforce. An M1 row appearing, vanishing or moving is on the record in
+  // `modelChanged`, never a version bump.
+  it('M1.* rows appearing or vanishing do not bump the version; the move is kept as modelChanged', () => {
+    const outPath = RULE_VERDICTS_PATH(home())
+    const rows = [...holdoutRows(), ...trainRows()]
+    const v1 = writeRuleVerdicts({ rows, campaign: 'c9', outPath, now: () => 't1' })
+    // wave N: the hindcast ran — M1.gbt appears.
+    const v2 = writeRuleVerdicts({ rows, campaign: 'c9', outPath, now: () => 't2', modelRows: [modelRow()] })
+    // wave N+1: the hindcast faulted — it vanishes.
+    const v3 = writeRuleVerdicts({ rows, campaign: 'c9', outPath, now: () => 't3' })
+    expect([v1.version, v2.version, v3.version]).toEqual([1, 1, 1])
+    const f = JSON.parse(readFileSync(outPath, 'utf8'))
+    expect(f.version).toBe(1)
+    expect(f.history.map(h => ({ version: h.version, at: h.at, changed: h.changed, modelChanged: h.modelChanged }))).toEqual([
+      { version: 1, at: 't1', changed: [], modelChanged: undefined },
+      { version: 1, at: 't2', changed: [], modelChanged: [{ id: 'M1.gbt', from: null, to: f.history[1].modelChanged[0].to }] },
+      { version: 1, at: 't3', changed: [], modelChanged: [{ id: 'M1.gbt', from: f.history[1].modelChanged[0].to, to: null }] },
+    ])
+    expect(f.history[1].modelChanged[0].to).toEqual(expect.any(String))
+    // Unchanged model rows add nothing.
+    writeRuleVerdicts({ rows, campaign: 'c9', outPath, now: () => 't4' })
+    expect(JSON.parse(readFileSync(outPath, 'utf8')).history).toHaveLength(3)
+  })
+
+  it('a rule move still bumps the version, and a model move in the same write rides on that entry', () => {
+    const outPath = RULE_VERDICTS_PATH(home())
+    const thin = thinRows().map((r, i) => withId(r, `hf${i}`))
+    writeRuleVerdicts({ rows: thin, campaign: 'c9', outPath, now: () => 't1' })
+    const rows = predictiveRows().map((r, i) => withId(r, `hf${i}`))
+    const m = { id: 'M1.lr', source: 'model', fired: new Set(rows.slice(0, 12).map(r => r.missionId)), scope: new Set(rows.map(r => r.missionId)) }
+    const r = writeRuleVerdicts({ rows, campaign: 'c9', outPath, now: () => 't2', modelRows: [m] })
+    expect(r.version).toBe(2)
+    const last = JSON.parse(readFileSync(outPath, 'utf8')).history.at(-1)
+    expect(last.version).toBe(2)
+    expect(last.changed.map(c => c.id)).toContain('X')
+    expect(last.changed.map(c => c.id)).not.toContain('M1.lr')
+    expect(last.modelChanged).toEqual([{ id: 'M1.lr', from: null, to: expect.any(String) }])
+  })
+
+  it('no model rows leaves the file exactly as before (no holmFamily recomputation of the rules)', () => {
+    const a = RULE_VERDICTS_PATH(home()), b = RULE_VERDICTS_PATH(home())
+    writeRuleVerdicts({ rows: predictiveRows(), campaign: 'c8', outPath: a, now: () => 't' })
+    writeRuleVerdicts({ rows: predictiveRows(), campaign: 'c8', outPath: b, now: () => 't', modelRows: [] })
+    expect(readFileSync(b, 'utf8')).toBe(readFileSync(a, 'utf8'))
   })
 })
 
@@ -151,5 +282,75 @@ describe('readRuleVerdicts', () => {
     const f = readRuleVerdicts(outPath)
     expect(f.predictive).toEqual(['X'])
     expect(existsSync(outPath)).toBe(true)
+  })
+})
+
+// Final review M7 (T7-M5 + `--with-hindcast`): the CLI names rules and model
+// rows apart, and with `--with-hindcast` runs the runner's own sequence —
+// export → model → verdicts. The python seam is stubbed; every file lands in a
+// temp `--datasets-dir`; `cyncoHome` throws, so the real home is never read.
+describe('the CLI (main)', () => {
+  const noHome = () => { throw new Error('the real home must not be touched') }
+  const turnsOf = (n) => Array.from({ length: n }, (_, i) => ({ toolSuccessRate: i % 2 ? 1 : 0.5, health: 'healthy' }))
+  // 12 failures firing X and Y, 12 successes firing Y — X PREDICTIVE, Y CONSTANT — each with 20 turns.
+  const ledgerRows = () => predictiveRows().map((r, i) => ({ ...r, missionId: `m${i}`, turns: turnsOf(20) }))
+  const modelAt = (path) => {
+    mkdirSync(dirname(path), { recursive: true })
+    const preds = (fired) => ledgerRows().map(r => ({ missionId: r.missionId, pFail: fired(r) ? 0.9 : 0.1 }))
+    writeFileSync(path, JSON.stringify({ schema: 1, version: 4, trainedAt: 't', prefixTurns: 16, nTrain: 20, nHoldout: 24, baseRate: 0.5, features: ['a'], droppedFeatures: ['b', 'c'], lengthFeature: null,
+      models: { gbt: { precision: 1, recall: 1, brier: 0.1, auc: 0.9, predictions: preds(r => r.outcome === 'failed') }, lr: { precision: null, recall: null, brier: 0.3, auc: 0.5, predictions: preds(() => false) } },
+      leakCheck: { gbt: { aucPrefix: 0.9, aucHindsight: 0.95 }, lr: { aucPrefix: 0.5, aucHindsight: 0.5 } }, secondary: { refusal: 'TOO FEW: x' } }))
+  }
+
+  it('rules only: "N predictive of R rules" — the model rows never counted as rules', async () => {
+    const out = join(home(), 'rv.json')
+    const lines = []
+    expect(await main(['--out', out], { readLedger: predictiveRows, cyncoHome: noHome, log: (s) => lines.push(s) })).toBe(0)
+    expect(lines).toEqual([`rule verdicts v1: 1 predictive of 2 rules (X) → ${out}`])
+  })
+
+  it('verdictsLine prints the model rows beside the rules, as the scoreboard reads them', () => {
+    expect(verdictsLine({ version: 3, predictive: [], rules: 8, modelRows: 2, total: 10 }, 'P')).toBe('rule verdicts v3: 0 predictive of 8 rules (+2 model rows) (none) → P')
+  })
+
+  it('--with-hindcast runs export → model → verdicts into --datasets-dir, and prints the hindcast line', async () => {
+    const dir = join(home(), 'ds')
+    const lines = [], seen = {}
+    const code = await main(['--with-hindcast', '--datasets-dir', dir], {
+      readLedger: ledgerRows, cyncoHome: noHome, log: (s) => lines.push(s),
+      runHindcast: ({ paths }) => { seen.paths = paths; modelAt(paths.out); return { status: 0, stdout: 'ok', stderr: '', fault: null } },
+    })
+    expect(code).toBe(0)
+    // Every file in the temp dir, named as the runner names them.
+    expect(seen.paths).toMatchObject({ dataset: join(dir, 'outcome-dataset.jsonl'), dataset32: join(dir, 'outcome-dataset-k32.jsonl'),
+      hindsight: join(dir, 'outcome-dataset-hindsight.jsonl'), out: join(dir, 'outcome-model.json') })
+    expect(readdirSync(dir).sort()).toEqual(['outcome-dataset-hindsight.jsonl', 'outcome-dataset-k32.jsonl', 'outcome-dataset.jsonl', 'outcome-model.json', 'rule-verdicts.json'])
+    const f = JSON.parse(readFileSync(join(dir, 'rule-verdicts.json'), 'utf8'))
+    expect(f.rules['M1.gbt']).toMatchObject({ source: 'model', scope: 'holdout', n: 12, failures: 12 })
+    expect(f.rules['M1.lr']).toMatchObject({ source: 'model', n: 0 })
+    expect(lines[0]).toMatch(/^- Outcome hindcast: v4 at K = 16 turns on 24 held-out missions \(base 50%\): M1\.gbt precision 100% .* on 12 fired p\(Holm\) .*; M1\.lr precision null on 0 fired p\(Holm\) null TOO FEW; leak check gbt AUC prefix 0\.90 \/ hindsight 0\.95, lr AUC prefix 0\.50 \/ hindsight 0\.50; K = 32 TOO FEW: x; dropped 2 dead column\(s\)$/)
+    expect(lines[1]).toMatch(new RegExp(`^rule verdicts v1: \\d predictive of 2 rules \\(\\+2 model rows\\) \\(.*\\) → ${join(dir, 'rule-verdicts.json').replace(/\\/g, '\\\\')}$`))
+  })
+
+  it('a hindcast that fails prints UNMEASURED and writes the rules without model rows — as the runner does', async () => {
+    const dir = join(home(), 'ds')
+    const lines = []
+    await main(['--with-hindcast', '--datasets-dir', dir], {
+      readLedger: ledgerRows, cyncoHome: noHome, log: (s) => lines.push(s),
+      runHindcast: () => ({ status: 2, stdout: 'TOO FEW: train 3 < 30 or holdout 1 < 8\n', stderr: '', fault: null }),
+    })
+    expect(lines[0]).toBe('- Outcome hindcast: UNMEASURED — exit 2: TOO FEW: train 3 < 30 or holdout 1 < 8')
+    expect(lines[1]).toMatch(/^rule verdicts v1: 1 predictive of 2 rules \(X\) → /)
+    expect(Object.keys(JSON.parse(readFileSync(join(dir, 'rule-verdicts.json'), 'utf8')).rules)).toEqual(['X', 'Y'])
+  })
+
+  it('--out wins over --datasets-dir for the verdict file', async () => {
+    const dir = join(home(), 'ds'), out = join(home(), 'elsewhere.json')
+    await main(['--with-hindcast', '--datasets-dir', dir, '--out', out], {
+      readLedger: ledgerRows, cyncoHome: noHome, log: () => {},
+      runHindcast: ({ paths }) => { modelAt(paths.out); return { status: 0, stdout: '', stderr: '', fault: null } },
+    })
+    expect(existsSync(out)).toBe(true)
+    expect(existsSync(join(dir, 'rule-verdicts.json'))).toBe(false)
   })
 })

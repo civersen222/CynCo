@@ -2,6 +2,7 @@
 import { spawnSync } from 'node:child_process'
 import { gateLineVerdict } from './cynco-signal-validation.mjs'
 import { autopoiesisLine } from './cynco-autopoiesis.mjs'
+import { scoreboardLines } from './cynco-scoreboard.mjs'
 
 const today = () => new Date().toISOString().slice(0, 10)
 const h = (s) => (s / 3600).toFixed(2)
@@ -77,7 +78,36 @@ function identityLine(identity) {
   return identity.intact ? '- Identity: intact' : `- Identity: VIOLATED ${identity.violated.join(' ')}`
 }
 
-export function verdictEntry({ spec, wave, row, grade, decision, ideationRecord, economicsLines, denialAnalysis = null, denialScope = 'campaign', capProposal = null, governancePosiwid = null, gateLines = null, identity = null, autopoiesis = null }) {
+// Phase 5 ruling 5: the outcome hindcast (scripts/cynco-hindcast.mjs) and the
+// ladder's reading of each model row. The verdict is `ruleVerdictOf`'s string
+// cut at its dash (`TOO FEW`, `NO EVIDENCE`, `PREDICTIVE`, …). Unmeasured
+// reads null, never 0 (F16); a fault prints UNMEASURED with its reason, the
+// way the scoreboard's does. null (no reading taken) is no line. The entry
+// line carries the dropped-column COUNT only (28 names made it unreadable);
+// `{ detail: true }` — the `--scoreboard` verb — names them.
+export function hindcastLine(h, { detail = false } = {}) {
+  if (!h) return null
+  if (h.fault) return `- Outcome hindcast: UNMEASURED — ${h.fault}`
+  const pct = (v) => (typeof v === 'number' ? `${Math.round(v * 100)}%` : 'null')
+  const num = (v, d) => (typeof v === 'number' ? v.toFixed(d) : 'null')
+  const ladder = Object.entries(h.ladder ?? {}).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([id, r]) => {
+    const ci = Array.isArray(r?.ci) && r.n > 0 ? ` [${Math.round(r.ci[0] * 100)}, ${Math.round(r.ci[1] * 100)}]` : ''
+    const verdict = String(r?.verdict ?? 'no verdict').split(' — ')[0]
+    return `${id} precision ${pct(r?.precision)}${ci} on ${r?.n ?? 0} fired p(Holm) ${num(r?.pAdjusted, 3)} ${verdict}`
+  })
+  const leak = h.leakCheck
+    ? `leak check ${['gbt', 'lr'].filter(k => h.leakCheck[k]).map(k => `${k} AUC prefix ${num(h.leakCheck[k].aucPrefix, 2)} / hindsight ${num(h.leakCheck[k].aucHindsight, 2)}`).join(', ')}`
+    : 'leak check not run'
+  const length = h.lengthFeature ? `; LENGTH FEATURE ${h.lengthFeature} in the prefix` : ''
+  const dropped = h.droppedFeatures?.length ? `; dropped ${h.droppedFeatures.length} dead column(s)${detail ? `: ${h.droppedFeatures.join(', ')}` : ''}` : ''
+  const s = h.secondary
+  const secondary = !s ? '' : s.refusal ? `; K = 32 ${s.refusal}`
+    : `; K = ${s.prefixTurns ?? 32} gbt AUC ${num(s.models?.gbt?.auc, 2)}, lr AUC ${num(s.models?.lr?.auc, 2)}`
+  return `- Outcome hindcast: v${h.version ?? '?'} at K = ${h.prefixTurns ?? '?'} turns on ${h.nHoldout ?? '?'} held-out missions (base ${pct(h.baseRate)}): `
+    + `${ladder.length ? ladder.join('; ') : h.ladderFault ? `LADDER NOT WRITTEN (${h.ladderFault}) — rules rewritten alone` : 'no ladder reading'}; ${leak}${length}${secondary}${dropped}`
+}
+
+export function verdictEntry({ spec, wave, row, grade, decision, ideationRecord, economicsLines, denialAnalysis = null, denialScope = 'campaign', capProposal = null, governancePosiwid = null, gateLines = null, identity = null, autopoiesis = null, scoreboard = null, hindcast = null }) {
   const ts = row.toolStats ?? {}
   const inv = row.invariants
   const rejected = row.invariantsRejected === true
@@ -115,6 +145,12 @@ export function verdictEntry({ spec, wave, row, grade, decision, ideationRecord,
   // beside the identity reading its first criterion is.
   const apLine = autopoiesisLine(autopoiesis)
   if (apLine) lines.push(apLine)
+  // Phase 5 ruling 2: the four headline numbers, campaign to date
+  // (scripts/cynco-scoreboard.mjs). No board, no line.
+  lines.push(...scoreboardLines(scoreboard))
+  // Phase 5 ruling 5: the outcome hindcast, right after the board.
+  const hcLine = hindcastLine(hindcast)
+  if (hcLine) lines.push(hcLine)
   if (denialAnalysis?.invariants) {
     const pct = v => v === null ? '—' : (v * 100).toFixed(1) + '%'
     // The scope is part of the claim: a pooled reading is every run in the

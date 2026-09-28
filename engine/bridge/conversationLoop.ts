@@ -2048,11 +2048,11 @@ export class ConversationLoop {
               this.emit({ type: 'stream.token', text: '\n**Best-of-N:** No candidate produced a valid patch. Running single-pass fallback.\n', messageId: '' } as any)
             }
           } finally {
-            // Always clean up worktrees
-            wtManager.cleanupAll()
+            // Restore state first (hygiene: a throwing cleanup cannot leave emit muted), then ALWAYS remove the worktrees
             this.emit = originalEmit
             this.config.temperature = savedTemp
             this.executor.setCwd(mainCwd)
+            wtManager.cleanupAll()
           }
         } else {
           console.log('[bestOfN] Enabled but no test framework detected — skipping')

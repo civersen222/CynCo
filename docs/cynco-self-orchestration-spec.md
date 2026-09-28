@@ -682,6 +682,200 @@ by assertion. (Numbering: this is the mission prompt's Phase 4;
   put it (four commits past the fixture's pinned BASE `1b00179`, which is why
   the fixture names its BASE instead of reading HEAD).
 
+**Phase 5 — the evidence engine (shipped 2026-09-26).** Phase 4 made every
+reading a measured fact; Phase 5 moves the ledger's numbers by running the
+loop and measuring it, not by adding organs
+(`docs/superpowers/specs/2026-09-26-evidence-engine-phase5-design.md`, rulings
+1–10). Three deliverables: the scoreboard, the first learner entering the
+authority ladder honestly, and C9 sealed and ready for the runner.
+
+- **The scoreboard.** `scripts/cynco-scoreboard.mjs`, one pure module with one
+  spelling of each definition, read by every VERDICT (the entry's
+  `- Scoreboard:` line and `rec.scoreboard` on the wave record — fault records
+  included, since the Task 7 fix: a trailing fault no longer undercounts the
+  dashboard's waves), by `bun scripts/cynco-campaign.mjs <spec> --scoreboard`,
+  by `GET /api/campaign` and the dashboard's Campaign panel (a lazy import;
+  engine start does not depend on a scripts module). Per campaign and pooled
+  over RUNNER-DRIVEN campaigns. The definitions, verbatim from
+  `benchmark/cynco-ledger/README.md` ("Scoreboard"):
+  - `passRatePerGpuHour` = decided-PASS campaigns (`pass` or `pass-with-survivors`) ÷ Σ `durationS`/3600 over every wave of every runner-driven campaign. Per campaign: `decision === PASS ? 1 : 0` ÷ that campaign's GPU-hours; an undecided campaign prints `open`.
+  - `wavesPerCampaign` = waves to the decision; undecided campaigns print `N so far (open)` and are excluded from the pooled mean.
+  - `gateLinesFixedPerLandedWave` = Σ over waves with ≥ 1 landed commit of max(0, failsBefore − failsAfter) ÷ the number of such waves, where failsBefore is the previous wave's `gate.fails.length` (wave 1: `calibration.baseFails.length`) and failsAfter is this wave's. A wave that graded no gate (fault) is excluded and counted.
+  - `humanInterventionsPerWave` = (operator notes delivered + proposals with `decidedBy` ≠ `auto` + supervisor refusals + reseals + `--adopt-inflight` records) ÷ waves. This is the stated PROXY for "supervisor minutes per wave": minutes are not recorded anywhere, so the count of human acts is what can be measured; the economics script's supervision dollars per wave print beside it.
+  - `perRulePrecision` = from `rule-verdicts.json`: predictive count ÷ total, and the single best rule with its precision, CI and verdict.
+
+  Two readings the definitions needed on contact with the records: the rules
+  counted are the S5 rules only (`source !== 'model'`) — the learner's `M1.*`
+  rows share the file but are not rules, and the best of them is the sibling
+  field `perRulePrecision.learner`; and a fault record carries `durationS`
+  (the row's when one was read, else the wall clock since `dispatchedAt`,
+  marked `durationFrom: 'wall-clock'`), because one no-row fault without it
+  would null the pooled PASS/GPU-h for good. A wall-clock hour is an upper
+  bound, so a rate over one is a floor: the board carries
+  `gpuHoursUpperBound` and `passRatePerGpuHourIsLowerBound`, names the wave in
+  `unmeasured`, and every reader prints `PASS/GPU-h ≥ …` (final review I2). The wave record gained the
+  per-wave inputs: `durationS`, `outcome.commitsLanded` (the runner's
+  `commitsBetween` count, NOT `toolStats.commits`) and `adopted`. For C8,
+  reproduced from the campaign log: `PASS/GPU-h 0.065 | waves 3 | lines fixed
+  per landed wave 4.67 | human interventions per wave 0.33 | rules predictive
+  0/8 (best I3 58% NO EVIDENCE)`. Unmeasured is `null` with its reason (F16).
+- **The roadmap moves itself.** The runner's first dispatch of a `sealed`
+  line moves it to `running`; a PASS decision moves it to `done` just before
+  the verdict commit, after every step that can throw (`moveRoadmapLine`,
+  forward-only, `scripts/cynco-campaign.mjs`; final review I1 — a `done`
+  written earlier could outlive a fault), and the moved `roadmap.json` joins
+  that wave's commit — the verdict's, or the fault path's when a later step
+  throws — so the dirty-tree guard never sees it as foreign work. The roadmap
+  path is repo-relative (`docs/civkings-redesign-briefs/roadmap.json`,
+  injectable only as a test dependency), so the live smoke below does not
+  exercise it — the unit tests in
+  `scripts/__tests__/cynco-campaign-roadmap.test.mjs` prove both moves and the
+  throw cases.
+- **The S5 enforce pin is lifted, with two guards.** `dispatch-mission.sh`
+  no longer pins `LOCALCODE_S5_ENFORCE=false` (it defaults to `true`; setting
+  it `false` still caps everything at advisory). The engine's per-rule
+  authority (Phase 4) is the only gate, and two guards make the day it lands
+  identical to the day before: (a) `RuleAuthority.authorityOf` returns
+  `advisory`, not `legacy`, when no verdict file exists AND the engine is an
+  unattended mission (`isUnattendedMission()`, `engine/missionEnv.ts`, F161's
+  four keys) — its log line reads `[s5] rule authority: legacy (no verdict
+  file at …) (advisory in this unattended mission)`, and a mission never runs
+  the pre-Phase-4 enforce-everything path; (b) the real home's
+  `rule-verdicts.json` is written before the first mission (the live step
+  below). With enforcement on in a mission the engine advertises the new
+  capability word `s5-earned-only` (F59's "S5 capped" becomes "only earned
+  rules act"); the driver accepts `s5-advisory` or `s5-earned-only` and warns
+  on any enforced decision whose authority is not `earned`. The first
+  PREDICTIVE rule will act in a mission and its row will show
+  `enforced: true, authority: earned`; 0 of 8 rules are PREDICTIVE today.
+- **Best-of-N applies its winner (F162).** `extractPatch` trimmed the diff, so
+  `git apply` rejected every winner whose diff ended in a normal hunk line and
+  the engine fell back to single-pass every time — best-of-N paid for N
+  candidates and never applied one. The diff is now returned byte-for-byte,
+  pinned by a test that applies a real extracted patch; `bestOfN.applied` is
+  readable on the ledger. The two leaked `cynco-bestofn-*` worktrees were
+  removed and `cleanup()` retries, unlocks and prunes. Skills and jlens
+  resolve under `cyncoHome()` (the `JLENS_DIR` override kept).
+- **The outcome dataset and the frozen holdout.**
+  `scripts/cynco-outcome-dataset.mjs` builds one row per LABELED mission from
+  its first K `turns[]` — a FIXED K, not a fraction of the run. The spec first
+  said "the first 50 % of the finished run", and the Task 4 review found that
+  prefix leaked the run's length: failures run a median 169 turns vs 95.5 for
+  successes, `consecutiveUnstable.max` correlated 1.000 with the prefix
+  length, and length alone separated failure at AUC 0.649 — a learner would
+  have "predicted" failure by reading how long the mission was going to be,
+  and the prefix-vs-hindsight leak check could not catch it because both sides
+  carried it. So: K = 16 primary (104 of 106 labeled missions eligible) and
+  K = 32 secondary (95); a mission shorter than K is excluded per K, never
+  truncated; running counters enter as per-turn rates; `turnsInPrefix` is
+  metadata, never a feature. Whole-mission fields never enter the features.
+  The frozen holdout `benchmark/cynco-ledger/frozen-eval.json` (v1, seed
+  20260926, 21 whole missions stratified by label, 12 failures / 9 successes)
+  is committed once; later missions join the training split; only the
+  explicit `--refreeze` verb writes a new version, and it never removes an id.
+- **The learner's honest reading.** At every VERDICT the runner exports the
+  datasets, retrains `lr` (standardised logistic regression) and `gbt`
+  (HistGradientBoosting) in `scripts/cynco-outcome-model.py` (numpy +
+  scikit-learn; 300 s `runSync` cap) and hands their held-out predictions to
+  `writeRuleVerdicts` as the synthetic rules `M1.lr` / `M1.gbt` (fired =
+  `pFail ≥ 0.5` on held-out missions), judged by the identical Fisher/Wilson
+  arithmetic against the holdout base and Holm-corrected together with the
+  rules. `engine/s5/ruleAuthority.ts` never grants an `M1.*` id authority.
+  `algedonicAlerts` enters as `.rate` only: the counter runs over the engine
+  SESSION, so its `.last`/`.max` carried alerts from before the mission began
+  (an era confound, final review T4-N2) — 56 feature keys.
+  On the real ledger at K = 16 (the 56-key vector, requoted 2026-09-28): 83
+  train / 21 holdout, base 0.571, 28 of 56 columns dead on the training split
+  (the six entropy features all null; `stuckTurns.*`, `taskError.*`,
+  `progressRate.*`, `consecutiveUnstable.last/max`, `brainPresent` and ten
+  one-hots constant). Holdout AUC: `lr` 0.472 — below chance, `gbt` 0.500 —
+  at it; with all turns (hindsight) 0.611 / 0.546; K = 32 `gbt` 0.625, `lr`
+  0.409; the finished length alone 0.633; the best single prefix feature
+  ~0.58–0.60. `M1.gbt` precision 0.500 [0.254, 0.746] on 12 fired — NO
+  EVIDENCE; `M1.lr` 0.556 [0.267, 0.811] on 9 — TOO FEW. Holm family 9 (7
+  rules + 2 models; adding the two changes no rule's verdict — every adjusted
+  p is 1.000), predictive: none. (The 58-key first run read `gbt` 0.407 /
+  hindsight 0.528, `M1.gbt` 0.545 on 11 fired; `lr` did not move.) Read
+  plainly: **the per-turn signal vector at 16 turns does not
+  predict outcomes today; the vector describes them weakly after the fact;
+  better signals, not more training, is what the ledger asks for.** The
+  dataset, the manifest and the ladder hook ship regardless — every later
+  learner needs them.
+- **C9 sealed.** Authored by the frontier occupant of the supervisor seat
+  (the local model failed nine attempts in Phase 3), against the supervisor
+  review that refused attempt 7 as its rubric. Round 0 was refused — the
+  reviewer's 230-line stub greened 5 of 6 MUST-FAIL lines; round 1 sealed
+  after nine tightenings and a delete guard. Fourteen graded lines
+  (resolutions, keybinds, saves UI, fps guard, packaging including a wheel
+  build) over civkings `e9366f3`; the triple under
+  `~/.cynco/heldout/civkings-redesign/c9/`, the spec
+  `docs/civkings-redesign-briefs/c9.campaign.json` with `author: human` (the
+  seat that sealed it — `sealGate` hardcodes `cynco`, corrected by hand),
+  `hoursPerWave 8, waves 8, iterations 2000`, roadmap `c9` → `sealed`
+  (449670f). It is dispatched from `main` after the merge:
+  `bun scripts/cynco-campaign.mjs docs/civkings-redesign-briefs/c9.campaign.json --waves 8`;
+  its first verdict prints the first real scoreboard.
+- **The live proof (s2, 2026-09-26).** The Phase 4 smoke campaign `s1`
+  regenerated under a fresh `CYNCO_HOME=C:/tmp/cynco-home-s2/.cynco`
+  (`--base 1b00179…`, `--runtime-from ~/.cynco`), no smoke roadmap (the path
+  is repo-relative, above), runner launched detached from PowerShell.
+  CALIBRATE `BASE MISS 8, perturb honest`; the engine logged `[s5] rule
+  authority: legacy (no verdict file at
+  C:\tmp\cynco-home-s2\.cynco\datasets\rule-verdicts.json) (advisory in this
+  unattended mission)`, the driver `engine declares [sealed-gates,
+  s5-earned-only] — dispatching mission`, and the row's one S5 decision
+  landed `enforced: false, authority: advisory` — guard (a) live. 13 tool
+  calls, 121 s; sealed gate PASS (0 fails), suite gate PASS, sweep refused →
+  `pass`. The entry read `- Scoreboard: PASS/GPU-h 29.752 | waves 1 | lines
+  fixed per landed wave 8.00 | human interventions per wave 0.00 | rules
+  predictive 0/8 (best I3 58% NO EVIDENCE) | learner M1.gbt 55% NO EVIDENCE`
+  and `- Outcome hindcast: v1 at K = 16 turns on 21 held-out missions (base
+  57%): M1.gbt precision 55% [28, 79] on 11 fired p(Holm) 1.000 NO EVIDENCE;
+  M1.lr precision 56% [27, 81] on 9 fired p(Holm) 1.000 TOO FEW; leak check …;
+  K = 32 gbt AUC 0.55, lr AUC 0.42; dropped 28 dead column(s)` — the same
+  numbers the offline run gave, on the 58-key vector (quoted as printed; the
+  56-key requote is above). One honest caveat: the smoke repo's `master`
+  already carried s1's work from Phase 4 (the mission baseline was its HEAD
+  `17cd9a6`, not BASE), so the mission's one commit — `2ff000c ship-files:
+  refresh VERSION, SHIP.md, CHANGELOG.md, LICENSE for 0.1.0` (parent
+  `17cd9a6`; `CHANGELOG.md`, `LICENSE`, `SHIP.md`, +10/−9) — rewrote three
+  files that already passed, and "8 lines fixed" is the calibration-at-BASE
+  bar against a HEAD that already passed — a harness proof, not a model
+  result (F163). Afterwards the
+  REAL home's verdict file was written before any mission (guard (b)):
+  `rule verdicts v1: 0 predictive of 10 (none)` (the old CLI wording — model
+  rows in the total; it now reads `0 predictive of 8 rules (+2 model rows)`),
+  `M1.gbt` NO EVIDENCE, `M1.lr` TOO FEW. That file describes the 58-key
+  vector; after the final fix wave it is rebuilt on the 56-key vector with
+  `bun scripts/cynco-rule-verdicts.mjs --with-hindcast` (the runner's own
+  sequence behind one flag; the controller's live step). The synthetic row and
+  the `campaign/s1` verdict commit were removed.
+- **What is parked, with reasons (ruling 8).** TabPFN and XGBoost (absent; a
+  download needs the operator). The latest-release resolver (network-facing;
+  needs a release-stream decision). `s5.decision` typing (ruling 10:
+  `protocol.ts` gains no import and no event this phase, so the frame stays
+  untyped as it was). The writer guard's blind spots (re-parked by ruling 8:
+  no Phase 5 measurement exercised the Write shrink guard of F112, so there is
+  no evidence yet to size a change by).
+- **Not in scope, rather than parked (ruling 9).** Applying retained tables
+  (no non-empty table observed yet; the row's `retainedVersion` per C9 wave
+  is the measurement that decides the next phase); LoRA/KTO training; new
+  roadmap lines beyond C9; live model-S5 in the engine; the dashboard chat.
+- **Closed.** Skills and jlens under `cyncoHome()`; `s4.workOrder.applied` is
+  written (`workOrderFor`, on the wave record). The final fix wave closed the
+  rest of what the Task reviews deferred: `worktreeManager`'s F155 retry is
+  opt-in for list/prune/unlock and `worktree add --lock` runs once; the
+  dashboard retries a rejected scoreboard load on the next poll and its purity
+  guard is one `violations()` check with `Bun.write`/`Bun.spawn`/`process.`/
+  `globalThis`/`XMLHttpRequest`/`WebSocket` in its tokens;
+  `algedonicAlerts.last/.max` are dropped (the requote above); a throw on the
+  model rows rewrites the rules alone (`ladderFault`), and `M1.*` rows never
+  bump the verdict-file version (`modelChanged`); `bun
+  scripts/cynco-rule-verdicts.mjs --with-hindcast` is the runner's own export
+  → model → verdicts sequence; the roadmap's `done` move sits just before the
+  commit; a fault's wall-clock hours print the rate as a floor (`≥`); and
+  F163's HEAD-vs-base refusal guards every dispatched wave.
+
 **Deferred spec items (follow-up, not built here).**
 
 - **Eigenform convergence (spec §7).** The metric for "the campaign's briefs

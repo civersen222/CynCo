@@ -2259,6 +2259,80 @@ function fetchSessionState() {
     return (6 - missing.length) + '/6' + (missing.length ? ' — missing ' + missing.join(', ') : '');
   }
 
+  // Phase 5 ruling 2: the scoreboard (scripts/cynco-scoreboard.mjs). Unmeasured
+  // is null with its reason — printed as a dash, the reason on the row's
+  // tooltip, never as 0 (F16).
+  function scoreboardNum(v, digits) {
+    if (typeof v !== 'number' || !isFinite(v)) return '—';
+    // No digits: a count (waves per campaign) — whole as-is, a pooled mean to one place.
+    if (digits == null) return v % 1 === 0 ? String(v) : v.toFixed(1);
+    return v.toFixed(digits);
+  }
+
+  // A PASS/GPU-h whose hours include a fault's wall-clock upper bound is a
+  // floor: printed with '≥ ', the per-wave reason on the tooltip (review I2).
+  function scoreboardFloor(b) {
+    return b && b.passRatePerGpuHourIsLowerBound === true && typeof b.passRatePerGpuHour === 'number' && isFinite(b.passRatePerGpuHour) ? '≥ ' : '';
+  }
+
+  // One campaign's row, off /api/campaign's campaigns[].scoreboard: the five
+  // headline numbers; { text, title } so the reasons ride the tooltip.
+  function campaignScoreboardText(sb) {
+    if (!sb) return { text: '—', title: 'no wave record carries a scoreboard yet' };
+    var gl = sb.gateLinesFixedPerLandedWave, hi = sb.humanInterventionsPerWave, rp = sb.perRulePrecision;
+    var rules = '—';
+    if (rp && typeof rp.predictive === 'number' && typeof rp.total === 'number') {
+      rules = rp.predictive + '/' + rp.total;
+      if (rp.best && typeof rp.best.precision === 'number') rules += ' (best ' + rp.best.id + ' ' + Math.round(rp.best.precision * 100) + '%)';
+      // The learner's best M1.* row (not a rule; not in the count).
+      if (rp.learner && typeof rp.learner.precision === 'number') rules += ' · learner ' + rp.learner.id + ' ' + Math.round(rp.learner.precision * 100) + '%';
+    }
+    // Which wave record the numbers were read off: a stop or fault written
+    // after it carries no board, so the row says how current it is.
+    var text = (typeof sb.wave === 'number' ? 'wave ' + sb.wave + ': ' : '') +
+      'PASS/GPU-h ' + scoreboardFloor(sb) + scoreboardNum(sb.passRatePerGpuHour, 3) +
+      ' · waves/campaign ' + scoreboardNum(sb.wavesPerCampaign) +
+      ' · lines fixed/landed wave ' + scoreboardNum(gl ? gl.value : null, 2) +
+      ' · human acts/wave ' + scoreboardNum(hi ? hi.value : null, 2) +
+      ' · rules predictive ' + rules;
+    return { text: text, title: (sb.unmeasured || []).join('\n') };
+  }
+
+  // The pooled line at the top of the panel, off /api/campaign's `pooled`
+  // (pooledScoreboard). Exclusions and unmeasured reasons on the tooltip.
+  function pooledScoreboardText(p) {
+    if (!p) return { text: '—', title: '' };
+    if (p.error) return { text: 'unmeasured — ' + p.error, title: '' };
+    var gl = p.gateLinesFixedPerLandedWave, hi = p.humanInterventionsPerWave;
+    var text = p.campaigns + ' campaigns, ' + p.decided + ' decided, ' + p.waves + ' waves — ' +
+      'PASS/GPU-h ' + scoreboardFloor(p) + scoreboardNum(p.passRatePerGpuHour, 3) +
+      ' · waves/campaign ' + scoreboardNum(p.wavesPerCampaign) +
+      ' · lines fixed/landed wave ' + scoreboardNum(gl ? gl.value : null, 2) +
+      ' · human acts/wave ' + scoreboardNum(hi ? hi.value : null, 2) +
+      ' · supervision $/wave ' + scoreboardNum(p.supervisionDollarsPerWave, 2);
+    // A campaign left out of the pool is named on the line itself (its id),
+    // with the reason on the tooltip — never silently missing (F16).
+    var excluded = p.excluded || [];
+    if (excluded.length) text += ' · excluded ' + excluded.map(function(e) { return String(e).split(':')[0]; }).join(', ');
+    var notes = (p.unmeasured || []).concat(excluded.map(function(e) { return 'excluded: ' + e; }));
+    return { text: text, title: notes.join('\n') };
+  }
+
+  // One "Label: value" row, built with textContent — the values come off disk.
+  function campaignRowEl(label, value, title) {
+    var row = document.createElement('div');
+    var l = document.createElement('span');
+    l.className = 'label';
+    l.textContent = label + ': ';
+    var v = document.createElement('span');
+    v.className = 'value';
+    v.textContent = String(value);
+    row.appendChild(l);
+    row.appendChild(v);
+    if (title) row.title = title;
+    return row;
+  }
+
   function pollCampaign() {
     fetch('/api/campaign').then(function(r) { return r.json(); }).then(function(data) {
       var panel = document.getElementById('panelCampaign');
@@ -2266,6 +2340,14 @@ function fetchSessionState() {
       if (!data || !data.campaigns || !data.campaigns.length) { panel.style.display = 'none'; return; }
       panel.style.display = '';
       list.innerHTML = '';
+      // Phase 5 ruling 2: the pooled scoreboard, one line at the top — the
+      // harness's headline numbers over every runner-driven campaign.
+      var pooled = pooledScoreboardText(data.pooled);
+      var pooledBlock = document.createElement('div');
+      pooledBlock.className = 'gov-stats';
+      pooledBlock.style.marginTop = '4px';
+      pooledBlock.appendChild(campaignRowEl('Scoreboard (pooled)', pooled.text, pooled.title));
+      list.appendChild(pooledBlock);
       // Roadmap is a single top-level line, not per campaign — skip it
       // entirely when the roadmap file could not be read (null), rather than
       // rendering a line that claims every campaign is in some unknown state.
@@ -2274,9 +2356,7 @@ function fetchSessionState() {
         roadmapBlock.className = 'gov-stats';
         roadmapBlock.style.marginTop = '4px';
         var roadmapText = data.roadmap.map(function(r) { return r.id + ' ' + r.status; }).join(' · ');
-        var roadmapRow = document.createElement('div');
-        roadmapRow.innerHTML = '<span class="label">Roadmap: </span><span class="value">' + escHtml(roadmapText) + '</span>';
-        roadmapBlock.appendChild(roadmapRow);
+        roadmapBlock.appendChild(campaignRowEl('Roadmap', roadmapText));
         list.appendChild(roadmapBlock);
       }
       data.campaigns.forEach(function(c) {
@@ -2299,6 +2379,7 @@ function fetchSessionState() {
           ' · check ' + (authoring && authoring.lastCheck ? (authoring.lastCheck.ok ? 'ok' : 'failing') : '—') +
           ' · sealed ' + (authoring && authoring.sealedAt ? authoring.sealedAt : '—');
         var authoringProblems = (authoring && authoring.lastCheck && authoring.lastCheck.problems) ? authoring.lastCheck.problems : [];
+        var board = campaignScoreboardText(c.scoreboard);
         var rows = [
           ['Campaign', c.id + (c.id === data.active ? ' (ACTIVE)' : '')],
           ['Wave', c.waveCount + (c.budgetWaves != null ? ' / ' + c.budgetWaves : '')],
@@ -2312,15 +2393,13 @@ function fetchSessionState() {
             ? (c.governancePosiwid.verdict + (c.governancePosiwid.onsetWave ? ' (drift onset wave ' + c.governancePosiwid.onsetWave + ')' : ''))
             : '—'],
           ['Autopoiesis', campaignAutopoiesisText(c.waves)],
+          ['Scoreboard', board.text, board.title],
           ['In flight', c.inFlight ? ('wave ' + c.inFlight.wave + ' dispatched ' + (c.inFlight.dispatchedAt || '')) : 'no'],
           ['Seat authority', Number(c.gateAuthorAuthority || 0).toFixed(2)],
           ['Authoring', authoringText, authoringProblems.join('\n')],
         ];
         rows.forEach(function(pair) {
-          var row = document.createElement('div');
-          row.innerHTML = '<span class="label">' + escHtml(pair[0]) + ': </span><span class="value">' + escHtml(String(pair[1])) + '</span>';
-          if (pair[2]) row.title = pair[2];
-          block.appendChild(row);
+          block.appendChild(campaignRowEl(pair[0], pair[1], pair[2]));
         });
         list.appendChild(block);
 

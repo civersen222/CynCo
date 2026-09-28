@@ -201,20 +201,32 @@ export function analyse(rows, { firedOf = rulesFired } = {}) {
   // the raw p-values sit right where that matters: two rules read "significant"
   // uncorrected and neither survives. Reporting the raw p alone would hand back
   // a green light built out of the number of rules we happen to have.
-  const tested = rules.filter(r => r.p !== null).sort((x, y) => x.p - y.p)
+  const rulesTested = holm(rules)
+
+  rules.sort((x, y) => y.firedTotal - x.firedTotal)
+  return {
+    total: rows.length, labeled: labeled.length, failures: nFail, base,
+    rulesTested, rules,
+  }
+}
+
+/**
+ * Holm-Bonferroni over one family, in place: sets `pAdjusted` on every item
+ * (null where `p` is null — untestable is not significant) and returns how
+ * many were tested. Exported (Phase 5) so `scripts/cynco-rule-verdicts.mjs`
+ * can correct the S5 rules and the outcome-model rows (`M1.*`) as ONE family
+ * with this arithmetic rather than a second copy of it.
+ */
+export function holm(items) {
+  const tested = items.filter(r => r.p !== null && r.p !== undefined).sort((x, y) => x.p - y.p)
   let running = 0
   tested.forEach((r, i) => {
     const adj = Math.min(1, r.p * (tested.length - i))
     running = Math.max(running, adj)          // Holm's p-values are monotone
     r.pAdjusted = running
   })
-  for (const r of rules) if (r.p === null) r.pAdjusted = null
-
-  rules.sort((x, y) => y.firedTotal - x.firedTotal)
-  return {
-    total: rows.length, labeled: labeled.length, failures: nFail, base,
-    rulesTested: tested.length, rules,
-  }
+  for (const r of items) if (r.p === null || r.p === undefined) r.pAdjusted = null
+  return tested.length
 }
 
 // ── Denials: did the denial change the next call? ─────────────────
@@ -549,4 +561,4 @@ async function main() {
 // M5: `main` is async and `--denials` awaits real I/O inside it. An un-awaited
 // call turns a thrown read error into an unhandled rejection — a stack trace on
 // stderr and exit 0, which a caller reads as a clean run that printed nothing.
-if (import.meta.url === pathToFileURL(process.argv[1]).href) main().catch(e => { console.error(e.message); process.exit(1) })
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main().catch(e => { console.error(e.message); process.exit(1) })

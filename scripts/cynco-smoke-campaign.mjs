@@ -6,7 +6,7 @@
 // spec path. It does NOT archive the BASE: the runner does that at CALIBRATE.
 //
 //   CYNCO_HOME=C:/tmp/cynco-home-s1/.cynco \
-//     bun scripts/cynco-smoke-campaign.mjs --write --repo C:/tmp/phase2-smoke [--home <dir>] \
+//     bun scripts/cynco-smoke-campaign.mjs --write --repo C:/tmp/phase2-smoke --base <sha> [--home <dir>] \
 //       [--common-from ~/.cynco/heldout/common]
 //
 // The wave grader runs `<CYNCO_HOME>/heldout/common/g_suite_no_regression.py`
@@ -99,19 +99,27 @@ export function smokeSpec({ repo, base, heldout }) {
   }
 }
 
-function headOf(repo) {
-  const r = runSync('git', ['-C', repo, 'rev-parse', 'HEAD'], { cwd: process.cwd(), env: {}, timeoutMs: 60_000 })
-  if (r.fault) throw new Error(`git -C ${repo} rev-parse HEAD did not run (${faultSummary(r.fault)})`)
+/** `rev` (HEAD, a sha, an abbreviation) in `repo` as its full commit sha; throws naming the failure. */
+export function commitOf(repo, rev) {
+  const r = runSync('git', ['-C', repo, 'rev-parse', '--verify', `${rev}^{commit}`], { cwd: process.cwd(), env: {}, timeoutMs: 60_000, retryImpossibleTimeout: true })
+  if (r.fault) throw new Error(`git -C ${repo} rev-parse ${rev} did not run (${faultSummary(r.fault)})`)
   if (r.status !== 0 || !/^[0-9a-f]{40}$/.test(String(r.stdout).trim())) {
-    throw new Error(`git -C ${repo} rev-parse HEAD failed: ${String(r.stderr).trim() || String(r.stdout).trim()}`)
+    throw new Error(`git -C ${repo} rev-parse ${rev} failed: ${String(r.stderr).trim() || String(r.stdout).trim()}`)
   }
   return String(r.stdout).trim()
 }
 
 /**
  * Lay out the smoke campaign in `home` (a CYNCO_HOME) and return the spec path.
- * `base` defaults to the repo's HEAD. Writes ONLY under `home`, and refuses the
- * real `~/.cynco` — the smoke run must never share state with a live campaign.
+ * Writes ONLY under `home`, and refuses the real `~/.cynco` — the smoke run must
+ * never share state with a live campaign.
+ *
+ * `base` is REQUIRED and the repo's HEAD must BE it (F163, final review T7-M1):
+ * the runner calibrates at `spec.base` while the dispatch starts the mission
+ * from the repo's HEAD, and a reused smoke repo whose HEAD already carried the
+ * shipped work PASSed a wave that fixed nothing. The generator refuses, naming
+ * both shas, instead of writing a spec the runner would then refuse to
+ * dispatch. `commit` is the test seam (`commitOf`).
  */
 // One spelling of the suite gate's filename: the grader's (cynco-campaign-grade.mjs).
 export { SUITE_GATE_FILE }
@@ -146,9 +154,10 @@ export function runtimeEnvFrom(runtimeFrom, { exists = existsSync, read = (p) =>
   return { LOCALCODE_LLAMA_SERVER: binary, LOCALCODE_MODEL_PATH: modelPath }
 }
 
-export function writeSmokeCampaign({ home, repo, base, commonFrom, runtimeFrom } = {}) {
+export function writeSmokeCampaign({ home, repo, base, commonFrom, runtimeFrom, commit = commitOf } = {}) {
   if (!home) throw new Error('writeSmokeCampaign: no home — pass --home or set CYNCO_HOME')
   if (!repo) throw new Error('writeSmokeCampaign: no repo — pass --repo')
+  if (!base) throw new Error('writeSmokeCampaign: no base — pass --base <sha>, the commit the fixture is calibrated at; the repo\'s HEAD must be it (F163)')
   const h = norm(resolve(home))
   if (h.toLowerCase() === norm(resolve(homedir(), '.cynco')).toLowerCase()) {
     throw new Error(`refusing to write into the real ${h} — point CYNCO_HOME at a temp dir ending in /.cynco`)
@@ -157,7 +166,12 @@ export function writeSmokeCampaign({ home, repo, base, commonFrom, runtimeFrom }
     throw new Error(`home ${h} must end in /.cynco — checkIdentity seals instruments by the /.cynco/heldout/ path shape (e.g. C:/tmp/cynco-home-s1/.cynco)`)
   }
   const r = norm(resolve(repo))
-  const sha = base ?? headOf(r)
+  const sha = commit(r, base)
+  const head = commit(r, 'HEAD')
+  if (head !== sha) {
+    throw new Error(`repo HEAD ${head} is not --base ${base}${sha !== base ? ` (${sha})` : ''} — calibration and dispatch must look at one commit (Rule 11, F163): `
+      + `git -C ${r} checkout --detach ${base} (a throwaway checkout), then write the campaign`)
+  }
 
   const heldout = heldoutDirFor(SMOKE_ID, h)
   mkdirSync(heldout, { recursive: true })
@@ -200,9 +214,9 @@ function parseArgs(argv) {
     if (a === '--write') out.write = true
     else if (a === '--common-from') out.commonFrom = argv[++i]
     else if (a === '--runtime-from') out.runtimeFrom = argv[++i]
-    // The BASE the fixture was calibrated against. HEAD is the default, but a
-    // repo that has already shipped one wave passes every line at HEAD, and
-    // CALIBRATE would refuse it; name the pre-ship commit instead.
+    // The BASE the fixture was calibrated against — REQUIRED, and the repo's
+    // HEAD must be it (F163): a repo that has already shipped one wave passes
+    // every line at HEAD, and a mission dispatched from there fixes nothing.
     else if (a === '--base') { out.base = argv[++i]; if (!out.base || out.base.startsWith('--')) throw new Error('--base needs a commit sha') }
     else if (a === '--repo') out.repo = argv[++i]
     else if (a === '--home') out.home = argv[++i]
@@ -215,7 +229,7 @@ const isMain = import.meta.main ?? (process.argv[1] ? resolve(process.argv[1]) =
 if (isMain) {
   try {
     const args = parseArgs(process.argv.slice(2))
-    if (!args.write) throw new Error('usage: bun scripts/cynco-smoke-campaign.mjs --write --repo <path> [--base <sha, default HEAD>] [--home <dir ending in /.cynco>] [--common-from <dir holding g_suite_no_regression.py>] [--runtime-from <real ~/.cynco: llama-server, models, profiles>]')
+    if (!args.write) throw new Error('usage: bun scripts/cynco-smoke-campaign.mjs --write --repo <path> --base <sha; the repo HEAD must be it> [--home <dir ending in /.cynco>] [--common-from <dir holding g_suite_no_regression.py>] [--runtime-from <real ~/.cynco: llama-server, models, profiles>]')
     console.log(writeSmokeCampaign({ home: args.home, repo: args.repo, base: args.base, commonFrom: args.commonFrom, runtimeFrom: args.runtimeFrom }))
   } catch (e) {
     console.error(`[smoke] ${e.message}`)

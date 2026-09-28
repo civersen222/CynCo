@@ -150,6 +150,16 @@ export function createMissionCollector(now = () => Date.now()) {
     // still queued). An entry with all three still null is a note the collector
     // saw queued and never saw resolved — a run that died mid-mission.
     operatorNotes: [],
+    // Phase 5 ruling 8 (F162): every best-of-N selection the engine made,
+    // `{ t, winner, passRate, applied }` off its `bestOfN.selected` frame.
+    // `applied: false` is a winner whose patch `git apply` refused — the turn
+    // then ran single-pass. Best-of-N paid for N candidates for weeks and
+    // applied none; this is where that is now readable.
+    // Final review M6 (T7-M6): null until a `bestOfN.start` (the engine's
+    // "running N candidates", conversationLoop.ts) or a `bestOfN.selected`
+    // frame arrives — so `null` is "best-of-N never started this mission" and
+    // `[]` is "it ran and selected no winner", never the same reading.
+    bestOfN: null,
 
     ingest(m) {
       const t = now()
@@ -227,6 +237,18 @@ export function createMissionCollector(now = () => Date.now()) {
             // F157: 'stuck-reeval' for the stuck-loop live re-evaluation's
             // decision; null for the per-message decision (and older engines).
             source: m.source ?? null,
+          })
+          break
+        case 'bestOfN.start':
+          if (this.bestOfN === null) this.bestOfN = []
+          break
+        case 'bestOfN.selected':
+          if (this.bestOfN === null) this.bestOfN = []
+          this.bestOfN.push({
+            t,
+            winner: typeof m.winner === 'number' ? m.winner : null,
+            passRate: typeof m.passRate === 'number' ? m.passRate : null,
+            applied: typeof m.applied === 'boolean' ? m.applied : null,
           })
           break
         case 'control.signals':
@@ -905,6 +927,12 @@ export function buildMissionRecord(collector, meta) {
     // collector. `[]` and "the engine never emitted one" are the same fact
     // here (nobody typed anything), so this is never null.
     operatorNotes: collector.operatorNotes ?? [],
+    // Phase 5 ruling 8 (F162): best-of-N selections, see the collector.
+    // `null` = best-of-N never started this mission (it is off unless
+    // LOCALCODE_BEST_OF_N=true and a test framework is detected); `[]` = it
+    // started (`bestOfN.start`) and selected no winner; a row written before
+    // Phase 5 has no field at all (final review M6).
+    bestOfN: collector.bestOfN ?? null,
     toolTransport: collector.toolTransport,
     toolStats: collector.toolStats,
     // Measured token totals (session.tokenStats) or null — see the collector.

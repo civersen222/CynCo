@@ -149,6 +149,19 @@ decisions still recorded here).
     { "t": 1783550300000, "text": "PROBE FAIL C8.1a.tiers-pressable ...", "queuedAt": "2026-09-22T10:05:00.000Z",
       "source": "driver", "deliveredAtIteration": null, "dropped": "mission ended" }
   ],
+  // Phase 5 ruling 8 (F162): one entry per `bestOfN.selected` frame — the
+  // engine picked a winner among N candidates. `applied: false` is a winner
+  // whose patch `git apply` refused; the turn then ran single-pass. Before
+  // F162's fix every winner came back false (the diff's final newline was
+  // trimmed), and nothing on the row said so. `winner` is the candidate's
+  // 0-based index, `passRate` its test pass rate; a field the frame lacked is
+  // null. `null` = best-of-N never started this mission (no `bestOfN.start`
+  // frame — it runs only with `LOCALCODE_BEST_OF_N=true` and a detected test
+  // framework); `[]` = it started and selected no winner; rows before Phase 5
+  // have no field.
+  "bestOfN": [
+    { "t": 1783550000000, "winner": 1, "passRate": 0.75, "applied": true }
+  ],
   "toolTransport": [        // one per toolcall.transport event (P1.8 repair ladder); absent in pre-P1.8 records
     { "t": 1783550000000, "stage": "repaired", "toolName": "Read", "detail": "..." }
   ],
@@ -497,9 +510,15 @@ to claims:
   brief→wave (≥ 1 graded wave), wave→ledger (≥ 1 campaign row),
   ledger→validation (a denial analysis), validation→proposal (a cap proposal
   raised), proposal→configuration (any approved), configuration→brief (an
-  `invariantOverrides` entry — the predicate also reads a wave's
-  `s4.workOrder.applied`, but NOTHING writes that field today (`workOrderFor`
-  never sets it), so in practice only an override closes this edge),
+  `invariantOverrides` entry, or a wave's `s4.workOrder.applied` — the runner
+  writes `s4.workOrder` on every dispatched wave record from `workOrderFor`
+  (`scripts/cynco-brief.mjs`), `{ applied, order }`, and `applied` is true only
+  when the ideation seat is at its maximum authority AND its order actually
+  moved a work item; an adopted wave records `workOrder: null`. Pinned by
+  `scripts/__tests__/cynco-campaign.test.mjs` (the runWave record carries
+  `rec.s4.workOrder`) and `cynco-brief.test.mjs` (`workOrderFor`). Phase 4's fix
+  wave said nothing wrote the field; that was wrong, corrected in Phase 5
+  Task 1),
   ledger→seat (gate-line or ideation evidence — the gate-lines summary is read
   ACROSS campaigns, not this campaign's lines only: the seat is one seat, so
   any campaign's graded gate lines close this edge; `facts.seatEvidence` can be
@@ -550,6 +569,161 @@ carries a reading (a later stop or fault record has none and is skipped);
 `bun scripts/cynco-campaign.mjs <id>.campaign.json --autopoiesis` prints the
 same checklist over a campaign that already ran, from its stored records, and
 dispatches and writes nothing.
+
+### Scoreboard
+
+Not a ledger field either: the harness scoreboard (Phase 5 ruling 2) is
+computed by `scripts/cynco-scoreboard.mjs` — one pure module, one spelling of
+each definition, one exported function per definition — at every wave VERDICT
+(stored on the wave record as `scoreboard`, printed as the entry's
+`- Scoreboard:` line right after `- Autopoiesis:`) and by
+`bun scripts/cynco-campaign.mjs <id>.campaign.json --scoreboard`. Per campaign
+and pooled over RUNNER-DRIVEN campaigns (those with a
+`~/.cynco/campaigns/<id>/waves.jsonl`; earlier hand-driven missions are
+excluded and the exclusion is printed). The definitions, verbatim from the
+spec (`docs/superpowers/specs/2026-09-26-evidence-engine-phase5-design.md`,
+ruling 2):
+
+- `passRatePerGpuHour` = decided-PASS campaigns (`pass` or `pass-with-survivors`) ÷ Σ `durationS`/3600 over every wave of every runner-driven campaign. Per campaign: `decision === PASS ? 1 : 0` ÷ that campaign's GPU-hours; an undecided campaign prints `open`.
+- `wavesPerCampaign` = waves to the decision; undecided campaigns print `N so far (open)` and are excluded from the pooled mean.
+- `gateLinesFixedPerLandedWave` = Σ over waves with ≥ 1 landed commit of max(0, failsBefore − failsAfter) ÷ the number of such waves, where failsBefore is the previous wave's `gate.fails.length` (wave 1: `calibration.baseFails.length`) and failsAfter is this wave's. A wave that graded no gate (fault) is excluded and counted.
+- `humanInterventionsPerWave` = (operator notes delivered + proposals with `decidedBy` ≠ `auto` + supervisor refusals + reseals + `--adopt-inflight` records) ÷ waves. This is the stated PROXY for "supervisor minutes per wave": minutes are not recorded anywhere, so the count of human acts is what can be measured; the economics script's supervision dollars per wave print beside it.
+- `perRulePrecision` = from `rule-verdicts.json`: predictive count ÷ total, and the single best rule with its precision, CI and verdict.
+
+Unmeasured → `null` with the reason, never 0 (F16).
+
+How each term is read off the records (the module's doc comments say the
+same, next to the code):
+
+- **Waves** are the SPENT wave records: every record in `waves.jsonl` except a
+  `stop` (a refusal to dispatch spends nothing); a `fault` spent its wave and
+  counts. **Decided** means the last spent wave's decision is `pass` or
+  `pass-with-survivors`; `next`, `fault`, `budget` and `no-progress` are open —
+  a budget stop is resumed with `--waves N` (C8's waves 1 and 2 both read
+  `STOP (budget)`; wave 3 passed).
+- **`durationS`** — the wave record's own (the runner writes `durationS` from
+  the row from Phase 5 on), else the joined ledger row's. A FAULT record
+  carries one too: the row's when the fault came after a row was read
+  (`durationFrom: "row"`), else the wall clock since `dispatchedAt`
+  (`durationFrom: "wall-clock"` — an upper bound: it includes waiting on a
+  driver that may have died early); `null` only for a fault with no
+  `dispatchedAt`. A wall-clock hour is counted, but it is a bound, not a
+  measurement: the board names the wave in `gpuHoursUpperBound`, adds
+  `gpuHours: wave N hours are a wall-clock upper bound (fault) — the rate is a
+  floor` to `unmeasured`, keeps `passRatePerGpuHour` numeric with
+  `passRatePerGpuHourIsLowerBound: true`, and every reader prints it as a floor
+  — the entry line and the verb `PASS/GPU-h ≥ 0.065`, the dashboard row and the
+  pooled line `≥` (pooled: the waves named `<id> wave N`). Fault records also carry a `scoreboard` reading, so the
+  last board on the record never undercounts a trailing fault. A spent wave with
+  neither (an older fault whose driver wrote no row) is named in `unmeasured` as
+  `gpuHours: wave N has no durationS …` — the hours are then a floor, and a
+  floor cannot be a denominator: `passRatePerGpuHour` is then null with
+  `hours unmeasured for wave N` (pooled: `for <id> wave N`), never an
+  overstated rate.
+- **Landed commits** — the wave record's `outcome.commitsLanded`: the
+  runner's `commitsBetween` count over the row's commit range (written from
+  Phase 5 on; the same instrument as `facts.commitsLanded` above, NOT
+  `toolStats.commits`). An older record reads `state.lastCommits.length` only
+  when it is the wave the state last graded (the `--autopoiesis` reading);
+  otherwise its commit count is unknown and the wave is excluded and named —
+  never read as 0 commits. A null `gateLinesFixedPerLandedWave` says which it
+  is: `no wave landed a commit` only when every graded wave has a known count
+  of 0; otherwise `commit counts unknown`, `no known-count wave landed; N
+  unknown`, or `every wave excluded — none graded a gate`.
+- **Previous wave** for failsBefore is the previous GRADED wave: a fault in
+  between graded nothing and does not reset it. A regression counts 0.
+- **FAIL count** is `gate.fails.length` — the FAIL lines the gate printed and
+  the record lists — never the terminator's own `failCount`. The two can
+  disagree: the real C8 wave-1 record carries `failCount 10` (`MISS (10
+  fails)`) beside 6 FAIL + 11 PASS lines of 17 and no ERROR line, so 10 is
+  not a count of anything on the record. `fails.length` is the internally
+  consistent reading (6 FAIL + 11 PASS = the 17 graded lines), it is what
+  `decide()` and the brief's THE MISSES read, and it is the one the board
+  takes.
+- **Operator notes delivered** — this campaign's rows' `operatorNotes[]` with
+  `deliveredAtIteration` set AND `source === "operator"`. The driver's
+  re-injected probe (`source: "driver"`) is not a human act; a delivered note
+  with `source: null` is unknown (see `operatorNotes` above: "never as
+  operator"), is not counted, and is named in `unmeasured`.
+- **Proposals with `decidedBy` ≠ `auto`** — `approved`/`rejected` proposals
+  only (a pending one was decided by nobody). Only a `gate/<id>` seal at earned
+  authority writes `decidedBy: "auto"`; the operator's `--approve-proposal` /
+  `--reject-proposal` on an `ideation/`, `gate-author/` or `invariants/`
+  proposal writes no `decidedBy` at all and IS a human decision.
+- **Supervisor refusals** — every `state.authoring.<id>.refusals[]` entry.
+  **Reseals** — `state.reseals[]`.
+- **`--adopt-inflight` records** — wave records with `adopted: true`. The
+  runner writes it from Phase 5 on for every wave it graded from an adopted row
+  (`--adopt-inflight`, or `scripts/cynco-campaign-adopt.mjs` — both are the
+  operator handing a wave over) and for the fault `--adopt-inflight` records
+  when the driver wrote no row. Earlier records carry no mark, so adoptions
+  before Phase 5 are not counted.
+- **Rules** — the S5 rules only: entries of `rule-verdicts.json` whose
+  `source` is not `"model"`. The learner's `M1.*` rows (see "Outcome hindcast
+  and the `M1.*` rows" below) share the file and the Holm family but are not
+  rules — the engine never grants them authority — so they are neither in
+  `predictive`/`total` nor ranked for `best`. The best of them, ranked the same
+  way, is the sibling field `perRulePrecision.learner`
+  (`{ id, precision, ci, verdict }`, null when the file has no `M1.*` row); the
+  verdict line appends `| learner M1.gbt 50% NO EVIDENCE` and the verb prints a
+  `learner …` line with its CI.
+- **Best rule** — a `PREDICTIVE` rule first; then a rule with enough evidence
+  to be read (not `TOO FEW`); then the highest precision; ties by id. The
+  verdict line prints `best I3 58% NO EVIDENCE` (precision as a whole percent,
+  the verdict's head before any ` — `); the verb prints the Wilson CI and the
+  whole verdict.
+- **Supervision dollars per wave** — the `$N SUPERVISING` figure of the
+  economics script's `VERDICT:` line ÷ waves. The script prices the WHOLE
+  supervision history, not one campaign, and the verb prints that scope beside
+  the number. It is not on the verdict line. Both readers (every VERDICT and
+  `--scoreboard`) spawn the script through `scoreboardEconomics`
+  (`scripts/cynco-campaign.mjs`): `runSync` capped at `ECONOMICS_TIMEOUT_MS`
+  (120 s); a timeout, fault or non-zero exit is null — `no economics line (the
+  economics script did not run)` — never an empty reading.
+- **Pooled** ratios are Σ numerator ÷ Σ denominator over the included
+  campaigns' waves (not a mean of per-campaign ratios), through the SAME
+  functions the campaign board uses (`ratePerGpuHour`, `perWave`,
+  `linesFixedReason`); `wavesPerCampaign` is the mean over decided campaigns;
+  `passRatePerGpuHour` is null until one campaign has decided, and null while
+  any included wave's hours are unmeasured. Every campaign's per-wave
+  exclusions (hours, lines fixed, unknown-source notes) reach the pooled
+  `unmeasured`, prefixed with the campaign id. A board that threw or spent no
+  wave is excluded and named, as is every campaign dir without a `waves.jsonl`
+  and the count of ledger missions no runner-driven wave record names.
+
+The stored shape (unrounded on the record; rounded here), for C8 reproduced from the campaign log (the fixture
+`scripts/__tests__/fixtures/scoreboard/`, pinned by
+`scripts/__tests__/cynco-scoreboard.test.mjs`):
+
+```jsonc
+"scoreboard": {
+  "id": "c8", "decided": true, "decision": "pass", "waves": 3, "gpuHours": 15.3656, "gpuHoursMissing": [],
+  "gpuHoursUpperBound": [],
+  "passRatePerGpuHour": 0.06508, "passRatePerGpuHourIsLowerBound": false, "wavesPerCampaign": 3,
+  "gateLinesFixedPerLandedWave": { "value": 4.667, "landedWaves": 3, "fixed": 14,
+                                   "graded": 3, "known": 3, "unknown": 0, "reason": null },
+  "humanInterventionsPerWave": { "value": 0.333, "notes": 1, "humanDecisions": 0, "refusals": 0,
+                                 "reseals": 0, "adopted": 0, "reason": null },
+  "perRulePrecision": { "predictive": 0, "total": 8,
+                        "best": { "id": "I3", "precision": 0.58, "ci": [0.45, 0.70], "verdict": "NO EVIDENCE" },
+                        "learner": null },
+  "supervisionDollars": 4295.55, "supervisionDollarsPerWave": 1431.85,
+  "unmeasured": [] }
+```
+
+and the entry line
+`- Scoreboard: PASS/GPU-h 0.065 | waves 3 | lines fixed per landed wave 4.67 | human interventions per wave 0.33 | rules predictive 0/8 (best I3 58% NO EVIDENCE)`
+(`PASS/GPU-h open | waves 2 so far (open)` while a campaign is undecided;
+`null (<reason head>)` for anything unmeasured — the reason cut before its
+first ` — ` or ` (`, at most 32 characters; the full reason is in
+`unmeasured`). The line is capped at 200 characters (`ENTRY_LINE_MAX`): past
+it the reasons are dropped and a bare `null` stays; if even that is over, the
+learner's verdict is dropped too. A board that throws is stored as
+`{ "error": "<message>" }`, prints `- Scoreboard: UNMEASURED — <message>`, and
+never faults the wave. `--scoreboard` prints the campaign's line, one line per
+definition with its parts and every `unmeasured` reason, then the pooled board
+and its exclusions; it dispatches nothing, takes no lock and writes nothing
+(exit 2 with the reason when the campaign has no state).
 
 ### The wave record's `gate.author`
 
@@ -699,8 +873,17 @@ as for the gate lines.
 `scripts/cynco-rule-verdicts.mjs` (`writeRuleVerdicts`) at every wave VERDICT
 from the WHOLE ledger — not the campaign's slice, because a rule's predictive
 power is a claim about every mission it fired on. `bun
-scripts/cynco-rule-verdicts.mjs [--ledger-dir DIR] [--out PATH]` rebuilds it by
-hand. It is Step 2's per-rule table (`analyse` + `ruleVerdictOf` in
+scripts/cynco-rule-verdicts.mjs [--ledger-dir DIR] [--out PATH]` rebuilds the
+rules by hand and prints `rule verdicts vN: P predictive of R rules (+M model
+rows) (…) → <path>` — rules and model rows counted apart, as the scoreboard's
+`N/8` reads them. `--with-hindcast` rebuilds what a VERDICT writes: the runner's
+own sequence (`exportOutcomeDatasets` → `runHindcast` → `hindcastOf` →
+`modelRowsFrom` → `writeRuleVerdicts`, `scripts/cynco-hindcast.mjs`), printing
+the `- Outcome hindcast:` line first (a fault is `UNMEASURED` and the rules are
+written without model rows, as at a VERDICT). `--datasets-dir DIR` writes the
+three datasets, `outcome-model.json` and — unless `--out` names another path —
+`rule-verdicts.json` directly into DIR instead of `~/.cynco/datasets/`, so a
+temp run never touches the real home. It is Step 2's per-rule table (`analyse` + `ruleVerdictOf` in
 `scripts/cynco-signal-validation.mjs`) turned into a file the engine reads:
 
 - **`engine/s5/ruleAuthority.ts`** loads it once per session and logs one line,
@@ -745,14 +928,260 @@ shown — C2, C4, W6 read `TOO FEW`, I1, I3, W7, W8 `NO EVIDENCE`, I4 `CONSTANT`
   the file does not list has never fired in the ledger and has earned nothing.
 - **`version`** rises only when the verdict SET changed — a rule's verdict
   moved, or a rule appeared or vanished. The numbers are refreshed on every
-  write; the version counts changes in what S5 may enforce.
-- **`history`** — the last 20 version changes, each naming the rules that moved
-  (`from`/`to`, `null` for appeared/vanished).
+  write; the version counts changes in what S5 may enforce. The learner's
+  `M1.*` rows (`source: "model"`) are outside that set: one appearing,
+  vanishing (a hindcast that faulted this wave) or moving never bumps it.
+- **`history`** — the last 20 entries, each naming the rules that moved
+  (`changed`: `from`/`to`, `null` for appeared/vanished). A model row that moved
+  is named in the entry's `modelChanged` (same shape) — on the version-bump
+  entry when a rule moved in the same write, else on an entry of its own at the
+  UNCHANGED version — so an `M1` reaching `PREDICTIVE` is on the record.
 - **`campaign`** — the campaign whose VERDICT wrote it (`null` from the CLI).
 
 The wave record carries `ruleVerdicts: { version, predictive, total }` (`null`
 when the write failed — logged, never a fault). On this ledger no rule is
 `PREDICTIVE`, so once the file exists every S5 decision reads `advisory`.
+
+### Outcome dataset and the frozen holdout
+
+Phase 5 ruling 5: the prerequisites for the first learner. Built by
+`scripts/cynco-outcome-dataset.mjs` (pinned by
+`scripts/__tests__/cynco-outcome-dataset.test.mjs`).
+
+**Dataset.** `bun scripts/cynco-outcome-dataset.mjs --export [--turns 16]
+[--out PATH] [--ledger-dir DIR]` writes JSONL to
+`~/.cynco/datasets/outcome-dataset.jsonl` (via `cyncoHome()`), one row per
+mission that is LABELED (`labelOf` from `scripts/cynco-signal-validation.mjs`,
+the "Labeling rule" below, imported — never restated) and has at least K
+turns. Unlabeled and short missions are counted and printed, not written, and
+so is every categorical value outside the vocabulary
+(`unknown categorical values: health.<v> ×n`, from `datasetRows(...).unknownValues`).
+`--fraction` is refused (see the leak rule). Row shape (`featuresOf(row, K)`;
+the values are c7 wave 5's real row at K = 16 — a TRAINING mission, since
+holdout rows are not quoted — features elided):
+
+```jsonc
+{ "missionId": "c7-wave5-1788613255404", "prefixTurns": 16,
+  "label": true,             // labelOf: true = success, false = failure
+  "features": { "toolSuccessRate.mean": 0.996875, "algedonicAlerts.rate": 0.06666666666666667,
+                "consecutiveUnstable.max": 16, "…": "…" },
+  "leakGuard": true }
+```
+
+The prefix is the first K entries of `turns[]` by index, at two fixed points:
+**K = 16** (primary, the default) and **K = 32** (secondary). A mission with
+fewer than K turns is EXCLUDED at that K, never truncated. `prefixTurns` is row
+metadata (it is the constant K), not a feature. The feature keys are EXACTLY
+these 56 (the test asserts the set, so adding one is a change to this list and
+the test together):
+
+- For each LEVEL signal — `toolSuccessRate`, `varietyRatio`,
+  `varietyWindowed`, `taskError`, `infoGain`, `progressRate`,
+  `axiomViolations` (= `axiomHealth.violations.length`), `toolEntropyMean`,
+  `toolEntropyMax` (= `brain.toolEntropy.mean`/`.max`): `<name>.mean`,
+  `<name>.last`, `<name>.max` over the prefix's non-null values (27 keys).
+- The three COUNTERS, as per-turn rates so nothing sums over turns:
+  - `stuckTurns` (the current stuck streak; it resets): `.rate` = the share of
+    prefix turns with a streak > 0, `.last`, `.max`.
+  - `algedonicAlerts` (alerts fired so far IN THE ENGINE SESSION, a running
+    count): `.rate` only = new alerts per turn, (last − first) ÷ (turns between
+    them; null with fewer than two values). Its level carries alerts from
+    before the mission began (turn-0 values 0–57, r −0.38 with total turns — an
+    era confound), so `.last`/`.max` were dropped (final review T4-N2): measured
+    from the prefix's first value they collapse onto `.rate` at a fixed K, and
+    unmeasured from it they are the confound.
+  - `consecutiveUnstable` (increments on every unstable turn): `.last`, `.max`
+    only — its mean tracks the turn index, so it is not a feature.
+- `.last` is the last non-null value in the prefix. Every numeric feature is
+  `null` when every value in the prefix is null — unmeasured is never 0 (F16).
+- `brainPresent` — 1 when any prefix turn carries a numeric tool entropy, else 0.
+- One-hots from turn K−1 (the last prefix turn), all zeros when that turn has
+  no value or one outside the vocabulary (counted, above): `errorTrend.{rising,flat,falling}`,
+  `explorationState.{healthy_exploration,thrashing,floundering}`,
+  `health.{healthy,warning,critical}`,
+  `s3s4Balance.{balanced,s3_dominant,s4_dominant,critical}`,
+  `varietyBalance.{balanced,underload,overload,critical}`,
+  `commander.{S1,S2,S3,S4,S5}` (from `heterarchy.commander`).
+
+**The leak rule.** A feature may be built only from what was observable at
+the end of the prefix. Whole-mission fields — `verified`, `outcome`,
+`mutationSweep`, `toolStats`, `durationS`, `exitReason`, `commits`,
+`identityGuard`, `regulatorFidelity`, `posiwidLive`, `s5Decisions`,
+`invariants`, `routing`, `brainStats`, `ultrastable` — are written after the
+run and describe the outcome after the fact; none of them is, or prefixes, a
+feature key. `featuresOf` reads `turns[]`, `missionId` and the label and
+nothing else; the leak test plants those fields on a row and checks the keys.
+
+The mission's LENGTH is the second leak, and the reason the prefix is a fixed
+K. The first cut took the first 50 % of the turns; a prefix of `floor(n/2)`
+turns is as long as the finished run says, failures run longer (a median of
+169 turns against 95.5), and `consecutiveUnstable.max` correlated 1.000 with
+the prefix length (AUC 0.649 for failure from length alone) — Task 4 review I1.
+So: a fixed K, no truncated prefixes, no feature that sums over turns, and a
+second leak test that feeds a row whose every signal is constant and requires
+every non-null feature to be identical at K = 16 and K = 32 — no feature is a
+function of the turn index.
+
+**The frozen holdout.** `benchmark/cynco-ledger/frozen-eval.json` —
+`{ schema: 1, version, seed, frozenAt, missionIds }` — names the missions no
+learner trains on. Invariants:
+
+- **Frozen once.** `--freeze --seed N` writes it and refuses when the file
+  exists. Only `--refreeze --seed N` writes another version (`version + 1`),
+  and it keeps EVERY previous id — a refreeze only adds, topping each label up
+  to its share of the grown ledger. Later-labeled missions otherwise join the
+  training split.
+- **20 %, stratified, whole missions.** 20 % of the eligible missions (labeled,
+  ≥ K turns, K = 16 unless `--turns` says otherwise) rounded to nearest, split
+  across failure/success in proportion, at least one of each when both exist;
+  drawn by a mulberry32 shuffle of the id-sorted candidates.
+- **Never silently shrinks.** `frozenSplit(rows, manifest, { turns: K })`
+  returns `{ train, holdout, missing, ineligible }`; a manifest id that matches
+  no row is reported in `missing`, and a held id whose mission is not eligible
+  at K (unlabeled, or fewer than K turns) leaves both splits and is reported in
+  `ineligible` — never dropped silently, never moved into training.
+
+**v1 and the draw streams (review M4).** v1 was frozen on 2026-09-26 with seed
+20260926 by the first cut of the module (commit f49b00f): eligibility was
+labeled and ≥ 4 turns, and both labels were drawn from ONE shared mulberry32
+stream. It is NOT regenerated — its 21 ids are the frozen holdout, and
+reproducing it from its seed requires that commit's code. From v2 on, each
+label draws from its own stream (`seed ^ <per-label constant>`), so adding a
+mission of one label never changes which missions of the other label a draw
+picks (pinned by a test), and eligibility is ≥ K turns.
+
+v1 over the 280-row ledger: 107 labeled (61 failures); the holdout holds
+**21** missions — 12 failures, 9 successes. Per prefix point:
+
+| K | eligible (fail / success) | excluded short | holdout (fail / success) | ineligible held ids | train (fail / success) |
+|---|---|---|---|---|---|
+| 16 | 104 (60 / 44) | 3 | 21 (12 / 9) | none | 83 (48 / 35) |
+| 32 | 95 (57 / 38) | 12 | 19 (11 / 8) | `ui2b_brief-1785392075491`, `mission_s14-1785723842757` | 76 (46 / 30) |
+
+(173 unlabeled at both.) No unknown categorical value appears at either K.
+None of the eligible missions carries brain tool entropy — `brainPresent` is 0
+on every row at this snapshot, and the six entropy features are null.
+
+### Outcome hindcast and the `M1.*` rows
+
+Phase 5 ruling 5: the first learner enters the authority ladder exactly as a
+rule would, judged on the frozen holdout and nowhere else. Nothing runs in the
+engine this phase — an `M1` that earns `PREDICTIVE` is the next phase's
+advisory S5 input, nothing more.
+
+**At every VERDICT** (`scripts/cynco-campaign.mjs`, seams `exportOutcomeDataset`
+/ `runHindcast`; the helpers are `scripts/cynco-hindcast.mjs`):
+
+1. `exportOutcomeDatasets` writes three files under `~/.cynco/datasets/`:
+   `outcome-dataset.jsonl` (K = 16, the ladder's rows),
+   `outcome-dataset-k32.jsonl` (K = 32, reported only) and
+   `outcome-dataset-hindsight.jsonl` (the K = 16-eligible missions built from
+   ALL their turns, for the leak check). It also reads the manifest through
+   `frozenSplit(rows, manifest, { turns: K })` at both K, so a held-out mission
+   too short at K is named (`split[K].ineligible`) rather than silently absent.
+2. `runHindcast` runs `python scripts/cynco-outcome-model.py --dataset …
+   --dataset32 … --hindsight … --manifest benchmark/cynco-ledger/frozen-eval.json
+   --out ~/.cynco/datasets/outcome-model.json` through `runSync` with a 300 s
+   cap (F155). numpy + scikit-learn only; TabPFN and XGBoost are absent and
+   PARKED (a download needs the operator).
+3. Exit 0 → the model's held-out predictions become model rows
+   (`modelRowsFrom` in `scripts/cynco-rule-verdicts.mjs`) and go into
+   `writeRuleVerdicts` beside the rules. Anything else — python or sklearn
+   missing, `TOO FEW` (exit 2), a crash, a timeout, a throw — is
+   `rec.hindcast = { fault }`, one `UNMEASURED` line in the entry, and the rule
+   verdicts are written WITHOUT model rows. A stale `outcome-model.json` from an
+   earlier wave is never read. The hindcast is a measurement, never a gate.
+
+**The model** (`scripts/cynco-outcome-model.py`, pinned by
+`scripts/__tests__/cynco-outcome-model.test.mjs` on the committed fixtures in
+`scripts/__tests__/fixtures/outcome/`): feature keys are read from the rows;
+a null is imputed with the TRAINING mean and nothing else is added; a column
+null on every training row, or holding one value on every measured training
+row, is dropped and named (`droppedFeatures`, `droppedReasons`: `all null` |
+`constant`). Features are standardised; `lr` = `LogisticRegression(max_iter=1000,
+class_weight='balanced')`, `gbt` = `HistGradientBoostingClassifier(max_depth=3,
+max_iter=200)`. The positive class is FAILURE (`pFail`). Refuses with exit 2
+and `TOO FEW: train N < 30 or holdout M < 8` (or `ONE CLASS: …`), writing
+nothing.
+
+`outcome-model.json` (schema 1): `{ version, trainedAt, prefixTurns, nTrain,
+nHoldout, baseRate, features, droppedFeatures, droppedReasons, models: { lr, gbt },
+lengthFeature, leakCheck, secondary }` — per model the holdout `precision`,
+`recall` (at `pFail ≥ 0.5`; null when nothing fired / no failure held out),
+`brier`, `auc` (null on a one-class holdout) and `predictions: [{ missionId,
+pFail }]`. `baseRate` is the HOLDOUT failure rate. `version` rises only when a
+held-out prediction changed (compared at 6 decimals).
+
+- **The leak check** — `leakCheck.<model> = { aucPrefix, aucHindsight }`: the
+  same models refitted on the all-turns rows and scored on the same holdout. If
+  hindsight separates and the prefix does not, the vector describes outcomes
+  after the fact, which is itself the finding. `lengthFeature` names any kept
+  feature that would carry the mission's length (`turnsInPrefix`,
+  `prefixTurns`, `turns`, `totalTurns`); it is `null` — the fixed-K prefix is
+  what makes the comparison meaningful.
+- **`secondary`** — the same pipeline at K = 32 (`{ refusal }` when it refused).
+  Reported, never laddered.
+
+**The `M1.*` rows in `rule-verdicts.json`.** `modelRowsFrom(outcomeModel, rows)`
+gives one synthetic rule per model: `M1.lr`, `M1.gbt`; *fired* = held-out
+missions with `pFail ≥ 0.5`, *scope* = the held-out ids the ledger still
+carries. `writeRuleVerdicts({ …, modelRows })` runs each through `analyse` over
+its scope rows only — the identical Fisher exact / Wilson arithmetic a rule
+faces, so the lift is against the HOLDOUT base — and re-runs Holm (`holm`,
+exported from `scripts/cynco-signal-validation.mjs`) over the whole family,
+rules and model rows together (`ledger.holmFamily`). Each lands as
+`rules['M1.<k>'] = { verdict, precision, ci, p, n, pAdjusted, lift, firedTotal,
+failures, source: 'model', scope: 'holdout', base, scopeN }`, and counts in
+the FILE's `predictive` list and the writer's `total` like any rule (the
+scoreboard's `perRulePrecision` does not: it counts S5 rules only and reads
+the best `M1.*` row as its `learner` field — see "Scoreboard"). `engine/s5/ruleAuthority.ts` skips every
+`source: 'model'` row, so an `M1.*` id never earns an S5 decision enforcement or
+a place in the earned-only training corpus (pinned in `ruleAuthority.test.ts`
+and `exportTrainingData.test.ts`). With no model rows the file is byte-identical
+to Phase 4's.
+
+The wave record carries `hindcast` (the model's metrics without its
+predictions, `split`, and `ladder` — the two `M1.*` entries as written), or
+`{ fault, split? }`; the entry prints it right after the scoreboard. If
+`writeRuleVerdicts` throws WITH the model rows, the rules' verdicts are
+rewritten alone (the engine never reads last wave's file, stale), the hindcast
+keeps its metrics with `ladderFault: "<message>"` and `ladder: null`, the
+record's `ruleVerdicts` carries `modelRowsSkipped: true`, and the entry prints
+`LADDER NOT WRITTEN (<message>) — rules rewritten alone`. The
+entry line carries the dropped dead columns as a COUNT (`dropped 28 dead
+column(s)`); `--scoreboard` prints the latest record's hindcast in full, the
+column names included (`hindcastLine(h, { detail: true })`).
+
+**Real run on the 56-key vector, 2026-09-28** (after `algedonicAlerts.last/.max`
+were dropped; 104 eligible at K = 16: train 83, holdout 21 — 12 failures / 9
+successes; K = 32: train 76, holdout 19; `bun scripts/cynco-rule-verdicts.mjs
+--with-hindcast --datasets-dir C:/tmp/p5fix-k56`, deterministic — a second
+run wrote the same model, `trainedAt` aside):
+
+```
+- Outcome hindcast: v1 at K = 16 turns on 21 held-out missions (base 57%): M1.gbt precision 50% [25, 75] on 12 fired p(Holm) 1.000 NO EVIDENCE; M1.lr precision 56% [27, 81] on 9 fired p(Holm) 1.000 TOO FEW; leak check gbt AUC prefix 0.50 / hindsight 0.55, lr AUC prefix 0.47 / hindsight 0.61; K = 32 gbt AUC 0.63, lr AUC 0.41; dropped 28 dead column(s)
+rule verdicts v1: 0 predictive of 8 rules (+2 model rows) (none) → C:\tmp\p5fix-k56\rule-verdicts.json
+```
+
+Holdout at K = 16: `lr` precision 0.556, recall 0.417, Brier 0.363, AUC 0.472;
+`gbt` precision 0.500, recall 0.500, Brier 0.340, AUC 0.500. `M1.gbt` 6 of 12
+fired missions failed, Wilson [0.254, 0.746], p 0.660, p(Holm) 1.000;
+`M1.lr` 5 of 9, [0.267, 0.811], TOO FEW. Holm family 9 (7 tested rules + 2
+models); no rule's verdict moved. For scale (the Task 4 review, over all the
+real rows): the finished length alone separates the outcome at AUC 0.633, the
+best single remaining prefix feature at ~0.58–0.60 (`s3s4Balance.balanced`
+0.600 over all 104 K = 16 rows; neither dropped key was near the top) — `lr`
+sits below chance and `gbt` at it, so on this ledger the learner adds nothing
+to either. 28 of 56 columns were dead on the training split (the six entropy
+features all null; `stuckTurns.*`, `taskError.*`, `progressRate.*`,
+`consecutiveUnstable.last/max`, `brainPresent` and ten one-hots constant); 28
+kept. Both `M1` rows are the honest verdict the spec predicted: no evidence on
+21 missions.
+
+The first run (2026-09-26, the 58-key vector with `algedonicAlerts.last/.max`)
+read `gbt` precision 0.545 on 11 fired, AUC 0.407, hindsight 0.528, K = 32
+`gbt` 0.55 / `lr` 0.42, 28 of 58 dead; `lr` did not move. Those numbers
+describe a vector the code no longer builds.
 
 ## Labeling rule
 

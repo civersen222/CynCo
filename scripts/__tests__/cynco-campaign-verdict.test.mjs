@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { verdictEntry, notify, commitVerdict } from '../cynco-campaign-verdict.mjs'
+import { campaignScoreboard } from '../cynco-scoreboard.mjs'
 
 const grade = { sha: '1bc0f8c', verified: false,
   gate: { fails: [{ id: 'C8.5.palette.Atlas', line: 'C8.5.palette.Atlas: FAIL pixels within 24/channel of a pinned ink at t40 = 0.71 (floor 0.9)' }], passes: [{ id: 'C8.1a', line: 'C8.1a: PASS' }], terminator: 'MISS', failCount: 1, priorRegressions: 0, exit: 1, durationMs: 120000, harnessFault: null },
@@ -243,5 +247,30 @@ describe('verdictEntry — the autopoiesis line (Phase 4)', () => {
   it('omits the line when no reading was taken', () => {
     expect(entry(null)).not.toMatch(/Autopoiesis:/)
     expect(entry(undefined)).not.toMatch(/Autopoiesis:/)
+  })
+})
+
+describe('verdictEntry — the scoreboard line (Phase 5)', () => {
+  // The C8 fixture (scripts/__tests__/fixtures/scoreboard/): 14 → 6 → 3 → 0
+  // fails, 28824 + 24147 + 2345 s, PASS at wave 3, one delivered operator note.
+  const FIX = fileURLToPath(new URL('./fixtures/scoreboard/', import.meta.url))
+  const jsonl = (p) => readFileSync(p, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l))
+  const rv = (verdict, precision, ci, n) => ({ verdict, precision, ci, n })
+  const ruleVerdicts = { rules: {
+    C2: rv('TOO FEW — cannot tell', 0.2, [0.04, 0.62], 5), C4: rv('TOO FEW — cannot tell', 0.75, [0.3, 0.95], 4), W6: rv('TOO FEW — cannot tell', 0.4, [0.1, 0.8], 5),
+    I1: rv('NO EVIDENCE', 0.549, [0.41, 0.68], 51), I3: rv('NO EVIDENCE', 0.58, [0.45, 0.70], 60), W7: rv('NO EVIDENCE', 0.5, [0.3, 0.7], 20),
+    W8: rv('NO EVIDENCE', 0.52, [0.35, 0.69], 30), I4: rv('CONSTANT — fires on everything, predicts nothing', 0.57, [0.47, 0.66], 107) } }
+  const scoreboard = campaignScoreboard({ spec: { id: 'c8' }, state: JSON.parse(readFileSync(join(FIX, 'c8', 'state.json'), 'utf8')),
+    waves: jsonl(join(FIX, 'c8', 'waves.jsonl')), rows: jsonl(join(FIX, 'rows.jsonl')), ruleVerdicts, economics: ['VERDICT: frontier spent $4295.55 SUPERVISING'] })
+  const entry = (sb) => verdictEntry({ spec: { id: 'c8' }, wave: 3, row, grade, decision: { kind: 'pass', why: 'x' }, ideationRecord: null, economicsLines: [],
+    identity: { intact: true, violated: [] }, autopoiesis: { criteria: {}, missing: ['boundarySelfProduced'] }, scoreboard: sb })
+
+  it('prints the four numbers and the rule precision right after the autopoiesis line', () => {
+    expect(entry(scoreboard)).toMatch(/^- Autopoiesis: 0\/6 — missing boundarySelfProduced\n- Scoreboard: PASS\/GPU-h 0\.065 \| waves 3 \| lines fixed per landed wave 4\.67 \| human interventions per wave 0\.33 \| rules predictive 0\/8 \(best I3 58% NO EVIDENCE\)$/m)
+  })
+  it('names a board that threw, and omits the line when there is no board', () => {
+    expect(entry({ error: 'boom' })).toMatch(/^- Scoreboard: UNMEASURED — boom$/m)
+    expect(entry(null)).not.toMatch(/Scoreboard:/)
+    expect(entry(undefined)).not.toMatch(/Scoreboard:/)
   })
 })

@@ -412,3 +412,43 @@ describe('operator notes', () => {
     expect(rec.operatorNotes).toEqual([])
   })
 })
+
+// Phase 5 ruling 8 (F162): `bestOfN.applied` readable on the ledger.
+describe('best-of-N selections', () => {
+  const meta = { missionId: 'm', briefFile: 'b', marker: 'x', cwd: '.', dispatchedAt: 't', durationS: 1, outcome: 'landed' }
+
+  it('records every bestOfN.selected frame with its applied flag', () => {
+    const c = createMissionCollector(() => 5)
+    c.ingest({ type: 'bestOfN.selected', winner: 1, passRate: 0.75, applied: true })
+    c.ingest({ type: 'bestOfN.selected', winner: 0, passRate: 1, applied: false })
+    const rec = buildMissionRecord(c, meta)
+    expect(rec.bestOfN).toEqual([{ t: 5, winner: 1, passRate: 0.75, applied: true }, { t: 5, winner: 0, passRate: 1, applied: false }])
+  })
+  // Final review M6 (T7-M6): off, ran-without-a-winner and ran-with-one are
+  // three different readings, and the row keeps them apart.
+  it('null when best-of-N never started; [] when it started and selected nothing; a frame missing a field reads null', () => {
+    expect(buildMissionRecord(createMissionCollector(), meta).bestOfN).toBeNull()
+    const started = createMissionCollector(() => 1)
+    started.ingest({ type: 'bestOfN.start', payload: { count: 3, framework: 'pytest', command: 'pytest -q' } })
+    expect(buildMissionRecord(started, meta).bestOfN).toEqual([])
+    const c = createMissionCollector(() => 1)
+    c.ingest({ type: 'bestOfN.selected' })
+    expect(buildMissionRecord(c, meta).bestOfN).toEqual([{ t: 1, winner: null, passRate: null, applied: null }])
+  })
+  it('a second bestOfN.start does not wipe the selections already recorded', () => {
+    const c = createMissionCollector(() => 2)
+    c.ingest({ type: 'bestOfN.start', payload: { count: 2 } })
+    c.ingest({ type: 'bestOfN.selected', winner: 0, passRate: 1, applied: true })
+    c.ingest({ type: 'bestOfN.start', payload: { count: 2 } })
+    expect(buildMissionRecord(c, meta).bestOfN).toEqual([{ t: 2, winner: 0, passRate: 1, applied: true }])
+  })
+  it('the engine emits bestOfN.start before any candidate runs', () => {
+    const src = readFileSync(new URL('../../engine/bridge/conversationLoop.ts', import.meta.url), 'utf8')
+    expect(src).toMatch(/this\.emit\(\{ type: 'bestOfN\.start', payload: \{ count: bonCount/)
+    expect(src.indexOf("type: 'bestOfN.start'")).toBeLessThan(src.indexOf("type: 'bestOfN.selected'"))
+  })
+  it('the engine emits the frame with exactly the fields the collector reads', () => {
+    const src = readFileSync(new URL('../../engine/bridge/conversationLoop.ts', import.meta.url), 'utf8')
+    expect(src).toMatch(/type: 'bestOfN\.selected' as any, winner: winner\.index, passRate: winner\.passRate, applied \}/)
+  })
+})
