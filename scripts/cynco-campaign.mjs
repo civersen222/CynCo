@@ -398,6 +398,12 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
 
   let ideation = null, ideationMeta = null
   let missionId, row, briefFile, dispatchedAt, waveFiles, workOrder
+  // The roadmap pathspec, once THIS wave moved the line (`sealed → running` at
+  // dispatch, `→ done` just before the verdict commit). Every commit this wave
+  // makes — the verdict's or the fault path's — carries it, so a moved roadmap
+  // is never left dirty for the next invocation's dirty-tree guard.
+  let roadmapFiles = []
+  const roadmapPathspec = (p) => (io.roadmapFileIn ?? roadmapFileIn)(p)
   // Phase 4 ruling 4: did the campaign-to-date denial digest (ledger →
   // validation) reach THIS wave's brief? The same predicate pacing() used to
   // print it (pacingDigestIncluded), recorded as `s4.pacingFromDenials`; an
@@ -471,7 +477,7 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
     dispatchedAt = new Date().toISOString()
     // The first dispatch of a sealed line starts it running; the file joins
     // the wave's commit so the dirty-tree guard never sees it as foreign work.
-    if (moveRoadmapLine(roadmapPath, spec.id, 'running', ['sealed'])) waveFiles.push(...roadmapFileIn(roadmapPath))
+    if (moveRoadmapLine(roadmapPath, spec.id, 'running', ['sealed'])) roadmapFiles = roadmapPathspec(roadmapPath)
     let waited
     try {
       const dispatched = await io.dispatch({ spec, briefFile, invariants: effectiveInvariants(spec, s), timeoutS: spec.budget.hoursPerWave * 3600, pidFile, driverLog })
@@ -485,14 +491,14 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
       row = missionId ? io.readRow(missionId) : null
     } catch (e) {
       console.error(`[campaign] wave ${wave} dispatch/wait failed: ${e?.stack ?? e}`)
-      return faultWave(spec, state, io, { wave, missionId: null, briefFile, base, dispatchedAt, files: waveFiles,
+      return faultWave(spec, state, io, { wave, missionId: null, briefFile, base, dispatchedAt, files: [...waveFiles, ...roadmapFiles],
         why: `dispatch or wait failed: ${e?.message ?? e}` })
     }
     if (!row) {
       const why = waited.exited ? 'driver exited without a ledger row'
         : waited.pidUnseen ? `driver pid ${waited.pidUnseen} was already invisible on the first probe — the PID handoff is broken and the mission may still be running unwatched (see ${driverLog})`
           : 'driver did not exit within the wall clock'
-      return faultWave(spec, state, io, { wave, missionId, briefFile, base, dispatchedAt, files: waveFiles, why })
+      return faultWave(spec, state, io, { wave, missionId, briefFile, base, dispatchedAt, files: [...waveFiles, ...roadmapFiles], why })
     }
   }
 
@@ -646,11 +652,6 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
     console.error(`[campaign] wave ${wave} IDENTITY VIOLATED: ${identity.violated.map(n => `${n} (${identity.evidence[n].detail})`).join('; ')}`)
   }
 
-  // Phase 5 Task 1: a pass finishes the roadmap line — read off the FINAL
-  // decision, after the identity check could still turn it into a fault.
-  const roadmapDone = (decision.kind === 'pass' || decision.kind === 'pass-with-survivors')
-    && moveRoadmapLine(roadmapPath, spec.id, 'done', ['running', 'sealed'])
-
   // §E: two proposals must not go pending in the same wave. promotionProposal
   // is computed FIRST; when it is about to be raised, capProposal is skipped
   // entirely (set to null) rather than called — calling it here would see
@@ -718,9 +719,16 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
   const ideationRecord = ideation ? { authority: s.ideationAuthority ?? 0, hypotheses: ideation.hypotheses, followed } : null
   const entry = verdictEntry({ spec, wave, row, grade, decision, ideationRecord, economicsLines: economicsText, denialAnalysis, denialScope, capProposal: cap, governancePosiwid: governance, gateLines, identity, autopoiesis: rec.autopoiesis, scoreboard: rec.scoreboard, hindcast: rec.hindcast })
   io.appendLog(entry)
+  // Phase 5 Task 1 / final review I1: a pass finishes the roadmap line — read
+  // off the FINAL decision (the identity check could still turn it into a
+  // fault), and moved HERE, just before the commit (spec §3), after every step
+  // that can throw. The line is forward-only: a `done` written before a later
+  // throw would name a campaign with no PASS record, and leave the file dirty.
+  if ((decision.kind === 'pass' || decision.kind === 'pass-with-survivors')
+    && moveRoadmapLine(roadmapPath, spec.id, 'done', ['running', 'sealed'])) roadmapFiles = [...new Set([...roadmapFiles, ...roadmapPathspec(roadmapPath)])]
   // Ruling 5: commitVerdict matches these against `git status --porcelain`,
   // which speaks repo-relative forward slashes and nothing else.
-  const files = [...new Set([LOG, ...waveFiles, ...(roadmapDone ? roadmapFileIn(roadmapPath) : []), ...ledgerShardsTouched()])]
+  const files = [...new Set([LOG, ...waveFiles, ...roadmapFiles, ...ledgerShardsTouched()])]
   try { rec.verdictSha = io.commit({ repoRoot: '.', branch: `campaign/${spec.id}`, files, message: `${spec.id.toUpperCase()} wave ${wave} verdict: ${decision.kind} — ${decision.why}` }).sha } catch (e) { console.error(`[campaign] commit skipped: ${e.message}`) }
   rec.notified = await notifyOrQueue(io, s, `${spec.id.toUpperCase()} wave ${wave}: ${decision.kind.toUpperCase()} — ${decision.why}\n${grade.gate.fails.map(f => f.line).join('\n')}`, decision)
   state.rewriteLastWave(rec)
@@ -731,7 +739,7 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
     // The wave is already on the record when the throw came from the verdict
     // half; a second append would put the same wave in waves.jsonl twice and
     // double-count it in every promotion reading afterwards. Overwrite it.
-    return faultWave(spec, state, io, { wave, missionId, briefFile, base, dispatchedAt, files: waveFiles, appended, adopted, rowDurationS: row?.durationS ?? null, why: `post-run step failed: ${e?.message ?? e}` })
+    return faultWave(spec, state, io, { wave, missionId, briefFile, base, dispatchedAt, files: [...new Set([...(waveFiles ?? []), ...roadmapFiles])], appended, adopted, rowDurationS: row?.durationS ?? null, why: `post-run step failed: ${e?.message ?? e}` })
   }
 }
 

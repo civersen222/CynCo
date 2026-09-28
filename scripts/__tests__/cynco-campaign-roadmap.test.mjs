@@ -113,6 +113,72 @@ describe('runWave moves the roadmap line', () => {
   })
 })
 
+// Final review I1: the `done` move runs just before the verdict commit (spec
+// §3), after every step that can throw, and the fault path commits the roadmap
+// whenever THIS wave moved it. `roadmapFileIn` is seamed so the pathspec is
+// visible without the temp roadmap living inside the repo.
+describe('the done move sits just before the commit (final review I1)', () => {
+  const PATHSPEC = 'docs/civkings-redesign-briefs/roadmap.json'
+  const commitsInto = (seen) => (args) => { (seen.commits ??= []).push({ files: args.files, message: args.message }); return { sha: 'v1' } }
+
+  it('a PASS whose appendLog throws → wave fault, the line still running, no roadmap in the fault commit', async () => {
+    const rm = roadmapWith([['c9', 'running']])
+    const seen = {}
+    const io = { ...ioFor(pass, rm, seen), roadmapFileIn: () => [PATHSPEC], commit: commitsInto(seen),
+      appendLog: () => { throw new Error('campaign-log.md is locked') } }
+    const rec = await runWave(specFor('c9'), freshState('c9'), io, { roadmapPath: rm })
+    expect(rec.decision.kind).toBe('fault')
+    expect(rec.decision.why).toContain('campaign-log.md is locked')
+    expect(statusOf(rm, 'c9')).toBe('running')
+    expect(seen.commits).toHaveLength(1)
+    expect(seen.commits[0].message).toContain('faulted')
+    expect(seen.commits[0].files).not.toContain(PATHSPEC)
+  })
+
+  it('a PASS whose commit throws → the line is done and the roadmap was in the attempted commit', async () => {
+    const rm = roadmapWith([['c9', 'running']])
+    const seen = {}
+    const io = { ...ioFor(pass, rm, seen), roadmapFileIn: () => [PATHSPEC],
+      commit: (args) => { (seen.commits ??= []).push({ files: args.files }); throw new Error('index.lock exists') } }
+    const rec = await runWave(specFor('c9'), freshState('c9'), io, { roadmapPath: rm })
+    // commitVerdict's throw is logged, not a fault (the verdict is on the record).
+    expect(rec.decision.kind).toBe('pass')
+    expect(statusOf(rm, 'c9')).toBe('done')
+    expect(seen.commits).toHaveLength(1)
+    expect(seen.commits[0].files).toContain(PATHSPEC)
+  })
+
+  it('a throw AFTER the done move → the fault commit carries the roadmap, so the next invocation is not refused as dirty', async () => {
+    const rm = roadmapWith([['c9', 'running']])
+    const seen = {}
+    const state = freshState('c9')
+    // rewriteLastWave runs after the verdict commit; its first call throws, the
+    // fault path's own rewrite then succeeds.
+    const real = state.rewriteLastWave.bind(state)
+    let thrown = false
+    state.rewriteLastWave = (rec) => { if (!thrown) { thrown = true; throw new Error('waves.jsonl is locked') } return real(rec) }
+    const io = { ...ioFor(pass, rm, seen), roadmapFileIn: () => [PATHSPEC], commit: commitsInto(seen) }
+    const rec = await runWave(specFor('c9'), state, io, { roadmapPath: rm })
+    expect(rec.decision.kind).toBe('fault')
+    expect(statusOf(rm, 'c9')).toBe('done')
+    expect(seen.commits).toHaveLength(2)
+    expect(seen.commits[0].files).toContain(PATHSPEC)
+    expect(seen.commits[1].message).toContain('faulted')
+    expect(seen.commits[1].files).toContain(PATHSPEC)
+  })
+
+  it('a dispatch that throws after sealed → running commits the roadmap on the fault path', async () => {
+    const rm = roadmapWith([['c9', 'sealed']])
+    const seen = {}
+    const io = { ...ioFor(miss, rm, seen), roadmapFileIn: () => [PATHSPEC], commit: commitsInto(seen),
+      dispatch: async () => { throw new Error('dispatch-mission.sh exit 1') } }
+    const rec = await runWave(specFor('c9'), freshState('c9'), io, { roadmapPath: rm })
+    expect(rec.decision.kind).toBe('fault')
+    expect(statusOf(rm, 'c9')).toBe('running')
+    expect(seen.commits[0].files).toContain(PATHSPEC)
+  })
+})
+
 describe('moveRoadmapLine', () => {
   it('forward-only: a refusal from setLineStatus is caught and logged, the file untouched', () => {
     const rm = roadmapWith([['c9', 'done']])
