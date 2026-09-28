@@ -12,6 +12,7 @@ import { mkdtempSync, mkdirSync, copyFileSync, writeFileSync, readFileSync, rmSy
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { spawnSync } from 'node:child_process'
 
 const tmp = []
 afterEach(() => { for (const d of tmp.splice(0)) rmSync(d, { recursive: true, force: true }) })
@@ -176,6 +177,74 @@ describe('the done move sits just before the commit (final review I1)', () => {
     expect(rec.decision.kind).toBe('fault')
     expect(statusOf(rm, 'c9')).toBe('running')
     expect(seen.commits[0].files).toContain(PATHSPEC)
+  })
+})
+
+// Final review T7-M1 (F163): before a wave is dispatched the repo's HEAD must
+// be the wave's base (`s.lastBase ?? spec.base`). A mismatch is a STOP — nothing
+// ran — naming both shas; nothing is dispatched and the roadmap never moves.
+describe('the repo HEAD must be the wave base before dispatch (T7-M1)', () => {
+  const FULL = '1d03308aaaabbbbccccddddeeeeffff000011112'
+  const OTHER = '17cd9a6000011112222333344445555666677778'
+  const shas = (head) => (repo, rev) => ({ HEAD: head, '1d03308': FULL, [FULL]: FULL })[rev] ?? null
+
+  it('HEAD elsewhere → stop naming both shas, nothing dispatched, the roadmap untouched, no wave spent', async () => {
+    const rm = roadmapWith([['c9', 'sealed']])
+    const before = readFileSync(rm, 'utf8')
+    const seen = { dispatched: 0 }
+    const state = freshState('c9')
+    const io = { ...ioFor(miss, rm, seen), repoHead: shas(OTHER), dispatch: async () => { seen.dispatched++; return { missionId: 'm1' } } }
+    const rec = await runWave(specFor('c9'), state, io, { roadmapPath: rm })
+    expect(rec.decision.kind).toBe('stop')
+    expect(rec.decision.why).toContain(`repo HEAD ${OTHER} is not the wave base 1d03308 (${FULL})`)
+    expect(rec.decision.why).toContain('calibration and dispatch must look at one commit (Rule 11, F163)')
+    expect(seen.dispatched).toBe(0)
+    expect(readFileSync(rm, 'utf8')).toBe(before)
+    expect(state.state.waveCount ?? 0).toBe(0)
+  })
+
+  it('an unresolvable base or HEAD is a stop too, never a guess', async () => {
+    const seen = { dispatched: 0 }
+    const io = { ...ioFor(miss, null, seen), repoHead: () => null, dispatch: async () => { seen.dispatched++; return {} } }
+    const rec = await runWave(specFor('c9'), freshState('c9'), io)
+    expect(rec.decision.kind).toBe('stop')
+    expect(rec.decision.why).toContain('repo HEAD (unresolved) is not the wave base 1d03308 (unresolved)')
+    expect(seen.dispatched).toBe(0)
+  })
+
+  it('HEAD at the base (an abbreviated base resolves to the same commit) → dispatched', async () => {
+    const rm = roadmapWith([['c9', 'sealed']])
+    const seen = {}
+    const rec = await runWave(specFor('c9'), freshState('c9'), { ...ioFor(miss, rm, seen), repoHead: shas(FULL) }, { roadmapPath: rm })
+    expect(rec.decision.kind).toBe('next')
+    expect(seen.atDispatch).toEqual(['c9:running'])
+  })
+
+  it('a later wave compares against the last graded HEAD (s.lastBase), not spec.base', async () => {
+    const state = freshState('c9')
+    state.state.lastBase = OTHER
+    const asked = []
+    const io = { ...ioFor(miss, null), repoHead: (repo, rev) => { asked.push(rev); return rev === 'HEAD' || rev === OTHER ? OTHER : FULL } }
+    const rec = await runWave(specFor('c9'), state, io)
+    expect(asked).toEqual(['HEAD', OTHER])
+    expect(rec.decision.kind).toBe('next')
+  })
+
+  it('the default io carries the real read; main hands runWave the default io', () => {
+    expect(typeof defaultIo.repoHead).toBe('function')
+    const src = readFileSync(fileURLToPath(new URL('../cynco-campaign.mjs', import.meta.url)), 'utf8')
+    expect(src).toMatch(/await runWave\(spec, state, defaultIo, \{ roadmapPath \}\)/)
+  })
+
+  it('defaultIo.repoHead resolves HEAD and an abbreviated sha in a real temp repo; garbage is null', () => {
+    const repo = tempDir('repohead-')
+    const git = (...a) => spawnSync('git', ['-C', repo, ...a], { encoding: 'utf8' })
+    git('init', '-q'); git('config', 'user.email', 't@t'); git('config', 'user.name', 't')
+    writeFileSync(join(repo, 'a.txt'), 'a\n'); git('add', 'a.txt'); git('commit', '-q', '-m', 'a')
+    const full = git('rev-parse', 'HEAD').stdout.trim()
+    expect(defaultIo.repoHead(repo, 'HEAD')).toBe(full)
+    expect(defaultIo.repoHead(repo, full.slice(0, 7))).toBe(full)
+    expect(defaultIo.repoHead(repo, 'deadbeefnope')).toBeNull()
   })
 })
 

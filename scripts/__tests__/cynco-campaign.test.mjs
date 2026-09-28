@@ -450,6 +450,8 @@ describe('runWave with an adopted row', () => {
       writeBrief: (p) => { seen.briefs++; return p },
       dispatch: async () => { seen.dispatched++; return { missionId: 'nope' } },
       waitForDriver: async () => { throw new Error('waitForDriver must not run for an adopted row') },
+      // T7-M1: the HEAD-vs-base check guards a DISPATCH; an adopted wave already ran.
+      repoHead: () => { throw new Error('repoHead must not run for an adopted row') },
       engineLive: async () => false,
       ideate: async () => { seen.ideated++; return { ideation: null } },
       readRow: (missionId) => ({ missionId, briefFile: 'docs/civkings-redesign-briefs/c8-wave1.txt', exitReason: 'timeout', durationS: 28824, commitRange: { base: '1d03308', head: '1bc0f8c' }, outcome: 'landed', markerSeen: false, toolStats: {} }),

@@ -44,6 +44,9 @@ describe.skipIf(!HAS_SMOKE)(`smoke campaign s1 (needs ${SMOKE_REPO})`, () => {
   beforeAll(() => {
     repo = cloneSmoke()
     if (git(['cat-file', '-e', `${SMOKE_BASE}^{commit}`], repo).status !== 0) throw new Error(`${SMOKE_REPO} lacks the fixture BASE ${SMOKE_BASE}`)
+    // F163 / T7-M1: the generator refuses unless the repo's HEAD IS the base,
+    // so the temp clone is checked out there (the original is never touched).
+    if (git(['checkout', '--quiet', '--detach', SMOKE_BASE], repo).status !== 0) throw new Error(`could not check out ${SMOKE_BASE} in the temp clone`)
     home = tempHome()
     specPath = writeSmokeCampaign({ home, repo, base: SMOKE_BASE })
     spec = loadCampaignSpec(specPath)
@@ -112,32 +115,71 @@ describe.skipIf(!HAS_SMOKE)(`smoke campaign s1 (needs ${SMOKE_REPO})`, () => {
 
   it('rewrites campaigns/s1 fresh on a second write', () => {
     const h = tempHome()
-    writeSmokeCampaign({ home: h, repo })
+    writeSmokeCampaign({ home: h, repo, base: SMOKE_BASE })
     writeFileSync(join(h, 'campaigns', SMOKE_ID, 'state.json'), '{}')
-    writeSmokeCampaign({ home: h, repo })
+    writeSmokeCampaign({ home: h, repo, base: SMOKE_BASE })
     expect(readdirSync(join(h, 'campaigns', SMOKE_ID))).toEqual([])
   })
 
   it('refuses a home that would fail checkIdentity, and the real ~/.cynco', () => {
     const notCynco = mkdtempSync(join(tmpdir(), 's1-plain-')).replace(/\\/g, '/')
-    expect(() => writeSmokeCampaign({ home: notCynco, repo })).toThrow(/must end in \/\.cynco/)
-    expect(() => writeSmokeCampaign({ home: join(homedir(), '.cynco'), repo })).toThrow(/refusing to write into the real/)
-    expect(() => writeSmokeCampaign({ home: tempHome(), repo: join(tmpdir(), 'no-such-repo-s1') })).toThrow(/rev-parse/)
+    expect(() => writeSmokeCampaign({ home: notCynco, repo, base: SMOKE_BASE })).toThrow(/must end in \/\.cynco/)
+    expect(() => writeSmokeCampaign({ home: join(homedir(), '.cynco'), repo, base: SMOKE_BASE })).toThrow(/refusing to write into the real/)
+    expect(() => writeSmokeCampaign({ home: tempHome(), repo: join(tmpdir(), 'no-such-repo-s1'), base: SMOKE_BASE })).toThrow(/rev-parse/)
   })
 
-  it('CLI: --write --repo --home prints the spec path', () => {
+  // F163 / final review T7-M1: the real git read, on a clone whose HEAD moved on.
+  it('refuses when the repo HEAD is not --base, naming both shas, and writes nothing', () => {
+    const moved = cloneSmoke()
+    const head = git(['rev-parse', 'HEAD'], moved).stdout.trim()
+    expect(head).not.toBe(SMOKE_BASE)
     const h = tempHome()
-    const r = spawnSync('bun', ['scripts/cynco-smoke-campaign.mjs', '--write', '--repo', repo, '--home', h], { cwd: ROOT, encoding: 'utf8' })
+    expect(() => writeSmokeCampaign({ home: h, repo: moved, base: SMOKE_BASE })).toThrow(`repo HEAD ${head} is not --base ${SMOKE_BASE}`)
+    expect(existsSync(h)).toBe(false)
+    // An abbreviated --base that names HEAD's own commit is the same commit.
+    const at = cloneSmoke()
+    git(['checkout', '--quiet', '--detach', SMOKE_BASE], at)
+    const spec = JSON.parse(readFileSync(writeSmokeCampaign({ home: tempHome(), repo: at, base: SMOKE_BASE.slice(0, 7) }), 'utf8'))
+    expect(spec.base).toBe(SMOKE_BASE)
+  })
+
+  it('CLI: --write --repo --base --home prints the spec path; without --base, or off HEAD, it refuses', () => {
+    const h = tempHome()
+    const r = spawnSync('bun', ['scripts/cynco-smoke-campaign.mjs', '--write', '--repo', repo, '--base', SMOKE_BASE, '--home', h], { cwd: ROOT, encoding: 'utf8' })
     expect(r.stderr).toBe('')
     expect(r.status).toBe(0)
     expect(r.stdout.trim()).toBe(`${h}/smoke/s1.campaign.json`)
     expect(existsSync(r.stdout.trim())).toBe(true)
+    const noBase = spawnSync('bun', ['scripts/cynco-smoke-campaign.mjs', '--write', '--repo', repo, '--home', tempHome()], { cwd: ROOT, encoding: 'utf8' })
+    expect(noBase.status).toBe(1)
+    expect(noBase.stderr).toMatch(/no base — pass --base <sha>/)
+    const moved = cloneSmoke()
+    const off = spawnSync('bun', ['scripts/cynco-smoke-campaign.mjs', '--write', '--repo', moved, '--base', SMOKE_BASE, '--home', tempHome()], { cwd: ROOT, encoding: 'utf8' })
+    expect(off.status).toBe(1)
+    expect(off.stderr).toMatch(new RegExp(`repo HEAD [0-9a-f]{40} is not --base ${SMOKE_BASE}`))
   }, 60_000)
+})
+
+// No smoke repo needed: the seam stands in for git.
+describe('smoke campaign --base is required and must be the repo HEAD (F163, T7-M1)', () => {
+  const base = 'b'.repeat(40)
+  it('no base is refused before anything is written', () => {
+    const h = tempHome()
+    expect(() => writeSmokeCampaign({ home: h, repo: 'C:/tmp/any-repo', commit: () => base })).toThrow(/no base — pass --base <sha>/)
+    expect(existsSync(h)).toBe(false)
+  })
+  it('HEAD elsewhere is refused naming both shas (and the resolved base when it was abbreviated)', () => {
+    const h = tempHome()
+    const commit = (repo, rev) => (rev === 'HEAD' ? 'c'.repeat(40) : base)
+    expect(() => writeSmokeCampaign({ home: h, repo: 'C:/tmp/any-repo', base: 'bbbbbbb', commit }))
+      .toThrow(`repo HEAD ${'c'.repeat(40)} is not --base bbbbbbb (${base})`)
+    expect(existsSync(h)).toBe(false)
+  })
 })
 
 // The wave grader reads the suite gate from <CYNCO_HOME>/heldout/common; a
 // fresh temp home has none. `--common-from` stages that one file. No smoke
-// repo needed: an explicit base skips the rev-parse.
+// repo needed: the `commit` seam stands in for git.
 describe('smoke campaign --common-from', () => {
   const base = 'a'.repeat(40)
   it('copies g_suite_no_regression.py into <home>/heldout/common, and only that file', () => {
@@ -145,16 +187,16 @@ describe('smoke campaign --common-from', () => {
     writeFileSync(join(src, 'g_suite_no_regression.py'), 'print("suite")\n')
     writeFileSync(join(src, 'suite_baseline.txt'), 'not copied\n')
     const h = tempHome()
-    writeSmokeCampaign({ home: h, repo: 'C:/tmp/any-repo', base, commonFrom: src })
+    writeSmokeCampaign({ home: h, repo: 'C:/tmp/any-repo', base, commit: () => base, commonFrom: src })
     expect(readdirSync(join(h, 'heldout', 'common'))).toEqual(['g_suite_no_regression.py'])
     expect(readFileSync(join(h, 'heldout', 'common', 'g_suite_no_regression.py'), 'utf8')).toBe('print("suite")\n')
   })
 
   it('refuses a --common-from dir without the suite gate, and stages nothing without the flag', () => {
     const empty = mkdtempSync(join(tmpdir(), 's1-common-empty-'))
-    expect(() => writeSmokeCampaign({ home: tempHome(), repo: 'C:/tmp/any-repo', base, commonFrom: empty })).toThrow(/does not exist/)
+    expect(() => writeSmokeCampaign({ home: tempHome(), repo: 'C:/tmp/any-repo', base, commit: () => base, commonFrom: empty })).toThrow(/does not exist/)
     const h = tempHome()
-    writeSmokeCampaign({ home: h, repo: 'C:/tmp/any-repo', base })
+    writeSmokeCampaign({ home: h, repo: 'C:/tmp/any-repo', base, commit: () => base })
     expect(existsSync(join(h, 'heldout', 'common'))).toBe(false)
   })
 })
@@ -201,14 +243,14 @@ describe('smoke campaign --runtime-from (F161)', () => {
   it('writes the env onto the spec, copies only the yaml profiles, and the spec still loads', () => {
     const r = fakeRuntime()
     const h = tempHome()
-    const specPath = writeSmokeCampaign({ home: h, repo: 'C:/tmp/any-repo', base, runtimeFrom: r })
+    const specPath = writeSmokeCampaign({ home: h, repo: 'C:/tmp/any-repo', base, commit: () => base, runtimeFrom: r })
     const spec = JSON.parse(readFileSync(specPath, 'utf8'))
     expect(spec.env).toEqual({ LOCALCODE_LLAMA_SERVER: `${r}/bin-brain/llama-server.exe`, LOCALCODE_MODEL_PATH: `${r}/models/qwen3.8-27b-nvfp4/Q.gguf` })
     expect(readdirSync(join(h, 'profiles')).sort()).toEqual(['default.yaml', 'other.yaml'])
     expect(loadCampaignSpec(specPath).env).toEqual(spec.env)
     expect(existsSync(join(h, 'models'))).toBe(false)
     expect(existsSync(join(h, 'bin'))).toBe(false)
-    const plain = JSON.parse(readFileSync(writeSmokeCampaign({ home: tempHome(), repo: 'C:/tmp/any-repo', base }), 'utf8'))
+    const plain = JSON.parse(readFileSync(writeSmokeCampaign({ home: tempHome(), repo: 'C:/tmp/any-repo', base, commit: () => base }), 'utf8'))
     expect(plain.env).toBeUndefined()
   })
 })

@@ -51,6 +51,8 @@ const BRIEFS_DIR = 'docs/civkings-redesign-briefs'
 const LOG = `${BRIEFS_DIR}/campaign-log.md`
 const ENGINE_URL = 'http://127.0.0.1:9161/'
 const ENGINE_PROBE_TIMEOUT_MS = 3_000
+/** The cap on one `git rev-parse` read (the wave's HEAD-vs-base check). */
+const GIT_READ_TIMEOUT_MS = 30_000
 
 /**
  * Which sweep survivors sit inside a file the campaign CLAIMED — spec §3.2's
@@ -240,6 +242,13 @@ export const defaultIo = {
   pidAlive: (pidFile) => { try { return pidIsAlive(Number(readFileSync(pidFile, 'utf8').trim())) } catch { return false } },
   sha256: (p) => calibrateIo.sha256(p),
   readRow: (missionId) => findLedgerRow(missionId),
+  // T7-M1: a rev (HEAD, a sha, an abbreviation) resolved to its full commit
+  // sha, or null. Capped through runSync and retried on an impossible
+  // ETIMEDOUT (a read — F155: it is the first spawn after a wave's long wait).
+  repoHead: (repo, rev = 'HEAD') => {
+    const r = runSync('git', ['-C', repo, 'rev-parse', '--verify', '--quiet', `${rev}^{commit}`], { timeoutMs: GIT_READ_TIMEOUT_MS, retryImpossibleTimeout: true })
+    return !r.fault && !r.timedOut && r.status === 0 ? (String(r.stdout ?? '').trim() || null) : null
+  },
   commitsBetween: (repo, base, head) => gitC(repo, ['log', '--oneline', `${base}..${head}`]).split('\n').filter(Boolean).map(l => ({ sha: l.slice(0, 7), subject: l.slice(8) })),
   firstCommitFiles: (repo, base, head) => { const first = gitC(repo, ['rev-list', '--reverse', `${base}..${head}`]).split('\n').filter(Boolean)[0]; return first ? gitC(repo, ['show', '--name-only', '--format=', first]).split('\n').filter(Boolean) : [] },
   // cynco-work-snapshot.mjs:35, called by the driver with outDir 'C:/tmp'.
@@ -440,6 +449,24 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
     // no items in it, and the wave would spend eight hours on a blank order.
     // Stop instead — a green gate is not a reason to dispatch.
     if (fails.length === 0) return stopWave(spec, state, io, { wave, base, why: 'no failing gate lines to work — grade says PASS' })
+
+    // Rule 11 / F163 (final review T7-M1): calibration and dispatch must look
+    // at ONE commit. The wave is graded against `base` (the calibration point,
+    // or the last graded HEAD), but dispatch-mission.sh starts the mission from
+    // wherever the repo's HEAD is — a reused repo whose HEAD already carried
+    // the work PASSed the s2 smoke on a wave that fixed nothing. Nothing ran
+    // yet, so this is a stop, not a fault; the roadmap is untouched. Like
+    // `roadmapPath`, the real read is the default io's (main passes defaultIo);
+    // an injected io without `repoHead` is a test's fake repo and skips it.
+    const repoHead = io.repoHead ?? (io === defaultIo ? defaultIo.repoHead : null)
+    const head = repoHead ? repoHead(spec.repo, 'HEAD') : null
+    const baseSha = repoHead ? repoHead(spec.repo, base) : null
+    if (repoHead && (!head || !baseSha || head !== baseSha)) {
+      const baseRead = !baseSha ? `${base} (unresolved)` : baseSha === base ? base : `${base} (${baseSha})`
+      return stopWave(spec, state, io, { wave, base,
+        why: `repo HEAD ${head ?? '(unresolved)'} is not the wave base ${baseRead} — `
+          + `calibration and dispatch must look at one commit (Rule 11, F163): reset ${spec.repo} to ${base}, or adopt the wave that moved it` })
+    }
 
     // S4, occupant B (advisory) — runs only while no engine holds the GPU.
     if (spec.ideation?.enabled) {
