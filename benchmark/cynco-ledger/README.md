@@ -632,6 +632,14 @@ same, next to the code):
   unknown`, or `every wave excluded — none graded a gate`.
 - **Previous wave** for failsBefore is the previous GRADED wave: a fault in
   between graded nothing and does not reset it. A regression counts 0.
+- **FAIL count** is `gate.fails.length` — the FAIL lines the gate printed and
+  the record lists — never the terminator's own `failCount`. The two can
+  disagree: the real C8 wave-1 record carries `failCount 10` (`MISS (10
+  fails)`) beside 6 FAIL + 11 PASS lines of 17 and no ERROR line, so 10 is
+  not a count of anything on the record. `fails.length` is the internally
+  consistent reading (6 FAIL + 11 PASS = the 17 graded lines), it is what
+  `decide()` and the brief's THE MISSES read, and it is the one the board
+  takes.
 - **Operator notes delivered** — this campaign's rows' `operatorNotes[]` with
   `deliveredAtIteration` set AND `source === "operator"`. The driver's
   re-injected probe (`source: "driver"`) is not a human act; a delivered note

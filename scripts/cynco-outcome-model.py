@@ -223,7 +223,9 @@ def evaluate(rows, held, min_train, min_holdout):
 
 
 def previous_version(path, models):
-    """(version, changed) against the file already at `path`."""
+    """The version to write, an int: the previous file's version when no
+    held-out prediction changed, else that + 1; 1 when there is no readable
+    schema-matching file at `path`."""
     if not os.path.exists(path):
         return 1
     try:
@@ -252,7 +254,7 @@ def write_atomic(path, obj):
 
 def main(argv):
     ap = argparse.ArgumentParser(description="Train the outcome models and score them on the frozen holdout.")
-    ap.add_argument("--dataset", required=True, help="prefix-only dataset JSONL (fraction 0.5)")
+    ap.add_argument("--dataset", required=True, help="prefix-only dataset JSONL at the primary fixed K (K = 16 turns)")
     ap.add_argument("--manifest", required=True, help="frozen-eval.json")
     ap.add_argument("--out", required=True, help="outcome-model.json to write")
     ap.add_argument("--hindsight", help="the same missions built from all their turns, for the leak check")
