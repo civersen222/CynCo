@@ -6,6 +6,7 @@ import { CampaignState } from '../cynco-campaign-state.mjs'
 import { promotionProposal } from '../cynco-ideation.mjs'
 import { readSeats, writeSeats } from '../cynco-proposals.mjs'
 import { defaultIo as calibrateIo } from '../cynco-campaign-calibrate.mjs'
+import { writeRuleVerdicts as realWriteRuleVerdicts } from '../cynco-rule-verdicts.mjs'
 import { mkdtempSync, mkdirSync, copyFileSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -2066,6 +2067,49 @@ describe('the outcome hindcast at VERDICT', () => {
     expect(rec.hindcast.ladder['M1.gbt']).toEqual(f.rules['M1.gbt'])
     expect(rec.ruleVerdicts.total).toBe(2)
     expect(entry).toMatch(/^- Scoreboard: .*\n- Outcome hindcast: v3 at K = 16 turns on 20 held-out missions \(base 60%\): M1\.gbt precision 80% \[\d+, \d+\] on 10 fired p\(Holm\) \d\.\d{3} [A-Z][A-Z ]+; M1\.lr precision null on 0 fired p\(Holm\) null TOO FEW; leak check gbt AUC prefix 0\.71 \/ hindsight 0\.93, lr AUC prefix 0\.50 \/ hindsight 0\.60; K = 32 TOO FEW: train 5 < 30 or holdout 19 < 8$/m)
+  })
+
+  // Final review M1 (T5-M1): a writeRuleVerdicts that throws on the MODEL rows
+  // must not leave last wave's file for the engine — the rules are rewritten
+  // alone, and the hindcast says its ladder faulted.
+  it('a verdict write that throws only on the model rows → the rules are written alone, ladderFault on the hindcast', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'hc-'))
+    // Last wave's file, holding a verdict this wave must replace.
+    mkdirSync(join(home, 'datasets'), { recursive: true })
+    writeFileSync(join(home, 'datasets', 'rule-verdicts.json'), JSON.stringify({ schema: 1, version: 7, at: 'stale', rules: { I3: { verdict: 'PREDICTIVE' } }, predictive: ['I3'], history: [] }))
+    const calls = []
+    let entry = null
+    const rec = await runWave(spec, freshState(), io(home, {
+      runHindcast: ({ paths }) => { writeModel(paths.out); return { status: 0, stdout: 'ok', stderr: '', fault: null } },
+      writeRuleVerdicts: (args) => {
+        calls.push(args.modelRows.length)
+        if (args.modelRows.length) throw new Error('Holm over a NaN p')
+        return realWriteRuleVerdicts(args)
+      },
+      appendLog: (t) => { entry = t },
+    }))
+    expect(rec.decision.kind).toBe('next')
+    expect(calls).toEqual([2, 0])
+    const f = verdictsIn(home)
+    expect(f.at).not.toBe('stale')
+    expect(Object.keys(f.rules).filter(id => id.startsWith('M1.'))).toEqual([])
+    expect(f.predictive).toEqual([])
+    expect(rec.ruleVerdicts).toMatchObject({ modelRowsSkipped: true, predictive: [] })
+    expect(rec.hindcast.ladderFault).toBe('Holm over a NaN p')
+    expect(rec.hindcast.ladder).toBeNull()
+    expect(rec.hindcast.version).toBe(3)
+    expect(entry).toMatch(/- Outcome hindcast: v3 at K = 16 turns .*LADDER NOT WRITTEN \(Holm over a NaN p\) — rules rewritten alone; leak check/)
+  })
+
+  it('a throw with no model rows is the rules\' own: the outer catch logs it, the wave is not faulted', async () => {
+    const calls = []
+    const rec = await runWave(spec, freshState(), io(mkdtempSync(join(tmpdir(), 'hc-')), {
+      runHindcast: () => ({ status: 1, stdout: '', stderr: 'boom', fault: null }),
+      writeRuleVerdicts: (args) => { calls.push(args.modelRows.length); throw new Error('disk full') },
+    }))
+    expect(calls).toEqual([0])
+    expect(rec.decision.kind).toBe('next')
+    expect(rec.ruleVerdicts).toBeNull()
   })
 })
 

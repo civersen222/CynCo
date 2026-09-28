@@ -604,7 +604,21 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
       }
     } catch (e) { rec.hindcast = { fault: String(e?.message ?? e) } }
     if (rec.hindcast?.fault) console.error(`[campaign] outcome hindcast not measured: ${rec.hindcast.fault}`)
-    rec.ruleVerdicts = (io.writeRuleVerdicts ?? defaultIo.writeRuleVerdicts)({ rows, campaign: spec.id, outPath, modelRows })
+    const write = io.writeRuleVerdicts ?? defaultIo.writeRuleVerdicts
+    try {
+      rec.ruleVerdicts = write({ rows, campaign: spec.id, outPath, modelRows })
+    } catch (e) {
+      // Final review M1 (T5-M1): a throw on the MODEL rows must not leave the
+      // previous wave's file for the engine to read, stale. The rules' verdicts
+      // are rewritten alone; the hindcast says its ladder faulted, and the
+      // record says the model rows were skipped. A throw without model rows is
+      // the rules' own and falls through to the outer catch as before.
+      if (!modelRows.length) throw e
+      const message = String(e?.message ?? e)
+      console.error(`[campaign] rule verdicts with the model rows failed (${message}) — rewriting the rules alone`)
+      if (rec.hindcast) rec.hindcast.ladderFault = message
+      rec.ruleVerdicts = { ...write({ rows, campaign: spec.id, outPath, modelRows: [] }), modelRowsSkipped: true }
+    }
     // The ladder's reading of each model row (verdict, precision, CI, p(Holm)),
     // kept on the hindcast beside the model's own holdout metrics.
     if (rec.hindcast && !rec.hindcast.fault) rec.hindcast.ladder = rec.ruleVerdicts?.models ?? null

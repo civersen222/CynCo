@@ -1115,7 +1115,12 @@ to Phase 4's.
 
 The wave record carries `hindcast` (the model's metrics without its
 predictions, `split`, and `ladder` — the two `M1.*` entries as written), or
-`{ fault, split? }`; the entry prints it right after the scoreboard. The
+`{ fault, split? }`; the entry prints it right after the scoreboard. If
+`writeRuleVerdicts` throws WITH the model rows, the rules' verdicts are
+rewritten alone (the engine never reads last wave's file, stale), the hindcast
+keeps its metrics with `ladderFault: "<message>"` and `ladder: null`, the
+record's `ruleVerdicts` carries `modelRowsSkipped: true`, and the entry prints
+`LADDER NOT WRITTEN (<message>) — rules rewritten alone`. The
 entry line carries the dropped dead columns as a COUNT (`dropped 28 dead
 column(s)`); `--scoreboard` prints the latest record's hindcast in full, the
 column names included (`hindcastLine(h, { detail: true })`).

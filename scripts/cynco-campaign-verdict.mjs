@@ -104,7 +104,7 @@ export function hindcastLine(h, { detail = false } = {}) {
   const secondary = !s ? '' : s.refusal ? `; K = 32 ${s.refusal}`
     : `; K = ${s.prefixTurns ?? 32} gbt AUC ${num(s.models?.gbt?.auc, 2)}, lr AUC ${num(s.models?.lr?.auc, 2)}`
   return `- Outcome hindcast: v${h.version ?? '?'} at K = ${h.prefixTurns ?? '?'} turns on ${h.nHoldout ?? '?'} held-out missions (base ${pct(h.baseRate)}): `
-    + `${ladder.length ? ladder.join('; ') : 'no ladder reading'}; ${leak}${length}${secondary}${dropped}`
+    + `${ladder.length ? ladder.join('; ') : h.ladderFault ? `LADDER NOT WRITTEN (${h.ladderFault}) — rules rewritten alone` : 'no ladder reading'}; ${leak}${length}${secondary}${dropped}`
 }
 
 export function verdictEntry({ spec, wave, row, grade, decision, ideationRecord, economicsLines, denialAnalysis = null, denialScope = 'campaign', capProposal = null, governancePosiwid = null, gateLines = null, identity = null, autopoiesis = null, scoreboard = null, hindcast = null }) {
