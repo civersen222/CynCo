@@ -822,9 +822,12 @@ authority ladder honestly, and C9 sealed and ready for the runner.
   K = 32 gbt AUC 0.55, lr AUC 0.42; dropped 28 dead column(s)` — the same
   numbers the offline run gave. One honest caveat: the smoke repo's `master`
   already carried s1's work from Phase 4 (the mission baseline was its HEAD
-  `17cd9a6`, not BASE), so the mission's one commit was an empty marker
-  commit and "8 lines fixed" is the calibration-at-BASE bar against a HEAD
-  that already passed — a harness proof, not a model result (F163). Afterwards the
+  `17cd9a6`, not BASE), so the mission's one commit — `2ff000c ship-files:
+  refresh VERSION, SHIP.md, CHANGELOG.md, LICENSE for 0.1.0` (parent
+  `17cd9a6`; `CHANGELOG.md`, `LICENSE`, `SHIP.md`, +10/−9) — rewrote three
+  files that already passed, and "8 lines fixed" is the calibration-at-BASE
+  bar against a HEAD that already passed — a harness proof, not a model
+  result (F163). Afterwards the
   REAL home's verdict file was written before any mission (guard (b)):
   `rule verdicts v1: 0 predictive of 10 (none)`, `M1.gbt` NO EVIDENCE,
   `M1.lr` TOO FEW. The synthetic row and the `campaign/s1` verdict commit
