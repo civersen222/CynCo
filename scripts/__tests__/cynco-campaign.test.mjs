@@ -90,6 +90,11 @@ const inertTriples = {
   readLedgerRows: () => [],
 }
 
+// Final review M5 (T7-M3): the fault path computes a board too, and without
+// these seams it falls through to defaultIo — the ~160 MB shard walk and the
+// REAL home's rule-verdicts.json. A literal fault io spreads this in.
+const faultIo = () => ({ readLedgerRows: () => [], datasetsHome: () => mkdtempSync(join(tmpdir(), 'ds-faultio-')), economics: () => null })
+
 /** A gate-lines summary with `held` of `n` CynCo lines and `hHeld` of `hN` human ones. */
 const gateLineSummary = (held, n, hHeld, hN) => summarizeGateLines([
   ...Array.from({ length: held }, (_, i) => ({ author: 'cynco', outcome: 'held', lineId: `c${i}` })),
@@ -170,6 +175,7 @@ describe('runWave', () => {
       readRow: () => null,
       salvageOf: () => null,
       notify: async (t) => { seen.notified = t; return true },
+      ...faultIo(),
     })
     expect(rec.decision.kind).toBe('fault')
     expect(rec.decision.why).toMatch(/without a ledger row/)
@@ -195,6 +201,7 @@ describe('runWave', () => {
       readRow: () => null,
       salvageOf: () => null,
       notify: async (t) => { seen.notified = t; return true },
+      ...faultIo(),
     })
     expect(rec.decision.kind).toBe('fault')
     expect(rec.decision.why).toMatch(/pid 2544 was already invisible/)
@@ -212,6 +219,7 @@ describe('runWave', () => {
       readRow: () => null,
       salvageOf: () => null,
       notify: async () => true,
+      ...faultIo(),
     })
     expect(rec.decision.kind).toBe('fault')
     expect(rec.decision.why).toMatch(/wall clock/)
