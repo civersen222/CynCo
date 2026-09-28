@@ -155,9 +155,10 @@ decisions still recorded here).
   // F162's fix every winner came back false (the diff's final newline was
   // trimmed), and nothing on the row said so. `winner` is the candidate's
   // 0-based index, `passRate` its test pass rate; a field the frame lacked is
-  // null. `[]` = best-of-N selected nothing this mission (it runs only with
-  // `LOCALCODE_BEST_OF_N=true` and a detected test framework); rows before
-  // Phase 5 have no field.
+  // null. `null` = best-of-N never started this mission (no `bestOfN.start`
+  // frame — it runs only with `LOCALCODE_BEST_OF_N=true` and a detected test
+  // framework); `[]` = it started and selected no winner; rows before Phase 5
+  // have no field.
   "bestOfN": [
     { "t": 1783550000000, "winner": 1, "passRate": 0.75, "applied": true }
   ],
