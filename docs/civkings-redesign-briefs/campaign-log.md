@@ -1764,3 +1764,27 @@ Calibration: BASE printed GATE: MISS (14 fails) — 14 fail(s) by absence, zero 
 Economics after this wave: VERDICT: frontier spent $2995.57 SUPERVISING (development $1270.88 and unattributed $1.86 are excluded — building LocalCode is not oversight). The supervised generation would have cost ~$5547.89 on the API ($2575.06 priced from measured tokens, $2972.84 still estimated) and ran locally for ~$22.79 of power. supervision ratio: $1 of frontier verify oversees ~$1.85 of displaced generation.
 
 Verdict: **MISS** — 3 line(s) still FAIL
+
+## C9 wave 2 — c9-wave2-1790629654480 (graded 2026-09-28, BASE fd96edad6d27db7d6c41571db54a19adcee7f269 → HEAD 9fd5fe98a94cf3e7c707eed4111b995370563ed9)
+
+- 42 tool calls, exitReason engine_closed_the_turn (2865s = 0.80h), 2 commit(s). maxCallsWithoutSourceEdit 11, maxCallsWithoutCommit 38. CodeIndex 0/42. graderProbes 0/42. Invariants: engine denied 0 call(s) (edit-gap 0, commit-gap 0, revert 0), 0 revert refusal(s), 0 CodeIndex-assisted Grep(s).
+- Bash by effect: read 3, write 5, run 13, commit 0, revert 0, other 2 (sum 23 vs byName.Bash 23 — agree).
+- Routing: 0 verify-first (revert 0, low-confidence edit 0): passed 0, failed 0, cached 0, could not run 0 (0/6 KEEP-GREEN runs spent).
+- **Sealed gate at 9fd5fe98a94cf3e7c707eed4111b995370563ed9: PASS (0 fails).** Prior-campaign regressions: 0.
+  - PASS: C9.1a.resolution-presets, C9.1b.resolution-applies, C9.1c.resolution-persists, C9.2a.keybinds-table, C9.2b.keybind-drives-game, C9.2c.rebind-persists, C9.3a.saves-screen, C9.3b.save-round-trips-state.s7, C9.3b.save-round-trips-state.s11, C9.4a.fps-guard, C9.4b.fps-follows-settings, C9.5a.packaging-declares, C9.5b.packaging-launches, C9.5c.packaging-builds, C9.9
+- Suite gate PASS: REGRESSED 0, REPAIRED 1.
+- Derived sweep: UNMEASURED — sweep refused (exit 2).
+- POSIWID Insufficient (divergence 0.049, dominant inspect).
+- Governance POSIWID Contradicted (divergence 6.719, dominant signalsLogged, support 59; drift onset wave 1).
+- S4 ideation (authority 0): 3 hypothesis/es; followed=true.
+- Ledger: verified true; mutationSweep null.
+- Identity: intact
+- Autopoiesis: 3/6 — missing boundarySelfProduced, circularProduction, organizationallyClosed
+- Scoreboard: PASS/GPU-h 0.218 | waves 2 | lines fixed per landed wave 7.00 | human interventions per wave 1.00 | rules predictive 0/8 (best I3 59% NO EVIDENCE) | learner M1.gbt 54% NO EVIDENCE
+- Outcome hindcast: v3 at K = 16 turns on 21 held-out missions (base 57%): M1.gbt precision 54% [29, 77] on 13 fired p(Holm) 1.000 NO EVIDENCE; M1.lr precision 56% [27, 81] on 9 fired p(Holm) 1.000 TOO FEW; leak check gbt AUC prefix 0.46 / hindsight 0.56, lr AUC prefix 0.47 / hindsight 0.60; K = 32 gbt AUC 0.56, lr AUC 0.41; dropped 27 dead column(s)
+- Denials (campaign to date): edit-gap 0/0 (TOO FEW); commit-gap 0/0 (TOO FEW); revert 0/0 (IDENTITY).
+- Gate lines: cynco 0/0 held (rate —, ci [0.00, 1.00]) vs human 41/45; TOO FEW
+
+Economics after this wave: VERDICT: frontier spent $2995.57 SUPERVISING (development $1270.88 and unattributed $1.86 are excluded — building LocalCode is not oversight). The supervised generation would have cost ~$5552.75 on the API ($2579.92 priced from measured tokens, $2972.84 still estimated) and ran locally for ~$22.86 of power. supervision ratio: $1 of frontier verify oversees ~$1.85 of displaced generation.
+
+Verdict: **CAMPAIGN PASS** — sealed gate PASS, suite gate PASS, sweep unmeasured
