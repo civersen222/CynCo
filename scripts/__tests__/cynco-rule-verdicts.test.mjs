@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
-import { RULE_VERDICTS_PATH, writeRuleVerdicts, readRuleVerdicts, RULE_VERDICTS_SCHEMA, RULE_VERDICTS_HISTORY_CAP, OUTCOME_MODEL_PATH, modelRowsFrom } from '../cynco-rule-verdicts.mjs'
+import { RULE_VERDICTS_PATH, writeRuleVerdicts, readRuleVerdicts, RULE_VERDICTS_SCHEMA, RULE_VERDICTS_HISTORY_CAP, OUTCOME_MODEL_PATH, modelRowsFrom, main, verdictsLine } from '../cynco-rule-verdicts.mjs'
 import { analyse, ruleVerdictOf } from '../cynco-signal-validation.mjs'
 
 afterEach(() => { vi.restoreAllMocks() })
@@ -42,7 +42,7 @@ describe('writeRuleVerdicts', () => {
   it('writes the schema: one verdict per rule, the predictive ids, the ledger totals, a history entry', () => {
     const outPath = RULE_VERDICTS_PATH(home())
     const r = writeRuleVerdicts({ rows: predictiveRows(), campaign: 'c8', outPath, now: () => '2026-09-25T00:00:00.000Z' })
-    expect(r).toEqual({ version: 1, predictive: ['X'], total: 2 })
+    expect(r).toEqual({ version: 1, predictive: ['X'], total: 2, rules: 2, modelRows: 0 })
     const f = JSON.parse(readFileSync(outPath, 'utf8'))
     expect(f.schema).toBe(RULE_VERDICTS_SCHEMA)
     expect(f).toMatchObject({ version: 1, at: '2026-09-25T00:00:00.000Z', campaign: 'c8', predictive: ['X'] })
@@ -85,7 +85,7 @@ describe('writeRuleVerdicts', () => {
     const outPath = RULE_VERDICTS_PATH(home())
     writeRuleVerdicts({ rows: predictiveRows(), campaign: 'c8', outPath, now: () => 't1' })
     const r = writeRuleVerdicts({ rows: thinRows(), campaign: 'c8', outPath, now: () => 't2' })
-    expect(r).toEqual({ version: 2, predictive: [], total: 2 })
+    expect(r).toEqual({ version: 2, predictive: [], total: 2, rules: 2, modelRows: 0 })
     const f = JSON.parse(readFileSync(outPath, 'utf8'))
     expect(f.history).toHaveLength(2)
     expect(f.history[1]).toEqual({ version: 2, at: 't2', campaign: 'c8', predictive: [],
@@ -113,7 +113,7 @@ describe('writeRuleVerdicts', () => {
 
   it('an empty ledger writes a file with no rules — the engine reads that as "nothing earned"', () => {
     const outPath = RULE_VERDICTS_PATH(home())
-    expect(writeRuleVerdicts({ rows: [], campaign: 'c8', outPath })).toEqual({ version: 1, predictive: [], total: 0 })
+    expect(writeRuleVerdicts({ rows: [], campaign: 'c8', outPath })).toEqual({ version: 1, predictive: [], total: 0, rules: 0, modelRows: 0 })
     expect(JSON.parse(readFileSync(outPath, 'utf8')).rules).toEqual({})
   })
 
@@ -282,5 +282,75 @@ describe('readRuleVerdicts', () => {
     const f = readRuleVerdicts(outPath)
     expect(f.predictive).toEqual(['X'])
     expect(existsSync(outPath)).toBe(true)
+  })
+})
+
+// Final review M7 (T7-M5 + `--with-hindcast`): the CLI names rules and model
+// rows apart, and with `--with-hindcast` runs the runner's own sequence —
+// export → model → verdicts. The python seam is stubbed; every file lands in a
+// temp `--datasets-dir`; `cyncoHome` throws, so the real home is never read.
+describe('the CLI (main)', () => {
+  const noHome = () => { throw new Error('the real home must not be touched') }
+  const turnsOf = (n) => Array.from({ length: n }, (_, i) => ({ toolSuccessRate: i % 2 ? 1 : 0.5, health: 'healthy' }))
+  // 12 failures firing X and Y, 12 successes firing Y — X PREDICTIVE, Y CONSTANT — each with 20 turns.
+  const ledgerRows = () => predictiveRows().map((r, i) => ({ ...r, missionId: `m${i}`, turns: turnsOf(20) }))
+  const modelAt = (path) => {
+    mkdirSync(dirname(path), { recursive: true })
+    const preds = (fired) => ledgerRows().map(r => ({ missionId: r.missionId, pFail: fired(r) ? 0.9 : 0.1 }))
+    writeFileSync(path, JSON.stringify({ schema: 1, version: 4, trainedAt: 't', prefixTurns: 16, nTrain: 20, nHoldout: 24, baseRate: 0.5, features: ['a'], droppedFeatures: ['b', 'c'], lengthFeature: null,
+      models: { gbt: { precision: 1, recall: 1, brier: 0.1, auc: 0.9, predictions: preds(r => r.outcome === 'failed') }, lr: { precision: null, recall: null, brier: 0.3, auc: 0.5, predictions: preds(() => false) } },
+      leakCheck: { gbt: { aucPrefix: 0.9, aucHindsight: 0.95 }, lr: { aucPrefix: 0.5, aucHindsight: 0.5 } }, secondary: { refusal: 'TOO FEW: x' } }))
+  }
+
+  it('rules only: "N predictive of R rules" — the model rows never counted as rules', async () => {
+    const out = join(home(), 'rv.json')
+    const lines = []
+    expect(await main(['--out', out], { readLedger: predictiveRows, cyncoHome: noHome, log: (s) => lines.push(s) })).toBe(0)
+    expect(lines).toEqual([`rule verdicts v1: 1 predictive of 2 rules (X) → ${out}`])
+  })
+
+  it('verdictsLine prints the model rows beside the rules, as the scoreboard reads them', () => {
+    expect(verdictsLine({ version: 3, predictive: [], rules: 8, modelRows: 2, total: 10 }, 'P')).toBe('rule verdicts v3: 0 predictive of 8 rules (+2 model rows) (none) → P')
+  })
+
+  it('--with-hindcast runs export → model → verdicts into --datasets-dir, and prints the hindcast line', async () => {
+    const dir = join(home(), 'ds')
+    const lines = [], seen = {}
+    const code = await main(['--with-hindcast', '--datasets-dir', dir], {
+      readLedger: ledgerRows, cyncoHome: noHome, log: (s) => lines.push(s),
+      runHindcast: ({ paths }) => { seen.paths = paths; modelAt(paths.out); return { status: 0, stdout: 'ok', stderr: '', fault: null } },
+    })
+    expect(code).toBe(0)
+    // Every file in the temp dir, named as the runner names them.
+    expect(seen.paths).toMatchObject({ dataset: join(dir, 'outcome-dataset.jsonl'), dataset32: join(dir, 'outcome-dataset-k32.jsonl'),
+      hindsight: join(dir, 'outcome-dataset-hindsight.jsonl'), out: join(dir, 'outcome-model.json') })
+    expect(readdirSync(dir).sort()).toEqual(['outcome-dataset-hindsight.jsonl', 'outcome-dataset-k32.jsonl', 'outcome-dataset.jsonl', 'outcome-model.json', 'rule-verdicts.json'])
+    const f = JSON.parse(readFileSync(join(dir, 'rule-verdicts.json'), 'utf8'))
+    expect(f.rules['M1.gbt']).toMatchObject({ source: 'model', scope: 'holdout', n: 12, failures: 12 })
+    expect(f.rules['M1.lr']).toMatchObject({ source: 'model', n: 0 })
+    expect(lines[0]).toMatch(/^- Outcome hindcast: v4 at K = 16 turns on 24 held-out missions \(base 50%\): M1\.gbt precision 100% .* on 12 fired p\(Holm\) .*; M1\.lr precision null on 0 fired p\(Holm\) null TOO FEW; leak check gbt AUC prefix 0\.90 \/ hindsight 0\.95, lr AUC prefix 0\.50 \/ hindsight 0\.50; K = 32 TOO FEW: x; dropped 2 dead column\(s\)$/)
+    expect(lines[1]).toMatch(new RegExp(`^rule verdicts v1: \\d predictive of 2 rules \\(\\+2 model rows\\) \\(.*\\) → ${join(dir, 'rule-verdicts.json').replace(/\\/g, '\\\\')}$`))
+  })
+
+  it('a hindcast that fails prints UNMEASURED and writes the rules without model rows — as the runner does', async () => {
+    const dir = join(home(), 'ds')
+    const lines = []
+    await main(['--with-hindcast', '--datasets-dir', dir], {
+      readLedger: ledgerRows, cyncoHome: noHome, log: (s) => lines.push(s),
+      runHindcast: () => ({ status: 2, stdout: 'TOO FEW: train 3 < 30 or holdout 1 < 8\n', stderr: '', fault: null }),
+    })
+    expect(lines[0]).toBe('- Outcome hindcast: UNMEASURED — exit 2: TOO FEW: train 3 < 30 or holdout 1 < 8')
+    expect(lines[1]).toMatch(/^rule verdicts v1: 1 predictive of 2 rules \(X\) → /)
+    expect(Object.keys(JSON.parse(readFileSync(join(dir, 'rule-verdicts.json'), 'utf8')).rules)).toEqual(['X', 'Y'])
+  })
+
+  it('--out wins over --datasets-dir for the verdict file', async () => {
+    const dir = join(home(), 'ds'), out = join(home(), 'elsewhere.json')
+    await main(['--with-hindcast', '--datasets-dir', dir, '--out', out], {
+      readLedger: ledgerRows, cyncoHome: noHome, log: () => {},
+      runHindcast: ({ paths }) => { modelAt(paths.out); return { status: 0, stdout: '', stderr: '', fault: null } },
+    })
+    expect(existsSync(out)).toBe(true)
+    expect(existsSync(join(dir, 'rule-verdicts.json'))).toBe(false)
   })
 })

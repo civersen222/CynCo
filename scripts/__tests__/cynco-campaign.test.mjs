@@ -1773,12 +1773,12 @@ describe('the rule verdicts at VERDICT', () => {
     const home = mkdtempSync(join(tmpdir(), 'rv-home-'))
     const state = freshState()
     const rec = await runWave(spec, state, io({ readLedgerRows: ledger, datasetsHome: () => home }))
-    expect(rec.ruleVerdicts).toEqual({ version: 1, predictive: ['X'], total: 2 })
+    expect(rec.ruleVerdicts).toEqual({ version: 1, predictive: ['X'], total: 2, rules: 2, modelRows: 0 })
     const f = JSON.parse(readFileSync(join(home, 'datasets', 'rule-verdicts.json'), 'utf8'))
     expect(f).toMatchObject({ schema: 1, version: 1, campaign: 'c8', predictive: ['X'] })
     expect(f.rules.X.verdict).toBe('PREDICTIVE')
     // The persisted record carries it too, not only the returned one.
-    expect(state.waves().at(-1).ruleVerdicts).toEqual({ version: 1, predictive: ['X'], total: 2 })
+    expect(state.waves().at(-1).ruleVerdicts).toEqual({ version: 1, predictive: ['X'], total: 2, rules: 2, modelRows: 0 })
   })
 
   it('reuses the rows the triples export already read instead of reading the ledger twice', async () => {
@@ -1788,7 +1788,7 @@ describe('the rule verdicts at VERDICT', () => {
       readLedgerRows: () => { throw new Error('the ledger must not be read a second time') },
       datasetsHome: () => home,
     }))
-    expect(rec.ruleVerdicts).toEqual({ version: 1, predictive: ['X'], total: 2 })
+    expect(rec.ruleVerdicts).toEqual({ version: 1, predictive: ['X'], total: 2, rules: 2, modelRows: 0 })
   })
 
   it('a verdict file that will not write costs the wave nothing', async () => {
@@ -2031,7 +2031,7 @@ describe('the outcome hindcast at VERDICT', () => {
     }))
     expect(rec.decision.kind).toBe('next')
     expect(rec.hindcast).toEqual({ fault: "exit 1: Traceback (most recent call last): | ModuleNotFoundError: No module named 'sklearn'" })
-    expect(rec.ruleVerdicts).toEqual({ version: 1, predictive: [], total: 0 })
+    expect(rec.ruleVerdicts).toEqual({ version: 1, predictive: [], total: 0, rules: 0, modelRows: 0 })
     expect(Object.keys(verdictsIn(home).rules)).toEqual([])
     expect(entry).toMatch(/^- Scoreboard: .*\n- Outcome hindcast: UNMEASURED — exit 1: .*No module named 'sklearn'$/m)
   })

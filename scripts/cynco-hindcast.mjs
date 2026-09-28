@@ -41,6 +41,15 @@ export const HINDCAST_PATHS = (home) => ({
   out: OUTCOME_MODEL_PATH(home),
 })
 
+/** The same four files directly inside `dir` — `HINDCAST_PATHS(home)` is
+ *  `hindcastPathsIn(<home>/datasets)`. The verdicts CLI's `--datasets-dir`. */
+export const hindcastPathsIn = (dir) => ({
+  dataset: join(dir, 'outcome-dataset.jsonl'),
+  dataset32: join(dir, `outcome-dataset-k${SECONDARY_TURNS}.jsonl`),
+  hindsight: join(dir, 'outcome-dataset-hindsight.jsonl'),
+  out: join(dir, 'outcome-model.json'),
+})
+
 function writeJsonl(path, rows) {
   mkdirSync(dirname(path), { recursive: true })
   const tmp = `${path}.tmp`
@@ -53,9 +62,10 @@ function writeJsonl(path, rows) {
  * at the primary K, each from its FULL turn list, so the leak check compares
  * the same missions with more of the story told. Returns the paths and the row
  * counts (`n` is the primary's — the one a train/holdout split is made from).
+ * `datasetsDir`, when given, replaces `<home>/datasets` as the directory.
  */
-export function exportOutcomeDatasets({ rows, home, manifestPath = MANIFEST_PATH }) {
-  const paths = { ...HINDCAST_PATHS(home), manifest: manifestPath }
+export function exportOutcomeDatasets({ rows, home, datasetsDir = null, manifestPath = MANIFEST_PATH }) {
+  const paths = { ...(datasetsDir ? hindcastPathsIn(datasetsDir) : HINDCAST_PATHS(home)), manifest: manifestPath }
   const primary = datasetRows(rows, PRIMARY_TURNS)
   const secondary = datasetRows(rows, SECONDARY_TURNS)
   const eligible = new Set(primary.rows.map(r => r.missionId))

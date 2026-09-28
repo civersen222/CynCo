@@ -4,7 +4,7 @@ import { describe, it, expect } from 'vitest'
 import { mkdtempSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
-import { exportOutcomeDatasets, runHindcast, hindcastOf, hindcastSummary, HINDCAST_PATHS, HINDCAST_TIMEOUT_MS, OUTCOME_MODEL_SCRIPT } from '../cynco-hindcast.mjs'
+import { exportOutcomeDatasets, runHindcast, hindcastOf, hindcastSummary, HINDCAST_PATHS, hindcastPathsIn, HINDCAST_TIMEOUT_MS, OUTCOME_MODEL_SCRIPT } from '../cynco-hindcast.mjs'
 import { featuresOf, DATASET_PATH, MANIFEST_PATH } from '../cynco-outcome-dataset.mjs'
 import { OUTCOME_MODEL_PATH } from '../cynco-rule-verdicts.mjs'
 import { hindcastLine } from '../cynco-campaign-verdict.mjs'
@@ -36,6 +36,15 @@ describe('exportOutcomeDatasets', () => {
     const hs = readJsonl(r.paths.hindsight)
     expect(hs.map(x => [x.missionId, x.prefixTurns])).toEqual([['long', 40], ['mid', 20]])
     expect(hs[0]).toEqual(featuresOf(rows[0], 40))
+  })
+
+  it('`datasetsDir` puts the files directly in that dir; HINDCAST_PATHS(home) is hindcastPathsIn(<home>/datasets)', () => {
+    const h = home()
+    expect(HINDCAST_PATHS(h)).toEqual(hindcastPathsIn(join(h, 'datasets')))
+    const dir = join(home(), 'elsewhere')
+    const r = exportOutcomeDatasets({ rows: [row('long', 40, false)], home: null, datasetsDir: dir, manifestPath: MANIFEST_PATH })
+    expect(r.paths).toEqual({ ...hindcastPathsIn(dir), manifest: MANIFEST_PATH })
+    expect(readJsonl(join(dir, 'outcome-dataset.jsonl')).map(x => x.missionId)).toEqual(['long'])
   })
 
   it('an empty ledger writes empty files and n = 0 (the committed manifest by default)', () => {

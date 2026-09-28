@@ -22,7 +22,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from 'node:fs'
 import { join, dirname, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { analyse as analyseFn, ruleVerdictOf, readLedger, holm, wilson } from './cynco-signal-validation.mjs'
+import { analyse as analyseFn, ruleVerdictOf, holm, wilson } from './cynco-signal-validation.mjs'
 
 export const RULE_VERDICTS_PATH = (home) => join(home, 'datasets', 'rule-verdicts.json')
 /** Where `scripts/cynco-outcome-model.py` writes the hindcast the runner reads. */
@@ -110,7 +110,8 @@ function verdictChanges(before, after) {
  * refreshed on every write regardless. History keeps the last 20 entries.
  * Written tmp + rename.
  *
- * Returns `{ version, predictive, total }` — what the wave record carries.
+ * Returns `{ version, predictive, total, rules, modelRows }` — what the wave
+ * record carries (`total` = `rules` + `modelRows`).
  *
  * Phase 5: `modelRows` (from `modelRowsFrom`) are evaluated beside the rules
  * with the same Fisher/Wilson arithmetic over their held-out scope, and Holm
@@ -178,21 +179,71 @@ export function writeRuleVerdicts({ rows, campaign, outPath, analyse = analyseFn
   renameSync(tmp, outPath)
   // With model rows, their entries ride back too: the verdict entry prints
   // them (`Outcome hindcast:`) without reading the file a second time.
-  return { version, predictive, total: Object.keys(rules).length,
+  // `total` counts every entry in the file; `rules` / `modelRows` split it, so
+  // a reader can say "N of 8 rules (+2 model rows)" as the scoreboard does
+  // (final review M7, T7-M5).
+  return { version, predictive, total: Object.keys(rules).length, rules: res.rules.length, modelRows: models.length,
     ...(models.length ? { models: Object.fromEntries(models.map(r => [r.id, rules[r.id]])) } : {}) }
 }
 
+/** The CLI's summary line: rules and model rows counted apart, as the scoreboard reads them. */
+export function verdictsLine(r, outPath) {
+  const models = r.modelRows ? ` (+${r.modelRows} model row${r.modelRows === 1 ? '' : 's'})` : ''
+  return `rule verdicts v${r.version}: ${r.predictive.length} predictive of ${r.rules} rules${models} (${r.predictive.join(', ') || 'none'}) → ${outPath}`
+}
+
 // CLI: rebuild the file by hand (the runner does it at every VERDICT).
-//   bun scripts/cynco-rule-verdicts.mjs [--ledger-dir DIR] [--out PATH]
+//   bun scripts/cynco-rule-verdicts.mjs [--ledger-dir DIR] [--out PATH] [--with-hindcast] [--datasets-dir DIR]
+//
+// Without `--with-hindcast` the rules alone are rewritten. With it, the
+// runner's own VERDICT sequence runs (final review M7): exportOutcomeDatasets
+// → runHindcast (python, capped) → hindcastOf → modelRowsFrom →
+// writeRuleVerdicts, through scripts/cynco-hindcast.mjs's functions, and the
+// hindcast line the verdict entry would carry is printed. A hindcast fault is
+// printed as UNMEASURED and the rules are written without model rows — as the
+// runner does. `--datasets-dir DIR` puts the three datasets and
+// outcome-model.json directly in DIR (default `<cyncoHome>/datasets`) and,
+// unless `--out` is given, the verdict file too — so a test or a temp run never
+// touches the real home.
+//
 // `engine/paths.js` is TypeScript behind a `.js` specifier and loads only under
-// bun, so it is imported lazily and only when --out is not given.
-async function main(argv) {
-  const dirIdx = argv.indexOf('--ledger-dir')
-  const outIdx = argv.indexOf('--out')
-  const rows = readLedger(dirIdx >= 0 ? argv[dirIdx + 1] : 'benchmark/cynco-ledger')
-  const outPath = outIdx >= 0 ? resolve(argv[outIdx + 1]) : RULE_VERDICTS_PATH((await import('../engine/paths.js')).cyncoHome())
-  const r = writeRuleVerdicts({ rows, campaign: null, outPath })
-  console.log(`rule verdicts v${r.version}: ${r.predictive.length} predictive of ${r.total} (${r.predictive.join(', ') || 'none'}) → ${outPath}`)
+// bun, so it is imported lazily and only when neither --out nor --datasets-dir
+// names where to write. `deps` is the test seam (`readLedger`, `runHindcast`,
+// `cyncoHome`, `log`).
+export async function main(argv, deps = {}) {
+  const arg = (flag) => { const i = argv.indexOf(flag); return i >= 0 ? argv[i + 1] : null }
+  const log = deps.log ?? ((s) => console.log(s))
+  const home = async () => (deps.cyncoHome ?? (await import('../engine/paths.js')).cyncoHome)()
+  const withHindcast = argv.includes('--with-hindcast')
+  const datasetsDir = arg('--datasets-dir') ? resolve(arg('--datasets-dir')) : null
+  // The runner's own ledger reader (scripts/cynco-ledger-shards.mjs), so the
+  // rows — and their order — are the ones a VERDICT hands the export.
+  const readRows = deps.readLedger ?? (await import('./cynco-ledger-shards.mjs')).readLedger
+  const rows = readRows(resolve(arg('--ledger-dir') ?? 'benchmark/cynco-ledger'))
+  const outPath = arg('--out') ? resolve(arg('--out'))
+    : datasetsDir ? join(datasetsDir, 'rule-verdicts.json')
+      : RULE_VERDICTS_PATH(await home())
+  let modelRows = []
+  if (withHindcast) {
+    const hc = await import('./cynco-hindcast.mjs')
+    const { hindcastLine } = await import('./cynco-campaign-verdict.mjs')
+    let hindcast
+    try {
+      const exported = hc.exportOutcomeDatasets({ rows, home: datasetsDir ? null : await home(), datasetsDir })
+      if (!exported?.n) hindcast = { fault: `no eligible labeled mission at K = ${hc.PRIMARY_TURNS} turns — nothing to train on` }
+      else {
+        const h = hc.hindcastOf((deps.runHindcast ?? hc.runHindcast)({ paths: exported.paths }), exported.paths.out)
+        if (h.fault) hindcast = { fault: h.fault }
+        else { hindcast = h.summary; modelRows = modelRowsFrom(h.model, rows) }
+      }
+    } catch (e) { hindcast = { fault: String(e?.message ?? e) } }
+    const r = writeRuleVerdicts({ rows, campaign: null, outPath, modelRows })
+    if (!hindcast.fault) hindcast.ladder = r.models ?? null
+    log(hindcastLine(hindcast))
+    log(verdictsLine(r, outPath))
+    return 0
+  }
+  log(verdictsLine(writeRuleVerdicts({ rows, campaign: null, outPath }), outPath))
   return 0
 }
 

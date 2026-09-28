@@ -864,8 +864,17 @@ as for the gate lines.
 `scripts/cynco-rule-verdicts.mjs` (`writeRuleVerdicts`) at every wave VERDICT
 from the WHOLE ledger — not the campaign's slice, because a rule's predictive
 power is a claim about every mission it fired on. `bun
-scripts/cynco-rule-verdicts.mjs [--ledger-dir DIR] [--out PATH]` rebuilds it by
-hand. It is Step 2's per-rule table (`analyse` + `ruleVerdictOf` in
+scripts/cynco-rule-verdicts.mjs [--ledger-dir DIR] [--out PATH]` rebuilds the
+rules by hand and prints `rule verdicts vN: P predictive of R rules (+M model
+rows) (…) → <path>` — rules and model rows counted apart, as the scoreboard's
+`N/8` reads them. `--with-hindcast` rebuilds what a VERDICT writes: the runner's
+own sequence (`exportOutcomeDatasets` → `runHindcast` → `hindcastOf` →
+`modelRowsFrom` → `writeRuleVerdicts`, `scripts/cynco-hindcast.mjs`), printing
+the `- Outcome hindcast:` line first (a fault is `UNMEASURED` and the rules are
+written without model rows, as at a VERDICT). `--datasets-dir DIR` writes the
+three datasets, `outcome-model.json` and — unless `--out` names another path —
+`rule-verdicts.json` directly into DIR instead of `~/.cynco/datasets/`, so a
+temp run never touches the real home. It is Step 2's per-rule table (`analyse` + `ruleVerdictOf` in
 `scripts/cynco-signal-validation.mjs`) turned into a file the engine reads:
 
 - **`engine/s5/ruleAuthority.ts`** loads it once per session and logs one line,
