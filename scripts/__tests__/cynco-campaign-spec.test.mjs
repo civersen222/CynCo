@@ -94,6 +94,8 @@ describe('loadCampaignSpec', () => {
     expect(() => loadCampaignSpec(write({ ...good(), progress: { everyMs: -1 } }))).toThrow(/progress\.everyMs/)
     expect(() => loadCampaignSpec(write({ ...good(), progress: { everyMs: 1.5 } }))).toThrow(/progress\.everyMs/)
     expect(() => loadCampaignSpec(write({ ...good(), progress: { everyMs: '20000' } }))).toThrow(/progress\.everyMs/)
+    // Task 5 review M1: present but empty — `everyMs` missing — is refused, naming the field.
+    expect(() => loadCampaignSpec(write({ ...good(), progress: {} }))).toThrow(/progress\.everyMs must be a positive integer/)
     expect(() => loadCampaignSpec(write({ ...good(), progress: [] }))).toThrow(/progress must be an object/)
     expect(() => loadCampaignSpec(write({ ...good(), progress: 'soon' }))).toThrow(/progress must be an object/)
   })
