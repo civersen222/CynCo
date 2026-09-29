@@ -332,6 +332,21 @@ describe('runnerRowsFrom', () => {
     expect([...row.fired]).toEqual(['cx#wave2'])
     expect([...row.failed].sort()).toEqual(['cx#wave2', 'cx-wave1-1'])
   })
+
+  // Task 4 review N2: a malformed record with no missionId is named by where
+  // it lives — `<campaign>/waves.jsonl line <n>` — not by its index in the
+  // combined list of every campaign's records.
+  it('a malformed record is named <campaign>/waves.jsonl line <n>', () => {
+    const campaigns = mkdtempSync(join(tmpdir(), 'rr-campaigns-'))
+    tempDirs.push(campaigns)
+    for (const [name, records] of [['ca', [{ wave: 1, missionId: 'ca-1', decision: { kind: 'next' } }]],
+      ['cb', [{ wave: 1, missionId: 'cb-1', decision: { kind: 'next' } }, { wave: 2, missionId: null, decision: { kind: 'next' }, shadowDecisions: {} }, 'not a record']]]) {
+      mkdirSync(join(campaigns, name))
+      writeFileSync(join(campaigns, name, 'waves.jsonl'), records.map(r => JSON.stringify(r)).join('\n') + '\n')
+    }
+    const [row] = runnerRowsFromCampaigns(campaigns)
+    expect(row.skipped).toEqual(['cb/waves.jsonl line 2', 'cb/waves.jsonl line 3'])
+  })
 })
 
 describe('progressLine', () => {

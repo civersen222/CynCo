@@ -339,12 +339,17 @@ export function verdictsLine(r, outPath) {
 // printed as UNMEASURED and the rules are written without model rows — as the
 // runner does. `--datasets-dir DIR` puts the three datasets and
 // outcome-model.json directly in DIR (default `<cyncoHome>/datasets`) and,
-// unless `--out` is given, the verdict file too — so a test or a temp run never
-// touches the real home.
+// unless `--out` is given, the verdict file too, and — unless `--manifest` is
+// given — keeps the holdout manifest at `<DIR>/frozen-eval.json` (final review
+// M8). Such a run WRITES nothing under the real home; it still READS
+// `<cyncoHome>/campaigns` for the runner row unless `--campaigns-dir DIR` names
+// another campaigns dir (Task 4 review N1).
 //
 // `engine/paths.js` is TypeScript behind a `.js` specifier and loads only under
-// bun, so it is imported lazily and only when neither --out nor --datasets-dir
-// names where to write and --campaigns-dir names the campaigns. `deps` is the
+// bun, so it is imported lazily, and only when something needs the real home:
+// no --out and no --datasets-dir (the verdict file's place), no
+// --campaigns-dir (the campaigns the runner row is read from), or
+// --with-hindcast without --datasets-dir (the datasets' place). `deps` is the
 // test seam (`readLedger`, `runHindcast`, `cyncoHome`, `log`).
 export async function main(argv, deps = {}) {
   const arg = (flag) => { const i = argv.indexOf(flag); return i >= 0 ? argv[i + 1] : null }

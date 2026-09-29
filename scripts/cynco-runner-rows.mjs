@@ -57,6 +57,7 @@ export function runnerRowsFrom(waves) {
  *   passed was wrong; on any other decision, right);
  * - skipped: the wave records that are not a record at all, or whose
  *   `shadowDecisions` is neither absent nor an array — named (missionId, else
+ *   `<campaign>/waves.jsonl line <n>`, else — a bare record with no campaign —
  *   `record #i`) and left out. One malformed line in any campaign's
  *   waves.jsonl costs that line, never the row (Task 4 review M1).
  * Recomputed from the records at every VERDICT, so nothing written is lost.
@@ -66,7 +67,9 @@ export function runnerRowsFromEntries(entries) {
   ;(Array.isArray(entries) ? entries : []).forEach(({ campaign = null, line, record: w } = {}, i) => {
     const missionId = isRecord(w) && typeof w.missionId === 'string' && w.missionId ? w.missionId : null
     if (!isRecord(w) || (w.shadowDecisions != null && !Array.isArray(w.shadowDecisions))) {
-      skipped.push(missionId ?? `record #${i + 1}`)
+      // Task 4 review N2: named by where it lives, not by its index in the
+      // combined list of every campaign's records.
+      skipped.push(missionId ?? (campaign ? `${campaign}/waves.jsonl line ${line}` : `record #${i + 1}`))
       return
     }
     const kind = isRecord(w.decision) ? w.decision.kind : undefined

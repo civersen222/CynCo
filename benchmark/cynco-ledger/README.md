@@ -914,17 +914,22 @@ as for the gate lines.
 `scripts/cynco-rule-verdicts.mjs` (`writeRuleVerdicts`) at every wave VERDICT
 from the WHOLE ledger — not the campaign's slice, because a rule's predictive
 power is a claim about every mission it fired on. `bun
-scripts/cynco-rule-verdicts.mjs [--ledger-dir DIR] [--out PATH]` rebuilds the
+scripts/cynco-rule-verdicts.mjs [--ledger-dir DIR] [--out PATH] [--with-hindcast]
+[--datasets-dir DIR] [--manifest PATH] [--campaigns-dir DIR]` rebuilds the
 rules by hand and prints `rule verdicts vN: P predictive of R rules (+M model
-rows) (…) → <path>` — rules and model rows counted apart, as the scoreboard's
-`N/8` reads them. `--with-hindcast` rebuilds what a VERDICT writes: the runner's
+rows) (+K runner rows) (…) → <path>` — rules, model rows and runner rows
+counted apart, as the scoreboard's `N/8` reads them. Every run builds the
+runner row `R1.no-progress` from the campaigns' wave records exactly as a
+VERDICT does, over `--campaigns-dir DIR` (default `<cyncoHome>/campaigns`). `--with-hindcast` rebuilds what a VERDICT writes: the runner's
 own sequence (`exportOutcomeDatasets` → `runHindcast` → `hindcastOf` →
 `modelRowsFrom` → `writeRuleVerdicts`, `scripts/cynco-hindcast.mjs`), printing
 the `- Outcome hindcast:` line first (a fault is `UNMEASURED` and the rules are
 written without model rows, as at a VERDICT). `--datasets-dir DIR` writes the
 three datasets, `outcome-model.json` and — unless `--out` names another path —
 `rule-verdicts.json` directly into DIR instead of `~/.cynco/datasets/`, so a
-temp run never touches the real home. With `--datasets-dir DIR` and no
+temp run WRITES nothing under the real home; it still READS
+`<cyncoHome>/campaigns` for the runner row unless `--campaigns-dir DIR` names
+another campaigns dir (Task 4 review N1). With `--datasets-dir DIR` and no
 `--manifest PATH`, the per-version holdout manifest is `<DIR>/frozen-eval.json`
 (final review M8): a temp run never performs the one-time v2 freeze on the
 repo's committed `benchmark/cynco-ledger/frozen-eval.json`; without
@@ -1497,7 +1502,9 @@ recomputed from the wave records at every VERDICT.
 - **A malformed wave record costs that record, never the row.** This covers a
   record that is not an object, or one whose `shadowDecisions` is neither absent
   nor an array. It is skipped and named in `note` (`N malformed wave record(s)
-  skipped: <missionId | record #i>`); otherwise `note` is `null`.
+  skipped: <missionId | <campaign>/waves.jsonl line <n>>` — Task 4 review N2;
+  a bare record handed to `runnerRowsFrom` with no campaign reads `record #i`);
+  otherwise `note` is `null`.
 - **The outcome is the wave's FINAL decision.** At VERDICT the identity
   assertion runs before the ladder, so a pass it turns into a fault is a failure
   for R1 on that same verdict.
