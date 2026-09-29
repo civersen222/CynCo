@@ -1292,16 +1292,23 @@ first counts from dispatch); with a measured gate the interval is raised to
 `gateMs × 10`, so the gate takes at most 10 % of the wave (C9's 215 s gate →
 ≥ 2150 s); ×2 per consecutive faulted reading; never within the last
 `gateMs × 2` of the clock (the clock's own end while the gate is unmeasured).
-`everyMs` = `spec.progress.everyMs`, else `CYNCO_PROGRESS_EVERY_MS`, else
-1 800 000 (30 min).
+`gateMs` is seeded from the start grade — the last verdict's
+`gate.durationMs`, else the calibration's BASE run (`calibration.baseGateMs`,
+recorded from Phase 6 on; older calibrations have none) — so the 10 % rule,
+the tail and the probe's cap hold from the first tick; each real probe run
+replaces it. `everyMs` = `spec.progress.everyMs`, else
+`CYNCO_PROGRESS_EVERY_MS`, else 1 800 000 (30 min).
 
 **`rec.progress`** — one entry per reading, in order:
 `{ at, sha, fails, passes, failIds, durationMs, elapsedFraction }` (`fails` /
 `passes` are COUNTS, `failIds` the FAIL line ids; `elapsedFraction` = wave
 clock at the reading / `clockMs`; `durationMs` = archive + gate) or
 `{ at, fault, durationMs }` (the archive failed, HEAD did not resolve, the gate
-timed out, did not run, printed no terminator or exited other than 0/1). A
-fault never touches the wave. `null` with `progressNote` naming why when the
+timed out, did not run, printed no terminator or exited other than 0/1). The
+reused start grade has the same fixed shape plus `reusedFrom: 'start'` and
+`durationMs: 0` (`passes` / `failIds` null only if the runner had no start
+passes / FAIL ids — runWave always hands both). A fault never touches the
+wave. `null` with `progressNote` naming why when the
 runner took no reading at all (an adopted wave was not waited on; a runner io
 without a probe); `[]` with a note when none was due before the wave ended. A
 wave that faulted in the WAIT (no ledger row, wall clock expired) keeps the
@@ -1317,14 +1324,21 @@ else the calibration's `baseFails.length`); it never fires when the newest
 reading is a fault (a stale count is not a reading of now) nor on an
 unmeasured start; `wouldHaveSavedS` = the wall clock left at the decision
 (`clockMs/1000 − elapsed`), written on every decision so a firing can be
-weighed against what it would have cost. SHADOW: nothing is stopped; a firing
-is one log line and one record entry.
+weighed against what it would have cost. It is read off the BUDGETED clock,
+so for a wave that ended early it overstates: a reader weighing a firing caps
+it at `rec.durationS − elapsed`. SHADOW: nothing is stopped; a firing is one
+log line and one record entry.
 
 **Runner rows for the ladder.** `runnerRowsFrom(waves)` → one row
 `{ id: 'R1.no-progress', source: 'runner', fired, scope, failed }`: *scope* =
 waves with a missionId, a decision (`stop` excluded — nothing ran) and ≥ 1
-non-fault reading at `elapsedFraction ≥ 0.5`; *fired* = scoped waves where any
-shadow decision fired; *failed* = scoped waves whose decision is not `pass` /
+`R1.no-progress` shadow DECISION at `elapsedFraction ≥ 0.5`, fired or not.
+Scope reads the decisions, never the readings: a wave that stops committing
+before 50 % has its last reading below 50 % and only skipped ticks after it,
+and those waves are the rule's positives (an 8 h wave that never commits is
+in scope and fired). A wave with no decision past 50 % (adopted, or ended
+before the halfway mark) is out. *fired* = scoped waves where any decision has
+`fired: true`; *failed* = scoped waves whose decision is not `pass` /
 `pass-with-survivors` — the rule's outcome (a firing on a wave that then
 passed was wrong). The row is returned with an empty scope too: TOO FEW is the
 honest state, not an absent row. It earns `PREDICTIVE` exactly as an S5 rule
@@ -1332,7 +1346,7 @@ would before any later phase lets it stop a wave.
 
 **The verdict line.** `verdictEntry` prints, after `- Autopoiesis:` and before
 `- Scoreboard:`, `progressLine(rec)`:
-`- Progress: 14 → 3 fails over 3 reading(s) (first fix at 41 min; last at 210
+`- Progress: 14 → 3 fails over 3 readings (first fix at 41 min; last at 210
 min: 3); R1.no-progress fired at 52% (would have saved 3.2 h)` — minutes are
 `at − dispatchedAt`; `no drop` when no reading went below the start; `; N
 fault(s)` when probes faulted. With no measured reading:

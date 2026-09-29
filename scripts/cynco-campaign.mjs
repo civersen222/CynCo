@@ -549,7 +549,11 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
         tracker = progressTracker({ spec, probe, headOf: () => repoHead(spec.repo, 'HEAD'), clockMs: spec.budget.hoursPerWave * 3600 * 1000,
           startSha: baseSha ?? base, startFails: s.lastFails?.length ?? s.calibration?.baseFails?.length ?? fails.length,
           startFailIds: s.lastFails ?? fails.map(f => f.id), startPasses: ctx.passes?.length ?? null,
-          dispatchedAtMs: Date.parse(dispatchedAt), everyMs: everyMsFor(spec) })
+          dispatchedAtMs: Date.parse(dispatchedAt), everyMs: everyMsFor(spec),
+          // Review M1: the gate's runtime as the start grade measured it (the
+          // last verdict's gate run, else the calibration's BASE run), so the
+          // cadence's 10 % rule and end-of-clock tail hold from the first tick.
+          gateMs: s.lastGrade?.gate?.durationMs ?? s.calibration?.baseGateMs ?? null })
       } else progressNote = !probe ? 'no progress probe on this runner io' : 'no repo HEAD reader on this runner io'
       waited = await io.waitForDriver({ pidFile, driverLog, timeoutMs: (spec.budget.hoursPerWave * 3600 + 3600) * 1000, onTick: tracker?.onTick ?? null })
       missionId = waited.exited ? (waited.missionId ?? dispatched?.missionId ?? io.missionIdFrom?.(driverLog) ?? null) : null
@@ -1378,7 +1382,7 @@ export async function main(argv, deps = {}) {
     if (!r.ok) { console.error('[campaign] CALIBRATION REFUSED:\n  ' + r.problems.join('\n  ')); await notify(`${spec.id}: calibration refused — ${r.problems[0]}`); return 3 }
     // basePasses is what wave 1's brief prints as "Already PASS at BASE and must
     // stay so" — the only thing telling the worker which lines it may not break.
-    const next = { gateSha256: r.gateSha256, perturbSha256: r.perturbSha256, positiveSha256: r.positiveSha256 ?? null, baseFails: r.baseFails, basePasses: r.basePasses ?? [], perturbFails: r.perturbFails, calibratedAt: new Date().toISOString() }
+    const next = { gateSha256: r.gateSha256, perturbSha256: r.perturbSha256, positiveSha256: r.positiveSha256 ?? null, baseFails: r.baseFails, basePasses: r.basePasses ?? [], perturbFails: r.perturbFails, baseGateMs: r.baseGateMs ?? null, calibratedAt: new Date().toISOString() }
     // BEFORE the overwrite: `cal` is the calibration this campaign has been
     // measured against so far, and once the line below runs it is gone. `wave`
     // is the number of waves already spent — the reseal lands between that wave

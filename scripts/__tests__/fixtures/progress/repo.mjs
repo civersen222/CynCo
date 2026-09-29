@@ -2,7 +2,7 @@
 // temp dir whose commits carry different `progress.txt` contents, graded by
 // ./gate_p.py. Each entry of `contents` becomes one commit, in order; the
 // shas come back in the same order. Nothing here touches a live home or repo.
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -16,8 +16,16 @@ const git = (dir, args) => {
   return r.stdout.trim()
 }
 
+const built = []
+
+/** Remove every repo buildProgressRepo made in this process (a test's afterAll). */
+export function removeProgressRepos() {
+  for (const dir of built.splice(0)) rmSync(dir, { recursive: true, force: true })
+}
+
 export function buildProgressRepo(contents) {
   const dir = mkdtempSync(join(tmpdir(), 'cynco-progress-repo-'))
+  built.push(dir)
   git(dir, ['init', '-q'])
   const shas = []
   for (const [i, text] of contents.entries()) {

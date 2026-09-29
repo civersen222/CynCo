@@ -188,8 +188,12 @@ export function shadowNoProgress({ readings, startFails, clockMs, nowMs, at = ne
  * `R1.no-progress`, always — an empty scope is the honest TOO FEW, not an
  * absent row.
  * - scope: waves with a missionId, a decision (a `stop` never ran and is not
- *   one) and ≥ 1 non-fault reading at `elapsedFraction ≥ 0.5`;
- * - fired: those scoped waves where any shadow decision fired;
+ *   one) and ≥ 1 `R1.no-progress` shadow DECISION at `elapsedFraction ≥ 0.5`,
+ *   fired or not (review I1). Scope reads the decisions, never the readings:
+ *   a wave that stops committing before 50 % has its last reading below 50 %
+ *   and only skipped ticks after it — exactly the rule's positives, which a
+ *   readings-based scope dropped on every 8 h wave;
+ * - fired: those scoped waves where any decision has `fired: true`;
  * - failed: those scoped waves whose decision is not `pass` /
  *   `pass-with-survivors` — the rule's OUTCOME (a firing on a wave that then
  *   passed was wrong; on any other decision, right). An addition beside the
@@ -201,11 +205,11 @@ export function runnerRowsFrom(waves) {
   for (const w of waves ?? []) {
     const kind = w?.decision?.kind
     if (!w?.missionId || !kind || kind === 'stop') continue
-    const pastHalf = (w.progress ?? []).some(r => r && !r.fault && !r.skipped && typeof r.fails === 'number'
-      && typeof r.elapsedFraction === 'number' && r.elapsedFraction >= NO_PROGRESS_AT)
-    if (!pastHalf) continue
+    const pastHalf = (w.shadowDecisions ?? []).filter(d => d?.rule === NO_PROGRESS_RULE
+      && typeof d.elapsedFraction === 'number' && d.elapsedFraction >= NO_PROGRESS_AT)
+    if (!pastHalf.length) continue
     scope.add(w.missionId)
-    if ((w.shadowDecisions ?? []).some(d => d?.rule === NO_PROGRESS_RULE && d.fired === true)) fired.add(w.missionId)
+    if (pastHalf.some(d => d.fired === true)) fired.add(w.missionId)
     if (kind !== 'pass' && kind !== 'pass-with-survivors') failed.add(w.missionId)
   }
   return [{ id: NO_PROGRESS_RULE, source: 'runner', fired, scope, failed }]
@@ -238,7 +242,7 @@ export function progressLine(rec) {
   const shadow = firing
     ? `${NO_PROGRESS_RULE} fired at ${Math.round(firing.elapsedFraction * 100)}%${typeof firing.wouldHaveSavedS === 'number' ? ` (would have saved ${(firing.wouldHaveSavedS / 3600).toFixed(1)} h)` : ''}`
     : decisions.length ? `${NO_PROGRESS_RULE} did not fire (${decisions.length} decision(s))` : `${NO_PROGRESS_RULE} not evaluated`
-  return `- Progress: ${start ?? '?'} → ${last.fails} fails over ${measured.length} reading(s) (${fix}; last at ${minOf(last)}: ${last.fails}${faulted}); ${shadow}`
+  return `- Progress: ${start ?? '?'} → ${last.fails} fails over ${measured.length} readings (${fix}; last at ${minOf(last)}: ${last.fails}${faulted}); ${shadow}`
 }
 
 /**
@@ -253,12 +257,20 @@ export function progressLine(rec) {
  * grade as a reading (`reusedFrom: 'start'`, no gate run — the gate is
  * deterministic and that sha was graded already), so a wave that commits
  * nothing still has a count past 50 %; after that an unchanged sha is skipped.
+ * The reused reading has the fixed reading shape `{ at, sha, fails, passes,
+ * failIds, durationMs: 0, elapsedFraction }` plus `reusedFrom: 'start'`;
+ * `passes` / `failIds` are null only when the caller handed no start passes /
+ * FAIL ids (runWave always hands both, from the calibration or the last grade).
  * `dispatchedAtMs` anchors the wave clock; the tick's `nowMs` is read against
  * it, else the tick's `elapsedMs` (the wait's own clock) is used.
+ * `gateMs` seeds the gate's measured runtime (review M1: runWave passes the
+ * last grade's `gate.durationMs`, else the calibration's BASE run) so the 10 %
+ * interval, the end-of-clock tail and the probe's cap hold before the first
+ * probe run of this wave; each real probe run replaces it.
  */
-export function progressTracker({ spec, probe, headOf, clockMs, startSha = null, startFails = null, startFailIds = null, startPasses = null, dispatchedAtMs = null, everyMs = everyMsFor(spec), log = (m) => console.log(m), now = Date.now }) {
+export function progressTracker({ spec, probe, headOf, clockMs, startSha = null, startFails = null, startFailIds = null, startPasses = null, dispatchedAtMs = null, everyMs = everyMsFor(spec), gateMs: seedGateMs = null, log = (m) => console.log(m), now = Date.now }) {
   const progress = [], shadowDecisions = []
-  let lastSha = null, lastAtMs = null, gateMs = null, faults = 0, n = 0, lastReason = null
+  let lastSha = null, lastAtMs = null, gateMs = finitePos(seedGateMs) ? seedGateMs : null, faults = 0, n = 0, lastReason = null
   const tick = ({ elapsedMs, nowMs } = {}) => {
     const waveMs = Number.isFinite(dispatchedAtMs) && typeof nowMs === 'number' ? nowMs - dispatchedAtMs : elapsedMs
     const c = progressCadence({ everyMs, clockMs, gateMs, faults, lastAtMs, nowMs: waveMs })
@@ -286,7 +298,7 @@ export function progressTracker({ spec, probe, headOf, clockMs, startSha = null,
       } else {
         faults = 0
         lastSha = reading.sha
-        if (!reading.reusedFrom) gateMs = reading.durationMs
+        if (!reading.reusedFrom && finitePos(reading.durationMs)) gateMs = reading.durationMs
         log(`[campaign] progress @ ${mins}m: ${reading.fails} fails (was ${startFails ?? '?'})${reading.reusedFrom ? ' — no commit since the start, start grade reused' : ` — gate ${Math.round(reading.durationMs / 1000)} s on ${String(reading.sha).slice(0, 7)}`}`)
       }
     }

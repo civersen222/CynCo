@@ -1,5 +1,5 @@
-import { describe, it, expect, afterEach, vi } from 'vitest'
-import { existsSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { describe, it, expect, afterEach, afterAll, vi } from 'vitest'
+import { existsSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -7,7 +7,19 @@ import {
   PROGRESS_EVERY_MS_DEFAULT, PROBE_GATE_TIMEOUT_UNMEASURED_MS,
 } from '../cynco-campaign-progress.mjs'
 import { defaultIo as campaignIo } from '../cynco-campaign.mjs'
-import { buildProgressRepo, PROGRESS_GATE } from './fixtures/progress/repo.mjs'
+import { buildProgressRepo, removeProgressRepos, PROGRESS_GATE } from './fixtures/progress/repo.mjs'
+
+// Review M4: every temp dir this file creates is removed when it is done.
+const tempDirs = []
+afterAll(() => {
+  removeProgressRepos()
+  for (const d of tempDirs.splice(0)) rmSync(d, { recursive: true, force: true })
+})
+
+// The fixed reading shape (Global Constraints); the reused start grade adds
+// exactly one key, `reusedFrom`.
+const READING_KEYS = ['at', 'durationMs', 'elapsedFraction', 'failIds', 'fails', 'passes', 'sha']
+const REUSED_KEYS = [...READING_KEYS, 'reusedFrom'].sort()
 
 const MIN = 60_000
 const HOUR = 60 * MIN
@@ -81,10 +93,12 @@ describe('probeProgress on a real fixture repo (git archive + the fixture gate)'
     writeFileSync(join(dir, 'progress.txt'), '1 2 3')
     const r0 = probeProgress({ spec, sha: shas[0], elapsedMs: 30 * MIN, clockMs: 8 * HOUR, n: 1 })
     expect(r0).toMatchObject({ sha: shas[0], fails: 3, passes: 0, failIds: ['P.1', 'P.2', 'P.3'], elapsedFraction: 0.063 })
+    expect(Object.keys(r0).sort()).toEqual(READING_KEYS)
     expect(r0.at).toMatch(/^\d{4}-\d{2}-\d{2}T/)
     expect(r0.durationMs).toBeGreaterThanOrEqual(0)
     const r1 = probeProgress({ spec, sha: shas[1], lastSha: shas[0], elapsedMs: 4 * HOUR, clockMs: 8 * HOUR, n: 2 })
     expect(r1).toMatchObject({ sha: shas[1], fails: 1, passes: 2, failIds: ['P.3'], elapsedFraction: 0.5 })
+    expect(Object.keys(r1).sort()).toEqual(READING_KEYS)
     // The temp archive is gone after each reading.
     expect(existsSync(join(tmpdir(), `cynco-progress-${spec.id}-1`))).toBe(false)
     expect(existsSync(join(tmpdir(), `cynco-progress-${spec.id}-2`))).toBe(false)
@@ -182,20 +196,25 @@ describe('shadowNoProgress (R1.no-progress, shadow)', () => {
 
 describe('runnerRowsFrom', () => {
   const reading = (fails, elapsedFraction) => ({ at: 't', sha: 's', fails, passes: 0, failIds: [], durationMs: 1, elapsedFraction })
-  const fire = (fired) => ({ rule: 'R1.no-progress', at: 't', elapsedFraction: 0.6, fired, startFails: 3, fails: 3, wouldHaveSavedS: 100 })
+  const decision = (fired, elapsedFraction = 0.6) => ({ rule: 'R1.no-progress', at: 't', elapsedFraction, fired, startFails: 3, fails: 3, wouldHaveSavedS: 100 })
 
-  it('scopes waves with a reading past 50 % and a decision; fired = any firing; failed = not a pass', () => {
+  // Review I1: scope is read off the shadow DECISIONS (any at ≥ 50 %, fired or
+  // not), never off the readings.
+  it('scopes waves with a decision past 50 %; fired = any firing; failed = not a pass', () => {
     const waves = [
       // fired and then PASSED: the rule was wrong.
-      { missionId: 'm-pass', decision: { kind: 'pass' }, progress: [reading(3, 0.6)], shadowDecisions: [fire(true)] },
+      { missionId: 'm-pass', decision: { kind: 'pass' }, progress: [reading(3, 0.6)], shadowDecisions: [decision(true)] },
       // fired and did not pass: the rule was right.
-      { missionId: 'm-next', decision: { kind: 'next' }, progress: [reading(3, 0.3), reading(3, 0.7)], shadowDecisions: [fire(false), fire(true)] },
-      // read past 50 %, never fired, passed with survivors.
-      { missionId: 'm-pws', decision: { kind: 'pass-with-survivors' }, progress: [reading(1, 0.8)], shadowDecisions: [fire(false)] },
-      // only read before 50 %: out of scope.
-      { missionId: 'm-early', decision: { kind: 'next' }, progress: [reading(3, 0.3)], shadowDecisions: [fire(false)] },
-      // only a FAULT past 50 %: out of scope.
-      { missionId: 'm-fault', decision: { kind: 'budget' }, progress: [{ at: 't', fault: 'x', durationMs: 1 }], shadowDecisions: [] },
+      { missionId: 'm-next', decision: { kind: 'next' }, progress: [reading(3, 0.3), reading(3, 0.7)], shadowDecisions: [decision(false, 0.3), decision(true, 0.7)] },
+      // a decision past 50 %, never fired, passed with survivors.
+      { missionId: 'm-pws', decision: { kind: 'pass-with-survivors' }, progress: [reading(1, 0.8)], shadowDecisions: [decision(false, 0.8)] },
+      // its only reading is before 50 %, but a (skip-tick) decision past it
+      // fired: IN scope — the no-progress wave the rule exists for.
+      { missionId: 'm-skips', decision: { kind: 'budget' }, progress: [reading(3, 0.06)], shadowDecisions: [decision(false, 0.06), decision(true, 0.56)] },
+      // decisions only before 50 % (the wave ended early): out of scope.
+      { missionId: 'm-early', decision: { kind: 'next' }, progress: [reading(3, 0.3)], shadowDecisions: [decision(false, 0.3)] },
+      // no decision at all (adopted — never waited on): out of scope.
+      { missionId: 'm-adopted', decision: { kind: 'next' }, progress: null, shadowDecisions: null },
       // a stop never ran; no progress field at all (a pre-Phase 6 record).
       { missionId: null, decision: { kind: 'stop' } },
       { missionId: 'm-old', decision: { kind: 'next' } },
@@ -204,9 +223,42 @@ describe('runnerRowsFrom', () => {
     expect(rest).toEqual([])
     expect(row.id).toBe('R1.no-progress')
     expect(row.source).toBe('runner')
-    expect([...row.scope].sort()).toEqual(['m-next', 'm-pass', 'm-pws'])
-    expect([...row.fired].sort()).toEqual(['m-next', 'm-pass'])
-    expect([...row.failed]).toEqual(['m-next'])
+    expect([...row.scope].sort()).toEqual(['m-next', 'm-pass', 'm-pws', 'm-skips'])
+    expect([...row.fired].sort()).toEqual(['m-next', 'm-pass', 'm-skips'])
+    expect([...row.failed].sort()).toEqual(['m-next', 'm-skips'])
+  })
+
+  // The reviewer's case, end to end through the tracker: an 8 h clock, HEAD
+  // never leaves the start sha, a due tick every 30 min.
+  const trackWave = ({ headAt }) => {
+    const clockMs = 8 * HOUR
+    const probe = { archive: () => ({ ok: true }), runGate: () => ({ terminator: 'MISS', fails: [{ id: 'P.1', line: 'P.1: FAIL' }], passes: [], errors: [], exit: 1, harnessFault: null }), removeDir: () => {} }
+    let min = 0
+    const t = progressTracker({ spec: { id: 'rr', repo: 'C:/r', gate: 'g.py' }, probe, headOf: () => headAt(min), clockMs, startSha: 'START', startFails: 3,
+      startFailIds: ['P.1', 'P.2', 'P.3'], startPasses: 0, dispatchedAtMs: 0, everyMs: 30 * MIN, log: () => {} })
+    for (min = 30; min < 480; min += 30) t.onTick({ nowMs: min * MIN })
+    return { missionId: 'm', decision: { kind: 'budget' }, progress: t.progress, shadowDecisions: t.shadowDecisions }
+  }
+
+  it('an 8 h wave that never commits after the start is IN scope and FIRED', () => {
+    const wave = trackWave({ headAt: () => 'START' })
+    // One reading (the reused start grade at 6 %), every later tick a skip —
+    // and yet the rule decided at every tick past 50 %.
+    expect(wave.progress).toHaveLength(1)
+    expect(wave.progress[0].elapsedFraction).toBeLessThan(0.5)
+    expect(wave.shadowDecisions.filter(d => d.fired).length).toBeGreaterThan(0)
+    const [row] = runnerRowsFrom([wave])
+    expect([...row.scope]).toEqual(['m'])
+    expect([...row.fired]).toEqual(['m'])
+  })
+
+  it('a wave whose only commit lands before 50 % is in scope', () => {
+    // Commits C1 at 90 min (1 fail, below the start's 3) and nothing after.
+    const wave = trackWave({ headAt: (min) => (min >= 90 ? 'C1' : 'START') })
+    expect(wave.progress.every(r => r.elapsedFraction < 0.5)).toBe(true)
+    const [row] = runnerRowsFrom([wave])
+    expect([...row.scope]).toEqual(['m'])
+    expect(row.fired.size).toBe(0)
   })
 
   it('keeps the row with an empty scope — TOO FEW is the honest state, not an absent row', () => {
@@ -225,13 +277,13 @@ describe('progressLine', () => {
     const rec = { dispatchedAt: at(0), progress: [reading(14, 30), reading(9, 41), reading(3, 210)],
       shadowDecisions: [{ rule: 'R1.no-progress', at: at(30), elapsedFraction: 0.06, fired: false, startFails: 14, fails: 14, wouldHaveSavedS: 27000 },
         { rule: 'R1.no-progress', at: at(250), elapsedFraction: 0.52, fired: true, startFails: 14, fails: 14, wouldHaveSavedS: 11520 }] }
-    expect(progressLine(rec)).toBe('- Progress: 14 → 3 fails over 3 reading(s) (first fix at 41 min; last at 210 min: 3); R1.no-progress fired at 52% (would have saved 3.2 h)')
+    expect(progressLine(rec)).toBe('- Progress: 14 → 3 fails over 3 readings (first fix at 41 min; last at 210 min: 3); R1.no-progress fired at 52% (would have saved 3.2 h)')
   })
 
   it('names faults, a missing drop and a rule that did not fire', () => {
     const rec = { dispatchedAt: at(0), progress: [reading(5, 30), { at: at(60), fault: 'gate timed out after 860000 ms', durationMs: 860_000 }],
       shadowDecisions: [{ rule: 'R1.no-progress', at: at(30), elapsedFraction: 0.06, fired: false, startFails: 5, fails: 5, wouldHaveSavedS: 1 }] }
-    expect(progressLine(rec)).toBe('- Progress: 5 → 5 fails over 1 reading(s) (no drop; last at 30 min: 5; 1 fault(s)); R1.no-progress did not fire (1 decision(s))')
+    expect(progressLine(rec)).toBe('- Progress: 5 → 5 fails over 1 readings (no drop; last at 30 min: 5; 1 fault(s)); R1.no-progress did not fire (1 decision(s))')
   })
 
   it('prints the reason when there is no reading', () => {
@@ -251,16 +303,19 @@ describe('progressTracker — the WAIT hook', () => {
     const gates = [], logs = []
     const probe = { archive: () => ({ ok: true }), runGate: (spec, dest) => { gates.push(dest); return gateOut(2) }, removeDir: () => {} }
     const t = progressTracker({ spec: { id: 'trk', repo: 'C:/r', gate: 'g.py' }, probe, headOf: () => head, clockMs, startSha: 'START', startFails: 2, startFailIds: ['P.1', 'P.2'],
-      dispatchedAtMs: 0, everyMs: 30 * MIN, log: (m) => logs.push(m) })
+      startPasses: 1, dispatchedAtMs: 0, everyMs: 30 * MIN, log: (m) => logs.push(m) })
     expect(t.onTick({ nowMs: 10 * MIN })).toBeNull() // not due
     expect(t.note()).toMatch(/none taken — next reading at 30 min/)
     const r1 = t.onTick({ nowMs: 30 * MIN })
-    expect(r1).toMatchObject({ sha: 'START', fails: 2, reusedFrom: 'start', durationMs: 0 })
+    // Review M5: the fixed reading shape, plus `reusedFrom` and nothing else.
+    expect(r1).toEqual({ at: new Date(30 * MIN).toISOString(), sha: 'START', fails: 2, passes: 1, failIds: ['P.1', 'P.2'], durationMs: 0, elapsedFraction: 0.125, reusedFrom: 'start' })
+    expect(Object.keys(r1).sort()).toEqual(REUSED_KEYS)
     expect(gates).toEqual([])
     expect(t.onTick({ nowMs: 60 * MIN })).toEqual({ skipped: 'sha unchanged' })
     head = 'C1'
     const r3 = t.onTick({ nowMs: 125 * MIN })
-    expect(r3).toMatchObject({ sha: 'C1', fails: 2, elapsedFraction: 0.521 })
+    expect(r3).toMatchObject({ sha: 'C1', fails: 2, passes: 0, failIds: ['P.1', 'P.2'], elapsedFraction: 0.521 })
+    expect(Object.keys(r3).sort()).toEqual(READING_KEYS)
     expect(gates).toHaveLength(1)
     expect(t.progress).toHaveLength(2)
     expect(t.shadowDecisions.map(d => d.fired)).toEqual([false, false, true])
@@ -279,11 +334,34 @@ describe('progressTracker — the WAIT hook', () => {
     const broken = progressTracker({ spec: { id: 'trk3', repo: 'C:/r', gate: 'g.py' }, probe, headOf: () => { throw new Error('git gone') }, clockMs, dispatchedAtMs: 0, everyMs: 30 * MIN, log: () => {} })
     expect(broken.onTick({ nowMs: 30 * MIN }).fault).toMatch(/latest commit not read: git gone/)
   })
+
+  // Review M1: the gate runtime the start grade measured seeds the cadence, so
+  // the 10 % rule, the end-of-clock tail and the probe's cap hold before the
+  // first probe run of the wave (the reused start grade never measures it).
+  it('seeds gateMs: the 10 % interval, the tail and the probe cap hold from the first tick', () => {
+    const caps = []
+    const probe = { archive: () => ({ ok: true }), runGate: (spec, dest, { timeoutMs }) => { caps.push(timeoutMs); return gateOut(1) }, removeDir: () => {} }
+    const make = (gateMs) => progressTracker({ spec: { id: 'seed', repo: 'C:/r', gate: 'g.py' }, probe, headOf: () => 'C1', clockMs: 8 * HOUR, startSha: 'START', startFails: 2,
+      dispatchedAtMs: 0, everyMs: 30 * MIN, gateMs, log: () => {} })
+    const seeded = make(215_000)
+    expect(seeded.onTick({ nowMs: 30 * MIN })).toBeNull() // 215 s × 10 = 2150 s ≈ 35.8 min
+    expect(seeded.note()).toMatch(/gate 215 s → ≥ 36 min/)
+    expect(seeded.onTick({ nowMs: 2_150_000 })).toMatchObject({ sha: 'C1', fails: 1 })
+    expect(caps).toEqual([860_000]) // 4 × 215 s, not the unmeasured 30 min
+    // The tail: no reading within 2 × 215 s of the 8 h clock, even on the first tick.
+    const late = make(215_000)
+    expect(late.onTick({ nowMs: 8 * HOUR - 400_000 })).toBeNull()
+    expect(late.note()).toMatch(/within the last 2 × 215 s gate runtime/)
+    // Unseeded: the first tick at 30 min reads.
+    expect(make(null).onTick({ nowMs: 30 * MIN })).toMatchObject({ sha: 'C1' })
+  })
 })
 
 describe('defaultIo.waitForDriver — the onTick seam', () => {
   it('calls onTick every poll, logs a repeated tick fault once, and the wait goes on', async () => {
-    const pidFile = join(mkdtempSync(join(tmpdir(), 'camp-pid-')), 'driver.pid')
+    const pidDir = mkdtempSync(join(tmpdir(), 'camp-pid-'))
+    tempDirs.push(pidDir)
+    const pidFile = join(pidDir, 'driver.pid')
     writeFileSync(pidFile, `${process.pid}\n`)
     let polls = 0
     const ticks = []

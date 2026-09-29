@@ -2059,7 +2059,7 @@ describe('runWave — gate progress measured by the runner mid-wave', () => {
     expect(rec.shadowDecisions[1]).toMatchObject({ rule: 'R1.no-progress', startFails: 1, fails: 1 })
     // Stored on waves.jsonl, where the ladder (Task 4) reads it.
     expect(state.waves().at(-1).shadowDecisions).toEqual(rec.shadowDecisions)
-    expect(seen.entry).toMatch(/^- Autopoiesis: .*\n- Progress: 1 → 1 fails over 2 reading\(s\) \(no drop; last at 130 min: 1\); R1\.no-progress fired at 54% \(would have saved 1\.8 h\)\n- Scoreboard: /m)
+    expect(seen.entry).toMatch(/^- Autopoiesis: .*\n- Progress: 1 → 1 fails over 2 readings \(no drop; last at 130 min: 1\); R1\.no-progress fired at 54% \(would have saved 1\.8 h\)\n- Scoreboard: /m)
     expect(logs.join('\n')).toMatch(/\[campaign\] progress @ 130m: 1 fails \(was 1\)/)
     // Shadow: the wave was not stopped — it ran to its grade.
     expect(rec.decision.kind).toBe('next')
@@ -2079,6 +2079,26 @@ describe('runWave — gate progress measured by the runner mid-wave', () => {
     expect(rec.decision.kind).toBe('fault')
     expect(rec.progress).toHaveLength(1)
     expect(rec.shadowDecisions).toHaveLength(1)
+  })
+
+  // Review M1: the tracker's gateMs is seeded from the start grade — the last
+  // verdict's gate run, else the calibration's BASE run — so the 10 % interval
+  // holds from the first tick. A 4 min gate lifts the 30 min cadence to 40 min:
+  // the tick at 31 min takes no reading.
+  it('seeds the cadence from the last grade\'s gate runtime, else the calibration\'s', async () => {
+    const lastGradeState = freshState()
+    lastGradeState.state.lastGrade = { gate: { fails: [{ id: 'C8.1a', line: 'C8.1a: FAIL x' }], passes: [], durationMs: 4 * MIN } }
+    const { io: fakeA } = io({ waitForDriver: async ({ onTick }) => { onTick({ elapsedMs: 0, nowMs: Date.now() + 31 * MIN }); return { exited: true } } })
+    const a = await runWave(progressSpec, lastGradeState, fakeA)
+    expect(a.progress).toEqual([])
+    expect(a.progressNote).toMatch(/gate 240 s → ≥ 40 min/)
+
+    const calState = freshState()
+    calState.state.calibration.baseGateMs = 4 * MIN
+    const { io: fakeB } = io({ waitForDriver: async ({ onTick }) => { onTick({ elapsedMs: 0, nowMs: Date.now() + 31 * MIN }); return { exited: true } } })
+    const b = await runWave(progressSpec, calState, fakeB)
+    expect(b.progress).toEqual([])
+    expect(b.progressNote).toMatch(/gate 240 s → ≥ 40 min/)
   })
 })
 

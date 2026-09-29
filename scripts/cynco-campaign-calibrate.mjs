@@ -162,6 +162,9 @@ export async function calibrate(spec, io = defaultIo, { baseDir: providedBaseDir
     perturbFails: perturbed.fails,
     positive,
     suiteBaselineCreated,
+    // Phase 6 (review M1): the BASE gate run's wall time — wave 1's progress
+    // probe seeds its cadence from it before the first mid-wave reading.
+    baseGateMs: typeof baseRun.elapsedMs === 'number' ? baseRun.elapsedMs : null,
     baseOutputTail: (baseRun.stdout + baseRun.stderr).slice(-4000),
     perturbOutputTail: (pertRun.stdout + pertRun.stderr).slice(-4000),
     positiveOutputTail: positiveRun ? (positiveRun.stdout + positiveRun.stderr).slice(-4000) : null,
