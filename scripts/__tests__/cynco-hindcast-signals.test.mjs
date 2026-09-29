@@ -7,8 +7,7 @@ import { describe, it, expect } from 'vitest'
 import { mkdtempSync, readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { exportOutcomeDatasets, runHindcast, hindcastOf, noEligibleFault, hindcastReady, HINDCAST_SIGNALS_VERSION } from '../cynco-hindcast.mjs'
-import { manifestSets, heldSetFor, freezeManifest, rowsOfVersion, FREEZE_MIN_ELIGIBLE, AUTO_FREEZE_SEED } from '../cynco-outcome-dataset.mjs'
+import { exportOutcomeDatasets, runHindcast, hindcastOf, noEligibleFault, HINDCAST_SIGNALS_VERSION } from '../cynco-hindcast.mjs'
 import { hindcastLine } from '../cynco-campaign-verdict.mjs'
 import { main as ruleVerdictsMain } from '../cynco-rule-verdicts.mjs'
 
@@ -18,11 +17,7 @@ const turns = (n, v) => Array.from({ length: n }, (_, i) => ({ toolSuccessRate: 
   ...(v === 2 ? { signalsVersion: 2, algedonicAlertsTotal: i, consecutiveUnstable: i % 3 } : { consecutiveUnstable: i + 1 }) }))
 const row = (missionId, v, ok) => ({ missionId, outcome: ok ? 'landed' : 'failed', verified: ok, mutationSweep: sweep, turns: turns(40, v) })
 const readJsonl = (p) => readFileSync(p, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l))
-// A per-version manifest whose v2 set is `ids` (fix round 2).
-const manifestIn = (d, ids) => { const p = join(d, 'frozen-eval.json'); writeFileSync(p, JSON.stringify({ schema: 2, sets: { 2: { schema: 1, version: 1, seed: 1, frozenAt: 't', missionIds: ids } }, history: [] })); return p }
-// Phase 5's shape: the file that IS v1's set.
-const V1_SET = { schema: 1, version: 1, seed: 20260926, frozenAt: '2026-09-26T18:59:02.676Z', missionIds: ['v1-0', 'v1-1', 'v1-2'] }
-const v1Manifest = (d) => { const p = join(d, 'frozen-eval.json'); writeFileSync(p, JSON.stringify(V1_SET, null, 2) + '\n'); return p }
+const manifestIn = (d, ids) => { const p = join(d, 'frozen-eval.json'); writeFileSync(p, JSON.stringify({ schema: 1, version: 1, seed: 1, frozenAt: 't', missionIds: ids })); return p }
 
 describe('the hindcast trains on one signals version (F165)', () => {
   it('the current version is 2', () => {
@@ -48,7 +43,7 @@ describe('the hindcast trains on one signals version (F165)', () => {
     expect(JSON.parse(args[args.indexOf('--rows-by-version') + 1])).toEqual({ 1: 3, 2: 2 })
   })
 
-  it('a frozen v2 set but too few v2 rows: the real model refuses, and the unmeasured reading names each version\'s count', () => {
+  it('too few v2 rows: the real model refuses, and the unmeasured reading names each version\'s count', () => {
     const d = dir()
     const rows = [...Array.from({ length: 40 }, (_, i) => row(`v1-${i}`, 1, i % 2 === 0)), row('b1', 2, false), row('b2', 2, true)]
     const r = exportOutcomeDatasets({ rows, home: null, datasetsDir: d, manifestPath: manifestIn(d, ['b1']) })
@@ -84,73 +79,6 @@ describe('the hindcast trains on one signals version (F165)', () => {
     expect(lines[0]).toBe('- Outcome hindcast: UNMEASURED — no eligible labeled mission at K = 16 turns with signals v2 (eligible by version: v1: 4) — nothing to train on'
       + '; R1.no-progress precision null on 0 fired p(Holm) null UNMEASURED — no wave in scope (no shadow decision at 50 % of its clock or later)')
   })
-})
-
-describe('the holdout is per signals version and freezes itself once (F165 fix round 2)', () => {
-  const now = (t) => () => t
-  const ledger = (nV2) => [...Array.from({ length: 3 }, (_, i) => row(`v1-${i}`, 1, i % 2 === 0)),
-    ...Array.from({ length: nV2 }, (_, i) => row(`v2-${String(i).padStart(2, '0')}`, 2, i % 3 !== 0))]
-
-  it('the Phase 5 (schema-1) file loads as version 1\'s set, verbatim; no file is empty; anything else throws', () => {
-    expect(manifestSets(V1_SET)).toEqual({ schema: 2, sets: { 1: V1_SET }, history: [] })
-    expect(heldSetFor(manifestSets(V1_SET), 1)).toBe(V1_SET)
-    expect(heldSetFor(manifestSets(V1_SET), 2)).toBeNull()
-    expect(manifestSets(null)).toEqual({ schema: 2, sets: {}, history: [] })
-    expect(() => manifestSets({ schema: 9 })).toThrow(/not a frozen-eval manifest/)
-    expect(FREEZE_MIN_ELIGIBLE).toBe(38)
-  })
-
-  it('a v2 pool below the minimum: "not yet frozen" with the counts, python not spawned, the file untouched', () => {
-    const d = dir()
-    const path = v1Manifest(d)
-    const before = readFileSync(path, 'utf8')
-    const r = exportOutcomeDatasets({ rows: ledger(37), home: null, datasetsDir: d, manifestPath: path })
-    expect(r.n).toBe(37)
-    expect(r.holdout).toEqual({ frozen: false, eligible: 37, needed: 38 })
-    expect(hindcastReady(r)).toBe(false)
-    expect(noEligibleFault(r)).toBe('v2 holdout not yet frozen (37 of 38 labeled; eligible by version: v1: 3, v2: 37)')
-    expect(r.split[16]).toMatchObject({ holdout: 0, train: 37 })
-    expect(readFileSync(path, 'utf8')).toBe(before)
-  })
-
-  it('a v2 pool at the minimum: v2\'s set is frozen once with Phase 5\'s rule; a second run changes nothing; v1\'s ids never move', () => {
-    const d = dir()
-    const path = v1Manifest(d)
-    const rows = ledger(38)
-    const r = exportOutcomeDatasets({ rows, home: null, datasetsDir: d, manifestPath: path, now: now('2026-10-01T00:00:00.000Z') })
-    const expected = freezeManifest(rowsOfVersion(rows, 2, 16), { seed: AUTO_FREEZE_SEED, turns: 16, now: now('2026-10-01T00:00:00.000Z') })
-    expect(expected.missionIds).toHaveLength(8)
-    const file = JSON.parse(readFileSync(path, 'utf8'))
-    expect(file.schema).toBe(2)
-    expect(file.sets['1']).toEqual(V1_SET)
-    expect(file.sets['2']).toEqual(expected)
-    expect(file.history).toEqual([{ signalsVersion: 2, frozenAt: '2026-10-01T00:00:00.000Z', count: 8, eligible: 38, seed: AUTO_FREEZE_SEED, how: 'auto' }])
-    expect(r.holdout).toEqual({ frozen: true, frozenNow: true, frozenAt: '2026-10-01T00:00:00.000Z', ids: 8 })
-    expect(hindcastReady(r)).toBe(true)
-    expect(r.split[16]).toMatchObject({ holdout: 8, train: 30 })
-    // The model reads the same eight ids from the per-version file.
-    const calls = []
-    runHindcast({ paths: r.paths, run: (cmd, args) => { calls.push(args); return { status: 0 } } })
-    expect(calls[0][calls[0].indexOf('--manifest') + 1]).toBe(path)
-    // Frozen means frozen: a later, larger ledger leaves the file as it was.
-    const text = readFileSync(path, 'utf8')
-    const again = exportOutcomeDatasets({ rows: ledger(60), home: null, datasetsDir: d, manifestPath: path, now: now('2026-11-01T00:00:00.000Z') })
-    expect(readFileSync(path, 'utf8')).toBe(text)
-    expect(again.holdout).toEqual({ frozen: true, frozenNow: false, frozenAt: '2026-10-01T00:00:00.000Z', ids: 8 })
-    expect(again.split[16]).toMatchObject({ holdout: 8, train: 52 })
-  })
-
-  it('the model trains on v2\'s frozen set from the per-version file (real python)', () => {
-    const d = dir()
-    const path = v1Manifest(d)
-    // v2 rows whose one varying signal separates the labels.
-    const sep = (id, ok) => ({ ...row(id, 2, ok), turns: Array.from({ length: 20 }, () => ({ signalsVersion: 2, toolSuccessRate: ok ? 0.9 : 0.2, health: 'healthy' })) })
-    const rows = Array.from({ length: 40 }, (_, i) => sep(`v2-${String(i).padStart(2, '0')}`, i % 2 === 0))
-    const r = exportOutcomeDatasets({ rows, home: null, datasetsDir: d, manifestPath: path })
-    const h = hindcastOf(runHindcast({ paths: r.paths }), r.paths.out)
-    expect(h.fault).toBeUndefined()
-    expect(h.summary).toMatchObject({ signalsVersion: 2, nHoldout: 8, nTrain: 32, rowsByVersion: { 2: 40 } })
-  }, 120_000)
 })
 
 describe('the verdict entry names the version and the counts (F165)', () => {

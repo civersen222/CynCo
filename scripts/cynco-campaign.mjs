@@ -36,7 +36,7 @@ import { loadRoadmap, saveRoadmap, rejectLine, setLineStatus, ROADMAP_PATH } fro
 import { assertIdentityIntact } from './cynco-identity.mjs'
 import { applyProposalDecision, seatAuthority } from './cynco-proposals.mjs'
 import { writeRuleVerdicts, readRuleVerdicts, RULE_VERDICTS_PATH, modelRowsFrom } from './cynco-rule-verdicts.mjs'
-import { exportOutcomeDatasets, runHindcast, hindcastOf, noEligibleFault, hindcastReady, PRIMARY_TURNS } from './cynco-hindcast.mjs'
+import { exportOutcomeDatasets, runHindcast, hindcastOf, noEligibleFault, PRIMARY_TURNS } from './cynco-hindcast.mjs'
 import { campaignScoreboard, pooledScoreboard, scoreboardLines } from './cynco-scoreboard.mjs'
 import { readLedger } from './cynco-ledger-shards.mjs'
 import { campaignAssessment, campaignRows, autopoiesisLine, storedAssessment, effectiveSeatAuthority } from './cynco-autopoiesis.mjs'
@@ -694,8 +694,8 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
       // F165: the one signals version the learner trained on, and how many
       // eligible missions each version had — on a fault too.
       const signals = typeof exported?.signalsVersion === 'number' ? { signalsVersion: exported.signalsVersion, rowsByVersion: exported.rowsByVersion ?? {} } : {}
-      if (!hindcastReady(exported)) {
-        rec.hindcast = { fault: noEligibleFault(exported, PRIMARY_TURNS), ...signals, ...(exported?.holdout ? { holdout: exported.holdout } : {}), ...split }
+      if (!exported?.n) {
+        rec.hindcast = { fault: noEligibleFault(exported, PRIMARY_TURNS), ...signals, ...split }
       } else {
         const h = hindcastOf((io.runHindcast ?? defaultIo.runHindcast)({ paths: exported.paths }), exported.paths.out)
         if (h.fault) rec.hindcast = { fault: h.fault, ...signals, ...split }

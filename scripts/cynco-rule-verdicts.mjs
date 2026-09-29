@@ -367,12 +367,8 @@ export async function main(argv, deps = {}) {
     const { hindcastLine } = await import('./cynco-campaign-verdict.mjs')
     let hindcast
     try {
-      // `--manifest PATH` (F165 fix round 2): the per-version frozen holdout the
-      // hindcast reads — and, when the current version's pool reaches the
-      // minimum, freezes into. Default: the committed one, as the runner does.
-      const manifest = arg('--manifest') ? { manifestPath: resolve(arg('--manifest')) } : {}
-      const exported = hc.exportOutcomeDatasets({ rows, home: datasetsDir ? null : await home(), datasetsDir, ...manifest })
-      if (!hc.hindcastReady(exported)) hindcast = { fault: hc.noEligibleFault(exported, hc.PRIMARY_TURNS) }
+      const exported = hc.exportOutcomeDatasets({ rows, home: datasetsDir ? null : await home(), datasetsDir })
+      if (!exported?.n) hindcast = { fault: hc.noEligibleFault(exported, hc.PRIMARY_TURNS) }
       else {
         const h = hc.hindcastOf((deps.runHindcast ?? hc.runHindcast)({ paths: exported.paths }), exported.paths.out)
         if (h.fault) hindcast = { fault: h.fault }

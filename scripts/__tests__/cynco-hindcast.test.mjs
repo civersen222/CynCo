@@ -22,8 +22,7 @@ describe('exportOutcomeDatasets', () => {
     const h = home()
     const rows = [row('long', 40, false), row('mid', 20, true), row('short', 10, true), { missionId: 'unlabeled', verified: null, turns: turns(50) }]
     const manifestPath = join(h, 'frozen-eval.json')
-    // Per-version manifest (F165 fix round 2): the hindcast reads v2's set.
-    writeFileSync(manifestPath, JSON.stringify({ schema: 2, sets: { 2: { schema: 1, version: 1, seed: 1, frozenAt: 't', missionIds: ['long', 'short', 'ghost'] } }, history: [] }))
+    writeFileSync(manifestPath, JSON.stringify({ schema: 1, version: 1, seed: 1, frozenAt: 't', missionIds: ['long', 'short', 'ghost'] }))
     const r = exportOutcomeDatasets({ rows, home: h, manifestPath })
     expect(r).toMatchObject({ n: 2, n32: 1, nHindsight: 2 })
     expect(r.paths).toEqual({ ...HINDCAST_PATHS(h), manifest: manifestPath, signalsVersion: 2, rowsByVersion: { 2: 2 } })
@@ -55,9 +54,7 @@ describe('exportOutcomeDatasets', () => {
     expect(r).toMatchObject({ n: 0, n32: 0, nHindsight: 0 })
     expect(r.paths.manifest).toBe(MANIFEST_PATH)
     expect(r.split[16]).toMatchObject({ train: 0, holdout: 0, ineligible: [] })
-    // The committed manifest has no v2 set (its 21 ids are v1's), so nothing is held.
-    expect(r.split[16].missing).toEqual([])
-    expect(r.holdout).toEqual({ frozen: false, eligible: 0, needed: 38 })
+    expect(r.split[16].missing).toHaveLength(JSON.parse(readFileSync(MANIFEST_PATH, 'utf8')).missionIds.length)
     expect(readFileSync(r.paths.dataset, 'utf8')).toBe('')
   })
 })
