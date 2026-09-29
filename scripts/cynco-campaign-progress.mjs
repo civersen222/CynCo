@@ -243,7 +243,21 @@ export function progressLine(rec) {
   const shadow = firing
     ? `${NO_PROGRESS_RULE} fired at ${Math.round(firing.elapsedFraction * 100)}%${typeof firing.wouldHaveSavedS === 'number' ? ` (would have saved ${(firing.wouldHaveSavedS / 3600).toFixed(1)} h)` : ''}`
     : decisions.length ? `${NO_PROGRESS_RULE} did not fire (${decisions.length} decision(s))` : `${NO_PROGRESS_RULE} not evaluated`
-  return `- Progress: ${start ?? '?'} → ${last.fails} fails over ${measured.length} readings (${fix}; last at ${minOf(last)}: ${last.fails}${faulted}); ${shadow}`
+  return `- Progress: ${start ?? '?'} → ${last.fails} fails over ${measured.length} reading${measured.length === 1 ? '' : 's'} (${fix}; last at ${minOf(last)}: ${last.fails}${faulted}); ${shadow}`
+}
+
+/**
+ * The gate runtime runWave seeds the tracker with (review M1): the last
+ * verdict's gate run, else the calibration's BASE run (`baseGateMs`), else
+ * null. Task 3 review N1: only a grade whose gate did NOT harness-fault — a
+ * faulted run's duration is its timeout (a gate that hung for 2 h), and ×10 of
+ * it would starve an 8 h wave of every reading.
+ */
+export function seedGateMs(state) {
+  const gate = state?.lastGrade?.gate
+  const fromGrade = gate && !gate.harnessFault && finitePos(gate.durationMs) ? gate.durationMs : null
+  const fromCalibration = finitePos(state?.calibration?.baseGateMs) ? state.calibration.baseGateMs : null
+  return fromGrade ?? fromCalibration
 }
 
 /**

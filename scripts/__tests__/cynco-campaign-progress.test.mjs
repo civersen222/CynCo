@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
-  progressCadence, everyMsFor, probeProgress, probeIo, probeGateTimeoutMs, shadowNoProgress, runnerRowsFrom, progressLine, progressTracker,
+  progressCadence, everyMsFor, probeProgress, probeIo, probeGateTimeoutMs, shadowNoProgress, runnerRowsFrom, progressLine, progressTracker, seedGateMs,
   PROGRESS_EVERY_MS_DEFAULT, PROBE_GATE_TIMEOUT_UNMEASURED_MS, PROBE_GATE_MS_ASSUMED,
 } from '../cynco-campaign-progress.mjs'
 import { runnerRowsFromCampaigns } from '../cynco-runner-rows.mjs'
@@ -349,7 +349,8 @@ describe('progressLine', () => {
   it('names faults, a missing drop and a rule that did not fire', () => {
     const rec = { dispatchedAt: at(0), progress: [reading(5, 30), { at: at(60), fault: 'gate timed out after 860000 ms', durationMs: 860_000 }],
       shadowDecisions: [{ rule: 'R1.no-progress', at: at(30), elapsedFraction: 0.06, fired: false, startFails: 5, fails: 5, wouldHaveSavedS: 1 }] }
-    expect(progressLine(rec)).toBe('- Progress: 5 → 5 fails over 1 readings (no drop; last at 30 min: 5; 1 fault(s)); R1.no-progress did not fire (1 decision(s))')
+    // Task 3 review N2: "1 reading", not "1 readings".
+    expect(progressLine(rec)).toBe('- Progress: 5 → 5 fails over 1 reading (no drop; last at 30 min: 5; 1 fault(s)); R1.no-progress did not fire (1 decision(s))')
   })
 
   it('prints the reason when there is no reading', () => {
@@ -420,6 +421,20 @@ describe('progressTracker — the WAIT hook', () => {
     expect(late.note()).toMatch(/within the last 2 × 215 s gate runtime/)
     // Unseeded: the first tick at 30 min reads.
     expect(make(null).onTick({ nowMs: 30 * MIN })).toMatchObject({ sha: 'C1' })
+  })
+})
+
+// Task 3 review N1: a faulted grade's duration is near its timeout (a gate
+// that hung for 2 h), and ×10 of it would starve an 8 h wave of readings — so
+// only a grade whose gate ran clean seeds gateMs.
+describe('seedGateMs', () => {
+  it('the last grade\'s gate run when it did not fault, else the calibration\'s BASE run, else null', () => {
+    expect(seedGateMs({ lastGrade: { gate: { durationMs: 215_000, harnessFault: null } }, calibration: { baseGateMs: 200_000 } })).toBe(215_000)
+    expect(seedGateMs({ lastGrade: { gate: { durationMs: 7_190_000, harnessFault: 'gate timed out after 7200000 ms' } }, calibration: { baseGateMs: 200_000 } })).toBe(200_000)
+    expect(seedGateMs({ lastGrade: { gate: { durationMs: 7_190_000, harnessFault: 'gate timed out after 7200000 ms' } }, calibration: {} })).toBeNull()
+    expect(seedGateMs({ calibration: { baseGateMs: 200_000 } })).toBe(200_000)
+    expect(seedGateMs({})).toBeNull()
+    expect(seedGateMs(null)).toBeNull()
   })
 })
 

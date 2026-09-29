@@ -41,7 +41,7 @@ import { campaignScoreboard, pooledScoreboard, scoreboardLines } from './cynco-s
 import { readLedger } from './cynco-ledger-shards.mjs'
 import { campaignAssessment, campaignRows, autopoiesisLine, storedAssessment, effectiveSeatAuthority } from './cynco-autopoiesis.mjs'
 import { summarize as summarizeGateLines, GATE_LINES_PATH } from './cynco-gate-lines.mjs'
-import { progressTracker, defaultProbeIo, everyMsFor } from './cynco-campaign-progress.mjs'
+import { progressTracker, defaultProbeIo, everyMsFor, seedGateMs } from './cynco-campaign-progress.mjs'
 import { runnerRowsFromCampaigns } from './cynco-runner-rows.mjs'
 
 // Phase 4: the operator's decision on a pending proposal lives in the one
@@ -554,7 +554,8 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
           // Review M1: the gate's runtime as the start grade measured it (the
           // last verdict's gate run, else the calibration's BASE run), so the
           // cadence's 10 % rule and end-of-clock tail hold from the first tick.
-          gateMs: s.lastGrade?.gate?.durationMs ?? s.calibration?.baseGateMs ?? null })
+          // Task 3 review N1: never a faulted grade's (its duration is the timeout).
+          gateMs: seedGateMs(s) })
       } else progressNote = !probe ? 'no progress probe on this runner io' : 'no repo HEAD reader on this runner io'
       waited = await io.waitForDriver({ pidFile, driverLog, timeoutMs: (spec.budget.hoursPerWave * 3600 + 3600) * 1000, onTick: tracker?.onTick ?? null })
       missionId = waited.exited ? (waited.missionId ?? dispatched?.missionId ?? io.missionIdFrom?.(driverLog) ?? null) : null
