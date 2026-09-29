@@ -1,7 +1,7 @@
 import { describe, expect, it, beforeEach } from 'bun:test'
 import { readFileSync } from 'fs'
 import { join } from 'path'
-import { CyberneticsGovernance } from '../../vsm/cyberneticsGovernance.js'
+import { CyberneticsGovernance, ALGEDONIC_WINDOW_TURNS } from '../../vsm/cyberneticsGovernance.js'
 import { resetEventBus } from '../../vsm/eventBus.js'
 
 /**
@@ -36,12 +36,26 @@ const fixture = JSON.parse(
 // them early is what lets the windowed count be seen falling back.
 const FAILED_TURNS = new Set([2, 4, 5, 7, 8, 9, 11, 12])
 
-function runStream(): { unstable: number[]; windowed: number[]; total: number[]; versions: number[]; perturbations: number } {
+// `holding/total violated-axioms` at turns 5, 10, …, 55 (the governor checks
+// the axioms every 5th turn), as the fixture replay reads them. Axiom2 (the
+// S3/S4 balance, fed by getBalance's observed levels) is violated at turns 15,
+// 30, 45 and 50 and holds at the other seven checks.
+const PINNED_AXIOM_CHECKS: string[] = [
+  '1/3 Axiom1,Principle1', '1/3 Axiom1,Principle1', '0/3 Axiom1,Axiom2,Principle1',
+  '1/3 Axiom1,Principle1', '1/3 Axiom1,Principle1', '0/3 Axiom1,Axiom2,Principle1',
+  '1/3 Axiom1,Principle1', '1/3 Axiom1,Principle1', '0/3 Axiom1,Axiom2,Principle1',
+  '0/3 Axiom1,Axiom2,Principle1', '1/3 Axiom1,Principle1',
+]
+
+type AxiomHealth = { holding: number; total: number; violations: string[] }
+
+function runStream(): { unstable: number[]; windowed: number[]; total: number[]; versions: number[]; axioms: AxiomHealth[]; perturbations: number } {
   const gov = new CyberneticsGovernance()
   const unstable: number[] = []
   const windowed: number[] = []
   const total: number[] = []
   const versions: number[] = []
+  const axioms: AxiomHealth[] = []
   fixture.turns.forEach((t, i) => {
     const turn = i + 1
     // One result per call, each a distinct command (C9 wave 2's stuckTurns
@@ -55,8 +69,9 @@ function runStream(): { unstable: number[]; windowed: number[]; total: number[];
     windowed.push(r.algedonicAlerts)
     total.push(r.algedonicAlertsTotal)
     versions.push(r.signalsVersion)
+    axioms.push(r.axiomHealth)
   })
-  return { unstable, windowed, total, versions, perturbations: gov.getHomeostat().getPerturbationCount() }
+  return { unstable, windowed, total, versions, axioms, perturbations: gov.getHomeostat().getPerturbationCount() }
 }
 
 describe('F165: signals v2 on the C9 wave 2 stream', () => {
@@ -103,6 +118,27 @@ describe('F165: signals v2 on the C9 wave 2 stream', () => {
     expect(total[56]).toBeGreaterThanOrEqual(FAILED_TURNS.size)
     expect(windowed[56]).toBeLessThan(total[56])
     expect(windowed[11]).toBe(total[11])
+  })
+
+  // Final review M5: exactly ALGEDONIC_WINDOW_TURNS (20) turns at the reading
+  // the dataset records — the per-turn `governance.status` frame, taken right
+  // after onTurnComplete — not 21. Before 20 turns the window is everything
+  // since the governor was built (the bus is reset per test, so the total).
+  it('algedonicAlerts at the per-turn frame counts exactly the last 20 turns', () => {
+    const { windowed, total } = runStream()
+    expect(ALGEDONIC_WINDOW_TURNS).toBe(20)
+    windowed.forEach((w, i) => {
+      expect(w).toBe(i < ALGEDONIC_WINDOW_TURNS ? total[i] : total[i] - total[i - ALGEDONIC_WINDOW_TURNS])
+    })
+  })
+
+  // Final review M6: since F165 `getBalance()` hands Axiom2 the observed
+  // pressure levels, not the unit states. Pinned on the fixture so a change to
+  // the band, the set point or the balance reader cannot move it silently.
+  it('axiomHealth on the C9 wave 2 stream: the reading at every 5th-turn check', () => {
+    const { axioms } = runStream()
+    const checks = axioms.filter((_, i) => (i + 1) % 5 === 0).map(a => `${a.holding}/${a.total} ${a.violations.map(v => v.split(':')[0]).join(',')}`)
+    expect(checks).toEqual(PINNED_AXIOM_CHECKS)
   })
 
   it('the report carries signalsVersion 2', () => {

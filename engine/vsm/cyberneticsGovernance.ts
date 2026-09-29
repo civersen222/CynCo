@@ -720,17 +720,17 @@ export class CyberneticsGovernance {
     ).length
   }
 
-  /** F165: record the cumulative alert count at this turn's seal, keeping
-   *  ALGEDONIC_WINDOW_TURNS + 1 seals so the oldest is the baseline the
-   *  windowed count subtracts. */
+  /** F165: record the cumulative alert count at turn t's seal, keeping
+   *  ALGEDONIC_WINDOW_TURNS + 1 seals (t-20 … t): the oldest is the baseline,
+   *  so the window counts turns t-19 … t — exactly 20, not 21 (review M5). */
   private sealAlertWindow(): void {
     this.alertTotalsAtSeal.push(this.algedonicAlertTotal())
     if (this.alertTotalsAtSeal.length > ALGEDONIC_WINDOW_TURNS + 1) this.alertTotalsAtSeal.shift()
   }
 
-  /** F165: alerts raised in the last ALGEDONIC_WINDOW_TURNS turns (and the
-   *  turn in progress). Before 21 seals the baseline is the bus count when
-   *  this governor was built — the bus is engine-wide, the window is not. */
+  /** F165: alerts in the last ALGEDONIC_WINDOW_TURNS (20) turns as the frame reads it, after onTurnComplete
+   *  (signalsVersion2.test.ts pins it). Before 21 seals the baseline is the bus count when this
+   *  governor was built — the bus is engine-wide, the window is not. */
   private windowedAlgedonicAlerts(total: number): number {
     const baseline = this.alertTotalsAtSeal.length > ALGEDONIC_WINDOW_TURNS
       ? this.alertTotalsAtSeal[0]
