@@ -1788,3 +1788,16 @@ Verdict: **MISS** — 3 line(s) still FAIL
 Economics after this wave: VERDICT: frontier spent $2995.57 SUPERVISING (development $1270.88 and unattributed $1.86 are excluded — building LocalCode is not oversight). The supervised generation would have cost ~$5552.75 on the API ($2579.92 priced from measured tokens, $2972.84 still estimated) and ran locally for ~$22.86 of power. supervision ratio: $1 of frontier verify oversees ~$1.85 of displaced generation.
 
 Verdict: **CAMPAIGN PASS** — sealed gate PASS, suite gate PASS, sweep unmeasured
+
+## Campaign C10 — Ambitions & the Ladder (authored by the frontier occupant on the human path, sealed 2026-09-29, BASE ccf3fee, gate_c10.py sha256 1b1f6a936d4e4403)
+
+Roadmap line: Player ambition chosen at start and shown once; the public-rank ladder with fogged axes; the court in session with stances from dispositions; rival agendas per fog; the ending names the ambition
+
+The gate grades 11 line(s): C10.1a.ambition-chosen, C10.1b.ambition-shown-once, C10.2a.rank-public, C10.2b.rank-why-through-fog, C10.3a.court-in-session, C10.3b.stance-from-dispositions, C10.4.opposing-member-lever, C10.5.rival-agendas-per-fog, C10.6.ending-names-ambition, C10.7.verbs-self-explain, C10.9.
+
+Authoring mission: none (verified null) — the triple was written by the frontier occupant (Phase 6 Task 6, staging ~/.cynco/authoring/c10, BASE archive of civkings ccf3fee); the supervisor's first review read FIX-THEN-SEAL (its own stub passed the gate: rank spelled "fourth of seven" on every screen, text drawn around the census, a member-deleting lever), one fix round closed all eight required fixes, and the re-check read SEAL with the supervisor's stub MISS (10 fails) at both seeds. Two halves of locked decision 2 are parked, not graded: rivals reading the player's agenda through the fog (already true in the sim at BASE; any drawn form makes a second home) and rivals pulling the player's opposing members (AI/sim, a denied file — a later campaign).
+
+Sealed sha256: gate_c10.py 1b1f6a936d4e4403, perturb_c10.py 6feed904d4cc9502, positive_c10.py a233bb6fce082c46.
+
+Calibration: BASE printed GATE: MISS (20 fails) — 20 fail(s) by absence, zero error lines; the cheat stub flips C10.7.verbs-self-explain.s7, C10.7.verbs-self-explain.s11 and leaves 18 discriminator(s) red; the positive shim printed GATE: PASS.
+

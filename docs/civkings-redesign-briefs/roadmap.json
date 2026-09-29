@@ -28,6 +28,14 @@
       "base": "e9366f37e6f9f0d71e2b0e6584a936d458ec25d3",
       "status": "done",
       "note": "2026-09-24: CynCo authoring, nine attempts, supervisor refused the seal (see campaign-log). 2026-09-26: the frontier occupant authored the triple, supervisor review round 1 SEAL 14/14, sealed by hand (author: human)"
+    },
+    {
+      "id": "c10",
+      "name": "Ambitions & the Ladder",
+      "bar": "Player ambition chosen at start and shown once; the public-rank ladder with fogged axes; the court in session with stances from dispositions; rival agendas per fog; the ending names the ambition",
+      "base": "ccf3fee6bac9b662c91b4324bbd8e2f1a1ffc05e",
+      "status": "sealed",
+      "note": "2026-09-29: the frontier occupant's reading of locked decision 2 (public-rank ladder + player ambitions); triple authored by the frontier (Phase 6 Task 6), supervisor review FIX-THEN-SEAL → one fix round → SEAL; sealed by hand (author: human). The user may strike this line before wave 1."
     }
   ]
 }
