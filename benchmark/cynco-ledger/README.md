@@ -92,6 +92,9 @@ decisions still recorded here).
       "toolSuccessRate": 0.9, "stuckTurns": 0, "varietyRatio": 9,
       "varietyBalance": "overload", "algedonicAlerts": 0, "axiomHealth": "red",
       "consecutiveUnstable": 3, "agreementRatio": 0.0,
+      // F165: the signal vector's version (1 when the frame carried none) and
+      // the cumulative alert count (null on v1). See "Signals version (F165)".
+      "signalsVersion": 2, "algedonicAlertsTotal": 21,
       // Task 4 (2a-iii): the Brain's telemetry for this turn (engine/bridge/
       // protocol.ts GovernanceStatusEvent.brain), verbatim. null when the
       // frame carried none — an older engine, Ollama, or a brain dep that
@@ -977,6 +980,38 @@ The wave record carries `ruleVerdicts: { version, predictive, total }` (`null`
 when the write failed — logged, never a fault). On this ledger no rule is
 `PREDICTIVE`, so once the file exists every S5 decision reads `advisory`.
 
+### Signals version (F165)
+
+Phase 6 ruling 4. Two per-turn signals measured something other than their
+names on every row before 2026-09-29, so every turn now says which instrument
+wrote it: `turns[].signalsVersion` (the `governance.status` frame's
+`signalsVersion`; a frame without one is **1**, written by
+`scripts/cynco-ledger.mjs`, pinned by
+`scripts/__tests__/cynco-ledger-signals-v2.test.mjs`).
+
+| field | v1 (every row before F165) | v2 |
+|---|---|---|
+| `consecutiveUnstable` | the turn index: the homeostat never read stable in a mission (C9 wave 1: 1…394, monotone) | turns in a row the homeostat read unstable; 0 on a stable turn; capped at 50 |
+| `algedonicAlerts` | non-Info alerts on the engine-wide bus since the engine started (21 by the end of C9 wave 1) | the same alerts raised in the last 20 turns |
+| `algedonicAlertsTotal` | `null` (absent) | the cumulative count v1 called `algedonicAlerts` |
+
+`stuckTurns` keeps its meaning in v2 — see F165's second paragraph for why it
+read 0 on C9 while the read-loop gate denied 5 times.
+
+v1 and v2 rows never mix silently. `scripts/cynco-outcome-dataset.mjs` writes
+`signalsVersion` on each dataset row — the MINIMUM over the prefix's turns, so
+a prefix that straddles an engine upgrade is v1 — and `--export
+--signals-version N` keeps only version-N rows (the rest are counted:
+`N other signals version`). A v2 row has one more feature than a v1 row,
+`algedonicAlertsTotal.rate` (the v1 quantity, new alerts per turn); the key
+lists are `FEATURE_KEYS_V1` (56) and `FEATURE_KEYS_V2` (57), and the leak tests
+pin both. `scripts/cynco-outcome-model.py --signals-version N` trains and
+scores only version-N rows and writes `signalsVersion: N` and
+`secondary.otherSignalsVersions` — per left-out version, `{ eligible,
+failures, successes, holdout }`. Without the flag it behaves as before
+(`signalsVersion: null`, `secondary` unchanged). The committed
+`frozen-eval.json` is not touched by any of this.
+
 ### Outcome dataset and the frozen holdout
 
 Phase 5 ruling 5: the prerequisites for the first learner. Built by
@@ -997,6 +1032,7 @@ holdout rows are not quoted — features elided):
 
 ```jsonc
 { "missionId": "c7-wave5-1788613255404", "prefixTurns": 16,
+  "signalsVersion": 1,       // F165: min over the prefix's turns (1 when absent)
   "label": true,             // labelOf: true = success, false = failure
   "features": { "toolSuccessRate.mean": 0.996875, "algedonicAlerts.rate": 0.06666666666666667,
                 "consecutiveUnstable.max": 16, "…": "…" },
@@ -1006,9 +1042,10 @@ holdout rows are not quoted — features elided):
 The prefix is the first K entries of `turns[]` by index, at two fixed points:
 **K = 16** (primary, the default) and **K = 32** (secondary). A mission with
 fewer than K turns is EXCLUDED at that K, never truncated. `prefixTurns` is row
-metadata (it is the constant K), not a feature. The feature keys are EXACTLY
-these 56 (the test asserts the set, so adding one is a change to this list and
-the test together):
+metadata (it is the constant K), not a feature. The feature keys of a v1 row
+are EXACTLY these 56 (`FEATURE_KEYS_V1`; a v2 row adds `algedonicAlertsTotal.rate`
+— "Signals version (F165)" above; the test asserts both sets, so adding one is
+a change to this list and the test together):
 
 - For each LEVEL signal — `toolSuccessRate`, `varietyRatio`,
   `varietyWindowed`, `taskError`, `infoGain`, `progressRate`,
