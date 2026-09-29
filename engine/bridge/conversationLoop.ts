@@ -3190,7 +3190,11 @@ export class ConversationLoop {
                 progressRate: turnReport.progressRate,
                 explorationState: turnReport.explorationState,
                 varietyBalance: turnReport.varietyBalance,
+                // F165 (signals v2): algedonicAlerts is the last-20-turn count;
+                // the cumulative reading v1 carried rides beside it.
                 algedonicAlerts: turnReport.algedonicAlerts,
+                algedonicAlertsTotal: turnReport.algedonicAlertsTotal,
+                signalsVersion: turnReport.signalsVersion,
                 axiomHealth: turnReport.axiomHealth,
                 consecutiveUnstable: turnReport.consecutiveUnstable,
                 // Suspect signal under falsification (pegged 0.00 in successful

@@ -75,8 +75,16 @@ export type GovernanceReport = {
    *  measurement only. Mirrors ExplorationState in vsm/explorationState.ts. */
   explorationState: 'healthy_exploration' | 'thrashing' | 'floundering' | null
   s3s4Balance: 'balanced' | 's3_dominant' | 's4_dominant' | 'critical'
+  /** F165 (signals v2): non-Info algedonic alerts raised in the last 20 turns. */
   algedonicAlerts: number
+  /** F165: the cumulative count (engine-wide bus) — what v1 reported as
+   *  algedonicAlerts. */
+  algedonicAlertsTotal: number
+  /** F165: the per-turn signal vector's version (2). */
+  signalsVersion: number
   stuckTurns: number
+  /** Turns in a row the homeostat read unstable; 0 on a stable turn; capped
+   *  at 50 (F165). */
   consecutiveUnstable: number
   modelLatencyTrend: 'stable' | 'rising' | 'falling'
   toolSuccessRate: number
