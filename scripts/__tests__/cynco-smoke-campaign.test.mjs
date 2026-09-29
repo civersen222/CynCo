@@ -63,6 +63,7 @@ describe.skipIf(!HAS_SMOKE)(`smoke campaign s1 (needs ${SMOKE_REPO})`, () => {
       keepGreen: 'python -m pytest -q test_calc.py',
       gate: `${heldout}/gate_s1.py`, perturb: `${heldout}/perturb_s1.py`, positive: `${heldout}/positive_s1.py`,
       budget: { hoursPerWave: 1, iterations: 300, bashTimeoutMs: 600000, waves: 1 },
+      progress: { everyMs: 20_000 },
       invariants: { editGapCap: 40, commitGapCap: 150, revertBan: true, codeIndexFirst: true },
       posiwid: { sourceEditShare: 0.3, commitEvery: 60 },
       sweep: { max: 2 }, prBase: 'main',
