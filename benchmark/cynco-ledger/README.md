@@ -48,10 +48,13 @@ decisions still recorded here).
   "mutationSweep": null,    // BEHAVIOURAL: null = UNMEASURED, never "clean"
   // { "command": "...", "killed": 1, "total": 7, "survived": ["W1","W5"], "note": "..." }
   // `kind` (absent = authored): "derived" = cynco-mutation-sweep.py over the
-  // expressions the diff ADDED; "derived-full" (F164) = the derived sweep
-  // refused (exit 2) on the diff — an import-only or otherwise unmutable
-  // change — and the runner's grade retried it ONCE with `--mutate` over every
-  // non-test `.py` the wave's diff touched, mutating those files WHOLE. The
+  // expressions the diff ADDED; "derived-full" (F164) = a derived sweep over
+  // the whole files named by `--mutate` — the runner's retry, or a hand run.
+  // The runner's retry: the derived sweep refused (exit 2) on the diff — an
+  // import-only or otherwise unmutable change — and the grade retried it ONCE
+  // with `--mutate` over every non-test `.py` the wave's diff touched,
+  // mutating those files WHOLE. A hand `--mutate` run recorded before F164
+  // says `derived`. The
   // grade writes `retried: false` on a first-call reading and `retried: true`
   // on a derived-full one; `cynco-ledger-sweep.mjs --kind derived-full` writes
   // the same shape for a hand relabel, and refuses it for a `--command` that

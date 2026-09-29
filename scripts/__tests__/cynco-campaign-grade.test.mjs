@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest'
 import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
@@ -330,23 +330,29 @@ describe('defaultIo.changedFiles', () => {
   // --mutate it is a hard refusal (missing at HEAD), and a deleted test_*.py
   // is not "the diff shipped its own test".
   describe('against a real repo whose wave deletes a module and a test and fixes an import', () => {
-    const repo = mkdtempSync(join(tmpdir(), 'grade-deleted-'))
-    const git = (...a) => {
-      const r = spawnSync('git', ['-C', repo, ...a], { encoding: 'utf8', windowsHide: true })
-      if (r.status !== 0) throw new Error(`git ${a.join(' ')}: ${r.stderr}`)
-      return r.stdout.trim()
-    }
-    git('init', '-q'); git('config', 'user.email', 't@t'); git('config', 'user.name', 't'); git('config', 'core.autocrlf', 'false')
-    mkdirSync(join(repo, 'gilded', 'tests'), { recursive: true })
-    writeFileSync(join(repo, 'gilded', 'dead.py'), 'X = 1\n')
-    writeFileSync(join(repo, 'gilded', 'view.py'), 'from gilded.dead import X\n')
-    writeFileSync(join(repo, 'gilded', 'tests', 'test_dead.py'), 'def test_x():\n    assert True\n')
-    git('add', '-A'); git('commit', '-q', '-m', 'base')
-    const base = git('rev-parse', 'HEAD')
-    rmSync(join(repo, 'gilded', 'dead.py')); rmSync(join(repo, 'gilded', 'tests', 'test_dead.py'))
-    writeFileSync(join(repo, 'gilded', 'view.py'), 'X = 1\n')
-    git('add', '-A'); git('commit', '-q', '-m', 'wave')
-    const head = git('rev-parse', 'HEAD')
+    // Task 1 review N2: built in beforeAll (a collection-time git failure used
+    // to take down the whole file) and removed in afterAll.
+    let repo, base, head
+    beforeAll(() => {
+      repo = mkdtempSync(join(tmpdir(), 'grade-deleted-'))
+      const git = (...a) => {
+        const r = spawnSync('git', ['-C', repo, ...a], { encoding: 'utf8', windowsHide: true })
+        if (r.status !== 0) throw new Error(`git ${a.join(' ')}: ${r.stderr}`)
+        return r.stdout.trim()
+      }
+      git('init', '-q'); git('config', 'user.email', 't@t'); git('config', 'user.name', 't'); git('config', 'core.autocrlf', 'false')
+      mkdirSync(join(repo, 'gilded', 'tests'), { recursive: true })
+      writeFileSync(join(repo, 'gilded', 'dead.py'), 'X = 1\n')
+      writeFileSync(join(repo, 'gilded', 'view.py'), 'from gilded.dead import X\n')
+      writeFileSync(join(repo, 'gilded', 'tests', 'test_dead.py'), 'def test_x():\n    assert True\n')
+      git('add', '-A'); git('commit', '-q', '-m', 'base')
+      base = git('rev-parse', 'HEAD')
+      rmSync(join(repo, 'gilded', 'dead.py')); rmSync(join(repo, 'gilded', 'tests', 'test_dead.py'))
+      writeFileSync(join(repo, 'gilded', 'view.py'), 'X = 1\n')
+      git('add', '-A'); git('commit', '-q', '-m', 'wave')
+      head = git('rev-parse', 'HEAD')
+    })
+    afterAll(() => { if (repo) rmSync(repo, { recursive: true, force: true }) })
 
     it('names only the surviving changed path', () => {
       expect(defaultIo.changedFiles(repo, base, head)).toEqual(['gilded/view.py'])
