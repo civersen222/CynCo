@@ -19,7 +19,7 @@
  * `durationS`, …) are written after the run ends; a feature built from one of
  * them describes the outcome after the fact. So `featuresOf` reads `row.turns`
  * and nothing else except `missionId` and the label, and the feature key set is
- * a fixed, documented list (`FEATURE_KEYS`, benchmark/cynco-ledger/README.md
+ * a fixed, documented list per signals version (`FEATURE_KEYS_V1`/`_V2`, benchmark/cynco-ledger/README.md
  * "Outcome dataset and the frozen holdout") that the leak test pins exactly.
  *
  * The label is `labelOf` from scripts/cynco-signal-validation.mjs — the ledger's
@@ -35,7 +35,12 @@
  * which only ever ADDS ids.
  *
  * Usage:
- *   bun scripts/cynco-outcome-dataset.mjs --export [--turns 16] [--out PATH] [--ledger-dir DIR]
+ * Signals version (F165): every row carries `signalsVersion`, the minimum over
+ * its prefix's turns (1 when a turn has none — pre-F165 ledgers). v1 and v2
+ * rows have different documented key sets (`FEATURE_KEYS_V1`,
+ * `FEATURE_KEYS_V2`); `--signals-version N` exports only version-N rows.
+ *
+ *   bun scripts/cynco-outcome-dataset.mjs --export [--turns 16] [--signals-version N] [--out PATH] [--ledger-dir DIR]
  *   bun scripts/cynco-outcome-dataset.mjs --freeze   --seed N [--manifest PATH] [--ledger-dir DIR]
  *   bun scripts/cynco-outcome-dataset.mjs --refreeze --seed N [--manifest PATH] [--ledger-dir DIR]
  */
@@ -88,7 +93,12 @@ const NUMERIC = [
   ['taskError', t => t.taskError, ['mean', 'last', 'max']],
   ['infoGain', t => t.infoGain, ['mean', 'last', 'max']],
   ['progressRate', t => t.progressRate, ['mean', 'last', 'max']],
+  // v1 rows: a cumulative count, so `.rate` is new alerts per turn. v2 rows
+  // (F165): the count in the last 20 turns, so `.rate` is its change per turn;
+  // the v1 quantity is `algedonicAlertsTotal.rate` (NUMERIC_V2 below).
   ['algedonicAlerts', t => t.algedonicAlerts, ['rate']],
+  // v1 rows: the turn index (C9: 1…394) — dead at fixed K. v2: a streak that
+  // resets on a stable turn, capped at 50.
   ['consecutiveUnstable', t => t.consecutiveUnstable, ['last', 'max']],
   ['axiomViolations', t => (Array.isArray(t.axiomHealth?.violations) ? t.axiomHealth.violations.length : null), ['mean', 'last', 'max']],
   ['toolEntropyMean', t => t.brain?.toolEntropy?.mean, ['mean', 'last', 'max']],
@@ -105,6 +115,25 @@ const RATE = {
   },
   stuckTurns: (points) => (points.length ? points.filter(([, v]) => v > 0).length / points.length : null),
 }
+RATE.algedonicAlertsTotal = RATE.algedonicAlerts
+
+/**
+ * F165: signals only a v2 turn carries. `algedonicAlertsTotal` is the
+ * engine-wide cumulative count (what v1 called algedonicAlerts), so only its
+ * `.rate` is a prefix feature, for the same era-confound reason.
+ */
+const NUMERIC_V2 = [
+  ['algedonicAlertsTotal', t => t.algedonicAlertsTotal, ['rate']],
+]
+
+/** A turn's signal-vector version: 1 when the ledger wrote none (pre-F165). */
+const turnVersion = (t) => (typeof t?.signalsVersion === 'number' ? t.signalsVersion : 1)
+
+/** The version of a prefix: the MINIMUM over its turns, so a prefix that
+ *  mixes versions is read as the older one. */
+export function signalsVersionOf(prefix) {
+  return prefix.length ? Math.min(...prefix.map(turnVersion)) : 1
+}
 
 /** Categorical signals read off the K-th (last prefix) turn, one-hot over a
  *  fixed vocabulary (the engine's enums). */
@@ -117,11 +146,19 @@ const CATEGORICAL = [
   ['commander', t => t.heterarchy?.commander, ['S1', 'S2', 'S3', 'S4', 'S5']],
 ]
 
-export const FEATURE_KEYS = Object.freeze([
+/** The documented key set of a v1 row (pre-F165 turns). */
+export const FEATURE_KEYS_V1 = Object.freeze([
   ...NUMERIC.flatMap(([n, , aggs]) => aggs.map(a => `${n}.${a}`)),
   'brainPresent',
   ...CATEGORICAL.flatMap(([n, , vocab]) => vocab.map(v => `${n}.${v}`)),
 ])
+/** The documented key set of a v2 row: v1's plus the v2-only signals. */
+export const FEATURE_KEYS_V2 = Object.freeze([
+  ...FEATURE_KEYS_V1,
+  ...NUMERIC_V2.flatMap(([n, , aggs]) => aggs.map(a => `${n}.${a}`)),
+])
+/** The key set per signals version. */
+export const FEATURE_KEYS_BY_VERSION = Object.freeze({ 1: FEATURE_KEYS_V1, 2: FEATURE_KEYS_V2 })
 
 function checkTurns(K) {
   if (!Number.isInteger(K) || K < 1) throw new Error(`turns must be a positive integer, got ${K}`)
@@ -139,8 +176,9 @@ export function featuresOf(row, K = DEFAULT_TURNS) {
   const all = turnsOf(row)
   if (all.length < K) throw new Error(`${row.missionId}: ${all.length} turns, fewer than K = ${K}`)
   const prefix = all.slice(0, K)
+  const signalsVersion = signalsVersionOf(prefix)
   const features = {}
-  for (const [name, read, aggs] of NUMERIC) {
+  for (const [name, read, aggs] of signalsVersion >= 2 ? [...NUMERIC, ...NUMERIC_V2] : NUMERIC) {
     const points = []
     prefix.forEach((t, i) => { const v = num(read(t ?? {})); if (v !== null) points.push([i, v]) })
     const vals = points.map(([, v]) => v)
@@ -154,7 +192,7 @@ export function featuresOf(row, K = DEFAULT_TURNS) {
     const v = read(last)
     for (const option of vocab) features[`${name}.${option}`] = v === option ? 1 : 0
   }
-  return { missionId: row.missionId, prefixTurns: K, label: labelOf(row), features, leakGuard: true }
+  return { missionId: row.missionId, prefixTurns: K, signalsVersion, label: labelOf(row), features, leakGuard: true }
 }
 
 /** Categorical values on the K-th turn that fall outside the vocabulary, as
@@ -180,16 +218,21 @@ function exclusionOf(row, K) {
  * One `featuresOf` row per labeled mission with ≥ K turns; the rest counted
  * (`excluded.unlabeled`, `excluded.short` — short at THIS K). `unknownValues`
  * counts out-of-vocabulary categorical values, `{ '<field>.<value>': n }`.
+ * With `signalsVersion: N` (F165) only rows whose prefix is version N are kept
+ * and the rest counted in `excluded.otherVersion`.
  */
-export function datasetRows(rows, K = DEFAULT_TURNS) {
+export function datasetRows(rows, K = DEFAULT_TURNS, { signalsVersion = null } = {}) {
   checkTurns(K)
+  if (signalsVersion !== null && !Number.isInteger(signalsVersion)) throw new Error(`signalsVersion must be an integer, got ${signalsVersion}`)
   const out = []
-  const excluded = { unlabeled: 0, short: 0 }
+  const excluded = { unlabeled: 0, short: 0, ...(signalsVersion !== null ? { otherVersion: 0 } : {}) }
   const unknownValues = {}
   for (const row of rows) {
     const why = exclusionOf(row, K)
     if (why) { excluded[why]++; continue }
-    out.push(featuresOf(row, K))
+    const r = featuresOf(row, K)
+    if (signalsVersion !== null && r.signalsVersion !== signalsVersion) { excluded.otherVersion++; continue }
+    out.push(r)
     for (const key of unknownCategoricals(row, K)) unknownValues[key] = (unknownValues[key] ?? 0) + 1
   }
   return { rows: out, excluded, unknownValues }
@@ -334,15 +377,22 @@ export async function main(argv, io = console) {
     io.error(`refused: --turns must be a positive integer, got ${turnsArg}`)
     return 2
   }
+  const versionArg = argOf(argv, '--signals-version')
+  const signalsVersion = versionArg === undefined ? null : Number(versionArg)
+  if (signalsVersion !== null && !(Number.isInteger(signalsVersion) && signalsVersion >= 1)) {
+    io.error(`refused: --signals-version must be a positive integer, got ${versionArg}`)
+    return 2
+  }
   const rows = readLedger(argOf(argv, '--ledger-dir') ?? REPO_LEDGER_DIR)
   if (argv.includes('--export')) {
     const out = argOf(argv, '--out') !== undefined
       ? resolve(argOf(argv, '--out'))
       : DATASET_PATH((await import('../engine/paths.js')).cyncoHome())
-    const { rows: ds, excluded, unknownValues } = datasetRows(rows, K)
+    const { rows: ds, excluded, unknownValues } = datasetRows(rows, K, { signalsVersion })
     writeAtomic(out, ds.map(r => JSON.stringify(r)).join('\n') + (ds.length ? '\n' : ''))
     const unknown = Object.entries(unknownValues).map(([k, n]) => `${k} ×${n}`)
-    io.log(`outcome dataset: ${ds.length} rows at K = ${K} turns (excluded ${excluded.unlabeled} unlabeled, ${excluded.short} short)` +
+    io.log(`outcome dataset: ${ds.length} rows at K = ${K} turns${signalsVersion !== null ? `, signals v${signalsVersion}` : ''} (excluded ${excluded.unlabeled} unlabeled, ${excluded.short} short` +
+      `${signalsVersion !== null ? `, ${excluded.otherVersion} other signals version` : ''})` +
       `${unknown.length ? `; unknown categorical values: ${unknown.join(', ')}` : ''} → ${out}`)
     return 0
   }
@@ -377,7 +427,7 @@ export async function main(argv, io = console) {
       `${ineligible.length ? `; ${ineligible.length} held ids ineligible at K = ${K}: ${ineligible.join(', ')}` : ''} → ${path}`)
     return 0
   }
-  io.error('usage: --export [--turns K] [--out PATH] | --freeze --seed N | --refreeze --seed N  [--turns K] [--ledger-dir DIR] [--manifest PATH]')
+  io.error('usage: --export [--turns K] [--signals-version N] [--out PATH] | --freeze --seed N | --refreeze --seed N  [--turns K] [--ledger-dir DIR] [--manifest PATH]')
   return 2
 }
 

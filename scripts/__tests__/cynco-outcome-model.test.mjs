@@ -113,6 +113,32 @@ describe('cynco-outcome-model.py', () => {
     expect(JSON.parse(readFileSync(out, 'utf8')).secondary).toEqual({ refusal: 'TOO FEW: train 0 < 30 or holdout 5 < 8' })
   }, TIMEOUT_MS)
 
+  it('--signals-version N trains on version-N rows only and reports the other version under secondary (F165)', () => {
+    const dir = outDir()
+    const mixed = join(dir, 'mixed.jsonl')
+    // The 60 separable rows are v1 (no signalsVersion). Six v2 rows are added,
+    // two of them held out, with a feature that would separate nothing.
+    const v2 = Array.from({ length: 6 }, (_, i) => JSON.stringify({ missionId: i < 2 ? `s0${i}` : `v2-${i}`, prefixTurns: 16, signalsVersion: 2,
+      label: i % 2 === 0, features: { 'signal.mean': 0.5, 'algedonicAlertsTotal.rate': i }, leakGuard: true }))
+    writeFileSync(mixed, readFileSync(SEPARABLE, 'utf8').trim() + '\n' + v2.join('\n') + '\n', 'utf8')
+    const out = join(dir, 'outcome-model.json')
+    const r = run(['--dataset', mixed, '--manifest', MANIFEST, '--out', out, '--signals-version', '1'])
+    expect(r.status, r.stderr).toBe(0)
+    const m = JSON.parse(readFileSync(out, 'utf8'))
+    expect(m).toMatchObject({ signalsVersion: 1, nTrain: 48, nHoldout: 12 })
+    expect(m.features).not.toContain('algedonicAlertsTotal.rate')
+    expect(m.secondary).toEqual({ otherSignalsVersions: { 2: { eligible: 6, failures: 3, successes: 3, holdout: 2 } } })
+    // Without the flag the file says so (null) and `secondary` is as before.
+    expect(run(['--dataset', SEPARABLE, '--manifest', MANIFEST, '--out', out]).status).toBe(0)
+    const plain = JSON.parse(readFileSync(out, 'utf8'))
+    expect(plain.signalsVersion).toBeNull()
+    expect(plain.secondary).toBeNull()
+    // v2 alone is six rows: refused, nothing about v1 leaks in.
+    const r2 = run(['--dataset', mixed, '--manifest', MANIFEST, '--out', join(dir, 'v2.json'), '--signals-version', '2'])
+    expect(r2.status).toBe(2)
+    expect(r2.stdout).toMatch(/^TOO FEW: train 4 < 30 or holdout 2 < 8$/m)
+  }, TIMEOUT_MS)
+
   it('exits 2 and says TOO FEW on 5 rows, writing nothing', () => {
     const out = join(outDir(), 'outcome-model.json')
     const r = run(['--dataset', TINY, '--manifest', MANIFEST, '--out', out])

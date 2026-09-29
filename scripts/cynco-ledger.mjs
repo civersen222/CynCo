@@ -180,7 +180,13 @@ export function createMissionCollector(now = () => Date.now()) {
             progressRate: m.progressRate ?? null,
             explorationState: m.explorationState ?? null,
             varietyBalance: m.varietyBalance ?? null,
+            // F165: a frame without signalsVersion is a v1 engine's —
+            // algedonicAlerts was then cumulative and consecutiveUnstable
+            // the turn index; v2 windows the one and makes the other a
+            // reachable streak, with the cumulative count beside it.
+            signalsVersion: typeof m.signalsVersion === 'number' ? m.signalsVersion : 1,
             algedonicAlerts: m.algedonicAlerts ?? null,
+            algedonicAlertsTotal: m.algedonicAlertsTotal ?? null,
             axiomHealth: m.axiomHealth ?? null,
             consecutiveUnstable: m.consecutiveUnstable ?? null,
             agreementRatio: m.agreementRatio ?? null,
