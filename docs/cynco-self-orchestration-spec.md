@@ -1007,9 +1007,14 @@ engine enforces anything new.
   is documented as the landed transition, by design. The first non-empty
   retained table (`~/.cynco/retained/mission-invariants.json` v1,
   `callsSinceCommit: { Discrete: 'edit-only' }`) has a named reader and still
-  is not applied: the commit-pressure invariant (`engine/bridge/commitPressure.ts`,
-  `callsSinceCommit`) is the one that would read it, and whether it should is
-  the next phase's measured decision.
+  is not applied: its reader is `MissionInvariants` itself
+  (`engine/vsm/missionInvariants.ts:163` declares the `callsSinceCommit`
+  essential variable; instance `mission-invariants`), which imports the table
+  at `:168` and exports it at every mission end, but the table is never
+  applied to a decision — a warm-started `MissionInvariants` steps exactly
+  like a cold one. Applying it would warm-start the invariant gate at the
+  `edit-only` position, and whether it should is the next phase's measured
+  decision.
 - **C10 — Ambitions & the Ladder.** The roadmap line is the frontier
   occupant's reading of the user's locked decision 2: *a player ambition from
   the 7 agenda families chosen at game start and shown once (Court in
@@ -1025,10 +1030,9 @@ engine enforces anything new.
   C10.3a court-in-session, C10.3b stance-from-dispositions, C10.4
   opposing-member-lever, C10.5 rival-agendas-per-fog, C10.6
   ending-names-ambition, C10.7 verbs-self-explain, and C10.9 (C9's sealed
-  gate, kept green). `--check` PASSed: BASE MISS 20, EXPECT-FLIP exactly
-  C10.7, MUST-FAIL 9 lines red, positive PASS, keep-green with the positive
-  installed. The triple is sealed in the seal commit on this branch (sha
-  added at the seal) with `author: human`, on C9's budget. Two
+  gate, kept green). FIX-THEN-SEAL from the supervisor review (8 required
+  fixes); sealed in the seal commit on this branch (sha added at the seal),
+  with `author: human`, on C9's budget. Two
   locked-decision items are NOT graded by C10: rivals reading the player's
   agenda through the fog, and rivals pulling the player's opposing members.
   The supervisor rules on them. C10 wave 1 runs from `main` after the merge
