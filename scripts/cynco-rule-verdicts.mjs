@@ -290,7 +290,7 @@ export async function main(argv, deps = {}) {
     let hindcast
     try {
       const exported = hc.exportOutcomeDatasets({ rows, home: datasetsDir ? null : await home(), datasetsDir })
-      if (!exported?.n) hindcast = { fault: `no eligible labeled mission at K = ${hc.PRIMARY_TURNS} turns — nothing to train on` }
+      if (!exported?.n) hindcast = { fault: hc.noEligibleFault(exported, hc.PRIMARY_TURNS) }
       else {
         const h = hc.hindcastOf((deps.runHindcast ?? hc.runHindcast)({ paths: exported.paths }), exported.paths.out)
         if (h.fault) hindcast = { fault: h.fault }

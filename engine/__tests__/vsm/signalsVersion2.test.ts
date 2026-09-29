@@ -13,10 +13,11 @@ import { resetEventBus } from '../../vsm/eventBus.js'
  * `algedonicAlerts` was a replay of every alert since the engine started (21 by
  * the end of the wave), a cumulative counter, not a per-turn reading.
  *
- * The fixture is C9 wave 2's 57-turn stream, rebuilt from its ledger row
- * (measured latencies; tool calls, decode tokens and context reconstructed to
- * the row's totals — see the fixture's `derivation`). On the pre-F165 code it
- * reproduces the wave's reading exactly: consecutiveUnstable = 1…57.
+ * The fixture is C9 wave 2's 57-turn stream RECONSTRUCTED from its ledger row
+ * — not a recorded frame stream: latencies are measured; tool calls, decode
+ * tokens and context are rebuilt to the row's totals and the thinking share is
+ * invented (see the fixture's `note` and `derivation`). On the pre-F165 code it
+ * gives the reading the ledger recorded for the wave: consecutiveUnstable = 1…57.
  */
 
 type Turn = {
@@ -75,6 +76,15 @@ describe('F165: signals v2 on the C9 wave 2 stream', () => {
     expect(resets).toBeGreaterThanOrEqual(1)
     expect(unstable.some(v => v > 0)).toBe(true)
     expect(Math.max(...unstable)).toBeLessThanOrEqual(50)
+  })
+
+  it('the measured shape F165 quotes: unstable on exactly 10 of 57 turns, four streaks, longest 4', () => {
+    // A property of the RECONSTRUCTED stream (see the fixture's note), pinned so
+    // a change to STABILITY_BAND or the set point cannot move it silently.
+    const { unstable } = runStream()
+    expect(unstable.filter(v => v > 0)).toHaveLength(10)
+    expect(Math.max(...unstable)).toBe(4)
+    expect(unstable.filter((v, i) => v === 1 && (i === 0 || unstable[i - 1] === 0))).toHaveLength(4)
   })
 
   it('one verdict per turn: ultrastability perturbs exactly on the turns counted unstable', () => {

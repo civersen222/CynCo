@@ -114,7 +114,11 @@ export function hindcastLine(h, { detail = false, runners = null } = {}) {
   const s = h.secondary
   const secondary = !s ? '' : s.refusal ? `; K = 32 ${s.refusal}`
     : `; K = ${s.prefixTurns ?? 32} gbt AUC ${num(s.models?.gbt?.auc, 2)}, lr AUC ${num(s.models?.lr?.auc, 2)}`
-  return `- Outcome hindcast: v${h.version ?? '?'} at K = ${h.prefixTurns ?? '?'} turns on ${h.nHoldout ?? '?'} held-out missions (base ${pct(h.baseRate)}): `
+  // F165: the one signals version the model was fitted on, and every
+  // version's eligible count — absent on a model written before F165.
+  const counts = Object.entries(h.rowsByVersion ?? {}).sort(([a], [b]) => Number(a) - Number(b)).map(([k, n]) => `v${k} ${n}`)
+  const signals = typeof h.signalsVersion === 'number' ? `, signals v${h.signalsVersion} only (eligible ${counts.join(', ') || 'none'})` : ''
+  return `- Outcome hindcast: v${h.version ?? '?'} at K = ${h.prefixTurns ?? '?'} turns${signals} on ${h.nHoldout ?? '?'} held-out missions (base ${pct(h.baseRate)}): `
     + `${ladder.length ? ladder.join('; ') : 'no ladder reading'}; ${leak}${length}${secondary}${dropped}`
 }
 

@@ -111,8 +111,8 @@ export class HomeostatIntegration {
     // asks whether the drive there is ~0. Fed raw levels, that asked "is every
     // pressure ~0" — unreachable in a mission, where S3 never drops below its
     // 0.1 floor, S4 sits at 0.3-0.8 and context only grows. C9 wave 1 read
-    // unstable on all 394 turns; on the C9 wave 2 stream the smallest net drive
-    // over 57 turns was 0.215 against a 0.05 bar. In deviation space x = 0 is
+    // unstable on all 394 turns; on the reconstructed C9 wave 2 stream the
+    // smallest net drive was 0.215 against a 0.05 bar. In deviation space x = 0 is
     // "the pressures are where they have been": the equilibrium a homeostat
     // regulates toward.
     this.ashby.setState(S3_UNIT, deviation(this.s3Trend, s3Pressure))
@@ -201,12 +201,12 @@ export class HomeostatIntegration {
    * The balance classified from the pressures last measured, or null if no turn
    * has been measured yet.
    *
-   * This is the reading to report. getBalance() below recomputes from the ashby
-   * unit states, which have been stepped through the coupled equation and, when
-   * the system is unstable, had their weights randomized — appropriate for
-   * asking whether the system is settling, wrong for saying what the S3/S4
-   * balance IS. lastBalance is the classification of the numbers that were
-   * actually observed.
+   * This is the reading to report: the classification of the numbers that were
+   * actually observed. Since F165 getBalance() below reads the same observed
+   * levels (the ashby units hold deviations from each pressure's running level,
+   * which are not pressures), so the two agree after the first turn; they
+   * differ only before it, where this is null and getBalance() classifies
+   * (0, 0).
    *
    * Null rather than a default: before the first turn there are no pressures,
    * and "no reading" is not the same as "balanced" even where they act alike.
@@ -219,7 +219,7 @@ export class HomeostatIntegration {
    * Get the S3/S4 balance result from the pressures last observed.
    *
    * Before F165 this read the ashby unit states after one Euler step (a shift
-   * of at most ~0.02 on the C9 wave 2 stream). Since F165 the units hold
+   * of at most ~0.02 on the reconstructed C9 wave 2 stream). Since F165 the units hold
    * deviations from each pressure's running level, which are not pressures, so
    * the balance is computed from the observed levels.
    */

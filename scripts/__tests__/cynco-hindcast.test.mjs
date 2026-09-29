@@ -11,7 +11,9 @@ import { hindcastLine } from '../cynco-campaign-verdict.mjs'
 
 const home = () => mkdtempSync(join(tmpdir(), 'hindcast-'))
 const sweep = { kind: 'withheld', killed: 1, total: 1, survived: [] }
-const turns = (n) => Array.from({ length: n }, (_, i) => ({ toolSuccessRate: i % 2 ? 1 : 0.5, stuckTurns: i % 3, health: 'healthy' }))
+// v2 turns (F165): the hindcast trains on signals v2 only; v1/v2 mixing is
+// pinned in cynco-hindcast-signals.test.mjs.
+const turns = (n) => Array.from({ length: n }, (_, i) => ({ toolSuccessRate: i % 2 ? 1 : 0.5, stuckTurns: i % 3, health: 'healthy', signalsVersion: 2 }))
 const row = (missionId, n, ok) => ({ missionId, outcome: ok ? 'landed' : 'failed', verified: ok, mutationSweep: sweep, turns: turns(n) })
 const readJsonl = (p) => readFileSync(p, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l))
 
@@ -23,11 +25,11 @@ describe('exportOutcomeDatasets', () => {
     writeFileSync(manifestPath, JSON.stringify({ schema: 1, version: 1, seed: 1, frozenAt: 't', missionIds: ['long', 'short', 'ghost'] }))
     const r = exportOutcomeDatasets({ rows, home: h, manifestPath })
     expect(r).toMatchObject({ n: 2, n32: 1, nHindsight: 2 })
-    expect(r.paths).toEqual({ ...HINDCAST_PATHS(h), manifest: manifestPath })
+    expect(r.paths).toEqual({ ...HINDCAST_PATHS(h), manifest: manifestPath, signalsVersion: 2, rowsByVersion: { 2: 2 } })
     // frozenSplit with `turns`: a held-out mission too short at K is named, an unknown id is missing.
     expect(r.split).toEqual({
-      16: { train: 1, holdout: 1, ineligible: ['short'], missing: ['ghost'] },
-      32: { train: 0, holdout: 1, ineligible: ['short'], missing: ['ghost'] },
+      16: { train: 1, holdout: 1, ineligible: ['short'], missing: ['ghost'], otherVersion: [] },
+      32: { train: 0, holdout: 1, ineligible: ['short'], missing: ['ghost'], otherVersion: [] },
     })
     expect(r.paths.dataset).toBe(DATASET_PATH(h))
     expect(r.paths.out).toBe(OUTCOME_MODEL_PATH(h))
@@ -43,7 +45,7 @@ describe('exportOutcomeDatasets', () => {
     expect(HINDCAST_PATHS(h)).toEqual(hindcastPathsIn(join(h, 'datasets')))
     const dir = join(home(), 'elsewhere')
     const r = exportOutcomeDatasets({ rows: [row('long', 40, false)], home: null, datasetsDir: dir, manifestPath: MANIFEST_PATH })
-    expect(r.paths).toEqual({ ...hindcastPathsIn(dir), manifest: MANIFEST_PATH })
+    expect(r.paths).toEqual({ ...hindcastPathsIn(dir), manifest: MANIFEST_PATH, signalsVersion: 2, rowsByVersion: { 2: 1 } })
     expect(readJsonl(join(dir, 'outcome-dataset.jsonl')).map(x => x.missionId)).toEqual(['long'])
   })
 
@@ -64,7 +66,7 @@ describe('runHindcast', () => {
     const res = runHindcast({ paths, run: (cmd, args, opts) => { calls.push({ cmd, args, opts }); return { status: 0 } } })
     expect(res).toEqual({ status: 0 })
     expect(calls).toEqual([{ cmd: 'python', args: [OUTCOME_MODEL_SCRIPT, '--dataset', paths.dataset, '--dataset32', paths.dataset32, '--hindsight', paths.hindsight,
-      '--manifest', MANIFEST_PATH, '--out', paths.out], opts: { timeoutMs: HINDCAST_TIMEOUT_MS } }])
+      '--manifest', MANIFEST_PATH, '--out', paths.out, '--signals-version', '2', '--rows-by-version', '{}'], opts: { timeoutMs: HINDCAST_TIMEOUT_MS } }])
     expect(HINDCAST_TIMEOUT_MS).toBe(300_000)
   })
 
@@ -85,7 +87,7 @@ describe('hindcastOf', () => {
     writeFileSync(p, JSON.stringify(model))
     const r = hindcastOf({ status: 0, stdout: '', stderr: '', fault: null }, p)
     expect(r.model).toEqual(model)
-    expect(r.summary).toEqual({ version: 2, trainedAt: 't', prefixTurns: 16, nTrain: 83, nHoldout: 21, baseRate: 12 / 21, features: 3, droppedFeatures: ['z'], droppedReasons: {}, lengthFeature: null,
+    expect(r.summary).toEqual({ version: 2, trainedAt: 't', prefixTurns: 16, signalsVersion: null, rowsByVersion: null, nTrain: 83, nHoldout: 21, baseRate: 12 / 21, features: 3, droppedFeatures: ['z'], droppedReasons: {}, lengthFeature: null,
       models: { gbt: { precision: null, recall: 0, brier: 0.26, auc: null }, lr: { precision: 0.5, recall: 0.25, brier: 0.3, auc: 0.55 } },
       leakCheck: model.leakCheck, secondary: null })
   })

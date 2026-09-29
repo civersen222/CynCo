@@ -1005,12 +1005,41 @@ a prefix that straddles an engine upgrade is v1 — and `--export
 `N other signals version`). A v2 row has one more feature than a v1 row,
 `algedonicAlertsTotal.rate` (the v1 quantity, new alerts per turn); the key
 lists are `FEATURE_KEYS_V1` (56) and `FEATURE_KEYS_V2` (57), and the leak tests
-pin both. `scripts/cynco-outcome-model.py --signals-version N` trains and
-scores only version-N rows and writes `signalsVersion: N` and
-`secondary.otherSignalsVersions` — per left-out version, `{ eligible,
-failures, successes, holdout }`. Without the flag it behaves as before
-(`signalsVersion: null`, `secondary` unchanged). The committed
-`frozen-eval.json` is not touched by any of this.
+pin both. At K ≤ 20 — the primary K = 16 included — `algedonicAlertsTotal.rate`
+equals `algedonicAlerts.rate` exactly: before 20 turns have passed the window
+has not dropped anything, so the windowed count is the total minus a constant
+(the bus count when the governor was built) and the two rates coincide. They
+differ only at K = 32, where alerts from turns 1–12 have aged out of the
+window. The feature stays: it is the v1 quantity by name, and at K = 32 it is
+the one that still reads "new alerts per turn".
+`scripts/cynco-outcome-model.py --signals-version N` trains and scores only
+version-N rows and writes `signalsVersion: N`, `rowsByVersion` (eligible
+missions per version, before filtering — from `--rows-by-version` when the
+caller passes its own count) and `secondary.otherSignalsVersions` — per
+left-out version, `{ eligible, failures, successes, holdout }`; its refusal
+ends with ` (signals vN: n eligible; v1: m)`. Without the flag it uses every
+row (`signalsVersion: null`, `secondary` unchanged).
+
+**The runner's hindcast trains on ONE version (fix round 1, review I1).**
+`scripts/cynco-hindcast.mjs` (`HINDCAST_SIGNALS_VERSION = 2`, the engine's
+current version) writes only v2 rows into all three datasets (K = 16, K = 32,
+hindsight), names held-out missions of another version in
+`split[K].otherVersion` (never as `missing`), and runs the model with
+`--signals-version 2 --rows-by-version {…}`. `outcome-model.json` and the wave
+record's `hindcast` summary carry `signalsVersion` and `rowsByVersion`. While
+fewer v2 missions are labeled than the model's minimum (train 30, holdout 8),
+the model refuses and the learner rows read UNMEASURED with the reason, e.g.
+`exit 2: TOO FEW: train 1 < 30 or holdout 1 < 8 (signals v2: 2 eligible; v1: 40)`
+— never a rate from a mixed or too-small set (F16). With no v2 mission
+eligible at all, python is not spawned and the record reads `no eligible
+labeled mission at K = 16 turns with signals v2 (eligible by version: v1: 104)
+— nothing to train on`; `rec.hindcast` carries `signalsVersion` and
+`rowsByVersion` on a fault too. The verdict entry's learner line names both:
+`- Outcome hindcast: v5 at K = 16 turns, signals v2 only (eligible v1 104,
+v2 40) on 9 held-out missions …`. Pinned by
+`scripts/__tests__/cynco-hindcast-signals.test.mjs`. The committed
+`frozen-eval.json` is not touched by any of this; its v1 ids simply leave the
+v2 split as `otherVersion`.
 
 ### Outcome dataset and the frozen holdout
 
@@ -1055,15 +1084,19 @@ a change to this list and the test together):
 - The three COUNTERS, as per-turn rates so nothing sums over turns:
   - `stuckTurns` (the current stuck streak; it resets): `.rate` = the share of
     prefix turns with a streak > 0, `.last`, `.max`.
-  - `algedonicAlerts` (alerts fired so far IN THE ENGINE SESSION, a running
-    count): `.rate` only = new alerts per turn, (last − first) ÷ (turns between
-    them; null with fewer than two values). Its level carries alerts from
-    before the mission began (turn-0 values 0–57, r −0.38 with total turns — an
-    era confound), so `.last`/`.max` were dropped (final review T4-N2): measured
-    from the prefix's first value they collapse onto `.rate` at a fixed K, and
-    unmeasured from it they are the confound.
-  - `consecutiveUnstable` (increments on every unstable turn): `.last`, `.max`
-    only — its mean tracks the turn index, so it is not a feature.
+  - `algedonicAlerts` — v1: alerts fired so far IN THE ENGINE SESSION, a
+    running count; v2 (F165): the alerts raised in the last 20 turns.
+    `.rate` only = (last − first) ÷ (turns between them; null with fewer than
+    two values): on v1 new alerts per turn, on v2 the change in the 20-turn
+    window per turn (the same number at K ≤ 20 — see "Signals version"). Its v1
+    level carries alerts from before the mission began (turn-0 values 0–57,
+    r −0.38 with total turns — an era confound), so `.last`/`.max` were dropped
+    (final review T4-N2): measured from the prefix's first value they collapse
+    onto `.rate` at a fixed K, and unmeasured from it they are the confound.
+  - `consecutiveUnstable` — v1: the turn index (the homeostat never read
+    stable, so it incremented on every turn); v2 (F165): turns in a row the
+    homeostat read unstable, 0 on a stable turn, capped at 50. `.last`, `.max`
+    only — on v1 its mean tracks the turn index, so it is not a feature.
 - `.last` is the last non-null value in the prefix. Every numeric feature is
   `null` when every value in the prefix is null — unmeasured is never 0 (F16).
 - `brainPresent` — 1 when any prefix turn carries a numeric tool entropy, else 0.

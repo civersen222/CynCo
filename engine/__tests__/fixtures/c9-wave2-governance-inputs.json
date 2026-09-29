@@ -1,10 +1,11 @@
 {
   "source": "benchmark/cynco-ledger/missions.0004.jsonl row c9-wave2-1790629654480 (57 governance.status turns)",
+  "note": "A RECONSTRUCTED stream, not a recorded one: the ledger row keeps the governor's outputs per turn, not its inputs. Only latencyMs is measured, and latency never enters the Ashby units; every input that does (tools, thinking share, context) is rebuilt to the row's totals. Numbers read off this stream are properties of the reconstruction.",
   "derivation": {
     "latencyMs": "measured: the gap between consecutive turns[].t (turn 1: turns[0].t - dispatchedAt); the five ~380-414 s turns are the gate/suite Bash runs",
     "toolsCalled": "reconstructed: 42 calls in all (toolStats.total = 42) spread 0-1 per turn, one call on each long Bash turn",
-    "totalTokens": "reconstructed: tokenStats.decodeTokens = 19590 spread over 57 turns (153-556 per turn)",
-    "thinkingTokens": "reconstructed: 30-79% of each turn's decode (a thinking model's split; no server reports it)",
+    "totalTokens": "reconstructed: tokenStats.decodeTokens = 19590 spread over 57 turns (153-556 per turn); the spread sums to 19589 after per-turn rounding",
+    "thinkingTokens": "invented: 30-79% of each turn's decode (a thinking model's split; no server reports it, and the row has no per-turn split)",
     "contextUtilization": "reconstructed: linear 0.10 -> 0.38; the mean 0.24 matches (prefillTokens + cachedTokens) / 57 turns = 32012 prompt tokens per turn over a 131072 window"
   },
   "turns": [

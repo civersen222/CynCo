@@ -21,7 +21,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { datasetRows, featuresOf, frozenSplit, DATASET_PATH, MANIFEST_PATH } from './cynco-outcome-dataset.mjs'
+import { datasetRows, featuresOf, frozenSplit, signalsVersionOf, DATASET_PATH, MANIFEST_PATH } from './cynco-outcome-dataset.mjs'
 import { runSync, faultSummary } from './cynco-spawn.mjs'
 import { OUTCOME_MODEL_PATH } from './cynco-rule-verdicts.mjs'
 
@@ -30,6 +30,15 @@ export const HINDCAST_TIMEOUT_MS = 300_000
 export const PRIMARY_TURNS = 16
 export const SECONDARY_TURNS = 32
 export const OUTCOME_MODEL_SCRIPT = fileURLToPath(new URL('./cynco-outcome-model.py', import.meta.url))
+/**
+ * F165: the one signals version the hindcast trains on — the engine's current
+ * one (`SIGNALS_VERSION` in engine/vsm/cyberneticsGovernance.ts). v1 and v2
+ * rows describe different instruments (`consecutiveUnstable` was the turn
+ * index in v1), so a learner fitted on both learns the era, not the outcome.
+ * Until enough v2 missions are labeled the model refuses TOO FEW — the honest
+ * reading (F16) — and the refusal names the per-version counts.
+ */
+export const HINDCAST_SIGNALS_VERSION = 2
 /** How much of a failed run's output the fault keeps. */
 const FAULT_TAIL_CHARS = 300
 
@@ -63,11 +72,19 @@ function writeJsonl(path, rows) {
  * the same missions with more of the story told. Returns the paths and the row
  * counts (`n` is the primary's — the one a train/holdout split is made from).
  * `datasetsDir`, when given, replaces `<home>/datasets` as the directory.
+ *
+ * F165: only rows of ONE signals version are written (`signalsVersion`,
+ * default HINDCAST_SIGNALS_VERSION) — at each K, and the hindsight rows from
+ * the primary's. `rowsByVersion` counts the eligible (labeled, ≥ K = 16 turns)
+ * missions of every version, so a refusal can say how many of each there were;
+ * both ride `paths` to the model, which writes them into its output.
  */
-export function exportOutcomeDatasets({ rows, home, datasetsDir = null, manifestPath = MANIFEST_PATH }) {
-  const paths = { ...(datasetsDir ? hindcastPathsIn(datasetsDir) : HINDCAST_PATHS(home)), manifest: manifestPath }
-  const primary = datasetRows(rows, PRIMARY_TURNS)
-  const secondary = datasetRows(rows, SECONDARY_TURNS)
+export function exportOutcomeDatasets({ rows, home, datasetsDir = null, manifestPath = MANIFEST_PATH, signalsVersion = HINDCAST_SIGNALS_VERSION }) {
+  const rowsByVersion = {}
+  for (const r of datasetRows(rows, PRIMARY_TURNS).rows) rowsByVersion[r.signalsVersion] = (rowsByVersion[r.signalsVersion] ?? 0) + 1
+  const paths = { ...(datasetsDir ? hindcastPathsIn(datasetsDir) : HINDCAST_PATHS(home)), manifest: manifestPath, signalsVersion, rowsByVersion }
+  const primary = datasetRows(rows, PRIMARY_TURNS, { signalsVersion })
+  const secondary = datasetRows(rows, SECONDARY_TURNS, { signalsVersion })
   const eligible = new Set(primary.rows.map(r => r.missionId))
   const hindsight = rows.filter(r => eligible.has(r?.missionId)).map(r => featuresOf(r, r.turns.length))
   writeJsonl(paths.dataset, primary.rows)
@@ -75,20 +92,41 @@ export function exportOutcomeDatasets({ rows, home, datasetsDir = null, manifest
   writeJsonl(paths.hindsight, hindsight)
   // The holdout as the manifest sees it at each K — always with `turns`, so a
   // held-out mission too short (or unlabeled) at K is NAMED rather than
-  // silently missing from the python split.
+  // silently missing from the python split. A held-out mission of another
+  // signals version is named too (`otherVersion`), never counted as missing.
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
+  const versionAt = (r, K) => signalsVersionOf((Array.isArray(r?.turns) ? r.turns : []).slice(0, K))
   const splitAt = (K) => {
-    const s = frozenSplit(rows, manifest, { turns: K })
-    return { train: s.train.length, holdout: s.holdout.length, ineligible: s.ineligible, missing: s.missing }
+    const s = frozenSplit(rows.filter(r => versionAt(r, K) === signalsVersion), manifest, { turns: K })
+    const other = new Set(rows.filter(r => versionAt(r, K) !== signalsVersion).map(r => r.missionId))
+    return { train: s.train.length, holdout: s.holdout.length, ineligible: s.ineligible,
+      missing: s.missing.filter(id => !other.has(id)), otherVersion: s.missing.filter(id => other.has(id)) }
   }
   return { paths, n: primary.rows.length, n32: secondary.rows.length, nHindsight: hindsight.length, excluded: primary.excluded,
+    signalsVersion, rowsByVersion,
     split: { [PRIMARY_TURNS]: splitAt(PRIMARY_TURNS), [SECONDARY_TURNS]: splitAt(SECONDARY_TURNS) } }
 }
 
-/** The python retrain, capped. The raw `runSync` result comes back. */
+/**
+ * The hindcast's reading when the export has nothing to train on — python is
+ * never spawned. F165: with a signals version it names the version and every
+ * version's eligible count, so "nothing to train on" reads as "no v2 mission
+ * labeled yet (v1: 104)", never as an empty ledger.
+ */
+export function noEligibleFault(exported, K = PRIMARY_TURNS) {
+  const v = exported?.signalsVersion
+  if (typeof v !== 'number') return `no eligible labeled mission at K = ${K} turns — nothing to train on`
+  const counts = Object.entries(exported?.rowsByVersion ?? {}).sort(([a], [b]) => Number(a) - Number(b)).map(([k, n]) => `v${k}: ${n}`)
+  return `no eligible labeled mission at K = ${K} turns with signals v${v} (eligible by version: ${counts.join(', ') || 'none'}) — nothing to train on`
+}
+
+/** The python retrain, capped. The raw `runSync` result comes back. The
+ *  signals version and the per-version counts go with it (F165). */
 export function runHindcast({ paths, run = runSync }) {
   return run('python', [OUTCOME_MODEL_SCRIPT, '--dataset', paths.dataset, '--dataset32', paths.dataset32, '--hindsight', paths.hindsight,
-    '--manifest', paths.manifest ?? MANIFEST_PATH, '--out', paths.out], { timeoutMs: HINDCAST_TIMEOUT_MS })
+    '--manifest', paths.manifest ?? MANIFEST_PATH, '--out', paths.out,
+    '--signals-version', String(paths.signalsVersion ?? HINDCAST_SIGNALS_VERSION),
+    '--rows-by-version', JSON.stringify(paths.rowsByVersion ?? {})], { timeoutMs: HINDCAST_TIMEOUT_MS })
 }
 
 const tail = (s) => {
@@ -105,6 +143,9 @@ export function hindcastSummary(model) {
   const s = model?.secondary
   return {
     version: model?.version ?? null, trainedAt: model?.trainedAt ?? null, prefixTurns: model?.prefixTurns ?? null,
+    // F165: which instrument the model was fitted on, and how many eligible
+    // missions each version had (null on a model written before F165).
+    signalsVersion: model?.signalsVersion ?? null, rowsByVersion: model?.rowsByVersion ?? null,
     nTrain: model?.nTrain ?? null, nHoldout: model?.nHoldout ?? null, baseRate: model?.baseRate ?? null,
     features: Array.isArray(model?.features) ? model.features.length : null, droppedFeatures: model?.droppedFeatures ?? [], droppedReasons: model?.droppedReasons ?? {},
     lengthFeature: model?.lengthFeature ?? null, models, leakCheck: model?.leakCheck ?? null,

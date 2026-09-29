@@ -401,7 +401,8 @@ describe('the CLI (main)', () => {
   const noHome = () => { throw new Error('the real home must not be touched') }
   const turnsOf = (n) => Array.from({ length: n }, (_, i) => ({ toolSuccessRate: i % 2 ? 1 : 0.5, health: 'healthy' }))
   // 12 failures firing X and Y, 12 successes firing Y — X PREDICTIVE, Y CONSTANT — each with 20 turns.
-  const ledgerRows = () => predictiveRows().map((r, i) => ({ ...r, missionId: `m${i}`, turns: turnsOf(20) }))
+  // v2 turns (F165): the hindcast trains on the current signals version only.
+  const ledgerRows = () => predictiveRows().map((r, i) => ({ ...r, missionId: `m${i}`, turns: turnsOf(20).map(t => ({ ...t, signalsVersion: 2 })) }))
   const modelAt = (path) => {
     mkdirSync(dirname(path), { recursive: true })
     const preds = (fired) => ledgerRows().map(r => ({ missionId: r.missionId, pFail: fired(r) ? 0.9 : 0.1 }))
