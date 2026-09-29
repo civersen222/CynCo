@@ -80,22 +80,32 @@ export function sweepSourcesFor(spec, changedFiles) {
   return (changedFiles ?? []).map(f => String(f).replace(/\\/g, '/')).filter(f => f.endsWith('.py') && !isTest(f))
 }
 
-function runGate(spec, io) {
+/**
+ * One run of the sealed gate over a tree, parsed. `opts` exists for Phase 6's
+ * progress probe (scripts/cynco-campaign-progress.mjs), which grades a clean
+ * `git archive` of the wave's latest commit mid-wave and never the live repo:
+ * `repo` is the tree the gate reads (CYNCO_GATE_REPO and cwd; default
+ * `spec.repo`), `timeoutMs` its cap (default GATE_TIMEOUT_MS), and `retry`
+ * whether an impossible ETIMEDOUT is retried (default true — the verdict's
+ * reading; the probe passes false, because a 215 s gate re-run is not free
+ * and a stale ETIMEDOUT mid-wave is a fault reading, not a reason to spend it).
+ */
+export function runGate(spec, io, { repo = spec.repo, timeoutMs = GATE_TIMEOUT_MS, retry = true } = {}) {
   const t0 = Date.now()
   // The gates read CYNCO_GATE_REPO for the tree they grade and fall back to
-  // cwd. Both are spec.repo here, so this changes nothing today — and keeps
-  // changing nothing the day a gate is run from anywhere else.
+  // cwd. Both are the same tree here (spec.repo for a verdict, the archive for
+  // a progress reading), so the gate grades one tree whichever it reads.
   //
   // Review I2: this is the first spawn after a wave that may have run for
   // hours, i.e. exactly the call bun's stale deadline kills (F155). The gate is
   // a read of the tree, so it is retried once on an impossible ETIMEDOUT like
   // calibrate's reads are; and a spawn that still did not run is named as the
   // fault it is — never parsed as an empty gate, which would read as 0 lines.
-  const r = io.run('python', [spec.gate], { cwd: spec.repo, env: { CYNCO_GATE_REPO: spec.repo }, timeoutMs: GATE_TIMEOUT_MS, retryImpossibleTimeout: true })
+  const r = io.run('python', [spec.gate], { cwd: repo, env: { CYNCO_GATE_REPO: repo }, timeoutMs, retryImpossibleTimeout: retry })
   const parsed = parseGateOutput((r.stdout ?? '') + '\n' + (r.stderr ?? ''))
   let harnessFault = null
   if (r.fault) harnessFault = `gate did not run (${faultSummary(r.fault)})`
-  else if (r.timedOut) harnessFault = `gate timed out after ${GATE_TIMEOUT_MS} ms`
+  else if (r.timedOut) harnessFault = `gate timed out after ${timeoutMs} ms`
   else if (parsed.errors.length) harnessFault = `gate printed an error: ${parsed.errors[0]}`
   else if (parsed.terminator === null) harnessFault = 'gate printed no GATE: terminator'
   return { ...parsed, exit: r.status, durationMs: Date.now() - t0, harnessFault, fault: r.fault ?? null, outputTail: ((r.stdout ?? '') + (r.stderr ?? '')).slice(-4000) }

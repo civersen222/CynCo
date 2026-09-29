@@ -1218,6 +1218,89 @@ read `gbt` precision 0.545 on 11 fired, AUC 0.407, hindsight 0.528, K = 32
 `gbt` 0.55 / `lr` 0.42, 28 of 58 dead; `lr` did not move. Those numbers
 describe a vector the code no longer builds.
 
+### Gate progress mid-wave and `R1.no-progress` in shadow (Phase 6)
+
+The runner grades the wave's latest commit WHILE the wave runs, with the sealed
+gate, and records what it read on the wave record
+(`scripts/cynco-campaign-progress.mjs`). It is a runner-side measurement only:
+a reading reaches `waves.jsonl` and the runner's own log
+(`[campaign] progress @ Nm: F fails (was F0)`) — never a probe message, never
+the brief, never the engine. A sealed instrument is never a probe (Stage 1);
+the model never gains information it did not have.
+
+**How a reading is taken.** `defaultIo.waitForDriver` calls
+`onTick({ elapsedMs, nowMs })` once per poll (a throw inside it is logged once
+per distinct message and the wait goes on). `runWave` hands it
+`progressTracker(…).onTick`; on each tick `progressCadence` decides whether a
+reading is due. When it is, the runner reads the repo's HEAD (`repoHead`); a
+sha equal to the last reading's is `{ skipped: 'sha unchanged' }` and nothing
+runs; otherwise `probeProgress` archives that sha with `archiveBase` (`git
+archive <sha> | tar -x` through `bashExe()`) into
+`<os.tmpdir()>/cynco-progress-<id>-<n>`, runs the grade module's `runGate` on
+the ARCHIVE (`CYNCO_GATE_REPO` and cwd = the archive, never the live repo the
+mission is editing), parses it with `parseGateOutput`, and removes the dir in a
+`finally`. The gate spawn goes through `runSync` and is **never retried**
+(`retry: false`): a 215 s gate re-run is not free, and a stale ETIMEDOUT
+mid-wave (F155) is a fault reading. Its cap is `min(GATE_TIMEOUT_MS, 4 × the
+last measured run)`, 30 min before the first measurement. While HEAD still
+sits at the wave's start sha, the first due tick records the start grade (the
+calibration's or the last verdict's reading of that very sha) as a reading
+with `reusedFrom: 'start'` and `durationMs: 0` — no gate runs — so a wave that
+commits nothing still has a count past 50 %.
+
+**Cadence.** `progressCadence({ everyMs, clockMs, gateMs, faults, lastAtMs,
+nowMs })`, all times on the wave clock (ms since dispatch; `clockMs` =
+`hoursPerWave × 3600 s`): never before `everyMs` since the last due tick (the
+first counts from dispatch); with a measured gate the interval is raised to
+`gateMs × 10`, so the gate takes at most 10 % of the wave (C9's 215 s gate →
+≥ 2150 s); ×2 per consecutive faulted reading; never within the last
+`gateMs × 2` of the clock (the clock's own end while the gate is unmeasured).
+`everyMs` = `spec.progress.everyMs`, else `CYNCO_PROGRESS_EVERY_MS`, else
+1 800 000 (30 min).
+
+**`rec.progress`** — one entry per reading, in order:
+`{ at, sha, fails, passes, failIds, durationMs, elapsedFraction }` (`fails` /
+`passes` are COUNTS, `failIds` the FAIL line ids; `elapsedFraction` = wave
+clock at the reading / `clockMs`; `durationMs` = archive + gate) or
+`{ at, fault, durationMs }` (the archive failed, HEAD did not resolve, the gate
+timed out, did not run, printed no terminator or exited other than 0/1). A
+fault never touches the wave. `null` with `progressNote` naming why when the
+runner took no reading at all (an adopted wave was not waited on; a runner io
+without a probe); `[]` with a note when none was due before the wave ended. A
+wave that faulted in the WAIT (no ledger row, wall clock expired) keeps the
+readings it did get on its fault record.
+
+**`rec.shadowDecisions`** — `R1.no-progress`, evaluated at every due tick
+(reading or skip): *if at ≥ 50 % of the wave's wall clock the gate's fail
+count has not dropped below the wave's starting count, the wave will not
+pass.* `{ rule: 'R1.no-progress', at, elapsedFraction, fired, startFails,
+fails, wouldHaveSavedS }`: `fired` iff `elapsedFraction ≥ 0.5` AND the latest
+non-fault reading's `fails ≥ startFails` (`startFails` = `lastFails.length`,
+else the calibration's `baseFails.length`); it never fires when the newest
+reading is a fault (a stale count is not a reading of now) nor on an
+unmeasured start; `wouldHaveSavedS` = the wall clock left at the decision
+(`clockMs/1000 − elapsed`), written on every decision so a firing can be
+weighed against what it would have cost. SHADOW: nothing is stopped; a firing
+is one log line and one record entry.
+
+**Runner rows for the ladder.** `runnerRowsFrom(waves)` → one row
+`{ id: 'R1.no-progress', source: 'runner', fired, scope, failed }`: *scope* =
+waves with a missionId, a decision (`stop` excluded — nothing ran) and ≥ 1
+non-fault reading at `elapsedFraction ≥ 0.5`; *fired* = scoped waves where any
+shadow decision fired; *failed* = scoped waves whose decision is not `pass` /
+`pass-with-survivors` — the rule's outcome (a firing on a wave that then
+passed was wrong). The row is returned with an empty scope too: TOO FEW is the
+honest state, not an absent row. It earns `PREDICTIVE` exactly as an S5 rule
+would before any later phase lets it stop a wave.
+
+**The verdict line.** `verdictEntry` prints, after `- Autopoiesis:` and before
+`- Scoreboard:`, `progressLine(rec)`:
+`- Progress: 14 → 3 fails over 3 reading(s) (first fix at 41 min; last at 210
+min: 3); R1.no-progress fired at 52% (would have saved 3.2 h)` — minutes are
+`at − dispatchedAt`; `no drop` when no reading went below the start; `; N
+fault(s)` when probes faulted. With no measured reading:
+`- Progress: no readings (<reason>)`. A runner io with no probe prints no line.
+
 ## Labeling rule
 
 Ground truth for signal validation (step 2, per-rule precision/recall):

@@ -2006,6 +2006,82 @@ describe('the scoreboard at VERDICT', () => {
   })
 })
 
+// ── Phase 6 ruling 2–3: gate progress mid-wave, R1.no-progress in shadow ────
+describe('runWave — gate progress measured by the runner mid-wave', () => {
+  const MIN = 60_000
+  const progressSpec = { ...spec, budget: { ...spec.budget, hoursPerWave: 4 }, progress: { everyMs: 30 * MIN } }
+  const oneFail = { terminator: 'MISS', fails: [{ id: 'C8.1a', line: 'C8.1a: FAIL x' }], passes: [], errors: [], failCount: 1, exit: 1, harnessFault: null }
+  const io = (over = {}) => {
+    const seen = { archived: [], dispatched: 0, ticksBeforeDispatch: 0, entry: null }
+    let head = 'BASESHA'
+    return { seen, io: {
+      writeBrief: (p) => p,
+      dispatch: async () => { seen.dispatched += 1; return { missionId: 'c8-wave1-1' } },
+      // The HEAD-vs-base check (Rule 11) reads HEAD = base before dispatch;
+      // the wave then commits C1 between the two ticks.
+      repoHead: (repo, rev) => (rev === 'HEAD' ? head : rev === '1d03308' ? 'BASESHA' : null),
+      progressProbe: { archive: (repo, sha, dest) => { seen.archived.push({ repo, sha, dest }); return { ok: true } }, runGate: () => oneFail, removeDir: () => {} },
+      waitForDriver: async ({ onTick }) => {
+        const t = Date.now()
+        onTick?.({ elapsedMs: 0, nowMs: t + 31 * MIN })
+        head = 'C1'
+        onTick?.({ elapsedMs: 0, nowMs: t + 130 * MIN })
+        return { exited: true }
+      },
+      readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 9000, commitRange: { base: 'BASESHA', head: 'C1' }, outcome: 'landed', markerSeen: false, toolStats: {} }),
+      commitsBetween: () => [{ sha: 'C1', subject: 'c' }],
+      grade: async () => g(), checkIdentity: okIdentity,
+      salvageOf: () => null, patchRow: () => {}, commit: () => ({ sha: 'v1' }), notify: async () => true, economics: () => [],
+      appendLog: (t) => { seen.entry = t },
+      datasetsHome: ((d) => () => d)(mkdtempSync(join(tmpdir(), 'ds-prog-'))),
+      ...inertTriples,
+      ...over,
+    } }
+  }
+
+  it('records the readings and the shadow decisions on the wave record, and prints the Progress line before the Scoreboard', async () => {
+    const state = freshState()
+    const { seen, io: fake } = io()
+    const logs = []
+    const orig = console.log
+    console.log = (m) => logs.push(String(m))
+    let rec
+    try { rec = await runWave(progressSpec, state, fake) } finally { console.log = orig }
+    // The first tick finds HEAD still at the base: the start grade is reused,
+    // no gate runs. The second finds C1: archived and graded (one probe run).
+    expect(seen.archived).toHaveLength(1)
+    expect(seen.archived[0]).toMatchObject({ repo: 'C:/repo', sha: 'C1' })
+    expect(rec.progress).toHaveLength(2)
+    expect(rec.progress[0]).toMatchObject({ sha: 'BASESHA', fails: 1, reusedFrom: 'start' })
+    expect(rec.progress[1]).toMatchObject({ sha: 'C1', fails: 1, passes: 0, failIds: ['C8.1a'] })
+    expect(rec.progress[1].elapsedFraction).toBeCloseTo(130 / 240, 2)
+    expect(rec.shadowDecisions.map(d => d.fired)).toEqual([false, true])
+    expect(rec.shadowDecisions[1]).toMatchObject({ rule: 'R1.no-progress', startFails: 1, fails: 1 })
+    // Stored on waves.jsonl, where the ladder (Task 4) reads it.
+    expect(state.waves().at(-1).shadowDecisions).toEqual(rec.shadowDecisions)
+    expect(seen.entry).toMatch(/^- Autopoiesis: .*\n- Progress: 1 → 1 fails over 2 reading\(s\) \(no drop; last at 130 min: 1\); R1\.no-progress fired at 54% \(would have saved 1\.8 h\)\n- Scoreboard: /m)
+    expect(logs.join('\n')).toMatch(/\[campaign\] progress @ 130m: 1 fails \(was 1\)/)
+    // Shadow: the wave was not stopped — it ran to its grade.
+    expect(rec.decision.kind).toBe('next')
+  })
+
+  it('an io without a probe takes no readings and prints no line; the record says why', async () => {
+    const { seen, io: fake } = io({ progressProbe: undefined })
+    const rec = await runWave(progressSpec, freshState(), fake)
+    expect(rec.progress).toBeNull()
+    expect(rec.progressNote).toBe('no progress probe on this runner io')
+    expect(seen.entry).not.toMatch(/- Progress:/)
+  })
+
+  it('a wait that faults keeps the readings it took on the fault record', async () => {
+    const { io: fake } = io({ waitForDriver: async ({ onTick }) => { onTick({ elapsedMs: 0, nowMs: Date.now() + 31 * MIN }); return { exited: false, timedOut: true } }, ...faultIo() })
+    const rec = await runWave(progressSpec, freshState(), fake)
+    expect(rec.decision.kind).toBe('fault')
+    expect(rec.progress).toHaveLength(1)
+    expect(rec.shadowDecisions).toHaveLength(1)
+  })
+})
+
 // ── Phase 5 ruling 5: the outcome hindcast at VERDICT ───────────────────────
 
 describe('the outcome hindcast at VERDICT', () => {

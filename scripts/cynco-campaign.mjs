@@ -41,6 +41,7 @@ import { campaignScoreboard, pooledScoreboard, scoreboardLines } from './cynco-s
 import { readLedger } from './cynco-ledger-shards.mjs'
 import { campaignAssessment, campaignRows, autopoiesisLine, storedAssessment, effectiveSeatAuthority } from './cynco-autopoiesis.mjs'
 import { summarize as summarizeGateLines, GATE_LINES_PATH } from './cynco-gate-lines.mjs'
+import { progressTracker, defaultProbeIo, everyMsFor } from './cynco-campaign-progress.mjs'
 
 // Phase 4: the operator's decision on a pending proposal lives in the one
 // proposal registry (scripts/cynco-proposals.mjs). Re-exported so every caller
@@ -212,8 +213,21 @@ export const defaultIo = {
   // that outlives the work). Once the row exists the wave is gradeable, so
   // check for it FIRST on every tick and keep the pid only as the secondary
   // signal for "it is gone and wrote nothing".
-  waitForDriver: async ({ pidFile, driverLog, timeoutMs, missionIdFrom = defaultIo.missionIdFrom, pollMs = 30_000 }) => {
+  //
+  // Phase 6 ruling 2: `onTick({ elapsedMs, nowMs })` is called once per poll
+  // while the driver runs — the runner's progress probe (scripts/cynco-campaign-
+  // progress.mjs) hangs off it. A throw inside it is caught and logged ONCE per
+  // distinct message, and the wait goes on: a probe never breaks the wait.
+  waitForDriver: async ({ pidFile, driverLog, timeoutMs, missionIdFrom = defaultIo.missionIdFrom, pollMs = 30_000, onTick = null }) => {
     const t0 = Date.now()
+    const tickFaults = new Set()
+    const tick = async () => {
+      if (typeof onTick !== 'function') return
+      try { await onTick({ elapsedMs: Date.now() - t0, nowMs: Date.now() }) } catch (e) {
+        const message = String(e?.message ?? e)
+        if (!tickFaults.has(message)) { tickFaults.add(message); console.error(`[campaign] progress tick failed (the wait goes on): ${message}`) }
+      }
+    }
     const idNow = () => { try { return missionIdFrom(driverLog) } catch { return null } }
     // The ledger line before the pid file: a driver that already wrote its
     // row is gradeable whether or not its pid file survived, and a missing
@@ -231,6 +245,7 @@ export const defaultIo = {
       const id = idNow()
       if (id) return { exited: true, missionId: id }
       if (!alive()) return { exited: true, missionId: idNow() }
+      await tick()
       // Never sleep past the wall clock: a 30 s poll on top of an expired
       // budget is 30 s of a wave nobody is waiting on any more.
       await new Promise(r => setTimeout(r, Math.min(pollMs, Math.max(1, timeoutMs - (Date.now() - t0)))))
@@ -249,6 +264,10 @@ export const defaultIo = {
     const r = runSync('git', ['-C', repo, 'rev-parse', '--verify', '--quiet', `${rev}^{commit}`], { timeoutMs: GIT_READ_TIMEOUT_MS, retryImpossibleTimeout: true })
     return !r.fault && !r.timedOut && r.status === 0 ? (String(r.stdout ?? '').trim() || null) : null
   },
+  // Phase 6 ruling 2: the mid-wave progress probe's io (archive the sha, run
+  // the sealed gate on the archive with no retry, remove it). An injected io
+  // without it takes no readings — a test's fake wave never spawns a gate.
+  progressProbe: defaultProbeIo,
   commitsBetween: (repo, base, head) => gitC(repo, ['log', '--oneline', `${base}..${head}`]).split('\n').filter(Boolean).map(l => ({ sha: l.slice(0, 7), subject: l.slice(8) })),
   firstCommitFiles: (repo, base, head) => { const first = gitC(repo, ['rev-list', '--reverse', `${base}..${head}`]).split('\n').filter(Boolean)[0]; return first ? gitC(repo, ['show', '--name-only', '--format=', first]).split('\n').filter(Boolean) : [] },
   // cynco-work-snapshot.mjs:35, called by the driver with outDir 'C:/tmp'.
@@ -422,6 +441,13 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
   // `--adopt-inflight`) — the scoreboard counts it as an intervention, so the
   // record says so. Nothing else on the record distinguishes it.
   let adopted = false
+  // Phase 6 ruling 2: the mid-wave gate readings (scripts/cynco-campaign-
+  // progress.mjs). The tracker exists only for a wave this runner WAITS on;
+  // `progressNote` says why there is none, so the verdict's `- Progress:` line
+  // names the reason instead of printing an empty reading as a measurement.
+  let tracker = null, progressNote = null
+  const progressFields = () => ({ progress: tracker ? tracker.progress : null, shadowDecisions: tracker ? tracker.shadowDecisions : null,
+    progressNote: tracker ? tracker.note() : progressNote })
 
   if (s.adoptedRow) {
     // ADOPT (scripts/cynco-campaign-adopt.mjs): this wave already RAN — it was
@@ -437,6 +463,7 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
     briefFile = resolve(row.briefFile ?? join(BRIEFS_DIR, `${spec.id}-wave${wave}.txt`))
     dispatchedAt = row.dispatchedAt ?? null
     delete s.adoptedRow
+    progressNote = 'adopted wave — the runner did not wait on it'
     // The brief was authored outside the runner, so its sidecar may not exist;
     // commitVerdict hands `files` straight to `git add`, where one missing
     // pathspec stages nothing at all.
@@ -513,19 +540,30 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
       // must not let the NEXT invocation dispatch a second one on top of it.
       s.inFlight = { wave, missionId: null, briefFile, pidFile, driverLog, dispatchedAt }
       state.save()
-      waited = await io.waitForDriver({ pidFile, driverLog, timeoutMs: (spec.budget.hoursPerWave * 3600 + 3600) * 1000 })
+      // Phase 6 ruling 2: gate progress, measured by the runner mid-wave and
+      // never shown to the model — the readings reach this wave's record and
+      // the runner's log only. Needs the probe io and the HEAD reader; a test's
+      // injected io without them takes no readings (and says so).
+      const probe = io.progressProbe ?? (io === defaultIo ? defaultProbeIo : null)
+      if (probe && repoHead) {
+        tracker = progressTracker({ spec, probe, headOf: () => repoHead(spec.repo, 'HEAD'), clockMs: spec.budget.hoursPerWave * 3600 * 1000,
+          startSha: baseSha ?? base, startFails: s.lastFails?.length ?? s.calibration?.baseFails?.length ?? fails.length,
+          startFailIds: s.lastFails ?? fails.map(f => f.id), startPasses: ctx.passes?.length ?? null,
+          dispatchedAtMs: Date.parse(dispatchedAt), everyMs: everyMsFor(spec) })
+      } else progressNote = !probe ? 'no progress probe on this runner io' : 'no repo HEAD reader on this runner io'
+      waited = await io.waitForDriver({ pidFile, driverLog, timeoutMs: (spec.budget.hoursPerWave * 3600 + 3600) * 1000, onTick: tracker?.onTick ?? null })
       missionId = waited.exited ? (waited.missionId ?? dispatched?.missionId ?? io.missionIdFrom?.(driverLog) ?? null) : null
       row = missionId ? io.readRow(missionId) : null
     } catch (e) {
       console.error(`[campaign] wave ${wave} dispatch/wait failed: ${e?.stack ?? e}`)
-      return faultWave(spec, state, io, { wave, missionId: null, briefFile, base, dispatchedAt, files: [...waveFiles, ...roadmapFiles],
+      return faultWave(spec, state, io, { wave, missionId: null, briefFile, base, dispatchedAt, files: [...waveFiles, ...roadmapFiles], progressFields: progressFields(),
         why: `dispatch or wait failed: ${e?.message ?? e}` })
     }
     if (!row) {
       const why = waited.exited ? 'driver exited without a ledger row'
         : waited.pidUnseen ? `driver pid ${waited.pidUnseen} was already invisible on the first probe — the PID handoff is broken and the mission may still be running unwatched (see ${driverLog})`
           : 'driver did not exit within the wall clock'
-      return faultWave(spec, state, io, { wave, missionId, briefFile, base, dispatchedAt, files: [...waveFiles, ...roadmapFiles], why })
+      return faultWave(spec, state, io, { wave, missionId, briefFile, base, dispatchedAt, files: [...waveFiles, ...roadmapFiles], progressFields: progressFields(), why })
     }
   }
 
@@ -572,7 +610,11 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
     durationS: row.durationS ?? null,
     outcome: { landed: row.outcome === 'landed', exitReason: row.exitReason, commitsLanded: commits.length },
     s4: { generatorInput: { failIds: fails.map(f => f.id), priorMissionId: prior?.missionId ?? null }, ideation, ideationMeta, authority: s.ideationAuthority ?? 0, commander, followed, workOrder, pacingFromDenials },
-    adopted, decision, verdictSha: null, notified: false }
+    adopted, decision, verdictSha: null, notified: false,
+    // Phase 6 rulings 2–3: the mid-wave gate readings and the shadow
+    // `R1.no-progress` decisions taken at each (null with a note when the
+    // runner took none — never an empty reading dressed as a measurement).
+    ...progressFields() }
   state.appendWave(rec)
   appended = true
 
@@ -761,7 +803,12 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
 
   // Verdict (campaign log, economics, local commit, algedonic).
   const ideationRecord = ideation ? { authority: s.ideationAuthority ?? 0, hypotheses: ideation.hypotheses, followed } : null
-  const entry = verdictEntry({ spec, wave, row, grade, decision, ideationRecord, economicsLines: economicsText, denialAnalysis, denialScope, capProposal: cap, governancePosiwid: governance, gateLines, identity, autopoiesis: rec.autopoiesis, scoreboard: rec.scoreboard, hindcast: rec.hindcast })
+  const entry = verdictEntry({ spec, wave, row, grade, decision, ideationRecord, economicsLines: economicsText, denialAnalysis, denialScope, capProposal: cap, governancePosiwid: governance, gateLines, identity, autopoiesis: rec.autopoiesis, scoreboard: rec.scoreboard, hindcast: rec.hindcast,
+    // A wave the runner waited on with a probe prints its readings (or why
+    // there were none); an adopted wave prints that it was not waited on. A
+    // runner io with no probe at all took no measurement — no line, the way a
+    // null hindcast prints none.
+    progress: tracker || adopted ? rec : null })
   io.appendLog(entry)
   // Phase 5 Task 1 / final review I1: a pass finishes the roadmap line — read
   // off the FINAL decision (the identity check could still turn it into a
@@ -783,7 +830,7 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
     // The wave is already on the record when the throw came from the verdict
     // half; a second append would put the same wave in waves.jsonl twice and
     // double-count it in every promotion reading afterwards. Overwrite it.
-    return faultWave(spec, state, io, { wave, missionId, briefFile, base, dispatchedAt, files: [...new Set([...(waveFiles ?? []), ...roadmapFiles])], appended, adopted, rowDurationS: row?.durationS ?? null, why: `post-run step failed: ${e?.message ?? e}` })
+    return faultWave(spec, state, io, { wave, missionId, briefFile, base, dispatchedAt, files: [...new Set([...(waveFiles ?? []), ...roadmapFiles])], appended, adopted, rowDurationS: row?.durationS ?? null, progressFields: progressFields(), why: `post-run step failed: ${e?.message ?? e}` })
   }
 }
 
@@ -840,9 +887,13 @@ async function stopWave(spec, state, io, { wave, base, why }) {
  * guard would otherwise refuse on at the NEXT invocation, bricking the campaign
  * with work that never ran.
  */
-async function faultWave(spec, state, io, { wave, missionId, briefFile, base, dispatchedAt, why, files, appended = false, adopted = false, rowDurationS = null }) {
+async function faultWave(spec, state, io, { wave, missionId, briefFile, base, dispatchedAt, why, files, appended = false, adopted = false, rowDurationS = null, progressFields = null }) {
   const s = state.state
   const rec = { wave, missionId: missionId ?? null, briefFile, base, dispatchedAt, decision: { kind: 'fault', why } }
+  // Phase 6: a wave that faulted in the WAIT (the wall clock ran out, the
+  // driver left no row) keeps the mid-wave readings it did get — they are the
+  // only measurement of what that wave did.
+  if (progressFields?.progress) Object.assign(rec, progressFields)
   // A fault on a wave the operator handed over (`--adopt-inflight`, the adopt
   // script) is still that hand-off; the scoreboard counts it (Phase 5 ruling 2).
   if (adopted) rec.adopted = true

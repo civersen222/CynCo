@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process'
 import { gateLineVerdict } from './cynco-signal-validation.mjs'
 import { autopoiesisLine } from './cynco-autopoiesis.mjs'
 import { scoreboardLines } from './cynco-scoreboard.mjs'
+import { progressLine } from './cynco-campaign-progress.mjs'
 
 const today = () => new Date().toISOString().slice(0, 10)
 const h = (s) => (s / 3600).toFixed(2)
@@ -107,7 +108,7 @@ export function hindcastLine(h, { detail = false } = {}) {
     + `${ladder.length ? ladder.join('; ') : h.ladderFault ? `LADDER NOT WRITTEN (${h.ladderFault}) — rules rewritten alone` : 'no ladder reading'}; ${leak}${length}${secondary}${dropped}`
 }
 
-export function verdictEntry({ spec, wave, row, grade, decision, ideationRecord, economicsLines, denialAnalysis = null, denialScope = 'campaign', capProposal = null, governancePosiwid = null, gateLines = null, identity = null, autopoiesis = null, scoreboard = null, hindcast = null }) {
+export function verdictEntry({ spec, wave, row, grade, decision, ideationRecord, economicsLines, denialAnalysis = null, denialScope = 'campaign', capProposal = null, governancePosiwid = null, gateLines = null, identity = null, autopoiesis = null, scoreboard = null, hindcast = null, progress = null }) {
   const ts = row.toolStats ?? {}
   const inv = row.invariants
   const rejected = row.invariantsRejected === true
@@ -145,6 +146,10 @@ export function verdictEntry({ spec, wave, row, grade, decision, ideationRecord,
   // beside the identity reading its first criterion is.
   const apLine = autopoiesisLine(autopoiesis)
   if (apLine) lines.push(apLine)
+  // Phase 6 ruling 2: the mid-wave gate readings and the shadow R1.no-progress
+  // (scripts/cynco-campaign-progress.mjs), read off the wave record. No record
+  // handed over, no line; a record without readings prints the reason.
+  if (progress) lines.push(progressLine(progress))
   // Phase 5 ruling 2: the four headline numbers, campaign to date
   // (scripts/cynco-scoreboard.mjs). No board, no line.
   lines.push(...scoreboardLines(scoreboard))
