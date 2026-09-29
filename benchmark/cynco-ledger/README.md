@@ -921,7 +921,12 @@ the `- Outcome hindcast:` line first (a fault is `UNMEASURED` and the rules are
 written without model rows, as at a VERDICT). `--datasets-dir DIR` writes the
 three datasets, `outcome-model.json` and — unless `--out` names another path —
 `rule-verdicts.json` directly into DIR instead of `~/.cynco/datasets/`, so a
-temp run never touches the real home. It is Step 2's per-rule table (`analyse` + `ruleVerdictOf` in
+temp run never touches the real home. With `--datasets-dir DIR` and no
+`--manifest PATH`, the per-version holdout manifest is `<DIR>/frozen-eval.json`
+(final review M8): a temp run never performs the one-time v2 freeze on the
+repo's committed `benchmark/cynco-ledger/frozen-eval.json`; without
+`--datasets-dir` it reads (and may freeze into) the committed one, as the
+runner does. It is Step 2's per-rule table (`analyse` + `ruleVerdictOf` in
 `scripts/cynco-signal-validation.mjs`) turned into a file the engine reads:
 
 - **`engine/s5/ruleAuthority.ts`** loads it once per session and logs one line,

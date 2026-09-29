@@ -497,6 +497,24 @@ describe('the CLI (main)', () => {
     expect(Object.keys(JSON.parse(readFileSync(join(dir, 'rule-verdicts.json'), 'utf8')).rules)).toEqual(['X', 'Y', 'R1.no-progress'])
   })
 
+  // Final review M8: a temp run never performs the one-time v2 freeze on the
+  // repo's committed manifest — with --datasets-dir and no --manifest the
+  // manifest is <DIR>/frozen-eval.json.
+  it('--datasets-dir without --manifest freezes into <DIR>/frozen-eval.json, never the committed file', async () => {
+    const committed = join('benchmark', 'cynco-ledger', 'frozen-eval.json')
+    const before = readFileSync(committed, 'utf8')
+    const dir = join(home(), 'ds')
+    // 40 eligible v2 missions, 20 of each label: enough for the automatic freeze.
+    const many = () => Array.from({ length: 40 }, (_, i) => ({ ...(i % 2 ? landed(['Y']) : failed(['X', 'Y'])), missionId: `f${i}`, turns: turnsOf(20).map(t => ({ ...t, signalsVersion: 2 })) }))
+    await main(['--with-hindcast', '--datasets-dir', dir, ...noCampaigns()], {
+      readLedger: many, cyncoHome: noHome, log: () => {},
+      runHindcast: ({ paths }) => { modelAt(paths.out); return { status: 0, stdout: '', stderr: '', fault: null } },
+    })
+    const frozen = JSON.parse(readFileSync(join(dir, 'frozen-eval.json'), 'utf8'))
+    expect(frozen.sets['2'].missionIds.length).toBe(8)
+    expect(readFileSync(committed, 'utf8')).toBe(before)
+  })
+
   it('--out wins over --datasets-dir for the verdict file', async () => {
     const dir = join(home(), 'ds'), out = join(home(), 'elsewhere.json')
     await main(['--with-hindcast', '--datasets-dir', dir, '--manifest', frozenV2(), '--out', out, ...noCampaigns()], {

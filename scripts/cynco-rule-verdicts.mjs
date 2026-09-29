@@ -374,8 +374,12 @@ export async function main(argv, deps = {}) {
     try {
       // `--manifest PATH` (F165 fix round 2): the per-version frozen holdout the
       // hindcast reads — and, when the current version's pool reaches the
-      // minimum, freezes into. Default: the committed one, as the runner does.
-      const manifest = arg('--manifest') ? { manifestPath: resolve(arg('--manifest')) } : {}
+      // minimum, freezes into. Default: `<DIR>/frozen-eval.json` when
+      // `--datasets-dir DIR` is given (final review M8: a temp run never
+      // performs the one-time freeze on the repo's committed manifest), else
+      // the committed one, as the runner does.
+      const manifestArg = arg('--manifest') ? resolve(arg('--manifest')) : datasetsDir ? join(datasetsDir, 'frozen-eval.json') : null
+      const manifest = manifestArg ? { manifestPath: manifestArg } : {}
       const exported = hc.exportOutcomeDatasets({ rows, home: datasetsDir ? null : await home(), datasetsDir, ...manifest })
       if (!hc.hindcastReady(exported)) hindcast = { fault: hc.noEligibleFault(exported, hc.PRIMARY_TURNS) }
       else {
