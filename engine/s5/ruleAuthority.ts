@@ -89,8 +89,9 @@ export class RuleAuthority {
     }
     const verdicts = new Map<string, string>()
     for (const [id, r] of Object.entries(rules as Record<string, { verdict?: unknown; source?: unknown }>)) {
-      // Phase 5: outcome-model rows (`M1.*`, source 'model') share the file but are never an S5 rule — no authority, not counted.
-      if (typeof r?.verdict === 'string' && r?.source !== 'model') verdicts.set(id, r.verdict)
+      // Phase 5: outcome-model rows (`M1.*`, source 'model') and Phase 6's runner rows (`R1.no-progress`, source 'runner')
+      // share the file but are never an S5 rule — no authority, not counted.
+      if (typeof r?.verdict === 'string' && r?.source !== 'model' && r?.source !== 'runner') verdicts.set(id, r.verdict)
     }
     return new RuleAuthority('earned', verdicts, path, null)
   }

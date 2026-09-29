@@ -41,7 +41,7 @@ import { campaignScoreboard, pooledScoreboard, scoreboardLines } from './cynco-s
 import { readLedger } from './cynco-ledger-shards.mjs'
 import { campaignAssessment, campaignRows, autopoiesisLine, storedAssessment, effectiveSeatAuthority } from './cynco-autopoiesis.mjs'
 import { summarize as summarizeGateLines, GATE_LINES_PATH } from './cynco-gate-lines.mjs'
-import { progressTracker, defaultProbeIo, everyMsFor } from './cynco-campaign-progress.mjs'
+import { progressTracker, defaultProbeIo, everyMsFor, runnerRowsFrom } from './cynco-campaign-progress.mjs'
 
 // Phase 4: the operator's decision on a pending proposal lives in the one
 // proposal registry (scripts/cynco-proposals.mjs). Re-exported so every caller
@@ -680,20 +680,30 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
       }
     } catch (e) { rec.hindcast = { fault: String(e?.message ?? e) } }
     if (rec.hindcast?.fault) console.error(`[campaign] outcome hindcast not measured: ${rec.hindcast.fault}`)
+    // Phase 6 Task 4: the runner's shadow regulator `R1.no-progress` as a
+    // runner row — one rule across campaigns, so its scope is this campaign's
+    // waves (the one just recorded included) and every other runner-driven
+    // campaign's under <home>/campaigns. Shadow: never authority, never the
+    // version. A fault reading the waves is logged and the ladder is written
+    // without it, never a fault of the wave.
+    let runnerRows = []
+    try { runnerRows = runnerRowsFrom(runnerWaves(join(home, 'campaigns'), { current: spec.id, waves: state.waves(), rec })) }
+    catch (e) { console.error(`[campaign] runner rows (R1.no-progress) not read: ${e?.message ?? e}`) }
     const write = io.writeRuleVerdicts ?? defaultIo.writeRuleVerdicts
     try {
-      rec.ruleVerdicts = write({ rows, campaign: spec.id, outPath, modelRows })
+      rec.ruleVerdicts = write({ rows, campaign: spec.id, outPath, modelRows, runnerRows })
     } catch (e) {
       // Final review M1 (T5-M1): a throw on the MODEL rows must not leave the
       // previous wave's file for the engine to read, stale. The rules' verdicts
-      // are rewritten alone; the hindcast says its ladder faulted, and the
-      // record says the model rows were skipped. A throw without model rows is
-      // the rules' own and falls through to the outer catch as before.
+      // are rewritten alone (with the runner rows, which do not depend on the
+      // hindcast); the hindcast says its ladder faulted, and the record says
+      // the model rows were skipped. A throw without model rows is the rules'
+      // own and falls through to the outer catch as before.
       if (!modelRows.length) throw e
       const message = String(e?.message ?? e)
       console.error(`[campaign] rule verdicts with the model rows failed (${message}) — rewriting the rules alone`)
       if (rec.hindcast) rec.hindcast.ladderFault = message
-      rec.ruleVerdicts = { ...write({ rows, campaign: spec.id, outPath, modelRows: [] }), modelRowsSkipped: true }
+      rec.ruleVerdicts = { ...write({ rows, campaign: spec.id, outPath, modelRows: [], runnerRows }), modelRowsSkipped: true }
     }
     // The ladder's reading of each model row (verdict, precision, CI, p(Holm)),
     // kept on the hindcast beside the model's own holdout metrics.
@@ -812,7 +822,9 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
     // there were none); an adopted wave prints that it was not waited on. A
     // runner io with no probe at all took no measurement — no line, the way a
     // null hindcast prints none.
-    progress: tracker || adopted ? rec : null })
+    progress: tracker || adopted ? rec : null,
+    // Phase 6 Task 4: R1.no-progress, named with its verdict on the ladder line.
+    runnerLadder: rec.ruleVerdicts?.runners ?? null })
   io.appendLog(entry)
   // Phase 5 Task 1 / final review I1: a pass finishes the roadmap line — read
   // off the FINAL decision (the identity check could still turn it into a
@@ -1080,6 +1092,23 @@ export function scoreboardEconomics(hooks = {}) {
   } })
   if (failed) { console.error(`[campaign] economics: the economics script did not answer (${failed}) — supervision dollars unmeasured`); return null }
   return lines
+}
+
+/**
+ * Phase 6 Task 4: every wave record the runner's shadow regulator is judged
+ * over — the campaign being graded (`waves` from its own state, with `rec`,
+ * the wave just recorded, in place of a stored copy of it) and every OTHER
+ * runner-driven campaign under `campaignsDir` (a dir holding a `waves.jsonl`,
+ * as runnerDrivenBoards reads it). A dir named `current` under the dir is
+ * skipped: the state handed over is this campaign's record. Reads only.
+ */
+export function runnerWaves(campaignsDir, { current, waves = [], rec = null }) {
+  const own = rec && waves.at(-1)?.wave === rec.wave ? [...waves.slice(0, -1), rec] : rec ? [...waves, rec] : [...waves]
+  const names = existsSync(campaignsDir)
+    ? readdirSync(campaignsDir, { withFileTypes: true }).filter(d => d.isDirectory() && d.name !== current).map(d => d.name).sort()
+    : []
+  const others = names.flatMap(name => new CampaignState(join(campaignsDir, name)).waves())
+  return [...others, ...own]
 }
 
 /**

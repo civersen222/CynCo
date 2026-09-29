@@ -264,6 +264,10 @@ describe('perRulePrecision — predictive ÷ total, and the best rule', () => {
     expect(detail).toContain('  perRulePrecision 0/8 predictive; best I3 58% [45,70] NO EVIDENCE')
     expect(detail).toContain('  learner M1.gbt 90% [60,98] PREDICTIVE')
   })
+  it('the runner row (R1.no-progress, source "runner") is not a rule either: neither counted nor ranked', () => {
+    const rv = { rules: { ...ruleVerdicts.rules, 'R1.no-progress': { ...rule('PREDICTIVE', 0.95, [0.7, 0.99], 20), source: 'runner', scope: 'waves' } } }
+    expect(perRulePrecision(rv)).toEqual({ predictive: 0, total: 8, best: { id: 'I3', precision: 0.58, ci: [0.45, 0.70], verdict: 'NO EVIDENCE' }, learner: null })
+  })
   it('model rows only: 0/0 rules, no best rule, the learner still read', () => {
     const rv = { rules: { 'M1.lr': { ...rule('TOO FEW — cannot tell', 0.5, [0.2, 0.8], 4), source: 'model' } } }
     expect(perRulePrecision(rv)).toEqual({ predictive: 0, total: 0, best: null, learner: { id: 'M1.lr', precision: 0.5, ci: [0.2, 0.8], verdict: 'TOO FEW — cannot tell' } })

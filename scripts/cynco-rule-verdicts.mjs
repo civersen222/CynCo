@@ -66,6 +66,34 @@ function modelRuleOf(m, rows, analyse) {
     ?? { id: m.id, firedTotal: 0, labeled: 0, failures: 0, precision: null, ci: wilson(0, 0), lift: null, p: null, coverage: 0 }
   return { ...r, base: res.labeled ? res.base : null, scopeN: res.labeled }
 }
+
+/** A runner row's verdict when there is no table to read one from (F16:
+ *  unmeasured is null with its reason, never a rate of 0). */
+export const RUNNER_UNMEASURED_NO_SCOPE = 'UNMEASURED — no wave in scope (no shadow decision at 50 % of its clock or later)'
+export const RUNNER_UNMEASURED_NEVER_FIRED = 'UNMEASURED — fired on no in-scope wave'
+
+/**
+ * Phase 6: one runner row (`R1.no-progress`, `source: 'runner'`, from
+ * `runnerRowsFrom` in scripts/cynco-campaign-progress.mjs) through the SAME
+ * arithmetic as an S5 rule and a model row: `analyse` over the row's scope —
+ * the in-scope WAVES, one per mission — with "fired" read off `fired` and the
+ * outcome off `failed` (the wave's own decision, the record the firing was
+ * read from; not a ledger label, which a wave that never graded lacks).
+ * A row that fired on no in-scope wave has no table: n 0, every number null,
+ * and an UNMEASURED verdict naming why. `pAdjusted` is set by the caller's
+ * Holm pass.
+ */
+function runnerRuleOf(u, analyse) {
+  const scoped = [...u.scope].sort().map(missionId => ({ missionId }))
+  const res = analyse(scoped, {
+    firedOf: (r) => (u.fired.has(r.missionId) ? new Set([u.id]) : new Set()),
+    labelOf: (r) => !u.failed.has(r.missionId),
+  })
+  const r = res.rules.find(x => x.id === u.id)
+    ?? { id: u.id, firedTotal: 0, labeled: 0, failures: 0, precision: null, ci: wilson(0, 0), lift: null, p: null, coverage: 0 }
+  const unmeasured = res.labeled === 0 ? RUNNER_UNMEASURED_NO_SCOPE : r.labeled === 0 ? RUNNER_UNMEASURED_NEVER_FIRED : null
+  return { ...r, base: res.labeled ? res.base : null, scopeN: res.labeled, unmeasured }
+}
 export const RULE_VERDICTS_SCHEMA = 1
 export const RULE_VERDICTS_HISTORY_CAP = 20
 
@@ -84,13 +112,18 @@ export function readRuleVerdicts(path) {
   return raw
 }
 
+/** id → verdict string for the entries whose `source` passes `keep`. */
+const verdictsWhere = (file, keep) => Object.fromEntries(Object.entries(file?.rules ?? {}).filter(([, r]) => keep(r?.source)).map(([id, r]) => [id, r?.verdict ?? null]))
 /** id → verdict string, from a file (or {} for none) — the S5 RULES only. The
- *  learner's `M1.*` rows (`source: 'model'`) are not in the version's meaning:
- *  nothing S5 may enforce changes when one appears, vanishes or moves (final
- *  review M2, T5-M2); they are compared by `modelVerdictMap` instead. */
-const verdictMap = (file) => Object.fromEntries(Object.entries(file?.rules ?? {}).filter(([, r]) => r?.source !== 'model').map(([id, r]) => [id, r?.verdict ?? null]))
+ *  learner's `M1.*` rows (`source: 'model'`) and the runner's `R1.*` rows
+ *  (`source: 'runner'`, Phase 6) are not in the version's meaning: nothing S5
+ *  may enforce changes when one appears, vanishes or moves (final review M2,
+ *  T5-M2); they are compared by `modelVerdictMap` / `runnerVerdictMap`. */
+const verdictMap = (file) => verdictsWhere(file, (s) => s !== 'model' && s !== 'runner')
 /** id → verdict string for the `M1.*` model rows only. */
-const modelVerdictMap = (file) => Object.fromEntries(Object.entries(file?.rules ?? {}).filter(([, r]) => r?.source === 'model').map(([id, r]) => [id, r?.verdict ?? null]))
+const modelVerdictMap = (file) => verdictsWhere(file, (s) => s === 'model')
+/** id → verdict string for the runner rows (`R1.no-progress`) only. */
+const runnerVerdictMap = (file) => verdictsWhere(file, (s) => s === 'runner')
 
 /** Every rule whose verdict differs between two id → verdict maps, sorted by id.
  *  A rule that appears or disappears is a change (`from`/`to` null). */
@@ -122,13 +155,25 @@ function verdictChanges(before, after) {
  * (`engine/s5/ruleAuthority.ts` skips `source: 'model'`); an M1 that earns
  * PREDICTIVE is the next phase's advisory input, nothing more. With no model
  * rows the file is exactly what it was before Phase 5.
+ *
+ * Phase 6: `runnerRows` (from `runnerRowsFrom`, the runner's shadow regulator
+ * `R1.no-progress`) mirror the model rows exactly — the same Fisher/Wilson
+ * over their scope (the in-scope waves across every runner-driven campaign),
+ * the same one Holm family (rules, then models, then runner rows), written as
+ * `rules['R1.no-progress'] = { …, source: 'runner', scope: 'waves', base,
+ * scopeN }`, recorded in `runnerChanged` on the history entry and never a
+ * version bump. The engine never grants a runner row authority
+ * (`engine/s5/ruleAuthority.ts` skips `source: 'runner'`). A runner row with
+ * no table reads UNMEASURED with its reason, n 0 and null numbers (F16).
  */
-export function writeRuleVerdicts({ rows, campaign, outPath, analyse = analyseFn, now = () => new Date().toISOString(), modelRows = [] }) {
+export function writeRuleVerdicts({ rows, campaign, outPath, analyse = analyseFn, now = () => new Date().toISOString(), modelRows = [], runnerRows = [] }) {
   const res = analyse(rows)
   const models = (modelRows ?? []).map(m => modelRuleOf(m, rows, analyse))
-  // Rules first, then models, as one Holm family. Only when there are model
-  // rows: without them the rules keep `analyse`'s own correction untouched.
-  const holmFamily = models.length ? holm([...res.rules, ...models]) : null
+  const runners = (runnerRows ?? []).map(u => runnerRuleOf(u, analyse))
+  // Rules first, then models, then runner rows, as one Holm family. Only when
+  // there are extra rows: without them the rules keep `analyse`'s own
+  // correction untouched.
+  const holmFamily = models.length || runners.length ? holm([...res.rules, ...models, ...runners]) : null
   const rules = {}
   for (const r of [...res.rules].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))) {
     rules[r.id] = {
@@ -150,21 +195,32 @@ export function writeRuleVerdicts({ rows, campaign, outPath, analyse = analyseFn
       source: 'model', scope: 'holdout', base: r.base, scopeN: r.scopeN,
     }
   }
+  for (const r of [...runners].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))) {
+    rules[r.id] = {
+      verdict: r.unmeasured ?? ruleVerdictOf(r),
+      precision: r.precision ?? null, ci: r.ci ?? null, p: r.p ?? null, n: r.labeled ?? null,
+      pAdjusted: r.pAdjusted ?? null, lift: r.lift ?? null, firedTotal: r.firedTotal ?? null, failures: r.failures ?? null,
+      // `base` is the failure rate over the in-scope waves; `scopeN` how many.
+      source: 'runner', scope: 'waves', base: r.base, scopeN: r.scopeN,
+    }
+  }
   const predictive = Object.keys(rules).filter(id => rules[id].verdict === 'PREDICTIVE')
   const prev = readRuleVerdicts(outPath)
   const changed = verdictChanges(verdictMap(prev), verdictMap({ rules }))
   // A model row that appeared, vanished or moved stays on the record — an M1
   // reaching PREDICTIVE must be findable — but it never bumps the version.
   const modelChanged = verdictChanges(modelVerdictMap(prev), modelVerdictMap({ rules }))
+  // The runner rows, the same way (Phase 6).
+  const runnerChanged = verdictChanges(runnerVerdictMap(prev), runnerVerdictMap({ rules }))
   const at = now()
   let version = Number.isInteger(prev?.version) ? prev.version : 0
   let history = Array.isArray(prev?.history) ? [...prev.history] : []
-  const modelNote = modelChanged.length ? { modelChanged } : {}
+  const notes = { ...(modelChanged.length ? { modelChanged } : {}), ...(runnerChanged.length ? { runnerChanged } : {}) }
   if (!prev || changed.length > 0) {
     version += 1
-    history.push({ version, at, campaign: campaign ?? null, predictive, changed, ...modelNote })
-  } else if (modelChanged.length > 0) {
-    history.push({ version, at, campaign: campaign ?? null, predictive, changed: [], modelChanged })
+    history.push({ version, at, campaign: campaign ?? null, predictive, changed, ...notes })
+  } else if (modelChanged.length > 0 || runnerChanged.length > 0) {
+    history.push({ version, at, campaign: campaign ?? null, predictive, changed: [], ...notes })
   }
   history = history.slice(-RULE_VERDICTS_HISTORY_CAP)
   const file = {
@@ -182,14 +238,18 @@ export function writeRuleVerdicts({ rows, campaign, outPath, analyse = analyseFn
   // `total` counts every entry in the file; `rules` / `modelRows` split it, so
   // a reader can say "N of 8 rules (+2 model rows)" as the scoreboard does
   // (final review M7, T7-M5).
+  // Phase 6: with runner rows, `runnerRows` counts them and `runners` carries
+  // their entries, which the verdict entry names on its ladder line.
   return { version, predictive, total: Object.keys(rules).length, rules: res.rules.length, modelRows: models.length,
-    ...(models.length ? { models: Object.fromEntries(models.map(r => [r.id, rules[r.id]])) } : {}) }
+    ...(models.length ? { models: Object.fromEntries(models.map(r => [r.id, rules[r.id]])) } : {}),
+    ...(runners.length ? { runnerRows: runners.length, runners: Object.fromEntries(runners.map(r => [r.id, rules[r.id]])) } : {}) }
 }
 
-/** The CLI's summary line: rules and model rows counted apart, as the scoreboard reads them. */
+/** The CLI's summary line: rules, model rows and runner rows counted apart, as the scoreboard reads them. */
 export function verdictsLine(r, outPath) {
   const models = r.modelRows ? ` (+${r.modelRows} model row${r.modelRows === 1 ? '' : 's'})` : ''
-  return `rule verdicts v${r.version}: ${r.predictive.length} predictive of ${r.rules} rules${models} (${r.predictive.join(', ') || 'none'}) → ${outPath}`
+  const runners = r.runnerRows ? ` (+${r.runnerRows} runner row${r.runnerRows === 1 ? '' : 's'})` : ''
+  return `rule verdicts v${r.version}: ${r.predictive.length} predictive of ${r.rules} rules${models}${runners} (${r.predictive.join(', ') || 'none'}) → ${outPath}`
 }
 
 // CLI: rebuild the file by hand (the runner does it at every VERDICT).

@@ -255,7 +255,9 @@ export function perRulePrecision(ruleVerdicts) {
   const all = ruleVerdicts?.rules
   if (!all || typeof all !== 'object' || Array.isArray(all)) return null
   const entries = Object.entries(all)
-  const rules = entries.filter(([, r]) => r?.source !== 'model')
+  // Phase 6: the runner's shadow regulator (`R1.no-progress`, source 'runner')
+  // is not a rule either — neither counted nor ranked.
+  const rules = entries.filter(([, r]) => r?.source !== 'model' && r?.source !== 'runner')
   const models = entries.filter(([, r]) => r?.source === 'model')
   const predictive = rules.filter(([, r]) => r?.verdict === 'PREDICTIVE').length
   return { predictive, total: rules.length, best: bestOf(rules), learner: bestOf(models) }

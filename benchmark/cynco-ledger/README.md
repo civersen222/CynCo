@@ -1352,6 +1352,40 @@ min: 3); R1.no-progress fired at 52% (would have saved 3.2 h)` — minutes are
 fault(s)` when probes faulted. With no measured reading:
 `- Progress: no readings (<reason>)`. A runner io with no probe prints no line.
 
+**`R1.no-progress` in the ladder (Task 4).** At every VERDICT the runner builds
+the runner row from THIS campaign's waves (the wave just recorded in place of
+its stored copy) and every OTHER runner-driven campaign's
+`<cyncoHome>/campaigns/*/waves.jsonl` (`runnerWaves` in
+`scripts/cynco-campaign.mjs`) — the rule is one rule across campaigns — and
+hands it to `writeRuleVerdicts({ …, modelRows, runnerRows })`. The row goes
+through the SAME `analyse` a rule faces — Fisher exact, Wilson — over its scope
+alone (one row per in-scope wave; *fired* from `fired`, the outcome from
+`failed`, through `analyse`'s `labelOf` seam, so the lift is against the
+in-scope waves' failure rate), and joins the ONE Holm family: rules, then
+`M1.*` model rows, then runner rows (`ledger.holmFamily`). It lands as
+`rules['R1.no-progress'] = { verdict, precision, ci, p, n, pAdjusted, lift,
+firedTotal, failures, source: 'runner', scope: 'waves', base, scopeN }`.
+Unmeasured is never a rate (F16): with no wave in scope the verdict is
+`UNMEASURED — no wave in scope (no shadow decision at 50 % of its clock or
+later)`, and with waves in scope but no firing `UNMEASURED — fired on no
+in-scope wave`; either way `n: 0` and every number `null`. Like the model rows
+it never moves the version: a runner row that appears, vanishes or changes
+verdict is written to the history entry's `runnerChanged` (a new entry at the
+SAME version when no rule moved; riding on the rule entry when one did).
+`engine/s5/ruleAuthority.ts` skips `source: 'runner'` exactly as it skips
+`source: 'model'` (pinned in `ruleAuthority.test.ts`), and the scoreboard's
+`perRulePrecision` neither counts nor ranks it — shadow means no authority,
+whatever the verdict. The writer returns `runnerRows` (count) and `runners`
+(the entries); the verdict entry names the row with its verdict on the
+`- Outcome hindcast:` ladder line, after the model rows — on a fault line too,
+since the runner row does not depend on the hindcast:
+`…; M1.lr precision null on 0 fired p(Holm) null TOO FEW; R1.no-progress
+precision 100% [21, 100] on 1 fired p(Holm) null TOO FEW; leak check …`. If
+the write throws on the MODEL rows, the fallback rewrite keeps the runner rows.
+The CLI (`bun scripts/cynco-rule-verdicts.mjs`) writes no runner rows, as it
+writes no model rows without `--with-hindcast`: a hand rebuild records the row
+as vanished in `runnerChanged`, and the next VERDICT restores it.
+
 ## Labeling rule
 
 Ground truth for signal validation (step 2, per-rule precision/recall):

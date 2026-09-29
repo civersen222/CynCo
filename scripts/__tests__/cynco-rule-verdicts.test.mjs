@@ -3,7 +3,8 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdi
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { RULE_VERDICTS_PATH, writeRuleVerdicts, readRuleVerdicts, RULE_VERDICTS_SCHEMA, RULE_VERDICTS_HISTORY_CAP, OUTCOME_MODEL_PATH, modelRowsFrom, main, verdictsLine } from '../cynco-rule-verdicts.mjs'
-import { analyse, ruleVerdictOf } from '../cynco-signal-validation.mjs'
+import { analyse, ruleVerdictOf, holm } from '../cynco-signal-validation.mjs'
+import { runnerRowsFrom } from '../cynco-campaign-progress.mjs'
 
 afterEach(() => { vi.restoreAllMocks() })
 
@@ -256,6 +257,113 @@ describe('writeRuleVerdicts with model rows', () => {
     writeRuleVerdicts({ rows: predictiveRows(), campaign: 'c8', outPath: a, now: () => 't' })
     writeRuleVerdicts({ rows: predictiveRows(), campaign: 'c8', outPath: b, now: () => 't', modelRows: [] })
     expect(readFileSync(b, 'utf8')).toBe(readFileSync(a, 'utf8'))
+  })
+})
+
+// Phase 6 Task 4: the runner's shadow regulator `R1.no-progress` in the ladder,
+// as a `source: 'runner'` row built from the wave records (runnerRowsFrom) —
+// the same Fisher/Wilson/Holm as a rule, never authority, never the version.
+describe('writeRuleVerdicts with runner rows', () => {
+  const past = [{ at: 't', sha: 's', fails: 2, elapsedFraction: 0.6 }]
+  const wave = (missionId, kind, fired) => ({ missionId, decision: { kind }, progress: past, shadowDecisions: [{ rule: 'R1.no-progress', fired, elapsedFraction: 0.6 }] })
+  // 15 in-scope waves: R1 fired on 5 (4 failed, 1 passed) and stayed quiet on
+  // 10 (3 failed, 7 passed). Two out-of-scope waves: one never read past 50 %,
+  // one a `stop` that never ran.
+  const waves = () => [
+    ...['f0', 'f1', 'f2', 'f3'].map(id => wave(id, 'next', true)), wave('p0', 'pass', true),
+    ...['q0', 'q1', 'q2'].map(id => wave(id, 'budget', false)),
+    ...Array.from({ length: 7 }, (_, i) => wave(`s${i}`, i % 2 ? 'pass-with-survivors' : 'pass', false)),
+    { missionId: 'early', decision: { kind: 'next' }, progress: [{ fails: 2, elapsedFraction: 0.3 }], shadowDecisions: [{ rule: 'R1.no-progress', fired: true, elapsedFraction: 0.3 }] },
+    { missionId: 'stopped', decision: { kind: 'stop' }, progress: past, shadowDecisions: [{ rule: 'R1.no-progress', fired: true, elapsedFraction: 0.6 }] },
+  ]
+  // The same 15 missions as ledger rows of an ordinary rule 'R'.
+  const asRuleRows = () => [
+    ...Array.from({ length: 4 }, () => failed(['R'])), landed(['R']),
+    ...Array.from({ length: 3 }, () => failed([])), ...Array.from({ length: 7 }, () => landed([])),
+  ]
+
+  it('a runner row with 4 of 5 fired waves failing gets exactly the numbers `analyse` gives a rule', () => {
+    const outPath = RULE_VERDICTS_PATH(home())
+    const r = writeRuleVerdicts({ rows: [], campaign: 'c9', outPath, runnerRows: runnerRowsFrom(waves()) })
+    const f = JSON.parse(readFileSync(outPath, 'utf8'))
+    const asRule = analyse(asRuleRows()).rules.find(x => x.id === 'R')
+    expect(asRule).toMatchObject({ labeled: 5, failures: 4, precision: 0.8 })
+    expect(f.rules['R1.no-progress']).toEqual({
+      verdict: ruleVerdictOf(asRule), precision: 0.8, ci: asRule.ci, p: asRule.p, n: 5,
+      pAdjusted: asRule.pAdjusted, lift: asRule.lift, firedTotal: 5, failures: 4,
+      source: 'runner', scope: 'waves', base: 7 / 15, scopeN: 15,
+    })
+    expect(f.rules['R1.no-progress'].lift).toBeCloseTo(0.8 - 7 / 15, 10)
+    expect(f.rules['R1.no-progress'].verdict).toBe('TOO FEW — cannot tell')
+    // The return names the runner rows apart from the rules and the model rows.
+    expect(r).toMatchObject({ rules: 0, modelRows: 0, runnerRows: 1, total: 1 })
+    expect(r.runners['R1.no-progress']).toEqual(f.rules['R1.no-progress'])
+  })
+
+  it('the Holm family is the rules, the model rows and the runner rows together', () => {
+    const outPath = RULE_VERDICTS_PATH(home())
+    const rows = predictiveRows().map((r, i) => ({ ...r, missionId: `p${i}` }))
+    const x = analyse(rows).rules.find(r => r.id === 'X')
+    const run = analyse(asRuleRows()).rules.find(r => r.id === 'R')
+    writeRuleVerdicts({ rows, campaign: 'c9', outPath, runnerRows: runnerRowsFrom(waves()) })
+    const f = JSON.parse(readFileSync(outPath, 'utf8'))
+    const family = [{ id: 'X', p: x.p }, { id: 'R', p: run.p }]
+    holm(family)
+    expect(f.ledger.holmFamily).toBe(2)
+    expect(f.rules.X.pAdjusted).toBeCloseTo(family[0].pAdjusted, 12)
+    expect(f.rules['R1.no-progress'].pAdjusted).toBeCloseTo(family[1].pAdjusted, 12)
+  })
+
+  it('no fired decision in scope is UNMEASURED with n 0 and no numbers, never a rate (F16)', () => {
+    const outPath = RULE_VERDICTS_PATH(home())
+    const quiet = waves().map(w => ({ ...w, shadowDecisions: w.shadowDecisions.map(d => ({ ...d, fired: false })) }))
+    writeRuleVerdicts({ rows: [], campaign: 'c9', outPath, runnerRows: runnerRowsFrom(quiet) })
+    expect(JSON.parse(readFileSync(outPath, 'utf8')).rules['R1.no-progress']).toMatchObject({
+      verdict: 'UNMEASURED — fired on no in-scope wave', n: 0, firedTotal: 0, failures: 0, precision: null, p: null, pAdjusted: null, lift: null,
+      source: 'runner', scope: 'waves', scopeN: 15, base: 7 / 15 })
+    // An empty scope (no wave read past 50 %) says so, and has no base either.
+    const empty = RULE_VERDICTS_PATH(home())
+    writeRuleVerdicts({ rows: [], campaign: 'c9', outPath: empty, runnerRows: runnerRowsFrom([]) })
+    expect(JSON.parse(readFileSync(empty, 'utf8')).rules['R1.no-progress']).toMatchObject({
+      verdict: 'UNMEASURED — no wave in scope (no shadow decision at 50 % of its clock or later)', n: 0, precision: null, p: null, scopeN: 0, base: null })
+  })
+
+  it('a runner row appearing, moving or vanishing never bumps the version; it is kept as runnerChanged', () => {
+    const outPath = RULE_VERDICTS_PATH(home())
+    const rows = predictiveRows()
+    const v1 = writeRuleVerdicts({ rows, campaign: 'c9', outPath, now: () => 't1' })
+    const v2 = writeRuleVerdicts({ rows, campaign: 'c9', outPath, now: () => 't2', runnerRows: runnerRowsFrom([]) })
+    const v3 = writeRuleVerdicts({ rows, campaign: 'c9', outPath, now: () => 't3', runnerRows: runnerRowsFrom(waves()) })
+    const v4 = writeRuleVerdicts({ rows, campaign: 'c9', outPath, now: () => 't4' })
+    expect([v1.version, v2.version, v3.version, v4.version]).toEqual([1, 1, 1, 1])
+    const f = JSON.parse(readFileSync(outPath, 'utf8'))
+    expect(f.version).toBe(1)
+    const unmeasured = 'UNMEASURED — no wave in scope (no shadow decision at 50 % of its clock or later)'
+    expect(f.history.map(h => ({ version: h.version, at: h.at, changed: h.changed, runnerChanged: h.runnerChanged, modelChanged: h.modelChanged }))).toEqual([
+      { version: 1, at: 't1', changed: f.history[0].changed, runnerChanged: undefined, modelChanged: undefined },
+      { version: 1, at: 't2', changed: [], runnerChanged: [{ id: 'R1.no-progress', from: null, to: unmeasured }], modelChanged: undefined },
+      { version: 1, at: 't3', changed: [], runnerChanged: [{ id: 'R1.no-progress', from: unmeasured, to: 'TOO FEW — cannot tell' }], modelChanged: undefined },
+      { version: 1, at: 't4', changed: [], runnerChanged: [{ id: 'R1.no-progress', from: 'TOO FEW — cannot tell', to: null }], modelChanged: undefined },
+    ])
+    // Unchanged runner rows add nothing.
+    writeRuleVerdicts({ rows, campaign: 'c9', outPath, now: () => 't5' })
+    expect(JSON.parse(readFileSync(outPath, 'utf8')).history).toHaveLength(4)
+  })
+
+  it('a rule move still bumps the version, and a runner move in the same write rides on that entry', () => {
+    const outPath = RULE_VERDICTS_PATH(home())
+    writeRuleVerdicts({ rows: thinRows(), campaign: 'c9', outPath, now: () => 't1' })
+    const r = writeRuleVerdicts({ rows: predictiveRows(), campaign: 'c9', outPath, now: () => 't2', runnerRows: runnerRowsFrom(waves()) })
+    expect(r.version).toBe(2)
+    const last = JSON.parse(readFileSync(outPath, 'utf8')).history.at(-1)
+    expect(last.changed.map(c => c.id)).toContain('X')
+    expect(last.changed.map(c => c.id)).not.toContain('R1.no-progress')
+    expect(last.runnerChanged).toEqual([{ id: 'R1.no-progress', from: null, to: 'TOO FEW — cannot tell' }])
+  })
+
+  it('verdictsLine counts the runner rows apart', () => {
+    expect(verdictsLine({ version: 3, predictive: [], rules: 8, modelRows: 2, runnerRows: 1, total: 11 }, 'P'))
+      .toBe('rule verdicts v3: 0 predictive of 8 rules (+2 model rows) (+1 runner row) (none) → P')
   })
 })
 

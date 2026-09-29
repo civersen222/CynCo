@@ -1803,12 +1803,12 @@ describe('the rule verdicts at VERDICT', () => {
     const home = mkdtempSync(join(tmpdir(), 'rv-home-'))
     const state = freshState()
     const rec = await runWave(spec, state, io({ readLedgerRows: ledger, datasetsHome: () => home }))
-    expect(rec.ruleVerdicts).toEqual({ version: 1, predictive: ['X'], total: 2, rules: 2, modelRows: 0 })
+    expect(rec.ruleVerdicts).toMatchObject({ version: 1, predictive: ['X'], total: 3, rules: 2, modelRows: 0, runnerRows: 1 })
     const f = JSON.parse(readFileSync(join(home, 'datasets', 'rule-verdicts.json'), 'utf8'))
     expect(f).toMatchObject({ schema: 1, version: 1, campaign: 'c8', predictive: ['X'] })
     expect(f.rules.X.verdict).toBe('PREDICTIVE')
     // The persisted record carries it too, not only the returned one.
-    expect(state.waves().at(-1).ruleVerdicts).toEqual({ version: 1, predictive: ['X'], total: 2, rules: 2, modelRows: 0 })
+    expect(state.waves().at(-1).ruleVerdicts).toEqual(rec.ruleVerdicts)
   })
 
   it('reuses the rows the triples export already read instead of reading the ledger twice', async () => {
@@ -1818,7 +1818,7 @@ describe('the rule verdicts at VERDICT', () => {
       readLedgerRows: () => { throw new Error('the ledger must not be read a second time') },
       datasetsHome: () => home,
     }))
-    expect(rec.ruleVerdicts).toEqual({ version: 1, predictive: ['X'], total: 2, rules: 2, modelRows: 0 })
+    expect(rec.ruleVerdicts).toMatchObject({ version: 1, predictive: ['X'], total: 3, rules: 2, modelRows: 0, runnerRows: 1 })
   })
 
   it('a verdict file that will not write costs the wave nothing', async () => {
@@ -1970,7 +1970,7 @@ describe('the scoreboard at VERDICT', () => {
     const home = mkdtempSync(join(tmpdir(), 'ds-sb-'))
     const rec = await runWave(spec, freshState(), io({ datasetsHome: () => home, readLedgerRows: () => [] }))
     expect(rec.ruleVerdicts).not.toBeNull()
-    expect(rec.scoreboard.perRulePrecision).toMatchObject({ predictive: 0, total: rec.ruleVerdicts.total })
+    expect(rec.scoreboard.perRulePrecision).toMatchObject({ predictive: 0, total: rec.ruleVerdicts.rules })
   })
 
   it('a PASS wave decides the campaign on the board', async () => {
@@ -2065,6 +2065,32 @@ describe('runWave — gate progress measured by the runner mid-wave', () => {
     expect(rec.decision.kind).toBe('next')
   })
 
+  // Phase 6 Task 4: the shadow decisions reach the ladder as one runner row,
+  // `R1.no-progress` (source 'runner'), built from THIS campaign's waves (the
+  // wave just recorded included) and every other runner-driven campaign's
+  // waves under <home>/campaigns — the rule is one rule across campaigns.
+  it('the shadow decisions reach the ladder as R1.no-progress over every runner-driven campaign\'s waves', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'ds-ladder-'))
+    const other = new CampaignState(join(home, 'campaigns', 'c7'))
+    const past = [{ at: 't', sha: 's', fails: 3, elapsedFraction: 0.7 }]
+    for (const [i, kind] of ['next', 'budget'].entries()) {
+      other.appendWave({ wave: i + 1, missionId: `c7-wave${i + 1}-1`, decision: { kind }, progress: past, shadowDecisions: [{ rule: 'R1.no-progress', fired: true, elapsedFraction: 0.7 }] })
+    }
+    // A dir without a waves.jsonl is not runner-driven and adds nothing; a
+    // stale copy of this campaign under the home is read from the state instead.
+    mkdirSync(join(home, 'campaigns', 'hand'), { recursive: true })
+    new CampaignState(join(home, 'campaigns', 'c8')).appendWave({ wave: 9, missionId: 'stale', decision: { kind: 'next' }, progress: past, shadowDecisions: [{ rule: 'R1.no-progress', fired: true, elapsedFraction: 0.7 }] })
+    const { seen, io: fake } = io({ datasetsHome: () => home })
+    const rec = await runWave(progressSpec, freshState(), fake)
+    const f = JSON.parse(readFileSync(join(home, 'datasets', 'rule-verdicts.json'), 'utf8'))
+    expect(f.rules['R1.no-progress']).toMatchObject({ source: 'runner', scope: 'waves', firedTotal: 3, n: 3, failures: 3, scopeN: 3, precision: 1, p: null, verdict: 'TOO FEW — cannot tell' })
+    expect(rec.ruleVerdicts).toMatchObject({ runnerRows: 1, rules: 0 })
+    expect(rec.ruleVerdicts.runners['R1.no-progress']).toEqual(f.rules['R1.no-progress'])
+    // Named with its verdict on the ladder line; the Progress line is untouched.
+    expect(seen.entry).toMatch(/^- Outcome hindcast: UNMEASURED — .*; R1\.no-progress precision 100% \[\d+, \d+\] on 3 fired p\(Holm\) null TOO FEW$/m)
+    expect(seen.entry).toMatch(/^- Progress: 1 → 1 fails /m)
+  })
+
   it('an io without a probe takes no readings and prints no line; the record says why', async () => {
     const { seen, io: fake } = io({ progressProbe: undefined })
     const rec = await runWave(progressSpec, freshState(), fake)
@@ -2157,9 +2183,11 @@ describe('the outcome hindcast at VERDICT', () => {
     }))
     expect(rec.decision.kind).toBe('next')
     expect(rec.hindcast).toEqual({ fault: "exit 1: Traceback (most recent call last): | ModuleNotFoundError: No module named 'sklearn'" })
-    expect(rec.ruleVerdicts).toEqual({ version: 1, predictive: [], total: 0, rules: 0, modelRows: 0 })
-    expect(Object.keys(verdictsIn(home).rules)).toEqual([])
-    expect(entry).toMatch(/^- Scoreboard: .*\n- Outcome hindcast: UNMEASURED — exit 1: .*No module named 'sklearn'$/m)
+    // Phase 6 Task 4: the runner row R1.no-progress is always written — no
+    // wave read past 50 % here, so it is UNMEASURED with no numbers.
+    expect(rec.ruleVerdicts).toMatchObject({ version: 1, predictive: [], total: 1, rules: 0, modelRows: 0, runnerRows: 1 })
+    expect(Object.keys(verdictsIn(home).rules)).toEqual(['R1.no-progress'])
+    expect(entry).toMatch(/^- Scoreboard: .*\n- Outcome hindcast: UNMEASURED — exit 1: .*No module named 'sklearn'; R1\.no-progress precision null on 0 fired p\(Holm\) null UNMEASURED$/m)
   })
 
   it('TOO FEW (exit 2) and a spawn fault read the same way; a throw from the seam too', async () => {
@@ -2199,8 +2227,8 @@ describe('the outcome hindcast at VERDICT', () => {
     expect(rec.hindcast).toMatchObject({ version: 3, prefixTurns: 16, nHoldout: 20, baseRate: 0.6, features: 2, lengthFeature: null,
       models: { gbt: { auc: 0.71 } }, secondary: { refusal: 'TOO FEW: train 5 < 30 or holdout 19 < 8' } })
     expect(rec.hindcast.ladder['M1.gbt']).toEqual(f.rules['M1.gbt'])
-    expect(rec.ruleVerdicts.total).toBe(2)
-    expect(entry).toMatch(/^- Scoreboard: .*\n- Outcome hindcast: v3 at K = 16 turns on 20 held-out missions \(base 60%\): M1\.gbt precision 80% \[\d+, \d+\] on 10 fired p\(Holm\) \d\.\d{3} [A-Z][A-Z ]+; M1\.lr precision null on 0 fired p\(Holm\) null TOO FEW; leak check gbt AUC prefix 0\.71 \/ hindsight 0\.93, lr AUC prefix 0\.50 \/ hindsight 0\.60; K = 32 TOO FEW: train 5 < 30 or holdout 19 < 8$/m)
+    expect(rec.ruleVerdicts.total).toBe(3)
+    expect(entry).toMatch(/^- Scoreboard: .*\n- Outcome hindcast: v3 at K = 16 turns on 20 held-out missions \(base 60%\): M1\.gbt precision 80% \[\d+, \d+\] on 10 fired p\(Holm\) \d\.\d{3} [A-Z][A-Z ]+; M1\.lr precision null on 0 fired p\(Holm\) null TOO FEW; R1\.no-progress precision null on 0 fired p\(Holm\) null UNMEASURED; leak check gbt AUC prefix 0\.71 \/ hindsight 0\.93, lr AUC prefix 0\.50 \/ hindsight 0\.60; K = 32 TOO FEW: train 5 < 30 or holdout 19 < 8$/m)
   })
 
   // Final review M1 (T5-M1): a writeRuleVerdicts that throws on the MODEL rows
@@ -2227,12 +2255,14 @@ describe('the outcome hindcast at VERDICT', () => {
     const f = verdictsIn(home)
     expect(f.at).not.toBe('stale')
     expect(Object.keys(f.rules).filter(id => id.startsWith('M1.'))).toEqual([])
+    // The runner row does not depend on the hindcast: it is kept.
+    expect(f.rules['R1.no-progress']).toMatchObject({ source: 'runner' })
     expect(f.predictive).toEqual([])
     expect(rec.ruleVerdicts).toMatchObject({ modelRowsSkipped: true, predictive: [] })
     expect(rec.hindcast.ladderFault).toBe('Holm over a NaN p')
     expect(rec.hindcast.ladder).toBeNull()
     expect(rec.hindcast.version).toBe(3)
-    expect(entry).toMatch(/- Outcome hindcast: v3 at K = 16 turns .*LADDER NOT WRITTEN \(Holm over a NaN p\) — rules rewritten alone; leak check/)
+    expect(entry).toMatch(/- Outcome hindcast: v3 at K = 16 turns .*LADDER NOT WRITTEN \(Holm over a NaN p\) — rules rewritten alone; R1\.no-progress precision null on 0 fired p\(Holm\) null UNMEASURED; leak check/)
   })
 
   it('a throw with no model rows is the rules\' own: the outer catch logs it, the wave is not faulted', async () => {

@@ -128,6 +128,25 @@ describe('hindcastLine', () => {
       .toBe('- Outcome hindcast: v1 at K = 16 turns on 21 held-out missions (base 50%): no ladder reading; leak check not run; dropped 2 dead column(s): stuckTurns.mean, consecutiveUnstable.last')
   })
 
+  // Phase 6 Task 4: the runner row R1.no-progress is named with its verdict
+  // on the same ladder line, after the model rows — and on a fault line too,
+  // since the runner row does not depend on the hindcast.
+  it('names R1.no-progress with its verdict on the ladder line, with or without a hindcast', () => {
+    const runners = { 'R1.no-progress': { verdict: 'TOO FEW — cannot tell', precision: 0.8, ci: [0.376, 0.964], n: 5, pAdjusted: 0.3, source: 'runner' } }
+    const h = { version: 1, prefixTurns: 16, nHoldout: 21, baseRate: 0.5, lengthFeature: null, leakCheck: null, secondary: null,
+      ladder: { 'M1.lr': { verdict: 'NO EVIDENCE', precision: 0.5, ci: [0.2, 0.8], n: 8, pAdjusted: 1 } } }
+    expect(hindcastLine(h, { runners }))
+      .toBe('- Outcome hindcast: v1 at K = 16 turns on 21 held-out missions (base 50%): M1.lr precision 50% [20, 80] on 8 fired p(Holm) 1.000 NO EVIDENCE; '
+        + 'R1.no-progress precision 80% [38, 96] on 5 fired p(Holm) 0.300 TOO FEW; leak check not run')
+    expect(hindcastLine({ ...h, ladder: {} }, { runners }))
+      .toBe('- Outcome hindcast: v1 at K = 16 turns on 21 held-out missions (base 50%): R1.no-progress precision 80% [38, 96] on 5 fired p(Holm) 0.300 TOO FEW; leak check not run')
+    const unmeasured = { 'R1.no-progress': { verdict: 'UNMEASURED — fired on no in-scope wave', precision: null, ci: [0, 1], n: 0, pAdjusted: null, source: 'runner' } }
+    expect(hindcastLine({ fault: 'exit 2: TOO FEW: x' }, { runners: unmeasured }))
+      .toBe('- Outcome hindcast: UNMEASURED — exit 2: TOO FEW: x; R1.no-progress precision null on 0 fired p(Holm) null UNMEASURED')
+    // No runner rows: the line is what it was.
+    expect(hindcastLine({ fault: 'exit 2: TOO FEW: x' }, { runners: null })).toBe('- Outcome hindcast: UNMEASURED — exit 2: TOO FEW: x')
+  })
+
   it('names a length feature when one reached the prefix', () => {
     expect(hindcastLine({ version: 1, prefixTurns: 16, nHoldout: 21, baseRate: 0.5, lengthFeature: 'turnsInPrefix', ladder: {}, leakCheck: null, secondary: null }))
       .toBe('- Outcome hindcast: v1 at K = 16 turns on 21 held-out missions (base 50%): no ladder reading; leak check not run; LENGTH FEATURE turnsInPrefix in the prefix')
