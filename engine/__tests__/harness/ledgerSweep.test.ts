@@ -161,6 +161,15 @@ describe('cynco-ledger-sweep writes back to the shard the record lives in', () =
     })
   })
 
+  // Review M3: derived-full says the sweep ran with --mutate; a command that
+  // did not is refused, and nothing is written.
+  it('--kind derived-full refuses a command without --mutate', () => {
+    const before = read('missions.jsonl')
+    expect(main(argv('--record', '1', '--command', 'python scripts/cynco-mutation-sweep.py --repo r --base a --head b', '--killed', '1', '--total', '1',
+      '--kind', 'derived-full'), dir)).toBe(2)
+    expect(read('missions.jsonl')).toEqual(before)
+  })
+
   it('an unknown --kind writes nothing rather than guessing', () => {
     const before = read('missions.jsonl')
     expect(main(argv('--record', '1', '--command', 'z', '--killed', '1', '--total', '1',

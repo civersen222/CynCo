@@ -31,10 +31,17 @@ export const defaultIo = {
   // suite and the reading looked normal. `null` means "I do not know what
   // changed", and runSweep then leaves `--tests` off so the sweep's own
   // refusal is the visible finding.
+  //
+  // `--diff-filter=d` (review I1): a path the wave DELETED is not a file it
+  // shipped. Named under `--mutate` it is a hard refusal (the sweep cannot
+  // find it at HEAD), so a wave that deletes a dead module and fixes an import
+  // — F164's shape — would refuse its retry too; and a deleted `test_*.py`
+  // is not "the diff shipped its own test", so it must not switch off the
+  // keep-green `--tests`. Renames keep their new path.
   changedFiles(repo, base, head) {
-    const r = spawnSync('git', ['-C', repo, 'diff', '--name-only', `${base}..${head}`], { encoding: 'utf8', windowsHide: true })
+    const r = spawnSync('git', ['-C', repo, 'diff', '--name-only', '--diff-filter=d', `${base}..${head}`], { encoding: 'utf8', windowsHide: true })
     if (r.error || r.status !== 0) {
-      console.error(`[grade] git diff --name-only ${base}..${head} failed: ${r.error?.message ?? r.stderr ?? `exit ${r.status}`}`)
+      console.error(`[grade] git diff --name-only --diff-filter=d ${base}..${head} failed: ${r.error?.message ?? r.stderr ?? `exit ${r.status}`}`)
       return null
     }
     return (r.stdout ?? '').split('\n').map(s => s.trim()).filter(Boolean)
@@ -61,13 +68,15 @@ export function sweepTestsFor(spec, changedFiles) {
 // those files (added lines → whole file) and never the set of files. No
 // "package dir" is derived: the sweep reads the same diff and has none, and a
 // guessed prefix could only drop a file the wave really changed. The test rule
-// is the sweep's `is_test_path` (a `tests/` directory, `test_*`, `*_test.py`),
-// because `--mutate` REFUSES a named test file — a looser rule here would
-// turn every retry on a mixed diff into a second refusal. `spec` is unused
-// today; it is in the signature beside `sweepTestsFor` so a campaign that ever
-// needs to narrow the sources has the place to say so.
+// is EXACTLY the sweep's `is_test_path` (`"/tests/" in p`, `test_*`,
+// `*_test.py`), because `--mutate` refuses precisely what that returns true
+// for: a looser rule here would turn a retry on a mixed diff into a second
+// refusal, and a stricter one (review M2) would drop a file the sweep accepts
+// — a top-level `tests/helpers.py` is a source to the sweep, so it is one
+// here. `spec` is unused today; it is in the signature beside `sweepTestsFor`
+// so a campaign that ever needs to narrow the sources has the place to say so.
 export function sweepSourcesFor(spec, changedFiles) {
-  const isTest = (p) => { const base = p.split('/').pop(); return /(^|\/)tests\//.test(p) || base.startsWith('test_') || base.endsWith('_test.py') }
+  const isTest = (p) => { const base = p.split('/').pop(); return p.includes('/tests/') || base.startsWith('test_') || base.endsWith('_test.py') }
   return (changedFiles ?? []).map(f => String(f).replace(/\\/g, '/')).filter(f => f.endsWith('.py') && !isTest(f))
 }
 

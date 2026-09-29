@@ -133,6 +133,13 @@ export function main(argv, dir = undefined) {
     console.error('usage: --record N | --mission ID  --command "..." --killed K --total T [--survived a,b] [--kind authored|derived|derived-full] [--dry-run]')
     return 2
   }
+  // Review M3: `derived-full` is a claim about HOW the sweep ran — whole files
+  // named by `--mutate`. A command without it is a plain derived reading, and
+  // stamping it derived-full would say its mutants reach lines they never did.
+  if (kind === 'derived-full' && !/(^|\s)--mutate(\s|=|$)/.test(command)) {
+    console.error('--kind derived-full needs a --command that ran the sweep with --mutate; this one did not — record it as --kind derived')
+    return 2
+  }
 
   // Across every shard, in record order, so `--record N` keeps meaning the Nth
   // mission ever run rather than the Nth in whichever file it happens to sit.

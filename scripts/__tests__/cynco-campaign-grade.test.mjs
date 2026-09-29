@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
-import { readFileSync, mkdtempSync } from 'node:fs'
+import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { gradeWave, sweepTestsFor, sweepSourcesFor, defaultIo, SUITE_GATE } from '../cynco-campaign-grade.mjs'
@@ -297,8 +298,13 @@ describe('sweepSourcesFor', () => {
     expect(sweepSourcesFor({}, ['gilded/ui/saves_view.py', 'gilded/tests/test_c9_shell.py', 'test_x.py', 'gilded/agenda.py']))
       .toEqual(['gilded/ui/saves_view.py', 'gilded/agenda.py'])
   })
-  it('drops tests by the sweep\'s own rule: a tests/ directory, test_*, *_test.py', () => {
-    expect(sweepSourcesFor({}, ['tests/helpers.py', 'gilded/tests/conftest.py', 'test_x.py', 'gilded/x_test.py'])).toEqual([])
+  it('drops tests by the sweep\'s own rule: a /tests/ directory, test_*, *_test.py', () => {
+    expect(sweepSourcesFor({}, ['gilded/tests/conftest.py', 'test_x.py', 'gilded/x_test.py'])).toEqual([])
+  })
+  // Review M2: exactly `is_test_path` — `"/tests/" in p` does not match a
+  // top-level `tests/…`, so the sweep accepts it under --mutate and so do we.
+  it('keeps a top-level tests/helpers.py, as the sweep\'s is_test_path does', () => {
+    expect(sweepSourcesFor({}, ['tests/helpers.py', 'tests/test_y.py'])).toEqual(['tests/helpers.py'])
   })
   it('drops what is not Python source, and normalises backslashes', () => {
     expect(sweepSourcesFor({}, ['README.md', 'gilded\\ui\\saves_view.py', 'assets/a.png'])).toEqual(['gilded/ui/saves_view.py'])
@@ -316,8 +322,53 @@ describe('defaultIo.changedFiles', () => {
     const bogus = join(mkdtempSync(join(tmpdir(), 'not-a-repo-')), 'nope')
     expect(defaultIo.changedFiles(bogus, '1d03308', '1bc0f8c')).toBeNull()
     expect(err).toHaveBeenCalledTimes(1)
-    expect(err.mock.calls[0][0]).toMatch(/^\[grade\] git diff --name-only 1d03308\.\.1bc0f8c failed: /)
+    expect(err.mock.calls[0][0]).toMatch(/^\[grade\] git diff --name-only --diff-filter=d 1d03308\.\.1bc0f8c failed: /)
     err.mockRestore()
+  })
+
+  // Review I1: a path the wave DELETED is not a file it shipped. Under
+  // --mutate it is a hard refusal (missing at HEAD), and a deleted test_*.py
+  // is not "the diff shipped its own test".
+  describe('against a real repo whose wave deletes a module and a test and fixes an import', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'grade-deleted-'))
+    const git = (...a) => {
+      const r = spawnSync('git', ['-C', repo, ...a], { encoding: 'utf8', windowsHide: true })
+      if (r.status !== 0) throw new Error(`git ${a.join(' ')}: ${r.stderr}`)
+      return r.stdout.trim()
+    }
+    git('init', '-q'); git('config', 'user.email', 't@t'); git('config', 'user.name', 't'); git('config', 'core.autocrlf', 'false')
+    mkdirSync(join(repo, 'gilded', 'tests'), { recursive: true })
+    writeFileSync(join(repo, 'gilded', 'dead.py'), 'X = 1\n')
+    writeFileSync(join(repo, 'gilded', 'view.py'), 'from gilded.dead import X\n')
+    writeFileSync(join(repo, 'gilded', 'tests', 'test_dead.py'), 'def test_x():\n    assert True\n')
+    git('add', '-A'); git('commit', '-q', '-m', 'base')
+    const base = git('rev-parse', 'HEAD')
+    rmSync(join(repo, 'gilded', 'dead.py')); rmSync(join(repo, 'gilded', 'tests', 'test_dead.py'))
+    writeFileSync(join(repo, 'gilded', 'view.py'), 'X = 1\n')
+    git('add', '-A'); git('commit', '-q', '-m', 'wave')
+    const head = git('rev-parse', 'HEAD')
+
+    it('names only the surviving changed path', () => {
+      expect(defaultIo.changedFiles(repo, base, head)).toEqual(['gilded/view.py'])
+    })
+    it('the retry runs over the fixed file, never the deleted one, and keep-green --tests stays on', async () => {
+      const calls = []
+      let n = 0
+      const io = { changedFiles: defaultIo.changedFiles, run: (cmd, args, opts) => {
+        const key = args.join(' ')
+        if (/gate_c8\.py/.test(key)) return { status: 0, stdout: 'GATE: PASS\n', stderr: '', timedOut: false }
+        if (/g_suite/.test(key)) return { status: 0, stdout: 'g_suite: PASS', stderr: '', timedOut: false }
+        calls.push(args)
+        return n++ === 0 ? { status: 2, stdout: '', stderr: '', timedOut: false }
+          : { status: 0, stdout: '{"command":"x --mutate gilded/view.py","kind":"derived","killed":1,"total":1,"survived":[]}', stderr: '', timedOut: false }
+      } }
+      const g = await gradeWave({ ...spec, repo, keepGreen: c8KeepGreen }, { ...row, commitRange: { base, head } }, io)
+      expect(calls).toHaveLength(2)
+      expect(calls[1][calls[1].indexOf('--mutate') + 1]).toBe('gilded/view.py')
+      expect(calls.flat().some(a => /dead\.py/.test(a))).toBe(false)
+      expect(calls[0][calls[0].indexOf('--tests') + 1]).toBe(c8KeepGreenFiles.join(' '))
+      expect(g.sweep).toMatchObject({ kind: 'derived-full', retried: true })
+    })
   })
 })
 
@@ -328,6 +379,11 @@ describe('sweepTestsFor', () => {
   })
   it('returns null when the diff already delivers a test file', () => {
     expect(sweepTestsFor(spec, ['gilded/ui/x.py', 'gilded/tests/test_c8_tiers.py'])).toBeNull()
+  })
+  it('a diff that only DELETED a test file (filtered out by defaultIo) still gets the keepGreen files', () => {
+    // defaultIo.changedFiles drops deletions (--diff-filter=d), so the deleted
+    // test never reaches this list; what remains shipped no test.
+    expect(sweepTestsFor(spec, [])).toBe(c8KeepGreenFiles.join(' '))
   })
   it('returns null when keepGreen has no .py token', () => {
     expect(sweepTestsFor({ keepGreen: 'echo nothing to run' }, ['gilded/ui/broadsheet.py'])).toBeNull()

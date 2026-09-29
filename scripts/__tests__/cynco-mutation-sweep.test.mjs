@@ -299,7 +299,7 @@ describe.runIf(!process.env.CI)('cynco-mutation-sweep --mutate (tests-only missi
     } finally { rmSync(repo.dir, { recursive: true, force: true }) }
   }, 180_000)
 
-  it('still records as derived — naming a file is not naming a rule', () => {
+  it('records as derived-full, never authored — naming a file is not naming a rule', () => {
     if (!havePython) return
     const repo = testsOnly(OWNS_BOTH)
     try {
@@ -309,8 +309,10 @@ describe.runIf(!process.env.CI)('cynco-mutation-sweep --mutate (tests-only missi
       // mutation set here is machine-enumerated over an entire file, so a
       // survivor is a coverage gap over lines the mission may never have
       // claimed. Defaulting to authored would fail missions for them.
-      expect(j.kind, out).toBe('derived')
-      expect(out).toContain('--kind derived')
+      // F164 / review M4: whole-file mutation is the derived-full kind, and the
+      // hint the operator copies must say so.
+      expect(j.kind, out).toBe('derived-full')
+      expect(out).toContain('--kind derived-full')
       // ...but the operator is told the choice exists, or nobody ever records
       // an authored sweep and the stronger reading is dead.
       expect(out).toMatch(/--kind authored only if/)
@@ -331,6 +333,7 @@ describe.runIf(!process.env.CI)('cynco-mutation-sweep --mutate (tests-only missi
       const j = parseJson(out)
       expect(j.kind, out).toBe('derived')
       expect(out).toContain('--kind derived')
+      expect(out).not.toContain('--kind derived-full')
       expect(j.command).not.toContain('--mutate')
       // The authored note belongs only to a run where a human chose the files.
       expect(out).not.toMatch(/--kind authored only if/)

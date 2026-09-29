@@ -74,6 +74,11 @@ describe('verdictEntry', () => {
     const twiceText = verdictEntry({ spec: { id: 'c9' }, wave: 2, row, grade: twice, decision: { kind: 'next', why: 'x' }, ideationRecord: null, economicsLines: [] })
     expect(twiceText).toMatch(/- Derived sweep: UNMEASURED — sweep refused \(exit 2\) \(and again on the --mutate retry\)\./)
     expect(text).toMatch(/mutationSweep recorded \(derived\)\./)
+    // review M1: a retry that TIMED OUT did not refuse "again" — say which happened
+    const retryTimedOut = { ...grade, sweep: null, sweepFault: 'timed out after 3600000 ms', sweepRetried: true }
+    const toText = verdictEntry({ spec: { id: 'c9' }, wave: 2, row, grade: retryTimedOut, decision: { kind: 'next', why: 'x' }, ideationRecord: null, economicsLines: [] })
+    expect(toText).toMatch(/- Derived sweep: UNMEASURED — timed out after 3600000 ms \(on the --mutate retry, after the diff sweep refused\)\./)
+    expect(toText).not.toMatch(/and again/)
   })
   it('keeps the generic UNMEASURED line when there was simply no diff', () => {
     const noDiffGrade = { ...grade, sweep: null, sweepFault: null }

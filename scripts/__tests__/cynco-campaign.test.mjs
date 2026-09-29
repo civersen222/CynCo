@@ -134,6 +134,34 @@ describe('runWave', () => {
     expect(state.state.waveCount).toBe(1)
     expect(state.state.lastBase).toBe('h')
     expect(state.waves()).toHaveLength(1)
+    expect(seen.patched.sweepRetried).toBe(false)
+  })
+
+  // Review M5 (F164): a refusal that survived its --mutate retry is told apart
+  // on the ROW, not only on the wave record.
+  it('patches sweepRetried onto the row beside a doubly refused sweepFault', async () => {
+    const state = freshState()
+    const seen = {}
+    const io = {
+      writeBrief: (path) => path,
+      dispatch: async () => ({ missionId: 'c8-wave1-1', driverLog: 'C:/tmp/d.log' }),
+      waitForDriver: async () => ({ exited: true }),
+      readRow: (missionId) => ({ missionId, exitReason: 'timeout', durationS: 100, commitRange: { base: '1d03308', head: 'h' }, outcome: 'landed', markerSeen: true, toolStats: { total: 10, commits: 1, byClass: { sourceEdit: 2, fileWrite: 0, inspect: 8 }, byName: {} } }),
+      commitsBetween: () => [{ sha: 'h', subject: 'C8 commit 1' }],
+      grade: async () => ({ ...g(), sweep: null, sweepFault: 'sweep refused (exit 2)', sweepRetried: true }), checkIdentity: okIdentity,
+      salvageOf: () => null,
+      ideate: async () => ({ ideation: null }),
+      patchRow: (missionId, fields) => { seen.patched = fields },
+      commit: () => ({ sha: 'v1' }),
+      notify: async () => true,
+      economics: () => ['VERDICT: x'],
+      appendLog: () => {},
+      ...inertTriples,
+    }
+    await runWave(spec, state, io)
+    expect(seen.patched).toMatchObject({ sweepFault: 'sweep refused (exit 2)', sweepRetried: true })
+    expect('mutationSweep' in seen.patched).toBe(false)
+    expect(state.waves()[0].sweepRetried).toBe(true)
   })
 
   // Ruling 5: the verdict commit names repo-relative, forward-slash paths —

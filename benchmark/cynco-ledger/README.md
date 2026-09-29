@@ -54,17 +54,28 @@ decisions still recorded here).
   // non-test `.py` the wave's diff touched, mutating those files WHOLE. The
   // grade writes `retried: false` on a first-call reading and `retried: true`
   // on a derived-full one; `cynco-ledger-sweep.mjs --kind derived-full` writes
-  // the same shape for a hand relabel. A derived-full reading's mutants are
-  // not only the wave's own lines — the kind says so, and both derived kinds
-  // label the row without a survivor failing it (see "Labeling rule").
+  // the same shape for a hand relabel, and refuses it for a `--command` that
+  // carries no `--mutate`. `cynco-mutation-sweep.py` itself prints
+  // `"kind": "derived-full"` (and the `--kind derived-full` hint) for any run
+  // given `--mutate`. The sources are the wave's diff read with
+  // `--diff-filter=d`: a DELETED path is never named (under `--mutate` it would
+  // be a refusal), and a deleted test file does not count as a shipped one. A
+  // derived-full reading's mutants are not only the wave's own lines — the
+  // kind says so, and both derived kinds label the row without a survivor
+  // failing it (see "Labeling rule").
   // Written by the campaign runner's GRADE alongside `mutationSweep`: why a
   // derived sweep produced no reading ("timed out after 3600000 ms", "sweep
   // refused (exit 2)", "unparseable sweep output") — after the `--mutate`
-  // retry when one ran (the wave record's `sweepRetried` says whether it did).
-  // null = the sweep ran, or there was no diff to sweep. Distinguishes
-  // "unmeasured because the instrument broke" from "unmeasured because nothing
-  // was measured".
+  // retry when one ran. null = the sweep ran, or there was no diff to sweep.
+  // Distinguishes "unmeasured because the instrument broke" from "unmeasured
+  // because nothing was measured".
   "sweepFault": null,
+  // Written by the same GRADE patch (and on the wave record): true when the
+  // F164 `--mutate` retry RAN — so `sweepFault: "sweep refused (exit 2)"` with
+  // `sweepRetried: true` is a refusal that survived its retry, and with
+  // `false` one that was never retried (no non-test source to name). Absent on
+  // rows graded before Phase 6.
+  "sweepRetried": false,
   // The commits this mission made. `base` is HEAD at dispatch, `head` is HEAD
   // after the check script ran, so `base..head` is exactly the mission's diff —
   // which is what a DERIVED sweep mutates. null when either end was unreadable;

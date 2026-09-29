@@ -544,7 +544,10 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
   // own counter is only advanced after the record is appended, so hand decide
   // the count this wave makes rather than the one before it.
   let decision = decide({ grade, state: { ...s, waveCount: wave }, spec, commitsLanded: commits.length, row })
-  io.patchRow(missionId, { verified: grade.verified, ...(grade.sweep ? { mutationSweep: grade.sweep } : {}), sweepFault: grade.sweepFault ?? null,
+  // Review M5: `sweepRetried` rides on the ROW too, so a dataset built from
+  // rows alone can tell a refusal that survived its F164 --mutate retry from
+  // one that was never retried (a reading carries `retried` on mutationSweep).
+  io.patchRow(missionId, { verified: grade.verified, ...(grade.sweep ? { mutationSweep: grade.sweep } : {}), sweepFault: grade.sweepFault ?? null, sweepRetried: grade.sweepRetried ?? false,
     gate: { sha: grade.sha, gateSha256, terminator: grade.gate.terminator, fails: grade.gate.fails.map(f => f.line), passes: grade.gate.passes.length, priorRegressions: grade.gate.priorRegressions, suiteRegressions: grade.suite.regressions, harnessFault: grade.gate.harnessFault ?? grade.suite.harnessFault ?? null },
     posiwid: { divergence: grade.posiwid.divergence, verdict: grade.posiwid.verdict, dominantObserved: grade.posiwid.dominantObserved } })
 
