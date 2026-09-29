@@ -2254,6 +2254,43 @@ describe('the outcome hindcast at VERDICT', () => {
     expect(rec.hindcast).toEqual({ fault: 'no eligible labeled mission at K = 16 turns — nothing to train on' })
   })
 
+  // F165 review N2: the VERDICT path itself splits the rules that read the v2
+  // homeostat streak (W5, I2) by signals version — proven here, at runWave,
+  // not only on writeRuleVerdicts.
+  it('at VERDICT, W5 is scored on v2 missions only with its v1 table kept apart; the ledger names the split', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'hc-'))
+    const turns = (v) => Array.from({ length: 20 }, () => (v === 2 ? { signalsVersion: 2 } : {}))
+    const m = (id, ok, ruleIds, v) => ({ missionId: id, outcome: ok ? 'landed' : 'failed', verified: ok, mutationSweep: sweep, s5Decisions: [{ ruleIds }], turns: turns(v) })
+    const rows = [
+      ...Array.from({ length: 6 }, (_, i) => m(`a${i}`, i % 2 === 0, ['W5'], 1)),
+      ...Array.from({ length: 4 }, (_, i) => m(`b${i}`, false, ['W5'], 2)),
+      ...Array.from({ length: 4 }, (_, i) => m(`c${i}`, true, [], 2)),
+    ]
+    const rec = await runWave(spec, freshState(), io(home, { readLedgerRows: () => rows, exportOutcomeDataset: () => ({ n: 0, paths: {} }) }))
+    expect(rec.ruleVerdicts).not.toBeNull()
+    const f = verdictsIn(home)
+    expect(f.ledger.v2Rules).toEqual(['I2', 'W5'])
+    expect(f.rules.W5).toMatchObject({ signals: 'v2', n: 4, failures: 4, precision: 1, scopeN: 8 })
+    expect(f.rules.W5.v1).toMatchObject({ n: 6, failures: 3, precision: 0.5, scopeN: 6 })
+  })
+
+  it('at VERDICT, a v2 pool below the freeze minimum reads "v2 holdout not yet frozen" with the counts; python is not spawned', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'hc-'))
+    const manifestPath = join(home, 'frozen-eval.json')
+    writeFileSync(manifestPath, JSON.stringify({ schema: 1, version: 1, seed: 1, frozenAt: 't', missionIds: ['hf0'] }))
+    const { exportOutcomeDatasets } = await import('../cynco-hindcast.mjs')
+    const rows = Array.from({ length: 5 }, (_, i) => ({ missionId: `v${i}`, outcome: i % 2 ? 'landed' : 'failed', verified: i % 2 === 1, mutationSweep: sweep,
+      turns: Array.from({ length: 20 }, () => ({ signalsVersion: 2, toolSuccessRate: 1 })) }))
+    const rec = await runWave(spec, freshState(), io(home, {
+      readLedgerRows: () => rows,
+      exportOutcomeDataset: (args) => exportOutcomeDatasets({ ...args, manifestPath }),
+      runHindcast: () => { throw new Error('python must not be spawned before the v2 holdout is frozen') },
+    }))
+    expect(rec.hindcast).toMatchObject({ fault: 'v2 holdout not yet frozen (5 of 38 labeled; eligible by version: v2: 5)', signalsVersion: 2,
+      rowsByVersion: { 2: 5 }, holdout: { frozen: false, eligible: 5, needed: 38 } })
+    expect(JSON.parse(readFileSync(manifestPath, 'utf8')).schema).toBe(1)
+  })
+
   it('a clean retrain puts M1.* into rule-verdicts.json through the rules\' test, and prints the line after the board', async () => {
     const home = mkdtempSync(join(tmpdir(), 'hc-'))
     const seen = {}

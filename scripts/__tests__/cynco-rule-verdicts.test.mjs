@@ -429,6 +429,13 @@ describe('the CLI (main)', () => {
   // 12 failures firing X and Y, 12 successes firing Y — X PREDICTIVE, Y CONSTANT — each with 20 turns.
   // v2 turns (F165): the hindcast trains on the current signals version only.
   const ledgerRows = () => predictiveRows().map((r, i) => ({ ...r, missionId: `m${i}`, turns: turnsOf(20).map(t => ({ ...t, signalsVersion: 2 })) }))
+  // A per-version holdout with a frozen v2 set (F165 fix round 2) — without
+  // one the 24 v2 missions read "v2 holdout not yet frozen" and python never runs.
+  const frozenV2 = () => {
+    const p = join(home(), 'frozen-eval.json')
+    writeFileSync(p, JSON.stringify({ schema: 2, sets: { 2: { schema: 1, version: 1, seed: 1, frozenAt: 't', missionIds: ledgerRows().map(r => r.missionId) } }, history: [] }))
+    return p
+  }
   const modelAt = (path) => {
     mkdirSync(dirname(path), { recursive: true })
     const preds = (fired) => ledgerRows().map(r => ({ missionId: r.missionId, pFail: fired(r) ? 0.9 : 0.1 }))
@@ -451,7 +458,7 @@ describe('the CLI (main)', () => {
   it('--with-hindcast runs export → model → verdicts into --datasets-dir, and prints the hindcast line', async () => {
     const dir = join(home(), 'ds')
     const lines = [], seen = {}
-    const code = await main(['--with-hindcast', '--datasets-dir', dir, ...noCampaigns()], {
+    const code = await main(['--with-hindcast', '--datasets-dir', dir, '--manifest', frozenV2(), ...noCampaigns()], {
       readLedger: ledgerRows, cyncoHome: noHome, log: (s) => lines.push(s),
       runHindcast: ({ paths }) => { seen.paths = paths; modelAt(paths.out); return { status: 0, stdout: 'ok', stderr: '', fault: null } },
     })
@@ -470,7 +477,7 @@ describe('the CLI (main)', () => {
   it('a hindcast that fails prints UNMEASURED and writes the rules without model rows — as the runner does', async () => {
     const dir = join(home(), 'ds')
     const lines = []
-    await main(['--with-hindcast', '--datasets-dir', dir, ...noCampaigns()], {
+    await main(['--with-hindcast', '--datasets-dir', dir, '--manifest', frozenV2(), ...noCampaigns()], {
       readLedger: ledgerRows, cyncoHome: noHome, log: (s) => lines.push(s),
       runHindcast: () => ({ status: 2, stdout: 'TOO FEW: train 3 < 30 or holdout 1 < 8\n', stderr: '', fault: null }),
     })
@@ -481,7 +488,7 @@ describe('the CLI (main)', () => {
 
   it('--out wins over --datasets-dir for the verdict file', async () => {
     const dir = join(home(), 'ds'), out = join(home(), 'elsewhere.json')
-    await main(['--with-hindcast', '--datasets-dir', dir, '--out', out, ...noCampaigns()], {
+    await main(['--with-hindcast', '--datasets-dir', dir, '--manifest', frozenV2(), '--out', out, ...noCampaigns()], {
       readLedger: ledgerRows, cyncoHome: noHome, log: () => {},
       runHindcast: ({ paths }) => { modelAt(paths.out); return { status: 0, stdout: '', stderr: '', fault: null } },
     })

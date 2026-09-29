@@ -377,6 +377,39 @@ describe('CLI', () => {
     expect(v2.missionIds).toEqual(expect.arrayContaining(v1.missionIds))
   })
 
+  it('--freeze/--refreeze --signals-version N act on that version\'s set only; v1\'s ids never move (F165 fix round 2)', async () => {
+    const v2 = (id, label) => row(id, { label, turnFn: (i) => turn(i, { signalsVersion: 2 }) })
+    const dir = ledger([...twenty(), ...Array.from({ length: 10 }, (_, i) => v2(`n${i}`, i < 6 ? 'fail' : 'success'))])
+    const manifest = join(mkdtempSync(join(tmpdir(), 'outcome-man-')), 'frozen-eval.json')
+    // A Phase 5 file (v1's set) first.
+    expect(await main(['--freeze', '--seed', '5', '--ledger-dir', dir, '--manifest', manifest], capture())).toBe(0)
+    const v1 = JSON.parse(readFileSync(manifest, 'utf8'))
+    expect(v1.schema).toBe(1)
+    // The v2 freeze migrates the file and draws from v2 rows only.
+    expect(await main(['--freeze', '--seed', '7', '--signals-version', '2', '--ledger-dir', dir, '--manifest', manifest], capture())).toBe(0)
+    const f = JSON.parse(readFileSync(manifest, 'utf8'))
+    expect(f.schema).toBe(2)
+    expect(f.sets['1']).toEqual(v1)
+    expect(f.sets['2'].missionIds.length).toBe(2)
+    expect(f.sets['2'].missionIds.every(id => id.startsWith('n'))).toBe(true)
+    expect(f.history).toEqual([expect.objectContaining({ signalsVersion: 2, count: 2, eligible: 10, seed: 7, how: 'freeze' })])
+    // Frozen once: a second --freeze of v2 is refused and changes nothing.
+    const text = readFileSync(manifest, 'utf8')
+    expect(await main(['--freeze', '--seed', '8', '--signals-version', '2', '--ledger-dir', dir, '--manifest', manifest], capture())).toBe(2)
+    expect(readFileSync(manifest, 'utf8')).toBe(text)
+    // --refreeze of v2 only adds; v1 is untouched.
+    expect(await main(['--refreeze', '--seed', '9', '--signals-version', '2', '--ledger-dir', dir, '--manifest', manifest], capture())).toBe(0)
+    const g = JSON.parse(readFileSync(manifest, 'utf8'))
+    expect(g.sets['2'].missionIds).toEqual(expect.arrayContaining(f.sets['2'].missionIds))
+    expect(g.sets['2'].version).toBe(2)
+    expect(g.sets['1']).toEqual(v1)
+    expect(g.history.map(h => h.how)).toEqual(['freeze', 'refreeze'])
+    // No v3 set to add to; and on a per-version file, a bare --freeze targets v1 (exists: refused).
+    expect(await main(['--refreeze', '--seed', '9', '--signals-version', '3', '--ledger-dir', dir, '--manifest', manifest], capture())).toBe(2)
+    expect(await main(['--freeze', '--seed', '9', '--ledger-dir', dir, '--manifest', manifest], capture())).toBe(2)
+    expect(JSON.parse(readFileSync(manifest, 'utf8')).sets['1']).toEqual(v1)
+  })
+
   it('--refreeze without a manifest, and --freeze without a seed, refuse with exit 2', async () => {
     const dir = ledger()
     const manifest = join(mkdtempSync(join(tmpdir(), 'outcome-man-')), 'frozen-eval.json')

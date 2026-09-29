@@ -320,7 +320,7 @@ export function verdictsLine(r, outPath) {
 }
 
 // CLI: rebuild the file by hand (the runner does it at every VERDICT).
-//   bun scripts/cynco-rule-verdicts.mjs [--ledger-dir DIR] [--out PATH] [--with-hindcast] [--datasets-dir DIR] [--campaigns-dir DIR]
+//   bun scripts/cynco-rule-verdicts.mjs [--ledger-dir DIR] [--out PATH] [--with-hindcast] [--datasets-dir DIR] [--manifest PATH] [--campaigns-dir DIR]
 //
 // Every run builds the runner row `R1.no-progress` from the campaigns' wave
 // records exactly as the VERDICT does (Task 4 review I1), so a hand rebuild
@@ -367,8 +367,12 @@ export async function main(argv, deps = {}) {
     const { hindcastLine } = await import('./cynco-campaign-verdict.mjs')
     let hindcast
     try {
-      const exported = hc.exportOutcomeDatasets({ rows, home: datasetsDir ? null : await home(), datasetsDir })
-      if (!exported?.n) hindcast = { fault: hc.noEligibleFault(exported, hc.PRIMARY_TURNS) }
+      // `--manifest PATH` (F165 fix round 2): the per-version frozen holdout the
+      // hindcast reads — and, when the current version's pool reaches the
+      // minimum, freezes into. Default: the committed one, as the runner does.
+      const manifest = arg('--manifest') ? { manifestPath: resolve(arg('--manifest')) } : {}
+      const exported = hc.exportOutcomeDatasets({ rows, home: datasetsDir ? null : await home(), datasetsDir, ...manifest })
+      if (!hc.hindcastReady(exported)) hindcast = { fault: hc.noEligibleFault(exported, hc.PRIMARY_TURNS) }
       else {
         const h = hc.hindcastOf((deps.runHindcast ?? hc.runHindcast)({ paths: exported.paths }), exported.paths.out)
         if (h.fault) hindcast = { fault: h.fault }

@@ -1026,20 +1026,46 @@ current version) writes only v2 rows into all three datasets (K = 16, K = 32,
 hindsight), names held-out missions of another version in
 `split[K].otherVersion` (never as `missing`), and runs the model with
 `--signals-version 2 --rows-by-version {…}`. `outcome-model.json` and the wave
-record's `hindcast` summary carry `signalsVersion` and `rowsByVersion`. While
-fewer v2 missions are labeled than the model's minimum (train 30, holdout 8),
-the model refuses and the learner rows read UNMEASURED with the reason, e.g.
-`exit 2: TOO FEW: train 1 < 30 or holdout 1 < 8 (signals v2: 2 eligible; v1: 40)`
-— never a rate from a mixed or too-small set (F16). With no v2 mission
-eligible at all, python is not spawned and the record reads `no eligible
-labeled mission at K = 16 turns with signals v2 (eligible by version: v1: 104)
-— nothing to train on`; `rec.hindcast` carries `signalsVersion` and
-`rowsByVersion` on a fault too. The verdict entry's learner line names both:
-`- Outcome hindcast: v5 at K = 16 turns, signals v2 only (eligible v1 104,
-v2 40) on 9 held-out missions …`. Pinned by
-`scripts/__tests__/cynco-hindcast-signals.test.mjs`. The committed
-`frozen-eval.json` is not touched by any of this; its v1 ids simply leave the
-v2 split as `otherVersion`.
+record's `hindcast` summary carry `signalsVersion` and `rowsByVersion`. The
+learner rows read UNMEASURED with the reason — never a rate from a mixed or
+too-small set (F16) — in three stages:
+
+1. **No v2 mission eligible**: python is not spawned; `no eligible labeled
+   mission at K = 16 turns with signals v2 (eligible by version: v1: 104) —
+   nothing to train on`.
+2. **v2 missions, no v2 holdout yet** (fix round 2, review N1): the holdout is
+   per signals version (below), and v1's 21 frozen ids are no use to a v2
+   learner. Until v2's eligible pool reaches `FREEZE_MIN_ELIGIBLE` = 38 —
+   the smallest pool whose 20 % draw leaves the model its own minimums
+   (holdout 8, train 30) — python is not spawned and the reading is
+   `v2 holdout not yet frozen (12 of 38 labeled; eligible by version: v1: 104, v2: 12)`.
+   `rec.hindcast.holdout` is `{ frozen: false, eligible, needed }`.
+3. **The first export that sees 38** freezes v2's set, ONCE, with Phase 5's
+   `freezeManifest` over the v2 rows (seed `AUTO_FREEZE_SEED` 20260929) into
+   `frozen-eval.json`, and records `{ signalsVersion: 2, frozenAt, count,
+   eligible, seed, how: 'auto' }` on the file's `history`. From then on the
+   set never changes (frozen means frozen) and a refusal is the model's own
+   TOO FEW with the per-version counts.
+
+`rec.hindcast` carries `signalsVersion` and `rowsByVersion` on a fault too.
+The verdict entry's learner line names both: `- Outcome hindcast: v5 at K = 16
+turns, signals v2 only (eligible v1 104, v2 40) on 9 held-out missions …`.
+Pinned by `scripts/__tests__/cynco-hindcast-signals.test.mjs` and the two
+F165 VERDICT tests in `scripts/__tests__/cynco-campaign.test.mjs`.
+
+**The holdout per signals version (fix round 2).** `frozen-eval.json` holds
+one set per signals version: `{ schema: 2, sets: { "1": <Phase 5's v1
+manifest, verbatim>, "2": … }, history: [ … ] }`, each set exactly what
+`freezeManifest` returns. The committed Phase 5 file (schema 1) IS v1's set:
+`manifestSets` reads it as `sets["1"]` byte-for-byte and it is migrated on the
+first write, never re-drawn. `--freeze --signals-version N` freezes version
+N's set from version-N rows only and refuses when it exists;
+`--refreeze --signals-version N` only adds to an existing one (Phase 5's two
+rules, per set). Without `--signals-version` on a schema-1 file both behave
+exactly as in Phase 5. `scripts/cynco-outcome-model.py` reads the set of its
+`--signals-version` (version 1 without the flag). The automatic freeze writes
+the committed file in the working tree; the operator commits it like any
+other ledger change.
 
 **S5 rules that read a v2-changed signal (fix round 1, review I2).** W5 and I2
 (`engine/s5/ruleBasedS5.ts`) fire on the homeostat streak, which in v1 was the

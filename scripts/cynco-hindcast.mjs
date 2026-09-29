@@ -21,7 +21,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { datasetRows, featuresOf, frozenSplit, signalsVersionOf, DATASET_PATH, MANIFEST_PATH } from './cynco-outcome-dataset.mjs'
+import { datasetRows, featuresOf, frozenSplit, signalsVersionOf, ensureVersionHoldout, DATASET_PATH, MANIFEST_PATH } from './cynco-outcome-dataset.mjs'
 import { runSync, faultSummary } from './cynco-spawn.mjs'
 import { OUTCOME_MODEL_PATH } from './cynco-rule-verdicts.mjs'
 
@@ -35,8 +35,14 @@ export const OUTCOME_MODEL_SCRIPT = fileURLToPath(new URL('./cynco-outcome-model
  * one (`SIGNALS_VERSION` in engine/vsm/cyberneticsGovernance.ts). v1 and v2
  * rows describe different instruments (`consecutiveUnstable` was the turn
  * index in v1), so a learner fitted on both learns the era, not the outcome.
- * Until enough v2 missions are labeled the model refuses TOO FEW — the honest
- * reading (F16) — and the refusal names the per-version counts.
+ *
+ * The holdout is per version too (fix round 2): `benchmark/cynco-ledger/
+ * frozen-eval.json` holds one frozen id set per signals version, v1's 21 ids
+ * untouched. Until v2 has FREEZE_MIN_ELIGIBLE (38) labeled missions of ≥ 16
+ * turns the reading is `v2 holdout not yet frozen (n of 38 labeled; …)` and
+ * python is not spawned; the export that first sees 38 freezes v2's set once,
+ * with Phase 5's `freezeManifest`, and records it on the file's history. After
+ * that a refusal is the model's own TOO FEW with the per-version counts.
  */
 export const HINDCAST_SIGNALS_VERSION = 2
 /** How much of a failed run's output the fault keeps. */
@@ -79,9 +85,13 @@ function writeJsonl(path, rows) {
  * missions of every version, so a refusal can say how many of each there were;
  * both ride `paths` to the model, which writes them into its output.
  */
-export function exportOutcomeDatasets({ rows, home, datasetsDir = null, manifestPath = MANIFEST_PATH, signalsVersion = HINDCAST_SIGNALS_VERSION }) {
+export function exportOutcomeDatasets({ rows, home, datasetsDir = null, manifestPath = MANIFEST_PATH, signalsVersion = HINDCAST_SIGNALS_VERSION, now = () => new Date().toISOString() }) {
   const rowsByVersion = {}
   for (const r of datasetRows(rows, PRIMARY_TURNS).rows) rowsByVersion[r.signalsVersion] = (rowsByVersion[r.signalsVersion] ?? 0) + 1
+  // F165 fix round 2: the holdout is this version's own frozen set. When it
+  // has none and the version's eligible pool has reached FREEZE_MIN_ELIGIBLE,
+  // it is frozen here, once (Phase 5's freezeManifest), into `manifestPath`.
+  const { set, holdout } = ensureVersionHoldout({ rows, path: manifestPath, v: signalsVersion, K: PRIMARY_TURNS, now })
   const paths = { ...(datasetsDir ? hindcastPathsIn(datasetsDir) : HINDCAST_PATHS(home)), manifest: manifestPath, signalsVersion, rowsByVersion }
   const primary = datasetRows(rows, PRIMARY_TURNS, { signalsVersion })
   const secondary = datasetRows(rows, SECONDARY_TURNS, { signalsVersion })
@@ -94,7 +104,7 @@ export function exportOutcomeDatasets({ rows, home, datasetsDir = null, manifest
   // held-out mission too short (or unlabeled) at K is NAMED rather than
   // silently missing from the python split. A held-out mission of another
   // signals version is named too (`otherVersion`), never counted as missing.
-  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
+  const manifest = { missionIds: set?.missionIds ?? [] }
   const versionAt = (r, K) => signalsVersionOf((Array.isArray(r?.turns) ? r.turns : []).slice(0, K))
   const splitAt = (K) => {
     const s = frozenSplit(rows.filter(r => versionAt(r, K) === signalsVersion), manifest, { turns: K })
@@ -103,8 +113,8 @@ export function exportOutcomeDatasets({ rows, home, datasetsDir = null, manifest
       missing: s.missing.filter(id => !other.has(id)), otherVersion: s.missing.filter(id => other.has(id)) }
   }
   return { paths, n: primary.rows.length, n32: secondary.rows.length, nHindsight: hindsight.length, excluded: primary.excluded,
-    signalsVersion, rowsByVersion,
-    split: { [PRIMARY_TURNS]: splitAt(PRIMARY_TURNS), [SECONDARY_TURNS]: splitAt(SECONDARY_TURNS) } }
+    signalsVersion, rowsByVersion, holdout,
+    split:{ [PRIMARY_TURNS]: splitAt(PRIMARY_TURNS), [SECONDARY_TURNS]: splitAt(SECONDARY_TURNS) } }
 }
 
 /**
@@ -117,8 +127,16 @@ export function noEligibleFault(exported, K = PRIMARY_TURNS) {
   const v = exported?.signalsVersion
   if (typeof v !== 'number') return `no eligible labeled mission at K = ${K} turns — nothing to train on`
   const counts = Object.entries(exported?.rowsByVersion ?? {}).sort(([a], [b]) => Number(a) - Number(b)).map(([k, n]) => `v${k}: ${n}`)
-  return `no eligible labeled mission at K = ${K} turns with signals v${v} (eligible by version: ${counts.join(', ') || 'none'}) — nothing to train on`
+  if (!exported?.n) return `no eligible labeled mission at K = ${K} turns with signals v${v} (eligible by version: ${counts.join(', ') || 'none'}) — nothing to train on`
+  // F165 fix round 2: missions exist, but this version has no frozen holdout
+  // yet — python is not spawned, and the reading says how far off the freeze is.
+  const h = exported.holdout
+  return `v${v} holdout not yet frozen (${h.eligible} of ${h.needed} labeled; eligible by version: ${counts.join(', ')})`
 }
+
+/** Whether the export can be trained on: missions of the version AND a frozen
+ *  holdout for it. When false the runner records `noEligibleFault`. */
+export const hindcastReady = (exported) => Boolean(exported?.n) && exported?.holdout?.frozen !== false
 
 /** The python retrain, capped. The raw `runSync` result comes back. The
  *  signals version and the per-version counts go with it (F165). */

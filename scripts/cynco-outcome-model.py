@@ -60,7 +60,10 @@ always written — `{"<version>": eligible missions}`, from `--rows-by-version`
 (the hindcast passes the counts it made BEFORE filtering its export to one
 version) or else the dataset's labeled rows per version — and a refusal under
 `--signals-version` ends with ` (signals vN: n eligible; v1: m)`.
-`scripts/cynco-hindcast.mjs` always trains on one version (2).
+`scripts/cynco-hindcast.mjs` always trains on one version (2). The manifest
+holds one frozen set per signals version (`{"schema": 2, "sets": {...}}`, fix
+round 2); the held-out ids are those of `--signals-version`'s set (version 1
+without the flag). A Phase 5 schema-1 file is version 1's set.
 
 Version
 -------
@@ -140,6 +143,20 @@ def version_counts(rows, held):
             "holdout": sum(1 for r in vs if r.get("missionId") in held),
         }
     return out
+
+
+def held_ids(manifest, version):
+    """The frozen holdout ids for a signals version (F165 fix round 2). A
+    schema-2 file holds one set per version under `sets`; a Phase 5 schema-1
+    file IS version 1's set. With no version filter, version 1 (the Phase 5
+    behaviour). A version with no frozen set holds nothing."""
+    v = 1 if version is None else version
+    if manifest.get("schema") == 2 and isinstance(manifest.get("sets"), dict):
+        s = manifest["sets"].get(str(v)) or {}
+        return set(s.get("missionIds") or [])
+    if manifest.get("schema") == 1:
+        return set(manifest.get("missionIds") or []) if v == 1 else set()
+    raise SystemExit(f"--manifest is not a frozen-eval manifest (schema {manifest.get('schema')})")
 
 
 def parse_rows_by_version(text, rows):
@@ -341,7 +358,7 @@ def main(argv):
 
     with open(args.manifest, encoding="utf-8") as f:
         manifest = json.load(f)
-    held = set(manifest.get("missionIds") or [])
+    held = held_ids(manifest, args.signals_version)
 
     all_rows = read_rows(args.dataset)
     rows_by_version = parse_rows_by_version(args.rows_by_version, all_rows)
