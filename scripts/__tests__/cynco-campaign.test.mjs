@@ -2065,6 +2065,32 @@ describe('runWave — gate progress measured by the runner mid-wave', () => {
     expect(rec.decision.kind).toBe('next')
   })
 
+  // P-F155: the probe's git spawns that hit bun's stale deadline are counted
+  // on the wave record (`retriedSpawns`) and the line is logged once.
+  it('the probe\'s stale-deadline retries reach the wave record as retriedSpawns, logged once', async () => {
+    const LINE = "[spawn] git: an impossible ETIMEDOUT after 6 ms (cap 30000 ms) — bun's stale deadline; retried once and the retry ran (F155)"
+    let head = 'BASESHA'
+    const { io: fake } = io({
+      repoHead: (repo, rev, hooks) => { hooks?.onStaleRetry?.(LINE); return rev === 'HEAD' ? head : rev === '1d03308' ? 'BASESHA' : null },
+      progressProbe: { archive: (repo, sha, dest, hooks) => { hooks?.onStaleRetry?.(LINE); return { ok: true } }, runGate: () => oneFail, removeDir: () => {} },
+      waitForDriver: async ({ onTick }) => {
+        const t = Date.now()
+        onTick?.({ elapsedMs: 0, nowMs: t + 31 * MIN })
+        head = 'C1'
+        onTick?.({ elapsedMs: 0, nowMs: t + 130 * MIN })
+        return { exited: true }
+      },
+    })
+    const logs = []
+    const orig = console.log
+    console.log = (m) => logs.push(String(m))
+    let rec
+    try { rec = await runWave(progressSpec, freshState(), fake) } finally { console.log = orig }
+    // Two HEAD reads (one per due tick) and one archive (the C1 reading).
+    expect(rec.retriedSpawns).toBe(3)
+    expect(logs.filter(l => l.includes('(F155)'))).toHaveLength(1)
+  })
+
   // Phase 6 Task 4: the shadow decisions reach the ladder as one runner row,
   // `R1.no-progress` (source 'runner'), built from THIS campaign's waves (the
   // wave just recorded included) and every other runner-driven campaign's

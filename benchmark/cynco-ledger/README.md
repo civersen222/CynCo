@@ -1374,7 +1374,13 @@ archive <sha> | tar -x` through `bashExe()`) into
 `<os.tmpdir()>/cynco-progress-<id>-<n>`, runs the grade module's `runGate` on
 the ARCHIVE (`CYNCO_GATE_REPO` and cwd = the archive, never the live repo the
 mission is editing), parses it with `parseGateOutput`, and removes the dir in a
-`finally`. The gate spawn goes through `runSync` and is **never retried**
+`finally`. Every due tick follows a gap of `everyMs` with no spawn, so the
+tick's first git spawn trips bun's stale deadline (F155): the HEAD read
+retries inside `runSync` (`retryImpossibleTimeout`, a pure read) and the
+archive re-runs `archiveBase` once into a freshly emptied dir; both hand their
+retry line to the tracker (`onStaleRetry`), which counts every retry as
+`rec.retriedSpawns` and logs the line ONCE per wave (P-F155 — at the smoke's
+20 s cadence it was a red line per tick). The gate spawn goes through `runSync` and is **never retried**
 (`retry: false`): a 215 s gate re-run is not free, and a stale ETIMEDOUT
 mid-wave (F155) is a fault reading. Its cap is `min(GATE_TIMEOUT_MS, 4 × the
 last measured run)`, 20 min (`PROBE_GATE_TIMEOUT_UNMEASURED_MS`, the tail's
@@ -1420,6 +1426,12 @@ runner took no reading at all (an adopted wave was not waited on; a runner io
 without a probe); `[]` with a note when none was due before the wave ended. A
 wave that faulted in the WAIT (no ledger row, wall clock expired) keeps the
 readings it did get on its fault record.
+
+**`rec.retriedSpawns`** — the number of the probe's git spawns (HEAD reads and
+archives) this wave that hit bun's stale deadline and were retried (P-F155;
+the F155 line is logged once per wave, the rest are only counted). Present
+whenever the runner waited on the wave with a tracker; absent on an adopted
+wave or a runner io with no probe.
 
 **`rec.shadowDecisions`** — `R1.no-progress`, evaluated at every due tick
 (reading or skip): *if at ≥ 50 % of the wave's wall clock the gate's fail

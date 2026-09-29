@@ -911,7 +911,9 @@ engine enforces anything new.
   sha into a temp dir (`archiveBase`'s form; the live repo is never touched),
   runs the sealed gate there with `runGate` exactly as a verdict does
   (`runSync`, never retried: a stale ETIMEDOUT mid-wave is a fault reading,
-  F155), and appends `{ at, sha, fails, passes, failIds, durationMs,
+  F155; the probe's git spawns — the HEAD read and the archive — ARE retried
+  once, because every tick follows a gap, and the retries are counted as
+  `rec.retriedSpawns` with the F155 line logged once per wave), and appends `{ at, sha, fails, passes, failIds, durationMs,
   elapsedFraction }` or `{ at, fault, durationMs }` to `rec.progress`. While
   HEAD still sits at the start sha, the first due tick reuses the start grade
   (`reusedFrom: 'start'`, `durationMs: 0`), so a wave that never commits still

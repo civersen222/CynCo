@@ -59,6 +59,27 @@ describe('runSync: a timeout is an elapsed measurement', () => {
     expect(r.staleDeadlineRetried).toBe(true)
   })
 
+  // Phase 6 fix wave (P-F155): at a 20 s probe cadence every tick's first
+  // spawn trips the stale deadline, and a red line per tick buries the log. A
+  // caller that counts its retries takes the line through `onStaleRetry` and
+  // decides how often to print it; nothing is written to stderr then.
+  it('hands the retry line to onStaleRetry instead of stderr when the caller gives one', () => {
+    const clock = clockOf()
+    let n = 0
+    const spawn = () => { n += 1; clock.t += n === 1 ? 6 : 20; return n === 1 ? ETIMEDOUT : { status: 0, stdout: 'abc\n', stderr: '' } }
+    const lines = []
+    const errors = []
+    const saved = console.error
+    console.error = (m) => errors.push(m)
+    try {
+      const r = runSync('git', ['rev-parse'], { timeoutMs: 30_000, retryImpossibleTimeout: true, onStaleRetry: (m) => lines.push(m) }, { spawn, now: () => clock.t })
+      expect(r.staleDeadlineRetried).toBe(true)
+      expect(r.stdout).toBe('abc\n')
+    } finally { console.error = saved }
+    expect(lines).toEqual(["[spawn] git: an impossible ETIMEDOUT after 6 ms (cap 30000 ms) — bun's stale deadline; retried once and the retry ran (F155)"])
+    expect(errors).toEqual([])
+  })
+
   /**
    * Opt-in, per call. Running a command twice is only safe when running it twice
    * is the same as running it once — a gate, a stub, a shim and a `--check` are

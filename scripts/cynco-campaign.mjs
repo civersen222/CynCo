@@ -261,8 +261,10 @@ export const defaultIo = {
   // T7-M1: a rev (HEAD, a sha, an abbreviation) resolved to its full commit
   // sha, or null. Capped through runSync and retried on an impossible
   // ETIMEDOUT (a read — F155: it is the first spawn after a wave's long wait).
-  repoHead: (repo, rev = 'HEAD') => {
-    const r = runSync('git', ['-C', repo, 'rev-parse', '--verify', '--quiet', `${rev}^{commit}`], { timeoutMs: GIT_READ_TIMEOUT_MS, retryImpossibleTimeout: true })
+  // `onStaleRetry` (P-F155): the progress tracker's counter — its every tick
+  // follows a gap, so the retry line is counted and logged once per wave.
+  repoHead: (repo, rev = 'HEAD', { onStaleRetry } = {}) => {
+    const r = runSync('git', ['-C', repo, 'rev-parse', '--verify', '--quiet', `${rev}^{commit}`], { timeoutMs: GIT_READ_TIMEOUT_MS, retryImpossibleTimeout: true, ...(onStaleRetry ? { onStaleRetry } : {}) })
     return !r.fault && !r.timedOut && r.status === 0 ? (String(r.stdout ?? '').trim() || null) : null
   },
   // Phase 6 ruling 2: the mid-wave progress probe's io (archive the sha, run
@@ -447,8 +449,11 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
   // `progressNote` says why there is none, so the verdict's `- Progress:` line
   // names the reason instead of printing an empty reading as a measurement.
   let tracker = null, progressNote = null
+  // `retriedSpawns` (P-F155): how many of the probe's git spawns hit bun's
+  // stale deadline and were retried this wave — on the record only when the
+  // runner waited with a tracker.
   const progressFields = () => ({ progress: tracker ? tracker.progress : null, shadowDecisions: tracker ? tracker.shadowDecisions : null,
-    progressNote: tracker ? tracker.note() : progressNote })
+    progressNote: tracker ? tracker.note() : progressNote, ...(tracker ? { retriedSpawns: tracker.retriedSpawns() } : {}) })
 
   if (s.adoptedRow) {
     // ADOPT (scripts/cynco-campaign-adopt.mjs): this wave already RAN — it was
@@ -547,7 +552,7 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
       // injected io without them takes no readings (and says so).
       const probe = io.progressProbe ?? (io === defaultIo ? defaultProbeIo : null)
       if (probe && repoHead) {
-        tracker = progressTracker({ spec, probe, headOf: () => repoHead(spec.repo, 'HEAD'), clockMs: spec.budget.hoursPerWave * 3600 * 1000,
+        tracker = progressTracker({ spec, probe, headOf: (hooks) => repoHead(spec.repo, 'HEAD', hooks), clockMs: spec.budget.hoursPerWave * 3600 * 1000,
           startSha: baseSha ?? base, startFails: s.lastFails?.length ?? s.calibration?.baseFails?.length ?? fails.length,
           startFailIds: s.lastFails ?? fails.map(f => f.id), startPasses: ctx.passes?.length ?? null,
           dispatchedAtMs: Date.parse(dispatchedAt), everyMs: everyMsFor(spec),

@@ -439,6 +439,47 @@ describe('progressTracker — the WAIT hook', () => {
   })
 })
 
+// Phase 6 fix wave (P-F155): every probe tick's first git spawn follows a gap,
+// so bun's stale deadline trips it and runSync's retry line fired every tick.
+// The probe's git spawns (HEAD read, archive) hand the line to the tracker,
+// which counts it (`retriedSpawns`, on the wave record) and logs it once.
+describe('progressTracker — stale-deadline retries are counted, logged once per wave', () => {
+  it('counts every retry of the HEAD read and the archive, logs the F155 line once', () => {
+    const logs = []
+    const LINE = "[spawn] git: an impossible ETIMEDOUT after 6 ms (cap 30000 ms) — bun's stale deadline; retried once and the retry ran (F155)"
+    let head = 0
+    const headOf = ({ onStaleRetry } = {}) => { onStaleRetry?.(LINE); head += 1; return `C${head}` }
+    const probe = { archive: (repo, sha, dest, { onStaleRetry } = {}) => { onStaleRetry?.(LINE); return { ok: true } },
+      runGate: () => ({ terminator: 'MISS', fails: [{ id: 'P.1', line: 'P.1: FAIL' }], passes: [], errors: [], exit: 1, harnessFault: null }), removeDir: () => {} }
+    const t = progressTracker({ spec: { id: 'f155', repo: 'C:/r', gate: 'g.py' }, probe, headOf, clockMs: 8 * HOUR, startSha: 'START', startFails: 2,
+      dispatchedAtMs: 0, everyMs: 30 * MIN, log: (m) => logs.push(m) })
+    expect(t.retriedSpawns()).toBe(0)
+    for (const min of [30, 60, 90]) t.onTick({ nowMs: min * MIN })
+    expect(t.retriedSpawns()).toBe(6)
+    const f155 = logs.filter(l => l.includes('F155'))
+    expect(f155).toEqual([`${LINE} — further stale-deadline retries this wave are counted on the wave record (retriedSpawns), not logged`])
+  })
+
+  it('the probe archive retries an impossible ETIMEDOUT once, into a fresh dir, and reports it', () => {
+    const calls = [], fresh = [], retried = []
+    const io = probeIo({
+      calibrate: { freshDir: (p) => fresh.push(p),
+        run: (cmd, args) => { calls.push(args); return calls.length === 1 ? { status: null, stdout: '', stderr: '', fault: { code: 'ETIMEDOUT', status: null, signal: 'SIGTERM', elapsedMs: 6 } } : { status: 0, stdout: '', stderr: '' } } },
+      grade: { run: () => ({ status: 1, stdout: 'P.1: FAIL x\nGATE: MISS (1 fails)\n', stderr: '' }) },
+    })
+    expect(io.archive('C:/r', 'abc', 'C:/tmp/d', { onStaleRetry: (m) => retried.push(m) })).toEqual({ ok: true, problems: [] })
+    expect(calls).toHaveLength(2)
+    expect(fresh).toEqual(['C:/tmp/d', 'C:/tmp/d'])
+    expect(retried).toHaveLength(1)
+    expect(retried[0]).toMatch(/impossible ETIMEDOUT after 6 ms .*retried once .*\(F155\)/)
+    // A real failure (not a stale deadline) is not retried.
+    calls.length = 0
+    const failing = probeIo({ calibrate: { freshDir: () => {}, run: (cmd, args) => { calls.push(args); return { status: 128, stdout: '', stderr: 'fatal: bad object' } } } })
+    expect(failing.archive('C:/r', 'abc', 'C:/tmp/d').ok).toBe(false)
+    expect(calls).toHaveLength(1)
+  })
+})
+
 // Task 3 review N1: a faulted grade's duration is near its timeout (a gate
 // that hung for 2 h), and ×10 of it would starve an 8 h wave of readings — so
 // only a grade whose gate ran clean seeds gateMs.

@@ -119,12 +119,39 @@ export function probeGateTimeoutMs(gateMs) {
  */
 export function probeIo({ calibrate = calibrateIo, grade = gradeIo } = {}) {
   return {
-    archive: (repo, sha, dest) => archiveBase(repo, sha, dest, calibrate),
+    archive: (repo, sha, dest, { onStaleRetry } = {}) => archiveProbe(repo, sha, dest, calibrate, onStaleRetry),
     runGate: (spec, dest, { timeoutMs } = {}) => runGate(spec, grade, { repo: dest, timeoutMs: timeoutMs ?? probeGateTimeoutMs(null), retry: false }),
     removeDir: (p) => rmSync(p, { recursive: true, force: true }),
   }
 }
 export const defaultProbeIo = probeIo()
+
+/**
+ * P-F155 (Phase 6 fix wave): the probe's archive, through calibrate's runSync.
+ * Every probe tick follows a gap of `everyMs` with no spawn, so bun's stale
+ * deadline (F155) kills its git spawns in milliseconds. The HEAD read is a
+ * pure read and retries inside runSync (`retryImpossibleTimeout`); the archive
+ * WRITES a tree, so runSync's in-place retry is not used for it (the spawn
+ * guard in cynco-spawn.test.mjs keeps archiveBase unretried). Instead an
+ * ETIMEDOUT that provably did not spend its cap (runSync's `fault`, never a
+ * `timedOut`) re-runs archiveBase ONCE from the top — `freshDir` empties the
+ * destination first, so the retry extracts into a clean dir. The retry's line
+ * goes to `onStaleRetry` (the tracker counts it and logs it once per wave),
+ * else to stderr as runSync would print it.
+ */
+function archiveProbe(repo, sha, dest, calibrate, onStaleRetry) {
+  let last = null
+  const io = { ...calibrate, run: (cmd, args, opts) => { const r = calibrate.run(cmd, args, opts); last = { cmd, opts, r }; return r } }
+  const first = archiveBase(repo, sha, dest, io)
+  if (first.ok || last?.r?.fault?.code !== 'ETIMEDOUT') return first
+  const stale = last
+  const second = archiveBase(repo, sha, dest, io)
+  if (!second.ok && last?.r?.fault?.code === 'ETIMEDOUT') return second
+  const line = `[spawn] ${stale.cmd}: an impossible ETIMEDOUT after ${stale.r.fault.elapsedMs} ms (cap ${stale.opts?.timeoutMs} ms) — bun's stale deadline; archive retried once into a fresh dir (F155)`
+  if (typeof onStaleRetry === 'function') onStaleRetry(line)
+  else console.error(line)
+  return second
+}
 
 /**
  * The fault CLASSES a probe reading may name — the leading, harness-authored
@@ -162,9 +189,10 @@ function gateFaultOf(g) {
  *   `{ skipped: 'sha unchanged' }` — `sha` equals `lastSha`; nothing is run.
  * `elapsedMs` / `clockMs` (the wave's clock) give `elapsedFraction`, null when
  * either is unknown. `gateMs` is the last measured gate run (the timeout).
+ * `onStaleRetry` receives the archive's F155 retry line (P-F155).
  * Never throws: a throw inside is the reading's fault.
  */
-export function probeProgress({ spec, sha, io = defaultProbeIo, lastSha = null, elapsedMs = null, clockMs = null, gateMs = null, n = 0, now = Date.now, at: atGiven = null }) {
+export function probeProgress({ spec, sha, io = defaultProbeIo, lastSha = null, elapsedMs = null, clockMs = null, gateMs = null, n = 0, now = Date.now, at: atGiven = null, onStaleRetry = null }) {
   if (lastSha && sha === lastSha) return { skipped: 'sha unchanged' }
   const t0 = now()
   const at = atGiven ?? new Date(t0).toISOString()
@@ -172,7 +200,7 @@ export function probeProgress({ spec, sha, io = defaultProbeIo, lastSha = null, 
   if (!sha) return { at, fault: 'no commit sha to grade (the repo HEAD did not resolve)', durationMs: took() }
   const dest = join(tmpdir(), `cynco-progress-${spec.id}-${n}`)
   try {
-    const arch = io.archive(spec.repo, sha, dest)
+    const arch = io.archive(spec.repo, sha, dest, onStaleRetry ? { onStaleRetry } : {})
     if (!arch?.ok) return { at, fault: `archive of ${sha} failed: ${(arch?.problems ?? []).join('; ') || 'no reason given'}`, durationMs: took() }
     const g = io.runGate(spec, dest, { timeoutMs: probeGateTimeoutMs(gateMs) })
     const fault = gateFaultOf(g)
@@ -286,6 +314,15 @@ export function seedGateMs(state) {
 export function progressTracker({ spec, probe, headOf, clockMs, startSha = null, startFails = null, startFailIds = null, startPasses = null, dispatchedAtMs = null, everyMs = everyMsFor(spec), gateMs: seedGateMs = null, log = (m) => console.log(m), now = Date.now }) {
   const progress = [], shadowDecisions = []
   let lastSha = null, lastAtMs = null, gateMs = finitePos(seedGateMs) ? seedGateMs : null, faults = 0, n = 0, lastReason = null
+  // P-F155: every tick's first git spawn follows a gap of `everyMs`, so bun's
+  // stale deadline trips it and the spawn is retried (runSync for the HEAD
+  // read, archiveProbe for the archive). Counted here — `retriedSpawns` on the
+  // wave record — and the line logged once per wave, not once per tick.
+  let retriedSpawns = 0
+  const onStaleRetry = (line) => {
+    retriedSpawns += 1
+    if (retriedSpawns === 1) log(`${line} — further stale-deadline retries this wave are counted on the wave record (retriedSpawns), not logged`)
+  }
   const tick = ({ elapsedMs, nowMs } = {}) => {
     const waveMs = Number.isFinite(dispatchedAtMs) && typeof nowMs === 'number' ? nowMs - dispatchedAtMs : elapsedMs
     const c = progressCadence({ everyMs, clockMs, gateMs, faults, lastAtMs, nowMs: waveMs })
@@ -297,12 +334,12 @@ export function progressTracker({ spec, probe, headOf, clockMs, startSha = null,
     const at = new Date(typeof nowMs === 'number' && Number.isFinite(nowMs) ? nowMs : now()).toISOString()
     const mins = Math.round(waveMs / 60_000)
     let sha = null, reading
-    try { sha = headOf() } catch (e) { reading = { at, fault: `latest commit not read: ${e?.message ?? e}`, durationMs: 0 } }
+    try { sha = headOf({ onStaleRetry }) } catch (e) { reading = { at, fault: `latest commit not read: ${e?.message ?? e}`, durationMs: 0 } }
     if (!reading && sha && startSha && sha === startSha && lastSha === null && typeof startFails === 'number') {
       reading = { at, sha, fails: startFails, passes: startPasses ?? null, failIds: startFailIds ?? null, durationMs: 0,
         elapsedFraction: finitePos(clockMs) ? round3(waveMs / clockMs) : null, reusedFrom: 'start' }
     }
-    if (!reading) reading = probeProgress({ spec, sha, io: probe, lastSha: lastSha ?? startSha, elapsedMs: waveMs, clockMs, gateMs, n: ++n, now, at })
+    if (!reading) reading = probeProgress({ spec, sha, io: probe, lastSha: lastSha ?? startSha, elapsedMs: waveMs, clockMs, gateMs, n: ++n, now, at, onStaleRetry })
     if (reading.skipped) {
       log(`[campaign] progress @ ${mins}m: ${reading.skipped} (${String(sha).slice(0, 7)}) — no gate run`)
     } else {
@@ -330,5 +367,5 @@ export function progressTracker({ spec, probe, headOf, clockMs, startSha = null,
     }
   }
   const note = () => (progress.length ? null : (lastReason ? `none taken — ${lastReason}` : 'the wave ended before the first tick'))
-  return { onTick, progress, shadowDecisions, note }
+  return { onTick, progress, shadowDecisions, note, retriedSpawns: () => retriedSpawns }
 }
