@@ -1034,11 +1034,16 @@ engine enforces anything new.
   opposing-member-lever, C10.5 rival-agendas-per-fog, C10.6
   ending-names-ambition, C10.7 verbs-self-explain, and C10.9 (C9's sealed
   gate, kept green). FIX-THEN-SEAL from the supervisor review (8 required
-  fixes); sealed in the seal commit on this branch (sha added at the seal),
-  with `author: human`, on C9's budget. Two
+  fixes: its own stub passed the gate with the rank spelled "fourth of seven"
+  on every screen, text drawn around the census and a member-deleting
+  lever); one fix round closed all eight and the re-check read SEAL with that
+  stub at MISS (10 fails) at both seeds; sealed 2026-09-29 in commit 4c45deb
+  (gate sha256 1b1f6a936d4e4403), with `author: human`, on C9's budget. Two
   locked-decision items are NOT graded by C10: rivals reading the player's
   agenda through the fog, and rivals pulling the player's opposing members.
-  The supervisor rules on them. C10 wave 1 runs from `main` after the merge
+  The supervisor parked both (the first already holds in the sim at BASE and
+  any drawn form makes a second home; the second is AI/sim in a denied
+  file). C10 wave 1 runs from `main` after the merge
   and is the phase's real live proof of rulings 2–3. Its first verdict prints
   the first real `- Progress:` line and the shadow rule's first row.
 - **The live proof (s3, 2026-09-29).** The Phase 4 smoke campaign `s1` ran
