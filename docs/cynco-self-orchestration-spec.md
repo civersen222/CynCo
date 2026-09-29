@@ -1025,22 +1025,62 @@ engine enforces anything new.
   The supervisor rules on them. C10 wave 1 runs from `main` after the merge
   and is the phase's real live proof of rulings 2–3. Its first verdict prints
   the first real `- Progress:` line and the shadow rule's first row.
-- **The live proof (s3).** The brief's smoke (the Phase 4 `s1` campaign under
-  a fresh temp home `C:/tmp/cynco-home-s3/.cynco`, `--base 1b00179…
-  --common-from … --runtime-from ~/.cynco`, `progress.everyMs` 20 s) was not
-  run in Task 7. Writing the temp home's spec was refused by the session's
-  permission policy, so there is no live reading from this task. What each
-  expectation rests on until the controller runs it:
-  - The readings, the `- Progress:` line and `R1.no-progress` on the ladder
-    line: `scripts/__tests__/cynco-campaign-progress.test.mjs`, which runs a
-    fixture repo with a seconds-long gate.
-  - `signalsVersion: 2` on a row's turns:
-    `scripts/__tests__/cynco-ledger-signals-v2.test.mjs`.
-  - The `derived-full` retry:
-    `scripts/__tests__/cynco-campaign-grade.test.mjs`, "a refused sweep
+- **The live proof (s3, 2026-09-29).** The Phase 4 smoke campaign `s1` ran
+  under a fresh `CYNCO_HOME=C:/tmp/cynco-home-s3/.cynco` (`--base 1b00179…
+  --common-from ~/.cynco/heldout/common --runtime-from ~/.cynco`,
+  `progress.everyMs` 20 s), with the runner launched detached from
+  PowerShell and the smoke repo reset to BASE first (F163). CALIBRATE read
+  `BASE MISS 8, perturb honest`. Mission `s1-wave1-1790718213749` took 20
+  tool calls and 151 s, and the model made 3 commits (6 since base including
+  the marker), BASE `1b00179` → HEAD `cf2bc53`.
+  - **Readings.** The runner took four and logged each:
+    ```
+    [campaign] progress @ 1m: 8 fails (was 8) — no commit since the start, start grade reused
+    [campaign] progress @ 1m: 3 fails (was 8) — gate 0 s on 100562d
+    [campaign] progress @ 2m: 0 fails (was 8) — gate 0 s on c829a10
+    [campaign] progress @ 2m: 0 fails (was 8) — gate 0 s on cf2bc53
+    [campaign] progress @ 3m: sha unchanged (cf2bc53) — no gate run
+    ```
+    On the record they are `rec.progress` at `elapsedFraction` 0.014 (8
+    fails, `reusedFrom: 'start'`), 0.022 (3 fails, gate 206 ms), 0.031 (0)
+    and 0.039 (0). The last line is a skip.
+  - **Shadow decisions.** `rec.shadowDecisions` holds 5 `R1.no-progress`
+    decisions, the skip included. None fired, and `wouldHaveSavedS` ran 3550
+    → 3429.
+  - **The dashboard.** Mid-wave, `/api/mission` read `"toolCalls":18`,
+    `"commitsSinceBase":6`, `"markerSeen":true`. The mission's commits
+    reached the dashboard; the gate readings did not reach the model or its
+    probes.
+  - **The entry.** It read `- Progress: 8 → 0 fails over 4 readings (first
+    fix at 1 min; last at 2 min: 0); R1.no-progress did not fire (5
+    decision(s))` and `- Outcome hindcast: UNMEASURED — v2 holdout not yet
+    frozen (1 of 38 labeled; eligible by version: v1: 105, v2: 1);
+    R1.no-progress precision null on 0 fired p(Holm) null UNMEASURED — no
+    wave in scope (no shadow decision at 50 % of its clock or later)`.
+  - **The ladder file.** The temp home's `rule-verdicts.json` carries
+    `rules['R1.no-progress']` with `source: 'runner'`, `n: 0`, `scopeN: 0`
+    and the same UNMEASURED verdict. That is right: the wave passed at 4 %
+    of its clock, so no decision reached 50 %.
+  - **Signals.** Every one of the ledger row's 20 turns carries
+    `signalsVersion: 2`, and `consecutiveUnstable` read `0, 1, 2, 3, 4, 5, 6,
+    0, 0, 0, 0, 0, 1, 0, …`. The streak resets, which is F165's fix visible
+    live. `algedonicAlerts` / `algedonicAlertsTotal` read 0 / 0.
+  - **The sweep.** It did NOT refuse. `kind: 'derived'`, `retried: false`,
+    0/2 with survivors `calc.py:14:cmp->NotEq` and `calc.py:15:const->2`,
+    giving the decision `pass-with-survivors` → CAMPAIGN PASS. So the
+    `derived-full` retry was not exercised live. It is proven by
+    `scripts/__tests__/cynco-campaign-grade.test.mjs` ("a refused sweep
     retries once with --mutate over the wave's sources (F164)", including a
-    real-repo case whose wave deletes a module.
-  C10 wave 1 is the phase's live proof in any case (ruling 7b).
+    real-repo case whose wave deletes a module), and the C9 wave 2 relabel
+    is its first real use.
+  - **One live defect, for the final fix wave.** Every probe tick's first
+    git spawn printed `[spawn] git: an impossible ETIMEDOUT after 6 ms (cap
+    30000 ms) — bun's stale deadline; retried once and the retry ran
+    (F155)`. The retry works, but at a 20 s cadence the log is noise.
+  - **Cleanup.** The `campaign/s1` branch was deleted, which reverted the
+    ledger row and the log entry with it. The smoke repo was left at
+    `cf2bc53`, and 9161 answers 000.
+  C10 wave 1 remains the phase's real live proof (ruling 7b).
 - **Parked, with reasons.** Enforcing `R1.no-progress` waits for PREDICTIVE on
   the ladder. TabPFN and XGBoost learners wait because no pip install happens
   without the operator's approval. The `wouldHaveSavedS` cap is left to
