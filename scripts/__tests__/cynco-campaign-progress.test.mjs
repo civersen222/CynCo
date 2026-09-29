@@ -1,11 +1,12 @@
 import { describe, it, expect, afterEach, afterAll, vi } from 'vitest'
-import { existsSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   progressCadence, everyMsFor, probeProgress, probeIo, probeGateTimeoutMs, shadowNoProgress, runnerRowsFrom, progressLine, progressTracker,
   PROGRESS_EVERY_MS_DEFAULT, PROBE_GATE_TIMEOUT_UNMEASURED_MS,
 } from '../cynco-campaign-progress.mjs'
+import { runnerRowsFromCampaigns } from '../cynco-runner-rows.mjs'
 import { defaultIo as campaignIo } from '../cynco-campaign.mjs'
 import { buildProgressRepo, removeProgressRepos, PROGRESS_GATE } from './fixtures/progress/repo.mjs'
 
@@ -265,6 +266,41 @@ describe('runnerRowsFrom', () => {
     const [row] = runnerRowsFrom([])
     expect(row.scope.size).toBe(0)
     expect(row.fired.size).toBe(0)
+    expect(row.unlabeled).toEqual([])
+  })
+
+  // Final review I1: a VERDICT whose grade did not run (`kind: 'fault'`,
+  // `verified: null` — the gate harness-faulted, or the grade never happened)
+  // is UNLABELED for R1, as `labelOf` makes it for the S5 rules: out of the
+  // scored n, named on the row. A WAIT-timeout fault (the faultWave record, no
+  // `verified` field at all — the wave burned its clock) stays a failure.
+  it('a grade that did not run is unlabeled and named; a WAIT-timeout fault stays a failure', () => {
+    const waves = [
+      { missionId: 'm-gradefault', decision: { kind: 'fault', why: 'gate did not run (code ETIMEDOUT, status null, after 7 ms)' }, verified: null, shadowDecisions: [decision(true)] },
+      { missionId: 'm-waitfault', decision: { kind: 'fault', why: 'driver did not exit within the wall clock' }, shadowDecisions: [decision(true)] },
+      { missionId: 'm-graded', decision: { kind: 'next' }, verified: false, shadowDecisions: [decision(true)] },
+    ]
+    const [row] = runnerRowsFrom(waves)
+    expect([...row.scope].sort()).toEqual(['m-graded', 'm-waitfault'])
+    expect([...row.fired].sort()).toEqual(['m-graded', 'm-waitfault'])
+    expect([...row.failed].sort()).toEqual(['m-graded', 'm-waitfault'])
+    expect(row.unlabeled).toEqual([{ missionId: 'm-gradefault', why: 'the grade did not run — gate did not run (code ETIMEDOUT, status null, after 7 ms)' }])
+  })
+
+  // Final review M3: the wave the runner gives up on (`waited.timedOut`) has
+  // `missionId: null`; it is keyed `<campaign>#wave<n>` and stays in scope.
+  it('a timed-out wave with a null missionId is in scope, keyed <campaign>#wave<n>, and counted failed', () => {
+    const campaigns = mkdtempSync(join(tmpdir(), 'rr-campaigns-'))
+    tempDirs.push(campaigns)
+    mkdirSync(join(campaigns, 'cx'))
+    writeFileSync(join(campaigns, 'cx', 'waves.jsonl'), [
+      { wave: 1, missionId: 'cx-wave1-1', decision: { kind: 'next' }, verified: false, shadowDecisions: [decision(false)] },
+      { wave: 2, missionId: null, decision: { kind: 'fault', why: 'driver did not exit within the wall clock' }, shadowDecisions: [decision(true)] },
+    ].map(r => JSON.stringify(r)).join('\n') + '\n')
+    const [row] = runnerRowsFromCampaigns(campaigns)
+    expect([...row.scope].sort()).toEqual(['cx#wave2', 'cx-wave1-1'])
+    expect([...row.fired]).toEqual(['cx#wave2'])
+    expect([...row.failed].sort()).toEqual(['cx#wave2', 'cx-wave1-1'])
   })
 })
 

@@ -291,7 +291,7 @@ describe('writeRuleVerdicts with runner rows', () => {
     expect(f.rules['R1.no-progress']).toEqual({
       verdict: ruleVerdictOf(asRule), precision: 0.8, ci: asRule.ci, p: asRule.p, n: 5,
       pAdjusted: asRule.pAdjusted, lift: asRule.lift, firedTotal: 5, failures: 4,
-      source: 'runner', scope: 'waves', base: 7 / 15, scopeN: 15, note: null,
+      source: 'runner', scope: 'waves', base: 7 / 15, scopeN: 15, note: null, unlabeled: [],
     })
     expect(f.rules['R1.no-progress'].lift).toBeCloseTo(0.8 - 7 / 15, 10)
     expect(f.rules['R1.no-progress'].verdict).toBe('TOO FEW — cannot tell')
@@ -335,6 +335,17 @@ describe('writeRuleVerdicts with runner rows', () => {
     writeRuleVerdicts({ rows: [], campaign: 'c9', outPath, runnerRows: runnerRowsFrom([...waves(), ...bad]) })
     const e = JSON.parse(readFileSync(outPath, 'utf8')).rules['R1.no-progress']
     expect(e).toMatchObject({ n: 5, failures: 4, scopeN: 15, note: '3 malformed wave record(s) skipped: bad-obj, record #19, record #20' })
+  })
+
+  // Final review I1: a wave whose VERDICT grade did not run is unlabeled for
+  // R1 as for the S5 rules — out of n, named on the row, never a "right" firing.
+  it('a grade that did not run is out of n and named in `unlabeled` on the row', () => {
+    const outPath = RULE_VERDICTS_PATH(home())
+    const faulted = { ...wave('gf', 'fault', true), verified: null, decision: { kind: 'fault', why: 'gate printed no GATE: terminator' } }
+    writeRuleVerdicts({ rows: [], campaign: 'c9', outPath, runnerRows: runnerRowsFrom([...waves(), faulted]) })
+    const e = JSON.parse(readFileSync(outPath, 'utf8')).rules['R1.no-progress']
+    expect(e).toMatchObject({ n: 5, failures: 4, scopeN: 15,
+      unlabeled: [{ missionId: 'gf', why: 'the grade did not run — gate printed no GATE: terminator' }] })
   })
 
   // Review M4: "N predictive of R rules" and the `predictive` list agree —

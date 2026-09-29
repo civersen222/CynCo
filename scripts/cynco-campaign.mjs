@@ -712,7 +712,7 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
     // skipped and named on the row; a fault reading the dir is logged and the
     // ladder is written without the row, never a fault of the wave.
     let runnerRows = []
-    try { runnerRows = runnerRowsFromCampaigns(join(home, 'campaigns'), { current: spec.id, waves: state.waves(), rec }) }
+    try { runnerRows = runnerRowsFromCampaigns(join(home, 'campaigns'), { current: spec.id, entries: state.waveEntries(), rec }) }
     catch (e) { console.error(`[campaign] runner rows (R1.no-progress) not read: ${e?.message ?? e}`) }
     const write = io.writeRuleVerdicts ?? defaultIo.writeRuleVerdicts
     try {

@@ -111,8 +111,11 @@ function runnerRuleOf(u, analyse) {
   // malformed line in some campaign's waves.jsonl is visible on the row.
   const skipped = Array.isArray(u.skipped) ? u.skipped : []
   const note = skipped.length ? `${skipped.length} malformed wave record(s) skipped: ${skipped.join(', ')}` : null
+  // Final review I1: the waves whose VERDICT grade did not run — unlabeled, as
+  // `labelOf` makes them for the S5 rules — named, never counted in n.
+  const unlabeled = Array.isArray(u.unlabeled) ? u.unlabeled : []
   // Review M3: an unmeasured row has no interval either — null, not wilson(0, 0)'s [0, 1].
-  return { ...r, ci: unmeasured ? null : r.ci, base: res.labeled ? res.base : null, scopeN: res.labeled, unmeasured, note }
+  return { ...r, ci: unmeasured ? null : r.ci, base: res.labeled ? res.base : null, scopeN: res.labeled, unmeasured, note, unlabeled }
 }
 /** An `analyse` row for a rule with no table in its scope (F16: null numbers). */
 const emptyRuleRow = (id) => ({ id, firedTotal: 0, labeled: 0, failures: 0, precision: null, ci: wilson(0, 0), lift: null, p: null, coverage: 0 })
@@ -263,6 +266,8 @@ export function writeRuleVerdicts({ rows, campaign, outPath, analyse = analyseFn
       source: 'runner', scope: 'waves', base: r.base, scopeN: r.scopeN,
       // null, or the malformed wave records skipped (named).
       note: r.note,
+      // `[{ missionId, why }]`: waves out of n because their grade did not run.
+      unlabeled: r.unlabeled ?? [],
     }
   }
   // Review M4: the runner rows are counted in neither the rule count nor this

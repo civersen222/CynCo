@@ -126,11 +126,21 @@ export class CampaignState {
    * line is skipped with a warning and the rest are returned.
    */
   waves() {
+    return this.waveEntries().map(e => e.record)
+  }
+  /**
+   * The parsed wave records with the waves.jsonl line each came from
+   * (`{ line, record }`, 1-based over the non-empty lines — appendWave writes
+   * no blank line, so it is the file's line). An unparseable line is skipped
+   * with the same warning as `waves()`; the numbers of the others do not move,
+   * so a reader can name a record by `<campaign>/waves.jsonl line <n>`.
+   */
+  waveEntries() {
     if (!existsSync(this.wavesPath)) return []
     const out = []
     const lines = readFileSync(this.wavesPath, 'utf8').split('\n').filter(Boolean)
     lines.forEach((l, i) => {
-      try { out.push(JSON.parse(l)) }
+      try { out.push({ line: i + 1, record: JSON.parse(l) }) }
       catch (e) { console.error(`[campaign] waves.jsonl line ${i + 1}${i === lines.length - 1 ? ' (the last line — a write was interrupted)' : ''} is not JSON, skipping it: ${e.message}`) }
     })
     return out

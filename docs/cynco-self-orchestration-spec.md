@@ -940,10 +940,15 @@ engine enforces anything new.
   'runner' }`, across every runner-driven campaign. Its scope is the waves
   with ≥ 1 shadow DECISION at `elapsedFraction ≥ 0.5`, fired or not. That
   scope was a ruling at Task 3's review: scoping by READINGS dropped the
-  rule's own targets, the waves that stop committing before halfway. Its
+  rule's own targets, the waves that stop committing before halfway. A wave
+  is keyed by its missionId, else `<campaign>#wave<n>`, so the wave the runner
+  gave up on in the WAIT (no missionId) stays in scope. Its
   outcome is the wave's final decision (`pass`/`pass-with-survivors` means a
   firing was wrong), read after the identity check that can turn a pass into
-  a fault. The row goes through the same Fisher/Wilson `analyse` and the one
+  a fault. A VERDICT whose grade did not run (`kind: 'fault'`, `verified:
+  null`) is UNLABELED for R1 as `labelOf` makes it for the S5 rules: out of n,
+  named on the row as `unlabeled: [{ missionId, why }]`; a WAIT-timeout fault
+  (no `verified` field) stays a failure. The row goes through the same Fisher/Wilson `analyse` and the one
   Holm family as the S5 rules and the `M1.*` model rows. The CLI builds it
   exactly as the VERDICT does, because a rebuild without it would correct the
   rules over a smaller m and could flip one near p(Holm) 0.05. It is named on

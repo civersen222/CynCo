@@ -1402,9 +1402,19 @@ it at `rec.durationS − elapsed`. SHADOW: nothing is stopped; a firing is one
 log line and one record entry.
 
 **Runner rows for the ladder.** `runnerRowsFrom(waves)` → one row
-`{ id: 'R1.no-progress', source: 'runner', fired, scope, failed }`: *scope* =
-waves with a missionId, a decision (`stop` excluded — nothing ran) and ≥ 1
+`{ id: 'R1.no-progress', source: 'runner', fired, scope, failed, skipped,
+unlabeled }`, each wave keyed by its missionId, else `<campaign>#wave<n>` (the
+wave the runner gave up on in the WAIT has `missionId: null`, and burning the
+whole clock is exactly the rule's target — final review M3): *scope* =
+waves with a decision (`stop` excluded — nothing ran) and ≥ 1
 `R1.no-progress` shadow DECISION at `elapsedFraction ≥ 0.5`, fired or not.
+*unlabeled* (final review I1) = the waves that would be in scope but whose
+VERDICT is `kind: 'fault'` with `verified: null` — the grade itself did not run
+(the gate or suite harness-faulted). `labelOf` makes that mission UNLABELED for
+the S5 rules in the same Holm family, so it is unlabeled for R1 too: out of
+scope and named `{ missionId, why }`. A WAIT-timeout or post-run fault record
+(`faultWave`, no `verified` field at all) is not this — it stays in scope as a
+failure.
 Scope reads the decisions, never the readings: a wave that stops committing
 before 50 % has its last reading below 50 % and only skipped ticks after it,
 and those waves are the rule's positives (an 8 h wave that never commits is
@@ -1445,7 +1455,9 @@ through `analyse`'s `labelOf` seam, so the lift is against the in-scope waves'
 failure rate). It joins the ONE Holm family: rules, then `M1.*` model rows, then
 runner rows (`ledger.holmFamily`). It lands as
 `rules['R1.no-progress'] = { verdict, precision, ci, p, n, pAdjusted, lift,
-firedTotal, failures, source: 'runner', scope: 'waves', base, scopeN, note }`.
+firedTotal, failures, source: 'runner', scope: 'waves', base, scopeN, note,
+unlabeled }` — `unlabeled` the row's `[{ missionId, why }]` (`[]` when none),
+recomputed from the wave records at every VERDICT.
 
 - **Unmeasured is never a rate (F16).** With no wave in scope the verdict is
   `UNMEASURED — no wave in scope (no shadow decision at 50 % of its clock or
