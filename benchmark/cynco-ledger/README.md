@@ -1064,8 +1064,11 @@ N's set from version-N rows only and refuses when it exists;
 rules, per set). Without `--signals-version` on a schema-1 file both behave
 exactly as in Phase 5. `scripts/cynco-outcome-model.py` reads the set of its
 `--signals-version` (version 1 without the flag). The automatic freeze writes
-the committed file in the working tree; the operator commits it like any
-other ledger change.
+the committed file in the working tree, and the runner commits it with that
+wave's verdict (the verdict commit stages every changed path under
+`benchmark/cynco-ledger/`, `ledgerShardsTouched` in
+`scripts/cynco-campaign.mjs`); a freeze made by the CLI is committed by the
+operator like any other ledger change.
 
 **S5 rules that read a v2-changed signal (fix round 1, review I2).** W5 and I2
 (`engine/s5/ruleBasedS5.ts`) fire on the homeostat streak, which in v1 was the

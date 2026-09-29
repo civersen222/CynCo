@@ -876,6 +876,187 @@ authority ladder honestly, and C9 sealed and ready for the runner.
   commit; a fault's wall-clock hours print the rate as a floor (`≥`); and
   F163's HEAD-vs-base refusal guards every dispatched wave.
 
+**Phase 6 — the runner measures the wave (shipped 2026-09-29).** Phase 5's
+own finding was the brief: *the per-turn signal vector at 16 turns does not
+predict outcomes; better signals, not more training*
+(`docs/superpowers/specs/2026-09-29-gate-progress-phase6-design.md`, rulings
+1–9). C9, the first campaign the runner drove end to end, said where the
+blindness was. Wave 1 MISSed 3 lines after 3.80 h, 367 tool calls and 6
+commits; wave 2 PASSed in 0.80 h and 42 calls; the scoreboard read PASS/GPU-h
+0.218 over 2 waves with 7.00 gate lines fixed per landed wave. Nothing in the
+engine or the runner knew, at minute 90 of that 3.8-hour wave, whether it was
+fixing gate lines: S5 decides once at t≈0, the invariants denied 0 calls, and
+governance POSIWID read Contradicted on both waves. The learner the phase
+inherited read AUC `lr` 0.47 / `gbt` 0.50 on the frozen holdout while the
+finished length alone read 0.63, and part of its vector was broken at the
+source: `consecutiveUnstable` equalled the turn index on every C9 turn (F165).
+And the wave that decided C9 was unlabeled, because the sweep refused an
+import-only diff (F164). Phase 6 gives the runner eyes mid-wave, puts the
+first runner-level regulator on the ladder in shadow, fixes the signals at
+their cause, labels every deciding wave, and authors C10. Nothing in the
+engine enforces anything new.
+
+- **Gate progress, measured by the runner (ruling 2).**
+  `scripts/cynco-campaign-progress.mjs`. During WAIT, on the wave clock,
+  `progressCadence` decides whether a reading is due. The interval is
+  `progress.everyMs`, raised to 10 × the gate's measured runtime so the gate
+  never takes more than 10 % of the wave; C9's 215 s gate means ≥ 2150 s. It
+  doubles per consecutive fault and never lands in the clock's last
+  2 × gate. `gateMs` is seeded from the last grade's `gate.durationMs`, else
+  the calibration's new `baseGateMs`, so the 10 % rule holds from the first
+  tick. When a reading is due, `probeProgress` reads the repo's HEAD, and an
+  unchanged sha is a skip with nothing run. Otherwise it `git archive`s that
+  sha into a temp dir (`archiveBase`'s form; the live repo is never touched),
+  runs the sealed gate there with `runGate` exactly as a verdict does
+  (`runSync`, never retried: a stale ETIMEDOUT mid-wave is a fault reading,
+  F155), and appends `{ at, sha, fails, passes, failIds, durationMs,
+  elapsedFraction }` or `{ at, fault, durationMs }` to `rec.progress`. While
+  HEAD still sits at the start sha, the first due tick reuses the start grade
+  (`reusedFrom: 'start'`, `durationMs: 0`), so a wave that never commits still
+  has a count past 50 %. The spec gains `progress.everyMs` (a positive
+  integer; `everyMsFor` = the spec's, else `CYNCO_PROGRESS_EVERY_MS`, else
+  30 min). The smoke spec uses 20 s, because its gate runs in seconds. The
+  verdict entry prints `- Progress: 14 → 3 fails over 3 readings (first fix
+  at 41 min; last at 210 min: 3); R1.no-progress fired at 52% (would have
+  saved 3.2 h)` (`progressLine`), or `- Progress: no readings (<reason>)`.
+  **The sealed-instrument rule, restated: progress is never a probe.** A
+  reading reaches `waves.jsonl` and the runner's log
+  (`[campaign] progress @ Nm: F fails (was F0)`) and nothing else: never the
+  model, never a probe message, never the brief. This is the Stage 1 lesson.
+  The model gains no information it did not have.
+- **`R1.no-progress`, the first runner-level regulator, in SHADOW (ruling
+  3).** The rule: *if at ≥ 50 % of the wave's wall clock the gate's fail count
+  has not dropped below the wave's starting count, the wave will not pass.*
+  `shadowNoProgress` evaluates it at every due tick, whether a reading or a
+  skip, and appends `{ rule, at, elapsedFraction, fired, startFails, fails,
+  wouldHaveSavedS }` to `rec.shadowDecisions`. It never fires on a faulted
+  newest reading or an unmeasured start, and nothing is stopped.
+  `wouldHaveSavedS` is read off the BUDGETED clock (`clockMs/1000 −
+  elapsed`), so for a wave that ended early it overstates. Readers cap it at
+  `rec.durationS − elapsed`, and the record stays the brief's formula. At
+  VERDICT, `runnerRowsFromCampaigns` (`scripts/cynco-runner-rows.mjs`, one
+  construction shared by the runner and the rule-verdicts CLI over
+  `--campaigns-dir`) builds one row, `{ id: 'R1.no-progress', source:
+  'runner' }`, across every runner-driven campaign. Its scope is the waves
+  with ≥ 1 shadow DECISION at `elapsedFraction ≥ 0.5`, fired or not. That
+  scope was a ruling at Task 3's review: scoping by READINGS dropped the
+  rule's own targets, the waves that stop committing before halfway. Its
+  outcome is the wave's final decision (`pass`/`pass-with-survivors` means a
+  firing was wrong), read after the identity check that can turn a pass into
+  a fault. The row goes through the same Fisher/Wilson `analyse` and the one
+  Holm family as the S5 rules and the `M1.*` model rows. The CLI builds it
+  exactly as the VERDICT does, because a rebuild without it would correct the
+  rules over a smaller m and could flip one near p(Holm) 0.05. It is named on
+  the `- Outcome hindcast:` ladder line, is in neither `predictive` nor the
+  rule count, and `engine/s5/ruleAuthority.ts` skips `source: 'runner'`.
+  With no wave in scope it reads `UNMEASURED — no wave in scope`, and with no
+  firing `UNMEASURED — fired on no in-scope wave`. It earns PREDICTIVE exactly
+  as an S5 rule would. Only then may a later phase let it stop a wave.
+- **Signals fixed at the source (ruling 4, amended at Task 2; F165).** The
+  cause: `homeostatIntegration.update` fed the Ashby units raw pressure
+  levels, and the core's `isStable(0.05 / tau)` asks whether every unit sits
+  within ~0.06 of zero. In a mission S3 ≥ 0.1 and S4 ≥ 0.3, so the homeostat
+  could never read stable and the streak counted session age. The fix is at
+  the integration layer; `engine/cybernetics-core` is untouched. Each pressure
+  enters as its DEVIATION from its own 20-turn mean, and the bar is
+  `h × 0.2 / tau`, a fixed band of one S3 quantum. **Amendment:** the ruling's
+  variance-scaled tolerance was built first and rejected. Scaled by its own
+  spread, an oscillating pressure made the oscillation its normal (30
+  alternating turns read a streak of 0). On the reconstructed C9 wave 2 stream
+  the fixed band reads unstable on 10 of 57 turns (57 of 57 before), in four
+  streaks, longest 4. `consecutiveUnstable` resets on a stable turn and caps
+  at 50. `algedonicAlerts` is the count in the last 20 turns, with the old
+  cumulative reading kept as `algedonicAlertsTotal`. `governance.status`
+  carries `signalsVersion: 2`; `protocol.ts` gains optional fields and no
+  import or event. The ledger writes `turns[].signalsVersion`, stamping 1 on a
+  frame without it, and v1 and v2 rows never mix silently. The hindcast trains
+  on ONE signals version, the current 2 (`HINDCAST_SIGNALS_VERSION`), and
+  carries `rowsByVersion`. S5 rules W5 and I2, the only rules reading a
+  v2-changed signal, are scored on v2 rows only (`analyseByVersion`), with
+  their v1 counts kept under `v1` and never pooled. Under v1 they fired on
+  every mission. The frozen holdout is now one set per signals version (v1's
+  21 ids verbatim). v2's set freezes itself ONCE when its eligible pool
+  reaches `FREEZE_MIN_ELIGIBLE` = 38, and the runner commits the manifest with
+  that verdict. Until then the learner reads unmeasured with the reason
+  (`noEligibleFault`), and python is not spawned. `stuckTurns` and the
+  read-loop gate were audited against C9 and measure different things (a
+  repetition detector vs re-reading): named, not changed.
+- **Every deciding wave gets its label (ruling 5; F164 CLOSED).** `runSweep`
+  (`scripts/cynco-campaign-grade.mjs`) retries a `sweep refused (exit 2)`
+  ONCE with `--mutate <sweepSourcesFor(spec, changedFiles)>`: every non-test
+  `.py` the diff touched, by the sweep's own `is_test_path` rule, read with
+  `--diff-filter=d` so a deleted module is never named. The retry is recorded
+  as `sweep.kind: 'derived-full'`, `retried: true`. Only a second refusal
+  stands, with `sweepRetried: true` on the record and the row. `labelOf`
+  reads `derived-full` like `derived`, and `cynco-ledger-sweep.mjs --kind
+  derived-full` (which requires `--mutate` in its command) writes the same
+  shape by hand for the C9 wave 2 relabel.
+- **Hygiene (ruling 8).** `humanInterventionsPerWave` counts from the seal
+  (`state.authoring[<id>].sealedAt`). Acts dated before it are left out and
+  named as `beforeSeal`, so C9 now reads 0.00 with `beforeSeal: 2` (its two
+  authoring-phase refusals). The driver's single `COMMIT LANDED` per mission
+  is documented as the landed transition, by design. The first non-empty
+  retained table (`~/.cynco/retained/mission-invariants.json` v1,
+  `callsSinceCommit: { Discrete: 'edit-only' }`) has a named reader and still
+  is not applied: the commit-pressure invariant (`engine/bridge/commitPressure.ts`,
+  `callsSinceCommit`) is the one that would read it, and whether it should is
+  the next phase's measured decision.
+- **C10 — Ambitions & the Ladder.** The roadmap line is the frontier
+  occupant's reading of the user's locked decision 2: *a player ambition from
+  the 7 agenda families chosen at game start and shown once (Court in
+  Session); public rank every turn with its axes earned through the intel
+  fog; portrait cards whose stance (backs/wary/opposes) and one-line want are
+  computed from the character's dispositions; an opposing member usable as a
+  lever; rivals' agendas on Powers per fog tier; the ending judge names the
+  ambition's outcome.* The frontier occupant authored the triple as in Phase
+  5 (rubric: Phase 5's supervisor review, the Clarity Law, F151–F156/F164)
+  over civkings `ccf3fee`, and it sits under `~/.cynco/authoring/c10/`. It
+  has eleven graded lines: C10.1a ambition-chosen, C10.1b
+  ambition-shown-once, C10.2a rank-public, C10.2b rank-why-through-fog,
+  C10.3a court-in-session, C10.3b stance-from-dispositions, C10.4
+  opposing-member-lever, C10.5 rival-agendas-per-fog, C10.6
+  ending-names-ambition, C10.7 verbs-self-explain, and C10.9 (C9's sealed
+  gate, kept green). `--check` PASSed: BASE MISS 20, EXPECT-FLIP exactly
+  C10.7, MUST-FAIL 9 lines red, positive PASS, keep-green with the positive
+  installed. The triple is sealed in the seal commit on this branch (sha
+  added at the seal) with `author: human`, on C9's budget. Two
+  locked-decision items are NOT graded by C10: rivals reading the player's
+  agenda through the fog, and rivals pulling the player's opposing members.
+  The supervisor rules on them. C10 wave 1 runs from `main` after the merge
+  and is the phase's real live proof of rulings 2–3. Its first verdict prints
+  the first real `- Progress:` line and the shadow rule's first row.
+- **The live proof (s3).** The brief's smoke (the Phase 4 `s1` campaign under
+  a fresh temp home `C:/tmp/cynco-home-s3/.cynco`, `--base 1b00179…
+  --common-from … --runtime-from ~/.cynco`, `progress.everyMs` 20 s) was not
+  run in Task 7. Writing the temp home's spec was refused by the session's
+  permission policy, so there is no live reading from this task. What each
+  expectation rests on until the controller runs it:
+  - The readings, the `- Progress:` line and `R1.no-progress` on the ladder
+    line: `scripts/__tests__/cynco-campaign-progress.test.mjs`, which runs a
+    fixture repo with a seconds-long gate.
+  - `signalsVersion: 2` on a row's turns:
+    `scripts/__tests__/cynco-ledger-signals-v2.test.mjs`.
+  - The `derived-full` retry:
+    `scripts/__tests__/cynco-campaign-grade.test.mjs`, "a refused sweep
+    retries once with --mutate over the wave's sources (F164)", including a
+    real-repo case whose wave deletes a module.
+  C10 wave 1 is the phase's live proof in any case (ruling 7b).
+- **Parked, with reasons.** Enforcing `R1.no-progress` waits for PREDICTIVE on
+  the ladder. TabPFN and XGBoost learners wait because no pip install happens
+  without the operator's approval. The `wouldHaveSavedS` cap is left to
+  readers, and the record keeps the budgeted-clock formula. Two stuck-detector
+  items are named in F165 for a later phase: a successful read-only Bash
+  resets `stuckTurns`, and gate denials never count as stuck evidence. C10
+  does not grade rivals reading the player's agenda through the fog, or
+  rivals pulling the player's opposing members; the supervisor rules on both.
+  Ruling 8's list stays parked: the download resolver, `s5.decision` typing,
+  writer-guard blind spots, LoRA/KTO, model-S5 live and the dashboard chat.
+  Post-merge controller steps: the C9 wave 2 relabel (`--mutate
+  gilded/ui/saves_view.py` at civkings `9fd5fe9`, recorded `--kind
+  derived-full`, through a PR) and the C10 dispatch
+  (`bun scripts/cynco-campaign.mjs docs/civkings-redesign-briefs/c10.campaign.json --waves 8`,
+  detached).
+
 **Deferred spec items (follow-up, not built here).**
 
 - **Eigenform convergence (spec §7).** The metric for "the campaign's briefs
