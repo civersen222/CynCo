@@ -22,7 +22,22 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from 'node:fs'
 import { join, dirname, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { analyse as analyseFn, ruleVerdictOf, holm, wilson } from './cynco-signal-validation.mjs'
+import { analyse as analyseFn, ruleVerdictOf, holm, wilson, rulesFired } from './cynco-signal-validation.mjs'
+import { signalsVersionOf } from './cynco-outcome-dataset.mjs'
+
+/**
+ * F165 (review I2): the S5 rules whose condition reads a signal that changed
+ * meaning in signals v2 — `homeostatStable` / `homeostatConsecutiveUnstable`
+ * (engine/s5/ruleBasedS5.ts: W5 at `>= 3`, I2 at `1..2`). In v1 the homeostat
+ * never read stable, so W5 fired on every turn from 3 on and I2 on turns 1–2
+ * of EVERY mission: a v1 firing is not the v2 rule's evidence. These rules are
+ * scored on v2 missions only; their v1 table rides on the row as `v1`, never
+ * pooled into `n`/`precision`. No rule reads `algedonicAlerts`.
+ */
+export const V2_CHANGED_RULES = Object.freeze(['I2', 'W5'])
+const V2_CHANGED = new Set(V2_CHANGED_RULES)
+/** A ledger row's signals version: the minimum over its turns (1 when none carries one). */
+const missionVersion = (row) => signalsVersionOf(Array.isArray(row?.turns) ? row.turns : [])
 
 export const RULE_VERDICTS_PATH = (home) => join(home, 'datasets', 'rule-verdicts.json')
 /** Where `scripts/cynco-outcome-model.py` writes the hindcast the runner reads. */
@@ -94,6 +109,40 @@ function runnerRuleOf(u, analyse) {
   const unmeasured = res.labeled === 0 ? RUNNER_UNMEASURED_NO_SCOPE : r.labeled === 0 ? RUNNER_UNMEASURED_NEVER_FIRED : null
   return { ...r, base: res.labeled ? res.base : null, scopeN: res.labeled, unmeasured }
 }
+/** An `analyse` row for a rule with no table in its scope (F16: null numbers). */
+const emptyRuleRow = (id) => ({ id, firedTotal: 0, labeled: 0, failures: 0, precision: null, ci: wilson(0, 0), lift: null, p: null, coverage: 0 })
+
+/**
+ * `analyse` over the ledger with the V2_CHANGED_RULES taken apart (F165,
+ * review I2). When no mission fired one of them the ledger is analysed exactly
+ * as before (`v2Split: false`). Otherwise:
+ * - every other rule is analysed over every row, as before;
+ * - each changed rule that fired anywhere is analysed over the v2 missions
+ *   only (a rule that fired on no v2 mission has an empty table: n 0, null
+ *   numbers, `TOO FEW`), with its v1 table beside it as `v1` — `{ n,
+ *   firedTotal, failures, precision, ci, p, lift, scopeN }`, `p` uncorrected
+ *   (the v1 table is not a test in the family);
+ * - Holm runs once over the whole rule set, so the family size is unchanged.
+ */
+function analyseByVersion(rows, analyse) {
+  const changedFired = new Set()
+  for (const r of rows) for (const id of rulesFired(r)) if (V2_CHANGED.has(id)) changedFired.add(id)
+  if (changedFired.size === 0) return { res: analyse(rows), v2Split: false }
+  const others = (r) => new Set([...rulesFired(r)].filter(id => !V2_CHANGED.has(id)))
+  const changedOnly = (r) => new Set([...rulesFired(r)].filter(id => V2_CHANGED.has(id)))
+  const res = analyse(rows, { firedOf: others })
+  const v2 = analyse(rows.filter(r => missionVersion(r) >= 2), { firedOf: changedOnly })
+  const v1 = analyse(rows.filter(r => missionVersion(r) < 2), { firedOf: changedOnly })
+  for (const id of [...changedFired].sort()) {
+    const r2 = v2.rules.find(x => x.id === id) ?? emptyRuleRow(id)
+    const r1 = v1.rules.find(x => x.id === id) ?? emptyRuleRow(id)
+    res.rules.push({ ...r2, scopeN: v2.labeled,
+      v1: { n: r1.labeled, firedTotal: r1.firedTotal, failures: r1.failures, precision: r1.precision, ci: r1.ci, p: r1.p, lift: r1.lift, scopeN: v1.labeled } })
+  }
+  res.rulesTested = holm(res.rules)
+  return { res, v2Split: true }
+}
+
 export const RULE_VERDICTS_SCHEMA = 1
 export const RULE_VERDICTS_HISTORY_CAP = 20
 
@@ -167,12 +216,13 @@ function verdictChanges(before, after) {
  * no table reads UNMEASURED with its reason, n 0 and null numbers (F16).
  */
 export function writeRuleVerdicts({ rows, campaign, outPath, analyse = analyseFn, now = () => new Date().toISOString(), modelRows = [], runnerRows = [] }) {
-  const res = analyse(rows)
+  const { res, v2Split } = analyseByVersion(rows, analyse)
   const models = (modelRows ?? []).map(m => modelRuleOf(m, rows, analyse))
   const runners = (runnerRows ?? []).map(u => runnerRuleOf(u, analyse))
   // Rules first, then models, then runner rows, as one Holm family. Only when
   // there are extra rows: without them the rules keep `analyse`'s own
-  // correction untouched.
+  // correction untouched (or, with a v2 split, the one `analyseByVersion` ran
+  // over the same rule set).
   const holmFamily = models.length || runners.length ? holm([...res.rules, ...models, ...runners]) : null
   const rules = {}
   for (const r of [...res.rules].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))) {
@@ -183,6 +233,10 @@ export function writeRuleVerdicts({ rows, campaign, outPath, analyse = analyseFn
       verdict: ruleVerdictOf(r),
       precision: r.precision ?? null, ci: r.ci ?? null, p: r.p ?? null, n: r.labeled ?? null,
       pAdjusted: r.pAdjusted ?? null, lift: r.lift ?? null, firedTotal: r.firedTotal ?? null, failures: r.failures ?? null,
+      // F165 (review I2): a rule that reads a v2-changed signal is scored on
+      // v2 missions only (`signals: 'v2'`, `scopeN` = the labeled v2
+      // missions); its v1 table is kept apart, never pooled.
+      ...(r.v1 !== undefined ? { signals: 'v2', scopeN: r.scopeN, v1: r.v1 } : {}),
     }
   }
   for (const r of [...models].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))) {
@@ -226,7 +280,9 @@ export function writeRuleVerdicts({ rows, campaign, outPath, analyse = analyseFn
   const file = {
     schema: RULE_VERDICTS_SCHEMA, version, at, campaign: campaign ?? null,
     ledger: { total: res.total, labeled: res.labeled, failures: res.failures, base: res.base, rulesTested: res.rulesTested,
-      ...(holmFamily === null ? {} : { holmFamily }) },
+      ...(holmFamily === null ? {} : { holmFamily }),
+      // F165: the rules scored on v2 missions only this write (absent when none fired).
+      ...(v2Split ? { v2Rules: [...V2_CHANGED_RULES] } : {}) },
     rules, predictive, history,
   }
   mkdirSync(dirname(outPath), { recursive: true })

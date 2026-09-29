@@ -1041,6 +1041,16 @@ v2 40) on 9 held-out missions …`. Pinned by
 `frozen-eval.json` is not touched by any of this; its v1 ids simply leave the
 v2 split as `otherVersion`.
 
+**S5 rules that read a v2-changed signal (fix round 1, review I2).** W5 and I2
+(`engine/s5/ruleBasedS5.ts`) fire on the homeostat streak, which in v1 was the
+turn index — so in every v1 mission W5 fired from turn 3 on and I2 on turns
+1–2. `scripts/cynco-rule-verdicts.mjs` scores `V2_CHANGED_RULES` on v2
+missions only: `rules.W5 = { …, signals: 'v2', scopeN, v1: { n, firedTotal,
+failures, precision, ci, p, lift, scopeN } }` — the v1 table rides beside the
+verdict and is never pooled into it. Every other rule pools as before; Holm
+runs once over all rules; `ledger.v2Rules` lists the split ids when any fired.
+See F165.
+
 ### Outcome dataset and the frozen holdout
 
 Phase 5 ruling 5: the prerequisites for the first learner. Built by
