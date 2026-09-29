@@ -385,7 +385,8 @@ export async function main(argv, deps = {}) {
       else {
         const h = hc.hindcastOf((deps.runHindcast ?? hc.runHindcast)({ paths: exported.paths }), exported.paths.out)
         if (h.fault) hindcast = { fault: h.fault }
-        else { hindcast = h.summary; modelRows = modelRowsFrom(h.model, rows) }
+        // Task 2 review N3: a hand run that froze the holdout says so too.
+        else { hindcast = { ...h.summary, ...(exported?.holdout ? { holdout: exported.holdout } : {}) }; modelRows = modelRowsFrom(h.model, rows) }
       }
     } catch (e) { hindcast = { fault: String(e?.message ?? e) } }
     const r = writeRuleVerdicts({ rows, campaign: null, outPath, modelRows, runnerRows })

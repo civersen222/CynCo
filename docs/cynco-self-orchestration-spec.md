@@ -985,8 +985,9 @@ engine enforces anything new.
   their v1 counts kept under `v1` and never pooled. Under v1 they fired on
   every mission. The frozen holdout is now one set per signals version (v1's
   21 ids verbatim). v2's set freezes itself ONCE when its eligible pool
-  reaches `FREEZE_MIN_ELIGIBLE` = 38, and the runner commits the manifest with
-  that verdict. Until then the learner reads unmeasured with the reason
+  reaches `FREEZE_MIN_ELIGIBLE` = 38 with at least 8 of each label, and the
+  runner commits the manifest with that verdict, whose learner line ends
+  `; v2 holdout frozen now (8 ids)`. Until then the learner reads unmeasured with the reason
   (`noEligibleFault`), and python is not spawned. `stuckTurns` and the
   read-loop gate were audited against C9 and measure different things (a
   repetition detector vs re-reading): named, not changed.

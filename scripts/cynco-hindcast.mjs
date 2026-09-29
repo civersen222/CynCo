@@ -131,6 +131,9 @@ export function noEligibleFault(exported, K = PRIMARY_TURNS) {
   // F165 fix round 2: missions exist, but this version has no frozen holdout
   // yet — python is not spawned, and the reading says how far off the freeze is.
   const h = exported.holdout
+  // Task 2 review N4: the pool is big enough, but one label is short of the
+  // holdout minimum — say which, not "n of 38".
+  if (typeof h.needEach === 'number') return `v${v} holdout not yet frozen (pass ${h.pass} / fail ${h.fail}; need ${h.needEach} of each; eligible by version: ${counts.join(', ')})`
   return `v${v} holdout not yet frozen (${h.eligible} of ${h.needed} labeled; eligible by version: ${counts.join(', ')})`
 }
 

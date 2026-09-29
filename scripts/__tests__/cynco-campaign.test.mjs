@@ -2291,6 +2291,26 @@ describe('the outcome hindcast at VERDICT', () => {
     expect(JSON.parse(readFileSync(manifestPath, 'utf8')).schema).toBe(1)
   })
 
+  // Task 2 review N3: the holdout rides the success path too, so the wave
+  // whose export froze v2's set names it on its record and its verdict entry.
+  it('a clean retrain on the wave that froze the holdout keeps `holdout` on the record and names the freeze', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'hc-'))
+    let entry = null
+    const holdout = { frozen: true, frozenNow: true, frozenAt: '2026-10-01T00:00:00.000Z', ids: 8 }
+    const rec = await runWave(spec, freshState(), io(home, {
+      exportOutcomeDataset: () => ({ ...exported(home)(), signalsVersion: 2, rowsByVersion: { 2: 26 }, holdout }),
+      // The model as a v2 run writes it: with its signals version and counts.
+      runHindcast: ({ paths }) => {
+        writeModel(paths.out)
+        writeFileSync(paths.out, JSON.stringify({ ...JSON.parse(readFileSync(paths.out, 'utf8')), signalsVersion: 2, rowsByVersion: { 2: 26 } }))
+        return { status: 0, stdout: 'ok', stderr: '', fault: null }
+      },
+      appendLog: (t) => { entry = t },
+    }))
+    expect(rec.hindcast.holdout).toEqual(holdout)
+    expect(entry).toMatch(/^- Outcome hindcast: v3 .*; v2 holdout frozen now \(8 ids\)$/m)
+  })
+
   it('a clean retrain puts M1.* into rule-verdicts.json through the rules\' test, and prints the line after the board', async () => {
     const home = mkdtempSync(join(tmpdir(), 'hc-'))
     const seen = {}

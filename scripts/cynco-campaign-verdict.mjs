@@ -122,8 +122,11 @@ export function hindcastLine(h, { detail = false, runners = null } = {}) {
   // version's eligible count — absent on a model written before F165.
   const counts = Object.entries(h.rowsByVersion ?? {}).sort(([a], [b]) => Number(a) - Number(b)).map(([k, n]) => `v${k} ${n}`)
   const signals = typeof h.signalsVersion === 'number' ? `, signals v${h.signalsVersion} only (eligible ${counts.join(', ') || 'none'})` : ''
+  // Task 2 review N3: the one irreversible act — the automatic per-version
+  // holdout freeze — is named on the wave whose export performed it.
+  const frozeNow = h.holdout?.frozenNow === true ? `; v${h.signalsVersion ?? '?'} holdout frozen now (${h.holdout.ids ?? '?'} ids)` : ''
   return `- Outcome hindcast: v${h.version ?? '?'} at K = ${h.prefixTurns ?? '?'} turns${signals} on ${h.nHoldout ?? '?'} held-out missions (base ${pct(h.baseRate)}): `
-    + `${ladder.length ? ladder.join('; ') : 'no ladder reading'}; ${leak}${length}${secondary}${dropped}`
+    + `${ladder.length ? ladder.join('; ') : 'no ladder reading'}; ${leak}${length}${secondary}${dropped}${frozeNow}`
 }
 
 export function verdictEntry({ spec, wave, row, grade, decision, ideationRecord, economicsLines, denialAnalysis = null, denialScope = 'campaign', capProposal = null, governancePosiwid = null, gateLines = null, identity = null, autopoiesis = null, scoreboard = null, hindcast = null, progress = null, runnerLadder = null }) {

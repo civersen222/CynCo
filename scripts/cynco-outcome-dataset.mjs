@@ -428,7 +428,11 @@ export function withVersionSet(file, v, set, entry, { add = false } = {}) {
  * `freezeManifest` — Phase 5's selection rule, over that version's rows —
  * written to `path` once and never touched again; otherwise not frozen, with
  * the counts. Returns `{ set, holdout }`; `holdout` is
- * `{ frozen, frozenNow, frozenAt, ids }` or `{ frozen: false, eligible, needed }`.
+ * `{ frozen, frozenNow, frozenAt, ids }`, `{ frozen: false, eligible, needed }`
+ * (the pool is too small), or `{ frozen: false, eligible, needed, pass, fail,
+ * needEach }` (Task 2 review N4: large enough, but short of
+ * MODEL_MIN_HOLDOUT of one label — a holdout frozen from a one-class pool can
+ * never give an AUC, and a frozen set only grows by a hand `--refreeze`).
  */
 export function ensureVersionHoldout({ rows, path, v, K = DEFAULT_TURNS, seed = AUTO_FREEZE_SEED, now = () => new Date().toISOString() }) {
   const file = readManifestFile(path)
@@ -436,6 +440,10 @@ export function ensureVersionHoldout({ rows, path, v, K = DEFAULT_TURNS, seed = 
   if (existing) return { set: existing, holdout: { frozen: true, frozenNow: false, frozenAt: existing.frozenAt ?? null, ids: existing.missionIds.length } }
   const pool = rowsOfVersion(rows, v, K).filter(r => exclusionOf(r, K) === null)
   if (pool.length < FREEZE_MIN_ELIGIBLE) return { set: null, holdout: { frozen: false, eligible: pool.length, needed: FREEZE_MIN_ELIGIBLE } }
+  const pass = pool.filter(r => labelOf(r) === true).length, fail = pool.length - pass
+  if (pass < MODEL_MIN_HOLDOUT || fail < MODEL_MIN_HOLDOUT) {
+    return { set: null, holdout: { frozen: false, eligible: pool.length, needed: FREEZE_MIN_ELIGIBLE, pass, fail, needEach: MODEL_MIN_HOLDOUT } }
+  }
   const set = freezeManifest(pool, { seed, turns: K, now })
   writeAtomic(path, JSON.stringify(withVersionSet(file, v, set,
     { frozenAt: set.frozenAt, count: set.missionIds.length, eligible: pool.length, seed, how: 'auto' }), null, 2) + '\n')

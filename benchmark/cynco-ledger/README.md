@@ -1047,11 +1047,21 @@ too-small set (F16) — in three stages:
    the smallest pool whose 20 % draw leaves the model its own minimums
    (holdout 8, train 30) — python is not spawned and the reading is
    `v2 holdout not yet frozen (12 of 38 labeled; eligible by version: v1: 104, v2: 12)`.
-   `rec.hindcast.holdout` is `{ frozen: false, eligible, needed }`.
-3. **The first export that sees 38** freezes v2's set, ONCE, with Phase 5's
-   `freezeManifest` over the v2 rows (seed `AUTO_FREEZE_SEED` 20260929) into
-   `frozen-eval.json`, and records `{ signalsVersion: 2, frozenAt, count,
-   eligible, seed, how: 'auto' }` on the file's `history`. From then on the
+   `rec.hindcast.holdout` is `{ frozen: false, eligible, needed }`. A pool of
+   38 or more with fewer than `MODEL_MIN_HOLDOUT` (8) of EITHER label is not
+   frozen either (Task 2 review N4: a holdout drawn from a one-class pool can
+   never give an AUC, and a frozen set only grows by a hand `--refreeze`):
+   `v2 holdout not yet frozen (pass 0 / fail 38; need 8 of each; eligible by
+   version: v2: 38)`, with `holdout` `{ frozen: false, eligible, needed, pass,
+   fail, needEach }`.
+3. **The first export that sees 38 with 8 of each label** freezes v2's set,
+   ONCE, with Phase 5's `freezeManifest` over the v2 rows (seed
+   `AUTO_FREEZE_SEED` 20260929) into `frozen-eval.json`, and records
+   `{ signalsVersion: 2, frozenAt, count, eligible, seed, how: 'auto' }` on the
+   file's `history`. That wave's `rec.hindcast.holdout` reads `{ frozen: true,
+   frozenNow: true, frozenAt, ids }` (it rides the success path too) and its
+   learner line ends `; v2 holdout frozen now (8 ids)` (Task 2 review N3); a
+   later wave's reads `frozenNow: false` and names nothing. From then on the
    set never changes (frozen means frozen) and a refusal is the model's own
    TOO FEW with the per-version counts.
 

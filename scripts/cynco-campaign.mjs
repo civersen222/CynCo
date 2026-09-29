@@ -699,7 +699,10 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
       } else {
         const h = hindcastOf((io.runHindcast ?? defaultIo.runHindcast)({ paths: exported.paths }), exported.paths.out)
         if (h.fault) rec.hindcast = { fault: h.fault, ...signals, ...split }
-        else { rec.hindcast = { ...h.summary, ...split }; modelRows = modelRowsFrom(h.model, rows) }
+        // Task 2 review N3: `holdout` rides the success path too — on the wave
+        // whose export froze v2's set it reads `frozenNow: true`, and the
+        // verdict entry names the freeze (the manifest is committed with it).
+        else { rec.hindcast = { ...h.summary, ...split, ...(exported?.holdout ? { holdout: exported.holdout } : {}) }; modelRows = modelRowsFrom(h.model, rows) }
       }
     } catch (e) { rec.hindcast = { fault: String(e?.message ?? e) } }
     if (rec.hindcast?.fault) console.error(`[campaign] outcome hindcast not measured: ${rec.hindcast.fault}`)

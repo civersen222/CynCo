@@ -140,6 +140,26 @@ describe('the holdout is per signals version and freezes itself once (F165 fix r
     expect(again.split[16]).toMatchObject({ holdout: 8, train: 52 })
   })
 
+  // Task 2 review N4: a holdout frozen from a one-class pool can never give an
+  // AUC, and a frozen set only grows by hand — so the freeze waits for
+  // MODEL_MIN_HOLDOUT (8) of EACH label in the eligible pool.
+  it('a 38-mission all-fail v2 pool is not frozen: "pass 0 / fail 38; need 8 of each", the file untouched', () => {
+    const d = dir()
+    const path = v1Manifest(d)
+    const before = readFileSync(path, 'utf8')
+    const rows = Array.from({ length: 38 }, (_, i) => row(`v2-${String(i).padStart(2, '0')}`, 2, false))
+    const r = exportOutcomeDatasets({ rows, home: null, datasetsDir: d, manifestPath: path })
+    expect(r.holdout).toEqual({ frozen: false, eligible: 38, needed: 38, pass: 0, fail: 38, needEach: 8 })
+    expect(hindcastReady(r)).toBe(false)
+    expect(noEligibleFault(r)).toBe('v2 holdout not yet frozen (pass 0 / fail 38; need 8 of each; eligible by version: v2: 38)')
+    expect(readFileSync(path, 'utf8')).toBe(before)
+    // Seven of one label is still one short; eight of each freezes.
+    const seven = Array.from({ length: 38 }, (_, i) => row(`v2-${String(i).padStart(2, '0')}`, 2, i < 7))
+    expect(exportOutcomeDatasets({ rows: seven, home: null, datasetsDir: d, manifestPath: path }).holdout).toMatchObject({ frozen: false, pass: 7, fail: 31 })
+    const eight = Array.from({ length: 38 }, (_, i) => row(`v2-${String(i).padStart(2, '0')}`, 2, i < 8))
+    expect(exportOutcomeDatasets({ rows: eight, home: null, datasetsDir: d, manifestPath: path }).holdout).toMatchObject({ frozen: true, frozenNow: true, ids: 8 })
+  })
+
   it('the model trains on v2\'s frozen set from the per-version file (real python)', () => {
     const d = dir()
     const path = v1Manifest(d)
@@ -159,6 +179,16 @@ describe('the verdict entry names the version and the counts (F165)', () => {
   it('a model fitted on one version says which, with every version\'s eligible count', () => {
     expect(hindcastLine({ ...h, signalsVersion: 2, rowsByVersion: { 2: 40, 1: 104 } }))
       .toBe('- Outcome hindcast: v5 at K = 16 turns, signals v2 only (eligible v1 104, v2 40) on 9 held-out missions (base 50%): no ladder reading; leak check not run')
+  })
+
+  // Task 2 review N3: the one irreversible act of this machinery is named on
+  // the wave that did it, and only there.
+  it('the wave whose export froze the holdout says so; a later wave does not', () => {
+    const base = { ...h, signalsVersion: 2, rowsByVersion: { 2: 40 } }
+    expect(hindcastLine({ ...base, holdout: { frozen: true, frozenNow: true, frozenAt: 't', ids: 8 } }))
+      .toBe('- Outcome hindcast: v5 at K = 16 turns, signals v2 only (eligible v2 40) on 9 held-out missions (base 50%): no ladder reading; leak check not run; v2 holdout frozen now (8 ids)')
+    expect(hindcastLine({ ...base, holdout: { frozen: true, frozenNow: false, frozenAt: 't', ids: 8 } }))
+      .toBe('- Outcome hindcast: v5 at K = 16 turns, signals v2 only (eligible v2 40) on 9 held-out missions (base 50%): no ladder reading; leak check not run')
   })
 
   it('a model written before F165 reads as before', () => {
