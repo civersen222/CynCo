@@ -22,7 +22,8 @@ describe('exportOutcomeDatasets', () => {
     const h = home()
     const rows = [row('long', 40, false), row('mid', 20, true), row('short', 10, true), { missionId: 'unlabeled', verified: null, turns: turns(50) }]
     const manifestPath = join(h, 'frozen-eval.json')
-    writeFileSync(manifestPath, JSON.stringify({ schema: 1, version: 1, seed: 1, frozenAt: 't', missionIds: ['long', 'short', 'ghost'] }))
+    // Per-version manifest (F165 fix round 2): the hindcast reads v2's set.
+    writeFileSync(manifestPath, JSON.stringify({ schema: 2, sets: { 2: { schema: 1, version: 1, seed: 1, frozenAt: 't', missionIds: ['long', 'short', 'ghost'] } }, history: [] }))
     const r = exportOutcomeDatasets({ rows, home: h, manifestPath })
     expect(r).toMatchObject({ n: 2, n32: 1, nHindsight: 2 })
     expect(r.paths).toEqual({ ...HINDCAST_PATHS(h), manifest: manifestPath, signalsVersion: 2, rowsByVersion: { 2: 2 } })
@@ -54,7 +55,9 @@ describe('exportOutcomeDatasets', () => {
     expect(r).toMatchObject({ n: 0, n32: 0, nHindsight: 0 })
     expect(r.paths.manifest).toBe(MANIFEST_PATH)
     expect(r.split[16]).toMatchObject({ train: 0, holdout: 0, ineligible: [] })
-    expect(r.split[16].missing).toHaveLength(JSON.parse(readFileSync(MANIFEST_PATH, 'utf8')).missionIds.length)
+    // The committed manifest has no v2 set (its 21 ids are v1's), so nothing is held.
+    expect(r.split[16].missing).toEqual([])
+    expect(r.holdout).toEqual({ frozen: false, eligible: 0, needed: 38 })
     expect(readFileSync(r.paths.dataset, 'utf8')).toBe('')
   })
 })
@@ -142,9 +145,12 @@ describe('hindcastLine', () => {
         + 'R1.no-progress precision 80% [38, 96] on 5 fired p(Holm) 0.300 TOO FEW; leak check not run')
     expect(hindcastLine({ ...h, ladder: {} }, { runners }))
       .toBe('- Outcome hindcast: v1 at K = 16 turns on 21 held-out missions (base 50%): R1.no-progress precision 80% [38, 96] on 5 fired p(Holm) 0.300 TOO FEW; leak check not run')
-    const unmeasured = { 'R1.no-progress': { verdict: 'UNMEASURED — fired on no in-scope wave', precision: null, ci: [0, 1], n: 0, pAdjusted: null, source: 'runner' } }
+    // Review M2: an UNMEASURED runner row prints its reason; a note (skipped
+    // malformed wave records, review M1) rides after it.
+    const unmeasured = { 'R1.no-progress': { verdict: 'UNMEASURED — fired on no in-scope wave', precision: null, ci: null, n: 0, pAdjusted: null, source: 'runner',
+      note: '1 malformed wave record(s) skipped: record #3' } }
     expect(hindcastLine({ fault: 'exit 2: TOO FEW: x' }, { runners: unmeasured }))
-      .toBe('- Outcome hindcast: UNMEASURED — exit 2: TOO FEW: x; R1.no-progress precision null on 0 fired p(Holm) null UNMEASURED')
+      .toBe('- Outcome hindcast: UNMEASURED — exit 2: TOO FEW: x; R1.no-progress precision null on 0 fired p(Holm) null UNMEASURED — fired on no in-scope wave (1 malformed wave record(s) skipped: record #3)')
     // No runner rows: the line is what it was.
     expect(hindcastLine({ fault: 'exit 2: TOO FEW: x' }, { runners: null })).toBe('- Outcome hindcast: UNMEASURED — exit 2: TOO FEW: x')
   })

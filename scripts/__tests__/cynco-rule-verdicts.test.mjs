@@ -291,7 +291,7 @@ describe('writeRuleVerdicts with runner rows', () => {
     expect(f.rules['R1.no-progress']).toEqual({
       verdict: ruleVerdictOf(asRule), precision: 0.8, ci: asRule.ci, p: asRule.p, n: 5,
       pAdjusted: asRule.pAdjusted, lift: asRule.lift, firedTotal: 5, failures: 4,
-      source: 'runner', scope: 'waves', base: 7 / 15, scopeN: 15,
+      source: 'runner', scope: 'waves', base: 7 / 15, scopeN: 15, note: null,
     })
     expect(f.rules['R1.no-progress'].lift).toBeCloseTo(0.8 - 7 / 15, 10)
     expect(f.rules['R1.no-progress'].verdict).toBe('TOO FEW — cannot tell')
@@ -320,12 +320,34 @@ describe('writeRuleVerdicts with runner rows', () => {
     writeRuleVerdicts({ rows: [], campaign: 'c9', outPath, runnerRows: runnerRowsFrom(quiet) })
     expect(JSON.parse(readFileSync(outPath, 'utf8')).rules['R1.no-progress']).toMatchObject({
       verdict: 'UNMEASURED — fired on no in-scope wave', n: 0, firedTotal: 0, failures: 0, precision: null, p: null, pAdjusted: null, lift: null,
-      source: 'runner', scope: 'waves', scopeN: 15, base: 7 / 15 })
+      ci: null, source: 'runner', scope: 'waves', scopeN: 15, base: 7 / 15 })
     // An empty scope (no wave read past 50 %) says so, and has no base either.
     const empty = RULE_VERDICTS_PATH(home())
     writeRuleVerdicts({ rows: [], campaign: 'c9', outPath: empty, runnerRows: runnerRowsFrom([]) })
     expect(JSON.parse(readFileSync(empty, 'utf8')).rules['R1.no-progress']).toMatchObject({
-      verdict: 'UNMEASURED — no wave in scope (no shadow decision at 50 % of its clock or later)', n: 0, precision: null, p: null, scopeN: 0, base: null })
+      verdict: 'UNMEASURED — no wave in scope (no shadow decision at 50 % of its clock or later)', n: 0, precision: null, p: null, ci: null, scopeN: 0, base: null })
+  })
+
+  // Review M1: a malformed wave record costs that record, never the row.
+  it('a malformed wave record is skipped and named on the row; the rest is measured', () => {
+    const outPath = RULE_VERDICTS_PATH(home())
+    const bad = [{ missionId: 'bad-obj', decision: { kind: 'next' }, shadowDecisions: {} }, 'not a record', null]
+    writeRuleVerdicts({ rows: [], campaign: 'c9', outPath, runnerRows: runnerRowsFrom([...waves(), ...bad]) })
+    const e = JSON.parse(readFileSync(outPath, 'utf8')).rules['R1.no-progress']
+    expect(e).toMatchObject({ n: 5, failures: 4, scopeN: 15, note: '3 malformed wave record(s) skipped: bad-obj, record #19, record #20' })
+  })
+
+  // Review M4: "N predictive of R rules" and the `predictive` list agree —
+  // R1 is in neither, even when it reads PREDICTIVE.
+  it('a PREDICTIVE runner row is not in the file\'s `predictive` list, as it is not in the rule count', () => {
+    const outPath = RULE_VERDICTS_PATH(home())
+    const strong = [...Array.from({ length: 12 }, (_, i) => wave(`sf${i}`, 'next', true)), ...Array.from({ length: 12 }, (_, i) => wave(`sp${i}`, 'pass', false))]
+    const r = writeRuleVerdicts({ rows: predictiveRows(), campaign: 'c9', outPath, runnerRows: runnerRowsFrom(strong) })
+    const f = JSON.parse(readFileSync(outPath, 'utf8'))
+    expect(f.rules['R1.no-progress'].verdict).toBe('PREDICTIVE')
+    expect(f.predictive).toEqual(['X'])
+    expect(r.predictive).toEqual(['X'])
+    expect(verdictsLine(r, 'P')).toBe('rule verdicts v1: 1 predictive of 2 rules (+1 runner row) (X) → P')
   })
 
   it('a runner row appearing, moving or vanishing never bumps the version; it is kept as runnerChanged', () => {
@@ -399,6 +421,10 @@ describe('readRuleVerdicts', () => {
 // temp `--datasets-dir`; `cyncoHome` throws, so the real home is never read.
 describe('the CLI (main)', () => {
   const noHome = () => { throw new Error('the real home must not be touched') }
+  // Review I1: every CLI run builds the runner row from a campaigns dir; an
+  // empty temp one here (the real home is never read).
+  const noCampaigns = () => ['--campaigns-dir', home()]
+  const R1_EMPTY = 'R1.no-progress precision null on 0 fired p(Holm) null UNMEASURED — no wave in scope (no shadow decision at 50 % of its clock or later)'
   const turnsOf = (n) => Array.from({ length: n }, (_, i) => ({ toolSuccessRate: i % 2 ? 1 : 0.5, health: 'healthy' }))
   // 12 failures firing X and Y, 12 successes firing Y — X PREDICTIVE, Y CONSTANT — each with 20 turns.
   // v2 turns (F165): the hindcast trains on the current signals version only.
@@ -414,8 +440,8 @@ describe('the CLI (main)', () => {
   it('rules only: "N predictive of R rules" — the model rows never counted as rules', async () => {
     const out = join(home(), 'rv.json')
     const lines = []
-    expect(await main(['--out', out], { readLedger: predictiveRows, cyncoHome: noHome, log: (s) => lines.push(s) })).toBe(0)
-    expect(lines).toEqual([`rule verdicts v1: 1 predictive of 2 rules (X) → ${out}`])
+    expect(await main(['--out', out, ...noCampaigns()], { readLedger: predictiveRows, cyncoHome: noHome, log: (s) => lines.push(s) })).toBe(0)
+    expect(lines).toEqual([`rule verdicts v1: 1 predictive of 2 rules (+1 runner row) (X) → ${out}`])
   })
 
   it('verdictsLine prints the model rows beside the rules, as the scoreboard reads them', () => {
@@ -425,7 +451,7 @@ describe('the CLI (main)', () => {
   it('--with-hindcast runs export → model → verdicts into --datasets-dir, and prints the hindcast line', async () => {
     const dir = join(home(), 'ds')
     const lines = [], seen = {}
-    const code = await main(['--with-hindcast', '--datasets-dir', dir], {
+    const code = await main(['--with-hindcast', '--datasets-dir', dir, ...noCampaigns()], {
       readLedger: ledgerRows, cyncoHome: noHome, log: (s) => lines.push(s),
       runHindcast: ({ paths }) => { seen.paths = paths; modelAt(paths.out); return { status: 0, stdout: 'ok', stderr: '', fault: null } },
     })
@@ -437,25 +463,25 @@ describe('the CLI (main)', () => {
     const f = JSON.parse(readFileSync(join(dir, 'rule-verdicts.json'), 'utf8'))
     expect(f.rules['M1.gbt']).toMatchObject({ source: 'model', scope: 'holdout', n: 12, failures: 12 })
     expect(f.rules['M1.lr']).toMatchObject({ source: 'model', n: 0 })
-    expect(lines[0]).toMatch(/^- Outcome hindcast: v4 at K = 16 turns on 24 held-out missions \(base 50%\): M1\.gbt precision 100% .* on 12 fired p\(Holm\) .*; M1\.lr precision null on 0 fired p\(Holm\) null TOO FEW; leak check gbt AUC prefix 0\.90 \/ hindsight 0\.95, lr AUC prefix 0\.50 \/ hindsight 0\.50; K = 32 TOO FEW: x; dropped 2 dead column\(s\)$/)
-    expect(lines[1]).toMatch(new RegExp(`^rule verdicts v1: \\d predictive of 2 rules \\(\\+2 model rows\\) \\(.*\\) → ${join(dir, 'rule-verdicts.json').replace(/\\/g, '\\\\')}$`))
+    expect(lines[0]).toMatch(/^- Outcome hindcast: v4 at K = 16 turns on 24 held-out missions \(base 50%\): M1\.gbt precision 100% .* on 12 fired p\(Holm\) .*; M1\.lr precision null on 0 fired p\(Holm\) null TOO FEW; R1\.no-progress precision null on 0 fired p\(Holm\) null UNMEASURED — no wave in scope \(no shadow decision at 50 % of its clock or later\); leak check gbt AUC prefix 0\.90 \/ hindsight 0\.95, lr AUC prefix 0\.50 \/ hindsight 0\.50; K = 32 TOO FEW: x; dropped 2 dead column\(s\)$/)
+    expect(lines[1]).toMatch(new RegExp(`^rule verdicts v1: \\d predictive of 2 rules \\(\\+2 model rows\\) \\(\\+1 runner row\\) \\(.*\\) → ${join(dir, 'rule-verdicts.json').replace(/\\/g, '\\\\')}$`))
   })
 
   it('a hindcast that fails prints UNMEASURED and writes the rules without model rows — as the runner does', async () => {
     const dir = join(home(), 'ds')
     const lines = []
-    await main(['--with-hindcast', '--datasets-dir', dir], {
+    await main(['--with-hindcast', '--datasets-dir', dir, ...noCampaigns()], {
       readLedger: ledgerRows, cyncoHome: noHome, log: (s) => lines.push(s),
       runHindcast: () => ({ status: 2, stdout: 'TOO FEW: train 3 < 30 or holdout 1 < 8\n', stderr: '', fault: null }),
     })
-    expect(lines[0]).toBe('- Outcome hindcast: UNMEASURED — exit 2: TOO FEW: train 3 < 30 or holdout 1 < 8')
-    expect(lines[1]).toMatch(/^rule verdicts v1: 1 predictive of 2 rules \(X\) → /)
-    expect(Object.keys(JSON.parse(readFileSync(join(dir, 'rule-verdicts.json'), 'utf8')).rules)).toEqual(['X', 'Y'])
+    expect(lines[0]).toBe(`- Outcome hindcast: UNMEASURED — exit 2: TOO FEW: train 3 < 30 or holdout 1 < 8; ${R1_EMPTY}`)
+    expect(lines[1]).toMatch(/^rule verdicts v1: 1 predictive of 2 rules \(\+1 runner row\) \(X\) → /)
+    expect(Object.keys(JSON.parse(readFileSync(join(dir, 'rule-verdicts.json'), 'utf8')).rules)).toEqual(['X', 'Y', 'R1.no-progress'])
   })
 
   it('--out wins over --datasets-dir for the verdict file', async () => {
     const dir = join(home(), 'ds'), out = join(home(), 'elsewhere.json')
-    await main(['--with-hindcast', '--datasets-dir', dir, '--out', out], {
+    await main(['--with-hindcast', '--datasets-dir', dir, '--out', out, ...noCampaigns()], {
       readLedger: ledgerRows, cyncoHome: noHome, log: () => {},
       runHindcast: ({ paths }) => { modelAt(paths.out); return { status: 0, stdout: '', stderr: '', fault: null } },
     })

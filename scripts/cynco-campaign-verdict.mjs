@@ -98,8 +98,12 @@ export function hindcastLine(h, { detail = false, runners = null } = {}) {
   const byId = ([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)
   const rung = ([id, r]) => {
     const ci = Array.isArray(r?.ci) && r.n > 0 ? ` [${Math.round(r.ci[0] * 100)}, ${Math.round(r.ci[1] * 100)}]` : ''
-    const verdict = String(r?.verdict ?? 'no verdict').split(' — ')[0]
-    return `${id} precision ${pct(r?.precision)}${ci} on ${r?.n ?? 0} fired p(Holm) ${num(r?.pAdjusted, 3)} ${verdict}`
+    // An UNMEASURED verdict keeps its reason (Task 4 review M2, F16: unmeasured
+    // is null WITH its reason); every other verdict is cut at its dash.
+    const full = String(r?.verdict ?? 'no verdict')
+    const verdict = full.startsWith('UNMEASURED') ? full : full.split(' — ')[0]
+    const note = typeof r?.note === 'string' && r.note ? ` (${r.note})` : ''
+    return `${id} precision ${pct(r?.precision)}${ci} on ${r?.n ?? 0} fired p(Holm) ${num(r?.pAdjusted, 3)} ${verdict}${note}`
   }
   const runnerRungs = Object.entries(runners ?? {}).sort(byId).map(rung)
   if (h.fault) return `- Outcome hindcast: UNMEASURED — ${h.fault}${runnerRungs.map(r => `; ${r}`).join('')}`

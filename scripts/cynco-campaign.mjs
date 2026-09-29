@@ -36,12 +36,13 @@ import { loadRoadmap, saveRoadmap, rejectLine, setLineStatus, ROADMAP_PATH } fro
 import { assertIdentityIntact } from './cynco-identity.mjs'
 import { applyProposalDecision, seatAuthority } from './cynco-proposals.mjs'
 import { writeRuleVerdicts, readRuleVerdicts, RULE_VERDICTS_PATH, modelRowsFrom } from './cynco-rule-verdicts.mjs'
-import { exportOutcomeDatasets, runHindcast, hindcastOf, noEligibleFault, PRIMARY_TURNS } from './cynco-hindcast.mjs'
+import { exportOutcomeDatasets, runHindcast, hindcastOf, noEligibleFault, hindcastReady, PRIMARY_TURNS } from './cynco-hindcast.mjs'
 import { campaignScoreboard, pooledScoreboard, scoreboardLines } from './cynco-scoreboard.mjs'
 import { readLedger } from './cynco-ledger-shards.mjs'
 import { campaignAssessment, campaignRows, autopoiesisLine, storedAssessment, effectiveSeatAuthority } from './cynco-autopoiesis.mjs'
 import { summarize as summarizeGateLines, GATE_LINES_PATH } from './cynco-gate-lines.mjs'
-import { progressTracker, defaultProbeIo, everyMsFor, runnerRowsFrom } from './cynco-campaign-progress.mjs'
+import { progressTracker, defaultProbeIo, everyMsFor } from './cynco-campaign-progress.mjs'
+import { runnerRowsFromCampaigns } from './cynco-runner-rows.mjs'
 
 // Phase 4: the operator's decision on a pending proposal lives in the one
 // proposal registry (scripts/cynco-proposals.mjs). Re-exported so every caller
@@ -644,6 +645,25 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
     s.denialAnalysis = denialAnalysis
   } catch (e) { console.error(`[campaign] triples export/analysis skipped: ${e?.message ?? e}`) }
 
+  // Phase 4: is the campaign still the campaign? Asserted AFTER the triples
+  // dataset is regenerated (it is evidence either way) and BEFORE any
+  // proposal is computed — a campaign whose identity broke this wave has no
+  // standing to ask for more authority or a wider cap. A violation outranks
+  // every grade the way invariantsRejected does in decide(): the wave is a
+  // fault, and the record, the verdict line, the commit message and the
+  // notification all say which invariant broke. It is pure over the spec,
+  // state and row (cynco-identity.mjs), and it runs BEFORE the rule ladder so
+  // the runner row reads this wave's FINAL decision as `R1.no-progress`'s
+  // outcome — a pass the identity check turns into a fault is a failure there
+  // too, on this verdict and not only the next one (Task 4 review M6).
+  const identity = assertIdentityIntact({ spec, state: s, wave, row, io })
+  rec.identity = identity
+  if (!identity.intact) {
+    decision = { kind: 'fault', why: `identity violated: ${identity.violated.join(' ')}` }
+    rec.decision = decision
+    console.error(`[campaign] wave ${wave} IDENTITY VIOLATED: ${identity.violated.map(n => `${n} (${identity.evidence[n].detail})`).join('; ')}`)
+  }
+
   // Phase 4: the per-rule S5 verdicts, rewritten for the engine from the whole
   // ledger (not this campaign's slice — a rule's predictive power is a claim
   // about every mission it fired on). The rows the triples export already read
@@ -674,8 +694,8 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
       // F165: the one signals version the learner trained on, and how many
       // eligible missions each version had — on a fault too.
       const signals = typeof exported?.signalsVersion === 'number' ? { signalsVersion: exported.signalsVersion, rowsByVersion: exported.rowsByVersion ?? {} } : {}
-      if (!exported?.n) {
-        rec.hindcast = { fault: noEligibleFault(exported, PRIMARY_TURNS), ...signals, ...split }
+      if (!hindcastReady(exported)) {
+        rec.hindcast = { fault: noEligibleFault(exported, PRIMARY_TURNS), ...signals, ...(exported?.holdout ? { holdout: exported.holdout } : {}), ...split }
       } else {
         const h = hindcastOf((io.runHindcast ?? defaultIo.runHindcast)({ paths: exported.paths }), exported.paths.out)
         if (h.fault) rec.hindcast = { fault: h.fault, ...signals, ...split }
@@ -686,11 +706,13 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
     // Phase 6 Task 4: the runner's shadow regulator `R1.no-progress` as a
     // runner row — one rule across campaigns, so its scope is this campaign's
     // waves (the one just recorded included) and every other runner-driven
-    // campaign's under <home>/campaigns. Shadow: never authority, never the
-    // version. A fault reading the waves is logged and the ladder is written
-    // without it, never a fault of the wave.
+    // campaign's under <home>/campaigns. Built by the ONE construction the
+    // rule-verdicts CLI uses too (scripts/cynco-runner-rows.mjs, review I1).
+    // Shadow: never authority, never the version. A malformed wave record is
+    // skipped and named on the row; a fault reading the dir is logged and the
+    // ladder is written without the row, never a fault of the wave.
     let runnerRows = []
-    try { runnerRows = runnerRowsFrom(runnerWaves(join(home, 'campaigns'), { current: spec.id, waves: state.waves(), rec })) }
+    try { runnerRows = runnerRowsFromCampaigns(join(home, 'campaigns'), { current: spec.id, waves: state.waves(), rec }) }
     catch (e) { console.error(`[campaign] runner rows (R1.no-progress) not read: ${e?.message ?? e}`) }
     const write = io.writeRuleVerdicts ?? defaultIo.writeRuleVerdicts
     try {
@@ -739,21 +761,6 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
   // gate has no lines. Same discipline: derived, rebuilt in full, never a fault.
   try { (io.exportGateOutcomes ?? defaultIo.exportGateOutcomes)() }
   catch (e) { console.error(`[campaign] gate-outcomes export skipped: ${e?.message ?? e}`) }
-
-  // Phase 4: is the campaign still the campaign? Asserted AFTER the datasets
-  // are regenerated (they are evidence either way) and BEFORE any proposal is
-  // computed — a campaign whose identity broke this wave has no standing to ask
-  // for more authority or a wider cap. A violation outranks every grade the
-  // way invariantsRejected does in decide(): the wave is a fault, and the
-  // record, the verdict line, the commit message and the notification all say
-  // which invariant broke.
-  const identity = assertIdentityIntact({ spec, state: s, wave, row, io })
-  rec.identity = identity
-  if (!identity.intact) {
-    decision = { kind: 'fault', why: `identity violated: ${identity.violated.join(' ')}` }
-    rec.decision = decision
-    console.error(`[campaign] wave ${wave} IDENTITY VIOLATED: ${identity.violated.map(n => `${n} (${identity.evidence[n].detail})`).join('; ')}`)
-  }
 
   // §E: two proposals must not go pending in the same wave. promotionProposal
   // is computed FIRST; when it is about to be raised, capProposal is skipped
@@ -1095,23 +1102,6 @@ export function scoreboardEconomics(hooks = {}) {
   } })
   if (failed) { console.error(`[campaign] economics: the economics script did not answer (${failed}) — supervision dollars unmeasured`); return null }
   return lines
-}
-
-/**
- * Phase 6 Task 4: every wave record the runner's shadow regulator is judged
- * over — the campaign being graded (`waves` from its own state, with `rec`,
- * the wave just recorded, in place of a stored copy of it) and every OTHER
- * runner-driven campaign under `campaignsDir` (a dir holding a `waves.jsonl`,
- * as runnerDrivenBoards reads it). A dir named `current` under the dir is
- * skipped: the state handed over is this campaign's record. Reads only.
- */
-export function runnerWaves(campaignsDir, { current, waves = [], rec = null }) {
-  const own = rec && waves.at(-1)?.wave === rec.wave ? [...waves.slice(0, -1), rec] : rec ? [...waves, rec] : [...waves]
-  const names = existsSync(campaignsDir)
-    ? readdirSync(campaignsDir, { withFileTypes: true }).filter(d => d.isDirectory() && d.name !== current).map(d => d.name).sort()
-    : []
-  const others = names.flatMap(name => new CampaignState(join(campaignsDir, name)).waves())
-  return [...others, ...own]
 }
 
 /**

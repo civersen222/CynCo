@@ -1395,39 +1395,66 @@ min: 3); R1.no-progress fired at 52% (would have saved 3.2 h)` — minutes are
 fault(s)` when probes faulted. With no measured reading:
 `- Progress: no readings (<reason>)`. A runner io with no probe prints no line.
 
-**`R1.no-progress` in the ladder (Task 4).** At every VERDICT the runner builds
-the runner row from THIS campaign's waves (the wave just recorded in place of
-its stored copy) and every OTHER runner-driven campaign's
-`<cyncoHome>/campaigns/*/waves.jsonl` (`runnerWaves` in
-`scripts/cynco-campaign.mjs`) — the rule is one rule across campaigns — and
-hands it to `writeRuleVerdicts({ …, modelRows, runnerRows })`. The row goes
-through the SAME `analyse` a rule faces — Fisher exact, Wilson — over its scope
-alone (one row per in-scope wave; *fired* from `fired`, the outcome from
-`failed`, through `analyse`'s `labelOf` seam, so the lift is against the
-in-scope waves' failure rate), and joins the ONE Holm family: rules, then
-`M1.*` model rows, then runner rows (`ledger.holmFamily`). It lands as
+**`R1.no-progress` in the ladder (Task 4).** The runner row is built by ONE
+construction, `runnerRowsFromCampaigns` in `scripts/cynco-runner-rows.mjs`
+(which also owns `runnerRowsFrom`, `runnerWaves` and the rule's name and 50 %
+threshold; `cynco-campaign-progress.mjs` re-exports them). It reads every
+runner-driven campaign's `<campaigns dir>/*/waves.jsonl` — the rule is one rule
+across campaigns. At VERDICT the campaign being graded is read from its own
+state, with the wave just recorded in place of its stored copy. The rule-verdicts
+CLI (`bun scripts/cynco-rule-verdicts.mjs`, with or without `--with-hindcast`)
+builds the same row over `--campaigns-dir DIR` (default
+`<cyncoHome>/campaigns`). The row is a member of the Holm family, so a rebuild
+that left it out would correct the S5 rules over a smaller m and could flip a
+rule near p(Holm) 0.05; a test pins that the CLI and the VERDICT write the same
+`pAdjusted` for every rule on the same inputs (review I1).
+
+The row goes to `writeRuleVerdicts({ …, modelRows, runnerRows })` and through
+the SAME `analyse` a rule faces — Fisher exact, Wilson — over its scope alone
+(one row per in-scope wave; *fired* from `fired`, the outcome from `failed`,
+through `analyse`'s `labelOf` seam, so the lift is against the in-scope waves'
+failure rate). It joins the ONE Holm family: rules, then `M1.*` model rows, then
+runner rows (`ledger.holmFamily`). It lands as
 `rules['R1.no-progress'] = { verdict, precision, ci, p, n, pAdjusted, lift,
-firedTotal, failures, source: 'runner', scope: 'waves', base, scopeN }`.
-Unmeasured is never a rate (F16): with no wave in scope the verdict is
-`UNMEASURED — no wave in scope (no shadow decision at 50 % of its clock or
-later)`, and with waves in scope but no firing `UNMEASURED — fired on no
-in-scope wave`; either way `n: 0` and every number `null`. Like the model rows
-it never moves the version: a runner row that appears, vanishes or changes
-verdict is written to the history entry's `runnerChanged` (a new entry at the
-SAME version when no rule moved; riding on the rule entry when one did).
-`engine/s5/ruleAuthority.ts` skips `source: 'runner'` exactly as it skips
-`source: 'model'` (pinned in `ruleAuthority.test.ts`), and the scoreboard's
-`perRulePrecision` neither counts nor ranks it — shadow means no authority,
-whatever the verdict. The writer returns `runnerRows` (count) and `runners`
-(the entries); the verdict entry names the row with its verdict on the
-`- Outcome hindcast:` ladder line, after the model rows — on a fault line too,
-since the runner row does not depend on the hindcast:
+firedTotal, failures, source: 'runner', scope: 'waves', base, scopeN, note }`.
+
+- **Unmeasured is never a rate (F16).** With no wave in scope the verdict is
+  `UNMEASURED — no wave in scope (no shadow decision at 50 % of its clock or
+  later)`. With waves in scope but no firing it is `UNMEASURED — fired on no
+  in-scope wave`. Either way `n: 0` and `precision`, `ci`, `p`, `pAdjusted` and
+  `lift` are all `null`.
+- **A malformed wave record costs that record, never the row.** This covers a
+  record that is not an object, or one whose `shadowDecisions` is neither absent
+  nor an array. It is skipped and named in `note` (`N malformed wave record(s)
+  skipped: <missionId | record #i>`); otherwise `note` is `null`.
+- **The outcome is the wave's FINAL decision.** At VERDICT the identity
+  assertion runs before the ladder, so a pass it turns into a fault is a failure
+  for R1 on that same verdict.
+- **The version.** Like the model rows, a runner row never moves it: a runner
+  row that appears, vanishes or changes verdict is written to the history
+  entry's `runnerChanged`. That is a new entry at the SAME version when no rule
+  moved, or it rides on the rule entry when one did.
+- **R1 is not a rule anywhere it could count as one.** It is in neither the
+  writer's `rules` count nor the file's `predictive` list, even when it reads
+  PREDICTIVE, so "N predictive of R rules (…)" and `predictive` agree; a
+  PREDICTIVE R1 is read in its own entry. The `M1.*` rows keep their Phase 5
+  place in `predictive`. `engine/s5/ruleAuthority.ts` skips `source: 'runner'`
+  exactly as it skips `source: 'model'` (pinned in `ruleAuthority.test.ts` and
+  `exportTrainingData.test.ts`), and the scoreboard's `perRulePrecision` neither
+  counts nor ranks it. Shadow means no authority, whatever the verdict.
+
+The writer returns `runnerRows` (count) and `runners` (the entries). The verdict
+entry, and the CLI's `--with-hindcast` output, names the row with its verdict on
+the `- Outcome hindcast:` ladder line, after the model rows. It appears on a
+hindcast fault line too, since the runner row does not depend on the hindcast.
+An UNMEASURED verdict prints with its reason, and a `note` follows in
+parentheses:
 `…; M1.lr precision null on 0 fired p(Holm) null TOO FEW; R1.no-progress
-precision 100% [21, 100] on 1 fired p(Holm) null TOO FEW; leak check …`. If
-the write throws on the MODEL rows, the fallback rewrite keeps the runner rows.
-The CLI (`bun scripts/cynco-rule-verdicts.mjs`) writes no runner rows, as it
-writes no model rows without `--with-hindcast`: a hand rebuild records the row
-as vanished in `runnerChanged`, and the next VERDICT restores it.
+precision null on 0 fired p(Holm) null UNMEASURED — fired on no in-scope wave;
+leak check …`.
+
+If the write throws on the MODEL rows, the fallback rewrite keeps the runner
+rows.
 
 ## Labeling rule
 

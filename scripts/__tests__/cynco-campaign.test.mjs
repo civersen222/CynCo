@@ -6,7 +6,7 @@ import { CampaignState } from '../cynco-campaign-state.mjs'
 import { promotionProposal } from '../cynco-ideation.mjs'
 import { readSeats, writeSeats } from '../cynco-proposals.mjs'
 import { defaultIo as calibrateIo } from '../cynco-campaign-calibrate.mjs'
-import { writeRuleVerdicts as realWriteRuleVerdicts } from '../cynco-rule-verdicts.mjs'
+import { writeRuleVerdicts as realWriteRuleVerdicts, main as verdictsMain } from '../cynco-rule-verdicts.mjs'
 import { mkdtempSync, mkdirSync, copyFileSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -2091,6 +2091,51 @@ describe('runWave — gate progress measured by the runner mid-wave', () => {
     expect(seen.entry).toMatch(/^- Progress: 1 → 1 fails /m)
   })
 
+  // Task 4 review M6: the ladder reads this wave's FINAL decision — a pass the
+  // identity check turns into a fault is a failure for R1 on this verdict.
+  it('R1 reads the decision after the identity check: a pass turned fault counts as failed', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'ds-m6-'))
+    const pass = g({ verified: true, gate: { ...g().gate, terminator: 'PASS', fails: [], failCount: 0, exit: 0 } })
+    const { io: fake } = io({ datasetsHome: () => home, grade: async () => pass, checkIdentity: () => ({ ok: false, problems: ['moved'] }) })
+    const rec = await runWave(progressSpec, freshState(), fake)
+    expect(rec.decision.kind).toBe('fault')
+    const f = JSON.parse(readFileSync(join(home, 'datasets', 'rule-verdicts.json'), 'utf8'))
+    expect(f.rules['R1.no-progress']).toMatchObject({ firedTotal: 1, n: 1, failures: 1, scopeN: 1 })
+  })
+
+  // Task 4 review I1: the CLI rebuild builds the runner row exactly as the
+  // VERDICT does, so the S5 rules are corrected over the same Holm family.
+  it('a CLI rebuild and the VERDICT write the same pAdjusted for every rule on the same inputs', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'ds-i1-'))
+    const sw = { kind: 'withheld', killed: 1, total: 1, survived: [] }
+    const lr = (i, failed, fires) => ({ missionId: `L${i}`, outcome: failed ? 'failed' : 'landed', verified: !failed, mutationSweep: sw, s5Decisions: [{ ruleIds: fires ? ['X'] : [] }] })
+    // X: 8 of 9 fired missions failed, 3 of 13 quiet ones — testable, so it and R1 share a Holm family.
+    const ledger = () => [...Array.from({ length: 8 }, (_, i) => lr(i, true, true)), lr(8, false, true),
+      ...Array.from({ length: 3 }, (_, i) => lr(10 + i, true, false)), ...Array.from({ length: 10 }, (_, i) => lr(20 + i, false, false))]
+    const other = new CampaignState(join(home, 'campaigns', 'c7'))
+    const w = (id, kind, fired) => ({ wave: 1, missionId: id, decision: { kind }, shadowDecisions: [{ rule: 'R1.no-progress', fired, elapsedFraction: 0.7 }] })
+    for (const x of [...Array.from({ length: 6 }, (_, i) => w(`f${i}`, 'next', true)), w('fp', 'pass', true),
+      w('q0', 'next', false), w('q1', 'budget', false), ...Array.from({ length: 5 }, (_, i) => w(`p${i}`, 'pass', false))]) other.appendWave(x)
+    const state = freshState()
+    const { io: fake } = io({ datasetsHome: () => home, readLedgerRows: ledger })
+    await runWave(progressSpec, state, fake)
+    const atVerdict = JSON.parse(readFileSync(join(home, 'datasets', 'rule-verdicts.json'), 'utf8'))
+    expect(atVerdict.ledger.holmFamily).toBe(2)
+    // The CLI reads every campaign under the dir, this one included once it is there.
+    const mine = new CampaignState(join(home, 'campaigns', 'c8'))
+    for (const x of state.waves()) mine.appendWave(x)
+    const out = join(home, 'cli.json')
+    expect(await verdictsMain(['--out', out, '--campaigns-dir', join(home, 'campaigns')], {
+      readLedger: ledger, cyncoHome: () => { throw new Error('the real home must not be read') }, log: () => {} })).toBe(0)
+    const byCli = JSON.parse(readFileSync(out, 'utf8'))
+    expect(Object.keys(byCli.rules).sort()).toEqual(Object.keys(atVerdict.rules).sort())
+    for (const id of Object.keys(atVerdict.rules)) {
+      expect(byCli.rules[id].pAdjusted, id).toBe(atVerdict.rules[id].pAdjusted)
+      expect(byCli.rules[id].verdict, id).toBe(atVerdict.rules[id].verdict)
+    }
+    expect(byCli.ledger.holmFamily).toBe(2)
+  })
+
   it('an io without a probe takes no readings and prints no line; the record says why', async () => {
     const { seen, io: fake } = io({ progressProbe: undefined })
     const rec = await runWave(progressSpec, freshState(), fake)
@@ -2187,7 +2232,7 @@ describe('the outcome hindcast at VERDICT', () => {
     // wave read past 50 % here, so it is UNMEASURED with no numbers.
     expect(rec.ruleVerdicts).toMatchObject({ version: 1, predictive: [], total: 1, rules: 0, modelRows: 0, runnerRows: 1 })
     expect(Object.keys(verdictsIn(home).rules)).toEqual(['R1.no-progress'])
-    expect(entry).toMatch(/^- Scoreboard: .*\n- Outcome hindcast: UNMEASURED — exit 1: .*No module named 'sklearn'; R1\.no-progress precision null on 0 fired p\(Holm\) null UNMEASURED$/m)
+    expect(entry).toMatch(/^- Scoreboard: .*\n- Outcome hindcast: UNMEASURED — exit 1: .*No module named 'sklearn'; R1\.no-progress precision null on 0 fired p\(Holm\) null UNMEASURED — no wave in scope \(no shadow decision at 50 % of its clock or later\)$/m)
   })
 
   it('TOO FEW (exit 2) and a spawn fault read the same way; a throw from the seam too', async () => {
@@ -2228,7 +2273,7 @@ describe('the outcome hindcast at VERDICT', () => {
       models: { gbt: { auc: 0.71 } }, secondary: { refusal: 'TOO FEW: train 5 < 30 or holdout 19 < 8' } })
     expect(rec.hindcast.ladder['M1.gbt']).toEqual(f.rules['M1.gbt'])
     expect(rec.ruleVerdicts.total).toBe(3)
-    expect(entry).toMatch(/^- Scoreboard: .*\n- Outcome hindcast: v3 at K = 16 turns on 20 held-out missions \(base 60%\): M1\.gbt precision 80% \[\d+, \d+\] on 10 fired p\(Holm\) \d\.\d{3} [A-Z][A-Z ]+; M1\.lr precision null on 0 fired p\(Holm\) null TOO FEW; R1\.no-progress precision null on 0 fired p\(Holm\) null UNMEASURED; leak check gbt AUC prefix 0\.71 \/ hindsight 0\.93, lr AUC prefix 0\.50 \/ hindsight 0\.60; K = 32 TOO FEW: train 5 < 30 or holdout 19 < 8$/m)
+    expect(entry).toMatch(/^- Scoreboard: .*\n- Outcome hindcast: v3 at K = 16 turns on 20 held-out missions \(base 60%\): M1\.gbt precision 80% \[\d+, \d+\] on 10 fired p\(Holm\) \d\.\d{3} [A-Z][A-Z ]+; M1\.lr precision null on 0 fired p\(Holm\) null TOO FEW; R1\.no-progress precision null on 0 fired p\(Holm\) null UNMEASURED — no wave in scope \(no shadow decision at 50 % of its clock or later\); leak check gbt AUC prefix 0\.71 \/ hindsight 0\.93, lr AUC prefix 0\.50 \/ hindsight 0\.60; K = 32 TOO FEW: train 5 < 30 or holdout 19 < 8$/m)
   })
 
   // Final review M1 (T5-M1): a writeRuleVerdicts that throws on the MODEL rows
@@ -2262,7 +2307,7 @@ describe('the outcome hindcast at VERDICT', () => {
     expect(rec.hindcast.ladderFault).toBe('Holm over a NaN p')
     expect(rec.hindcast.ladder).toBeNull()
     expect(rec.hindcast.version).toBe(3)
-    expect(entry).toMatch(/- Outcome hindcast: v3 at K = 16 turns .*LADDER NOT WRITTEN \(Holm over a NaN p\) — rules rewritten alone; R1\.no-progress precision null on 0 fired p\(Holm\) null UNMEASURED; leak check/)
+    expect(entry).toMatch(/- Outcome hindcast: v3 at K = 16 turns .*LADDER NOT WRITTEN \(Holm over a NaN p\) — rules rewritten alone; R1\.no-progress precision null on 0 fired p\(Holm\) null UNMEASURED — no wave in scope \(no shadow decision at 50 % of its clock or later\); leak check/)
   })
 
   it('a throw with no model rows is the rules\' own: the outer catch logs it, the wave is not faulted', async () => {

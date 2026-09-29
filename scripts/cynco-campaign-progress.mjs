@@ -16,6 +16,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { archiveBase, defaultIo as calibrateIo } from './cynco-campaign-calibrate.mjs'
 import { runGate, GATE_TIMEOUT_MS, defaultIo as gradeIo } from './cynco-campaign-grade.mjs'
+import { NO_PROGRESS_AT, NO_PROGRESS_RULE, runnerRowsFrom } from './cynco-runner-rows.mjs'
 
 /** `progress.everyMs` / `CYNCO_PROGRESS_EVERY_MS` when neither says otherwise: 30 min. */
 export const PROGRESS_EVERY_MS_DEFAULT = 1_800_000
@@ -27,9 +28,11 @@ export const PROGRESS_TAIL_GATES = 2
 export const PROBE_GATE_TIMEOUT_UNMEASURED_MS = 1_800_000
 /** The probe's gate cap once measured: this many times the last measured run. */
 export const PROBE_GATE_TIMEOUT_FACTOR = 4
-/** `R1.no-progress` speaks from this fraction of the wall clock on. */
-export const NO_PROGRESS_AT = 0.5
-export const NO_PROGRESS_RULE = 'R1.no-progress'
+// `R1.no-progress`'s name and threshold, and the runner rows the ladder reads
+// off the wave records, live in scripts/cynco-runner-rows.mjs — the one
+// construction the VERDICT and the rule-verdicts CLI share (Task 4 review I1).
+// Re-exported here so every existing caller keeps its import.
+export { NO_PROGRESS_AT, NO_PROGRESS_RULE, runnerRowsFrom }
 
 const finitePos = (v) => typeof v === 'number' && Number.isFinite(v) && v > 0
 const round3 = (v) => Math.round(v * 1000) / 1000
@@ -180,39 +183,6 @@ export function shadowNoProgress({ readings, startFails, clockMs, nowMs, at = ne
     && newest !== null && !newest.fault && start !== null && fails !== null && fails >= start
   const wouldHaveSavedS = clockKnown ? Math.max(0, Math.round(clockMs / 1000 - nowMs / 1000)) : null
   return { rule: NO_PROGRESS_RULE, at, elapsedFraction, fired, startFails: start, fails, wouldHaveSavedS }
-}
-
-/**
- * The runner rows for the ladder (Task 4 feeds them to writeRuleVerdicts beside
- * the S5 rules and the `M1.*` model rows, `source: 'runner'`). One row,
- * `R1.no-progress`, always — an empty scope is the honest TOO FEW, not an
- * absent row.
- * - scope: waves with a missionId, a decision (a `stop` never ran and is not
- *   one) and ≥ 1 `R1.no-progress` shadow DECISION at `elapsedFraction ≥ 0.5`,
- *   fired or not (review I1). Scope reads the decisions, never the readings:
- *   a wave that stops committing before 50 % has its last reading below 50 %
- *   and only skipped ticks after it — exactly the rule's positives, which a
- *   readings-based scope dropped on every 8 h wave;
- * - fired: those scoped waves where any decision has `fired: true`;
- * - failed: those scoped waves whose decision is not `pass` /
- *   `pass-with-survivors` — the rule's OUTCOME (a firing on a wave that then
- *   passed was wrong; on any other decision, right). An addition beside the
- *   four fields the plan names, so the ladder reads the outcome off the same
- *   records it read the firing from.
- */
-export function runnerRowsFrom(waves) {
-  const scope = new Set(), fired = new Set(), failed = new Set()
-  for (const w of waves ?? []) {
-    const kind = w?.decision?.kind
-    if (!w?.missionId || !kind || kind === 'stop') continue
-    const pastHalf = (w.shadowDecisions ?? []).filter(d => d?.rule === NO_PROGRESS_RULE
-      && typeof d.elapsedFraction === 'number' && d.elapsedFraction >= NO_PROGRESS_AT)
-    if (!pastHalf.length) continue
-    scope.add(w.missionId)
-    if (pastHalf.some(d => d.fired === true)) fired.add(w.missionId)
-    if (kind !== 'pass' && kind !== 'pass-with-survivors') failed.add(w.missionId)
-  }
-  return [{ id: NO_PROGRESS_RULE, source: 'runner', fired, scope, failed }]
 }
 
 /**

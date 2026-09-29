@@ -107,7 +107,12 @@ function runnerRuleOf(u, analyse) {
   const r = res.rules.find(x => x.id === u.id)
     ?? { id: u.id, firedTotal: 0, labeled: 0, failures: 0, precision: null, ci: wilson(0, 0), lift: null, p: null, coverage: 0 }
   const unmeasured = res.labeled === 0 ? RUNNER_UNMEASURED_NO_SCOPE : r.labeled === 0 ? RUNNER_UNMEASURED_NEVER_FIRED : null
-  return { ...r, base: res.labeled ? res.base : null, scopeN: res.labeled, unmeasured }
+  // Review M1: the wave records runnerRowsFrom could not read, named, so a
+  // malformed line in some campaign's waves.jsonl is visible on the row.
+  const skipped = Array.isArray(u.skipped) ? u.skipped : []
+  const note = skipped.length ? `${skipped.length} malformed wave record(s) skipped: ${skipped.join(', ')}` : null
+  // Review M3: an unmeasured row has no interval either — null, not wilson(0, 0)'s [0, 1].
+  return { ...r, ci: unmeasured ? null : r.ci, base: res.labeled ? res.base : null, scopeN: res.labeled, unmeasured, note }
 }
 /** An `analyse` row for a rule with no table in its scope (F16: null numbers). */
 const emptyRuleRow = (id) => ({ id, firedTotal: 0, labeled: 0, failures: 0, precision: null, ci: wilson(0, 0), lift: null, p: null, coverage: 0 })
@@ -256,9 +261,15 @@ export function writeRuleVerdicts({ rows, campaign, outPath, analyse = analyseFn
       pAdjusted: r.pAdjusted ?? null, lift: r.lift ?? null, firedTotal: r.firedTotal ?? null, failures: r.failures ?? null,
       // `base` is the failure rate over the in-scope waves; `scopeN` how many.
       source: 'runner', scope: 'waves', base: r.base, scopeN: r.scopeN,
+      // null, or the malformed wave records skipped (named).
+      note: r.note,
     }
   }
-  const predictive = Object.keys(rules).filter(id => rules[id].verdict === 'PREDICTIVE')
+  // Review M4: the runner rows are counted in neither the rule count nor this
+  // list — `predictive` and "N predictive of R rules" agree that R1 is not a
+  // rule; a PREDICTIVE R1 is read in its own entry. (The `M1.*` rows keep their
+  // Phase 5 place in the list.)
+  const predictive = Object.keys(rules).filter(id => rules[id].verdict === 'PREDICTIVE' && rules[id].source !== 'runner')
   const prev = readRuleVerdicts(outPath)
   const changed = verdictChanges(verdictMap(prev), verdictMap({ rules }))
   // A model row that appeared, vanished or moved stays on the record — an M1
@@ -309,7 +320,11 @@ export function verdictsLine(r, outPath) {
 }
 
 // CLI: rebuild the file by hand (the runner does it at every VERDICT).
-//   bun scripts/cynco-rule-verdicts.mjs [--ledger-dir DIR] [--out PATH] [--with-hindcast] [--datasets-dir DIR]
+//   bun scripts/cynco-rule-verdicts.mjs [--ledger-dir DIR] [--out PATH] [--with-hindcast] [--datasets-dir DIR] [--campaigns-dir DIR]
+//
+// Every run builds the runner row `R1.no-progress` from the campaigns' wave
+// records exactly as the VERDICT does (Task 4 review I1), so a hand rebuild
+// corrects the rules over the same Holm family.
 //
 // Without `--with-hindcast` the rules alone are rewritten. With it, the
 // runner's own VERDICT sequence runs (final review M7): exportOutcomeDatasets
@@ -324,8 +339,8 @@ export function verdictsLine(r, outPath) {
 //
 // `engine/paths.js` is TypeScript behind a `.js` specifier and loads only under
 // bun, so it is imported lazily and only when neither --out nor --datasets-dir
-// names where to write. `deps` is the test seam (`readLedger`, `runHindcast`,
-// `cyncoHome`, `log`).
+// names where to write and --campaigns-dir names the campaigns. `deps` is the
+// test seam (`readLedger`, `runHindcast`, `cyncoHome`, `log`).
 export async function main(argv, deps = {}) {
   const arg = (flag) => { const i = argv.indexOf(flag); return i >= 0 ? argv[i + 1] : null }
   const log = deps.log ?? ((s) => console.log(s))
@@ -339,27 +354,38 @@ export async function main(argv, deps = {}) {
   const outPath = arg('--out') ? resolve(arg('--out'))
     : datasetsDir ? join(datasetsDir, 'rule-verdicts.json')
       : RULE_VERDICTS_PATH(await home())
+  // Review I1: the runner row the VERDICT builds, from the same construction
+  // (scripts/cynco-runner-rows.mjs) over every runner-driven campaign's waves —
+  // it is a member of the Holm family, so a rebuild without it would correct
+  // the S5 rules over a smaller m than the VERDICT and could flip one.
+  // `--campaigns-dir DIR` names the campaigns dir (default <cyncoHome>/campaigns).
+  const campaignsDir = arg('--campaigns-dir') ? resolve(arg('--campaigns-dir')) : join(await home(), 'campaigns')
+  const runnerRows = (await import('./cynco-runner-rows.mjs')).runnerRowsFromCampaigns(campaignsDir)
   let modelRows = []
   if (withHindcast) {
     const hc = await import('./cynco-hindcast.mjs')
     const { hindcastLine } = await import('./cynco-campaign-verdict.mjs')
     let hindcast
     try {
-      const exported = hc.exportOutcomeDatasets({ rows, home: datasetsDir ? null : await home(), datasetsDir })
-      if (!exported?.n) hindcast = { fault: hc.noEligibleFault(exported, hc.PRIMARY_TURNS) }
+      // `--manifest PATH` (F165 fix round 2): the per-version frozen holdout the
+      // hindcast reads — and, when the current version's pool reaches the
+      // minimum, freezes into. Default: the committed one, as the runner does.
+      const manifest = arg('--manifest') ? { manifestPath: resolve(arg('--manifest')) } : {}
+      const exported = hc.exportOutcomeDatasets({ rows, home: datasetsDir ? null : await home(), datasetsDir, ...manifest })
+      if (!hc.hindcastReady(exported)) hindcast = { fault: hc.noEligibleFault(exported, hc.PRIMARY_TURNS) }
       else {
         const h = hc.hindcastOf((deps.runHindcast ?? hc.runHindcast)({ paths: exported.paths }), exported.paths.out)
         if (h.fault) hindcast = { fault: h.fault }
         else { hindcast = h.summary; modelRows = modelRowsFrom(h.model, rows) }
       }
     } catch (e) { hindcast = { fault: String(e?.message ?? e) } }
-    const r = writeRuleVerdicts({ rows, campaign: null, outPath, modelRows })
+    const r = writeRuleVerdicts({ rows, campaign: null, outPath, modelRows, runnerRows })
     if (!hindcast.fault) hindcast.ladder = r.models ?? null
-    log(hindcastLine(hindcast))
+    log(hindcastLine(hindcast, { runners: r.runners ?? null }))
     log(verdictsLine(r, outPath))
     return 0
   }
-  log(verdictsLine(writeRuleVerdicts({ rows, campaign: null, outPath }), outPath))
+  log(verdictsLine(writeRuleVerdicts({ rows, campaign: null, outPath, runnerRows }), outPath))
   return 0
 }
 

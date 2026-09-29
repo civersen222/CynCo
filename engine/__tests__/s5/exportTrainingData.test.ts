@@ -147,6 +147,19 @@ describe('exportTrainingData', () => {
       expect(res.excluded.byRule).toEqual({ 'M1.gbt': 1, 'M1.lr': 1 })
     })
 
+    it('a runner row (R1.no-progress, source "runner") never earns a decision a place in the corpus', () => {
+      const journalPath = writeJournal([withRules(['C7'], 'keep'), withRules(['R1.no-progress'], 'runner'), withRules(['C7', 'R1.no-progress'], 'mixed')])
+      const p = join(dir, 'rule-verdicts.json')
+      writeFileSync(p, JSON.stringify({ schema: 1, version: 1, predictive: ['C7'], history: [], rules: {
+        C7: { verdict: 'PREDICTIVE' },
+        'R1.no-progress': { verdict: 'PREDICTIVE', source: 'runner', scope: 'waves' },
+      } }))
+      const out = join(dir, 'out.jsonl')
+      const res = exportViableExamples({ journalPath, outPath: out, outcomeBySession: outcomes, verdictsPath: p })
+      expect(res.written).toBe(1)
+      expect(res.excluded.byRule).toEqual({ 'R1.no-progress': 2 })
+    })
+
     it('no verdict file: legacy pass-through, and it says so', () => {
       const journalPath = writeJournal([withRules(['W1'], 'a'), withRules([], 'b')])
       const res = exportViableExamples({ journalPath, outPath: join(dir, 'out.jsonl'), outcomeBySession: outcomes, verdictsPath: join(dir, 'absent.json') })
