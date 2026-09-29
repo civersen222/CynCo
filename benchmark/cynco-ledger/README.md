@@ -1389,8 +1389,10 @@ first counts from dispatch); with a measured gate the interval is raised to
 assume a 600 s gate (`PROBE_GATE_MS_ASSUMED`, final review M4) and the reason
 says so (`gate unmeasured (600 s assumed for the tail and the cap)`), so a probe
 cannot hold the WAIT past the wave's end; the interval stays `everyMs`.
-`gateMs` is seeded from the start grade — the last verdict's
-`gate.durationMs`, else the calibration's BASE run (`calibration.baseGateMs`,
+`gateMs` is seeded from the start grade (`seedGateMs`) — the last verdict's
+`gate.durationMs` when that gate did not harness-fault (a faulted run's
+duration is its timeout, which would starve the wave of readings), else the
+calibration's BASE run (`calibration.baseGateMs`,
 recorded from Phase 6 on; older calibrations have none) — so the 10 % rule,
 the tail and the probe's cap hold from the first tick; each real probe run
 replaces it. `everyMs` = `spec.progress.everyMs`, else
