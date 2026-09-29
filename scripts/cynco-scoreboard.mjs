@@ -186,9 +186,31 @@ export function linesFixedReason({ spent, graded, known, unknown, landedWaves })
  *   - reseals: `state.reseals[]`.
  *   - adopted: wave records marked `adopted: true` — an `--adopt-inflight` or
  *     `cynco-campaign-adopt.mjs` hand-off (records before Phase 5 carry no mark).
+ *
+ * Phase 6 ruling 8: the count starts at the SEAL. When the campaign's own
+ * authoring record carries `sealedAt` (`state.authoring[spec.id].sealedAt`,
+ * written by `sealGate`), a refusal (`at`) or a proposal decision
+ * (`decidedAt`) dated before it is an AUTHORING-phase act — it shaped the gate,
+ * not a wave — and is left out and counted in `beforeSeal` (named in
+ * `unmeasured`). An act with no readable date cannot be placed either side of
+ * the seal, so it IS counted, and `undated` names it. Reseals, notes and
+ * adoptions happen to waves and are post-seal by construction. A campaign with
+ * no seal record (a human-sealed gate, or a call with no `spec`) counts every
+ * act, as before.
  */
-export function humanInterventionsPerWave({ state, waves, rows }) {
+export function humanInterventionsPerWave({ spec = null, state, waves, rows }) {
   const s = state ?? {}
+  const sealedAt = spec?.id ? s.authoring?.[spec.id]?.sealedAt ?? null : null
+  const sealMs = sealedAt === null ? NaN : Date.parse(sealedAt)
+  let beforeSeal = 0, undated = 0
+  // true = the act counts. Only consulted when there is a seal to compare to.
+  const afterSeal = (when) => {
+    if (Number.isNaN(sealMs)) return true
+    const t = typeof when === 'string' ? Date.parse(when) : NaN
+    if (Number.isNaN(t)) { undated++; return true }
+    if (t < sealMs) { beforeSeal++; return false }
+    return true
+  }
   const spent = spentWaves(waves)
   let notes = 0, unknownSourceNotes = 0
   for (const r of rowsByMission(waves, rows).values()) {
@@ -199,12 +221,15 @@ export function humanInterventionsPerWave({ state, waves, rows }) {
     }
   }
   const humanDecisions = (Array.isArray(s.proposals) ? s.proposals : [])
-    .filter(p => (p?.status === 'approved' || p?.status === 'rejected') && p.decidedBy !== 'auto').length
-  const refusals = Object.values(s.authoring ?? {}).reduce((n, a) => n + (Array.isArray(a?.refusals) ? a.refusals.length : 0), 0)
+    .filter(p => (p?.status === 'approved' || p?.status === 'rejected') && p.decidedBy !== 'auto')
+    .filter(p => afterSeal(p.decidedAt ?? p.at)).length
+  const refusals = Object.values(s.authoring ?? {})
+    .flatMap(a => (Array.isArray(a?.refusals) ? a.refusals : []))
+    .filter(r => afterSeal(r?.at)).length
   const reseals = Array.isArray(s.reseals) ? s.reseals.length : 0
   const adopted = spent.filter(w => w.adopted === true).length
   const { value, reason } = perWave(notes + humanDecisions + refusals + reseals + adopted, spent.length)
-  return { value, notes, humanDecisions, refusals, reseals, adopted, unknownSourceNotes, reason }
+  return { value, notes, humanDecisions, refusals, reseals, adopted, unknownSourceNotes, sealedAt, beforeSeal, undated, reason }
 }
 
 // "Best" over verdict-file entries: a PREDICTIVE entry first; then one with
@@ -276,7 +301,7 @@ export function campaignScoreboard({ spec, state, waves, rows, ruleVerdicts = nu
   const rate = passRatePerGpuHour({ waves: ws, rows })
   const wpc = wavesPerCampaign({ waves: ws })
   const gl = gateLinesFixedPerLandedWave({ state, waves: ws })
-  const hi = humanInterventionsPerWave({ state, waves: ws, rows })
+  const hi = humanInterventionsPerWave({ spec, state, waves: ws, rows })
   const rp = perRulePrecision(ruleVerdicts)
   const sup = supervisionDollarsPerWave({ economics, waves: d.spent })
   const unmeasured = []
@@ -288,6 +313,8 @@ export function campaignScoreboard({ spec, state, waves, rows, ruleVerdicts = nu
   if (gl.value === null) unmeasured.push(`gateLinesFixedPerLandedWave: ${gl.reason}`)
   if (hi.value === null) unmeasured.push(`humanInterventionsPerWave: ${hi.reason}`)
   if (hi.unknownSourceNotes) unmeasured.push(`humanInterventionsPerWave: ${hi.unknownSourceNotes} delivered note(s) carry no source — unknown sender, not counted`)
+  if (hi.beforeSeal) unmeasured.push(`humanInterventionsPerWave: ${hi.beforeSeal} act(s) before the seal (${hi.sealedAt}) not counted — authoring-phase, not campaign, interventions`)
+  if (hi.undated) unmeasured.push(`humanInterventionsPerWave: ${hi.undated} act(s) carry no date — counted, though they cannot be placed after the seal (${hi.sealedAt})`)
   if (rp === null) unmeasured.push('perRulePrecision: no rule-verdicts.json — missing or unreadable')
   if (sup.value === null) unmeasured.push(`supervisionDollarsPerWave: ${sup.reason}`)
   return {
@@ -330,7 +357,7 @@ export function pooledScoreboard(campaignScoreboards, opts = {}) {
   // here too, not only on its own campaign's board.
   for (const b of included) {
     for (const u of b.unmeasured ?? []) {
-      const field = POOLED_WAVE_NOTES.find(f => u.startsWith(`${f}: wave `) || (f === 'humanInterventionsPerWave' && u.startsWith(`${f}: `) && u.includes('delivered note')))
+      const field = POOLED_WAVE_NOTES.find(f => u.startsWith(`${f}: wave `) || (f === 'humanInterventionsPerWave' && u.startsWith(`${f}: `) && /delivered note|the seal/.test(u)))
       if (field) unmeasured.push(`${field}: ${b.id} ${u.slice(field.length + 2)}`)
     }
   }

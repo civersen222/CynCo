@@ -664,6 +664,18 @@ same, next to the code):
   proposal writes no `decidedBy` at all and IS a human decision.
 - **Supervisor refusals** — every `state.authoring.<id>.refusals[]` entry.
   **Reseals** — `state.reseals[]`.
+- **From the seal** (Phase 6 ruling 8; C9 counted its two AUTHORING-phase
+  refusals as 1.00 intervention per wave, F164) — when the campaign's own
+  authoring record carries `sealedAt` (`state.authoring[<spec.id>].sealedAt`,
+  written by `sealGate` for a CynCo-authored gate), a refusal whose `at`, or a
+  proposal decision whose `decidedAt`, is before it is an authoring-phase act:
+  it shaped the gate, not a wave, and is NOT counted. The board names how many
+  in `unmeasured` (`humanInterventionsPerWave: N act(s) before the seal (<sealedAt>)
+  not counted — …`, pooled with the campaign id). An act with no readable date
+  cannot be placed after the seal, so it IS counted and named (`N act(s) carry
+  no date — counted …`) — never silently dropped. Reseals, notes and adoptions
+  happen to waves and are post-seal by construction. A campaign with no seal
+  record (a human-sealed gate) counts every act, as before.
 - **`--adopt-inflight` records** — wave records with `adopted: true`. The
   runner writes it from Phase 5 on for every wave it graded from an adopted row
   (`--adopt-inflight`, or `scripts/cynco-campaign-adopt.mjs` — both are the
@@ -1209,6 +1221,13 @@ Ground truth for signal validation (step 2, per-rule precision/recall):
 
 `outcome` is assigned by the driver (commit marker found in `git log` /
 timeout / F7 zero-tool fast-fail).
+
+The driver prints `[driver] COMMIT LANDED` ONCE per mission, by design: it
+marks the landed TRANSITION (the first poll on which `missionCommitted` sees a
+mission commit), not each commit — C9 wave 1 made six commits and printed it
+once. A mission's commit count is read off the record — the runner's
+`commitsBetween` over the row's `commitRange` (the wave record's
+`outcome.commitsLanded`) — never a count of that console line.
 
 ### `verified` is structural, and it is narrower than the brief
 
