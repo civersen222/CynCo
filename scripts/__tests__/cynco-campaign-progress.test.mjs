@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   progressCadence, everyMsFor, probeProgress, probeIo, probeGateTimeoutMs, shadowNoProgress, runnerRowsFrom, progressLine, progressTracker,
-  PROGRESS_EVERY_MS_DEFAULT, PROBE_GATE_TIMEOUT_UNMEASURED_MS,
+  PROGRESS_EVERY_MS_DEFAULT, PROBE_GATE_TIMEOUT_UNMEASURED_MS, PROBE_GATE_MS_ASSUMED,
 } from '../cynco-campaign-progress.mjs'
 import { runnerRowsFromCampaigns } from '../cynco-runner-rows.mjs'
 import { defaultIo as campaignIo } from '../cynco-campaign.mjs'
@@ -66,8 +66,24 @@ describe('progressCadence', () => {
     const late = c(clockMs - 430_000)
     expect(late.due).toBe(false)
     expect(late.reason).toMatch(/within the last 2 × 215 s gate runtime/)
-    // Unmeasured gate: the tail is the clock's own end.
     expect(progressCadence({ everyMs: 30 * MIN, clockMs, nowMs: clockMs }).due).toBe(false)
+  })
+
+  // Final review M4: with no measured gate (a pre-Phase-6 calibration and no
+  // last grade) the tail and the probe's cap assume a 600 s gate, so a probe
+  // started at the edge of the tail cannot hold the WAIT past the wave's end.
+  it('an unmeasured gate assumes PROBE_GATE_MS_ASSUMED (600 s) for the tail and the cap, and says so', () => {
+    expect(PROBE_GATE_MS_ASSUMED).toBe(600_000)
+    const clockMs = 8 * HOUR
+    const c = (nowMs) => progressCadence({ everyMs: 30 * MIN, clockMs, gateMs: null, lastAtMs: 0, nowMs })
+    expect(c(clockMs - 1_200_001).due).toBe(true)
+    const late = c(clockMs - 1_200_000)
+    expect(late.due).toBe(false)
+    expect(late.reason).toBe('within the last 2 × 600 s assumed gate runtime of the 480 min wall clock (gate unmeasured)')
+    expect(progressCadence({ everyMs: 30 * MIN, clockMs, nowMs: 10 * MIN }).reason).toMatch(/gate unmeasured \(600 s assumed for the tail and the cap\)/)
+    // The cap never outlasts the tail: a probe started just before it ends by the clock's end.
+    expect(probeGateTimeoutMs(null)).toBe(2 * PROBE_GATE_MS_ASSUMED)
+    expect(PROBE_GATE_TIMEOUT_UNMEASURED_MS).toBe(2 * PROBE_GATE_MS_ASSUMED)
   })
 
   it('refuses without a wall clock', () => {
@@ -115,8 +131,22 @@ describe('probeProgress on a real fixture repo (git archive + the fixture gate)'
   it('records a gate that exits 3 as { at, fault, durationMs }, never a count', () => {
     const r = probeProgress({ spec, sha: shas[3], elapsedMs: HOUR, clockMs: 8 * HOUR, n: 3 })
     expect(Object.keys(r).sort()).toEqual(['at', 'durationMs', 'fault'])
-    expect(r.fault).toMatch(/no GATE: terminator|exited 3/)
+    expect(r.fault).toBe('gate printed an error; exit 3')
     expect(existsSync(join(tmpdir(), `cynco-progress-${spec.id}-3`))).toBe(false)
+  }, 60_000)
+
+  // Final review M2: the runner's log is the one mid-wave copy of a reading
+  // outside runner memory, and the fault line is logged. It carries the fault
+  // CLASS and the exit code — never the gate's stdout or stderr.
+  it('a fault reading carries no gate output (the fixture gate prints a marker on its way out)', () => {
+    const logs = []
+    const t = progressTracker({ spec, probe: undefined, headOf: () => shas[3], clockMs: 8 * HOUR, startSha: shas[0], startFails: 3,
+      dispatchedAtMs: 0, everyMs: 30 * MIN, log: (m) => logs.push(m) })
+    const r = t.onTick({ nowMs: 30 * MIN })
+    expect(r.fault).toBeTruthy()
+    expect(r.fault).not.toContain('GATE-OUTPUT-MARKER')
+    expect(r.fault).not.toContain('boom')
+    expect(logs.join('\n')).not.toContain('GATE-OUTPUT-MARKER')
   }, 60_000)
 
   it('records an archive that fails as a fault naming the sha', () => {

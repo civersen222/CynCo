@@ -902,7 +902,9 @@ engine enforces anything new.
   `progress.everyMs`, raised to 10 × the gate's measured runtime so the gate
   never takes more than 10 % of the wave; C9's 215 s gate means ≥ 2150 s. It
   doubles per consecutive fault and never lands in the clock's last
-  2 × gate. `gateMs` is seeded from the last grade's `gate.durationMs`, else
+  2 × gate; with no gate measured, the tail and the probe's cap assume a
+  600 s gate (`PROBE_GATE_MS_ASSUMED`), so a probe cannot outlast the wave.
+  `gateMs` is seeded from the last grade's `gate.durationMs`, else
   the calibration's new `baseGateMs`, so the 10 % rule holds from the first
   tick. When a reading is due, `probeProgress` reads the repo's HEAD, and an
   unchanged sha is a skip with nothing run. Otherwise it `git archive`s that
@@ -923,7 +925,9 @@ engine enforces anything new.
   reading reaches `waves.jsonl` and the runner's log
   (`[campaign] progress @ Nm: F fails (was F0)`) and nothing else: never the
   model, never a probe message, never the brief. This is the Stage 1 lesson.
-  The model gains no information it did not have.
+  The model gains no information it did not have. The runner's log is the
+  operator's; it is never given to the model or written under the mission
+  cwd. A probe fault names its class and exit code only, never gate output.
 - **`R1.no-progress`, the first runner-level regulator, in SHADOW (ruling
   3).** The rule: *if at ≥ 50 % of the wave's wall clock the gate's fail count
   has not dropped below the wave's starting count, the wave will not pass.*

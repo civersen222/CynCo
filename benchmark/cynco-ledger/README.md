@@ -1335,7 +1335,10 @@ gate, and records what it read on the wave record
 a reading reaches `waves.jsonl` and the runner's own log
 (`[campaign] progress @ Nm: F fails (was F0)`) — never a probe message, never
 the brief, never the engine. A sealed instrument is never a probe (Stage 1);
-the model never gains information it did not have.
+the model never gains information it did not have. The runner's log is the
+operator's; it is never given to the model or written under the mission cwd
+(it is the one mid-wave copy of a reading outside runner memory — final review
+M2 — and its fault lines carry a fault class and exit code, never gate output).
 
 **How a reading is taken.** `defaultIo.waitForDriver` calls
 `onTick({ elapsedMs, nowMs })` once per poll (a throw inside it is logged once
@@ -1351,7 +1354,8 @@ mission is editing), parses it with `parseGateOutput`, and removes the dir in a
 `finally`. The gate spawn goes through `runSync` and is **never retried**
 (`retry: false`): a 215 s gate re-run is not free, and a stale ETIMEDOUT
 mid-wave (F155) is a fault reading. Its cap is `min(GATE_TIMEOUT_MS, 4 × the
-last measured run)`, 30 min before the first measurement. While HEAD still
+last measured run)`, 20 min (`PROBE_GATE_TIMEOUT_UNMEASURED_MS`, the tail's
+own length) before any measurement. While HEAD still
 sits at the wave's start sha, the first due tick records the start grade (the
 calibration's or the last verdict's reading of that very sha) as a reading
 with `reusedFrom: 'start'` and `durationMs: 0` — no gate runs — so a wave that
@@ -1363,7 +1367,10 @@ nowMs })`, all times on the wave clock (ms since dispatch; `clockMs` =
 first counts from dispatch); with a measured gate the interval is raised to
 `gateMs × 10`, so the gate takes at most 10 % of the wave (C9's 215 s gate →
 ≥ 2150 s); ×2 per consecutive faulted reading; never within the last
-`gateMs × 2` of the clock (the clock's own end while the gate is unmeasured).
+`gateMs × 2` of the clock. While no gate is measured the tail and the cap
+assume a 600 s gate (`PROBE_GATE_MS_ASSUMED`, final review M4) and the reason
+says so (`gate unmeasured (600 s assumed for the tail and the cap)`), so a probe
+cannot hold the WAIT past the wave's end; the interval stays `everyMs`.
 `gateMs` is seeded from the start grade — the last verdict's
 `gate.durationMs`, else the calibration's BASE run (`calibration.baseGateMs`,
 recorded from Phase 6 on; older calibrations have none) — so the 10 % rule,
@@ -1376,7 +1383,10 @@ replaces it. `everyMs` = `spec.progress.everyMs`, else
 `passes` are COUNTS, `failIds` the FAIL line ids; `elapsedFraction` = wave
 clock at the reading / `clockMs`; `durationMs` = archive + gate) or
 `{ at, fault, durationMs }` (the archive failed, HEAD did not resolve, the gate
-timed out, did not run, printed no terminator or exited other than 0/1). The
+timed out, did not run, printed an error or no terminator, or exited other than
+0/1). A gate fault names its CLASS and exit code only — `gate printed an error;
+exit 3`, `gate did not run (code ETIMEDOUT, …); exit null` — never the gate's
+stdout or stderr (final review M2), because the fault is also logged. The
 reused start grade has the same fixed shape plus `reusedFrom: 'start'` and
 `durationMs: 0` (`passes` / `failIds` null only if the runner had no start
 passes / FAIL ids — runWave always hands both). A fault never touches the

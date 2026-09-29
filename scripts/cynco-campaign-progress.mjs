@@ -24,8 +24,20 @@ export const PROGRESS_EVERY_MS_DEFAULT = 1_800_000
 export const PROGRESS_GATE_SHARE = 0.10
 /** No reading starts within the last `gateMs × 2` of the wall clock. */
 export const PROGRESS_TAIL_GATES = 2
-/** The probe's gate cap before the first reading measured the gate: 30 min. */
-export const PROBE_GATE_TIMEOUT_UNMEASURED_MS = 1_800_000
+/**
+ * Final review M4: the gate runtime assumed while none is measured (a
+ * calibration from before Phase 6 carries no `baseGateMs`, and no verdict has
+ * graded yet): 600 s, for the end-of-clock tail and the probe's cap only —
+ * never for the interval, which stays `everyMs` until a gate is measured.
+ */
+export const PROBE_GATE_MS_ASSUMED = 600_000
+/**
+ * The probe's gate cap before any reading measured the gate: the tail's own
+ * length (`PROGRESS_TAIL_GATES × PROBE_GATE_MS_ASSUMED`, 20 min), so a probe
+ * that starts at the last moment the tail allows ends by the clock's end and
+ * never holds the WAIT past the wave.
+ */
+export const PROBE_GATE_TIMEOUT_UNMEASURED_MS = PROGRESS_TAIL_GATES * PROBE_GATE_MS_ASSUMED
 /** The probe's gate cap once measured: this many times the last measured run. */
 export const PROBE_GATE_TIMEOUT_FACTOR = 4
 // `R1.no-progress`'s name and threshold, and the runner rows the ladder reads
@@ -66,7 +78,9 @@ export function everyMsFor(spec, env = process.env) {
  *   hammer the CPU beside a running wave);
  * - never within the last `gateMs × 2` of the clock (a reading that cannot
  *   finish before the wave ends only delays the verdict). With no measured
- *   gate the tail is the clock's own end.
+ *   gate the tail assumes PROBE_GATE_MS_ASSUMED (600 s) and the reason says so
+ *   (final review M4: the clock's own end let a probe due at clock − 1 s hold
+ *   the wait up to its cap past the wave's end).
  */
 export function progressCadence({ everyMs = Number(process.env.CYNCO_PROGRESS_EVERY_MS ?? PROGRESS_EVERY_MS_DEFAULT), clockMs, gateMs = null, faults = 0, lastAtMs = null, nowMs }) {
   const every = finitePos(everyMs) ? everyMs : PROGRESS_EVERY_MS_DEFAULT
@@ -79,16 +93,18 @@ export function progressCadence({ everyMs = Number(process.env.CYNCO_PROGRESS_EV
   const backoff = 2 ** Math.max(0, Math.floor(Number(faults) || 0))
   const interval = floor * backoff
   const nextAtMs = (lastAtMs ?? 0) + interval
-  const tailFrom = clockMs - PROGRESS_TAIL_GATES * (gate ?? 0)
-  const why = [`every ${minutes(every)}`, gate ? `gate ${Math.round(gate / 1000)} s → ≥ ${minutes(gate * 10)}` : 'gate unmeasured', backoff > 1 ? `×${backoff} after ${faults} fault(s)` : null].filter(Boolean).join(', ')
+  const tailFrom = clockMs - PROGRESS_TAIL_GATES * (gate ?? PROBE_GATE_MS_ASSUMED)
+  const assumedS = Math.round(PROBE_GATE_MS_ASSUMED / 1000)
+  const why = [`every ${minutes(every)}`, gate ? `gate ${Math.round(gate / 1000)} s → ≥ ${minutes(gate * 10)}` : `gate unmeasured (${assumedS} s assumed for the tail and the cap)`, backoff > 1 ? `×${backoff} after ${faults} fault(s)` : null].filter(Boolean).join(', ')
   if (nowMs >= tailFrom) {
-    return { due: false, nextAtMs: null, reason: gate ? `within the last ${PROGRESS_TAIL_GATES} × ${Math.round(gate / 1000)} s gate runtime of the ${minutes(clockMs)} wall clock` : `past the ${minutes(clockMs)} wall clock` }
+    return { due: false, nextAtMs: null, reason: gate ? `within the last ${PROGRESS_TAIL_GATES} × ${Math.round(gate / 1000)} s gate runtime of the ${minutes(clockMs)} wall clock`
+      : `within the last ${PROGRESS_TAIL_GATES} × ${assumedS} s assumed gate runtime of the ${minutes(clockMs)} wall clock (gate unmeasured)` }
   }
   if (nowMs < nextAtMs) return { due: false, nextAtMs, reason: `next reading at ${minutes(nextAtMs)} (${why})` }
   return { due: true, nextAtMs, reason: `due at ${minutes(nextAtMs)} (${why})` }
 }
 
-/** The probe's gate cap: `min(GATE_TIMEOUT_MS, 4 × measured gateMs)`, 30 min before any measurement. */
+/** The probe's gate cap: `min(GATE_TIMEOUT_MS, 4 × measured gateMs)`, PROBE_GATE_TIMEOUT_UNMEASURED_MS (20 min) before any measurement. */
 export function probeGateTimeoutMs(gateMs) {
   return finitePos(gateMs) ? Math.min(GATE_TIMEOUT_MS, PROBE_GATE_TIMEOUT_FACTOR * gateMs) : Math.min(GATE_TIMEOUT_MS, PROBE_GATE_TIMEOUT_UNMEASURED_MS)
 }
@@ -110,13 +126,28 @@ export function probeIo({ calibrate = calibrateIo, grade = gradeIo } = {}) {
 }
 export const defaultProbeIo = probeIo()
 
-/** Why a gate reading is not a reading, or null when it is one. */
+/**
+ * The fault CLASSES a probe reading may name — the leading, harness-authored
+ * part of runGate's `harnessFault`. What follows a class in `harnessFault`
+ * (`gate printed an error: <the gate's own line>`) is gate output, and gate
+ * output never leaves the runner's memory on a probe (final review M2: the
+ * fault string is logged, and the runner's log is the one mid-wave copy of a
+ * reading outside it). `did not run (…)` keeps its parenthesis: that is
+ * faultSummary's code/status/signal/elapsed, the harness's words.
+ */
+const GATE_FAULT_CLASSES = [/^gate did not run \([^)]*\)/, /^gate timed out after \d+ ms/, /^gate printed an error/, /^gate printed no GATE: terminator/]
+
+/** Why a gate reading is not a reading — the fault class and the exit code, never gate output — or null when it is one. */
 function gateFaultOf(g) {
-  if (g.harnessFault) return g.harnessFault
+  const exit = `exit ${g.exit ?? 'null'}`
+  if (g.harnessFault) {
+    const cls = GATE_FAULT_CLASSES.map(re => re.exec(String(g.harnessFault))?.[0]).find(Boolean) ?? 'gate harness fault'
+    return `${cls}; ${exit}`
+  }
   // The sealed gates exit 0 on PASS and 1 on MISS (gate_c99.py, the real gates'
   // `sys.exit(1 if fails else 0)`); anything else is the gate dying, whatever
   // it managed to print first.
-  if (g.exit !== 0 && g.exit !== 1) return `gate exited ${g.exit ?? 'null'}`
+  if (g.exit !== 0 && g.exit !== 1) return `gate exited abnormally; ${exit}`
   return null
 }
 
