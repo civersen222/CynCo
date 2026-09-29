@@ -128,9 +128,9 @@ export function verdictEntry({ spec, wave, row, grade, decision, ideationRecord,
   if (grade.gate.passes.length) lines.push(`  - PASS: ${grade.gate.passes.map(p => p.id).join(', ')}`)
   lines.push(`- Suite gate ${grade.suite.harnessFault ? `REFUSED (${grade.suite.harnessFault})` : grade.suite.exit === 0 ? 'PASS' : 'FAIL'}: REGRESSED ${grade.suite.regressions.length}${grade.suite.regressions.length ? ` (${grade.suite.regressions.join(', ')})` : ''}, REPAIRED ${grade.suite.repairs.length}.`)
   lines.push(grade.sweep
-    ? `- Derived sweep ${grade.sweep.killed}/${grade.sweep.total}; survivors: ${grade.sweep.survived.length ? grade.sweep.survived.join(', ') : 'none'}.`
+    ? `- Derived sweep ${grade.sweep.killed}/${grade.sweep.total}${grade.sweep.kind === 'derived-full' ? ' (derived-full: refused on the diff, retried with --mutate over the wave\'s sources)' : ''}; survivors: ${grade.sweep.survived.length ? grade.sweep.survived.join(', ') : 'none'}.`
     : grade.sweepFault
-      ? `- Derived sweep: UNMEASURED — ${grade.sweepFault}.`
+      ? `- Derived sweep: UNMEASURED — ${grade.sweepFault}${grade.sweepRetried ? ' (and again on the --mutate retry)' : ''}.`
       : '- Derived sweep: UNMEASURED (no diff or the sweep refused).')
   lines.push(`- POSIWID ${grade.posiwid.verdict} (divergence ${grade.posiwid.divergence.toFixed(3)}, dominant ${grade.posiwid.dominantObserved}).`)
   if (governancePosiwid) {
@@ -138,7 +138,7 @@ export function verdictEntry({ spec, wave, row, grade, decision, ideationRecord,
     lines.push(`- Governance POSIWID ${verdict} (divergence ${divergence.toFixed(3)}, dominant ${dominantObserved}, support ${support}${onsetWave ? `; drift onset wave ${onsetWave}` : ''}).`)
   }
   if (ideationRecord) lines.push(`- S4 ideation (authority ${ideationRecord.authority}): ${ideationRecord.hypotheses.length} hypothesis/es; followed=${ideationRecord.followed}.`)
-  lines.push(`- Ledger: verified ${grade.verified === null ? 'null (harness fault)' : grade.verified}; mutationSweep ${grade.sweep ? 'recorded (derived)' : 'null'}.`)
+  lines.push(`- Ledger: verified ${grade.verified === null ? 'null (harness fault)' : grade.verified}; mutationSweep ${grade.sweep ? `recorded (${grade.sweep.kind ?? 'derived'})` : 'null'}.`)
   const idLine = identityLine(identity)
   if (idLine) lines.push(idLine)
   // Phase 4 ruling 4: the campaign checklist (scripts/cynco-autopoiesis.mjs),

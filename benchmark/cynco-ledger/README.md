@@ -47,11 +47,23 @@ decisions still recorded here).
   },
   "mutationSweep": null,    // BEHAVIOURAL: null = UNMEASURED, never "clean"
   // { "command": "...", "killed": 1, "total": 7, "survived": ["W1","W5"], "note": "..." }
+  // `kind` (absent = authored): "derived" = cynco-mutation-sweep.py over the
+  // expressions the diff ADDED; "derived-full" (F164) = the derived sweep
+  // refused (exit 2) on the diff — an import-only or otherwise unmutable
+  // change — and the runner's grade retried it ONCE with `--mutate` over every
+  // non-test `.py` the wave's diff touched, mutating those files WHOLE. The
+  // grade writes `retried: false` on a first-call reading and `retried: true`
+  // on a derived-full one; `cynco-ledger-sweep.mjs --kind derived-full` writes
+  // the same shape for a hand relabel. A derived-full reading's mutants are
+  // not only the wave's own lines — the kind says so, and both derived kinds
+  // label the row without a survivor failing it (see "Labeling rule").
   // Written by the campaign runner's GRADE alongside `mutationSweep`: why a
   // derived sweep produced no reading ("timed out after 3600000 ms", "sweep
-  // refused (exit 2)", "unparseable sweep output"). null = the sweep ran, or
-  // there was no diff to sweep. Distinguishes "unmeasured because the
-  // instrument broke" from "unmeasured because nothing was measured".
+  // refused (exit 2)", "unparseable sweep output") — after the `--mutate`
+  // retry when one ran (the wave record's `sweepRetried` says whether it did).
+  // null = the sweep ran, or there was no diff to sweep. Distinguishes
+  // "unmeasured because the instrument broke" from "unmeasured because nothing
+  // was measured".
   "sweepFault": null,
   // The commits this mission made. `base` is HEAD at dispatch, `head` is HEAD
   // after the check script ran, so `base..head` is exactly the mission's diff —
@@ -1188,7 +1200,9 @@ describe a vector the code no longer builds.
 Ground truth for signal validation (step 2, per-rule precision/recall):
 
 - **success** = `outcome === "landed" && verified === true && mutationSweep` has
-  no survivor that a DoD item claimed to own
+  no survivor that a DoD item claimed to own (a `derived` or `derived-full`
+  sweep's survivors are coverage findings, not DoD claims — such a row is
+  labeled, and a success when it landed verified)
 - **failure** = anything else
 - **unlabeled** = `verified === null` or `mutationSweep === null`. An unmeasured
   mission is not a passing one. Exclude it; do not default it.

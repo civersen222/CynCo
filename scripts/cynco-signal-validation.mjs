@@ -142,7 +142,10 @@ export function labelOf(row) {
   // they cannot be read as "the mission failed its own definition of done".
   // Conflating the two would fail every mission whose brief told it not to add
   // tests. It still counts as MEASURED, which is the point of running it.
-  if (sweep.kind === 'derived') return true
+  // `derived-full` (F164) is the same instrument retried with `--mutate` over
+  // the wave's whole source files: still machine-enumerated, still not a rule
+  // a DoD claimed, so its survivors are coverage findings too.
+  if (sweep.kind === 'derived' || sweep.kind === 'derived-full') return true
   return (sweep.survived ?? []).length === 0
 }
 
