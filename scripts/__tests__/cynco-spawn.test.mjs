@@ -59,6 +59,27 @@ describe('runSync: a timeout is an elapsed measurement', () => {
     expect(r.staleDeadlineRetried).toBe(true)
   })
 
+  // Phase 6 fix wave (P-F155): at a 20 s probe cadence every tick's first
+  // spawn trips the stale deadline, and a red line per tick buries the log. A
+  // caller that counts its retries takes the line through `onStaleRetry` and
+  // decides how often to print it; nothing is written to stderr then.
+  it('hands the retry line to onStaleRetry instead of stderr when the caller gives one', () => {
+    const clock = clockOf()
+    let n = 0
+    const spawn = () => { n += 1; clock.t += n === 1 ? 6 : 20; return n === 1 ? ETIMEDOUT : { status: 0, stdout: 'abc\n', stderr: '' } }
+    const lines = []
+    const errors = []
+    const saved = console.error
+    console.error = (m) => errors.push(m)
+    try {
+      const r = runSync('git', ['rev-parse'], { timeoutMs: 30_000, retryImpossibleTimeout: true, onStaleRetry: (m) => lines.push(m) }, { spawn, now: () => clock.t })
+      expect(r.staleDeadlineRetried).toBe(true)
+      expect(r.stdout).toBe('abc\n')
+    } finally { console.error = saved }
+    expect(lines).toEqual(["[spawn] git: an impossible ETIMEDOUT after 6 ms (cap 30000 ms) — bun's stale deadline; retried once and the retry ran (F155)"])
+    expect(errors).toEqual([])
+  })
+
   /**
    * Opt-in, per call. Running a command twice is only safe when running it twice
    * is the same as running it once — a gate, a stub, a shim and a `--check` are
@@ -90,8 +111,16 @@ describe('runSync: a timeout is an elapsed measurement', () => {
     // Review I2: the wave grader's gate and suite-gate runs are reads and opt
     // in; the mutation sweep rewrites the tree per mutant and must not.
     const grade = readFileSync(new URL('../cynco-campaign-grade.mjs', import.meta.url), 'utf8')
-    expect(grade.match(/retryImpossibleTimeout: true/g) ?? []).toHaveLength(2)
-    expect(/\[spec\.gate\][\s\S]{0,200}retryImpossibleTimeout: true/.test(grade)).toBe(true)
+    // Phase 6: the gate's retry is runGate's `retry` option, true by default
+    // (the verdict's read) and false for the mid-wave progress probe.
+    expect(grade.match(/retryImpossibleTimeout: true/g) ?? []).toHaveLength(1)
+    expect(/export function runGate\(spec, io, \{[^}]*retry = true[^}]*\}/.test(grade)).toBe(true)
+    expect(/\[spec\.gate\][\s\S]{0,200}retryImpossibleTimeout: retry\b/.test(grade)).toBe(true)
+    // …and the probe never retries: a 215 s gate re-run is not free, and a
+    // stale ETIMEDOUT mid-wave is a fault reading (F155).
+    const progress = readFileSync(new URL('../cynco-campaign-progress.mjs', import.meta.url), 'utf8')
+    expect(/runGate\(spec, grade, \{[^}]*retry: false[^}]*\}\)/.test(progress)).toBe(true)
+    expect(/retry: true|retryImpossibleTimeout: true/.test(progress)).toBe(false)
     expect(/\[SUITE_GATE\(\)\][\s\S]{0,300}retryImpossibleTimeout: true/.test(grade)).toBe(true)
     expect(/cynco-mutation-sweep[\s\S]{0,600}retryImpossibleTimeout/.test(grade)).toBe(false)
   })

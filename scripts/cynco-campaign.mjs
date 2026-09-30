@@ -36,11 +36,13 @@ import { loadRoadmap, saveRoadmap, rejectLine, setLineStatus, ROADMAP_PATH } fro
 import { assertIdentityIntact } from './cynco-identity.mjs'
 import { applyProposalDecision, seatAuthority } from './cynco-proposals.mjs'
 import { writeRuleVerdicts, readRuleVerdicts, RULE_VERDICTS_PATH, modelRowsFrom } from './cynco-rule-verdicts.mjs'
-import { exportOutcomeDatasets, runHindcast, hindcastOf, PRIMARY_TURNS } from './cynco-hindcast.mjs'
+import { exportOutcomeDatasets, runHindcast, hindcastOf, noEligibleFault, hindcastReady, PRIMARY_TURNS } from './cynco-hindcast.mjs'
 import { campaignScoreboard, pooledScoreboard, scoreboardLines } from './cynco-scoreboard.mjs'
 import { readLedger } from './cynco-ledger-shards.mjs'
 import { campaignAssessment, campaignRows, autopoiesisLine, storedAssessment, effectiveSeatAuthority } from './cynco-autopoiesis.mjs'
 import { summarize as summarizeGateLines, GATE_LINES_PATH } from './cynco-gate-lines.mjs'
+import { progressTracker, defaultProbeIo, everyMsFor, seedGateMs } from './cynco-campaign-progress.mjs'
+import { runnerRowsFromCampaigns } from './cynco-runner-rows.mjs'
 
 // Phase 4: the operator's decision on a pending proposal lives in the one
 // proposal registry (scripts/cynco-proposals.mjs). Re-exported so every caller
@@ -212,8 +214,21 @@ export const defaultIo = {
   // that outlives the work). Once the row exists the wave is gradeable, so
   // check for it FIRST on every tick and keep the pid only as the secondary
   // signal for "it is gone and wrote nothing".
-  waitForDriver: async ({ pidFile, driverLog, timeoutMs, missionIdFrom = defaultIo.missionIdFrom, pollMs = 30_000 }) => {
+  //
+  // Phase 6 ruling 2: `onTick({ elapsedMs, nowMs })` is called once per poll
+  // while the driver runs — the runner's progress probe (scripts/cynco-campaign-
+  // progress.mjs) hangs off it. A throw inside it is caught and logged ONCE per
+  // distinct message, and the wait goes on: a probe never breaks the wait.
+  waitForDriver: async ({ pidFile, driverLog, timeoutMs, missionIdFrom = defaultIo.missionIdFrom, pollMs = 30_000, onTick = null }) => {
     const t0 = Date.now()
+    const tickFaults = new Set()
+    const tick = async () => {
+      if (typeof onTick !== 'function') return
+      try { await onTick({ elapsedMs: Date.now() - t0, nowMs: Date.now() }) } catch (e) {
+        const message = String(e?.message ?? e)
+        if (!tickFaults.has(message)) { tickFaults.add(message); console.error(`[campaign] progress tick failed (the wait goes on): ${message}`) }
+      }
+    }
     const idNow = () => { try { return missionIdFrom(driverLog) } catch { return null } }
     // The ledger line before the pid file: a driver that already wrote its
     // row is gradeable whether or not its pid file survived, and a missing
@@ -231,6 +246,7 @@ export const defaultIo = {
       const id = idNow()
       if (id) return { exited: true, missionId: id }
       if (!alive()) return { exited: true, missionId: idNow() }
+      await tick()
       // Never sleep past the wall clock: a 30 s poll on top of an expired
       // budget is 30 s of a wave nobody is waiting on any more.
       await new Promise(r => setTimeout(r, Math.min(pollMs, Math.max(1, timeoutMs - (Date.now() - t0)))))
@@ -245,10 +261,16 @@ export const defaultIo = {
   // T7-M1: a rev (HEAD, a sha, an abbreviation) resolved to its full commit
   // sha, or null. Capped through runSync and retried on an impossible
   // ETIMEDOUT (a read — F155: it is the first spawn after a wave's long wait).
-  repoHead: (repo, rev = 'HEAD') => {
-    const r = runSync('git', ['-C', repo, 'rev-parse', '--verify', '--quiet', `${rev}^{commit}`], { timeoutMs: GIT_READ_TIMEOUT_MS, retryImpossibleTimeout: true })
+  // `onStaleRetry` (P-F155): the progress tracker's counter — its every tick
+  // follows a gap, so the retry line is counted and logged once per wave.
+  repoHead: (repo, rev = 'HEAD', { onStaleRetry } = {}) => {
+    const r = runSync('git', ['-C', repo, 'rev-parse', '--verify', '--quiet', `${rev}^{commit}`], { timeoutMs: GIT_READ_TIMEOUT_MS, retryImpossibleTimeout: true, ...(onStaleRetry ? { onStaleRetry } : {}) })
     return !r.fault && !r.timedOut && r.status === 0 ? (String(r.stdout ?? '').trim() || null) : null
   },
+  // Phase 6 ruling 2: the mid-wave progress probe's io (archive the sha, run
+  // the sealed gate on the archive with no retry, remove it). An injected io
+  // without it takes no readings — a test's fake wave never spawns a gate.
+  progressProbe: defaultProbeIo,
   commitsBetween: (repo, base, head) => gitC(repo, ['log', '--oneline', `${base}..${head}`]).split('\n').filter(Boolean).map(l => ({ sha: l.slice(0, 7), subject: l.slice(8) })),
   firstCommitFiles: (repo, base, head) => { const first = gitC(repo, ['rev-list', '--reverse', `${base}..${head}`]).split('\n').filter(Boolean)[0]; return first ? gitC(repo, ['show', '--name-only', '--format=', first]).split('\n').filter(Boolean) : [] },
   // cynco-work-snapshot.mjs:35, called by the driver with outDir 'C:/tmp'.
@@ -422,6 +444,16 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
   // `--adopt-inflight`) — the scoreboard counts it as an intervention, so the
   // record says so. Nothing else on the record distinguishes it.
   let adopted = false
+  // Phase 6 ruling 2: the mid-wave gate readings (scripts/cynco-campaign-
+  // progress.mjs). The tracker exists only for a wave this runner WAITS on;
+  // `progressNote` says why there is none, so the verdict's `- Progress:` line
+  // names the reason instead of printing an empty reading as a measurement.
+  let tracker = null, progressNote = null
+  // `retriedSpawns` (P-F155): how many of the probe's git spawns hit bun's
+  // stale deadline and were retried this wave — on the record only when the
+  // runner waited with a tracker.
+  const progressFields = () => ({ progress: tracker ? tracker.progress : null, shadowDecisions: tracker ? tracker.shadowDecisions : null,
+    progressNote: tracker ? tracker.note() : progressNote, ...(tracker ? { retriedSpawns: tracker.retriedSpawns() } : {}) })
 
   if (s.adoptedRow) {
     // ADOPT (scripts/cynco-campaign-adopt.mjs): this wave already RAN — it was
@@ -437,6 +469,7 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
     briefFile = resolve(row.briefFile ?? join(BRIEFS_DIR, `${spec.id}-wave${wave}.txt`))
     dispatchedAt = row.dispatchedAt ?? null
     delete s.adoptedRow
+    progressNote = 'adopted wave — the runner did not wait on it'
     // The brief was authored outside the runner, so its sidecar may not exist;
     // commitVerdict hands `files` straight to `git add`, where one missing
     // pathspec stages nothing at all.
@@ -513,19 +546,35 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
       // must not let the NEXT invocation dispatch a second one on top of it.
       s.inFlight = { wave, missionId: null, briefFile, pidFile, driverLog, dispatchedAt }
       state.save()
-      waited = await io.waitForDriver({ pidFile, driverLog, timeoutMs: (spec.budget.hoursPerWave * 3600 + 3600) * 1000 })
+      // Phase 6 ruling 2: gate progress, measured by the runner mid-wave and
+      // never shown to the model — the readings reach this wave's record and
+      // the runner's log only. Needs the probe io and the HEAD reader; a test's
+      // injected io without them takes no readings (and says so).
+      const probe = io.progressProbe ?? (io === defaultIo ? defaultProbeIo : null)
+      if (probe && repoHead) {
+        tracker = progressTracker({ spec, probe, headOf: (hooks) => repoHead(spec.repo, 'HEAD', hooks), clockMs: spec.budget.hoursPerWave * 3600 * 1000,
+          startSha: baseSha ?? base, startFails: s.lastFails?.length ?? s.calibration?.baseFails?.length ?? fails.length,
+          startFailIds: s.lastFails ?? fails.map(f => f.id), startPasses: ctx.passes?.length ?? null,
+          dispatchedAtMs: Date.parse(dispatchedAt), everyMs: everyMsFor(spec),
+          // Review M1: the gate's runtime as the start grade measured it (the
+          // last verdict's gate run, else the calibration's BASE run), so the
+          // cadence's 10 % rule and end-of-clock tail hold from the first tick.
+          // Task 3 review N1: never a faulted grade's (its duration is the timeout).
+          gateMs: seedGateMs(s) })
+      } else progressNote = !probe ? 'no progress probe on this runner io' : 'no repo HEAD reader on this runner io'
+      waited = await io.waitForDriver({ pidFile, driverLog, timeoutMs: (spec.budget.hoursPerWave * 3600 + 3600) * 1000, onTick: tracker?.onTick ?? null })
       missionId = waited.exited ? (waited.missionId ?? dispatched?.missionId ?? io.missionIdFrom?.(driverLog) ?? null) : null
       row = missionId ? io.readRow(missionId) : null
     } catch (e) {
       console.error(`[campaign] wave ${wave} dispatch/wait failed: ${e?.stack ?? e}`)
-      return faultWave(spec, state, io, { wave, missionId: null, briefFile, base, dispatchedAt, files: [...waveFiles, ...roadmapFiles],
+      return faultWave(spec, state, io, { wave, missionId: null, briefFile, base, dispatchedAt, files: [...waveFiles, ...roadmapFiles], progressFields: progressFields(),
         why: `dispatch or wait failed: ${e?.message ?? e}` })
     }
     if (!row) {
       const why = waited.exited ? 'driver exited without a ledger row'
         : waited.pidUnseen ? `driver pid ${waited.pidUnseen} was already invisible on the first probe — the PID handoff is broken and the mission may still be running unwatched (see ${driverLog})`
           : 'driver did not exit within the wall clock'
-      return faultWave(spec, state, io, { wave, missionId, briefFile, base, dispatchedAt, files: [...waveFiles, ...roadmapFiles], why })
+      return faultWave(spec, state, io, { wave, missionId, briefFile, base, dispatchedAt, files: [...waveFiles, ...roadmapFiles], progressFields: progressFields(), why })
     }
   }
 
@@ -544,7 +593,10 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
   // own counter is only advanced after the record is appended, so hand decide
   // the count this wave makes rather than the one before it.
   let decision = decide({ grade, state: { ...s, waveCount: wave }, spec, commitsLanded: commits.length, row })
-  io.patchRow(missionId, { verified: grade.verified, ...(grade.sweep ? { mutationSweep: grade.sweep } : {}), sweepFault: grade.sweepFault ?? null,
+  // Review M5: `sweepRetried` rides on the ROW too, so a dataset built from
+  // rows alone can tell a refusal that survived its F164 --mutate retry from
+  // one that was never retried (a reading carries `retried` on mutationSweep).
+  io.patchRow(missionId, { verified: grade.verified, ...(grade.sweep ? { mutationSweep: grade.sweep } : {}), sweepFault: grade.sweepFault ?? null, sweepRetried: grade.sweepRetried ?? false,
     gate: { sha: grade.sha, gateSha256, terminator: grade.gate.terminator, fails: grade.gate.fails.map(f => f.line), passes: grade.gate.passes.length, priorRegressions: grade.gate.priorRegressions, suiteRegressions: grade.suite.regressions, harnessFault: grade.gate.harnessFault ?? grade.suite.harnessFault ?? null },
     posiwid: { divergence: grade.posiwid.divergence, verdict: grade.posiwid.verdict, dominantObserved: grade.posiwid.dominantObserved } })
 
@@ -562,14 +614,18 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
   // attributed to the seat that sealed it, and the promotion has no denominator.
   // `spec.author` is already defaulted to 'human' by loadCampaignSpec; the
   // fallback here is for an adopted or hand-built spec that never went through it.
-  const rec = { wave, missionId, briefFile, base, head: grade.sha, gateSha256, dispatchedAt, gradedAt: new Date().toISOString(), gate: { ...grade.gate, author: spec.author ?? 'human' }, suite: grade.suite, sweep: grade.sweep, sweepFault: grade.sweepFault ?? null, posiwid: grade.posiwid, verified: grade.verified,
+  const rec = { wave, missionId, briefFile, base, head: grade.sha, gateSha256, dispatchedAt, gradedAt: new Date().toISOString(), gate: { ...grade.gate, author: spec.author ?? 'human' }, suite: grade.suite, sweep: grade.sweep, sweepFault: grade.sweepFault ?? null, sweepRetried: grade.sweepRetried ?? false, posiwid: grade.posiwid, verified: grade.verified,
     // Phase 5 ruling 2: the scoreboard's per-wave inputs, kept on the record so
     // a board is recomputable without the ledger — the wave's GPU seconds and
     // the runner's own commitsBetween count (not toolStats.commits).
     durationS: row.durationS ?? null,
     outcome: { landed: row.outcome === 'landed', exitReason: row.exitReason, commitsLanded: commits.length },
     s4: { generatorInput: { failIds: fails.map(f => f.id), priorMissionId: prior?.missionId ?? null }, ideation, ideationMeta, authority: s.ideationAuthority ?? 0, commander, followed, workOrder, pacingFromDenials },
-    adopted, decision, verdictSha: null, notified: false }
+    adopted, decision, verdictSha: null, notified: false,
+    // Phase 6 rulings 2–3: the mid-wave gate readings and the shadow
+    // `R1.no-progress` decisions taken at each (null with a note when the
+    // runner took none — never an empty reading dressed as a measurement).
+    ...progressFields() }
   state.appendWave(rec)
   appended = true
 
@@ -594,6 +650,25 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
     denialAnalysis = (io.analyseDenials ?? defaultIo.analyseDenials)(scoped ?? { denials: summary?.denials, quiet: summary?.quiet })
     s.denialAnalysis = denialAnalysis
   } catch (e) { console.error(`[campaign] triples export/analysis skipped: ${e?.message ?? e}`) }
+
+  // Phase 4: is the campaign still the campaign? Asserted AFTER the triples
+  // dataset is regenerated (it is evidence either way) and BEFORE any
+  // proposal is computed — a campaign whose identity broke this wave has no
+  // standing to ask for more authority or a wider cap. A violation outranks
+  // every grade the way invariantsRejected does in decide(): the wave is a
+  // fault, and the record, the verdict line, the commit message and the
+  // notification all say which invariant broke. It is pure over the spec,
+  // state and row (cynco-identity.mjs), and it runs BEFORE the rule ladder so
+  // the runner row reads this wave's FINAL decision as `R1.no-progress`'s
+  // outcome — a pass the identity check turns into a fault is a failure there
+  // too, on this verdict and not only the next one (Task 4 review M6).
+  const identity = assertIdentityIntact({ spec, state: s, wave, row, io })
+  rec.identity = identity
+  if (!identity.intact) {
+    decision = { kind: 'fault', why: `identity violated: ${identity.violated.join(' ')}` }
+    rec.decision = decision
+    console.error(`[campaign] wave ${wave} IDENTITY VIOLATED: ${identity.violated.map(n => `${n} (${identity.evidence[n].detail})`).join('; ')}`)
+  }
 
   // Phase 4: the per-rule S5 verdicts, rewritten for the engine from the whole
   // ledger (not this campaign's slice — a rule's predictive power is a claim
@@ -622,29 +697,47 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
       const exported = (io.exportOutcomeDataset ?? defaultIo.exportOutcomeDataset)({ rows, home })
       // The holdout as the manifest sees it per K (ineligible / missing ids named).
       const split = exported?.split ? { split: exported.split } : {}
-      if (!exported?.n) {
-        rec.hindcast = { fault: `no eligible labeled mission at K = ${PRIMARY_TURNS} turns — nothing to train on`, ...split }
+      // F165: the one signals version the learner trained on, and how many
+      // eligible missions each version had — on a fault too.
+      const signals = typeof exported?.signalsVersion === 'number' ? { signalsVersion: exported.signalsVersion, rowsByVersion: exported.rowsByVersion ?? {} } : {}
+      if (!hindcastReady(exported)) {
+        rec.hindcast = { fault: noEligibleFault(exported, PRIMARY_TURNS), ...signals, ...(exported?.holdout ? { holdout: exported.holdout } : {}), ...split }
       } else {
         const h = hindcastOf((io.runHindcast ?? defaultIo.runHindcast)({ paths: exported.paths }), exported.paths.out)
-        if (h.fault) rec.hindcast = { fault: h.fault, ...split }
-        else { rec.hindcast = { ...h.summary, ...split }; modelRows = modelRowsFrom(h.model, rows) }
+        if (h.fault) rec.hindcast = { fault: h.fault, ...signals, ...split }
+        // Task 2 review N3: `holdout` rides the success path too — on the wave
+        // whose export froze v2's set it reads `frozenNow: true`, and the
+        // verdict entry names the freeze (the manifest is committed with it).
+        else { rec.hindcast = { ...h.summary, ...split, ...(exported?.holdout ? { holdout: exported.holdout } : {}) }; modelRows = modelRowsFrom(h.model, rows) }
       }
     } catch (e) { rec.hindcast = { fault: String(e?.message ?? e) } }
     if (rec.hindcast?.fault) console.error(`[campaign] outcome hindcast not measured: ${rec.hindcast.fault}`)
+    // Phase 6 Task 4: the runner's shadow regulator `R1.no-progress` as a
+    // runner row — one rule across campaigns, so its scope is this campaign's
+    // waves (the one just recorded included) and every other runner-driven
+    // campaign's under <home>/campaigns. Built by the ONE construction the
+    // rule-verdicts CLI uses too (scripts/cynco-runner-rows.mjs, review I1).
+    // Shadow: never authority, never the version. A malformed wave record is
+    // skipped and named on the row; a fault reading the dir is logged and the
+    // ladder is written without the row, never a fault of the wave.
+    let runnerRows = []
+    try { runnerRows = runnerRowsFromCampaigns(join(home, 'campaigns'), { current: spec.id, entries: state.waveEntries(), rec }) }
+    catch (e) { console.error(`[campaign] runner rows (R1.no-progress) not read: ${e?.message ?? e}`) }
     const write = io.writeRuleVerdicts ?? defaultIo.writeRuleVerdicts
     try {
-      rec.ruleVerdicts = write({ rows, campaign: spec.id, outPath, modelRows })
+      rec.ruleVerdicts = write({ rows, campaign: spec.id, outPath, modelRows, runnerRows })
     } catch (e) {
       // Final review M1 (T5-M1): a throw on the MODEL rows must not leave the
       // previous wave's file for the engine to read, stale. The rules' verdicts
-      // are rewritten alone; the hindcast says its ladder faulted, and the
-      // record says the model rows were skipped. A throw without model rows is
-      // the rules' own and falls through to the outer catch as before.
+      // are rewritten alone (with the runner rows, which do not depend on the
+      // hindcast); the hindcast says its ladder faulted, and the record says
+      // the model rows were skipped. A throw without model rows is the rules'
+      // own and falls through to the outer catch as before.
       if (!modelRows.length) throw e
       const message = String(e?.message ?? e)
       console.error(`[campaign] rule verdicts with the model rows failed (${message}) — rewriting the rules alone`)
       if (rec.hindcast) rec.hindcast.ladderFault = message
-      rec.ruleVerdicts = { ...write({ rows, campaign: spec.id, outPath, modelRows: [] }), modelRowsSkipped: true }
+      rec.ruleVerdicts = { ...write({ rows, campaign: spec.id, outPath, modelRows: [], runnerRows }), modelRowsSkipped: true }
     }
     // The ladder's reading of each model row (verdict, precision, CI, p(Holm)),
     // kept on the hindcast beside the model's own holdout metrics.
@@ -677,21 +770,6 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
   // gate has no lines. Same discipline: derived, rebuilt in full, never a fault.
   try { (io.exportGateOutcomes ?? defaultIo.exportGateOutcomes)() }
   catch (e) { console.error(`[campaign] gate-outcomes export skipped: ${e?.message ?? e}`) }
-
-  // Phase 4: is the campaign still the campaign? Asserted AFTER the datasets
-  // are regenerated (they are evidence either way) and BEFORE any proposal is
-  // computed — a campaign whose identity broke this wave has no standing to ask
-  // for more authority or a wider cap. A violation outranks every grade the
-  // way invariantsRejected does in decide(): the wave is a fault, and the
-  // record, the verdict line, the commit message and the notification all say
-  // which invariant broke.
-  const identity = assertIdentityIntact({ spec, state: s, wave, row, io })
-  rec.identity = identity
-  if (!identity.intact) {
-    decision = { kind: 'fault', why: `identity violated: ${identity.violated.join(' ')}` }
-    rec.decision = decision
-    console.error(`[campaign] wave ${wave} IDENTITY VIOLATED: ${identity.violated.map(n => `${n} (${identity.evidence[n].detail})`).join('; ')}`)
-  }
 
   // §E: two proposals must not go pending in the same wave. promotionProposal
   // is computed FIRST; when it is about to be raised, capProposal is skipped
@@ -758,7 +836,14 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
 
   // Verdict (campaign log, economics, local commit, algedonic).
   const ideationRecord = ideation ? { authority: s.ideationAuthority ?? 0, hypotheses: ideation.hypotheses, followed } : null
-  const entry = verdictEntry({ spec, wave, row, grade, decision, ideationRecord, economicsLines: economicsText, denialAnalysis, denialScope, capProposal: cap, governancePosiwid: governance, gateLines, identity, autopoiesis: rec.autopoiesis, scoreboard: rec.scoreboard, hindcast: rec.hindcast })
+  const entry = verdictEntry({ spec, wave, row, grade, decision, ideationRecord, economicsLines: economicsText, denialAnalysis, denialScope, capProposal: cap, governancePosiwid: governance, gateLines, identity, autopoiesis: rec.autopoiesis, scoreboard: rec.scoreboard, hindcast: rec.hindcast,
+    // A wave the runner waited on with a probe prints its readings (or why
+    // there were none); an adopted wave prints that it was not waited on. A
+    // runner io with no probe at all took no measurement — no line, the way a
+    // null hindcast prints none.
+    progress: tracker || adopted ? rec : null,
+    // Phase 6 Task 4: R1.no-progress, named with its verdict on the ladder line.
+    runnerLadder: rec.ruleVerdicts?.runners ?? null })
   io.appendLog(entry)
   // Phase 5 Task 1 / final review I1: a pass finishes the roadmap line — read
   // off the FINAL decision (the identity check could still turn it into a
@@ -780,7 +865,7 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
     // The wave is already on the record when the throw came from the verdict
     // half; a second append would put the same wave in waves.jsonl twice and
     // double-count it in every promotion reading afterwards. Overwrite it.
-    return faultWave(spec, state, io, { wave, missionId, briefFile, base, dispatchedAt, files: [...new Set([...(waveFiles ?? []), ...roadmapFiles])], appended, adopted, rowDurationS: row?.durationS ?? null, why: `post-run step failed: ${e?.message ?? e}` })
+    return faultWave(spec, state, io, { wave, missionId, briefFile, base, dispatchedAt, files: [...new Set([...(waveFiles ?? []), ...roadmapFiles])], appended, adopted, rowDurationS: row?.durationS ?? null, progressFields: progressFields(), why: `post-run step failed: ${e?.message ?? e}` })
   }
 }
 
@@ -837,9 +922,13 @@ async function stopWave(spec, state, io, { wave, base, why }) {
  * guard would otherwise refuse on at the NEXT invocation, bricking the campaign
  * with work that never ran.
  */
-async function faultWave(spec, state, io, { wave, missionId, briefFile, base, dispatchedAt, why, files, appended = false, adopted = false, rowDurationS = null }) {
+async function faultWave(spec, state, io, { wave, missionId, briefFile, base, dispatchedAt, why, files, appended = false, adopted = false, rowDurationS = null, progressFields = null }) {
   const s = state.state
   const rec = { wave, missionId: missionId ?? null, briefFile, base, dispatchedAt, decision: { kind: 'fault', why } }
+  // Phase 6: a wave that faulted in the WAIT (the wall clock ran out, the
+  // driver left no row) keeps the mid-wave readings it did get — they are the
+  // only measurement of what that wave did.
+  if (progressFields?.progress) Object.assign(rec, progressFields)
   // A fault on a wave the operator handed over (`--adopt-inflight`, the adopt
   // script) is still that hand-off; the scoreboard counts it (Phase 5 ruling 2).
   if (adopted) rec.adopted = true
@@ -1324,7 +1413,7 @@ export async function main(argv, deps = {}) {
     if (!r.ok) { console.error('[campaign] CALIBRATION REFUSED:\n  ' + r.problems.join('\n  ')); await notify(`${spec.id}: calibration refused — ${r.problems[0]}`); return 3 }
     // basePasses is what wave 1's brief prints as "Already PASS at BASE and must
     // stay so" — the only thing telling the worker which lines it may not break.
-    const next = { gateSha256: r.gateSha256, perturbSha256: r.perturbSha256, positiveSha256: r.positiveSha256 ?? null, baseFails: r.baseFails, basePasses: r.basePasses ?? [], perturbFails: r.perturbFails, calibratedAt: new Date().toISOString() }
+    const next = { gateSha256: r.gateSha256, perturbSha256: r.perturbSha256, positiveSha256: r.positiveSha256 ?? null, baseFails: r.baseFails, basePasses: r.basePasses ?? [], perturbFails: r.perturbFails, baseGateMs: r.baseGateMs ?? null, calibratedAt: new Date().toISOString() }
     // BEFORE the overwrite: `cal` is the calibration this campaign has been
     // measured against so far, and once the line below runs it is gone. `wave`
     // is the number of waves already spent — the reseal lands between that wave

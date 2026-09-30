@@ -197,7 +197,12 @@ export type GovernanceStatusEvent = {
    *  counterpart to the monotone varietyRatio; both logged for Phase 3. */
   varietyWindowed?: number
   varietyBalance?: string
+  /** Signals v2 (F165): alerts in the last 20 turns. */
   algedonicAlerts?: number
+  /** F165: the cumulative count (v1's algedonicAlerts). */
+  algedonicAlertsTotal?: number
+  /** F165: per-turn signal vector version; absent on a v1 frame. */
+  signalsVersion?: number
   /** Mirrors AxiomHealth in vsm/types.ts (emit sends the object, not a string). */
   axiomHealth?: { holding: number; total: number; violations: string[] }
   consecutiveUnstable?: number

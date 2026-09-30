@@ -47,6 +47,24 @@ prefix/hindsight comparison meaningful).
 `--dataset32` runs the same pipeline on the K = 32 rows and writes it under
 `secondary`. Only the primary (K = 16) predictions enter the ladder.
 
+Signals version (F165)
+----------------------
+A dataset row carries `signalsVersion` (1 when absent: pre-F165 turns, where
+`consecutiveUnstable` was the turn index and `algedonicAlerts` cumulative).
+`--signals-version N` trains and scores only version-N rows (primary,
+hindsight and K = 32 alike); the file then records `signalsVersion: N` and
+`secondary.otherSignalsVersions` — per left-out version, its eligible,
+failure, success and held-out counts. Without the flag every row is used,
+`signalsVersion` is null and `secondary` is unchanged. `rowsByVersion` is
+always written — `{"<version>": eligible missions}`, from `--rows-by-version`
+(the hindcast passes the counts it made BEFORE filtering its export to one
+version) or else the dataset's labeled rows per version — and a refusal under
+`--signals-version` ends with ` (signals vN: n eligible; v1: m)`.
+`scripts/cynco-hindcast.mjs` always trains on one version (2). The manifest
+holds one frozen set per signals version (`{"schema": 2, "sets": {...}}`, fix
+round 2); the held-out ids are those of `--signals-version`'s set (version 1
+without the flag). A Phase 5 schema-1 file is version 1's set.
+
 Version
 -------
 `version` is the previous file's version + 1 when any held-out prediction
@@ -58,7 +76,7 @@ reason printed on stdout; 1 bad input. Never touches the network.
 
 Usage:
   python scripts/cynco-outcome-model.py --dataset D.jsonl --manifest frozen-eval.json --out outcome-model.json
-      [--hindsight H.jsonl] [--dataset32 D32.jsonl] [--min-train 30] [--min-holdout 8]
+      [--hindsight H.jsonl] [--dataset32 D32.jsonl] [--min-train 30] [--min-holdout 8] [--signals-version N] [--rows-by-version JSON]
 """
 
 import argparse
@@ -97,6 +115,74 @@ def read_rows(path):
             except json.JSONDecodeError as e:
                 raise SystemExit(f"{path}:{n}: not a JSON line ({e})")
     return rows
+
+
+def row_version(r):
+    """A dataset row's signals version (F165); 1 when it carries none."""
+    v = r.get("signalsVersion")
+    return v if isinstance(v, int) and not isinstance(v, bool) else 1
+
+
+def by_version(rows, version):
+    """(rows of `version`, the rest). `version` None keeps every row."""
+    if version is None:
+        return rows, []
+    return [r for r in rows if row_version(r) == version], [r for r in rows if row_version(r) != version]
+
+
+def version_counts(rows, held):
+    """Eligible counts of the rows left out by --signals-version, per version."""
+    lab = labeled(rows)
+    out = {}
+    for v in sorted({row_version(r) for r in lab}):
+        vs = [r for r in lab if row_version(r) == v]
+        out[str(v)] = {
+            "eligible": len(vs),
+            "failures": sum(1 for r in vs if r["label"] is False),
+            "successes": sum(1 for r in vs if r["label"] is True),
+            "holdout": sum(1 for r in vs if r.get("missionId") in held),
+        }
+    return out
+
+
+def held_ids(manifest, version):
+    """The frozen holdout ids for a signals version (F165 fix round 2). A
+    schema-2 file holds one set per version under `sets`; a Phase 5 schema-1
+    file IS version 1's set. With no version filter, version 1 (the Phase 5
+    behaviour). A version with no frozen set holds nothing."""
+    v = 1 if version is None else version
+    if manifest.get("schema") == 2 and isinstance(manifest.get("sets"), dict):
+        s = manifest["sets"].get(str(v)) or {}
+        return set(s.get("missionIds") or [])
+    if manifest.get("schema") == 1:
+        return set(manifest.get("missionIds") or []) if v == 1 else set()
+    raise SystemExit(f"--manifest is not a frozen-eval manifest (schema {manifest.get('schema')})")
+
+
+def parse_rows_by_version(text, rows):
+    """`{"<version>": n}` — from --rows-by-version when given, else the
+    labeled rows of the dataset counted per version."""
+    if text is None:
+        out = {}
+        for r in labeled(rows):
+            k = str(row_version(r))
+            out[k] = out.get(k, 0) + 1
+        return dict(sorted(out.items()))
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError as e:
+        raise SystemExit(f"--rows-by-version is not JSON: {e}")
+    if not isinstance(parsed, dict) or not all(isinstance(v, int) and not isinstance(v, bool) and v >= 0 for v in parsed.values()):
+        raise SystemExit(f"--rows-by-version must map a version to a count, got {text}")
+    return {str(k): v for k, v in sorted(parsed.items())}
+
+
+def version_note(version, rows_by_version):
+    """` (signals v2: 3 eligible; v1: 104)` — empty without a version filter."""
+    if version is None:
+        return ""
+    others = "; ".join(f"v{k}: {n}" for k, n in rows_by_version.items() if k != str(version))
+    return f" (signals v{version}: {rows_by_version.get(str(version), 0)} eligible{'; ' + others if others else ''})"
 
 
 def labeled(rows):
@@ -261,21 +347,33 @@ def main(argv):
     ap.add_argument("--dataset32", help="the second, later prefix (K = 32 turns), reported under `secondary`")
     ap.add_argument("--min-train", type=int, default=30)
     ap.add_argument("--min-holdout", type=int, default=8)
+    ap.add_argument("--signals-version", type=int, default=None,
+                    help="train and score only rows of this signals version (F165; a row without one is v1)")
+    ap.add_argument("--rows-by-version", default=None,
+                    help='JSON {"<version>": eligible missions} as the caller counted them before filtering '
+                         "(the hindcast's export); default: the labeled rows of --dataset per version")
     args = ap.parse_args(argv)
+    if args.signals_version is not None and args.signals_version < 1:
+        raise SystemExit(f"--signals-version must be a positive integer, got {args.signals_version}")
 
     with open(args.manifest, encoding="utf-8") as f:
         manifest = json.load(f)
-    held = set(manifest.get("missionIds") or [])
+    held = held_ids(manifest, args.signals_version)
 
-    primary = evaluate(read_rows(args.dataset), held, args.min_train, args.min_holdout)
+    all_rows = read_rows(args.dataset)
+    rows_by_version = parse_rows_by_version(args.rows_by_version, all_rows)
+    rows, other_rows = by_version(all_rows, args.signals_version)
+    primary = evaluate(rows, held, args.min_train, args.min_holdout)
     if "refusal" in primary:
-        print(primary["refusal"])
+        # F165: a refusal under a version filter names what each version had,
+        # so "TOO FEW" reads as "too few v2 missions yet", never as a mixed set.
+        print(primary["refusal"] + version_note(args.signals_version, rows_by_version))
         return 2
     models = primary["models"]
 
     leak = None
     if args.hindsight:
-        htrain, hholdout = split(labeled(read_rows(args.hindsight)), held)
+        htrain, hholdout = split(labeled(by_version(read_rows(args.hindsight), args.signals_version)[0]), held)
         if len(set(y_fail(htrain).tolist())) < 2 or not hholdout:
             leak = {k: {"aucPrefix": models[k]["auc"], "aucHindsight": None} for k in models}
         else:
@@ -286,13 +384,23 @@ def main(argv):
     # refusal is recorded in place of its numbers rather than failing the run.
     secondary = None
     if args.dataset32:
-        s = evaluate(read_rows(args.dataset32), held, args.min_train, args.min_holdout)
+        s = evaluate(by_version(read_rows(args.dataset32), args.signals_version)[0], held, args.min_train, args.min_holdout)
         secondary = {"refusal": s["refusal"]} if "refusal" in s else s
+    # F165: with --signals-version, the rows of the OTHER version(s) are not
+    # silently gone — their eligible counts are reported here. Only then:
+    # a run without the flag writes `secondary` exactly as before.
+    if args.signals_version is not None:
+        secondary = {**(secondary or {}), "otherSignalsVersions": version_counts(other_rows, held)}
 
     out = {
         "schema": SCHEMA,
         "version": previous_version(args.out, models),
         "trainedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        # null: every row, whatever its version (the pre-F165 behaviour).
+        "signalsVersion": args.signals_version,
+        # F165: eligible missions per signals version, as counted before any
+        # version filter — how much of the ledger this model could not use.
+        "rowsByVersion": rows_by_version,
         **primary,
         # The feature that would leak the finished length. The dataset's
         # prefix is a fixed K turns, so no length can be read from it; this is

@@ -113,6 +113,58 @@ describe('cynco-outcome-model.py', () => {
     expect(JSON.parse(readFileSync(out, 'utf8')).secondary).toEqual({ refusal: 'TOO FEW: train 0 < 30 or holdout 5 < 8' })
   }, TIMEOUT_MS)
 
+  it('--signals-version N trains on version-N rows only and reports the other version under secondary (F165)', () => {
+    const dir = outDir()
+    const mixed = join(dir, 'mixed.jsonl')
+    // The 60 separable rows are v1 (no signalsVersion). Six v2 rows are added,
+    // two of them held out, with a feature that would separate nothing.
+    const v2 = Array.from({ length: 6 }, (_, i) => JSON.stringify({ missionId: i < 2 ? `s0${i}` : `v2-${i}`, prefixTurns: 16, signalsVersion: 2,
+      label: i % 2 === 0, features: { 'signal.mean': 0.5, 'algedonicAlertsTotal.rate': i }, leakGuard: true }))
+    writeFileSync(mixed, readFileSync(SEPARABLE, 'utf8').trim() + '\n' + v2.join('\n') + '\n', 'utf8')
+    const out = join(dir, 'outcome-model.json')
+    const r = run(['--dataset', mixed, '--manifest', MANIFEST, '--out', out, '--signals-version', '1'])
+    expect(r.status, r.stderr).toBe(0)
+    const m = JSON.parse(readFileSync(out, 'utf8'))
+    expect(m).toMatchObject({ signalsVersion: 1, nTrain: 48, nHoldout: 12, rowsByVersion: { 1: 60, 2: 6 } })
+    expect(m.features).not.toContain('algedonicAlertsTotal.rate')
+    expect(m.secondary).toEqual({ otherSignalsVersions: { 2: { eligible: 6, failures: 3, successes: 3, holdout: 2 } } })
+    // Without the flag the file says so (null) and `secondary` is as before.
+    expect(run(['--dataset', SEPARABLE, '--manifest', MANIFEST, '--out', out]).status).toBe(0)
+    const plain = JSON.parse(readFileSync(out, 'utf8'))
+    expect(plain.signalsVersion).toBeNull()
+    expect(plain.secondary).toBeNull()
+    // v2 alone is six rows: refused, nothing about v1 leaks in. The holdout is
+    // v2's own frozen set (fix round 2): against the schema-1 file (v1's set
+    // only) nothing is held; against a per-version file, s00/s01 are.
+    const r0 = run(['--dataset', mixed, '--manifest', MANIFEST, '--out', join(dir, 'v2a.json'), '--signals-version', '2'])
+    expect(r0.status).toBe(2)
+    expect(r0.stdout).toMatch(/^TOO FEW: train 6 < 30 or holdout 0 < 8 \(signals v2: 6 eligible; v1: 60\)$/m)
+    const perVersion = join(dir, 'frozen-eval.json')
+    writeFileSync(perVersion, JSON.stringify({ schema: 2, sets: { 1: JSON.parse(readFileSync(MANIFEST, 'utf8')),
+      2: { schema: 1, version: 1, seed: 1, frozenAt: 't', missionIds: ['s00', 's01'] } }, history: [] }), 'utf8')
+    const r2 = run(['--dataset', mixed, '--manifest', perVersion, '--out', join(dir, 'v2.json'), '--signals-version', '2'])
+    expect(r2.status).toBe(2)
+    expect(r2.stdout).toMatch(/^TOO FEW: train 4 < 30 or holdout 2 < 8 \(signals v2: 6 eligible; v1: 60\)$/m)
+    // The hindcast's form: an already-filtered file, the counts passed in.
+    const v2only = join(dir, 'v2only.jsonl')
+    writeFileSync(v2only, v2.join('\n') + '\n', 'utf8')
+    const r3 = run(['--dataset', v2only, '--manifest', perVersion, '--out', join(dir, 'v2b.json'), '--signals-version', '2', '--rows-by-version', '{"1":104,"2":6}'])
+    expect(r3.status).toBe(2)
+    expect(r3.stdout).toMatch(/^TOO FEW: train 4 < 30 or holdout 2 < 8 \(signals v2: 6 eligible; v1: 104\)$/m)
+    // A per-version file with version 1 reads exactly as the schema-1 file.
+    const v1Out = join(dir, 'v1pv.json')
+    expect(run(['--dataset', SEPARABLE, '--manifest', perVersion, '--out', v1Out, '--signals-version', '1']).status).toBe(0)
+    expect(JSON.parse(readFileSync(v1Out, 'utf8'))).toMatchObject({ nTrain: 48, nHoldout: 12 })
+    expect(run(['--dataset', v2only, '--manifest', MANIFEST, '--out', join(dir, 'x.json'), '--rows-by-version', '[1]']).status).toBe(1)
+  }, TIMEOUT_MS)
+
+  it('--rows-by-version is written as given on a model that trains (F165)', () => {
+    const out = join(outDir(), 'outcome-model.json')
+    const r = run(['--dataset', SEPARABLE, '--manifest', MANIFEST, '--out', out, '--signals-version', '1', '--rows-by-version', '{"2":3,"1":60}'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(JSON.parse(readFileSync(out, 'utf8'))).toMatchObject({ signalsVersion: 1, rowsByVersion: { 1: 60, 2: 3 } })
+  }, TIMEOUT_MS)
+
   it('exits 2 and says TOO FEW on 5 rows, writing nothing', () => {
     const out = join(outDir(), 'outcome-model.json')
     const r = run(['--dataset', TINY, '--manifest', MANIFEST, '--out', out])

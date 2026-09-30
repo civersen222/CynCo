@@ -6,7 +6,7 @@ import { CampaignState } from '../cynco-campaign-state.mjs'
 import { promotionProposal } from '../cynco-ideation.mjs'
 import { readSeats, writeSeats } from '../cynco-proposals.mjs'
 import { defaultIo as calibrateIo } from '../cynco-campaign-calibrate.mjs'
-import { writeRuleVerdicts as realWriteRuleVerdicts } from '../cynco-rule-verdicts.mjs'
+import { writeRuleVerdicts as realWriteRuleVerdicts, main as verdictsMain } from '../cynco-rule-verdicts.mjs'
 import { mkdtempSync, mkdirSync, copyFileSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -134,6 +134,34 @@ describe('runWave', () => {
     expect(state.state.waveCount).toBe(1)
     expect(state.state.lastBase).toBe('h')
     expect(state.waves()).toHaveLength(1)
+    expect(seen.patched.sweepRetried).toBe(false)
+  })
+
+  // Review M5 (F164): a refusal that survived its --mutate retry is told apart
+  // on the ROW, not only on the wave record.
+  it('patches sweepRetried onto the row beside a doubly refused sweepFault', async () => {
+    const state = freshState()
+    const seen = {}
+    const io = {
+      writeBrief: (path) => path,
+      dispatch: async () => ({ missionId: 'c8-wave1-1', driverLog: 'C:/tmp/d.log' }),
+      waitForDriver: async () => ({ exited: true }),
+      readRow: (missionId) => ({ missionId, exitReason: 'timeout', durationS: 100, commitRange: { base: '1d03308', head: 'h' }, outcome: 'landed', markerSeen: true, toolStats: { total: 10, commits: 1, byClass: { sourceEdit: 2, fileWrite: 0, inspect: 8 }, byName: {} } }),
+      commitsBetween: () => [{ sha: 'h', subject: 'C8 commit 1' }],
+      grade: async () => ({ ...g(), sweep: null, sweepFault: 'sweep refused (exit 2)', sweepRetried: true }), checkIdentity: okIdentity,
+      salvageOf: () => null,
+      ideate: async () => ({ ideation: null }),
+      patchRow: (missionId, fields) => { seen.patched = fields },
+      commit: () => ({ sha: 'v1' }),
+      notify: async () => true,
+      economics: () => ['VERDICT: x'],
+      appendLog: () => {},
+      ...inertTriples,
+    }
+    await runWave(spec, state, io)
+    expect(seen.patched).toMatchObject({ sweepFault: 'sweep refused (exit 2)', sweepRetried: true })
+    expect('mutationSweep' in seen.patched).toBe(false)
+    expect(state.waves()[0].sweepRetried).toBe(true)
   })
 
   // Ruling 5: the verdict commit names repo-relative, forward-slash paths —
@@ -1433,14 +1461,14 @@ describe('main routes the authoring verbs before it loads a campaign spec', () =
     } }
   }
 
-  // c10: C9's spec was sealed on 2026-09-26 (Phase 5), so the "no spec anywhere"
-  // precondition now uses the next unauthored line.
-  it('--author c10 reaches the author module with no c10.campaign.json anywhere', async () => {
-    expect(existsSync('docs/civkings-redesign-briefs/c10.campaign.json')).toBe(false)
+  // c11: C9's spec was sealed on 2026-09-26 (Phase 5) and C10's on 2026-09-29
+  // (Phase 6), so the "no spec anywhere" precondition uses the next unauthored line.
+  it('--author c11 reaches the author module with no c11.campaign.json anywhere', async () => {
+    expect(existsSync('docs/civkings-redesign-briefs/c11.campaign.json')).toBe(false)
     const s = stub()
-    expect(await main(['--author', 'c10'], { authorModule: s.authorModule })).toBe(0)
+    expect(await main(['--author', 'c11'], { authorModule: s.authorModule })).toBe(0)
     expect(s.calls).toHaveLength(1)
-    expect(s.calls[0].argv).toEqual(['--author', 'c10'])
+    expect(s.calls[0].argv).toEqual(['--author', 'c11'])
     // the runner's own helpers are what travel over, not an import back
     expect(Object.keys(s.calls[0].io.helpers).sort()).toEqual(['appendLog', 'applyProposalDecision', 'dispatchEnv', 'dispatchRaw', 'missionIdFrom', 'notify', 'readRow', 'releaseLock', 'seatAuthority', 'takeLock', 'waitForDriver'])
   })
@@ -1775,12 +1803,12 @@ describe('the rule verdicts at VERDICT', () => {
     const home = mkdtempSync(join(tmpdir(), 'rv-home-'))
     const state = freshState()
     const rec = await runWave(spec, state, io({ readLedgerRows: ledger, datasetsHome: () => home }))
-    expect(rec.ruleVerdicts).toEqual({ version: 1, predictive: ['X'], total: 2, rules: 2, modelRows: 0 })
+    expect(rec.ruleVerdicts).toMatchObject({ version: 1, predictive: ['X'], total: 3, rules: 2, modelRows: 0, runnerRows: 1 })
     const f = JSON.parse(readFileSync(join(home, 'datasets', 'rule-verdicts.json'), 'utf8'))
     expect(f).toMatchObject({ schema: 1, version: 1, campaign: 'c8', predictive: ['X'] })
     expect(f.rules.X.verdict).toBe('PREDICTIVE')
     // The persisted record carries it too, not only the returned one.
-    expect(state.waves().at(-1).ruleVerdicts).toEqual({ version: 1, predictive: ['X'], total: 2, rules: 2, modelRows: 0 })
+    expect(state.waves().at(-1).ruleVerdicts).toEqual(rec.ruleVerdicts)
   })
 
   it('reuses the rows the triples export already read instead of reading the ledger twice', async () => {
@@ -1790,7 +1818,7 @@ describe('the rule verdicts at VERDICT', () => {
       readLedgerRows: () => { throw new Error('the ledger must not be read a second time') },
       datasetsHome: () => home,
     }))
-    expect(rec.ruleVerdicts).toEqual({ version: 1, predictive: ['X'], total: 2, rules: 2, modelRows: 0 })
+    expect(rec.ruleVerdicts).toMatchObject({ version: 1, predictive: ['X'], total: 3, rules: 2, modelRows: 0, runnerRows: 1 })
   })
 
   it('a verdict file that will not write costs the wave nothing', async () => {
@@ -1942,7 +1970,7 @@ describe('the scoreboard at VERDICT', () => {
     const home = mkdtempSync(join(tmpdir(), 'ds-sb-'))
     const rec = await runWave(spec, freshState(), io({ datasetsHome: () => home, readLedgerRows: () => [] }))
     expect(rec.ruleVerdicts).not.toBeNull()
-    expect(rec.scoreboard.perRulePrecision).toMatchObject({ predictive: 0, total: rec.ruleVerdicts.total })
+    expect(rec.scoreboard.perRulePrecision).toMatchObject({ predictive: 0, total: rec.ruleVerdicts.rules })
   })
 
   it('a PASS wave decides the campaign on the board', async () => {
@@ -1975,6 +2003,199 @@ describe('the scoreboard at VERDICT', () => {
     expect(rec.decision.kind).toBe('next')
     expect(rec.scoreboard).toEqual({ error: 'boom' })
     expect(entry).toMatch(/^- Scoreboard: UNMEASURED — boom$/m)
+  })
+})
+
+// ── Phase 6 ruling 2–3: gate progress mid-wave, R1.no-progress in shadow ────
+describe('runWave — gate progress measured by the runner mid-wave', () => {
+  const MIN = 60_000
+  const progressSpec = { ...spec, budget: { ...spec.budget, hoursPerWave: 4 }, progress: { everyMs: 30 * MIN } }
+  const oneFail = { terminator: 'MISS', fails: [{ id: 'C8.1a', line: 'C8.1a: FAIL x' }], passes: [], errors: [], failCount: 1, exit: 1, harnessFault: null }
+  const io = (over = {}) => {
+    const seen = { archived: [], dispatched: 0, ticksBeforeDispatch: 0, entry: null }
+    let head = 'BASESHA'
+    return { seen, io: {
+      writeBrief: (p) => p,
+      dispatch: async () => { seen.dispatched += 1; return { missionId: 'c8-wave1-1' } },
+      // The HEAD-vs-base check (Rule 11) reads HEAD = base before dispatch;
+      // the wave then commits C1 between the two ticks.
+      repoHead: (repo, rev) => (rev === 'HEAD' ? head : rev === '1d03308' ? 'BASESHA' : null),
+      progressProbe: { archive: (repo, sha, dest) => { seen.archived.push({ repo, sha, dest }); return { ok: true } }, runGate: () => oneFail, removeDir: () => {} },
+      waitForDriver: async ({ onTick }) => {
+        const t = Date.now()
+        onTick?.({ elapsedMs: 0, nowMs: t + 31 * MIN })
+        head = 'C1'
+        onTick?.({ elapsedMs: 0, nowMs: t + 130 * MIN })
+        return { exited: true }
+      },
+      readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 9000, commitRange: { base: 'BASESHA', head: 'C1' }, outcome: 'landed', markerSeen: false, toolStats: {} }),
+      commitsBetween: () => [{ sha: 'C1', subject: 'c' }],
+      grade: async () => g(), checkIdentity: okIdentity,
+      salvageOf: () => null, patchRow: () => {}, commit: () => ({ sha: 'v1' }), notify: async () => true, economics: () => [],
+      appendLog: (t) => { seen.entry = t },
+      datasetsHome: ((d) => () => d)(mkdtempSync(join(tmpdir(), 'ds-prog-'))),
+      ...inertTriples,
+      ...over,
+    } }
+  }
+
+  it('records the readings and the shadow decisions on the wave record, and prints the Progress line before the Scoreboard', async () => {
+    const state = freshState()
+    const { seen, io: fake } = io()
+    const logs = []
+    const orig = console.log
+    console.log = (m) => logs.push(String(m))
+    let rec
+    try { rec = await runWave(progressSpec, state, fake) } finally { console.log = orig }
+    // The first tick finds HEAD still at the base: the start grade is reused,
+    // no gate runs. The second finds C1: archived and graded (one probe run).
+    expect(seen.archived).toHaveLength(1)
+    expect(seen.archived[0]).toMatchObject({ repo: 'C:/repo', sha: 'C1' })
+    expect(rec.progress).toHaveLength(2)
+    expect(rec.progress[0]).toMatchObject({ sha: 'BASESHA', fails: 1, reusedFrom: 'start' })
+    expect(rec.progress[1]).toMatchObject({ sha: 'C1', fails: 1, passes: 0, failIds: ['C8.1a'] })
+    expect(rec.progress[1].elapsedFraction).toBeCloseTo(130 / 240, 2)
+    expect(rec.shadowDecisions.map(d => d.fired)).toEqual([false, true])
+    expect(rec.shadowDecisions[1]).toMatchObject({ rule: 'R1.no-progress', startFails: 1, fails: 1 })
+    // Stored on waves.jsonl, where the ladder (Task 4) reads it.
+    expect(state.waves().at(-1).shadowDecisions).toEqual(rec.shadowDecisions)
+    expect(seen.entry).toMatch(/^- Autopoiesis: .*\n- Progress: 1 → 1 fails over 2 readings \(no drop; last at 130 min: 1\); R1\.no-progress fired at 54% \(would have saved 1\.8 h\)\n- Scoreboard: /m)
+    expect(logs.join('\n')).toMatch(/\[campaign\] progress @ 130m: 1 fails \(was 1\)/)
+    // Shadow: the wave was not stopped — it ran to its grade.
+    expect(rec.decision.kind).toBe('next')
+  })
+
+  // P-F155: the probe's git spawns that hit bun's stale deadline are counted
+  // on the wave record (`retriedSpawns`) and the line is logged once.
+  it('the probe\'s stale-deadline retries reach the wave record as retriedSpawns, logged once', async () => {
+    const LINE = "[spawn] git: an impossible ETIMEDOUT after 6 ms (cap 30000 ms) — bun's stale deadline; retried once and the retry ran (F155)"
+    let head = 'BASESHA'
+    const { io: fake } = io({
+      repoHead: (repo, rev, hooks) => { hooks?.onStaleRetry?.(LINE); return rev === 'HEAD' ? head : rev === '1d03308' ? 'BASESHA' : null },
+      progressProbe: { archive: (repo, sha, dest, hooks) => { hooks?.onStaleRetry?.(LINE); return { ok: true } }, runGate: () => oneFail, removeDir: () => {} },
+      waitForDriver: async ({ onTick }) => {
+        const t = Date.now()
+        onTick?.({ elapsedMs: 0, nowMs: t + 31 * MIN })
+        head = 'C1'
+        onTick?.({ elapsedMs: 0, nowMs: t + 130 * MIN })
+        return { exited: true }
+      },
+    })
+    const logs = []
+    const orig = console.log
+    console.log = (m) => logs.push(String(m))
+    let rec
+    try { rec = await runWave(progressSpec, freshState(), fake) } finally { console.log = orig }
+    // Two HEAD reads (one per due tick) and one archive (the C1 reading).
+    expect(rec.retriedSpawns).toBe(3)
+    expect(logs.filter(l => l.includes('(F155)'))).toHaveLength(1)
+  })
+
+  // Phase 6 Task 4: the shadow decisions reach the ladder as one runner row,
+  // `R1.no-progress` (source 'runner'), built from THIS campaign's waves (the
+  // wave just recorded included) and every other runner-driven campaign's
+  // waves under <home>/campaigns — the rule is one rule across campaigns.
+  it('the shadow decisions reach the ladder as R1.no-progress over every runner-driven campaign\'s waves', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'ds-ladder-'))
+    const other = new CampaignState(join(home, 'campaigns', 'c7'))
+    const past = [{ at: 't', sha: 's', fails: 3, elapsedFraction: 0.7 }]
+    for (const [i, kind] of ['next', 'budget'].entries()) {
+      other.appendWave({ wave: i + 1, missionId: `c7-wave${i + 1}-1`, decision: { kind }, progress: past, shadowDecisions: [{ rule: 'R1.no-progress', fired: true, elapsedFraction: 0.7 }] })
+    }
+    // A dir without a waves.jsonl is not runner-driven and adds nothing; a
+    // stale copy of this campaign under the home is read from the state instead.
+    mkdirSync(join(home, 'campaigns', 'hand'), { recursive: true })
+    new CampaignState(join(home, 'campaigns', 'c8')).appendWave({ wave: 9, missionId: 'stale', decision: { kind: 'next' }, progress: past, shadowDecisions: [{ rule: 'R1.no-progress', fired: true, elapsedFraction: 0.7 }] })
+    const { seen, io: fake } = io({ datasetsHome: () => home })
+    const rec = await runWave(progressSpec, freshState(), fake)
+    const f = JSON.parse(readFileSync(join(home, 'datasets', 'rule-verdicts.json'), 'utf8'))
+    expect(f.rules['R1.no-progress']).toMatchObject({ source: 'runner', scope: 'waves', firedTotal: 3, n: 3, failures: 3, scopeN: 3, precision: 1, p: null, verdict: 'TOO FEW — cannot tell' })
+    expect(rec.ruleVerdicts).toMatchObject({ runnerRows: 1, rules: 0 })
+    expect(rec.ruleVerdicts.runners['R1.no-progress']).toEqual(f.rules['R1.no-progress'])
+    // Named with its verdict on the ladder line; the Progress line is untouched.
+    expect(seen.entry).toMatch(/^- Outcome hindcast: UNMEASURED — .*; R1\.no-progress precision 100% \[\d+, \d+\] on 3 fired p\(Holm\) null TOO FEW$/m)
+    expect(seen.entry).toMatch(/^- Progress: 1 → 1 fails /m)
+  })
+
+  // Task 4 review M6: the ladder reads this wave's FINAL decision — a pass the
+  // identity check turns into a fault is a failure for R1 on this verdict.
+  it('R1 reads the decision after the identity check: a pass turned fault counts as failed', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'ds-m6-'))
+    const pass = g({ verified: true, gate: { ...g().gate, terminator: 'PASS', fails: [], failCount: 0, exit: 0 } })
+    const { io: fake } = io({ datasetsHome: () => home, grade: async () => pass, checkIdentity: () => ({ ok: false, problems: ['moved'] }) })
+    const rec = await runWave(progressSpec, freshState(), fake)
+    expect(rec.decision.kind).toBe('fault')
+    const f = JSON.parse(readFileSync(join(home, 'datasets', 'rule-verdicts.json'), 'utf8'))
+    expect(f.rules['R1.no-progress']).toMatchObject({ firedTotal: 1, n: 1, failures: 1, scopeN: 1 })
+  })
+
+  // Task 4 review I1: the CLI rebuild builds the runner row exactly as the
+  // VERDICT does, so the S5 rules are corrected over the same Holm family.
+  it('a CLI rebuild and the VERDICT write the same pAdjusted for every rule on the same inputs', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'ds-i1-'))
+    const sw = { kind: 'withheld', killed: 1, total: 1, survived: [] }
+    const lr = (i, failed, fires) => ({ missionId: `L${i}`, outcome: failed ? 'failed' : 'landed', verified: !failed, mutationSweep: sw, s5Decisions: [{ ruleIds: fires ? ['X'] : [] }] })
+    // X: 8 of 9 fired missions failed, 3 of 13 quiet ones — testable, so it and R1 share a Holm family.
+    const ledger = () => [...Array.from({ length: 8 }, (_, i) => lr(i, true, true)), lr(8, false, true),
+      ...Array.from({ length: 3 }, (_, i) => lr(10 + i, true, false)), ...Array.from({ length: 10 }, (_, i) => lr(20 + i, false, false))]
+    const other = new CampaignState(join(home, 'campaigns', 'c7'))
+    const w = (id, kind, fired) => ({ wave: 1, missionId: id, decision: { kind }, shadowDecisions: [{ rule: 'R1.no-progress', fired, elapsedFraction: 0.7 }] })
+    for (const x of [...Array.from({ length: 6 }, (_, i) => w(`f${i}`, 'next', true)), w('fp', 'pass', true),
+      w('q0', 'next', false), w('q1', 'budget', false), ...Array.from({ length: 5 }, (_, i) => w(`p${i}`, 'pass', false))]) other.appendWave(x)
+    const state = freshState()
+    const { io: fake } = io({ datasetsHome: () => home, readLedgerRows: ledger })
+    await runWave(progressSpec, state, fake)
+    const atVerdict = JSON.parse(readFileSync(join(home, 'datasets', 'rule-verdicts.json'), 'utf8'))
+    expect(atVerdict.ledger.holmFamily).toBe(2)
+    // The CLI reads every campaign under the dir, this one included once it is there.
+    const mine = new CampaignState(join(home, 'campaigns', 'c8'))
+    for (const x of state.waves()) mine.appendWave(x)
+    const out = join(home, 'cli.json')
+    expect(await verdictsMain(['--out', out, '--campaigns-dir', join(home, 'campaigns')], {
+      readLedger: ledger, cyncoHome: () => { throw new Error('the real home must not be read') }, log: () => {} })).toBe(0)
+    const byCli = JSON.parse(readFileSync(out, 'utf8'))
+    expect(Object.keys(byCli.rules).sort()).toEqual(Object.keys(atVerdict.rules).sort())
+    for (const id of Object.keys(atVerdict.rules)) {
+      expect(byCli.rules[id].pAdjusted, id).toBe(atVerdict.rules[id].pAdjusted)
+      expect(byCli.rules[id].verdict, id).toBe(atVerdict.rules[id].verdict)
+    }
+    expect(byCli.ledger.holmFamily).toBe(2)
+  })
+
+  it('an io without a probe takes no readings and prints no line; the record says why', async () => {
+    const { seen, io: fake } = io({ progressProbe: undefined })
+    const rec = await runWave(progressSpec, freshState(), fake)
+    expect(rec.progress).toBeNull()
+    expect(rec.progressNote).toBe('no progress probe on this runner io')
+    expect(seen.entry).not.toMatch(/- Progress:/)
+  })
+
+  it('a wait that faults keeps the readings it took on the fault record', async () => {
+    const { io: fake } = io({ waitForDriver: async ({ onTick }) => { onTick({ elapsedMs: 0, nowMs: Date.now() + 31 * MIN }); return { exited: false, timedOut: true } }, ...faultIo() })
+    const rec = await runWave(progressSpec, freshState(), fake)
+    expect(rec.decision.kind).toBe('fault')
+    expect(rec.progress).toHaveLength(1)
+    expect(rec.shadowDecisions).toHaveLength(1)
+  })
+
+  // Review M1: the tracker's gateMs is seeded from the start grade — the last
+  // verdict's gate run, else the calibration's BASE run — so the 10 % interval
+  // holds from the first tick. A 4 min gate lifts the 30 min cadence to 40 min:
+  // the tick at 31 min takes no reading.
+  it('seeds the cadence from the last grade\'s gate runtime, else the calibration\'s', async () => {
+    const lastGradeState = freshState()
+    lastGradeState.state.lastGrade = { gate: { fails: [{ id: 'C8.1a', line: 'C8.1a: FAIL x' }], passes: [], durationMs: 4 * MIN } }
+    const { io: fakeA } = io({ waitForDriver: async ({ onTick }) => { onTick({ elapsedMs: 0, nowMs: Date.now() + 31 * MIN }); return { exited: true } } })
+    const a = await runWave(progressSpec, lastGradeState, fakeA)
+    expect(a.progress).toEqual([])
+    expect(a.progressNote).toMatch(/gate 240 s → ≥ 40 min/)
+
+    const calState = freshState()
+    calState.state.calibration.baseGateMs = 4 * MIN
+    const { io: fakeB } = io({ waitForDriver: async ({ onTick }) => { onTick({ elapsedMs: 0, nowMs: Date.now() + 31 * MIN }); return { exited: true } } })
+    const b = await runWave(progressSpec, calState, fakeB)
+    expect(b.progress).toEqual([])
+    expect(b.progressNote).toMatch(/gate 240 s → ≥ 40 min/)
   })
 })
 
@@ -2033,9 +2254,11 @@ describe('the outcome hindcast at VERDICT', () => {
     }))
     expect(rec.decision.kind).toBe('next')
     expect(rec.hindcast).toEqual({ fault: "exit 1: Traceback (most recent call last): | ModuleNotFoundError: No module named 'sklearn'" })
-    expect(rec.ruleVerdicts).toEqual({ version: 1, predictive: [], total: 0, rules: 0, modelRows: 0 })
-    expect(Object.keys(verdictsIn(home).rules)).toEqual([])
-    expect(entry).toMatch(/^- Scoreboard: .*\n- Outcome hindcast: UNMEASURED — exit 1: .*No module named 'sklearn'$/m)
+    // Phase 6 Task 4: the runner row R1.no-progress is always written — no
+    // wave read past 50 % here, so it is UNMEASURED with no numbers.
+    expect(rec.ruleVerdicts).toMatchObject({ version: 1, predictive: [], total: 1, rules: 0, modelRows: 0, runnerRows: 1 })
+    expect(Object.keys(verdictsIn(home).rules)).toEqual(['R1.no-progress'])
+    expect(entry).toMatch(/^- Scoreboard: .*\n- Outcome hindcast: UNMEASURED — exit 1: .*No module named 'sklearn'; R1\.no-progress precision null on 0 fired p\(Holm\) null UNMEASURED — no wave in scope \(no shadow decision at 50 % of its clock or later\)$/m)
   })
 
   it('TOO FEW (exit 2) and a spawn fault read the same way; a throw from the seam too', async () => {
@@ -2057,6 +2280,63 @@ describe('the outcome hindcast at VERDICT', () => {
     expect(rec.hindcast).toEqual({ fault: 'no eligible labeled mission at K = 16 turns — nothing to train on' })
   })
 
+  // F165 review N2: the VERDICT path itself splits the rules that read the v2
+  // homeostat streak (W5, I2) by signals version — proven here, at runWave,
+  // not only on writeRuleVerdicts.
+  it('at VERDICT, W5 is scored on v2 missions only with its v1 table kept apart; the ledger names the split', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'hc-'))
+    const turns = (v) => Array.from({ length: 20 }, () => (v === 2 ? { signalsVersion: 2 } : {}))
+    const m = (id, ok, ruleIds, v) => ({ missionId: id, outcome: ok ? 'landed' : 'failed', verified: ok, mutationSweep: sweep, s5Decisions: [{ ruleIds }], turns: turns(v) })
+    const rows = [
+      ...Array.from({ length: 6 }, (_, i) => m(`a${i}`, i % 2 === 0, ['W5'], 1)),
+      ...Array.from({ length: 4 }, (_, i) => m(`b${i}`, false, ['W5'], 2)),
+      ...Array.from({ length: 4 }, (_, i) => m(`c${i}`, true, [], 2)),
+    ]
+    const rec = await runWave(spec, freshState(), io(home, { readLedgerRows: () => rows, exportOutcomeDataset: () => ({ n: 0, paths: {} }) }))
+    expect(rec.ruleVerdicts).not.toBeNull()
+    const f = verdictsIn(home)
+    expect(f.ledger.v2Rules).toEqual(['I2', 'W5'])
+    expect(f.rules.W5).toMatchObject({ signals: 'v2', n: 4, failures: 4, precision: 1, scopeN: 8 })
+    expect(f.rules.W5.v1).toMatchObject({ n: 6, failures: 3, precision: 0.5, scopeN: 6 })
+  })
+
+  it('at VERDICT, a v2 pool below the freeze minimum reads "v2 holdout not yet frozen" with the counts; python is not spawned', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'hc-'))
+    const manifestPath = join(home, 'frozen-eval.json')
+    writeFileSync(manifestPath, JSON.stringify({ schema: 1, version: 1, seed: 1, frozenAt: 't', missionIds: ['hf0'] }))
+    const { exportOutcomeDatasets } = await import('../cynco-hindcast.mjs')
+    const rows = Array.from({ length: 5 }, (_, i) => ({ missionId: `v${i}`, outcome: i % 2 ? 'landed' : 'failed', verified: i % 2 === 1, mutationSweep: sweep,
+      turns: Array.from({ length: 20 }, () => ({ signalsVersion: 2, toolSuccessRate: 1 })) }))
+    const rec = await runWave(spec, freshState(), io(home, {
+      readLedgerRows: () => rows,
+      exportOutcomeDataset: (args) => exportOutcomeDatasets({ ...args, manifestPath }),
+      runHindcast: () => { throw new Error('python must not be spawned before the v2 holdout is frozen') },
+    }))
+    expect(rec.hindcast).toMatchObject({ fault: 'v2 holdout not yet frozen (5 of 38 labeled; eligible by version: v2: 5)', signalsVersion: 2,
+      rowsByVersion: { 2: 5 }, holdout: { frozen: false, eligible: 5, needed: 38 } })
+    expect(JSON.parse(readFileSync(manifestPath, 'utf8')).schema).toBe(1)
+  })
+
+  // Task 2 review N3: the holdout rides the success path too, so the wave
+  // whose export froze v2's set names it on its record and its verdict entry.
+  it('a clean retrain on the wave that froze the holdout keeps `holdout` on the record and names the freeze', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'hc-'))
+    let entry = null
+    const holdout = { frozen: true, frozenNow: true, frozenAt: '2026-10-01T00:00:00.000Z', ids: 8 }
+    const rec = await runWave(spec, freshState(), io(home, {
+      exportOutcomeDataset: () => ({ ...exported(home)(), signalsVersion: 2, rowsByVersion: { 2: 26 }, holdout }),
+      // The model as a v2 run writes it: with its signals version and counts.
+      runHindcast: ({ paths }) => {
+        writeModel(paths.out)
+        writeFileSync(paths.out, JSON.stringify({ ...JSON.parse(readFileSync(paths.out, 'utf8')), signalsVersion: 2, rowsByVersion: { 2: 26 } }))
+        return { status: 0, stdout: 'ok', stderr: '', fault: null }
+      },
+      appendLog: (t) => { entry = t },
+    }))
+    expect(rec.hindcast.holdout).toEqual(holdout)
+    expect(entry).toMatch(/^- Outcome hindcast: v3 .*; v2 holdout frozen now \(8 ids\)$/m)
+  })
+
   it('a clean retrain puts M1.* into rule-verdicts.json through the rules\' test, and prints the line after the board', async () => {
     const home = mkdtempSync(join(tmpdir(), 'hc-'))
     const seen = {}
@@ -2075,8 +2355,8 @@ describe('the outcome hindcast at VERDICT', () => {
     expect(rec.hindcast).toMatchObject({ version: 3, prefixTurns: 16, nHoldout: 20, baseRate: 0.6, features: 2, lengthFeature: null,
       models: { gbt: { auc: 0.71 } }, secondary: { refusal: 'TOO FEW: train 5 < 30 or holdout 19 < 8' } })
     expect(rec.hindcast.ladder['M1.gbt']).toEqual(f.rules['M1.gbt'])
-    expect(rec.ruleVerdicts.total).toBe(2)
-    expect(entry).toMatch(/^- Scoreboard: .*\n- Outcome hindcast: v3 at K = 16 turns on 20 held-out missions \(base 60%\): M1\.gbt precision 80% \[\d+, \d+\] on 10 fired p\(Holm\) \d\.\d{3} [A-Z][A-Z ]+; M1\.lr precision null on 0 fired p\(Holm\) null TOO FEW; leak check gbt AUC prefix 0\.71 \/ hindsight 0\.93, lr AUC prefix 0\.50 \/ hindsight 0\.60; K = 32 TOO FEW: train 5 < 30 or holdout 19 < 8$/m)
+    expect(rec.ruleVerdicts.total).toBe(3)
+    expect(entry).toMatch(/^- Scoreboard: .*\n- Outcome hindcast: v3 at K = 16 turns on 20 held-out missions \(base 60%\): M1\.gbt precision 80% \[\d+, \d+\] on 10 fired p\(Holm\) \d\.\d{3} [A-Z][A-Z ]+; M1\.lr precision null on 0 fired p\(Holm\) null TOO FEW; R1\.no-progress precision null on 0 fired p\(Holm\) null UNMEASURED — no wave in scope \(no shadow decision at 50 % of its clock or later\); leak check gbt AUC prefix 0\.71 \/ hindsight 0\.93, lr AUC prefix 0\.50 \/ hindsight 0\.60; K = 32 TOO FEW: train 5 < 30 or holdout 19 < 8$/m)
   })
 
   // Final review M1 (T5-M1): a writeRuleVerdicts that throws on the MODEL rows
@@ -2103,12 +2383,14 @@ describe('the outcome hindcast at VERDICT', () => {
     const f = verdictsIn(home)
     expect(f.at).not.toBe('stale')
     expect(Object.keys(f.rules).filter(id => id.startsWith('M1.'))).toEqual([])
+    // The runner row does not depend on the hindcast: it is kept.
+    expect(f.rules['R1.no-progress']).toMatchObject({ source: 'runner' })
     expect(f.predictive).toEqual([])
     expect(rec.ruleVerdicts).toMatchObject({ modelRowsSkipped: true, predictive: [] })
     expect(rec.hindcast.ladderFault).toBe('Holm over a NaN p')
     expect(rec.hindcast.ladder).toBeNull()
     expect(rec.hindcast.version).toBe(3)
-    expect(entry).toMatch(/- Outcome hindcast: v3 at K = 16 turns .*LADDER NOT WRITTEN \(Holm over a NaN p\) — rules rewritten alone; leak check/)
+    expect(entry).toMatch(/- Outcome hindcast: v3 at K = 16 turns .*LADDER NOT WRITTEN \(Holm over a NaN p\) — rules rewritten alone; R1\.no-progress precision null on 0 fired p\(Holm\) null UNMEASURED — no wave in scope \(no shadow decision at 50 % of its clock or later\); leak check/)
   })
 
   it('a throw with no model rows is the rules\' own: the outer catch logs it, the wave is not faulted', async () => {

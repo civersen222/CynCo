@@ -191,6 +191,54 @@ describe('humanInterventionsPerWave — (notes + human decisions + refusals + re
     expect(r).toMatchObject({ notes: 1, humanDecisions: 2, refusals: 2, reseals: 1, adopted: 1 })
     expect(r.value).toBeCloseTo(7 / 3, 10)
   })
+  // Phase 6 ruling 8 (F164's second WRONG): C9's two AUTHORING-phase supervisor
+  // refusals read as 1.00 intervention per wave. With a seal record the count
+  // starts at the seal; what it leaves out is named, never silently dropped.
+  describe('counts from the seal when the campaign has one', () => {
+    const SEAL = '2026-09-27T12:00:00.000Z'
+    const sealedState = () => {
+      const s = c8State()
+      s.authoring = { c8: { sealedAt: SEAL, refusals: [
+        { at: '2026-09-26T09:00:00.000Z', by: 'supervisor', notePath: 'a.md' }, // authoring phase
+        { at: '2026-09-28T09:00:00.000Z', by: 'supervisor', notePath: 'b.md' }, // after the seal
+      ] } }
+      return s
+    }
+    it('a refusal dated before sealedAt is excluded and named; one after counts', () => {
+      const r = humanInterventionsPerWave({ spec, state: sealedState(), waves: c8Waves(), rows: rows() })
+      expect(r).toMatchObject({ notes: 1, refusals: 1, beforeSeal: 1, undated: 0, sealedAt: SEAL })
+      expect(r.value).toBeCloseTo(2 / 3, 10)
+      const b = board({ state: sealedState() })
+      expect(b.humanInterventionsPerWave.refusals).toBe(1)
+      expect(b.unmeasured).toContainEqual('humanInterventionsPerWave: 1 act(s) before the seal (2026-09-27T12:00:00.000Z) not counted — authoring-phase, not campaign, interventions')
+    })
+    it('decisions are filtered by decidedAt the same way', () => {
+      const s = sealedState(); s.authoring.c8.refusals = []
+      s.proposals = [
+        { name: 'gate/c8', status: 'approved', decidedAt: '2026-09-27T11:59:59.000Z', decidedBy: 'supervisor' },
+        { name: 'invariants/editGapCap', status: 'approved', decidedAt: '2026-09-28T00:00:00.000Z' },
+      ]
+      const r = humanInterventionsPerWave({ spec, state: s, waves: c8Waves(), rows: rows() })
+      expect(r).toMatchObject({ humanDecisions: 1, beforeSeal: 1 })
+    })
+    it('an undated act still counts, and is named as undated', () => {
+      const s = sealedState(); s.authoring.c8.refusals.push({ by: 'supervisor' })
+      const r = humanInterventionsPerWave({ spec, state: s, waves: c8Waves(), rows: rows() })
+      expect(r).toMatchObject({ refusals: 2, beforeSeal: 1, undated: 1 })
+      expect(board({ state: s }).unmeasured).toContainEqual(expect.stringMatching(/^humanInterventionsPerWave: 1 act\(s\) carry no date — counted/))
+    })
+    it('a campaign with no seal record counts as before, and the other campaigns\' seal does not apply', () => {
+      const s = sealedState(); s.authoring = { c9: s.authoring.c8 }
+      const r = humanInterventionsPerWave({ spec, state: s, waves: c8Waves(), rows: rows() })
+      expect(r).toMatchObject({ refusals: 2, beforeSeal: 0, undated: 0, sealedAt: null })
+      // no spec at all: the old call shape, the old count
+      expect(humanInterventionsPerWave({ state: sealedState(), waves: c8Waves(), rows: rows() }).refusals).toBe(2)
+    })
+    it('the pooled board carries the before-seal note, prefixed with the campaign', () => {
+      const p = pooledScoreboard([board({ state: sealedState() })])
+      expect(p.unmeasured).toContainEqual(expect.stringMatching(/^humanInterventionsPerWave: c8 1 act\(s\) before the seal/))
+    })
+  })
   it('a delivered note with no `source` is unknown, not counted, and named in unmeasured', () => {
     const rs = rows(); rs[2].operatorNotes = [{ text: 'x', source: null, deliveredAtIteration: 3, dropped: null }]
     const b = board({ rows: rs })
@@ -215,6 +263,10 @@ describe('perRulePrecision — predictive ÷ total, and the best rule', () => {
     const detail = scoreboardLines(board({ ruleVerdicts: rv }), { detail: true })
     expect(detail).toContain('  perRulePrecision 0/8 predictive; best I3 58% [45,70] NO EVIDENCE')
     expect(detail).toContain('  learner M1.gbt 90% [60,98] PREDICTIVE')
+  })
+  it('the runner row (R1.no-progress, source "runner") is not a rule either: neither counted nor ranked', () => {
+    const rv = { rules: { ...ruleVerdicts.rules, 'R1.no-progress': { ...rule('PREDICTIVE', 0.95, [0.7, 0.99], 20), source: 'runner', scope: 'waves' } } }
+    expect(perRulePrecision(rv)).toEqual({ predictive: 0, total: 8, best: { id: 'I3', precision: 0.58, ci: [0.45, 0.70], verdict: 'NO EVIDENCE' }, learner: null })
   })
   it('model rows only: 0/0 rules, no best rule, the learner still read', () => {
     const rv = { rules: { 'M1.lr': { ...rule('TOO FEW — cannot tell', 0.5, [0.2, 0.8], 4), source: 'model' } } }

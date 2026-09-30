@@ -19,7 +19,7 @@
  * `durationS`, …) are written after the run ends; a feature built from one of
  * them describes the outcome after the fact. So `featuresOf` reads `row.turns`
  * and nothing else except `missionId` and the label, and the feature key set is
- * a fixed, documented list (`FEATURE_KEYS`, benchmark/cynco-ledger/README.md
+ * a fixed, documented list per signals version (`FEATURE_KEYS_V1`/`_V2`, benchmark/cynco-ledger/README.md
  * "Outcome dataset and the frozen holdout") that the leak test pins exactly.
  *
  * The label is `labelOf` from scripts/cynco-signal-validation.mjs — the ledger's
@@ -35,9 +35,18 @@
  * which only ever ADDS ids.
  *
  * Usage:
- *   bun scripts/cynco-outcome-dataset.mjs --export [--turns 16] [--out PATH] [--ledger-dir DIR]
- *   bun scripts/cynco-outcome-dataset.mjs --freeze   --seed N [--manifest PATH] [--ledger-dir DIR]
- *   bun scripts/cynco-outcome-dataset.mjs --refreeze --seed N [--manifest PATH] [--ledger-dir DIR]
+ * Signals version (F165): every row carries `signalsVersion`, the minimum over
+ * its prefix's turns (1 when a turn has none — pre-F165 ledgers). v1 and v2
+ * rows have different documented key sets (`FEATURE_KEYS_V1`,
+ * `FEATURE_KEYS_V2`); `--signals-version N` exports only version-N rows.
+ *
+ *   bun scripts/cynco-outcome-dataset.mjs --export [--turns 16] [--signals-version N] [--out PATH] [--ledger-dir DIR]
+ *   bun scripts/cynco-outcome-dataset.mjs --freeze   --seed N [--signals-version N] [--manifest PATH] [--ledger-dir DIR]
+ *   bun scripts/cynco-outcome-dataset.mjs --refreeze --seed N [--signals-version N] [--manifest PATH] [--ledger-dir DIR]
+ *
+ * The holdout is one set per signals version (F165 fix round 2; see
+ * "The holdout per signals version" below). Without --signals-version on a
+ * Phase 5 (schema-1) file, --freeze/--refreeze behave exactly as in Phase 5.
  */
 
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
@@ -88,7 +97,12 @@ const NUMERIC = [
   ['taskError', t => t.taskError, ['mean', 'last', 'max']],
   ['infoGain', t => t.infoGain, ['mean', 'last', 'max']],
   ['progressRate', t => t.progressRate, ['mean', 'last', 'max']],
+  // v1 rows: a cumulative count, so `.rate` is new alerts per turn. v2 rows
+  // (F165): the count in the last 20 turns, so `.rate` is its change per turn;
+  // the v1 quantity is `algedonicAlertsTotal.rate` (NUMERIC_V2 below).
   ['algedonicAlerts', t => t.algedonicAlerts, ['rate']],
+  // v1 rows: the turn index (C9: 1…394) — dead at fixed K. v2: a streak that
+  // resets on a stable turn, capped at 50.
   ['consecutiveUnstable', t => t.consecutiveUnstable, ['last', 'max']],
   ['axiomViolations', t => (Array.isArray(t.axiomHealth?.violations) ? t.axiomHealth.violations.length : null), ['mean', 'last', 'max']],
   ['toolEntropyMean', t => t.brain?.toolEntropy?.mean, ['mean', 'last', 'max']],
@@ -105,6 +119,25 @@ const RATE = {
   },
   stuckTurns: (points) => (points.length ? points.filter(([, v]) => v > 0).length / points.length : null),
 }
+RATE.algedonicAlertsTotal = RATE.algedonicAlerts
+
+/**
+ * F165: signals only a v2 turn carries. `algedonicAlertsTotal` is the
+ * engine-wide cumulative count (what v1 called algedonicAlerts), so only its
+ * `.rate` is a prefix feature, for the same era-confound reason.
+ */
+const NUMERIC_V2 = [
+  ['algedonicAlertsTotal', t => t.algedonicAlertsTotal, ['rate']],
+]
+
+/** A turn's signal-vector version: 1 when the ledger wrote none (pre-F165). */
+const turnVersion = (t) => (typeof t?.signalsVersion === 'number' ? t.signalsVersion : 1)
+
+/** The version of a prefix: the MINIMUM over its turns, so a prefix that
+ *  mixes versions is read as the older one. */
+export function signalsVersionOf(prefix) {
+  return prefix.length ? Math.min(...prefix.map(turnVersion)) : 1
+}
 
 /** Categorical signals read off the K-th (last prefix) turn, one-hot over a
  *  fixed vocabulary (the engine's enums). */
@@ -117,11 +150,19 @@ const CATEGORICAL = [
   ['commander', t => t.heterarchy?.commander, ['S1', 'S2', 'S3', 'S4', 'S5']],
 ]
 
-export const FEATURE_KEYS = Object.freeze([
+/** The documented key set of a v1 row (pre-F165 turns). */
+export const FEATURE_KEYS_V1 = Object.freeze([
   ...NUMERIC.flatMap(([n, , aggs]) => aggs.map(a => `${n}.${a}`)),
   'brainPresent',
   ...CATEGORICAL.flatMap(([n, , vocab]) => vocab.map(v => `${n}.${v}`)),
 ])
+/** The documented key set of a v2 row: v1's plus the v2-only signals. */
+export const FEATURE_KEYS_V2 = Object.freeze([
+  ...FEATURE_KEYS_V1,
+  ...NUMERIC_V2.flatMap(([n, , aggs]) => aggs.map(a => `${n}.${a}`)),
+])
+/** The key set per signals version. */
+export const FEATURE_KEYS_BY_VERSION = Object.freeze({ 1: FEATURE_KEYS_V1, 2: FEATURE_KEYS_V2 })
 
 function checkTurns(K) {
   if (!Number.isInteger(K) || K < 1) throw new Error(`turns must be a positive integer, got ${K}`)
@@ -139,8 +180,9 @@ export function featuresOf(row, K = DEFAULT_TURNS) {
   const all = turnsOf(row)
   if (all.length < K) throw new Error(`${row.missionId}: ${all.length} turns, fewer than K = ${K}`)
   const prefix = all.slice(0, K)
+  const signalsVersion = signalsVersionOf(prefix)
   const features = {}
-  for (const [name, read, aggs] of NUMERIC) {
+  for (const [name, read, aggs] of signalsVersion >= 2 ? [...NUMERIC, ...NUMERIC_V2] : NUMERIC) {
     const points = []
     prefix.forEach((t, i) => { const v = num(read(t ?? {})); if (v !== null) points.push([i, v]) })
     const vals = points.map(([, v]) => v)
@@ -154,7 +196,7 @@ export function featuresOf(row, K = DEFAULT_TURNS) {
     const v = read(last)
     for (const option of vocab) features[`${name}.${option}`] = v === option ? 1 : 0
   }
-  return { missionId: row.missionId, prefixTurns: K, label: labelOf(row), features, leakGuard: true }
+  return { missionId: row.missionId, prefixTurns: K, signalsVersion, label: labelOf(row), features, leakGuard: true }
 }
 
 /** Categorical values on the K-th turn that fall outside the vocabulary, as
@@ -180,16 +222,21 @@ function exclusionOf(row, K) {
  * One `featuresOf` row per labeled mission with ≥ K turns; the rest counted
  * (`excluded.unlabeled`, `excluded.short` — short at THIS K). `unknownValues`
  * counts out-of-vocabulary categorical values, `{ '<field>.<value>': n }`.
+ * With `signalsVersion: N` (F165) only rows whose prefix is version N are kept
+ * and the rest counted in `excluded.otherVersion`.
  */
-export function datasetRows(rows, K = DEFAULT_TURNS) {
+export function datasetRows(rows, K = DEFAULT_TURNS, { signalsVersion = null } = {}) {
   checkTurns(K)
+  if (signalsVersion !== null && !Number.isInteger(signalsVersion)) throw new Error(`signalsVersion must be an integer, got ${signalsVersion}`)
   const out = []
-  const excluded = { unlabeled: 0, short: 0 }
+  const excluded = { unlabeled: 0, short: 0, ...(signalsVersion !== null ? { otherVersion: 0 } : {}) }
   const unknownValues = {}
   for (const row of rows) {
     const why = exclusionOf(row, K)
     if (why) { excluded[why]++; continue }
-    out.push(featuresOf(row, K))
+    const r = featuresOf(row, K)
+    if (signalsVersion !== null && r.signalsVersion !== signalsVersion) { excluded.otherVersion++; continue }
+    out.push(r)
     for (const key of unknownCategoricals(row, K)) unknownValues[key] = (unknownValues[key] ?? 0) + 1
   }
   return { rows: out, excluded, unknownValues }
@@ -294,6 +341,115 @@ export function freezeManifest(rows, { seed, version, previous = null, turns = D
   }
 }
 
+// ── The holdout per signals version (F165, fix round 2) ──────────
+//
+// v1 and v2 rows never mix (F165), so one id set cannot serve both: every v1
+// id is useless to a v2 learner, and a v2 learner with no held v2 id reads
+// `holdout 0 < 8` for ever. The manifest file therefore holds ONE SET PER
+// SIGNALS VERSION:
+//
+//   { schema: 2, sets: { "1": <the v1 manifest, verbatim>, "2": { … } },
+//     history: [ { signalsVersion, frozenAt, count, eligible, seed, how } ] }
+//
+// where each set is exactly what `freezeManifest` returns (Phase 5's shape and
+// selection rule). The schema-1 file (Phase 5; the committed one) is read as
+// `sets["1"]`, byte-for-byte, and is migrated on the first write. A set, once
+// written, is never replaced — frozen means frozen; `--refreeze` only adds.
+
+export const MANIFEST_FILE_SCHEMA = 2
+/** The model's own minimums (scripts/cynco-outcome-model.py `--min-train` 30,
+ *  `--min-holdout` 8). */
+export const MODEL_MIN_TRAIN = 30
+export const MODEL_MIN_HOLDOUT = 8
+/**
+ * The smallest eligible pool of one signals version from which a
+ * HOLDOUT_SHARE draw leaves the model trainable: a holdout of at least
+ * MODEL_MIN_HOLDOUT and a training split of at least MODEL_MIN_TRAIN (38:
+ * round(7.6) = 8 held, 30 left). Phase 5's `--refreeze` had no minimum of its
+ * own — it was run by hand on a 107-mission pool — so the automatic freeze
+ * takes the one the model enforces.
+ */
+export const FREEZE_MIN_ELIGIBLE = (() => {
+  for (let n = 1; ; n++) {
+    const held = Math.round(n * HOLDOUT_SHARE)
+    if (held >= MODEL_MIN_HOLDOUT && n - held >= MODEL_MIN_TRAIN) return n
+  }
+})()
+/** The seed an automatic freeze draws with (recorded on the set and the history). */
+export const AUTO_FREEZE_SEED = 20260929
+
+/**
+ * Any manifest file as the per-version shape. A schema-1 file (Phase 5) is
+ * version 1's set, kept verbatim; a schema-2 file is returned as is; null (no
+ * file) is an empty file. Anything else throws — a manifest that cannot be
+ * read is never silently an empty holdout.
+ */
+export function manifestSets(raw) {
+  if (raw === null || raw === undefined) return { schema: MANIFEST_FILE_SCHEMA, sets: {}, history: [] }
+  if (raw.schema === MANIFEST_FILE_SCHEMA && raw.sets && typeof raw.sets === 'object') {
+    return { schema: MANIFEST_FILE_SCHEMA, sets: raw.sets, history: Array.isArray(raw.history) ? raw.history : [] }
+  }
+  if (raw.schema === MANIFEST_SCHEMA && Array.isArray(raw.missionIds)) {
+    return { schema: MANIFEST_FILE_SCHEMA, sets: { 1: raw }, history: [] }
+  }
+  throw new Error(`not a frozen-eval manifest (schema ${raw?.schema ?? 'none'})`)
+}
+
+/** Read the manifest file at `path` in the per-version shape (no file → empty). */
+export function readManifestFile(path) {
+  return manifestSets(existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : null)
+}
+
+/** Signals version `v`'s frozen set, or null when none has been frozen. */
+export function heldSetFor(file, v) {
+  return file?.sets?.[String(v)] ?? null
+}
+
+/** The rows whose K-turn prefix is signals version `v`. */
+export function rowsOfVersion(rows, v, K = DEFAULT_TURNS) {
+  return rows.filter(r => signalsVersionOf(turnsOf(r).slice(0, K)) === v)
+}
+
+/**
+ * `file` with version `v`'s set written and a history entry appended. Refuses
+ * to replace an existing set unless `add` is set (the `--refreeze` path, whose
+ * `freezeManifest(…, { previous })` only ever adds ids).
+ */
+export function withVersionSet(file, v, set, entry, { add = false } = {}) {
+  if (heldSetFor(file, v) && !add) throw new Error(`the signals v${v} holdout is already frozen — frozen means frozen`)
+  return { schema: MANIFEST_FILE_SCHEMA, sets: { ...file.sets, [String(v)]: set },
+    history: [...(file.history ?? []), { signalsVersion: v, ...entry }] }
+}
+
+/**
+ * The hindcast's holdout for signals version `v`: the frozen set when there
+ * is one; otherwise, when `v`'s eligible pool (labeled, ≥ K turns, prefix
+ * version `v`) has reached FREEZE_MIN_ELIGIBLE, the set is frozen NOW with
+ * `freezeManifest` — Phase 5's selection rule, over that version's rows —
+ * written to `path` once and never touched again; otherwise not frozen, with
+ * the counts. Returns `{ set, holdout }`; `holdout` is
+ * `{ frozen, frozenNow, frozenAt, ids }`, `{ frozen: false, eligible, needed }`
+ * (the pool is too small), or `{ frozen: false, eligible, needed, pass, fail,
+ * needEach }` (Task 2 review N4: large enough, but short of
+ * MODEL_MIN_HOLDOUT of one label — a holdout frozen from a one-class pool can
+ * never give an AUC, and a frozen set only grows by a hand `--refreeze`).
+ */
+export function ensureVersionHoldout({ rows, path, v, K = DEFAULT_TURNS, seed = AUTO_FREEZE_SEED, now = () => new Date().toISOString() }) {
+  const file = readManifestFile(path)
+  const existing = heldSetFor(file, v)
+  if (existing) return { set: existing, holdout: { frozen: true, frozenNow: false, frozenAt: existing.frozenAt ?? null, ids: existing.missionIds.length } }
+  const pool = rowsOfVersion(rows, v, K).filter(r => exclusionOf(r, K) === null)
+  if (pool.length < FREEZE_MIN_ELIGIBLE) return { set: null, holdout: { frozen: false, eligible: pool.length, needed: FREEZE_MIN_ELIGIBLE } }
+  const pass = pool.filter(r => labelOf(r) === true).length, fail = pool.length - pass
+  if (pass < MODEL_MIN_HOLDOUT || fail < MODEL_MIN_HOLDOUT) {
+    return { set: null, holdout: { frozen: false, eligible: pool.length, needed: FREEZE_MIN_ELIGIBLE, pass, fail, needEach: MODEL_MIN_HOLDOUT } }
+  }
+  const set = freezeManifest(pool, { seed, turns: K, now })
+  writeAtomic(path, JSON.stringify(withVersionSet(file, v, set,
+    { frozenAt: set.frozenAt, count: set.missionIds.length, eligible: pool.length, seed, how: 'auto' }), null, 2) + '\n')
+  return { set, holdout: { frozen: true, frozenNow: true, frozenAt: set.frozenAt, ids: set.missionIds.length } }
+}
+
 // ── CLI ──────────────────────────────────────────────────────────
 
 function writeAtomic(path, text) {
@@ -334,15 +490,22 @@ export async function main(argv, io = console) {
     io.error(`refused: --turns must be a positive integer, got ${turnsArg}`)
     return 2
   }
+  const versionArg = argOf(argv, '--signals-version')
+  const signalsVersion = versionArg === undefined ? null : Number(versionArg)
+  if (signalsVersion !== null && !(Number.isInteger(signalsVersion) && signalsVersion >= 1)) {
+    io.error(`refused: --signals-version must be a positive integer, got ${versionArg}`)
+    return 2
+  }
   const rows = readLedger(argOf(argv, '--ledger-dir') ?? REPO_LEDGER_DIR)
   if (argv.includes('--export')) {
     const out = argOf(argv, '--out') !== undefined
       ? resolve(argOf(argv, '--out'))
       : DATASET_PATH((await import('../engine/paths.js')).cyncoHome())
-    const { rows: ds, excluded, unknownValues } = datasetRows(rows, K)
+    const { rows: ds, excluded, unknownValues } = datasetRows(rows, K, { signalsVersion })
     writeAtomic(out, ds.map(r => JSON.stringify(r)).join('\n') + (ds.length ? '\n' : ''))
     const unknown = Object.entries(unknownValues).map(([k, n]) => `${k} ×${n}`)
-    io.log(`outcome dataset: ${ds.length} rows at K = ${K} turns (excluded ${excluded.unlabeled} unlabeled, ${excluded.short} short)` +
+    io.log(`outcome dataset: ${ds.length} rows at K = ${K} turns${signalsVersion !== null ? `, signals v${signalsVersion}` : ''} (excluded ${excluded.unlabeled} unlabeled, ${excluded.short} short` +
+      `${signalsVersion !== null ? `, ${excluded.otherVersion} other signals version` : ''})` +
       `${unknown.length ? `; unknown categorical values: ${unknown.join(', ')}` : ''} → ${out}`)
     return 0
   }
@@ -355,6 +518,33 @@ export async function main(argv, io = console) {
       return 2
     }
     const path = resolve(argOf(argv, '--manifest') ?? MANIFEST_PATH)
+    // F165 fix round 2: with --signals-version, or on a per-version file, the
+    // freeze targets ONE version's set; the same two rules hold per set
+    // (--freeze refuses an existing set, --refreeze only adds to one).
+    const raw = existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : null
+    const file = raw ? manifestSets(raw) : null
+    const onFile = raw?.schema === MANIFEST_FILE_SCHEMA
+    if (signalsVersion !== null || onFile) {
+      const v = signalsVersion ?? 1
+      const had = file ? heldSetFor(file, v) : null
+      if (freeze && had) {
+        io.error(`refused: the signals v${v} holdout in ${path} is frozen — frozen once; use --refreeze --signals-version ${v} to add ids`)
+        return 2
+      }
+      if (refreeze && !had) {
+        io.error(`refused: no signals v${v} holdout in ${path} to refreeze — use --freeze --signals-version ${v} first`)
+        return 2
+      }
+      const vRows = rowsOfVersion(rows, v, K)
+      const set = freezeManifest(vRows, { seed, previous: had, turns: K })
+      const eligibleN = vRows.filter(r => exclusionOf(r, K) === null).length
+      writeAtomic(path, JSON.stringify(withVersionSet(file ?? manifestSets(null), v, set,
+        { frozenAt: set.frozenAt, count: set.missionIds.length, eligible: eligibleN, seed, how: freeze ? 'freeze' : 'refreeze' }, { add: refreeze }), null, 2) + '\n')
+      const c = counts(vRows, set, K)
+      io.log(`frozen holdout signals v${v}, set v${set.version} (seed ${seed}, K = ${K}): ${c.holdout} of ${c.eligible} eligible v${v} missions ` +
+        `(${c.holdoutFailures} failures, ${c.holdoutSuccesses} successes; eligible ${c.eligibleFailures} failures) → ${path}`)
+      return 0
+    }
     let previous = null
     if (freeze && existsSync(path)) {
       io.error(`refused: ${path} exists — the holdout is frozen once; use --refreeze to add ids`)
@@ -377,7 +567,7 @@ export async function main(argv, io = console) {
       `${ineligible.length ? `; ${ineligible.length} held ids ineligible at K = ${K}: ${ineligible.join(', ')}` : ''} → ${path}`)
     return 0
   }
-  io.error('usage: --export [--turns K] [--out PATH] | --freeze --seed N | --refreeze --seed N  [--turns K] [--ledger-dir DIR] [--manifest PATH]')
+  io.error('usage: --export [--turns K] [--signals-version N] [--out PATH] | --freeze --seed N [--signals-version N] | --refreeze --seed N [--signals-version N]  [--turns K] [--ledger-dir DIR] [--manifest PATH]')
   return 2
 }
 

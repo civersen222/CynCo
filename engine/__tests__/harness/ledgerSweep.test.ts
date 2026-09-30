@@ -151,6 +151,25 @@ describe('cynco-ledger-sweep writes back to the shard the record lives in', () =
     })
   })
 
+  // F164: a hand relabel of a row the runner's --mutate retry would have
+  // labeled writes the runner's own shape — kind derived-full, retried true.
+  it('a derived-full sweep is marked as the runner writes it (F164)', () => {
+    expect(main(argv('--record', '1', '--command', 'gen --mutate gilded/ui/saves_view.py', '--killed', '4', '--total', '4',
+      '--kind', 'derived-full'), dir)).toBe(0)
+    expect(read('missions.jsonl')[0].mutationSweep).toEqual({
+      kind: 'derived-full', command: 'gen --mutate gilded/ui/saves_view.py', killed: 4, total: 4, survived: [], retried: true,
+    })
+  })
+
+  // Review M3: derived-full says the sweep ran with --mutate; a command that
+  // did not is refused, and nothing is written.
+  it('--kind derived-full refuses a command without --mutate', () => {
+    const before = read('missions.jsonl')
+    expect(main(argv('--record', '1', '--command', 'python scripts/cynco-mutation-sweep.py --repo r --base a --head b', '--killed', '1', '--total', '1',
+      '--kind', 'derived-full'), dir)).toBe(2)
+    expect(read('missions.jsonl')).toEqual(before)
+  })
+
   it('an unknown --kind writes nothing rather than guessing', () => {
     const before = read('missions.jsonl')
     expect(main(argv('--record', '1', '--command', 'z', '--killed', '1', '--total', '1',

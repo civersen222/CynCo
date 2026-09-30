@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  featuresOf, datasetRows, frozenSplit, freezeManifest, FEATURE_KEYS, PREFIX_TURNS, DEFAULT_TURNS, main,
+  featuresOf, datasetRows, frozenSplit, freezeManifest, FEATURE_KEYS_V1, FEATURE_KEYS_V2, FEATURE_KEYS_BY_VERSION,
+  signalsVersionOf, PREFIX_TURNS, DEFAULT_TURNS, main,
 } from '../cynco-outcome-dataset.mjs'
 import { labelOf } from '../cynco-signal-validation.mjs'
 
@@ -55,6 +56,9 @@ const DOCUMENTED = [
   'varietyBalance.balanced', 'varietyBalance.underload', 'varietyBalance.overload', 'varietyBalance.critical',
   'commander.S1', 'commander.S2', 'commander.S3', 'commander.S4', 'commander.S5',
 ]
+// F165: a v2 row (every prefix turn carries signalsVersion 2) adds the
+// cumulative alert count's rate — what v1's algedonicAlerts.rate measured.
+const DOCUMENTED_V2 = [...DOCUMENTED, 'algedonicAlertsTotal.rate']
 const FORBIDDEN = ['verified', 'outcome', 'mutationSweep', 'toolStats', 'durationS', 'exitReason', 'commits',
   'identityGuard', 'regulatorFidelity', 'posiwidLive', 's5Decisions', 'invariants', 'routing', 'brainStats', 'ultrastable']
 
@@ -66,7 +70,7 @@ describe('featuresOf — the first K turns only', () => {
 
   it('K = 16 of 40 turns reads turns 0–15 and nothing after', () => {
     const f = featuresOf(row('m1'), 16)
-    expect(f).toEqual({ missionId: 'm1', prefixTurns: 16, label: false, features: expect.any(Object), leakGuard: true })
+    expect(f).toEqual({ missionId: 'm1', prefixTurns: 16, signalsVersion: 1, label: false, features: expect.any(Object), leakGuard: true })
     expect(f.features['varietyRatio.last']).toBe(15)
     expect(f.features['varietyRatio.max']).toBe(15)
     expect(f.features['varietyRatio.mean']).toBe(7.5)
@@ -96,9 +100,43 @@ describe('featuresOf — the first K turns only', () => {
     const keys = Object.keys(featuresOf(r, 16).features)
     expect(keys.filter(k => FORBIDDEN.some(n => k.startsWith(n)))).toEqual([])
     expect([...keys].sort()).toEqual([...DOCUMENTED].sort())
-    expect([...FEATURE_KEYS].sort()).toEqual([...DOCUMENTED].sort())
-    expect(FEATURE_KEYS).toHaveLength(56)
-    expect(FEATURE_KEYS.filter(k => k.startsWith('algedonicAlerts.'))).toEqual(['algedonicAlerts.rate'])
+    expect([...FEATURE_KEYS_V1].sort()).toEqual([...DOCUMENTED].sort())
+    expect(FEATURE_KEYS_V1).toHaveLength(56)
+    expect(FEATURE_KEYS_V1.filter(k => k.startsWith('algedonicAlerts.'))).toEqual(['algedonicAlerts.rate'])
+  })
+
+  it('LEAK (v2, F165): a v2 row\'s key set is the documented v2 list, forbidden-free; algedonicAlertsTotal.* only on v2', () => {
+    const v2 = (i) => turn(i, { signalsVersion: 2, algedonicAlertsTotal: 30 + i })
+    const r = row('m3v2', { turnFn: v2, verified: true, outcome: 'landed', toolStats: { total: 5 }, identityGuard: {}, brainStats: {}, ultrastable: {} })
+    const f = featuresOf(r, 16)
+    expect(f.signalsVersion).toBe(2)
+    const keys = Object.keys(f.features)
+    expect(keys.filter(k => FORBIDDEN.some(n => k.startsWith(n)))).toEqual([])
+    expect([...keys].sort()).toEqual([...DOCUMENTED_V2].sort())
+    expect([...FEATURE_KEYS_V2].sort()).toEqual([...DOCUMENTED_V2].sort())
+    expect(FEATURE_KEYS_V2).toHaveLength(57)
+    expect(FEATURE_KEYS_BY_VERSION).toEqual({ 1: FEATURE_KEYS_V1, 2: FEATURE_KEYS_V2 })
+    expect(FEATURE_KEYS_V1.some(k => k.startsWith('algedonicAlertsTotal.'))).toBe(false)
+    expect(f.features['algedonicAlertsTotal.rate']).toBe(1)
+    // A v1 row (no signalsVersion on its turns) never carries the v2 key.
+    const v1 = featuresOf(row('m3v1'), 16)
+    expect(v1.signalsVersion).toBe(1)
+    expect('algedonicAlertsTotal.rate' in v1.features).toBe(false)
+  })
+
+  it('a prefix mixing versions is the older version (the minimum over its turns); after K does not count', () => {
+    const mixed = row('mix', { turnFn: (i) => turn(i, i === 3 ? {} : { signalsVersion: 2, algedonicAlertsTotal: i }) })
+    expect(featuresOf(mixed, 16).signalsVersion).toBe(1)
+    const lateV1 = row('late', { turnFn: (i) => turn(i, i < 16 ? { signalsVersion: 2, algedonicAlertsTotal: i } : {}) })
+    expect(featuresOf(lateV1, 16).signalsVersion).toBe(2)
+    expect(signalsVersionOf([])).toBe(1)
+  })
+
+  it('LEAK (v2): a constant v2 row reads identically at K = 16 and K = 32', () => {
+    const constant = row('c2', { turnFn: () => ({ signalsVersion: 2, algedonicAlertsTotal: 9, algedonicAlerts: 2, consecutiveUnstable: 3 }) })
+    const a = featuresOf(constant, 16).features
+    const b = featuresOf(constant, 32).features
+    for (const k of Object.keys(a)) expect([k, b[k]]).toEqual([k, a[k]])
   })
 
   it('LEAK: no feature is a function of the turn index — a constant row reads identically at K = 16 and K = 32', () => {
@@ -172,6 +210,19 @@ describe('datasetRows', () => {
     const at32 = datasetRows(rows, 32)
     expect(at32.rows.map(r => r.missionId)).toEqual(['ok1'])
     expect(at32.excluded).toEqual({ unlabeled: 2, short: 2 })
+  })
+
+  it('signalsVersion filter keeps version-N rows and counts the rest (F165)', () => {
+    const v2 = (id, label = 'fail') => row(id, { label, turnFn: (i) => turn(i, { signalsVersion: 2, algedonicAlertsTotal: i }) })
+    const rows = [row('old1'), row('old2', { label: 'success' }), v2('new1'), row('short', { turns: 3 })]
+    const all = datasetRows(rows, 16)
+    expect(all.rows.map(r => [r.missionId, r.signalsVersion])).toEqual([['old1', 1], ['old2', 1], ['new1', 2]])
+    expect(all.excluded).toEqual({ unlabeled: 0, short: 1 })
+    const only2 = datasetRows(rows, 16, { signalsVersion: 2 })
+    expect(only2.rows.map(r => r.missionId)).toEqual(['new1'])
+    expect(only2.excluded).toEqual({ unlabeled: 0, short: 1, otherVersion: 2 })
+    expect(datasetRows(rows, 16, { signalsVersion: 1 }).rows.map(r => r.missionId)).toEqual(['old1', 'old2'])
+    expect(() => datasetRows(rows, 16, { signalsVersion: 1.5 })).toThrow(/signalsVersion/)
   })
 
   it('counts out-of-vocabulary categorical values on turn K−1 (and not absent ones)', () => {
@@ -286,6 +337,22 @@ describe('CLI', () => {
     expect(readFileSync(out, 'utf8').trim().split('\n')).toHaveLength(21)
   })
 
+  it('--export --signals-version N keeps only version-N rows and says how many it left out (F165)', async () => {
+    const v2 = row('new', { turnFn: (i) => turn(i, { signalsVersion: 2, algedonicAlertsTotal: i }) })
+    const dir = ledger([...twenty(), v2])
+    const out = join(mkdtempSync(join(tmpdir(), 'outcome-out-')), 'ds.jsonl')
+    const io = capture()
+    expect(await main(['--export', '--ledger-dir', dir, '--signals-version', '2', '--out', out], io)).toBe(0)
+    const lines = readFileSync(out, 'utf8').trim().split('\n').map(l => JSON.parse(l))
+    expect(lines.map(l => [l.missionId, l.signalsVersion])).toEqual([['new', 2]])
+    expect('algedonicAlertsTotal.rate' in lines[0].features).toBe(true)
+    expect(io.lines[0]).toMatch(/1 rows at K = 16 turns, signals v2 \(excluded 0 unlabeled, 0 short, 20 other signals version\)/)
+    expect(await main(['--export', '--ledger-dir', dir, '--out', out], capture())).toBe(0)
+    expect(readFileSync(out, 'utf8').trim().split('\n')).toHaveLength(21)
+    expect(await main(['--export', '--ledger-dir', dir, '--signals-version', 'two', '--out', out], capture())).toBe(2)
+    expect(await main(['--export', '--ledger-dir', dir, '--signals-version', '0', '--out', out], capture())).toBe(2)
+  })
+
   it('--export prints unknown categorical values; --fraction and a bad --turns are refused', async () => {
     const dir = ledger([row('odd', { turnFn: (i) => turn(i, { health: 'meltdown' }) })])
     const out = join(mkdtempSync(join(tmpdir(), 'outcome-out-')), 'ds.jsonl')
@@ -308,6 +375,39 @@ describe('CLI', () => {
     const v2 = JSON.parse(readFileSync(manifest, 'utf8'))
     expect(v2.version).toBe(2)
     expect(v2.missionIds).toEqual(expect.arrayContaining(v1.missionIds))
+  })
+
+  it('--freeze/--refreeze --signals-version N act on that version\'s set only; v1\'s ids never move (F165 fix round 2)', async () => {
+    const v2 = (id, label) => row(id, { label, turnFn: (i) => turn(i, { signalsVersion: 2 }) })
+    const dir = ledger([...twenty(), ...Array.from({ length: 10 }, (_, i) => v2(`n${i}`, i < 6 ? 'fail' : 'success'))])
+    const manifest = join(mkdtempSync(join(tmpdir(), 'outcome-man-')), 'frozen-eval.json')
+    // A Phase 5 file (v1's set) first.
+    expect(await main(['--freeze', '--seed', '5', '--ledger-dir', dir, '--manifest', manifest], capture())).toBe(0)
+    const v1 = JSON.parse(readFileSync(manifest, 'utf8'))
+    expect(v1.schema).toBe(1)
+    // The v2 freeze migrates the file and draws from v2 rows only.
+    expect(await main(['--freeze', '--seed', '7', '--signals-version', '2', '--ledger-dir', dir, '--manifest', manifest], capture())).toBe(0)
+    const f = JSON.parse(readFileSync(manifest, 'utf8'))
+    expect(f.schema).toBe(2)
+    expect(f.sets['1']).toEqual(v1)
+    expect(f.sets['2'].missionIds.length).toBe(2)
+    expect(f.sets['2'].missionIds.every(id => id.startsWith('n'))).toBe(true)
+    expect(f.history).toEqual([expect.objectContaining({ signalsVersion: 2, count: 2, eligible: 10, seed: 7, how: 'freeze' })])
+    // Frozen once: a second --freeze of v2 is refused and changes nothing.
+    const text = readFileSync(manifest, 'utf8')
+    expect(await main(['--freeze', '--seed', '8', '--signals-version', '2', '--ledger-dir', dir, '--manifest', manifest], capture())).toBe(2)
+    expect(readFileSync(manifest, 'utf8')).toBe(text)
+    // --refreeze of v2 only adds; v1 is untouched.
+    expect(await main(['--refreeze', '--seed', '9', '--signals-version', '2', '--ledger-dir', dir, '--manifest', manifest], capture())).toBe(0)
+    const g = JSON.parse(readFileSync(manifest, 'utf8'))
+    expect(g.sets['2'].missionIds).toEqual(expect.arrayContaining(f.sets['2'].missionIds))
+    expect(g.sets['2'].version).toBe(2)
+    expect(g.sets['1']).toEqual(v1)
+    expect(g.history.map(h => h.how)).toEqual(['freeze', 'refreeze'])
+    // No v3 set to add to; and on a per-version file, a bare --freeze targets v1 (exists: refused).
+    expect(await main(['--refreeze', '--seed', '9', '--signals-version', '3', '--ledger-dir', dir, '--manifest', manifest], capture())).toBe(2)
+    expect(await main(['--freeze', '--seed', '9', '--ledger-dir', dir, '--manifest', manifest], capture())).toBe(2)
+    expect(JSON.parse(readFileSync(manifest, 'utf8')).sets['1']).toEqual(v1)
   })
 
   it('--refreeze without a manifest, and --freeze without a seed, refuse with exit 2', async () => {

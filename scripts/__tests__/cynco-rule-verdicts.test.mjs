@@ -3,7 +3,8 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdi
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { RULE_VERDICTS_PATH, writeRuleVerdicts, readRuleVerdicts, RULE_VERDICTS_SCHEMA, RULE_VERDICTS_HISTORY_CAP, OUTCOME_MODEL_PATH, modelRowsFrom, main, verdictsLine } from '../cynco-rule-verdicts.mjs'
-import { analyse, ruleVerdictOf } from '../cynco-signal-validation.mjs'
+import { analyse, ruleVerdictOf, holm } from '../cynco-signal-validation.mjs'
+import { runnerRowsFrom } from '../cynco-campaign-progress.mjs'
 
 afterEach(() => { vi.restoreAllMocks() })
 
@@ -259,6 +260,146 @@ describe('writeRuleVerdicts with model rows', () => {
   })
 })
 
+// Phase 6 Task 4: the runner's shadow regulator `R1.no-progress` in the ladder,
+// as a `source: 'runner'` row built from the wave records (runnerRowsFrom) —
+// the same Fisher/Wilson/Holm as a rule, never authority, never the version.
+describe('writeRuleVerdicts with runner rows', () => {
+  const past = [{ at: 't', sha: 's', fails: 2, elapsedFraction: 0.6 }]
+  const wave = (missionId, kind, fired) => ({ missionId, decision: { kind }, progress: past, shadowDecisions: [{ rule: 'R1.no-progress', fired, elapsedFraction: 0.6 }] })
+  // 15 in-scope waves: R1 fired on 5 (4 failed, 1 passed) and stayed quiet on
+  // 10 (3 failed, 7 passed). Two out-of-scope waves: one never read past 50 %,
+  // one a `stop` that never ran.
+  const waves = () => [
+    ...['f0', 'f1', 'f2', 'f3'].map(id => wave(id, 'next', true)), wave('p0', 'pass', true),
+    ...['q0', 'q1', 'q2'].map(id => wave(id, 'budget', false)),
+    ...Array.from({ length: 7 }, (_, i) => wave(`s${i}`, i % 2 ? 'pass-with-survivors' : 'pass', false)),
+    { missionId: 'early', decision: { kind: 'next' }, progress: [{ fails: 2, elapsedFraction: 0.3 }], shadowDecisions: [{ rule: 'R1.no-progress', fired: true, elapsedFraction: 0.3 }] },
+    { missionId: 'stopped', decision: { kind: 'stop' }, progress: past, shadowDecisions: [{ rule: 'R1.no-progress', fired: true, elapsedFraction: 0.6 }] },
+  ]
+  // The same 15 missions as ledger rows of an ordinary rule 'R'.
+  const asRuleRows = () => [
+    ...Array.from({ length: 4 }, () => failed(['R'])), landed(['R']),
+    ...Array.from({ length: 3 }, () => failed([])), ...Array.from({ length: 7 }, () => landed([])),
+  ]
+
+  it('a runner row with 4 of 5 fired waves failing gets exactly the numbers `analyse` gives a rule', () => {
+    const outPath = RULE_VERDICTS_PATH(home())
+    const r = writeRuleVerdicts({ rows: [], campaign: 'c9', outPath, runnerRows: runnerRowsFrom(waves()) })
+    const f = JSON.parse(readFileSync(outPath, 'utf8'))
+    const asRule = analyse(asRuleRows()).rules.find(x => x.id === 'R')
+    expect(asRule).toMatchObject({ labeled: 5, failures: 4, precision: 0.8 })
+    expect(f.rules['R1.no-progress']).toEqual({
+      verdict: ruleVerdictOf(asRule), precision: 0.8, ci: asRule.ci, p: asRule.p, n: 5,
+      pAdjusted: asRule.pAdjusted, lift: asRule.lift, firedTotal: 5, failures: 4,
+      source: 'runner', scope: 'waves', base: 7 / 15, scopeN: 15, note: null, unlabeled: [],
+    })
+    expect(f.rules['R1.no-progress'].lift).toBeCloseTo(0.8 - 7 / 15, 10)
+    expect(f.rules['R1.no-progress'].verdict).toBe('TOO FEW — cannot tell')
+    // The return names the runner rows apart from the rules and the model rows.
+    expect(r).toMatchObject({ rules: 0, modelRows: 0, runnerRows: 1, total: 1 })
+    expect(r.runners['R1.no-progress']).toEqual(f.rules['R1.no-progress'])
+  })
+
+  it('the Holm family is the rules, the model rows and the runner rows together', () => {
+    const outPath = RULE_VERDICTS_PATH(home())
+    const rows = predictiveRows().map((r, i) => ({ ...r, missionId: `p${i}` }))
+    const x = analyse(rows).rules.find(r => r.id === 'X')
+    const run = analyse(asRuleRows()).rules.find(r => r.id === 'R')
+    writeRuleVerdicts({ rows, campaign: 'c9', outPath, runnerRows: runnerRowsFrom(waves()) })
+    const f = JSON.parse(readFileSync(outPath, 'utf8'))
+    const family = [{ id: 'X', p: x.p }, { id: 'R', p: run.p }]
+    holm(family)
+    expect(f.ledger.holmFamily).toBe(2)
+    expect(f.rules.X.pAdjusted).toBeCloseTo(family[0].pAdjusted, 12)
+    expect(f.rules['R1.no-progress'].pAdjusted).toBeCloseTo(family[1].pAdjusted, 12)
+  })
+
+  it('no fired decision in scope is UNMEASURED with n 0 and no numbers, never a rate (F16)', () => {
+    const outPath = RULE_VERDICTS_PATH(home())
+    const quiet = waves().map(w => ({ ...w, shadowDecisions: w.shadowDecisions.map(d => ({ ...d, fired: false })) }))
+    writeRuleVerdicts({ rows: [], campaign: 'c9', outPath, runnerRows: runnerRowsFrom(quiet) })
+    expect(JSON.parse(readFileSync(outPath, 'utf8')).rules['R1.no-progress']).toMatchObject({
+      verdict: 'UNMEASURED — fired on no in-scope wave', n: 0, firedTotal: 0, failures: 0, precision: null, p: null, pAdjusted: null, lift: null,
+      ci: null, source: 'runner', scope: 'waves', scopeN: 15, base: 7 / 15 })
+    // An empty scope (no wave read past 50 %) says so, and has no base either.
+    const empty = RULE_VERDICTS_PATH(home())
+    writeRuleVerdicts({ rows: [], campaign: 'c9', outPath: empty, runnerRows: runnerRowsFrom([]) })
+    expect(JSON.parse(readFileSync(empty, 'utf8')).rules['R1.no-progress']).toMatchObject({
+      verdict: 'UNMEASURED — no wave in scope (no shadow decision at 50 % of its clock or later)', n: 0, precision: null, p: null, ci: null, scopeN: 0, base: null })
+  })
+
+  // Review M1: a malformed wave record costs that record, never the row.
+  it('a malformed wave record is skipped and named on the row; the rest is measured', () => {
+    const outPath = RULE_VERDICTS_PATH(home())
+    const bad = [{ missionId: 'bad-obj', decision: { kind: 'next' }, shadowDecisions: {} }, 'not a record', null]
+    writeRuleVerdicts({ rows: [], campaign: 'c9', outPath, runnerRows: runnerRowsFrom([...waves(), ...bad]) })
+    const e = JSON.parse(readFileSync(outPath, 'utf8')).rules['R1.no-progress']
+    expect(e).toMatchObject({ n: 5, failures: 4, scopeN: 15, note: '3 malformed wave record(s) skipped: bad-obj, record #19, record #20' })
+  })
+
+  // Final review I1: a wave whose VERDICT grade did not run is unlabeled for
+  // R1 as for the S5 rules — out of n, named on the row, never a "right" firing.
+  it('a grade that did not run is out of n and named in `unlabeled` on the row', () => {
+    const outPath = RULE_VERDICTS_PATH(home())
+    const faulted = { ...wave('gf', 'fault', true), verified: null, decision: { kind: 'fault', why: 'gate printed no GATE: terminator' } }
+    writeRuleVerdicts({ rows: [], campaign: 'c9', outPath, runnerRows: runnerRowsFrom([...waves(), faulted]) })
+    const e = JSON.parse(readFileSync(outPath, 'utf8')).rules['R1.no-progress']
+    expect(e).toMatchObject({ n: 5, failures: 4, scopeN: 15,
+      unlabeled: [{ missionId: 'gf', why: 'the grade did not run — gate printed no GATE: terminator' }] })
+  })
+
+  // Review M4: "N predictive of R rules" and the `predictive` list agree —
+  // R1 is in neither, even when it reads PREDICTIVE.
+  it('a PREDICTIVE runner row is not in the file\'s `predictive` list, as it is not in the rule count', () => {
+    const outPath = RULE_VERDICTS_PATH(home())
+    const strong = [...Array.from({ length: 12 }, (_, i) => wave(`sf${i}`, 'next', true)), ...Array.from({ length: 12 }, (_, i) => wave(`sp${i}`, 'pass', false))]
+    const r = writeRuleVerdicts({ rows: predictiveRows(), campaign: 'c9', outPath, runnerRows: runnerRowsFrom(strong) })
+    const f = JSON.parse(readFileSync(outPath, 'utf8'))
+    expect(f.rules['R1.no-progress'].verdict).toBe('PREDICTIVE')
+    expect(f.predictive).toEqual(['X'])
+    expect(r.predictive).toEqual(['X'])
+    expect(verdictsLine(r, 'P')).toBe('rule verdicts v1: 1 predictive of 2 rules (+1 runner row) (X) → P')
+  })
+
+  it('a runner row appearing, moving or vanishing never bumps the version; it is kept as runnerChanged', () => {
+    const outPath = RULE_VERDICTS_PATH(home())
+    const rows = predictiveRows()
+    const v1 = writeRuleVerdicts({ rows, campaign: 'c9', outPath, now: () => 't1' })
+    const v2 = writeRuleVerdicts({ rows, campaign: 'c9', outPath, now: () => 't2', runnerRows: runnerRowsFrom([]) })
+    const v3 = writeRuleVerdicts({ rows, campaign: 'c9', outPath, now: () => 't3', runnerRows: runnerRowsFrom(waves()) })
+    const v4 = writeRuleVerdicts({ rows, campaign: 'c9', outPath, now: () => 't4' })
+    expect([v1.version, v2.version, v3.version, v4.version]).toEqual([1, 1, 1, 1])
+    const f = JSON.parse(readFileSync(outPath, 'utf8'))
+    expect(f.version).toBe(1)
+    const unmeasured = 'UNMEASURED — no wave in scope (no shadow decision at 50 % of its clock or later)'
+    expect(f.history.map(h => ({ version: h.version, at: h.at, changed: h.changed, runnerChanged: h.runnerChanged, modelChanged: h.modelChanged }))).toEqual([
+      { version: 1, at: 't1', changed: f.history[0].changed, runnerChanged: undefined, modelChanged: undefined },
+      { version: 1, at: 't2', changed: [], runnerChanged: [{ id: 'R1.no-progress', from: null, to: unmeasured }], modelChanged: undefined },
+      { version: 1, at: 't3', changed: [], runnerChanged: [{ id: 'R1.no-progress', from: unmeasured, to: 'TOO FEW — cannot tell' }], modelChanged: undefined },
+      { version: 1, at: 't4', changed: [], runnerChanged: [{ id: 'R1.no-progress', from: 'TOO FEW — cannot tell', to: null }], modelChanged: undefined },
+    ])
+    // Unchanged runner rows add nothing.
+    writeRuleVerdicts({ rows, campaign: 'c9', outPath, now: () => 't5' })
+    expect(JSON.parse(readFileSync(outPath, 'utf8')).history).toHaveLength(4)
+  })
+
+  it('a rule move still bumps the version, and a runner move in the same write rides on that entry', () => {
+    const outPath = RULE_VERDICTS_PATH(home())
+    writeRuleVerdicts({ rows: thinRows(), campaign: 'c9', outPath, now: () => 't1' })
+    const r = writeRuleVerdicts({ rows: predictiveRows(), campaign: 'c9', outPath, now: () => 't2', runnerRows: runnerRowsFrom(waves()) })
+    expect(r.version).toBe(2)
+    const last = JSON.parse(readFileSync(outPath, 'utf8')).history.at(-1)
+    expect(last.changed.map(c => c.id)).toContain('X')
+    expect(last.changed.map(c => c.id)).not.toContain('R1.no-progress')
+    expect(last.runnerChanged).toEqual([{ id: 'R1.no-progress', from: null, to: 'TOO FEW — cannot tell' }])
+  })
+
+  it('verdictsLine counts the runner rows apart', () => {
+    expect(verdictsLine({ version: 3, predictive: [], rules: 8, modelRows: 2, runnerRows: 1, total: 11 }, 'P'))
+      .toBe('rule verdicts v3: 0 predictive of 8 rules (+2 model rows) (+1 runner row) (none) → P')
+  })
+})
+
 describe('readRuleVerdicts', () => {
   it('null without a word when there is no file — the legacy state', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
@@ -291,9 +432,21 @@ describe('readRuleVerdicts', () => {
 // temp `--datasets-dir`; `cyncoHome` throws, so the real home is never read.
 describe('the CLI (main)', () => {
   const noHome = () => { throw new Error('the real home must not be touched') }
+  // Review I1: every CLI run builds the runner row from a campaigns dir; an
+  // empty temp one here (the real home is never read).
+  const noCampaigns = () => ['--campaigns-dir', home()]
+  const R1_EMPTY = 'R1.no-progress precision null on 0 fired p(Holm) null UNMEASURED — no wave in scope (no shadow decision at 50 % of its clock or later)'
   const turnsOf = (n) => Array.from({ length: n }, (_, i) => ({ toolSuccessRate: i % 2 ? 1 : 0.5, health: 'healthy' }))
   // 12 failures firing X and Y, 12 successes firing Y — X PREDICTIVE, Y CONSTANT — each with 20 turns.
-  const ledgerRows = () => predictiveRows().map((r, i) => ({ ...r, missionId: `m${i}`, turns: turnsOf(20) }))
+  // v2 turns (F165): the hindcast trains on the current signals version only.
+  const ledgerRows = () => predictiveRows().map((r, i) => ({ ...r, missionId: `m${i}`, turns: turnsOf(20).map(t => ({ ...t, signalsVersion: 2 })) }))
+  // A per-version holdout with a frozen v2 set (F165 fix round 2) — without
+  // one the 24 v2 missions read "v2 holdout not yet frozen" and python never runs.
+  const frozenV2 = () => {
+    const p = join(home(), 'frozen-eval.json')
+    writeFileSync(p, JSON.stringify({ schema: 2, sets: { 2: { schema: 1, version: 1, seed: 1, frozenAt: 't', missionIds: ledgerRows().map(r => r.missionId) } }, history: [] }))
+    return p
+  }
   const modelAt = (path) => {
     mkdirSync(dirname(path), { recursive: true })
     const preds = (fired) => ledgerRows().map(r => ({ missionId: r.missionId, pFail: fired(r) ? 0.9 : 0.1 }))
@@ -305,8 +458,8 @@ describe('the CLI (main)', () => {
   it('rules only: "N predictive of R rules" — the model rows never counted as rules', async () => {
     const out = join(home(), 'rv.json')
     const lines = []
-    expect(await main(['--out', out], { readLedger: predictiveRows, cyncoHome: noHome, log: (s) => lines.push(s) })).toBe(0)
-    expect(lines).toEqual([`rule verdicts v1: 1 predictive of 2 rules (X) → ${out}`])
+    expect(await main(['--out', out, ...noCampaigns()], { readLedger: predictiveRows, cyncoHome: noHome, log: (s) => lines.push(s) })).toBe(0)
+    expect(lines).toEqual([`rule verdicts v1: 1 predictive of 2 rules (+1 runner row) (X) → ${out}`])
   })
 
   it('verdictsLine prints the model rows beside the rules, as the scoreboard reads them', () => {
@@ -316,7 +469,7 @@ describe('the CLI (main)', () => {
   it('--with-hindcast runs export → model → verdicts into --datasets-dir, and prints the hindcast line', async () => {
     const dir = join(home(), 'ds')
     const lines = [], seen = {}
-    const code = await main(['--with-hindcast', '--datasets-dir', dir], {
+    const code = await main(['--with-hindcast', '--datasets-dir', dir, '--manifest', frozenV2(), ...noCampaigns()], {
       readLedger: ledgerRows, cyncoHome: noHome, log: (s) => lines.push(s),
       runHindcast: ({ paths }) => { seen.paths = paths; modelAt(paths.out); return { status: 0, stdout: 'ok', stderr: '', fault: null } },
     })
@@ -328,25 +481,43 @@ describe('the CLI (main)', () => {
     const f = JSON.parse(readFileSync(join(dir, 'rule-verdicts.json'), 'utf8'))
     expect(f.rules['M1.gbt']).toMatchObject({ source: 'model', scope: 'holdout', n: 12, failures: 12 })
     expect(f.rules['M1.lr']).toMatchObject({ source: 'model', n: 0 })
-    expect(lines[0]).toMatch(/^- Outcome hindcast: v4 at K = 16 turns on 24 held-out missions \(base 50%\): M1\.gbt precision 100% .* on 12 fired p\(Holm\) .*; M1\.lr precision null on 0 fired p\(Holm\) null TOO FEW; leak check gbt AUC prefix 0\.90 \/ hindsight 0\.95, lr AUC prefix 0\.50 \/ hindsight 0\.50; K = 32 TOO FEW: x; dropped 2 dead column\(s\)$/)
-    expect(lines[1]).toMatch(new RegExp(`^rule verdicts v1: \\d predictive of 2 rules \\(\\+2 model rows\\) \\(.*\\) → ${join(dir, 'rule-verdicts.json').replace(/\\/g, '\\\\')}$`))
+    expect(lines[0]).toMatch(/^- Outcome hindcast: v4 at K = 16 turns on 24 held-out missions \(base 50%\): M1\.gbt precision 100% .* on 12 fired p\(Holm\) .*; M1\.lr precision null on 0 fired p\(Holm\) null TOO FEW; R1\.no-progress precision null on 0 fired p\(Holm\) null UNMEASURED — no wave in scope \(no shadow decision at 50 % of its clock or later\); leak check gbt AUC prefix 0\.90 \/ hindsight 0\.95, lr AUC prefix 0\.50 \/ hindsight 0\.50; K = 32 TOO FEW: x; dropped 2 dead column\(s\)$/)
+    expect(lines[1]).toMatch(new RegExp(`^rule verdicts v1: \\d predictive of 2 rules \\(\\+2 model rows\\) \\(\\+1 runner row\\) \\(.*\\) → ${join(dir, 'rule-verdicts.json').replace(/\\/g, '\\\\')}$`))
   })
 
   it('a hindcast that fails prints UNMEASURED and writes the rules without model rows — as the runner does', async () => {
     const dir = join(home(), 'ds')
     const lines = []
-    await main(['--with-hindcast', '--datasets-dir', dir], {
+    await main(['--with-hindcast', '--datasets-dir', dir, '--manifest', frozenV2(), ...noCampaigns()], {
       readLedger: ledgerRows, cyncoHome: noHome, log: (s) => lines.push(s),
       runHindcast: () => ({ status: 2, stdout: 'TOO FEW: train 3 < 30 or holdout 1 < 8\n', stderr: '', fault: null }),
     })
-    expect(lines[0]).toBe('- Outcome hindcast: UNMEASURED — exit 2: TOO FEW: train 3 < 30 or holdout 1 < 8')
-    expect(lines[1]).toMatch(/^rule verdicts v1: 1 predictive of 2 rules \(X\) → /)
-    expect(Object.keys(JSON.parse(readFileSync(join(dir, 'rule-verdicts.json'), 'utf8')).rules)).toEqual(['X', 'Y'])
+    expect(lines[0]).toBe(`- Outcome hindcast: UNMEASURED — exit 2: TOO FEW: train 3 < 30 or holdout 1 < 8; ${R1_EMPTY}`)
+    expect(lines[1]).toMatch(/^rule verdicts v1: 1 predictive of 2 rules \(\+1 runner row\) \(X\) → /)
+    expect(Object.keys(JSON.parse(readFileSync(join(dir, 'rule-verdicts.json'), 'utf8')).rules)).toEqual(['X', 'Y', 'R1.no-progress'])
+  })
+
+  // Final review M8: a temp run never performs the one-time v2 freeze on the
+  // repo's committed manifest — with --datasets-dir and no --manifest the
+  // manifest is <DIR>/frozen-eval.json.
+  it('--datasets-dir without --manifest freezes into <DIR>/frozen-eval.json, never the committed file', async () => {
+    const committed = join('benchmark', 'cynco-ledger', 'frozen-eval.json')
+    const before = readFileSync(committed, 'utf8')
+    const dir = join(home(), 'ds')
+    // 40 eligible v2 missions, 20 of each label: enough for the automatic freeze.
+    const many = () => Array.from({ length: 40 }, (_, i) => ({ ...(i % 2 ? landed(['Y']) : failed(['X', 'Y'])), missionId: `f${i}`, turns: turnsOf(20).map(t => ({ ...t, signalsVersion: 2 })) }))
+    await main(['--with-hindcast', '--datasets-dir', dir, ...noCampaigns()], {
+      readLedger: many, cyncoHome: noHome, log: () => {},
+      runHindcast: ({ paths }) => { modelAt(paths.out); return { status: 0, stdout: '', stderr: '', fault: null } },
+    })
+    const frozen = JSON.parse(readFileSync(join(dir, 'frozen-eval.json'), 'utf8'))
+    expect(frozen.sets['2'].missionIds.length).toBe(8)
+    expect(readFileSync(committed, 'utf8')).toBe(before)
   })
 
   it('--out wins over --datasets-dir for the verdict file', async () => {
     const dir = join(home(), 'ds'), out = join(home(), 'elsewhere.json')
-    await main(['--with-hindcast', '--datasets-dir', dir, '--out', out], {
+    await main(['--with-hindcast', '--datasets-dir', dir, '--manifest', frozenV2(), '--out', out, ...noCampaigns()], {
       readLedger: ledgerRows, cyncoHome: noHome, log: () => {},
       runHindcast: ({ paths }) => { modelAt(paths.out); return { status: 0, stdout: '', stderr: '', fault: null } },
     })

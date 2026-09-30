@@ -142,7 +142,10 @@ export function labelOf(row) {
   // they cannot be read as "the mission failed its own definition of done".
   // Conflating the two would fail every mission whose brief told it not to add
   // tests. It still counts as MEASURED, which is the point of running it.
-  if (sweep.kind === 'derived') return true
+  // `derived-full` (F164) is the same instrument retried with `--mutate` over
+  // the wave's whole source files: still machine-enumerated, still not a rule
+  // a DoD claimed, so its survivors are coverage findings too.
+  if (sweep.kind === 'derived' || sweep.kind === 'derived-full') return true
   return (sweep.survived ?? []).length === 0
 }
 
@@ -166,8 +169,13 @@ export function invariantsFired(row) {
   return out
 }
 
-export function analyse(rows, { firedOf = rulesFired } = {}) {
-  const labeled = rows.map(r => ({ row: r, label: labelOf(r) })).filter(x => x.label !== null)
+// `labelOfRow` is the one seam for a row whose outcome is not a ledger label:
+// Phase 6's runner row (`R1.no-progress`, scripts/cynco-rule-verdicts.mjs)
+// reads its outcome off the wave records it read the firing from, and goes
+// through THIS table rather than a second copy of it. true = succeeded,
+// false = failed, null = unlabeled — labelOf's contract.
+export function analyse(rows, { firedOf = rulesFired, labelOf: labelOfRow = labelOf } = {}) {
+  const labeled = rows.map(r => ({ row: r, label: labelOfRow(r) })).filter(x => x.label !== null)
   const nFail = labeled.filter(x => x.label === false).length
   const base = labeled.length ? nFail / labeled.length : 0
 

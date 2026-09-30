@@ -11,7 +11,9 @@ import { hindcastLine } from '../cynco-campaign-verdict.mjs'
 
 const home = () => mkdtempSync(join(tmpdir(), 'hindcast-'))
 const sweep = { kind: 'withheld', killed: 1, total: 1, survived: [] }
-const turns = (n) => Array.from({ length: n }, (_, i) => ({ toolSuccessRate: i % 2 ? 1 : 0.5, stuckTurns: i % 3, health: 'healthy' }))
+// v2 turns (F165): the hindcast trains on signals v2 only; v1/v2 mixing is
+// pinned in cynco-hindcast-signals.test.mjs.
+const turns = (n) => Array.from({ length: n }, (_, i) => ({ toolSuccessRate: i % 2 ? 1 : 0.5, stuckTurns: i % 3, health: 'healthy', signalsVersion: 2 }))
 const row = (missionId, n, ok) => ({ missionId, outcome: ok ? 'landed' : 'failed', verified: ok, mutationSweep: sweep, turns: turns(n) })
 const readJsonl = (p) => readFileSync(p, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l))
 
@@ -20,14 +22,15 @@ describe('exportOutcomeDatasets', () => {
     const h = home()
     const rows = [row('long', 40, false), row('mid', 20, true), row('short', 10, true), { missionId: 'unlabeled', verified: null, turns: turns(50) }]
     const manifestPath = join(h, 'frozen-eval.json')
-    writeFileSync(manifestPath, JSON.stringify({ schema: 1, version: 1, seed: 1, frozenAt: 't', missionIds: ['long', 'short', 'ghost'] }))
+    // Per-version manifest (F165 fix round 2): the hindcast reads v2's set.
+    writeFileSync(manifestPath, JSON.stringify({ schema: 2, sets: { 2: { schema: 1, version: 1, seed: 1, frozenAt: 't', missionIds: ['long', 'short', 'ghost'] } }, history: [] }))
     const r = exportOutcomeDatasets({ rows, home: h, manifestPath })
     expect(r).toMatchObject({ n: 2, n32: 1, nHindsight: 2 })
-    expect(r.paths).toEqual({ ...HINDCAST_PATHS(h), manifest: manifestPath })
+    expect(r.paths).toEqual({ ...HINDCAST_PATHS(h), manifest: manifestPath, signalsVersion: 2, rowsByVersion: { 2: 2 } })
     // frozenSplit with `turns`: a held-out mission too short at K is named, an unknown id is missing.
     expect(r.split).toEqual({
-      16: { train: 1, holdout: 1, ineligible: ['short'], missing: ['ghost'] },
-      32: { train: 0, holdout: 1, ineligible: ['short'], missing: ['ghost'] },
+      16: { train: 1, holdout: 1, ineligible: ['short'], missing: ['ghost'], otherVersion: [] },
+      32: { train: 0, holdout: 1, ineligible: ['short'], missing: ['ghost'], otherVersion: [] },
     })
     expect(r.paths.dataset).toBe(DATASET_PATH(h))
     expect(r.paths.out).toBe(OUTCOME_MODEL_PATH(h))
@@ -43,7 +46,7 @@ describe('exportOutcomeDatasets', () => {
     expect(HINDCAST_PATHS(h)).toEqual(hindcastPathsIn(join(h, 'datasets')))
     const dir = join(home(), 'elsewhere')
     const r = exportOutcomeDatasets({ rows: [row('long', 40, false)], home: null, datasetsDir: dir, manifestPath: MANIFEST_PATH })
-    expect(r.paths).toEqual({ ...hindcastPathsIn(dir), manifest: MANIFEST_PATH })
+    expect(r.paths).toEqual({ ...hindcastPathsIn(dir), manifest: MANIFEST_PATH, signalsVersion: 2, rowsByVersion: { 2: 1 } })
     expect(readJsonl(join(dir, 'outcome-dataset.jsonl')).map(x => x.missionId)).toEqual(['long'])
   })
 
@@ -52,7 +55,9 @@ describe('exportOutcomeDatasets', () => {
     expect(r).toMatchObject({ n: 0, n32: 0, nHindsight: 0 })
     expect(r.paths.manifest).toBe(MANIFEST_PATH)
     expect(r.split[16]).toMatchObject({ train: 0, holdout: 0, ineligible: [] })
-    expect(r.split[16].missing).toHaveLength(JSON.parse(readFileSync(MANIFEST_PATH, 'utf8')).missionIds.length)
+    // The committed manifest has no v2 set (its 21 ids are v1's), so nothing is held.
+    expect(r.split[16].missing).toEqual([])
+    expect(r.holdout).toEqual({ frozen: false, eligible: 0, needed: 38 })
     expect(readFileSync(r.paths.dataset, 'utf8')).toBe('')
   })
 })
@@ -64,7 +69,7 @@ describe('runHindcast', () => {
     const res = runHindcast({ paths, run: (cmd, args, opts) => { calls.push({ cmd, args, opts }); return { status: 0 } } })
     expect(res).toEqual({ status: 0 })
     expect(calls).toEqual([{ cmd: 'python', args: [OUTCOME_MODEL_SCRIPT, '--dataset', paths.dataset, '--dataset32', paths.dataset32, '--hindsight', paths.hindsight,
-      '--manifest', MANIFEST_PATH, '--out', paths.out], opts: { timeoutMs: HINDCAST_TIMEOUT_MS } }])
+      '--manifest', MANIFEST_PATH, '--out', paths.out, '--signals-version', '2', '--rows-by-version', '{}'], opts: { timeoutMs: HINDCAST_TIMEOUT_MS } }])
     expect(HINDCAST_TIMEOUT_MS).toBe(300_000)
   })
 
@@ -85,7 +90,7 @@ describe('hindcastOf', () => {
     writeFileSync(p, JSON.stringify(model))
     const r = hindcastOf({ status: 0, stdout: '', stderr: '', fault: null }, p)
     expect(r.model).toEqual(model)
-    expect(r.summary).toEqual({ version: 2, trainedAt: 't', prefixTurns: 16, nTrain: 83, nHoldout: 21, baseRate: 12 / 21, features: 3, droppedFeatures: ['z'], droppedReasons: {}, lengthFeature: null,
+    expect(r.summary).toEqual({ version: 2, trainedAt: 't', prefixTurns: 16, signalsVersion: null, rowsByVersion: null, nTrain: 83, nHoldout: 21, baseRate: 12 / 21, features: 3, droppedFeatures: ['z'], droppedReasons: {}, lengthFeature: null,
       models: { gbt: { precision: null, recall: 0, brier: 0.26, auc: null }, lr: { precision: 0.5, recall: 0.25, brier: 0.3, auc: 0.55 } },
       leakCheck: model.leakCheck, secondary: null })
   })
@@ -126,6 +131,28 @@ describe('hindcastLine', () => {
       .toBe('- Outcome hindcast: v1 at K = 16 turns on 21 held-out missions (base 50%): no ladder reading; leak check not run; dropped 2 dead column(s)')
     expect(hindcastLine(h, { detail: true }))
       .toBe('- Outcome hindcast: v1 at K = 16 turns on 21 held-out missions (base 50%): no ladder reading; leak check not run; dropped 2 dead column(s): stuckTurns.mean, consecutiveUnstable.last')
+  })
+
+  // Phase 6 Task 4: the runner row R1.no-progress is named with its verdict
+  // on the same ladder line, after the model rows — and on a fault line too,
+  // since the runner row does not depend on the hindcast.
+  it('names R1.no-progress with its verdict on the ladder line, with or without a hindcast', () => {
+    const runners = { 'R1.no-progress': { verdict: 'TOO FEW — cannot tell', precision: 0.8, ci: [0.376, 0.964], n: 5, pAdjusted: 0.3, source: 'runner' } }
+    const h = { version: 1, prefixTurns: 16, nHoldout: 21, baseRate: 0.5, lengthFeature: null, leakCheck: null, secondary: null,
+      ladder: { 'M1.lr': { verdict: 'NO EVIDENCE', precision: 0.5, ci: [0.2, 0.8], n: 8, pAdjusted: 1 } } }
+    expect(hindcastLine(h, { runners }))
+      .toBe('- Outcome hindcast: v1 at K = 16 turns on 21 held-out missions (base 50%): M1.lr precision 50% [20, 80] on 8 fired p(Holm) 1.000 NO EVIDENCE; '
+        + 'R1.no-progress precision 80% [38, 96] on 5 fired p(Holm) 0.300 TOO FEW; leak check not run')
+    expect(hindcastLine({ ...h, ladder: {} }, { runners }))
+      .toBe('- Outcome hindcast: v1 at K = 16 turns on 21 held-out missions (base 50%): R1.no-progress precision 80% [38, 96] on 5 fired p(Holm) 0.300 TOO FEW; leak check not run')
+    // Review M2: an UNMEASURED runner row prints its reason; a note (skipped
+    // malformed wave records, review M1) rides after it.
+    const unmeasured = { 'R1.no-progress': { verdict: 'UNMEASURED — fired on no in-scope wave', precision: null, ci: null, n: 0, pAdjusted: null, source: 'runner',
+      note: '1 malformed wave record(s) skipped: record #3' } }
+    expect(hindcastLine({ fault: 'exit 2: TOO FEW: x' }, { runners: unmeasured }))
+      .toBe('- Outcome hindcast: UNMEASURED — exit 2: TOO FEW: x; R1.no-progress precision null on 0 fired p(Holm) null UNMEASURED — fired on no in-scope wave (1 malformed wave record(s) skipped: record #3)')
+    // No runner rows: the line is what it was.
+    expect(hindcastLine({ fault: 'exit 2: TOO FEW: x' }, { runners: null })).toBe('- Outcome hindcast: UNMEASURED — exit 2: TOO FEW: x')
   })
 
   it('names a length feature when one reached the prefix', () => {

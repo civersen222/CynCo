@@ -28,6 +28,33 @@ const S3_UNIT = 0
 const S4_UNIT = 1
 const CONTEXT_UNIT = 2
 
+/**
+ * F165: how far (in pressure units, 0..1) a pressure may sit from its own
+ * running level and still count as settled. 0.2 is one quantum of S3 pressure
+ * (one tool call = 1/5): a band narrower than the signal's own step can never
+ * be met by a turn that calls one tool more or fewer than usual.
+ *
+ * A FIXED band, not one scaled by the metric's recent variance (spec ruling 4
+ * asked for variance scaling; tried and measured): scaled by its own spread
+ * (deviation / max(std, 0.1), settled within 2), a pressure that swings
+ * between extremes every turn makes the swing its own normal — after 30 turns
+ * of alternating extremes (freshTaskGovernance.test.ts) the streak read 0, and
+ * the C9 wave 2 stream failed signalsVersion2.test.ts's streak assertions. An
+ * oscillation is the instability a homeostat exists to see.
+ */
+export const STABILITY_BAND = 0.2
+
+/**
+ * The unit's reading for this turn: its deviation from the mean of the values
+ * the tracker held BEFORE this turn (the set point). 0 on the first turn —
+ * there is no running level yet, so the observation is its own set point.
+ */
+function deviation(tracker: InstanceType<typeof homeostat.TrendTracker>, observed: number): number {
+  const prior = tracker.values()
+  if (prior.length === 0) return 0
+  return observed - prior.reduce((s, v) => s + v, 0) / prior.length
+}
+
 export class HomeostatIntegration {
   /** 3-variable Ashby homeostat: S3, S4, context pressure */
   readonly ashby: InstanceType<typeof homeostat.AshbyHomeostat>
@@ -40,6 +67,10 @@ export class HomeostatIntegration {
   private nodeId: InstanceType<typeof NodeId>
   private lastBalance: InstanceType<typeof HomeostatBalance> | null = null
   private perturbationCount = 0
+  /** The pressures last observed (levels, not deviations). */
+  private lastPressures: { s3: number; s4: number } = { s3: 0, s4: 0 }
+  /** F165: the last turn's stability verdict, taken before ultrastability. */
+  private stableAtLastUpdate = true
 
   constructor(nodeId: InstanceType<typeof NodeId>) {
     this.nodeId = nodeId
@@ -73,10 +104,21 @@ export class HomeostatIntegration {
    * @param latencyMs - model response latency
    */
   update(s3Pressure: number, s4Pressure: number, contextPressure: number, latencyMs: number): void {
-    // Set current states
-    this.ashby.setState(S3_UNIT, s3Pressure)
-    this.ashby.setState(S4_UNIT, s4Pressure)
-    this.ashby.setState(CONTEXT_UNIT, contextPressure)
+    // F165: the units hold each pressure's DEVIATION from its own running level
+    // (the mean of the trailing window, taken before this turn is pushed), not
+    // the raw level. The coupled equation
+    // dx/dt = (A - hI)x / tau has its only equilibrium at x = 0, and isStable
+    // asks whether the drive there is ~0. Fed raw levels, that asked "is every
+    // pressure ~0" — unreachable in a mission, where S3 never drops below its
+    // 0.1 floor, S4 sits at 0.3-0.8 and context only grows. C9 wave 1 read
+    // unstable on all 394 turns; on the reconstructed C9 wave 2 stream the
+    // smallest net drive was 0.215 against a 0.05 bar. In deviation space x = 0 is
+    // "the pressures are where they have been": the equilibrium a homeostat
+    // regulates toward.
+    this.ashby.setState(S3_UNIT, deviation(this.s3Trend, s3Pressure))
+    this.ashby.setState(S4_UNIT, deviation(this.s4Trend, s4Pressure))
+    this.ashby.setState(CONTEXT_UNIT, deviation(this.contextTrend, contextPressure))
+    this.lastPressures = { s3: s3Pressure, s4: s4Pressure }
 
     // Step the coupled differential equation
     this.ashby.step(1.0) // dt = 1 turn
@@ -98,32 +140,46 @@ export class HomeostatIntegration {
       balance.ratio,
     ))
 
-    // ULTRASTABILITY: if not stable, randomize weights to search for new equilibrium
-    // Scale tolerance by time constant — isStable checks derivatives which are divided by tau,
-    // so a larger tau requires a proportionally smaller tolerance to detect the same instability.
-    const stabilityTolerance = 0.05 / this.ashby.timeConstant
-    if (!this.ashby.isStable(stabilityTolerance)) {
+    // ULTRASTABILITY: if not stable, randomize weights to search for new equilibrium.
+    // The turn's verdict is taken BEFORE the randomization and held: asked
+    // again after it, the same states under new weights could answer the other
+    // way, and the perturbation count and the instability streak would then
+    // disagree about the same turn.
+    this.stableAtLastUpdate = this.ashby.isStable(this.stabilityTolerance())
+    if (!this.stableAtLastUpdate) {
       this.ashby.randomizeWeights(0.5)
       this.perturbationCount++
     }
   }
 
   /**
-   * Is the homeostat currently stable?
+   * The derivative bound isStable passes to the core. The core divides the net
+   * drive (sum a_ik x_k - h x_i) by tau, so the bound is scaled by tau too; the
+   * drive bound itself is h * STABILITY_BAND — an uncoupled unit is settled
+   * while its deviation is within the band. (The pre-F165 bar, a drive of 0.05
+   * on raw levels, was a pressure of 0.0625: a third of one tool call.)
+   */
+  private stabilityTolerance(): number {
+    return (this.ashby.damping * STABILITY_BAND) / this.ashby.timeConstant
+  }
+
+  /**
+   * Did the last measured turn read stable — were the pressures near their
+   * own running levels? True before any turn (nothing has been perturbed).
    *
    * BEHAVIORAL EFFECT: When unstable, S5 should intervene.
-   * Tolerance is scaled by time constant so stability check is tau-independent.
    */
   isStable(): boolean {
-    return this.ashby.isStable(0.05 / this.ashby.timeConstant)
+    return this.stableAtLastUpdate
   }
 
   /**
    * Get the full metasystem state (S3/S4/S5).
    */
   getMetasystemState(): ReturnType<typeof homeostat.calculateMetasystem> {
-    const s3 = this.ashby.states[S3_UNIT]
-    const s4 = this.ashby.states[S4_UNIT]
+    // Levels, not the units' states: since F165 the units hold deviations.
+    const s3 = this.lastPressures.s3
+    const s4 = this.lastPressures.s4
 
     // S5 engagement: higher when system is unstable or perturbation count is high
     const s5Engagement = this.isStable() ? 0.3 : 0.8
@@ -145,12 +201,12 @@ export class HomeostatIntegration {
    * The balance classified from the pressures last measured, or null if no turn
    * has been measured yet.
    *
-   * This is the reading to report. getBalance() below recomputes from the ashby
-   * unit states, which have been stepped through the coupled equation and, when
-   * the system is unstable, had their weights randomized — appropriate for
-   * asking whether the system is settling, wrong for saying what the S3/S4
-   * balance IS. lastBalance is the classification of the numbers that were
-   * actually observed.
+   * This is the reading to report: the classification of the numbers that were
+   * actually observed. Since F165 getBalance() below reads the same observed
+   * levels (the ashby units hold deviations from each pressure's running level,
+   * which are not pressures), so the two agree after the first turn; they
+   * differ only before it, where this is null and getBalance() classifies
+   * (0, 0).
    *
    * Null rather than a default: before the first turn there are no pressures,
    * and "no reading" is not the same as "balanced" even where they act alike.
@@ -160,13 +216,15 @@ export class HomeostatIntegration {
   }
 
   /**
-   * Get the S3/S4 balance result.
+   * Get the S3/S4 balance result from the pressures last observed.
+   *
+   * Before F165 this read the ashby unit states after one Euler step (a shift
+   * of at most ~0.02 on the reconstructed C9 wave 2 stream). Since F165 the units hold
+   * deviations from each pressure's running level, which are not pressures, so
+   * the balance is computed from the observed levels.
    */
   getBalance(): ReturnType<typeof homeostat.calculateBalance> {
-    return homeostat.calculateBalance(
-      this.ashby.states[S3_UNIT],
-      this.ashby.states[S4_UNIT],
-    )
+    return homeostat.calculateBalance(this.lastPressures.s3, this.lastPressures.s4)
   }
 
   /**

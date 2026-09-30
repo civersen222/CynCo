@@ -81,6 +81,25 @@ describe('loadCampaignSpec', () => {
     expect(loaded.authorMissionId).toBeNull()
     expect(loaded.positive).toBeUndefined()
   })
+  // Phase 6 Task 5: the mid-wave progress probe's cadence
+  // (cynco-campaign-progress.mjs's everyMsFor reads spec.progress.everyMs
+  // before CYNCO_PROGRESS_EVERY_MS and the 30 min default). Optional; when
+  // present, everyMs must be a positive integer.
+  it('accepts the optional progress cadence and refuses nonsense in it', () => {
+    const s = good(); s.progress = { everyMs: 20_000 }
+    const loaded = loadCampaignSpec(write(s))
+    expect(loaded.progress).toEqual({ everyMs: 20_000 })
+    expect(loadCampaignSpec(write(good())).progress).toBeUndefined()
+    expect(() => loadCampaignSpec(write({ ...good(), progress: { everyMs: 0 } }))).toThrow(/progress\.everyMs/)
+    expect(() => loadCampaignSpec(write({ ...good(), progress: { everyMs: -1 } }))).toThrow(/progress\.everyMs/)
+    expect(() => loadCampaignSpec(write({ ...good(), progress: { everyMs: 1.5 } }))).toThrow(/progress\.everyMs/)
+    expect(() => loadCampaignSpec(write({ ...good(), progress: { everyMs: '20000' } }))).toThrow(/progress\.everyMs/)
+    // Task 5 review M1: present but empty — `everyMs` missing — is refused, naming the field.
+    expect(() => loadCampaignSpec(write({ ...good(), progress: {} }))).toThrow(/progress\.everyMs must be a positive integer/)
+    expect(() => loadCampaignSpec(write({ ...good(), progress: [] }))).toThrow(/progress must be an object/)
+    expect(() => loadCampaignSpec(write({ ...good(), progress: 'soon' }))).toThrow(/progress must be an object/)
+  })
+
   it('refuses an author that is neither cynco nor human, and nonsense in the other two', () => {
     expect(() => loadCampaignSpec(write({ ...good(), author: 'robot' }))).toThrow(/author must be "cynco" or "human"/)
     expect(() => loadCampaignSpec(write({ ...good(), author: '' }))).toThrow(/author must be/)

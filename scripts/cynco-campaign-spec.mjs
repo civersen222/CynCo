@@ -58,6 +58,13 @@ export function loadCampaignSpec(path) {
       if (typeof v !== 'string' || !v) throw new Error(`campaign spec env.${k} must be a non-empty string`)
     }
   }
+  // Optional: the mid-wave progress probe's cadence (Phase 6 Task 3,
+  // cynco-campaign-progress.mjs's everyMsFor) — spec.progress.everyMs is read
+  // before CYNCO_PROGRESS_EVERY_MS and the 30 min default.
+  if (spec.progress !== undefined) {
+    if (typeof spec.progress !== 'object' || spec.progress === null || Array.isArray(spec.progress)) throw new Error('campaign spec progress must be an object')
+    if (!Number.isInteger(spec.progress.everyMs) || spec.progress.everyMs <= 0) throw new Error('campaign spec progress.everyMs must be a positive integer')
+  }
   if (spec.author !== undefined && spec.author !== 'cynco' && spec.author !== 'human') throw new Error(`campaign spec author must be "cynco" or "human"; got ${JSON.stringify(spec.author)}`)
   spec.author = spec.author ?? 'human'
   if (spec.authorMissionId !== undefined && spec.authorMissionId !== null && typeof spec.authorMissionId !== 'string') throw new Error('campaign spec authorMissionId must be a string or null')

@@ -93,7 +93,8 @@ export function bashExe() {
  *
  * Options: `cwd`, `env` (merged over process.env unless `envExact`, which
  * passes `env` as the whole environment), `timeoutMs`, `shell`,
- * `retryImpossibleTimeout` (see below).
+ * `retryImpossibleTimeout` (see below), `onStaleRetry(line)` (the retry's log
+ * line goes to it instead of stderr).
  *
  * Returns `{ status, stdout, stderr, elapsedMs, timedOut, fault }`.
  * `timedOut` and `fault` are mutually exclusive, and both are absent-or-false
@@ -129,9 +130,13 @@ export function runSync(cmd, args, opts = {}, hooks = {}) {
     if (second.fault?.code === 'ETIMEDOUT') return second
     // Said out loud, because otherwise the retry is invisible: nothing could tell
     // from a log whether it had fired, which made "did the fix work?" unanswerable
-    // on the one live run that exercised it.
-    console.error(`[spawn] ${cmd}: an impossible ETIMEDOUT after ${first.fault.elapsedMs} ms `
-      + `(cap ${opts.timeoutMs} ms) — bun's stale deadline; retried once and the retry ran (F155)`)
+    // on the one live run that exercised it. A caller that COUNTS its retries
+    // (the mid-wave progress probe, whose every tick follows a gap) passes
+    // `onStaleRetry` and decides how often the line is printed.
+    const line = `[spawn] ${cmd}: an impossible ETIMEDOUT after ${first.fault.elapsedMs} ms `
+      + `(cap ${opts.timeoutMs} ms) — bun's stale deadline; retried once and the retry ran (F155)`
+    if (typeof opts.onStaleRetry === 'function') opts.onStaleRetry(line)
+    else console.error(line)
     return { ...second, staleDeadlineRetried: true }
   }
   return first

@@ -99,6 +99,15 @@ function classifyTask(userMessage: string): { type: TaskType; complexity: number
   return { type: 'simple_query', complexity: 1 }
 }
 
+/** F165: the per-turn signal vector's version. 2 = consecutiveUnstable is a
+ *  reachable, bounded streak and algedonicAlerts is windowed (with the
+ *  cumulative reading in algedonicAlertsTotal). Rows without it are v1. */
+export const SIGNALS_VERSION = 2
+/** F165: consecutiveUnstable never reports more than this. */
+export const CONSECUTIVE_UNSTABLE_CAP = 50
+/** F165: algedonicAlerts counts the alerts raised in this many turns. */
+export const ALGEDONIC_WINDOW_TURNS = 20
+
 // ─── Cybernetics Governance Layer ─────────────────────────────
 
 export class CyberneticsGovernance {
@@ -193,6 +202,9 @@ export class CyberneticsGovernance {
   private _lastTokPerSec = 0
   private lastVarietyRatio = 1.0
   private consecutiveUnstableCount = 0
+  /** F165: cumulative alert count at each of the last 21 turn seals. */
+  private alertTotalsAtSeal: number[] = []
+  private alertTotalAtConstruction = 0
   private varietyAttenuators: InstanceType<typeof variety.Attenuator>[]
   private varietyAmplifiers: InstanceType<typeof variety.Amplifier>[]
 
@@ -200,6 +212,7 @@ export class CyberneticsGovernance {
     this.onAlert = onAlert
     this._ablated = process.env._ABLATION_VSM_DISABLED === '1'
     this.eventBus = getEventBus()
+    this.alertTotalAtConstruction = this.algedonicAlertTotal()
     this.nodeId = new NodeId()
     this._predictionTracker = new PredictionTracker(this._sessionId)
 
@@ -441,6 +454,7 @@ export class CyberneticsGovernance {
     // fidelity (before the ablation return — measurement, not authority).
     this.regulatorFidelity.observe(globalContract.snapshot())
     if (this._ablated || this._paused) {
+      this.sealAlertWindow()
       return
     }
 
@@ -558,11 +572,15 @@ export class CyberneticsGovernance {
     const s4Pressure = metrics.thinkingTokens > 0 ? Math.min(metrics.thinkingTokens / metrics.totalTokens, 1.0) : 0.3
     this.homeostatIntegration.update(s3Pressure, s4Pressure, contextUtilization, metrics.latencyMs)
 
-    // Track consecutive instability — used by S5 for escalation decisions
+    // Track consecutive instability — used by S5 for escalation decisions.
+    // F165: bounded at CONSECUTIVE_UNSTABLE_CAP. S5 escalates at >= 3; past a
+    // cap the count carries no further decision, only session age — which is
+    // what it measured on C9 (1…394, monotone) before the homeostat could read
+    // stable at all.
     if (this.homeostatIntegration.isStable()) {
       this.consecutiveUnstableCount = 0
     } else {
-      this.consecutiveUnstableCount++
+      this.consecutiveUnstableCount = Math.min(this.consecutiveUnstableCount + 1, CONSECUTIVE_UNSTABLE_CAP)
     }
 
     // Emit variety event to EventBus
@@ -691,6 +709,33 @@ export class CyberneticsGovernance {
     })
 
     this._predictionTracker.evaluateOpen(this.turnCount, report, this.lastToolSignatures)
+    this.sealAlertWindow()
+  }
+
+  /** Non-Info AlgedonicFired events on the bus — the cumulative reading
+   *  `algedonicAlerts` reported before F165, now `algedonicAlertsTotal`. */
+  private algedonicAlertTotal(): number {
+    return this.eventBus.replayFiltered(
+      e => e.payload.kind === 'AlgedonicFired' && (e.payload as any).severity !== 'Info'
+    ).length
+  }
+
+  /** F165: record the cumulative alert count at turn t's seal, keeping
+   *  ALGEDONIC_WINDOW_TURNS + 1 seals (t-20 … t): the oldest is the baseline,
+   *  so the window counts turns t-19 … t — exactly 20, not 21 (review M5). */
+  private sealAlertWindow(): void {
+    this.alertTotalsAtSeal.push(this.algedonicAlertTotal())
+    if (this.alertTotalsAtSeal.length > ALGEDONIC_WINDOW_TURNS + 1) this.alertTotalsAtSeal.shift()
+  }
+
+  /** F165: alerts in the last ALGEDONIC_WINDOW_TURNS (20) turns as the frame reads it, after onTurnComplete
+   *  (signalsVersion2.test.ts pins it). Before 21 seals the baseline is the bus count when this
+   *  governor was built — the bus is engine-wide, the window is not. */
+  private windowedAlgedonicAlerts(total: number): number {
+    const baseline = this.alertTotalsAtSeal.length > ALGEDONIC_WINDOW_TURNS
+      ? this.alertTotalsAtSeal[0]
+      : this.alertTotalAtConstruction
+    return Math.max(0, total - baseline)
   }
 
   onModelError(error: string): void {
@@ -789,7 +834,9 @@ export class CyberneticsGovernance {
     const taskSnapshot = this.taskModel.snapshot()
     const noveltySnapshot = this.turnNovelty.snapshot()
     const progressSnapshot = this.progressModel.snapshot()
+    const algedonicAlertsTotal = this.algedonicAlertTotal()
     return {
+      signalsVersion: SIGNALS_VERSION,
       status,
       varietyBalance,
       varietyRatio: this.lastVarietyRatio,
@@ -805,9 +852,10 @@ export class CyberneticsGovernance {
         taskSnapshot.errorTrend,
       ),
       s3s4Balance,
-      algedonicAlerts: this.eventBus.replayFiltered(
-        e => e.payload.kind === 'AlgedonicFired' && (e.payload as any).severity !== 'Info'
-      ).length,
+      // F165: windowed. Before, this was the cumulative count (21 by the end
+      // of C9 wave 1), a session-age proxy; that reading is algedonicAlertsTotal.
+      algedonicAlerts: this.windowedAlgedonicAlerts(algedonicAlertsTotal),
+      algedonicAlertsTotal,
       stuckTurns: this.stuckCount,
       consecutiveUnstable: this.consecutiveUnstableCount,
       modelLatencyTrend: this.getLatencyTrend(),

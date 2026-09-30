@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process'
 import { gateLineVerdict } from './cynco-signal-validation.mjs'
 import { autopoiesisLine } from './cynco-autopoiesis.mjs'
 import { scoreboardLines } from './cynco-scoreboard.mjs'
+import { progressLine } from './cynco-campaign-progress.mjs'
 
 const today = () => new Date().toISOString().slice(0, 10)
 const h = (s) => (s / 3600).toFixed(2)
@@ -85,16 +86,30 @@ function identityLine(identity) {
 // way the scoreboard's does. null (no reading taken) is no line. The entry
 // line carries the dropped-column COUNT only (28 names made it unreadable);
 // `{ detail: true }` — the `--scoreboard` verb — names them.
-export function hindcastLine(h, { detail = false } = {}) {
+//
+// Phase 6 Task 4: `runners` (the ladder's `source: 'runner'` entries,
+// `R1.no-progress`) are named with their verdict on this same ladder line,
+// after the model rows, read the same way. The runner row does not depend on
+// the hindcast, so a fault line carries it too.
+export function hindcastLine(h, { detail = false, runners = null } = {}) {
   if (!h) return null
-  if (h.fault) return `- Outcome hindcast: UNMEASURED — ${h.fault}`
   const pct = (v) => (typeof v === 'number' ? `${Math.round(v * 100)}%` : 'null')
   const num = (v, d) => (typeof v === 'number' ? v.toFixed(d) : 'null')
-  const ladder = Object.entries(h.ladder ?? {}).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([id, r]) => {
+  const byId = ([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)
+  const rung = ([id, r]) => {
     const ci = Array.isArray(r?.ci) && r.n > 0 ? ` [${Math.round(r.ci[0] * 100)}, ${Math.round(r.ci[1] * 100)}]` : ''
-    const verdict = String(r?.verdict ?? 'no verdict').split(' — ')[0]
-    return `${id} precision ${pct(r?.precision)}${ci} on ${r?.n ?? 0} fired p(Holm) ${num(r?.pAdjusted, 3)} ${verdict}`
-  })
+    // An UNMEASURED verdict keeps its reason (Task 4 review M2, F16: unmeasured
+    // is null WITH its reason); every other verdict is cut at its dash.
+    const full = String(r?.verdict ?? 'no verdict')
+    const verdict = full.startsWith('UNMEASURED') ? full : full.split(' — ')[0]
+    const note = typeof r?.note === 'string' && r.note ? ` (${r.note})` : ''
+    return `${id} precision ${pct(r?.precision)}${ci} on ${r?.n ?? 0} fired p(Holm) ${num(r?.pAdjusted, 3)} ${verdict}${note}`
+  }
+  const runnerRungs = Object.entries(runners ?? {}).sort(byId).map(rung)
+  if (h.fault) return `- Outcome hindcast: UNMEASURED — ${h.fault}${runnerRungs.map(r => `; ${r}`).join('')}`
+  const models = Object.entries(h.ladder ?? {}).sort(byId).map(rung)
+  // A model ladder that faulted still says so when the runner rows follow it.
+  const ladder = [...(!models.length && h.ladderFault ? [`LADDER NOT WRITTEN (${h.ladderFault}) — rules rewritten alone`] : models), ...runnerRungs]
   const leak = h.leakCheck
     ? `leak check ${['gbt', 'lr'].filter(k => h.leakCheck[k]).map(k => `${k} AUC prefix ${num(h.leakCheck[k].aucPrefix, 2)} / hindsight ${num(h.leakCheck[k].aucHindsight, 2)}`).join(', ')}`
     : 'leak check not run'
@@ -103,11 +118,18 @@ export function hindcastLine(h, { detail = false } = {}) {
   const s = h.secondary
   const secondary = !s ? '' : s.refusal ? `; K = 32 ${s.refusal}`
     : `; K = ${s.prefixTurns ?? 32} gbt AUC ${num(s.models?.gbt?.auc, 2)}, lr AUC ${num(s.models?.lr?.auc, 2)}`
-  return `- Outcome hindcast: v${h.version ?? '?'} at K = ${h.prefixTurns ?? '?'} turns on ${h.nHoldout ?? '?'} held-out missions (base ${pct(h.baseRate)}): `
-    + `${ladder.length ? ladder.join('; ') : h.ladderFault ? `LADDER NOT WRITTEN (${h.ladderFault}) — rules rewritten alone` : 'no ladder reading'}; ${leak}${length}${secondary}${dropped}`
+  // F165: the one signals version the model was fitted on, and every
+  // version's eligible count — absent on a model written before F165.
+  const counts = Object.entries(h.rowsByVersion ?? {}).sort(([a], [b]) => Number(a) - Number(b)).map(([k, n]) => `v${k} ${n}`)
+  const signals = typeof h.signalsVersion === 'number' ? `, signals v${h.signalsVersion} only (eligible ${counts.join(', ') || 'none'})` : ''
+  // Task 2 review N3: the one irreversible act — the automatic per-version
+  // holdout freeze — is named on the wave whose export performed it.
+  const frozeNow = h.holdout?.frozenNow === true ? `; v${h.signalsVersion ?? '?'} holdout frozen now (${h.holdout.ids ?? '?'} ids)` : ''
+  return `- Outcome hindcast: v${h.version ?? '?'} at K = ${h.prefixTurns ?? '?'} turns${signals} on ${h.nHoldout ?? '?'} held-out missions (base ${pct(h.baseRate)}): `
+    + `${ladder.length ? ladder.join('; ') : 'no ladder reading'}; ${leak}${length}${secondary}${dropped}${frozeNow}`
 }
 
-export function verdictEntry({ spec, wave, row, grade, decision, ideationRecord, economicsLines, denialAnalysis = null, denialScope = 'campaign', capProposal = null, governancePosiwid = null, gateLines = null, identity = null, autopoiesis = null, scoreboard = null, hindcast = null }) {
+export function verdictEntry({ spec, wave, row, grade, decision, ideationRecord, economicsLines, denialAnalysis = null, denialScope = 'campaign', capProposal = null, governancePosiwid = null, gateLines = null, identity = null, autopoiesis = null, scoreboard = null, hindcast = null, progress = null, runnerLadder = null }) {
   const ts = row.toolStats ?? {}
   const inv = row.invariants
   const rejected = row.invariantsRejected === true
@@ -128,9 +150,9 @@ export function verdictEntry({ spec, wave, row, grade, decision, ideationRecord,
   if (grade.gate.passes.length) lines.push(`  - PASS: ${grade.gate.passes.map(p => p.id).join(', ')}`)
   lines.push(`- Suite gate ${grade.suite.harnessFault ? `REFUSED (${grade.suite.harnessFault})` : grade.suite.exit === 0 ? 'PASS' : 'FAIL'}: REGRESSED ${grade.suite.regressions.length}${grade.suite.regressions.length ? ` (${grade.suite.regressions.join(', ')})` : ''}, REPAIRED ${grade.suite.repairs.length}.`)
   lines.push(grade.sweep
-    ? `- Derived sweep ${grade.sweep.killed}/${grade.sweep.total}; survivors: ${grade.sweep.survived.length ? grade.sweep.survived.join(', ') : 'none'}.`
+    ? `- Derived sweep ${grade.sweep.killed}/${grade.sweep.total}${grade.sweep.kind === 'derived-full' ? ' (derived-full: refused on the diff, retried with --mutate over the wave\'s sources)' : ''}; survivors: ${grade.sweep.survived.length ? grade.sweep.survived.join(', ') : 'none'}.`
     : grade.sweepFault
-      ? `- Derived sweep: UNMEASURED — ${grade.sweepFault}.`
+      ? `- Derived sweep: UNMEASURED — ${grade.sweepFault}${grade.sweepRetried ? (grade.sweepFault === 'sweep refused (exit 2)' ? ' (and again on the --mutate retry)' : ' (on the --mutate retry, after the diff sweep refused)') : ''}.`
       : '- Derived sweep: UNMEASURED (no diff or the sweep refused).')
   lines.push(`- POSIWID ${grade.posiwid.verdict} (divergence ${grade.posiwid.divergence.toFixed(3)}, dominant ${grade.posiwid.dominantObserved}).`)
   if (governancePosiwid) {
@@ -138,18 +160,23 @@ export function verdictEntry({ spec, wave, row, grade, decision, ideationRecord,
     lines.push(`- Governance POSIWID ${verdict} (divergence ${divergence.toFixed(3)}, dominant ${dominantObserved}, support ${support}${onsetWave ? `; drift onset wave ${onsetWave}` : ''}).`)
   }
   if (ideationRecord) lines.push(`- S4 ideation (authority ${ideationRecord.authority}): ${ideationRecord.hypotheses.length} hypothesis/es; followed=${ideationRecord.followed}.`)
-  lines.push(`- Ledger: verified ${grade.verified === null ? 'null (harness fault)' : grade.verified}; mutationSweep ${grade.sweep ? 'recorded (derived)' : 'null'}.`)
+  lines.push(`- Ledger: verified ${grade.verified === null ? 'null (harness fault)' : grade.verified}; mutationSweep ${grade.sweep ? `recorded (${grade.sweep.kind ?? 'derived'})` : 'null'}.`)
   const idLine = identityLine(identity)
   if (idLine) lines.push(idLine)
   // Phase 4 ruling 4: the campaign checklist (scripts/cynco-autopoiesis.mjs),
   // beside the identity reading its first criterion is.
   const apLine = autopoiesisLine(autopoiesis)
   if (apLine) lines.push(apLine)
+  // Phase 6 ruling 2: the mid-wave gate readings and the shadow R1.no-progress
+  // (scripts/cynco-campaign-progress.mjs), read off the wave record. No record
+  // handed over, no line; a record without readings prints the reason.
+  if (progress) lines.push(progressLine(progress))
   // Phase 5 ruling 2: the four headline numbers, campaign to date
   // (scripts/cynco-scoreboard.mjs). No board, no line.
   lines.push(...scoreboardLines(scoreboard))
   // Phase 5 ruling 5: the outcome hindcast, right after the board.
-  const hcLine = hindcastLine(hindcast)
+  // Phase 6 Task 4: the ladder's runner rows (R1.no-progress) ride on it.
+  const hcLine = hindcastLine(hindcast, { runners: runnerLadder })
   if (hcLine) lines.push(hcLine)
   if (denialAnalysis?.invariants) {
     const pct = v => v === null ? '—' : (v * 100).toFixed(1) + '%'

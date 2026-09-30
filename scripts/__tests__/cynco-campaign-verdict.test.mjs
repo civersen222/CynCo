@@ -64,6 +64,22 @@ describe('verdictEntry', () => {
     expect(faultText).toMatch(/- Derived sweep: UNMEASURED — timed out after 3600000 ms\./)
     expect(faultText).not.toMatch(/no diff or the sweep refused/)
   })
+  // F164: a derived-full reading says it is one, on the sweep line and the ledger line.
+  it('names a derived-full reading and a refusal that survived its retry', () => {
+    const fullGrade = { ...grade, sweep: { kind: 'derived-full', retried: true, killed: 4, total: 4, survived: [] }, sweepRetried: true }
+    const fullText = verdictEntry({ spec: { id: 'c9' }, wave: 2, row, grade: fullGrade, decision: { kind: 'pass', why: 'x' }, ideationRecord: null, economicsLines: [] })
+    expect(fullText).toMatch(/- Derived sweep 4\/4 \(derived-full: refused on the diff, retried with --mutate over the wave's sources\); survivors: none\./)
+    expect(fullText).toMatch(/mutationSweep recorded \(derived-full\)\./)
+    const twice = { ...grade, sweep: null, sweepFault: 'sweep refused (exit 2)', sweepRetried: true }
+    const twiceText = verdictEntry({ spec: { id: 'c9' }, wave: 2, row, grade: twice, decision: { kind: 'next', why: 'x' }, ideationRecord: null, economicsLines: [] })
+    expect(twiceText).toMatch(/- Derived sweep: UNMEASURED — sweep refused \(exit 2\) \(and again on the --mutate retry\)\./)
+    expect(text).toMatch(/mutationSweep recorded \(derived\)\./)
+    // review M1: a retry that TIMED OUT did not refuse "again" — say which happened
+    const retryTimedOut = { ...grade, sweep: null, sweepFault: 'timed out after 3600000 ms', sweepRetried: true }
+    const toText = verdictEntry({ spec: { id: 'c9' }, wave: 2, row, grade: retryTimedOut, decision: { kind: 'next', why: 'x' }, ideationRecord: null, economicsLines: [] })
+    expect(toText).toMatch(/- Derived sweep: UNMEASURED — timed out after 3600000 ms \(on the --mutate retry, after the diff sweep refused\)\./)
+    expect(toText).not.toMatch(/and again/)
+  })
   it('keeps the generic UNMEASURED line when there was simply no diff', () => {
     const noDiffGrade = { ...grade, sweep: null, sweepFault: null }
     const noDiffText = verdictEntry({ spec: { id: 'c8' }, wave: 1, row, grade: noDiffGrade, decision: { kind: 'next', why: 'x' }, ideationRecord: null, economicsLines: [] })

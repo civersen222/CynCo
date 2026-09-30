@@ -119,14 +119,25 @@ export function main(argv, dir = undefined) {
   // whatever expressions the diff added, so a survivor is a coverage finding
   // instead. Both make the row MEASURED; only the first can fail it. Absent
   // means authored, which is what all 42 pre-existing sweeps are.
+  // 'derived-full' (F164) = the derived sweep refused on the diff and was
+  // re-run with `--mutate` over the wave's whole source files — the shape the
+  // campaign runner's grade writes, spelled the same so a hand relabel of a
+  // row the runner could not label is indistinguishable from the runner's own.
   const kind = arg(argv, 'kind') ?? 'authored'
-  if (kind !== 'authored' && kind !== 'derived') {
-    console.error(`--kind must be 'authored' or 'derived', got ${kind}`)
+  if (kind !== 'authored' && kind !== 'derived' && kind !== 'derived-full') {
+    console.error(`--kind must be 'authored', 'derived' or 'derived-full', got ${kind}`)
     return 2
   }
 
   if ((!recordArg && !missionArg) || !command || killed === undefined || total === undefined) {
-    console.error('usage: --record N | --mission ID  --command "..." --killed K --total T [--survived a,b] [--kind authored|derived] [--dry-run]')
+    console.error('usage: --record N | --mission ID  --command "..." --killed K --total T [--survived a,b] [--kind authored|derived|derived-full] [--dry-run]')
+    return 2
+  }
+  // Review M3: `derived-full` is a claim about HOW the sweep ran — whole files
+  // named by `--mutate`. A command without it is a plain derived reading, and
+  // stamping it derived-full would say its mutants reach lines they never did.
+  if (kind === 'derived-full' && !/(^|\s)--mutate(\s|=|$)/.test(command)) {
+    console.error('--kind derived-full needs a --command that ran the sweep with --mutate; this one did not — record it as --kind derived')
     return 2
   }
 
@@ -161,7 +172,9 @@ export function main(argv, dir = undefined) {
   const before = rec.mutationSweep
   rec.mutationSweep = kind === 'derived'
     ? { kind, command, killed: k, total: t, survived }
-    : { command, killed: k, total: t, survived }
+    : kind === 'derived-full'
+      ? { kind, command, killed: k, total: t, survived, retried: true }
+      : { command, killed: k, total: t, survived }
 
   console.log(`record #${idx + 1}  ${rec.missionId}`)
   console.log(`  briefFile : ${rec.briefFile}`)

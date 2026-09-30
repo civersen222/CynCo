@@ -22,7 +22,22 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from 'node:fs'
 import { join, dirname, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { analyse as analyseFn, ruleVerdictOf, holm, wilson } from './cynco-signal-validation.mjs'
+import { analyse as analyseFn, ruleVerdictOf, holm, wilson, rulesFired } from './cynco-signal-validation.mjs'
+import { signalsVersionOf } from './cynco-outcome-dataset.mjs'
+
+/**
+ * F165 (review I2): the S5 rules whose condition reads a signal that changed
+ * meaning in signals v2 — `homeostatStable` / `homeostatConsecutiveUnstable`
+ * (engine/s5/ruleBasedS5.ts: W5 at `>= 3`, I2 at `1..2`). In v1 the homeostat
+ * never read stable, so W5 fired on every turn from 3 on and I2 on turns 1–2
+ * of EVERY mission: a v1 firing is not the v2 rule's evidence. These rules are
+ * scored on v2 missions only; their v1 table rides on the row as `v1`, never
+ * pooled into `n`/`precision`. No rule reads `algedonicAlerts`.
+ */
+export const V2_CHANGED_RULES = Object.freeze(['I2', 'W5'])
+const V2_CHANGED = new Set(V2_CHANGED_RULES)
+/** A ledger row's signals version: the minimum over its turns (1 when none carries one). */
+const missionVersion = (row) => signalsVersionOf(Array.isArray(row?.turns) ? row.turns : [])
 
 export const RULE_VERDICTS_PATH = (home) => join(home, 'datasets', 'rule-verdicts.json')
 /** Where `scripts/cynco-outcome-model.py` writes the hindcast the runner reads. */
@@ -66,6 +81,76 @@ function modelRuleOf(m, rows, analyse) {
     ?? { id: m.id, firedTotal: 0, labeled: 0, failures: 0, precision: null, ci: wilson(0, 0), lift: null, p: null, coverage: 0 }
   return { ...r, base: res.labeled ? res.base : null, scopeN: res.labeled }
 }
+
+/** A runner row's verdict when there is no table to read one from (F16:
+ *  unmeasured is null with its reason, never a rate of 0). */
+export const RUNNER_UNMEASURED_NO_SCOPE = 'UNMEASURED — no wave in scope (no shadow decision at 50 % of its clock or later)'
+export const RUNNER_UNMEASURED_NEVER_FIRED = 'UNMEASURED — fired on no in-scope wave'
+
+/**
+ * Phase 6: one runner row (`R1.no-progress`, `source: 'runner'`, from
+ * `runnerRowsFrom` in scripts/cynco-campaign-progress.mjs) through the SAME
+ * arithmetic as an S5 rule and a model row: `analyse` over the row's scope —
+ * the in-scope WAVES, one per mission — with "fired" read off `fired` and the
+ * outcome off `failed` (the wave's own decision, the record the firing was
+ * read from; not a ledger label, which a wave that never graded lacks).
+ * A row that fired on no in-scope wave has no table: n 0, every number null,
+ * and an UNMEASURED verdict naming why. `pAdjusted` is set by the caller's
+ * Holm pass.
+ */
+function runnerRuleOf(u, analyse) {
+  const scoped = [...u.scope].sort().map(missionId => ({ missionId }))
+  const res = analyse(scoped, {
+    firedOf: (r) => (u.fired.has(r.missionId) ? new Set([u.id]) : new Set()),
+    labelOf: (r) => !u.failed.has(r.missionId),
+  })
+  const r = res.rules.find(x => x.id === u.id)
+    ?? { id: u.id, firedTotal: 0, labeled: 0, failures: 0, precision: null, ci: wilson(0, 0), lift: null, p: null, coverage: 0 }
+  const unmeasured = res.labeled === 0 ? RUNNER_UNMEASURED_NO_SCOPE : r.labeled === 0 ? RUNNER_UNMEASURED_NEVER_FIRED : null
+  // Review M1: the wave records runnerRowsFrom could not read, named, so a
+  // malformed line in some campaign's waves.jsonl is visible on the row.
+  const skipped = Array.isArray(u.skipped) ? u.skipped : []
+  const note = skipped.length ? `${skipped.length} malformed wave record(s) skipped: ${skipped.join(', ')}` : null
+  // Final review I1: the waves whose VERDICT grade did not run — unlabeled, as
+  // `labelOf` makes them for the S5 rules — named, never counted in n.
+  const unlabeled = Array.isArray(u.unlabeled) ? u.unlabeled : []
+  // Review M3: an unmeasured row has no interval either — null, not wilson(0, 0)'s [0, 1].
+  return { ...r, ci: unmeasured ? null : r.ci, base: res.labeled ? res.base : null, scopeN: res.labeled, unmeasured, note, unlabeled }
+}
+/** An `analyse` row for a rule with no table in its scope (F16: null numbers). */
+const emptyRuleRow = (id) => ({ id, firedTotal: 0, labeled: 0, failures: 0, precision: null, ci: wilson(0, 0), lift: null, p: null, coverage: 0 })
+
+/**
+ * `analyse` over the ledger with the V2_CHANGED_RULES taken apart (F165,
+ * review I2). When no mission fired one of them the ledger is analysed exactly
+ * as before (`v2Split: false`). Otherwise:
+ * - every other rule is analysed over every row, as before;
+ * - each changed rule that fired anywhere is analysed over the v2 missions
+ *   only (a rule that fired on no v2 mission has an empty table: n 0, null
+ *   numbers, `TOO FEW`), with its v1 table beside it as `v1` — `{ n,
+ *   firedTotal, failures, precision, ci, p, lift, scopeN }`, `p` uncorrected
+ *   (the v1 table is not a test in the family);
+ * - Holm runs once over the whole rule set, so the family size is unchanged.
+ */
+function analyseByVersion(rows, analyse) {
+  const changedFired = new Set()
+  for (const r of rows) for (const id of rulesFired(r)) if (V2_CHANGED.has(id)) changedFired.add(id)
+  if (changedFired.size === 0) return { res: analyse(rows), v2Split: false }
+  const others = (r) => new Set([...rulesFired(r)].filter(id => !V2_CHANGED.has(id)))
+  const changedOnly = (r) => new Set([...rulesFired(r)].filter(id => V2_CHANGED.has(id)))
+  const res = analyse(rows, { firedOf: others })
+  const v2 = analyse(rows.filter(r => missionVersion(r) >= 2), { firedOf: changedOnly })
+  const v1 = analyse(rows.filter(r => missionVersion(r) < 2), { firedOf: changedOnly })
+  for (const id of [...changedFired].sort()) {
+    const r2 = v2.rules.find(x => x.id === id) ?? emptyRuleRow(id)
+    const r1 = v1.rules.find(x => x.id === id) ?? emptyRuleRow(id)
+    res.rules.push({ ...r2, scopeN: v2.labeled,
+      v1: { n: r1.labeled, firedTotal: r1.firedTotal, failures: r1.failures, precision: r1.precision, ci: r1.ci, p: r1.p, lift: r1.lift, scopeN: v1.labeled } })
+  }
+  res.rulesTested = holm(res.rules)
+  return { res, v2Split: true }
+}
+
 export const RULE_VERDICTS_SCHEMA = 1
 export const RULE_VERDICTS_HISTORY_CAP = 20
 
@@ -84,13 +169,18 @@ export function readRuleVerdicts(path) {
   return raw
 }
 
+/** id → verdict string for the entries whose `source` passes `keep`. */
+const verdictsWhere = (file, keep) => Object.fromEntries(Object.entries(file?.rules ?? {}).filter(([, r]) => keep(r?.source)).map(([id, r]) => [id, r?.verdict ?? null]))
 /** id → verdict string, from a file (or {} for none) — the S5 RULES only. The
- *  learner's `M1.*` rows (`source: 'model'`) are not in the version's meaning:
- *  nothing S5 may enforce changes when one appears, vanishes or moves (final
- *  review M2, T5-M2); they are compared by `modelVerdictMap` instead. */
-const verdictMap = (file) => Object.fromEntries(Object.entries(file?.rules ?? {}).filter(([, r]) => r?.source !== 'model').map(([id, r]) => [id, r?.verdict ?? null]))
+ *  learner's `M1.*` rows (`source: 'model'`) and the runner's `R1.*` rows
+ *  (`source: 'runner'`, Phase 6) are not in the version's meaning: nothing S5
+ *  may enforce changes when one appears, vanishes or moves (final review M2,
+ *  T5-M2); they are compared by `modelVerdictMap` / `runnerVerdictMap`. */
+const verdictMap = (file) => verdictsWhere(file, (s) => s !== 'model' && s !== 'runner')
 /** id → verdict string for the `M1.*` model rows only. */
-const modelVerdictMap = (file) => Object.fromEntries(Object.entries(file?.rules ?? {}).filter(([, r]) => r?.source === 'model').map(([id, r]) => [id, r?.verdict ?? null]))
+const modelVerdictMap = (file) => verdictsWhere(file, (s) => s === 'model')
+/** id → verdict string for the runner rows (`R1.no-progress`) only. */
+const runnerVerdictMap = (file) => verdictsWhere(file, (s) => s === 'runner')
 
 /** Every rule whose verdict differs between two id → verdict maps, sorted by id.
  *  A rule that appears or disappears is a change (`from`/`to` null). */
@@ -122,13 +212,26 @@ function verdictChanges(before, after) {
  * (`engine/s5/ruleAuthority.ts` skips `source: 'model'`); an M1 that earns
  * PREDICTIVE is the next phase's advisory input, nothing more. With no model
  * rows the file is exactly what it was before Phase 5.
+ *
+ * Phase 6: `runnerRows` (from `runnerRowsFrom`, the runner's shadow regulator
+ * `R1.no-progress`) mirror the model rows exactly — the same Fisher/Wilson
+ * over their scope (the in-scope waves across every runner-driven campaign),
+ * the same one Holm family (rules, then models, then runner rows), written as
+ * `rules['R1.no-progress'] = { …, source: 'runner', scope: 'waves', base,
+ * scopeN }`, recorded in `runnerChanged` on the history entry and never a
+ * version bump. The engine never grants a runner row authority
+ * (`engine/s5/ruleAuthority.ts` skips `source: 'runner'`). A runner row with
+ * no table reads UNMEASURED with its reason, n 0 and null numbers (F16).
  */
-export function writeRuleVerdicts({ rows, campaign, outPath, analyse = analyseFn, now = () => new Date().toISOString(), modelRows = [] }) {
-  const res = analyse(rows)
+export function writeRuleVerdicts({ rows, campaign, outPath, analyse = analyseFn, now = () => new Date().toISOString(), modelRows = [], runnerRows = [] }) {
+  const { res, v2Split } = analyseByVersion(rows, analyse)
   const models = (modelRows ?? []).map(m => modelRuleOf(m, rows, analyse))
-  // Rules first, then models, as one Holm family. Only when there are model
-  // rows: without them the rules keep `analyse`'s own correction untouched.
-  const holmFamily = models.length ? holm([...res.rules, ...models]) : null
+  const runners = (runnerRows ?? []).map(u => runnerRuleOf(u, analyse))
+  // Rules first, then models, then runner rows, as one Holm family. Only when
+  // there are extra rows: without them the rules keep `analyse`'s own
+  // correction untouched (or, with a v2 split, the one `analyseByVersion` ran
+  // over the same rule set).
+  const holmFamily = models.length || runners.length ? holm([...res.rules, ...models, ...runners]) : null
   const rules = {}
   for (const r of [...res.rules].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))) {
     rules[r.id] = {
@@ -138,6 +241,10 @@ export function writeRuleVerdicts({ rows, campaign, outPath, analyse = analyseFn
       verdict: ruleVerdictOf(r),
       precision: r.precision ?? null, ci: r.ci ?? null, p: r.p ?? null, n: r.labeled ?? null,
       pAdjusted: r.pAdjusted ?? null, lift: r.lift ?? null, firedTotal: r.firedTotal ?? null, failures: r.failures ?? null,
+      // F165 (review I2): a rule that reads a v2-changed signal is scored on
+      // v2 missions only (`signals: 'v2'`, `scopeN` = the labeled v2
+      // missions); its v1 table is kept apart, never pooled.
+      ...(r.v1 !== undefined ? { signals: 'v2', scopeN: r.scopeN, v1: r.v1 } : {}),
     }
   }
   for (const r of [...models].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))) {
@@ -150,27 +257,48 @@ export function writeRuleVerdicts({ rows, campaign, outPath, analyse = analyseFn
       source: 'model', scope: 'holdout', base: r.base, scopeN: r.scopeN,
     }
   }
-  const predictive = Object.keys(rules).filter(id => rules[id].verdict === 'PREDICTIVE')
+  for (const r of [...runners].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))) {
+    rules[r.id] = {
+      verdict: r.unmeasured ?? ruleVerdictOf(r),
+      precision: r.precision ?? null, ci: r.ci ?? null, p: r.p ?? null, n: r.labeled ?? null,
+      pAdjusted: r.pAdjusted ?? null, lift: r.lift ?? null, firedTotal: r.firedTotal ?? null, failures: r.failures ?? null,
+      // `base` is the failure rate over the in-scope waves; `scopeN` how many.
+      source: 'runner', scope: 'waves', base: r.base, scopeN: r.scopeN,
+      // null, or the malformed wave records skipped (named).
+      note: r.note,
+      // `[{ missionId, why }]`: waves out of n because their grade did not run.
+      unlabeled: r.unlabeled ?? [],
+    }
+  }
+  // Review M4: the runner rows are counted in neither the rule count nor this
+  // list — `predictive` and "N predictive of R rules" agree that R1 is not a
+  // rule; a PREDICTIVE R1 is read in its own entry. (The `M1.*` rows keep their
+  // Phase 5 place in the list.)
+  const predictive = Object.keys(rules).filter(id => rules[id].verdict === 'PREDICTIVE' && rules[id].source !== 'runner')
   const prev = readRuleVerdicts(outPath)
   const changed = verdictChanges(verdictMap(prev), verdictMap({ rules }))
   // A model row that appeared, vanished or moved stays on the record — an M1
   // reaching PREDICTIVE must be findable — but it never bumps the version.
   const modelChanged = verdictChanges(modelVerdictMap(prev), modelVerdictMap({ rules }))
+  // The runner rows, the same way (Phase 6).
+  const runnerChanged = verdictChanges(runnerVerdictMap(prev), runnerVerdictMap({ rules }))
   const at = now()
   let version = Number.isInteger(prev?.version) ? prev.version : 0
   let history = Array.isArray(prev?.history) ? [...prev.history] : []
-  const modelNote = modelChanged.length ? { modelChanged } : {}
+  const notes = { ...(modelChanged.length ? { modelChanged } : {}), ...(runnerChanged.length ? { runnerChanged } : {}) }
   if (!prev || changed.length > 0) {
     version += 1
-    history.push({ version, at, campaign: campaign ?? null, predictive, changed, ...modelNote })
-  } else if (modelChanged.length > 0) {
-    history.push({ version, at, campaign: campaign ?? null, predictive, changed: [], modelChanged })
+    history.push({ version, at, campaign: campaign ?? null, predictive, changed, ...notes })
+  } else if (modelChanged.length > 0 || runnerChanged.length > 0) {
+    history.push({ version, at, campaign: campaign ?? null, predictive, changed: [], ...notes })
   }
   history = history.slice(-RULE_VERDICTS_HISTORY_CAP)
   const file = {
     schema: RULE_VERDICTS_SCHEMA, version, at, campaign: campaign ?? null,
     ledger: { total: res.total, labeled: res.labeled, failures: res.failures, base: res.base, rulesTested: res.rulesTested,
-      ...(holmFamily === null ? {} : { holmFamily }) },
+      ...(holmFamily === null ? {} : { holmFamily }),
+      // F165: the rules scored on v2 missions only this write (absent when none fired).
+      ...(v2Split ? { v2Rules: [...V2_CHANGED_RULES] } : {}) },
     rules, predictive, history,
   }
   mkdirSync(dirname(outPath), { recursive: true })
@@ -182,18 +310,26 @@ export function writeRuleVerdicts({ rows, campaign, outPath, analyse = analyseFn
   // `total` counts every entry in the file; `rules` / `modelRows` split it, so
   // a reader can say "N of 8 rules (+2 model rows)" as the scoreboard does
   // (final review M7, T7-M5).
+  // Phase 6: with runner rows, `runnerRows` counts them and `runners` carries
+  // their entries, which the verdict entry names on its ladder line.
   return { version, predictive, total: Object.keys(rules).length, rules: res.rules.length, modelRows: models.length,
-    ...(models.length ? { models: Object.fromEntries(models.map(r => [r.id, rules[r.id]])) } : {}) }
+    ...(models.length ? { models: Object.fromEntries(models.map(r => [r.id, rules[r.id]])) } : {}),
+    ...(runners.length ? { runnerRows: runners.length, runners: Object.fromEntries(runners.map(r => [r.id, rules[r.id]])) } : {}) }
 }
 
-/** The CLI's summary line: rules and model rows counted apart, as the scoreboard reads them. */
+/** The CLI's summary line: rules, model rows and runner rows counted apart, as the scoreboard reads them. */
 export function verdictsLine(r, outPath) {
   const models = r.modelRows ? ` (+${r.modelRows} model row${r.modelRows === 1 ? '' : 's'})` : ''
-  return `rule verdicts v${r.version}: ${r.predictive.length} predictive of ${r.rules} rules${models} (${r.predictive.join(', ') || 'none'}) → ${outPath}`
+  const runners = r.runnerRows ? ` (+${r.runnerRows} runner row${r.runnerRows === 1 ? '' : 's'})` : ''
+  return `rule verdicts v${r.version}: ${r.predictive.length} predictive of ${r.rules} rules${models}${runners} (${r.predictive.join(', ') || 'none'}) → ${outPath}`
 }
 
 // CLI: rebuild the file by hand (the runner does it at every VERDICT).
-//   bun scripts/cynco-rule-verdicts.mjs [--ledger-dir DIR] [--out PATH] [--with-hindcast] [--datasets-dir DIR]
+//   bun scripts/cynco-rule-verdicts.mjs [--ledger-dir DIR] [--out PATH] [--with-hindcast] [--datasets-dir DIR] [--manifest PATH] [--campaigns-dir DIR]
+//
+// Every run builds the runner row `R1.no-progress` from the campaigns' wave
+// records exactly as the VERDICT does (Task 4 review I1), so a hand rebuild
+// corrects the rules over the same Holm family.
 //
 // Without `--with-hindcast` the rules alone are rewritten. With it, the
 // runner's own VERDICT sequence runs (final review M7): exportOutcomeDatasets
@@ -203,13 +339,18 @@ export function verdictsLine(r, outPath) {
 // printed as UNMEASURED and the rules are written without model rows — as the
 // runner does. `--datasets-dir DIR` puts the three datasets and
 // outcome-model.json directly in DIR (default `<cyncoHome>/datasets`) and,
-// unless `--out` is given, the verdict file too — so a test or a temp run never
-// touches the real home.
+// unless `--out` is given, the verdict file too, and — unless `--manifest` is
+// given — keeps the holdout manifest at `<DIR>/frozen-eval.json` (final review
+// M8). Such a run WRITES nothing under the real home; it still READS
+// `<cyncoHome>/campaigns` for the runner row unless `--campaigns-dir DIR` names
+// another campaigns dir (Task 4 review N1).
 //
 // `engine/paths.js` is TypeScript behind a `.js` specifier and loads only under
-// bun, so it is imported lazily and only when neither --out nor --datasets-dir
-// names where to write. `deps` is the test seam (`readLedger`, `runHindcast`,
-// `cyncoHome`, `log`).
+// bun, so it is imported lazily, and only when something needs the real home:
+// no --out and no --datasets-dir (the verdict file's place), no
+// --campaigns-dir (the campaigns the runner row is read from), or
+// --with-hindcast without --datasets-dir (the datasets' place). `deps` is the
+// test seam (`readLedger`, `runHindcast`, `cyncoHome`, `log`).
 export async function main(argv, deps = {}) {
   const arg = (flag) => { const i = argv.indexOf(flag); return i >= 0 ? argv[i + 1] : null }
   const log = deps.log ?? ((s) => console.log(s))
@@ -223,27 +364,43 @@ export async function main(argv, deps = {}) {
   const outPath = arg('--out') ? resolve(arg('--out'))
     : datasetsDir ? join(datasetsDir, 'rule-verdicts.json')
       : RULE_VERDICTS_PATH(await home())
+  // Review I1: the runner row the VERDICT builds, from the same construction
+  // (scripts/cynco-runner-rows.mjs) over every runner-driven campaign's waves —
+  // it is a member of the Holm family, so a rebuild without it would correct
+  // the S5 rules over a smaller m than the VERDICT and could flip one.
+  // `--campaigns-dir DIR` names the campaigns dir (default <cyncoHome>/campaigns).
+  const campaignsDir = arg('--campaigns-dir') ? resolve(arg('--campaigns-dir')) : join(await home(), 'campaigns')
+  const runnerRows = (await import('./cynco-runner-rows.mjs')).runnerRowsFromCampaigns(campaignsDir)
   let modelRows = []
   if (withHindcast) {
     const hc = await import('./cynco-hindcast.mjs')
     const { hindcastLine } = await import('./cynco-campaign-verdict.mjs')
     let hindcast
     try {
-      const exported = hc.exportOutcomeDatasets({ rows, home: datasetsDir ? null : await home(), datasetsDir })
-      if (!exported?.n) hindcast = { fault: `no eligible labeled mission at K = ${hc.PRIMARY_TURNS} turns — nothing to train on` }
+      // `--manifest PATH` (F165 fix round 2): the per-version frozen holdout the
+      // hindcast reads — and, when the current version's pool reaches the
+      // minimum, freezes into. Default: `<DIR>/frozen-eval.json` when
+      // `--datasets-dir DIR` is given (final review M8: a temp run never
+      // performs the one-time freeze on the repo's committed manifest), else
+      // the committed one, as the runner does.
+      const manifestArg = arg('--manifest') ? resolve(arg('--manifest')) : datasetsDir ? join(datasetsDir, 'frozen-eval.json') : null
+      const manifest = manifestArg ? { manifestPath: manifestArg } : {}
+      const exported = hc.exportOutcomeDatasets({ rows, home: datasetsDir ? null : await home(), datasetsDir, ...manifest })
+      if (!hc.hindcastReady(exported)) hindcast = { fault: hc.noEligibleFault(exported, hc.PRIMARY_TURNS) }
       else {
         const h = hc.hindcastOf((deps.runHindcast ?? hc.runHindcast)({ paths: exported.paths }), exported.paths.out)
         if (h.fault) hindcast = { fault: h.fault }
-        else { hindcast = h.summary; modelRows = modelRowsFrom(h.model, rows) }
+        // Task 2 review N3: a hand run that froze the holdout says so too.
+        else { hindcast = { ...h.summary, ...(exported?.holdout ? { holdout: exported.holdout } : {}) }; modelRows = modelRowsFrom(h.model, rows) }
       }
     } catch (e) { hindcast = { fault: String(e?.message ?? e) } }
-    const r = writeRuleVerdicts({ rows, campaign: null, outPath, modelRows })
+    const r = writeRuleVerdicts({ rows, campaign: null, outPath, modelRows, runnerRows })
     if (!hindcast.fault) hindcast.ladder = r.models ?? null
-    log(hindcastLine(hindcast))
+    log(hindcastLine(hindcast, { runners: r.runners ?? null }))
     log(verdictsLine(r, outPath))
     return 0
   }
-  log(verdictsLine(writeRuleVerdicts({ rows, campaign: null, outPath }), outPath))
+  log(verdictsLine(writeRuleVerdicts({ rows, campaign: null, outPath, runnerRows }), outPath))
   return 0
 }
 

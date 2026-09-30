@@ -31,10 +31,17 @@ export const defaultIo = {
   // suite and the reading looked normal. `null` means "I do not know what
   // changed", and runSweep then leaves `--tests` off so the sweep's own
   // refusal is the visible finding.
+  //
+  // `--diff-filter=d` (review I1): a path the wave DELETED is not a file it
+  // shipped. Named under `--mutate` it is a hard refusal (the sweep cannot
+  // find it at HEAD), so a wave that deletes a dead module and fixes an import
+  // — F164's shape — would refuse its retry too; and a deleted `test_*.py`
+  // is not "the diff shipped its own test", so it must not switch off the
+  // keep-green `--tests`. Renames keep their new path.
   changedFiles(repo, base, head) {
-    const r = spawnSync('git', ['-C', repo, 'diff', '--name-only', `${base}..${head}`], { encoding: 'utf8', windowsHide: true })
+    const r = spawnSync('git', ['-C', repo, 'diff', '--name-only', '--diff-filter=d', `${base}..${head}`], { encoding: 'utf8', windowsHide: true })
     if (r.error || r.status !== 0) {
-      console.error(`[grade] git diff --name-only ${base}..${head} failed: ${r.error?.message ?? r.stderr ?? `exit ${r.status}`}`)
+      console.error(`[grade] git diff --name-only --diff-filter=d ${base}..${head} failed: ${r.error?.message ?? r.stderr ?? `exit ${r.status}`}`)
       return null
     }
     return (r.stdout ?? '').split('\n').map(s => s.trim()).filter(Boolean)
@@ -54,22 +61,51 @@ export function sweepTestsFor(spec, changedFiles) {
   return tokens.length ? tokens.join(' ') : null
 }
 
-function runGate(spec, io) {
+// F164: the source files a refused sweep is retried over with `--mutate`.
+// Every non-test `.py` the wave's diff touched — exactly the files the sweep's
+// own default would have mutated on added lines (cynco-mutation-sweep.py
+// `sources = [... not is_test_path(f)]`), so the retry widens the SCOPE inside
+// those files (added lines → whole file) and never the set of files. No
+// "package dir" is derived: the sweep reads the same diff and has none, and a
+// guessed prefix could only drop a file the wave really changed. The test rule
+// is EXACTLY the sweep's `is_test_path` (`"/tests/" in p`, `test_*`,
+// `*_test.py`), because `--mutate` refuses precisely what that returns true
+// for: a looser rule here would turn a retry on a mixed diff into a second
+// refusal, and a stricter one (review M2) would drop a file the sweep accepts
+// — a top-level `tests/helpers.py` is a source to the sweep, so it is one
+// here. `spec` is unused today; it is in the signature beside `sweepTestsFor`
+// so a campaign that ever needs to narrow the sources has the place to say so.
+export function sweepSourcesFor(spec, changedFiles) {
+  const isTest = (p) => { const base = p.split('/').pop(); return p.includes('/tests/') || base.startsWith('test_') || base.endsWith('_test.py') }
+  return (changedFiles ?? []).map(f => String(f).replace(/\\/g, '/')).filter(f => f.endsWith('.py') && !isTest(f))
+}
+
+/**
+ * One run of the sealed gate over a tree, parsed. `opts` exists for Phase 6's
+ * progress probe (scripts/cynco-campaign-progress.mjs), which grades a clean
+ * `git archive` of the wave's latest commit mid-wave and never the live repo:
+ * `repo` is the tree the gate reads (CYNCO_GATE_REPO and cwd; default
+ * `spec.repo`), `timeoutMs` its cap (default GATE_TIMEOUT_MS), and `retry`
+ * whether an impossible ETIMEDOUT is retried (default true — the verdict's
+ * reading; the probe passes false, because a 215 s gate re-run is not free
+ * and a stale ETIMEDOUT mid-wave is a fault reading, not a reason to spend it).
+ */
+export function runGate(spec, io, { repo = spec.repo, timeoutMs = GATE_TIMEOUT_MS, retry = true } = {}) {
   const t0 = Date.now()
   // The gates read CYNCO_GATE_REPO for the tree they grade and fall back to
-  // cwd. Both are spec.repo here, so this changes nothing today — and keeps
-  // changing nothing the day a gate is run from anywhere else.
+  // cwd. Both are the same tree here (spec.repo for a verdict, the archive for
+  // a progress reading), so the gate grades one tree whichever it reads.
   //
   // Review I2: this is the first spawn after a wave that may have run for
   // hours, i.e. exactly the call bun's stale deadline kills (F155). The gate is
   // a read of the tree, so it is retried once on an impossible ETIMEDOUT like
   // calibrate's reads are; and a spawn that still did not run is named as the
   // fault it is — never parsed as an empty gate, which would read as 0 lines.
-  const r = io.run('python', [spec.gate], { cwd: spec.repo, env: { CYNCO_GATE_REPO: spec.repo }, timeoutMs: GATE_TIMEOUT_MS, retryImpossibleTimeout: true })
+  const r = io.run('python', [spec.gate], { cwd: repo, env: { CYNCO_GATE_REPO: repo }, timeoutMs, retryImpossibleTimeout: retry })
   const parsed = parseGateOutput((r.stdout ?? '') + '\n' + (r.stderr ?? ''))
   let harnessFault = null
   if (r.fault) harnessFault = `gate did not run (${faultSummary(r.fault)})`
-  else if (r.timedOut) harnessFault = `gate timed out after ${GATE_TIMEOUT_MS} ms`
+  else if (r.timedOut) harnessFault = `gate timed out after ${timeoutMs} ms`
   else if (parsed.errors.length) harnessFault = `gate printed an error: ${parsed.errors[0]}`
   else if (parsed.terminator === null) harnessFault = 'gate printed no GATE: terminator'
   return { ...parsed, exit: r.status, durationMs: Date.now() - t0, harnessFault, fault: r.fault ?? null, outputTail: ((r.stdout ?? '') + (r.stderr ?? '')).slice(-4000) }
@@ -88,13 +124,38 @@ function runSuiteGate(spec, io) {
   return { exit: r.status, regressions: pick('REGRESSED'), repairs: pick('REPAIRED'), harnessFault, fault: r.fault ?? null, outputTail: out.slice(-3000) }
 }
 
-// Returns { sweep, sweepFault }: sweepFault is null when the sweep succeeded or
-// was legitimately skipped (no diff), and a short human string when the sweep
-// was attempted and produced nothing usable. A silent null would otherwise read
-// in the verdict as "no diff" when in fact the sweep timed out or refused.
+// One sweep spawn, read into { sweep, sweepFault } (sweep without kind/retried —
+// runSweep stamps those, because only it knows which call this was).
+function sweepOnce(args, io) {
+  const r = io.run('python', args, { cwd: process.cwd(), env: {}, timeoutMs: SWEEP_TIMEOUT_MS })
+  if (r.timedOut) return { sweep: null, sweepFault: `timed out after ${SWEEP_TIMEOUT_MS} ms` }
+  if (r.status === 2) return { sweep: null, sweepFault: 'sweep refused (exit 2)' }
+  const last = (r.stdout + '').trim().split('\n').reverse().find(l => l.startsWith('{'))
+  if (!last) return { sweep: null, sweepFault: 'unparseable sweep output' }
+  try { const j = JSON.parse(last); return { sweep: { command: j.command, killed: j.killed, total: j.total, survived: j.survived ?? [] }, sweepFault: null } } catch { return { sweep: null, sweepFault: 'unparseable sweep output' } }
+}
+
+// Returns { sweep, sweepFault, kind, retried }: sweepFault is null when the
+// sweep succeeded or was legitimately skipped (no diff), and a short human
+// string when the sweep was attempted and produced nothing usable. A silent
+// null would otherwise read in the verdict as "no diff" when in fact the sweep
+// timed out or refused. `kind` is the reading's kind (null with no reading);
+// `retried` says whether the F164 retry ran, reading or not — a refusal that
+// survived its retry is a different fact from one that was never retried.
+//
+// F164: a refusal (exit 2) earns exactly ONE retry with `--mutate <the wave's
+// non-test sources>` (sweepSourcesFor): a real, correct diff can add no
+// mutable expression (C9 wave 2's import-line fix), and the sweep's unit
+// ("expressions the diff added") then leaves the deciding row unlabeled. The
+// retry mutates those files whole and is recorded as `derived-full` so the
+// row says its mutants are not only the wave's own lines. No retry when there
+// is no source to name (a tests-only diff, or a diff that could not be read):
+// `--mutate` over nothing is the same refusal, spawned twice. A timeout or an
+// unparseable reading is not a refusal and is never retried — the sweep
+// mutates a temp tree for an hour; running it twice is not running it once.
 function runSweep(spec, row, io) {
   const { base, head } = row.commitRange ?? {}
-  if (!base || !head || base === head) return { sweep: null, sweepFault: null }
+  if (!base || !head || base === head) return { sweep: null, sweepFault: null, kind: null, retried: false }
   // resolve('scripts', …) assumes cwd = repo root: true for the campaign runner,
   // which is always invoked from the repo root (never from engine/ or tui/).
   // The sweep re-runs the KEEP-GREEN suite once per mutant: at 25 mutants a
@@ -110,12 +171,13 @@ function runSweep(spec, row, io) {
   const testsArg = changed === null ? null : sweepTestsFor(spec, changed)
   const args = [resolve('scripts', 'cynco-mutation-sweep.py'), '--repo', spec.repo, '--base', base, '--head', head, '--max', String(max), '--json']
   if (testsArg) args.push('--tests', testsArg)
-  const r = io.run('python', args, { cwd: process.cwd(), env: {}, timeoutMs: SWEEP_TIMEOUT_MS })
-  if (r.timedOut) return { sweep: null, sweepFault: `timed out after ${SWEEP_TIMEOUT_MS} ms` }
-  if (r.status === 2) return { sweep: null, sweepFault: 'sweep refused (exit 2)' }
-  const last = (r.stdout + '').trim().split('\n').reverse().find(l => l.startsWith('{'))
-  if (!last) return { sweep: null, sweepFault: 'unparseable sweep output' }
-  try { const j = JSON.parse(last); return { sweep: { kind: 'derived', command: j.command, killed: j.killed, total: j.total, survived: j.survived ?? [] }, sweepFault: null } } catch { return { sweep: null, sweepFault: 'unparseable sweep output' } }
+  const first = sweepOnce(args, io)
+  if (first.sweep) return { sweep: { kind: 'derived', ...first.sweep, retried: false }, sweepFault: null, kind: 'derived', retried: false }
+  const sources = first.sweepFault === 'sweep refused (exit 2)' ? sweepSourcesFor(spec, changed) : []
+  if (!sources.length) return { ...first, kind: null, retried: false }
+  const second = sweepOnce([...args, '--mutate', sources.join(' ')], io)
+  if (second.sweep) return { sweep: { kind: 'derived-full', ...second.sweep, retried: true }, sweepFault: null, kind: 'derived-full', retried: true }
+  return { ...second, kind: null, retried: true }
 }
 
 export function posiwidForRow(spec, row) {
@@ -136,7 +198,7 @@ export function posiwidForRow(spec, row) {
 export async function gradeWave(spec, row, io = defaultIo) {
   const gate = runGate(spec, io)
   const suite = runSuiteGate(spec, io)
-  const { sweep, sweepFault } = gate.harnessFault ? { sweep: null, sweepFault: null } : runSweep(spec, row, io)
+  const { sweep, sweepFault, retried: sweepRetried } = gate.harnessFault ? { sweep: null, sweepFault: null, retried: false } : runSweep(spec, row, io)
   const posiwid = posiwidForRow(spec, row)
   const verified = (gate.harnessFault || suite.harnessFault) ? null : (gate.exit === 0 && suite.exit === 0)
   // Review I2: a spawn that never ran is carried whole on the grade, so the
@@ -145,5 +207,7 @@ export async function gradeWave(spec, row, io = defaultIo) {
   const fault = gate.fault || suite.fault
     ? { ...(gate.fault ? { gate: gate.fault } : {}), ...(suite.fault ? { suite: suite.fault } : {}) }
     : null
-  return { sha: row.commitRange?.head ?? null, gate, suite, sweep, sweepFault, posiwid, verified, fault }
+  // `sweepRetried` rides beside `sweep` because a refusal that survived its
+  // F164 retry has no sweep object to carry `retried` on.
+  return { sha: row.commitRange?.head ?? null, gate, suite, sweep, sweepFault, sweepRetried, posiwid, verified, fault }
 }

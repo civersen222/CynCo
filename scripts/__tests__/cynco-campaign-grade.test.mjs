@@ -1,8 +1,9 @@
-import { describe, it, expect, vi } from 'vitest'
-import { readFileSync, mkdtempSync } from 'node:fs'
+import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest'
+import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { gradeWave, sweepTestsFor, defaultIo, SUITE_GATE } from '../cynco-campaign-grade.mjs'
+import { gradeWave, sweepTestsFor, sweepSourcesFor, defaultIo, SUITE_GATE } from '../cynco-campaign-grade.mjs'
 import { decide } from '../cynco-campaign.mjs'
 
 const baseLog = readFileSync(new URL('./fixtures/gate_c8_base.log', import.meta.url), 'utf8')
@@ -31,7 +32,7 @@ describe('gradeWave', () => {
     expect(g.sha).toBe('1bc0f8c')
     expect(g.gate.failCount).toBe(14); expect(g.gate.exit).toBe(1); expect(g.gate.harnessFault).toBeNull()
     expect(g.suite.exit).toBe(0); expect(g.suite.regressions).toEqual([])
-    expect(g.sweep).toMatchObject({ kind: 'derived', killed: 6, total: 25, survived: ['gilded/x.py:12'] })
+    expect(g.sweep).toMatchObject({ kind: 'derived', retried: false, killed: 6, total: 25, survived: ['gilded/x.py:12'] })
     expect(g.sweepFault).toBeNull()
     expect(g.verified).toBe(false)
     // Hand-computed (ruling 2): stated {sourceEdit:0.15, commit:1/150≈0.006667, inspect:0.843333},
@@ -211,6 +212,106 @@ describe('gradeWave', () => {
     expect(err).not.toHaveBeenCalled()
     err.mockRestore()
   })
+
+  // F164: C9 wave 2's import-only diff gave the derived sweep no added
+  // expression to mutate, it refused (exit 2), and the campaign-deciding row
+  // went unlabeled. The refusal now earns ONE retry with `--mutate` over the
+  // non-test sources the wave touched, recorded as `derived-full`.
+  describe('a refused sweep retries once with --mutate over the wave\'s sources (F164)', () => {
+    const green = [[/gate_c8\.py/, { status: 0, stdout: 'GATE: PASS\n' }], [/g_suite/, { status: 0, stdout: 'g_suite: PASS' }]]
+    // A sweep spawn that answers call by call: `answers[i]` is the i-th sweep call's result.
+    function sequencedIo(answers, changed) {
+      const io = fakeIo(green, () => changed)
+      const sweepCalls = []
+      const run = io.run
+      io.run = (cmd, args, opts) => {
+        if (!/cynco-mutation-sweep\.py/.test(args.join(' '))) return run(cmd, args, opts)
+        io.calls.push({ cmd, args, opts })
+        const r = answers[sweepCalls.length]
+        sweepCalls.push(args)
+        if (!r) throw new Error(`unscripted sweep call #${sweepCalls.length}`)
+        return { status: 0, stdout: '', stderr: '', timedOut: false, ...r }
+      }
+      io.sweepCalls = sweepCalls
+      return io
+    }
+    const full = '{"command":"python scripts/cynco-mutation-sweep.py --mutate \\"a.py b.py\\"","kind":"derived","killed":7,"total":9,"survived":["a.py:3","b.py:8"]}'
+
+    it('exit 2, then a JSON reading under --mutate a.py b.py → derived-full, retried', async () => {
+      const io = sequencedIo([{ status: 2, stdout: 'g-sweep: nothing to mutate' }, { status: 1, stdout: `g-sweep: 7/9 killed\n${full}\n` }],
+        ['a.py', 'b.py', 'tests/test_a.py'])
+      const g = await gradeWave(spec, row, io)
+      expect(io.sweepCalls).toHaveLength(2)
+      expect(io.sweepCalls[0]).not.toContain('--mutate')
+      const i = io.sweepCalls[1].indexOf('--mutate')
+      expect(i).toBeGreaterThan(-1)
+      expect(io.sweepCalls[1][i + 1]).toBe('a.py b.py')
+      // the retry is the same sweep otherwise: same range, same cap
+      expect(io.sweepCalls[1].slice(0, i)).toEqual(io.sweepCalls[0])
+      expect(g.sweep).toMatchObject({ kind: 'derived-full', retried: true, killed: 7, total: 9, survived: ['a.py:3', 'b.py:8'] })
+      expect(g.sweepFault).toBeNull()
+    })
+    it('exit 2 twice → the refusal stands, and the record says the retry happened', async () => {
+      const io = sequencedIo([{ status: 2, stdout: '' }, { status: 2, stdout: '' }], ['a.py', 'b.py'])
+      const g = await gradeWave(spec, row, io)
+      expect(io.sweepCalls).toHaveLength(2)
+      expect(g.sweep).toBeNull()
+      expect(g.sweepFault).toBe('sweep refused (exit 2)')
+      expect(g.sweepRetried).toBe(true)
+    })
+    it('a first reading needs no retry: kind derived, retried false', async () => {
+      const io = sequencedIo([{ status: 0, stdout: '{"command":"x","kind":"derived","killed":1,"total":1,"survived":[]}' }], ['a.py'])
+      const g = await gradeWave(spec, row, io)
+      expect(io.sweepCalls).toHaveLength(1)
+      expect(g.sweep).toMatchObject({ kind: 'derived', retried: false })
+      expect(g.sweepRetried).toBe(false)
+    })
+    it('no source to name (a tests-only diff) → no retry: --mutate over nothing is the same refusal', async () => {
+      const io = sequencedIo([{ status: 2, stdout: '' }], ['gilded/tests/test_c9_shell.py'])
+      const g = await gradeWave(spec, row, io)
+      expect(io.sweepCalls).toHaveLength(1)
+      expect(g.sweepFault).toBe('sweep refused (exit 2)')
+      expect(g.sweepRetried).toBe(false)
+    })
+    it('a retry that times out is recorded as the timeout it is', async () => {
+      const io = sequencedIo([{ status: 2, stdout: '' }, { status: null, stdout: '', timedOut: true }], ['a.py'])
+      const g = await gradeWave(spec, row, io)
+      expect(g.sweep).toBeNull()
+      expect(g.sweepFault).toBe('timed out after 3600000 ms')
+      expect(g.sweepRetried).toBe(true)
+    })
+    it('C9 wave 2\'s shape: the import-only source is retried in full, its delivered test is not named', async () => {
+      const io = sequencedIo([{ status: 2, stdout: '' }, { status: 0, stdout: '{"command":"x","kind":"derived","killed":4,"total":4,"survived":[]}' }],
+        ['gilded/tests/test_c9_shell.py', 'gilded/ui/saves_view.py'])
+      const g = await gradeWave({ ...spec, keepGreen: c8KeepGreen }, row, io)
+      const args = io.sweepCalls[1]
+      expect(args[args.indexOf('--mutate') + 1]).toBe('gilded/ui/saves_view.py')
+      // the diff shipped its own test file, so --tests stays the sweep's default on both calls
+      expect(args).not.toContain('--tests')
+      expect(g.sweep).toMatchObject({ kind: 'derived-full', retried: true, killed: 4, total: 4 })
+    })
+  })
+})
+
+describe('sweepSourcesFor', () => {
+  it('keeps the non-test .py sources the wave touched, in diff order', () => {
+    expect(sweepSourcesFor({}, ['gilded/ui/saves_view.py', 'gilded/tests/test_c9_shell.py', 'test_x.py', 'gilded/agenda.py']))
+      .toEqual(['gilded/ui/saves_view.py', 'gilded/agenda.py'])
+  })
+  it('drops tests by the sweep\'s own rule: a /tests/ directory, test_*, *_test.py', () => {
+    expect(sweepSourcesFor({}, ['gilded/tests/conftest.py', 'test_x.py', 'gilded/x_test.py'])).toEqual([])
+  })
+  // Review M2: exactly `is_test_path` — `"/tests/" in p` does not match a
+  // top-level `tests/…`, so the sweep accepts it under --mutate and so do we.
+  it('keeps a top-level tests/helpers.py, as the sweep\'s is_test_path does', () => {
+    expect(sweepSourcesFor({}, ['tests/helpers.py', 'tests/test_y.py'])).toEqual(['tests/helpers.py'])
+  })
+  it('drops what is not Python source, and normalises backslashes', () => {
+    expect(sweepSourcesFor({}, ['README.md', 'gilded\\ui\\saves_view.py', 'assets/a.png'])).toEqual(['gilded/ui/saves_view.py'])
+  })
+  it('an unreadable diff (null) names nothing', () => {
+    expect(sweepSourcesFor({}, null)).toEqual([])
+  })
 })
 
 // I4 at the defaultIo level: the real `git diff` against a path that is not a
@@ -221,8 +322,59 @@ describe('defaultIo.changedFiles', () => {
     const bogus = join(mkdtempSync(join(tmpdir(), 'not-a-repo-')), 'nope')
     expect(defaultIo.changedFiles(bogus, '1d03308', '1bc0f8c')).toBeNull()
     expect(err).toHaveBeenCalledTimes(1)
-    expect(err.mock.calls[0][0]).toMatch(/^\[grade\] git diff --name-only 1d03308\.\.1bc0f8c failed: /)
+    expect(err.mock.calls[0][0]).toMatch(/^\[grade\] git diff --name-only --diff-filter=d 1d03308\.\.1bc0f8c failed: /)
     err.mockRestore()
+  })
+
+  // Review I1: a path the wave DELETED is not a file it shipped. Under
+  // --mutate it is a hard refusal (missing at HEAD), and a deleted test_*.py
+  // is not "the diff shipped its own test".
+  describe('against a real repo whose wave deletes a module and a test and fixes an import', () => {
+    // Task 1 review N2: built in beforeAll (a collection-time git failure used
+    // to take down the whole file) and removed in afterAll.
+    let repo, base, head
+    beforeAll(() => {
+      repo = mkdtempSync(join(tmpdir(), 'grade-deleted-'))
+      const git = (...a) => {
+        const r = spawnSync('git', ['-C', repo, ...a], { encoding: 'utf8', windowsHide: true })
+        if (r.status !== 0) throw new Error(`git ${a.join(' ')}: ${r.stderr}`)
+        return r.stdout.trim()
+      }
+      git('init', '-q'); git('config', 'user.email', 't@t'); git('config', 'user.name', 't'); git('config', 'core.autocrlf', 'false')
+      mkdirSync(join(repo, 'gilded', 'tests'), { recursive: true })
+      writeFileSync(join(repo, 'gilded', 'dead.py'), 'X = 1\n')
+      writeFileSync(join(repo, 'gilded', 'view.py'), 'from gilded.dead import X\n')
+      writeFileSync(join(repo, 'gilded', 'tests', 'test_dead.py'), 'def test_x():\n    assert True\n')
+      git('add', '-A'); git('commit', '-q', '-m', 'base')
+      base = git('rev-parse', 'HEAD')
+      rmSync(join(repo, 'gilded', 'dead.py')); rmSync(join(repo, 'gilded', 'tests', 'test_dead.py'))
+      writeFileSync(join(repo, 'gilded', 'view.py'), 'X = 1\n')
+      git('add', '-A'); git('commit', '-q', '-m', 'wave')
+      head = git('rev-parse', 'HEAD')
+    })
+    afterAll(() => { if (repo) rmSync(repo, { recursive: true, force: true }) })
+
+    it('names only the surviving changed path', () => {
+      expect(defaultIo.changedFiles(repo, base, head)).toEqual(['gilded/view.py'])
+    })
+    it('the retry runs over the fixed file, never the deleted one, and keep-green --tests stays on', async () => {
+      const calls = []
+      let n = 0
+      const io = { changedFiles: defaultIo.changedFiles, run: (cmd, args, opts) => {
+        const key = args.join(' ')
+        if (/gate_c8\.py/.test(key)) return { status: 0, stdout: 'GATE: PASS\n', stderr: '', timedOut: false }
+        if (/g_suite/.test(key)) return { status: 0, stdout: 'g_suite: PASS', stderr: '', timedOut: false }
+        calls.push(args)
+        return n++ === 0 ? { status: 2, stdout: '', stderr: '', timedOut: false }
+          : { status: 0, stdout: '{"command":"x --mutate gilded/view.py","kind":"derived","killed":1,"total":1,"survived":[]}', stderr: '', timedOut: false }
+      } }
+      const g = await gradeWave({ ...spec, repo, keepGreen: c8KeepGreen }, { ...row, commitRange: { base, head } }, io)
+      expect(calls).toHaveLength(2)
+      expect(calls[1][calls[1].indexOf('--mutate') + 1]).toBe('gilded/view.py')
+      expect(calls.flat().some(a => /dead\.py/.test(a))).toBe(false)
+      expect(calls[0][calls[0].indexOf('--tests') + 1]).toBe(c8KeepGreenFiles.join(' '))
+      expect(g.sweep).toMatchObject({ kind: 'derived-full', retried: true })
+    })
   })
 })
 
@@ -233,6 +385,11 @@ describe('sweepTestsFor', () => {
   })
   it('returns null when the diff already delivers a test file', () => {
     expect(sweepTestsFor(spec, ['gilded/ui/x.py', 'gilded/tests/test_c8_tiers.py'])).toBeNull()
+  })
+  it('a diff that only DELETED a test file (filtered out by defaultIo) still gets the keepGreen files', () => {
+    // defaultIo.changedFiles drops deletions (--diff-filter=d), so the deleted
+    // test never reaches this list; what remains shipped no test.
+    expect(sweepTestsFor(spec, [])).toBe(c8KeepGreenFiles.join(' '))
   })
   it('returns null when keepGreen has no .py token', () => {
     expect(sweepTestsFor({ keepGreen: 'echo nothing to run' }, ['gilded/ui/broadsheet.py'])).toBeNull()

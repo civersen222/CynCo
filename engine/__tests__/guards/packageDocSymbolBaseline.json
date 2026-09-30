@@ -13,6 +13,5 @@
   "profiles/CLAUDE.md: ollama @ types.ts:64",
   "skills/CLAUDE.md: getSkillIndex @ store.ts:19",
   "tools/CLAUDE.md: ContractState @ contract.ts:90",
-  "vsm/CLAUDE.md: CyberneticsGovernance @ cyberneticsGovernance.ts:199",
   "workflows/CLAUDE.md: advance() @ engine.ts:65"
 ]

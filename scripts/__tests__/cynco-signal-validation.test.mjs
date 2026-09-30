@@ -88,6 +88,14 @@ describe('labelOf', () => {
     expect(labelOf(derived)).toBe(true)
   })
 
+  // F164: the runner's --mutate retry over the wave's whole sources is still a
+  // machine-enumerated sweep — a survivor is a coverage finding, the row is labeled.
+  it('a DERIVED-FULL sweep labels the row like a derived one (F164)', () => {
+    const full = { ...base, mutationSweep: { kind: 'derived-full', retried: true, killed: 3, total: 5, survived: ['gilded/ui/saves_view.py:12', 'gilded/ui/saves_view.py:40'] } }
+    expect(labelOf(full)).toBe(true)
+    expect(labelOf({ ...full, outcome: 'crashed' })).toBe(false)
+  })
+
   it('a derived sweep cannot rescue a mission that did not land', () => {
     const derived = {
       outcome: 'void-bad-brief', verified: true,

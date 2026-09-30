@@ -47,12 +47,38 @@ decisions still recorded here).
   },
   "mutationSweep": null,    // BEHAVIOURAL: null = UNMEASURED, never "clean"
   // { "command": "...", "killed": 1, "total": 7, "survived": ["W1","W5"], "note": "..." }
+  // `kind` (absent = authored): "derived" = cynco-mutation-sweep.py over the
+  // expressions the diff ADDED; "derived-full" (F164) = a derived sweep over
+  // the whole files named by `--mutate` — the runner's retry, or a hand run.
+  // The runner's retry: the derived sweep refused (exit 2) on the diff — an
+  // import-only or otherwise unmutable change — and the grade retried it ONCE
+  // with `--mutate` over every non-test `.py` the wave's diff touched,
+  // mutating those files WHOLE. A hand `--mutate` run recorded before F164
+  // says `derived`. The
+  // grade writes `retried: false` on a first-call reading and `retried: true`
+  // on a derived-full one; `cynco-ledger-sweep.mjs --kind derived-full` writes
+  // the same shape for a hand relabel, and refuses it for a `--command` that
+  // carries no `--mutate`. `cynco-mutation-sweep.py` itself prints
+  // `"kind": "derived-full"` (and the `--kind derived-full` hint) for any run
+  // given `--mutate`. The sources are the wave's diff read with
+  // `--diff-filter=d`: a DELETED path is never named (under `--mutate` it would
+  // be a refusal), and a deleted test file does not count as a shipped one. A
+  // derived-full reading's mutants are not only the wave's own lines — the
+  // kind says so, and both derived kinds label the row without a survivor
+  // failing it (see "Labeling rule").
   // Written by the campaign runner's GRADE alongside `mutationSweep`: why a
   // derived sweep produced no reading ("timed out after 3600000 ms", "sweep
-  // refused (exit 2)", "unparseable sweep output"). null = the sweep ran, or
-  // there was no diff to sweep. Distinguishes "unmeasured because the
-  // instrument broke" from "unmeasured because nothing was measured".
+  // refused (exit 2)", "unparseable sweep output") — after the `--mutate`
+  // retry when one ran. null = the sweep ran, or there was no diff to sweep.
+  // Distinguishes "unmeasured because the instrument broke" from "unmeasured
+  // because nothing was measured".
   "sweepFault": null,
+  // Written by the same GRADE patch (and on the wave record): true when the
+  // F164 `--mutate` retry RAN — so `sweepFault: "sweep refused (exit 2)"` with
+  // `sweepRetried: true` is a refusal that survived its retry, and with
+  // `false` one that was never retried (no non-test source to name). Absent on
+  // rows graded before Phase 6.
+  "sweepRetried": false,
   // The commits this mission made. `base` is HEAD at dispatch, `head` is HEAD
   // after the check script ran, so `base..head` is exactly the mission's diff —
   // which is what a DERIVED sweep mutates. null when either end was unreadable;
@@ -69,6 +95,9 @@ decisions still recorded here).
       "toolSuccessRate": 0.9, "stuckTurns": 0, "varietyRatio": 9,
       "varietyBalance": "overload", "algedonicAlerts": 0, "axiomHealth": "red",
       "consecutiveUnstable": 3, "agreementRatio": 0.0,
+      // F165: the signal vector's version (1 when the frame carried none) and
+      // the cumulative alert count (null on v1). See "Signals version (F165)".
+      "signalsVersion": 2, "algedonicAlertsTotal": 21,
       // Task 4 (2a-iii): the Brain's telemetry for this turn (engine/bridge/
       // protocol.ts GovernanceStatusEvent.brain), verbatim. null when the
       // frame carried none — an older engine, Ollama, or a brain dep that
@@ -652,6 +681,18 @@ same, next to the code):
   proposal writes no `decidedBy` at all and IS a human decision.
 - **Supervisor refusals** — every `state.authoring.<id>.refusals[]` entry.
   **Reseals** — `state.reseals[]`.
+- **From the seal** (Phase 6 ruling 8; C9 counted its two AUTHORING-phase
+  refusals as 1.00 intervention per wave, F164) — when the campaign's own
+  authoring record carries `sealedAt` (`state.authoring[<spec.id>].sealedAt`,
+  written by `sealGate` for a CynCo-authored gate), a refusal whose `at`, or a
+  proposal decision whose `decidedAt`, is before it is an authoring-phase act:
+  it shaped the gate, not a wave, and is NOT counted. The board names how many
+  in `unmeasured` (`humanInterventionsPerWave: N act(s) before the seal (<sealedAt>)
+  not counted — …`, pooled with the campaign id). An act with no readable date
+  cannot be placed after the seal, so it IS counted and named (`N act(s) carry
+  no date — counted …`) — never silently dropped. Reseals, notes and adoptions
+  happen to waves and are post-seal by construction. A campaign with no seal
+  record (a human-sealed gate) counts every act, as before.
 - **`--adopt-inflight` records** — wave records with `adopted: true`. The
   runner writes it from Phase 5 on for every wave it graded from an adopted row
   (`--adopt-inflight`, or `scripts/cynco-campaign-adopt.mjs` — both are the
@@ -873,17 +914,27 @@ as for the gate lines.
 `scripts/cynco-rule-verdicts.mjs` (`writeRuleVerdicts`) at every wave VERDICT
 from the WHOLE ledger — not the campaign's slice, because a rule's predictive
 power is a claim about every mission it fired on. `bun
-scripts/cynco-rule-verdicts.mjs [--ledger-dir DIR] [--out PATH]` rebuilds the
+scripts/cynco-rule-verdicts.mjs [--ledger-dir DIR] [--out PATH] [--with-hindcast]
+[--datasets-dir DIR] [--manifest PATH] [--campaigns-dir DIR]` rebuilds the
 rules by hand and prints `rule verdicts vN: P predictive of R rules (+M model
-rows) (…) → <path>` — rules and model rows counted apart, as the scoreboard's
-`N/8` reads them. `--with-hindcast` rebuilds what a VERDICT writes: the runner's
+rows) (+K runner rows) (…) → <path>` — rules, model rows and runner rows
+counted apart, as the scoreboard's `N/8` reads them. Every run builds the
+runner row `R1.no-progress` from the campaigns' wave records exactly as a
+VERDICT does, over `--campaigns-dir DIR` (default `<cyncoHome>/campaigns`). `--with-hindcast` rebuilds what a VERDICT writes: the runner's
 own sequence (`exportOutcomeDatasets` → `runHindcast` → `hindcastOf` →
 `modelRowsFrom` → `writeRuleVerdicts`, `scripts/cynco-hindcast.mjs`), printing
 the `- Outcome hindcast:` line first (a fault is `UNMEASURED` and the rules are
 written without model rows, as at a VERDICT). `--datasets-dir DIR` writes the
 three datasets, `outcome-model.json` and — unless `--out` names another path —
 `rule-verdicts.json` directly into DIR instead of `~/.cynco/datasets/`, so a
-temp run never touches the real home. It is Step 2's per-rule table (`analyse` + `ruleVerdictOf` in
+temp run WRITES nothing under the real home; it still READS
+`<cyncoHome>/campaigns` for the runner row unless `--campaigns-dir DIR` names
+another campaigns dir (Task 4 review N1). With `--datasets-dir DIR` and no
+`--manifest PATH`, the per-version holdout manifest is `<DIR>/frozen-eval.json`
+(final review M8): a temp run never performs the one-time v2 freeze on the
+repo's committed `benchmark/cynco-ledger/frozen-eval.json`; without
+`--datasets-dir` it reads (and may freeze into) the committed one, as the
+runner does. It is Step 2's per-rule table (`analyse` + `ruleVerdictOf` in
 `scripts/cynco-signal-validation.mjs`) turned into a file the engine reads:
 
 - **`engine/s5/ruleAuthority.ts`** loads it once per session and logs one line,
@@ -942,6 +993,116 @@ The wave record carries `ruleVerdicts: { version, predictive, total }` (`null`
 when the write failed — logged, never a fault). On this ledger no rule is
 `PREDICTIVE`, so once the file exists every S5 decision reads `advisory`.
 
+### Signals version (F165)
+
+Phase 6 ruling 4. Two per-turn signals measured something other than their
+names on every row before 2026-09-29, so every turn now says which instrument
+wrote it: `turns[].signalsVersion` (the `governance.status` frame's
+`signalsVersion`; a frame without one is **1**, written by
+`scripts/cynco-ledger.mjs`, pinned by
+`scripts/__tests__/cynco-ledger-signals-v2.test.mjs`).
+
+| field | v1 (every row before F165) | v2 |
+|---|---|---|
+| `consecutiveUnstable` | the turn index: the homeostat never read stable in a mission (C9 wave 1: 1…394, monotone) | turns in a row the homeostat read unstable; 0 on a stable turn; capped at 50 |
+| `algedonicAlerts` | non-Info alerts on the engine-wide bus since the engine started (21 by the end of C9 wave 1) | the same alerts raised in the last 20 turns |
+| `algedonicAlertsTotal` | `null` (absent) | the cumulative count v1 called `algedonicAlerts` |
+
+`stuckTurns` keeps its meaning in v2 — see F165's second paragraph for why it
+read 0 on C9 while the read-loop gate denied 5 times.
+
+v1 and v2 rows never mix silently. `scripts/cynco-outcome-dataset.mjs` writes
+`signalsVersion` on each dataset row — the MINIMUM over the prefix's turns, so
+a prefix that straddles an engine upgrade is v1 — and `--export
+--signals-version N` keeps only version-N rows (the rest are counted:
+`N other signals version`). A v2 row has one more feature than a v1 row,
+`algedonicAlertsTotal.rate` (the v1 quantity, new alerts per turn); the key
+lists are `FEATURE_KEYS_V1` (56) and `FEATURE_KEYS_V2` (57), and the leak tests
+pin both. At K ≤ 20 — the primary K = 16 included — `algedonicAlertsTotal.rate`
+equals `algedonicAlerts.rate` exactly: before 20 turns have passed the window
+has not dropped anything, so the windowed count is the total minus a constant
+(the bus count when the governor was built) and the two rates coincide. They
+differ only at K = 32, where alerts from turns 1–12 have aged out of the
+window. The feature stays: it is the v1 quantity by name, and at K = 32 it is
+the one that still reads "new alerts per turn".
+`scripts/cynco-outcome-model.py --signals-version N` trains and scores only
+version-N rows and writes `signalsVersion: N`, `rowsByVersion` (eligible
+missions per version, before filtering — from `--rows-by-version` when the
+caller passes its own count) and `secondary.otherSignalsVersions` — per
+left-out version, `{ eligible, failures, successes, holdout }`; its refusal
+ends with ` (signals vN: n eligible; v1: m)`. Without the flag it uses every
+row (`signalsVersion: null`, `secondary` unchanged).
+
+**The runner's hindcast trains on ONE version (fix round 1, review I1).**
+`scripts/cynco-hindcast.mjs` (`HINDCAST_SIGNALS_VERSION = 2`, the engine's
+current version) writes only v2 rows into all three datasets (K = 16, K = 32,
+hindsight), names held-out missions of another version in
+`split[K].otherVersion` (never as `missing`), and runs the model with
+`--signals-version 2 --rows-by-version {…}`. `outcome-model.json` and the wave
+record's `hindcast` summary carry `signalsVersion` and `rowsByVersion`. The
+learner rows read UNMEASURED with the reason — never a rate from a mixed or
+too-small set (F16) — in three stages:
+
+1. **No v2 mission eligible**: python is not spawned; `no eligible labeled
+   mission at K = 16 turns with signals v2 (eligible by version: v1: 104) —
+   nothing to train on`.
+2. **v2 missions, no v2 holdout yet** (fix round 2, review N1): the holdout is
+   per signals version (below), and v1's 21 frozen ids are no use to a v2
+   learner. Until v2's eligible pool reaches `FREEZE_MIN_ELIGIBLE` = 38 —
+   the smallest pool whose 20 % draw leaves the model its own minimums
+   (holdout 8, train 30) — python is not spawned and the reading is
+   `v2 holdout not yet frozen (12 of 38 labeled; eligible by version: v1: 104, v2: 12)`.
+   `rec.hindcast.holdout` is `{ frozen: false, eligible, needed }`. A pool of
+   38 or more with fewer than `MODEL_MIN_HOLDOUT` (8) of EITHER label is not
+   frozen either (Task 2 review N4: a holdout drawn from a one-class pool can
+   never give an AUC, and a frozen set only grows by a hand `--refreeze`):
+   `v2 holdout not yet frozen (pass 0 / fail 38; need 8 of each; eligible by
+   version: v2: 38)`, with `holdout` `{ frozen: false, eligible, needed, pass,
+   fail, needEach }`.
+3. **The first export that sees 38 with 8 of each label** freezes v2's set,
+   ONCE, with Phase 5's `freezeManifest` over the v2 rows (seed
+   `AUTO_FREEZE_SEED` 20260929) into `frozen-eval.json`, and records
+   `{ signalsVersion: 2, frozenAt, count, eligible, seed, how: 'auto' }` on the
+   file's `history`. That wave's `rec.hindcast.holdout` reads `{ frozen: true,
+   frozenNow: true, frozenAt, ids }` (it rides the success path too) and its
+   learner line ends `; v2 holdout frozen now (8 ids)` (Task 2 review N3); a
+   later wave's reads `frozenNow: false` and names nothing. From then on the
+   set never changes (frozen means frozen) and a refusal is the model's own
+   TOO FEW with the per-version counts.
+
+`rec.hindcast` carries `signalsVersion` and `rowsByVersion` on a fault too.
+The verdict entry's learner line names both: `- Outcome hindcast: v5 at K = 16
+turns, signals v2 only (eligible v1 104, v2 40) on 9 held-out missions …`.
+Pinned by `scripts/__tests__/cynco-hindcast-signals.test.mjs` and the two
+F165 VERDICT tests in `scripts/__tests__/cynco-campaign.test.mjs`.
+
+**The holdout per signals version (fix round 2).** `frozen-eval.json` holds
+one set per signals version: `{ schema: 2, sets: { "1": <Phase 5's v1
+manifest, verbatim>, "2": … }, history: [ … ] }`, each set exactly what
+`freezeManifest` returns. The committed Phase 5 file (schema 1) IS v1's set:
+`manifestSets` reads it as `sets["1"]` byte-for-byte and it is migrated on the
+first write, never re-drawn. `--freeze --signals-version N` freezes version
+N's set from version-N rows only and refuses when it exists;
+`--refreeze --signals-version N` only adds to an existing one (Phase 5's two
+rules, per set). Without `--signals-version` on a schema-1 file both behave
+exactly as in Phase 5. `scripts/cynco-outcome-model.py` reads the set of its
+`--signals-version` (version 1 without the flag). The automatic freeze writes
+the committed file in the working tree, and the runner commits it with that
+wave's verdict (the verdict commit stages every changed path under
+`benchmark/cynco-ledger/`, `ledgerShardsTouched` in
+`scripts/cynco-campaign.mjs`); a freeze made by the CLI is committed by the
+operator like any other ledger change.
+
+**S5 rules that read a v2-changed signal (fix round 1, review I2).** W5 and I2
+(`engine/s5/ruleBasedS5.ts`) fire on the homeostat streak, which in v1 was the
+turn index — so in every v1 mission W5 fired from turn 3 on and I2 on turns
+1–2. `scripts/cynco-rule-verdicts.mjs` scores `V2_CHANGED_RULES` on v2
+missions only: `rules.W5 = { …, signals: 'v2', scopeN, v1: { n, firedTotal,
+failures, precision, ci, p, lift, scopeN } }` — the v1 table rides beside the
+verdict and is never pooled into it. Every other rule pools as before; Holm
+runs once over all rules; `ledger.v2Rules` lists the split ids when any fired.
+See F165.
+
 ### Outcome dataset and the frozen holdout
 
 Phase 5 ruling 5: the prerequisites for the first learner. Built by
@@ -962,6 +1123,7 @@ holdout rows are not quoted — features elided):
 
 ```jsonc
 { "missionId": "c7-wave5-1788613255404", "prefixTurns": 16,
+  "signalsVersion": 1,       // F165: min over the prefix's turns (1 when absent)
   "label": true,             // labelOf: true = success, false = failure
   "features": { "toolSuccessRate.mean": 0.996875, "algedonicAlerts.rate": 0.06666666666666667,
                 "consecutiveUnstable.max": 16, "…": "…" },
@@ -971,9 +1133,10 @@ holdout rows are not quoted — features elided):
 The prefix is the first K entries of `turns[]` by index, at two fixed points:
 **K = 16** (primary, the default) and **K = 32** (secondary). A mission with
 fewer than K turns is EXCLUDED at that K, never truncated. `prefixTurns` is row
-metadata (it is the constant K), not a feature. The feature keys are EXACTLY
-these 56 (the test asserts the set, so adding one is a change to this list and
-the test together):
+metadata (it is the constant K), not a feature. The feature keys of a v1 row
+are EXACTLY these 56 (`FEATURE_KEYS_V1`; a v2 row adds `algedonicAlertsTotal.rate`
+— "Signals version (F165)" above; the test asserts both sets, so adding one is
+a change to this list and the test together):
 
 - For each LEVEL signal — `toolSuccessRate`, `varietyRatio`,
   `varietyWindowed`, `taskError`, `infoGain`, `progressRate`,
@@ -983,15 +1146,19 @@ the test together):
 - The three COUNTERS, as per-turn rates so nothing sums over turns:
   - `stuckTurns` (the current stuck streak; it resets): `.rate` = the share of
     prefix turns with a streak > 0, `.last`, `.max`.
-  - `algedonicAlerts` (alerts fired so far IN THE ENGINE SESSION, a running
-    count): `.rate` only = new alerts per turn, (last − first) ÷ (turns between
-    them; null with fewer than two values). Its level carries alerts from
-    before the mission began (turn-0 values 0–57, r −0.38 with total turns — an
-    era confound), so `.last`/`.max` were dropped (final review T4-N2): measured
-    from the prefix's first value they collapse onto `.rate` at a fixed K, and
-    unmeasured from it they are the confound.
-  - `consecutiveUnstable` (increments on every unstable turn): `.last`, `.max`
-    only — its mean tracks the turn index, so it is not a feature.
+  - `algedonicAlerts` — v1: alerts fired so far IN THE ENGINE SESSION, a
+    running count; v2 (F165): the alerts raised in the last 20 turns.
+    `.rate` only = (last − first) ÷ (turns between them; null with fewer than
+    two values): on v1 new alerts per turn, on v2 the change in the 20-turn
+    window per turn (the same number at K ≤ 20 — see "Signals version"). Its v1
+    level carries alerts from before the mission began (turn-0 values 0–57,
+    r −0.38 with total turns — an era confound), so `.last`/`.max` were dropped
+    (final review T4-N2): measured from the prefix's first value they collapse
+    onto `.rate` at a fixed K, and unmeasured from it they are the confound.
+  - `consecutiveUnstable` — v1: the turn index (the homeostat never read
+    stable, so it incremented on every turn); v2 (F165): turns in a row the
+    homeostat read unstable, 0 on a stable turn, capped at 50. `.last`, `.max`
+    only — on v1 its mean tracks the turn index, so it is not a feature.
 - `.last` is the last non-null value in the prefix. Every numeric feature is
   `null` when every value in the prefix is null — unmeasured is never 0 (F16).
 - `brainPresent` — 1 when any prefix turn carries a numeric tool entropy, else 0.
@@ -1183,18 +1350,223 @@ read `gbt` precision 0.545 on 11 fired, AUC 0.407, hindsight 0.528, K = 32
 `gbt` 0.55 / `lr` 0.42, 28 of 58 dead; `lr` did not move. Those numbers
 describe a vector the code no longer builds.
 
+### Gate progress mid-wave and `R1.no-progress` in shadow (Phase 6)
+
+The runner grades the wave's latest commit WHILE the wave runs, with the sealed
+gate, and records what it read on the wave record
+(`scripts/cynco-campaign-progress.mjs`). It is a runner-side measurement only:
+a reading reaches `waves.jsonl` and the runner's own log
+(`[campaign] progress @ Nm: F fails (was F0)`) — never a probe message, never
+the brief, never the engine. A sealed instrument is never a probe (Stage 1);
+the model never gains information it did not have. The runner's log is the
+operator's; it is never given to the model or written under the mission cwd
+(it is the one mid-wave copy of a reading outside runner memory — final review
+M2 — and its fault lines carry a fault class and exit code, never gate output).
+
+**How a reading is taken.** `defaultIo.waitForDriver` calls
+`onTick({ elapsedMs, nowMs })` once per poll (a throw inside it is logged once
+per distinct message and the wait goes on). `runWave` hands it
+`progressTracker(…).onTick`; on each tick `progressCadence` decides whether a
+reading is due. When it is, the runner reads the repo's HEAD (`repoHead`); a
+sha equal to the last reading's is `{ skipped: 'sha unchanged' }` and nothing
+runs; otherwise `probeProgress` archives that sha with `archiveBase` (`git
+archive <sha> | tar -x` through `bashExe()`) into
+`<os.tmpdir()>/cynco-progress-<id>-<n>`, runs the grade module's `runGate` on
+the ARCHIVE (`CYNCO_GATE_REPO` and cwd = the archive, never the live repo the
+mission is editing), parses it with `parseGateOutput`, and removes the dir in a
+`finally`. Every due tick follows a gap of `everyMs` with no spawn, so the
+tick's first git spawn trips bun's stale deadline (F155): the HEAD read
+retries inside `runSync` (`retryImpossibleTimeout`, a pure read) and the
+archive re-runs `archiveBase` once into a freshly emptied dir; both hand their
+retry line to the tracker (`onStaleRetry`), which counts every retry as
+`rec.retriedSpawns` and logs the line ONCE per wave (P-F155 — at the smoke's
+20 s cadence it was a red line per tick). The gate spawn goes through `runSync` and is **never retried**
+(`retry: false`): a 215 s gate re-run is not free, and a stale ETIMEDOUT
+mid-wave (F155) is a fault reading. Its cap is `min(GATE_TIMEOUT_MS, 4 × the
+last measured run)`, 20 min (`PROBE_GATE_TIMEOUT_UNMEASURED_MS`, the tail's
+own length) before any measurement. While HEAD still
+sits at the wave's start sha, the first due tick records the start grade (the
+calibration's or the last verdict's reading of that very sha) as a reading
+with `reusedFrom: 'start'` and `durationMs: 0` — no gate runs — so a wave that
+commits nothing still has a count past 50 %.
+
+**Cadence.** `progressCadence({ everyMs, clockMs, gateMs, faults, lastAtMs,
+nowMs })`, all times on the wave clock (ms since dispatch; `clockMs` =
+`hoursPerWave × 3600 s`): never before `everyMs` since the last due tick (the
+first counts from dispatch); with a measured gate the interval is raised to
+`gateMs × 10`, so the gate takes at most 10 % of the wave (C9's 215 s gate →
+≥ 2150 s); ×2 per consecutive faulted reading; never within the last
+`gateMs × 2` of the clock. While no gate is measured the tail and the cap
+assume a 600 s gate (`PROBE_GATE_MS_ASSUMED`, final review M4) and the reason
+says so (`gate unmeasured (600 s assumed for the tail and the cap)`), so a probe
+cannot hold the WAIT past the wave's end; the interval stays `everyMs`.
+`gateMs` is seeded from the start grade (`seedGateMs`) — the last verdict's
+`gate.durationMs` when that gate did not harness-fault (a faulted run's
+duration is its timeout, which would starve the wave of readings), else the
+calibration's BASE run (`calibration.baseGateMs`,
+recorded from Phase 6 on; older calibrations have none) — so the 10 % rule,
+the tail and the probe's cap hold from the first tick; each real probe run
+replaces it. `everyMs` = `spec.progress.everyMs`, else
+`CYNCO_PROGRESS_EVERY_MS`, else 1 800 000 (30 min).
+
+**`rec.progress`** — one entry per reading, in order:
+`{ at, sha, fails, passes, failIds, durationMs, elapsedFraction }` (`fails` /
+`passes` are COUNTS, `failIds` the FAIL line ids; `elapsedFraction` = wave
+clock at the reading / `clockMs`; `durationMs` = archive + gate) or
+`{ at, fault, durationMs }` (the archive failed, HEAD did not resolve, the gate
+timed out, did not run, printed an error or no terminator, or exited other than
+0/1). A gate fault names its CLASS and exit code only — `gate printed an error;
+exit 3`, `gate did not run (code ETIMEDOUT, …); exit null` — never the gate's
+stdout or stderr (final review M2), because the fault is also logged. The
+reused start grade has the same fixed shape plus `reusedFrom: 'start'` and
+`durationMs: 0` (`passes` / `failIds` null only if the runner had no start
+passes / FAIL ids — runWave always hands both). A fault never touches the
+wave. `null` with `progressNote` naming why when the
+runner took no reading at all (an adopted wave was not waited on; a runner io
+without a probe); `[]` with a note when none was due before the wave ended. A
+wave that faulted in the WAIT (no ledger row, wall clock expired) keeps the
+readings it did get on its fault record.
+
+**`rec.retriedSpawns`** — the number of the probe's git spawns (HEAD reads and
+archives) this wave that hit bun's stale deadline and were retried (P-F155;
+the F155 line is logged once per wave, the rest are only counted). Present
+whenever the runner waited on the wave with a tracker; absent on an adopted
+wave or a runner io with no probe.
+
+**`rec.shadowDecisions`** — `R1.no-progress`, evaluated at every due tick
+(reading or skip): *if at ≥ 50 % of the wave's wall clock the gate's fail
+count has not dropped below the wave's starting count, the wave will not
+pass.* `{ rule: 'R1.no-progress', at, elapsedFraction, fired, startFails,
+fails, wouldHaveSavedS }`: `fired` iff `elapsedFraction ≥ 0.5` AND the latest
+non-fault reading's `fails ≥ startFails` (`startFails` = `lastFails.length`,
+else the calibration's `baseFails.length`); it never fires when the newest
+reading is a fault (a stale count is not a reading of now) nor on an
+unmeasured start; `wouldHaveSavedS` = the wall clock left at the decision
+(`clockMs/1000 − elapsed`), written on every decision so a firing can be
+weighed against what it would have cost. It is read off the BUDGETED clock,
+so for a wave that ended early it overstates: a reader weighing a firing caps
+it at `rec.durationS − elapsed`. SHADOW: nothing is stopped; a firing is one
+log line and one record entry.
+
+**Runner rows for the ladder.** `runnerRowsFrom(waves)` → one row
+`{ id: 'R1.no-progress', source: 'runner', fired, scope, failed, skipped,
+unlabeled }`, each wave keyed by its missionId, else `<campaign>#wave<n>` (the
+wave the runner gave up on in the WAIT has `missionId: null`, and burning the
+whole clock is exactly the rule's target — final review M3): *scope* =
+waves with a decision (`stop` excluded — nothing ran) and ≥ 1
+`R1.no-progress` shadow DECISION at `elapsedFraction ≥ 0.5`, fired or not.
+*unlabeled* (final review I1) = the waves that would be in scope but whose
+VERDICT is `kind: 'fault'` with `verified: null` — the grade itself did not run
+(the gate or suite harness-faulted). `labelOf` makes that mission UNLABELED for
+the S5 rules in the same Holm family, so it is unlabeled for R1 too: out of
+scope and named `{ missionId, why }`. A WAIT-timeout or post-run fault record
+(`faultWave`, no `verified` field at all) is not this — it stays in scope as a
+failure.
+Scope reads the decisions, never the readings: a wave that stops committing
+before 50 % has its last reading below 50 % and only skipped ticks after it,
+and those waves are the rule's positives (an 8 h wave that never commits is
+in scope and fired). A wave with no decision past 50 % (adopted, or ended
+before the halfway mark) is out. *fired* = scoped waves where any decision has
+`fired: true`; *failed* = scoped waves whose decision is not `pass` /
+`pass-with-survivors` — the rule's outcome (a firing on a wave that then
+passed was wrong). The row is returned with an empty scope too: TOO FEW is the
+honest state, not an absent row. It earns `PREDICTIVE` exactly as an S5 rule
+would before any later phase lets it stop a wave.
+
+**The verdict line.** `verdictEntry` prints, after `- Autopoiesis:` and before
+`- Scoreboard:`, `progressLine(rec)`:
+`- Progress: 14 → 3 fails over 3 readings (first fix at 41 min; last at 210
+min: 3); R1.no-progress fired at 52% (would have saved 3.2 h)` — minutes are
+`at − dispatchedAt`; `no drop` when no reading went below the start; `; N
+fault(s)` when probes faulted. With no measured reading:
+`- Progress: no readings (<reason>)`. A runner io with no probe prints no line.
+
+**`R1.no-progress` in the ladder (Task 4).** The runner row is built by ONE
+construction, `runnerRowsFromCampaigns` in `scripts/cynco-runner-rows.mjs`
+(which also owns `runnerRowsFrom`, `runnerWaves` and the rule's name and 50 %
+threshold; `cynco-campaign-progress.mjs` re-exports them). It reads every
+runner-driven campaign's `<campaigns dir>/*/waves.jsonl` — the rule is one rule
+across campaigns. At VERDICT the campaign being graded is read from its own
+state, with the wave just recorded in place of its stored copy. The rule-verdicts
+CLI (`bun scripts/cynco-rule-verdicts.mjs`, with or without `--with-hindcast`)
+builds the same row over `--campaigns-dir DIR` (default
+`<cyncoHome>/campaigns`). The row is a member of the Holm family, so a rebuild
+that left it out would correct the S5 rules over a smaller m and could flip a
+rule near p(Holm) 0.05; a test pins that the CLI and the VERDICT write the same
+`pAdjusted` for every rule on the same inputs (review I1).
+
+The row goes to `writeRuleVerdicts({ …, modelRows, runnerRows })` and through
+the SAME `analyse` a rule faces — Fisher exact, Wilson — over its scope alone
+(one row per in-scope wave; *fired* from `fired`, the outcome from `failed`,
+through `analyse`'s `labelOf` seam, so the lift is against the in-scope waves'
+failure rate). It joins the ONE Holm family: rules, then `M1.*` model rows, then
+runner rows (`ledger.holmFamily`). It lands as
+`rules['R1.no-progress'] = { verdict, precision, ci, p, n, pAdjusted, lift,
+firedTotal, failures, source: 'runner', scope: 'waves', base, scopeN, note,
+unlabeled }` — `unlabeled` the row's `[{ missionId, why }]` (`[]` when none),
+recomputed from the wave records at every VERDICT.
+
+- **Unmeasured is never a rate (F16).** With no wave in scope the verdict is
+  `UNMEASURED — no wave in scope (no shadow decision at 50 % of its clock or
+  later)`. With waves in scope but no firing it is `UNMEASURED — fired on no
+  in-scope wave`. Either way `n: 0` and `precision`, `ci`, `p`, `pAdjusted` and
+  `lift` are all `null`.
+- **A malformed wave record costs that record, never the row.** This covers a
+  record that is not an object, or one whose `shadowDecisions` is neither absent
+  nor an array. It is skipped and named in `note` (`N malformed wave record(s)
+  skipped: <missionId | <campaign>/waves.jsonl line <n>>` — Task 4 review N2;
+  a bare record handed to `runnerRowsFrom` with no campaign reads `record #i`);
+  otherwise `note` is `null`.
+- **The outcome is the wave's FINAL decision.** At VERDICT the identity
+  assertion runs before the ladder, so a pass it turns into a fault is a failure
+  for R1 on that same verdict.
+- **The version.** Like the model rows, a runner row never moves it: a runner
+  row that appears, vanishes or changes verdict is written to the history
+  entry's `runnerChanged`. That is a new entry at the SAME version when no rule
+  moved, or it rides on the rule entry when one did.
+- **R1 is not a rule anywhere it could count as one.** It is in neither the
+  writer's `rules` count nor the file's `predictive` list, even when it reads
+  PREDICTIVE, so "N predictive of R rules (…)" and `predictive` agree; a
+  PREDICTIVE R1 is read in its own entry. The `M1.*` rows keep their Phase 5
+  place in `predictive`. `engine/s5/ruleAuthority.ts` skips `source: 'runner'`
+  exactly as it skips `source: 'model'` (pinned in `ruleAuthority.test.ts` and
+  `exportTrainingData.test.ts`), and the scoreboard's `perRulePrecision` neither
+  counts nor ranks it. Shadow means no authority, whatever the verdict.
+
+The writer returns `runnerRows` (count) and `runners` (the entries). The verdict
+entry, and the CLI's `--with-hindcast` output, names the row with its verdict on
+the `- Outcome hindcast:` ladder line, after the model rows. It appears on a
+hindcast fault line too, since the runner row does not depend on the hindcast.
+An UNMEASURED verdict prints with its reason, and a `note` follows in
+parentheses:
+`…; M1.lr precision null on 0 fired p(Holm) null TOO FEW; R1.no-progress
+precision null on 0 fired p(Holm) null UNMEASURED — fired on no in-scope wave;
+leak check …`.
+
+If the write throws on the MODEL rows, the fallback rewrite keeps the runner
+rows.
+
 ## Labeling rule
 
 Ground truth for signal validation (step 2, per-rule precision/recall):
 
 - **success** = `outcome === "landed" && verified === true && mutationSweep` has
-  no survivor that a DoD item claimed to own
+  no survivor that a DoD item claimed to own (a `derived` or `derived-full`
+  sweep's survivors are coverage findings, not DoD claims — such a row is
+  labeled, and a success when it landed verified)
 - **failure** = anything else
 - **unlabeled** = `verified === null` or `mutationSweep === null`. An unmeasured
   mission is not a passing one. Exclude it; do not default it.
 
 `outcome` is assigned by the driver (commit marker found in `git log` /
 timeout / F7 zero-tool fast-fail).
+
+The driver prints `[driver] COMMIT LANDED` ONCE per mission, by design: it
+marks the landed TRANSITION (the first poll on which `missionCommitted` sees a
+mission commit), not each commit — C9 wave 1 made six commits and printed it
+once. A mission's commit count is read off the record — the runner's
+`commitsBetween` over the row's `commitRange` (the wave record's
+`outcome.commitsLanded`) — never a count of that console line.
 
 ### `verified` is structural, and it is narrower than the brief
 

@@ -2,7 +2,7 @@
 // live proof. These tests run the REAL python against a temp clone of the
 // smoke repo — the triple has to be genuinely runnable, not a stand-in — and
 // never touch C:/tmp/phase2-smoke itself or the live ~/.cynco.
-import { describe, it, expect, beforeAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir, homedir } from 'node:os'
 import { join } from 'node:path'
@@ -63,6 +63,7 @@ describe.skipIf(!HAS_SMOKE)(`smoke campaign s1 (needs ${SMOKE_REPO})`, () => {
       keepGreen: 'python -m pytest -q test_calc.py',
       gate: `${heldout}/gate_s1.py`, perturb: `${heldout}/perturb_s1.py`, positive: `${heldout}/positive_s1.py`,
       budget: { hoursPerWave: 1, iterations: 300, bashTimeoutMs: 600000, waves: 1 },
+      progress: { everyMs: 20_000 },
       invariants: { editGapCap: 40, commitGapCap: 150, revertBan: true, codeIndexFirst: true },
       posiwid: { sourceEditShare: 0.3, commitEvery: 60 },
       sweep: { max: 2 }, prBase: 'main',
@@ -128,35 +129,56 @@ describe.skipIf(!HAS_SMOKE)(`smoke campaign s1 (needs ${SMOKE_REPO})`, () => {
     expect(() => writeSmokeCampaign({ home: tempHome(), repo: join(tmpdir(), 'no-such-repo-s1'), base: SMOKE_BASE })).toThrow(/rev-parse/)
   })
 
-  // F163 / final review T7-M1: the real git read, on a clone whose HEAD moved on.
+})
+
+// F163 / final review T7-M1: the real git read of HEAD against --base. Phase 6
+// fix wave (P-SMOKE): these build their OWN throwaway repo — one commit as the
+// base, a second on top — so they never depend on where C:/tmp/phase2-smoke's
+// HEAD happens to be (a live smoke moves it; a reset puts it back).
+describe('smoke campaign --base against a real repo HEAD (F163, T7-M1; own throwaway repo)', () => {
+  let root, moved, at, base, head
+  beforeAll(() => {
+    root = mkdtempSync(join(tmpdir(), 's1-headcheck-'))
+    moved = join(root, 'moved').replace(/\\/g, '/')
+    mkdirSync(moved)
+    const run = (args, cwd) => { const r = git(['-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid', '-c', 'commit.gpgsign=false', ...args], cwd); if (r.status !== 0) throw new Error(`git ${args.join(' ')}: ${r.stderr}`); return r.stdout.trim() }
+    run(['init', '-q'], moved)
+    writeFileSync(join(moved, 'calc.py'), 'X = 1\n')
+    run(['add', 'calc.py'], moved); run(['commit', '-q', '-m', 'base'], moved)
+    base = run(['rev-parse', 'HEAD'], moved)
+    writeFileSync(join(moved, 'SHIP.md'), 'shipped\n')
+    run(['add', 'SHIP.md'], moved); run(['commit', '-q', '-m', 'wave'], moved)
+    head = run(['rev-parse', 'HEAD'], moved)
+    // A second checkout whose HEAD IS the base.
+    at = join(root, 'at').replace(/\\/g, '/')
+    run(['clone', '--quiet', moved, at], root)
+    run(['checkout', '--quiet', '--detach', base], at)
+  })
+  afterAll(() => { if (root) rmSync(root, { recursive: true, force: true }) })
+
   it('refuses when the repo HEAD is not --base, naming both shas, and writes nothing', () => {
-    const moved = cloneSmoke()
-    const head = git(['rev-parse', 'HEAD'], moved).stdout.trim()
-    expect(head).not.toBe(SMOKE_BASE)
+    expect(head).not.toBe(base)
     const h = tempHome()
-    expect(() => writeSmokeCampaign({ home: h, repo: moved, base: SMOKE_BASE })).toThrow(`repo HEAD ${head} is not --base ${SMOKE_BASE}`)
+    expect(() => writeSmokeCampaign({ home: h, repo: moved, base })).toThrow(`repo HEAD ${head} is not --base ${base}`)
     expect(existsSync(h)).toBe(false)
     // An abbreviated --base that names HEAD's own commit is the same commit.
-    const at = cloneSmoke()
-    git(['checkout', '--quiet', '--detach', SMOKE_BASE], at)
-    const spec = JSON.parse(readFileSync(writeSmokeCampaign({ home: tempHome(), repo: at, base: SMOKE_BASE.slice(0, 7) }), 'utf8'))
-    expect(spec.base).toBe(SMOKE_BASE)
+    const spec = JSON.parse(readFileSync(writeSmokeCampaign({ home: tempHome(), repo: at, base: base.slice(0, 7) }), 'utf8'))
+    expect(spec.base).toBe(base)
   })
 
   it('CLI: --write --repo --base --home prints the spec path; without --base, or off HEAD, it refuses', () => {
     const h = tempHome()
-    const r = spawnSync('bun', ['scripts/cynco-smoke-campaign.mjs', '--write', '--repo', repo, '--base', SMOKE_BASE, '--home', h], { cwd: ROOT, encoding: 'utf8' })
+    const r = spawnSync('bun', ['scripts/cynco-smoke-campaign.mjs', '--write', '--repo', at, '--base', base, '--home', h], { cwd: ROOT, encoding: 'utf8' })
     expect(r.stderr).toBe('')
     expect(r.status).toBe(0)
     expect(r.stdout.trim()).toBe(`${h}/smoke/s1.campaign.json`)
     expect(existsSync(r.stdout.trim())).toBe(true)
-    const noBase = spawnSync('bun', ['scripts/cynco-smoke-campaign.mjs', '--write', '--repo', repo, '--home', tempHome()], { cwd: ROOT, encoding: 'utf8' })
+    const noBase = spawnSync('bun', ['scripts/cynco-smoke-campaign.mjs', '--write', '--repo', at, '--home', tempHome()], { cwd: ROOT, encoding: 'utf8' })
     expect(noBase.status).toBe(1)
     expect(noBase.stderr).toMatch(/no base — pass --base <sha>/)
-    const moved = cloneSmoke()
-    const off = spawnSync('bun', ['scripts/cynco-smoke-campaign.mjs', '--write', '--repo', moved, '--base', SMOKE_BASE, '--home', tempHome()], { cwd: ROOT, encoding: 'utf8' })
+    const off = spawnSync('bun', ['scripts/cynco-smoke-campaign.mjs', '--write', '--repo', moved, '--base', base, '--home', tempHome()], { cwd: ROOT, encoding: 'utf8' })
     expect(off.status).toBe(1)
-    expect(off.stderr).toMatch(new RegExp(`repo HEAD [0-9a-f]{40} is not --base ${SMOKE_BASE}`))
+    expect(off.stderr).toMatch(new RegExp(`repo HEAD ${head} is not --base ${base}`))
   }, 60_000)
 })
 

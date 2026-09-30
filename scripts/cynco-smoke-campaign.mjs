@@ -68,6 +68,10 @@ export function smokeSpec({ repo, base, heldout }) {
     marker: 'smoke s1 complete',
     keepGreen: 'python -m pytest -q test_calc.py',
     budget: { hoursPerWave: 1, iterations: 300, bashTimeoutMs: 600000, waves: 1 },
+    // The smoke gate runs in seconds (calc.py is tiny), so the mid-wave
+    // progress probe (Phase 6 Task 3) reads every 20 s here — the runner's
+    // 30 min default would never fire inside this wave's 1 h clock.
+    progress: { everyMs: 20_000 },
     invariants: { ...WORKER_INVARIANTS },
     posiwid: { sourceEditShare: 0.3, commitEvery: 60 },
     sweep: { max: 2 },

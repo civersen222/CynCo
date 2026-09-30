@@ -56,7 +56,8 @@ sharper form of it:
     do the tests this mission delivered actually own the rules it claims?
 
 A survivor under --mutate is a rule in a file the mission said it now measures,
-which its tests still cannot tell is wrong. It is still recorded as `derived`:
+which its tests still cannot tell is wrong. It is recorded as `derived-full`
+(a derived sweep over whole files, F164), never `authored` by default:
 naming a file is not naming a rule, the mutation set is machine-enumerated over
 everything in that file, and an `authored` survivor fails the mission under the
 labeling rule. Record `authored` only when the files named ARE the DoD's rule
@@ -454,7 +455,12 @@ def main(argv=None):
         # against the DoD's own rule ids, where a survivor is an unmet claim and
         # the labeling rule fails the mission for it. Defaulting --mutate to
         # authored would fail missions over lines they never claimed.
-        kind = "derived"
+        # Under --mutate the kind is `derived-full` (F164, review M4): the same
+        # machine-enumerated instrument, but over whole files rather than the
+        # mission's added lines — the campaign runner's retry records exactly
+        # this kind, and cynco-ledger-sweep.mjs accepts it only for a command
+        # that carries --mutate. Both derived kinds label without failing.
+        kind = "derived-full" if whole_file else "derived"
         print()
         print("Record it with:")
         print(f'  bun scripts/cynco-ledger-sweep.mjs --mission <id> --kind {kind} \\')
