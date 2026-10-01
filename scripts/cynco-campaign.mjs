@@ -596,7 +596,7 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
   // Review M5: `sweepRetried` rides on the ROW too, so a dataset built from
   // rows alone can tell a refusal that survived its F164 --mutate retry from
   // one that was never retried (a reading carries `retried` on mutationSweep).
-  io.patchRow(missionId, { verified: grade.verified, ...(grade.sweep ? { mutationSweep: grade.sweep } : {}), sweepFault: grade.sweepFault ?? null, sweepRetried: grade.sweepRetried ?? false,
+  io.patchRow(missionId, { verified: grade.verified, ...(grade.sweep ? { mutationSweep: grade.sweep } : {}), sweepFault: grade.sweepFault ?? null, sweepWhy: grade.sweepWhy ?? null, sweepRetried: grade.sweepRetried ?? false,
     gate: { sha: grade.sha, gateSha256, terminator: grade.gate.terminator, fails: grade.gate.fails.map(f => f.line), passes: grade.gate.passes.length, priorRegressions: grade.gate.priorRegressions, suiteRegressions: grade.suite.regressions, harnessFault: grade.gate.harnessFault ?? grade.suite.harnessFault ?? null },
     posiwid: { divergence: grade.posiwid.divergence, verdict: grade.posiwid.verdict, dominantObserved: grade.posiwid.dominantObserved } })
 
@@ -614,7 +614,7 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
   // attributed to the seat that sealed it, and the promotion has no denominator.
   // `spec.author` is already defaulted to 'human' by loadCampaignSpec; the
   // fallback here is for an adopted or hand-built spec that never went through it.
-  const rec = { wave, missionId, briefFile, base, head: grade.sha, gateSha256, dispatchedAt, gradedAt: new Date().toISOString(), gate: { ...grade.gate, author: spec.author ?? 'human' }, suite: grade.suite, sweep: grade.sweep, sweepFault: grade.sweepFault ?? null, sweepRetried: grade.sweepRetried ?? false, posiwid: grade.posiwid, verified: grade.verified,
+  const rec = { wave, missionId, briefFile, base, head: grade.sha, gateSha256, dispatchedAt, gradedAt: new Date().toISOString(), gate: { ...grade.gate, author: spec.author ?? 'human' }, suite: grade.suite, sweep: grade.sweep, sweepFault: grade.sweepFault ?? null, sweepWhy: grade.sweepWhy ?? null, sweepRetried: grade.sweepRetried ?? false, posiwid: grade.posiwid, verified: grade.verified,
     // Phase 5 ruling 2: the scoreboard's per-wave inputs, kept on the record so
     // a board is recomputable without the ledger — the wave's GPU seconds and
     // the runner's own commitsBetween count (not toolStats.commits).

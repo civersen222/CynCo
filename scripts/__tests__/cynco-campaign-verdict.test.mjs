@@ -74,6 +74,11 @@ describe('verdictEntry', () => {
     const twiceText = verdictEntry({ spec: { id: 'c9' }, wave: 2, row, grade: twice, decision: { kind: 'next', why: 'x' }, ideationRecord: null, economicsLines: [] })
     expect(twiceText).toMatch(/- Derived sweep: UNMEASURED — sweep refused \(exit 2\) \(and again on the --mutate retry\)\./)
     expect(text).toMatch(/mutationSweep recorded \(derived\)\./)
+    // F166 follow-up: the sweep's own reason rides on the line when it printed one.
+    const why = { ...grade, sweep: null, sweepFault: 'sweep refused (exit 2)', sweepWhy: 'the UNMUTATED tree is already red under unparse.', sweepRetried: false }
+    const whyText = verdictEntry({ spec: { id: 'c10' }, wave: 1, row, grade: why, decision: { kind: 'next', why: 'x' }, ideationRecord: null, economicsLines: [] })
+    expect(whyText).toMatch(/- Derived sweep: UNMEASURED — sweep refused \(exit 2\): the UNMUTATED tree is already red under unparse\.\./)
+    expect(whyText).not.toMatch(/and again/)
     // review M1: a retry that TIMED OUT did not refuse "again" — say which happened
     const retryTimedOut = { ...grade, sweep: null, sweepFault: 'timed out after 3600000 ms', sweepRetried: true }
     const toText = verdictEntry({ spec: { id: 'c9' }, wave: 2, row, grade: retryTimedOut, decision: { kind: 'next', why: 'x' }, ideationRecord: null, economicsLines: [] })

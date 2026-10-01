@@ -142,6 +142,25 @@ export function runSync(cmd, args, opts = {}, hooks = {}) {
   return first
 }
 
+// F166: every merge-mode spawn is an instrument whose OUTPUT IS PARSED — a gate,
+// the suite gate, the sweep, git. The runner inherits whatever launched it, and
+// the operator's terminal exported `FORCE_COLOR=3`: pytest honours it even on a
+// pipe, printed `\x1b[31mFAILED\x1b[0m …`, and the suite gate's
+// `line.startswith("FAILED ")` saw no failure in a run that had one — C10 wave 1
+// became a harness fault instead of a graded MISS. So the child never sees a
+// colour-forcing variable, and is told plainly not to colour, unless the caller
+// set those keys itself. `envExact` callers built their environment on purpose
+// and are left alone.
+export const COLOUR_FORCING_KEYS = ['FORCE_COLOR', 'CLICOLOR_FORCE']
+export const NO_COLOUR_ENV = { NO_COLOR: '1', PY_COLORS: '0' }
+
+export function instrumentEnv(base, env) {
+  const merged = { ...base, ...(env ?? {}) }
+  for (const k of COLOUR_FORCING_KEYS) if (!(env && k in env)) delete merged[k]
+  for (const [k, v] of Object.entries(NO_COLOUR_ENV)) if (!(env && k in env)) merged[k] = v
+  return merged
+}
+
 function attempt(cmd, args, { cwd, env, envExact, timeoutMs, shell } = {}, { spawn = spawnSync, now = () => Date.now() } = {}) {
   const t0 = now()
   const r = spawn(cmd, args, {
@@ -149,7 +168,7 @@ function attempt(cmd, args, { cwd, env, envExact, timeoutMs, shell } = {}, { spa
     // `envExact`: the caller built the WHOLE environment and stripped keys out
     // of it on purpose (the mission dispatch drops CYNCO_NTFY_* and GitHub
     // tokens) — merging process.env back underneath would put them straight back.
-    env: envExact ? (env ?? process.env) : { ...process.env, ...(env ?? {}) },
+    env: envExact ? (env ?? process.env) : instrumentEnv(process.env, env),
     encoding: 'utf8',
     timeout: timeoutMs,
     maxBuffer: 64 * 1024 * 1024,

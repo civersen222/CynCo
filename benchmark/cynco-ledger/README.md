@@ -79,6 +79,14 @@ decisions still recorded here).
   // `false` one that was never retried (no non-test source to name). Absent on
   // rows graded before Phase 6.
   "sweepRetried": false,
+  // F166 follow-up (C10 wave 1): the sweep's own first `g-sweep:` line when it
+  // refused — "the UNMUTATED tree is already red under unparse." (the delivered
+  // tests fail before any mutation; NOT retried, the retry would refuse the
+  // same way), "the mission changed no non-test .py source — nothing to
+  // mutate." / "no mutable expression …" (the F164 diff-scope refusal, retried
+  // with --mutate). null when the sweep ran, was not attempted, or printed no
+  // reason. Absent on rows graded before the F166 fix.
+  "sweepWhy": null,
   // The commits this mission made. `base` is HEAD at dispatch, `head` is HEAD
   // after the check script ran, so `base..head` is exactly the mission's diff —
   // which is what a DERIVED sweep mutates. null when either end was unreadable;

@@ -152,7 +152,7 @@ export function verdictEntry({ spec, wave, row, grade, decision, ideationRecord,
   lines.push(grade.sweep
     ? `- Derived sweep ${grade.sweep.killed}/${grade.sweep.total}${grade.sweep.kind === 'derived-full' ? ' (derived-full: refused on the diff, retried with --mutate over the wave\'s sources)' : ''}; survivors: ${grade.sweep.survived.length ? grade.sweep.survived.join(', ') : 'none'}.`
     : grade.sweepFault
-      ? `- Derived sweep: UNMEASURED — ${grade.sweepFault}${grade.sweepRetried ? (grade.sweepFault === 'sweep refused (exit 2)' ? ' (and again on the --mutate retry)' : ' (on the --mutate retry, after the diff sweep refused)') : ''}.`
+      ? `- Derived sweep: UNMEASURED — ${grade.sweepFault}${grade.sweepWhy ? `: ${grade.sweepWhy}` : ''}${grade.sweepRetried ? (grade.sweepFault === 'sweep refused (exit 2)' ? ' (and again on the --mutate retry)' : ' (on the --mutate retry, after the diff sweep refused)') : ''}.`
       : '- Derived sweep: UNMEASURED (no diff or the sweep refused).')
   lines.push(`- POSIWID ${grade.posiwid.verdict} (divergence ${grade.posiwid.divergence.toFixed(3)}, dominant ${grade.posiwid.dominantObserved}).`)
   if (governancePosiwid) {

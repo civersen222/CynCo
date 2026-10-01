@@ -280,6 +280,33 @@ describe('gradeWave', () => {
       expect(g.sweepFault).toBe('timed out after 3600000 ms')
       expect(g.sweepRetried).toBe(true)
     })
+    // F166 follow-up (C10 wave 1): the sweep refused because the delivered tests
+    // already failed on the unmutated tree, and the --mutate retry refused for
+    // the same reason 20 minutes later. The refusal's own line now rides on the
+    // reading, and only the diff-scope refusal is retried.
+    it('the refusal reason is recorded, and a red-suite refusal is NOT retried', async () => {
+      const red = 'g-sweep: the UNMUTATED tree is already red under unparse.\n         Every mutant would die for a reason that is not the mutation,\n         so this is UNMEASURED, not 15/15. Do not record a sweep.\n'
+      const io = sequencedIo([{ status: 2, stdout: red }], ['a.py', 'b.py'])
+      const g = await gradeWave(spec, row, io)
+      expect(io.sweepCalls).toHaveLength(1)
+      expect(g.sweep).toBeNull()
+      expect(g.sweepFault).toBe('sweep refused (exit 2)')
+      expect(g.sweepWhy).toBe('the UNMUTATED tree is already red under unparse.')
+      expect(g.sweepRetried).toBe(false)
+    })
+    it('"nothing to mutate" is the retryable refusal, with its reason kept when the retry refuses too', async () => {
+      const io = sequencedIo([{ status: 2, stdout: 'g-sweep: the mission changed no non-test .py source — nothing to mutate.\n' }, { status: 2, stdout: 'g-sweep: no mutable expression in a.py.\n' }], ['a.py'])
+      const g = await gradeWave(spec, row, io)
+      expect(io.sweepCalls).toHaveLength(2)
+      expect(g.sweepRetried).toBe(true)
+      expect(g.sweepWhy).toBe('no mutable expression in a.py.')
+    })
+    it('a refusal that printed no g-sweep line keeps the old behaviour: retried, sweepWhy null', async () => {
+      const io = sequencedIo([{ status: 2, stdout: '' }, { status: 2, stdout: '' }], ['a.py'])
+      const g = await gradeWave(spec, row, io)
+      expect(io.sweepCalls).toHaveLength(2)
+      expect(g.sweepWhy).toBeNull()
+    })
     it('C9 wave 2\'s shape: the import-only source is retried in full, its delivered test is not named', async () => {
       const io = sequencedIo([{ status: 2, stdout: '' }, { status: 0, stdout: '{"command":"x","kind":"derived","killed":4,"total":4,"survived":[]}' }],
         ['gilded/tests/test_c9_shell.py', 'gilded/ui/saves_view.py'])
