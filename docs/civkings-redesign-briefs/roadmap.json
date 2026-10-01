@@ -34,7 +34,7 @@
       "name": "Ambitions & the Ladder",
       "bar": "Player ambition chosen at start and shown once; the public-rank ladder with fogged axes; the court in session with stances from dispositions; rival agendas per fog; the ending names the ambition",
       "base": "ccf3fee6bac9b662c91b4324bbd8e2f1a1ffc05e",
-      "status": "sealed",
+      "status": "done",
       "note": "2026-09-29: the frontier occupant's reading of locked decision 2 (public-rank ladder + player ambitions); triple authored by the frontier (Phase 6 Task 6), supervisor review FIX-THEN-SEAL → one fix round → SEAL; sealed by hand (author: human). The user may strike this line before wave 1."
     }
   ]

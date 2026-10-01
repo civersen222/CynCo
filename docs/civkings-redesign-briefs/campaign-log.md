@@ -1801,3 +1801,71 @@ Sealed sha256: gate_c10.py 1b1f6a936d4e4403, perturb_c10.py 6feed904d4cc9502, po
 
 Calibration: BASE printed GATE: MISS (20 fails) — 20 fail(s) by absence, zero error lines; the cheat stub flips C10.7.verbs-self-explain.s7, C10.7.verbs-self-explain.s11 and leaves 18 discriminator(s) red; the positive shim printed GATE: PASS.
 
+
+## C10 wave 1 — c10-wave1-1790784121158 (graded 2026-10-01, BASE ccf3fee6bac9b662c91b4324bbd8e2f1a1ffc05e → HEAD e5d14fc166d6e8760173581c7bd88c50cd6b5fec)
+
+- 1127 tool calls, exitReason timeout (28827s = 8.01h), 10 commit(s). maxCallsWithoutSourceEdit 130, maxCallsWithoutCommit 160. CodeIndex 11/1127. graderProbes 0/1127. Invariants: engine denied 24 call(s) (edit-gap 16, commit-gap 7, revert 1), 1 revert refusal(s), 15 CodeIndex-assisted Grep(s). The engine stopped enforcing edit-gap after repeated relents.
+- Bash by effect: read 76, write 11, run 332, commit 14, revert 1, other 2 (sum 436 vs byName.Bash 436 — agree).
+- Routing: 1 verify-first (revert 1, low-confidence edit 0): passed 0, failed 1, cached 0, could not run 0 (1/6 KEEP-GREEN runs spent).
+- **Sealed gate at e5d14fc166d6e8760173581c7bd88c50cd6b5fec: MISS (18 fails).** Prior-campaign regressions: 0.
+  - `C10.1b.ambition-shown-once.s7: FAIL C10.court raised AttributeError: 'BroadsheetView' object has no attribute '_draw_court'`
+  - `C10.1b.ambition-shown-once.s11: FAIL C10.court raised AttributeError: 'BroadsheetView' object has no attribute '_draw_court'`
+  - `C10.2a.rank-public.s7: FAIL C10.2a raised AttributeError: 'BroadsheetView' object has no attribute '_draw_court'`
+  - `C10.2a.rank-public.s11: FAIL C10.2a raised AttributeError: 'BroadsheetView' object has no attribute '_draw_court'`
+  - `C10.2b.rank-why-through-fog.s7: FAIL C10.fog raised AttributeError: 'BroadsheetView' object has no attribute '_draw_court'`
+  - `C10.2b.rank-why-through-fog.s11: FAIL C10.fog raised AttributeError: 'BroadsheetView' object has no attribute '_draw_court'`
+  - `C10.3a.court-in-session.s7: FAIL C10.court raised AttributeError: 'BroadsheetView' object has no attribute '_draw_court'`
+  - `C10.3a.court-in-session.s11: FAIL C10.court raised AttributeError: 'BroadsheetView' object has no attribute '_draw_court'`
+  - `C10.3b.stance-from-dispositions.s7: FAIL C10.court raised AttributeError: 'BroadsheetView' object has no attribute '_draw_court'`
+  - `C10.3b.stance-from-dispositions.s11: FAIL C10.court raised AttributeError: 'BroadsheetView' object has no attribute '_draw_court'`
+  - `C10.4.opposing-member-lever.s7: FAIL C10.court raised AttributeError: 'BroadsheetView' object has no attribute '_draw_court'`
+  - `C10.4.opposing-member-lever.s11: FAIL C10.court raised AttributeError: 'BroadsheetView' object has no attribute '_draw_court'`
+  - `C10.5.rival-agendas-per-fog.s7: FAIL C10.fog raised AttributeError: 'BroadsheetView' object has no attribute '_draw_court'`
+  - `C10.5.rival-agendas-per-fog.s11: FAIL C10.fog raised AttributeError: 'BroadsheetView' object has no attribute '_draw_court'`
+  - `C10.6.ending-names-ambition.s7: FAIL Glory +treasury (capital 100.0): sim fulfilled=True drawn=None judge()=None ; Glory treasury 0 (capital 33.3): sim=False drawn=None judge()=None ; Dynasty: sim=False drawn=None judge()=None (need the drawn epilogue and judge() to name the family with exactly the sim's outcome; Glory fulfilled rich, failed broke)`
+  - `C10.6.ending-names-ambition.s11: FAIL Glory +treasury (capital 100.0): sim fulfilled=True drawn=None judge()=None ; Glory treasury 0 (capital 17.7): sim=False drawn=None judge()=None ; Dynasty: sim=False drawn=None judge()=None (need the drawn epilogue and judge() to name the family with exactly the sim's outcome; Glory fulfilled rich, failed broke)`
+  - `C10.7.verbs-self-explain.s7: FAIL C10.court raised AttributeError: 'BroadsheetView' object has no attribute '_draw_court'`
+  - `C10.7.verbs-self-explain.s11: FAIL C10.court raised AttributeError: 'BroadsheetView' object has no attribute '_draw_court'`
+  - PASS: C10.1a.ambition-chosen.s7, C10.1a.ambition-chosen.s11, C10.9
+- Suite gate REFUSED (g_suite: pytest reported failures but printed no FAILED lines.): REGRESSED 0, REPAIRED 0.
+- Derived sweep: UNMEASURED — sweep refused (exit 2) (and again on the --mutate retry).
+- POSIWID Drifting (divergence 0.126, dominant inspect).
+- Governance POSIWID Contradicted (divergence 6.808, dominant signalsLogged, support 1201; drift onset wave 1).
+- S4 ideation (authority 0): 5 hypothesis/es; followed=false.
+- Ledger: verified null (harness fault); mutationSweep null.
+- Identity: intact
+- Autopoiesis: 2/6 — missing boundarySelfProduced, circularProduction, organizationallyClosed, organizationMaintained
+- Progress: 20 → 18 fails over 8 readings (first fix at 139 min; last at 467 min: 18); R1.no-progress did not fire (10 decision(s))
+- Scoreboard: PASS/GPU-h open | waves 1 so far (open) | lines fixed per landed wave 2.00 | human interventions per wave 0.00 | rules predictive 0/8 (best I3 58% NO EVIDENCE)
+- Outcome hindcast: UNMEASURED — no eligible labeled mission at K = 16 turns with signals v2 (eligible by version: v1: 106) — nothing to train on; R1.no-progress precision null on 0 fired p(Holm) null UNMEASURED — no wave in scope (no shadow decision at 50 % of its clock or later)
+- Denials (campaign to date): edit-gap 3/16 (TOO FEW); commit-gap 2/7 (TOO FEW); revert 1/1 (IDENTITY).
+- Gate lines: cynco 0/0 held (rate —, ci [0.00, 1.00]) vs human 41/45; TOO FEW
+
+Economics after this wave: VERDICT: frontier spent $2995.57 SUPERVISING (development $1270.88 and unattributed $1.86 are excluded — building LocalCode is not oversight). The supervised generation would have cost ~$5709.78 on the API ($2736.95 priced from measured tokens, $2972.84 still estimated) and ran locally for ~$23.58 of power. supervision ratio: $1 of frontier verify oversees ~$1.91 of displaced generation.
+
+Verdict: **STOP (fault)** — g_suite: pytest reported failures but printed no FAILED lines.
+
+## C10 wave 2 — c10-wave2-1790815293245 (graded 2026-10-01, BASE e5d14fc166d6e8760173581c7bd88c50cd6b5fec → HEAD 74f75ee02e16b45fc4c0d434a65371d6f3578d10)
+
+- 555 tool calls, exitReason engine_closed_the_turn (23579s = 6.55h), 8 commit(s). maxCallsWithoutSourceEdit 48, maxCallsWithoutCommit 153. CodeIndex 17/555. graderProbes 0/555. Invariants: engine denied 5 call(s) (edit-gap 4, commit-gap 1, revert 0), 0 revert refusal(s), 24 CodeIndex-assisted Grep(s).
+- Bash by effect: read 28, write 0, run 67, commit 6, revert 0, other 5 (sum 106 vs byName.Bash 106 — agree).
+- Routing: 0 verify-first (revert 0, low-confidence edit 0): passed 0, failed 0, cached 0, could not run 0 (0/6 KEEP-GREEN runs spent).
+- **Sealed gate at 74f75ee02e16b45fc4c0d434a65371d6f3578d10: PASS (0 fails).** Prior-campaign regressions: 0.
+  - PASS: C10.1a.ambition-chosen.s7, C10.1a.ambition-chosen.s11, C10.1b.ambition-shown-once.s7, C10.1b.ambition-shown-once.s11, C10.2a.rank-public.s7, C10.2a.rank-public.s11, C10.2b.rank-why-through-fog.s7, C10.2b.rank-why-through-fog.s11, C10.3a.court-in-session.s7, C10.3a.court-in-session.s11, C10.3b.stance-from-dispositions.s7, C10.3b.stance-from-dispositions.s11, C10.4.opposing-member-lever.s7, C10.4.opposing-member-lever.s11, C10.5.rival-agendas-per-fog.s7, C10.5.rival-agendas-per-fog.s11, C10.6.ending-names-ambition.s7, C10.6.ending-names-ambition.s11, C10.7.verbs-self-explain.s7, C10.7.verbs-self-explain.s11, C10.9
+- Suite gate PASS: REGRESSED 0, REPAIRED 0.
+- Derived sweep 1/6; survivors: gilded/endings.py:150:cmp->IsNot, gilded/endings.py:154:cmp->IsNot, gilded/endings.py:169:cmp->NotEq, gilded/endings.py:173:cmp->NotEq, gilded/endings.py:177:cmp->NotEq.
+- POSIWID Drifting (divergence 0.133, dominant inspect).
+- Governance POSIWID Contradicted (divergence 6.844, dominant signalsLogged, support 590; drift onset wave 1).
+- S4 ideation (authority 0): 2 hypothesis/es; followed=true.
+- Ledger: verified true; mutationSweep recorded (derived).
+- Identity: intact
+- Autopoiesis: 4/6 — missing boundarySelfProduced, organizationallyClosed
+- Progress: 18 → 0 fails over 6 readings (first fix at 90 min; last at 373 min: 0); R1.no-progress did not fire (8 decision(s))
+- Scoreboard: PASS/GPU-h 0.069 | waves 2 | lines fixed per landed wave 10.00 | human interventions per wave 0.00 | rules predictive 0/8 (best I3 57% NO EVIDENCE)
+- Outcome hindcast: UNMEASURED — v2 holdout not yet frozen (1 of 38 labeled; eligible by version: v1: 106, v2: 1); R1.no-progress precision null on 0 fired p(Holm) null UNMEASURED — fired on no in-scope wave
+- Denials (campaign to date): edit-gap 1/4 (TOO FEW); commit-gap 0/1 (TOO FEW); revert 0/0 (IDENTITY).
+- Gate lines: cynco 0/0 held (rate —, ci [0.00, 1.00]) vs human 62/66; TOO FEW
+
+Economics after this wave: VERDICT: frontier spent $2995.57 SUPERVISING (development $1270.88 and unattributed $1.86 are excluded — building LocalCode is not oversight). The supervised generation would have cost ~$5625.37 on the API ($2652.54 priced from measured tokens, $2972.84 still estimated) and ran locally for ~$23.45 of power. supervision ratio: $1 of frontier verify oversees ~$1.88 of displaced generation.
+
+Verdict: **CAMPAIGN PASS (sweep survivors: 5)** — sealed gate PASS, suite gate PASS, sweep 1/6, 5 survivor(s) — 5 inside a claimed file: gilded/endings.py:150:cmp->IsNot, gilded/endings.py:154:cmp->IsNot, gilded/endings.py:169:cmp->NotEq, gilded/endings.py:173:cmp->NotEq, gilded/endings.py:177:cmp->NotEq
