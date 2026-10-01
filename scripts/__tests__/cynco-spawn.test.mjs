@@ -352,3 +352,55 @@ describe('runDispatch: the mission launch names a stale ETIMEDOUT and never retr
     expect(r.fault).toBeNull()
   })
 })
+
+// F166. The operator's terminal exported FORCE_COLOR=3; the runner inherited it
+// through a detached launch; pytest honours it on a pipe and printed
+// `\x1b[31mFAILED\x1b[0m …`; the suite gate's `startswith("FAILED ")` then saw a
+// run with one real regression as "failures but no FAILED lines" and C10 wave 1
+// became a harness fault instead of a graded MISS. An instrument's output is
+// parsed, so the instrument is never handed a colour-forcing environment.
+describe('F166: a parsed instrument never inherits a colour-forcing environment', () => {
+  const envSeen = (opts) => {
+    const clock = clockOf()
+    let seen = null
+    const spawn = (_cmd, _args, o) => { clock.t += 10; seen = o.env; return { status: 0, stdout: '', stderr: '' } }
+    runSync('python', ['g_suite_no_regression.py'], opts, { spawn, now: () => clock.t })
+    return seen
+  }
+  const withForced = (fn) => {
+    const saved = { FORCE_COLOR: process.env.FORCE_COLOR, CLICOLOR_FORCE: process.env.CLICOLOR_FORCE, NO_COLOR: process.env.NO_COLOR, PY_COLORS: process.env.PY_COLORS }
+    process.env.FORCE_COLOR = '3'; process.env.CLICOLOR_FORCE = '1'; delete process.env.NO_COLOR; delete process.env.PY_COLORS
+    try { return fn() } finally {
+      for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v }
+    }
+  }
+
+  it('merge mode drops FORCE_COLOR / CLICOLOR_FORCE and pins NO_COLOR=1, PY_COLORS=0 beside the caller keys', () => {
+    const env = withForced(() => envSeen({ env: { CHK_SUITE_BASELINE: 'b.txt' }, timeoutMs: 1000 }))
+    expect(env.FORCE_COLOR).toBeUndefined()
+    expect(env.CLICOLOR_FORCE).toBeUndefined()
+    expect(env.NO_COLOR).toBe('1')
+    expect(env.PY_COLORS).toBe('0')
+    expect(env.CHK_SUITE_BASELINE).toBe('b.txt')
+    expect(env.PATH ?? env.Path).toBeDefined()
+  })
+
+  it('a caller that sets the colour keys itself is obeyed', () => {
+    const env = withForced(() => envSeen({ env: { FORCE_COLOR: '1', PY_COLORS: '1' }, timeoutMs: 1000 }))
+    expect(env.FORCE_COLOR).toBe('1')
+    expect(env.PY_COLORS).toBe('1')
+    expect(env.NO_COLOR).toBe('1')
+  })
+
+  it('envExact is passed through untouched (the dispatch env is built on purpose)', () => {
+    const env = withForced(() => envSeen({ env: { ONLY: 'this', FORCE_COLOR: '3' }, envExact: true, timeoutMs: 1000 }))
+    expect(env).toEqual({ ONLY: 'this', FORCE_COLOR: '3' })
+  })
+
+  it('instrumentEnv is the one rule, exported so the probe and the sweep share it', async () => {
+    const { instrumentEnv, COLOUR_FORCING_KEYS, NO_COLOUR_ENV } = await import('../cynco-spawn.mjs')
+    expect(COLOUR_FORCING_KEYS).toEqual(['FORCE_COLOR', 'CLICOLOR_FORCE'])
+    expect(NO_COLOUR_ENV).toEqual({ NO_COLOR: '1', PY_COLORS: '0' })
+    expect(instrumentEnv({ FORCE_COLOR: '3', PATH: 'p' }, { X: '1' })).toEqual({ PATH: 'p', X: '1', NO_COLOR: '1', PY_COLORS: '0' })
+  })
+})
