@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { readFileSync, mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
+import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -129,12 +129,12 @@ describe('intervalsOf: the span between two ticks is one labeled sample', () => 
     it('reads the ledger and campaign waves under CYNCO_HOME, writes JSONL, and prints the counts', async () => {
       const prevHome = process.env.CYNCO_HOME
       const home = mkdtempSync(join(tmpdir(), 'outcome-intervals-home-'))
+      const ledgerDir = mkdtempSync(join(tmpdir(), 'outcome-intervals-ledger-'))
       process.env.CYNCO_HOME = home
       try {
         const campaignDir = join(home, 'campaigns', 'fx')
         mkdirSync(campaignDir, { recursive: true })
         writeFileSync(join(campaignDir, 'waves.jsonl'), JSON.stringify(wave) + '\n', 'utf8')
-        const ledgerDir = mkdtempSync(join(tmpdir(), 'outcome-intervals-ledger-'))
         writeFileSync(join(ledgerDir, 'missions.jsonl'), JSON.stringify(row) + '\n', 'utf8')
         const lines = []
         const io = { log: (s) => lines.push(s), error: (s) => lines.push(s) }
@@ -147,6 +147,8 @@ describe('intervalsOf: the span between two ticks is one labeled sample', () => 
         expect(lines[0]).toMatch(/reading-level outcomes: 3 rows from 1 waves \(excluded 0 short, 0 no ticks, 0 no turn times, 0 other signals version, 0 after zero fails, 0 no ledger row\) →/)
       } finally {
         if (prevHome === undefined) delete process.env.CYNCO_HOME; else process.env.CYNCO_HOME = prevHome
+        // T1-N2: the temp home and ledger are this test's alone — removed, not left behind.
+        for (const d of [home, ledgerDir]) rmSync(d, { recursive: true, force: true, maxRetries: 5 })
       }
     })
   })
