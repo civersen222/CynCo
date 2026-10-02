@@ -460,7 +460,9 @@ branch exists), `npm install` in that directory, then
 `bun scripts/cynco-campaign.mjs <id>.campaign.json …` with that directory as
 the cwd. Started anywhere else, the runner exits 2 and prints these commands.
 The report and authoring verbs (`--autopoiesis`, `--scoreboard`, `--author`,
-`--check`, the proposal decisions, `--sync`) run from any checkout.
+`--check`, the proposal decisions, `--sync`) run from any checkout. A report verb
+reads the ledger shards of the checkout it runs in, so an in-flight campaign's
+rows are visible only from its own worktree until its PR merges.
 
 Two further blocks are patched on by the campaign runner
 (`scripts/cynco-campaign.mjs` → `scripts/cynco-ledger-patch.mjs`) when it grades
@@ -581,7 +583,11 @@ measured, never a zero. The verdict entry prints both on one line:
 The campaign state keeps the raw windows under
 `state.governancePosiwid.windows`; the verdict entry prints the reading as its
 "Governance POSIWID" line, and `GET /api/campaign` hands the dashboard the last
-wave's `verdict` and `onsetWave`.
+wave's `verdict` and `onsetWave` and, per wave, `waves[].governancePosiwid =
+{ verdict, onsetWave, v2: { verdict, stated: { earned, total } | null } | null }`
+(`v2: null` on a wave that predates v2, `verdict: null` on an unmeasured one);
+the Campaign panel prints `v1 <verdict> | v2 <verdict> (e of t earned)`, or
+`v2 unmeasured`, and v1 alone on an older wave.
 `engine/__tests__/guards/ledgerGovernancePosiwidBlock.test.ts` re-runs the
 module on this block's `counts` and fails if the reading moves (F149: a
 documented number no code produces).
@@ -1677,6 +1683,18 @@ firing, else `did not fire (n decision(s))`; a record from before Phase 7 reads
 `R2.stalled not evaluated`. The `- Outcome hindcast:` ladder line prints every
 runner row in id order, so `R2.stalled …` follows `R1.no-progress …`.
 
+**The panel (Phase 7 ruling 5).** `GET /api/campaign` reduces each wave
+record's `progress` + `shadowDecisions` to `waves[].progress = { startFails,
+readings: [{ elapsedFraction, fails, sha7, fault }], decisions: { <rule>: { n,
+fired, firedAt: [elapsedFraction…] } } }` (`reduceProgress` in
+`engine/dashboard/server.ts`; `null` when the record has no `progress` array;
+a fault reading is `{ elapsedFraction: null, fails: null, sha7: null, fault }`;
+`startFails` is the first decision's, else the first measured reading's). The
+Campaign panel draws it per wave as a fails-over-clock line with each rule's
+fired ticks marked; fault readings stay off the line and are counted, their
+reasons on the tooltip. It is read off the wave record after the verdict —
+the same runner-side copy as above, never the model's.
+
 ### Reading-level outcomes (Phase 7 ruling 1)
 
 One mission gives `featuresOf` one row (above). But the mid-wave gate progress
@@ -1848,7 +1866,11 @@ base, scopeN }` (`scopeN` held-out readings); the `M1.*` entries now carry
 numbers (F16). `engine/s5/ruleAuthority.ts` skips every `source: 'model'` row,
 so an `M2.*` id is refused authority exactly as an `M1.*` id is; the
 scoreboard neither counts nor ranks them, and its `learner` field reads the
-`M1.*` rows only.
+`M1.*` rows only. **Read an `M2.*` p as optimistic:** the held-out readings of
+one mission share its model, brief and repo state, so they are not independent
+draws, and Fisher's test counts them as if they were. Twelve held-out readings
+from six missions carry less evidence than twelve missions would. Authority is
+refused either way; the mission unit stays the one that can earn it.
 
 **The verdict line** gains `; readings: <the mission learner's grammar>` after
 the mission clause — `; readings: UNMEASURED — reading holdout not yet frozen
