@@ -1224,6 +1224,26 @@ authority. Nothing in the engine enforces anything new.
   `verify.retried`. The smoke's `markerCheck` is a fixture that fails on its
   first call and passes after, with `markerRetryMinS: 60`. That makes the
   smoke a mechanical proof of the loop, not a measurement.
+  **Amended at the final review (I1): the marker check has its own channel.**
+  The check-cmd had a second consumer nobody had priced: the driver makes it
+  the engine's withheld contract assertion, and the model's
+  `ContractAssertPass` runs that inside its own turn. With the suite gate as
+  the check-cmd, every such call ran the whole suite in-turn (C10 wave 2
+  measured 450 s for it), and on the smoke the model could spend the
+  fixture's one failure before the driver ever ran it — the retry proof void,
+  with no tell on the row. So the check-cmd stays `spec.keepGreen` (the
+  contract assertion and verify-first keep what they had before Phase 7), and
+  `waveDispatch` hands the marker check to the driver as `CYNCO_MARKER_CHECK`
+  with its cap `CYNCO_MARKER_CHECK_TIMEOUT_MS` (1 800 000).
+  `markerCheckFrom` (`scripts/cynco-verify.mjs`) is the driver's only reader:
+  the in-loop check, the retry and the final verify run it, falling back to
+  the check-cmd without the channel. The engine reads the channel for its
+  instruments only (`markerCheckGateAssertions`, so the baseline stays sealed
+  on every message, the retry note included), the driver snapshots and
+  restores them (`driverInstrumentAssertions`), and the Bash tool's env drops
+  `CYNCO_MARKER_CHECK*` and `LOCALCODE_MISSION_*` (`bashToolEnv`). The driver
+  passes `CYNCO_CHECK_ORDINAL=<n>` to each check; the fixture fails only at
+  ordinal 1 and passes, stamp untouched, when the ordinal is absent.
   **The sealed-instrument rule, restated.** The suite gate's output may reach
   the model. It is pytest over the public tests, against a baseline the model
   cannot read. The sealed campaign gate's output never reaches the model.

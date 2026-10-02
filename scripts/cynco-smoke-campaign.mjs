@@ -24,11 +24,17 @@
 // The marker check (Phase 7 ruling 3, review I3) is a MECHANICAL PROOF of the
 // driver's retry loop, not a measurement of the work. The spec's markerCheck is
 // `<home>/smoke/marker_check_once.py`, written here (under the temp home, never
-// under heldout): its first call FAILS on purpose (`marker-check-once: first
-// call fails on purpose`) and leaves a stamp beside itself; every later call
-// PASSES. `markerRetryMinS: 60` lets the one-hour wave reach the retry, so one
-// smoke run walks FAIL → note → second turn → PASS end to end. The sealed gate
-// and the suite gate still grade the work, after the driver, as always.
+// under heldout): the driver's first check FAILS on purpose (`marker-check-once:
+// first call fails on purpose`) and leaves a stamp beside itself; every later
+// call PASSES. `markerRetryMinS: 60` lets the one-hour wave reach the retry, so
+// one smoke run walks FAIL → note → second turn → PASS end to end. The sealed
+// gate and the suite gate still grade the work, after the driver, as always.
+//
+// Final review I1: the marker check reaches the driver on its own channel
+// (CYNCO_MARKER_CHECK), never as the engine's contract assertion — the
+// check-cmd stays `keepGreen` — and the fixture fails only for
+// CYNCO_CHECK_ORDINAL=1, which only the driver sets, so nothing else (the
+// model's ContractAssertPass, a stray run) can spend the stamp.
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { resolve } from 'node:path'
@@ -69,19 +75,28 @@ export const MARKER_CHECK_ONCE = 'marker_check_once.py'
 export const MARKER_CHECK_STAMP = 'marker_check_once.stamp'
 
 /**
- * The fixture: FAILS on its first call (and writes the stamp), PASSES on every
- * later call. A mechanical proof of the driver's retry loop — see the header.
+ * The fixture: FAILS on the driver's first check (CYNCO_CHECK_ORDINAL=1, no
+ * stamp yet — and writes the stamp), PASSES on every other call, including any
+ * call without the ordinal. A mechanical proof of the driver's retry loop — see
+ * the header.
  */
 export const MARKER_CHECK_ONCE_PY = `# marker_check_once.py — the s1 smoke's marker check (Phase 7 ruling 3).
 # A MECHANICAL proof of the driver's marker-check retry loop, not a
-# measurement of the work: the first call fails on purpose and leaves a stamp
-# beside this file; every later call passes. Written by
+# measurement of the work: the driver's first check fails on purpose and
+# leaves a stamp beside this file; every later call passes. Two locks keep the
+# failure the driver's: the stamp (spent once), and CYNCO_CHECK_ORDINAL, which
+# only the driver sets — a call without it (anyone else's) passes and leaves
+# the stamp alone, and only ordinal 1 can fail. Written by
 # scripts/cynco-smoke-campaign.mjs; the stamp is removed on every --write.
 import os
 import sys
 
+ordinal = os.environ.get("CYNCO_CHECK_ORDINAL")
+if ordinal is None:
+    print("marker-check-once: not the driver (no CYNCO_CHECK_ORDINAL) — passes, the stamp is left alone")
+    sys.exit(0)
 stamp = os.path.join(os.path.dirname(os.path.abspath(__file__)), ${JSON.stringify(MARKER_CHECK_STAMP)})
-if not os.path.exists(stamp):
+if ordinal == "1" and not os.path.exists(stamp):
     with open(stamp, "w", encoding="utf-8") as f:
         f.write("first call made\\n")
     print("marker-check-once: first call fails on purpose")

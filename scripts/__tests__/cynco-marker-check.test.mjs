@@ -3,7 +3,7 @@
 // is reconnected first, and a stood check is reused only while HEAD holds.
 import { describe, it, expect } from 'vitest'
 import { fileURLToPath } from 'node:url'
-import { markerCheckRound, sendConfirmed, canReuseMarkerVerdict, withKeepalive } from '../cynco-marker-check.mjs'
+import { markerCheckRound, sendConfirmed, canReuseMarkerVerdict, withKeepalive, noteAcknowledged } from '../cynco-marker-check.mjs'
 import { runAsync } from '../cynco-spawn.mjs'
 
 const OPEN = 1
@@ -91,6 +91,17 @@ describe('sendConfirmed', () => {
 })
 
 // Review I4: "same commit" is checked, not assumed.
+// Final review M7: `retried: true` counts a note confirmed SENT; whether the
+// engine then acted on it is a separate fact — a further turn closing after
+// the note, before the final verify.
+describe('noteAcknowledged (final review M7)', () => {
+  it('is null without a retry, true only when a turn closed after the note', () => {
+    expect(noteAcknowledged({ retried: false, completesAtNote: null, completesAtVerify: 7 })).toBeNull()
+    expect(noteAcknowledged({ retried: true, completesAtNote: 7, completesAtVerify: 7 })).toBe(false)
+    expect(noteAcknowledged({ retried: true, completesAtNote: 7, completesAtVerify: 9 })).toBe(true)
+  })
+})
+
 describe('canReuseMarkerVerdict', () => {
   const verdict = { headBefore: 'aaa', headAfter: 'aaa' }
   it('reuses only a check that read one commit, with HEAD still there and the run closed', () => {

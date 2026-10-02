@@ -87,5 +87,6 @@ Defines every tool the model can call in an agent turn — file I/O, Bash, Git, 
 - `arbiterVerdict: true` marks an honest "not yet" from a declared arbiter so the doom-loop breaker does not fire on a run correctly re-asking the same graded question.
 - Windows PowerShell 5.1 has no `&&`/`||`, and a trailing `2>&1` makes a successful command look failed (F60) — `bash.ts` strips it and reports both streams instead. Pinned by `shellInfo.test.ts` and `bash.test.ts`.
 - Bash timeouts have two ceilings, not one: `bashDefaultTimeoutMs` (what a call gets unasked) and `bashMaxTimeoutMs` (hard clamp on any override) — F142 was an operator raising one env var while a separate constant still capped it.
+- The Bash tool's shell never inherits the harness's keys: `bashToolEnv` (`impl/bash.ts`) drops `LOCALCODE_MISSION_*` and `CYNCO_MARKER_CHECK*` (the driver's marker check, Phase 7 final review I1) while the engine process keeps them. Pinned by `bash.test.ts`.
 - `Write` refuses to shrink a git-tracked file below half its size unless the file is untracked; delete-then-write is the deliberate escape hatch. Pinned by `writeShrinkGuard.test.ts`.
 - `Edit`/`MultiEdit` normalize CRLF to LF before matching and restore CRLF on write — without it a multi-line `old_string` never matches a CRLF file. Pinned by `edit.test.ts`, `editNearMiss.test.ts`, `multiEdit.test.ts`.

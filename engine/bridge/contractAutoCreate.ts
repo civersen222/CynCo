@@ -427,6 +427,34 @@ export function sealedGatePaths(
   return withheldGatePaths(assertions, cwd, exists).filter(p => !isHarnessOwnFile(p, harnessRoot))
 }
 
+/**
+ * The driver's marker check, as the dispatch hands it over (Phase 7 final
+ * review I1). The check-cmd is the engine's withheld contract assertion, which
+ * the model's `ContractAssertPass` runs inside its own turn — so the marker
+ * check (the whole-suite gate on a campaign, the fail-once fixture on the
+ * smoke) travels on a channel of its own that ONLY the driver runs (its cap
+ * is CYNCO_MARKER_CHECK_TIMEOUT_MS, read by the driver alone —
+ * scripts/cynco-verify.mjs `markerCheckFrom`).
+ */
+export const MARKER_CHECK_ENV = 'CYNCO_MARKER_CHECK'
+/** The text of the pseudo-assertion below; never shown to the model, never run. */
+export const MARKER_CHECK_GATE_TEXT = "the driver's marker check (its instruments only — never run by the engine)"
+
+/**
+ * The marker channel as assertions, read for their PATHS only: the instruments
+ * the marker check names (the suite baseline, the fixture) are sealed by the
+ * engine and snapshotted/restored by the driver like any withheld gate's, and
+ * both derive them through `harnessGatePaths` from this. Never handed to
+ * `applyHarnessContract` — the engine must never run the marker check. Empty
+ * when the channel is unset or blank.
+ */
+export function markerCheckGateAssertions(
+  env: Record<string, string | undefined> = process.env,
+): HarnessAssertion[] {
+  const command = (env[MARKER_CHECK_ENV] ?? '').trim()
+  return command ? [{ text: MARKER_CHECK_GATE_TEXT, command }] : []
+}
+
 /** Apply a harness-supplied contract spec. Returns true when applied. */
 export function applyHarnessContract(
   spec: HarnessContractSpec | undefined,

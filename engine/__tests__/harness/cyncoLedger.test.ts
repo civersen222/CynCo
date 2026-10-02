@@ -1166,7 +1166,8 @@ describe('history-rewrite wiring guard', () => {
     // still reaches `verify` — evidence is kept — but the reward-bearing field
     // must go through gate.label or the guard is decorative.
     expect(driver).toMatch(/verified = gate\.label \? r\.verified : undefined/)
-    expect(driver).toMatch(/if \(checkCmd && !gate\.run\)/)
+    // Final review I1: the marker check (CYNCO_MARKER_CHECK, else the check-cmd).
+    expect(driver).toMatch(/if \(MARKER\.command && !gate\.run\)/)
   })
 
   /**

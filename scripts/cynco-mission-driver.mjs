@@ -21,8 +21,17 @@
 //                  ONCE as a driver note (reconnecting first if the socket
 //                  died) and the mission continues, and the next check sets
 //                  `verified` (ledger `verifyRetries`, `verify.retried`,
-//                  `verify.noteFailed`, `verify.patches`).
-//   probe-cmd:     Stage 1 (S3*, docs/cynco-self-orchestration-spec.md): cheap
+//                  `verify.noteFailed`, `verify.patches`,
+//                  `verify.noteAcknowledged`, `verify.overrunS`).
+//                  Final review I1: the MARKER check (the in-loop check, the
+//                  retry, and the final verify) is CYNCO_MARKER_CHECK when the
+//                  dispatch sets it (cap CYNCO_MARKER_CHECK_TIMEOUT_MS,
+//                  required with it), else this check-cmd. The check-cmd
+//                  alone becomes the engine's contract assertion, which the
+//                  model's ContractAssertPass runs in-turn; the marker check
+//                  never does. Each marker check runs with
+//                  CYNCO_CHECK_ORDINAL=<n> (1 for the first) in its env.
+//   probe-cmd:    Stage 1 (S3*, docs/cynco-self-orchestration-spec.md): cheap
 //                  PUBLIC check run at every quiescent turn boundary once a
 //                  commit has landed. FAIL => verbatim output injected as a new
 //                  user turn and the mission continues (max
@@ -63,14 +72,14 @@ import { appendFileSync, readFileSync, existsSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { createMissionCollector, buildMissionRecord, missionCommitted, missionOutcome, waitExitReason, gateDisposition, historyRewrite, gradedHeadSuspect, QUIET_MS } from './cynco-ledger.mjs'
 import { countGraderProbes } from './cynco-grader-probes.mjs'
-import { runCheck, runCheckAsync, markerCheckNote, markerRetryMinSFrom } from './cynco-verify.mjs'
-import { markerCheckRound, canReuseMarkerVerdict, openSocket, withKeepalive } from './cynco-marker-check.mjs'
+import { runCheck, runCheckAsync, markerCheckNote, markerRetryMinSFrom, markerCheckFrom, verifyOverrunS } from './cynco-verify.mjs'
+import { markerCheckRound, canReuseMarkerVerdict, openSocket, withKeepalive, noteAcknowledged } from './cynco-marker-check.mjs'
 import { probeConfigError, shouldProbe, overrideDecision, probeMessage } from './cynco-probe.mjs'
 import { purgeBytecodeCaches, purgeStaleAgentState } from './cynco-workspace.mjs'
 import { loadMissionAssertions, sidecarPath, sealedDispatchRefusal, s5DispatchRefusal, workspaceError } from './cynco-contract.mjs'
 import { invariantsFromEnv } from './cynco-invariants.mjs'
 import { engineEndpoints } from './cynco-endpoints.mjs'
-import { snapshotHeldOut, restoreHeldOut } from './cynco-held-out.mjs'
+import { snapshotHeldOut, restoreHeldOut, withHeldOutRestored, driverInstrumentAssertions } from './cynco-held-out.mjs'
 import { snapshotUncommittedWork } from './cynco-work-snapshot.mjs'
 import { activeShardPath, ledgerCount, ensureLedgerDir } from './cynco-ledger-shards.mjs'
 import { cyncoHome } from '../engine/paths.js'
@@ -161,6 +170,20 @@ if (markerRetry.error) {
 }
 const MARKER_RETRY_MIN_S = markerRetry.minS
 
+// Phase 7 final review I1: the marker check on its own channel. The check-cmd
+// is ALSO the engine's withheld contract assertion (loadMissionAssertions
+// below), which the model's ContractAssertPass runs inside its own turn — a
+// whole-suite gate there spends the wave's clock unpriced, and the smoke's
+// fail-once fixture would be spent with no tell. So the runner hands the
+// marker check to THIS script alone; without the channel the check-cmd is the
+// marker check, as before Phase 7. A channel with no usable cap is refused.
+const MARKER = markerCheckFrom(process.env, checkCmd, CHECK_TIMEOUT_MS)
+if (MARKER.error) {
+  console.error(`[driver] ${MARKER.error} — nothing was dispatched`)
+  process.exit(2)
+}
+if (MARKER.source === 'env') console.log(`[driver] marker check from CYNCO_MARKER_CHECK (cap ${MARKER.timeoutMs}ms) — run by this driver only; the check-cmd stays the contract's assertion`)
+
 // Stage 1 (S3*): same fail-closed shape for the probe's cap — a probe killed at
 // a default nobody chose reports UNMEASURED at the exact moment it was needed.
 const probeError = probeConfigError(probeCmd, process.env.CYNCO_PROBE_TIMEOUT_MS)
@@ -208,8 +231,11 @@ if (missionAssertions && missionAssertions.length > (checkCmd ? 1 : 0)) {
 // It also decides whether this mission needs an engine that can seal at all, and
 // a mission whose only outside instrument is the harness's own checker needs no
 // such guarantee. The snapshot barrier below takes the full set, not this one.
-const SEALED_COUNT = missionAssertions
-  ? sealedGatePaths(missionAssertions, CWD).length
+// Final review I1: the contract PLUS the marker channel — the engine seals the
+// marker check's instruments (the suite baseline) from the same two sources.
+const instrumentAssertions = driverInstrumentAssertions(missionAssertions, process.env)
+const SEALED_COUNT = instrumentAssertions.length
+  ? sealedGatePaths(instrumentAssertions, CWD).length
   : 0
 if (SEALED_COUNT > 0) console.log(`[driver] this mission seals ${SEALED_COUNT} held-out instrument(s)`)
 
@@ -231,8 +257,8 @@ let enforcedWarned = false
 // that GENERATES the gate, ran it, and was then scored by a gate it had rebuilt
 // itself from a stale base. So take the bytes now and put them back before the
 // check — the paths stay inside this scope, exactly as at SEALED_COUNT above.
-const heldOutSnapshots = missionAssertions
-  ? snapshotHeldOut(withheldGatePaths(missionAssertions, CWD),
+const heldOutSnapshots = instrumentAssertions.length
+  ? snapshotHeldOut(withheldGatePaths(instrumentAssertions, CWD),
                     join(cyncoHome(), 'held-out', missionId))
   : []
 if (heldOutSnapshots.length) {
@@ -242,7 +268,7 @@ if (heldOutSnapshots.length) {
 }
 // Phase 7 review I1: the marker-check note never quotes a line naming one of
 // these (the suite gate's baseline is one). Kept in this scope, like the paths above.
-const noteRedact = missionAssertions ? withheldGatePaths(missionAssertions, CWD) : []
+const noteRedact = instrumentAssertions.length ? withheldGatePaths(instrumentAssertions, CWD) : []
 
 // The bridge refuses an unauthenticated upgrade. Reading the same token file the
 // engine minted keeps this driver a zero-configuration tool; Bun's WebSocket
@@ -277,6 +303,9 @@ const toolStartFrames = []
 // loop keeps waiting for the conversation to go quiet: a completed message with
 // no tool call after it for QUIET_MS. Any tool.start reopens the run.
 let sawMessageComplete = false
+// Final review M7: every completed message, so the row can say whether the
+// engine closed a further turn after a marker-check note (`noteAcknowledged`).
+let messageCompletes = 0
 let lastActivityAt = Date.now()
 // F19: the engine said it was dead and nobody was listening. Wave 7h run 2 lost
 // llama-server at turn 59; the engine caught the connection failure and emitted
@@ -404,7 +433,7 @@ function onMissionMessage(ev) {
       sawMessageComplete = false
       lastActivityAt = Date.now()
     }
-    if (m.type === 'message.complete') { sawMessageComplete = true; lastActivityAt = Date.now() }
+    if (m.type === 'message.complete') { sawMessageComplete = true; lastActivityAt = Date.now(); messageCompletes++ }
     if (m.type === 'session.error' && !engineError) {
       // Terminal for this mission: conversationLoop only emits this after the
       // model loop has thrown and unwound. Recorded, not thrown away, so the
@@ -536,6 +565,10 @@ let verifyRetries = 0
 let markerFirstAttempt = null
 let markerVerdict = null
 let noteFailed = null
+// Final review M7: `messageCompletes` when the note was confirmed sent.
+let completesAtNote = null
+// Final review M9: how far past the wave clock the in-loop check ran (seconds).
+let markerOverrunS = 0
 // Every patch a verify check's F132 reset wrote, one per check (review I2).
 const verifyPatches = []
 let checkOrdinal = 0
@@ -618,7 +651,7 @@ while (!quiet && !zeroToolCompletion && !silentAfterDispatch && (Date.now() - st
     // possible — under an hour, the check below runs once, as it always did.
     // The socket's state is not a precondition: the round reconnects when the
     // engine dropped it (review C1), and the engine answered /api/run just now.
-    if (checkCmd && markerSeen && exitReason === 'engine_closed_the_turn' && verifyRetries === 0 && remainingS() >= MARKER_RETRY_MIN_S) {
+    if (MARKER.command && markerSeen && exitReason === 'engine_closed_the_turn' && verifyRetries === 0 && remainingS() >= MARKER_RETRY_MIN_S) {
       console.log('[verify] marker landed and the engine closed the turn — running the marker check now, while a retry can still be acted on')
       const round = await markerCheckRound({
         getWs: () => ws,
@@ -631,10 +664,18 @@ while (!quiet && !zeroToolCompletion && !silentAfterDispatch && (Date.now() - st
         frameFor: (text) => JSON.stringify({ type: 'user.message', text, cwd: CWD, readOnlyPaths, unattended: true }),
       })
       const attempt = round.attempt
+      // Final review M9: the loop's bound is read only at its top, so a check
+      // admitted with an hour left can end past the wave clock. Said, and kept.
+      const over = verifyOverrunS({ startMs: start, nowMs: Date.now(), timeoutS: TIMEOUT_S })
+      if (over > 0) {
+        markerOverrunS = Math.max(markerOverrunS, over)
+        console.log(`[verify] marker check running past the wave clock by ${over}s`)
+      }
       if (attempt.r.verified === true) console.log('[verify] marker check PASSED')
       if (attempt.r.verified === false) console.log(`[verify] output tail:\n${attempt.r.outputTail}`)
       if (round.retried) {
         verifyRetries = 1
+        completesAtNote = messageCompletes
         markerFirstAttempt = { exitCode: attempt.r.exitCode, timedOut: attempt.r.timedOut, durationMs: attempt.r.durationMs, gradedSha: attempt.headBefore,
           heldOutRestored: attempt.tampered.length, outputTail: attempt.r.outputTail, patchPath: attempt.patchPath }
         sawMessageComplete = false
@@ -748,7 +789,7 @@ async function gradeAtCheck({ quarantine }) {
       + `is the dispatched one. Something in this run wrote to a file it was `
       + `never shown — look for an unsealed script that generates it.`)
   }
-  console.log(`[verify] running check in ${CWD}: ${checkCmd} (cap ${CHECK_TIMEOUT_MS}ms)`)
+  console.log(`[verify] running check in ${CWD}: ${MARKER.command} (cap ${MARKER.timeoutMs}ms, ordinal ${ordinal}${MARKER.source === 'env' ? ', from CYNCO_MARKER_CHECK' : ''})`)
   // F56: which commit did the gate actually read? The check can run for the
   // better part of an hour, and the mission is not necessarily
   // finished when it starts — Gilded Wave 10 committed `ea9ac06` while its gate
@@ -796,59 +837,74 @@ async function gradeAtCheck({ quarantine }) {
   // Asynchronous (review C1): the check can run for half an hour, and a
   // blocked event loop cannot answer the bridge's keep-alive. The caller
   // keeps the socket pinged (withKeepalive / markerCheckRound).
-  const r = await runCheckAsync(checkCmd, CWD, CHECK_TIMEOUT_MS)
+  // CYNCO_CHECK_ORDINAL (final review I1): which of this driver's checks this
+  // is, so an instrument can tell the driver's call from anyone else's — the
+  // smoke's fail-once fixture fails only for ordinal 1.
+  const r = await runCheckAsync(MARKER.command, CWD, MARKER.timeoutMs, { env: { CYNCO_CHECK_ORDINAL: String(ordinal) } })
   const headAfter = gitHead(CWD)
   return { r, tampered, dirtyAtVerify, resetFiles, patchPath, headBefore, headAfter }
 }
 
-if (checkCmd && !gate.run) {
-  console.log(`[verify] SKIPPED — ${gate.why}`)
-} else if (checkCmd) {
-  if (!gate.label) console.log(`[verify] ADVISORY — ${gate.why}`)
-  // Phase 7 ruling 3: a marker check that already ran between turns and stands
-  // IS this verify — but only while it read one commit and HEAD is still that
-  // commit (review I4). Anything else is re-run: a stale PASS is not a verdict.
-  const headNow = gitHead(CWD)
-  const reuse = canReuseMarkerVerdict({ verdict: markerVerdict, headNow, runStillOpen })
-  if (reuse) console.log('[verify] the marker check above stands as the verdict — HEAD unchanged, not re-run')
-  else if (markerVerdict) console.log(`[verify] the marker check above read ${markerVerdict.headBefore ?? '?'}→${markerVerdict.headAfter ?? '?'} but HEAD is now ${headNow ?? '?'}${runStillOpen ? ' and the run is still open' : ''} — re-running`)
-  const { r, tampered, dirtyAtVerify, headBefore, headAfter } = reuse
-    ? markerVerdict
-    : await withKeepalive(() => ws, () => gradeAtCheck({ quarantine: !runStillOpen }))
-  verified = gate.label ? r.verified : undefined
-  // `heldOutRestored` is a count, never the paths: the paths are the withheld
-  // thing, and the ledger is read by everything. Zero is the ordinary case and
-  // is recorded rather than omitted — an absent field cannot tell "nothing was
-  // touched" apart from "this driver could not tell".
-  // `retried` / `firstAttempt` (Phase 7 ruling 3): whether this result is the
-  // SECOND marker check, after the first FAIL was CONFIRMED delivered to the
-  // model, and what that first one read. `firstAttempt` is null when there was
-  // no retry. `noteFailed`: why a due note did not go out (the FAIL stood).
-  // `patches`: every patch a check's F132 reset wrote, one per check.
-  verify = { command: checkCmd, exitCode: r.exitCode, timedOut: r.timedOut, spawnFailed: r.spawnFailed, harnessFault: r.harnessFault, durationMs: r.durationMs, outputTail: r.outputTail, gradedSha: headBefore, headAfterCheck: headAfter, heldOutRestored: tampered.length + (markerFirstAttempt?.heldOutRestored ?? 0) + (!reuse && markerVerdict ? markerVerdict.tampered.length : 0), dirtyAtVerify,
-    retried: verifyRetries > 0, firstAttempt: markerFirstAttempt, noteFailed, patches: [...verifyPatches] }
-  if (verifyRetries > 0 && r.verified === true) console.log('[verify] marker check PASSED (on the retry)')
-  if (r.harnessFault) {
-    console.log(`[verify] HARNESS FAULT — verified stays null: ${r.harnessFault}`)
+// Final review M5: every exit of this routine — the skipped gate, a throw, the
+// verdict — puts the instruments back, because the runner's own grade reads the
+// same files after this driver; gradeAtCheck's restore covers only a check that runs.
+await withHeldOutRestored(heldOutSnapshots, async () => {
+  if (MARKER.command && !gate.run) {
+    console.log(`[verify] SKIPPED — ${gate.why}`)
+  } else if (MARKER.command) {
+    if (!gate.label) console.log(`[verify] ADVISORY — ${gate.why}`)
+    // Final review M7: read before the check runs — a turn closed after the
+    // note, before this verify, is the engine acting on it.
+    const acknowledged = noteAcknowledged({ retried: verifyRetries > 0, completesAtNote, completesAtVerify: messageCompletes })
+    // Phase 7 ruling 3: a marker check that already ran between turns and stands
+    // IS this verify — but only while it read one commit and HEAD is still that
+    // commit (review I4). Anything else is re-run: a stale PASS is not a verdict.
+    const headNow = gitHead(CWD)
+    const reuse = canReuseMarkerVerdict({ verdict: markerVerdict, headNow, runStillOpen })
+    if (reuse) console.log('[verify] the marker check above stands as the verdict — HEAD unchanged, not re-run')
+    else if (markerVerdict) console.log(`[verify] the marker check above read ${markerVerdict.headBefore ?? '?'}→${markerVerdict.headAfter ?? '?'} but HEAD is now ${headNow ?? '?'}${runStillOpen ? ' and the run is still open' : ''} — re-running`)
+    const { r, tampered, dirtyAtVerify, headBefore, headAfter } = reuse
+      ? markerVerdict
+      : await withKeepalive(() => ws, () => gradeAtCheck({ quarantine: !runStillOpen }))
+    verified = gate.label ? r.verified : undefined
+    // `heldOutRestored` is a count, never the paths: the paths are the withheld
+    // thing, and the ledger is read by everything. Zero is the ordinary case and
+    // is recorded rather than omitted — an absent field cannot tell "nothing was
+    // touched" apart from "this driver could not tell".
+    // `retried` / `firstAttempt` (Phase 7 ruling 3): whether this result is the
+    // SECOND marker check, after the first FAIL was CONFIRMED delivered to the
+    // model, and what that first one read. `firstAttempt` is null when there was
+    // no retry. `noteFailed`: why a due note did not go out (the FAIL stood).
+    // `patches`: every patch a check's F132 reset wrote, one per check.
+    // `noteAcknowledged` (final review M7): null without a retry; true when the
+    // engine closed a further turn after the note. `overrunS` (M9): seconds the
+    // in-loop check ran past the wave clock, 0 when it did not.
+    verify = { command: MARKER.command, exitCode: r.exitCode, timedOut: r.timedOut, spawnFailed: r.spawnFailed, harnessFault: r.harnessFault, durationMs: r.durationMs, outputTail: r.outputTail, gradedSha: headBefore, headAfterCheck: headAfter, heldOutRestored: tampered.length + (markerFirstAttempt?.heldOutRestored ?? 0) + (!reuse && markerVerdict ? markerVerdict.tampered.length : 0), dirtyAtVerify,
+      retried: verifyRetries > 0, firstAttempt: markerFirstAttempt, noteFailed, patches: [...verifyPatches], noteAcknowledged: acknowledged, overrunS: markerOverrunS }
+    if (acknowledged === false) console.log('[verify] the note was delivered but no turn closed after it — the engine never acted on it (verify.noteAcknowledged: false)')
+    if (verifyRetries > 0 && r.verified === true) console.log('[verify] marker check PASSED (on the retry)')
+    if (r.harnessFault) {
+      console.log(`[verify] HARNESS FAULT — verified stays null: ${r.harnessFault}`)
+    }
+    if (headBefore && headAfter && headBefore !== headAfter) {
+      // Demote here as well as in gateDisposition. That call reads `quiet`, which
+      // is a guess about whether the run had stopped; this is the thing itself.
+      console.log(`[verify] HEAD MOVED UNDER THE GATE: graded ${headBefore}, HEAD is now ${headAfter}. ` +
+        `verified stays null — the gate measured a commit this mission then committed past.`)
+      verified = undefined
+    }
+    // Three outcomes, not two. A check that never answered has not said the
+    // delivery is broken — it has said nothing, and the label must say nothing.
+    const verdict = r.verified === null ? 'UNMEASURED' : r.verified ? 'PASS' : 'FAIL'
+    console.log(`[verify] ${gate.label ? verdict : `${verdict} (advisory — verified stays null)`} ` +
+      `(exit=${r.exitCode ?? 'none'}${r.timedOut ? ', TIMED OUT' : ''}${r.spawnFailed ? ', SPAWN FAILED' : ''}, ${r.durationMs}ms)`)
+    if (r.verified !== true) console.log(`[verify] output tail:\n${r.outputTail}`)
+    if (gate.label && r.verified === null) {
+      console.log(`[verify] verified stays null — the check did not finish. ` +
+        `Re-run it by hand, or raise ${MARKER.source === 'env' ? 'CYNCO_MARKER_CHECK_TIMEOUT_MS' : 'CYNCO_CHECK_TIMEOUT_MS'}, then patch the record.`)
+    }
   }
-  if (headBefore && headAfter && headBefore !== headAfter) {
-    // Demote here as well as in gateDisposition. That call reads `quiet`, which
-    // is a guess about whether the run had stopped; this is the thing itself.
-    console.log(`[verify] HEAD MOVED UNDER THE GATE: graded ${headBefore}, HEAD is now ${headAfter}. ` +
-      `verified stays null — the gate measured a commit this mission then committed past.`)
-    verified = undefined
-  }
-  // Three outcomes, not two. A check that never answered has not said the
-  // delivery is broken — it has said nothing, and the label must say nothing.
-  const verdict = r.verified === null ? 'UNMEASURED' : r.verified ? 'PASS' : 'FAIL'
-  console.log(`[verify] ${gate.label ? verdict : `${verdict} (advisory — verified stays null)`} ` +
-    `(exit=${r.exitCode ?? 'none'}${r.timedOut ? ', TIMED OUT' : ''}${r.spawnFailed ? ', SPAWN FAILED' : ''}, ${r.durationMs}ms)`)
-  if (r.verified !== true) console.log(`[verify] output tail:\n${r.outputTail}`)
-  if (gate.label && r.verified === null) {
-    console.log(`[verify] verified stays null — the check did not finish. ` +
-      `Re-run it by hand, or raise CYNCO_CHECK_TIMEOUT_MS, then patch the record.`)
-  }
-}
+})
 
 // F38. Ask the reflog what this mission committed and then threw away, because
 // every other label on this record — `verified`, `mutationSweep`, `markerSeen` —
@@ -959,7 +1015,7 @@ try {
     verified,
     verify,
     // Phase 7 ruling 3: 0|1 marker-check retries; null when no check-cmd ran.
-    verifyRetries: checkCmd ? verifyRetries : null,
+    verifyRetries: MARKER.command ? verifyRetries : null,
     // Stage 1 (S3*): what the in-loop probe saw and did. null when no probe-cmd.
     probe: probeState,
     history,
@@ -983,7 +1039,7 @@ try {
   const shard = activeShardPath()
   appendFileSync(shard, JSON.stringify(record) + '\n')
   console.log(`[ledger] ${outcome} record ${missionId} appended (${collector.turns.length} turns, ${collector.s5Decisions.length} S5 decisions) → ${shard}`)
-  if (!checkCmd) console.log('[ledger] no check-cmd given — patch "verified": true|false after independent verification')
+  if (!MARKER.command) console.log('[ledger] no check-cmd given — patch "verified": true|false after independent verification')
   // `verified` is one check command's exit code. It cannot say whether the new
   // tests BITE — only a withheld mutation set can, and those run later. Say so
   // on every record, so nobody reads verified:true as accepted.
@@ -1021,7 +1077,7 @@ try {
     const count = ledgerCount()
     if (count % 5 === 0) {
       console.log(`[ledger] SPOT-AUDIT DUE: record #${count} — human-verify this mission's label (1-in-5 cadence)`)
-      console.log(`[ledger]   verified=${verified ?? 'null'} is STRUCTURAL (${checkCmd ?? 'no check-cmd'}); mutationSweep is BEHAVIOURAL and still null.`)
+      console.log(`[ledger]   verified=${verified ?? 'null'} is STRUCTURAL (${MARKER.command ?? 'no check-cmd'}); mutationSweep is BEHAVIOURAL and still null.`)
       console.log(`[ledger]   The audit question is not "did the check pass" but "would these tests have caught the rule breaking".`)
     }
   } catch (e) {

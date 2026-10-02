@@ -31,7 +31,9 @@ function cloneSmoke() {
   if (r.status !== 0) throw new Error(`git clone failed: ${r.stderr}`)
   return dest.replace(/\\/g, '/')
 }
-const tempHome = () => join(mkdtempSync(join(tmpdir(), 's1-home-')), '.cynco').replace(/\\/g, '/')
+/** The env the driver's n-th check runs the fixture with. */
+const driverCall = (n) => ({ ...process.env, CYNCO_CHECK_ORDINAL: String(n) })
+const tempHome = () =>join(mkdtempSync(join(tmpdir(), 's1-home-')), '.cynco').replace(/\\/g, '/')
 
 // The fixture's BASE is a pinned commit, not the smoke repo's HEAD: the live
 // proof's mission ships the very files the gate grades, so after one real wave
@@ -90,18 +92,38 @@ describe.skipIf(!HAS_SMOKE)(`smoke campaign s1 (needs ${SMOKE_REPO})`, () => {
     expect(readFileSync(script, 'utf8')).toBe(MARKER_CHECK_ONCE_PY)
     expect(script).not.toMatch(/heldout/)
     expect(existsSync(stamp)).toBe(false)
-    const first = spawnSync('python', [script], { encoding: 'utf8' })
+    const first = spawnSync('python', [script], { encoding: 'utf8', env: driverCall(1) })
     expect(first.status).toBe(1)
     expect(first.stdout).toContain('marker-check-once: first call fails on purpose')
     expect(existsSync(stamp)).toBe(true)
-    for (let i = 0; i < 2; i++) {
-      const later = spawnSync('python', [script], { encoding: 'utf8' })
+    for (const n of [2, 1]) {
+      const later = spawnSync('python', [script], { encoding: 'utf8', env: driverCall(n) })
       expect(later.status).toBe(0)
       expect(later.stdout).toContain('marker-check-once: a later call passes')
     }
     writeSmokeCampaign({ home, repo, base: SMOKE_BASE })
     expect(existsSync(stamp)).toBe(false)
-    expect(spawnSync('python', [script], { encoding: 'utf8' }).status).toBe(1)
+    expect(spawnSync('python', [script], { encoding: 'utf8', env: driverCall(1) }).status).toBe(1)
+    rmSync(stamp, { force: true })
+  })
+
+  // Final review I1, the second lock: the stamp can be spent ONLY by the
+  // driver's first check (CYNCO_CHECK_ORDINAL=1). A call without the ordinal —
+  // the engine's, the model's — passes and leaves the stamp unwritten; a later
+  // ordinal never fails, even on a fresh stamp.
+  it('is spent only by the driver: no ordinal passes without the stamp, ordinal 2 never fails', () => {
+    const script = `${home}/smoke/${MARKER_CHECK_ONCE}`
+    const stamp = `${home}/smoke/${MARKER_CHECK_STAMP}`
+    rmSync(stamp, { force: true })
+    const { CYNCO_CHECK_ORDINAL: _drop, ...noOrdinal } = process.env
+    const stranger = spawnSync('python', [script], { encoding: 'utf8', env: noOrdinal })
+    expect(stranger.status).toBe(0)
+    expect(stranger.stdout).toContain('not the driver')
+    expect(existsSync(stamp)).toBe(false)
+    expect(spawnSync('python', [script], { encoding: 'utf8', env: driverCall(2) }).status).toBe(0)
+    expect(existsSync(stamp)).toBe(false)
+    expect(spawnSync('python', [script], { encoding: 'utf8', env: driverCall(1) }).status).toBe(1)
+    expect(existsSync(stamp)).toBe(true)
     rmSync(stamp, { force: true })
   })
 

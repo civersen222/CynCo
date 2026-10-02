@@ -151,8 +151,9 @@ export function dispatchEnv(base, extra) {
  * POSIX env prefix (runCheck's translateEnvPrefix runs it in PowerShell too).
  * In the env they reached the engine and the model's Bash, and the baseline —
  * the file the suite gate trusts — was neither sealed nor restored. As a path
- * token in the check command, harnessGatePaths names it, so the engine seals
- * it and the driver snapshots and restores it like every other instrument.
+ * token in the marker check command (CYNCO_MARKER_CHECK, final review I1),
+ * harnessGatePaths names it (through markerCheckGateAssertions), so the engine
+ * seals it and the driver snapshots and restores it like every other instrument.
  * The prefix is split on whitespace, so a path with a space is refused.
  */
 export const MARKER_CHECK_TIMEOUT_MS = 1_800_000
@@ -170,10 +171,19 @@ export function suiteGateCommand(spec) {
 export const SUITE_GATE_ENV_KEYS = ['CHK_SUITE_BASELINE', 'CYNCO_GATE_REPO']
 
 /**
- * The wave's dispatch-mission.sh argv and environment. A spec `markerCheck` is
- * run verbatim; without one the suite gate is the check, carrying its baseline
- * and repo in its own command, with a cap that covers a whole-suite run — the
- * driver refuses a check without CYNCO_CHECK_TIMEOUT_MS. `spec.markerRetryMinS`
+ * The wave's dispatch-mission.sh argv and environment.
+ *
+ * The check-cmd argument stays `spec.keepGreen` (final review I1): the driver
+ * also turns it into the engine's withheld contract assertion, which the
+ * model's `ContractAssertPass` runs inside its own turn — a whole-suite gate
+ * there costs the wave's clock unpriced, and the smoke's fail-once fixture
+ * would be spent by the model with no tell. The marker check travels to the
+ * driver on its own channel instead: CYNCO_MARKER_CHECK (a spec `markerCheck`
+ * verbatim; without one the suite gate, carrying its baseline and repo in its
+ * own command) and its cap CYNCO_MARKER_CHECK_TIMEOUT_MS. Only the driver's
+ * marker verify runs it; the engine reads it for the instruments it seals and
+ * the model's Bash never holds it (bashToolEnv). The keepGreen check keeps the
+ * cap dispatch-mission.sh gives it, as before Phase 7. `spec.markerRetryMinS`
  * reaches the driver as CYNCO_MARKER_RETRY_MIN_S. `base` is the runner's env.
  */
 export function waveDispatch(spec, { briefFile, invariants, timeoutS, pidFile, driverLog }, base = process.env) {
@@ -189,11 +199,11 @@ export function waveDispatch(spec, { briefFile, invariants, timeoutS, pidFile, d
   const env = dispatchEnv(waveEnvBase(spec, base), {
     LOCALCODE_MAX_ITERATIONS: String(spec.budget.iterations), CYNCO_BASH_TIMEOUT_MS: String(spec.budget.bashTimeoutMs),
     CYNCO_MISSION_INVARIANTS: JSON.stringify(invariants), DRIVER_PID_FILE: pidFile, DRIVER_LOG: driverLog, CYNCO_SKIP_IDLE_ENGINE: '1', CYNCO_CAMPAIGN_ID: spec.id,
-    ...(suite ? { CYNCO_CHECK_TIMEOUT_MS: String(MARKER_CHECK_TIMEOUT_MS) } : {}),
+    CYNCO_MARKER_CHECK: markerCheck, CYNCO_MARKER_CHECK_TIMEOUT_MS: String(MARKER_CHECK_TIMEOUT_MS),
     ...(spec.markerRetryMinS !== undefined ? { CYNCO_MARKER_RETRY_MIN_S: String(spec.markerRetryMinS) } : {}),
   })
   for (const k of SUITE_GATE_ENV_KEYS) delete env[k]
-  return { args: [briefFile, spec.marker, spec.repo, String(timeoutS), markerCheck], env }
+  return { args: [briefFile, spec.marker, spec.repo, String(timeoutS), spec.keepGreen], env }
 }
 
 /** The cap on the dispatch-mission.sh launch itself (it backgrounds the driver and returns). */

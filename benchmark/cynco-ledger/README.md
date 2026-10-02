@@ -64,7 +64,18 @@ decisions still recorded here).
     // `<missionId>.uncommitted.patch`. A first check that stood is reused only
     // while it read one commit and HEAD is still that commit; otherwise the
     // final verify re-runs it. Absent on rows written before the ruling.
-    "retried": false, "firstAttempt": null, "noteFailed": null, "patches": []
+    // `noteAcknowledged` (final review M7): null without a retry; true when
+    // the engine closed a further turn (a `message.complete` after the note)
+    // before the final verify; false is "told, and nothing came back" — the
+    // final verify then re-read the same work. `overrunS` (final review M9):
+    // seconds the in-loop check ran past the wave clock (`TIMEOUT_S`), 0 when
+    // it did not — the loop's bound is read only at its top, so a check
+    // admitted with an hour left can end up to its cap past the clock (the
+    // engine is idle then; `durationS` grows by it), and the driver logs
+    // `[verify] marker check running past the wave clock by Ns`.
+    // `command` is the MARKER check (below), not necessarily the check-cmd.
+    "retried": false, "firstAttempt": null, "noteFailed": null, "patches": [],
+    "noteAcknowledged": null, "overrunS": 0
   },
   // Phase 7 ruling 3: how many times a FAILED marker check was fed back to the
   // model before the check that set `verified` — 0 or 1, counted only on a
@@ -72,12 +83,27 @@ decisions still recorded here).
   // `markerRetryMinS`, through CYNCO_MARKER_RETRY_MIN_S) of the mission clock
   // left; under that, the first check is the verdict. null when no check-cmd
   // was dispatched (nothing to retry); absent on older rows. A campaign wave's
-  // check is the suite gate (g_suite_no_regression.py), carrying its baseline
-  // and repo as an env prefix in the command (`CHK_SUITE_BASELINE=<path>
-  // CYNCO_GATE_REPO=<repo> python "<gate>"`) so the baseline is sealed and
-  // restored like the gate and never sits in the engine's env, unless its spec
-  // names a `markerCheck` — never the sealed campaign gate, whose output must
-  // not reach the model.
+  // MARKER check is the suite gate (g_suite_no_regression.py), carrying its
+  // baseline and repo as an env prefix in the command (`CHK_SUITE_BASELINE=<path>
+  // CYNCO_GATE_REPO=<repo> python "<gate>"`), unless its spec names a
+  // `markerCheck` — never the sealed campaign gate, whose output must not
+  // reach the model. Final review I1: the marker check reaches the DRIVER on
+  // its own channel, `CYNCO_MARKER_CHECK` with its cap
+  // `CYNCO_MARKER_CHECK_TIMEOUT_MS` (1 800 000), set by the runner's
+  // `waveDispatch`; the check-cmd argument stays `spec.keepGreen`, because the
+  // driver also makes the check-cmd the engine's withheld contract assertion,
+  // which the model's `ContractAssertPass` runs inside its own turn (a
+  // whole-suite gate there spends the clock unpriced; the smoke's fixture would
+  // be spent with no tell). The driver's marker verify — the in-loop check,
+  // the retry and the final verify — runs the channel's command when set, else
+  // the check-cmd; nothing else runs it. Its instruments (the baseline) are
+  // still sealed by the engine and snapshotted/restored by the driver, both
+  // reading the channel for paths only (`markerCheckGateAssertions`), and the
+  // model's Bash env never holds `CYNCO_MARKER_CHECK*` or `LOCALCODE_MISSION_*`
+  // (`bashToolEnv`). Each marker check runs with `CYNCO_CHECK_ORDINAL=<n>` in
+  // its env; the smoke's fixture fails only for ordinal 1, and passes (leaving
+  // its stamp alone) for a call without the ordinal — a second lock beside the
+  // stamp.
   "verifyRetries": 0,
   "mutationSweep": null,    // BEHAVIOURAL: null = UNMEASURED, never "clean"
   // { "command": "...", "killed": 1, "total": 7, "survived": ["W1","W5"], "note": "..." }

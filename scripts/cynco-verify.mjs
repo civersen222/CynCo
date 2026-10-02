@@ -67,6 +67,47 @@ export function markerRetryMinSFrom(env) {
 }
 
 /**
+ * The command the driver's marker verify runs — the first check between
+ * turns, the retry, and the final verify — and its cap (Phase 7 final review
+ * I1). The check-cmd argument is ALSO the engine's withheld contract assertion,
+ * which the model's `ContractAssertPass` runs inside its own turn, so it stays
+ * the fast keep-green subset; the marker check (the whole-suite gate, the
+ * smoke's fail-once fixture) reaches the driver on its own channel,
+ * `CYNCO_MARKER_CHECK` with its cap `CYNCO_MARKER_CHECK_TIMEOUT_MS`, which
+ * nothing else reads. Without the channel the check-cmd is the marker check,
+ * under `checkTimeoutMs`, as before Phase 7. A channel without a usable cap is
+ * refused (`error`) — the caps above are refused the same way.
+ *
+ * Returns { command, timeoutMs, source: 'env' | 'check-cmd' | null, error }.
+ */
+export function markerCheckFrom(env, checkCmd, checkTimeoutMs) {
+  const command = String(env?.CYNCO_MARKER_CHECK ?? '').trim()
+  if (!command) {
+    const fallback = String(checkCmd ?? '').trim()
+    return { command: fallback || null, timeoutMs: checkTimeoutMs, source: fallback ? 'check-cmd' : null, error: null }
+  }
+  const raw = env?.CYNCO_MARKER_CHECK_TIMEOUT_MS
+  if (raw === undefined || raw === '') {
+    return { command, timeoutMs: null, source: 'env', error: 'CYNCO_MARKER_CHECK is set but CYNCO_MARKER_CHECK_TIMEOUT_MS is not — the marker check would run under a cap nobody chose' }
+  }
+  const n = Number(raw)
+  if (!Number.isInteger(n) || n <= 0) {
+    return { command, timeoutMs: null, source: 'env', error: `CYNCO_MARKER_CHECK_TIMEOUT_MS must be a positive integer of milliseconds; got ${JSON.stringify(raw)}` }
+  }
+  return { command, timeoutMs: n, source: 'env', error: null }
+}
+
+/**
+ * Phase 7 final review M9: how many seconds past the wave clock (`timeoutS`
+ * from `startMs`) the wait has run at `nowMs`. The loop's bound is read only
+ * at the top of the loop, so a marker check admitted with an hour left can
+ * still end past the clock; never negative.
+ */
+export function verifyOverrunS({ startMs, nowMs, timeoutS }) {
+  return Math.max(0, Math.round((nowMs - startMs) / 1000 - timeoutS))
+}
+
+/**
  * Retry a marker check? Only a FAIL (`ok === false`) — a null check measured
  * nothing about the delivery, so there is nothing for the model to fix —
  * with no retry spent and at least `minS` of the clock left.
@@ -140,12 +181,14 @@ export function runCheck(command, cwd, timeoutMs) {
  * runCheck without blocking the event loop (Phase 7 review C1): the marker
  * check and the final verify run the suite gate for minutes while the driver
  * must keep answering the bridge's keep-alive. Same shell, same environment,
- * same result shape, through runAsync.
+ * same result shape, through runAsync. `env` is laid over the instrument
+ * environment — the driver hands each marker check its CYNCO_CHECK_ORDINAL
+ * (final review I1), so a fixture can tell the driver's call from any other.
  */
-export async function runCheckAsync(command, cwd, timeoutMs) {
+export async function runCheckAsync(command, cwd, timeoutMs, { env } = {}) {
   const start = Date.now()
   const { info, runnable } = checkRunnable(command)
-  const result = await runAsync(runnable, [], { shell: info.shell, cwd, timeoutMs })
+  const result = await runAsync(runnable, [], { shell: info.shell, cwd, timeoutMs, ...(env ? { env } : {}) })
   return checkResult(command, result, Date.now() - start, timeoutMs)
 }
 

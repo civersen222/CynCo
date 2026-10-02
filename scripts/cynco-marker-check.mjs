@@ -112,6 +112,17 @@ export async function markerCheckRound({ getWs, reconnect, check, remainingS, mi
 }
 
 /**
+ * Phase 7 final review M7: did the engine act on a note that was confirmed
+ * sent? `retried` says the note left; this says a further turn closed after it
+ * (a `message.complete` counted after the send) before the final verify ran.
+ * Null when there was no retry; false is "told and nothing came back".
+ */
+export function noteAcknowledged({ retried, completesAtNote, completesAtVerify }) {
+  if (!retried) return null
+  return completesAtVerify > completesAtNote
+}
+
+/**
  * Phase 7 review I4: may the final verify reuse a marker check that stood?
  * Only when that check read one commit throughout, the run is not still open,
  * and HEAD is still that commit — otherwise it measured a state that is gone.

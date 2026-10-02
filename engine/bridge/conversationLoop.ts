@@ -77,7 +77,7 @@ import { probeEdit } from '../vsm/groundingProbe.js'
 import { loadInterventionRates, saveInterventionRates } from '../vsm/interventionPersistence.js'
 import { applyNudgeTemperature } from '../vsm/controlSignals.js'
 import { globalContract } from '../tools/contract.js'
-import { applyHarnessContract, harnessGatePaths, sealedGatePaths, maybeAutoCreateContract, type HarnessContractSpec } from './contractAutoCreate.js'
+import { applyHarnessContract, harnessGatePaths, sealedGatePaths, markerCheckGateAssertions, maybeAutoCreateContract, type HarnessContractSpec } from './contractAutoCreate.js'
 import { gitProbe, runCommandDetailed } from '../tools/contractVerify.js'
 import { globalAskBroker } from '../tools/askBroker.js'
 import { estimateTokensAsync } from '../engine/contextBudget.js'
@@ -1400,9 +1400,16 @@ export class ConversationLoop {
     }
 
     const declared = (opts?.readOnlyPaths ?? []).map(p => p.replace(/\\/g, '/'))
+    // Phase 7 final review I1: the driver's marker check arrives on its own env
+    // channel, never as a contract assertion (the engine must never RUN it), but
+    // the instruments it names are sealed here like any withheld gate's. Read
+    // from this process's env on every message, so the driver's follow-up notes
+    // (which carry no contract) keep the seal for the retry turn.
+    const markerGates = markerCheckGateAssertions(process.env)
+    const instrumentAssertions = [...(opts?.contract?.assertions ?? []), ...markerGates]
     const gates = [...new Set([
       ...declared,
-      ...(opts?.contract ? harnessGatePaths(opts.contract.assertions, this.executor['cwd']) : []),
+      ...(instrumentAssertions.length > 0 ? harnessGatePaths(instrumentAssertions, this.executor['cwd']) : []),
     ])]
     setTaskImmutablePaths(gates)
     // F37. A held-out gate is not read-only, it is sealed: unreadable,
@@ -1413,8 +1420,8 @@ export class ConversationLoop {
     // F154: `sealedGatePaths`, not `withheldGatePaths` — the seal is the one
     // place the harness's own checker is exempt, because the seal is what makes
     // a path unrunnable. The driver's write barrier still takes the full set.
-    const sealed = opts?.contract
-      ? sealedGatePaths(opts.contract.assertions, this.executor['cwd'])
+    const sealed = instrumentAssertions.length > 0
+      ? sealedGatePaths(instrumentAssertions, this.executor['cwd'])
       : []
     setTaskSealedPaths(sealed)
     const readable = gates.filter(g => !sealed.includes(g))

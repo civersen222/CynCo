@@ -15,6 +15,8 @@ import {
   maybeAutoCreateContract,
   isHarnessOwnFile,
   HARNESS_ROOT,
+  markerCheckGateAssertions,
+  MARKER_CHECK_GATE_TEXT,
 } from '../../bridge/contractAutoCreate.js'
 
 const dirs: string[] = []
@@ -444,6 +446,25 @@ describe('harnessGatePaths: the instruments a contract names', () => {
     expect(harnessGatePaths(
       [{ text: 'held out', command: `CHK_SUITE_BASELINE=${baseline} CYNCO_GATE_REPO=${wsFwd} python "${suite}"` }], ws,
     )).toEqual([baseline, suite].sort())
+  })
+
+  // Final review I1: the marker check reaches the driver on its own channel,
+  // never as a contract assertion the engine runs — but its instruments are
+  // still sealed (engine) and snapshotted/restored (driver), so both read the
+  // channel for its PATHS through this one function.
+  it('reads the marker channel for its paths only', () => {
+    const { file: baseline } = gate('suite_baseline.txt')
+    const { file: suite } = gate('g_suite.py')
+    const ws = workspace('src/app.ts')
+    const wsFwd = ws.replace(/\\/g, '/')
+    expect(markerCheckGateAssertions({})).toEqual([])
+    expect(markerCheckGateAssertions({ CYNCO_MARKER_CHECK: '   ' })).toEqual([])
+    const command = `CHK_SUITE_BASELINE=${baseline} CYNCO_GATE_REPO=${wsFwd} python "${suite}"`
+    const marker = markerCheckGateAssertions({ CYNCO_MARKER_CHECK: command })
+    expect(marker).toEqual([{ text: MARKER_CHECK_GATE_TEXT, command }])
+    const contract = [{ text: 'held out', command: 'python -m pytest a.py -q' }]
+    expect(withheldGatePaths([...contract, ...marker], ws)).toEqual([baseline, suite].sort())
+    expect(withheldGatePaths(contract, ws)).toEqual([])
   })
 
   it('ignores path-shaped tokens that are not on disk', () => {

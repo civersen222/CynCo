@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 // @ts-ignore — untyped harness module
-import { runCheck, runCheckAsync, shouldRetryMarkerCheck, markerCheckNote, noteLines, markerRetryMinSFrom, MARKER_RETRY_MIN_S } from '../../../scripts/cynco-verify.mjs'
+import { runCheck, runCheckAsync, shouldRetryMarkerCheck, markerCheckNote, noteLines, markerRetryMinSFrom, markerCheckFrom, verifyOverrunS, MARKER_RETRY_MIN_S } from '../../../scripts/cynco-verify.mjs'
 
 // process.execPath is the current JS runtime (node under vitest, bun under
 // Bun) — both support -e. Quoted for paths with spaces. runCheck (F146) now
@@ -248,8 +248,46 @@ describe('markerRetryMinSFrom (review I3)', () => {
   })
 })
 
+// Final review I1: the marker check reaches the driver on its own channel
+// (CYNCO_MARKER_CHECK + CYNCO_MARKER_CHECK_TIMEOUT_MS); the check-cmd stays the
+// engine's contract assertion. Absent the channel, the check-cmd is the check.
+describe('markerCheckFrom (final review I1)', () => {
+  it('reads the marker channel when it is set', () => {
+    expect(markerCheckFrom({ CYNCO_MARKER_CHECK: 'python gate.py', CYNCO_MARKER_CHECK_TIMEOUT_MS: '1800000' }, 'python -m pytest a.py', 600000))
+      .toEqual({ command: 'python gate.py', timeoutMs: 1800000, source: 'env', error: null })
+  })
+  it('falls back to the check-cmd and its cap when the channel is absent or blank', () => {
+    expect(markerCheckFrom({}, 'python -m pytest a.py', 600000)).toEqual({ command: 'python -m pytest a.py', timeoutMs: 600000, source: 'check-cmd', error: null })
+    expect(markerCheckFrom({ CYNCO_MARKER_CHECK: '  ' }, 'pytest', 1000).source).toBe('check-cmd')
+    expect(markerCheckFrom({}, undefined, 1000)).toEqual({ command: null, timeoutMs: 1000, source: null, error: null })
+  })
+  it('refuses a channel without a usable cap — a cap nobody chose is not a default', () => {
+    expect(markerCheckFrom({ CYNCO_MARKER_CHECK: 'python gate.py' }, 'pytest', 600000).error).toMatch(/CYNCO_MARKER_CHECK_TIMEOUT_MS/)
+    for (const bad of ['0', '-5', 'soon', '1.5']) {
+      expect(markerCheckFrom({ CYNCO_MARKER_CHECK: 'python gate.py', CYNCO_MARKER_CHECK_TIMEOUT_MS: bad }, 'pytest', 600000).error).toMatch(/positive integer/)
+    }
+  })
+})
+
+// F-M9: a check started inside the clock can end past it.
+describe('verifyOverrunS (final review M9)', () => {
+  it('is how far past the wave clock the wait ran, never negative', () => {
+    expect(verifyOverrunS({ startMs: 0, nowMs: 3_000_000, timeoutS: 3600 })).toBe(0)
+    expect(verifyOverrunS({ startMs: 0, nowMs: 3_600_000, timeoutS: 3600 })).toBe(0)
+    expect(verifyOverrunS({ startMs: 1000, nowMs: 1000 + 3_725_400, timeoutS: 3600 })).toBe(125)
+  })
+})
+
 // Review C1: the in-loop check must not block the event loop.
 describe('runCheckAsync', () => {
+  // The fixture's second lock (final review I1): the driver hands each check
+  // its ordinal, so a script can tell the driver's call from anyone else's.
+  it('hands the check the env it is given, over the instrument env', async () => {
+    const r = await runCheckAsync(`${RUNTIME} -e "console.log('ORD=' + (process.env.CYNCO_CHECK_ORDINAL ?? 'unset'))"`, process.cwd(), 30000, { env: { CYNCO_CHECK_ORDINAL: '2' } })
+    expect(r.outputTail).toContain('ORD=2')
+    const plain = await runCheckAsync(`${RUNTIME} -e "console.log('ORD=' + (process.env.CYNCO_CHECK_ORDINAL ?? 'unset'))"`, process.cwd(), 30000)
+    expect(plain.outputTail).toContain('ORD=unset')
+  })
   it('reads PASS, FAIL and a real timeout the way runCheck does, without blocking the loop', async () => {
     let ticks = 0
     const timer = setInterval(() => { ticks++ }, 50)

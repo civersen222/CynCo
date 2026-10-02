@@ -38,7 +38,9 @@ describe('gate immutability wiring guard', () => {
     expect(src).toContain('setTaskImmutablePaths')
     // Derivation is actually invoked with the contract's assertions and the
     // workspace, not merely imported.
-    expect(src).toMatch(/harnessGatePaths\(\s*opts\.contract\.assertions,\s*this\.executor\['cwd'\]\s*\)/)
+    // Phase 7 final review I1: the contract's assertions plus the marker channel.
+    expect(src).toMatch(/harnessGatePaths\(\s*instrumentAssertions,\s*this\.executor\['cwd'\]\s*\)/)
+    expect(src).toMatch(/const instrumentAssertions = \[\.\.\.\(opts\?\.contract\?\.assertions \?\? \[\]\)/)
     // ...and the result is handed to the enforcement point.
     expect(src).toMatch(/setTaskImmutablePaths\(gates\)/)
   })
@@ -129,8 +131,13 @@ describe('sealed instrument wiring guard', () => {
     // source tree, because the seal makes a path UNRUNNABLE and a mission cannot
     // be refused the acceptance command its own brief orders it to run. The
     // driver's F45 snapshot barrier still takes the full `withheldGatePaths` set.
-    expect(src).toMatch(/sealedGatePaths\(opts\.contract\.assertions, this\.executor\['cwd'\]\)/)
-    expect(src).not.toMatch(/withheldGatePaths\(opts\.contract\.assertions/)
+    // Phase 7 final review I1: the contract's assertions plus the driver's
+    // marker channel, read for paths only (never applied as a contract).
+    expect(src).toMatch(/const instrumentAssertions = \[\.\.\.\(opts\?\.contract\?\.assertions \?\? \[\]\), \.\.\.markerGates\]/)
+    expect(src).toMatch(/markerCheckGateAssertions\(process\.env\)/)
+    expect(src).toMatch(/sealedGatePaths\(instrumentAssertions, this\.executor\['cwd'\]\)/)
+    expect(src).not.toMatch(/withheldGatePaths\((opts\.contract\.assertions|instrumentAssertions)/)
+    expect(src).not.toMatch(/applyHarnessContract\([^)]*markerGates/)
     expect(src).toMatch(/setTaskSealedPaths\(sealed\)/)
     // Unconditional, like the immutable set: a task carrying no withheld gate
     // must CLEAR the last one's seal, and a refusal that by design cannot name
@@ -166,8 +173,10 @@ describe('sealed instrument wiring guard', () => {
    */
   it('the driver snapshots the full withheld set and counts only the sealable one', () => {
     const src = read('scripts/cynco-mission-driver.mjs')
-    expect(src).toMatch(/snapshotHeldOut\(withheldGatePaths\(missionAssertions, CWD\)/)
-    expect(src).toMatch(/sealedGatePaths\(missionAssertions, CWD\)\.length/)
+    // Final review I1: the contract plus the marker channel (the suite baseline).
+    expect(src).toMatch(/const instrumentAssertions = driverInstrumentAssertions\(missionAssertions, process\.env\)/)
+    expect(src).toMatch(/snapshotHeldOut\(withheldGatePaths\(instrumentAssertions, CWD\)/)
+    expect(src).toMatch(/sealedGatePaths\(instrumentAssertions, CWD\)\.length/)
   })
 
   it('the executor reaches both enforcement layers of the seal', () => {
