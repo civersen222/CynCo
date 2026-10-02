@@ -585,10 +585,13 @@ own numbers, not an illustration:
 "governancePosiwid": { "verdict": "Contradicted", "divergence": 5.98,
   "dominantObserved": "signalsLogged", "support": 33, "onsetWave": 2,
   "windows": 2,
-  "counts": { "denialsChanged": 2, "recommendationsConsumed": 1, "signalsLogged": 30 },
   "v2": { "verdict": "Consistent", "divergence": 0.27, "dominantObserved": "signalsLogged",
-    "stated": { "earned": 0, "total": 8 } } }
+    "stated": { "earned": 0, "total": 8 } },
+  "counts": { "denialsChanged": 2, "recommendationsConsumed": 1, "signalsLogged": 30 } }
 ```
+
+(The fields in the order the record writes them: the v1 reading, `windows`,
+`v2`, then `counts` — T4-M3.)
 
 `verdict`, `divergence`, `dominantObserved` and `support` are the LAST window's
 reading — here 33 observations of which 30 were logging, so: past `minSupport`
@@ -619,7 +622,11 @@ measured, never a zero. The verdict entry prints both on one line:
 `- Governance POSIWID v1 <v1 reading> | v2 <verdict> (<earned> of <total> earned).`
 
 The campaign state keeps the raw windows under
-`state.governancePosiwid.windows`; the verdict entry prints the reading as its
+`state.governancePosiwid.windows` — `{ wave, denialsChanged,
+recommendationsConsumed, signalsLogged, stated }`, where `stated` is the
+`{ earned, total }` v2 read that wave under (null when v2 was not measured;
+absent on windows stored before T4-M1), so v2 can be replayed over the stored
+windows later the way v1 is; the verdict entry prints the reading as its
 "Governance POSIWID" line, and `GET /api/campaign` hands the dashboard the last
 wave's `verdict` and `onsetWave` and, per wave, `waves[].governancePosiwid =
 { verdict, onsetWave, v2: { verdict, stated: { earned, total } | null } | null }`

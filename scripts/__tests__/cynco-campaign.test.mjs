@@ -1359,6 +1359,30 @@ describe('runWave — the Level 4 spine at VERDICT', () => {
     expect(rec.governancePosiwid).toMatchObject({ verdict: expect.any(String), counts: expect.any(Object), windows: 1 })
     expect(state.waves().at(-1).governancePosiwid.v2).toEqual(rec.governancePosiwid.v2)
     expect(entries.join('\n')).toMatch(/- Governance POSIWID v1 \S+ \(.*\) \| v2 \S+ \(1 of 4 earned\)\./)
+    // T4-M1: the stored window carries the authority it was read under, so v2
+    // can be replayed over the windows later.
+    expect(state.state.governancePosiwid.windows.at(-1)).toMatchObject({ wave: 1, stated: { earned: 1, total: 4 } })
+  })
+
+  // T4-M4: a verdict file that is there but cannot be read is not measured,
+  // and says which file; its window records no authority (`stated: null`).
+  it('names v2 not measured when the verdict file is there but unreadable', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'gp-v2-bad-'))
+    const state = freshState()
+    const rec = await runWave(spec, state, gradedIo({
+      exportTriples: () => ({ summary: { denials: {}, quiet: {}, campaigns: {} }, rows: [] }),
+      analyseDenials: () => null,
+      datasetsHome: () => home,
+      writeRuleVerdicts: ({ outPath }) => {
+        mkdirSync(join(home, 'datasets'), { recursive: true })
+        writeFileSync(outPath, '{ not json')
+        return { version: 1, predictive: [], total: 0 }
+      },
+      readRuleVerdicts: () => null,
+    }))
+    expect(rec.governancePosiwid.v2).toEqual({ verdict: null, reason: `${join(home, 'datasets', 'rule-verdicts.json')} unreadable` })
+    expect(typeof rec.governancePosiwid.verdict).toBe('string')
+    expect(state.state.governancePosiwid.windows.at(-1).stated).toBeNull()
   })
 
   it('reads v2 as all-logging (0 of 0 earned) when no verdict file was written', async () => {

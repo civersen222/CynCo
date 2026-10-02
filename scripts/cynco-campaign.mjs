@@ -856,9 +856,6 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
   try {
     const proposalsDecided = (s.proposals ?? []).filter(p => p.decidedAt && p.decidedAt > (s.lastVerdictAt ?? '')).length
     const counts = governanceCounts({ row, wave: rec, proposalsDecided })
-    s.governancePosiwid = s.governancePosiwid ?? { windows: [] }
-    s.governancePosiwid.windows.push({ wave, ...counts })
-    governance = governancePosiwid(s.governancePosiwid.windows)
     // Phase 7 ruling 4: v2 states the purpose the authority table grants, read
     // from the verdict file THIS verdict wrote (a stale file from an earlier
     // wave is not this wave's table). No file → { earned: 0, total: 0 }; a file
@@ -877,7 +874,12 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
       console.error(`[campaign] governance POSIWID v2 not measured: ${e?.message ?? e}`)
       v2 = { verdict: null, reason: String(e?.message ?? e) }
     }
-    governance = { ...governance, v2 }
+    // T4-M1: each stored window carries the authority v2 read it under
+    // (`stated`, null when v2 was not measured), so v2 can be replayed over
+    // the windows later the way v1 is.
+    s.governancePosiwid = s.governancePosiwid ?? { windows: [] }
+    s.governancePosiwid.windows.push({ wave, ...counts, stated: v2.stated ?? null })
+    governance = { ...governancePosiwid(s.governancePosiwid.windows), v2 }
     rec.governancePosiwid = { ...governance, counts }
   } catch (e) { console.error(`[campaign] governance POSIWID skipped: ${e?.message ?? e}`) }
 
