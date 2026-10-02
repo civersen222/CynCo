@@ -855,14 +855,10 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
   // Ruling 5: commitVerdict matches these against `git status --porcelain`,
   // which speaks repo-relative forward slashes and nothing else.
   const files = [...new Set([LOG, ...waveFiles, ...roadmapFiles, ...ledgerShardsTouched()])]
-  // F167: the commit goes through plumbing when the working copy is on another
-  // branch, so the operator's checkout can no longer break it — said once here.
-  try {
-    const branch = `campaign/${spec.id}`
-    const { sha, detached } = io.commit({ repoRoot: '.', branch, files, message: `${spec.id.toUpperCase()} wave ${wave} verdict: ${decision.kind} — ${decision.why}` })
-    rec.verdictSha = sha
-    if (detached) console.log(`[campaign] verdict committed detached on ${branch} (${String(sha).slice(0, 7)})`)
-  } catch (e) { console.error(`[campaign] commit skipped: ${e.message}`) }
+  // F167: the runner runs from the campaign worktree (ensureCampaignCheckout at
+  // startup), so this commit lands on the branch the tree is on; if someone
+  // moved HEAD since, commitVerdict refuses rather than check anything out.
+  try { rec.verdictSha = io.commit({ repoRoot: '.', branch: `campaign/${spec.id}`, files, message: `${spec.id.toUpperCase()} wave ${wave} verdict: ${decision.kind} — ${decision.why}` }).sha } catch (e) { console.error(`[campaign] commit skipped: ${e.message}`) }
   rec.notified = await notifyOrQueue(io, s, `${spec.id.toUpperCase()} wave ${wave}: ${decision.kind.toUpperCase()} — ${decision.why}\n${grade.gate.fails.map(f => f.line).join('\n')}`, decision)
   state.rewriteLastWave(rec)
   state.save()
@@ -1180,11 +1176,62 @@ function authorIoBase(author) {
     seatAuthority: () => author.gateAuthorAuthorityAcrossCampaigns(join(cyncoHome(), 'campaigns')) })
 }
 
+/**
+ * F167: a campaign runs from its own worktree; the operator's checkout is never
+ * the runner's. The runner READS the campaign log, the roadmap and the ledger
+ * shards from its working copy and commits its verdict there, so that working
+ * copy has to BE `campaign/<id>`'s checkout — no commit technique can make the
+ * verdict independent of a checkout the runner reads from.
+ *
+ * The refusal names the exact commands, by case: the branch is already checked
+ * out in another worktree (go there), it exists (add a worktree on it), or it
+ * does not exist yet (add a worktree that creates it at HEAD).
+ */
+export function campaignCheckoutRefusal({ id, current, branchExists, headSha7, checkedOutAt = null, rerun }) {
+  const branch = `campaign/${id}`
+  const dir = `.claude/worktrees/campaign-${id}`
+  const head = [`[campaign] ${id}: this checkout is on ${current || '(detached HEAD)'}, not ${branch}. A campaign runs from its own worktree; the operator's checkout is never the runner's (F167).`]
+  if (checkedOutAt) return [...head, `${branch} is checked out at ${checkedOutAt} — run from there:`, `  cd ${checkedOutAt}`, `  ${rerun}`].join('\n')
+  const add = branchExists ? `  git worktree add ${dir} ${branch}` : `  git worktree add ${dir} -b ${branch} ${headSha7}`
+  return [...head, `Run it from a worktree on ${branch}${branchExists ? '' : ` (the branch does not exist yet; this creates it at HEAD ${headSha7})`}:`,
+    add, `  cd ${dir}`, '  npm install', `  ${rerun}`].join('\n')
+}
+
+const defaultCheckoutGit = (repoRoot) => (args) => {
+  const r = runSync('git', ['-C', repoRoot, ...args])
+  return { status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '' }
+}
+
+/**
+ * The startup guard for every runner path that writes to the repo (waves,
+ * --dry-run's calibration, --adopt-inflight's verdict). `{ ok: true }` on
+ * `campaign/<id>`; otherwise `{ ok: false, message }` from campaignCheckoutRefusal.
+ */
+export function ensureCampaignCheckout({ repoRoot = '.', id, argv = [], io } = {}) {
+  const git = io?.git ?? defaultCheckoutGit(repoRoot)
+  const branch = `campaign/${id}`
+  const current = git(['branch', '--show-current']).stdout.trim()
+  if (current === branch) return { ok: true }
+  const branchExists = git(['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]).status === 0
+  const headSha7 = git(['rev-parse', '--short=7', 'HEAD']).stdout.trim()
+  // `git worktree list --porcelain`: blocks of `worktree <path>` … `branch refs/heads/<b>`.
+  let checkedOutAt = null
+  let at = null
+  for (const line of git(['worktree', 'list', '--porcelain']).stdout.split(/\r?\n/)) {
+    if (line.startsWith('worktree ')) at = line.slice('worktree '.length)
+    else if (line === `branch refs/heads/${branch}`) checkedOutAt = at
+  }
+  const rerun = `bun scripts/cynco-campaign.mjs ${argv.join(' ')}`.trimEnd()
+  return { ok: false, message: campaignCheckoutRefusal({ id, current, branchExists, headSha7, checkedOutAt, rerun }) }
+}
+
 export async function main(argv, deps = {}) {
   // Every path below reaches for a repo-relative path (scripts/, docs/,
   // benchmark/cynco-ledger/). Run from anywhere else and the first symptom is
   // a brief written into the wrong tree, not an error.
-  if (!existsSync('scripts/dispatch-mission.sh')) { console.error('[campaign] run from the localcode repo root'); return 2 }
+  // A campaign run's root is its own worktree (`.claude/worktrees/campaign-<id>`,
+  // F167); the authoring and report verbs run from any localcode checkout's root.
+  if (!existsSync('scripts/dispatch-mission.sh')) { console.error('[campaign] run from the root of a localcode checkout — for a campaign run, its worktree\'s root (.claude/worktrees/campaign-<id>, F167)'); return 2 }
   // F160: a missing Git Bash is a refusal up front, not a spent, faulted wave
   // an hour from now (dispatch is the first spawn). Asked only on the paths
   // that WILL spawn bash — `--author` (the BASE archive, the dispatch) and the
@@ -1299,6 +1346,16 @@ export async function main(argv, deps = {}) {
   const verbOnly = ['--autopoiesis', '--scoreboard', '--approve-proposal', '--reject-proposal', '--sync'].some(f => flag(f) !== -1)
   if (!verbOnly && !needGitBash()) return 2
   const spec = loadCampaignSpec(specPath)
+  // F167: the runner (waves, --dry-run, --adopt-inflight) reads and commits the
+  // campaign's files in its working copy, so it runs only from the campaign's
+  // own worktree. The verbs above the lock write nothing to the repo (state
+  // lives under CYNCO_HOME; --sync pushes the branch ref, which works from any
+  // checkout) and run anywhere. Asked before the identity check, which already
+  // reads repo files.
+  if (!verbOnly) {
+    const co = ensureCampaignCheckout({ repoRoot: '.', id: spec.id, argv, io: deps.git ? { git: deps.git } : undefined })
+    if (!co.ok) { console.error(co.message); return 2 }
+  }
   // Phase 4 ruling 4: `--autopoiesis` is a dry report over what the campaign
   // already stored — the last graded wave's identity reading, the ledger rows
   // the runner reads, the last regenerated gate-lines dataset. It runs before

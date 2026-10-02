@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterAll } from 'vitest'
-import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdtempSync, mkdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -133,7 +133,7 @@ describe('commitVerdict', () => {
     expect(calls.some(c => c.startsWith('checkout'))).toBe(false)
     expect(calls).toContain('add -- docs/x.md')
     expect(calls).toContain('commit -m m')
-    expect(r).toEqual({ sha: 'abc123', detached: false })
+    expect(r).toEqual({ sha: 'abc123' })
     const dirty = { git: (args) => args[0] === 'status' ? { status: 0, stdout: ' M engine/other.ts\n M docs/x.md\n' } : { status: 0, stdout: '' } }
     expect(() => commitVerdict({ repoRoot: '.', branch: 'campaign/c8', files: ['docs/x.md'], message: 'm', io: dirty })).toThrow(/engine\/other\.ts/)
   })
@@ -141,11 +141,11 @@ describe('commitVerdict', () => {
 
 // F167: C10 wave 2's verdict commit died on `git checkout campaign/c10` because
 // the operator had switched the working copy's branch under the running
-// campaign. The commit is now written through plumbing — a temporary index,
-// write-tree, commit-tree, update-ref — so it never moves HEAD and never touches
-// the working copy. These run against a real git repo, because the property
-// under test is what git itself does.
-describe('commitVerdict — through plumbing (F167)', () => {
+// campaign. A campaign now runs from its own worktree, checked out on
+// `campaign/<id>`, and the verdict commit never checks anything out: on the
+// branch it is add + commit; anywhere else it refuses and touches nothing.
+// Real git repo, nested paths, because the property is what git itself does.
+describe('commitVerdict — the campaign worktree only (F167)', () => {
   const roots = []
   afterAll(() => { for (const r of roots) rmSync(r, { recursive: true, force: true }) })
   let repo
@@ -163,59 +163,53 @@ describe('commitVerdict — through plumbing (F167)', () => {
     g('config', 'user.name', 'F167 Test')
     g('config', 'user.email', 'f167@example.invalid')
     g('config', 'core.autocrlf', 'false')
-    writeFileSync(join(repo, 'a.txt'), 'a0\n')
-    writeFileSync(join(repo, 'c.txt'), 'c0\n')
-    g('add', 'a.txt', 'c.txt')
+    mkdirSync(join(repo, 'docs', 'briefs'), { recursive: true })
+    writeFileSync(join(repo, 'docs', 'briefs', 'log.md'), 'log\n')
+    writeFileSync(join(repo, 'docs', 'briefs', 'old.txt'), 'old\n')
+    g('add', 'docs')
     g('commit', '-q', '-m', 'base')
     g('checkout', '-q', '-b', 'campaign/x')
-    writeFileSync(join(repo, 'd.txt'), 'd0\n')
-    g('add', 'd.txt')
-    g('commit', '-q', '-m', 'wave 1 verdict')
-    oldTip = g('rev-parse', 'campaign/x')
-    g('checkout', '-q', 'main')
-    // The verdict files, written into the working copy that sits on main.
-    writeFileSync(join(repo, 'a.txt'), 'a1\n')
-    writeFileSync(join(repo, 'b.txt'), 'b1\n')
-    rmSync(join(repo, 'c.txt'))
+    oldTip = g('rev-parse', 'HEAD')
+    // The verdict files, written into the working copy on the campaign branch:
+    // a modified log, a new nested brief, a deleted file.
+    writeFileSync(join(repo, 'docs', 'briefs', 'log.md'), 'log\nwave1\n')
+    writeFileSync(join(repo, 'docs', 'briefs', 'x-wave1.txt'), 'brief\n')
+    rmSync(join(repo, 'docs', 'briefs', 'old.txt'))
   })
-  const files = ['a.txt', 'b.txt', 'c.txt']
+  const files = ['docs/briefs/log.md', 'docs/briefs/x-wave1.txt', 'docs/briefs/old.txt']
 
-  it('HEAD is not the branch: commits onto the branch without touching HEAD or the working copy', () => {
-    const before = g('status', '--porcelain')
-    const r = commitVerdict({ repoRoot: repo, branch: 'campaign/x', files, message: 'X wave 2 verdict' })
-    expect(r.detached).toBe(true)
-    expect(g('rev-parse', 'campaign/x')).toBe(r.sha)
-    expect(g('rev-parse', `${r.sha}^`)).toBe(oldTip)
-    expect(show(r.sha, 'a.txt').stdout).toBe('a1\n')
-    expect(show(r.sha, 'b.txt').stdout).toBe('b1\n')
-    expect(show(r.sha, 'c.txt').status).not.toBe(0)
-    expect(show(r.sha, 'd.txt').stdout).toBe('d0\n')
-    expect(g('log', '-1', '--format=%s', r.sha)).toBe('X wave 2 verdict')
-    expect(g('branch', '--show-current')).toBe('main')
-    expect(g('status', '--porcelain')).toBe(before)
-    expect(before).toMatch(/a\.txt/)
-    expect(before).toMatch(/b\.txt/)
-    expect(before).toMatch(/c\.txt/)
-  })
-
-  it('the branch does not exist: created from HEAD\'s commit', () => {
-    const head = g('rev-parse', 'HEAD')
-    const r = commitVerdict({ repoRoot: repo, branch: 'campaign/new', files, message: 'm' })
-    expect(r.detached).toBe(true)
-    expect(g('rev-parse', 'campaign/new')).toBe(r.sha)
-    expect(g('rev-parse', `${r.sha}^`)).toBe(head)
-    expect(show(r.sha, 'b.txt').stdout).toBe('b1\n')
-    expect(show(r.sha, 'c.txt').status).not.toBe(0)
-    expect(g('branch', '--show-current')).toBe('main')
-  })
-
-  it('HEAD is the branch: today\'s add + commit, tree clean after', () => {
-    g('checkout', '-q', 'campaign/x')
-    const r = commitVerdict({ repoRoot: repo, branch: 'campaign/x', files, message: 'm' })
-    expect(r.detached).toBe(false)
+  it('HEAD is the branch: add + commit of nested paths, tree clean after', () => {
+    const r = commitVerdict({ repoRoot: repo, branch: 'campaign/x', files, message: 'X wave 1 verdict' })
+    expect(Object.keys(r)).toEqual(['sha'])
     expect(g('rev-parse', 'HEAD')).toBe(r.sha)
     expect(g('rev-parse', `${r.sha}^`)).toBe(oldTip)
+    expect(show(r.sha, 'docs/briefs/log.md').stdout).toBe('log\nwave1\n')
+    expect(show(r.sha, 'docs/briefs/x-wave1.txt').stdout).toBe('brief\n')
+    expect(show(r.sha, 'docs/briefs/old.txt').status).not.toBe(0)
+    expect(g('log', '-1', '--format=%s', r.sha)).toBe('X wave 1 verdict')
     expect(g('status', '--porcelain')).toBe('')
+  })
+
+  it('HEAD is not the branch: refuses, names the worktree, and touches nothing', () => {
+    // The operator's checkout moved: the working copy is on main now, carrying
+    // the verdict files with it (all three are untracked/modified/deleted
+    // against main too, so git lets the switch happen).
+    g('checkout', '-q', 'main')
+    const before = g('status', '--porcelain')
+    const calls = []
+    const git = (args) => { calls.push(args[0]); return runSync('git', ['-C', repo, ...args]) }
+    expect(() => commitVerdict({ repoRoot: repo, branch: 'campaign/x', files, message: 'm', io: { git } }))
+      .toThrow('commitVerdict: HEAD is main, not campaign/x — the runner runs from the campaign worktree')
+    expect(calls.some(c => ['checkout', 'switch', 'add', 'commit', 'update-ref', 'branch'].includes(c))).toBe(false)
+    expect(g('branch', '--show-current')).toBe('main')
+    expect(g('rev-parse', 'campaign/x')).toBe(oldTip)
+    expect(g('status', '--porcelain')).toBe(before)
+  })
+
+  it('the branch does not exist: refuses rather than create it', () => {
+    g('checkout', '-q', 'main')
+    expect(() => commitVerdict({ repoRoot: repo, branch: 'campaign/new', files, message: 'm' })).toThrow(/HEAD is main, not campaign\/new/)
+    expect(runSync('git', ['-C', repo, 'rev-parse', '--verify', '--quiet', 'refs/heads/campaign/new']).status).not.toBe(0)
   })
 
   it('changes outside the verdict files: the existing refusal, nothing committed', () => {
@@ -224,15 +218,12 @@ describe('commitVerdict — through plumbing (F167)', () => {
     expect(g('rev-parse', 'campaign/x')).toBe(oldTip)
   })
 
-  it('the branch moves between the read and update-ref: throws, and the other commit stays', () => {
-    const other = g('commit-tree', `${oldTip}^{tree}`, '-p', oldTip, '-m', 'someone else')
-    const git = (args, env) => {
-      const r = runSync('git', ['-C', repo, ...args], { env })
-      if (args[0] === 'commit-tree') g('update-ref', 'refs/heads/campaign/x', other)
-      return r
-    }
-    expect(() => commitVerdict({ repoRoot: repo, branch: 'campaign/x', files, message: 'm', io: { git } })).toThrow(/update-ref/)
-    expect(g('rev-parse', 'campaign/x')).toBe(other)
+  it('a failed commit throws instead of recording the old HEAD as the verdict', () => {
+    // Nothing to commit: every file is already as HEAD has it.
+    g('checkout', '-q', '--', 'docs/briefs/log.md', 'docs/briefs/old.txt')
+    rmSync(join(repo, 'docs', 'briefs', 'x-wave1.txt'))
+    expect(() => commitVerdict({ repoRoot: repo, branch: 'campaign/x', files: ['docs/briefs/log.md'], message: 'm' })).toThrow(/commitVerdict: git commit failed/)
+    expect(g('rev-parse', 'campaign/x')).toBe(oldTip)
   })
 })
 

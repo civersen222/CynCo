@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { decide, runWave, waveContext, budgetSpent, defaultIo, claimedSurvivors, dispatchEnv, waveEnvBase, dirtyOutsideCampaign, inFlightRefusal, adoptInFlight, takeLock, releaseLock, applyProposalDecision, recordReseal, main } from '../cynco-campaign.mjs'
+import { decide, runWave, waveContext, budgetSpent, defaultIo, claimedSurvivors, dispatchEnv, waveEnvBase, dirtyOutsideCampaign, inFlightRefusal, adoptInFlight, takeLock, releaseLock, applyProposalDecision, recordReseal, main, ensureCampaignCheckout, campaignCheckoutRefusal } from '../cynco-campaign.mjs'
 import { summarize as summarizeGateLines } from '../cynco-gate-lines.mjs'
 import { adopt } from '../cynco-campaign-adopt.mjs'
 import { CampaignState } from '../cynco-campaign-state.mjs'
@@ -189,34 +189,6 @@ describe('runWave', () => {
     expect(files).toContain('docs/civkings-redesign-briefs/c8-wave1.txt')
     expect(files).toContain('docs/civkings-redesign-briefs/c8-wave1.contract.json')
     for (const f of files) { expect(f).not.toMatch(/\\/); expect(f).not.toMatch(/^[A-Za-z]:/) }
-  })
-
-  // F167: a verdict written through plumbing (the working copy was on another
-  // branch) keeps its sha on the record and says so once.
-  it('records a detached verdict commit and logs it once', async () => {
-    const state = freshState()
-    const logged = []
-    const orig = console.log
-    console.log = (...a) => { logged.push(a.join(' ')); }
-    try {
-      const rec = await runWave(spec, state, {
-        writeBrief: (p) => p,
-        dispatch: async () => ({ missionId: 'c8-wave1-1' }),
-        waitForDriver: async () => ({ exited: true }),
-        readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', markerSeen: false, toolStats: {} }),
-        commitsBetween: () => [],
-        grade: async () => g(), checkIdentity: okIdentity,
-        salvageOf: () => null,
-        patchRow: () => {},
-        commit: () => ({ sha: 'abcdef1234567', detached: true }),
-        notify: async () => true,
-        economics: () => [],
-        appendLog: () => {},
-        ...inertTriples,
-      })
-      expect(rec.verdictSha).toBe('abcdef1234567')
-    } finally { console.log = orig }
-    expect(logged.filter(l => l === '[campaign] verdict committed detached on campaign/c8 (abcdef1)')).toHaveLength(1)
   })
 
   // Ruling 8: an engine fault that leaves no ledger row still SPENDS a wave.
@@ -917,6 +889,86 @@ describe('defaultIo.waitForDriver — the ledger line is the authority', () => {
 
 // I6: the worker is an unattended model with a Bash tool. Anything in its env
 // it can read, print, or post.
+// F167: a campaign runs from its own worktree; the operator's checkout is never
+// the runner's. The guard reads git only, so a scripted git stands in for it.
+describe('ensureCampaignCheckout (F167)', () => {
+  const gitFor = ({ current, exists, worktrees = '' }) => {
+    const calls = []
+    const git = (args) => {
+      calls.push(args.join(' '))
+      if (args[0] === 'branch' && args[1] === '--show-current') return { status: 0, stdout: `${current}\n` }
+      if (args[0] === 'rev-parse' && args[1] === '--verify') return { status: exists ? 0 : 1, stdout: '' }
+      if (args[0] === 'rev-parse' && args[1] === '--short=7') return { status: 0, stdout: 'b63b73b\n' }
+      if (args[0] === 'worktree') return { status: 0, stdout: worktrees }
+      return { status: 1, stdout: '' }
+    }
+    return { git, calls }
+  }
+  const argv = ['docs/civkings-redesign-briefs/c11.campaign.json', '--waves', '3']
+
+  it('on campaign/<id>: proceeds, asking git nothing else', () => {
+    const { git, calls } = gitFor({ current: 'campaign/c11', exists: true })
+    expect(ensureCampaignCheckout({ id: 'c11', argv, io: { git } })).toEqual({ ok: true })
+    expect(calls).toEqual(['branch --show-current'])
+  })
+
+  it('branch absent: names the worktree add that creates it at HEAD, npm install, and the rerun', () => {
+    const { git } = gitFor({ current: 'main', exists: false })
+    const r = ensureCampaignCheckout({ id: 'c11', argv, io: { git } })
+    expect(r.ok).toBe(false)
+    expect(r.message).toBe(campaignCheckoutRefusal({ id: 'c11', current: 'main', branchExists: false, headSha7: 'b63b73b',
+      rerun: 'bun scripts/cynco-campaign.mjs docs/civkings-redesign-briefs/c11.campaign.json --waves 3' }))
+    expect(r.message).toBe([
+      "[campaign] c11: this checkout is on main, not campaign/c11. A campaign runs from its own worktree; the operator's checkout is never the runner's (F167).",
+      'Run it from a worktree on campaign/c11 (the branch does not exist yet; this creates it at HEAD b63b73b):',
+      '  git worktree add .claude/worktrees/campaign-c11 -b campaign/c11 b63b73b',
+      '  cd .claude/worktrees/campaign-c11',
+      '  npm install',
+      '  bun scripts/cynco-campaign.mjs docs/civkings-redesign-briefs/c11.campaign.json --waves 3',
+    ].join('\n'))
+  })
+
+  it('branch present but checked out nowhere: names the worktree add on the existing branch', () => {
+    const { git } = gitFor({ current: 'main', exists: true, worktrees: 'worktree C:/repo\nHEAD abc\nbranch refs/heads/main\n\n' })
+    const r = ensureCampaignCheckout({ id: 'c11', argv, io: { git } })
+    expect(r.ok).toBe(false)
+    expect(r.message.split('\n').slice(1)).toEqual([
+      'Run it from a worktree on campaign/c11:',
+      '  git worktree add .claude/worktrees/campaign-c11 campaign/c11',
+      '  cd .claude/worktrees/campaign-c11',
+      '  npm install',
+      '  bun scripts/cynco-campaign.mjs docs/civkings-redesign-briefs/c11.campaign.json --waves 3',
+    ])
+  })
+
+  it('branch already checked out in another worktree: names that worktree instead of a second add', () => {
+    const { git } = gitFor({ current: '', exists: true,
+      worktrees: 'worktree C:/repo\nHEAD abc\nbranch refs/heads/main\n\nworktree C:/repo/.claude/worktrees/campaign-c11\nHEAD def\nbranch refs/heads/campaign/c11\n\n' })
+    const r = ensureCampaignCheckout({ id: 'c11', argv, io: { git } })
+    expect(r.ok).toBe(false)
+    expect(r.message).toMatch(/this checkout is on \(detached HEAD\), not campaign\/c11/)
+    expect(r.message.split('\n').slice(1)).toEqual([
+      'campaign/c11 is checked out at C:/repo/.claude/worktrees/campaign-c11 — run from there:',
+      '  cd C:/repo/.claude/worktrees/campaign-c11',
+      '  bun scripts/cynco-campaign.mjs docs/civkings-redesign-briefs/c11.campaign.json --waves 3',
+    ])
+  })
+
+  it('main() refuses a wave run from another checkout with exit 2, before the identity check or the lock', async () => {
+    const errors = []
+    const orig = console.error
+    console.error = (m) => errors.push(String(m))
+    const { git } = gitFor({ current: 'main', exists: false })
+    try {
+      const code = await main(['docs/civkings-redesign-briefs/c9.campaign.json', '--waves', '1'], { bashExe: () => 'bash', git })
+      expect(code).toBe(2)
+      expect(errors).toHaveLength(1)
+      expect(errors[0]).toMatch(/^\[campaign\] c9: this checkout is on main, not campaign\/c9/)
+      expect(errors[0]).toMatch(/git worktree add \.claude\/worktrees\/campaign-c9 -b campaign\/c9 b63b73b/)
+    } finally { console.error = orig }
+  })
+})
+
 // F160 (re-review N-2): a missing Git Bash used to surface as a spent, faulted
 // wave, because dispatch was the first spawn. main() checks first and exits 2.
 describe('main refuses before touching state when no Git Bash resolves', () => {

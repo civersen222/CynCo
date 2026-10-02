@@ -1,8 +1,5 @@
 // scripts/cynco-campaign-verdict.mjs
 import { spawnSync } from 'node:child_process'
-import { existsSync, rmSync } from 'node:fs'
-import { join } from 'node:path'
-import { tmpdir } from 'node:os'
 import { runSync } from './cynco-spawn.mjs'
 import { gateLineVerdict } from './cynco-signal-validation.mjs'
 import { autopoiesisLine } from './cynco-autopoiesis.mjs'
@@ -228,27 +225,26 @@ export async function notify(message, env = process.env, fetchImpl = globalThis.
   } catch { return false }
 }
 
-// Through runSync merge mode, so F166's colour scrub applies to git too. `env`
-// is merged over process.env (the plumbing path passes GIT_INDEX_FILE).
-const defaultGit = (repoRoot) => (args, env) => {
-  const r = runSync('git', ['-C', repoRoot, ...args], env ? { env } : {})
+// Through runSync merge mode, so F166's colour scrub applies to git too.
+const defaultGit = (repoRoot) => (args) => {
+  const r = runSync('git', ['-C', repoRoot, ...args])
   return { status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '' }
 }
 
 /**
- * Commit the verdict files onto `branch` and return `{ sha, detached }`.
+ * Commit the verdict files onto `branch` and return `{ sha }`.
  *
- * F167 rule: a harness that writes history never depends on where the
- * operator's checkout stands. C10 wave 2's verdict commit died on
- * `git checkout campaign/c10` because the operator had switched the working
- * copy's branch under the running campaign. So when HEAD is not `branch` the
- * commit is written through plumbing — a temporary index seeded from the
- * branch tip (or HEAD's commit when the branch does not exist yet), the
- * verdict files read from the working copy into it, write-tree, commit-tree,
- * and update-ref guarded by the old tip — and neither HEAD, the real index
- * nor the working copy is touched (`detached: true`). The guarded update-ref
- * refuses rather than overwrite a branch that moved in between. When HEAD is
- * already `branch`, it is the plain add + commit (`detached: false`).
+ * F167 rule: a campaign runs from its own worktree; the operator's checkout is
+ * never the runner's. C10 wave 2's verdict commit died on `git checkout
+ * campaign/c10` because the operator had switched the shared working copy's
+ * branch under the running campaign. The runner now starts only from a worktree
+ * on `campaign/<id>` (`ensureCampaignCheckout` in cynco-campaign.mjs), so this
+ * is a plain add + commit on the branch the tree is on. It never checks out or
+ * creates anything: when HEAD is not `branch` it refuses and touches nothing.
+ * (Committing through plumbing from another checkout was tried and rejected:
+ * the runner also READS the log, roadmap and ledger from its working copy, so
+ * the commit left those files dirty for the next wave and overwrote
+ * branch-only content with the other checkout's copy — F167.)
  *
  * Any failed git step throws; the runner logs "commit skipped" and the wave
  * record keeps verdictSha null, which is the honest reading.
@@ -263,30 +259,10 @@ export function commitVerdict({ repoRoot, branch, files, message, io }) {
   const foreign = status.filter(p => !files.includes(p) && !p.startsWith('benchmark/cynco-ledger/'))
   if (foreign.length) throw new Error(`working tree has changes outside the verdict files: ${foreign.join(', ')} — refusing to commit over someone's work`)
   const head = must(git(['rev-parse', '--abbrev-ref', 'HEAD']), 'rev-parse HEAD').stdout.trim()
-  if (head === branch) {
-    must(git(['add', '--', ...files]), 'add')
-    must(git(['commit', '-m', message]), 'commit')
-    return { sha: must(git(['rev-parse', 'HEAD']), 'rev-parse HEAD').stdout.trim(), detached: false }
-  }
-  const exists = git(['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]).status === 0
-  const tip = must(exists ? git(['rev-parse', `refs/heads/${branch}`]) : git(['rev-parse', 'HEAD']), 'rev-parse tip').stdout.trim()
-  // Absolute: git resolves a relative GIT_INDEX_FILE against its own cwd.
-  const indexFile = join(tmpdir(), `cynco-verdict-index-${process.pid}-${Date.now()}`)
-  const env = { GIT_INDEX_FILE: indexFile }
-  try {
-    must(git(['read-tree', tip], env), 'read-tree')
-    const present = files.filter(f => existsSync(join(repoRoot, f)))
-    const gone = files.filter(f => !existsSync(join(repoRoot, f)))
-    if (present.length) must(git(['update-index', '--add', '--', ...present], env), 'update-index')
-    if (gone.length) must(git(['update-index', '--force-remove', '--', ...gone], env), 'update-index --force-remove')
-    const tree = must(git(['write-tree'], env), 'write-tree').stdout.trim()
-    const sha = must(git(['commit-tree', tree, '-p', tip, '-m', message], env), 'commit-tree').stdout.trim()
-    // The old value makes this a compare-and-swap: '' means "must not exist yet".
-    must(git(['update-ref', `refs/heads/${branch}`, sha, exists ? tip : '']), 'update-ref')
-    return { sha, detached: true }
-  } finally {
-    rmSync(indexFile, { force: true })
-  }
+  if (head !== branch) throw new Error(`commitVerdict: HEAD is ${head || '(unknown)'}, not ${branch} — the runner runs from the campaign worktree`)
+  must(git(['add', '--', ...files]), 'add')
+  must(git(['commit', '-m', message]), 'commit')
+  return { sha: must(git(['rev-parse', 'HEAD']), 'rev-parse HEAD').stdout.trim() }
 }
 
 export function economicsLines(io = { run: (cmd, args) => spawnSync(cmd, args, { encoding: 'utf8' }).stdout ?? '' }) {

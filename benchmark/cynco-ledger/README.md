@@ -416,6 +416,18 @@ Two fields are patched in by hand and appear only on some rows:
 - **`verifyCorrection`** — a hand correction to `verified` with its evidence,
   written when an independent re-run contradicts the driver's patched value.
 
+The campaign runner runs from its own worktree, checked out on
+`campaign/<id>` (F167): the shards it patches, the campaign log and the roadmap
+it reads and the verdict it commits all live in that worktree, never in the
+operator's checkout. From the localcode root, once per campaign:
+`git worktree add .claude/worktrees/campaign-<id> -b campaign/<id> <HEAD sha>`
+(or `git worktree add .claude/worktrees/campaign-<id> campaign/<id>` when the
+branch exists), `npm install` in that directory, then
+`bun scripts/cynco-campaign.mjs <id>.campaign.json …` with that directory as
+the cwd. Started anywhere else, the runner exits 2 and prints these commands.
+The report and authoring verbs (`--autopoiesis`, `--scoreboard`, `--author`,
+`--check`, the proposal decisions, `--sync`) run from any checkout.
+
 Two further blocks are patched on by the campaign runner
 (`scripts/cynco-campaign.mjs` → `scripts/cynco-ledger-patch.mjs`) when it grades
 a wave, so a mission row carries the sealed-gate reading that judged it:
