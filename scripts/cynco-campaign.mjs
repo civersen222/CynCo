@@ -167,6 +167,23 @@ export function suiteGateCommand(spec) {
   return `CHK_SUITE_BASELINE=${baseline} CYNCO_GATE_REPO=${repo} python "${fwd(SUITE_GATE())}"`
 }
 
+/**
+ * Final review M4: suiteGateCommand's whitespace refusal, asked at STARTUP
+ * (beside the checkout guard, before the lock) rather than inside every
+ * wave's dispatch, where it faulted each wave in turn. Null when the spec
+ * names its own `markerCheck` (the suite gate is then not the marker check)
+ * or the paths can travel; otherwise the refusal line.
+ */
+export function suiteGateRefusal(spec) {
+  if (spec.markerCheck !== undefined && spec.markerCheck !== null) return null
+  try {
+    suiteGateCommand(spec)
+    return null
+  } catch (e) {
+    return `[campaign] ${spec.id}: ${e.message}; move it to a path without whitespace (or name a markerCheck) — nothing was dispatched`
+  }
+}
+
 /** The keys the suite gate reads, which the engine (and so the model's Bash) must never hold. */
 export const SUITE_GATE_ENV_KEYS = ['CHK_SUITE_BASELINE', 'CYNCO_GATE_REPO']
 
@@ -1293,15 +1310,23 @@ function authorIoBase(author) {
  * out in another worktree (go there), it exists (add a worktree on it), or it
  * does not exist yet (add a worktree that creates it at HEAD).
  */
-export function campaignCheckoutRefusal({ id, current, branchExists, headSha7, checkedOutAt = null, rerun }) {
+export function campaignCheckoutRefusal({ id, current, branchExists, headSha7, checkedOutAt = null, rerun, worktreesRoot = '.claude/worktrees', dirtySeal = [] }) {
   const branch = `campaign/${id}`
-  const dir = `.claude/worktrees/campaign-${id}`
+  const dir = `${worktreesRoot}/campaign-${id}`
   const head = [`[campaign] ${id}: this checkout is on ${current || '(detached HEAD)'}, not ${branch}. A campaign runs from its own worktree; the operator's checkout is never the runner's (F167).`]
   if (checkedOutAt) return [...head, `${branch} is checked out at ${checkedOutAt} — run from there:`, `  cd ${checkedOutAt}`, `  ${rerun}`].join('\n')
+  // T3 N1: a worktree created at HEAD carries only what HEAD holds.
+  const seal = !branchExists && dirtySeal.length
+    ? [`Commit the seal first: ${dirtySeal.join(', ')} ${dirtySeal.length === 1 ? 'is' : 'are'} uncommitted here, and a worktree created at HEAD would not carry ${dirtySeal.length === 1 ? 'it' : 'them'}.`]
+    : []
   const add = branchExists ? `  git worktree add ${dir} ${branch}` : `  git worktree add ${dir} -b ${branch} ${headSha7}`
-  return [...head, `Run it from a worktree on ${branch}${branchExists ? '' : ` (the branch does not exist yet; this creates it at HEAD ${headSha7})`}:`,
-    add, `  cd ${dir}`, '  npm install', `  ${rerun}`].join('\n')
+  return [...head, ...seal, `Run it from a worktree on ${branch}${branchExists ? '' : ` (the branch does not exist yet; this creates it at HEAD ${headSha7})`}:`,
+    add, `  cd ${dir}`, '  npm install', `  ${rerun}`, STALE_WORKTREE_HINT(dir)].join('\n')
 }
+
+/** Final review M6: a removed worktree can leave its directory behind, and `git worktree add` then refuses. */
+export const STALE_WORKTREE_HINT = (dir) => `If git worktree add says '${dir}' already exists, a removed worktree left it behind: `
+  + 'git worktree prune, delete the directory, and run the add again — or add the worktree under another name.'
 
 const defaultCheckoutGit = (repoRoot) => (args) => {
   const r = runSync('git', ['-C', repoRoot, ...args])
@@ -1312,14 +1337,23 @@ const defaultCheckoutGit = (repoRoot) => (args) => {
  * The startup guard for every runner path that writes to the repo (waves,
  * --dry-run's calibration, --adopt-inflight's verdict). `{ ok: true }` on
  * `campaign/<id>`; otherwise `{ ok: false, message }` from campaignCheckoutRefusal.
+ * The printed worktree path is absolute when git names the common dir (T3 N2:
+ * right whichever worktree the operator stands in), and a dirty spec or roadmap
+ * is named first (T3 N1). `specPath` defaults to argv's first `.campaign.json`.
  */
-export function ensureCampaignCheckout({ repoRoot = '.', id, argv = [], io } = {}) {
+export function ensureCampaignCheckout({ repoRoot = '.', id, argv = [], specPath = null, io } = {}) {
   const git = io?.git ?? defaultCheckoutGit(repoRoot)
   const branch = `campaign/${id}`
   const current = git(['branch', '--show-current']).stdout.trim()
   if (current === branch) return { ok: true }
   const branchExists = git(['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]).status === 0
   const headSha7 = git(['rev-parse', '--short=7', 'HEAD']).stdout.trim()
+  const common = git(['rev-parse', '--path-format=absolute', '--git-common-dir'])
+  const commonDir = common.status === 0 ? common.stdout.trim().replace(/\\/g, '/') : ''
+  const worktreesRoot = /\/\.git$/.test(commonDir) ? `${commonDir.slice(0, -'/.git'.length)}/.claude/worktrees` : '.claude/worktrees'
+  const sealFiles = [specPath ?? argv.find(a => /\.campaign\.json$/.test(String(a))), ROADMAP_PATH].filter(Boolean).map(p => String(p).replace(/\\/g, '/'))
+  const st = git(['status', '--porcelain', '--', ...sealFiles])
+  const dirtySeal = st.status === 0 ? st.stdout.split(/\r?\n/).filter(Boolean).map(l => l.slice(3).trim()) : []
   // `git worktree list --porcelain`: blocks of `worktree <path>` … `branch refs/heads/<b>`.
   let checkedOutAt = null
   let at = null
@@ -1328,7 +1362,7 @@ export function ensureCampaignCheckout({ repoRoot = '.', id, argv = [], io } = {
     else if (line === `branch refs/heads/${branch}`) checkedOutAt = at
   }
   const rerun = `bun scripts/cynco-campaign.mjs ${argv.join(' ')}`.trimEnd()
-  return { ok: false, message: campaignCheckoutRefusal({ id, current, branchExists, headSha7, checkedOutAt, rerun }) }
+  return { ok: false, message: campaignCheckoutRefusal({ id, current, branchExists, headSha7, checkedOutAt, rerun, worktreesRoot, dirtySeal }) }
 }
 
 export async function main(argv, deps = {}) {
@@ -1459,8 +1493,12 @@ export async function main(argv, deps = {}) {
   // checkout) and run anywhere. Asked before the identity check, which already
   // reads repo files.
   if (!verbOnly) {
-    const co = ensureCampaignCheckout({ repoRoot: '.', id: spec.id, argv, io: deps.git ? { git: deps.git } : undefined })
+    const co = ensureCampaignCheckout({ repoRoot: '.', id: spec.id, argv, specPath, io: deps.git ? { git: deps.git } : undefined })
     if (!co.ok) { console.error(co.message); return 2 }
+    // Final review M4: a suite gate the env prefix cannot carry is refused
+    // here, once, rather than faulting every wave at dispatch.
+    const gateRefusal = suiteGateRefusal(spec)
+    if (gateRefusal) { console.error(gateRefusal); return 2 }
   }
   // Phase 4 ruling 4: `--autopoiesis` is a dry report over what the campaign
   // already stored — the last graded wave's identity reading, the ledger rows

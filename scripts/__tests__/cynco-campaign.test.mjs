@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { decide, runWave, waveContext, budgetSpent, defaultIo, claimedSurvivors, dispatchEnv, waveEnvBase, dirtyOutsideCampaign, inFlightRefusal, adoptInFlight, takeLock, releaseLock, applyProposalDecision, recordReseal, main, ensureCampaignCheckout, campaignCheckoutRefusal, waveDispatch, suiteGateCommand, MARKER_CHECK_TIMEOUT_MS } from '../cynco-campaign.mjs'
+import { decide, runWave, waveContext, budgetSpent, defaultIo, claimedSurvivors, dispatchEnv, waveEnvBase, dirtyOutsideCampaign, inFlightRefusal, adoptInFlight, takeLock, releaseLock, applyProposalDecision, recordReseal, main, ensureCampaignCheckout, campaignCheckoutRefusal, waveDispatch, suiteGateCommand, suiteGateRefusal, STALE_WORKTREE_HINT, MARKER_CHECK_TIMEOUT_MS } from '../cynco-campaign.mjs'
 import { summarize as summarizeGateLines } from '../cynco-gate-lines.mjs'
 import { adopt } from '../cynco-campaign-adopt.mjs'
 import { CampaignState } from '../cynco-campaign-state.mjs'
@@ -894,13 +894,15 @@ describe('defaultIo.waitForDriver — the ledger line is the authority', () => {
 // F167: a campaign runs from its own worktree; the operator's checkout is never
 // the runner's. The guard reads git only, so a scripted git stands in for it.
 describe('ensureCampaignCheckout (F167)', () => {
-  const gitFor = ({ current, exists, worktrees = '' }) => {
+  const gitFor = ({ current, exists, worktrees = '', commonDir = null, dirty = null }) => {
     const calls = []
     const git = (args) => {
       calls.push(args.join(' '))
       if (args[0] === 'branch' && args[1] === '--show-current') return { status: 0, stdout: `${current}\n` }
       if (args[0] === 'rev-parse' && args[1] === '--verify') return { status: exists ? 0 : 1, stdout: '' }
       if (args[0] === 'rev-parse' && args[1] === '--short=7') return { status: 0, stdout: 'b63b73b\n' }
+      if (args[0] === 'rev-parse' && args.includes('--git-common-dir')) return commonDir ? { status: 0, stdout: `${commonDir}\n` } : { status: 1, stdout: '' }
+      if (args[0] === 'status' && dirty !== null) return { status: 0, stdout: dirty }
       if (args[0] === 'worktree') return { status: 0, stdout: worktrees }
       return { status: 1, stdout: '' }
     }
@@ -927,7 +929,30 @@ describe('ensureCampaignCheckout (F167)', () => {
       '  cd .claude/worktrees/campaign-c11',
       '  npm install',
       '  bun scripts/cynco-campaign.mjs docs/civkings-redesign-briefs/c11.campaign.json --waves 3',
+      STALE_WORKTREE_HINT('.claude/worktrees/campaign-c11'),
     ].join('\n'))
+  })
+
+  // Final review M6 / T3 N2: the printed path is absolute, from the common git
+  // dir, so it is right whichever worktree the operator stands in.
+  it('prints the worktree path absolute when git names the common dir', () => {
+    const { git } = gitFor({ current: 'main', exists: false, commonDir: 'C:/Users/civer/localcode/.git' })
+    const r = ensureCampaignCheckout({ id: 'c11', argv, io: { git } })
+    const dir = 'C:/Users/civer/localcode/.claude/worktrees/campaign-c11'
+    expect(r.message).toContain(`  git worktree add ${dir} -b campaign/c11 b63b73b`)
+    expect(r.message).toContain(`  cd ${dir}`)
+    expect(r.message).toContain(STALE_WORKTREE_HINT(dir))
+  })
+
+  // T3 N1: a worktree made from HEAD carries only what HEAD holds — a seal
+  // (the spec, the roadmap line) left uncommitted here would be missing there.
+  it('says "commit the seal first" when the spec or the roadmap is dirty here', () => {
+    const { git, calls } = gitFor({ current: 'main', exists: false, dirty: ' M docs/civkings-redesign-briefs/roadmap.json\n?? docs/civkings-redesign-briefs/c11.campaign.json\n' })
+    const r = ensureCampaignCheckout({ id: 'c11', argv, io: { git } })
+    expect(calls).toContain('status --porcelain -- docs/civkings-redesign-briefs/c11.campaign.json docs/civkings-redesign-briefs/roadmap.json')
+    expect(r.message.split('\n')[1]).toBe('Commit the seal first: docs/civkings-redesign-briefs/roadmap.json, docs/civkings-redesign-briefs/c11.campaign.json are uncommitted here, and a worktree created at HEAD would not carry them.')
+    const clean = gitFor({ current: 'main', exists: false, dirty: '' })
+    expect(ensureCampaignCheckout({ id: 'c11', argv, io: { git: clean.git } }).message).not.toMatch(/Commit the seal first/)
   })
 
   it('branch present but checked out nowhere: names the worktree add on the existing branch', () => {
@@ -940,7 +965,10 @@ describe('ensureCampaignCheckout (F167)', () => {
       '  cd .claude/worktrees/campaign-c11',
       '  npm install',
       '  bun scripts/cynco-campaign.mjs docs/civkings-redesign-briefs/c11.campaign.json --waves 3',
+      STALE_WORKTREE_HINT('.claude/worktrees/campaign-c11'),
     ])
+    // Final review M6: a stale directory left by a removed worktree makes the add fail.
+    expect(STALE_WORKTREE_HINT('X')).toBe("If git worktree add says 'X' already exists, a removed worktree left it behind: git worktree prune, delete the directory, and run the add again — or add the worktree under another name.")
   })
 
   it('branch already checked out in another worktree: names that worktree instead of a second add', () => {
@@ -968,6 +996,30 @@ describe('ensureCampaignCheckout (F167)', () => {
       expect(errors[0]).toMatch(/^\[campaign\] c9: this checkout is on main, not campaign\/c9/)
       expect(errors[0]).toMatch(/git worktree add \.claude\/worktrees\/campaign-c9 -b campaign\/c9 b63b73b/)
     } finally { console.error = orig }
+  })
+
+  // Final review M4: a suite-gate path the env prefix cannot carry is refused
+  // at startup, beside this guard and before the lock — not by a faulted
+  // dispatch on every wave.
+  it('main() refuses a suite gate the env prefix cannot carry at startup, before the identity check or the lock', async () => {
+    const errors = []
+    const orig = console.error
+    console.error = (m) => errors.push(String(m))
+    const spec9 = JSON.parse(readFileSync('docs/civkings-redesign-briefs/c9.campaign.json', 'utf8'))
+    const specPath = join(mkdtempSync(join(tmpdir(), 'm4-')), 'c9.campaign.json')
+    writeFileSync(specPath, JSON.stringify({ ...spec9, suiteBaseline: 'C:/my dir/.cynco/heldout/c9/suite_baseline.txt' }))
+    const { git } = gitFor({ current: 'campaign/c9', exists: true })
+    try {
+      const code = await main([specPath, '--waves', '1'], { bashExe: () => 'bash', git })
+      expect(code).toBe(2)
+      expect(errors).toEqual(['[campaign] c9: campaign spec suiteBaseline "C:/my dir/.cynco/heldout/c9/suite_baseline.txt" contains whitespace — it cannot travel in the suite gate\'s env prefix; move it to a path without whitespace (or name a markerCheck) — nothing was dispatched'])
+    } finally { console.error = orig }
+  })
+
+  it('suiteGateRefusal: null for a carryable spec or one with its own markerCheck', () => {
+    expect(suiteGateRefusal({ id: 'c9', suiteBaseline: 'C:/h/.cynco/b.txt', repo: 'C:/repo' })).toBeNull()
+    expect(suiteGateRefusal({ id: 'c9', suiteBaseline: 'C:/my dir/b.txt', repo: 'C:/repo', markerCheck: 'python x.py' })).toBeNull()
+    expect(suiteGateRefusal({ id: 'c9', suiteBaseline: 'C:/h/b.txt', repo: 'C:/my repo' })).toMatch(/repo "C:\/my repo" contains whitespace/)
   })
 })
 

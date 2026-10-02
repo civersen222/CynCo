@@ -484,7 +484,19 @@ operator's checkout. From the localcode root, once per campaign:
 (or `git worktree add .claude/worktrees/campaign-<id> campaign/<id>` when the
 branch exists), `npm install` in that directory, then
 `bun scripts/cynco-campaign.mjs <id>.campaign.json …` with that directory as
-the cwd. Started anywhere else, the runner exits 2 and prints these commands.
+the cwd. Started anywhere else, the runner exits 2 and prints these commands,
+with the worktree path made absolute from `git rev-parse --git-common-dir`; it
+first says `Commit the seal first: …` when the spec or `roadmap.json` is
+uncommitted in the checkout a new branch would be cut from, and it ends with
+what to do when `git worktree add` finds a directory a removed worktree left
+behind (`git worktree prune`, delete it, or use another name). `.claude/` is
+ignored only through this clone's `.git/info/exclude`, not the repo's
+`.gitignore`: on a fresh clone the campaign worktree shows as an untracked
+directory in the main checkout — harmless to the runner, whose `git status`
+is its own worktree's, but add `.claude/` to `.git/info/exclude` there too.
+A spec whose suite-gate baseline or repo path holds whitespace (the env
+prefix cannot carry one) is refused at the same startup guard, before the
+lock, unless the spec names its own `markerCheck` (final review M4).
 The report and authoring verbs (`--autopoiesis`, `--scoreboard`, `--author`,
 `--check`, the proposal decisions, `--sync`) run from any checkout. A report verb
 reads the ledger shards of the checkout it runs in, so an in-flight campaign's
