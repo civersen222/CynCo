@@ -47,6 +47,12 @@
  * The holdout is one set per signals version (F165 fix round 2; see
  * "The holdout per signals version" below). Without --signals-version on a
  * Phase 5 (schema-1) file, --freeze/--refreeze behave exactly as in Phase 5.
+ *
+ * Phase 7 ruling 1 ("reading-level outcomes"): one row per inter-tick
+ * interval instead of one row per mission — see `intervalsOf`/`intervalRows`
+ * below and benchmark/cynco-ledger/README.md, "Reading-level outcomes".
+ *
+ *   bun scripts/cynco-outcome-dataset.mjs --export-intervals [--campaigns-dir DIR] [--out PATH] [--ledger-dir DIR]
  */
 
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
@@ -54,10 +60,15 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { readLedger } from './cynco-ledger-shards.mjs'
 import { labelOf } from './cynco-signal-validation.mjs'
+import { runnerWaves } from './cynco-runner-rows.mjs'
 
 const REPO_LEDGER_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'benchmark', 'cynco-ledger')
 export const MANIFEST_PATH = join(REPO_LEDGER_DIR, 'frozen-eval.json')
 export const DATASET_PATH = (home) => join(home, 'datasets', 'outcome-dataset.jsonl')
+/** Phase 7: one labeled sample per inter-tick interval (reading-level outcomes). */
+export const DATASET_INTERVALS_PATH = (home) => join(home, 'datasets', 'outcome-dataset-intervals.jsonl')
+/** An interval with fewer prefix turns than this is SHORT, not a row of nulls. */
+export const INTERVAL_MIN_TURNS = 4
 export const MANIFEST_SCHEMA = 1
 /** The two fixed prefix points: primary and secondary. */
 export const PREFIX_TURNS = Object.freeze([16, 32])
@@ -168,7 +179,33 @@ function checkTurns(K) {
   if (!Number.isInteger(K) || K < 1) throw new Error(`turns must be a positive integer, got ${K}`)
 }
 
-const turnsOf = (row) => (Array.isArray(row.turns) ? row.turns : [])
+export const turnsOf = (row) => (Array.isArray(row.turns) ? row.turns : [])
+
+/**
+ * The Phase 5/6 aggregates over an arbitrary turn slice: the same NUMERIC /
+ * NUMERIC_V2 / CATEGORICAL computation `featuresOf` and `intervalsOf` share,
+ * so a mission's K-turn prefix and a wave's inter-tick slice can never drift
+ * apart (Task 1 review: the two were a copy-paste away from disagreeing).
+ */
+function aggregatesOf(slice) {
+  const signalsVersion = signalsVersionOf(slice)
+  const features = {}
+  for (const [name, read, aggs] of signalsVersion >= 2 ? [...NUMERIC, ...NUMERIC_V2] : NUMERIC) {
+    const points = []
+    slice.forEach((t, i) => { const v = num(read(t ?? {})); if (v !== null) points.push([i, v]) })
+    const vals = points.map(([, v]) => v)
+    for (const a of aggs) {
+      features[`${name}.${a}`] = a === 'mean' ? mean(vals) : a === 'last' ? lastOf(vals) : a === 'max' ? maxOf(vals) : RATE[name](points)
+    }
+  }
+  features.brainPresent = slice.some(t => num(t?.brain?.toolEntropy?.mean) !== null || num(t?.brain?.toolEntropy?.max) !== null) ? 1 : 0
+  const last = slice[slice.length - 1] ?? {}
+  for (const [name, read, vocab] of CATEGORICAL) {
+    const v = read(last)
+    for (const option of vocab) features[`${name}.${option}`] = v === option ? 1 : 0
+  }
+  return { signalsVersion, features }
+}
 
 /**
  * The feature vector of one mission's first K turns. Reads `row.turns`,
@@ -180,22 +217,7 @@ export function featuresOf(row, K = DEFAULT_TURNS) {
   const all = turnsOf(row)
   if (all.length < K) throw new Error(`${row.missionId}: ${all.length} turns, fewer than K = ${K}`)
   const prefix = all.slice(0, K)
-  const signalsVersion = signalsVersionOf(prefix)
-  const features = {}
-  for (const [name, read, aggs] of signalsVersion >= 2 ? [...NUMERIC, ...NUMERIC_V2] : NUMERIC) {
-    const points = []
-    prefix.forEach((t, i) => { const v = num(read(t ?? {})); if (v !== null) points.push([i, v]) })
-    const vals = points.map(([, v]) => v)
-    for (const a of aggs) {
-      features[`${name}.${a}`] = a === 'mean' ? mean(vals) : a === 'last' ? lastOf(vals) : a === 'max' ? maxOf(vals) : RATE[name](points)
-    }
-  }
-  features.brainPresent = prefix.some(t => num(t?.brain?.toolEntropy?.mean) !== null || num(t?.brain?.toolEntropy?.max) !== null) ? 1 : 0
-  const last = prefix[prefix.length - 1] ?? {}
-  for (const [name, read, vocab] of CATEGORICAL) {
-    const v = read(last)
-    for (const option of vocab) features[`${name}.${option}`] = v === option ? 1 : 0
-  }
+  const { signalsVersion, features } = aggregatesOf(prefix)
   return { missionId: row.missionId, prefixTurns: K, signalsVersion, label: labelOf(row), features, leakGuard: true }
 }
 
@@ -240,6 +262,92 @@ export function datasetRows(rows, K = DEFAULT_TURNS, { signalsVersion = null } =
     for (const key of unknownCategoricals(row, K)) unknownValues[key] = (unknownValues[key] ?? 0) + 1
   }
   return { rows: out, excluded, unknownValues }
+}
+
+// ── Reading-level outcomes: one row per inter-tick interval (Phase 7) ──────
+//
+// A wave's shadow decisions (`rec.shadowDecisions[]`) tick the fail count on a
+// cadence; the span between two consecutive ticks is one labeled sample —
+// "did the fail count fall by the next tick?" — built from the ledger turns
+// whose timestamp falls inside that span, (atStart, atEnd]. This is 7–9×
+// the rows per campaign that the one-row-per-mission `featuresOf` gives, from
+// the SAME mid-wave grading Phase 6 already runs.
+//
+// `aggregatesOf` is shared with `featuresOf` above: the interval features use
+// the identical key set (`interval.*` keys are ADDED, never substituted for
+// one), so the two can never drift.
+
+const round3 = (x) => Math.round(x * 1000) / 1000
+
+/** The wave's measured ticks: shadow decisions with a numeric `fails`, one
+ *  per `at` (later duplicates of the same `at` are dropped), in time order. */
+function ticksOf(rec) {
+  const seen = new Map()
+  for (const d of Array.isArray(rec?.shadowDecisions) ? rec.shadowDecisions : []) {
+    if (!d || typeof d.at !== 'string' || typeof d.fails !== 'number' || !Number.isFinite(d.fails)) continue
+    if (!seen.has(d.at)) seen.set(d.at, { at: d.at, ms: Date.parse(d.at), fails: d.fails, elapsedFraction: d.elapsedFraction ?? null, startFails: d.startFails ?? null })
+  }
+  return [...seen.values()].filter(t => Number.isFinite(t.ms)).sort((a, b) => a.ms - b.ms)
+}
+
+/**
+ * One interval per pair of consecutive ticks on `rec`, built from `row`'s
+ * turns inside (atStart, atEnd]. `excluded` counts why an interval did not
+ * become a row: `short` (fewer than INTERVAL_MIN_TURNS turns in the slice),
+ * `noTicks` (fewer than 2 usable ticks — at most one row-level 0/1, not a
+ * per-interval count), `noTurnTimes` (the row has no turns, or a turn with no
+ * `t` — a v1/pre-F165-timestamp ledger row, at most one row-level 0/1),
+ * `otherVersion` (the slice's signals version is not the requested one).
+ */
+export function intervalsOf(rec, row, { signalsVersion = 2 } = {}) {
+  const excluded = { short: 0, noTicks: 0, noTurnTimes: 0, otherVersion: 0 }
+  const ticks = ticksOf(rec)
+  if (ticks.length < 2) { excluded.noTicks = 1; return { intervals: [], excluded } }
+  const turns = turnsOf(row)
+  if (!turns.length || turns.some(t => typeof t?.t !== 'number')) { excluded.noTurnTimes = 1; return { intervals: [], excluded } }
+  const startFails = ticks[0].startFails ?? ticks[0].fails
+  const intervals = []
+  for (let i = 0; i + 1 < ticks.length; i++) {
+    const a = ticks[i], b = ticks[i + 1]
+    const slice = turns.filter(t => t.t > a.ms && t.t <= b.ms)
+    if (slice.length < INTERVAL_MIN_TURNS) { excluded.short++; continue }
+    const { signalsVersion: v, features } = aggregatesOf(slice)
+    if (v !== signalsVersion) { excluded.otherVersion++; continue }
+    features['interval.turns'] = slice.length
+    features['interval.minutes'] = round3((b.ms - a.ms) / 60_000)
+    features['interval.elapsedFractionStart'] = a.elapsedFraction
+    features['interval.failsStart'] = a.fails
+    features['interval.failsStartShare'] = startFails > 0 ? round3(a.fails / startFails) : null
+    intervals.push({
+      missionId: row.missionId, campaign: rec.campaign ?? row.campaignId ?? null, wave: rec.wave ?? null, interval: i,
+      at: [a.at, b.at], failsStart: a.fails, failsEnd: b.fails, label: b.fails < a.fails ? 'improved' : 'stalled',
+      signalsVersion: v, turns: slice.length, features, leakGuard: true,
+    })
+  }
+  return { intervals, excluded }
+}
+
+/**
+ * `intervalsOf` over every wave, joined to its ledger row by `missionId`
+ * (`rows` from `readLedger`, `waves` the wave records — `runnerWaves(...)`
+ * mapped to its bare records for the CLI). A wave with no matching row is
+ * counted in `excluded.noRow` and contributes nothing; `waves` is the number
+ * of waves that DID join a row.
+ */
+export function intervalRows(rows, waves, { signalsVersion = 2 } = {}) {
+  const byId = new Map((Array.isArray(rows) ? rows : []).map(r => [r.missionId, r]))
+  const out = []
+  const excluded = { short: 0, noTicks: 0, noTurnTimes: 0, otherVersion: 0, noRow: 0 }
+  let n = 0
+  for (const w of Array.isArray(waves) ? waves : []) {
+    const row = w?.missionId ? byId.get(w.missionId) : null
+    if (!row) { excluded.noRow++; continue }
+    n++
+    const r = intervalsOf(w, row, { signalsVersion })
+    out.push(...r.intervals)
+    for (const k of Object.keys(r.excluded)) excluded[k] += r.excluded[k]
+  }
+  return { rows: out, excluded, waves: n }
 }
 
 // ── The frozen holdout ───────────────────────────────────────────
@@ -509,6 +617,19 @@ export async function main(argv, io = console) {
       `${unknown.length ? `; unknown categorical values: ${unknown.join(', ')}` : ''} → ${out}`)
     return 0
   }
+  if (argv.includes('--export-intervals')) {
+    const campaignsArg = argOf(argv, '--campaigns-dir')
+    const outArg = argOf(argv, '--out')
+    const home = (campaignsArg === undefined || outArg === undefined) ? (await import('../engine/paths.js')).cyncoHome() : null
+    const campaignsDir = campaignsArg !== undefined ? resolve(campaignsArg) : join(home, 'campaigns')
+    const out = outArg !== undefined ? resolve(outArg) : DATASET_INTERVALS_PATH(home)
+    const waves = runnerWaves(campaignsDir).map(({ record }) => record)
+    const { rows: intervals, excluded, waves: n } = intervalRows(rows, waves, { signalsVersion: signalsVersion ?? 2 })
+    writeAtomic(out, intervals.map(r => JSON.stringify(r)).join('\n') + (intervals.length ? '\n' : ''))
+    io.log(`reading-level outcomes: ${intervals.length} rows from ${n} waves (excluded ${excluded.short} short, ${excluded.noTicks} no ticks, ` +
+      `${excluded.noTurnTimes} no turn times, ${excluded.otherVersion} other signals version, ${excluded.noRow} no ledger row) → ${out}`)
+    return 0
+  }
   const freeze = argv.includes('--freeze')
   const refreeze = argv.includes('--refreeze')
   if (freeze || refreeze) {
@@ -567,7 +688,7 @@ export async function main(argv, io = console) {
       `${ineligible.length ? `; ${ineligible.length} held ids ineligible at K = ${K}: ${ineligible.join(', ')}` : ''} → ${path}`)
     return 0
   }
-  io.error('usage: --export [--turns K] [--signals-version N] [--out PATH] | --freeze --seed N [--signals-version N] | --refreeze --seed N [--signals-version N]  [--turns K] [--ledger-dir DIR] [--manifest PATH]')
+  io.error('usage: --export [--turns K] [--signals-version N] [--out PATH] | --export-intervals [--campaigns-dir DIR] [--out PATH] | --freeze --seed N [--signals-version N] | --refreeze --seed N [--signals-version N]  [--turns K] [--ledger-dir DIR] [--manifest PATH]')
   return 2
 }
 

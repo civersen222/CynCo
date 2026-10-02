@@ -1,0 +1,48 @@
+{
+  "wave": 1,
+  "missionId": "fx-wave1-1",
+  "campaign": "fx",
+  "dispatchedAt": "2026-10-01T00:00:00.000Z",
+  "decision": {
+    "kind": "next",
+    "why": "x"
+  },
+  "shadowDecisions": [
+    {
+      "rule": "R1.no-progress",
+      "at": "2026-10-01T00:45:00.000Z",
+      "elapsedFraction": 0.094,
+      "fired": false,
+      "startFails": 20,
+      "fails": 20,
+      "wouldHaveSavedS": 26100
+    },
+    {
+      "rule": "R1.no-progress",
+      "at": "2026-10-01T01:15:00.000Z",
+      "elapsedFraction": 0.156,
+      "fired": false,
+      "startFails": 20,
+      "fails": 16,
+      "wouldHaveSavedS": 24300
+    },
+    {
+      "rule": "R1.no-progress",
+      "at": "2026-10-01T01:45:00.000Z",
+      "elapsedFraction": 0.219,
+      "fired": false,
+      "startFails": 20,
+      "fails": 16,
+      "wouldHaveSavedS": 22500
+    },
+    {
+      "rule": "R1.no-progress",
+      "at": "2026-10-01T02:15:00.000Z",
+      "elapsedFraction": 0.281,
+      "fired": false,
+      "startFails": 20,
+      "fails": 10,
+      "wouldHaveSavedS": 20700
+    }
+  ]
+}

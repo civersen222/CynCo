@@ -1554,6 +1554,83 @@ leak check …`.
 If the write throws on the MODEL rows, the fallback rewrite keeps the runner
 rows.
 
+### Reading-level outcomes (Phase 7 ruling 1)
+
+One mission gives `featuresOf` one row (above). But the mid-wave gate progress
+(Phase 6, above) already ticks the gate's fail count every `everyMs` and writes
+a shadow decision at each tick — so the span between two consecutive ticks is
+ITS OWN labeled sample: *did the fail count fall by the next tick?* Built by
+`intervalsOf`/`intervalRows` in `scripts/cynco-outcome-dataset.mjs` (pinned by
+`scripts/__tests__/cynco-outcome-intervals.test.mjs`), this is 7–9× the rows
+per campaign that one row per mission gives, from the same readings Phase 6
+already took — no new measurement, no new gate run.
+
+**An interval** is the half-open span `(atStart, atEnd]` between two of a
+wave's `rec.shadowDecisions` entries that carry a numeric `fails` (ticks
+deduplicated by `at`, kept in time order; fewer than two usable ticks is
+`noTicks`). Its turns are the ledger row's `turns[]` whose `t` (epoch ms) falls
+inside that span — a prefix nowhere in sight: Phase 7 slices the MIDDLE of a
+mission, not its start. `aggregatesOf` — the same NUMERIC/NUMERIC_V2/CATEGORICAL
+computation `featuresOf` runs over a mission's K-turn prefix — runs over that
+slice instead, so the mission-level and interval-level feature keys can never
+drift apart; a slice with fewer than `INTERVAL_MIN_TURNS` (4) turns is `short`,
+never a row of nulls, and a row whose turns carry no `t` at all (a pre-F165-
+timestamp ledger row) is `noTurnTimes`.
+
+**The label.** `improved` when the tick at the end of the span reads fewer
+fails than the tick at its start, `stalled` otherwise (equal counts included —
+a skipped tick that repeats the previous `fails` is a stall, not a drop). Over
+the fixture's four ticks (20 → 16 → 16 → 10 fails) the three intervals label
+`improved`, `stalled`, `improved`.
+
+**The five context keys**, added to the shared aggregate features (never
+replacing one): `interval.turns` (the slice's turn count), `interval.minutes`
+(wall-clock span, `(atEnd − atStart) / 60000`, rounded to 3 places),
+`interval.elapsedFractionStart` (the start tick's `elapsedFraction`, verbatim),
+`interval.failsStart` (the start tick's `fails`), and `interval.failsStartShare`
+(`failsStart / startFails` — `startFails` the WAVE's starting fail count, the
+first tick's `startFails` else its `fails` — `null` when `startFails` is 0, so
+later intervals read as a share of where the wave began, not of each other).
+
+Row shape (`Interval`; `campaign` reads `rec.campaign`, falling back to the
+ledger row's `campaignId` — the field is not on the wave record today):
+
+```jsonc
+{ "missionId": "fx-wave1-1", "campaign": "fx", "wave": 1, "interval": 0,
+  "at": ["2026-10-01T00:45:00.000Z", "2026-10-01T01:15:00.000Z"],
+  "failsStart": 20, "failsEnd": 16, "label": "improved", "signalsVersion": 2,
+  "turns": 20,
+  "features": { "interval.turns": 20, "interval.minutes": 30,
+                "interval.elapsedFractionStart": 0.094, "interval.failsStart": 20,
+                "interval.failsStartShare": 1, "consecutiveUnstable.max": 3, "…": "…" },
+  "leakGuard": true }
+```
+
+**Excluded, not silently dropped** — `intervalsOf(rec, row)` returns
+`{ intervals, excluded: { short, noTicks, noTurnTimes, otherVersion } }`:
+`noTicks` and `noTurnTimes` are row-level 0/1 (a wave or mission that cannot
+yield any interval at all), `short` and `otherVersion` count per-interval.
+`intervalRows(rows, waves)` joins each wave to its ledger row by `missionId`
+(a wave with no matching row is counted in `excluded.noRow` and contributes
+nothing) and sums `excluded` across waves; `waves` is the count of waves that
+DID join a row.
+
+**v2 only.** Like the mission dataset, `signalsVersion` is the slice's own
+minimum over its turns; `intervalRows`/`intervalsOf` default to
+`signalsVersion: 2` and count a v1 slice (or a mixed one whose minimum is 1)
+in `excluded.otherVersion` rather than emit a row with a smaller key set —
+there is one Phase 7 dataset, not a v1/v2 split, because mid-wave progress
+reading only exists on F165-era (v2) ledgers.
+
+**CLI.** `bun scripts/cynco-outcome-dataset.mjs --export-intervals
+[--campaigns-dir DIR] [--out PATH] [--ledger-dir DIR]` reads the ledger
+(`readLedger`), every runner-driven campaign's wave records
+(`runnerWaves(campaignsDir)`, default `<cyncoHome>/campaigns`), and writes
+JSONL to `--out` (default `~/.cynco/datasets/outcome-dataset-intervals.jsonl`,
+`DATASET_INTERVALS_PATH`), printing
+`reading-level outcomes: N rows from M waves (excluded … short, … no ticks,
+… no turn times, … other signals version, … no ledger row) → PATH`.
+
 ## Labeling rule
 
 Ground truth for signal validation (step 2, per-rule precision/recall):
