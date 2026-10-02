@@ -848,7 +848,11 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
     if (rec.hindcast?.reading && !rec.hindcast.reading.fault) rec.hindcast.reading.ladder = ladders.reading
   } catch (e) {
     console.error(`[campaign] rule verdicts skipped: ${e?.message ?? e}`)
-    if (!rec.hindcast) rec.hindcast = { fault: `not run: ${e?.message ?? e}` }
+    // T5-M1: a fault before the learners ran (the ledger unreadable) is the
+    // reading unit's too, so the entry's `; readings:` clause still prints.
+    const fault = `not run: ${e?.message ?? e}`
+    if (!rec.hindcast) rec.hindcast = { fault, reading: { fault } }
+    else if (!rec.hindcast.reading) rec.hindcast.reading = { fault }
   }
 
   // 2d: POSIWID on the governance layer itself, one window per wave.

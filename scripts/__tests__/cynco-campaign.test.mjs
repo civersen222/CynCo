@@ -2151,6 +2151,15 @@ describe('the rule verdicts at VERDICT', () => {
     expect(rec.ruleVerdicts).toBeNull()
   })
 
+  // T5-M1: a fault before either learner ran (the ledger unreadable) is BOTH
+  // units' fault, so the entry's `; readings:` clause still prints.
+  it('a ledger-read fault is written on the reading too, and the readings clause prints', async () => {
+    let entry = ''
+    const rec = await runWave(spec, freshState(), io({ readLedgerRows: () => { throw new Error('shard unreadable') }, appendLog: (t) => { entry = t } }))
+    expect(rec.hindcast).toEqual({ fault: 'not run: shard unreadable', reading: { fault: 'not run: shard unreadable' } })
+    expect(entry).toMatch(/- Outcome hindcast: UNMEASURED — not run: shard unreadable; readings: UNMEASURED — not run: shard unreadable$/m)
+  })
+
   it('the default io reads the datasets home from cyncoHome and the rows from the ledger shards', () => {
     expect(typeof defaultIo.readLedgerRows).toBe('function')
     expect(defaultIo.datasetsHome()).toBe(process.env.CYNCO_HOME)

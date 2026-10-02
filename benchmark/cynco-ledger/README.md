@@ -1946,7 +1946,11 @@ the mission clause — `; readings: UNMEASURED — reading holdout not yet froze
 held-out readings (base 50%): M2.gbt … ; M2.lr … (p optimistic: readings share
 missions); leak check not run`, with
 `; reading:2 holdout frozen now (12 readings of 6 missions)` on the wave that
-froze it. A record from before Phase 7 has no `reading` and prints no clause.
+froze it — on an UNMEASURED reading too (a TOO FEW right after the freeze,
+T5-M2), since the manifest is committed with that wave either way. A fault
+before either learner ran (the ledger unreadable) is written on both units —
+`rec.hindcast = { fault, reading: { fault } }` — so the clause always prints
+(T5-M1). A record from before Phase 7 has no `reading` and prints no clause.
 `bun scripts/cynco-rule-verdicts.mjs --with-hindcast` runs the reading learner
 too, over the same campaigns dir it reads the runner rows from.
 

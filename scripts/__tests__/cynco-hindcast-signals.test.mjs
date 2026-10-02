@@ -326,6 +326,17 @@ describe('the verdict entry names the version and the counts (F165)', () => {
         .toMatch(/; readings: v2 per interval, .*: no ladder reading; leak check not run; dropped 1 dead column\(s\): a; reading:2 holdout frozen now \(12 readings of 6 missions\)$/)
     })
 
+    // T5-M2: the wave whose export froze `reading:2` names the freeze even
+    // when the reading model then refused (TOO FEW) — the manifest is
+    // committed with that wave either way.
+    it('names the freeze on the wave that did it even when the reading model reads TOO FEW', () => {
+      const tooFew = 'TOO FEW: train 22 < 30 after the whole-mission draw (holdout 16 readings) (signals v2: 38 eligible)'
+      expect(hindcastLine({ ...h, reading: { fault: tooFew, signalsVersion: 2, holdout: { frozen: true, frozenNow: true, ids: 16, missions: 2 } } }))
+        .toMatch(new RegExp(`; readings: UNMEASURED — ${tooFew.replace(/[()]/g, '\\$&')}; reading:2 holdout frozen now \\(16 readings of 2 missions\\)$`))
+      // An unfrozen holdout's fault names no freeze.
+      expect(hindcastLine({ ...h, reading: { fault: notFrozen, holdout: { frozen: false } } })).not.toMatch(/frozen now/)
+    })
+
     // Final review M2: an M2 p is a Fisher p over readings that share missions
     // — optimistic — and the line says so wherever such a p is printed.
     it('names the optimism of an M2 p only when one is printed', () => {

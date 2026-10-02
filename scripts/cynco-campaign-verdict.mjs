@@ -124,12 +124,15 @@ export function hindcastLine(h, { detail = false, runners = null } = {}) {
   const readingRungs = Object.entries(r?.ladder ?? {}).sort(byId)
   const optimistic = readingRungs.some(([, x]) => typeof x?.pAdjusted === 'number')
     ? ` (p optimistic: ${readingRungs.find(([, x]) => typeof x?.dependence === 'string')?.[1].dependence ?? READING_DEPENDENCE})` : ''
+  // T5-M2: the wave whose export froze `reading:2` names the freeze whether
+  // or not the model then measured (a TOO FEW is a fault with the holdout on it).
+  const readingFrozeNow = r?.holdout?.frozenNow === true ? `; reading:${r.signalsVersion ?? '?'} holdout frozen now (${r.holdout.ids ?? '?'} readings of ${r.holdout.missions ?? '?'} missions)` : ''
   const readings = !r ? ''
-    : r.fault ? `; readings: UNMEASURED — ${r.fault}`
+    : r.fault ? `; readings: UNMEASURED — ${r.fault}${readingFrozeNow}`
       : `; readings: v${r.version ?? '?'} per interval${eligibleOf(r)} on ${r.nHoldout ?? '?'} held-out readings (base ${pct(r.baseRate)}): `
         + `${readingRungs.length ? readingRungs.map(rung).join('; ') + optimistic
           : r.ladderFault ? `LADDER NOT WRITTEN (${r.ladderFault}) — rules rewritten alone` : 'no ladder reading'}; leak check not run${dead(r)}`
-        + `${r.holdout?.frozenNow === true ? `; reading:${r.signalsVersion ?? '?'} holdout frozen now (${r.holdout.ids ?? '?'} readings of ${r.holdout.missions ?? '?'} missions)` : ''}`
+        + readingFrozeNow
   if (h.fault) return `- Outcome hindcast: UNMEASURED — ${h.fault}${runnerRungs.map(r => `; ${r}`).join('')}${readings}`
   const models = Object.entries(h.ladder ?? {}).sort(byId).map(rung)
   // A model ladder that faulted still says so when the runner rows follow it.
