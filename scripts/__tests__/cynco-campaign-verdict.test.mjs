@@ -1,9 +1,11 @@
-import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { describe, it, expect, beforeEach, afterAll } from 'vitest'
+import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { verdictEntry, notify, commitVerdict } from '../cynco-campaign-verdict.mjs'
 import { campaignScoreboard } from '../cynco-scoreboard.mjs'
+import { runSync } from '../cynco-spawn.mjs'
 
 const grade = { sha: '1bc0f8c', verified: false,
   gate: { fails: [{ id: 'C8.5.palette.Atlas', line: 'C8.5.palette.Atlas: FAIL pixels within 24/channel of a pinned ink at t40 = 0.71 (floor 0.9)' }], passes: [{ id: 'C8.1a', line: 'C8.1a: PASS' }], terminator: 'MISS', failCount: 1, priorRegressions: 0, exit: 1, durationMs: 120000, harnessFault: null },
@@ -124,47 +126,113 @@ describe('notify', () => {
 })
 
 describe('commitVerdict', () => {
-  it('creates the branch once, stages by name, refuses a dirty tree', () => {
+  it('on the branch: stages by name and commits; refuses a dirty tree', () => {
     const calls = []
-    const io = { git: (args) => { calls.push(args.join(' ')); if (args[0] === 'rev-parse' && args[1] === '--verify') return { status: 1, stdout: '' }; if (args[0] === 'status') return { status: 0, stdout: ' M docs/x.md\n' }; if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') return { status: 0, stdout: 'campaign/c8\n' }; if (args[0] === 'rev-parse') return { status: 0, stdout: 'abc123\n' }; return { status: 0, stdout: '' } } }
+    const io = { git: (args) => { calls.push(args.join(' ')); if (args[0] === 'status') return { status: 0, stdout: ' M docs/x.md\n' }; if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') return { status: 0, stdout: 'campaign/c8\n' }; if (args[0] === 'rev-parse') return { status: 0, stdout: 'abc123\n' }; return { status: 0, stdout: '' } } }
     const r = commitVerdict({ repoRoot: '.', branch: 'campaign/c8', files: ['docs/x.md'], message: 'm', io })
-    expect(calls).toContain('checkout -b campaign/c8')
-    expect(calls).toContain('add docs/x.md')
-    expect(r.sha).toBe('abc123')
+    expect(calls.some(c => c.startsWith('checkout'))).toBe(false)
+    expect(calls).toContain('add -- docs/x.md')
+    expect(calls).toContain('commit -m m')
+    expect(r).toEqual({ sha: 'abc123', detached: false })
     const dirty = { git: (args) => args[0] === 'status' ? { status: 0, stdout: ' M engine/other.ts\n M docs/x.md\n' } : { status: 0, stdout: '' } }
     expect(() => commitVerdict({ repoRoot: '.', branch: 'campaign/c8', files: ['docs/x.md'], message: 'm', io: dirty })).toThrow(/engine\/other\.ts/)
   })
+})
 
-  // A failed checkout used to be silent: add + commit ran anyway and the verdict
-  // landed on whatever branch the tree was on — main, most likely.
-  it('throws instead of committing when the checkout fails', () => {
-    const calls = []
-    const io = { git: (args) => {
-      calls.push(args.join(' '))
-      if (args[0] === 'status') return { status: 0, stdout: '' }
-      if (args[0] === 'rev-parse' && args[1] === '--verify') return { status: 0, stdout: 'abc\n' }
-      if (args[0] === 'checkout') return { status: 1, stdout: '', stderr: 'error: Your local changes would be overwritten\n' }
-      return { status: 0, stdout: 'main\n' }
-    } }
-    expect(() => commitVerdict({ repoRoot: '.', branch: 'campaign/c8', files: ['docs/x.md'], message: 'm', io }))
-      .toThrow(/commitVerdict: git checkout campaign\/c8 failed: error: Your local changes would be overwritten/)
-    expect(calls.some(c => c.startsWith('add '))).toBe(false)
-    expect(calls.some(c => c.startsWith('commit '))).toBe(false)
+// F167: C10 wave 2's verdict commit died on `git checkout campaign/c10` because
+// the operator had switched the working copy's branch under the running
+// campaign. The commit is now written through plumbing — a temporary index,
+// write-tree, commit-tree, update-ref — so it never moves HEAD and never touches
+// the working copy. These run against a real git repo, because the property
+// under test is what git itself does.
+describe('commitVerdict — through plumbing (F167)', () => {
+  const roots = []
+  afterAll(() => { for (const r of roots) rmSync(r, { recursive: true, force: true }) })
+  let repo
+  const g = (...args) => {
+    const r = runSync('git', ['-C', repo, ...args])
+    if (r.status !== 0) throw new Error(`test git ${args.join(' ')} failed: ${r.stderr}`)
+    return r.stdout.trim()
+  }
+  const show = (ref, path) => runSync('git', ['-C', repo, 'show', `${ref}:${path}`])
+  let oldTip
+  beforeEach(() => {
+    repo = mkdtempSync(join(tmpdir(), 'cynco-f167-'))
+    roots.push(repo)
+    g('init', '-q', '-b', 'main')
+    g('config', 'user.name', 'F167 Test')
+    g('config', 'user.email', 'f167@example.invalid')
+    g('config', 'core.autocrlf', 'false')
+    writeFileSync(join(repo, 'a.txt'), 'a0\n')
+    writeFileSync(join(repo, 'c.txt'), 'c0\n')
+    g('add', 'a.txt', 'c.txt')
+    g('commit', '-q', '-m', 'base')
+    g('checkout', '-q', '-b', 'campaign/x')
+    writeFileSync(join(repo, 'd.txt'), 'd0\n')
+    g('add', 'd.txt')
+    g('commit', '-q', '-m', 'wave 1 verdict')
+    oldTip = g('rev-parse', 'campaign/x')
+    g('checkout', '-q', 'main')
+    // The verdict files, written into the working copy that sits on main.
+    writeFileSync(join(repo, 'a.txt'), 'a1\n')
+    writeFileSync(join(repo, 'b.txt'), 'b1\n')
+    rmSync(join(repo, 'c.txt'))
+  })
+  const files = ['a.txt', 'b.txt', 'c.txt']
+
+  it('HEAD is not the branch: commits onto the branch without touching HEAD or the working copy', () => {
+    const before = g('status', '--porcelain')
+    const r = commitVerdict({ repoRoot: repo, branch: 'campaign/x', files, message: 'X wave 2 verdict' })
+    expect(r.detached).toBe(true)
+    expect(g('rev-parse', 'campaign/x')).toBe(r.sha)
+    expect(g('rev-parse', `${r.sha}^`)).toBe(oldTip)
+    expect(show(r.sha, 'a.txt').stdout).toBe('a1\n')
+    expect(show(r.sha, 'b.txt').stdout).toBe('b1\n')
+    expect(show(r.sha, 'c.txt').status).not.toBe(0)
+    expect(show(r.sha, 'd.txt').stdout).toBe('d0\n')
+    expect(g('log', '-1', '--format=%s', r.sha)).toBe('X wave 2 verdict')
+    expect(g('branch', '--show-current')).toBe('main')
+    expect(g('status', '--porcelain')).toBe(before)
+    expect(before).toMatch(/a\.txt/)
+    expect(before).toMatch(/b\.txt/)
+    expect(before).toMatch(/c\.txt/)
   })
 
-  // A checkout that reports success but leaves HEAD elsewhere (a detached HEAD,
-  // a hook) is the same failure wearing a 0 exit code.
-  it('throws when HEAD is not the branch after a successful checkout', () => {
-    const calls = []
-    const io = { git: (args) => {
-      calls.push(args.join(' '))
-      if (args[0] === 'status') return { status: 0, stdout: '' }
-      if (args[0] === 'rev-parse' && args[1] === '--verify') return { status: 0, stdout: 'abc\n' }
-      if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') return { status: 0, stdout: 'main\n' }
-      return { status: 0, stdout: '' }
-    } }
-    expect(() => commitVerdict({ repoRoot: '.', branch: 'campaign/c8', files: ['docs/x.md'], message: 'm', io })).toThrow(/HEAD is main/)
-    expect(calls.some(c => c.startsWith('add '))).toBe(false)
+  it('the branch does not exist: created from HEAD\'s commit', () => {
+    const head = g('rev-parse', 'HEAD')
+    const r = commitVerdict({ repoRoot: repo, branch: 'campaign/new', files, message: 'm' })
+    expect(r.detached).toBe(true)
+    expect(g('rev-parse', 'campaign/new')).toBe(r.sha)
+    expect(g('rev-parse', `${r.sha}^`)).toBe(head)
+    expect(show(r.sha, 'b.txt').stdout).toBe('b1\n')
+    expect(show(r.sha, 'c.txt').status).not.toBe(0)
+    expect(g('branch', '--show-current')).toBe('main')
+  })
+
+  it('HEAD is the branch: today\'s add + commit, tree clean after', () => {
+    g('checkout', '-q', 'campaign/x')
+    const r = commitVerdict({ repoRoot: repo, branch: 'campaign/x', files, message: 'm' })
+    expect(r.detached).toBe(false)
+    expect(g('rev-parse', 'HEAD')).toBe(r.sha)
+    expect(g('rev-parse', `${r.sha}^`)).toBe(oldTip)
+    expect(g('status', '--porcelain')).toBe('')
+  })
+
+  it('changes outside the verdict files: the existing refusal, nothing committed', () => {
+    writeFileSync(join(repo, 'foreign.txt'), 'theirs\n')
+    expect(() => commitVerdict({ repoRoot: repo, branch: 'campaign/x', files, message: 'm' })).toThrow(/foreign\.txt/)
+    expect(g('rev-parse', 'campaign/x')).toBe(oldTip)
+  })
+
+  it('the branch moves between the read and update-ref: throws, and the other commit stays', () => {
+    const other = g('commit-tree', `${oldTip}^{tree}`, '-p', oldTip, '-m', 'someone else')
+    const git = (args, env) => {
+      const r = runSync('git', ['-C', repo, ...args], { env })
+      if (args[0] === 'commit-tree') g('update-ref', 'refs/heads/campaign/x', other)
+      return r
+    }
+    expect(() => commitVerdict({ repoRoot: repo, branch: 'campaign/x', files, message: 'm', io: { git } })).toThrow(/update-ref/)
+    expect(g('rev-parse', 'campaign/x')).toBe(other)
   })
 })
 

@@ -855,7 +855,14 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
   // Ruling 5: commitVerdict matches these against `git status --porcelain`,
   // which speaks repo-relative forward slashes and nothing else.
   const files = [...new Set([LOG, ...waveFiles, ...roadmapFiles, ...ledgerShardsTouched()])]
-  try { rec.verdictSha = io.commit({ repoRoot: '.', branch: `campaign/${spec.id}`, files, message: `${spec.id.toUpperCase()} wave ${wave} verdict: ${decision.kind} — ${decision.why}` }).sha } catch (e) { console.error(`[campaign] commit skipped: ${e.message}`) }
+  // F167: the commit goes through plumbing when the working copy is on another
+  // branch, so the operator's checkout can no longer break it — said once here.
+  try {
+    const branch = `campaign/${spec.id}`
+    const { sha, detached } = io.commit({ repoRoot: '.', branch, files, message: `${spec.id.toUpperCase()} wave ${wave} verdict: ${decision.kind} — ${decision.why}` })
+    rec.verdictSha = sha
+    if (detached) console.log(`[campaign] verdict committed detached on ${branch} (${String(sha).slice(0, 7)})`)
+  } catch (e) { console.error(`[campaign] commit skipped: ${e.message}`) }
   rec.notified = await notifyOrQueue(io, s, `${spec.id.toUpperCase()} wave ${wave}: ${decision.kind.toUpperCase()} — ${decision.why}\n${grade.gate.fails.map(f => f.line).join('\n')}`, decision)
   state.rewriteLastWave(rec)
   state.save()

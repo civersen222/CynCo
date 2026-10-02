@@ -191,6 +191,34 @@ describe('runWave', () => {
     for (const f of files) { expect(f).not.toMatch(/\\/); expect(f).not.toMatch(/^[A-Za-z]:/) }
   })
 
+  // F167: a verdict written through plumbing (the working copy was on another
+  // branch) keeps its sha on the record and says so once.
+  it('records a detached verdict commit and logs it once', async () => {
+    const state = freshState()
+    const logged = []
+    const orig = console.log
+    console.log = (...a) => { logged.push(a.join(' ')); }
+    try {
+      const rec = await runWave(spec, state, {
+        writeBrief: (p) => p,
+        dispatch: async () => ({ missionId: 'c8-wave1-1' }),
+        waitForDriver: async () => ({ exited: true }),
+        readRow: (missionId) => ({ missionId, exitReason: 'marker', durationS: 10, commitRange: { base: 'b', head: 'h' }, outcome: 'landed', markerSeen: false, toolStats: {} }),
+        commitsBetween: () => [],
+        grade: async () => g(), checkIdentity: okIdentity,
+        salvageOf: () => null,
+        patchRow: () => {},
+        commit: () => ({ sha: 'abcdef1234567', detached: true }),
+        notify: async () => true,
+        economics: () => [],
+        appendLog: () => {},
+        ...inertTriples,
+      })
+      expect(rec.verdictSha).toBe('abcdef1234567')
+    } finally { console.log = orig }
+    expect(logged.filter(l => l === '[campaign] verdict committed detached on campaign/c8 (abcdef1)')).toHaveLength(1)
+  })
+
   // Ruling 8: an engine fault that leaves no ledger row still SPENDS a wave.
   it('records a fault and still counts the wave when no ledger row appears', async () => {
     const state = freshState()
