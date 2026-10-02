@@ -265,6 +265,27 @@ describe('GET /api/campaign', () => {
       v2: { verdict: 'Consistent', stated: { earned: 0, total: 8 } } })
   })
 
+  // T7-M1: the per-rule tally is a prototype-free map, so a rule id that is an
+  // Object.prototype name tallies like any other rather than mutating a builtin.
+  it('tallies a rule named like an Object.prototype member as an ordinary rule', async () => {
+    CYNCO_HOME = mkdtempSync(join(tmpdir(), 'cynco-campaign-proto-'))
+    process.env.CYNCO_HOME = CYNCO_HOME
+    writeCampaign(CYNCO_HOME, 'c10', { waveCount: 1 }, [
+      { wave: 1, decision: { kind: 'next', why: 'x' }, progress: [],
+        shadowDecisions: [
+          { rule: 'toString', elapsedFraction: 0.5, fired: true },
+          { rule: 'constructor', elapsedFraction: 0.6, fired: false },
+          { rule: 'toString', elapsedFraction: 0.7, fired: false },
+        ] },
+    ])
+    const res = await authFetch(`${BASE}/api/campaign`)
+    const c10 = ((await res.json()) as any).campaigns.find((c: any) => c.id === 'c10')
+    expect(c10.waves[0].progress.decisions).toEqual({
+      toString: { n: 2, fired: 1, firedAt: [0.5] },
+      constructor: { n: 1, fired: 0, firedAt: [] },
+    })
+  })
+
   it('a v2 that was not measured reaches the panel as a null verdict, not a missing one', async () => {
     CYNCO_HOME = mkdtempSync(join(tmpdir(), 'cynco-campaign-v2-unmeasured-'))
     process.env.CYNCO_HOME = CYNCO_HOME

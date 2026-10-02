@@ -1133,7 +1133,8 @@ window.__CYNCO_TOKEN = ${JSON.stringify(token)};
         ? { elapsedFraction: null, fails: null, sha7: null, fault: r.fault }
         : { elapsedFraction: num(r.elapsedFraction), fails: num(r.fails), sha7: typeof r.sha === 'string' ? r.sha.slice(0, 7) : null, fault: null }
     ))
-    const decisions: Record<string, { n: number; fired: number; firedAt: number[] }> = {}
+    // T7-M1: prototype-free, so a rule id like `constructor` is just a key.
+    const decisions: Record<string, { n: number; fired: number; firedAt: number[] }> = Object.create(null)
     let startFails: number | null = null
     for (const d of Array.isArray(shadowDecisions) ? shadowDecisions : []) {
       if (!d || typeof d.rule !== 'string') continue

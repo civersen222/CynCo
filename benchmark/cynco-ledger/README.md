@@ -1743,7 +1743,11 @@ a fault reading is `{ elapsedFraction: null, fails: null, sha7: null, fault }`;
 `startFails` is the first decision's, else the first measured reading's). The
 Campaign panel draws it per wave as a fails-over-clock line with each rule's
 fired ticks marked; fault readings stay off the line and are counted, their
-reasons on the tooltip. It is read off the wave record after the verdict —
+reasons on the tooltip. A measured reading whose `elapsedFraction` is null is
+counted and listed (`?%` on the tooltip) but not drawn, an `elapsedFraction`
+outside [0, 1] is drawn at the box's edge, and a curve whose SVG does not
+parse is not inserted (T7-M2..M4); the per-rule tally is prototype-free
+(T7-M1). It is read off the wave record after the verdict —
 the same runner-side copy as above, never the model's. So the dashboard's
 readings are the VERDICT's: a wave in flight has no curve there, and what
 `/api/campaign` serves (per-commit sealed-gate readings of finished waves,

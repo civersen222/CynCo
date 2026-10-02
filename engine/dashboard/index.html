@@ -2266,22 +2266,26 @@ function fetchSessionState() {
   // measurement and is left off the line; each fired shadow decision is a
   // filled circle on the curve. Only numbers reach the markup — the rule name
   // in a circle's <title> is escaped. '' when there is nothing to draw.
+  // A measured reading is one with a count and no fault (T7-M2: a reading
+  // whose clock was unknown still counts and is listed); only one with an
+  // elapsedFraction has an x to be drawn at, clamped to [0, 1] (T7-M3).
   function campaignProgressMeasured(p) {
     return ((p && p.readings) || []).filter(function(r) {
-      return r && !r.fault && typeof r.fails === 'number' && typeof r.elapsedFraction === 'number';
+      return r && !r.fault && typeof r.fails === 'number';
     });
   }
   function campaignProgressSvg(p) {
-    var measured = campaignProgressMeasured(p);
+    var measured = campaignProgressMeasured(p).filter(function(r) { return typeof r.elapsedFraction === 'number'; });
     if (!measured.length) return '';
     var start = typeof p.startFails === 'number' ? p.startFails : null;
     var scale = Math.max(start || 0, 1);
     measured.forEach(function(r) { scale = Math.max(scale, r.fails); });
     var n = function(v) { return String(Math.round(v * 100) / 100); };
     var y = function(f) { return n(24 - 24 * f / scale); };
+    var x = function(at) { return n(Math.min(1, Math.max(0, at)) * 100); };
     var pts = [];
     if (start !== null && measured[0].elapsedFraction > 0) pts.push('0,' + y(start));
-    measured.forEach(function(r) { pts.push(n(r.elapsedFraction * 100) + ',' + y(r.fails)); });
+    measured.forEach(function(r) { pts.push(x(r.elapsedFraction) + ',' + y(r.fails)); });
     var esc = function(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); };
     var circles = '';
     var decisions = p.decisions || {};
@@ -2291,7 +2295,7 @@ function fetchSessionState() {
         // The count in force at that tick: the last reading at or before it.
         var f = start !== null ? start : measured[0].fails;
         measured.forEach(function(r) { if (r.elapsedFraction <= at) f = r.fails; });
-        circles += '<circle cx="' + n(at * 100) + '" cy="' + y(f) + '" r="1.5" fill="currentColor"><title>' +
+        circles += '<circle cx="' + x(at) + '" cy="' + y(f) + '" r="1.5" fill="currentColor"><title>' +
           esc(rule) + ' fired at ' + Math.round(at * 100) + '%</title></circle>';
       });
     });
@@ -2498,7 +2502,11 @@ function fetchSessionState() {
           if (svg) {
             // Parsed as SVG, not assigned as markup: numbers only, and the one
             // string (a rule name in a <title>) is escaped by the builder.
-            curve.appendChild(document.importNode(new DOMParser().parseFromString(svg, 'image/svg+xml').documentElement, true));
+            // T7-M4: DOMParser returns a <parsererror> document instead of
+            // throwing, so a curve that does not parse is never inserted.
+            var parsed = new DOMParser().parseFromString(svg, 'image/svg+xml');
+            if (parsed.getElementsByTagName('parsererror').length === 0) curve.appendChild(document.importNode(parsed.documentElement, true));
+            else svg = '';
           }
           var label = campaignProgressText(w.progress);
           var cap = document.createElement('span');
