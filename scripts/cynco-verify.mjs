@@ -37,10 +37,44 @@
 // vitest (the tests), and it imports the engine's own shellInfo rather than
 // carrying a second copy of the shell-dialect rules.
 
-import { spawnSync } from 'node:child_process'
 import { getShellInfo, shellPreamble, translateEnvPrefix } from '../engine/tools/shellInfo.js'
+import { runSync, faultSummary } from './cynco-spawn.mjs'
 
 const OUTPUT_TAIL_CHARS = 2000
+
+/**
+ * Phase 7 ruling 3: a FAILED marker check is fed back to the model once, as a
+ * driver note, and the mission continues — but only when the clock left can
+ * pay for a fix and a second whole-suite check. Under an hour, the first check
+ * is the verdict.
+ */
+export const MARKER_RETRY_MIN_S = 3600
+/** How much of the check output the note carries. */
+export const MARKER_NOTE_LINES = 40
+
+/**
+ * Retry a marker check? Only a FAIL (`ok === false`) — a null check measured
+ * nothing about the delivery, so there is nothing for the model to fix —
+ * with no retry spent and at least MARKER_RETRY_MIN_S of the clock left.
+ */
+export function shouldRetryMarkerCheck({ ok, remainingS, retries }) {
+  return ok === false && retries === 0 && Number.isFinite(remainingS) && remainingS >= MARKER_RETRY_MIN_S
+}
+
+/**
+ * The driver note for a FAILED marker check: the prefix, then the last
+ * MARKER_NOTE_LINES lines of the check's output. When the driver reset an
+ * uncommitted tree so the check graded the commit (F132), the note says so and
+ * where the work went — otherwise the model returns to files that changed under it.
+ */
+export function markerCheckNote(output, { resetFiles = 0, patchPath = null } = {}) {
+  const lines = String(output ?? '').replace(/\s+$/, '').split(/\r?\n/).slice(-MARKER_NOTE_LINES)
+  const out = ['[driver] marker check FAILED — fix and re-mark:', ...lines]
+  if (resetFiles > 0) {
+    out.push(`[driver] ${resetFiles} uncommitted tracked file(s) were reset so the check graded your commit; the changes are preserved at ${patchPath}`)
+  }
+  return out.join('\n')
+}
 
 const PYTEST_USAGE_ERROR = 4
 const PYTEST_NO_TESTS = 5
@@ -69,21 +103,21 @@ export function runCheck(command, cwd, timeoutMs) {
   // guard leaves that case alone too.
   const exitPropagation = info.isPowerShell ? '; if ($LASTEXITCODE -ne $null) { exit $LASTEXITCODE }' : ''
   const runnable = shellPreamble(info) + translateEnvPrefix(String(command ?? ''), info) + exitPropagation
-  const result = spawnSync(runnable, {
-    shell: info.shell,
-    cwd,
-    timeout: timeoutMs,
-    encoding: 'utf8',
-    windowsHide: true,
-  })
+  // Through runSync (scripts/cynco-spawn.mjs), not a bare spawnSync. F155: the
+  // marker check (Phase 7 ruling 3) is the driver's first long spawn after
+  // hours of waiting, and an impossible ETIMEDOUT is retried once instead of
+  // filed as UNMEASURED. F166: the check is now the suite gate, which parses
+  // pytest's plain `FAILED ` lines, so it gets runSync's colourless instrument
+  // environment rather than whatever colour-forcing the operator's shell exported.
+  const result = runSync(runnable, [], { shell: info.shell, cwd, timeoutMs, retryImpossibleTimeout: true })
   const durationMs = Date.now() - start
-  const timedOut = result.error?.code === 'ETIMEDOUT'
-  const spawnFailed = Boolean(result.error) && !timedOut
+  const timedOut = result.timedOut
+  const spawnFailed = Boolean(result.fault)
   const exitCode = typeof result.status === 'number' ? result.status : null
   const mentionsPytest = /\bpytest\b/.test(String(command ?? ''))
   let harnessFault = null
   if (timedOut) harnessFault = `timed out after ${timeoutMs}ms`
-  else if (spawnFailed) harnessFault = `spawn failed: ${result.error.message}`
+  else if (spawnFailed) harnessFault = `spawn failed: ${faultSummary(result.fault)}`
   else if (mentionsPytest && exitCode === PYTEST_USAGE_ERROR) {
     harnessFault = 'pytest usage error (exit 4): the check command itself is wrong — a path did not resolve'
   } else if (mentionsPytest && exitCode === PYTEST_NO_TESTS) {
@@ -100,5 +134,9 @@ export function runCheck(command, cwd, timeoutMs) {
     harnessFault,
     durationMs,
     outputTail: output.slice(-OUTPUT_TAIL_CHARS),
+    // The whole output, for the marker-check note's last MARKER_NOTE_LINES
+    // lines (a 2000-char tail can hold fewer). Never written to the ledger:
+    // the driver builds `verify` field by field.
+    output,
   }
 }

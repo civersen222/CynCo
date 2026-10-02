@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 // @ts-ignore — untyped harness module
-import { runCheck } from '../../../scripts/cynco-verify.mjs'
+import { runCheck, shouldRetryMarkerCheck, markerCheckNote, MARKER_RETRY_MIN_S } from '../../../scripts/cynco-verify.mjs'
 
 // process.execPath is the current JS runtime (node under vitest, bun under
 // Bun) — both support -e. Quoted for paths with spaces. runCheck (F146) now
@@ -63,6 +63,8 @@ describe('cynco mission check runner (Phase 2b)', () => {
     const r = runCheck(`${RUNTIME} -e "process.stdout.write('x'.repeat(10000))"`, process.cwd(), 30000)
     expect(r.verified).toBe(true)
     expect(r.outputTail.length).toBeLessThanOrEqual(2000)
+    // The whole output stays available to the marker-check note (Phase 7 ruling 3).
+    expect(r.output.length).toBeGreaterThanOrEqual(10000)
   })
 
   // The engine's contract runner accepts a POSIX env prefix, so a check that
@@ -153,5 +155,57 @@ describe('cynco mission check runner (Phase 2b)', () => {
     const r = runCheck('exit 1', dir, 20000)
     expect(r.verified).toBe(false)
     expect(r.harnessFault).toBeNull()
+  })
+})
+
+// F166: the suite gate reads pytest's plain `FAILED ` lines, and a colour-forcing
+// variable inherited from the operator's terminal turns them into escape codes.
+// The marker check now runs the suite gate, so runCheck goes through runSync,
+// which hands every instrument a colourless environment.
+describe('runCheck — the instrument environment (F166)', () => {
+  it('drops FORCE_COLOR and sets NO_COLOR for the check', () => {
+    const prev = process.env.FORCE_COLOR
+    process.env.FORCE_COLOR = '3'
+    try {
+      const r = runCheck(`${RUNTIME} -e "console.log('FC=' + (process.env.FORCE_COLOR ?? 'unset') + ' NC=' + process.env.NO_COLOR)"`, process.cwd(), 30000)
+      expect(r.verified).toBe(true)
+      expect(r.outputTail).toContain('FC=unset NC=1')
+    } finally {
+      if (prev === undefined) delete process.env.FORCE_COLOR; else process.env.FORCE_COLOR = prev
+    }
+  })
+})
+
+// Phase 7 ruling 3: a FAILED marker check is fed back to the model ONCE, and
+// only when an hour of the mission's clock is left to act on it.
+describe('shouldRetryMarkerCheck', () => {
+  it('retries a FAIL with at least MARKER_RETRY_MIN_S left and no retry spent', () => {
+    expect(MARKER_RETRY_MIN_S).toBe(3600)
+    expect(shouldRetryMarkerCheck({ ok: false, remainingS: 3600, retries: 0 })).toBe(true)
+    expect(shouldRetryMarkerCheck({ ok: false, remainingS: 20000, retries: 0 })).toBe(true)
+  })
+  it('never retries a PASS or an UNMEASURED check — null is not a failure', () => {
+    expect(shouldRetryMarkerCheck({ ok: true, remainingS: 20000, retries: 0 })).toBe(false)
+    expect(shouldRetryMarkerCheck({ ok: null, remainingS: 20000, retries: 0 })).toBe(false)
+  })
+  it('never retries with under an hour left, or twice', () => {
+    expect(shouldRetryMarkerCheck({ ok: false, remainingS: 3599, retries: 0 })).toBe(false)
+    expect(shouldRetryMarkerCheck({ ok: false, remainingS: 20000, retries: 1 })).toBe(false)
+    expect(shouldRetryMarkerCheck({ ok: false, remainingS: Number.NaN, retries: 0 })).toBe(false)
+  })
+})
+
+describe('markerCheckNote', () => {
+  it('carries the prefix and only the last 40 lines of the check output', () => {
+    const output = Array.from({ length: 60 }, (_, i) => `line ${i + 1}`).join('\n') + '\n'
+    const note = markerCheckNote(output)
+    const lines = note.split('\n')
+    expect(lines[0]).toBe('[driver] marker check FAILED — fix and re-mark:')
+    expect(lines.slice(1)).toEqual(Array.from({ length: 40 }, (_, i) => `line ${i + 21}`))
+  })
+  it('says what the driver did to an uncommitted tree before the check graded the commit', () => {
+    const note = markerCheckNote('E boom', { resetFiles: 2, patchPath: 'C:/tmp/m.patch' })
+    expect(note).toContain('E boom')
+    expect(note).toMatch(/2 uncommitted tracked file\(s\) were reset .* C:\/tmp\/m\.patch/)
   })
 })

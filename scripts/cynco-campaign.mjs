@@ -22,7 +22,7 @@ import { loadCampaignSpec, checkIdentity } from './cynco-campaign-spec.mjs'
 import { CampaignState } from './cynco-campaign-state.mjs'
 import { calibrate, defaultIo as calibrateIo } from './cynco-campaign-calibrate.mjs'
 import { generateBrief, sidecarFor, workOrderFor, pacingDigestIncluded } from './cynco-brief.mjs'
-import { gradeWave } from './cynco-campaign-grade.mjs'
+import { gradeWave, SUITE_GATE } from './cynco-campaign-grade.mjs'
 import { verdictEntry, notify, commitVerdict, economicsLines, hindcastLine } from './cynco-campaign-verdict.mjs'
 import { runIdeation, measureFollowed, authorityRegistry, promotionProposal, capProposal, effectiveInvariants } from './cynco-ideation.mjs'
 import { patchLedgerRow, findLedgerRow } from './cynco-ledger-patch.mjs'
@@ -137,6 +137,44 @@ export function dispatchEnv(base, extra) {
   return { ...out, ...extra }
 }
 
+/**
+ * Phase 7 ruling 3: the check the driver runs once the engine closes the turn
+ * with the marker landed. On C10 the brief's keep-green subset missed a
+ * regression the full suite caught, so the default is the suite gate — public
+ * pytest over the whole suite against the sealed baseline, whose output may
+ * reach the model (the driver feeds a FAIL back once). The sealed campaign
+ * gate's never does: it is graded by the runner, after the driver, as before.
+ * Forward slashes so the command reads the same in every shell runCheck uses.
+ */
+export const MARKER_CHECK_TIMEOUT_MS = 1_800_000
+export function suiteGateCommand() {
+  return `python "${SUITE_GATE().replace(/\\/g, '/')}"`
+}
+
+/**
+ * The wave's dispatch-mission.sh argv and environment. A spec `markerCheck` is
+ * run verbatim; without one the suite gate is the check, and it needs its
+ * baseline, its repo and a cap that covers a whole-suite run — the driver
+ * refuses a check without CYNCO_CHECK_TIMEOUT_MS. `base` is the runner's env.
+ */
+export function waveDispatch(spec, { briefFile, invariants, timeoutS, pidFile, driverLog }, base = process.env) {
+  const suite = spec.markerCheck === undefined || spec.markerCheck === null
+  const markerCheck = suite ? suiteGateCommand() : spec.markerCheck
+  // CYNCO_CAMPAIGN_ID: the only way the dispatched engine's own 9161 dashboard
+  // can name its campaign as `active` in /api/campaign between waves, when no
+  // campaign has a driver in flight (Phase 2c-ii). dispatch-mission.sh passes
+  // it through to `bun engine/main.ts` the same way it passes LOCALCODE_MISSION_*.
+  // F161: spec.env (the engine's explicit llama-server / GGUF paths for a
+  // campaign under a temp home) goes in through the BASE, so the same
+  // stripping applies to it as to the runner's own environment.
+  const env = dispatchEnv(waveEnvBase(spec, base), {
+    LOCALCODE_MAX_ITERATIONS: String(spec.budget.iterations), CYNCO_BASH_TIMEOUT_MS: String(spec.budget.bashTimeoutMs),
+    CYNCO_MISSION_INVARIANTS: JSON.stringify(invariants), DRIVER_PID_FILE: pidFile, DRIVER_LOG: driverLog, CYNCO_SKIP_IDLE_ENGINE: '1', CYNCO_CAMPAIGN_ID: spec.id,
+    ...(suite ? { CHK_SUITE_BASELINE: spec.suiteBaseline, CYNCO_GATE_REPO: spec.repo, CYNCO_CHECK_TIMEOUT_MS: String(MARKER_CHECK_TIMEOUT_MS) } : {}),
+  })
+  return { args: [briefFile, spec.marker, spec.repo, String(timeoutS), markerCheck], env }
+}
+
 /** The cap on the dispatch-mission.sh launch itself (it backgrounds the driver and returns). */
 export const DISPATCH_TIMEOUT_MS = 900_000
 
@@ -178,20 +216,13 @@ const repoRel = (abs) => relative(process.cwd(), abs).replace(/\\/g, '/')
 export const defaultIo = {
   writeBrief: (path, text, sidecar) => { writeFileSync(path, text, 'utf8'); writeFileSync(sidecarPath(path), JSON.stringify(sidecar, null, 2) + '\n'); return path },
   dispatch: async ({ spec, briefFile, invariants, timeoutS, pidFile, driverLog }) => {
-    // CYNCO_CAMPAIGN_ID: the only way the dispatched engine's own 9161 dashboard
-    // can name its campaign as `active` in /api/campaign between waves, when no
-    // campaign has a driver in flight (Phase 2c-ii). dispatch-mission.sh passes
-    // it through to `bun engine/main.ts` the same way it passes LOCALCODE_MISSION_*.
-    // F161: spec.env (the engine's explicit llama-server / GGUF paths for a
-    // campaign under a temp home) goes in through the BASE, so the same
-    // stripping applies to it as to the runner's own environment.
-    const env = dispatchEnv(waveEnvBase(spec), { LOCALCODE_MAX_ITERATIONS: String(spec.budget.iterations), CYNCO_BASH_TIMEOUT_MS: String(spec.budget.bashTimeoutMs),
-      CYNCO_MISSION_INVARIANTS: JSON.stringify(invariants), DRIVER_PID_FILE: pidFile, DRIVER_LOG: driverLog, CYNCO_SKIP_IDLE_ENGINE: '1', CYNCO_CAMPAIGN_ID: spec.id })
+    // The env and the marker check (Phase 7 ruling 3) are built by waveDispatch.
+    const { args, env } = waveDispatch(spec, { briefFile, invariants, timeoutS, pidFile, driverLog })
     // dispatch-mission.sh prints the invariants it accepted and the driver log
     // and PID it started; runDispatch re-emits them — those three lines are the
     // only unattended evidence that the wave was given its orders and that the
     // PID we are about to wait on is the driver's.
-    runDispatch([briefFile, spec.marker, spec.repo, String(timeoutS), spec.keepGreen], env)
+    runDispatch(args, env)
     // dispatch-mission.sh backgrounds the driver, so the missionId does not
     // exist yet: it is read out of the driver log by missionIdFrom once the
     // driver has written its ledger line.

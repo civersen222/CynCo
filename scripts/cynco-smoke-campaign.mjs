@@ -67,6 +67,9 @@ export function smokeSpec({ repo, base, heldout }) {
     suiteBaseline: `${heldout}/suite_baseline_${base.slice(0, 7)}.txt`,
     marker: 'smoke s1 complete',
     keepGreen: 'python -m pytest -q test_calc.py',
+    // Phase 7 ruling 3: the marker check defaults to the suite gate under the
+    // operator's home; the smoke names its own so it stays self-contained.
+    markerCheck: 'python -m pytest -q test_calc.py',
     budget: { hoursPerWave: 1, iterations: 300, bashTimeoutMs: 600000, waves: 1 },
     // The smoke gate runs in seconds (calc.py is tiny), so the mid-wave
     // progress probe (Phase 6 Task 3) reads every 20 s here — the runner's

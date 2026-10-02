@@ -28,6 +28,21 @@ describe('loadCampaignSpec', () => {
     const s = good(); s.keepGreen = 'python -m pytest gilded/tests/test_c8_*.py -q'
     expect(() => loadCampaignSpec(write(s))).toThrow(/wildcard/)
   })
+  // Phase 7 ruling 3: the check the driver runs when the marker lands. Optional
+  // (absent = the suite gate, resolved by the runner), validated like keepGreen.
+  it('accepts an optional markerCheck and leaves it undefined when absent', () => {
+    expect(loadCampaignSpec(write(good())).markerCheck).toBeUndefined()
+    const s = good(); s.markerCheck = 'python -m pytest gilded/tests -q'
+    expect(loadCampaignSpec(write(s)).markerCheck).toBe('python -m pytest gilded/tests -q')
+  })
+  it('refuses a markerCheck that is empty, not a string, or carries a wildcard (F146)', () => {
+    for (const bad of ['', '   ', 7, null, ['python -m pytest']]) {
+      const s = good(); s.markerCheck = bad
+      expect(() => loadCampaignSpec(write(s))).toThrow(/markerCheck must be a non-empty string/)
+    }
+    const s = good(); s.markerCheck = 'python -m pytest gilded/tests/test_c8_*.py -q'
+    expect(() => loadCampaignSpec(write(s))).toThrow(/markerCheck contains a wildcard/)
+  })
   it('refuses duplicate gateIds across work items', () => {
     const s = good(); s.work.push({ id: 2, title: 'X', gateIds: ['C8.4a'], text: 'y' })
     expect(() => loadCampaignSpec(write(s))).toThrow(/C8.4a/)
@@ -143,6 +158,15 @@ describe('checkIdentity', () => {
   // Every field below reaches the worker verbatim through cynco-brief.mjs, so
   // naming the sealed gate in any of them is the same leak as naming it in
   // `measures` — which was the only field scanned.
+  // The marker check's output reaches the model (the driver feeds a failure
+  // back once). The sealed gate's output never may, so a markerCheck that names
+  // a sealed instrument is an identity breach; the marker rule mirrors keepGreen.
+  it('refuses a markerCheck that names a sealed instrument or contains the marker', () => {
+    expect(checkIdentity({ ...good(), markerCheck: 'python -m pytest gilded/tests -q' }, io())).toEqual({ ok: true, problems: [] })
+    expect(checkIdentity({ ...good(), markerCheck: 'python C:/Users/civer/.cynco/heldout/civkings-redesign/c8/gate_c8.py' }, io()).problems.join()).toMatch(/markerCheck names the sealed instrument "gate_c8\.py"/)
+    expect(checkIdentity({ ...good(), markerCheck: 'python perturb_c8.py' }, io()).problems.join()).toMatch(/perturb_c8\.py/)
+    expect(checkIdentity({ ...good(), markerCheck: 'git log | grep "stage c8 complete"' }, io()).problems.join()).toMatch(/markerCheck must not contain the marker/)
+  })
   it('scans the title, KEEP-GREEN command, allow lists and deny list too', () => {
     for (const patch of [
       { title: 'presentation (see gate_c8.py)' },

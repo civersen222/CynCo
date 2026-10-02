@@ -43,8 +43,25 @@ decisions still recorded here).
   "verified": null,
   "verify": {               // what produced `verified`; null when no check-cmd was given
     "command": "python3 -m pytest -q", "exitCode": 0,
-    "timedOut": false, "spawnFailed": false, "durationMs": 70303, "outputTail": "..."
+    "timedOut": false, "spawnFailed": false, "durationMs": 70303, "outputTail": "...",
+    // Phase 7 ruling 3 (the marker check): true when this result is the SECOND
+    // check — the first FAILED after the engine closed the turn with the marker
+    // landed, its last 40 output lines went to the model once as a driver note
+    // (`[driver] marker check FAILED — fix and re-mark:`), and the mission went
+    // on. `firstAttempt` is what that first check read ({ exitCode, timedOut,
+    // durationMs, gradedSha, heldOutRestored }), null when there was no retry.
+    // Absent on rows written before the ruling.
+    "retried": false, "firstAttempt": null
   },
+  // Phase 7 ruling 3: how many times a FAILED marker check was fed back to the
+  // model before the check that set `verified` — 0 or 1. A retry needs at least
+  // MARKER_RETRY_MIN_S (3600 s) of the mission clock left (timeout-s minus the
+  // time since dispatch); under that, the first check is the verdict. null when
+  // no check-cmd was dispatched (nothing to retry); absent on older rows. A
+  // campaign wave's check is the suite gate (g_suite_no_regression.py) unless
+  // its spec names a `markerCheck` — never the sealed campaign gate, whose
+  // output must not reach the model.
+  "verifyRetries": 0,
   "mutationSweep": null,    // BEHAVIOURAL: null = UNMEASURED, never "clean"
   // { "command": "...", "killed": 1, "total": 7, "survived": ["W1","W5"], "note": "..." }
   // `kind` (absent = authored): "derived" = cynco-mutation-sweep.py over the

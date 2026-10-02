@@ -106,6 +106,16 @@ describe('buildMissionRecord probe block', () => {
     const without = buildMissionRecord(createMissionCollector(), minimalMeta)
     expect(without.probe).toBeNull()
   })
+  // Phase 7 ruling 3: how many times the marker check was fed back to the model
+  // (0|1). null = no check-cmd was dispatched, so there was nothing to retry.
+  it('carries verifyRetries and verify.retried, verifyRetries null when absent', () => {
+    const verify = { command: 'python g.py', exitCode: 0, retried: true, firstAttempt: { exitCode: 1, durationMs: 9, gradedSha: 'aaa' } }
+    const rec = buildMissionRecord(createMissionCollector(), { ...minimalMeta, verify, verifyRetries: 1 })
+    expect(rec.verifyRetries).toBe(1)
+    expect(rec.verify.retried).toBe(true)
+    expect(buildMissionRecord(createMissionCollector(), { ...minimalMeta, verifyRetries: 0 }).verifyRetries).toBe(0)
+    expect(buildMissionRecord(createMissionCollector(), minimalMeta).verifyRetries).toBeNull()
+  })
 })
 
 describe('bash effects and invariant blocks', () => {

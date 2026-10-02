@@ -276,14 +276,15 @@ describe('bashBin (F160): Git Bash by path, never whatever `bash` PATH holds', (
     }
     expect(bare).toEqual([])
     const campaign = readFileSync(join(dir, 'cynco-campaign.mjs'), 'utf8')
-    expect(campaign).toMatch(/dispatchEnv\(waveEnvBase\(spec\)/)
+    // Phase 7 ruling 3: the wave's env is built in waveDispatch, over the runner's env.
+    expect(campaign).toMatch(/dispatchEnv\(waveEnvBase\(spec, base\)/)
     // I3: both dispatches (wave and authoring) go through the one runDispatch,
     // whose spawn is runSync WITHOUT retryImpossibleTimeout.
     expect(campaign.match(/\['scripts\/dispatch-mission\.sh'/g)?.length).toBe(1)
     const dispatchCall = campaign.split('\n').find(l => l.includes("['scripts/dispatch-mission.sh'"))
     expect(dispatchCall).toMatch(/runSync\(bash \?\? bashExe\(\), \['scripts\/dispatch-mission\.sh'/)
     expect(dispatchCall).not.toMatch(/retryImpossibleTimeout/)
-    expect(campaign.match(/\brunDispatch\(\[/g)?.length).toBe(2)
+    expect(campaign.match(/\brunDispatch\((\[|args, env\))/g)?.length).toBe(2)
     expect(readFileSync(join(dir, 'cynco-campaign-calibrate.mjs'), 'utf8')).toMatch(/io\.run\(bashExe\(\), \['-c'/)
   })
 })

@@ -61,6 +61,8 @@ describe.skipIf(!HAS_SMOKE)(`smoke campaign s1 (needs ${SMOKE_REPO})`, () => {
     expect(spec).toMatchObject({
       id: 's1', repo, base: head, author: 'human', marker: 'smoke s1 complete',
       keepGreen: 'python -m pytest -q test_calc.py',
+      // Phase 7 ruling 3: the smoke keeps its marker check self-contained.
+      markerCheck: 'python -m pytest -q test_calc.py',
       gate: `${heldout}/gate_s1.py`, perturb: `${heldout}/perturb_s1.py`, positive: `${heldout}/positive_s1.py`,
       budget: { hoursPerWave: 1, iterations: 300, bashTimeoutMs: 600000, waves: 1 },
       progress: { everyMs: 20_000 },

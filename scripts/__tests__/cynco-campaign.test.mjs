@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { decide, runWave, waveContext, budgetSpent, defaultIo, claimedSurvivors, dispatchEnv, waveEnvBase, dirtyOutsideCampaign, inFlightRefusal, adoptInFlight, takeLock, releaseLock, applyProposalDecision, recordReseal, main, ensureCampaignCheckout, campaignCheckoutRefusal } from '../cynco-campaign.mjs'
+import { decide, runWave, waveContext, budgetSpent, defaultIo, claimedSurvivors, dispatchEnv, waveEnvBase, dirtyOutsideCampaign, inFlightRefusal, adoptInFlight, takeLock, releaseLock, applyProposalDecision, recordReseal, main, ensureCampaignCheckout, campaignCheckoutRefusal, waveDispatch, suiteGateCommand, MARKER_CHECK_TIMEOUT_MS } from '../cynco-campaign.mjs'
 import { summarize as summarizeGateLines } from '../cynco-gate-lines.mjs'
 import { adopt } from '../cynco-campaign-adopt.mjs'
 import { CampaignState } from '../cynco-campaign-state.mjs'
@@ -1064,6 +1064,56 @@ describe('dispatchEnv', () => {
   it('carries CYNCO_CAMPAIGN_ID through to the dispatched engine, extra winning over the base env', () => {
     const env = dispatchEnv({ PATH: '/usr/bin', CYNCO_CAMPAIGN_ID: 'stale' }, { CYNCO_CAMPAIGN_ID: 'c8', DRIVER_LOG: 'C:/tmp/d.log' })
     expect(env.CYNCO_CAMPAIGN_ID).toBe('c8')
+  })
+})
+
+// Phase 7 ruling 3: the check the driver runs when the marker lands is the
+// suite gate unless the spec names its own `markerCheck`. The suite gate needs
+// its baseline, its repo and a cap that covers a whole-suite run.
+describe('waveDispatch — the marker check', () => {
+  const wave = { briefFile: 'C:/tmp/b.md', invariants: { editGapCap: 40 }, timeoutS: 28800, pidFile: 'C:/tmp/d.pid', driverLog: 'C:/tmp/d.log' }
+  const withHome = (fn) => {
+    const prev = process.env.CYNCO_HOME
+    process.env.CYNCO_HOME = mkdtempSync(join(tmpdir(), 'home-'))
+    try { return fn(process.env.CYNCO_HOME) } finally { if (prev === undefined) delete process.env.CYNCO_HOME; else process.env.CYNCO_HOME = prev }
+  }
+  const suiteSpec = { ...spec, suiteBaseline: 'C:/h/.cynco/heldout/c8/suite_baseline.txt' }
+
+  it('resolves to the suite gate and hands the driver its baseline, repo and a 30-minute cap', () => withHome((home) => {
+    const { args, env } = waveDispatch(suiteSpec, wave, { PATH: '/usr/bin', GH_TOKEN: 'gh', CYNCO_NTFY_URL: 'http://n' })
+    const gatePath = join(home, 'heldout', 'common', 'g_suite_no_regression.py').replace(/\\/g, '/')
+    expect(suiteGateCommand()).toBe(`python "${gatePath}"`)
+    expect(args).toEqual(['C:/tmp/b.md', 'stage c8 complete', 'C:/repo', '28800', `python "${gatePath}"`])
+    expect(env.CHK_SUITE_BASELINE).toBe('C:/h/.cynco/heldout/c8/suite_baseline.txt')
+    expect(env.CYNCO_GATE_REPO).toBe('C:/repo')
+    expect(env.CYNCO_CHECK_TIMEOUT_MS).toBe('1800000')
+    expect(MARKER_CHECK_TIMEOUT_MS).toBe(1_800_000)
+    // dispatchEnv still strips the credential keys, and the wave terms still ride along.
+    expect(env.GH_TOKEN).toBeUndefined()
+    expect(env.CYNCO_NTFY_URL).toBeUndefined()
+    expect(env.PATH).toBe('/usr/bin')
+    expect(env.LOCALCODE_MAX_ITERATIONS).toBe('100')
+    expect(env.CYNCO_BASH_TIMEOUT_MS).toBe('1000')
+    expect(env.CYNCO_MISSION_INVARIANTS).toBe(JSON.stringify({ editGapCap: 40 }))
+    expect(env.DRIVER_PID_FILE).toBe('C:/tmp/d.pid')
+    expect(env.DRIVER_LOG).toBe('C:/tmp/d.log')
+    expect(env.CYNCO_SKIP_IDLE_ENGINE).toBe('1')
+    expect(env.CYNCO_CAMPAIGN_ID).toBe('c8')
+  }))
+
+  it('passes a spec markerCheck verbatim and adds no suite-gate env for it', () => withHome(() => {
+    const { args, env } = waveDispatch({ ...suiteSpec, markerCheck: 'python -m pytest a.py -q' }, wave, { PATH: '/usr/bin' })
+    expect(args[4]).toBe('python -m pytest a.py -q')
+    expect(env.CHK_SUITE_BASELINE).toBeUndefined()
+    expect(env.CYNCO_GATE_REPO).toBeUndefined()
+    expect(env.CYNCO_CHECK_TIMEOUT_MS).toBeUndefined()
+  }))
+
+  it('is what defaultIo.dispatch runs — keepGreen is no longer the marker check', () => {
+    const src = readFileSync(fileURLToPath(new URL('../cynco-campaign.mjs', import.meta.url)), 'utf8')
+    const body = src.slice(src.indexOf('  dispatch: async'), src.indexOf('  dispatchRaw: async'))
+    expect(body).toMatch(/waveDispatch\(spec, \{ briefFile, invariants, timeoutS, pidFile, driverLog \}\)/)
+    expect(body).not.toMatch(/spec\.keepGreen/)
   })
 })
 
