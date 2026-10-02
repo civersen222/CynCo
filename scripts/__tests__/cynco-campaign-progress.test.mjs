@@ -256,6 +256,17 @@ describe('shadowStalled (R2.stalled, shadow)', () => {
     expect(d).toMatchObject({ fired: true, window: [16, 16, 16] })
   })
 
+  // T2-M1: a tick whose OWN probe faulted measured nothing, so R2 does not
+  // decide on it — `fired: false` with the fault on the decision, as R1 does.
+  it('never fires on a tick whose own probe faulted, and says why', () => {
+    const d = shadowStalled({ readings: [], decisions: [tick(46, 16), tick(92, 16), tick(139, 16), tick(186, 0, true)], clockMs, nowMs: 186 * 60_000 })
+    expect(d).toMatchObject({ fired: false, fault: 'gate died', window: [16, 16, 16], fails: 16 })
+    // The next measured tick decides again.
+    const next = shadowStalled({ readings: [], decisions: [tick(46, 16), tick(92, 16), tick(139, 16), tick(186, 0, true), tick(232, 16)], clockMs, nowMs: 232 * 60_000 })
+    expect(next.fired).toBe(true)
+    expect('fault' in next).toBe(false)
+  })
+
   it('an unknown clock is unmeasured (null), never a firing', () => {
     const d = shadowStalled({ readings: [], decisions: [tick(46, 16), tick(92, 16), tick(139, 16)], clockMs: null, nowMs: 139 * 60_000 })
     expect(d).toMatchObject({ fired: false, elapsedFraction: null, wouldHaveSavedS: null, fails: 16 })

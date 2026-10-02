@@ -1698,7 +1698,10 @@ decision, then R2's, at every due tick (`rec.shadowDecisions` alternates
 `fails` the last measured count, carried across a skip tick (the sha did not
 move, so the count is still true) — with one correction: R1 also carries the
 stale count onto a FAULTED tick, and a fault is no measurement, so the tracker
-marks that tick `{ fails: null, fault }` and R2 leaves it out of the window. A
+marks that tick `{ fails: null, fault }` and R2 leaves it out of the window.
+And R2 does not DECIDE on that tick (T2-M1): the decision at a tick whose own
+probe faulted is `fired: false` with `fault: <reason>` on it, as R1 refuses
+the same tick; the next measured tick decides again. A
 firing is one runner log line (`[campaign] shadow R2.stalled FIRED at N% (a, b,
 c fails over the last 3 measured ticks; would have saved X h) — shadow only,
 nothing stopped`) and one record entry; nothing is stopped, nothing reaches

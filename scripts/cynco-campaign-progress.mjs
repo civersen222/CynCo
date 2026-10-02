@@ -271,9 +271,13 @@ export function shadowStalled({ readings, decisions, clockMs, nowMs, at = new Da
   const elapsedFraction = clockKnown ? round3(nowMs / clockMs) : null
   const latest = window.at(-1) ?? null
   const nonDecreasing = window.length === STALLED_WINDOW && window.every((f, i) => i === 0 || f >= window[i - 1])
-  const fired = elapsedFraction !== null && elapsedFraction >= STALLED_AT && nonDecreasing && latest > 0
+  // T2-M1: this tick's own probe faulted — it measured nothing, so R2 does not
+  // decide on it (R1 refuses the same tick); the fault rides on the decision.
+  const own = (decisions ?? []).at(-1)
+  const ownFault = own?.fault ? own.fault : null
+  const fired = !ownFault && elapsedFraction !== null && elapsedFraction >= STALLED_AT && nonDecreasing && latest > 0
   const wouldHaveSavedS = clockKnown ? Math.max(0, Math.round(clockMs / 1000 - nowMs / 1000)) : null
-  return { rule: STALLED_RULE, at, elapsedFraction, fired, window, fails: latest, wouldHaveSavedS }
+  return { rule: STALLED_RULE, at, elapsedFraction, fired, window, fails: latest, wouldHaveSavedS, ...(ownFault ? { fault: ownFault } : {}) }
 }
 
 /**
