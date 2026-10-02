@@ -1162,6 +1162,56 @@ describe('runWave — the Level 4 spine at VERDICT', () => {
     expect(state.state.governancePosiwid.windows[1].wave).toBe(2)
   })
 
+  // Phase 7 ruling 4: v2's stated purpose comes from the verdict file THIS
+  // verdict wrote — rule rows only, earned = PREDICTIVE.
+  it('records governance POSIWID v2 from the rule-verdicts file this verdict wrote, beside an unchanged v1', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'gp-v2-'))
+    const state = freshState()
+    const entries = []
+    const rec = await runWave(spec, state, gradedIo({
+      exportTriples: () => ({ summary: { denials: {}, quiet: {}, campaigns: {} }, rows: [] }),
+      analyseDenials: () => null,
+      datasetsHome: () => home,
+      writeRuleVerdicts: ({ outPath }) => {
+        mkdirSync(join(home, 'datasets'), { recursive: true })
+        writeFileSync(outPath, JSON.stringify({ schema: 1, version: 1, rules: {
+          I1: { verdict: 'PREDICTIVE' }, I2: { verdict: 'NOT PREDICTIVE' }, I3: { verdict: 'INSUFFICIENT' }, W5: { verdict: 'NOT PREDICTIVE' },
+          'M1.lr': { verdict: 'PREDICTIVE', source: 'model' }, 'R1.no-progress': { verdict: 'PREDICTIVE', source: 'runner' } } }))
+        return { version: 1, predictive: ['I1'], total: 4 }
+      },
+      appendLog: (text) => entries.push(text),
+    }))
+    expect(rec.governancePosiwid.v2).toMatchObject({ stated: { earned: 1, total: 4 } })
+    expect(typeof rec.governancePosiwid.v2.verdict).toBe('string')
+    expect(typeof rec.governancePosiwid.v2.divergence).toBe('number')
+    expect(typeof rec.governancePosiwid.v2.dominantObserved).toBe('string')
+    // v1's top-level fields are where they always were.
+    expect(rec.governancePosiwid).toMatchObject({ verdict: expect.any(String), counts: expect.any(Object), windows: 1 })
+    expect(state.waves().at(-1).governancePosiwid.v2).toEqual(rec.governancePosiwid.v2)
+    expect(entries.join('\n')).toMatch(/- Governance POSIWID v1 \S+ \(.*\) \| v2 \S+ \(1 of 4 earned\)\./)
+  })
+
+  it('reads v2 as all-logging (0 of 0 earned) when no verdict file was written', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'gp-v2-none-'))
+    const rec = await runWave(spec, freshState(), gradedIo({
+      exportTriples: () => ({ summary: { denials: {}, quiet: {}, campaigns: {} }, rows: [] }),
+      analyseDenials: () => null,
+      datasetsHome: () => home,
+      writeRuleVerdicts: () => ({ version: 1, predictive: [], total: 0 }),
+    }))
+    expect(rec.governancePosiwid.v2.stated).toEqual({ earned: 0, total: 0 })
+  })
+
+  it('names v2 not measured when this verdict could not write the rule verdicts', async () => {
+    const rec = await runWave(spec, freshState(), gradedIo({
+      exportTriples: () => ({ summary: { denials: {}, quiet: {}, campaigns: {} }, rows: [] }),
+      analyseDenials: () => null,
+      datasetsHome: () => { throw new Error('datasets dir is read-only') },
+    }))
+    expect(rec.governancePosiwid.v2).toEqual({ verdict: null, reason: expect.stringMatching(/rule verdicts not written/) })
+    expect(typeof rec.governancePosiwid.verdict).toBe('string')
+  })
+
   // §E: two proposals must not go pending in the same wave. A promotion
   // proposal is computed BEFORE the cap proposal so it can suppress the cap
   // one — otherwise a wave with both an earned-authority signal AND an INERT

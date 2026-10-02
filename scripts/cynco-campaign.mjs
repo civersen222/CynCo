@@ -31,7 +31,7 @@ import { gateAuthorPromotion } from './cynco-gate-author.mjs'
 import { sidecarPath } from './cynco-contract.mjs'
 import { exportTriples } from './cynco-triples.mjs'
 import { analyseDenials } from './cynco-signal-validation.mjs'
-import { governanceCounts, governancePosiwid } from './cynco-governance-posiwid.mjs'
+import { governanceCounts, governancePosiwid, governancePosiwidV2, authorityOf } from './cynco-governance-posiwid.mjs'
 import { loadRoadmap, saveRoadmap, rejectLine, setLineStatus, ROADMAP_PATH } from './cynco-roadmap.mjs'
 import { assertIdentityIntact } from './cynco-identity.mjs'
 import { applyProposalDecision, seatAuthority } from './cynco-proposals.mjs'
@@ -755,6 +755,25 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
     s.governancePosiwid = s.governancePosiwid ?? { windows: [] }
     s.governancePosiwid.windows.push({ wave, ...counts })
     governance = governancePosiwid(s.governancePosiwid.windows)
+    // Phase 7 ruling 4: v2 states the purpose the authority table grants, read
+    // from the verdict file THIS verdict wrote (a stale file from an earlier
+    // wave is not this wave's table). No file → { earned: 0, total: 0 }; a file
+    // that is there but unreadable, or a verdict that wrote none, is not
+    // measured and says why. v1's fields stay exactly where they were.
+    let v2
+    try {
+      if (!rec.ruleVerdicts) v2 = { verdict: null, reason: 'rule verdicts not written this verdict' }
+      else {
+        const path = RULE_VERDICTS_PATH((io.datasetsHome ?? defaultIo.datasetsHome)())
+        const present = existsSync(path)
+        const file = present ? (io.readRuleVerdicts ?? defaultIo.readRuleVerdicts)(path) : null
+        v2 = present && !file ? { verdict: null, reason: `${path} unreadable` } : governancePosiwidV2(counts, authorityOf(file))
+      }
+    } catch (e) {
+      console.error(`[campaign] governance POSIWID v2 not measured: ${e?.message ?? e}`)
+      v2 = { verdict: null, reason: String(e?.message ?? e) }
+    }
+    governance = { ...governance, v2 }
     rec.governancePosiwid = { ...governance, counts }
   } catch (e) { console.error(`[campaign] governance POSIWID skipped: ${e?.message ?? e}`) }
 

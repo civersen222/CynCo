@@ -6,6 +6,9 @@
 // (posiwidDivergence's implicit `other` bucket). The first Contradicted wave is
 // the day we stop calling governance a collector — and the day it is written
 // down rather than said.
+//
+// That is v1, kept unchanged. v2 (Phase 7 ruling 4, `governancePosiwidV2`)
+// states the purpose the authority table grants instead — see below.
 import { constraints } from '../engine/cybernetics-core/src/index.js'
 import { denialRecords, complied } from './cynco-triples.mjs'
 
@@ -81,4 +84,42 @@ export function governancePosiwid(windows) {
   // only fall back to the 1-based index when a window carries no `wave`.
   const onsetWave = onset === null || onset === undefined ? null : (windows[onset]?.wave ?? onset + 1)
   return { verdict: last.verdict, divergence: last.divergence, dominantObserved: last.dominantObserved, support: last.support, onsetWave, windows: windows?.length ?? 0 }
+}
+
+/**
+ * Phase 7 ruling 4 — v2: the stated purpose the authority table actually
+ * grants. v1 states "regulate" while every S5 rule is advisory, so it reads
+ * Contradicted on every wave by construction and carries no information. v2
+ * states what the layer is ALLOWED to do: with e = earned/total of the S5 rules
+ * reading PREDICTIVE, regulation gets e (split evenly across denials and
+ * consumed recommendations) and logging the rest. No rule earned (or no table)
+ * → logging is the whole stated purpose; every rule earned → v2 equals v1's
+ * purpose with logging at 0. v1 is kept unchanged beside it.
+ */
+export function governancePurposeFor({ earned, total }) {
+  const e = total > 0 ? earned / total : 0
+  return new constraints.PurposeModel([['denialsChanged', 0.5 * e], ['recommendationsConsumed', 0.5 * e], ['signalsLogged', 1 - e]])
+}
+
+/** v2 over one wave's counts (the same counts v1 reads), at v1's driftThreshold and minSupport. */
+export function governancePosiwidV2(counts, { earned, total }) {
+  const d = GOVERNANCE_DRIFT
+  const r = constraints.posiwidDivergence(governancePurposeFor({ earned, total }), toObserved(counts), d.driftThreshold, d.minSupport)
+  return { verdict: r.verdict, divergence: r.divergence, dominantObserved: r.dominantObserved, stated: { earned, total } }
+}
+
+/**
+ * The authority table out of a rule-verdicts file (`readRuleVerdicts`' shape),
+ * by `engine/s5/ruleAuthority.ts`'s own rule: an S5 rule is a row with a string
+ * verdict whose `source` is neither 'model' nor 'runner'; it has earned
+ * authority when that verdict is exactly 'PREDICTIVE'. No file → { 0, 0 }.
+ */
+export function authorityOf(file) {
+  let earned = 0, total = 0
+  for (const r of Object.values(file?.rules ?? {})) {
+    if (typeof r?.verdict !== 'string' || r?.source === 'model' || r?.source === 'runner') continue
+    total++
+    if (r.verdict === 'PREDICTIVE') earned++
+  }
+  return { earned, total }
 }

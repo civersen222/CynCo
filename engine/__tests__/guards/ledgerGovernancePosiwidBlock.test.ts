@@ -18,7 +18,7 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'fs'
 import { join } from 'path'
 // @ts-expect-error — plain .mjs harness module, no types
-import { governancePosiwid } from '../../../scripts/cynco-governance-posiwid.mjs'
+import { governancePosiwid, governancePosiwidV2 } from '../../../scripts/cynco-governance-posiwid.mjs'
 
 const README = join(process.cwd(), 'benchmark', 'cynco-ledger', 'README.md')
 
@@ -28,6 +28,7 @@ type Block = {
   dominantObserved: string
   support: number
   counts: { denialsChanged: number; recommendationsConsumed: number; signalsLogged: number }
+  v2: { verdict: string; divergence: number; dominantObserved: string; stated: { earned: number; total: number } }
 }
 
 /** The `"governancePosiwid": { … }` jsonc example, read as written. */
@@ -66,6 +67,14 @@ describe('ledger README: the governancePosiwid block is a real reading', () => {
     expect(r.support).toBe(block.support)
     // The README rounds; two decimals is the contract.
     expect(Number(r.divergence.toFixed(2))).toBe(block.divergence)
+  })
+
+  it('the v2 reading the README prints is what the module returns on the same counts', () => {
+    const v2 = block.v2
+    const r = governancePosiwidV2(block.counts, v2.stated)
+    expect(r.verdict).toBe(v2.verdict)
+    expect(r.dominantObserved).toBe(v2.dominantObserved)
+    expect(Number(r.divergence.toFixed(2))).toBe(v2.divergence)
   })
 
   it('the dominant bucket the README prints is in fact its largest count', () => {

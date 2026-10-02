@@ -511,7 +511,9 @@ own numbers, not an illustration:
 "governancePosiwid": { "verdict": "Contradicted", "divergence": 5.98,
   "dominantObserved": "signalsLogged", "support": 33, "onsetWave": 2,
   "windows": 2,
-  "counts": { "denialsChanged": 2, "recommendationsConsumed": 1, "signalsLogged": 30 } }
+  "counts": { "denialsChanged": 2, "recommendationsConsumed": 1, "signalsLogged": 30 },
+  "v2": { "verdict": "Consistent", "divergence": 0.27, "dominantObserved": "signalsLogged",
+    "stated": { "earned": 0, "total": 8 } } }
 ```
 
 `verdict`, `divergence`, `dominantObserved` and `support` are the LAST window's
@@ -521,6 +523,26 @@ ladder is exactly the per-wave `posiwid` block's (`Insufficient` below
 `minSupport` 20, then `Contradicted`, `Drifting`, `Consistent`). `onsetWave`
 and `windows` are properties of the whole replayed history rather than of that
 last window.
+
+**`v2`** (Phase 7 ruling 4) sits beside those fields, which are v1 and are
+unchanged. While no S5 rule has earned authority, v1's stated purpose
+("regulate") reads every wave `Contradicted` by construction and carries no
+information. v2 states the purpose the authority table actually grants:
+`governancePurposeFor({ earned, total })` gives `denialsChanged` and
+`recommendationsConsumed` `0.5·e` each and `signalsLogged` `1 − e`, with
+`e = earned / total` (0 when `total` is 0). `earned` / `total` are read at the
+VERDICT from the `rule-verdicts.json` this same verdict wrote, by
+`engine/s5/ruleAuthority.ts`'s rule (`authorityOf`): S5 rule rows only — a
+string `verdict`, `source` neither `model` nor `runner` — and earned when the
+verdict is exactly `PREDICTIVE`; no file is `{ earned: 0, total: 0 }`. v2 is
+`posiwidDivergence` over the wave's same `counts`, at v1's `driftThreshold`
+and `minSupport`, with no drift replay. Above, at 0 of 8 earned, logging IS the
+stated purpose, so the wave v1 calls `Contradicted` reads `Consistent` under
+v2; the same counts at 8 of 8 read `Contradicted` (divergence 5.98, v1's
+purpose exactly). When this verdict wrote no rule verdicts, or the file is
+there but unreadable, `v2` is `{ "verdict": null, "reason": "…" }` — not
+measured, never a zero. The verdict entry prints both on one line:
+`- Governance POSIWID v1 <v1 reading> | v2 <verdict> (<earned> of <total> earned).`
 
 The campaign state keeps the raw windows under
 `state.governancePosiwid.windows`; the verdict entry prints the reading as its

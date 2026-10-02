@@ -111,6 +111,19 @@ describe('verdictEntry', () => {
     const text = verdictEntry({ spec: { id: 'c8' }, wave: 1, row, grade, decision: { kind: 'next', why: 'x' }, ideationRecord: null, economicsLines: [] })
     expect(text).not.toMatch(/Governance POSIWID/)
   })
+  // Phase 7 ruling 4: v1 and v2 side by side on one line.
+  it('prints v1 beside v2 with the authority count when the reading carries v2', () => {
+    const both = verdictEntry({ spec: { id: 'c9' }, wave: 2, row, grade, decision: { kind: 'next', why: 'x' }, ideationRecord: null, economicsLines: [],
+      governancePosiwid: { verdict: 'Contradicted', divergence: 5.797, dominantObserved: 'signalsLogged', support: 1206, onsetWave: 1, windows: 2,
+        v2: { verdict: 'Consistent', divergence: 0.061, dominantObserved: 'signalsLogged', stated: { earned: 0, total: 8 } } } })
+    expect(both).toMatch(/- Governance POSIWID v1 Contradicted \(divergence 5\.797, dominant signalsLogged, support 1206; drift onset wave 1\) \| v2 Consistent \(0 of 8 earned\)\.\n/)
+  })
+  it('names why v2 was not measured instead of printing a verdict', () => {
+    const text = verdictEntry({ spec: { id: 'c9' }, wave: 2, row, grade, decision: { kind: 'next', why: 'x' }, ideationRecord: null, economicsLines: [],
+      governancePosiwid: { verdict: 'Contradicted', divergence: 5.797, dominantObserved: 'signalsLogged', support: 1206, onsetWave: null, windows: 2,
+        v2: { verdict: null, reason: 'verdict file unreadable' } } })
+    expect(text).toMatch(/- Governance POSIWID v1 Contradicted \(divergence 5\.797, dominant signalsLogged, support 1206\) \| v2 not measured \(verdict file unreadable\)\.\n/)
+  })
 })
 
 describe('notify', () => {

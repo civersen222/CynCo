@@ -158,8 +158,15 @@ export function verdictEntry({ spec, wave, row, grade, decision, ideationRecord,
       : '- Derived sweep: UNMEASURED (no diff or the sweep refused).')
   lines.push(`- POSIWID ${grade.posiwid.verdict} (divergence ${grade.posiwid.divergence.toFixed(3)}, dominant ${grade.posiwid.dominantObserved}).`)
   if (governancePosiwid) {
-    const { verdict, divergence, dominantObserved, support, onsetWave } = governancePosiwid
-    lines.push(`- Governance POSIWID ${verdict} (divergence ${divergence.toFixed(3)}, dominant ${dominantObserved}, support ${support}${onsetWave ? `; drift onset wave ${onsetWave}` : ''}).`)
+    const { verdict, divergence, dominantObserved, support, onsetWave, v2 } = governancePosiwid
+    const v1 = `${verdict} (divergence ${divergence.toFixed(3)}, dominant ${dominantObserved}, support ${support}${onsetWave ? `; drift onset wave ${onsetWave}` : ''})`
+    // Phase 7 ruling 4: v2 (purpose from the authority table) beside v1. A
+    // reading from before v2 existed prints the v1 line as it always did.
+    if (!v2) lines.push(`- Governance POSIWID ${v1}.`)
+    else {
+      const second = v2.verdict ? `v2 ${v2.verdict} (${v2.stated.earned} of ${v2.stated.total} earned)` : `v2 not measured (${v2.reason})`
+      lines.push(`- Governance POSIWID v1 ${v1} | ${second}.`)
+    }
   }
   if (ideationRecord) lines.push(`- S4 ideation (authority ${ideationRecord.authority}): ${ideationRecord.hypotheses.length} hypothesis/es; followed=${ideationRecord.followed}.`)
   lines.push(`- Ledger: verified ${grade.verified === null ? 'null (harness fault)' : grade.verified}; mutationSweep ${grade.sweep ? `recorded (${grade.sweep.kind ?? 'derived'})` : 'null'}.`)
