@@ -292,7 +292,7 @@ describe('runCheckAsync', () => {
     let ticks = 0
     const timer = setInterval(() => { ticks++ }, 50)
     try {
-      const pass = await runCheckAsync(`${RUNTIME} -e "setTimeout(() => { console.log('ok'); process.exit(0) }, 600)"`, process.cwd(), 30000)
+      const pass = await runCheckAsync(`${RUNTIME} -e "setTimeout(() => { console.log('ok'); process.exit(0) }, 300)"`, process.cwd(), 30000)
       expect(pass.verified).toBe(true)
       expect(pass.outputTail).toContain('ok')
       expect(ticks).toBeGreaterThan(3)
@@ -300,7 +300,8 @@ describe('runCheckAsync', () => {
     const fail = await runCheckAsync(`${RUNTIME} -e "console.error('3 tests failed'); process.exit(3)"`, process.cwd(), 30000)
     expect(fail.verified).toBe(false)
     expect(fail.exitCode).toBe(3)
-    const slow = await runCheckAsync(`${RUNTIME} -e "setTimeout(() => {}, 60000)"`, process.cwd(), 1500)
+    // T9: a 300 ms cap keeps this case far from vitest's 5 s per-test limit under load.
+    const slow = await runCheckAsync(`${RUNTIME} -e "setTimeout(() => {}, 60000)"`, process.cwd(), 300)
     expect(slow.verified).toBeNull()
     expect(slow.timedOut).toBe(true)
     expect(slow.harnessFault).toMatch(/timed out after/)
