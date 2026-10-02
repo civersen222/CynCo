@@ -1305,8 +1305,95 @@ authority. Nothing in the engine enforces anything new.
   is drawn, and negation. A CynCo seal would be `author: cynco`, the seat's
   first landed data point. A DO-NOT-SEAL sends the line to the frontier path
   C10 took. C11 seal: attempt in progress; seal pending.
-- **The live proof.** LIVE PROOF: pending (the controller runs the s4 smoke
-  after the C11 attempt).
+- **The live proof (s4, 2026-10-02).** The Phase 4 smoke campaign `s1` ran
+  under a fresh `CYNCO_HOME=C:/tmp/cynco-home-s4/.cynco` (`--base 1b00179…
+  --common-from … --runtime-from …`, `progress.everyMs` 20 s, `--waves 1`).
+  The runner was launched detached from PowerShell, with the smoke repo reset
+  to BASE first. It ran from the campaign worktree
+  `.claude/worktrees/campaign-s1` on `campaign/s1`, and the startup guard
+  let it through (F167's rule). CALIBRATE read `calibrated: BASE MISS 8,
+  perturb honest, suite baseline written`. Mission
+  `s1-wave1-1790984124826` took 22 turns, all `signalsVersion: 2`, and the
+  model made three commits, BASE `1b00179` → `d22ebb2`.
+  - **The marker check, on its own channel.** The runner logged `[dispatch]
+    marker check on its own channel (driver-run, cap 1800000ms)`. The driver
+    log read:
+    ```
+    [driver] marker check from CYNCO_MARKER_CHECK (cap 1800000ms) — run by this driver only; the check-cmd stays the contract's assertion
+    [verify] marker landed and the engine closed the turn — running the marker check now, while a retry can still be acted on
+    [verify] running check in C:/tmp/phase2-smoke: python C:/tmp/cynco-home-s4/.cynco/smoke/marker_check_once.py (cap 1800000ms, ordinal 1, from CYNCO_MARKER_CHECK)
+    [verify] marker check FAILED — retrying once (3420s left)
+    [verify] note delivered to the engine — the mission continues
+    [verify] output tail:
+    marker-check-once: first call fails on purpose
+    …
+    [verify] running check in C:/tmp/phase2-smoke: python C:/tmp/cynco-home-s4/.cynco/smoke/marker_check_once.py (cap 1800000ms, ordinal 2, from CYNCO_MARKER_CHECK)
+    [verify] marker check PASSED (on the retry)
+    [verify] PASS (exit=0, 140ms)
+    ```
+    The model's two `ContractAssertPass` calls ran the contract's keep-green
+    assertion, not the marker check. The fixture failed at ordinal 1, the
+    driver's own first check, as the final review's I1 amendment intends.
+    The ledger row reads
+    `verified: true`, `verifyRetries: 1`, `verify.retried: true`,
+    `verify.noteAcknowledged: true`, `verify.patches: []` (the tree was
+    clean at both checks), `verify.overrunS: 0`. The feedback loop that C1
+    broke (a note sent into a closed socket) is proven live.
+  - **Readings and both shadow rules.** The runner logged:
+    ```
+    [campaign] progress @ 0m: 8 fails (was 8) — no commit since the start, start grade reused
+    [campaign] progress @ 1m: sha unchanged (1b00179) — no gate run
+    [campaign] progress @ 1m: 3 fails (was 8) — gate 0 s on d610599
+    [campaign] progress @ 2m: sha unchanged (d610599) — no gate run
+    [campaign] progress @ 2m: 0 fails (was 8) — gate 0 s on 410ceca
+    [campaign] progress @ 3m: 0 fails (was 8) — gate 0 s on d22ebb2
+    [campaign] progress @ 3m: sha unchanged (d22ebb2) — no gate run
+    [campaign] progress @ 4m: sha unchanged (d22ebb2) — no gate run
+    ```
+    On the record, `rec.progress` holds four readings, at `elapsedFraction`
+    0.006 (8, `reusedFrom: 'start'`), 0.023 (3, `d610599`), 0.039 (0,
+    `410ceca`) and 0.048 (0, `d22ebb2`). `rec.shadowDecisions` holds 16
+    decisions, alternating `R1.no-progress` / `R2.stalled` over 8 ticks.
+    R2's windows run `[8]`, `[8, 8]`, `[8, 8, 3]` … `[0, 0, 0]`, and none
+    fired: before 25 % of the clock nothing may fire, and once the gate read
+    0 the latest count is not > 0. `retriedSpawns` is 7, with the F155 line
+    logged once. The entry read `- Progress: 8 → 0 fails over 4 readings
+    (first fix at 1 min; last at 3 min: 0); R1.no-progress did not fire (8
+    decision(s)); R2.stalled did not fire (8 decision(s))`.
+  - **Governance v2.** `- Governance POSIWID v1 Contradicted (divergence
+    6.909, dominant signalsLogged, support 24; drift onset wave 1) | v2
+    Consistent (0 of 8 earned).` The counts were 0 / 0 / 24, all logging,
+    which is what the stated purpose is at 0 earned.
+  - **The reading dataset.** `outcome-dataset-intervals.jsonl` holds ONE
+    row: interval 2, `stalled`, 8 turns, 3 → 3 fails, `signalsVersion: 2`,
+    `leakGuard: true`. The other six intervals are excluded and counted,
+    `short: 3` and `afterZero: 3`. At a 20 s cadence most intervals hold
+    fewer than `INTERVAL_MIN_TURNS` turns. So the smoke proves the pipeline
+    end to end (ticks → intervals → labeled row → hindcast → the verdict
+    clause), not the volume. C11's 45-minute intervals carry hundreds of
+    turns.
+  - **The ladder.** The `- Outcome hindcast:` line ends `… R2.stalled
+    precision null on 0 fired p(Holm) null UNMEASURED — no wave in scope (no
+    shadow decision at 25 % of its clock or later); readings: UNMEASURED —
+    reading holdout not yet frozen (1 of 38 labeled; improved 0 / stalled 1;
+    need 8 of each)`. The temp home's `rule-verdicts.json` carries both
+    runner rows, `source: 'runner'`, `n: 0`, UNMEASURED with no wave in
+    scope. That is right, because the wave ended at 6 % of its clock. There
+    are no `M1.*` or `M2.*` rows: below the minimum no model runs.
+  - **The dashboard.** After the verdict, a token-gated `/api/campaign`
+    probe on an idle engine over the temp home read `waves[0].progress =
+    {"startFails":8,"readings":[{"elapsedFraction":0.006,"fails":8,"sha7":"1b00179","fault":null},
+    …4 readings…],"decisions":{"R1.no-progress":{"n":8,"fired":0,"firedAt":[]},"R2.stalled":{"n":8,"fired":0,"firedAt":[]}}}`
+    and `waves[0].governancePosiwid = {"verdict":"Contradicted","onsetWave":1,"v2":{"verdict":"Consistent","stated":{"earned":0,"total":8}}}`.
+  - **The verdict and F167, live.** `[campaign] wave 1: pass-with-survivors —
+    sealed gate PASS, suite gate PASS, sweep 0/2, 2 survivor(s) — 2 inside a
+    claimed file: calc.py:14:cmp->NotEq, calc.py:15:const->3` → CAMPAIGN
+    PASS. The verdict commit `fbf5861` landed on `campaign/s1` in the
+    campaign worktree, which was left clean. The phase worktree stayed on
+    `worktree-phase7-evidence-per-hour` throughout.
+  - **Cleanup.** The idle engine was stopped, and 9161 answers 000. The
+    campaign worktree and `campaign/s1` are kept until the merge as the
+    proof.
 - **Parked, with reasons.** Spec §8 stays parked, each item with the evidence
   that would unpark it. Enforcing R1/R2 waits for PREDICTIVE on the ladder.
   The reading learner as an S5 input waits for a measured AUC. Shorter waves
