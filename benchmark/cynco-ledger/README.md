@@ -76,7 +76,12 @@ decisions still recorded here).
     // admitted with an hour left can end up to its cap past the clock (the
     // engine is idle then; `durationS` grows by it), and the driver logs
     // `[verify] marker check running past the wave clock by Ns`.
-    // `command` is the MARKER check (below), not necessarily the check-cmd.
+    // `command` records the MARKER check (below) — on a campaign the suite
+    // gate from `CYNCO_MARKER_CHECK`, NOT the brief's keepGreen, which is the
+    // contract's check-cmd and appears nowhere in `verify` (re-review R1-M2).
+    // F168: when the marker check is the check-cmd fallback on a mission that
+    // seals instruments (a hand-dispatched sealed gate), a FAIL is never fed
+    // back — `noteFailed: 'sealed instrument'`, the FAIL stands.
     "retried": false, "firstAttempt": null, "noteFailed": null, "patches": [],
     "noteAcknowledged": null, "overrunS": 0
   },

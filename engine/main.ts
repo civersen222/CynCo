@@ -33,6 +33,7 @@ import { LocalCodeWSServer } from './bridge/server.js'
 import type { TUICommand } from './bridge/protocol.js'
 import { PROTOCOL_VERSION } from './bridge/protocol.js'
 import { governanceCapabilities } from './bridge/capabilities.js'
+import { markerChannelSealLine } from './bridge/contractAutoCreate.js'
 import { ConversationLoop } from './bridge/conversationLoop.js'
 import { S5Orchestrator } from './s5/orchestrator.js'
 import { RuleBasedS5 } from './s5/ruleBasedS5.js'
@@ -1363,6 +1364,10 @@ provider.healthCheck().then(async ok => {
   }
 })
 
+// Phase 7 re-review R1-M1: an engine whose env carries the driver's marker
+// channel seals what it names for its whole life — said once, as a count.
+const markerSeal = markerChannelSealLine(process.env)
+if (markerSeal) console.log(markerSeal)
 console.log(`[localcode] Ready. Waiting for TUI connection on ws://localhost:${port}`)
 
 // Keep process alive

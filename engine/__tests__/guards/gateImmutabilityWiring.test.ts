@@ -1,7 +1,11 @@
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'fs'
+import { readFileSync, mkdtempSync, writeFileSync, rmSync } from 'fs'
 import { join, dirname } from 'path'
+import { tmpdir } from 'os'
 import { fileURLToPath } from 'url'
+import { ContractState } from '../../tools/contract.js'
+import { applyHarnessContract, instrumentAssertionsFor, sealedGatePaths } from '../../bridge/contractAutoCreate.js'
+import { setTaskSealedPaths, callTouchesSealed } from '../../tools/sealedPaths.js'
 
 /**
  * BLOCKING wire-check: the gate-immutability guard must stay CONNECTED.
@@ -40,7 +44,8 @@ describe('gate immutability wiring guard', () => {
     // workspace, not merely imported.
     // Phase 7 final review I1: the contract's assertions plus the marker channel.
     expect(src).toMatch(/harnessGatePaths\(\s*instrumentAssertions,\s*this\.executor\['cwd'\]\s*\)/)
-    expect(src).toMatch(/const instrumentAssertions = \[\.\.\.\(opts\?\.contract\?\.assertions \?\? \[\]\)/)
+    // F168: through instrumentAssertionsFor (contract, else the active harness one, + the channel).
+    expect(src).toMatch(/const instrumentAssertions = instrumentAssertionsFor\(opts,/)
     // ...and the result is handed to the enforcement point.
     expect(src).toMatch(/setTaskImmutablePaths\(gates\)/)
   })
@@ -133,11 +138,12 @@ describe('sealed instrument wiring guard', () => {
     // driver's F45 snapshot barrier still takes the full `withheldGatePaths` set.
     // Phase 7 final review I1: the contract's assertions plus the driver's
     // marker channel, read for paths only (never applied as a contract).
-    expect(src).toMatch(/const instrumentAssertions = \[\.\.\.\(opts\?\.contract\?\.assertions \?\? \[\]\), \.\.\.markerGates\]/)
-    expect(src).toMatch(/markerCheckGateAssertions\(process\.env\)/)
+    // F168: instrumentAssertionsFor adds the channel (markerCheckGateAssertions) itself.
+    expect(src).toMatch(/const instrumentAssertions = instrumentAssertionsFor\(opts, \{ contract: globalContract, env: process\.env/)
+    expect(read('engine/bridge/contractAutoCreate.ts')).toMatch(/return \[\.\.\.own, \.\.\.markerCheckGateAssertions\(env\)\]/)
     expect(src).toMatch(/sealedGatePaths\(instrumentAssertions, this\.executor\['cwd'\]\)/)
     expect(src).not.toMatch(/withheldGatePaths\((opts\.contract\.assertions|instrumentAssertions)/)
-    expect(src).not.toMatch(/applyHarnessContract\([^)]*markerGates/)
+    expect(src).not.toMatch(/applyHarnessContract\([^)]*(markerCheckGateAssertions|instrumentAssertions)/)
     // T6-N1: the content-exempt set (the suite baseline) rides the same call.
     expect(src).toMatch(/setTaskSealedPaths\(sealed, undefined, undefined, sealed\.length > 0 \? contentExemptGatePaths\(instrumentAssertions, this\.executor\['cwd'\]\) : \[\]\)/)
     // Unconditional, like the immutable set: a task carrying no withheld gate
@@ -200,5 +206,55 @@ describe('sealed instrument wiring guard', () => {
     const src = read('engine/bridge/conversationLoop.ts')
     expect(src).toMatch(/gates\.filter\(g => !sealed\.includes\(g\)\)/)
     expect(src).toMatch(/\$\{sealed\.length\} sealed instrument/)
+  })
+})
+
+/**
+ * F168: the sealed set is monotone within a mission. F37 rebuilt it from each
+ * frame's own `contract`, so a contract-less `user.message` — the driver's
+ * marker-check note, a probe injection — dropped every contract-derived seal
+ * for the rest of the mission. Driven through the same functions
+ * `runUserMessage` calls, in its order: apply the harness contract, derive the
+ * instrument set, seal; then a contract-less unattended frame.
+ */
+describe('F168: a contract-less frame keeps the mission\'s seal', () => {
+  it('a contract-sealing message, then a contract-less unattended one: the gate is still refused', () => {
+    const gatesDir = mkdtempSync(join(tmpdir(), 'f168-gates-'))
+    const ws = mkdtempSync(join(tmpdir(), 'f168-ws-'))
+    const gate = join(gatesDir, 'verify_f168.py').replace(/\\/g, '/')
+    writeFileSync(gate, 'MUTATIONS = []\n')
+    const contract = new ContractState()
+    const env = {}
+    try {
+      const first = { contract: { title: 'Mission: m', assertions: [{ text: 'the held-out gate passes', command: `python ${gate}` }] }, unattended: true }
+      expect(applyHarnessContract(first.contract, contract, () => null)).toBe(true)
+      setTaskSealedPaths(sealedGatePaths(instrumentAssertionsFor(first, { contract, env }), ws))
+      expect(callTouchesSealed('Bash', { command: `python ${gate}` }, ws)).toBe(true)
+
+      // The driver's note: no contract. The active harness contract still measures.
+      const note = { unattended: true }
+      setTaskSealedPaths(sealedGatePaths(instrumentAssertionsFor(note, { contract, env }), ws))
+      expect(callTouchesSealed('Bash', { command: `python ${gate}` }, ws)).toBe(true)
+
+      // An auto-contract replaced the (completed) harness one: an unattended
+      // frame still carries the mission's set.
+      contract.create('auto', '', ['Changes committed to git'])
+      setTaskSealedPaths(sealedGatePaths(instrumentAssertionsFor(note, { contract, env, carried: first.contract.assertions }), ws))
+      expect(callTouchesSealed('Bash', { command: `python ${gate}` }, ws)).toBe(true)
+
+      // A person's message with no harness contract active carries nothing (F37).
+      setTaskSealedPaths(sealedGatePaths(instrumentAssertionsFor({}, { contract, env, carried: first.contract.assertions }), ws))
+      expect(callTouchesSealed('Bash', { command: `python ${gate}` }, ws)).toBe(false)
+    } finally {
+      setTaskSealedPaths([])
+      rmSync(gatesDir, { recursive: true, force: true })
+      rmSync(ws, { recursive: true, force: true })
+    }
+  })
+
+  it('runUserMessage derives the set through instrumentAssertionsFor, carrying the last harness contract', () => {
+    const src = read('engine/bridge/conversationLoop.ts')
+    expect(src).toMatch(/const instrumentAssertions = instrumentAssertionsFor\(opts, \{ contract: globalContract, env: process\.env, carried: this\.carriedHarnessAssertions \}\)/)
+    expect(src).toMatch(/if \(opts\?\.contract\) this\.carriedHarnessAssertions = opts\.contract\.assertions/)
   })
 })

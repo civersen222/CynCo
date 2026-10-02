@@ -86,10 +86,16 @@ export async function sendConfirmed(ws, frame, confirmMs = NOTE_CONFIRM_MS) {
  * FAIL then stands). Never throws for a socket problem.
  */
 export async function markerCheckRound({ getWs, reconnect, check, remainingS, minS = MARKER_RETRY_MIN_S, retries = 0, noteFor, frameFor,
-  pingEveryMs = PING_EVERY_MS, confirmMs = NOTE_CONFIRM_MS, log = console.log }) {
+  pingEveryMs = PING_EVERY_MS, confirmMs = NOTE_CONFIRM_MS, log = console.log, refusal = null }) {
   const attempt = await withKeepalive(getWs, check, pingEveryMs, log)
   const left = Math.round(remainingS())
   if (!shouldRetryMarkerCheck({ ok: attempt.r.verified, remainingS: left, retries, minS })) return { attempt, left, retried: false, noteFailed: null }
+  // F168 (R1-I1): a sealed instrument's output never reaches the model — no
+  // note is built, nothing is sent, the FAIL stands.
+  if (refusal) {
+    log(`[verify] the marker check is a ${refusal} — no feedback round; the FAIL stands`)
+    return { attempt, left, retried: false, noteFailed: refusal }
+  }
   log(`[verify] marker check FAILED — retrying once (${left}s left)`)
   let ws = getWs()
   if (!ws || ws.readyState !== OPEN) {

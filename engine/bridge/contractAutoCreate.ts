@@ -456,6 +456,60 @@ export function markerCheckGateAssertions(
 }
 
 /**
+ * The active contract's assertions in the harness form they were created from:
+ * a withheld assertion as `{ text, command }`, a stated one as its text. Read
+ * for PATHS (F168); `[]` when no contract is active.
+ */
+export function activeHarnessAssertions(contract: ContractState = globalContract): HarnessAssertion[] {
+  if (!contract.isActive()) return []
+  const out: HarnessAssertion[] = []
+  for (let i = 0; ; i++) {
+    const a = contract.assertionAt(i)
+    if (!a) break
+    out.push(a.command ? { text: a.text, command: a.command } : a.text)
+  }
+  return out
+}
+
+/**
+ * The assertions a message's instrument set (read-only + sealed) is derived
+ * from (F168). F37 rebuilt the set from each frame's own `contract`, so a
+ * contract-less `user.message` — the driver's marker-check note, a probe
+ * injection — dropped every contract-derived seal for the rest of the mission.
+ * Now the set is monotone within a mission:
+ *   - the frame's own contract, when it carries one;
+ *   - else the ACTIVE harness contract's assertions (it is still measuring);
+ *   - else, on an unattended frame, `carried` — the last harness contract's
+ *     assertions, in case an auto-contract replaced a completed harness one;
+ *   - an interactive frame with no active harness contract carries nothing
+ *     (F37's rule: a seal never outlives what it protects).
+ * Plus the driver's marker channel (`markerCheckGateAssertions`), always.
+ */
+export function instrumentAssertionsFor(
+  opts: { contract?: { assertions: HarnessAssertion[] }; unattended?: boolean } | undefined,
+  { contract = globalContract, env = process.env, carried = [] as HarnessAssertion[] }: {
+    contract?: ContractState; env?: Record<string, string | undefined>; carried?: HarnessAssertion[]
+  } = {},
+): HarnessAssertion[] {
+  const own = opts?.contract?.assertions
+    ?? (contract.isActive() && contract.getOrigin() === 'harness' ? activeHarnessAssertions(contract)
+      : opts?.unattended === true ? carried : [])
+  return [...own, ...markerCheckGateAssertions(env)]
+}
+
+/**
+ * Phase 7 re-review R1-M1: the startup line saying how many instruments the
+ * marker channel seals for this engine's whole life — a count, never a path
+ * (the paths are the withheld thing). Null when the channel seals nothing.
+ */
+export function markerChannelSealLine(env: Record<string, string | undefined> = process.env, cwd: string = env.LOCALCODE_MISSION_CWD || process.cwd()): string | null {
+  const marker = markerCheckGateAssertions(env)
+  if (!marker.length) return null
+  const n = sealedGatePaths(marker, cwd).length
+  return n > 0 ? `[contract] CYNCO_MARKER_CHECK is set: ${n} instrument(s) it names are sealed for this engine's lifetime (the driver's marker check; never run by the engine)` : null
+}
+
+/**
  * The env-prefix keys whose value is a DATA instrument sealed by path only
  * (Phase 7 T6-N1): the suite gate's baseline, a list of bare pytest node ids
  * that the model's own `pytest --collect-only` prints line for line.

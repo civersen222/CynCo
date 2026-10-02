@@ -77,7 +77,7 @@ import { probeEdit } from '../vsm/groundingProbe.js'
 import { loadInterventionRates, saveInterventionRates } from '../vsm/interventionPersistence.js'
 import { applyNudgeTemperature } from '../vsm/controlSignals.js'
 import { globalContract } from '../tools/contract.js'
-import { applyHarnessContract, harnessGatePaths, sealedGatePaths, markerCheckGateAssertions, contentExemptGatePaths, maybeAutoCreateContract, type HarnessContractSpec } from './contractAutoCreate.js'
+import { applyHarnessContract, harnessGatePaths, sealedGatePaths, instrumentAssertionsFor, contentExemptGatePaths, maybeAutoCreateContract, type HarnessContractSpec } from './contractAutoCreate.js'
 import { gitProbe, runCommandDetailed } from '../tools/contractVerify.js'
 import { globalAskBroker } from '../tools/askBroker.js'
 import { estimateTokensAsync } from '../engine/contextBudget.js'
@@ -300,6 +300,8 @@ export class ConversationLoop {
    * task in `runUserMessage` and never carried into an interactive message.
    */
   private missionInvariants: MissionInvariants | null = null
+  /** F168: the last harness contract's assertions, so the mission's sealed set is monotone. */
+  private carriedHarnessAssertions: HarnessContractSpec['assertions'] = []
   /**
    * An `invariants` block was declared for this unattended task and rejected as
    * malformed. `invariants: null` on the wire is otherwise ambiguous — a
@@ -1405,8 +1407,12 @@ export class ConversationLoop {
     // the instruments it names are sealed here like any withheld gate's. Read
     // from this process's env on every message, so the driver's follow-up notes
     // (which carry no contract) keep the seal for the retry turn.
-    const markerGates = markerCheckGateAssertions(process.env)
-    const instrumentAssertions = [...(opts?.contract?.assertions ?? []), ...markerGates]
+    // F168: the contract-derived part is monotone within a mission too — a
+    // contract-less frame (the marker note, a probe injection) derives it from
+    // the active harness contract, or on an unattended frame from the last one.
+    if (opts?.contract) this.carriedHarnessAssertions = opts.contract.assertions
+    else if (opts?.unattended !== true && !(globalContract.isActive() && globalContract.getOrigin() === 'harness')) this.carriedHarnessAssertions = []
+    const instrumentAssertions = instrumentAssertionsFor(opts, { contract: globalContract, env: process.env, carried: this.carriedHarnessAssertions })
     const gates = [...new Set([
       ...declared,
       ...(instrumentAssertions.length > 0 ? harnessGatePaths(instrumentAssertions, this.executor['cwd']) : []),

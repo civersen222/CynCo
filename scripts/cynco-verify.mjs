@@ -98,6 +98,19 @@ export function markerCheckFrom(env, checkCmd, checkTimeoutMs) {
 }
 
 /**
+ * F168 (re-review R1-I1): may a FAILED marker check be fed back to the model?
+ * Never when the marker check is the check-cmd fallback on a mission that seals
+ * instruments: on a hand-dispatched sealed mission the check-cmd IS the sealed
+ * gate, and its output must never reach the model (the sealed-instrument rule).
+ * Returns the refusal (`verify.noteFailed`) or null. The campaign channel
+ * (`source: 'env'`) is the public suite gate, whose output may.
+ */
+export const SEALED_FEEDBACK_REFUSAL = 'sealed instrument'
+export function markerFeedbackRefusal({ source, sealedCount }) {
+  return source === 'check-cmd' && sealedCount > 0 ? SEALED_FEEDBACK_REFUSAL : null
+}
+
+/**
  * Phase 7 final review M9: how many seconds past the wave clock (`timeoutS`
  * from `startMs`) the wait has run at `nowMs`. The loop's bound is read only
  * at the top of the loop, so a marker check admitted with an hour left can

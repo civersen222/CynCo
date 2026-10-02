@@ -72,7 +72,7 @@ import { appendFileSync, readFileSync, existsSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { createMissionCollector, buildMissionRecord, missionCommitted, missionOutcome, waitExitReason, gateDisposition, historyRewrite, gradedHeadSuspect, QUIET_MS } from './cynco-ledger.mjs'
 import { countGraderProbes } from './cynco-grader-probes.mjs'
-import { runCheck, runCheckAsync, markerCheckNote, markerRetryMinSFrom, markerCheckFrom, verifyOverrunS } from './cynco-verify.mjs'
+import { runCheck, runCheckAsync, markerCheckNote, markerRetryMinSFrom, markerCheckFrom, verifyOverrunS, markerFeedbackRefusal } from './cynco-verify.mjs'
 import { markerCheckRound, canReuseMarkerVerdict, openSocket, withKeepalive, noteAcknowledged } from './cynco-marker-check.mjs'
 import { probeConfigError, shouldProbe, overrideDecision, probeMessage } from './cynco-probe.mjs'
 import { purgeBytecodeCaches, purgeStaleAgentState } from './cynco-workspace.mjs'
@@ -662,6 +662,8 @@ while (!quiet && !zeroToolCompletion && !silentAfterDispatch && (Date.now() - st
         retries: verifyRetries,
         noteFor: (a) => markerCheckNote(a.r.output, { resetFiles: a.resetFiles, patchPath: a.patchPath, redact: noteRedact }),
         frameFor: (text) => JSON.stringify({ type: 'user.message', text, cwd: CWD, readOnlyPaths, unattended: true }),
+        // F168 (R1-I1): the check-cmd fallback on a sealed mission IS the sealed gate.
+        refusal: markerFeedbackRefusal({ source: MARKER.source, sealedCount: SEALED_COUNT }),
       })
       const attempt = round.attempt
       // Final review M9: the loop's bound is read only at its top, so a check

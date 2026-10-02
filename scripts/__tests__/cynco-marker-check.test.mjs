@@ -5,6 +5,8 @@ import { describe, it, expect } from 'vitest'
 import { fileURLToPath } from 'node:url'
 import { markerCheckRound, sendConfirmed, canReuseMarkerVerdict, withKeepalive, noteAcknowledged } from '../cynco-marker-check.mjs'
 import { runAsync } from '../cynco-spawn.mjs'
+import { markerFeedbackRefusal, SEALED_FEEDBACK_REFUSAL } from '../cynco-verify.mjs'
+import { readFileSync } from 'node:fs'
 
 const OPEN = 1
 const CLOSED = 3
@@ -74,6 +76,22 @@ describe('markerCheckRound', () => {
       expect(r.retried).toBe(false)
       expect(r.noteFailed).toMatch(why)
     }
+  })
+  // F168 (re-review R1-I1): on a hand-dispatched sealed mission the check-cmd
+  // fallback IS the sealed gate — its FAIL is never fed back, no note is even built.
+  it('a sealed fallback never retries: nothing is built or sent, the FAIL stands as noteFailed', async () => {
+    const ws = fakeWs()
+    let built = 0
+    const r = await round({ ws, noteFor: () => { built++; return 'x' }, refusal: markerFeedbackRefusal({ source: 'check-cmd', sealedCount: 1 }) })
+    expect(r).toMatchObject({ retried: false, noteFailed: 'sealed instrument' })
+    expect(ws.sent).toEqual([])
+    expect(built).toBe(0)
+    // Only the fallback on a sealing mission is refused; the campaign channel and an unsealed check-cmd retry.
+    expect(markerFeedbackRefusal({ source: 'env', sealedCount: 2 })).toBeNull()
+    expect(markerFeedbackRefusal({ source: 'check-cmd', sealedCount: 0 })).toBeNull()
+    expect(SEALED_FEEDBACK_REFUSAL).toBe('sealed instrument')
+    const driver = readFileSync(fileURLToPath(new URL('../cynco-mission-driver.mjs', import.meta.url)), 'utf8')
+    expect(driver).toMatch(/refusal: markerFeedbackRefusal\(\{ source: MARKER\.source, sealedCount: SEALED_COUNT \}\)/)
   })
   it('pings the socket while the check runs', async () => {
     const ws = fakeWs()
