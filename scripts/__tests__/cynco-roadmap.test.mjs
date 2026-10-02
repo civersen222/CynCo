@@ -8,10 +8,10 @@ import {
 } from '../cynco-roadmap.mjs'
 
 describe('cynco-roadmap: checked-in roadmap.json', () => {
-  it('loads the checked-in roadmap with 5 lines', () => {
+  it('loads the checked-in roadmap with 6 lines', () => {
     const roadmap = loadRoadmap()
-    expect(roadmap.lines).toHaveLength(5)
-    expect(roadmap.lines.map(l => l.id)).toEqual(['c6', 'c7', 'c8', 'c9', 'c10'])
+    expect(roadmap.lines).toHaveLength(6)
+    expect(roadmap.lines.map(l => l.id)).toEqual(['c6', 'c7', 'c8', 'c9', 'c10', 'c11'])
   })
 
   // The checked-in file's STATUSES move as the campaign ladder advances — c9 went
