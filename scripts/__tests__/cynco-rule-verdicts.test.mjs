@@ -208,6 +208,9 @@ describe('writeRuleVerdicts with reading model rows (Phase 7 ruling 1)', () => {
     const f = JSON.parse(readFileSync(outPath, 'utf8'))
     expect(f.rules['M1.gbt']).toMatchObject({ source: 'model', unit: 'mission', scope: 'holdout' })
     expect(f.rules['M2.lr']).toMatchObject({ source: 'model', unit: 'reading', scope: 'holdout', n: 1 })
+    // Final review M2: a reading row says its p is over dependent readings; a mission row says nothing.
+    expect(f.rules['M2.lr'].dependence).toBe('readings share missions')
+    expect('dependence' in f.rules['M1.gbt']).toBe(false)
   })
 })
 

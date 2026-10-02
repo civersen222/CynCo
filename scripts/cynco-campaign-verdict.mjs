@@ -5,6 +5,7 @@ import { gateLineVerdict } from './cynco-signal-validation.mjs'
 import { autopoiesisLine } from './cynco-autopoiesis.mjs'
 import { scoreboardLines } from './cynco-scoreboard.mjs'
 import { progressLine } from './cynco-campaign-progress.mjs'
+import { READING_DEPENDENCE } from './cynco-rule-verdicts.mjs'
 
 const today = () => new Date().toISOString().slice(0, 10)
 const h = (s) => (s / 3600).toFixed(2)
@@ -118,10 +119,15 @@ export function hindcastLine(h, { detail = false, runners = null } = {}) {
   // record written before Phase 7. Readings have no hindsight, so their leak
   // check always reads "not run".
   const r = h.reading
+  // Final review M2: an M2 p is over readings that share missions, so it is
+  // optimistic — named once, after the rungs, whenever one is printed.
+  const readingRungs = Object.entries(r?.ladder ?? {}).sort(byId)
+  const optimistic = readingRungs.some(([, x]) => typeof x?.pAdjusted === 'number')
+    ? ` (p optimistic: ${readingRungs.find(([, x]) => typeof x?.dependence === 'string')?.[1].dependence ?? READING_DEPENDENCE})` : ''
   const readings = !r ? ''
     : r.fault ? `; readings: UNMEASURED — ${r.fault}`
       : `; readings: v${r.version ?? '?'} per interval${eligibleOf(r)} on ${r.nHoldout ?? '?'} held-out readings (base ${pct(r.baseRate)}): `
-        + `${Object.keys(r.ladder ?? {}).length ? Object.entries(r.ladder).sort(byId).map(rung).join('; ')
+        + `${readingRungs.length ? readingRungs.map(rung).join('; ') + optimistic
           : r.ladderFault ? `LADDER NOT WRITTEN (${r.ladderFault}) — rules rewritten alone` : 'no ladder reading'}; leak check not run${dead(r)}`
         + `${r.holdout?.frozenNow === true ? `; reading:${r.signalsVersion ?? '?'} holdout frozen now (${r.holdout.ids ?? '?'} readings of ${r.holdout.missions ?? '?'} missions)` : ''}`
   if (h.fault) return `- Outcome hindcast: UNMEASURED — ${h.fault}${runnerRungs.map(r => `; ${r}`).join('')}${readings}`

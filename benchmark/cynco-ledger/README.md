@@ -1855,7 +1855,14 @@ missions**: the set's `missionIds` are missions, `ids` the readings
 held mission is held; one mission's intervals never straddle train and
 holdout** (a reading added later to a held mission is held too). Missions are
 taken in seeded order while either label is short of its share, so the held
-count can run over the share by part of one mission.
+count can run over the share by part of one mission. The 38 minimum is the
+mission unit's arithmetic (8 held, 30 left), and the whole-mission draw does
+not guarantee it: at the minimum one mission can hold a dozen readings, so the
+first frozen set can leave fewer than 30 training readings (final review M3).
+The model then refuses with the cause named — `TOO FEW: train 22 < 30 after
+the whole-mission draw (holdout 16 readings)` — and the reading reads
+UNMEASURED; the holdout is frozen and train grows every wave, so it heals
+itself, by a campaign at most.
 
 **Below the minimum** the reading is UNMEASURED with the counts, python is not
 spawned for that unit, and the file is untouched:
@@ -1887,7 +1894,7 @@ held-out readings the interval rows still carry, the label read from the ROW
 (improved = success). They go through the same `analyse` arithmetic in the
 same Holm family (rules, then `M1.*` and `M2.*`, then runner rows), written as
 `rules['M2.<k>'] = { …, source: 'model', scope: 'holdout', unit: 'reading',
-base, scopeN }` (`scopeN` held-out readings); the `M1.*` entries now carry
+base, scopeN, dependence }` (`scopeN` held-out readings); the `M1.*` entries now carry
 `unit: 'mission'`. A row that fired on no held-out reading has n 0 and null
 numbers (F16). `engine/s5/ruleAuthority.ts` skips every `source: 'model'` row,
 so an `M2.*` id is refused authority exactly as an `M1.*` id is; the
@@ -1896,12 +1903,21 @@ scoreboard neither counts nor ranks them, and its `learner` field reads the
 one mission share its model, brief and repo state, so they are not independent
 draws, and Fisher's test counts them as if they were. Twelve held-out readings
 from six missions carry less evidence than twelve missions would. Authority is
-refused either way; the mission unit stays the one that can earn it.
+refused either way; the mission unit stays the one that can earn it. The row
+says so where the number is read (final review M2): every `M2.*` entry carries
+`dependence: 'readings share missions'` (`READING_DEPENDENCE`), and the
+verdict's `; readings:` clause prints `(p optimistic: readings share
+missions)` after the rungs whenever an `M2.*` p(Holm) is printed. The Holm
+family is kept as is: the `M2.*` rows (and `R2.stalled`) are members, so each
+one raises `m` for the S5 rules too — a rule's PREDICTIVE verdict is harder to
+reach by the rows the engine refuses authority anyway. That is a documented
+property of the one-family design, not a defect to correct per row.
 
 **The verdict line** gains `; readings: <the mission learner's grammar>` after
 the mission clause — `; readings: UNMEASURED — reading holdout not yet frozen
 (…)`, or `; readings: v1 per interval, signals v2 only (eligible v2 60) on 12
-held-out readings (base 50%): M2.gbt … ; M2.lr … ; leak check not run`, with
+held-out readings (base 50%): M2.gbt … ; M2.lr … (p optimistic: readings share
+missions); leak check not run`, with
 `; reading:2 holdout frozen now (12 readings of 6 missions)` on the wave that
 froze it. A record from before Phase 7 has no `reading` and prints no clause.
 `bun scripts/cynco-rule-verdicts.mjs --with-hindcast` runs the reading learner

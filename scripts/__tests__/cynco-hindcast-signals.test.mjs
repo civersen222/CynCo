@@ -321,9 +321,17 @@ describe('the verdict entry names the version and the counts (F165)', () => {
     it('a trained reading learner: its M2 rungs in the mission grammar; the freeze named on the wave that did it', () => {
       expect(hindcastLine({ ...h, reading }))
         .toBe('- Outcome hindcast: v5 at K = 16 turns on 9 held-out missions (base 50%): no ladder reading; leak check not run'
-          + '; readings: v2 per interval, signals v2 only (eligible v2 60) on 12 held-out readings (base 50%): M2.gbt precision 80% [38, 96] on 5 fired p(Holm) 0.500 NO EVIDENCE; M2.lr precision null on 0 fired p(Holm) null TOO FEW; leak check not run; dropped 1 dead column(s)')
+          + '; readings: v2 per interval, signals v2 only (eligible v2 60) on 12 held-out readings (base 50%): M2.gbt precision 80% [38, 96] on 5 fired p(Holm) 0.500 NO EVIDENCE; M2.lr precision null on 0 fired p(Holm) null TOO FEW (p optimistic: readings share missions); leak check not run; dropped 1 dead column(s)')
       expect(hindcastLine({ ...h, reading: { ...reading, ladder: null, holdout: { frozen: true, frozenNow: true, ids: 12, missions: 6 } } }, { detail: true }))
         .toMatch(/; readings: v2 per interval, .*: no ladder reading; leak check not run; dropped 1 dead column\(s\): a; reading:2 holdout frozen now \(12 readings of 6 missions\)$/)
+    })
+
+    // Final review M2: an M2 p is a Fisher p over readings that share missions
+    // — optimistic — and the line says so wherever such a p is printed.
+    it('names the optimism of an M2 p only when one is printed', () => {
+      const allNull = { ...reading, ladder: { 'M2.lr': reading.ladder['M2.lr'], 'M2.gbt': { ...reading.ladder['M2.gbt'], pAdjusted: null } } }
+      expect(hindcastLine({ ...h, reading: allNull })).not.toMatch(/p optimistic/)
+      expect(hindcastLine({ ...h, reading })).toMatch(/p\(Holm\) null TOO FEW \(p optimistic: readings share missions\); leak check not run/)
     })
 
     it('a record without a reading block (before Phase 7) prints no readings clause', () => {

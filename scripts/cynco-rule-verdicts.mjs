@@ -44,6 +44,12 @@ export const RULE_VERDICTS_PATH = (home) => join(home, 'datasets', 'rule-verdict
 export const OUTCOME_MODEL_PATH = (home) => join(home, 'datasets', 'outcome-model.json')
 /** The pFail at or above which a model "fires" on a held-out mission. */
 export const MODEL_FIRE_THRESHOLD = 0.5
+/**
+ * Final review M2: what an M2.* row's p is computed over. Readings from one
+ * mission are not independent, so Fisher's p over them is optimistic; the row
+ * carries this as `dependence`, and the verdict line names it beside the p.
+ */
+export const READING_DEPENDENCE = 'readings share missions'
 
 /**
  * Phase 5 ruling 5: the outcome model's held-out predictions as synthetic
@@ -296,6 +302,10 @@ export function writeRuleVerdicts({ rows, campaign, outPath, analyse = analyseFn
       // Phase 7 ruling 1: which learner — `mission` (M1.*) or `reading` (M2.*,
       // `scopeN` held-out readings). Authority ignores both by `source`.
       unit: r.unit ?? 'mission',
+      // Final review M2: an M2 p is Fisher's over readings that share
+      // missions — not independent, so optimistic. Said on the row, where the
+      // number is read, not only in the README.
+      ...(r.unit === 'reading' ? { dependence: READING_DEPENDENCE } : {}),
     }
   }
   for (const r of [...runners].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))) {

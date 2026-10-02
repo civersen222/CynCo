@@ -233,6 +233,19 @@ describe('cynco-outcome-model.py', () => {
       // The mission inputs are refused with the reading unit.
       expect(run(['--unit', 'reading', '--dataset', readingsIn(dir), '--hindsight', SEPARABLE, '--manifest', manifest, '--out', out]).status).toBe(1)
     }, TIMEOUT_MS)
+
+    // Final review M3: whole missions are drawn into the holdout, so a frozen
+    // set can leave train short while the holdout is ample — the refusal names
+    // that cause rather than the generic either/or.
+    it('names the whole-mission draw when the holdout is ample and train is short', () => {
+      const dir = outDir()
+      const out = join(dir, 'outcome-model.json')
+      const manifest = manifestIn(dir, { 'reading:2': READING_SET })
+      const r = run(['--unit', 'reading', '--dataset', readingsIn(dir), '--manifest', manifest, '--out', out, '--signals-version', '2', '--rows-by-version', '{"2":120}', '--min-train', '110'])
+      expect(r.status).toBe(2)
+      expect(r.stdout).toMatch(/^TOO FEW: train 108 < 110 after the whole-mission draw \(holdout 12 readings\) \(signals v2: 120 eligible\)$/m)
+      expect(existsSync(out)).toBe(false)
+    }, TIMEOUT_MS)
   })
 
   it('honours --min-train / --min-holdout', () => {

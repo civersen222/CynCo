@@ -352,6 +352,12 @@ def evaluate(rows, held, min_train, min_holdout, unit="mission"):
     units, so a held mission's readings are all held (Phase 7 ruling 1:
     missions split whole)."""
     train, holdout = split(labeled(rows), held)
+    if unit == "reading" and len(train) < min_train and len(holdout) >= min_holdout:
+        # Final review M3: the reading holdout is drawn by WHOLE missions, so
+        # one mission's many readings can leave train short of the minimum
+        # while the holdout is ample. The holdout is frozen; train grows with
+        # every wave, so this heals itself — the reason says which it is.
+        return {"refusal": f"TOO FEW: train {len(train)} < {min_train} after the whole-mission draw (holdout {len(holdout)} readings)"}
     if len(train) < min_train or len(holdout) < min_holdout:
         return {"refusal": f"TOO FEW: train {len(train)} < {min_train} or holdout {len(holdout)} < {min_holdout}"}
     classes = set(y_fail(train).tolist())

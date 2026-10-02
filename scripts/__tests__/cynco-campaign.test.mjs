@@ -2659,7 +2659,8 @@ describe('the outcome hindcast at VERDICT', () => {
     expect(rec.hindcast.reading.ladder['M2.gbt']).toEqual(f.rules['M2.gbt'])
     expect(Object.keys(rec.hindcast.ladder).sort()).toEqual(['M1.gbt', 'M1.lr'])
     expect(Object.keys(rec.hindcast.reading.ladder).sort()).toEqual(['M2.gbt', 'M2.lr'])
-    expect(entry).toMatch(/; K = 32 TOO FEW: train 5 < 30 or holdout 19 < 8; readings: v1 per interval, signals v2 only \(eligible v2 60\) on 10 held-out readings \(base 60%\): M2\.gbt precision 80% \[\d+, \d+\] on 5 fired p\(Holm\) \d\.\d{3} [A-Z][A-Z ]+; M2\.lr precision null on 0 fired p\(Holm\) null TOO FEW; leak check not run; reading:2 holdout frozen now \(10 readings of 5 missions\)$/m)
+    expect(entry).toMatch(/; K = 32 TOO FEW: train 5 < 30 or holdout 19 < 8; readings: v1 per interval, signals v2 only \(eligible v2 60\) on 10 held-out readings \(base 60%\): M2\.gbt precision 80% \[\d+, \d+\] on 5 fired p\(Holm\) \d\.\d{3} [A-Z][A-Z ]+; M2\.lr precision null on 0 fired p\(Holm\) null TOO FEW \(p optimistic: readings share missions\); leak check not run; reading:2 holdout frozen now \(10 readings of 5 missions\)$/m)
+    expect(f.rules['M2.gbt'].dependence).toBe('readings share missions')
   })
 
   // Final review M1 (T5-M1): a writeRuleVerdicts that throws on the MODEL rows
