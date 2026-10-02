@@ -281,7 +281,30 @@ interface CampaignSummary {
     wave: number
     decision: { kind: string; why: string } | null
     posiwid: { verdict: string; divergence: number } | null
-    governancePosiwid: { verdict: string; onsetWave: number | null } | null
+    /** v1 (`verdict`, `onsetWave`) as before; Phase 7 ruling 4's v2 — the
+     *  purpose the authority table grants — beside it: `stated` is the
+     *  earned/total S5 rules it was stated from, and a v2 that was not
+     *  measured is `{ verdict: null, stated: null }`. `v2: null` when the wave
+     *  predates v2. */
+    governancePosiwid: {
+      verdict: string
+      onsetWave: number | null
+      v2: { verdict: string | null; stated: { earned: number; total: number } | null } | null
+    } | null
+    /** Phase 7 ruling 5: the wave record's mid-wave gate readings
+     *  (`rec.progress`) and shadow-rule decisions (`rec.shadowDecisions`),
+     *  reduced to what the panel draws. Both are written at VERDICT, so a wave
+     *  in flight has none; `null` when the wave predates Phase 6 or the runner
+     *  did not wait on it. A fault reading is `{ elapsedFraction: null, fails:
+     *  null, sha7: null, fault }`. `startFails` is the R1 decisions' start
+     *  count (else the first measured reading's), the curve's y scale.
+     *  `decisions[rule]`: `n` decisions, `fired` of them fired, at `firedAt`
+     *  elapsed fractions. */
+    progress: {
+      startFails: number | null
+      readings: Array<{ elapsedFraction: number | null; fails: number | null; sha7: string | null; fault: string | null }>
+      decisions: Record<string, { n: number; fired: number; firedAt: number[] }>
+    } | null
     /** Phase 4 ruling 4: the wave record's campaign checklist, reduced to what
      *  the panel prints (scripts/cynco-autopoiesis.mjs); `assessError` when the
      *  assessment threw, null when the wave predates it. */
@@ -934,7 +957,12 @@ window.__CYNCO_TOKEN = ${JSON.stringify(token)};
       wave: w.wave,
       decision: w.decision ?? null,
       posiwid: w.posiwid ? { verdict: w.posiwid.verdict, divergence: w.posiwid.divergence } : null,
-      governancePosiwid: w.governancePosiwid ? { verdict: w.governancePosiwid.verdict, onsetWave: w.governancePosiwid.onsetWave ?? null } : null,
+      governancePosiwid: w.governancePosiwid ? {
+        verdict: w.governancePosiwid.verdict,
+        onsetWave: w.governancePosiwid.onsetWave ?? null,
+        v2: this.reduceGovernanceV2(w.governancePosiwid.v2),
+      } : null,
+      progress: this.reduceProgress(w.progress, w.shadowDecisions),
       autopoiesis: !w.autopoiesis ? null
         : typeof w.autopoiesis.assessError === 'string' ? { isAutopoietic: false, missing: [], assessError: w.autopoiesis.assessError }
           : Array.isArray(w.autopoiesis.missing) ? { isAutopoietic: w.autopoiesis.isAutopoietic === true, missing: w.autopoiesis.missing }
@@ -1082,6 +1110,44 @@ window.__CYNCO_TOKEN = ${JSON.stringify(token)};
       console.warn(`[dashboard] pooled scoreboard not computed (${message})`)
       return { error: message }
     }
+  }
+
+  /** A wave record's `governancePosiwid.v2` (scripts/cynco-campaign.mjs,
+   *  Phase 7 ruling 4) reduced to the verdict and what it was stated from.
+   *  An unmeasured v2 (`{ verdict: null, reason }`) keeps its null verdict. */
+  private reduceGovernanceV2(v2: any): NonNullable<NonNullable<CampaignSummary['waves'][number]['governancePosiwid']>['v2']> | null {
+    if (!v2 || typeof v2 !== 'object') return null
+    const s = v2.stated
+    const stated = s && typeof s.earned === 'number' && typeof s.total === 'number' ? { earned: s.earned, total: s.total } : null
+    return { verdict: typeof v2.verdict === 'string' ? v2.verdict : null, stated }
+  }
+
+  /** A wave record's `progress` + `shadowDecisions` (written at verdict by
+   *  scripts/cynco-campaign.mjs progressFields) reduced to what the panel
+   *  draws. null when the record carries no `progress` array. */
+  private reduceProgress(progress: any, shadowDecisions: any): CampaignSummary['waves'][number]['progress'] {
+    if (!Array.isArray(progress)) return null
+    const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null)
+    const readings = progress.filter((r: any) => r && typeof r === 'object').map((r: any) => (
+      typeof r.fault === 'string'
+        ? { elapsedFraction: null, fails: null, sha7: null, fault: r.fault }
+        : { elapsedFraction: num(r.elapsedFraction), fails: num(r.fails), sha7: typeof r.sha === 'string' ? r.sha.slice(0, 7) : null, fault: null }
+    ))
+    const decisions: Record<string, { n: number; fired: number; firedAt: number[] }> = {}
+    let startFails: number | null = null
+    for (const d of Array.isArray(shadowDecisions) ? shadowDecisions : []) {
+      if (!d || typeof d.rule !== 'string') continue
+      const slot = decisions[d.rule] ?? (decisions[d.rule] = { n: 0, fired: 0, firedAt: [] })
+      slot.n += 1
+      if (d.fired === true) {
+        slot.fired += 1
+        const at = num(d.elapsedFraction)
+        if (at !== null) slot.firedAt.push(at)
+      }
+      if (startFails === null && num(d.startFails) !== null) startFails = num(d.startFails)
+    }
+    if (startFails === null) startFails = readings.find((r: { fails: number | null }) => r.fails !== null)?.fails ?? null
+    return { startFails, readings, decisions }
   }
 
   /** state.authoring[id] (cynco-gate-author.mjs) reduced to the panel's shape.
