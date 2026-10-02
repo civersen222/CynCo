@@ -1150,7 +1150,9 @@ the committed file in the working tree, and the runner commits it with that
 wave's verdict (the verdict commit stages every changed path under
 `benchmark/cynco-ledger/`, `ledgerShardsTouched` in
 `scripts/cynco-campaign.mjs`); a freeze made by the CLI is committed by the
-operator like any other ledger change.
+operator like any other ledger change. Phase 7 adds a third kind of key, the
+reading unit's `"reading:<v>"` (see "The reading learner, `M2.*`" below); the
+mission sets `"1"`/`"2"` are written back byte-identical when it freezes.
 
 **S5 rules that read a v2-changed signal (fix round 1, review I2).** W5 and I2
 (`engine/s5/ruleBasedS5.ts`) fire on the homeostat streak, which in v1 was the
@@ -1670,22 +1672,47 @@ per campaign that one row per mission gives, from the same readings Phase 6
 already took — no new measurement, no new gate run.
 
 **An interval** is the half-open span `(atStart, atEnd]` between two of a
-wave's `rec.shadowDecisions` entries that carry a numeric `fails` (ticks
-deduplicated by `at`, kept in time order; fewer than two usable ticks is
-`noTicks`). Its turns are the ledger row's `turns[]` whose `t` (epoch ms) falls
-inside that span — a prefix nowhere in sight: Phase 7 slices the MIDDLE of a
+wave's `rec.shadowDecisions` entries that carry a numeric `fails`, in time
+order. `ticksOf` builds the tick series with two corrections over the raw
+decisions (Task 1 review, fix round 1):
+
+- **The dedupe prefers `R1.no-progress` (M2).** More than one rule decides at
+  the same `at` (`R2.stalled`, Phase 7 ruling 2); only R1's decision carries
+  `startFails`, and the first tick's `startFails` sets the share for every
+  interval in the wave, so a dedupe that kept whichever rule came first could
+  silently read the wrong one's (missing) `startFails`. R1 wins at a given
+  `at` whenever it exists; otherwise the first decision there is kept.
+- **A faulted tick is dropped, not measured (I1).** `shadowNoProgress` copies
+  the LAST MEASURED reading's `fails` onto a tick whose probe faulted — a
+  stale count is not a reading of now — so a naive reading would mint a
+  fabricated `stalled` interval out of a tick where nothing was actually
+  measured. A tick whose `at` matches a `rec.progress` reading carrying
+  `.fault` is dropped; the spans on either side of it merge into one interval,
+  exactly as a skipped tick already does. Fewer than two surviving ticks is
+  `noTicks`.
+
+Its turns are the ledger row's `turns[]` whose `t` (epoch ms) falls inside that
+span, sorted by `t` before aggregating (M1: array order is not guaranteed to be
+time order) — a prefix nowhere in sight: Phase 7 slices the MIDDLE of a
 mission, not its start. `aggregatesOf` — the same NUMERIC/NUMERIC_V2/CATEGORICAL
 computation `featuresOf` runs over a mission's K-turn prefix — runs over that
 slice instead, so the mission-level and interval-level feature keys can never
 drift apart; a slice with fewer than `INTERVAL_MIN_TURNS` (4) turns is `short`,
-never a row of nulls, and a row whose turns carry no `t` at all (a pre-F165-
-timestamp ledger row) is `noTurnTimes`.
+never a row of nulls. `noTurnTimes` is ROW-LEVEL only: a turn without a numeric
+`t` is simply skipped from whichever interval it would have fallen in (M5); the
+row is `noTurnTimes` only when NO turn on it carries a `t` at all (a
+pre-F165-timestamp ledger row).
 
 **The label.** `improved` when the tick at the end of the span reads fewer
 fails than the tick at its start, `stalled` otherwise (equal counts included —
-a skipped tick that repeats the previous `fails` is a stall, not a drop). Over
-the fixture's four ticks (20 → 16 → 16 → 10 fails) the three intervals label
-`improved`, `stalled`, `improved`.
+a skipped tick that repeats the previous `fails` is a stall, not a drop) —
+**except** when the span STARTS at 0 fails: `excluded.afterZero` (I2). Once the
+gate is passing, every later tick still reads `0 → 0`, which the label rule
+above would call `stalled`; a wave that is still ticking after it solved the
+gate is not stalled, it is finished, so that interval is excluded rather than
+mislabeled. Over the fixture's four ticks (20 → 16 → 16 → 10 fails) the three
+intervals label `improved`, `stalled`, `improved`; over a synthetic 2 → 0 → 0 →
+0 run, the first interval is `improved` and the other two are `afterZero`.
 
 **The five context keys**, added to the shared aggregate features (never
 replacing one): `interval.turns` (the slice's turn count), `interval.minutes`
@@ -1711,13 +1738,13 @@ ledger row's `campaignId` — the field is not on the wave record today):
 ```
 
 **Excluded, not silently dropped** — `intervalsOf(rec, row)` returns
-`{ intervals, excluded: { short, noTicks, noTurnTimes, otherVersion } }`:
+`{ intervals, excluded: { short, noTicks, noTurnTimes, otherVersion, afterZero } }`:
 `noTicks` and `noTurnTimes` are row-level 0/1 (a wave or mission that cannot
-yield any interval at all), `short` and `otherVersion` count per-interval.
-`intervalRows(rows, waves)` joins each wave to its ledger row by `missionId`
-(a wave with no matching row is counted in `excluded.noRow` and contributes
-nothing) and sums `excluded` across waves; `waves` is the count of waves that
-DID join a row.
+yield any interval at all), `short`, `otherVersion` and `afterZero` count
+per-interval. `intervalRows(rows, waves)` joins each wave to its ledger row by
+`missionId` (a wave with no matching row is counted in `excluded.noRow` and
+contributes nothing) and sums `excluded` across waves; `waves` is the count of
+waves that DID join a row.
 
 **v2 only.** Like the mission dataset, `signalsVersion` is the slice's own
 minimum over its turns; `intervalRows`/`intervalsOf` default to
@@ -1727,13 +1754,93 @@ there is one Phase 7 dataset, not a v1/v2 split, because mid-wave progress
 reading only exists on F165-era (v2) ledgers.
 
 **CLI.** `bun scripts/cynco-outcome-dataset.mjs --export-intervals
-[--campaigns-dir DIR] [--out PATH] [--ledger-dir DIR]` reads the ledger
-(`readLedger`), every runner-driven campaign's wave records
+[--campaigns-dir DIR] [--signals-version N] [--out PATH] [--ledger-dir DIR]`
+reads the ledger (`readLedger`), every runner-driven campaign's wave records
 (`runnerWaves(campaignsDir)`, default `<cyncoHome>/campaigns`), and writes
 JSONL to `--out` (default `~/.cynco/datasets/outcome-dataset-intervals.jsonl`,
 `DATASET_INTERVALS_PATH`), printing
 `reading-level outcomes: N rows from M waves (excluded … short, … no ticks,
-… no turn times, … other signals version, … no ledger row) → PATH`.
+… no turn times, … other signals version, … after zero fails, … no ledger row)
+→ PATH`. `--signals-version N` (default 2, same flag `--export` reads) selects
+which slice version to keep; everything else is "v2 only" above.
+
+### The reading learner, `M2.*`, and the `reading:2` holdout (Phase 7 ruling 1)
+
+The interval rows above go through the SAME model, hindcast and ladder as the
+mission rows, as a second unit. The mission unit stays primary — its `M1.*`
+rows, its hindcast line and the scoreboard's `learner` field are unchanged —
+and the reading unit is reported beside it.
+
+**The labels, kept apart.** A mission row's label is a boolean (`true` =
+landed); a reading row's is `improved` / `stalled`, and its success class is
+`improved` (`POSITIVE_LABEL` / `NEGATIVE_LABEL` in
+`scripts/cynco-outcome-model.py`, `READING_LABELS` in
+`scripts/cynco-outcome-dataset.mjs`). In both units the probability written is
+the NEGATIVE class's: a reading's `pFail` is P(stalled).
+
+**The `reading:2` holdout.** A set of its own in `frozen-eval.json`, keyed
+`"reading:<v>"` (`setKeyOf(v, 'reading')`), frozen ONCE by the mission unit's
+rule: the first VERDICT whose interval export holds `FREEZE_MIN_ELIGIBLE` (38)
+labeled v2 readings with at least 8 of each label freezes it with
+`freezeManifest(rows, { unit: 'reading', seed: AUTO_FREEZE_SEED })` and records
+`{ signalsVersion: 2, unit: 'reading', frozenAt, count, missions, eligible,
+seed, how: 'auto' }` on the history; the sets `"1"` and `"2"` are written back
+byte-identical, and the runner commits the file with that wave's verdict as it
+does for `"2"`. The draw is Phase 5's (HOLDOUT_SHARE of the readings,
+proportional per label, at least one of each, a seeded shuffle) **by whole
+missions**: the set's `missionIds` are missions, `ids` the readings
+(`missionId:interval`) held at freeze time, and `frozenSplit(rows, set, { unit:
+'reading' })` — like the model — splits by `missionId`. **Every interval of a
+held mission is held; one mission's intervals never straddle train and
+holdout** (a reading added later to a held mission is held too). Missions are
+taken in seeded order while either label is short of its share, so the held
+count can run over the share by part of one mission.
+
+**Below the minimum** the reading is UNMEASURED with the counts, python is not
+spawned for that unit, and the file is untouched:
+`reading holdout not yet frozen (36 of 38 labeled; improved 18 / stalled 18; need 8 of each)`.
+
+**The model.** `python scripts/cynco-outcome-model.py --unit reading --dataset
+<home>/datasets/outcome-dataset-intervals.jsonl --manifest frozen-eval.json
+--out <home>/datasets/outcome-model.json --signals-version 2 --rows-by-version
+'{"2": n}'` trains the same `lr`/`gbt` on the training readings, scores the
+`reading:2` readings, and writes the block under `reading` in
+`outcome-model.json` — the same keys as the mission block plus `unit` and
+`positiveLabel`, `leakCheck` and `secondary` null (no hindsight, no second
+prefix: `--hindsight`/`--dataset32` are refused with `--unit reading`). A
+reading prediction is `{ id, missionId, interval, pFail }`. The mission run
+carries the previous `reading` block over and a reading run replaces only it,
+so each unit's `version` counts its own retrains. A run that exits 0 with no
+`reading` block is a fault, never the previous block.
+
+**`rec.hindcast.reading`** (`runReadingHindcast` in
+`scripts/cynco-hindcast.mjs`): `{ fault, signalsVersion, rowsByVersion,
+holdout, waves, excluded }`, or the model summary with the same context and
+`ladder` (the two `M2.*` entries as written). It is independent of the
+mission's: either may be UNMEASURED while the other trains.
+
+**The `M2.*` rows.** `modelRowsFrom(readingBlock, intervalRows, { unit:
+'reading' })` gives `M2.lr` and `M2.gbt` (`source: 'model'`, `unit:
+'reading'`): *fired* = held-out readings with `pFail ≥ 0.5`, *scope* = the
+held-out readings the interval rows still carry, the label read from the ROW
+(improved = success). They go through the same `analyse` arithmetic in the
+same Holm family (rules, then `M1.*` and `M2.*`, then runner rows), written as
+`rules['M2.<k>'] = { …, source: 'model', scope: 'holdout', unit: 'reading',
+base, scopeN }` (`scopeN` held-out readings); the `M1.*` entries now carry
+`unit: 'mission'`. A row that fired on no held-out reading has n 0 and null
+numbers (F16). `engine/s5/ruleAuthority.ts` skips every `source: 'model'` row,
+so an `M2.*` id is refused authority exactly as an `M1.*` id is; the
+scoreboard neither counts nor ranks them, and its `learner` field reads the
+`M1.*` rows only.
+
+**The verdict line** gains `; readings: <the mission learner's grammar>` after
+the mission clause — `; readings: UNMEASURED — reading holdout not yet frozen
+(…)`, or `; readings: v1 per interval, signals v2 only (eligible v2 60) on 12
+held-out readings (base 50%): M2.gbt … ; M2.lr … ; leak check not run`, with
+`; reading:2 holdout frozen now (12 readings of 6 missions)` on the wave that
+froze it. A record from before Phase 7 has no `reading` and prints no clause.
+`bun scripts/cynco-rule-verdicts.mjs --with-hindcast` runs the reading learner
+too, over the same campaigns dir it reads the runner rows from.
 
 ## Labeling rule
 

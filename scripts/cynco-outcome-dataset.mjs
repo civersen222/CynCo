@@ -52,7 +52,7 @@
  * interval instead of one row per mission — see `intervalsOf`/`intervalRows`
  * below and benchmark/cynco-ledger/README.md, "Reading-level outcomes".
  *
- *   bun scripts/cynco-outcome-dataset.mjs --export-intervals [--campaigns-dir DIR] [--out PATH] [--ledger-dir DIR]
+ *   bun scripts/cynco-outcome-dataset.mjs --export-intervals [--campaigns-dir DIR] [--signals-version N] [--out PATH] [--ledger-dir DIR]
  */
 
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
@@ -60,7 +60,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { readLedger } from './cynco-ledger-shards.mjs'
 import { labelOf } from './cynco-signal-validation.mjs'
-import { runnerWaves } from './cynco-runner-rows.mjs'
+import { runnerWaves, NO_PROGRESS_RULE } from './cynco-runner-rows.mjs'
 
 const REPO_LEDGER_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'benchmark', 'cynco-ledger')
 export const MANIFEST_PATH = join(REPO_LEDGER_DIR, 'frozen-eval.json')
@@ -69,6 +69,19 @@ export const DATASET_PATH = (home) => join(home, 'datasets', 'outcome-dataset.js
 export const DATASET_INTERVALS_PATH = (home) => join(home, 'datasets', 'outcome-dataset-intervals.jsonl')
 /** An interval with fewer prefix turns than this is SHORT, not a row of nulls. */
 export const INTERVAL_MIN_TURNS = 4
+/**
+ * Phase 7 ruling 1: the two units a learner is trained on. A mission row's
+ * label is `labelOf` (true = landed); a reading row's is `improved` /
+ * `stalled`, and its success class is `improved`. The two maps stay apart.
+ */
+export const MISSION_UNIT = 'mission'
+export const READING_UNIT = 'reading'
+export const READING_LABELS = Object.freeze({ positive: 'improved', negative: 'stalled' })
+/** The manifest set a unit's holdout lives in: "<v>" (missions), "reading:<v>". */
+export const setKeyOf = (v, unit = MISSION_UNIT) => (unit === MISSION_UNIT ? String(v) : `${unit}:${v}`)
+/** A reading's identity in a holdout: `missionId:interval`. */
+export const readingIdOf = (r) => `${r.missionId}:${r.interval}`
+const readingLabeled = (r) => r?.label === READING_LABELS.positive || r?.label === READING_LABELS.negative
 export const MANIFEST_SCHEMA = 1
 /** The two fixed prefix points: primary and secondary. */
 export const PREFIX_TURNS = Object.freeze([16, 32])
@@ -279,15 +292,42 @@ export function datasetRows(rows, K = DEFAULT_TURNS, { signalsVersion = null } =
 
 const round3 = (x) => Math.round(x * 1000) / 1000
 
-/** The wave's measured ticks: shadow decisions with a numeric `fails`, one
- *  per `at` (later duplicates of the same `at` are dropped), in time order. */
+/**
+ * The wave's measured ticks: shadow decisions with a numeric `fails`, one per
+ * `at`, in time order.
+ *
+ * Two corrections over the raw `shadowDecisions` (Task 1 review, fix round 1):
+ *
+ * - **Dedup prefers `R1.no-progress` explicitly (M2).** More than one rule
+ *   decides at the same `at` (`R2.stalled` as of Phase 7 ruling 2); R2 carries
+ *   no `startFails`, so a first-seen-wins dedupe would silently fall back to
+ *   reading `startFails` off the wrong rule's tick — and off the first tick
+ *   specifically, which decides `startFails` for the WHOLE interval set. The
+ *   R1 decision at an `at` always wins when one exists; otherwise the first
+ *   decision at that `at` is kept, same as before.
+ * - **A faulted tick is dropped, not measured (I1).** `shadowNoProgress`
+ *   copies the LAST MEASURED reading's `fails` onto a tick whose probe
+ *   faulted (`cynco-campaign-progress.mjs:242` — a stale count is not a
+ *   reading of now), so a faulted tick's decision carries a `fails` that was
+ *   already true at the PREVIOUS tick. Treating it as a fresh reading mints a
+ *   fabricated "stalled" interval out of nothing having been measured. Ticks
+ *   whose `at` matches a `rec.progress` reading with `.fault` are dropped
+ *   entirely; dropping one merges the spans on either side of it into a
+ *   single interval, same as a skipped tick already did.
+ */
 function ticksOf(rec) {
-  const seen = new Map()
+  const faultedAts = new Set((Array.isArray(rec?.progress) ? rec.progress : []).filter(r => r?.fault).map(r => r.at))
+  const byAt = new Map()
   for (const d of Array.isArray(rec?.shadowDecisions) ? rec.shadowDecisions : []) {
     if (!d || typeof d.at !== 'string' || typeof d.fails !== 'number' || !Number.isFinite(d.fails)) continue
-    if (!seen.has(d.at)) seen.set(d.at, { at: d.at, ms: Date.parse(d.at), fails: d.fails, elapsedFraction: d.elapsedFraction ?? null, startFails: d.startFails ?? null })
+    if (faultedAts.has(d.at)) continue
+    const existing = byAt.get(d.at)
+    if (!existing || (d.rule === NO_PROGRESS_RULE && existing.rule !== NO_PROGRESS_RULE)) byAt.set(d.at, d)
   }
-  return [...seen.values()].filter(t => Number.isFinite(t.ms)).sort((a, b) => a.ms - b.ms)
+  return [...byAt.values()]
+    .map(d => ({ at: d.at, ms: Date.parse(d.at), fails: d.fails, elapsedFraction: d.elapsedFraction ?? null, startFails: d.startFails ?? null }))
+    .filter(t => Number.isFinite(t.ms))
+    .sort((a, b) => a.ms - b.ms)
 }
 
 /**
@@ -295,21 +335,26 @@ function ticksOf(rec) {
  * turns inside (atStart, atEnd]. `excluded` counts why an interval did not
  * become a row: `short` (fewer than INTERVAL_MIN_TURNS turns in the slice),
  * `noTicks` (fewer than 2 usable ticks — at most one row-level 0/1, not a
- * per-interval count), `noTurnTimes` (the row has no turns, or a turn with no
- * `t` — a v1/pre-F165-timestamp ledger row, at most one row-level 0/1),
- * `otherVersion` (the slice's signals version is not the requested one).
+ * per-interval count), `noTurnTimes` (NO turn on the row carries a numeric
+ * `t` — a v1/pre-F165-timestamp ledger row, at most one row-level 0/1; a turn
+ * WITHOUT `t` on an otherwise-timed row is simply skipped, per turn — M5),
+ * `otherVersion` (the slice's signals version is not the requested one),
+ * `afterZero` (the interval starts at 0 fails — I2: once the gate is passing,
+ * every later tick reads the same way `b.fails < a.fails` would call
+ * "stalled", but a solved wave that is still ticking is not a stall).
  */
 export function intervalsOf(rec, row, { signalsVersion = 2 } = {}) {
-  const excluded = { short: 0, noTicks: 0, noTurnTimes: 0, otherVersion: 0 }
+  const excluded = { short: 0, noTicks: 0, noTurnTimes: 0, otherVersion: 0, afterZero: 0 }
   const ticks = ticksOf(rec)
   if (ticks.length < 2) { excluded.noTicks = 1; return { intervals: [], excluded } }
-  const turns = turnsOf(row)
-  if (!turns.length || turns.some(t => typeof t?.t !== 'number')) { excluded.noTurnTimes = 1; return { intervals: [], excluded } }
+  const turns = turnsOf(row).filter(t => typeof t?.t === 'number' && Number.isFinite(t.t))
+  if (!turns.length) { excluded.noTurnTimes = 1; return { intervals: [], excluded } }
   const startFails = ticks[0].startFails ?? ticks[0].fails
   const intervals = []
   for (let i = 0; i + 1 < ticks.length; i++) {
     const a = ticks[i], b = ticks[i + 1]
-    const slice = turns.filter(t => t.t > a.ms && t.t <= b.ms)
+    if (a.fails === 0) { excluded.afterZero++; continue }
+    const slice = turns.filter(t => t.t > a.ms && t.t <= b.ms).sort((x, y) => x.t - y.t)
     if (slice.length < INTERVAL_MIN_TURNS) { excluded.short++; continue }
     const { signalsVersion: v, features } = aggregatesOf(slice)
     if (v !== signalsVersion) { excluded.otherVersion++; continue }
@@ -337,7 +382,7 @@ export function intervalsOf(rec, row, { signalsVersion = 2 } = {}) {
 export function intervalRows(rows, waves, { signalsVersion = 2 } = {}) {
   const byId = new Map((Array.isArray(rows) ? rows : []).map(r => [r.missionId, r]))
   const out = []
-  const excluded = { short: 0, noTicks: 0, noTurnTimes: 0, otherVersion: 0, noRow: 0 }
+  const excluded = { short: 0, noTicks: 0, noTurnTimes: 0, otherVersion: 0, afterZero: 0, noRow: 0 }
   let n = 0
   for (const w of Array.isArray(waves) ? waves : []) {
     const row = w?.missionId ? byId.get(w.missionId) : null
@@ -358,7 +403,11 @@ export function intervalRows(rows, waves, { signalsVersion = 2 } = {}) {
  * eligible at K (unlabeled, or fewer than K turns) leave both splits, and held
  * ids among them are reported in `ineligible`.
  */
-export function frozenSplit(rows, manifest, { turns = null } = {}) {
+export function frozenSplit(rows, manifest, { turns = null, unit = MISSION_UNIT } = {}) {
+  // Phase 7 ruling 1: a reading set's `missionIds` are whole missions — the
+  // split below is by `missionId` for both units, so every reading of a held
+  // mission is held. A reading has no K-turn prefix to be eligible at.
+  if (unit !== MISSION_UNIT && turns !== null) throw new Error(`turns: K applies to the mission unit only, not '${unit}'`)
   const held = new Set(manifest?.missionIds ?? [])
   const seen = new Set(rows.map(r => r.missionId))
   const ineligible = []
@@ -412,8 +461,10 @@ function seededShuffle(ids, rand) {
  * every previous id is kept (refreeze only adds) and each label's share is
  * topped up from the rows not yet held.
  */
-export function freezeManifest(rows, { seed, version, previous = null, turns = DEFAULT_TURNS, now = () => new Date().toISOString() } = {}) {
+export function freezeManifest(rows, { seed, version, previous = null, turns = DEFAULT_TURNS, now = () => new Date().toISOString(), unit = MISSION_UNIT } = {}) {
   if (!Number.isInteger(seed)) throw new Error(`seed must be an integer, got ${seed}`)
+  if (unit === READING_UNIT) return freezeReadingManifest(rows, { seed, version, previous, now })
+  if (unit !== MISSION_UNIT) throw new Error(`unknown unit '${unit}'`)
   checkTurns(turns)
   const eligible = rows.filter(r => exclusionOf(r, turns) === null)
   const byLabel = { false: [], true: [] }
@@ -446,6 +497,66 @@ export function freezeManifest(rows, { seed, version, previous = null, turns = D
     seed,
     frozenAt: now(),
     missionIds: [...held].sort(),
+  }
+}
+
+/** The reading unit's own stream, apart from the two mission label streams. */
+const READING_STREAM = 0x27D4EB2F
+
+/**
+ * The reading unit's holdout (Phase 7 ruling 1): Phase 5's rule — HOLDOUT_SHARE
+ * of the labeled readings, split across the two labels in proportion, at least
+ * one of each when both exist, a seeded shuffle — drawn by WHOLE MISSIONS, so
+ * one mission's intervals never straddle train and holdout. Missions are taken
+ * in seeded order while either label is short of its share (a mission is
+ * skipped when it holds only readings of labels already met), so the held count
+ * can run over the share by part of one mission. `missionIds` is the split key;
+ * `ids` the readings (`missionId:interval`) held at freeze time. With
+ * `previous`, every previous mission is kept (refreeze only adds).
+ */
+function freezeReadingManifest(rows, { seed, version, previous = null, now }) {
+  const pool = rows.filter(readingLabeled)
+  const byMission = new Map()
+  const total = { improved: 0, stalled: 0 }
+  for (const r of pool) {
+    const c = byMission.get(r.missionId) ?? { improved: 0, stalled: 0 }
+    c[r.label]++
+    total[r.label]++
+    byMission.set(r.missionId, c)
+  }
+  const both = total.improved > 0 && total.stalled > 0
+  const rounded = Math.round(pool.length * HOLDOUT_SHARE)
+  const want = both ? Math.max(2, rounded) : rounded
+  const target = { improved: 0, stalled: 0 }
+  if (pool.length) {
+    target.stalled = Math.round(want * total.stalled / pool.length)
+    target.improved = want - target.stalled
+    if (both) {
+      if (target.stalled === 0) { target.stalled = 1; target.improved = want - 1 }
+      if (target.improved === 0) { target.improved = 1; target.stalled = want - 1 }
+    }
+  }
+  const held = new Set(previous?.missionIds ?? [])
+  const have = { improved: 0, stalled: 0 }
+  for (const id of held) { const c = byMission.get(id); if (c) { have.improved += c.improved; have.stalled += c.stalled } }
+  const rand = mulberry32((seed ^ READING_STREAM) >>> 0)
+  for (const id of seededShuffle([...byMission.keys()].filter(id => !held.has(id)), rand)) {
+    const short = (l) => have[l] < target[l]
+    if (!short('improved') && !short('stalled')) break
+    const c = byMission.get(id)
+    if (!((c.improved && short('improved')) || (c.stalled && short('stalled')))) continue
+    held.add(id)
+    have.improved += c.improved
+    have.stalled += c.stalled
+  }
+  return {
+    schema: MANIFEST_SCHEMA,
+    unit: READING_UNIT,
+    version: version ?? (previous ? (previous.version ?? 1) + 1 : 1),
+    seed,
+    frozenAt: now(),
+    missionIds: [...held].sort(),
+    ids: pool.filter(r => held.has(r.missionId)).map(readingIdOf).sort(),
   }
 }
 
@@ -508,9 +619,10 @@ export function readManifestFile(path) {
   return manifestSets(existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : null)
 }
 
-/** Signals version `v`'s frozen set, or null when none has been frozen. */
-export function heldSetFor(file, v) {
-  return file?.sets?.[String(v)] ?? null
+/** Signals version `v`'s frozen set of `unit` (Phase 7: "reading:<v>" for
+ *  readings), or null when none has been frozen. */
+export function heldSetFor(file, v, { unit = MISSION_UNIT } = {}) {
+  return file?.sets?.[setKeyOf(v, unit)] ?? null
 }
 
 /** The rows whose K-turn prefix is signals version `v`. */
@@ -523,10 +635,12 @@ export function rowsOfVersion(rows, v, K = DEFAULT_TURNS) {
  * to replace an existing set unless `add` is set (the `--refreeze` path, whose
  * `freezeManifest(…, { previous })` only ever adds ids).
  */
-export function withVersionSet(file, v, set, entry, { add = false } = {}) {
-  if (heldSetFor(file, v) && !add) throw new Error(`the signals v${v} holdout is already frozen — frozen means frozen`)
-  return { schema: MANIFEST_FILE_SCHEMA, sets: { ...file.sets, [String(v)]: set },
-    history: [...(file.history ?? []), { signalsVersion: v, ...entry }] }
+export function withVersionSet(file, v, set, entry, { add = false, unit = MISSION_UNIT } = {}) {
+  const key = setKeyOf(v, unit)
+  if (heldSetFor(file, v, { unit }) && !add) throw new Error(`the ${unit === MISSION_UNIT ? `signals v${v}` : key} holdout is already frozen — frozen means frozen`)
+  // The history entry names a non-mission unit; a mission entry keeps Phase 5's shape.
+  return { schema: MANIFEST_FILE_SCHEMA, sets: { ...file.sets, [key]: set },
+    history: [...(file.history ?? []), { signalsVersion: v, ...(unit === MISSION_UNIT ? {} : { unit }), ...entry }] }
 }
 
 /**
@@ -542,7 +656,9 @@ export function withVersionSet(file, v, set, entry, { add = false } = {}) {
  * MODEL_MIN_HOLDOUT of one label — a holdout frozen from a one-class pool can
  * never give an AUC, and a frozen set only grows by a hand `--refreeze`).
  */
-export function ensureVersionHoldout({ rows, path, v, K = DEFAULT_TURNS, seed = AUTO_FREEZE_SEED, now = () => new Date().toISOString() }) {
+export function ensureVersionHoldout({ rows, path, v, K = DEFAULT_TURNS, seed = AUTO_FREEZE_SEED, now = () => new Date().toISOString(), unit = MISSION_UNIT }) {
+  if (unit === READING_UNIT) return ensureReadingHoldout({ rows, path, v, seed, now })
+  if (unit !== MISSION_UNIT) throw new Error(`unknown unit '${unit}'`)
   const file = readManifestFile(path)
   const existing = heldSetFor(file, v)
   if (existing) return { set: existing, holdout: { frozen: true, frozenNow: false, frozenAt: existing.frozenAt ?? null, ids: existing.missionIds.length } }
@@ -556,6 +672,33 @@ export function ensureVersionHoldout({ rows, path, v, K = DEFAULT_TURNS, seed = 
   writeAtomic(path, JSON.stringify(withVersionSet(file, v, set,
     { frozenAt: set.frozenAt, count: set.missionIds.length, eligible: pool.length, seed, how: 'auto' }), null, 2) + '\n')
   return { set, holdout: { frozen: true, frozenNow: true, frozenAt: set.frozenAt, ids: set.missionIds.length } }
+}
+
+/**
+ * `ensureVersionHoldout` for the reading unit (Phase 7 ruling 1): `rows` are
+ * interval rows (`intervalRows`); the pool is version `v`'s labeled readings.
+ * The rule is the mission unit's — frozen once, at FREEZE_MIN_ELIGIBLE
+ * readings with at least MODEL_MIN_HOLDOUT of each label — into the set
+ * `reading:<v>`, recorded on the history; every other set is written back
+ * untouched. Not frozen ALWAYS carries both label counts:
+ * `{ frozen: false, unit, eligible, needed, improved, stalled, needEach }`;
+ * frozen: `{ frozen, frozenNow, frozenAt, ids, missions }` (`ids` readings).
+ */
+function ensureReadingHoldout({ rows, path, v, seed, now }) {
+  const file = readManifestFile(path)
+  const existing = heldSetFor(file, v, { unit: READING_UNIT })
+  const frozenAs = (set, frozenNow) => ({ frozen: true, frozenNow, frozenAt: set.frozenAt ?? null,
+    ids: Array.isArray(set.ids) ? set.ids.length : null, missions: set.missionIds.length })
+  if (existing) return { set: existing, holdout: frozenAs(existing, false) }
+  const pool = (Array.isArray(rows) ? rows : []).filter(r => r?.signalsVersion === v && readingLabeled(r))
+  const improved = pool.filter(r => r.label === READING_LABELS.positive).length, stalled = pool.length - improved
+  if (pool.length < FREEZE_MIN_ELIGIBLE || improved < MODEL_MIN_HOLDOUT || stalled < MODEL_MIN_HOLDOUT) {
+    return { set: null, holdout: { frozen: false, unit: READING_UNIT, eligible: pool.length, needed: FREEZE_MIN_ELIGIBLE, improved, stalled, needEach: MODEL_MIN_HOLDOUT } }
+  }
+  const set = freezeManifest(pool, { unit: READING_UNIT, seed, now })
+  writeAtomic(path, JSON.stringify(withVersionSet(file, v, set,
+    { frozenAt: set.frozenAt, count: set.ids.length, missions: set.missionIds.length, eligible: pool.length, seed, how: 'auto' }, { unit: READING_UNIT }), null, 2) + '\n')
+  return { set, holdout: frozenAs(set, true) }
 }
 
 // ── CLI ──────────────────────────────────────────────────────────
@@ -627,7 +770,7 @@ export async function main(argv, io = console) {
     const { rows: intervals, excluded, waves: n } = intervalRows(rows, waves, { signalsVersion: signalsVersion ?? 2 })
     writeAtomic(out, intervals.map(r => JSON.stringify(r)).join('\n') + (intervals.length ? '\n' : ''))
     io.log(`reading-level outcomes: ${intervals.length} rows from ${n} waves (excluded ${excluded.short} short, ${excluded.noTicks} no ticks, ` +
-      `${excluded.noTurnTimes} no turn times, ${excluded.otherVersion} other signals version, ${excluded.noRow} no ledger row) → ${out}`)
+      `${excluded.noTurnTimes} no turn times, ${excluded.otherVersion} other signals version, ${excluded.afterZero} after zero fails, ${excluded.noRow} no ledger row) → ${out}`)
     return 0
   }
   const freeze = argv.includes('--freeze')
@@ -688,7 +831,7 @@ export async function main(argv, io = console) {
       `${ineligible.length ? `; ${ineligible.length} held ids ineligible at K = ${K}: ${ineligible.join(', ')}` : ''} → ${path}`)
     return 0
   }
-  io.error('usage: --export [--turns K] [--signals-version N] [--out PATH] | --export-intervals [--campaigns-dir DIR] [--out PATH] | --freeze --seed N [--signals-version N] | --refreeze --seed N [--signals-version N]  [--turns K] [--ledger-dir DIR] [--manifest PATH]')
+  io.error('usage: --export [--turns K] [--signals-version N] [--out PATH] | --export-intervals [--campaigns-dir DIR] [--signals-version N] [--out PATH] | --freeze --seed N [--signals-version N] | --refreeze --seed N [--signals-version N]  [--turns K] [--ledger-dir DIR] [--manifest PATH]')
   return 2
 }
 
