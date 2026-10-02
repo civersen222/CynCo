@@ -17,6 +17,7 @@ import {
   HARNESS_ROOT,
   markerCheckGateAssertions,
   MARKER_CHECK_GATE_TEXT,
+  contentExemptGatePaths,
 } from '../../bridge/contractAutoCreate.js'
 
 const dirs: string[] = []
@@ -465,6 +466,19 @@ describe('harnessGatePaths: the instruments a contract names', () => {
     const contract = [{ text: 'held out', command: 'python -m pytest a.py -q' }]
     expect(withheldGatePaths([...contract, ...marker], ws)).toEqual([baseline, suite].sort())
     expect(withheldGatePaths(contract, ws)).toEqual([])
+  })
+
+  // T6-N1: the suite baseline (bare node ids) is sealed by path only — the
+  // content layer would fire on the model's own collection output.
+  it('names the suite baseline as content-exempt, and nothing else', () => {
+    const { file: baseline } = gate('suite_baseline.txt')
+    const { file: suite } = gate('g_suite.py')
+    const ws = workspace('src/app.ts')
+    const command = `CHK_SUITE_BASELINE=${baseline} CYNCO_GATE_REPO=${ws.replace(/\\/g, '/')} python "${suite}"`
+    expect(contentExemptGatePaths([{ text: 'm', command }], ws)).toEqual([baseline])
+    expect(contentExemptGatePaths([{ text: 'm', command: `python "${suite}"` }], ws)).toEqual([])
+    // A plain-string assertion is not withheld, so nothing of it is sealed or exempted.
+    expect(contentExemptGatePaths([`Verification command exits 0: ${command}`], ws)).toEqual([])
   })
 
   it('ignores path-shaped tokens that are not on disk', () => {

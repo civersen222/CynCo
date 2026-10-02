@@ -61,7 +61,10 @@ decisions still recorded here).
     // `patches`: every patch a check's F132 reset wrote, one per check,
     // `C:/tmp/<missionId>.uncommitted.<n>.patch` (n = the check's ordinal), so
     // a later check never overwrites an earlier one; the tail snapshot keeps
-    // `<missionId>.uncommitted.patch`. A first check that stood is reused only
+    // `<missionId>.uncommitted.patch`. The runner's salvage (`salvageFrom`,
+    // T6-N3) offers the next wave's STEP 0 every one of these patches whose
+    // changes HEAD does not hold (`git apply --check --reverse` fails), the
+    // per-check ones first, the tail last. A first check that stood is reused only
     // while it read one commit and HEAD is still that commit; otherwise the
     // final verify re-runs it. Absent on rows written before the ruling.
     // `noteAcknowledged` (final review M7): null without a retry; true when

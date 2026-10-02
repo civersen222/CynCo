@@ -61,7 +61,7 @@ Defines every tool the model can call in an agent turn — file I/O, Bash, Git, 
 - **`verifyAssertion`** (`contractVerify.ts:169`) — checks a contract assertion against actual repo state; the ground truth behind `ContractAssertPass`.
 - **`checkBashSafety`** (`bashSafety.ts:39`) — best-effort blocklist for destructive/blocking commands; explicitly not a sandbox.
 - **`ContractState`** (`contract.ts:90`) — Definition-of-Done state machine backing the four Contract* tools; distinguishes unreplaceable `harness` contracts from `auto` ones.
-- **`callTouchesSealed`** (`sealedPaths.ts:180`) — refuses any call whose path or Bash text names a withheld gate instrument, its basename, or its gates directory.
+- **`callTouchesSealed`** (`sealedPaths.ts:191`) — refuses any call whose path or Bash text names a withheld gate instrument, its basename, or its gates directory.
 - **`shouldAutoApprove`** (`approvalGate.ts:18`) — decides whether a call skips the human approval prompt, given trust profile / approve-all / tool tier.
 - **`DoomLoopDetector`** (`doomLoop.ts:11`) — flags a tool call repeated 3+ times with identical input and no intervening workspace change.
 
@@ -81,7 +81,7 @@ Defines every tool the model can call in an agent turn — file I/O, Bash, Git, 
 - `bashSafety.ts` is explicitly "NOT a sandbox — trivially bypassed... The real protection is Bash tier='approval'" — pinned by `bashSafety.test.ts`.
 - `Bash` is deliberately absent from `executor.ts`'s `WORKSPACE_MUTATING_TOOLS` even though the shell can write files — a named, accepted blind spot (finding (f)), not an oversight.
 - Downloads never ride on approve-all, including the mission driver's — even unattended runs get a refusal naming the staging path (`approvalGate.ts`), pinned by `approvalGate.test.ts`.
-- The sealed-gate refusal (F37) is four layers (reference/enumeration/location/content); read-only alone was insufficient because a command can read gate content while spelling no sealed name. Pinned by `sealedPaths.test.ts`.
+- The sealed-gate refusal (F37) is four layers (reference/enumeration/location/content); read-only alone was insufficient because a command can read gate content while spelling no sealed name. Pinned by `sealedPaths.test.ts`. A data instrument named by a `CHK_SUITE_BASELINE=` prefix (the suite baseline's bare node ids) is sealed by path only — `setTaskSealedPaths`' `contentExempt`, from `contractAutoCreate.ts`'s `contentExemptGatePaths` (Phase 7 T6-N1) — or the model's own `pytest --collect-only` output would be discarded.
 - A withheld contract assertion's `command` must never appear in a failure message (F34) — naming it would leak every mutation anchor to the model being graded on defeating them.
 - A verification command that is killed by its timeout is `unmeasured`, never `contradicted` (F35) — a timeout must not be recorded as a "no". Pinned in `contractVerify.ts`'s own tests.
 - `arbiterVerdict: true` marks an honest "not yet" from a declared arbiter so the doom-loop breaker does not fire on a run correctly re-asking the same graded question.

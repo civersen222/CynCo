@@ -353,7 +353,11 @@ export const defaultIo = {
   commitsBetween: (repo, base, head) => gitC(repo, ['log', '--oneline', `${base}..${head}`]).split('\n').filter(Boolean).map(l => ({ sha: l.slice(0, 7), subject: l.slice(8) })),
   firstCommitFiles: (repo, base, head) => { const first = gitC(repo, ['rev-list', '--reverse', `${base}..${head}`]).split('\n').filter(Boolean)[0]; return first ? gitC(repo, ['show', '--name-only', '--format=', first]).split('\n').filter(Boolean) : [] },
   // cynco-work-snapshot.mjs:35, called by the driver with outDir 'C:/tmp'.
-  salvageOf: (missionId) => { const p = `C:/tmp/${missionId}.uncommitted.patch`; if (!existsSync(p)) return null; const files = [...readFileSync(p, 'utf8').matchAll(/^\+\+\+ b\/(.+)$/gm)].map(m => m[1]); return files.length ? { patchPath: p, files } : null },
+  // T6-N3: the tail patch AND the marker checks' per-check patches, each one
+  // whose changes HEAD does not already hold (`git apply --check --reverse`
+  // succeeds only when they are already there).
+  salvageOf: (missionId, { patches = [], repo = null } = {}) => salvageFrom({ missionId, patches, dir: 'C:/tmp',
+    applied: (p) => Boolean(repo) && runSync('git', ['-C', repo, 'apply', '--check', '--reverse', p], { timeoutMs: 60_000, retryImpossibleTimeout: true }).status === 0 }),
   // Ruling 7: the advisory occupant runs on the SAME GPU as the wave. A live
   // engine on 9161 (the dashboard, or a run someone else started) means the
   // card is taken — any answer, even a 404, proves something is listening.
@@ -402,6 +406,26 @@ export const defaultIo = {
 }
 
 /**
+ * What the last wave left on the floor (T6-N3): the per-check patches a marker
+ * check's F132 reset wrote (`verify.patches`, oldest first), then the tail's
+ * `<missionId>.uncommitted.patch` — each that exists, names a file, and whose
+ * changes HEAD does not hold (`applied(path)` false). `{ patchPath, files,
+ * patches }` — `patchPath` the first offered patch, `files` the union, in
+ * order — or null when nothing is left to restore.
+ */
+export function salvageFrom({ missionId, patches = [], dir, applied = () => false }) {
+  const offered = []
+  for (const p of [...patches, `${dir}/${missionId}.uncommitted.patch`]) {
+    if (!p || !existsSync(p) || offered.some(o => o.patchPath === p)) continue
+    const files = [...readFileSync(p, 'utf8').matchAll(/^\+\+\+ b\/(.+)$/gm)].map(m => m[1])
+    if (!files.length || applied(p)) continue
+    offered.push({ patchPath: p, files })
+  }
+  if (!offered.length) return null
+  return { patchPath: offered[0].patchPath, files: [...new Set(offered.flatMap(o => o.files))], patches: offered }
+}
+
+/**
  * Everything the brief generator needs about where the campaign stands.
  * Shared by runWave and `--dry-run` so the dry run prints the brief the next
  * wave would actually receive, not an approximation of it.
@@ -418,7 +442,7 @@ export function waveContext(spec, s, io = defaultIo) {
   const prior = s.lastRow
     ? { missionId: s.lastRow.missionId, exitReason: s.lastRow.exitReason, durationS: s.lastRow.durationS, commits: s.lastCommits ?? [], toolStats: s.lastRow.toolStats, invariants: s.lastRow.invariants ?? null, verify: s.lastRow.verify, posiwid: s.lastGrade?.posiwid ?? null }
     : null
-  const salvage = s.lastRow ? io.salvageOf(s.lastRow.missionId) : null
+  const salvage = s.lastRow ? io.salvageOf(s.lastRow.missionId, { patches: s.lastRow.verify?.patches ?? [], repo: spec.repo }) : null
   return { wave, base, fails, passes, prior, salvage, ideation: null,
            ideationAuthority: s.ideationAuthority ?? 0, invariants: effectiveInvariants(spec, s), denialDigest: s.denialAnalysis?.invariants ?? null }
 }

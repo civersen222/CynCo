@@ -283,4 +283,26 @@ describe('layer 4 — a sealed instrument cannot be read around', () => {
     expect(out).not.toContain('preamble line one')
     expect(out).not.toContain('D2-a')
   })
+
+  // Phase 7 T6-N1: the suite gate's baseline is a list of bare pytest node ids
+  // — the very lines a model's own `pytest --collect-only -q` prints. Sealed by
+  // path (layers 1–3), it is exempt from the content layer, or three adjacent
+  // standing failures would discard the model's whole collection output.
+  it('a content-exempt instrument stays path-sealed but never withholds the model\'s own pytest output', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'baseline-'))
+    made.push(dir)
+    const baseline = join(dir, 'suite_baseline_abc1234.txt').replace(/\\/g, '/')
+    const ids = ['gilded/tests/test_court.py::test_rival_sees_family', 'gilded/tests/test_court.py::test_rival_courts_member', 'gilded/tests/test_court.py::test_lever_visible_on_house']
+    writeFileSync(baseline, ids.join('\n') + '\n')
+    const collected = ['gilded/tests/test_court.py::test_alpha_is_collected', ...ids, 'gilded/tests/test_court.py::test_omega_is_collected', '', '5 tests collected in 0.12s'].join('\n')
+    setTaskSealedPaths([baseline], undefined, undefined, [baseline])
+    expect(redactSealed(collected)).toBe(collected)
+    // Still sealed by path: named, it is refused; listed, it is struck.
+    expect(callTouchesSealed('Bash', { command: `cat ${baseline}` }, dir)).toBe(true)
+    expect(redactSealed('suite_baseline_abc1234.txt\nother.txt')).toContain('[sealed: one entry withheld')
+    // Without the exemption, the same three adjacent ids discard the whole output.
+    setTaskSealedPaths([baseline])
+    expect(redactSealed(collected)).not.toContain('test_alpha_is_collected')
+    setTaskSealedPaths([])
+  })
 })

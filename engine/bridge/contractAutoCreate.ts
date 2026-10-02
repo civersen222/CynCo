@@ -455,6 +455,39 @@ export function markerCheckGateAssertions(
   return command ? [{ text: MARKER_CHECK_GATE_TEXT, command }] : []
 }
 
+/**
+ * The env-prefix keys whose value is a DATA instrument sealed by path only
+ * (Phase 7 T6-N1): the suite gate's baseline, a list of bare pytest node ids
+ * that the model's own `pytest --collect-only` prints line for line.
+ */
+export const CONTENT_EXEMPT_ENV_KEYS = ['CHK_SUITE_BASELINE'] as const
+
+/**
+ * The withheld instruments the content layer (`sealedPaths.ts` layer 4) must
+ * not read: the values of CONTENT_EXEMPT_ENV_KEYS prefixes in a withheld
+ * assertion's command that `withheldGatePaths` names. Still sealed by
+ * reference, enumeration and location.
+ */
+export function contentExemptGatePaths(
+  assertions: HarnessAssertion[],
+  cwd: string,
+  exists: (p: string) => boolean = isInstrumentPath,
+): string[] {
+  const withheld = new Set(withheldGatePaths(assertions, cwd, exists))
+  const found = new Set<string>()
+  for (const a of assertions) {
+    if (typeof a === 'string' || !a.command) continue
+    for (const token of a.command.split(/\s+/)) {
+      const m = /^([A-Za-z_][A-Za-z0-9_]*)=(.+)$/.exec(token)
+      if (!m || !(CONTENT_EXEMPT_ENV_KEYS as readonly string[]).includes(m[1])) continue
+      const raw = m[2].replace(/^["']+|["':;,]+$/g, '')
+      const abs = (isAbsolute(raw) ? raw : resolve(cwd, raw)).replace(/\\/g, '/')
+      if (withheld.has(abs)) found.add(abs)
+    }
+  }
+  return [...found].sort()
+}
+
 /** Apply a harness-supplied contract spec. Returns true when applied. */
 export function applyHarnessContract(
   spec: HarnessContractSpec | undefined,

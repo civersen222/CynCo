@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { decide, runWave, waveContext, budgetSpent, defaultIo, claimedSurvivors, dispatchEnv, waveEnvBase, dirtyOutsideCampaign, inFlightRefusal, adoptInFlight, takeLock, releaseLock, applyProposalDecision, recordReseal, main, ensureCampaignCheckout, campaignCheckoutRefusal, waveDispatch, suiteGateCommand, suiteGateRefusal, STALE_WORKTREE_HINT, MARKER_CHECK_TIMEOUT_MS } from '../cynco-campaign.mjs'
+import { decide, runWave, waveContext, budgetSpent, defaultIo, claimedSurvivors, dispatchEnv, waveEnvBase, dirtyOutsideCampaign, inFlightRefusal, adoptInFlight, takeLock, releaseLock, applyProposalDecision, recordReseal, main, ensureCampaignCheckout, campaignCheckoutRefusal, waveDispatch, suiteGateCommand, suiteGateRefusal, STALE_WORKTREE_HINT, salvageFrom, MARKER_CHECK_TIMEOUT_MS } from '../cynco-campaign.mjs'
 import { summarize as summarizeGateLines } from '../cynco-gate-lines.mjs'
 import { adopt } from '../cynco-campaign-adopt.mjs'
 import { CampaignState } from '../cynco-campaign-state.mjs'
@@ -1234,6 +1234,42 @@ describe('waveDispatch — the marker check', () => {
     const body = src.slice(src.indexOf('  dispatch: async'), src.indexOf('  dispatchRaw: async'))
     expect(body).toMatch(/waveDispatch\(spec, \{ briefFile, invariants, timeoutS, pidFile, driverLog \}\)/)
     expect(body).not.toMatch(/spec\.keepGreen/)
+  })
+})
+
+// T6-N3: the per-check patches a marker check's F132 reset wrote
+// (`verify.patches`) are salvage too — every one whose changes HEAD does not
+// already hold is offered to the next wave's STEP 0, oldest first, the tail last.
+describe('salvageFrom (T6-N3)', () => {
+  const patch = (files) => files.map(f => `diff --git a/${f} b/${f}\n--- a/${f}\n+++ b/${f}\n@@ -1 +1 @@\n-a\n+b\n`).join('')
+  const setup = () => {
+    const dir = mkdtempSync(join(tmpdir(), 'salvage-')).replace(/\\/g, '/')
+    writeFileSync(`${dir}/m.uncommitted.1.patch`, patch(['gilded/ui/app.py']))
+    writeFileSync(`${dir}/m.uncommitted.2.patch`, patch(['gilded/ui/app.py', 'gilded/world.py']))
+    writeFileSync(`${dir}/m.uncommitted.patch`, patch(['gilded/ai.py']))
+    return dir
+  }
+
+  it('offers every unapplied per-check patch, then the tail; files are their union', () => {
+    const dir = setup()
+    const s = salvageFrom({ missionId: 'm', patches: [`${dir}/m.uncommitted.1.patch`, `${dir}/m.uncommitted.2.patch`], dir, applied: (p) => p.endsWith('.2.patch') })
+    expect(s).toEqual({ patchPath: `${dir}/m.uncommitted.1.patch`, files: ['gilded/ui/app.py', 'gilded/ai.py'],
+      patches: [{ patchPath: `${dir}/m.uncommitted.1.patch`, files: ['gilded/ui/app.py'] }, { patchPath: `${dir}/m.uncommitted.patch`, files: ['gilded/ai.py'] }] })
+  })
+
+  it('is the tail alone without per-check patches, and null when nothing is left to restore', () => {
+    const dir = setup()
+    expect(salvageFrom({ missionId: 'm', patches: [], dir, applied: () => false })).toEqual({ patchPath: `${dir}/m.uncommitted.patch`, files: ['gilded/ai.py'],
+      patches: [{ patchPath: `${dir}/m.uncommitted.patch`, files: ['gilded/ai.py'] }] })
+    expect(salvageFrom({ missionId: 'm', patches: [`${dir}/m.uncommitted.1.patch`], dir, applied: () => true })).toBeNull()
+    expect(salvageFrom({ missionId: 'gone', patches: [`${dir}/missing.patch`], dir, applied: () => false })).toBeNull()
+  })
+
+  it('waveContext hands the last row\'s verify.patches and the repo to salvageOf', () => {
+    const seen = []
+    const s = { waveCount: 1, lastRow: { missionId: 'm', verify: { patches: ['C:/tmp/m.uncommitted.1.patch'] } }, calibration: { baseFails: [], basePasses: [] } }
+    waveContext(spec, s, { salvageOf: (...args) => { seen.push(args); return null } })
+    expect(seen).toEqual([['m', { patches: ['C:/tmp/m.uncommitted.1.patch'], repo: spec.repo }]])
   })
 })
 

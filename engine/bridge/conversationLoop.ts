@@ -77,7 +77,7 @@ import { probeEdit } from '../vsm/groundingProbe.js'
 import { loadInterventionRates, saveInterventionRates } from '../vsm/interventionPersistence.js'
 import { applyNudgeTemperature } from '../vsm/controlSignals.js'
 import { globalContract } from '../tools/contract.js'
-import { applyHarnessContract, harnessGatePaths, sealedGatePaths, markerCheckGateAssertions, maybeAutoCreateContract, type HarnessContractSpec } from './contractAutoCreate.js'
+import { applyHarnessContract, harnessGatePaths, sealedGatePaths, markerCheckGateAssertions, contentExemptGatePaths, maybeAutoCreateContract, type HarnessContractSpec } from './contractAutoCreate.js'
 import { gitProbe, runCommandDetailed } from '../tools/contractVerify.js'
 import { globalAskBroker } from '../tools/askBroker.js'
 import { estimateTokensAsync } from '../engine/contextBudget.js'
@@ -1423,7 +1423,8 @@ export class ConversationLoop {
     const sealed = instrumentAssertions.length > 0
       ? sealedGatePaths(instrumentAssertions, this.executor['cwd'])
       : []
-    setTaskSealedPaths(sealed)
+    // T6-N1: the suite baseline (bare node ids) is sealed by path, never by content.
+    setTaskSealedPaths(sealed, undefined, undefined, sealed.length > 0 ? contentExemptGatePaths(instrumentAssertions, this.executor['cwd']) : [])
     const readable = gates.filter(g => !sealed.includes(g))
     if (readable.length > 0) {
       console.log(`[contract] Read-only instrument(s) for this task: ${readable.join(', ')}`)

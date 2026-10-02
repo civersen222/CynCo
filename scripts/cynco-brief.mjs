@@ -29,12 +29,15 @@ function fact0(ctx) {
 
 function step0(ctx) {
   if (!ctx.salvage || ctx.salvage.files.length === 0) return null
+  // T6-N3: every unapplied patch — a marker check's reset wrote its own, before the tail's.
+  const patches = ctx.salvage.patches?.length ? ctx.salvage.patches : [{ patchPath: ctx.salvage.patchPath, files: ctx.salvage.files }]
+  const saved = patches.length === 1 ? 'saved as a patch outside the repo' : `saved as ${patches.length} patches outside the repo, oldest first`
   return wrap(`STEP 0 — COMMIT WHAT THE LAST WAVE LEFT ON THE FLOOR (first 15 calls, nothing else in it)
 
   The previous run ended with uncommitted edits to ${ctx.salvage.files.join(', ')}. They were
-  saved as a patch outside the repo. Restore and commit them BEFORE you read anything else;
+  ${saved}. Restore and commit them BEFORE you read anything else;
   a red commit is recoverable and an uncommitted tree is not. Do not run the tests first.
-    git apply --3way "${ctx.salvage.patchPath}"
+${patches.map(p => `    git apply --3way "${p.patchPath}"`).join('\n')}
     git add ${ctx.salvage.files.join(' ')}
     git commit -m "wave ${ctx.wave} step 0: restore uncommitted work from wave ${ctx.wave - 1}"
   COMMIT 0. If the patch does not apply cleanly, commit whatever applied and say so in the message.`)

@@ -138,11 +138,12 @@ describe('sealed instrument wiring guard', () => {
     expect(src).toMatch(/sealedGatePaths\(instrumentAssertions, this\.executor\['cwd'\]\)/)
     expect(src).not.toMatch(/withheldGatePaths\((opts\.contract\.assertions|instrumentAssertions)/)
     expect(src).not.toMatch(/applyHarnessContract\([^)]*markerGates/)
-    expect(src).toMatch(/setTaskSealedPaths\(sealed\)/)
+    // T6-N1: the content-exempt set (the suite baseline) rides the same call.
+    expect(src).toMatch(/setTaskSealedPaths\(sealed, undefined, undefined, sealed\.length > 0 \? contentExemptGatePaths\(instrumentAssertions, this\.executor\['cwd'\]\) : \[\]\)/)
     // Unconditional, like the immutable set: a task carrying no withheld gate
     // must CLEAR the last one's seal, and a refusal that by design cannot name
     // its file is the worst possible thing to leave behind for the next task.
-    const call = src.indexOf('setTaskSealedPaths(sealed)')
+    const call = src.indexOf('setTaskSealedPaths(sealed,')
     expect(call).toBeGreaterThan(-1)
     const before = src.slice(0, call)
     expect(before.lastIndexOf('\n    }'))
