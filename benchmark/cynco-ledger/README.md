@@ -1731,7 +1731,12 @@ a fault reading is `{ elapsedFraction: null, fails: null, sha7: null, fault }`;
 Campaign panel draws it per wave as a fails-over-clock line with each rule's
 fired ticks marked; fault readings stay off the line and are counted, their
 reasons on the tooltip. It is read off the wave record after the verdict —
-the same runner-side copy as above, never the model's.
+the same runner-side copy as above, never the model's. So the dashboard's
+readings are the VERDICT's: a wave in flight has no curve there, and what
+`/api/campaign` serves (per-commit sealed-gate readings of finished waves,
+behind the inference token in `~/.cynco/tokens.json`) is post-verdict. The
+token file itself is not a sealed path; its protection is Phase 2's design and
+is not reopened here (final review M8: documentation only).
 
 ### Reading-level outcomes (Phase 7 ruling 1)
 
