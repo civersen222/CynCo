@@ -16,13 +16,14 @@ import { resolve, join, basename, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { writeFileSync, readFileSync, existsSync, appendFileSync, unlinkSync, openSync, writeSync, closeSync, readdirSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
+import { homedir } from 'node:os'
 import { cyncoHome } from '../engine/paths.js'
 import { bashExe, runSync, faultSummary } from './cynco-spawn.mjs'
 import { loadCampaignSpec, checkIdentity } from './cynco-campaign-spec.mjs'
 import { CampaignState } from './cynco-campaign-state.mjs'
 import { calibrate, defaultIo as calibrateIo } from './cynco-campaign-calibrate.mjs'
 import { generateBrief, sidecarFor, workOrderFor, pacingDigestIncluded } from './cynco-brief.mjs'
-import { gradeWave } from './cynco-campaign-grade.mjs'
+import { gradeWave, SUITE_GATE } from './cynco-campaign-grade.mjs'
 import { verdictEntry, notify, commitVerdict, economicsLines, hindcastLine } from './cynco-campaign-verdict.mjs'
 import { runIdeation, measureFollowed, authorityRegistry, promotionProposal, capProposal, effectiveInvariants } from './cynco-ideation.mjs'
 import { patchLedgerRow, findLedgerRow } from './cynco-ledger-patch.mjs'
@@ -31,18 +32,18 @@ import { gateAuthorPromotion } from './cynco-gate-author.mjs'
 import { sidecarPath } from './cynco-contract.mjs'
 import { exportTriples } from './cynco-triples.mjs'
 import { analyseDenials } from './cynco-signal-validation.mjs'
-import { governanceCounts, governancePosiwid } from './cynco-governance-posiwid.mjs'
+import { governanceCounts, governancePosiwid, governancePosiwidV2, authorityOf } from './cynco-governance-posiwid.mjs'
 import { loadRoadmap, saveRoadmap, rejectLine, setLineStatus, ROADMAP_PATH } from './cynco-roadmap.mjs'
 import { assertIdentityIntact } from './cynco-identity.mjs'
 import { applyProposalDecision, seatAuthority } from './cynco-proposals.mjs'
-import { writeRuleVerdicts, readRuleVerdicts, RULE_VERDICTS_PATH, modelRowsFrom } from './cynco-rule-verdicts.mjs'
-import { exportOutcomeDatasets, runHindcast, hindcastOf, noEligibleFault, hindcastReady, PRIMARY_TURNS } from './cynco-hindcast.mjs'
+import { writeRuleVerdicts, readRuleVerdicts, RULE_VERDICTS_PATH, modelRowsFrom, modelLaddersOf } from './cynco-rule-verdicts.mjs'
+import { exportOutcomeDatasets, runHindcast, hindcastOf, noEligibleFault, hindcastReady, PRIMARY_TURNS, exportReadingDataset, runReadingHindcast } from './cynco-hindcast.mjs'
 import { campaignScoreboard, pooledScoreboard, scoreboardLines } from './cynco-scoreboard.mjs'
 import { readLedger } from './cynco-ledger-shards.mjs'
 import { campaignAssessment, campaignRows, autopoiesisLine, storedAssessment, effectiveSeatAuthority } from './cynco-autopoiesis.mjs'
 import { summarize as summarizeGateLines, GATE_LINES_PATH } from './cynco-gate-lines.mjs'
 import { progressTracker, defaultProbeIo, everyMsFor, seedGateMs } from './cynco-campaign-progress.mjs'
-import { runnerRowsFromCampaigns } from './cynco-runner-rows.mjs'
+import { runnerRowsFromCampaigns, runnerWaves } from './cynco-runner-rows.mjs'
 
 // Phase 4: the operator's decision on a pending proposal lives in the one
 // proposal registry (scripts/cynco-proposals.mjs). Re-exported so every caller
@@ -137,6 +138,91 @@ export function dispatchEnv(base, extra) {
   return { ...out, ...extra }
 }
 
+/**
+ * Phase 7 ruling 3: the check the driver runs once the engine closes the turn
+ * with the marker landed. On C10 the brief's keep-green subset missed a
+ * regression the full suite caught, so the default is the suite gate — public
+ * pytest over the whole suite against the sealed baseline, whose output may
+ * reach the model (the driver feeds a FAIL back once). The sealed campaign
+ * gate's never does: it is graded by the runner, after the driver, as before.
+ * Forward slashes so the command reads the same in every shell runCheck uses.
+ *
+ * Review I1: the baseline and the repo travel ONLY inside the command, as a
+ * POSIX env prefix (runCheck's translateEnvPrefix runs it in PowerShell too).
+ * In the env they reached the engine and the model's Bash, and the baseline —
+ * the file the suite gate trusts — was neither sealed nor restored. As a path
+ * token in the marker check command (CYNCO_MARKER_CHECK, final review I1),
+ * harnessGatePaths names it (through markerCheckGateAssertions), so the engine
+ * seals it and the driver snapshots and restores it like every other instrument.
+ * The prefix is split on whitespace, so a path with a space is refused.
+ */
+export const MARKER_CHECK_TIMEOUT_MS = 1_800_000
+export function suiteGateCommand(spec) {
+  const fwd = (p) => String(p).replace(/^~(?=[\\/])/, homedir()).replace(/\\/g, '/')
+  const baseline = fwd(spec.suiteBaseline)
+  const repo = fwd(spec.repo)
+  for (const [k, v] of [['suiteBaseline', baseline], ['repo', repo]]) {
+    if (/\s/.test(v)) throw new Error(`campaign spec ${k} "${v}" contains whitespace — it cannot travel in the suite gate's env prefix`)
+  }
+  return `CHK_SUITE_BASELINE=${baseline} CYNCO_GATE_REPO=${repo} python "${fwd(SUITE_GATE())}"`
+}
+
+/**
+ * Final review M4: suiteGateCommand's whitespace refusal, asked at STARTUP
+ * (beside the checkout guard, before the lock) rather than inside every
+ * wave's dispatch, where it faulted each wave in turn. Null when the spec
+ * names its own `markerCheck` (the suite gate is then not the marker check)
+ * or the paths can travel; otherwise the refusal line.
+ */
+export function suiteGateRefusal(spec) {
+  if (spec.markerCheck !== undefined && spec.markerCheck !== null) return null
+  try {
+    suiteGateCommand(spec)
+    return null
+  } catch (e) {
+    return `[campaign] ${spec.id}: ${e.message}; move it to a path without whitespace (or name a markerCheck) — nothing was dispatched`
+  }
+}
+
+/** The keys the suite gate reads, which the engine (and so the model's Bash) must never hold. */
+export const SUITE_GATE_ENV_KEYS = ['CHK_SUITE_BASELINE', 'CYNCO_GATE_REPO']
+
+/**
+ * The wave's dispatch-mission.sh argv and environment.
+ *
+ * The check-cmd argument stays `spec.keepGreen` (final review I1): the driver
+ * also turns it into the engine's withheld contract assertion, which the
+ * model's `ContractAssertPass` runs inside its own turn — a whole-suite gate
+ * there costs the wave's clock unpriced, and the smoke's fail-once fixture
+ * would be spent by the model with no tell. The marker check travels to the
+ * driver on its own channel instead: CYNCO_MARKER_CHECK (a spec `markerCheck`
+ * verbatim; without one the suite gate, carrying its baseline and repo in its
+ * own command) and its cap CYNCO_MARKER_CHECK_TIMEOUT_MS. Only the driver's
+ * marker verify runs it; the engine reads it for the instruments it seals and
+ * the model's Bash never holds it (bashToolEnv). The keepGreen check keeps the
+ * cap dispatch-mission.sh gives it, as before Phase 7. `spec.markerRetryMinS`
+ * reaches the driver as CYNCO_MARKER_RETRY_MIN_S. `base` is the runner's env.
+ */
+export function waveDispatch(spec, { briefFile, invariants, timeoutS, pidFile, driverLog }, base = process.env) {
+  const suite = spec.markerCheck === undefined || spec.markerCheck === null
+  const markerCheck = suite ? suiteGateCommand(spec) : spec.markerCheck
+  // CYNCO_CAMPAIGN_ID: the only way the dispatched engine's own 9161 dashboard
+  // can name its campaign as `active` in /api/campaign between waves, when no
+  // campaign has a driver in flight (Phase 2c-ii). dispatch-mission.sh passes
+  // it through to `bun engine/main.ts` the same way it passes LOCALCODE_MISSION_*.
+  // F161: spec.env (the engine's explicit llama-server / GGUF paths for a
+  // campaign under a temp home) goes in through the BASE, so the same
+  // stripping applies to it as to the runner's own environment.
+  const env = dispatchEnv(waveEnvBase(spec, base), {
+    LOCALCODE_MAX_ITERATIONS: String(spec.budget.iterations), CYNCO_BASH_TIMEOUT_MS: String(spec.budget.bashTimeoutMs),
+    CYNCO_MISSION_INVARIANTS: JSON.stringify(invariants), DRIVER_PID_FILE: pidFile, DRIVER_LOG: driverLog, CYNCO_SKIP_IDLE_ENGINE: '1', CYNCO_CAMPAIGN_ID: spec.id,
+    CYNCO_MARKER_CHECK: markerCheck, CYNCO_MARKER_CHECK_TIMEOUT_MS: String(MARKER_CHECK_TIMEOUT_MS),
+    ...(spec.markerRetryMinS !== undefined ? { CYNCO_MARKER_RETRY_MIN_S: String(spec.markerRetryMinS) } : {}),
+  })
+  for (const k of SUITE_GATE_ENV_KEYS) delete env[k]
+  return { args: [briefFile, spec.marker, spec.repo, String(timeoutS), spec.keepGreen], env }
+}
+
 /** The cap on the dispatch-mission.sh launch itself (it backgrounds the driver and returns). */
 export const DISPATCH_TIMEOUT_MS = 900_000
 
@@ -178,20 +264,13 @@ const repoRel = (abs) => relative(process.cwd(), abs).replace(/\\/g, '/')
 export const defaultIo = {
   writeBrief: (path, text, sidecar) => { writeFileSync(path, text, 'utf8'); writeFileSync(sidecarPath(path), JSON.stringify(sidecar, null, 2) + '\n'); return path },
   dispatch: async ({ spec, briefFile, invariants, timeoutS, pidFile, driverLog }) => {
-    // CYNCO_CAMPAIGN_ID: the only way the dispatched engine's own 9161 dashboard
-    // can name its campaign as `active` in /api/campaign between waves, when no
-    // campaign has a driver in flight (Phase 2c-ii). dispatch-mission.sh passes
-    // it through to `bun engine/main.ts` the same way it passes LOCALCODE_MISSION_*.
-    // F161: spec.env (the engine's explicit llama-server / GGUF paths for a
-    // campaign under a temp home) goes in through the BASE, so the same
-    // stripping applies to it as to the runner's own environment.
-    const env = dispatchEnv(waveEnvBase(spec), { LOCALCODE_MAX_ITERATIONS: String(spec.budget.iterations), CYNCO_BASH_TIMEOUT_MS: String(spec.budget.bashTimeoutMs),
-      CYNCO_MISSION_INVARIANTS: JSON.stringify(invariants), DRIVER_PID_FILE: pidFile, DRIVER_LOG: driverLog, CYNCO_SKIP_IDLE_ENGINE: '1', CYNCO_CAMPAIGN_ID: spec.id })
+    // The env and the marker check (Phase 7 ruling 3) are built by waveDispatch.
+    const { args, env } = waveDispatch(spec, { briefFile, invariants, timeoutS, pidFile, driverLog })
     // dispatch-mission.sh prints the invariants it accepted and the driver log
     // and PID it started; runDispatch re-emits them — those three lines are the
     // only unattended evidence that the wave was given its orders and that the
     // PID we are about to wait on is the driver's.
-    runDispatch([briefFile, spec.marker, spec.repo, String(timeoutS), spec.keepGreen], env)
+    runDispatch(args, env)
     // dispatch-mission.sh backgrounds the driver, so the missionId does not
     // exist yet: it is read out of the driver log by missionIdFrom once the
     // driver has written its ledger line.
@@ -274,7 +353,11 @@ export const defaultIo = {
   commitsBetween: (repo, base, head) => gitC(repo, ['log', '--oneline', `${base}..${head}`]).split('\n').filter(Boolean).map(l => ({ sha: l.slice(0, 7), subject: l.slice(8) })),
   firstCommitFiles: (repo, base, head) => { const first = gitC(repo, ['rev-list', '--reverse', `${base}..${head}`]).split('\n').filter(Boolean)[0]; return first ? gitC(repo, ['show', '--name-only', '--format=', first]).split('\n').filter(Boolean) : [] },
   // cynco-work-snapshot.mjs:35, called by the driver with outDir 'C:/tmp'.
-  salvageOf: (missionId) => { const p = `C:/tmp/${missionId}.uncommitted.patch`; if (!existsSync(p)) return null; const files = [...readFileSync(p, 'utf8').matchAll(/^\+\+\+ b\/(.+)$/gm)].map(m => m[1]); return files.length ? { patchPath: p, files } : null },
+  // T6-N3: the tail patch AND the marker checks' per-check patches, each one
+  // whose changes HEAD does not already hold (`git apply --check --reverse`
+  // succeeds only when they are already there).
+  salvageOf: (missionId, { patches = [], repo = null } = {}) => salvageFrom({ missionId, patches, dir: 'C:/tmp',
+    applied: (p) => Boolean(repo) && runSync('git', ['-C', repo, 'apply', '--check', '--reverse', p], { timeoutMs: 60_000, retryImpossibleTimeout: true }).status === 0 }),
   // Ruling 7: the advisory occupant runs on the SAME GPU as the wave. A live
   // engine on 9161 (the dashboard, or a run someone else started) means the
   // card is taken — any answer, even a 404, proves something is listening.
@@ -308,6 +391,9 @@ export const defaultIo = {
   // Phase 5 ruling 5: the outcome hindcast. Seams so a unit test never reads
   // the live ledger into ~/.cynco or spawns python (scripts/cynco-hindcast.mjs).
   exportOutcomeDataset: (args) => exportOutcomeDatasets(args),
+  // Phase 7 ruling 1: the reading unit's interval dataset (and its one-time
+  // `reading:2` holdout freeze) — a seam for the same reason.
+  exportReadingDataset: (args) => exportReadingDataset(args),
   runHindcast: (args) => runHindcast(args),
   // Phase 4 ruling 4: the checklist is pure over facts the VERDICT already
   // holds; a seam only so a test can prove a throw never faults the wave.
@@ -317,6 +403,26 @@ export const defaultIo = {
   // it reads is the one writeRuleVerdicts just rewrote.
   scoreboard: (args) => campaignScoreboard(args),
   readRuleVerdicts: (path) => readRuleVerdicts(path),
+}
+
+/**
+ * What the last wave left on the floor (T6-N3): the per-check patches a marker
+ * check's F132 reset wrote (`verify.patches`, oldest first), then the tail's
+ * `<missionId>.uncommitted.patch` — each that exists, names a file, and whose
+ * changes HEAD does not hold (`applied(path)` false). `{ patchPath, files,
+ * patches }` — `patchPath` the first offered patch, `files` the union, in
+ * order — or null when nothing is left to restore.
+ */
+export function salvageFrom({ missionId, patches = [], dir, applied = () => false }) {
+  const offered = []
+  for (const p of [...patches, `${dir}/${missionId}.uncommitted.patch`]) {
+    if (!p || !existsSync(p) || offered.some(o => o.patchPath === p)) continue
+    const files = [...readFileSync(p, 'utf8').matchAll(/^\+\+\+ b\/(.+)$/gm)].map(m => m[1])
+    if (!files.length || applied(p)) continue
+    offered.push({ patchPath: p, files })
+  }
+  if (!offered.length) return null
+  return { patchPath: offered[0].patchPath, files: [...new Set(offered.flatMap(o => o.files))], patches: offered }
 }
 
 /**
@@ -336,7 +442,7 @@ export function waveContext(spec, s, io = defaultIo) {
   const prior = s.lastRow
     ? { missionId: s.lastRow.missionId, exitReason: s.lastRow.exitReason, durationS: s.lastRow.durationS, commits: s.lastCommits ?? [], toolStats: s.lastRow.toolStats, invariants: s.lastRow.invariants ?? null, verify: s.lastRow.verify, posiwid: s.lastGrade?.posiwid ?? null }
     : null
-  const salvage = s.lastRow ? io.salvageOf(s.lastRow.missionId) : null
+  const salvage = s.lastRow ? io.salvageOf(s.lastRow.missionId, { patches: s.lastRow.verify?.patches ?? [], repo: spec.repo }) : null
   return { wave, base, fails, passes, prior, salvage, ideation: null,
            ideationAuthority: s.ideationAuthority ?? 0, invariants: effectiveInvariants(spec, s), denialDigest: s.denialAnalysis?.invariants ?? null }
 }
@@ -712,6 +818,24 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
       }
     } catch (e) { rec.hindcast = { fault: String(e?.message ?? e) } }
     if (rec.hindcast?.fault) console.error(`[campaign] outcome hindcast not measured: ${rec.hindcast.fault}`)
+    // Phase 7 ruling 1: the reading learner, beside the mission one (which
+    // stays primary) — the interval dataset over every runner-driven
+    // campaign's waves (this one's included, as the runner rows read them),
+    // its own `reading:2` holdout frozen once by the same rule, the model run
+    // with `--unit reading`, its held-out predictions on the ladder as `M2.*`.
+    // Below the minimum it is `{ fault: 'reading holdout not yet frozen (…)' }`
+    // and python is not spawned. Its fault is its own: never the mission's,
+    // never the wave's.
+    let reading
+    try {
+      const waves = runnerWaves(join(home, 'campaigns'), { current: spec.id, entries: state.waveEntries(), rec }).map(({ record }) => record)
+      const exportedR = (io.exportReadingDataset ?? defaultIo.exportReadingDataset)({ rows, waves, home })
+      const rh = runReadingHindcast({ exported: exportedR, runHindcast: io.runHindcast ?? defaultIo.runHindcast })
+      reading = rh.reading
+      modelRows = [...modelRows, ...modelRowsFrom(rh.model, exportedR.intervals, { unit: 'reading' })]
+    } catch (e) { reading = { fault: String(e?.message ?? e) } }
+    if (reading.fault) console.error(`[campaign] reading hindcast not measured: ${reading.fault}`)
+    rec.hindcast = { ...rec.hindcast, reading }
     // Phase 6 Task 4: the runner's shadow regulator `R1.no-progress` as a
     // runner row — one rule across campaigns, so its scope is this campaign's
     // waves (the one just recorded included) and every other runner-driven
@@ -737,14 +861,22 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
       const message = String(e?.message ?? e)
       console.error(`[campaign] rule verdicts with the model rows failed (${message}) — rewriting the rules alone`)
       if (rec.hindcast) rec.hindcast.ladderFault = message
+      if (rec.hindcast?.reading && !rec.hindcast.reading.fault) rec.hindcast.reading.ladderFault = message
       rec.ruleVerdicts = { ...write({ rows, campaign: spec.id, outPath, modelRows: [], runnerRows }), modelRowsSkipped: true }
     }
     // The ladder's reading of each model row (verdict, precision, CI, p(Holm)),
-    // kept on the hindcast beside the model's own holdout metrics.
-    if (rec.hindcast && !rec.hindcast.fault) rec.hindcast.ladder = rec.ruleVerdicts?.models ?? null
+    // kept on the hindcast beside the model's own holdout metrics — the M1.*
+    // rows on the mission hindcast, the M2.* rows on its reading (Phase 7).
+    const ladders = modelLaddersOf(rec.ruleVerdicts?.models)
+    if (rec.hindcast && !rec.hindcast.fault) rec.hindcast.ladder = ladders.mission
+    if (rec.hindcast?.reading && !rec.hindcast.reading.fault) rec.hindcast.reading.ladder = ladders.reading
   } catch (e) {
     console.error(`[campaign] rule verdicts skipped: ${e?.message ?? e}`)
-    if (!rec.hindcast) rec.hindcast = { fault: `not run: ${e?.message ?? e}` }
+    // T5-M1: a fault before the learners ran (the ledger unreadable) is the
+    // reading unit's too, so the entry's `; readings:` clause still prints.
+    const fault = `not run: ${e?.message ?? e}`
+    if (!rec.hindcast) rec.hindcast = { fault, reading: { fault } }
+    else if (!rec.hindcast.reading) rec.hindcast.reading = { fault }
   }
 
   // 2d: POSIWID on the governance layer itself, one window per wave.
@@ -752,9 +884,30 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
   try {
     const proposalsDecided = (s.proposals ?? []).filter(p => p.decidedAt && p.decidedAt > (s.lastVerdictAt ?? '')).length
     const counts = governanceCounts({ row, wave: rec, proposalsDecided })
+    // Phase 7 ruling 4: v2 states the purpose the authority table grants, read
+    // from the verdict file THIS verdict wrote (a stale file from an earlier
+    // wave is not this wave's table). No file → { earned: 0, total: 0 }; a file
+    // that is there but unreadable, or a verdict that wrote none, is not
+    // measured and says why. v1's fields stay exactly where they were.
+    let v2
+    try {
+      if (!rec.ruleVerdicts) v2 = { verdict: null, reason: 'rule verdicts not written this verdict' }
+      else {
+        const path = RULE_VERDICTS_PATH((io.datasetsHome ?? defaultIo.datasetsHome)())
+        const present = existsSync(path)
+        const file = present ? (io.readRuleVerdicts ?? defaultIo.readRuleVerdicts)(path) : null
+        v2 = present && !file ? { verdict: null, reason: `${path} unreadable` } : governancePosiwidV2(counts, authorityOf(file))
+      }
+    } catch (e) {
+      console.error(`[campaign] governance POSIWID v2 not measured: ${e?.message ?? e}`)
+      v2 = { verdict: null, reason: String(e?.message ?? e) }
+    }
+    // T4-M1: each stored window carries the authority v2 read it under
+    // (`stated`, null when v2 was not measured), so v2 can be replayed over
+    // the windows later the way v1 is.
     s.governancePosiwid = s.governancePosiwid ?? { windows: [] }
-    s.governancePosiwid.windows.push({ wave, ...counts })
-    governance = governancePosiwid(s.governancePosiwid.windows)
+    s.governancePosiwid.windows.push({ wave, ...counts, stated: v2.stated ?? null })
+    governance = { ...governancePosiwid(s.governancePosiwid.windows), v2 }
     rec.governancePosiwid = { ...governance, counts }
   } catch (e) { console.error(`[campaign] governance POSIWID skipped: ${e?.message ?? e}`) }
 
@@ -855,6 +1008,9 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
   // Ruling 5: commitVerdict matches these against `git status --porcelain`,
   // which speaks repo-relative forward slashes and nothing else.
   const files = [...new Set([LOG, ...waveFiles, ...roadmapFiles, ...ledgerShardsTouched()])]
+  // F167: the runner runs from the campaign worktree (ensureCampaignCheckout at
+  // startup), so this commit lands on the branch the tree is on; if someone
+  // moved HEAD since, commitVerdict refuses rather than check anything out.
   try { rec.verdictSha = io.commit({ repoRoot: '.', branch: `campaign/${spec.id}`, files, message: `${spec.id.toUpperCase()} wave ${wave} verdict: ${decision.kind} — ${decision.why}` }).sha } catch (e) { console.error(`[campaign] commit skipped: ${e.message}`) }
   rec.notified = await notifyOrQueue(io, s, `${spec.id.toUpperCase()} wave ${wave}: ${decision.kind.toUpperCase()} — ${decision.why}\n${grade.gate.fails.map(f => f.line).join('\n')}`, decision)
   state.rewriteLastWave(rec)
@@ -1173,11 +1329,79 @@ function authorIoBase(author) {
     seatAuthority: () => author.gateAuthorAuthorityAcrossCampaigns(join(cyncoHome(), 'campaigns')) })
 }
 
+/**
+ * F167: a campaign runs from its own worktree; the operator's checkout is never
+ * the runner's. The runner READS the campaign log, the roadmap and the ledger
+ * shards from its working copy and commits its verdict there, so that working
+ * copy has to BE `campaign/<id>`'s checkout — no commit technique can make the
+ * verdict independent of a checkout the runner reads from.
+ *
+ * The refusal names the exact commands, by case: the branch is already checked
+ * out in another worktree (go there), it exists (add a worktree on it), or it
+ * does not exist yet (add a worktree that creates it at HEAD).
+ */
+export function campaignCheckoutRefusal({ id, current, branchExists, headSha7, checkedOutAt = null, rerun, worktreesRoot = '.claude/worktrees', dirtySeal = [] }) {
+  const branch = `campaign/${id}`
+  const dir = `${worktreesRoot}/campaign-${id}`
+  const head = [`[campaign] ${id}: this checkout is on ${current || '(detached HEAD)'}, not ${branch}. A campaign runs from its own worktree; the operator's checkout is never the runner's (F167).`]
+  if (checkedOutAt) return [...head, `${branch} is checked out at ${checkedOutAt} — run from there:`, `  cd ${checkedOutAt}`, `  ${rerun}`].join('\n')
+  // T3 N1: a worktree created at HEAD carries only what HEAD holds.
+  const seal = !branchExists && dirtySeal.length
+    ? [`Commit the seal first: ${dirtySeal.join(', ')} ${dirtySeal.length === 1 ? 'is' : 'are'} uncommitted here, and a worktree created at HEAD would not carry ${dirtySeal.length === 1 ? 'it' : 'them'}.`]
+    : []
+  const add = branchExists ? `  git worktree add ${dir} ${branch}` : `  git worktree add ${dir} -b ${branch} ${headSha7}`
+  return [...head, ...seal, `Run it from a worktree on ${branch}${branchExists ? '' : ` (the branch does not exist yet; this creates it at HEAD ${headSha7})`}:`,
+    add, `  cd ${dir}`, '  npm install', `  ${rerun}`, STALE_WORKTREE_HINT(dir)].join('\n')
+}
+
+/** Final review M6: a removed worktree can leave its directory behind, and `git worktree add` then refuses. */
+export const STALE_WORKTREE_HINT = (dir) => `If git worktree add says '${dir}' already exists, a removed worktree left it behind: `
+  + 'git worktree prune, delete the directory, and run the add again — or add the worktree under another name.'
+
+const defaultCheckoutGit = (repoRoot) => (args) => {
+  const r = runSync('git', ['-C', repoRoot, ...args])
+  return { status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '' }
+}
+
+/**
+ * The startup guard for every runner path that writes to the repo (waves,
+ * --dry-run's calibration, --adopt-inflight's verdict). `{ ok: true }` on
+ * `campaign/<id>`; otherwise `{ ok: false, message }` from campaignCheckoutRefusal.
+ * The printed worktree path is absolute when git names the common dir (T3 N2:
+ * right whichever worktree the operator stands in), and a dirty spec or roadmap
+ * is named first (T3 N1). `specPath` defaults to argv's first `.campaign.json`.
+ */
+export function ensureCampaignCheckout({ repoRoot = '.', id, argv = [], specPath = null, io } = {}) {
+  const git = io?.git ?? defaultCheckoutGit(repoRoot)
+  const branch = `campaign/${id}`
+  const current = git(['branch', '--show-current']).stdout.trim()
+  if (current === branch) return { ok: true }
+  const branchExists = git(['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]).status === 0
+  const headSha7 = git(['rev-parse', '--short=7', 'HEAD']).stdout.trim()
+  const common = git(['rev-parse', '--path-format=absolute', '--git-common-dir'])
+  const commonDir = common.status === 0 ? common.stdout.trim().replace(/\\/g, '/') : ''
+  const worktreesRoot = /\/\.git$/.test(commonDir) ? `${commonDir.slice(0, -'/.git'.length)}/.claude/worktrees` : '.claude/worktrees'
+  const sealFiles = [specPath ?? argv.find(a => /\.campaign\.json$/.test(String(a))), ROADMAP_PATH].filter(Boolean).map(p => String(p).replace(/\\/g, '/'))
+  const st = git(['status', '--porcelain', '--', ...sealFiles])
+  const dirtySeal = st.status === 0 ? st.stdout.split(/\r?\n/).filter(Boolean).map(l => l.slice(3).trim()) : []
+  // `git worktree list --porcelain`: blocks of `worktree <path>` … `branch refs/heads/<b>`.
+  let checkedOutAt = null
+  let at = null
+  for (const line of git(['worktree', 'list', '--porcelain']).stdout.split(/\r?\n/)) {
+    if (line.startsWith('worktree ')) at = line.slice('worktree '.length)
+    else if (line === `branch refs/heads/${branch}`) checkedOutAt = at
+  }
+  const rerun = `bun scripts/cynco-campaign.mjs ${argv.join(' ')}`.trimEnd()
+  return { ok: false, message: campaignCheckoutRefusal({ id, current, branchExists, headSha7, checkedOutAt, rerun, worktreesRoot, dirtySeal }) }
+}
+
 export async function main(argv, deps = {}) {
   // Every path below reaches for a repo-relative path (scripts/, docs/,
   // benchmark/cynco-ledger/). Run from anywhere else and the first symptom is
   // a brief written into the wrong tree, not an error.
-  if (!existsSync('scripts/dispatch-mission.sh')) { console.error('[campaign] run from the localcode repo root'); return 2 }
+  // A campaign run's root is its own worktree (`.claude/worktrees/campaign-<id>`,
+  // F167); the authoring and report verbs run from any localcode checkout's root.
+  if (!existsSync('scripts/dispatch-mission.sh')) { console.error('[campaign] run from the root of a localcode checkout — for a campaign run, its worktree\'s root (.claude/worktrees/campaign-<id>, F167)'); return 2 }
   // F160: a missing Git Bash is a refusal up front, not a spent, faulted wave
   // an hour from now (dispatch is the first spawn). Asked only on the paths
   // that WILL spawn bash — `--author` (the BASE archive, the dispatch) and the
@@ -1292,6 +1516,20 @@ export async function main(argv, deps = {}) {
   const verbOnly = ['--autopoiesis', '--scoreboard', '--approve-proposal', '--reject-proposal', '--sync'].some(f => flag(f) !== -1)
   if (!verbOnly && !needGitBash()) return 2
   const spec = loadCampaignSpec(specPath)
+  // F167: the runner (waves, --dry-run, --adopt-inflight) reads and commits the
+  // campaign's files in its working copy, so it runs only from the campaign's
+  // own worktree. The verbs above the lock write nothing to the repo (state
+  // lives under CYNCO_HOME; --sync pushes the branch ref, which works from any
+  // checkout) and run anywhere. Asked before the identity check, which already
+  // reads repo files.
+  if (!verbOnly) {
+    const co = ensureCampaignCheckout({ repoRoot: '.', id: spec.id, argv, specPath, io: deps.git ? { git: deps.git } : undefined })
+    if (!co.ok) { console.error(co.message); return 2 }
+    // Final review M4: a suite gate the env prefix cannot carry is refused
+    // here, once, rather than faulting every wave at dispatch.
+    const gateRefusal = suiteGateRefusal(spec)
+    if (gateRefusal) { console.error(gateRefusal); return 2 }
+  }
   // Phase 4 ruling 4: `--autopoiesis` is a dry report over what the campaign
   // already stored — the last graded wave's identity reading, the ledger rows
   // the runner reads, the last regenerated gate-lines dataset. It runs before

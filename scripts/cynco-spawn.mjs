@@ -27,7 +27,7 @@
 //      `fault = { code, status, signal, elapsedMs }` and `timedOut: false`, so a
 //      caller cannot mistake "the harness did not run this" for "the thing I was
 //      measuring failed".
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { win32 } from 'node:path'
 
@@ -176,18 +176,87 @@ function attempt(cmd, args, { cwd, env, envExact, timeoutMs, shell } = {}, { spa
     shell,
   })
   const elapsedMs = Math.max(0, now() - t0)
-  const out = { status: r.status ?? null, stdout: r.stdout ?? '', stderr: r.stderr ?? '', elapsedMs, timedOut: false, fault: null }
+  return classified({ status: r.status ?? null, stdout: r.stdout ?? '', stderr: r.stderr ?? '', signal: r.signal ?? null, error: r.error }, elapsedMs, timeoutMs)
+}
 
-  if (!r.error) return out
-
+/** Rules 1 and 2 above, shared by runSync and runAsync: an ETIMEDOUT is believed only when the time was spent. */
+function classified({ status, stdout, stderr, signal, error }, elapsedMs, timeoutMs) {
+  const out = { status, stdout, stderr, elapsedMs, timedOut: false, fault: null }
+  if (!error) return out
   const spentIt = typeof timeoutMs === 'number' && Number.isFinite(timeoutMs) && timeoutMs > 0
     && elapsedMs >= timeoutMs * TIMEOUT_ELAPSED_FRACTION
-  if (r.error.code === 'ETIMEDOUT' && spentIt) {
+  if (error.code === 'ETIMEDOUT' && spentIt) {
     out.timedOut = true
     return out
   }
-  out.fault = { code: r.error.code ?? null, status: r.status ?? null, signal: r.signal ?? null, elapsedMs }
+  out.fault = { code: error.code ?? null, status, signal, elapsedMs }
   return out
+}
+
+/**
+ * The async sibling of runSync. Same options, same `{ status, stdout, stderr,
+ * elapsedMs, timedOut, fault }` shape, the same F166 instrument environment
+ * and the same elapsed-time reading of a timeout.
+ *
+ * Phase 7 review C1: a check that blocks the event loop for half an hour
+ * cannot answer the bridge's keep-alive, so the engine drops the socket the
+ * driver's note must travel on. This one awaits, so the loop keeps running.
+ *
+ * The deadline is this function's own timer, not spawnSync's, so bun's stale
+ * deadline (F155) cannot fire here; `retryImpossibleTimeout` is accepted and
+ * has nothing to retry. On a timeout the child's whole tree is killed
+ * (`taskkill /T` on Windows — a shell's pytest grandchild would outlive a
+ * plain kill). `hooks.spawn`, `hooks.now` and `hooks.kill` are test seams.
+ */
+export function runAsync(cmd, args, { cwd, env, envExact, timeoutMs, shell } = {}, { spawn: spawnImpl = spawn, now = () => Date.now(), kill = killTree } = {}) {
+  const t0 = now()
+  return new Promise((resolveRun) => {
+    let stdout = ''
+    let stderr = ''
+    let deadlineHit = false
+    let settled = false
+    let child
+    const settle = (fields) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolveRun(classified({ stdout, stderr, ...fields }, Math.max(0, now() - t0), timeoutMs))
+    }
+    const timer = typeof timeoutMs === 'number' && Number.isFinite(timeoutMs) && timeoutMs > 0
+      ? setTimeout(() => { deadlineHit = true; kill(child) }, timeoutMs)
+      : null
+    try {
+      child = spawnImpl(cmd, args, {
+        cwd,
+        env: envExact ? (env ?? process.env) : instrumentEnv(process.env, env),
+        windowsHide: true,
+        shell,
+      })
+    } catch (e) {
+      settle({ status: null, signal: null, error: { code: e?.code ?? 'ESPAWN' } })
+      return
+    }
+    child.stdout?.setEncoding?.('utf8')
+    child.stderr?.setEncoding?.('utf8')
+    child.stdout?.on('data', (d) => { stdout += d })
+    child.stderr?.on('data', (d) => { stderr += d })
+    child.on('error', (e) => settle({ status: null, signal: null, error: { code: e?.code ?? 'ESPAWN' } }))
+    child.on('close', (code, signal) => settle({
+      status: deadlineHit ? null : (typeof code === 'number' ? code : null),
+      signal: signal ?? null,
+      error: deadlineHit ? { code: 'ETIMEDOUT' } : null,
+    }))
+  })
+}
+
+/** Kill a child and everything under it. */
+function killTree(child) {
+  if (!child?.pid) return
+  if (process.platform === 'win32') {
+    const r = spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { encoding: 'utf8', windowsHide: true })
+    if (r.status === 0) return
+  }
+  try { child.kill('SIGKILL') } catch (e) { console.error(`[spawn] could not kill pid ${child.pid}: ${e?.message ?? e}`) }
 }
 
 /** One line naming a fault, for a problem list a person reads. */

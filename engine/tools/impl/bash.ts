@@ -192,10 +192,8 @@ export const bashTool: ToolImpl = {
         cwd,
         encoding: 'utf-8',
         timeout,
-        // Force UTF-8 for Python subprocesses on Windows — the default
-        // cp1252 codec crashes any script that reads/prints files
-        // containing non-ASCII (emoji in game code, etc.)
-        env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
+        // UTF-8 forced for Python, harness-only keys dropped: see bashToolEnv.
+        env: bashToolEnv(process.env),
         maxBuffer: 2 * 1024 * 1024, // 2MB
         shell,
       }, (err, stdout, stderr) => {
@@ -232,4 +230,28 @@ export const bashTool: ToolImpl = {
       })
     })
   },
+}
+
+/**
+ * Keys the HARNESS reads and the model's shell must never hold (Phase 7 final
+ * review I1, closing T6 N2). `LOCALCODE_MISSION_*` names the mission's check
+ * command (the dashboard reads them in-process); `CYNCO_MARKER_CHECK*` is the
+ * driver's marker check — the whole-suite gate with its sealed baseline on a
+ * campaign. The engine process keeps both (it seals the marker check's
+ * instruments); a command the model runs inherits neither.
+ */
+const HARNESS_ONLY_ENV = [/^LOCALCODE_MISSION_/, /^CYNCO_MARKER_CHECK/]
+
+/**
+ * The environment the Bash tool's shell runs with: `base` minus the
+ * harness-only keys, with UTF-8 forced for Python subprocesses on Windows (the
+ * default cp1252 codec crashes any script that prints non-ASCII).
+ */
+export function bashToolEnv(base: Record<string, string | undefined> = process.env): Record<string, string | undefined> {
+  const out: Record<string, string | undefined> = {}
+  for (const [k, v] of Object.entries(base)) {
+    if (HARNESS_ONLY_ENV.some(re => re.test(k))) continue
+    out[k] = v
+  }
+  return { ...out, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' }
 }

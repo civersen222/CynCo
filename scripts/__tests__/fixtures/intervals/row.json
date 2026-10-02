@@ -1,0 +1,2906 @@
+{
+  "missionId": "fx-wave1-1",
+  "campaignId": "fx",
+  "turns": [
+    {
+      "t": 1790815590000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0,
+      "stuckTurns": 0,
+      "varietyRatio": 0,
+      "varietyWindowed": 0,
+      "taskError": 0,
+      "errorTrend": "flat",
+      "infoGain": 0,
+      "progressRate": 0,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 0,
+      "algedonicAlertsTotal": 30,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": []
+      },
+      "consecutiveUnstable": 1,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 0,
+          "max": 0,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790815680000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.01,
+      "stuckTurns": 1,
+      "varietyRatio": 1,
+      "varietyWindowed": 1,
+      "taskError": 1,
+      "errorTrend": "flat",
+      "infoGain": 1,
+      "progressRate": 1,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 1,
+      "algedonicAlertsTotal": 31,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": [
+          "v0"
+        ]
+      },
+      "consecutiveUnstable": 2,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 1,
+          "max": 2,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790815770000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.02,
+      "stuckTurns": 0,
+      "varietyRatio": 2,
+      "varietyWindowed": 2,
+      "taskError": 2,
+      "errorTrend": "flat",
+      "infoGain": 2,
+      "progressRate": 2,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 2,
+      "algedonicAlertsTotal": 32,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": [
+          "v0",
+          "v1"
+        ]
+      },
+      "consecutiveUnstable": 3,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 2,
+          "max": 4,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790815860000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.03,
+      "stuckTurns": 1,
+      "varietyRatio": 3,
+      "varietyWindowed": 3,
+      "taskError": 3,
+      "errorTrend": "flat",
+      "infoGain": 3,
+      "progressRate": 3,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 3,
+      "algedonicAlertsTotal": 33,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": [
+          "v0",
+          "v1",
+          "v2"
+        ]
+      },
+      "consecutiveUnstable": 1,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 3,
+          "max": 6,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790815950000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.04,
+      "stuckTurns": 0,
+      "varietyRatio": 4,
+      "varietyWindowed": 4,
+      "taskError": 4,
+      "errorTrend": "flat",
+      "infoGain": 4,
+      "progressRate": 4,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 4,
+      "algedonicAlertsTotal": 34,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": []
+      },
+      "consecutiveUnstable": 2,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 4,
+          "max": 8,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790816040000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.05,
+      "stuckTurns": 1,
+      "varietyRatio": 5,
+      "varietyWindowed": 5,
+      "taskError": 5,
+      "errorTrend": "flat",
+      "infoGain": 5,
+      "progressRate": 5,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 5,
+      "algedonicAlertsTotal": 35,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": [
+          "v0"
+        ]
+      },
+      "consecutiveUnstable": 3,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 5,
+          "max": 10,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790816130000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.06,
+      "stuckTurns": 0,
+      "varietyRatio": 6,
+      "varietyWindowed": 6,
+      "taskError": 6,
+      "errorTrend": "flat",
+      "infoGain": 6,
+      "progressRate": 6,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 6,
+      "algedonicAlertsTotal": 36,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": [
+          "v0",
+          "v1"
+        ]
+      },
+      "consecutiveUnstable": 1,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 6,
+          "max": 12,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790816220000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.07,
+      "stuckTurns": 1,
+      "varietyRatio": 7,
+      "varietyWindowed": 7,
+      "taskError": 7,
+      "errorTrend": "flat",
+      "infoGain": 7,
+      "progressRate": 7,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 7,
+      "algedonicAlertsTotal": 37,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": [
+          "v0",
+          "v1",
+          "v2"
+        ]
+      },
+      "consecutiveUnstable": 2,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 7,
+          "max": 14,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790816310000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.08,
+      "stuckTurns": 0,
+      "varietyRatio": 8,
+      "varietyWindowed": 8,
+      "taskError": 8,
+      "errorTrend": "flat",
+      "infoGain": 8,
+      "progressRate": 8,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 8,
+      "algedonicAlertsTotal": 38,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": []
+      },
+      "consecutiveUnstable": 3,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 8,
+          "max": 16,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790816400000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.09,
+      "stuckTurns": 1,
+      "varietyRatio": 9,
+      "varietyWindowed": 9,
+      "taskError": 9,
+      "errorTrend": "flat",
+      "infoGain": 9,
+      "progressRate": 9,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 9,
+      "algedonicAlertsTotal": 39,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": [
+          "v0"
+        ]
+      },
+      "consecutiveUnstable": 1,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 9,
+          "max": 18,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790816490000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.1,
+      "stuckTurns": 0,
+      "varietyRatio": 10,
+      "varietyWindowed": 10,
+      "taskError": 10,
+      "errorTrend": "flat",
+      "infoGain": 10,
+      "progressRate": 10,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 10,
+      "algedonicAlertsTotal": 40,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": [
+          "v0",
+          "v1"
+        ]
+      },
+      "consecutiveUnstable": 2,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 10,
+          "max": 20,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790816580000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.11,
+      "stuckTurns": 1,
+      "varietyRatio": 11,
+      "varietyWindowed": 11,
+      "taskError": 11,
+      "errorTrend": "flat",
+      "infoGain": 11,
+      "progressRate": 11,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 11,
+      "algedonicAlertsTotal": 41,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": [
+          "v0",
+          "v1",
+          "v2"
+        ]
+      },
+      "consecutiveUnstable": 3,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 11,
+          "max": 22,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790816670000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.12,
+      "stuckTurns": 0,
+      "varietyRatio": 12,
+      "varietyWindowed": 12,
+      "taskError": 12,
+      "errorTrend": "flat",
+      "infoGain": 12,
+      "progressRate": 12,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 12,
+      "algedonicAlertsTotal": 42,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": []
+      },
+      "consecutiveUnstable": 1,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 12,
+          "max": 24,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790816760000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.13,
+      "stuckTurns": 1,
+      "varietyRatio": 13,
+      "varietyWindowed": 13,
+      "taskError": 13,
+      "errorTrend": "flat",
+      "infoGain": 13,
+      "progressRate": 13,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 13,
+      "algedonicAlertsTotal": 43,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": [
+          "v0"
+        ]
+      },
+      "consecutiveUnstable": 2,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 13,
+          "max": 26,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790816850000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.14,
+      "stuckTurns": 0,
+      "varietyRatio": 14,
+      "varietyWindowed": 14,
+      "taskError": 14,
+      "errorTrend": "flat",
+      "infoGain": 14,
+      "progressRate": 14,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 14,
+      "algedonicAlertsTotal": 44,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": [
+          "v0",
+          "v1"
+        ]
+      },
+      "consecutiveUnstable": 3,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 14,
+          "max": 28,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790816940000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.15,
+      "stuckTurns": 1,
+      "varietyRatio": 15,
+      "varietyWindowed": 15,
+      "taskError": 15,
+      "errorTrend": "flat",
+      "infoGain": 15,
+      "progressRate": 15,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 15,
+      "algedonicAlertsTotal": 45,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": [
+          "v0",
+          "v1",
+          "v2"
+        ]
+      },
+      "consecutiveUnstable": 1,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 15,
+          "max": 30,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790817030000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.16,
+      "stuckTurns": 0,
+      "varietyRatio": 16,
+      "varietyWindowed": 16,
+      "taskError": 16,
+      "errorTrend": "flat",
+      "infoGain": 16,
+      "progressRate": 16,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 16,
+      "algedonicAlertsTotal": 46,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": []
+      },
+      "consecutiveUnstable": 2,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 16,
+          "max": 32,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790817120000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.17,
+      "stuckTurns": 1,
+      "varietyRatio": 17,
+      "varietyWindowed": 17,
+      "taskError": 17,
+      "errorTrend": "flat",
+      "infoGain": 17,
+      "progressRate": 17,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 17,
+      "algedonicAlertsTotal": 47,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": [
+          "v0"
+        ]
+      },
+      "consecutiveUnstable": 3,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 17,
+          "max": 34,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790817210000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.18,
+      "stuckTurns": 0,
+      "varietyRatio": 18,
+      "varietyWindowed": 18,
+      "taskError": 18,
+      "errorTrend": "flat",
+      "infoGain": 18,
+      "progressRate": 18,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 18,
+      "algedonicAlertsTotal": 48,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": [
+          "v0",
+          "v1"
+        ]
+      },
+      "consecutiveUnstable": 1,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 18,
+          "max": 36,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790817300000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.19,
+      "stuckTurns": 1,
+      "varietyRatio": 19,
+      "varietyWindowed": 19,
+      "taskError": 19,
+      "errorTrend": "flat",
+      "infoGain": 19,
+      "progressRate": 19,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 19,
+      "algedonicAlertsTotal": 49,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": [
+          "v0",
+          "v1",
+          "v2"
+        ]
+      },
+      "consecutiveUnstable": 2,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 19,
+          "max": 38,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790817390000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.2,
+      "stuckTurns": 0,
+      "varietyRatio": 20,
+      "varietyWindowed": 20,
+      "taskError": 20,
+      "errorTrend": "flat",
+      "infoGain": 20,
+      "progressRate": 20,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 20,
+      "algedonicAlertsTotal": 50,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": []
+      },
+      "consecutiveUnstable": 1,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 20,
+          "max": 40,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790817480000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.21,
+      "stuckTurns": 1,
+      "varietyRatio": 21,
+      "varietyWindowed": 21,
+      "taskError": 21,
+      "errorTrend": "flat",
+      "infoGain": 21,
+      "progressRate": 21,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 21,
+      "algedonicAlertsTotal": 51,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": [
+          "v0"
+        ]
+      },
+      "consecutiveUnstable": 2,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 21,
+          "max": 42,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790817570000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.22,
+      "stuckTurns": 0,
+      "varietyRatio": 22,
+      "varietyWindowed": 22,
+      "taskError": 22,
+      "errorTrend": "flat",
+      "infoGain": 22,
+      "progressRate": 22,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 22,
+      "algedonicAlertsTotal": 52,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": [
+          "v0",
+          "v1"
+        ]
+      },
+      "consecutiveUnstable": 3,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 22,
+          "max": 44,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790817660000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.23,
+      "stuckTurns": 1,
+      "varietyRatio": 23,
+      "varietyWindowed": 23,
+      "taskError": 23,
+      "errorTrend": "flat",
+      "infoGain": 23,
+      "progressRate": 23,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 23,
+      "algedonicAlertsTotal": 53,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": [
+          "v0",
+          "v1",
+          "v2"
+        ]
+      },
+      "consecutiveUnstable": 4,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 23,
+          "max": 46,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790817750000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.24,
+      "stuckTurns": 0,
+      "varietyRatio": 24,
+      "varietyWindowed": 24,
+      "taskError": 24,
+      "errorTrend": "flat",
+      "infoGain": 24,
+      "progressRate": 24,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 24,
+      "algedonicAlertsTotal": 54,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": []
+      },
+      "consecutiveUnstable": 5,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 24,
+          "max": 48,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790817840000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.25,
+      "stuckTurns": 1,
+      "varietyRatio": 25,
+      "varietyWindowed": 25,
+      "taskError": 25,
+      "errorTrend": "flat",
+      "infoGain": 25,
+      "progressRate": 25,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 25,
+      "algedonicAlertsTotal": 55,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": [
+          "v0"
+        ]
+      },
+      "consecutiveUnstable": 6,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 25,
+          "max": 50,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790817930000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.26,
+      "stuckTurns": 0,
+      "varietyRatio": 26,
+      "varietyWindowed": 26,
+      "taskError": 26,
+      "errorTrend": "flat",
+      "infoGain": 26,
+      "progressRate": 26,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 26,
+      "algedonicAlertsTotal": 56,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": [
+          "v0",
+          "v1"
+        ]
+      },
+      "consecutiveUnstable": 7,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 26,
+          "max": 52,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790818020000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.27,
+      "stuckTurns": 1,
+      "varietyRatio": 27,
+      "varietyWindowed": 27,
+      "taskError": 27,
+      "errorTrend": "flat",
+      "infoGain": 27,
+      "progressRate": 27,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 27,
+      "algedonicAlertsTotal": 57,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": [
+          "v0",
+          "v1",
+          "v2"
+        ]
+      },
+      "consecutiveUnstable": 1,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 27,
+          "max": 54,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790818110000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.28,
+      "stuckTurns": 0,
+      "varietyRatio": 28,
+      "varietyWindowed": 28,
+      "taskError": 28,
+      "errorTrend": "flat",
+      "infoGain": 28,
+      "progressRate": 28,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 28,
+      "algedonicAlertsTotal": 58,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": []
+      },
+      "consecutiveUnstable": 2,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 28,
+          "max": 56,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790818200000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.29,
+      "stuckTurns": 1,
+      "varietyRatio": 29,
+      "varietyWindowed": 29,
+      "taskError": 29,
+      "errorTrend": "flat",
+      "infoGain": 29,
+      "progressRate": 29,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 29,
+      "algedonicAlertsTotal": 59,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": [
+          "v0"
+        ]
+      },
+      "consecutiveUnstable": 3,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 29,
+          "max": 58,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790818290000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.3,
+      "stuckTurns": 0,
+      "varietyRatio": 30,
+      "varietyWindowed": 30,
+      "taskError": 30,
+      "errorTrend": "flat",
+      "infoGain": 30,
+      "progressRate": 30,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 30,
+      "algedonicAlertsTotal": 60,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": [
+          "v0",
+          "v1"
+        ]
+      },
+      "consecutiveUnstable": 4,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 30,
+          "max": 60,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790818380000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.31,
+      "stuckTurns": 1,
+      "varietyRatio": 31,
+      "varietyWindowed": 31,
+      "taskError": 31,
+      "errorTrend": "flat",
+      "infoGain": 31,
+      "progressRate": 31,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 31,
+      "algedonicAlertsTotal": 61,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": [
+          "v0",
+          "v1",
+          "v2"
+        ]
+      },
+      "consecutiveUnstable": 5,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 31,
+          "max": 62,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790818470000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.32,
+      "stuckTurns": 0,
+      "varietyRatio": 32,
+      "varietyWindowed": 32,
+      "taskError": 32,
+      "errorTrend": "flat",
+      "infoGain": 32,
+      "progressRate": 32,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 32,
+      "algedonicAlertsTotal": 62,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": []
+      },
+      "consecutiveUnstable": 6,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 32,
+          "max": 64,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790818560000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.33,
+      "stuckTurns": 1,
+      "varietyRatio": 33,
+      "varietyWindowed": 33,
+      "taskError": 33,
+      "errorTrend": "flat",
+      "infoGain": 33,
+      "progressRate": 33,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 33,
+      "algedonicAlertsTotal": 63,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": [
+          "v0"
+        ]
+      },
+      "consecutiveUnstable": 7,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 33,
+          "max": 66,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790818650000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.34,
+      "stuckTurns": 0,
+      "varietyRatio": 34,
+      "varietyWindowed": 34,
+      "taskError": 34,
+      "errorTrend": "flat",
+      "infoGain": 34,
+      "progressRate": 34,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 34,
+      "algedonicAlertsTotal": 64,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": [
+          "v0",
+          "v1"
+        ]
+      },
+      "consecutiveUnstable": 1,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 34,
+          "max": 68,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790818740000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.35,
+      "stuckTurns": 1,
+      "varietyRatio": 35,
+      "varietyWindowed": 35,
+      "taskError": 35,
+      "errorTrend": "flat",
+      "infoGain": 35,
+      "progressRate": 35,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 35,
+      "algedonicAlertsTotal": 65,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": [
+          "v0",
+          "v1",
+          "v2"
+        ]
+      },
+      "consecutiveUnstable": 2,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 35,
+          "max": 70,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790818830000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.36,
+      "stuckTurns": 0,
+      "varietyRatio": 36,
+      "varietyWindowed": 36,
+      "taskError": 36,
+      "errorTrend": "flat",
+      "infoGain": 36,
+      "progressRate": 36,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 36,
+      "algedonicAlertsTotal": 66,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": []
+      },
+      "consecutiveUnstable": 3,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 36,
+          "max": 72,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790818920000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.37,
+      "stuckTurns": 1,
+      "varietyRatio": 37,
+      "varietyWindowed": 37,
+      "taskError": 37,
+      "errorTrend": "flat",
+      "infoGain": 37,
+      "progressRate": 37,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 37,
+      "algedonicAlertsTotal": 67,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": [
+          "v0"
+        ]
+      },
+      "consecutiveUnstable": 4,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 37,
+          "max": 74,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790819010000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.38,
+      "stuckTurns": 0,
+      "varietyRatio": 38,
+      "varietyWindowed": 38,
+      "taskError": 38,
+      "errorTrend": "flat",
+      "infoGain": 38,
+      "progressRate": 38,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 38,
+      "algedonicAlertsTotal": 68,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": [
+          "v0",
+          "v1"
+        ]
+      },
+      "consecutiveUnstable": 5,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 38,
+          "max": 76,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790819100000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.39,
+      "stuckTurns": 1,
+      "varietyRatio": 39,
+      "varietyWindowed": 39,
+      "taskError": 39,
+      "errorTrend": "flat",
+      "infoGain": 39,
+      "progressRate": 39,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 39,
+      "algedonicAlertsTotal": 69,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": [
+          "v0",
+          "v1",
+          "v2"
+        ]
+      },
+      "consecutiveUnstable": 6,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 39,
+          "max": 78,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790819190000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.4,
+      "stuckTurns": 0,
+      "varietyRatio": 40,
+      "varietyWindowed": 40,
+      "taskError": 40,
+      "errorTrend": "flat",
+      "infoGain": 40,
+      "progressRate": 40,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 40,
+      "algedonicAlertsTotal": 70,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": []
+      },
+      "consecutiveUnstable": 1,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 40,
+          "max": 80,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790819280000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.41,
+      "stuckTurns": 1,
+      "varietyRatio": 41,
+      "varietyWindowed": 41,
+      "taskError": 41,
+      "errorTrend": "flat",
+      "infoGain": 41,
+      "progressRate": 41,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 41,
+      "algedonicAlertsTotal": 71,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": [
+          "v0"
+        ]
+      },
+      "consecutiveUnstable": 2,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 41,
+          "max": 82,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790819370000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.42,
+      "stuckTurns": 0,
+      "varietyRatio": 42,
+      "varietyWindowed": 42,
+      "taskError": 42,
+      "errorTrend": "flat",
+      "infoGain": 42,
+      "progressRate": 42,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 42,
+      "algedonicAlertsTotal": 72,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": [
+          "v0",
+          "v1"
+        ]
+      },
+      "consecutiveUnstable": 3,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 42,
+          "max": 84,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790819460000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.43,
+      "stuckTurns": 1,
+      "varietyRatio": 43,
+      "varietyWindowed": 43,
+      "taskError": 43,
+      "errorTrend": "flat",
+      "infoGain": 43,
+      "progressRate": 43,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 43,
+      "algedonicAlertsTotal": 73,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": [
+          "v0",
+          "v1",
+          "v2"
+        ]
+      },
+      "consecutiveUnstable": 4,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 43,
+          "max": 86,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790819550000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.44,
+      "stuckTurns": 0,
+      "varietyRatio": 44,
+      "varietyWindowed": 44,
+      "taskError": 44,
+      "errorTrend": "flat",
+      "infoGain": 44,
+      "progressRate": 44,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 44,
+      "algedonicAlertsTotal": 74,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": []
+      },
+      "consecutiveUnstable": 5,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 44,
+          "max": 88,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790819640000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.45,
+      "stuckTurns": 1,
+      "varietyRatio": 45,
+      "varietyWindowed": 45,
+      "taskError": 45,
+      "errorTrend": "flat",
+      "infoGain": 45,
+      "progressRate": 45,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 45,
+      "algedonicAlertsTotal": 75,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": [
+          "v0"
+        ]
+      },
+      "consecutiveUnstable": 1,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 45,
+          "max": 90,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790819730000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.46,
+      "stuckTurns": 0,
+      "varietyRatio": 46,
+      "varietyWindowed": 46,
+      "taskError": 46,
+      "errorTrend": "flat",
+      "infoGain": 46,
+      "progressRate": 46,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 46,
+      "algedonicAlertsTotal": 76,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": [
+          "v0",
+          "v1"
+        ]
+      },
+      "consecutiveUnstable": 2,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 46,
+          "max": 92,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790819820000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.47,
+      "stuckTurns": 1,
+      "varietyRatio": 47,
+      "varietyWindowed": 47,
+      "taskError": 47,
+      "errorTrend": "flat",
+      "infoGain": 47,
+      "progressRate": 47,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 47,
+      "algedonicAlertsTotal": 77,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": [
+          "v0",
+          "v1",
+          "v2"
+        ]
+      },
+      "consecutiveUnstable": 3,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 47,
+          "max": 94,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790819910000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.48,
+      "stuckTurns": 0,
+      "varietyRatio": 48,
+      "varietyWindowed": 48,
+      "taskError": 48,
+      "errorTrend": "flat",
+      "infoGain": 48,
+      "progressRate": 48,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 48,
+      "algedonicAlertsTotal": 78,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": []
+      },
+      "consecutiveUnstable": 4,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 48,
+          "max": 96,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790820000000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.49,
+      "stuckTurns": 1,
+      "varietyRatio": 49,
+      "varietyWindowed": 49,
+      "taskError": 49,
+      "errorTrend": "flat",
+      "infoGain": 49,
+      "progressRate": 49,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 49,
+      "algedonicAlertsTotal": 79,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": [
+          "v0"
+        ]
+      },
+      "consecutiveUnstable": 5,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 49,
+          "max": 98,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790820090000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.5,
+      "stuckTurns": 0,
+      "varietyRatio": 50,
+      "varietyWindowed": 50,
+      "taskError": 50,
+      "errorTrend": "flat",
+      "infoGain": 50,
+      "progressRate": 50,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 50,
+      "algedonicAlertsTotal": 80,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": [
+          "v0",
+          "v1"
+        ]
+      },
+      "consecutiveUnstable": 1,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 50,
+          "max": 100,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790820180000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.51,
+      "stuckTurns": 1,
+      "varietyRatio": 51,
+      "varietyWindowed": 51,
+      "taskError": 51,
+      "errorTrend": "flat",
+      "infoGain": 51,
+      "progressRate": 51,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 51,
+      "algedonicAlertsTotal": 81,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": [
+          "v0",
+          "v1",
+          "v2"
+        ]
+      },
+      "consecutiveUnstable": 2,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 51,
+          "max": 102,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790820270000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.52,
+      "stuckTurns": 0,
+      "varietyRatio": 52,
+      "varietyWindowed": 52,
+      "taskError": 52,
+      "errorTrend": "flat",
+      "infoGain": 52,
+      "progressRate": 52,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 52,
+      "algedonicAlertsTotal": 82,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": []
+      },
+      "consecutiveUnstable": 3,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 52,
+          "max": 104,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790820360000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.53,
+      "stuckTurns": 1,
+      "varietyRatio": 53,
+      "varietyWindowed": 53,
+      "taskError": 53,
+      "errorTrend": "flat",
+      "infoGain": 53,
+      "progressRate": 53,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 53,
+      "algedonicAlertsTotal": 83,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": [
+          "v0"
+        ]
+      },
+      "consecutiveUnstable": 4,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 53,
+          "max": 106,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790820450000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.54,
+      "stuckTurns": 0,
+      "varietyRatio": 54,
+      "varietyWindowed": 54,
+      "taskError": 54,
+      "errorTrend": "flat",
+      "infoGain": 54,
+      "progressRate": 54,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 54,
+      "algedonicAlertsTotal": 84,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": [
+          "v0",
+          "v1"
+        ]
+      },
+      "consecutiveUnstable": 5,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 54,
+          "max": 108,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790820540000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.55,
+      "stuckTurns": 1,
+      "varietyRatio": 55,
+      "varietyWindowed": 55,
+      "taskError": 55,
+      "errorTrend": "flat",
+      "infoGain": 55,
+      "progressRate": 55,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 55,
+      "algedonicAlertsTotal": 85,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": [
+          "v0",
+          "v1",
+          "v2"
+        ]
+      },
+      "consecutiveUnstable": 1,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 55,
+          "max": 110,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790820630000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.56,
+      "stuckTurns": 0,
+      "varietyRatio": 56,
+      "varietyWindowed": 56,
+      "taskError": 56,
+      "errorTrend": "flat",
+      "infoGain": 56,
+      "progressRate": 56,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 56,
+      "algedonicAlertsTotal": 86,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": []
+      },
+      "consecutiveUnstable": 2,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 56,
+          "max": 112,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790820720000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.57,
+      "stuckTurns": 1,
+      "varietyRatio": 57,
+      "varietyWindowed": 57,
+      "taskError": 57,
+      "errorTrend": "flat",
+      "infoGain": 57,
+      "progressRate": 57,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 57,
+      "algedonicAlertsTotal": 87,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": [
+          "v0"
+        ]
+      },
+      "consecutiveUnstable": 3,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 57,
+          "max": 114,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790820810000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.58,
+      "stuckTurns": 0,
+      "varietyRatio": 58,
+      "varietyWindowed": 58,
+      "taskError": 58,
+      "errorTrend": "flat",
+      "infoGain": 58,
+      "progressRate": 58,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 58,
+      "algedonicAlertsTotal": 88,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": [
+          "v0",
+          "v1"
+        ]
+      },
+      "consecutiveUnstable": 4,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 58,
+          "max": 116,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790820900000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.59,
+      "stuckTurns": 1,
+      "varietyRatio": 59,
+      "varietyWindowed": 59,
+      "taskError": 59,
+      "errorTrend": "flat",
+      "infoGain": 59,
+      "progressRate": 59,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 59,
+      "algedonicAlertsTotal": 89,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": [
+          "v0",
+          "v1",
+          "v2"
+        ]
+      },
+      "consecutiveUnstable": 5,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 59,
+          "max": 118,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790820990000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.6,
+      "stuckTurns": 0,
+      "varietyRatio": 60,
+      "varietyWindowed": 60,
+      "taskError": 60,
+      "errorTrend": "flat",
+      "infoGain": 60,
+      "progressRate": 60,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 60,
+      "algedonicAlertsTotal": 90,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": []
+      },
+      "consecutiveUnstable": 1,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 60,
+          "max": 120,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790821080000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.61,
+      "stuckTurns": 1,
+      "varietyRatio": 61,
+      "varietyWindowed": 61,
+      "taskError": 61,
+      "errorTrend": "flat",
+      "infoGain": 61,
+      "progressRate": 61,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 61,
+      "algedonicAlertsTotal": 91,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": [
+          "v0"
+        ]
+      },
+      "consecutiveUnstable": 2,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 61,
+          "max": 122,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790821170000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.62,
+      "stuckTurns": 0,
+      "varietyRatio": 62,
+      "varietyWindowed": 62,
+      "taskError": 62,
+      "errorTrend": "flat",
+      "infoGain": 62,
+      "progressRate": 62,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 62,
+      "algedonicAlertsTotal": 92,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": [
+          "v0",
+          "v1"
+        ]
+      },
+      "consecutiveUnstable": 3,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 62,
+          "max": 124,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790821260000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.63,
+      "stuckTurns": 1,
+      "varietyRatio": 63,
+      "varietyWindowed": 63,
+      "taskError": 63,
+      "errorTrend": "flat",
+      "infoGain": 63,
+      "progressRate": 63,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 63,
+      "algedonicAlertsTotal": 93,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": [
+          "v0",
+          "v1",
+          "v2"
+        ]
+      },
+      "consecutiveUnstable": 4,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 63,
+          "max": 126,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790821350000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.64,
+      "stuckTurns": 0,
+      "varietyRatio": 64,
+      "varietyWindowed": 64,
+      "taskError": 64,
+      "errorTrend": "flat",
+      "infoGain": 64,
+      "progressRate": 64,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 64,
+      "algedonicAlertsTotal": 94,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": []
+      },
+      "consecutiveUnstable": 1,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 64,
+          "max": 128,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790821440000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.65,
+      "stuckTurns": 1,
+      "varietyRatio": 65,
+      "varietyWindowed": 65,
+      "taskError": 65,
+      "errorTrend": "flat",
+      "infoGain": 65,
+      "progressRate": 65,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 65,
+      "algedonicAlertsTotal": 95,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": [
+          "v0"
+        ]
+      },
+      "consecutiveUnstable": 2,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 65,
+          "max": 130,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790821530000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.66,
+      "stuckTurns": 0,
+      "varietyRatio": 66,
+      "varietyWindowed": 66,
+      "taskError": 66,
+      "errorTrend": "flat",
+      "infoGain": 66,
+      "progressRate": 66,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 66,
+      "algedonicAlertsTotal": 96,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": [
+          "v0",
+          "v1"
+        ]
+      },
+      "consecutiveUnstable": 3,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 66,
+          "max": 132,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790821620000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.67,
+      "stuckTurns": 1,
+      "varietyRatio": 67,
+      "varietyWindowed": 67,
+      "taskError": 67,
+      "errorTrend": "flat",
+      "infoGain": 67,
+      "progressRate": 67,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 67,
+      "algedonicAlertsTotal": 97,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": [
+          "v0",
+          "v1",
+          "v2"
+        ]
+      },
+      "consecutiveUnstable": 4,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 67,
+          "max": 134,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790821710000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.68,
+      "stuckTurns": 0,
+      "varietyRatio": 68,
+      "varietyWindowed": 68,
+      "taskError": 68,
+      "errorTrend": "flat",
+      "infoGain": 68,
+      "progressRate": 68,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 68,
+      "algedonicAlertsTotal": 98,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": []
+      },
+      "consecutiveUnstable": 1,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 68,
+          "max": 136,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790821800000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.69,
+      "stuckTurns": 1,
+      "varietyRatio": 69,
+      "varietyWindowed": 69,
+      "taskError": 69,
+      "errorTrend": "flat",
+      "infoGain": 69,
+      "progressRate": 69,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 69,
+      "algedonicAlertsTotal": 99,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": [
+          "v0"
+        ]
+      },
+      "consecutiveUnstable": 2,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 69,
+          "max": 138,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790821890000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.7,
+      "stuckTurns": 0,
+      "varietyRatio": 70,
+      "varietyWindowed": 70,
+      "taskError": 70,
+      "errorTrend": "flat",
+      "infoGain": 70,
+      "progressRate": 70,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 70,
+      "algedonicAlertsTotal": 100,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": [
+          "v0",
+          "v1"
+        ]
+      },
+      "consecutiveUnstable": 3,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 70,
+          "max": 140,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790821980000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.71,
+      "stuckTurns": 1,
+      "varietyRatio": 71,
+      "varietyWindowed": 71,
+      "taskError": 71,
+      "errorTrend": "flat",
+      "infoGain": 71,
+      "progressRate": 71,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 71,
+      "algedonicAlertsTotal": 101,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": [
+          "v0",
+          "v1",
+          "v2"
+        ]
+      },
+      "consecutiveUnstable": 4,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 71,
+          "max": 142,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790822070000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.72,
+      "stuckTurns": 0,
+      "varietyRatio": 72,
+      "varietyWindowed": 72,
+      "taskError": 72,
+      "errorTrend": "flat",
+      "infoGain": 72,
+      "progressRate": 72,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 72,
+      "algedonicAlertsTotal": 102,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": []
+      },
+      "consecutiveUnstable": 1,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 72,
+          "max": 144,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790822160000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.73,
+      "stuckTurns": 1,
+      "varietyRatio": 73,
+      "varietyWindowed": 73,
+      "taskError": 73,
+      "errorTrend": "flat",
+      "infoGain": 73,
+      "progressRate": 73,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 73,
+      "algedonicAlertsTotal": 103,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": [
+          "v0"
+        ]
+      },
+      "consecutiveUnstable": 2,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 73,
+          "max": 146,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790822250000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.74,
+      "stuckTurns": 0,
+      "varietyRatio": 74,
+      "varietyWindowed": 74,
+      "taskError": 74,
+      "errorTrend": "flat",
+      "infoGain": 74,
+      "progressRate": 74,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 74,
+      "algedonicAlertsTotal": 104,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": [
+          "v0",
+          "v1"
+        ]
+      },
+      "consecutiveUnstable": 3,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 74,
+          "max": 148,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790822340000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.75,
+      "stuckTurns": 1,
+      "varietyRatio": 75,
+      "varietyWindowed": 75,
+      "taskError": 75,
+      "errorTrend": "flat",
+      "infoGain": 75,
+      "progressRate": 75,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 75,
+      "algedonicAlertsTotal": 105,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": [
+          "v0",
+          "v1",
+          "v2"
+        ]
+      },
+      "consecutiveUnstable": 4,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 75,
+          "max": 150,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790822430000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.76,
+      "stuckTurns": 0,
+      "varietyRatio": 76,
+      "varietyWindowed": 76,
+      "taskError": 76,
+      "errorTrend": "flat",
+      "infoGain": 76,
+      "progressRate": 76,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 76,
+      "algedonicAlertsTotal": 106,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": []
+      },
+      "consecutiveUnstable": 1,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 76,
+          "max": 152,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790822520000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.77,
+      "stuckTurns": 1,
+      "varietyRatio": 77,
+      "varietyWindowed": 77,
+      "taskError": 77,
+      "errorTrend": "flat",
+      "infoGain": 77,
+      "progressRate": 77,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 77,
+      "algedonicAlertsTotal": 107,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": [
+          "v0"
+        ]
+      },
+      "consecutiveUnstable": 2,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 77,
+          "max": 154,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790822610000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.78,
+      "stuckTurns": 0,
+      "varietyRatio": 78,
+      "varietyWindowed": 78,
+      "taskError": 78,
+      "errorTrend": "flat",
+      "infoGain": 78,
+      "progressRate": 78,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 78,
+      "algedonicAlertsTotal": 108,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": [
+          "v0",
+          "v1"
+        ]
+      },
+      "consecutiveUnstable": 3,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 78,
+          "max": 156,
+          "spikeCount": 0
+        }
+      }
+    },
+    {
+      "t": 1790822700000,
+      "signalsVersion": 2,
+      "health": "healthy",
+      "s3s4Balance": "balanced",
+      "toolSuccessRate": 0.79,
+      "stuckTurns": 1,
+      "varietyRatio": 79,
+      "varietyWindowed": 79,
+      "taskError": 79,
+      "errorTrend": "flat",
+      "infoGain": 79,
+      "progressRate": 79,
+      "explorationState": "healthy_exploration",
+      "varietyBalance": "balanced",
+      "algedonicAlerts": 79,
+      "algedonicAlertsTotal": 109,
+      "axiomHealth": {
+        "holding": 1,
+        "total": 3,
+        "violations": [
+          "v0",
+          "v1",
+          "v2"
+        ]
+      },
+      "consecutiveUnstable": 4,
+      "heterarchy": {
+        "commander": "S3"
+      },
+      "brain": {
+        "toolEntropy": {
+          "mean": 79,
+          "max": 158,
+          "spikeCount": 0
+        }
+      }
+    }
+  ]
+}

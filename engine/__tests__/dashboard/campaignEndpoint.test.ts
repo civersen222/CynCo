@@ -153,8 +153,8 @@ describe('GET /api/campaign', () => {
     expect(c8.budgetWaves).toBe(8)
 
     expect(c8.waves).toHaveLength(2)
-    expect(c8.waves[0]).toEqual({ wave: 1, decision: { kind: 'next', why: '2 line(s) still FAIL' }, posiwid: { verdict: 'Consistent', divergence: 0.05 }, governancePosiwid: null, autopoiesis: null, verified: true })
-    expect(c8.waves[1].governancePosiwid).toEqual({ verdict: 'Consistent', onsetWave: null })
+    expect(c8.waves[0]).toEqual({ wave: 1, decision: { kind: 'next', why: '2 line(s) still FAIL' }, posiwid: { verdict: 'Consistent', divergence: 0.05 }, governancePosiwid: null, autopoiesis: null, verified: true, progress: null })
+    expect(c8.waves[1].governancePosiwid).toEqual({ verdict: 'Consistent', onsetWave: null, v2: null })
     // Phase 4 ruling 4: the checklist reduced to what the panel prints.
     expect(c8.waves[1].autopoiesis).toEqual({ isAutopoietic: false, missing: ['boundarySelfProduced', 'organizationallyClosed'] })
     expect(c8.governancePosiwid).toEqual({ verdict: 'Consistent', divergence: 0.01, dominantObserved: 'inspect', support: 5, onsetWave: null, counts: { wave: 2 } })
@@ -212,6 +212,91 @@ describe('GET /api/campaign', () => {
     const c7 = ((await res.json()) as any).campaigns.find((c: any) => c.id === 'c7')
     expect(c7.waves[0].autopoiesis).toEqual({ isAutopoietic: false, missing: ['hasBoundary'] })
     expect(c7.waves[1].autopoiesis).toEqual({ isAutopoietic: false, missing: [], assessError: 'boom' })
+  })
+
+  it('a wave record\'s mid-wave readings and shadow decisions reach the panel reduced; a wave without them is progress: null', async () => {
+    // Phase 7 ruling 5. `rec.progress` / `rec.shadowDecisions` are written at
+    // VERDICT (scripts/cynco-campaign.mjs progressFields), so the endpoint
+    // reads them off the wave record and nowhere else.
+    CYNCO_HOME = mkdtempSync(join(tmpdir(), 'cynco-campaign-progress-'))
+    process.env.CYNCO_HOME = CYNCO_HOME
+    writeCampaign(CYNCO_HOME, 'c10', { waveCount: 2 }, [
+      // Pre-Phase-6: no progress key at all.
+      { wave: 1, decision: { kind: 'next', why: 'x' }, verified: false,
+        governancePosiwid: { verdict: 'Contradicted', divergence: 0.9, onsetWave: 1 } },
+      { wave: 2, decision: { kind: 'next', why: 'y' }, verified: false,
+        progress: [
+          { at: '2026-10-01T10:30:00.000Z', sha: 'aaaaaaa1111111', fails: 9, passes: 3, failIds: ['A'], durationMs: 0, elapsedFraction: 0.25, reusedFrom: 'start' },
+          { at: '2026-10-01T11:00:00.000Z', fault: 'gate timed out (exit null)', durationMs: 600000 },
+          { at: '2026-10-01T11:30:00.000Z', sha: 'bbbbbbb2222222', fails: 7, passes: 5, failIds: ['A'], durationMs: 41000, elapsedFraction: 0.5 },
+          { at: '2026-10-01T12:00:00.000Z', sha: 'ccccccc3333333', fails: 7, passes: 5, failIds: ['A'], durationMs: 40000, elapsedFraction: 0.75 },
+        ],
+        shadowDecisions: [
+          { rule: 'R1.no-progress', at: '2026-10-01T10:30:00.000Z', elapsedFraction: 0.25, fired: false, startFails: 9, fails: 9, wouldHaveSavedS: 0 },
+          { rule: 'R2.stalled', at: '2026-10-01T10:30:00.000Z', elapsedFraction: 0.25, fired: false, window: [9], fails: 9, wouldHaveSavedS: 0 },
+          { rule: 'R1.no-progress', at: '2026-10-01T11:00:00.000Z', elapsedFraction: 0.375, fired: false, startFails: 9, fails: 9, wouldHaveSavedS: 0 },
+          { rule: 'R2.stalled', at: '2026-10-01T11:00:00.000Z', elapsedFraction: 0.375, fired: false, window: [9], fails: 9, wouldHaveSavedS: 0 },
+          { rule: 'R1.no-progress', at: '2026-10-01T11:30:00.000Z', elapsedFraction: 0.5, fired: false, startFails: 9, fails: 7, wouldHaveSavedS: 0 },
+          { rule: 'R2.stalled', at: '2026-10-01T11:30:00.000Z', elapsedFraction: 0.5, fired: false, window: [9, 7], fails: 7, wouldHaveSavedS: 0 },
+          { rule: 'R1.no-progress', at: '2026-10-01T12:00:00.000Z', elapsedFraction: 0.75, fired: false, startFails: 9, fails: 7, wouldHaveSavedS: 0 },
+          { rule: 'R2.stalled', at: '2026-10-01T12:00:00.000Z', elapsedFraction: 0.75, fired: true, window: [7, 7], fails: 7, wouldHaveSavedS: 3600 },
+        ],
+        governancePosiwid: { verdict: 'Contradicted', divergence: 0.8, onsetWave: 1,
+          v2: { verdict: 'Consistent', divergence: 0.02, dominantObserved: 'signalsLogged', stated: { earned: 0, total: 8 } } } },
+    ])
+    const res = await authFetch(`${BASE}/api/campaign`)
+    const c10 = ((await res.json()) as any).campaigns.find((c: any) => c.id === 'c10')
+    expect(c10.waves[0].progress).toBeNull()
+    expect(c10.waves[0].governancePosiwid).toEqual({ verdict: 'Contradicted', onsetWave: 1, v2: null })
+    expect(c10.waves[1].progress).toEqual({
+      startFails: 9,
+      readings: [
+        { elapsedFraction: 0.25, fails: 9, sha7: 'aaaaaaa', fault: null },
+        { elapsedFraction: null, fails: null, sha7: null, fault: 'gate timed out (exit null)' },
+        { elapsedFraction: 0.5, fails: 7, sha7: 'bbbbbbb', fault: null },
+        { elapsedFraction: 0.75, fails: 7, sha7: 'ccccccc', fault: null },
+      ],
+      decisions: {
+        'R1.no-progress': { n: 4, fired: 0, firedAt: [] },
+        'R2.stalled': { n: 4, fired: 1, firedAt: [0.75] },
+      },
+    })
+    expect(c10.waves[1].governancePosiwid).toEqual({ verdict: 'Contradicted', onsetWave: 1,
+      v2: { verdict: 'Consistent', stated: { earned: 0, total: 8 } } })
+  })
+
+  // T7-M1: the per-rule tally is a prototype-free map, so a rule id that is an
+  // Object.prototype name tallies like any other rather than mutating a builtin.
+  it('tallies a rule named like an Object.prototype member as an ordinary rule', async () => {
+    CYNCO_HOME = mkdtempSync(join(tmpdir(), 'cynco-campaign-proto-'))
+    process.env.CYNCO_HOME = CYNCO_HOME
+    writeCampaign(CYNCO_HOME, 'c10', { waveCount: 1 }, [
+      { wave: 1, decision: { kind: 'next', why: 'x' }, progress: [],
+        shadowDecisions: [
+          { rule: 'toString', elapsedFraction: 0.5, fired: true },
+          { rule: 'constructor', elapsedFraction: 0.6, fired: false },
+          { rule: 'toString', elapsedFraction: 0.7, fired: false },
+        ] },
+    ])
+    const res = await authFetch(`${BASE}/api/campaign`)
+    const c10 = ((await res.json()) as any).campaigns.find((c: any) => c.id === 'c10')
+    expect(c10.waves[0].progress.decisions).toEqual({
+      toString: { n: 2, fired: 1, firedAt: [0.5] },
+      constructor: { n: 1, fired: 0, firedAt: [] },
+    })
+  })
+
+  it('a v2 that was not measured reaches the panel as a null verdict, not a missing one', async () => {
+    CYNCO_HOME = mkdtempSync(join(tmpdir(), 'cynco-campaign-v2-unmeasured-'))
+    process.env.CYNCO_HOME = CYNCO_HOME
+    writeCampaign(CYNCO_HOME, 'c10', { waveCount: 1 }, [
+      { wave: 1, decision: { kind: 'next', why: 'x' }, progress: [], shadowDecisions: [],
+        governancePosiwid: { verdict: 'Contradicted', onsetWave: null, v2: { verdict: null, reason: 'rule verdicts not written this verdict' } } },
+    ])
+    const res = await authFetch(`${BASE}/api/campaign`)
+    const c10 = ((await res.json()) as any).campaigns.find((c: any) => c.id === 'c10')
+    expect(c10.waves[0].governancePosiwid.v2).toEqual({ verdict: null, stated: null })
+    expect(c10.waves[0].progress).toEqual({ startFails: null, readings: [], decisions: {} })
   })
 
   it('authoring state and a gate/<id> proposal carry the shape the panel needs', async () => {

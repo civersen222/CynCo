@@ -43,8 +43,76 @@ decisions still recorded here).
   "verified": null,
   "verify": {               // what produced `verified`; null when no check-cmd was given
     "command": "python3 -m pytest -q", "exitCode": 0,
-    "timedOut": false, "spawnFailed": false, "durationMs": 70303, "outputTail": "..."
+    "timedOut": false, "spawnFailed": false, "durationMs": 70303, "outputTail": "...",
+    // Phase 7 ruling 3 (the marker check): true when this result is the SECOND
+    // check — the first FAILED after the engine closed the turn with the marker
+    // landed, its last 40 model-readable output lines (never a line naming
+    // `heldout` or a withheld path, never the suite gate's REPAIRED block) went
+    // to the model once as a driver note (`[driver] marker check FAILED — fix
+    // and re-mark:`), and the mission went on. `retried` is true only when that
+    // note was CONFIRMED sent: an OPEN socket before and after the send, the
+    // buffer drained. The check runs asynchronously with the socket pinged
+    // every 30 s; a socket the engine dropped anyway is reconnected first.
+    // `firstAttempt` is what that first check read ({ exitCode, timedOut,
+    // durationMs, gradedSha, heldOutRestored, outputTail, patchPath }), null
+    // when there was no retry. `noteFailed`: why a due note did NOT go out
+    // (reconnect failed, the send threw, the socket closed mid-send) — the
+    // first FAIL then stands and `retried` is false; null otherwise.
+    // `patches`: every patch a check's F132 reset wrote, one per check,
+    // `C:/tmp/<missionId>.uncommitted.<n>.patch` (n = the check's ordinal), so
+    // a later check never overwrites an earlier one; the tail snapshot keeps
+    // `<missionId>.uncommitted.patch`. The runner's salvage (`salvageFrom`,
+    // T6-N3) offers the next wave's STEP 0 every one of these patches whose
+    // changes HEAD does not hold (`git apply --check --reverse` fails), the
+    // per-check ones first, the tail last. A first check that stood is reused only
+    // while it read one commit and HEAD is still that commit; otherwise the
+    // final verify re-runs it. Absent on rows written before the ruling.
+    // `noteAcknowledged` (final review M7): null without a retry; true when
+    // the engine closed a further turn (a `message.complete` after the note)
+    // before the final verify; false is "told, and nothing came back" — the
+    // final verify then re-read the same work. `overrunS` (final review M9):
+    // seconds the in-loop check ran past the wave clock (`TIMEOUT_S`), 0 when
+    // it did not — the loop's bound is read only at its top, so a check
+    // admitted with an hour left can end up to its cap past the clock (the
+    // engine is idle then; `durationS` grows by it), and the driver logs
+    // `[verify] marker check running past the wave clock by Ns`.
+    // `command` records the MARKER check (below) — on a campaign the suite
+    // gate from `CYNCO_MARKER_CHECK`, NOT the brief's keepGreen, which is the
+    // contract's check-cmd and appears nowhere in `verify` (re-review R1-M2).
+    // F168: when the marker check is the check-cmd fallback on a mission that
+    // seals instruments (a hand-dispatched sealed gate), a FAIL is never fed
+    // back — `noteFailed: 'sealed instrument'`, the FAIL stands.
+    "retried": false, "firstAttempt": null, "noteFailed": null, "patches": [],
+    "noteAcknowledged": null, "overrunS": 0
   },
+  // Phase 7 ruling 3: how many times a FAILED marker check was fed back to the
+  // model before the check that set `verified` — 0 or 1, counted only on a
+  // confirmed send. A retry needs at least MARKER_RETRY_MIN_S (3600 s; a spec's
+  // `markerRetryMinS`, through CYNCO_MARKER_RETRY_MIN_S) of the mission clock
+  // left; under that, the first check is the verdict. null when no check-cmd
+  // was dispatched (nothing to retry); absent on older rows. A campaign wave's
+  // MARKER check is the suite gate (g_suite_no_regression.py), carrying its
+  // baseline and repo as an env prefix in the command (`CHK_SUITE_BASELINE=<path>
+  // CYNCO_GATE_REPO=<repo> python "<gate>"`), unless its spec names a
+  // `markerCheck` — never the sealed campaign gate, whose output must not
+  // reach the model. Final review I1: the marker check reaches the DRIVER on
+  // its own channel, `CYNCO_MARKER_CHECK` with its cap
+  // `CYNCO_MARKER_CHECK_TIMEOUT_MS` (1 800 000), set by the runner's
+  // `waveDispatch`; the check-cmd argument stays `spec.keepGreen`, because the
+  // driver also makes the check-cmd the engine's withheld contract assertion,
+  // which the model's `ContractAssertPass` runs inside its own turn (a
+  // whole-suite gate there spends the clock unpriced; the smoke's fixture would
+  // be spent with no tell). The driver's marker verify — the in-loop check,
+  // the retry and the final verify — runs the channel's command when set, else
+  // the check-cmd; nothing else runs it. Its instruments (the baseline) are
+  // still sealed by the engine and snapshotted/restored by the driver, both
+  // reading the channel for paths only (`markerCheckGateAssertions`), and the
+  // model's Bash env never holds `CYNCO_MARKER_CHECK*` or `LOCALCODE_MISSION_*`
+  // (`bashToolEnv`). Each marker check runs with `CYNCO_CHECK_ORDINAL=<n>` in
+  // its env; the smoke's fixture fails only for ordinal 1, and passes (leaving
+  // its stamp alone) for a call without the ordinal — a second lock beside the
+  // stamp.
+  "verifyRetries": 0,
   "mutationSweep": null,    // BEHAVIOURAL: null = UNMEASURED, never "clean"
   // { "command": "...", "killed": 1, "total": 7, "survived": ["W1","W5"], "note": "..." }
   // `kind` (absent = authored): "derived" = cynco-mutation-sweep.py over the
@@ -416,6 +484,32 @@ Two fields are patched in by hand and appear only on some rows:
 - **`verifyCorrection`** — a hand correction to `verified` with its evidence,
   written when an independent re-run contradicts the driver's patched value.
 
+The campaign runner runs from its own worktree, checked out on
+`campaign/<id>` (F167): the shards it patches, the campaign log and the roadmap
+it reads and the verdict it commits all live in that worktree, never in the
+operator's checkout. From the localcode root, once per campaign:
+`git worktree add .claude/worktrees/campaign-<id> -b campaign/<id> <HEAD sha>`
+(or `git worktree add .claude/worktrees/campaign-<id> campaign/<id>` when the
+branch exists), `npm install` in that directory, then
+`bun scripts/cynco-campaign.mjs <id>.campaign.json …` with that directory as
+the cwd. Started anywhere else, the runner exits 2 and prints these commands,
+with the worktree path made absolute from `git rev-parse --git-common-dir`; it
+first says `Commit the seal first: …` when the spec or `roadmap.json` is
+uncommitted in the checkout a new branch would be cut from, and it ends with
+what to do when `git worktree add` finds a directory a removed worktree left
+behind (`git worktree prune`, delete it, or use another name). `.claude/` is
+ignored only through this clone's `.git/info/exclude`, not the repo's
+`.gitignore`: on a fresh clone the campaign worktree shows as an untracked
+directory in the main checkout — harmless to the runner, whose `git status`
+is its own worktree's, but add `.claude/` to `.git/info/exclude` there too.
+A spec whose suite-gate baseline or repo path holds whitespace (the env
+prefix cannot carry one) is refused at the same startup guard, before the
+lock, unless the spec names its own `markerCheck` (final review M4).
+The report and authoring verbs (`--autopoiesis`, `--scoreboard`, `--author`,
+`--check`, the proposal decisions, `--sync`) run from any checkout. A report verb
+reads the ledger shards of the checkout it runs in, so an in-flight campaign's
+rows are visible only from its own worktree until its PR merges.
+
 Two further blocks are patched on by the campaign runner
 (`scripts/cynco-campaign.mjs` → `scripts/cynco-ledger-patch.mjs`) when it grades
 a wave, so a mission row carries the sealed-gate reading that judged it:
@@ -499,8 +593,13 @@ own numbers, not an illustration:
 "governancePosiwid": { "verdict": "Contradicted", "divergence": 5.98,
   "dominantObserved": "signalsLogged", "support": 33, "onsetWave": 2,
   "windows": 2,
+  "v2": { "verdict": "Consistent", "divergence": 0.27, "dominantObserved": "signalsLogged",
+    "stated": { "earned": 0, "total": 8 } },
   "counts": { "denialsChanged": 2, "recommendationsConsumed": 1, "signalsLogged": 30 } }
 ```
+
+(The fields in the order the record writes them: the v1 reading, `windows`,
+`v2`, then `counts` — T4-M3.)
 
 `verdict`, `divergence`, `dominantObserved` and `support` are the LAST window's
 reading — here 33 observations of which 30 were logging, so: past `minSupport`
@@ -510,10 +609,38 @@ ladder is exactly the per-wave `posiwid` block's (`Insufficient` below
 and `windows` are properties of the whole replayed history rather than of that
 last window.
 
+**`v2`** (Phase 7 ruling 4) sits beside those fields, which are v1 and are
+unchanged. While no S5 rule has earned authority, v1's stated purpose
+("regulate") reads every wave `Contradicted` by construction and carries no
+information. v2 states the purpose the authority table actually grants:
+`governancePurposeFor({ earned, total })` gives `denialsChanged` and
+`recommendationsConsumed` `0.5·e` each and `signalsLogged` `1 − e`, with
+`e = earned / total` (0 when `total` is 0). `earned` / `total` are read at the
+VERDICT from the `rule-verdicts.json` this same verdict wrote, by
+`engine/s5/ruleAuthority.ts`'s rule (`authorityOf`): S5 rule rows only — a
+string `verdict`, `source` neither `model` nor `runner` — and earned when the
+verdict is exactly `PREDICTIVE`; no file is `{ earned: 0, total: 0 }`. v2 is
+`posiwidDivergence` over the wave's same `counts`, at v1's `driftThreshold`
+and `minSupport`, with no drift replay. Above, at 0 of 8 earned, logging IS the
+stated purpose, so the wave v1 calls `Contradicted` reads `Consistent` under
+v2; the same counts at 8 of 8 read `Contradicted` (divergence 5.98, v1's
+purpose exactly). When this verdict wrote no rule verdicts, or the file is
+there but unreadable, `v2` is `{ "verdict": null, "reason": "…" }` — not
+measured, never a zero. The verdict entry prints both on one line:
+`- Governance POSIWID v1 <v1 reading> | v2 <verdict> (<earned> of <total> earned).`
+
 The campaign state keeps the raw windows under
-`state.governancePosiwid.windows`; the verdict entry prints the reading as its
+`state.governancePosiwid.windows` — `{ wave, denialsChanged,
+recommendationsConsumed, signalsLogged, stated }`, where `stated` is the
+`{ earned, total }` v2 read that wave under (null when v2 was not measured;
+absent on windows stored before T4-M1), so v2 can be replayed over the stored
+windows later the way v1 is; the verdict entry prints the reading as its
 "Governance POSIWID" line, and `GET /api/campaign` hands the dashboard the last
-wave's `verdict` and `onsetWave`.
+wave's `verdict` and `onsetWave` and, per wave, `waves[].governancePosiwid =
+{ verdict, onsetWave, v2: { verdict, stated: { earned, total } | null } | null }`
+(`v2: null` on a wave that predates v2, `verdict: null` on an unmeasured one);
+the Campaign panel prints `v1 <verdict> | v2 <verdict> (e of t earned)`, or
+`v2 unmeasured`, and v1 alone on an older wave.
 `engine/__tests__/guards/ledgerGovernancePosiwidBlock.test.ts` re-runs the
 module on this block's `counts` and fails if the reading moves (F149: a
 documented number no code produces).
@@ -1099,7 +1226,9 @@ the committed file in the working tree, and the runner commits it with that
 wave's verdict (the verdict commit stages every changed path under
 `benchmark/cynco-ledger/`, `ledgerShardsTouched` in
 `scripts/cynco-campaign.mjs`); a freeze made by the CLI is committed by the
-operator like any other ledger change.
+operator like any other ledger change. Phase 7 adds a third kind of key, the
+reading unit's `"reading:<v>"` (see "The reading learner, `M2.*`" below); the
+mission sets `"1"`/`"2"` are written back byte-identical when it freezes.
 
 **S5 rules that read a v2-changed signal (fix round 1, review I2).** W5 and I2
 (`engine/s5/ruleBasedS5.ts`) fire on the homeostat streak, which in v1 was the
@@ -1484,7 +1613,8 @@ would before any later phase lets it stop a wave.
 **The verdict line.** `verdictEntry` prints, after `- Autopoiesis:` and before
 `- Scoreboard:`, `progressLine(rec)`:
 `- Progress: 14 → 3 fails over 3 readings (first fix at 41 min; last at 210
-min: 3); R1.no-progress fired at 52% (would have saved 3.2 h)` — minutes are
+min: 3); R1.no-progress fired at 52% (would have saved 3.2 h); R2.stalled not
+evaluated` (a record with no `R2.stalled` decision; Phase 7, below) — minutes are
 `at − dispatchedAt`; `no drop` when no reading went below the start; `; N
 fault(s)` when probes faulted. With no measured reading:
 `- Progress: no readings (<reason>)`. A runner io with no probe prints no line.
@@ -1553,6 +1683,288 @@ leak check …`.
 
 If the write throws on the MODEL rows, the fallback rewrite keeps the runner
 rows.
+
+### `R2.stalled` beside `R1.no-progress` (Phase 7 ruling 2)
+
+On the live C10 campaign `R1.no-progress` never fired while the wave sat flat
+for five hours: R1 compares against the wave's START count and waits for 50 %
+of the clock, so a wave that fixed a few lines early and then stalled is
+invisible to it. Phase 7 adds a second shadow rule through the SAME path —
+tracker, wave record, runner row, Holm family, ladder line — and changes
+nothing about R1.
+
+**The rule.** `shadowStalled({ readings, decisions, clockMs, nowMs, at })` in
+`scripts/cynco-campaign-progress.mjs`: *if at ≥ 25 % of the wave's wall clock
+the fail count has not decreased over the last three measured ticks, the wave
+is stalled.* The name and constants live beside R1's in
+`scripts/cynco-runner-rows.mjs` (`STALLED_RULE = 'R2.stalled'`,
+`STALLED_AT = 0.25`, `STALLED_WINDOW = 3`; the progress module re-exports
+them). The decision is
+`{ rule: 'R2.stalled', at, elapsedFraction, fired, window, fails, wouldHaveSavedS }`:
+`window` = the counts of the last three MEASURED ticks (fewer when fewer were
+measured), `fails` = the latest of them (null when none), `wouldHaveSavedS` as
+R1's. `fired` iff `elapsedFraction ≥ 0.25` AND the window is full AND never
+decreases (each count ≥ the one before) AND the latest count > 0. An unknown
+clock is `elapsedFraction: null` and never a firing (unmeasured, never 0).
+
+**The tick series.** R2 reads ticks, not readings. The tracker pushes R1's
+decision, then R2's, at every due tick (`rec.shadowDecisions` alternates
+`R1.no-progress`, `R2.stalled`). R2's input is R1's decisions — one per tick,
+`fails` the last measured count, carried across a skip tick (the sha did not
+move, so the count is still true) — with one correction: R1 also carries the
+stale count onto a FAULTED tick, and a fault is no measurement, so the tracker
+marks that tick `{ fails: null, fault }` and R2 leaves it out of the window.
+And R2 does not DECIDE on that tick (T2-M1): the decision at a tick whose own
+probe faulted is `fired: false` with `fault: <reason>` on it, as R1 refuses
+the same tick; the next measured tick decides again. A
+firing is one runner log line (`[campaign] shadow R2.stalled FIRED at N% (a, b,
+c fails over the last 3 measured ticks; would have saved X h) — shadow only,
+nothing stopped`) and one record entry; nothing is stopped, nothing reaches
+the driver, the brief or the engine.
+
+**The runner row.** `runnerRowsFromEntries` returns two rows, always, in this
+order: `[R1.no-progress, R2.stalled]`. Each is `runnerRowFor(entries, { id, at })`
+— the scan described above for R1, with the rule's own id and threshold: R2's
+scope is the waves with ≥ 1 `R2.stalled` decision at `elapsedFraction ≥ 0.25`,
+fired or not; fired, failed, unlabeled and skipped read as R1's. Each row
+carries its `at`, so an empty scope names its own threshold: R2's reads
+`UNMEASURED — no wave in scope (no shadow decision at 25 % of its clock or
+later)`. R2 joins the one Holm family after R1, never moves the version
+(`runnerChanged`), and is neither a rule nor an authority, exactly as R1.
+
+**The lines.** `progressLine` names both rules:
+`…; R1.no-progress did not fire (4 decision(s)); R2.stalled fired at 186 min
+(4 decision(s))` — R2 at the wave minute (`at − dispatchedAt`) of its first
+firing, else `did not fire (n decision(s))`; a record from before Phase 7 reads
+`R2.stalled not evaluated`. The `- Outcome hindcast:` ladder line prints every
+runner row in id order, so `R2.stalled …` follows `R1.no-progress …`.
+
+**The panel (Phase 7 ruling 5).** `GET /api/campaign` reduces each wave
+record's `progress` + `shadowDecisions` to `waves[].progress = { startFails,
+readings: [{ elapsedFraction, fails, sha7, fault }], decisions: { <rule>: { n,
+fired, firedAt: [elapsedFraction…] } } }` (`reduceProgress` in
+`engine/dashboard/server.ts`; `null` when the record has no `progress` array;
+a fault reading is `{ elapsedFraction: null, fails: null, sha7: null, fault }`;
+`startFails` is the first decision's, else the first measured reading's). The
+Campaign panel draws it per wave as a fails-over-clock line with each rule's
+fired ticks marked; fault readings stay off the line and are counted, their
+reasons on the tooltip. A measured reading whose `elapsedFraction` is null is
+counted and listed (`?%` on the tooltip) but not drawn, an `elapsedFraction`
+outside [0, 1] is drawn at the box's edge, and a curve whose SVG does not
+parse is not inserted (T7-M2..M4); the per-rule tally is prototype-free
+(T7-M1). It is read off the wave record after the verdict —
+the same runner-side copy as above, never the model's. So the dashboard's
+readings are the VERDICT's: a wave in flight has no curve there, and what
+`/api/campaign` serves (per-commit sealed-gate readings of finished waves,
+behind the inference token in `~/.cynco/tokens.json`) is post-verdict. The
+token file itself is not a sealed path; its protection is Phase 2's design and
+is not reopened here (final review M8: documentation only).
+
+### Reading-level outcomes (Phase 7 ruling 1)
+
+One mission gives `featuresOf` one row (above). But the mid-wave gate progress
+(Phase 6, above) already ticks the gate's fail count every `everyMs` and writes
+a shadow decision at each tick — so the span between two consecutive ticks is
+ITS OWN labeled sample: *did the fail count fall by the next tick?* Built by
+`intervalsOf`/`intervalRows` in `scripts/cynco-outcome-dataset.mjs` (pinned by
+`scripts/__tests__/cynco-outcome-intervals.test.mjs`), this is 7–9× the rows
+per campaign that one row per mission gives, from the same readings Phase 6
+already took — no new measurement, no new gate run.
+
+**An interval** is the half-open span `(atStart, atEnd]` between two of a
+wave's `rec.shadowDecisions` entries that carry a numeric `fails`, in time
+order. `ticksOf` builds the tick series with two corrections over the raw
+decisions (Task 1 review, fix round 1):
+
+- **The dedupe prefers `R1.no-progress` (M2).** More than one rule decides at
+  the same `at` (`R2.stalled`, Phase 7 ruling 2); only R1's decision carries
+  `startFails`, and the first tick's `startFails` sets the share for every
+  interval in the wave, so a dedupe that kept whichever rule came first could
+  silently read the wrong one's (missing) `startFails`. R1 wins at a given
+  `at` whenever it exists; otherwise the first decision there is kept.
+- **A faulted tick is dropped, not measured (I1).** `shadowNoProgress` copies
+  the LAST MEASURED reading's `fails` onto a tick whose probe faulted — a
+  stale count is not a reading of now — so a naive reading would mint a
+  fabricated `stalled` interval out of a tick where nothing was actually
+  measured. A tick whose `at` matches a `rec.progress` reading carrying
+  `.fault` is dropped; the spans on either side of it merge into one interval,
+  exactly as a skipped tick already does. Fewer than two surviving ticks is
+  `noTicks`.
+
+Its turns are the ledger row's `turns[]` whose `t` (epoch ms) falls inside that
+span, sorted by `t` before aggregating (M1: array order is not guaranteed to be
+time order) — a prefix nowhere in sight: Phase 7 slices the MIDDLE of a
+mission, not its start. `aggregatesOf` — the same NUMERIC/NUMERIC_V2/CATEGORICAL
+computation `featuresOf` runs over a mission's K-turn prefix — runs over that
+slice instead, so the mission-level and interval-level feature keys can never
+drift apart; a slice with fewer than `INTERVAL_MIN_TURNS` (4) turns is `short`,
+never a row of nulls. `noTurnTimes` is ROW-LEVEL only: a turn without a numeric
+`t` is simply skipped from whichever interval it would have fallen in (M5); the
+row is `noTurnTimes` only when NO turn on it carries a `t` at all (a
+pre-F165-timestamp ledger row).
+
+**The label.** `improved` when the tick at the end of the span reads fewer
+fails than the tick at its start, `stalled` otherwise (equal counts included —
+a skipped tick that repeats the previous `fails` is a stall, not a drop) —
+**except** when the span STARTS at 0 fails: `excluded.afterZero` (I2). Once the
+gate is passing, every later tick still reads `0 → 0`, which the label rule
+above would call `stalled`; a wave that is still ticking after it solved the
+gate is not stalled, it is finished, so that interval is excluded rather than
+mislabeled. Over the fixture's four ticks (20 → 16 → 16 → 10 fails) the three
+intervals label `improved`, `stalled`, `improved`; over a synthetic 2 → 0 → 0 →
+0 run, the first interval is `improved` and the other two are `afterZero`.
+
+**The five context keys**, added to the shared aggregate features (never
+replacing one): `interval.turns` (the slice's turn count), `interval.minutes`
+(wall-clock span, `(atEnd − atStart) / 60000`, rounded to 3 places),
+`interval.elapsedFractionStart` (the start tick's `elapsedFraction`, verbatim),
+`interval.failsStart` (the start tick's `fails`), and `interval.failsStartShare`
+(`failsStart / startFails` — `startFails` the WAVE's starting fail count, the
+first tick's `startFails` else its `fails` — `null` when `startFails` is 0, so
+later intervals read as a share of where the wave began, not of each other).
+
+Row shape (`Interval`; `campaign` reads `rec.campaign`, falling back to the
+ledger row's `campaignId` — the field is not on the wave record today):
+
+```jsonc
+{ "missionId": "fx-wave1-1", "campaign": "fx", "wave": 1, "interval": 0,
+  "at": ["2026-10-01T00:45:00.000Z", "2026-10-01T01:15:00.000Z"],
+  "failsStart": 20, "failsEnd": 16, "label": "improved", "signalsVersion": 2,
+  "turns": 20,
+  "features": { "interval.turns": 20, "interval.minutes": 30,
+                "interval.elapsedFractionStart": 0.094, "interval.failsStart": 20,
+                "interval.failsStartShare": 1, "consecutiveUnstable.max": 3, "…": "…" },
+  "leakGuard": true }
+```
+
+**Excluded, not silently dropped** — `intervalsOf(rec, row)` returns
+`{ intervals, excluded: { short, noTicks, noTurnTimes, otherVersion, afterZero } }`:
+`noTicks` and `noTurnTimes` are row-level 0/1 (a wave or mission that cannot
+yield any interval at all), `short`, `otherVersion` and `afterZero` count
+per-interval. `intervalRows(rows, waves)` joins each wave to its ledger row by
+`missionId` (a wave with no matching row is counted in `excluded.noRow` and
+contributes nothing) and sums `excluded` across waves; `waves` is the count of
+waves that DID join a row.
+
+**v2 only.** Like the mission dataset, `signalsVersion` is the slice's own
+minimum over its turns; `intervalRows`/`intervalsOf` default to
+`signalsVersion: 2` and count a v1 slice (or a mixed one whose minimum is 1)
+in `excluded.otherVersion` rather than emit a row with a smaller key set —
+there is one Phase 7 dataset, not a v1/v2 split, because mid-wave progress
+reading only exists on F165-era (v2) ledgers.
+
+**CLI.** `bun scripts/cynco-outcome-dataset.mjs --export-intervals
+[--campaigns-dir DIR] [--signals-version N] [--out PATH] [--ledger-dir DIR]`
+reads the ledger (`readLedger`), every runner-driven campaign's wave records
+(`runnerWaves(campaignsDir)`, default `<cyncoHome>/campaigns`), and writes
+JSONL to `--out` (default `~/.cynco/datasets/outcome-dataset-intervals.jsonl`,
+`DATASET_INTERVALS_PATH`), printing
+`reading-level outcomes: N rows from M waves (excluded … short, … no ticks,
+… no turn times, … other signals version, … after zero fails, … no ledger row)
+→ PATH`. `--signals-version N` (default 2, same flag `--export` reads) selects
+which slice version to keep; everything else is "v2 only" above.
+
+### The reading learner, `M2.*`, and the `reading:2` holdout (Phase 7 ruling 1)
+
+The interval rows above go through the SAME model, hindcast and ladder as the
+mission rows, as a second unit. The mission unit stays primary — its `M1.*`
+rows, its hindcast line and the scoreboard's `learner` field are unchanged —
+and the reading unit is reported beside it.
+
+**The labels, kept apart.** A mission row's label is a boolean (`true` =
+landed); a reading row's is `improved` / `stalled`, and its success class is
+`improved` (`POSITIVE_LABEL` / `NEGATIVE_LABEL` in
+`scripts/cynco-outcome-model.py`, `READING_LABELS` in
+`scripts/cynco-outcome-dataset.mjs`). In both units the probability written is
+the NEGATIVE class's: a reading's `pFail` is P(stalled).
+
+**The `reading:2` holdout.** A set of its own in `frozen-eval.json`, keyed
+`"reading:<v>"` (`setKeyOf(v, 'reading')`), frozen ONCE by the mission unit's
+rule: the first VERDICT whose interval export holds `FREEZE_MIN_ELIGIBLE` (38)
+labeled v2 readings with at least 8 of each label freezes it with
+`freezeManifest(rows, { unit: 'reading', seed: AUTO_FREEZE_SEED })` and records
+`{ signalsVersion: 2, unit: 'reading', frozenAt, count, missions, eligible,
+seed, how: 'auto' }` on the history; the sets `"1"` and `"2"` are written back
+byte-identical, and the runner commits the file with that wave's verdict as it
+does for `"2"`. The draw is Phase 5's (HOLDOUT_SHARE of the readings,
+proportional per label, at least one of each, a seeded shuffle) **by whole
+missions**: the set's `missionIds` are missions, `ids` the readings
+(`missionId:interval`) held at freeze time, and `frozenSplit(rows, set, { unit:
+'reading' })` — like the model — splits by `missionId`. **Every interval of a
+held mission is held; one mission's intervals never straddle train and
+holdout** (a reading added later to a held mission is held too). Missions are
+taken in seeded order while either label is short of its share, so the held
+count can run over the share by part of one mission. The 38 minimum is the
+mission unit's arithmetic (8 held, 30 left), and the whole-mission draw does
+not guarantee it: at the minimum one mission can hold a dozen readings, so the
+first frozen set can leave fewer than 30 training readings (final review M3).
+The model then refuses with the cause named — `TOO FEW: train 22 < 30 after
+the whole-mission draw (holdout 16 readings)` — and the reading reads
+UNMEASURED; the holdout is frozen and train grows every wave, so it heals
+itself, by a campaign at most.
+
+**Below the minimum** the reading is UNMEASURED with the counts, python is not
+spawned for that unit, and the file is untouched:
+`reading holdout not yet frozen (36 of 38 labeled; improved 18 / stalled 18; need 8 of each)`.
+
+**The model.** `python scripts/cynco-outcome-model.py --unit reading --dataset
+<home>/datasets/outcome-dataset-intervals.jsonl --manifest frozen-eval.json
+--out <home>/datasets/outcome-model.json --signals-version 2 --rows-by-version
+'{"2": n}'` trains the same `lr`/`gbt` on the training readings, scores the
+`reading:2` readings, and writes the block under `reading` in
+`outcome-model.json` — the same keys as the mission block plus `unit` and
+`positiveLabel`, `leakCheck` and `secondary` null (no hindsight, no second
+prefix: `--hindsight`/`--dataset32` are refused with `--unit reading`). A
+reading prediction is `{ id, missionId, interval, pFail }`. The mission run
+carries the previous `reading` block over and a reading run replaces only it,
+so each unit's `version` counts its own retrains. A run that exits 0 with no
+`reading` block is a fault, never the previous block.
+
+**`rec.hindcast.reading`** (`runReadingHindcast` in
+`scripts/cynco-hindcast.mjs`): `{ fault, signalsVersion, rowsByVersion,
+holdout, waves, excluded }`, or the model summary with the same context and
+`ladder` (the two `M2.*` entries as written). It is independent of the
+mission's: either may be UNMEASURED while the other trains.
+
+**The `M2.*` rows.** `modelRowsFrom(readingBlock, intervalRows, { unit:
+'reading' })` gives `M2.lr` and `M2.gbt` (`source: 'model'`, `unit:
+'reading'`): *fired* = held-out readings with `pFail ≥ 0.5`, *scope* = the
+held-out readings the interval rows still carry, the label read from the ROW
+(improved = success). They go through the same `analyse` arithmetic in the
+same Holm family (rules, then `M1.*` and `M2.*`, then runner rows), written as
+`rules['M2.<k>'] = { …, source: 'model', scope: 'holdout', unit: 'reading',
+base, scopeN, dependence }` (`scopeN` held-out readings); the `M1.*` entries now carry
+`unit: 'mission'`. A row that fired on no held-out reading has n 0 and null
+numbers (F16). `engine/s5/ruleAuthority.ts` skips every `source: 'model'` row,
+so an `M2.*` id is refused authority exactly as an `M1.*` id is; the
+scoreboard neither counts nor ranks them, and its `learner` field reads the
+`M1.*` rows only. **Read an `M2.*` p as optimistic:** the held-out readings of
+one mission share its model, brief and repo state, so they are not independent
+draws, and Fisher's test counts them as if they were. Twelve held-out readings
+from six missions carry less evidence than twelve missions would. Authority is
+refused either way; the mission unit stays the one that can earn it. The row
+says so where the number is read (final review M2): every `M2.*` entry carries
+`dependence: 'readings share missions'` (`READING_DEPENDENCE`), and the
+verdict's `; readings:` clause prints `(p optimistic: readings share
+missions)` after the rungs whenever an `M2.*` p(Holm) is printed. The Holm
+family is kept as is: the `M2.*` rows (and `R2.stalled`) are members, so each
+one raises `m` for the S5 rules too — a rule's PREDICTIVE verdict is harder to
+reach by the rows the engine refuses authority anyway. That is a documented
+property of the one-family design, not a defect to correct per row.
+
+**The verdict line** gains `; readings: <the mission learner's grammar>` after
+the mission clause — `; readings: UNMEASURED — reading holdout not yet frozen
+(…)`, or `; readings: v1 per interval, signals v2 only (eligible v2 60) on 12
+held-out readings (base 50%): M2.gbt … ; M2.lr … (p optimistic: readings share
+missions); leak check not run`, with
+`; reading:2 holdout frozen now (12 readings of 6 missions)` on the wave that
+froze it — on an UNMEASURED reading too (a TOO FEW right after the freeze,
+T5-M2), since the manifest is committed with that wave either way. A fault
+before either learner ran (the ledger unreadable) is written on both units —
+`rec.hindcast = { fault, reading: { fault } }` — so the clause always prints
+(T5-M1). A record from before Phase 7 has no `reading` and prints no clause.
+`bun scripts/cynco-rule-verdicts.mjs --with-hindcast` runs the reading learner
+too, over the same campaigns dir it reads the runner rows from.
 
 ## Labeling rule
 

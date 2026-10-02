@@ -24,6 +24,21 @@ afterEach(() => {
 })
 
 describe('snapshotUncommittedWork', () => {
+  // Phase 7 review I2: each verify check's reset keeps its own patch, so a
+  // later check (or the tail's unnumbered snapshot) cannot overwrite it.
+  it('names a per-check patch by ordinal and never overwrites the unnumbered one', () => {
+    writeFileSync(join(repo, 'a.py'), 'x = 2\n')
+    const first = snapshotUncommittedWork(repo, out, 'm', { ordinal: 1 })
+    writeFileSync(join(repo, 'a.py'), 'x = 3\n')
+    const second = snapshotUncommittedWork(repo, out, 'm', { ordinal: 2 })
+    const tail = snapshotUncommittedWork(repo, out, 'm')
+    expect(first.patchPath.replace(/\\/g, '/')).toBe(`${out.replace(/\\/g, '/')}/m.uncommitted.1.patch`)
+    expect(second.patchPath.replace(/\\/g, '/')).toBe(`${out.replace(/\\/g, '/')}/m.uncommitted.2.patch`)
+    expect(tail.patchPath.replace(/\\/g, '/')).toBe(`${out.replace(/\\/g, '/')}/m.uncommitted.patch`)
+    expect(readFileSync(first.patchPath, 'utf-8')).toContain('+x = 2')
+    expect(readFileSync(second.patchPath, 'utf-8')).toContain('+x = 3')
+  })
+
   it('writes a patch of tracked modifications', () => {
     writeFileSync(join(repo, 'a.py'), 'x = 2\n')
     const r = snapshotUncommittedWork(repo, out, 'mission_test')

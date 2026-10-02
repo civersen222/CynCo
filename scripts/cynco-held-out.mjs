@@ -32,6 +32,19 @@
 import { mkdirSync, copyFileSync, readFileSync, writeFileSync, existsSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
+import { markerCheckGateAssertions } from '../engine/bridge/contractAutoCreate.js'
+
+/**
+ * The assertions the driver derives its instrument set from: the mission's
+ * contract plus the marker check's channel (Phase 7 final review I1). The
+ * marker check reaches the driver as CYNCO_MARKER_CHECK, not as a contract
+ * assertion, so without this its instruments — the suite gate and its sealed
+ * baseline — would be neither counted as sealed nor snapshotted and restored.
+ * Read for paths only; the engine derives the same set the same way.
+ */
+export function driverInstrumentAssertions(missionAssertions, env = process.env) {
+  return [...(missionAssertions ?? []), ...markerCheckGateAssertions(env)]
+}
 
 /**
  * Copy each held-out instrument into `vault`.
@@ -89,4 +102,28 @@ export function restoreHeldOut(snapshots) {
     changed.push(s.path)
   }
   return changed
+}
+
+/**
+ * Run the driver's check routine and put every instrument back on EVERY exit
+ * of it (Phase 7 final review M5). `gradeAtCheck` restores before each check,
+ * but a routine that runs no check — the skipped-gate path — or throws used to
+ * leave the snapshot unrestored for the runner's own grade, which reads the
+ * same files after the driver. Returns { value, restoredAtExit } (paths, kept
+ * in the driver's scope; the log line counts them and names none); a throw from
+ * `work` still restores, then propagates.
+ */
+export async function withHeldOutRestored(snapshots, work, log = console.log) {
+  let value
+  let restored = []
+  try {
+    value = await work()
+  } finally {
+    restored = restoreHeldOut(snapshots)
+    if (restored.length) {
+      log(`[verify] HELD-OUT INSTRUMENT CHANGED UNDER THE MISSION: ${restored.length} restored at the end of the check routine `
+        + 'from the dispatch snapshot — something in this run wrote to a file it was never shown.')
+    }
+  }
+  return { value, restoredAtExit: restored }
 }

@@ -1,9 +1,11 @@
-import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { describe, it, expect, beforeEach, afterAll } from 'vitest'
+import { readFileSync, writeFileSync, mkdtempSync, mkdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { verdictEntry, notify, commitVerdict } from '../cynco-campaign-verdict.mjs'
 import { campaignScoreboard } from '../cynco-scoreboard.mjs'
+import { runSync } from '../cynco-spawn.mjs'
 
 const grade = { sha: '1bc0f8c', verified: false,
   gate: { fails: [{ id: 'C8.5.palette.Atlas', line: 'C8.5.palette.Atlas: FAIL pixels within 24/channel of a pinned ink at t40 = 0.71 (floor 0.9)' }], passes: [{ id: 'C8.1a', line: 'C8.1a: PASS' }], terminator: 'MISS', failCount: 1, priorRegressions: 0, exit: 1, durationMs: 120000, harnessFault: null },
@@ -109,6 +111,19 @@ describe('verdictEntry', () => {
     const text = verdictEntry({ spec: { id: 'c8' }, wave: 1, row, grade, decision: { kind: 'next', why: 'x' }, ideationRecord: null, economicsLines: [] })
     expect(text).not.toMatch(/Governance POSIWID/)
   })
+  // Phase 7 ruling 4: v1 and v2 side by side on one line.
+  it('prints v1 beside v2 with the authority count when the reading carries v2', () => {
+    const both = verdictEntry({ spec: { id: 'c9' }, wave: 2, row, grade, decision: { kind: 'next', why: 'x' }, ideationRecord: null, economicsLines: [],
+      governancePosiwid: { verdict: 'Contradicted', divergence: 5.797, dominantObserved: 'signalsLogged', support: 1206, onsetWave: 1, windows: 2,
+        v2: { verdict: 'Consistent', divergence: 0.061, dominantObserved: 'signalsLogged', stated: { earned: 0, total: 8 } } } })
+    expect(both).toMatch(/- Governance POSIWID v1 Contradicted \(divergence 5\.797, dominant signalsLogged, support 1206; drift onset wave 1\) \| v2 Consistent \(0 of 8 earned\)\.\n/)
+  })
+  it('names why v2 was not measured instead of printing a verdict', () => {
+    const text = verdictEntry({ spec: { id: 'c9' }, wave: 2, row, grade, decision: { kind: 'next', why: 'x' }, ideationRecord: null, economicsLines: [],
+      governancePosiwid: { verdict: 'Contradicted', divergence: 5.797, dominantObserved: 'signalsLogged', support: 1206, onsetWave: null, windows: 2,
+        v2: { verdict: null, reason: 'verdict file unreadable' } } })
+    expect(text).toMatch(/- Governance POSIWID v1 Contradicted \(divergence 5\.797, dominant signalsLogged, support 1206\) \| v2 not measured \(verdict file unreadable\)\.\n/)
+  })
 })
 
 describe('notify', () => {
@@ -124,47 +139,104 @@ describe('notify', () => {
 })
 
 describe('commitVerdict', () => {
-  it('creates the branch once, stages by name, refuses a dirty tree', () => {
+  it('on the branch: stages by name and commits; refuses a dirty tree', () => {
     const calls = []
-    const io = { git: (args) => { calls.push(args.join(' ')); if (args[0] === 'rev-parse' && args[1] === '--verify') return { status: 1, stdout: '' }; if (args[0] === 'status') return { status: 0, stdout: ' M docs/x.md\n' }; if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') return { status: 0, stdout: 'campaign/c8\n' }; if (args[0] === 'rev-parse') return { status: 0, stdout: 'abc123\n' }; return { status: 0, stdout: '' } } }
+    const io = { git: (args) => { calls.push(args.join(' ')); if (args[0] === 'status') return { status: 0, stdout: ' M docs/x.md\n' }; if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') return { status: 0, stdout: 'campaign/c8\n' }; if (args[0] === 'rev-parse') return { status: 0, stdout: 'abc123\n' }; return { status: 0, stdout: '' } } }
     const r = commitVerdict({ repoRoot: '.', branch: 'campaign/c8', files: ['docs/x.md'], message: 'm', io })
-    expect(calls).toContain('checkout -b campaign/c8')
-    expect(calls).toContain('add docs/x.md')
-    expect(r.sha).toBe('abc123')
+    expect(calls.some(c => c.startsWith('checkout'))).toBe(false)
+    expect(calls).toContain('add -- docs/x.md')
+    expect(calls).toContain('commit -m m')
+    expect(r).toEqual({ sha: 'abc123' })
     const dirty = { git: (args) => args[0] === 'status' ? { status: 0, stdout: ' M engine/other.ts\n M docs/x.md\n' } : { status: 0, stdout: '' } }
     expect(() => commitVerdict({ repoRoot: '.', branch: 'campaign/c8', files: ['docs/x.md'], message: 'm', io: dirty })).toThrow(/engine\/other\.ts/)
   })
+})
 
-  // A failed checkout used to be silent: add + commit ran anyway and the verdict
-  // landed on whatever branch the tree was on — main, most likely.
-  it('throws instead of committing when the checkout fails', () => {
-    const calls = []
-    const io = { git: (args) => {
-      calls.push(args.join(' '))
-      if (args[0] === 'status') return { status: 0, stdout: '' }
-      if (args[0] === 'rev-parse' && args[1] === '--verify') return { status: 0, stdout: 'abc\n' }
-      if (args[0] === 'checkout') return { status: 1, stdout: '', stderr: 'error: Your local changes would be overwritten\n' }
-      return { status: 0, stdout: 'main\n' }
-    } }
-    expect(() => commitVerdict({ repoRoot: '.', branch: 'campaign/c8', files: ['docs/x.md'], message: 'm', io }))
-      .toThrow(/commitVerdict: git checkout campaign\/c8 failed: error: Your local changes would be overwritten/)
-    expect(calls.some(c => c.startsWith('add '))).toBe(false)
-    expect(calls.some(c => c.startsWith('commit '))).toBe(false)
+// F167: C10 wave 2's verdict commit died on `git checkout campaign/c10` because
+// the operator had switched the working copy's branch under the running
+// campaign. A campaign now runs from its own worktree, checked out on
+// `campaign/<id>`, and the verdict commit never checks anything out: on the
+// branch it is add + commit; anywhere else it refuses and touches nothing.
+// Real git repo, nested paths, because the property is what git itself does.
+describe('commitVerdict — the campaign worktree only (F167)', () => {
+  const roots = []
+  afterAll(() => { for (const r of roots) rmSync(r, { recursive: true, force: true }) })
+  let repo
+  const g = (...args) => {
+    const r = runSync('git', ['-C', repo, ...args])
+    if (r.status !== 0) throw new Error(`test git ${args.join(' ')} failed: ${r.stderr}`)
+    return r.stdout.trim()
+  }
+  const show = (ref, path) => runSync('git', ['-C', repo, 'show', `${ref}:${path}`])
+  let oldTip
+  beforeEach(() => {
+    repo = mkdtempSync(join(tmpdir(), 'cynco-f167-'))
+    roots.push(repo)
+    g('init', '-q', '-b', 'main')
+    g('config', 'user.name', 'F167 Test')
+    g('config', 'user.email', 'f167@example.invalid')
+    g('config', 'core.autocrlf', 'false')
+    mkdirSync(join(repo, 'docs', 'briefs'), { recursive: true })
+    writeFileSync(join(repo, 'docs', 'briefs', 'log.md'), 'log\n')
+    writeFileSync(join(repo, 'docs', 'briefs', 'old.txt'), 'old\n')
+    g('add', 'docs')
+    g('commit', '-q', '-m', 'base')
+    g('checkout', '-q', '-b', 'campaign/x')
+    oldTip = g('rev-parse', 'HEAD')
+    // The verdict files, written into the working copy on the campaign branch:
+    // a modified log, a new nested brief, a deleted file.
+    writeFileSync(join(repo, 'docs', 'briefs', 'log.md'), 'log\nwave1\n')
+    writeFileSync(join(repo, 'docs', 'briefs', 'x-wave1.txt'), 'brief\n')
+    rmSync(join(repo, 'docs', 'briefs', 'old.txt'))
+  })
+  const files = ['docs/briefs/log.md', 'docs/briefs/x-wave1.txt', 'docs/briefs/old.txt']
+
+  it('HEAD is the branch: add + commit of nested paths, tree clean after', () => {
+    const r = commitVerdict({ repoRoot: repo, branch: 'campaign/x', files, message: 'X wave 1 verdict' })
+    expect(Object.keys(r)).toEqual(['sha'])
+    expect(g('rev-parse', 'HEAD')).toBe(r.sha)
+    expect(g('rev-parse', `${r.sha}^`)).toBe(oldTip)
+    expect(show(r.sha, 'docs/briefs/log.md').stdout).toBe('log\nwave1\n')
+    expect(show(r.sha, 'docs/briefs/x-wave1.txt').stdout).toBe('brief\n')
+    expect(show(r.sha, 'docs/briefs/old.txt').status).not.toBe(0)
+    expect(g('log', '-1', '--format=%s', r.sha)).toBe('X wave 1 verdict')
+    expect(g('status', '--porcelain')).toBe('')
   })
 
-  // A checkout that reports success but leaves HEAD elsewhere (a detached HEAD,
-  // a hook) is the same failure wearing a 0 exit code.
-  it('throws when HEAD is not the branch after a successful checkout', () => {
+  it('HEAD is not the branch: refuses, names the worktree, and touches nothing', () => {
+    // The operator's checkout moved: the working copy is on main now, carrying
+    // the verdict files with it (all three are untracked/modified/deleted
+    // against main too, so git lets the switch happen).
+    g('checkout', '-q', 'main')
+    const before = g('status', '--porcelain')
     const calls = []
-    const io = { git: (args) => {
-      calls.push(args.join(' '))
-      if (args[0] === 'status') return { status: 0, stdout: '' }
-      if (args[0] === 'rev-parse' && args[1] === '--verify') return { status: 0, stdout: 'abc\n' }
-      if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') return { status: 0, stdout: 'main\n' }
-      return { status: 0, stdout: '' }
-    } }
-    expect(() => commitVerdict({ repoRoot: '.', branch: 'campaign/c8', files: ['docs/x.md'], message: 'm', io })).toThrow(/HEAD is main/)
-    expect(calls.some(c => c.startsWith('add '))).toBe(false)
+    const git = (args) => { calls.push(args[0]); return runSync('git', ['-C', repo, ...args]) }
+    expect(() => commitVerdict({ repoRoot: repo, branch: 'campaign/x', files, message: 'm', io: { git } }))
+      .toThrow('commitVerdict: HEAD is main, not campaign/x — the runner runs from the campaign worktree')
+    expect(calls.some(c => ['checkout', 'switch', 'add', 'commit', 'update-ref', 'branch'].includes(c))).toBe(false)
+    expect(g('branch', '--show-current')).toBe('main')
+    expect(g('rev-parse', 'campaign/x')).toBe(oldTip)
+    expect(g('status', '--porcelain')).toBe(before)
+  })
+
+  it('the branch does not exist: refuses rather than create it', () => {
+    g('checkout', '-q', 'main')
+    expect(() => commitVerdict({ repoRoot: repo, branch: 'campaign/new', files, message: 'm' })).toThrow(/HEAD is main, not campaign\/new/)
+    expect(runSync('git', ['-C', repo, 'rev-parse', '--verify', '--quiet', 'refs/heads/campaign/new']).status).not.toBe(0)
+  })
+
+  it('changes outside the verdict files: the existing refusal, nothing committed', () => {
+    writeFileSync(join(repo, 'foreign.txt'), 'theirs\n')
+    expect(() => commitVerdict({ repoRoot: repo, branch: 'campaign/x', files, message: 'm' })).toThrow(/foreign\.txt/)
+    expect(g('rev-parse', 'campaign/x')).toBe(oldTip)
+  })
+
+  it('a failed commit throws instead of recording the old HEAD as the verdict', () => {
+    // Nothing to commit: every file is already as HEAD has it.
+    g('checkout', '-q', '--', 'docs/briefs/log.md', 'docs/briefs/old.txt')
+    rmSync(join(repo, 'docs', 'briefs', 'x-wave1.txt'))
+    expect(() => commitVerdict({ repoRoot: repo, branch: 'campaign/x', files: ['docs/briefs/log.md'], message: 'm' })).toThrow(/commitVerdict: git commit failed/)
+    expect(g('rev-parse', 'campaign/x')).toBe(oldTip)
   })
 })
 
@@ -293,5 +365,22 @@ describe('verdictEntry — the scoreboard line (Phase 5)', () => {
     expect(entry({ error: 'boom' })).toMatch(/^- Scoreboard: UNMEASURED — boom$/m)
     expect(entry(null)).not.toMatch(/Scoreboard:/)
     expect(entry(undefined)).not.toMatch(/Scoreboard:/)
+  })
+})
+
+// Phase 7 ruling 2: every runner row rides the ladder line, in id order —
+// R2.stalled after R1.no-progress — on a measured hindcast and a faulted one.
+describe('verdictEntry — the runner rows on the ladder line (Phase 7)', () => {
+  const runnerLadder = {
+    'R2.stalled': { verdict: 'TOO FEW — cannot tell', precision: 1, ci: [0.21, 1], n: 1, pAdjusted: 1, source: 'runner' },
+    'R1.no-progress': { verdict: 'UNMEASURED — fired on no in-scope wave', precision: null, ci: null, n: 0, pAdjusted: null, source: 'runner' },
+  }
+  const entry = (hindcast) => verdictEntry({ spec: { id: 'c10' }, wave: 2, row, grade, decision: { kind: 'next', why: 'x' }, ideationRecord: null, economicsLines: [], hindcast, runnerLadder })
+  const R1 = 'R1.no-progress precision null on 0 fired p(Holm) null UNMEASURED — fired on no in-scope wave'
+  const R2 = 'R2.stalled precision 100% [21, 100] on 1 fired p(Holm) 1.000 TOO FEW'
+  it('prints R2.stalled after R1.no-progress', () => {
+    expect(entry({ version: 1, prefixTurns: 16, nHoldout: 21, baseRate: 0.5, ladder: {} }))
+      .toMatch(new RegExp(`^- Outcome hindcast: v1 at K = 16 turns on 21 held-out missions \\(base 50%\\): ${R1.replace(/[()]/g, '\\$&')}; ${R2.replace(/[()[\]]/g, '\\$&')}; leak check not run$`, 'm'))
+    expect(entry({ fault: 'exit 2: TOO FEW' })).toContain(`- Outcome hindcast: UNMEASURED — exit 2: TOO FEW; ${R1}; ${R2}`)
   })
 })

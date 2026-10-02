@@ -249,6 +249,8 @@ function bestOf(entries) {
  * share the file and the Holm family but are not rules — the engine never
  * grants them authority — so they are neither counted nor ranked here; the
  * best of them is the sibling `learner` field, null when the file has none.
+ * The reading learner's `M2.*` rows (Phase 7) are model rows too — not
+ * counted, not ranked, and not the `learner` (the mission unit is primary).
  * null when there is no verdict file.
  */
 export function perRulePrecision(ruleVerdicts) {
@@ -258,7 +260,10 @@ export function perRulePrecision(ruleVerdicts) {
   // Phase 6: the runner's shadow regulator (`R1.no-progress`, source 'runner')
   // is not a rule either — neither counted nor ranked.
   const rules = entries.filter(([, r]) => r?.source !== 'model' && r?.source !== 'runner')
-  const models = entries.filter(([, r]) => r?.source === 'model')
+  // Phase 7 ruling 1: the `learner` is the MISSION learner (M1.*; a row from
+  // before Phase 7 has no `unit` and is one). The reading learner's M2.* rows
+  // (`unit: 'reading'`) are reported on the hindcast line, not here.
+  const models = entries.filter(([, r]) => r?.source === 'model' && (r?.unit ?? 'mission') === 'mission')
   const predictive = rules.filter(([, r]) => r?.verdict === 'PREDICTIVE').length
   return { predictive, total: rules.length, best: bestOf(rules), learner: bestOf(models) }
 }

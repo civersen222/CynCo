@@ -24,7 +24,7 @@ import { join } from 'node:path'
  * a swallowed failure here looks exactly like a clean tree, which is the one
  * answer this function must never give wrongly.
  */
-export function snapshotUncommittedWork(cwd, outDir, missionId) {
+export function snapshotUncommittedWork(cwd, outDir, missionId, { ordinal = null } = {}) {
   const result = { written: false, patchPath: '', untracked: [], error: null }
   try {
     // `--binary`: without it a change to any non-text file is recorded as the
@@ -52,7 +52,11 @@ export function snapshotUncommittedWork(cwd, outDir, missionId) {
     result.untracked = (untracked.stdout ?? '').split('\n').map(s => s.trim()).filter(Boolean)
 
     const patch = diff.stdout ?? ''
-    result.patchPath = join(outDir, `${missionId}.uncommitted.patch`)
+    // `ordinal` (Phase 7 review I2): the driver's verify checks each take their
+    // own `<id>.uncommitted.<n>.patch`, so the marker check's reset is never
+    // overwritten by the next check's or by the tail's `<id>.uncommitted.patch`
+    // (the one the runner's salvage reads).
+    result.patchPath = join(outDir, ordinal === null ? `${missionId}.uncommitted.patch` : `${missionId}.uncommitted.${ordinal}.patch`)
     if (patch.trim() === '') {
       // `git diff` failing (not a repo, git missing) also yields empty stdout.
       // Say which of the two it was, so "nothing to save" is never a guess.

@@ -17,6 +17,19 @@ export function loadCampaignSpec(path) {
   for (const k of ['revertBan', 'codeIndexFirst']) if (typeof spec.invariants[k] !== 'boolean') throw new Error(`campaign spec invariants.${k} must be a boolean`)
   NUM(spec.posiwid, 'sourceEditShare', 'posiwid'); NUM(spec.posiwid, 'commitEvery', 'posiwid')
   if (/[*?]/.test(spec.keepGreen)) throw new Error('campaign spec keepGreen contains a wildcard — the check must name files (F146)')
+  // Optional (Phase 7 ruling 3): the check the driver runs once the engine
+  // closes the turn with the marker landed. Absent = the suite gate, resolved
+  // by the runner at DISPATCH; present = run verbatim, so held to keepGreen's terms.
+  if (spec.markerCheck !== undefined) {
+    if (typeof spec.markerCheck !== 'string' || !spec.markerCheck.trim()) throw new Error('campaign spec markerCheck must be a non-empty string')
+    if (/[*?]/.test(spec.markerCheck)) throw new Error('campaign spec markerCheck contains a wildcard — the check must name files (F146)')
+  }
+  // Optional (Phase 7 review I3): the seconds of mission clock a FAILED marker
+  // check needs left to be fed back (the driver's MARKER_RETRY_MIN_S, 3600 by
+  // default). The one-hour smoke wave lowers it, or it could never retry.
+  if (spec.markerRetryMinS !== undefined && (!Number.isInteger(spec.markerRetryMinS) || spec.markerRetryMinS <= 0)) {
+    throw new Error('campaign spec markerRetryMinS must be a positive integer of seconds')
+  }
   if (!Array.isArray(spec.work) || spec.work.length === 0) throw new Error('campaign spec work must be a non-empty array')
   const seen = new Set()
   for (const w of spec.work) {
@@ -104,7 +117,15 @@ export function checkIdentity(spec, io = defaultIo) {
   if (!underHeldout(spec.suiteBaseline)) problems.push(`suiteBaseline must live under ~/.cynco/heldout/ (sealed); got ${spec.suiteBaseline}`)
   if (!io.gitHasCommit(spec.repo, spec.base)) problems.push(`base ${spec.base} is not a commit in ${spec.repo}`)
   if (spec.keepGreen.includes(spec.marker)) problems.push('keepGreen must not contain the marker')
-  const forbidden = [basename(norm(spec.gate)), basename(norm(spec.perturb)), ...(spec.positive ? [basename(norm(spec.positive))] : []), 'heldout']
+  const instruments = [basename(norm(spec.gate)), basename(norm(spec.perturb)), ...(spec.positive ? [basename(norm(spec.positive))] : [])]
+  // The marker check's output is fed back to the model on a FAIL (Phase 7
+  // ruling 3); the sealed gate's output never may be. It is not brief-visible,
+  // so `heldout` is allowed (the suite gate lives there) — the instruments are not.
+  if (spec.markerCheck !== undefined) {
+    if (spec.markerCheck.includes(spec.marker)) problems.push('markerCheck must not contain the marker')
+    for (const f of instruments) if (spec.markerCheck.includes(f)) problems.push(`markerCheck names the sealed instrument "${f}" — its output would reach the model`)
+  }
+  const forbidden = [...instruments, 'heldout']
   // EVERY field the brief prints, not just the prose ones: the KEEP-GREEN
   // command, the allow/deny lists and the title all reach the worker verbatim
   // through cynco-brief.mjs, and naming the sealed gate in any of them is the

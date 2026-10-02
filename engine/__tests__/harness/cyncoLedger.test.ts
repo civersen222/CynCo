@@ -1166,7 +1166,8 @@ describe('history-rewrite wiring guard', () => {
     // still reaches `verify` — evidence is kept — but the reward-bearing field
     // must go through gate.label or the guard is decorative.
     expect(driver).toMatch(/verified = gate\.label \? r\.verified : undefined/)
-    expect(driver).toMatch(/if \(checkCmd && !gate\.run\)/)
+    // Final review I1: the marker check (CYNCO_MARKER_CHECK, else the check-cmd).
+    expect(driver).toMatch(/if \(MARKER\.command && !gate\.run\)/)
   })
 
   /**
@@ -1188,7 +1189,8 @@ describe('history-rewrite wiring guard', () => {
     // Taken around the check, not near it — a SHA read after `runCheck` on both
     // sides would agree with itself forever and detect nothing.
     const before = driver.indexOf('const headBefore = gitHead(')
-    const check = driver.indexOf('const r = runCheck(')
+    // Phase 7 review C1: the check is awaited (runCheckAsync), still between the two reads.
+    const check = driver.search(/const r = (await )?runCheck(Async)?\(/)
     const after = driver.indexOf('const headAfter = gitHead(')
     expect(before).toBeGreaterThan(-1)
     expect(check).toBeGreaterThan(before)

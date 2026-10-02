@@ -77,7 +77,7 @@ import { probeEdit } from '../vsm/groundingProbe.js'
 import { loadInterventionRates, saveInterventionRates } from '../vsm/interventionPersistence.js'
 import { applyNudgeTemperature } from '../vsm/controlSignals.js'
 import { globalContract } from '../tools/contract.js'
-import { applyHarnessContract, harnessGatePaths, sealedGatePaths, maybeAutoCreateContract, type HarnessContractSpec } from './contractAutoCreate.js'
+import { applyHarnessContract, harnessGatePaths, sealedGatePaths, instrumentAssertionsFor, contentExemptGatePaths, maybeAutoCreateContract, type HarnessContractSpec } from './contractAutoCreate.js'
 import { gitProbe, runCommandDetailed } from '../tools/contractVerify.js'
 import { globalAskBroker } from '../tools/askBroker.js'
 import { estimateTokensAsync } from '../engine/contextBudget.js'
@@ -300,6 +300,8 @@ export class ConversationLoop {
    * task in `runUserMessage` and never carried into an interactive message.
    */
   private missionInvariants: MissionInvariants | null = null
+  /** F168: the last harness contract's assertions, so the mission's sealed set is monotone. */
+  private carriedHarnessAssertions: HarnessContractSpec['assertions'] = []
   /**
    * An `invariants` block was declared for this unattended task and rejected as
    * malformed. `invariants: null` on the wire is otherwise ambiguous — a
@@ -1400,9 +1402,20 @@ export class ConversationLoop {
     }
 
     const declared = (opts?.readOnlyPaths ?? []).map(p => p.replace(/\\/g, '/'))
+    // Phase 7 final review I1: the driver's marker check arrives on its own env
+    // channel, never as a contract assertion (the engine must never RUN it), but
+    // the instruments it names are sealed here like any withheld gate's. Read
+    // from this process's env on every message, so the driver's follow-up notes
+    // (which carry no contract) keep the seal for the retry turn.
+    // F168: the contract-derived part is monotone within a mission too — a
+    // contract-less frame (the marker note, a probe injection) derives it from
+    // the active harness contract, or on an unattended frame from the last one.
+    if (opts?.contract) this.carriedHarnessAssertions = opts.contract.assertions
+    else if (opts?.unattended !== true && !(globalContract.isActive() && globalContract.getOrigin() === 'harness')) this.carriedHarnessAssertions = []
+    const instrumentAssertions = instrumentAssertionsFor(opts, { contract: globalContract, env: process.env, carried: this.carriedHarnessAssertions })
     const gates = [...new Set([
       ...declared,
-      ...(opts?.contract ? harnessGatePaths(opts.contract.assertions, this.executor['cwd']) : []),
+      ...(instrumentAssertions.length > 0 ? harnessGatePaths(instrumentAssertions, this.executor['cwd']) : []),
     ])]
     setTaskImmutablePaths(gates)
     // F37. A held-out gate is not read-only, it is sealed: unreadable,
@@ -1413,10 +1426,11 @@ export class ConversationLoop {
     // F154: `sealedGatePaths`, not `withheldGatePaths` — the seal is the one
     // place the harness's own checker is exempt, because the seal is what makes
     // a path unrunnable. The driver's write barrier still takes the full set.
-    const sealed = opts?.contract
-      ? sealedGatePaths(opts.contract.assertions, this.executor['cwd'])
+    const sealed = instrumentAssertions.length > 0
+      ? sealedGatePaths(instrumentAssertions, this.executor['cwd'])
       : []
-    setTaskSealedPaths(sealed)
+    // T6-N1: the suite baseline (bare node ids) is sealed by path, never by content.
+    setTaskSealedPaths(sealed, undefined, undefined, sealed.length > 0 ? contentExemptGatePaths(instrumentAssertions, this.executor['cwd']) : [])
     const readable = gates.filter(g => !sealed.includes(g))
     if (readable.length > 0) {
       console.log(`[contract] Read-only instrument(s) for this task: ${readable.join(', ')}`)

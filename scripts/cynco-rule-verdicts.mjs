@@ -23,7 +23,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from '
 import { join, dirname, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { analyse as analyseFn, ruleVerdictOf, holm, wilson, rulesFired } from './cynco-signal-validation.mjs'
-import { signalsVersionOf } from './cynco-outcome-dataset.mjs'
+import { signalsVersionOf, READING_UNIT, READING_LABELS, readingIdOf } from './cynco-outcome-dataset.mjs'
 
 /**
  * F165 (review I2): the S5 rules whose condition reads a signal that changed
@@ -44,6 +44,12 @@ export const RULE_VERDICTS_PATH = (home) => join(home, 'datasets', 'rule-verdict
 export const OUTCOME_MODEL_PATH = (home) => join(home, 'datasets', 'outcome-model.json')
 /** The pFail at or above which a model "fires" on a held-out mission. */
 export const MODEL_FIRE_THRESHOLD = 0.5
+/**
+ * Final review M2: what an M2.* row's p is computed over. Readings from one
+ * mission are not independent, so Fisher's p over them is optimistic; the row
+ * carries this as `dependence`, and the verdict line names it beside the p.
+ */
+export const READING_DEPENDENCE = 'readings share missions'
 
 /**
  * Phase 5 ruling 5: the outcome model's held-out predictions as synthetic
@@ -53,16 +59,41 @@ export const MODEL_FIRE_THRESHOLD = 0.5
  * 2×2 table is built over `scope` alone (never the training missions it has
  * seen). No model file, or no models in it, is no rows.
  */
-export function modelRowsFrom(outcomeModel, rows) {
+export function modelRowsFrom(outcomeModel, rows, { unit = 'mission' } = {}) {
   const models = outcomeModel?.models
   if (!models || typeof models !== 'object') return []
+  if (unit === READING_UNIT) return readingRowsFrom(models, rows)
   const inLedger = new Set((rows ?? []).map(r => r?.missionId))
   return Object.keys(models).sort().map(k => {
     const preds = (models[k]?.predictions ?? []).filter(p => inLedger.has(p?.missionId))
     return {
-      id: `M1.${k}`, source: 'model',
+      id: `M1.${k}`, source: 'model', unit: 'mission',
       fired: new Set(preds.filter(p => typeof p.pFail === 'number' && p.pFail >= MODEL_FIRE_THRESHOLD).map(p => p.missionId)),
       scope: new Set(preds.map(p => p.missionId)),
+    }
+  })
+}
+
+/**
+ * Phase 7 ruling 1: the reading learner's rows, `M2.<k>` (`unit: 'reading'`).
+ * `rows` are the interval rows the export wrote (`intervalRows`); a held-out
+ * prediction is in scope when its reading (`missionId:interval`) is still
+ * among them and labelled, and the label is read from the ROW, never from the
+ * model's file — `improved` is the success, so "fired" (P(stalled) ≥ 0.5) on
+ * a stalled reading is the hit, as fired on a failed mission is for M1.
+ */
+function readingRowsFrom(models, rows) {
+  const labelOfId = new Map()
+  for (const r of rows ?? []) {
+    if (r?.label === READING_LABELS.positive || r?.label === READING_LABELS.negative) labelOfId.set(readingIdOf(r), r.label === READING_LABELS.positive)
+  }
+  return Object.keys(models).sort().map(k => {
+    const preds = (models[k]?.predictions ?? []).filter(p => typeof p?.id === 'string' && labelOfId.has(p.id))
+    return {
+      id: `M2.${k}`, source: 'model', unit: READING_UNIT,
+      fired: new Set(preds.filter(p => typeof p.pFail === 'number' && p.pFail >= MODEL_FIRE_THRESHOLD).map(p => p.id)),
+      scope: new Set(preds.map(p => p.id)),
+      labels: new Map(preds.map(p => [p.id, labelOfId.get(p.id)])),
     }
   })
 }
@@ -75,16 +106,24 @@ export function modelRowsFrom(outcomeModel, rows) {
  * labeled mission. `pAdjusted` is set by the caller's Holm pass.
  */
 function modelRuleOf(m, rows, analyse) {
-  const scoped = rows.filter(r => m.scope.has(r?.missionId))
-  const res = analyse(scoped, { firedOf: (r) => (m.fired.has(r?.missionId) ? new Set([m.id]) : new Set()) })
+  // Phase 7 ruling 1: a reading row's table is over its held-out READINGS,
+  // each labelled from the interval rows (`m.labels`, improved = success).
+  const res = m.unit === READING_UNIT
+    ? analyse([...m.scope].sort().map(id => ({ missionId: id })), {
+      firedOf: (r) => (m.fired.has(r.missionId) ? new Set([m.id]) : new Set()),
+      labelOf: (r) => m.labels?.get(r.missionId) ?? null,
+    })
+    : analyse(rows.filter(r => m.scope.has(r?.missionId)), { firedOf: (r) => (m.fired.has(r?.missionId) ? new Set([m.id]) : new Set()) })
   const r = res.rules.find(x => x.id === m.id)
     ?? { id: m.id, firedTotal: 0, labeled: 0, failures: 0, precision: null, ci: wilson(0, 0), lift: null, p: null, coverage: 0 }
-  return { ...r, base: res.labeled ? res.base : null, scopeN: res.labeled }
+  return { ...r, base: res.labeled ? res.base : null, scopeN: res.labeled, unit: m.unit ?? 'mission' }
 }
 
 /** A runner row's verdict when there is no table to read one from (F16:
  *  unmeasured is null with its reason, never a rate of 0). */
-export const RUNNER_UNMEASURED_NO_SCOPE = 'UNMEASURED — no wave in scope (no shadow decision at 50 % of its clock or later)'
+export const runnerUnmeasuredNoScope = (at) => `UNMEASURED — no wave in scope (no shadow decision at ${Math.round(at * 100)} % of its clock or later)`
+/** R1's (50 %); Phase 7: each runner row names its OWN threshold (`row.at`, R2.stalled's is 25 %). */
+export const RUNNER_UNMEASURED_NO_SCOPE = runnerUnmeasuredNoScope(0.5)
 export const RUNNER_UNMEASURED_NEVER_FIRED = 'UNMEASURED — fired on no in-scope wave'
 
 /**
@@ -106,7 +145,8 @@ function runnerRuleOf(u, analyse) {
   })
   const r = res.rules.find(x => x.id === u.id)
     ?? { id: u.id, firedTotal: 0, labeled: 0, failures: 0, precision: null, ci: wilson(0, 0), lift: null, p: null, coverage: 0 }
-  const unmeasured = res.labeled === 0 ? RUNNER_UNMEASURED_NO_SCOPE : r.labeled === 0 ? RUNNER_UNMEASURED_NEVER_FIRED : null
+  const noScope = typeof u.at === 'number' && Number.isFinite(u.at) ? runnerUnmeasuredNoScope(u.at) : RUNNER_UNMEASURED_NO_SCOPE
+  const unmeasured = res.labeled === 0 ? noScope : r.labeled === 0 ? RUNNER_UNMEASURED_NEVER_FIRED : null
   // Review M1: the wave records runnerRowsFrom could not read, named, so a
   // malformed line in some campaign's waves.jsonl is visible on the row.
   const skipped = Array.isArray(u.skipped) ? u.skipped : []
@@ -210,7 +250,11 @@ function verdictChanges(before, after) {
  * `rules['M1.<k>'] = { verdict, precision, ci, p, n, …, source: 'model',
  * scope: 'holdout' }`. The engine never grants an `M1.*` id authority
  * (`engine/s5/ruleAuthority.ts` skips `source: 'model'`); an M1 that earns
- * PREDICTIVE is the next phase's advisory input, nothing more. With no model
+ * PREDICTIVE is the next phase's advisory input, nothing more. Phase 7 ruling
+ * 1: the reading learner's rows `M2.<k>` (`unit: 'reading'`, scoped to the
+ * held-out READINGS, improved = success) go through the same arithmetic in
+ * the same family and are refused authority the same way; every model entry
+ * carries its `unit` ('mission' for M1). With no model
  * rows the file is exactly what it was before Phase 5.
  *
  * Phase 6: `runnerRows` (from `runnerRowsFrom`, the runner's shadow regulator
@@ -255,6 +299,13 @@ export function writeRuleVerdicts({ rows, campaign, outPath, analyse = analyseFn
       // `base` is the HOLDOUT failure rate the lift is measured against;
       // `scopeN` the labeled held-out missions the table was built over.
       source: 'model', scope: 'holdout', base: r.base, scopeN: r.scopeN,
+      // Phase 7 ruling 1: which learner — `mission` (M1.*) or `reading` (M2.*,
+      // `scopeN` held-out readings). Authority ignores both by `source`.
+      unit: r.unit ?? 'mission',
+      // Final review M2: an M2 p is Fisher's over readings that share
+      // missions — not independent, so optimistic. Said on the row, where the
+      // number is read, not only in the README.
+      ...(r.unit === 'reading' ? { dependence: READING_DEPENDENCE } : {}),
     }
   }
   for (const r of [...runners].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))) {
@@ -317,6 +368,19 @@ export function writeRuleVerdicts({ rows, campaign, outPath, analyse = analyseFn
     ...(runners.length ? { runnerRows: runners.length, runners: Object.fromEntries(runners.map(r => [r.id, rules[r.id]])) } : {}) }
 }
 
+/**
+ * Phase 7 ruling 1: `writeRuleVerdicts(...).models` split by learner — the
+ * mission ladder (`M1.*`, the hindcast's `ladder`) and the reading ladder
+ * (`M2.*`, `hindcast.reading.ladder`). Each is null when it has no row.
+ */
+export function modelLaddersOf(models) {
+  const pick = (unit) => {
+    const e = Object.entries(models ?? {}).filter(([, v]) => (v?.unit ?? 'mission') === unit)
+    return e.length ? Object.fromEntries(e) : null
+  }
+  return { mission: pick('mission'), reading: pick(READING_UNIT) }
+}
+
 /** The CLI's summary line: rules, model rows and runner rows counted apart, as the scoreboard reads them. */
 export function verdictsLine(r, outPath) {
   const models = r.modelRows ? ` (+${r.modelRows} model row${r.modelRows === 1 ? '' : 's'})` : ''
@@ -337,7 +401,9 @@ export function verdictsLine(r, outPath) {
 // writeRuleVerdicts, through scripts/cynco-hindcast.mjs's functions, and the
 // hindcast line the verdict entry would carry is printed. A hindcast fault is
 // printed as UNMEASURED and the rules are written without model rows — as the
-// runner does. `--datasets-dir DIR` puts the three datasets and
+// runner does. Phase 7 ruling 1: the reading learner runs beside it
+// (exportReadingDataset over the campaigns' waves → runReadingHindcast →
+// M2.* rows), its reading printed as the line's `; readings:` clause. `--datasets-dir DIR` puts the three datasets and
 // outcome-model.json directly in DIR (default `<cyncoHome>/datasets`) and,
 // unless `--out` is given, the verdict file too, and — unless `--manifest` is
 // given — keeps the holdout manifest at `<DIR>/frozen-eval.json` (final review
@@ -370,21 +436,22 @@ export async function main(argv, deps = {}) {
   // the S5 rules over a smaller m than the VERDICT and could flip one.
   // `--campaigns-dir DIR` names the campaigns dir (default <cyncoHome>/campaigns).
   const campaignsDir = arg('--campaigns-dir') ? resolve(arg('--campaigns-dir')) : join(await home(), 'campaigns')
-  const runnerRows = (await import('./cynco-runner-rows.mjs')).runnerRowsFromCampaigns(campaignsDir)
+  const runnerMod = await import('./cynco-runner-rows.mjs')
+  const runnerRows = runnerMod.runnerRowsFromCampaigns(campaignsDir)
   let modelRows = []
   if (withHindcast) {
     const hc = await import('./cynco-hindcast.mjs')
     const { hindcastLine } = await import('./cynco-campaign-verdict.mjs')
     let hindcast
+    // `--manifest PATH` (F165 fix round 2): the per-version frozen holdout the
+    // hindcast reads — and, when the current version's pool reaches the
+    // minimum, freezes into. Default: `<DIR>/frozen-eval.json` when
+    // `--datasets-dir DIR` is given (final review M8: a temp run never
+    // performs the one-time freeze on the repo's committed manifest), else
+    // the committed one, as the runner does.
+    const manifestArg = arg('--manifest') ? resolve(arg('--manifest')) : datasetsDir ? join(datasetsDir, 'frozen-eval.json') : null
+    const manifest = manifestArg ? { manifestPath: manifestArg } : {}
     try {
-      // `--manifest PATH` (F165 fix round 2): the per-version frozen holdout the
-      // hindcast reads — and, when the current version's pool reaches the
-      // minimum, freezes into. Default: `<DIR>/frozen-eval.json` when
-      // `--datasets-dir DIR` is given (final review M8: a temp run never
-      // performs the one-time freeze on the repo's committed manifest), else
-      // the committed one, as the runner does.
-      const manifestArg = arg('--manifest') ? resolve(arg('--manifest')) : datasetsDir ? join(datasetsDir, 'frozen-eval.json') : null
-      const manifest = manifestArg ? { manifestPath: manifestArg } : {}
       const exported = hc.exportOutcomeDatasets({ rows, home: datasetsDir ? null : await home(), datasetsDir, ...manifest })
       if (!hc.hindcastReady(exported)) hindcast = { fault: hc.noEligibleFault(exported, hc.PRIMARY_TURNS) }
       else {
@@ -394,8 +461,22 @@ export async function main(argv, deps = {}) {
         else { hindcast = { ...h.summary, ...(exported?.holdout ? { holdout: exported.holdout } : {}) }; modelRows = modelRowsFrom(h.model, rows) }
       }
     } catch (e) { hindcast = { fault: String(e?.message ?? e) } }
+    // Phase 7 ruling 1: the reading learner, as the VERDICT runs it — the
+    // interval dataset over the same campaigns' waves, its own `reading:2`
+    // holdout, `--unit reading`, the M2.* rows. Its fault is its own reading.
+    let reading
+    try {
+      const waves = runnerMod.runnerWaves(campaignsDir).map(({ record }) => record)
+      const exportedR = hc.exportReadingDataset({ rows, waves, home: datasetsDir ? null : await home(), datasetsDir, ...manifest })
+      const rh = hc.runReadingHindcast({ exported: exportedR, runHindcast: deps.runHindcast ?? hc.runHindcast })
+      reading = rh.reading
+      modelRows = [...modelRows, ...modelRowsFrom(rh.model, exportedR.intervals, { unit: READING_UNIT })]
+    } catch (e) { reading = { fault: String(e?.message ?? e) } }
+    hindcast.reading = reading
     const r = writeRuleVerdicts({ rows, campaign: null, outPath, modelRows, runnerRows })
-    if (!hindcast.fault) hindcast.ladder = r.models ?? null
+    const ladders = modelLaddersOf(r.models)
+    if (!hindcast.fault) hindcast.ladder = ladders.mission
+    if (!reading.fault) reading.ladder = ladders.reading
     log(hindcastLine(hindcast, { runners: r.runners ?? null }))
     log(verdictsLine(r, outPath))
     return 0

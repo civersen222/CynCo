@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 import {
   featuresOf, datasetRows, frozenSplit, freezeManifest, FEATURE_KEYS_V1, FEATURE_KEYS_V2, FEATURE_KEYS_BY_VERSION,
   signalsVersionOf, PREFIX_TURNS, DEFAULT_TURNS, main,
+  setKeyOf, READING_UNIT, readingIdOf, heldSetFor, manifestSets, ensureVersionHoldout, FREEZE_MIN_ELIGIBLE, AUTO_FREEZE_SEED,
 } from '../cynco-outcome-dataset.mjs'
 import { labelOf } from '../cynco-signal-validation.mjs'
 
@@ -313,6 +314,103 @@ describe('frozenSplit', () => {
     expect(split.missing).toEqual(['gone'])
     expect(split.train).toHaveLength(19)
     expect(frozenSplit(rows, { missionIds: ['short-held'] }, { turns: 16 }).ineligible).toEqual([])
+  })
+})
+
+// Phase 7 ruling 1: the reading unit's holdout — a set of its own,
+// `reading:<v>`, frozen by the same rule, split by WHOLE missions.
+describe('the reading unit\'s holdout', () => {
+  const now = () => '2026-10-02T00:00:00.000Z'
+  // `n` missions with `per` intervals each; mission i's intervals alternate
+  // improved / stalled starting from i's parity, so every mission has both.
+  const readings = (n, per = 3, label = (m, k) => ((m + k) % 2 ? 'improved' : 'stalled')) =>
+    Array.from({ length: n }, (_, m) => Array.from({ length: per }, (_, k) => ({
+      missionId: `m${String(m).padStart(2, '0')}`, interval: k, label: label(m, k), signalsVersion: 2, features: {}, leakGuard: true,
+    }))).flat()
+
+  it('the set key is "<v>" for missions and "reading:<v>" for readings', () => {
+    expect(setKeyOf(2)).toBe('2')
+    expect(setKeyOf(2, 'mission')).toBe('2')
+    expect(setKeyOf(2, READING_UNIT)).toBe('reading:2')
+    expect(readingIdOf({ missionId: 'm01', interval: 3 })).toBe('m01:3')
+    const file = { schema: 2, sets: { 2: { missionIds: ['a'] }, 'reading:2': { missionIds: ['b'] } }, history: [] }
+    expect(heldSetFor(file, 2).missionIds).toEqual(['a'])
+    expect(heldSetFor(file, 2, { unit: 'reading' }).missionIds).toEqual(['b'])
+  })
+
+  it('freezes ~20 % of the readings by whole missions, both labels, deterministic for the seed', () => {
+    const rows = readings(20, 2)
+    const m = freezeManifest(rows, { unit: 'reading', seed: 7, now })
+    expect(m).toMatchObject({ schema: 1, unit: 'reading', version: 1, seed: 7, frozenAt: '2026-10-02T00:00:00.000Z' })
+    // 40 readings → 8 held (4 of each label); each mission carries one of each, so 4 whole missions.
+    expect(m.ids).toHaveLength(8)
+    expect(m.missionIds).toHaveLength(4)
+    const others = [1, 2, 3, 4, 5].map(seed => freezeManifest(rows, { unit: 'reading', seed, now }).missionIds.join())
+    expect(others.some(ids => ids !== m.missionIds.join())).toBe(true)
+    // Whole missions: every interval of a held mission is held, and nothing else.
+    expect(m.ids).toEqual(rows.filter(r => m.missionIds.includes(r.missionId)).map(readingIdOf).sort())
+    const held = rows.filter(r => m.missionIds.includes(r.missionId))
+    expect(held.some(r => r.label === 'improved') && held.some(r => r.label === 'stalled')).toBe(true)
+    expect(freezeManifest([...rows].reverse(), { unit: 'reading', seed: 7, now })).toEqual(m)
+  })
+
+  it('frozenSplit by a reading set never puts one mission\'s intervals on both sides', () => {
+    const rows = readings(20, 3)
+    const m = freezeManifest(rows, { unit: 'reading', seed: 7, now })
+    // A reading added later to a held mission is held too — the mission is the unit of the split.
+    const heldLate = { missionId: m.missionIds[0], interval: 9, label: 'improved' }
+    const s = frozenSplit([...rows, { missionId: 'late', interval: 0, label: 'improved' }, heldLate], m, { unit: 'reading' })
+    const trainM = new Set(s.train.map(r => r.missionId)), holdM = new Set(s.holdout.map(r => r.missionId))
+    expect([...trainM].filter(id => holdM.has(id))).toEqual([])
+    expect(s.holdout).toHaveLength(m.ids.length + 1)
+    expect(s.train).toHaveLength(60 - m.ids.length + 1)
+    expect(s.missing).toEqual([])
+    expect(() => frozenSplit(rows, m, { unit: 'reading', turns: 16 })).toThrow(/turns/)
+  })
+
+  it('ensureVersionHoldout below the minimum: not frozen, the counts per label, the file untouched', () => {
+    const d = mkdtempSync(join(tmpdir(), 'reading-holdout-'))
+    const path = join(d, 'frozen-eval.json')
+    writeFileSync(path, JSON.stringify({ schema: 1, version: 1, seed: 1, frozenAt: 't', missionIds: ['x'] }, null, 2) + '\n')
+    const before = readFileSync(path, 'utf8')
+    expect(ensureVersionHoldout({ rows: readings(12), path, v: 2, unit: 'reading', now }))
+      .toEqual({ set: null, holdout: { frozen: false, unit: 'reading', eligible: 36, needed: 38, improved: 18, stalled: 18, needEach: 8 } })
+    // 38 readings but 7 improved: still not frozen.
+    const skew = readings(19, 2, (m, k) => (m * 2 + k < 7 ? 'improved' : 'stalled'))
+    expect(ensureVersionHoldout({ rows: skew, path, v: 2, unit: 'reading', now }).holdout).toMatchObject({ frozen: false, eligible: 38, improved: 7, stalled: 31 })
+    // Readings of another version are not in the pool.
+    expect(ensureVersionHoldout({ rows: readings(13).map(r => ({ ...r, signalsVersion: 3 })), path, v: 2, unit: 'reading', now }).holdout).toMatchObject({ eligible: 0 })
+    expect(readFileSync(path, 'utf8')).toBe(before)
+  })
+
+  it('at the minimum: frozen once under sets["reading:2"], recorded on the history, "1" and "2" byte-identical', () => {
+    const d = mkdtempSync(join(tmpdir(), 'reading-holdout-'))
+    const path = join(d, 'frozen-eval.json')
+    const one = { schema: 1, version: 1, seed: 20260926, frozenAt: 't1', missionIds: ['v1-a', 'v1-b'] }
+    const two = { schema: 1, version: 1, seed: AUTO_FREEZE_SEED, frozenAt: 't2', missionIds: ['v2-a'] }
+    writeFileSync(path, JSON.stringify({ schema: 2, sets: { 1: one, 2: two }, history: [{ signalsVersion: 2, frozenAt: 't2', count: 1, eligible: 38, seed: AUTO_FREEZE_SEED, how: 'auto' }] }, null, 2) + '\n')
+    const setText = (k) => JSON.stringify(JSON.parse(readFileSync(path, 'utf8')).sets[k], null, 2)
+    const before = { 1: setText('1'), 2: setText('2') }
+    const rows = readings(19, 2)
+    expect(rows).toHaveLength(FREEZE_MIN_ELIGIBLE)
+    const r = ensureVersionHoldout({ rows, path, v: 2, unit: 'reading', now })
+    const expected = freezeManifest(rows, { unit: 'reading', seed: AUTO_FREEZE_SEED, now })
+    expect(r.set).toEqual(expected)
+    expect(r.holdout).toEqual({ frozen: true, frozenNow: true, frozenAt: '2026-10-02T00:00:00.000Z', ids: expected.ids.length, missions: expected.missionIds.length })
+    const file = JSON.parse(readFileSync(path, 'utf8'))
+    expect(Object.keys(file.sets).sort()).toEqual(['1', '2', 'reading:2'])
+    expect(file.sets['reading:2']).toEqual(expected)
+    expect(setText('1')).toBe(before[1])
+    expect(setText('2')).toBe(before[2])
+    expect(file.history.at(-1)).toEqual({ signalsVersion: 2, unit: 'reading', frozenAt: '2026-10-02T00:00:00.000Z', count: expected.ids.length,
+      missions: expected.missionIds.length, eligible: 38, seed: AUTO_FREEZE_SEED, how: 'auto' })
+    // Frozen means frozen: a later, larger pool changes nothing on disk.
+    const text = readFileSync(path, 'utf8')
+    expect(ensureVersionHoldout({ rows: readings(40), path, v: 2, unit: 'reading', now: () => 'later' }).holdout)
+      .toEqual({ frozen: true, frozenNow: false, frozenAt: '2026-10-02T00:00:00.000Z', ids: expected.ids.length, missions: expected.missionIds.length })
+    expect(readFileSync(path, 'utf8')).toBe(text)
+    // The mission set "2" is not the reading set: a v2 mission freeze would see its own.
+    expect(heldSetFor(manifestSets(file), 2)).toEqual(two)
   })
 })
 

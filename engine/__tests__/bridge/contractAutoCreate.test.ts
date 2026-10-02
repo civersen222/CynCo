@@ -15,6 +15,9 @@ import {
   maybeAutoCreateContract,
   isHarnessOwnFile,
   HARNESS_ROOT,
+  markerCheckGateAssertions,
+  MARKER_CHECK_GATE_TEXT,
+  contentExemptGatePaths,
 } from '../../bridge/contractAutoCreate.js'
 
 const dirs: string[] = []
@@ -432,6 +435,50 @@ describe('harnessGatePaths: the instruments a contract names', () => {
     expect(harnessGatePaths(
       [`Verification command exits 0: python -m pytest ${ws.replace(/\\/g, '/')}/gilded/tests -q`], ws,
     )).toEqual([])
+  })
+
+  // Phase 7 review I1: the suite gate's baseline travels as an env prefix in
+  // the check command, and is an instrument like the gate it feeds.
+  it('reads the value of a NAME=<path> env prefix as a path token', () => {
+    const { file: baseline } = gate('suite_baseline.txt')
+    const { file: suite } = gate('g_suite.py')
+    const ws = workspace('src/app.ts')
+    const wsFwd = ws.replace(/\\/g, '/')
+    expect(harnessGatePaths(
+      [{ text: 'held out', command: `CHK_SUITE_BASELINE=${baseline} CYNCO_GATE_REPO=${wsFwd} python "${suite}"` }], ws,
+    )).toEqual([baseline, suite].sort())
+  })
+
+  // Final review I1: the marker check reaches the driver on its own channel,
+  // never as a contract assertion the engine runs — but its instruments are
+  // still sealed (engine) and snapshotted/restored (driver), so both read the
+  // channel for its PATHS through this one function.
+  it('reads the marker channel for its paths only', () => {
+    const { file: baseline } = gate('suite_baseline.txt')
+    const { file: suite } = gate('g_suite.py')
+    const ws = workspace('src/app.ts')
+    const wsFwd = ws.replace(/\\/g, '/')
+    expect(markerCheckGateAssertions({})).toEqual([])
+    expect(markerCheckGateAssertions({ CYNCO_MARKER_CHECK: '   ' })).toEqual([])
+    const command = `CHK_SUITE_BASELINE=${baseline} CYNCO_GATE_REPO=${wsFwd} python "${suite}"`
+    const marker = markerCheckGateAssertions({ CYNCO_MARKER_CHECK: command })
+    expect(marker).toEqual([{ text: MARKER_CHECK_GATE_TEXT, command }])
+    const contract = [{ text: 'held out', command: 'python -m pytest a.py -q' }]
+    expect(withheldGatePaths([...contract, ...marker], ws)).toEqual([baseline, suite].sort())
+    expect(withheldGatePaths(contract, ws)).toEqual([])
+  })
+
+  // T6-N1: the suite baseline (bare node ids) is sealed by path only — the
+  // content layer would fire on the model's own collection output.
+  it('names the suite baseline as content-exempt, and nothing else', () => {
+    const { file: baseline } = gate('suite_baseline.txt')
+    const { file: suite } = gate('g_suite.py')
+    const ws = workspace('src/app.ts')
+    const command = `CHK_SUITE_BASELINE=${baseline} CYNCO_GATE_REPO=${ws.replace(/\\/g, '/')} python "${suite}"`
+    expect(contentExemptGatePaths([{ text: 'm', command }], ws)).toEqual([baseline])
+    expect(contentExemptGatePaths([{ text: 'm', command: `python "${suite}"` }], ws)).toEqual([])
+    // A plain-string assertion is not withheld, so nothing of it is sealed or exempted.
+    expect(contentExemptGatePaths([`Verification command exits 0: ${command}`], ws)).toEqual([])
   })
 
   it('ignores path-shaped tokens that are not on disk', () => {

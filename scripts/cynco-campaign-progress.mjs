@@ -1,6 +1,7 @@
 // scripts/cynco-campaign-progress.mjs — Phase 6 rulings 2 and 3: the runner
 // grades the wave's latest commit MID-WAVE with the sealed gate, and runs the
-// first runner-level regulator, `R1.no-progress`, in SHADOW over the readings.
+// first runner-level regulator, `R1.no-progress`, in SHADOW over the readings
+// — and, since Phase 7, a second, `R2.stalled`, over the same ticks.
 //
 // The gate stays sealed. A reading goes to the wave record (`rec.progress`,
 // `rec.shadowDecisions`) and the runner's own log — never a probe message,
@@ -16,7 +17,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { archiveBase, defaultIo as calibrateIo } from './cynco-campaign-calibrate.mjs'
 import { runGate, GATE_TIMEOUT_MS, defaultIo as gradeIo } from './cynco-campaign-grade.mjs'
-import { NO_PROGRESS_AT, NO_PROGRESS_RULE, runnerRowsFrom } from './cynco-runner-rows.mjs'
+import { NO_PROGRESS_AT, NO_PROGRESS_RULE, STALLED_AT, STALLED_RULE, STALLED_WINDOW, runnerRowsFrom } from './cynco-runner-rows.mjs'
 
 /** `progress.everyMs` / `CYNCO_PROGRESS_EVERY_MS` when neither says otherwise: 30 min. */
 export const PROGRESS_EVERY_MS_DEFAULT = 1_800_000
@@ -43,8 +44,9 @@ export const PROBE_GATE_TIMEOUT_FACTOR = 4
 // `R1.no-progress`'s name and threshold, and the runner rows the ladder reads
 // off the wave records, live in scripts/cynco-runner-rows.mjs — the one
 // construction the VERDICT and the rule-verdicts CLI share (Task 4 review I1).
-// Re-exported here so every existing caller keeps its import.
-export { NO_PROGRESS_AT, NO_PROGRESS_RULE, runnerRowsFrom }
+// Re-exported here so every existing caller keeps its import. Phase 7's
+// `R2.stalled` constants live there too, beside R1's.
+export { NO_PROGRESS_AT, NO_PROGRESS_RULE, STALLED_AT, STALLED_RULE, STALLED_WINDOW, runnerRowsFrom }
 
 const finitePos = (v) => typeof v === 'number' && Number.isFinite(v) && v > 0
 const round3 = (v) => Math.round(v * 1000) / 1000
@@ -245,6 +247,40 @@ export function shadowNoProgress({ readings, startFails, clockMs, nowMs, at = ne
 }
 
 /**
+ * `R2.stalled`, in SHADOW (Phase 7 ruling 2): *if at ≥ 25 % of the wave's wall
+ * clock the fail count has not decreased over the last three measured ticks,
+ * the wave is stalled.* R1 compares against the wave's start and waits for
+ * 50 %; on C10 the wave sat flat for five hours below its start and R1 never
+ * spoke. R2 reads the TICK series, not the readings: `decisions` is one entry
+ * per tick carrying that tick's count (a skip tick carries the last measured
+ * count — the sha did not move, so the count is still true) or `fault` (a
+ * faulted tick is no measurement and is left out of the window).
+ *
+ * `fired` iff `elapsedFraction ≥ STALLED_AT` AND the window (the last
+ * `STALLED_WINDOW` measured ticks) is full AND never decreases AND its latest
+ * count > 0. `window` is the counts read (fewer than three when fewer were
+ * measured); `fails` the latest, null when none was measured; an unknown
+ * clock is null with no firing (unmeasured, never 0). `wouldHaveSavedS` is
+ * R1's: the clock left at the decision. `readings` is accepted for symmetry
+ * with R1 and not read.
+ */
+export function shadowStalled({ readings, decisions, clockMs, nowMs, at = new Date().toISOString() }) {
+  const measured = (decisions ?? []).filter(d => d && !d.fault && typeof d.fails === 'number' && Number.isFinite(d.fails))
+  const window = measured.slice(-STALLED_WINDOW).map(d => d.fails)
+  const clockKnown = finitePos(clockMs) && typeof nowMs === 'number' && Number.isFinite(nowMs)
+  const elapsedFraction = clockKnown ? round3(nowMs / clockMs) : null
+  const latest = window.at(-1) ?? null
+  const nonDecreasing = window.length === STALLED_WINDOW && window.every((f, i) => i === 0 || f >= window[i - 1])
+  // T2-M1: this tick's own probe faulted — it measured nothing, so R2 does not
+  // decide on it (R1 refuses the same tick); the fault rides on the decision.
+  const own = (decisions ?? []).at(-1)
+  const ownFault = own?.fault ? own.fault : null
+  const fired = !ownFault && elapsedFraction !== null && elapsedFraction >= STALLED_AT && nonDecreasing && latest > 0
+  const wouldHaveSavedS = clockKnown ? Math.max(0, Math.round(clockMs / 1000 - nowMs / 1000)) : null
+  return { rule: STALLED_RULE, at, elapsedFraction, fired, window, fails: latest, wouldHaveSavedS, ...(ownFault ? { fault: ownFault } : {}) }
+}
+
+/**
  * The verdict entry's `- Progress:` line, from the wave record. Minutes are
  * read off `at − dispatchedAt`. The start count is the shadow rule's
  * `startFails`, else the brief's FAIL ids (`s4.generatorInput.failIds`).
@@ -271,7 +307,13 @@ export function progressLine(rec) {
   const shadow = firing
     ? `${NO_PROGRESS_RULE} fired at ${Math.round(firing.elapsedFraction * 100)}%${typeof firing.wouldHaveSavedS === 'number' ? ` (would have saved ${(firing.wouldHaveSavedS / 3600).toFixed(1)} h)` : ''}`
     : decisions.length ? `${NO_PROGRESS_RULE} did not fire (${decisions.length} decision(s))` : `${NO_PROGRESS_RULE} not evaluated`
-  return `- Progress: ${start ?? '?'} → ${last.fails} fails over ${measured.length} reading${measured.length === 1 ? '' : 's'} (${fix}; last at ${minOf(last)}: ${last.fails}${faulted}); ${shadow}`
+  // Phase 7: R2.stalled, at the wave minute it first fired. A record from
+  // before Phase 7 carries no R2 decision: named, not evaluated.
+  const stalled = (rec?.shadowDecisions ?? []).filter(d => d?.rule === STALLED_RULE)
+  const stalledFiring = stalled.find(d => d.fired)
+  const shadow2 = stalledFiring ? `${STALLED_RULE} fired at ${minOf(stalledFiring)} (${stalled.length} decision(s))`
+    : stalled.length ? `${STALLED_RULE} did not fire (${stalled.length} decision(s))` : `${STALLED_RULE} not evaluated`
+  return `- Progress: ${start ?? '?'} → ${last.fails} fails over ${measured.length} reading${measured.length === 1 ? '' : 's'} (${fix}; last at ${minOf(last)}: ${last.fails}${faulted}); ${shadow}; ${shadow2}`
 }
 
 /**
@@ -312,7 +354,7 @@ export function seedGateMs(state) {
  * probe run of this wave; each real probe run replaces it.
  */
 export function progressTracker({ spec, probe, headOf, clockMs, startSha = null, startFails = null, startFailIds = null, startPasses = null, dispatchedAtMs = null, everyMs = everyMsFor(spec), gateMs: seedGateMs = null, log = (m) => console.log(m), now = Date.now }) {
-  const progress = [], shadowDecisions = []
+  const progress = [], shadowDecisions = [], stallTicks = []
   let lastSha = null, lastAtMs = null, gateMs = finitePos(seedGateMs) ? seedGateMs : null, faults = 0, n = 0, lastReason = null
   // P-F155: every tick's first git spawn follows a gap of `everyMs`, so bun's
   // stale deadline trips it and the spawn is retried (runSync for the HEAD
@@ -357,6 +399,13 @@ export function progressTracker({ spec, probe, headOf, clockMs, startSha = null,
     const d = shadowNoProgress({ readings: progress, startFails, clockMs, nowMs: waveMs, at })
     shadowDecisions.push(d)
     if (d.fired) log(`[campaign] shadow ${NO_PROGRESS_RULE} FIRED at ${Math.round(d.elapsedFraction * 100)}% (${d.fails} ≥ ${d.startFails}; would have saved ${(d.wouldHaveSavedS / 3600).toFixed(1)} h) — shadow only, nothing stopped`)
+    // Phase 7: R2.stalled over the tick series — R1's decisions, one per tick,
+    // with this tick's fault marked: R1 carries the last measured count onto
+    // a faulted tick, and that stale count is no measurement for R2.
+    stallTicks.push(reading.fault ? { ...d, fails: null, fault: reading.fault } : d)
+    const d2 = shadowStalled({ readings: progress, decisions: stallTicks, clockMs, nowMs: waveMs, at })
+    shadowDecisions.push(d2)
+    if (d2.fired) log(`[campaign] shadow ${STALLED_RULE} FIRED at ${Math.round(d2.elapsedFraction * 100)}% (${d2.window.join(', ')} fails over the last ${STALLED_WINDOW} measured ticks; would have saved ${(d2.wouldHaveSavedS / 3600).toFixed(1)} h) — shadow only, nothing stopped`)
     return reading
   }
   const onTick = (t) => {

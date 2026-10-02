@@ -846,7 +846,11 @@ export function buildMissionRecord(collector, meta) {
     // Phase 2(b): set by the driver's post-mission check script (exit 0 =>
     // true); null when no check command was supplied (manual-patch path).
     verified: meta.verified ?? null,
-    verify: meta.verify ?? null, // { command, exitCode, timedOut, durationMs, outputTail }
+    verify: meta.verify ?? null, // { command, exitCode, timedOut, durationMs, outputTail, retried, firstAttempt }
+    // Phase 7 ruling 3: how many times a FAILED marker check was fed back to
+    // the model before the check that set `verified` (0|1). null = no
+    // check-cmd was dispatched, so there was nothing that could be retried.
+    verifyRetries: meta.verifyRetries ?? null,
     // Stage 1 (S3*, docs/cynco-self-orchestration-spec.md): what the in-loop
     // probe saw and did at each turn boundary. null = no probe-cmd dispatched,
     // which an absent field could not distinguish from an old driver.

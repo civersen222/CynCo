@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 // @ts-ignore — untyped harness module
-import { runCheck } from '../../../scripts/cynco-verify.mjs'
+import { runCheck, runCheckAsync, shouldRetryMarkerCheck, markerCheckNote, noteLines, markerRetryMinSFrom, markerCheckFrom, verifyOverrunS, MARKER_RETRY_MIN_S } from '../../../scripts/cynco-verify.mjs'
 
 // process.execPath is the current JS runtime (node under vitest, bun under
 // Bun) — both support -e. Quoted for paths with spaces. runCheck (F146) now
@@ -63,6 +63,8 @@ describe('cynco mission check runner (Phase 2b)', () => {
     const r = runCheck(`${RUNTIME} -e "process.stdout.write('x'.repeat(10000))"`, process.cwd(), 30000)
     expect(r.verified).toBe(true)
     expect(r.outputTail.length).toBeLessThanOrEqual(2000)
+    // The whole output stays available to the marker-check note (Phase 7 ruling 3).
+    expect(r.output.length).toBeGreaterThanOrEqual(10000)
   })
 
   // The engine's contract runner accepts a POSIX env prefix, so a check that
@@ -153,5 +155,168 @@ describe('cynco mission check runner (Phase 2b)', () => {
     const r = runCheck('exit 1', dir, 20000)
     expect(r.verified).toBe(false)
     expect(r.harnessFault).toBeNull()
+  })
+})
+
+// F166: the suite gate reads pytest's plain `FAILED ` lines, and a colour-forcing
+// variable inherited from the operator's terminal turns them into escape codes.
+// The marker check now runs the suite gate, so runCheck goes through runSync,
+// which hands every instrument a colourless environment.
+describe('runCheck — the instrument environment (F166)', () => {
+  it('drops FORCE_COLOR and sets NO_COLOR for the check', () => {
+    const prev = process.env.FORCE_COLOR
+    process.env.FORCE_COLOR = '3'
+    try {
+      const r = runCheck(`${RUNTIME} -e "console.log('FC=' + (process.env.FORCE_COLOR ?? 'unset') + ' NC=' + process.env.NO_COLOR)"`, process.cwd(), 30000)
+      expect(r.verified).toBe(true)
+      expect(r.outputTail).toContain('FC=unset NC=1')
+    } finally {
+      if (prev === undefined) delete process.env.FORCE_COLOR; else process.env.FORCE_COLOR = prev
+    }
+  })
+})
+
+// Phase 7 ruling 3: a FAILED marker check is fed back to the model ONCE, and
+// only when an hour of the mission's clock is left to act on it.
+describe('shouldRetryMarkerCheck', () => {
+  it('retries a FAIL with at least MARKER_RETRY_MIN_S left and no retry spent', () => {
+    expect(MARKER_RETRY_MIN_S).toBe(3600)
+    expect(shouldRetryMarkerCheck({ ok: false, remainingS: 3600, retries: 0 })).toBe(true)
+    expect(shouldRetryMarkerCheck({ ok: false, remainingS: 20000, retries: 0 })).toBe(true)
+  })
+  it('never retries a PASS or an UNMEASURED check — null is not a failure', () => {
+    expect(shouldRetryMarkerCheck({ ok: true, remainingS: 20000, retries: 0 })).toBe(false)
+    expect(shouldRetryMarkerCheck({ ok: null, remainingS: 20000, retries: 0 })).toBe(false)
+  })
+  it('never retries with under an hour left, or twice', () => {
+    expect(shouldRetryMarkerCheck({ ok: false, remainingS: 3599, retries: 0 })).toBe(false)
+    expect(shouldRetryMarkerCheck({ ok: false, remainingS: 20000, retries: 1 })).toBe(false)
+    expect(shouldRetryMarkerCheck({ ok: false, remainingS: Number.NaN, retries: 0 })).toBe(false)
+  })
+})
+
+describe('markerCheckNote', () => {
+  it('carries the prefix and only the last 40 lines of the check output', () => {
+    const output = Array.from({ length: 60 }, (_, i) => `line ${i + 1}`).join('\n') + '\n'
+    const note = markerCheckNote(output)
+    const lines = note.split('\n')
+    expect(lines[0]).toBe('[driver] marker check FAILED — fix and re-mark:')
+    expect(lines.slice(1)).toEqual(Array.from({ length: 40 }, (_, i) => `line ${i + 21}`))
+  })
+  it('says what the driver did to an uncommitted tree, and how to bring it back (review M1)', () => {
+    const note = markerCheckNote('E boom', { resetFiles: 2, patchPath: 'C:/tmp/m.uncommitted.1.patch' })
+    expect(note).toContain('E boom')
+    expect(note).toMatch(/2 uncommitted tracked file\(s\) were reset .* C:\/tmp\/m\.uncommitted\.1\.patch/)
+    expect(note).toContain('git apply --3way "C:/tmp/m.uncommitted.1.patch"')
+  })
+  // Review I1/M2: the suite gate prints `baseline: N known failure(s) from
+  // <path>` and a REPAIRED block of baseline members — neither may reach the model.
+  it('never carries a heldout line, a redacted path, or the REPAIRED block', () => {
+    const output = [
+      'g_suite no regression: gilded/tests in C:/repo',
+      '  baseline: 3 known failure(s) from C:/Users/x/.cynco/heldout/c10/suite_baseline_abc.txt',
+      '  measured: 5 failed, 900 passed',
+      '  REPAIRED 2 baseline failure(s) — reported, not punished:',
+      '      + gilded/tests/test_a.py::test_one',
+      '      + gilded/tests/test_a.py::test_two',
+      '  REGRESSED 1 test(s) that pass on the baseline:',
+      '      - gilded/tests/test_b.py::test_three',
+      'read C:\\Elsewhere\\Base.TXT here',
+      'g_suite: FAIL — a test that was green is red.',
+    ].join('\n')
+    const note = markerCheckNote(output, { redact: ['c:/elsewhere/base.txt'] })
+    expect(note).not.toMatch(/heldout/i)
+    expect(note).not.toMatch(/base\.txt/i)
+    expect(note).not.toContain('REPAIRED')
+    expect(note).not.toContain('test_one')
+    expect(note).toContain('REGRESSED 1 test(s)')
+    expect(note).toContain('- gilded/tests/test_b.py::test_three')
+    expect(note).toContain('g_suite: FAIL')
+    expect(noteLines(output)).toHaveLength(6)
+  })
+})
+
+describe('markerRetryMinSFrom (review I3)', () => {
+  it('defaults to MARKER_RETRY_MIN_S, takes a positive integer, refuses anything else', () => {
+    expect(markerRetryMinSFrom({})).toEqual({ minS: 3600, error: null })
+    expect(markerRetryMinSFrom({ CYNCO_MARKER_RETRY_MIN_S: '60' })).toEqual({ minS: 60, error: null })
+    for (const bad of ['0', '-1', '1.5', 'soon']) expect(markerRetryMinSFrom({ CYNCO_MARKER_RETRY_MIN_S: bad }).error).toMatch(/positive integer/)
+  })
+  it('a lowered floor lets a short clock retry', () => {
+    expect(shouldRetryMarkerCheck({ ok: false, remainingS: 120, retries: 0, minS: 60 })).toBe(true)
+    expect(shouldRetryMarkerCheck({ ok: false, remainingS: 59, retries: 0, minS: 60 })).toBe(false)
+  })
+})
+
+// Final review I1: the marker check reaches the driver on its own channel
+// (CYNCO_MARKER_CHECK + CYNCO_MARKER_CHECK_TIMEOUT_MS); the check-cmd stays the
+// engine's contract assertion. Absent the channel, the check-cmd is the check.
+describe('markerCheckFrom (final review I1)', () => {
+  it('reads the marker channel when it is set', () => {
+    expect(markerCheckFrom({ CYNCO_MARKER_CHECK: 'python gate.py', CYNCO_MARKER_CHECK_TIMEOUT_MS: '1800000' }, 'python -m pytest a.py', 600000))
+      .toEqual({ command: 'python gate.py', timeoutMs: 1800000, source: 'env', error: null })
+  })
+  it('falls back to the check-cmd and its cap when the channel is absent or blank', () => {
+    expect(markerCheckFrom({}, 'python -m pytest a.py', 600000)).toEqual({ command: 'python -m pytest a.py', timeoutMs: 600000, source: 'check-cmd', error: null })
+    expect(markerCheckFrom({ CYNCO_MARKER_CHECK: '  ' }, 'pytest', 1000).source).toBe('check-cmd')
+    expect(markerCheckFrom({}, undefined, 1000)).toEqual({ command: null, timeoutMs: 1000, source: null, error: null })
+  })
+  it('refuses a channel without a usable cap — a cap nobody chose is not a default', () => {
+    expect(markerCheckFrom({ CYNCO_MARKER_CHECK: 'python gate.py' }, 'pytest', 600000).error).toMatch(/CYNCO_MARKER_CHECK_TIMEOUT_MS/)
+    for (const bad of ['0', '-5', 'soon', '1.5']) {
+      expect(markerCheckFrom({ CYNCO_MARKER_CHECK: 'python gate.py', CYNCO_MARKER_CHECK_TIMEOUT_MS: bad }, 'pytest', 600000).error).toMatch(/positive integer/)
+    }
+  })
+})
+
+// F-M9: a check started inside the clock can end past it.
+describe('verifyOverrunS (final review M9)', () => {
+  it('is how far past the wave clock the wait ran, never negative', () => {
+    expect(verifyOverrunS({ startMs: 0, nowMs: 3_000_000, timeoutS: 3600 })).toBe(0)
+    expect(verifyOverrunS({ startMs: 0, nowMs: 3_600_000, timeoutS: 3600 })).toBe(0)
+    expect(verifyOverrunS({ startMs: 1000, nowMs: 1000 + 3_725_400, timeoutS: 3600 })).toBe(125)
+  })
+})
+
+// Review C1: the in-loop check must not block the event loop.
+describe('runCheckAsync', () => {
+  // The fixture's second lock (final review I1): the driver hands each check
+  // its ordinal, so a script can tell the driver's call from anyone else's.
+  it('hands the check the env it is given, over the instrument env', async () => {
+    const r = await runCheckAsync(`${RUNTIME} -e "console.log('ORD=' + (process.env.CYNCO_CHECK_ORDINAL ?? 'unset'))"`, process.cwd(), 30000, { env: { CYNCO_CHECK_ORDINAL: '2' } })
+    expect(r.outputTail).toContain('ORD=2')
+    const plain = await runCheckAsync(`${RUNTIME} -e "console.log('ORD=' + (process.env.CYNCO_CHECK_ORDINAL ?? 'unset'))"`, process.cwd(), 30000)
+    expect(plain.outputTail).toContain('ORD=unset')
+  })
+  it('reads PASS, FAIL and a real timeout the way runCheck does, without blocking the loop', async () => {
+    let ticks = 0
+    const timer = setInterval(() => { ticks++ }, 50)
+    try {
+      const pass = await runCheckAsync(`${RUNTIME} -e "setTimeout(() => { console.log('ok'); process.exit(0) }, 300)"`, process.cwd(), 30000)
+      expect(pass.verified).toBe(true)
+      expect(pass.outputTail).toContain('ok')
+      expect(ticks).toBeGreaterThan(3)
+    } finally { clearInterval(timer) }
+    const fail = await runCheckAsync(`${RUNTIME} -e "console.error('3 tests failed'); process.exit(3)"`, process.cwd(), 30000)
+    expect(fail.verified).toBe(false)
+    expect(fail.exitCode).toBe(3)
+    // T9: a 300 ms cap keeps this case far from vitest's 5 s per-test limit under load.
+    const slow = await runCheckAsync(`${RUNTIME} -e "setTimeout(() => {}, 60000)"`, process.cwd(), 300)
+    expect(slow.verified).toBeNull()
+    expect(slow.timedOut).toBe(true)
+    expect(slow.harnessFault).toMatch(/timed out after/)
+  })
+  it('a spawn that cannot start is UNMEASURED, and the env is colourless (F166)', async () => {
+    const bad = await runCheckAsync(`${RUNTIME} -e "process.exit(0)"`, join(process.cwd(), 'no-such-directory-a7f3c1'), 30000)
+    expect(bad.verified).toBeNull()
+    expect(bad.spawnFailed).toBe(true)
+    const prev = process.env.FORCE_COLOR
+    process.env.FORCE_COLOR = '3'
+    try {
+      const r = await runCheckAsync(`${RUNTIME} -e "console.log('FC=' + (process.env.FORCE_COLOR ?? 'unset') + ' NC=' + process.env.NO_COLOR)"`, process.cwd(), 30000)
+      expect(r.outputTail).toContain('FC=unset NC=1')
+    } finally {
+      if (prev === undefined) delete process.env.FORCE_COLOR; else process.env.FORCE_COLOR = prev
+    }
   })
 })

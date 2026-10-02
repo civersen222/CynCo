@@ -1118,6 +1118,320 @@ engine enforces anything new.
   (`bun scripts/cynco-campaign.mjs docs/civkings-redesign-briefs/c10.campaign.json --waves 8`,
   detached).
 
+**Phase 7 — evidence per GPU-hour (shipped 2026-10-02).** Phase 6 gave the
+runner eyes mid-wave, and C10 was the first campaign it watched end to end
+(`docs/superpowers/specs/2026-10-02-evidence-per-hour-phase7-design.md`,
+rulings 1–10). C10 PASSed in 2 waves and 14.5 GPU-hours, so PASS/GPU-h fell
+from C9's 0.218 to 0.069. Gate lines fixed per landed wave rose from 7.00 to
+10.00, and human interventions per wave stayed at 0.00. The proxy cannot see
+the one intervention that happened: the controller rebuilt C10 wave 2's
+verdict commit by hand (F167). The rules stood at 0 of 8 PREDICTIVE.
+`R1.no-progress` had 2 waves in scope and fired on neither. The learner was
+UNMEASURED with 1 labeled v2 mission of the 38 its holdout needs. The ledger
+said where the hours went:
+- **E1.** 9.8 of the 14.5 GPU-hours (68 %) came after the wave's last gate
+  improvement. Wave 1 read 20 → 16 by minute 139, then 16 → 18 to minute 467,
+  for a net −2 lines over 5.5 hours. Wave 2 reached 0 at minute 185 and ran
+  4.3 more hours.
+- **E2.** The learner was starved by its unit. One campaign gave ONE labeled
+  v2 mission, so the first v2 holdout would freeze in about twenty campaigns.
+  The same campaign wrote 18 shadow-decision ticks, which make 16 intervals,
+  each with a measured outcome and its own slice of per-turn signals.
+- **E3.** R1 compares against the wave's start count at ≥ 50 % of the clock,
+  so it could not fire on wave 1, which held 16–18 against a start of 20 for
+  five hours. A stall condition would have fired at minute 278 and saved
+  about 12 100 s.
+- **E4.** The keep-green subset missed a House-tab regression
+  (`test_c7_branching`) that the full suite catches. The model found it with
+  its own full-suite run in wave 2's last 2.5 hours; the suite gate itself ran
+  only at the grade.
+- **E5.** Governance POSIWID read Contradicted on every wave by construction.
+  Its stated purpose gave logging no share while every rule was advisory.
+- **E6.** The verdict commit depended on the operator's checkout (F167).
+- **E7.** The authoring seat had never been retried with a supervisor rubric.
+Phase 7 takes more evidence from the same GPU-hours instead of buying new
+ones. Shorter waves were rejected for want of a measured pass at a shorter
+clock. Acting mid-wave on a stall was rejected because nothing has earned
+authority. Nothing in the engine enforces anything new.
+
+- **Reading-level outcomes, a second unit of evidence (ruling 1, amended at
+  Task 1's review).** `intervalsOf(rec, row)` / `intervalRows(rows, waves)` in
+  `scripts/cynco-outcome-dataset.mjs` split a wave into the spans between
+  consecutive shadow-decision ticks. Each span is labeled `improved` when the
+  fail count fell by the next tick, else `stalled`. Its features are the Phase
+  5/6 aggregates over the turns whose `t` falls inside the span, plus five
+  `interval.*` context keys, and nothing from after the span's end
+  (`leakGuard`). Two exclusions were added in review. A tick whose probe
+  FAULTED is dropped, and the spans on either side merge: R1 copies the last
+  measured count onto a fault, so keeping that tick would label a stall
+  nobody measured. An interval that STARTS at 0 fails is excluded as
+  `afterZero`, because a wave still ticking after it solved the gate is
+  finished, not stalled. Spans shorter than `INTERVAL_MIN_TURNS` (4) count as
+  `short`. A row without turn times counts as `noTurnTimes`, a wave with
+  fewer than two ticks as `noTicks`, and a v1 slice as `otherVersion`. None of
+  these is dropped silently. Rows go to
+  `<home>/datasets/outcome-dataset-intervals.jsonl` (`DATASET_INTERVALS_PATH`).
+  The same model (`--unit reading`) and ladder read them as `M2.lr` /
+  `M2.gbt`, with `source: 'model'` and `unit: 'reading'`. They sit in the same
+  Holm family, and authority is refused exactly as it is for `M1.*`. The
+  reading holdout is its own set, `reading:2`, in `frozen-eval.json`. It
+  freezes once by the mission rule (38 eligible, ≥ 8 of each label), by WHOLE
+  missions, so one mission's intervals never straddle train and holdout. The
+  committed `"1"`/`"2"` sets stay byte-identical. The mission unit stays
+  primary: the verdict's learner line gains a `; readings: …` clause after
+  the mission clause, and `rec.hindcast.reading` holds the reading. Readings
+  from one mission are not independent, so an `M2.*` p is optimistic, and the
+  README says so.
+- **`R2.stalled`, a second shadow rule (ruling 2).** `shadowStalled`
+  (`scripts/cynco-campaign-progress.mjs`; `STALLED_RULE`, `STALLED_AT` 0.25,
+  `STALLED_WINDOW` 3 in `scripts/cynco-runner-rows.mjs`) decides at every due
+  tick beside R1. It fires iff, at ≥ 25 % of the clock, the last three
+  MEASURED ticks never decrease and the latest is > 0. A faulted tick is
+  marked `{ fails: null, fault }` and left out of the window, never counted
+  with R1's carried value. Each decision
+  is `{ rule: 'R2.stalled', at, elapsedFraction, fired, window, fails,
+  wouldHaveSavedS }` on `rec.shadowDecisions`, and a firing is one runner log
+  line. `runnerRowsFromEntries` returns two rows, R1 then R2, each scoped by
+  its own threshold. The Progress line names both rules (`…; R2.stalled fired
+  at 186 min (4 decision(s))`, or `not evaluated` on an older record). It is
+  shadow only. Enforcement waits for PREDICTIVE.
+- **The marker check runs the suite gate, and a failure feeds back once
+  (ruling 3, amended at Task 6's review).** A campaign spec may name
+  `markerCheck`. Without one, `waveDispatch` makes the suite gate the check,
+  as `CHK_SUITE_BASELINE=<path> CYNCO_GATE_REPO=<repo> python
+  "<g_suite_no_regression.py>"`, capped by `CYNCO_CHECK_TIMEOUT_MS`
+  1 800 000. The baseline travels only inside the command string, so the
+  existing withheld-path logic seals and restores it, and it is stripped from
+  the engine's env. The check runs when the engine closes the turn with the
+  marker landed. If it FAILS with at least `MARKER_RETRY_MIN_S` (3600; a spec's
+  `markerRetryMinS`, passed as `CYNCO_MARKER_RETRY_MIN_S`) of the clock left,
+  the driver sends the check's last 40 model-readable lines once as a driver
+  note (`[driver] marker check FAILED — fix and re-mark:`), and the mission
+  continues. `shouldRetryMarkerCheck` decides, and `markerCheckNote` writes
+  the note; it filters out lines naming `heldout`, withheld paths and the
+  suite gate's REPAIRED block, and tells the model where the F132 reset put
+  its uncommitted work. The second check's result is `verified`. The review
+  found the first build blocked the driver for the whole suite run. The
+  engine's ws server idles out after 120 s, so the note went into a closed
+  socket while `verifyRetries: 1` was recorded anyway. The check now runs
+  asynchronously (`runAsync` / `runCheckAsync`, sharing `runSync`'s
+  `instrumentEnv` and timeout rule). The socket is pinged every 30 s, and a
+  dropped socket is reconnected before the note. The retry counts only on a
+  confirmed send; otherwise the FAIL stands as `verify.noteFailed`. A bun ws
+  stub with a 1 s idle timeout pins both paths. Every check writes its own
+  patch (`verify.patches`). A first check is reused only while HEAD holds,
+  and the ledger row carries `verifyRetries` (0/1, null without a check) and
+  `verify.retried`. The smoke's `markerCheck` is a fixture that fails on its
+  first call and passes after, with `markerRetryMinS: 60`. That makes the
+  smoke a mechanical proof of the loop, not a measurement.
+  **Amended at the final review (I1): the marker check has its own channel.**
+  The check-cmd had a second consumer nobody had priced: the driver makes it
+  the engine's withheld contract assertion, and the model's
+  `ContractAssertPass` runs that inside its own turn. With the suite gate as
+  the check-cmd, every such call ran the whole suite in-turn (C10 wave 2
+  measured 450 s for it), and on the smoke the model could spend the
+  fixture's one failure before the driver ever ran it — the retry proof void,
+  with no tell on the row. So the check-cmd stays `spec.keepGreen` (the
+  contract assertion and verify-first keep what they had before Phase 7), and
+  `waveDispatch` hands the marker check to the driver as `CYNCO_MARKER_CHECK`
+  with its cap `CYNCO_MARKER_CHECK_TIMEOUT_MS` (1 800 000).
+  `markerCheckFrom` (`scripts/cynco-verify.mjs`) is the driver's only reader:
+  the in-loop check, the retry and the final verify run it, falling back to
+  the check-cmd without the channel. The engine reads the channel for its
+  instruments only (`markerCheckGateAssertions`, so the baseline stays sealed
+  on every message, the retry note included), the driver snapshots and
+  restores them (`driverInstrumentAssertions`), and the Bash tool's env drops
+  `CYNCO_MARKER_CHECK*` and `LOCALCODE_MISSION_*` (`bashToolEnv`). The driver
+  passes `CYNCO_CHECK_ORDINAL=<n>` to each check; the fixture fails only at
+  ordinal 1 and passes, stamp untouched, when the ordinal is absent.
+  **The sealed-instrument rule, restated.** The suite gate's output may reach
+  the model. It is pytest over the public tests, against a baseline the model
+  cannot read. The sealed campaign gate's output never reaches the model.
+  `checkIdentity` refuses a `markerCheck` that names a sealed instrument or
+  contains the marker, and the progress readings stay runner-side as in
+  Phase 6.
+- **Governance POSIWID v2 (ruling 4).** `governancePurposeFor({ earned,
+  total })` states the purpose that the authority table grants:
+  `denialsChanged` and `recommendationsConsumed` each get `0.5·e`, and
+  `signalsLogged` gets `1 − e`, with `e = earned / total` read by
+  `authorityOf` from the `rule-verdicts.json` this verdict wrote. The record
+  keeps v1 and adds `governancePosiwid.v2 = { verdict, divergence,
+  dominantObserved, stated: { earned, total } }`, or `{ verdict: null,
+  reason }` when not measured. The entry prints `- Governance POSIWID v1 … |
+  v2 Consistent (0 of 8 earned).` At 0 earned, logging IS the stated
+  purpose. The first v2 Contradicted wave will mean that an earned rule did
+  not act or an advisory one did.
+- **The dashboard draws the wave (ruling 5).** `/api/campaign` gains
+  `waves[].progress = { startFails, readings, decisions }`, and the Campaign
+  panel draws a fails-over-clock line per wave, with each rule's fired ticks
+  marked and fault readings counted off the line. The panel shows v2 beside
+  v1.
+- **F167: a campaign runs from its own worktree (ruling 6, amended at Task
+  3's review).** The verdict commit used to run `git checkout campaign/<id>`
+  in the operator's working copy. The operator switched that copy to another
+  branch during C10 wave 2, git refused the checkout, and the verdict was
+  rebuilt by hand. The spec's fix, committing through plumbing (a temporary
+  index, `commit-tree`, a compare-and-swap `update-ref`) from whatever
+  checkout the runner stood in, was built (`de118ca`) and rejected in review.
+  It fixed the write but not the read. The verdict files stayed dirty in the
+  operator's tree, so the next wave's foreign-changes guard refused and
+  every later wave read `commit skipped`. And it took files whole from a
+  working copy based on another branch, which silently dropped wave 1's log
+  entry from the campaign branch. The runner also READS the campaign log,
+  the roadmap and the ledger shards from its checkout, so whatever checkout
+  it runs in IS the campaign's state. The ruling that shipped (`aa89eaa`):
+  `ensureCampaignCheckout` refuses (exit 2) unless `git branch
+  --show-current` is `campaign/<id>`. It runs on every runner path, before
+  the lock or any write, and prints the exact `git worktree add
+  .claude/worktrees/campaign-<id> …`, `npm install` and runner commands (or
+  names the worktree that already holds the branch). `commitVerdict` is
+  on-branch only: it does an add and a commit, and throws when HEAD is not
+  the branch, with no checkout and no `-b`. The plumbing path and its
+  `detached` flag are gone. The report and authoring verbs run anywhere. The
+  operator's checkout is never the runner's again.
+- **C11 — Rivals & Reach (ruling 7).** The roadmap's next line, open at
+  civkings `2e313f6`, holds the two halves of locked decision 2 that C10's
+  supervisor parked. (a) On Powers/Dossier with a rival selected, a line
+  owned by that rival states whether it sees the player's family (intel tier
+  ≥ 2), never naming the family. (b) The AI courts a rival's opposing member
+  as a lever when it holds tier ≥ 2 on that house and leaves a beat naming
+  the member; the pulled lever is visible on House/Court. `gilded/ai.py` is
+  open for C11; `gilded/intel.py` stays denied. The user may strike the line
+  before wave 1.
+- **The authoring seat's one attempt (ruling 8).** The seat gets `--author
+  c11` once, with the C10 supervisor review's rubric as its
+  `supervisorNote`. The rubric covers the stub test, the one-home census over
+  rendered text, the rank vocabulary, the gone-member clause, why the line
+  is drawn, and negation. A CynCo seal would be `author: cynco`, the seat's
+  first landed data point. A DO-NOT-SEAL sends the line to the frontier path
+  C10 took. C11 seal: attempt in progress; seal pending.
+- **The live proof (s4, 2026-10-02).** The Phase 4 smoke campaign `s1` ran
+  under a fresh `CYNCO_HOME=C:/tmp/cynco-home-s4/.cynco` (`--base 1b00179…
+  --common-from … --runtime-from …`, `progress.everyMs` 20 s, `--waves 1`).
+  The runner was launched detached from PowerShell, with the smoke repo reset
+  to BASE first. It ran from the campaign worktree
+  `.claude/worktrees/campaign-s1` on `campaign/s1`, and the startup guard
+  let it through (F167's rule). CALIBRATE read `calibrated: BASE MISS 8,
+  perturb honest, suite baseline written`. Mission
+  `s1-wave1-1790984124826` took 22 turns, all `signalsVersion: 2`, and the
+  model made three commits, BASE `1b00179` → `d22ebb2`.
+  - **The marker check, on its own channel.** The runner logged `[dispatch]
+    marker check on its own channel (driver-run, cap 1800000ms)`. The driver
+    log read:
+    ```
+    [driver] marker check from CYNCO_MARKER_CHECK (cap 1800000ms) — run by this driver only; the check-cmd stays the contract's assertion
+    [verify] marker landed and the engine closed the turn — running the marker check now, while a retry can still be acted on
+    [verify] running check in C:/tmp/phase2-smoke: python C:/tmp/cynco-home-s4/.cynco/smoke/marker_check_once.py (cap 1800000ms, ordinal 1, from CYNCO_MARKER_CHECK)
+    [verify] marker check FAILED — retrying once (3420s left)
+    [verify] note delivered to the engine — the mission continues
+    [verify] output tail:
+    marker-check-once: first call fails on purpose
+    …
+    [verify] running check in C:/tmp/phase2-smoke: python C:/tmp/cynco-home-s4/.cynco/smoke/marker_check_once.py (cap 1800000ms, ordinal 2, from CYNCO_MARKER_CHECK)
+    [verify] marker check PASSED (on the retry)
+    [verify] PASS (exit=0, 140ms)
+    ```
+    The model's two `ContractAssertPass` calls ran the contract's keep-green
+    assertion, not the marker check. The fixture failed at ordinal 1, the
+    driver's own first check, as the final review's I1 amendment intends.
+    The ledger row reads
+    `verified: true`, `verifyRetries: 1`, `verify.retried: true`,
+    `verify.noteAcknowledged: true`, `verify.patches: []` (the tree was
+    clean at both checks), `verify.overrunS: 0`. The feedback loop that C1
+    broke (a note sent into a closed socket) is proven live.
+  - **Readings and both shadow rules.** The runner logged:
+    ```
+    [campaign] progress @ 0m: 8 fails (was 8) — no commit since the start, start grade reused
+    [campaign] progress @ 1m: sha unchanged (1b00179) — no gate run
+    [campaign] progress @ 1m: 3 fails (was 8) — gate 0 s on d610599
+    [campaign] progress @ 2m: sha unchanged (d610599) — no gate run
+    [campaign] progress @ 2m: 0 fails (was 8) — gate 0 s on 410ceca
+    [campaign] progress @ 3m: 0 fails (was 8) — gate 0 s on d22ebb2
+    [campaign] progress @ 3m: sha unchanged (d22ebb2) — no gate run
+    [campaign] progress @ 4m: sha unchanged (d22ebb2) — no gate run
+    ```
+    On the record, `rec.progress` holds four readings, at `elapsedFraction`
+    0.006 (8, `reusedFrom: 'start'`), 0.023 (3, `d610599`), 0.039 (0,
+    `410ceca`) and 0.048 (0, `d22ebb2`). `rec.shadowDecisions` holds 16
+    decisions, alternating `R1.no-progress` / `R2.stalled` over 8 ticks.
+    R2's windows run `[8]`, `[8, 8]`, `[8, 8, 3]` … `[0, 0, 0]`, and none
+    fired: before 25 % of the clock nothing may fire, and once the gate read
+    0 the latest count is not > 0. `retriedSpawns` is 7, with the F155 line
+    logged once. The entry read `- Progress: 8 → 0 fails over 4 readings
+    (first fix at 1 min; last at 3 min: 0); R1.no-progress did not fire (8
+    decision(s)); R2.stalled did not fire (8 decision(s))`.
+  - **Governance v2.** `- Governance POSIWID v1 Contradicted (divergence
+    6.909, dominant signalsLogged, support 24; drift onset wave 1) | v2
+    Consistent (0 of 8 earned).` The counts were 0 / 0 / 24, all logging,
+    which is what the stated purpose is at 0 earned.
+  - **The reading dataset.** `outcome-dataset-intervals.jsonl` holds ONE
+    row: interval 2, `stalled`, 8 turns, 3 → 3 fails, `signalsVersion: 2`,
+    `leakGuard: true`. The other six intervals are excluded and counted,
+    `short: 3` and `afterZero: 3`. At a 20 s cadence most intervals hold
+    fewer than `INTERVAL_MIN_TURNS` turns. So the smoke proves the pipeline
+    end to end (ticks → intervals → labeled row → hindcast → the verdict
+    clause), not the volume. C11's 45-minute intervals carry hundreds of
+    turns.
+  - **The ladder.** The `- Outcome hindcast:` line ends `… R2.stalled
+    precision null on 0 fired p(Holm) null UNMEASURED — no wave in scope (no
+    shadow decision at 25 % of its clock or later); readings: UNMEASURED —
+    reading holdout not yet frozen (1 of 38 labeled; improved 0 / stalled 1;
+    need 8 of each)`. The temp home's `rule-verdicts.json` carries both
+    runner rows, `source: 'runner'`, `n: 0`, UNMEASURED with no wave in
+    scope. That is right, because the wave ended at 6 % of its clock. There
+    are no `M1.*` or `M2.*` rows: below the minimum no model runs.
+  - **The dashboard.** After the verdict, a token-gated `/api/campaign`
+    probe on an idle engine over the temp home read `waves[0].progress =
+    {"startFails":8,"readings":[{"elapsedFraction":0.006,"fails":8,"sha7":"1b00179","fault":null},
+    …4 readings…],"decisions":{"R1.no-progress":{"n":8,"fired":0,"firedAt":[]},"R2.stalled":{"n":8,"fired":0,"firedAt":[]}}}`
+    and `waves[0].governancePosiwid = {"verdict":"Contradicted","onsetWave":1,"v2":{"verdict":"Consistent","stated":{"earned":0,"total":8}}}`.
+  - **The verdict and F167, live.** `[campaign] wave 1: pass-with-survivors —
+    sealed gate PASS, suite gate PASS, sweep 0/2, 2 survivor(s) — 2 inside a
+    claimed file: calc.py:14:cmp->NotEq, calc.py:15:const->3` → CAMPAIGN
+    PASS. The verdict commit `fbf5861` landed on `campaign/s1` in the
+    campaign worktree, which was left clean. The phase worktree stayed on
+    `worktree-phase7-evidence-per-hour` throughout.
+  - **Cleanup.** The idle engine was stopped, and 9161 answers 000. The
+    campaign worktree and `campaign/s1` are kept until the merge as the
+    proof.
+- **Parked, with reasons.** Spec §8 stays parked, each item with the evidence
+  that would unpark it. Enforcing R1/R2 waits for PREDICTIVE on the ladder.
+  The reading learner as an S5 input waits for a measured AUC. Shorter waves
+  wait for a measured pass at a shorter clock. The probe's git spawns on a
+  fresh-subprocess path wait because `retriedSpawns` is counted and harmless.
+  TabPFN/XGBoost wait for approval to download. Applying retained tables
+  waits for a non-empty table. Also parked: the download resolver,
+  `s5.decision` typing, writer-guard blind spots, LoRA/KTO, model-S5 live,
+  the dashboard chat, and CodeIndex adoption (C10: 11/1127 and 17/555). The
+  reviews' deferred minors were closed in the fix wave after the final review:
+  - interval dataset: the CLI test removes its temp dirs. Still parked: the
+    dispatch → first-tick span as interval 0 (it would renumber intervals and
+    change holdout identity).
+  - R2: the decision at a tick whose own probe faulted is `fired: false` with
+    the fault on it, as R1 refuses. A no-commit wave firing at 25 % is by
+    design.
+  - F167 guard: the refusal says "commit the seal first" when the spec or
+    roadmap is dirty, prints the worktree path absolute, and names the
+    stale-directory case; an uncarryable suite-gate path refuses at startup,
+    before the lock.
+  - governance v2: every stored window records `stated: { earned, total }`,
+    so v2 can be replayed; the unreadable-file branch is tested.
+  - panel: the tally is `Object.create(null)`; a measured reading with a null
+    `elapsedFraction` is counted and listed, not drawn; `elapsedFraction` is
+    clamped to [0, 1]; a curve with a `parsererror` is not inserted.
+  - reading learner: a ledger-read fault is written on `reading` too; the
+    `reading:2 holdout frozen now` clause prints on an unmeasured reading;
+    `M2.*` rows carry `dependence: 'readings share missions'` and the clause
+    prints `(p optimistic: …)`; a TOO FEW after the whole-mission draw names
+    that cause.
+  - marker check: the baseline is sealed by path only (`contentExemptGatePaths`,
+    not the content layer); the Bash tool's env drops `LOCALCODE_MISSION_*`
+    and `CYNCO_MARKER_CHECK*`; salvage offers every unapplied per-check patch;
+    the F45 restore runs on every exit of the check routine;
+    `verify.noteAcknowledged` and `verify.overrunS` are on the row.
+  - the dashboard's readings are the verdict's (post-verdict, token-gated);
+    `tokens.json` protection stays Phase 2's design, not reopened.
+
 **Deferred spec items (follow-up, not built here).**
 
 - **Eigenform convergence (spec §7).** The metric for "the campaign's briefs

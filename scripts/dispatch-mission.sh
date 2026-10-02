@@ -135,6 +135,22 @@ LOCALCODE_EMBED_MODEL="${LOCALCODE_EMBED_MODEL:-nomic-embed-text}" \
 # path of ''.
 if [ -n "${LOCALCODE_LEARNINGS_DB:-}" ]; then export LOCALCODE_LEARNINGS_DB; echo "[dispatch] learnings db $LOCALCODE_LEARNINGS_DB"; fi
 
+# CYNCO_MARKER_CHECK / CYNCO_MARKER_CHECK_TIMEOUT_MS (Phase 7 final review I1):
+# the campaign runner's marker check — the whole-suite gate with its sealed
+# baseline, or the smoke's fail-once fixture — on a channel of its own. The
+# check-cmd ($5) is ALSO the engine's withheld contract assertion, which the
+# model's ContractAssertPass runs inside its turn, so it stays the fast
+# keep-green subset; the marker check is run by the DRIVER alone. Both
+# processes get the pair: the driver runs it (and snapshots/restores its
+# instruments), the engine only seals the instruments it names. The engine's
+# Bash tool strips CYNCO_MARKER_CHECK* and LOCALCODE_MISSION_* from the shell
+# the model runs commands in (engine/tools/impl/bash.ts bashToolEnv).
+# Exported only when set, like LOCALCODE_LEARNINGS_DB above.
+if [ -n "${CYNCO_MARKER_CHECK:-}" ]; then
+  export CYNCO_MARKER_CHECK CYNCO_MARKER_CHECK_TIMEOUT_MS
+  echo "[dispatch] marker check on its own channel (driver-run, cap ${CYNCO_MARKER_CHECK_TIMEOUT_MS:-unset}ms)"
+fi
+
 MISSION_BASE=$(git -C "$MISSION_CWD" rev-parse HEAD)
 echo "[dispatch] mission baseline $MISSION_BASE"
 if [ -n "${CYNCO_MISSION_INVARIANTS:-}" ]; then echo "[dispatch] invariants: $CYNCO_MISSION_INVARIANTS"; fi

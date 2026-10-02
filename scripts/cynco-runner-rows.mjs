@@ -1,6 +1,6 @@
 // scripts/cynco-runner-rows.mjs — the runner rows for the rule ladder
-// (Phase 6): `R1.no-progress`, the runner's shadow regulator, read off the
-// wave records of every runner-driven campaign.
+// (Phase 6): `R1.no-progress` and (Phase 7) `R2.stalled`, the runner's shadow
+// regulators, read off the wave records of every runner-driven campaign.
 //
 // One module, two callers, one construction: the campaign runner's VERDICT and
 // the rule-verdicts CLI (`bun scripts/cynco-rule-verdicts.mjs`) both build the
@@ -17,6 +17,14 @@ import { CampaignState } from './cynco-campaign-state.mjs'
 /** `R1.no-progress` speaks from this fraction of the wall clock on. */
 export const NO_PROGRESS_AT = 0.5
 export const NO_PROGRESS_RULE = 'R1.no-progress'
+/**
+ * Phase 7 ruling 2: `R2.stalled` — no decrease over the last `STALLED_WINDOW`
+ * measured ticks, at ≥ `STALLED_AT` of the wall clock, with the latest count
+ * > 0. Shadow, like R1; its row rides the same ladder.
+ */
+export const STALLED_AT = 0.25
+export const STALLED_RULE = 'R2.stalled'
+export const STALLED_WINDOW = 3
 
 const isRecord = (v) => v !== null && typeof v === 'object' && !Array.isArray(v)
 
@@ -31,9 +39,12 @@ export function runnerRowsFrom(waves) {
 }
 
 /**
- * The runner rows from `{ campaign, line, record }` entries (runnerWaves). One
- * row, `R1.no-progress`, always — an empty scope is the honest UNMEASURED, not
- * an absent row.
+ * The runner rows from `{ campaign, line, record }` entries (runnerWaves). Two
+ * rows, always, in this order: `R1.no-progress` (threshold `NO_PROGRESS_AT`)
+ * and `R2.stalled` (Phase 7, `STALLED_AT`) — an empty scope is the honest
+ * UNMEASURED, not an absent row. Each is `runnerRowFor` over the SAME entries
+ * with its own rule id and threshold; below, "the rule" and "the threshold"
+ * are that row's (the text was written for R1's 50 %).
  * - key: the wave's missionId, else `<campaign>#wave<n>` (final review M3: the
  *   wave the runner gives up on — `waited.timedOut` — has `missionId: null`,
  *   and "the wave burned its whole clock" is exactly the rule's target), else
@@ -63,6 +74,18 @@ export function runnerRowsFrom(waves) {
  * Recomputed from the records at every VERDICT, so nothing written is lost.
  */
 export function runnerRowsFromEntries(entries) {
+  return [
+    runnerRowFor(entries, { id: NO_PROGRESS_RULE, at: NO_PROGRESS_AT }),
+    runnerRowFor(entries, { id: STALLED_RULE, at: STALLED_AT }),
+  ]
+}
+
+/**
+ * One runner row: the scan `runnerRowsFromEntries` documents, for the rule
+ * `id` over its decisions at `elapsedFraction ≥ at`. The row carries `at` so
+ * an empty scope can name the rule's own threshold (cynco-rule-verdicts.mjs).
+ */
+export function runnerRowFor(entries, { id, at }) {
   const scope = new Set(), fired = new Set(), failed = new Set(), skipped = [], unlabeled = []
   ;(Array.isArray(entries) ? entries : []).forEach(({ campaign = null, line, record: w } = {}, i) => {
     const missionId = isRecord(w) && typeof w.missionId === 'string' && w.missionId ? w.missionId : null
@@ -74,19 +97,19 @@ export function runnerRowsFromEntries(entries) {
     }
     const kind = isRecord(w.decision) ? w.decision.kind : undefined
     if (!kind || kind === 'stop') return
-    const pastHalf = (w.shadowDecisions ?? []).filter(d => isRecord(d) && d.rule === NO_PROGRESS_RULE
-      && typeof d.elapsedFraction === 'number' && d.elapsedFraction >= NO_PROGRESS_AT)
-    if (!pastHalf.length) return
+    const pastThreshold = (w.shadowDecisions ?? []).filter(d => isRecord(d) && d.rule === id
+      && typeof d.elapsedFraction === 'number' && d.elapsedFraction >= at)
+    if (!pastThreshold.length) return
     const key = missionId ?? (campaign ? `${campaign}#wave${w.wave ?? '?'}` : `record #${line ?? i + 1}`)
     if (kind === 'fault' && w.verified === null) {
       unlabeled.push({ missionId: key, why: `the grade did not run — ${w.decision.why ?? 'harness fault'}` })
       return
     }
     scope.add(key)
-    if (pastHalf.some(d => d.fired === true)) fired.add(key)
+    if (pastThreshold.some(d => d.fired === true)) fired.add(key)
     if (kind !== 'pass' && kind !== 'pass-with-survivors') failed.add(key)
   })
-  return [{ id: NO_PROGRESS_RULE, source: 'runner', fired, scope, failed, skipped, unlabeled }]
+  return { id, source: 'runner', at, fired, scope, failed, skipped, unlabeled }
 }
 
 /**

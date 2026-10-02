@@ -83,6 +83,25 @@ describe('RuleAuthority', () => {
     expect(a.total()).toBe(1)
   })
 
+  // Phase 7 ruling 1: the reading learner's rows (M2.*, unit "reading") are
+  // model rows — refused authority exactly as M1.* are, by `source`.
+  it('a reading-unit model row (M2.*, source "model", unit "reading") is never read as an S5 rule, even when PREDICTIVE', () => {
+    const path = ruleVerdictsPath(home())
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, JSON.stringify({ schema: 1, version: 1, predictive: ['C7', 'M1.gbt', 'M2.gbt'], history: [], rules: {
+      C7: { verdict: 'PREDICTIVE' },
+      'M1.gbt': { verdict: 'PREDICTIVE', source: 'model', scope: 'holdout', unit: 'mission' },
+      'M2.gbt': { verdict: 'PREDICTIVE', source: 'model', scope: 'holdout', unit: 'reading' },
+    } }))
+    const a = RuleAuthority.load(path)
+    expect(a.authorityOf(['C7'])).toBe('earned')
+    expect(a.authorityOf(['M2.gbt'])).toBe('advisory')
+    expect(a.authorityOf(['C7', 'M2.gbt'])).toBe('advisory')
+    expect(a.verdictOf('M2.gbt')).toBeNull()
+    expect(a.predictiveCount()).toBe(1)
+    expect(a.total()).toBe(1)
+  })
+
   it('a runner row (R1.no-progress, source "runner") is never read as an S5 rule, even when PREDICTIVE', () => {
     const path = ruleVerdictsPath(home())
     mkdirSync(dirname(path), { recursive: true })

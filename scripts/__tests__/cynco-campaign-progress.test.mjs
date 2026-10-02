@@ -3,7 +3,8 @@ import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
-  progressCadence, everyMsFor, probeProgress, probeIo, probeGateTimeoutMs, shadowNoProgress, runnerRowsFrom, progressLine, progressTracker, seedGateMs,
+  progressCadence, everyMsFor, probeProgress, probeIo, probeGateTimeoutMs, shadowNoProgress, shadowStalled, runnerRowsFrom, progressLine, progressTracker, seedGateMs,
+  STALLED_AT, STALLED_RULE, STALLED_WINDOW,
   PROGRESS_EVERY_MS_DEFAULT, PROBE_GATE_TIMEOUT_UNMEASURED_MS, PROBE_GATE_MS_ASSUMED,
 } from '../cynco-campaign-progress.mjs'
 import { runnerRowsFromCampaigns } from '../cynco-runner-rows.mjs'
@@ -225,6 +226,54 @@ describe('shadowNoProgress (R1.no-progress, shadow)', () => {
   })
 })
 
+// Phase 7 ruling 2: the second shadow rule, `R2.stalled` — no decrease over the
+// last three MEASURED ticks, at ≥ 25 % of the clock, with the latest count > 0.
+describe('shadowStalled (R2.stalled, shadow)', () => {
+  const tick = (min, fails, fault = false) => ({ at: new Date(min * 60_000).toISOString(), fails: fault ? null : fails, fault: fault ? 'gate died' : null, elapsedFraction: min / 480 })
+  const clockMs = 8 * HOUR
+
+  it('names its rule, threshold and window', () => {
+    expect([STALLED_RULE, STALLED_AT, STALLED_WINDOW]).toEqual(['R2.stalled', 0.25, 3])
+  })
+
+  it('fires at ≥ 25 % of the clock when the last three measured ticks never decreased and the latest is > 0', () => {
+    const decisions = [tick(46, 20), tick(92, 16), tick(139, 16), tick(186, 16)]
+    const d = shadowStalled({ readings: [], decisions, clockMs, nowMs: 186 * 60_000, at: decisions.at(-1).at })
+    expect(d).toEqual({ rule: 'R2.stalled', at: decisions.at(-1).at, elapsedFraction: 0.388, fired: true, window: [16, 16, 16], fails: 16, wouldHaveSavedS: 17640 })
+  })
+
+  it('does not fire before 25 %, on a decrease inside the window, at 0 fails, or with fewer than three measured ticks', () => {
+    expect(shadowStalled({ readings: [], decisions: [tick(46, 20), tick(92, 20), tick(100, 20)], clockMs, nowMs: 100 * 60_000 }).fired).toBe(false)
+    // The window is the LAST three: 20 → 18 drops out of it once a fourth tick lands.
+    expect(shadowStalled({ readings: [], decisions: [tick(46, 20), tick(92, 18), tick(139, 18), tick(186, 18)], clockMs, nowMs: 186 * 60_000 })).toMatchObject({ fired: true, window: [18, 18, 18] })
+    expect(shadowStalled({ readings: [], decisions: [tick(46, 20), tick(139, 18), tick(186, 18)], clockMs, nowMs: 186 * 60_000 })).toMatchObject({ fired: false, window: [20, 18, 18] })
+    expect(shadowStalled({ readings: [], decisions: [tick(139, 0), tick(186, 0), tick(232, 0)], clockMs, nowMs: 232 * 60_000 }).fired).toBe(false)
+    expect(shadowStalled({ readings: [], decisions: [tick(139, 16), tick(186, 16)], clockMs, nowMs: 186 * 60_000 })).toMatchObject({ fired: false, window: [16, 16] })
+  })
+
+  it('a fault inside the window is skipped, not counted as a measurement', () => {
+    const d = shadowStalled({ readings: [], decisions: [tick(46, 16), tick(92, 16), tick(139, 0, true), tick(186, 16)], clockMs, nowMs: 186 * 60_000 })
+    expect(d).toMatchObject({ fired: true, window: [16, 16, 16] })
+  })
+
+  // T2-M1: a tick whose OWN probe faulted measured nothing, so R2 does not
+  // decide on it — `fired: false` with the fault on the decision, as R1 does.
+  it('never fires on a tick whose own probe faulted, and says why', () => {
+    const d = shadowStalled({ readings: [], decisions: [tick(46, 16), tick(92, 16), tick(139, 16), tick(186, 0, true)], clockMs, nowMs: 186 * 60_000 })
+    expect(d).toMatchObject({ fired: false, fault: 'gate died', window: [16, 16, 16], fails: 16 })
+    // The next measured tick decides again.
+    const next = shadowStalled({ readings: [], decisions: [tick(46, 16), tick(92, 16), tick(139, 16), tick(186, 0, true), tick(232, 16)], clockMs, nowMs: 232 * 60_000 })
+    expect(next.fired).toBe(true)
+    expect('fault' in next).toBe(false)
+  })
+
+  it('an unknown clock is unmeasured (null), never a firing', () => {
+    const d = shadowStalled({ readings: [], decisions: [tick(46, 16), tick(92, 16), tick(139, 16)], clockMs: null, nowMs: 139 * 60_000 })
+    expect(d).toMatchObject({ fired: false, elapsedFraction: null, wouldHaveSavedS: null, fails: 16 })
+    expect(shadowStalled({ readings: [], decisions: [], clockMs, nowMs: 0 })).toMatchObject({ fired: false, window: [], fails: null })
+  })
+})
+
 describe('runnerRowsFrom', () => {
   const reading = (fails, elapsedFraction) => ({ at: 't', sha: 's', fails, passes: 0, failIds: [], durationMs: 1, elapsedFraction })
   const decision = (fired, elapsedFraction = 0.6) => ({ rule: 'R1.no-progress', at: 't', elapsedFraction, fired, startFails: 3, fails: 3, wouldHaveSavedS: 100 })
@@ -250,8 +299,11 @@ describe('runnerRowsFrom', () => {
       { missionId: null, decision: { kind: 'stop' } },
       { missionId: 'm-old', decision: { kind: 'next' } },
     ]
-    const [row, ...rest] = runnerRowsFrom(waves)
+    const [row, r2, ...rest] = runnerRowsFrom(waves)
     expect(rest).toEqual([])
+    expect(r2.id).toBe('R2.stalled')
+    // No R2 decision anywhere in these records: R2's scope is empty.
+    expect(r2.scope.size).toBe(0)
     expect(row.id).toBe('R1.no-progress')
     expect(row.source).toBe('runner')
     expect([...row.scope].sort()).toEqual(['m-next', 'm-pass', 'm-pws', 'm-skips'])
@@ -297,6 +349,30 @@ describe('runnerRowsFrom', () => {
     expect(row.scope.size).toBe(0)
     expect(row.fired.size).toBe(0)
     expect(row.unlabeled).toEqual([])
+  })
+
+  // Phase 7 ruling 2: R2.stalled is a second runner row through the same
+  // construction, scoped by ITS decisions at ≥ 25 % of the clock.
+  it('returns R1 then R2; R2 is scoped, fired and failed off its own decisions, and R1 is unchanged by them', () => {
+    const r2 = (fired, elapsedFraction) => ({ rule: 'R2.stalled', at: 't', elapsedFraction, fired, window: [3, 3, 3], fails: 3, wouldHaveSavedS: 100 })
+    const waves = [
+      // R2 fired at ≥ 25 %, the wave did not pass: R2 was right.
+      { missionId: 'w-next', decision: { kind: 'next' }, shadowDecisions: [decision(false, 0.2), r2(false, 0.2), decision(false, 0.3), r2(true, 0.3)] },
+      // R2 decided past 25 % and never fired; the wave passed.
+      { missionId: 'w-pass', decision: { kind: 'pass' }, shadowDecisions: [decision(false, 0.3), r2(false, 0.3), decision(false, 0.6), r2(false, 0.6)] },
+      // adopted: never waited on, no decision at all.
+      { missionId: 'w-adopted', decision: { kind: 'next' }, progress: null, shadowDecisions: null },
+    ]
+    const rows = runnerRowsFrom(waves)
+    expect(rows.map(r => r.id)).toEqual(['R1.no-progress', 'R2.stalled'])
+    const [r1Row, r2Row] = rows
+    expect(r2Row.source).toBe('runner')
+    expect([...r2Row.scope].sort()).toEqual(['w-next', 'w-pass'])
+    expect([...r2Row.fired]).toEqual(['w-next'])
+    expect([...r2Row.failed]).toEqual(['w-next'])
+    const [r1Alone] = runnerRowsFrom(waves.map(w => ({ ...w, shadowDecisions: w.shadowDecisions?.filter(d => d.rule === 'R1.no-progress') ?? null })))
+    expect(r1Row).toEqual(r1Alone)
+    expect([...r1Row.scope]).toEqual(['w-pass'])
   })
 
   // Final review I1: a VERDICT whose grade did not run (`kind: 'fault'`,
@@ -358,14 +434,25 @@ describe('progressLine', () => {
     const rec = { dispatchedAt: at(0), progress: [reading(14, 30), reading(9, 41), reading(3, 210)],
       shadowDecisions: [{ rule: 'R1.no-progress', at: at(30), elapsedFraction: 0.06, fired: false, startFails: 14, fails: 14, wouldHaveSavedS: 27000 },
         { rule: 'R1.no-progress', at: at(250), elapsedFraction: 0.52, fired: true, startFails: 14, fails: 14, wouldHaveSavedS: 11520 }] }
-    expect(progressLine(rec)).toBe('- Progress: 14 → 3 fails over 3 readings (first fix at 41 min; last at 210 min: 3); R1.no-progress fired at 52% (would have saved 3.2 h)')
+    // A record from before Phase 7 has no R2 decision: R2 is named, not evaluated.
+    expect(progressLine(rec)).toBe('- Progress: 14 → 3 fails over 3 readings (first fix at 41 min; last at 210 min: 3); R1.no-progress fired at 52% (would have saved 3.2 h); R2.stalled not evaluated')
+  })
+
+  it('names both rules: R2.stalled at the minute it first fired, with its decision count', () => {
+    const r1 = (min) => ({ rule: 'R1.no-progress', at: at(min), elapsedFraction: min / 480, fired: false, startFails: 20, fails: 16, wouldHaveSavedS: (480 - min) * 60 })
+    const r2 = (min, fired) => ({ rule: 'R2.stalled', at: at(min), elapsedFraction: min / 480, fired, window: [16, 16, 16], fails: 16, wouldHaveSavedS: (480 - min) * 60 })
+    const rec = { dispatchedAt: at(0), progress: [reading(20, 46), reading(16, 92)],
+      shadowDecisions: [r1(46), r2(46, false), r1(92), r2(92, false), r1(139), r2(139, false), r1(186), r2(186, true)] }
+    expect(progressLine(rec)).toBe('- Progress: 20 → 16 fails over 2 readings (first fix at 92 min; last at 92 min: 16); R1.no-progress did not fire (4 decision(s)); R2.stalled fired at 186 min (4 decision(s))')
+    const quiet = { ...rec, shadowDecisions: rec.shadowDecisions.map(d => ({ ...d, fired: false })) }
+    expect(progressLine(quiet)).toMatch(/; R1\.no-progress did not fire \(4 decision\(s\)\); R2\.stalled did not fire \(4 decision\(s\)\)$/)
   })
 
   it('names faults, a missing drop and a rule that did not fire', () => {
     const rec = { dispatchedAt: at(0), progress: [reading(5, 30), { at: at(60), fault: 'gate timed out after 860000 ms', durationMs: 860_000 }],
       shadowDecisions: [{ rule: 'R1.no-progress', at: at(30), elapsedFraction: 0.06, fired: false, startFails: 5, fails: 5, wouldHaveSavedS: 1 }] }
     // Task 3 review N2: "1 reading", not "1 readings".
-    expect(progressLine(rec)).toBe('- Progress: 5 → 5 fails over 1 reading (no drop; last at 30 min: 5; 1 fault(s)); R1.no-progress did not fire (1 decision(s))')
+    expect(progressLine(rec)).toBe('- Progress: 5 → 5 fails over 1 reading (no drop; last at 30 min: 5; 1 fault(s)); R1.no-progress did not fire (1 decision(s)); R2.stalled not evaluated')
   })
 
   it('prints the reason when there is no reading', () => {
@@ -400,10 +487,33 @@ describe('progressTracker — the WAIT hook', () => {
     expect(Object.keys(r3).sort()).toEqual(READING_KEYS)
     expect(gates).toHaveLength(1)
     expect(t.progress).toHaveLength(2)
-    expect(t.shadowDecisions.map(d => d.fired)).toEqual([false, false, true])
+    // Phase 7: both rules decide at every tick, R1 first.
+    expect(t.shadowDecisions.map(d => d.rule)).toEqual(['R1.no-progress', 'R2.stalled', 'R1.no-progress', 'R2.stalled', 'R1.no-progress', 'R2.stalled'])
+    expect(t.shadowDecisions.filter(d => d.rule === 'R1.no-progress').map(d => d.fired)).toEqual([false, false, true])
+    // R2 reads R1's tick series (the skip tick carries the count): [2], [2, 2], [2, 2, 2] at 52 %.
+    expect(t.shadowDecisions.filter(d => d.rule === 'R2.stalled').map(d => [d.fired, d.window])).toEqual([[false, [2]], [false, [2, 2]], [true, [2, 2, 2]]])
     expect(logs.join('\n')).toMatch(/\[campaign\] progress @ 125m: 2 fails \(was 2\)/)
     expect(logs.join('\n')).toMatch(/shadow R1\.no-progress FIRED at 52%/)
+    expect(logs.join('\n')).toMatch(/shadow R2\.stalled FIRED at 52% \(2, 2, 2 fails over the last 3 measured ticks; would have saved 1\.9 h\) — shadow only, nothing stopped/)
     expect(t.note()).toBeNull()
+  })
+
+  it('a faulted tick is not a measurement for R2 — the stale count R1 carries is left out of the window', () => {
+    let fault = false
+    const probe = { archive: () => (fault ? { ok: false, problems: ['boom'] } : { ok: true }), runGate: () => gateOut(2), removeDir: () => {} }
+    let head = 'START'
+    const t = progressTracker({ spec: { id: 'trk-f', repo: 'C:/r', gate: 'g.py' }, probe, headOf: () => head, clockMs, startSha: 'START', startFails: 2, startFailIds: ['P.1', 'P.2'],
+      startPasses: 1, dispatchedAtMs: 0, everyMs: 30 * MIN, log: () => {} })
+    t.onTick({ nowMs: 30 * MIN }) // start grade reused: 2
+    head = 'C1'; fault = true
+    t.onTick({ nowMs: 60 * MIN }) // archive faulted
+    fault = false
+    t.onTick({ nowMs: 120 * MIN }) // back-off ×2 → due at 120: C1 graded, 2
+    const r1 = t.shadowDecisions.filter(d => d.rule === 'R1.no-progress')
+    const r2 = t.shadowDecisions.filter(d => d.rule === 'R2.stalled')
+    expect(r1.map(d => d.fails)).toEqual([2, 2, 2])
+    expect(r2.map(d => d.window)).toEqual([[2], [2], [2, 2]])
+    expect(r2.at(-1).fired).toBe(false)
   })
 
   it('backs off after a fault and never throws out of a tick', () => {

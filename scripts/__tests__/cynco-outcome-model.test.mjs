@@ -174,6 +174,80 @@ describe('cynco-outcome-model.py', () => {
     expect(existsSync(out)).toBe(false)
   }, TIMEOUT_MS)
 
+  // Phase 7 ruling 1: the reading unit. Each separable mission becomes two
+  // intervals labelled improved (landed) / stalled (failed); the holdout is the
+  // `reading:2` set — whole missions, so both intervals of a held mission are held.
+  describe('--unit reading', () => {
+    const readingsIn = (dir) => {
+      const p = join(dir, 'intervals.jsonl')
+      writeFileSync(p, readFileSync(SEPARABLE, 'utf8').split('\n').filter(Boolean).flatMap(l => {
+        const r = JSON.parse(l)
+        return [0, 1].map(interval => JSON.stringify({ missionId: r.missionId, interval, label: r.label ? 'improved' : 'stalled', signalsVersion: 2, features: r.features, leakGuard: true }))
+      }).join('\n') + '\n', 'utf8')
+      return p
+    }
+    const manifestIn = (dir, sets) => { const p = join(dir, 'frozen-eval.json'); writeFileSync(p, JSON.stringify({ schema: 2, sets, history: [] })); return p }
+    const READING_SET = { schema: 1, unit: 'reading', version: 1, seed: 1, frozenAt: 't', missionIds: ['s00', 's01', 's02', 's03', 's04', 's05'] }
+
+    it('trains on the readings, holds out every interval of the reading:2 missions, writes `reading` beside the mission model', () => {
+      const dir = outDir()
+      const out = join(dir, 'outcome-model.json')
+      // The mission model first (as the hindcast does), then the readings.
+      expect(run(['--dataset', SEPARABLE, '--manifest', MANIFEST, '--out', out]).status).toBe(0)
+      const mission = JSON.parse(readFileSync(out, 'utf8'))
+      const manifest = manifestIn(dir, { 1: JSON.parse(readFileSync(MANIFEST, 'utf8')), 'reading:2': READING_SET })
+      const r = run(['--unit', 'reading', '--dataset', readingsIn(dir), '--manifest', manifest, '--out', out, '--signals-version', '2', '--rows-by-version', '{"2":120}'])
+      expect(r.status, r.stderr).toBe(0)
+      const m = JSON.parse(readFileSync(out, 'utf8'))
+      // The mission block is untouched.
+      const { reading, ...rest } = m
+      expect(rest).toEqual(mission)
+      expect(reading).toMatchObject({ version: 1, unit: 'reading', positiveLabel: 'improved', signalsVersion: 2, rowsByVersion: { 2: 120 },
+        nTrain: 108, nHoldout: 12, baseRate: 0.5, leakCheck: null, secondary: null, lengthFeature: null })
+      // The same keys as the mission block.
+      for (const k of Object.keys(mission)) if (k !== 'schema') expect(Object.keys(reading)).toContain(k)
+      for (const k of ['lr', 'gbt']) {
+        const preds = reading.models[k].predictions
+        expect(preds.map(p => p.id)).toEqual(READING_SET.missionIds.flatMap(id => [`${id}:0`, `${id}:1`]))
+        expect(preds.every(p => p.id === `${p.missionId}:${p.interval}`)).toBe(true)
+        // pFail is P(stalled): high on the stalled (failed-mission) readings.
+        expect(reading.models[k].auc).toBeGreaterThan(0.9)
+      }
+      expect(reading.models.lr.predictions.find(p => p.id === 's00:0').pFail).toBeGreaterThan(0.5)
+      expect(reading.models.lr.predictions.find(p => p.id === 's01:0').pFail).toBeLessThan(0.5)
+      // A mission retrain carries the reading block over; a reading retrain that predicts the same keeps its version.
+      expect(run(['--dataset', SEPARABLE, '--manifest', MANIFEST, '--out', out]).status).toBe(0)
+      expect(JSON.parse(readFileSync(out, 'utf8')).reading).toEqual(reading)
+      expect(run(['--unit', 'reading', '--dataset', readingsIn(dir), '--manifest', manifest, '--out', out, '--signals-version', '2']).status).toBe(0)
+      expect(JSON.parse(readFileSync(out, 'utf8')).reading.version).toBe(1)
+    }, TIMEOUT_MS)
+
+    it('reads only the reading:2 set — the mission set "2" holds nothing for it — and refuses TOO FEW, writing nothing', () => {
+      const dir = outDir()
+      const out = join(dir, 'outcome-model.json')
+      const manifest = manifestIn(dir, { 2: { ...READING_SET, unit: undefined } })
+      const r = run(['--unit', 'reading', '--dataset', readingsIn(dir), '--manifest', manifest, '--out', out, '--signals-version', '2', '--rows-by-version', '{"2":120}'])
+      expect(r.status).toBe(2)
+      expect(r.stdout).toMatch(/^TOO FEW: train 120 < 30 or holdout 0 < 8 \(signals v2: 120 eligible\)$/m)
+      expect(existsSync(out)).toBe(false)
+      // The mission inputs are refused with the reading unit.
+      expect(run(['--unit', 'reading', '--dataset', readingsIn(dir), '--hindsight', SEPARABLE, '--manifest', manifest, '--out', out]).status).toBe(1)
+    }, TIMEOUT_MS)
+
+    // Final review M3: whole missions are drawn into the holdout, so a frozen
+    // set can leave train short while the holdout is ample — the refusal names
+    // that cause rather than the generic either/or.
+    it('names the whole-mission draw when the holdout is ample and train is short', () => {
+      const dir = outDir()
+      const out = join(dir, 'outcome-model.json')
+      const manifest = manifestIn(dir, { 'reading:2': READING_SET })
+      const r = run(['--unit', 'reading', '--dataset', readingsIn(dir), '--manifest', manifest, '--out', out, '--signals-version', '2', '--rows-by-version', '{"2":120}', '--min-train', '110'])
+      expect(r.status).toBe(2)
+      expect(r.stdout).toMatch(/^TOO FEW: train 108 < 110 after the whole-mission draw \(holdout 12 readings\) \(signals v2: 120 eligible\)$/m)
+      expect(existsSync(out)).toBe(false)
+    }, TIMEOUT_MS)
+  })
+
   it('honours --min-train / --min-holdout', () => {
     const out = join(outDir(), 'outcome-model.json')
     const r = run(['--dataset', SEPARABLE, '--manifest', MANIFEST, '--out', out, '--min-train', '49'])

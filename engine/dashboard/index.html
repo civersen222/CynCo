@@ -2259,6 +2259,85 @@ function fetchSessionState() {
     return (6 - missing.length) + '/6' + (missing.length ? ' — missing ' + missing.join(', ') : '');
   }
 
+  // Phase 7 ruling 5: one wave's gate progress off /api/campaign's
+  // waves[].progress — the readings and shadow decisions the runner wrote to
+  // the WAVE RECORD at verdict (never a live probe: a wave in flight has none).
+  // Fails over the wave clock, from (0, start count); a fault reading is no
+  // measurement and is left off the line; each fired shadow decision is a
+  // filled circle on the curve. Only numbers reach the markup — the rule name
+  // in a circle's <title> is escaped. '' when there is nothing to draw.
+  // A measured reading is one with a count and no fault (T7-M2: a reading
+  // whose clock was unknown still counts and is listed); only one with an
+  // elapsedFraction has an x to be drawn at, clamped to [0, 1] (T7-M3).
+  function campaignProgressMeasured(p) {
+    return ((p && p.readings) || []).filter(function(r) {
+      return r && !r.fault && typeof r.fails === 'number';
+    });
+  }
+  function campaignProgressSvg(p) {
+    var measured = campaignProgressMeasured(p).filter(function(r) { return typeof r.elapsedFraction === 'number'; });
+    if (!measured.length) return '';
+    var start = typeof p.startFails === 'number' ? p.startFails : null;
+    var scale = Math.max(start || 0, 1);
+    measured.forEach(function(r) { scale = Math.max(scale, r.fails); });
+    var n = function(v) { return String(Math.round(v * 100) / 100); };
+    var y = function(f) { return n(24 - 24 * f / scale); };
+    var x = function(at) { return n(Math.min(1, Math.max(0, at)) * 100); };
+    var pts = [];
+    if (start !== null && measured[0].elapsedFraction > 0) pts.push('0,' + y(start));
+    measured.forEach(function(r) { pts.push(x(r.elapsedFraction) + ',' + y(r.fails)); });
+    var esc = function(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); };
+    var circles = '';
+    var decisions = p.decisions || {};
+    Object.keys(decisions).forEach(function(rule) {
+      (decisions[rule].firedAt || []).forEach(function(at) {
+        if (typeof at !== 'number') return;
+        // The count in force at that tick: the last reading at or before it.
+        var f = start !== null ? start : measured[0].fails;
+        measured.forEach(function(r) { if (r.elapsedFraction <= at) f = r.fails; });
+        circles += '<circle cx="' + x(at) + '" cy="' + y(f) + '" r="1.5" fill="currentColor"><title>' +
+          esc(rule) + ' fired at ' + Math.round(at * 100) + '%</title></circle>';
+      });
+    });
+    return '<svg viewBox="0 0 100 24" xmlns="http://www.w3.org/2000/svg" width="100" height="24" preserveAspectRatio="none" style="vertical-align:middle;overflow:visible">' +
+      '<polyline fill="none" stroke="currentColor" stroke-width="1" points="' + pts.join(' ') + '"/>' + circles + '</svg>';
+  }
+
+  // The curve's label, { text, title }: start → last count, how many readings
+  // measured and faulted, each rule's fired/decided; per-reading sha7s and
+  // fault reasons on the tooltip.
+  function campaignProgressText(p) {
+    if (!p) return { text: 'no gate curve (wave predates Phase 6, or the runner did not wait on it)', title: '' };
+    var readings = p.readings || [];
+    var measured = campaignProgressMeasured(p);
+    var faults = readings.filter(function(r) { return r && r.fault; }).length;
+    var start = typeof p.startFails === 'number' ? p.startFails : (measured.length ? measured[0].fails : null);
+    var parts = [measured.length ? (start === null ? '?' : start) + ' → ' + measured[measured.length - 1].fails + ' fails' : 'no measured reading'];
+    parts.push(measured.length + ' reading' + (measured.length === 1 ? '' : 's') + (faults ? ', ' + faults + ' fault' + (faults === 1 ? '' : 's') : ''));
+    var decisions = p.decisions || {};
+    Object.keys(decisions).forEach(function(rule) {
+      parts.push(rule + ' ' + decisions[rule].fired + '/' + decisions[rule].n + ' fired');
+    });
+    var title = readings.map(function(r) {
+      if (!r) return '';
+      if (r.fault) return 'fault: ' + r.fault;
+      return (typeof r.elapsedFraction === 'number' ? Math.round(r.elapsedFraction * 100) : '?') + '% ' + (r.sha7 || '?') + ' ' + r.fails + ' fails';
+    }).join('\n');
+    return { text: parts.join(' · '), title: title };
+  }
+
+  // Governance POSIWID: v1 alone for a wave that predates v2 (Phase 7 ruling
+  // 4); 'v1 <verdict> | v2 <verdict> (e of t earned)' when v2 exists. Works on
+  // the campaign's raw last-wave reading and on a wave's reduced one alike.
+  function campaignGovernanceText(g) {
+    if (!g) return '—';
+    var v1 = g.verdict + (g.onsetWave ? ' (drift onset wave ' + g.onsetWave + ')' : '');
+    if (!g.v2) return v1;
+    var s = g.v2.stated;
+    return 'v1 ' + v1 + ' | v2 ' + (g.v2.verdict || 'unmeasured') +
+      (s && typeof s.earned === 'number' && typeof s.total === 'number' ? ' (' + s.earned + ' of ' + s.total + ' earned)' : '');
+  }
+
   // Phase 5 ruling 2: the scoreboard (scripts/cynco-scoreboard.mjs). Unmeasured
   // is null with its reason — printed as a dash, the reason on the row's
   // tooltip, never as 0 (F16).
@@ -2389,9 +2468,7 @@ function fetchSessionState() {
           ['Invariant overrides', Object.keys(c.invariantOverrides || {}).length
             ? Object.keys(c.invariantOverrides).map(function(k) { return k + ' ' + c.invariantOverrides[k]; }).join(', ')
             : 'none'],
-          ['Governance POSIWID', c.governancePosiwid
-            ? (c.governancePosiwid.verdict + (c.governancePosiwid.onsetWave ? ' (drift onset wave ' + c.governancePosiwid.onsetWave + ')' : ''))
-            : '—'],
+          ['Governance POSIWID', campaignGovernanceText(c.governancePosiwid)],
           ['Autopoiesis', campaignAutopoiesisText(c.waves)],
           ['Scoreboard', board.text, board.title],
           ['In flight', c.inFlight ? ('wave ' + c.inFlight.wave + ' dispatched ' + (c.inFlight.dispatchedAt || '')) : 'no'],
@@ -2415,9 +2492,37 @@ function fetchSessionState() {
           var d = document.createElement('div');
           var verifiedLabel = w.verified === null ? '—' : (w.verified ? 'yes' : 'no');
           d.textContent = 'wave ' + w.wave + ': ' + (w.decision ? w.decision.kind + ' — ' + w.decision.why : '?') +
-            ' (verified ' + verifiedLabel + (w.posiwid ? ', POSIWID ' + w.posiwid.verdict : '') + ')';
+            ' (verified ' + verifiedLabel + (w.posiwid ? ', POSIWID ' + w.posiwid.verdict : '') +
+            (w.governancePosiwid ? ', governance ' + campaignGovernanceText(w.governancePosiwid) : '') + ')';
           entries.appendChild(d);
+          // Phase 7 ruling 5: the wave's gate curve, off the wave record only.
+          var curve = document.createElement('div');
+          curve.style.paddingLeft = '12px';
+          var svg = campaignProgressSvg(w.progress);
+          if (svg) {
+            // Parsed as SVG, not assigned as markup: numbers only, and the one
+            // string (a rule name in a <title>) is escaped by the builder.
+            // T7-M4: DOMParser returns a <parsererror> document instead of
+            // throwing, so a curve that does not parse is never inserted.
+            var parsed = new DOMParser().parseFromString(svg, 'image/svg+xml');
+            if (parsed.getElementsByTagName('parsererror').length === 0) curve.appendChild(document.importNode(parsed.documentElement, true));
+            else svg = '';
+          }
+          var label = campaignProgressText(w.progress);
+          var cap = document.createElement('span');
+          cap.textContent = (svg ? ' ' : '') + label.text;
+          curve.appendChild(cap);
+          if (label.title) curve.title = label.title;
+          entries.appendChild(curve);
         });
+        // A wave in flight has no curve yet: the mid-wave readings reach the
+        // wave record at its verdict, never this panel live.
+        if (c.inFlight) {
+          var pending = document.createElement('div');
+          pending.className = 'empty-text';
+          pending.textContent = 'wave ' + c.inFlight.wave + ' in flight — its gate curve appears at its verdict (readings are written to the wave record then, never read live)';
+          entries.appendChild(pending);
+        }
         if (!entries.children.length) {
           var empty = document.createElement('div');
           empty.className = 'empty-text';

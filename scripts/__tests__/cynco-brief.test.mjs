@@ -71,6 +71,16 @@ describe('generateBrief — wave 2 with a prior wave', () => {
     expect(text).toMatch(/STEP 0[\s\S]*git apply --3way "C:\/tmp\/c8-wave1-1788634174399\.uncommitted\.patch"[\s\S]*git add gilded\/ui\/atlas_view\.py gilded\/ui\/app\.py[\s\S]*COMMIT 0/)
     expect(text).toMatch(/Do not run the tests first/)
   })
+  // T6-N3: a marker check's F132 reset wrote its own patch; the next wave is
+  // told about EVERY patch whose changes HEAD does not hold, oldest first.
+  it('names every unapplied patch in STEP 0, the per-check ones before the tail', () => {
+    const many = generateBrief(spec, { wave: 2, base: '1bc0f8c', fails: remaining, passes, prior,
+      salvage: { patchPath: 'C:/tmp/m.uncommitted.1.patch', files: ['gilded/ui/app.py', 'gilded/ai.py'],
+        patches: [{ patchPath: 'C:/tmp/m.uncommitted.1.patch', files: ['gilded/ui/app.py'] }, { patchPath: 'C:/tmp/m.uncommitted.patch', files: ['gilded/ai.py'] }] },
+      ideation: null })
+    expect(many).toMatch(/STEP 0[\s\S]*uncommitted edits to gilded\/ui\/app\.py, gilded\/ai\.py[\s\S]*git apply --3way "C:\/tmp\/m\.uncommitted\.1\.patch"\n\s+git apply --3way "C:\/tmp\/m\.uncommitted\.patch"\n\s+git add gilded\/ui\/app\.py gilded\/ai\.py/)
+    expect(many).toMatch(/saved as 2 patches outside the repo/)
+  })
   it('only lists work items whose gate ids still fail', () => {
     const work = text.slice(text.indexOf('THE WORK'), text.indexOf('S4 IDEATION'))
     expect(work).toMatch(/5\. ART PASS/); expect(work).not.toMatch(/2\. PORTRAITS/)

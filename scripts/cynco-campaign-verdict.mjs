@@ -1,9 +1,11 @@
 // scripts/cynco-campaign-verdict.mjs
 import { spawnSync } from 'node:child_process'
+import { runSync } from './cynco-spawn.mjs'
 import { gateLineVerdict } from './cynco-signal-validation.mjs'
 import { autopoiesisLine } from './cynco-autopoiesis.mjs'
 import { scoreboardLines } from './cynco-scoreboard.mjs'
 import { progressLine } from './cynco-campaign-progress.mjs'
+import { READING_DEPENDENCE } from './cynco-rule-verdicts.mjs'
 
 const today = () => new Date().toISOString().slice(0, 10)
 const h = (s) => (s / 3600).toFixed(2)
@@ -90,7 +92,8 @@ function identityLine(identity) {
 // Phase 6 Task 4: `runners` (the ladder's `source: 'runner'` entries,
 // `R1.no-progress`) are named with their verdict on this same ladder line,
 // after the model rows, read the same way. The runner row does not depend on
-// the hindcast, so a fault line carries it too.
+// the hindcast, so a fault line carries it too. Phase 7: every runner row is
+// printed, in id order — `R1.no-progress`, then `R2.stalled`.
 export function hindcastLine(h, { detail = false, runners = null } = {}) {
   if (!h) return null
   const pct = (v) => (typeof v === 'number' ? `${Math.round(v * 100)}%` : 'null')
@@ -106,7 +109,31 @@ export function hindcastLine(h, { detail = false, runners = null } = {}) {
     return `${id} precision ${pct(r?.precision)}${ci} on ${r?.n ?? 0} fired p(Holm) ${num(r?.pAdjusted, 3)} ${verdict}${note}`
   }
   const runnerRungs = Object.entries(runners ?? {}).sort(byId).map(rung)
-  if (h.fault) return `- Outcome hindcast: UNMEASURED — ${h.fault}${runnerRungs.map(r => `; ${r}`).join('')}`
+  const dead = (x) => (x?.droppedFeatures?.length ? `; dropped ${x.droppedFeatures.length} dead column(s)${detail ? `: ${x.droppedFeatures.join(', ')}` : ''}` : '')
+  const eligibleOf = (x) => {
+    const counts = Object.entries(x?.rowsByVersion ?? {}).sort(([a], [b]) => Number(a) - Number(b)).map(([k, n]) => `v${k} ${n}`)
+    return typeof x?.signalsVersion === 'number' ? `, signals v${x.signalsVersion} only (eligible ${counts.join(', ') || 'none'})` : ''
+  }
+  // Phase 7 ruling 1: the reading unit (`h.reading`, M2.*) beside the mission
+  // unit, in the same grammar, after the whole mission clause. Absent on a
+  // record written before Phase 7. Readings have no hindsight, so their leak
+  // check always reads "not run".
+  const r = h.reading
+  // Final review M2: an M2 p is over readings that share missions, so it is
+  // optimistic — named once, after the rungs, whenever one is printed.
+  const readingRungs = Object.entries(r?.ladder ?? {}).sort(byId)
+  const optimistic = readingRungs.some(([, x]) => typeof x?.pAdjusted === 'number')
+    ? ` (p optimistic: ${readingRungs.find(([, x]) => typeof x?.dependence === 'string')?.[1].dependence ?? READING_DEPENDENCE})` : ''
+  // T5-M2: the wave whose export froze `reading:2` names the freeze whether
+  // or not the model then measured (a TOO FEW is a fault with the holdout on it).
+  const readingFrozeNow = r?.holdout?.frozenNow === true ? `; reading:${r.signalsVersion ?? '?'} holdout frozen now (${r.holdout.ids ?? '?'} readings of ${r.holdout.missions ?? '?'} missions)` : ''
+  const readings = !r ? ''
+    : r.fault ? `; readings: UNMEASURED — ${r.fault}${readingFrozeNow}`
+      : `; readings: v${r.version ?? '?'} per interval${eligibleOf(r)} on ${r.nHoldout ?? '?'} held-out readings (base ${pct(r.baseRate)}): `
+        + `${readingRungs.length ? readingRungs.map(rung).join('; ') + optimistic
+          : r.ladderFault ? `LADDER NOT WRITTEN (${r.ladderFault}) — rules rewritten alone` : 'no ladder reading'}; leak check not run${dead(r)}`
+        + readingFrozeNow
+  if (h.fault) return `- Outcome hindcast: UNMEASURED — ${h.fault}${runnerRungs.map(r => `; ${r}`).join('')}${readings}`
   const models = Object.entries(h.ladder ?? {}).sort(byId).map(rung)
   // A model ladder that faulted still says so when the runner rows follow it.
   const ladder = [...(!models.length && h.ladderFault ? [`LADDER NOT WRITTEN (${h.ladderFault}) — rules rewritten alone`] : models), ...runnerRungs]
@@ -126,7 +153,7 @@ export function hindcastLine(h, { detail = false, runners = null } = {}) {
   // holdout freeze — is named on the wave whose export performed it.
   const frozeNow = h.holdout?.frozenNow === true ? `; v${h.signalsVersion ?? '?'} holdout frozen now (${h.holdout.ids ?? '?'} ids)` : ''
   return `- Outcome hindcast: v${h.version ?? '?'} at K = ${h.prefixTurns ?? '?'} turns${signals} on ${h.nHoldout ?? '?'} held-out missions (base ${pct(h.baseRate)}): `
-    + `${ladder.length ? ladder.join('; ') : 'no ladder reading'}; ${leak}${length}${secondary}${dropped}${frozeNow}`
+    + `${ladder.length ? ladder.join('; ') : 'no ladder reading'}; ${leak}${length}${secondary}${dropped}${frozeNow}${readings}`
 }
 
 export function verdictEntry({ spec, wave, row, grade, decision, ideationRecord, economicsLines, denialAnalysis = null, denialScope = 'campaign', capProposal = null, governancePosiwid = null, gateLines = null, identity = null, autopoiesis = null, scoreboard = null, hindcast = null, progress = null, runnerLadder = null }) {
@@ -156,8 +183,15 @@ export function verdictEntry({ spec, wave, row, grade, decision, ideationRecord,
       : '- Derived sweep: UNMEASURED (no diff or the sweep refused).')
   lines.push(`- POSIWID ${grade.posiwid.verdict} (divergence ${grade.posiwid.divergence.toFixed(3)}, dominant ${grade.posiwid.dominantObserved}).`)
   if (governancePosiwid) {
-    const { verdict, divergence, dominantObserved, support, onsetWave } = governancePosiwid
-    lines.push(`- Governance POSIWID ${verdict} (divergence ${divergence.toFixed(3)}, dominant ${dominantObserved}, support ${support}${onsetWave ? `; drift onset wave ${onsetWave}` : ''}).`)
+    const { verdict, divergence, dominantObserved, support, onsetWave, v2 } = governancePosiwid
+    const v1 = `${verdict} (divergence ${divergence.toFixed(3)}, dominant ${dominantObserved}, support ${support}${onsetWave ? `; drift onset wave ${onsetWave}` : ''})`
+    // Phase 7 ruling 4: v2 (purpose from the authority table) beside v1. A
+    // reading from before v2 existed prints the v1 line as it always did.
+    if (!v2) lines.push(`- Governance POSIWID ${v1}.`)
+    else {
+      const second = v2.verdict ? `v2 ${v2.verdict} (${v2.stated.earned} of ${v2.stated.total} earned)` : `v2 not measured (${v2.reason})`
+      lines.push(`- Governance POSIWID v1 ${v1} | ${second}.`)
+    }
   }
   if (ideationRecord) lines.push(`- S4 ideation (authority ${ideationRecord.authority}): ${ideationRecord.hypotheses.length} hypothesis/es; followed=${ideationRecord.followed}.`)
   lines.push(`- Ledger: verified ${grade.verified === null ? 'null (harness fault)' : grade.verified}; mutationSweep ${grade.sweep ? `recorded (${grade.sweep.kind ?? 'derived'})` : 'null'}.`)
@@ -175,7 +209,8 @@ export function verdictEntry({ spec, wave, row, grade, decision, ideationRecord,
   // (scripts/cynco-scoreboard.mjs). No board, no line.
   lines.push(...scoreboardLines(scoreboard))
   // Phase 5 ruling 5: the outcome hindcast, right after the board.
-  // Phase 6 Task 4: the ladder's runner rows (R1.no-progress) ride on it.
+  // Phase 6 Task 4: the ladder's runner rows (R1.no-progress; Phase 7:
+  // R2.stalled after it) ride on it.
   const hcLine = hindcastLine(hindcast, { runners: runnerLadder })
   if (hcLine) lines.push(hcLine)
   if (denialAnalysis?.invariants) {
@@ -222,24 +257,44 @@ export async function notify(message, env = process.env, fetchImpl = globalThis.
   } catch { return false }
 }
 
-const defaultGit = (repoRoot) => (args) => { const r = spawnSync('git', ['-C', repoRoot, ...args], { encoding: 'utf8' }); return { status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '' } }
+// Through runSync merge mode, so F166's colour scrub applies to git too.
+const defaultGit = (repoRoot) => (args) => {
+  const r = runSync('git', ['-C', repoRoot, ...args])
+  return { status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '' }
+}
 
+/**
+ * Commit the verdict files onto `branch` and return `{ sha }`.
+ *
+ * F167 rule: a campaign runs from its own worktree; the operator's checkout is
+ * never the runner's. C10 wave 2's verdict commit died on `git checkout
+ * campaign/c10` because the operator had switched the shared working copy's
+ * branch under the running campaign. The runner now starts only from a worktree
+ * on `campaign/<id>` (`ensureCampaignCheckout` in cynco-campaign.mjs), so this
+ * is a plain add + commit on the branch the tree is on. It never checks out or
+ * creates anything: when HEAD is not `branch` it refuses and touches nothing.
+ * (Committing through plumbing from another checkout was tried and rejected:
+ * the runner also READS the log, roadmap and ledger from its working copy, so
+ * the commit left those files dirty for the next wave and overwrote
+ * branch-only content with the other checkout's copy — F167.)
+ *
+ * Any failed git step throws; the runner logs "commit skipped" and the wave
+ * record keeps verdictSha null, which is the honest reading.
+ */
 export function commitVerdict({ repoRoot, branch, files, message, io }) {
   const git = io?.git ?? defaultGit(repoRoot)
+  const must = (r, what) => {
+    if (r.status !== 0) throw new Error(`commitVerdict: git ${what} failed: ${String(r.stderr ?? '').trim()}`)
+    return r
+  }
   const status = git(['status', '--porcelain']).stdout.split('\n').filter(Boolean).map(l => l.slice(3).trim())
   const foreign = status.filter(p => !files.includes(p) && !p.startsWith('benchmark/cynco-ledger/'))
   if (foreign.length) throw new Error(`working tree has changes outside the verdict files: ${foreign.join(', ')} — refusing to commit over someone's work`)
-  // A failed checkout used to be silent: `git add` and `git commit` ran anyway
-  // and the verdict landed on whatever branch the tree happened to be on —
-  // main, most likely. Fail loudly instead; the runner logs "commit skipped"
-  // and the wave record keeps verdictSha null, which is the honest reading.
-  const co = git(['rev-parse', '--verify', branch]).status !== 0 ? git(['checkout', '-b', branch]) : git(['checkout', branch])
-  if (co.status !== 0) throw new Error(`commitVerdict: git checkout ${branch} failed: ${String(co.stderr ?? '').trim()}`)
-  const head = git(['rev-parse', '--abbrev-ref', 'HEAD']).stdout.trim()
-  if (head !== branch) throw new Error(`commitVerdict: git checkout ${branch} failed: HEAD is ${head || '(unknown)'}`)
-  git(['add', ...files])
-  git(['commit', '-m', message])
-  return { sha: git(['rev-parse', 'HEAD']).stdout.trim() }
+  const head = must(git(['rev-parse', '--abbrev-ref', 'HEAD']), 'rev-parse HEAD').stdout.trim()
+  if (head !== branch) throw new Error(`commitVerdict: HEAD is ${head || '(unknown)'}, not ${branch} — the runner runs from the campaign worktree`)
+  must(git(['add', '--', ...files]), 'add')
+  must(git(['commit', '-m', message]), 'commit')
+  return { sha: must(git(['rev-parse', 'HEAD']), 'rev-parse HEAD').stdout.trim() }
 }
 
 export function economicsLines(io = { run: (cmd, args) => spawnSync(cmd, args, { encoding: 'utf8' }).stdout ?? '' }) {

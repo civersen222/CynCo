@@ -11,7 +11,7 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync, existsSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { runSync, faultSummary, TIMEOUT_ELAPSED_FRACTION, bashBin, gitExeOnPath, bashExe } from '../cynco-spawn.mjs'
+import { runSync, runAsync, faultSummary, TIMEOUT_ELAPSED_FRACTION, bashBin, gitExeOnPath, bashExe } from '../cynco-spawn.mjs'
 
 /** A spawnSync stand-in: returns `result`, and advances the injected clock by `ms`. */
 const fakeSpawn = (result, ms, clock) => (...args) => { clock.t += ms; return { ...result, _args: args } }
@@ -276,14 +276,15 @@ describe('bashBin (F160): Git Bash by path, never whatever `bash` PATH holds', (
     }
     expect(bare).toEqual([])
     const campaign = readFileSync(join(dir, 'cynco-campaign.mjs'), 'utf8')
-    expect(campaign).toMatch(/dispatchEnv\(waveEnvBase\(spec\)/)
+    // Phase 7 ruling 3: the wave's env is built in waveDispatch, over the runner's env.
+    expect(campaign).toMatch(/dispatchEnv\(waveEnvBase\(spec, base\)/)
     // I3: both dispatches (wave and authoring) go through the one runDispatch,
     // whose spawn is runSync WITHOUT retryImpossibleTimeout.
     expect(campaign.match(/\['scripts\/dispatch-mission\.sh'/g)?.length).toBe(1)
     const dispatchCall = campaign.split('\n').find(l => l.includes("['scripts/dispatch-mission.sh'"))
     expect(dispatchCall).toMatch(/runSync\(bash \?\? bashExe\(\), \['scripts\/dispatch-mission\.sh'/)
     expect(dispatchCall).not.toMatch(/retryImpossibleTimeout/)
-    expect(campaign.match(/\brunDispatch\(\[/g)?.length).toBe(2)
+    expect(campaign.match(/\brunDispatch\((\[|args, env\))/g)?.length).toBe(2)
     expect(readFileSync(join(dir, 'cynco-campaign-calibrate.mjs'), 'utf8')).toMatch(/io\.run\(bashExe\(\), \['-c'/)
   })
 })
@@ -402,5 +403,57 @@ describe('F166: a parsed instrument never inherits a colour-forcing environment'
     expect(COLOUR_FORCING_KEYS).toEqual(['FORCE_COLOR', 'CLICOLOR_FORCE'])
     expect(NO_COLOUR_ENV).toEqual({ NO_COLOR: '1', PY_COLORS: '0' })
     expect(instrumentEnv({ FORCE_COLOR: '3', PATH: 'p' }, { X: '1' })).toEqual({ PATH: 'p', X: '1', NO_COLOR: '1', PY_COLORS: '0' })
+  })
+})
+
+// Phase 7 review C1: the marker check must not block the driver's event loop,
+// so it runs through runAsync — same result shape, same F166 env, same
+// elapsed-time reading of a timeout.
+describe('runAsync: the async sibling of runSync', () => {
+  const node = process.execPath
+  it('returns status and output without blocking the event loop', async () => {
+    let ticks = 0
+    const timer = setInterval(() => { ticks++ }, 50)
+    try {
+      const r = await runAsync(node, ['-e', "setTimeout(() => { console.log('out'); console.error('err'); process.exit(3) }, 600)"], { timeoutMs: 30_000 })
+      expect(r).toMatchObject({ status: 3, timedOut: false, fault: null })
+      expect(r.stdout).toContain('out')
+      expect(r.stderr).toContain('err')
+      expect(ticks).toBeGreaterThan(3)
+    } finally { clearInterval(timer) }
+  })
+  it('a deadline that was spent is a timeout, and the child is killed', async () => {
+    const r = await runAsync(node, ['-e', 'setTimeout(() => {}, 60000)'], { timeoutMs: 800 })
+    expect(r.timedOut).toBe(true)
+    expect(r.fault).toBeNull()
+    expect(r.status).toBeNull()
+    expect(r.elapsedMs).toBeGreaterThanOrEqual(800 * TIMEOUT_ELAPSED_FRACTION)
+  })
+  it('a deadline the clock says was NOT spent is a fault, never a timeout (the shared rule)', async () => {
+    let t = 0
+    const killed = []
+    const fakeChild = () => {
+      const handlers = {}
+      const child = { pid: 1, on: (ev, fn) => { handlers[ev] = fn }, stdout: null, stderr: null }
+      setTimeout(() => handlers.close?.(null, 'SIGKILL'), 30)
+      return child
+    }
+    const r = await runAsync('x', [], { timeoutMs: 10 }, { spawn: fakeChild, now: () => t, kill: (c) => { killed.push(c.pid) } })
+    expect(killed).toEqual([1])
+    expect(r.timedOut).toBe(false)
+    expect(r.fault).toMatchObject({ code: 'ETIMEDOUT' })
+  })
+  it('a spawn error is a fault', async () => {
+    const r = await runAsync(node, ['-e', '0'], { cwd: join(fileURLToPath(new URL('.', import.meta.url)), 'no-such-dir-7f1c'), timeoutMs: 30_000 })
+    expect(r.fault).not.toBeNull()
+    expect(r.timedOut).toBe(false)
+  })
+  it('hands the child the colourless instrument env (F166)', async () => {
+    const prev = process.env.FORCE_COLOR
+    process.env.FORCE_COLOR = '3'
+    try {
+      const r = await runAsync(node, ['-e', "console.log(String(process.env.FORCE_COLOR) + '/' + process.env.NO_COLOR)"], { timeoutMs: 30_000 })
+      expect(r.stdout.trim()).toBe('undefined/1')
+    } finally { if (prev === undefined) delete process.env.FORCE_COLOR; else process.env.FORCE_COLOR = prev }
   })
 })

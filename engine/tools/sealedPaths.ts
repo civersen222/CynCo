@@ -102,14 +102,25 @@ export function setTaskSealedPaths(
   paths: string[],
   listDir: (d: string) => string[] = (d) => readdirSync(d),
   readFile: (p: string) => string = (p) => readFileSync(p, 'utf-8'),
+  contentExempt: string[] = [],
 ): void {
   taskSealedPaths = paths.map(p => p.replace(/\\/g, '/')).filter(Boolean)
 
   // Layer 4. Read each sealed file once, now, and remember what is IN it.
   // Layers 1-3 all judge the spelling of a request; this one judges the answer,
   // which is the only thing that holds when the request spelled nothing.
+  //
+  // `contentExempt` (Phase 7 T6-N1): instruments sealed by PATH only. The suite
+  // gate's baseline is a list of bare pytest node ids — exactly the lines the
+  // model's own `pytest --collect-only -q` prints — so three adjacent standing
+  // failures would discard the model's whole collection output. The cost,
+  // accepted by that ruling: a read that spells nothing sealed (`find …
+  // -exec cat`) can now show which standing failures the baseline forgives;
+  // naming, listing or running it is still refused (layers 1–3).
+  const exempt = new Set(contentExempt.map(norm))
   sealedLines = new Set<string>()
   for (const p of taskSealedPaths) {
+    if (exempt.has(norm(p))) continue
     let text: string
     try {
       text = readFile(p)

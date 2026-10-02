@@ -360,7 +360,10 @@ export function harnessGatePaths(
     const command = assertionCommand(a)
     if (command === null) continue
     for (const rawToken of command.split(/\s+/)) {
-      const token = rawToken.replace(/^["']+|["':;,]+$/g, '')
+      // A POSIX env prefix (`CHK_SUITE_BASELINE=<path> python gate.py`) names
+      // an instrument too: the suite gate's baseline travels that way (Phase 7
+      // review I1), so the value after `NAME=` is read as a path token.
+      const token = rawToken.replace(/^[A-Za-z_][A-Za-z0-9_]*=/, '').replace(/^["']+|["':;,]+$/g, '')
       // Path-shaped or nothing. A bare word is a program name or a flag.
       if (!token || !/[\\/]/.test(token)) continue
       const abs = (isAbsolute(token) ? token : resolve(cwd, token)).replace(/\\/g, '/')
@@ -422,6 +425,121 @@ export function sealedGatePaths(
   harnessRoot: string = HARNESS_ROOT,
 ): string[] {
   return withheldGatePaths(assertions, cwd, exists).filter(p => !isHarnessOwnFile(p, harnessRoot))
+}
+
+/**
+ * The driver's marker check, as the dispatch hands it over (Phase 7 final
+ * review I1). The check-cmd is the engine's withheld contract assertion, which
+ * the model's `ContractAssertPass` runs inside its own turn — so the marker
+ * check (the whole-suite gate on a campaign, the fail-once fixture on the
+ * smoke) travels on a channel of its own that ONLY the driver runs (its cap
+ * is CYNCO_MARKER_CHECK_TIMEOUT_MS, read by the driver alone —
+ * scripts/cynco-verify.mjs `markerCheckFrom`).
+ */
+export const MARKER_CHECK_ENV = 'CYNCO_MARKER_CHECK'
+/** The text of the pseudo-assertion below; never shown to the model, never run. */
+export const MARKER_CHECK_GATE_TEXT = "the driver's marker check (its instruments only — never run by the engine)"
+
+/**
+ * The marker channel as assertions, read for their PATHS only: the instruments
+ * the marker check names (the suite baseline, the fixture) are sealed by the
+ * engine and snapshotted/restored by the driver like any withheld gate's, and
+ * both derive them through `harnessGatePaths` from this. Never handed to
+ * `applyHarnessContract` — the engine must never run the marker check. Empty
+ * when the channel is unset or blank.
+ */
+export function markerCheckGateAssertions(
+  env: Record<string, string | undefined> = process.env,
+): HarnessAssertion[] {
+  const command = (env[MARKER_CHECK_ENV] ?? '').trim()
+  return command ? [{ text: MARKER_CHECK_GATE_TEXT, command }] : []
+}
+
+/**
+ * The active contract's assertions in the harness form they were created from:
+ * a withheld assertion as `{ text, command }`, a stated one as its text. Read
+ * for PATHS (F168); `[]` when no contract is active.
+ */
+export function activeHarnessAssertions(contract: ContractState = globalContract): HarnessAssertion[] {
+  if (!contract.isActive()) return []
+  const out: HarnessAssertion[] = []
+  for (let i = 0; ; i++) {
+    const a = contract.assertionAt(i)
+    if (!a) break
+    out.push(a.command ? { text: a.text, command: a.command } : a.text)
+  }
+  return out
+}
+
+/**
+ * The assertions a message's instrument set (read-only + sealed) is derived
+ * from (F168). F37 rebuilt the set from each frame's own `contract`, so a
+ * contract-less `user.message` — the driver's marker-check note, a probe
+ * injection — dropped every contract-derived seal for the rest of the mission.
+ * Now the set is monotone within a mission:
+ *   - the frame's own contract, when it carries one;
+ *   - else the ACTIVE harness contract's assertions (it is still measuring);
+ *   - else, on an unattended frame, `carried` — the last harness contract's
+ *     assertions, in case an auto-contract replaced a completed harness one;
+ *   - an interactive frame with no active harness contract carries nothing
+ *     (F37's rule: a seal never outlives what it protects).
+ * Plus the driver's marker channel (`markerCheckGateAssertions`), always.
+ */
+export function instrumentAssertionsFor(
+  opts: { contract?: { assertions: HarnessAssertion[] }; unattended?: boolean } | undefined,
+  { contract = globalContract, env = process.env, carried = [] as HarnessAssertion[] }: {
+    contract?: ContractState; env?: Record<string, string | undefined>; carried?: HarnessAssertion[]
+  } = {},
+): HarnessAssertion[] {
+  const own = opts?.contract?.assertions
+    ?? (contract.isActive() && contract.getOrigin() === 'harness' ? activeHarnessAssertions(contract)
+      : opts?.unattended === true ? carried : [])
+  return [...own, ...markerCheckGateAssertions(env)]
+}
+
+/**
+ * Phase 7 re-review R1-M1: the startup line saying how many instruments the
+ * marker channel seals for this engine's whole life — a count, never a path
+ * (the paths are the withheld thing). Null when the channel seals nothing.
+ */
+export function markerChannelSealLine(env: Record<string, string | undefined> = process.env, cwd: string = env.LOCALCODE_MISSION_CWD || process.cwd()): string | null {
+  const marker = markerCheckGateAssertions(env)
+  if (!marker.length) return null
+  const n = sealedGatePaths(marker, cwd).length
+  return n > 0 ? `[contract] CYNCO_MARKER_CHECK is set: ${n} instrument(s) it names are sealed for this engine's lifetime (the driver's marker check; never run by the engine)` : null
+}
+
+/**
+ * The env-prefix keys whose value is a DATA instrument sealed by path only
+ * (Phase 7 T6-N1): the suite gate's baseline, a list of bare pytest node ids
+ * that the model's own `pytest --collect-only` prints line for line.
+ */
+export const CONTENT_EXEMPT_ENV_KEYS = ['CHK_SUITE_BASELINE'] as const
+
+/**
+ * The withheld instruments the content layer (`sealedPaths.ts` layer 4) must
+ * not read: the values of CONTENT_EXEMPT_ENV_KEYS prefixes in a withheld
+ * assertion's command that `withheldGatePaths` names. Still sealed by
+ * reference, enumeration and location.
+ */
+export function contentExemptGatePaths(
+  assertions: HarnessAssertion[],
+  cwd: string,
+  exists: (p: string) => boolean = isInstrumentPath,
+): string[] {
+  const withheld = new Set(withheldGatePaths(assertions, cwd, exists))
+  const found = new Set<string>()
+  for (const a of assertions) {
+    if (typeof a === 'string' || !a.command) continue
+    for (const token of a.command.split(/\s+/)) {
+      const m = /^([A-Za-z_][A-Za-z0-9_]*)=(.+)$/.exec(token)
+      if (!m || !(CONTENT_EXEMPT_ENV_KEYS as readonly string[]).includes(m[1])) continue
+      const raw = m[2].replace(/^["']+|["':;,]+$/g, '')
+      const abs = (isAbsolute(raw) ? raw : resolve(cwd, raw)).replace(/\\/g, '/')
+      if (withheld.has(abs)) found.add(abs)
+    }
+  }
+  return [...found].sort()
 }
 
 /** Apply a harness-supplied contract spec. Returns true when applied. */

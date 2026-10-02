@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import { bashDefaultTimeoutMs, bashMaxTimeoutMs, bashTool, failedOutput, formatBashFailure } from '../../tools/impl/bash.js'
+import { bashDefaultTimeoutMs, bashMaxTimeoutMs, bashTool, bashToolEnv, failedOutput, formatBashFailure } from '../../tools/impl/bash.js'
 import { getShellInfo } from '../../tools/shellInfo.js'
 import { tmpdir } from 'os'
 import { mkdtempSync, writeFileSync } from 'fs'
@@ -408,4 +408,39 @@ describe('the default timeout is the operator\'s to raise', () => {
     expect(desc).toContain('300000')
     clear()
   })
+})
+
+// Final review I1 / T6 N2: the mission keys are the HARNESS's, not the model's.
+// `LOCALCODE_MISSION_CHECK` names the check command and `CYNCO_MARKER_CHECK`
+// the driver's marker check (the suite gate with its sealed baseline): neither
+// may reach the shell the model runs commands in.
+describe('bashToolEnv — what the model\'s shell inherits', () => {
+  it('drops LOCALCODE_MISSION_* and CYNCO_MARKER_CHECK*, keeps the rest, forces UTF-8', () => {
+    const env = bashToolEnv({
+      PATH: '/usr/bin',
+      LOCALCODE_MISSION_CHECK: 'python gate.py', LOCALCODE_MISSION_MARKER: 'm', LOCALCODE_MISSION_CWD: 'C:/r', LOCALCODE_MISSION_BASE: 'abc',
+      CYNCO_MARKER_CHECK: 'CHK_SUITE_BASELINE=C:/h/.cynco/heldout/c/b.txt python g.py', CYNCO_MARKER_CHECK_TIMEOUT_MS: '1800000',
+      CYNCO_BASH_TIMEOUT_MS: '300000', LOCALCODE_APPROVE_ALL: 'true',
+    })
+    expect(Object.keys(env).filter(k => k.startsWith('LOCALCODE_MISSION_') || k.startsWith('CYNCO_MARKER_CHECK'))).toEqual([])
+    expect(env.PATH).toBe('/usr/bin')
+    expect(env.CYNCO_BASH_TIMEOUT_MS).toBe('300000')
+    expect(env.LOCALCODE_APPROVE_ALL).toBe('true')
+    expect(env.PYTHONIOENCODING).toBe('utf-8')
+    expect(env.PYTHONUTF8).toBe('1')
+  })
+
+  it('is the env the Bash tool runs with', async () => {
+    const prev = process.env.CYNCO_MARKER_CHECK
+    process.env.CYNCO_MARKER_CHECK = 'secret-marker-check-7f2'
+    try {
+      const shell = getShellInfo()
+      const command = shell.isPowerShell ? 'Write-Output "MC=$env:CYNCO_MARKER_CHECK"' : 'echo "MC=$CYNCO_MARKER_CHECK"'
+      const result = await bashTool.execute({ command }, tmpdir())
+      expect(result.output).toContain('MC=')
+      expect(result.output).not.toContain('secret-marker-check-7f2')
+    } finally {
+      if (prev === undefined) delete process.env.CYNCO_MARKER_CHECK; else process.env.CYNCO_MARKER_CHECK = prev
+    }
+  }, 20000)
 })

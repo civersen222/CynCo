@@ -8,7 +8,7 @@ import { tmpdir, homedir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { writeSmokeCampaign, runtimeEnvFrom, SMOKE_ID } from '../cynco-smoke-campaign.mjs'
+import { writeSmokeCampaign, runtimeEnvFrom, SMOKE_ID, MARKER_CHECK_ONCE, MARKER_CHECK_STAMP, MARKER_CHECK_ONCE_PY } from '../cynco-smoke-campaign.mjs'
 import { loadCampaignSpec, checkIdentity } from '../cynco-campaign-spec.mjs'
 import { calibrate, archiveBase } from '../cynco-campaign-calibrate.mjs'
 import { parseGateOutput } from '../cynco-gate-parse.mjs'
@@ -31,7 +31,9 @@ function cloneSmoke() {
   if (r.status !== 0) throw new Error(`git clone failed: ${r.stderr}`)
   return dest.replace(/\\/g, '/')
 }
-const tempHome = () => join(mkdtempSync(join(tmpdir(), 's1-home-')), '.cynco').replace(/\\/g, '/')
+/** The env the driver's n-th check runs the fixture with. */
+const driverCall = (n) => ({ ...process.env, CYNCO_CHECK_ORDINAL: String(n) })
+const tempHome = () =>join(mkdtempSync(join(tmpdir(), 's1-home-')), '.cynco').replace(/\\/g, '/')
 
 // The fixture's BASE is a pinned commit, not the smoke repo's HEAD: the live
 // proof's mission ships the very files the gate grades, so after one real wave
@@ -61,6 +63,10 @@ describe.skipIf(!HAS_SMOKE)(`smoke campaign s1 (needs ${SMOKE_REPO})`, () => {
     expect(spec).toMatchObject({
       id: 's1', repo, base: head, author: 'human', marker: 'smoke s1 complete',
       keepGreen: 'python -m pytest -q test_calc.py',
+      // Phase 7 ruling 3 / review I3: the smoke's own fails-once fixture, and a
+      // retry floor its one-hour wave can reach.
+      markerCheck: `python ${home}/smoke/marker_check_once.py`,
+      markerRetryMinS: 60,
       gate: `${heldout}/gate_s1.py`, perturb: `${heldout}/perturb_s1.py`, positive: `${heldout}/positive_s1.py`,
       budget: { hoursPerWave: 1, iterations: 300, bashTimeoutMs: 600000, waves: 1 },
       progress: { everyMs: 20_000 },
@@ -75,6 +81,50 @@ describe.skipIf(!HAS_SMOKE)(`smoke campaign s1 (needs ${SMOKE_REPO})`, () => {
     // already refuses a duplicate), and nothing else is. FULL ids: the brief
     // (cynco-brief.mjs) picks work items by exact membership in the failing set.
     expect(spec.work.flatMap(w => w.gateIds).sort()).toEqual(FULL_IDS)
+  })
+
+  // Review I3: a mechanical proof of the driver's retry loop — the first call
+  // FAILS on purpose, every later one PASSES — written under the temp home,
+  // never under heldout, and re-armed (stamp removed) by every --write.
+  it('writes the fails-once marker check under <home>/smoke, never under heldout, and re-arms it on every write', () => {
+    const script = `${home}/smoke/${MARKER_CHECK_ONCE}`
+    const stamp = `${home}/smoke/${MARKER_CHECK_STAMP}`
+    expect(readFileSync(script, 'utf8')).toBe(MARKER_CHECK_ONCE_PY)
+    expect(script).not.toMatch(/heldout/)
+    expect(existsSync(stamp)).toBe(false)
+    const first = spawnSync('python', [script], { encoding: 'utf8', env: driverCall(1) })
+    expect(first.status).toBe(1)
+    expect(first.stdout).toContain('marker-check-once: first call fails on purpose')
+    expect(existsSync(stamp)).toBe(true)
+    for (const n of [2, 1]) {
+      const later = spawnSync('python', [script], { encoding: 'utf8', env: driverCall(n) })
+      expect(later.status).toBe(0)
+      expect(later.stdout).toContain('marker-check-once: a later call passes')
+    }
+    writeSmokeCampaign({ home, repo, base: SMOKE_BASE })
+    expect(existsSync(stamp)).toBe(false)
+    expect(spawnSync('python', [script], { encoding: 'utf8', env: driverCall(1) }).status).toBe(1)
+    rmSync(stamp, { force: true })
+  })
+
+  // Final review I1, the second lock: the stamp can be spent ONLY by the
+  // driver's first check (CYNCO_CHECK_ORDINAL=1). A call without the ordinal —
+  // the engine's, the model's — passes and leaves the stamp unwritten; a later
+  // ordinal never fails, even on a fresh stamp.
+  it('is spent only by the driver: no ordinal passes without the stamp, ordinal 2 never fails', () => {
+    const script = `${home}/smoke/${MARKER_CHECK_ONCE}`
+    const stamp = `${home}/smoke/${MARKER_CHECK_STAMP}`
+    rmSync(stamp, { force: true })
+    const { CYNCO_CHECK_ORDINAL: _drop, ...noOrdinal } = process.env
+    const stranger = spawnSync('python', [script], { encoding: 'utf8', env: noOrdinal })
+    expect(stranger.status).toBe(0)
+    expect(stranger.stdout).toContain('not the driver')
+    expect(existsSync(stamp)).toBe(false)
+    expect(spawnSync('python', [script], { encoding: 'utf8', env: driverCall(2) }).status).toBe(0)
+    expect(existsSync(stamp)).toBe(false)
+    expect(spawnSync('python', [script], { encoding: 'utf8', env: driverCall(1) }).status).toBe(1)
+    expect(existsSync(stamp)).toBe(true)
+    rmSync(stamp, { force: true })
   })
 
   it('passes loadCampaignSpec and checkIdentity (instruments sealed, base a real commit, no leak)', () => {
