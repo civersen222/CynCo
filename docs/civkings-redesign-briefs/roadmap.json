@@ -42,7 +42,7 @@
       "name": "Rivals & Reach",
       "bar": "Rivals read the player's ambition through the fog: on Powers/Dossier with a rival selected, a line owned by that rival states whether it sees the player's family (intel tier ≥ 2), never naming the family; the AI courts a rival's opposing member as a lever when it holds intel tier ≥ 2 on that house and leaves a beat naming the member; a lever pulled by a rival is visible on the player's House/Court page",
       "base": "2e313f69ff64bb49aa76af90f3630641b55bdb4a",
-      "status": "open",
+      "status": "authoring",
       "note": "2026-10-02: the two halves of locked decision 2 that C10's supervisor parked (see the C10 seal entry). gilded/ai.py is open for this line; gilded/intel.py stays denied. Authoring: one attempt by CynCo's seat with the C10 supervisor rubric (Phase 7 ruling 8), else the frontier. The user may strike this line before wave 1."
     }
   ]
