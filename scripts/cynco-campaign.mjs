@@ -35,14 +35,14 @@ import { governanceCounts, governancePosiwid, governancePosiwidV2, authorityOf }
 import { loadRoadmap, saveRoadmap, rejectLine, setLineStatus, ROADMAP_PATH } from './cynco-roadmap.mjs'
 import { assertIdentityIntact } from './cynco-identity.mjs'
 import { applyProposalDecision, seatAuthority } from './cynco-proposals.mjs'
-import { writeRuleVerdicts, readRuleVerdicts, RULE_VERDICTS_PATH, modelRowsFrom } from './cynco-rule-verdicts.mjs'
-import { exportOutcomeDatasets, runHindcast, hindcastOf, noEligibleFault, hindcastReady, PRIMARY_TURNS } from './cynco-hindcast.mjs'
+import { writeRuleVerdicts, readRuleVerdicts, RULE_VERDICTS_PATH, modelRowsFrom, modelLaddersOf } from './cynco-rule-verdicts.mjs'
+import { exportOutcomeDatasets, runHindcast, hindcastOf, noEligibleFault, hindcastReady, PRIMARY_TURNS, exportReadingDataset, runReadingHindcast } from './cynco-hindcast.mjs'
 import { campaignScoreboard, pooledScoreboard, scoreboardLines } from './cynco-scoreboard.mjs'
 import { readLedger } from './cynco-ledger-shards.mjs'
 import { campaignAssessment, campaignRows, autopoiesisLine, storedAssessment, effectiveSeatAuthority } from './cynco-autopoiesis.mjs'
 import { summarize as summarizeGateLines, GATE_LINES_PATH } from './cynco-gate-lines.mjs'
 import { progressTracker, defaultProbeIo, everyMsFor, seedGateMs } from './cynco-campaign-progress.mjs'
-import { runnerRowsFromCampaigns } from './cynco-runner-rows.mjs'
+import { runnerRowsFromCampaigns, runnerWaves } from './cynco-runner-rows.mjs'
 
 // Phase 4: the operator's decision on a pending proposal lives in the one
 // proposal registry (scripts/cynco-proposals.mjs). Re-exported so every caller
@@ -339,6 +339,9 @@ export const defaultIo = {
   // Phase 5 ruling 5: the outcome hindcast. Seams so a unit test never reads
   // the live ledger into ~/.cynco or spawns python (scripts/cynco-hindcast.mjs).
   exportOutcomeDataset: (args) => exportOutcomeDatasets(args),
+  // Phase 7 ruling 1: the reading unit's interval dataset (and its one-time
+  // `reading:2` holdout freeze) — a seam for the same reason.
+  exportReadingDataset: (args) => exportReadingDataset(args),
   runHindcast: (args) => runHindcast(args),
   // Phase 4 ruling 4: the checklist is pure over facts the VERDICT already
   // holds; a seam only so a test can prove a throw never faults the wave.
@@ -743,6 +746,24 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
       }
     } catch (e) { rec.hindcast = { fault: String(e?.message ?? e) } }
     if (rec.hindcast?.fault) console.error(`[campaign] outcome hindcast not measured: ${rec.hindcast.fault}`)
+    // Phase 7 ruling 1: the reading learner, beside the mission one (which
+    // stays primary) — the interval dataset over every runner-driven
+    // campaign's waves (this one's included, as the runner rows read them),
+    // its own `reading:2` holdout frozen once by the same rule, the model run
+    // with `--unit reading`, its held-out predictions on the ladder as `M2.*`.
+    // Below the minimum it is `{ fault: 'reading holdout not yet frozen (…)' }`
+    // and python is not spawned. Its fault is its own: never the mission's,
+    // never the wave's.
+    let reading
+    try {
+      const waves = runnerWaves(join(home, 'campaigns'), { current: spec.id, entries: state.waveEntries(), rec }).map(({ record }) => record)
+      const exportedR = (io.exportReadingDataset ?? defaultIo.exportReadingDataset)({ rows, waves, home })
+      const rh = runReadingHindcast({ exported: exportedR, runHindcast: io.runHindcast ?? defaultIo.runHindcast })
+      reading = rh.reading
+      modelRows = [...modelRows, ...modelRowsFrom(rh.model, exportedR.intervals, { unit: 'reading' })]
+    } catch (e) { reading = { fault: String(e?.message ?? e) } }
+    if (reading.fault) console.error(`[campaign] reading hindcast not measured: ${reading.fault}`)
+    rec.hindcast = { ...rec.hindcast, reading }
     // Phase 6 Task 4: the runner's shadow regulator `R1.no-progress` as a
     // runner row — one rule across campaigns, so its scope is this campaign's
     // waves (the one just recorded included) and every other runner-driven
@@ -768,11 +789,15 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
       const message = String(e?.message ?? e)
       console.error(`[campaign] rule verdicts with the model rows failed (${message}) — rewriting the rules alone`)
       if (rec.hindcast) rec.hindcast.ladderFault = message
+      if (rec.hindcast?.reading && !rec.hindcast.reading.fault) rec.hindcast.reading.ladderFault = message
       rec.ruleVerdicts = { ...write({ rows, campaign: spec.id, outPath, modelRows: [], runnerRows }), modelRowsSkipped: true }
     }
     // The ladder's reading of each model row (verdict, precision, CI, p(Holm)),
-    // kept on the hindcast beside the model's own holdout metrics.
-    if (rec.hindcast && !rec.hindcast.fault) rec.hindcast.ladder = rec.ruleVerdicts?.models ?? null
+    // kept on the hindcast beside the model's own holdout metrics — the M1.*
+    // rows on the mission hindcast, the M2.* rows on its reading (Phase 7).
+    const ladders = modelLaddersOf(rec.ruleVerdicts?.models)
+    if (rec.hindcast && !rec.hindcast.fault) rec.hindcast.ladder = ladders.mission
+    if (rec.hindcast?.reading && !rec.hindcast.reading.fault) rec.hindcast.reading.ladder = ladders.reading
   } catch (e) {
     console.error(`[campaign] rule verdicts skipped: ${e?.message ?? e}`)
     if (!rec.hindcast) rec.hindcast = { fault: `not run: ${e?.message ?? e}` }

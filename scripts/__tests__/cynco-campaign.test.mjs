@@ -2297,7 +2297,7 @@ describe('runWave — gate progress measured by the runner mid-wave', () => {
     // Named with its verdict on the ladder line, R2.stalled after it (this
     // wave's own R2 decisions: in scope past 25 %, never fired); the Progress
     // line is untouched.
-    expect(seen.entry).toMatch(/^- Outcome hindcast: UNMEASURED — .*; R1\.no-progress precision 100% \[\d+, \d+\] on 3 fired p\(Holm\) null TOO FEW; R2\.stalled precision null on 0 fired p\(Holm\) null UNMEASURED — fired on no in-scope wave$/m)
+    expect(seen.entry).toMatch(/^- Outcome hindcast: UNMEASURED — .*; R1\.no-progress precision 100% \[\d+, \d+\] on 3 fired p\(Holm\) null TOO FEW; R2\.stalled precision null on 0 fired p\(Holm\) null UNMEASURED — fired on no in-scope wave; readings: UNMEASURED — reading holdout not yet frozen \(0 of 38 labeled; improved 0 \/ stalled 0; need 8 of each\)$/m)
     expect(seen.entry).toMatch(/^- Progress: 1 → 1 fails /m)
   })
 
@@ -2388,6 +2388,10 @@ describe('runWave — gate progress measured by the runner mid-wave', () => {
 
 describe('the outcome hindcast at VERDICT', () => {
   const sweep = { kind: 'withheld', killed: 1, total: 1, survived: [] }
+  // Phase 7 ruling 1: the reading learner rides every hindcast record. These
+  // ledger rows carry no turn times, so there is no reading to train on.
+  const READING_0 = 'reading holdout not yet frozen (0 of 38 labeled; improved 0 / stalled 0; need 8 of each)'
+  const withReading = (h) => ({ ...h, reading: expect.objectContaining({ fault: READING_0 }) })
   // 12 held-out failures and 8 held-out successes, plus training rows the model never scored.
   const ledger = () => [
     ...Array.from({ length: 12 }, (_, i) => ({ missionId: `hf${i}`, outcome: 'failed', verified: false, mutationSweep: sweep })),
@@ -2438,23 +2442,23 @@ describe('the outcome hindcast at VERDICT', () => {
       appendLog: (t) => { entry = t },
     }))
     expect(rec.decision.kind).toBe('next')
-    expect(rec.hindcast).toEqual({ fault: "exit 1: Traceback (most recent call last): | ModuleNotFoundError: No module named 'sklearn'" })
+    expect(rec.hindcast).toEqual(withReading({ fault: "exit 1: Traceback (most recent call last): | ModuleNotFoundError: No module named 'sklearn'" }))
     // Phase 6 Task 4: the runner row R1.no-progress is always written — no
     // wave read past 50 % here, so it is UNMEASURED with no numbers.
     // Phase 7: R2.stalled likewise, naming its own 25 % threshold.
     expect(rec.ruleVerdicts).toMatchObject({ version: 1, predictive: [], total: 2, rules: 0, modelRows: 0, runnerRows: 2 })
     expect(Object.keys(verdictsIn(home).rules)).toEqual(['R1.no-progress', 'R2.stalled'])
-    expect(entry).toMatch(/^- Scoreboard: .*\n- Outcome hindcast: UNMEASURED — exit 1: .*No module named 'sklearn'; R1\.no-progress precision null on 0 fired p\(Holm\) null UNMEASURED — no wave in scope \(no shadow decision at 50 % of its clock or later\); R2\.stalled precision null on 0 fired p\(Holm\) null UNMEASURED — no wave in scope \(no shadow decision at 25 % of its clock or later\)$/m)
+    expect(entry).toMatch(/^- Scoreboard: .*\n- Outcome hindcast: UNMEASURED — exit 1: .*No module named 'sklearn'; R1\.no-progress precision null on 0 fired p\(Holm\) null UNMEASURED — no wave in scope \(no shadow decision at 50 % of its clock or later\); R2\.stalled precision null on 0 fired p\(Holm\) null UNMEASURED — no wave in scope \(no shadow decision at 25 % of its clock or later\); readings: UNMEASURED — reading holdout not yet frozen \(0 of 38 labeled; improved 0 \/ stalled 0; need 8 of each\)$/m)
   })
 
   it('TOO FEW (exit 2) and a spawn fault read the same way; a throw from the seam too', async () => {
     const tooFew = await runWave(spec, freshState(), io(mkdtempSync(join(tmpdir(), 'hc-')), { runHindcast: () => ({ status: 2, stdout: 'TOO FEW: train 12 < 30 or holdout 4 < 8\n', stderr: '', fault: null }) }))
-    expect(tooFew.hindcast).toEqual({ fault: 'exit 2: TOO FEW: train 12 < 30 or holdout 4 < 8' })
+    expect(tooFew.hindcast).toEqual(withReading({ fault: 'exit 2: TOO FEW: train 12 < 30 or holdout 4 < 8' }))
     const faulted = await runWave(spec, freshState(), io(mkdtempSync(join(tmpdir(), 'hc-')), { runHindcast: () => ({ status: null, stdout: '', stderr: '', fault: { code: 'ENOENT', status: null, signal: null, elapsedMs: 3 } }) }))
-    expect(faulted.hindcast).toEqual({ fault: 'the hindcast did not run (code ENOENT, status null, after 3 ms)' })
+    expect(faulted.hindcast).toEqual(withReading({ fault: 'the hindcast did not run (code ENOENT, status null, after 3 ms)' }))
     const thrown = await runWave(spec, freshState(), io(mkdtempSync(join(tmpdir(), 'hc-')), { exportOutcomeDataset: () => { throw new Error('disk full') } }))
     expect(thrown.decision.kind).toBe('next')
-    expect(thrown.hindcast).toEqual({ fault: 'disk full' })
+    expect(thrown.hindcast).toEqual(withReading({ fault: 'disk full' }))
     expect(thrown.ruleVerdicts).not.toBeNull()
   })
 
@@ -2463,7 +2467,7 @@ describe('the outcome hindcast at VERDICT', () => {
       exportOutcomeDataset: () => ({ n: 0, paths: {} }),
       runHindcast: () => { throw new Error('python must not be spawned for an empty dataset') },
     }))
-    expect(rec.hindcast).toEqual({ fault: 'no eligible labeled mission at K = 16 turns — nothing to train on' })
+    expect(rec.hindcast).toEqual(withReading({ fault: 'no eligible labeled mission at K = 16 turns — nothing to train on' }))
   })
 
   // F165 review N2: the VERDICT path itself splits the rules that read the v2
@@ -2520,7 +2524,7 @@ describe('the outcome hindcast at VERDICT', () => {
       appendLog: (t) => { entry = t },
     }))
     expect(rec.hindcast.holdout).toEqual(holdout)
-    expect(entry).toMatch(/^- Outcome hindcast: v3 .*; v2 holdout frozen now \(8 ids\)$/m)
+    expect(entry).toMatch(/^- Outcome hindcast: v3 .*; v2 holdout frozen now \(8 ids\); readings: UNMEASURED — reading holdout not yet frozen \(0 of 38 labeled; improved 0 \/ stalled 0; need 8 of each\)$/m)
   })
 
   it('a clean retrain puts M1.* into rule-verdicts.json through the rules\' test, and prints the line after the board', async () => {
@@ -2542,7 +2546,52 @@ describe('the outcome hindcast at VERDICT', () => {
       models: { gbt: { auc: 0.71 } }, secondary: { refusal: 'TOO FEW: train 5 < 30 or holdout 19 < 8' } })
     expect(rec.hindcast.ladder['M1.gbt']).toEqual(f.rules['M1.gbt'])
     expect(rec.ruleVerdicts.total).toBe(4)
-    expect(entry).toMatch(/^- Scoreboard: .*\n- Outcome hindcast: v3 at K = 16 turns on 20 held-out missions \(base 60%\): M1\.gbt precision 80% \[\d+, \d+\] on 10 fired p\(Holm\) \d\.\d{3} [A-Z][A-Z ]+; M1\.lr precision null on 0 fired p\(Holm\) null TOO FEW; R1\.no-progress precision null on 0 fired p\(Holm\) null UNMEASURED — no wave in scope \(no shadow decision at 50 % of its clock or later\); R2\.stalled precision null on 0 fired p\(Holm\) null UNMEASURED — no wave in scope \(no shadow decision at 25 % of its clock or later\); leak check gbt AUC prefix 0\.71 \/ hindsight 0\.93, lr AUC prefix 0\.50 \/ hindsight 0\.60; K = 32 TOO FEW: train 5 < 30 or holdout 19 < 8$/m)
+    expect(entry).toMatch(/^- Scoreboard: .*\n- Outcome hindcast: v3 at K = 16 turns on 20 held-out missions \(base 60%\): M1\.gbt precision 80% \[\d+, \d+\] on 10 fired p\(Holm\) \d\.\d{3} [A-Z][A-Z ]+; M1\.lr precision null on 0 fired p\(Holm\) null TOO FEW; R1\.no-progress precision null on 0 fired p\(Holm\) null UNMEASURED — no wave in scope \(no shadow decision at 50 % of its clock or later\); R2\.stalled precision null on 0 fired p\(Holm\) null UNMEASURED — no wave in scope \(no shadow decision at 25 % of its clock or later\); leak check gbt AUC prefix 0\.71 \/ hindsight 0\.93, lr AUC prefix 0\.50 \/ hindsight 0\.60; K = 32 TOO FEW: train 5 < 30 or holdout 19 < 8; readings: UNMEASURED — reading holdout not yet frozen \(0 of 38 labeled; improved 0 \/ stalled 0; need 8 of each\)$/m)
+  })
+
+  // Phase 7 ruling 1: with a frozen reading holdout the reading learner runs
+  // beside the mission one (`--unit reading` through the same seam), its
+  // held-out predictions reach the ladder as M2.* (unit reading), and the
+  // verdict entry prints them after the mission clause.
+  it('a frozen reading holdout: M2.* through the same ladder, on the record and on the line', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'hc-'))
+    let entry = null
+    const calls = []
+    // 10 held-out readings over 5 missions: 6 stalled, 4 improved; gbt fires on 4 stalled + 1 improved.
+    const intervals = Array.from({ length: 5 }, (_, m) => [0, 1].map(k => ({ missionId: `rm${m}`, interval: k, label: m * 2 + k < 6 ? 'stalled' : 'improved', signalsVersion: 2 }))).flat()
+    const gbtFired = new Set(['rm0:0', 'rm0:1', 'rm1:0', 'rm1:1', 'rm3:0'])
+    const preds = (fired) => intervals.map(r => ({ id: `${r.missionId}:${r.interval}`, missionId: r.missionId, interval: r.interval, pFail: fired.has(`${r.missionId}:${r.interval}`) ? 0.8 : 0.2 }))
+    const holdout = { frozen: true, frozenNow: true, frozenAt: 't', ids: 10, missions: 5 }
+    const rec = await runWave(spec, freshState(), io(home, {
+      exportReadingDataset: (args) => {
+        calls.push(['export', args.home, args.waves.length])
+        return { paths: { dataset: 'di', out: join(home, 'datasets', 'outcome-model.json'), manifest: 'm', signalsVersion: 2, rowsByVersion: { 2: 60 }, unit: 'reading' },
+          n: 60, waves: 30, excluded: { short: 0, noTicks: 0, noTurnTimes: 0, otherVersion: 0, noRow: 0 }, signalsVersion: 2, rowsByVersion: { 2: 60 }, holdout, intervals }
+      },
+      runHindcast: ({ paths }) => {
+        calls.push(['run', paths.unit ?? 'mission'])
+        if (paths.unit !== 'reading') { writeModel(paths.out); return { status: 0, stdout: 'ok', stderr: '', fault: null } }
+        const m = JSON.parse(readFileSync(paths.out, 'utf8'))
+        m.reading = { version: 1, unit: 'reading', signalsVersion: 2, rowsByVersion: { 2: 60 }, nTrain: 50, nHoldout: 10, baseRate: 0.6, features: ['a'], droppedFeatures: [], lengthFeature: null, leakCheck: null, secondary: null,
+          models: { gbt: { precision: 0.8, recall: 0.67, brier: 0.2, auc: 0.7, predictions: preds(gbtFired) }, lr: { precision: null, recall: null, brier: 0.3, auc: 0.5, predictions: preds(new Set()) } } }
+        writeFileSync(paths.out, JSON.stringify(m))
+        return { status: 0, stdout: 'ok', stderr: '', fault: null }
+      },
+      appendLog: (t) => { entry = t },
+    }))
+    // The mission learner first, then the readings; the export is handed this campaign's waves too.
+    expect(calls.map(c => c[0] === 'run' ? c[1] : c[0])).toEqual(['mission', 'export', 'reading'])
+    expect(calls[1][1]).toBe(home)
+    expect(calls[1][2]).toBeGreaterThanOrEqual(1)
+    const f = verdictsIn(home)
+    expect(f.rules['M2.gbt']).toMatchObject({ source: 'model', unit: 'reading', scope: 'holdout', n: 5, failures: 4, precision: 0.8, scopeN: 10 })
+    expect(f.rules['M2.lr']).toMatchObject({ source: 'model', unit: 'reading', n: 0, precision: null, p: null })
+    expect(f.rules['M1.gbt']).toMatchObject({ source: 'model', unit: 'mission' })
+    expect(rec.hindcast.reading).toMatchObject({ unit: 'reading', version: 1, nHoldout: 10, signalsVersion: 2, holdout, waves: 30 })
+    expect(rec.hindcast.reading.ladder['M2.gbt']).toEqual(f.rules['M2.gbt'])
+    expect(Object.keys(rec.hindcast.ladder).sort()).toEqual(['M1.gbt', 'M1.lr'])
+    expect(Object.keys(rec.hindcast.reading.ladder).sort()).toEqual(['M2.gbt', 'M2.lr'])
+    expect(entry).toMatch(/; K = 32 TOO FEW: train 5 < 30 or holdout 19 < 8; readings: v1 per interval, signals v2 only \(eligible v2 60\) on 10 held-out readings \(base 60%\): M2\.gbt precision 80% \[\d+, \d+\] on 5 fired p\(Holm\) \d\.\d{3} [A-Z][A-Z ]+; M2\.lr precision null on 0 fired p\(Holm\) null TOO FEW; leak check not run; reading:2 holdout frozen now \(10 readings of 5 missions\)$/m)
   })
 
   // Final review M1 (T5-M1): a writeRuleVerdicts that throws on the MODEL rows

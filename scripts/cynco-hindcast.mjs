@@ -18,10 +18,14 @@
 //
 // Nothing here runs in the engine. The model's held-out predictions reach the
 // authority ladder only through `modelRowsFrom` in scripts/cynco-rule-verdicts.mjs.
+//
+// Phase 7 ruling 1: the reading unit (`exportReadingDataset` →
+// `runReadingHindcast`, below) runs the same model on one sample per
+// inter-tick interval, with its own `reading:<v>` holdout; its rows are M2.*.
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { datasetRows, featuresOf, frozenSplit, signalsVersionOf, ensureVersionHoldout, DATASET_PATH, MANIFEST_PATH } from './cynco-outcome-dataset.mjs'
+import { datasetRows, featuresOf, frozenSplit, signalsVersionOf, ensureVersionHoldout, intervalRows, DATASET_PATH, DATASET_INTERVALS_PATH, MANIFEST_PATH, READING_UNIT } from './cynco-outcome-dataset.mjs'
 import { runSync, faultSummary } from './cynco-spawn.mjs'
 import { OUTCOME_MODEL_PATH } from './cynco-rule-verdicts.mjs'
 
@@ -141,9 +145,75 @@ export function noEligibleFault(exported, K = PRIMARY_TURNS) {
  *  holdout for it. When false the runner records `noEligibleFault`. */
 export const hindcastReady = (exported) => Boolean(exported?.n) && exported?.holdout?.frozen !== false
 
+// ── The reading unit (Phase 7 ruling 1) ──────────────────────────
+//
+// One labeled sample per inter-tick interval of a wave (`intervalRows`), put
+// through the same model with `--unit reading`: its own frozen holdout — the
+// manifest set `reading:<v>`, whole missions, frozen once by the mission
+// unit's rule (FREEZE_MIN_ELIGIBLE readings, MODEL_MIN_HOLDOUT of each label)
+// — and its predictions on the ladder as `M2.lr` / `M2.gbt`. The mission unit
+// stays primary; the reading is reported beside it. Below the minimum the
+// reading is UNMEASURED with the counts and python is not spawned.
+
+/** Where the reading unit's dataset lives: `<home>/datasets/` or `dir`. */
+export const readingDatasetPath = ({ home = null, datasetsDir = null }) =>
+  (datasetsDir ? join(datasetsDir, 'outcome-dataset-intervals.jsonl') : DATASET_INTERVALS_PATH(home))
+
+/**
+ * Export the reading dataset: `intervalRows(rows, waves)` of one signals
+ * version, written as JSONL, and the version's `reading:<v>` holdout ensured
+ * (frozen here, once, when the pool first reaches the minimum). `waves` are
+ * the bare wave records (the runner's `runnerWaves(...)` records). The
+ * interval rows ride back as `intervals` for the ladder (`modelRowsFrom`'s
+ * reading scope and labels). The model writes into the mission model's file
+ * (`outcome-model.json`), under `reading`.
+ */
+export function exportReadingDataset({ rows, waves, home, datasetsDir = null, manifestPath = MANIFEST_PATH, signalsVersion = HINDCAST_SIGNALS_VERSION, now = () => new Date().toISOString() }) {
+  const built = intervalRows(rows, waves, { signalsVersion })
+  const { holdout } = ensureVersionHoldout({ rows: built.rows, path: manifestPath, v: signalsVersion, unit: READING_UNIT, now })
+  const rowsByVersion = { [signalsVersion]: built.rows.length }
+  const out = (datasetsDir ? hindcastPathsIn(datasetsDir) : HINDCAST_PATHS(home)).out
+  const paths = { dataset: readingDatasetPath({ home, datasetsDir }), out, manifest: manifestPath, signalsVersion, rowsByVersion, unit: READING_UNIT }
+  writeJsonl(paths.dataset, built.rows)
+  return { paths, n: built.rows.length, waves: built.waves, excluded: built.excluded, signalsVersion, rowsByVersion, holdout, intervals: built.rows }
+}
+
+/** Whether the reading export can be trained on: its holdout is frozen. */
+export const readingReady = (exported) => exported?.holdout?.frozen === true
+
+/** The reading's UNMEASURED reason while its holdout is not frozen (F16: the counts, never a 0). */
+export function readingNotFrozenFault(exported) {
+  const h = exported?.holdout ?? {}
+  return `reading holdout not yet frozen (${h.eligible ?? 0} of ${h.needed ?? '?'} labeled; improved ${h.improved ?? 0} / stalled ${h.stalled ?? 0}; need ${h.needEach ?? '?'} of each)`
+}
+
+/**
+ * The reading hindcast from an export: `{ reading, model }`. `reading` is what
+ * `rec.hindcast.reading` carries — `{ fault, signalsVersion, rowsByVersion,
+ * holdout, waves, excluded }` (not frozen: python NOT spawned; or the model's
+ * own fault), or the model's summary with the same context. `model` is the
+ * written `reading` block (its predictions are the M2 rows), null on a fault.
+ */
+export function runReadingHindcast({ exported, runHindcast: run = runHindcast }) {
+  const ctx = { signalsVersion: exported?.signalsVersion ?? null, rowsByVersion: exported?.rowsByVersion ?? {}, holdout: exported?.holdout ?? null,
+    waves: exported?.waves ?? 0, excluded: exported?.excluded ?? null }
+  if (!readingReady(exported)) return { reading: { fault: readingNotFrozenFault(exported), ...ctx }, model: null }
+  const h = hindcastOf(run({ paths: exported.paths }), exported.paths.out, undefined, { unit: READING_UNIT })
+  if (h.fault) return { reading: { fault: h.fault, ...ctx }, model: null }
+  return { reading: { ...h.summary, ...ctx }, model: h.model }
+}
+
 /** The python retrain, capped. The raw `runSync` result comes back. The
- *  signals version and the per-version counts go with it (F165). */
+ *  signals version and the per-version counts go with it (F165). A reading
+ *  export's paths (`unit: 'reading'`) run `--unit reading` on the interval
+ *  dataset — no hindsight, no second prefix (Phase 7 ruling 1). */
 export function runHindcast({ paths, run = runSync }) {
+  if (paths.unit === READING_UNIT) {
+    return run('python', [OUTCOME_MODEL_SCRIPT, '--unit', READING_UNIT, '--dataset', paths.dataset,
+      '--manifest', paths.manifest ?? MANIFEST_PATH, '--out', paths.out,
+      '--signals-version', String(paths.signalsVersion ?? HINDCAST_SIGNALS_VERSION),
+      '--rows-by-version', JSON.stringify(paths.rowsByVersion ?? {})], { timeoutMs: HINDCAST_TIMEOUT_MS })
+  }
   return run('python', [OUTCOME_MODEL_SCRIPT, '--dataset', paths.dataset, '--dataset32', paths.dataset32, '--hindsight', paths.hindsight,
     '--manifest', paths.manifest ?? MANIFEST_PATH, '--out', paths.out,
     '--signals-version', String(paths.signalsVersion ?? HINDCAST_SIGNALS_VERSION),
@@ -180,11 +250,16 @@ export function hindcastSummary(model) {
  * The spawn result as a reading: `{ fault }` for anything but a clean exit 0,
  * else `{ model, summary }` with the model file read back from `path`.
  */
-export function hindcastOf(result, path, read = (p) => JSON.parse(readFileSync(p, 'utf8'))) {
+export function hindcastOf(result, path, read = (p) => JSON.parse(readFileSync(p, 'utf8')), { unit = 'mission' } = {}) {
   if (result?.fault) return { fault: `the hindcast did not run (${faultSummary(result.fault)})` }
   if (result?.timedOut) return { fault: `the hindcast timed out after ${result.elapsedMs} ms` }
   if (result?.status !== 0) return { fault: `exit ${result?.status ?? 'null'}: ${tail(`${result?.stdout ?? ''}\n${result?.stderr ?? ''}`) || 'no output'}` }
   if (!existsSync(path)) return { fault: `exit 0 but no model at ${path}` }
-  const model = read(path)
-  return { model, summary: hindcastSummary(model) }
+  const file = read(path)
+  if (unit !== READING_UNIT) return { model: file, summary: hindcastSummary(file) }
+  // Phase 7 ruling 1: the reading run writes its block under `reading`; a
+  // file without one is a fault, never the previous wave's block read as new.
+  const model = file?.reading
+  if (!model || typeof model !== 'object') return { fault: `exit 0 but no reading block in ${path}` }
+  return { model, summary: { unit: READING_UNIT, ...hindcastSummary(model) } }
 }

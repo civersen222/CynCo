@@ -268,6 +268,18 @@ describe('perRulePrecision — predictive ÷ total, and the best rule', () => {
     const rv = { rules: { ...ruleVerdicts.rules, 'R1.no-progress': { ...rule('PREDICTIVE', 0.95, [0.7, 0.99], 20), source: 'runner', scope: 'waves' } } }
     expect(perRulePrecision(rv)).toEqual({ predictive: 0, total: 8, best: { id: 'I3', precision: 0.58, ci: [0.45, 0.70], verdict: 'NO EVIDENCE' }, learner: null })
   })
+  // Phase 7 ruling 1: the reading learner's M2.* rows are model rows too —
+  // neither counted nor ranked — and the `learner` field stays the MISSION
+  // learner's best (the mission unit is primary), even when an M2 reads better.
+  it('the reading learner\'s M2.* rows are neither rules nor the `learner`', () => {
+    const rv = { rules: { ...ruleVerdicts.rules,
+      'M1.gbt': { ...rule('NO EVIDENCE', 0.6, [0.3, 0.8], 10), source: 'model', scope: 'holdout', unit: 'mission' },
+      'M2.gbt': { ...rule('PREDICTIVE', 0.95, [0.8, 0.99], 40), source: 'model', scope: 'holdout', unit: 'reading' } } }
+    expect(perRulePrecision(rv)).toEqual({ predictive: 0, total: 8, best: { id: 'I3', precision: 0.58, ci: [0.45, 0.70], verdict: 'NO EVIDENCE' },
+      learner: { id: 'M1.gbt', precision: 0.6, ci: [0.3, 0.8], verdict: 'NO EVIDENCE' } })
+    const onlyReadings = { rules: { 'M2.gbt': rv.rules['M2.gbt'] } }
+    expect(perRulePrecision(onlyReadings)).toEqual({ predictive: 0, total: 0, best: null, learner: null })
+  })
   it('model rows only: 0/0 rules, no best rule, the learner still read', () => {
     const rv = { rules: { 'M1.lr': { ...rule('TOO FEW — cannot tell', 0.5, [0.2, 0.8], 4), source: 'model' } } }
     expect(perRulePrecision(rv)).toEqual({ predictive: 0, total: 0, best: null, learner: { id: 'M1.lr', precision: 0.5, ci: [0.2, 0.8], verdict: 'TOO FEW — cannot tell' } })

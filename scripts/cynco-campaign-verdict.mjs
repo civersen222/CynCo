@@ -108,7 +108,23 @@ export function hindcastLine(h, { detail = false, runners = null } = {}) {
     return `${id} precision ${pct(r?.precision)}${ci} on ${r?.n ?? 0} fired p(Holm) ${num(r?.pAdjusted, 3)} ${verdict}${note}`
   }
   const runnerRungs = Object.entries(runners ?? {}).sort(byId).map(rung)
-  if (h.fault) return `- Outcome hindcast: UNMEASURED — ${h.fault}${runnerRungs.map(r => `; ${r}`).join('')}`
+  const dead = (x) => (x?.droppedFeatures?.length ? `; dropped ${x.droppedFeatures.length} dead column(s)${detail ? `: ${x.droppedFeatures.join(', ')}` : ''}` : '')
+  const eligibleOf = (x) => {
+    const counts = Object.entries(x?.rowsByVersion ?? {}).sort(([a], [b]) => Number(a) - Number(b)).map(([k, n]) => `v${k} ${n}`)
+    return typeof x?.signalsVersion === 'number' ? `, signals v${x.signalsVersion} only (eligible ${counts.join(', ') || 'none'})` : ''
+  }
+  // Phase 7 ruling 1: the reading unit (`h.reading`, M2.*) beside the mission
+  // unit, in the same grammar, after the whole mission clause. Absent on a
+  // record written before Phase 7. Readings have no hindsight, so their leak
+  // check always reads "not run".
+  const r = h.reading
+  const readings = !r ? ''
+    : r.fault ? `; readings: UNMEASURED — ${r.fault}`
+      : `; readings: v${r.version ?? '?'} per interval${eligibleOf(r)} on ${r.nHoldout ?? '?'} held-out readings (base ${pct(r.baseRate)}): `
+        + `${Object.keys(r.ladder ?? {}).length ? Object.entries(r.ladder).sort(byId).map(rung).join('; ')
+          : r.ladderFault ? `LADDER NOT WRITTEN (${r.ladderFault}) — rules rewritten alone` : 'no ladder reading'}; leak check not run${dead(r)}`
+        + `${r.holdout?.frozenNow === true ? `; reading:${r.signalsVersion ?? '?'} holdout frozen now (${r.holdout.ids ?? '?'} readings of ${r.holdout.missions ?? '?'} missions)` : ''}`
+  if (h.fault) return `- Outcome hindcast: UNMEASURED — ${h.fault}${runnerRungs.map(r => `; ${r}`).join('')}${readings}`
   const models = Object.entries(h.ladder ?? {}).sort(byId).map(rung)
   // A model ladder that faulted still says so when the runner rows follow it.
   const ladder = [...(!models.length && h.ladderFault ? [`LADDER NOT WRITTEN (${h.ladderFault}) — rules rewritten alone`] : models), ...runnerRungs]
@@ -128,7 +144,7 @@ export function hindcastLine(h, { detail = false, runners = null } = {}) {
   // holdout freeze — is named on the wave whose export performed it.
   const frozeNow = h.holdout?.frozenNow === true ? `; v${h.signalsVersion ?? '?'} holdout frozen now (${h.holdout.ids ?? '?'} ids)` : ''
   return `- Outcome hindcast: v${h.version ?? '?'} at K = ${h.prefixTurns ?? '?'} turns${signals} on ${h.nHoldout ?? '?'} held-out missions (base ${pct(h.baseRate)}): `
-    + `${ladder.length ? ladder.join('; ') : 'no ladder reading'}; ${leak}${length}${secondary}${dropped}${frozeNow}`
+    + `${ladder.length ? ladder.join('; ') : 'no ladder reading'}; ${leak}${length}${secondary}${dropped}${frozeNow}${readings}`
 }
 
 export function verdictEntry({ spec, wave, row, grade, decision, ideationRecord, economicsLines, denialAnalysis = null, denialScope = 'campaign', capProposal = null, governancePosiwid = null, gateLines = null, identity = null, autopoiesis = null, scoreboard = null, hindcast = null, progress = null, runnerLadder = null }) {

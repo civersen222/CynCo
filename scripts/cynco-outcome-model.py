@@ -65,11 +65,32 @@ holds one frozen set per signals version (`{"schema": 2, "sets": {...}}`, fix
 round 2); the held-out ids are those of `--signals-version`'s set (version 1
 without the flag). A Phase 5 schema-1 file is version 1's set.
 
+The reading unit (Phase 7 ruling 1)
+-----------------------------------
+`--unit reading` trains the same two models on a different unit: one row per
+inter-tick interval of a wave (`DATASET_INTERVALS_PATH`,
+`intervalRows` in scripts/cynco-outcome-dataset.mjs), labelled `improved` /
+`stalled`. The two units' label maps are kept apart and explicit
+(`POSITIVE_LABEL`, `NEGATIVE_LABEL`): a mission's success is `true`
+(landed), a reading's is `improved`, and in both the probability written is
+that of the NEGATIVE class — `pFail` is P(stalled) for a reading, so "fired"
+reads the same way on the ladder (`M2.lr` / `M2.gbt`). The holdout is the
+manifest set `reading:<version>`, whose `missionIds` are WHOLE missions:
+every interval of a held mission is held, so one mission's intervals never
+straddle train and holdout. A reading prediction carries `id`
+(`missionId:interval`), `missionId`, `interval` and `pFail`. The block is
+written under `reading` in `--out` beside the mission model (a mission run
+carries the previous `reading` block over; a reading run replaces only it),
+with the same keys as the mission block (`leakCheck` and `secondary` null:
+there is no hindsight or second prefix for an interval). `--hindsight` and
+`--dataset32` are refused with `--unit reading`.
+
 Version
 -------
 `version` is the previous file's version + 1 when any held-out prediction
 changed, and unchanged when none did, so the version counts retrains that
-said something different.
+said something different (per unit: the reading block against the previous
+reading block).
 
 Exit codes: 0 written; 2 too few rows (or one class) — nothing written, the
 reason printed on stdout; 1 bad input. Never touches the network.
@@ -77,6 +98,7 @@ reason printed on stdout; 1 bad input. Never touches the network.
 Usage:
   python scripts/cynco-outcome-model.py --dataset D.jsonl --manifest frozen-eval.json --out outcome-model.json
       [--hindsight H.jsonl] [--dataset32 D32.jsonl] [--min-train 30] [--min-holdout 8] [--signals-version N] [--rows-by-version JSON]
+      [--unit mission|reading]
 """
 
 import argparse
@@ -102,6 +124,35 @@ DECIMALS = 6
 # fractional prefix leaked the finished length — failures ran a median 169
 # turns against 95.5), and `prefixTurns` is metadata, never a feature.
 LENGTH_KEYS = ("turnsInPrefix", "prefixTurns", "turns", "totalTurns")
+# The two units' labels, kept apart (Phase 7 ruling 1). A mission's dataset
+# label is a boolean (true = landed); a reading's is a string. POSITIVE is the
+# success class, NEGATIVE the one every probability here is of.
+UNITS = ("mission", "reading")
+POSITIVE_LABEL = {"mission": True, "reading": "improved"}
+NEGATIVE_LABEL = {"mission": False, "reading": "stalled"}
+# How a refusal names the two classes per unit.
+CLASS_NAMES = {"mission": ("failures", "successes"), "reading": ("stalled", "improved")}
+
+
+def unit_rows(rows, unit):
+    """The rows as the pipeline reads them: `label` a boolean (true = the
+    unit's POSITIVE_LABEL). A mission row passes through unchanged. A reading
+    row is copied with its string label mapped; a row whose label is neither
+    of the unit's two is unlabeled and left out."""
+    if unit == "mission":
+        return rows
+    out = []
+    for r in rows:
+        lab = r.get("label")
+        if lab == POSITIVE_LABEL[unit] or lab == NEGATIVE_LABEL[unit]:
+            out.append({**r, "label": lab == POSITIVE_LABEL[unit]})
+    return out
+
+
+def set_key(version, unit):
+    """The manifest set a unit's holdout lives in: "<v>" for missions,
+    "reading:<v>" for readings."""
+    return str(version) if unit == "mission" else f"{unit}:{version}"
 
 
 def read_rows(path):
@@ -145,17 +196,18 @@ def version_counts(rows, held):
     return out
 
 
-def held_ids(manifest, version):
+def held_ids(manifest, version, unit="mission"):
     """The frozen holdout ids for a signals version (F165 fix round 2). A
     schema-2 file holds one set per version under `sets`; a Phase 5 schema-1
     file IS version 1's set. With no version filter, version 1 (the Phase 5
-    behaviour). A version with no frozen set holds nothing."""
+    behaviour). A version with no frozen set holds nothing. The reading unit's
+    set is `reading:<v>`; its ids are whole missions (Phase 7 ruling 1)."""
     v = 1 if version is None else version
     if manifest.get("schema") == 2 and isinstance(manifest.get("sets"), dict):
-        s = manifest["sets"].get(str(v)) or {}
+        s = manifest["sets"].get(set_key(v, unit)) or {}
         return set(s.get("missionIds") or [])
     if manifest.get("schema") == 1:
-        return set(manifest.get("missionIds") or []) if v == 1 else set()
+        return set(manifest.get("missionIds") or []) if v == 1 and unit == "mission" else set()
     raise SystemExit(f"--manifest is not a frozen-eval manifest (schema {manifest.get('schema')})")
 
 
@@ -232,7 +284,16 @@ def auc_of(y, p):
     return float(roc_auc_score(y, p))
 
 
-def fit_eval(train, holdout):
+def prediction(r, p, unit):
+    """One held-out prediction. A reading names its interval too: `id` is
+    `missionId:interval`, the reading's identity on the ladder."""
+    if unit == "mission":
+        return {"missionId": r["missionId"], "pFail": round(float(p), DECIMALS)}
+    return {"id": f"{r['missionId']}:{r.get('interval')}", "missionId": r["missionId"], "interval": r.get("interval"),
+            "pFail": round(float(p), DECIMALS)}
+
+
+def fit_eval(train, holdout, unit="mission"):
     """Fit both models on `train`, score on `holdout`. Returns the kept and
     dropped feature keys and, per model, holdout metrics and predictions."""
     keys = feature_keys(train + holdout)
@@ -278,22 +339,26 @@ def fit_eval(train, holdout):
             "brier": float(np.mean((p - yho) ** 2)) if len(yho) else None,
             "auc": auc_of(yho, p),
             "predictions": sorted(
-                ({"missionId": r["missionId"], "pFail": round(float(v), DECIMALS)} for r, v in zip(holdout, p)),
-                key=lambda d: d["missionId"],
+                (prediction(r, v, unit) for r, v in zip(holdout, p)),
+                key=lambda d: d.get("id", d["missionId"]),
             ),
         }
     return kept, dropped, reasons, out
 
 
-def evaluate(rows, held, min_train, min_holdout):
-    """One dataset through the split and both models, or `{refusal}`."""
+def evaluate(rows, held, min_train, min_holdout, unit="mission"):
+    """One dataset (its labels already through `unit_rows`) through the split
+    and both models, or `{refusal}`. The split is by `missionId` for both
+    units, so a held mission's readings are all held (Phase 7 ruling 1:
+    missions split whole)."""
     train, holdout = split(labeled(rows), held)
     if len(train) < min_train or len(holdout) < min_holdout:
         return {"refusal": f"TOO FEW: train {len(train)} < {min_train} or holdout {len(holdout)} < {min_holdout}"}
     classes = set(y_fail(train).tolist())
     if len(classes) < 2:
-        return {"refusal": f"ONE CLASS: the {len(train)} training rows are all {'failures' if 1 in classes else 'successes'}, nothing to separate"}
-    kept, dropped, reasons, models = fit_eval(train, holdout)
+        neg, pos = CLASS_NAMES[unit]
+        return {"refusal": f"ONE CLASS: the {len(train)} training rows are all {neg if 1 in classes else pos}, nothing to separate"}
+    kept, dropped, reasons, models = fit_eval(train, holdout, unit)
     turns =sorted({r.get("prefixTurns") for r in train + holdout if isinstance(r.get("prefixTurns"), int)})
     return {
         "prefixTurns": turns[0] if len(turns) == 1 else (turns or None),
@@ -308,20 +373,28 @@ def evaluate(rows, held, min_train, min_holdout):
     }
 
 
-def previous_version(path, models):
-    """The version to write, an int: the previous file's version when no
-    held-out prediction changed, else that + 1; 1 when there is no readable
-    schema-matching file at `path`."""
+def read_previous(path):
+    """The previous file at `path` as a dict, or None when there is none, it
+    is not readable JSON, or it is not this schema (said on stderr)."""
     if not os.path.exists(path):
-        return 1
+        return None
     try:
         with open(path, encoding="utf-8") as f:
             prev = json.load(f)
     except (OSError, json.JSONDecodeError) as e:
         print(f"[outcome-model] {path} is not readable JSON; starting over at version 1: {e}", file=sys.stderr)
-        return 1
-    if not isinstance(prev, dict) or prev.get("schema") != SCHEMA or not isinstance(prev.get("version"), int):
+        return None
+    if not isinstance(prev, dict) or prev.get("schema") != SCHEMA:
         print(f"[outcome-model] {path} is not a schema-{SCHEMA} outcome model; starting over at version 1", file=sys.stderr)
+        return None
+    return prev
+
+
+def previous_version(prev, models):
+    """The version to write, an int: `prev`'s version when no held-out
+    prediction changed, else that + 1; 1 when `prev` (the previous block of
+    the same unit) is absent or carries no integer version."""
+    if not isinstance(prev, dict) or not isinstance(prev.get("version"), int):
         return 1
     before = {k: (prev.get("models") or {}).get(k, {}).get("predictions") for k in models}
     after = {k: models[k]["predictions"] for k in models}
@@ -352,18 +425,28 @@ def main(argv):
     ap.add_argument("--rows-by-version", default=None,
                     help='JSON {"<version>": eligible missions} as the caller counted them before filtering '
                          "(the hindcast's export); default: the labeled rows of --dataset per version")
+    ap.add_argument("--unit", choices=UNITS, default="mission",
+                    help="mission: one row per labeled mission (true = landed); reading: one row per inter-tick "
+                         "interval (improved / stalled), written under `reading` in --out (Phase 7 ruling 1)")
     args = ap.parse_args(argv)
     if args.signals_version is not None and args.signals_version < 1:
         raise SystemExit(f"--signals-version must be a positive integer, got {args.signals_version}")
+    if args.unit == "reading" and (args.hindsight or args.dataset32):
+        raise SystemExit("--hindsight and --dataset32 are mission-unit inputs; refused with --unit reading")
 
     with open(args.manifest, encoding="utf-8") as f:
         manifest = json.load(f)
-    held = held_ids(manifest, args.signals_version)
+    held = held_ids(manifest, args.signals_version, args.unit)
 
-    all_rows = read_rows(args.dataset)
+    all_rows = unit_rows(read_rows(args.dataset), args.unit)
     rows_by_version = parse_rows_by_version(args.rows_by_version, all_rows)
     rows, other_rows = by_version(all_rows, args.signals_version)
-    primary = evaluate(rows, held, args.min_train, args.min_holdout)
+    primary = evaluate(rows, held, args.min_train, args.min_holdout, args.unit)
+    if args.unit == "reading":
+        if "refusal" in primary:
+            print(primary["refusal"] + version_note(args.signals_version, rows_by_version))
+            return 2
+        return write_reading(args, primary, rows_by_version)
     if "refusal" in primary:
         # F165: a refusal under a version filter names what each version had,
         # so "TOO FEW" reads as "too few v2 missions yet", never as a mixed set.
@@ -392,9 +475,10 @@ def main(argv):
     if args.signals_version is not None:
         secondary = {**(secondary or {}), "otherSignalsVersions": version_counts(other_rows, held)}
 
+    prev = read_previous(args.out)
     out = {
         "schema": SCHEMA,
-        "version": previous_version(args.out, models),
+        "version": previous_version(prev, models),
         "trainedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         # null: every row, whatever its version (the pre-F165 behaviour).
         "signalsVersion": args.signals_version,
@@ -410,6 +494,11 @@ def main(argv):
         "leakCheck": leak,
         "secondary": secondary,
     }
+    # Phase 7 ruling 1: the reading block is the reading run's to replace;
+    # a mission run carries the previous one over so its version keeps
+    # counting (the hindcast reads it only from a reading run that exited 0).
+    if isinstance(prev, dict) and "reading" in prev:
+        out["reading"] = prev["reading"]
     write_atomic(args.out, out)
     summary = ", ".join(
         f"{k} precision {models[k]['precision'] if models[k]['precision'] is None else round(models[k]['precision'], 3)}"
@@ -417,6 +506,30 @@ def main(argv):
         for k in models
     )
     print(f"outcome model v{out['version']}: train {out['nTrain']}, holdout {out['nHoldout']} (base {out['baseRate']:.3f}); {summary} -> {args.out}")
+    return 0
+
+
+def write_reading(args, primary, rows_by_version):
+    """The reading unit's block, written under `reading` in --out beside
+    whatever mission model is there (none: a file with the block alone)."""
+    prev = read_previous(args.out)
+    models = primary["models"]
+    block = {
+        "version": previous_version((prev or {}).get("reading"), models),
+        "trainedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "unit": "reading",
+        "positiveLabel": POSITIVE_LABEL["reading"],
+        "signalsVersion": args.signals_version,
+        "rowsByVersion": rows_by_version,
+        **primary,
+        "lengthFeature": next((k for k in primary["features"] if k in LENGTH_KEYS), None),
+        "leakCheck": None,
+        "secondary": None,
+    }
+    out = {**(prev or {"schema": SCHEMA}), "reading": block}
+    write_atomic(args.out, out)
+    print(f"outcome model (readings) v{block['version']}: train {block['nTrain']}, holdout {block['nHoldout']} "
+          f"(base {block['baseRate']:.3f}) -> {args.out}")
     return 0
 
 
