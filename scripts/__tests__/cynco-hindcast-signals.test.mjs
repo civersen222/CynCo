@@ -80,9 +80,11 @@ describe('the hindcast trains on one signals version (F165)', () => {
       runHindcast: () => { throw new Error('python must not be spawned with no v2 row') },
     })
     // The CLI builds the runner row as the VERDICT does (Task 4 review I1): the
-    // temp home has no campaigns, so R1.no-progress is UNMEASURED on the line.
+    // temp home has no campaigns, so R1.no-progress (and, Phase 7, R2.stalled)
+    // is UNMEASURED on the line.
     expect(lines[0]).toBe('- Outcome hindcast: UNMEASURED — no eligible labeled mission at K = 16 turns with signals v2 (eligible by version: v1: 4) — nothing to train on'
-      + '; R1.no-progress precision null on 0 fired p(Holm) null UNMEASURED — no wave in scope (no shadow decision at 50 % of its clock or later)')
+      + '; R1.no-progress precision null on 0 fired p(Holm) null UNMEASURED — no wave in scope (no shadow decision at 50 % of its clock or later)'
+      + '; R2.stalled precision null on 0 fired p(Holm) null UNMEASURED — no wave in scope (no shadow decision at 25 % of its clock or later)')
   })
 })
 

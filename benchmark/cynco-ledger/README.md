@@ -1484,7 +1484,8 @@ would before any later phase lets it stop a wave.
 **The verdict line.** `verdictEntry` prints, after `- Autopoiesis:` and before
 `- Scoreboard:`, `progressLine(rec)`:
 `- Progress: 14 → 3 fails over 3 readings (first fix at 41 min; last at 210
-min: 3); R1.no-progress fired at 52% (would have saved 3.2 h)` — minutes are
+min: 3); R1.no-progress fired at 52% (would have saved 3.2 h); R2.stalled not
+evaluated` (a record with no `R2.stalled` decision; Phase 7, below) — minutes are
 `at − dispatchedAt`; `no drop` when no reading went below the start; `; N
 fault(s)` when probes faulted. With no measured reading:
 `- Progress: no readings (<reason>)`. A runner io with no probe prints no line.
@@ -1553,6 +1554,58 @@ leak check …`.
 
 If the write throws on the MODEL rows, the fallback rewrite keeps the runner
 rows.
+
+### `R2.stalled` beside `R1.no-progress` (Phase 7 ruling 2)
+
+On the live C10 campaign `R1.no-progress` never fired while the wave sat flat
+for five hours: R1 compares against the wave's START count and waits for 50 %
+of the clock, so a wave that fixed a few lines early and then stalled is
+invisible to it. Phase 7 adds a second shadow rule through the SAME path —
+tracker, wave record, runner row, Holm family, ladder line — and changes
+nothing about R1.
+
+**The rule.** `shadowStalled({ readings, decisions, clockMs, nowMs, at })` in
+`scripts/cynco-campaign-progress.mjs`: *if at ≥ 25 % of the wave's wall clock
+the fail count has not decreased over the last three measured ticks, the wave
+is stalled.* The name and constants live beside R1's in
+`scripts/cynco-runner-rows.mjs` (`STALLED_RULE = 'R2.stalled'`,
+`STALLED_AT = 0.25`, `STALLED_WINDOW = 3`; the progress module re-exports
+them). The decision is
+`{ rule: 'R2.stalled', at, elapsedFraction, fired, window, fails, wouldHaveSavedS }`:
+`window` = the counts of the last three MEASURED ticks (fewer when fewer were
+measured), `fails` = the latest of them (null when none), `wouldHaveSavedS` as
+R1's. `fired` iff `elapsedFraction ≥ 0.25` AND the window is full AND never
+decreases (each count ≥ the one before) AND the latest count > 0. An unknown
+clock is `elapsedFraction: null` and never a firing (unmeasured, never 0).
+
+**The tick series.** R2 reads ticks, not readings. The tracker pushes R1's
+decision, then R2's, at every due tick (`rec.shadowDecisions` alternates
+`R1.no-progress`, `R2.stalled`). R2's input is R1's decisions — one per tick,
+`fails` the last measured count, carried across a skip tick (the sha did not
+move, so the count is still true) — with one correction: R1 also carries the
+stale count onto a FAULTED tick, and a fault is no measurement, so the tracker
+marks that tick `{ fails: null, fault }` and R2 leaves it out of the window. A
+firing is one runner log line (`[campaign] shadow R2.stalled FIRED at N% (a, b,
+c fails over the last 3 measured ticks; would have saved X h) — shadow only,
+nothing stopped`) and one record entry; nothing is stopped, nothing reaches
+the driver, the brief or the engine.
+
+**The runner row.** `runnerRowsFromEntries` returns two rows, always, in this
+order: `[R1.no-progress, R2.stalled]`. Each is `runnerRowFor(entries, { id, at })`
+— the scan described above for R1, with the rule's own id and threshold: R2's
+scope is the waves with ≥ 1 `R2.stalled` decision at `elapsedFraction ≥ 0.25`,
+fired or not; fired, failed, unlabeled and skipped read as R1's. Each row
+carries its `at`, so an empty scope names its own threshold: R2's reads
+`UNMEASURED — no wave in scope (no shadow decision at 25 % of its clock or
+later)`. R2 joins the one Holm family after R1, never moves the version
+(`runnerChanged`), and is neither a rule nor an authority, exactly as R1.
+
+**The lines.** `progressLine` names both rules:
+`…; R1.no-progress did not fire (4 decision(s)); R2.stalled fired at 186 min
+(4 decision(s))` — R2 at the wave minute (`at − dispatchedAt`) of its first
+firing, else `did not fire (n decision(s))`; a record from before Phase 7 reads
+`R2.stalled not evaluated`. The `- Outcome hindcast:` ladder line prints every
+runner row in id order, so `R2.stalled …` follows `R1.no-progress …`.
 
 ### Reading-level outcomes (Phase 7 ruling 1)
 

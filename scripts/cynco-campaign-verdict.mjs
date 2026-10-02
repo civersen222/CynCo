@@ -94,7 +94,8 @@ function identityLine(identity) {
 // Phase 6 Task 4: `runners` (the ladder's `source: 'runner'` entries,
 // `R1.no-progress`) are named with their verdict on this same ladder line,
 // after the model rows, read the same way. The runner row does not depend on
-// the hindcast, so a fault line carries it too.
+// the hindcast, so a fault line carries it too. Phase 7: every runner row is
+// printed, in id order — `R1.no-progress`, then `R2.stalled`.
 export function hindcastLine(h, { detail = false, runners = null } = {}) {
   if (!h) return null
   const pct = (v) => (typeof v === 'number' ? `${Math.round(v * 100)}%` : 'null')
@@ -179,7 +180,8 @@ export function verdictEntry({ spec, wave, row, grade, decision, ideationRecord,
   // (scripts/cynco-scoreboard.mjs). No board, no line.
   lines.push(...scoreboardLines(scoreboard))
   // Phase 5 ruling 5: the outcome hindcast, right after the board.
-  // Phase 6 Task 4: the ladder's runner rows (R1.no-progress) ride on it.
+  // Phase 6 Task 4: the ladder's runner rows (R1.no-progress; Phase 7:
+  // R2.stalled after it) ride on it.
   const hcLine = hindcastLine(hindcast, { runners: runnerLadder })
   if (hcLine) lines.push(hcLine)
   if (denialAnalysis?.invariants) {

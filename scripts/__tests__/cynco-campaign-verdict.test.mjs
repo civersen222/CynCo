@@ -363,3 +363,20 @@ describe('verdictEntry — the scoreboard line (Phase 5)', () => {
     expect(entry(undefined)).not.toMatch(/Scoreboard:/)
   })
 })
+
+// Phase 7 ruling 2: every runner row rides the ladder line, in id order —
+// R2.stalled after R1.no-progress — on a measured hindcast and a faulted one.
+describe('verdictEntry — the runner rows on the ladder line (Phase 7)', () => {
+  const runnerLadder = {
+    'R2.stalled': { verdict: 'TOO FEW — cannot tell', precision: 1, ci: [0.21, 1], n: 1, pAdjusted: 1, source: 'runner' },
+    'R1.no-progress': { verdict: 'UNMEASURED — fired on no in-scope wave', precision: null, ci: null, n: 0, pAdjusted: null, source: 'runner' },
+  }
+  const entry = (hindcast) => verdictEntry({ spec: { id: 'c10' }, wave: 2, row, grade, decision: { kind: 'next', why: 'x' }, ideationRecord: null, economicsLines: [], hindcast, runnerLadder })
+  const R1 = 'R1.no-progress precision null on 0 fired p(Holm) null UNMEASURED — fired on no in-scope wave'
+  const R2 = 'R2.stalled precision 100% [21, 100] on 1 fired p(Holm) 1.000 TOO FEW'
+  it('prints R2.stalled after R1.no-progress', () => {
+    expect(entry({ version: 1, prefixTurns: 16, nHoldout: 21, baseRate: 0.5, ladder: {} }))
+      .toMatch(new RegExp(`^- Outcome hindcast: v1 at K = 16 turns on 21 held-out missions \\(base 50%\\): ${R1.replace(/[()]/g, '\\$&')}; ${R2.replace(/[()[\]]/g, '\\$&')}; leak check not run$`, 'm'))
+    expect(entry({ fault: 'exit 2: TOO FEW' })).toContain(`- Outcome hindcast: UNMEASURED — exit 2: TOO FEW; ${R1}; ${R2}`)
+  })
+})

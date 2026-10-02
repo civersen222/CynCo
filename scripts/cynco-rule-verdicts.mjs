@@ -84,7 +84,9 @@ function modelRuleOf(m, rows, analyse) {
 
 /** A runner row's verdict when there is no table to read one from (F16:
  *  unmeasured is null with its reason, never a rate of 0). */
-export const RUNNER_UNMEASURED_NO_SCOPE = 'UNMEASURED — no wave in scope (no shadow decision at 50 % of its clock or later)'
+export const runnerUnmeasuredNoScope = (at) => `UNMEASURED — no wave in scope (no shadow decision at ${Math.round(at * 100)} % of its clock or later)`
+/** R1's (50 %); Phase 7: each runner row names its OWN threshold (`row.at`, R2.stalled's is 25 %). */
+export const RUNNER_UNMEASURED_NO_SCOPE = runnerUnmeasuredNoScope(0.5)
 export const RUNNER_UNMEASURED_NEVER_FIRED = 'UNMEASURED — fired on no in-scope wave'
 
 /**
@@ -106,7 +108,8 @@ function runnerRuleOf(u, analyse) {
   })
   const r = res.rules.find(x => x.id === u.id)
     ?? { id: u.id, firedTotal: 0, labeled: 0, failures: 0, precision: null, ci: wilson(0, 0), lift: null, p: null, coverage: 0 }
-  const unmeasured = res.labeled === 0 ? RUNNER_UNMEASURED_NO_SCOPE : r.labeled === 0 ? RUNNER_UNMEASURED_NEVER_FIRED : null
+  const noScope = typeof u.at === 'number' && Number.isFinite(u.at) ? runnerUnmeasuredNoScope(u.at) : RUNNER_UNMEASURED_NO_SCOPE
+  const unmeasured = res.labeled === 0 ? noScope : r.labeled === 0 ? RUNNER_UNMEASURED_NEVER_FIRED : null
   // Review M1: the wave records runnerRowsFrom could not read, named, so a
   // malformed line in some campaign's waves.jsonl is visible on the row.
   const skipped = Array.isArray(u.skipped) ? u.skipped : []

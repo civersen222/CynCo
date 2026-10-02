@@ -1831,7 +1831,7 @@ describe('the rule verdicts at VERDICT', () => {
     const home = mkdtempSync(join(tmpdir(), 'rv-home-'))
     const state = freshState()
     const rec = await runWave(spec, state, io({ readLedgerRows: ledger, datasetsHome: () => home }))
-    expect(rec.ruleVerdicts).toMatchObject({ version: 1, predictive: ['X'], total: 3, rules: 2, modelRows: 0, runnerRows: 1 })
+    expect(rec.ruleVerdicts).toMatchObject({ version: 1, predictive: ['X'], total: 4, rules: 2, modelRows: 0, runnerRows: 2 })
     const f = JSON.parse(readFileSync(join(home, 'datasets', 'rule-verdicts.json'), 'utf8'))
     expect(f).toMatchObject({ schema: 1, version: 1, campaign: 'c8', predictive: ['X'] })
     expect(f.rules.X.verdict).toBe('PREDICTIVE')
@@ -1846,7 +1846,7 @@ describe('the rule verdicts at VERDICT', () => {
       readLedgerRows: () => { throw new Error('the ledger must not be read a second time') },
       datasetsHome: () => home,
     }))
-    expect(rec.ruleVerdicts).toMatchObject({ version: 1, predictive: ['X'], total: 3, rules: 2, modelRows: 0, runnerRows: 1 })
+    expect(rec.ruleVerdicts).toMatchObject({ version: 1, predictive: ['X'], total: 4, rules: 2, modelRows: 0, runnerRows: 2 })
   })
 
   it('a verdict file that will not write costs the wave nothing', async () => {
@@ -2083,11 +2083,13 @@ describe('runWave — gate progress measured by the runner mid-wave', () => {
     expect(rec.progress[0]).toMatchObject({ sha: 'BASESHA', fails: 1, reusedFrom: 'start' })
     expect(rec.progress[1]).toMatchObject({ sha: 'C1', fails: 1, passes: 0, failIds: ['C8.1a'] })
     expect(rec.progress[1].elapsedFraction).toBeCloseTo(130 / 240, 2)
-    expect(rec.shadowDecisions.map(d => d.fired)).toEqual([false, true])
-    expect(rec.shadowDecisions[1]).toMatchObject({ rule: 'R1.no-progress', startFails: 1, fails: 1 })
+    // Phase 7: R1 then R2.stalled at every tick; two measured ticks are not R2's window of three.
+    expect(rec.shadowDecisions.map(d => [d.rule, d.fired])).toEqual([['R1.no-progress', false], ['R2.stalled', false], ['R1.no-progress', true], ['R2.stalled', false]])
+    expect(rec.shadowDecisions[2]).toMatchObject({ rule: 'R1.no-progress', startFails: 1, fails: 1 })
+    expect(rec.shadowDecisions[3]).toMatchObject({ rule: 'R2.stalled', window: [1, 1], fails: 1 })
     // Stored on waves.jsonl, where the ladder (Task 4) reads it.
     expect(state.waves().at(-1).shadowDecisions).toEqual(rec.shadowDecisions)
-    expect(seen.entry).toMatch(/^- Autopoiesis: .*\n- Progress: 1 → 1 fails over 2 readings \(no drop; last at 130 min: 1\); R1\.no-progress fired at 54% \(would have saved 1\.8 h\)\n- Scoreboard: /m)
+    expect(seen.entry).toMatch(/^- Autopoiesis: .*\n- Progress: 1 → 1 fails over 2 readings \(no drop; last at 130 min: 1\); R1\.no-progress fired at 54% \(would have saved 1\.8 h\); R2\.stalled did not fire \(2 decision\(s\)\)\n- Scoreboard: /m)
     expect(logs.join('\n')).toMatch(/\[campaign\] progress @ 130m: 1 fails \(was 1\)/)
     // Shadow: the wave was not stopped — it ran to its grade.
     expect(rec.decision.kind).toBe('next')
@@ -2138,10 +2140,12 @@ describe('runWave — gate progress measured by the runner mid-wave', () => {
     const rec = await runWave(progressSpec, freshState(), fake)
     const f = JSON.parse(readFileSync(join(home, 'datasets', 'rule-verdicts.json'), 'utf8'))
     expect(f.rules['R1.no-progress']).toMatchObject({ source: 'runner', scope: 'waves', firedTotal: 3, n: 3, failures: 3, scopeN: 3, precision: 1, p: null, verdict: 'TOO FEW — cannot tell' })
-    expect(rec.ruleVerdicts).toMatchObject({ runnerRows: 1, rules: 0 })
+    expect(rec.ruleVerdicts).toMatchObject({ runnerRows: 2, rules: 0 })
     expect(rec.ruleVerdicts.runners['R1.no-progress']).toEqual(f.rules['R1.no-progress'])
-    // Named with its verdict on the ladder line; the Progress line is untouched.
-    expect(seen.entry).toMatch(/^- Outcome hindcast: UNMEASURED — .*; R1\.no-progress precision 100% \[\d+, \d+\] on 3 fired p\(Holm\) null TOO FEW$/m)
+    // Named with its verdict on the ladder line, R2.stalled after it (this
+    // wave's own R2 decisions: in scope past 25 %, never fired); the Progress
+    // line is untouched.
+    expect(seen.entry).toMatch(/^- Outcome hindcast: UNMEASURED — .*; R1\.no-progress precision 100% \[\d+, \d+\] on 3 fired p\(Holm\) null TOO FEW; R2\.stalled precision null on 0 fired p\(Holm\) null UNMEASURED — fired on no in-scope wave$/m)
     expect(seen.entry).toMatch(/^- Progress: 1 → 1 fails /m)
   })
 
@@ -2203,7 +2207,8 @@ describe('runWave — gate progress measured by the runner mid-wave', () => {
     const rec = await runWave(progressSpec, freshState(), fake)
     expect(rec.decision.kind).toBe('fault')
     expect(rec.progress).toHaveLength(1)
-    expect(rec.shadowDecisions).toHaveLength(1)
+    // One tick: R1's decision and R2's.
+    expect(rec.shadowDecisions.map(d => d.rule)).toEqual(['R1.no-progress', 'R2.stalled'])
   })
 
   // Review M1: the tracker's gateMs is seeded from the start grade — the last
@@ -2284,9 +2289,10 @@ describe('the outcome hindcast at VERDICT', () => {
     expect(rec.hindcast).toEqual({ fault: "exit 1: Traceback (most recent call last): | ModuleNotFoundError: No module named 'sklearn'" })
     // Phase 6 Task 4: the runner row R1.no-progress is always written — no
     // wave read past 50 % here, so it is UNMEASURED with no numbers.
-    expect(rec.ruleVerdicts).toMatchObject({ version: 1, predictive: [], total: 1, rules: 0, modelRows: 0, runnerRows: 1 })
-    expect(Object.keys(verdictsIn(home).rules)).toEqual(['R1.no-progress'])
-    expect(entry).toMatch(/^- Scoreboard: .*\n- Outcome hindcast: UNMEASURED — exit 1: .*No module named 'sklearn'; R1\.no-progress precision null on 0 fired p\(Holm\) null UNMEASURED — no wave in scope \(no shadow decision at 50 % of its clock or later\)$/m)
+    // Phase 7: R2.stalled likewise, naming its own 25 % threshold.
+    expect(rec.ruleVerdicts).toMatchObject({ version: 1, predictive: [], total: 2, rules: 0, modelRows: 0, runnerRows: 2 })
+    expect(Object.keys(verdictsIn(home).rules)).toEqual(['R1.no-progress', 'R2.stalled'])
+    expect(entry).toMatch(/^- Scoreboard: .*\n- Outcome hindcast: UNMEASURED — exit 1: .*No module named 'sklearn'; R1\.no-progress precision null on 0 fired p\(Holm\) null UNMEASURED — no wave in scope \(no shadow decision at 50 % of its clock or later\); R2\.stalled precision null on 0 fired p\(Holm\) null UNMEASURED — no wave in scope \(no shadow decision at 25 % of its clock or later\)$/m)
   })
 
   it('TOO FEW (exit 2) and a spawn fault read the same way; a throw from the seam too', async () => {
@@ -2383,8 +2389,8 @@ describe('the outcome hindcast at VERDICT', () => {
     expect(rec.hindcast).toMatchObject({ version: 3, prefixTurns: 16, nHoldout: 20, baseRate: 0.6, features: 2, lengthFeature: null,
       models: { gbt: { auc: 0.71 } }, secondary: { refusal: 'TOO FEW: train 5 < 30 or holdout 19 < 8' } })
     expect(rec.hindcast.ladder['M1.gbt']).toEqual(f.rules['M1.gbt'])
-    expect(rec.ruleVerdicts.total).toBe(3)
-    expect(entry).toMatch(/^- Scoreboard: .*\n- Outcome hindcast: v3 at K = 16 turns on 20 held-out missions \(base 60%\): M1\.gbt precision 80% \[\d+, \d+\] on 10 fired p\(Holm\) \d\.\d{3} [A-Z][A-Z ]+; M1\.lr precision null on 0 fired p\(Holm\) null TOO FEW; R1\.no-progress precision null on 0 fired p\(Holm\) null UNMEASURED — no wave in scope \(no shadow decision at 50 % of its clock or later\); leak check gbt AUC prefix 0\.71 \/ hindsight 0\.93, lr AUC prefix 0\.50 \/ hindsight 0\.60; K = 32 TOO FEW: train 5 < 30 or holdout 19 < 8$/m)
+    expect(rec.ruleVerdicts.total).toBe(4)
+    expect(entry).toMatch(/^- Scoreboard: .*\n- Outcome hindcast: v3 at K = 16 turns on 20 held-out missions \(base 60%\): M1\.gbt precision 80% \[\d+, \d+\] on 10 fired p\(Holm\) \d\.\d{3} [A-Z][A-Z ]+; M1\.lr precision null on 0 fired p\(Holm\) null TOO FEW; R1\.no-progress precision null on 0 fired p\(Holm\) null UNMEASURED — no wave in scope \(no shadow decision at 50 % of its clock or later\); R2\.stalled precision null on 0 fired p\(Holm\) null UNMEASURED — no wave in scope \(no shadow decision at 25 % of its clock or later\); leak check gbt AUC prefix 0\.71 \/ hindsight 0\.93, lr AUC prefix 0\.50 \/ hindsight 0\.60; K = 32 TOO FEW: train 5 < 30 or holdout 19 < 8$/m)
   })
 
   // Final review M1 (T5-M1): a writeRuleVerdicts that throws on the MODEL rows
@@ -2418,7 +2424,7 @@ describe('the outcome hindcast at VERDICT', () => {
     expect(rec.hindcast.ladderFault).toBe('Holm over a NaN p')
     expect(rec.hindcast.ladder).toBeNull()
     expect(rec.hindcast.version).toBe(3)
-    expect(entry).toMatch(/- Outcome hindcast: v3 at K = 16 turns .*LADDER NOT WRITTEN \(Holm over a NaN p\) — rules rewritten alone; R1\.no-progress precision null on 0 fired p\(Holm\) null UNMEASURED — no wave in scope \(no shadow decision at 50 % of its clock or later\); leak check/)
+    expect(entry).toMatch(/- Outcome hindcast: v3 at K = 16 turns .*LADDER NOT WRITTEN \(Holm over a NaN p\) — rules rewritten alone; R1\.no-progress precision null on 0 fired p\(Holm\) null UNMEASURED — no wave in scope \(no shadow decision at 50 % of its clock or later\); R2\.stalled precision null on 0 fired p\(Holm\) null UNMEASURED — no wave in scope \(no shadow decision at 25 % of its clock or later\); leak check/)
   })
 
   it('a throw with no model rows is the rules\' own: the outer catch logs it, the wave is not faulted', async () => {

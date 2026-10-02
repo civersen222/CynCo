@@ -296,8 +296,11 @@ describe('writeRuleVerdicts with runner rows', () => {
     expect(f.rules['R1.no-progress'].lift).toBeCloseTo(0.8 - 7 / 15, 10)
     expect(f.rules['R1.no-progress'].verdict).toBe('TOO FEW — cannot tell')
     // The return names the runner rows apart from the rules and the model rows.
-    expect(r).toMatchObject({ rules: 0, modelRows: 0, runnerRows: 1, total: 1 })
+    // Phase 7: R2.stalled is the second runner row (no R2 decision here: UNMEASURED).
+    expect(r).toMatchObject({ rules: 0, modelRows: 0, runnerRows: 2, total: 2 })
     expect(r.runners['R1.no-progress']).toEqual(f.rules['R1.no-progress'])
+    expect(f.rules['R2.stalled']).toMatchObject({ source: 'runner', n: 0, scopeN: 0, precision: null,
+      verdict: 'UNMEASURED — no wave in scope (no shadow decision at 25 % of its clock or later)' })
   })
 
   it('the Holm family is the rules, the model rows and the runner rows together', () => {
@@ -358,7 +361,7 @@ describe('writeRuleVerdicts with runner rows', () => {
     expect(f.rules['R1.no-progress'].verdict).toBe('PREDICTIVE')
     expect(f.predictive).toEqual(['X'])
     expect(r.predictive).toEqual(['X'])
-    expect(verdictsLine(r, 'P')).toBe('rule verdicts v1: 1 predictive of 2 rules (+1 runner row) (X) → P')
+    expect(verdictsLine(r, 'P')).toBe('rule verdicts v1: 1 predictive of 2 rules (+2 runner rows) (X) → P')
   })
 
   it('a runner row appearing, moving or vanishing never bumps the version; it is kept as runnerChanged', () => {
@@ -372,11 +375,13 @@ describe('writeRuleVerdicts with runner rows', () => {
     const f = JSON.parse(readFileSync(outPath, 'utf8'))
     expect(f.version).toBe(1)
     const unmeasured = 'UNMEASURED — no wave in scope (no shadow decision at 50 % of its clock or later)'
+    // Phase 7: R2.stalled (no R2 decision in these waves) names its own 25 %.
+    const unmeasured2 = 'UNMEASURED — no wave in scope (no shadow decision at 25 % of its clock or later)'
     expect(f.history.map(h => ({ version: h.version, at: h.at, changed: h.changed, runnerChanged: h.runnerChanged, modelChanged: h.modelChanged }))).toEqual([
       { version: 1, at: 't1', changed: f.history[0].changed, runnerChanged: undefined, modelChanged: undefined },
-      { version: 1, at: 't2', changed: [], runnerChanged: [{ id: 'R1.no-progress', from: null, to: unmeasured }], modelChanged: undefined },
+      { version: 1, at: 't2', changed: [], runnerChanged: [{ id: 'R1.no-progress', from: null, to: unmeasured }, { id: 'R2.stalled', from: null, to: unmeasured2 }], modelChanged: undefined },
       { version: 1, at: 't3', changed: [], runnerChanged: [{ id: 'R1.no-progress', from: unmeasured, to: 'TOO FEW — cannot tell' }], modelChanged: undefined },
-      { version: 1, at: 't4', changed: [], runnerChanged: [{ id: 'R1.no-progress', from: 'TOO FEW — cannot tell', to: null }], modelChanged: undefined },
+      { version: 1, at: 't4', changed: [], runnerChanged: [{ id: 'R1.no-progress', from: 'TOO FEW — cannot tell', to: null }, { id: 'R2.stalled', from: unmeasured2, to: null }], modelChanged: undefined },
     ])
     // Unchanged runner rows add nothing.
     writeRuleVerdicts({ rows, campaign: 'c9', outPath, now: () => 't5' })
@@ -391,7 +396,8 @@ describe('writeRuleVerdicts with runner rows', () => {
     const last = JSON.parse(readFileSync(outPath, 'utf8')).history.at(-1)
     expect(last.changed.map(c => c.id)).toContain('X')
     expect(last.changed.map(c => c.id)).not.toContain('R1.no-progress')
-    expect(last.runnerChanged).toEqual([{ id: 'R1.no-progress', from: null, to: 'TOO FEW — cannot tell' }])
+    expect(last.runnerChanged).toEqual([{ id: 'R1.no-progress', from: null, to: 'TOO FEW — cannot tell' },
+      { id: 'R2.stalled', from: null, to: 'UNMEASURED — no wave in scope (no shadow decision at 25 % of its clock or later)' }])
   })
 
   it('verdictsLine counts the runner rows apart', () => {
@@ -436,6 +442,8 @@ describe('the CLI (main)', () => {
   // empty temp one here (the real home is never read).
   const noCampaigns = () => ['--campaigns-dir', home()]
   const R1_EMPTY = 'R1.no-progress precision null on 0 fired p(Holm) null UNMEASURED — no wave in scope (no shadow decision at 50 % of its clock or later)'
+  // Phase 7: the second runner row, after R1, with its own 25 % threshold.
+  const R2_EMPTY = 'R2.stalled precision null on 0 fired p(Holm) null UNMEASURED — no wave in scope (no shadow decision at 25 % of its clock or later)'
   const turnsOf = (n) => Array.from({ length: n }, (_, i) => ({ toolSuccessRate: i % 2 ? 1 : 0.5, health: 'healthy' }))
   // 12 failures firing X and Y, 12 successes firing Y — X PREDICTIVE, Y CONSTANT — each with 20 turns.
   // v2 turns (F165): the hindcast trains on the current signals version only.
@@ -459,7 +467,7 @@ describe('the CLI (main)', () => {
     const out = join(home(), 'rv.json')
     const lines = []
     expect(await main(['--out', out, ...noCampaigns()], { readLedger: predictiveRows, cyncoHome: noHome, log: (s) => lines.push(s) })).toBe(0)
-    expect(lines).toEqual([`rule verdicts v1: 1 predictive of 2 rules (+1 runner row) (X) → ${out}`])
+    expect(lines).toEqual([`rule verdicts v1: 1 predictive of 2 rules (+2 runner rows) (X) → ${out}`])
   })
 
   it('verdictsLine prints the model rows beside the rules, as the scoreboard reads them', () => {
@@ -481,8 +489,8 @@ describe('the CLI (main)', () => {
     const f = JSON.parse(readFileSync(join(dir, 'rule-verdicts.json'), 'utf8'))
     expect(f.rules['M1.gbt']).toMatchObject({ source: 'model', scope: 'holdout', n: 12, failures: 12 })
     expect(f.rules['M1.lr']).toMatchObject({ source: 'model', n: 0 })
-    expect(lines[0]).toMatch(/^- Outcome hindcast: v4 at K = 16 turns on 24 held-out missions \(base 50%\): M1\.gbt precision 100% .* on 12 fired p\(Holm\) .*; M1\.lr precision null on 0 fired p\(Holm\) null TOO FEW; R1\.no-progress precision null on 0 fired p\(Holm\) null UNMEASURED — no wave in scope \(no shadow decision at 50 % of its clock or later\); leak check gbt AUC prefix 0\.90 \/ hindsight 0\.95, lr AUC prefix 0\.50 \/ hindsight 0\.50; K = 32 TOO FEW: x; dropped 2 dead column\(s\)$/)
-    expect(lines[1]).toMatch(new RegExp(`^rule verdicts v1: \\d predictive of 2 rules \\(\\+2 model rows\\) \\(\\+1 runner row\\) \\(.*\\) → ${join(dir, 'rule-verdicts.json').replace(/\\/g, '\\\\')}$`))
+    expect(lines[0]).toMatch(/^- Outcome hindcast: v4 at K = 16 turns on 24 held-out missions \(base 50%\): M1\.gbt precision 100% .* on 12 fired p\(Holm\) .*; M1\.lr precision null on 0 fired p\(Holm\) null TOO FEW; R1\.no-progress precision null on 0 fired p\(Holm\) null UNMEASURED — no wave in scope \(no shadow decision at 50 % of its clock or later\); R2\.stalled precision null on 0 fired p\(Holm\) null UNMEASURED — no wave in scope \(no shadow decision at 25 % of its clock or later\); leak check gbt AUC prefix 0\.90 \/ hindsight 0\.95, lr AUC prefix 0\.50 \/ hindsight 0\.50; K = 32 TOO FEW: x; dropped 2 dead column\(s\)$/)
+    expect(lines[1]).toMatch(new RegExp(`^rule verdicts v1: \\d predictive of 2 rules \\(\\+2 model rows\\) \\(\\+2 runner rows\\) \\(.*\\) → ${join(dir, 'rule-verdicts.json').replace(/\\/g, '\\\\')}$`))
   })
 
   it('a hindcast that fails prints UNMEASURED and writes the rules without model rows — as the runner does', async () => {
@@ -492,9 +500,9 @@ describe('the CLI (main)', () => {
       readLedger: ledgerRows, cyncoHome: noHome, log: (s) => lines.push(s),
       runHindcast: () => ({ status: 2, stdout: 'TOO FEW: train 3 < 30 or holdout 1 < 8\n', stderr: '', fault: null }),
     })
-    expect(lines[0]).toBe(`- Outcome hindcast: UNMEASURED — exit 2: TOO FEW: train 3 < 30 or holdout 1 < 8; ${R1_EMPTY}`)
-    expect(lines[1]).toMatch(/^rule verdicts v1: 1 predictive of 2 rules \(\+1 runner row\) \(X\) → /)
-    expect(Object.keys(JSON.parse(readFileSync(join(dir, 'rule-verdicts.json'), 'utf8')).rules)).toEqual(['X', 'Y', 'R1.no-progress'])
+    expect(lines[0]).toBe(`- Outcome hindcast: UNMEASURED — exit 2: TOO FEW: train 3 < 30 or holdout 1 < 8; ${R1_EMPTY}; ${R2_EMPTY}`)
+    expect(lines[1]).toMatch(/^rule verdicts v1: 1 predictive of 2 rules \(\+2 runner rows\) \(X\) → /)
+    expect(Object.keys(JSON.parse(readFileSync(join(dir, 'rule-verdicts.json'), 'utf8')).rules)).toEqual(['X', 'Y', 'R1.no-progress', 'R2.stalled'])
   })
 
   // Final review M8: a temp run never performs the one-time v2 freeze on the
