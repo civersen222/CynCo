@@ -1316,25 +1316,34 @@ authority. Nothing in the engine enforces anything new.
   waits for a non-empty table. Also parked: the download resolver,
   `s5.decision` typing, writer-guard blind spots, LoRA/KTO, model-S5 live,
   the dashboard chat, and CodeIndex adoption (C10: 11/1127 and 17/555). The
-  reviews' deferred minors go to the final fix wave:
-  - interval dataset: the dispatch → first-tick span as interval 0 (it would
-    renumber intervals and change holdout identity); the CLI test's temp dirs
-    are not removed.
-  - R2: it can fire on a tick whose own probe faulted, where R1 refuses; a
-    no-commit wave fires at 25 % by design.
+  reviews' deferred minors were closed in the fix wave after the final review:
+  - interval dataset: the CLI test removes its temp dirs. Still parked: the
+    dispatch → first-tick span as interval 0 (it would renumber intervals and
+    change holdout identity).
+  - R2: the decision at a tick whose own probe faulted is `fired: false` with
+    the fault on it, as R1 refuses. A no-commit wave firing at 25 % is by
+    design.
   - F167 guard: the refusal says "commit the seal first" when the spec or
-    roadmap is dirty, and the printed worktree path is absolute.
-  - governance v2: no drift replay, and the windows do not record
-    `earned`/`total`; the unreadable-file branch is untested.
-  - panel: the tally is not `Object.create(null)`; a measured reading with a
-    null `elapsedFraction` is counted nowhere; `elapsedFraction` is not
-    clamped to [0, 1]; `DOMParser`'s parsererror is not checked.
-  - reading learner: a ledger-read fault writes no `reading` key; `reading:2
-    holdout frozen now` prints only on a successful reading run.
-  - marker check: the sealed baseline also arms the engine's content seal
-    (`engine/tools/sealedPaths.ts:241`); the check command reaches the
-    model's Bash env as `LOCALCODE_MISSION_CHECK`; salvage reads only the
-    end-of-mission patch, not the per-check patches.
+    roadmap is dirty, prints the worktree path absolute, and names the
+    stale-directory case; an uncarryable suite-gate path refuses at startup,
+    before the lock.
+  - governance v2: every stored window records `stated: { earned, total }`,
+    so v2 can be replayed; the unreadable-file branch is tested.
+  - panel: the tally is `Object.create(null)`; a measured reading with a null
+    `elapsedFraction` is counted and listed, not drawn; `elapsedFraction` is
+    clamped to [0, 1]; a curve with a `parsererror` is not inserted.
+  - reading learner: a ledger-read fault is written on `reading` too; the
+    `reading:2 holdout frozen now` clause prints on an unmeasured reading;
+    `M2.*` rows carry `dependence: 'readings share missions'` and the clause
+    prints `(p optimistic: …)`; a TOO FEW after the whole-mission draw names
+    that cause.
+  - marker check: the baseline is sealed by path only (`contentExemptGatePaths`,
+    not the content layer); the Bash tool's env drops `LOCALCODE_MISSION_*`
+    and `CYNCO_MARKER_CHECK*`; salvage offers every unapplied per-check patch;
+    the F45 restore runs on every exit of the check routine;
+    `verify.noteAcknowledged` and `verify.overrunS` are on the row.
+  - the dashboard's readings are the verdict's (post-verdict, token-gated);
+    `tokens.json` protection stays Phase 2's design, not reopened.
 
 **Deferred spec items (follow-up, not built here).**
 
