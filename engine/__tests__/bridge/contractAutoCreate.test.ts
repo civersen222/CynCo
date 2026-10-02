@@ -434,6 +434,18 @@ describe('harnessGatePaths: the instruments a contract names', () => {
     )).toEqual([])
   })
 
+  // Phase 7 review I1: the suite gate's baseline travels as an env prefix in
+  // the check command, and is an instrument like the gate it feeds.
+  it('reads the value of a NAME=<path> env prefix as a path token', () => {
+    const { file: baseline } = gate('suite_baseline.txt')
+    const { file: suite } = gate('g_suite.py')
+    const ws = workspace('src/app.ts')
+    const wsFwd = ws.replace(/\\/g, '/')
+    expect(harnessGatePaths(
+      [{ text: 'held out', command: `CHK_SUITE_BASELINE=${baseline} CYNCO_GATE_REPO=${wsFwd} python "${suite}"` }], ws,
+    )).toEqual([baseline, suite].sort())
+  })
+
   it('ignores path-shaped tokens that are not on disk', () => {
     expect(harnessGatePaths(
       ['Verification command exits 0: python C:/tmp/does-not-exist-9f3a.py'],

@@ -46,21 +46,38 @@ decisions still recorded here).
     "timedOut": false, "spawnFailed": false, "durationMs": 70303, "outputTail": "...",
     // Phase 7 ruling 3 (the marker check): true when this result is the SECOND
     // check — the first FAILED after the engine closed the turn with the marker
-    // landed, its last 40 output lines went to the model once as a driver note
-    // (`[driver] marker check FAILED — fix and re-mark:`), and the mission went
-    // on. `firstAttempt` is what that first check read ({ exitCode, timedOut,
-    // durationMs, gradedSha, heldOutRestored }), null when there was no retry.
-    // Absent on rows written before the ruling.
-    "retried": false, "firstAttempt": null
+    // landed, its last 40 model-readable output lines (never a line naming
+    // `heldout` or a withheld path, never the suite gate's REPAIRED block) went
+    // to the model once as a driver note (`[driver] marker check FAILED — fix
+    // and re-mark:`), and the mission went on. `retried` is true only when that
+    // note was CONFIRMED sent: an OPEN socket before and after the send, the
+    // buffer drained. The check runs asynchronously with the socket pinged
+    // every 30 s; a socket the engine dropped anyway is reconnected first.
+    // `firstAttempt` is what that first check read ({ exitCode, timedOut,
+    // durationMs, gradedSha, heldOutRestored, outputTail, patchPath }), null
+    // when there was no retry. `noteFailed`: why a due note did NOT go out
+    // (reconnect failed, the send threw, the socket closed mid-send) — the
+    // first FAIL then stands and `retried` is false; null otherwise.
+    // `patches`: every patch a check's F132 reset wrote, one per check,
+    // `C:/tmp/<missionId>.uncommitted.<n>.patch` (n = the check's ordinal), so
+    // a later check never overwrites an earlier one; the tail snapshot keeps
+    // `<missionId>.uncommitted.patch`. A first check that stood is reused only
+    // while it read one commit and HEAD is still that commit; otherwise the
+    // final verify re-runs it. Absent on rows written before the ruling.
+    "retried": false, "firstAttempt": null, "noteFailed": null, "patches": []
   },
   // Phase 7 ruling 3: how many times a FAILED marker check was fed back to the
-  // model before the check that set `verified` — 0 or 1. A retry needs at least
-  // MARKER_RETRY_MIN_S (3600 s) of the mission clock left (timeout-s minus the
-  // time since dispatch); under that, the first check is the verdict. null when
-  // no check-cmd was dispatched (nothing to retry); absent on older rows. A
-  // campaign wave's check is the suite gate (g_suite_no_regression.py) unless
-  // its spec names a `markerCheck` — never the sealed campaign gate, whose
-  // output must not reach the model.
+  // model before the check that set `verified` — 0 or 1, counted only on a
+  // confirmed send. A retry needs at least MARKER_RETRY_MIN_S (3600 s; a spec's
+  // `markerRetryMinS`, through CYNCO_MARKER_RETRY_MIN_S) of the mission clock
+  // left; under that, the first check is the verdict. null when no check-cmd
+  // was dispatched (nothing to retry); absent on older rows. A campaign wave's
+  // check is the suite gate (g_suite_no_regression.py), carrying its baseline
+  // and repo as an env prefix in the command (`CHK_SUITE_BASELINE=<path>
+  // CYNCO_GATE_REPO=<repo> python "<gate>"`) so the baseline is sealed and
+  // restored like the gate and never sits in the engine's env, unless its spec
+  // names a `markerCheck` — never the sealed campaign gate, whose output must
+  // not reach the model.
   "verifyRetries": 0,
   "mutationSweep": null,    // BEHAVIOURAL: null = UNMEASURED, never "clean"
   // { "command": "...", "killed": 1, "total": 7, "survived": ["W1","W5"], "note": "..." }

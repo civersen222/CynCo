@@ -360,7 +360,10 @@ export function harnessGatePaths(
     const command = assertionCommand(a)
     if (command === null) continue
     for (const rawToken of command.split(/\s+/)) {
-      const token = rawToken.replace(/^["']+|["':;,]+$/g, '')
+      // A POSIX env prefix (`CHK_SUITE_BASELINE=<path> python gate.py`) names
+      // an instrument too: the suite gate's baseline travels that way (Phase 7
+      // review I1), so the value after `NAME=` is read as a path token.
+      const token = rawToken.replace(/^[A-Za-z_][A-Za-z0-9_]*=/, '').replace(/^["']+|["':;,]+$/g, '')
       // Path-shaped or nothing. A bare word is a program name or a flag.
       if (!token || !/[\\/]/.test(token)) continue
       const abs = (isAbsolute(token) ? token : resolve(cwd, token)).replace(/\\/g, '/')

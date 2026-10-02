@@ -38,7 +38,7 @@
 // carrying a second copy of the shell-dialect rules.
 
 import { getShellInfo, shellPreamble, translateEnvPrefix } from '../engine/tools/shellInfo.js'
-import { runSync, faultSummary } from './cynco-spawn.mjs'
+import { runSync, runAsync, faultSummary } from './cynco-spawn.mjs'
 
 const OUTPUT_TAIL_CHARS = 2000
 
@@ -46,32 +46,68 @@ const OUTPUT_TAIL_CHARS = 2000
  * Phase 7 ruling 3: a FAILED marker check is fed back to the model once, as a
  * driver note, and the mission continues — but only when the clock left can
  * pay for a fix and a second whole-suite check. Under an hour, the first check
- * is the verdict.
+ * is the verdict. A spec may lower it (`markerRetryMinS`, through the driver's
+ * CYNCO_MARKER_RETRY_MIN_S) — the one-hour smoke does, to reach the retry at all.
  */
 export const MARKER_RETRY_MIN_S = 3600
 /** How much of the check output the note carries. */
 export const MARKER_NOTE_LINES = 40
 
 /**
+ * The driver's retry floor from its environment: MARKER_RETRY_MIN_S when
+ * CYNCO_MARKER_RETRY_MIN_S is unset, the value when it is a positive integer,
+ * and a refusal (`error`) otherwise — a floor nobody can read is not a default.
+ */
+export function markerRetryMinSFrom(env) {
+  const raw = env?.CYNCO_MARKER_RETRY_MIN_S
+  if (raw === undefined || raw === '') return { minS: MARKER_RETRY_MIN_S, error: null }
+  const n = Number(raw)
+  if (!Number.isInteger(n) || n <= 0) return { minS: null, error: `CYNCO_MARKER_RETRY_MIN_S must be a positive integer of seconds; got ${JSON.stringify(raw)}` }
+  return { minS: n, error: null }
+}
+
+/**
  * Retry a marker check? Only a FAIL (`ok === false`) — a null check measured
  * nothing about the delivery, so there is nothing for the model to fix —
- * with no retry spent and at least MARKER_RETRY_MIN_S of the clock left.
+ * with no retry spent and at least `minS` of the clock left.
  */
-export function shouldRetryMarkerCheck({ ok, remainingS, retries }) {
-  return ok === false && retries === 0 && Number.isFinite(remainingS) && remainingS >= MARKER_RETRY_MIN_S
+export function shouldRetryMarkerCheck({ ok, remainingS, retries, minS = MARKER_RETRY_MIN_S }) {
+  return ok === false && retries === 0 && Number.isFinite(remainingS) && remainingS >= minS
+}
+
+/**
+ * The lines of a check's output the model may read. Phase 7 review I1/M2:
+ * never a line naming the sealed tree (`heldout`) or any path in `redact`
+ * (the check's withheld instruments — the suite baseline among them), and
+ * never the suite gate's REPAIRED block, whose node ids are baseline members.
+ */
+export function noteLines(output, redact = []) {
+  const hidden = redact.map(p => String(p).replace(/\\/g, '/').toLowerCase()).filter(Boolean)
+  const out = []
+  let inRepaired = false
+  for (const line of String(output ?? '').replace(/\s+$/, '').split(/\r?\n/)) {
+    if (/^\s*REPAIRED \d+/.test(line)) { inRepaired = true; continue }
+    if (inRepaired && /^\s+\+ /.test(line)) continue
+    inRepaired = false
+    const n = line.replace(/\\/g, '/').toLowerCase()
+    if (n.includes('heldout') || hidden.some(p => n.includes(p))) continue
+    out.push(line)
+  }
+  return out
 }
 
 /**
  * The driver note for a FAILED marker check: the prefix, then the last
- * MARKER_NOTE_LINES lines of the check's output. When the driver reset an
- * uncommitted tree so the check graded the commit (F132), the note says so and
- * where the work went — otherwise the model returns to files that changed under it.
+ * MARKER_NOTE_LINES model-readable lines of the check's output (noteLines).
+ * When the driver reset an uncommitted tree so the check graded the commit
+ * (F132), the note says so, where the work went and how to bring it back —
+ * otherwise the model returns to files that changed under it.
  */
-export function markerCheckNote(output, { resetFiles = 0, patchPath = null } = {}) {
-  const lines = String(output ?? '').replace(/\s+$/, '').split(/\r?\n/).slice(-MARKER_NOTE_LINES)
-  const out = ['[driver] marker check FAILED — fix and re-mark:', ...lines]
+export function markerCheckNote(output, { resetFiles = 0, patchPath = null, redact = [] } = {}) {
+  const out = ['[driver] marker check FAILED — fix and re-mark:', ...noteLines(output, redact).slice(-MARKER_NOTE_LINES)]
   if (resetFiles > 0) {
-    out.push(`[driver] ${resetFiles} uncommitted tracked file(s) were reset so the check graded your commit; the changes are preserved at ${patchPath}`)
+    out.push(`[driver] ${resetFiles} uncommitted tracked file(s) were reset so the check graded your commit; the changes are preserved at ${patchPath}`
+      + ` — restore them with: git apply --3way "${patchPath}"`)
   }
   return out.join('\n')
 }
@@ -90,6 +126,30 @@ const PYTEST_NO_TESTS = 5
  */
 export function runCheck(command, cwd, timeoutMs) {
   const start = Date.now()
+  const { info, runnable } = checkRunnable(command)
+  // Through runSync (scripts/cynco-spawn.mjs), not a bare spawnSync. F155: an
+  // impossible ETIMEDOUT is retried once instead of filed as UNMEASURED.
+  // F166: the suite gate parses pytest's plain `FAILED ` lines, so the check
+  // gets the colourless instrument environment rather than whatever
+  // colour-forcing the operator's shell exported.
+  const result = runSync(runnable, [], { shell: info.shell, cwd, timeoutMs, retryImpossibleTimeout: true })
+  return checkResult(command, result, Date.now() - start, timeoutMs)
+}
+
+/**
+ * runCheck without blocking the event loop (Phase 7 review C1): the marker
+ * check and the final verify run the suite gate for minutes while the driver
+ * must keep answering the bridge's keep-alive. Same shell, same environment,
+ * same result shape, through runAsync.
+ */
+export async function runCheckAsync(command, cwd, timeoutMs) {
+  const start = Date.now()
+  const { info, runnable } = checkRunnable(command)
+  const result = await runAsync(runnable, [], { shell: info.shell, cwd, timeoutMs })
+  return checkResult(command, result, Date.now() - start, timeoutMs)
+}
+
+function checkRunnable(command) {
   const info = getShellInfo()
   // PowerShell (5.1 and 7) does not make an external program's exit code its
   // OWN process exit code — `-Command "pytest ..."` returns 1 for ANY nonzero
@@ -103,14 +163,10 @@ export function runCheck(command, cwd, timeoutMs) {
   // guard leaves that case alone too.
   const exitPropagation = info.isPowerShell ? '; if ($LASTEXITCODE -ne $null) { exit $LASTEXITCODE }' : ''
   const runnable = shellPreamble(info) + translateEnvPrefix(String(command ?? ''), info) + exitPropagation
-  // Through runSync (scripts/cynco-spawn.mjs), not a bare spawnSync. F155: the
-  // marker check (Phase 7 ruling 3) is the driver's first long spawn after
-  // hours of waiting, and an impossible ETIMEDOUT is retried once instead of
-  // filed as UNMEASURED. F166: the check is now the suite gate, which parses
-  // pytest's plain `FAILED ` lines, so it gets runSync's colourless instrument
-  // environment rather than whatever colour-forcing the operator's shell exported.
-  const result = runSync(runnable, [], { shell: info.shell, cwd, timeoutMs, retryImpossibleTimeout: true })
-  const durationMs = Date.now() - start
+  return { info, runnable }
+}
+
+function checkResult(command, result, durationMs, timeoutMs) {
   const timedOut = result.timedOut
   const spawnFailed = Boolean(result.fault)
   const exitCode = typeof result.status === 'number' ? result.status : null

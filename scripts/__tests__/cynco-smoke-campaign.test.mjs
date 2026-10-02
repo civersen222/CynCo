@@ -8,7 +8,7 @@ import { tmpdir, homedir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { writeSmokeCampaign, runtimeEnvFrom, SMOKE_ID } from '../cynco-smoke-campaign.mjs'
+import { writeSmokeCampaign, runtimeEnvFrom, SMOKE_ID, MARKER_CHECK_ONCE, MARKER_CHECK_STAMP, MARKER_CHECK_ONCE_PY } from '../cynco-smoke-campaign.mjs'
 import { loadCampaignSpec, checkIdentity } from '../cynco-campaign-spec.mjs'
 import { calibrate, archiveBase } from '../cynco-campaign-calibrate.mjs'
 import { parseGateOutput } from '../cynco-gate-parse.mjs'
@@ -61,8 +61,10 @@ describe.skipIf(!HAS_SMOKE)(`smoke campaign s1 (needs ${SMOKE_REPO})`, () => {
     expect(spec).toMatchObject({
       id: 's1', repo, base: head, author: 'human', marker: 'smoke s1 complete',
       keepGreen: 'python -m pytest -q test_calc.py',
-      // Phase 7 ruling 3: the smoke keeps its marker check self-contained.
-      markerCheck: 'python -m pytest -q test_calc.py',
+      // Phase 7 ruling 3 / review I3: the smoke's own fails-once fixture, and a
+      // retry floor its one-hour wave can reach.
+      markerCheck: `python ${home}/smoke/marker_check_once.py`,
+      markerRetryMinS: 60,
       gate: `${heldout}/gate_s1.py`, perturb: `${heldout}/perturb_s1.py`, positive: `${heldout}/positive_s1.py`,
       budget: { hoursPerWave: 1, iterations: 300, bashTimeoutMs: 600000, waves: 1 },
       progress: { everyMs: 20_000 },
@@ -77,6 +79,30 @@ describe.skipIf(!HAS_SMOKE)(`smoke campaign s1 (needs ${SMOKE_REPO})`, () => {
     // already refuses a duplicate), and nothing else is. FULL ids: the brief
     // (cynco-brief.mjs) picks work items by exact membership in the failing set.
     expect(spec.work.flatMap(w => w.gateIds).sort()).toEqual(FULL_IDS)
+  })
+
+  // Review I3: a mechanical proof of the driver's retry loop — the first call
+  // FAILS on purpose, every later one PASSES — written under the temp home,
+  // never under heldout, and re-armed (stamp removed) by every --write.
+  it('writes the fails-once marker check under <home>/smoke, never under heldout, and re-arms it on every write', () => {
+    const script = `${home}/smoke/${MARKER_CHECK_ONCE}`
+    const stamp = `${home}/smoke/${MARKER_CHECK_STAMP}`
+    expect(readFileSync(script, 'utf8')).toBe(MARKER_CHECK_ONCE_PY)
+    expect(script).not.toMatch(/heldout/)
+    expect(existsSync(stamp)).toBe(false)
+    const first = spawnSync('python', [script], { encoding: 'utf8' })
+    expect(first.status).toBe(1)
+    expect(first.stdout).toContain('marker-check-once: first call fails on purpose')
+    expect(existsSync(stamp)).toBe(true)
+    for (let i = 0; i < 2; i++) {
+      const later = spawnSync('python', [script], { encoding: 'utf8' })
+      expect(later.status).toBe(0)
+      expect(later.stdout).toContain('marker-check-once: a later call passes')
+    }
+    writeSmokeCampaign({ home, repo, base: SMOKE_BASE })
+    expect(existsSync(stamp)).toBe(false)
+    expect(spawnSync('python', [script], { encoding: 'utf8' }).status).toBe(1)
+    rmSync(stamp, { force: true })
   })
 
   it('passes loadCampaignSpec and checkIdentity (instruments sealed, base a real commit, no leak)', () => {

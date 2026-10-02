@@ -44,7 +44,7 @@ This package is the CynCo engine's spine: `ConversationLoop` drives the user-mes
 - **`TUICommand`** (`protocol.ts:855`) — discriminated union of every TUI→engine command type.
 - **`parseCommandResult`** (`protocol.ts:906`) — parses and shape-validates a command frame, returning the refusal reason rather than swallowing it (F32).
 - **`maybeAutoCreateContract`** (`contractAutoCreate.ts:197`) — intent-classifies a user message into a DoD contract when no incomplete contract is already active.
-- **`applyHarnessContract`** (`contractAutoCreate.ts:339`) — installs a mission-driver-supplied contract, refusing one with an unrunnable verification command.
+- **`applyHarnessContract`** (`contractAutoCreate.ts:431`) — installs a mission-driver-supplied contract, refusing one with an unrunnable verification command.
 - **`LocalCodeWSServer`** (`server.ts:23`) — the bridge's WebSocket server: loopback-only, token-gated, single-client, refuses any request carrying an `Origin` header.
 - **`applyToolFloor`** (`toolFloor.ts:80`) — restores `Bash`/`ContractAssertPass`/`ContractAssertFail`/`ContractStatus` (and a file-mutation tool, if the contract needs one) whenever any upstream narrowing layer dropped them during active enforcement.
 

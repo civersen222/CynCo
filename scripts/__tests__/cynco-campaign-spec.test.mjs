@@ -43,6 +43,16 @@ describe('loadCampaignSpec', () => {
     const s = good(); s.markerCheck = 'python -m pytest gilded/tests/test_c8_*.py -q'
     expect(() => loadCampaignSpec(write(s))).toThrow(/markerCheck contains a wildcard/)
   })
+  // Review I3: the retry floor, lowered by the one-hour smoke so it can retry at all.
+  it('accepts an optional positive-integer markerRetryMinS and refuses anything else', () => {
+    expect(loadCampaignSpec(write(good())).markerRetryMinS).toBeUndefined()
+    const s = good(); s.markerRetryMinS = 60
+    expect(loadCampaignSpec(write(s)).markerRetryMinS).toBe(60)
+    for (const bad of [0, -5, 1.5, '60', null]) {
+      const b = good(); b.markerRetryMinS = bad
+      expect(() => loadCampaignSpec(write(b))).toThrow(/markerRetryMinS must be a positive integer/)
+    }
+  })
   it('refuses duplicate gateIds across work items', () => {
     const s = good(); s.work.push({ id: 2, title: 'X', gateIds: ['C8.4a'], text: 'y' })
     expect(() => loadCampaignSpec(write(s))).toThrow(/C8.4a/)

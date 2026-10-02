@@ -1188,7 +1188,8 @@ describe('history-rewrite wiring guard', () => {
     // Taken around the check, not near it — a SHA read after `runCheck` on both
     // sides would agree with itself forever and detect nothing.
     const before = driver.indexOf('const headBefore = gitHead(')
-    const check = driver.indexOf('const r = runCheck(')
+    // Phase 7 review C1: the check is awaited (runCheckAsync), still between the two reads.
+    const check = driver.search(/const r = (await )?runCheck(Async)?\(/)
     const after = driver.indexOf('const headAfter = gitHead(')
     expect(before).toBeGreaterThan(-1)
     expect(check).toBeGreaterThan(before)

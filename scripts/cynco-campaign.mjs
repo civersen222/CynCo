@@ -16,6 +16,7 @@ import { resolve, join, basename, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { writeFileSync, readFileSync, existsSync, appendFileSync, unlinkSync, openSync, writeSync, closeSync, readdirSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
+import { homedir } from 'node:os'
 import { cyncoHome } from '../engine/paths.js'
 import { bashExe, runSync, faultSummary } from './cynco-spawn.mjs'
 import { loadCampaignSpec, checkIdentity } from './cynco-campaign-spec.mjs'
@@ -145,21 +146,39 @@ export function dispatchEnv(base, extra) {
  * reach the model (the driver feeds a FAIL back once). The sealed campaign
  * gate's never does: it is graded by the runner, after the driver, as before.
  * Forward slashes so the command reads the same in every shell runCheck uses.
+ *
+ * Review I1: the baseline and the repo travel ONLY inside the command, as a
+ * POSIX env prefix (runCheck's translateEnvPrefix runs it in PowerShell too).
+ * In the env they reached the engine and the model's Bash, and the baseline —
+ * the file the suite gate trusts — was neither sealed nor restored. As a path
+ * token in the check command, harnessGatePaths names it, so the engine seals
+ * it and the driver snapshots and restores it like every other instrument.
+ * The prefix is split on whitespace, so a path with a space is refused.
  */
 export const MARKER_CHECK_TIMEOUT_MS = 1_800_000
-export function suiteGateCommand() {
-  return `python "${SUITE_GATE().replace(/\\/g, '/')}"`
+export function suiteGateCommand(spec) {
+  const fwd = (p) => String(p).replace(/^~(?=[\\/])/, homedir()).replace(/\\/g, '/')
+  const baseline = fwd(spec.suiteBaseline)
+  const repo = fwd(spec.repo)
+  for (const [k, v] of [['suiteBaseline', baseline], ['repo', repo]]) {
+    if (/\s/.test(v)) throw new Error(`campaign spec ${k} "${v}" contains whitespace — it cannot travel in the suite gate's env prefix`)
+  }
+  return `CHK_SUITE_BASELINE=${baseline} CYNCO_GATE_REPO=${repo} python "${fwd(SUITE_GATE())}"`
 }
+
+/** The keys the suite gate reads, which the engine (and so the model's Bash) must never hold. */
+export const SUITE_GATE_ENV_KEYS = ['CHK_SUITE_BASELINE', 'CYNCO_GATE_REPO']
 
 /**
  * The wave's dispatch-mission.sh argv and environment. A spec `markerCheck` is
- * run verbatim; without one the suite gate is the check, and it needs its
- * baseline, its repo and a cap that covers a whole-suite run — the driver
- * refuses a check without CYNCO_CHECK_TIMEOUT_MS. `base` is the runner's env.
+ * run verbatim; without one the suite gate is the check, carrying its baseline
+ * and repo in its own command, with a cap that covers a whole-suite run — the
+ * driver refuses a check without CYNCO_CHECK_TIMEOUT_MS. `spec.markerRetryMinS`
+ * reaches the driver as CYNCO_MARKER_RETRY_MIN_S. `base` is the runner's env.
  */
 export function waveDispatch(spec, { briefFile, invariants, timeoutS, pidFile, driverLog }, base = process.env) {
   const suite = spec.markerCheck === undefined || spec.markerCheck === null
-  const markerCheck = suite ? suiteGateCommand() : spec.markerCheck
+  const markerCheck = suite ? suiteGateCommand(spec) : spec.markerCheck
   // CYNCO_CAMPAIGN_ID: the only way the dispatched engine's own 9161 dashboard
   // can name its campaign as `active` in /api/campaign between waves, when no
   // campaign has a driver in flight (Phase 2c-ii). dispatch-mission.sh passes
@@ -170,8 +189,10 @@ export function waveDispatch(spec, { briefFile, invariants, timeoutS, pidFile, d
   const env = dispatchEnv(waveEnvBase(spec, base), {
     LOCALCODE_MAX_ITERATIONS: String(spec.budget.iterations), CYNCO_BASH_TIMEOUT_MS: String(spec.budget.bashTimeoutMs),
     CYNCO_MISSION_INVARIANTS: JSON.stringify(invariants), DRIVER_PID_FILE: pidFile, DRIVER_LOG: driverLog, CYNCO_SKIP_IDLE_ENGINE: '1', CYNCO_CAMPAIGN_ID: spec.id,
-    ...(suite ? { CHK_SUITE_BASELINE: spec.suiteBaseline, CYNCO_GATE_REPO: spec.repo, CYNCO_CHECK_TIMEOUT_MS: String(MARKER_CHECK_TIMEOUT_MS) } : {}),
+    ...(suite ? { CYNCO_CHECK_TIMEOUT_MS: String(MARKER_CHECK_TIMEOUT_MS) } : {}),
+    ...(spec.markerRetryMinS !== undefined ? { CYNCO_MARKER_RETRY_MIN_S: String(spec.markerRetryMinS) } : {}),
   })
+  for (const k of SUITE_GATE_ENV_KEYS) delete env[k]
   return { args: [briefFile, spec.marker, spec.repo, String(timeoutS), markerCheck], env }
 }
 

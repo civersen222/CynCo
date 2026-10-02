@@ -1,6 +1,5 @@
 [
   "agents/CLAUDE.md: formatVocabularyPrompt @ vocabulary.ts:296",
-  "bridge/CLAUDE.md: applyHarnessContract @ contractAutoCreate.ts:339",
   "daemon/CLAUDE.md: FAILURE_ALERT_THRESHOLD @ missionRunner.ts:178",
   "daemon/CLAUDE.md: TaskOutcome @ types.ts:7",
   "daemon/CLAUDE.md: drainOnDemand @ missionRunner.ts:235",

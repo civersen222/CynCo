@@ -24,6 +24,12 @@ export function loadCampaignSpec(path) {
     if (typeof spec.markerCheck !== 'string' || !spec.markerCheck.trim()) throw new Error('campaign spec markerCheck must be a non-empty string')
     if (/[*?]/.test(spec.markerCheck)) throw new Error('campaign spec markerCheck contains a wildcard — the check must name files (F146)')
   }
+  // Optional (Phase 7 review I3): the seconds of mission clock a FAILED marker
+  // check needs left to be fed back (the driver's MARKER_RETRY_MIN_S, 3600 by
+  // default). The one-hour smoke wave lowers it, or it could never retry.
+  if (spec.markerRetryMinS !== undefined && (!Number.isInteger(spec.markerRetryMinS) || spec.markerRetryMinS <= 0)) {
+    throw new Error('campaign spec markerRetryMinS must be a positive integer of seconds')
+  }
   if (!Array.isArray(spec.work) || spec.work.length === 0) throw new Error('campaign spec work must be a non-empty array')
   const seen = new Set()
   for (const w of spec.work) {

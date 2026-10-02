@@ -20,6 +20,15 @@
 // `<home>/heldout/...`. So the caller passes `C:/tmp/cynco-home-s1/.cynco` as
 // CYNCO_HOME (not `C:/tmp/cynco-home-s1`), and the runner, the engine and this
 // generator then all agree on one directory.
+//
+// The marker check (Phase 7 ruling 3, review I3) is a MECHANICAL PROOF of the
+// driver's retry loop, not a measurement of the work. The spec's markerCheck is
+// `<home>/smoke/marker_check_once.py`, written here (under the temp home, never
+// under heldout): its first call FAILS on purpose (`marker-check-once: first
+// call fails on purpose`) and leaves a stamp beside itself; every later call
+// PASSES. `markerRetryMinS: 60` lets the one-hour wave reach the retry, so one
+// smoke run walks FAIL → note → second turn → PASS end to end. The sealed gate
+// and the suite gate still grade the work, after the driver, as always.
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { resolve } from 'node:path'
@@ -54,8 +63,35 @@ const MEASURES = `HOW THE BAR MEASURES — build to these definitions exactly
   stay green.
 `
 
-/** The campaign spec for `repo` at `base`, with its instruments under `heldout`. */
-export function smokeSpec({ repo, base, heldout }) {
+/** The marker-check fixture's file name, written under `<home>/smoke/`. */
+export const MARKER_CHECK_ONCE = 'marker_check_once.py'
+/** Its stamp, beside it: present = the first call has happened. */
+export const MARKER_CHECK_STAMP = 'marker_check_once.stamp'
+
+/**
+ * The fixture: FAILS on its first call (and writes the stamp), PASSES on every
+ * later call. A mechanical proof of the driver's retry loop — see the header.
+ */
+export const MARKER_CHECK_ONCE_PY = `# marker_check_once.py — the s1 smoke's marker check (Phase 7 ruling 3).
+# A MECHANICAL proof of the driver's marker-check retry loop, not a
+# measurement of the work: the first call fails on purpose and leaves a stamp
+# beside this file; every later call passes. Written by
+# scripts/cynco-smoke-campaign.mjs; the stamp is removed on every --write.
+import os
+import sys
+
+stamp = os.path.join(os.path.dirname(os.path.abspath(__file__)), ${JSON.stringify(MARKER_CHECK_STAMP)})
+if not os.path.exists(stamp):
+    with open(stamp, "w", encoding="utf-8") as f:
+        f.write("first call made\\n")
+    print("marker-check-once: first call fails on purpose")
+    sys.exit(1)
+print("marker-check-once: a later call passes")
+sys.exit(0)
+`
+
+/** The campaign spec for `repo` at `base`, with its instruments under `heldout` and the smoke's own files under `smokeDir`. */
+export function smokeSpec({ repo, base, heldout, smokeDir }) {
   return {
     id: SMOKE_ID,
     title: 'smoke: ship calc 0.1.0',
@@ -67,9 +103,11 @@ export function smokeSpec({ repo, base, heldout }) {
     suiteBaseline: `${heldout}/suite_baseline_${base.slice(0, 7)}.txt`,
     marker: 'smoke s1 complete',
     keepGreen: 'python -m pytest -q test_calc.py',
-    // Phase 7 ruling 3: the marker check defaults to the suite gate under the
-    // operator's home; the smoke names its own so it stays self-contained.
-    markerCheck: 'python -m pytest -q test_calc.py',
+    // Phase 7 ruling 3 / review I3: the marker check defaults to the suite
+    // gate; the smoke names its own fixture — fails once, then passes — and
+    // lowers the retry floor so its one-hour wave can reach the retry at all.
+    markerCheck: `python ${smokeDir}/${MARKER_CHECK_ONCE}`,
+    markerRetryMinS: 60,
     budget: { hoursPerWave: 1, iterations: 300, bashTimeoutMs: 600000, waves: 1 },
     // The smoke gate runs in seconds (calc.py is tiny), so the mid-wave
     // progress probe (Phase 6 Task 3) reads every 20 s here — the runner's
@@ -206,9 +244,14 @@ export function writeSmokeCampaign({ home, repo, base, commonFrom, runtimeFrom, 
   rmSync(campaignDir, { recursive: true, force: true })
   mkdirSync(campaignDir, { recursive: true })
 
-  mkdirSync(`${h}/smoke`, { recursive: true })
-  const specPath = `${h}/smoke/${SMOKE_ID}.campaign.json`
-  const spec = smokeSpec({ repo: r, base: sha, heldout })
+  const smokeDir = `${h}/smoke`
+  mkdirSync(smokeDir, { recursive: true })
+  writeFileSync(`${smokeDir}/${MARKER_CHECK_ONCE}`, MARKER_CHECK_ONCE_PY, 'utf8')
+  // A stamp from an earlier run would make the first call pass and the retry
+  // loop go unexercised.
+  rmSync(`${smokeDir}/${MARKER_CHECK_STAMP}`, { force: true })
+  const specPath = `${smokeDir}/${SMOKE_ID}.campaign.json`
+  const spec = smokeSpec({ repo: r, base: sha, heldout, smokeDir })
   if (env) spec.env = env
   writeFileSync(specPath, JSON.stringify(spec, null, 2) + '\n', 'utf8')
   return specPath

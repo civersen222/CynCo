@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 // @ts-ignore — untyped harness module
-import { runCheck, shouldRetryMarkerCheck, markerCheckNote, MARKER_RETRY_MIN_S } from '../../../scripts/cynco-verify.mjs'
+import { runCheck, runCheckAsync, shouldRetryMarkerCheck, markerCheckNote, noteLines, markerRetryMinSFrom, MARKER_RETRY_MIN_S } from '../../../scripts/cynco-verify.mjs'
 
 // process.execPath is the current JS runtime (node under vitest, bun under
 // Bun) — both support -e. Quoted for paths with spaces. runCheck (F146) now
@@ -203,9 +203,81 @@ describe('markerCheckNote', () => {
     expect(lines[0]).toBe('[driver] marker check FAILED — fix and re-mark:')
     expect(lines.slice(1)).toEqual(Array.from({ length: 40 }, (_, i) => `line ${i + 21}`))
   })
-  it('says what the driver did to an uncommitted tree before the check graded the commit', () => {
-    const note = markerCheckNote('E boom', { resetFiles: 2, patchPath: 'C:/tmp/m.patch' })
+  it('says what the driver did to an uncommitted tree, and how to bring it back (review M1)', () => {
+    const note = markerCheckNote('E boom', { resetFiles: 2, patchPath: 'C:/tmp/m.uncommitted.1.patch' })
     expect(note).toContain('E boom')
-    expect(note).toMatch(/2 uncommitted tracked file\(s\) were reset .* C:\/tmp\/m\.patch/)
+    expect(note).toMatch(/2 uncommitted tracked file\(s\) were reset .* C:\/tmp\/m\.uncommitted\.1\.patch/)
+    expect(note).toContain('git apply --3way "C:/tmp/m.uncommitted.1.patch"')
+  })
+  // Review I1/M2: the suite gate prints `baseline: N known failure(s) from
+  // <path>` and a REPAIRED block of baseline members — neither may reach the model.
+  it('never carries a heldout line, a redacted path, or the REPAIRED block', () => {
+    const output = [
+      'g_suite no regression: gilded/tests in C:/repo',
+      '  baseline: 3 known failure(s) from C:/Users/x/.cynco/heldout/c10/suite_baseline_abc.txt',
+      '  measured: 5 failed, 900 passed',
+      '  REPAIRED 2 baseline failure(s) — reported, not punished:',
+      '      + gilded/tests/test_a.py::test_one',
+      '      + gilded/tests/test_a.py::test_two',
+      '  REGRESSED 1 test(s) that pass on the baseline:',
+      '      - gilded/tests/test_b.py::test_three',
+      'read C:\\Elsewhere\\Base.TXT here',
+      'g_suite: FAIL — a test that was green is red.',
+    ].join('\n')
+    const note = markerCheckNote(output, { redact: ['c:/elsewhere/base.txt'] })
+    expect(note).not.toMatch(/heldout/i)
+    expect(note).not.toMatch(/base\.txt/i)
+    expect(note).not.toContain('REPAIRED')
+    expect(note).not.toContain('test_one')
+    expect(note).toContain('REGRESSED 1 test(s)')
+    expect(note).toContain('- gilded/tests/test_b.py::test_three')
+    expect(note).toContain('g_suite: FAIL')
+    expect(noteLines(output)).toHaveLength(6)
+  })
+})
+
+describe('markerRetryMinSFrom (review I3)', () => {
+  it('defaults to MARKER_RETRY_MIN_S, takes a positive integer, refuses anything else', () => {
+    expect(markerRetryMinSFrom({})).toEqual({ minS: 3600, error: null })
+    expect(markerRetryMinSFrom({ CYNCO_MARKER_RETRY_MIN_S: '60' })).toEqual({ minS: 60, error: null })
+    for (const bad of ['0', '-1', '1.5', 'soon']) expect(markerRetryMinSFrom({ CYNCO_MARKER_RETRY_MIN_S: bad }).error).toMatch(/positive integer/)
+  })
+  it('a lowered floor lets a short clock retry', () => {
+    expect(shouldRetryMarkerCheck({ ok: false, remainingS: 120, retries: 0, minS: 60 })).toBe(true)
+    expect(shouldRetryMarkerCheck({ ok: false, remainingS: 59, retries: 0, minS: 60 })).toBe(false)
+  })
+})
+
+// Review C1: the in-loop check must not block the event loop.
+describe('runCheckAsync', () => {
+  it('reads PASS, FAIL and a real timeout the way runCheck does, without blocking the loop', async () => {
+    let ticks = 0
+    const timer = setInterval(() => { ticks++ }, 50)
+    try {
+      const pass = await runCheckAsync(`${RUNTIME} -e "setTimeout(() => { console.log('ok'); process.exit(0) }, 600)"`, process.cwd(), 30000)
+      expect(pass.verified).toBe(true)
+      expect(pass.outputTail).toContain('ok')
+      expect(ticks).toBeGreaterThan(3)
+    } finally { clearInterval(timer) }
+    const fail = await runCheckAsync(`${RUNTIME} -e "console.error('3 tests failed'); process.exit(3)"`, process.cwd(), 30000)
+    expect(fail.verified).toBe(false)
+    expect(fail.exitCode).toBe(3)
+    const slow = await runCheckAsync(`${RUNTIME} -e "setTimeout(() => {}, 60000)"`, process.cwd(), 1500)
+    expect(slow.verified).toBeNull()
+    expect(slow.timedOut).toBe(true)
+    expect(slow.harnessFault).toMatch(/timed out after/)
+  })
+  it('a spawn that cannot start is UNMEASURED, and the env is colourless (F166)', async () => {
+    const bad = await runCheckAsync(`${RUNTIME} -e "process.exit(0)"`, join(process.cwd(), 'no-such-directory-a7f3c1'), 30000)
+    expect(bad.verified).toBeNull()
+    expect(bad.spawnFailed).toBe(true)
+    const prev = process.env.FORCE_COLOR
+    process.env.FORCE_COLOR = '3'
+    try {
+      const r = await runCheckAsync(`${RUNTIME} -e "console.log('FC=' + (process.env.FORCE_COLOR ?? 'unset') + ' NC=' + process.env.NO_COLOR)"`, process.cwd(), 30000)
+      expect(r.outputTail).toContain('FC=unset NC=1')
+    } finally {
+      if (prev === undefined) delete process.env.FORCE_COLOR; else process.env.FORCE_COLOR = prev
+    }
   })
 })

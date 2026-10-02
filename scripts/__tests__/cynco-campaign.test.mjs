@@ -12,6 +12,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
+import { loadMissionAssertions } from '../cynco-contract.mjs'
+import { sealedGatePaths, withheldGatePaths } from '../../engine/bridge/contractAutoCreate.js'
 
 // runWave only ever sha256s spec.gate / spec.perturb (the Rule-11 re-check), so
 // three real files stand in for the sealed instruments here and the shas below
@@ -1079,14 +1081,18 @@ describe('waveDispatch — the marker check', () => {
   }
   const suiteSpec = { ...spec, suiteBaseline: 'C:/h/.cynco/heldout/c8/suite_baseline.txt' }
 
-  it('resolves to the suite gate and hands the driver its baseline, repo and a 30-minute cap', () => withHome((home) => {
-    const { args, env } = waveDispatch(suiteSpec, wave, { PATH: '/usr/bin', GH_TOKEN: 'gh', CYNCO_NTFY_URL: 'http://n' })
+  // Review I1: the baseline and the repo travel ONLY inside the command, never
+  // in the env the engine (and so the model's Bash) inherits.
+  it('resolves to the suite gate, carrying its baseline and repo in the command and a 30-minute cap', () => withHome((home) => {
+    const { args, env } = waveDispatch(suiteSpec, wave, { PATH: '/usr/bin', GH_TOKEN: 'gh', CYNCO_NTFY_URL: 'http://n', CHK_SUITE_BASELINE: 'C:/stale.txt', CYNCO_GATE_REPO: 'C:/stale' })
     const gatePath = join(home, 'heldout', 'common', 'g_suite_no_regression.py').replace(/\\/g, '/')
-    expect(suiteGateCommand()).toBe(`python "${gatePath}"`)
-    expect(args).toEqual(['C:/tmp/b.md', 'stage c8 complete', 'C:/repo', '28800', `python "${gatePath}"`])
-    expect(env.CHK_SUITE_BASELINE).toBe('C:/h/.cynco/heldout/c8/suite_baseline.txt')
-    expect(env.CYNCO_GATE_REPO).toBe('C:/repo')
+    const cmd = `CHK_SUITE_BASELINE=C:/h/.cynco/heldout/c8/suite_baseline.txt CYNCO_GATE_REPO=C:/repo python "${gatePath}"`
+    expect(suiteGateCommand(suiteSpec)).toBe(cmd)
+    expect(args).toEqual(['C:/tmp/b.md', 'stage c8 complete', 'C:/repo', '28800', cmd])
+    expect(env.CHK_SUITE_BASELINE).toBeUndefined()
+    expect(env.CYNCO_GATE_REPO).toBeUndefined()
     expect(env.CYNCO_CHECK_TIMEOUT_MS).toBe('1800000')
+    expect(env.CYNCO_MARKER_RETRY_MIN_S).toBeUndefined()
     expect(MARKER_CHECK_TIMEOUT_MS).toBe(1_800_000)
     // dispatchEnv still strips the credential keys, and the wave terms still ride along.
     expect(env.GH_TOKEN).toBeUndefined()
@@ -1107,6 +1113,29 @@ describe('waveDispatch — the marker check', () => {
     expect(env.CHK_SUITE_BASELINE).toBeUndefined()
     expect(env.CYNCO_GATE_REPO).toBeUndefined()
     expect(env.CYNCO_CHECK_TIMEOUT_MS).toBeUndefined()
+  }))
+
+  it('hands a spec markerRetryMinS to the driver as CYNCO_MARKER_RETRY_MIN_S', () => withHome(() => {
+    expect(waveDispatch({ ...suiteSpec, markerRetryMinS: 60 }, wave, { PATH: '/usr/bin' }).env.CYNCO_MARKER_RETRY_MIN_S).toBe('60')
+  }))
+
+  it('refuses a baseline or repo path the env prefix cannot carry', () => withHome(() => {
+    expect(() => suiteGateCommand({ ...suiteSpec, suiteBaseline: 'C:/my dir/.cynco/heldout/b.txt' })).toThrow(/suiteBaseline .* contains whitespace/)
+  }))
+
+  // The point of carrying it in the command: the withheld-path logic names the
+  // baseline, so the engine seals it and the driver snapshots and restores it.
+  it('puts the baseline in the sealed set the driver and the engine derive from the check', () => withHome((home) => {
+    const held = join(home, 'heldout', 'c8'); mkdirSync(held, { recursive: true })
+    const baseline = join(held, 'suite_baseline.txt').replace(/\\/g, '/'); writeFileSync(baseline, 'tests/x.py::t\n')
+    mkdirSync(join(home, 'heldout', 'common'), { recursive: true }); writeFileSync(join(home, 'heldout', 'common', 'g_suite_no_regression.py'), '# gate\n')
+    const repo = mkdtempSync(join(tmpdir(), 'repo-')).replace(/\\/g, '/')
+    const cmd = suiteGateCommand({ ...suiteSpec, suiteBaseline: baseline, repo })
+    const assertions = loadMissionAssertions('C:/tmp/none.md', cmd, { exists: () => false, readFile: () => '' }, MARKER_CHECK_TIMEOUT_MS)
+    const sealed = sealedGatePaths(assertions, repo).map(p => p.toLowerCase())
+    expect(sealed).toContain(baseline.toLowerCase())
+    expect(sealed).toContain(join(home, 'heldout', 'common', 'g_suite_no_regression.py').replace(/\\/g, '/').toLowerCase())
+    expect(withheldGatePaths(assertions, repo).map(p => p.toLowerCase())).toContain(baseline.toLowerCase())
   }))
 
   it('is what defaultIo.dispatch runs — keepGreen is no longer the marker check', () => {
