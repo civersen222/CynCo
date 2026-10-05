@@ -1869,3 +1869,16 @@ Verdict: **STOP (fault)** — g_suite: pytest reported failures but printed no F
 Economics after this wave: VERDICT: frontier spent $2995.57 SUPERVISING (development $1270.88 and unattributed $1.86 are excluded — building LocalCode is not oversight). The supervised generation would have cost ~$5625.37 on the API ($2652.54 priced from measured tokens, $2972.84 still estimated) and ran locally for ~$23.45 of power. supervision ratio: $1 of frontier verify oversees ~$1.88 of displaced generation.
 
 Verdict: **CAMPAIGN PASS (sweep survivors: 5)** — sealed gate PASS, suite gate PASS, sweep 1/6, 5 survivor(s) — 5 inside a claimed file: gilded/endings.py:150:cmp->IsNot, gilded/endings.py:154:cmp->IsNot, gilded/endings.py:169:cmp->NotEq, gilded/endings.py:173:cmp->NotEq, gilded/endings.py:177:cmp->NotEq
+
+## Campaign C11 — Rivals & Reach (authored by the frontier occupant on the human path after CynCo's seat's one attempt, sealed 2026-10-05, BASE 2e313f6, gate_c11.py sha256 5697ee0601cbdbc7)
+
+Roadmap line: Rivals read the player's ambition through the fog: on Powers/Dossier with a rival selected, a line owned by that rival states whether it sees the player's family (intel tier ≥ 2), never naming the family; the AI courts a rival's opposing member as a lever when it holds intel tier ≥ 2 on that house and leaves a beat naming the member; a lever pulled by a rival is visible on the player's House/Court page
+
+The gate grades 9 line(s): C11.1a.rival-reads-you, C11.1b.reads-you-never-names, C11.1c.reads-you-one-home, C11.2a.ai-courts-the-player, C11.2b.ai-courts-a-rival-house, C11.2c.courts-only-through-intel, C11.3a.rival-lever-on-court, C11.3b.rival-lever-one-home, C11.9.
+
+Authoring mission: brief-1-1790962309082 (verified null) — CynCo's seat got one authoring attempt under the C10 supervisor rubric (Phase 7 ruling 8): four hours, 600 tool calls, a gate written in its last minute, no perturb, positive or draft, so no triple to check; recorded as the seat's data point (attempts 1). The triple was then written by the frontier occupant (staging ~/.cynco/authoring/c11, BASE archive of civkings 2e313f6). The supervisor's first review read FIX-THEN-SEAL with five required fixes (an arrival-alive clause for departures, a family-blind differential for C11.1b, fog words dropped from the NEG list, headers and audit carrying the supervisor's stub, draft wording); one fix round closed all five, and the re-check read SEAL with the supervisor's stub MISS (12 fails) at both seeds — red on 1b, 2a, 2b, 2c, 3a and 3b, green only on 1a and 1c — the honest fog wording PASS, the death lever MISS (10 fails), the arrive probe PASS. Rulings carried into the wave: the stake swap compares the whole Powers/Dossier screen for the selected rival (one-home applied to the swap); one family pair per seed is an accepted residual. This line closes both halves of locked decision 2 that the C10 seal parked.
+
+Sealed sha256: gate_c11.py 5697ee0601cbdbc7, perturb_c11.py 49fb6ccfb28d4824, positive_c11.py 46f3ff66471c9d92.
+
+Calibration: BASE printed GATE: MISS (16 fails) — 16 fail(s) by absence, zero error lines; the cheat stub flips C11.2a.ai-courts-the-player.s7, C11.2a.ai-courts-the-player.s11, C11.3a.rival-lever-on-court.s7, C11.3a.rival-lever-on-court.s11 and leaves 12 discriminator(s) red; the positive shim printed GATE: PASS.
+

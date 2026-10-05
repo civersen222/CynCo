@@ -1821,14 +1821,15 @@ describe('main routes the authoring verbs before it loads a campaign spec', () =
     } }
   }
 
-  // c11: C9's spec was sealed on 2026-09-26 (Phase 5) and C10's on 2026-09-29
-  // (Phase 6), so the "no spec anywhere" precondition uses the next unauthored line.
-  it('--author c11 reaches the author module with no c11.campaign.json anywhere', async () => {
-    expect(existsSync('docs/civkings-redesign-briefs/c11.campaign.json')).toBe(false)
+  // c12: C9's spec was sealed on 2026-09-26 (Phase 5), C10's on 2026-09-29
+  // (Phase 6) and C11's on 2026-10-05 (after Phase 7), so the "no spec anywhere"
+  // precondition uses the next unauthored line.
+  it('--author c12 reaches the author module with no c12.campaign.json anywhere', async () => {
+    expect(existsSync('docs/civkings-redesign-briefs/c12.campaign.json')).toBe(false)
     const s = stub()
-    expect(await main(['--author', 'c11'], { authorModule: s.authorModule })).toBe(0)
+    expect(await main(['--author', 'c12'], { authorModule: s.authorModule })).toBe(0)
     expect(s.calls).toHaveLength(1)
-    expect(s.calls[0].argv).toEqual(['--author', 'c11'])
+    expect(s.calls[0].argv).toEqual(['--author', 'c12'])
     // the runner's own helpers are what travel over, not an import back
     expect(Object.keys(s.calls[0].io.helpers).sort()).toEqual(['appendLog', 'applyProposalDecision', 'dispatchEnv', 'dispatchRaw', 'missionIdFrom', 'notify', 'readRow', 'releaseLock', 'seatAuthority', 'takeLock', 'waitForDriver'])
   })
