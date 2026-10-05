@@ -122,25 +122,25 @@ describe('GET /api/campaign', () => {
           isAutopoietic: false, missing: ['boundarySelfProduced', 'organizationallyClosed'], network: { unproduced: ['gate'], productions: [] }, facts: {} } },
     ])
 
-    // c11: no waves yet, inFlight set — this is the active campaign. (c11, not
-    // c9: C9's spec is sealed and checked in now (449670f), and this fixture
+    // c12: no waves yet, inFlight set — this is the active campaign. (c12, not
+    // c9/c10/c11: those specs are sealed and checked in now, and this fixture
     // needs an id with NO spec on disk.)
-    writeCampaign(CYNCO_HOME, 'c11', {
+    writeCampaign(CYNCO_HOME, 'c12', {
       waveCount: 0,
-      inFlight: { wave: 1, missionId: null, briefFile: 'docs/civkings-redesign-briefs/c11-wave1.txt', pidFile: 'C:/tmp/c11.pid', driverLog: 'C:/tmp/c11.log', dispatchedAt: '2026-09-21T00:00:00.000Z' },
+      inFlight: { wave: 1, missionId: null, briefFile: 'docs/civkings-redesign-briefs/c12-wave1.txt', pidFile: 'C:/tmp/c12.pid', driverLog: 'C:/tmp/c12.log', dispatchedAt: '2026-09-21T00:00:00.000Z' },
     })
 
     const res = await authFetch(`${BASE}/api/campaign`)
     expect(res.status).toBe(200)
     const data = await res.json() as any
 
-    expect(data.active).toBe('c11')
+    expect(data.active).toBe('c12')
     expect(data.campaigns).toHaveLength(2)
 
     const c8 = data.campaigns.find((c: any) => c.id === 'c8')
-    const c11 = data.campaigns.find((c: any) => c.id === 'c11')
+    const c12 = data.campaigns.find((c: any) => c.id === 'c12')
     expect(c8).toBeTruthy()
-    expect(c11).toBeTruthy()
+    expect(c12).toBeTruthy()
 
     // c8: waves, proposals, invariant overrides, ideation authority verbatim.
     expect(c8.waveCount).toBe(2)
@@ -173,14 +173,14 @@ describe('GET /api/campaign', () => {
     expect(c8.authoring).toBeNull()
     expect(c8.gateAuthorAuthority).toBe(0)
 
-    // c11: no spec file on disk for this id -> budgetWaves null; inFlight passed through.
-    expect(c11.waveCount).toBe(0)
-    expect(c11.budgetWaves).toBeNull()
-    expect(c11.lastFails).toEqual([])
-    expect(c11.lastDecision).toBeNull()
-    expect(c11.waves).toEqual([])
-    expect(c11.pendingProposals).toEqual([])
-    expect(c11.inFlight).toEqual({ wave: 1, missionId: null, briefFile: 'docs/civkings-redesign-briefs/c11-wave1.txt', pidFile: 'C:/tmp/c11.pid', driverLog: 'C:/tmp/c11.log', dispatchedAt: '2026-09-21T00:00:00.000Z' })
+    // c12: no spec file on disk for this id -> budgetWaves null; inFlight passed through.
+    expect(c12.waveCount).toBe(0)
+    expect(c12.budgetWaves).toBeNull()
+    expect(c12.lastFails).toEqual([])
+    expect(c12.lastDecision).toBeNull()
+    expect(c12.waves).toEqual([])
+    expect(c12.pendingProposals).toEqual([])
+    expect(c12.inFlight).toEqual({ wave: 1, missionId: null, briefFile: 'docs/civkings-redesign-briefs/c12-wave1.txt', pidFile: 'C:/tmp/c12.pid', driverLog: 'C:/tmp/c12.log', dispatchedAt: '2026-09-21T00:00:00.000Z' })
 
     // The real checked-in roadmap.json (c6..c9) — read cwd-relative, same as
     // budgetWaves reads the real c8.campaign.json above.
@@ -303,17 +303,17 @@ describe('GET /api/campaign', () => {
     CYNCO_HOME = mkdtempSync(join(tmpdir(), 'cynco-campaign-authoring-'))
     process.env.CYNCO_HOME = CYNCO_HOME
 
-    // c11 has no docs/civkings-redesign-briefs/c11.campaign.json in this repo
-    // (c9 did until 449670f sealed it), so the gate/c11 proposal's approve
-    // command is built from the roadmap id (== the campaign directory id)
-    // alone — no spec file needed (Task 4). budgetWaves null proves the
+    // c12 has no docs/civkings-redesign-briefs/c12.campaign.json in this repo
+    // (c9, c10 and c11 did until their seals), so the gate/c12 proposal's
+    // approve command is built from the roadmap id (== the campaign directory
+    // id) alone — no spec file needed (Task 4). budgetWaves null proves the
     // spec is absent.
-    writeCampaign(CYNCO_HOME, 'c11', {
+    writeCampaign(CYNCO_HOME, 'c12', {
       waveCount: 0,
       gateAuthorAuthority: 0.2,
       authoring: {
-        c11: {
-          missionId: 'mission-c11-author-1',
+        c12: {
+          missionId: 'mission-c12-author-1',
           verified: true,
           sealedAt: '2026-09-22T00:00:00.000Z',
           lastCheck: { at: '2026-09-22T00:00:00.000Z', ok: false, problems: ['C10.1a.saves-list-restores: no BASE MISS'], lineCount: 3 },
@@ -321,9 +321,9 @@ describe('GET /api/campaign', () => {
       },
       proposals: [
         {
-          type: 'Code', name: 'gate/c11', description: 'Seal the CynCo-authored gate triple for c11',
+          type: 'Code', name: 'gate/c12', description: 'Seal the CynCo-authored gate triple for c12',
           status: 'pending', proposedAt: '2026-09-22T00:00:00.000Z',
-          evidence: { lineCount: 3, problems: [], missionId: 'mission-c11-author-1', verified: true },
+          evidence: { lineCount: 3, problems: [], missionId: 'mission-c12-author-1', verified: true },
         },
       ],
     })
@@ -331,24 +331,24 @@ describe('GET /api/campaign', () => {
     const res = await authFetch(`${BASE}/api/campaign`)
     expect(res.status).toBe(200)
     const data = await res.json() as any
-    const c11 = data.campaigns.find((c: any) => c.id === 'c11')
+    const c12 = data.campaigns.find((c: any) => c.id === 'c12')
 
-    expect(c11.budgetWaves).toBeNull()
-    expect(c11.gateAuthorAuthority).toBe(0.2)
-    expect(c11.authoring).toEqual({
-      missionId: 'mission-c11-author-1',
+    expect(c12.budgetWaves).toBeNull()
+    expect(c12.gateAuthorAuthority).toBe(0.2)
+    expect(c12.authoring).toEqual({
+      missionId: 'mission-c12-author-1',
       verified: true,
       sealedAt: '2026-09-22T00:00:00.000Z',
       lastCheck: { ok: false, problems: ['C10.1a.saves-list-restores: no BASE MISS'] },
     })
 
-    expect(c11.pendingProposals).toHaveLength(1)
-    expect(c11.pendingProposals[0]).toEqual({
-      name: 'gate/c11',
+    expect(c12.pendingProposals).toHaveLength(1)
+    expect(c12.pendingProposals[0]).toEqual({
+      name: 'gate/c12',
       currentValue: null,
       newValue: undefined,
       max: null,
-      approveCommand: 'bun scripts/cynco-campaign.mjs docs/civkings-redesign-briefs/c11.campaign.json --approve-proposal gate/c11',
+      approveCommand: 'bun scripts/cynco-campaign.mjs docs/civkings-redesign-briefs/c12.campaign.json --approve-proposal gate/c12',
       type: 'Code',
       decidedBy: null,
     })
