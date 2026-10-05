@@ -1882,3 +1882,32 @@ Sealed sha256: gate_c11.py 5697ee0601cbdbc7, perturb_c11.py 49fb6ccfb28d4824, po
 
 Calibration: BASE printed GATE: MISS (16 fails) — 16 fail(s) by absence, zero error lines; the cheat stub flips C11.2a.ai-courts-the-player.s7, C11.2a.ai-courts-the-player.s11, C11.3a.rival-lever-on-court.s7, C11.3a.rival-lever-on-court.s11 and leaves 12 discriminator(s) red; the positive shim printed GATE: PASS.
 
+
+## C11 wave 1 — c11-wave1-1791222808885 (graded 2026-10-05, BASE 2e313f69ff64bb49aa76af90f3630641b55bdb4a → HEAD 16311886b51d7861842f8c4884ab3195f99b5b2b)
+
+- 337 tool calls, exitReason engine_closed_the_turn (13174s = 3.66h), 4 commit(s). maxCallsWithoutSourceEdit 72, maxCallsWithoutCommit 155. CodeIndex 17/337. graderProbes 0/337. Invariants: engine denied 4 call(s) (edit-gap 4, commit-gap 0, revert 0), 0 revert refusal(s), 10 CodeIndex-assisted Grep(s).
+- Bash by effect: read 6, write 1, run 79, commit 3, revert 0, other 2 (sum 91 vs byName.Bash 91 — agree).
+- Routing: 0 verify-first (revert 0, low-confidence edit 0): passed 0, failed 0, cached 0, could not run 0 (0/6 KEEP-GREEN runs spent).
+- **Sealed gate at 16311886b51d7861842f8c4884ab3195f99b5b2b: MISS (4 fails).** Prior-campaign regressions: 0.
+  - `C11.3a.rival-lever-on-court.s7: FAIL House Duval-Corse courted Kublai Ashworth (turned opposes->backs) on turn 1; House/Court lines naming the member and House Duval-Corse, new since the turn before and naming no other member of Ashworth and no other rival=[] (need one); lines that also name others=['Kublai Ashworth has been courted away by House Duval-Corse Freydis Ashworth Alexios Ashworth']`
+  - `C11.3a.rival-lever-on-court.s11: FAIL House Vantrell courted Sargon Ashworth (turned opposes->backs) on turn 1; House/Court lines naming the member and House Vantrell, new since the turn before and naming no other member of Ashworth and no other rival=[] (need one); lines that also name others=['Sargon Ashworth has been courted away by House Vantrell Roxana Ashworth Ragnar Ashworth']`
+  - `C11.3b.rival-lever-one-home.s7: FAIL other screens drawing a line naming Kublai Ashworth and House Duval-Corse=[] (must be none; House/Court drew it=False)`
+  - `C11.3b.rival-lever-one-home.s11: FAIL other screens drawing a line naming Sargon Ashworth and House Vantrell=[] (must be none; House/Court drew it=False)`
+  - PASS: C11.1a.rival-reads-you.s7, C11.1a.rival-reads-you.s11, C11.1b.reads-you-never-names.s7, C11.1b.reads-you-never-names.s11, C11.1c.reads-you-one-home.s7, C11.1c.reads-you-one-home.s11, C11.2a.ai-courts-the-player.s7, C11.2a.ai-courts-the-player.s11, C11.2b.ai-courts-a-rival-house.s7, C11.2b.ai-courts-a-rival-house.s11, C11.2c.courts-only-through-intel.s7, C11.2c.courts-only-through-intel.s11, C11.9
+- Suite gate PASS: REGRESSED 0, REPAIRED 1.
+- Derived sweep 4/6; survivors: gilded/ai.py:297:cmp->Is, gilded/ai.py:298:cmp->IsNot.
+- POSIWID Drifting (divergence 0.109, dominant inspect).
+- Governance POSIWID v1 Contradicted (divergence 6.806, dominant signalsLogged, support 361; drift onset wave 1) | v2 Consistent (0 of 8 earned).
+- S4 ideation (authority 0): 8 hypothesis/es; followed=true.
+- Ledger: verified false; mutationSweep recorded (derived).
+- Identity: intact
+- Autopoiesis: 3/6 — missing boundarySelfProduced, circularProduction, organizationallyClosed
+- Progress: 16 → 4 fails over 4 readings (first fix at 97 min; last at 199 min: 4); R1.no-progress did not fire (4 decision(s)); R2.stalled fired at 199 min (4 decision(s))
+- Scoreboard: PASS/GPU-h open | waves 1 so far (open) | lines fixed per landed wave 12.00 | human interventions per wave 0.00 | rules predictive 0/8 (best I3 58% NO EVIDENCE)
+- Outcome hindcast: UNMEASURED — v2 holdout not yet frozen (2 of 38 labeled; eligible by version: v1: 106, v2: 2); R1.no-progress precision null on 0 fired p(Holm) null UNMEASURED — fired on no in-scope wave; R2.stalled precision 100% [21, 100] on 1 fired p(Holm) null TOO FEW; readings: UNMEASURED — reading holdout not yet frozen (15 of 38 labeled; improved 5 / stalled 10; need 8 of each)
+- Denials (campaign to date): edit-gap 2/4 (TOO FEW); commit-gap 0/0 (TOO FEW); revert 0/0 (IDENTITY).
+- Gate lines: cynco 0/0 held (rate —, ci [0.00, 1.00]) vs human 62/66; TOO FEW
+
+Economics after this wave: VERDICT: frontier spent $2995.57 SUPERVISING (development $1270.88 and unattributed $1.86 are excluded — building LocalCode is not oversight). The supervised generation would have cost ~$5910.00 on the API ($2937.16 priced from measured tokens, $2972.84 still estimated) and ran locally for ~$24.86 of power. supervision ratio: $1 of frontier verify oversees ~$1.97 of displaced generation.
+
+Verdict: **MISS** — 4 line(s) still FAIL
