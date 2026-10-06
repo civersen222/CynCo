@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test'
-import { AskBroker } from '../tools/askBroker.js'
+import { AskBroker, AskCancelledError } from '../tools/askBroker.js'
 import type { AskRequest } from '../tools/askBroker.js'
 
 describe('AskBroker', () => {
@@ -49,6 +49,21 @@ describe('AskBroker', () => {
     expect(broker.pendingCount).toBe(1)
     broker.answer(id, 'done')
     expect(broker.pendingCount).toBe(0)
+  })
+
+  it('cancelAll rejects every pending question with a named reason and clears them', async () => {
+    const broker = new AskBroker({ timeoutMs: 300000 })
+    broker.setEmitter(() => {})
+    const a = broker.ask('q1')
+    const b = broker.ask('q2')
+    expect(broker.cancelAll('session switched')).toBe(2)
+    expect(broker.pendingCount).toBe(0)
+    for (const p of [a, b]) {
+      const err = await p.then(() => null, (e: unknown) => e)
+      expect(err).toBeInstanceOf(AskCancelledError)
+      expect((err as AskCancelledError).reason).toBe('session switched')
+    }
+    expect(broker.cancelAll('again')).toBe(0)
   })
 
   it('does not throw when asking with no emitter set', () => {

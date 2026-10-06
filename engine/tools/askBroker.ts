@@ -19,7 +19,16 @@ export type AskEmitter = (req: AskRequest) => void
 
 type PendingAsk = {
   resolve: (answer: string) => void
+  reject: (err: AskCancelledError) => void
   timer: ReturnType<typeof setTimeout>
+}
+
+/** A pending question withdrawn by the engine (`cancelAll`) — not a timeout, not an answer. */
+export class AskCancelledError extends Error {
+  constructor(readonly reason: string) {
+    super(`question cancelled: ${reason}`)
+    this.name = 'AskCancelledError'
+  }
 }
 
 export class AskBroker {
@@ -61,7 +70,7 @@ export class AskBroker {
     const requestId = randomUUID()
     this.emitter({ requestId, question, options })
 
-    return new Promise<string>((resolve) => {
+    return new Promise<string>((resolve, reject) => {
       const timer = setTimeout(() => {
         const entry = this.pending.get(requestId)
         if (entry) {
@@ -69,8 +78,24 @@ export class AskBroker {
           entry.resolve('')
         }
       }, this.timeoutMs)
-      this.pending.set(requestId, { resolve, timer })
+      this.pending.set(requestId, { resolve, reject, timer })
     })
+  }
+
+  /**
+   * Withdraw every pending question, rejecting each with an `AskCancelledError`
+   * that names why — the person is no longer looking at the conversation that
+   * asked (a session switch), so waiting out the timeout only stalls the
+   * caller. Returns how many were cancelled.
+   */
+  cancelAll(reason: string): number {
+    const entries = [...this.pending.values()]
+    this.pending.clear()
+    for (const e of entries) {
+      clearTimeout(e.timer)
+      e.reject(new AskCancelledError(reason))
+    }
+    return entries.length
   }
 
   /** Deliver a human answer for a pending request. Returns false if unknown. */

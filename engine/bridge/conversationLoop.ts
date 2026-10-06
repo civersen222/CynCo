@@ -916,6 +916,8 @@ export class ConversationLoop {
       // A turn parked on an approval card would otherwise hold the switch until
       // the card's 5-minute auto-deny; the user has left that chat, so deny it.
       for (const [id, resolve] of [...this.pendingApprovals]) { this.pendingApprovals.delete(id); resolve(false) }
+      // Same for a turn parked on an AskUser question (300 s timeout otherwise).
+      globalAskBroker.cancelAll('the user switched to another conversation')
       try { await this.currentTurn } catch (e) { console.log(`[projects] aborted turn ended with: ${e instanceof Error ? e.message : String(e)}`) }
       // An abort mid-stream leaves the streamed text outside this.messages (the
       // assistant message is pushed only when the stream completes, and a
@@ -927,6 +929,11 @@ export class ConversationLoop {
       }
     }
     this.project = binding
+    // The contract belongs to the conversation it was made for. Left in place,
+    // an unfinished coding contract would follow the user into a project chat
+    // (an `## Active Contract` prompt section, the contract tool floor, and the
+    // enforcement re-prompts) — and a project's into the next coding session.
+    globalContract.clear()
     this.messages = binding ? messages.map(m => ({ role: m.role, content: m.content }) as Message) : []
     this.sessionId = `session-${Date.now()}`
     this.journal = new JSONLStore(this.sessionId)

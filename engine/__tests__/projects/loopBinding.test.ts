@@ -11,6 +11,7 @@ import { listChats, readTranscript } from '../../projects/chat.js'
 import { RETRIEVAL_TAG } from '../../projects/retrieval.js'
 import { getProjectToolContext, setProjectToolContext } from '../../projects/tools.js'
 import { globalContract } from '../../tools/contract.js'
+import { globalAskBroker } from '../../tools/askBroker.js'
 import { PROJECT_TOOL_NAMES } from '../../projects/profile.js'
 import { makeLoop } from './loopScaffold.js'
 
@@ -195,6 +196,55 @@ describe('ConversationLoop + ProjectBinding', () => {
     expect(readExclude()).toBe(before.exclude)
     expect(existsSync(join(dir, '.cynco-snapshots'))).toBe(false)
     expect(loop.undoLastBatch().ok).toBe(false)
+  }, 60000)
+
+  it('an unfinished coding contract does not follow the user into a project chat', async () => {
+    const { home, slug } = await project('Clean', '')
+    const { loop, calls } = makeLoop({ script: [[{ type: 'text', text: 'Here is the plan.' }]] })
+    // An incomplete contract from a coding task in this session.
+    globalContract.create('coding task', '', ['File seat.py exists after changes'])
+    expect(globalContract.isActive() && !globalContract.isComplete()).toBe(true)
+    const b = await openBinding({ home, slug, embed: null, embedModel: 'none', contextLength: 32768 })
+    if (!b.ok) throw new Error(b.reason)
+    await loop.startProjectSession(b.binding, b.messages)
+    expect(globalContract.isActive()).toBe(false)
+    await loop.handleUserMessage('draft me a plan')
+    expect(calls[0].systemPrompt).not.toContain('## Active Contract')
+    // the contract tool floor would have restored Bash/ContractAssert*; the set is exactly the project's
+    expect([...offered(loop)].sort()).toEqual([...PROJECT_TOOL_NAMES].sort())
+    // one prose reply ends the turn: no enforcement re-prompt, no "Contract unresolved"
+    expect(calls).toHaveLength(1)
+    const t = readTranscript(join(home, slug), listChats(join(home, slug))[0].file)!
+    expect(t.messages.map(m => m.role)).toEqual(['user', 'assistant'])
+  }, 60000)
+
+  it('a switch during a pending AskUser question completes promptly and the aborted turn is transcribed', async () => {
+    const { home, slug } = await project('Ask', '')
+    const { loop, events } = makeLoop({
+      script: [[{ type: 'tool_use', name: 'AskUser', input: { question: 'Which colour for the base?' } }]],
+    })
+    const b = await openBinding({ home, slug, embed: null, embedModel: 'none', contextLength: 32768 })
+    if (!b.ok) throw new Error(b.reason)
+    await loop.startProjectSession(b.binding, b.messages)
+    const turn = loop.handleUserMessage('paint the base')
+    const deadline = Date.now() + 20000
+    while (!events.some(e => e.type === 'ask.request')) {
+      if (Date.now() > deadline) throw new Error('AskUser never asked')
+      await new Promise(r => setTimeout(r, 10))
+    }
+    const started = Date.now()
+    await loop.startProjectSession(null)
+    await turn
+    expect(Date.now() - started).toBeLessThan(10000) // not the broker's 300 s timeout
+    expect(globalAskBroker.pendingCount).toBe(0)
+    expect(loop.currentProject()).toBeNull()
+    const t = readTranscript(join(home, slug), listChats(join(home, slug))[0].file)!
+    expect(t.messages.slice(0, 2).map(m => m.role)).toEqual(['user', 'assistant'])
+    const resultMsg = t.messages.find(m => m.role === 'user' && m.content.some(c => c.type === 'tool_result'))!
+    expect(resultMsg).toBeDefined()
+    const result = resultMsg.content.find(c => c.type === 'tool_result') as any
+    const text = Array.isArray(result.content) ? result.content.map((c: any) => c.text).join('') : String(result.content)
+    expect(text).toContain('Question withdrawn before the user answered (the user switched to another conversation)')
   }, 60000)
 
   it('startProjectSession(null) restores the coding prompt and tools', async () => {

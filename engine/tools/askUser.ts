@@ -4,7 +4,7 @@
  * answer. Routed over the existing approval/WS bridge via the global AskBroker.
  */
 import type { ToolImpl } from './types.js'
-import { globalAskBroker } from './askBroker.js'
+import { globalAskBroker, AskCancelledError } from './askBroker.js'
 
 export const askUserTool: ToolImpl = {
   name: 'AskUser',
@@ -38,7 +38,13 @@ export const askUserTool: ToolImpl = {
     const options = Array.isArray(input.options) ? (input.options as string[]) : undefined
 
     const unattended = globalAskBroker.isUnattended
-    const answer = await globalAskBroker.ask(question, options)
+    let answer: string
+    try {
+      answer = await globalAskBroker.ask(question, options)
+    } catch (e) {
+      if (e instanceof AskCancelledError) return { output: `Question withdrawn before the user answered (${e.reason}).`, isError: true }
+      throw e
+    }
     if (!answer) {
       return {
         output: unattended
