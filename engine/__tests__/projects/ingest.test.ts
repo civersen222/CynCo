@@ -98,12 +98,34 @@ describe('ingestFile', () => {
     // and the rebuild is the one that calls it, not a lone rm of project.db
     const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'projects', 'ingest.ts'), 'utf8')
     const rebuild = src.slice(src.indexOf('function openForModel('), src.indexOf('async function writeChunks('))
-    expect(rebuild).toContain('removeProjectStore(dir)')
+    expect(rebuild).toContain('removeStore(dir)')
     expect(rebuild).not.toContain('rmSync(')
+    expect(src.match(/deps\.removeStore \?\? removeProjectStore/g)).toHaveLength(2) // ingestFile and ingestChat
     await ingestFile({ ...deps(new StubEmbed()), embedModel: 'other-model' }, slug, 'knowledge', 'a.md', 'pasted')
     expect(existsSync(idx)).toBe(true)
     const store = openProjectStore(dir)
     expect(store.getMeta('embed_model')).toBe('other-model')
+    expect(store.allChunks(['knowledge'])).toHaveLength(1)
+    store.close()
+  })
+  it('a rebuild that cannot remove the old store is an unindexed reason, never a throw, and keeps the old store (spec §11)', async () => {
+    writeFileSync(join(dir, 'knowledge', 'a.md'), '# A\n\ntext\n', 'utf8')
+    await ingestFile(deps(new StubEmbed()), slug, 'knowledge', 'a.md', 'pasted')
+    const busy = (_dir: string) => { throw new Error("EBUSY: resource busy or locked, unlink 'project.db'") }
+    const reason = "index rebuild failed: EBUSY: resource busy or locked, unlink 'project.db'"
+    events.length = 0
+    const ev = await ingestFile({ ...deps(new StubEmbed()), embedModel: 'other-model', removeStore: busy }, slug, 'knowledge', 'a.md', 'pasted')
+    expect(ev).toEqual({ slug, filePath: 'knowledge/a.md', kind: 'knowledge', indexed: false, reason })
+    expect(events).toEqual([ev])
+    expect(readFileIndex(dir, 'knowledge').files['a.md']).toMatchObject({ indexed: false, reason })
+    expect(readJournal(dir)[0]).toMatchObject({ event: 'knowledge.unindexed', detail: `a.md (pasted) — not indexed: ${reason}` })
+    expect(readJournal(dir).some(e => e.event === 'index.rebuilt')).toBe(false)
+    // a chat turn takes the same path
+    const chat = await ingestChat({ ...deps(new StubEmbed()), embedModel: 'other-model', removeStore: busy }, slug, '20261005T120000-x.jsonl', 'X', [{ user: 'q', assistant: 'a' }])
+    expect(chat).toEqual({ slug, filePath: 'chats/20261005T120000-x.jsonl', kind: 'chat', indexed: false, reason })
+    // the old store is intact for the next rescan
+    const store = openProjectStore(dir)
+    expect(store.getMeta('embed_model')).toBe('stub-model')
     expect(store.allChunks(['knowledge'])).toHaveLength(1)
     store.close()
   })

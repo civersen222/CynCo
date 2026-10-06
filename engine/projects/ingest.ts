@@ -20,7 +20,8 @@ import { appendJournal, projectDir, readFileIndex, sha256Of, writeFileIndex, typ
 
 export type IngestKind = 'knowledge' | 'artifact' | 'chat'
 export type IngestEvent = { slug: string; filePath: string; kind: IngestKind; indexed: boolean; reason?: string; chunks?: number }
-export type IngestDeps = { home: string; embed: EmbedClient | null; embedModel: string; emit?: (e: IngestEvent) => void; now?: () => string }
+/** `removeStore` is a test seam for the model-change rebuild's delete; it defaults to `removeProjectStore`. */
+export type IngestDeps = { home: string; embed: EmbedClient | null; embedModel: string; emit?: (e: IngestEvent) => void; now?: () => string; removeStore?: (dir: string) => void }
 type FileIndexRecord = ReturnType<typeof readFileIndex>['files'][string]
 
 const AREA_DIR: Record<'knowledge' | 'artifact', 'knowledge' | 'artifacts'> = { knowledge: 'knowledge', artifact: 'artifacts' }
@@ -53,18 +54,29 @@ export function openProjectStore(dir: string): IndexStore {
   return new IndexStore(join(indexDir, 'project.db'))
 }
 
-/** Open the store for writing under `embedModel`, rebuilding it if a different model embedded it. */
-function openForModel(dir: string, embedModel: string, now: () => string): IndexStore {
+/**
+ * Open the store for writing under `embedModel`, rebuilding it if a different
+ * model embedded it. A rebuild that cannot remove the old store (EBUSY on
+ * Windows while a search holds project.db open) is a reason, never a throw
+ * (spec §11): the old store is left as it is for the next rescan.
+ */
+function openForModel(dir: string, embedModel: string, now: () => string, removeStore: (dir: string) => void): { ok: true; store: IndexStore } | { ok: false; reason: string } {
   let store = openProjectStore(dir)
   const recorded = store.getMeta('embed_model')
   if (recorded && recorded !== embedModel) {
     store.close()
-    removeProjectStore(dir)
+    try {
+      removeStore(dir)
+    } catch (e) {
+      const reason = `index rebuild failed: ${e instanceof Error ? e.message : String(e)}`
+      console.log(`[projects] ${dir}: ${reason} (embedding model ${recorded} → ${embedModel}; old store kept for the next rescan)`)
+      return { ok: false, reason }
+    }
     appendJournal(dir, 'index.rebuilt', `embedding model changed ${recorded} → ${embedModel}; store recreated`, now)
     store = openProjectStore(dir)
   }
   store.setMeta('embed_model', embedModel)
-  return store
+  return { ok: true, store }
 }
 
 async function writeChunks(store: IndexStore, embed: EmbedClient | null, filePath: string, kind: IngestKind, fileHash: string, chunks: ProseChunk[]): Promise<{ ok: true; count: number } | { ok: false; reason: string }> {
@@ -105,7 +117,12 @@ export async function ingestFile(deps: IngestDeps, slug: string, kind: 'knowledg
     return finish({ slug, filePath, kind, indexed: false, reason: extracted.reason })
   }
   const chunks = chunkSegments(extracted.segments)
-  const store = openForModel(dir, deps.embedModel, now)
+  const opened = openForModel(dir, deps.embedModel, now, deps.removeStore ?? removeProjectStore)
+  if (!opened.ok) {
+    appendJournal(dir, kind === 'knowledge' ? 'knowledge.unindexed' : 'artifact.unindexed', `${relPath} (${origin}) — not indexed: ${opened.reason}`, now)
+    return finish({ slug, filePath, kind, indexed: false, reason: opened.reason })
+  }
+  const store = opened.store
   try {
     const w = await writeChunks(store, deps.embed, filePath, kind, sha256, chunks)
     if (!w.ok) {
@@ -124,7 +141,13 @@ export async function ingestChat(deps: IngestDeps, slug: string, chatFile: strin
   const dir = projectDir(deps.home, slug)
   const filePath = `chats/${chatFile}`
   const chunks = chunkTranscriptTurns(turns, title)
-  const store = openForModel(dir, deps.embedModel, now)
+  const opened = openForModel(dir, deps.embedModel, now, deps.removeStore ?? removeProjectStore)
+  if (!opened.ok) {
+    const ev: IngestEvent = { slug, filePath, kind: 'chat', indexed: false, reason: opened.reason }
+    deps.emit?.(ev)
+    return ev
+  }
+  const store = opened.store
   try {
     const w = await writeChunks(store, deps.embed, filePath, 'chat', sha256Of(JSON.stringify(turns)), chunks)
     const ev: IngestEvent = w.ok ? { slug, filePath, kind: 'chat', indexed: true, chunks: w.count } : { slug, filePath, kind: 'chat', indexed: false, reason: w.reason }
