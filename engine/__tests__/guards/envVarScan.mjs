@@ -45,9 +45,9 @@ function walk(dir, out = []) {
  * the built-in default for most of these. A column naming that key is the
  * shortest correction of that claim.
  */
-function deriveDefault(text, at, name) {
+function deriveDefault(text, at, name, readPrefix = 'process\\.env\\.') {
   const tail = text.slice(at, at + 220)
-  const read = `process\\.env\\.${name}`
+  const read = `${readPrefix}${name}`
   const LIT = `('([^']*)'|"([^"]*)"|\`([^\`]*)\`|-?\\d+(?:\\.\\d+)?)`
   const lit = m => {
     const v = m[2] ?? m[3] ?? m[4] ?? m[1]
@@ -87,7 +87,92 @@ function deriveDefault(text, at, name) {
   const coalesce = tail.match(new RegExp(`^${read}\\s*(?:\\?\\?|\\|\\|)\\s*${LIT}`))
   if (coalesce) return { def: lit(coalesce), profileKey: null }
 
+  // The read lands in a const first and the fallback is a guard on that const:
+  //
+  //   const v = env.X                       const n = Number(env.X)
+  //   return v && v.trim() ? v : FALLBACK   if (!Number.isFinite(n) || n <= 0) return FALLBACK
+  //
+  // FALLBACK is a literal, or `join(homedir(), 'a', ...)`, rendered `~/a/...`.
+  const bound = text.slice(Math.max(0, at - 60), at).match(/const\s+([A-Za-z_$][\w$]*)\s*=\s*(?:Number\()?$/)
+  if (bound) {
+    const v = bound[1].replace(/\$/g, '\\$')
+    const FALLBACK = `(?:${LIT}|join\\(\\s*homedir\\(\\)\\s*,\\s*((?:'[^']*'\\s*,?\\s*)+)\\))`
+    const fallback = m => {
+      if (m[5] != null) return '~/' + [...m[5].matchAll(/'([^']*)'/g)].map(x => x[1]).join('/')
+      return lit(m)
+    }
+    const truthy = tail.match(new RegExp(`^${read}\\)?\\s*\\n\\s*return\\s+${v}\\s*&&\\s*${v}\\.trim\\(\\)\\s*\\?\\s*${v}(?:\\.trim\\(\\))?\\s*:\\s*${FALLBACK}`))
+    if (truthy) return { def: fallback(truthy), profileKey: null }
+    const guard = tail.match(new RegExp(`^${read}\\)?\\s*\\n\\s*if\\s*\\([^\\n]*\\b${v}\\b[^\\n]*\\)\\s*return\\s+${FALLBACK}`))
+    if (guard) return { def: fallback(guard), profileKey: null }
+  }
+
   return { def: null, profileKey: null }
+}
+
+/**
+ * Byte ranges of every function whose `env` parameter defaults to
+ * `process.env` — `function f(env: NodeJS.ProcessEnv = process.env)`, or a
+ * destructured `{ env = process.env }` — from its parameter list to the end of
+ * its body. Inside one, `env.LOCALCODE_X` is a read of the process
+ * environment exactly as `process.env.LOCALCODE_X` is: the parameter exists
+ * only so a test can inject a fake, and with no argument it IS process.env.
+ * Projects mode reads all three of its knobs this way; a scanner blind to the
+ * shape listed none of them.
+ *
+ * Bracket matching skips string and template literals but not regex literals
+ * or comments — enough for a parameter list and a function body, which is all
+ * it is asked to find. A range it cannot close runs to the end of the file.
+ */
+export function injectedEnvScopes(text) {
+  const closer = { '(': ')', '[': ']', '{': '}' }
+  // From `open` (an opening bracket), the index of its matching closer, or -1.
+  const matchForward = open => {
+    const stack = []
+    for (let i = open; i < text.length; i++) {
+      const c = text[i]
+      if (c === "'" || c === '"' || c === '`') {
+        for (i++; i < text.length && text[i] !== c; i++) if (text[i] === '\\') i++
+        continue
+      }
+      if (closer[c]) stack.push(closer[c])
+      else if (c === ')' || c === ']' || c === '}') {
+        if (stack.pop() !== c) return -1
+        if (stack.length === 0) return i
+      }
+    }
+    return -1
+  }
+  // The `(` of the parameter list that holds `at`: the nearest unmatched one before it.
+  const openParenBefore = at => {
+    let depth = 0
+    for (let i = at - 1; i >= 0; i--) {
+      const c = text[i]
+      if (c === ')') depth++
+      else if (c === '(') { if (depth === 0) return i; depth-- }
+    }
+    return -1
+  }
+  const scopes = []
+  for (const m of text.matchAll(/(?<![.\w$])env\s*(?::[^=)]+?)?=\s*process\.env\b(?!\s*\.)/g)) {
+    const open = openParenBefore(m.index)
+    if (open === -1) continue
+    const close = matchForward(open)
+    if (close === -1) { scopes.push([open, text.length]); continue }
+    // A return type, then the body: `{ ... }`, or an arrow's expression to end of line.
+    const head = text.slice(close + 1).match(/^\s*(?::[^{;=]*)?\s*(=>)?\s*(\{)?/)
+    let end = close
+    if (head[2]) {
+      const body = close + head[0].length
+      const shut = matchForward(body)
+      end = shut === -1 ? text.length : shut
+    } else if (head[1]) {
+      const nl = text.indexOf('\n', close + head[0].length + 1)
+      end = nl === -1 ? text.length : nl
+    }
+    scopes.push([open, end])
+  }
+  return scopes
 }
 
 /**
@@ -121,16 +206,27 @@ export function scanEnvVars() {
   for (const file of walk(engineRoot)) {
     const text = readFileSync(file, 'utf-8')
     const rel = relative(repoRoot, file).replace(/\\/g, '/')
+    const record = (name, { def, profileKey }) => {
+      const entry = (found[name] ??= { defaults: [], profileKeys: [], files: [] })
+      if (!entry.files.includes(rel)) entry.files.push(rel)
+      if (def != null && !entry.defaults.includes(def)) entry.defaults.push(def)
+      if (profileKey != null && !entry.profileKeys.includes(profileKey)) entry.profileKeys.push(profileKey)
+    }
     for (const m of text.matchAll(/(process\.env\.|')(LOCALCODE_[A-Z0-9_]+)/g)) {
       const name = m[2]
       const quoted = m[1] === "'"
-      const entry = (found[name] ??= { defaults: [], profileKeys: [], files: [] })
-      if (!entry.files.includes(rel)) entry.files.push(rel)
-      const { def, profileKey } = quoted
-        ? deriveHelperDefault(text, m.index, name)
-        : deriveDefault(text, m.index, name)
-      if (def != null && !entry.defaults.includes(def)) entry.defaults.push(def)
-      if (profileKey != null && !entry.profileKeys.includes(profileKey)) entry.profileKeys.push(profileKey)
+      record(name, quoted ? deriveHelperDefault(text, m.index, name) : deriveDefault(text, m.index, name))
+    }
+    // `env.LOCALCODE_X` where `env` is a parameter defaulting to process.env.
+    const seen = new Set()
+    for (const [from, to] of injectedEnvScopes(text)) {
+      const scope = text.slice(from, to)
+      for (const m of scope.matchAll(/(?<![.\w$])env\.(LOCALCODE_[A-Z0-9_]+)/g)) {
+        const at = from + m.index
+        if (seen.has(at)) continue // nested scopes see the same read twice
+        seen.add(at)
+        record(m[1], deriveDefault(text, at, m[1], 'env\\.'))
+      }
     }
   }
   for (const entry of Object.values(found)) {
