@@ -28,4 +28,19 @@ describe('EmbedClient', () => {
       if (origEnv !== undefined) process.env.LOCALCODE_EMBED_BASE_URL = origEnv
     }
   })
+
+  it('pinModel makes the constructor model win over LOCALCODE_EMBED_MODEL', () => {
+    const origEnv = process.env.LOCALCODE_EMBED_MODEL
+    process.env.LOCALCODE_EMBED_MODEL = 'other'
+
+    try {
+      const pinned = new EmbedClient('http://x', 'nomic-embed-text', { pinModel: true })
+      expect(pinned.modelName).toBe('nomic-embed-text')
+      const unpinned = new EmbedClient('http://x', 'nomic-embed-text')
+      expect(unpinned.modelName).toBe('other')
+    } finally {
+      if (origEnv === undefined) delete process.env.LOCALCODE_EMBED_MODEL
+      else process.env.LOCALCODE_EMBED_MODEL = origEnv
+    }
+  })
 })

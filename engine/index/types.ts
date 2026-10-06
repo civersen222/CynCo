@@ -1,4 +1,4 @@
-export type ChunkType = 'function' | 'class' | 'module' | 'import_block' | 'research'
+export type ChunkType = 'function' | 'class' | 'module' | 'import_block' | 'research' | 'knowledge' | 'artifact' | 'chat'
 
 export type Chunk = {
   filePath: string
@@ -11,6 +11,7 @@ export type Chunk = {
 }
 
 export type IndexResult = {
+  id?: number
   filePath: string
   name: string | null
   chunkType: ChunkType

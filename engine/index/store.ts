@@ -1,6 +1,6 @@
 
 import { Database } from 'bun:sqlite'
-import type { Chunk, IndexResult, Relationship } from './types.js'
+import type { Chunk, ChunkType, IndexResult, Relationship } from './types.js'
 // symbolLookup.ts only `import type`s this module, so there is no runtime
 // cycle to avoid. The previous `require('./symbolLookup.js')` here resolved
 // under Bun but not under vitest (a CommonJS require cannot map the .js
@@ -176,7 +176,7 @@ export class IndexStore {
     // so this was a silent fallback to keyword search rather than a crash.
     const vec = new Float32Array(queryEmbedding)
     const rows = this.db.prepare(`
-      SELECT v.chunk_id, v.distance, c.file_path, c.name, c.chunk_type, c.start_line, c.end_line, c.content
+      SELECT v.chunk_id, v.distance, c.id, c.file_path, c.name, c.chunk_type, c.start_line, c.end_line, c.content
       FROM vec_chunks v
       JOIN chunks c ON c.id = v.chunk_id
       WHERE v.embedding MATCH ? AND k = ?
@@ -184,6 +184,7 @@ export class IndexStore {
     `).all(vec, Math.max(1, Math.floor(topK))) as any[]
 
     return rows.map(r => ({
+      id: r.id,
       filePath: r.file_path,
       name: r.name,
       chunkType: r.chunk_type,
@@ -230,11 +231,12 @@ export class IndexStore {
     const params = terms.flatMap(t => [t, t])
 
     const rows = this.db.prepare(`
-      SELECT file_path, name, chunk_type, start_line, end_line, content
+      SELECT id, file_path, name, chunk_type, start_line, end_line, content
       FROM chunks WHERE ${where} LIMIT ?
     `).all(...params, topK) as any[]
 
     return rows.map(r => ({
+      id: r.id,
       filePath: r.file_path,
       name: r.name,
       chunkType: r.chunk_type,
@@ -267,6 +269,22 @@ export class IndexStore {
       endLine: r.end_line,
       content: r.content,
       score: 0.5,
+    }))
+  }
+
+  /** Every chunk (optionally of the given types), score 0, with ids — the lexical candidate set for prose search. */
+  allChunks(chunkTypes?: ChunkType[]): IndexResult[] {
+    const where = chunkTypes && chunkTypes.length ? ` WHERE chunk_type IN (${chunkTypes.map(() => '?').join(',')})` : ''
+    const rows = this.db.prepare(`SELECT id, file_path, chunk_type, name, start_line, end_line, content FROM chunks${where} ORDER BY id`).all(...(chunkTypes ?? [])) as any[]
+    return rows.map(r => ({
+      id: r.id,
+      filePath: r.file_path,
+      chunkType: r.chunk_type,
+      name: r.name,
+      startLine: r.start_line,
+      endLine: r.end_line,
+      content: r.content,
+      score: 0,
     }))
   }
 

@@ -100,9 +100,9 @@ export class EmbedClient {
   // would leave the pin enforced in two places — `dialectOrder` is the one that
   // actually stops the probe when the pinned dialect *fails*, so it holds the
   // rule alone.
-  constructor(baseUrl = 'http://localhost:11434', model = 'jina-code-embeddings-0.5b') {
+  constructor(baseUrl = 'http://localhost:11434', model = 'jina-code-embeddings-0.5b', opts: { pinModel?: boolean } = {}) {
     this.baseUrl = process.env.LOCALCODE_EMBED_BASE_URL ?? baseUrl
-    this.model = process.env.LOCALCODE_EMBED_MODEL ?? model
+    this.model = opts.pinModel ? model : (process.env.LOCALCODE_EMBED_MODEL ?? model)
   }
 
   async embed(text: string, signal?: AbortSignal): Promise<number[]> {
