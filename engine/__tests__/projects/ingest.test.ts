@@ -1,9 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test'
-import { mkdtempSync, rmSync, writeFileSync, existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createProject, readFileIndex, readJournal } from '../../projects/layout.js'
-import { ingestFile, ingestChat, removeFromIndex, rescanProject, openProjectStore, proseEmbedModel, type IngestEvent } from '../../projects/ingest.js'
+import { ingestFile, ingestChat, removeFromIndex, rescanProject, openProjectStore, proseEmbedModel, PROJECT_DB_FILES, removeProjectStore, type IngestEvent } from '../../projects/ingest.js'
 import { pdfWithPages, scannedPdf } from './fixtures.js'
 import type { EmbedClient } from '../../index/embedClient.js'
 
@@ -79,6 +80,44 @@ describe('ingestFile', () => {
     const store = openProjectStore(dir)
     expect(store.getMeta('embed_model')).toBe('other-model')
     store.close()
+  })
+  it('a rebuild removes project.db with its WAL sidecars, never leaving the old model\'s frames to replay (final review M4)', async () => {
+    expect([...PROJECT_DB_FILES]).toEqual(['project.db', 'project.db-wal', 'project.db-shm'])
+    writeFileSync(join(dir, 'knowledge', 'a.md'), '# A\n\ntext\n', 'utf8')
+    await ingestFile(deps(new StubEmbed()), slug, 'knowledge', 'a.md', 'pasted')
+    // What a second connection open at close leaves behind: sidecars no
+    // checkpoint folded in. (SQLite itself rewrites stand-in sidecars when the
+    // old store is opened, so the removal is checked on plain files.)
+    const idx = join(dir, '.cynco', 'index')
+    const scratch = mkdtempSync(join(tmpdir(), 'cynco-store-'))
+    mkdirSync(join(scratch, '.cynco', 'index'), { recursive: true })
+    for (const f of PROJECT_DB_FILES) writeFileSync(join(scratch, '.cynco', 'index', f), 'old model', 'utf8')
+    removeProjectStore(scratch)
+    expect(PROJECT_DB_FILES.filter(f => existsSync(join(scratch, '.cynco', 'index', f)))).toEqual([])
+    rmSync(scratch, { recursive: true, force: true })
+    // and the rebuild is the one that calls it, not a lone rm of project.db
+    const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'projects', 'ingest.ts'), 'utf8')
+    const rebuild = src.slice(src.indexOf('function openForModel('), src.indexOf('async function writeChunks('))
+    expect(rebuild).toContain('removeProjectStore(dir)')
+    expect(rebuild).not.toContain('rmSync(')
+    await ingestFile({ ...deps(new StubEmbed()), embedModel: 'other-model' }, slug, 'knowledge', 'a.md', 'pasted')
+    expect(existsSync(idx)).toBe(true)
+    const store = openProjectStore(dir)
+    expect(store.getMeta('embed_model')).toBe('other-model')
+    expect(store.allChunks(['knowledge'])).toHaveLength(1)
+    store.close()
+  })
+  it('an artifact that fails to index is journaled artifact.unindexed, and its removal artifact.removed (final review M3)', async () => {
+    writeFileSync(join(dir, 'artifacts', 'plan.md'), '# Plan\n\nsteps\n', 'utf8')
+    const ev = await ingestFile(deps(new StubEmbed(true)), slug, 'artifact', 'plan.md', 'chat')
+    expect(ev.indexed).toBe(false)
+    expect(readJournal(dir)[0]).toMatchObject({ event: 'artifact.unindexed', detail: expect.stringMatching(/^plan\.md \(chat\) — not indexed: embeddings unavailable: /) })
+    writeFileSync(join(dir, 'artifacts', 'photo.png'), new Uint8Array([1, 2, 3]))
+    await ingestFile(deps(new StubEmbed()), slug, 'artifact', 'photo.png', 'chat')
+    expect(readJournal(dir)[0]).toMatchObject({ event: 'artifact.unindexed', detail: 'photo.png (chat) — not indexed: images are captioned in sub-project 3' })
+    await removeFromIndex(deps(new StubEmbed()), slug, 'artifact', 'plan.md')
+    expect(readJournal(dir)[0]).toMatchObject({ event: 'artifact.removed', detail: 'plan.md removed' })
+    expect(readJournal(dir).some(e => e.event === 'artifact.saved')).toBe(false)
   })
 })
 

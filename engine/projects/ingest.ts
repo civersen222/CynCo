@@ -34,6 +34,19 @@ export function makeProseEmbedClient(baseUrl: string, env: NodeJS.ProcessEnv = p
   return new EmbedClient(baseUrl, proseEmbedModel(env), { pinModel: true })
 }
 
+/** The project store and its WAL sidecars; a rebuild removes all three together. */
+export const PROJECT_DB_FILES = ['project.db', 'project.db-wal', 'project.db-shm'] as const
+
+/**
+ * Delete a (closed) project store. The store runs in WAL mode: a -wal/-shm
+ * left beside a fresh project.db (another connection held it open at close,
+ * so no checkpoint ran) would be replayed into it — the old model's frames,
+ * the old vec dimension. So all three go together.
+ */
+export function removeProjectStore(dir: string): void {
+  for (const f of PROJECT_DB_FILES) rmSync(join(dir, '.cynco', 'index', f), { force: true })
+}
+
 export function openProjectStore(dir: string): IndexStore {
   const indexDir = join(dir, '.cynco', 'index')
   mkdirSync(indexDir, { recursive: true })
@@ -46,7 +59,7 @@ function openForModel(dir: string, embedModel: string, now: () => string): Index
   const recorded = store.getMeta('embed_model')
   if (recorded && recorded !== embedModel) {
     store.close()
-    rmSync(join(dir, '.cynco', 'index', 'project.db'), { force: true })
+    removeProjectStore(dir)
     appendJournal(dir, 'index.rebuilt', `embedding model changed ${recorded} → ${embedModel}; store recreated`, now)
     store = openProjectStore(dir)
   }
@@ -88,7 +101,7 @@ export async function ingestFile(deps: IngestDeps, slug: string, kind: 'knowledg
   }
   const extracted = await extractFile(bytes, relPath)
   if (!extracted.ok) {
-    appendJournal(dir, kind === 'knowledge' ? 'knowledge.unindexed' : 'artifact.saved', `${relPath} (${origin}) — not indexed: ${extracted.reason}`, now)
+    appendJournal(dir, kind === 'knowledge' ? 'knowledge.unindexed' : 'artifact.unindexed', `${relPath} (${origin}) — not indexed: ${extracted.reason}`, now)
     return finish({ slug, filePath, kind, indexed: false, reason: extracted.reason })
   }
   const chunks = chunkSegments(extracted.segments)
@@ -96,7 +109,7 @@ export async function ingestFile(deps: IngestDeps, slug: string, kind: 'knowledg
   try {
     const w = await writeChunks(store, deps.embed, filePath, kind, sha256, chunks)
     if (!w.ok) {
-      appendJournal(dir, kind === 'knowledge' ? 'knowledge.unindexed' : 'artifact.saved', `${relPath} (${origin}) — not indexed: ${w.reason}`, now)
+      appendJournal(dir, kind === 'knowledge' ? 'knowledge.unindexed' : 'artifact.unindexed', `${relPath} (${origin}) — not indexed: ${w.reason}`, now)
       return finish({ slug, filePath, kind, indexed: false, reason: w.reason })
     }
     appendJournal(dir, kind === 'knowledge' ? 'knowledge.added' : 'artifact.saved', `${relPath} (${origin}) — ${w.count} chunk(s)`, now)
@@ -131,7 +144,7 @@ export async function removeFromIndex(deps: IngestDeps, slug: string, kind: 'kno
   const index = readFileIndex(dir, area)
   delete index.files[relPath]
   writeFileIndex(dir, area, index)
-  appendJournal(dir, kind === 'knowledge' ? 'knowledge.removed' : 'artifact.saved', `${relPath} removed`, now)
+  appendJournal(dir, kind === 'knowledge' ? 'knowledge.removed' : 'artifact.removed', `${relPath} removed`, now)
 }
 
 function listFiles(root: string): string[] {
