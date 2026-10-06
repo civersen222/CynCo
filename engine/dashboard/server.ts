@@ -28,7 +28,23 @@ import {
   GATE_MIN_USABLE,
 } from '../training/datasetBuilder.js'
 import type { TokenSet, TokenScope } from '../security/localToken.js'
-import type { ProjectsDeps } from '../projects/api.js'
+import {
+  type ProjectsDeps,
+  listProjects,
+  createProjectApi,
+  getProjectApi,
+  patchProjectApi,
+  searchApi,
+  listKnowledgeApi,
+  addKnowledgeApi,
+  removeKnowledgeApi,
+  listArtifactsApi,
+  promoteArtifactApi,
+  listChatsApi,
+  renameChatApi,
+  rescanApi,
+  UPLOAD_MAX_BYTES,
+} from '../projects/api.js'
 import { cyncoHome } from '../paths.js'
 
 /** Phase 5 ruling 2: the pooled board is Task 2's one spelling
@@ -434,6 +450,17 @@ export class DashboardServer {
           return this.serveIndex()
         }
 
+        // Projects mode (R5): every /api/projects* and /api/project-search
+        // request runs under the inference (read) scope regardless of method —
+        // these routes are a non-code project's own data, not engine
+        // configuration, and they must gate BEFORE the generic method-based
+        // split below or every POST here would wrongly demand management.
+        if (pathname === '/api/projects' || pathname.startsWith('/api/projects/') || pathname === '/api/project-search') {
+          const denied = this.requireScope(req, 'inference')
+          if (denied) return denied
+          return await this.handleProjects(req, method, pathname, url)
+        }
+
         // Everything else is gated, including unknown paths: a 404 that answers
         // before the token check turns the route table into public information.
         const scope: TokenScope = method === 'GET' ? 'inference' : 'management'
@@ -690,6 +717,61 @@ export class DashboardServer {
       return jsonResponse({ error: `scope '${scope}' required` }, 403)
     }
     return jsonResponse({ error: 'token required' }, 401)
+  }
+
+  // ── Projects mode routes (Task 8) ────────────────────────────────
+
+  private async handleProjects(req: Request, method: string, pathname: string, url: URL): Promise<Response> {
+    const d = this.deps.projects
+    if (!d) return jsonResponse({ error: 'projects are not configured' }, 503)
+    const send = (r: { status: number; body: unknown }) => jsonResponse(r.body, r.status)
+    const parts = pathname.split('/').filter(Boolean) // ['api','projects',slug?,area?,name?,verb?]
+    const q = url.searchParams
+    if (pathname === '/api/project-search' && method === 'GET') return send(await searchApi(d, null, q.get('q') ?? '', q.get('kinds'), q.get('limit')))
+    if (parts.length === 2) {
+      if (method === 'GET') return send(listProjects(d))
+      if (method === 'POST') return send(await createProjectApi(d, await this.jsonBody(req)))
+      return jsonResponse({ error: 'Method not allowed' }, 405)
+    }
+    const slug = decodeURIComponent(parts[2])
+    if (parts.length === 3) {
+      if (method === 'GET') return send(getProjectApi(d, slug))
+      if (method === 'PATCH') return send(await patchProjectApi(d, slug, await this.jsonBody(req)))
+      return jsonResponse({ error: 'Method not allowed' }, 405)
+    }
+    const area = parts[3], name = parts[4] ? decodeURIComponent(parts[4]) : null, verb = parts[5] ?? null
+    if (area === 'search' && method === 'GET') return send(await searchApi(d, slug, q.get('q') ?? '', q.get('kinds'), q.get('limit')))
+    if (area === 'rescan' && method === 'POST') return send(await rescanApi(d, slug))
+    if (area === 'knowledge') {
+      if (method === 'GET' && !name) return send(listKnowledgeApi(d, slug))
+      if (method === 'POST' && !name) {
+        const len = Number(req.headers.get('content-length') ?? 0)
+        if (len > UPLOAD_MAX_BYTES) return jsonResponse({ error: `file is larger than ${UPLOAD_MAX_BYTES} bytes` }, 413)
+        const ct = req.headers.get('content-type') ?? ''
+        if (ct.startsWith('multipart/form-data')) {
+          const form = await req.formData()
+          const file = form.get('file')
+          if (!(file instanceof File)) return jsonResponse({ error: 'multipart field "file" is required' }, 400)
+          return send(await addKnowledgeApi(d, slug, { name: file.name, bytes: new Uint8Array(await file.arrayBuffer()) }))
+        }
+        const body = await this.jsonBody(req) as Record<string, unknown>
+        return send(await addKnowledgeApi(d, slug, { name: String(body.name ?? ''), text: typeof body.text === 'string' ? body.text : '' }))
+      }
+      if (method === 'DELETE' && name) return send(await removeKnowledgeApi(d, slug, name))
+    }
+    if (area === 'artifacts') {
+      if (method === 'GET' && !name) return send(listArtifactsApi(d, slug))
+      if (method === 'POST' && name && verb === 'promote') return send(await promoteArtifactApi(d, slug, name))
+    }
+    if (area === 'chats') {
+      if (method === 'GET' && !name) return send(listChatsApi(d, slug))
+      if (method === 'PATCH' && name) return send(await renameChatApi(d, slug, name, await this.jsonBody(req)))
+    }
+    return jsonResponse({ error: 'Not found' }, 404)
+  }
+
+  private async jsonBody(req: Request): Promise<unknown> {
+    try { return await req.json() } catch (e) { console.log(`[dashboard] invalid JSON body: ${e instanceof Error ? e.message : String(e)}`); return {} }
   }
 
   // ── GET Handlers ────────────────────────────────────────────────
