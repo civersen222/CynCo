@@ -5,13 +5,13 @@
  * mistake: unknown project 404, bad input 400, unsupported type 415, too
  * large 413. The server (Task 8) only parses the request and mounts these.
  */
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, copyFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync, copyFileSync } from 'node:fs'
 import { basename, extname, join } from 'node:path'
 import { EmbedClient } from '../index/embedClient.js'
 import { ACCEPTED_EXTS } from './extract/index.js'
 import { commitHistory, ensureHistory } from './history.js'
 import { ingestFile, makeProseEmbedClient, proseEmbedModel, removeFromIndex, rescanProject, type IngestEvent } from './ingest.js'
-import { appendJournal, createProject, projectDir, readFileIndex, readInstructions, readJournal, readProject, slugify, writeInstructions, writeProject, SLUG_RE } from './layout.js'
+import { appendJournal, createProject, isReservedFileName, projectDir, readFileIndex, readInstructions, readJournal, readProject, slugify, writeInstructions, writeProject, RESERVED_FILE_NAME, SLUG_RE } from './layout.js'
 import { readRegistry, upsertRegistry } from './registry.js'
 import { listChats, readTranscript, renameChat } from './chat.js'
 import { searchProjects, type SearchKind } from './search.js'
@@ -121,8 +121,14 @@ export function listArtifactsApi(d: ProjectsDeps, slug: string): ApiResult {
 export async function promoteArtifactApi(d: ProjectsDeps, slug: string, name: string): Promise<ApiResult> {
   if (!readProject(d.home, slug)) return notFound('project')
   const rel = basename(name)
+  if (!rel || rel === '.' || rel === '..') return bad(`not an artifact name: "${name}"`)
+  // Each area's index.json is its own record: promoting artifacts/index.json
+  // would copy the artifact records over knowledge/index.json.
+  if (isReservedFileName(rel)) return bad(`"${RESERVED_FILE_NAME}" is the project's own file index, not an artifact`)
   const dir = projectDir(d.home, slug)
-  if (!existsSync(join(dir, 'artifacts', rel))) return notFound('artifact')
+  const src = join(dir, 'artifacts', rel)
+  if (!existsSync(src)) return notFound('artifact')
+  if (!statSync(src).isFile()) return bad(`not a file: artifacts/${rel}`)
   copyFileSync(join(dir, 'artifacts', rel), join(dir, 'knowledge', rel))
   const ev = await ingestFile(d, slug, 'knowledge', rel, 'artifact')
   appendJournal(dir, 'artifact.promoted', `${rel} → knowledge/${rel}`)

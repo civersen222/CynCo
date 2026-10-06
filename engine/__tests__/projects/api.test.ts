@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test'
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import {
@@ -102,7 +102,9 @@ describe('searchApi', () => {
     const global2 = await searchApi(d, null, 'resin', null, null)
     expect(global2.status).toBe(200)
     expect((global2.body as { skipped: { slug: string; reason: string }[] }).skipped).toContainEqual({ slug: b.slug, reason: 'project folder missing' })
-  })
+    // Two createProjectApi + a knowledge add spawn ~15 git processes; under
+    // full-suite load on Windows that ran past the 5 s default (final review M5).
+  }, 30000)
 
   it('400s an empty query', async () => {
     const r = await searchApi(deps(), null, '  ', null, null)
@@ -187,6 +189,27 @@ describe('artifacts: list/promote', () => {
     const r = await promoteArtifactApi(d, slug, 'ghost.md')
     expect(r.status).toBe(404)
   })
+
+  it('refuses index.json, "." / "..", and a directory by name with 400, leaving knowledge/index.json intact (final review I1)', async () => {
+    const d = deps()
+    const slug = ((await createProjectApi(d, { name: 'Diorama' })).body as { slug: string }).slug
+    const dir = join(home, slug)
+    writeFileSync(join(dir, 'artifacts', 'plan.md'), '# Plan\n\nBase first.\n', 'utf8')
+    await ingestFile(d, slug, 'artifact', 'plan.md', 'artifact')
+    const before = readFileSync(join(dir, 'knowledge', 'index.json'), 'utf8')
+    for (const name of ['index.json', 'Index.JSON']) {
+      const r = await promoteArtifactApi(d, slug, name)
+      expect(r, name).toEqual({ status: 400, body: { error: '"index.json" is the project\'s own file index, not an artifact' } })
+    }
+    for (const name of ['.', '..', '']) {
+      const r = await promoteArtifactApi(d, slug, name)
+      expect(r.status, JSON.stringify(name)).toBe(400)
+      expect((r.body as { error: string }).error).toMatch(/^not an artifact name/)
+    }
+    mkdirSync(join(dir, 'artifacts', 'drafts'))
+    expect(await promoteArtifactApi(d, slug, 'drafts')).toEqual({ status: 400, body: { error: 'not a file: artifacts/drafts' } })
+    expect(readFileSync(join(dir, 'knowledge', 'index.json'), 'utf8')).toBe(before)
+  }, 30000)
 })
 
 describe('chats: list/rename', () => {

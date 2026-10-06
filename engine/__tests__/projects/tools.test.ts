@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test'
-import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync, realpathSync, symlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createProject, readFileIndex, readJournal } from '../../projects/layout.js'
@@ -65,11 +65,26 @@ describe('SaveArtifact', () => {
     // the path refusal still holds when an extension is typed
     expect((await saveArtifactTool.execute({ name: '../x.md', content: 'y' }, dir)).output).toMatch(/name must not contain/)
     expect((await saveArtifactTool.execute({ name: 'a/b.txt', content: 'y' }, dir)).output).toMatch(/name must not contain/)
-  })
+    // Five saves, each three git spawns: under full-suite load on Windows this
+    // ran past the 5 s default (final review M5), not a product defect.
+  }, 30000)
   it('refuses path separators and empty content', async () => {
     expect((await saveArtifactTool.execute({ name: '../x', content: 'y' }, dir)).output).toMatch(/name must not contain/)
     expect((await saveArtifactTool.execute({ name: 'x', content: '  ' }, dir)).isError).toBe(true)
   })
+  it('refuses the name index.json in any spelling, leaving the artifact index intact (final review I1)', async () => {
+    await saveArtifactTool.execute({ name: 'plan', content: '# Plan\n' }, dir)
+    const before = readFileSync(join(dir, 'artifacts', 'index.json'), 'utf8')
+    for (const input of [{ name: 'index', kind: 'json' }, { name: 'index.json' }, { name: 'INDEX.JSON' }]) {
+      const r = await saveArtifactTool.execute({ ...input, content: '{"files":{}}' }, dir)
+      expect(r.isError, JSON.stringify(input)).toBe(true)
+      expect(r.output).toMatch(/"index\.json" is reserved/)
+    }
+    expect(readFileSync(join(dir, 'artifacts', 'index.json'), 'utf8')).toBe(before)
+    expect(Object.keys(readFileIndex(dir, 'artifacts').files)).toEqual(['plan.md'])
+    // index as an md is an ordinary artifact
+    expect((await saveArtifactTool.execute({ name: 'index', content: '# Index\n' }, dir)).output).toBe('Saved artifacts/index.md')
+  }, 30000)
 })
 
 describe('AddToKnowledge', () => {
@@ -97,5 +112,26 @@ describe('AddToKnowledge', () => {
     const p = await addToKnowledgeTool.execute({ path: '../../etc/passwd' }, dir)
     expect(p.isError).toBe(true)
     expect(p.output).toMatch(/inside this project/)
+  })
+  it('refuses an area index, a copy named index.json, and a directory, leaving knowledge/index.json intact (final review I1)', async () => {
+    const before = readFileSync(join(dir, 'knowledge', 'index.json'), 'utf8')
+    const own = await addToKnowledgeTool.execute({ path: 'artifacts/index.json' }, dir)
+    expect(own).toEqual({ output: '"index.json" is the project\'s own file index, not a file to add', isError: true })
+    writeFileSync(join(dir, 'artifacts', 'parts.json'), '{"a":1}\n', 'utf8')
+    const renamed = await addToKnowledgeTool.execute({ path: 'artifacts/parts.json', name: 'Index' }, dir)
+    expect(renamed.isError).toBe(true)
+    expect(renamed.output).toMatch(/"index\.json" is reserved/)
+    const folder = await addToKnowledgeTool.execute({ path: 'artifacts' }, dir)
+    expect(folder).toEqual({ output: 'not a file: artifacts', isError: true })
+    expect(readFileSync(join(dir, 'knowledge', 'index.json'), 'utf8')).toBe(before)
+  })
+  it('refuses a path through a junction that points outside the project, naming the real path (final review I2)', async () => {
+    const outside = mkdtempSync(join(tmpdir(), 'cynco-outside-'))
+    writeFileSync(join(outside, 'secret.md'), '# Secret\n', 'utf8')
+    symlinkSync(outside, join(dir, 'knowledge', 'h'), 'junction')
+    const r = await addToKnowledgeTool.execute({ path: 'knowledge/h/secret.md' }, dir)
+    expect(r).toEqual({ output: `path must be inside this project: ${join(realpathSync.native(outside), 'secret.md')}`, isError: true })
+    expect(existsSync(join(dir, 'knowledge', 'secret.md'))).toBe(false)
+    rmSync(outside, { recursive: true, force: true })
   })
 })

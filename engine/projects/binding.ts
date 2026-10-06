@@ -2,17 +2,18 @@
  * engine/projects/binding.ts — what the loop holds while a project is open,
  * and how a tool call is graded there.
  *
- * The grader is the single allowed-root check for file tools (resolved path
- * under the project folder, no `..`, no sibling) and the Bash grade: every
+ * The grader is the single allowed-root check for file tools (the REAL path —
+ * symlinks and junctions followed — under the project folder, no `..`, no
+ * sibling, no Glob pattern that climbs out) and the Bash grade: every
  * download is `risky` (the user approves every download — standing rule),
  * otherwise the guardian classifier's word; `dangerous` is refused, `risky`
  * asks, `safe` runs. The classifier is passed in because this package never
  * imports from engine/bridge.
  */
-import { resolve } from 'node:path'
+import { isAbsolute, resolve } from 'node:path'
 import type { EmbedClient } from '../index/embedClient.js'
 import { isDownloadCommand } from '../tools/approvalGate.js'
-import { isInside, projectDir, readInstructions, readProject } from './layout.js'
+import { projectDir, readInstructions, readProject, realInside } from './layout.js'
 import { readTranscript, trimDanglingToolCall, type TranscriptMessage } from './chat.js'
 import type { IngestEvent } from './ingest.js'
 import type { Citation } from './retrieval.js'
@@ -45,10 +46,22 @@ function pathArgOf(toolName: string, input: Record<string, unknown>): string | n
 
 export function gradeProjectCall(root: string, cwd: string, classify: Classifier, describe: (t: string, i: Record<string, unknown>, r: 'safe' | 'risky' | 'dangerous') => string, toolName: string, input: Record<string, unknown>): Grade {
   if (FILE_TOOLS.has(toolName)) {
+    // Glob scans `pattern` from its dir, and the pattern itself can climb out
+    // (`../other-project/**/*.md`) or be absolute — a listing of another
+    // project's file names is a read of that project (spec §5). Grep's `glob`
+    // is only a filter under its dir and cannot escape.
+    if (toolName === 'Glob' && typeof input.pattern === 'string') {
+      const pattern = input.pattern
+      if (isAbsolute(pattern) || /^([\\/]|[A-Za-z]:)/.test(pattern) || pattern.split(/[\\/]+/).includes('..')) {
+        return { level: 'dangerous', reason: `the Glob pattern reaches outside the project folder: ${pattern}` }
+      }
+    }
     const p = pathArgOf(toolName, input)
     if (p === null) return { level: 'safe', reason: '' }
-    const abs = resolve(cwd, p)
-    return isInside(root, abs) ? { level: 'safe', reason: '' } : { level: 'dangerous', reason: `outside the project folder: ${abs}` }
+    // Judged on the real path, not the lexical one: a symlink or junction
+    // inside the project that points outside it is outside (spec §5).
+    const { inside, real } = realInside(root, resolve(cwd, p))
+    return inside ? { level: 'safe', reason: '' } : { level: 'dangerous', reason: `outside the project folder: ${real}` }
   }
   if (toolName === 'Bash') {
     const command = String(input.command ?? '')

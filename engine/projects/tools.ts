@@ -6,12 +6,12 @@
  * starts and clears when it ends. Outside a project session every tool
  * refuses by name. Files are only ever written inside the project folder.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync, copyFileSync } from 'node:fs'
+import { existsSync, mkdirSync, statSync, writeFileSync, copyFileSync } from 'node:fs'
 import { basename, join, resolve } from 'node:path'
 import type { ToolImpl } from '../tools/types.js'
 import type { EmbedClient } from '../index/embedClient.js'
 import { fetchGuarded } from '../tools/impl/webFetch.js'
-import { appendJournal, isInside, projectDir, readProject, slugify } from './layout.js'
+import { appendJournal, isInside, isReservedFileName, projectDir, readProject, realInside, slugify, RESERVED_FILE_NAME } from './layout.js'
 import { commitHistory, ensureHistory } from './history.js'
 import { ingestFile, type IngestEvent } from './ingest.js'
 import { searchProjects } from './search.js'
@@ -88,6 +88,9 @@ export const saveArtifactTool: ToolImpl = {
     const kind = ['md', 'txt', 'json'].includes(String(input.kind)) ? String(input.kind) : typed ? typed[2].toLowerCase() : 'md'
     const dir = projectDir(context.home, context.slug)
     const rel = `${n.name}.${kind}`
+    // artifacts/index.json is the area's own record; an artifact named that
+    // would overwrite it and empty the artifact list.
+    if (isReservedFileName(rel)) return { output: `"${RESERVED_FILE_NAME}" is reserved for the project's own file index; choose another name`, isError: true }
     mkdirSync(join(dir, 'artifacts'), { recursive: true })
     writeFileSync(join(dir, 'artifacts', rel), content.endsWith('\n') ? content : content + '\n', 'utf8')
     await ingestFile({ home: context.home, embed: context.embed, embedModel: context.embedModel, emit: context.emit }, context.slug, 'artifact', rel, 'chat')
@@ -134,12 +137,18 @@ export const addToKnowledgeTool: ToolImpl = {
     }
     if (typeof input.path === 'string' && input.path.trim()) {
       const abs = resolve(dir, input.path.trim())
-      if (!isInside(dir, abs)) return { output: `path must be inside this project: ${abs}`, isError: true }
+      // The real path: a link inside the project pointing outside it is outside.
+      const where = realInside(dir, abs)
+      if (!where.inside) return { output: `path must be inside this project: ${where.real}`, isError: true }
       if (!existsSync(abs)) return { output: `no such file: ${input.path}`, isError: true }
+      if (!statSync(abs).isFile()) return { output: `not a file: ${input.path}`, isError: true }
+      if (isReservedFileName(abs)) return { output: `"${RESERVED_FILE_NAME}" is the project's own file index, not a file to add`, isError: true }
       const n = safeName(input.name ?? basename(abs).replace(/\.[^.]+$/, ''))
       if (!n.ok) return { output: n.reason, isError: true }
       const ext = basename(abs).includes('.') ? basename(abs).slice(basename(abs).lastIndexOf('.')) : '.md'
       const rel = `${n.name}${ext}`
+      // knowledge/index.json is the area's own record; a copy named that would replace it.
+      if (isReservedFileName(rel)) return { output: `"${RESERVED_FILE_NAME}" is reserved for the project's own file index; choose another name`, isError: true }
       copyFileSync(abs, join(dir, 'knowledge', rel))
       const fromArtifacts = isInside(join(dir, 'artifacts'), abs)
       const ev = await ingestFile(deps, context.slug, 'knowledge', rel, fromArtifacts ? 'artifact' : 'uploaded')
