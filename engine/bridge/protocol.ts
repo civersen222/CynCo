@@ -866,6 +866,12 @@ export type VibeEscalationResponseCommand = {
   action: 'fix' | 'skip' | 'explain'
 }
 
+export type ProjectOpenCommand = {
+  type: 'project.open'
+  slug: string | null
+  chat?: string
+}
+
 export type WebSearchResultEvent = {
   type: 'web.search.result'
   requestId: string
@@ -904,6 +910,7 @@ export type TUICommand =
   | VibeAnswerCommand
   | VibeActionCommand
   | VibeEscalationResponseCommand
+  | ProjectOpenCommand
 
 // ─── Helpers ────────────────────────────────────────────────────
 

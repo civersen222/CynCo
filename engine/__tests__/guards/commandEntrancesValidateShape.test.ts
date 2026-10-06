@@ -45,6 +45,7 @@ const VALID: Record<string, Record<string, unknown>> = {
   'vibe.answer': { type: 'vibe.answer', questionId: 'q1', answer: 'a' },
   'vibe.action': { type: 'vibe.action', action: 'done' },
   'vibe.escalation_response': { type: 'vibe.escalation_response', requestId: 'r1', action: 'fix' },
+  'project.open': { type: 'project.open', slug: 'diorama' },
 }
 
 /** The `type: '...'` literal of every member of the TUICommand union, read off

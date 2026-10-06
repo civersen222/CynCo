@@ -28,6 +28,7 @@ import {
   GATE_MIN_USABLE,
 } from '../training/datasetBuilder.js'
 import type { TokenSet, TokenScope } from '../security/localToken.js'
+import type { ProjectsDeps } from '../projects/api.js'
 import { cyncoHome } from '../paths.js'
 
 /** Phase 5 ruling 2: the pooled board is Task 2's one spelling
@@ -82,6 +83,8 @@ export interface DashboardDeps {
   setBrainLayer?: (layer: number) => void
   /** Test seam: load scripts/cynco-scoreboard.mjs. Default: a lazy dynamic import. */
   loadScoreboard?: () => Promise<ScoreboardModule>
+  /** Projects mode deps (Task 8 mounts the /api/projects routes over these). */
+  projects?: ProjectsDeps
 }
 
 // ---------------------------------------------------------------------------
@@ -128,6 +131,7 @@ const DASHBOARD_ALLOWED_TYPES: ReadonlySet<unknown> = new Set([
   'vibe.answer',
   'vibe.action',
   'vibe.escalation_response',
+  'project.open',
 ])
 
 /**

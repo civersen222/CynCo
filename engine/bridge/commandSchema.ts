@@ -177,6 +177,10 @@ export const COMMAND_SCHEMA: Record<TUICommand['type'], Check[]> = {
     req('requestId', isString, 'a string'),
     req('action', oneOf('fix', 'skip', 'explain'), "one of 'fix', 'skip', 'explain'"),
   ],
+  'project.open': [
+    (f) => (f.slug === null || (typeof f.slug === 'string' && /^[a-z0-9-]{1,64}$/.test(f.slug)) ? null : 'slug must be a lower-case slug or null'),
+    (f) => (f.chat === undefined || (typeof f.chat === 'string' && /^[A-Za-z0-9._-]+\.jsonl$/.test(f.chat) && !f.chat.includes('..')) ? null : 'chat must be a transcript file name'),
+  ],
 }
 
 export type CommandValidation =
