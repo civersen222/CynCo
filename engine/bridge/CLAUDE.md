@@ -32,6 +32,7 @@ This package is the CynCo engine's spine: `ConversationLoop` drives the user-mes
 | `tokenTotals.ts` | Session-lifetime measured token totals (prefill/cache/decode), never chars/4 estimates. |
 | `finalizeGuard.ts` | `runWithFinalize` — guarantees a finalizer runs exactly once regardless of exit path. |
 | `capabilities.ts` | Measures what this build can actually enforce (sealed gates, S5 advisory-only) rather than declaring it. |
+| (consumes) `../projects/binding.ts` | `ProjectBinding` + `openBinding` — what `startProjectSession` holds while a project is open; the grader the executor runs in project mode. |
 
 ## Important types & functions
 - **`ConversationLoop`** (`conversationLoop.ts:305`) — the class; owns the message array, governance, contract state, and the model loop for one engine session.
