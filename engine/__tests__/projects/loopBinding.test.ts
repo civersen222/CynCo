@@ -264,6 +264,51 @@ describe('ConversationLoop + ProjectBinding', () => {
     expect(text).toContain('Question withdrawn before the user answered (the user switched to another conversation)')
   }, 60000)
 
+  it('startProjectSession(null) with no project bound leaves the coding conversation alone and only re-emits project.opened (final review I4)', async () => {
+    const { loop, events, cwd } = makeLoop({ script: [[{ type: 'text', text: 'first answer' }], [{ type: 'text', text: 'second answer' }]] })
+    await loop.handleUserMessage('refactor the parser')
+    await loop.handleUserMessage('and add a test')
+    globalContract.create('coding task', '', ['File parser.test.ts exists after changes'])
+    const before = {
+      messages: JSON.stringify(loop.getMessages()),
+      sessionId: (loop as any).sessionId as string,
+      journal: (loop as any).journal,
+      cwd: (loop as any).executor['cwd'] as string,
+      grader: (loop as any).executor['grader'],
+    }
+    expect((loop.getMessages() as any[]).length).toBeGreaterThanOrEqual(4)
+    await loop.startProjectSession(null)
+    expect(JSON.stringify(loop.getMessages())).toBe(before.messages)
+    expect((loop as any).sessionId).toBe(before.sessionId)
+    expect((loop as any).journal).toBe(before.journal)
+    expect((loop as any).executor['cwd']).toBe(before.cwd)
+    expect((loop as any).executor['cwd']).toBe(cwd)
+    expect((loop as any).executor['grader']).toBe(before.grader)
+    expect(globalContract.isActive()).toBe(true)
+    expect(getProjectToolContext()).toBeNull()
+    expect(events.filter(e => e.type === 'project.opened')).toEqual([{ type: 'project.opened', slug: null, chat: null, title: null }])
+  }, 60000)
+
+  it('a page-typed contract, readOnlyPaths, invariants or unattended are ignored in a project chat (final review M1)', async () => {
+    const { home, slug } = await project('Frame', '')
+    const { loop, calls } = makeLoop({ script: [[{ type: 'text', text: 'Noted.' }]] })
+    const b = await openBinding({ home, slug, embed: null, embedModel: 'none', contextLength: 32768 })
+    if (!b.ok) throw new Error(b.reason)
+    await loop.startProjectSession(b.binding, b.messages)
+    await loop.handleUserMessage('plan the base', {
+      contract: { title: 'sneaked in', assertions: [{ text: 'gate passes', command: 'echo ok' }] },
+      readOnlyPaths: ['plan.md'],
+      unattended: true,
+      invariants: { editGapCap: 5, commitGapCap: 5, revertBan: true, codeIndexFirst: true },
+    })
+    expect(globalContract.isActive()).toBe(false)
+    expect(calls[0].systemPrompt).not.toContain('## Active Contract')
+    expect(globalAskBroker.isUnattended).toBe(false)
+    expect((loop as any).missionInvariants).toBeNull()
+    expect((loop as any).unattendedActive).toBe(false)
+    expect(calls).toHaveLength(1) // one prose reply ends the turn: no contract enforcement re-prompt
+  }, 60000)
+
   it('startProjectSession(null) restores the coding prompt and tools', async () => {
     const { home, slug } = await project('Back', '')
     const { loop, calls, events } = makeLoop({ script: [[{ type: 'text', text: 'hi' }]] })

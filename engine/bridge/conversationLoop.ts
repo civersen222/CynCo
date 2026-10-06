@@ -911,6 +911,14 @@ export class ConversationLoop {
 
   /** Project mode: swap the conversation to a project (or back to coding with null). */
   async startProjectSession(binding: ProjectBinding | null, messages: TranscriptMessage[] = []): Promise<void> {
+    // "Leave project" with no project held (a second tab, a reconnecting page,
+    // a stale click) must not touch the coding conversation: no abort, no new
+    // session, no cleared contract or messages. Re-emit so the asking page syncs.
+    if (binding === null && this.project === null) {
+      console.log('[projects] project.open { slug: null } with no project bound — coding session left as is')
+      this.emit({ type: 'project.opened', slug: null, chat: null, title: null })
+      return
+    }
     if (this.processing || this.currentTurn) {
       this.abort()
       // A turn parked on an approval card would otherwise hold the switch until
@@ -1382,6 +1390,15 @@ export class ConversationLoop {
   }
 
   private async runUserMessage(text: string, opts?: TaskOpts): Promise<void> {
+    // A project chat has no harness contract, no sealed or read-only
+    // instruments, no mission invariants and is never unattended (spec §8.2):
+    // the dashboard forwards a page frame whole, so a token holder could send
+    // them, and they are dropped here, by name, before anything reads them.
+    if (this.project && opts) {
+      const dropped = (['contract', 'readOnlyPaths', 'invariants', 'unattended'] as const).filter(k => opts[k] !== undefined)
+      if (dropped.length) console.log(`[projects] ignored in a project chat: ${dropped.join(', ')}`)
+      opts = undefined
+    }
     this.processing = true
     this.sessionFidelityEmitted = false
     // Set with `processing`, and only ever read by the busy guard above. See
