@@ -9,6 +9,9 @@ Projects mode: a non-code project (a diorama, a cookbook) as a plain folder unde
 | `layout.ts` | Folder shape, slugs, `project.json`/`instructions.md`/file-index/journal read-write, `isInside` path guard, `sha256Of`. |
 | `registry.ts` | `registry.json` cache over a projects home: read-with-rebuild-if-stale, full rebuild from disk, upsert, `touchOpened`. |
 | `history.ts` | Invisible per-project git: `ensureHistory` inits once, `commitHistory` stages and commits named paths, serialised per directory. |
+| `profile.ts` | `assembleProjectPrompt`: the project-chat system prompt — governance/memory kept verbatim, code-shaped sections dropped, a `<PROJECT>` block added. |
+| `chat.ts` | One JSONL transcript per chat: `newChatFile`/`appendTranscript`/`readTranscript`/`listChats`/`renameChat`, plus `turnsOf` for indexing. |
+| `tools.ts` | `ProjectSearch`/`SaveArtifact`/`AddToKnowledge` tool implementations and the module-state `ProjectToolContext` the loop sets per session. |
 
 ## Important types & functions
 - **`ProjectMeta`** (`layout.ts:14`) — the `project.json` shape; `schema: 1` is checked on every read so a future schema bump can't be silently misread.
@@ -20,6 +23,11 @@ Projects mode: a non-code project (a diorama, a cookbook) as a plain folder unde
 - **`rebuildRegistry`** (`registry.ts:29`) — the only place a `RegistryEntry` is derived from a folder's `project.json`; preserves `lastOpenedAt` from the previous cache across a rebuild.
 - **`ensureHistory`** (`history.ts:37`) — `git init` once per project folder (idempotent on `.git` already existing), sets a local `user.email`/`user.name` so commits never depend on global git config.
 - **`commitHistory`** (`history.ts:47`) — stages exactly the given paths, treats `git diff --cached --quiet` exit 0 as "nothing to record" (not a failure), and only runs `git commit` when something is staged.
+- **`assembleProjectPrompt`** (`profile.ts:36`) — builds the project-chat system prompt array (same shape as `assembleBasePrompt`); byte-identical for identical input so the prefix cache holds.
+- **`newChatFile`** (`chat.ts:24`) — names a chat file `<timestamp>-<title slug>.jsonl` and writes its header as line 1.
+- **`turnsOf`** (`chat.ts:83`) — pairs each text-only user message with the following assistant text for chat ingestion; skips a user message that is a tool result.
+- **`setProjectToolContext`** (`tools.ts:23`) — sets the module-state `ProjectToolContext` (home/slug/embed client/emit) the three tools below read; `null` outside a project session.
+- **`projectSearchTool`** (`tools.ts:37`), **`saveArtifactTool`** (`tools.ts:66`), **`addToKnowledgeTool`** (`tools.ts:97`) — the `ProjectSearch`/`SaveArtifact`/`AddToKnowledge` `ToolImpl`s; each refuses by name when `ProjectToolContext` is unset, and every write stays inside the project folder (`isInside`) and is followed by `ensureHistory`+`commitHistory`.
 
 ## Data flow
 1. A caller (a later task's API handler or tool) calls `createProject` (`layout.ts:70`) with a name and optional description/instructions/tags; the returned `ProjectMeta` is the slug every other call keys off.
