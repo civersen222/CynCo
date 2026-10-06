@@ -13,6 +13,8 @@ export type RequestApprovalFn = (
   risk: 'low' | 'medium' | 'high',
 ) => Promise<boolean>
 
+export type Grader = (toolName: string, input: Record<string, unknown>) => { level: 'safe' | 'risky' | 'dangerous'; reason: string }
+
 export type ToolExecutorOptions = {
   cwd: string
   requestApproval: RequestApprovalFn
@@ -20,6 +22,7 @@ export type ToolExecutorOptions = {
   approveAll?: boolean
   contextLength?: number
   toolScorer?: ToolScorer
+  grader?: Grader
 }
 
 /**
@@ -119,6 +122,7 @@ export class ToolExecutor {
   private contextLength: number
   private doomLoop = new DoomLoopDetector(3)
   private toolScorer?: ToolScorer
+  private grader: Grader | null
 
   constructor(opts: ToolExecutorOptions) {
     this.cwd = opts.cwd
@@ -127,6 +131,7 @@ export class ToolExecutor {
     this.approveAll = opts.approveAll ?? false
     this.contextLength = opts.contextLength ?? 32768
     this.toolScorer = opts.toolScorer
+    this.grader = opts.grader ?? null
   }
 
   setApproveAll(value: boolean): void {
@@ -135,6 +140,10 @@ export class ToolExecutor {
 
   setCwd(cwd: string): void {
     this.cwd = cwd
+  }
+
+  setGrader(g: Grader | null): void {
+    this.grader = g
   }
 
   getToolScorer(): ToolScorer | undefined {
@@ -167,20 +176,31 @@ export class ToolExecutor {
       }
     }
 
-    // Downloads never ride on approve-all (see approvalGate.ts). Under
-    // approve-all there is no user to ask, so the answer is a refusal that
-    // names the sanctioned route; interactively, it is a forced approval card.
-    const download = toolName === 'Bash' && isDownloadCommand(String(input.command ?? ''))
-    if (download && this.approveAll) {
-      return { output: DOWNLOAD_REFUSAL, isError: true }
-    }
-
-    const autoApprove = !download && shouldAutoApprove(toolName, this.trustProfile, this.approveAll)
-    if (!autoApprove) {
-      const risk = getToolRisk(toolName)
-      const approved = await this.requestApproval(toolName, input, risk)
-      if (!approved) {
-        return { output: `Tool call denied by user: ${toolName}`, isError: true }
+    if (this.grader) {
+      // Project mode: one grade decides. A download is the grader's `risky`
+      // (the user approves every download), so the approve-all refusal below
+      // does not apply — there IS a user to ask in a project chat.
+      const g = this.grader(toolName, input)
+      if (g.level === 'dangerous') return { output: `Refused: ${g.reason}`, isError: true }
+      if (g.level === 'risky') {
+        const approved = await this.requestApproval(toolName, input, getToolRisk(toolName))
+        if (!approved) return { output: `Tool call denied by user: ${toolName}`, isError: true }
+      }
+    } else {
+      // Downloads never ride on approve-all (see approvalGate.ts). Under
+      // approve-all there is no user to ask, so the answer is a refusal that
+      // names the sanctioned route; interactively, it is a forced approval card.
+      const download = toolName === 'Bash' && isDownloadCommand(String(input.command ?? ''))
+      if (download && this.approveAll) {
+        return { output: DOWNLOAD_REFUSAL, isError: true }
+      }
+      const autoApprove = !download && shouldAutoApprove(toolName, this.trustProfile, this.approveAll)
+      if (!autoApprove) {
+        const risk = getToolRisk(toolName)
+        const approved = await this.requestApproval(toolName, input, risk)
+        if (!approved) {
+          return { output: `Tool call denied by user: ${toolName}`, isError: true }
+        }
       }
     }
 

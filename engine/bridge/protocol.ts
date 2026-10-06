@@ -499,6 +499,35 @@ export type SkillListEvent = {
   skills: SkillSummary[]
 }
 
+// ─── Projects Mode Events ─────────────────────────────────────
+
+/** The loop switched to a project chat (slug set) or back to coding (all null). */
+export type ProjectOpenedEvent = {
+  type: 'project.opened'
+  slug: string | null
+  chat: string | null
+  title: string | null
+}
+
+/** The passages an assistant turn cited from the last `[Project knowledge]` block. */
+export type ProjectCitationsEvent = {
+  type: 'project.citations'
+  chat: string
+  turn: number
+  citations: { n: number; filePath: string; heading: string; ordinal: number }[]
+}
+
+/** One file (knowledge, artifact or chat) was indexed into a project's store — or not, and why. */
+export type ProjectIngestEvent = {
+  type: 'project.ingest'
+  slug: string
+  filePath: string
+  kind: 'knowledge' | 'artifact' | 'chat'
+  indexed: boolean
+  reason?: string
+  chunks?: number
+}
+
 // ─── Vibe Loop Events ─────────────────────────────────────────
 
 export type VibeStateChangedEvent = {
@@ -700,6 +729,9 @@ export type EngineEvent =
   | SkillStatusEvent
   | SkillInstalledEvent
   | SkillListEvent
+  | ProjectOpenedEvent
+  | ProjectCitationsEvent
+  | ProjectIngestEvent
 
 // ─── TUI → Engine Commands ─────────────────────────────────────
 

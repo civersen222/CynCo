@@ -107,6 +107,15 @@ import { detectTests } from '../bestOfN/testDetector.js'
 import { WorktreeManager } from '../bestOfN/worktreeManager.js'
 import { extractPatch } from '../bestOfN/patchExtractor.js'
 import { runTests, selectWinner, applyPatch } from '../bestOfN/sampler.js'
+import type { ProjectBinding } from '../projects/binding.js'
+import { gradeProjectCall } from '../projects/binding.js'
+import { assembleProjectPrompt, PROJECT_TOOL_NAMES } from '../projects/profile.js'
+import { appendTranscript, newChatFile, readTranscript, turnsOf, type TranscriptMessage } from '../projects/chat.js'
+import { searchProjects } from '../projects/search.js'
+import { buildRetrievalBlock, citationsUsed, retrievalShare, RETRIEVAL_TAG } from '../projects/retrieval.js'
+import { setProjectToolContext } from '../projects/tools.js'
+import { ingestChat } from '../projects/ingest.js'
+import { classifyRisk, describeRisk } from './guardianRules.js'
 
 /**
  * Phase 6: build structured diff hunks from a write-tool input for the file.diff
@@ -449,6 +458,18 @@ export class ConversationLoop {
   private emit: (event: EngineEvent) => void
   private executor: ToolExecutor
   private toolScorer = new ToolScorer()
+  /** Projects mode: the open project, or null for an ordinary coding session. */
+  private project: ProjectBinding | null = null
+  /** The in-flight `handleUserMessage` turn, so a session switch can await its end. */
+  private currentTurn: Promise<void> | null = null
+  /**
+   * Text streamed by the model call in flight that has not yet become an
+   * assistant message — what an abort leaves behind. Cleared when the
+   * assistant message is pushed; read by `startProjectSession`.
+   */
+  private partialAssistantText = ''
+  /** The directory the engine was launched at; `startProjectSession(null)` returns here. */
+  private launchCwd: string
   private toolScorerPath = require('path').join(cyncoHome(), 'tool-scores.json')
   // Observed task difficulty from turn telemetry — feeds S5Input.promptDifficulty
   private difficultyClassifier = new DifficultyClassifier()
@@ -602,6 +623,7 @@ export class ConversationLoop {
     }
 
     this.toolScorer.load(this.toolScorerPath)
+    this.launchCwd = opts.cwd ?? process.cwd()
     this.executor = new ToolExecutor({
       cwd: opts.cwd ?? process.cwd(),
       requestApproval,
@@ -876,6 +898,68 @@ export class ConversationLoop {
     return false
   }
 
+  /** Project mode: swap the conversation to a project (or back to coding with null). */
+  async startProjectSession(binding: ProjectBinding | null, messages: TranscriptMessage[] = []): Promise<void> {
+    if (this.processing || this.currentTurn) {
+      this.abort()
+      // A turn parked on an approval card would otherwise hold the switch until
+      // the card's 5-minute auto-deny; the user has left that chat, so deny it.
+      for (const [id, resolve] of [...this.pendingApprovals]) { this.pendingApprovals.delete(id); resolve(false) }
+      try { await this.currentTurn } catch (e) { console.log(`[projects] aborted turn ended with: ${e instanceof Error ? e.message : String(e)}`) }
+      // An abort mid-stream leaves the streamed text outside this.messages (the
+      // assistant message is pushed only when the stream completes, and a
+      // completed one is already in the transcript). Keep what the user saw.
+      const partial = this.partialAssistantText
+      this.partialAssistantText = ''
+      if (this.project?.chatFile && partial) {
+        appendTranscript(this.project.dir, this.project.chatFile, { role: 'assistant', content: [{ type: 'text', text: partial }], aborted: true })
+      }
+    }
+    this.project = binding
+    this.messages = binding ? messages.map(m => ({ role: m.role, content: m.content }) as Message) : []
+    this.sessionId = `session-${Date.now()}`
+    this.journal = new JSONLStore(this.sessionId)
+    this.thinkingRecorder = new ThinkingRecorder(this.sessionId)
+    process.env.LOCALCODE_SESSION_ID = this.sessionId
+    this.governance.setSessionId(this.sessionId)
+    this.setCwd(binding ? binding.dir : this.launchCwd)
+    if (binding) {
+      setProjectToolContext({ home: binding.home, slug: binding.slug, embed: binding.embed, embedModel: binding.embedModel, emit: binding.emit })
+      this.executor.setGrader((tool, input) => gradeProjectCall(binding.dir, this.executor['cwd'], classifyRisk, describeRisk, tool, input))
+      this.emit({ type: 'project.opened', slug: binding.slug, chat: binding.chatFile, title: binding.chatTitle })
+    } else {
+      setProjectToolContext(null)
+      this.executor.setGrader(null)
+      this.emit({ type: 'project.opened', slug: null, chat: null, title: null })
+    }
+  }
+
+  currentProject(): ProjectBinding | null { return this.project }
+
+  /**
+   * Project mode: replace last turn's `[Project knowledge]` block with one
+   * built for this message, spliced just above it (the code-context pattern).
+   * Never journaled — it is per-turn context, not conversation.
+   */
+  private async injectProjectRetrieval(text: string): Promise<void> {
+    const p = this.project!
+    for (let i = this.messages.length - 1; i >= 0; i--) {
+      const m = this.messages[i]
+      const first = m.content[0] as any
+      if (m.role === 'system' && typeof first?.text === 'string' && first.text.startsWith(RETRIEVAL_TAG)) this.messages.splice(i, 1)
+    }
+    p.citations = []
+    try {
+      const r = await searchProjects({ home: p.home, embed: p.embed }, { query: text, scope: { slug: p.slug }, limit: 8, excludeFilePath: p.chatFile ? `chats/${p.chatFile}` : undefined })
+      const block = buildRetrievalBlock(r.hits, Math.floor(p.contextLength * retrievalShare()))
+      if (!block) return
+      p.citations = block.citations
+      this.messages.splice(this.messages.length - 1, 0, { role: 'system', content: [{ type: 'text', text: block.text }] })
+    } catch (e) {
+      console.log(`[projects] retrieval skipped: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+
   /**
    * Proactive scout dispatch — the engine decides when to spawn scouts.
    *
@@ -1097,6 +1181,22 @@ export class ConversationLoop {
     // with no error surfaced anywhere. The session was bricked until restart.
     // Same failure shape runWithFinalize was introduced to solve one layer
     // down, so it gets the same remedy.
+    //
+    // The turn is held in `currentTurn` (projects mode) so a session switch can
+    // abort it and await its real end — every clear below included — instead of
+    // polling `processing`, which `abort()` drops early. Recorded only past the
+    // busy guard: a refused re-entrant call must not replace the running turn.
+    const turn = this.runTurn(text, opts)
+    this.currentTurn = turn
+    try {
+      return await turn
+    } finally {
+      if (this.currentTurn === turn) this.currentTurn = null
+    }
+  }
+
+  /** The body of one accepted `handleUserMessage` — split out so the turn can be awaited as a whole. */
+  private async runTurn(text: string, opts?: TaskOpts): Promise<void> {
     try {
       return await runWithFinalize(
         () => this.runUserMessage(text, opts),
@@ -1275,6 +1375,16 @@ export class ConversationLoop {
       role: 'user',
       content: [{ type: 'text', text }],
     })
+    // Projects mode: the transcript is the chat's record; the first message
+    // names it.
+    if (this.project) {
+      if (!this.project.chatFile) {
+        const c = newChatFile(this.project.dir, text)
+        this.project.chatFile = c.file
+        this.project.chatTitle = c.header.title
+      }
+      appendTranscript(this.project.dir, this.project.chatFile, { role: 'user', content: [{ type: 'text', text }] })
+    }
     // The one place genuine user input enters the loop (F16).
     this._lastExternalUserText = text
 
@@ -1461,7 +1571,8 @@ export class ConversationLoop {
     // (2026-06-12 weekly-digest incident). The nudge text is now pluggable via
     // engine/bridge/enforcementNudge.ts and is phase-aware; a mission-aware nudge
     // variant is the right path to lifting this skip, not hardcoding new text here.
-    else if (!this.allowedTools && maybeAutoCreateContract(text, this.executor['cwd'])) {
+    // Never in a project chat: there is no code task for a contract to measure.
+    else if (!this.allowedTools && !this.project && maybeAutoCreateContract(text, this.executor['cwd'])) {
       console.log(`[contract] Auto-created: ${globalContract.pendingCount()} assertions for "${text.slice(0, 50)}..."`)
       this.governance.setContractCreated()
       contractIsNew = true
@@ -1516,6 +1627,12 @@ export class ConversationLoop {
       await this.compactNow('pre-turn')
     }
 
+    // Projects mode: the project's own knowledge, not the code index — a
+    // project folder has no code to rank, and the index would open a store
+    // in it. The `else` binds the whole indexer try/catch below.
+    if (this.project) {
+      await this.injectProjectRetrieval(text)
+    } else
     // Auto-inject CodeIndex results as system context — don't modify user message
     // (modifying user message leaks into memory recall display as "Prior: [Relevant code...]")
     try {
@@ -1619,18 +1736,26 @@ export class ConversationLoop {
       const pinned = new Set(this.allowedTools)
       activeTools = activeTools.filter(t => pinned.has(t.name))
     }
+    // Projects mode: the project tool set, whatever the coding layers chose.
+    if (this.project) {
+      const names = new Set(PROJECT_TOOL_NAMES)
+      activeTools = ALL_TOOLS.filter(t => names.has(t.name))
+    }
 
     // Build tool definitions in the format callModel expects (inputJSONSchema)
     let toolDefs = toToolDefs(activeTools)
     const toolNames = activeTools.map(t => `- ${t.name}: ${t.description}`).join('\n')
 
-    const promptParts = assembleBasePrompt(toolNames, this.executor['cwd'])
+    const promptParts = this.project
+      ? assembleProjectPrompt({ name: this.project.name, description: this.project.description, instructions: this.project.instructions, toolNames, cwd: this.executor['cwd'] })
+      : assembleBasePrompt(toolNames, this.executor['cwd'])
 
     // Tell the model which extended tools it can pull in on demand. Static
     // (same every turn) so it stays within the append-only prompt prefix; only
     // shown when gating is active (LOCALCODE_ALL_TOOLS loads everything up
-    // front, so there is nothing left to load).
-    if (!isAllToolsEnabled()) {
+    // front, so there is nothing left to load). Never in a project chat: its
+    // tool set is fixed.
+    if (!this.project && !isAllToolsEnabled()) {
       const loadable = getExtendedTools().filter(t => !this.loadedTools.has(t.name))
       if (loadable.length > 0) {
         promptParts.push('')
@@ -1670,8 +1795,9 @@ export class ConversationLoop {
       }
     } catch {}
 
-    // First-message project audit: if no memory exists, scan the project
-    if (this.messages.length === 1) {
+    // First-message project audit: if no memory exists, scan the project.
+    // Code-shaped (FIRST_TIME/FRESH name a codebase) — not in a project chat.
+    if (!this.project && this.messages.length === 1) {
       try {
         const crypto = await import('crypto')
         const os = await import('os')
@@ -1698,15 +1824,18 @@ export class ConversationLoop {
       } catch {}
     }
 
-    // S4: Load system.md template extension
-    try {
-      const templates = new TemplateLoader(this.executor['cwd'])
-      const systemExt = templates.loadSystemExtension()
-      if (systemExt) {
-        promptParts.push('')
-        promptParts.push('## User Custom Instructions\n' + systemExt)
-      }
-    } catch {}
+    // S4: Load system.md template extension. Not in a project chat: the
+    // project's own instructions are its custom instructions.
+    if (!this.project) {
+      try {
+        const templates = new TemplateLoader(this.executor['cwd'])
+        const systemExt = templates.loadSystemExtension()
+        if (systemExt) {
+          promptParts.push('')
+          promptParts.push('## User Custom Instructions\n' + systemExt)
+        }
+      } catch {}
+    }
 
     // Autopoietic strategy injection — the population-evolved behavioral directive
     const activeStrategy = this.governance.getActiveStrategy()
@@ -2579,7 +2708,9 @@ export class ConversationLoop {
       // in the prompt is not a control surface. The threshold is read through
       // commitPressureDue, not compared for equality, because the counter it
       // reads advances per tool call while this block runs per iteration.
-      const commitDue = commitPressureDue(this.callsSinceCommit, this.commitPressureNotifiedAt)
+      // Never in a project chat: there is no repository work to commit (the
+      // project's history is committed by its own tools).
+      const commitDue = this.project ? 0 : commitPressureDue(this.callsSinceCommit, this.commitPressureNotifiedAt)
       if (commitDue > 0) {
         // Read the tree only when the notice is about to fire — once per 150
         // calls — so the common path pays nothing. Which of the two failures
@@ -3031,6 +3162,7 @@ export class ConversationLoop {
       const toolsUsedThisTurn: string[] = []
       const toolResultsThisTurn: ('success' | 'failure' | 'denied')[] = []
       let streamedText = ''
+      this.partialAssistantText = ''
 
       for await (const yielded of gen) {
         if (this.abortController?.signal.aborted) return
@@ -3045,6 +3177,7 @@ export class ConversationLoop {
               if (delta?.type === 'text_delta' && delta.text) {
                 tokenCount++
                 streamedText += delta.text
+                this.partialAssistantText += delta.text
                 if (!this.vibeMode) {
                   this.emit({ type: 'stream.token', text: delta.text })
                 }
@@ -3341,6 +3474,13 @@ export class ConversationLoop {
             role: 'assistant',
             content: assistantContent as Message['content'],
           })
+          this.partialAssistantText = ''
+          if (this.project?.chatFile) {
+            appendTranscript(this.project.dir, this.project.chatFile, { role: 'assistant', content: assistantContent as TranscriptMessage['content'] })
+            const text = (assistantContent as any[]).filter((b: any) => b.type === 'text').map((b: any) => b.text).join('\n')
+            const used = citationsUsed(text, this.project.citations)
+            if (used.length) this.emit({ type: 'project.citations', chat: this.project.chatFile, turn: this.messages.length, citations: used })
+          }
         }
       }
 
@@ -3624,6 +3764,13 @@ export class ConversationLoop {
           messageId: lastMessageId,
           stopReason,
         })
+        // Projects mode: the finished chat becomes searchable. Fire-and-forget —
+        // indexing must not hold the turn open; a failure is logged.
+        if (this.project?.chatFile) {
+          const p = this.project, chatFile = this.project.chatFile
+          const t = readTranscript(p.dir, chatFile)
+          if (t) void ingestChat({ home: p.home, embed: p.embed, embedModel: p.embedModel, emit: p.emit }, p.slug, chatFile, t.header.title, turnsOf(t.messages)).catch(e => console.log(`[projects] chat index failed: ${e instanceof Error ? e.message : String(e)}`))
+        }
 
         // P4.3/4(e): session-level regulator fidelity — the mission driver
         // ingests this into the outcome ledger; the TUI/vibe surfaces consume
@@ -3714,6 +3861,7 @@ export class ConversationLoop {
         role: 'user',
         content: toolResults,
       })
+      if (this.project?.chatFile) appendTranscript(this.project.dir, this.project.chatFile, { role: 'user', content: toolResults as TranscriptMessage['content'] })
 
       // On-demand tool surfacing: if the model called load_tools this turn,
       // grow the loaded set and append a tool-availability block (Option B —

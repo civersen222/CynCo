@@ -53,7 +53,7 @@ Defines every tool the model can call in an agent turn — file I/O, Bash, Git, 
 - **`ToolImpl`** (`types.ts:29`) — the contract every tool exports: name, description, input schema, approval tier, core/extended flag, `execute`. Implemented by every file under `impl/`.
 - **`ALL_TOOLS`** (`registry.ts:34`) — the flat tool registry every lookup/filter function in this file reads.
 - **`getToolByName`** (`registry.ts:57`) — registry lookup used by `ToolExecutor`, `approvalGate.ts`, and `load_tools` to resolve a call by name.
-- **`ToolExecutor`** (`executor.ts:114`) — turns `(toolName, input)` into a `ToolResult`: sealed check, immutable-path check, download gate, approval, execute, doom-loop check, redaction/cap.
+- **`ToolExecutor`** (`executor.ts:117`) — turns `(toolName, input)` into a `ToolResult`: sealed check, immutable-path check, download gate, approval, execute, doom-loop check, redaction/cap. With a `Grader` set (`setGrader`, projects mode) one grade replaces the download gate and tier approval: `dangerous` is refused with its reason, `risky` asks, `safe` runs.
 - **`bashTool`** (`engine/tools/impl/bash.ts:129`) — the Bash implementation: safety check, shell-dialect translation, timeout clamp, failure formatting.
 - **`bashMaxTimeoutMs`** (`engine/tools/impl/bash.ts:91`) — the hard ceiling any Bash timeout is clamped to, env-raisable up to `HARD_MAX_BASH_TIMEOUT_MS`.
 - **`bashDefaultTimeoutMs`** (`engine/tools/impl/bash.ts:121`) — the timeout a Bash call gets when the model doesn't ask for one.

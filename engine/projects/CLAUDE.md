@@ -12,6 +12,7 @@ Projects mode: a non-code project (a diorama, a cookbook) as a plain folder unde
 | `profile.ts` | `assembleProjectPrompt`: the project-chat system prompt — governance/memory kept verbatim, code-shaped sections dropped, a `<PROJECT>` block added. |
 | `chat.ts` | One JSONL transcript per chat: `newChatFile`/`appendTranscript`/`readTranscript`/`listChats`/`renameChat`, plus `turnsOf` for indexing. |
 | `tools.ts` | `ProjectSearch`/`SaveArtifact`/`AddToKnowledge` tool implementations and the module-state `ProjectToolContext` the loop sets per session. |
+| `binding.ts` | `ProjectBinding` (what `ConversationLoop` holds while a project is open), `openBinding`, and `gradeProjectCall` — the executor grader for project chats. |
 
 ## Important types & functions
 - **`ProjectMeta`** (`layout.ts:14`) — the `project.json` shape; `schema: 1` is checked on every read so a future schema bump can't be silently misread.
@@ -28,6 +29,9 @@ Projects mode: a non-code project (a diorama, a cookbook) as a plain folder unde
 - **`turnsOf`** (`chat.ts:83`) — pairs each text-only user message with the following assistant text for chat ingestion; skips a user message that is a tool result.
 - **`setProjectToolContext`** (`tools.ts:23`) — sets the module-state `ProjectToolContext` (home/slug/embed client/emit) the three tools below read; `null` outside a project session.
 - **`projectSearchTool`** (`tools.ts:37`), **`saveArtifactTool`** (`tools.ts:66`), **`addToKnowledgeTool`** (`tools.ts:97`) — the `ProjectSearch`/`SaveArtifact`/`AddToKnowledge` `ToolImpl`s; each refuses by name when `ProjectToolContext` is unset, and every write stays inside the project folder (`isInside`) and is followed by `ensureHistory`+`commitHistory`.
+
+- **`gradeProjectCall`** (`binding.ts:46`) — file tools: a resolved path inside the project folder is `safe`, anything else `dangerous` naming the path; Bash: every download (and `git clone`) is `risky`, otherwise the classifier passed in (the bridge's `classifyRisk`, passed because this package never imports from `engine/bridge/`); every other tool `safe`.
+- **`openBinding`** (`binding.ts:62`) — reads the project (and an existing chat's transcript, if named), ensures history and the registry entry, touches `lastOpenedAt`, journals `chat.opened`; the loop then takes the binding via `ConversationLoop.startProjectSession`.
 
 ## Data flow
 1. A caller (a later task's API handler or tool) calls `createProject` (`layout.ts:70`) with a name and optional description/instructions/tags; the returned `ProjectMeta` is the slug every other call keys off.
