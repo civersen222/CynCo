@@ -80,4 +80,13 @@ describe('askUserTool', () => {
     const result = await askUserTool.execute({ question: 'Which option?' }, '/cwd')
     expect(result.output).toBe('option A')
   })
+
+  it('a question withdrawn by cancelAll is an error naming the reason, not an answer', async () => {
+    globalAskBroker.setEmitter(() => {
+      setTimeout(() => globalAskBroker.cancelAll('the user switched to another conversation'), 0)
+    })
+    const result = await askUserTool.execute({ question: 'Which option?' }, '/cwd')
+    expect(result).toEqual({ output: 'Question withdrawn before the user answered (the user switched to another conversation).', isError: true })
+    expect(globalAskBroker.pendingCount).toBe(0)
+  })
 })

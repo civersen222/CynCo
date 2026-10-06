@@ -450,6 +450,64 @@ body.mission-mode #panelBestOfN,
 body.mission-mode #historyPanel { display: none; }
 #missionCommitList { margin-top: 6px; font-size: 11px; color: #9a9a9a; }
 #missionCommitList div { padding: 1px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ── Projects (projects mode) ────────────────────────────── */
+#tab-projects { padding: 0 20px 20px; }
+#tab-projects .two-col { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+#tab-projects .panel { min-height: 0; margin-bottom: 12px; }
+#tab-projects input[type=text], #tab-projects input[type=search], #tab-projects textarea {
+  width: 100%; background: #1e1e2e; color: #d4d4d4; border: 1px solid #444; border-radius: 4px;
+  padding: 6px 8px; font-family: inherit; font-size: 13px; outline: none;
+}
+#tab-projects input:focus, #tab-projects textarea:focus { border-color: #4ec9b0; }
+#tab-projects textarea { min-height: 70px; resize: vertical; line-height: 1.5; }
+#tab-projects label { display: block; color: #808080; font-size: 11px; margin: 6px 0 2px; }
+.proj-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid #333; flex-wrap: wrap; }
+.proj-row:last-child { border-bottom: none; }
+.proj-row .grow { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.proj-row .muted, .proj-muted { color: #808080; font-size: 11px; }
+.proj-link { color: #4ec9b0; cursor: pointer; text-decoration: none; }
+.proj-link:hover { text-decoration: underline; }
+.proj-ok { color: #4ec9b0; font-size: 11px; }
+.proj-warn { color: #dcdcaa; font-size: 11px; }
+.proj-err { color: #f44747; font-size: 12px; }
+.proj-status { min-height: 18px; font-size: 12px; margin: 4px 0; overflow-wrap: anywhere; }
+.proj-hit { padding: 6px 0; border-bottom: 1px solid #333; overflow-wrap: anywhere; }
+.proj-hit .passage { color: #9a9a9a; font-size: 12px; white-space: pre-wrap; }
+.proj-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.proj-head h2 { font-size: 15px; color: #4ec9b0; }
+.proj-tag { background: #2d3a4a; color: #569cd6; border-radius: 3px; padding: 0 6px; font-size: 11px; }
+#projectTabs { display: flex; gap: 4px; flex-wrap: wrap; margin: 8px 0; }
+.proj-panel { display: none; }
+.proj-panel.active { display: block; }
+.proj-drop { border: 1px dashed #444; border-radius: 6px; padding: 12px; text-align: center; color: #808080; margin-top: 6px; }
+.proj-drop.over { border-color: #4ec9b0; color: #4ec9b0; }
+#planView { white-space: pre-wrap; background: #1e1e1e; padding: 10px; border-radius: 4px; overflow-x: auto; }
+.chat-project-strip { display: none; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px 10px; margin-top: 6px;
+  background: #1f2d2a; border: 1px solid #2f5a50; border-radius: 4px; color: #4ec9b0; font-size: 12px; }
+.chat-project-strip.visible { display: flex; }
+#chatCitations { font-size: 11px; color: #9a9a9a; overflow-wrap: anywhere; }
+#chatCitations:not(:empty) { padding: 4px 0; border-top: 1px dashed #333; }
+.chat-save-artifact { font-size: 11px; margin: -4px 0 8px; }
+.proj-toast { position: fixed; right: 16px; bottom: 16px; max-width: calc(100vw - 32px); z-index: 50;
+  background: #3a3a1a; color: #dcdcaa; border: 1px solid #5a5a2a; border-radius: 4px; padding: 8px 12px; font-size: 12px; }
+
+@media (max-width: 720px) {
+  .tab-bar { flex-wrap: wrap; }
+  .tab-btn { padding: 8px 12px; }
+  .header { flex-wrap: wrap; }
+  .grid { grid-template-columns: 1fr; padding: 12px; }
+  #tab-projects { padding: 0 12px 16px; }
+  #tab-projects .two-col { grid-template-columns: 1fr; }
+  .chat-container { height: calc(100vh - 120px); }
+  .chat-header { flex-wrap: wrap; }
+  .cwd-input { flex: 1; min-width: 0; }
+  /* Older panels have fixed-width content (sliders, canvases); it scrolls
+     inside its own tab instead of widening the page. */
+  .tab-content { overflow-x: auto; }
+  input, textarea, select { font-size: 14px; }
+  #tab-projects input[type=text], #tab-projects input[type=search], #tab-projects textarea, .chat-input, .cwd-input { font-size: 14px; }
+}
 </style>
 </head>
 <body>
@@ -467,6 +525,7 @@ body.mission-mode #historyPanel { display: none; }
   <button class="tab-btn" onclick="switchTab('brain')">Brain</button>
   <button class="tab-btn" onclick="switchTab('history')">History</button>
   <button class="tab-btn" onclick="switchTab('config')">Config</button>
+  <button class="tab-btn" onclick="switchTab('projects')">Projects</button>
 </div>
 
 <!-- ── Chat Tab ────────────────────────────────────────────── -->
@@ -480,7 +539,12 @@ body.mission-mode #historyPanel { display: none; }
         <span class="brain-label" id="brainLabel">idle</span>
       </div>
     </div>
+    <div class="chat-project-strip" id="chatProjectStrip">
+      <span id="chatProjectLabel"></span>
+      <button class="btn btn-grey" onclick="leaveProject()">Leave project</button>
+    </div>
     <div class="chat-messages" id="chatMessages"></div>
+    <div id="chatCitations"></div>
     <div class="chat-input-area">
       <textarea class="chat-input" id="chatInput" placeholder="Type a message... (/plan, /tdd, /debug for workflows)&#10;&#10;Enter to send, Shift+Enter for newline"
              onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChatMessage()}"></textarea>
@@ -818,6 +882,99 @@ body.mission-mode #historyPanel { display: none; }
 </div>
 </div><!-- /tab-config -->
 
+<!-- ── Projects Tab (projects mode) ────────────────────────── -->
+<div id="tab-projects" class="tab-content">
+  <div class="proj-status" id="projectsStatus"></div>
+
+  <!-- Home: every project, search across all of them, a new one -->
+  <div id="projectsHome">
+    <div class="panel">
+      <div class="panel-title">Search all projects</div>
+      <input type="search" id="projectsSearch" placeholder="Search knowledge, artifacts and chats in every project (Enter)"
+             onkeydown="if(event.key==='Enter'){event.preventDefault();projectsGlobalSearch()}">
+      <div id="projectsSearchResults"></div>
+    </div>
+    <div class="two-col">
+      <div class="panel">
+        <div class="panel-title">Projects</div>
+        <div id="projectsList"><span class="proj-muted">loading…</span></div>
+      </div>
+      <div class="panel">
+        <div class="panel-title">New project</div>
+        <form id="projectNewForm" onsubmit="event.preventDefault();createProjectFromForm()">
+          <label for="projectNewName">Name</label>
+          <input type="text" id="projectNewName" placeholder="e.g. Harbor diorama">
+          <label for="projectNewDesc">Description</label>
+          <input type="text" id="projectNewDesc" placeholder="One line about it">
+          <label for="projectNewInstr">Instructions</label>
+          <textarea id="projectNewInstr" placeholder="How CynCo should work in this project"></textarea>
+          <div style="margin-top:8px"><button type="submit" class="btn btn-teal">Create project</button></div>
+          <div class="proj-status" id="projectNewStatus"></div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- One project -->
+  <div id="projectView" style="display:none">
+    <div class="proj-head">
+      <a class="proj-link" href="#projects">&larr; All projects</a>
+      <h2 id="projectName"></h2>
+      <span class="proj-muted" id="projectDesc"></span>
+      <span id="projectTags"></span>
+    </div>
+    <div class="two-col">
+      <div class="panel">
+        <div class="panel-title">Instructions</div>
+        <textarea id="projectInstructions" placeholder="How CynCo should work in this project"></textarea>
+        <div style="margin-top:6px"><button class="btn btn-teal" onclick="saveProjectInstructions()">Save instructions</button></div>
+        <div class="proj-status" id="projectInstructionsStatus"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-title">Search this project</div>
+        <input type="search" id="projectSearch" placeholder="Search this project (Enter)"
+               onkeydown="if(event.key==='Enter'){event.preventDefault();projectLocalSearch()}">
+        <div id="projectSearchResults"></div>
+      </div>
+    </div>
+    <div id="projectTabs">
+      <button class="adv-tab-btn active" data-ptab="chats" onclick="switchProjectTab('chats')">Chats</button>
+      <button class="adv-tab-btn" data-ptab="knowledge" onclick="switchProjectTab('knowledge')">Knowledge</button>
+      <button class="adv-tab-btn" data-ptab="artifacts" onclick="switchProjectTab('artifacts')">Artifacts</button>
+      <button class="adv-tab-btn" data-ptab="plan" onclick="switchProjectTab('plan')">Plan</button>
+      <button class="adv-tab-btn" data-ptab="history" onclick="switchProjectTab('history')">History</button>
+    </div>
+    <div class="panel proj-panel active" id="projectChatsPanel" data-ppanel="chats">
+      <div style="margin-bottom:6px"><button class="btn btn-teal" id="projectChatOpen" onclick="openProjectChat(projectsState.slug, null)">New chat</button></div>
+      <div id="projectChats"></div>
+    </div>
+    <div class="panel proj-panel" id="knowledgePanel" data-ppanel="knowledge">
+      <label for="knowledgePasteName">Name</label>
+      <input type="text" id="knowledgePasteName" placeholder="e.g. resin-notes.md">
+      <label for="knowledgePaste">Paste text</label>
+      <textarea id="knowledgePaste" placeholder="Paste notes, a recipe, a page of a manual…"></textarea>
+      <div style="margin-top:6px"><button class="btn btn-teal" onclick="addKnowledgePaste()">Add</button></div>
+      <label for="knowledgeUpload">Upload a file</label>
+      <input type="file" id="knowledgeUpload" onchange="uploadKnowledgeFiles(this.files)">
+      <div class="proj-drop" id="knowledgeDrop">or drop files here</div>
+      <div class="proj-status" id="knowledgeStatus"></div>
+      <div id="knowledgeList"></div>
+    </div>
+    <div class="panel proj-panel" id="artifactsPanel" data-ppanel="artifacts">
+      <div class="proj-status" id="artifactsStatus"></div>
+      <div id="artifactsList"></div>
+    </div>
+    <div class="panel proj-panel" id="planPanel" data-ppanel="plan">
+      <div id="planView"></div>
+    </div>
+    <div class="panel proj-panel" id="projectHistoryPanel" data-ppanel="history">
+      <div style="margin-bottom:6px"><button class="btn btn-grey" onclick="rescanProjectFiles()">Rescan</button></div>
+      <div class="proj-status" id="historyStatus"></div>
+      <div id="historyList"></div>
+    </div>
+  </div>
+</div><!-- /tab-projects -->
+
 <!-- ── Bottom Bar ──────────────────────────────────────────── -->
 <div class="bottom-bar">
   <span class="apply-status" id="applyStatus"></span>
@@ -941,7 +1098,7 @@ function handleEvent(event) {
       state.tier = event.tier || (event.contextLength > 65536 ? 'advanced' : event.contextLength > 16384 ? 'standard' : 'basic');
       state.sessionStart = new Date();
       state.turnCount = 0;
-      if (event.projectPath) { var cwdEl = document.getElementById('chatCwd'); if (cwdEl) cwdEl.value = event.projectPath; }
+      if (event.projectPath) setCodingCwd(event.projectPath);
       activateSession(event.contextLength);
       break;
 
@@ -1109,6 +1266,7 @@ function handleEvent(event) {
             lastEl.textContent += event.text;
           } else {
             closeChatThinking();
+            clearChatCitations(); // a new assistant message: last turn's sources no longer apply
             var div = document.createElement('div');
             div.className = 'chat-msg chat-msg-assistant';
             div.textContent = event.text;
@@ -1123,6 +1281,7 @@ function handleEvent(event) {
       state.turnCount++;
       closeChatThinking();
       brainViz.setActive(false);
+      markSaveableReplies();
       break;
 
     case 'approval.request':
@@ -1166,6 +1325,27 @@ function handleEvent(event) {
 
     case 'brain.tier':
       brainOnTier(event);
+      break;
+
+    // A refused project.open (unknown slug, missing chat, a frame the command
+    // schema refuses) arrives as session.error; without this arm the page
+    // showed nothing at all and the next message went to the coding session.
+    case 'session.error':
+      appendChatMsg('system', 'error: ' + (event.error || 'unknown engine error'));
+      if (String(event.error || '').indexOf('project.open') >= 0) projStatus('projectsStatus', 'err', event.error);
+      break;
+
+    // ── Projects mode ──
+    case 'project.opened':
+      onProjectOpened(event);
+      break;
+
+    case 'project.citations':
+      renderChatCitations(event);
+      break;
+
+    case 'project.ingest':
+      onProjectIngest(event);
       break;
   }
 }
@@ -2175,7 +2355,7 @@ function fetchSessionState() {
         state.model = data.model;
         if (data.contextLength) setSlider('sliderCtxLen', 'valCtxLen', data.contextLength);
         if (data.tier) state.tier = data.tier;
-        if (data.projectPath) { var cwdEl2 = document.getElementById('chatCwd'); if (cwdEl2) cwdEl2.value = data.projectPath; }
+        if (data.projectPath) setCodingCwd(data.projectPath);
         activateSession(data.contextLength);
       }
     })
@@ -2828,6 +3008,14 @@ function switchTab(name) {
     if (btns[i].textContent.trim().toLowerCase() === name) btns[i].classList.add('active');
   }
   if (name === 'brain') drawSparkline();
+  if (name === 'projects' && !projectsState.routing) {
+    // A chat hash would re-open the chat and bounce back to the Chat tab, so
+    // the Projects tab lands on that chat's project instead.
+    var ph = parseProjectsHash();
+    if (!ph) location.hash = '#projects';
+    else if (ph.chat !== undefined) location.hash = '#projects/' + encodeURIComponent(ph.slug);
+    else projectsRoute();
+  }
 }
 window.addEventListener('resize', drawSparkline);
 
@@ -2852,7 +3040,11 @@ function sendChatMessage() {
     }
   }
 
-  if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'user.message', text: text, cwd: cwd }));
+  // While a project is bound the box shows the project folder read-only and the
+  // frame carries no cwd; only a coding turn sends one.
+  var frame = { type: 'user.message', text: text };
+  if (!projectsState.active) frame.cwd = cwd;
+  if (ws && ws.readyState === 1) ws.send(JSON.stringify(frame));
   appendChatMsg('user', text);
   brainViz.setActive(true);
 }
@@ -3292,6 +3484,740 @@ function loadSessionTranscript() {
     el.innerHTML = html || '<div style="color:#808080">No messages found</div>';
   }).catch(function(err) { console.warn('[brain] load session transcript:', err); });
 }
+
+/* ══════════════════════════════════════════════════════════════
+   Projects view (projects mode)
+   A project is a folder with instructions, knowledge, chats and artifacts.
+   Routes: #projects → list, #projects/<slug> → project,
+           #projects/<slug>/chat/<file> → that chat on the Chat tab.
+   Every action writes its outcome (or the server's { error }) next to it.
+   ══════════════════════════════════════════════════════════════ */
+
+var projectsState = {
+  routing: false,        // projectsRoute → switchTab('projects') must not re-route
+  slug: null,            // the project shown on the Projects tab
+  meta: null,            // GET /api/projects/<slug>
+  names: {},             // slug → name, for the chat strip
+  paths: {},             // slug → project folder, shown read-only in the CWD box while bound
+  codingCwd: null,       // the CWD box's coding value, kept while a project holds the box
+  knowledge: {},         // name → FileRecord
+  artifacts: {},         // name → FileRecord
+  active: null,          // { slug, chat, title } — the chat the engine is bound to
+  renderedChat: null,    // '<slug>/<file>' whose transcript openProjectChat drew before project.open
+  replyCount: 0,         // assistant replies given a "Save as artifact" link
+  chatToasted: {},       // chat filePath + reason → true (one toast per cause, not per turn)
+};
+
+/** fetch + JSON + the server's { error } turned into a thrown Error with that text. */
+function projFetch(path, opts) {
+  return fetch(path, opts || {}).then(function(res) {
+    return res.text().then(function(t) {
+      var data = null;
+      if (t) {
+        try { data = JSON.parse(t); } catch (e) {
+          console.warn('[projects] non-JSON reply from ' + path + ': ' + e.message);
+          data = { error: t.slice(0, 200) };
+        }
+      }
+      if (!res.ok) throw new Error((data && data.error) || ('HTTP ' + res.status));
+      return data || {};
+    });
+  });
+}
+
+function projJson(method, path, body) {
+  return projFetch(path, { method: method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+}
+
+function projUrl(slug) { return '/api/projects/' + encodeURIComponent(slug); }
+
+/** kind: 'ok' | 'warn' | 'err' | 'busy' */
+function projStatus(id, kind, text) {
+  var el = document.getElementById(id);
+  if (!el) return;
+  var cls = kind === 'ok' ? 'proj-ok' : kind === 'warn' ? 'proj-warn' : kind === 'err' ? 'proj-err' : 'proj-muted';
+  el.innerHTML = text ? '<span class="' + cls + '">' + escHtml(text) + '</span>' : '';
+}
+
+function projToast(text) {
+  var t = document.createElement('div');
+  t.className = 'proj-toast';
+  t.textContent = text;
+  document.body.appendChild(t);
+  setTimeout(function() { if (t.parentNode) t.parentNode.removeChild(t); }, 6000);
+}
+
+/** "indexed (3 chunks)" or "kept but not indexed: <reason>" */
+function indexedLabel(rec) {
+  if (!rec) return '';
+  if (rec.indexed) return 'indexed' + (typeof rec.chunks === 'number' ? ' (' + rec.chunks + ' chunks)' : '');
+  return 'kept but not indexed: ' + (rec.reason || 'no reason given');
+}
+
+function indexedHtml(rec) {
+  return '<span class="' + (rec && rec.indexed ? 'proj-ok' : 'proj-warn') + '">' + escHtml(indexedLabel(rec)) + '</span>';
+}
+
+// ── Hash router ───────────────────────────────────────────
+
+/** null when the hash is not a projects hash; else { slug?, chat? } (chat '' = a new chat). */
+function parseProjectsHash() {
+  var h = location.hash || '';
+  if (h !== '#projects' && h.indexOf('#projects/') !== 0) return null;
+  var parts = h.slice('#projects'.length).split('/').filter(function(p) { return p !== ''; });
+  var out = {};
+  try {
+    if (parts[0]) out.slug = decodeURIComponent(parts[0]);
+    if (parts[1] === 'chat') out.chat = parts[2] ? decodeURIComponent(parts[2]) : '';
+  } catch (e) {
+    console.warn('[projects] bad hash ' + h + ': ' + e.message);
+    return {};
+  }
+  return out;
+}
+
+function projectsRoute() {
+  var ph = parseProjectsHash();
+  if (!ph) return;
+  if (ph.slug && ph.chat !== undefined) {
+    var a = projectsState.active;
+    if (a && a.slug === ph.slug && (a.chat || '') === ph.chat) { switchTab('chat'); return; }
+    openProjectChat(ph.slug, ph.chat || null);
+    return;
+  }
+  if (!document.getElementById('tab-projects').classList.contains('active')) {
+    projectsState.routing = true;
+    try { switchTab('projects'); } finally { projectsState.routing = false; }
+  }
+  if (ph.slug) showProject(ph.slug);
+  else showProjectsHome();
+}
+
+/** Set the hash, or re-route when it is already that hash (no hashchange would fire). */
+function goProjectsHash(target) {
+  if (location.hash === target) projectsRoute();
+  else location.hash = target;
+}
+
+function openProject(slug) {
+  goProjectsHash('#projects/' + encodeURIComponent(slug));
+}
+
+// ── Home: list, global search, new project ───────────────
+
+function showProjectsHome() {
+  projectsState.slug = null;
+  document.getElementById('projectsHome').style.display = '';
+  document.getElementById('projectView').style.display = 'none';
+  loadProjectsList();
+}
+
+function loadProjectsList() {
+  var el = document.getElementById('projectsList');
+  return projFetch('/api/projects').then(function(data) {
+    var list = data.projects || [];
+    list.forEach(function(p) { projectsState.names[p.slug] = p.name; if (p.path) projectsState.paths[p.slug] = p.path; });
+    if (projectsState.active) showProjectCwd(projectsState.active.slug);
+    if (!list.length) { el.innerHTML = '<span class="proj-muted">No projects yet &mdash; create one with the form.</span>'; return; }
+    el.innerHTML = list.map(function(p) {
+      return '<div class="proj-row"><div class="grow">' +
+        '<a class="proj-link" href="#projects/' + encodeURIComponent(p.slug) + '">' + escHtml(p.name) + '</a>' +
+        (p.description ? ' <span class="muted">' + escHtml(p.description) + '</span>' : '') +
+        (p.tags && p.tags.length ? ' ' + p.tags.map(function(t) { return '<span class="proj-tag">' + escHtml(t) + '</span>'; }).join(' ') : '') +
+        '</div><span class="muted">' + escHtml(p.lastOpenedAt ? 'opened ' + p.lastOpenedAt.slice(0, 10) : 'created ' + String(p.createdAt || '').slice(0, 10)) + '</span></div>';
+    }).join('') + (data.rebuilt ? '<div class="proj-muted">(project list rebuilt from the folders on disk)</div>' : '');
+  }).catch(function(err) {
+    console.warn('[projects] list: ' + err.message);
+    el.innerHTML = '<span class="proj-err">Could not list projects: ' + escHtml(err.message) + '</span>';
+  });
+}
+
+function renderSearchHits(el, data, showProject) {
+  var hits = data.hits || [];
+  var html = '<div class="proj-muted">' + hits.length + ' result' + (hits.length === 1 ? '' : 's') + ' (' + escHtml(data.mode || '') + ' search)</div>';
+  html += hits.map(function(h) {
+    return '<div class="proj-hit">' +
+      (showProject ? '<a class="proj-link" href="#projects/' + encodeURIComponent(h.slug) + '">' + escHtml(h.projectName || h.slug) + '</a> &middot; ' : '') +
+      escHtml(h.filePath) + (h.heading ? ' &rsaquo; ' + escHtml(h.heading) : '') + ' <span class="proj-muted">(' + escHtml(h.kind) + ', ' + h.ordinal + ')</span>' +
+      '<div class="passage">' + escHtml(String(h.passage || '').slice(0, 300)) + '</div></div>';
+  }).join('');
+  (data.skipped || []).forEach(function(s) {
+    html += '<div class="proj-warn">skipped ' + escHtml(s.slug) + ': ' + escHtml(s.reason) + '</div>';
+  });
+  el.innerHTML = html;
+}
+
+function projectsGlobalSearch() {
+  var q = document.getElementById('projectsSearch').value.trim();
+  var el = document.getElementById('projectsSearchResults');
+  if (!q) { el.innerHTML = '<span class="proj-warn">Type something to search for.</span>'; return; }
+  el.innerHTML = '<span class="proj-muted">searching…</span>';
+  projFetch('/api/project-search?q=' + encodeURIComponent(q)).then(function(data) {
+    renderSearchHits(el, data, true);
+  }).catch(function(err) {
+    console.warn('[projects] global search: ' + err.message);
+    el.innerHTML = '<span class="proj-err">Search failed: ' + escHtml(err.message) + '</span>';
+  });
+}
+
+function createProjectFromForm() {
+  var name = document.getElementById('projectNewName').value.trim();
+  if (!name) { projStatus('projectNewStatus', 'err', 'A project needs a name.'); return; }
+  projStatus('projectNewStatus', 'busy', 'creating…');
+  projJson('POST', '/api/projects', {
+    name: name,
+    description: document.getElementById('projectNewDesc').value.trim(),
+    instructions: document.getElementById('projectNewInstr').value,
+  }).then(function(meta) {
+    projStatus('projectNewStatus', 'ok', 'Created ' + meta.name + ' (' + meta.slug + ')');
+    document.getElementById('projectNewName').value = '';
+    document.getElementById('projectNewDesc').value = '';
+    document.getElementById('projectNewInstr').value = '';
+    projectsState.names[meta.slug] = meta.name;
+    openProject(meta.slug);
+  }).catch(function(err) {
+    console.warn('[projects] create: ' + err.message);
+    projStatus('projectNewStatus', 'err', 'Could not create the project: ' + err.message);
+  });
+}
+
+// ── One project ───────────────────────────────────────────
+
+function showProject(slug) {
+  projectsState.slug = slug;
+  document.getElementById('projectsHome').style.display = 'none';
+  document.getElementById('projectView').style.display = '';
+  ['projectInstructionsStatus', 'knowledgeStatus', 'artifactsStatus', 'historyStatus'].forEach(function(id) { projStatus(id, '', ''); });
+  document.getElementById('projectSearchResults').innerHTML = '';
+  document.getElementById('projectName').textContent = projectsState.names[slug] || slug;
+  document.getElementById('projectDesc').textContent = 'loading…';
+  loadProjectMeta(slug);
+  loadProjectChats(slug);
+  loadKnowledge(slug);
+  loadArtifacts(slug);
+}
+
+function loadProjectMeta(slug) {
+  return projFetch(projUrl(slug)).then(function(meta) {
+    if (projectsState.slug !== slug) return;
+    projectsState.meta = meta;
+    projectsState.names[slug] = meta.name;
+    document.getElementById('projectName').textContent = meta.name;
+    document.getElementById('projectDesc').textContent = meta.description || '';
+    document.getElementById('projectTags').innerHTML = (meta.tags || []).map(function(t) { return '<span class="proj-tag">' + escHtml(t) + '</span>'; }).join(' ');
+    document.getElementById('projectInstructions').value = meta.instructions || '';
+    document.getElementById('planView').textContent = meta.plan || 'No plan.md yet — ask CynCo in a chat to plan the project.';
+    var journal = meta.journal || [];
+    document.getElementById('historyList').innerHTML = journal.length ? journal.map(function(j) {
+      return '<div class="proj-row"><span class="muted">' + escHtml(j.at) + '</span><b>' + escHtml(j.event) + '</b><span class="grow">' + escHtml(j.detail) + '</span></div>';
+    }).join('') : '<span class="proj-muted">No history yet.</span>';
+  }).catch(function(err) {
+    console.warn('[projects] open ' + slug + ': ' + err.message);
+    document.getElementById('projectDesc').textContent = '';
+    projStatus('projectsStatus', 'err', 'Could not open project ' + slug + ': ' + err.message);
+  });
+}
+
+function switchProjectTab(name) {
+  var btns = document.querySelectorAll('#projectTabs [data-ptab]');
+  for (var i = 0; i < btns.length; i++) btns[i].classList.toggle('active', btns[i].getAttribute('data-ptab') === name);
+  var panels = document.querySelectorAll('#projectView [data-ppanel]');
+  for (var j = 0; j < panels.length; j++) panels[j].classList.toggle('active', panels[j].getAttribute('data-ppanel') === name);
+}
+
+function saveProjectInstructions() {
+  var slug = projectsState.slug;
+  if (!slug) return;
+  projStatus('projectInstructionsStatus', 'busy', 'saving…');
+  projJson('PATCH', projUrl(slug), { instructions: document.getElementById('projectInstructions').value }).then(function() {
+    projStatus('projectInstructionsStatus', 'ok', 'Saved — the next turn in this project uses them.');
+  }).catch(function(err) {
+    console.warn('[projects] save instructions: ' + err.message);
+    projStatus('projectInstructionsStatus', 'err', 'Not saved: ' + err.message);
+  });
+}
+
+function projectLocalSearch() {
+  var slug = projectsState.slug;
+  var q = document.getElementById('projectSearch').value.trim();
+  var el = document.getElementById('projectSearchResults');
+  if (!slug) return;
+  if (!q) { el.innerHTML = '<span class="proj-warn">Type something to search for.</span>'; return; }
+  el.innerHTML = '<span class="proj-muted">searching…</span>';
+  projFetch(projUrl(slug) + '/search?q=' + encodeURIComponent(q)).then(function(data) {
+    renderSearchHits(el, data, false);
+  }).catch(function(err) {
+    console.warn('[projects] project search: ' + err.message);
+    el.innerHTML = '<span class="proj-err">Search failed: ' + escHtml(err.message) + '</span>';
+  });
+}
+
+// ── Chats ─────────────────────────────────────────────────
+
+function loadProjectChats(slug) {
+  var el = document.getElementById('projectChats');
+  return projFetch(projUrl(slug) + '/chats').then(function(data) {
+    if (projectsState.slug !== slug) return;
+    var chats = data.chats || [];
+    if (!chats.length) { el.innerHTML = '<span class="proj-muted">No chats yet &mdash; start one with New chat.</span>'; return; }
+    el.innerHTML = chats.map(function(c) {
+      return '<div class="proj-row"><div class="grow">' +
+        '<a class="proj-link" href="#projects/' + encodeURIComponent(slug) + '/chat/' + encodeURIComponent(c.file) + '" onclick="event.preventDefault();goProjectsHash(this.getAttribute(\'href\'))">' + escHtml(c.title || c.file) + '</a>' +
+        ' <span class="muted">' + c.messages + ' messages &middot; ' + escHtml(String(c.createdAt || '').slice(0, 16).replace('T', ' ')) + '</span></div>' +
+        '<button class="btn btn-grey" title="Rename" data-file="' + escHtml(c.file) + '" data-title="' + escHtml(c.title || '') + '" onclick="renameProjectChat(this.getAttribute(\'data-file\'), this.getAttribute(\'data-title\'))">&#9998;</button></div>';
+    }).join('');
+  }).catch(function(err) {
+    console.warn('[projects] chats: ' + err.message);
+    el.innerHTML = '<span class="proj-err">Could not list chats: ' + escHtml(err.message) + '</span>';
+  });
+}
+
+function renameProjectChat(file, current) {
+  var slug = projectsState.slug;
+  var title = window.prompt('Rename chat', current || '');
+  if (title === null) return;
+  if (!title.trim()) { projStatus('projectsStatus', 'err', 'A chat title cannot be empty.'); return; }
+  projJson('PATCH', projUrl(slug) + '/chats/' + encodeURIComponent(file), { title: title }).then(function(r) {
+    projStatus('projectsStatus', 'ok', 'Renamed ' + r.file + ' to "' + r.title + '"');
+    loadProjectChats(slug);
+  }).catch(function(err) {
+    console.warn('[projects] rename chat: ' + err.message);
+    projStatus('projectsStatus', 'err', 'Rename failed: ' + err.message);
+  });
+}
+
+/**
+ * Bind the engine's conversation to a project chat (file null = a new chat),
+ * then show the Chat tab. An existing chat's transcript is fetched and drawn
+ * into the pane FIRST, so the user sees the turns the model is resuming from.
+ */
+function openProjectChat(slug, file) {
+  if (!slug) { projStatus('projectsStatus', 'err', 'Open a project first.'); return; }
+  // A new chat OMITS `chat`: the command schema accepts a transcript file
+  // name or no field at all, and refuses `chat: null`.
+  var msg = { type: 'project.open', slug: slug };
+  if (file) msg.chat = file;
+  if (!ws || ws.readyState !== 1) {
+    // On a page load straight onto a chat hash the socket is still opening.
+    var tries = 0;
+    var timer = setInterval(function() {
+      tries++;
+      if (ws && ws.readyState === 1) { clearInterval(timer); openProjectChat(slug, file); }
+      else if (tries >= 40) {
+        clearInterval(timer);
+        projStatus('projectsStatus', 'err', 'Not connected to the engine — could not open the chat.');
+        appendChatMsg('system', 'Not connected to the engine — could not open project chat ' + slug + (file ? '/' + file : '') + '.');
+      }
+    }, 250);
+    return;
+  }
+  switchTab('chat');
+  if (!file) {
+    projectsState.renderedChat = null;
+    ws.send(JSON.stringify(msg));
+    appendChatMsg('system', 'Opening ' + (projectsState.names[slug] || slug) + ' › new chat…');
+    return;
+  }
+  clearChatPane();
+  appendChatMsg('system', 'Loading ' + (projectsState.names[slug] || slug) + ' › ' + file + '…');
+  return projFetch(projUrl(slug) + '/chats/' + encodeURIComponent(file)).then(function(t) {
+    clearChatPane();
+    renderTranscript(t);
+    projectsState.renderedChat = slug + '/' + file;
+  }).catch(function(err) {
+    console.warn('[projects] transcript ' + file + ': ' + err.message);
+    projectsState.renderedChat = null;
+    appendChatMsg('system', 'Could not load the earlier messages of ' + file + ': ' + err.message);
+  }).then(function() {
+    if (!ws || ws.readyState !== 1) { appendChatMsg('system', 'Not connected to the engine — the chat was not opened.'); return; }
+    ws.send(JSON.stringify(msg));
+  });
+}
+
+function clearChatPane() {
+  var msgs = document.getElementById('chatMessages');
+  if (msgs) msgs.innerHTML = '';
+  clearChatCitations();
+}
+
+/**
+ * Draw a stored transcript the way the live chat draws it: user and assistant
+ * text as messages, each tool call as a collapsed tool row (✓/✗ from its
+ * result), thinking and tool-result plumbing skipped.
+ */
+function renderTranscript(t) {
+  var messages = (t && t.messages) || [];
+  var failed = {};
+  messages.forEach(function(m) {
+    (m.content || []).forEach(function(b) { if (b && b.type === 'tool_result' && b.is_error) failed[b.tool_use_id] = true; });
+  });
+  var shown = 0;
+  messages.forEach(function(m) {
+    var blocks = Array.isArray(m.content) ? m.content : [{ type: 'text', text: String(m.content || '') }];
+    var text = blocks.filter(function(b) { return b && b.type === 'text' && b.text; }).map(function(b) { return b.text; }).join('\n');
+    if (m.role === 'user' && text) { appendChatMsg('user', text); shown++; }
+    if (m.role === 'assistant') {
+      if (text) { appendChatMsg('assistant', text + (m.aborted ? '\n(interrupted)' : '')); shown++; }
+      blocks.forEach(function(b) {
+        if (b && b.type === 'tool_use') appendChatTool(b.name || 'tool', summarizeInput(b.name, b.input), failed[b.id] ? 'error' : 'success', null);
+      });
+    }
+  });
+  if (!shown) appendChatMsg('system', 'This chat has no messages yet.');
+  return shown;
+}
+
+function leaveProject() {
+  if (!ws || ws.readyState !== 1) { appendChatMsg('system', 'Not connected to the engine — cannot leave the project.'); return; }
+  ws.send(JSON.stringify({ type: 'project.open', slug: null }));
+  appendChatMsg('system', 'Leaving the project…');
+}
+
+/* The CWD box while a project is bound: it shows the project folder, read-only,
+   and no user.message carries a cwd (the engine refuses one in a project chat;
+   sending the launch dir only made the box lie). The coding value is kept and
+   put back when the project is left. */
+function showProjectCwd(slug) {
+  var box = document.getElementById('chatCwd');
+  if (!box) return;
+  if (!box.readOnly) projectsState.codingCwd = box.value;
+  box.readOnly = true;
+  box.value = projectsState.paths[slug] || ('project folder: ' + (projectsState.names[slug] || slug));
+  box.title = 'A project chat works in its own project folder; leave the project to change this.';
+}
+function restoreCodingCwd() {
+  var box = document.getElementById('chatCwd');
+  if (!box || !box.readOnly) return;
+  box.readOnly = false;
+  // A page loaded while a project was bound learned the PROJECT folder as its
+  // cwd; sending that back would pull the coding session into the project.
+  var kept = projectsState.codingCwd || '';
+  var norm = function(p) { return String(p).replace(/[\\/]+$/, '').replace(/\\/g, '/').toLowerCase(); };
+  Object.keys(projectsState.paths).forEach(function(s) { if (kept && norm(projectsState.paths[s]) === norm(kept)) kept = ''; });
+  box.value = kept;
+  box.title = '';
+  projectsState.codingCwd = null;
+  // The engine is back in its launch directory; ask it which that is.
+  fetch('/api/session').then(function(r) { return r.json(); }).then(function(data) {
+    if (data && data.projectPath && !projectsState.active && !box.readOnly) box.value = data.projectPath;
+  }).catch(function(err) { console.warn('[projects] coding cwd after leaving: ' + err.message); });
+}
+/** The engine's coding working directory: into the box, or kept for later while a project holds it. */
+function setCodingCwd(path) {
+  var box = document.getElementById('chatCwd');
+  if (!box) return;
+  if (box.readOnly) projectsState.codingCwd = path; else box.value = path;
+}
+
+function onProjectOpened(event) {
+  var strip = document.getElementById('chatProjectStrip');
+  clearChatCitations();
+  if (!event.slug) {
+    projectsState.active = null;
+    restoreCodingCwd();
+    strip.classList.remove('visible');
+    appendChatMsg('system', 'Left the project — back to the coding session.');
+    var ph = parseProjectsHash();
+    if (ph && ph.chat !== undefined) history.replaceState(null, '', '#projects/' + encodeURIComponent(ph.slug));
+    return;
+  }
+  projectsState.active = { slug: event.slug, chat: event.chat, title: event.title };
+  showProjectCwd(event.slug);
+  if (!projectsState.paths[event.slug]) {
+    projFetch('/api/projects').then(function(data) {
+      (data.projects || []).forEach(function(p) { if (p.path) projectsState.paths[p.slug] = p.path; });
+      if (projectsState.active && projectsState.active.slug === event.slug) showProjectCwd(event.slug);
+    }).catch(function(err) { console.warn('[projects] folder for the CWD box: ' + err.message); });
+  }
+  // openProjectChat already drew this chat's transcript; keep it. Anything
+  // else in the pane belongs to the conversation the engine just left.
+  var rendered = event.chat && projectsState.renderedChat === event.slug + '/' + event.chat;
+  projectsState.renderedChat = null;
+  var msgs = document.getElementById('chatMessages');
+  if (msgs && !rendered) msgs.innerHTML = '';
+  var setLabel = function() {
+    document.getElementById('chatProjectLabel').textContent =
+      'Project: ' + (projectsState.names[event.slug] || event.slug) + ' › ' + (event.title || 'new chat');
+  };
+  setLabel();
+  strip.classList.add('visible');
+  if (!projectsState.names[event.slug]) {
+    projFetch(projUrl(event.slug)).then(function(meta) { projectsState.names[event.slug] = meta.name; setLabel(); })
+      .catch(function(err) { console.warn('[projects] name for strip: ' + err.message); });
+  }
+  appendChatMsg('system', 'Opened ' + (projectsState.names[event.slug] || event.slug) + ' › ' + (event.title || 'new chat') +
+    (event.chat && !rendered ? ' (' + event.chat + ')' : ''));
+  markSaveableReplies();
+  if (event.chat) history.replaceState(null, '', '#projects/' + encodeURIComponent(event.slug) + '/chat/' + encodeURIComponent(event.chat));
+  projStatus('projectsStatus', '', '');
+  if (projectsState.slug === event.slug) loadProjectChats(event.slug);
+}
+
+// ── Citations + save-as-artifact on the Chat tab ─────────
+
+function clearChatCitations() {
+  var el = document.getElementById('chatCitations');
+  if (el) el.innerHTML = '';
+}
+
+function renderChatCitations(event) {
+  var el = document.getElementById('chatCitations');
+  if (!el) return;
+  var cites = event.citations || [];
+  if (!cites.length) { el.innerHTML = ''; return; }
+  el.innerHTML = 'Sources: ' + cites.map(function(c) {
+    return '[' + c.n + '] ' + escHtml(c.filePath) + (c.heading ? ' &rsaquo; ' + escHtml(c.heading) : '') + ' (' + c.ordinal + ')';
+  }).join(' &nbsp; ');
+}
+
+/** Give every finished assistant reply in a project chat a "Save as artifact" link. */
+function markSaveableReplies() {
+  if (!projectsState.active) return;
+  var replies = document.querySelectorAll('#chatMessages .chat-msg-assistant:not([data-reply])');
+  for (var i = 0; i < replies.length; i++) {
+    var div = replies[i];
+    if (!div.textContent.trim()) continue;
+    var idx = projectsState.replyCount++;
+    div.setAttribute('data-reply', String(idx));
+    var link = document.createElement('div');
+    link.className = 'chat-save-artifact';
+    link.innerHTML = '<a class="proj-link" onclick="saveAsArtifact(' + idx + ')">Save as artifact</a>';
+    div.insertAdjacentElement('afterend', link);
+  }
+}
+
+function saveAsArtifact(msgIndex) {
+  if (!projectsState.active) { appendChatMsg('system', 'Save as artifact needs an open project chat.'); return; }
+  if (!ws || ws.readyState !== 1) { appendChatMsg('system', 'Not connected to the engine — nothing was saved.'); return; }
+  var name = window.prompt('Artifact name', 'reply-' + (msgIndex + 1));
+  if (name === null) return;
+  name = name.trim();
+  if (!name) { appendChatMsg('system', 'An artifact needs a name — nothing was saved.'); return; }
+  var text = 'Save the previous reply as an artifact named "' + name + '" using SaveArtifact.';
+  // The model only knows "the previous reply"; an older one is named by its opening words.
+  if (msgIndex !== projectsState.replyCount - 1) {
+    var div = document.querySelector('#chatMessages .chat-msg-assistant[data-reply="' + msgIndex + '"]');
+    if (div) text += ' The reply to save is the earlier one that begins: "' + div.textContent.trim().slice(0, 120) + '".';
+  }
+  // A project chat works in its own folder: no cwd on the frame.
+  ws.send(JSON.stringify({ type: 'user.message', text: text }));
+  appendChatMsg('user', text);
+  appendChatMsg('system', 'Waiting for the artifact "' + name + '" to be saved…');
+  brainViz.setActive(true);
+}
+
+// ── Knowledge ─────────────────────────────────────────────
+
+function loadKnowledge(slug) {
+  return projFetch(projUrl(slug) + '/knowledge').then(function(data) {
+    if (projectsState.slug !== slug) return;
+    projectsState.knowledge = data.files || {};
+    renderKnowledgeList();
+  }).catch(function(err) {
+    console.warn('[projects] knowledge: ' + err.message);
+    document.getElementById('knowledgeList').innerHTML = '<span class="proj-err">Could not list knowledge: ' + escHtml(err.message) + '</span>';
+  });
+}
+
+function renderKnowledgeList() {
+  var el = document.getElementById('knowledgeList');
+  var names = Object.keys(projectsState.knowledge).sort();
+  if (!names.length) { el.innerHTML = '<span class="proj-muted">No knowledge yet &mdash; paste text or upload a file.</span>'; return; }
+  el.innerHTML = names.map(function(n) {
+    var r = projectsState.knowledge[n];
+    return '<div class="proj-row" data-kname="' + escHtml(n) + '"><span class="grow">' + escHtml(n) + '</span>' +
+      '<span class="muted">' + escHtml(r.origin || '') + '</span>' + indexedHtml(r) +
+      '<button class="btn btn-grey" data-name="' + escHtml(n) + '" onclick="removeKnowledge(this.getAttribute(\'data-name\'))">Remove</button></div>';
+  }).join('');
+}
+
+function reportAdded(statusId, r) {
+  var rec = r.event || r;
+  projStatus(statusId, rec.indexed ? 'ok' : 'warn', 'Added ' + r.name + ' — ' + indexedLabel(rec));
+}
+
+function addKnowledgePaste() {
+  var slug = projectsState.slug;
+  var text = document.getElementById('knowledgePaste').value;
+  if (!text.trim()) { projStatus('knowledgeStatus', 'err', 'Paste some text first.'); return; }
+  var name = document.getElementById('knowledgePasteName').value.trim();
+  if (!name) name = 'pasted-' + new Date().toISOString().slice(0, 19).replace(/[-:T]/g, '') + '.md';
+  projStatus('knowledgeStatus', 'busy', 'adding ' + name + '…');
+  projJson('POST', projUrl(slug) + '/knowledge', { name: name, text: text }).then(function(r) {
+    reportAdded('knowledgeStatus', r);
+    document.getElementById('knowledgePaste').value = '';
+    document.getElementById('knowledgePasteName').value = '';
+    loadKnowledge(slug);
+  }).catch(function(err) {
+    console.warn('[projects] paste: ' + err.message);
+    projStatus('knowledgeStatus', 'err', 'Not added: ' + err.message);
+  });
+}
+
+function uploadKnowledgeFiles(files) {
+  var slug = projectsState.slug;
+  if (!slug || !files || !files.length) return;
+  var list = Array.prototype.slice.call(files);
+  var results = [];
+  var next = function() {
+    if (!list.length) {
+      document.getElementById('knowledgeUpload').value = '';
+      var bad = results.filter(function(r) { return r.kind !== 'ok'; });
+      projStatus('knowledgeStatus', bad.some(function(r) { return r.kind === 'err'; }) ? 'err' : bad.length ? 'warn' : 'ok',
+        results.map(function(r) { return r.text; }).join(' · '));
+      loadKnowledge(slug);
+      return;
+    }
+    var f = list.shift();
+    projStatus('knowledgeStatus', 'busy', 'uploading ' + f.name + '…');
+    var form = new FormData();
+    form.append('file', f, f.name);
+    projFetch(projUrl(slug) + '/knowledge', { method: 'POST', body: form }).then(function(r) {
+      var rec = r.event || r;
+      results.push({ kind: rec.indexed ? 'ok' : 'warn', text: 'Added ' + r.name + ' — ' + indexedLabel(rec) });
+    }).catch(function(err) {
+      console.warn('[projects] upload ' + f.name + ': ' + err.message);
+      results.push({ kind: 'err', text: f.name + ' not added: ' + err.message });
+    }).then(next);
+  };
+  next();
+}
+
+function removeKnowledge(name) {
+  var slug = projectsState.slug;
+  if (!window.confirm('Remove ' + name + ' from this project\'s knowledge?')) return;
+  projFetch(projUrl(slug) + '/knowledge/' + encodeURIComponent(name), { method: 'DELETE' }).then(function(r) {
+    projStatus('knowledgeStatus', 'ok', 'Removed ' + r.removed);
+    loadKnowledge(slug);
+  }).catch(function(err) {
+    console.warn('[projects] remove: ' + err.message);
+    projStatus('knowledgeStatus', 'err', 'Not removed: ' + err.message);
+  });
+}
+
+// ── Artifacts ─────────────────────────────────────────────
+
+function loadArtifacts(slug) {
+  return projFetch(projUrl(slug) + '/artifacts').then(function(data) {
+    if (projectsState.slug !== slug) return;
+    projectsState.artifacts = data.files || {};
+    renderArtifactsList();
+  }).catch(function(err) {
+    console.warn('[projects] artifacts: ' + err.message);
+    document.getElementById('artifactsList').innerHTML = '<span class="proj-err">Could not list artifacts: ' + escHtml(err.message) + '</span>';
+  });
+}
+
+function renderArtifactsList() {
+  var el = document.getElementById('artifactsList');
+  var names = Object.keys(projectsState.artifacts).sort();
+  if (!names.length) { el.innerHTML = '<span class="proj-muted">No artifacts yet &mdash; use "Save as artifact" under a reply in a project chat.</span>'; return; }
+  el.innerHTML = names.map(function(n) {
+    var r = projectsState.artifacts[n];
+    return '<div class="proj-row" data-aname="' + escHtml(n) + '"><span class="grow">' + escHtml(n) + '</span>' +
+      '<span class="muted">' + escHtml(String(r.addedAt || '').slice(0, 10)) + '</span>' + indexedHtml(r) +
+      '<button class="btn btn-grey" title="Copy into knowledge" data-name="' + escHtml(n) + '" onclick="promoteArtifact(this.getAttribute(\'data-name\'))">Promote</button></div>';
+  }).join('');
+}
+
+function promoteArtifact(name) {
+  var slug = projectsState.slug;
+  projStatus('artifactsStatus', 'busy', 'promoting ' + name + '…');
+  projFetch(projUrl(slug) + '/artifacts/' + encodeURIComponent(name) + '/promote', { method: 'POST' }).then(function(r) {
+    var rec = r.event || {};
+    projStatus('artifactsStatus', rec.indexed ? 'ok' : 'warn', 'Promoted ' + r.promoted + ' to knowledge — ' + indexedLabel(rec));
+    loadKnowledge(slug);
+  }).catch(function(err) {
+    console.warn('[projects] promote: ' + err.message);
+    projStatus('artifactsStatus', 'err', 'Not promoted: ' + err.message);
+  });
+}
+
+// ── History ───────────────────────────────────────────────
+
+function rescanProjectFiles() {
+  var slug = projectsState.slug;
+  projStatus('historyStatus', 'busy', 'rescanning…');
+  projFetch(projUrl(slug) + '/rescan', { method: 'POST' }).then(function(counts) {
+    var parts = Object.keys(counts || {}).map(function(k) { return k + ' ' + (typeof counts[k] === 'object' ? JSON.stringify(counts[k]) : counts[k]); });
+    projStatus('historyStatus', 'ok', 'Rescanned: ' + (parts.join(', ') || 'nothing to do'));
+    loadProjectMeta(slug);
+    loadKnowledge(slug);
+    loadArtifacts(slug);
+  }).catch(function(err) {
+    console.warn('[projects] rescan: ' + err.message);
+    projStatus('historyStatus', 'err', 'Rescan failed: ' + err.message);
+  });
+}
+
+// ── project.ingest ────────────────────────────────────────
+
+function onProjectIngest(event) {
+  var fp = String(event.filePath || '');
+  var rec = { indexed: !!event.indexed, reason: event.reason, chunks: event.chunks };
+  if (!event.indexed) {
+    var key = fp + '|' + (event.reason || '');
+    if (event.kind !== 'chat' || !projectsState.chatToasted[key]) {
+      projectsState.chatToasted[key] = true;
+      projToast(fp + ' — kept but not indexed: ' + (event.reason || 'no reason given'));
+    }
+  }
+  if (event.kind === 'artifact' && projectsState.active && projectsState.active.slug === event.slug) {
+    appendChatMsg('system', 'Saved artifact ' + fp + ' — ' + indexedLabel(rec));
+  }
+  if (event.kind === 'chat') {
+    // A new chat has no file until its first turn is written; the first chat
+    // ingest names it, so the strip, the hash and the Chats list catch up.
+    var a = projectsState.active;
+    var chatFile = fp.indexOf('chats/') === 0 ? fp.slice('chats/'.length) : '';
+    if (a && a.slug === event.slug && !a.chat && chatFile) {
+      a.chat = chatFile;
+      history.replaceState(null, '', '#projects/' + encodeURIComponent(a.slug) + '/chat/' + encodeURIComponent(chatFile));
+      projFetch(projUrl(a.slug) + '/chats').then(function(data) {
+        var c = (data.chats || []).filter(function(x) { return x.file === chatFile; })[0];
+        if (c && projectsState.active === a) {
+          a.title = c.title;
+          document.getElementById('chatProjectLabel').textContent = 'Project: ' + (projectsState.names[a.slug] || a.slug) + ' › ' + c.title;
+        }
+      }).catch(function(err) { console.warn('[projects] chat title for strip: ' + err.message); });
+    }
+    if (projectsState.slug === event.slug) loadProjectChats(event.slug);
+    return;
+  }
+  if (projectsState.slug !== event.slug) return;
+  var area = fp.indexOf('knowledge/') === 0 ? 'knowledge' : fp.indexOf('artifacts/') === 0 ? 'artifacts' : null;
+  if (!area) return;
+  var name = fp.slice(area.length + 1);
+  var map = projectsState[area];
+  if (map[name]) {
+    map[name].indexed = rec.indexed;
+    map[name].reason = rec.reason;
+    map[name].chunks = rec.chunks;
+    if (area === 'knowledge') renderKnowledgeList(); else renderArtifactsList();
+  } else if (area === 'knowledge') {
+    loadKnowledge(event.slug);
+  } else {
+    loadArtifacts(event.slug);
+  }
+}
+
+// ── Init ──────────────────────────────────────────────────
+
+(function initProjectsView() {
+  var drop = document.getElementById('knowledgeDrop');
+  if (drop) {
+    drop.addEventListener('dragover', function(e) { e.preventDefault(); drop.classList.add('over'); });
+    drop.addEventListener('dragleave', function() { drop.classList.remove('over'); });
+    drop.addEventListener('drop', function(e) {
+      e.preventDefault();
+      drop.classList.remove('over');
+      if (!projectsState.slug) { projStatus('knowledgeStatus', 'err', 'Open a project first.'); return; }
+      uploadKnowledgeFiles(e.dataTransfer && e.dataTransfer.files);
+    });
+  }
+  window.addEventListener('hashchange', projectsRoute);
+  projectsRoute();
+})();
 </script>
 </body>
 </html>

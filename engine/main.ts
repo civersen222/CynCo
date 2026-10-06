@@ -48,6 +48,10 @@ import { ActivationsConsumer, DEFAULT_LAYERS } from './brain/activationsConsumer
 import { JlensClient } from './brain/jlensClient.js'
 import { startJlensSidecar, type JlensSidecarHandle } from './brain/jlensSidecar.js'
 import { cyncoHome } from './paths.js'
+import { embedBaseUrlFor } from './index/embedClient.js'
+import { makeProjectsDeps } from './projects/api.js'
+import { projectsHome } from './projects/layout.js'
+import { openBinding } from './projects/binding.js'
 
 // ─── MCP Discovery (standalone — standalone implementation) ──────
 
@@ -389,6 +393,17 @@ const loop = new ConversationLoop({
   } : null,
 })
 
+// Projects mode deps: the embedding client, model name and emit sink every
+// /api/projects route (Task 8) and the `project.open` command below share.
+// `emitEvent` fans the ingest event out to both sockets the same way every
+// other engine event does.
+const projectsDeps = makeProjectsDeps({
+  home: projectsHome(),
+  embedBaseUrl: embedBaseUrlFor(config),
+  emitEvent: (e) => { wsServer.emit(e as any); dashboardServer?.broadcast(e as any) },
+  contextLength,
+})
+
 // Wire llama-server eval tok/s → governance for accurate dashboard display
 if ((globalThis as any).__llamaProcessManager) {
   const pm = (globalThis as any).__llamaProcessManager
@@ -462,6 +477,11 @@ try {
       },
       setBrainLayer: (layer: number) => {
         if (activationsConsumer) activationsConsumer.layer = layer
+      },
+      projects: projectsDeps,
+      currentProject: () => {
+        const b = loop.currentProject()
+        return b ? { slug: b.slug, chat: b.chatFile, title: b.chatTitle } : null
       },
     },
   })
@@ -594,8 +614,7 @@ async function handleCommand(command: TUICommand): Promise<void> {
       if (command.cwd) {
         const { existsSync } = require('fs')
         if (existsSync(command.cwd)) {
-          loop.setCwd(command.cwd)
-          console.log(`[localcode] Switched cwd to: ${command.cwd}`)
+          if (loop.acceptClientCwd(command.cwd)) console.log(`[localcode] Switched cwd to: ${command.cwd}`)
         } else {
           console.log(`[localcode] Ignoring invalid cwd: ${command.cwd}`)
         }
@@ -607,6 +626,14 @@ async function handleCommand(command: TUICommand): Promise<void> {
         invariants: command.invariants,
       })
       break
+
+    case 'project.open': {
+      if (command.slug === null) { await loop.startProjectSession(null); break }
+      const opened = await openBinding({ home: projectsDeps.home, slug: command.slug, chat: command.chat ?? null, embed: projectsDeps.embed, embedModel: projectsDeps.embedModel, contextLength, emit: projectsDeps.emit })
+      if (!opened.ok) { wsServer.emit({ type: 'session.error', error: `project.open refused: ${opened.reason}` }); dashboardServer?.broadcast({ type: 'session.error', error: `project.open refused: ${opened.reason}` }); break }
+      await loop.startProjectSession(opened.binding, opened.messages)
+      break
+    }
 
     case 'abort':
       loop.abort()

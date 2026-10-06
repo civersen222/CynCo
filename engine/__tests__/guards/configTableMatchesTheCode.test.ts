@@ -3,7 +3,7 @@ import { readFileSync } from 'fs'
 import { join } from 'path'
 import { parse as parseYaml } from 'yaml'
 // @ts-expect-error — plain .mjs helper, shared with scripts/generate-env-docs.mjs
-import { scanEnvVars, renderInventory, readmeInventory, repoRoot, BEGIN, END } from './envVarScan.mjs'
+import { scanEnvVars, renderInventory, readmeInventory, repoRoot, BEGIN, END, injectedEnvScopes } from './envVarScan.mjs'
 
 /**
  * The configuration section of the README must describe the code that is here.
@@ -88,6 +88,30 @@ describe('the README configuration section describes this code', () => {
     // scanner loses this shape it reports three documented variables as
     // nonexistent and fails the next test on its own blind spot.
     expect(Object.keys(vars)).toContain('LOCALCODE_UBATCH_SIZE')
+    // Read as `env.X` inside a function whose `env` parameter defaults to
+    // process.env (projects mode, final review M2). A scanner blind to that
+    // shape listed none of the three.
+    expect(vars['LOCALCODE_PROJECTS_HOME']).toMatchObject({ defaults: ['~/cynco-projects'], files: ['engine/projects/layout.ts'] })
+    expect(vars['LOCALCODE_PROJECTS_EMBED_MODEL']).toMatchObject({ defaults: ['nomic-embed-text'], files: ['engine/projects/ingest.ts'] })
+    expect(vars['LOCALCODE_PROJECTS_RETRIEVAL_SHARE']).toMatchObject({ defaults: ['0.15'], files: ['engine/projects/retrieval.ts'] })
+  })
+
+  it('an injected-env scope covers the parameter list and body of an env = process.env function, and nothing else', () => {
+    const src = [
+      "const outside = env.LOCALCODE_NOT_A_READ",
+      "export function a(env: NodeJS.ProcessEnv = process.env): string {",
+      "  const v = env.LOCALCODE_A",
+      "  return v && v.trim() ? v : 'x'",
+      "}",
+      "export const b = ({ env = process.env } = {}) => env.LOCALCODE_B ?? 'y'",
+      "function c(env: Record<string, string | undefined>) { return env.LOCALCODE_C }",
+    ].join('\n')
+    const scopes: [number, number][] = injectedEnvScopes(src)
+    const covered = (needle: string) => scopes.some(([f, t]) => { const i = src.indexOf(needle); return i >= f && i < t })
+    expect(covered('LOCALCODE_A')).toBe(true)
+    expect(covered('LOCALCODE_B')).toBe(true)
+    expect(covered('LOCALCODE_C')).toBe(false) // no process.env default: an injected value, not the environment
+    expect(covered('LOCALCODE_NOT_A_READ')).toBe(false)
   })
 
   it('the generated inventory in README.md is current', () => {

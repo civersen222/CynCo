@@ -33,6 +33,9 @@ const NON_TUI_CONSUMERS: Record<string, string> = {
     'the loop emits a `stream.token` carrying "[operator note delivered]", so ' +
     'both the TUI and the 9161 dashboard already show the moment in the ' +
     'transcript without parsing this frame.',
+  'project.opened': 'consumed by the 9161 dashboard Projects view (projects-mode core)',
+  'project.citations': 'consumed by the 9161 dashboard Projects view (projects-mode core)',
+  'project.ingest': 'consumed by the 9161 dashboard Projects view (projects-mode core)',
 }
 
 /** TUI event types handled bespoke in the receiver (app.py), not via the dispatch table. */

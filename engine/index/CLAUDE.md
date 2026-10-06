@@ -26,6 +26,7 @@ The code index: a SQLite-backed store (`sqlite-vec` when available) plus an embe
 - **`EmbedClient`** (`embedClient.ts:90`) — `embed`/`embedBatch`/`embedQuery`/`embedWithDeadline`, dialect probing, fallback-model swap; used by `ProjectIndexer` and `research/indexer.ts`.
 - **`chunkFileAsync`** (`chunker.ts:195`) — tries the tree-sitter chunker, falls back to regex `chunkFile` (`chunker.ts:6`); used by `ProjectIndexer.index`/`reindexFile`.
 - **`isIndexableSource`** (`indexer.ts:73`) / **`isInsideProject`** (`indexer.ts:57`) — gate what the index will ever store; shared by `walkFiles`, `reindexFile`, `refreshFromGitStatus`, and the on-open `purgeWhere` sweep.
+- **`allChunks`** (`store.ts:276`) — every chunk row, optionally filtered to given `ChunkType`s, score 0 (no ranking); the lexical candidate set `engine/projects/search.ts` reads straight off the store for its own BM25 pass, never through `ProjectIndexer`.
 
 ## Data flow
 Query path:
@@ -47,3 +48,4 @@ Build path:
 - Stored file paths are always forward-slash; `migrateMixedSeparators` (`store.ts:94`) collapses "separator twin" duplicate rows on open — pinned by `engine/__tests__/index/pathNormalization.test.ts`.
 - `SCORE_FLOOR = 0.35` (`indexer.ts:24`) is calibrated against a measured eval score dump, not arbitrary — do not change it without rerunning `benchmark/codeindex-eval`.
 - Resolve the embedding endpoint with `embedBaseUrlFor` (`embedClient.ts:46`), never `config.baseUrl` directly — under the llama.cpp provider the chat URL has no embedding route.
+- `ChunkType` (`types.ts:1`) carries three prose kinds alongside the code ones — `knowledge`/`artifact`/`chat` — the chunk types a project's own `.cynco/index/project.db` holds (plus `research`, used elsewhere). `ProjectIndexer` must never open one of those: its constructor purges every row `isIndexableSource` rejects (`indexer.ts:169`), and none of the three is a source file, so the next open would silently empty a project's whole prose index. Projects mode opens that store only through `engine/projects/ingest.ts`'s `openProjectStore`/`openForModel` — see R2 in `engine/projects/CLAUDE.md`.

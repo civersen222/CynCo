@@ -28,6 +28,25 @@ import {
   GATE_MIN_USABLE,
 } from '../training/datasetBuilder.js'
 import type { TokenSet, TokenScope } from '../security/localToken.js'
+import {
+  type ProjectsDeps,
+  listProjects,
+  createProjectApi,
+  getProjectApi,
+  patchProjectApi,
+  searchApi,
+  listKnowledgeApi,
+  addKnowledgeApi,
+  removeKnowledgeApi,
+  listArtifactsApi,
+  promoteArtifactApi,
+  listChatsApi,
+  getChatApi,
+  renameChatApi,
+  rescanApi,
+  UPLOAD_MAX_BYTES,
+  SLUG_RE,
+} from '../projects/api.js'
 import { cyncoHome } from '../paths.js'
 
 /** Phase 5 ruling 2: the pooled board is Task 2's one spelling
@@ -82,6 +101,17 @@ export interface DashboardDeps {
   setBrainLayer?: (layer: number) => void
   /** Test seam: load scripts/cynco-scoreboard.mjs. Default: a lazy dynamic import. */
   loadScoreboard?: () => Promise<ScoreboardModule>
+  /** Projects mode deps (Task 8 mounts the /api/projects routes over these). */
+  projects?: ProjectsDeps
+  /**
+   * The project chat the loop is bound to right now, or null in the coding
+   * session. A socket that connects mid-project (a page reload, a second tab)
+   * gets one `project.opened` frame from this on open, so it does not show the
+   * coding session while its messages go into a project chat. Asked of the
+   * loop, not replayed from the last broadcast: a new chat is named by its
+   * first message, after `project.opened` went out with `chat: null`.
+   */
+  currentProject?: () => { slug: string; chat: string | null; title: string | null } | null
 }
 
 // ---------------------------------------------------------------------------
@@ -128,6 +158,7 @@ const DASHBOARD_ALLOWED_TYPES: ReadonlySet<unknown> = new Set([
   'vibe.answer',
   'vibe.action',
   'vibe.escalation_response',
+  'project.open',
 ])
 
 /**
@@ -430,6 +461,17 @@ export class DashboardServer {
           return this.serveIndex()
         }
 
+        // Projects mode (R5): every /api/projects* and /api/project-search
+        // request runs under the inference (read) scope regardless of method —
+        // these routes are a non-code project's own data, not engine
+        // configuration, and they must gate BEFORE the generic method-based
+        // split below or every POST here would wrongly demand management.
+        if (pathname === '/api/projects' || pathname.startsWith('/api/projects/') || pathname === '/api/project-search') {
+          const denied = this.requireScope(req, 'inference')
+          if (denied) return denied
+          return await this.handleProjects(req, method, pathname, url)
+        }
+
         // Everything else is gated, including unknown paths: a 404 that answers
         // before the token check turns the route table into public information.
         const scope: TokenScope = method === 'GET' ? 'inference' : 'management'
@@ -597,6 +639,10 @@ export class DashboardServer {
           for (const json of this.replayCache.values()) {
             try { ws.send(json) } catch (err) { console.log('[dashboard] replay send failed:', err) }
           }
+          const project = this.deps.currentProject?.() ?? null
+          if (project) {
+            try { ws.send(JSON.stringify({ type: 'project.opened', ...project })) } catch (err) { console.log('[dashboard] project.opened on connect failed:', err) }
+          }
         },
         message: (ws: ServerWebSocket<unknown>, message: string | Buffer) => {
           // Forward commands from dashboard chat to engine — but only the ones
@@ -686,6 +732,140 @@ export class DashboardServer {
       return jsonResponse({ error: `scope '${scope}' required` }, 403)
     }
     return jsonResponse({ error: 'token required' }, 401)
+  }
+
+  // ── Projects mode routes (Task 8) ────────────────────────────────
+
+  /** Every path segment, percent-decoded; `null` on a malformed escape
+   *  (`decodeURIComponent` throws `URIError`) rather than letting that
+   *  exception reach Bun's handler and answer a generic 500. */
+  private decodePathParts(pathname: string): string[] | null {
+    const raw = pathname.split('/').filter(Boolean)
+    const out: string[] = []
+    for (const p of raw) {
+      try { out.push(decodeURIComponent(p)) } catch (e) {
+        console.log(`[dashboard] bad path encoding in ${pathname}: ${e instanceof Error ? e.message : String(e)}`)
+        return null
+      }
+    }
+    return out
+  }
+
+  private async handleProjects(req: Request, method: string, pathname: string, url: URL): Promise<Response> {
+    const d = this.deps.projects
+    if (!d) return jsonResponse({ error: 'projects are not configured' }, 503)
+    const send = (r: { status: number; body: unknown }) => jsonResponse(r.body, r.status)
+    const q = url.searchParams
+
+    // A sibling of /api/projects, not a prefix of it — handled for every
+    // method BEFORE the /api/projects table below, or a non-GET here (PUT,
+    // DELETE, …) fell through into "parts.length === 2" and created a
+    // project instead of being refused.
+    if (pathname === '/api/project-search') {
+      if (method !== 'GET') return jsonResponse({ error: 'Method not allowed' }, 405)
+      return send(await searchApi(d, null, q.get('q') ?? '', q.get('kinds'), q.get('limit')))
+    }
+
+    const parts = this.decodePathParts(pathname) // ['api','projects',slug?,area?,name?,verb?]
+    if (!parts) return jsonResponse({ error: 'bad path encoding' }, 400)
+
+    if (parts.length === 2) {
+      if (method === 'GET') return send(listProjects(d))
+      if (method === 'POST') return send(await createProjectApi(d, await this.jsonBody(req)))
+      return jsonResponse({ error: 'Method not allowed' }, 405)
+    }
+
+    // The slug is validated the instant it is known, before any api.ts call
+    // or filesystem join sees it — `../x` or `..\x` (decoded from `..%2Fx` /
+    // `..%5Cx`) must never resolve outside the projects home. `projectDir`/
+    // `readProject` in layout.ts refuse the same pattern as a second layer
+    // for every api.ts function, including one called directly.
+    const slug = parts[2]
+    if (!SLUG_RE.test(slug)) return jsonResponse({ error: 'bad slug' }, 400)
+
+    if (parts.length === 3) {
+      if (method === 'GET') return send(getProjectApi(d, slug))
+      if (method === 'PATCH') return send(await patchProjectApi(d, slug, await this.jsonBody(req)))
+      return jsonResponse({ error: 'Method not allowed' }, 405)
+    }
+
+    const area = parts[3]
+    const name = parts[4] ?? null
+    const verb = parts[5] ?? null
+
+    if (area === 'search') {
+      if (parts.length !== 4) return jsonResponse({ error: 'Not found' }, 404)
+      if (method !== 'GET') return jsonResponse({ error: 'Method not allowed' }, 405)
+      return send(await searchApi(d, slug, q.get('q') ?? '', q.get('kinds'), q.get('limit')))
+    }
+
+    if (area === 'rescan') {
+      if (parts.length !== 4) return jsonResponse({ error: 'Not found' }, 404)
+      if (method !== 'POST') return jsonResponse({ error: 'Method not allowed' }, 405)
+      return send(await rescanApi(d, slug))
+    }
+
+    if (area === 'knowledge') {
+      if (parts.length === 4) {
+        if (method === 'GET') return send(listKnowledgeApi(d, slug))
+        if (method === 'POST') {
+          const len = Number(req.headers.get('content-length') ?? 0)
+          if (len > UPLOAD_MAX_BYTES) return jsonResponse({ error: `file is larger than ${UPLOAD_MAX_BYTES} bytes` }, 413)
+          const ct = req.headers.get('content-type') ?? ''
+          if (ct.startsWith('multipart/form-data')) {
+            let form: FormData
+            try {
+              form = await req.formData()
+            } catch (e) {
+              console.log(`[dashboard] malformed multipart body for ${slug}: ${e instanceof Error ? e.message : String(e)}`)
+              return jsonResponse({ error: 'malformed multipart body' }, 400)
+            }
+            const file = form.get('file')
+            if (!(file instanceof File)) return jsonResponse({ error: 'multipart field "file" is required' }, 400)
+            return send(await addKnowledgeApi(d, slug, { name: file.name, bytes: new Uint8Array(await file.arrayBuffer()) }))
+          }
+          const body = await this.jsonBody(req) as Record<string, unknown>
+          return send(await addKnowledgeApi(d, slug, { name: String(body.name ?? ''), text: typeof body.text === 'string' ? body.text : '' }))
+        }
+        return jsonResponse({ error: 'Method not allowed' }, 405)
+      }
+      if (parts.length === 5) {
+        if (method === 'DELETE') return send(await removeKnowledgeApi(d, slug, name!))
+        return jsonResponse({ error: 'Method not allowed' }, 405)
+      }
+      return jsonResponse({ error: 'Not found' }, 404)
+    }
+
+    if (area === 'artifacts') {
+      if (parts.length === 4) {
+        if (method === 'GET') return send(listArtifactsApi(d, slug))
+        return jsonResponse({ error: 'Method not allowed' }, 405)
+      }
+      if (parts.length === 6 && verb === 'promote') {
+        if (method === 'POST') return send(await promoteArtifactApi(d, slug, name!))
+        return jsonResponse({ error: 'Method not allowed' }, 405)
+      }
+      return jsonResponse({ error: 'Not found' }, 404)
+    }
+
+    if (area === 'chats') {
+      if (parts.length === 4) {
+        if (method === 'GET') return send(listChatsApi(d, slug))
+        return jsonResponse({ error: 'Method not allowed' }, 405)
+      }
+      if (parts.length === 5) {
+        if (method === 'GET') return send(getChatApi(d, slug, name!))
+        if (method === 'PATCH') return send(await renameChatApi(d, slug, name!, await this.jsonBody(req)))
+        return jsonResponse({ error: 'Method not allowed' }, 405)
+      }
+      return jsonResponse({ error: 'Not found' }, 404)
+    }
+
+    return jsonResponse({ error: 'Not found' }, 404)
+  }
+
+  private async jsonBody(req: Request): Promise<unknown> {
+    try { return await req.json() } catch (e) { console.log(`[dashboard] invalid JSON body: ${e instanceof Error ? e.message : String(e)}`); return {} }
   }
 
   // ── GET Handlers ────────────────────────────────────────────────
