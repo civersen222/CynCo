@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import {
   projectsHome, slugify, uniqueSlug, createProject, readProject, readInstructions, writeInstructions,
-  readFileIndex, writeFileIndex, appendJournal, readJournal, isInside, sha256Of,
+  readFileIndex, writeFileIndex, appendJournal, readJournal, isInside, sha256Of, projectDir, SLUG_RE,
 } from '../../projects/layout.js'
 
 let home: string
@@ -78,6 +78,22 @@ describe('file index and journal', () => {
     const lines = readFileSync(join(dir, 'journal.md'), 'utf8').trim().split('\n')
     expect(lines[lines.length - 1]).toBe('- 2026-10-05T00:00:01.000Z history.failed — git: fatal: not a repo')
     expect(readJournal(dir, 2).map(e => e.event)).toEqual(['history.failed', 'knowledge.added'])
+  })
+})
+
+describe('projectDir and readProject refuse a slug that is not SLUG_RE', () => {
+  // Task 8 fix round 1: a slug decoded from `..%2Foutside` (or `..%5Coutside`
+  // on win32) must never resolve a path outside the projects home, whatever
+  // called it — the dashboard route validates it too (a first layer), but
+  // every api.ts function goes through these two so a caller that bypasses
+  // the route is covered as well.
+  it('projectDir throws a named Error instead of joining outside home', () => {
+    expect(() => projectDir(home, '../outside')).toThrow(/bad slug/)
+    expect(() => projectDir(home, '..\\outside')).toThrow(/bad slug/)
+    expect(SLUG_RE.test('../outside')).toBe(false)
+  })
+  it('readProject returns null rather than reading outside home', () => {
+    expect(readProject(home, '../outside')).toBeNull()
   })
 })
 

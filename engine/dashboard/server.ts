@@ -44,6 +44,7 @@ import {
   renameChatApi,
   rescanApi,
   UPLOAD_MAX_BYTES,
+  SLUG_RE,
 } from '../projects/api.js'
 import { cyncoHome } from '../paths.js'
 
@@ -721,52 +722,130 @@ export class DashboardServer {
 
   // ── Projects mode routes (Task 8) ────────────────────────────────
 
+  /** Every path segment, percent-decoded; `null` on a malformed escape
+   *  (`decodeURIComponent` throws `URIError`) rather than letting that
+   *  exception reach Bun's handler and answer a generic 500. */
+  private decodePathParts(pathname: string): string[] | null {
+    const raw = pathname.split('/').filter(Boolean)
+    const out: string[] = []
+    for (const p of raw) {
+      try { out.push(decodeURIComponent(p)) } catch (e) {
+        console.log(`[dashboard] bad path encoding in ${pathname}: ${e instanceof Error ? e.message : String(e)}`)
+        return null
+      }
+    }
+    return out
+  }
+
   private async handleProjects(req: Request, method: string, pathname: string, url: URL): Promise<Response> {
     const d = this.deps.projects
     if (!d) return jsonResponse({ error: 'projects are not configured' }, 503)
     const send = (r: { status: number; body: unknown }) => jsonResponse(r.body, r.status)
-    const parts = pathname.split('/').filter(Boolean) // ['api','projects',slug?,area?,name?,verb?]
     const q = url.searchParams
-    if (pathname === '/api/project-search' && method === 'GET') return send(await searchApi(d, null, q.get('q') ?? '', q.get('kinds'), q.get('limit')))
+
+    // A sibling of /api/projects, not a prefix of it — handled for every
+    // method BEFORE the /api/projects table below, or a non-GET here (PUT,
+    // DELETE, …) fell through into "parts.length === 2" and created a
+    // project instead of being refused.
+    if (pathname === '/api/project-search') {
+      if (method !== 'GET') return jsonResponse({ error: 'Method not allowed' }, 405)
+      return send(await searchApi(d, null, q.get('q') ?? '', q.get('kinds'), q.get('limit')))
+    }
+
+    const parts = this.decodePathParts(pathname) // ['api','projects',slug?,area?,name?,verb?]
+    if (!parts) return jsonResponse({ error: 'bad path encoding' }, 400)
+
     if (parts.length === 2) {
       if (method === 'GET') return send(listProjects(d))
       if (method === 'POST') return send(await createProjectApi(d, await this.jsonBody(req)))
       return jsonResponse({ error: 'Method not allowed' }, 405)
     }
-    const slug = decodeURIComponent(parts[2])
+
+    // The slug is validated the instant it is known, before any api.ts call
+    // or filesystem join sees it — `../x` or `..\x` (decoded from `..%2Fx` /
+    // `..%5Cx`) must never resolve outside the projects home. `projectDir`/
+    // `readProject` in layout.ts refuse the same pattern as a second layer
+    // for every api.ts function, including one called directly.
+    const slug = parts[2]
+    if (!SLUG_RE.test(slug)) return jsonResponse({ error: 'bad slug' }, 400)
+
     if (parts.length === 3) {
       if (method === 'GET') return send(getProjectApi(d, slug))
       if (method === 'PATCH') return send(await patchProjectApi(d, slug, await this.jsonBody(req)))
       return jsonResponse({ error: 'Method not allowed' }, 405)
     }
-    const area = parts[3], name = parts[4] ? decodeURIComponent(parts[4]) : null, verb = parts[5] ?? null
-    if (area === 'search' && method === 'GET') return send(await searchApi(d, slug, q.get('q') ?? '', q.get('kinds'), q.get('limit')))
-    if (area === 'rescan' && method === 'POST') return send(await rescanApi(d, slug))
+
+    const area = parts[3]
+    const name = parts[4] ?? null
+    const verb = parts[5] ?? null
+
+    if (area === 'search') {
+      if (parts.length !== 4) return jsonResponse({ error: 'Not found' }, 404)
+      if (method !== 'GET') return jsonResponse({ error: 'Method not allowed' }, 405)
+      return send(await searchApi(d, slug, q.get('q') ?? '', q.get('kinds'), q.get('limit')))
+    }
+
+    if (area === 'rescan') {
+      if (parts.length !== 4) return jsonResponse({ error: 'Not found' }, 404)
+      if (method !== 'POST') return jsonResponse({ error: 'Method not allowed' }, 405)
+      return send(await rescanApi(d, slug))
+    }
+
     if (area === 'knowledge') {
-      if (method === 'GET' && !name) return send(listKnowledgeApi(d, slug))
-      if (method === 'POST' && !name) {
-        const len = Number(req.headers.get('content-length') ?? 0)
-        if (len > UPLOAD_MAX_BYTES) return jsonResponse({ error: `file is larger than ${UPLOAD_MAX_BYTES} bytes` }, 413)
-        const ct = req.headers.get('content-type') ?? ''
-        if (ct.startsWith('multipart/form-data')) {
-          const form = await req.formData()
-          const file = form.get('file')
-          if (!(file instanceof File)) return jsonResponse({ error: 'multipart field "file" is required' }, 400)
-          return send(await addKnowledgeApi(d, slug, { name: file.name, bytes: new Uint8Array(await file.arrayBuffer()) }))
+      if (parts.length === 4) {
+        if (method === 'GET') return send(listKnowledgeApi(d, slug))
+        if (method === 'POST') {
+          const len = Number(req.headers.get('content-length') ?? 0)
+          if (len > UPLOAD_MAX_BYTES) return jsonResponse({ error: `file is larger than ${UPLOAD_MAX_BYTES} bytes` }, 413)
+          const ct = req.headers.get('content-type') ?? ''
+          if (ct.startsWith('multipart/form-data')) {
+            let form: FormData
+            try {
+              form = await req.formData()
+            } catch (e) {
+              console.log(`[dashboard] malformed multipart body for ${slug}: ${e instanceof Error ? e.message : String(e)}`)
+              return jsonResponse({ error: 'malformed multipart body' }, 400)
+            }
+            const file = form.get('file')
+            if (!(file instanceof File)) return jsonResponse({ error: 'multipart field "file" is required' }, 400)
+            return send(await addKnowledgeApi(d, slug, { name: file.name, bytes: new Uint8Array(await file.arrayBuffer()) }))
+          }
+          const body = await this.jsonBody(req) as Record<string, unknown>
+          return send(await addKnowledgeApi(d, slug, { name: String(body.name ?? ''), text: typeof body.text === 'string' ? body.text : '' }))
         }
-        const body = await this.jsonBody(req) as Record<string, unknown>
-        return send(await addKnowledgeApi(d, slug, { name: String(body.name ?? ''), text: typeof body.text === 'string' ? body.text : '' }))
+        return jsonResponse({ error: 'Method not allowed' }, 405)
       }
-      if (method === 'DELETE' && name) return send(await removeKnowledgeApi(d, slug, name))
+      if (parts.length === 5) {
+        if (method === 'DELETE') return send(await removeKnowledgeApi(d, slug, name!))
+        return jsonResponse({ error: 'Method not allowed' }, 405)
+      }
+      return jsonResponse({ error: 'Not found' }, 404)
     }
+
     if (area === 'artifacts') {
-      if (method === 'GET' && !name) return send(listArtifactsApi(d, slug))
-      if (method === 'POST' && name && verb === 'promote') return send(await promoteArtifactApi(d, slug, name))
+      if (parts.length === 4) {
+        if (method === 'GET') return send(listArtifactsApi(d, slug))
+        return jsonResponse({ error: 'Method not allowed' }, 405)
+      }
+      if (parts.length === 6 && verb === 'promote') {
+        if (method === 'POST') return send(await promoteArtifactApi(d, slug, name!))
+        return jsonResponse({ error: 'Method not allowed' }, 405)
+      }
+      return jsonResponse({ error: 'Not found' }, 404)
     }
+
     if (area === 'chats') {
-      if (method === 'GET' && !name) return send(listChatsApi(d, slug))
-      if (method === 'PATCH' && name) return send(await renameChatApi(d, slug, name, await this.jsonBody(req)))
+      if (parts.length === 4) {
+        if (method === 'GET') return send(listChatsApi(d, slug))
+        return jsonResponse({ error: 'Method not allowed' }, 405)
+      }
+      if (parts.length === 5) {
+        if (method === 'PATCH') return send(await renameChatApi(d, slug, name!, await this.jsonBody(req)))
+        return jsonResponse({ error: 'Method not allowed' }, 405)
+      }
+      return jsonResponse({ error: 'Not found' }, 404)
     }
+
     return jsonResponse({ error: 'Not found' }, 404)
   }
 

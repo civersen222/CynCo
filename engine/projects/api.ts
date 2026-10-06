@@ -11,7 +11,7 @@ import { EmbedClient } from '../index/embedClient.js'
 import { ACCEPTED_EXTS } from './extract/index.js'
 import { commitHistory, ensureHistory } from './history.js'
 import { ingestFile, makeProseEmbedClient, proseEmbedModel, removeFromIndex, rescanProject, type IngestEvent } from './ingest.js'
-import { appendJournal, createProject, projectDir, readFileIndex, readInstructions, readJournal, readProject, slugify, writeInstructions, writeProject } from './layout.js'
+import { appendJournal, createProject, projectDir, readFileIndex, readInstructions, readJournal, readProject, slugify, writeInstructions, writeProject, SLUG_RE } from './layout.js'
 import { readRegistry, upsertRegistry } from './registry.js'
 import { listChats, renameChat } from './chat.js'
 import { searchProjects, type SearchKind } from './search.js'
@@ -19,7 +19,7 @@ import { searchProjects, type SearchKind } from './search.js'
 export type ProjectsDeps = { home: string; embed: EmbedClient | null; embedModel: string; emit: (e: IngestEvent) => void; contextLength: number }
 export type ApiResult = { status: number; body: unknown }
 export const UPLOAD_MAX_BYTES = 50 * 1024 * 1024
-const SLUG_RE = /^[a-z0-9-]{1,64}$/
+export { SLUG_RE }
 
 export function makeProjectsDeps(args: { home: string; embedBaseUrl: string; emitEvent: (e: { type: 'project.ingest' } & IngestEvent) => void; contextLength: number }): ProjectsDeps {
   return { home: args.home, embed: makeProseEmbedClient(args.embedBaseUrl), embedModel: proseEmbedModel(), emit: (e) => args.emitEvent({ type: 'project.ingest', ...e }), contextLength: args.contextLength }

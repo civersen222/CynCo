@@ -43,7 +43,14 @@ export function uniqueSlug(name: string, taken: (slug: string) => boolean): stri
   throw new Error(`no free slug for "${name}"`)
 }
 
+/** The one spelling of a valid slug; `projectDir`/`readProject` refuse anything
+ *  else so a slug carrying `../` or a path separator can never resolve
+ *  outside the projects home, whatever the caller (an API handler, a tool,
+ *  a direct unit test) decoded it from. */
+export const SLUG_RE = /^[a-z0-9-]{1,64}$/
+
 export function projectDir(home: string, slug: string): string {
+  if (!SLUG_RE.test(slug)) throw new Error(`bad slug: ${slug}`)
   return join(home, slug)
 }
 
@@ -89,6 +96,7 @@ export function createProject(home: string, input: { name: string; description?:
 }
 
 export function readProject(home: string, slug: string): ProjectMeta | null {
+  if (!SLUG_RE.test(slug)) return null
   const p = join(home, slug, 'project.json')
   if (!existsSync(p)) return null
   try {

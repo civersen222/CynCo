@@ -16,10 +16,11 @@ Projects mode: a non-code project (a diorama, a cookbook) as a plain folder unde
 
 ## Important types & functions
 - **`ProjectMeta`** (`layout.ts:14`) — the `project.json` shape; `schema: 1` is checked on every read so a future schema bump can't be silently misread.
-- **`createProject`** (`layout.ts:70`) — lays out every file/folder a fresh project needs (`knowledge/`, `chats/`, `artifacts/`, `inbox/`, `.cynco/index/`, the two index.json, `plan.md`, `.gitignore`, `journal.md`) and appends the `created` journal line.
-- **`isInside`** (`layout.ts:55`) — case-folded on win32, accepts the root itself; later tasks use it to refuse a knowledge/artifact path that escapes the project folder.
-- **`appendJournal`** (`layout.ts:136`) — appends one journal line per event.
-- **`readJournal`** (`layout.ts:140`) — reads those lines back newest first.
+- **`createProject`** (`layout.ts:77`) — lays out every file/folder a fresh project needs (`knowledge/`, `chats/`, `artifacts/`, `inbox/`, `.cynco/index/`, the two index.json, `plan.md`, `.gitignore`, `journal.md`) and appends the `created` journal line.
+- **`SLUG_RE`** (`layout.ts:50`) — the one spelling of a valid slug (`/^[a-z0-9-]{1,64}$/`); `projectDir` (`layout.ts:52`) throws a named `Error` and `readProject` (`layout.ts:98`) returns `null` for anything else, so a slug decoded from a path segment (e.g. `..%2Foutside` → `../outside`) can never resolve outside the projects home even when an api.ts function is called directly.
+- **`isInside`** (`layout.ts:62`) — case-folded on win32, accepts the root itself; later tasks use it to refuse a knowledge/artifact path that escapes the project folder.
+- **`appendJournal`** (`layout.ts:144`) — appends one journal line per event.
+- **`readJournal`** (`layout.ts:148`) — reads those lines back newest first.
 - **`readRegistry`** (`registry.ts:84`) — returns the cached registry plus whether it had to rebuild; the cache is never trusted past one `isFresh` check against the folders on disk, unless called with `{ heal: false }`, which returns the cache as written (still rebuilding when it is missing or unparsable) — used by `engine/projects/search.ts`'s fan-out so a vanished project stays in the list long enough for its own `existsSync` check to produce a `skipped` entry.
 - **`rebuildRegistry`** (`registry.ts:29`) — the only place a `RegistryEntry` is derived from a folder's `project.json`; preserves `lastOpenedAt` from the previous cache across a rebuild.
 - **`ensureHistory`** (`history.ts:37`) — `git init` once per project folder (idempotent on `.git` already existing), sets a local `user.email`/`user.name` so commits never depend on global git config.
@@ -35,9 +36,9 @@ Projects mode: a non-code project (a diorama, a cookbook) as a plain folder unde
 - **`openBinding`** (`binding.ts:62`) — reads the project (and an existing chat's transcript, if named), ensures history and the registry entry, touches `lastOpenedAt`, journals `chat.opened`; the loop then takes the binding via `ConversationLoop.startProjectSession`.
 
 ## Data flow
-1. A caller (a later task's API handler or tool) calls `createProject` (`layout.ts:70`) with a name and optional description/instructions/tags; the returned `ProjectMeta` is the slug every other call keys off.
+1. A caller (a later task's API handler or tool) calls `createProject` (`layout.ts:77`) with a name and optional description/instructions/tags; the returned `ProjectMeta` is the slug every other call keys off.
 2. The caller registers the new project with `upsertRegistry` (`registry.ts:91`) so `readRegistry` (`registry.ts:84`) lists it without a rebuild; any later read that finds the cache stale (a hand-deleted folder, a corrupt file) silently calls `rebuildRegistry` (`registry.ts:29`) instead of surfacing the mismatch.
-3. Every mutating write under the project folder is followed by `ensureHistory` (`history.ts:37`, once) then `commitHistory` (`history.ts:47`) with the paths that changed; a git failure is journaled via `appendJournal(dir, 'history.failed', ...)` (`layout.ts:136`) and returned as `{ ok: false, reason }` rather than thrown, so the write itself is never rolled back by a history problem.
+3. Every mutating write under the project folder is followed by `ensureHistory` (`history.ts:37`, once) then `commitHistory` (`history.ts:47`) with the paths that changed; a git failure is journaled via `appendJournal(dir, 'history.failed', ...)` (`layout.ts:144`) and returned as `{ ok: false, reason }` rather than thrown, so the write itself is never rolled back by a history problem.
 
 ## Gotchas
 - The registry is a cache, never the truth: `readRegistry` rebuilds whenever the on-disk folder set and the cached slug set disagree (missing folder, extra folder, unparsable JSON, wrong `version`) — never hand-edit `registry.json` and expect it to stick past the next read.
