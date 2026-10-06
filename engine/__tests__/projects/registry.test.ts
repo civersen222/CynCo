@@ -38,6 +38,18 @@ describe('registry', () => {
     expect(r.rebuilt).toBe(true)
     expect(r.registry.projects.map(p => p.slug)).toEqual(['a'])
   })
+  it('a registry naming a vanished folder returns it under heal: false and drops it under the default', () => {
+    const a = createProject(home, { name: 'A' })
+    createProject(home, { name: 'B' })
+    rebuildRegistry(home)
+    rmSync(join(home, 'b'), { recursive: true, force: true })
+    const unhealed = readRegistry(home, { heal: false })
+    expect(unhealed.rebuilt).toBe(false)
+    expect(unhealed.registry.projects.map(p => p.slug).sort()).toEqual(['a', 'b'])
+    const healed = readRegistry(home)
+    expect(healed.rebuilt).toBe(true)
+    expect(healed.registry.projects.map(p => p.slug)).toEqual([a.slug])
+  })
   it('touchOpened stamps lastOpenedAt', () => {
     const a = createProject(home, { name: 'A' })
     rebuildRegistry(home)

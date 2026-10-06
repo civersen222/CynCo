@@ -16,14 +16,14 @@ Projects mode: a non-code project (a diorama, a cookbook) as a plain folder unde
 - **`isInside`** (`layout.ts:55`) — case-folded on win32, accepts the root itself; later tasks use it to refuse a knowledge/artifact path that escapes the project folder.
 - **`appendJournal`** (`layout.ts:136`) — appends one journal line per event.
 - **`readJournal`** (`layout.ts:140`) — reads those lines back newest first.
-- **`readRegistry`** (`registry.ts:76`) — returns the cached registry plus whether it had to rebuild; the cache is never trusted past one `isFresh` check against the folders on disk.
+- **`readRegistry`** (`registry.ts:84`) — returns the cached registry plus whether it had to rebuild; the cache is never trusted past one `isFresh` check against the folders on disk, unless called with `{ heal: false }`, which returns the cache as written (still rebuilding when it is missing or unparsable) — used by `engine/projects/search.ts`'s fan-out so a vanished project stays in the list long enough for its own `existsSync` check to produce a `skipped` entry.
 - **`rebuildRegistry`** (`registry.ts:29`) — the only place a `RegistryEntry` is derived from a folder's `project.json`; preserves `lastOpenedAt` from the previous cache across a rebuild.
 - **`ensureHistory`** (`history.ts:37`) — `git init` once per project folder (idempotent on `.git` already existing), sets a local `user.email`/`user.name` so commits never depend on global git config.
 - **`commitHistory`** (`history.ts:47`) — stages exactly the given paths, treats `git diff --cached --quiet` exit 0 as "nothing to record" (not a failure), and only runs `git commit` when something is staged.
 
 ## Data flow
 1. A caller (a later task's API handler or tool) calls `createProject` (`layout.ts:70`) with a name and optional description/instructions/tags; the returned `ProjectMeta` is the slug every other call keys off.
-2. The caller registers the new project with `upsertRegistry` (`registry.ts:82`) so `readRegistry` (`registry.ts:76`) lists it without a rebuild; any later read that finds the cache stale (a hand-deleted folder, a corrupt file) silently calls `rebuildRegistry` (`registry.ts:29`) instead of surfacing the mismatch.
+2. The caller registers the new project with `upsertRegistry` (`registry.ts:91`) so `readRegistry` (`registry.ts:84`) lists it without a rebuild; any later read that finds the cache stale (a hand-deleted folder, a corrupt file) silently calls `rebuildRegistry` (`registry.ts:29`) instead of surfacing the mismatch.
 3. Every mutating write under the project folder is followed by `ensureHistory` (`history.ts:37`, once) then `commitHistory` (`history.ts:47`) with the paths that changed; a git failure is journaled via `appendJournal(dir, 'history.failed', ...)` (`layout.ts:136`) and returned as `{ ok: false, reason }` rather than thrown, so the write itself is never rolled back by a history problem.
 
 ## Gotchas

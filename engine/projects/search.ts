@@ -8,7 +8,7 @@
  * for every registry entry with the query embedded ONCE, merged by fused
  * score. A project that cannot be opened is named in `skipped`.
  */
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { BM25Index } from '../retrieval/bm25Index.js'
 import { reciprocalRankFusion } from '../retrieval/hybridSearch.js'
@@ -26,26 +26,6 @@ export type SearchResult = { hits: SearchHit[]; skipped: { slug: string; reason:
 export const RRF_K = 60
 const ALL_KINDS: SearchKind[] = ['knowledge', 'artifact', 'chat']
 const CANDIDATES = 20
-
-/**
- * The 'all'-scope target list, read from the cache as it stands — NOT through
- * `readRegistry`, whose `isFresh` check would quietly rebuild a stale cache
- * (dropping a project whose folder just vanished) before the per-target
- * `existsSync` guard below ever gets a turn at it. A missing or unparsable
- * cache still falls back to `readRegistry` so a first run bootstraps it.
- */
-function registeredTargets(home: string): { slug: string; name: string }[] {
-  const p = join(home, 'registry.json')
-  if (existsSync(p)) {
-    try {
-      const v = JSON.parse(readFileSync(p, 'utf8')) as { projects?: { slug: string; name: string }[] }
-      if (v && Array.isArray(v.projects)) return v.projects.map(e => ({ slug: e.slug, name: e.name }))
-    } catch (e) {
-      console.log(`[projects] registry.json unreadable for search, bootstrapping: ${e instanceof Error ? e.message : String(e)}`)
-    }
-  }
-  return readRegistry(home).registry.projects.map(e => ({ slug: e.slug, name: e.name }))
-}
 
 async function searchOne(deps: SearchDeps, slug: string, projectName: string, query: string, queryEmbedding: number[] | null, kinds: SearchKind[], limit: number, excludeFilePath?: string): Promise<SearchHit[]> {
   const dir = join(deps.home, slug)
@@ -88,7 +68,10 @@ export async function searchProjects(deps: SearchDeps, q: { query: string; scope
   }
   const targets: { slug: string; name: string }[] = []
   if (q.scope === 'all') {
-    targets.push(...registeredTargets(deps.home))
+    // heal: false — a project the cache still remembers but whose folder just
+    // vanished must stay in the list so the existsSync guard below (not a
+    // silent registry self-heal) is what produces its `skipped` entry.
+    for (const p of readRegistry(deps.home, { heal: false }).registry.projects) targets.push({ slug: p.slug, name: p.name })
   } else {
     const meta = readProject(deps.home, q.scope.slug)
     if (!meta) return { hits: [], skipped: [{ slug: q.scope.slug, reason: 'no such project' }], mode: queryEmbedding ? 'hybrid' : 'keyword' }

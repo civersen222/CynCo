@@ -73,8 +73,17 @@ function isFresh(home: string, reg: Registry): boolean {
   return true
 }
 
-export function readRegistry(home: string): { registry: Registry; rebuilt: boolean } {
+/**
+ * `heal: false` (default `true`) returns the cached file's entries exactly as
+ * written, never rebuilding just because a listed folder has gone stale — a
+ * caller that wants to notice "this project the cache remembers no longer has
+ * a folder" (search's fan-out skip list) needs the stale entry still in hand,
+ * not silently dropped before it gets a look. A missing or unparsable cache
+ * still rebuilds either way: there is nothing cached left to return.
+ */
+export function readRegistry(home: string, opts?: { heal?: boolean }): { registry: Registry; rebuilt: boolean } {
   const cached = parse(home)
+  if (opts?.heal === false) return cached ? { registry: cached, rebuilt: false } : { registry: rebuildRegistry(home), rebuilt: true }
   if (cached && isFresh(home, cached)) return { registry: cached, rebuilt: false }
   return { registry: rebuildRegistry(home), rebuilt: true }
 }
