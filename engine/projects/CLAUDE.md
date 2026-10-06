@@ -26,7 +26,8 @@ Projects mode: a non-code project (a diorama, a cookbook) as a plain folder unde
 - **`commitHistory`** (`history.ts:47`) — stages exactly the given paths, treats `git diff --cached --quiet` exit 0 as "nothing to record" (not a failure), and only runs `git commit` when something is staged.
 - **`assembleProjectPrompt`** (`profile.ts:36`) — builds the project-chat system prompt array (same shape as `assembleBasePrompt`); byte-identical for identical input so the prefix cache holds.
 - **`newChatFile`** (`chat.ts:24`) — names a chat file `<timestamp>-<title slug>.jsonl` and writes its header as line 1.
-- **`turnsOf`** (`chat.ts:83`) — pairs each text-only user message with the following assistant text for chat ingestion; skips a user message that is a tool result.
+- **`turnsOf`** (`chat.ts:100`) — pairs each text-only user message with the following assistant text for chat ingestion; skips a user message that is a tool result.
+- **`trimDanglingToolCall`** (`chat.ts:88`) — drops trailing assistant messages carrying a `tool_use` no `tool_result` answered (a chat aborted mid-tool), so a reopened chat resumes without a dangling call; `openBinding` applies it, the transcript on disk is left as written.
 - **`setProjectToolContext`** (`tools.ts:23`) — sets the module-state `ProjectToolContext` (home/slug/embed client/emit) the three tools below read; `null` outside a project session.
 - **`projectSearchTool`** (`tools.ts:37`), **`saveArtifactTool`** (`tools.ts:66`), **`addToKnowledgeTool`** (`tools.ts:97`) — the `ProjectSearch`/`SaveArtifact`/`AddToKnowledge` `ToolImpl`s; each refuses by name when `ProjectToolContext` is unset, and every write stays inside the project folder (`isInside`) and is followed by `ensureHistory`+`commitHistory`.
 

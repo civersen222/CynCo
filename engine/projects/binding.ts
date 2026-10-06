@@ -13,7 +13,7 @@ import { resolve } from 'node:path'
 import type { EmbedClient } from '../index/embedClient.js'
 import { isDownloadCommand } from '../tools/approvalGate.js'
 import { isInside, projectDir, readInstructions, readProject } from './layout.js'
-import { readTranscript, type TranscriptMessage } from './chat.js'
+import { readTranscript, trimDanglingToolCall, type TranscriptMessage } from './chat.js'
 import type { IngestEvent } from './ingest.js'
 import type { Citation } from './retrieval.js'
 import { ensureHistory } from './history.js'
@@ -68,7 +68,8 @@ export async function openBinding(args: { home: string; slug: string; chat?: str
   if (args.chat) {
     const t = readTranscript(dir, args.chat)
     if (!t) return { ok: false, reason: `no such chat: ${args.chat}` }
-    chatFile = args.chat; chatTitle = t.header.title; messages = t.messages
+    // A chat aborted mid-tool must not resume on an unanswered tool call.
+    chatFile = args.chat; chatTitle = t.header.title; messages = trimDanglingToolCall(t.messages)
   }
   const reg = readRegistry(args.home).registry
   if (!reg.projects.some(p => p.slug === meta.slug)) upsertRegistry(args.home, { slug: meta.slug, name: meta.name, description: meta.description, tags: meta.tags, createdAt: meta.createdAt, lastOpenedAt: null, path: dir })

@@ -3,7 +3,8 @@ import { mkdtempSync, rmSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createProject } from '../../projects/layout.js'
-import { newChatFile, appendTranscript, readTranscript, listChats, renameChat, titleFrom, turnsOf } from '../../projects/chat.js'
+import { newChatFile, appendTranscript, readTranscript, listChats, renameChat, titleFrom, turnsOf, trimDanglingToolCall } from '../../projects/chat.js'
+import { openBinding } from '../../projects/binding.js'
 
 let dir: string
 beforeEach(() => { const home = mkdtempSync(join(tmpdir(), 'cynco-chat-')); dir = join(home, createProject(home, { name: 'C' }).slug) })
@@ -48,5 +49,44 @@ describe('chat transcripts', () => {
       { role: 'user' as const, content: [{ type: 'text', text: 'q2' }] },
     ]
     expect(turnsOf(msgs)).toEqual([{ user: 'q1', assistant: 'calling\n\na1' }, { user: 'q2', assistant: '' }])
+  })
+})
+
+describe('trimDanglingToolCall', () => {
+  const q = { role: 'user' as const, content: [{ type: 'text', text: 'q' }] }
+  const call = (id: string) => ({ role: 'assistant' as const, content: [{ type: 'text', text: 'calling' }, { type: 'tool_use', id, name: 'Read', input: {} }] })
+  const result = (id: string) => ({ role: 'user' as const, content: [{ type: 'tool_result', tool_use_id: id, content: 'file' }] })
+  const prose = { role: 'assistant' as const, content: [{ type: 'text', text: 'a' }] }
+
+  it('drops a trailing assistant tool call that no tool_result answered', () => {
+    expect(trimDanglingToolCall([q, call('t1')])).toEqual([q])
+  })
+  it('drops every trailing assistant tool-call message (one per streamed block)', () => {
+    expect(trimDanglingToolCall([q, call('t1'), call('t1')])).toEqual([q])
+  })
+  it('keeps an answered tool call, prose endings and aborted partial text', () => {
+    const answered = [q, call('t1'), result('t1')]
+    expect(trimDanglingToolCall(answered)).toEqual(answered)
+    expect(trimDanglingToolCall([q, prose])).toEqual([q, prose])
+    const aborted = { ...prose, aborted: true }
+    expect(trimDanglingToolCall([q, aborted])).toEqual([q, aborted])
+    expect(trimDanglingToolCall([])).toEqual([])
+  })
+  it('does not mutate its input', () => {
+    const msgs = [q, call('t1')]
+    trimDanglingToolCall(msgs)
+    expect(msgs).toHaveLength(2)
+  })
+  it('openBinding trims it when a chat is reopened', async () => {
+    const home = join(dir, '..')
+    const slug = JSON.parse(readFileSync(join(dir, 'project.json'), 'utf8')).slug as string
+    const { file } = newChatFile(dir, 'q')
+    appendTranscript(dir, file, q)
+    appendTranscript(dir, file, call('t1'))
+    const b = await openBinding({ home, slug, chat: file, embed: null, embedModel: 'none', contextLength: 32768 })
+    if (!b.ok) throw new Error(b.reason)
+    expect(b.messages.map(m => m.role)).toEqual(['user'])
+    // the transcript itself is left as written
+    expect(readTranscript(dir, file)!.messages).toHaveLength(2)
   })
 })

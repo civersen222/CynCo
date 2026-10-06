@@ -78,6 +78,23 @@ export function renameChat(dir: string, file: string, title: string): boolean {
   return true
 }
 
+/**
+ * A chat aborted mid-tool ends on an assistant message whose tool_use blocks
+ * no tool_result ever answered; providers reject that shape on the next call.
+ * Drops such trailing assistant messages (returns a new array) so a reopened
+ * chat resumes cleanly. A trailing assistant message with no tool_use (prose,
+ * or aborted partial text) is kept.
+ */
+export function trimDanglingToolCall(messages: TranscriptMessage[]): TranscriptMessage[] {
+  const out = [...messages]
+  while (out.length) {
+    const last = out[out.length - 1]
+    if (last.role === 'assistant' && last.content.some(b => b.type === 'tool_use')) out.pop()
+    else break
+  }
+  return out
+}
+
 const textOf = (m: TranscriptMessage) => m.content.filter(b => b.type === 'text' && typeof b.text === 'string').map(b => b.text as string).join('\n\n')
 
 export function turnsOf(messages: TranscriptMessage[]): { user: string; assistant: string }[] {

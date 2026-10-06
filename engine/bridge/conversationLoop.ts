@@ -806,6 +806,17 @@ export class ConversationLoop {
     // Undo entries reference tree objects in the previous cwd's snapshot repo —
     // unrestorable after re-init, so drop them (P1.4 review I1).
     this.snapshotUndoStack = []
+    // Projects mode: no workspace snapshot. The snapshot store would sit in the
+    // project folder (`.cynco-snapshots/`, a copy of every knowledge file),
+    // write `/.cynco-snapshots/` into the project's own `.git/info/exclude`,
+    // and an undo would rewrite project files behind the project's history,
+    // which is the record there (history.ts).
+    if (this.project) {
+      this.snapshot = undefined
+      this.snapshotCwd = cwd
+      console.log(`[snapshot] Skipped for project ${this.project.slug} — the project's own history is the record`)
+      return
+    }
     try {
       const fs = require('fs')
       const path = require('path')
@@ -935,6 +946,15 @@ export class ConversationLoop {
   }
 
   currentProject(): ProjectBinding | null { return this.project }
+
+  /**
+   * Where the per-iteration debug files (`.cynco-debug.json`,
+   * `.cynco-stream.log`) go: the working directory, or in a project the
+   * git-ignored `<project>/.cynco/` — never the user's project folder itself.
+   */
+  private debugDir(): string {
+    return this.project ? require('path').join(this.project.dir, '.cynco') : this.executor['cwd']
+  }
 
   /**
    * Project mode: replace last turn's `[Project knowledge]` block with one
@@ -3273,7 +3293,7 @@ export class ConversationLoop {
               this.uncertaintyIndex = 0
               // Debug: write conversation state to file for diagnosis
               try {
-                const debugPath = require('path').join(this.executor['cwd'], '.cynco-debug.json')
+                const debugPath = require('path').join(this.debugDir(), '.cynco-debug.json')
                 require('fs').writeFileSync(debugPath, JSON.stringify({
                   iteration: i + 1,
                   messageCount: this.messages.length,
@@ -3412,7 +3432,7 @@ export class ConversationLoop {
                 const fs = require('fs')
                 const path = require('path')
                 fs.appendFileSync(
-                  path.join(this.executor['cwd'], '.cynco-stream.log'),
+                  path.join(this.debugDir(), '.cynco-stream.log'),
                   `\n--- Iteration ${i + 1} | tokens=${tokenCount} reasoning=${reasoningTokenCount} stop=${stopReason} ---\n${streamedText}\n`
                 )
               } catch {}
@@ -3626,7 +3646,10 @@ export class ConversationLoop {
       if (noToolsEndTurn && this.unproductiveNudges >= UNPRODUCTIVE_NUDGE_LIMIT) {
         console.log(`[s2] Nudge backstop: ${this.unproductiveNudges} nudges produced no file change — accepting the model's completion`)
       }
-      if (shouldNudge({
+      // Never in a project chat: a prose answer IS the turn's end there, and the
+      // "call a tool" re-prompt is contract-shaped. Governance steers (stuck
+      // signal, homeostat, steering queue) still run.
+      if (!this.project && shouldNudge({
         noToolsEndTurn,
         reasoningTokens: reasoningTokenCount,
         textTokens: tokenCount,
@@ -3713,7 +3736,8 @@ export class ConversationLoop {
       if (toolUseBlocks.length === 0 || stopReason !== 'tool_use') {
         // Before exiting: check whether the model ended silently after tool use
         // and if so, queue a summary follow-up to force one more turn.
-        if (!this.vibeMode && shouldInjectSummary(streamedText, stopReason, toolsUsedInSession, summaryInjected)) {
+        // Not in a project chat: the reply is already the user-facing answer.
+        if (!this.project && !this.vibeMode && shouldInjectSummary(streamedText, stopReason, toolsUsedInSession, summaryInjected)) {
           summaryInjected = true
           console.log(`[s2] Summary follow-up queued`)
           this.emit({ type: 'summary.injected', toolsUsed: Array.from(new Set(toolsUsedInSession)) })

@@ -1,5 +1,7 @@
 import { describe, it, expect, afterEach } from 'bun:test'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { ensureHistory, commitHistory } from '../../projects/history.js'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createProject } from '../../projects/layout.js'
@@ -105,7 +107,7 @@ describe('ConversationLoop + ProjectBinding', () => {
 
   it('a Write outside the project is refused as dangerous and never asked', async () => {
     const { home, slug } = await project('Fence', '')
-    const { loop, events } = makeLoop({
+    const { loop, events, calls } = makeLoop({
       script: [
         [{ type: 'tool_use', name: 'Write', input: { file_path: '../other/x.md', content: 'x' } }],
         [{ type: 'text', text: 'I could not write there.' }],
@@ -124,11 +126,75 @@ describe('ConversationLoop + ProjectBinding', () => {
     expect(text.startsWith('Refused: outside the project folder')).toBe(true)
     expect(result.is_error).toBe(true)
     expect(events.some(e => e.type === 'approval.request')).toBe(false)
-    // user message, the Write call, its refused result, then the reply
-    // The first four only: after a tool-using turn the coding loop's no-tool
-    // nudges still fire in a project chat (not switched by this task), and
-    // their replies land in the transcript after these.
-    expect(t.messages.slice(0, 4).map(m => m.role)).toEqual(['user', 'assistant', 'user', 'assistant'])
+    // user message, the Write call, its refused result, then the reply — and
+    // nothing after it: a project turn that ends in prose after a tool call is
+    // not re-prompted with the coding loop's "call a tool" nudge or a summary
+    // follow-up.
+    expect(t.messages.map(m => m.role)).toEqual(['user', 'assistant', 'user', 'assistant'])
+    expect(calls).toHaveLength(2)
+    expect(events.some(e => e.type === 'summary.injected')).toBe(false)
+    const injected = (loop.getMessages() as any[]).filter(m => m.role === 'user' && m.content.some((c: any) => c.type === 'text' && /call a tool|CONTINUE WORKING|You MUST call a tool/i.test(c.text)))
+    expect(injected).toEqual([])
+  }, 60000)
+
+  it('a project turn that ends in prose after a tool call gets exactly one assistant reply, with no re-prompt', async () => {
+    const { home, slug } = await project('Prose', '')
+    writeFileSync(join(home, slug, 'knowledge', 'n.md'), '# Notes\n\nPaint the base first.\n', 'utf8')
+    const { loop, calls } = makeLoop({
+      script: [
+        [{ type: 'tool_use', name: 'Read', input: { file_path: 'knowledge/n.md' } }],
+        [{ type: 'text', text: 'Paint the base first.' }],
+      ],
+    })
+    const b = await openBinding({ home, slug, embed: null, embedModel: 'none', contextLength: 32768 })
+    if (!b.ok) throw new Error(b.reason)
+    await loop.startProjectSession(b.binding, b.messages)
+    await loop.handleUserMessage('what goes first?')
+    const t = readTranscript(join(home, slug), listChats(join(home, slug))[0].file)!
+    const prose = t.messages.filter(m => m.role === 'assistant' && m.content.every(c => c.type === 'text'))
+    expect(prose).toHaveLength(1)
+    expect(prose[0].content[0].text).toBe('Paint the base first.')
+    expect(calls).toHaveLength(2)
+  }, 60000)
+
+  it('a project session takes no workspace snapshot: the project repo, its exclude file and the folder are untouched', async () => {
+    const { home, slug } = await project('Snap', '')
+    const dir = join(home, slug)
+    writeFileSync(join(dir, 'knowledge', 'n.md'), '# Notes\n\nPaint the base first.\n', 'utf8')
+    await ensureHistory(dir)
+    const seeded = await commitHistory(dir, ['.'], 'seed')
+    expect(seeded).toEqual({ ok: true })
+    const git = (...args: string[]) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' })
+    const exclude = join(dir, '.git', 'info', 'exclude')
+    const readExclude = () => existsSync(exclude) ? readFileSync(exclude, 'utf8') : null
+
+    const { loop } = makeLoop({
+      script: [
+        [{ type: 'tool_use', name: 'Read', input: { file_path: 'knowledge/n.md' } }],
+        [{ type: 'text', text: 'Paint the base first.' }],
+      ],
+    })
+    const b = await openBinding({ home, slug, embed: null, embedModel: 'none', contextLength: 32768 })
+    if (!b.ok) throw new Error(b.reason)
+    // Taken after openBinding, which journals `chat.opened` by design: what is
+    // measured is the loop's session switch and turn.
+    const before = { log: git('log', '--format=%H'), status: git('status', '--porcelain'), exclude: readExclude() }
+    expect(before.log.trim()).not.toBe('')
+    await loop.startProjectSession(b.binding, b.messages)
+    // opening the session changes nothing a git user can see
+    expect(git('log', '--format=%H')).toBe(before.log)
+    expect(git('status', '--porcelain')).toBe(before.status)
+    expect(readExclude()).toBe(before.exclude)
+    expect(existsSync(join(dir, '.cynco-snapshots'))).toBe(false)
+
+    // a turn with a tool batch (the snapshot track point) adds only its chat transcript
+    await loop.handleUserMessage('what goes first?')
+    expect(git('log', '--format=%H')).toBe(before.log)
+    const added = git('status', '--porcelain').split('\n').filter(Boolean).filter(l => !before.status.includes(l))
+    expect(added.filter(l => !/^\?\? chats\//.test(l))).toEqual([])
+    expect(readExclude()).toBe(before.exclude)
+    expect(existsSync(join(dir, '.cynco-snapshots'))).toBe(false)
+    expect(loop.undoLastBatch().ok).toBe(false)
   }, 60000)
 
   it('startProjectSession(null) restores the coding prompt and tools', async () => {
