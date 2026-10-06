@@ -23,6 +23,7 @@ LocalCode is a local-first coding agent engine (Bun + TypeScript under `engine/`
 | Workflows | [`engine/workflows/CLAUDE.md`](engine/workflows/CLAUDE.md) | `WorkflowEngine` |
 | Vibe mode | [`engine/vibe/CLAUDE.md`](engine/vibe/CLAUDE.md) | Guided mode controller, side-query routing, mode suppression |
 | Daemon | [`engine/daemon/CLAUDE.md`](engine/daemon/CLAUDE.md) | Liveness daemon, task runner (child engines), notifications |
+| Projects | [`engine/projects/CLAUDE.md`](engine/projects/CLAUDE.md) | Non-code projects: folder layout + registry, invisible git, prose ingestion, project/global search, project chats, the three project tools, `/api/projects/*` |
 | Profiles | [`engine/profiles/CLAUDE.md`](engine/profiles/CLAUDE.md) | `~/.cynco/profiles/*.yaml` schema and the runtime knobs that reach llama-server |
 | Dashboard | `engine/dashboard/server.ts` + `index.html` | Governance dashboard on 9161 (token-gated `/ws`, `/api/mission`); the page is read once at engine start |
 | Security | `engine/security/` | Local tokens (`tokens.json`), Job Object child cleanup (`jobObject.ts`) |
