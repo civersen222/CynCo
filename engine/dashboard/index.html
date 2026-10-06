@@ -1098,7 +1098,7 @@ function handleEvent(event) {
       state.tier = event.tier || (event.contextLength > 65536 ? 'advanced' : event.contextLength > 16384 ? 'standard' : 'basic');
       state.sessionStart = new Date();
       state.turnCount = 0;
-      if (event.projectPath) { var cwdEl = document.getElementById('chatCwd'); if (cwdEl) cwdEl.value = event.projectPath; }
+      if (event.projectPath) setCodingCwd(event.projectPath);
       activateSession(event.contextLength);
       break;
 
@@ -2355,7 +2355,7 @@ function fetchSessionState() {
         state.model = data.model;
         if (data.contextLength) setSlider('sliderCtxLen', 'valCtxLen', data.contextLength);
         if (data.tier) state.tier = data.tier;
-        if (data.projectPath) { var cwdEl2 = document.getElementById('chatCwd'); if (cwdEl2) cwdEl2.value = data.projectPath; }
+        if (data.projectPath) setCodingCwd(data.projectPath);
         activateSession(data.contextLength);
       }
     })
@@ -3040,7 +3040,11 @@ function sendChatMessage() {
     }
   }
 
-  if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'user.message', text: text, cwd: cwd }));
+  // While a project is bound the box shows the project folder read-only and the
+  // frame carries no cwd; only a coding turn sends one.
+  var frame = { type: 'user.message', text: text };
+  if (!projectsState.active) frame.cwd = cwd;
+  if (ws && ws.readyState === 1) ws.send(JSON.stringify(frame));
   appendChatMsg('user', text);
   brainViz.setActive(true);
 }
@@ -3494,6 +3498,8 @@ var projectsState = {
   slug: null,            // the project shown on the Projects tab
   meta: null,            // GET /api/projects/<slug>
   names: {},             // slug → name, for the chat strip
+  paths: {},             // slug → project folder, shown read-only in the CWD box while bound
+  codingCwd: null,       // the CWD box's coding value, kept while a project holds the box
   knowledge: {},         // name → FileRecord
   artifacts: {},         // name → FileRecord
   active: null,          // { slug, chat, title } — the chat the engine is bound to
@@ -3610,7 +3616,8 @@ function loadProjectsList() {
   var el = document.getElementById('projectsList');
   return projFetch('/api/projects').then(function(data) {
     var list = data.projects || [];
-    list.forEach(function(p) { projectsState.names[p.slug] = p.name; });
+    list.forEach(function(p) { projectsState.names[p.slug] = p.name; if (p.path) projectsState.paths[p.slug] = p.path; });
+    if (projectsState.active) showProjectCwd(projectsState.active.slug);
     if (!list.length) { el.innerHTML = '<span class="proj-muted">No projects yet &mdash; create one with the form.</span>'; return; }
     el.innerHTML = list.map(function(p) {
       return '<div class="proj-row"><div class="grow">' +
@@ -3866,11 +3873,48 @@ function leaveProject() {
   appendChatMsg('system', 'Leaving the project…');
 }
 
+/* The CWD box while a project is bound: it shows the project folder, read-only,
+   and no user.message carries a cwd (the engine refuses one in a project chat;
+   sending the launch dir only made the box lie). The coding value is kept and
+   put back when the project is left. */
+function showProjectCwd(slug) {
+  var box = document.getElementById('chatCwd');
+  if (!box) return;
+  if (!box.readOnly) projectsState.codingCwd = box.value;
+  box.readOnly = true;
+  box.value = projectsState.paths[slug] || ('project folder: ' + (projectsState.names[slug] || slug));
+  box.title = 'A project chat works in its own project folder; leave the project to change this.';
+}
+function restoreCodingCwd() {
+  var box = document.getElementById('chatCwd');
+  if (!box || !box.readOnly) return;
+  box.readOnly = false;
+  // A page loaded while a project was bound learned the PROJECT folder as its
+  // cwd; sending that back would pull the coding session into the project.
+  var kept = projectsState.codingCwd || '';
+  var norm = function(p) { return String(p).replace(/[\\/]+$/, '').replace(/\\/g, '/').toLowerCase(); };
+  Object.keys(projectsState.paths).forEach(function(s) { if (kept && norm(projectsState.paths[s]) === norm(kept)) kept = ''; });
+  box.value = kept;
+  box.title = '';
+  projectsState.codingCwd = null;
+  // The engine is back in its launch directory; ask it which that is.
+  fetch('/api/session').then(function(r) { return r.json(); }).then(function(data) {
+    if (data && data.projectPath && !projectsState.active && !box.readOnly) box.value = data.projectPath;
+  }).catch(function(err) { console.warn('[projects] coding cwd after leaving: ' + err.message); });
+}
+/** The engine's coding working directory: into the box, or kept for later while a project holds it. */
+function setCodingCwd(path) {
+  var box = document.getElementById('chatCwd');
+  if (!box) return;
+  if (box.readOnly) projectsState.codingCwd = path; else box.value = path;
+}
+
 function onProjectOpened(event) {
   var strip = document.getElementById('chatProjectStrip');
   clearChatCitations();
   if (!event.slug) {
     projectsState.active = null;
+    restoreCodingCwd();
     strip.classList.remove('visible');
     appendChatMsg('system', 'Left the project — back to the coding session.');
     var ph = parseProjectsHash();
@@ -3878,6 +3922,13 @@ function onProjectOpened(event) {
     return;
   }
   projectsState.active = { slug: event.slug, chat: event.chat, title: event.title };
+  showProjectCwd(event.slug);
+  if (!projectsState.paths[event.slug]) {
+    projFetch('/api/projects').then(function(data) {
+      (data.projects || []).forEach(function(p) { if (p.path) projectsState.paths[p.slug] = p.path; });
+      if (projectsState.active && projectsState.active.slug === event.slug) showProjectCwd(event.slug);
+    }).catch(function(err) { console.warn('[projects] folder for the CWD box: ' + err.message); });
+  }
   // openProjectChat already drew this chat's transcript; keep it. Anything
   // else in the pane belongs to the conversation the engine just left.
   var rendered = event.chat && projectsState.renderedChat === event.slug + '/' + event.chat;
@@ -3948,8 +3999,8 @@ function saveAsArtifact(msgIndex) {
     var div = document.querySelector('#chatMessages .chat-msg-assistant[data-reply="' + msgIndex + '"]');
     if (div) text += ' The reply to save is the earlier one that begins: "' + div.textContent.trim().slice(0, 120) + '".';
   }
-  var cwd = document.getElementById('chatCwd').value.trim();
-  ws.send(JSON.stringify({ type: 'user.message', text: text, cwd: cwd }));
+  // A project chat works in its own folder: no cwd on the frame.
+  ws.send(JSON.stringify({ type: 'user.message', text: text }));
   appendChatMsg('user', text);
   appendChatMsg('system', 'Waiting for the artifact "' + name + '" to be saved…');
   brainViz.setActive(true);

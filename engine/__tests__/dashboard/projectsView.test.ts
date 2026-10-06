@@ -167,6 +167,57 @@ describe('dashboard: the Projects view', () => {
     expect(h.sent).toEqual([{ type: 'project.open', slug: 'harbor', chat: 'ghost.jsonl' }])
   })
 
+  it('while a project is bound the CWD box shows the project folder read-only and user.message carries no cwd (final review M7)', async () => {
+    const box = { value: 'C:/code/launch', readOnly: false, title: '' }
+    const input = { value: '' }
+    const sent: Record<string, unknown>[] = []
+    const fetched: string[] = []
+    const projectsState: Record<string, any> = { active: null, paths: { harbor: 'C:/projects/harbor' }, names: {}, codingCwd: null }
+    const make = new Function('document', 'ws', 'projectsState', 'appendChatMsg', 'brainViz', 'fetch',
+      fnSource('sendChatMessage') + fnSource('showProjectCwd') + fnSource('restoreCodingCwd') +
+      '\nreturn { sendChatMessage: sendChatMessage, showProjectCwd: showProjectCwd, restoreCodingCwd: restoreCodingCwd };')
+    const page = make(
+      { getElementById: (id: string) => (id === 'chatCwd' ? box : input) },
+      { readyState: 1, send: (s: string) => sent.push(JSON.parse(s)) },
+      projectsState,
+      () => {},
+      { setActive: () => {} },
+      (path: string) => { fetched.push(path); return Promise.resolve({ json: () => ({ projectPath: 'C:/code/launch' }) }) },
+    )
+    const say = (text: string) => { input.value = text; page.sendChatMessage() }
+
+    say('coding question')
+    expect(sent.pop()).toEqual({ type: 'user.message', text: 'coding question', cwd: 'C:/code/launch' })
+
+    projectsState.active = { slug: 'harbor', chat: null, title: null }
+    page.showProjectCwd('harbor')
+    expect(box).toMatchObject({ value: 'C:/projects/harbor', readOnly: true })
+    say('project question')
+    expect(sent.pop()).toEqual({ type: 'user.message', text: 'project question' })
+
+    projectsState.active = null
+    page.restoreCodingCwd()
+    expect(box).toMatchObject({ value: 'C:/code/launch', readOnly: false })
+    await new Promise(r => setTimeout(r, 0))
+    expect(fetched).toEqual(['/api/session'])
+    say('back to code')
+    expect(sent.pop()).toEqual({ type: 'user.message', text: 'back to code', cwd: 'C:/code/launch' })
+
+    // A page loaded while bound learned the project folder as its cwd; leaving
+    // must not send it back as the coding cwd.
+    box.value = 'C:/projects/harbor'
+    projectsState.active = { slug: 'harbor', chat: null, title: null }
+    page.showProjectCwd('harbor')
+    projectsState.active = null
+    page.restoreCodingCwd()
+    expect(box.value).toBe('')
+
+    // the wiring: project.opened drives both, Save-as-artifact never sends a cwd
+    expect(fnSource('onProjectOpened')).toContain('showProjectCwd(event.slug)')
+    expect(fnSource('onProjectOpened')).toContain('restoreCodingCwd()')
+    expect(fnSource('saveAsArtifact')).toContain("JSON.stringify({ type: 'user.message', text: text })")
+  })
+
   it('calls the project routes', () => {
     const js = scripts()
     expect(js).toContain('/api/project-search?q=')
