@@ -52,6 +52,20 @@ describe('SaveArtifact', () => {
     expect(readFileIndex(dir, 'artifacts').files['shopping-list.md']).toMatchObject({ origin: 'chat', indexed: true })
     expect(readJournal(dir)[0].event).toBe('artifact.saved')
   })
+  it('keeps a typed name: a .md/.txt/.json extension is stripped before slugifying and picks the kind', async () => {
+    // Found in the Task 9 hand check: "crane-and-resin.md" saved as crane-and-resin-md.md.
+    expect((await saveArtifactTool.execute({ name: 'crane-and-resin.md', content: '# Crane\n' }, dir)).output).toBe('Saved artifacts/crane-and-resin.md')
+    expect(readFileSync(join(dir, 'artifacts', 'crane-and-resin.md'), 'utf8')).toContain('# Crane')
+    expect((await saveArtifactTool.execute({ name: 'Paint List.TXT', content: 'rust red\n' }, dir)).output).toBe('Saved artifacts/paint-list.txt')
+    expect((await saveArtifactTool.execute({ name: 'parts.json', content: '{"a":1}' }, dir)).output).toBe('Saved artifacts/parts.json')
+    // an explicit kind still wins over the typed extension
+    expect((await saveArtifactTool.execute({ name: 'notes.md', kind: 'txt', content: 'x\n' }, dir)).output).toBe('Saved artifacts/notes.txt')
+    // an extension that is not a kind stays part of the name
+    expect((await saveArtifactTool.execute({ name: 'photo.png', content: 'x\n' }, dir)).output).toBe('Saved artifacts/photo-png.md')
+    // the path refusal still holds when an extension is typed
+    expect((await saveArtifactTool.execute({ name: '../x.md', content: 'y' }, dir)).output).toMatch(/name must not contain/)
+    expect((await saveArtifactTool.execute({ name: 'a/b.txt', content: 'y' }, dir)).output).toMatch(/name must not contain/)
+  })
   it('refuses path separators and empty content', async () => {
     expect((await saveArtifactTool.execute({ name: '../x', content: 'y' }, dir)).output).toMatch(/name must not contain/)
     expect((await saveArtifactTool.execute({ name: 'x', content: '  ' }, dir)).isError).toBe(true)

@@ -13,7 +13,7 @@ import { commitHistory, ensureHistory } from './history.js'
 import { ingestFile, makeProseEmbedClient, proseEmbedModel, removeFromIndex, rescanProject, type IngestEvent } from './ingest.js'
 import { appendJournal, createProject, projectDir, readFileIndex, readInstructions, readJournal, readProject, slugify, writeInstructions, writeProject, SLUG_RE } from './layout.js'
 import { readRegistry, upsertRegistry } from './registry.js'
-import { listChats, renameChat } from './chat.js'
+import { listChats, readTranscript, renameChat } from './chat.js'
 import { searchProjects, type SearchKind } from './search.js'
 
 export type ProjectsDeps = { home: string; embed: EmbedClient | null; embedModel: string; emit: (e: IngestEvent) => void; contextLength: number }
@@ -133,6 +133,15 @@ export async function promoteArtifactApi(d: ProjectsDeps, slug: string, name: st
 export function listChatsApi(d: ProjectsDeps, slug: string): ApiResult {
   if (!readProject(d.home, slug)) return notFound('project')
   return { status: 200, body: { chats: listChats(projectDir(d.home, slug)) } }
+}
+
+/** One chat's transcript — the page renders it when a chat is reopened. */
+export function getChatApi(d: ProjectsDeps, slug: string, file: string): ApiResult {
+  if (!SLUG_RE.test(slug)) return bad('bad slug')
+  if (!readProject(d.home, slug)) return notFound('project')
+  const t = readTranscript(projectDir(d.home, slug), basename(file))
+  if (!t) return notFound('chat')
+  return { status: 200, body: t }
 }
 
 export async function renameChatApi(d: ProjectsDeps, slug: string, file: string, body: unknown): Promise<ApiResult> {

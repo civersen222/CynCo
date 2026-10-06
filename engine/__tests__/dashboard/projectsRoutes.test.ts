@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DashboardServer } from '../../dashboard/server.js'
 import { loadOrCreateTokens } from '../../security/localToken.js'
-import { newChatFile } from '../../projects/chat.js'
+import { appendTranscript, newChatFile } from '../../projects/chat.js'
 import { projectDir } from '../../projects/layout.js'
 import { pdfWithPages } from '../projects/fixtures.js'
 import { UPLOAD_MAX_BYTES } from '../../projects/api.js'
@@ -257,6 +257,27 @@ describe('PATCH /api/projects/:slug/chats/:file', () => {
   })
 })
 
+describe('GET /api/projects/:slug/chats/:file', () => {
+  it('200s with the header and the messages', async () => {
+    const dir = projectDir(HOME, slug)
+    const { file } = newChatFile(dir, 'What colour is the crane?')
+    appendTranscript(dir, file, { role: 'user', content: [{ type: 'text', text: 'What colour is the crane?' }] })
+    appendTranscript(dir, file, { role: 'assistant', content: [{ type: 'text', text: 'Rust red [1].' }] })
+    const res = await authFetch(`/api/projects/${slug}/chats/${file}`)
+    expect(res.status).toBe(200)
+    const body = await res.json() as any
+    expect(body.header).toMatchObject({ kind: 'chat', title: 'What colour is the crane?' })
+    expect(body.messages.map((m: any) => m.role)).toEqual(['user', 'assistant'])
+    expect(body.messages[1].content[0].text).toBe('Rust red [1].')
+  })
+
+  it('404s `no such chat` for an unknown file', async () => {
+    const res = await authFetch(`/api/projects/${slug}/chats/ghost.jsonl`)
+    expect(res.status).toBe(404)
+    expect(await res.json()).toEqual({ error: 'no such chat' })
+  })
+})
+
 describe('GET /api/projects/:slug/chats', () => {
   it('200s with the renamed chat listed', async () => {
     const res = await authFetch(`/api/projects/${slug}/chats`)
@@ -362,8 +383,8 @@ describe('a known sub-path with the wrong method answers 405, not 404', () => {
   it('POST /api/projects/:slug/chats', async () => {
     expect((await authFetch(`/api/projects/${slug}/chats`, { method: 'POST' })).status).toBe(405)
   })
-  it('GET /api/projects/:slug/chats/:file', async () => {
-    expect((await authFetch(`/api/projects/${slug}/chats/whatever.jsonl`)).status).toBe(405)
+  it('DELETE /api/projects/:slug/chats/:file', async () => {
+    expect((await authFetch(`/api/projects/${slug}/chats/whatever.jsonl`, { method: 'DELETE' })).status).toBe(405)
   })
 })
 

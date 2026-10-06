@@ -41,6 +41,7 @@ import {
   listArtifactsApi,
   promoteArtifactApi,
   listChatsApi,
+  getChatApi,
   renameChatApi,
   rescanApi,
   UPLOAD_MAX_BYTES,
@@ -840,6 +841,7 @@ export class DashboardServer {
         return jsonResponse({ error: 'Method not allowed' }, 405)
       }
       if (parts.length === 5) {
+        if (method === 'GET') return send(getChatApi(d, slug, name!))
         if (method === 'PATCH') return send(await renameChatApi(d, slug, name!, await this.jsonBody(req)))
         return jsonResponse({ error: 'Method not allowed' }, 405)
       }

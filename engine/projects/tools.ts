@@ -78,11 +78,14 @@ export const saveArtifactTool: ToolImpl = {
   tier: 'auto', core: false,
   execute: async (input) => {
     if (!context) return NOT_IN_PROJECT('SaveArtifact')
-    const n = safeName(input.name)
+    // A typed extension ("crane-and-resin.md") is the user's own kind, not part
+    // of the name: slugified whole it became `crane-and-resin-md.md`.
+    const typed = typeof input.name === 'string' ? input.name.trim().match(/^(.*)\.(md|txt|json)$/i) : null
+    const n = safeName(typed ? typed[1] : input.name)
     if (!n.ok) return { output: n.reason, isError: true }
     const content = String(input.content ?? '')
     if (!content.trim()) return { output: 'content is empty', isError: true }
-    const kind = ['md', 'txt', 'json'].includes(String(input.kind)) ? String(input.kind) : 'md'
+    const kind = ['md', 'txt', 'json'].includes(String(input.kind)) ? String(input.kind) : typed ? typed[2].toLowerCase() : 'md'
     const dir = projectDir(context.home, context.slug)
     const rel = `${n.name}.${kind}`
     mkdirSync(join(dir, 'artifacts'), { recursive: true })

@@ -100,23 +100,71 @@ describe('dashboard: the Projects view', () => {
     expect(js).toContain('using SaveArtifact.')
   })
 
+  /** One top-level `function name(` … `}` from the served script, as source. */
+  function fnSource(name: string): string {
+    const js = scripts()
+    const start = js.indexOf(`function ${name}(`)
+    expect(start, `function ${name} not found`).toBeGreaterThan(-1)
+    const close = /\r?\n\}\r?\n/.exec(js.slice(start))
+    expect(close).not.toBeNull()
+    return js.slice(start, start + close!.index + close![0].length)
+  }
+
+  /** openProjectChat + renderTranscript run against stubs; returns what it sent, drew and fetched. */
+  function openHarness(transcript: unknown | Error) {
+    const sent: Record<string, unknown>[] = []
+    const drawn: string[] = []
+    const fetched: string[] = []
+    const run = new Function('ws', 'projectsState', 'projStatus', 'appendChatMsg', 'appendChatTool', 'switchTab',
+      'clearChatPane', 'projFetch', 'projUrl', 'summarizeInput',
+      fnSource('openProjectChat') + fnSource('renderTranscript') + '\nreturn openProjectChat;')
+    const open = run(
+      { readyState: 1, send: (s: string) => { drawn.push('SEND'); sent.push(JSON.parse(s)) } },
+      { names: {} },
+      () => {},
+      (role: string, text: string) => drawn.push(`${role}: ${text}`),
+      (name: string, _t: string, status: string) => drawn.push(`tool ${name} ${status}`),
+      () => {},
+      () => drawn.push('CLEAR'),
+      (path: string) => { fetched.push(path); return transcript instanceof Error ? Promise.reject(transcript) : Promise.resolve(transcript) },
+      (slug: string) => '/api/projects/' + encodeURIComponent(slug),
+      () => '',
+    )
+    return { open, sent, drawn, fetched }
+  }
+
   it('a new chat omits `chat` from the project.open frame (the command schema refuses chat: null)', () => {
     // Found in the hand check: `chat: null` was refused as "chat must be a
     // transcript file name", and the next message went to the coding session.
-    const js = scripts()
-    const start = js.indexOf('function openProjectChat(')
-    const close = /\r?\n\}\r?\n/.exec(js.slice(start))
-    expect(start).toBeGreaterThan(-1)
-    expect(close).not.toBeNull()
-    const end = start + close!.index + close![0].length
-    const sent: Record<string, unknown>[] = []
-    const run = new Function('ws', 'projectsState', 'projStatus', 'appendChatMsg', 'switchTab',
-      js.slice(start, end) + '\nreturn openProjectChat;')
-    const open = run({ readyState: 1, send: (s: string) => sent.push(JSON.parse(s)) }, { names: {} }, () => {}, () => {}, () => {})
-    open('harbor', null)
-    open('harbor', '2026-10-06-chat.jsonl')
-    expect(sent[0]).toEqual({ type: 'project.open', slug: 'harbor' })
-    expect(sent[1]).toEqual({ type: 'project.open', slug: 'harbor', chat: '2026-10-06-chat.jsonl' })
+    const h = openHarness({ messages: [] })
+    h.open('harbor', null)
+    expect(h.sent).toEqual([{ type: 'project.open', slug: 'harbor' }])
+    expect(h.fetched).toEqual([])
+  })
+
+  it('reopening a chat fetches its transcript and draws it BEFORE sending project.open', async () => {
+    expect(scripts()).toContain("projUrl(slug) + '/chats/' + encodeURIComponent(file)")
+    const h = openHarness({
+      header: { kind: 'chat', title: 'Crane' },
+      messages: [
+        { role: 'user', content: [{ type: 'text', text: 'What colour is the crane?' }] },
+        { role: 'assistant', content: [{ type: 'thinking', thinking: 'hm' }, { type: 'tool_use', id: 't1', name: 'ProjectSearch', input: {} }] },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'rust red', is_error: false }] },
+        { role: 'assistant', content: [{ type: 'text', text: 'Rust red [1].' }] },
+      ],
+    })
+    await h.open('harbor', '2026-10-06-chat.jsonl')
+    expect(h.fetched).toEqual(['/api/projects/harbor/chats/2026-10-06-chat.jsonl'])
+    expect(h.sent).toEqual([{ type: 'project.open', slug: 'harbor', chat: '2026-10-06-chat.jsonl' }])
+    const after = h.drawn.slice(h.drawn.lastIndexOf('CLEAR') + 1)
+    expect(after).toEqual(['user: What colour is the crane?', 'tool ProjectSearch success', 'assistant: Rust red [1].', 'SEND'])
+  })
+
+  it('a transcript that will not load is said so, and the chat still opens', async () => {
+    const h = openHarness(new Error('no such chat'))
+    await h.open('harbor', 'ghost.jsonl')
+    expect(h.drawn).toContain('system: Could not load the earlier messages of ghost.jsonl: no such chat')
+    expect(h.sent).toEqual([{ type: 'project.open', slug: 'harbor', chat: 'ghost.jsonl' }])
   })
 
   it('calls the project routes', () => {

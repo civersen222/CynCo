@@ -3497,6 +3497,7 @@ var projectsState = {
   knowledge: {},         // name → FileRecord
   artifacts: {},         // name → FileRecord
   active: null,          // { slug, chat, title } — the chat the engine is bound to
+  renderedChat: null,    // '<slug>/<file>' whose transcript openProjectChat drew before project.open
   replyCount: 0,         // assistant replies given a "Save as artifact" link
   chatToasted: {},       // chat filePath + reason → true (one toast per cause, not per turn)
 };
@@ -3778,7 +3779,11 @@ function renameProjectChat(file, current) {
   });
 }
 
-/** Bind the engine's conversation to a project chat (file null = a new chat), then show the Chat tab. */
+/**
+ * Bind the engine's conversation to a project chat (file null = a new chat),
+ * then show the Chat tab. An existing chat's transcript is fetched and drawn
+ * into the pane FIRST, so the user sees the turns the model is resuming from.
+ */
 function openProjectChat(slug, file) {
   if (!slug) { projStatus('projectsStatus', 'err', 'Open a project first.'); return; }
   // A new chat OMITS `chat`: the command schema accepts a transcript file
@@ -3799,9 +3804,60 @@ function openProjectChat(slug, file) {
     }, 250);
     return;
   }
-  ws.send(JSON.stringify(msg));
-  appendChatMsg('system', 'Opening ' + (projectsState.names[slug] || slug) + ' › ' + (file || 'new chat') + '…');
   switchTab('chat');
+  if (!file) {
+    projectsState.renderedChat = null;
+    ws.send(JSON.stringify(msg));
+    appendChatMsg('system', 'Opening ' + (projectsState.names[slug] || slug) + ' › new chat…');
+    return;
+  }
+  clearChatPane();
+  appendChatMsg('system', 'Loading ' + (projectsState.names[slug] || slug) + ' › ' + file + '…');
+  return projFetch(projUrl(slug) + '/chats/' + encodeURIComponent(file)).then(function(t) {
+    clearChatPane();
+    renderTranscript(t);
+    projectsState.renderedChat = slug + '/' + file;
+  }).catch(function(err) {
+    console.warn('[projects] transcript ' + file + ': ' + err.message);
+    projectsState.renderedChat = null;
+    appendChatMsg('system', 'Could not load the earlier messages of ' + file + ': ' + err.message);
+  }).then(function() {
+    if (!ws || ws.readyState !== 1) { appendChatMsg('system', 'Not connected to the engine — the chat was not opened.'); return; }
+    ws.send(JSON.stringify(msg));
+  });
+}
+
+function clearChatPane() {
+  var msgs = document.getElementById('chatMessages');
+  if (msgs) msgs.innerHTML = '';
+  clearChatCitations();
+}
+
+/**
+ * Draw a stored transcript the way the live chat draws it: user and assistant
+ * text as messages, each tool call as a collapsed tool row (✓/✗ from its
+ * result), thinking and tool-result plumbing skipped.
+ */
+function renderTranscript(t) {
+  var messages = (t && t.messages) || [];
+  var failed = {};
+  messages.forEach(function(m) {
+    (m.content || []).forEach(function(b) { if (b && b.type === 'tool_result' && b.is_error) failed[b.tool_use_id] = true; });
+  });
+  var shown = 0;
+  messages.forEach(function(m) {
+    var blocks = Array.isArray(m.content) ? m.content : [{ type: 'text', text: String(m.content || '') }];
+    var text = blocks.filter(function(b) { return b && b.type === 'text' && b.text; }).map(function(b) { return b.text; }).join('\n');
+    if (m.role === 'user' && text) { appendChatMsg('user', text); shown++; }
+    if (m.role === 'assistant') {
+      if (text) { appendChatMsg('assistant', text + (m.aborted ? '\n(interrupted)' : '')); shown++; }
+      blocks.forEach(function(b) {
+        if (b && b.type === 'tool_use') appendChatTool(b.name || 'tool', summarizeInput(b.name, b.input), failed[b.id] ? 'error' : 'success', null);
+      });
+    }
+  });
+  if (!shown) appendChatMsg('system', 'This chat has no messages yet.');
+  return shown;
 }
 
 function leaveProject() {
@@ -3822,8 +3878,12 @@ function onProjectOpened(event) {
     return;
   }
   projectsState.active = { slug: event.slug, chat: event.chat, title: event.title };
+  // openProjectChat already drew this chat's transcript; keep it. Anything
+  // else in the pane belongs to the conversation the engine just left.
+  var rendered = event.chat && projectsState.renderedChat === event.slug + '/' + event.chat;
+  projectsState.renderedChat = null;
   var msgs = document.getElementById('chatMessages');
-  if (msgs) msgs.innerHTML = '';
+  if (msgs && !rendered) msgs.innerHTML = '';
   var setLabel = function() {
     document.getElementById('chatProjectLabel').textContent =
       'Project: ' + (projectsState.names[event.slug] || event.slug) + ' › ' + (event.title || 'new chat');
@@ -3835,7 +3895,8 @@ function onProjectOpened(event) {
       .catch(function(err) { console.warn('[projects] name for strip: ' + err.message); });
   }
   appendChatMsg('system', 'Opened ' + (projectsState.names[event.slug] || event.slug) + ' › ' + (event.title || 'new chat') +
-    (event.chat ? ' (' + event.chat + ' — earlier turns are back in the model\'s context)' : ''));
+    (event.chat && !rendered ? ' (' + event.chat + ')' : ''));
+  markSaveableReplies();
   if (event.chat) history.replaceState(null, '', '#projects/' + encodeURIComponent(event.slug) + '/chat/' + encodeURIComponent(event.chat));
   projStatus('projectsStatus', '', '');
   if (projectsState.slug === event.slug) loadProjectChats(event.slug);

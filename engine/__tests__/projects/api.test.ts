@@ -6,12 +6,12 @@ import {
   listProjects, createProjectApi, getProjectApi, patchProjectApi, searchApi,
   listKnowledgeApi, addKnowledgeApi, removeKnowledgeApi,
   listArtifactsApi, promoteArtifactApi,
-  listChatsApi, renameChatApi, rescanApi,
+  listChatsApi, getChatApi, renameChatApi, rescanApi,
   UPLOAD_MAX_BYTES, type ProjectsDeps,
 } from '../../projects/api.js'
 import { readFileIndex } from '../../projects/layout.js'
 import { ingestFile, type IngestEvent } from '../../projects/ingest.js'
-import { newChatFile } from '../../projects/chat.js'
+import { appendTranscript, newChatFile } from '../../projects/chat.js'
 import { pdfWithPages } from './fixtures.js'
 import type { EmbedClient } from '../../index/embedClient.js'
 
@@ -203,6 +203,27 @@ describe('chats: list/rename', () => {
     const renamed = await renameChatApi(d, slug, file, { title: 'Resin quantities' })
     expect(renamed.status).toBe(200)
     expect(renamed.body).toMatchObject({ file, title: 'Resin quantities' })
+  })
+
+  it('reads one chat transcript; 404s an unknown chat or project; basenames the file', async () => {
+    const d = deps()
+    const slug = ((await createProjectApi(d, { name: 'Diorama' })).body as { slug: string }).slug
+    const dir = join(home, slug)
+    const { file } = newChatFile(dir, 'How much resin do I need?')
+    appendTranscript(dir, file, { role: 'user', content: [{ type: 'text', text: 'How much resin do I need?' }] })
+    appendTranscript(dir, file, { role: 'assistant', content: [{ type: 'text', text: 'About 2 L.' }] })
+
+    const r = getChatApi(d, slug, file)
+    expect(r.status).toBe(200)
+    const body = r.body as { header: { title: string }; messages: { role: string }[] }
+    expect(body.header.title).toBe('How much resin do I need?')
+    expect(body.messages.map(m => m.role)).toEqual(['user', 'assistant'])
+    // a path in the file name is reduced to its basename, never followed
+    expect(getChatApi(d, slug, `../../${slug}/chats/${file}`).status).toBe(200)
+
+    expect(getChatApi(d, slug, 'ghost.jsonl')).toEqual({ status: 404, body: { error: 'no such chat' } })
+    expect(getChatApi(d, 'nope', file)).toEqual({ status: 404, body: { error: 'no such project' } })
+    expect(getChatApi(d, '../x', file).status).toBe(400)
   })
 
   it('404s renaming an unknown chat', async () => {
