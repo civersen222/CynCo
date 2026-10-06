@@ -106,6 +106,23 @@ describe('ConversationLoop + ProjectBinding', () => {
     expect(loop.isProcessing).toBe(false)
   }, 60000)
 
+  it('a client cwd is refused while a project is bound and honoured in the coding session (Task 11 live proof)', async () => {
+    const { home, slug } = await project('Cwd', '')
+    const elsewhere = mkdtempSync(join(tmpdir(), 'cynco-elsewhere-'))
+    const { loop } = makeLoop({ script: [] })
+    const b = await openBinding({ home, slug, embed: null, embedModel: 'none', contextLength: 32768 })
+    if (!b.ok) throw new Error(b.reason)
+    await loop.startProjectSession(b.binding, b.messages)
+    const cwd = () => (loop as any).executor['cwd'] as string
+    expect(cwd()).toBe(join(home, slug))
+    // The dashboard sends its CWD box (the launch dir) with every user.message.
+    expect(loop.acceptClientCwd(elsewhere)).toBe(false)
+    expect(cwd()).toBe(join(home, slug))
+    await loop.startProjectSession(null)
+    expect(loop.acceptClientCwd(elsewhere)).toBe(true)
+    expect(cwd()).toBe(elsewhere)
+  }, 60000)
+
   it('a Write outside the project is refused as dangerous and never asked', async () => {
     const { home, slug } = await project('Fence', '')
     const { loop, events, calls } = makeLoop({

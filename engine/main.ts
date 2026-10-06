@@ -479,6 +479,10 @@ try {
         if (activationsConsumer) activationsConsumer.layer = layer
       },
       projects: projectsDeps,
+      currentProject: () => {
+        const b = loop.currentProject()
+        return b ? { slug: b.slug, chat: b.chatFile, title: b.chatTitle } : null
+      },
     },
   })
   const dashboardHost = dashboardServer.getHostname()
@@ -610,8 +614,7 @@ async function handleCommand(command: TUICommand): Promise<void> {
       if (command.cwd) {
         const { existsSync } = require('fs')
         if (existsSync(command.cwd)) {
-          loop.setCwd(command.cwd)
-          console.log(`[localcode] Switched cwd to: ${command.cwd}`)
+          if (loop.acceptClientCwd(command.cwd)) console.log(`[localcode] Switched cwd to: ${command.cwd}`)
         } else {
           console.log(`[localcode] Ignoring invalid cwd: ${command.cwd}`)
         }

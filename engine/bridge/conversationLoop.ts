@@ -5383,4 +5383,20 @@ export class ConversationLoop {
       .join('\n  ')
     return `${toolName}\n  ${entries}`
   }
+
+  /**
+   * A working directory a client sent with `user.message`. Refused while a
+   * project chat is bound: the project folder is that chat's cwd
+   * (`startProjectSession` set it), and the dashboard's CWD box still holds the
+   * launch directory, so honouring it sent every page-typed project turn's
+   * tools to the launch cwd (found in the Task 11 live proof).
+   */
+  acceptClientCwd(cwd: string): boolean {
+    if (this.project) {
+      console.log(`[projects] ignoring client cwd ${cwd}: project ${this.project.slug} works in ${this.project.dir}`)
+      return false
+    }
+    this.setCwd(cwd)
+    return true
+  }
 }

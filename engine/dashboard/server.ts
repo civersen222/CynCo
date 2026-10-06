@@ -103,6 +103,15 @@ export interface DashboardDeps {
   loadScoreboard?: () => Promise<ScoreboardModule>
   /** Projects mode deps (Task 8 mounts the /api/projects routes over these). */
   projects?: ProjectsDeps
+  /**
+   * The project chat the loop is bound to right now, or null in the coding
+   * session. A socket that connects mid-project (a page reload, a second tab)
+   * gets one `project.opened` frame from this on open, so it does not show the
+   * coding session while its messages go into a project chat. Asked of the
+   * loop, not replayed from the last broadcast: a new chat is named by its
+   * first message, after `project.opened` went out with `chat: null`.
+   */
+  currentProject?: () => { slug: string; chat: string | null; title: string | null } | null
 }
 
 // ---------------------------------------------------------------------------
@@ -629,6 +638,10 @@ export class DashboardServer {
           this.clients.add(ws)
           for (const json of this.replayCache.values()) {
             try { ws.send(json) } catch (err) { console.log('[dashboard] replay send failed:', err) }
+          }
+          const project = this.deps.currentProject?.() ?? null
+          if (project) {
+            try { ws.send(JSON.stringify({ type: 'project.opened', ...project })) } catch (err) { console.log('[dashboard] project.opened on connect failed:', err) }
           }
         },
         message: (ws: ServerWebSocket<unknown>, message: string | Buffer) => {

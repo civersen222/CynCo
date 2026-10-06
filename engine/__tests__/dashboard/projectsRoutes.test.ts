@@ -408,3 +408,39 @@ describe('projects not configured', () => {
     }
   })
 })
+
+// Task 11 wire check: `ConversationLoop.currentProject()` reaches the page. A
+// socket that connects while the loop is bound to a project chat (a reload, a
+// second tab) is told so, instead of showing the coding session.
+describe('/ws on connect: the bound project', () => {
+  async function framesOnConnect(bound: { slug: string; chat: string | null; title: string | null } | null): Promise<any[]> {
+    const s = new DashboardServer({ port: 0, tokens: _tokens, deps: { currentProject: () => bound } })
+    try {
+      const port = await waitForPort(s)
+      const frames: any[] = []
+      const ws = new WebSocket(`ws://localhost:${port}/ws?token=${_INFERENCE}`)
+      ws.addEventListener('message', (ev: any) => frames.push(JSON.parse(String(ev.data))))
+      await new Promise<void>((resolve, reject) => {
+        ws.addEventListener('open', () => resolve())
+        ws.addEventListener('error', (err: any) => reject(err))
+      })
+      await new Promise(r => setTimeout(r, 200))
+      ws.close()
+      return frames
+    } finally {
+      s.stop()
+    }
+  }
+
+  it('sends one project.opened naming the bound chat', async () => {
+    const frames = await framesOnConnect({ slug: 'diorama', chat: '20261006-crane.jsonl', title: 'Crane questions' })
+    expect(frames.filter(f => f.type === 'project.opened')).toEqual([
+      { type: 'project.opened', slug: 'diorama', chat: '20261006-crane.jsonl', title: 'Crane questions' },
+    ])
+  })
+
+  it('sends nothing in the coding session', async () => {
+    const frames = await framesOnConnect(null)
+    expect(frames.filter(f => f.type === 'project.opened')).toEqual([])
+  })
+})
