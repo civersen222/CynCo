@@ -13,6 +13,16 @@ Projects mode: a non-code project (a diorama, a cookbook) as a plain folder unde
 | `chat.ts` | One JSONL transcript per chat: `newChatFile`/`appendTranscript`/`readTranscript`/`listChats`/`renameChat`, plus `turnsOf` for indexing. |
 | `tools.ts` | `ProjectSearch`/`SaveArtifact`/`AddToKnowledge` tool implementations and the module-state `ProjectToolContext` the loop sets per session. |
 | `binding.ts` | `ProjectBinding` (what `ConversationLoop` holds while a project is open), `openBinding`, and `gradeProjectCall` — the executor grader for project chats. |
+| `ingest.ts` | extract → chunk → embed → store, for one knowledge/artifact file or one chat; the only place a project's own `.cynco/index/project.db` is opened for writing. |
+| `proseChunker.ts` | Heading-bounded, paragraph-packed chunking for prose files (`chunkSegments`) and chat transcripts (`chunkTranscriptTurns`). |
+| `search.ts` | `searchProjects`: one hybrid (vector+BM25, RRF-fused) search function, used for a single project and fanned out across every registered one. |
+| `retrieval.ts` | Builds the per-turn `[Project knowledge]` system block from search hits (`buildRetrievalBlock`) and tracks which citations a reply actually used (`citationsUsed`). |
+| `api.ts` | `/api/projects/*` and `/api/project-search` route handlers as plain `{ status, body }` functions; `makeProjectsDeps` builds the shared deps object. |
+| `extract/types.ts` | `Segment`/`Extracted`/`Extractor` — the shared shape every format extractor returns. |
+| `extract/index.ts` | `extractFile`/`extractorFor`: picks the extractor by extension; the accepted/image extension sets. |
+| `extract/markdown.ts` | `.md`/`.markdown`/`.txt` → heading-pathed segments from ATX `#`–`###`. |
+| `extract/pdf.ts` | `.pdf` → one segment per page, via `unpdf` (pdf.js, no canvas, runs under Bun). |
+| `extract/epub.ts` | `.epub` → one segment per spine chapter; `htmlToText` (also reused by `tools.ts` for AddToKnowledge-by-URL) turns a chapter's XHTML into paragraphs. |
 
 ## Important types & functions
 - **`ProjectMeta`** (`layout.ts:14`) — the `project.json` shape; `schema: 1` is checked on every read so a future schema bump can't be silently misread.
@@ -34,11 +44,26 @@ Projects mode: a non-code project (a diorama, a cookbook) as a plain folder unde
 
 - **`gradeProjectCall`** (`binding.ts:46`) — file tools: a resolved path inside the project folder is `safe`, anything else `dangerous` naming the path; Bash: every download (and `git clone`) is `risky`, otherwise the classifier passed in (the bridge's `classifyRisk`, passed because this package never imports from `engine/bridge/`); every other tool `safe`.
 - **`openBinding`** (`binding.ts:62`) — reads the project (and an existing chat's transcript, if named), ensures history and the registry entry, touches `lastOpenedAt`, journals `chat.opened`; the loop then takes the binding via `ConversationLoop.startProjectSession`.
+- **`extractFile`** (`engine/projects/extract/index.ts:20`) — picks the extractor by extension (markdown/txt, pdf, epub); refuses an image outright (`'images are captioned in sub-project 3'`) and anything with no extractor, each with a reason rather than throwing.
+- **`chunkSegments`** (`proseChunker.ts:31`) — packs a file's `Segment[]` into chunks that never cross a heading boundary, toward `TARGET_WORDS` and never past `MAX_WORDS`; each new chunk after the first repeats the previous chunk's last paragraph as overlap so a sentence split by the boundary is still findable; a single over-long paragraph is split at sentence ends (`splitLongParagraph`).
+- **`ingestFile`** (`ingest.ts:74`) — `extractFile` → `chunkSegments` → embed (or skip, if no embed client) → `IndexStore.insertChunk`, for one knowledge/artifact file; `openForModel` (`ingest.ts:44`) rebuilds the store from scratch when the configured embed model changed since it was created (the vec table's dimension is fixed at first open). Every outcome — indexed, refused by the extractor, embeddings unavailable — is written to the area's `index.json`, journaled, and emitted as one `IngestEvent`; nothing is silent.
+- **`searchProjects`** (`search.ts:59`) — embeds the query once, then for each target project (one slug, or every entry of `readRegistry(home, { heal: false })` for `scope: 'all'`) runs vector kNN + BM25 over `IndexStore.allChunks` fused by `reciprocalRankFusion`; a project that cannot be opened is named in the result's `skipped`, not dropped.
+- **`buildRetrievalBlock`** (`retrieval.ts:23`) — turns search hits into the numbered `[Project knowledge]` text (tag `RETRIEVAL_TAG`), cut to a token budget and at most `MAX_PASSAGES`; returns the `Citation[]` actually included, which `citationsUsed` (`retrieval.ts:45`) later filters down to the ones `[n]` the assistant's reply actually cited.
+- **`makeProjectsDeps`** (`api.ts:24`) — builds the one `ProjectsDeps` (home, embed client, embed model, ingest-event emitter, context length) every `/api/projects/*` and `/api/project-search` handler in this file takes; `main.ts` constructs it once at startup.
 
 ## Data flow
 1. A caller (a later task's API handler or tool) calls `createProject` (`layout.ts:77`) with a name and optional description/instructions/tags; the returned `ProjectMeta` is the slug every other call keys off.
 2. The caller registers the new project with `upsertRegistry` (`registry.ts:91`) so `readRegistry` (`registry.ts:84`) lists it without a rebuild; any later read that finds the cache stale (a hand-deleted folder, a corrupt file) silently calls `rebuildRegistry` (`registry.ts:29`) instead of surfacing the mismatch.
 3. Every mutating write under the project folder is followed by `ensureHistory` (`history.ts:37`, once) then `commitHistory` (`history.ts:47`) with the paths that changed; a git failure is journaled via `appendJournal(dir, 'history.failed', ...)` (`layout.ts:144`) and returned as `{ ok: false, reason }` rather than thrown, so the write itself is never rolled back by a history problem.
+
+One chat turn:
+4. `openBinding` (`binding.ts:62`) runs once, when the project/chat is opened; `ConversationLoop.startProjectSession` takes the returned `ProjectBinding`, sets `setProjectToolContext` (`tools.ts:23`) and the executor's `Grader` to `gradeProjectCall` (`binding.ts:46`).
+5. Each user message: the loop builds the retrieval block from `searchProjects` (`search.ts:59`) and `buildRetrievalBlock` (`retrieval.ts:23`), splices it in as a `[Project knowledge]` system message, then appends both sides of the turn to the chat's JSONL transcript via `appendTranscript` (`chat.ts:35`) once each is produced.
+6. If the assistant calls `ProjectSearch`/`SaveArtifact`/`AddToKnowledge` (`tools.ts:37/66/100`), each refuses outside a project session, stays inside the project folder (`isInside`, `layout.ts:62`), and is followed by `ensureHistory`+`commitHistory` the same as any other write.
+
+One upload (`addKnowledgeApi`, `api.ts:87`, or `promoteArtifactApi`, `api.ts:121`):
+7. The bytes are written under `knowledge/` (or copied from `artifacts/`), then `ingestFile` (`ingest.ts:74`) runs `extractFile` (`engine/projects/extract/index.ts:20`) → `chunkSegments` (`proseChunker.ts:31`) → embed → `IndexStore.insertChunk`, recording the outcome in `knowledge/index.json` and the journal and returning one `IngestEvent`.
+8. `commitHistory` (`history.ts:47`) stages the new file, its area's `index.json`, and `journal.md` in one commit.
 
 ## Gotchas
 - The registry is a cache, never the truth: `readRegistry` rebuilds whenever the on-disk folder set and the cached slug set disagree (missing folder, extra folder, unparsable JSON, wrong `version`) — never hand-edit `registry.json` and expect it to stick past the next read.
@@ -46,3 +71,10 @@ Projects mode: a non-code project (a diorama, a cookbook) as a plain folder unde
 - `git diff --cached --quiet` exit 0 means nothing is staged (ok, nothing to record); exit 1 means something is staged and should be committed — do not invert this when touching `commitHistory`.
 - Commits for one project directory are serialised through a per-dir promise queue (`queues` in `history.ts`) so two concurrent writes to the same project can't race `git add`/`git commit`; this package uses `execFile` (async), never `spawnSync`, per F155.
 - `.cynco/` under a project is git-ignored by the `.gitignore` every `createProject` writes — it holds the local index/db, never history.
+- R2: a project's `.cynco/index/project.db` is opened ONLY by `ingest.ts` (`openProjectStore`/`openForModel`) and `search.ts` (`searchOne`), never by `engine/index`'s `ProjectIndexer` — its constructor purges every row `isIndexableSource` rejects, and none of `knowledge`/`artifact`/`chat` is a source file, so the next open would silently empty the project's whole prose index. See `engine/index/CLAUDE.md`.
+- R4: the `[Project knowledge]` system block is rebuilt and spliced in fresh by `injectProjectRetrieval` (`engine/bridge/conversationLoop.ts:971`) on every turn and is never appended to the chat transcript or journal — it is per-turn context, not conversation; `RETRIEVAL_TAG` (`retrieval.ts:11`) is how the loop finds the previous one to delete before adding the new one.
+- R5: every `/api/projects*` and `/api/project-search` request runs under the `inference` (read) scope regardless of HTTP method — this is a non-code project's own data, not engine configuration — and that check runs before the dashboard server's generic GET=inference/POST=management split, or every POST here would wrongly demand the management token (`engine/dashboard/server.ts`).
+- R7: every download (and `git clone`) is graded `risky` by `gradeProjectCall`, never `safe`, however the guardian classifier would otherwise rate it — in a project chat there is always a user to ask, so the engine-wide approve-all download refusal does not apply; see `engine/tools/CLAUDE.md`'s grader step in `ToolExecutor.execute`.
+- `readProject` (`layout.ts:98`) rejects any folder name that fails `SLUG_RE` (`layout.ts:50`) before even checking for a `project.json` — a hand-made `My Project/` folder dropped straight into the projects home is invisible to `rebuildRegistry` and to every API route, not merely unlisted until renamed.
+- `readRegistry(home, { heal: false })` (`registry.ts:84`) exists for a caller that must see a project the cache still remembers even though its folder just vanished — `searchProjects`'s fan-out uses it so its own `existsSync` check, not a silent rebuild, is what produces that project's `skipped` entry.
+- `initSnapshot` (`engine/bridge/conversationLoop.ts:805`) is a no-op while a `ProjectBinding` is held: the workspace-snapshot store would write `.cynco-snapshots/` into the project's own `.git/info/exclude` and an undo would rewrite project files behind the project's own history. There is no `/undo` inside a project chat — the project's git history is the record.

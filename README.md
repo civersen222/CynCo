@@ -287,6 +287,36 @@ Open the URL the engine printed at startup (bridge port + 1; `http://localhost:9
 
 Survives page reload, auto-detects active sessions, auto-reconnects on disconnect. Polls governance every 3s and training data every 30s.
 
+### Projects
+
+A **[Projects]** view on the dashboard at `/#projects` for non-code work — a
+build, a plan, a recipe book, a piece of research — kept separate from the
+coding workspace above. It lists your projects, opens one to its knowledge,
+artifacts, chats and journal, and opens a chat that answers from the project's
+own material (with numbered citations) alongside the open web.
+
+Each project is one plain folder, five pieces:
+
+- `project.json` / `instructions.md` — the project's name, description, tags, and your standing instructions for every chat in it.
+- `knowledge/` — the sources you've gathered, each indexed for search.
+- `chats/` — one JSONL transcript per conversation.
+- `artifacts/` — the things CynCo has produced for you (specs, plans, drafts), promotable into `knowledge/`.
+- `journal.md` — an append-only record of what happened, plus an invisible git history underneath the whole folder (no git command ever shown to you).
+
+Tool calls inside a project chat are graded, not approved by tier: a file write
+or read stays inside the project folder or is refused outright; a Bash command
+runs at once when it's safe, asks you first when it's risky — and *every*
+download asks, always, however safe it would otherwise look; anything
+dangerous is refused with its reason. There is no `/undo` and no workspace
+snapshot inside a project chat — the project's own invisible git history is the
+record instead.
+
+Three environment variables tune it: `LOCALCODE_PROJECTS_HOME` (default
+`~/cynco-projects`) for where project folders live, `LOCALCODE_PROJECTS_EMBED_MODEL`
+(default `nomic-embed-text`) for the prose embedding model, and
+`LOCALCODE_PROJECTS_RETRIEVAL_SHARE` (default `0.15`) for the context-window
+share given to the per-turn retrieval block.
+
 ### Local tokens
 
 The engine mints `~/.cynco/tokens.json` at startup (owner-only; on Windows the

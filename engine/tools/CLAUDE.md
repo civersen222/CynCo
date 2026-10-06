@@ -70,12 +70,13 @@ Defines every tool the model can call in an agent turn — file I/O, Bash, Git, 
 2. `getToolByName` (registry.ts) resolves the `ToolImpl`; an unknown name returns an error result immediately.
 3. `callTouchesSealed` (sealedPaths.ts) refuses the call outright if it names a withheld gate instrument.
 4. `immutableTargetOf` refuses a write to a declared brief/gate path (readable, never writable).
-5. A download command (`isDownloadCommand`) is refused under approve-all, or forced through interactive approval.
-6. `shouldAutoApprove` decides tier/trust; if not auto, `requestApproval` blocks on the human/UI before proceeding.
-7. `tool.execute(input, cwd)` runs the tool's own implementation (e.g. `bashTool`, `editTool`, `codeIndexTool`).
-8. A successful workspace-mutating call clears `DoomLoopDetector` state; a failed repeat is checked via `doomLoop.check`.
-9. Output is redacted (`redactSealed`), capped (`capToolResult`), and given a CodeIndex-adoption nudge before returning as the final `ToolResult`; `arbiterVerdict` passes through unchanged.
-10. `toolScorer.record` logs success/failure for later demotion/probation decisions.
+5. If a `Grader` is set (projects mode, `setGrader`), it alone decides what happens next — `dangerous` refuses with its reason, `risky` goes straight to `requestApproval`, `safe` proceeds — and steps 6-7 below are skipped entirely.
+6. A download command (`isDownloadCommand`) is refused under approve-all, or forced through interactive approval.
+7. `shouldAutoApprove` decides tier/trust; if not auto, `requestApproval` blocks on the human/UI before proceeding.
+8. `tool.execute(input, cwd)` runs the tool's own implementation (e.g. `bashTool`, `editTool`, `codeIndexTool`).
+9. A successful workspace-mutating call clears `DoomLoopDetector` state; a failed repeat is checked via `doomLoop.check`.
+10. Output is redacted (`redactSealed`), capped (`capToolResult`), and given a CodeIndex-adoption nudge before returning as the final `ToolResult`; `arbiterVerdict` passes through unchanged.
+11. `toolScorer.record` logs success/failure for later demotion/probation decisions.
 
 ## Gotchas
 - `bashSafety.ts` is explicitly "NOT a sandbox — trivially bypassed... The real protection is Bash tier='approval'" — pinned by `bashSafety.test.ts`.
