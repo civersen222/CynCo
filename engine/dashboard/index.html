@@ -456,6 +456,8 @@ body.mission-mode #panelGrammar,
 body.mission-mode #panelTraining,
 body.mission-mode #panelBestOfN,
 body.mission-mode #historyPanel { display: none; }
+/* Mission / Campaign panels and the Project row: shown only when they carry something live. */
+.panel.hidden, #connProjectRow.hidden { display: none; }
 #missionCommitList { margin-top: 6px; font-size: 11px; color: #9a9a9a; }
 #missionCommitList div { padding: 1px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
@@ -579,6 +581,7 @@ body.mission-mode #historyPanel { display: none; }
       <div><span class="label">Duration: </span><span class="value" id="connDuration">&mdash;</span></div>
       <div><span class="label">Turns: </span><span class="value" id="connTurns">0</span></div>
       <div><span class="label">Tier: </span><span class="value" id="connTier">&mdash;</span></div>
+      <div id="connProjectRow" class="hidden"><span class="label">Project: </span><span class="value" id="connProject">&mdash;</span></div>
     </div>
   </div>
 
@@ -596,7 +599,7 @@ body.mission-mode #historyPanel { display: none; }
        dispatch-mission.sh (/api/mission answers active:true). The facts come
        from the mission repo's git history — the evidence the driver grades —
        not from the model's own account of its progress. -->
-  <div class="panel" id="panelMission" style="display:none">
+  <div class="panel hidden" id="panelMission">
     <div class="panel-title">Mission</div>
     <div class="gov-stats" id="missionStats">
       <div><span class="label">Marker: </span><span class="value" id="missionMarker">&mdash;</span></div>
@@ -615,7 +618,7 @@ body.mission-mode #historyPanel { display: none; }
        campaign stands. Rebuilt in full on every poll rather than patched in
        place: the campaign set, proposal list and wave count can all change
        between polls and there is no stable per-row id to patch against. -->
-  <div class="panel full-width" id="panelCampaign" style="display:none">
+  <div class="panel full-width hidden" id="panelCampaign">
     <div class="panel-title">Campaign</div>
     <div id="campaignList"></div>
   </div>
@@ -2363,6 +2366,43 @@ function fetchContracts() {
     .catch(function() {});
 }
 
+/**
+ * Seed the Governance tab's connection panel and the project strip from
+ * /api/session, so a reload shows the live conversation (turns, context, the
+ * bound project) instead of `Turns: 0` and `0 / 0 tokens` until the next
+ * event. A live event already seen wins: counts only go up, and a
+ * context.status frame is never overwritten by the snapshot. contextUsed null
+ * means nothing measured yet — the gauge stays empty, not a made-up 0 (F16).
+ */
+function seedSessionCounters(data) {
+  if (typeof data.turns === 'number' && data.turns > state.turnCount) state.turnCount = data.turns;
+  if (!state.context && typeof data.contextUsed === 'number' && data.contextLength) {
+    var util = Math.min(1, data.contextUsed / data.contextLength);
+    state.context = { estimatedTokens: data.contextUsed, contextLength: data.contextLength,
+      utilization: util, action: util > 0.8 ? 'compact' : 'proceed' };
+  }
+  var p = data.project;
+  showConnProject(p);
+  // The strip, before the on-connect project.opened frame draws the pane.
+  if (p && p.slug && !projectsState.active) {
+    document.getElementById('chatProjectLabel').textContent =
+      'Project: ' + (projectsState.names[p.slug] || p.slug) + ' › ' + (p.title || 'new chat');
+    document.getElementById('chatProjectStrip').classList.add('visible');
+  }
+}
+
+/** The connection panel's Project row: the bound project chat, or hidden in the coding session. */
+function showConnProject(p) {
+  var row = document.getElementById('connProjectRow');
+  if (!row) return;
+  if (p && p.slug) {
+    document.getElementById('connProject').textContent = (projectsState.names[p.slug] || p.slug) + ' › ' + (p.title || 'new chat');
+    row.classList.remove('hidden');
+  } else {
+    row.classList.add('hidden');
+  }
+}
+
 function fetchSessionState() {
   // Hydrate full dashboard state from REST — handles reload, late connect, reconnect
   fetch('/api/session')
@@ -2376,8 +2416,9 @@ function fetchSessionState() {
         if (data.projectPath) setCodingCwd(data.projectPath);
         activateSession(data.contextLength);
       }
+      if (data) { seedSessionCounters(data); render(); }
     })
-    .catch(function() {});
+    .catch(function(err) { console.warn('[session] /api/session: ' + err.message); });
 
   // Hydrate + poll governance every 3 seconds (tok/s, stuck, health).
   // MERGE, never replace: /api/governance serves CyberneticsGovernance.getReport(),
@@ -2409,9 +2450,14 @@ function fetchSessionState() {
   // and hide the panels that carry no signal during an unattended run.
   function pollMission() {
     fetch('/api/mission').then(function(r) { return r.json(); }).then(function(m) {
-      if (!m || !m.active) return;
+      // No mission (an interactive chat, a project): no Mission panel.
+      if (!m || !m.active) {
+        document.body.classList.remove('mission-mode');
+        document.getElementById('panelMission').classList.add('hidden');
+        return;
+      }
       document.body.classList.add('mission-mode');
-      document.getElementById('panelMission').style.display = '';
+      document.getElementById('panelMission').classList.remove('hidden');
       document.getElementById('missionMarker').textContent = '"' + m.marker + '"';
       var seen = document.getElementById('missionMarkerSeen');
       seen.textContent = m.markerSeen ? 'YES' : 'not yet';
@@ -2614,8 +2660,10 @@ function fetchSessionState() {
     fetch('/api/campaign').then(function(r) { return r.json(); }).then(function(data) {
       var panel = document.getElementById('panelCampaign');
       var list = document.getElementById('campaignList');
-      if (!data || !data.campaigns || !data.campaigns.length) { panel.style.display = 'none'; return; }
-      panel.style.display = '';
+      // Shown only while a campaign is active (a wave in flight, or this engine
+      // launched for one); a project or plain chat session has no Campaign panel.
+      if (!data || !data.active || !data.campaigns || !data.campaigns.length) { panel.classList.add('hidden'); return; }
+      panel.classList.remove('hidden');
       list.innerHTML = '';
       // Phase 5 ruling 2: the pooled scoreboard, one line at the top — the
       // harness's headline numbers over every runner-driven campaign.
@@ -4034,6 +4082,7 @@ function onProjectOpened(event) {
   var setLabel = function() {
     document.getElementById('chatProjectLabel').textContent =
       'Project: ' + (projectsState.names[event.slug] || event.slug) + ' › ' + (event.title || 'new chat');
+    showConnProject(event.slug ? event : null);
   };
   var key = event.slug && event.chat ? event.slug + '/' + event.chat : null;
   var prev = projectsState.active;
@@ -4049,6 +4098,7 @@ function onProjectOpened(event) {
     projectsState.active = null;
     projectsState.renderedChat = null;
     restoreCodingCwd();
+    showConnProject(null);
     strip.classList.remove('visible');
     appendChatMsg('system', 'Left the project — back to the coding session.');
     var ph = parseProjectsHash();

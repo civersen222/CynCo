@@ -112,6 +112,42 @@ export interface DashboardDeps {
    * first message, after `project.opened` went out with `chat: null`.
    */
   currentProject?: () => { slug: string; chat: string | null; title: string | null } | null
+  /**
+   * The conversation's own counters for `/api/session`: `turns` = user
+   * messages that are not tool results; `contextUsed` = the token estimate the
+   * loop last put on `context.status` (floored by the server's measured prompt
+   * count), null before any turn has run — never 0 (F16).
+   */
+  getSessionCounters?: () => { turns: number; contextUsed: number | null }
+}
+
+/**
+ * The conversation's turn count for `/api/session`: user messages that are not
+ * tool-result carriers. A user message whose content holds a `tool_result`
+ * block is plumbing the loop appends after a tool call, not something the user
+ * said.
+ */
+export function countUserTurns(messages: readonly { role: string; content: unknown }[]): number {
+  let turns = 0
+  for (const m of messages) {
+    if (m.role !== 'user') continue
+    const isToolResult = Array.isArray(m.content) &&
+      m.content.some(b => !!b && typeof b === 'object' && (b as { type?: unknown }).type === 'tool_result')
+    if (!isToolResult) turns++
+  }
+  return turns
+}
+
+/** GET /api/session's reply. A fact whose dep is not wired is null. */
+export type SessionSnapshot = {
+  model: string | null
+  contextLength: number | null
+  processing: boolean | null
+  toolCalls: number | null
+  turns: number | null
+  contextUsed: number | null
+  project: { slug: string; chat: string | null; title: string | null } | null
+  [extra: string]: unknown
 }
 
 // ---------------------------------------------------------------------------
@@ -498,7 +534,7 @@ export class DashboardServer {
             case '/api/sessions':
               return this.getSessions()
             case '/api/session':
-              return jsonResponse(this.deps.getSessionInfo?.() ?? null)
+              return jsonResponse(this.getSession())
             case '/api/run':
               // `null` when the engine did not wire the dep, and it must stay
               // distinguishable from `{processing:false}`. A caller that reads
@@ -932,6 +968,30 @@ window.__CYNCO_TOKEN = ${JSON.stringify(token)};
   private getGovernance(): Response {
     const report = this.deps.getGovernanceReport?.() ?? null
     return jsonResponse(report)
+  }
+
+  /**
+   * GET /api/session — the live conversation in one read, so a reloaded page
+   * seeds its Governance tab and project strip instead of showing `Turns: 0`
+   * and `0 / 0 tokens` until the next event (projects-fix-1 D). The session
+   * info's own fields (tier, projectPath) ride along unchanged. Every fact the
+   * engine did not wire is null, never a made-up 0 (F16): `contextUsed` is null
+   * until a turn has been measured.
+   */
+  private getSession(): SessionSnapshot {
+    const info = this.deps.getSessionInfo?.() ?? null
+    const run = this.deps.getRunState?.() ?? null
+    const counters = this.deps.getSessionCounters?.() ?? null
+    return {
+      ...(info ?? {}),
+      model: info?.model ?? null,
+      contextLength: info?.contextLength ?? null,
+      processing: run ? run.processing : null,
+      toolCalls: run?.toolCalls ?? null,
+      turns: counters ? counters.turns : null,
+      contextUsed: counters?.contextUsed ?? null,
+      project: this.deps.currentProject?.() ?? null,
+    }
   }
 
   /**

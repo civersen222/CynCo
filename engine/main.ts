@@ -43,7 +43,7 @@ import { VibeController } from './vibe/controller.js'
 import { TemplateLoader } from './prompts/templateLoader.js'
 import { initJournal } from './training/decisionJournal.js'
 import { loadOrCreateTokens, TOKEN_FILENAME } from './security/localToken.js'
-import { DashboardServer } from './dashboard/server.js'
+import { DashboardServer, countUserTurns } from './dashboard/server.js'
 import { ActivationsConsumer, DEFAULT_LAYERS } from './brain/activationsConsumer.js'
 import { JlensClient } from './brain/jlensClient.js'
 import { startJlensSidecar, type JlensSidecarHandle } from './brain/jlensSidecar.js'
@@ -483,6 +483,9 @@ try {
         const b = loop.currentProject()
         return b ? { slug: b.slug, chat: b.chatFile, title: b.chatTitle } : null
       },
+      // /api/session: a reloaded page seeds Turns and the context gauge from
+      // these instead of waiting for the next event (projects-fix-1 D).
+      getSessionCounters: () => ({ turns: countUserTurns(loop.getMessages()), contextUsed: loop.contextUsed }),
     },
   })
   const dashboardHost = dashboardServer.getHostname()

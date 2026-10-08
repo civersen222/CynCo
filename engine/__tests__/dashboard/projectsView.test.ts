@@ -188,7 +188,7 @@ describe('dashboard: the Projects view', () => {
     const projectsState: Record<string, any> = { active: null, renderedChat: null, openedSeq: 0, names: { yard: 'Front Yard' }, paths: { yard: 'C:/p/yard' }, slug: null, ...state }
     const make = new Function('document', 'ws', 'projectsState', 'clearChatCitations', 'restoreCodingCwd', 'appendChatMsg',
       'appendChatTool', 'summarizeInput', 'parseProjectsHash', 'history', 'showProjectCwd', 'projFetch', 'projUrl', 'projStatus',
-      'loadProjectChats', 'markSaveableReplies',
+      'loadProjectChats', 'markSaveableReplies', 'showConnProject',
       fnSource('onProjectOpened') + fnSource('fetchTranscript') + fnSource('renderTranscript') + '\nreturn onProjectOpened;')
     const onOpened = make(
       { getElementById: (id: string) => (id === 'chatMessages' ? msgs : id === 'chatProjectStrip' ? strip : label) },
@@ -203,7 +203,7 @@ describe('dashboard: the Projects view', () => {
       () => {},
       (path: string) => { fetched.push(path); return transcript instanceof Error ? Promise.reject(transcript) : Promise.resolve(transcript) },
       (slug: string) => '/api/projects/' + encodeURIComponent(slug),
-      () => {}, () => {}, () => {},
+      () => {}, () => {}, () => {}, () => {},
     )
     const pane = () => children.map(c => c.text)
     return { onOpened, sent, fetched, replaced, put, pane, projectsState, label }
