@@ -438,6 +438,12 @@ export class ConversationLoop {
   private lastMeasuredPromptTokens: number | null = null
   private lastMeasuredAtMessageCount = 0
   /**
+   * The `estimatedTokens` last put on `context.status` — what the dashboard's
+   * `/api/session` reports as `contextUsed`. Null until a turn has run in this
+   * conversation (never 0, F16); reset when the conversation is swapped.
+   */
+  private lastContextUsed: number | null = null
+  /**
    * Session-lifetime token totals (see bridge/tokenTotals.ts). Emitted
    * cumulatively at every message_stop, so the driver's last-seen frame IS
    * the session total no matter how the session ends.
@@ -847,6 +853,11 @@ export class ConversationLoop {
     return this.toolCallsTotal
   }
 
+  /** The tokens `context.status` last reported for this conversation; null before its first turn. */
+  get contextUsed(): number | null {
+    return this.lastContextUsed
+  }
+
   abort(): void {
     if (this.abortController) {
       this.abortController.abort()
@@ -890,6 +901,7 @@ export class ConversationLoop {
     const messages = store.loadMessages()
     if (messages.length > 0) {
       this.messages = messages
+      this.lastContextUsed = null
       this.journal = store
       this.sessionId = sessionId
       this.thinkingRecorder = new ThinkingRecorder(this.sessionId)
@@ -943,6 +955,7 @@ export class ConversationLoop {
     // enforcement re-prompts) — and a project's into the next coding session.
     globalContract.clear()
     this.messages = binding ? messages.map(m => ({ role: m.role, content: m.content }) as Message) : []
+    this.lastContextUsed = null
     this.sessionId = `session-${Date.now()}`
     this.journal = new JSONLStore(this.sessionId)
     this.thinkingRecorder = new ThinkingRecorder(this.sessionId)
@@ -3624,6 +3637,7 @@ export class ConversationLoop {
         this.estimateMessageTokens(this.lastMeasuredAtMessageCount),
       )
       const contextLength = this.config.contextLength ?? 32768
+      this.lastContextUsed = Math.round(estimatedTokens)
       this.emit({
         type: 'context.status',
         utilization: Math.min(1, estimatedTokens / contextLength),

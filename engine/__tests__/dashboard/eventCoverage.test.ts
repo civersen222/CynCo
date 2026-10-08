@@ -25,6 +25,9 @@ const MUST_RENDER = [
   'tool.complete',
   'file.diff',
   'approval.request',
+  // The model's AskUser question (projects-fix-1 A): with no arm the question
+  // was invisible and the broker's 300 s timer answered '' for the user.
+  'ask.request',
   'governance.status',
   'context.status',
 ]

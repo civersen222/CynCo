@@ -117,7 +117,7 @@ describe('dashboard: the Projects view', () => {
     const fetched: string[] = []
     const run = new Function('ws', 'projectsState', 'projStatus', 'appendChatMsg', 'appendChatTool', 'switchTab',
       'clearChatPane', 'projFetch', 'projUrl', 'summarizeInput',
-      fnSource('openProjectChat') + fnSource('renderTranscript') + '\nreturn openProjectChat;')
+      fnSource('openProjectChat') + fnSource('fetchTranscript') + fnSource('renderTranscript') + '\nreturn openProjectChat;')
     const open = run(
       { readyState: 1, send: (s: string) => { drawn.push('SEND'); sent.push(JSON.parse(s)) } },
       { names: {} },
@@ -165,6 +165,130 @@ describe('dashboard: the Projects view', () => {
     await h.open('harbor', 'ghost.jsonl')
     expect(h.drawn).toContain('system: Could not load the earlier messages of ghost.jsonl: no such chat')
     expect(h.sent).toEqual([{ type: 'project.open', slug: 'harbor', chat: 'ghost.jsonl' }])
+  })
+
+  /**
+   * onProjectOpened against a stub pane: `pane` is the #chatMessages node list
+   * as text, `sent` every socket send, `fetched` every route asked for.
+   */
+  function openedHarness(transcript: unknown | Error, state: Record<string, any> = {}) {
+    const sent: string[] = []
+    const fetched: string[] = []
+    const replaced: string[] = []
+    const children: any[] = []
+    const msgs: any = {
+      get children() { return children },
+      set innerHTML(_v: string) { children.length = 0 },
+      removeChild: (n: any) => { children.splice(children.indexOf(n), 1); n.parentNode = null },
+      appendChild: (n: any) => { const i = children.indexOf(n); if (i >= 0) children.splice(i, 1); children.push(n); n.parentNode = msgs },
+    }
+    const strip = { classList: { add: () => {}, remove: () => {} } }
+    const label = { textContent: '' }
+    const put = (text: string) => msgs.appendChild({ text })
+    const projectsState: Record<string, any> = { active: null, renderedChat: null, openedSeq: 0, names: { yard: 'Front Yard' }, paths: { yard: 'C:/p/yard' }, slug: null, ...state }
+    const make = new Function('document', 'ws', 'projectsState', 'clearChatCitations', 'restoreCodingCwd', 'appendChatMsg',
+      'appendChatTool', 'summarizeInput', 'parseProjectsHash', 'history', 'showProjectCwd', 'projFetch', 'projUrl', 'projStatus',
+      'loadProjectChats', 'markSaveableReplies', 'showConnProject',
+      fnSource('onProjectOpened') + fnSource('fetchTranscript') + fnSource('renderTranscript') + '\nreturn onProjectOpened;')
+    const onOpened = make(
+      { getElementById: (id: string) => (id === 'chatMessages' ? msgs : id === 'chatProjectStrip' ? strip : label) },
+      { readyState: 1, send: (s: string) => sent.push(s) },
+      projectsState,
+      () => {}, () => {},
+      (role: string, text: string) => put(`${role}: ${text}`),
+      (name: string) => put(`tool ${name}`),
+      () => '',
+      () => null,
+      { replaceState: (_a: unknown, _b: string, h: string) => replaced.push(h) },
+      () => {},
+      (path: string) => {
+        fetched.push(path)
+        if (typeof transcript === 'function') return (transcript as (p: string) => Promise<unknown>)(path)
+        return transcript instanceof Error ? Promise.reject(transcript) : Promise.resolve(transcript)
+      },
+      (slug: string) => '/api/projects/' + encodeURIComponent(slug),
+      () => {}, () => {}, () => {}, () => {},
+    )
+    const pane = () => children.map(c => c.text)
+    return { onOpened, sent, fetched, replaced, put, pane, projectsState, label }
+  }
+
+  const YARD = {
+    messages: [
+      { role: 'user', content: [{ type: 'text', text: 'Plan a diorama of my front yard.' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'What scale?' }] },
+    ],
+  }
+
+  it('a reload into a bound chat fetches the transcript and draws its turns, then the Opened line (fix-1 B)', async () => {
+    const h = openedHarness(YARD)
+    h.put('system: left over from the coding session')
+    const p = h.onOpened({ type: 'project.opened', slug: 'yard', chat: 'c1.jsonl', title: 'Diorama' })
+    h.put('assistant: (streamed while the transcript loaded)')
+    await p
+    expect(h.fetched).toEqual(['/api/projects/yard/chats/c1.jsonl'])
+    expect(h.pane()).toEqual([
+      'user: Plan a diorama of my front yard.',
+      'assistant: What scale?',
+      'system: Opened Front Yard › Diorama',
+      'assistant: (streamed while the transcript loaded)',
+    ])
+    expect(h.projectsState.renderedChat).toBe('yard/c1.jsonl')
+    expect(h.replaced).toEqual(['#projects/yard/chat/c1.jsonl'])
+    expect(h.sent).toEqual([])
+  })
+
+  it('a second identical frame (a reconnect of the same page) is a no-op but the strip label', async () => {
+    const h = openedHarness(YARD)
+    await h.onOpened({ type: 'project.opened', slug: 'yard', chat: 'c1.jsonl', title: 'Diorama' })
+    const before = h.pane()
+    await h.onOpened({ type: 'project.opened', slug: 'yard', chat: 'c1.jsonl', title: 'Diorama v2' })
+    expect(h.pane()).toEqual(before)
+    expect(h.fetched).toHaveLength(1)
+    expect(h.label.textContent).toBe('Project: Front Yard › Diorama v2')
+    expect(h.projectsState.active).toEqual({ slug: 'yard', chat: 'c1.jsonl', title: 'Diorama v2' })
+    expect(h.sent).toEqual([])
+  })
+
+  it('a late transcript fetch loses to a newer frame (openedSeq)', async () => {
+    const pending: Record<string, (t: unknown) => void> = {}
+    const h = openedHarness((path: string) => new Promise(res => { pending[path] = res }))
+    const first = h.onOpened({ type: 'project.opened', slug: 'yard', chat: 'old.jsonl', title: 'Old' })
+    const second = h.onOpened({ type: 'project.opened', slug: 'yard', chat: 'new.jsonl', title: 'New' })
+    pending['/api/projects/yard/chats/new.jsonl']({ messages: [{ role: 'user', content: [{ type: 'text', text: 'new chat turn' }] }] })
+    await second
+    pending['/api/projects/yard/chats/old.jsonl']({ messages: [{ role: 'user', content: [{ type: 'text', text: 'old chat turn' }] }] })
+    await first
+    expect(h.pane()).toEqual(['user: new chat turn', 'system: Opened Front Yard › New'])
+    expect(h.projectsState.renderedChat).toBe('yard/new.jsonl')
+  })
+
+  it('a chat openProjectChat already drew is kept, not fetched again', async () => {
+    const h = openedHarness(YARD, { renderedChat: 'yard/c1.jsonl' })
+    h.put('user: drawn by openProjectChat')
+    await h.onOpened({ type: 'project.opened', slug: 'yard', chat: 'c1.jsonl', title: 'Diorama' })
+    expect(h.fetched).toEqual([])
+    expect(h.pane()).toEqual(['user: drawn by openProjectChat', 'system: Opened Front Yard › Diorama'])
+  })
+
+  it('a new chat keeps today\'s behaviour: a fresh pane and one Opened line', async () => {
+    const h = openedHarness(YARD)
+    h.put('system: old')
+    await h.onOpened({ type: 'project.opened', slug: 'yard', chat: null, title: null })
+    expect(h.fetched).toEqual([])
+    expect(h.pane()).toEqual(['system: Opened Front Yard › new chat'])
+  })
+
+  it('a transcript that will not load on connect is said so', async () => {
+    const h = openedHarness(new Error('gone'))
+    await h.onOpened({ type: 'project.opened', slug: 'yard', chat: 'c1.jsonl', title: 'Diorama' })
+    expect(h.pane()).toEqual(['system: Could not load the earlier messages of c1.jsonl: gone', 'system: Opened Front Yard › Diorama (c1.jsonl)'])
+    expect(h.projectsState.renderedChat).toBe(null)
+  })
+
+  it('onProjectOpened never sends on the socket (an on-connect frame must not become a project.open)', () => {
+    expect(fnSource('onProjectOpened')).not.toContain('ws.send')
+    expect(fnSource('onProjectOpened')).toContain('history.replaceState')
   })
 
   it('while a project is bound the CWD box shows the project folder read-only and user.message carries no cwd (final review M7)', async () => {
