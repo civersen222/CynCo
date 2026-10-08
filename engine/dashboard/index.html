@@ -2660,9 +2660,9 @@ function fetchSessionState() {
     fetch('/api/campaign').then(function(r) { return r.json(); }).then(function(data) {
       var panel = document.getElementById('panelCampaign');
       var list = document.getElementById('campaignList');
-      // Shown only while a campaign is active (a wave in flight, or this engine
-      // launched for one); a project or plain chat session has no Campaign panel.
-      if (!data || !data.active || !data.campaigns || !data.campaigns.length) { panel.classList.add('hidden'); return; }
+      // Shown whenever a campaign exists — operators watch it between waves too;
+      // hidden only when there are no campaigns at all.
+      if (!data || !data.campaigns || !data.campaigns.length) { panel.classList.add('hidden'); return; }
       panel.classList.remove('hidden');
       list.innerHTML = '';
       // Phase 5 ruling 2: the pooled scoreboard, one line at the top — the

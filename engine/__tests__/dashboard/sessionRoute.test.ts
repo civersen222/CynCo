@@ -121,12 +121,14 @@ describe('dashboard page: seeded from /api/session, idle panels hidden', () => {
     expect(onopen).toContain('fetchSessionState()')
   })
 
-  it('hides the Mission panel on active:false and the Campaign panel with no active campaign', () => {
+  it('hides the Mission panel on active:false and the Campaign panel only when no campaign exists', () => {
     expect(html).toContain('<div class="panel hidden" id="panelMission">')
     expect(html).toContain('<div class="panel full-width hidden" id="panelCampaign">')
     expect(html).toContain('.panel.hidden')
     expect(js).toMatch(/if \(!m \|\| !m\.active\) \{\s*document\.body\.classList\.remove\('mission-mode'\);\s*document\.getElementById\('panelMission'\)\.classList\.add\('hidden'\);/)
-    expect(js).toContain("if (!data || !data.active || !data.campaigns || !data.campaigns.length) { panel.classList.add('hidden'); return; }")
+    expect(js).toContain("if (!data || !data.campaigns || !data.campaigns.length) { panel.classList.add('hidden'); return; }")
+    // between waves no campaign is active, and the panel must still show
+    expect(js).not.toContain('!data.active || !data.campaigns')
   })
 
   function seedHarness(stateIn: Record<string, any>, projectsState: Record<string, any> = { names: {}, active: null }) {
