@@ -3605,7 +3605,8 @@ var projectsState = {
   knowledge: {},         // name → FileRecord
   artifacts: {},         // name → FileRecord
   active: null,          // { slug, chat, title } — the chat the engine is bound to
-  renderedChat: null,    // '<slug>/<file>' whose transcript openProjectChat drew before project.open
+  renderedChat: null,    // '<slug>/<file>' whose transcript the Chat pane shows (openProjectChat or onProjectOpened drew it)
+  openedSeq: 0,          // bumps per project.opened; a transcript fetch for an older frame draws nothing
   replyCount: 0,         // assistant replies given a "Save as artifact" link
   chatToasted: {},       // chat filePath + reason → true (one toast per cause, not per turn)
 };
@@ -3922,7 +3923,7 @@ function openProjectChat(slug, file) {
   }
   clearChatPane();
   appendChatMsg('system', 'Loading ' + (projectsState.names[slug] || slug) + ' › ' + file + '…');
-  return projFetch(projUrl(slug) + '/chats/' + encodeURIComponent(file)).then(function(t) {
+  return fetchTranscript(slug, file).then(function(t) {
     clearChatPane();
     renderTranscript(t);
     projectsState.renderedChat = slug + '/' + file;
@@ -3934,6 +3935,11 @@ function openProjectChat(slug, file) {
     if (!ws || ws.readyState !== 1) { appendChatMsg('system', 'Not connected to the engine — the chat was not opened.'); return; }
     ws.send(JSON.stringify(msg));
   });
+}
+
+/** One project chat's stored transcript — the reopen path and the reconnect path both draw from it. */
+function fetchTranscript(slug, file) {
+  return projFetch(projUrl(slug) + '/chats/' + encodeURIComponent(file));
 }
 
 function clearChatPane() {
@@ -4011,11 +4017,37 @@ function setCodingCwd(path) {
   if (box.readOnly) projectsState.codingCwd = path; else box.value = path;
 }
 
+/**
+ * `project.opened` — from this page's own project.open, or the frame the server
+ * sends every socket that connects while a project is bound (a reload, a
+ * reconnect, a second tab). Never sends anything: an on-connect frame must not
+ * turn into a project.open.
+ *   - the chat this pane already shows (a reconnect of this page): refresh the
+ *     strip label, nothing else;
+ *   - an existing chat the pane does not show (a page load into a bound chat):
+ *     fetch its transcript and draw it, THEN the "Opened …" line — so a reload
+ *     is not a blank pane with only the next thinking streaming in;
+ *   - a new chat: a fresh pane.
+ */
 function onProjectOpened(event) {
   var strip = document.getElementById('chatProjectStrip');
+  var setLabel = function() {
+    document.getElementById('chatProjectLabel').textContent =
+      'Project: ' + (projectsState.names[event.slug] || event.slug) + ' › ' + (event.title || 'new chat');
+  };
+  var key = event.slug && event.chat ? event.slug + '/' + event.chat : null;
+  var prev = projectsState.active;
+  if (key && prev && prev.slug === event.slug && prev.chat === event.chat && projectsState.renderedChat === key) {
+    projectsState.active = { slug: event.slug, chat: event.chat, title: event.title };
+    setLabel();
+    strip.classList.add('visible');
+    return;
+  }
+  var seq = ++projectsState.openedSeq;
   clearChatCitations();
   if (!event.slug) {
     projectsState.active = null;
+    projectsState.renderedChat = null;
     restoreCodingCwd();
     strip.classList.remove('visible');
     appendChatMsg('system', 'Left the project — back to the coding session.');
@@ -4031,28 +4063,55 @@ function onProjectOpened(event) {
       if (projectsState.active && projectsState.active.slug === event.slug) showProjectCwd(event.slug);
     }).catch(function(err) { console.warn('[projects] folder for the CWD box: ' + err.message); });
   }
-  // openProjectChat already drew this chat's transcript; keep it. Anything
-  // else in the pane belongs to the conversation the engine just left.
-  var rendered = event.chat && projectsState.renderedChat === event.slug + '/' + event.chat;
-  projectsState.renderedChat = null;
-  var msgs = document.getElementById('chatMessages');
-  if (msgs && !rendered) msgs.innerHTML = '';
-  var setLabel = function() {
-    document.getElementById('chatProjectLabel').textContent =
-      'Project: ' + (projectsState.names[event.slug] || event.slug) + ' › ' + (event.title || 'new chat');
-  };
   setLabel();
   strip.classList.add('visible');
   if (!projectsState.names[event.slug]) {
     projFetch(projUrl(event.slug)).then(function(meta) { projectsState.names[event.slug] = meta.name; setLabel(); })
       .catch(function(err) { console.warn('[projects] name for strip: ' + err.message); });
   }
-  appendChatMsg('system', 'Opened ' + (projectsState.names[event.slug] || event.slug) + ' › ' + (event.title || 'new chat') +
-    (event.chat && !rendered ? ' (' + event.chat + ')' : ''));
-  markSaveableReplies();
   if (event.chat) history.replaceState(null, '', '#projects/' + encodeURIComponent(event.slug) + '/chat/' + encodeURIComponent(event.chat));
   projStatus('projectsStatus', '', '');
   if (projectsState.slug === event.slug) loadProjectChats(event.slug);
+  var opened = function(note) {
+    appendChatMsg('system', 'Opened ' + (projectsState.names[event.slug] || event.slug) + ' › ' + (event.title || 'new chat') + (note || ''));
+    markSaveableReplies();
+  };
+  var msgs = document.getElementById('chatMessages');
+  // openProjectChat already drew this chat's transcript; keep it.
+  if (key && projectsState.renderedChat === key) { opened(''); return; }
+  if (!key) {
+    // A new chat: anything in the pane belongs to the conversation the engine left.
+    projectsState.renderedChat = null;
+    if (msgs) msgs.innerHTML = '';
+    opened('');
+    return;
+  }
+  // A page load / reconnect into a bound chat. What the pane holds now belongs
+  // to another conversation and goes; whatever streams in while the transcript
+  // loads is this chat's live turn and stays, after the stored turns.
+  projectsState.renderedChat = null;
+  var stale = msgs ? Array.prototype.slice.call(msgs.children) : [];
+  var settle = function(draw) {
+    if (seq !== projectsState.openedSeq || !msgs) return;
+    stale.forEach(function(n) { if (n.parentNode === msgs) msgs.removeChild(n); });
+    var live = Array.prototype.slice.call(msgs.children);
+    live.forEach(function(n) { msgs.removeChild(n); });
+    draw();
+    live.forEach(function(n) { msgs.appendChild(n); });
+  };
+  return fetchTranscript(event.slug, event.chat).then(function(t) {
+    settle(function() {
+      renderTranscript(t);
+      projectsState.renderedChat = key;
+      opened('');
+    });
+  }).catch(function(err) {
+    console.warn('[projects] transcript on connect ' + event.chat + ': ' + err.message);
+    settle(function() {
+      appendChatMsg('system', 'Could not load the earlier messages of ' + event.chat + ': ' + err.message);
+      opened(' (' + event.chat + ')');
+    });
+  });
 }
 
 // ── Citations + save-as-artifact on the Chat tab ─────────
