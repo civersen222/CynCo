@@ -388,6 +388,14 @@ input[type="range"]:disabled::-webkit-slider-thumb { cursor: not-allowed; }
 .chat-approval .ap-no:hover { background:#6e3636; }
 .chat-approval.resolved { opacity:0.5; }
 .chat-approval .ap-status { font-size:11px; color:#808080; }
+.chat-approval.chat-ask { border-left-color:#4ec9b0; }
+.chat-ask .ap-btns { flex-wrap:wrap; }
+.chat-ask .ap-opt { background:#264f78; color:#d4d4d4; }
+.chat-ask .ap-opt:hover { background:#2d5a8a; }
+.chat-ask .ask-free { display:flex; gap:8px; margin-top:8px; }
+.chat-ask .ask-input { flex:1; background:#1e1e2e; color:#d4d4d4; border:1px solid #444;
+  border-radius:4px; padding:5px 8px; font-size:12px; }
+.chat-ask .ask-send { background:#1e3a2e; color:#d4d4d4; }
 .cwd-input { background:#1e1e2e; color:#808080; border:1px solid #333; border-radius:4px;
   padding:4px 8px; font-size:11px; width:300px; font-family:'Cascadia Code',monospace; }
 .brain-badge { margin-left:auto; display:flex; align-items:center; gap:6px; user-select:none; }
@@ -1195,6 +1203,9 @@ function handleEvent(event) {
         }
       }
       state.turnCount++;
+      // An AskUser call that ended while its card was still open was withdrawn
+      // (session switch) or timed out; the card must not stay answerable.
+      if (name === 'AskUser') closeOpenAskCards(event.output || '');
       // Chat tab: update tool status
       var active = chatActiveTools[event.toolId || event.toolName];
       if (active) {
@@ -1286,6 +1297,13 @@ function handleEvent(event) {
 
     case 'approval.request':
       appendApprovalCard(event);
+      brainViz.setActive(false); // engine is now waiting on you, not computing
+      break;
+
+    // The model's AskUser question. Without this arm the question was never
+    // shown, the broker's 300 s timer answered '' and the model carried on.
+    case 'ask.request':
+      appendAskCard(event);
       brainViz.setActive(false); // engine is now waiting on you, not computing
       break;
 
@@ -3084,6 +3102,90 @@ function respondApproval(requestId, approved) {
     if (btns) btns.innerHTML = '<span class="ap-status">' + (approved ? '\u2713 approved' : '\u2717 denied') + '</span>';
   }
   if (approved) brainViz.setActive(true); // work resumes
+}
+
+/**
+ * The model's AskUser question as a card: the question, one button per
+ * suggested option, and a free-text answer. askBroker is single-emitter, so at
+ * most one card is open at a time.
+ */
+function appendAskCard(event) {
+  var msgs = document.getElementById('chatMessages');
+  if (!msgs || !event.requestId) return;
+  closeChatThinking();
+  var card = document.createElement('div');
+  card.className = 'chat-approval chat-ask';
+  card.setAttribute('data-ask', event.requestId);
+  card.setAttribute('data-open', '1');
+  var options = Array.isArray(event.options) ? event.options.filter(function(o) { return typeof o === 'string' && o; }) : [];
+  card.innerHTML =
+    '<div class="ap-head">' +
+      '<span class="ap-tool">AskUser</span>' +
+      '<span style="color:#808080">the model asks</span>' +
+    '</div>' +
+    '<div class="ap-desc">' + escHtml(event.question || '') + '</div>' +
+    (options.length ? '<div class="ap-btns">' + options.map(function(o, i) {
+      return '<button class="ap-opt" data-opt="' + i + '">' + escHtml(o) + '</button>';
+    }).join('') + '</div>' : '') +
+    '<div class="ask-free">' +
+      '<input class="ask-input" type="text" placeholder="Type your answer…">' +
+      '<button class="ask-send">Send</button>' +
+    '</div>';
+  var optBtns = card.querySelectorAll('.ap-opt');
+  for (var i = 0; i < optBtns.length; i++) {
+    (function(btn) {
+      btn.onclick = function() { answerAsk(event.requestId, options[Number(btn.getAttribute('data-opt'))]); };
+    })(optBtns[i]);
+  }
+  var input = card.querySelector('.ask-input');
+  var sendFree = function() {
+    var text = (input.value || '').trim();
+    if (text) answerAsk(event.requestId, text);
+  };
+  card.querySelector('.ask-send').onclick = sendFree;
+  input.onkeydown = function(e) { if (e.key === 'Enter') { e.preventDefault(); sendFree(); } };
+  msgs.appendChild(card);
+  msgs.scrollTop = msgs.scrollHeight;
+}
+
+function answerAsk(requestId, answer) {
+  var card = document.querySelector('.chat-ask[data-ask="' + requestId + '"]');
+  if (!card || card.getAttribute('data-open') !== '1') return;
+  if (!ws || ws.readyState !== 1) {
+    appendChatMsg('system', 'Not connected to the engine — the answer was not sent.');
+    return;
+  }
+  ws.send(JSON.stringify({ type: 'ask.answer', requestId: requestId, answer: answer }));
+  resolveAskCard(card, 'You answered: ' + answer);
+  brainViz.setActive(true); // work resumes
+}
+
+/** Collapse a card to one status line; it can no longer be answered. */
+function resolveAskCard(card, status) {
+  card.setAttribute('data-open', '0');
+  card.classList.add('resolved');
+  var parts = card.querySelectorAll('.ap-btns, .ask-free');
+  for (var i = 0; i < parts.length; i++) parts[i].parentNode.removeChild(parts[i]);
+  var line = document.createElement('div');
+  line.className = 'ap-status';
+  line.textContent = status;
+  card.appendChild(line);
+}
+
+/**
+ * An AskUser tool.complete while a card is still open: the engine withdrew the
+ * question (the tool result reads "Question withdrawn before the user answered
+ * (…)") or the broker timed it out. tool.complete carries no requestId, so
+ * every open card closes — there is only ever one.
+ */
+function closeOpenAskCards(output) {
+  var open = document.querySelectorAll('.chat-ask[data-open="1"]');
+  var withdrawn = String(output).indexOf('Question withdrawn') === 0;
+  for (var i = 0; i < open.length; i++) {
+    resolveAskCard(open[i], withdrawn
+      ? 'withdrawn — ' + String(output)
+      : 'withdrawn — the model stopped waiting: ' + String(output).slice(0, 200));
+  }
 }
 
 function appendChatMsg(role, text) {
