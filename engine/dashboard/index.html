@@ -1208,7 +1208,7 @@ function handleEvent(event) {
       state.turnCount++;
       // An AskUser call that ended while its card was still open was withdrawn
       // (session switch) or timed out; the card must not stay answerable.
-      if (name === 'AskUser') closeOpenAskCards(event.output || '');
+      if (name === 'AskUser') closeOpenAskCards(toolResultText(event));
       // Chat tab: update tool status
       var active = chatActiveTools[event.toolId || event.toolName];
       if (active) {
@@ -1220,7 +1220,7 @@ function handleEvent(event) {
           chatRow.children[3].textContent = chatLat + 'ms';
         }
         var chatDetail = document.getElementById(active.chatId + '-detail');
-        if (chatDetail) chatDetail.textContent = (event.output || '').slice(0, 2000);
+        if (chatDetail) chatDetail.textContent = toolResultText(event).slice(0, 2000);
         delete chatActiveTools[event.toolId || event.toolName];
       }
       break;
@@ -3160,6 +3160,8 @@ function respondApproval(requestId, approved) {
 function appendAskCard(event) {
   var msgs = document.getElementById('chatMessages');
   if (!msgs || !event.requestId) return;
+  // A repeated ask.request for a question already on the pane draws nothing.
+  if (document.querySelector('.chat-ask[data-ask="' + event.requestId + '"]')) return;
   closeChatThinking();
   var card = document.createElement('div');
   card.className = 'chat-approval chat-ask';
@@ -3194,6 +3196,18 @@ function appendAskCard(event) {
   input.onkeydown = function(e) { if (e.key === 'Enter') { e.preventDefault(); sendFree(); } };
   msgs.appendChild(card);
   msgs.scrollTop = msgs.scrollHeight;
+}
+
+/**
+ * A tool.complete frame's result as text. The frame carries `result`
+ * (protocol.ts ToolCompleteEvent), not `output`: usually a string, otherwise
+ * JSON.
+ */
+function toolResultText(event) {
+  var r = event.result;
+  if (r == null) return '';
+  if (typeof r === 'string') return r;
+  try { return JSON.stringify(r); } catch (e) { return String(r); }
 }
 
 function answerAsk(requestId, answer) {

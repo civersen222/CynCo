@@ -201,7 +201,11 @@ describe('dashboard: the Projects view', () => {
       () => null,
       { replaceState: (_a: unknown, _b: string, h: string) => replaced.push(h) },
       () => {},
-      (path: string) => { fetched.push(path); return transcript instanceof Error ? Promise.reject(transcript) : Promise.resolve(transcript) },
+      (path: string) => {
+        fetched.push(path)
+        if (typeof transcript === 'function') return (transcript as (p: string) => Promise<unknown>)(path)
+        return transcript instanceof Error ? Promise.reject(transcript) : Promise.resolve(transcript)
+      },
       (slug: string) => '/api/projects/' + encodeURIComponent(slug),
       () => {}, () => {}, () => {}, () => {},
     )
@@ -244,6 +248,19 @@ describe('dashboard: the Projects view', () => {
     expect(h.label.textContent).toBe('Project: Front Yard › Diorama v2')
     expect(h.projectsState.active).toEqual({ slug: 'yard', chat: 'c1.jsonl', title: 'Diorama v2' })
     expect(h.sent).toEqual([])
+  })
+
+  it('a late transcript fetch loses to a newer frame (openedSeq)', async () => {
+    const pending: Record<string, (t: unknown) => void> = {}
+    const h = openedHarness((path: string) => new Promise(res => { pending[path] = res }))
+    const first = h.onOpened({ type: 'project.opened', slug: 'yard', chat: 'old.jsonl', title: 'Old' })
+    const second = h.onOpened({ type: 'project.opened', slug: 'yard', chat: 'new.jsonl', title: 'New' })
+    pending['/api/projects/yard/chats/new.jsonl']({ messages: [{ role: 'user', content: [{ type: 'text', text: 'new chat turn' }] }] })
+    await second
+    pending['/api/projects/yard/chats/old.jsonl']({ messages: [{ role: 'user', content: [{ type: 'text', text: 'old chat turn' }] }] })
+    await first
+    expect(h.pane()).toEqual(['user: new chat turn', 'system: Opened Front Yard › New'])
+    expect(h.projectsState.renderedChat).toBe('yard/new.jsonl')
   })
 
   it('a chat openProjectChat already drew is kept, not fetched again', async () => {

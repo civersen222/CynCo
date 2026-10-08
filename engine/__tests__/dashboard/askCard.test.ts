@@ -127,7 +127,41 @@ describe('dashboard: the AskUser card', () => {
     expect(open.appended[0].textContent).toContain('withdrawn')
   })
 
-  it('the tool.complete arm calls the withdrawal on AskUser', () => {
-    expect(scripts()).toContain("if (name === 'AskUser') closeOpenAskCards(event.output || '')")
+  /** toolResultText as the page defines it. */
+  function resultText(event: Record<string, unknown>): string {
+    return new Function(fnSource('toolResultText') + '\nreturn toolResultText;')()(event)
+  }
+
+  it('the tool.complete arm reads `result` — the field protocol.ts ToolCompleteEvent carries — not `output`', () => {
+    const js = scripts()
+    expect(js).toContain("if (name === 'AskUser') closeOpenAskCards(toolResultText(event))")
+    expect(js).toContain('chatDetail.textContent = toolResultText(event).slice(0, 2000)')
+    expect(js).not.toContain('event.output')
+    expect(resultText({ type: 'tool.complete', result: 'the answer' })).toBe('the answer')
+    expect(resultText({ type: 'tool.complete', output: 'not a field the engine sends' })).toBe('')
+    expect(resultText({ type: 'tool.complete', result: { ok: 1 } })).toBe('{"ok":1}')
+    expect(resultText({ type: 'tool.complete' })).toBe('')
+  })
+
+  it('a withdrawn AskUser result, read off the real frame, puts the withdrawn text on the card', () => {
+    const open = { id: 'r1', ...makeCard(true) }
+    const h = harness([open])
+    const frame = { type: 'tool.complete', toolId: 't1', toolName: 'AskUser', isError: true,
+      result: 'Question withdrawn before the user answered (the user switched to another conversation).' }
+    h.page.closeOpenAskCards(resultText(frame))
+    expect(open.attrs['data-open']).toBe('0')
+    expect(open.appended[0].textContent).toBe('withdrawn — Question withdrawn before the user answered (the user switched to another conversation).')
+  })
+
+  it('a repeated ask.request for a requestId that already has a card draws nothing', () => {
+    const appended: unknown[] = []
+    const msgs = { appendChild: (n: unknown) => appended.push(n) }
+    const make = new Function('document', 'closeChatThinking', 'escHtml', fnSource('appendAskCard') + '\nreturn appendAskCard;')
+    const append = make({
+      getElementById: () => msgs,
+      querySelector: (sel: string) => (sel === '.chat-ask[data-ask="r1"]' ? {} : null),
+    }, () => {}, (s: string) => s)
+    append({ type: 'ask.request', requestId: 'r1', question: 'again?' })
+    expect(appended).toEqual([])
   })
 })
