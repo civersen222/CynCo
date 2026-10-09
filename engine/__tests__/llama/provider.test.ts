@@ -241,4 +241,76 @@ describe('LlamaCppProvider', () => {
       globalThis.fetch = realFetch
     }
   })
+
+  // F171: generative-UI forcing. 'required' rides on the request; without
+  // tools there is nothing to require; a server that refuses it costs the
+  // forcing (sticky 'auto'), never the turn.
+  it('passes tool_choice required through with tools, never without them', async () => {
+    const bodies: any[] = []
+    const realFetch = globalThis.fetch
+    globalThis.fetch = (async (_url: any, init: any) => {
+      bodies.push(JSON.parse(init.body))
+      return new Response(JSON.stringify({ id: 'r', model: 'm', choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }] }), { status: 200 })
+    }) as any
+    try {
+      const provider = new LlamaCppProvider({ primaryUrl: 'http://127.0.0.1:9999', modelName: 'qwen3.6', modelsDir: '/tmp' })
+      const msg = [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }]
+      const tools = [{ name: 'RenderUI', description: 'draw', input_schema: { type: 'object', properties: {} } }]
+      await provider.complete({ model: 'qwen3.6', messages: msg, tools, tool_choice: 'required' } as any)
+      await provider.complete({ model: 'qwen3.6', messages: msg, tool_choice: 'required' } as any)
+      expect(bodies[0].tool_choice).toBe('required')
+      expect(bodies[1].tool_choice).toBeUndefined()
+      expect(bodies[1].tools).toBeUndefined()
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+
+  it('retries with tool_choice auto after a 400 tool_choice rejection, then stays on auto', async () => {
+    const bodies: any[] = []
+    const realFetch = globalThis.fetch
+    const sse = 'data: {"id":"c","model":"m","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'
+    globalThis.fetch = (async (_url: any, init: any) => {
+      const body = JSON.parse(init.body)
+      bodies.push(body)
+      if (body.tool_choice === 'required') {
+        return new Response(JSON.stringify({ error: { code: 400, message: 'Invalid tool_choice: required' } }), { status: 400 })
+      }
+      return new Response(sse, { status: 200, headers: { 'Content-Type': 'text/event-stream' } })
+    }) as any
+    try {
+      const provider = new LlamaCppProvider({ primaryUrl: 'http://127.0.0.1:9999', modelName: 'qwen3.6', modelsDir: '/tmp' })
+      const req = {
+        model: 'qwen3.6',
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+        tools: [{ name: 'RenderUI', description: 'draw', input_schema: { type: 'object', properties: {} } }],
+        tool_choice: 'required',
+      } as any
+      const events: any[] = []
+      for await (const e of provider.stream(req)) events.push(e)
+      expect(bodies.map(b => b.tool_choice)).toEqual(['required', 'auto'])
+      expect(events.some(e => e.type === 'message_stop')).toBe(true)
+      for await (const _e of provider.stream(req)) { /* drain */ }
+      expect(bodies.map(b => b.tool_choice)).toEqual(['required', 'auto', 'auto'])
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+
+  it('a 400 that is not about tool_choice still throws when forcing', async () => {
+    const realFetch = globalThis.fetch
+    globalThis.fetch = (async () => new Response(JSON.stringify({ error: { code: 400, message: 'context overflow' } }), { status: 400 })) as any
+    try {
+      const provider = new LlamaCppProvider({ primaryUrl: 'http://127.0.0.1:9999', modelName: 'qwen3.6', modelsDir: '/tmp' })
+      const req = {
+        model: 'qwen3.6',
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+        tools: [{ name: 'RenderUI', description: 'draw', input_schema: { type: 'object', properties: {} } }],
+        tool_choice: 'required',
+      } as any
+      await expect((async () => { for await (const _e of provider.stream(req)) { /* drain */ } })()).rejects.toThrow(/HTTP 400: .*context overflow/)
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
 })

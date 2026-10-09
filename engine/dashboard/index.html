@@ -5802,7 +5802,7 @@ function renderChatCitations(event) {
   }).join(' &nbsp; ');
 }
 
-/** Give every finished assistant reply in a project chat a "Save as artifact" link. */
+/** Give every finished assistant reply in a project chat "Save as artifact" and "Show as UI" links. */
 function markSaveableReplies() {
   if (!projectsState.active) return;
   var replies = document.querySelectorAll('#chatMessages .chat-msg-assistant:not([data-reply])');
@@ -5815,7 +5815,8 @@ function markSaveableReplies() {
     div.setAttribute('data-reply', String(idx));
     var link = document.createElement('div');
     link.className = 'chat-save-artifact';
-    link.innerHTML = '<a class="proj-link" onclick="saveAsArtifact(' + idx + ')">Save as artifact</a>';
+    link.innerHTML = '<a class="proj-link" onclick="saveAsArtifact(' + idx + ')">Save as artifact</a>' +
+      ' &middot; <a class="proj-link" onclick="showReplyAsUi(' + idx + ')">Show as UI</a>';
     div.insertAdjacentElement('afterend', link);
   }
 }
@@ -5841,6 +5842,30 @@ function saveAsArtifact(msgIndex) {
   ws.send(JSON.stringify({ type: 'user.message', text: text }));
   appendChatMsg('user', text);
   appendChatMsg('system', 'Waiting for the artifact "' + name + '" to be saved…');
+  brainViz.setActive(true);
+}
+
+/**
+ * Ask for a reply to be redrawn as a RenderUI surface. "as UI" is a request the
+ * engine forces (engine/genui/intent.ts): the turn's model calls go out with
+ * tool_choice 'required' until a surface draws, so this works even when the
+ * model wrote options as prose (F171).
+ */
+function showReplyAsUi(msgIndex) {
+  if (!projectsState.active) { appendChatMsg('system', 'Show as UI needs an open project chat.'); return; }
+  if (!ws || ws.readyState !== 1) { appendChatMsg('system', 'Not connected to the engine — nothing was sent.'); return; }
+  var text = 'Show your previous reply as UI with RenderUI: the same content, no new facts.';
+  // The model only knows "the previous reply"; an older one is named by its opening words.
+  if (msgIndex !== projectsState.replyCount - 1) {
+    var div = document.querySelector('#chatMessages .chat-msg-assistant[data-reply="' + msgIndex + '"]');
+    if (div) {
+      var raw = div.getAttribute('data-raw');
+      if (raw === null) raw = div.textContent;
+      text += ' The reply to show is the earlier one that begins: "' + raw.trim().slice(0, 120) + '".';
+    }
+  }
+  ws.send(JSON.stringify({ type: 'user.message', text: text }));
+  appendChatMsg('user', text);
   brainViz.setActive(true);
 }
 

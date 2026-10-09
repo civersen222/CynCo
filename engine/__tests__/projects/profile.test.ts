@@ -40,7 +40,13 @@ describe('assembleProjectPrompt', () => {
     const text = assembleProjectPrompt(input).join('\n')
     expect(text).toContain('Understand before you act')
     expect(text).toContain('ONE focused question per turn, then end your turn and wait')
-    expect(text).toContain('propose two or three ways to approach it')
+    // F171: options are drawn with RenderUI, and a request to see them
+    // outranks asking first.
+    expect(text).toContain('Options are drawn, not written')
+    expect(text).toContain('Showing options is not drafting')
+    expect(text).toContain('When the user asks to see options, designs, ideas or a comparison, show them now')
+    expect(text).toContain('draw the options with RenderUI so the user can click one')
+    expect(text).toContain('you show options, designs and comparisons as UI in this chat with RenderUI')
     expect(text).toContain('Save with consent')
     expect(text).toContain('Never save a draft the user has not seen in the chat first')
     expect(text).toContain('this is a conversation, not a mission')

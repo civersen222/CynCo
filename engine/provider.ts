@@ -52,6 +52,13 @@ export type CompletionRequest = {
   stop_sequences?: string[]
   thinking?: { enabled: boolean; budget_tokens?: number }
   grammar?: string
+  /**
+   * 'required' makes a native-tools call end in a tool call (llama-server
+   * builds a non-lazy grammar; the rendered prompt is unchanged, so the
+   * prefix cache holds). Omitted means 'auto'. Providers that cannot honour
+   * it ignore it.
+   */
+  tool_choice?: 'auto' | 'required'
 }
 
 // ─── Provider Interface ──────────────────────────────────────────

@@ -1,10 +1,11 @@
 /**
  * The RENDER_UI section rides inside the cached prompt prefix: it must name
- * every catalog component exactly once, stay under the budget the design set
- * (10k chars, ~2.5k tokens), and be byte-identical on every call.
+ * every catalog component exactly once, stay under its budget (12k chars,
+ * ~3k tokens — raised from 10k for the options example, F171), and be
+ * byte-identical on every call.
  */
 import { describe, expect, it } from 'vitest'
-import { genuiPromptSection, genuiExampleCall } from '../../genui/prompt.js'
+import { genuiPromptSection, genuiExampleCall, genuiOptionsExampleCall } from '../../genui/prompt.js'
 import { GENUI_COMPONENT_NAMES, GENUI_CATALOG } from '../../genui/catalog.js'
 import { validateSpec } from '../../genui/spec.js'
 
@@ -13,7 +14,7 @@ describe('genui prompt section', () => {
 
   it('is byte-stable and bounded', () => {
     expect(genuiPromptSection()).toBe(text)
-    expect(text.length).toBeLessThan(10_000)
+    expect(text.length).toBeLessThan(12_000)
     expect(text.startsWith('<RENDER_UI>')).toBe(true)
     expect(text.trimEnd().endsWith('</RENDER_UI>')).toBe(true)
   })
@@ -35,10 +36,14 @@ describe('genui prompt section', () => {
 
   it('teaches the rules the surveys found models break', () => {
     // Inverted from OpenUI/json-render's "generate plausible data": a coding
-    // agent's report blocks carry real work, so nothing may be invented.
-    expect(text).toMatch(/Real values only: numbers, file paths, test counts, command output and URLs come from your tool results or the conversation — never invent them/)
+    // agent's report blocks carry real work, so no fact may be invented — but
+    // ideas the model proposes are its to draw (F171: "never invent" read as
+    // a reason to keep designs out of the surface).
+    expect(text).toMatch(/Facts must be real: numbers, prices, file paths, test counts, command output and URLs come from your tool results or the conversation — never invent them/)
+    expect(text).toMatch(/Ideas you propose \(designs, names, options, drafts\) are yours to write, and drawing them is the point/)
     expect(text).toMatch(/With no real image URL, leave the Image out/)
-    expect(text).toMatch(/FollowUps go last: 2-4 short questions/)
+    expect(text).toMatch(/FollowUps go last: 2-4 short questions the user is likely to ask you next/)
+    expect(text).toMatch(/A question you are asking the user goes in a Text line .*never in FollowUps/)
     expect(text).toMatch(/one cell per column/)
     expect(text).toMatch(/one with no action sends its label/)
     expect(text).toMatch(/never add a Callout or Text that explains the UI itself/)
@@ -50,8 +55,37 @@ describe('genui prompt section', () => {
     expect(text).toMatch(/do not resend the same spec/)
   })
 
+  // F171: "Write your prose first, then one RenderUI call" ended the turn on
+  // a complete prose answer; options/designs/choices are now the surface.
+  it('makes the surface the answer for options, designs and choices, tool call first', () => {
+    const opening = text.split('\n\n')[0]
+    expect(opening).toMatch(/When your answer offers options, designs, ideas, a comparison or a choice/)
+    expect(opening).toMatch(/the surface IS the answer: call RenderUI first, with at most one sentence of prose before it/)
+    expect(opening).toMatch(/Never also write the same options out as prose/)
+    expect(text).not.toMatch(/prose first/i)
+    expect(text).toMatch(/options or designs → a Grid of Cards, one per option/)
+    expect(text).toMatch(/An idea with no picture still gets a card/)
+  })
+
+  it('never shows the call as text the model could copy into its reply', () => {
+    expect(text).not.toContain('RenderUI(')
+    expect(text).toMatch(/Use the tool call itself — never write the arguments into your reply/)
+  })
+
+  it('carries an options example before the plan example, both validating clean', () => {
+    const opt = genuiOptionsExampleCall()
+    const ro = validateSpec(opt.spec)
+    expect(ro.errors).toEqual([])
+    expect(ro.count).toBe(10)
+    expect(opt.surface).toBe('path-options')
+    const iOpt = text.indexOf('{"surface":"path-options","spec":{"root":"card"')
+    const iPlan = text.indexOf('{"surface":"plan","spec":{"root":"card"')
+    expect(iOpt).toBeGreaterThan(0)
+    expect(iPlan).toBeGreaterThan(iOpt)
+  })
+
   it('carries a worked example that validates clean and names the tool', () => {
-    expect(text).toContain('RenderUI({"surface":"plan","spec":{"root":"card"')
+    expect(text).toContain('{"surface":"plan","spec":{"root":"card"')
     const ex = genuiExampleCall()
     const r = validateSpec(ex.spec)
     expect(r.errors).toEqual([])
