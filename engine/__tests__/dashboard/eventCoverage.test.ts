@@ -30,6 +30,8 @@ const MUST_RENDER = [
   'ask.request',
   'governance.status',
   'context.status',
+  // A RenderUI surface (engine/genui): with no arm the model's cards, forms and charts never reach the pane.
+  'ui.render',
 ]
 
 describe('dashboard event coverage', () => {

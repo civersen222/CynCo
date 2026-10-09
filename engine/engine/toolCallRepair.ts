@@ -44,6 +44,32 @@ export function repairToolCall(raw: string): RepairResult {
   return { ok: false, error: firstError, raw: raw.slice(0, MAX_RAW_LENGTH) }
 }
 
+/**
+ * True when tool-call arguments were cut off rather than merely untidy: an
+ * object or array still open at the end, or a string still open. jsonrepair
+ * also fixes trailing commas, single quotes and Python literals, and those
+ * are not truncation — reporting them as "cut off by the output limit" told a
+ * model to shrink a complete spec (genui design review, A11).
+ */
+export function isTruncatedJson(raw: string): boolean {
+  let depth = 0
+  let inString = false
+  let quote = ''
+  let escaped = false
+  for (const ch of raw) {
+    if (inString) {
+      if (escaped) escaped = false
+      else if (ch === '\\') escaped = true
+      else if (ch === quote) inString = false
+      continue
+    }
+    if (ch === '"' || ch === "'") { inString = true; quote = ch }
+    else if (ch === '{' || ch === '[') depth++
+    else if (ch === '}' || ch === ']') depth = Math.max(0, depth - 1)
+  }
+  return inString || depth > 0
+}
+
 export type OpenAIToolCall = {
   id?: string
   type?: string

@@ -20,7 +20,7 @@ import { convertMessages, convertTools, buildSystemPrompt } from './messageConve
 import type { ToolLike } from './messageConvert.js'
 import { translateStream } from './streamTranslator.js'
 import { filterTools } from './toolFilter.js'
-import { repairToolCall, MALFORMED_KEY } from './toolCallRepair.js'
+import { repairToolCall, MALFORMED_KEY, isTruncatedJson } from './toolCallRepair.js'
 import { cyncoHome } from '../paths.js'
 
 // ─── Output Types ──────
@@ -470,6 +470,10 @@ export async function* localCallModel({
   // Include tools only for native tool use
   if (!noToolUse && !simulatedToolUse && toolDefs.length > 0) {
     request.tools = toolDefs
+    // A caller that needs this call to end in a tool call (generative-UI
+    // forcing, engine/genui/intent.ts) passes toolChoice 'required'. Only the
+    // native path can honour it; simulated and no-tools calls ignore it.
+    if ((options as any).toolChoice === 'required') request.tool_choice = 'required'
   }
 
   // Include thinking config if enabled
@@ -510,7 +514,10 @@ export async function* localCallModel({
   // so a whole run could go by producing prose while the log looked healthy.
   const toolMode = noToolUse ? 'NO TOOLS SENT (model family unknown to the capability table)'
     : simulatedToolUse ? 'simulated' : 'native'
-  console.log(`[callModel] Streaming from provider with ${convertedMessages.length} messages, ${toolDefs.length} tools, mode=${toolMode}`)
+  const toolChoiceNote = (options as any).toolChoice === 'required'
+    ? (request.tool_choice === 'required' ? ', tool_choice=required' : `, tool_choice=required NOT SENT (mode=${toolMode})`)
+    : ''
+  console.log(`[callModel] Streaming from provider with ${convertedMessages.length} messages, ${toolDefs.length} tools, mode=${toolMode}${toolChoiceNote}`)
 
   // Open the stream, retrying transport failures until something comes back or
   // the budget runs out.
@@ -640,8 +647,12 @@ export async function* localCallModel({
                     event: {
                       type: 'toolcall_transport',
                       stage: 'repaired',
+                      toolId: currentBlock.id as string,
                       toolName: currentBlock.name as string,
-                      detail: `jsonrepair salvaged ${raw.length}-char args`,
+                      // Cut off, not merely untidy (trailing comma, quotes):
+                      // only this one means the call lost content.
+                      truncated: isTruncatedJson(raw),
+                      detail: `jsonrepair salvaged ${raw.length}-char args${isTruncatedJson(raw) ? ' (truncated)' : ''}`,
                     } as any,
                   }
                 }

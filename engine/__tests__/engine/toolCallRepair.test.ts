@@ -1,7 +1,20 @@
 import { describe, it, expect } from 'vitest'
 import {
-  repairToolCall, parseNativeToolCalls, isMalformedInput, MALFORMED_KEY,
+  repairToolCall, parseNativeToolCalls, isMalformedInput, MALFORMED_KEY, isTruncatedJson,
 } from '../../engine/toolCallRepair.js'
+
+describe('isTruncatedJson', () => {
+  it('is false for complete arguments, however untidy jsonrepair finds them', () => {
+    for (const raw of ['', '{}', '{"a": 1}', '{"a": [1, 2,],}', "{'a': 'x'}", '{a: 1}', '{"a": True, "b": None}', '{"s": "brace } and [ inside"}', '{"s": "esc \\" quote"}']) {
+      expect(isTruncatedJson(raw), raw).toBe(false)
+    }
+  })
+  it('is true when an object, array or string is still open', () => {
+    for (const raw of ['{', '{"a": [1, 2', '{"a": {"b": 1}', '{"a": "half', '{"a": "x\\"', '[{"a": 1}']) {
+      expect(isTruncatedJson(raw), raw).toBe(true)
+    }
+  })
+})
 
 describe('repairToolCall', () => {
   it('parses valid JSON without marking repaired', () => {

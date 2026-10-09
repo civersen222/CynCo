@@ -5,7 +5,7 @@
  */
 
 import { randomUUID } from 'crypto'
-import type { EngineEvent, TUICommand, DiffHunk, DiffLine, OperatorNoteSource } from './protocol.js'
+import type { EngineEvent, TUICommand, DiffHunk, DiffLine, OperatorNoteSource, UiActionCommand, UiSpec } from './protocol.js'
 import type { ThinkingConfig, TurnCost } from '../types.js'
 import { asSystemPrompt } from '../types.js'
 import type { LocalCodeConfig } from '../config.js'
@@ -109,13 +109,19 @@ import { extractPatch } from '../bestOfN/patchExtractor.js'
 import { runTests, selectWinner, applyPatch } from '../bestOfN/sampler.js'
 import type { ProjectBinding } from '../projects/binding.js'
 import { gradeProjectCall } from '../projects/binding.js'
-import { assembleProjectPrompt, PROJECT_TOOL_NAMES } from '../projects/profile.js'
+import { assembleProjectPrompt, projectTools } from '../projects/profile.js'
 import { appendTranscript, newChatFile, readTranscript, turnsOf, type TranscriptMessage } from '../projects/chat.js'
 import { searchProjects } from '../projects/search.js'
 import { buildRetrievalBlock, citationsUsed, retrievalShare, RETRIEVAL_TAG } from '../projects/retrieval.js'
 import { setProjectToolContext } from '../projects/tools.js'
 import { ingestChat } from '../projects/ingest.js'
 import { classifyRisk, describeRisk } from './guardianRules.js'
+import { validateSpec, isSurfaceId, drawsContent } from '../genui/spec.js'
+import { parsePartialSpec, PARTIAL_FRAME_INTERVAL_MS } from '../genui/partial.js'
+import { genuiPromptSection } from '../genui/prompt.js'
+import { formatUiAction, uiActionEcho, isFollowUp } from '../genui/actions.js'
+import { uiRequestReason, UI_FORCE_MAX_CALLS } from '../genui/intent.js'
+import { filterTools } from '../engine/toolFilter.js'
 
 /**
  * Phase 6: build structured diff hunks from a write-tool input for the file.diff
@@ -240,6 +246,11 @@ function classifyParallelBatches(toolBlocks: any[], readOnlySet: Set<string>): a
 export type TaskOpts = {
   contract?: HarnessContractSpec
   /**
+   * The message is a click on a RenderUI surface (engine/genui/actions.ts): no
+   * DoD contract is auto-created for it — a form submit is not a task.
+   */
+  uiAction?: boolean
+  /**
    * Instrument files: read-only for this task. Declared by the harness because
    * only the harness knows them — the brief it wrote sits outside the contract
    * mechanism entirely, so nothing in the assertions names it. Unioned with the
@@ -297,7 +308,7 @@ export type ConversationLoopOptions = {
  */
 export function candidateEmit(emit: (event: any) => void): (event: any) => void {
   return (event: any) => {
-    if (event?.type === 'stream.token' || event?.type === 'governance.session_fidelity') return
+    if (event?.type === 'stream.token' || event?.type === 'governance.session_fidelity' || event?.type === 'ui.render') return
     emit(event)
   }
 }
@@ -578,6 +589,31 @@ export class ConversationLoop {
   // Lazy-once guard: skills are discovered from disk on the first user message,
   // populating the process-wide skill store that run_skill / list_skills read.
   private skillsLoaded = false
+  // ── Generative UI (engine/genui) ──────────────────────────────
+  /** The RenderUI tool_use block whose arguments are streaming now, with the buffer so far. */
+  private uiStream: { toolId: string; index: number; buffer: string; lastEmitMs: number } | null = null
+  /** Surfaces that got a partial frame and no final one yet; every exit path owes them a terminal frame (design A2). */
+  private pendingUiSurfaces = new Set<string>()
+  /** Clicks that arrived while a turn was running; drained at the turn's natural end or re-dispatched after it (design A8). */
+  private pendingUiActions: UiActionCommand[] = []
+  /**
+   * Tool calls whose arguments were CUT OFF this model call (an object, array
+   * or string still open when the stream ended — `isTruncatedJson`): a cut-off
+   * spec is drawn but reported, never presented as final. A merely untidy
+   * call jsonrepair fixed (a trailing comma) is not in here. `stop_reason`
+   * cannot carry this: on the native streaming path it always reads
+   * 'tool_use' for a call with a tool block (streamTranslator synthesizes it).
+   */
+  private truncatedToolIds = new Set<string>()
+  /**
+   * Generative-UI forcing for the running message (engine/genui/intent.ts,
+   * F171): set when a project-chat message asks to SEE options, designs, a
+   * comparison or a table. While set, each model call goes out with
+   * tool_choice 'required' and an AskUser call is redirected to RenderUI.
+   * Cleared when a RenderUI surface draws, after UI_FORCE_MAX_CALLS forced
+   * calls, and when the turn ends.
+   */
+  private uiForce: { remaining: number; reason: string } | null = null
   // Tool names actually offered to the model in the current iteration (after
   // S5 restrictions, demotions, routing). In one-shot runs this is enforced
   // at execution time too — see executeOneTool.
@@ -885,6 +921,100 @@ export class ConversationLoop {
     globalAskBroker.answer(requestId, answer)
   }
 
+  /**
+   * A click on a RenderUI surface (engine/genui/actions.ts). Idle: it is the
+   * next user turn at once. Busy: queued, then drained at the running turn's
+   * natural end (runModelLoop) or re-dispatched from runTurn's finally when
+   * the turn leaves by any other path — the busy guard above never sees it.
+   */
+  handleUiAction(cmd: UiActionCommand): void {
+    // `currentTurn` as well as `processing`: abort() clears `processing` while
+    // the turn is still unwinding, and a click then must queue, not start a
+    // second turn alongside it.
+    if (this.processing || this.currentTurn) {
+      this.pendingUiActions.push(cmd)
+      console.log(`[genui] ui.action "${cmd.action}" queued behind the running turn (${this.pendingUiActions.length} waiting)`)
+      return
+    }
+    void this.handleUserMessage(this.uiActionText(cmd), { uiAction: !isFollowUp(cmd) })
+  }
+
+  /**
+   * The user turn for a click: the echo line the page showed, then the
+   * structured body. A FollowUps chip is the question itself, verbatim — it
+   * is what typing would have sent, so it also gets the same contract
+   * decision a typed message would (`uiAction: false`).
+   */
+  private uiActionText(cmd: UiActionCommand): string {
+    if (isFollowUp(cmd)) return cmd.userMessage!.trim()
+    return `${uiActionEcho(cmd)}\n${formatUiAction(cmd)}`
+  }
+
+  /**
+   * Whether RenderUI survives the profile's tool scoping (`config.tools`),
+   * which callModel applies after the loop's own narrowing: forcing a call
+   * whose real tool list has no RenderUI would force some other tool.
+   */
+  private renderUiScoped(): boolean {
+    return filterTools([{ name: 'RenderUI' }], this.config.tools).length > 0
+  }
+
+  /**
+   * Generative-UI forcing for a new user turn (a typed message, or a click
+   * delivered at a turn's end): in a project chat that offers RenderUI, a
+   * request to see something drawn sets a fresh budget; anything else clears
+   * it, so a click never inherits the previous request's forcing (F171).
+   */
+  private setUiForce(text: string, renderUiOffered: boolean): void {
+    const reason = this.project && renderUiOffered && this.renderUiScoped() ? uiRequestReason(text) : null
+    this.uiForce = reason ? { remaining: UI_FORCE_MAX_CALLS, reason } : null
+    if (reason) console.log(`[genui] the message asks to see "${reason}" — tool_choice=required until a RenderUI surface draws (at most ${UI_FORCE_MAX_CALLS} calls)`)
+  }
+
+  /** Emit one `ui.render` frame; partial frames always key on the tool id (design A1). */
+  private emitUiRender(frame: { toolId: string; surfaceId: string; partial: boolean; spec: UiSpec | null; errors?: string[] }): void {
+    if (frame.partial) this.pendingUiSurfaces.add(frame.toolId)
+    else this.pendingUiSurfaces.delete(frame.toolId)
+    this.emit({ type: 'ui.render', ...frame })
+  }
+
+  /** Every surface still partial gets its terminal frame, with the reason the page shows. */
+  private closePendingUiSurfaces(reasonFor: (toolId: string) => string): void {
+    for (const toolId of [...this.pendingUiSurfaces]) {
+      this.emitUiRender({ toolId, surfaceId: toolId, partial: false, spec: null, errors: [reasonFor(toolId)] })
+    }
+  }
+
+  /**
+   * The one final frame per RenderUI call, emitted before `tool.complete` so
+   * the surface id it appends to the result reaches the model and the page in
+   * the same order. A refused or errored call withdraws the surface; a spec
+   * whose arguments were cut off mid-stream is drawn but reported as cut off
+   * (design A11, `truncatedToolIds`).
+   */
+  private emitFinalUiRender(toolId: string, toolInput: Record<string, unknown>, result: { output: string; isError: boolean }): void {
+    const surfaceId = isSurfaceId(toolInput.surface) ? toolInput.surface : toolId
+    if (result.isError) {
+      // Keyed on this call, never on the surface it named: a call that drew
+      // nothing must not withdraw an earlier, working surface of that name.
+      this.emitUiRender({ toolId, surfaceId: toolId, partial: false, spec: null, errors: [result.output.slice(0, 500)] })
+      return
+    }
+    const v = validateSpec(toolInput.spec !== undefined ? toolInput.spec : toolInput)
+    const errors = [...v.errors]
+    if (this.truncatedToolIds.has(toolId)) {
+      const note = 'the spec was cut off by the output limit; re-issue it with fewer rows or elements'
+      errors.push(note)
+      result.output += `\n- ${note}`
+    }
+    result.output += ` (surface: ${surfaceId})`
+    this.emitUiRender({ toolId, surfaceId, partial: false, spec: v.spec, errors })
+    if (this.uiForce && drawsContent(v.spec) && !this.truncatedToolIds.has(toolId)) {
+      console.log('[genui] surface drawn — the rest of the turn uses tool_choice=auto')
+      this.uiForce = null
+    }
+  }
+
   setApproveAll(value: boolean): void {
     this.executor.setApproveAll(value)
   }
@@ -938,6 +1068,8 @@ export class ConversationLoop {
       for (const [id, resolve] of [...this.pendingApprovals]) { this.pendingApprovals.delete(id); resolve(false) }
       // Same for a turn parked on an AskUser question (300 s timeout otherwise).
       globalAskBroker.cancelAll('the user switched to another conversation')
+      // Clicks queued for the conversation being left belong to it, not to the next one.
+      this.pendingUiActions = []
       try { await this.currentTurn } catch (e) { console.log(`[projects] aborted turn ended with: ${e instanceof Error ? e.message : String(e)}`) }
       // An abort mid-stream leaves the streamed text outside this.messages (the
       // assistant message is pushed only when the stream completes, and a
@@ -965,10 +1097,12 @@ export class ConversationLoop {
     if (binding) {
       setProjectToolContext({ home: binding.home, slug: binding.slug, embed: binding.embed, embedModel: binding.embedModel, emit: binding.emit })
       this.executor.setGrader((tool, input) => gradeProjectCall(binding.dir, this.executor['cwd'], classifyRisk, describeRisk, tool, input))
+      this.executor.setCodeIndexHints(false)
       this.emit({ type: 'project.opened', slug: binding.slug, chat: binding.chatFile, title: binding.chatTitle })
     } else {
       setProjectToolContext(null)
       this.executor.setGrader(null)
+      this.executor.setCodeIndexHints(true)
       this.emit({ type: 'project.opened', slug: null, chat: null, title: null })
     }
   }
@@ -1252,6 +1386,23 @@ export class ConversationLoop {
       )
     } finally {
       this.processing = false
+      this.uiForce = null
+      // A surface left partial by an abort, halt or error gets its terminal
+      // frame, and a click queued behind this turn that the natural end did
+      // not drain is dispatched once the loop is free (design A2/A8). Both
+      // wrapped: nothing here may skip the clears below.
+      try { this.closePendingUiSurfaces(() => 'the turn ended before this surface was finished') } catch (e) { console.error('[genui] terminal frame failed: ' + (e as Error).message) }
+      const queuedClick = this.pendingUiActions.shift()
+      if (queuedClick) {
+        console.log(`[genui] ui.action "${queuedClick.action}" re-dispatched after the turn`)
+        setTimeout(() => {
+          // Another turn got in first (a second click, a typed message): hand
+          // the click to it rather than to the busy guard, which drops it.
+          if (this.processing || this.currentTurn) { this.pendingUiActions.unshift(queuedClick); return }
+          this.handleUserMessage(this.uiActionText(queuedClick), { uiAction: !isFollowUp(queuedClick) })
+            .catch(e => console.error('[genui] ui.action re-dispatch failed: ' + (e as Error).message))
+        }, 0)
+      }
       // BEFORE `unattendedActive` is cleared: this is the last instant at which
       // the queue belongs to a mission at all, and anything still in it never
       // reached the model.
@@ -1629,7 +1780,7 @@ export class ConversationLoop {
     // engine/bridge/enforcementNudge.ts and is phase-aware; a mission-aware nudge
     // variant is the right path to lifting this skip, not hardcoding new text here.
     // Never in a project chat: there is no code task for a contract to measure.
-    else if (!this.allowedTools && !this.project && maybeAutoCreateContract(text, this.executor['cwd'])) {
+    else if (!this.allowedTools && !this.project && !opts?.uiAction && maybeAutoCreateContract(text, this.executor['cwd'])) {
       console.log(`[contract] Auto-created: ${globalContract.pendingCount()} assertions for "${text.slice(0, 50)}..."`)
       this.governance.setContractCreated()
       contractIsNew = true
@@ -1793,11 +1944,9 @@ export class ConversationLoop {
       const pinned = new Set(this.allowedTools)
       activeTools = activeTools.filter(t => pinned.has(t.name))
     }
-    // Projects mode: the project tool set, whatever the coding layers chose.
-    if (this.project) {
-      const names = new Set(PROJECT_TOOL_NAMES)
-      activeTools = ALL_TOOLS.filter(t => names.has(t.name))
-    }
+    // Projects mode: the project tool set, whatever the coding layers chose,
+    // with the project descriptions (no tool may name one the chat lacks).
+    if (this.project) activeTools = projectTools(ALL_TOOLS)
 
     // Build tool definitions in the format callModel expects (inputJSONSchema)
     let toolDefs = toToolDefs(activeTools)
@@ -1806,6 +1955,19 @@ export class ConversationLoop {
     const promptParts = this.project
       ? assembleProjectPrompt({ name: this.project.name, description: this.project.description, instructions: this.project.instructions, toolNames, cwd: this.executor['cwd'] })
       : assembleBasePrompt(toolNames, this.executor['cwd'])
+
+    // Generative UI: the RENDER_UI section rides only on turns where the tool
+    // is offered — every project chat, a coding session once it is loaded —
+    // the same condition that already rewrites the tool list (design A15).
+    if (activeTools.some(t => t.name === 'RenderUI')) {
+      promptParts.push('')
+      promptParts.push(genuiPromptSection(this.project ? 'project' : 'session'))
+    }
+    // A project-chat message that asks to SEE options, designs, a comparison
+    // or a table gets a surface: its model calls go out with tool_choice
+    // 'required' until one draws. The prompt alone let Qwen answer such a
+    // request in markdown (F171). Per message, never in the system prompt.
+    this.setUiForce(text, activeTools.some(t => t.name === 'RenderUI'))
 
     // Tell the model which extended tools it can pull in on demand. Static
     // (same every turn) so it stays within the append-only prompt prefix; only
@@ -1826,7 +1988,9 @@ export class ConversationLoop {
     // Skill catalogue (one line per skill). Session-static — skills are
     // discovered once per session — so this stays inside the append-only prompt
     // prefix. run_skill loads a skill's body + surfaces its tools on demand.
-    const skillIndexBlock = formatSkillIndexBlock(getSkillIndex())
+    // Not in a project chat: run_skill is not in its tool set, and the block
+    // tells the model to call it.
+    const skillIndexBlock = this.project ? '' : formatSkillIndexBlock(getSkillIndex())
     if (skillIndexBlock) {
       promptParts.push('')
       promptParts.push(skillIndexBlock)
@@ -2250,6 +2414,10 @@ export class ConversationLoop {
           } finally {
             // Restore state first (hygiene: a throwing cleanup cannot leave emit muted), then ALWAYS remove the worktrees
             this.emit = originalEmit
+            // A candidate's RenderUI frames were muted, so any surface it left
+            // pending never reached the page; closing it under the real emit
+            // would draw a withdrawn box out of nothing.
+            this.pendingUiSurfaces.clear()
             this.config.temperature = savedTemp
             this.executor.setCwd(mainCwd)
             wtManager.cleanupAll()
@@ -3195,13 +3363,30 @@ export class ConversationLoop {
         console.log(`[loop] Sending to model with ${iterationTools.length} tools: ${iterationTools.map((t: any) => t.name).join(', ')}`)
       }
       this.offeredToolNames = new Set(iterationTools.map((t: any) => t.name))
+      // Generative-UI forcing (uiForce): this call must end in a tool call
+      // while the user's request to see something drawn is unmet. Only when
+      // RenderUI is offered on this call and survives the profile's scoping,
+      // never in a best-of-N candidate. The tool list is unchanged, so the
+      // cached prompt prefix holds. A spent budget is released here, at the
+      // next call, so the last forced call's tools still see uiForce (its
+      // AskUser is redirected too).
+      if (this.uiForce && this.uiForce.remaining <= 0) {
+        console.log(`[genui] no surface after ${UI_FORCE_MAX_CALLS} forced calls — tool_choice back to auto`)
+        this.uiForce = null
+      }
+      const forceUi = this.uiForce !== null && !loopOpts?.candidate && this.offeredToolNames.has('RenderUI') && this.renderUiScoped()
+      if (forceUi) {
+        const f = this.uiForce!
+        f.remaining--
+        console.log(`[genui] tool_choice=required for this call ("${f.reason}"; ${f.remaining} forced call(s) left)`)
+      }
       const gen = localCallModel({
         messages: this.messages,
         systemPrompt,
         thinkingConfig,
         tools: iterationTools,
         signal: this.abortController?.signal ?? new AbortController().signal,
-        options: { model: this.config.model!, stuckTurns: this.governance?.getStuckCount() ?? 0 },
+        options: { model: this.config.model!, stuckTurns: this.governance?.getStuckCount() ?? 0, ...(forceUi ? { toolChoice: 'required' } : {}) },
         deps,
       })
       this.config.temperature = _savedTemperature
@@ -3220,6 +3405,8 @@ export class ConversationLoop {
       const toolResultsThisTurn: ('success' | 'failure' | 'denied')[] = []
       let streamedText = ''
       this.partialAssistantText = ''
+      this.uiStream = null
+      this.truncatedToolIds.clear()
 
       for await (const yielded of gen) {
         if (this.abortController?.signal.aborted) return
@@ -3252,6 +3439,21 @@ export class ConversationLoop {
               if (delta?.type === 'input_json_delta' && delta.partial_json) {
                 tokenCount++ // tool call JSON also counts as output
                 if ((delta as any).logprobs?.length) this.observeUncertainty('tool', (delta as any).logprobs)
+                // A RenderUI call drawing itself while it streams: repair the
+                // buffer every PARTIAL_FRAME_INTERVAL_MS and send what already
+                // names real components (engine/genui/partial.ts, design A3).
+                const ui = this.uiStream
+                if (ui && event.index === ui.index && typeof delta.partial_json === 'string') {
+                  ui.buffer += delta.partial_json
+                  const now = Date.now()
+                  if (ui.buffer.length >= 40 && now - ui.lastEmitMs >= PARTIAL_FRAME_INTERVAL_MS) {
+                    const partial = parsePartialSpec(ui.buffer)
+                    if (partial) {
+                      ui.lastEmitMs = now
+                      this.emitUiRender({ toolId: ui.toolId, surfaceId: ui.toolId, partial: true, spec: partial.spec })
+                    }
+                  }
+                }
               }
               break
             }
@@ -3282,6 +3484,7 @@ export class ConversationLoop {
               }
               break
             case 'message_stop': {
+              this.uiStream = null
               const modelCallElapsedMs = Date.now() - modelCallStartTime
               // `tokenCount` and `reasoningTokenCount` count stream DELTAS, not
               // tokens. One chunk can carry several tokens under speculative
@@ -3493,6 +3696,15 @@ export class ConversationLoop {
                 // `input.file_path` off `tool.start` to caption the matching
                 // `tool.complete`.
                 if ((block as any).logprobs?.length) this.observeUncertainty('tool', (block as any).logprobs)
+                // Partial frames only for a RenderUI call that will actually run:
+                // one the model was offered this turn (executeOneTool refuses the
+                // rest before the executor) and not a vibe-mode turn.
+                const blockId = typeof (block as any).id === 'string' ? (block as any).id : ''
+                if ((block as any).name === 'RenderUI' && blockId && !this.vibeMode && this.offeredToolNames?.has('RenderUI')) {
+                  this.uiStream = { toolId: blockId, index: event.index, buffer: '', lastEmitMs: 0 }
+                } else {
+                  this.uiStream = null
+                }
               }
               break
             }
@@ -3515,9 +3727,11 @@ export class ConversationLoop {
               break
             }
             case 'toolcall_transport': {
+              if ((event as any).stage === 'repaired' && (event as any).truncated === true && typeof (event as any).toolId === 'string') this.truncatedToolIds.add((event as any).toolId)
               this.emit({
                 type: 'toolcall.transport',
                 stage: (event as any).stage,
+                toolId: (event as any).toolId,
                 toolName: (event as any).toolName,
                 detail: (event as any).detail,
               })
@@ -3534,7 +3748,9 @@ export class ConversationLoop {
           this.partialAssistantText = ''
           if (this.project?.chatFile) {
             appendTranscript(this.project.dir, this.project.chatFile, { role: 'assistant', content: assistantContent as TranscriptMessage['content'] })
-            const text = (assistantContent as any[]).filter((b: any) => b.type === 'text').map((b: any) => b.text).join('\n')
+            // A surface carries the details now (F171), so its [n] count too.
+            const text = (assistantContent as any[]).map((b: any) =>
+              b.type === 'text' ? b.text : b.type === 'tool_use' && b.name === 'RenderUI' ? JSON.stringify(b.input ?? {}) : '').join('\n')
             const used = citationsUsed(text, this.project.citations)
             if (used.length) this.emit({ type: 'project.citations', chat: this.project.chatFile, turn: this.messages.length, citations: used })
           }
@@ -3775,11 +3991,30 @@ export class ConversationLoop {
         // Before exiting: check whether the model ended silently after tool use
         // and if so, queue a summary follow-up to force one more turn.
         // Not in a project chat: the reply is already the user-facing answer.
-        if (!this.project && !this.vibeMode && shouldInjectSummary(streamedText, stopReason, toolsUsedInSession, summaryInjected)) {
+        // A click on a RenderUI surface that arrived during this turn is the
+        // next user turn, here rather than through the busy guard (design A8).
+        // Never in a best-of-N candidate: its messages are thrown away, and a
+        // click it consumed would vanish with them.
+        const clicked = loopOpts?.candidate ? undefined : this.pendingUiActions.shift()
+        if (clicked) {
+          const clickText = this.uiActionText(clicked)
+          console.log(`[genui] ui.action "${clicked.action}" delivered at the turn's end`)
+          this.addMessage({ role: 'user', content: [{ type: 'text', text: clickText }] })
+          if (this.project?.chatFile) appendTranscript(this.project.dir, this.project.chatFile, { role: 'user', content: [{ type: 'text', text: clickText }] })
+          // A new user turn: a FollowUps chip asking to see more options is
+          // forced like a typed one, a Button click clears forcing.
+          this.setUiForce(clickText, toolDefs.some(t => t.name === 'RenderUI'))
+          continue
+        }
+
+        // A turn whose only tool drew the answer is a prose answer for the
+        // summary nudge: narrating a card under the card is noise.
+        const toolsForSummary = toolsUsedInSession.filter(t => t !== 'RenderUI')
+        if (!this.project && !this.vibeMode && shouldInjectSummary(streamedText, stopReason, toolsForSummary, summaryInjected)) {
           summaryInjected = true
           console.log(`[s2] Summary follow-up queued`)
           this.emit({ type: 'summary.injected', toolsUsed: Array.from(new Set(toolsUsedInSession)) })
-          const summaryMsg = buildSummaryInjectionMessage(toolsUsedInSession)
+          const summaryMsg = buildSummaryInjectionMessage(toolsForSummary)
           this.steering.followUp(summaryMsg.content[0].text, 'summary')
         }
 
@@ -3909,6 +4144,15 @@ export class ConversationLoop {
         }
       }
 
+      // A RenderUI call that streamed partial frames and then never reached the
+      // executor (refused, malformed, denied) still owes the page a terminal
+      // frame; the reason is what the model was told (design A2).
+      this.closePendingUiSurfaces(toolId => {
+        const r = (toolResults as any[]).find(x => x?.tool_use_id === toolId)
+        const text = Array.isArray(r?.content) ? r.content.map((c: any) => c?.text ?? '').join(' ') : ''
+        return (text || 'the call did not run').slice(0, 300)
+      })
+
       // Snapshot: track workspace state after tool batch.
       // Re-init if the executor cwd changed since the snapshot was created
       // (user.message with a different project dir, worktree switch, ...).
@@ -3931,6 +4175,11 @@ export class ConversationLoop {
       // like compaction; the system prompt itself is untouched).
       const requestedLoads: string[] = []
       for (const block of toolUseBlocks as any[]) {
+        // A call that was refused as not offered (executeOneTool) surfaces
+        // nothing: in a project chat a remembered load_tools/run_skill would
+        // otherwise rebuild toolDefs from the coding core set, and a
+        // governance-refused one would start a workflow it was denied.
+        if (this.offeredToolNames && !this.offeredToolNames.has(block.name)) continue
         if (block.name === 'load_tools' && Array.isArray(block.input?.tools)) {
           for (const n of block.input.tools) if (typeof n === 'string') requestedLoads.push(n)
         }
@@ -4557,6 +4806,23 @@ export class ConversationLoop {
       return
     }
 
+    // ─── Generative-UI forcing: a choice is drawn, not asked ───────
+    // While the user's request to see options is unmet (uiForce), AskUser
+    // would put the options in an ask card instead of a surface — the likely
+    // pick when a call is forced. Not executed and not counted against the
+    // tool: the result tells the model what to draw.
+    if (this.uiForce && toolName === 'AskUser' && this.offeredToolNames?.has('RenderUI') && this.renderUiScoped()) {
+      const msg = 'Not asked: the user asked to see this drawn. Call RenderUI instead — a Card per option with a Button to choose it ' +
+        '(a Badge on the one you recommend), and your question as a Text line inside the surface.'
+      console.log('[genui] AskUser redirected to RenderUI while the request to see options is unmet')
+      this.emit({ type: 'tool.start', toolId, toolName, input: toolInput })
+      this.emit({ type: 'tool.complete', toolId, toolName, result: msg, isError: false })
+      toolResults.push({ type: 'tool_result', tool_use_id: toolId, content: [{ type: 'text', text: msg }] })
+      toolsUsedThisTurn.push(toolName)
+      toolsUsedInSession.push(toolName)
+      return
+    }
+
     // ─── Commit scope guard ────────────────────────────────────────
     // Prevention, not a rescue: a commit is hard to reverse once made, and an
     // unattended run runs with approveAll so nothing else will stop it.
@@ -5111,6 +5377,11 @@ export class ConversationLoop {
     } else {
       this.toolFailureCounts.delete(toolName)
     }
+
+    // Generative UI: the final frame goes out before tool.complete so the
+    // surface id it appends to the result reaches the model and the page in
+    // the same order (engine/genui).
+    if (toolName === 'RenderUI') this.emitFinalUiRender(toolId, toolInput as Record<string, unknown>, result)
 
     this.emit({
       type: 'tool.complete',

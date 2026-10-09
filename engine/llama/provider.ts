@@ -49,6 +49,8 @@ export class LlamaCppProvider implements Provider {
   /** Sticky: stock llama-server (≥b9529) rejects logprobs with tools+stream.
    *  Tier 1 must degrade, never break the turn — set on first rejection. */
   private logprobsUnsupported = false
+  /** Set when this server refuses tool_choice 'required'; later calls send 'auto'. */
+  private toolChoiceUnsupported = false
 
   constructor(config: LlamaCppProviderConfig & { tokenCacheBound?: number }) {
     this.primaryUrl = config.primaryUrl.replace(/\/$/, '')
@@ -149,6 +151,21 @@ export class LlamaCppProvider implements Provider {
       if (body.logprobs && resp.status === 400 && /logprobs/i.test(detail)) {
         this.logprobsUnsupported = true
         console.log(`[llama-cpp] server rejects logprobs — entropy trace disabled for this session (${detail})`)
+        body = this.buildRequestBody(request, true)
+        resp = await fetch(this.getCompletionsUrl(), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        })
+        detail = ''
+        try { if (!resp.ok) detail = (await resp.text()).slice(0, 500) } catch (err) { console.log('[llama-cpp] could not read error body:', err) }
+      }
+      // A build that refuses tool_choice 'required' (generative-UI forcing,
+      // engine/genui/intent.ts) must cost the forcing, not the turn: send
+      // 'auto' for the rest of the session and retry once.
+      if (!resp.ok && body.tool_choice === 'required' && resp.status === 400 && /tool_choice/i.test(detail)) {
+        this.toolChoiceUnsupported = true
+        console.log(`[llama-cpp] server rejects tool_choice 'required' — generative-UI forcing disabled for this session (${detail})`)
         body = this.buildRequestBody(request, true)
         resp = await fetch(this.getCompletionsUrl(), {
           method: 'POST',
@@ -308,7 +325,7 @@ export class LlamaCppProvider implements Provider {
     if (request.stop_sequences) body.stop = request.stop_sequences
     if (request.tools?.length) {
       body.tools = toOpenAITools(request.tools)
-      body.tool_choice = 'auto'
+      body.tool_choice = request.tool_choice === 'required' && !this.toolChoiceUnsupported ? 'required' : 'auto'
     }
     if (request.grammar) {
       body.grammar = request.grammar

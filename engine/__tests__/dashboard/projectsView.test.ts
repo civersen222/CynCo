@@ -297,7 +297,7 @@ describe('dashboard: the Projects view', () => {
     const sent: Record<string, unknown>[] = []
     const fetched: string[] = []
     const projectsState: Record<string, any> = { active: null, paths: { harbor: 'C:/projects/harbor' }, names: {}, codingCwd: null }
-    const make = new Function('document', 'ws', 'projectsState', 'appendChatMsg', 'brainViz', 'fetch',
+    const make = new Function('document', 'ws', 'projectsState', 'appendChatMsg', 'brainViz', 'fetch', 'clearChatCitations',
       fnSource('sendChatMessage') + fnSource('showProjectCwd') + fnSource('restoreCodingCwd') +
       '\nreturn { sendChatMessage: sendChatMessage, showProjectCwd: showProjectCwd, restoreCodingCwd: restoreCodingCwd };')
     const page = make(
@@ -307,6 +307,7 @@ describe('dashboard: the Projects view', () => {
       () => {},
       { setActive: () => {} },
       (path: string) => { fetched.push(path); return Promise.resolve({ json: () => ({ projectPath: 'C:/code/launch' }) }) },
+      () => {},
     )
     const say = (text: string) => { input.value = text; page.sendChatMessage() }
 

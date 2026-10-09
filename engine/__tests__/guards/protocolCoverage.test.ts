@@ -36,6 +36,10 @@ const NON_TUI_CONSUMERS: Record<string, string> = {
   'project.opened': 'consumed by the 9161 dashboard Projects view (projects-mode core)',
   'project.citations': 'consumed by the 9161 dashboard Projects view (projects-mode core)',
   'project.ingest': 'consumed by the 9161 dashboard Projects view (projects-mode core)',
+  'ui.render':
+    'Generative UI surfaces (engine/genui), consumed by the 9161 dashboard Chat tab, which is the only ' +
+    'surface that can draw them. The TUI shows the RenderUI call as a tool row like any other tool; ' +
+    'the browser dashboard is the deliverable and the TUI is explicitly out of scope for this feature.',
 }
 
 /** TUI event types handled bespoke in the receiver (app.py), not via the dispatch table. */

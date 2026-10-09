@@ -20,13 +20,13 @@ export type ScriptBlock =
   | { type: 'text'; text: string | string[] }  // an array streams as separate deltas
   | { type: 'tool_use'; name: string; input: Record<string, unknown> }
 
-export type RecordedCall = { systemPrompt: string | undefined; messages: unknown[]; tools: { name: string }[] }
+export type RecordedCall = { systemPrompt: string | undefined; messages: unknown[]; tools: { name: string }[]; toolChoice: CompletionRequest['tool_choice'] }
 
 export type Hold = { call: number; reached: () => void; release: Promise<void> }
 
-function config(): LocalCodeConfig {
+function config(model = 'test-model'): LocalCodeConfig {
   return {
-    baseUrl: 'http://localhost:11434', model: 'test-model', tier: 'auto', temperature: 0.7,
+    baseUrl: 'http://localhost:11434', model, tier: 'auto', temperature: 0.7,
     maxOutputTokens: 8192, timeout: 120000, contextLength: 131072, tools: undefined, noScouts: true, approveAll: true,
   } as LocalCodeConfig
 }
@@ -55,7 +55,12 @@ async function* streamOf(blocks: ScriptBlock[], id: string, hold: Hold | null): 
   yield { type: 'message_stop' } as any
 }
 
-export function makeLoop(opts: { script: ScriptBlock[][]; hold?: Hold; cwd?: string }) {
+/**
+ * `model` defaults to a family the capability table does not know (no native
+ * tool array); pass a known one such as 'qwen3.8' to see the request's
+ * `tools` and `tool_choice` as llama-server would.
+ */
+export function makeLoop(opts: { script: ScriptBlock[][]; hold?: Hold; cwd?: string; model?: string }) {
   const cwd = opts.cwd ?? mkdtempSync(join(tmpdir(), 'cynco-loop-code-'))
   const calls: RecordedCall[] = []
   const events: any[] = []
@@ -70,11 +75,11 @@ export function makeLoop(opts: { script: ScriptBlock[][]; hold?: Hold; cwd?: str
     async complete() { throw new Error('not implemented') },
     async *stream(r: CompletionRequest): AsyncGenerator<StreamEvent> {
       const n = idx++
-      calls.push({ systemPrompt: r.system, messages: r.messages as unknown[], tools: (r.tools ?? []) as { name: string }[] })
+      calls.push({ systemPrompt: r.system, messages: r.messages as unknown[], tools: (r.tools ?? []) as { name: string }[], toolChoice: r.tool_choice })
       const blocks = opts.script[n] ?? [{ type: 'text', text: 'done' }]
       yield* streamOf(blocks, `m${n}`, opts.hold && opts.hold.call === n ? opts.hold : null)
     },
   } as Provider
-  const loop = new ConversationLoop({ cwd, config: config(), provider, emit: (e: any) => { events.push(e) } })
+  const loop = new ConversationLoop({ cwd, config: config(opts.model), provider, emit: (e: any) => { events.push(e) } })
   return { loop, events, calls, cwd }
 }
