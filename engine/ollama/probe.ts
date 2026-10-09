@@ -75,10 +75,19 @@ export const KNOWN_MODEL_CAPABILITIES: Map<string, KnownEntry> = new Map([
  *   'llama3.1:8b-instruct-q4_0' → 'llama3.1'
  *   'deepseek-r1:14b' → 'deepseek-r1'
  *   'phi4' → 'phi4'
+ *   'Qwen3.8-27B' → 'qwen3.8-27b' (the table is lower-case; case means nothing to it)
+ *   'C:\models\Qwen3.8-27B-Q4_K_M.gguf' → 'qwen3.8-27b-q4_k_m'
+ *   'hf.co/unsloth/Qwen3-8B-GGUF:Q4_K_M' → 'qwen3-8b-gguf'
+ *
+ * A capitalised name used to miss the table and resolve to `toolUse: 'none'`,
+ * so no tools were sent at all — silently (F172).
  */
 export function parseModelFamily(modelName: string): string {
-  // Strip everything after the first colon (tag/quantization)
-  return modelName.split(':')[0]
+  // A path, or an hf.co/<org>/<repo> reference, names the model by its last
+  // segment; then strip the tag/quantization after the first colon and a
+  // GGUF file extension.
+  const last = modelName.split(/[\\/]/).pop() ?? modelName
+  return last.split(':')[0].replace(/\.gguf$/i, '').toLowerCase()
 }
 
 // ─── Capability Lookup ───────────────────────────────────────────
@@ -88,6 +97,7 @@ export function parseModelFamily(modelName: string): string {
  * Returns null if the family is not in the known table.
  */
 export function lookupKnownCapabilities(family: string): KnownEntry | null {
+  family = family.toLowerCase()
   // Exact match first
   const exact = KNOWN_MODEL_CAPABILITIES.get(family)
   if (exact) return exact
