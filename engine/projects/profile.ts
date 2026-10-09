@@ -1,15 +1,17 @@
 /**
  * engine/projects/profile.ts — the system prompt for a project chat.
  *
- * Keeps the engine's governance and memory sections verbatim (the VSM layer
- * is about behaviour, not code) and the shell note; drops the code-shaped
+ * Keeps the engine's governance section (the VSM layer is about behaviour,
+ * not code) and the shell note, each naming only tools a project chat has —
+ * its own memory note instead of the engine's, which orders SaveLearning, and
+ * ProjectSearch in place of CodeIndex in the variety row; drops the code-shaped
  * sections (CodeIndex-first, edit rules, commit cadence, contracts, code
  * quality, version control); adds a <PROJECT> block with the project's name,
  * description and standing instructions. Everything here is fixed at session
  * open (instructions are read once by the loop), so the prompt is
  * byte-identical across turns and the prefix cache holds.
  */
-import { VSM_GOVERNANCE, MEMORY } from '../engine/systemPromptText.js'
+import { VSM_GOVERNANCE } from '../engine/systemPromptText.js'
 import { getShellInfo } from '../tools/shellInfo.js'
 
 export const PROJECT_TOOL_NAMES: readonly string[] = [
@@ -35,14 +37,35 @@ const PROJECT_WORK = `<PROJECT_WORK>
 - Be concrete when you do answer: quantities, dimensions, times, costs, names of things. Short turns, one step at a time; this is a conversation, not a mission.
 </PROJECT_WORK>`
 
+/**
+ * The engine's governance section, naming the project chat's own search tool
+ * in its variety row (CodeIndex is not offered here). Derived once, so it is
+ * as byte-stable as the original; the profile test fails if a tool the chat
+ * lacks reappears anywhere in the prompt.
+ */
+const PROJECT_GOVERNANCE = VSM_GOVERNANCE.replace('CodeIndex, Grep, Glob, Read', 'ProjectSearch, Grep, Glob, Read')
+
+/**
+ * Not the engine's MEMORY: that one orders "IMMEDIATELY use the SaveLearning
+ * tool" on every correction, and a project chat does not offer SaveLearning —
+ * the learnings store is global, and the last 20 learnings ride every prompt,
+ * so a project's preference ("metric units", the aliens' look) would leak into
+ * coding sessions and missions. A preference that should outlast the chat
+ * belongs in the project's instructions. The F171 chat opened its reasoning on
+ * memory after exactly such a correction.
+ */
+const PROJECT_MEMORY = `<MEMORY>
+Learnings from previous sessions appear under "## Learnings from previous sessions" in your context; apply them silently. When the user corrects you or takes back a decision, follow the correction from now on: what you produced earlier in this project is a draft they can overrule. You have no tool that saves learnings here — a preference that should outlast this chat belongs in the project's instructions, so suggest the user add it there.
+</MEMORY>`
+
 export function assembleProjectPrompt(p: ProjectPromptInput): string[] {
   const parts: string[] = [
     PROJECT_ROLE, '',
     `<TOOLS>\nYou have access to these tools:\n${p.toolNames}\n</TOOLS>`, '',
     PROJECT_WORK, '',
     `<PROJECT>\nName: ${p.name}\nDescription: ${p.description || '(none)'}` + (p.instructions.trim() ? `\n\n## Project instructions\n${p.instructions.trim()}` : '') + `\n</PROJECT>`, '',
-    VSM_GOVERNANCE, '',
-    MEMORY, '',
+    PROJECT_GOVERNANCE, '',
+    PROJECT_MEMORY, '',
     `Working directory: ${p.cwd}`,
     `Shell: ${getShellInfo().dialectNote}`,
   ]

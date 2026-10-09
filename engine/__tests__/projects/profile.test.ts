@@ -1,14 +1,21 @@
 import { describe, it, expect } from 'bun:test'
 import { assembleProjectPrompt, PROJECT_TOOL_NAMES } from '../../projects/profile.js'
+import { ALL_TOOLS } from '../../tools/registry.js'
 import { VSM_GOVERNANCE, MEMORY, TOOL_USE, WORKFLOW, VERSION_CONTROL, CODE_QUALITY } from '../../engine/systemPromptText.js'
 
 const input = { name: 'Front Garden Diorama', description: 'A 1:24 diorama for the front bed.', instructions: 'Metric units. Ask before buying.', toolNames: '- Read: read a file', cwd: 'C:/p/diorama' }
 
 describe('assembleProjectPrompt', () => {
-  it('keeps governance and memory, adds the project block, drops the code-shaped sections', () => {
+  it('keeps governance and a project memory note, adds the project block, drops the code-shaped sections', () => {
     const text = assembleProjectPrompt(input).join('\n')
-    expect(text).toContain(VSM_GOVERNANCE)
-    expect(text).toContain(MEMORY)
+    // the governance section, with the chat's own search tool in its variety row
+    expect(text).toContain(VSM_GOVERNANCE.replace('CodeIndex, Grep, Glob, Read', 'ProjectSearch, Grep, Glob, Read'))
+    expect(text).toContain('Use more diverse tools — ProjectSearch, Grep, Glob, Read')
+    // not the engine's MEMORY: it orders SaveLearning, which a project chat lacks
+    expect(text).not.toContain(MEMORY)
+    expect(text).toMatch(/<MEMORY>\nLearnings from previous sessions appear under "## Learnings from previous sessions"/)
+    expect(text).toContain('what you produced earlier in this project is a draft they can overrule')
+    expect(text).toContain("belongs in the project's instructions, so suggest the user add it there")
     expect(text).toContain('<PROJECT>')
     expect(text).toContain('Front Garden Diorama')
     expect(text).toContain('A 1:24 diorama for the front bed.')
@@ -16,12 +23,18 @@ describe('assembleProjectPrompt', () => {
     expect(text).toContain('- Read: read a file')
     expect(text).toContain('Working directory: C:/p/diorama')
     for (const dropped of [TOOL_USE, WORKFLOW, VERSION_CONTROL, CODE_QUALITY]) expect(text).not.toContain(dropped)
-    // "CodeIndex" alone is not used here: VSM_GOVERNANCE (kept verbatim, asserted
-    // above) names CodeIndex in its VARIETY WARNING row as an example of tool
-    // diversity, so a bare /CodeIndex/ match would fail against the section this
-    // same test requires to be present. These two markers are unique to the
-    // dropped TOOL_USE/WORKFLOW sections.
+    // These two markers are unique to the dropped TOOL_USE/WORKFLOW sections.
     expect(text).not.toMatch(/MANDATORY FIRST STEP|5\. \*\*COMMIT\*\*/)
+  })
+  // The project prompt used to order SaveLearning (MEMORY) and suggest
+  // CodeIndex (the governance variety row), neither of which a project chat
+  // offers; the F171 chat's reasoning opened on memory after a correction.
+  it('names no tool the project chat does not offer', () => {
+    const text = assembleProjectPrompt({ ...input, toolNames: '' }).join('\n')
+    const offered = new Set(PROJECT_TOOL_NAMES)
+    const named = ALL_TOOLS.map(t => t.name).filter(n => new RegExp(`\\b${n}\\b`).test(text))
+    expect(named.filter(n => !offered.has(n))).toEqual([])
+    expect(named).toContain('ProjectSearch')
   })
   it('is byte-identical for identical input (prefix stability) and omits an empty instructions block', () => {
     expect(assembleProjectPrompt(input)).toEqual(assembleProjectPrompt({ ...input }))
