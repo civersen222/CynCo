@@ -67,10 +67,13 @@ describe('validateSpec', () => {
     expect(r.errors).toEqual(['x: unknown prop "colour" was dropped'])
   })
 
-  it('table rows: objects by column, strings, mixed cells', () => {
-    const r = one('Table', { columns: ['Name', 'Qty'], rows: [{ Name: 'Resin', Qty: 2 }, { name: 'Pigment', qty: '1' }, 'note', ['a', null, true]] })
-    expect(r.spec?.elements.x.props?.rows).toEqual([['Resin', '2'], ['Pigment', '1'], ['note'], ['a', '', 'true']])
+  it('table rows: objects by column, strings, mixed cells — one cell per column', () => {
+    const r = one('Table', { columns: ['Name', 'Qty'], rows: [{ Name: 'Resin', Qty: 2 }, { name: 'Pigment', qty: '1' }, 'note', ['a', null]] })
+    expect(r.spec?.elements.x.props?.rows).toEqual([['Resin', '2'], ['Pigment', '1'], ['note', ''], ['a', '']])
     expect(r.errors).toEqual([])
+    const long = one('Table', { columns: ['A'], rows: [['1', '2', '3'], ['4']] })
+    expect(long.spec?.elements.x.props?.rows).toEqual([['1'], ['4']])
+    expect(long.errors).toEqual(['x.rows: 1 row(s) had more cells than the 1 columns; the extra cells were dropped'])
   })
 
   it('table without columns derives them from the first row object; without rows it is dropped', () => {
@@ -157,11 +160,27 @@ describe('validateSpec', () => {
     expect(noRoot.errors[0]).toMatch(/spec.root was missing/)
   })
 
-  it('Button needs an action unless a Form supplies one', () => {
-    const bare = validateSpec({ root: 'b', elements: { b: { type: 'Button', props: { label: 'Go' } } } })
-    expect(bare.errors.join(' ')).toMatch(/needs an action name, or a Form/)
+  it('action names are made socket-safe: "Plan trip" would be refused at the click', () => {
+    const r = validateSpec({ root: 'c', elements: {
+      c: { type: 'Card', children: ['b', 'f', 'l'] },
+      b: { type: 'Button', props: { label: 'Go', action: 'Plan trip' } },
+      f: { type: 'Form', props: { action: 'save form!' } },
+      l: { type: 'List', props: { items: [{ title: 'One', action: 'open step 1' }, { title: 'Two', action: 'ok_2' }] } },
+    } })
+    expect(r.errors).toEqual([])
+    expect(r.spec?.elements.b.props?.action).toBe('plan-trip')
+    expect(r.spec?.elements.f.props?.action).toBe('save-form')
+    expect((r.spec?.elements.l.props?.items as any[]).map(i => i.action)).toEqual(['open-step-1', 'ok_2'])
+  })
+
+  it('a Button with no action sends its label (OpenUI); inside a Form the Form supplies it', () => {
+    const bare = validateSpec({ root: 'b', elements: { b: { type: 'Button', props: { label: 'Plan a Trip!' } } } })
+    expect(bare.errors).toEqual([])
+    expect(bare.spec?.elements.b.props?.action).toBe('plan-a-trip')
+    expect(validateSpec({ root: 'b', elements: { b: { type: 'Button', props: { label: '!!!' } } } }).spec?.elements.b.props?.action).toBe('click')
     const inForm = validateSpec({ root: 'f', elements: { f: { type: 'Form', children: ['row'] }, row: { type: 'ButtonRow', children: ['b'] }, b: { type: 'Button', props: { label: 'Go' } } } })
     expect(inForm.errors).toEqual([])
+    expect(inForm.spec?.elements.b.props?.action).toBeUndefined()
   })
 
   it('Tabs children without a tab go to the first tab, said once each', () => {

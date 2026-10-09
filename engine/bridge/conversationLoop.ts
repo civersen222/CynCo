@@ -119,7 +119,7 @@ import { classifyRisk, describeRisk } from './guardianRules.js'
 import { validateSpec, isSurfaceId } from '../genui/spec.js'
 import { parsePartialSpec, PARTIAL_FRAME_INTERVAL_MS } from '../genui/partial.js'
 import { genuiPromptSection } from '../genui/prompt.js'
-import { formatUiAction, uiActionEcho } from '../genui/actions.js'
+import { formatUiAction, uiActionEcho, isFollowUp } from '../genui/actions.js'
 
 /**
  * Phase 6: build structured diff hunks from a write-tool input for the file.diff
@@ -594,10 +594,15 @@ export class ConversationLoop {
   private pendingUiSurfaces = new Set<string>()
   /** Clicks that arrived while a turn was running; drained at the turn's natural end or re-dispatched after it (design A8). */
   private pendingUiActions: UiActionCommand[] = []
-  /** Tool calls whose arguments jsonrepair had to close this model call: a cut-off spec is reported, not presented as final. */
-  private repairedToolIds = new Set<string>()
-  /** The stop reason of the model call whose tool calls are being executed. */
-  private lastStopReason = 'end_turn'
+  /**
+   * Tool calls whose arguments were CUT OFF this model call (an object, array
+   * or string still open when the stream ended — `isTruncatedJson`): a cut-off
+   * spec is drawn but reported, never presented as final. A merely untidy
+   * call jsonrepair fixed (a trailing comma) is not in here. `stop_reason`
+   * cannot carry this: on the native streaming path it always reads
+   * 'tool_use' for a call with a tool block (streamTranslator synthesizes it).
+   */
+  private truncatedToolIds = new Set<string>()
   // Tool names actually offered to the model in the current iteration (after
   // S5 restrictions, demotions, routing). In one-shot runs this is enforced
   // at execution time too — see executeOneTool.
@@ -917,11 +922,17 @@ export class ConversationLoop {
       console.log(`[genui] ui.action "${cmd.action}" queued behind the running turn (${this.pendingUiActions.length} waiting)`)
       return
     }
-    void this.handleUserMessage(this.uiActionText(cmd), { uiAction: true })
+    void this.handleUserMessage(this.uiActionText(cmd), { uiAction: !isFollowUp(cmd) })
   }
 
-  /** The user turn for a click: the echo line the page showed, then the structured body. */
+  /**
+   * The user turn for a click: the echo line the page showed, then the
+   * structured body. A FollowUps chip is the question itself, verbatim — it
+   * is what typing would have sent, so it also gets the same contract
+   * decision a typed message would (`uiAction: false`).
+   */
   private uiActionText(cmd: UiActionCommand): string {
+    if (isFollowUp(cmd)) return cmd.userMessage!.trim()
     return `${uiActionEcho(cmd)}\n${formatUiAction(cmd)}`
   }
 
@@ -943,8 +954,8 @@ export class ConversationLoop {
    * The one final frame per RenderUI call, emitted before `tool.complete` so
    * the surface id it appends to the result reaches the model and the page in
    * the same order. A refused or errored call withdraws the surface; a spec
-   * jsonrepair had to close or a `max_tokens` stop is drawn but reported as
-   * cut off (design A11).
+   * whose arguments were cut off mid-stream is drawn but reported as cut off
+   * (design A11, `truncatedToolIds`).
    */
   private emitFinalUiRender(toolId: string, toolInput: Record<string, unknown>, result: { output: string; isError: boolean }): void {
     const surfaceId = isSurfaceId(toolInput.surface) ? toolInput.surface : toolId
@@ -954,7 +965,7 @@ export class ConversationLoop {
     }
     const v = validateSpec(toolInput.spec !== undefined ? toolInput.spec : toolInput)
     const errors = [...v.errors]
-    if (this.repairedToolIds.has(toolId) || this.lastStopReason === 'max_tokens') {
+    if (this.truncatedToolIds.has(toolId)) {
       const note = 'the spec was cut off by the output limit; re-issue it with fewer rows or elements'
       errors.push(note)
       result.output += `\n- ${note}`
@@ -1341,7 +1352,7 @@ export class ConversationLoop {
       if (queuedClick) {
         console.log(`[genui] ui.action "${queuedClick.action}" re-dispatched after the turn`)
         setTimeout(() => {
-          this.handleUserMessage(this.uiActionText(queuedClick), { uiAction: true })
+          this.handleUserMessage(this.uiActionText(queuedClick), { uiAction: !isFollowUp(queuedClick) })
             .catch(e => console.error('[genui] ui.action re-dispatch failed: ' + (e as Error).message))
         }, 0)
       }
@@ -2351,6 +2362,10 @@ export class ConversationLoop {
           } finally {
             // Restore state first (hygiene: a throwing cleanup cannot leave emit muted), then ALWAYS remove the worktrees
             this.emit = originalEmit
+            // A candidate's RenderUI frames were muted, so any surface it left
+            // pending never reached the page; closing it under the real emit
+            // would draw a withdrawn box out of nothing.
+            this.pendingUiSurfaces.clear()
             this.config.temperature = savedTemp
             this.executor.setCwd(mainCwd)
             wtManager.cleanupAll()
@@ -3322,7 +3337,7 @@ export class ConversationLoop {
       let streamedText = ''
       this.partialAssistantText = ''
       this.uiStream = null
-      this.repairedToolIds.clear()
+      this.truncatedToolIds.clear()
 
       for await (const yielded of gen) {
         if (this.abortController?.signal.aborted) return
@@ -3643,7 +3658,7 @@ export class ConversationLoop {
               break
             }
             case 'toolcall_transport': {
-              if ((event as any).stage === 'repaired' && typeof (event as any).toolId === 'string') this.repairedToolIds.add((event as any).toolId)
+              if ((event as any).stage === 'repaired' && (event as any).truncated === true && typeof (event as any).toolId === 'string') this.truncatedToolIds.add((event as any).toolId)
               this.emit({
                 type: 'toolcall.transport',
                 stage: (event as any).stage,
@@ -4041,7 +4056,6 @@ export class ConversationLoop {
       const toolResults: Message['content'] = []
       const P_READ_ONLY = new Set(['Read', 'Grep', 'Glob', 'Ls', 'ImageView', 'Git'])
       const batches = classifyParallelBatches(toolUseBlocks, P_READ_ONLY)
-      this.lastStopReason = stopReason
 
       for (const batch of batches) {
         if (batch.length > 1) {

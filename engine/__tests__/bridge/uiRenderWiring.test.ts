@@ -186,6 +186,43 @@ describe('RenderUI frames on the live loop', () => {
   }, 30000)
 })
 
+describe('a cut-off spec versus an untidy one', () => {
+  async function finalFrameFor(args: string) {
+    globalContract.clear()
+    const events: any[] = []
+    const loop = new ConversationLoop({
+      cwd: tempDir('cynco-ui-cut-'),
+      config: config(),
+      provider: mockProvider([loadRenderUi, toolUse('tu-cut', 'RenderUI', chunks(args, 80)), textResponse('drawn, all done.')]),
+      emit: (e: any) => { events.push(e) },
+    })
+    await loop.handleUserMessage('draw')
+    globalContract.clear()
+    const final = uiFrames(events).filter(f => !f.partial)
+    const complete = events.find(e => e?.type === 'tool.complete' && e.toolId === 'tu-cut')
+    return { final, complete }
+  }
+
+  it('arguments cut off mid-stream: drawn, and both the page and the model are told', async () => {
+    const full = JSON.stringify(genuiExampleCall())
+    const cut = full.slice(0, full.indexOf('"next"') - 2) // ends inside the Form's children list
+    const { final, complete } = await finalFrameFor(cut)
+    expect(final).toHaveLength(1)
+    expect(final[0].spec).not.toBeNull()
+    expect(final[0].errors).toEqual(expect.arrayContaining([expect.stringContaining('cut off by the output limit')]))
+    expect(String(complete.result)).toContain('cut off by the output limit')
+  }, 30000)
+
+  it('a complete spec jsonrepair only tidied (trailing commas) is not reported as cut off', async () => {
+    const tidy = JSON.stringify(genuiExampleCall()).replace(/\]\}/g, '],}').replace(/"\]/g, '",]')
+    const { final, complete } = await finalFrameFor(tidy)
+    expect(final).toHaveLength(1)
+    expect(final[0].spec).not.toBeNull()
+    expect(final[0].errors.join(' ')).not.toContain('cut off')
+    expect(String(complete.result)).not.toContain('cut off')
+  }, 30000)
+})
+
 describe('ui.action on the live loop', () => {
   const click = { type: 'ui.action' as const, surfaceId: 'plan', action: 'recalc', label: 'Recalculate', state: { kg: 3 } }
 
@@ -227,6 +264,24 @@ describe('ui.action on the live loop', () => {
     expect(at('user:\u25B6 Recalculate\n[UI action]')).toBeGreaterThan(at('assistant:first, all done.'))
     expect(at('assistant:second, all done.')).toBeGreaterThan(at('user:\u25B6 Recalculate\n[UI action]'))
     expect((loop as any).pendingUiActions).toEqual([])
+    globalContract.clear()
+  }, 30000)
+
+  it('a FollowUps chip clicked while the turn runs is delivered as the plain question, never dropped', async () => {
+    globalContract.clear()
+    let loopRef: ConversationLoop | null = null
+    const chip = { type: 'ui.action' as const, surfaceId: 'plan', action: 'followup', label: 'What if I use walnut?', userMessage: 'What if I use walnut?' }
+    const provider = mockProvider([
+      textResponse('first, all done.', () => { loopRef!.handleUiAction(chip) }),
+      textResponse('walnut, all done.'),
+    ])
+    const loop = new ConversationLoop({ cwd: tempDir('cynco-ui-chip-'), config: config(), provider, emit: () => {} })
+    loopRef = loop
+    await loop.handleUserMessage('hi')
+    expect(provider.calls).toBe(2)
+    const users: string[] = (loop as any).messages.filter((m: any) => m.role === 'user').map((m: any) => String(m.content?.[0]?.text ?? ''))
+    expect(users).toContain('What if I use walnut?')
+    expect(users.some(u => u.includes('[UI action]'))).toBe(false)
     globalContract.clear()
   }, 30000)
 })

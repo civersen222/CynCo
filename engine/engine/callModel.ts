@@ -20,7 +20,7 @@ import { convertMessages, convertTools, buildSystemPrompt } from './messageConve
 import type { ToolLike } from './messageConvert.js'
 import { translateStream } from './streamTranslator.js'
 import { filterTools } from './toolFilter.js'
-import { repairToolCall, MALFORMED_KEY } from './toolCallRepair.js'
+import { repairToolCall, MALFORMED_KEY, isTruncatedJson } from './toolCallRepair.js'
 import { cyncoHome } from '../paths.js'
 
 // ─── Output Types ──────
@@ -642,7 +642,10 @@ export async function* localCallModel({
                       stage: 'repaired',
                       toolId: currentBlock.id as string,
                       toolName: currentBlock.name as string,
-                      detail: `jsonrepair salvaged ${raw.length}-char args`,
+                      // Cut off, not merely untidy (trailing comma, quotes):
+                      // only this one means the call lost content.
+                      truncated: isTruncatedJson(raw),
+                      detail: `jsonrepair salvaged ${raw.length}-char args${isTruncatedJson(raw) ? ' (truncated)' : ''}`,
                     } as any,
                   }
                 }

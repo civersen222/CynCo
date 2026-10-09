@@ -34,6 +34,14 @@ describe('genui prompt section', () => {
   })
 
   it('teaches the rules the surveys found models break', () => {
+    // Inverted from OpenUI/json-render's "generate plausible data": a coding
+    // agent's report blocks carry real work, so nothing may be invented.
+    expect(text).toMatch(/Real values only: numbers, file paths, test counts, command output and URLs come from your tool results or the conversation — never invent them/)
+    expect(text).toMatch(/With no real image URL, leave the Image out/)
+    expect(text).toMatch(/FollowUps go last: 2-4 short questions/)
+    expect(text).toMatch(/one cell per column/)
+    expect(text).toMatch(/one with no action sends its label/)
+    expect(text).toMatch(/never add a Callout or Text that explains the UI itself/)
     expect(text).toMatch(/an element nothing references is dropped/)
     expect(text).toMatch(/Numbers are numbers \(2, not "2"\)/)
     expect(text).toMatch(/write each parent before its children with the root first/)

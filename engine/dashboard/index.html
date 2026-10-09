@@ -359,7 +359,7 @@ input[type="range"]:disabled::-webkit-slider-thumb { cursor: not-allowed; }
 .chat-msg { margin-bottom:8px; line-height:1.6; }
 .chat-msg-user { color:#808080; }
 .chat-msg-user span { color:#4ec9b0; font-weight:600; }
-.chat-msg-assistant { color:#d4d4d4; white-space:pre-wrap; }
+.chat-msg-assistant { color:#d4d4d4; } /* markdown block styles below replace pre-wrap */
 .chat-thinking { color:#555; font-style:italic; font-size:12px; border-left:2px solid #333;
   padding-left:8px; margin:4px 0; cursor:pointer; max-height:20px; overflow:hidden; transition:max-height 0.3s; }
 .chat-thinking.expanded { max-height:500px; overflow-y:auto; }
@@ -517,6 +517,256 @@ body.mission-mode #historyPanel { display: none; }
   .tab-content { overflow-x: auto; }
   input, textarea, select { font-size: 14px; }
   #tab-projects input[type=text], #tab-projects input[type=search], #tab-projects textarea, .chat-input, .cwd-input { font-size: 14px; }
+}
+
+/* ── Markdown in assistant prose and genui Markdown blocks ── */
+.chat-msg-assistant p, .genui-md p { margin: 0 0 8px; }
+.chat-msg-assistant > :last-child, .genui-md > :last-child { margin-bottom: 0; }
+.chat-msg-assistant h1, .chat-msg-assistant h2, .chat-msg-assistant h3, .chat-msg-assistant h4,
+.genui-md h1, .genui-md h2, .genui-md h3, .genui-md h4 { color: #4ec9b0; font-weight: 600; line-height: 1.3; margin: 12px 0 6px; }
+.chat-msg-assistant h1, .genui-md h1 { font-size: 16px; }
+.chat-msg-assistant h2, .genui-md h2 { font-size: 15px; }
+.chat-msg-assistant h3, .genui-md h3 { font-size: 14px; }
+.chat-msg-assistant h4, .genui-md h4 { font-size: 13px; }
+.chat-msg-assistant ul, .chat-msg-assistant ol, .genui-md ul, .genui-md ol { margin: 0 0 8px; padding-left: 22px; }
+.chat-msg-assistant li, .genui-md li { margin: 2px 0; }
+.chat-msg-assistant li.task, .genui-md li.task { list-style: none; margin-left: -18px; }
+.chat-msg-assistant li.task .box, .genui-md li.task .box { color: #808080; }
+.chat-msg-assistant li.task.done .box, .genui-md li.task.done .box { color: #4ec9b0; }
+.chat-msg-assistant pre, .genui-md pre { background: #1a1a2e; border: 1px solid #333; border-radius: 4px; padding: 8px 10px;
+  margin: 0 0 8px; overflow-x: auto; white-space: pre; font-size: 12px; line-height: 1.5; }
+.chat-msg-assistant code, .genui-md code { background: #1a1a2e; border-radius: 3px; padding: 1px 4px; font-size: 12px; font-family: 'Cascadia Code', 'Fira Code', monospace; }
+.chat-msg-assistant pre code, .genui-md pre code { background: none; padding: 0; }
+.chat-msg-assistant table, .genui-md table { border-collapse: collapse; margin: 0 0 8px; font-size: 12px; max-width: 100%; }
+.chat-msg-assistant th, .chat-msg-assistant td, .genui-md th, .genui-md td { border: 1px solid #333; padding: 4px 8px; text-align: left; vertical-align: top; }
+.chat-msg-assistant th, .genui-md th { color: #4ec9b0; background: #252535; font-weight: 600; }
+.chat-msg-assistant blockquote, .genui-md blockquote { border-left: 3px solid #333; margin: 0 0 8px; padding: 2px 10px; color: #808080; }
+.chat-msg-assistant hr, .genui-md hr { border: none; border-top: 1px solid #333; margin: 10px 0; }
+.chat-msg-assistant a, .genui-md a { color: #569cd6; text-decoration: none; overflow-wrap: anywhere; }
+.chat-msg-assistant a:hover, .genui-md a:hover { text-decoration: underline; }
+.chat-msg-assistant strong, .genui-md strong { color: #d4d4d4; font-weight: 600; }
+.chat-msg-assistant del, .genui-md del { color: #808080; }
+/* The echo of a click on a generated surface: never the plain `you` bubble. */
+.chat-msg-action { display: inline-block; color: #dcb6ff; background: #2a1f2e; border-left: 3px solid #c586c0;
+  border-radius: 4px; padding: 3px 10px; font-size: 12px; }
+
+/* ── Generative UI (RenderUI surfaces) ────────────────────── */
+.genui-surface { background: #252525; border: 1px solid #333; border-radius: 6px; padding: 10px 12px; margin: 6px 0 8px;
+  font-size: 13px; color: #d4d4d4; line-height: 1.5; max-width: 100%; overflow-x: auto; }
+.genui-surface.genui-partial { border-color: #3a3a4a; }
+.genui-surface.genui-withdrawn { opacity: .55; }
+.genui-withdrawn-note { color: #808080; font-style: italic; font-size: 12px; margin-top: 6px; }
+.genui-hidden { display: none !important; }
+.genui-w { animation: genui-fade .35s ease-out both; }
+@keyframes genui-fade { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .genui-w { animation: none; } }
+.genui-issues { margin-top: 8px; font-size: 11px; }
+.genui-issues-btn { background: none; border: 1px solid #333; color: #808080; border-radius: 3px; padding: 1px 8px;
+  font-size: 11px; cursor: pointer; font-family: inherit; }
+.genui-issues-btn:hover { color: #d4d4d4; border-color: #555; }
+.genui-issues-list { color: #808080; margin: 4px 0 0; padding-left: 18px; }
+.genui-unknown { color: #808080; border: 1px dashed #444; border-radius: 4px; padding: 6px 10px; font-size: 12px; font-style: italic; }
+.genui-body > * { min-width: 0; }
+/* layout */
+.genui-children { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.genui-card { border: 1px solid #333; border-radius: 6px; background: #1e1e2e; padding: 10px 12px; }
+.genui-card-title { color: #4ec9b0; font-weight: 600; font-size: 14px; margin-bottom: 2px; }
+.genui-card-desc { color: #808080; font-size: 12px; margin-bottom: 8px; }
+.genui-stack { display: flex; min-width: 0; }
+.genui-stack-column { flex-direction: column; }
+.genui-stack-row { flex-direction: row; }
+.genui-stack-row > * { min-width: 0; flex: 1 1 0; }
+.genui-wrap { flex-wrap: wrap; }
+.genui-gap-none { gap: 0; } .genui-gap-sm { gap: 4px; } .genui-gap-md { gap: 10px; } .genui-gap-lg { gap: 18px; }
+.genui-align-start { align-items: flex-start; } .genui-align-center { align-items: center; }
+.genui-align-end { align-items: flex-end; } .genui-align-stretch { align-items: stretch; }
+.genui-justify-start { justify-content: flex-start; } .genui-justify-center { justify-content: center; }
+.genui-justify-end { justify-content: flex-end; } .genui-justify-between { justify-content: space-between; }
+.genui-grid { display: grid; min-width: 0; }
+.genui-grid > * { min-width: 0; }
+.genui-section-title { color: #4ec9b0; font-weight: 600; font-size: 13px; margin-bottom: 6px; }
+.genui-section-toggle { display: flex; align-items: center; gap: 6px; width: 100%; background: none; border: none;
+  color: #4ec9b0; font: inherit; font-weight: 600; font-size: 13px; padding: 0; margin-bottom: 6px; cursor: pointer; text-align: left; }
+.genui-section-toggle .genui-section-title { margin: 0; }
+.genui-section-toggle:disabled { cursor: default; opacity: .6; }
+.genui-caret { color: #808080; width: 10px; }
+.genui-tab-strip { display: flex; gap: 2px; border-bottom: 1px solid #333; margin-bottom: 8px; flex-wrap: wrap; }
+.genui-tab { background: none; border: none; border-bottom: 2px solid transparent; color: #808080; font: inherit; font-size: 12px;
+  padding: 5px 10px; cursor: pointer; margin-bottom: -1px; }
+.genui-tab:hover { color: #d4d4d4; }
+.genui-tab.active { color: #4ec9b0; border-bottom-color: #4ec9b0; }
+.genui-tab:disabled { cursor: default; opacity: .6; }
+.genui-sep { border: none; border-top: 1px solid #333; margin: 4px 0; }
+.genui-spacer-sm { height: 4px; } .genui-spacer-md { height: 10px; } .genui-spacer-lg { height: 20px; }
+/* content */
+.genui-heading { color: #4ec9b0; font-weight: 600; line-height: 1.3; margin: 0; }
+h1.genui-heading { font-size: 17px; } h2.genui-heading { font-size: 15px; } h3.genui-heading { font-size: 14px; } h4.genui-heading { font-size: 13px; }
+.genui-text { margin: 0; }
+.genui-text-muted { color: #808080; }
+.genui-text-caption { color: #808080; font-size: 11px; }
+.genui-text-lead { font-size: 14px; }
+.genui-text code, .genui-heading code { background: #1a1a2e; border-radius: 3px; padding: 1px 4px; font-size: 12px; }
+.genui-text a { color: #569cd6; text-decoration: none; }
+.genui-text a:hover { text-decoration: underline; }
+.genui-code { border: 1px solid #333; border-radius: 4px; background: #1a1a2e; overflow: hidden; }
+.genui-code-title { color: #808080; font-size: 11px; padding: 4px 10px; border-bottom: 1px solid #333; background: #252535; }
+.genui-code pre { margin: 0; padding: 8px 10px; overflow-x: auto; white-space: pre; font-size: 12px; line-height: 1.5; }
+.genui-callout { border: 1px solid #333; border-left-width: 3px; border-radius: 4px; padding: 8px 10px; background: #1e1e2e; }
+.genui-callout-title { font-weight: 600; margin-bottom: 2px; }
+.genui-callout-info { border-left-color: #569cd6; } .genui-callout-info .genui-callout-title { color: #569cd6; }
+.genui-callout-success { border-left-color: #4ec9b0; } .genui-callout-success .genui-callout-title { color: #4ec9b0; }
+.genui-callout-warning { border-left-color: #dcdcaa; } .genui-callout-warning .genui-callout-title { color: #dcdcaa; }
+.genui-callout-error { border-left-color: #f44747; } .genui-callout-error .genui-callout-title { color: #f44747; }
+.genui-callout-msg { white-space: pre-wrap; }
+.genui-badge { display: inline-block; align-self: flex-start; font-size: 10px; text-transform: uppercase; letter-spacing: 1px; padding: 1px 6px;
+  border-radius: 3px; background: #333; color: #d4d4d4; vertical-align: middle; }
+.genui-badge-info { background: #1e2e3e; color: #569cd6; }
+.genui-badge-success { background: #1e3a2e; color: #4ec9b0; }
+.genui-badge-warning { background: #3a341e; color: #dcdcaa; }
+.genui-badge-danger { background: #3a1e1e; color: #f44747; }
+.genui-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+.genui-tag { background: #252535; border: 1px solid #333; border-radius: 10px; padding: 1px 8px; font-size: 11px; color: #d4d4d4; }
+.genui-link { color: #569cd6; text-decoration: none; overflow-wrap: anywhere; }
+.genui-link:hover { text-decoration: underline; }
+.genui-link-bad { color: #808080; text-decoration: line-through; }
+.genui-image { margin: 0; }
+.genui-img { max-width: 100%; height: auto; border-radius: 4px; display: block; }
+.genui-image-ph { background: #1a1a2e; border: 1px dashed #444; border-radius: 4px; color: #808080; font-size: 12px;
+  padding: 18px 12px; text-align: center; }
+.genui-image-caption { color: #808080; font-size: 11px; margin-top: 4px; }
+.genui-image-load { display: block; margin: 8px auto 0; background: #264f78; color: #d4d4d4; border: none; border-radius: 4px;
+  padding: 4px 10px; font-size: 11px; cursor: pointer; font-family: inherit; }
+.genui-image-load:disabled { opacity: .5; cursor: default; }
+/* data display */
+.genui-table-wrap { overflow-x: auto; max-width: 100%; }
+.genui-table { border-collapse: collapse; width: 100%; font-size: 12px; }
+.genui-table th, .genui-table td { border: 1px solid #333; padding: 4px 8px; text-align: left; vertical-align: top; }
+.genui-table th { color: #4ec9b0; background: #252535; font-weight: 600; }
+.genui-table tbody tr:nth-child(even) td { background: #222230; }
+.genui-table-caption { caption-side: bottom; color: #808080; font-size: 11px; padding-top: 4px; text-align: left; }
+.genui-list { margin: 0; padding-left: 20px; }
+.genui-list-check { list-style: none; padding-left: 0; }
+.genui-list-item { margin: 2px 0; }
+.genui-list-check .genui-list-item { display: flex; gap: 6px; align-items: baseline; }
+.genui-list-check .genui-list-check { color: #4ec9b0; }
+.genui-list-body { display: inline-flex; flex-direction: column; }
+.genui-list-sub { color: #808080; font-size: 11px; }
+.genui-list-btn { background: none; border: none; color: #569cd6; font: inherit; padding: 0; cursor: pointer; text-align: left; }
+.genui-list-btn:hover { text-decoration: underline; }
+.genui-list-btn:disabled { color: #808080; cursor: default; text-decoration: none; }
+.genui-kv-title { color: #4ec9b0; font-weight: 600; margin-bottom: 4px; }
+.genui-kv-row { display: flex; gap: 12px; padding: 3px 0; border-bottom: 1px solid #2a2a2a; }
+.genui-kv-row:last-child { border-bottom: none; }
+.genui-kv-label { color: #808080; flex: 0 0 40%; max-width: 220px; }
+.genui-kv-value { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.genui-metric { border: 1px solid #333; border-radius: 4px; background: #1e1e2e; padding: 8px 12px; display: inline-flex; flex-direction: column; min-width: 120px; }
+.genui-metric-label { color: #808080; font-size: 11px; }
+.genui-metric-value { color: #4ec9b0; font-size: 22px; font-weight: 600; line-height: 1.2; }
+.genui-metric-unit { color: #808080; font-size: 12px; font-weight: 400; }
+.genui-metric-change { font-size: 11px; margin-top: 2px; }
+.genui-change-positive { color: #4ec9b0; } .genui-change-negative { color: #f44747; } .genui-change-neutral { color: #808080; }
+.genui-progress-head { display: flex; justify-content: space-between; font-size: 11px; color: #808080; margin-bottom: 3px; }
+.genui-progress-bar { background: #1a1a2e; border: 1px solid #333; border-radius: 4px; height: 8px; overflow: hidden; }
+.genui-progress-fill { background: #4ec9b0; height: 100%; transition: width .3s; }
+.genui-timeline { border-left: 2px solid #333; margin-left: 6px; padding-left: 14px; display: flex; flex-direction: column; gap: 8px; }
+.genui-timeline-item { position: relative; }
+.genui-timeline-dot { position: absolute; left: -19px; top: 5px; width: 8px; height: 8px; border-radius: 50%; background: #4ec9b0; }
+.genui-timeline-head { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.genui-timeline-title { font-weight: 600; }
+.genui-timeline-time { color: #808080; font-size: 11px; }
+.genui-timeline-details { color: #808080; font-size: 12px; }
+.genui-steps { display: flex; flex-direction: column; gap: 4px; }
+.genui-step { display: flex; gap: 8px; align-items: baseline; }
+.genui-step-glyph { width: 14px; text-align: center; flex: none; }
+.genui-step-todo .genui-step-glyph { color: #808080; }
+.genui-step-active .genui-step-glyph { color: #dcdcaa; }
+.genui-step-done .genui-step-glyph { color: #4ec9b0; }
+.genui-step-failed .genui-step-glyph { color: #f44747; }
+.genui-step-skipped .genui-step-glyph, .genui-step-skipped .genui-step-title { color: #808080; }
+.genui-step-done .genui-step-title { color: #808080; text-decoration: line-through; }
+.genui-step-active .genui-step-title { color: #dcdcaa; }
+.genui-step-details { color: #808080; font-size: 11px; }
+/* charts */
+.genui-chart { max-width: 560px; }
+.genui-chart-title { font-weight: 600; font-size: 12px; margin-bottom: 4px; }
+.genui-svg { width: 100%; height: auto; display: block; font-family: 'Cascadia Code', 'Fira Code', monospace; }
+.genui-pie { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+.genui-pie-svg { width: 150px; flex: none; }
+.genui-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 11px; color: #808080; margin-top: 4px; }
+.genui-pie .genui-legend { flex-direction: column; gap: 2px; margin: 0; }
+.genui-legend-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
+.genui-sparkline { display: inline-flex; align-items: center; gap: 8px; }
+.genui-spark-svg { width: 120px; height: 28px; }
+.genui-sparkline-label { color: #808080; font-size: 11px; }
+/* coding-agent report */
+.genui-filechange { border: 1px solid #333; border-radius: 4px; background: #1e1e2e; padding: 6px 10px; }
+.genui-filechange-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.genui-filechange-created .genui-filechange-kind { background: #1e3a2e; color: #4ec9b0; }
+.genui-filechange-deleted .genui-filechange-kind { background: #3a1e1e; color: #f44747; }
+.genui-filechange-modified .genui-filechange-kind { background: #3a341e; color: #dcdcaa; }
+.genui-filechange-renamed .genui-filechange-kind { background: #1e2e3e; color: #569cd6; }
+.genui-filechange-path { font-weight: 600; overflow-wrap: anywhere; }
+.genui-add { color: #4ec9b0; font-size: 11px; } .genui-del { color: #f44747; font-size: 11px; }
+.genui-filechange-summary { color: #808080; font-size: 12px; margin-top: 2px; }
+.genui-terminal { border: 1px solid #333; border-radius: 4px; background: #1a1a2e; overflow: hidden; }
+.genui-terminal-cmd { display: flex; gap: 4px; align-items: baseline; padding: 6px 10px; background: #252535; font-size: 12px; flex-wrap: wrap; }
+.genui-terminal-prompt { color: #4ec9b0; }
+.genui-terminal-text { color: #ce9178; overflow-wrap: anywhere; }
+.genui-terminal-exit { margin-left: auto; font-size: 10px; padding: 1px 6px; border-radius: 3px; }
+.genui-terminal-exit.ok { background: #1e3a2e; color: #4ec9b0; } .genui-terminal-exit.bad { background: #3a1e1e; color: #f44747; }
+.genui-terminal-out { margin: 0; padding: 8px 10px; white-space: pre-wrap; word-break: break-word; font-size: 12px; color: #d4d4d4; max-height: 300px; overflow-y: auto; }
+.genui-tests { border: 1px solid #333; border-left-width: 3px; border-radius: 4px; background: #1e1e2e; padding: 6px 10px; }
+.genui-tests-ok { border-left-color: #4ec9b0; } .genui-tests-bad { border-left-color: #f44747; }
+.genui-tests-head { display: flex; gap: 12px; flex-wrap: wrap; font-size: 12px; }
+.genui-tests-passed { color: #4ec9b0; } .genui-tests-failed { color: #f44747; }
+.genui-tests-bad .genui-tests-failed { font-weight: 600; }
+.genui-tests-ok .genui-tests-failed { color: #808080; }
+.genui-tests-skipped, .genui-tests-runner { color: #808080; }
+.genui-tests-failures { margin: 6px 0 0; padding-left: 18px; font-size: 12px; }
+.genui-tests-name { color: #f44747; }
+.genui-tests-msg { color: #808080; margin-left: 8px; }
+/* forms */
+.genui-form { border: 1px solid #333; border-radius: 4px; background: #1e1e2e; padding: 10px 12px; }
+.genui-form-title { color: #4ec9b0; font-weight: 600; margin-bottom: 2px; }
+.genui-form-desc { color: #808080; font-size: 12px; margin-bottom: 8px; }
+.genui-field { display: flex; flex-direction: column; gap: 4px; }
+.genui-label { color: #808080; font-size: 11px; display: flex; justify-content: space-between; gap: 8px; }
+.genui-input, .genui-select, .genui-textarea { background: #1e1e2e; color: #d4d4d4; border: 1px solid #444; border-radius: 4px;
+  padding: 6px 8px; font: inherit; font-size: 12px; max-width: 100%; }
+.genui-input:focus, .genui-select:focus, .genui-textarea:focus { outline: none; border-color: #4ec9b0; }
+.genui-input:disabled, .genui-select:disabled, .genui-textarea:disabled, .genui-range:disabled { opacity: .5; }
+.genui-textarea { resize: vertical; }
+.genui-choice { display: flex; flex-direction: column; gap: 4px; }
+.genui-option { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.genui-chips { flex-direction: row; flex-wrap: wrap; gap: 6px; }
+.genui-chips .genui-option { border: 1px solid #444; border-radius: 14px; padding: 3px 10px; font-size: 12px; }
+.genui-chips .genui-option input { position: absolute; opacity: 0; width: 0; height: 0; }
+.genui-chips .genui-option.on { border-color: #4ec9b0; background: #1e3a2e; color: #4ec9b0; }
+.genui-check, .genui-switch { flex-direction: row; align-items: center; gap: 8px; cursor: pointer; }
+.genui-switch-input { position: absolute; opacity: 0; width: 0; height: 0; }
+.genui-switch-track { width: 30px; height: 16px; border-radius: 8px; background: #444; position: relative; flex: none; transition: background .2s; }
+.genui-switch-track::after { content: ''; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: #d4d4d4; transition: left .2s; }
+.genui-switch-track.on { background: #4ec9b0; }
+.genui-switch-track.on::after { left: 16px; background: #1e1e2e; }
+.genui-slider-val { color: #4ec9b0; font-weight: 600; }
+.genui-range { width: 100%; accent-color: #4ec9b0; }
+/* actions */
+.genui-btn { align-self: flex-start; border: none; border-radius: 5px; padding: 6px 14px; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
+.genui-btn-primary { background: #264f78; color: #d4d4d4; } .genui-btn-primary:hover { background: #2d5a8a; }
+.genui-btn-secondary { background: #3a3a4a; color: #d4d4d4; } .genui-btn-secondary:hover { background: #45455a; }
+.genui-btn-danger { background: #5a2d2d; color: #d4d4d4; } .genui-btn-danger:hover { background: #6e3636; }
+.genui-btn-ghost { background: none; border: 1px solid #444; color: #d4d4d4; } .genui-btn-ghost:hover { border-color: #4ec9b0; }
+.genui-btn:disabled { opacity: .5; cursor: default; }
+.genui-btnrow { display: flex; gap: 8px; flex-wrap: wrap; }
+.genui-followups { display: flex; gap: 6px; flex-wrap: wrap; }
+.genui-chip { background: #1e3a2e; color: #d4d4d4; border: 1px solid #2e5a4e; border-radius: 14px; padding: 4px 12px;
+  font: inherit; font-size: 12px; cursor: pointer; text-align: left; }
+.genui-chip:hover { border-color: #4ec9b0; color: #4ec9b0; }
+.genui-chip:disabled { opacity: .5; cursor: default; }
+@media (max-width: 520px) {
+  .genui-grid { grid-template-columns: 1fr !important; }
+  .genui-stack-row { flex-direction: column; }
+  .genui-kv-row { flex-direction: column; gap: 0; }
 }
 </style>
 </head>
@@ -1147,6 +1397,8 @@ function handleEvent(event) {
       var chatTarget = summarizeInput(event.toolName, event.input);
       var chatToolId = appendChatTool(event.toolName, chatTarget, 'running', null);
       chatActiveTools[event.toolId || event.toolName] = { chatId: chatToolId, start: Date.now() };
+      // The RenderUI surface is placed under this row (ui.render arrives before tool.complete).
+      if (event.toolName === 'RenderUI') genuiToolRows[event.toolId || ''] = chatToolId;
       break;
     }
 
@@ -1277,14 +1529,15 @@ function handleEvent(event) {
         if (msgs) {
           var lastEl = msgs.lastElementChild;
           if (lastEl && lastEl.classList.contains('chat-msg-assistant')) {
-            lastEl.textContent += event.text;
+            mdStreamAppend(lastEl, event.text);
           } else {
             closeChatThinking();
             clearChatCitations(); // a new assistant message: last turn's sources no longer apply
             var div = document.createElement('div');
             div.className = 'chat-msg chat-msg-assistant';
-            div.textContent = event.text;
+            div.setAttribute('data-raw', event.text);
             msgs.appendChild(div);
+            mdScheduleRender(div);
           }
           msgs.scrollTop = msgs.scrollHeight;
         }
@@ -1294,6 +1547,8 @@ function handleEvent(event) {
     case 'message.complete':
       state.turnCount++;
       closeChatThinking();
+      mdFlushStream();
+      finalizeGenuiSurfaces(); // a surface still partial here never got its final frame
       brainViz.setActive(false);
       markSaveableReplies();
       break;
@@ -1354,6 +1609,13 @@ function handleEvent(event) {
     case 'session.error':
       appendChatMsg('system', 'error: ' + (event.error || 'unknown engine error'));
       if (String(event.error || '').indexOf('project.open') >= 0) projStatus('projectsStatus', 'err', event.error);
+      finalizeGenuiSurfaces();
+      break;
+
+    // A RenderUI surface (engine/genui): partial frames while the call streams,
+    // one final frame per call, spec:null when the call was withdrawn.
+    case 'ui.render':
+      upsertSurface(event);
       break;
 
     // ── Projects mode ──
@@ -3260,6 +3522,13 @@ function appendChatMsg(role, text) {
     div.style.color = '#808080';
     div.style.fontStyle = 'italic';
     div.textContent = text;
+  } else if (role === 'assistant') {
+    // Markdown; the raw text stays in data-raw for Save-as-artifact and the stream arm.
+    div.setAttribute('data-raw', String(text == null ? '' : text));
+    div.innerHTML = mdToHtml(text);
+  } else if (role === 'action') {
+    // The echo of a click on a generated surface (design A9) — not the `you` bubble.
+    div.textContent = text;
   } else {
     div.textContent = text;
   }
@@ -3381,6 +3650,1314 @@ function closeChatThinking() {
   var all = el.querySelectorAll('.chat-thinking');
   for (var i = 0; i < all.length; i++) all[i].dataset.closed = 'true';
 }
+
+// ── Markdown (assistant prose) ───────────────────────────────
+// A small, escape-first markdown renderer for the chat pane. The input is
+// escaped BEFORE any markup is recognised, so the only tags that can appear in
+// the output are the ones this file writes. Links keep only http(s) hrefs
+// (safeUrl); everything else stays literal text. Unclosed emphasis and
+// brackets stay literal while a reply is still streaming; an unclosed code
+// fence renders as an open code block (what a reader expects mid-stream).
+
+function safeUrl(value) {
+  var s = String(value || '').trim();
+  if (!/^https?:\/\/[^\s<>"']+$/i.test(s)) return '';
+  return s;
+}
+
+function mdInline(s) {
+  // `s` is already HTML-escaped. Code spans are protected first so their
+  // contents see no further markup.
+  var codes = [];
+  s = s.replace(/`([^`\n]+)`/g, function(_, c) { codes.push(c); return '\u0000' + (codes.length - 1) + '\u0000'; });
+  // [label](https://url) — label is escaped text; href must pass safeUrl.
+  // An escaped entity for " < > ends a URL: `&quot;` is the quote the model
+  // typed, never part of the address (an `&amp;` is a real `&` and stays).
+  var URL_CHAR = '(?:(?!&(?:quot|lt|gt|#39);)[^\\s<>"\')])';
+  var LINK_RE = new RegExp('\\[([^\\]\\n]+)\\]\\((' + URL_CHAR + '+)\\)', 'g');
+  // Pre-context: start, whitespace, or an opening paren that is NOT the `](`
+  // of a link still being typed (that one stays literal until it closes).
+  var AUTO_RE = new RegExp('(^\\(?|\\s\\(?|[^\\]\\s]\\()((?:https?:\\/\\/)' + URL_CHAR + '*(?:(?!&(?:quot|lt|gt|#39);)[^\\s<>"\'),.;:!?]))', 'g');
+  s = s.replace(LINK_RE, function(m, label, url) {
+    var href = safeUrl(url.replace(/&amp;/g, '&'));
+    if (!href) return m;
+    return '<a href="' + escHtml(href) + '" target="_blank" rel="noopener noreferrer">' + label + '</a>';
+  });
+  // bare https://… autolink (not already inside an anchor: anchors above
+  // contain the url in href="…", which this pattern cannot match because of
+  // the leading quote requirement below).
+  s = s.replace(AUTO_RE, function(_, pre, url) {
+    var href = safeUrl(url.replace(/&amp;/g, '&'));
+    if (!href) return pre + url;
+    return pre + '<a href="' + escHtml(href) + '" target="_blank" rel="noopener noreferrer">' + url + '</a>';
+  });
+  s = s.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
+  s = s.replace(/(^|[^*\w])\*([^*\n]+)\*(?!\w)/g, '$1<em>$2</em>');
+  s = s.replace(/(^|[^\w])_([^_\n]+)_(?!\w)/g, '$1<em>$2</em>');
+  s = s.replace(/~~([^~\n]+)~~/g, '<del>$1</del>');
+  s = s.replace(/\u0000(\d+)\u0000/g, function(_, i) { return '<code>' + codes[Number(i)] + '</code>'; });
+  return s;
+}
+
+function mdTableRow(line) {
+  var t = line.trim();
+  if (t.charAt(0) === '|') t = t.slice(1);
+  if (t.charAt(t.length - 1) === '|') t = t.slice(0, -1);
+  return t.split('|').map(function(c) { return c.trim(); });
+}
+
+function mdToHtml(src) {
+  var text = escHtml(String(src == null ? '' : src)).replace(/\r\n?/g, '\n');
+  var out = [];
+  var lines = text.split('\n');
+  var i = 0, n = lines.length;
+  var para = [];
+  function flushPara() {
+    if (para.length) { out.push('<p>' + para.map(mdInline).join('<br>') + '</p>'); para = []; }
+  }
+  while (i < n) {
+    var line = lines[i];
+    var fence = /^\s*```\s*([\w+-]*)\s*$/.exec(line);
+    if (fence) {
+      flushPara();
+      var lang = fence[1] ? ' class="lang-' + fence[1].toLowerCase() + '"' : '';
+      var body = [];
+      i++;
+      while (i < n && !/^\s*```\s*$/.test(lines[i])) { body.push(lines[i]); i++; }
+      if (i < n) i++; // closing fence; an unclosed fence consumes to the end
+      out.push('<pre><code' + lang + '>' + body.join('\n') + '</code></pre>');
+      continue;
+    }
+    if (/^\s*$/.test(line)) { flushPara(); i++; continue; }
+    var h = /^(#{1,4})\s+(.+?)\s*#*\s*$/.exec(line);
+    if (h) { flushPara(); out.push('<h' + h[1].length + '>' + mdInline(h[2]) + '</h' + h[1].length + '>'); i++; continue; }
+    if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) { flushPara(); out.push('<hr>'); i++; continue; }
+    if (/^\s*&gt;\s?/.test(line)) {
+      flushPara();
+      var q = [];
+      while (i < n && /^\s*&gt;\s?/.test(lines[i])) { q.push(lines[i].replace(/^\s*&gt;\s?/, '')); i++; }
+      out.push('<blockquote>' + mdToHtmlEscaped(q.join('\n')) + '</blockquote>');
+      continue;
+    }
+    // table: a header row, then a |---| separator row
+    if (/^\s*\|/.test(line) && i + 1 < n && /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/.test(lines[i + 1])) {
+      flushPara();
+      var head = mdTableRow(line);
+      i += 2;
+      var rows = [];
+      while (i < n && /^\s*\|/.test(lines[i])) { rows.push(mdTableRow(lines[i])); i++; }
+      var t = '<table><thead><tr>' + head.map(function(c) { return '<th>' + mdInline(c) + '</th>'; }).join('') + '</tr></thead>';
+      if (rows.length) t += '<tbody>' + rows.map(function(r) { return '<tr>' + r.map(function(c) { return '<td>' + mdInline(c) + '</td>'; }).join('') + '</tr>'; }).join('') + '</tbody>';
+      out.push(t + '</table>');
+      continue;
+    }
+    var li = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/.exec(line);
+    if (li) {
+      flushPara();
+      var ordered = /\d/.test(li[2].charAt(0));
+      var tag = ordered ? 'ol' : 'ul';
+      var items = [];
+      var baseIndent = li[1].length;
+      while (i < n) {
+        var m = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/.exec(lines[i]);
+        if (!m || m[1].length < baseIndent) break;
+        if (m[1].length > baseIndent) {
+          // one nested level: collect until indentation returns
+          var sub = [];
+          var subTag = /\d/.test(m[2].charAt(0)) ? 'ol' : 'ul';
+          while (i < n) {
+            var sm = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/.exec(lines[i]);
+            if (!sm || sm[1].length <= baseIndent) break;
+            sub.push('<li>' + mdInline(sm[3]) + '</li>'); i++;
+          }
+          if (items.length) items[items.length - 1] = items[items.length - 1].replace(/<\/li>$/, '<' + subTag + '>' + sub.join('') + '</' + subTag + '></li>');
+          else items.push('<li><' + subTag + '>' + sub.join('') + '</' + subTag + '></li>');
+          continue;
+        }
+        var task = /^\[([ xX])\]\s+(.*)$/.exec(m[3]);
+        if (task) items.push('<li class="task' + (task[1] === ' ' ? '' : ' done') + '"><span class="box">' + (task[1] === ' ' ? '☐' : '☑') + '</span> ' + mdInline(task[2]) + '</li>');
+        else items.push('<li>' + mdInline(m[3]) + '</li>');
+        i++;
+      }
+      out.push('<' + tag + '>' + items.join('') + '</' + tag + '>');
+      continue;
+    }
+    para.push(line);
+    i++;
+  }
+  flushPara();
+  return out.join('');
+}
+
+// Block renderer for text that is ALREADY escaped (blockquote bodies).
+function mdToHtmlEscaped(escaped) {
+  var saved = escHtml;
+  escHtml = function(s) { return String(s == null ? '' : s); };
+  try { return mdToHtml(escaped); } finally { escHtml = saved; }
+}
+
+// Streaming assistant prose: the raw text lives in data-raw, the markdown
+// render is redone at most once per animation frame (a frame that is still
+// queued when the next token lands is reused). message.complete flushes.
+var mdStream = { pending: [], queued: false };
+
+function mdRenderDiv(div) {
+  div.innerHTML = mdToHtml(div.getAttribute('data-raw') || '');
+}
+
+function mdScheduleRender(div) {
+  // Every div touched since the last frame is rendered by that frame: a second
+  // bubble that starts within the same frame must not eat the first one's tail.
+  if (mdStream.pending.indexOf(div) < 0) mdStream.pending.push(div);
+  if (mdStream.queued) return;
+  mdStream.queued = true;
+  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(mdFlushStream); else mdFlushStream();
+}
+
+function mdStreamAppend(div, text) {
+  div.setAttribute('data-raw', (div.getAttribute('data-raw') || '') + text);
+  mdScheduleRender(div);
+}
+
+function mdFlushStream() {
+  var list = mdStream.pending, pane = null;
+  mdStream.pending = [];
+  mdStream.queued = false;
+  for (var i = 0; i < list.length; i++) {
+    mdRenderDiv(list[i]);
+    if (list[i].parentNode) pane = list[i].parentNode;
+  }
+  if (pane) pane.scrollTop = pane.scrollHeight;
+}
+
+// ── Generative UI (RenderUI surfaces) ────────────────────────
+// The model draws tables, plans, charts, forms and buttons through the
+// RenderUI tool; the engine validates the spec (engine/genui/spec.ts) and
+// emits `ui.render` frames — partial while the call streams, final after it
+// ran (design §5, §8 A1/A2/A7/A9). Everything here is built with
+// createElement/textContent; the only innerHTML is the escape-first markdown
+// above. A click goes back over the socket as `ui.action` with the surface's
+// input values; a FollowUps chip is an ordinary user.message.
+var GENUI_SVG_NS = 'http://www.w3.org/2000/svg';
+var GENUI_PALETTE = ['#4ec9b0', '#569cd6', '#dcdcaa', '#ce9178', '#c586c0', '#f44747'];
+var GENUI_ID_RE = /^[A-Za-z0-9_-]{1,40}$/;
+var GENUI_STEP_GLYPHS = { todo: '○', active: '◐', done: '●', failed: '✕', skipped: '—' };
+var genuiSurfaces = {};   // surfaceId → its .genui-surface element (sendUiAction reads the state off it)
+var genuiToolRows = {};   // RenderUI toolId → the chat tool row id the surface sits under
+
+function genuiEl(tag, cls, text) {
+  var el = document.createElement(tag);
+  if (cls) el.className = cls;
+  if (text !== undefined && text !== null) el.textContent = String(text);
+  return el;
+}
+function genuiStr(v, dflt) {
+  if (v === undefined || v === null) return dflt === undefined ? '' : dflt;
+  return typeof v === 'object' ? JSON.stringify(v) : String(v);
+}
+function genuiNum(v, dflt) {
+  var n = typeof v === 'number' ? v : parseFloat(v);
+  return isFinite(n) ? n : dflt;
+}
+function genuiBool(v) { return v === true || v === 'true' || v === 1 || v === '1' || v === 'yes' || v === 'on'; }
+function genuiArr(v) { return Array.isArray(v) ? v : (v === undefined || v === null ? [] : [v]); }
+function genuiNums(v) {
+  return genuiArr(v).map(function(x) { return genuiNum(x && typeof x === 'object' ? x.value : x, 0); });
+}
+function genuiStrs(v) { return genuiArr(v).map(function(x) { return genuiStr(x && typeof x === 'object' ? (x.label !== undefined ? x.label : x.title) : x); }); }
+function genuiOptions(v) {
+  return genuiArr(v).map(function(o) {
+    if (o && typeof o === 'object') {
+      var label = o.label !== undefined ? o.label : o.value, value = o.value !== undefined ? o.value : o.label;
+      return { label: genuiStr(label), value: genuiStr(value) };
+    }
+    return { label: genuiStr(o), value: genuiStr(o) };
+  });
+}
+function genuiSeries(v) {
+  var arr = genuiArr(v);
+  if (arr.length && arr.every(function(x) { return typeof x === 'number' || typeof x === 'string'; })) return [{ name: '', values: genuiNums(arr) }];
+  return arr.map(function(s) {
+    if (Array.isArray(s)) return { name: '', values: genuiNums(s) };
+    if (s && typeof s === 'object') return { name: genuiStr(s.name), values: genuiNums(s.values !== undefined ? s.values : s.data) };
+    return null;
+  }).filter(function(s) { return s && s.values.length; });
+}
+function genuiClear(el) { while (el.lastChild) el.removeChild(el.lastChild); }
+function genuiToggleClass(el, cls, on) {
+  if (on === undefined) on = !el.classList.contains(cls);
+  if (on) el.classList.add(cls); else el.classList.remove(cls);
+}
+function genuiCssId(s) { return String(s).replace(/["\\\]]/g, ''); }
+function genuiTrunc(s, n) { s = genuiStr(s); return s.length > n ? s.slice(0, n - 1) + '…' : s; }
+function genuiR2(n) { return Math.round(n * 100) / 100; }
+/** Compact number text for axis ticks and marks: 1234 → 1.2k, 2 → 2, 0.456 → 0.46. */
+function genuiFmtNum(n) {
+  if (!isFinite(n)) return '';
+  var a = Math.abs(n), s;
+  if (a >= 1e9) s = (n / 1e9).toFixed(1) + 'B';
+  else if (a >= 1e6) s = (n / 1e6).toFixed(1) + 'M';
+  else if (a >= 1e4) s = (n / 1e3).toFixed(1) + 'k';
+  else if (a >= 100 || n === Math.round(n)) s = String(Math.round(n));
+  else s = String(Math.round(n * 100) / 100);
+  return s.replace(/\.0([kMB])$/, '$1');
+}
+
+// Surface state: `{ [name]: value }` for every input, plus `__tab:<id>` and
+// `__open:<id>` for Tabs and collapsible Sections. Only the input values go
+// back to the model.
+function genuiInit(ctx, name, init) {
+  if (Object.prototype.hasOwnProperty.call(ctx.state, name)) return ctx.state[name];
+  // A partial frame draws an input's value but never seeds the state: what
+  // it carries may be half-written, and the final frame's value must win.
+  // Tab and section keys (`__…`) are page state and seed at once.
+  if (ctx.partial && name.indexOf('__') !== 0) { ctx.draft[name] = init; return init; }
+  ctx.state[name] = init;
+  return init;
+}
+/** The state `visible` reads: the real values, over a partial frame's drafts. */
+function genuiView(ctx) {
+  var v = {};
+  Object.keys(ctx.draft || {}).forEach(function(k) { v[k] = ctx.draft[k]; });
+  Object.keys(ctx.state).forEach(function(k) { v[k] = ctx.state[k]; });
+  return v;
+}
+/** A name the socket accepts (letters, digits, - and _; at most 128). */
+function genuiActionId(s) {
+  s = genuiStr(s);
+  if (/^[A-Za-z0-9_-]{1,128}$/.test(s)) return s;
+  s = s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64);
+  return s || 'click';
+}
+function genuiInputState(ctx) {
+  var out = {};
+  Object.keys(ctx.state).forEach(function(k) { if (k.indexOf('__') !== 0) out[k] = ctx.state[k]; });
+  return out;
+}
+function genuiRefresh(ctx) { for (var i = 0; i < ctx.refreshers.length; i++) ctx.refreshers[i](); }
+function genuiName(p, id) { return genuiStr(p.name) || id; }
+
+function genuiVisibleOf(el) {
+  var v = el.visible !== undefined ? el.visible : (el.props && el.props.visible);
+  if (typeof v === 'string') return { name: v, neq: '' };
+  return v && typeof v === 'object' && typeof v.name === 'string' ? v : null;
+}
+function genuiVisibleOk(vis, state) {
+  var v = state[vis.name];
+  var s = v === undefined || v === null ? '' : String(v);
+  if (vis.eq !== undefined) return s === String(vis.eq);
+  if (vis.neq !== undefined) return s !== String(vis.neq);
+  if (Array.isArray(v)) return v.length > 0;
+  return !!v;
+}
+
+// Word fade while a surface is partial: words beyond the count the previous
+// frame showed get a .genui-w span (the keyframe runs once on insertion).
+// Escaped text never holds a raw `<`, so splitting on tags is exact.
+function genuiFadeWords(html, ctx, id) {
+  var parts = html.split(/(<[^>]+>)/), out = '', idx = 0, shown = ctx.wordsShown[id] || 0;
+  for (var i = 0; i < parts.length; i++) {
+    var part = parts[i];
+    if (!part) continue;
+    if (part.charAt(0) === '<') { out += part; continue; }
+    out += part.replace(/\S+/g, function(w) { var k = idx++; return k >= shown ? '<span class="genui-w">' + w + '</span>' : w; });
+  }
+  ctx.wordsShown[id] = idx;
+  return out;
+}
+function genuiRich(html, ctx, id) { return ctx.partial ? genuiFadeWords(html, ctx, id) : html; }
+
+function genuiUnknown(type, note) {
+  return genuiEl('div', 'genui-unknown', 'unknown component' + (type !== undefined && type !== null ? ' "' + genuiTrunc(type, 40) + '"' : '') + (note ? ' — ' + note : ''));
+}
+function genuiResolveType(type) {
+  if (typeof type !== 'string') return null;
+  if (Object.prototype.hasOwnProperty.call(GENUI_RENDERERS, type)) return type;
+  var lower = type.trim().toLowerCase(), keys = Object.keys(GENUI_RENDERERS);
+  for (var i = 0; i < keys.length; i++) if (keys[i].toLowerCase() === lower) return keys[i];
+  return null;
+}
+
+/** One element: its renderer's node, tagged with data-el, with its `visible` rule registered. */
+function genuiRenderNode(id, ctx, inh, depth) {
+  if (!Object.prototype.hasOwnProperty.call(ctx.spec.elements, id)) return null;
+  var el = ctx.spec.elements[id];
+  // The engine caps live specs; a stored transcript is replayed unvalidated,
+  // so the page keeps its own bounds: no revisits, depth 32, 400 elements.
+  if (!el || typeof el !== 'object' || ctx.seen[id] || depth > 32 || ctx.drawn >= 400) return null;
+  ctx.seen[id] = true;
+  ctx.drawn++;
+  var type = genuiResolveType(el.type);
+  var node = null;
+  if (!type) node = genuiUnknown(el.type);
+  else {
+    try { node = GENUI_RENDERERS[type](el, ctx, id, inh, depth); }
+    catch (e) { node = genuiUnknown(type, 'could not draw: ' + (e && e.message ? e.message : e)); }
+  }
+  if (!node) return null;
+  node.setAttribute('data-el', id);
+  var vis = genuiVisibleOf(el);
+  if (vis) ctx.refreshers.push(function() { genuiToggleClass(node, 'genui-hidden', !genuiVisibleOk(vis, genuiView(ctx))); });
+  return node;
+}
+function genuiChildren(el, ctx, id, inh, depth, cls) {
+  var wrap = genuiEl('div', cls || 'genui-children');
+  genuiArr(el.children).forEach(function(cid) {
+    var node = genuiRenderNode(String(cid), ctx, inh, depth + 1);
+    if (node) wrap.appendChild(node);
+  });
+  return wrap;
+}
+function genuiField(p, name, control, cls) {
+  var wrap = genuiEl('label', 'genui-field' + (cls ? ' ' + cls : ''));
+  wrap.appendChild(genuiEl('span', 'genui-label', genuiStr(p.label) || name));
+  wrap.appendChild(control);
+  return wrap;
+}
+function genuiGroup(p, name, group) {
+  var wrap = genuiEl('div', 'genui-field');
+  wrap.appendChild(genuiEl('span', 'genui-label', genuiStr(p.label) || name));
+  wrap.appendChild(group);
+  return wrap;
+}
+function genuiControl(ctx, control) { ctx.controls.push(control); return control; }
+
+// ── SVG charts ──
+function genuiSvg(tag, attrs, text) {
+  var e = document.createElementNS(GENUI_SVG_NS, tag);
+  if (attrs) for (var k in attrs) if (Object.prototype.hasOwnProperty.call(attrs, k)) e.setAttribute(k, String(attrs[k]));
+  if (text !== undefined && text !== null) e.textContent = String(text);
+  return e;
+}
+function genuiTicks(lo, hi, n) {
+  if (hi <= lo) hi = lo + 1;
+  var raw = (hi - lo) / n, mag = Math.pow(10, Math.floor(Math.log(raw) / Math.LN10)), norm = raw / mag;
+  var step = (norm >= 5 ? 5 : norm >= 2 ? 2 : 1) * mag;
+  var out = [], v = Math.ceil(lo / step) * step;
+  for (; v <= hi + step / 1000 && out.length < 20; v += step) out.push(Math.round(v * 1e6) / 1e6);
+  return out;
+}
+function genuiChartFrame(p, cls) {
+  var wrap = genuiEl('div', 'genui-chart ' + cls);
+  if (p.title) wrap.appendChild(genuiEl('div', 'genui-chart-title', p.title));
+  return wrap;
+}
+function genuiLegend(items) {
+  var leg = genuiEl('div', 'genui-legend');
+  items.forEach(function(it, i) {
+    var item = genuiEl('span', 'genui-legend-item');
+    var sw = genuiEl('span', 'genui-legend-swatch');
+    sw.style.background = GENUI_PALETTE[i % GENUI_PALETTE.length];
+    item.appendChild(sw);
+    item.appendChild(genuiEl('span', '', it));
+    leg.appendChild(item);
+  });
+  return leg;
+}
+/** Axes and grid for a cartesian chart; `g` is the plot rectangle. */
+function genuiAxes(svg, g, lo, hi, labels, yLabel) {
+  genuiTicks(lo, hi, 4).forEach(function(t) {
+    var y = g.y0 + g.h - (t - lo) / (hi - lo) * g.h;
+    svg.appendChild(genuiSvg('line', { x1: g.x0, x2: g.x0 + g.w, y1: genuiR2(y), y2: genuiR2(y), stroke: '#333', 'stroke-width': 1 }));
+    svg.appendChild(genuiSvg('text', { x: g.x0 - 6, y: genuiR2(y + 3), 'text-anchor': 'end', 'font-size': 10, fill: '#808080' }, genuiFmtNum(t)));
+  });
+  svg.appendChild(genuiSvg('line', { x1: g.x0, x2: g.x0 + g.w, y1: g.y0 + g.h, y2: g.y0 + g.h, stroke: '#444', 'stroke-width': 1 }));
+  labels.forEach(function(lab, i) {
+    var x = g.x0 + (i + 0.5) * g.w / labels.length;
+    svg.appendChild(genuiSvg('text', { x: genuiR2(x), y: g.y0 + g.h + 14, 'text-anchor': 'middle', 'font-size': 10, fill: '#808080' }, genuiTrunc(lab, 10)));
+  });
+  if (yLabel) {
+    var ym = genuiR2(g.y0 + g.h / 2);
+    svg.appendChild(genuiSvg('text', { x: 11, y: ym, 'text-anchor': 'middle', 'font-size': 10, fill: '#808080', transform: 'rotate(-90 11 ' + ym + ')' }, genuiTrunc(yLabel, 24)));
+  }
+}
+function genuiPlotRect(p) {
+  var W = 420, H = 220, x0 = p.yLabel ? 54 : 42, y0 = 10;
+  return { W: W, H: H, x0: x0, y0: y0, w: W - x0 - 12, h: H - y0 - 30 };
+}
+
+var GENUI_RENDERERS = {
+  // ── Layout ──
+  Card: function(el, ctx, id, inh, depth) {
+    var p = el.props || {};
+    var card = genuiEl('div', 'genui-card');
+    if (p.title) card.appendChild(genuiEl('div', 'genui-card-title', p.title));
+    if (p.description) card.appendChild(genuiEl('div', 'genui-card-desc', p.description));
+    card.appendChild(genuiChildren(el, ctx, id, inh, depth, 'genui-children genui-card-body'));
+    return card;
+  },
+  Stack: function(el, ctx, id, inh, depth) {
+    var p = el.props || {};
+    var cls = 'genui-stack genui-stack-' + (genuiStr(p.direction) === 'row' ? 'row' : 'column') +
+      ' genui-gap-' + (genuiStr(p.gap) || 'md') +
+      (p.align ? ' genui-align-' + genuiStr(p.align) : '') +
+      (p.justify ? ' genui-justify-' + genuiStr(p.justify) : '') +
+      (genuiBool(p.wrap) ? ' genui-wrap' : '');
+    return genuiChildren(el, ctx, id, inh, depth, cls);
+  },
+  Grid: function(el, ctx, id, inh, depth) {
+    var p = el.props || {};
+    var cols = Math.max(1, Math.min(6, Math.round(genuiNum(p.columns, 2))));
+    var grid = genuiChildren(el, ctx, id, inh, depth, 'genui-grid genui-gap-' + (genuiStr(p.gap) || 'md'));
+    grid.setAttribute('data-columns', String(cols));
+    grid.style.gridTemplateColumns = 'repeat(' + cols + ', minmax(0, 1fr))';
+    return grid;
+  },
+  Section: function(el, ctx, id, inh, depth) {
+    var p = el.props || {};
+    var collapsible = genuiBool(p.collapsible), open = p.open === undefined || p.open === null ? true : genuiBool(p.open);
+    var sec = genuiEl('div', 'genui-section');
+    var body = genuiChildren(el, ctx, id, inh, depth, 'genui-children genui-section-body');
+    if (collapsible) {
+      var key = '__open:' + id;
+      var isOpen = genuiInit(ctx, key, open);
+      var btn = genuiControl(ctx, genuiEl('button', 'genui-section-toggle'));
+      btn.type = 'button';
+      var caret = genuiEl('span', 'genui-caret', isOpen ? '▾' : '▸');
+      btn.appendChild(caret);
+      btn.appendChild(genuiEl('span', 'genui-section-title', genuiStr(p.title)));
+      btn.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+      btn.addEventListener('click', function() {
+        ctx.state[key] = !ctx.state[key];
+        genuiToggleClass(body, 'genui-hidden', !ctx.state[key]);
+        caret.textContent = ctx.state[key] ? '▾' : '▸';
+        btn.setAttribute('aria-expanded', ctx.state[key] ? 'true' : 'false');
+      });
+      sec.appendChild(btn);
+      genuiToggleClass(body, 'genui-hidden', !isOpen);
+    } else {
+      sec.appendChild(genuiEl('div', 'genui-section-title', genuiStr(p.title)));
+    }
+    sec.appendChild(body);
+    return sec;
+  },
+  Tabs: function(el, ctx, id, inh, depth) {
+    var p = el.props || {};
+    var tabs = genuiArr(p.tabs).map(function(t) {
+      if (t && typeof t === 'object') return { label: genuiStr(t.label !== undefined ? t.label : t.value), value: genuiStr(t.value !== undefined ? t.value : t.label) };
+      return { label: genuiStr(t), value: genuiStr(t) };
+    });
+    var key = '__tab:' + id;
+    genuiInit(ctx, key, p.value !== undefined && p.value !== null ? genuiStr(p.value) : (tabs.length ? tabs[0].value : ''));
+    var wrap = genuiEl('div', 'genui-tabs');
+    var strip = genuiEl('div', 'genui-tab-strip');
+    var panels = genuiEl('div', 'genui-tab-panels');
+    var btns = [], kids = [];
+    tabs.forEach(function(t) {
+      var b = genuiControl(ctx, genuiEl('button', 'genui-tab', t.label));
+      b.type = 'button';
+      b.setAttribute('data-tab', t.value);
+      b.addEventListener('click', function() { ctx.state[key] = t.value; genuiRefresh(ctx); });
+      btns.push(b);
+      strip.appendChild(b);
+    });
+    genuiArr(el.children).forEach(function(cid) {
+      var child = ctx.spec.elements[cid];
+      var node = genuiRenderNode(String(cid), ctx, inh, depth + 1);
+      if (!node) return;
+      var tab = child && child.tab !== undefined && child.tab !== null ? genuiStr(child.tab) : (child && child.props && child.props.tab !== undefined ? genuiStr(child.props.tab) : (tabs.length ? tabs[0].value : ''));
+      var panel = genuiEl('div', 'genui-tab-panel');
+      panel.setAttribute('data-tab', tab);
+      panel.appendChild(node);
+      panels.appendChild(panel);
+      kids.push(panel);
+    });
+    ctx.refreshers.push(function() {
+      var active = genuiStr(ctx.state[key]);
+      btns.forEach(function(b) { genuiToggleClass(b, 'active', b.getAttribute('data-tab') === active); });
+      kids.forEach(function(pn) { genuiToggleClass(pn, 'genui-hidden', pn.getAttribute('data-tab') !== active); });
+    });
+    wrap.appendChild(strip);
+    wrap.appendChild(panels);
+    return wrap;
+  },
+  Separator: function() { return genuiEl('hr', 'genui-sep'); },
+  Spacer: function(el) { var p = el.props || {}; return genuiEl('div', 'genui-spacer genui-spacer-' + (genuiStr(p.size) || 'md')); },
+
+  // ── Content ──
+  Heading: function(el, ctx, id) {
+    var p = el.props || {};
+    var level = Math.max(1, Math.min(4, Math.round(genuiNum(p.level, 2))));
+    var h = genuiEl('h' + level, 'genui-heading');
+    h.innerHTML = genuiRich(escHtml(genuiStr(p.text)), ctx, id);
+    return h;
+  },
+  Text: function(el, ctx, id) {
+    var p = el.props || {};
+    var para = genuiEl('p', 'genui-text genui-text-' + (genuiStr(p.variant) || 'body'));
+    para.innerHTML = genuiRich(mdInline(escHtml(genuiStr(p.text))), ctx, id);
+    return para;
+  },
+  Markdown: function(el, ctx, id) {
+    var p = el.props || {};
+    var box = genuiEl('div', 'genui-md');
+    box.innerHTML = genuiRich(mdToHtml(genuiStr(p.text)), ctx, id);
+    return box;
+  },
+  Code: function(el) {
+    var p = el.props || {};
+    var box = genuiEl('div', 'genui-code');
+    if (p.title) box.appendChild(genuiEl('div', 'genui-code-title', p.title));
+    var pre = genuiEl('pre');
+    var code = genuiEl('code', p.language ? 'lang-' + genuiStr(p.language).toLowerCase().replace(/[^a-z0-9+#-]/g, '') : '', genuiStr(p.code));
+    pre.appendChild(code);
+    box.appendChild(pre);
+    return box;
+  },
+  Callout: function(el) {
+    var p = el.props || {};
+    var type = genuiStr(p.type) || 'info';
+    var box = genuiEl('div', 'genui-callout genui-callout-' + type);
+    if (p.title) box.appendChild(genuiEl('div', 'genui-callout-title', p.title));
+    box.appendChild(genuiEl('div', 'genui-callout-msg', genuiStr(p.message)));
+    return box;
+  },
+  Badge: function(el) {
+    var p = el.props || {};
+    return genuiEl('span', 'genui-badge genui-badge-' + (genuiStr(p.variant) || 'default'), genuiStr(p.text));
+  },
+  Tags: function(el) {
+    var p = el.props || {};
+    var row = genuiEl('div', 'genui-tags');
+    genuiStrs(p.items).forEach(function(t) { row.appendChild(genuiEl('span', 'genui-tag', t)); });
+    return row;
+  },
+  Link: function(el) {
+    var p = el.props || {};
+    var href = safeUrl(p.href);
+    if (!href) {
+      var bad = genuiEl('span', 'genui-link-bad', genuiStr(p.label) || genuiStr(p.href));
+      bad.title = 'link withheld: only http(s) addresses are opened';
+      return bad;
+    }
+    var a = genuiEl('a', 'genui-link', genuiStr(p.label) || href);
+    a.href = href;
+    a.setAttribute('href', href);
+    a.setAttribute('target', '_blank');
+    a.setAttribute('rel', 'noopener noreferrer');
+    return a;
+  },
+  // A remote image is fetched only after a click. The model chose the URL,
+  // and a URL can carry anything the model has read (a prompt-injected page
+  // asking it to put .env into a query string): loading it unasked would make
+  // the dashboard the exfiltration channel. An inline data: image and a URL
+  // the user already loaded on this surface draw at once.
+  Image: function(el, ctx) {
+    var p = el.props || {};
+    var remote = safeUrl(p.src);
+    var inline = /^data:image\/(png|jpe?g|gif|webp);base64,[A-Za-z0-9+\/=]+$/.test(genuiStr(p.src)) ? genuiStr(p.src) : '';
+    var fig = genuiEl('figure', 'genui-image');
+    var alt = genuiStr(p.alt);
+    var caption = function() { if (p.caption) fig.appendChild(genuiEl('figcaption', 'genui-image-caption', p.caption)); };
+    var placeholder = function() {
+      genuiClear(fig);
+      fig.appendChild(genuiEl('div', 'genui-image-ph', alt || 'image unavailable'));
+      caption();
+    };
+    var load = function(src) {
+      genuiClear(fig);
+      var img = genuiEl('img', 'genui-img');
+      img.setAttribute('alt', alt);
+      img.setAttribute('referrerpolicy', 'no-referrer');
+      img.addEventListener('error', placeholder);
+      img.setAttribute('src', src);
+      fig.appendChild(img);
+      caption();
+    };
+    if (inline) { load(inline); return fig; }
+    if (!remote) { placeholder(); return fig; }
+    if (ctx && ctx.loadedImages && ctx.loadedImages[remote]) { load(remote); return fig; }
+    var host = remote.replace(/^https?:\/\//i, '').split(/[\/?#]/)[0];
+    var ph = genuiEl('div', 'genui-image-ph', alt || 'image');
+    var btn = genuiEl('button', 'genui-image-load', 'Load image from ' + host);
+    btn.type = 'button';
+    btn.title = remote;
+    if (ctx) genuiControl(ctx, btn);
+    btn.addEventListener('click', function() { if (ctx && ctx.loadedImages) ctx.loadedImages[remote] = true; load(remote); });
+    ph.appendChild(btn);
+    fig.appendChild(ph);
+    caption();
+    return fig;
+  },
+
+  // ── Data display ──
+  Table: function(el) {
+    var p = el.props || {};
+    var cols = genuiStrs(p.columns);
+    var wrap = genuiEl('div', 'genui-table-wrap');
+    var table = genuiEl('table', 'genui-table');
+    if (p.caption) table.appendChild(genuiEl('caption', 'genui-table-caption', p.caption));
+    var thead = genuiEl('thead'), hr = genuiEl('tr');
+    cols.forEach(function(c) { hr.appendChild(genuiEl('th', '', c)); });
+    thead.appendChild(hr);
+    table.appendChild(thead);
+    var tbody = genuiEl('tbody');
+    genuiArr(p.rows).forEach(function(row) {
+      var cells = Array.isArray(row) ? row
+        : (row && typeof row === 'object' ? cols.map(function(c) { return row[c] !== undefined ? row[c] : row[c.toLowerCase()]; }) : [row]);
+      var tr = genuiEl('tr');
+      var n = cols.length || cells.length;
+      for (var i = 0; i < n; i++) tr.appendChild(genuiEl('td', '', genuiStr(cells[i])));
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    wrap.appendChild(table);
+    return wrap;
+  },
+  List: function(el, ctx) {
+    var p = el.props || {};
+    var variant = genuiStr(p.variant) || 'bullet';
+    var list = genuiEl(variant === 'number' ? 'ol' : 'ul', 'genui-list genui-list-' + variant);
+    genuiArr(p.items).forEach(function(item) {
+      var it = item && typeof item === 'object' ? item : { title: genuiStr(item) };
+      var li = genuiEl('li', 'genui-list-item');
+      if (variant === 'check') li.appendChild(genuiEl('span', 'genui-list-check', '✓'));
+      var body = genuiEl('span', 'genui-list-body');
+      if (it.action) {
+        var b = genuiControl(ctx, genuiEl('button', 'genui-list-btn', genuiStr(it.title)));
+        b.type = 'button';
+        b.addEventListener('click', function() { sendUiAction(ctx.surfaceId, genuiStr(it.action), genuiStr(it.title)); });
+        body.appendChild(b);
+      } else {
+        body.appendChild(genuiEl('span', 'genui-list-title', genuiStr(it.title)));
+      }
+      if (it.subtitle) body.appendChild(genuiEl('span', 'genui-list-sub', genuiStr(it.subtitle)));
+      li.appendChild(body);
+      list.appendChild(li);
+    });
+    return list;
+  },
+  KeyValue: function(el) {
+    var p = el.props || {};
+    var box = genuiEl('div', 'genui-kv');
+    if (p.title) box.appendChild(genuiEl('div', 'genui-kv-title', p.title));
+    genuiArr(p.rows).forEach(function(r) {
+      var row = genuiEl('div', 'genui-kv-row');
+      var it = r && typeof r === 'object' ? r : { label: genuiStr(r), value: '' };
+      row.appendChild(genuiEl('span', 'genui-kv-label', genuiStr(it.label)));
+      row.appendChild(genuiEl('span', 'genui-kv-value', genuiStr(it.value)));
+      box.appendChild(row);
+    });
+    return box;
+  },
+  Metric: function(el) {
+    var p = el.props || {};
+    var box = genuiEl('div', 'genui-metric');
+    box.appendChild(genuiEl('div', 'genui-metric-label', genuiStr(p.label)));
+    var val = genuiEl('div', 'genui-metric-value', genuiStr(p.value));
+    if (p.unit) val.appendChild(genuiEl('span', 'genui-metric-unit', ' ' + genuiStr(p.unit)));
+    box.appendChild(val);
+    if (p.change) box.appendChild(genuiEl('div', 'genui-metric-change genui-change-' + (genuiStr(p.changeType) || 'neutral'), genuiStr(p.change)));
+    return box;
+  },
+  Progress: function(el) {
+    var p = el.props || {};
+    var v = Math.max(0, Math.min(100, genuiNum(p.value, 0)));
+    var box = genuiEl('div', 'genui-progress');
+    var head = genuiEl('div', 'genui-progress-head');
+    head.appendChild(genuiEl('span', 'genui-progress-label', genuiStr(p.label)));
+    head.appendChild(genuiEl('span', 'genui-progress-pct', Math.round(v) + '%'));
+    box.appendChild(head);
+    var bar = genuiEl('div', 'genui-progress-bar');
+    bar.setAttribute('role', 'progressbar');
+    bar.setAttribute('aria-valuenow', String(Math.round(v)));
+    bar.setAttribute('aria-valuemin', '0');
+    bar.setAttribute('aria-valuemax', '100');
+    var fill = genuiEl('div', 'genui-progress-fill');
+    fill.style.width = v + '%';
+    bar.appendChild(fill);
+    box.appendChild(bar);
+    return box;
+  },
+  Timeline: function(el) {
+    var p = el.props || {};
+    var box = genuiEl('div', 'genui-timeline');
+    genuiArr(p.items).forEach(function(item) {
+      var it = item && typeof item === 'object' ? item : { title: genuiStr(item) };
+      var row = genuiEl('div', 'genui-timeline-item');
+      row.appendChild(genuiEl('span', 'genui-timeline-dot'));
+      var body = genuiEl('div', 'genui-timeline-body');
+      var head = genuiEl('div', 'genui-timeline-head');
+      head.appendChild(genuiEl('span', 'genui-timeline-title', genuiStr(it.title)));
+      if (it.time) head.appendChild(genuiEl('span', 'genui-timeline-time', genuiStr(it.time)));
+      body.appendChild(head);
+      if (it.details) body.appendChild(genuiEl('div', 'genui-timeline-details', genuiStr(it.details)));
+      row.appendChild(body);
+      box.appendChild(row);
+    });
+    return box;
+  },
+  Steps: function(el) {
+    var p = el.props || {};
+    var box = genuiEl('div', 'genui-steps');
+    genuiArr(p.items).forEach(function(item) {
+      var it = item && typeof item === 'object' ? item : { title: genuiStr(item) };
+      var status = GENUI_STEP_GLYPHS.hasOwnProperty(genuiStr(it.status)) ? genuiStr(it.status) : 'todo';
+      var row = genuiEl('div', 'genui-step genui-step-' + status);
+      row.appendChild(genuiEl('span', 'genui-step-glyph', GENUI_STEP_GLYPHS[status]));
+      var body = genuiEl('div', 'genui-step-body');
+      body.appendChild(genuiEl('div', 'genui-step-title', genuiStr(it.title)));
+      if (it.details) body.appendChild(genuiEl('div', 'genui-step-details', genuiStr(it.details)));
+      row.appendChild(body);
+      box.appendChild(row);
+    });
+    return box;
+  },
+
+  // ── Charts (inline SVG) ──
+  BarChart: function(el) {
+    var p = el.props || {};
+    var labels = genuiStrs(p.labels), series = genuiSeries(p.series), stacked = genuiBool(p.stacked);
+    var wrap = genuiChartFrame(p, 'genui-bar');
+    if (!labels.length || !series.length) { wrap.appendChild(genuiEl('div', 'genui-unknown', 'no data')); return wrap; }
+    var lo = 0, hi = 0, i, j;
+    for (i = 0; i < labels.length; i++) {
+      var pos = 0, neg = 0;
+      for (j = 0; j < series.length; j++) {
+        var v = genuiNum(series[j].values[i], 0);
+        if (stacked) { if (v >= 0) pos += v; else neg += v; }
+        else { if (v > hi) hi = v; if (v < lo) lo = v; }
+      }
+      if (stacked) { if (pos > hi) hi = pos; if (neg < lo) lo = neg; }
+    }
+    if (hi <= lo) hi = lo + 1;
+    var g = genuiPlotRect(p);
+    var svg = genuiSvg('svg', { viewBox: '0 0 ' + g.W + ' ' + g.H, role: 'img', 'class': 'genui-svg' });
+    svg.appendChild(genuiSvg('title', null, genuiStr(p.title) || 'bar chart'));
+    genuiAxes(svg, g, lo, hi, labels, p.yLabel);
+    var sy = function(v) { return g.y0 + g.h - (v - lo) / (hi - lo) * g.h; };
+    var groupW = g.w / labels.length, barW = stacked ? groupW * 0.6 : groupW * 0.7 / series.length;
+    for (i = 0; i < labels.length; i++) {
+      var upTop = 0, downTop = 0;
+      for (j = 0; j < series.length; j++) {
+        var val = genuiNum(series[j].values[i], 0);
+        var x = stacked ? g.x0 + i * groupW + groupW * 0.2 : g.x0 + i * groupW + groupW * 0.15 + j * barW;
+        var y1, y2;
+        if (stacked) {
+          if (val >= 0) { y1 = sy(upTop + val); y2 = sy(upTop); upTop += val; }
+          else { y1 = sy(downTop); y2 = sy(downTop + val); downTop += val; }
+        } else { y1 = sy(Math.max(val, 0)); y2 = sy(Math.min(val, 0)); }
+        var rect = genuiSvg('rect', { x: genuiR2(x), y: genuiR2(Math.min(y1, y2)), width: genuiR2(Math.max(barW - 1, 1)), height: genuiR2(Math.max(Math.abs(y2 - y1), 0.5)), fill: GENUI_PALETTE[j % GENUI_PALETTE.length], rx: 1 });
+        rect.appendChild(genuiSvg('title', null, (series[j].name ? series[j].name + ' · ' : '') + labels[i] + ': ' + genuiFmtNum(val)));
+        svg.appendChild(rect);
+      }
+    }
+    wrap.appendChild(svg);
+    if (series.length > 1) wrap.appendChild(genuiLegend(series.map(function(s, k) { return s.name || ('series ' + (k + 1)); })));
+    return wrap;
+  },
+  LineChart: function(el) {
+    var p = el.props || {};
+    var labels = genuiStrs(p.labels), series = genuiSeries(p.series), area = genuiBool(p.area);
+    var wrap = genuiChartFrame(p, 'genui-line');
+    if (!labels.length || !series.length) { wrap.appendChild(genuiEl('div', 'genui-unknown', 'no data')); return wrap; }
+    var lo = Infinity, hi = -Infinity;
+    series.forEach(function(s) { s.values.forEach(function(v) { if (v < lo) lo = v; if (v > hi) hi = v; }); });
+    if (!isFinite(lo)) { lo = 0; hi = 1; }
+    if (lo >= 0 && lo <= hi * 0.5) lo = 0;
+    if (hi <= lo) hi = lo + 1;
+    var g = genuiPlotRect(p);
+    var svg = genuiSvg('svg', { viewBox: '0 0 ' + g.W + ' ' + g.H, role: 'img', 'class': 'genui-svg' });
+    svg.appendChild(genuiSvg('title', null, genuiStr(p.title) || 'line chart'));
+    genuiAxes(svg, g, lo, hi, labels, p.yLabel);
+    var n = labels.length;
+    var sx = function(i) { return n > 1 ? g.x0 + (i + 0.5) * g.w / n : g.x0 + g.w / 2; };
+    var sy = function(v) { return g.y0 + g.h - (v - lo) / (hi - lo) * g.h; };
+    series.forEach(function(s, k) {
+      var colour = GENUI_PALETTE[k % GENUI_PALETTE.length];
+      var pts = [];
+      for (var i = 0; i < n; i++) if (s.values[i] !== undefined) pts.push({ x: genuiR2(sx(i)), y: genuiR2(sy(genuiNum(s.values[i], 0))), i: i });
+      if (!pts.length) return;
+      var points = pts.map(function(q) { return q.x + ',' + q.y; }).join(' ');
+      if (area) {
+        var base = genuiR2(sy(lo >= 0 ? lo : 0)); // the floor, or the zero line when values go negative
+        svg.appendChild(genuiSvg('polygon', { points: pts[0].x + ',' + base + ' ' + points + ' ' + pts[pts.length - 1].x + ',' + base, fill: colour, 'fill-opacity': 0.15, stroke: 'none' }));
+      }
+      svg.appendChild(genuiSvg('polyline', { points: points, fill: 'none', stroke: colour, 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }));
+      pts.forEach(function(q) {
+        var c = genuiSvg('circle', { cx: q.x, cy: q.y, r: 2.5, fill: colour });
+        c.appendChild(genuiSvg('title', null, (s.name ? s.name + ' · ' : '') + labels[q.i] + ': ' + genuiFmtNum(genuiNum(s.values[q.i], 0))));
+        svg.appendChild(c);
+      });
+    });
+    wrap.appendChild(svg);
+    if (series.length > 1) wrap.appendChild(genuiLegend(series.map(function(s, k) { return s.name || ('series ' + (k + 1)); })));
+    return wrap;
+  },
+  PieChart: function(el) {
+    var p = el.props || {};
+    var labels = genuiStrs(p.labels), values = genuiNums(p.values), donut = genuiBool(p.donut);
+    var wrap = genuiChartFrame(p, 'genui-pie-chart');
+    var total = 0;
+    values.forEach(function(v) { if (v > 0) total += v; });
+    if (!total) { wrap.appendChild(genuiEl('div', 'genui-unknown', 'no data')); return wrap; }
+    var W = 200, cx = 100, cy = 100, r = 92, ri = donut ? 52 : 0;
+    var row = genuiEl('div', 'genui-pie');
+    var svg = genuiSvg('svg', { viewBox: '0 0 ' + W + ' ' + W, role: 'img', 'class': 'genui-svg genui-pie-svg' });
+    svg.appendChild(genuiSvg('title', null, genuiStr(p.title) || 'pie chart'));
+    var a0 = -Math.PI / 2;
+    var legend = [];
+    values.forEach(function(v, i) {
+      var label = labels[i] !== undefined ? labels[i] : 'slice ' + (i + 1);
+      var pct = Math.round(v / total * 1000) / 10;
+      legend.push(label + ' — ' + genuiFmtNum(v) + ' (' + pct + '%)');
+      if (v <= 0) return;
+      var colour = GENUI_PALETTE[i % GENUI_PALETTE.length];
+      var mark;
+      if (v >= total) {
+        mark = donut ? genuiSvg('circle', { cx: cx, cy: cy, r: (r + ri) / 2, fill: 'none', stroke: colour, 'stroke-width': r - ri })
+          : genuiSvg('circle', { cx: cx, cy: cy, r: r, fill: colour });
+      } else {
+        var a1 = a0 + v / total * 2 * Math.PI;
+        var large = a1 - a0 > Math.PI ? 1 : 0;
+        var x0 = genuiR2(cx + r * Math.cos(a0)), y0 = genuiR2(cy + r * Math.sin(a0));
+        var x1 = genuiR2(cx + r * Math.cos(a1)), y1 = genuiR2(cy + r * Math.sin(a1));
+        var d;
+        if (donut) {
+          var xi0 = genuiR2(cx + ri * Math.cos(a0)), yi0 = genuiR2(cy + ri * Math.sin(a0));
+          var xi1 = genuiR2(cx + ri * Math.cos(a1)), yi1 = genuiR2(cy + ri * Math.sin(a1));
+          d = 'M' + x0 + ' ' + y0 + ' A' + r + ' ' + r + ' 0 ' + large + ' 1 ' + x1 + ' ' + y1 +
+            ' L' + xi1 + ' ' + yi1 + ' A' + ri + ' ' + ri + ' 0 ' + large + ' 0 ' + xi0 + ' ' + yi0 + ' Z';
+        } else {
+          d = 'M' + cx + ' ' + cy + ' L' + x0 + ' ' + y0 + ' A' + r + ' ' + r + ' 0 ' + large + ' 1 ' + x1 + ' ' + y1 + ' Z';
+        }
+        mark = genuiSvg('path', { d: d, fill: colour, stroke: '#252525', 'stroke-width': 1 });
+        a0 = a1;
+      }
+      mark.appendChild(genuiSvg('title', null, label + ': ' + genuiFmtNum(v) + ' (' + pct + '%)'));
+      svg.appendChild(mark);
+    });
+    row.appendChild(svg);
+    row.appendChild(genuiLegend(legend));
+    wrap.appendChild(row);
+    return wrap;
+  },
+  Sparkline: function(el) {
+    var p = el.props || {};
+    var values = genuiNums(p.values);
+    var wrap = genuiEl('span', 'genui-sparkline');
+    if (values.length) {
+      var W = 120, H = 28, pad = 2, lo = Infinity, hi = -Infinity;
+      values.forEach(function(v) { if (v < lo) lo = v; if (v > hi) hi = v; });
+      if (hi <= lo) hi = lo + 1;
+      var n = values.length;
+      var pts = values.map(function(v, i) {
+        var x = n > 1 ? pad + i * (W - 2 * pad) / (n - 1) : W / 2;
+        var y = pad + (H - 2 * pad) - (v - lo) / (hi - lo) * (H - 2 * pad);
+        return genuiR2(x) + ',' + genuiR2(y);
+      });
+      var svg = genuiSvg('svg', { viewBox: '0 0 ' + W + ' ' + H, width: W, height: H, role: 'img', 'class': 'genui-svg genui-spark-svg' });
+      svg.appendChild(genuiSvg('title', null, (genuiStr(p.label) ? genuiStr(p.label) + ': ' : '') + values.map(genuiFmtNum).join(', ')));
+      svg.appendChild(genuiSvg('polyline', { points: pts.join(' '), fill: 'none', stroke: GENUI_PALETTE[0], 'stroke-width': 1.5, 'stroke-linejoin': 'round' }));
+      var last = pts[pts.length - 1].split(',');
+      svg.appendChild(genuiSvg('circle', { cx: last[0], cy: last[1], r: 2, fill: GENUI_PALETTE[0] }));
+      wrap.appendChild(svg);
+    }
+    if (p.label) wrap.appendChild(genuiEl('span', 'genui-sparkline-label', p.label));
+    return wrap;
+  },
+
+  // ── Coding-agent report ──
+  FileChange: function(el) {
+    var p = el.props || {};
+    var kind = genuiStr(p.kind) || 'modified';
+    var box = genuiEl('div', 'genui-filechange genui-filechange-' + kind);
+    var head = genuiEl('div', 'genui-filechange-head');
+    head.appendChild(genuiEl('span', 'genui-badge genui-filechange-kind', kind));
+    head.appendChild(genuiEl('span', 'genui-filechange-path', genuiStr(p.path)));
+    var adds = genuiNum(p.additions, NaN), dels = genuiNum(p.deletions, NaN);
+    if (isFinite(adds)) head.appendChild(genuiEl('span', 'genui-add', '+' + genuiFmtNum(adds)));
+    if (isFinite(dels)) head.appendChild(genuiEl('span', 'genui-del', '-' + genuiFmtNum(dels)));
+    box.appendChild(head);
+    if (p.summary) box.appendChild(genuiEl('div', 'genui-filechange-summary', p.summary));
+    return box;
+  },
+  Terminal: function(el) {
+    var p = el.props || {};
+    var box = genuiEl('div', 'genui-terminal');
+    var cmd = genuiEl('div', 'genui-terminal-cmd');
+    cmd.appendChild(genuiEl('span', 'genui-terminal-prompt', '$ '));
+    cmd.appendChild(genuiEl('span', 'genui-terminal-text', genuiStr(p.command)));
+    var code = genuiNum(p.exitCode, NaN);
+    if (isFinite(code)) cmd.appendChild(genuiEl('span', 'genui-terminal-exit ' + (code === 0 ? 'ok' : 'bad'), 'exit ' + code));
+    box.appendChild(cmd);
+    if (p.output !== undefined && p.output !== null && genuiStr(p.output) !== '') box.appendChild(genuiEl('pre', 'genui-terminal-out', genuiStr(p.output)));
+    return box;
+  },
+  TestResults: function(el) {
+    var p = el.props || {};
+    var passed = genuiNum(p.passed, 0), failed = genuiNum(p.failed, 0), skipped = genuiNum(p.skipped, NaN);
+    var box = genuiEl('div', 'genui-tests ' + (failed > 0 ? 'genui-tests-bad' : 'genui-tests-ok'));
+    var head = genuiEl('div', 'genui-tests-head');
+    head.appendChild(genuiEl('span', 'genui-tests-passed', genuiFmtNum(passed) + ' passed'));
+    head.appendChild(genuiEl('span', 'genui-tests-failed', genuiFmtNum(failed) + ' failed'));
+    if (isFinite(skipped)) head.appendChild(genuiEl('span', 'genui-tests-skipped', genuiFmtNum(skipped) + ' skipped'));
+    if (p.runner) head.appendChild(genuiEl('span', 'genui-tests-runner', genuiStr(p.runner)));
+    box.appendChild(head);
+    var failures = genuiArr(p.failures);
+    if (failures.length) {
+      var list = genuiEl('ul', 'genui-tests-failures');
+      failures.forEach(function(f) {
+        var it = f && typeof f === 'object' ? f : { name: genuiStr(f) };
+        var li = genuiEl('li');
+        li.appendChild(genuiEl('span', 'genui-tests-name', genuiStr(it.name)));
+        if (it.message) li.appendChild(genuiEl('span', 'genui-tests-msg', genuiStr(it.message)));
+        list.appendChild(li);
+      });
+      box.appendChild(list);
+    }
+    return box;
+  },
+
+  // ── Forms ──
+  Form: function(el, ctx, id, inh, depth) {
+    var p = el.props || {};
+    var form = genuiEl('div', 'genui-form');
+    if (p.title) form.appendChild(genuiEl('div', 'genui-form-title', p.title));
+    if (p.description) form.appendChild(genuiEl('div', 'genui-form-desc', p.description));
+    form.appendChild(genuiChildren(el, ctx, id, { formAction: genuiStr(p.action) || 'submit' }, depth, 'genui-children genui-form-body'));
+    return form;
+  },
+  Input: function(el, ctx, id) {
+    var p = el.props || {}, name = genuiName(p, id);
+    var input = genuiControl(ctx, genuiEl('input', 'genui-input'));
+    input.type = genuiStr(p.type) || 'text';
+    if (p.placeholder) input.placeholder = genuiStr(p.placeholder);
+    if (genuiBool(p.required)) input.required = true;
+    input.value = genuiStr(genuiInit(ctx, name, p.value !== undefined && p.value !== null ? genuiStr(p.value) : ''));
+    input.addEventListener('input', function() { ctx.state[name] = input.value; genuiRefresh(ctx); });
+    return genuiField(p, name, input);
+  },
+  Textarea: function(el, ctx, id) {
+    var p = el.props || {}, name = genuiName(p, id);
+    var ta = genuiControl(ctx, genuiEl('textarea', 'genui-textarea'));
+    ta.rows = Math.max(1, Math.min(20, Math.round(genuiNum(p.rows, 3))));
+    if (p.placeholder) ta.placeholder = genuiStr(p.placeholder);
+    ta.value = genuiStr(genuiInit(ctx, name, p.value !== undefined && p.value !== null ? genuiStr(p.value) : ''));
+    ta.addEventListener('input', function() { ctx.state[name] = ta.value; genuiRefresh(ctx); });
+    return genuiField(p, name, ta);
+  },
+  Select: function(el, ctx, id) {
+    var p = el.props || {}, name = genuiName(p, id), opts = genuiOptions(p.options);
+    var initial = p.value !== undefined && p.value !== null ? genuiStr(p.value) : (p.placeholder || !opts.length ? '' : opts[0].value);
+    var current = genuiStr(genuiInit(ctx, name, initial));
+    var sel = genuiControl(ctx, genuiEl('select', 'genui-select'));
+    if (p.placeholder) {
+      var ph = genuiEl('option', '', genuiStr(p.placeholder));
+      ph.value = '';
+      ph.disabled = true;
+      ph.selected = current === '';
+      sel.appendChild(ph);
+    }
+    opts.forEach(function(o) {
+      var opt = genuiEl('option', '', o.label);
+      opt.value = o.value;
+      opt.selected = o.value === current;
+      sel.appendChild(opt);
+    });
+    sel.value = current;
+    sel.addEventListener('change', function() { ctx.state[name] = sel.value; genuiRefresh(ctx); });
+    return genuiField(p, name, sel);
+  },
+  Radio: function(el, ctx, id) {
+    var p = el.props || {}, name = genuiName(p, id), opts = genuiOptions(p.options), chips = genuiStr(p.display) === 'chips';
+    var current = genuiStr(genuiInit(ctx, name, p.value !== undefined && p.value !== null ? genuiStr(p.value) : ''));
+    var group = genuiEl('div', 'genui-choice' + (chips ? ' genui-chips' : ''));
+    var items = [];
+    var sync = function() { items.forEach(function(it) { genuiToggleClass(it.label, 'on', genuiStr(ctx.state[name]) === it.value); }); };
+    opts.forEach(function(o) {
+      var lab = genuiEl('label', 'genui-option');
+      var r = genuiControl(ctx, genuiEl('input', 'genui-radio'));
+      r.type = 'radio';
+      r.name = 'genui-' + ctx.surfaceId + '-' + name;
+      r.value = o.value;
+      r.checked = o.value === current;
+      r.addEventListener('change', function() { if (r.checked) { ctx.state[name] = o.value; sync(); genuiRefresh(ctx); } });
+      lab.appendChild(r);
+      lab.appendChild(genuiEl('span', 'genui-option-text', o.label));
+      items.push({ label: lab, value: o.value });
+      group.appendChild(lab);
+    });
+    sync();
+    return genuiGroup(p, name, group);
+  },
+  Checkbox: function(el, ctx, id) {
+    var p = el.props || {}, name = genuiName(p, id);
+    var lab = genuiEl('label', 'genui-field genui-check');
+    var cb = genuiControl(ctx, genuiEl('input', 'genui-checkbox'));
+    cb.type = 'checkbox';
+    cb.checked = !!genuiInit(ctx, name, genuiBool(p.checked));
+    cb.addEventListener('change', function() { ctx.state[name] = !!cb.checked; genuiRefresh(ctx); });
+    lab.appendChild(cb);
+    lab.appendChild(genuiEl('span', 'genui-option-text', genuiStr(p.label) || name));
+    return lab;
+  },
+  CheckboxGroup: function(el, ctx, id) {
+    var p = el.props || {}, name = genuiName(p, id), opts = genuiOptions(p.options), chips = genuiStr(p.display) === 'chips';
+    var current = genuiInit(ctx, name, genuiArr(p.value).map(function(v) { return genuiStr(v); }));
+    if (!Array.isArray(current)) { current = [genuiStr(current)]; ctx.state[name] = current; }
+    var group = genuiEl('div', 'genui-choice' + (chips ? ' genui-chips' : ''));
+    var items = [];
+    var sync = function() {
+      var chosen = [];
+      items.forEach(function(it) { if (it.input.checked) chosen.push(it.value); genuiToggleClass(it.label, 'on', !!it.input.checked); });
+      ctx.state[name] = chosen;
+    };
+    opts.forEach(function(o) {
+      var lab = genuiEl('label', 'genui-option');
+      var cb = genuiControl(ctx, genuiEl('input', 'genui-checkbox'));
+      cb.type = 'checkbox';
+      cb.value = o.value;
+      cb.checked = current.indexOf(o.value) >= 0;
+      cb.addEventListener('change', function() { sync(); genuiRefresh(ctx); });
+      lab.appendChild(cb);
+      lab.appendChild(genuiEl('span', 'genui-option-text', o.label));
+      items.push({ input: cb, label: lab, value: o.value });
+      group.appendChild(lab);
+    });
+    items.forEach(function(it) { genuiToggleClass(it.label, 'on', !!it.input.checked); });
+    return genuiGroup(p, name, group);
+  },
+  Switch: function(el, ctx, id) {
+    var p = el.props || {}, name = genuiName(p, id);
+    var lab = genuiEl('label', 'genui-field genui-switch');
+    var cb = genuiControl(ctx, genuiEl('input', 'genui-switch-input'));
+    cb.type = 'checkbox';
+    cb.setAttribute('role', 'switch');
+    cb.checked = !!genuiInit(ctx, name, genuiBool(p.checked));
+    var track = genuiEl('span', 'genui-switch-track');
+    var sync = function() { genuiToggleClass(track, 'on', !!cb.checked); cb.setAttribute('aria-checked', cb.checked ? 'true' : 'false'); };
+    cb.addEventListener('change', function() { ctx.state[name] = !!cb.checked; sync(); genuiRefresh(ctx); });
+    sync();
+    lab.appendChild(cb);
+    lab.appendChild(track);
+    lab.appendChild(genuiEl('span', 'genui-option-text', genuiStr(p.label) || name));
+    return lab;
+  },
+  Slider: function(el, ctx, id) {
+    var p = el.props || {}, name = genuiName(p, id);
+    var min = genuiNum(p.min, 0), max = genuiNum(p.max, 100), step = genuiNum(p.step, 1);
+    if (max < min) { var t = max; max = min; min = t; }
+    var current = genuiNum(genuiInit(ctx, name, p.value !== undefined && p.value !== null ? genuiNum(p.value, min) : min), min);
+    var wrap = genuiEl('label', 'genui-field genui-slider');
+    var head = genuiEl('span', 'genui-label');
+    head.appendChild(genuiEl('span', '', genuiStr(p.label) || name));
+    var val = genuiEl('span', 'genui-slider-val', genuiFmtNum(current));
+    head.appendChild(val);
+    wrap.appendChild(head);
+    var input = genuiControl(ctx, genuiEl('input', 'genui-range'));
+    input.type = 'range';
+    input.min = String(min);
+    input.max = String(max);
+    input.step = String(step > 0 ? step : 1);
+    input.value = String(current);
+    input.addEventListener('input', function() {
+      ctx.state[name] = genuiNum(input.value, min);
+      val.textContent = genuiFmtNum(ctx.state[name]);
+      genuiRefresh(ctx);
+    });
+    wrap.appendChild(input);
+    return wrap;
+  },
+
+  // ── Actions ──
+  Button: function(el, ctx, id, inh) {
+    var p = el.props || {};
+    var label = genuiStr(p.label) || genuiStr(p.action) || 'OK';
+    var btn = genuiEl('button', 'genui-btn genui-btn-' + (genuiStr(p.variant) || 'secondary'), label);
+    btn.type = 'button';
+    var action = genuiStr(p.action) || (inh && inh.formAction) || genuiActionId(label);
+    var context = p.context && typeof p.context === 'object' && !Array.isArray(p.context) ? p.context : undefined;
+    if (genuiBool(p.disabled)) btn.disabled = true; else genuiControl(ctx, btn);
+    btn.addEventListener('click', function() { sendUiAction(ctx.surfaceId, action, label, context); });
+    return btn;
+  },
+  ButtonRow: function(el, ctx, id, inh, depth) {
+    var p = el.props || {};
+    return genuiChildren(el, ctx, id, inh, depth, 'genui-btnrow genui-justify-' + (genuiStr(p.align) || 'start'));
+  },
+  FollowUps: function(el, ctx) {
+    var p = el.props || {};
+    var row = genuiEl('div', 'genui-followups');
+    genuiStrs(p.items).forEach(function(text) {
+      if (!text) return;
+      var chip = genuiControl(ctx, genuiEl('button', 'genui-chip', text));
+      chip.type = 'button';
+      // A chip rides the ui.action queue: a user.message sent while the turn
+      // that drew it is still running would be dropped by the busy guard.
+      chip.addEventListener('click', function() { sendUiAction(ctx.surfaceId, 'followup', text, undefined, text); });
+      row.appendChild(chip);
+    });
+    return row;
+  },
+};
+
+/**
+ * Draw `spec` into `surfaceEl`. `ctx` carries the surface's state between
+ * renders ({ state, wordsShown, partial, surfaceId }); input values survive a
+ * re-render by name. Returns the ctx. Unknown types draw a muted box: the
+ * engine already replaced them for live frames, a stored transcript may still
+ * hold one.
+ */
+function renderUiSpec(spec, surfaceEl, ctx) {
+  ctx = ctx || {};
+  if (!ctx.state) ctx.state = {};
+  if (!ctx.wordsShown) ctx.wordsShown = {};
+  ctx.partial = !!ctx.partial;
+  ctx.spec = spec && typeof spec === 'object' && spec.elements && typeof spec.elements === 'object' ? spec : { root: '', elements: {} };
+  ctx.controls = [];
+  ctx.refreshers = [];
+  ctx.seen = {};
+  ctx.drawn = 0;
+  ctx.draft = {};
+  if (!ctx.loadedImages) ctx.loadedImages = {};
+  ctx.surfaceId = ctx.surfaceId || surfaceEl.getAttribute('data-surface') || '';
+  surfaceEl.__genui = ctx;
+  if (ctx.surfaceId) genuiSurfaces[ctx.surfaceId] = surfaceEl;
+  genuiClear(surfaceEl);
+  var body = genuiEl('div', 'genui-body');
+  var rootId = ctx.spec.root === undefined || ctx.spec.root === null ? '' : String(ctx.spec.root);
+  var root = rootId ? genuiRenderNode(rootId, ctx, { formAction: null }, 0) : null;
+  body.appendChild(root || genuiUnknown(rootId || undefined, 'nothing to draw'));
+  surfaceEl.appendChild(body);
+  genuiRefresh(ctx);
+  genuiSetPartial(surfaceEl, ctx.partial);
+  return ctx;
+}
+
+/** Partial: every control disabled and the surface marked; final: enabled. */
+function genuiSetPartial(surfaceEl, partial) {
+  genuiToggleClass(surfaceEl, 'genui-partial', !!partial);
+  var ctx = surfaceEl.__genui;
+  if (!ctx) return;
+  ctx.partial = !!partial;
+  for (var i = 0; i < (ctx.controls || []).length; i++) ctx.controls[i].disabled = !!partial;
+}
+
+/** A terminal frame with no spec: keep what was drawn, muted, drop its controls, show the reason. */
+function genuiWithdraw(surfaceEl, reason) {
+  var ctx = surfaceEl.__genui;
+  if (ctx) {
+    for (var i = 0; i < (ctx.controls || []).length; i++) {
+      var c = ctx.controls[i];
+      if (c.parentNode) c.parentNode.removeChild(c);
+    }
+    ctx.controls = [];
+    ctx.refreshers = [];
+    ctx.partial = false;
+  }
+  genuiToggleClass(surfaceEl, 'genui-partial', false);
+  genuiToggleClass(surfaceEl, 'genui-withdrawn', true);
+  var old = surfaceEl.querySelector('.genui-withdrawn-note');
+  if (old && old.parentNode) old.parentNode.removeChild(old);
+  surfaceEl.appendChild(genuiEl('div', 'genui-withdrawn-note', 'UI withdrawn' + (reason ? ' — ' + genuiStr(reason) : '')));
+}
+
+/** The final frame's `errors`: a muted "n issues" toggle that lists them (the model saw the same list). */
+function genuiIssues(errors) {
+  var box = genuiEl('div', 'genui-issues');
+  var btn = genuiEl('button', 'genui-issues-btn', errors.length + (errors.length === 1 ? ' issue' : ' issues'));
+  btn.type = 'button';
+  var list = genuiEl('ul', 'genui-issues-list genui-hidden');
+  errors.forEach(function(e) { list.appendChild(genuiEl('li', '', genuiStr(e))); });
+  btn.addEventListener('click', function() { genuiToggleClass(list, 'genui-hidden'); });
+  box.appendChild(btn);
+  box.appendChild(list);
+  return box;
+}
+
+/** Put the surface right after its RenderUI tool row (and that row's detail) when the row exists, else at the end. */
+function genuiPlaceSurface(el, toolId, surfaceId, msgs) {
+  var rowId = genuiToolRows[toolId];
+  var row = rowId ? msgs.querySelector('.chat-tool[data-id="' + genuiCssId(rowId) + '"]') : null;
+  var detail = rowId ? document.getElementById(rowId + '-detail') : null;
+  if (row && row.children && row.children[2]) row.children[2].textContent = 'surface ' + surfaceId;
+  var anchor = detail && detail.parentNode === msgs ? detail : (row && row.parentNode === msgs ? row : null);
+  if (anchor) {
+    if (anchor.nextSibling !== el) msgs.insertBefore(el, anchor.nextSibling);
+  } else if (el.parentNode !== msgs) {
+    msgs.appendChild(el);
+  }
+}
+
+/**
+ * The `ui.render` arm (design A1/A2). Partial frames key on toolId. A final
+ * frame whose surfaceId names a surface from an EARLIER call renders into
+ * that element (input state kept by name) and drops this call's transient
+ * element; otherwise the transient element is relabelled. `spec: null`
+ * withdraws the surface with the first error as the reason.
+ */
+function upsertSurface(event) {
+  var msgs = document.getElementById('chatMessages');
+  if (!msgs || !event) return null;
+  var toolId = genuiStr(event.toolId);
+  var surfaceId = genuiStr(event.surfaceId) || toolId;
+  var partial = !!event.partial;
+  var byTool = toolId ? msgs.querySelector('.genui-surface[data-tool-id="' + genuiCssId(toolId) + '"]') : null;
+  var el = byTool;
+  if (!partial) {
+    var older = msgs.querySelector('.genui-surface[data-surface="' + genuiCssId(surfaceId) + '"]');
+    if (older && older !== byTool) {
+      if (byTool && byTool.parentNode) byTool.parentNode.removeChild(byTool);
+      el = older;
+    }
+  }
+  if (!el) {
+    el = genuiEl('div', 'genui-surface');
+    el.__genui = { state: {}, wordsShown: {} };
+  }
+  var prevId = el.getAttribute('data-surface');
+  if (prevId && prevId !== surfaceId && genuiSurfaces[prevId] === el) delete genuiSurfaces[prevId];
+  el.setAttribute('data-tool-id', toolId);
+  el.setAttribute('data-surface', surfaceId);
+  var ctx = el.__genui || (el.__genui = { state: {}, wordsShown: {} });
+  ctx.surfaceId = surfaceId;
+  ctx.toolId = toolId;
+  ctx.partial = partial;
+  genuiSurfaces[surfaceId] = el;
+  genuiPlaceSurface(el, toolId, surfaceId, msgs);
+  if (event.spec) {
+    genuiToggleClass(el, 'genui-withdrawn', false);
+    renderUiSpec(event.spec, el, ctx);
+    if (!partial && event.errors && event.errors.length) el.appendChild(genuiIssues(event.errors));
+  } else {
+    genuiWithdraw(el, event.errors && event.errors.length ? event.errors[0] : '');
+  }
+  msgs.scrollTop = msgs.scrollHeight;
+  return el;
+}
+
+/** message.complete / session.error: a surface still partial is finalized (its controls enabled). */
+function finalizeGenuiSurfaces() {
+  var list = document.querySelectorAll('.genui-surface.genui-partial');
+  for (var i = 0; i < list.length; i++) genuiSetPartial(list[i], false);
+}
+
+/**
+ * A Button (or an actionable List item) click: `ui.action` with the surface's
+ * current input values, echoed in the pane as the user's click (design A9).
+ */
+function sendUiAction(surfaceId, action, label, context, userMessage) {
+  if (!ws || ws.readyState !== 1) { appendChatMsg('system', 'Not connected to the engine — the click was not sent.'); return false; }
+  var el = genuiSurfaces[surfaceId];
+  var ctx = el && el.__genui;
+  // The socket's bounds (commandSchema.ts): short ids, 2,000-char text, 8 KB objects.
+  var frame = { type: 'ui.action', surfaceId: genuiActionId(surfaceId), action: genuiActionId(action || 'submit') };
+  if (label) frame.label = genuiStr(label).slice(0, 2000);
+  if (context && typeof context === 'object' && JSON.stringify(context).length <= 8192) frame.context = context;
+  frame.state = ctx ? genuiInputState(ctx) : {};
+  if (JSON.stringify(frame.state).length > 8192) {
+    appendChatMsg('system', 'The values on this surface are over 8 KB, too long to send with a click — shorten them and click again.');
+    return false;
+  }
+  if (userMessage) frame.userMessage = genuiStr(userMessage).slice(0, 2000);
+  ws.send(JSON.stringify(frame));
+  appendChatMsg('action', userMessage ? genuiStr(userMessage) : '▶ ' + (genuiStr(label) || frame.action));
+  brainViz.setActive(true);
+  return true;
+}
+
+// ── end generative UI ────────────────────────────────────────
 
 // ── Brain pane ────────────────────────────────────────────────
 var brain = { entropies: [], toolEntropies: [], divergences: [], paused: false, turnCount: 0 };
@@ -4029,7 +5606,16 @@ function renderTranscript(t) {
     if (m.role === 'assistant') {
       if (text) { appendChatMsg('assistant', text + (m.aborted ? '\n(interrupted)' : '')); shown++; }
       blocks.forEach(function(b) {
-        if (b && b.type === 'tool_use') appendChatTool(b.name || 'tool', summarizeInput(b.name, b.input), failed[b.id] ? 'error' : 'success', null);
+        if (!b || b.type !== 'tool_use') return;
+        var rowId = appendChatTool(b.name || 'tool', summarizeInput(b.name, b.input), failed[b.id] ? 'error' : 'success', null);
+        // A stored RenderUI call: draw its spec as a final surface under the row. The
+        // engine validated it when it ran; unknown types draw a muted box.
+        if (b.name === 'RenderUI' && b.input && b.input.spec && typeof b.input.spec === 'object' && typeof upsertSurface === 'function') {
+          var tid = typeof b.id === 'string' && b.id ? b.id : 'transcript-' + rowId;
+          var sid = typeof b.input.surface === 'string' && GENUI_ID_RE.test(b.input.surface) ? b.input.surface : tid;
+          genuiToolRows[tid] = rowId;
+          upsertSurface({ type: 'ui.render', toolId: tid, surfaceId: sid, partial: false, spec: b.input.spec, errors: [] });
+        }
       });
     }
   });
@@ -4201,7 +5787,9 @@ function markSaveableReplies() {
   var replies = document.querySelectorAll('#chatMessages .chat-msg-assistant:not([data-reply])');
   for (var i = 0; i < replies.length; i++) {
     var div = replies[i];
-    if (!div.textContent.trim()) continue;
+    var rawReply = div.getAttribute('data-raw');
+    if (rawReply === null) rawReply = div.textContent;
+    if (!rawReply.trim()) continue;
     var idx = projectsState.replyCount++;
     div.setAttribute('data-reply', String(idx));
     var link = document.createElement('div');
@@ -4222,7 +5810,11 @@ function saveAsArtifact(msgIndex) {
   // The model only knows "the previous reply"; an older one is named by its opening words.
   if (msgIndex !== projectsState.replyCount - 1) {
     var div = document.querySelector('#chatMessages .chat-msg-assistant[data-reply="' + msgIndex + '"]');
-    if (div) text += ' The reply to save is the earlier one that begins: "' + div.textContent.trim().slice(0, 120) + '".';
+    if (div) {
+      var rawSaved = div.getAttribute('data-raw');
+      if (rawSaved === null) rawSaved = div.textContent;
+      text += ' The reply to save is the earlier one that begins: "' + rawSaved.trim().slice(0, 120) + '".';
+    }
   }
   // A project chat works in its own folder: no cwd on the frame.
   ws.send(JSON.stringify({ type: 'user.message', text: text }));

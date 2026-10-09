@@ -450,7 +450,17 @@ export function validateSpec(raw: unknown, opts: ValidateOptions = {}): Validati
     // Table rows need the columns to coerce objects.
     if (typeName === 'Table') {
       const columns = Array.isArray(coerced.columns) ? (coerced.columns as string[]) : []
-      const rows = toRows(props.rows, columns, ctx, `${at}.rows`)
+      let rows = toRows(props.rows, columns, ctx, `${at}.rows`)
+      // Every row has exactly one cell per column: short rows are padded,
+      // long ones cut and said so (a 2,000-cell row is not a table).
+      if (rows && columns.length) {
+        let cut = 0
+        rows = rows.map(r => {
+          if (r.length > columns.length) { cut++; return r.slice(0, columns.length) }
+          return r.length < columns.length ? [...r, ...Array(columns.length - r.length).fill('')] : r
+        })
+        if (cut) report(ctx, `${at}.rows: ${cut} row(s) had more cells than the ${columns.length} columns; the extra cells were dropped`)
+      }
       if (rows) coerced.rows = rows; else delete coerced.rows
       if (!rows && props.rows !== undefined) report(ctx, `${at}.rows: expected an array of rows`)
     }
@@ -513,13 +523,25 @@ export function validateSpec(raw: unknown, opts: ValidateOptions = {}): Validati
   }
   for (const id of Object.keys(normalised)) if (!reachable[id]) report(ctx, `${id}: not reachable from root "${rootId}" and was dropped`)
 
-  // Buttons: an action, or a Form ancestor that supplies one.
+  // Action names travel back over the socket, which accepts only short ids
+  // (commandSchema.ts): "Plan trip" would be refused at the click.
+  for (const el of Object.values(reachable)) {
+    const p = el.props
+    if (!p) continue
+    if ((el.type === 'Button' || el.type === 'Form') && typeof p.action === 'string' && p.action.trim() && !ACTION_ID.test(p.action)) p.action = actionFromLabel(p.action)
+    if (el.type === 'List' && Array.isArray(p.items)) {
+      for (const it of p.items as Record<string, unknown>[]) if (typeof it.action === 'string' && it.action.trim() && !ACTION_ID.test(it.action)) it.action = actionFromLabel(it.action)
+    }
+  }
+
+  // Buttons: an action, or a Form ancestor that supplies one; otherwise the
+  // label is the action (OpenUI: a Button with no action sends its label).
   for (const [id, el] of Object.entries(reachable)) {
     if (el.type !== 'Button') continue
     if (typeof el.props?.action === 'string' && el.props.action.trim()) continue
     let p = parentOf.get(id); let inForm = false
     while (p) { if (reachable[p]?.type === 'Form') { inForm = true; break } p = parentOf.get(p) }
-    if (!inForm) report(ctx, `${id} (Button): needs an action name, or a Form around it`)
+    if (!inForm) el.props = { ...(el.props ?? {}), action: actionFromLabel(el.props?.label) }
   }
   // Tabs: a child with no tab goes to the first tab; say so once per container.
   for (const [id, el] of Object.entries(reachable)) {
@@ -534,6 +556,14 @@ export function validateSpec(raw: unknown, opts: ValidateOptions = {}): Validati
 
   const count = Object.keys(reachable).length
   return { spec: { root: rootId, elements: reachable }, errors: ctx.errors, count }
+}
+
+const ACTION_ID = /^[A-Za-z0-9_-]{1,128}$/
+
+/** An action name the socket accepts (/^[A-Za-z0-9_-]{1,128}$/) made from a button label. */
+export function actionFromLabel(label: unknown): string {
+  const slug = String(label ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64)
+  return slug || 'click'
 }
 
 /** True when `name` is a container (takes children). Exported for the prompt and tests. */

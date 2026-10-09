@@ -15,6 +15,20 @@ export const UI_ACTION_SECTION_CAP = 4096
 
 export const UI_ACTION_PREFIX = '[UI action]'
 
+/**
+ * The action a FollowUps chip sends. The chip's text IS the user's next
+ * question, so the model receives it verbatim — no "[UI action]" envelope —
+ * and it rides the same queue as a Button click, because a `user.message`
+ * sent while the turn that drew the chips is still running is dropped by
+ * the busy guard (design review, parity lens).
+ */
+export const UI_FOLLOWUP_ACTION = 'followup'
+
+/** A chip click: the `followup` action carrying non-empty text. */
+export function isFollowUp(a: UiActionCommand): boolean {
+  return a.action === UI_FOLLOWUP_ACTION && typeof a.userMessage === 'string' && a.userMessage.trim() !== ''
+}
+
 function bounded(value: unknown): string {
   let s: string
   try { s = JSON.stringify(value) ?? 'null' } catch { s = String(value) }

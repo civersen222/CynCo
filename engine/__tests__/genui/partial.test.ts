@@ -5,7 +5,7 @@
  * grow monotonically into the final spec.
  */
 import { describe, expect, it } from 'vitest'
-import { parsePartialSpec, PARTIAL_FRAME_INTERVAL_MS } from '../../genui/partial.js'
+import { parsePartialSpec, trimOpenScalar, PARTIAL_FRAME_INTERVAL_MS } from '../../genui/partial.js'
 import { genuiExampleCall } from '../../genui/prompt.js'
 import { validateSpec } from '../../genui/spec.js'
 
@@ -52,6 +52,21 @@ describe('parsePartialSpec', () => {
     expect(parsePartialSpec('not json')).toBeNull()
     expect(parsePartialSpec('[1,2]')).toBeNull()
     expect(parsePartialSpec('{"spec":"x"}')).toBeNull()
+  })
+
+  it('a half-written number never reaches a frame; text does', () => {
+    expect(trimOpenScalar('{"max": 1')).toBe('{"max": ')
+    expect(trimOpenScalar('{"v": [12, 3')).toBe('{"v": [12, ')
+    expect(trimOpenScalar('{"v": -0.')).toBe('{"v": ')
+    expect(trimOpenScalar('{"ok": tr')).toBe('{"ok": ')
+    expect(trimOpenScalar('{"ok": true')).toBe('{"ok": true')
+    expect(trimOpenScalar('{"text": "a, 12')).toBe('{"text": "a, 12')
+    expect(trimOpenScalar('{"text": "hel')).toBe('{"text": "hel')
+    expect(trimOpenScalar('{"a": 1,')).toBe('{"a": 1,')
+    const slider = parsePartialSpec('{"spec":{"root":"s","elements":{"s":{"type":"Slider","props":{"name":"kg","label":"Kg","max": 1')
+    expect(slider?.spec.elements.s.props?.max).toBeUndefined()
+    const bars = parsePartialSpec('{"spec":{"root":"b","elements":{"b":{"type":"Sparkline","props":{"values":[12, 3')
+    expect(bars?.spec.elements.b.props?.values).toEqual([12])
   })
 
   it('throttle constant is sane', () => {

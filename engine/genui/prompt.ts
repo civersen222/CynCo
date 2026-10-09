@@ -70,11 +70,13 @@ Rules:
 2. Element ids are short names you choose (letters, digits, - and _). Only components marked [children] take a "children" list of ids; every other component is a leaf.
 3. Props hold literal values only — no expressions, templates or bindings. Numbers are numbers (2, not "2"); lists are JSON arrays; option lists may be plain strings.
 4. Put "surface" before "spec", and write each parent before its children with the root first, so the surface draws while you stream.
-5. A Button click sends its action name, its context and every input value on the surface back to you as the user's next message; a Button inside a Form needs no action of its own. FollowUps chips send their text as the user's next message.
-6. Inside Tabs, each child element carries "tab": "<tab value>" next to its "type" (not inside props).
-7. Keep it small: a few dozen elements at most, tables under ~50 rows, charts under ~30 points. For long content prefer Markdown.
-8. To change a surface you already drew, call RenderUI again with the same "surface" id — it is replaced in place and input values are kept by name.
-9. The tool result lists anything it could not draw. Fix those lines and call again; do not resend the same spec.
+5. Real values only: numbers, file paths, test counts, command output and URLs come from your tool results or the conversation — never invent them. With no real image URL, leave the Image out.
+6. A Button click sends its action name, its context and every input value on the surface back to you as the user's next message; a Button inside a Form needs no action of its own, and one with no action sends its label. Give the main Button variant "primary". Input names are unique on a surface.
+7. FollowUps go last: 2-4 short questions the user is likely to ask next; a chip click sends its text as the user's next message.
+8. Inside Tabs, each child element carries "tab": "<tab value>" next to its "type" (not inside props).
+9. Keep it small: a few dozen elements at most, tables under ~50 rows with one cell per column, charts under ~30 points with the unit in yLabel. For long text prefer Markdown; never add a Callout or Text that explains the UI itself.
+10. To change a surface you already drew, call RenderUI again with the same "surface" id — it is replaced in place and input values are kept by name.
+11. The tool result lists anything it could not draw. Fix those lines and call again; do not resend the same spec.
 
 Example — a plan with a table, a form and follow-ups:
 RenderUI(${JSON.stringify(EXAMPLE)})
