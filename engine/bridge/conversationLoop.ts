@@ -116,11 +116,12 @@ import { buildRetrievalBlock, citationsUsed, retrievalShare, RETRIEVAL_TAG } fro
 import { setProjectToolContext } from '../projects/tools.js'
 import { ingestChat } from '../projects/ingest.js'
 import { classifyRisk, describeRisk } from './guardianRules.js'
-import { validateSpec, isSurfaceId } from '../genui/spec.js'
+import { validateSpec, isSurfaceId, drawsContent } from '../genui/spec.js'
 import { parsePartialSpec, PARTIAL_FRAME_INTERVAL_MS } from '../genui/partial.js'
 import { genuiPromptSection } from '../genui/prompt.js'
 import { formatUiAction, uiActionEcho, isFollowUp } from '../genui/actions.js'
 import { uiRequestReason, UI_FORCE_MAX_CALLS } from '../genui/intent.js'
+import { filterTools } from '../engine/toolFilter.js'
 
 /**
  * Phase 6: build structured diff hunks from a write-tool input for the file.diff
@@ -949,6 +950,27 @@ export class ConversationLoop {
     return `${uiActionEcho(cmd)}\n${formatUiAction(cmd)}`
   }
 
+  /**
+   * Whether RenderUI survives the profile's tool scoping (`config.tools`),
+   * which callModel applies after the loop's own narrowing: forcing a call
+   * whose real tool list has no RenderUI would force some other tool.
+   */
+  private renderUiScoped(): boolean {
+    return filterTools([{ name: 'RenderUI' }], this.config.tools).length > 0
+  }
+
+  /**
+   * Generative-UI forcing for a new user turn (a typed message, or a click
+   * delivered at a turn's end): in a project chat that offers RenderUI, a
+   * request to see something drawn sets a fresh budget; anything else clears
+   * it, so a click never inherits the previous request's forcing (F171).
+   */
+  private setUiForce(text: string, renderUiOffered: boolean): void {
+    const reason = this.project && renderUiOffered && this.renderUiScoped() ? uiRequestReason(text) : null
+    this.uiForce = reason ? { remaining: UI_FORCE_MAX_CALLS, reason } : null
+    if (reason) console.log(`[genui] the message asks to see "${reason}" — tool_choice=required until a RenderUI surface draws (at most ${UI_FORCE_MAX_CALLS} calls)`)
+  }
+
   /** Emit one `ui.render` frame; partial frames always key on the tool id (design A1). */
   private emitUiRender(frame: { toolId: string; surfaceId: string; partial: boolean; spec: UiSpec | null; errors?: string[] }): void {
     if (frame.partial) this.pendingUiSurfaces.add(frame.toolId)
@@ -987,7 +1009,7 @@ export class ConversationLoop {
     }
     result.output += ` (surface: ${surfaceId})`
     this.emitUiRender({ toolId, surfaceId, partial: false, spec: v.spec, errors })
-    if (this.uiForce && v.spec && !this.truncatedToolIds.has(toolId)) {
+    if (this.uiForce && drawsContent(v.spec) && !this.truncatedToolIds.has(toolId)) {
       console.log('[genui] surface drawn — the rest of the turn uses tool_choice=auto')
       this.uiForce = null
     }
@@ -1939,15 +1961,13 @@ export class ConversationLoop {
     // the same condition that already rewrites the tool list (design A15).
     if (activeTools.some(t => t.name === 'RenderUI')) {
       promptParts.push('')
-      promptParts.push(genuiPromptSection())
+      promptParts.push(genuiPromptSection(this.project ? 'project' : 'session'))
     }
     // A project-chat message that asks to SEE options, designs, a comparison
     // or a table gets a surface: its model calls go out with tool_choice
     // 'required' until one draws. The prompt alone let Qwen answer such a
     // request in markdown (F171). Per message, never in the system prompt.
-    const uiReason = this.project && activeTools.some(t => t.name === 'RenderUI') ? uiRequestReason(text) : null
-    this.uiForce = uiReason ? { remaining: UI_FORCE_MAX_CALLS, reason: uiReason } : null
-    if (uiReason) console.log(`[genui] the message asks to see "${uiReason}" — tool_choice=required until a RenderUI surface draws (at most ${UI_FORCE_MAX_CALLS} calls)`)
+    this.setUiForce(text, activeTools.some(t => t.name === 'RenderUI'))
 
     // Tell the model which extended tools it can pull in on demand. Static
     // (same every turn) so it stays within the append-only prompt prefix; only
@@ -3343,14 +3363,20 @@ export class ConversationLoop {
       this.offeredToolNames = new Set(iterationTools.map((t: any) => t.name))
       // Generative-UI forcing (uiForce): this call must end in a tool call
       // while the user's request to see something drawn is unmet. Only when
-      // RenderUI is offered on this call, never in a best-of-N candidate.
-      // The tool list is unchanged, so the cached prompt prefix holds.
-      const forceUi = this.uiForce !== null && !loopOpts?.candidate && this.offeredToolNames.has('RenderUI')
+      // RenderUI is offered on this call and survives the profile's scoping,
+      // never in a best-of-N candidate. The tool list is unchanged, so the
+      // cached prompt prefix holds. A spent budget is released here, at the
+      // next call, so the last forced call's tools still see uiForce (its
+      // AskUser is redirected too).
+      if (this.uiForce && this.uiForce.remaining <= 0) {
+        console.log(`[genui] no surface after ${UI_FORCE_MAX_CALLS} forced calls — tool_choice back to auto`)
+        this.uiForce = null
+      }
+      const forceUi = this.uiForce !== null && !loopOpts?.candidate && this.offeredToolNames.has('RenderUI') && this.renderUiScoped()
       if (forceUi) {
         const f = this.uiForce!
         f.remaining--
         console.log(`[genui] tool_choice=required for this call ("${f.reason}"; ${f.remaining} forced call(s) left)`)
-        if (f.remaining <= 0) this.uiForce = null
       }
       const gen = localCallModel({
         messages: this.messages,
@@ -3720,7 +3746,9 @@ export class ConversationLoop {
           this.partialAssistantText = ''
           if (this.project?.chatFile) {
             appendTranscript(this.project.dir, this.project.chatFile, { role: 'assistant', content: assistantContent as TranscriptMessage['content'] })
-            const text = (assistantContent as any[]).filter((b: any) => b.type === 'text').map((b: any) => b.text).join('\n')
+            // A surface carries the details now (F171), so its [n] count too.
+            const text = (assistantContent as any[]).map((b: any) =>
+              b.type === 'text' ? b.text : b.type === 'tool_use' && b.name === 'RenderUI' ? JSON.stringify(b.input ?? {}) : '').join('\n')
             const used = citationsUsed(text, this.project.citations)
             if (used.length) this.emit({ type: 'project.citations', chat: this.project.chatFile, turn: this.messages.length, citations: used })
           }
@@ -3971,6 +3999,9 @@ export class ConversationLoop {
           console.log(`[genui] ui.action "${clicked.action}" delivered at the turn's end`)
           this.addMessage({ role: 'user', content: [{ type: 'text', text: clickText }] })
           if (this.project?.chatFile) appendTranscript(this.project.dir, this.project.chatFile, { role: 'user', content: [{ type: 'text', text: clickText }] })
+          // A new user turn: a FollowUps chip asking to see more options is
+          // forced like a typed one, a Button click clears forcing.
+          this.setUiForce(clickText, toolDefs.some(t => t.name === 'RenderUI'))
           continue
         }
 
@@ -4773,7 +4804,7 @@ export class ConversationLoop {
     // would put the options in an ask card instead of a surface — the likely
     // pick when a call is forced. Not executed and not counted against the
     // tool: the result tells the model what to draw.
-    if (this.uiForce && toolName === 'AskUser' && this.offeredToolNames?.has('RenderUI')) {
+    if (this.uiForce && toolName === 'AskUser' && this.offeredToolNames?.has('RenderUI') && this.renderUiScoped()) {
       const msg = 'Not asked: the user asked to see this drawn. Call RenderUI instead — a Card per option with a Button to choose it ' +
         '(a Badge on the one you recommend), and your question as a Text line inside the surface.'
       console.log('[genui] AskUser redirected to RenderUI while the request to see options is unmet')

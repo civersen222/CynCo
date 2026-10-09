@@ -24,6 +24,8 @@ import { fileURLToPath } from 'url'
 import { GENUI_CATALOG } from '../../genui/catalog.js'
 import { genuiExampleCall } from '../../genui/prompt.js'
 import { uiRequestReason } from '../../genui/intent.js'
+import { isFollowUp } from '../../genui/actions.js'
+import { validateCommand } from '../../bridge/commandSchema.js'
 
 const html = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../../dashboard/index.html'), 'utf-8')
 
@@ -880,40 +882,51 @@ describe('dashboard genui: upsertSurface keeps one element per surface', () => {
 })
 
 // F171: a prose reply in a project chat can be redrawn with one click. The
-// page's message must be one the engine forces (uiRequestReason), for the
-// latest reply and for an older one quoted by its opening words.
-describe('dashboard genui: "Show as UI" under a project reply', () => {
+// page's message must be one the engine forces (uiRequestReason); it goes as
+// a FollowUps-style click so a turn that is running queues it instead of the
+// busy guard dropping it, and it always names its reply by the opening words
+// (final review: "the previous reply" is wrong after a surface-only turn).
+describe('dashboard genui: "Show as UI" and "Save as artifact" under a project reply', () => {
+  const OPENING = 'Here are four "designs": just tell me plainly, no cards'
   function page(state: { active: unknown; replyCount: number }, connected = true) {
     const sent: string[] = []
     const shown: string[] = []
-    const older = { getAttribute: (k: string) => (k === 'data-raw' ? 'Here are four designs: just tell me plainly, no cards' : null), textContent: 'x' }
-    const show = new Function('projectsState', 'ws', 'appendChatMsg', 'document', 'brainViz',
-      fnSource('showReplyAsUi') + '\nreturn showReplyAsUi;')(
+    let cleared = 0
+    const reply = { getAttribute: (k: string) => (k === 'data-raw' ? OPENING : null), textContent: 'x' }
+    const fns = new Function('projectsState', 'ws', 'appendChatMsg', 'document', 'brainViz', 'clearChatCitations', 'window',
+      fnSource('replyReference') + fnSource('showReplyAsUi') + fnSource('saveAsArtifact') + '\nreturn { show: showReplyAsUi, save: saveAsArtifact };')(
       state,
       { readyState: connected ? 1 : 3, send: (x: string) => sent.push(x) },
       (role: string, text: string) => shown.push(role + ': ' + text),
-      { querySelector: (sel: string) => (sel.includes('data-reply="0"') ? older : null) },
+      { querySelector: (sel: string) => (sel.includes('data-reply="0"') ? reply : null) },
       { setActive: () => {} },
+      () => { cleared++ },
+      { prompt: () => 'Alien "designs"' },
     )
-    return { show, sent, shown }
+    return { ...fns, sent, shown, cleared: () => cleared }
   }
 
-  it('asks for the latest reply as UI in words the engine forces', () => {
-    const { show, sent, shown } = page({ active: { slug: 'yard', chat: 'c.jsonl' }, replyCount: 2 })
-    show(1)
-    expect(sent).toHaveLength(1)
-    const frame = JSON.parse(sent[0])
-    expect(frame).toEqual({ type: 'user.message', text: 'Show your previous reply as UI with RenderUI: the same content, no new facts.' })
-    expect(uiRequestReason(frame.text)).toBe('as ui')
-    expect(shown).toEqual(['user: ' + frame.text])
+  it('sends a queued followup click whose text the engine forces, quoting the reply without its quotes', () => {
+    const p = page({ active: { slug: 'yard', chat: 'c.jsonl' }, replyCount: 1 })
+    p.show(0)
+    expect(p.sent).toHaveLength(1)
+    const frame = JSON.parse(p.sent[0])
+    const text = "Show your previous reply as UI with RenderUI: the same content, no new facts. The reply to show is the one that begins: \"Here are four 'designs': just tell me plainly, no cards\"."
+    expect(frame).toEqual({ type: 'ui.action', surfaceId: 'show-as-ui', action: 'followup', label: 'Show as UI', userMessage: text })
+    expect(validateCommand(frame).ok).toBe(true)
+    expect(isFollowUp(frame)).toBe(true)
+    expect(uiRequestReason(frame.userMessage)).toBe('as ui')
+    expect(p.shown).toEqual(['user: ' + text])
+    expect(p.cleared()).toBe(1)
   })
 
-  it('names an older reply by its opening words, and the quote cannot veto the forcing', () => {
-    const { show, sent } = page({ active: { slug: 'yard', chat: 'c.jsonl' }, replyCount: 2 })
-    show(0)
-    const text = JSON.parse(sent[0]).text as string
-    expect(text).toContain('The reply to show is the earlier one that begins: "Here are four designs: just tell me plainly, no cards".')
-    expect(uiRequestReason(text)).toBe('as ui')
+  it('Save as artifact names the reply the same way and is never forced', () => {
+    const p = page({ active: { slug: 'yard', chat: 'c.jsonl' }, replyCount: 1 })
+    p.save(0)
+    const frame = JSON.parse(p.sent[0])
+    expect(frame.type).toBe('user.message')
+    expect(frame.text).toBe("Save the previous reply as an artifact named \"Alien 'designs'\" using SaveArtifact. The reply to save is the one that begins: \"Here are four 'designs': just tell me plainly, no cards\".")
+    expect(uiRequestReason(frame.text)).toBeNull()
   })
 
   it('sends nothing outside a project chat or while disconnected', () => {
@@ -927,9 +940,11 @@ describe('dashboard genui: "Show as UI" under a project reply', () => {
     expect(off.shown[0]).toMatch(/Not connected/)
   })
 
-  it('every project reply gets the link next to Save as artifact', () => {
+  it('every project reply gets the link next to Save as artifact; a typed turn and a click clear the old Sources line', () => {
     const src = fnSource('markSaveableReplies')
     expect(src).toContain('onclick="saveAsArtifact(')
     expect(src).toContain('onclick="showReplyAsUi(')
+    expect(fnSource('sendChatMessage')).toContain('clearChatCitations()')
+    expect(fnSource('sendUiAction')).toContain('clearChatCitations()')
   })
 })

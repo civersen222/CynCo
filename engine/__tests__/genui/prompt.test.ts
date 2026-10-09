@@ -10,10 +10,13 @@ import { GENUI_COMPONENT_NAMES, GENUI_CATALOG } from '../../genui/catalog.js'
 import { validateSpec } from '../../genui/spec.js'
 
 describe('genui prompt section', () => {
-  const text = genuiPromptSection()
+  const text = genuiPromptSection('project')
+  const session = genuiPromptSection('session')
 
-  it('is byte-stable and bounded', () => {
-    expect(genuiPromptSection()).toBe(text)
+  it('is byte-stable and bounded in both modes', () => {
+    expect(genuiPromptSection('project')).toBe(text)
+    expect(genuiPromptSection('session')).toBe(session)
+    expect(session.length).toBeLessThan(12_000)
     expect(text.length).toBeLessThan(12_000)
     expect(text.startsWith('<RENDER_UI>')).toBe(true)
     expect(text.trimEnd().endsWith('</RENDER_UI>')).toBe(true)
@@ -40,7 +43,9 @@ describe('genui prompt section', () => {
     // ideas the model proposes are its to draw (F171: "never invent" read as
     // a reason to keep designs out of the surface).
     expect(text).toMatch(/Facts must be real: numbers, prices, file paths, test counts, command output and URLs come from your tool results or the conversation — never invent them/)
-    expect(text).toMatch(/Ideas you propose \(designs, names, options, drafts\) are yours to write, and drawing them is the point/)
+    expect(text).toMatch(/Ideas you propose \(designs, names, options\) are yours to write, and drawing them is the point/)
+    // a draft the user asked to read stays prose (final review: rule 5 used to list drafts)
+    expect(text).toMatch(/Plain prose is for a short direct answer, a single open question, or a draft the user asked to read/)
     expect(text).toMatch(/With no real image URL, leave the Image out/)
     expect(text).toMatch(/FollowUps go last: 2-4 short questions the user is likely to ask you next/)
     expect(text).toMatch(/A question you are asking the user goes in a Text line .*never in FollowUps/)
@@ -65,6 +70,16 @@ describe('genui prompt section', () => {
     expect(text).not.toMatch(/prose first/i)
     expect(text).toMatch(/options or designs → a Grid of Cards, one per option/)
     expect(text).toMatch(/An idea with no picture still gets a card/)
+  })
+
+  // Final review: a coding session may be the TUI, which draws no surface, so
+  // only a project chat makes the surface the answer; the rest is shared.
+  it('keeps a coding session\'s answer in prose, the surface alongside it', () => {
+    const opening = session.split('\n\n')[0]
+    expect(opening).toMatch(/write your answer in prose and add one surface alongside it, never instead of the text, and never instead of editing the files/)
+    expect(session).not.toMatch(/the surface IS the answer/)
+    expect(session).not.toMatch(/at most one sentence of prose/)
+    expect(session.slice(opening.length)).toBe(text.slice(text.split('\n\n')[0].length))
   })
 
   it('never shows the call as text the model could copy into its reply', () => {

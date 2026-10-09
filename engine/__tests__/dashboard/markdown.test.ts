@@ -77,8 +77,9 @@ describe('dashboard markdown: the page defines the renderer', () => {
     expect(js).toContain('mdFlushStream();')
     // the save-as-artifact snippet and the empty check read the raw text, not the rendered preview
     expect(fnSource('markSaveableReplies')).toContain("div.getAttribute('data-raw')")
-    expect(fnSource('saveAsArtifact')).toContain("div.getAttribute('data-raw')")
-    expect(fnSource('saveAsArtifact')).not.toContain('div.textContent.trim().slice(0, 120)')
+    expect(fnSource('saveAsArtifact')).toContain('replyReference(msgIndex')
+    expect(fnSource('replyReference')).toContain("div.getAttribute('data-raw')")
+    expect(fnSource('replyReference')).not.toContain('div.textContent.trim().slice(0, 120)')
   })
 
   it('replaces pre-wrap on .chat-msg-assistant with block styles for markdown and the genui Markdown block', () => {

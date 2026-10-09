@@ -58,7 +58,7 @@ export function renderUiResultText(count: number, errors: string[]): string {
 
 export const renderUiTool: ToolImpl = {
   name: 'RenderUI',
-  description: 'Show your answer as UI in this chat: options and designs as cards to choose from, comparisons as tables, steps, key facts, charts, forms and buttons (spec: RENDER_UI in your instructions). Call it whenever you offer options, designs or a choice, with a sentence of prose at most. Clicks come back to you as the user\'s next message.',
+  description: 'Draw structured UI in the user\'s dashboard — options as cards to choose from, comparisons as tables, steps, key facts, charts, forms and buttons — from a small JSON spec (see RENDER_UI in your instructions). Clicks come back to you as the user\'s next message.',
   inputSchema: RENDER_UI_INPUT_SCHEMA,
   tier: 'auto',
   core: false,

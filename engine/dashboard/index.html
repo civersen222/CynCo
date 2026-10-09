@@ -3373,6 +3373,9 @@ function sendChatMessage() {
   var frame = { type: 'user.message', text: text };
   if (!projectsState.active) frame.cwd = cwd;
   if (ws && ws.readyState === 1) ws.send(JSON.stringify(frame));
+  // A new turn: the last answer's Sources line is no longer this answer's (a
+  // surface-only turn opens no prose bubble to clear it).
+  clearChatCitations();
   appendChatMsg('user', text);
   brainViz.setActive(true);
 }
@@ -4968,6 +4971,7 @@ function sendUiAction(surfaceId, action, label, context, userMessage) {
   }
   if (userMessage) frame.userMessage = genuiStr(userMessage).slice(0, 2000);
   ws.send(JSON.stringify(frame));
+  if (typeof clearChatCitations === 'function') clearChatCitations();
   appendChatMsg('action', userMessage ? genuiStr(userMessage) : '▶ ' + (genuiStr(label) || frame.action));
   brainViz.setActive(true);
   return true;
@@ -5828,18 +5832,10 @@ function saveAsArtifact(msgIndex) {
   if (name === null) return;
   name = name.trim();
   if (!name) { appendChatMsg('system', 'An artifact needs a name — nothing was saved.'); return; }
-  var text = 'Save the previous reply as an artifact named "' + name + '" using SaveArtifact.';
-  // The model only knows "the previous reply"; an older one is named by its opening words.
-  if (msgIndex !== projectsState.replyCount - 1) {
-    var div = document.querySelector('#chatMessages .chat-msg-assistant[data-reply="' + msgIndex + '"]');
-    if (div) {
-      var rawSaved = div.getAttribute('data-raw');
-      if (rawSaved === null) rawSaved = div.textContent;
-      text += ' The reply to save is the earlier one that begins: "' + rawSaved.trim().slice(0, 120) + '".';
-    }
-  }
+  var text = 'Save the previous reply as an artifact named "' + name.replace(/["“”]/g, "'") + '" using SaveArtifact.' + replyReference(msgIndex, 'save');
   // A project chat works in its own folder: no cwd on the frame.
   ws.send(JSON.stringify({ type: 'user.message', text: text }));
+  clearChatCitations();
   appendChatMsg('user', text);
   appendChatMsg('system', 'Waiting for the artifact "' + name + '" to be saved…');
   brainViz.setActive(true);
@@ -5854,19 +5850,29 @@ function saveAsArtifact(msgIndex) {
 function showReplyAsUi(msgIndex) {
   if (!projectsState.active) { appendChatMsg('system', 'Show as UI needs an open project chat.'); return; }
   if (!ws || ws.readyState !== 1) { appendChatMsg('system', 'Not connected to the engine — nothing was sent.'); return; }
-  var text = 'Show your previous reply as UI with RenderUI: the same content, no new facts.';
-  // The model only knows "the previous reply"; an older one is named by its opening words.
-  if (msgIndex !== projectsState.replyCount - 1) {
-    var div = document.querySelector('#chatMessages .chat-msg-assistant[data-reply="' + msgIndex + '"]');
-    if (div) {
-      var raw = div.getAttribute('data-raw');
-      if (raw === null) raw = div.textContent;
-      text += ' The reply to show is the earlier one that begins: "' + raw.trim().slice(0, 120) + '".';
-    }
-  }
-  ws.send(JSON.stringify({ type: 'user.message', text: text }));
+  var text = 'Show your previous reply as UI with RenderUI: the same content, no new facts.' + replyReference(msgIndex, 'show');
+  // Sent the way a FollowUps chip is: a click that lands while a turn runs is
+  // queued by the engine (handleUiAction) and delivered when it ends, where a
+  // user.message would meet the busy guard and be dropped.
+  ws.send(JSON.stringify({ type: 'ui.action', surfaceId: 'show-as-ui', action: 'followup', label: 'Show as UI', userMessage: text }));
+  clearChatCitations();
   appendChatMsg('user', text);
   brainViz.setActive(true);
+}
+
+/**
+ * How a "Save as artifact" / "Show as UI" message names its reply: always by
+ * its opening words — "the previous reply" alone is wrong once a turn drew
+ * only a surface (no prose bubble), or while another turn runs. Quotes in the
+ * excerpt become apostrophes so they cannot end the quote early, and the
+ * engine's classifier cuts the excerpt off at this lead-in (intent.ts).
+ */
+function replyReference(msgIndex, verb) {
+  var div = document.querySelector('#chatMessages .chat-msg-assistant[data-reply="' + msgIndex + '"]');
+  if (!div) return '';
+  var raw = div.getAttribute('data-raw');
+  if (raw === null) raw = div.textContent;
+  return ' The reply to ' + verb + ' is the one that begins: "' + raw.trim().slice(0, 120).replace(/["“”]/g, "'") + '".';
 }
 
 // ── Knowledge ─────────────────────────────────────────────

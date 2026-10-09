@@ -77,13 +77,26 @@ const OPTIONS_EXAMPLE = {
   },
 }
 
-function build(): string {
+/**
+ * When the surface is the answer. A project chat lives in the dashboard, so a
+ * surface IS the answer for options, designs and choices (F171: "write your
+ * prose first" ended the turn on prose). A coding session may be a terminal,
+ * which draws no surface, so there the answer stays in prose.
+ */
+const OPENING = {
+  project: `You can draw UI right in this chat with the RenderUI tool: cards, tables, plans with steps, charts, key facts, forms and buttons. When your answer offers options, designs, ideas, a comparison or a choice — or lays out figures or steps the user will act on — the surface IS the answer: call RenderUI first, with at most one sentence of prose before it, and put the details, your recommendation and your question inside the surface. Never also write the same options out as prose. Plain prose is for a short direct answer, a single open question, or a draft the user asked to read. One surface per answer.`,
+  session: `You can draw UI in the user's dashboard with the RenderUI tool: cards, tables, plans with steps, charts, key facts, forms and buttons. Use it when structure helps — options to choose from, a comparison, a plan, figures. In a coding session the user may be in a terminal, which draws no surface: write your answer in prose and add one surface alongside it, never instead of the text, and never instead of editing the files.`,
+}
+
+export type GenuiPromptMode = keyof typeof OPENING
+
+function build(mode: GenuiPromptMode): string {
   const groups = GENUI_GROUPS.map(g => {
     const names = Object.keys(GENUI_CATALOG).filter(n => GENUI_CATALOG[n].group === g)
     return `### ${GROUP_TITLES[g] ?? g}\n${names.map(signature).join('\n')}`
   }).join('\n')
   return `<RENDER_UI>
-You can draw UI right in this chat with the RenderUI tool: cards, tables, plans with steps, charts, key facts, forms and buttons. When your answer offers options, designs, ideas, a comparison or a choice — or lays out figures or steps the user will act on — the surface IS the answer: call RenderUI first, with at most one sentence of prose before it, and put the details, your recommendation and your question inside the surface. Never also write the same options out as prose. Plain prose is for a short direct answer, a single open question, or a draft the user asked to read. One surface per answer; in code, a surface never replaces editing the files.
+${OPENING[mode]}
 
 Shapes: options or designs → a Grid of Cards, one per option (its name as title, a one-line pitch as description, KeyValue or Tags for its traits, a Button to choose it, a Badge "Recommended" on the one you recommend); a comparison → a Table; steps → Steps; figures → KeyValue, Metric or a chart; a pick from fixed answers → Buttons, or a Radio in a Form. An idea with no picture still gets a card: describe its look in the card's text.
 
@@ -94,7 +107,7 @@ Rules:
 2. Element ids are short names you choose (letters, digits, - and _). Only components marked [children] take a "children" list of ids; every other component is a leaf.
 3. Props hold literal values only — no expressions, templates or bindings. Numbers are numbers (2, not "2"); lists are JSON arrays; option lists may be plain strings.
 4. Put "surface" before "spec", and write each parent before its children with the root first, so the surface draws while you stream.
-5. Facts must be real: numbers, prices, file paths, test counts, command output and URLs come from your tool results or the conversation — never invent them. Ideas you propose (designs, names, options, drafts) are yours to write, and drawing them is the point. With no real image URL, leave the Image out.
+5. Facts must be real: numbers, prices, file paths, test counts, command output and URLs come from your tool results or the conversation — never invent them. Ideas you propose (designs, names, options) are yours to write, and drawing them is the point. With no real image URL, leave the Image out.
 6. A Button click sends its action name, its context and every input value on the surface back to you as the user's next message; a Button inside a Form needs no action of its own, and one with no action sends its label. Give the main Button variant "primary". Input names are unique on a surface.
 7. FollowUps go last: 2-4 short questions the user is likely to ask you next; a chip click sends its text as the user's next message. A question you are asking the user goes in a Text line (or as Buttons when it has fixed answers), never in FollowUps.
 8. Inside Tabs, each child element carries "tab": "<tab value>" next to its "type" (not inside props).
@@ -113,11 +126,14 @@ ${groups}
 </RENDER_UI>`
 }
 
-const SECTION = build()
+const SECTIONS: Record<GenuiPromptMode, string> = { project: build('project'), session: build('session') }
 
-/** The RENDER_UI prompt section; the same string on every call. */
-export function genuiPromptSection(): string {
-  return SECTION
+/**
+ * The RENDER_UI prompt section for a project chat or a coding session; the
+ * same string on every call in a mode, so the prefix cache holds.
+ */
+export function genuiPromptSection(mode: GenuiPromptMode): string {
+  return SECTIONS[mode]
 }
 
 /** The options example from the prompt, for tests. */

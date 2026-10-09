@@ -430,7 +430,7 @@ export function validateSpec(raw: unknown, opts: ValidateOptions = {}): Validati
       if (ctx.partial) continue
       report(ctx, `${id}: unknown component "${String(el.type)}" — it was replaced by an error note; use a name from the catalog`)
       typeName = 'Callout'; def = GENUI_CATALOG.Callout
-      normalised[id] = { type: 'Callout', props: { type: 'error', title: 'Unknown component', message: `"${String(el.type)}" is not in the catalog` } }
+      normalised[id] = { type: 'Callout', props: { type: 'error', title: UNKNOWN_COMPONENT_TITLE, message: `"${String(el.type)}" is not in the catalog` } }
       kept++
       continue
     }
@@ -576,4 +576,27 @@ export function actionFromLabel(label: unknown): string {
 /** True when `name` is a container (takes children). Exported for the prompt and tests. */
 export function isContainer(name: string): boolean {
   return CONTAINER_NAMES.has(name)
+}
+
+/** The title of the error note an unknown component is replaced by. */
+const UNKNOWN_COMPONENT_TITLE = 'Unknown component'
+const SPACING = new Set(['Separator', 'Spacer'])
+
+/**
+ * Whether a validated spec draws anything for the user to read or use:
+ * an element other than spacing, an unknown-component note, or a container
+ * with no title or description of its own. A Grid of two "Unknown component"
+ * notes is a valid spec and draws nothing — it must not count as the answer
+ * a request to see options was forced for (F171 final review).
+ */
+export function drawsContent(spec: UiSpec | null): boolean {
+  if (!spec) return false
+  for (const el of Object.values(spec.elements)) {
+    const p = (el.props ?? {}) as Record<string, unknown>
+    if (SPACING.has(el.type)) continue
+    if (el.type === 'Callout' && p.type === 'error' && p.title === UNKNOWN_COMPONENT_TITLE) continue
+    if (isContainer(el.type) && !(typeof p.title === 'string' && p.title.trim()) && !(typeof p.description === 'string' && p.description.trim())) continue
+    return true
+  }
+  return false
 }
