@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, afterEach } from 'vitest'
 import { decide, runWave, waveContext, budgetSpent, defaultIo, claimedSurvivors, dispatchEnv, waveEnvBase, dirtyOutsideCampaign, inFlightRefusal, adoptInFlight, takeLock, releaseLock, applyProposalDecision, recordReseal, main, ensureCampaignCheckout, campaignCheckoutRefusal, waveDispatch, suiteGateCommand, suiteGateRefusal, STALE_WORKTREE_HINT, salvageFrom, MARKER_CHECK_TIMEOUT_MS } from '../cynco-campaign.mjs'
 import { summarize as summarizeGateLines } from '../cynco-gate-lines.mjs'
 import { adopt } from '../cynco-campaign-adopt.mjs'
@@ -91,6 +91,18 @@ const inertTriples = {
   // The real reader walks ~160 MB of shards; a unit test hands over none.
   readLedgerRows: () => [],
 }
+
+// The default ledger reader walks the real shards (benchmark/cynco-ledger,
+// ~166 MB). A unit test that fell through to it took 1.5–4.5 s alone and hit
+// the 5 s default timeout under the full parallel suite. Every io here hands
+// its own rows over (inertTriples, faultIo); this tripwire turns a fall-through
+// into a named failure instead of a slow, load-dependent one.
+const ledgerWalks = []
+defaultIo.readLedgerRows = () => { ledgerWalks.push(expect.getState().currentTestName); return [] }
+afterEach(() => {
+  const walked = ledgerWalks.splice(0)
+  expect(walked, 'fell through to the real ledger walk — spread faultIo() or inertTriples into this io').toEqual([])
+})
 
 // Final review M5 (T7-M3): the fault path computes a board too, and without
 // these seams it falls through to defaultIo — the ~160 MB shard walk and the
@@ -341,6 +353,7 @@ describe('runWave', () => {
       readRow: () => null,
       salvageOf: () => null,
       notify: async () => true,
+      ...faultIo(),
     })
     expect(state.state.waveCount).toBe(1)
     expect(state.state.lastGrade).toBeUndefined()
@@ -406,6 +419,7 @@ describe('runWave', () => {
       grade: async () => { throw new Error('gate exploded') },
       salvageOf: () => null,
       notify: async (t) => { seen.notified = t; return true },
+      ...faultIo(),
     })
     expect(rec.decision.kind).toBe('fault')
     expect(rec.decision.why).toMatch(/post-run step failed: gate exploded/)
@@ -428,6 +442,7 @@ describe('runWave', () => {
       readRow: () => null,
       salvageOf: () => null,
       notify: async () => { throw new Error('ntfy down') },
+      ...faultIo(),
     })
     expect(rec.decision.kind).toBe('fault')
     expect(rec.notified).toBe(false)
@@ -832,7 +847,7 @@ describe('inFlightRefusal / adoptInFlight', () => {
 
   it('records a fault when the driver is gone and wrote no row', async () => {
     const state = inFlight(freshState())
-    const r = await adoptInFlight(spec, state, { missionIdFrom: () => { throw new Error('ENOENT') }, pidAlive: () => false, notify: async () => true })
+    const r = await adoptInFlight(spec, state, { missionIdFrom: () => { throw new Error('ENOENT') }, pidAlive: () => false, notify: async () => true, ...faultIo() })
     expect(r.kind).toBe('fault')
     expect(r.record.decision.why).toMatch(/gone and wrote no ledger row/)
     // the operator's --adopt-inflight is on the record even when it found nothing to grade
