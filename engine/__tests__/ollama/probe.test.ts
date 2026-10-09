@@ -22,6 +22,7 @@ describe('parseModelFamily', () => {
     expect(parseModelFamily('C:\\models\\Qwen3.8-27B-Q4_K_M.gguf')).toBe('qwen3.8-27b-q4_k_m')
     expect(parseModelFamily('/opt/models/Qwen3.8-27B-Q4_K_M.GGUF')).toBe('qwen3.8-27b-q4_k_m')
     expect(parseModelFamily('hf.co/unsloth/Qwen3-8B-GGUF:Q4_K_M')).toBe('qwen3-8b-gguf')
+    expect(parseModelFamily('/models/Qwen3-32B/')).toBe('qwen3-32b')
   })
 })
 
@@ -87,6 +88,12 @@ describe('resolveCapabilities', () => {
     for (const name of ['Qwen3.8-27B', 'QWEN3.8-27B', 'Qwen3.8-27B-Q4_K_M.gguf', 'C:\\models\\Qwen3.8-27B-Q4_K_M.gguf']) {
       expect(resolveCapabilities(name).toolUse, name).toBe('native')
       expect(resolveCapabilities(name).contextLength, name).toBe(KNOWN_MODEL_CAPABILITIES.get('qwen3.8')!.contextLength)
+    }
+    // a folder named after the model stands in for a generic file or subfolder
+    // name (llama-cpp resolves 'qwen3.6-27b/q6k' under its models dir), and a
+    // trailing separator is not an empty family (review of F172)
+    for (const name of ['qwen3.6-27b/q6k', '/models/Qwen3-32B/', 'C:\\models\\Qwen3.8-27B\\', 'qwen3.8-27b-nvfp4/model.gguf']) {
+      expect(resolveCapabilities(name).toolUse, name).toBe('native')
     }
     expect(resolveCapabilities('Llama3.1:8B').toolUse).toBe('simulated')
     expect(resolveCapabilities('DeepSeek-R1:14b').toolUse).toBe('none')

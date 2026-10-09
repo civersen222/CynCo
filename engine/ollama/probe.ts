@@ -86,7 +86,7 @@ export function parseModelFamily(modelName: string): string {
   // A path, or an hf.co/<org>/<repo> reference, names the model by its last
   // segment; then strip the tag/quantization after the first colon and a
   // GGUF file extension.
-  const last = modelName.split(/[\\/]/).pop() ?? modelName
+  const last = modelName.split(/[\\/]/).filter(Boolean).pop() ?? modelName
   return last.split(':')[0].replace(/\.gguf$/i, '').toLowerCase()
 }
 
@@ -120,8 +120,14 @@ export function resolveCapabilities(
   modelName: string,
   probeResult?: { toolUse: ToolUseCapability; thinking: ThinkingCapability; contextLength?: number },
 ): ModelCapabilities {
-  const family = parseModelFamily(modelName)
-  const known = lookupKnownCapabilities(family)
+  // The last segment names the model in most spellings; when it does not —
+  // a nested llama-cpp name ('qwen3.6-27b/q6k'), a generic file in a folder
+  // named after the model ('qwen3.8-27b-nvfp4/model.gguf') — an earlier
+  // segment the table knows stands in. An unknown name stays unknown.
+  const segments = modelName.split(/[\\/]/).filter(Boolean)
+  let known: KnownEntry | null = null
+  for (let i = segments.length - 1; i >= 0 && !known; i--) known = lookupKnownCapabilities(parseModelFamily(segments[i]))
+  if (!known && segments.length === 0) known = lookupKnownCapabilities(parseModelFamily(modelName))
 
   if (known) {
     return {
