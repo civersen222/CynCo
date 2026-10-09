@@ -20,7 +20,7 @@ Defines every tool the model can call in an agent turn — file I/O, Bash, Git, 
 | `resultCap.ts` | Truncates long tool output to fit the model's context budget. |
 | `sealedPaths.ts` | Four-layer defense keeping held-out gate scripts unreachable (reference/enumeration/location/content). |
 | `shellInfo.ts` | Detects the real shell (bash/pwsh/PowerShell 5.1) and translates POSIX-isms into its dialect. |
-| `toolHints.ts` | Inline nudges appended to output: prefer Read/Edit over shell string-surgery; CodeIndex adoption hints. |
+| `toolHints.ts` | Inline nudges appended to output: prefer Read/Edit over shell string-surgery; CodeIndex adoption hints (off in a project chat, which has no CodeIndex: `ToolExecutor.setCodeIndexHints`, `executor.ts:151`). |
 | `toolRouter.ts` | Two-stage tool-category routing to shrink the schema sent to small-context local models. |
 | `toolScorer.ts` | `ToolScorer` — per-tool success-rate tracking with probation-based demotion/reinstatement. |
 | `types.ts` | `ToolImpl`/`ToolResult` — the contract every tool and the executor share. |

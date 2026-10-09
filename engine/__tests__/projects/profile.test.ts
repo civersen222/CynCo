@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test'
-import { assembleProjectPrompt, PROJECT_TOOL_NAMES } from '../../projects/profile.js'
+import { assembleProjectPrompt, PROJECT_TOOL_NAMES, projectTools } from '../../projects/profile.js'
 import { ALL_TOOLS } from '../../tools/registry.js'
 import { VSM_GOVERNANCE, MEMORY, TOOL_USE, WORKFLOW, VERSION_CONTROL, CODE_QUALITY } from '../../engine/systemPromptText.js'
 
@@ -30,7 +30,10 @@ describe('assembleProjectPrompt', () => {
   // CodeIndex (the governance variety row), neither of which a project chat
   // offers; the F171 chat's reasoning opened on memory after a correction.
   it('names no tool the project chat does not offer', () => {
-    const text = assembleProjectPrompt({ ...input, toolNames: '' }).join('\n')
+    // the <TOOLS> block exactly as the loop builds it (review: an empty
+    // toolNames hid Grep's "call CodeIndex first")
+    const toolNames = projectTools(ALL_TOOLS).map(t => `- ${t.name}: ${t.description}`).join('\n')
+    const text = assembleProjectPrompt({ ...input, toolNames }).join('\n')
     const offered = new Set(PROJECT_TOOL_NAMES)
     const named = ALL_TOOLS.map(t => t.name).filter(n => new RegExp(`\\b${n}\\b`).test(text))
     expect(named.filter(n => !offered.has(n))).toEqual([])

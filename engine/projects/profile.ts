@@ -12,12 +12,32 @@
  * byte-identical across turns and the prefix cache holds.
  */
 import { VSM_GOVERNANCE } from '../engine/systemPromptText.js'
+import type { ToolImpl } from '../tools/types.js'
 import { getShellInfo } from '../tools/shellInfo.js'
 
 export const PROJECT_TOOL_NAMES: readonly string[] = [
   'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Ls', 'Bash', 'WebSearch', 'WebFetch', 'ImageView',
   'ProjectSearch', 'SaveArtifact', 'AddToKnowledge', 'AskUser', 'RenderUI',
 ]
+
+/**
+ * Descriptions a project chat sees in place of the coding ones. Grep's tells
+ * the model to "call CodeIndex first", a tool a project chat does not have.
+ */
+const PROJECT_TOOL_DESCRIPTIONS: Readonly<Record<string, string>> = {
+  Grep: 'Search file contents using regex patterns. Returns matching lines with file paths and line numbers. Use it for an exact string or regex match in the project\'s files; for a question about meaning ("where did we decide the wall height") use ProjectSearch.',
+}
+
+/**
+ * The tools a project chat is offered, in registry order, with the project
+ * descriptions applied — the one list the loop builds its tool definitions
+ * and the prompt's <TOOLS> block from, so the two cannot disagree.
+ */
+export function projectTools(all: readonly ToolImpl[]): ToolImpl[] {
+  const names = new Set(PROJECT_TOOL_NAMES)
+  return all.filter(t => names.has(t.name))
+    .map(t => (PROJECT_TOOL_DESCRIPTIONS[t.name] ? { ...t, description: PROJECT_TOOL_DESCRIPTIONS[t.name] } : t))
+}
 
 export type ProjectPromptInput = { name: string; description: string; instructions: string; toolNames: string; cwd: string }
 

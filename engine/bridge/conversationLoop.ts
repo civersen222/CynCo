@@ -109,7 +109,7 @@ import { extractPatch } from '../bestOfN/patchExtractor.js'
 import { runTests, selectWinner, applyPatch } from '../bestOfN/sampler.js'
 import type { ProjectBinding } from '../projects/binding.js'
 import { gradeProjectCall } from '../projects/binding.js'
-import { assembleProjectPrompt, PROJECT_TOOL_NAMES } from '../projects/profile.js'
+import { assembleProjectPrompt, projectTools } from '../projects/profile.js'
 import { appendTranscript, newChatFile, readTranscript, turnsOf, type TranscriptMessage } from '../projects/chat.js'
 import { searchProjects } from '../projects/search.js'
 import { buildRetrievalBlock, citationsUsed, retrievalShare, RETRIEVAL_TAG } from '../projects/retrieval.js'
@@ -1097,10 +1097,12 @@ export class ConversationLoop {
     if (binding) {
       setProjectToolContext({ home: binding.home, slug: binding.slug, embed: binding.embed, embedModel: binding.embedModel, emit: binding.emit })
       this.executor.setGrader((tool, input) => gradeProjectCall(binding.dir, this.executor['cwd'], classifyRisk, describeRisk, tool, input))
+      this.executor.setCodeIndexHints(false)
       this.emit({ type: 'project.opened', slug: binding.slug, chat: binding.chatFile, title: binding.chatTitle })
     } else {
       setProjectToolContext(null)
       this.executor.setGrader(null)
+      this.executor.setCodeIndexHints(true)
       this.emit({ type: 'project.opened', slug: null, chat: null, title: null })
     }
   }
@@ -1942,11 +1944,9 @@ export class ConversationLoop {
       const pinned = new Set(this.allowedTools)
       activeTools = activeTools.filter(t => pinned.has(t.name))
     }
-    // Projects mode: the project tool set, whatever the coding layers chose.
-    if (this.project) {
-      const names = new Set(PROJECT_TOOL_NAMES)
-      activeTools = ALL_TOOLS.filter(t => names.has(t.name))
-    }
+    // Projects mode: the project tool set, whatever the coding layers chose,
+    // with the project descriptions (no tool may name one the chat lacks).
+    if (this.project) activeTools = projectTools(ALL_TOOLS)
 
     // Build tool definitions in the format callModel expects (inputJSONSchema)
     let toolDefs = toToolDefs(activeTools)
@@ -1988,7 +1988,9 @@ export class ConversationLoop {
     // Skill catalogue (one line per skill). Session-static — skills are
     // discovered once per session — so this stays inside the append-only prompt
     // prefix. run_skill loads a skill's body + surfaces its tools on demand.
-    const skillIndexBlock = formatSkillIndexBlock(getSkillIndex())
+    // Not in a project chat: run_skill is not in its tool set, and the block
+    // tells the model to call it.
+    const skillIndexBlock = this.project ? '' : formatSkillIndexBlock(getSkillIndex())
     if (skillIndexBlock) {
       promptParts.push('')
       promptParts.push(skillIndexBlock)
@@ -4173,6 +4175,11 @@ export class ConversationLoop {
       // like compaction; the system prompt itself is untouched).
       const requestedLoads: string[] = []
       for (const block of toolUseBlocks as any[]) {
+        // A call that was refused as not offered (executeOneTool) surfaces
+        // nothing: in a project chat a remembered load_tools/run_skill would
+        // otherwise rebuild toolDefs from the coding core set, and a
+        // governance-refused one would start a workflow it was denied.
+        if (this.offeredToolNames && !this.offeredToolNames.has(block.name)) continue
         if (block.name === 'load_tools' && Array.isArray(block.input?.tools)) {
           for (const n of block.input.tools) if (typeof n === 'string') requestedLoads.push(n)
         }
