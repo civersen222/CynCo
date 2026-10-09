@@ -219,3 +219,39 @@ describe('streamed assistant prose renders at most once per animation frame', ()
     expect(c.innerHTML).toBe('<p>pending</p>')
   })
 })
+
+/** How many anchors opened, and every href value. */
+function anchorsOf(out: string): { opens: number; hrefs: string[] } {
+  return { opens: (out.match(/<a /g) ?? []).length, hrefs: [...out.matchAll(/href="([^"]*)"/g)].map(m => m[1]) }
+}
+
+// Final review (security lens): the autolink pass once ran over the href the
+// link pass had just written and put a second anchor inside its quotes, so
+// model text could add attributes, an event handler included, to an <a>.
+describe('mdInline never re-processes the markup it generated', () => {
+  it('a link URL holding "(" and a second URL never puts an anchor inside an href', () => {
+    for (const md of [
+      '[x](https://a.example/p(https://b.example/data-probe=1)',
+      'see [docs](https://a.example/p(https://b.example/onmouseover=location=/javascript:alert%281%29/.source//) here',
+      '[see https://b.example/x](https://a.example/y)',
+    ]) {
+      const out = mdToHtml(md)
+      const { opens, hrefs } = anchorsOf(out)
+      expect(opens, out).toBe(1)
+      for (const h of hrefs) expect(h, out).not.toMatch(/[<>"]/)
+      // The anchor's attributes, read the way a parser would: quoted values
+      // blanked out, so URL text inside href cannot pass for an attribute.
+      const tag = out.match(/<a [^>]*>/)![0].replace(/"[^"]*"/g, '""')
+      expect([...tag.matchAll(/\s([a-z-]+)=/g)].map(m => m[1]), out).toEqual(['href', 'target', 'rel'])
+    }
+  })
+
+  it('emphasis never runs over generated tags: target="_blank" and underscores in URLs survive', () => {
+    const pep = mdToHtml('See [PEP 8](https://peps.python.org/pep-0008/): use a trailing underscore, e.g. class_ or type_.')
+    expect(pep).toContain('target="_blank"')
+    expect(pep).toContain('class_ or type_')
+    expect(mdToHtml('[static](https://site.dev/_static_/app.js)')).toContain('href="https://site.dev/_static_/app.js"')
+    expect(mdToHtml('_see [the docs](https://x.y/a) for details_')).toBe('<p><em>see <a href="https://x.y/a" target="_blank" rel="noopener noreferrer">the docs</a> for details</em></p>')
+    expect(mdToHtml('[**bold** label](https://x.y)')).toBe('<p><a href="https://x.y" target="_blank" rel="noopener noreferrer"><strong>bold</strong> label</a></p>')
+  })
+})

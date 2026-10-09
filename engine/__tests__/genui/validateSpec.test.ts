@@ -216,6 +216,37 @@ describe('validateSpec', () => {
     expect(r.errors.some(e => e.includes(`first ${LIMITS.elements} elements`))).toBe(true)
   })
 
+  it('a child that points back at the root terminates, even with an action-less Button (no engine freeze)', () => {
+    const spec = { root: 'a', elements: {
+      a: { type: 'Card', props: { title: 'x' }, children: ['b'] },
+      b: { type: 'Stack', children: ['go', 'a'] },
+      go: { type: 'Button', props: { label: 'Go' } },
+    } }
+    for (const partial of [false, true]) {
+      const r = validateSpec(spec, { partial })
+      expect(r.spec?.elements.a.children).toEqual(['b'])
+      expect(r.spec?.elements.b.children).toEqual(['go'])
+    }
+    expect(validateSpec(spec).errors).toEqual(['b.children: "a" is already placed (a cycle or a second parent) and was skipped'])
+  })
+
+  it('"__proto__", "constructor" and "prototype" are never ids or input names, and nothing pollutes Object.prototype', () => {
+    const r = validateSpec({ root: 't', elements: {
+      t: { type: 'Tabs', props: { tabs: [{ label: 'A', value: 'pwned' }] }, children: ['__proto__', 'constructor', 'x'] },
+      x: { type: 'Input', props: { name: '__proto__', label: 'X' } },
+    } })
+    expect(({} as any).tab).toBeUndefined()
+    expect(Object.keys(r.spec!.elements)).toEqual(['t', 'x'])
+    expect(r.spec?.elements.t.children).toEqual(['x'])
+    expect(r.spec?.elements.x.props?.name).toBe('field-proto')
+    const asId = validateSpec(JSON.parse('{"root":"c","elements":{"c":{"type":"Card","children":["__proto__"]},"__proto__":{"type":"Text","props":{"text":"x"}}}}'))
+    expect(({} as any).type).toBeUndefined()
+    expect(asId.spec?.elements.c.children).toEqual([])
+    expect(asId.errors.join(' ')).toMatch(/element id "__proto__" must match .* and not be a reserved name/)
+    const later = validateSpec({ root: 't', elements: { t: { type: 'Tabs', props: { tabs: [{ label: 'A', value: 'a' }] }, children: ['c1'] }, c1: { type: 'Text', props: { text: 'x' } } } })
+    expect(later.spec?.elements.c1.tab).toBe('a')
+  })
+
   it('ids must be short and safe', () => {
     const r = validateSpec({ root: 'ok', elements: { ok: { type: 'Card', children: ['bad id!'] }, 'bad id!': { type: 'Text', props: { text: 'x' } } } })
     expect(r.errors[0]).toMatch(/element id "bad id!" must match/)

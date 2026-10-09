@@ -47,6 +47,8 @@ export function isSurfaceId(v: unknown): v is string {
   return typeof v === 'string' && LIMITS.idPattern.test(v)
 }
 
+/** Names that are properties of every JS object: never an element id or an input name. */
+const RESERVED_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
 const ELEMENT_KEYS = new Set(['type', 'props', 'children', 'visible', 'tab'])
 /** Keys a model adds from other formats that mean nothing here and are not worth a report. */
 const IGNORED_ELEMENT_KEYS = new Set(['id', 'key', 'component', 'catalogId', 'weight', 'slots', 'on', 'watch', 'repeat', 'metadata', 'accessibility'])
@@ -261,7 +263,7 @@ function coerceProps(raw: Record<string, unknown>, fields: Record<string, PropDe
   const out: Record<string, unknown> = {}
   const lowerFields = new Map(Object.keys(fields).map(k => [k.toLowerCase(), k]))
   for (const [rawKey, value] of Object.entries(raw)) {
-    const key = fields[rawKey] ? rawKey : lowerFields.get(rawKey.toLowerCase())
+    const key = Object.hasOwn(fields, rawKey) ? rawKey : lowerFields.get(rawKey.toLowerCase())
     if (!key) {
       if (!o.silentUnknown) report(ctx, `${at}: unknown prop "${rawKey}" was dropped`)
       continue
@@ -368,7 +370,7 @@ function flattenInto(elements: Record<string, unknown>, node: Record<string, unk
   if (Array.isArray(copy.children)) {
     copy.children = (copy.children as unknown[]).map((child, i) => {
       if (isObj(child)) {
-        const childId = typeof child.id === 'string' && LIMITS.idPattern.test(child.id) && !(child.id in elements) ? child.id : `${id}-${i + 1}`
+        const childId = typeof child.id === 'string' && LIMITS.idPattern.test(child.id) && !RESERVED_KEYS.has(child.id) && !Object.hasOwn(elements, child.id) ? child.id : `${id}-${i + 1}`
         return flattenInto(elements, child, childId, ctx)
       }
       return child
@@ -392,7 +394,7 @@ export function validateSpec(raw: unknown, opts: ValidateOptions = {}): Validati
   if (elementsRaw === undefined) {
     const tree = isObj(raw.root) ? (raw.root as Record<string, unknown>) : typeof raw.type === 'string' ? raw : undefined
     if (tree) {
-      elementsRaw = {}
+      elementsRaw = Object.create(null) as Record<string, unknown>
       rootId = flattenInto(elementsRaw, tree, typeof tree.id === 'string' && LIMITS.idPattern.test(tree.id) ? tree.id : 'root', ctx)
     }
   }
@@ -411,12 +413,14 @@ export function validateSpec(raw: unknown, opts: ValidateOptions = {}): Validati
   if (rootId === undefined) return fail('spec has no elements')
 
   // Normalise every element first.
-  const normalised: Record<string, UiElement> = {}
+  // Null-prototype maps and own-property checks throughout: an element id of
+  // "__proto__" must be an id like any other, never Object.prototype.
+  const normalised: Record<string, UiElement> = Object.create(null)
   let kept = 0
   for (const [rawId, el] of Object.entries(elementsRaw)) {
     if (kept >= LIMITS.elements) { report(ctx, `only the first ${LIMITS.elements} elements were kept`); break }
     const id = String(rawId).trim()
-    if (!LIMITS.idPattern.test(id)) { report(ctx, `element id "${rawId}" must match ${LIMITS.idPattern}`); continue }
+    if (!LIMITS.idPattern.test(id) || RESERVED_KEYS.has(id)) { report(ctx, `element id "${rawId}" must match ${LIMITS.idPattern} and not be a reserved name`); continue }
     if (!isObj(el)) { report(ctx, `${id}: not an object`); continue }
     const at = id
     const type = resolveComponentName(el.type)
@@ -437,7 +441,7 @@ export function validateSpec(raw: unknown, opts: ValidateOptions = {}): Validati
       if (k === 'type' || k === 'props') continue
       if (ELEMENT_KEYS.has(k)) { element[k] = v; continue }
       if (IGNORED_ELEMENT_KEYS.has(k)) continue
-      if (def.props[k] || Object.keys(def.props).some(p => p.toLowerCase() === k.toLowerCase())) { if (props[k] === undefined) props[k] = v; continue }
+      if (Object.hasOwn(def.props, k) || Object.keys(def.props).some(p => p.toLowerCase() === k.toLowerCase())) { if (props[k] === undefined) props[k] = v; continue }
       if (k === 'content' || k === 'text' || k === 'label' || k === 'title' || k === 'items' || k === 'rows' || k === 'columns' || k === 'action') { if (props[k] === undefined) props[k] = v; continue }
       report(ctx, `${at}: unknown field "${k}" was dropped`)
     }
@@ -470,6 +474,7 @@ export function validateSpec(raw: unknown, opts: ValidateOptions = {}): Validati
     if (fatal) { report(ctx, `${at} (${typeName}): missing ${missing.join(', ') || 'required props'} — the element was dropped`); continue }
     if (missing.length) report(ctx, `${at} (${typeName}): missing ${missing.join(', ')}`)
 
+    if (typeof coerced.name === 'string' && RESERVED_KEYS.has(coerced.name)) coerced.name = `field-${coerced.name.replace(/_/g, '')}`
     const out: UiElement = { type: typeName, props: coerced }
     if (def.children === 'any') {
       const rawChildren = element.children
@@ -493,7 +498,7 @@ export function validateSpec(raw: unknown, opts: ValidateOptions = {}): Validati
     kept++
   }
 
-  if (!normalised[rootId]) {
+  if (!Object.hasOwn(normalised, rootId)) {
     if (ctx.partial) return { spec: null, errors: [], count: 0 }
     const first = Object.keys(normalised)[0]
     if (!first) return fail(`root "${rootId}" is not a drawable element and nothing else is either`)
@@ -502,7 +507,7 @@ export function validateSpec(raw: unknown, opts: ValidateOptions = {}): Validati
   }
 
   // Reachability from root, depth cap, cycles, dangling children, parent map.
-  const reachable: Record<string, UiElement> = {}
+  const reachable: Record<string, UiElement> = Object.create(null)
   const parentOf = new Map<string, string>()
   const queue: Array<{ id: string; depth: number }> = [{ id: rootId, depth: 0 }]
   const seen = new Set<string>([rootId])
@@ -514,8 +519,10 @@ export function validateSpec(raw: unknown, opts: ValidateOptions = {}): Validati
     if (depth >= LIMITS.depth) { report(ctx, `${id}: nesting deeper than ${LIMITS.depth} was cut`); el.children = []; continue }
     const kids: string[] = []
     for (const c of el.children) {
-      if (!normalised[c]) { report(ctx, `${id}.children: "${c}" is not an element id`); continue }
-      if (seen.has(c)) { if (c === id || parentOf.has(c)) { report(ctx, `${id}.children: "${c}" would nest twice (cycle) and was skipped`); continue } }
+      if (!Object.hasOwn(normalised, c)) { report(ctx, `${id}.children: "${c}" is not an element id`); continue }
+      // Anything already placed — the root included — is never placed again,
+      // so parentOf stays a tree and the ancestor walks below terminate.
+      if (seen.has(c)) { report(ctx, `${id}.children: "${c}" is already placed (a cycle or a second parent) and was skipped`); continue }
       seen.add(c); parentOf.set(c, id); kids.push(c)
       queue.push({ id: c, depth: depth + 1 })
     }
@@ -540,7 +547,7 @@ export function validateSpec(raw: unknown, opts: ValidateOptions = {}): Validati
     if (el.type !== 'Button') continue
     if (typeof el.props?.action === 'string' && el.props.action.trim()) continue
     let p = parentOf.get(id); let inForm = false
-    while (p) { if (reachable[p]?.type === 'Form') { inForm = true; break } p = parentOf.get(p) }
+    for (let steps = 0; p && steps <= LIMITS.depth; steps++) { if (reachable[p]?.type === 'Form') { inForm = true; break } p = parentOf.get(p) }
     if (!inForm) el.props = { ...(el.props ?? {}), action: actionFromLabel(el.props?.label) }
   }
   // Tabs: a child with no tab goes to the first tab; say so once per container.

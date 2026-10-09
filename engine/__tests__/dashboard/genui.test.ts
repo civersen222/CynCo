@@ -273,11 +273,25 @@ describe('dashboard genui: the page wires the protocol', () => {
     expect(arm('tool.start')).toContain("if (event.toolName === 'RenderUI') genuiToolRows[event.toolId || ''] = chatToolId")
   })
 
-  it('renderTranscript draws a stored RenderUI tool_use as a final surface', () => {
-    const src = fnSource('renderTranscript')
-    expect(src).toContain("b.name === 'RenderUI'")
-    expect(src).toContain('GENUI_ID_RE.test(b.input.surface)')
-    expect(src).toContain("upsertSurface({ type: 'ui.render', toolId: tid, surfaceId: sid, partial: false, spec: b.input.spec, errors: [] })")
+  it('renderTranscript redraws a stored RenderUI call; one that failed or drew nothing comes back withdrawn', () => {
+    const frames: Record<string, unknown>[] = []
+    const run = new Function('appendChatMsg', 'appendChatTool', 'summarizeInput', 'upsertSurface', 'GENUI_ID_RE', 'genuiToolRows',
+      fnSource('renderTranscript') + '\nreturn renderTranscript;')(
+      () => {}, () => 'row', () => '', (f: Record<string, unknown>) => { frames.push(f) }, /^[A-Za-z0-9_-]{1,40}$/, {},
+    ) as (t: unknown) => number
+    const spec = { root: 'c', elements: { c: { type: 'Card', props: {}, children: [] } } }
+    run({ messages: [
+      { role: 'assistant', content: [{ type: 'tool_use', id: 'ok', name: 'RenderUI', input: { surface: 'plan', spec } }] },
+      { role: 'assistant', content: [{ type: 'tool_use', id: 'bad', name: 'RenderUI', input: { surface: 'plan', spec } }] },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'bad', is_error: true, content: [] }] },
+      { role: 'assistant', content: [{ type: 'tool_use', id: 'none', name: 'RenderUI', input: { spec: null } }] },
+    ] })
+    expect(frames).toEqual([
+      { type: 'ui.render', toolId: 'ok', surfaceId: 'plan', partial: false, spec, errors: [] },
+      // a failed call keys on its own id: it never takes over (or withdraws) 'plan'
+      { type: 'ui.render', toolId: 'bad', surfaceId: 'bad', partial: false, spec: null, errors: ['this call failed when it ran'] },
+      { type: 'ui.render', toolId: 'none', surfaceId: 'none', partial: false, spec: null, errors: ['nothing could be drawn'] },
+    ])
   })
 
   it('every catalog component has a renderer key (GENUI_RENDERERS cannot drift from engine/genui/catalog.ts)', () => {
@@ -386,6 +400,25 @@ describe('dashboard genui: renderUiSpec draws the worked example', () => {
     page.renderUiSpec(spec, el, ctx)
     expect(el.querySelector('input.genui-range')!.value).toBe('3.5')
     expect(ctx.state).toEqual({ kg: 3.5 })
+  })
+
+  it('a half-streamed tab value never sticks: the final frame shows its tab panel', () => {
+    const { page } = harness()
+    const tabsSpec = (first: string) => ({ root: 't', elements: {
+      t: { type: 'Tabs', props: { tabs: [{ label: 'Plan', value: first }, { label: 'Costs', value: 'costs' }] }, children: ['a', 'b'] },
+      a: { type: 'Text', props: { text: 'plan body' }, tab: first },
+      b: { type: 'Text', props: { text: 'costs body' }, tab: 'costs' },
+    } })
+    const el = surfaceEl('trip')
+    const ctx = page.renderUiSpec(tabsSpec('pla'), el, { partial: true })
+    expect(ctx.state['__tab:t']).toBeUndefined()
+    page.renderUiSpec(tabsSpec('plan'), el, Object.assign(ctx, { partial: false }))
+    const panels = el.querySelectorAll('.genui-tab-panel')
+    expect(panels.map(pn => pn.classList.contains('genui-hidden'))).toEqual([false, true])
+    // a remembered tab the new render no longer has falls back to the default
+    ctx.state['__tab:t'] = 'gone'
+    page.renderUiSpec(tabsSpec('plan'), el, ctx)
+    expect(el.querySelectorAll('.genui-tab-panel').map(pn => pn.classList.contains('genui-hidden'))).toEqual([false, true])
   })
 
   it('a partial frame never seeds input state: the final frame\'s value wins', () => {
@@ -786,6 +819,18 @@ describe('dashboard genui: upsertSurface keeps one element per surface', () => {
     // a terminal frame for a call nobody saw still says so
     page.upsertSurface({ type: 'ui.render', toolId: 't4', surfaceId: 't4', partial: false, spec: null, errors: ['RenderUI refused'] })
     expect(msgs.querySelectorAll('.genui-surface.genui-withdrawn')).toHaveLength(2)
+  })
+
+  it('a failed call naming an earlier surface leaves that surface and its inputs alone', () => {
+    const { page, msgs } = harness()
+    const plan = page.upsertSurface({ type: 'ui.render', toolId: 't1', surfaceId: 'plan', partial: false, spec, errors: [] })!
+    const before = controls(plan).length
+    // the engine keys a failed call's terminal frame on its own id; the page
+    // also refuses to let a spec-less frame adopt an older surface by name
+    page.upsertSurface({ type: 'ui.render', toolId: 't2', surfaceId: 'plan', partial: false, spec: null, errors: ['Nothing could be drawn'] })
+    expect(plan.classList.contains('genui-withdrawn')).toBe(false)
+    expect(controls(plan).length).toBe(before)
+    expect(msgs.querySelectorAll('.genui-surface')).toHaveLength(2)
   })
 
   it('a final frame with errors shows a muted "n issues" toggle listing them', () => {

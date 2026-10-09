@@ -3678,24 +3678,35 @@ function mdInline(s) {
   // Pre-context: start, whitespace, or an opening paren that is NOT the `](`
   // of a link still being typed (that one stays literal until it closes).
   var AUTO_RE = new RegExp('(^\\(?|\\s\\(?|[^\\]\\s]\\()((?:https?:\\/\\/)' + URL_CHAR + '*(?:(?!&(?:quot|lt|gt|#39);)[^\\s<>"\'),.;:!?]))', 'g');
+  // Every anchor this function writes goes behind a \u0001 placeholder until
+  // the last pass: the autolink and emphasis passes must never see generated
+  // markup. Run over a finished href="…", the autolinker once wrote a second
+  // anchor inside the first one's attribute (attribute injection, so script),
+  // and `_…_` turned target="_blank" into markup.
+  var tags = [];
+  var stash = function(t) { tags.push(t); return '\u0001' + (tags.length - 1) + '\u0001'; };
   s = s.replace(LINK_RE, function(m, label, url) {
     var href = safeUrl(url.replace(/&amp;/g, '&'));
     if (!href) return m;
-    return '<a href="' + escHtml(href) + '" target="_blank" rel="noopener noreferrer">' + label + '</a>';
+    return stash('<a href="' + escHtml(href) + '" target="_blank" rel="noopener noreferrer">' + mdEmphasis(label) + '</a>');
   });
-  // bare https://… autolink (not already inside an anchor: anchors above
-  // contain the url in href="…", which this pattern cannot match because of
-  // the leading quote requirement below).
   s = s.replace(AUTO_RE, function(_, pre, url) {
     var href = safeUrl(url.replace(/&amp;/g, '&'));
     if (!href) return pre + url;
-    return pre + '<a href="' + escHtml(href) + '" target="_blank" rel="noopener noreferrer">' + url + '</a>';
+    return pre + stash('<a href="' + escHtml(href) + '" target="_blank" rel="noopener noreferrer">' + url + '</a>');
   });
+  s = mdEmphasis(s);
+  s = s.replace(/\u0001(\d+)\u0001/g, function(_, i) { return tags[Number(i)]; });
+  s = s.replace(/\u0000(\d+)\u0000/g, function(_, i) { return '<code>' + codes[Number(i)] + '</code>'; });
+  return s;
+}
+
+/** Bold, italics and strike over escaped text that holds no generated tags. */
+function mdEmphasis(s) {
   s = s.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
   s = s.replace(/(^|[^*\w])\*([^*\n]+)\*(?!\w)/g, '$1<em>$2</em>');
   s = s.replace(/(^|[^\w])_([^_\n]+)_(?!\w)/g, '$1<em>$2</em>');
   s = s.replace(/~~([^~\n]+)~~/g, '<del>$1</del>');
-  s = s.replace(/\u0000(\d+)\u0000/g, function(_, i) { return '<code>' + codes[Number(i)] + '</code>'; });
   return s;
 }
 
@@ -3908,10 +3919,10 @@ function genuiFmtNum(n) {
 // back to the model.
 function genuiInit(ctx, name, init) {
   if (Object.prototype.hasOwnProperty.call(ctx.state, name)) return ctx.state[name];
-  // A partial frame draws an input's value but never seeds the state: what
-  // it carries may be half-written, and the final frame's value must win.
-  // Tab and section keys (`__…`) are page state and seed at once.
-  if (ctx.partial && name.indexOf('__') !== 0) { ctx.draft[name] = init; return init; }
+  // A partial frame draws a value but never seeds the state: what it carries
+  // may be half-written (a tab value "pla" on its way to "plan"), and the
+  // final frame's value must win. Its controls are disabled meanwhile.
+  if (ctx.partial) { ctx.draft[name] = init; return init; }
   ctx.state[name] = init;
   return init;
 }
@@ -4138,7 +4149,8 @@ var GENUI_RENDERERS = {
       return { label: genuiStr(t), value: genuiStr(t) };
     });
     var key = '__tab:' + id;
-    genuiInit(ctx, key, p.value !== undefined && p.value !== null ? genuiStr(p.value) : (tabs.length ? tabs[0].value : ''));
+    var def = p.value !== undefined && p.value !== null ? genuiStr(p.value) : (tabs.length ? tabs[0].value : '');
+    genuiInit(ctx, key, def);
     var wrap = genuiEl('div', 'genui-tabs');
     var strip = genuiEl('div', 'genui-tab-strip');
     var panels = genuiEl('div', 'genui-tab-panels');
@@ -4163,7 +4175,9 @@ var GENUI_RENDERERS = {
       kids.push(panel);
     });
     ctx.refreshers.push(function() {
-      var active = genuiStr(ctx.state[key]);
+      // A remembered tab that this render no longer has falls back to the default.
+      var active = genuiStr(genuiView(ctx)[key]);
+      if (!tabs.some(function(t) { return t.value === active; })) active = def;
       btns.forEach(function(b) { genuiToggleClass(b, 'active', b.getAttribute('data-tab') === active); });
       kids.forEach(function(pn) { genuiToggleClass(pn, 'genui-hidden', pn.getAttribute('data-tab') !== active); });
     });
@@ -4895,7 +4909,9 @@ function upsertSurface(event) {
   var partial = !!event.partial;
   var byTool = toolId ? msgs.querySelector('.genui-surface[data-tool-id="' + genuiCssId(toolId) + '"]') : null;
   var el = byTool;
-  if (!partial) {
+  if (!partial && event.spec) {
+    // Only a frame with something to draw takes over an earlier surface of
+    // that name; a failed call must not withdraw a working one.
     var older = msgs.querySelector('.genui-surface[data-surface="' + genuiCssId(surfaceId) + '"]');
     if (older && older !== byTool) {
       if (byTool && byTool.parentNode) byTool.parentNode.removeChild(byTool);
@@ -5608,13 +5624,18 @@ function renderTranscript(t) {
       blocks.forEach(function(b) {
         if (!b || b.type !== 'tool_use') return;
         var rowId = appendChatTool(b.name || 'tool', summarizeInput(b.name, b.input), failed[b.id] ? 'error' : 'success', null);
-        // A stored RenderUI call: draw its spec as a final surface under the row. The
-        // engine validated it when it ran; unknown types draw a muted box.
-        if (b.name === 'RenderUI' && b.input && b.input.spec && typeof b.input.spec === 'object' && typeof upsertSurface === 'function') {
+        // A stored RenderUI call: the chat route serves the spec validateSpec made
+        // of it (projects/api.ts), so it redraws as it showed live. A call that
+        // failed live, or whose spec drew nothing, comes back withdrawn, never as
+        // live controls; unknown types still draw a muted box.
+        if (b.name === 'RenderUI' && b.input && typeof b.input === 'object' && typeof upsertSurface === 'function') {
           var tid = typeof b.id === 'string' && b.id ? b.id : 'transcript-' + rowId;
-          var sid = typeof b.input.surface === 'string' && GENUI_ID_RE.test(b.input.surface) ? b.input.surface : tid;
+          var drawable = !failed[b.id] && b.input.spec && typeof b.input.spec === 'object';
+          var sid = drawable && typeof b.input.surface === 'string' && GENUI_ID_RE.test(b.input.surface) ? b.input.surface : tid;
           genuiToolRows[tid] = rowId;
-          upsertSurface({ type: 'ui.render', toolId: tid, surfaceId: sid, partial: false, spec: b.input.spec, errors: [] });
+          upsertSurface({ type: 'ui.render', toolId: tid, surfaceId: sid, partial: false,
+            spec: drawable ? b.input.spec : null,
+            errors: drawable ? [] : [failed[b.id] ? 'this call failed when it ran' : 'nothing could be drawn'] });
         }
       });
     }

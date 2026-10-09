@@ -101,3 +101,39 @@ describe('ui.action → user turn', () => {
     expect((arrayCtx as any).reason).toMatch(/context must be an object/)
   })
 })
+
+// Final review: the transcript stores the model's raw RenderUI input, but the
+// page drew what validateSpec made of it; the chat route serves the latter.
+describe('the chat transcript route serves validated RenderUI specs', () => {
+  it('aliases, chart pairs and options resolve; nothing drawable becomes spec:null; history is untouched', async () => {
+    const { withValidatedSurfaces } = await import('../../projects/api.js')
+    const raw = { root: 'c', elements: {
+      c: { type: 'Card', props: { title: 'Costs' }, children: ['h', 'ch', 'sel'] },
+      h: { type: 'Heading', props: { title: 'Budget' } },
+      ch: { type: 'BarChart', props: { data: [{ label: 'Resin', value: 120 }, { label: 'Wood', value: 40 }] } },
+      sel: { type: 'Select', props: { name: 'wood', label: 'Wood', choices: ['Oak', 'Walnut'] } },
+    } }
+    const t = { messages: [
+      { role: 'user', content: [{ type: 'text', text: 'hi' }] },
+      { role: 'assistant', content: [
+        { type: 'text', text: 'here' },
+        { type: 'tool_use', id: 'a', name: 'RenderUI', input: { surface: 'costs', spec: raw } },
+        { type: 'tool_use', id: 'b', name: 'RenderUI', input: raw },
+        { type: 'tool_use', id: 'c', name: 'RenderUI', input: { spec: 'nope', surface: 'bad id!' } },
+        { type: 'tool_use', id: 'd', name: 'Read', input: { file_path: 'x' } },
+      ] },
+    ] }
+    const before = JSON.stringify(t)
+    const out = withValidatedSurfaces(t) as typeof t
+    expect(JSON.stringify(t)).toBe(before)
+    const [, a, b, c, d] = (out.messages[1] as any).content
+    expect(a.input.surface).toBe('costs')
+    expect(a.input.spec.elements.h.props).toEqual({ text: 'Budget' })
+    expect(a.input.spec.elements.ch.props.series).toEqual([{ name: '', values: [120, 40] }])
+    expect(a.input.spec.elements.sel.props.options).toEqual([{ label: 'Oak', value: 'Oak' }, { label: 'Walnut', value: 'Walnut' }])
+    expect(b.input.spec.root).toBe('c')
+    expect(c.input).toEqual({ surface: undefined, spec: null })
+    expect(d).toEqual({ type: 'tool_use', id: 'd', name: 'Read', input: { file_path: 'x' } })
+    expect(out.messages[0]).toBe(t.messages[0])
+  })
+})

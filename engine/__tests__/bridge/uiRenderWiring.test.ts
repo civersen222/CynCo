@@ -8,8 +8,9 @@
  * half-drawn card forever, or draw the same card twice — the F170 failure
  * (a question the page never showed) in a new coat of paint.
  */
-import { describe, expect, it, afterAll } from 'vitest'
-import { mkdtempSync, rmSync } from 'fs'
+import { describe, expect, it, afterAll, afterEach } from 'vitest'
+import { mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { execSync } from 'child_process'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { ConversationLoop } from '../../bridge/conversationLoop.js'
@@ -186,6 +187,23 @@ describe('RenderUI frames on the live loop', () => {
   }, 30000)
 })
 
+describe('a failed RenderUI call never touches an earlier surface it named', () => {
+  it('the terminal frame of an errored call keys on the call itself', async () => {
+    globalContract.clear()
+    const events: any[] = []
+    const loop = new ConversationLoop({
+      cwd: tempDir('cynco-ui-fail-'),
+      config: config(),
+      provider: mockProvider([loadRenderUi, toolUse('tu-bad', 'RenderUI', [JSON.stringify({ surface: 'plan', spec: 'nope' })]), textResponse('ok, all done.')]),
+      emit: (e: any) => { events.push(e) },
+    })
+    await loop.handleUserMessage('draw')
+    const final = uiFrames(events).filter(f => !f.partial)
+    expect(final).toEqual([{ type: 'ui.render', toolId: 'tu-bad', surfaceId: 'tu-bad', partial: false, spec: null, errors: [expect.stringContaining('Nothing could be drawn')] }])
+    globalContract.clear()
+  }, 30000)
+})
+
 describe('a cut-off spec versus an untidy one', () => {
   async function finalFrameFor(args: string) {
     globalContract.clear()
@@ -284,4 +302,62 @@ describe('ui.action on the live loop', () => {
     expect(users.some(u => u.includes('[UI action]'))).toBe(false)
     globalContract.clear()
   }, 30000)
+})
+
+describe('a click is never lost to a best-of-N candidate or to the re-dispatch window', () => {
+  const bonEnv = ['LOCALCODE_BEST_OF_N', 'LOCALCODE_BEST_OF_N_COUNT'] as const
+  const prev = Object.fromEntries(bonEnv.map(k => [k, process.env[k]]))
+  afterEach(() => { for (const k of bonEnv) { if (prev[k] === undefined) delete process.env[k]; else process.env[k] = prev[k] } })
+  const click = (action: string, label: string) => ({ type: 'ui.action' as const, surfaceId: 'plan', action, label, state: {} })
+  const userTexts = (loop: ConversationLoop): string[] => (loop as any).messages.filter((m: any) => m.role === 'user').map((m: any) => String(m.content?.[0]?.text ?? ''))
+
+  it('a click queued while a best-of-N candidate samples survives the candidate and is answered', async () => {
+    process.env.LOCALCODE_BEST_OF_N = 'true'
+    process.env.LOCALCODE_BEST_OF_N_COUNT = '1'
+    globalContract.clear()
+    const cwd = tempDir('cynco-ui-bon-')
+    writeFileSync(join(cwd, 'package.json'), JSON.stringify({ name: 'ui-bon', private: true, scripts: { test: 'node -e "0"' } }))
+    writeFileSync(join(cwd, '.gitignore'), '.cynco*\n.cynco/\n')
+    const git = (args: string) => execSync(`git -c user.name=t -c user.email=t@t ${args}`, { cwd, stdio: 'pipe' })
+    git('init -q'); git('add -A'); git('commit -q -m base')
+    let loopRef: ConversationLoop | null = null
+    const provider = mockProvider([
+      textResponse('candidate, all done.', () => { loopRef!.handleUiAction(click('recalc', 'Recalculate')) }),
+      textResponse('single pass, all done.'),
+      textResponse('recalculated, all done.'),
+    ])
+    const loop = new ConversationLoop({ cwd, config: config(), provider, emit: () => {}, allowedTools: ['Read'] })
+    loopRef = loop
+    await loop.handleUserMessage('hi')
+    for (let i = 0; i < 50 && (provider.calls < 3 || (loop as any).currentTurn); i++) await new Promise(r => setTimeout(r, 20))
+    expect(userTexts(loop).some(t => t.includes('[UI action] "Recalculate"'))).toBe(true)
+    expect((loop as any).pendingUiActions).toEqual([])
+    globalContract.clear()
+  }, 60000)
+
+  it('a click handed back after an aborted turn survives a second click that starts a turn first', async () => {
+    globalContract.clear()
+    let loopRef: ConversationLoop | null = null
+    const aborting = function* (): Generator<StreamEvent> {
+      loopRef!.handleUiAction(click('alpha', 'Alpha'))
+      yield start('m-ab')
+      yield { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } } as any
+      loopRef!.abort()
+      yield { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'x' } } as any
+      yield { type: 'content_block_stop', index: 0 } as any
+      yield* stop('end_turn')
+    }
+    const provider = mockProvider([aborting, textResponse('beta, all done.'), textResponse('alpha, all done.')])
+    const loop = new ConversationLoop({ cwd: tempDir('cynco-ui-race-'), config: config(), provider, emit: () => {} })
+    loopRef = loop
+    await loop.handleUserMessage('hi')
+    // The aborted turn's finally scheduled Alpha's re-dispatch; Beta lands first.
+    loop.handleUiAction(click('beta', 'Beta'))
+    for (let i = 0; i < 100 && (provider.calls < 3 || (loop as any).currentTurn); i++) await new Promise(r => setTimeout(r, 20))
+    const texts = userTexts(loop)
+    expect(texts.some(t => t.includes('[UI action] "Beta"'))).toBe(true)
+    expect(texts.some(t => t.includes('[UI action] "Alpha"'))).toBe(true)
+    expect((loop as any).pendingUiActions).toEqual([])
+    globalContract.clear()
+  }, 60000)
 })

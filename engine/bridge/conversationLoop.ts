@@ -917,7 +917,10 @@ export class ConversationLoop {
    * the turn leaves by any other path — the busy guard above never sees it.
    */
   handleUiAction(cmd: UiActionCommand): void {
-    if (this.processing) {
+    // `currentTurn` as well as `processing`: abort() clears `processing` while
+    // the turn is still unwinding, and a click then must queue, not start a
+    // second turn alongside it.
+    if (this.processing || this.currentTurn) {
       this.pendingUiActions.push(cmd)
       console.log(`[genui] ui.action "${cmd.action}" queued behind the running turn (${this.pendingUiActions.length} waiting)`)
       return
@@ -960,7 +963,9 @@ export class ConversationLoop {
   private emitFinalUiRender(toolId: string, toolInput: Record<string, unknown>, result: { output: string; isError: boolean }): void {
     const surfaceId = isSurfaceId(toolInput.surface) ? toolInput.surface : toolId
     if (result.isError) {
-      this.emitUiRender({ toolId, surfaceId, partial: false, spec: null, errors: [result.output.slice(0, 500)] })
+      // Keyed on this call, never on the surface it named: a call that drew
+      // nothing must not withdraw an earlier, working surface of that name.
+      this.emitUiRender({ toolId, surfaceId: toolId, partial: false, spec: null, errors: [result.output.slice(0, 500)] })
       return
     }
     const v = validateSpec(toolInput.spec !== undefined ? toolInput.spec : toolInput)
@@ -1352,6 +1357,9 @@ export class ConversationLoop {
       if (queuedClick) {
         console.log(`[genui] ui.action "${queuedClick.action}" re-dispatched after the turn`)
         setTimeout(() => {
+          // Another turn got in first (a second click, a typed message): hand
+          // the click to it rather than to the busy guard, which drops it.
+          if (this.processing || this.currentTurn) { this.pendingUiActions.unshift(queuedClick); return }
           this.handleUserMessage(this.uiActionText(queuedClick), { uiAction: !isFollowUp(queuedClick) })
             .catch(e => console.error('[genui] ui.action re-dispatch failed: ' + (e as Error).message))
         }, 0)
@@ -3922,7 +3930,9 @@ export class ConversationLoop {
         // Not in a project chat: the reply is already the user-facing answer.
         // A click on a RenderUI surface that arrived during this turn is the
         // next user turn, here rather than through the busy guard (design A8).
-        const clicked = this.pendingUiActions.shift()
+        // Never in a best-of-N candidate: its messages are thrown away, and a
+        // click it consumed would vanish with them.
+        const clicked = loopOpts?.candidate ? undefined : this.pendingUiActions.shift()
         if (clicked) {
           const clickText = this.uiActionText(clicked)
           console.log(`[genui] ui.action "${clicked.action}" delivered at the turn's end`)

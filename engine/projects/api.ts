@@ -6,6 +6,7 @@
  * large 413. The server (Task 8) only parses the request and mounts these.
  */
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync, copyFileSync } from 'node:fs'
+import { validateSpec, isSurfaceId } from '../genui/spec.js'
 import { basename, extname, join } from 'node:path'
 import { EmbedClient } from '../index/embedClient.js'
 import { ACCEPTED_EXTS } from './extract/index.js'
@@ -147,7 +148,32 @@ export function getChatApi(d: ProjectsDeps, slug: string, file: string): ApiResu
   if (!readProject(d.home, slug)) return notFound('project')
   const t = readTranscript(projectDir(d.home, slug), basename(file))
   if (!t) return notFound('chat')
-  return { status: 200, body: t }
+  return { status: 200, body: withValidatedSurfaces(t) }
+}
+
+/**
+ * The transcript stores the model's raw RenderUI input; the page drew what
+ * `validateSpec` made of it. Serve the validated spec, so a reloaded chat
+ * draws the surface it showed live (aliases, chart pairs and nested trees
+ * resolved) and a spec with nothing drawable comes back as `spec: null`.
+ * The stored history stays untouched.
+ */
+export function withValidatedSurfaces<T>(t: T): T {
+  const msgs = (t as { messages?: unknown }).messages
+  if (!Array.isArray(msgs)) return t
+  const messages = msgs.map((m: any) => {
+    if (!m || m.role !== 'assistant' || !Array.isArray(m.content)) return m
+    if (!m.content.some((b: any) => b?.type === 'tool_use' && b.name === 'RenderUI')) return m
+    return {
+      ...m,
+      content: m.content.map((b: any) => {
+        if (b?.type !== 'tool_use' || b.name !== 'RenderUI' || !b.input || typeof b.input !== 'object') return b
+        const raw = b.input.spec !== undefined ? b.input.spec : b.input
+        return { ...b, input: { surface: isSurfaceId(b.input.surface) ? b.input.surface : undefined, spec: validateSpec(raw).spec } }
+      }),
+    }
+  })
+  return { ...(t as object), messages } as T
 }
 
 export async function renameChatApi(d: ProjectsDeps, slug: string, file: string, body: unknown): Promise<ApiResult> {
