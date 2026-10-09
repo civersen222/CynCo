@@ -654,6 +654,12 @@ async function handleCommand(command: TUICommand): Promise<void> {
       loop.handleAskAnswer(command.requestId, command.answer)
       break
 
+    // A click on a RenderUI surface (engine/genui): one user turn, now or
+    // queued behind the turn in flight.
+    case 'ui.action':
+      loop.handleUiAction(command)
+      break
+
     case 'command': {
       const cmd = command.command
       const args = command.args ?? ''

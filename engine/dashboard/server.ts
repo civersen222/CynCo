@@ -195,6 +195,8 @@ const DASHBOARD_ALLOWED_TYPES: ReadonlySet<unknown> = new Set([
   'vibe.action',
   'vibe.escalation_response',
   'project.open',
+  // A click on a RenderUI surface: drives the agent exactly like user.message.
+  'ui.action',
 ])
 
 /**

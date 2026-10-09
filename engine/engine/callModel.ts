@@ -640,6 +640,7 @@ export async function* localCallModel({
                     event: {
                       type: 'toolcall_transport',
                       stage: 'repaired',
+                      toolId: currentBlock.id as string,
                       toolName: currentBlock.name as string,
                       detail: `jsonrepair salvaged ${raw.length}-char args`,
                     } as any,

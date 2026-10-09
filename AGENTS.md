@@ -22,6 +22,7 @@ LocalCode is a local-first coding agent engine (Bun + TypeScript under `engine/`
 | Skills | [`engine/skills/CLAUDE.md`](engine/skills/CLAUDE.md) | Skill discovery, loading and invocation |
 | Workflows | [`engine/workflows/CLAUDE.md`](engine/workflows/CLAUDE.md) | `WorkflowEngine` |
 | Vibe mode | [`engine/vibe/CLAUDE.md`](engine/vibe/CLAUDE.md) | Guided mode controller, side-query routing, mode suppression |
+| Generative UI | [`engine/genui/CLAUDE.md`](engine/genui/CLAUDE.md) | `RenderUI`: the component catalog, spec validator, prompt section, streaming partial frames and `ui.action` round trip that let the model draw tables, plans, charts and forms in the dashboard |
 | Daemon | [`engine/daemon/CLAUDE.md`](engine/daemon/CLAUDE.md) | Liveness daemon, task runner (child engines), notifications |
 | Projects | [`engine/projects/CLAUDE.md`](engine/projects/CLAUDE.md) | Non-code projects: folder layout + registry, invisible git, prose ingestion, project/global search, project chats, the three project tools, `/api/projects/*` |
 | Profiles | [`engine/profiles/CLAUDE.md`](engine/profiles/CLAUDE.md) | `~/.cynco/profiles/*.yaml` schema and the runtime knobs that reach llama-server |

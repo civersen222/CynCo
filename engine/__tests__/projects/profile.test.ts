@@ -51,6 +51,6 @@ describe('assembleProjectPrompt', () => {
     expect(text).toMatch(/\n<\/PROJECT_WORK>/)
   })
   it('keeps the tool name list', () => {
-    expect(PROJECT_TOOL_NAMES).toEqual(['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Ls', 'Bash', 'WebSearch', 'WebFetch', 'ImageView', 'ProjectSearch', 'SaveArtifact', 'AddToKnowledge', 'AskUser'])
+    expect(PROJECT_TOOL_NAMES).toEqual(['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Ls', 'Bash', 'WebSearch', 'WebFetch', 'ImageView', 'ProjectSearch', 'SaveArtifact', 'AddToKnowledge', 'AskUser', 'RenderUI'])
   })
 })

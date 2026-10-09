@@ -139,6 +139,44 @@ export type AskRequestEvent = {
   options?: string[]
 }
 
+// ─── Generative UI (engine/genui) ──────────────────────────────
+//
+// One element of a model-authored UI spec. Inlined here rather than imported
+// from engine/genui so this file keeps its single import; genui/spec.ts
+// imports these types back (type-only, erased at runtime).
+export type UiElement = {
+  type: string
+  props?: Record<string, unknown>
+  children?: string[]
+  /** Show this element only while the named input holds (eq) / does not hold (neq) a value. */
+  visible?: { name: string; eq?: unknown; neq?: unknown }
+  /** Inside a Tabs container: the tab value this child belongs to. */
+  tab?: string
+}
+
+/** A validated spec: a flat element map plus the id drawn first. */
+export type UiSpec = {
+  root: string
+  elements: Record<string, UiElement>
+}
+
+/**
+ * A RenderUI surface for the 9161 dashboard. `partial: true` frames carry a
+ * spec repaired out of the tool call's half-streamed arguments and always use
+ * `surfaceId === toolId`; the one `partial: false` frame per call carries the
+ * validated spec (or `null` when the call was refused, errored or cut off,
+ * with the reason in `errors`) under the surface the model named, or the
+ * toolId when it named none.
+ */
+export type UiRenderEvent = {
+  type: 'ui.render'
+  toolId: string
+  surfaceId: string
+  partial: boolean
+  spec: UiSpec | null
+  errors?: string[]
+}
+
 export type ContextStatusEvent = {
   type: 'context.status'
   utilization: number
@@ -732,6 +770,7 @@ export type EngineEvent =
   | ProjectOpenedEvent
   | ProjectCitationsEvent
   | ProjectIngestEvent
+  | UiRenderEvent
 
 // ─── TUI → Engine Commands ─────────────────────────────────────
 
@@ -777,6 +816,23 @@ export type AskAnswerCommand = {
   type: 'ask.answer'
   requestId: string
   answer: string
+}
+
+/**
+ * A click on a RenderUI surface (a Button, a Form submit, a FollowUps chip is
+ * a plain user.message instead). `state` is the surface's current input
+ * values by `name`; `context` is whatever the model put on the Button; the
+ * loop turns the frame into a user turn the model reads (engine/genui/actions.ts).
+ */
+export type UiActionCommand = {
+  type: 'ui.action'
+  surfaceId: string
+  action: string
+  label?: string
+  context?: Record<string, unknown>
+  state?: Record<string, unknown>
+  /** What the page shows as the user's own bubble, when the model supplied one. */
+  userMessage?: string
 }
 
 export type SlashCommand = {
@@ -911,6 +967,7 @@ export type TUICommand =
   | VibeActionCommand
   | VibeEscalationResponseCommand
   | ProjectOpenCommand
+  | UiActionCommand
 
 // ─── Helpers ────────────────────────────────────────────────────
 

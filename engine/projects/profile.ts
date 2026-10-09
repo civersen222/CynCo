@@ -14,7 +14,7 @@ import { getShellInfo } from '../tools/shellInfo.js'
 
 export const PROJECT_TOOL_NAMES: readonly string[] = [
   'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Ls', 'Bash', 'WebSearch', 'WebFetch', 'ImageView',
-  'ProjectSearch', 'SaveArtifact', 'AddToKnowledge', 'AskUser',
+  'ProjectSearch', 'SaveArtifact', 'AddToKnowledge', 'AskUser', 'RenderUI',
 ]
 
 export type ProjectPromptInput = { name: string; description: string; instructions: string; toolNames: string; cwd: string }
