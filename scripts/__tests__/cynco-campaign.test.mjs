@@ -97,6 +97,8 @@ const inertTriples = {
 // the 5 s default timeout under the full parallel suite. Every io here hands
 // its own rows over (inertTriples, faultIo); this tripwire turns a fall-through
 // into a named failure instead of a slow, load-dependent one.
+// The real reader, kept so the test of the default io still checks it.
+const realReadLedgerRows = defaultIo.readLedgerRows
 const ledgerWalks = []
 defaultIo.readLedgerRows = () => { ledgerWalks.push(expect.getState().currentTestName); return [] }
 afterEach(() => {
@@ -2213,7 +2215,9 @@ describe('the rule verdicts at VERDICT', () => {
   })
 
   it('the default io reads the datasets home from cyncoHome and the rows from the ledger shards', () => {
-    expect(typeof defaultIo.readLedgerRows).toBe('function')
+    // the real reader, not the tripwire this file installs over it
+    expect(typeof realReadLedgerRows).toBe('function')
+    expect(String(realReadLedgerRows)).toMatch(/readLedger\b/)
     expect(defaultIo.datasetsHome()).toBe(process.env.CYNCO_HOME)
   })
 })
