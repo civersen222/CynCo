@@ -1284,3 +1284,148 @@ describe('dashboard genui: generated pictures — the lightbox', () => {
     expect(name.length - `-${KEY2.slice(0, 8)}.png`.length).toBeLessThanOrEqual(40)
   })
 })
+
+describe('dashboard genui: generated pictures — the pane changes conversation (stage C review)', () => {
+  /**
+   * The Chat pane's own functions (clearChatPane, renderTranscript,
+   * openProjectChat, onProjectOpened) compiled in one scope with the genui
+   * section, so they share its picture map; what they call outside it is
+   * stubbed. `transcript` answers fetchTranscript; the pane's lines are plain
+   * nodes in #chatMessages.
+   */
+  function paneHarness(transcript: (file: string) => Promise<unknown>, state: Record<string, unknown> = {}) {
+    const document = makeDocument()
+    const msgs = new Node('div'); msgs.id = 'chatMessages'; document.body.appendChild(msgs)
+    for (const id of ['chatProjectStrip', 'chatProjectLabel']) { const n = new Node('div'); n.id = id; document.body.appendChild(n) }
+    const fetched: string[] = []
+    const blobs = { created: [] as unknown[], revoked: [] as string[] }
+    const projectsState = { active: null, renderedChat: null, openedSeq: 0, names: { p: 'P' }, paths: { p: '/x' }, slug: null, ...state }
+    const env: Record<string, unknown> = {
+      document, projectsState,
+      ws: { readyState: 1, send: () => {} },
+      appendChatMsg: (role: string, text: string) => { const n = new Node('div'); n.className = 'chat-msg'; n.textContent = role + ': ' + text; msgs.appendChild(n) },
+      brainViz: { setActive: () => {} },
+      fetch: async (url: string) => { fetched.push(url); return reply(200, 'image/png') },
+      URL: {
+        createObjectURL: (b: unknown) => { blobs.created.push(b); return 'blob:page/' + blobs.created.length },
+        revokeObjectURL: (u: string) => { blobs.revoked.push(u) },
+      },
+      fetchTranscript: (_slug: string, file: string) => transcript(file),
+      appendChatTool: () => 'row', summarizeInput: () => '', clearChatCitations: () => {}, restoreCodingCwd: () => {},
+      showConnProject: () => {}, parseProjectsHash: () => null, history: { replaceState: () => {} }, showProjectCwd: () => {},
+      projFetch: () => new Promise(() => {}), projUrl: (s: string) => '/api/projects/' + s, loadProjectChats: () => {},
+      markSaveableReplies: () => {}, projStatus: () => {}, switchTab: () => {},
+    }
+    const names = Object.keys(env)
+    const page = new Function(...names, fnSource('escHtml') + '\n' + genuiSection() + '\n' +
+      ['clearChatPane', 'renderTranscript', 'openProjectChat', 'onProjectOpened'].map(fnSource).join('\n') +
+      '\nreturn { upsertSurface: upsertSurface, applyUiImage: applyUiImage, genuiImages: genuiImages,' +
+      ' openProjectChat: openProjectChat, onProjectOpened: onProjectOpened };')(...names.map(n => env[n])) as {
+      upsertSurface: Page['upsertSurface']; applyUiImage: Page['applyUiImage']; genuiImages: Page['genuiImages']
+      openProjectChat: (slug: string, file: string | null) => Promise<unknown> | undefined
+      onProjectOpened: (event: Record<string, unknown>) => Promise<unknown> | undefined
+    }
+    return { page, document, msgs, fetched, blobs, projectsState }
+  }
+  /** A stored chat whose one RenderUI call shows KEY with the state the server read from its record. */
+  const storedChat = (status: string) => ({ messages: [
+    { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_1', name: 'RenderUI',
+      input: { surface: 'aliens', spec: picSpec({ status, key: KEY, slug: 'p', w: 1024, h: 1024 }) } }] },
+  ] })
+  const held = () => { let open!: (t: unknown) => void; const p = new Promise(r => { open = r }); return { p, open } }
+  const KEY3 = 'c'.repeat(32)
+
+  it('reopening a chat: a done ui.image that lands while the transcript loads beats the record the server read', async () => {
+    const t = held()
+    const h = paneHarness(() => t.p)
+    // the chat the pane showed before: its loaded picture is freed by the first clear
+    h.page.upsertSurface({ type: 'ui.render', toolId: 'old', surfaceId: 'old', partial: false, spec: picSpec(done(KEY2)) })
+    await tick()
+    const opening = h.page.openProjectChat('p', 'c.jsonl')
+    expect(h.blobs.revoked).toEqual(['blob:page/1'])
+    // the server read the sidecar as "running"; the picture finishes before the page reads the reply
+    h.page.applyUiImage({ type: 'ui.image', key: KEY, slug: 'p', status: 'done' })
+    t.open(storedChat('running'))
+    await opening
+    await tick()
+    expect(h.page.genuiImages[KEY]).toMatchObject({ status: 'done', url: 'blob:page/2' })
+    expect(h.msgs.querySelector('.genui-image-box img')!.getAttribute('src')).toBe('blob:page/2')
+    expect(h.fetched).toEqual([`/api/projects/p/images/${KEY2}.png`, `/api/projects/p/images/${KEY}.png`])
+  })
+
+  it('reopening a chat: a picture the old conversation drew while the transcript loaded is freed with it', async () => {
+    const t = held()
+    const h = paneHarness(() => t.p)
+    const opening = h.page.openProjectChat('p', 'c.jsonl')
+    // the engine is still bound to the last chat until the transcript is drawn: its turn can draw meanwhile
+    h.page.upsertSurface({ type: 'ui.render', toolId: 'late', surfaceId: 'late', partial: false, spec: picSpec(done(KEY2)) })
+    await tick()
+    expect(h.page.genuiImages[KEY2].url).toBe('blob:page/1')
+    t.open(storedChat('queued'))
+    await opening
+    expect(h.blobs.revoked).toEqual(['blob:page/1'])
+    expect(Object.keys(h.page.genuiImages)).toEqual([KEY])
+  })
+
+  it('a new project chat empties the pane through clearChatPane: the old pictures\' blob URLs are freed, the map emptied', async () => {
+    const h = paneHarness(() => new Promise(() => {}), { active: { slug: 'p', chat: 'c.jsonl', title: 'Old' }, renderedChat: 'p/c.jsonl' })
+    h.page.upsertSurface({ type: 'ui.render', toolId: 'old', surfaceId: 'old', partial: false, spec: picSpec(done()) })
+    await tick()
+    h.page.onProjectOpened({ type: 'project.opened', slug: 'p', chat: null, title: null })
+    expect(h.document.body.querySelectorAll('[data-image-key]')).toHaveLength(0)
+    expect(h.blobs.revoked).toEqual(['blob:page/1'])
+    expect(h.page.genuiImages).toEqual({})
+  })
+
+  it('a reconnect into another bound chat frees the stale chat\'s pictures and keeps the live turn\'s and any newer state', async () => {
+    const t = held()
+    const h = paneHarness(() => t.p, { active: { slug: 'p', chat: 'old.jsonl', title: 'Old' }, renderedChat: 'p/old.jsonl' })
+    h.page.upsertSurface({ type: 'ui.render', toolId: 'stale', surfaceId: 'stale', partial: false, spec: picSpec(done(KEY3)) })
+    await tick()
+    expect(h.page.genuiImages[KEY3].url).toBe('blob:page/1')
+    const opened = h.page.onProjectOpened({ type: 'project.opened', slug: 'p', chat: 'other.jsonl', title: 'Other' })
+    // this chat's live turn streams in while the transcript loads: a cached picture, already shown
+    const live = h.page.upsertSurface({ type: 'ui.render', toolId: 'live', surfaceId: 'live', partial: false, spec: picSpec(done(KEY2)) })!
+    await tick()
+    expect(live.querySelector('img')!.getAttribute('src')).toBe('blob:page/2')
+    // and a stored picture finishes after the server read its record as running
+    h.page.applyUiImage({ type: 'ui.image', key: KEY, slug: 'p', status: 'done' })
+    t.open(storedChat('running'))
+    await opened
+    await tick()
+    expect(h.blobs.revoked).toEqual(['blob:page/1'])
+    expect(Object.keys(h.page.genuiImages).sort()).toEqual([KEY, KEY2])
+    expect(live.querySelector('img')!.getAttribute('src')).toBe('blob:page/2')
+    expect(h.page.genuiImages[KEY]).toMatchObject({ status: 'done', url: 'blob:page/3' })
+  })
+})
+
+describe('dashboard genui: generated pictures — a withdrawn or cramped card (stage C review)', () => {
+  it('a streaming surface withdrawn before its final frame no longer promises the picture', () => {
+    const { page, fetched } = harness()
+    page.upsertSurface({ type: 'ui.render', toolId: 't1', surfaceId: 't1', partial: true, spec: picSpec() })
+    const el = page.upsertSurface({ type: 'ui.render', toolId: 't1', surfaceId: 't1', partial: false, spec: null, errors: ['the turn was stopped before this call finished'] })!
+    expect(el.classList.contains('genui-withdrawn')).toBe(true)
+    expect(boxText(el)).toBe('Stone path — picture not generated (the card was not finished)')
+    expect(el.querySelector('.genui-image-alt')!.classList.contains('genui-hidden')).toBe(true)
+    expect(el.querySelector('.genui-image-box')!.classList.contains('genui-image-pulse')).toBe(false)
+    expect(fetched).toEqual([])
+  })
+
+  it('a withdrawn surface leaves a picture the engine already reported alone', () => {
+    const { page } = harness()
+    const el = page.upsertSurface({ type: 'ui.render', toolId: 't1', surfaceId: 'opts', partial: false, spec: picSpec({ status: 'queued', key: KEY, slug: 'p', w: 1024, h: 1024 }) })!
+    page.upsertSurface({ type: 'ui.render', toolId: 't1', surfaceId: 'opts', partial: false, spec: null, errors: ['x'] })
+    expect(boxText(el)).toBe('Picture queued…')
+    const off = page.upsertSurface({ type: 'ui.render', toolId: 't2', surfaceId: 'off', partial: false, spec: picSpec({ status: 'off', reason: 'pictures are generated in project chats only' }) })!
+    page.upsertSurface({ type: 'ui.render', toolId: 't2', surfaceId: 'off', partial: false, spec: null, errors: ['x'] })
+    expect(boxText(off)).toBe('Stone path — pictures are generated in project chats only')
+  })
+
+  it('a long reason in a small box scrolls inside it instead of being cut off top and bottom', () => {
+    const rule = (sel: string) => { const i = html.indexOf(sel + ' {'); return html.slice(i, html.indexOf('}', i)) }
+    expect(rule('.genui-image-msg')).toContain('max-height: 100%')
+    expect(rule('.genui-image-msg')).toContain('overflow-y: auto')
+    expect(rule('.genui-image-box')).toContain('align-items: safe center')
+  })
+})

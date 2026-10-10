@@ -639,10 +639,12 @@ h1.genui-heading { font-size: 17px; } h2.genui-heading { font-size: 15px; } h3.g
 .genui-image-load:disabled { opacity: .5; cursor: default; }
 /* A picture the engine paints (F174): the box takes the picture's shape from the first frame, so filling in never moves the card. */
 .genui-image-gen { max-width: 512px; }
-.genui-image-box { position: relative; width: 100%; aspect-ratio: 1 / 1; display: flex; align-items: center; justify-content: center;
-  background: #1a1a2e; border: 1px dashed #444; border-radius: 4px; overflow: hidden; }
+/* A reason longer than the box scrolls inside it; `safe` keeps its first line from being centred out of sight. */
+.genui-image-box { position: relative; width: 100%; aspect-ratio: 1 / 1; display: flex; align-items: center; align-items: safe center;
+  justify-content: center; background: #1a1a2e; border: 1px dashed #444; border-radius: 4px; overflow: hidden; }
 .genui-image-box.genui-image-has { border: 1px solid #333; background: #141414; }
-.genui-image-msg { color: #808080; font-size: 12px; padding: 12px; text-align: center; overflow-wrap: anywhere; }
+.genui-image-msg { color: #808080; font-size: 12px; padding: 12px; text-align: center; overflow-wrap: anywhere; max-height: 100%;
+  overflow-y: auto; }
 .genui-image-failed .genui-image-msg { color: #f44747; }
 .genui-image-pulse { animation: genui-pulse 1.6s ease-in-out infinite; }
 @keyframes genui-pulse { 0%, 100% { background-color: #1a1a2e; } 50% { background-color: #262645; } }
@@ -4138,6 +4140,7 @@ var GENUI_IMAGE_SLUG_RE = /^[a-z0-9-]{1,64}$/;
 // queued < running < failed < done: a picture that exists outranks a failure.
 var GENUI_IMAGE_RANK = { queued: 1, running: 2, failed: 3, done: 4 };
 var genuiImages = {};   // image key → { status, reason, slug, url (blob), loading }
+var genuiLightboxShows = '';   // the key the open lightbox shows ('' when closed)
 
 /** The engine's annotation on an Image, checked: a replayed transcript spec is otherwise unvalidated here. */
 function genuiImageAnnotation(el) {
@@ -4183,14 +4186,17 @@ function genuiGeneratedImage(el, ctx) {
   fig.appendChild(box);
   fig.appendChild(altLine);
   if (p.caption) fig.appendChild(genuiEl('figcaption', 'genui-image-caption', p.caption));
-  var g = { box: box, altLine: altLine, alt: alt, prompt: genuiStr(p.prompt), key: '', note: '', named: false };
+  // pending: drawn from a partial frame, so it promises a picture the final frame decides.
+  var g = { box: box, altLine: altLine, alt: alt, prompt: genuiStr(p.prompt), key: '', note: '', named: false, pending: false };
   fig.__genuiImage = g;
   var partial = !!(ctx && ctx.partial);
   var a = partial ? null : genuiImageAnnotation(el);
   var ratio = '1 / 1';
   // No picture is ever started, fetched or promised from a partial frame.
-  if (partial) g.note = 'Picture comes when the card is finished';
-  else if (!a || a.status === 'off') {
+  if (partial) {
+    g.note = 'Picture comes when the card is finished';
+    g.pending = true;
+  } else if (!a || a.status === 'off') {
     g.note = (alt ? alt + ' — ' : '') + (a ? a.reason : 'picture not generated');
     g.named = !!alt;
   } else {
@@ -4309,16 +4315,33 @@ function genuiRecheckImages() {
   });
 }
 
+/** Drop one picture from the map, freeing its blob URL. */
+function genuiFreeImage(key) {
+  var url = genuiImages[key].url;
+  if (url) {
+    try { URL.revokeObjectURL(url); } catch (e) { console.warn('[genui] freeing picture ' + key.slice(0, 8) + ': ' + (e && e.message ? e.message : e)); }
+  }
+  delete genuiImages[key];
+}
+
 /** The chat pane was cleared: no figure shows these any more, so every blob URL is freed and the map emptied (in place). */
 function genuiForgetImages() {
   genuiCloseLightbox();
-  Object.keys(genuiImages).forEach(function(key) {
-    var url = genuiImages[key].url;
-    if (url) {
-      try { URL.revokeObjectURL(url); } catch (e) { console.warn('[genui] freeing picture ' + key.slice(0, 8) + ': ' + (e && e.message ? e.message : e)); }
-    }
-    delete genuiImages[key];
-  });
+  Object.keys(genuiImages).forEach(genuiFreeImage);
+}
+
+/**
+ * The pane was redrawn for another conversation: free every picture no figure
+ * shows any more. Not a forget — a state that landed while the transcript
+ * loaded is newer than the record the server read, and the live turn's
+ * pictures are still shown; both stay.
+ */
+function genuiPruneImages() {
+  var shown = Object.create(null);
+  var nodes = document.querySelectorAll('[data-image-key]');
+  for (var i = 0; i < nodes.length; i++) shown[nodes[i].getAttribute('data-image-key')] = true;
+  if (genuiLightboxShows && !shown[genuiLightboxShows]) genuiCloseLightbox();
+  Object.keys(genuiImages).forEach(function(key) { if (!shown[key]) genuiFreeImage(key); });
 }
 
 /** The download name: the alt as a slug of at most 40 characters, then the key's first 8. */
@@ -4356,12 +4379,14 @@ function genuiOpenLightbox(key, alt, prompt) {
   back.appendChild(panel);
   back.addEventListener('click', function(ev) { if (ev && ev.target === back) genuiCloseLightbox(); });
   document.body.appendChild(back);
+  genuiLightboxShows = key;
   document.addEventListener('keydown', genuiLightboxKey);
   if (typeof close.focus === 'function') close.focus();
   return back;
 }
 function genuiLightboxKey(ev) { if (ev && ev.key === 'Escape') genuiCloseLightbox(); }
 function genuiCloseLightbox() {
+  genuiLightboxShows = '';
   document.removeEventListener('keydown', genuiLightboxKey);
   var open = document.querySelectorAll('.genui-lightbox');
   for (var i = 0; i < open.length; i++) if (open[i].parentNode) open[i].parentNode.removeChild(open[i]);
@@ -5137,7 +5162,7 @@ function genuiSetPartial(surfaceEl, partial) {
   for (var i = 0; i < (ctx.controls || []).length; i++) ctx.controls[i].disabled = !!partial;
 }
 
-/** A terminal frame with no spec: keep what was drawn, muted, drop its controls, show the reason. */
+/** A terminal frame with no spec: keep what was drawn, muted, drop its controls, show the reason; a promised picture says it was not made. */
 function genuiWithdraw(surfaceEl, reason) {
   var ctx = surfaceEl.__genui;
   if (ctx) {
@@ -5151,6 +5176,16 @@ function genuiWithdraw(surfaceEl, reason) {
   }
   genuiToggleClass(surfaceEl, 'genui-partial', false);
   genuiToggleClass(surfaceEl, 'genui-withdrawn', true);
+  // No final frame follows a withdrawal, so a picture a partial frame promised will never come.
+  var figs = surfaceEl.querySelectorAll('figure.genui-image-gen');
+  for (var j = 0; j < figs.length; j++) {
+    var g = figs[j].__genuiImage;
+    if (!g || !g.pending) continue;
+    g.pending = false;
+    g.note = (g.alt ? g.alt + ' — ' : '') + 'picture not generated (the card was not finished)';
+    g.named = !!g.alt;
+    genuiFillImage(figs[j]);
+  }
   var old = surfaceEl.querySelector('.genui-withdrawn-note');
   if (old && old.parentNode) old.parentNode.removeChild(old);
   surfaceEl.appendChild(genuiEl('div', 'genui-withdrawn-note', 'UI withdrawn' + (reason ? ' — ' + genuiStr(reason) : '')));
@@ -5869,8 +5904,13 @@ function openProjectChat(slug, file) {
   clearChatPane();
   appendChatMsg('system', 'Loading ' + (projectsState.names[slug] || slug) + ' › ' + file + '…');
   return fetchTranscript(slug, file).then(function(t) {
-    clearChatPane();
+    // The first clear freed the last chat's pictures. This one keeps the
+    // picture map: a ui.image that landed while the transcript loaded is newer
+    // than the record the server read. The prune then frees whatever was drawn
+    // meanwhile and is not shown now.
+    clearChatPane(true);
     renderTranscript(t);
+    genuiPruneImages();
     projectsState.renderedChat = slug + '/' + file;
   }).catch(function(err) {
     console.warn('[projects] transcript ' + file + ': ' + err.message);
@@ -5887,11 +5927,12 @@ function fetchTranscript(slug, file) {
   return projFetch(projUrl(slug) + '/chats/' + encodeURIComponent(file));
 }
 
-function clearChatPane() {
+/** Empty the Chat pane and free its pictures; `keepPictures` when the same chat is about to be redrawn into it. */
+function clearChatPane(keepPictures) {
   var msgs = document.getElementById('chatMessages');
   if (msgs) msgs.innerHTML = '';
   clearChatCitations();
-  genuiForgetImages();
+  if (!keepPictures) genuiForgetImages();
 }
 
 /**
@@ -6044,7 +6085,7 @@ function onProjectOpened(event) {
   if (!key) {
     // A new chat: anything in the pane belongs to the conversation the engine left.
     projectsState.renderedChat = null;
-    if (msgs) msgs.innerHTML = '';
+    clearChatPane();
     opened('');
     return;
   }
@@ -6060,6 +6101,8 @@ function onProjectOpened(event) {
     live.forEach(function(n) { msgs.removeChild(n); });
     draw();
     live.forEach(function(n) { msgs.appendChild(n); });
+    // The stale conversation's pictures went with its nodes.
+    genuiPruneImages();
   };
   return fetchTranscript(event.slug, event.chat).then(function(t) {
     settle(function() {

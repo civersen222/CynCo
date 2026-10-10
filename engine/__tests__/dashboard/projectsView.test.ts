@@ -116,7 +116,7 @@ describe('dashboard: the Projects view', () => {
     const drawn: string[] = []
     const fetched: string[] = []
     const run = new Function('ws', 'projectsState', 'projStatus', 'appendChatMsg', 'appendChatTool', 'switchTab',
-      'clearChatPane', 'projFetch', 'projUrl', 'summarizeInput',
+      'clearChatPane', 'projFetch', 'projUrl', 'summarizeInput', 'genuiPruneImages',
       fnSource('openProjectChat') + fnSource('fetchTranscript') + fnSource('renderTranscript') + '\nreturn openProjectChat;')
     const open = run(
       { readyState: 1, send: (s: string) => { drawn.push('SEND'); sent.push(JSON.parse(s)) } },
@@ -129,6 +129,7 @@ describe('dashboard: the Projects view', () => {
       (path: string) => { fetched.push(path); return transcript instanceof Error ? Promise.reject(transcript) : Promise.resolve(transcript) },
       (slug: string) => '/api/projects/' + encodeURIComponent(slug),
       () => '',
+      () => drawn.push('PRUNE'),
     )
     return { open, sent, drawn, fetched }
   }
@@ -157,7 +158,8 @@ describe('dashboard: the Projects view', () => {
     expect(h.fetched).toEqual(['/api/projects/harbor/chats/2026-10-06-chat.jsonl'])
     expect(h.sent).toEqual([{ type: 'project.open', slug: 'harbor', chat: '2026-10-06-chat.jsonl' }])
     const after = h.drawn.slice(h.drawn.lastIndexOf('CLEAR') + 1)
-    expect(after).toEqual(['user: What colour is the crane?', 'tool ProjectSearch success', 'assistant: Rust red [1].', 'SEND'])
+    // the pictures the redraw no longer shows are freed after it, before the engine is bound
+    expect(after).toEqual(['user: What colour is the crane?', 'tool ProjectSearch success', 'assistant: Rust red [1].', 'PRUNE', 'SEND'])
   })
 
   it('a transcript that will not load is said so, and the chat still opens', async () => {
@@ -188,7 +190,7 @@ describe('dashboard: the Projects view', () => {
     const projectsState: Record<string, any> = { active: null, renderedChat: null, openedSeq: 0, names: { yard: 'Front Yard' }, paths: { yard: 'C:/p/yard' }, slug: null, ...state }
     const make = new Function('document', 'ws', 'projectsState', 'clearChatCitations', 'restoreCodingCwd', 'appendChatMsg',
       'appendChatTool', 'summarizeInput', 'parseProjectsHash', 'history', 'showProjectCwd', 'projFetch', 'projUrl', 'projStatus',
-      'loadProjectChats', 'markSaveableReplies', 'showConnProject',
+      'loadProjectChats', 'markSaveableReplies', 'showConnProject', 'clearChatPane', 'genuiPruneImages',
       fnSource('onProjectOpened') + fnSource('fetchTranscript') + fnSource('renderTranscript') + '\nreturn onProjectOpened;')
     const onOpened = make(
       { getElementById: (id: string) => (id === 'chatMessages' ? msgs : id === 'chatProjectStrip' ? strip : label) },
@@ -208,6 +210,8 @@ describe('dashboard: the Projects view', () => {
       },
       (slug: string) => '/api/projects/' + encodeURIComponent(slug),
       () => {}, () => {}, () => {}, () => {},
+      () => { msgs.innerHTML = '' },
+      () => {},
     )
     const pane = () => children.map(c => c.text)
     return { onOpened, sent, fetched, replaced, put, pane, projectsState, label }
